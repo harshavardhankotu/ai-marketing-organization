@@ -1,4 +1,4 @@
-﻿import { Hono } from 'hono';
+import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { serve } from '@hono/node-server';
 import { apiRouter } from './routes/api.js';
@@ -21,6 +21,14 @@ app.use('*', async (c, next) => {
   console.log(`[HTTP] ${c.req.method} ${c.req.path} - ${c.res.status} (${ms}ms)`);
 });
 
+// Health endpoint for stability verification
+app.get('/api/health', (c) => {
+  return c.json({
+    status: 'ok',
+    service: 'ai-marketing-organization'
+  });
+});
+
 // Mount domain routes under /api/v1
 app.route('/api/v1', apiRouter);
 
@@ -37,9 +45,11 @@ console.log(`🏢 Seed Business: SmileKraft Dental Hyderabad (₹50k INR Budget)
 console.log(`🤖 Agents Active: 80 Specialized Autonomous Agents`);
 console.log(`======================================================\n`);
 
-serve({
-  fetch: app.fetch,
-  port: PORT
-});
+if (process.env.NODE_ENV !== 'test') {
+  serve({
+    fetch: app.fetch,
+    port: PORT
+  });
+}
 
 export default app;

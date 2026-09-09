@@ -1,4 +1,4 @@
-﻿# Dependencies
+# Dependencies
 node_modules/
 .pnpm-store/
 dist/
@@ -6,6 +6,6 @@ build/
 .wrangler/
 .env
 .env.local
-*.db
-*.sqlite
+*.db*
+*.sqlite*
 *.log
