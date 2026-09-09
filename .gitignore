@@ -1,0 +1,11 @@
+﻿# Dependencies
+node_modules/
+.pnpm-store/
+dist/
+build/
+.wrangler/
+.env
+.env.local
+*.db
+*.sqlite
+*.log

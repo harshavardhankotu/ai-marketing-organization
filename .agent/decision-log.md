@@ -1,0 +1,13 @@
+﻿# Decision Log
+
+### DEC-001: Monorepo Structure & Cloudflare-compatible Hono
+- **Date**: 2026-09-10
+- **Context**: Need a free-first, high performance, edge-deployable backend that runs seamlessly locally and on Cloudflare Workers/D1.
+- **Decision**: Used npm workspaces with Hono HTTP engine, Better-SQLite3 for local dev/testing, and D1/R2 compatible design.
+- **Alternatives Considered**: Fastify/Express (not edge/Cloudflare compatible), Next.js (heavyweight).
+- **Outcome**: Fast startup, zero-overhead edge portability.
+
+### DEC-002: Exact Model & Quota Protection
+- **Date**: 2026-09-10
+- **Context**: Free-tier Gemini limits can hit 429 if 80 agents run concurrently.
+- **Decision**: Primary model `gemini-3.8-flash`. Agents are logical units, not concurrent background threads. Priority task queue with max 3 concurrent calls, exponential backoff, SHA-256 deduplication cache.

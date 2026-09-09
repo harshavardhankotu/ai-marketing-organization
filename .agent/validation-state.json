@@ -1,0 +1,8 @@
+﻿{
+  "last_run": null,
+  "unit_tests": { "total": 0, "passed": 0, "failed": 0 },
+  "integration_tests": { "total": 0, "passed": 0, "failed": 0 },
+  "contract_tests": { "total": 0, "passed": 0, "failed": 0 },
+  "browser_e2e": { "total": 0, "passed": 0, "failed": 0 },
+  "build_status": "PENDING"
+}
