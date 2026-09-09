@@ -35,8 +35,8 @@
   "known_failures": [],
   "active_blockers": [],
   "test_status": {
-    "unit": "PENDING",
-    "integration": "PENDING",
+    "unit": "PASSED",
+    "integration": "PASSED",
     "contract": "PENDING",
     "e2e": "PENDING"
   },

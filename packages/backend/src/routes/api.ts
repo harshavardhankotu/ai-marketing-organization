@@ -1,0 +1,363 @@
+﻿import { Hono } from 'hono';
+import { getDb } from '../db/client.js';
+import { QuotaManager } from '../ai/quota-manager.js';
+import { KillSwitchController } from '../control-plane/kill-switch.js';
+import { ApprovalManager } from '../control-plane/approval-manager.js';
+import { EventTracker } from '../analytics/event-tracker.js';
+import { ExperimentEngine } from '../experiments/experiment-engine.js';
+import { ClosedLoopMarketingCycle } from '../workflows/closed-loop-cycle.js';
+import { AGENT_REGISTRY, getAgentById } from '@ai-marketing/shared';
+import {
+  CreateBusinessProfileSchema,
+  CreateGoalSchema,
+  CreateCampaignSchema,
+  ApprovalActionSchema,
+  IngestAnalyticsEventSchema,
+  EmergencyKillSwitchSchema
+} from '@ai-marketing/shared';
+
+export type AppVariables = {
+  organizationId: string;
+  userId: string;
+};
+
+export const apiRouter = new Hono<{ Variables: AppVariables }>();
+
+// Middleware: Extract tenant/org context
+apiRouter.use('*', async (c, next) => {
+  // Default to SmileKraft tenant for local dev / seed
+  c.set('organizationId', c.req.header('x-organization-id') || 'org_smilekraft_01');
+  c.set('userId', c.req.header('x-user-id') || 'usr_owner_01');
+  await next();
+});
+
+// Health check
+apiRouter.get('/health', (c) => {
+  return c.json({
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    version: '1.0.0',
+    service: 'AI Marketing Organization Engine'
+  });
+});
+
+// Quota & Free Tier Observability
+apiRouter.get('/quota', (c) => {
+  const status = QuotaManager.getInstance().getStatus();
+  return c.json({ success: true, data: status });
+});
+
+// 80 Agents Registry
+apiRouter.get('/agents', (c) => {
+  const db = getDb();
+  const dbAgents = db.prepare('SELECT * FROM agents').all() as any[];
+
+  // Merge runtime DB stats with catalog
+  const agents = AGENT_REGISTRY.map(catalogAgent => {
+    const fromDb = dbAgents.find(d => d.id === catalogAgent.id);
+    return {
+      ...catalogAgent,
+      status: fromDb?.status || catalogAgent.status,
+      version: fromDb?.version || catalogAgent.version
+    };
+  });
+
+  return c.json({ success: true, data: agents, total: agents.length });
+});
+
+apiRouter.get('/agents/:id', (c) => {
+  const id = c.req.param('id');
+  const agent = getAgentById(id);
+  if (!agent) return c.json({ success: false, error: 'Agent not found' }, 404);
+
+  const db = getDb();
+  const dbAgent = db.prepare('SELECT * FROM agents WHERE id = ?').get(id) as any;
+  return c.json({
+    success: true,
+    data: { ...agent, ...dbAgent }
+  });
+});
+
+// Business Profile
+apiRouter.get('/business', (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const business = db.prepare('SELECT * FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  if (!business) return c.json({ success: false, error: 'Business not found' }, 404);
+
+  return c.json({
+    success: true,
+    data: {
+      ...business,
+      offerings: JSON.parse(business.offerings_json || '[]'),
+      valuePropositions: JSON.parse(business.value_propositions_json || '[]'),
+      secondaryLanguages: JSON.parse(business.secondary_languages_json || '[]'),
+      constraints: JSON.parse(business.constraints_json || '{}')
+    }
+  });
+});
+
+apiRouter.post('/business', async (c) => {
+  const orgId = c.get('organizationId');
+  const body = await c.req.json();
+  const parsed = CreateBusinessProfileSchema.safeParse(body);
+
+  if (!parsed.success) {
+    return c.json({ success: false, errors: parsed.error.errors }, 400);
+  }
+
+  const data = parsed.data;
+  const db = getDb();
+  const businessId = `biz_${Date.now()}`;
+
+  db.prepare(`
+    INSERT INTO businesses (
+      id, organization_id, name, vertical_id, vertical_name,
+      country, currency, timezone, city, neighborhood,
+      website_url, phone, primary_language, secondary_languages_json,
+      brand_voice, value_propositions_json, offerings_json, constraints_json,
+      autonomy_mode, kill_switch_active
+    ) VALUES (?, ?, ?, ?, ?, 'IN', 'INR', 'Asia/Kolkata', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+  `).run(
+    businessId, orgId, data.name, data.verticalId, data.verticalName,
+    data.city, data.neighborhood, data.websiteUrl || null, data.phone || null,
+    data.primaryLanguage, JSON.stringify(data.secondaryLanguages),
+    data.brandVoice, JSON.stringify(data.valuePropositions), JSON.stringify(data.offerings),
+    JSON.stringify({ monthlyBudgetINR: data.monthlyBudgetINR }),
+    data.autonomyMode
+  );
+
+  return c.json({ success: true, data: { id: businessId } });
+});
+
+// Goals
+apiRouter.get('/goals', (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const goals = db.prepare('SELECT * FROM business_goals WHERE organization_id = ?').all(orgId) as any[];
+
+  return c.json({
+    success: true,
+    data: goals.map(g => ({
+      ...g,
+      kpis: JSON.parse(g.kpis_json || '[]')
+    }))
+  });
+});
+
+apiRouter.post('/goals', async (c) => {
+  const orgId = c.get('organizationId');
+  const body = await c.req.json();
+  const parsed = CreateGoalSchema.safeParse(body);
+  if (!parsed.success) return c.json({ success: false, errors: parsed.error.errors }, 400);
+
+  const d = parsed.data;
+  const db = getDb();
+  const goalId = `goal_${Date.now()}`;
+
+  db.prepare(`
+    INSERT INTO business_goals (
+      id, organization_id, business_id, title, target_metric,
+      target_value, current_value, metric_unit, timeframe_days,
+      start_date, target_date, budget_allocated_inr, status, kpis_json
+    ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, date('now'), date('now', '+' || ? || ' days'), ?, 'ACTIVE', '[]')
+  `).run(goalId, orgId, d.businessId, d.title, d.targetMetric, d.targetValue, d.metricUnit, d.timeframeDays, d.timeframeDays, d.budgetAllocatedINR);
+
+  return c.json({ success: true, data: { id: goalId } });
+});
+
+// Closed-Loop Autonomous Marketing Cycle Trigger
+apiRouter.post('/workflows/trigger-cycle', async (c) => {
+  const orgId = c.get('organizationId');
+  const body = await c.req.json();
+  const businessId = body.businessId || 'biz_smilekraft_hyd';
+  const goalId = body.goalId || 'goal_100_leads_hyd';
+
+  const cycle = new ClosedLoopMarketingCycle();
+  const result = await cycle.executeCompleteCycle({
+    organizationId: orgId,
+    businessId,
+    goalId
+  });
+
+  return c.json({
+    success: true,
+    message: 'Closed loop marketing cycle successfully executed across research, strategy, campaign, content, telemetry, experiments, and evolution.',
+    data: result
+  });
+});
+
+// Campaigns
+apiRouter.get('/campaigns', (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const campaigns = db.prepare('SELECT * FROM campaigns WHERE organization_id = ? ORDER BY created_at DESC').all(orgId) as any[];
+
+  return c.json({
+    success: true,
+    data: campaigns.map(cmp => ({
+      ...cmp,
+      channels: JSON.parse(cmp.channels_json || '[]'),
+      geography: JSON.parse(cmp.geography_json || '{}')
+    }))
+  });
+});
+
+// Content Assets
+apiRouter.get('/content', (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const content = db.prepare('SELECT * FROM content_assets WHERE organization_id = ? ORDER BY created_at DESC').all(orgId) as any[];
+
+  return c.json({
+    success: true,
+    data: content.map(cnt => ({
+      ...cnt,
+      complianceFlags: JSON.parse(cnt.compliance_flags_json || '[]'),
+      performance: JSON.parse(cnt.performance_json || '{}')
+    }))
+  });
+});
+
+// Research Findings
+apiRouter.get('/research', (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const findings = db.prepare('SELECT * FROM research_findings WHERE organization_id = ? ORDER BY created_at DESC').all(orgId);
+  return c.json({ success: true, data: findings });
+});
+
+// Analytics & Dashboard KPIs
+apiRouter.get('/analytics/dashboard', (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const biz = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  const businessId = biz?.id || 'biz_smilekraft_hyd';
+
+  const metrics = EventTracker.getDashboardMetrics(businessId);
+  const events = db.prepare('SELECT * FROM analytics_events WHERE business_id = ? ORDER BY created_at DESC LIMIT 50').all(businessId);
+  const attributions = db.prepare('SELECT * FROM attributions WHERE business_id = ? ORDER BY created_at DESC LIMIT 50').all(businessId);
+
+  return c.json({
+    success: true,
+    data: {
+      metrics,
+      events,
+      attributions
+    }
+  });
+});
+
+// Experiments
+apiRouter.get('/experiments', (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const experiments = db.prepare('SELECT * FROM experiments WHERE organization_id = ? ORDER BY created_at DESC').all(orgId) as any[];
+
+  return c.json({
+    success: true,
+    data: experiments.map(e => ({
+      ...e,
+      metrics: JSON.parse(e.metrics_json || '{}')
+    }))
+  });
+});
+
+// Evolution, Learnings & Decision Journal
+apiRouter.get('/evolution', (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+
+  const strategies = db.prepare('SELECT * FROM strategies WHERE organization_id = ? ORDER BY version DESC').all(orgId) as any[];
+  const learnings = db.prepare('SELECT * FROM learnings WHERE organization_id = ? ORDER BY created_at DESC').all(orgId);
+  const decisions = db.prepare('SELECT * FROM decisions WHERE organization_id = ? ORDER BY created_at DESC').all(orgId);
+
+  return c.json({
+    success: true,
+    data: {
+      strategies: strategies.map(s => ({
+        ...s,
+        channelStrategy: JSON.parse(s.channel_strategy_json || '[]'),
+        contentThemes: JSON.parse(s.content_themes_json || '[]')
+      })),
+      learnings,
+      decisions
+    }
+  });
+});
+
+// Human Approval Requests
+apiRouter.get('/approvals', (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const requests = db.prepare('SELECT * FROM approval_requests WHERE organization_id = ? ORDER BY created_at DESC').all(orgId) as any[];
+
+  return c.json({
+    success: true,
+    data: requests.map(r => ({
+      ...r,
+      riskFactors: JSON.parse(r.risk_factors_json || '[]')
+    }))
+  });
+});
+
+apiRouter.post('/approvals/resolve', async (c) => {
+  const userId = c.get('userId');
+  const body = await c.req.json();
+  const parsed = ApprovalActionSchema.safeParse(body);
+  if (!parsed.success) return c.json({ success: false, errors: parsed.error.errors }, 400);
+
+  ApprovalManager.resolveApproval(parsed.data.requestId, parsed.data.action, userId, parsed.data.feedbackNotes);
+  return c.json({ success: true, message: `Request successfully resolved as ${parsed.data.action}` });
+});
+
+// Global Emergency Kill Switch
+apiRouter.post('/kill-switch', async (c) => {
+  const orgId = c.get('organizationId');
+  const userId = c.get('userId');
+  const body = await c.req.json();
+  const parsed = EmergencyKillSwitchSchema.safeParse(body);
+  if (!parsed.success) return c.json({ success: false, errors: parsed.error.errors }, 400);
+
+  if (parsed.data.active) {
+    KillSwitchController.trigger(parsed.data.businessId, orgId, userId, parsed.data.reason);
+  } else {
+    KillSwitchController.reset(parsed.data.businessId, orgId, userId, parsed.data.reason);
+  }
+
+  return c.json({
+    success: true,
+    message: parsed.data.active ? 'Emergency Kill Switch ENGAGED' : 'Emergency Kill Switch RESET',
+    killSwitchActive: parsed.data.active
+  });
+});
+
+// Integrations
+apiRouter.get('/integrations', (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const integrations = db.prepare('SELECT * FROM integrations WHERE organization_id = ?').all(orgId) as any[];
+
+  return c.json({
+    success: true,
+    data: integrations.map(int => ({
+      ...int,
+      credentialsMeta: JSON.parse(int.credentials_meta_json || '{}')
+    }))
+  });
+});
+
+// Activity Stream & Audit Trail
+apiRouter.get('/activity', (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const logs = db.prepare('SELECT * FROM audit_logs WHERE organization_id = ? ORDER BY created_at DESC LIMIT 100').all(orgId) as any[];
+
+  return c.json({
+    success: true,
+    data: logs.map(l => ({
+      ...l,
+      details: JSON.parse(l.details_json || '{}')
+    }))
+  });
+});
