@@ -32,20 +32,20 @@ app.get('/api/health', (c) => {
 // Mount domain routes under /api/v1
 app.route('/api/v1', apiRouter);
 
-// Auto-seed if running fresh
-seedDatabase();
-
 const PORT = Number(process.env.PORT) || 3001;
 
-console.log(`\n======================================================`);
-console.log(`🚀 AI Marketing Organization Backend Service Running`);
-console.log(`📡 URL: http://localhost:${PORT}`);
-console.log(`📊 API Health: http://localhost:${PORT}/api/v1/health`);
-console.log(`🏢 Seed Business: SmileKraft Dental Hyderabad (₹50k INR Budget)`);
-console.log(`🤖 Agents Active: 80 Specialized Autonomous Agents`);
-console.log(`======================================================\n`);
-
 if (process.env.NODE_ENV !== 'test') {
+  // Auto-seed if running fresh
+  seedDatabase();
+
+  console.log(`\n======================================================`);
+  console.log(`🚀 AI Marketing Organization Backend Service Running`);
+  console.log(`📡 URL: http://localhost:${PORT}`);
+  console.log(`📊 API Health: http://localhost:${PORT}/api/v1/health`);
+  console.log(`🏢 Seed Business: SmileKraft Dental Hyderabad (₹50k INR Budget)`);
+  console.log(`🤖 Agents Active: 80 Specialized Autonomous Agents`);
+  console.log(`======================================================\n`);
+
   serve({
     fetch: app.fetch,
     port: PORT
