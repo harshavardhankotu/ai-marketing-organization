@@ -1,11 +1,11 @@
 {
-  "last_run": "2026-09-11T20:22:00+05:30",
-  "unit_tests": { "total": 25, "passed": 25, "failed": 0 },
+  "last_run": "2026-09-11T20:39:00+05:30",
+  "unit_tests": { "total": 32, "passed": 32, "failed": 0 },
   "integration_tests": { "total": 14, "passed": 14, "failed": 0 },
   "contract_tests": { "total": 7, "passed": 7, "failed": 0 },
   "browser_e2e": { "total": 1, "passed": 1, "failed": 0 },
-  "total_tests": 39,
-  "passed_tests": 39,
+  "total_tests": 46,
+  "passed_tests": 46,
   "failed_tests": 0,
   "build_status": "SUCCESS",
   "stability_test": "PASSED",
@@ -16,8 +16,11 @@
   "tenant_isolation": "PASSED",
   "public_lead_capture": "PASSED",
   "payment_webhooks": "PASSED",
+  "production_secrets_validation": "PASSED",
+  "placeholder_rejection": "PASSED",
+  "test_real_roas_isolation": "PASSED",
   "github_actions_ci": {
-    "run_id": "34612672121",
+    "run_id": "34614414303",
     "status": "COMPLETED",
     "conclusion": "SUCCESS"
   }

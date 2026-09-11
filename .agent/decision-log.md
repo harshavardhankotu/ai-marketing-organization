@@ -35,3 +35,9 @@
 - **Context**: High-risk healthcare businesses require strict tenant data isolation, audit trails on manual revenue entry, and multi-cloud deployment specs (Cloudflare Workers/Pages and Docker).
 - **Decision**: Implemented tenant isolation checks preventing cross-organization data access, verified manual revenue entry requiring audit references and user attribution, Cloudflare `wrangler.jsonc` configs, and multi-stage Dockerfile.
 - **Outcome**: Verified tenant security (tested), schema portability (`schema.sql`), and 1-command deployment readiness.
+
+### DEC-007: Production Placeholder Rejection & Secrets Enforcement
+- **Date**: 2026-09-11
+- **Context**: Production environments must never allow placeholder credentials, demo keys, or synthetic numbers to bleed into real financial accounting.
+- **Decision**: Implemented `validateProductionSecrets()` halting production startups on placeholders or `demo_key`. Enforced that `docker-compose.yml` requires `${GEMINI_API_KEY}` without fallback. Prohibited recording `REAL` revenue using `SIMULATED` gateways. Isolated production ROAS calculation strictly to verified real revenue (`realRevenueINR / totalAdSpend`).
+- **Outcome**: Fail-safe production security and complete isolation of real financial performance from test scenarios.
