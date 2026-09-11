@@ -406,22 +406,26 @@ apiRouter.post('/revenue/transactions', async (c) => {
     return c.json({ success: false, error: 'Missing required transaction fields: invoiceNumber, amountINR, paymentMethod' }, 400);
   }
 
-  const tx = revenueEngine.recordTransaction({
-    businessId: business.id,
-    organizationId: orgId,
-    journeyId: body.journeyId,
-    campaignId: body.campaignId,
-    invoiceNumber: body.invoiceNumber,
-    amountINR: body.amountINR,
-    paymentMethod: body.paymentMethod,
-    paymentGateway: body.paymentGateway,
-    transactionRef: body.transactionRef,
-    status: body.status,
-    classification: body.classification || 'TEST',
-    serviceRendered: body.serviceRendered,
-  });
+  try {
+    const tx = revenueEngine.recordTransaction({
+      businessId: business.id,
+      organizationId: orgId,
+      journeyId: body.journeyId,
+      campaignId: body.campaignId,
+      invoiceNumber: body.invoiceNumber,
+      amountINR: body.amountINR,
+      paymentMethod: body.paymentMethod,
+      paymentGateway: body.paymentGateway,
+      transactionRef: body.transactionRef,
+      status: body.status,
+      classification: body.classification || 'TEST',
+      serviceRendered: body.serviceRendered,
+    });
 
-  return c.json({ success: true, data: tx }, 201);
+    return c.json({ success: true, data: tx }, 201);
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 400);
+  }
 });
 
 // ==========================================

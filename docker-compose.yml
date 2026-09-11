@@ -8,7 +8,7 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3001
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-demo_key}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:?Error: GEMINI_API_KEY deployment secret must be provided for production}
     volumes:
       - app_data:/app/data
     restart: unless-stopped

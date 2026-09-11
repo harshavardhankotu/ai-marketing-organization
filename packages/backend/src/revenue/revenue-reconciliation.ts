@@ -52,7 +52,12 @@ export class RevenueReconciliationEngine {
     const orgId = params.organizationId || 'org_smilekraft_01';
     const status = params.status || 'SUCCESS';
     const classification = params.classification || 'TEST';
-    const gateway = params.paymentGateway || 'SIMULATED';
+    const gateway = params.paymentGateway || (classification === 'REAL' ? 'MANUAL' : 'SIMULATED');
+
+    // Strict REAL vs SIMULATED distinction: REAL revenue must never use SIMULATED gateway
+    if (classification === 'REAL' && (gateway === 'SIMULATED' || params.paymentGateway === 'SIMULATED')) {
+      throw new Error('Cannot record REAL revenue using a SIMULATED payment gateway. REAL revenue must come from verified sources or production gateways.');
+    }
 
     this.db
       .prepare(
@@ -132,20 +137,23 @@ export class RevenueReconciliationEngine {
 
   recordVerifiedManualRevenue(params: {
     businessId: string;
-    organizationId: string;
+    organizationId?: string;
     verifiedByUserId: string;
     invoiceNumber: string;
     amountINR: number;
     paymentMethod: PaymentMethod;
     transactionRef: string;
-    verificationSource: 'BANK_STATEMENT' | 'RAZORPAY_PORTAL' | 'CLINIC_POS_RECEIPT' | 'CASHFREE' | 'OTHER';
+    verificationSource: 'BANK_STATEMENT' | 'RAZORPAY_PORTAL' | 'CLINIC_POS_RECEIPT' | 'CASHFREE' | 'OTHER' | string;
     journeyId?: string;
     campaignId?: string;
-    serviceRendered: string;
+    serviceRendered?: string;
   }): TransactionRecord {
+    const orgId = params.organizationId || 'org_smilekraft_01';
+    const service = params.serviceRendered || 'Verified In-Clinic Treatment';
+
     const tx = this.recordTransaction({
       businessId: params.businessId,
-      organizationId: params.organizationId,
+      organizationId: orgId,
       journeyId: params.journeyId,
       campaignId: params.campaignId,
       invoiceNumber: params.invoiceNumber,
@@ -155,7 +163,7 @@ export class RevenueReconciliationEngine {
       transactionRef: params.transactionRef,
       status: 'SUCCESS',
       classification: 'REAL',
-      serviceRendered: params.serviceRendered,
+      serviceRendered: service,
     });
 
     // Record formal audit trail
@@ -166,7 +174,7 @@ export class RevenueReconciliationEngine {
       )
       .run(
         `audit-${randomUUID()}`,
-        params.organizationId,
+        orgId,
         params.verifiedByUserId,
         tx.id,
         JSON.stringify({
@@ -305,9 +313,15 @@ export class RevenueReconciliationEngine {
       .get(businessId) as any;
     const totalAdSpend = campaignSpend?.total_spent || 0;
 
-    // ROAS strictly on actual revenue if real exists, otherwise test mode ROAS
-    const effectiveRevenue = realRevenueINR > 0 ? realRevenueINR : testRevenueINR;
-    const roas = totalAdSpend > 0 ? effectiveRevenue / totalAdSpend : 0;
+    const realRoas = totalAdSpend > 0 ? Math.round((realRevenueINR / totalAdSpend) * 100) / 100 : 0;
+    const testRoas = totalAdSpend > 0 ? Math.round((testRevenueINR / totalAdSpend) * 100) / 100 : 0;
+
+    // In production (NODE_ENV=production), ROAS is strictly realRoas. Zero test bleed into real metrics.
+    const isProd = process.env.NODE_ENV === 'production';
+    const effectiveRevenue = isProd
+      ? realRevenueINR
+      : (realRevenueINR > 0 ? realRevenueINR : testRevenueINR);
+    const roas = totalAdSpend > 0 ? Math.round((effectiveRevenue / totalAdSpend) * 100) / 100 : 0;
 
     return {
       realRevenueINR,
@@ -319,7 +333,9 @@ export class RevenueReconciliationEngine {
       totalAICostINR,
       aiCostPerQualifiedLeadINR: Math.round(aiCostPerQualifiedLeadINR * 100) / 100,
       aiCostPerCustomerINR: Math.round(aiCostPerCustomerINR * 100) / 100,
-      roas: Math.round(roas * 100) / 100,
+      roas,
+      realRoas,
+      testRoas,
     };
   }
 

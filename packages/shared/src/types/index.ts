@@ -485,4 +485,6 @@ export interface RevenueReconciliationSummary {
   aiCostPerQualifiedLeadINR: number;
   aiCostPerCustomerINR: number;
   roas: number;
+  realRoas: number;
+  testRoas: number;
 }

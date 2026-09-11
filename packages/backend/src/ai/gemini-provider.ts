@@ -1,6 +1,7 @@
-﻿import { QuotaManager } from './quota-manager.js';
+import { QuotaManager } from './quota-manager.js';
 import { DeduplicationEngine } from './deduplication.js';
 import { TaskPriority } from '@ai-marketing/shared';
+import { isPlaceholderCredential, isProduction, ProductionSecretViolationError } from '../config/env.js';
 
 export type ThinkingLevel = 'low' | 'medium' | 'high';
 
@@ -60,7 +61,23 @@ export class GeminiProvider {
     const result = await this.quotaManager.schedule(fingerprint, priority, async () => {
       const apiKey = process.env.GEMINI_API_KEY;
 
-      if (apiKey) {
+      if (isProduction()) {
+        if (!apiKey || isPlaceholderCredential(apiKey)) {
+          throw new ProductionSecretViolationError(
+            `[SECURITY ERROR] Production must reject placeholder credentials and 'demo_key'. GEMINI_API_KEY must be provided via deployment secrets.`
+          );
+        }
+
+        try {
+          return await this.callLiveGeminiAPI<T>(apiKey, options, thinkingLevel);
+        } catch (error: any) {
+          console.error(`[GeminiProvider][PRODUCTION CRITICAL] Live API call failed: ${error?.message}`);
+          throw new Error(`Production Gemini API call failed: ${error?.message}`);
+        }
+      }
+
+      // Non-production (development, test) execution
+      if (apiKey && !isPlaceholderCredential(apiKey)) {
         try {
           return await this.callLiveGeminiAPI<T>(apiKey, options, thinkingLevel);
         } catch (error: any) {

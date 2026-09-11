@@ -3,6 +3,17 @@ import { cors } from 'hono/cors';
 import { serve } from '@hono/node-server';
 import { apiRouter } from './routes/api.js';
 import { seedDatabase } from './db/seed.js';
+import { validateProductionSecrets } from './config/env.js';
+
+// Enforce production secret validation immediately
+try {
+  validateProductionSecrets();
+} catch (err: any) {
+  console.error(`\n🚨 FATAL CONFIGURATION ERROR: ${err.message}\n`);
+  if (process.env.NODE_ENV === 'production') {
+    process.exit(1);
+  }
+}
 
 const app = new Hono();
 
