@@ -1,4 +1,4 @@
-﻿import { getDb } from '../db/client.js';
+import { getDb } from '../db/client.js';
 
 export type MemoryScope = 'BUSINESS' | 'MARKET' | 'CAMPAIGN' | 'AGENT' | 'SYSTEM';
 
@@ -35,7 +35,7 @@ export class MemoryStore {
     options?: { confidence?: number; ttlDays?: number }
   ): void {
     const db = getDb();
-    const id = `mem_${scope.toLowerCase()}_${key}`;
+    const id = `mem_${businessId}_${scope.toLowerCase()}_${key}`;
     const confidence = options?.confidence ?? 1.0;
     const expiresAt = options?.ttlDays
       ? new Date(Date.now() + options.ttlDays * 86400000).toISOString()

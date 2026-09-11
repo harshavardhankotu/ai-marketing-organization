@@ -19,7 +19,9 @@ const STAGE_ORDER: Record<CustomerJourneyStage, number> = {
 };
 
 export class CustomerJourneyTracker {
-  private db = getDb();
+  private get db() {
+    return getDb();
+  }
 
   getOrCreateJourney(
     businessId: string,
@@ -203,6 +205,64 @@ export class CustomerJourneyTracker {
         WHERE id = ?`
       )
       .run(amountINR, now, journeyId);
+  }
+
+  subtractRevenue(journeyId: string, amountINR: number): void {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `UPDATE customer_journeys SET
+          total_lifetime_value_inr = MAX(0, total_lifetime_value_inr - ?),
+          updated_at = ?
+        WHERE id = ?`
+      )
+      .run(amountINR, now, journeyId);
+  }
+
+  recordRealLead(params: {
+    businessId: string;
+    organizationId?: string;
+    customerName: string;
+    customerPhone: string;
+    customerEmail?: string;
+    channel: MarketingChannel;
+    campaignId?: string;
+    source?: string;
+    serviceOfInterest?: string;
+    notes?: string;
+  }): CustomerJourneyRecord {
+    const visitorId = `vis_real_${randomUUID().slice(0, 8)}`;
+    const orgId = params.organizationId || 'org_smilekraft_01';
+    
+    // 1. Initialize journey in REAL mode
+    this.getOrCreateJourney(params.businessId, visitorId, 'REAL', orgId);
+
+    // 2. Add lead submission touchpoint
+    this.recordTouchpoint({
+      businessId: params.businessId,
+      visitorId,
+      channel: params.channel,
+      event: 'public_lead_submission',
+      campaignId: params.campaignId,
+      metadata: {
+        source: params.source || 'direct_landing_page',
+        serviceOfInterest: params.serviceOfInterest,
+        notes: params.notes
+      },
+      classification: 'REAL',
+      organizationId: orgId
+    });
+
+    // 3. Advance to LEAD with verified contact info
+    return this.advanceStage({
+      businessId: params.businessId,
+      visitorId,
+      targetStage: 'LEAD',
+      customerName: params.customerName,
+      customerPhone: params.customerPhone,
+      customerEmail: params.customerEmail,
+      classification: 'REAL'
+    });
   }
 
   getJourneyFunnel(

@@ -8,7 +8,9 @@ const COST_PER_1K_INPUT_TOKENS_INR = 0.06;
 const COST_PER_1K_OUTPUT_TOKENS_INR = 0.24;
 
 export class CostAccountingEngine {
-  private db = getDb();
+  private get db() {
+    return getDb();
+  }
 
   calculateEstimatedCostINR(inputTokens: number, outputTokens: number): number {
     const inputCost = (inputTokens / 1000) * COST_PER_1K_INPUT_TOKENS_INR;

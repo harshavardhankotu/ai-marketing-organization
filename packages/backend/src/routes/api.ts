@@ -542,3 +542,144 @@ apiRouter.post('/ai-costs/log', async (c) => {
 
   return c.json({ success: true, data: log }, 201);
 });
+
+// ==========================================
+// REAL LEAD CAPTURE & PUBLIC BOOKING API
+// ==========================================
+apiRouter.post('/public/lead', async (c) => {
+  const body = await c.req.json();
+  const businessId = body.businessId || 'biz_smilekraft_hyd';
+  const orgId = body.organizationId || 'org_smilekraft_01';
+
+  if (!body.customerName || !body.customerPhone) {
+    return c.json({ success: false, error: 'Full name and mobile phone number are required' }, 400);
+  }
+
+  // Validate Indian Phone format (10+ digits)
+  const cleanPhone = body.customerPhone.replace(/\D/g, '');
+  if (cleanPhone.length < 10) {
+    return c.json({ success: false, error: 'Invalid phone number. Must be a valid 10-digit mobile number' }, 400);
+  }
+
+  const journey = journeyTracker.recordRealLead({
+    businessId,
+    organizationId: orgId,
+    customerName: body.customerName.trim(),
+    customerPhone: body.customerPhone.trim(),
+    customerEmail: body.customerEmail ? body.customerEmail.trim() : undefined,
+    channel: body.channel || 'WHATSAPP',
+    campaignId: body.campaignId || 'camp_seed_aligners_01',
+    source: body.source || 'public_landing_page',
+    serviceOfInterest: body.serviceOfInterest || 'Invisible Clear Aligners',
+    notes: body.notes
+  });
+
+  return c.json({
+    success: true,
+    message: 'Consultation request received successfully. Our clinic team will reach out via WhatsApp.',
+    data: {
+      journeyId: journey.id,
+      visitorId: journey.visitorId,
+      stage: journey.stage,
+      clinic: 'SmileKraft Dental Clinic Banjara Hills & Gachibowli'
+    }
+  }, 201);
+});
+
+// ==========================================
+// VERIFIED MANUAL REVENUE ENTRY (AUDITED)
+// ==========================================
+apiRouter.post('/revenue/verified-entry', async (c) => {
+  const orgId = c.get('organizationId');
+  const userId = c.get('userId');
+  const db = getDb();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  if (!business) return c.json({ success: false, error: 'Business not found' }, 404);
+
+  const body = await c.req.json();
+  if (!body.invoiceNumber || !body.amountINR || !body.paymentMethod || !body.transactionRef || !body.verificationSource) {
+    return c.json({
+      success: false,
+      error: 'Missing required audit fields: invoiceNumber, amountINR, paymentMethod, transactionRef, verificationSource'
+    }, 400);
+  }
+
+  try {
+    const tx = revenueEngine.recordVerifiedManualRevenue({
+      businessId: business.id,
+      organizationId: orgId,
+      verifiedByUserId: userId,
+      invoiceNumber: body.invoiceNumber,
+      amountINR: body.amountINR,
+      paymentMethod: body.paymentMethod,
+      transactionRef: body.transactionRef,
+      verificationSource: body.verificationSource,
+      journeyId: body.journeyId,
+      campaignId: body.campaignId,
+      serviceRendered: body.serviceRendered || 'Verified In-Clinic Treatment',
+    });
+
+    return c.json({ success: true, data: tx }, 201);
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 400);
+  }
+});
+
+// ==========================================
+// REVENUE REFUND & CANCELLATION HANDLER
+// ==========================================
+apiRouter.post('/revenue/refund', async (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  if (!business) return c.json({ success: false, error: 'Business not found' }, 404);
+
+  const body = await c.req.json();
+  if (!body.transactionId || !body.reason) {
+    return c.json({ success: false, error: 'transactionId and reason are required' }, 400);
+  }
+
+  try {
+    const refundedTx = revenueEngine.refundTransaction(business.id, body.transactionId, body.reason);
+    return c.json({ success: true, data: refundedTx });
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 400);
+  }
+});
+
+// ==========================================
+// PAYMENT WEBHOOKS (IDEMPOTENT INGESTION)
+// ==========================================
+apiRouter.post('/webhooks/payments/:gateway', async (c) => {
+  const gateway = c.req.param('gateway').toUpperCase() as any;
+  const payload = await c.req.json();
+
+  // Basic validation of webhook body
+  const invoiceNumber = payload.invoice_number || payload.order_id || `INV-WH-${Date.now()}`;
+  const amountINR = payload.amount || payload.payment?.amount || 0;
+  const transactionRef = payload.payment_id || payload.transaction_id || `ref-${Date.now()}`;
+  const businessId = payload.business_id || 'biz_smilekraft_hyd';
+  const orgId = payload.organization_id || 'org_smilekraft_01';
+
+  try {
+    const tx = revenueEngine.recordTransaction({
+      businessId,
+      organizationId: orgId,
+      journeyId: payload.journey_id,
+      campaignId: payload.campaign_id,
+      invoiceNumber,
+      amountINR,
+      paymentMethod: payload.payment_method || 'UPI',
+      paymentGateway: gateway,
+      transactionRef,
+      status: 'SUCCESS',
+      classification: payload.test_mode ? 'TEST' : 'REAL',
+      serviceRendered: payload.notes?.service || 'Online Payment Gateway Checkout',
+    });
+
+    return c.json({ success: true, received: true, transactionId: tx.id });
+  } catch (err: any) {
+    // Return 200 on duplicate to prevent webhook retry storms, but report status
+    return c.json({ success: false, duplicate: true, error: err.message }, 200);
+  }
+});

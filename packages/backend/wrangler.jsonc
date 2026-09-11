@@ -1,0 +1,20 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "ai-marketing-backend",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-02-01",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "vars": {
+    "NODE_ENV": "production",
+    "PORT": "8787"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "ai-marketing-prod",
+      "database_id": "ai-marketing-d1-placeholder"
+    }
+  ]
+}

@@ -10,7 +10,9 @@ import {
 import { CustomerJourneyTracker } from './customer-journey-tracker.js';
 
 export class RevenueReconciliationEngine {
-  private db = getDb();
+  private get db() {
+    return getDb();
+  }
   private journeyTracker = new CustomerJourneyTracker();
 
   recordTransaction(params: {
@@ -27,9 +29,27 @@ export class RevenueReconciliationEngine {
     classification?: DataClassification;
     serviceRendered?: string;
   }): TransactionRecord {
+    // 1. Strict Duplicate Prevention (Requirement 27)
+    const existingInv = this.db
+      .prepare('SELECT id FROM transactions WHERE business_id = ? AND invoice_number = ?')
+      .get(params.businessId, params.invoiceNumber) as any;
+
+    if (existingInv) {
+      throw new Error(`Duplicate transaction: Invoice ${params.invoiceNumber} already exists`);
+    }
+
+    if (params.transactionRef) {
+      const existingRef = this.db
+        .prepare('SELECT id FROM transactions WHERE business_id = ? AND transaction_ref = ?')
+        .get(params.businessId, params.transactionRef) as any;
+      if (existingRef) {
+        throw new Error(`Duplicate transaction: Reference ${params.transactionRef} already recorded`);
+      }
+    }
+
     const id = `tx-${randomUUID()}`;
     const now = new Date().toISOString();
-    const orgId = params.organizationId || 'org-india-1';
+    const orgId = params.organizationId || 'org_smilekraft_01';
     const status = params.status || 'SUCCESS';
     const classification = params.classification || 'TEST';
     const gateway = params.paymentGateway || 'SIMULATED';
@@ -110,8 +130,115 @@ export class RevenueReconciliationEngine {
     };
   }
 
+  recordVerifiedManualRevenue(params: {
+    businessId: string;
+    organizationId: string;
+    verifiedByUserId: string;
+    invoiceNumber: string;
+    amountINR: number;
+    paymentMethod: PaymentMethod;
+    transactionRef: string;
+    verificationSource: 'BANK_STATEMENT' | 'RAZORPAY_PORTAL' | 'CLINIC_POS_RECEIPT' | 'CASHFREE' | 'OTHER';
+    journeyId?: string;
+    campaignId?: string;
+    serviceRendered: string;
+  }): TransactionRecord {
+    const tx = this.recordTransaction({
+      businessId: params.businessId,
+      organizationId: params.organizationId,
+      journeyId: params.journeyId,
+      campaignId: params.campaignId,
+      invoiceNumber: params.invoiceNumber,
+      amountINR: params.amountINR,
+      paymentMethod: params.paymentMethod,
+      paymentGateway: 'MANUAL',
+      transactionRef: params.transactionRef,
+      status: 'SUCCESS',
+      classification: 'REAL',
+      serviceRendered: params.serviceRendered,
+    });
+
+    // Record formal audit trail
+    this.db
+      .prepare(
+        `INSERT INTO audit_logs (id, organization_id, actor_id, actor_type, action, entity_type, entity_id, details_json)
+         VALUES (?, ?, ?, 'USER', 'VERIFIED_REVENUE_ENTRY', 'TRANSACTION', ?, ?)`
+      )
+      .run(
+        `audit-${randomUUID()}`,
+        params.organizationId,
+        params.verifiedByUserId,
+        tx.id,
+        JSON.stringify({
+          invoiceNumber: params.invoiceNumber,
+          amountINR: params.amountINR,
+          verificationSource: params.verificationSource,
+          transactionRef: params.transactionRef,
+        })
+      );
+
+    return tx;
+  }
+
+  refundTransaction(businessId: string, transactionId: string, reason: string): TransactionRecord {
+    const tx = this.db
+      .prepare('SELECT * FROM transactions WHERE id = ? AND business_id = ?')
+      .get(transactionId, businessId) as any;
+
+    if (!tx) throw new Error('Transaction not found');
+    if (tx.status === 'REFUNDED') throw new Error('Transaction is already refunded');
+
+    const now = new Date().toISOString();
+    this.db
+      .prepare(`UPDATE transactions SET status = 'REFUNDED' WHERE id = ?`)
+      .run(transactionId);
+
+    if (tx.journey_id) {
+      this.journeyTracker.subtractRevenue(tx.journey_id, tx.amount_inr);
+    }
+
+    // Log refund event
+    const eventId = `event-ref-${randomUUID()}`;
+    this.db
+      .prepare(
+        `INSERT INTO analytics_events (
+          id, organization_id, business_id, campaign_id,
+          channel, event_type, user_identifier, revenue_inr, metadata_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        eventId,
+        tx.organization_id,
+        businessId,
+        tx.campaign_id,
+        tx.payment_method === 'UPI' ? 'WHATSAPP' : 'META_ADS',
+        'refund',
+        tx.journey_id || null,
+        -tx.amount_inr,
+        JSON.stringify({ reason, originalInvoice: tx.invoice_number }),
+        now
+      );
+
+    return {
+      id: tx.id,
+      organizationId: tx.organization_id,
+      businessId: tx.business_id,
+      journeyId: tx.journey_id || undefined,
+      campaignId: tx.campaign_id || undefined,
+      invoiceNumber: tx.invoice_number,
+      amountINR: tx.amount_inr,
+      paymentMethod: tx.payment_method,
+      paymentGateway: tx.payment_gateway,
+      transactionRef: tx.transaction_ref || undefined,
+      status: 'REFUNDED',
+      classification: tx.classification,
+      serviceRendered: tx.service_rendered || undefined,
+      createdAt: tx.created_at,
+    };
+  }
+
   getRevenueSummary(businessId: string): RevenueReconciliationSummary {
-    // 1. Separate Real, Test, and Simulated Revenue
+    // 1. Separate Real, Test, and Simulated Revenue (Only status = 'SUCCESS')
     const revRows = this.db
       .prepare(
         `SELECT classification, SUM(amount_inr) as total_rev
@@ -178,7 +305,7 @@ export class RevenueReconciliationEngine {
       .get(businessId) as any;
     const totalAdSpend = campaignSpend?.total_spent || 0;
 
-    // ROAS = (Real + Test Revenue) / Total Ad Spend (if spend > 0)
+    // ROAS strictly on actual revenue if real exists, otherwise test mode ROAS
     const effectiveRevenue = realRevenueINR > 0 ? realRevenueINR : testRevenueINR;
     const roas = totalAdSpend > 0 ? effectiveRevenue / totalAdSpend : 0;
 

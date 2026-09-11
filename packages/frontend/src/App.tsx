@@ -5,6 +5,7 @@ import { KillSwitchModal } from './components/layout/KillSwitchModal.js';
 import { Dashboard } from './pages/Dashboard.js';
 import { Revenue } from './pages/Revenue.js';
 import { CustomerJourney } from './pages/CustomerJourney.js';
+import { PublicBookingPage } from './pages/PublicBookingPage.js';
 import { Agents } from './pages/Agents.js';
 import { Campaigns } from './pages/Campaigns.js';
 import { ContentStudio } from './pages/ContentStudio.js';
@@ -160,6 +161,10 @@ export const App: React.FC = () => {
               isCycleRunning={isCycleRunning}
               onNavigateTab={setCurrentTab}
             />
+          )}
+
+          {currentTab === 'public_landing' && (
+            <PublicBookingPage onBackToAdmin={() => setCurrentTab('dashboard')} />
           )}
 
           {currentTab === 'revenue' && (

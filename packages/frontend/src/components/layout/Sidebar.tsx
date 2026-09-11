@@ -13,11 +13,13 @@ import {
   Settings, 
   PlayCircle,
   IndianRupee,
-  Users
+  Users,
+  Globe
 } from 'lucide-react';
 
 export type NavTab = 
   | 'dashboard'
+  | 'public_landing'
   | 'revenue'
   | 'journey'
   | 'agents'
@@ -41,6 +43,7 @@ interface SidebarProps {
 export const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab, pendingApprovalsCount }) => {
   const navItems = [
     { id: 'dashboard', label: 'Overview', icon: LayoutDashboard },
+    { id: 'public_landing', label: 'Public Patient Page', icon: Globe },
     { id: 'revenue', label: 'Revenue & UPI', icon: IndianRupee },
     { id: 'journey', label: 'Customer Funnel', icon: Users },
     { id: 'agents', label: 'AI Org (80 Agents)', icon: Bot },
