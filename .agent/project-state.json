@@ -1,14 +1,16 @@
 {
   "project_name": "AI Marketing Organization",
-  "version": "1.1.0",
-  "updated_at": "2026-09-10T21:43:00+05:30",
-  "current_objective": "Revenue Reconciliation, Customer Journey Funnel, AI Cost Accounting, Workspace Rules, and E2E Closed-Loop Verification",
+  "version": "1.2.0",
+  "updated_at": "2026-09-11T20:23:00+05:30",
+  "current_objective": "Autonomous Revenue Closed-Loop Execution, Tenant Isolation, Public Landing Page, Real Lead Funnel, Idempotent Webhooks, Audited Manual Revenue Entry & Multi-Cloud Deployment Readiness",
   "architecture": {
     "pattern": "Modular monorepo with edge-ready Hono HTTP server and modern React 19 / Vite client",
     "backend": "Hono + Better-SQLite3 / Cloudflare D1 DDL",
     "frontend": "React 19 + TypeScript + Vite + Tailwind CSS",
     "health_endpoint": "GET /api/health returning { status: 'ok', service: 'ai-marketing-organization' }",
-    "revenue_engine": "Strict tri-state (REAL, TEST, SIMULATED) attribution, double-entry customer journey progression, and AI unit economics (INR)"
+    "revenue_engine": "Strict tri-state (REAL, TEST, SIMULATED) attribution, double-entry customer journey progression, duplicate prevention, and AI unit economics (INR)",
+    "landing_engine": "Public patient booking landing page with Indian mobile validation and MCI compliance disclaimer",
+    "deployment": "Cloudflare Workers / D1 (wrangler.jsonc), Cloudflare Pages (wrangler.jsonc), and Docker (Dockerfile & docker-compose.yml)"
   },
   "files_created": [
     ".agents/rules/repository-first.md",
@@ -16,18 +18,29 @@
     ".agents/rules/revenue-integrity.md",
     ".agents/rules/safe-git.md",
     ".agents/rules/india-first-domain.md",
+    "Dockerfile",
+    "docker-compose.yml",
+    "packages/backend/schema.sql",
+    "packages/backend/src/db/export-schema.ts",
     "packages/backend/src/revenue/customer-journey-tracker.ts",
     "packages/backend/src/revenue/revenue-reconciliation.ts",
     "packages/backend/src/revenue/cost-accounting.ts",
     "packages/backend/tests/unit/customer-journey.test.ts",
     "packages/backend/tests/unit/revenue-reconciliation.test.ts",
     "packages/backend/tests/unit/cost-accounting.test.ts",
+    "packages/backend/tests/unit/tenant-isolation.test.ts",
+    "packages/backend/tests/unit/revenue-integrity-audit.test.ts",
     "packages/backend/tests/integration/revenue-closed-loop.test.ts",
+    "packages/backend/tests/integration/public-lead-and-webhooks.test.ts",
+    "packages/backend/wrangler.jsonc",
     "packages/frontend/src/pages/Revenue.tsx",
-    "packages/frontend/src/pages/CustomerJourney.tsx"
+    "packages/frontend/src/pages/CustomerJourney.tsx",
+    "packages/frontend/src/pages/PublicBookingPage.tsx",
+    "packages/frontend/wrangler.jsonc"
   ],
   "files_modified": [
     "packages/shared/src/types/index.ts",
+    "packages/backend/package.json",
     "packages/backend/src/db/schema.ts",
     "packages/backend/src/db/seed.ts",
     "packages/backend/src/routes/api.ts",
@@ -39,8 +52,8 @@
     ".agent/project-state.json"
   ],
   "tests_run": {
-    "total": 27,
-    "passed": 27,
+    "total": 39,
+    "passed": 39,
     "failed": 0,
     "test_files": [
       "tests/unit/health.test.ts",
@@ -50,9 +63,12 @@
       "tests/unit/customer-journey.test.ts",
       "tests/unit/revenue-reconciliation.test.ts",
       "tests/unit/cost-accounting.test.ts",
+      "tests/unit/tenant-isolation.test.ts",
+      "tests/unit/revenue-integrity-audit.test.ts",
       "tests/integration/closed-loop.test.ts",
       "tests/integration/api-contracts.test.ts",
-      "tests/integration/revenue-closed-loop.test.ts"
+      "tests/integration/revenue-closed-loop.test.ts",
+      "tests/integration/public-lead-and-webhooks.test.ts"
     ]
   },
   "browser_verification": {
@@ -60,8 +76,24 @@
     "proxied_frontend_api": "http://localhost:3000/api/health -> 200 OK { status: 'ok', service: 'ai-marketing-organization' }",
     "revenue_summary_api": "http://localhost:3001/api/v1/revenue/summary -> 200 OK",
     "customer_journeys_api": "http://localhost:3001/api/v1/customer-journeys -> 200 OK",
-    "frontend_page": "http://localhost:3000 -> 200 OK with Revenue and Customer Journey modules active"
+    "public_lead_capture_api": "http://localhost:3001/api/v1/public/lead -> 201 Created (REAL lead recorded)",
+    "verified_revenue_entry_api": "http://localhost:3001/api/v1/revenue/verified-entry -> 201 Created (audited manual revenue)",
+    "frontend_page": "http://localhost:3000 -> 200 OK with Overview, Public Patient Page, Revenue & UPI, and Customer Funnel tabs"
+  },
+  "ci_cd": {
+    "provider": "GitHub Actions",
+    "latest_run_id": "34612672121",
+    "status": "success",
+    "checks": [
+      "Setup Node.js 22",
+      "Install dependencies",
+      "Build Shared Package",
+      "Build Backend Service",
+      "Build Frontend Application",
+      "Run Test Suite (39/39 passing)",
+      "Verify Database Seeding"
+    ]
   },
   "build_status": "SUCCESS",
-  "next_objective": "Production deployment pipelines and automated multi-channel execution monitors"
+  "next_objective": "Live client domain routing & DNS attachment for real-world traffic"
 }

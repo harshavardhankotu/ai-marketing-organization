@@ -23,3 +23,15 @@
 - **Context**: Require persistent, non-ephemeral development guidelines that survive model restarts.
 - **Decision**: Created 5 modular workspace rules in `.agents/rules/`: repository-first, verification-before-claims, revenue-integrity, safe-git, and india-first-domain.
 - **Outcome**: Standardized agent behavior, robust error prevention, and continuous compliance.
+
+### DEC-005: Idempotent Payment Webhooks & Public Patient Capture
+- **Date**: 2026-09-11
+- **Context**: Real revenue experiments require receiving leads from patients and webhooks from gateways (Razorpay, Cashfree, UPI) without duplicate billing or webhook retry storms.
+- **Decision**: Built public lead intake (`POST /api/v1/public/lead`) with Indian mobile formatting and auto-attribution to active campaigns. Built idempotent webhook ingestion returning HTTP 200 with `{ duplicate: true }` upon detecting repeated transaction references or invoice numbers.
+- **Outcome**: Resilient real-time lead capture and double-entry payment reconciliation.
+
+### DEC-006: Tenant Isolation & Multi-Cloud Deployment Readiness
+- **Date**: 2026-09-11
+- **Context**: High-risk healthcare businesses require strict tenant data isolation, audit trails on manual revenue entry, and multi-cloud deployment specs (Cloudflare Workers/Pages and Docker).
+- **Decision**: Implemented tenant isolation checks preventing cross-organization data access, verified manual revenue entry requiring audit references and user attribution, Cloudflare `wrangler.jsonc` configs, and multi-stage Dockerfile.
+- **Outcome**: Verified tenant security (tested), schema portability (`schema.sql`), and 1-command deployment readiness.
