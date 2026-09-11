@@ -1,0 +1,235 @@
+import { randomUUID } from 'crypto';
+import { getDb } from '../db/client.js';
+import {
+  DataClassification,
+  PaymentGateway,
+  PaymentMethod,
+  RevenueReconciliationSummary,
+  TransactionRecord,
+} from '@ai-marketing/shared';
+import { CustomerJourneyTracker } from './customer-journey-tracker.js';
+
+export class RevenueReconciliationEngine {
+  private db = getDb();
+  private journeyTracker = new CustomerJourneyTracker();
+
+  recordTransaction(params: {
+    businessId: string;
+    organizationId?: string;
+    journeyId?: string;
+    campaignId?: string;
+    invoiceNumber: string;
+    amountINR: number;
+    paymentMethod: PaymentMethod;
+    paymentGateway?: PaymentGateway;
+    transactionRef?: string;
+    status?: 'SUCCESS' | 'PENDING' | 'REFUNDED' | 'FAILED';
+    classification?: DataClassification;
+    serviceRendered?: string;
+  }): TransactionRecord {
+    const id = `tx-${randomUUID()}`;
+    const now = new Date().toISOString();
+    const orgId = params.organizationId || 'org-india-1';
+    const status = params.status || 'SUCCESS';
+    const classification = params.classification || 'TEST';
+    const gateway = params.paymentGateway || 'SIMULATED';
+
+    this.db
+      .prepare(
+        `INSERT INTO transactions (
+          id, organization_id, business_id, journey_id, campaign_id,
+          invoice_number, amount_inr, payment_method, payment_gateway,
+          transaction_ref, status, classification, service_rendered, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        id,
+        orgId,
+        params.businessId,
+        params.journeyId || null,
+        params.campaignId || null,
+        params.invoiceNumber,
+        params.amountINR,
+        params.paymentMethod,
+        gateway,
+        params.transactionRef || null,
+        status,
+        classification,
+        params.serviceRendered || null,
+        now
+      );
+
+    // If successful transaction linked to a journey, update journey lifetime value and stage
+    if (status === 'SUCCESS' && params.journeyId) {
+      this.journeyTracker.addRevenue(params.journeyId, params.amountINR);
+    }
+
+    // Ingest into analytics events for full attribution tracing
+    if (status === 'SUCCESS') {
+      const eventId = `event-rev-${randomUUID()}`;
+      this.db
+        .prepare(
+          `INSERT INTO analytics_events (
+            id, organization_id, business_id, campaign_id,
+            channel, event_type, user_identifier, revenue_inr, metadata_json, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          eventId,
+          orgId,
+          params.businessId,
+          params.campaignId || null,
+          params.paymentMethod === 'UPI' ? 'WHATSAPP' : 'META_ADS',
+          'revenue',
+          params.journeyId || null,
+          params.amountINR,
+          JSON.stringify({
+            invoiceNumber: params.invoiceNumber,
+            serviceRendered: params.serviceRendered,
+            classification,
+          }),
+          now
+        );
+    }
+
+    return {
+      id,
+      organizationId: orgId,
+      businessId: params.businessId,
+      journeyId: params.journeyId,
+      campaignId: params.campaignId,
+      invoiceNumber: params.invoiceNumber,
+      amountINR: params.amountINR,
+      paymentMethod: params.paymentMethod,
+      paymentGateway: gateway,
+      transactionRef: params.transactionRef,
+      status,
+      classification,
+      serviceRendered: params.serviceRendered,
+      createdAt: now,
+    };
+  }
+
+  getRevenueSummary(businessId: string): RevenueReconciliationSummary {
+    // 1. Separate Real, Test, and Simulated Revenue
+    const revRows = this.db
+      .prepare(
+        `SELECT classification, SUM(amount_inr) as total_rev
+         FROM transactions
+         WHERE business_id = ? AND status = 'SUCCESS'
+         GROUP BY classification`
+      )
+      .all(businessId) as Array<{ classification: DataClassification; total_rev: number }>;
+
+    let realRevenueINR = 0;
+    let testRevenueINR = 0;
+    let simulatedRevenueINR = 0;
+
+    for (const r of revRows) {
+      if (r.classification === 'REAL') realRevenueINR = r.total_rev;
+      else if (r.classification === 'TEST') testRevenueINR = r.total_rev;
+      else if (r.classification === 'SIMULATED') simulatedRevenueINR = r.total_rev;
+    }
+
+    // 2. Transaction counts
+    const txStats = this.db
+      .prepare(
+        `SELECT 
+           COUNT(*) as total,
+           SUM(CASE WHEN campaign_id IS NOT NULL THEN 1 ELSE 0 END) as attributed,
+           SUM(CASE WHEN campaign_id IS NULL THEN 1 ELSE 0 END) as unattributed
+         FROM transactions
+         WHERE business_id = ? AND status = 'SUCCESS'`
+      )
+      .get(businessId) as any;
+
+    const totalTransactions = txStats?.total || 0;
+    const attributedTransactions = txStats?.attributed || 0;
+    const unattributedTransactions = txStats?.unattributed || 0;
+
+    // 3. AI Costs
+    const costStats = this.db
+      .prepare(
+        `SELECT SUM(estimated_cost_inr) as total_cost FROM ai_cost_logs WHERE business_id = ?`
+      )
+      .get(businessId) as any;
+    const totalAICostINR = costStats?.total_cost || 0;
+
+    // 4. Unit economics (Count qualified leads and customers)
+    const journeyStats = this.db
+      .prepare(
+        `SELECT 
+           SUM(CASE WHEN stage IN ('QUALIFIED_LEAD', 'OPPORTUNITY', 'CUSTOMER') THEN 1 ELSE 0 END) as qualified_leads,
+           SUM(CASE WHEN stage = 'CUSTOMER' THEN 1 ELSE 0 END) as customers
+         FROM customer_journeys
+         WHERE business_id = ?`
+      )
+      .get(businessId) as any;
+
+    const qualifiedLeads = journeyStats?.qualified_leads || 0;
+    const customers = journeyStats?.customers || 0;
+
+    const aiCostPerQualifiedLeadINR = qualifiedLeads > 0 ? totalAICostINR / qualifiedLeads : 0;
+    const aiCostPerCustomerINR = customers > 0 ? totalAICostINR / customers : 0;
+
+    // 5. Total ad spend from campaigns
+    const campaignSpend = this.db
+      .prepare(`SELECT SUM(spent_inr) as total_spent FROM campaigns WHERE business_id = ?`)
+      .get(businessId) as any;
+    const totalAdSpend = campaignSpend?.total_spent || 0;
+
+    // ROAS = (Real + Test Revenue) / Total Ad Spend (if spend > 0)
+    const effectiveRevenue = realRevenueINR > 0 ? realRevenueINR : testRevenueINR;
+    const roas = totalAdSpend > 0 ? effectiveRevenue / totalAdSpend : 0;
+
+    return {
+      realRevenueINR,
+      testRevenueINR,
+      simulatedRevenueINR,
+      totalTransactions,
+      attributedTransactions,
+      unattributedTransactions,
+      totalAICostINR,
+      aiCostPerQualifiedLeadINR: Math.round(aiCostPerQualifiedLeadINR * 100) / 100,
+      aiCostPerCustomerINR: Math.round(aiCostPerCustomerINR * 100) / 100,
+      roas: Math.round(roas * 100) / 100,
+    };
+  }
+
+  listTransactions(
+    businessId: string,
+    options: {
+      classification?: DataClassification;
+      limit?: number;
+    } = {}
+  ): TransactionRecord[] {
+    let sql = `SELECT * FROM transactions WHERE business_id = ?`;
+    const args: any[] = [businessId];
+
+    if (options.classification) {
+      sql += ` AND classification = ?`;
+      args.push(options.classification);
+    }
+
+    sql += ` ORDER BY created_at DESC LIMIT ?`;
+    args.push(options.limit || 50);
+
+    const rows = this.db.prepare(sql).all(...args) as any[];
+    return rows.map((r) => ({
+      id: r.id,
+      organizationId: r.organization_id,
+      businessId: r.business_id,
+      journeyId: r.journey_id || undefined,
+      campaignId: r.campaign_id || undefined,
+      invoiceNumber: r.invoice_number,
+      amountINR: r.amount_inr,
+      paymentMethod: r.payment_method,
+      paymentGateway: r.payment_gateway,
+      transactionRef: r.transaction_ref || undefined,
+      status: r.status,
+      classification: r.classification,
+      serviceRendered: r.service_rendered || undefined,
+      createdAt: r.created_at,
+    }));
+  }
+}

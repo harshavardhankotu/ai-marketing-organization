@@ -1,4 +1,4 @@
-﻿import React from 'react';
+import React from 'react';
 import { 
   LayoutDashboard, 
   Bot, 
@@ -11,11 +11,15 @@ import {
   CheckSquare, 
   Activity, 
   Settings, 
-  PlayCircle
+  PlayCircle,
+  IndianRupee,
+  Users
 } from 'lucide-react';
 
 export type NavTab = 
   | 'dashboard'
+  | 'revenue'
+  | 'journey'
   | 'agents'
   | 'campaigns'
   | 'content'
@@ -37,6 +41,8 @@ interface SidebarProps {
 export const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab, pendingApprovalsCount }) => {
   const navItems = [
     { id: 'dashboard', label: 'Overview', icon: LayoutDashboard },
+    { id: 'revenue', label: 'Revenue & UPI', icon: IndianRupee },
+    { id: 'journey', label: 'Customer Funnel', icon: Users },
     { id: 'agents', label: 'AI Org (80 Agents)', icon: Bot },
     { id: 'campaigns', label: 'Campaigns', icon: Compass },
     { id: 'content', label: 'Content Studio', icon: FileText },

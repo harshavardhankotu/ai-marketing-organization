@@ -1,4 +1,4 @@
-﻿import { getDb } from './client.js';
+import { getDb } from './client.js';
 import { AGENT_REGISTRY } from '@ai-marketing/shared';
 
 export function seedDatabase(): void {
@@ -191,8 +191,176 @@ export function seedDatabase(): void {
     ) VALUES (?, ?, ?, ?, ?, ?)
   `).run(todayKey, 14, 28400, 156, 0, 0);
 
-  console.log('Seeding completed successfully: Business, Goal, 80 Agents, Integrations, Quotas.');
+  const now = new Date().toISOString();
+
+  // 8. Seed Initial Strategy
+  const stratId = `strat_v1_${businessId}`;
+  db.prepare(`
+    INSERT OR REPLACE INTO strategies (
+      id, organization_id, business_id, goal_id, version,
+      title, rationale, positioning, target_audience_json,
+      channel_strategy_json, content_themes_json, expected_leads,
+      expected_cpql_inr, status, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    stratId, orgId, businessId, goalId, 1,
+    'Hyderabad High-Affluence Smile Transformation Strategy',
+    'Target tech professionals and affluent families in Gachibowli and Banjara Hills via Meta Ads and localized WhatsApp consultation funnels.',
+    'Premier Pain-Free Digital Smile Clinic in Hyderabad',
+    JSON.stringify(['Tech professionals 24-38', 'Affluent parents seeking modern braces']),
+    JSON.stringify(['META_ADS', 'WHATSAPP', 'GOOGLE_BUSINESS_PROFILE']),
+    JSON.stringify(['Invisible Aligners', 'Laser Whitening', 'Titanium Implants']),
+    100, 500, 'ACTIVE', now, now
+  );
+
+  // 9. Seed Active Campaigns
+  const insertCampaignStmt = db.prepare(`
+    INSERT OR REPLACE INTO campaigns (
+      id, organization_id, business_id, strategy_id, goal_id,
+      title, objective, channels_json, target_audience, geography_json,
+      budget_inr, spent_inr, status, start_date, end_date,
+      primary_kpi, target_qualified_leads, achieved_qualified_leads,
+      conversion_threshold, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  insertCampaignStmt.run(
+    'camp_seed_aligners_01', orgId, businessId, stratId, goalId,
+    'Gachibowli IT Corridor Clear Aligners Campaign',
+    'Generate 60 qualified consultation bookings for clear aligners in West Hyderabad',
+    JSON.stringify(['META_ADS', 'WHATSAPP']),
+    'Tech professionals aged 22-38 in HITEC City & Gachibowli',
+    JSON.stringify({ city: 'Hyderabad', localities: ['Gachibowli', 'HITEC City', 'Kondapur'] }),
+    30000, 12400, 'ACTIVE',
+    new Date(Date.now() - 10 * 86400000).toISOString().split('T')[0],
+    new Date(Date.now() + 20 * 86400000).toISOString().split('T')[0],
+    'qualified_consultations', 60, 22, 0.08, now, now
+  );
+
+  insertCampaignStmt.run(
+    'camp_seed_implants_01', orgId, businessId, stratId, goalId,
+    'Banjara Hills Titanium Implants & Restorative Dentistry',
+    'Attract 40 high-intent dental implant patients in Central Hyderabad',
+    JSON.stringify(['GOOGLE_BUSINESS_PROFILE', 'META_ADS']),
+    'Adults 40+ needing single or full mouth restoration',
+    JSON.stringify({ city: 'Hyderabad', localities: ['Banjara Hills', 'Jubilee Hills'] }),
+    20000, 8900, 'ACTIVE',
+    new Date(Date.now() - 8 * 86400000).toISOString().split('T')[0],
+    new Date(Date.now() + 22 * 86400000).toISOString().split('T')[0],
+    'qualified_consultations', 40, 10, 0.06, now, now
+  );
+
+  // 10. Seed Customer Journeys (Visitor -> Opportunity -> Customer)
+  const insertJourneyStmt = db.prepare(`
+    INSERT OR REPLACE INTO customer_journeys (
+      id, organization_id, business_id, visitor_id, customer_name,
+      customer_phone, customer_email, stage, first_touch_channel,
+      last_touch_channel, touchpoints_json, total_lifetime_value_inr,
+      classification, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  insertJourneyStmt.run(
+    'journey_01', orgId, businessId, 'vis_hyd_8821', 'Priya Sharma',
+    '+91-98490-11223', 'priya.sharma@techcorp.in', 'CUSTOMER',
+    'META_ADS', 'WHATSAPP',
+    JSON.stringify([
+      { channel: 'META_ADS', timestamp: '2026-09-01T10:00:00Z', event: 'click_aligner_ad' },
+      { channel: 'WHATSAPP', timestamp: '2026-09-01T10:15:00Z', event: 'whatsapp_consultation_booked' },
+      { channel: 'WHATSAPP', timestamp: '2026-09-03T14:30:00Z', event: 'in_clinic_3d_scan_completed' }
+    ]),
+    45000, 'TEST', now, now
+  );
+
+  insertJourneyStmt.run(
+    'journey_02', orgId, businessId, 'vis_hyd_9942', 'Rajesh Varma',
+    '+91-99887-33445', 'rajesh.v@varmafoundry.com', 'CUSTOMER',
+    'GOOGLE_BUSINESS_PROFILE', 'WHATSAPP',
+    JSON.stringify([
+      { channel: 'GOOGLE_BUSINESS_PROFILE', timestamp: '2026-09-02T11:20:00Z', event: 'map_direction_click' },
+      { channel: 'WHATSAPP', timestamp: '2026-09-02T12:00:00Z', event: 'implant_pricing_query' }
+    ]),
+    28000, 'TEST', now, now
+  );
+
+  insertJourneyStmt.run(
+    'journey_03', orgId, businessId, 'vis_hyd_1104', 'Ananya Deshmukh',
+    '+91-97001-44556', 'ananya.d@fintech.co', 'QUALIFIED_LEAD',
+    'INSTAGRAM', 'WHATSAPP',
+    JSON.stringify([
+      { channel: 'INSTAGRAM', timestamp: '2026-09-04T09:10:00Z', event: 'reel_view_laser_whitening' },
+      { channel: 'WHATSAPP', timestamp: '2026-09-04T09:40:00Z', event: 'lead_inquiry' }
+    ]),
+    0, 'TEST', now, now
+  );
+
+  insertJourneyStmt.run(
+    'journey_04', orgId, businessId, 'vis_hyd_3321', 'Kiran Kumar',
+    '+91-98712-66778', 'kiran.k@gmail.com', 'OPPORTUNITY',
+    'META_ADS', 'WHATSAPP',
+    JSON.stringify([
+      { channel: 'META_ADS', timestamp: '2026-09-05T16:00:00Z', event: 'smile_makeover_lead_gen' },
+      { channel: 'WHATSAPP', timestamp: '2026-09-05T16:30:00Z', event: 'appointment_scheduled' }
+    ]),
+    0, 'TEST', now, now
+  );
+
+  // 9. Seed INR Transactions (UPI, Netbanking, 0% EMI)
+  const insertTxStmt = db.prepare(`
+    INSERT OR REPLACE INTO transactions (
+      id, organization_id, business_id, journey_id, campaign_id,
+      invoice_number, amount_inr, payment_method, payment_gateway,
+      transaction_ref, status, classification, service_rendered, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  insertTxStmt.run(
+    'tx_01', orgId, businessId, 'journey_01', 'camp_seed_aligners_01',
+    'INV-SK-2026-001', 45000, 'NO_COST_EMI', 'RAZORPAY',
+    'pay_rzp_9841289', 'SUCCESS', 'TEST',
+    'Invisible Clear Aligners & Orthodontics Full Treatment', now
+  );
+
+  insertTxStmt.run(
+    'tx_02', orgId, businessId, 'journey_02', 'camp_seed_implants_01',
+    'INV-SK-2026-002', 28000, 'UPI', 'PHONEPE_PG',
+    'upi_phn_5521901', 'SUCCESS', 'TEST',
+    'German Titanium Dental Implant - Single Tooth Replacement', now
+  );
+
+  // 10. Seed AI Cost Logs (Efficiency & Token Accounting)
+  const insertCostStmt = db.prepare(`
+    INSERT OR REPLACE INTO ai_cost_logs (
+      id, organization_id, business_id, agent_id, division,
+      model, thinking_level, input_tokens, output_tokens,
+      total_tokens, latency_ms, estimated_cost_inr, purpose, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  insertCostStmt.run(
+    'cost_01', orgId, businessId, 'agt_market_researcher', 'RESEARCH_INTELLIGENCE',
+    'gemini-3.8-flash', 'high', 2450, 980, 3430, 850, 0.38,
+    'Hyderabad Banjara Hills competitor density and demographic pricing audit', now
+  );
+  insertCostStmt.run(
+    'cost_02', orgId, businessId, 'agt_social_copywriter', 'CONTENT',
+    'gemini-3.8-flash', 'medium', 1820, 640, 2460, 420, 0.26,
+    'Bilingual Telugu/English aligner ad copy generation with MCI disclaimers', now
+  );
+  insertCostStmt.run(
+    'cost_03', orgId, businessId, 'agt_paid_meta_specialist', 'MARKETING_GROWTH',
+    'gemini-3.8-flash', 'medium', 2100, 750, 2850, 510, 0.31,
+    'Meta Advantage+ campaign audience clustering for Gachibowli IT corridor', now
+  );
+  insertCostStmt.run(
+    'cost_04', orgId, businessId, 'agt_attribution_analyst', 'ANALYTICS_LEARNING',
+    'gemini-3.8-flash', 'high', 3200, 1100, 4300, 920, 0.46,
+    'Multi-touch assisted conversion path calculation across WhatsApp & Instagram', now
+  );
+
+  console.log('Seeding completed successfully: Business, Goal, 80 Agents, Integrations, Quotas, Journeys, Transactions, AI Costs.');
 }
+
 
 // Auto-run if executed directly
 if (process.argv[1] && process.argv[1].endsWith('seed.ts')) {

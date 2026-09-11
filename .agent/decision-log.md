@@ -1,4 +1,4 @@
-﻿# Decision Log
+# Decision Log
 
 ### DEC-001: Monorepo Structure & Cloudflare-compatible Hono
 - **Date**: 2026-09-10
@@ -11,3 +11,15 @@
 - **Date**: 2026-09-10
 - **Context**: Free-tier Gemini limits can hit 429 if 80 agents run concurrently.
 - **Decision**: Primary model `gemini-3.8-flash`. Agents are logical units, not concurrent background threads. Priority task queue with max 3 concurrent calls, exponential backoff, SHA-256 deduplication cache.
+
+### DEC-003: Revenue Integrity & Tri-State Data Isolation
+- **Date**: 2026-09-10
+- **Context**: Marketing without verified business revenue is vanity, but mixing synthetic demo data with real business revenue is dishonest.
+- **Decision**: Implemented strict tri-state data classification (`REAL`, `TEST`, `SIMULATED`) across all transactions, customer journeys, and attributions. Only audited gateway/clinic transactions are counted towards real revenue.
+- **Outcome**: Completely trustworthy financial metrics with zero synthetic pollution.
+
+### DEC-004: Workspace Governance via .agents/rules/
+- **Date**: 2026-09-10
+- **Context**: Require persistent, non-ephemeral development guidelines that survive model restarts.
+- **Decision**: Created 5 modular workspace rules in `.agents/rules/`: repository-first, verification-before-claims, revenue-integrity, safe-git, and india-first-domain.
+- **Outcome**: Standardized agent behavior, robust error prevention, and continuous compliance.

@@ -3,6 +3,8 @@ import { Sidebar, NavTab } from './components/layout/Sidebar.js';
 import { Navbar } from './components/layout/Navbar.js';
 import { KillSwitchModal } from './components/layout/KillSwitchModal.js';
 import { Dashboard } from './pages/Dashboard.js';
+import { Revenue } from './pages/Revenue.js';
+import { CustomerJourney } from './pages/CustomerJourney.js';
 import { Agents } from './pages/Agents.js';
 import { Campaigns } from './pages/Campaigns.js';
 import { ContentStudio } from './pages/ContentStudio.js';
@@ -158,6 +160,14 @@ export const App: React.FC = () => {
               isCycleRunning={isCycleRunning}
               onNavigateTab={setCurrentTab}
             />
+          )}
+
+          {currentTab === 'revenue' && (
+            <Revenue />
+          )}
+
+          {currentTab === 'journey' && (
+            <CustomerJourney />
           )}
 
           {currentTab === 'agents' && (

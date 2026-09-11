@@ -1,4 +1,4 @@
-﻿const API_BASE = '/api/v1';
+const API_BASE = '/api/v1';
 
 export async function fetchApi<T = any>(endpoint: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${endpoint}`, {
@@ -42,5 +42,15 @@ export const api = {
   triggerCycle: (businessId?: string, goalId?: string) =>
     fetchApi('/workflows/trigger-cycle', { method: 'POST', body: JSON.stringify({ businessId, goalId }) }),
   toggleKillSwitch: (businessId: string, active: boolean, reason: string) =>
-    fetchApi('/kill-switch', { method: 'POST', body: JSON.stringify({ businessId, active, reason }) })
+    fetchApi('/kill-switch', { method: 'POST', body: JSON.stringify({ businessId, active, reason }) }),
+  getRevenueSummary: () => fetchApi('/revenue/summary'),
+  getTransactions: (classification?: string) =>
+    fetchApi(`/revenue/transactions${classification ? `?classification=${classification}` : ''}`),
+  recordTransaction: (data: any) =>
+    fetchApi('/revenue/transactions', { method: 'POST', body: JSON.stringify(data) }),
+  getCustomerJourneys: (classification?: string) =>
+    fetchApi(`/customer-journeys${classification ? `?classification=${classification}` : ''}`),
+  advanceJourney: (data: any) =>
+    fetchApi('/customer-journeys/advance', { method: 'POST', body: JSON.stringify(data) }),
+  getAICosts: () => fetchApi('/ai-costs'),
 };

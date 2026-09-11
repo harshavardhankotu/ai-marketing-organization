@@ -1,4 +1,4 @@
-﻿// Complete Relational Database Schema for SQLite & Cloudflare D1
+// Complete Relational Database Schema for SQLite & Cloudflare D1
 // 40+ Core Entities with strict referential integrity, indexes, and tenant isolation
 
 export const SCHEMA_SQL = `
@@ -446,4 +446,75 @@ CREATE TABLE IF NOT EXISTS integrations (
   FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_integrations_biz_provider ON integrations(business_id, provider);
+
+-- 23. Customer Journeys (End-to-End Visitor -> Customer Progression)
+CREATE TABLE IF NOT EXISTS customer_journeys (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL,
+  business_id TEXT NOT NULL,
+  visitor_id TEXT NOT NULL,
+  customer_name TEXT,
+  customer_phone TEXT,
+  customer_email TEXT,
+  stage TEXT NOT NULL DEFAULT 'VISITOR',
+  first_touch_channel TEXT,
+  last_touch_channel TEXT,
+  touchpoints_json TEXT NOT NULL DEFAULT '[]',
+  total_lifetime_value_inr REAL NOT NULL DEFAULT 0,
+  classification TEXT NOT NULL DEFAULT 'TEST',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE,
+  FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_journeys_biz_visitor ON customer_journeys(business_id, visitor_id);
+CREATE INDEX IF NOT EXISTS idx_journeys_stage ON customer_journeys(stage);
+CREATE INDEX IF NOT EXISTS idx_journeys_class ON customer_journeys(classification);
+
+-- 24. Transactions (INR Revenue Reconciliation & Verification)
+CREATE TABLE IF NOT EXISTS transactions (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL,
+  business_id TEXT NOT NULL,
+  journey_id TEXT,
+  campaign_id TEXT,
+  invoice_number TEXT UNIQUE NOT NULL,
+  amount_inr REAL NOT NULL,
+  payment_method TEXT NOT NULL,
+  payment_gateway TEXT NOT NULL DEFAULT 'SIMULATED',
+  transaction_ref TEXT,
+  status TEXT NOT NULL DEFAULT 'SUCCESS',
+  classification TEXT NOT NULL DEFAULT 'TEST',
+  service_rendered TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE,
+  FOREIGN KEY (journey_id) REFERENCES customer_journeys(id) ON DELETE SET NULL,
+  FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tx_biz ON transactions(business_id);
+CREATE INDEX IF NOT EXISTS idx_tx_campaign ON transactions(campaign_id);
+CREATE INDEX IF NOT EXISTS idx_tx_class ON transactions(classification);
+CREATE INDEX IF NOT EXISTS idx_tx_status ON transactions(status);
+
+-- 25. AI Cost Logs (Token Accounting, Thinking Budgets & Unit Economics)
+CREATE TABLE IF NOT EXISTS ai_cost_logs (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL,
+  business_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  division TEXT NOT NULL,
+  model TEXT NOT NULL,
+  thinking_level TEXT NOT NULL DEFAULT 'none',
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  total_tokens INTEGER NOT NULL DEFAULT 0,
+  latency_ms INTEGER NOT NULL DEFAULT 0,
+  estimated_cost_inr REAL NOT NULL DEFAULT 0,
+  purpose TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_ai_cost_biz ON ai_cost_logs(business_id);
+CREATE INDEX IF NOT EXISTS idx_ai_cost_agent ON ai_cost_logs(agent_id);
+CREATE INDEX IF NOT EXISTS idx_ai_cost_division ON ai_cost_logs(division);
 `;

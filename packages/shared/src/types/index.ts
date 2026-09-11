@@ -1,4 +1,4 @@
-﻿import { IndianLanguage } from '../constants/india.js';
+import { IndianLanguage } from '../constants/india.js';
 
 export type AutonomyMode = 'SAFE' | 'ASSISTED' | 'AUTONOMOUS';
 export type SectorRiskTier = 'LOW' | 'MEDIUM' | 'HIGH';
@@ -384,4 +384,105 @@ export interface QuotaStatus {
   queueDepth: number;
   quotaWarning: boolean;
   throttledMode: boolean;
+}
+
+export type DataClassification = 'REAL' | 'TEST' | 'SIMULATED';
+
+export type CustomerJourneyStage = 
+  | 'VISITOR' 
+  | 'SESSION' 
+  | 'LEAD' 
+  | 'QUALIFIED_LEAD' 
+  | 'OPPORTUNITY' 
+  | 'CUSTOMER' 
+  | 'CHURNED';
+
+export type PaymentMethod = 
+  | 'UPI' 
+  | 'NETBANKING' 
+  | 'CREDIT_CARD' 
+  | 'DEBIT_CARD' 
+  | 'NO_COST_EMI' 
+  | 'CASH' 
+  | 'OTHER';
+
+export type PaymentGateway = 
+  | 'RAZORPAY' 
+  | 'CASHFREE' 
+  | 'STRIPE' 
+  | 'PHONEPE_PG' 
+  | 'MANUAL' 
+  | 'SIMULATED';
+
+export interface CustomerTouchpoint {
+  channel: MarketingChannel;
+  campaignId?: string;
+  timestamp: string;
+  event: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface CustomerJourneyRecord {
+  id: string;
+  organizationId: string;
+  businessId: string;
+  visitorId: string;
+  customerName?: string;
+  customerPhone?: string;
+  customerEmail?: string;
+  stage: CustomerJourneyStage;
+  firstTouchChannel?: MarketingChannel;
+  lastTouchChannel?: MarketingChannel;
+  touchpoints: CustomerTouchpoint[];
+  totalLifetimeValueINR: number;
+  classification: DataClassification;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TransactionRecord {
+  id: string;
+  organizationId: string;
+  businessId: string;
+  journeyId?: string;
+  campaignId?: string;
+  invoiceNumber: string;
+  amountINR: number;
+  paymentMethod: PaymentMethod;
+  paymentGateway: PaymentGateway;
+  transactionRef?: string;
+  status: 'SUCCESS' | 'PENDING' | 'REFUNDED' | 'FAILED';
+  classification: DataClassification;
+  serviceRendered?: string;
+  createdAt: string;
+}
+
+export interface AICostRecord {
+  id: string;
+  organizationId: string;
+  businessId: string;
+  agentId: string;
+  division: AgentCategory;
+  model: string;
+  thinkingLevel: 'none' | 'low' | 'medium' | 'high';
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  latencyMs: number;
+  estimatedCostINR: number;
+  purpose: string;
+  createdAt: string;
+}
+
+export interface RevenueReconciliationSummary {
+  realRevenueINR: number;
+  testRevenueINR: number;
+  simulatedRevenueINR: number;
+  totalTransactions: number;
+  attributedTransactions: number;
+  unattributedTransactions: number;
+  totalAICostINR: number;
+  aiCostPerQualifiedLeadINR: number;
+  aiCostPerCustomerINR: number;
+  roas: number;
 }

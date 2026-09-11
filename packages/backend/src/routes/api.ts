@@ -1,4 +1,4 @@
-﻿import { Hono } from 'hono';
+import { Hono } from 'hono';
 import { getDb } from '../db/client.js';
 import { QuotaManager } from '../ai/quota-manager.js';
 import { KillSwitchController } from '../control-plane/kill-switch.js';
@@ -6,6 +6,9 @@ import { ApprovalManager } from '../control-plane/approval-manager.js';
 import { EventTracker } from '../analytics/event-tracker.js';
 import { ExperimentEngine } from '../experiments/experiment-engine.js';
 import { ClosedLoopMarketingCycle } from '../workflows/closed-loop-cycle.js';
+import { CustomerJourneyTracker } from '../revenue/customer-journey-tracker.js';
+import { RevenueReconciliationEngine } from '../revenue/revenue-reconciliation.js';
+import { CostAccountingEngine } from '../revenue/cost-accounting.js';
 import { AGENT_REGISTRY, getAgentById } from '@ai-marketing/shared';
 import {
   CreateBusinessProfileSchema,
@@ -360,4 +363,182 @@ apiRouter.get('/activity', (c) => {
       details: JSON.parse(l.details_json || '{}')
     }))
   });
+});
+
+// ==========================================
+// REVENUE & ATTRIBUTION RECONCILIATION
+// ==========================================
+const revenueEngine = new RevenueReconciliationEngine();
+const journeyTracker = new CustomerJourneyTracker();
+const costAccounting = new CostAccountingEngine();
+
+apiRouter.get('/revenue/summary', (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  if (!business) return c.json({ success: false, error: 'Business not found' }, 404);
+
+  const summary = revenueEngine.getRevenueSummary(business.id);
+  return c.json({ success: true, data: summary });
+});
+
+apiRouter.get('/revenue/transactions', (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  if (!business) return c.json({ success: false, error: 'Business not found' }, 404);
+
+  const classification = c.req.query('classification') as any;
+  const limit = c.req.query('limit') ? parseInt(c.req.query('limit')!) : 50;
+
+  const transactions = revenueEngine.listTransactions(business.id, { classification, limit });
+  return c.json({ success: true, data: transactions, total: transactions.length });
+});
+
+apiRouter.post('/revenue/transactions', async (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  if (!business) return c.json({ success: false, error: 'Business not found' }, 404);
+
+  const body = await c.req.json();
+  if (!body.invoiceNumber || !body.amountINR || !body.paymentMethod) {
+    return c.json({ success: false, error: 'Missing required transaction fields: invoiceNumber, amountINR, paymentMethod' }, 400);
+  }
+
+  const tx = revenueEngine.recordTransaction({
+    businessId: business.id,
+    organizationId: orgId,
+    journeyId: body.journeyId,
+    campaignId: body.campaignId,
+    invoiceNumber: body.invoiceNumber,
+    amountINR: body.amountINR,
+    paymentMethod: body.paymentMethod,
+    paymentGateway: body.paymentGateway,
+    transactionRef: body.transactionRef,
+    status: body.status,
+    classification: body.classification || 'TEST',
+    serviceRendered: body.serviceRendered,
+  });
+
+  return c.json({ success: true, data: tx }, 201);
+});
+
+// ==========================================
+// CUSTOMER JOURNEY TRACKING & FUNNEL
+// ==========================================
+apiRouter.get('/customer-journeys', (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  if (!business) return c.json({ success: false, error: 'Business not found' }, 404);
+
+  const classification = c.req.query('classification') as any;
+  const stage = c.req.query('stage') as any;
+  const limit = c.req.query('limit') ? parseInt(c.req.query('limit')!) : 50;
+
+  const funnel = journeyTracker.getJourneyFunnel(business.id, classification);
+  const journeys = journeyTracker.listJourneys(business.id, { classification, stage, limit });
+
+  return c.json({
+    success: true,
+    data: {
+      funnel,
+      journeys,
+      total: journeys.length
+    }
+  });
+});
+
+apiRouter.post('/customer-journeys/touchpoint', async (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  if (!business) return c.json({ success: false, error: 'Business not found' }, 404);
+
+  const body = await c.req.json();
+  if (!body.visitorId || !body.channel || !body.event) {
+    return c.json({ success: false, error: 'Missing required touchpoint fields: visitorId, channel, event' }, 400);
+  }
+
+  const updatedJourney = journeyTracker.recordTouchpoint({
+    businessId: business.id,
+    organizationId: orgId,
+    visitorId: body.visitorId,
+    channel: body.channel,
+    event: body.event,
+    campaignId: body.campaignId,
+    metadata: body.metadata,
+    classification: body.classification || 'TEST',
+  });
+
+  return c.json({ success: true, data: updatedJourney });
+});
+
+apiRouter.post('/customer-journeys/advance', async (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  if (!business) return c.json({ success: false, error: 'Business not found' }, 404);
+
+  const body = await c.req.json();
+  if (!body.visitorId || !body.targetStage) {
+    return c.json({ success: false, error: 'Missing required fields: visitorId, targetStage' }, 400);
+  }
+
+  const updatedJourney = journeyTracker.advanceStage({
+    businessId: business.id,
+    visitorId: body.visitorId,
+    targetStage: body.targetStage,
+    customerName: body.customerName,
+    customerPhone: body.customerPhone,
+    customerEmail: body.customerEmail,
+    classification: body.classification || 'TEST',
+  });
+
+  return c.json({ success: true, data: updatedJourney });
+});
+
+// ==========================================
+// AI COST OBSERVABILITY & TOKEN ACCOUNTING
+// ==========================================
+apiRouter.get('/ai-costs', (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  if (!business) return c.json({ success: false, error: 'Business not found' }, 404);
+
+  const summary = costAccounting.getCostSummary(business.id);
+  const recentLogs = costAccounting.listCostLogs(business.id, 50);
+
+  return c.json({
+    success: true,
+    data: {
+      summary,
+      recentLogs
+    }
+  });
+});
+
+apiRouter.post('/ai-costs/log', async (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  if (!business) return c.json({ success: false, error: 'Business not found' }, 404);
+
+  const body = await c.req.json();
+  const log = costAccounting.logCost({
+    organizationId: orgId,
+    businessId: business.id,
+    agentId: body.agentId,
+    division: body.division,
+    model: body.model || 'gemini-3.8-flash',
+    thinkingLevel: body.thinkingLevel || 'none',
+    inputTokens: body.inputTokens || 0,
+    outputTokens: body.outputTokens || 0,
+    latencyMs: body.latencyMs || 0,
+    purpose: body.purpose || 'Agent task execution',
+  });
+
+  return c.json({ success: true, data: log }, 201);
 });

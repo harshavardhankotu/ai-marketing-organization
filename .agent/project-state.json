@@ -1,74 +1,67 @@
-﻿{
+{
   "project_name": "AI Marketing Organization",
-  "version": "1.0.0",
-  "updated_at": "2026-09-10T01:49:00+05:30",
-  "current_objective": "Execute Antigravity Stability Test: Verified Full-Stack Health & State Preservation",
+  "version": "1.1.0",
+  "updated_at": "2026-09-10T21:43:00+05:30",
+  "current_objective": "Revenue Reconciliation, Customer Journey Funnel, AI Cost Accounting, Workspace Rules, and E2E Closed-Loop Verification",
   "architecture": {
     "pattern": "Modular monorepo with edge-ready Hono HTTP server and modern React 19 / Vite client",
     "backend": "Hono + Better-SQLite3 / Cloudflare D1 DDL",
     "frontend": "React 19 + TypeScript + Vite + Tailwind CSS",
-    "health_endpoint": "GET /api/health returning { status: 'ok', service: 'ai-marketing-organization' }"
+    "health_endpoint": "GET /api/health returning { status: 'ok', service: 'ai-marketing-organization' }",
+    "revenue_engine": "Strict tri-state (REAL, TEST, SIMULATED) attribution, double-entry customer journey progression, and AI unit economics (INR)"
   },
   "files_created": [
-    ".agent/connectivity-test.md",
-    "packages/backend/tests/unit/health.test.ts",
-    "packages/backend/tests/integration/api-contracts.test.ts",
-    "packages/frontend/src/components/common/HealthStatusCard.tsx",
-    "packages/frontend/src/components/layout/Navbar.tsx",
-    "packages/frontend/src/components/layout/Sidebar.tsx",
-    "packages/frontend/src/components/layout/KillSwitchModal.tsx",
-    "packages/frontend/src/pages/Dashboard.tsx",
-    "packages/frontend/src/pages/Agents.tsx",
-    "packages/frontend/src/pages/Campaigns.tsx",
-    "packages/frontend/src/pages/ContentStudio.tsx",
-    "packages/frontend/src/pages/Research.tsx",
-    "packages/frontend/src/pages/Analytics.tsx",
-    "packages/frontend/src/pages/Experiments.tsx",
-    "packages/frontend/src/pages/Evolution.tsx",
-    "packages/frontend/src/pages/Approvals.tsx",
-    "packages/frontend/src/pages/Activity.tsx",
-    "packages/frontend/src/pages/Simulation.tsx",
-    "packages/frontend/src/pages/Settings.tsx",
-    ".github/workflows/ci.yml",
-    "README.md",
-    "ARCHITECTURE.md",
-    "FREE-TIER.md",
-    "AGENTS.md",
-    "API.md",
-    "DATABASE.md",
-    "DEPLOYMENT.md",
-    "SECURITY.md",
-    "OPERATIONS.md"
+    ".agents/rules/repository-first.md",
+    ".agents/rules/verification-before-claims.md",
+    ".agents/rules/revenue-integrity.md",
+    ".agents/rules/safe-git.md",
+    ".agents/rules/india-first-domain.md",
+    "packages/backend/src/revenue/customer-journey-tracker.ts",
+    "packages/backend/src/revenue/revenue-reconciliation.ts",
+    "packages/backend/src/revenue/cost-accounting.ts",
+    "packages/backend/tests/unit/customer-journey.test.ts",
+    "packages/backend/tests/unit/revenue-reconciliation.test.ts",
+    "packages/backend/tests/unit/cost-accounting.test.ts",
+    "packages/backend/tests/integration/revenue-closed-loop.test.ts",
+    "packages/frontend/src/pages/Revenue.tsx",
+    "packages/frontend/src/pages/CustomerJourney.tsx"
   ],
   "files_modified": [
-    "packages/backend/src/index.ts",
+    "packages/shared/src/types/index.ts",
+    "packages/backend/src/db/schema.ts",
+    "packages/backend/src/db/seed.ts",
+    "packages/backend/src/routes/api.ts",
+    "packages/frontend/src/services/api.ts",
+    "packages/frontend/src/components/layout/Sidebar.tsx",
     "packages/frontend/src/App.tsx",
-    "packages/frontend/tsconfig.json",
-    ".gitignore",
-    ".agent/project-state.json",
+    ".agent/decision-log.md",
     ".agent/validation-state.json",
-    ".agent/known-issues.md"
+    ".agent/project-state.json"
   ],
   "tests_run": {
-    "total": 20,
-    "passed": 20,
+    "total": 27,
+    "passed": 27,
     "failed": 0,
     "test_files": [
       "tests/unit/health.test.ts",
       "tests/unit/quota-manager.test.ts",
       "tests/unit/attribution.test.ts",
       "tests/unit/agent-registry.test.ts",
+      "tests/unit/customer-journey.test.ts",
+      "tests/unit/revenue-reconciliation.test.ts",
+      "tests/unit/cost-accounting.test.ts",
       "tests/integration/closed-loop.test.ts",
-      "tests/integration/api-contracts.test.ts"
+      "tests/integration/api-contracts.test.ts",
+      "tests/integration/revenue-closed-loop.test.ts"
     ]
   },
   "browser_verification": {
     "direct_api": "http://localhost:3001/api/health -> 200 OK { status: 'ok', service: 'ai-marketing-organization' }",
     "proxied_frontend_api": "http://localhost:3000/api/health -> 200 OK { status: 'ok', service: 'ai-marketing-organization' }",
-    "frontend_page": "http://localhost:3000 -> 200 OK HTML with live React state and HealthStatusCard",
-    "error_transition_test": "Verified simulated 404 outage and instant recovery back to 200 OK"
+    "revenue_summary_api": "http://localhost:3001/api/v1/revenue/summary -> 200 OK",
+    "customer_journeys_api": "http://localhost:3001/api/v1/customer-journeys -> 200 OK",
+    "frontend_page": "http://localhost:3000 -> 200 OK with Revenue and Customer Journey modules active"
   },
   "build_status": "SUCCESS",
-  "current_git_commit": "6535a48",
-  "next_objective": "Scale and execute the full autonomous marketing organization closed-loop lifecycle"
+  "next_objective": "Production deployment pipelines and automated multi-channel execution monitors"
 }
