@@ -70,3 +70,13 @@
   4. **Floki Live Execution Mode**: `scripts/floki_marketing_runner.py` clearly reports `[LLM AGENT DECISION]` with actual Gemini OpenAI-compatible client only when valid keys are configured, and reports `[LLM REQUESTED - NOT AVAILABLE]` or honest error without masking.
   5. **System Readiness State**: Implemented `SystemReadinessEngine` evaluating all 12 prerequisites for `READY_FOR_REAL_EXPERIMENT`, exposed via `GET /api/v1/system/readiness`.
 - **Outcome**: 100% truthful, verifiable architecture with 61 passing tests (15 test files), passing monorepo build, and clean Git state.
+
+### DEC-011: Complete End-to-End Autonomous Agent Execution Pipeline: Decisions, Capability-Bounded Tool Execution, and Telemetry
+- **Date**: 2026-09-12
+- **Context**: Connect the complete execution chain: `GEMINI_API_KEY -> GeminiProvider -> gemini-3.8-flash -> AgentRuntime -> actual agent decision -> tool execution -> telemetry`.
+- **Decision**:
+  1. **Actual Agent Decision Journaling**: Enhanced `AgentRuntime.execute` to formally record reasoned agent evaluations, confidence scores, and rationales into the relational `decisions` table.
+  2. **Tool Execution Engine (`ToolExecutor`)**: Created `ToolExecutor` executing scoped operations (`database_read`, `database_write`, `evidence_retrieval`, `analytics_query`). Enforced strict capability security: queries verify that the requested tool exists in `agent.allowedTools`.
+  3. **Telemetry & Unit Economics Ledger**: Logged exact execution telemetry from `GeminiProvider` directly to `ai_cost_logs` (tracking model `gemini-3.8-flash`, thinking level, tokens, latency, cost in INR) and dispatched audit events to `analytics_events`.
+  4. **Verification & Testing**: Added comprehensive unit test suite `tests/unit/agent-pipeline.test.ts` (5 tests) and demonstration script `scripts/demonstrate_agent_pipeline.ts`. Total test suite expanded to 16 test files, 66/66 tests passing.
+- **Outcome**: Fully verified, capability-bounded, observable agent decision and tool execution pipeline.

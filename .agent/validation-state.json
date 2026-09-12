@@ -1,11 +1,11 @@
 {
-  "last_run": "2026-09-12T22:54:00+05:30",
-  "unit_tests": { "total": 47, "passed": 47, "failed": 0 },
+  "last_run": "2026-09-12T23:15:30+05:30",
+  "unit_tests": { "total": 52, "passed": 52, "failed": 0 },
   "integration_tests": { "total": 14, "passed": 14, "failed": 0 },
   "contract_tests": { "total": 7, "passed": 7, "failed": 0 },
   "browser_e2e": { "total": 1, "passed": 1, "failed": 0 },
-  "total_tests": 61,
-  "passed_tests": 61,
+  "total_tests": 66,
+  "passed_tests": 66,
   "failed_tests": 0,
   "build_status": "SUCCESS",
   "stability_test": "PASSED",
@@ -27,5 +27,6 @@
   "gemini_3_8_flash_telemetry": "PASSED",
   "floki_scientific_harness_verification": "PASSED",
   "system_readiness_state": "PASSED",
-  "frontend_revenue_truth_panel": "PASSED"
+  "frontend_revenue_truth_panel": "PASSED",
+  "agent_decision_tool_pipeline": "PASSED"
 }

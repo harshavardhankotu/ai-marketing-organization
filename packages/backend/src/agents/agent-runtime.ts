@@ -1,6 +1,7 @@
 import { getDb } from '../db/client.js';
 import { GeminiProvider, ThinkingLevel } from '../ai/gemini-provider.js';
 import { MemoryStore } from '../memory/memory-store.js';
+import { ToolExecutor, ToolCallRequest, ToolExecutionResult } from './tool-executor.js';
 import { getAgentById, AgentDescriptor, TaskPriority, ExecutionType } from '@ai-marketing/shared';
 
 export interface ExecuteAgentOptions {
@@ -13,6 +14,7 @@ export interface ExecuteAgentOptions {
   contextOverride?: Record<string, any>;
   thinkingLevel?: ThinkingLevel;
   priority?: TaskPriority;
+  toolCall?: ToolCallRequest;
 }
 
 export interface AgentExecutionResult<T = any> {
@@ -26,6 +28,8 @@ export interface AgentExecutionResult<T = any> {
   model?: string;
   telemetry?: any;
   tokenUsageStatus?: string;
+  decisionId?: string;
+  toolExecution?: ToolExecutionResult;
   error?: string;
 }
 
@@ -33,6 +37,7 @@ export class AgentRuntime {
   private static instance: AgentRuntime;
   private gemini = new GeminiProvider();
   private memory = MemoryStore.getInstance();
+  private toolExecutor = ToolExecutor.getInstance();
 
   public static getInstance(): AgentRuntime {
     if (!AgentRuntime.instance) {
@@ -85,8 +90,107 @@ export class AgentRuntime {
       });
 
       const latencyMs = Date.now() - startMs;
+      const respData = response.data as any;
 
-      // 6. Update Agent Metrics in DB
+      // 6. Record Actual Agent Decision in Decision Journal
+      let decisionId: string | undefined;
+      const hasDecision = respData && (
+        respData.decision ||
+        respData.recommendation ||
+        respData.action ||
+        respData.strategy ||
+        respData.strategyTitle ||
+        respData.recommendedAction ||
+        respData.summary
+      );
+
+      if (hasDecision) {
+        decisionId = `dec_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        const rawDecision = respData.decision || respData.recommendation || respData.strategyTitle || respData.action || respData.recommendedAction || respData.summary;
+        db.prepare(`
+          INSERT INTO decisions (
+            id, organization_id, business_id, agent_id, decision,
+            reason, evidence, source, confidence, alternatives_json,
+            expected_outcome, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        `).run(
+          decisionId,
+          options.organizationId,
+          options.businessId,
+          agent.id,
+          typeof rawDecision === 'object' ? JSON.stringify(rawDecision) : String(rawDecision),
+          respData.reason || respData.rationale || 'Reasoned evaluation by agent',
+          respData.evidence || respData.extractedEvidence || 'Agent context evaluation',
+          response.model || 'gemini-3.8-flash',
+          respData.confidence ?? 0.85,
+          JSON.stringify(respData.alternatives || []),
+          respData.expectedOutcome || respData.forecast || 'Optimization of business target'
+        );
+      }
+
+      // 7. Execute Authorized Tool Call (if requested by agent decision or options)
+      let toolExecution: ToolExecutionResult | undefined;
+      const toolCall = respData?.toolCall || (respData?.tool ? { tool: respData.tool, parameters: respData.parameters || {} } : undefined) || options.toolCall;
+      if (toolCall) {
+        toolExecution = await this.toolExecutor.executeTool(
+          agent,
+          toolCall,
+          { businessId: options.businessId, organizationId: options.organizationId }
+        );
+      }
+
+      // 8. Record Telemetry in ai_cost_logs and analytics_events
+      if (response.telemetry) {
+        const costId = `cost_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        const estimatedCostINR = response.telemetry.tokenUsageStatus === 'VERIFIED'
+          ? ((response.telemetry.totalTokens / 1000) * 0.05)
+          : 0;
+
+        db.prepare(`
+          INSERT INTO ai_cost_logs (
+            id, organization_id, business_id, agent_id, division,
+            model, thinking_level, input_tokens, output_tokens, total_tokens,
+            latency_ms, estimated_cost_inr, purpose, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        `).run(
+          costId,
+          options.organizationId,
+          options.businessId,
+          agent.id,
+          agent.category,
+          response.telemetry.model,
+          response.telemetry.thinkingLevel,
+          response.telemetry.inputTokens,
+          response.telemetry.outputTokens,
+          response.telemetry.totalTokens,
+          response.telemetry.latencyMs,
+          estimatedCostINR,
+          options.prompt.substring(0, 100)
+        );
+
+        const eventId = `evt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        db.prepare(`
+          INSERT INTO analytics_events (
+            id, organization_id, business_id, channel, event_type,
+            revenue_inr, metadata_json, created_at
+          ) VALUES (?, ?, ?, 'AI_AGENT', 'AGENT_EXECUTION_COMPLETED', 0, ?, datetime('now'))
+        `).run(
+          eventId,
+          options.organizationId,
+          options.businessId,
+          JSON.stringify({
+            agentId: agent.id,
+            model: response.model,
+            executionType: response.executionType,
+            tokens: response.tokenCount,
+            decisionId: decisionId || null,
+            toolExecuted: toolExecution?.tool || null,
+            toolSuccess: toolExecution?.success ?? null
+          })
+        );
+      }
+
+      // 9. Update Agent Metrics in DB
       db.prepare(`
         UPDATE agents
         SET status = 'IDLE',
@@ -94,16 +198,22 @@ export class AgentRuntime {
         WHERE id = ?
       `).run(agent.id);
 
-      // 7. Mark Task Completed
+      // 10. Mark Task Completed
+      const taskOutput = {
+        ...(typeof response.data === 'object' && response.data !== null ? response.data : { result: response.data }),
+        decisionId,
+        toolExecution
+      };
+
       db.prepare(`
         UPDATE tasks 
         SET status = 'COMPLETED',
             outputs_json = ?,
             completed_at = datetime('now')
         WHERE id = ?
-      `).run(JSON.stringify(response.data), options.taskId);
+      `).run(JSON.stringify(taskOutput), options.taskId);
 
-      // 8. Persist Findings to Memory if Research Agent
+      // 11. Persist Findings to Memory if Research Agent
       if (agent.category === 'RESEARCH_INTELLIGENCE' && (response.data as any).findings) {
         const findings = (response.data as any).findings as any[];
         const insertFinding = db.prepare(`
@@ -147,7 +257,9 @@ export class AgentRuntime {
         executionType: response.executionType,
         model: response.model,
         telemetry: response.telemetry,
-        tokenUsageStatus: response.tokenUsageStatus
+        tokenUsageStatus: response.tokenUsageStatus,
+        decisionId,
+        toolExecution
       };
     } catch (error: any) {
       db.prepare(`

@@ -1,8 +1,8 @@
 {
   "project_name": "AI Marketing Organization",
-  "version": "1.5.0",
-  "updated_at": "2026-09-12T22:55:00+05:30",
-  "current_objective": "Scientific Truth System: Production Auth Boundary, Zero Fabricated Model Evidence, Gemini 3.8 Flash Telemetry, Floki Honest LLM Integration, and Operational State READY_FOR_REAL_EXPERIMENT",
+  "version": "1.6.0",
+  "updated_at": "2026-09-12T23:16:00+05:30",
+  "current_objective": "End-to-End Autonomous Agent Execution Pipeline: GEMINI_API_KEY -> GeminiProvider -> gemini-3.8-flash -> AgentRuntime -> actual agent decision -> tool execution -> telemetry",
   "architecture": {
     "pattern": "Modular monorepo with edge-ready Hono HTTP server and modern React 19 / Vite client",
     "backend": "Hono + Better-SQLite3 / Cloudflare D1 DDL",
@@ -13,12 +13,16 @@
     "anti_escalation": "Automatic classification of test/synthetic domains as TEST. Strict prevention of escalating TEST journeys to REAL or recording REAL revenue against TEST journeys.",
     "model_provider": "Model-agnostic ModelProvider interface implemented by GeminiProvider targeting gemini-3.8-flash, with ExecutionType telemetry (LLM, DETERMINISTIC, HUMAN, EXTERNAL). Zero fabricated evidence in deterministic fixtures.",
     "production_auth": "Production authentication boundary strictly requiring authenticated principals via Bearer token / api_token (rejecting spoofed x-user-id headers with HTTP 401).",
-    "floki_orchestration": "Scientific dual-mode runner: explicit [DETERMINISTIC HARNESS] by default with zero dummy keys, and [LLM AGENT DECISION] when genuine API keys are configured."
+    "floki_orchestration": "Scientific dual-mode runner: explicit [DETERMINISTIC HARNESS] by default with zero dummy keys, and [LLM AGENT DECISION] when genuine API keys are configured.",
+    "agent_pipeline": "End-to-end pipeline: GEMINI_API_KEY -> GeminiProvider -> gemini-3.8-flash -> AgentRuntime -> actual agent decision -> tool execution -> telemetry."
   },
   "files_created": [
     "packages/backend/src/ai/model-provider.ts",
     "packages/backend/src/control-plane/system-readiness.ts",
-    "packages/backend/tests/unit/production-auth-and-readiness.test.ts"
+    "packages/backend/src/agents/tool-executor.ts",
+    "packages/backend/tests/unit/production-auth-and-readiness.test.ts",
+    "packages/backend/tests/unit/agent-pipeline.test.ts",
+    "scripts/demonstrate_agent_pipeline.ts"
   ],
   "files_modified": [
     "packages/shared/src/types/index.ts",
@@ -42,8 +46,8 @@
     ".agent/project-state.json"
   ],
   "tests_run": {
-    "total": 61,
-    "passed": 61,
+    "total": 66,
+    "passed": 66,
     "failed": 0,
     "test_files": [
       "tests/unit/health.test.ts",
