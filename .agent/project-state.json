@@ -1,8 +1,8 @@
 {
   "project_name": "AI Marketing Organization",
-  "version": "1.4.0",
-  "updated_at": "2026-09-12T22:25:00+05:30",
-  "current_objective": "Forensic Audit & Scientific Correction: Floki Dual Mode, Single Trusted Owner Authority, Anti-Escalation, Marketing Attribution Separation, Verified ROAS, and Frontend Revenue Truth Panel",
+  "version": "1.5.0",
+  "updated_at": "2026-09-12T22:55:00+05:30",
+  "current_objective": "Scientific Truth System: Production Auth Boundary, Zero Fabricated Model Evidence, Gemini 3.8 Flash Telemetry, Floki Honest LLM Integration, and Operational State READY_FOR_REAL_EXPERIMENT",
   "architecture": {
     "pattern": "Modular monorepo with edge-ready Hono HTTP server and modern React 19 / Vite client",
     "backend": "Hono + Better-SQLite3 / Cloudflare D1 DDL",
@@ -11,11 +11,14 @@
     "revenue_engine": "Strict isolation between Real clinic collections, Sandbox tests, and Simulated revenue. Real marketing-attributed revenue strictly separated from unattributed walk-ins.",
     "trusted_authority": "Single trusted authority: only authenticated clinic OWNER or cryptographically verified production payment webhooks can certify REAL revenue. Scripts/agents strictly forbidden (HTTP 403).",
     "anti_escalation": "Automatic classification of test/synthetic domains as TEST. Strict prevention of escalating TEST journeys to REAL or recording REAL revenue against TEST journeys.",
-    "model_provider": "Model-agnostic ModelProvider interface implemented by GeminiProvider targeting gemini-3.8-flash, with ExecutionType telemetry (LLM, DETERMINISTIC, HUMAN, EXTERNAL).",
+    "model_provider": "Model-agnostic ModelProvider interface implemented by GeminiProvider targeting gemini-3.8-flash, with ExecutionType telemetry (LLM, DETERMINISTIC, HUMAN, EXTERNAL). Zero fabricated evidence in deterministic fixtures.",
+    "production_auth": "Production authentication boundary strictly requiring authenticated principals via Bearer token / api_token (rejecting spoofed x-user-id headers with HTTP 401).",
     "floki_orchestration": "Scientific dual-mode runner: explicit [DETERMINISTIC HARNESS] by default with zero dummy keys, and [LLM AGENT DECISION] when genuine API keys are configured."
   },
   "files_created": [
-    "packages/backend/src/ai/model-provider.ts"
+    "packages/backend/src/ai/model-provider.ts",
+    "packages/backend/src/control-plane/system-readiness.ts",
+    "packages/backend/tests/unit/production-auth-and-readiness.test.ts"
   ],
   "files_modified": [
     "packages/shared/src/types/index.ts",
@@ -39,8 +42,8 @@
     ".agent/project-state.json"
   ],
   "tests_run": {
-    "total": 50,
-    "passed": 50,
+    "total": 61,
+    "passed": 61,
     "failed": 0,
     "test_files": [
       "tests/unit/health.test.ts",
@@ -53,6 +56,7 @@
       "tests/unit/tenant-isolation.test.ts",
       "tests/unit/revenue-integrity-audit.test.ts",
       "tests/unit/production-secrets.test.ts",
+      "tests/unit/production-auth-and-readiness.test.ts",
       "tests/integration/closed-loop.test.ts",
       "tests/integration/api-contracts.test.ts",
       "tests/integration/revenue-closed-loop.test.ts",

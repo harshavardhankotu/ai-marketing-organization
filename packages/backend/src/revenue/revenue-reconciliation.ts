@@ -406,12 +406,17 @@ export class RevenueReconciliationEngine {
       unattributedRealRevenueINR,
       testRevenueINR,
       simulatedRevenueINR,
+      simulatedValueINR: simulatedRevenueINR,
       totalTransactions,
       attributedTransactions,
       unattributedTransactions,
       marketingSpendINR,
       totalAICostINR,
-      aiCostStatus: 'ESTIMATED',
+      aiCost: totalAICostINR,
+      aiCostStatus: totalAICostINR > 0 ? 'ESTIMATED' : 'UNKNOWN',
+      aiCostStatusReason: totalAICostINR > 0 
+        ? 'Cost estimated from nominal model token rates' 
+        : 'Zero external tokens consumed; deterministic execution',
       aiCostPerQualifiedLeadINR: Math.round(aiCostPerQualifiedLeadINR * 100) / 100,
       aiCostPerCustomerINR: Math.round(aiCostPerCustomerINR * 100) / 100,
       roas,

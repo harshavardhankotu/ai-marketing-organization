@@ -24,9 +24,25 @@ export function getDb(dbPath?: string): Database.Database {
   // Safe schema migrations for existing persistent SQLite databases
   try {
     db.exec(`ALTER TABLE learnings ADD COLUMN data_classification TEXT NOT NULL DEFAULT 'TEST_LEARNING'`);
-  } catch {
-    // Column already exists
-  }
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE users ADD COLUMN api_token TEXT`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE research_findings ADD COLUMN source_type TEXT NOT NULL DEFAULT 'TEST_DATA'`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE research_findings ADD COLUMN source_reference TEXT NOT NULL DEFAULT 'DETERMINISTIC_TEST_FIXTURE'`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE research_findings ADD COLUMN retrieved_at TEXT NOT NULL DEFAULT (datetime('now'))`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE research_findings ADD COLUMN evidence_status TEXT NOT NULL DEFAULT 'NO_REAL_WORLD_EVIDENCE'`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE research_findings ADD COLUMN data_classification TEXT NOT NULL DEFAULT 'TEST_DATA'`);
+  } catch {}
 
   dbInstance = db;
   return dbInstance;

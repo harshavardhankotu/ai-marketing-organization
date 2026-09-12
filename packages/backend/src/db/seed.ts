@@ -17,9 +17,9 @@ export function seedDatabase(): void {
 
   // 2. User
   db.prepare(`
-    INSERT OR REPLACE INTO users (id, organization_id, email, name, role)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(userId, orgId, 'dr.aravind@smilekraftdental.in', 'Dr. Aravind Reddy', 'OWNER');
+    INSERT OR REPLACE INTO users (id, organization_id, email, name, role, api_token)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(userId, orgId, 'dr.aravind@smilekraftdental.in', 'Dr. Aravind Reddy', 'OWNER', 'secret_token_owner_smilekraft_2026');
 
   // 3. Business: Hyderabad Dental Clinic
   const offerings = [

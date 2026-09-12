@@ -257,9 +257,18 @@ export const Revenue: React.FC = () => {
               <TrendingUp className="w-3.5 h-3.5" />
               Verified ROAS
             </span>
-            <span className="font-bold text-cyan-400 text-base font-mono">
-              {summary?.verifiedRoas !== undefined ? `${summary.verifiedRoas.toFixed(2)}x` : '0.00x'}
-            </span>
+            <div className="text-right">
+              <span className="font-bold text-cyan-400 text-base font-mono block">
+                {summary?.verifiedRoas && summary.verifiedRoas > 0 ? `${summary.verifiedRoas.toFixed(2)}x` : '0.00x'}
+              </span>
+              <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded ${
+                summary?.verifiedRoas && summary.verifiedRoas > 0
+                  ? 'bg-cyan-500/20 text-cyan-300'
+                  : 'bg-slate-800 text-slate-400'
+              }`}>
+                {summary?.verifiedRoas && summary.verifiedRoas > 0 ? 'AUDITED ATTRIBUTION' : 'INSUFFICIENT VERIFIED DATA'}
+              </span>
+            </div>
           </div>
           <div className="flex items-center justify-between p-3 bg-emerald-950/20 rounded-lg border border-emerald-500/30">
             <span className="text-emerald-300 font-medium">Verified Marketing ROI</span>

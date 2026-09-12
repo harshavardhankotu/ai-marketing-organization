@@ -478,7 +478,30 @@ export type ExecutionType = 'LLM' | 'DETERMINISTIC' | 'HUMAN' | 'EXTERNAL';
 
 export type LearningClassification = 'REAL_WORLD_LEARNING' | 'TEST_LEARNING' | 'SIMULATION_INSIGHT';
 
-export type AICostStatus = 'MEASURED' | 'ESTIMATED' | 'UNKNOWN';
+export type AICostStatus = 'VERIFIED' | 'MEASURED' | 'ESTIMATED' | 'UNKNOWN';
+
+export type EvidenceSourceType = 'REAL_EXTERNAL_EVIDENCE' | 'REAL_INTERNAL_DATA' | 'TEST_DATA' | 'SIMULATED_DATA';
+
+export interface ResearchFindingRecord {
+  id: string;
+  organizationId: string;
+  businessId: string;
+  agentId: string;
+  topic: string;
+  market: string;
+  finding: string;
+  extractedEvidence: string;
+  source: string;
+  certainty: EvidenceCertainty;
+  confidenceScore: number;
+  relevanceScore: number;
+  sourceType: EvidenceSourceType;
+  sourceReference: string;
+  retrievedAt: string;
+  evidenceStatus: string;
+  dataClassification: DataClassification;
+  createdAt: string;
+}
 
 export interface RevenueTruthSummary {
   realRevenueRecordedINR: number;
@@ -487,6 +510,10 @@ export interface RevenueTruthSummary {
   unattributedRealRevenueINR: number;
   testRevenueINR: number;
   simulatedRevenueINR: number;
+  // Aliases for clear reporting
+  simulatedValueINR: number;
+  aiCost: number;
+  aiCostStatusReason?: string;
   totalTransactions: number;
   attributedTransactions: number;
   unattributedTransactions: number;
@@ -505,3 +532,19 @@ export interface RevenueTruthSummary {
 }
 
 export type RevenueReconciliationSummary = RevenueTruthSummary;
+
+export interface SystemReadinessCheck {
+  id: string;
+  name: string;
+  passed: boolean;
+  details: string;
+  requiredForRealExperiment: boolean;
+}
+
+export interface SystemReadinessReport {
+  status: 'READY_FOR_REAL_EXPERIMENT' | 'NOT_READY';
+  timestamp: string;
+  passedChecks: number;
+  totalChecks: number;
+  checks: SystemReadinessCheck[];
+}

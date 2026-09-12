@@ -13,6 +13,7 @@ export class CostAccountingEngine {
   }
 
   calculateEstimatedCostINR(inputTokens: number, outputTokens: number): number {
+    if (inputTokens <= 0 && outputTokens <= 0) return 0;
     const inputCost = (inputTokens / 1000) * COST_PER_1K_INPUT_TOKENS_INR;
     const outputCost = (outputTokens / 1000) * COST_PER_1K_OUTPUT_TOKENS_INR;
     return Math.round((inputCost + outputCost) * 10000) / 10000;

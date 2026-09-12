@@ -19,6 +19,9 @@ import {
   EmergencyKillSwitchSchema
 } from '@ai-marketing/shared';
 
+import { isProduction } from '../config/env.js';
+import { SystemReadinessEngine } from '../control-plane/system-readiness.js';
+
 export type AppVariables = {
   organizationId: string;
   userId: string;
@@ -26,11 +29,84 @@ export type AppVariables = {
 
 export const apiRouter = new Hono<{ Variables: AppVariables }>();
 
-// Middleware: Extract tenant/org context
+// Middleware: Authentication & Tenant Context Boundary
 apiRouter.use('*', async (c, next) => {
-  // Default to SmileKraft tenant for local dev / seed
-  c.set('organizationId', c.req.header('x-organization-id') || 'org_smilekraft_01');
-  c.set('userId', c.req.header('x-user-id') || 'usr_owner_01');
+  const path = c.req.path;
+
+  // 1. Public endpoints
+  if (
+    path.endsWith('/health') ||
+    path.includes('/public/') ||
+    path.includes('/webhooks/')
+  ) {
+    c.set('organizationId', c.req.header('x-organization-id') || 'org_smilekraft_01');
+    c.set('userId', 'usr_public_lead');
+    return await next();
+  }
+
+  const db = getDb();
+  const authHeader = c.req.header('authorization') || c.req.header('Authorization');
+  const apiKeyHeader = c.req.header('x-api-key');
+
+  const token = authHeader?.startsWith('Bearer ')
+    ? authHeader.substring(7).trim()
+    : apiKeyHeader?.trim();
+
+  if (isProduction()) {
+    // PRODUCTION: Authenticated principal strictly required!
+    // Arbitrary client-provided identity headers (x-user-id / x-organization-id) are rejected.
+    if (!token) {
+      return c.json({
+        success: false,
+        error: 'Unauthorized: In production, an authenticated principal is required via Bearer token or x-api-key. Client identity headers alone are rejected.'
+      }, 401);
+    }
+
+    const prodSecret = process.env.AUTH_SECRET || process.env.PRODUCTION_API_KEY;
+    let authenticatedUser: any = null;
+
+    if (prodSecret && token === prodSecret) {
+      authenticatedUser = db.prepare("SELECT * FROM users WHERE role = 'OWNER' LIMIT 1").get();
+    } else {
+      try {
+        authenticatedUser = db.prepare("SELECT * FROM users WHERE api_token = ?").get(token);
+      } catch {}
+    }
+
+    if (!authenticatedUser) {
+      return c.json({
+        success: false,
+        error: 'Unauthorized: Invalid authentication credentials.'
+      }, 401);
+    }
+
+    c.set('userId', authenticatedUser.id);
+    c.set('organizationId', authenticatedUser.organization_id);
+  } else {
+    // DEVELOPMENT & TEST:
+    // If Bearer token is provided, authenticate with it
+    if (token) {
+      const prodSecret = process.env.AUTH_SECRET || process.env.PRODUCTION_API_KEY;
+      let authenticatedUser: any = null;
+      if (prodSecret && token === prodSecret) {
+        authenticatedUser = db.prepare("SELECT * FROM users WHERE role = 'OWNER' LIMIT 1").get();
+      } else {
+        try {
+          authenticatedUser = db.prepare("SELECT * FROM users WHERE api_token = ?").get(token);
+        } catch {}
+      }
+      if (authenticatedUser) {
+        c.set('userId', authenticatedUser.id);
+        c.set('organizationId', authenticatedUser.organization_id);
+        return await next();
+      }
+    }
+
+    // In dev/test: allow explicit identity headers for testing fixtures, defaulting to dev owner
+    c.set('organizationId', c.req.header('x-organization-id') || 'org_smilekraft_01');
+    c.set('userId', c.req.header('x-user-id') || 'usr_owner_01');
+  }
+
   await next();
 });
 
@@ -700,5 +776,39 @@ apiRouter.post('/webhooks/payments/:gateway', async (c) => {
   } catch (err: any) {
     // Return 200 on duplicate to prevent webhook retry storms, but report status
     return c.json({ success: false, duplicate: true, error: err.message }, 200);
+  }
+});
+
+// ==========================================
+// SYSTEM OPERATIONAL READINESS REPORT
+// ==========================================
+apiRouter.get('/system/readiness', (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  const businessId = business?.id || 'biz_smilekraft_hyd';
+  const report = SystemReadinessEngine.evaluateReadiness(businessId);
+  return c.json({ success: true, data: report });
+});
+
+// ==========================================
+// WORKFLOW TRIGGER: CLOSED LOOP CYCLE
+// ==========================================
+apiRouter.post('/workflows/trigger-cycle', async (c) => {
+  const orgId = c.get('organizationId');
+  const body = await c.req.json();
+  const businessId = body.businessId || 'biz_smilekraft_hyd';
+  const goalId = body.goalId || 'goal_100_leads_hyd';
+
+  const cycle = new ClosedLoopMarketingCycle();
+  try {
+    const result = await cycle.executeCompleteCycle({
+      organizationId: orgId,
+      businessId,
+      goalId
+    });
+    return c.json({ success: true, data: result });
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 500);
   }
 });

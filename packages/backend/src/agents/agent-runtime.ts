@@ -24,6 +24,8 @@ export interface AgentExecutionResult<T = any> {
   confidence: number;
   executionType?: ExecutionType;
   model?: string;
+  telemetry?: any;
+  tokenUsageStatus?: string;
   error?: string;
 }
 
@@ -107,8 +109,9 @@ export class AgentRuntime {
         const insertFinding = db.prepare(`
           INSERT INTO research_findings (
             id, organization_id, business_id, agent_id, topic, market,
-            finding, extracted_evidence, source, certainty, confidence_score, relevance_score
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            finding, extracted_evidence, source, certainty, confidence_score, relevance_score,
+            source_type, source_reference, retrieved_at, evidence_status, data_classification
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
         for (const f of findings) {
@@ -120,11 +123,16 @@ export class AgentRuntime {
             f.topic || 'Market Insight',
             f.market || combinedContext.business?.city || 'India',
             f.finding || '',
-            f.evidence || '',
-            f.source || 'Secondary Analysis',
+            f.evidence || f.extractedEvidence || 'NO_REAL_WORLD_EVIDENCE',
+            f.source || 'DETERMINISTIC_TEST_FIXTURE',
             f.certainty || 'OBSERVED',
-            f.confidence || 0.85,
-            0.9
+            f.confidence || 0.5,
+            0.9,
+            f.sourceType || 'TEST_DATA',
+            f.sourceReference || 'DETERMINISTIC_TEST_FIXTURE',
+            f.retrievedAt || new Date().toISOString(),
+            f.evidenceStatus || 'NO_REAL_WORLD_EVIDENCE',
+            f.dataClassification || 'TEST_DATA'
           );
         }
       }
@@ -138,6 +146,8 @@ export class AgentRuntime {
         confidence: (response.data as any)?.confidence ?? 0.88,
         executionType: response.executionType,
         model: response.model,
+        telemetry: response.telemetry,
+        tokenUsageStatus: response.tokenUsageStatus
       };
     } catch (error: any) {
       db.prepare(`

@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS users (
   email TEXT NOT NULL,
   name TEXT NOT NULL,
   role TEXT NOT NULL DEFAULT 'OWNER',
+  api_token TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
 );
@@ -192,6 +193,11 @@ CREATE TABLE IF NOT EXISTS research_findings (
   confidence_score REAL NOT NULL DEFAULT 0.85,
   relevance_score REAL NOT NULL DEFAULT 0.9,
   tags_json TEXT NOT NULL DEFAULT '[]',
+  source_type TEXT NOT NULL DEFAULT 'TEST_DATA',
+  source_reference TEXT NOT NULL DEFAULT 'DETERMINISTIC_TEST_FIXTURE',
+  retrieved_at TEXT NOT NULL DEFAULT (datetime('now')),
+  evidence_status TEXT NOT NULL DEFAULT 'NO_REAL_WORLD_EVIDENCE',
+  data_classification TEXT NOT NULL DEFAULT 'TEST_DATA',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
 );

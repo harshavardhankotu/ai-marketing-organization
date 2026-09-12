@@ -1,6 +1,27 @@
 import { TaskPriority, ExecutionType } from '@ai-marketing/shared';
 
 export type ThinkingLevel = 'none' | 'low' | 'medium' | 'high';
+export type TokenUsageStatus = 'VERIFIED' | 'ESTIMATED' | 'UNKNOWN';
+
+export interface ModelTelemetry {
+  provider: string;
+  model: string;
+  agentId: string;
+  agentVersion: number;
+  thinkingLevel: ThinkingLevel;
+  requestTimestamp: string;
+  completionTimestamp: string;
+  latencyMs: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  tokenUsageStatus: TokenUsageStatus;
+  cached: boolean;
+  executionType: ExecutionType;
+  success: boolean;
+  error?: string;
+  retryCount: number;
+}
 
 export interface ModelRequestOptions {
   agentId: string;
@@ -20,10 +41,13 @@ export interface ModelResponse<T = any> {
   thinkingLevel: ThinkingLevel;
   cached: boolean;
   tokenCount: number;
+  tokenUsageStatus: TokenUsageStatus;
   executionType: ExecutionType;
+  telemetry: ModelTelemetry;
 }
 
 export interface ModelProvider {
+  readonly providerName: string;
   readonly modelName: string;
   generateStructured<T>(options: ModelRequestOptions): Promise<ModelResponse<T>>;
 }
