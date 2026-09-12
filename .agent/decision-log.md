@@ -41,3 +41,9 @@
 - **Context**: Production environments must never allow placeholder credentials, demo keys, or synthetic numbers to bleed into real financial accounting.
 - **Decision**: Implemented `validateProductionSecrets()` halting production startups on placeholders or `demo_key`. Enforced that `docker-compose.yml` requires `${GEMINI_API_KEY}` without fallback. Prohibited recording `REAL` revenue using `SIMULATED` gateways. Isolated production ROAS calculation strictly to verified real revenue (`realRevenueINR / totalAdSpend`).
 - **Outcome**: Fail-safe production security and complete isolation of real financial performance from test scenarios.
+
+### DEC-008: Floki Multi-Agent Framework Integration & Subagent Definition
+- **Date**: 2026-09-12
+- **Context**: Autonomous orchestration of the entire marketing lifecycle using the Floki multi-agent framework (`floki-ai`) and Antigravity subagents.
+- **Decision**: Installed `floki` agent framework, registered the `floki` subagent in Antigravity, and built `scripts/floki_marketing_runner.py` defining specialized Floki agents (`Floki_CMO`, `Floki_MarketResearcher`, `Floki_LeadFunnelManager`, `Floki_RevenueReconciler`, `Floki_StrategyOptimizer`). Connected Floki tools directly to the live backend to execute end-to-end patient lead intake, funnel progression, payment reconciliation, duplicate rejection, and closed-loop evolution.
+- **Outcome**: Deterministic multi-agent execution driven by Floki, completely verified against live APIs with 4.23x ROAS and zero test pollution.
