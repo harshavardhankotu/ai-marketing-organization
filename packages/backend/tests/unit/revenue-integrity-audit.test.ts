@@ -184,4 +184,110 @@ describe('Revenue Integrity & Anti-Pollution Audit (Requirement 27)', () => {
     const details = JSON.parse(audit.details_json);
     expect(details.verificationSource).toBe('BANK_STATEMENT');
   });
+
+  it('rejects recording REAL manual revenue by non-owner or script (Single Trusted Authority)', () => {
+    expect(() => {
+      engine.recordVerifiedManualRevenue({
+        businessId,
+        organizationId: orgId,
+        verifiedByUserId: 'usr_floki_test_harness', // Non-owner user
+        invoiceNumber: 'INV-UNAUTH-AUDIT-01',
+        amountINR: 45000,
+        paymentMethod: 'UPI',
+        transactionRef: 'UPI-UNAUTH-001',
+        verificationSource: 'BANK_STATEMENT',
+      });
+    }).toThrow(/Unauthorized: Only an authenticated clinic OWNER can certify REAL revenue/);
+  });
+
+  it('rejects recording REAL revenue against a TEST customer journey (Anti-Cross-Contamination)', () => {
+    // 1. Create a TEST journey
+    const testJourney = tracker.recordRealLead({
+      businessId,
+      organizationId: orgId,
+      customerName: 'Test Patient',
+      customerPhone: '+91 99999 11111',
+      customerEmail: 'patient@example.com',
+      channel: 'WHATSAPP',
+      classification: 'TEST',
+    });
+    expect(testJourney.classification).toBe('TEST');
+
+    // 2. Owner attempting to attach REAL revenue to a TEST journey must be rejected
+    expect(() => {
+      engine.recordVerifiedManualRevenue({
+        businessId,
+        organizationId: orgId,
+        verifiedByUserId: 'usr_owner_01',
+        invoiceNumber: 'INV-CROSS-ATTEMPT-01',
+        amountINR: 45000,
+        paymentMethod: 'UPI',
+        transactionRef: 'UPI-CROSS-REF-001',
+        verificationSource: 'BANK_STATEMENT',
+        journeyId: testJourney.id,
+      });
+    }).toThrow(/Cannot record REAL revenue against a TEST customer journey/);
+  });
+
+  it('strictly separates marketing-attributed real revenue from unattributed real revenue and calculates verified ROAS only on attributed revenue', () => {
+    // 1. Unattributed Real Walk-in Transaction (₹40,000)
+    engine.recordTransaction({
+      businessId,
+      organizationId: orgId,
+      invoiceNumber: 'INV-WALKIN-01',
+      amountINR: 40000,
+      paymentMethod: 'CASH',
+      paymentGateway: 'MANUAL',
+      classification: 'REAL',
+      serviceRendered: 'Emergency Walk-in Root Canal Treatment',
+    });
+
+    // 2. Marketing-Attributed Real Transaction (₹45,000 linked to campaign)
+    engine.recordTransaction({
+      businessId,
+      organizationId: orgId,
+      campaignId: 'camp_seed_aligners_01',
+      invoiceNumber: 'INV-CAMP-ATTR-01',
+      amountINR: 45000,
+      paymentMethod: 'UPI',
+      paymentGateway: 'RAZORPAY',
+      transactionRef: 'pay_rzp_camp_01',
+      classification: 'REAL',
+      serviceRendered: 'Clear Aligners via WhatsApp Campaign',
+    });
+
+    const summary = engine.getRevenueSummary(businessId);
+    expect(summary.realRevenueRecordedINR).toBe(85000);
+    expect(summary.realMarketingAttributedRevenueINR).toBe(45000);
+    expect(summary.unattributedRealRevenueINR).toBe(40000);
+
+    // ROAS must be computed strictly as realMarketingAttributedRevenueINR / marketingSpendINR
+    // Total ad spend is ₹21,300 from seed campaigns (12,400 + 8,900)
+    expect(summary.marketingSpendINR).toBe(21300);
+    expect(summary.verifiedRoas).toBe(2.11); // 45,000 / 21,300 = 2.11x (NOT 85,000 / 21,300 = 3.99x)
+    expect(summary.roas).toBe(2.11);
+  });
+
+  it('automatically classifies synthetic email domains as TEST and prevents escalation', () => {
+    const lead = tracker.recordRealLead({
+      businessId,
+      organizationId: orgId,
+      customerName: 'Kavita Synthetic',
+      customerPhone: '+91 94401 12345',
+      customerEmail: 'kavita.999@hyderabad-tech.example', // .example synthetic domain
+      channel: 'WHATSAPP',
+    });
+
+    expect(lead.classification).toBe('TEST');
+
+    // Attempting to advance stage with REAL classification on a TEST journey must throw
+    expect(() => {
+      tracker.advanceStage({
+        businessId,
+        visitorId: lead.visitorId,
+        targetStage: 'OPPORTUNITY',
+        classification: 'REAL',
+      });
+    }).toThrow(/Anti-Escalation Violation: Cannot escalate TEST customer journey to REAL/);
+  });
 });

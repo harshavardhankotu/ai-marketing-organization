@@ -1,32 +1,14 @@
 import { QuotaManager } from './quota-manager.js';
 import { DeduplicationEngine } from './deduplication.js';
-import { TaskPriority } from '@ai-marketing/shared';
+import { TaskPriority, ExecutionType } from '@ai-marketing/shared';
 import { isPlaceholderCredential, isProduction, ProductionSecretViolationError } from '../config/env.js';
+import type { ModelProvider, ModelRequestOptions, ModelResponse, ThinkingLevel } from './model-provider.js';
 
-export type ThinkingLevel = 'low' | 'medium' | 'high';
+export type { ModelProvider, ModelRequestOptions, ModelResponse, ThinkingLevel };
 
-export interface ModelRequestOptions {
-  agentId: string;
-  systemInstruction: string;
-  prompt: string;
-  context?: Record<string, any>;
-  thinkingLevel?: ThinkingLevel;
-  priority?: TaskPriority;
-  strategyVersion?: number;
-  skipCache?: boolean;
-}
-
-export interface ModelResponse<T = any> {
-  data: T;
-  rawText: string;
-  model: string;
-  thinkingLevel: ThinkingLevel;
-  cached: boolean;
-  tokenCount: number;
-}
-
-export class GeminiProvider {
+export class GeminiProvider implements ModelProvider {
   private static readonly MODEL_NAME = 'gemini-3.8-flash';
+  public readonly modelName = GeminiProvider.MODEL_NAME;
   private quotaManager = QuotaManager.getInstance();
 
   public async generateStructured<T>(options: ModelRequestOptions): Promise<ModelResponse<T>> {
@@ -52,7 +34,8 @@ export class GeminiProvider {
           model: modelVersion,
           thinkingLevel,
           cached: true,
-          tokenCount: 0
+          tokenCount: 0,
+          executionType: 'DETERMINISTIC'
         };
       }
     }
@@ -104,7 +87,8 @@ export class GeminiProvider {
     // Official Gemini REST endpoint
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${GeminiProvider.MODEL_NAME}:generateContent?key=${apiKey}`;
 
-    const thinkingBudgets = {
+    const thinkingBudgets: Record<ThinkingLevel, number> = {
+      none: 0,
       low: 0,
       medium: 1024,
       high: 4096
@@ -150,7 +134,8 @@ export class GeminiProvider {
       model: GeminiProvider.MODEL_NAME,
       thinkingLevel: options.thinkingLevel || 'medium',
       cached: false,
-      tokenCount: payload?.usageMetadata?.totalTokenCount || 500
+      tokenCount: payload?.usageMetadata?.totalTokenCount || 500,
+      executionType: 'LLM'
     };
   }
 
@@ -233,7 +218,8 @@ export class GeminiProvider {
       model: GeminiProvider.MODEL_NAME,
       thinkingLevel: options.thinkingLevel || 'medium',
       cached: false,
-      tokenCount: 450
+      tokenCount: 450,
+      executionType: 'DETERMINISTIC'
     };
   }
 }

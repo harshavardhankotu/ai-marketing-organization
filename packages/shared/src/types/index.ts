@@ -474,17 +474,34 @@ export interface AICostRecord {
   createdAt: string;
 }
 
-export interface RevenueReconciliationSummary {
-  realRevenueINR: number;
+export type ExecutionType = 'LLM' | 'DETERMINISTIC' | 'HUMAN' | 'EXTERNAL';
+
+export type LearningClassification = 'REAL_WORLD_LEARNING' | 'TEST_LEARNING' | 'SIMULATION_INSIGHT';
+
+export type AICostStatus = 'MEASURED' | 'ESTIMATED' | 'UNKNOWN';
+
+export interface RevenueTruthSummary {
+  realRevenueRecordedINR: number;
+  realRevenueIndependentlyVerifiedINR: number;
+  realMarketingAttributedRevenueINR: number;
+  unattributedRealRevenueINR: number;
   testRevenueINR: number;
   simulatedRevenueINR: number;
   totalTransactions: number;
   attributedTransactions: number;
   unattributedTransactions: number;
+  marketingSpendINR: number;
   totalAICostINR: number;
+  aiCostStatus: AICostStatus;
   aiCostPerQualifiedLeadINR: number;
   aiCostPerCustomerINR: number;
   roas: number;
   realRoas: number;
   testRoas: number;
+  verifiedRoas: number;
+  verifiedRoi: number;
+  // Backwards-compatibility alias for realRevenueRecordedINR
+  realRevenueINR: number;
 }
+
+export type RevenueReconciliationSummary = RevenueTruthSummary;

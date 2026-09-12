@@ -565,6 +565,10 @@ apiRouter.post('/public/lead', async (c) => {
     return c.json({ success: false, error: 'Invalid phone number. Must be a valid 10-digit mobile number' }, 400);
   }
 
+  // Check test mode headers or explicit classification
+  const testHeader = c.req.header('x-test-mode');
+  const forcedClassification = (testHeader === 'true' || testHeader === '1') ? 'TEST' : body.classification;
+
   const journey = journeyTracker.recordRealLead({
     businessId,
     organizationId: orgId,
@@ -575,7 +579,8 @@ apiRouter.post('/public/lead', async (c) => {
     campaignId: body.campaignId || 'camp_seed_aligners_01',
     source: body.source || 'public_landing_page',
     serviceOfInterest: body.serviceOfInterest || 'Invisible Clear Aligners',
-    notes: body.notes
+    notes: body.notes,
+    classification: forcedClassification
   });
 
   return c.json({
@@ -585,6 +590,7 @@ apiRouter.post('/public/lead', async (c) => {
       journeyId: journey.id,
       visitorId: journey.visitorId,
       stage: journey.stage,
+      classification: journey.classification,
       clinic: 'SmileKraft Dental Clinic Banjara Hills & Gachibowli'
     }
   }, 201);
@@ -599,6 +605,15 @@ apiRouter.post('/revenue/verified-entry', async (c) => {
   const db = getDb();
   const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
   if (!business) return c.json({ success: false, error: 'Business not found' }, 404);
+
+  // Single Trusted Authority Enforcement: Caller must be authenticated clinic OWNER
+  const user = db.prepare('SELECT id, role FROM users WHERE id = ? AND organization_id = ?').get(userId, orgId) as any;
+  if (!user || user.role !== 'OWNER') {
+    return c.json({
+      success: false,
+      error: `Forbidden: Only an authenticated clinic OWNER can certify REAL revenue. Actor '${userId}' is not an OWNER.`
+    }, 403);
+  }
 
   const body = await c.req.json();
   if (!body.invoiceNumber || !body.amountINR || !body.paymentMethod || !body.transactionRef || !body.verificationSource) {

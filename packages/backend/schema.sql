@@ -261,6 +261,7 @@ CREATE TABLE IF NOT EXISTS learnings (
   policy_update TEXT NOT NULL,
   confidence REAL NOT NULL DEFAULT 0.85,
   applied_to_strategy_version INTEGER,
+  data_classification TEXT NOT NULL DEFAULT 'TEST_LEARNING',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE,
   FOREIGN KEY (source_experiment_id) REFERENCES experiments(id) ON DELETE SET NULL

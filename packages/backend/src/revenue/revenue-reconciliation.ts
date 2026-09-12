@@ -5,6 +5,7 @@ import {
   PaymentGateway,
   PaymentMethod,
   RevenueReconciliationSummary,
+  RevenueTruthSummary,
   TransactionRecord,
 } from '@ai-marketing/shared';
 import { CustomerJourneyTracker } from './customer-journey-tracker.js';
@@ -151,6 +152,37 @@ export class RevenueReconciliationEngine {
     const orgId = params.organizationId || 'org_smilekraft_01';
     const service = params.serviceRendered || 'Verified In-Clinic Treatment';
 
+    // 1. Single Trusted Authority Enforcement: Caller must be authenticated clinic OWNER
+    const user = this.db
+      .prepare('SELECT id, role, organization_id FROM users WHERE id = ?')
+      .get(params.verifiedByUserId) as any;
+
+    if (!user || user.role !== 'OWNER') {
+      throw new Error(
+        `Unauthorized: Only an authenticated clinic OWNER can certify REAL revenue. User '${params.verifiedByUserId}' is not an OWNER.`
+      );
+    }
+
+    // 2. Audit Evidence Requirement
+    if (!params.verificationSource || !params.transactionRef) {
+      throw new Error('External verificationSource and transactionRef are required to certify REAL revenue.');
+    }
+
+    // 3. Prevent cross-contamination: REAL revenue can NEVER attach to a TEST or SIMULATED journey
+    if (params.journeyId) {
+      const journey = this.db
+        .prepare('SELECT id, classification FROM customer_journeys WHERE id = ?')
+        .get(params.journeyId) as any;
+      if (!journey) {
+        throw new Error(`Customer journey ${params.journeyId} not found`);
+      }
+      if (journey.classification !== 'REAL') {
+        throw new Error(
+          `Cannot record REAL revenue against a ${journey.classification} customer journey. Real clinic revenue must attach only to REAL patient journeys.`
+        );
+      }
+    }
+
     const tx = this.recordTransaction({
       businessId: params.businessId,
       organizationId: orgId,
@@ -245,7 +277,7 @@ export class RevenueReconciliationEngine {
     };
   }
 
-  getRevenueSummary(businessId: string): RevenueReconciliationSummary {
+  getRevenueSummary(businessId: string): RevenueTruthSummary {
     // 1. Separate Real, Test, and Simulated Revenue (Only status = 'SUCCESS')
     const revRows = this.db
       .prepare(
@@ -256,17 +288,56 @@ export class RevenueReconciliationEngine {
       )
       .all(businessId) as Array<{ classification: DataClassification; total_rev: number }>;
 
-    let realRevenueINR = 0;
+    let realRevenueRecordedINR = 0;
     let testRevenueINR = 0;
     let simulatedRevenueINR = 0;
 
     for (const r of revRows) {
-      if (r.classification === 'REAL') realRevenueINR = r.total_rev;
+      if (r.classification === 'REAL') realRevenueRecordedINR = r.total_rev;
       else if (r.classification === 'TEST') testRevenueINR = r.total_rev;
       else if (r.classification === 'SIMULATED') simulatedRevenueINR = r.total_rev;
     }
 
-    // 2. Transaction counts
+    // 2. Independently verified real revenue (from external payment gateways or audited owner entries)
+    const verifiedManualRows = this.db
+      .prepare(
+        `SELECT SUM(t.amount_inr) as verified_rev
+         FROM transactions t
+         JOIN audit_logs a ON a.entity_id = t.id AND a.action = 'VERIFIED_REVENUE_ENTRY'
+         WHERE t.business_id = ? AND t.status = 'SUCCESS' AND t.classification = 'REAL'`
+      )
+      .get(businessId) as any;
+    const verifiedGatewayRows = this.db
+      .prepare(
+        `SELECT SUM(amount_inr) as gateway_rev
+         FROM transactions
+         WHERE business_id = ? AND status = 'SUCCESS' AND classification = 'REAL' 
+           AND payment_gateway NOT IN ('SIMULATED', 'MANUAL')`
+      )
+      .get(businessId) as any;
+    const realRevenueIndependentlyVerifiedINR =
+      (verifiedManualRows?.verified_rev || 0) + (verifiedGatewayRows?.gateway_rev || 0);
+
+    // 3. Marketing-Attributed REAL Revenue:
+    // Successful REAL transactions linked to a campaign or linked to a REAL journey with marketing touchpoints
+    const attributedRealRev = this.db
+      .prepare(
+        `SELECT SUM(t.amount_inr) as attributed_rev
+         FROM transactions t
+         LEFT JOIN customer_journeys j ON t.journey_id = j.id
+         WHERE t.business_id = ? 
+           AND t.status = 'SUCCESS' 
+           AND t.classification = 'REAL'
+           AND (
+             t.campaign_id IS NOT NULL 
+             OR (j.id IS NOT NULL AND j.classification = 'REAL' AND (j.first_touch_channel IS NOT NULL OR j.touchpoints_json LIKE '%"campaignId":%'))
+           )`
+      )
+      .get(businessId) as any;
+    const realMarketingAttributedRevenueINR = attributedRealRev?.attributed_rev || 0;
+    const unattributedRealRevenueINR = Math.max(0, realRevenueRecordedINR - realMarketingAttributedRevenueINR);
+
+    // 4. Transaction counts
     const txStats = this.db
       .prepare(
         `SELECT 
@@ -282,7 +353,13 @@ export class RevenueReconciliationEngine {
     const attributedTransactions = txStats?.attributed || 0;
     const unattributedTransactions = txStats?.unattributed || 0;
 
-    // 3. AI Costs
+    // 5. Total ad spend from campaigns
+    const campaignSpend = this.db
+      .prepare(`SELECT SUM(spent_inr) as total_spent FROM campaigns WHERE business_id = ?`)
+      .get(businessId) as any;
+    const marketingSpendINR = campaignSpend?.total_spent || 0;
+
+    // 6. AI Costs
     const costStats = this.db
       .prepare(
         `SELECT SUM(estimated_cost_inr) as total_cost FROM ai_cost_logs WHERE business_id = ?`
@@ -290,7 +367,7 @@ export class RevenueReconciliationEngine {
       .get(businessId) as any;
     const totalAICostINR = costStats?.total_cost || 0;
 
-    // 4. Unit economics (Count qualified leads and customers)
+    // 7. Unit economics (Count qualified leads and customers)
     const journeyStats = this.db
       .prepare(
         `SELECT 
@@ -307,35 +384,42 @@ export class RevenueReconciliationEngine {
     const aiCostPerQualifiedLeadINR = qualifiedLeads > 0 ? totalAICostINR / qualifiedLeads : 0;
     const aiCostPerCustomerINR = customers > 0 ? totalAICostINR / customers : 0;
 
-    // 5. Total ad spend from campaigns
-    const campaignSpend = this.db
-      .prepare(`SELECT SUM(spent_inr) as total_spent FROM campaigns WHERE business_id = ?`)
-      .get(businessId) as any;
-    const totalAdSpend = campaignSpend?.total_spent || 0;
+    // 8. ROAS & ROI - Strictly computed on real marketing-attributed revenue
+    const verifiedRoas = marketingSpendINR > 0 
+      ? Math.round((realMarketingAttributedRevenueINR / marketingSpendINR) * 100) / 100 
+      : 0;
+    const verifiedRoi = marketingSpendINR > 0
+      ? Math.round(((realMarketingAttributedRevenueINR - marketingSpendINR) / marketingSpendINR) * 100) / 100
+      : 0;
+    const testRoas = marketingSpendINR > 0 
+      ? Math.round((testRevenueINR / marketingSpendINR) * 100) / 100 
+      : 0;
 
-    const realRoas = totalAdSpend > 0 ? Math.round((realRevenueINR / totalAdSpend) * 100) / 100 : 0;
-    const testRoas = totalAdSpend > 0 ? Math.round((testRevenueINR / totalAdSpend) * 100) / 100 : 0;
-
-    // In production (NODE_ENV=production), ROAS is strictly realRoas. Zero test bleed into real metrics.
-    const isProd = process.env.NODE_ENV === 'production';
-    const effectiveRevenue = isProd
-      ? realRevenueINR
-      : (realRevenueINR > 0 ? realRevenueINR : testRevenueINR);
-    const roas = totalAdSpend > 0 ? Math.round((effectiveRevenue / totalAdSpend) * 100) / 100 : 0;
+    // Zero test bleed: verifiedRoas is strictly used for ROAS
+    const realRoas = verifiedRoas;
+    const roas = verifiedRoas;
 
     return {
-      realRevenueINR,
+      realRevenueRecordedINR,
+      realRevenueIndependentlyVerifiedINR,
+      realMarketingAttributedRevenueINR,
+      unattributedRealRevenueINR,
       testRevenueINR,
       simulatedRevenueINR,
       totalTransactions,
       attributedTransactions,
       unattributedTransactions,
+      marketingSpendINR,
       totalAICostINR,
+      aiCostStatus: 'ESTIMATED',
       aiCostPerQualifiedLeadINR: Math.round(aiCostPerQualifiedLeadINR * 100) / 100,
       aiCostPerCustomerINR: Math.round(aiCostPerCustomerINR * 100) / 100,
       roas,
       realRoas,
       testRoas,
+      verifiedRoas,
+      verifiedRoi,
+      realRevenueINR: realRevenueRecordedINR,
     };
   }
 

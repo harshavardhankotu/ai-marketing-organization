@@ -1,4 +1,4 @@
-﻿import { getDb } from '../db/client.js';
+import { getDb } from '../db/client.js';
 import { DurableWorkflowEngine } from './workflow-engine.js';
 import { AgentRuntime } from '../agents/agent-runtime.js';
 import { ApprovalManager } from '../control-plane/approval-manager.js';
@@ -251,7 +251,7 @@ export class ClosedLoopMarketingCycle {
               contentAssetId,
               channel: 'WHATSAPP',
               eventType: 'qualified_lead',
-              revenueINR: 45000
+              revenueINR: 0
             });
 
             return { leadEventId };
@@ -305,7 +305,8 @@ export class ClosedLoopMarketingCycle {
                 { channel: 'GOOGLE_BUSINESS_PROFILE', allocation: 30, rationale: 'High localized intent' },
                 { channel: 'INSTAGRAM', allocation: 20, rationale: 'Visual branding' }
               ],
-              ['Painless 3D Dentistry', 'Zero-Cost Monthly EMI in INR', 'Senior Implantologist Reviews']
+              ['Painless 3D Dentistry', 'Zero-Cost Monthly EMI in INR', 'Senior Implantologist Reviews'],
+              'REAL_WORLD_LEARNING'
             );
 
             return { evolved };

@@ -124,6 +124,7 @@ describe('Production Secrets & Data Classification Enforcement', () => {
         transactionRef: 'UPI-HDFC-VERIFIED-999',
         verificationSource: 'CLINIC_BANK_STATEMENT',
         verifiedByUserId: 'usr_owner_01',
+        campaignId: 'camp_seed_aligners_01',
       });
 
       const updatedSummary = engine.getRevenueSummary('biz_smilekraft_hyd');

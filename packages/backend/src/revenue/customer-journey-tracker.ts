@@ -18,6 +18,37 @@ const STAGE_ORDER: Record<CustomerJourneyStage, number> = {
   CHURNED: 7,
 };
 
+export function isSyntheticOrTestLead(email?: string, name?: string, notes?: string): boolean {
+  if (email) {
+    const e = email.toLowerCase().trim();
+    if (
+      e.endsWith('.example') ||
+      e.endsWith('@example.com') ||
+      e.endsWith('@example.org') ||
+      e.endsWith('@test.com') ||
+      e.includes('test') ||
+      e.includes('floki') ||
+      e.includes('dummy') ||
+      e.includes('sample')
+    ) {
+      return true;
+    }
+  }
+  if (name) {
+    const n = name.toLowerCase().trim();
+    if (n.startsWith('test') || n.includes('synthetic') || n.includes('dummy') || n.includes('floki')) {
+      return true;
+    }
+  }
+  if (notes) {
+    const s = notes.toLowerCase().trim();
+    if (s.includes('test') || s.includes('synthetic') || s.includes('simulation') || s.includes('automated_test')) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export class CustomerJourneyTracker {
   private get db() {
     return getDb();
@@ -167,6 +198,16 @@ export class CustomerJourneyTracker {
       params.classification ?? 'TEST'
     );
 
+    // Anti-Escalation Check: NEVER allow escalating a TEST or SIMULATED journey to REAL
+    if (
+      (journey.classification === 'TEST' || journey.classification === 'SIMULATED') &&
+      params.classification === 'REAL'
+    ) {
+      throw new Error(
+        `Anti-Escalation Violation: Cannot escalate ${journey.classification} customer journey to REAL.`
+      );
+    }
+
     const now = new Date().toISOString();
     const customerName = params.customerName || journey.customerName;
     const customerPhone = params.customerPhone || journey.customerPhone;
@@ -230,12 +271,21 @@ export class CustomerJourneyTracker {
     source?: string;
     serviceOfInterest?: string;
     notes?: string;
+    classification?: DataClassification;
   }): CustomerJourneyRecord {
-    const visitorId = `vis_real_${randomUUID().slice(0, 8)}`;
+    // Detect synthetic test fixture domains or test flags
+    const isTest =
+      params.classification === 'TEST' ||
+      params.classification === 'SIMULATED' ||
+      isSyntheticOrTestLead(params.customerEmail, params.customerName, params.notes);
+
+    const classification: DataClassification = isTest ? 'TEST' : (params.classification || 'REAL');
+    const visitorPrefix = classification === 'REAL' ? 'vis_real_' : 'vis_test_';
+    const visitorId = `${visitorPrefix}${randomUUID().slice(0, 8)}`;
     const orgId = params.organizationId || 'org_smilekraft_01';
     
-    // 1. Initialize journey in REAL mode
-    this.getOrCreateJourney(params.businessId, visitorId, 'REAL', orgId);
+    // 1. Initialize journey with resolved classification
+    this.getOrCreateJourney(params.businessId, visitorId, classification, orgId);
 
     // 2. Add lead submission touchpoint
     this.recordTouchpoint({
@@ -249,7 +299,7 @@ export class CustomerJourneyTracker {
         serviceOfInterest: params.serviceOfInterest,
         notes: params.notes
       },
-      classification: 'REAL',
+      classification,
       organizationId: orgId
     });
 
@@ -261,7 +311,7 @@ export class CustomerJourneyTracker {
       customerName: params.customerName,
       customerPhone: params.customerPhone,
       customerEmail: params.customerEmail,
-      classification: 'REAL'
+      classification
     });
   }
 

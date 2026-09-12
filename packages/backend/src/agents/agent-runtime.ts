@@ -1,7 +1,7 @@
-﻿import { getDb } from '../db/client.js';
+import { getDb } from '../db/client.js';
 import { GeminiProvider, ThinkingLevel } from '../ai/gemini-provider.js';
 import { MemoryStore } from '../memory/memory-store.js';
-import { getAgentById, AgentDescriptor, TaskPriority } from '@ai-marketing/shared';
+import { getAgentById, AgentDescriptor, TaskPriority, ExecutionType } from '@ai-marketing/shared';
 
 export interface ExecuteAgentOptions {
   agentId: string;
@@ -22,6 +22,8 @@ export interface AgentExecutionResult<T = any> {
   agentName: string;
   cached: boolean;
   confidence: number;
+  executionType?: ExecutionType;
+  model?: string;
   error?: string;
 }
 
@@ -133,7 +135,9 @@ export class AgentRuntime {
         agentId: agent.id,
         agentName: agent.name,
         cached: response.cached,
-        confidence: (response.data as any)?.confidence ?? 0.88
+        confidence: (response.data as any)?.confidence ?? 0.88,
+        executionType: response.executionType,
+        model: response.model,
       };
     } catch (error: any) {
       db.prepare(`

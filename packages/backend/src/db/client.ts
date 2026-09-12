@@ -1,4 +1,4 @@
-﻿import Database from 'better-sqlite3';
+import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 import { SCHEMA_SQL } from './schema.js';
@@ -20,6 +20,13 @@ export function getDb(dbPath?: string): Database.Database {
 
   // Initialize schema
   db.exec(SCHEMA_SQL);
+
+  // Safe schema migrations for existing persistent SQLite databases
+  try {
+    db.exec(`ALTER TABLE learnings ADD COLUMN data_classification TEXT NOT NULL DEFAULT 'TEST_LEARNING'`);
+  } catch {
+    // Column already exists
+  }
 
   dbInstance = db;
   return dbInstance;

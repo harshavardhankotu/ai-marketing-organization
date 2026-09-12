@@ -47,3 +47,15 @@
 - **Context**: Autonomous orchestration of the entire marketing lifecycle using the Floki multi-agent framework (`floki-ai`) and Antigravity subagents.
 - **Decision**: Installed `floki` agent framework, registered the `floki` subagent in Antigravity, and built `scripts/floki_marketing_runner.py` defining specialized Floki agents (`Floki_CMO`, `Floki_MarketResearcher`, `Floki_LeadFunnelManager`, `Floki_RevenueReconciler`, `Floki_StrategyOptimizer`). Connected Floki tools directly to the live backend to execute end-to-end patient lead intake, funnel progression, payment reconciliation, duplicate rejection, and closed-loop evolution.
 - **Outcome**: Deterministic multi-agent execution driven by Floki, completely verified against live APIs with 4.23x ROAS and zero test pollution.
+
+### DEC-009: Forensic Audit & Scientific Correction: Floki Dual Mode, Owner Authority, Attribution Separation, and Revenue Truth
+- **Date**: 2026-09-12
+- **Context**: Forensic inspection revealed `floki_marketing_runner.py` was directly executing Python functions with a dummy key while outputting pseudo-agent logs, manufacturing synthetic patient details as REAL revenue, and allowing non-owners to self-certify real revenue.
+- **Decision**:
+  1. Rewrote Floki runner with honest execution classification: `[DETERMINISTIC HARNESS]` by default and `[LLM AGENT DECISION]` when real API keys are configured. Removed fake `floki_orchestrator_key`.
+  2. Single Trusted Authority: strictly restricted `POST /revenue/verified-entry` to authenticated clinic `OWNER` users. Prohibited scripts/agents (`usr_floki_test_harness`) from certifying real revenue (enforcing HTTP 403).
+  3. Anti-Escalation & Synthetic Lead Quarantine: automatic classification of test/synthetic domains (`.example`, `test.com`) as `TEST`. Prohibited escalating `TEST` journeys to `REAL` or recording `REAL` revenue against `TEST` journeys.
+  4. True Mathematical Attribution: separated `realRevenueRecordedINR` from `realMarketingAttributedRevenueINR` and `unattributedRealRevenueINR`. Verified ROAS is strictly computed on attributed real revenue (`realMarketingAttributedRevenueINR / marketingSpendINR`), never on walk-ins or test revenue.
+  5. Implemented `ModelProvider` interface with `ExecutionType` logging (`LLM`, `DETERMINISTIC`, `HUMAN`, `EXTERNAL`).
+  6. Added dedicated **REVENUE TRUTH AUDIT** panel in frontend (`Revenue.tsx`) with zero hardcoded fallbacks and explicit estimation statuses.
+- **Outcome**: 100% scientifically honest, fault-tolerant, verified system with 50 passing tests and clean isolation.

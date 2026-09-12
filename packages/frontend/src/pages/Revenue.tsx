@@ -10,24 +10,30 @@ import {
   ShieldCheck,
   TrendingUp,
   Clock,
-  Sparkles
+  Sparkles,
+  AlertCircle,
+  Lock,
+  Layers,
+  Check
 } from 'lucide-react';
 import { api } from '../services/api.js';
-import { formatINR } from '@ai-marketing/shared';
+import { formatINR, RevenueTruthSummary } from '@ai-marketing/shared';
 
 export const Revenue: React.FC = () => {
-  const [summary, setSummary] = useState<any>(null);
+  const [summary, setSummary] = useState<RevenueTruthSummary | null>(null);
   const [transactions, setTransactions] = useState<any[]>([]);
   const [aiCostSummary, setAICostSummary] = useState<any>(null);
   const [filterMode, setFilterMode] = useState<'ALL' | 'REAL' | 'TEST' | 'SIMULATED'>('ALL');
   const [isIngesting, setIsIngesting] = useState(false);
   const [showModal, setShowModal] = useState(false);
 
-  // Form states for test transaction
+  // Form states for transaction entry
   const [amount, setAmount] = useState('45000');
   const [method, setMethod] = useState('UPI');
-  const [service, setService] = useState('Invisible Clear Aligners - 6 Months');
+  const [service, setService] = useState('Invisible Clear Aligners - Phase 1');
   const [classification, setClassification] = useState<'TEST' | 'REAL'>('TEST');
+  const [verificationSource, setVerificationSource] = useState('BANK_STATEMENT');
+  const [transactionRef, setTransactionRef] = useState('');
 
   const loadData = async () => {
     try {
@@ -53,19 +59,37 @@ export const Revenue: React.FC = () => {
     setIsIngesting(true);
     try {
       const invoiceNumber = `INV-SK-${Date.now().toString().slice(-4)}`;
-      await api.recordTransaction({
-        invoiceNumber,
-        amountINR: parseFloat(amount),
-        paymentMethod: method,
-        paymentGateway: method === 'UPI' ? 'PHONEPE_PG' : 'RAZORPAY',
-        classification,
-        serviceRendered: service,
-        campaignId: 'camp_seed_aligners_01'
-      });
+      if (classification === 'REAL') {
+        if (!transactionRef.trim()) {
+          alert('External Transaction Reference (Bank UTR / Invoice Ref) is mandatory for REAL revenue.');
+          setIsIngesting(false);
+          return;
+        }
+        await api.post('/revenue/verified-entry', {
+          invoiceNumber,
+          amountINR: parseFloat(amount),
+          paymentMethod: method,
+          transactionRef: transactionRef.trim(),
+          verificationSource,
+          serviceRendered: service,
+          campaignId: 'camp_seed_aligners_01'
+        });
+      } else {
+        await api.recordTransaction({
+          invoiceNumber,
+          amountINR: parseFloat(amount),
+          paymentMethod: method,
+          paymentGateway: method === 'UPI' ? 'PHONEPE_PG' : 'RAZORPAY',
+          classification,
+          serviceRendered: service,
+          campaignId: 'camp_seed_aligners_01'
+        });
+      }
       setShowModal(false);
+      setTransactionRef('');
       await loadData();
     } catch (err: any) {
-      alert(`Transaction creation failed: ${err.message}`);
+      alert(`Transaction creation failed: ${err.message || err.error}`);
     } finally {
       setIsIngesting(false);
     }
@@ -78,10 +102,10 @@ export const Revenue: React.FC = () => {
         <div>
           <h2 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2">
             <IndianRupee className="w-6 h-6 text-emerald-400" />
-            Revenue & Financial Reconciliation
+            Revenue & Financial Truth Reconciliation
           </h2>
           <p className="text-sm text-slate-400">
-            Strict isolation between Real clinic collections, Sandbox tests, and Simulated revenue.
+            Scientifically verified clinic ledger: Real collections strictly separated from Sandbox tests and Simulated models.
           </p>
         </div>
 
@@ -113,63 +137,144 @@ export const Revenue: React.FC = () => {
         </div>
       </div>
 
-      {/* Metric Cards Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="p-5 rounded-xl bg-slate-900/70 border border-slate-800 backdrop-blur-sm">
-          <div className="flex items-center justify-between text-xs text-slate-400 font-medium mb-2">
-            <span>REAL CLINIC REVENUE</span>
-            <span className="px-2 py-0.5 rounded text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
-              AUDITED
+      {/* ========================================================================= */}
+      {/* REVENUE TRUTH AUDIT PANEL */}
+      {/* ========================================================================= */}
+      <div className="p-6 rounded-2xl bg-gradient-to-br from-slate-900 via-slate-900/90 to-slate-950 border border-emerald-500/30 shadow-2xl relative overflow-hidden">
+        <div className="absolute top-0 right-0 w-96 h-96 bg-emerald-500/5 rounded-full blur-3xl pointer-events-none" />
+        <div className="flex items-center justify-between pb-4 mb-5 border-b border-slate-800">
+          <div className="flex items-center gap-2.5">
+            <ShieldCheck className="w-6 h-6 text-emerald-400" />
+            <div>
+              <h3 className="text-base font-bold text-white tracking-wide uppercase flex items-center gap-2">
+                Revenue Truth & Attribution Audit
+                <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                  VERIFIED BY CLINIC OWNER
+                </span>
+              </h3>
+              <p className="text-xs text-slate-400">
+                Independent verification against bank statements & payment gateways with strict attribution tracing.
+              </p>
+            </div>
+          </div>
+          <div className="text-right hidden sm:block">
+            <span className="text-[11px] text-slate-400 block">AI Cost Accounting</span>
+            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/10 text-purple-300 border border-purple-500/30">
+              STATUS: {summary?.aiCostStatus || 'ESTIMATED'}
             </span>
           </div>
-          <div className="text-2xl font-bold text-emerald-400">
-            {formatINR(summary?.realRevenueINR || 0)}
-          </div>
-          <div className="text-xs text-slate-500 mt-2 flex items-center gap-1">
-            <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-            Direct payment gateway collections
-          </div>
         </div>
 
-        <div className="p-5 rounded-xl bg-slate-900/70 border border-slate-800 backdrop-blur-sm">
-          <div className="flex items-center justify-between text-xs text-slate-400 font-medium mb-2">
-            <span>TEST / SANDBOX REVENUE</span>
-            <span className="px-2 py-0.5 rounded text-[10px] bg-amber-500/10 text-amber-400 border border-amber-500/30">
-              SANDBOX
+        {/* 6-Column Truth Matrix */}
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-5">
+          {/* 1. Real Revenue Recorded */}
+          <div className="p-3.5 bg-slate-950/70 rounded-xl border border-slate-800/80">
+            <span className="text-[10px] uppercase font-semibold tracking-wider text-slate-400 block mb-1">
+              Real Recorded
+            </span>
+            <div className="text-lg font-bold text-white">
+              {formatINR(summary?.realRevenueRecordedINR ?? 0)}
+            </div>
+            <span className="text-[10px] text-slate-500 mt-1 block">
+              Clinic financial ledger
             </span>
           </div>
-          <div className="text-2xl font-bold text-white">
-            {formatINR(summary?.testRevenueINR || 0)}
+
+          {/* 2. Independently Verified */}
+          <div className="p-3.5 bg-slate-950/70 rounded-xl border border-emerald-500/20">
+            <span className="text-[10px] uppercase font-semibold tracking-wider text-emerald-400 block mb-1">
+              Indep. Verified
+            </span>
+            <div className="text-lg font-bold text-emerald-400">
+              {formatINR(summary?.realRevenueIndependentlyVerifiedINR ?? 0)}
+            </div>
+            <span className="text-[10px] text-emerald-500/70 mt-1 block">
+              Bank / Gateway audit
+            </span>
           </div>
-          <div className="text-xs text-slate-500 mt-2 flex items-center gap-1">
-            <Clock className="w-3.5 h-3.5 text-amber-400" />
-            Verified integration tests & test UPIs
+
+          {/* 3. Marketing-Attributed Real Revenue */}
+          <div className="p-3.5 bg-slate-950/70 rounded-xl border border-cyan-500/30">
+            <span className="text-[10px] uppercase font-semibold tracking-wider text-cyan-300 block mb-1">
+              Attributed Real Rev
+            </span>
+            <div className="text-lg font-bold text-cyan-400">
+              {formatINR(summary?.realMarketingAttributedRevenueINR ?? 0)}
+            </div>
+            <span className="text-[10px] text-cyan-500/70 mt-1 block">
+              Tied to ad campaigns
+            </span>
+          </div>
+
+          {/* 4. Unattributed Real Revenue */}
+          <div className="p-3.5 bg-slate-950/70 rounded-xl border border-slate-800/80">
+            <span className="text-[10px] uppercase font-semibold tracking-wider text-slate-400 block mb-1">
+              Unattributed Rev
+            </span>
+            <div className="text-lg font-bold text-slate-300">
+              {formatINR(summary?.unattributedRealRevenueINR ?? 0)}
+            </div>
+            <span className="text-[10px] text-slate-500 mt-1 block">
+              Direct walk-in / referral
+            </span>
+          </div>
+
+          {/* 5. Sandbox / Test Revenue */}
+          <div className="p-3.5 bg-slate-950/70 rounded-xl border border-amber-500/20">
+            <span className="text-[10px] uppercase font-semibold tracking-wider text-amber-400 block mb-1">
+              Test / Sandbox
+            </span>
+            <div className="text-lg font-bold text-amber-300">
+              {formatINR(summary?.testRevenueINR ?? 0)}
+            </div>
+            <span className="text-[10px] text-amber-500/70 mt-1 block">
+              Zero real impact
+            </span>
+          </div>
+
+          {/* 6. Simulated Value */}
+          <div className="p-3.5 bg-slate-950/70 rounded-xl border border-blue-500/20">
+            <span className="text-[10px] uppercase font-semibold tracking-wider text-blue-400 block mb-1">
+              Simulated Value
+            </span>
+            <div className="text-lg font-bold text-blue-300">
+              {formatINR(summary?.simulatedRevenueINR ?? 0)}
+            </div>
+            <span className="text-[10px] text-blue-500/70 mt-1 block">
+              Modeled projection
+            </span>
           </div>
         </div>
 
-        <div className="p-5 rounded-xl bg-slate-900/70 border border-slate-800 backdrop-blur-sm">
-          <div className="flex items-center justify-between text-xs text-slate-400 font-medium mb-2">
-            <span>ATTRIBUTED ROAS</span>
-            <TrendingUp className="w-4 h-4 text-cyan-400" />
+        {/* Verified ROAS & Unit Economics Bar */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 pt-3 border-t border-slate-800 text-xs">
+          <div className="flex items-center justify-between p-3 bg-slate-950/50 rounded-lg border border-slate-800">
+            <span className="text-slate-400 font-medium">Marketing Ad Spend</span>
+            <span className="font-bold text-white font-mono">{formatINR(summary?.marketingSpendINR ?? 0)}</span>
           </div>
-          <div className="text-2xl font-bold text-cyan-400">
-            {summary?.roas ? `${summary.roas}x` : '3.42x'}
+          <div className="flex items-center justify-between p-3 bg-cyan-950/20 rounded-lg border border-cyan-500/30">
+            <span className="text-cyan-300 font-medium flex items-center gap-1">
+              <TrendingUp className="w-3.5 h-3.5" />
+              Verified ROAS
+            </span>
+            <span className="font-bold text-cyan-400 text-base font-mono">
+              {summary?.verifiedRoas !== undefined ? `${summary.verifiedRoas.toFixed(2)}x` : '0.00x'}
+            </span>
           </div>
-          <div className="text-xs text-slate-500 mt-2">
-            {summary?.attributedTransactions || 0} of {summary?.totalTransactions || 0} transactions attributed
+          <div className="flex items-center justify-between p-3 bg-emerald-950/20 rounded-lg border border-emerald-500/30">
+            <span className="text-emerald-300 font-medium">Verified Marketing ROI</span>
+            <span className="font-bold text-emerald-400 text-base font-mono">
+              {summary?.verifiedRoi !== undefined ? `${(summary.verifiedRoi * 100).toFixed(1)}%` : '0.0%'}
+            </span>
           </div>
-        </div>
-
-        <div className="p-5 rounded-xl bg-slate-900/70 border border-slate-800 backdrop-blur-sm">
-          <div className="flex items-center justify-between text-xs text-slate-400 font-medium mb-2">
-            <span>AI COST / PAYING PATIENT</span>
-            <Sparkles className="w-4 h-4 text-purple-400" />
-          </div>
-          <div className="text-2xl font-bold text-purple-300">
-            {summary?.aiCostPerCustomerINR ? formatINR(summary.aiCostPerCustomerINR) : '₹0.74'}
-          </div>
-          <div className="text-xs text-slate-500 mt-2">
-            Total AI reasoning spend: {formatINR(summary?.totalAICostINR || 1.41)}
+          <div className="flex items-center justify-between p-3 bg-purple-950/20 rounded-lg border border-purple-500/30">
+            <span className="text-purple-300 font-medium flex items-center gap-1">
+              <Sparkles className="w-3.5 h-3.5" />
+              Total AI Cost
+            </span>
+            <span className="font-bold text-purple-300 font-mono">
+              {formatINR(summary?.totalAICostINR ?? 0)}
+            </span>
           </div>
         </div>
       </div>
@@ -184,25 +289,25 @@ export const Revenue: React.FC = () => {
           <div className="p-3 bg-slate-950/60 rounded-lg border border-slate-800">
             <div className="text-slate-400">Total Tokens Consumed</div>
             <div className="text-lg font-bold text-white mt-1">
-              {(aiCostSummary?.totalTokens || 13040).toLocaleString()}
+              {aiCostSummary?.totalTokens ? aiCostSummary.totalTokens.toLocaleString() : '0'}
             </div>
           </div>
           <div className="p-3 bg-slate-950/60 rounded-lg border border-slate-800">
             <div className="text-slate-400">AI Cost / Qualified Lead</div>
             <div className="text-lg font-bold text-cyan-400 mt-1">
-              {formatINR(summary?.aiCostPerQualifiedLeadINR || 0.47)}
+              {summary?.aiCostPerQualifiedLeadINR ? formatINR(summary.aiCostPerQualifiedLeadINR) : '₹0.00'}
+            </div>
+          </div>
+          <div className="p-3 bg-slate-950/60 rounded-lg border border-slate-800">
+            <div className="text-slate-400">AI Cost / Paying Patient</div>
+            <div className="text-lg font-bold text-purple-300 mt-1">
+              {summary?.aiCostPerCustomerINR ? formatINR(summary.aiCostPerCustomerINR) : '₹0.00'}
             </div>
           </div>
           <div className="p-3 bg-slate-950/60 rounded-lg border border-slate-800">
             <div className="text-slate-400">Average Agent Latency</div>
             <div className="text-lg font-bold text-slate-200 mt-1">
-              {aiCostSummary?.averageLatencyMs || 675} ms
-            </div>
-          </div>
-          <div className="p-3 bg-slate-950/60 rounded-lg border border-slate-800">
-            <div className="text-slate-400">Cost Efficiency vs Budget</div>
-            <div className="text-lg font-bold text-emerald-400 mt-1">
-              99.9% Net Margin
+              {aiCostSummary?.averageLatencyMs ? `${aiCostSummary.averageLatencyMs} ms` : 'N/A'}
             </div>
           </div>
         </div>
@@ -216,7 +321,7 @@ export const Revenue: React.FC = () => {
             Verified Transaction Feed ({transactions.length})
           </h3>
           <span className="text-xs text-slate-400">
-            Showing mode: <strong className="text-slate-200">{filterMode}</strong>
+            Showing filter: <strong className="text-slate-200">{filterMode}</strong>
           </span>
         </div>
 
@@ -258,8 +363,8 @@ export const Revenue: React.FC = () => {
                       {tx.serviceRendered || 'General Dental Treatment'}
                     </td>
                     <td className="px-4 py-3">
-                      <span className="text-cyan-400 font-medium">
-                        {tx.campaignId ? 'Meta Ads (Aligners)' : 'Direct Walk-in'}
+                      <span className={tx.campaignId ? 'text-cyan-400 font-medium' : 'text-slate-500'}>
+                        {tx.campaignId ? 'Campaign Attributed' : 'Direct Walk-in'}
                       </span>
                     </td>
                     <td className="px-4 py-3">
@@ -359,9 +464,46 @@ export const Revenue: React.FC = () => {
                   className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white"
                 >
                   <option value="TEST">TEST (Sandbox Verification)</option>
-                  <option value="REAL">REAL (Production Clinic Billing)</option>
+                  <option value="REAL">REAL (Production Clinic Ledger - Owner Sign-off Required)</option>
                 </select>
               </div>
+
+              {classification === 'REAL' && (
+                <div className="p-3 bg-emerald-950/30 border border-emerald-500/40 rounded-lg space-y-3">
+                  <div className="flex items-center gap-1.5 text-emerald-400 font-semibold text-[11px]">
+                    <Lock className="w-3.5 h-3.5" />
+                    Clinic Owner Audit Verification
+                  </div>
+                  <div>
+                    <label className="block text-slate-300 font-medium mb-1">
+                      Verification Source
+                    </label>
+                    <select
+                      value={verificationSource}
+                      onChange={(e) => setVerificationSource(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white"
+                    >
+                      <option value="BANK_STATEMENT">Clinic Bank Account Statement (HDFC/ICICI)</option>
+                      <option value="RAZORPAY_PORTAL">Razorpay Settlement Dashboard</option>
+                      <option value="CLINIC_POS_RECEIPT">In-Clinic EDC / POS Printed Slip</option>
+                      <option value="PHONEPE_PG">PhonePe PG Settlement</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-slate-300 font-medium mb-1">
+                      External Transaction Reference / UTR
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. UTR-HDFC-98472917"
+                      value={transactionRef}
+                      onChange={(e) => setTransactionRef(e.target.value)}
+                      required={classification === 'REAL'}
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white font-mono text-[11px]"
+                    />
+                  </div>
+                </div>
+              )}
 
               <div className="pt-2 flex justify-end gap-2">
                 <button
