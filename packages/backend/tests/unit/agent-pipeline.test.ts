@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { AgentRuntime } from '../../src/agents/agent-runtime.js';
 import { ToolExecutor } from '../../src/agents/tool-executor.js';
-import { getDb } from '../../src/db/client.js';
+import { resetDbForTesting, getDb } from '../../src/db/client.js';
 import { seedDatabase } from '../../src/db/seed.js';
 import { getAgentById } from '@ai-marketing/shared';
 
@@ -10,6 +10,7 @@ describe('End-to-End Agent Decision & Tool Execution Pipeline', () => {
   const orgId = 'org_smilekraft_01';
 
   beforeEach(() => {
+    resetDbForTesting();
     seedDatabase();
     const db = getDb();
     db.prepare(`

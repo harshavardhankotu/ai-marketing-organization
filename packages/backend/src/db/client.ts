@@ -8,7 +8,26 @@ let dbInstance: Database.Database | null = null;
 export function getDb(dbPath?: string): Database.Database {
   if (dbInstance) return dbInstance;
 
-  const resolvedPath = dbPath || process.env.DATABASE_PATH || path.resolve(process.cwd(), 'ai_marketing.sqlite');
+  let resolvedPath = dbPath || process.env.DATABASE_PATH;
+  if (!resolvedPath) {
+    const rootDb = path.resolve(process.cwd(), 'ai_marketing.sqlite');
+    const siblingDb = path.resolve(process.cwd(), '../ai_marketing.sqlite');
+    const parentDb = path.resolve(process.cwd(), '../../ai_marketing.sqlite');
+    const pkgDb = path.resolve(process.cwd(), 'packages/backend/ai_marketing.sqlite');
+
+    if (fs.existsSync(rootDb)) {
+      resolvedPath = rootDb;
+    } else if (fs.existsSync(siblingDb)) {
+      resolvedPath = siblingDb;
+    } else if (fs.existsSync(parentDb)) {
+      resolvedPath = parentDb;
+    } else if (fs.existsSync(pkgDb)) {
+      resolvedPath = pkgDb;
+    } else {
+      resolvedPath = rootDb;
+    }
+  }
+
   const dir = path.dirname(resolvedPath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });

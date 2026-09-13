@@ -40,6 +40,7 @@ export const App: React.FC = () => {
   const [quota, setQuota] = useState<any>(null);
   const [integrations, setIntegrations] = useState<any[]>([]);
   const [activityLogs, setActivityLogs] = useState<any[]>([]);
+  const [readiness, setReadiness] = useState<any>(null);
 
   const loadAllData = async () => {
     try {
@@ -56,7 +57,8 @@ export const App: React.FC = () => {
         appRes,
         quoRes,
         intRes,
-        actRes
+        actRes,
+        readyRes
       ] = await Promise.all([
         api.getBusiness().catch(() => ({ data: null })),
         api.getGoals().catch(() => ({ data: [] })),
@@ -70,7 +72,8 @@ export const App: React.FC = () => {
         api.getApprovals().catch(() => ({ data: [] })),
         api.getQuota().catch(() => ({ data: null })),
         api.getIntegrations().catch(() => ({ data: [] })),
-        api.getActivity().catch(() => ({ data: [] }))
+        api.getActivity().catch(() => ({ data: [] })),
+        api.getSystemReadiness().catch(() => ({ data: null }))
       ]);
 
       setBusiness(bizRes.data);
@@ -86,6 +89,7 @@ export const App: React.FC = () => {
       setQuota(quoRes.data);
       setIntegrations(intRes.data || []);
       setActivityLogs(actRes.data || []);
+      setReadiness(readyRes.data || null);
     } finally {
       setLoading(false);
     }
@@ -156,6 +160,7 @@ export const App: React.FC = () => {
             maxRequests: quota?.geminiMaxDailyRequests || 1500,
             isTripped: quota?.circuitBreakerTripped || false
           }}
+          operatingMilestone={readiness?.operatingState || readiness?.status}
         />
 
         {/* Scrollable Page Canvas */}
@@ -172,6 +177,7 @@ export const App: React.FC = () => {
               onTriggerCycle={handleTriggerCycle}
               isCycleRunning={isCycleRunning}
               onNavigateTab={setCurrentTab}
+              readiness={readiness}
             />
           )}
 

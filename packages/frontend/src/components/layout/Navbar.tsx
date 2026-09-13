@@ -1,4 +1,4 @@
-﻿import React from 'react';
+import React from 'react';
 import { AlertOctagon, Play, ShieldAlert, Cpu, Sparkles } from 'lucide-react';
 
 interface NavbarProps {
@@ -13,6 +13,7 @@ interface NavbarProps {
     maxRequests: number;
     isTripped: boolean;
   };
+  operatingMilestone?: string;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -22,7 +23,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenKillSwitchModal,
   onTriggerCycle,
   isCycleRunning,
-  quotaInfo
+  quotaInfo,
+  operatingMilestone
 }) => {
   return (
     <header className="h-16 bg-slate-900/90 backdrop-blur-md border-b border-slate-800 px-6 flex items-center justify-between shrink-0">
@@ -32,6 +34,18 @@ export const Navbar: React.FC<NavbarProps> = ({
         <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/30">
           {autonomyMode} Mode
         </span>
+        {operatingMilestone && (
+          <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold font-mono border flex items-center gap-1.5 ${
+            operatingMilestone === 'PROFITABLE' || operatingMilestone === 'AUTONOMOUS_SCALING'
+              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+              : operatingMilestone === 'FIRST_REAL_CUSTOMER' || operatingMilestone === 'FIRST_VERIFIED_REVENUE' || operatingMilestone === 'FIRST_MARKETING_ATTRIBUTED_REVENUE'
+              ? 'bg-purple-500/20 text-purple-300 border-purple-500/40'
+              : 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
+          }`}>
+            <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping" />
+            Milestone: {operatingMilestone}
+          </span>
+        )}
         {killSwitchActive && (
           <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40 flex items-center gap-1.5 animate-pulse">
             <AlertOctagon className="w-3.5 h-3.5 text-rose-400" />

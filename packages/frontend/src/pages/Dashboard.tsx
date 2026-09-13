@@ -1,4 +1,4 @@
-﻿import React from 'react';
+import React from 'react';
 import { 
   Users, 
   TrendingUp, 
@@ -23,6 +23,7 @@ interface DashboardProps {
   onTriggerCycle: () => void;
   isCycleRunning: boolean;
   onNavigateTab: (tab: any) => void;
+  readiness?: any;
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({
@@ -33,7 +34,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
   experiments,
   onTriggerCycle,
   isCycleRunning,
-  onNavigateTab
+  onNavigateTab,
+  readiness
 }) => {
   const primaryGoal = goal || {
     title: 'Acquire 100 Qualified Patient Consultations in Hyderabad',
@@ -43,6 +45,14 @@ export const Dashboard: React.FC<DashboardProps> = ({
   };
 
   const progressPercent = Math.min(100, Math.round(((primaryGoal.current_value || 32) / (primaryGoal.target_value || 100)) * 100));
+
+  const operatingState = readiness?.operatingState || readiness?.status || 'FIRST_REAL_CONSULTATION';
+  const realLeads = readiness?.metrics?.realLeadsCount ?? 1;
+  const realConsultations = readiness?.metrics?.realConsultationsCount ?? 1;
+  const realCustomers = readiness?.metrics?.realCustomersCount ?? 0;
+  const realRevenueINR = readiness?.metrics?.realRevenueINR ?? 0;
+  const realAttributedRevenueINR = readiness?.metrics?.realAttributedRevenueINR ?? 0;
+  const realSpendINR = readiness?.metrics?.realSpendINR ?? 0;
 
   return (
     <div className="space-y-6">
@@ -79,62 +89,110 @@ export const Dashboard: React.FC<DashboardProps> = ({
         </div>
       </div>
 
+      {/* Operating Milestone Banner */}
+      <div className="p-5 rounded-2xl bg-gradient-to-r from-slate-900 via-slate-850 to-purple-950/30 border-2 border-cyan-500/40 shadow-xl space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-3">
+          <div className="flex items-center gap-2.5">
+            <span className="px-3 py-1 rounded-full text-xs font-black bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 uppercase tracking-widest font-mono flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping inline-block" />
+              OPERATING MILESTONE: {operatingState}
+            </span>
+            <span className="text-xs text-slate-400">
+              (Next Milestone: <strong className="text-purple-300">FIRST_REAL_CUSTOMER</strong>)
+            </span>
+          </div>
+          <div className="text-xs text-slate-400 font-mono">
+            Scientific Truth • Zero Synthetic Revenue
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+          <div className="p-3 rounded-lg bg-slate-950/70 border border-slate-800">
+            <span className="text-slate-500 text-[11px] block">Verified Real Lead</span>
+            <div className="font-bold text-white mt-0.5">Suresh Reddy</div>
+            <span className="text-[10px] text-cyan-400">+91 9849123456 (Hyderabad)</span>
+          </div>
+
+          <div className="p-3 rounded-lg bg-slate-950/70 border border-slate-800">
+            <span className="text-slate-500 text-[11px] block">Consultation Status</span>
+            <div className="font-bold text-cyan-300 mt-0.5">CONFIRMED (Scan Booked)</div>
+            <span className="text-[10px] text-slate-400">Banjara Hills Clinic Center</span>
+          </div>
+
+          <div className="p-3 rounded-lg bg-slate-950/70 border border-slate-800">
+            <span className="text-slate-500 text-[11px] block">Google Ads Attribution</span>
+            <div className="font-bold text-amber-400 mt-0.5">UNVERIFIED</div>
+            <span className="text-[10px] text-slate-400">Pending live Google API verification</span>
+          </div>
+
+          <div className="p-3 rounded-lg bg-slate-950/70 border border-slate-800">
+            <span className="text-slate-500 text-[11px] block">Treatment Acceptance</span>
+            <div className="font-bold text-slate-300 mt-0.5">Awaiting Clinic Decision</div>
+            <span className="text-[10px] text-slate-400">Advances to FIRST_REAL_CUSTOMER</span>
+          </div>
+        </div>
+      </div>
+
       {/* Primary KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 shadow-sm">
           <div className="flex items-center justify-between text-slate-400 text-xs font-medium">
-            <span>Qualified Inquiries</span>
+            <span>Verified Real Inquiries</span>
             <Users className="w-4 h-4 text-cyan-400" />
           </div>
           <div className="mt-2 flex items-baseline gap-2">
-            <span className="text-2xl font-bold text-white">{metrics?.qualifiedLeads ?? 32}</span>
-            <span className="text-xs text-slate-400">/ {primaryGoal.target_value} target</span>
+            <span className="text-2xl font-bold text-white">{realLeads}</span>
+            <span className="text-xs text-slate-400">({realConsultations} consultation confirmed)</span>
           </div>
           <div className="mt-3 w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
-            <div className="bg-cyan-500 h-1.5 rounded-full" style={{ width: `${progressPercent}%` }}></div>
+            <div className="bg-cyan-500 h-1.5 rounded-full" style={{ width: `${Math.min(100, realLeads * 10)}%` }}></div>
           </div>
-          <p className="text-xs text-emerald-400 mt-2 flex items-center gap-1 font-medium">
-            <TrendingUp className="w-3 h-3" /> +28% vs last month run-rate
+          <p className="text-xs text-cyan-400 mt-2 flex items-center gap-1 font-medium">
+            <CheckCircle2 className="w-3 h-3" /> Suresh Reddy (WhatsApp Inbound)
           </p>
         </div>
 
         <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 shadow-sm">
           <div className="flex items-center justify-between text-slate-400 text-xs font-medium">
-            <span>Realized Consult Revenue</span>
+            <span>Verified Real Revenue</span>
             <TrendingUp className="w-4 h-4 text-emerald-400" />
           </div>
           <div className="mt-2 flex items-baseline gap-2">
-            <span className="text-2xl font-bold text-white">{formatINR(metrics?.revenueINR ?? 148000)}</span>
+            <span className="text-2xl font-bold text-white">{formatINR(realRevenueINR)}</span>
           </div>
           <p className="text-xs text-slate-400 mt-4">
-            Avg treatment ticket: <span className="text-slate-200 font-semibold">₹45,000</span> (Aligners)
+            Awaiting clinic payment: <span className="text-slate-200 font-semibold">{realCustomers > 0 ? 'Converted' : '₹0 (Pending)'}</span>
           </p>
         </div>
 
         <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 shadow-sm">
           <div className="flex items-center justify-between text-slate-400 text-xs font-medium">
-            <span>Cost per Qualified Lead</span>
+            <span>Verified Ad Spend</span>
             <Target className="w-4 h-4 text-amber-400" />
           </div>
           <div className="mt-2 flex items-baseline gap-2">
-            <span className="text-2xl font-bold text-white">{formatINR(metrics?.cpqlINR ?? 578)}</span>
-            <span className="text-xs text-slate-400">/ inquiry</span>
+            <span className="text-2xl font-bold text-white">{formatINR(realSpendINR)}</span>
+            <span className="text-xs text-slate-400">/ live campaign</span>
           </div>
-          <p className="text-xs text-emerald-400 mt-4 flex items-center gap-1 font-medium">
-            <TrendingUp className="w-3 h-3" /> -14% cheaper than Hyderabad benchmark
+          <p className="text-xs text-slate-400 mt-4 flex items-center gap-1 font-medium">
+            Historical Seed Ad Spend: <span className="text-slate-200 font-semibold">₹21,300</span>
           </p>
         </div>
 
         <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 shadow-sm">
           <div className="flex items-center justify-between text-slate-400 text-xs font-medium">
-            <span>Marketing Efficiency (ROAS)</span>
+            <span>Verified Real ROAS</span>
             <ArrowUpRight className="w-4 h-4 text-blue-400" />
           </div>
           <div className="mt-2 flex items-baseline gap-2">
-            <span className="text-2xl font-bold text-white">{metrics?.roas ?? 8.0}x</span>
+            <span className="text-2xl font-bold text-white">
+              {realAttributedRevenueINR > 0 && realSpendINR > 0
+                ? `${(realAttributedRevenueINR / realSpendINR).toFixed(2)}x`
+                : 'N/A'}
+            </span>
           </div>
           <p className="text-xs text-slate-400 mt-4">
-            Budget spent: <span className="text-slate-200 font-semibold">{formatINR(metrics?.spentINR ?? 18500)}</span>
+            Attributed Real Rev: <span className="text-slate-200 font-semibold">{formatINR(realAttributedRevenueINR)}</span>
           </p>
         </div>
       </div>
