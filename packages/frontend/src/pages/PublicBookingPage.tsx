@@ -26,6 +26,15 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
   const [confirmedBooking, setConfirmedBooking] = useState<any>(null);
   const [errorMsg, setErrorMsg] = useState('');
 
+  // Extract UTM parameters and campaign tracking context from URL
+  const searchParams = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '');
+  const utmSource = searchParams.get('utm_source') || 'google';
+  const utmMedium = searchParams.get('utm_medium') || 'cpc';
+  const utmCampaign = searchParams.get('utm_campaign') || 'aligners_hyd_search';
+  const utmTerm = searchParams.get('utm_term') || 'clear aligners hyderabad';
+  const utmContent = searchParams.get('utm_content') || 'instant_whatsapp';
+  const campaignId = searchParams.get('campaignId') || searchParams.get('campaign_id') || 'camp_seed_aligners_01';
+
   const handleBookingSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
@@ -42,10 +51,16 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
           customerPhone: phone,
           customerEmail: email || undefined,
           channel: 'WHATSAPP',
-          campaignId: 'camp_seed_aligners_01',
-          source: 'meta_ads_gachibowli_campaign',
+          campaignId: campaignId,
+          source: `${utmSource}_${utmMedium}`,
           serviceOfInterest: treatment,
-          notes: `Preferred Location: ${location}, Date: ${date}. ${notes}`
+          notes: `Preferred Location: ${location}, Date: ${date}. ${notes}`,
+          utmSource,
+          utmMedium,
+          utmCampaign,
+          utmTerm,
+          utmContent,
+          sessionId: `sess_${Date.now()}`
         })
       });
 
@@ -161,7 +176,19 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
                 </div>
                 <div className="flex justify-between">
                   <span className="text-slate-400">Journey Status:</span>
-                  <span className="text-emerald-400 font-semibold">{confirmedBooking.stage} (REAL)</span>
+                  <span className="text-emerald-400 font-semibold">{confirmedBooking.stage} ({confirmedBooking.classification || 'REAL'})</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">Campaign:</span>
+                  <span className="text-white">{confirmedBooking.utmCampaign || campaignId}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">Attribution Source:</span>
+                  <span className="text-cyan-300">{confirmedBooking.utmSource || utmSource} / {confirmedBooking.utmMedium || utmMedium}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">Search Term:</span>
+                  <span className="text-amber-400">{confirmedBooking.utmTerm || utmTerm}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-slate-400">Clinic Center:</span>

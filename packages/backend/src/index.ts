@@ -1,6 +1,10 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { serve } from '@hono/node-server';
+import { serveStatic } from '@hono/node-server/serve-static';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
 import { apiRouter } from './routes/api.js';
 import { seedDatabase } from './db/seed.js';
 import { validateProductionSecrets } from './config/env.js';
@@ -42,6 +46,48 @@ app.get('/api/health', (c) => {
 
 // Mount domain routes under /api/v1
 app.route('/api/v1', apiRouter);
+
+// Static frontend assets and public landing page routing
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const candidateDistDirs = [
+  path.resolve(process.cwd(), 'packages/frontend/dist'),
+  path.resolve(process.cwd(), '../frontend/dist'),
+  path.resolve(__dirname, '../../frontend/dist'),
+  path.resolve(__dirname, '../packages/frontend/dist')
+];
+const distDir = candidateDistDirs.find(d => fs.existsSync(d));
+
+if (distDir) {
+  const indexHtmlPath = path.join(distDir, 'index.html');
+  const indexHtml = fs.existsSync(indexHtmlPath) ? fs.readFileSync(indexHtmlPath, 'utf-8') : null;
+  const relRoot = path.relative(process.cwd(), distDir);
+
+  // Serve compiled frontend assets
+  app.use('/assets/*', serveStatic({ root: relRoot }));
+
+  // Explicit landing routes for patient ads (Google Search, Meta, etc.)
+  app.get('/aligners-hyderabad', (c) => {
+    if (indexHtml) return c.html(indexHtml);
+    return c.text('SmileKraft Dental Clinic Hyderabad - Clear Aligners Landing Page', 200);
+  });
+  app.get('/aligners', (c) => {
+    if (indexHtml) return c.html(indexHtml);
+    return c.text('SmileKraft Dental Clinic Hyderabad - Clear Aligners Landing Page', 200);
+  });
+
+  // SPA fallback for all non-API web traffic
+  app.get('*', (c, next) => {
+    if (c.req.path.startsWith('/api')) {
+      return next();
+    }
+    if (indexHtml) {
+      return c.html(indexHtml);
+    }
+    return next();
+  });
+}
 
 const PORT = Number(process.env.PORT) || 3001;
 

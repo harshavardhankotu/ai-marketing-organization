@@ -177,6 +177,16 @@ export function seedDatabase(): void {
     new Date().toISOString()
   );
   insertIntegrationStmt.run(
+    'int_google_ads_01', orgId, businessId, 'GOOGLE_ADS', 'CONNECTED', 'SANDBOX',
+    JSON.stringify({ 
+      customer_id: '928-401-8821', 
+      campaign_type: 'SEARCH', 
+      tracking_template: '{lpurl}?utm_source=google&utm_medium=cpc&utm_campaign={_campaign}&utm_term={keyword}&utm_content={creative}',
+      target_location: 'Hyderabad (Banjara Hills, Gachibowli, HITEC City)'
+    }),
+    new Date().toISOString()
+  );
+  insertIntegrationStmt.run(
     'int_email_01', orgId, businessId, 'EMAIL', 'NOT_CONNECTED', 'SANDBOX',
     JSON.stringify({ sender: 'info@smilekraftdental.in' }),
     null
@@ -205,10 +215,10 @@ export function seedDatabase(): void {
   `).run(
     stratId, orgId, businessId, goalId, 1,
     'Hyderabad High-Affluence Smile Transformation Strategy',
-    'Target tech professionals and affluent families in Gachibowli and Banjara Hills via Meta Ads and localized WhatsApp consultation funnels.',
+    'Target tech professionals and affluent families in Gachibowli and Banjara Hills via Google Search Ads, Meta Ads and localized WhatsApp consultation funnels.',
     'Premier Pain-Free Digital Smile Clinic in Hyderabad',
     JSON.stringify(['Tech professionals 24-38', 'Affluent parents seeking modern braces']),
-    JSON.stringify(['META_ADS', 'WHATSAPP', 'GOOGLE_BUSINESS_PROFILE']),
+    JSON.stringify(['GOOGLE_SEARCH_ADS', 'META_ADS', 'WHATSAPP', 'GOOGLE_BUSINESS_PROFILE']),
     JSON.stringify(['Invisible Aligners', 'Laser Whitening', 'Titanium Implants']),
     100, 500, 'ACTIVE', now, now
   );
@@ -226,11 +236,11 @@ export function seedDatabase(): void {
 
   insertCampaignStmt.run(
     'camp_seed_aligners_01', orgId, businessId, stratId, goalId,
-    'Gachibowli IT Corridor Clear Aligners Campaign',
-    'Generate 60 qualified consultation bookings for clear aligners in West Hyderabad',
-    JSON.stringify(['META_ADS', 'WHATSAPP']),
-    'Tech professionals aged 22-38 in HITEC City & Gachibowli',
-    JSON.stringify({ city: 'Hyderabad', localities: ['Gachibowli', 'HITEC City', 'Kondapur'] }),
+    'Hyderabad Clear Aligners & Invisible Braces Search Campaign',
+    'Generate qualified consultation bookings for clear aligners in Hyderabad through high-intent search ads',
+    JSON.stringify(['GOOGLE_SEARCH_ADS', 'WHATSAPP']),
+    'Tech professionals aged 22-38 in HITEC City, Gachibowli & Banjara Hills',
+    JSON.stringify({ city: 'Hyderabad', localities: ['Gachibowli', 'HITEC City', 'Kondapur', 'Banjara Hills'] }),
     30000, 12400, 'ACTIVE',
     new Date(Date.now() - 10 * 86400000).toISOString().split('T')[0],
     new Date(Date.now() + 20 * 86400000).toISOString().split('T')[0],

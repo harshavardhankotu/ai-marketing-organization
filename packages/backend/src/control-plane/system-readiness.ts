@@ -134,13 +134,13 @@ export class SystemReadinessEngine {
     const realLeadsCount = (db.prepare(`
       SELECT COUNT(*) as c FROM customer_journeys
       WHERE business_id = ? AND classification = 'REAL'
-        AND stage IN ('NEW_LEAD', 'QUALIFIED', 'CONSULTATION_BOOKED', 'CONSULTATION_COMPLETED', 'PROPOSAL_SENT', 'CUSTOMER')
+        AND stage IN ('LEAD', 'NEW_LEAD', 'QUALIFIED', 'QUALIFIED_LEAD', 'OPPORTUNITY', 'CONSULTATION_BOOKED', 'CONSULTATION_COMPLETED', 'PROPOSAL_SENT', 'CUSTOMER')
     `).get(businessId) as any)?.c ?? 0;
 
     const realConsultationsCount = (db.prepare(`
       SELECT COUNT(*) as c FROM customer_journeys
       WHERE business_id = ? AND classification = 'REAL'
-        AND stage IN ('CONSULTATION_BOOKED', 'CONSULTATION_COMPLETED', 'PROPOSAL_SENT', 'CUSTOMER')
+        AND stage IN ('QUALIFIED_LEAD', 'OPPORTUNITY', 'CONSULTATION_BOOKED', 'CONSULTATION_COMPLETED', 'PROPOSAL_SENT', 'CUSTOMER')
     `).get(businessId) as any)?.c ?? 0;
 
     const realCustomersCount = (db.prepare(`

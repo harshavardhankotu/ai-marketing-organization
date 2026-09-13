@@ -121,6 +121,18 @@ export const App: React.FC = () => {
 
   const pendingApprovalsCount = approvals.filter(a => a.status === 'PENDING').length;
 
+  // Direct public patient route (e.g. ad landing page /aligners-hyderabad)
+  const isDirectPublicLanding = typeof window !== 'undefined' && (
+    window.location.pathname === '/aligners-hyderabad' ||
+    window.location.pathname === '/aligners' ||
+    window.location.pathname.startsWith('/booking') ||
+    window.location.pathname.startsWith('/public')
+  );
+
+  if (isDirectPublicLanding) {
+    return <PublicBookingPage />;
+  }
+
   return (
     <div className="flex h-screen bg-slate-950 text-slate-100 overflow-hidden font-sans">
       {/* Sidebar */}
