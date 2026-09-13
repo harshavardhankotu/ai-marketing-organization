@@ -424,6 +424,10 @@ export interface CustomerTouchpoint {
 
 export type AttributionStatus = 'VERIFIED' | 'UNVERIFIED' | 'NOT_ATTRIBUTED';
 
+export type GoogleAdsAccessLevel = 'STANDARD' | 'TEST_ACCOUNT' | 'NOT_CONFIGURED';
+export type GoogleAdsAuthStatus = 'AUTHENTICATED' | 'REFRESH_TOKEN_EXPIRED' | 'UNAUTHENTICATED';
+export type GoogleAdsAccountStatus = 'ACTIVE' | 'SUSPENDED' | 'UNCONFIGURED';
+
 export interface GoogleClickRecord {
   gclid: string;
   customerId: string;
@@ -431,6 +435,8 @@ export interface GoogleClickRecord {
   campaignName: string;
   adGroupId?: string;
   keyword?: string;
+  device?: 'MOBILE' | 'DESKTOP' | 'TABLET' | string;
+  clickType?: string;
   clickTimestamp: string;
   verificationSource: string;
   createdAt: string;
@@ -569,6 +575,216 @@ export interface RevenueTruthSummary {
 
 export type RevenueReconciliationSummary = RevenueTruthSummary;
 
+// ==========================================
+// ATTRIBUTION EVIDENCE & PROVENANCE HIERARCHY
+// ==========================================
+export type AttributionHierarchyLevel = 
+  | 'LEVEL_1_VERIFIED_GCLID' 
+  | 'LEVEL_2_CAMPAIGN_CORRELATION' 
+  | 'LEVEL_3_UTM_ONLY' 
+  | 'LEVEL_4_UNKNOWN';
+
+export interface AttributionEvidenceRecord {
+  source: string;
+  campaign?: string;
+  gclid?: string;
+  clickEvidence?: GoogleClickRecord;
+  session?: string;
+  visitor: string;
+  lead?: string;
+  customer?: string;
+  transaction?: string;
+  verificationStatus: 'MATCHED' | 'UNVERIFIED' | 'NOT_ATTRIBUTED';
+  hierarchyLevel: AttributionHierarchyLevel;
+  verificationTimestamp?: string;
+  rationale: string;
+}
+
+// ==========================================
+// REAL ECONOMICS ENGINE
+// ==========================================
+export interface RealEconomicsSummary {
+  actualAdSpendINR: number;
+  verifiedRealRevenueINR: number;
+  attributedRealRevenueINR: number;
+  unattributedRealRevenueINR: number;
+  cacINR: number | 'UNKNOWN';
+  cplINR: number | 'UNKNOWN';
+  costPerConsultationINR: number | 'UNKNOWN';
+  costPerCustomerINR: number | 'UNKNOWN';
+  arpcINR: number | 'UNKNOWN';
+  grossMarginPercent: number;
+  netContributionINR: number;
+  verifiedRoas: number | 'N/A';
+  verifiedRoi: number | 'N/A';
+}
+
+// ==========================================
+// PREDICTION VS OUTCOME & AGENT SCORECARDS
+// ==========================================
+export interface PredictionRecord {
+  id: string;
+  decisionId: string;
+  agentId: string;
+  businessId: string;
+  expectedConversionRate?: number;
+  expectedCplINR?: number;
+  expectedCacINR?: number;
+  expectedRevenueINR?: number;
+  expectedRoas?: number;
+  confidence: number;
+  actualConversionRate?: number;
+  actualCplINR?: number;
+  actualCacINR?: number;
+  actualRevenueINR?: number;
+  actualRoas?: number;
+  predictionError?: number;
+  evaluatedAt?: string;
+  createdAt: string;
+}
+
+export interface AgentScorecardRecord {
+  agentId: string;
+  agentName: string;
+  division: AgentCategory;
+  testDecisionsCount: number;
+  realDecisionsCount: number;
+  acceptedRecommendations: number;
+  rejectedRecommendations: number;
+  successfulActions: number;
+  failedActions: number;
+  averagePredictionAccuracyPercent: number;
+  realRevenueInfluencedINR: number;
+  realCostInfluencedINR: number;
+  outcomeQualityScore: number;
+}
+
+// ==========================================
+// MARKETING MEMORY & CAMPAIGN KNOWLEDGE GRAPH
+// ==========================================
+export type MarketingMemoryDimension =
+  | 'WINNING_AUDIENCE'
+  | 'WINNING_KEYWORD'
+  | 'WINNING_CREATIVE'
+  | 'WINNING_OFFER'
+  | 'WINNING_LANDING_PAGE'
+  | 'WINNING_CTA'
+  | 'FAILED_EXPERIMENT'
+  | 'COST_THRESHOLD'
+  | 'CONVERSION_THRESHOLD'
+  | 'COMPLIANCE_CONSTRAINT'
+  | 'SEASONALITY'
+  | 'GEOGRAPHY';
+
+export interface MarketingMemoryRecord {
+  id: string;
+  businessId: string;
+  dimension: MarketingMemoryDimension;
+  key: string;
+  insight: string;
+  evidenceReference: string;
+  sourceType: EvidenceSourceType;
+  confidence: number;
+  verifiedAt: string;
+  createdAt: string;
+}
+
+export interface KnowledgeGraphNode {
+  id: string;
+  type: 'CAMPAIGN' | 'AD' | 'KEYWORD' | 'SESSION' | 'VISITOR' | 'LEAD' | 'CONSULTATION' | 'CUSTOMER' | 'TRANSACTION' | 'REVENUE';
+  label: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface KnowledgeGraphEdge {
+  id: string;
+  sourceNodeId: string;
+  targetNodeId: string;
+  relation: string;
+  weight?: number;
+}
+
+// ==========================================
+// AUTONOMY CONTROLLER & GOVERNANCE
+// ==========================================
+export type AutonomyOperatingMode =
+  | 'OBSERVE'
+  | 'CONTROLLED_AUTONOMY'
+  | 'AUTONOMOUS_OPTIMIZATION'
+  | 'AUTONOMOUS_SCALING';
+
+export interface BudgetPolicyRecord {
+  maxAutonomousSpendINR: number;
+  currentAutonomousSpendINR: number;
+  remainingAutonomousBudgetINR: number;
+  requiresOwnerApprovalAboveINR: number;
+  stopConditionsTriggered: boolean;
+  activeMode: AutonomyOperatingMode;
+}
+
+export interface StopConditionEvent {
+  id: string;
+  condition:
+    | 'BUDGET_THRESHOLD_EXCEEDED'
+    | 'CAC_EXCEEDS_MAX'
+    | 'ROAS_FALLS_BELOW_MIN'
+    | 'PAYMENT_VERIFICATION_FAILED'
+    | 'ATTRIBUTION_CORRUPTION_DETECTED'
+    | 'AUTHENTICATION_ERROR'
+    | 'TENANT_MISMATCH'
+    | 'COMPLIANCE_VIOLATION'
+    | 'KILL_SWITCH_ACTIVATED';
+  details: string;
+  timestamp: string;
+  campaignHalted: boolean;
+}
+
+export interface CampaignOptimizationProposal {
+  id: string;
+  businessId: string;
+  agentId: string;
+  actionType:
+    | 'PAUSE_KEYWORD'
+    | 'INCREASE_KEYWORD'
+    | 'CHANGE_CREATIVE'
+    | 'CHANGE_LANDING_PAGE'
+    | 'CHANGE_AUDIENCE'
+    | 'CHANGE_CTA'
+    | 'SHIFT_BUDGET'
+    | 'CREATE_VARIATION';
+  targetEntityId: string;
+  evidence: string;
+  reason: string;
+  confidence: number;
+  expectedImpact: string;
+  budgetImpactINR: number;
+  risk: 'LOW' | 'MEDIUM' | 'HIGH';
+  approvalStatus: 'PROPOSED' | 'APPROVED' | 'AUTO_EXECUTED' | 'REJECTED';
+  createdAt: string;
+}
+
+export interface ExperimentCandidateProposal {
+  id: string;
+  businessId: string;
+  agentId: string;
+  hypothesis: string;
+  control: string;
+  treatment: string;
+  primaryMetric: string;
+  secondaryMetrics: string[];
+  sampleSizeTarget: number;
+  budgetINR: number;
+  durationDays: number;
+  successThreshold: string;
+  stopCondition: string;
+  risk: 'LOW' | 'MEDIUM' | 'HIGH';
+  status: 'PROPOSED' | 'VALIDATED' | 'APPROVED' | 'RUNNING' | 'CONCLUDED';
+  createdAt: string;
+}
+
+// ==========================================
+// SYSTEM OPERATING STATE MACHINE
+// ==========================================
 export type SystemOperatingState =
   | 'NOT_READY'
   | 'READY_FOR_REAL_EXPERIMENT'
@@ -578,7 +794,11 @@ export type SystemOperatingState =
   | 'FIRST_REAL_CUSTOMER'
   | 'FIRST_VERIFIED_REVENUE'
   | 'FIRST_MARKETING_ATTRIBUTED_REVENUE'
+  | 'FIRST_REAL_WORLD_LEARNING'
+  | 'EXPERIMENT_2_READY'
+  | 'CONTROLLED_AUTONOMY'
   | 'PROFITABLE'
+  | 'AUTONOMOUS_OPTIMIZATION'
   | 'AUTONOMOUS_SCALING';
 
 export interface SystemReadinessCheck {

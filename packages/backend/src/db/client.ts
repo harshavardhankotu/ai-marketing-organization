@@ -65,6 +65,12 @@ export function getDb(dbPath?: string): Database.Database {
   try {
     db.exec(`ALTER TABLE research_findings ADD COLUMN data_classification TEXT NOT NULL DEFAULT 'TEST_DATA'`);
   } catch {}
+  try {
+    db.exec(`ALTER TABLE google_clicks ADD COLUMN device TEXT`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE google_clicks ADD COLUMN click_type TEXT`);
+  } catch {}
 
   // Initialize schema
   db.exec(SCHEMA_SQL);

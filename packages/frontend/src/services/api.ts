@@ -58,4 +58,13 @@ export const api = {
     fetchApi('/revenue/verified-entry', { method: 'POST', body: JSON.stringify(data) }),
   post: (endpoint: string, data: any) =>
     fetchApi(endpoint, { method: 'POST', body: JSON.stringify(data) }),
+  getRealEconomics: () => fetchApi('/economics/summary'),
+  getAttributionEvidence: (journeyId: string) => fetchApi(`/attribution/evidence/${journeyId}`),
+  getAutonomyStatus: () => fetchApi('/autonomy/status'),
+  setAutonomyMode: (mode: string) => fetchApi('/autonomy/mode', { method: 'POST', body: JSON.stringify({ mode }) }),
+  getAutonomyProposals: () => fetchApi('/autonomy/proposals'),
+  getAutonomyExperiments: () => fetchApi('/autonomy/experiments'),
+  getAgentScorecards: () => fetchApi('/agent-scorecards'),
+  getMarketingMemory: (dimension?: string) => fetchApi(`/marketing-memory${dimension ? `?dimension=${dimension}` : ''}`),
+  getKnowledgeGraph: () => fetchApi('/knowledge-graph'),
 };

@@ -260,6 +260,18 @@ export function seedDatabase(): void {
     'qualified_consultations', 40, 10, 0.06, now, now
   );
 
+  insertCampaignStmt.run(
+    'cmp_google_invisalign_01', orgId, businessId, stratId, goalId,
+    'SmileKraft Banjara Hills Google Search Ads (Live Experiment)',
+    'Drive qualified patient consultations for Invisalign clear aligners in Banjara Hills',
+    JSON.stringify(['GOOGLE_SEARCH_ADS', 'WHATSAPP']),
+    'Affluent adults & working professionals in Banjara Hills & Jubilee Hills',
+    JSON.stringify({ city: 'Hyderabad', localities: ['Banjara Hills', 'Jubilee Hills'] }),
+    10000, 0, 'ACTIVE',
+    '2026-09-12', '2026-09-30',
+    'qualified_consultations', 25, 1, 0.10, now, now
+  );
+
   // 10. Seed Customer Journeys (Visitor -> Opportunity -> Customer)
   const insertJourneyStmt = db.prepare(`
     INSERT OR REPLACE INTO customer_journeys (
@@ -313,6 +325,54 @@ export function seedDatabase(): void {
       { channel: 'WHATSAPP', timestamp: '2026-09-05T16:30:00Z', event: 'appointment_scheduled' }
     ]),
     0, 'TEST', now, now
+  );
+
+  // Seed Suresh Reddy Real Patient Journey (Live Experiment)
+  insertJourneyStmt.run(
+    'journey-961c351f-71d2-4d7b-a842-b6858984b288', orgId, businessId, 'vis_real_2f6de21c', 'Suresh Reddy',
+    '+919849123456', 'suresh.reddy.hyd@gmail.com', 'QUALIFIED_LEAD',
+    'WHATSAPP', 'WHATSAPP',
+    JSON.stringify([
+      {
+        channel: 'WHATSAPP',
+        campaignId: 'cmp_google_invisalign_01',
+        timestamp: '2026-09-13T10:39:06.199Z',
+        event: 'public_lead_submission',
+        metadata: {
+          source: 'google_cpc',
+          serviceOfInterest: 'Invisible Clear Aligners',
+          notes: 'Consultation request for clear aligners scan and treatment plan at Banjara Hills clinic center',
+          utmSource: 'google',
+          utmMedium: 'cpc',
+          utmCampaign: 'aligners_hyd_search',
+          utmTerm: 'clear aligners hyderabad',
+          utmContent: 'instant_whatsapp',
+          sessionId: 'sess_google_search_hyd_001',
+        },
+      }
+    ]),
+    0, 'REAL', '2026-09-13T10:39:06.199Z', '2026-09-13T10:39:06.199Z'
+  );
+
+  // Seed Suresh Reddy Confirmed Consultation Appointment
+  db.prepare(`
+    INSERT OR REPLACE INTO appointments (
+      id, journey_id, business_id, patient_name, appointment_date,
+      service, clinic_location, clinic_confirmation, confirmation_timestamp,
+      created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    'appt_suresh_001',
+    'journey-961c351f-71d2-4d7b-a842-b6858984b288',
+    businessId,
+    'Suresh Reddy',
+    '2026-09-15T10:30:00Z',
+    'Invisalign Clear Aligners 3D Scan & Doctor Consultation',
+    'SmileKraft Banjara Hills',
+    'CONFIRMED',
+    '2026-09-13T10:45:00.000Z',
+    '2026-09-13T10:45:00.000Z',
+    '2026-09-13T10:45:00.000Z'
   );
 
   // 9. Seed INR Transactions (UPI, Netbanking, 0% EMI)

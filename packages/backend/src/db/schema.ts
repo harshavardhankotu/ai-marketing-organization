@@ -556,10 +556,116 @@ CREATE TABLE IF NOT EXISTS google_clicks (
   campaign_name TEXT NOT NULL,
   ad_group_id TEXT,
   keyword TEXT,
+  device TEXT,
+  click_type TEXT,
   click_timestamp TEXT NOT NULL,
   verification_source TEXT NOT NULL DEFAULT 'GOOGLE_ADS_API_CLICK_VIEW',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_gclicks_campaign ON google_clicks(campaign_id);
 CREATE INDEX IF NOT EXISTS idx_gclicks_time ON google_clicks(click_timestamp);
+
+-- 28. Marketing Memories (Structured Long-Term Evidence-Backed Memory)
+CREATE TABLE IF NOT EXISTS marketing_memories (
+  id TEXT PRIMARY KEY,
+  business_id TEXT NOT NULL,
+  dimension TEXT NOT NULL,
+  memory_key TEXT NOT NULL,
+  insight TEXT NOT NULL,
+  evidence_reference TEXT NOT NULL,
+  source_type TEXT NOT NULL,
+  confidence REAL NOT NULL DEFAULT 0.5,
+  verified_at TEXT NOT NULL DEFAULT (datetime('now')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_memories_biz ON marketing_memories(business_id);
+CREATE INDEX IF NOT EXISTS idx_memories_dim ON marketing_memories(dimension);
+
+-- 29. Campaign Knowledge Graph (Nodes and Provenance Edges)
+CREATE TABLE IF NOT EXISTS knowledge_graph_nodes (
+  id TEXT PRIMARY KEY,
+  node_type TEXT NOT NULL,
+  label TEXT NOT NULL,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_kg_nodes_type ON knowledge_graph_nodes(node_type);
+
+CREATE TABLE IF NOT EXISTS knowledge_graph_edges (
+  id TEXT PRIMARY KEY,
+  source_node_id TEXT NOT NULL,
+  target_node_id TEXT NOT NULL,
+  relation TEXT NOT NULL,
+  weight REAL DEFAULT 1.0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (source_node_id) REFERENCES knowledge_graph_nodes(id) ON DELETE CASCADE,
+  FOREIGN KEY (target_node_id) REFERENCES knowledge_graph_nodes(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_kg_edges_source ON knowledge_graph_edges(source_node_id);
+CREATE INDEX IF NOT EXISTS idx_kg_edges_target ON knowledge_graph_edges(target_node_id);
+
+-- 30. Predictions & Prediction vs Outcome
+CREATE TABLE IF NOT EXISTS predictions (
+  id TEXT PRIMARY KEY,
+  decision_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  business_id TEXT NOT NULL,
+  expected_conversion_rate REAL,
+  expected_cpl_inr REAL,
+  expected_cac_inr REAL,
+  expected_revenue_inr REAL,
+  expected_roas REAL,
+  confidence REAL NOT NULL,
+  actual_conversion_rate REAL,
+  actual_cpl_inr REAL,
+  actual_cac_inr REAL,
+  actual_revenue_inr REAL,
+  actual_roas REAL,
+  prediction_error REAL,
+  evaluated_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_predictions_agent ON predictions(agent_id);
+CREATE INDEX IF NOT EXISTS idx_predictions_biz ON predictions(business_id);
+
+-- 31. Agent Scorecards
+CREATE TABLE IF NOT EXISTS agent_scorecards (
+  agent_id TEXT PRIMARY KEY,
+  agent_name TEXT NOT NULL,
+  division TEXT NOT NULL,
+  test_decisions_count INTEGER NOT NULL DEFAULT 0,
+  real_decisions_count INTEGER NOT NULL DEFAULT 0,
+  accepted_recommendations INTEGER NOT NULL DEFAULT 0,
+  rejected_recommendations INTEGER NOT NULL DEFAULT 0,
+  successful_actions INTEGER NOT NULL DEFAULT 0,
+  failed_actions INTEGER NOT NULL DEFAULT 0,
+  average_prediction_accuracy_percent REAL NOT NULL DEFAULT 0.0,
+  real_revenue_influenced_inr REAL NOT NULL DEFAULT 0.0,
+  real_cost_influenced_inr REAL NOT NULL DEFAULT 0.0,
+  outcome_quality_score REAL NOT NULL DEFAULT 50.0,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 32. Stop Conditions Log
+CREATE TABLE IF NOT EXISTS stop_conditions_log (
+  id TEXT PRIMARY KEY,
+  condition TEXT NOT NULL,
+  details TEXT NOT NULL,
+  campaign_halted INTEGER NOT NULL DEFAULT 1,
+  timestamp TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 33. Autonomy Policy & Budget Controls
+CREATE TABLE IF NOT EXISTS autonomy_policy (
+  business_id TEXT PRIMARY KEY,
+  active_mode TEXT NOT NULL DEFAULT 'CONTROLLED_AUTONOMY',
+  max_autonomous_spend_inr REAL NOT NULL DEFAULT 10000.0,
+  current_autonomous_spend_inr REAL NOT NULL DEFAULT 0.0,
+  requires_owner_approval_above_inr REAL NOT NULL DEFAULT 10000.0,
+  stop_conditions_triggered INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+);
 `;

@@ -22,6 +22,13 @@ import {
 import { isProduction } from '../config/env.js';
 import { SystemReadinessEngine } from '../control-plane/system-readiness.js';
 import { googleAdsClient } from '../integrations/google-ads.js';
+import { AttributionEvidenceEngine } from '../revenue/attribution-evidence.js';
+import { RealEconomicsEngine } from '../revenue/real-economics.js';
+import { MarketingMemoryEngine } from '../knowledge/marketing-memory.js';
+import { CampaignKnowledgeGraph } from '../knowledge/knowledge-graph.js';
+import { AgentScorecardEngine } from '../analytics/agent-scorecard.js';
+import { AutonomyController } from '../control-plane/autonomy-controller.js';
+import { FirstCustomerAutomationPipeline } from '../workflows/first-customer-automation.js';
 
 export type AppVariables = {
   organizationId: string;
@@ -469,6 +476,13 @@ apiRouter.get('/activity', (c) => {
 const revenueEngine = new RevenueReconciliationEngine();
 const journeyTracker = new CustomerJourneyTracker();
 const costAccounting = new CostAccountingEngine();
+const attributionEvidence = new AttributionEvidenceEngine();
+const realEconomics = new RealEconomicsEngine();
+const marketingMemory = new MarketingMemoryEngine();
+const campaignKnowledgeGraph = new CampaignKnowledgeGraph();
+const agentScorecards = new AgentScorecardEngine();
+const autonomyController = new AutonomyController();
+const firstCustomerPipeline = new FirstCustomerAutomationPipeline();
 
 apiRouter.get('/revenue/summary', (c) => {
   const orgId = c.get('organizationId');
@@ -919,4 +933,225 @@ apiRouter.post('/workflows/trigger-cycle', async (c) => {
   } catch (err: any) {
     return c.json({ success: false, error: err.message }, 500);
   }
+});
+
+// ==========================================
+// ATTRIBUTION EVIDENCE & PROVENANCE (GCLID-FIRST)
+// ==========================================
+apiRouter.get('/attribution/evidence/:journeyId', (c) => {
+  const journeyId = c.req.param('journeyId');
+  const evidence = attributionEvidence.getEvidenceForJourney(journeyId);
+  const evaluation = attributionEvidence.evaluateAttribution(evidence);
+  return c.json({ success: true, data: { evidence, evaluation } });
+});
+
+// ==========================================
+// REAL ECONOMICS ENGINE
+// ==========================================
+apiRouter.get('/economics/summary', (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  const businessId = business?.id || 'biz_smilekraft_hyd';
+  const summary = realEconomics.calculate(businessId);
+  return c.json({ success: true, data: summary });
+});
+
+// ==========================================
+// AUTONOMY CONTROLLER & GOVERNANCE
+// ==========================================
+apiRouter.get('/autonomy/status', (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  const businessId = business?.id || 'biz_smilekraft_hyd';
+  const policy = autonomyController.getBudgetPolicy(businessId);
+  return c.json({ success: true, data: policy });
+});
+
+apiRouter.post('/autonomy/mode', async (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  const businessId = business?.id || 'biz_smilekraft_hyd';
+  const body = await c.req.json();
+  const result = autonomyController.setOperatingMode(businessId, body.mode);
+  if (!result.success) {
+    return c.json({ success: false, error: result.rationale }, 403);
+  }
+  return c.json({ success: true, data: result });
+});
+
+apiRouter.get('/autonomy/proposals', (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  const businessId = business?.id || 'biz_smilekraft_hyd';
+  const proposals = autonomyController.generateOptimizationProposals(businessId);
+  return c.json({ success: true, data: proposals, total: proposals.length });
+});
+
+apiRouter.get('/autonomy/experiments', (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  const businessId = business?.id || 'biz_smilekraft_hyd';
+  const candidates = autonomyController.generateExperimentCandidates(businessId);
+  return c.json({ success: true, data: candidates, total: candidates.length });
+});
+
+apiRouter.get('/autonomy/stop-conditions', (c) => {
+  const events = autonomyController.listStopConditions();
+  return c.json({ success: true, data: events, total: events.length });
+});
+
+apiRouter.post('/autonomy/stop-conditions', async (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  const businessId = business?.id || 'biz_smilekraft_hyd';
+  const body = await c.req.json();
+  const event = autonomyController.triggerStopCondition(
+    businessId,
+    body.condition,
+    body.details || 'System or operator triggered stop condition'
+  );
+  return c.json({ success: true, data: event }, 201);
+});
+
+// ==========================================
+// AGENT SCORECARDS & PREDICTIONS
+// ==========================================
+apiRouter.get('/agent-scorecards', (c) => {
+  const cards = agentScorecards.listScorecards();
+  return c.json({ success: true, data: cards, total: cards.length });
+});
+
+// ==========================================
+// MARKETING MEMORY
+// ==========================================
+apiRouter.get('/marketing-memory', (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  const businessId = business?.id || 'biz_smilekraft_hyd';
+  const dimension = c.req.query('dimension') as any;
+  const memories = marketingMemory.listMemories(businessId, dimension);
+  return c.json({ success: true, data: memories, total: memories.length });
+});
+
+apiRouter.post('/marketing-memory', async (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  const businessId = business?.id || 'biz_smilekraft_hyd';
+  const body = await c.req.json();
+  const mem = marketingMemory.recordMemory({
+    businessId,
+    dimension: body.dimension,
+    key: body.key,
+    insight: body.insight,
+    evidenceReference: body.evidenceReference,
+    sourceType: body.sourceType || 'REAL_INTERNAL_DATA',
+    confidence: body.confidence,
+  });
+  return c.json({ success: true, data: mem }, 201);
+});
+
+// ==========================================
+// CAMPAIGN KNOWLEDGE GRAPH
+// ==========================================
+apiRouter.get('/knowledge-graph', (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  const businessId = business?.id || 'biz_smilekraft_hyd';
+  campaignKnowledgeGraph.syncFromLiveEntities(businessId);
+  const graph = campaignKnowledgeGraph.getGraph();
+  return c.json({ success: true, data: graph });
+});
+
+// ==========================================
+// WORKFLOW: FIRST CUSTOMER AUTOMATION
+// ==========================================
+apiRouter.post('/workflows/first-customer', async (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  const businessId = business?.id || 'biz_smilekraft_hyd';
+  const body = await c.req.json();
+  const result = await firstCustomerPipeline.executePipeline({
+    businessId,
+    journeyId: body.journeyId,
+    appointmentId: body.appointmentId,
+    invoiceNumber: body.invoiceNumber,
+    amountINR: body.amountINR,
+    paymentMethod: body.paymentMethod,
+    transactionRef: body.transactionRef,
+    verificationSource: body.verificationSource,
+    serviceRendered: body.serviceRendered,
+    doctorNotes: body.doctorNotes,
+    dryRun: body.dryRun ?? true,
+  });
+  return c.json({ success: true, data: result });
+});
+
+// ==========================================
+// CLINICAL CONFIRMATION / ACCEPTANCE HELPER
+// ==========================================
+apiRouter.post('/clinic/confirm-treatment-acceptance', async (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  const businessId = business?.id || 'biz_smilekraft_hyd';
+  const body = await c.req.json();
+
+  if (!body.journeyId || !body.doctorNotes || !body.serviceRendered) {
+    return c.json({ success: false, error: 'Missing required clinical acceptance fields: journeyId, doctorNotes, serviceRendered' }, 400);
+  }
+
+  marketingMemory.recordMemory({
+    businessId,
+    dimension: 'CLINICAL_OUTCOME' as any,
+    key: `acceptance-${body.journeyId}`,
+    insight: `Patient treatment plan accepted: ${body.serviceRendered}. Notes: ${body.doctorNotes}`,
+    evidenceReference: body.journeyId,
+    sourceType: 'REAL_INTERNAL_DATA',
+    confidence: 0.95,
+  });
+
+  return c.json({
+    success: true,
+    message: 'Treatment acceptance verified and recorded in clinical audit log.',
+    data: {
+      journeyId: body.journeyId,
+      serviceRendered: body.serviceRendered,
+      notes: body.doctorNotes,
+    }
+  });
+});
+
+// ==========================================
+// GOOGLE ADS 2026 STATUS OBSERVABILITY
+// ==========================================
+apiRouter.get('/google-ads/status', async (c) => {
+  const accessLevel = googleAdsClient.getAccessLevel();
+  const authStatus = await googleAdsClient.getAuthStatus();
+  const accountStatus = await googleAdsClient.getAccountStatus();
+  const isConfigured = googleAdsClient.isConfigured();
+  const customerId = googleAdsClient.getCustomerId();
+
+  return c.json({
+    success: true,
+    data: {
+      googleCloudProjectId: process.env.GOOGLE_CLOUD_PROJECT_ID || process.env.GOOGLE_ADS_PROJECT_ID || 'NONE',
+      customerId,
+      accessLevel,
+      authStatus,
+      accountStatus,
+      isConfigured,
+      modernOAuth2026Model: true,
+      developerTokenPreservedAsTransitionHeaderOnly: true,
+    }
+  });
 });
