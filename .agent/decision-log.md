@@ -80,3 +80,14 @@
   3. **Telemetry & Unit Economics Ledger**: Logged exact execution telemetry from `GeminiProvider` directly to `ai_cost_logs` (tracking model `gemini-3.8-flash`, thinking level, tokens, latency, cost in INR) and dispatched audit events to `analytics_events`.
   4. **Verification & Testing**: Added comprehensive unit test suite `tests/unit/agent-pipeline.test.ts` (5 tests) and demonstration script `scripts/demonstrate_agent_pipeline.ts`. Total test suite expanded to 16 test files, 66/66 tests passing.
 - **Outcome**: Fully verified, capability-bounded, observable agent decision and tool execution pipeline.
+
+### DEC-012: Live Real Revenue Experiment Activation & 9 Operational Milestone States
+- **Date**: 2026-09-13
+- **Context**: Transition the system from `READY_FOR_REAL_EXPERIMENT` to `LIVE_EXPERIMENT` without fabricating real revenue, leads, or model metrics. Implement the 9 audited operational milestone states and anti-auto-spend safeguards.
+- **Decision**:
+  1. **ThinkingLevel & Gemini 3.8 Flash Semantics**: Standardized `ThinkingLevel` to `'low' | 'medium' | 'high'`, passing `thinkingConfig: { thinkingLevel: thinkingLevel.toUpperCase() }`. Live Gemini API failures throw `LLM EXECUTION = FAILED` immediately rather than silently falling back to synthetic reasoning.
+  2. **9 Audited Operational Milestone States**: Added `SystemOperatingState` (`READY_FOR_REAL_EXPERIMENT`, `LIVE_EXPERIMENT`, `FIRST_REAL_LEAD`, `FIRST_REAL_CONSULTATION`, `FIRST_REAL_CUSTOMER`, `FIRST_VERIFIED_REVENUE`, `FIRST_MARKETING_ATTRIBUTED_REVENUE`, `PROFITABLE`, `AUTONOMOUS_SCALING`). `SystemReadinessEngine` computes this state dynamically from audited relational database rows.
+  3. **Anti-Auto-Spend Boundary**: Added safety check in `ToolExecutor` rejecting autonomous campaign budget updates exceeding ₹10,000 INR initial ceiling without explicit clinic owner sign-off. Added immutable audit trail recording into `audit_logs`.
+  4. **Frontend Acquisition Funnel & State Header**: Enhanced `Revenue.tsx` with dynamic operational state badge, Gemini 3.8 Flash metadata, and 5-stage acquisition funnel (Visitors, Real Leads, Qualified Leads, Consultations, Real Customers).
+  5. **Experiment Launch**: Activated `exp_real_aligners_hyd_01` (Hyderabad Clear Aligners Google Search & WhatsApp consultation experiment), successfully transitioning operating state to `LIVE_EXPERIMENT`.
+- **Outcome**: System is live, operational, and 100% truthful with 67/67 tests passing across all 16 test files. Zero fabricated real revenue or leads.

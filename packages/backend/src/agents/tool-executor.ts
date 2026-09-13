@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { getDb } from '../db/client.js';
 import { AgentDescriptor } from '@ai-marketing/shared';
 
@@ -85,26 +86,46 @@ export class ToolExecutor {
               WHERE id = ? AND business_id = ?
             `).run(data.stage, data.id, context.businessId);
 
+            this.logAudit(db, context, agent.id, 'JOURNEY_STAGE_UPDATE', 'customer_journeys', data.id, data);
+
             return {
               tool: toolCall.tool,
               success: true,
               data: { action: 'journey_stage_updated', journeyId: data.id, newStage: data.stage },
               executedAt
             };
-          } else if (table === 'campaigns' && action === 'update' && data.id && data.status) {
-            db.prepare(`
-              UPDATE campaigns
-              SET status = ?, updated_at = datetime('now')
-              WHERE id = ? AND business_id = ?
-            `).run(data.status, data.id, context.businessId);
+          } else if (table === 'campaigns' && action === 'update' && data.id) {
+            // Budget boundary enforcement (Requirement 22: DO NOT AUTO-SPEND)
+            if (data.budget_inr !== undefined && data.budget_inr > 10000) {
+              throw new Error(`Budget Boundary Violation: Proposed budget ₹${data.budget_inr} exceeds autonomous initial experiment ceiling of ₹10,000 INR. Explicit clinic owner approval required.`);
+            }
+
+            if (data.status) {
+              db.prepare(`
+                UPDATE campaigns
+                SET status = ?, updated_at = datetime('now')
+                WHERE id = ? AND business_id = ?
+              `).run(data.status, data.id, context.businessId);
+            }
+
+            if (data.budget_inr !== undefined) {
+              db.prepare(`
+                UPDATE campaigns
+                SET budget_inr = ?, updated_at = datetime('now')
+                WHERE id = ? AND business_id = ?
+              `).run(data.budget_inr, data.id, context.businessId);
+            }
+
+            this.logAudit(db, context, agent.id, 'CAMPAIGN_UPDATE', 'campaigns', data.id, data);
 
             return {
               tool: toolCall.tool,
               success: true,
-              data: { action: 'campaign_status_updated', campaignId: data.id, newStatus: data.status },
+              data: { action: 'campaign_updated', campaignId: data.id, updates: data },
               executedAt
             };
           } else {
+            this.logAudit(db, context, agent.id, `DATABASE_WRITE_${action.toUpperCase()}`, table, data.id || table, data);
             return {
               tool: toolCall.tool,
               success: true,
@@ -195,4 +216,32 @@ export class ToolExecutor {
       };
     }
   }
+
+  private logAudit(
+    db: any,
+    context: { businessId: string; organizationId: string },
+    actorId: string,
+    action: string,
+    entityType: string,
+    entityId: string,
+    details: any
+  ): void {
+    try {
+      db.prepare(`
+        INSERT INTO audit_logs (id, organization_id, actor_id, actor_type, action, entity_type, entity_id, details_json)
+        VALUES (?, ?, ?, 'AGENT', ?, ?, ?, ?)
+      `).run(
+        `audit-${randomUUID()}`,
+        context.organizationId,
+        actorId,
+        action,
+        entityType,
+        String(entityId),
+        JSON.stringify(details || {})
+      );
+    } catch {
+      // Best-effort audit logging; prevent audit failure from crashing primary business operation
+    }
+  }
 }
+

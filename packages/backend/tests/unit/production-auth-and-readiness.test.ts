@@ -245,5 +245,83 @@ describe('Production Authentication, Learning Isolation & Truth Integrity', () =
       expect(json.data.status).toBe('READY_FOR_REAL_EXPERIMENT');
       expect(json.data.passedChecks).toBe(12);
     });
+
+    it('transitions through operating states based on audited milestones (Requirement 19)', () => {
+      const db = getDb();
+      const businessId = 'biz_smilekraft_hyd';
+      const orgId = 'org_smilekraft_01';
+
+      // 1. Initially READY_FOR_REAL_EXPERIMENT
+      let report = SystemReadinessEngine.evaluateReadiness(businessId);
+      expect(report.status).toBe('READY_FOR_REAL_EXPERIMENT');
+
+      // 2. Launch experiment -> transitions to LIVE_EXPERIMENT
+      db.prepare(`
+        INSERT INTO experiments (
+          id, organization_id, business_id, title, hypothesis, baseline, treatment,
+          success_metric, expected_effect, start_date, status
+        ) VALUES (
+          'exp_real_aligners_01', ?, ?, 'Real Clear Aligners Experiment',
+          'Local search intent in Hyderabad yields high-intent consultations',
+          'Standard Landing Page', 'Localized Telugu/English WhatsApp Funnel',
+          'qualified_consultations', '+25% consultations', date('now'), 'RUNNING'
+        )
+      `).run(orgId, businessId);
+
+      report = SystemReadinessEngine.evaluateReadiness(businessId);
+      expect(report.status).toBe('LIVE_EXPERIMENT');
+
+      // 3. Real lead arrives -> transitions to FIRST_REAL_LEAD
+      db.prepare(`
+        INSERT INTO customer_journeys (
+          id, organization_id, business_id, visitor_id, customer_name,
+          customer_phone, customer_email, stage, classification
+        ) VALUES (
+          'jrn_real_lead_01', ?, ?, 'vis_ext_9988', 'Sunita Reddy',
+          '+91 98490 12345', 'sunita.reddy@gmail.com', 'NEW_LEAD', 'REAL'
+        )
+      `).run(orgId, businessId);
+
+      report = SystemReadinessEngine.evaluateReadiness(businessId);
+      expect(report.status).toBe('FIRST_REAL_LEAD');
+
+      // 4. Consultation booked -> transitions to FIRST_REAL_CONSULTATION
+      db.prepare("UPDATE customer_journeys SET stage = 'CONSULTATION_BOOKED' WHERE id = 'jrn_real_lead_01'").run();
+      report = SystemReadinessEngine.evaluateReadiness(businessId);
+      expect(report.status).toBe('FIRST_REAL_CONSULTATION');
+
+      // 5. Patient becomes customer -> transitions to FIRST_REAL_CUSTOMER
+      db.prepare("UPDATE customer_journeys SET stage = 'CUSTOMER' WHERE id = 'jrn_real_lead_01'").run();
+      report = SystemReadinessEngine.evaluateReadiness(businessId);
+      expect(report.status).toBe('FIRST_REAL_CUSTOMER');
+
+      // 6. Direct revenue without attribution -> transitions to FIRST_VERIFIED_REVENUE
+      db.prepare(`
+        INSERT INTO transactions (
+          id, organization_id, business_id, invoice_number, amount_inr,
+          payment_method, payment_gateway, transaction_ref, status, classification
+        ) VALUES (
+          'tx_real_direct_01', ?, ?, 'INV-SK-REAL-001', 45000,
+          'UPI', 'PHONEPE_PG', 'UTR998877665544', 'SUCCESS', 'REAL'
+        )
+      `).run(orgId, businessId);
+
+      report = SystemReadinessEngine.evaluateReadiness(businessId);
+      expect(report.status).toBe('FIRST_VERIFIED_REVENUE');
+
+      // 7. Marketing attributed revenue -> transitions to FIRST_MARKETING_ATTRIBUTED_REVENUE
+      db.prepare(`
+        INSERT INTO transactions (
+          id, organization_id, business_id, campaign_id, invoice_number, amount_inr,
+          payment_method, payment_gateway, transaction_ref, status, classification
+        ) VALUES (
+          'tx_real_attributed_01', ?, ?, 'camp_seed_aligners_01', 'INV-SK-ATTR-001', 15000,
+          'RAZORPAY', 'RAZORPAY', 'pay_real_992211', 'SUCCESS', 'REAL'
+        )
+      `).run(orgId, businessId);
+
+      report = SystemReadinessEngine.evaluateReadiness(businessId);
+      expect(report.status).toBe('FIRST_MARKETING_ATTRIBUTED_REVENUE');
+    });
   });
 });

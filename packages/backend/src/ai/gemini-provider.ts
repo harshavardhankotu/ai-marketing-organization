@@ -85,8 +85,8 @@ export class GeminiProvider implements ModelProvider {
         try {
           return await this.callLiveGeminiAPI<T>(apiKey, options, thinkingLevel);
         } catch (error: any) {
-          console.warn(`[GeminiProvider] Live API call failed, falling back to deterministic test fixture: ${error?.message}`);
-          return this.synthesizeDomainResponse<T>(options);
+          // Do not silently downgrade a failed live request into fabricated reasoning
+          throw new Error(`LLM EXECUTION = FAILED: Live Gemini API call failed: ${error?.message}`);
         }
       } else {
         // Honest deterministic test fixture for zero-dependency test scenarios
@@ -108,17 +108,8 @@ export class GeminiProvider implements ModelProvider {
     const requestTimestamp = new Date().toISOString();
     const startMs = Date.now();
 
-    // Supported Gemini thinking budgets for gemini-3.8-flash
-    const thinkingBudgets: Record<ThinkingLevel, number> = {
-      none: 0,
-      low: 0,
-      medium: 1024,
-      high: 4096
-    };
-
-    const budget = thinkingBudgets[thinkingLevel];
-    if (budget === undefined) {
-      throw new Error(`[GeminiProvider] Unsupported thinking level: '${thinkingLevel}'. Must be 'none', 'low', 'medium', or 'high'.`);
+    if (!['low', 'medium', 'high'].includes(thinkingLevel)) {
+      throw new Error(`[GeminiProvider] Unsupported thinking level: '${thinkingLevel}'. Must be 'low', 'medium', or 'high'.`);
     }
 
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${GeminiProvider.MODEL_NAME}:generateContent?key=${apiKey}`;
@@ -135,15 +126,12 @@ export class GeminiProvider implements ModelProvider {
         }
       ],
       generationConfig: {
-        responseMimeType: 'application/json'
+        responseMimeType: 'application/json',
+        thinkingConfig: {
+          thinkingLevel: thinkingLevel.toUpperCase() // 'LOW' | 'MEDIUM' | 'HIGH'
+        }
       }
     };
-
-    if (budget > 0) {
-      requestBody.generationConfig.thinkingConfig = {
-        thinkingBudget: budget
-      };
-    }
 
     const response = await fetch(url, {
       method: 'POST',
@@ -156,7 +144,7 @@ export class GeminiProvider implements ModelProvider {
 
     if (!response.ok) {
       const errText = await response.text();
-      const err = new Error(`Gemini API error ${response.status}: ${errText}`);
+      const err = new Error(`LLM EXECUTION = FAILED: Gemini API error ${response.status}: ${errText}`);
       (err as any).status = response.status;
       throw err;
     }

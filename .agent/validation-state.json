@@ -1,13 +1,14 @@
 {
   "last_run": "2026-09-12T23:15:30+05:30",
-  "unit_tests": { "total": 52, "passed": 52, "failed": 0 },
+  "unit_tests": { "total": 53, "passed": 53, "failed": 0 },
   "integration_tests": { "total": 14, "passed": 14, "failed": 0 },
   "contract_tests": { "total": 7, "passed": 7, "failed": 0 },
   "browser_e2e": { "total": 1, "passed": 1, "failed": 0 },
-  "total_tests": 66,
-  "passed_tests": 66,
+  "total_tests": 67,
+  "passed_tests": 67,
   "failed_tests": 0,
   "build_status": "SUCCESS",
+  "operating_state": "LIVE_EXPERIMENT",
   "stability_test": "PASSED",
   "revenue_closed_loop": "PASSED",
   "customer_journey_tracking": "PASSED",
@@ -28,5 +29,7 @@
   "floki_scientific_harness_verification": "PASSED",
   "system_readiness_state": "PASSED",
   "frontend_revenue_truth_panel": "PASSED",
-  "agent_decision_tool_pipeline": "PASSED"
+  "agent_decision_tool_pipeline": "PASSED",
+  "anti_auto_spend_boundary": "PASSED",
+  "live_experiment_activation": "PASSED"
 }

@@ -1,6 +1,6 @@
 import { TaskPriority, ExecutionType } from '@ai-marketing/shared';
 
-export type ThinkingLevel = 'none' | 'low' | 'medium' | 'high';
+export type ThinkingLevel = 'low' | 'medium' | 'high';
 export type TokenUsageStatus = 'VERIFIED' | 'ESTIMATED' | 'UNKNOWN';
 
 export interface ModelTelemetry {

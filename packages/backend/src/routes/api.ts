@@ -342,6 +342,27 @@ apiRouter.get('/experiments', (c) => {
   });
 });
 
+apiRouter.post('/experiments', async (c) => {
+  const orgId = c.get('organizationId');
+  const body = await c.req.json();
+  const businessId = body.businessId || 'biz_smilekraft_hyd';
+
+  const id = ExperimentEngine.createExperiment({
+    organizationId: orgId,
+    businessId,
+    campaignId: body.campaignId,
+    title: body.title || 'Hyderabad Clear Aligners Acquisition Experiment',
+    hypothesis: body.hypothesis || 'Targeted local high-intent clear aligners search in Banjara Hills & Gachibowli drives genuine consultations',
+    baseline: body.baseline || 'Standard Dental Clinic Services Page',
+    treatment: body.treatment || 'Dedicated Clear Aligners Hyderabad Landing Page with WhatsApp Booking Funnel',
+    successMetric: body.successMetric || 'verified_consultations',
+    expectedEffect: body.expectedEffect || '+25% consultation bookings with CAC <= ₹2,500',
+    minimumEvidenceRequirement: body.minimumEvidenceRequirement || 25
+  });
+
+  return c.json({ success: true, data: { experimentId: id, status: 'RUNNING' } }, 201);
+});
+
 // Evolution, Learnings & Decision Journal
 apiRouter.get('/evolution', (c) => {
   const orgId = c.get('organizationId');

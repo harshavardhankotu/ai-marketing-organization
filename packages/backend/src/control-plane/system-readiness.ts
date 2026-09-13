@@ -1,5 +1,5 @@
 import { getDb } from '../db/client.js';
-import { SystemReadinessReport, SystemReadinessCheck } from '@ai-marketing/shared';
+import { SystemReadinessReport, SystemReadinessCheck, SystemOperatingState } from '@ai-marketing/shared';
 
 export class SystemReadinessEngine {
   public static evaluateReadiness(businessId: string = 'biz_smilekraft_hyd'): SystemReadinessReport {
@@ -130,12 +130,88 @@ export class SystemReadinessEngine {
     const totalChecks = checks.length;
     const allRequiredPassed = checks.every(c => !c.requiredForRealExperiment || c.passed);
 
+    // Query actual real-world milestones
+    const realLeadsCount = (db.prepare(`
+      SELECT COUNT(*) as c FROM customer_journeys
+      WHERE business_id = ? AND classification = 'REAL'
+        AND stage IN ('NEW_LEAD', 'QUALIFIED', 'CONSULTATION_BOOKED', 'CONSULTATION_COMPLETED', 'PROPOSAL_SENT', 'CUSTOMER')
+    `).get(businessId) as any)?.c ?? 0;
+
+    const realConsultationsCount = (db.prepare(`
+      SELECT COUNT(*) as c FROM customer_journeys
+      WHERE business_id = ? AND classification = 'REAL'
+        AND stage IN ('CONSULTATION_BOOKED', 'CONSULTATION_COMPLETED', 'PROPOSAL_SENT', 'CUSTOMER')
+    `).get(businessId) as any)?.c ?? 0;
+
+    const realCustomersCount = (db.prepare(`
+      SELECT COUNT(*) as c FROM customer_journeys
+      WHERE business_id = ? AND classification = 'REAL' AND stage = 'CUSTOMER'
+    `).get(businessId) as any)?.c ?? 0;
+
+    const realRevenueRow = db.prepare(`
+      SELECT 
+        COALESCE(SUM(amount_inr), 0) as total_real,
+        COALESCE(SUM(CASE WHEN campaign_id IS NOT NULL THEN amount_inr ELSE 0 END), 0) as attributed_real
+      FROM transactions
+      WHERE business_id = ? AND classification = 'REAL' AND status = 'SUCCESS'
+    `).get(businessId) as any;
+    const realRevenueINR = realRevenueRow?.total_real ?? 0;
+    const realAttributedRevenueINR = realRevenueRow?.attributed_real ?? 0;
+
+    const spendRow = db.prepare(`
+      SELECT COALESCE(SUM(spent_inr), 0) as total_spend
+      FROM campaigns WHERE business_id = ?
+    `).get(businessId) as any;
+    const realSpendINR = spendRow?.total_spend ?? 0;
+
+    const runningExperimentsCount = (db.prepare(`
+      SELECT COUNT(*) as c FROM experiments WHERE business_id = ? AND status IN ('RUNNING', 'ACTIVE')
+    `).get(businessId) as any)?.c ?? 0;
+
+    const activeCampaignsCount = (db.prepare(`
+      SELECT COUNT(*) as c FROM campaigns WHERE business_id = ? AND status = 'ACTIVE'
+    `).get(businessId) as any)?.c ?? 0;
+
+    let operatingState: SystemOperatingState = 'READY_FOR_REAL_EXPERIMENT';
+
+    if (!allRequiredPassed) {
+      operatingState = 'NOT_READY';
+    } else if (realAttributedRevenueINR > 0 && realAttributedRevenueINR > realSpendINR && realCustomersCount >= 5) {
+      operatingState = 'AUTONOMOUS_SCALING';
+    } else if (realAttributedRevenueINR > 0 && realAttributedRevenueINR > realSpendINR) {
+      operatingState = 'PROFITABLE';
+    } else if (realAttributedRevenueINR > 0) {
+      operatingState = 'FIRST_MARKETING_ATTRIBUTED_REVENUE';
+    } else if (realRevenueINR > 0) {
+      operatingState = 'FIRST_VERIFIED_REVENUE';
+    } else if (realCustomersCount > 0) {
+      operatingState = 'FIRST_REAL_CUSTOMER';
+    } else if (realConsultationsCount > 0) {
+      operatingState = 'FIRST_REAL_CONSULTATION';
+    } else if (realLeadsCount > 0) {
+      operatingState = 'FIRST_REAL_LEAD';
+    } else if (runningExperimentsCount > 0) {
+      operatingState = 'LIVE_EXPERIMENT';
+    } else {
+      operatingState = 'READY_FOR_REAL_EXPERIMENT';
+    }
+
     return {
-      status: allRequiredPassed ? 'READY_FOR_REAL_EXPERIMENT' : 'NOT_READY',
+      status: operatingState,
+      operatingState,
       timestamp: new Date().toISOString(),
       passedChecks,
       totalChecks,
-      checks
+      checks,
+      metrics: {
+        realLeadsCount,
+        realConsultationsCount,
+        realCustomersCount,
+        realRevenueINR,
+        realAttributedRevenueINR,
+        realSpendINR,
+        activeCampaignsCount
+      }
     };
   }
 }

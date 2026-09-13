@@ -533,6 +533,18 @@ export interface RevenueTruthSummary {
 
 export type RevenueReconciliationSummary = RevenueTruthSummary;
 
+export type SystemOperatingState =
+  | 'NOT_READY'
+  | 'READY_FOR_REAL_EXPERIMENT'
+  | 'LIVE_EXPERIMENT'
+  | 'FIRST_REAL_LEAD'
+  | 'FIRST_REAL_CONSULTATION'
+  | 'FIRST_REAL_CUSTOMER'
+  | 'FIRST_VERIFIED_REVENUE'
+  | 'FIRST_MARKETING_ATTRIBUTED_REVENUE'
+  | 'PROFITABLE'
+  | 'AUTONOMOUS_SCALING';
+
 export interface SystemReadinessCheck {
   id: string;
   name: string;
@@ -542,9 +554,19 @@ export interface SystemReadinessCheck {
 }
 
 export interface SystemReadinessReport {
-  status: 'READY_FOR_REAL_EXPERIMENT' | 'NOT_READY';
+  status: SystemOperatingState;
+  operatingState: SystemOperatingState;
   timestamp: string;
   passedChecks: number;
   totalChecks: number;
   checks: SystemReadinessCheck[];
+  metrics?: {
+    realLeadsCount: number;
+    realConsultationsCount: number;
+    realCustomersCount: number;
+    realRevenueINR: number;
+    realAttributedRevenueINR: number;
+    realSpendINR: number;
+    activeCampaignsCount: number;
+  };
 }

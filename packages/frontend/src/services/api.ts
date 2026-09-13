@@ -53,6 +53,7 @@ export const api = {
   advanceJourney: (data: any) =>
     fetchApi('/customer-journeys/advance', { method: 'POST', body: JSON.stringify(data) }),
   getAICosts: () => fetchApi('/ai-costs'),
+  getSystemReadiness: () => fetchApi('/system/readiness'),
   recordVerifiedEntry: (data: any) =>
     fetchApi('/revenue/verified-entry', { method: 'POST', body: JSON.stringify(data) }),
   post: (endpoint: string, data: any) =>

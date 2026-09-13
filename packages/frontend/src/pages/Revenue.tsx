@@ -23,6 +23,8 @@ export const Revenue: React.FC = () => {
   const [summary, setSummary] = useState<RevenueTruthSummary | null>(null);
   const [transactions, setTransactions] = useState<any[]>([]);
   const [aiCostSummary, setAICostSummary] = useState<any>(null);
+  const [readiness, setReadiness] = useState<any>(null);
+  const [analyticsData, setAnalyticsData] = useState<any>(null);
   const [filterMode, setFilterMode] = useState<'ALL' | 'REAL' | 'TEST' | 'SIMULATED'>('ALL');
   const [isIngesting, setIsIngesting] = useState(false);
   const [showModal, setShowModal] = useState(false);
@@ -37,14 +39,18 @@ export const Revenue: React.FC = () => {
 
   const loadData = async () => {
     try {
-      const [sumRes, txRes, costRes] = await Promise.all([
+      const [sumRes, txRes, costRes, readyRes, dashRes] = await Promise.all([
         api.getRevenueSummary(),
         api.getTransactions(filterMode === 'ALL' ? undefined : filterMode),
-        api.getAICosts()
+        api.getAICosts(),
+        api.getSystemReadiness().catch(() => ({ data: null })),
+        api.getDashboardAnalytics().catch(() => ({ data: null }))
       ]);
       setSummary(sumRes.data);
       setTransactions(txRes.data || []);
       setAICostSummary(costRes.data?.summary || null);
+      setReadiness(readyRes.data || null);
+      setAnalyticsData(dashRes.data || null);
     } catch (e) {
       console.error('Failed to load revenue data', e);
     }
@@ -165,6 +171,35 @@ export const Revenue: React.FC = () => {
           </div>
         </div>
 
+        {/* Operational State & Experiment Metadata Bar */}
+        <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 mb-5 bg-slate-950/80 rounded-xl border border-slate-800">
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-slate-400 font-semibold uppercase tracking-wider">Current State:</span>
+            <span className={`px-2.5 py-1 rounded-md text-xs font-bold font-mono ${
+              readiness?.operatingState === 'LIVE_EXPERIMENT' || readiness?.operatingState === 'PROFITABLE' || readiness?.operatingState === 'AUTONOMOUS_SCALING'
+                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                : 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
+            }`}>
+              {readiness?.operatingState || readiness?.status || 'READY_FOR_REAL_EXPERIMENT'}
+            </span>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-4 text-xs">
+            <div>
+              <span className="text-slate-500 mr-1">Model:</span>
+              <span className="font-mono text-slate-200">gemini-3.8-flash</span>
+            </div>
+            <div>
+              <span className="text-slate-500 mr-1">Actual LLM Calls:</span>
+              <span className="font-mono text-slate-200">{aiCostSummary?.total_calls ?? 0}</span>
+            </div>
+            <div>
+              <span className="text-slate-500 mr-1">Latest Campaign:</span>
+              <span className="font-mono text-slate-200">Gachibowli Aligners (camp_seed_aligners_01)</span>
+            </div>
+          </div>
+        </div>
+
         {/* 6-Column Truth Matrix */}
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-5">
           {/* 1. Real Revenue Recorded */}
@@ -243,6 +278,35 @@ export const Revenue: React.FC = () => {
             <span className="text-[10px] text-blue-500/70 mt-1 block">
               Modeled projection
             </span>
+          </div>
+        </div>
+
+        {/* Real Funnel & Patient Journey Funnel */}
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-5">
+          <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800/60">
+            <span className="text-[10px] uppercase font-semibold text-slate-400 block mb-0.5">Visitors</span>
+            <span className="text-base font-bold text-white font-mono">{analyticsData?.metrics?.totalVisitors ?? readiness?.metrics?.realLeadsCount ?? 0}</span>
+            <span className="text-[9px] text-slate-500 block mt-0.5">Tracked sessions</span>
+          </div>
+          <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800/60">
+            <span className="text-[10px] uppercase font-semibold text-slate-400 block mb-0.5">Real Leads</span>
+            <span className="text-base font-bold text-white font-mono">{readiness?.metrics?.realLeadsCount ?? 0}</span>
+            <span className="text-[9px] text-slate-500 block mt-0.5">Verified inbound</span>
+          </div>
+          <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800/60">
+            <span className="text-[10px] uppercase font-semibold text-slate-400 block mb-0.5">Qualified Leads</span>
+            <span className="text-base font-bold text-cyan-400 font-mono">{readiness?.metrics?.realConsultationsCount ?? 0}</span>
+            <span className="text-[9px] text-slate-500 block mt-0.5">Criteria verified</span>
+          </div>
+          <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800/60">
+            <span className="text-[10px] uppercase font-semibold text-slate-400 block mb-0.5">Consultations</span>
+            <span className="text-base font-bold text-white font-mono">{readiness?.metrics?.realConsultationsCount ?? 0}</span>
+            <span className="text-[9px] text-slate-500 block mt-0.5">Attended / booked</span>
+          </div>
+          <div className="p-3 bg-slate-950/60 rounded-xl border border-emerald-500/30">
+            <span className="text-[10px] uppercase font-semibold text-emerald-400 block mb-0.5">Real Customers</span>
+            <span className="text-base font-bold text-emerald-400 font-mono">{readiness?.metrics?.realCustomersCount ?? 0}</span>
+            <span className="text-[9px] text-emerald-500/70 block mt-0.5">Treatment started</span>
           </div>
         </div>
 
