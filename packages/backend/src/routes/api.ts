@@ -21,6 +21,7 @@ import {
 
 import { isProduction } from '../config/env.js';
 import { SystemReadinessEngine } from '../control-plane/system-readiness.js';
+import { googleAdsClient } from '../integrations/google-ads.js';
 
 export type AppVariables = {
   organizationId: string;
@@ -601,6 +602,72 @@ apiRouter.post('/customer-journeys/advance', async (c) => {
 });
 
 // ==========================================
+// APPOINTMENTS & IN-CLINIC CONSULTATIONS
+// ==========================================
+apiRouter.get('/appointments', (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  if (!business) return c.json({ success: false, error: 'Business not found' }, 404);
+
+  const appointments = db.prepare(`
+    SELECT * FROM appointments WHERE business_id = ? ORDER BY appointment_date DESC
+  `).all(business.id) as any[];
+
+  return c.json({
+    success: true,
+    data: appointments.map((a) => ({
+      id: a.id,
+      businessId: a.business_id,
+      organizationId: a.organization_id || orgId,
+      journeyId: a.journey_id,
+      patientName: a.patient_name,
+      clinicLocation: a.clinic_location,
+      scheduledAt: a.appointment_date,
+      appointmentDate: a.appointment_date,
+      service: a.service,
+      status: a.clinic_confirmation,
+      clinicConfirmation: a.clinic_confirmation,
+      confirmationTimestamp: a.confirmation_timestamp,
+      createdAt: a.created_at,
+      updatedAt: a.updated_at,
+    })),
+  });
+});
+
+// ==========================================
+// GOOGLE ADS ATTRIBUTION & RECONCILIATION
+// ==========================================
+apiRouter.post('/google-ads/reconcile', async (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  if (!business) return c.json({ success: false, error: 'Business not found' }, 404);
+
+  const body = await c.req.json();
+  const result = await googleAdsClient.reconcileLeadAttribution({
+    gclid: body.gclid,
+    campaignId: body.campaignId,
+    keyword: body.keyword,
+    clickDate: body.clickDate,
+  });
+
+  // If journeyId is provided, update the journey's attribution_status
+  if (body.journeyId) {
+    db.prepare(`
+      UPDATE customer_journeys
+      SET attribution_status = ?, gclid = COALESCE(?, gclid), updated_at = ?
+      WHERE id = ?
+    `).run(result.status, result.gclid || null, new Date().toISOString(), body.journeyId);
+  }
+
+  return c.json({
+    success: true,
+    data: result,
+  });
+});
+
+// ==========================================
 // AI COST OBSERVABILITY & TOKEN ACCOUNTING
 // ==========================================
 apiRouter.get('/ai-costs', (c) => {
@@ -683,7 +750,8 @@ apiRouter.post('/public/lead', async (c) => {
     utmCampaign: body.utmCampaign,
     utmTerm: body.utmTerm,
     utmContent: body.utmContent,
-    sessionId: body.sessionId
+    sessionId: body.sessionId,
+    gclid: body.gclid,
   });
 
   const leadId = `lead_${journey.id.replace('journey-', '')}`;
@@ -699,6 +767,8 @@ apiRouter.post('/public/lead', async (c) => {
       utmCampaign: body.utmCampaign || null,
       utmTerm: body.utmTerm || null,
       utmContent: body.utmContent || null,
+      gclid: journey.gclid || body.gclid || null,
+      attributionStatus: journey.attributionStatus || 'UNVERIFIED',
       visitorId: journey.visitorId,
       sessionId: resolvedSessionId,
       leadId,

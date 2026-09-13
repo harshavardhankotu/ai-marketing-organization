@@ -1,3 +1,5 @@
+import { GoogleAdsClient, GoogleAdsCredentials } from './google-ads.js';
+
 export type IntegrationProvider = 
   | 'GOOGLE_BUSINESS_PROFILE'
   | 'GOOGLE_ADS'
@@ -154,30 +156,27 @@ export class GoogleAdapter implements IChannelAdapter {
 // 3b. Google Ads Adapter (Search Network & Local Extensions)
 export class GoogleAdsAdapter implements IChannelAdapter {
   public provider: IntegrationProvider = 'GOOGLE_ADS';
+  private client: GoogleAdsClient;
 
-  constructor(private credentials?: { customerId?: string; developerToken?: string }) {}
+  constructor(private credentials?: GoogleAdsCredentials) {
+    this.client = new GoogleAdsClient(credentials);
+  }
 
   async checkHealth(): Promise<IntegrationHealth> {
-    const isLive = Boolean(
-      (this.credentials?.customerId && this.credentials?.developerToken) ||
-      (process.env.GOOGLE_ADS_CUSTOMER_ID && process.env.GOOGLE_ADS_DEVELOPER_TOKEN)
-    );
+    const isLive = this.client.isConfigured();
     return {
       provider: this.provider,
       connected: true,
       mode: isLive ? 'LIVE' : 'SANDBOX',
       details: isLive
-        ? `Google Ads API Connected (Customer ID: ${this.credentials?.customerId || process.env.GOOGLE_ADS_CUSTOMER_ID})`
+        ? `Google Ads API Connected (Customer ID: ${this.client.getCustomerId()})`
         : 'Google Ads Search Network Sandbox (Simulated Click-to-WhatsApp/Landing Experiments)',
       lastChecked: new Date().toISOString()
     };
   }
 
   async publish(payload: PublishPayload): Promise<PublishResult> {
-    const isLive = Boolean(
-      (this.credentials?.customerId && this.credentials?.developerToken) ||
-      (process.env.GOOGLE_ADS_CUSTOMER_ID && process.env.GOOGLE_ADS_DEVELOPER_TOKEN)
-    );
+    const isLive = this.client.isConfigured();
     const externalId = `gads_camp_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
 
     return {

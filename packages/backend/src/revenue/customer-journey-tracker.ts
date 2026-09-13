@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import { getDb } from '../db/client.js';
 import {
+  AttributionStatus,
   CustomerJourneyRecord,
   CustomerJourneyStage,
   CustomerTouchpoint,
@@ -58,7 +59,9 @@ export class CustomerJourneyTracker {
     businessId: string,
     visitorId: string,
     classification: DataClassification = 'TEST',
-    organizationId = 'org-india-1'
+    organizationId = 'org-india-1',
+    gclid?: string,
+    attributionStatus: AttributionStatus = 'UNVERIFIED'
   ): CustomerJourneyRecord {
     const existing = this.db
       .prepare('SELECT * FROM customer_journeys WHERE business_id = ? AND visitor_id = ?')
@@ -77,8 +80,8 @@ export class CustomerJourneyTracker {
         `INSERT INTO customer_journeys (
           id, organization_id, business_id, visitor_id,
           stage, touchpoints_json, total_lifetime_value_inr,
-          classification, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          classification, gclid, attribution_status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -89,6 +92,8 @@ export class CustomerJourneyTracker {
         JSON.stringify(touchpoints),
         0,
         classification,
+        gclid || null,
+        attributionStatus,
         now,
         now
       );
@@ -102,6 +107,8 @@ export class CustomerJourneyTracker {
       touchpoints,
       totalLifetimeValueINR: 0,
       classification,
+      gclid,
+      attributionStatus,
       createdAt: now,
       updatedAt: now,
     };
@@ -191,11 +198,16 @@ export class CustomerJourneyTracker {
     customerPhone?: string;
     customerEmail?: string;
     classification?: DataClassification;
+    gclid?: string;
+    attributionStatus?: AttributionStatus;
   }): CustomerJourneyRecord {
     const journey = this.getOrCreateJourney(
       params.businessId,
       params.visitorId,
-      params.classification ?? 'TEST'
+      params.classification ?? 'TEST',
+      undefined,
+      params.gclid,
+      params.attributionStatus
     );
 
     // Anti-Escalation Check: NEVER allow escalating a TEST or SIMULATED journey to REAL
@@ -212,6 +224,8 @@ export class CustomerJourneyTracker {
     const customerName = params.customerName || journey.customerName;
     const customerPhone = params.customerPhone || journey.customerPhone;
     const customerEmail = params.customerEmail || journey.customerEmail;
+    const gclid = params.gclid || journey.gclid || null;
+    const attributionStatus = params.attributionStatus || journey.attributionStatus || 'UNVERIFIED';
 
     this.db
       .prepare(
@@ -220,10 +234,12 @@ export class CustomerJourneyTracker {
           customer_name = ?,
           customer_phone = ?,
           customer_email = ?,
+          gclid = ?,
+          attribution_status = ?,
           updated_at = ?
         WHERE id = ?`
       )
-      .run(params.targetStage, customerName, customerPhone, customerEmail, now, journey.id);
+      .run(params.targetStage, customerName, customerPhone, customerEmail, gclid, attributionStatus, now, journey.id);
 
     return {
       ...journey,
@@ -231,6 +247,8 @@ export class CustomerJourneyTracker {
       customerName,
       customerPhone,
       customerEmail,
+      gclid: gclid || undefined,
+      attributionStatus,
       updatedAt: now,
     };
   }
@@ -278,6 +296,8 @@ export class CustomerJourneyTracker {
     utmTerm?: string;
     utmContent?: string;
     sessionId?: string;
+    gclid?: string;
+    attributionStatus?: AttributionStatus;
   }): CustomerJourneyRecord {
     // Detect synthetic test fixture domains or test flags
     const isTest =
@@ -289,9 +309,20 @@ export class CustomerJourneyTracker {
     const visitorPrefix = classification === 'REAL' ? 'vis_real_' : 'vis_test_';
     const visitorId = `${visitorPrefix}${randomUUID().slice(0, 8)}`;
     const orgId = params.organizationId || 'org_smilekraft_01';
+
+    // Determine attribution status
+    let attributionStatus: AttributionStatus = params.attributionStatus || 'UNVERIFIED';
+    if (!params.attributionStatus && params.gclid) {
+      const click = this.db.prepare('SELECT * FROM google_clicks WHERE gclid = ?').get(params.gclid) as any;
+      if (click) {
+        attributionStatus = 'VERIFIED';
+      } else {
+        attributionStatus = 'UNVERIFIED';
+      }
+    }
     
-    // 1. Initialize journey with resolved classification
-    this.getOrCreateJourney(params.businessId, visitorId, classification, orgId);
+    // 1. Initialize journey with resolved classification, gclid and attributionStatus
+    this.getOrCreateJourney(params.businessId, visitorId, classification, orgId, params.gclid, attributionStatus);
 
     // 2. Add lead submission touchpoint
     this.recordTouchpoint({
@@ -309,13 +340,15 @@ export class CustomerJourneyTracker {
         utmCampaign: params.utmCampaign,
         utmTerm: params.utmTerm,
         utmContent: params.utmContent,
-        sessionId: params.sessionId
+        sessionId: params.sessionId,
+        gclid: params.gclid,
+        attributionStatus,
       },
       classification,
       organizationId: orgId
     });
 
-    // 3. Advance to LEAD with verified contact info
+    // 3. Advance to LEAD with verified contact info, gclid and attributionStatus
     return this.advanceStage({
       businessId: params.businessId,
       visitorId,
@@ -323,7 +356,9 @@ export class CustomerJourneyTracker {
       customerName: params.customerName,
       customerPhone: params.customerPhone,
       customerEmail: params.customerEmail,
-      classification
+      classification,
+      gclid: params.gclid,
+      attributionStatus,
     });
   }
 
@@ -403,6 +438,8 @@ export class CustomerJourneyTracker {
       touchpoints: JSON.parse(row.touchpoints_json || '[]'),
       totalLifetimeValueINR: row.total_lifetime_value_inr,
       classification: row.classification as DataClassification,
+      gclid: row.gclid || undefined,
+      attributionStatus: (row.attribution_status as AttributionStatus) || 'UNVERIFIED',
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };

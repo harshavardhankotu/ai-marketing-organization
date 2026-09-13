@@ -150,10 +150,14 @@ export class SystemReadinessEngine {
 
     const realRevenueRow = db.prepare(`
       SELECT 
-        COALESCE(SUM(amount_inr), 0) as total_real,
-        COALESCE(SUM(CASE WHEN campaign_id IS NOT NULL THEN amount_inr ELSE 0 END), 0) as attributed_real
-      FROM transactions
-      WHERE business_id = ? AND classification = 'REAL' AND status = 'SUCCESS'
+        COALESCE(SUM(t.amount_inr), 0) as total_real,
+        COALESCE(SUM(CASE 
+          WHEN (t.journey_id IS NOT NULL AND j.attribution_status = 'VERIFIED')
+            OR (t.journey_id IS NULL AND t.campaign_id IS NOT NULL)
+          THEN t.amount_inr ELSE 0 END), 0) as attributed_real
+      FROM transactions t
+      LEFT JOIN customer_journeys j ON t.journey_id = j.id
+      WHERE t.business_id = ? AND t.classification = 'REAL' AND t.status = 'SUCCESS'
     `).get(businessId) as any;
     const realRevenueINR = realRevenueRow?.total_real ?? 0;
     const realAttributedRevenueINR = realRevenueRow?.attributed_real ?? 0;
@@ -163,6 +167,35 @@ export class SystemReadinessEngine {
       FROM campaigns WHERE business_id = ?
     `).get(businessId) as any;
     const realSpendINR = spendRow?.total_spend ?? 0;
+
+    // Actual Google Ads spend: strictly live experiment spend, excluding mock seed spend
+    const liveSpendRow = db.prepare(`
+      SELECT COALESCE(SUM(spent_inr), 0) as live_spend
+      FROM campaigns WHERE business_id = ? AND id NOT LIKE 'camp_seed_%' AND status IN ('LIVE', 'ACTIVE')
+    `).get(businessId) as any;
+    const verifiedActualGoogleAdsSpendINR = liveSpendRow?.live_spend ?? 0;
+
+    // Google Clicks count
+    const clicksCountRow = db.prepare(`SELECT COUNT(*) as c FROM google_clicks`).get() as any;
+    const googleClicksCount = clicksCountRow?.c ?? 0;
+
+    // Tracked sessions count
+    const sessionsCountRow = db.prepare(`
+      SELECT COUNT(*) as c FROM customer_journeys
+      WHERE business_id = ? AND stage IN ('SESSION', 'LEAD', 'QUALIFIED_LEAD', 'OPPORTUNITY', 'CUSTOMER')
+    `).get(businessId) as any;
+    const trackedSessionsCount = sessionsCountRow?.c ?? 0;
+
+    // Attributed vs Unverified leads count
+    const leadAttributionRow = db.prepare(`
+      SELECT 
+        SUM(CASE WHEN attribution_status = 'VERIFIED' THEN 1 ELSE 0 END) as attributed,
+        SUM(CASE WHEN attribution_status != 'VERIFIED' OR attribution_status IS NULL THEN 1 ELSE 0 END) as unverified
+      FROM customer_journeys
+      WHERE business_id = ? AND classification = 'REAL' AND stage IN ('LEAD', 'QUALIFIED_LEAD', 'OPPORTUNITY', 'CUSTOMER')
+    `).get(businessId) as any;
+    const attributedLeadsCount = leadAttributionRow?.attributed ?? 0;
+    const unverifiedLeadsCount = leadAttributionRow?.unverified ?? 0;
 
     const runningExperimentsCount = (db.prepare(`
       SELECT COUNT(*) as c FROM experiments WHERE business_id = ? AND status IN ('RUNNING', 'ACTIVE')
@@ -210,7 +243,12 @@ export class SystemReadinessEngine {
         realRevenueINR,
         realAttributedRevenueINR,
         realSpendINR,
-        activeCampaignsCount
+        activeCampaignsCount,
+        googleClicksCount,
+        trackedSessionsCount,
+        attributedLeadsCount,
+        unverifiedLeadsCount,
+        verifiedActualGoogleAdsSpendINR,
       }
     };
   }

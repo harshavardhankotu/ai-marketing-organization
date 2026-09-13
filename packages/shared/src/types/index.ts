@@ -422,6 +422,34 @@ export interface CustomerTouchpoint {
   metadata?: Record<string, unknown>;
 }
 
+export type AttributionStatus = 'VERIFIED' | 'UNVERIFIED' | 'NOT_ATTRIBUTED';
+
+export interface GoogleClickRecord {
+  gclid: string;
+  customerId: string;
+  campaignId: string;
+  campaignName: string;
+  adGroupId?: string;
+  keyword?: string;
+  clickTimestamp: string;
+  verificationSource: string;
+  createdAt: string;
+}
+
+export interface AppointmentRecord {
+  id: string;
+  journeyId: string;
+  businessId: string;
+  patientName: string;
+  appointmentDate: string;
+  service: string;
+  clinicLocation: string;
+  clinicConfirmation: 'CONFIRMED' | 'PENDING' | 'CANCELLED';
+  confirmationTimestamp: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface CustomerJourneyRecord {
   id: string;
   organizationId: string;
@@ -436,6 +464,8 @@ export interface CustomerJourneyRecord {
   touchpoints: CustomerTouchpoint[];
   totalLifetimeValueINR: number;
   classification: DataClassification;
+  gclid?: string;
+  attributionStatus?: AttributionStatus;
   createdAt: string;
   updatedAt: string;
 }
@@ -529,6 +559,12 @@ export interface RevenueTruthSummary {
   verifiedRoi: number;
   // Backwards-compatibility alias for realRevenueRecordedINR
   realRevenueINR: number;
+  // Google Ads Attribution & Live Experiment Economics
+  googleClicksCount?: number;
+  trackedSessionsCount?: number;
+  attributedLeadsCount?: number;
+  unverifiedLeadsCount?: number;
+  verifiedActualGoogleAdsSpendINR?: number;
 }
 
 export type RevenueReconciliationSummary = RevenueTruthSummary;
@@ -568,5 +604,11 @@ export interface SystemReadinessReport {
     realAttributedRevenueINR: number;
     realSpendINR: number;
     activeCampaignsCount: number;
+    googleClicksCount?: number;
+    googleClicksVerifiedCount?: number;
+    trackedSessionsCount?: number;
+    attributedLeadsCount?: number;
+    unverifiedLeadsCount?: number;
+    verifiedActualGoogleAdsSpendINR?: number;
   };
 }

@@ -37,10 +37,13 @@ export function getDb(dbPath?: string): Database.Database {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
 
-  // Initialize schema
-  db.exec(SCHEMA_SQL);
-
-  // Safe schema migrations for existing persistent SQLite databases
+  // Safe schema migrations for existing persistent SQLite databases before index creation
+  try {
+    db.exec(`ALTER TABLE customer_journeys ADD COLUMN gclid TEXT`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE customer_journeys ADD COLUMN attribution_status TEXT NOT NULL DEFAULT 'UNVERIFIED'`);
+  } catch {}
   try {
     db.exec(`ALTER TABLE learnings ADD COLUMN data_classification TEXT NOT NULL DEFAULT 'TEST_LEARNING'`);
   } catch {}
@@ -62,6 +65,9 @@ export function getDb(dbPath?: string): Database.Database {
   try {
     db.exec(`ALTER TABLE research_findings ADD COLUMN data_classification TEXT NOT NULL DEFAULT 'TEST_DATA'`);
   } catch {}
+
+  // Initialize schema
+  db.exec(SCHEMA_SQL);
 
   dbInstance = db;
   return dbInstance;

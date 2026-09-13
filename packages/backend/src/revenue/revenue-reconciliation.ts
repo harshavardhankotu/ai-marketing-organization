@@ -319,7 +319,9 @@ export class RevenueReconciliationEngine {
       (verifiedManualRows?.verified_rev || 0) + (verifiedGatewayRows?.gateway_rev || 0);
 
     // 3. Marketing-Attributed REAL Revenue:
-    // Successful REAL transactions linked to a campaign or linked to a REAL journey with marketing touchpoints
+    // Strictly requires verified Google click evidence (attribution_status = 'VERIFIED') if linked to a journey,
+    // or an explicitly assigned campaign if a direct campaign conversion.
+    // Unverified journeys (such as Suresh Reddy) are strictly excluded and categorized as unattributedRealRevenueINR.
     const attributedRealRev = this.db
       .prepare(
         `SELECT SUM(t.amount_inr) as attributed_rev
@@ -329,23 +331,24 @@ export class RevenueReconciliationEngine {
            AND t.status = 'SUCCESS' 
            AND t.classification = 'REAL'
            AND (
-             t.campaign_id IS NOT NULL 
-             OR (j.id IS NOT NULL AND j.classification = 'REAL' AND (j.first_touch_channel IS NOT NULL OR j.touchpoints_json LIKE '%"campaignId":%'))
+             (t.journey_id IS NOT NULL AND j.attribution_status = 'VERIFIED')
+             OR (t.journey_id IS NULL AND t.campaign_id IS NOT NULL)
            )`
       )
       .get(businessId) as any;
     const realMarketingAttributedRevenueINR = attributedRealRev?.attributed_rev || 0;
     const unattributedRealRevenueINR = Math.max(0, realRevenueRecordedINR - realMarketingAttributedRevenueINR);
 
-    // 4. Transaction counts
+    // 4. Transaction counts (All SUCCESS transactions)
     const txStats = this.db
       .prepare(
         `SELECT 
            COUNT(*) as total,
-           SUM(CASE WHEN campaign_id IS NOT NULL THEN 1 ELSE 0 END) as attributed,
-           SUM(CASE WHEN campaign_id IS NULL THEN 1 ELSE 0 END) as unattributed
-         FROM transactions
-         WHERE business_id = ? AND status = 'SUCCESS'`
+           SUM(CASE WHEN (t.journey_id IS NOT NULL AND j.attribution_status = 'VERIFIED') OR (t.journey_id IS NULL AND t.campaign_id IS NOT NULL) THEN 1 ELSE 0 END) as attributed,
+           SUM(CASE WHEN (t.journey_id IS NOT NULL AND (j.attribution_status != 'VERIFIED' OR j.attribution_status IS NULL)) OR (t.journey_id IS NULL AND t.campaign_id IS NULL) THEN 1 ELSE 0 END) as unattributed
+         FROM transactions t
+         LEFT JOIN customer_journeys j ON t.journey_id = j.id
+         WHERE t.business_id = ? AND t.status = 'SUCCESS'`
       )
       .get(businessId) as any;
 
@@ -358,6 +361,38 @@ export class RevenueReconciliationEngine {
       .prepare(`SELECT SUM(spent_inr) as total_spent FROM campaigns WHERE business_id = ?`)
       .get(businessId) as any;
     const marketingSpendINR = campaignSpend?.total_spent || 0;
+
+    // Actual Google Ads spend: strictly live experiment spend, excluding mock seed spend (e.g. camp_seed_*)
+    const liveSpendRow = this.db
+      .prepare(
+        `SELECT SUM(spent_inr) as live_spend FROM campaigns 
+         WHERE business_id = ? AND id NOT LIKE 'camp_seed_%' AND status IN ('LIVE', 'ACTIVE')`
+      )
+      .get(businessId) as any;
+    const verifiedActualGoogleAdsSpendINR = liveSpendRow?.live_spend || 0;
+
+    // Google Clicks count
+    const clicksCountRow = this.db.prepare(
+      `SELECT COUNT(*) as cnt FROM google_clicks`
+    ).get() as any;
+    const googleClicksCount = clicksCountRow?.cnt || 0;
+
+    // Tracked sessions count
+    const sessionsCountRow = this.db.prepare(
+      `SELECT COUNT(*) as cnt FROM customer_journeys WHERE business_id = ? AND stage IN ('SESSION', 'LEAD', 'QUALIFIED_LEAD', 'OPPORTUNITY', 'CUSTOMER')`
+    ).get(businessId) as any;
+    const trackedSessionsCount = sessionsCountRow?.cnt || 0;
+
+    // Attributed vs Unverified leads count (REAL classification)
+    const leadStatsRow = this.db.prepare(
+      `SELECT 
+         SUM(CASE WHEN attribution_status = 'VERIFIED' THEN 1 ELSE 0 END) as attributed,
+         SUM(CASE WHEN attribution_status != 'VERIFIED' OR attribution_status IS NULL THEN 1 ELSE 0 END) as unverified
+       FROM customer_journeys
+       WHERE business_id = ? AND classification = 'REAL' AND stage IN ('LEAD', 'QUALIFIED_LEAD', 'OPPORTUNITY', 'CUSTOMER')`
+    ).get(businessId) as any;
+    const attributedLeadsCount = leadStatsRow?.attributed || 0;
+    const unverifiedLeadsCount = leadStatsRow?.unverified || 0;
 
     // 6. AI Costs
     const costStats = this.db
@@ -384,7 +419,7 @@ export class RevenueReconciliationEngine {
     const aiCostPerQualifiedLeadINR = qualifiedLeads > 0 ? totalAICostINR / qualifiedLeads : 0;
     const aiCostPerCustomerINR = customers > 0 ? totalAICostINR / customers : 0;
 
-    // 8. ROAS & ROI - Strictly computed on real marketing-attributed revenue
+    // 8. ROAS & ROI - Computed on real marketing-attributed revenue
     const verifiedRoas = marketingSpendINR > 0 
       ? Math.round((realMarketingAttributedRevenueINR / marketingSpendINR) * 100) / 100 
       : 0;
@@ -425,6 +460,11 @@ export class RevenueReconciliationEngine {
       verifiedRoas,
       verifiedRoi,
       realRevenueINR: realRevenueRecordedINR,
+      googleClicksCount,
+      trackedSessionsCount,
+      attributedLeadsCount,
+      unverifiedLeadsCount,
+      verifiedActualGoogleAdsSpendINR,
     };
   }
 

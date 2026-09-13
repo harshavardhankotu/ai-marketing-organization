@@ -26,8 +26,9 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
   const [confirmedBooking, setConfirmedBooking] = useState<any>(null);
   const [errorMsg, setErrorMsg] = useState('');
 
-  // Extract UTM parameters and campaign tracking context from URL
+  // Extract UTM parameters, GCLID, and campaign tracking context from URL
   const searchParams = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '');
+  const gclid = searchParams.get('gclid') || undefined;
   const utmSource = searchParams.get('utm_source') || 'google';
   const utmMedium = searchParams.get('utm_medium') || 'cpc';
   const utmCampaign = searchParams.get('utm_campaign') || 'aligners_hyd_search';
@@ -55,6 +56,7 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
           source: `${utmSource}_${utmMedium}`,
           serviceOfInterest: treatment,
           notes: `Preferred Location: ${location}, Date: ${date}. ${notes}`,
+          gclid,
           utmSource,
           utmMedium,
           utmCampaign,
@@ -189,6 +191,16 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
                 <div className="flex justify-between">
                   <span className="text-slate-400">Search Term:</span>
                   <span className="text-amber-400">{confirmedBooking.utmTerm || utmTerm}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">Google Click ID (GCLID):</span>
+                  <span className="text-purple-300">{confirmedBooking.gclid || gclid || 'None (Direct / Unverified)'}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">Attribution Status:</span>
+                  <span className={confirmedBooking.attributionStatus === 'VERIFIED' ? 'text-emerald-400 font-bold' : 'text-amber-400 font-bold'}>
+                    {confirmedBooking.attributionStatus || 'UNVERIFIED'}
+                  </span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-slate-400">Clinic Center:</span>

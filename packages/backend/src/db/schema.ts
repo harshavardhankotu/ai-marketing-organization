@@ -469,6 +469,8 @@ CREATE TABLE IF NOT EXISTS customer_journeys (
   touchpoints_json TEXT NOT NULL DEFAULT '[]',
   total_lifetime_value_inr REAL NOT NULL DEFAULT 0,
   classification TEXT NOT NULL DEFAULT 'TEST',
+  gclid TEXT,
+  attribution_status TEXT NOT NULL DEFAULT 'UNVERIFIED',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE,
@@ -477,6 +479,8 @@ CREATE TABLE IF NOT EXISTS customer_journeys (
 CREATE INDEX IF NOT EXISTS idx_journeys_biz_visitor ON customer_journeys(business_id, visitor_id);
 CREATE INDEX IF NOT EXISTS idx_journeys_stage ON customer_journeys(stage);
 CREATE INDEX IF NOT EXISTS idx_journeys_class ON customer_journeys(classification);
+CREATE INDEX IF NOT EXISTS idx_journeys_gclid ON customer_journeys(gclid);
+CREATE INDEX IF NOT EXISTS idx_journeys_attr_status ON customer_journeys(attribution_status);
 
 -- 24. Transactions (INR Revenue Reconciliation & Verification)
 CREATE TABLE IF NOT EXISTS transactions (
@@ -524,4 +528,38 @@ CREATE TABLE IF NOT EXISTS ai_cost_logs (
 CREATE INDEX IF NOT EXISTS idx_ai_cost_biz ON ai_cost_logs(business_id);
 CREATE INDEX IF NOT EXISTS idx_ai_cost_agent ON ai_cost_logs(agent_id);
 CREATE INDEX IF NOT EXISTS idx_ai_cost_division ON ai_cost_logs(division);
+
+-- 26. Appointments (Confirmed Patient Clinical Appointments)
+CREATE TABLE IF NOT EXISTS appointments (
+  id TEXT PRIMARY KEY,
+  journey_id TEXT NOT NULL,
+  business_id TEXT NOT NULL,
+  patient_name TEXT NOT NULL,
+  appointment_date TEXT NOT NULL,
+  service TEXT NOT NULL,
+  clinic_location TEXT NOT NULL,
+  clinic_confirmation TEXT NOT NULL DEFAULT 'CONFIRMED',
+  confirmation_timestamp TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (journey_id) REFERENCES customer_journeys(id) ON DELETE CASCADE,
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_appointments_journey ON appointments(journey_id);
+CREATE INDEX IF NOT EXISTS idx_appointments_biz ON appointments(business_id);
+
+-- 27. Google Clicks (Click-Level Verification from Google Ads click_view)
+CREATE TABLE IF NOT EXISTS google_clicks (
+  gclid TEXT PRIMARY KEY,
+  customer_id TEXT NOT NULL,
+  campaign_id TEXT NOT NULL,
+  campaign_name TEXT NOT NULL,
+  ad_group_id TEXT,
+  keyword TEXT,
+  click_timestamp TEXT NOT NULL,
+  verification_source TEXT NOT NULL DEFAULT 'GOOGLE_ADS_API_CLICK_VIEW',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_gclicks_campaign ON google_clicks(campaign_id);
+CREATE INDEX IF NOT EXISTS idx_gclicks_time ON google_clicks(click_timestamp);
 `;

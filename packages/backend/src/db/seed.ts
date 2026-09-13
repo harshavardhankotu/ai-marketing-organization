@@ -368,7 +368,33 @@ export function seedDatabase(): void {
     'Multi-touch assisted conversion path calculation across WhatsApp & Instagram', now
   );
 
-  console.log('Seeding completed successfully: Business, Goal, 80 Agents, Integrations, Quotas, Journeys, Transactions, AI Costs.');
+  // 11. Seed Confirmed Clinical Appointments (Only if referenced journey exists)
+  const insertApptStmt = db.prepare(`
+    INSERT OR REPLACE INTO appointments (
+      id, journey_id, business_id, patient_name, appointment_date,
+      service, clinic_location, clinic_confirmation, confirmation_timestamp,
+      created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const sureshJourney = db.prepare('SELECT id FROM customer_journeys WHERE id = ?').get('journey-961c351f-71d2-4d7b-a842-b6858984b288') as any;
+  if (sureshJourney) {
+    insertApptStmt.run(
+      'appt_suresh_001',
+      'journey-961c351f-71d2-4d7b-a842-b6858984b288',
+      businessId,
+      'Suresh Reddy',
+      '2026-09-15T10:30:00Z',
+      'Invisible Clear Aligners 3D Digital Scan & Smile Assessment',
+      'SmileKraft Dental Clinic Banjara Hills Center',
+      'CONFIRMED',
+      '2026-09-13T10:41:00.000Z',
+      now,
+      now
+    );
+  }
+
+  console.log('Seeding completed successfully: Business, Goal, 80 Agents, Integrations, Quotas, Journeys, Transactions, AI Costs, Appointments.');
 }
 
 
