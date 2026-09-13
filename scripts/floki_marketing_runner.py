@@ -164,14 +164,14 @@ def initialize_floki_llm_agent():
             client = OpenAIChatClient(
                 api_key=gemini_key,
                 base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-                model="gemini-2.5-flash"
+                model="gemini-3.8-flash"
             )
             agent = Agent(
                 name="Floki_Autonomous_Analyst",
                 role="Healthcare Unit Economics & Marketing Strategy Evaluator",
                 llm=client
             )
-            return agent, "Google Gemini (via OpenAI-compatible endpoint)", "gemini-2.5-flash"
+            return agent, "google/gemini-compatible", "gemini-3.8-flash"
         except Exception as err:
             print(f"  [Floki LLM Init Warning] Failed to initialize Gemini OpenAI client: {err}")
             return None, None, None
@@ -334,7 +334,7 @@ def main():
                 print(f"  ✗ LLM EXECUTION FAILED: {e}")
                 print("  [Honest Error] Live LLM execution failed cleanly without masking.")
         else:
-            print("  LLM EXECUTION = NOT AVAILABLE")
+            print("  FLOKI LLM = NOT AVAILABLE")
             print("  (No valid non-placeholder GEMINI_API_KEY / OPENAI_API_KEY configured in environment)")
     else:
         print("\n[DETERMINISTIC HARNESS] Step 7: Running in Honest Deterministic Mode (Use --llm with API key for live LLM mode).")
@@ -354,8 +354,8 @@ def main():
     print("🎯 SCIENTIFIC INTEGRITY & EXECUTION SUMMARY")
     print("=" * 80)
     print(f"FLoki execution mode: {'[LLM AGENT DECISION]' if (args.llm and llm_executed) else ('[LLM REQUESTED - NOT AVAILABLE]' if args.llm else '[DETERMINISTIC HARNESS]')}")
-    print(f"Actual provider: {'Google Gemini / OpenAI' if llm_executed else 'N/A (Deterministic local harness)'}")
-    print(f"Actual model: {'gemini-2.5-flash / gpt-4o' if llm_executed else 'N/A'}")
+    print(f"Actual provider: {'google/gemini-compatible' if llm_executed else 'N/A (Deterministic local harness)'}")
+    print(f"Actual model: {'gemini-3.8-flash' if llm_executed else 'N/A'}")
     print(f"Actual LLM calls: {1 if llm_executed else 0}")
     print(f"Deterministic calls: 8")
     print(f"External calls: 0")

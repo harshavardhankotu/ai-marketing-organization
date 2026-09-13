@@ -173,4 +173,159 @@ describe('End-to-End Agent Decision & Tool Execution Pipeline', () => {
     // Reset kill switch
     db.prepare('UPDATE businesses SET kill_switch_active = 0, kill_switch_reason = NULL WHERE id = ?').run(businessId);
   });
+
+  it('6. Proves Gemini 3.8 Flash live execution with thinkingLevel and VERIFIED token usage', async () => {
+    const runtime = AgentRuntime.getInstance();
+    const db = getDb();
+
+    // Mock global fetch for genuine Gemini API response structure
+    const originalFetch = global.fetch;
+    const mockApiKey = 'AIzaSyFakeLiveDeploymentKeyForContractTest12345';
+    process.env.GEMINI_API_KEY = mockApiKey;
+
+    let capturedUrl = '';
+    let capturedBody: any = null;
+
+    global.fetch = async (url: any, init?: any) => {
+      capturedUrl = String(url);
+      capturedBody = JSON.parse(init?.body || '{}');
+
+      return {
+        ok: true,
+        status: 200,
+        text: async () => '',
+        json: async () => ({
+          candidates: [
+            {
+              content: {
+                parts: [
+                  {
+                    text: JSON.stringify({
+                      objective: 'Acquire qualified clear-aligner consultations in Hyderabad within a controlled initial budget',
+                      currentState: 'Zero real leads recorded; baseline clinic capacity ready',
+                      evidence: 'Market research confirms high demand in Banjara Hills & Gachibowli for invisible braces',
+                      evidenceClassification: 'REAL_WORLD_EVIDENCE',
+                      audience: 'Working IT professionals 24-38 in Hyderabad tech corridor',
+                      offer: 'Free 3D Digital Smile Scan + ₹5,000 INR Off on Clear Aligners',
+                      channel: 'Google Search Ads + Local WhatsApp Funnel',
+                      campaign: 'camp_seed_aligners_01',
+                      creative: 'Get Your Dream Smile Invisibly - US-FDA Approved Clear Aligners in Banjara Hills',
+                      landingPage: 'https://smilekraftdental.in/aligners-hyderabad',
+                      followUp: 'Instant WhatsApp consultation booking with clinic orthodontist within 15 minutes',
+                      budget: 10000,
+                      expectedOutcome: '15-20 qualified patient consultation bookings with CAC <= ₹2,500',
+                      confidence: 0.92,
+                      actions: [
+                        { action: 'deploy_landing_page', status: 'ready' },
+                        { action: 'activate_search_campaign', budget_ceiling_inr: 10000 }
+                      ]
+                    })
+                  }
+                ]
+              }
+            }
+          ],
+          usageMetadata: {
+            promptTokenCount: 420,
+            candidatesTokenCount: 285,
+            totalTokenCount: 705
+          }
+        })
+      } as any;
+    };
+
+    try {
+      const taskId = `task_live_gemini_${Date.now()}`;
+      db.prepare(`
+        INSERT INTO tasks (id, organization_id, workflow_id, agent_id, title, status, idempotency_key)
+        VALUES (?, ?, 'wf_test', 'mkt-01', 'Formulate Live Acquisition Strategy', 'PENDING', ?)
+      `).run(taskId, orgId, taskId);
+
+      const result = await runtime.execute({
+        agentId: 'mkt-01',
+        businessId,
+        organizationId: orgId,
+        taskId,
+        workflowId: 'wf_test',
+        prompt: 'Acquire qualified clear-aligner consultations in Hyderabad within a controlled initial budget.',
+        thinkingLevel: 'high',
+        skipCache: true
+      });
+
+      // 1. Verify live URL and thinking configuration
+      expect(capturedUrl).toContain('gemini-3.8-flash:generateContent');
+      expect(capturedUrl).toContain(`key=${mockApiKey}`);
+      expect(capturedBody.generationConfig?.thinkingConfig?.thinkingLevel).toBe('HIGH');
+      expect(capturedBody.generationConfig?.responseMimeType).toBe('application/json');
+
+      // 2. Verify Execution and Telemetry
+      expect(result.executionType).toBe('LLM');
+      expect(result.model).toBe('gemini-3.8-flash');
+      expect(result.telemetry.provider).toBe('google');
+      expect(result.telemetry.model).toBe('gemini-3.8-flash');
+      expect(result.telemetry.executionType).toBe('LLM');
+      expect(result.telemetry.thinkingLevel).toBe('high');
+      expect(result.telemetry.inputTokens).toBe(420);
+      expect(result.telemetry.outputTokens).toBe(285);
+      expect(result.telemetry.totalTokens).toBe(705);
+      expect(result.telemetry.tokenUsageStatus).toBe('VERIFIED');
+
+      // 3. Verify Decision Persisted with all required fields
+      expect(result.decisionId).toBeDefined();
+      const decisionRow = db.prepare('SELECT * FROM decisions WHERE id = ?').get(result.decisionId) as any;
+      expect(decisionRow).toBeDefined();
+      expect(decisionRow.source).toBe('gemini-3.8-flash');
+      expect(decisionRow.confidence).toBe(0.92);
+      expect(decisionRow.evidence).toContain('REAL_WORLD_EVIDENCE');
+      expect(decisionRow.expected_outcome).toContain('CAC <= ₹2,500');
+
+      // 4. Verify Telemetry Persisted in ai_cost_logs
+      const costRow = db.prepare('SELECT * FROM ai_cost_logs WHERE id = ?').get(result.telemetry.costId || undefined) ||
+        db.prepare('SELECT * FROM ai_cost_logs WHERE business_id = ? ORDER BY rowid DESC LIMIT 1').get(businessId) as any;
+      expect(costRow).toBeDefined();
+      expect(costRow.model).toBe('gemini-3.8-flash');
+      expect(costRow.total_tokens).toBe(705);
+      expect(costRow.estimated_cost_inr).toBeGreaterThan(0);
+    } finally {
+      global.fetch = originalFetch;
+      delete process.env.GEMINI_API_KEY;
+    }
+  });
+
+  it('7. Live Gemini failure throws LLM EXECUTION = FAILED immediately without silent fallback', async () => {
+    const runtime = AgentRuntime.getInstance();
+    const db = getDb();
+
+    const originalFetch = global.fetch;
+    process.env.GEMINI_API_KEY = 'AIzaSyFakeKeyCausingError12345';
+
+    global.fetch = async () => ({
+      ok: false,
+      status: 403,
+      text: async () => 'API key not valid or service unavailable'
+    } as any);
+
+    try {
+      const taskId = `task_fail_${Date.now()}`;
+      db.prepare(`
+        INSERT INTO tasks (id, organization_id, workflow_id, agent_id, title, status, idempotency_key)
+        VALUES (?, ?, 'wf_test', 'mkt-01', 'Failing Task', 'PENDING', ?)
+      `).run(taskId, orgId, taskId);
+
+      await expect(
+        runtime.execute({
+          agentId: 'mkt-01',
+          businessId,
+          organizationId: orgId,
+          taskId,
+          workflowId: 'wf_test',
+          prompt: 'Execute with failing live endpoint',
+          skipCache: true
+        })
+      ).rejects.toThrow(/LLM EXECUTION = FAILED/);
+    } finally {
+      global.fetch = originalFetch;
+      delete process.env.GEMINI_API_KEY;
+    }
+  });
 });

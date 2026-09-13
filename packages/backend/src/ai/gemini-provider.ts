@@ -51,7 +51,7 @@ export class GeminiProvider implements ModelProvider {
             inputTokens: 0,
             outputTokens: 0,
             totalTokens: 0,
-            tokenUsageStatus: 'VERIFIED',
+            tokenUsageStatus: 'UNKNOWN',
             cached: true,
             executionType: 'DETERMINISTIC',
             success: true,

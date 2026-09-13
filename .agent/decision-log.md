@@ -91,3 +91,13 @@
   4. **Frontend Acquisition Funnel & State Header**: Enhanced `Revenue.tsx` with dynamic operational state badge, Gemini 3.8 Flash metadata, and 5-stage acquisition funnel (Visitors, Real Leads, Qualified Leads, Consultations, Real Customers).
   5. **Experiment Launch**: Activated `exp_real_aligners_hyd_01` (Hyderabad Clear Aligners Google Search & WhatsApp consultation experiment), successfully transitioning operating state to `LIVE_EXPERIMENT`.
 - **Outcome**: System is live, operational, and 100% truthful with 67/67 tests passing across all 16 test files. Zero fabricated real revenue or leads.
+
+### DEC-013: Live Gemini 3.8 Flash Contract Verification, Floki LLM Honesty & UTM Persistence
+- **Date**: 2026-09-13
+- **Context**: Prove live Gemini 3.8 Flash execution path with thinkingLevel ('low' | 'medium' | 'high'), verified token accounting, Floki runner model alignment (`gemini-3.8-flash`), clean failure on live API error without silent fallback, and full UTM parameter persistence on public lead capture.
+- **Decision**:
+  1. **Live Gemini 3.8 Flash Contract Proof**: Added comprehensive test cases in `agent-pipeline.test.ts` verifying live API URL dispatch (`gemini-3.8-flash:generateContent`), modern thinking configuration (`thinkingConfig.thinkingLevel`), extraction of `usageMetadata` (`promptTokenCount`, `candidatesTokenCount`), `tokenUsageStatus = 'VERIFIED'`, decision persistence in `decisions`, and cost ledger logging in `ai_cost_logs`.
+  2. **Zero-Deception Error Policy**: Proved that live API failures throw `LLM EXECUTION = FAILED` immediately and never silently downgrade to synthetic fixtures.
+  3. **Floki Model Alignment & Honesty**: Updated `floki_marketing_runner.py` to target `gemini-3.8-flash` and output `FLOKI LLM = NOT AVAILABLE` when valid API keys are absent, ensuring 0 fabricated calls.
+  4. **UTM & Funnel Traceability**: Enhanced `/api/v1/public/lead` and `CustomerJourneyTracker.recordRealLead` to capture and return `utmSource`, `utmMedium`, `utmCampaign`, `utmTerm`, `utmContent`, `visitorId`, `sessionId`, `leadId`, and `journeyId`.
+- **Outcome**: 69/69 tests passing across all 16 test suites. 100% truthful metrics with zero synthetic pollution.

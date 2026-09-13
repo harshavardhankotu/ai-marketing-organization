@@ -677,15 +677,32 @@ apiRouter.post('/public/lead', async (c) => {
     source: body.source || 'public_landing_page',
     serviceOfInterest: body.serviceOfInterest || 'Invisible Clear Aligners',
     notes: body.notes,
-    classification: forcedClassification
+    classification: forcedClassification,
+    utmSource: body.utmSource,
+    utmMedium: body.utmMedium,
+    utmCampaign: body.utmCampaign,
+    utmTerm: body.utmTerm,
+    utmContent: body.utmContent,
+    sessionId: body.sessionId
   });
+
+  const leadId = `lead_${journey.id.replace('journey-', '')}`;
+  const resolvedSessionId = body.sessionId || `sess_${journey.visitorId.slice(-8)}`;
 
   return c.json({
     success: true,
     message: 'Consultation request received successfully. Our clinic team will reach out via WhatsApp.',
     data: {
-      journeyId: journey.id,
+      campaignId: body.campaignId || 'camp_seed_aligners_01',
+      utmSource: body.utmSource || null,
+      utmMedium: body.utmMedium || null,
+      utmCampaign: body.utmCampaign || null,
+      utmTerm: body.utmTerm || null,
+      utmContent: body.utmContent || null,
       visitorId: journey.visitorId,
+      sessionId: resolvedSessionId,
+      leadId,
+      journeyId: journey.id,
       stage: journey.stage,
       classification: journey.classification,
       clinic: 'SmileKraft Dental Clinic Banjara Hills & Gachibowli'

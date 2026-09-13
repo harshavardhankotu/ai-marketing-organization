@@ -22,7 +22,7 @@ async function main() {
   console.log('\n[STAGE 2 & 3: GeminiProvider -> gemini-3.8-flash]');
   console.log('  ✓ Provider: Google Gemini');
   console.log('  ✓ Target Model: gemini-3.8-flash');
-  console.log('  ✓ Thinking Budget: 1024 tokens (medium) / 4096 tokens (high)');
+  console.log('  ✓ Thinking Level: low | medium | high (thinkingConfig.thinkingLevel)');
   console.log('  ✓ Zero Fabricated Token Counts Enforced');
 
   // Initialize DB and ensure workflow exists

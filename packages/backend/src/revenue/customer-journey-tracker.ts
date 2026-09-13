@@ -272,6 +272,12 @@ export class CustomerJourneyTracker {
     serviceOfInterest?: string;
     notes?: string;
     classification?: DataClassification;
+    utmSource?: string;
+    utmMedium?: string;
+    utmCampaign?: string;
+    utmTerm?: string;
+    utmContent?: string;
+    sessionId?: string;
   }): CustomerJourneyRecord {
     // Detect synthetic test fixture domains or test flags
     const isTest =
@@ -297,7 +303,13 @@ export class CustomerJourneyTracker {
       metadata: {
         source: params.source || 'direct_landing_page',
         serviceOfInterest: params.serviceOfInterest,
-        notes: params.notes
+        notes: params.notes,
+        utmSource: params.utmSource,
+        utmMedium: params.utmMedium,
+        utmCampaign: params.utmCampaign,
+        utmTerm: params.utmTerm,
+        utmContent: params.utmContent,
+        sessionId: params.sessionId
       },
       classification,
       organizationId: orgId

@@ -15,6 +15,7 @@ export interface ExecuteAgentOptions {
   thinkingLevel?: ThinkingLevel;
   priority?: TaskPriority;
   toolCall?: ToolCallRequest;
+  skipCache?: boolean;
 }
 
 export interface AgentExecutionResult<T = any> {
@@ -86,7 +87,8 @@ export class AgentRuntime {
         prompt: options.prompt,
         context: combinedContext,
         thinkingLevel: options.thinkingLevel || (agent.category === 'MARKETING_GROWTH' ? 'high' : 'medium'),
-        priority: options.priority || 'NORMAL'
+        priority: options.priority || 'NORMAL',
+        skipCache: options.skipCache
       });
 
       const latencyMs = Date.now() - startMs;
@@ -98,15 +100,17 @@ export class AgentRuntime {
         respData.decision ||
         respData.recommendation ||
         respData.action ||
+        respData.actions ||
         respData.strategy ||
         respData.strategyTitle ||
         respData.recommendedAction ||
-        respData.summary
+        respData.summary ||
+        respData.objective
       );
 
       if (hasDecision) {
         decisionId = `dec_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-        const rawDecision = respData.decision || respData.recommendation || respData.strategyTitle || respData.action || respData.recommendedAction || respData.summary;
+        const rawDecision = respData.decision || respData.recommendation || respData.strategyTitle || respData.action || respData.actions || respData.recommendedAction || respData.summary || respData.objective;
         db.prepare(`
           INSERT INTO decisions (
             id, organization_id, business_id, agent_id, decision,
@@ -120,7 +124,9 @@ export class AgentRuntime {
           agent.id,
           typeof rawDecision === 'object' ? JSON.stringify(rawDecision) : String(rawDecision),
           respData.reason || respData.rationale || 'Reasoned evaluation by agent',
-          respData.evidence || respData.extractedEvidence || 'Agent context evaluation',
+          respData.evidenceClassification
+            ? `[${respData.evidenceClassification}] ${respData.evidence || respData.extractedEvidence || 'Context evaluation'}`
+            : (respData.evidence || respData.extractedEvidence || 'Agent context evaluation'),
           response.model || 'gemini-3.8-flash',
           respData.confidence ?? 0.85,
           JSON.stringify(respData.alternatives || []),
