@@ -34,6 +34,7 @@ import { OrganicContentEngine } from '../organic/organic-content-engine.js';
 import { LocalLandingPageEngine } from '../organic/local-landing-pages.js';
 import { ReviewAndReferralEngine } from '../organic/review-and-referral-engine.js';
 import { GoogleBusinessProfileAdapter } from '../organic/gbp-integration.js';
+import { TrafficProvenanceEngine } from '../organic/traffic-provenance.js';
 
 export type AppVariables = {
   organizationId: string;
@@ -51,7 +52,9 @@ apiRouter.use('*', async (c, next) => {
     path.endsWith('/health') ||
     path.includes('/public/') ||
     path.includes('/webhooks/') ||
-    path.includes('/landing-pages')
+    path.includes('/landing-pages') ||
+    path.includes('/organic/sessions') ||
+    path.includes('/organic/leads')
   ) {
     c.set('organizationId', c.req.header('x-organization-id') || 'org_smilekraft_01');
     c.set('userId', 'usr_public_lead');
@@ -1467,4 +1470,162 @@ apiRouter.get('/organic/experiments', async (c) => {
   const businessId = c.req.query('businessId') || 'biz_smilekraft_hyd';
   const experiments = autonomyController.generateZeroBudgetExperiments(businessId);
   return c.json({ success: true, count: experiments.length, data: experiments });
+});
+
+// 13. Public Visitor Session Ingestion (Evaluates Traffic Provenance)
+const trafficProvenance = new TrafficProvenanceEngine();
+
+apiRouter.post('/organic/sessions', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const ipAddress =
+    c.req.header('x-forwarded-for')?.split(',')[0].trim() ||
+    c.req.header('cf-connecting-ip') ||
+    c.req.header('x-real-ip') ||
+    '127.0.0.1';
+  const userAgent = c.req.header('user-agent') || 'unknown';
+  const referrer = body.referrer || c.req.header('referer') || '';
+
+  const session = trafficProvenance.recordSession({
+    businessId: body.businessId || 'biz_smilekraft_hyd',
+    visitorId: body.visitorId,
+    sessionId: body.sessionId,
+    landingPage: body.landingPage || '/aligners-hyderabad',
+    referrer,
+    utmSource: body.utmSource,
+    utmMedium: body.utmMedium,
+    utmCampaign: body.utmCampaign,
+    utmContent: body.utmContent,
+    ipAddress,
+    userAgent,
+    isTestHarness: body.isTestHarness,
+  });
+
+  return c.json({ success: true, data: session }, 201);
+});
+
+// 14. List Traffic Sessions
+apiRouter.get('/organic/sessions', async (c) => {
+  const businessId = c.req.query('businessId') || 'biz_smilekraft_hyd';
+  const status = c.req.query('status') as any;
+  const sessions = trafficProvenance.listSessions({ businessId, trafficEvidenceStatus: status });
+  return c.json({ success: true, count: sessions.length, data: sessions });
+});
+
+// 15. Ingest Real Organic Lead (Tied to Existing Session Provenance)
+apiRouter.post('/organic/leads', async (c) => {
+  const body = await c.req.json();
+  const businessId = body.businessId || 'biz_smilekraft_hyd';
+
+  if (!body.customerName || body.customerName.trim().length === 0) {
+    return c.json({ success: false, error: 'Customer name is required' }, 400);
+  }
+
+  const result = trafficProvenance.recordLead({
+    businessId,
+    organizationId: c.get('organizationId') || 'org_smilekraft_01',
+    customerName: body.customerName,
+    customerPhone: body.customerPhone,
+    customerEmail: body.customerEmail,
+    sessionId: body.sessionId,
+    visitorId: body.visitorId,
+    notes: body.notes,
+  });
+
+  return c.json({ success: true, data: result }, 201);
+});
+
+// 16. Traffic Stats & External Organic Distribution Counts
+apiRouter.get('/organic/traffic-stats', async (c) => {
+  const businessId = c.req.query('businessId') || 'biz_smilekraft_hyd';
+  const stats = trafficProvenance.getOrganicDistributionStats(businessId);
+  return c.json({ success: true, data: stats });
+});
+
+// 17. Lead Acquisition Evidence Retrieval
+apiRouter.get('/organic/acquisition-evidence/:id', async (c) => {
+  const id = c.req.param('id');
+  const evidence = trafficProvenance.getAcquisitionEvidence(id);
+  if (!evidence) {
+    return c.json({ success: false, error: `Acquisition evidence for '${id}' not found` }, 404);
+  }
+  return c.json({ success: true, data: evidence });
+});
+
+// 18. Record External Publication Evidence (Gates DRAFT -> PUBLISHED)
+apiRouter.post('/organic/content/:id/publish-evidence', async (c) => {
+  const contentId = c.req.param('id');
+  const body = await c.req.json();
+  const userId = c.get('userId') || 'usr_owner_01';
+
+  try {
+    const updated = organicContent.recordPublicationEvidence({
+      contentId,
+      externalPostId: body.externalPostId,
+      externalUrl: body.externalUrl,
+      platform: body.platform || 'INSTAGRAM',
+      verifiedByUserId: userId,
+      rawResponseSnippet: body.rawResponseSnippet,
+    });
+    return c.json({ success: true, data: updated });
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 400);
+  }
+});
+
+// 19. Google Business Profile OAuth Endpoints
+apiRouter.get('/organic/gbp/oauth/status', async (c) => {
+  const businessId = c.req.query('businessId') || 'biz_smilekraft_hyd';
+  const status = gbpAdapter.getOAuthStatus(businessId);
+  return c.json({ success: true, data: status });
+});
+
+apiRouter.get('/organic/gbp/oauth/authorize', async (c) => {
+  const businessId = c.req.query('businessId') || 'biz_smilekraft_hyd';
+  const redirectUri = c.req.query('redirectUri') || 'https://smilekraftdental.in/api/v1/organic/gbp/oauth/callback';
+  const authUrl = gbpAdapter.getAuthorizationUrl(businessId, redirectUri);
+  return c.json({ success: true, data: authUrl });
+});
+
+apiRouter.post('/organic/gbp/oauth/callback', async (c) => {
+  const body = await c.req.json();
+  const businessId = body.businessId || 'biz_smilekraft_hyd';
+
+  try {
+    const auth = gbpAdapter.handleOAuthCallback({
+      businessId,
+      code: body.code,
+      googleAccountId: body.googleAccountId,
+      locationId: body.locationId,
+      refreshToken: body.refreshToken,
+    });
+    return c.json({ success: true, data: auth });
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 400);
+  }
+});
+
+apiRouter.post('/organic/gbp/posts', async (c) => {
+  const body = await c.req.json();
+  const businessId = body.businessId || 'biz_smilekraft_hyd';
+
+  const result = gbpAdapter.createPostDraft({
+    businessId,
+    summary: body.summary,
+    callToAction: body.callToAction,
+    url: body.url,
+    postType: body.postType,
+  });
+  return c.json({ success: true, data: result }, 201);
+});
+
+apiRouter.post('/organic/gbp/faqs', async (c) => {
+  const body = await c.req.json();
+  const businessId = body.businessId || 'biz_smilekraft_hyd';
+
+  const draft = gbpAdapter.createFaqDraft({
+    businessId,
+    question: body.question,
+    answer: body.answer,
+  });
+  return c.json({ success: true, data: draft }, 201);
 });

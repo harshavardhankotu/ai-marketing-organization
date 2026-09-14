@@ -761,6 +761,8 @@ CREATE TABLE IF NOT EXISTS organic_content (
   medical_claim_source TEXT,
   approval_status TEXT NOT NULL DEFAULT 'AI_DRAFT',
   publication_status TEXT NOT NULL DEFAULT 'DRAFT',
+  publishing_mode TEXT NOT NULL DEFAULT 'REQUIRES_CLINIC_APPROVAL',
+  publication_evidence_json TEXT,
   source_evidence TEXT,
   clinic_approved_by TEXT,
   approved_at TEXT,
@@ -855,4 +857,63 @@ CREATE TABLE IF NOT EXISTS gbp_interactions (
   last_sync_timestamp TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
 );
+
+-- 43. Traffic Sessions & External Provenance
+CREATE TABLE IF NOT EXISTS traffic_sessions (
+  id TEXT PRIMARY KEY,
+  business_id TEXT NOT NULL,
+  visitor_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  source TEXT NOT NULL,
+  referrer TEXT NOT NULL DEFAULT '',
+  landing_page TEXT NOT NULL,
+  timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+  utm_source TEXT,
+  utm_medium TEXT,
+  utm_campaign TEXT,
+  utm_content TEXT,
+  traffic_evidence_status TEXT NOT NULL DEFAULT 'UNKNOWN',
+  ip_address TEXT,
+  user_agent TEXT,
+  is_external INTEGER NOT NULL DEFAULT 0,
+  verification_reason TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_traffic_sess_biz ON traffic_sessions(business_id);
+CREATE INDEX IF NOT EXISTS idx_traffic_sess_visitor ON traffic_sessions(visitor_id);
+CREATE INDEX IF NOT EXISTS idx_traffic_sess_status ON traffic_sessions(traffic_evidence_status);
+CREATE INDEX IF NOT EXISTS idx_traffic_sess_source ON traffic_sessions(source);
+
+-- 44. Google Business Profile OAuth 2.0 Credentials & State
+CREATE TABLE IF NOT EXISTS gbp_oauth_authorizations (
+  business_id TEXT PRIMARY KEY,
+  google_account_id TEXT NOT NULL,
+  location_id TEXT NOT NULL,
+  oauth_status TEXT NOT NULL DEFAULT 'NOT_CONNECTED',
+  authorization_timestamp TEXT,
+  token_expiry TEXT,
+  encrypted_refresh_token TEXT,
+  scopes TEXT NOT NULL DEFAULT 'https://www.googleapis.com/auth/business.manage',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+);
+
+-- 45. Lead Acquisition Evidence (Separating Suresh Reddy Baseline from New Inbound)
+CREATE TABLE IF NOT EXISTS acquisition_evidence (
+  id TEXT PRIMARY KEY,
+  lead_id TEXT NOT NULL,
+  journey_id TEXT NOT NULL,
+  customer_name TEXT NOT NULL,
+  lead_status TEXT NOT NULL DEFAULT 'REAL_LEAD',
+  source_provenance TEXT NOT NULL DEFAULT 'UNKNOWN',
+  traffic_evidence_status TEXT NOT NULL DEFAULT 'UNKNOWN',
+  verified_organic INTEGER NOT NULL DEFAULT 0,
+  evidence_details TEXT NOT NULL,
+  timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (journey_id) REFERENCES customer_journeys(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_acq_ev_journey ON acquisition_evidence(journey_id);
+CREATE INDEX IF NOT EXISTS idx_acq_ev_source ON acquisition_evidence(source_provenance);
 `;

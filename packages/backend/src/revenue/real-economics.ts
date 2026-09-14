@@ -185,7 +185,45 @@ export class RealEconomicsEngine {
       totalAiCost = 0;
     }
 
+    // External Organic Visitors (Strictly VERIFIED_EXTERNAL)
+    let externalOrganicVisitors = 0;
+    let verifiedExternalVisitors = 0;
+    try {
+      const extSessRow = this.db
+        .prepare(
+          `SELECT COUNT(DISTINCT visitor_id) as ext_visitors
+           FROM traffic_sessions
+           WHERE business_id = ? AND traffic_evidence_status = 'VERIFIED_EXTERNAL'`
+        )
+        .get(businessId) as any;
+      externalOrganicVisitors = extSessRow?.ext_visitors || 0;
+      verifiedExternalVisitors = externalOrganicVisitors;
+    } catch {
+      externalOrganicVisitors = 0;
+      verifiedExternalVisitors = 0;
+    }
+
+    // Verified Organic Leads (Requiring verified external acquisition evidence)
+    let verifiedOrganicLeads = 0;
+    try {
+      const verifiedLeadsRow = this.db
+        .prepare(
+          `SELECT COUNT(*) as cnt FROM acquisition_evidence ae
+           JOIN customer_journeys j ON ae.journey_id = j.id
+           WHERE j.business_id = ? AND ae.verified_organic = 1 AND j.classification = 'REAL'`
+        )
+        .get(businessId) as any;
+      verifiedOrganicLeads = verifiedLeadsRow?.cnt || 0;
+    } catch {
+      verifiedOrganicLeads = 0;
+    }
+
     const aiCostStatus: 'VERIFIED' | 'ESTIMATED' = (isFreeTier || isZeroBudget || totalAiCost === 0) ? 'VERIFIED' : 'ESTIMATED';
+    const freeTierStatus: 'FREE_TIER_VERIFIED' | 'ESTIMATED' | 'FREE_TIER_STATUS_UNKNOWN' = isFreeTier
+      ? 'FREE_TIER_VERIFIED'
+      : isZeroBudget
+      ? 'FREE_TIER_VERIFIED'
+      : 'ESTIMATED';
 
     return {
       actualAdSpendINR: verifiedAdSpendINR,
@@ -203,7 +241,10 @@ export class RealEconomicsEngine {
       verifiedRoi,
       // Organic Economics
       organicVisitors,
+      externalOrganicVisitors,
+      verifiedExternalVisitors,
       organicLeads,
+      verifiedOrganicLeads,
       organicQualifiedLeads,
       organicConsultations,
       organicCustomers,
@@ -213,6 +254,7 @@ export class RealEconomicsEngine {
       revenuePerOrganicCustomerINR,
       organicConversionRatePercent,
       aiCostStatus,
+      freeTierStatus,
     };
   }
 }

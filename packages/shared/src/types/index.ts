@@ -619,7 +619,10 @@ export interface RealEconomicsSummary {
   verifiedRoi: number | 'N/A';
   // Organic Economics (Zero-Budget Mode)
   organicVisitors?: number;
+  externalOrganicVisitors?: number;
+  verifiedExternalVisitors?: number;
   organicLeads?: number;
+  verifiedOrganicLeads?: number;
   organicQualifiedLeads?: number;
   organicConsultations?: number;
   organicCustomers?: number;
@@ -629,6 +632,7 @@ export interface RealEconomicsSummary {
   revenuePerOrganicCustomerINR?: number | 'UNKNOWN';
   organicConversionRatePercent?: number | 'UNKNOWN';
   aiCostStatus?: AICostStatus;
+  freeTierStatus?: 'FREE_TIER_VERIFIED' | 'ESTIMATED' | 'FREE_TIER_STATUS_UNKNOWN';
 }
 
 // ==========================================
@@ -1154,4 +1158,99 @@ export interface ZeroBudgetExperimentProposal {
   channel: OrganicMarketingChannel;
   status: 'PROPOSED' | 'APPROVED' | 'RUNNING' | 'CONCLUDED';
   createdAt: string;
+}
+
+// ==========================================
+// REAL ORGANIC DISTRIBUTION & TRAFFIC PROVENANCE
+// ==========================================
+
+export type TrafficSource =
+  | 'GOOGLE_ORGANIC'
+  | 'GOOGLE_BUSINESS_PROFILE'
+  | 'INSTAGRAM_ORGANIC'
+  | 'FACEBOOK_ORGANIC'
+  | 'YOUTUBE_ORGANIC'
+  | 'WHATSAPP_INBOUND'
+  | 'REFERRAL'
+  | 'LOCAL_PARTNERSHIP'
+  | 'DIRECT'
+  | 'UNKNOWN'
+  | 'TEST';
+
+export type TrafficEvidenceStatus =
+  | 'VERIFIED_EXTERNAL'
+  | 'INTERNAL'
+  | 'TEST'
+  | 'UNKNOWN';
+
+export interface VisitorSessionRecord {
+  id: string;
+  businessId: string;
+  visitorId: string;
+  sessionId: string;
+  source: TrafficSource;
+  referrer: string;
+  landingPage: string;
+  timestamp: string;
+  utmSource?: string;
+  utmMedium?: string;
+  utmCampaign?: string;
+  utmContent?: string;
+  trafficEvidenceStatus: TrafficEvidenceStatus;
+  ipAddress?: string;
+  userAgent?: string;
+  isExternal: boolean;
+  verificationReason: string;
+  createdAt: string;
+}
+
+export type GBPOAuthStatus =
+  | 'NOT_CONNECTED'
+  | 'PENDING_AUTHORIZATION'
+  | 'AUTHORIZED'
+  | 'EXPIRED'
+  | 'REVOKED';
+
+export interface GBPOAuthRecord {
+  businessId: string;
+  googleAccountId: string;
+  locationId: string;
+  oauthStatus: GBPOAuthStatus;
+  authorizationTimestamp?: string;
+  tokenExpiry?: string;
+  hasEncryptedRefreshToken: boolean;
+  scopes: string[];
+}
+
+export type ChannelPublishingMode =
+  | 'CAN_PUBLISH_AUTOMATICALLY'
+  | 'REQUIRES_OWNER_AUTH'
+  | 'REQUIRES_CLINIC_APPROVAL'
+  | 'MANUAL_ONLY';
+
+export type MedicalClaimSource =
+  | 'CLINIC_PROVIDED'
+  | 'VERIFIED_EXTERNAL'
+  | 'PENDING_CLINIC_APPROVAL';
+
+export interface PublicationEvidence {
+  externalPostId: string;
+  externalUrl: string;
+  platform: string;
+  verificationTimestamp: string;
+  verifiedByUserId?: string;
+  rawResponseSnippet?: string;
+}
+
+export interface AcquisitionEvidenceRecord {
+  id: string;
+  leadId: string;
+  journeyId: string;
+  customerName: string;
+  leadStatus: 'REAL_LEAD' | 'TEST_LEAD';
+  sourceProvenance: TrafficSource;
+  trafficEvidenceStatus: TrafficEvidenceStatus;
+  verifiedOrganic: boolean;
+  evidenceDetails: string;
+  timestamp: string;
 }

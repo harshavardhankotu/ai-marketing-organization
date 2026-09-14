@@ -63,6 +63,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const [landingPages, setLandingPages] = useState<any[]>([]);
   const [zeroExperiments, setZeroExperiments] = useState<any[]>([]);
   const [gbpInsights, setGbpInsights] = useState<any>(null);
+  const [trafficStats, setTrafficStats] = useState<any>(null);
+  const [gbpOAuth, setGbpOAuth] = useState<any>(null);
 
   useEffect(() => {
     api.getRealEconomics().then((res) => setEconomics(res.data)).catch(() => {});
@@ -74,6 +76,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
     api.getLandingPages().then((res) => setLandingPages(res.data || [])).catch(() => {});
     api.getZeroBudgetExperiments().then((res) => setZeroExperiments(res.data || [])).catch(() => {});
     api.getGBPInsights().then((res) => setGbpInsights(res.data || null)).catch(() => {});
+    api.getTrafficStats().then((res) => setTrafficStats(res.data)).catch(() => {});
+    api.getGBPOAuthStatus().then((res) => setGbpOAuth(res.data)).catch(() => {});
   }, []);
 
   const primaryGoal = goal || {
@@ -631,38 +635,44 @@ export const Dashboard: React.FC<DashboardProps> = ({
           </div>
         </div>
 
-        {/* Funnel & Economics Cards */}
-        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+        {/* Funnel & Provenance Cards */}
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
           <div className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800">
-            <span className="text-[11px] text-slate-400 font-medium">Organic Visitors</span>
-            <div className="text-lg font-bold text-white font-mono mt-1">{economics?.organicVisitors ?? 1}</div>
-            <span className="text-[10px] text-slate-500">Tracked sessions</span>
+            <span className="text-[11px] text-slate-400 font-medium">External Visitors</span>
+            <div className="text-lg font-bold text-white font-mono mt-1">
+              {trafficStats?.verifiedExternalVisitors ?? economics?.verifiedExternalVisitors ?? 0}
+            </div>
+            <span className="text-[10px] text-emerald-400">Strictly VERIFIED_EXTERNAL</span>
           </div>
           <div className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800">
             <span className="text-[11px] text-slate-400 font-medium">Real Leads</span>
             <div className="text-lg font-bold text-cyan-400 font-mono mt-1">{economics?.organicLeads ?? 1}</div>
-            <span className="text-[10px] text-slate-500">Suresh Reddy</span>
+            <span className="text-[10px] text-amber-400 font-mono">Suresh (UNVERIFIED_SRC)</span>
           </div>
           <div className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800">
-            <span className="text-[11px] text-slate-400 font-medium">Consultations</span>
-            <div className="text-lg font-bold text-purple-400 font-mono mt-1">{economics?.organicConsultations ?? 1}</div>
-            <span className="text-[10px] text-slate-500">appt_suresh_001</span>
+            <span className="text-[11px] text-slate-400 font-medium">Verified Organic Leads</span>
+            <div className="text-lg font-bold text-cyan-400 font-mono mt-1">
+              {trafficStats?.verifiedOrganicLeads ?? economics?.verifiedOrganicLeads ?? 0}
+            </div>
+            <span className="text-[10px] text-slate-500">Target: 1 External Lead</span>
           </div>
           <div className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800">
-            <span className="text-[11px] text-slate-400 font-medium">Real Customers</span>
-            <div className="text-lg font-bold text-amber-400 font-mono mt-1">{economics?.organicCustomers ?? 0}</div>
-            <span className="text-[10px] text-slate-500">Awaiting Acceptance</span>
+            <span className="text-[11px] text-slate-400 font-medium">Consultations / Cust.</span>
+            <div className="text-lg font-bold text-purple-400 font-mono mt-1">1 / 0</div>
+            <span className="text-[10px] text-slate-500">appt_suresh_001 (Sep 15)</span>
           </div>
           <div className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800">
-            <span className="text-[11px] text-slate-400 font-medium">Organic Revenue</span>
-            <div className="text-lg font-bold text-emerald-400 font-mono mt-1">₹0</div>
-            <span className="text-[10px] text-slate-500">Zero fabrication</span>
+            <span className="text-[11px] text-slate-400 font-medium">GBP OAuth State</span>
+            <div className="text-xs font-bold text-amber-300 font-mono mt-1.5 truncate">
+              {gbpOAuth?.oauthStatus || 'PENDING_AUTHORIZATION'}
+            </div>
+            <span className="text-[10px] text-slate-500">OAuth 2.0 boundary active</span>
           </div>
           <div className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800">
-            <span className="text-[11px] text-slate-400 font-medium">AI Cost & Status</span>
+            <span className="text-[11px] text-slate-400 font-medium">AI Cost & Allowance</span>
             <div className="text-lg font-bold text-emerald-400 font-mono mt-1">₹0</div>
             <span className="text-[10px] text-emerald-400 font-semibold flex items-center gap-1">
-              <Check className="w-3 h-3" /> {economics?.aiCostStatus || 'VERIFIED'} (Free Tier)
+              <Check className="w-3 h-3" /> {economics?.freeTierStatus || economics?.aiCostStatus || 'FREE_TIER_VERIFIED'}
             </span>
           </div>
         </div>

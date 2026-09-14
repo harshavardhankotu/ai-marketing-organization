@@ -82,4 +82,9 @@ export const api = {
   getGBPInsights: () => fetchApi('/organic/gbp'),
   getOrganicEconomics: () => fetchApi('/organic/economics'),
   getZeroBudgetExperiments: () => fetchApi('/organic/experiments'),
+  getTrafficStats: () => fetchApi('/organic/traffic-stats'),
+  getTrafficSessions: (status?: string) => fetchApi(`/organic/sessions${status ? `?status=${status}` : ''}`),
+  getAcquisitionEvidence: (id: string) => fetchApi(`/organic/acquisition-evidence/${id}`),
+  getGBPOAuthStatus: () => fetchApi('/organic/gbp/oauth/status'),
+  recordPublicationEvidence: (id: string, data: any) => fetchApi(`/organic/content/${id}/publish-evidence`, { method: 'POST', body: JSON.stringify(data) }),
 };

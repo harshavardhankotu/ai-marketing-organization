@@ -678,7 +678,30 @@ export function seedDatabase(): void {
     ) VALUES (?, 1420, 890, 18, 44, 29, 47, 4.9, datetime('now'))
   `).run(businessId);
 
-  console.log('Seeding completed successfully: Business, Goal, 80 Agents, Integrations, Quotas, Journeys, Transactions, AI Costs, Appointments, Memory, Autonomy Policy, 10 Organic Channels, Local Landing Pages, GBP.');
+  // 17. Seed Acquisition Evidence for Suresh Reddy Baseline (Preserving UNVERIFIED provenance)
+  db.prepare(`
+    INSERT OR REPLACE INTO acquisition_evidence (
+      id, lead_id, journey_id, customer_name, lead_status,
+      source_provenance, traffic_evidence_status, verified_organic,
+      evidence_details, timestamp
+    ) VALUES (?, ?, ?, ?, 'REAL_LEAD', 'WHATSAPP_INBOUND', 'UNKNOWN', 0, ?, datetime('now'))
+  `).run(
+    'acq_ev_suresh_001',
+    'lead_suresh_001',
+    'journey-961c351f-71d2-4d7b-a842-b6858984b288',
+    'Suresh Reddy',
+    'Baseline real patient lead with confirmed consultation appt_suresh_001. Originating digital traffic session not independently verified by external server logs; classified as UNVERIFIED_SOURCE.'
+  );
+
+  // 18. Seed GBP OAuth Authorization Boundary (Awaiting Genuine Owner OAuth Grant)
+  db.prepare(`
+    INSERT OR REPLACE INTO gbp_oauth_authorizations (
+      business_id, google_account_id, location_id, oauth_status,
+      authorization_timestamp, token_expiry, encrypted_refresh_token, scopes, created_at, updated_at
+    ) VALUES (?, 'accounts/108934789123847', 'locations/9847123984712', 'PENDING_AUTHORIZATION', NULL, NULL, NULL, 'https://www.googleapis.com/auth/business.manage', datetime('now'), datetime('now'))
+  `).run(businessId);
+
+  console.log('Seeding completed successfully: Business, Goal, 80 Agents, Integrations, Quotas, Journeys, Transactions, AI Costs, Appointments, Memory, Autonomy Policy, 10 Organic Channels, Local Landing Pages, GBP, Suresh Acquisition Evidence, GBP OAuth.');
 }
 
 
