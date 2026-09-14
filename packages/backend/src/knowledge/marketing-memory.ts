@@ -2,13 +2,66 @@ import { randomUUID } from 'crypto';
 import { getDb } from '../db/client.js';
 import {
   EvidenceSourceType,
+  EvidenceThresholdConfig,
   MarketingMemoryDimension,
+  MarketingMemoryMaturity,
   MarketingMemoryRecord,
 } from '@ai-marketing/shared';
+
+export const DEFAULT_EVIDENCE_THRESHOLDS: EvidenceThresholdConfig = {
+  promisingMinObservations: 1,
+  supportedMinObservations: 5,
+  provenMinObservations: 10,
+  provenMinCustomers: 3,
+  provenPositiveNetContribution: true,
+};
 
 export class MarketingMemoryEngine {
   private get db() {
     return getDb();
+  }
+
+  /**
+   * Evaluates memory maturity strictly based on verifiable evidence.
+   */
+  public calculateMaturity(params: {
+    evidenceCount: number;
+    sourceType: EvidenceSourceType;
+    verifiedRevenueINR?: number;
+    payingCustomersCount?: number;
+    netContributionINR?: number;
+    config?: Partial<EvidenceThresholdConfig>;
+  }): MarketingMemoryMaturity {
+    const cfg = { ...DEFAULT_EVIDENCE_THRESHOLDS, ...params.config };
+
+    // Invariant 11: Test or simulated data can NEVER become PROVEN real-world memory
+    if (params.sourceType === 'TEST_DATA' || params.sourceType === 'SIMULATED_DATA') {
+      return 'HYPOTHESIS';
+    }
+
+    const count = params.evidenceCount || 0;
+    const customers = params.payingCustomersCount || 0;
+    const netContrib = params.netContributionINR ?? 0;
+
+    // Invariant 9: One observation cannot create PROVEN memory (strictly PROMISING)
+    if (count < cfg.promisingMinObservations) {
+      return 'HYPOTHESIS';
+    }
+
+    if (count < cfg.supportedMinObservations) {
+      return 'PROMISING';
+    }
+
+    const meetsProvenCriteria =
+      count >= cfg.provenMinObservations &&
+      customers >= cfg.provenMinCustomers &&
+      (!cfg.provenPositiveNetContribution || netContrib > 0);
+
+    if (meetsProvenCriteria) {
+      return 'PROVEN';
+    }
+
+    return 'SUPPORTED';
   }
 
   /**
@@ -22,17 +75,37 @@ export class MarketingMemoryEngine {
     evidenceReference: string;
     sourceType: EvidenceSourceType;
     confidence?: number;
+    evidenceCount?: number;
+    verifiedRevenueINR?: number;
+    maturity?: MarketingMemoryMaturity;
+    payingCustomersCount?: number;
+    netContributionINR?: number;
+    config?: Partial<EvidenceThresholdConfig>;
   }): MarketingMemoryRecord {
     const id = `mem-${randomUUID()}`;
     const now = new Date().toISOString();
     const confidence = params.confidence !== undefined ? params.confidence : 0.85;
+    const evidenceCount = params.evidenceCount !== undefined ? params.evidenceCount : 1;
+    const verifiedRevenueINR = params.verifiedRevenueINR || 0;
+
+    const maturity =
+      params.maturity ||
+      this.calculateMaturity({
+        evidenceCount,
+        sourceType: params.sourceType,
+        verifiedRevenueINR,
+        payingCustomersCount: params.payingCustomersCount,
+        netContributionINR: params.netContributionINR,
+        config: params.config,
+      });
 
     this.db
       .prepare(
         `INSERT INTO marketing_memories (
           id, business_id, dimension, memory_key, insight, evidence_reference,
-          source_type, confidence, verified_at, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          source_type, confidence, maturity, evidence_count, verified_revenue_inr,
+          verified_at, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -43,6 +116,9 @@ export class MarketingMemoryEngine {
         params.evidenceReference,
         params.sourceType,
         confidence,
+        maturity,
+        evidenceCount,
+        verifiedRevenueINR,
         now,
         now
       );
@@ -56,8 +132,62 @@ export class MarketingMemoryEngine {
       evidenceReference: params.evidenceReference,
       sourceType: params.sourceType,
       confidence,
+      maturity,
+      evidenceCount,
+      verifiedRevenueINR,
       verifiedAt: now,
       createdAt: now,
+    };
+  }
+
+  /**
+   * Updates an existing memory's maturity based on new observations.
+   */
+  public updateMaturity(
+    id: string,
+    params: {
+      evidenceCount: number;
+      sourceType?: EvidenceSourceType;
+      verifiedRevenueINR?: number;
+      payingCustomersCount?: number;
+      netContributionINR?: number;
+      config?: Partial<EvidenceThresholdConfig>;
+    }
+  ): MarketingMemoryRecord {
+    const existing = this.getMemory(id);
+    if (!existing) throw new Error(`Memory ${id} not found`);
+
+    const sourceType = params.sourceType || existing.sourceType;
+    const verifiedRev = params.verifiedRevenueINR !== undefined ? params.verifiedRevenueINR : existing.verifiedRevenueINR;
+
+    const newMaturity = this.calculateMaturity({
+      evidenceCount: params.evidenceCount,
+      sourceType,
+      verifiedRevenueINR: verifiedRev,
+      payingCustomersCount: params.payingCustomersCount,
+      netContributionINR: params.netContributionINR,
+      config: params.config,
+    });
+
+    const now = new Date().toISOString();
+
+    this.db
+      .prepare(
+        `UPDATE marketing_memories SET
+           maturity = ?,
+           evidence_count = ?,
+           verified_revenue_inr = ?,
+           verified_at = ?
+         WHERE id = ?`
+      )
+      .run(newMaturity, params.evidenceCount, verifiedRev, now, id);
+
+    return {
+      ...existing,
+      maturity: newMaturity,
+      evidenceCount: params.evidenceCount,
+      verifiedRevenueINR: verifiedRev,
+      verifiedAt: now,
     };
   }
 
@@ -90,6 +220,9 @@ export class MarketingMemoryEngine {
       evidenceReference: r.evidence_reference,
       sourceType: r.source_type as EvidenceSourceType,
       confidence: r.confidence,
+      maturity: (r.maturity as MarketingMemoryMaturity) || 'HYPOTHESIS',
+      evidenceCount: r.evidence_count || 0,
+      verifiedRevenueINR: r.verified_revenue_inr || 0,
       verifiedAt: r.verified_at,
       createdAt: r.created_at,
     }));
@@ -113,6 +246,9 @@ export class MarketingMemoryEngine {
       evidenceReference: r.evidence_reference,
       sourceType: r.source_type as EvidenceSourceType,
       confidence: r.confidence,
+      maturity: (r.maturity as MarketingMemoryMaturity) || 'HYPOTHESIS',
+      evidenceCount: r.evidence_count || 0,
+      verifiedRevenueINR: r.verified_revenue_inr || 0,
       verifiedAt: r.verified_at,
       createdAt: r.created_at,
     };

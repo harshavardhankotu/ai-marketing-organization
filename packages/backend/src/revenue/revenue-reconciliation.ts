@@ -2,11 +2,14 @@ import { randomUUID } from 'crypto';
 import { getDb } from '../db/client.js';
 import {
   DataClassification,
+  ImmutableTruthEvent,
+  ImmutableTruthEventType,
   PaymentGateway,
   PaymentMethod,
   RevenueReconciliationSummary,
   RevenueTruthSummary,
   TransactionRecord,
+  TreatmentPlanRecord,
 } from '@ai-marketing/shared';
 import { CustomerJourneyTracker } from './customer-journey-tracker.js';
 
@@ -15,6 +18,359 @@ export class RevenueReconciliationEngine {
     return getDb();
   }
   private journeyTracker = new CustomerJourneyTracker();
+
+  /**
+   * Event Sourcing: Records an immutable truth event to the audit event stream.
+   */
+  public recordImmutableTruthEvent(params: {
+    businessId: string;
+    eventType: ImmutableTruthEventType;
+    journeyId?: string;
+    entityId: string;
+    entityType: string;
+    actorId: string;
+    actorType: 'AGENT' | 'CLINIC' | 'PATIENT' | 'SYSTEM' | 'EXTERNAL_GATEWAY';
+    payload: Record<string, unknown>;
+  }): ImmutableTruthEvent {
+    const id = `ite-${randomUUID()}`;
+    const now = new Date().toISOString();
+
+    this.db
+      .prepare(
+        `INSERT INTO immutable_truth_events (
+          id, business_id, event_type, journey_id, entity_id, entity_type,
+          actor_id, actor_type, payload_json, timestamp
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        id,
+        params.businessId,
+        params.eventType,
+        params.journeyId || null,
+        params.entityId,
+        params.entityType,
+        params.actorId,
+        params.actorType,
+        JSON.stringify(params.payload),
+        now
+      );
+
+    return {
+      id,
+      businessId: params.businessId,
+      eventType: params.eventType,
+      journeyId: params.journeyId,
+      entityId: params.entityId,
+      entityType: params.entityType,
+      actorId: params.actorId,
+      actorType: params.actorType,
+      payload: params.payload,
+      timestamp: now,
+    };
+  }
+
+  /**
+   * Lists immutable truth events for a business or specific journey.
+   */
+  public listImmutableTruthEvents(businessId: string, journeyId?: string): ImmutableTruthEvent[] {
+    let rows: any[];
+    if (journeyId) {
+      rows = this.db
+        .prepare(
+          'SELECT * FROM immutable_truth_events WHERE business_id = ? AND journey_id = ? ORDER BY timestamp ASC'
+        )
+        .all(businessId, journeyId);
+    } else {
+      rows = this.db
+        .prepare('SELECT * FROM immutable_truth_events WHERE business_id = ? ORDER BY timestamp ASC')
+        .all(businessId);
+    }
+
+    return rows.map((r) => {
+      let payload = {};
+      try {
+        payload = JSON.parse(r.payload_json);
+      } catch {}
+      return {
+        id: r.id,
+        businessId: r.business_id,
+        eventType: r.event_type as ImmutableTruthEventType,
+        journeyId: r.journey_id || undefined,
+        entityId: r.entity_id,
+        entityType: r.entity_type,
+        actorId: r.actor_id,
+        actorType: r.actor_type as any,
+        payload,
+        timestamp: r.timestamp,
+      };
+    });
+  }
+
+  /**
+   * Records a treatment plan quote.
+   * INVARIANT 2: A treatment plan quote is strictly NOT revenue and does not create a ledger transaction.
+   */
+  public recordTreatmentPlan(params: {
+    businessId: string;
+    journeyId: string;
+    service: string;
+    quotedAmountINR: number;
+    doctorNotes: string;
+    acceptedTreatmentAmountINR?: number;
+    depositAmountINR?: number;
+    paidAmountINR?: number;
+    clinicConfirmation?: 'CONFIRMED' | 'PENDING' | 'REJECTED';
+    confirmationSource?: string;
+    status?: 'PROPOSED' | 'ACCEPTED' | 'REJECTED' | 'IN_PROGRESS' | 'COMPLETED';
+    treatmentPlanReference?: string;
+  }): TreatmentPlanRecord {
+    if (params.quotedAmountINR <= 0) {
+      throw new Error('Treatment plan quote must be greater than zero.');
+    }
+
+    const id = `tp-${randomUUID()}`;
+    const now = new Date().toISOString();
+    const acceptedAmount = params.acceptedTreatmentAmountINR ?? params.quotedAmountINR;
+    const depositAmount = params.depositAmountINR ?? 0;
+    const paidAmount = params.paidAmountINR ?? 0;
+    const outstanding = Math.max(0, acceptedAmount - (depositAmount + paidAmount));
+    const confirmation = params.clinicConfirmation || 'PENDING';
+    const status = params.status || 'PROPOSED';
+    const source = params.confirmationSource || 'MANUAL';
+    const ref = params.treatmentPlanReference || `TP-REF-${Math.floor(100000 + Math.random() * 900000)}`;
+
+    this.db
+      .prepare(
+        `INSERT INTO treatment_plans (
+          id, business_id, journey_id, service, quoted_amount_inr,
+          accepted_treatment_amount_inr, deposit_amount_inr, paid_amount_inr,
+          outstanding_amount_inr, doctor_notes, clinic_confirmation,
+          confirmation_source, confirmation_timestamp, status,
+          treatment_plan_reference, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        id,
+        params.businessId,
+        params.journeyId,
+        params.service,
+        params.quotedAmountINR,
+        acceptedAmount,
+        depositAmount,
+        paidAmount,
+        outstanding,
+        params.doctorNotes,
+        confirmation,
+        source,
+        now,
+        status,
+        ref,
+        now,
+        now
+      );
+
+    // Emit immutable truth event
+    this.recordImmutableTruthEvent({
+      businessId: params.businessId,
+      eventType: status === 'ACCEPTED' ? 'TREATMENT_ACCEPTED' : 'TREATMENT_QUOTED',
+      journeyId: params.journeyId,
+      entityId: id,
+      entityType: 'TREATMENT_PLAN',
+      actorId: 'clinic_doctor',
+      actorType: 'CLINIC',
+      payload: {
+        service: params.service,
+        quotedAmountINR: params.quotedAmountINR,
+        acceptedAmountINR: acceptedAmount,
+        outstandingAmountINR: outstanding,
+        status,
+        clinicConfirmation: confirmation,
+      },
+    });
+
+    return {
+      id,
+      businessId: params.businessId,
+      journeyId: params.journeyId,
+      service: params.service,
+      quotedAmountINR: params.quotedAmountINR,
+      acceptedTreatmentAmountINR: acceptedAmount,
+      depositAmountINR: depositAmount,
+      paidAmountINR: paidAmount,
+      outstandingAmountINR: outstanding,
+      doctorNotes: params.doctorNotes,
+      clinicConfirmation: confirmation,
+      confirmationSource: source,
+      confirmationTimestamp: now,
+      status,
+      treatmentPlanReference: ref,
+      createdAt: now,
+      updatedAt: now,
+    };
+  }
+
+  /**
+   * Retrieves treatment plans for a journey.
+   */
+  public getTreatmentPlans(journeyId: string): TreatmentPlanRecord[] {
+    const rows = this.db
+      .prepare('SELECT * FROM treatment_plans WHERE journey_id = ? ORDER BY created_at DESC')
+      .all(journeyId) as any[];
+
+    return rows.map((r) => ({
+      id: r.id,
+      businessId: r.business_id,
+      journeyId: r.journey_id,
+      service: r.service,
+      quotedAmountINR: r.quoted_amount_inr,
+      acceptedTreatmentAmountINR: r.accepted_treatment_amount_inr,
+      depositAmountINR: r.deposit_amount_inr,
+      paidAmountINR: r.paid_amount_inr,
+      outstandingAmountINR: r.outstanding_amount_inr,
+      doctorNotes: r.doctor_notes,
+      clinicConfirmation: r.clinic_confirmation,
+      confirmationSource: r.confirmation_source,
+      confirmationTimestamp: r.confirmation_timestamp,
+      status: r.status,
+      treatmentPlanReference: r.treatment_plan_reference,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    }));
+  }
+
+  /**
+   * Records verified deposit or treatment payment linked to a treatment plan.
+   * INVARIANT 1: Consultation cannot become customer without treatment acceptance.
+   * INVARIANT 3: Quoted amount cannot become paid amount (deposit ₹20,000 -> revenue ₹20,000, outstanding ₹130,000).
+   * INVARIANT 4: External evidence (gateway ref or bank UTR) is strictly required.
+   */
+  public recordTreatmentPayment(params: {
+    businessId: string;
+    organizationId?: string;
+    journeyId: string;
+    treatmentPlanId: string;
+    amountINR: number;
+    paymentMethod: PaymentMethod;
+    paymentGateway?: PaymentGateway;
+    transactionRef: string;
+    invoiceNumber: string;
+    verificationSource: string;
+    verifiedByUserId: string;
+    serviceRendered?: string;
+  }): { transaction: TransactionRecord; treatmentPlan: TreatmentPlanRecord } {
+    // 1. Invariant 4: Require external payment evidence
+    if (!params.transactionRef || params.transactionRef.length < 6) {
+      throw new Error('External payment evidence (valid gateway transaction ID or bank UTR) is required.');
+    }
+
+    // 2. Fetch Treatment Plan
+    const tplan = this.db
+      .prepare('SELECT * FROM treatment_plans WHERE id = ? AND journey_id = ?')
+      .get(params.treatmentPlanId, params.journeyId) as any;
+
+    if (!tplan) {
+      throw new Error(`Treatment plan ${params.treatmentPlanId} not found for journey ${params.journeyId}`);
+    }
+
+    // 3. Invariant 1: Consultation cannot become customer without treatment acceptance
+    if (tplan.clinic_confirmation !== 'CONFIRMED' || (tplan.status !== 'ACCEPTED' && tplan.status !== 'IN_PROGRESS')) {
+      throw new Error('Cannot convert consultation to customer: treatment plan has not been accepted and confirmed by clinic.');
+    }
+
+    // 4. Record the verified revenue transaction for the actual paid amount (NOT the quote!)
+    const tx = this.recordVerifiedManualRevenue({
+      businessId: params.businessId,
+      organizationId: params.organizationId,
+      journeyId: params.journeyId,
+      invoiceNumber: params.invoiceNumber,
+      amountINR: params.amountINR,
+      paymentMethod: params.paymentMethod,
+      transactionRef: params.transactionRef,
+      verificationSource: params.verificationSource,
+      verifiedByUserId: params.verifiedByUserId,
+      serviceRendered: params.serviceRendered || tplan.service,
+    });
+
+    // 5. Update Treatment Plan Balances
+    const newPaid = tplan.paid_amount_inr + params.amountINR;
+    const newDeposit = tplan.deposit_amount_inr + params.amountINR;
+    const newOutstanding = Math.max(0, tplan.accepted_treatment_amount_inr - newPaid);
+    const newStatus = newOutstanding === 0 ? 'COMPLETED' : 'IN_PROGRESS';
+    const now = new Date().toISOString();
+
+    this.db
+      .prepare(
+        `UPDATE treatment_plans SET
+           deposit_amount_inr = ?,
+           paid_amount_inr = ?,
+           outstanding_amount_inr = ?,
+           status = ?,
+           updated_at = ?
+         WHERE id = ?`
+      )
+      .run(newDeposit, newPaid, newOutstanding, newStatus, now, params.treatmentPlanId);
+
+    // 6. Elevate journey stage to CUSTOMER upon verified payment
+    this.db
+      .prepare(
+        "UPDATE customer_journeys SET stage = 'CUSTOMER', updated_at = datetime('now') WHERE id = ?"
+      )
+      .run(params.journeyId);
+
+    // 7. Emit immutable truth events
+    this.recordImmutableTruthEvent({
+      businessId: params.businessId,
+      eventType: 'PAYMENT_RECEIVED',
+      journeyId: params.journeyId,
+      entityId: tx.id,
+      entityType: 'TRANSACTION',
+      actorId: params.verifiedByUserId,
+      actorType: 'CLINIC',
+      payload: {
+        invoiceNumber: params.invoiceNumber,
+        amountPaidINR: params.amountINR,
+        paymentMethod: params.paymentMethod,
+        transactionRef: params.transactionRef,
+      },
+    });
+
+    this.recordImmutableTruthEvent({
+      businessId: params.businessId,
+      eventType: 'PAYMENT_VERIFIED',
+      journeyId: params.journeyId,
+      entityId: tx.id,
+      entityType: 'TRANSACTION',
+      actorId: params.verifiedByUserId,
+      actorType: 'CLINIC',
+      payload: {
+        verificationSource: params.verificationSource,
+        outstandingAmountINR: newOutstanding,
+        treatmentStatus: newStatus,
+      },
+    });
+
+    const updatedPlan: TreatmentPlanRecord = {
+      id: tplan.id,
+      businessId: tplan.business_id,
+      journeyId: tplan.journey_id,
+      service: tplan.service,
+      quotedAmountINR: tplan.quoted_amount_inr,
+      acceptedTreatmentAmountINR: tplan.accepted_treatment_amount_inr,
+      depositAmountINR: newDeposit,
+      paidAmountINR: newPaid,
+      outstandingAmountINR: newOutstanding,
+      doctorNotes: tplan.doctor_notes,
+      clinicConfirmation: tplan.clinic_confirmation,
+      confirmationSource: tplan.confirmation_source,
+      confirmationTimestamp: tplan.confirmation_timestamp,
+      status: newStatus,
+      treatmentPlanReference: tplan.treatment_plan_reference,
+      createdAt: tplan.created_at,
+      updatedAt: now,
+    };
+
+    return { transaction: tx, treatmentPlan: updatedPlan };
+  }
 
   recordTransaction(params: {
     businessId: string;

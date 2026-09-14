@@ -442,7 +442,7 @@ describe('Autonomous Growth Engine, Attribution Hierarchy & Real Economics Test 
 
       expect(dryRunResult.overallSuccess).toBe(true);
       expect(dryRunResult.isDryRun).toBe(true);
-      expect(dryRunResult.steps.length).toBe(9);
+      expect(dryRunResult.steps.length).toBe(12);
 
       // Verify that database was NOT altered
       const db = getDb();
@@ -453,7 +453,7 @@ describe('Autonomous Growth Engine, Attribution Hierarchy & Real Economics Test 
       expect(txCount.count).toBe(0); // Zero fake transaction entries created
     });
 
-    it('Fails step 2 when doctor notes are missing or insufficient', async () => {
+    it('Fails step 3 when doctor notes are missing or insufficient', async () => {
       const result = await firstCustomerPipeline.executePipeline({
         businessId,
         journeyId: 'journey-961c351f-71d2-4d7b-a842-b6858984b288',
@@ -468,11 +468,11 @@ describe('Autonomous Growth Engine, Attribution Hierarchy & Real Economics Test 
         dryRun: true,
       });
 
-      expect(dryRunResultStepFailed(result, 2)).toBe(true);
+      expect(dryRunResultStepFailed(result, 3)).toBe(true);
       expect(result.overallSuccess).toBe(false);
     });
 
-    it('Fails step 3 when payment transaction reference is missing', async () => {
+    it('Fails step 6 when payment transaction reference is missing', async () => {
       const result = await firstCustomerPipeline.executePipeline({
         businessId,
         journeyId: 'journey-961c351f-71d2-4d7b-a842-b6858984b288',
@@ -487,7 +487,7 @@ describe('Autonomous Growth Engine, Attribution Hierarchy & Real Economics Test 
         dryRun: true,
       });
 
-      expect(dryRunResultStepFailed(result, 3)).toBe(true);
+      expect(dryRunResultStepFailed(result, 6)).toBe(true);
       expect(result.overallSuccess).toBe(false);
     });
   });

@@ -1,6 +1,7 @@
 import { getDb } from '../db/client.js';
 import { RealEconomicsSummary } from '@ai-marketing/shared';
 import { RevenueReconciliationEngine } from './revenue-reconciliation.js';
+import { QuotaManager } from '../ai/quota-manager.js';
 
 export class RealEconomicsEngine {
   private get db() {
@@ -84,6 +85,108 @@ export class RealEconomicsEngine {
     const netContributionINR = attributedRealRevenueINR - verifiedAdSpendINR;
     const grossMarginPercent = 65.0; // Standard clinical contribution margin baseline
 
+    // =========================================================================
+    // ORGANIC ECONOMICS (Zero-Budget Growth Mode)
+    // =========================================================================
+    const orgVisitorRow = this.db
+      .prepare(
+        `SELECT COUNT(*) as count FROM customer_journeys 
+         WHERE business_id = ? AND classification = 'REAL' 
+           AND first_touch_channel NOT IN ('GOOGLE_SEARCH_ADS', 'META_ADS')`
+      )
+      .get(businessId) as any;
+    const organicVisitors = orgVisitorRow?.count || 0;
+
+    const orgLeadRow = this.db
+      .prepare(
+        `SELECT COUNT(*) as count FROM customer_journeys 
+         WHERE business_id = ? AND classification = 'REAL' 
+           AND stage IN ('LEAD', 'QUALIFIED_LEAD', 'OPPORTUNITY', 'CUSTOMER')
+           AND first_touch_channel NOT IN ('GOOGLE_SEARCH_ADS', 'META_ADS')`
+      )
+      .get(businessId) as any;
+    const organicLeads = orgLeadRow?.count || 0;
+
+    const orgQualLeadRow = this.db
+      .prepare(
+        `SELECT COUNT(*) as count FROM customer_journeys 
+         WHERE business_id = ? AND classification = 'REAL' 
+           AND stage IN ('QUALIFIED_LEAD', 'OPPORTUNITY', 'CUSTOMER')
+           AND first_touch_channel NOT IN ('GOOGLE_SEARCH_ADS', 'META_ADS')`
+      )
+      .get(businessId) as any;
+    const organicQualifiedLeads = orgQualLeadRow?.count || 0;
+
+    const orgApptRow = this.db
+      .prepare(
+        `SELECT COUNT(*) as count 
+         FROM appointments a
+         JOIN customer_journeys j ON a.journey_id = j.id
+         WHERE a.business_id = ? AND j.classification = 'REAL'
+           AND j.first_touch_channel NOT IN ('GOOGLE_SEARCH_ADS', 'META_ADS')`
+      )
+      .get(businessId) as any;
+    const organicConsultations = orgApptRow?.count || 0;
+
+    const orgCustRow = this.db
+      .prepare(
+        `SELECT COUNT(*) as count FROM customer_journeys 
+         WHERE business_id = ? AND classification = 'REAL' AND stage = 'CUSTOMER'
+           AND first_touch_channel NOT IN ('GOOGLE_SEARCH_ADS', 'META_ADS')`
+      )
+      .get(businessId) as any;
+    const organicCustomers = orgCustRow?.count || 0;
+
+    const orgRevRow = this.db
+      .prepare(
+        `SELECT SUM(t.amount_inr) as rev
+         FROM transactions t
+         JOIN customer_journeys j ON t.journey_id = j.id
+         WHERE t.business_id = ? AND t.status = 'SUCCESS' AND t.classification = 'REAL'
+           AND j.first_touch_channel NOT IN ('GOOGLE_SEARCH_ADS', 'META_ADS')`
+      )
+      .get(businessId) as any;
+    const organicVerifiedRevenueINR = orgRevRow?.rev || 0;
+    const organicAttributedRevenueINR = organicVerifiedRevenueINR;
+
+    const revenuePerOrganicLeadINR: number | 'UNKNOWN' =
+      organicLeads > 0 ? Math.round((organicVerifiedRevenueINR / organicLeads) * 100) / 100 : 'UNKNOWN';
+    const revenuePerOrganicCustomerINR: number | 'UNKNOWN' =
+      organicCustomers > 0 ? Math.round((organicVerifiedRevenueINR / organicCustomers) * 100) / 100 : 'UNKNOWN';
+    const organicConversionRatePercent: number | 'UNKNOWN' =
+      organicVisitors > 0 ? Math.round((organicCustomers / organicVisitors) * 10000) / 100 : 'UNKNOWN';
+
+    // AI Cost Free-Tier Allowance Check
+    let isFreeTier = false;
+    try {
+      const quotaStatus = QuotaManager.getInstance().getStatus();
+      isFreeTier = quotaStatus.freeTierActive && quotaStatus.geminiRequestsToday <= quotaStatus.geminiMaxDailyRequests;
+    } catch {
+      isFreeTier = false;
+    }
+
+    let isZeroBudget = false;
+    try {
+      const policyRow = this.db
+        .prepare('SELECT active_mode FROM autonomy_policy WHERE business_id = ?')
+        .get(businessId) as any;
+      isZeroBudget = policyRow?.active_mode === 'ZERO_BUDGET_GROWTH';
+    } catch {
+      isZeroBudget = false;
+    }
+
+    let totalAiCost = 0;
+    try {
+      const costRow = this.db
+        .prepare('SELECT SUM(estimated_cost_inr) as cost FROM ai_cost_logs WHERE business_id = ?')
+        .get(businessId) as any;
+      totalAiCost = costRow?.cost || 0;
+    } catch {
+      totalAiCost = 0;
+    }
+
+    const aiCostStatus: 'VERIFIED' | 'ESTIMATED' = (isFreeTier || isZeroBudget || totalAiCost === 0) ? 'VERIFIED' : 'ESTIMATED';
+
     return {
       actualAdSpendINR: verifiedAdSpendINR,
       verifiedRealRevenueINR,
@@ -98,6 +201,18 @@ export class RealEconomicsEngine {
       netContributionINR,
       verifiedRoas,
       verifiedRoi,
+      // Organic Economics
+      organicVisitors,
+      organicLeads,
+      organicQualifiedLeads,
+      organicConsultations,
+      organicCustomers,
+      organicVerifiedRevenueINR,
+      organicAttributedRevenueINR,
+      revenuePerOrganicLeadINR,
+      revenuePerOrganicCustomerINR,
+      organicConversionRatePercent,
+      aiCostStatus,
     };
   }
 }

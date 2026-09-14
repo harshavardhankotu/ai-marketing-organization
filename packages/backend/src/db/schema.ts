@@ -575,12 +575,16 @@ CREATE TABLE IF NOT EXISTS marketing_memories (
   evidence_reference TEXT NOT NULL,
   source_type TEXT NOT NULL,
   confidence REAL NOT NULL DEFAULT 0.5,
+  maturity TEXT NOT NULL DEFAULT 'HYPOTHESIS',
+  evidence_count INTEGER NOT NULL DEFAULT 0,
+  verified_revenue_inr REAL NOT NULL DEFAULT 0.0,
   verified_at TEXT NOT NULL DEFAULT (datetime('now')),
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_memories_biz ON marketing_memories(business_id);
 CREATE INDEX IF NOT EXISTS idx_memories_dim ON marketing_memories(dimension);
+CREATE INDEX IF NOT EXISTS idx_memories_maturity ON marketing_memories(maturity);
 
 -- 29. Campaign Knowledge Graph (Nodes and Provenance Edges)
 CREATE TABLE IF NOT EXISTS knowledge_graph_nodes (
@@ -597,13 +601,17 @@ CREATE TABLE IF NOT EXISTS knowledge_graph_edges (
   source_node_id TEXT NOT NULL,
   target_node_id TEXT NOT NULL,
   relation TEXT NOT NULL,
+  verification_status TEXT NOT NULL DEFAULT 'UNVERIFIED',
+  evidence_id TEXT,
   weight REAL DEFAULT 1.0,
+  timestamp TEXT NOT NULL DEFAULT (datetime('now')),
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (source_node_id) REFERENCES knowledge_graph_nodes(id) ON DELETE CASCADE,
   FOREIGN KEY (target_node_id) REFERENCES knowledge_graph_nodes(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_kg_edges_source ON knowledge_graph_edges(source_node_id);
 CREATE INDEX IF NOT EXISTS idx_kg_edges_target ON knowledge_graph_edges(target_node_id);
+CREATE INDEX IF NOT EXISTS idx_kg_edges_status ON knowledge_graph_edges(verification_status);
 
 -- 30. Predictions & Prediction vs Outcome
 CREATE TABLE IF NOT EXISTS predictions (
@@ -611,6 +619,7 @@ CREATE TABLE IF NOT EXISTS predictions (
   decision_id TEXT NOT NULL,
   agent_id TEXT NOT NULL,
   business_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'PREDICTION_PENDING',
   expected_conversion_rate REAL,
   expected_cpl_inr REAL,
   expected_cac_inr REAL,
@@ -629,6 +638,7 @@ CREATE TABLE IF NOT EXISTS predictions (
 );
 CREATE INDEX IF NOT EXISTS idx_predictions_agent ON predictions(agent_id);
 CREATE INDEX IF NOT EXISTS idx_predictions_biz ON predictions(business_id);
+CREATE INDEX IF NOT EXISTS idx_predictions_status ON predictions(status);
 
 -- 31. Agent Scorecards
 CREATE TABLE IF NOT EXISTS agent_scorecards (
@@ -637,6 +647,11 @@ CREATE TABLE IF NOT EXISTS agent_scorecards (
   division TEXT NOT NULL,
   test_decisions_count INTEGER NOT NULL DEFAULT 0,
   real_decisions_count INTEGER NOT NULL DEFAULT 0,
+  pending_predictions_count INTEGER NOT NULL DEFAULT 0,
+  resolved_predictions_count INTEGER NOT NULL DEFAULT 0,
+  sample_size_tier TEXT NOT NULL DEFAULT 'PILOT_SAMPLE',
+  confidence_level TEXT NOT NULL DEFAULT 'LOW',
+  is_top_performer INTEGER NOT NULL DEFAULT 0,
   accepted_recommendations INTEGER NOT NULL DEFAULT 0,
   rejected_recommendations INTEGER NOT NULL DEFAULT 0,
   successful_actions INTEGER NOT NULL DEFAULT 0,
@@ -666,6 +681,178 @@ CREATE TABLE IF NOT EXISTS autonomy_policy (
   requires_owner_approval_above_inr REAL NOT NULL DEFAULT 10000.0,
   stop_conditions_triggered INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+);
+
+-- 34. Treatment Plans (Quotes vs Payments Separation)
+CREATE TABLE IF NOT EXISTS treatment_plans (
+  id TEXT PRIMARY KEY,
+  business_id TEXT NOT NULL,
+  journey_id TEXT NOT NULL,
+  service TEXT NOT NULL,
+  quoted_amount_inr REAL NOT NULL,
+  accepted_treatment_amount_inr REAL NOT NULL DEFAULT 0.0,
+  deposit_amount_inr REAL NOT NULL DEFAULT 0.0,
+  paid_amount_inr REAL NOT NULL DEFAULT 0.0,
+  outstanding_amount_inr REAL NOT NULL DEFAULT 0.0,
+  doctor_notes TEXT NOT NULL DEFAULT '',
+  clinic_confirmation TEXT NOT NULL DEFAULT 'PENDING',
+  confirmation_source TEXT NOT NULL DEFAULT 'MANUAL',
+  confirmation_timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+  status TEXT NOT NULL DEFAULT 'PROPOSED',
+  treatment_plan_reference TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE,
+  FOREIGN KEY (journey_id) REFERENCES customer_journeys(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_tplans_biz ON treatment_plans(business_id);
+CREATE INDEX IF NOT EXISTS idx_tplans_journey ON treatment_plans(journey_id);
+
+-- 35. Immutable Truth Events (Event Sourcing Audit Log)
+CREATE TABLE IF NOT EXISTS immutable_truth_events (
+  id TEXT PRIMARY KEY,
+  business_id TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  journey_id TEXT,
+  entity_id TEXT NOT NULL,
+  entity_type TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  actor_type TEXT NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_ite_biz ON immutable_truth_events(business_id);
+CREATE INDEX IF NOT EXISTS idx_ite_journey ON immutable_truth_events(journey_id);
+CREATE INDEX IF NOT EXISTS idx_ite_type ON immutable_truth_events(event_type);
+
+-- 36. Organic Marketing Channels
+CREATE TABLE IF NOT EXISTS organic_channels (
+  id TEXT PRIMARY KEY,
+  business_id TEXT NOT NULL,
+  channel TEXT NOT NULL,
+  strategy TEXT NOT NULL,
+  content_themes_json TEXT NOT NULL DEFAULT '[]',
+  call_to_action TEXT NOT NULL,
+  tracking_template TEXT NOT NULL,
+  source_evidence TEXT NOT NULL,
+  active_status TEXT NOT NULL DEFAULT 'ACTIVE',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_org_chan_biz ON organic_channels(business_id);
+
+-- 37. Organic Content Assets & Medical Compliance Approval
+CREATE TABLE IF NOT EXISTS organic_content (
+  id TEXT PRIMARY KEY,
+  business_id TEXT NOT NULL,
+  channel TEXT NOT NULL,
+  campaign_id TEXT NOT NULL,
+  content_type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  call_to_action TEXT NOT NULL,
+  target_keyword TEXT,
+  tracking_params_json TEXT NOT NULL,
+  created_by_agent TEXT NOT NULL,
+  has_medical_claim INTEGER NOT NULL DEFAULT 0,
+  medical_claim_source TEXT,
+  approval_status TEXT NOT NULL DEFAULT 'AI_DRAFT',
+  publication_status TEXT NOT NULL DEFAULT 'DRAFT',
+  source_evidence TEXT,
+  clinic_approved_by TEXT,
+  approved_at TEXT,
+  published_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_org_content_biz ON organic_content(business_id);
+CREATE INDEX IF NOT EXISTS idx_org_content_status ON organic_content(approval_status);
+
+-- 38. Local Landing Pages
+CREATE TABLE IF NOT EXISTS local_landing_pages (
+  slug TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  clinic_name TEXT NOT NULL,
+  location TEXT NOT NULL,
+  service TEXT NOT NULL,
+  contact_phone TEXT NOT NULL,
+  whatsapp_number TEXT NOT NULL,
+  cta_text TEXT NOT NULL,
+  canonical_url TEXT NOT NULL,
+  meta_description TEXT NOT NULL,
+  appointment_path TEXT NOT NULL,
+  verified_doctor TEXT NOT NULL,
+  address TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 39. Clinical Review Requests (Post-Appointment Verification)
+CREATE TABLE IF NOT EXISTS review_requests (
+  id TEXT PRIMARY KEY,
+  business_id TEXT NOT NULL,
+  customer_id TEXT NOT NULL,
+  journey_id TEXT NOT NULL,
+  appointment_id TEXT NOT NULL,
+  clinic_confirmation TEXT NOT NULL DEFAULT 'CONFIRMED',
+  channel TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'QUEUED',
+  request_timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+  feedback_score REAL,
+  external_review_platform TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_rev_req_biz ON review_requests(business_id);
+
+-- 40. Referral Partnerships & Local Community Proposals
+CREATE TABLE IF NOT EXISTS referral_partnerships (
+  id TEXT PRIMARY KEY,
+  business_id TEXT NOT NULL,
+  category TEXT NOT NULL,
+  partner_name TEXT NOT NULL,
+  contact_person TEXT,
+  proposal_draft TEXT NOT NULL,
+  offer_terms TEXT NOT NULL,
+  approval_status TEXT NOT NULL DEFAULT 'DRAFT',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_ref_part_biz ON referral_partnerships(business_id);
+
+-- 41. Ethical Direct Outreach & Rate Limits Log
+CREATE TABLE IF NOT EXISTS direct_outreach_log (
+  id TEXT PRIMARY KEY,
+  business_id TEXT NOT NULL,
+  segment TEXT NOT NULL,
+  prospect_name TEXT NOT NULL,
+  channel TEXT NOT NULL,
+  message_draft TEXT NOT NULL,
+  compliance_checked INTEGER NOT NULL DEFAULT 0,
+  human_approved INTEGER NOT NULL DEFAULT 0,
+  dispatched INTEGER NOT NULL DEFAULT 0,
+  dispatch_timestamp TEXT,
+  response_status TEXT NOT NULL DEFAULT 'PENDING',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_outreach_biz ON direct_outreach_log(business_id);
+
+-- 42. Google Business Profile Boundary
+CREATE TABLE IF NOT EXISTS gbp_interactions (
+  business_id TEXT PRIMARY KEY,
+  search_impressions INTEGER,
+  map_impressions INTEGER,
+  call_clicks INTEGER NOT NULL DEFAULT 0,
+  website_clicks INTEGER NOT NULL DEFAULT 0,
+  direction_requests INTEGER NOT NULL DEFAULT 0,
+  reviews_count INTEGER NOT NULL DEFAULT 0,
+  average_rating REAL NOT NULL DEFAULT 0.0,
+  last_sync_timestamp TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
 );
 `;

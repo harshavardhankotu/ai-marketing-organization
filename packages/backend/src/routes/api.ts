@@ -29,6 +29,11 @@ import { CampaignKnowledgeGraph } from '../knowledge/knowledge-graph.js';
 import { AgentScorecardEngine } from '../analytics/agent-scorecard.js';
 import { AutonomyController } from '../control-plane/autonomy-controller.js';
 import { FirstCustomerAutomationPipeline } from '../workflows/first-customer-automation.js';
+import { OrganicChannelManager } from '../organic/organic-channel-manager.js';
+import { OrganicContentEngine } from '../organic/organic-content-engine.js';
+import { LocalLandingPageEngine } from '../organic/local-landing-pages.js';
+import { ReviewAndReferralEngine } from '../organic/review-and-referral-engine.js';
+import { GoogleBusinessProfileAdapter } from '../organic/gbp-integration.js';
 
 export type AppVariables = {
   organizationId: string;
@@ -45,7 +50,8 @@ apiRouter.use('*', async (c, next) => {
   if (
     path.endsWith('/health') ||
     path.includes('/public/') ||
-    path.includes('/webhooks/')
+    path.includes('/webhooks/') ||
+    path.includes('/landing-pages')
   ) {
     c.set('organizationId', c.req.header('x-organization-id') || 'org_smilekraft_01');
     c.set('userId', 'usr_public_lead');
@@ -1072,6 +1078,111 @@ apiRouter.get('/knowledge-graph', (c) => {
 });
 
 // ==========================================
+// IMMUTABLE TRUTH EVENTS & EVENT SOURCING
+// ==========================================
+apiRouter.get('/truth/events', (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  const businessId = business?.id || 'biz_smilekraft_hyd';
+  const journeyId = c.req.query('journeyId');
+  const events = revenueEngine.listImmutableTruthEvents(businessId, journeyId);
+  return c.json({ success: true, data: events, total: events.length });
+});
+
+// ==========================================
+// TREATMENT PLANS (QUOTES VS PAYMENTS)
+// ==========================================
+apiRouter.get('/treatment-plans/:journeyId', (c) => {
+  const journeyId = c.req.param('journeyId');
+  const plans = revenueEngine.getTreatmentPlans(journeyId);
+  return c.json({ success: true, data: plans, total: plans.length });
+});
+
+apiRouter.post('/treatment-plans', async (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  const businessId = business?.id || 'biz_smilekraft_hyd';
+  const body = await c.req.json();
+
+  if (!body.journeyId || !body.service || !body.quotedAmountINR || !body.doctorNotes) {
+    return c.json({
+      success: false,
+      error: 'Missing required treatment plan fields: journeyId, service, quotedAmountINR, doctorNotes',
+    }, 400);
+  }
+
+  try {
+    const plan = revenueEngine.recordTreatmentPlan({
+      businessId,
+      journeyId: body.journeyId,
+      service: body.service,
+      quotedAmountINR: body.quotedAmountINR,
+      acceptedTreatmentAmountINR: body.acceptedTreatmentAmountINR,
+      doctorNotes: body.doctorNotes,
+      clinicConfirmation: body.clinicConfirmation || 'CONFIRMED',
+      confirmationSource: body.confirmationSource || 'CLINIC_CONSULTATION',
+      status: body.status || 'ACCEPTED',
+    });
+    return c.json({ success: true, data: plan }, 201);
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 400);
+  }
+});
+
+// ==========================================
+// CAMPAIGN OPTIMIZATION & AUTONOMY
+// ==========================================
+apiRouter.post('/campaigns/optimize', async (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  const businessId = business?.id || 'biz_smilekraft_hyd';
+  const body = await c.req.json();
+
+  if (!body.evidence || body.evidence.trim().length === 0) {
+    return c.json({
+      success: false,
+      error: 'EVIDENCE GATE REJECTION: Cannot execute optimization without verifiable external evidence.',
+    }, 400);
+  }
+
+  const proposal = {
+    id: body.id || `opt-${Date.now()}`,
+    businessId,
+    agentId: body.agentId || 'agt_paid_search_01',
+    actionType: body.actionType || 'INCREASE_KEYWORD',
+    targetEntityId: body.targetEntityId || 'kw-invisalign-banjara-hills',
+    evidence: body.evidence,
+    reason: body.reason || 'Evidence-gated campaign adjustment',
+    confidence: body.confidence ?? 0.85,
+    expectedImpact: body.expectedImpact || 'Optimized ROI',
+    budgetImpactINR: body.budgetImpactINR ?? 1500,
+    risk: body.risk || 'LOW',
+    approvalStatus: 'PROPOSED' as const,
+    createdAt: new Date().toISOString(),
+  };
+
+  const result = autonomyController.executeOptimizationProposal(businessId, proposal);
+  if (!result.success) {
+    return c.json({ success: false, error: result.rationale }, 403);
+  }
+  return c.json({ success: true, data: result });
+});
+
+apiRouter.post('/autonomy/kill-switch', async (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  const businessId = business?.id || 'biz_smilekraft_hyd';
+  const body = await c.req.json();
+  const reason = body.reason || 'Manual emergency kill switch triggered by operator';
+  autonomyController.activateKillSwitch(businessId, reason);
+  return c.json({ success: true, message: 'Kill switch activated. All autonomous actions halted.', reason });
+});
+
+// ==========================================
 // WORKFLOW: FIRST CUSTOMER AUTOMATION
 // ==========================================
 apiRouter.post('/workflows/first-customer', async (c) => {
@@ -1085,6 +1196,8 @@ apiRouter.post('/workflows/first-customer', async (c) => {
     journeyId: body.journeyId,
     appointmentId: body.appointmentId,
     invoiceNumber: body.invoiceNumber,
+    quotedAmountINR: body.quotedAmountINR,
+    paidAmountINR: body.paidAmountINR,
     amountINR: body.amountINR,
     paymentMethod: body.paymentMethod,
     transactionRef: body.transactionRef,
@@ -1092,6 +1205,7 @@ apiRouter.post('/workflows/first-customer', async (c) => {
     serviceRendered: body.serviceRendered,
     doctorNotes: body.doctorNotes,
     dryRun: body.dryRun ?? true,
+    idempotencyKey: body.idempotencyKey,
   });
   return c.json({ success: true, data: result });
 });
@@ -1154,4 +1268,203 @@ apiRouter.get('/google-ads/status', async (c) => {
       developerTokenPreservedAsTransitionHeaderOnly: true,
     }
   });
+});
+
+// ==========================================
+// ZERO-BUDGET ORGANIC GROWTH ENDPOINTS
+// ==========================================
+const organicChannels = new OrganicChannelManager();
+const organicContent = new OrganicContentEngine();
+const landingPages = new LocalLandingPageEngine();
+const reviewReferral = new ReviewAndReferralEngine();
+const gbpAdapter = new GoogleBusinessProfileAdapter();
+
+// 1. Organic Channels Portfolio
+apiRouter.get('/organic/channels', async (c) => {
+  const businessId = c.req.query('businessId') || 'biz_smilekraft_hyd';
+  const channels = organicChannels.listChannels(businessId);
+  return c.json({ success: true, count: channels.length, data: channels });
+});
+
+// 2. Organic Content Drafts & Assets
+apiRouter.get('/organic/content', async (c) => {
+  const businessId = c.req.query('businessId') || 'biz_smilekraft_hyd';
+  const channel = c.req.query('channel') as any;
+  const status = c.req.query('status') as any;
+  const assets = organicContent.listContent({ businessId, channel, approvalStatus: status });
+  return c.json({ success: true, count: assets.length, data: assets });
+});
+
+// 3. Create Content Draft (Medical Compliance Check)
+apiRouter.post('/organic/content', async (c) => {
+  const body = await c.req.json();
+  const businessId = body.businessId || 'biz_smilekraft_hyd';
+  const userId = c.get('userId') || 'usr_owner_01';
+
+  try {
+    const asset = organicContent.createContentDraft({
+      businessId,
+      channel: body.channel,
+      campaignId: body.campaignId || 'cmp_organic_hyd_01',
+      contentType: body.contentType || 'PATIENT_EDUCATION',
+      title: body.title,
+      body: body.body,
+      callToAction: body.callToAction,
+      targetKeyword: body.targetKeyword,
+      createdByAgent: body.createdByAgent || 'agt_content_01',
+      hasMedicalClaim: body.hasMedicalClaim,
+      medicalClaimSource: body.medicalClaimSource,
+      sourceEvidence: body.sourceEvidence,
+    });
+    return c.json({ success: true, data: asset }, 201);
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 400);
+  }
+});
+
+// 4. Approve & Publish Content (Doctor / Owner Signature Required)
+apiRouter.post('/organic/content/:id/approve', async (c) => {
+  const contentId = c.req.param('id');
+  const body = await c.req.json().catch(() => ({}));
+  const userId = c.get('userId') || body.approvedByUserId || 'usr_owner_01';
+
+  try {
+    const approved = organicContent.approveContent({
+      contentId,
+      approvedByUserId: userId,
+      publishImmediately: body.publishImmediately ?? true,
+    });
+    return c.json({ success: true, data: approved });
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 400);
+  }
+});
+
+// 5. Local Landing Pages Directory
+apiRouter.get('/organic/landing-pages', async (c) => {
+  const pages = landingPages.listLandingPages();
+  return c.json({ success: true, count: pages.length, data: pages });
+});
+
+// 6. Specific Local Landing Page with JSON-LD
+apiRouter.get('/organic/landing-pages/:slug', async (c) => {
+  const slug = c.req.param('slug');
+  const page = landingPages.getLandingPage(slug);
+  if (!page) {
+    return c.json({ success: false, error: `Landing page '${slug}' not found` }, 404);
+  }
+  const jsonLd = landingPages.generateJsonLd(page);
+  return c.json({ success: true, data: page, structuredData: jsonLd });
+});
+
+// 7. Clinical Review Requests (Post-Consultation)
+apiRouter.post('/organic/reviews/request', async (c) => {
+  const body = await c.req.json();
+  const businessId = body.businessId || 'biz_smilekraft_hyd';
+
+  try {
+    const req = reviewReferral.createReviewRequest({
+      businessId,
+      customerId: body.customerId,
+      journeyId: body.journeyId,
+      appointmentId: body.appointmentId,
+      channel: body.channel || 'WHATSAPP',
+    });
+    return c.json({ success: true, data: req }, 201);
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 400);
+  }
+});
+
+apiRouter.get('/organic/reviews', async (c) => {
+  const businessId = c.req.query('businessId') || 'biz_smilekraft_hyd';
+  const reviews = reviewReferral.listReviewRequests(businessId);
+  return c.json({ success: true, count: reviews.length, data: reviews });
+});
+
+// 8. Referral Partnerships
+apiRouter.post('/organic/referrals', async (c) => {
+  const body = await c.req.json();
+  const businessId = body.businessId || 'biz_smilekraft_hyd';
+
+  try {
+    const proposal = reviewReferral.createReferralProposal({
+      businessId,
+      category: body.category || 'LOCAL_COMMUNITY',
+      partnerName: body.partnerName,
+      contactPerson: body.contactPerson,
+      proposalDraft: body.proposalDraft,
+      offerTerms: body.offerTerms,
+    });
+    return c.json({ success: true, data: proposal }, 201);
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 400);
+  }
+});
+
+apiRouter.get('/organic/referrals', async (c) => {
+  const businessId = c.req.query('businessId') || 'biz_smilekraft_hyd';
+  const proposals = reviewReferral.listReferralPartnerships(businessId);
+  return c.json({ success: true, count: proposals.length, data: proposals });
+});
+
+// 9. Ethical Direct Outreach
+apiRouter.post('/organic/outreach', async (c) => {
+  const body = await c.req.json();
+  const businessId = body.businessId || 'biz_smilekraft_hyd';
+
+  try {
+    const draft = reviewReferral.createOutreachDraft({
+      businessId,
+      segment: body.segment || 'Corporate HR HITEC City',
+      prospectName: body.prospectName,
+      channel: body.channel || 'LINKEDIN',
+      messageDraft: body.messageDraft,
+    });
+    return c.json({ success: true, data: draft }, 201);
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 400);
+  }
+});
+
+apiRouter.post('/organic/outreach/:id/dispatch', async (c) => {
+  const outreachId = c.req.param('id');
+  const userId = c.get('userId') || 'usr_owner_01';
+
+  try {
+    const result = reviewReferral.dispatchOutreach({
+      outreachId,
+      approvedByUserId: userId,
+    });
+    return c.json({ success: true, data: result });
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 400);
+  }
+});
+
+apiRouter.get('/organic/outreach', async (c) => {
+  const businessId = c.req.query('businessId') || 'biz_smilekraft_hyd';
+  const logs = reviewReferral.listOutreachLogs(businessId);
+  return c.json({ success: true, count: logs.length, data: logs });
+});
+
+// 10. Google Business Profile Insights
+apiRouter.get('/organic/gbp', async (c) => {
+  const businessId = c.req.query('businessId') || 'biz_smilekraft_hyd';
+  const insights = gbpAdapter.getLocationInsights(businessId);
+  return c.json({ success: true, data: insights });
+});
+
+// 11. Organic Economics
+apiRouter.get('/organic/economics', async (c) => {
+  const businessId = c.req.query('businessId') || 'biz_smilekraft_hyd';
+  const economics = realEconomics.calculate(businessId);
+  return c.json({ success: true, data: economics });
+});
+
+// 12. Zero-Budget Organic Experiments
+apiRouter.get('/organic/experiments', async (c) => {
+  const businessId = c.req.query('businessId') || 'biz_smilekraft_hyd';
+  const experiments = autonomyController.generateZeroBudgetExperiments(businessId);
+  return c.json({ success: true, count: experiments.length, data: experiments });
 });

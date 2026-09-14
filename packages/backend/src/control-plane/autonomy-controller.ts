@@ -6,6 +6,7 @@ import {
   CampaignOptimizationProposal,
   ExperimentCandidateProposal,
   StopConditionEvent,
+  ZeroBudgetExperimentProposal,
 } from '@ai-marketing/shared';
 import { RealEconomicsEngine } from '../revenue/real-economics.js';
 
@@ -89,11 +90,29 @@ export class AutonomyController {
       }
     }
 
+    // ZERO_BUDGET_GROWTH MODE ENFORCEMENT: Enforces strict ₹0 spend limit
+    if (mode === 'ZERO_BUDGET_GROWTH') {
+      this.getBudgetPolicy(businessId);
+      this.db
+        .prepare(
+          `UPDATE autonomy_policy 
+           SET active_mode = 'ZERO_BUDGET_GROWTH', max_autonomous_spend_inr = 0.0, updated_at = datetime('now') 
+           WHERE business_id = ?`
+        )
+        .run(businessId);
+
+      return {
+        success: true,
+        mode: 'ZERO_BUDGET_GROWTH',
+        rationale: 'Operating mode transitioned to ZERO_BUDGET_GROWTH. Paid media spend cap strictly locked at ₹0.',
+      };
+    }
+
     this.getBudgetPolicy(businessId); // Ensure initialized
 
     this.db
       .prepare(
-        'UPDATE autonomy_policy SET active_mode = ?, updated_at = datetime("now") WHERE business_id = ?'
+        `UPDATE autonomy_policy SET active_mode = ?, updated_at = datetime('now') WHERE business_id = ?`
       )
       .run(mode, businessId);
 
@@ -174,7 +193,7 @@ export class AutonomyController {
     const proposals: CampaignOptimizationProposal[] = [];
 
     if (campaign) {
-      // Proposal 1: Increase bid on highest-intent winning search keyword
+      // Proposal 1: Targeted keyword proposal
       proposals.push({
         id: `opt-${randomUUID()}`,
         businessId,
@@ -182,12 +201,12 @@ export class AutonomyController {
         actionType: 'INCREASE_KEYWORD',
         targetEntityId: 'kw-invisalign-banjara-hills',
         evidence: 'Highest lead conversion intent observed in Banjara Hills catchment area.',
-        reason: 'Suresh Reddy converted via Invisalign search query. Expand top-of-page impression share.',
-        confidence: 0.92,
+        reason: 'Suresh Reddy qualified lead inquiry observed for Invisalign search query. Expand top-of-page impression share.',
+        confidence: 0.88,
         expectedImpact: '+25% qualified consultations from Banjara Hills catchment',
         budgetImpactINR: 1500,
         risk: 'LOW',
-        approvalStatus: policy.activeMode === 'CONTROLLED_AUTONOMY' ? 'AUTO_EXECUTED' : 'PROPOSED',
+        approvalStatus: policy.activeMode === 'CONTROLLED_AUTONOMY' ? 'PROPOSED' : 'PROPOSED',
         createdAt: now,
       });
 
@@ -210,6 +229,94 @@ export class AutonomyController {
     }
 
     return proposals;
+  }
+
+  /**
+   * Executes an optimization proposal with strict evidence and budget gating.
+   * INVARIANT 14: Budget increase beyond policy rejected.
+   * INVARIANT 15: Kill switch stops optimization immediately.
+   */
+  public executeOptimizationProposal(
+    businessId: string,
+    proposal: CampaignOptimizationProposal
+  ): { success: boolean; rationale: string; executedProposal?: CampaignOptimizationProposal } {
+    // 1. INVARIANT 15: Kill Switch Check
+    const biz = this.db
+      .prepare('SELECT kill_switch_active, kill_switch_reason FROM businesses WHERE id = ?')
+      .get(businessId) as any;
+
+    const policy = this.getBudgetPolicy(businessId);
+
+    if (biz?.kill_switch_active === 1 || policy.stopConditionsTriggered || policy.activeMode === 'OBSERVE') {
+      return {
+        success: false,
+        rationale: `KILL SWITCH / STOP CONDITION ACTIVE: Optimization halted immediately. (${biz?.kill_switch_reason || 'Autonomous operations halted'})`,
+      };
+    }
+
+    // 2. Evidence Gating Check: No execution without verifiable evidence
+    if (!proposal.evidence || proposal.evidence.trim().length === 0) {
+      return {
+        success: false,
+        rationale: 'EVIDENCE GATE REJECTION: Cannot execute autonomous optimization without verifiable external evidence.',
+      };
+    }
+
+    // 3. ZERO-BUDGET GROWTH PROHIBITION: Rejects all paid spend
+    if (policy.activeMode === 'ZERO_BUDGET_GROWTH' && proposal.budgetImpactINR > 0) {
+      return {
+        success: false,
+        rationale: `BUDGET POLICY REJECTION: ZERO-BUDGET GROWTH PROHIBITION: Paid media spend is strictly ₹0. Prohibited from spending money on Google Ads, Meta Ads, or paid traffic without explicit owner authorization.`,
+      };
+    }
+
+    // 4. INVARIANT 14: Budget Policy Checks
+    if (proposal.budgetImpactINR > policy.remainingAutonomousBudgetINR) {
+      return {
+        success: false,
+        rationale: `BUDGET POLICY REJECTION: Budget increase of ₹${proposal.budgetImpactINR} exceeds remaining autonomous budget of ₹${policy.remainingAutonomousBudgetINR}. Human approval required.`,
+      };
+    }
+
+    if (policy.currentAutonomousSpendINR + proposal.budgetImpactINR > policy.maxAutonomousSpendINR) {
+      return {
+        success: false,
+        rationale: `BUDGET POLICY REJECTION: Total autonomous spend would exceed policy limit of ₹${policy.maxAutonomousSpendINR}.`,
+      };
+    }
+
+    // 4. Execute: Deduct from remaining autonomous budget
+    const newSpend = policy.currentAutonomousSpendINR + proposal.budgetImpactINR;
+    this.db
+      .prepare(
+        `UPDATE autonomy_policy SET current_autonomous_spend_inr = ?, updated_at = datetime('now') WHERE business_id = ?`
+      )
+      .run(newSpend, businessId);
+
+    const executed: CampaignOptimizationProposal = {
+      ...proposal,
+      approvalStatus: 'AUTO_EXECUTED',
+    };
+
+    return {
+      success: true,
+      rationale: `Optimization proposal ${proposal.id} executed autonomously within approved policy budget.`,
+      executedProposal: executed,
+    };
+  }
+
+  /**
+   * Activates the emergency kill switch for a business.
+   * INVARIANT 15: Immediately stops campaigns and reverts autonomy mode.
+   */
+  public activateKillSwitch(businessId: string, reason: string): void {
+    this.db
+      .prepare(
+        `UPDATE businesses SET kill_switch_active = 1, kill_switch_reason = ?, updated_at = datetime('now') WHERE id = ?`
+      )
+      .run(reason, businessId);
+
+    this.triggerStopCondition(businessId, 'KILL_SWITCH_ACTIVATED', reason);
   }
 
   /**
@@ -240,4 +347,66 @@ export class AutonomyController {
       },
     ];
   }
+
+  /**
+   * Generates organic acquisition experiments strictly at ₹0 budget.
+   */
+  public generateZeroBudgetExperiments(businessId: string): ZeroBudgetExperimentProposal[] {
+    const now = new Date().toISOString();
+
+    return [
+      {
+        id: 'exp-zero-001',
+        businessId,
+        title: 'Doctor Explainer Reels vs Treatment Process Carousel',
+        hypothesis:
+          'Doctor-led Instagram educational reels explaining 3D digital aligners will drive higher direct WhatsApp inquiries than static infographics.',
+        control: 'Static 5-slide carousel explaining clear aligner benefits (Organic Instagram)',
+        treatment: '60-second doctor video explaining painless 3D scan and digital preview (Organic Instagram)',
+        primaryMetric: 'WhatsApp Inbound Inquiries (leads)',
+        secondaryMetrics: ['Video Completion Rate', 'Direct Message Conversion Rate'],
+        successThreshold: '>= 3 genuine inbound inquiries from Hyderabad metro in 14 days',
+        stopCondition: 'Zero inquiries after 5 published organic posts without engagement',
+        budgetINR: 0,
+        channel: 'INSTAGRAM_ORGANIC',
+        status: 'PROPOSED',
+        createdAt: now,
+      },
+      {
+        id: 'exp-zero-002',
+        businessId,
+        title: 'Banjara Hills Local Landing Page vs Generic Metro Page',
+        hypothesis:
+          'A hyper-local Banjara Hills landing page featuring clinic address and landmark directions will achieve higher consultation booking rate than a generic city-wide page.',
+        control: '/aligners-hyderabad (City-wide organic landing page)',
+        treatment: '/aligners-banjara-hills (Road No. 12 hyper-local landing page with Google Map & parking info)',
+        primaryMetric: 'Consultation Booking Rate (%)',
+        secondaryMetrics: ['Organic Visit-to-WhatsApp Rate', 'Time on Page'],
+        successThreshold: 'Consultation booking conversion rate >= 5% from organic visits',
+        stopCondition: 'Bounce rate > 75% after 20 organic visits',
+        budgetINR: 0,
+        channel: 'ORGANIC_SEO',
+        status: 'PROPOSED',
+        createdAt: now,
+      },
+      {
+        id: 'exp-zero-003',
+        businessId,
+        title: 'Direct WhatsApp Chat CTA vs Web Booking Form CTA',
+        hypothesis:
+          'Offering a direct WhatsApp chat CTA with the clinic care desk will generate 2x more verified inquiries than a multi-field web appointment form.',
+        control: 'Standard 4-field web form (Name, Phone, Preferred Time, Message)',
+        treatment: 'Instant 1-click WhatsApp booking with pre-filled candidate message',
+        primaryMetric: 'Inquiry Form Completion Rate (%)',
+        secondaryMetrics: ['Phone Number Verification Rate', 'Show-up Rate'],
+        successThreshold: '2x increase in initiated conversations from organic visitors',
+        stopCondition: 'Response time on WhatsApp exceeds 30 minutes during clinic hours',
+        budgetINR: 0,
+        channel: 'WHATSAPP_INBOUND',
+        status: 'PROPOSED',
+        createdAt: now,
+      },
+    ];
+  }
 }
+

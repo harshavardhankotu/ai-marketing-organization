@@ -29,17 +29,34 @@ export class CampaignKnowledgeGraph {
    */
   public upsertEdge(edge: KnowledgeGraphEdge): void {
     const weight = edge.weight !== undefined ? edge.weight : 1.0;
+    const verificationStatus = edge.verificationStatus || 'UNVERIFIED';
+    const now = edge.timestamp || new Date().toISOString();
+
     this.db
       .prepare(
-        `INSERT INTO knowledge_graph_edges (id, source_node_id, target_node_id, relation, weight)
-         VALUES (?, ?, ?, ?, ?)
+        `INSERT INTO knowledge_graph_edges (
+           id, source_node_id, target_node_id, relation, verification_status, evidence_id, weight, timestamp
+         )
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            source_node_id = excluded.source_node_id,
            target_node_id = excluded.target_node_id,
            relation = excluded.relation,
-           weight = excluded.weight`
+           verification_status = excluded.verification_status,
+           evidence_id = excluded.evidence_id,
+           weight = excluded.weight,
+           timestamp = excluded.timestamp`
       )
-      .run(edge.id, edge.sourceNodeId, edge.targetNodeId, edge.relation, weight);
+      .run(
+        edge.id,
+        edge.sourceNodeId,
+        edge.targetNodeId,
+        edge.relation,
+        verificationStatus,
+        edge.evidenceId || null,
+        weight,
+        now
+      );
   }
 
   /**
@@ -93,7 +110,10 @@ export class CampaignKnowledgeGraph {
       sourceNodeId: r.source_node_id,
       targetNodeId: r.target_node_id,
       relation: r.relation,
+      verificationStatus: (r.verification_status as any) || 'UNVERIFIED',
+      evidenceId: r.evidence_id || undefined,
       weight: r.weight,
+      timestamp: r.timestamp,
     }));
 
     return { nodes, edges };
@@ -145,6 +165,8 @@ export class CampaignKnowledgeGraph {
             sourceNodeId: cl.campaign_id,
             targetNodeId: kwId,
             relation: 'TARGETS',
+            verificationStatus: 'VERIFIED',
+            evidenceId: cl.gclid,
             weight: 1.0,
           });
         }
@@ -173,7 +195,7 @@ export class CampaignKnowledgeGraph {
         },
       });
 
-      // Edge from Campaign to Journey if campaign exists
+      // Edge from Campaign to Journey with qualified relation
       let touchpoints: any[] = [];
       try {
         touchpoints = JSON.parse(j.touchpoints_json || '[]');
@@ -182,7 +204,6 @@ export class CampaignKnowledgeGraph {
       }
       const cmpId = touchpoints[0]?.campaignId;
       if (cmpId) {
-        // Ensure campaign node exists if not in campaigns table
         if (!this.getNode(cmpId)) {
           this.upsertNode({
             id: cmpId,
@@ -191,11 +212,19 @@ export class CampaignKnowledgeGraph {
             metadata: { inferred: true },
           });
         }
+
+        // Invariant 8: Qualified relation: POSSIBLY_ATTRIBUTED_TO vs VERIFIED_ATTRIBUTED_TO
+        const isVerified = j.attribution_status === 'VERIFIED';
+        const relation = isVerified ? 'VERIFIED_ATTRIBUTED_TO' : 'POSSIBLY_ATTRIBUTED_TO';
+        const status = isVerified ? 'VERIFIED' : 'UNVERIFIED';
+
         this.upsertEdge({
           id: `edge-${cmpId}-${j.id}`,
           sourceNodeId: cmpId,
           targetNodeId: j.id,
-          relation: 'ATTRACTED',
+          relation,
+          verificationStatus: status,
+          evidenceId: j.gclid || undefined,
           weight: 1.0,
         });
       }
@@ -219,17 +248,58 @@ export class CampaignKnowledgeGraph {
         },
       });
 
+      const relation = a.clinic_confirmation === 'CONFIRMED' ? 'ATTENDED' : 'SCHEDULED';
+
       // Edge: Lead -> Consultation
       this.upsertEdge({
         id: `edge-${a.journey_id}-${a.id}`,
         sourceNodeId: a.journey_id,
         targetNodeId: a.id,
-        relation: 'ATTENDED',
+        relation,
+        verificationStatus: a.clinic_confirmation === 'CONFIRMED' ? 'VERIFIED' : 'UNVERIFIED',
         weight: 1.0,
       });
     }
 
-    // 5. Transactions & Revenue
+    // 5. Treatment Plans
+    try {
+      const tplans = this.db
+        .prepare('SELECT * FROM treatment_plans WHERE business_id = ?')
+        .all(businessId) as any[];
+
+      for (const tp of tplans) {
+        this.upsertNode({
+          id: tp.id,
+          type: 'TREATMENT_PLAN',
+          label: `Treatment Plan: ${tp.service} (Quote: ₹${tp.quoted_amount_inr})`,
+          metadata: {
+            journeyId: tp.journey_id,
+            service: tp.service,
+            quotedAmountINR: tp.quoted_amount_inr,
+            acceptedTreatmentAmountINR: tp.accepted_treatment_amount_inr,
+            depositAmountINR: tp.deposit_amount_inr,
+            paidAmountINR: tp.paid_amount_inr,
+            outstandingAmountINR: tp.outstanding_amount_inr,
+            clinicConfirmation: tp.clinic_confirmation,
+            status: tp.status,
+          },
+        });
+
+        if (tp.journey_id) {
+          const relation = tp.status === 'ACCEPTED' ? 'ACCEPTED_TREATMENT' : 'PROPOSED';
+          this.upsertEdge({
+            id: `edge-${tp.journey_id}-${tp.id}`,
+            sourceNodeId: tp.journey_id,
+            targetNodeId: tp.id,
+            relation,
+            verificationStatus: tp.clinic_confirmation === 'CONFIRMED' ? 'VERIFIED' : 'UNVERIFIED',
+            weight: tp.quoted_amount_inr,
+          });
+        }
+      }
+    } catch {}
+
+    // 6. Transactions & Revenue
     const txs = this.db
       .prepare("SELECT * FROM transactions WHERE business_id = ? AND status = 'SUCCESS'")
       .all(businessId) as any[];
@@ -252,7 +322,9 @@ export class CampaignKnowledgeGraph {
           id: `edge-${tx.journey_id}-${tx.id}`,
           sourceNodeId: tx.journey_id,
           targetNodeId: tx.id,
-          relation: 'PAID',
+          relation: 'PAID_DEPOSIT',
+          verificationStatus: tx.classification === 'REAL' ? 'VERIFIED' : 'UNVERIFIED',
+          evidenceId: tx.transaction_ref || undefined,
           weight: tx.amount_inr,
         });
       }

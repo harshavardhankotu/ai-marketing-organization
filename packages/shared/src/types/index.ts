@@ -617,16 +617,33 @@ export interface RealEconomicsSummary {
   netContributionINR: number;
   verifiedRoas: number | 'N/A';
   verifiedRoi: number | 'N/A';
+  // Organic Economics (Zero-Budget Mode)
+  organicVisitors?: number;
+  organicLeads?: number;
+  organicQualifiedLeads?: number;
+  organicConsultations?: number;
+  organicCustomers?: number;
+  organicVerifiedRevenueINR?: number;
+  organicAttributedRevenueINR?: number;
+  revenuePerOrganicLeadINR?: number | 'UNKNOWN';
+  revenuePerOrganicCustomerINR?: number | 'UNKNOWN';
+  organicConversionRatePercent?: number | 'UNKNOWN';
+  aiCostStatus?: AICostStatus;
 }
 
 // ==========================================
 // PREDICTION VS OUTCOME & AGENT SCORECARDS
 // ==========================================
+export type PredictionStatus = 'PREDICTION_PENDING' | 'RESOLVED' | 'INVALIDATED';
+export type AgentSampleSizeTier = 'PILOT_SAMPLE' | 'EARLY_EVIDENCE' | 'ESTABLISHED';
+export type AgentConfidenceLevel = 'LOW' | 'MEDIUM' | 'HIGH';
+
 export interface PredictionRecord {
   id: string;
   decisionId: string;
   agentId: string;
   businessId: string;
+  status: PredictionStatus;
   expectedConversionRate?: number;
   expectedCplINR?: number;
   expectedCacINR?: number;
@@ -649,6 +666,11 @@ export interface AgentScorecardRecord {
   division: AgentCategory;
   testDecisionsCount: number;
   realDecisionsCount: number;
+  pendingPredictionsCount: number;
+  resolvedPredictionsCount: number;
+  sampleSizeTier: AgentSampleSizeTier;
+  confidenceLevel: AgentConfidenceLevel;
+  isTopPerformer: boolean;
   acceptedRecommendations: number;
   rejectedRecommendations: number;
   successfulActions: number;
@@ -676,6 +698,21 @@ export type MarketingMemoryDimension =
   | 'SEASONALITY'
   | 'GEOGRAPHY';
 
+export type MarketingMemoryMaturity = 
+  | 'HYPOTHESIS' 
+  | 'PROMISING' 
+  | 'SUPPORTED' 
+  | 'PROVEN' 
+  | 'INVALIDATED';
+
+export interface EvidenceThresholdConfig {
+  promisingMinObservations: number;    // default 1
+  supportedMinObservations: number;    // default 5
+  provenMinObservations: number;       // default 10
+  provenMinCustomers: number;          // default 3
+  provenPositiveNetContribution: boolean; // default true
+}
+
 export interface MarketingMemoryRecord {
   id: string;
   businessId: string;
@@ -685,23 +722,116 @@ export interface MarketingMemoryRecord {
   evidenceReference: string;
   sourceType: EvidenceSourceType;
   confidence: number;
+  maturity: MarketingMemoryMaturity;
+  evidenceCount: number;
+  verifiedRevenueINR: number;
+  sampleThresholdMet?: boolean;
   verifiedAt: string;
   createdAt: string;
 }
 
+export interface TreatmentPlanRecord {
+  id: string;
+  businessId: string;
+  journeyId: string;
+  service: string;
+  quotedAmountINR: number;
+  acceptedTreatmentAmountINR: number;
+  depositAmountINR: number;
+  paidAmountINR: number;
+  outstandingAmountINR: number;
+  doctorNotes: string;
+  clinicConfirmation: 'CONFIRMED' | 'PENDING' | 'REJECTED';
+  confirmationSource: string;
+  confirmationTimestamp: string;
+  status: 'PROPOSED' | 'ACCEPTED' | 'REJECTED' | 'IN_PROGRESS' | 'COMPLETED';
+  treatmentPlanReference?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface KnowledgeGraphNode {
   id: string;
-  type: 'CAMPAIGN' | 'AD' | 'KEYWORD' | 'SESSION' | 'VISITOR' | 'LEAD' | 'CONSULTATION' | 'CUSTOMER' | 'TRANSACTION' | 'REVENUE';
+  type: 
+    | 'CAMPAIGN' 
+    | 'AD' 
+    | 'KEYWORD' 
+    | 'GOOGLE_CLICK' 
+    | 'SESSION' 
+    | 'VISITOR' 
+    | 'LEAD' 
+    | 'CONSULTATION' 
+    | 'TREATMENT_PLAN' 
+    | 'CUSTOMER' 
+    | 'PAYMENT' 
+    | 'TRANSACTION' 
+    | 'REVENUE' 
+    | 'SPEND';
   label: string;
   metadata: Record<string, unknown>;
 }
+
+export type KnowledgeGraphEdgeRelation =
+  | 'POSSIBLY_ATTRIBUTED_TO'
+  | 'VERIFIED_ATTRIBUTED_TO'
+  | 'SCHEDULED'
+  | 'ATTENDED'
+  | 'ACCEPTED_TREATMENT'
+  | 'PAID_DEPOSIT'
+  | 'PAID_FULL'
+  | 'GENERATED'
+  | 'TARGETS'
+  | 'TRIGGERED';
 
 export interface KnowledgeGraphEdge {
   id: string;
   sourceNodeId: string;
   targetNodeId: string;
-  relation: string;
+  relation: KnowledgeGraphEdgeRelation | string;
+  verificationStatus: 'VERIFIED' | 'UNVERIFIED' | 'NOT_ATTRIBUTED';
+  evidenceId?: string;
   weight?: number;
+  timestamp?: string;
+  metadata?: Record<string, unknown>;
+}
+
+// ==========================================
+// IMMUTABLE TRUTH EVENTS (EVENT SOURCING)
+// ==========================================
+export type ImmutableTruthEventType =
+  | 'LEAD_CREATED'
+  | 'CONSULTATION_CONFIRMED'
+  | 'CONSULTATION_COMPLETED'
+  | 'TREATMENT_QUOTED'
+  | 'TREATMENT_ACCEPTED'
+  | 'PAYMENT_RECEIVED'
+  | 'PAYMENT_VERIFIED'
+  | 'ATTRIBUTION_VERIFIED'
+  | 'ATTRIBUTION_REJECTED'
+  | 'REFUND_VERIFIED'
+  | 'MEMORY_MATURITY_CHANGED'
+  | 'BUDGET_POLICY_TRIGGERED'
+  | 'EXPERIMENT_LAUNCHED';
+
+export interface ImmutableTruthEvent {
+  id: string;
+  businessId: string;
+  eventType: ImmutableTruthEventType;
+  journeyId?: string;
+  entityId: string;
+  entityType: string;
+  actorId: string;
+  actorType: 'AGENT' | 'CLINIC' | 'PATIENT' | 'SYSTEM' | 'EXTERNAL_GATEWAY';
+  payload: Record<string, unknown>;
+  timestamp: string;
+}
+
+export interface ExperimentReasoningRetrospective {
+  whatWasRight: string;
+  whatWasWrong: string;
+  whatRemainsUncertain: string;
+  whatShouldChange: string;
+  evidenceReferences: string[];
 }
 
 // ==========================================
@@ -710,6 +840,7 @@ export interface KnowledgeGraphEdge {
 export type AutonomyOperatingMode =
   | 'OBSERVE'
   | 'CONTROLLED_AUTONOMY'
+  | 'ZERO_BUDGET_GROWTH'
   | 'AUTONOMOUS_OPTIMIZATION'
   | 'AUTONOMOUS_SCALING';
 
@@ -831,4 +962,196 @@ export interface SystemReadinessReport {
     unverifiedLeadsCount?: number;
     verifiedActualGoogleAdsSpendINR?: number;
   };
+}
+
+// ==========================================
+// ZERO-BUDGET ORGANIC GROWTH PORTFOLIO
+// ==========================================
+
+export type OrganicMarketingChannel =
+  | 'GOOGLE_BUSINESS_PROFILE'
+  | 'ORGANIC_SEO'
+  | 'INSTAGRAM_ORGANIC'
+  | 'FACEBOOK_ORGANIC'
+  | 'YOUTUBE_ORGANIC'
+  | 'LINKEDIN_ORGANIC'
+  | 'WHATSAPP_INBOUND'
+  | 'REFERRALS'
+  | 'LOCAL_PARTNERSHIPS'
+  | 'DIRECT_OUTREACH';
+
+export interface OrganicChannelRecord {
+  id: string;
+  businessId: string;
+  channel: OrganicMarketingChannel;
+  strategy: string;
+  contentThemes: string[];
+  callToAction: string;
+  trackingTemplate: string;
+  sourceEvidence: string;
+  activeStatus: 'ACTIVE' | 'PLANNED' | 'PAUSED';
+  metrics?: {
+    impressions?: number | 'UNKNOWN';
+    visits: number;
+    leads: number;
+    consultations: number;
+    customers: number;
+  };
+}
+
+export type OrganicContentType =
+  | 'SHORT_VIDEO'
+  | 'CAROUSEL'
+  | 'IMAGE_POST'
+  | 'FAQ'
+  | 'PATIENT_EDUCATION'
+  | 'DOCTOR_EXPLANATION'
+  | 'BEFORE_AFTER'
+  | 'MYTH_VS_FACT'
+  | 'TREATMENT_PROCESS'
+  | 'PRICING_EMI';
+
+export type ContentApprovalStatus =
+  | 'AI_DRAFT'
+  | 'COMPLIANCE_CHECK'
+  | 'PENDING_CLINIC_APPROVAL'
+  | 'APPROVED'
+  | 'REJECTED';
+
+export type ContentPublicationStatus =
+  | 'DRAFT'
+  | 'SCHEDULED'
+  | 'PUBLISHED'
+  | 'ARCHIVED';
+
+export interface OrganicContentAsset {
+  id: string;
+  businessId: string;
+  channel: OrganicMarketingChannel;
+  campaignId: string;
+  contentType: OrganicContentType;
+  title: string;
+  body: string;
+  callToAction: string;
+  targetKeyword?: string;
+  trackingParams: {
+    utmSource: string;
+    utmMedium: string;
+    utmCampaign: string;
+    utmContent: string;
+  };
+  createdByAgent: string;
+  hasMedicalClaim: boolean;
+  medicalClaimSource?: string;
+  approvalStatus: ContentApprovalStatus;
+  publicationStatus: ContentPublicationStatus;
+  sourceEvidence?: string;
+  clinicApprovedBy?: string;
+  approvedAt?: string;
+  publishedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LocalLandingPageRecord {
+  slug: string;
+  title: string;
+  clinicName: string;
+  location: string;
+  service: string;
+  contactPhone: string;
+  whatsappNumber: string;
+  ctaText: string;
+  canonicalUrl: string;
+  metaDescription: string;
+  appointmentPath: string;
+  verifiedDoctor: string;
+  address: string;
+}
+
+export interface ReviewRequestRecord {
+  id: string;
+  businessId: string;
+  customerId: string;
+  journeyId: string;
+  appointmentId: string;
+  clinicConfirmation: 'CONFIRMED';
+  channel: 'WHATSAPP' | 'SMS' | 'EMAIL';
+  status: 'QUEUED' | 'SENT' | 'COMPLETED' | 'CANCELLED';
+  requestTimestamp: string;
+  feedbackScore?: number;
+  externalReviewPlatform?: 'GOOGLE_BUSINESS_PROFILE' | 'PRACTO';
+}
+
+export interface ReferralPartnershipRecord {
+  id: string;
+  businessId: string;
+  category:
+    | 'EXISTING_PATIENT'
+    | 'LOCAL_COMMUNITY'
+    | 'HOUSING_SOCIETY'
+    | 'CORPORATE_COMMUNITY'
+    | 'PARTNER_CLINIC'
+    | 'PROFESSIONAL';
+  partnerName: string;
+  contactPerson?: string;
+  proposalDraft: string;
+  offerTerms: string;
+  approvalStatus: 'DRAFT' | 'PENDING_APPROVAL' | 'APPROVED' | 'ACTIVE' | 'DECLINED';
+  createdAt: string;
+}
+
+export interface DirectOutreachRecord {
+  id: string;
+  businessId: string;
+  segment: string;
+  prospectName: string;
+  channel: 'LINKEDIN' | 'EMAIL' | 'WHATSAPP';
+  messageDraft: string;
+  complianceChecked: boolean;
+  humanApproved: boolean;
+  dispatched: boolean;
+  dispatchTimestamp?: string;
+  responseStatus: 'PENDING' | 'INTERESTED' | 'NOT_INTERESTED' | 'NO_RESPONSE';
+  createdAt: string;
+}
+
+export interface GBPLocationInsights {
+  businessId: string;
+  searchImpressions: number | 'UNKNOWN';
+  mapImpressions: number | 'UNKNOWN';
+  callClicks: number;
+  websiteClicks: number;
+  directionRequests: number;
+  reviewsCount: number;
+  averageRating: number;
+  lastSyncTimestamp: string;
+}
+
+export interface GBPPostRecord {
+  id: string;
+  businessId: string;
+  summary: string;
+  callToAction: 'BOOK' | 'CALL' | 'LEARN_MORE';
+  url: string;
+  postType: 'UPDATE' | 'EVENT' | 'OFFER';
+  status: 'DRAFT' | 'PUBLISHED';
+  publishedAt?: string;
+}
+
+export interface ZeroBudgetExperimentProposal {
+  id: string;
+  businessId: string;
+  title: string;
+  hypothesis: string;
+  control: string;
+  treatment: string;
+  primaryMetric: string;
+  secondaryMetrics: string[];
+  successThreshold: string;
+  stopCondition: string;
+  budgetINR: 0;
+  channel: OrganicMarketingChannel;
+  status: 'PROPOSED' | 'APPROVED' | 'RUNNING' | 'CONCLUDED';
+  createdAt: string;
 }

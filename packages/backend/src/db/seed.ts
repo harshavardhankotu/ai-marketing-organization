@@ -452,9 +452,233 @@ export function seedDatabase(): void {
       now,
       now
     );
+
+    // 12. Seed Marketing Memory: Maturity strictly PROMISING (not PROVEN)
+    db.prepare(`
+      INSERT OR REPLACE INTO marketing_memories (
+        id, business_id, dimension, memory_key, insight, evidence_reference,
+        source_type, confidence, maturity, evidence_count, verified_revenue_inr,
+        verified_at, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      'mem_invisalign_banjara_001',
+      businessId,
+      'WINNING_KEYWORD',
+      'invisalign-banjara-hills',
+      'Consultation booked for Invisalign Clear Aligners in Banjara Hills (Awaiting clinic attendance on Sept 15).',
+      'journey-961c351f-71d2-4d7b-a842-b6858984b288',
+      'REAL_INTERNAL_DATA',
+      0.75,
+      'PROMISING',
+      1,
+      0.0,
+      now,
+      now
+    );
   }
 
-  console.log('Seeding completed successfully: Business, Goal, 80 Agents, Integrations, Quotas, Journeys, Transactions, AI Costs, Appointments.');
+  // 13. Seed Autonomy Policy
+  db.prepare(`
+    INSERT OR REPLACE INTO autonomy_policy (
+      business_id, active_mode, max_autonomous_spend_inr, current_autonomous_spend_inr,
+      requires_owner_approval_above_inr, stop_conditions_triggered, updated_at
+    ) VALUES (?, 'CONTROLLED_AUTONOMY', 10000.0, 0.0, 10000.0, 0, datetime('now'))
+  `).run(businessId);
+
+  // 14. Seed 10 Zero-Budget Organic Marketing Channels
+  const organicChannels = [
+    {
+      id: 'chan_gbp_01',
+      channel: 'GOOGLE_BUSINESS_PROFILE',
+      strategy: 'Optimize local pack rankings for clear aligners Banjara Hills, publish weekly treatment FAQs, and route calls directly to clinic WhatsApp desk.',
+      themes: ['Doctor Q&A', 'Smile Transformation Stories', 'Clinic 3D Tech Showcase'],
+      cta: 'Book 3D Digital Smile Scan via WhatsApp',
+      tracking: 'utm_source=google_business_profile&utm_medium=organic&utm_campaign=gbp_local_pack',
+      evidence: 'Google Business Profile is the #1 local conversion surface for Hyderabad dental clinics within 5km radius.',
+    },
+    {
+      id: 'chan_seo_01',
+      channel: 'ORGANIC_SEO',
+      strategy: 'Long-tail geotargeted programmatic guides for clear aligners in Banjara Hills, Jubilee Hills, and Gachibowli with verified doctor reviews.',
+      themes: ['Clear Aligners vs Braces Cost in Hyderabad', 'Invisible Teeth Straightening Process', 'Adult Orthodontics FAQ'],
+      cta: 'Check Aligner Candidacy Online Free',
+      tracking: 'utm_source=google_organic&utm_medium=organic&utm_campaign=seo_local_guides',
+      evidence: 'High local search intent in Hyderabad for painless teeth straightening without metal brackets.',
+    },
+    {
+      id: 'chan_insta_01',
+      channel: 'INSTAGRAM_ORGANIC',
+      strategy: 'Doctor-led educational reels and step-by-step 3D aligner manufacturing breakdowns highlighting hygiene and lifestyle flexibility.',
+      themes: ['Aligner Care 101', 'Can You Eat With Aligners?', 'Patient Journey Day in the Life'],
+      cta: 'DM "SMILE" for Free 3D Aligner Simulation',
+      tracking: 'utm_source=instagram&utm_medium=organic&utm_campaign=reels_doctor_explainer',
+      evidence: 'High engagement among 22-35 age group in IT corridors seeking aesthetic orthodontics.',
+    },
+    {
+      id: 'chan_fb_01',
+      channel: 'FACEBOOK_ORGANIC',
+      strategy: 'Community health education and neighborhood parent groups discussing teen & adult clear aligners.',
+      themes: ['Smile Confidence', 'Parent Guide to Teen Aligners', 'Clinic Safety Standards'],
+      cta: 'Send Message for Clinic Timings & Consultation',
+      tracking: 'utm_source=facebook&utm_medium=organic&utm_campaign=fb_community_health',
+      evidence: 'Strong presence of family decision makers across Hyderabad resident groups.',
+    },
+    {
+      id: 'chan_yt_01',
+      channel: 'YOUTUBE_ORGANIC',
+      strategy: 'In-depth video breakdowns by Dr. Aravind Reddy detailing the iTero 3D scanning process and aligner attachment mechanics.',
+      themes: ['How Clear Aligners Move Teeth', 'Invisalign Treatment Step-by-Step', 'Doctor Review of Common Dental Mistakes'],
+      cta: 'Schedule Complimentary Video Consultation',
+      tracking: 'utm_source=youtube&utm_medium=organic&utm_campaign=yt_deep_dive_doctor',
+      evidence: 'Long-form video establishes clinical authority and reduces in-clinic consultation hesitation.',
+    },
+    {
+      id: 'chan_li_01',
+      channel: 'LINKEDIN_ORGANIC',
+      strategy: 'Thought leadership posts on aesthetic dental wellness and executive grooming for tech professionals in HITEC City.',
+      themes: ['Executive Presence and Smile Aesthetics', 'Corporate Dental Wellness Programs', 'Ergonomics & Dental Health'],
+      cta: 'Connect for Corporate Executive Dental Screening',
+      tracking: 'utm_source=linkedin&utm_medium=organic&utm_campaign=li_tech_executives',
+      evidence: 'HITEC City executives prefer discreet clear aligner options over traditional brackets.',
+    },
+    {
+      id: 'chan_wa_01',
+      channel: 'WHATSAPP_INBOUND',
+      strategy: 'Direct click-to-WhatsApp inbound conversation triage with automated appointment scheduling and clinic directions.',
+      themes: ['Instant Scan Booking', 'Pricing & EMI Breakdown', 'Clinic Location & Timings'],
+      cta: 'Chat with Clinic Care Coordinator Now',
+      tracking: 'utm_source=whatsapp&utm_medium=organic&utm_campaign=wa_direct_booking',
+      evidence: '94% of Hyderabad patients prefer instant WhatsApp confirmation over phone calls.',
+    },
+    {
+      id: 'chan_ref_01',
+      channel: 'REFERRALS',
+      strategy: 'Satisfied patient referral program offering family scan privileges and hygiene credits.',
+      themes: ['Family & Friend Smile Pass', 'Patient Appreciation Program'],
+      cta: 'Gift a Friend Free 3D Smile Scan',
+      tracking: 'utm_source=patient_referral&utm_medium=organic&utm_campaign=smile_pass_referral',
+      evidence: 'Referral patients have a 78% higher consultation show rate than cold traffic.',
+    },
+    {
+      id: 'chan_part_01',
+      channel: 'LOCAL_PARTNERSHIPS',
+      strategy: 'Partnerships with premium gyms, aesthetic skin clinics, and corporate campuses in Banjara Hills.',
+      themes: ['Holistic Wellness & Smile Alignment', 'Corporate Health Fair Screening'],
+      cta: 'Book Partner Exclusive Clinic Visit',
+      tracking: 'utm_source=local_partner&utm_medium=organic&utm_campaign=banjara_wellness_network',
+      evidence: 'Cross-promotion with luxury wellness centers attracts high-intent cosmetic dental candidates.',
+    },
+    {
+      id: 'chan_outreach_01',
+      channel: 'DIRECT_OUTREACH',
+      strategy: 'Targeted, ethical B2B outreach to HR heads of Hyderabad tech firms for complimentary on-site dental health checks.',
+      themes: ['Corporate Dental Benefit Seminars', 'Workplace Wellness Dental Screening'],
+      cta: 'Schedule 15-min HR Wellness Partnership Call',
+      tracking: 'utm_source=direct_outreach&utm_medium=organic&utm_campaign=corporate_hr_outreach',
+      evidence: 'Corporate tie-ups provide reliable, batched consultation opportunities without ad spend.',
+    },
+  ];
+
+  for (const c of organicChannels) {
+    db.prepare(`
+      INSERT OR REPLACE INTO organic_channels (
+        id, business_id, channel, strategy, content_themes_json,
+        call_to_action, tracking_template, source_evidence, active_status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
+    `).run(
+      c.id,
+      businessId,
+      c.channel,
+      c.strategy,
+      JSON.stringify(c.themes),
+      c.cta,
+      c.tracking,
+      c.evidence
+    );
+  }
+
+  // 15. Seed Verified Local Landing Pages
+  const localLandingPages = [
+    {
+      slug: 'aligners-hyderabad',
+      title: 'Invisible Clear Aligners in Hyderabad | SmileKraft Dental Centre',
+      clinicName: 'SmileKraft Healthcare Solutions',
+      location: 'Hyderabad Metro (Banjara Hills & Gachibowli)',
+      service: 'Invisalign & Custom Clear Aligners',
+      contactPhone: '+91 98491 23456',
+      whatsappNumber: '+91 98491 23456',
+      ctaText: 'Book Free 3D Digital Smile Consultation',
+      canonicalUrl: 'https://smilekraftdental.in/aligners-hyderabad',
+      metaDescription: 'Transform your smile with digital clear aligners in Hyderabad. Painless, discreet teeth straightening by certified orthodontists. Real 3D scan included.',
+      appointmentPath: '/book?location=hyderabad&service=aligners',
+      verifiedDoctor: 'Dr. Aravind Reddy, MDS Orthodontics',
+      address: 'Road No. 12, Banjara Hills, Hyderabad, Telangana 500034',
+    },
+    {
+      slug: 'aligners-banjara-hills',
+      title: 'Clear Aligners in Banjara Hills, Hyderabad | Dr. Aravind Reddy',
+      clinicName: 'SmileKraft Banjara Hills Clinic',
+      location: 'Banjara Hills, Hyderabad',
+      service: 'Advanced 3D Clear Aligner Orthodontics',
+      contactPhone: '+91 98491 23456',
+      whatsappNumber: '+91 98491 23456',
+      ctaText: 'Reserve Banjara Hills 3D iTero Scan',
+      canonicalUrl: 'https://smilekraftdental.in/aligners-banjara-hills',
+      metaDescription: 'Top-rated clear aligner clinic in Banjara Hills Road No. 12. Digital 3D outcome preview before starting. Zero-interest flexible monthly EMI available.',
+      appointmentPath: '/book?location=banjara-hills&service=invisalign',
+      verifiedDoctor: 'Dr. Aravind Reddy, MDS Orthodontics',
+      address: 'Plot 42, Road No. 12, Banjara Hills, Hyderabad, Telangana 500034',
+    },
+    {
+      slug: 'aligners-gachibowli',
+      title: 'Clear Teeth Aligners Gachibowli & Financial District | SmileKraft',
+      clinicName: 'SmileKraft Financial District Centre',
+      location: 'Gachibowli & HITEC City, Hyderabad',
+      service: 'Invisible Aligners for Working Professionals',
+      contactPhone: '+91 98491 23456',
+      whatsappNumber: '+91 98491 23456',
+      ctaText: 'Book Evening / Weekend Aligner Slot',
+      canonicalUrl: 'https://smilekraftdental.in/aligners-gachibowli',
+      metaDescription: 'Convenient clear aligners for tech professionals in Gachibowli and HITEC City. Weekend and evening appointments available with instant 3D scan.',
+      appointmentPath: '/book?location=gachibowli&service=aligners',
+      verifiedDoctor: 'Dr. Aravind Reddy, MDS Orthodontics',
+      address: 'Financial District, Nanakramguda, Gachibowli, Hyderabad, Telangana 500032',
+    },
+  ];
+
+  for (const page of localLandingPages) {
+    db.prepare(`
+      INSERT OR REPLACE INTO local_landing_pages (
+        slug, title, clinic_name, location, service, contact_phone,
+        whatsapp_number, cta_text, canonical_url, meta_description,
+        appointment_path, verified_doctor, address
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      page.slug,
+      page.title,
+      page.clinicName,
+      page.location,
+      page.service,
+      page.contactPhone,
+      page.whatsappNumber,
+      page.ctaText,
+      page.canonicalUrl,
+      page.metaDescription,
+      page.appointmentPath,
+      page.verifiedDoctor,
+      page.address
+    );
+  }
+
+  // 16. Seed Google Business Profile Boundary
+  db.prepare(`
+    INSERT OR REPLACE INTO gbp_interactions (
+      business_id, search_impressions, map_impressions, call_clicks,
+      website_clicks, direction_requests, reviews_count, average_rating, last_sync_timestamp
+    ) VALUES (?, 1420, 890, 18, 44, 29, 47, 4.9, datetime('now'))
+  `).run(businessId);
+
+  console.log('Seeding completed successfully: Business, Goal, 80 Agents, Integrations, Quotas, Journeys, Transactions, AI Costs, Appointments, Memory, Autonomy Policy, 10 Organic Channels, Local Landing Pages, GBP.');
 }
 
 

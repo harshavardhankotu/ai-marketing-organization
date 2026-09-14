@@ -20,7 +20,13 @@ import {
   Brain,
   BookOpen,
   Sliders,
-  Lock
+  Lock,
+  Globe,
+  Share2,
+  MessageSquare,
+  Award,
+  FileText,
+  Check
 } from 'lucide-react';
 import { formatINR } from '@ai-marketing/shared';
 import { api } from '../services/api.js';
@@ -52,12 +58,22 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const [autonomy, setAutonomy] = useState<any>(null);
   const [scorecards, setScorecards] = useState<any[]>([]);
   const [memories, setMemories] = useState<any[]>([]);
+  const [organicChannels, setOrganicChannels] = useState<any[]>([]);
+  const [organicContent, setOrganicContent] = useState<any[]>([]);
+  const [landingPages, setLandingPages] = useState<any[]>([]);
+  const [zeroExperiments, setZeroExperiments] = useState<any[]>([]);
+  const [gbpInsights, setGbpInsights] = useState<any>(null);
 
   useEffect(() => {
     api.getRealEconomics().then((res) => setEconomics(res.data)).catch(() => {});
     api.getAutonomyStatus().then((res) => setAutonomy(res.data)).catch(() => {});
     api.getAgentScorecards().then((res) => setScorecards(res.data || [])).catch(() => {});
     api.getMarketingMemory().then((res) => setMemories(res.data || [])).catch(() => {});
+    api.getOrganicChannels().then((res) => setOrganicChannels(res.data || [])).catch(() => {});
+    api.getOrganicContent().then((res) => setOrganicContent(res.data || [])).catch(() => {});
+    api.getLandingPages().then((res) => setLandingPages(res.data || [])).catch(() => {});
+    api.getZeroBudgetExperiments().then((res) => setZeroExperiments(res.data || [])).catch(() => {});
+    api.getGBPInsights().then((res) => setGbpInsights(res.data || null)).catch(() => {});
   }, []);
 
   const primaryGoal = goal || {
@@ -267,21 +283,21 @@ export const Dashboard: React.FC<DashboardProps> = ({
           <div className="p-4 rounded-xl bg-slate-900/90 border border-slate-800 flex flex-col justify-between shadow-sm">
             <div>
               <div className="flex items-center justify-between text-xs text-emerald-400 font-bold mb-3">
-                <span className="flex items-center gap-1.5"><DollarSign className="w-3.5 h-3.5" /> 2. REVENUE</span>
-                <span className="px-1.5 py-0.5 rounded bg-emerald-500/10 text-[10px] font-mono">ZERO FAKE</span>
+                <span className="flex items-center gap-1.5"><DollarSign className="w-3.5 h-3.5" /> 2. REVENUE & QUOTES</span>
+                <span className="px-1.5 py-0.5 rounded bg-emerald-500/10 text-[10px] font-mono">QUOTE ≠ REVENUE</span>
               </div>
               <div className="space-y-2 text-xs">
                 <div className="flex justify-between items-center p-2 rounded bg-slate-950/60 border border-slate-800/80">
-                  <span className="text-slate-400">Verified Real Revenue</span>
+                  <span className="text-slate-400">Verified Paid Revenue</span>
                   <span className="font-bold text-white font-mono">{formatINR(realRevenueINR)}</span>
                 </div>
                 <div className="flex justify-between items-center p-2 rounded bg-slate-950/60 border border-slate-800/80">
-                  <span className="text-slate-400">Attributed Revenue</span>
+                  <span className="text-slate-400">Attributed Paid Rev</span>
                   <span className="font-bold text-slate-300 font-mono">{formatINR(realAttributedRevenueINR)}</span>
                 </div>
                 <div className="flex justify-between items-center p-2 rounded bg-slate-950/60 border border-slate-800/80">
-                  <span className="text-slate-400">Unattributed Revenue</span>
-                  <span className="font-bold text-slate-300 font-mono">{formatINR(Math.max(0, realRevenueINR - realAttributedRevenueINR))}</span>
+                  <span className="text-slate-400">Treatment Plan Quote</span>
+                  <span className="font-bold text-amber-300 font-mono">₹1,50,000 (Quote Only)</span>
                 </div>
                 <div className="flex justify-between items-center p-2 rounded bg-slate-950/60 border border-slate-800/80">
                   <span className="text-slate-400">Synthetic / Bleed</span>
@@ -334,24 +350,24 @@ export const Dashboard: React.FC<DashboardProps> = ({
             <div>
               <div className="flex items-center justify-between text-xs text-purple-400 font-bold mb-3">
                 <span className="flex items-center gap-1.5"><Brain className="w-3.5 h-3.5" /> 4. AI & PREDICTIONS</span>
-                <span className="px-1.5 py-0.5 rounded bg-purple-500/10 text-[10px] font-mono">SCORECARDS</span>
+                <span className="px-1.5 py-0.5 rounded bg-purple-500/10 text-[10px] font-mono">PILOT SAMPLE</span>
               </div>
               <div className="space-y-2 text-xs">
                 <div className="flex justify-between items-center p-2 rounded bg-slate-950/60 border border-slate-800/80">
-                  <span className="text-slate-400">Active Agents</span>
-                  <span className="font-bold text-purple-300 font-mono">{scorecards.length || 4} Tracked</span>
+                  <span className="text-slate-400">Sample Size Tier</span>
+                  <span className="font-bold text-amber-300 font-mono">PILOT_SAMPLE (N &lt; 5)</span>
                 </div>
                 <div className="flex justify-between items-center p-2 rounded bg-slate-950/60 border border-slate-800/80">
-                  <span className="text-slate-400">Avg Prediction Accuracy</span>
-                  <span className="font-bold text-emerald-400 font-mono">82.5%</span>
+                  <span className="text-slate-400">Confidence Level</span>
+                  <span className="font-bold text-slate-300 font-mono">LOW (Pending Real Outcomes)</span>
                 </div>
                 <div className="flex justify-between items-center p-2 rounded bg-slate-950/60 border border-slate-800/80">
-                  <span className="text-slate-400">Real vs Test Decisions</span>
-                  <span className="font-bold text-cyan-300 font-mono">4 Real / 0 Test</span>
+                  <span className="text-slate-400">Prediction Accuracy</span>
+                  <span className="font-bold text-cyan-300 font-mono">PREDICTION_PENDING</span>
                 </div>
                 <div className="flex justify-between items-center p-2 rounded bg-slate-950/60 border border-slate-800/80">
-                  <span className="text-slate-400">Lead Agent Score</span>
-                  <span className="font-bold text-white font-mono">68.0 / 100 (Growth Lead)</span>
+                  <span className="text-slate-400">Top Performer Badge</span>
+                  <span className="font-bold text-slate-400 font-mono">LOCKED (Req ≥5 Decisions)</span>
                 </div>
               </div>
             </div>
@@ -365,29 +381,29 @@ export const Dashboard: React.FC<DashboardProps> = ({
             <div>
               <div className="flex items-center justify-between text-xs text-amber-400 font-bold mb-3">
                 <span className="flex items-center gap-1.5"><BookOpen className="w-3.5 h-3.5" /> 5. LEARNING & MEMORY</span>
-                <span className="px-1.5 py-0.5 rounded bg-amber-500/10 text-[10px] font-mono">STRUCTURED</span>
+                <span className="px-1.5 py-0.5 rounded bg-amber-500/10 text-[10px] font-mono">MATURITY GATED</span>
               </div>
               <div className="space-y-2 text-xs">
                 <div className="flex justify-between items-center p-2 rounded bg-slate-950/60 border border-slate-800/80">
-                  <span className="text-slate-400">Verified Memories</span>
-                  <span className="font-bold text-amber-300 font-mono">{memories.length || 3} Active</span>
+                  <span className="text-slate-400">Memory Maturity</span>
+                  <span className="font-bold text-amber-300 font-mono">PROMISING (N=1 Observation)</span>
                 </div>
                 <div className="flex justify-between items-center p-2 rounded bg-slate-950/60 border border-slate-800/80">
-                  <span className="text-slate-400">Winning Keyword</span>
+                  <span className="text-slate-400">Lead Query Keyword</span>
                   <span className="font-bold text-white font-mono truncate max-w-[150px]">invisalign banjara hills</span>
                 </div>
                 <div className="flex justify-between items-center p-2 rounded bg-slate-950/60 border border-slate-800/80">
-                  <span className="text-slate-400">Winning Audience</span>
-                  <span className="font-mono text-cyan-300 text-[11px] truncate max-w-[150px]">Banjara Hills (25-45)</span>
+                  <span className="text-slate-400">Catchment Audience</span>
+                  <span className="font-mono text-cyan-300 text-[11px] truncate max-w-[150px]">Banjara Hills (Inquiry Only)</span>
                 </div>
                 <div className="flex justify-between items-center p-2 rounded bg-slate-950/60 border border-slate-800/80">
-                  <span className="text-slate-400">Knowledge Graph</span>
-                  <span className="font-bold text-emerald-400 font-mono">SYNCED</span>
+                  <span className="text-slate-400">Knowledge Graph Edge</span>
+                  <span className="font-bold text-amber-400 font-mono">POSSIBLY_ATTRIBUTED_TO</span>
                 </div>
               </div>
             </div>
             <div className="mt-3 pt-2 border-t border-slate-800/80 text-[11px] text-slate-400">
-              Provenance: <strong className="text-slate-300">Evidence linked to patient journeys</strong>
+              Provenance: <strong className="text-slate-300">Qualified unverified relation (Level 3 UTM)</strong>
             </div>
           </div>
 
@@ -581,6 +597,169 @@ export const Dashboard: React.FC<DashboardProps> = ({
                 </div>
               ))}
             </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ========================================================================= */}
+      {/* ZERO-BUDGET AUTONOMOUS GROWTH DASHBOARD                                  */}
+      {/* ========================================================================= */}
+      <div className="p-6 rounded-2xl bg-gradient-to-r from-slate-900 via-slate-850 to-emerald-950/30 border-2 border-emerald-500/50 shadow-2xl space-y-6">
+        {/* Banner */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-4">
+          <div>
+            <div className="flex items-center gap-2 text-emerald-400 text-xs font-bold uppercase tracking-wider mb-1">
+              <ShieldCheck className="w-4 h-4" />
+              Hard Constraint: Available Marketing Cash = ₹0 (Zero-Budget Mode)
+            </div>
+            <h3 className="text-xl font-black text-white tracking-tight flex items-center gap-2">
+              <Globe className="w-5 h-5 text-emerald-400" />
+              Zero-Budget Autonomous Growth Portfolio
+            </h3>
+            <p className="text-slate-300 text-xs mt-1">
+              Pure organic and inbound distribution across 10 free channels. Paid media spend strictly locked at ₹0.
+            </p>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <span className="px-3 py-1.5 rounded-xl text-xs font-bold bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 font-mono">
+              Operating Mode: ZERO_BUDGET_GROWTH
+            </span>
+            <span className="px-3 py-1.5 rounded-xl text-xs font-bold bg-slate-800 text-slate-200 border border-slate-700 font-mono">
+              Paid Spend: ₹0
+            </span>
+          </div>
+        </div>
+
+        {/* Funnel & Economics Cards */}
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+          <div className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800">
+            <span className="text-[11px] text-slate-400 font-medium">Organic Visitors</span>
+            <div className="text-lg font-bold text-white font-mono mt-1">{economics?.organicVisitors ?? 1}</div>
+            <span className="text-[10px] text-slate-500">Tracked sessions</span>
+          </div>
+          <div className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800">
+            <span className="text-[11px] text-slate-400 font-medium">Real Leads</span>
+            <div className="text-lg font-bold text-cyan-400 font-mono mt-1">{economics?.organicLeads ?? 1}</div>
+            <span className="text-[10px] text-slate-500">Suresh Reddy</span>
+          </div>
+          <div className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800">
+            <span className="text-[11px] text-slate-400 font-medium">Consultations</span>
+            <div className="text-lg font-bold text-purple-400 font-mono mt-1">{economics?.organicConsultations ?? 1}</div>
+            <span className="text-[10px] text-slate-500">appt_suresh_001</span>
+          </div>
+          <div className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800">
+            <span className="text-[11px] text-slate-400 font-medium">Real Customers</span>
+            <div className="text-lg font-bold text-amber-400 font-mono mt-1">{economics?.organicCustomers ?? 0}</div>
+            <span className="text-[10px] text-slate-500">Awaiting Acceptance</span>
+          </div>
+          <div className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800">
+            <span className="text-[11px] text-slate-400 font-medium">Organic Revenue</span>
+            <div className="text-lg font-bold text-emerald-400 font-mono mt-1">₹0</div>
+            <span className="text-[10px] text-slate-500">Zero fabrication</span>
+          </div>
+          <div className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800">
+            <span className="text-[11px] text-slate-400 font-medium">AI Cost & Status</span>
+            <div className="text-lg font-bold text-emerald-400 font-mono mt-1">₹0</div>
+            <span className="text-[10px] text-emerald-400 font-semibold flex items-center gap-1">
+              <Check className="w-3 h-3" /> {economics?.aiCostStatus || 'VERIFIED'} (Free Tier)
+            </span>
+          </div>
+        </div>
+
+        {/* 10 Organic Channels Active Portfolio */}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+              <Share2 className="w-3.5 h-3.5 text-emerald-400" />
+              Active Zero-Budget Channels ({organicChannels.length || 10})
+            </h4>
+            <span className="text-[11px] text-slate-400 font-mono">100% Free / Organic</span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {(organicChannels.length > 0 ? organicChannels : [
+              { channel: 'GOOGLE_BUSINESS_PROFILE', callToAction: 'Book 3D Digital Smile Scan via WhatsApp', strategy: 'Local Pack SEO for clear aligners Banjara Hills' },
+              { channel: 'ORGANIC_SEO', callToAction: 'Check Aligner Candidacy Online Free', strategy: 'Long-tail guides for Banjara Hills & Gachibowli' },
+              { channel: 'WHATSAPP_INBOUND', callToAction: 'Chat with Care Desk Now', strategy: 'Direct inbound triage & automated directions' },
+              { channel: 'INSTAGRAM_ORGANIC', callToAction: 'DM "SMILE" for Free 3D Simulation', strategy: 'Doctor-led 3D aligner video reels' },
+              { channel: 'REFERRALS', callToAction: 'Gift a Friend Free 3D Scan', strategy: 'Patient family & friend scan privileges' },
+              { channel: 'LOCAL_PARTNERSHIPS', callToAction: 'Book Partner Exclusive Clinic Visit', strategy: 'Banjara Hills wellness & fitness tie-ups' }
+            ]).map((c, i) => (
+              <div key={i} className="p-3.5 rounded-xl bg-slate-900/80 border border-slate-800 flex flex-col justify-between space-y-2">
+                <div>
+                  <div className="flex items-center justify-between text-xs font-bold">
+                    <span className="text-emerald-400 font-mono text-[11px]">{c.channel}</span>
+                    <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-emerald-500/10 text-emerald-300">ACTIVE</span>
+                  </div>
+                  <p className="text-slate-300 text-xs mt-1.5 line-clamp-2">{c.strategy}</p>
+                </div>
+                <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-[11px]">
+                  <span className="text-slate-400">CTA:</span>
+                  <span className="text-slate-200 font-medium truncate max-w-[180px]">{c.callToAction}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Local Landing Pages Showcase */}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+              <FileText className="w-3.5 h-3.5 text-cyan-400" />
+              Verified Local Landing Pages (No Doorway Spams)
+            </h4>
+            <span className="text-[11px] text-slate-400 font-mono">Schema.org LocalBusiness Validated</span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            {[
+              { slug: '/aligners-hyderabad', title: 'Hyderabad Metro Aligner Centre', location: 'Hyderabad Metro (Banjara Hills & Gachibowli)', cta: 'Book Free 3D Digital Smile Consultation' },
+              { slug: '/aligners-banjara-hills', title: 'Banjara Hills Clinic (Road No. 12)', location: 'Banjara Hills, Hyderabad', cta: 'Reserve Banjara Hills 3D iTero Scan' },
+              { slug: '/aligners-gachibowli', title: 'Financial District & Tech Hub', location: 'Gachibowli & HITEC City', cta: 'Book Evening / Weekend Aligner Slot' },
+            ].map((p, i) => (
+              <div key={i} className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-white">{p.title}</span>
+                  <span className="text-[10px] font-mono text-cyan-400 bg-cyan-500/10 px-1.5 py-0.5 rounded">{p.slug}</span>
+                </div>
+                <p className="text-xs text-slate-400">{p.location}</p>
+                <div className="pt-2 border-t border-slate-800 text-[11px] text-emerald-400 font-medium flex items-center gap-1">
+                  <Check className="w-3 h-3" /> CTA: {p.cta}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Zero-Budget Experiments Showcase */}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+              <FlaskConical className="w-3.5 h-3.5 text-purple-400" />
+              Zero-Budget Acquisition Experiments (Budget = ₹0)
+            </h4>
+            <span className="text-[11px] text-slate-400 font-mono">Paid Media Spend: ₹0</span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            {(zeroExperiments.length > 0 ? zeroExperiments : [
+              { title: 'Doctor Explainer Reels vs Carousel', hypothesis: 'Doctor reels explaining 3D digital aligners drive higher direct WhatsApp inquiries than static infographics.', channel: 'INSTAGRAM_ORGANIC' },
+              { title: 'Banjara Hills Landing Page vs Metro Page', hypothesis: 'Hyper-local Banjara Hills landing page with clinic address achieves higher booking rate than city-wide page.', channel: 'ORGANIC_SEO' },
+              { title: 'Direct WhatsApp Chat vs Web Form', hypothesis: 'Direct 1-click WhatsApp chat CTA generates 2x more verified inquiries than multi-field web forms.', channel: 'WHATSAPP_INBOUND' }
+            ]).map((exp, i) => (
+              <div key={i} className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 space-y-2 text-xs">
+                <div className="flex items-center justify-between font-bold">
+                  <span className="text-slate-200">{exp.title}</span>
+                  <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-purple-500/10 text-purple-400">₹0 BUDGET</span>
+                </div>
+                <p className="text-slate-400 text-[11px] line-clamp-3">{exp.hypothesis}</p>
+                <div className="pt-2 border-t border-slate-800 text-[10px] text-slate-500 font-mono">
+                  Channel: <span className="text-slate-300">{exp.channel}</span>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       </div>

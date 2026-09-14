@@ -216,6 +216,14 @@ describe('Production Authentication, Learning Isolation & Truth Integrity', () =
   });
 
   describe('4. Operational Readiness: READY_FOR_REAL_EXPERIMENT (Requirement 16)', () => {
+    beforeEach(() => {
+      const db = getDb();
+      db.prepare("DELETE FROM customer_journeys WHERE classification = 'REAL'").run();
+      db.prepare("DELETE FROM appointments").run();
+      db.prepare("DELETE FROM transactions WHERE classification = 'REAL'").run();
+      db.prepare("DELETE FROM experiments").run();
+    });
+
     it('evaluates and passes all 12 operational criteria for real revenue experiment', () => {
       const report = SystemReadinessEngine.evaluateReadiness(businessId);
       expect(report.status).toBe('READY_FOR_REAL_EXPERIMENT');
