@@ -10,8 +10,10 @@ import {
   Calendar,
   ChevronRight,
   Award,
-  AlertCircle
+  AlertCircle,
+  FileCheck
 } from 'lucide-react';
+import { PrivacyPolicyPage } from './PrivacyPolicyPage';
 
 export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ onBackToAdmin }) => {
   const [name, setName] = useState('');
@@ -21,6 +23,9 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
   const [treatment, setTreatment] = useState('Invisible Clear Aligners');
   const [date, setDate] = useState('2026-09-15');
   const [notes, setNotes] = useState('');
+  const [consentGiven, setConsentGiven] = useState(false);
+  const [botTrap, setBotTrap] = useState('');
+  const [showPrivacyPolicy, setShowPrivacyPolicy] = useState(false);
   
   const [submitting, setSubmitting] = useState(false);
   const [confirmedBooking, setConfirmedBooking] = useState<any>(null);
@@ -38,8 +43,14 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
 
   const handleBookingSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSubmitting(true);
     setErrorMsg('');
+
+    if (!consentGiven) {
+      setErrorMsg('Mandatory Consent: Please check the DPDP Act 2023 consent box to proceed with consultation scheduling.');
+      return;
+    }
+
+    setSubmitting(true);
 
     try {
       const res = await fetch('/api/v1/public/lead', {
@@ -62,7 +73,9 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
           utmCampaign,
           utmTerm,
           utmContent,
-          sessionId: `sess_${Date.now()}`
+          sessionId: `sess_${Date.now()}`,
+          dpdpConsentGiven: consentGiven,
+          website_url_hp: botTrap
         })
       });
 
@@ -79,17 +92,27 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
     }
   };
 
+  if (showPrivacyPolicy) {
+    return <PrivacyPolicyPage onBack={() => setShowPrivacyPolicy(false)} />;
+  }
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans">
       {/* Top Banner with MCI compliance notice */}
-      <div className="bg-gradient-to-r from-cyan-900/60 to-blue-900/60 border-b border-cyan-800/40 px-4 py-2 text-xs text-center text-cyan-200">
-        <span className="font-semibold">SmileKraft Dental Clinic</span> • Certified Specialists in Banjara Hills & Gachibowli • MCI & NMC Ethically Compliant
+      <div className="bg-gradient-to-r from-cyan-900/60 to-blue-900/60 border-b border-cyan-800/40 px-4 py-2 text-xs text-center text-cyan-200 flex flex-wrap items-center justify-center gap-2">
+        <span className="font-semibold">SmileKraft Dental Clinic</span> • Certified Specialists in Banjara Hills & Gachibowli • MCI & DCI Ethically Compliant
+        <button
+          onClick={() => setShowPrivacyPolicy(true)}
+          className="underline text-cyan-300 hover:text-white font-medium ml-2"
+        >
+          Privacy Policy & Disclosures
+        </button>
         {onBackToAdmin && (
           <button 
             onClick={onBackToAdmin} 
             className="ml-4 underline text-cyan-300 hover:text-white font-medium"
           >
-            ← Return to Marketing Management Console
+            ← Return to Console
           </button>
         )}
       </div>
@@ -99,13 +122,13 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
         <div className="text-center space-y-3">
           <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 text-xs font-semibold">
             <Sparkles className="w-3.5 h-3.5" />
-            Hyderabad Premier Pain-Free Smile Transformation
+            Hyderabad Modern Digital Orthodontics & Dental Care
           </div>
           <h1 className="text-3xl sm:text-4xl font-black text-white tracking-tight">
             SmileKraft Dental Clinic
           </h1>
           <p className="text-sm text-slate-400 max-w-xl mx-auto">
-            Led by <strong>Dr. Aravind Reddy (MDS Orthodontics, 15+ Yrs Exp)</strong>. Digital 3D smile planning, German titanium implants, and invisible aligners.
+            Led by <strong>Dr. Aravind Reddy (MDS Orthodontics, TSDC Reg: TSDC/2011/58291)</strong>. Digital 3D smile planning, German titanium implants, and invisible aligners.
           </p>
 
           <div className="flex flex-wrap items-center justify-center gap-4 text-xs text-slate-300 pt-2">
@@ -119,7 +142,7 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
             </span>
             <span className="flex items-center gap-1">
               <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-              100% Pain-Free Laser Tech
+              Advanced Comfort Laser Tech (Zero Deceptive Guarantees)
             </span>
           </div>
         </div>
@@ -340,6 +363,41 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
                     onChange={(e) => setNotes(e.target.value)}
                     className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3.5 py-2 text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500"
                   />
+                </div>
+
+                {/* Honeypot Bot Trap */}
+                <div style={{ display: 'none' }} aria-hidden="true">
+                  <input
+                    type="text"
+                    name="website_url_hp"
+                    tabIndex={-1}
+                    autoComplete="off"
+                    value={botTrap}
+                    onChange={(e) => setBotTrap(e.target.value)}
+                  />
+                </div>
+
+                {/* DPDP Act 2023 Statutory Consent Checkbox */}
+                <div className="p-3.5 rounded-xl bg-slate-950/80 border border-slate-800 space-y-1.5">
+                  <label className="flex items-start gap-2.5 cursor-pointer text-xs text-slate-300">
+                    <input
+                      type="checkbox"
+                      required
+                      checked={consentGiven}
+                      onChange={(e) => setConsentGiven(e.target.checked)}
+                      className="mt-0.5 rounded border-slate-700 bg-slate-900 text-cyan-500 focus:ring-cyan-500"
+                    />
+                    <span>
+                      I consent to SmileKraft Dental Clinic processing my contact details solely for consultation scheduling in compliance with the <strong>Digital Personal Data Protection (DPDP) Act 2023</strong>.{' '}
+                      <button
+                        type="button"
+                        onClick={() => setShowPrivacyPolicy(true)}
+                        className="underline text-cyan-400 hover:text-cyan-300 font-medium inline"
+                      >
+                        Read Statutory Privacy Policy &amp; DCI Disclosures
+                      </button>
+                    </span>
+                  </label>
                 </div>
 
                 <div className="pt-2">

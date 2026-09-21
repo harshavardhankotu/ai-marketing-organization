@@ -35,6 +35,8 @@ import { LocalLandingPageEngine } from '../organic/local-landing-pages.js';
 import { ReviewAndReferralEngine } from '../organic/review-and-referral-engine.js';
 import { GoogleBusinessProfileAdapter } from '../organic/gbp-integration.js';
 import { TrafficProvenanceEngine } from '../organic/traffic-provenance.js';
+import { RazorpayAdapter } from '../integrations/razorpay.js';
+import { DPDPComplianceManager } from '../compliance/dpdp-manager.js';
 
 export type AppVariables = {
   organizationId: string;
@@ -52,6 +54,8 @@ apiRouter.use('*', async (c, next) => {
     path.endsWith('/health') ||
     path.includes('/public/') ||
     path.includes('/webhooks/') ||
+    path.includes('/payments/') ||
+    path.includes('/compliance/') ||
     path.includes('/landing-pages') ||
     path.includes('/organic/sessions') ||
     path.includes('/organic/leads')
@@ -492,6 +496,9 @@ const campaignKnowledgeGraph = new CampaignKnowledgeGraph();
 const agentScorecards = new AgentScorecardEngine();
 const autonomyController = new AutonomyController();
 const firstCustomerPipeline = new FirstCustomerAutomationPipeline();
+const razorpayAdapter = new RazorpayAdapter();
+const dpdpManager = new DPDPComplianceManager();
+const publicRateLimitMap = new Map<string, number[]>();
 
 apiRouter.get('/revenue/summary', (c) => {
   const orgId = c.get('organizationId');
@@ -735,12 +742,35 @@ apiRouter.post('/ai-costs/log', async (c) => {
 });
 
 // ==========================================
+// ==========================================
 // REAL LEAD CAPTURE & PUBLIC BOOKING API
 // ==========================================
 apiRouter.post('/public/lead', async (c) => {
   const body = await c.req.json();
   const businessId = body.businessId || 'biz_smilekraft_hyd';
   const orgId = body.organizationId || 'org_smilekraft_01';
+
+  // 1. Anti-Bot Honeypot Defense: Silently absorb scrapers
+  if (body.website_url_hp || body.bot_trap) {
+    return c.json({
+      success: true,
+      message: 'Consultation request received successfully.',
+      data: { leadId: 'lead_hp_bot', status: 'FILTERED', clinic: 'SmileKraft Dental Clinic' }
+    }, 200);
+  }
+
+  // 2. Sliding-Window Rate Limiter (Max 10 requests per 10 mins per IP)
+  const clientIp = c.req.header('x-forwarded-for') || c.req.header('cf-connecting-ip') || '127.0.0.1';
+  const nowMs = Date.now();
+  const timestamps = (publicRateLimitMap.get(clientIp) || []).filter(t => nowMs - t < 10 * 60 * 1000);
+  if (timestamps.length >= 10) {
+    return c.json({
+      success: false,
+      error: 'Rate limit exceeded: Too many consultation requests from this network. Please wait a few minutes or contact the clinic directly via phone.'
+    }, 429);
+  }
+  timestamps.push(nowMs);
+  publicRateLimitMap.set(clientIp, timestamps);
 
   if (!body.customerName || !body.customerPhone) {
     return c.json({ success: false, error: 'Full name and mobile phone number are required' }, 400);
@@ -777,6 +807,19 @@ apiRouter.post('/public/lead', async (c) => {
     gclid: body.gclid,
   });
 
+  // DPDP Act 2023: Record digital patient consent
+  if (body.dpdpConsentGiven || body.consentGiven) {
+    dpdpManager.recordConsent({
+      businessId,
+      journeyId: journey.id,
+      customerName: body.customerName.trim(),
+      customerPhone: body.customerPhone.trim(),
+      ipAddress: clientIp,
+      purpose: 'Direct dental consultation coordination and orthodontic treatment assessment at SmileKraft Dental Clinic',
+      consentVersion: body.consentVersion || '2026.1',
+    });
+  }
+
   const leadId = `lead_${journey.id.replace('journey-', '')}`;
   const resolvedSessionId = body.sessionId || `sess_${journey.visitorId.slice(-8)}`;
 
@@ -798,9 +841,124 @@ apiRouter.post('/public/lead', async (c) => {
       journeyId: journey.id,
       stage: journey.stage,
       classification: journey.classification,
+      dpdpConsentCaptured: Boolean(body.dpdpConsentGiven || body.consentGiven),
       clinic: 'SmileKraft Dental Clinic Banjara Hills & Gachibowli'
     }
   }, 201);
+});
+
+// ==========================================
+// AUTOMATED RAZORPAY PAYMENT GATEWAY & WEBHOOKS
+// ==========================================
+
+apiRouter.post('/payments/razorpay/create-order', async (c) => {
+  const body = await c.req.json();
+  const businessId = body.businessId || 'biz_smilekraft_hyd';
+
+  if (!body.amountINR || body.amountINR <= 0) {
+    return c.json({ success: false, error: 'Valid amount in INR is required' }, 400);
+  }
+
+  try {
+    const order = await razorpayAdapter.createPaymentOrder({
+      businessId,
+      journeyId: body.journeyId,
+      amountINR: body.amountINR,
+      receipt: body.receipt || `rcpt_${Date.now()}`,
+      notes: {
+        business_id: businessId,
+        journey_id: body.journeyId || '',
+        service: body.service || 'SmileKraft Dental Procedure',
+        invoice_number: body.invoiceNumber || `INV-SK-${Date.now()}`
+      }
+    });
+
+    return c.json({ success: true, data: order }, 201);
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 400);
+  }
+});
+
+apiRouter.post('/webhooks/razorpay', async (c) => {
+  const rawBody = await c.req.text();
+  const signature = c.req.header('x-razorpay-signature') || '';
+
+  if (!signature) {
+    return c.json({ success: false, error: 'Missing x-razorpay-signature header' }, 400);
+  }
+
+  let eventPayload: any;
+  try {
+    eventPayload = JSON.parse(rawBody);
+  } catch {
+    return c.json({ success: false, error: 'Invalid JSON payload' }, 400);
+  }
+
+  try {
+    const result = await razorpayAdapter.processWebhook({
+      rawBody,
+      signature,
+      event: eventPayload
+    });
+
+    return c.json({ success: true, data: result }, 200);
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 400);
+  }
+});
+
+// ==========================================
+// DPDP ACT 2023 COMPLIANCE & PRIVACY RIGHTS
+// ==========================================
+
+apiRouter.post('/compliance/dpdp/consent', async (c) => {
+  const body = await c.req.json();
+  const businessId = body.businessId || 'biz_smilekraft_hyd';
+
+  if (!body.customerName || !body.purpose) {
+    return c.json({ success: false, error: 'Customer name and explicit purpose are required' }, 400);
+  }
+
+  const clientIp = c.req.header('x-forwarded-for') || c.req.header('cf-connecting-ip') || '127.0.0.1';
+  const consent = dpdpManager.recordConsent({
+    businessId,
+    journeyId: body.journeyId,
+    customerName: body.customerName,
+    customerPhone: body.customerPhone,
+    ipAddress: clientIp,
+    purpose: body.purpose,
+    consentVersion: body.consentVersion || '2026.1'
+  });
+
+  return c.json({ success: true, data: consent }, 201);
+});
+
+apiRouter.post('/compliance/dpdp/erasure', async (c) => {
+  const body = await c.req.json();
+  const businessId = body.businessId || 'biz_smilekraft_hyd';
+
+  if (!body.phoneOrJourneyId) {
+    return c.json({ success: false, error: 'Phone number or Journey ID required for Section 12 erasure request' }, 400);
+  }
+
+  const result = dpdpManager.requestErasure({
+    businessId,
+    phoneOrJourneyId: body.phoneOrJourneyId,
+    reason: body.reason || 'Patient consent withdrawal'
+  });
+
+  return c.json({ success: true, data: result }, 200);
+});
+
+apiRouter.get('/compliance/dpdp/status/:identifier', (c) => {
+  const identifier = c.req.param('identifier');
+  const consent = dpdpManager.getConsent(identifier);
+
+  if (!consent) {
+    return c.json({ success: false, error: 'Consent record not found' }, 404);
+  }
+
+  return c.json({ success: true, data: consent });
 });
 
 // ==========================================

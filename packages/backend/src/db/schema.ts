@@ -916,4 +916,41 @@ CREATE TABLE IF NOT EXISTS acquisition_evidence (
 );
 CREATE INDEX IF NOT EXISTS idx_acq_ev_journey ON acquisition_evidence(journey_id);
 CREATE INDEX IF NOT EXISTS idx_acq_ev_source ON acquisition_evidence(source_provenance);
+
+-- 46. DPDP Act 2023 Digital Patient Consents & Rights Management
+CREATE TABLE IF NOT EXISTS patient_dpdp_consents (
+  id TEXT PRIMARY KEY,
+  business_id TEXT NOT NULL,
+  journey_id TEXT,
+  customer_name TEXT NOT NULL,
+  customer_phone TEXT,
+  ip_address TEXT,
+  purpose TEXT NOT NULL,
+  consent_version TEXT NOT NULL DEFAULT '2026.1',
+  status TEXT NOT NULL DEFAULT 'ACTIVE',
+  consent_timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+  revoked_timestamp TEXT,
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_dpdp_biz ON patient_dpdp_consents(business_id);
+CREATE INDEX IF NOT EXISTS idx_dpdp_phone ON patient_dpdp_consents(customer_phone);
+
+-- 47. Automated Payment Orders & Gateway Reconciliation
+CREATE TABLE IF NOT EXISTS payment_orders (
+  id TEXT PRIMARY KEY,
+  business_id TEXT NOT NULL,
+  journey_id TEXT,
+  order_id TEXT UNIQUE NOT NULL,
+  amount_inr REAL NOT NULL,
+  currency TEXT NOT NULL DEFAULT 'INR',
+  status TEXT NOT NULL DEFAULT 'CREATED',
+  receipt TEXT NOT NULL,
+  notes_json TEXT,
+  payment_id TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_pay_orders_biz ON payment_orders(business_id);
+CREATE INDEX IF NOT EXISTS idx_pay_orders_ref ON payment_orders(order_id);
 `;
