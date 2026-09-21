@@ -115,7 +115,14 @@ export const Dashboard: React.FC<DashboardProps> = ({
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            onClick={() => onNavigateTab('public_landing')}
+            className="px-4 py-2.5 rounded-xl text-xs font-bold bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white shadow-md shadow-emerald-600/20 transition-all flex items-center gap-1.5"
+          >
+            <Globe className="w-3.5 h-3.5" />
+            View Patient Booking Page
+          </button>
           <button
             onClick={() => onNavigateTab('agents')}
             className="px-4 py-2.5 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 transition-all"
@@ -129,6 +136,35 @@ export const Dashboard: React.FC<DashboardProps> = ({
           >
             <Sparkles className="w-3.5 h-3.5" />
             {isCycleRunning ? 'Autonomous Cycle Running...' : 'Trigger Next Learning Cycle'}
+          </button>
+        </div>
+      </div>
+
+      {/* Platform & Product Architecture Clarifier */}
+      <div className="p-4 rounded-xl bg-slate-900/90 border border-indigo-500/30 shadow-md flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+        <div className="flex items-start gap-3">
+          <div className="p-2 rounded-lg bg-indigo-500/20 text-indigo-400 mt-0.5">
+            <Layers className="w-5 h-5" />
+          </div>
+          <div>
+            <h4 className="text-sm font-bold text-white flex flex-wrap items-center gap-2">
+              Two Systems Working Together:
+              <span className="text-cyan-400 font-medium">1. Autonomous AI Agency (80 Agents)</span>
+              <span className="text-slate-400 font-normal">&bull;</span>
+              <span className="text-emerald-400 font-medium">2. Client Website & Patient Booking Funnel</span>
+            </h4>
+            <p className="text-xs text-slate-300 mt-1 leading-relaxed">
+              This dashboard is the <strong>Internal AI Marketing Agency Command Center</strong> (orchestrating 80 autonomous agents, multi-lingual creatives, Google/Meta campaigns, multi-touch attribution, and live double-entry ledger). The <strong>Patient Booking Page</strong> (<code className="text-emerald-300 font-mono">/aligners-hyderabad</code>) is the live conversion destination created by the AI agents to attract, book, and collect ₹500/₹5,000 deposits from real Hyderabad patients via Razorpay UPI.
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={() => onNavigateTab('public_landing')}
+            className="px-3.5 py-2 rounded-lg text-xs font-semibold bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 transition-all flex items-center gap-1.5"
+          >
+            <Globe className="w-3.5 h-3.5" />
+            Open Patient Booking Page &rarr;
           </button>
         </div>
       </div>

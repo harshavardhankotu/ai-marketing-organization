@@ -294,23 +294,32 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans">
-      {/* Top Banner with MCI compliance notice */}
-      <div className="bg-gradient-to-r from-cyan-900/60 to-blue-900/60 border-b border-cyan-800/40 px-4 py-2 text-xs text-center text-cyan-200 flex flex-wrap items-center justify-center gap-2">
-        <span className="font-semibold">SmileKraft Dental Clinic</span> • Certified Specialists in Banjara Hills & Gachibowli • MCI & DCI Ethically Compliant
-        <button
-          onClick={() => setShowPrivacyPolicy(true)}
-          className="underline text-cyan-300 hover:text-white font-medium ml-2"
-        >
-          Privacy Policy & Disclosures
-        </button>
-        {onBackToAdmin && (
-          <button 
-            onClick={onBackToAdmin} 
-            className="ml-4 underline text-cyan-300 hover:text-white font-medium"
+      {/* Top Banner: Dual-Surface Navigation */}
+      <div className="bg-gradient-to-r from-slate-950 via-cyan-950/80 to-slate-950 border-b border-cyan-800/60 px-4 py-2 text-xs flex flex-wrap items-center justify-between gap-3 shadow-lg">
+        <div className="flex items-center gap-2 text-cyan-300 font-medium">
+          <Sparkles className="w-4 h-4 text-cyan-400 shrink-0" />
+          <span>Patient Acquisition Funnel (Outward-Facing Surface for Hyderabad Patients)</span>
+        </div>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setShowPrivacyPolicy(true)}
+            className="text-slate-400 hover:text-cyan-300 text-[11px] underline"
           >
-            ← Return to Console
+            MCI Disclosures
           </button>
-        )}
+          <button 
+            onClick={() => {
+              if (onBackToAdmin) {
+                onBackToAdmin();
+              } else {
+                window.location.href = '/';
+              }
+            }} 
+            className="px-3 py-1 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs shadow-md shadow-cyan-600/30 flex items-center gap-1.5 transition-all"
+          >
+            <span>← Open AI Marketing Console (80 Agents &amp; Analytics)</span>
+          </button>
+        </div>
       </div>
 
       <div className="max-w-4xl mx-auto px-4 py-8 space-y-8">

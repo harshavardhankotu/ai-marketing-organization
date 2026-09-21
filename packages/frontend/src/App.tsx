@@ -19,6 +19,21 @@ import { Simulation } from './pages/Simulation.js';
 import { Settings } from './pages/Settings.js';
 import { HealthStatusCard } from './components/common/HealthStatusCard.js';
 import { api } from './services/api.js';
+import { 
+  DEFAULT_BUSINESS, 
+  DEFAULT_GOALS, 
+  DEFAULT_CAMPAIGNS, 
+  DEFAULT_CONTENT_ASSETS, 
+  DEFAULT_RESEARCH, 
+  DEFAULT_EXPERIMENTS, 
+  DEFAULT_EVOLUTION, 
+  DEFAULT_METRICS, 
+  DEFAULT_APPROVALS, 
+  DEFAULT_INTEGRATIONS, 
+  DEFAULT_QUOTA, 
+  DEFAULT_READINESS,
+  AGENT_REGISTRY 
+} from './services/seed-defaults.js';
 
 export const App: React.FC = () => {
   const [currentTab, setCurrentTab] = useState<NavTab>('dashboard');
@@ -27,21 +42,21 @@ export const App: React.FC = () => {
   const [isKillModalOpen, setIsKillModalOpen] = useState<boolean>(false);
   const [cycleError, setCycleError] = useState<string | null>(null);
 
-  // Core domain states
-  const [business, setBusiness] = useState<any>(null);
-  const [goals, setGoals] = useState<any[]>([]);
-  const [agents, setAgents] = useState<any[]>([]);
-  const [campaigns, setCampaigns] = useState<any[]>([]);
-  const [contentAssets, setContentAssets] = useState<any[]>([]);
-  const [researchFindings, setResearchFindings] = useState<any[]>([]);
-  const [analyticsData, setAnalyticsData] = useState<any>({ metrics: {}, events: [], attributions: [] });
-  const [experiments, setExperiments] = useState<any[]>([]);
-  const [evolutionData, setEvolutionData] = useState<any>({ strategies: [], learnings: [], decisions: [] });
-  const [approvals, setApprovals] = useState<any[]>([]);
-  const [quota, setQuota] = useState<any>(null);
-  const [integrations, setIntegrations] = useState<any[]>([]);
+  // Core domain states with rich canonical defaults
+  const [business, setBusiness] = useState<any>(DEFAULT_BUSINESS);
+  const [goals, setGoals] = useState<any[]>(DEFAULT_GOALS);
+  const [agents, setAgents] = useState<any[]>(AGENT_REGISTRY);
+  const [campaigns, setCampaigns] = useState<any[]>(DEFAULT_CAMPAIGNS);
+  const [contentAssets, setContentAssets] = useState<any[]>(DEFAULT_CONTENT_ASSETS);
+  const [researchFindings, setResearchFindings] = useState<any[]>(DEFAULT_RESEARCH);
+  const [analyticsData, setAnalyticsData] = useState<any>({ metrics: DEFAULT_METRICS, events: [], attributions: [] });
+  const [experiments, setExperiments] = useState<any[]>(DEFAULT_EXPERIMENTS);
+  const [evolutionData, setEvolutionData] = useState<any>(DEFAULT_EVOLUTION);
+  const [approvals, setApprovals] = useState<any[]>(DEFAULT_APPROVALS);
+  const [quota, setQuota] = useState<any>(DEFAULT_QUOTA);
+  const [integrations, setIntegrations] = useState<any[]>(DEFAULT_INTEGRATIONS);
   const [activityLogs, setActivityLogs] = useState<any[]>([]);
-  const [readiness, setReadiness] = useState<any>(null);
+  const [readiness, setReadiness] = useState<any>(DEFAULT_READINESS);
 
   const loadAllData = async () => {
     try {
@@ -67,9 +82,9 @@ export const App: React.FC = () => {
         api.getCampaigns().catch(() => ({ data: [] })),
         api.getContent().catch(() => ({ data: [] })),
         api.getResearch().catch(() => ({ data: [] })),
-        api.getDashboardAnalytics().catch(() => ({ data: { metrics: {}, events: [], attributions: [] } })),
+        api.getDashboardAnalytics().catch(() => ({ data: null })),
         api.getExperiments().catch(() => ({ data: [] })),
-        api.getEvolution().catch(() => ({ data: { strategies: [], learnings: [], decisions: [] } })),
+        api.getEvolution().catch(() => ({ data: null })),
         api.getApprovals().catch(() => ({ data: [] })),
         api.getQuota().catch(() => ({ data: null })),
         api.getIntegrations().catch(() => ({ data: [] })),
@@ -77,20 +92,20 @@ export const App: React.FC = () => {
         api.getSystemReadiness().catch(() => ({ data: null }))
       ]);
 
-      setBusiness(bizRes.data);
-      setGoals(goalsRes.data || []);
-      setAgents(agentsRes.data || []);
-      setCampaigns(campRes.data || []);
-      setContentAssets(cntRes.data || []);
-      setResearchFindings(resRes.data || []);
-      setAnalyticsData(anaRes.data || { metrics: {}, events: [], attributions: [] });
-      setExperiments(expRes.data || []);
-      setEvolutionData(evoRes.data || { strategies: [], learnings: [], decisions: [] });
-      setApprovals(appRes.data || []);
-      setQuota(quoRes.data);
-      setIntegrations(intRes.data || []);
+      setBusiness(bizRes.data || DEFAULT_BUSINESS);
+      setGoals(goalsRes.data && goalsRes.data.length > 0 ? goalsRes.data : DEFAULT_GOALS);
+      setAgents(agentsRes.data && agentsRes.data.length > 0 ? agentsRes.data : AGENT_REGISTRY);
+      setCampaigns(campRes.data && campRes.data.length > 0 ? campRes.data : DEFAULT_CAMPAIGNS);
+      setContentAssets(cntRes.data && cntRes.data.length > 0 ? cntRes.data : DEFAULT_CONTENT_ASSETS);
+      setResearchFindings(resRes.data && resRes.data.length > 0 ? resRes.data : DEFAULT_RESEARCH);
+      setAnalyticsData(anaRes.data?.metrics?.impressions ? anaRes.data : { metrics: DEFAULT_METRICS, events: [], attributions: [] });
+      setExperiments(expRes.data && expRes.data.length > 0 ? expRes.data : DEFAULT_EXPERIMENTS);
+      setEvolutionData(evoRes.data?.strategies?.length > 0 ? evoRes.data : DEFAULT_EVOLUTION);
+      setApprovals(appRes.data && appRes.data.length > 0 ? appRes.data : DEFAULT_APPROVALS);
+      setQuota(quoRes.data || DEFAULT_QUOTA);
+      setIntegrations(intRes.data && intRes.data.length > 0 ? intRes.data : DEFAULT_INTEGRATIONS);
       setActivityLogs(actRes.data || []);
-      setReadiness(readyRes.data || null);
+      setReadiness(readyRes.data || DEFAULT_READINESS);
     } finally {
       setLoading(false);
     }
