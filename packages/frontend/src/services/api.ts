@@ -1,7 +1,33 @@
-const API_BASE = '/api/v1';
+export function getApiBaseUrl(): string {
+  if (typeof window !== 'undefined') {
+    const custom = localStorage.getItem('AI_MARKETING_API_URL');
+    if (custom && custom.trim().length > 0) {
+      return custom.trim().replace(/\/+$/, '');
+    }
+  }
+  const envUrl = (import.meta as any).env?.VITE_API_BASE_URL;
+  if (envUrl && envUrl.trim().length > 0) {
+    return envUrl.trim().replace(/\/+$/, '');
+  }
+  return '/api/v1';
+}
+
+export function setApiBaseUrl(url: string): void {
+  if (typeof window !== 'undefined') {
+    if (!url || url.trim().length === 0) {
+      localStorage.removeItem('AI_MARKETING_API_URL');
+    } else {
+      localStorage.setItem('AI_MARKETING_API_URL', url.trim().replace(/\/+$/, ''));
+    }
+  }
+}
 
 export async function fetchApi<T = any>(endpoint: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${endpoint}`, {
+  const base = getApiBaseUrl();
+  const normalizedEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  const url = `${base}${normalizedEndpoint}`;
+
+  const res = await fetch(url, {
     headers: {
       'Content-Type': 'application/json',
       'x-organization-id': 'org_smilekraft_01',
@@ -11,12 +37,29 @@ export async function fetchApi<T = any>(endpoint: string, options?: RequestInit)
     ...options
   });
 
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || `Request failed with status ${res.status}`);
+  const contentType = res.headers.get('content-type') || '';
+  const text = await res.text();
+
+  // Intercept HTML responses from static SPA hosting rewrites (e.g. Firebase Hosting index.html fallback)
+  if (contentType.includes('text/html') || text.trim().startsWith('<!doctype') || text.trim().startsWith('<html')) {
+    throw new Error(
+      `Backend API server not reached at ${url}. The cloud host returned static HTML instead of JSON. ` +
+      `Ensure the local backend is running (npm start) and configure the API URL in Settings/Navbar.`
+    );
   }
 
-  return res.json();
+  let json: any;
+  try {
+    json = JSON.parse(text);
+  } catch (parseErr) {
+    throw new Error(`Invalid JSON response from ${url} (status ${res.status}): ${text.slice(0, 100)}...`);
+  }
+
+  if (!res.ok) {
+    throw new Error(json.error || `Request failed with status ${res.status}`);
+  }
+
+  return json;
 }
 
 export const api = {
@@ -87,4 +130,14 @@ export const api = {
   getAcquisitionEvidence: (id: string) => fetchApi(`/organic/acquisition-evidence/${id}`),
   getGBPOAuthStatus: () => fetchApi('/organic/gbp/oauth/status'),
   recordPublicationEvidence: (id: string, data: any) => fetchApi(`/organic/content/${id}/publish-evidence`, { method: 'POST', body: JSON.stringify(data) }),
+  // Live Payment Gateway (Razorpay & Inbound UPI)
+  createPaymentOrder: (data: { businessId?: string; journeyId?: string; amountINR: number; receipt?: string; notes?: any }) =>
+    fetchApi('/payments/razorpay/create-order', { method: 'POST', body: JSON.stringify(data) }),
+  verifyPayment: (data: { orderId: string; paymentId: string; signature: string; businessId?: string; journeyId?: string; method?: string }) =>
+    fetchApi('/payments/razorpay/verify', { method: 'POST', body: JSON.stringify(data) }),
+  // DPDP Statutory Compliance
+  recordDPDPConsent: (data: any) =>
+    fetchApi('/compliance/dpdp/consent', { method: 'POST', body: JSON.stringify(data) }),
+  requestDPDPErasure: (data: any) =>
+    fetchApi('/compliance/dpdp/erasure', { method: 'POST', body: JSON.stringify(data) }),
 };

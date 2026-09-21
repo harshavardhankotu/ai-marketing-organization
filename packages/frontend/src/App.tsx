@@ -25,6 +25,7 @@ export const App: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(true);
   const [isCycleRunning, setIsCycleRunning] = useState<boolean>(false);
   const [isKillModalOpen, setIsKillModalOpen] = useState<boolean>(false);
+  const [cycleError, setCycleError] = useState<string | null>(null);
 
   // Core domain states
   const [business, setBusiness] = useState<any>(null);
@@ -101,11 +102,12 @@ export const App: React.FC = () => {
 
   const handleTriggerCycle = async () => {
     setIsCycleRunning(true);
+    setCycleError(null);
     try {
       await api.triggerCycle(business?.id, goals[0]?.id);
       await loadAllData();
     } catch (err: any) {
-      alert(`Marketing cycle failed: ${err.message}`);
+      setCycleError(err.message);
     } finally {
       setIsCycleRunning(false);
     }
@@ -165,6 +167,21 @@ export const App: React.FC = () => {
 
         {/* Scrollable Page Canvas */}
         <main className="flex-1 overflow-y-auto p-6 lg:p-8">
+          {cycleError && (
+            <div className="mb-6 p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-start justify-between gap-3 shadow-lg">
+              <div className="flex items-start gap-2">
+                <span className="font-bold text-rose-200 shrink-0">System Alert:</span>
+                <span className="leading-relaxed">{cycleError}</span>
+              </div>
+              <button
+                onClick={() => setCycleError(null)}
+                className="text-rose-400 hover:text-white font-bold px-2 py-0.5 rounded hover:bg-rose-500/20"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+
           <HealthStatusCard />
 
           {currentTab === 'dashboard' && (

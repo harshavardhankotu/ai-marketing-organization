@@ -7,6 +7,9 @@
     "packages/*"
   ],
   "scripts": {
+    "dev": "node scripts/start-dev.mjs",
+    "start": "node packages/backend/dist/index.js",
+    "serve": "npm run build && npm start",
     "build": "npm run build --workspace=packages/shared && npm run build --workspace=packages/backend && npm run build --workspace=packages/frontend",
     "dev:backend": "npm run dev --workspace=packages/backend",
     "dev:frontend": "npm run dev --workspace=packages/frontend",

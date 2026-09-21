@@ -879,6 +879,29 @@ apiRouter.post('/payments/razorpay/create-order', async (c) => {
   }
 });
 
+apiRouter.post('/payments/razorpay/verify', async (c) => {
+  const body = await c.req.json();
+  const { orderId, paymentId, signature, businessId, journeyId, method } = body;
+
+  if (!orderId || !paymentId || !signature) {
+    return c.json({ success: false, error: 'Missing required payment verification parameters: orderId, paymentId, signature' }, 400);
+  }
+
+  try {
+    const result = await razorpayAdapter.confirmClientPayment({
+      orderId,
+      paymentId,
+      signature,
+      method,
+      businessId,
+      journeyId
+    });
+    return c.json({ success: true, data: result });
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 400);
+  }
+});
+
 apiRouter.post('/webhooks/razorpay', async (c) => {
   const rawBody = await c.req.text();
   const signature = c.req.header('x-razorpay-signature') || '';

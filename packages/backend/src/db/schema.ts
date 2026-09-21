@@ -507,6 +507,26 @@ CREATE INDEX IF NOT EXISTS idx_tx_campaign ON transactions(campaign_id);
 CREATE INDEX IF NOT EXISTS idx_tx_class ON transactions(classification);
 CREATE INDEX IF NOT EXISTS idx_tx_status ON transactions(status);
 
+-- 24b. Payment Orders (Razorpay & Online Inbound Patient Payments)
+CREATE TABLE IF NOT EXISTS payment_orders (
+  id TEXT PRIMARY KEY,
+  business_id TEXT NOT NULL,
+  journey_id TEXT,
+  order_id TEXT UNIQUE NOT NULL,
+  amount_inr REAL NOT NULL,
+  currency TEXT NOT NULL DEFAULT 'INR',
+  status TEXT NOT NULL DEFAULT 'CREATED',
+  receipt TEXT NOT NULL,
+  payment_id TEXT,
+  notes_json TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE,
+  FOREIGN KEY (journey_id) REFERENCES customer_journeys(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_payment_orders_order ON payment_orders(order_id);
+CREATE INDEX IF NOT EXISTS idx_payment_orders_biz ON payment_orders(business_id);
+
 -- 25. AI Cost Logs (Token Accounting, Thinking Budgets & Unit Economics)
 CREATE TABLE IF NOT EXISTS ai_cost_logs (
   id TEXT PRIMARY KEY,

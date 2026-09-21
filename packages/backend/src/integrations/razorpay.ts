@@ -59,6 +59,128 @@ export class RazorpayAdapter {
   }
 
   /**
+   * Cryptographically verifies Razorpay Standard Checkout payment signature.
+   * HMAC-SHA256 of (order_id + "|" + razorpay_payment_id) with key_secret.
+   */
+  public verifyPaymentSignature(orderId: string, paymentId: string, signature: string, secret?: string): boolean {
+    if (!orderId || !paymentId || !signature) return false;
+    const keySecret = secret || this.getKeySecret();
+    const payload = `${orderId}|${paymentId}`;
+    const expected = createHmac('sha256', keySecret).update(payload).digest('hex');
+
+    if (expected.length !== signature.length) return false;
+    try {
+      return timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Confirms payment received from client checkout (Razorpay / UPI), verifies signature,
+   * records immutable REAL revenue, and advances customer journey.
+   */
+  public async confirmClientPayment(params: {
+    orderId: string;
+    paymentId: string;
+    signature: string;
+    method?: PaymentMethod;
+    businessId?: string;
+    journeyId?: string;
+    secret?: string;
+  }): Promise<{
+    success: boolean;
+    transactionId?: string;
+    amountINR?: number;
+    journeyId?: string;
+    error?: string;
+  }> {
+    const isSigValid = this.verifyPaymentSignature(
+      params.orderId,
+      params.paymentId,
+      params.signature,
+      params.secret
+    );
+
+    if (!isSigValid) {
+      throw new Error('SECURITY VIOLATION: Invalid Razorpay payment signature. Payment verification failed.');
+    }
+
+    // Look up order
+    const order = this.db
+      .prepare('SELECT * FROM payment_orders WHERE order_id = ?')
+      .get(params.orderId) as any;
+
+    if (!order) {
+      throw new Error(`Payment order not found for order_id: ${params.orderId}`);
+    }
+
+    const businessId = params.businessId || order.business_id || 'biz_smilekraft_hyd';
+    const journeyId = params.journeyId || order.journey_id || undefined;
+    const amountINR = order.amount_inr;
+    const paymentMethod: PaymentMethod = params.method || 'UPI';
+
+    // Idempotency check
+    const existingTx = this.db
+      .prepare('SELECT id FROM transactions WHERE transaction_ref = ?')
+      .get(params.paymentId) as any;
+
+    if (existingTx) {
+      return {
+        success: true,
+        transactionId: existingTx.id,
+        amountINR,
+        journeyId
+      };
+    }
+
+    // Update payment order status
+    this.db
+      .prepare(
+        `UPDATE payment_orders 
+         SET status = 'PAID', payment_id = ?, updated_at = datetime('now')
+         WHERE order_id = ?`
+      )
+      .run(params.paymentId, params.orderId);
+
+    // Record verified REAL transaction
+    const tx = this.revenueEngine.recordTransaction({
+      businessId,
+      journeyId,
+      invoiceNumber: `INV-RZP-${Date.now()}`,
+      amountINR,
+      paymentMethod,
+      paymentGateway: 'RAZORPAY',
+      transactionRef: params.paymentId,
+      status: 'SUCCESS',
+      classification: 'REAL',
+      serviceRendered: 'Consultation Deposit & 3D Assessment',
+    });
+
+    // Elevate Customer Journey to CUSTOMER if journeyId is provided
+    if (journeyId) {
+      const jRow = this.db
+        .prepare('SELECT * FROM customer_journeys WHERE id = ?')
+        .get(journeyId) as any;
+
+      if (jRow && jRow.stage !== 'CUSTOMER') {
+        this.journeyTracker.advanceStage({
+          businessId,
+          visitorId: jRow.visitor_id,
+          targetStage: 'CUSTOMER',
+        });
+      }
+    }
+
+    return {
+      success: true,
+      transactionId: tx.id,
+      amountINR: tx.amountINR,
+      journeyId
+    };
+  }
+
+  /**
    * Creates a payment order for patient treatments or initial deposits.
    */
   public async createPaymentOrder(input: RazorpayOrderInput): Promise<RazorpayOrderResult> {

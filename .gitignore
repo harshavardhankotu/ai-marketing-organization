@@ -9,3 +9,4 @@ build/
 *.db*
 *.sqlite*
 *.log
+.firebase/

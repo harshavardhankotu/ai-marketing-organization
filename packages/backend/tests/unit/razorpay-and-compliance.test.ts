@@ -145,6 +145,59 @@ describe('Razorpay Automated Payment Gateway & DPDP Compliance Suite', () => {
       const txCount = db.prepare("SELECT COUNT(*) as cnt FROM transactions WHERE transaction_ref = 'pay_rzp_idempotent_112'").get() as any;
       expect(txCount.cnt).toBe(1); // Exactly 1 ledger entry
     });
+
+    it('creates payment order, verifies checkout signature, and confirms patient deposit', async () => {
+      const order = await adapter.createPaymentOrder({
+        businessId,
+        journeyId: 'journey-961c351f-71d2-4d7b-a842-b6858984b288',
+        amountINR: 500,
+        receipt: 'rcpt_test_consultation_001',
+        notes: { patient: 'Suresh Reddy', service: 'Consultation Deposit' }
+      });
+
+      expect(order.orderId).toBeTruthy();
+      expect(order.amountINR).toBe(500);
+
+      const testKeySecret = 'test_checkout_secret_abc123';
+      const paymentId = 'pay_checkout_verified_001';
+      const validSig = createHmac('sha256', testKeySecret).update(`${order.orderId}|${paymentId}`).digest('hex');
+
+      // Verify signature helper
+      expect(adapter.verifyPaymentSignature(order.orderId, paymentId, validSig, testKeySecret)).toBe(true);
+      expect(adapter.verifyPaymentSignature(order.orderId, paymentId, 'invalid_sig', testKeySecret)).toBe(false);
+
+      // Confirm client payment
+      const confirmed = await adapter.confirmClientPayment({
+        orderId: order.orderId,
+        paymentId,
+        signature: validSig,
+        businessId,
+        journeyId: 'journey-961c351f-71d2-4d7b-a842-b6858984b288',
+        secret: testKeySecret
+      });
+
+      expect(confirmed.success).toBe(true);
+      expect(confirmed.amountINR).toBe(500);
+
+      const db = getDb();
+      const tx = db.prepare('SELECT * FROM transactions WHERE transaction_ref = ?').get(paymentId) as any;
+      expect(tx).toBeTruthy();
+      expect(tx.amount_inr).toBe(500);
+      expect(tx.classification).toBe('REAL');
+      expect(tx.payment_gateway).toBe('RAZORPAY');
+
+      // Idempotency: reconfirming same payment returns success without duplicating transaction
+      const duplicateConfirm = await adapter.confirmClientPayment({
+        orderId: order.orderId,
+        paymentId,
+        signature: validSig,
+        businessId,
+        secret: testKeySecret
+      });
+      expect(duplicateConfirm.success).toBe(true);
+      const totalTx = db.prepare("SELECT COUNT(*) as count FROM transactions WHERE transaction_ref = ?").get(paymentId) as any;
+      expect(totalTx.count).toBe(1);
+    });
   });
 
   describe('3. DPDP Act 2023 Digital Patient Consent & Section 12 Erasure', () => {
