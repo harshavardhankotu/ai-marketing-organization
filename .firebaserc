@@ -1,5 +1,7 @@
 {
   "projects": {
-    "default": "smilekraft-marketing-2026"
-  }
+    "default": "smilekraft-marketing-hyd"
+  },
+  "targets": {},
+  "etags": {}
 }
