@@ -3,6 +3,7 @@ import { getDb } from '../db/client.js';
 import { RevenueReconciliationEngine } from '../revenue/revenue-reconciliation.js';
 import { CustomerJourneyTracker } from '../revenue/customer-journey-tracker.js';
 import { PaymentMethod, DataClassification } from '@ai-marketing/shared';
+import { isPlaceholderCredential, isProduction } from '../config/env.js';
 
 export interface RazorpayOrderInput {
   businessId: string;
@@ -59,11 +60,28 @@ export class RazorpayAdapter {
   /**
    * Cryptographically verifies Razorpay webhook signature using HMAC-SHA256.
    * Uses constant-time buffer comparison to prevent timing side-channel attacks.
+   * 
+   * SECURITY HARDENING:
+   * In production, strictly rejects verification if the webhook secret is missing,
+   * empty, or matches a known default/placeholder secret (such as 'unverified_webhook_hmac_secret').
    */
   public verifyWebhookSignature(rawBody: string, signature: string, secret?: string): boolean {
     if (!rawBody || !signature) return false;
-    const webhookSecret = secret || this.getWebhookSecret();
-    const expected = createHmac('sha256', webhookSecret).update(rawBody).digest('hex');
+
+    const webhookSecret = secret || process.env.RAZORPAY_WEBHOOK_SECRET;
+
+    if (isProduction()) {
+      if (!webhookSecret || isPlaceholderCredential(webhookSecret)) {
+        console.error(
+          '[SECURITY VIOLATION] Razorpay webhook signature rejected in production: ' +
+          'RAZORPAY_WEBHOOK_SECRET is missing or matches a known default/placeholder secret.'
+        );
+        return false;
+      }
+    }
+
+    const effectiveSecret = webhookSecret || 'unverified_webhook_hmac_secret';
+    const expected = createHmac('sha256', effectiveSecret).update(rawBody).digest('hex');
 
     if (expected.length !== signature.length) return false;
     try {
@@ -76,12 +94,29 @@ export class RazorpayAdapter {
   /**
    * Cryptographically verifies Razorpay Standard Checkout payment signature.
    * HMAC-SHA256 of (order_id + "|" + razorpay_payment_id) with key_secret.
+   * 
+   * SECURITY HARDENING:
+   * In production, strictly rejects verification if the key secret is missing
+   * or matches a known default/placeholder secret.
    */
   public verifyPaymentSignature(orderId: string, paymentId: string, signature: string, secret?: string): boolean {
     if (!orderId || !paymentId || !signature) return false;
-    const keySecret = secret || this.getKeySecret();
+
+    const keySecret = secret || process.env.RAZORPAY_KEY_SECRET;
+
+    if (isProduction()) {
+      if (!keySecret || isPlaceholderCredential(keySecret)) {
+        console.error(
+          '[SECURITY VIOLATION] Razorpay payment signature rejected in production: ' +
+          'RAZORPAY_KEY_SECRET is missing or matches a known default/placeholder secret.'
+        );
+        return false;
+      }
+    }
+
+    const effectiveSecret = keySecret || 'unverified_sandbox_secret';
     const payload = `${orderId}|${paymentId}`;
-    const expected = createHmac('sha256', keySecret).update(payload).digest('hex');
+    const expected = createHmac('sha256', effectiveSecret).update(payload).digest('hex');
 
     if (expected.length !== signature.length) return false;
     try {
@@ -257,6 +292,14 @@ export class RazorpayAdapter {
     amountINR?: number;
     journeyId?: string;
   }> {
+    // Strict production check: halt if secret is missing or placeholder
+    const webhookSecret = params.overrideSecret || process.env.RAZORPAY_WEBHOOK_SECRET;
+    if (isProduction() && (!webhookSecret || isPlaceholderCredential(webhookSecret))) {
+      throw new Error(
+        'SECURITY VIOLATION: Razorpay webhooks are disabled in production because RAZORPAY_WEBHOOK_SECRET is unset or using a known placeholder/default secret.'
+      );
+    }
+
     // 1. Verify Cryptographic Signature
     const isValid = this.verifyWebhookSignature(params.rawBody, params.signature, params.overrideSecret);
     if (!isValid) {

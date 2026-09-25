@@ -29,15 +29,74 @@ describe('Razorpay Automated Payment Gateway & DPDP Compliance Suite', () => {
       expect(result).toBe(true);
     });
 
-    it('rejects a forged or tampered signature (anti-spoofing)', () => {
-      const payload = JSON.stringify({
-        event: 'payment.captured',
-        payload: { payment: { entity: { id: 'pay_rzp_test_1001', amount: 4500000 } } }
-      });
-      const forgedSignature = '1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef';
+    it('rejects signature verification in production if RAZORPAY_WEBHOOK_SECRET is missing or default placeholder', () => {
+      const prevEnv = process.env.NODE_ENV;
+      const prevSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
+      try {
+        process.env.NODE_ENV = 'production';
+        delete process.env.RAZORPAY_WEBHOOK_SECRET;
 
-      const result = adapter.verifyWebhookSignature(payload, forgedSignature, testSecret);
-      expect(result).toBe(false);
+        const payload = JSON.stringify({ event: 'payment.captured' });
+        // Signature generated using the known default secret 'unverified_webhook_hmac_secret'
+        const sigWithDefault = createHmac('sha256', 'unverified_webhook_hmac_secret').update(payload).digest('hex');
+
+        // Must hard-fail (return false) in production instead of accepting the visible default secret
+        expect(adapter.verifyWebhookSignature(payload, sigWithDefault)).toBe(false);
+
+        // Also test with explicit placeholder value
+        process.env.RAZORPAY_WEBHOOK_SECRET = 'unverified_webhook_hmac_secret';
+        expect(adapter.verifyWebhookSignature(payload, sigWithDefault)).toBe(false);
+
+        process.env.RAZORPAY_WEBHOOK_SECRET = 'demo_key';
+        expect(adapter.verifyWebhookSignature(payload, sigWithDefault)).toBe(false);
+      } finally {
+        process.env.NODE_ENV = prevEnv;
+        if (prevSecret) process.env.RAZORPAY_WEBHOOK_SECRET = prevSecret;
+        else delete process.env.RAZORPAY_WEBHOOK_SECRET;
+      }
+    });
+
+    it('accepts authentic signature in production when genuine deployment secret is configured', () => {
+      const prevEnv = process.env.NODE_ENV;
+      const prevSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
+      try {
+        process.env.NODE_ENV = 'production';
+        const genuineSecret = 'whsec_prod_live_abc998877665544';
+        process.env.RAZORPAY_WEBHOOK_SECRET = genuineSecret;
+
+        const payload = JSON.stringify({ event: 'payment.captured' });
+        const validSig = createHmac('sha256', genuineSecret).update(payload).digest('hex');
+        const invalidSig = createHmac('sha256', 'wrong_secret').update(payload).digest('hex');
+
+        expect(adapter.verifyWebhookSignature(payload, validSig)).toBe(true);
+        expect(adapter.verifyWebhookSignature(payload, invalidSig)).toBe(false);
+      } finally {
+        process.env.NODE_ENV = prevEnv;
+        if (prevSecret) process.env.RAZORPAY_WEBHOOK_SECRET = prevSecret;
+        else delete process.env.RAZORPAY_WEBHOOK_SECRET;
+      }
+    });
+
+    it('processWebhook throws security violation in production if secret is unset or placeholder', async () => {
+      const prevEnv = process.env.NODE_ENV;
+      const prevSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
+      try {
+        process.env.NODE_ENV = 'production';
+        delete process.env.RAZORPAY_WEBHOOK_SECRET;
+
+        const payload = JSON.stringify({ event: 'payment.captured' });
+        const sig = 'dummy_sig';
+
+        await expect(adapter.processWebhook({
+          rawBody: payload,
+          signature: sig,
+          event: { event: 'payment.captured' }
+        })).rejects.toThrow(/SECURITY VIOLATION.*RAZORPAY_WEBHOOK_SECRET is unset or using a known placeholder/i);
+      } finally {
+        process.env.NODE_ENV = prevEnv;
+        if (prevSecret) process.env.RAZORPAY_WEBHOOK_SECRET = prevSecret;
+        else delete process.env.RAZORPAY_WEBHOOK_SECRET;
+      }
     });
   });
 

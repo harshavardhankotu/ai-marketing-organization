@@ -19,7 +19,7 @@ import {
   EmergencyKillSwitchSchema
 } from '@ai-marketing/shared';
 
-import { isProduction } from '../config/env.js';
+import { isProduction, isPlaceholderCredential } from '../config/env.js';
 import { SystemReadinessEngine } from '../control-plane/system-readiness.js';
 import { googleAdsClient } from '../integrations/google-ads.js';
 import { AttributionEvidenceEngine } from '../revenue/attribution-evidence.js';
@@ -988,6 +988,15 @@ apiRouter.post('/payments/razorpay/verify', async (c) => {
 });
 
 apiRouter.post('/webhooks/razorpay', async (c) => {
+  // Hard-fail immediately in production if RAZORPAY_WEBHOOK_SECRET is missing or default/placeholder
+  const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
+  if (isProduction() && (!webhookSecret || isPlaceholderCredential(webhookSecret))) {
+    return c.json({
+      success: false,
+      error: 'SECURITY VIOLATION: Razorpay webhooks are disabled in production until RAZORPAY_WEBHOOK_SECRET is configured with a valid deployment secret.'
+    }, 403);
+  }
+
   const rawBody = await c.req.text();
   const signature = c.req.header('x-razorpay-signature') || '';
 
@@ -1011,7 +1020,8 @@ apiRouter.post('/webhooks/razorpay', async (c) => {
 
     return c.json({ success: true, data: result }, 200);
   } catch (err: any) {
-    return c.json({ success: false, error: err.message }, 400);
+    const status = err.message?.includes('SECURITY VIOLATION') ? 403 : 400;
+    return c.json({ success: false, error: err.message }, status);
   }
 });
 
@@ -1143,6 +1153,14 @@ apiRouter.post('/revenue/refund', async (c) => {
 // PAYMENT WEBHOOKS (IDEMPOTENT INGESTION)
 // ==========================================
 apiRouter.post('/webhooks/payments/:gateway', async (c) => {
+  // In production, unauthenticated payment ingestion on generic webhook endpoint is prohibited
+  if (isProduction()) {
+    return c.json({
+      success: false,
+      error: 'SECURITY VIOLATION: Generic payment webhook ingestion without gateway-specific cryptographic HMAC verification is prohibited in production. Use /webhooks/razorpay.'
+    }, 403);
+  }
+
   const gateway = c.req.param('gateway').toUpperCase() as any;
   const payload = await c.req.json();
 

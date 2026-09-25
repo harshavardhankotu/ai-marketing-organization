@@ -69,6 +69,9 @@ export const KNOWN_PLACEHOLDER_KEYS = new Set([
   'change_me',
   'fake_key',
   'sample_key',
+  'unverified_webhook_hmac_secret',
+  'unverified_sandbox_secret',
+  'rzp_test_unverified_sandbox'
 ]);
 
 export class ProductionSecretViolationError extends Error {
