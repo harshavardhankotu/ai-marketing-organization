@@ -33,8 +33,6 @@ COPY --from=builder /app/packages/backend/dist ./packages/backend/dist
 COPY --from=builder /app/packages/backend/schema.sql ./packages/backend/schema.sql
 COPY --from=builder /app/packages/frontend/dist ./packages/frontend/dist
 COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/packages/backend/node_modules ./packages/backend/node_modules
-COPY --from=builder /app/packages/shared/node_modules ./packages/shared/node_modules
 
 EXPOSE 3001
 
