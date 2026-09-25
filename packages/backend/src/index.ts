@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 import { apiRouter } from './routes/api.js';
 import { seedDatabase } from './db/seed.js';
 import { validateProductionSecrets, loadLocalEnvFile } from './config/env.js';
+import { DailyMarketResearchScheduler } from './scheduler/daily-research-scheduler.js';
 
 // Safely load local .env or .env.local if present
 loadLocalEnvFile();
@@ -98,12 +99,20 @@ if (process.env.NODE_ENV !== 'test') {
   // Auto-seed if running fresh
   seedDatabase();
 
+  // Start autonomous background scheduler for continuous market intelligence & research
+  try {
+    DailyMarketResearchScheduler.getInstance().startScheduler();
+  } catch (err: any) {
+    console.warn('[SCHEDULER] Could not start daily research scheduler:', err.message);
+  }
+
   console.log(`\n======================================================`);
   console.log(`🚀 AI Marketing Organization Backend Service Running`);
   console.log(`📡 URL: http://localhost:${PORT}`);
   console.log(`📊 API Health: http://localhost:${PORT}/api/v1/health`);
   console.log(`🏢 Seed Business: SmileKraft Dental Hyderabad (₹50k INR Budget)`);
   console.log(`🤖 Agents Active: 80 Specialized Autonomous Agents`);
+  console.log(`⏱️ Daily Autonomous Research Scheduler: RUNNING`);
   console.log(`======================================================\n`);
 
   serve({

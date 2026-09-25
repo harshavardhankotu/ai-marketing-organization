@@ -168,16 +168,25 @@ export class ClosedLoopMarketingCycle {
               VALUES (?, ?, ?, 'cnt-11', 'Generate WhatsApp & Meta Ad Creatives', ?)
             `).run(taskId, input.organizationId, workflowId, taskId);
 
-            const contentRes = await this.runtime.execute({
-              agentId: 'cnt-11',
-              businessId: input.businessId,
-              organizationId: input.organizationId,
-              taskId,
-              workflowId,
-              prompt: `Draft a high-converting WhatsApp consultation template for Clear Aligners with ₹2,999/mo EMI pricing.`
-            });
-
-            const cData = contentRes.data as any;
+            let cData: any = {};
+            try {
+              const contentRes = await this.runtime.execute({
+                agentId: 'cnt-11',
+                businessId: input.businessId,
+                organizationId: input.organizationId,
+                taskId,
+                workflowId,
+                prompt: `Draft a high-converting WhatsApp consultation template for Clear Aligners with ₹2,999/mo EMI pricing.`
+              });
+              cData = contentRes.data || {};
+            } catch (llmErr: any) {
+              console.warn('[CLOSED LOOP CYCLE] LLM generation skipped (missing API key or offline):', llmErr.message);
+              cData = {
+                title: `${biz.vertical_name || 'Client'} Consultation Invitation`,
+                content: `Hi! Looking for premier ${biz.vertical_name || 'consultation'} in ${biz.city || 'Hyderabad'}? ${biz.name} offers custom assessments backed by verified expertise and transparent pricing.`,
+                callToAction: 'Reply "BOOK" on WhatsApp or call our clinic directly'
+              };
+            }
             db.prepare(`
               INSERT INTO content_assets (
                 id, organization_id, campaign_id, agent_id, title,

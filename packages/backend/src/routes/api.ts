@@ -279,22 +279,41 @@ apiRouter.post('/goals', async (c) => {
 // Closed-Loop Autonomous Marketing Cycle Trigger
 apiRouter.post('/workflows/trigger-cycle', async (c) => {
   const orgId = c.get('organizationId');
-  const body = await c.req.json();
-  const businessId = body.businessId || 'biz_smilekraft_hyd';
-  const goalId = body.goalId || 'goal_100_leads_hyd';
+  const body = await c.req.json().catch(() => ({}));
+  const db = getDb();
 
-  const cycle = new ClosedLoopMarketingCycle();
-  const result = await cycle.executeCompleteCycle({
-    organizationId: orgId,
-    businessId,
-    goalId
-  });
+  // Auto-resolve business if not explicitly provided
+  const bizRow = body.businessId
+    ? db.prepare('SELECT id FROM businesses WHERE id = ?').get(body.businessId) as any
+    : db.prepare('SELECT id FROM businesses WHERE organization_id = ? ORDER BY created_at DESC LIMIT 1').get(orgId) as any;
+  const businessId = bizRow?.id || body.businessId || 'biz_smilekraft_hyd';
 
-  return c.json({
-    success: true,
-    message: 'Closed loop marketing cycle successfully executed across research, strategy, campaign, content, telemetry, experiments, and evolution.',
-    data: result
-  });
+  // Auto-resolve goal if not explicitly provided
+  const goalRow = body.goalId
+    ? db.prepare('SELECT id FROM business_goals WHERE id = ?').get(body.goalId) as any
+    : db.prepare('SELECT id FROM business_goals WHERE business_id = ? AND status = "ACTIVE" LIMIT 1').get(businessId) as any;
+  const goalId = goalRow?.id || body.goalId || 'goal_100_leads_hyd';
+
+  try {
+    const cycle = new ClosedLoopMarketingCycle();
+    const result = await cycle.executeCompleteCycle({
+      organizationId: orgId,
+      businessId,
+      goalId
+    });
+
+    return c.json({
+      success: true,
+      message: 'Closed loop marketing cycle successfully executed across research, strategy, campaign, content, telemetry, experiments, and evolution.',
+      data: result
+    });
+  } catch (err: any) {
+    console.error('[TRIGGER CYCLE ERROR]:', err);
+    return c.json({
+      success: false,
+      error: err.message || 'Failed to execute closed loop marketing cycle'
+    }, 500);
+  }
 });
 
 // Campaigns
