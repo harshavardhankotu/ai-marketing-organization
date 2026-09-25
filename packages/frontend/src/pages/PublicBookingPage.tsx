@@ -68,9 +68,9 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
     loadBiz();
   }, [urlBizId]);
 
-  const targetBizId = business?.id || urlBizId || storedBiz?.id || '';
-  const targetOrgId = business?.organization_id || storedBiz?.organization_id || '';
-  const bizName = business?.name || '';
+  const targetBizId = business?.id || urlBizId || storedBiz?.id || 'biz_1790373784467';
+  const targetOrgId = business?.organization_id || storedBiz?.organization_id || 'org_default';
+  const bizName = business?.name || 'SmileKraft Dental Clinic Hyderabad';
   const upiVpa = ((import.meta as any).env?.VITE_UPI_VPA as string) || business?.upi_vpa || '';
 
   // Locations dynamic list
