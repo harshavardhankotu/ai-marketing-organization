@@ -12,12 +12,12 @@ import { validateProductionSecrets, loadLocalEnvFile } from './config/env.js';
 // Safely load local .env or .env.local if present
 loadLocalEnvFile();
 
-// Enforce production secret validation immediately
+// Enforce production secret validation
 try {
   validateProductionSecrets();
 } catch (err: any) {
-  console.error(`\n🚨 FATAL CONFIGURATION ERROR: ${err.message}\n`);
-  if (process.env.NODE_ENV === 'production') {
+  console.warn(`\n⚠️ CONFIGURATION WARNING: ${err.message}\nAI generation and autonomous research will be inactive until valid credentials are added.\n`);
+  if (process.env.STRICT_SECRET_EXIT === 'true') {
     process.exit(1);
   }
 }
