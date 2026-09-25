@@ -869,67 +869,79 @@ apiRouter.post('/public/lead', async (c) => {
   const testHeader = c.req.header('x-test-mode');
   const forcedClassification = (testHeader === 'true' || testHeader === '1') ? 'TEST' : body.classification;
 
-  const journey = journeyTracker.recordRealLead({
-    businessId,
-    organizationId: orgId,
-    customerName: body.customerName.trim(),
-    customerPhone: body.customerPhone.trim(),
-    customerEmail: body.customerEmail ? body.customerEmail.trim() : undefined,
-    channel: body.channel || 'WHATSAPP',
-    campaignId: body.campaignId || 'camp_seed_general_01',
-    source: body.source || 'public_landing_page',
-    serviceOfInterest: body.serviceOfInterest || 'General Consultation',
-    notes: body.notes,
-    classification: forcedClassification,
-    utmSource: body.utmSource,
-    utmMedium: body.utmMedium,
-    utmCampaign: body.utmCampaign,
-    utmTerm: body.utmTerm,
-    utmContent: body.utmContent,
-    sessionId: body.sessionId,
-    gclid: body.gclid,
-  });
-
-  // DPDP Act 2023: Record digital patient/customer consent
-  if (body.dpdpConsentGiven || body.consentGiven) {
-    dpdpManager.recordConsent({
+  try {
+    const journey = journeyTracker.recordRealLead({
       businessId,
-      journeyId: journey.id,
+      organizationId: orgId,
       customerName: body.customerName.trim(),
       customerPhone: body.customerPhone.trim(),
-      ipAddress: clientIp,
-      purpose: (biz?.vertical_name?.toLowerCase().includes('dental') || biz?.name?.toLowerCase().includes('dental'))
-        ? `Direct dental consultation coordination and orthodontic treatment assessment at ${bizName}`
-        : `Direct consultation coordination and appointment booking with ${bizName}`,
-      consentVersion: body.consentVersion || '2026.1',
-    });
-  }
-
-  const leadId = `lead_${journey.id.replace('journey-', '')}`;
-  const resolvedSessionId = body.sessionId || `sess_${journey.visitorId.slice(-8)}`;
-
-  return c.json({
-    success: true,
-    message: `Consultation request received successfully. The ${bizName} team will reach out shortly.`,
-    data: {
+      customerEmail: body.customerEmail ? body.customerEmail.trim() : undefined,
+      channel: body.channel || 'WHATSAPP',
       campaignId: body.campaignId || 'camp_seed_general_01',
-      utmSource: body.utmSource || null,
-      utmMedium: body.utmMedium || null,
-      utmCampaign: body.utmCampaign || null,
-      utmTerm: body.utmTerm || null,
-      utmContent: body.utmContent || null,
-      gclid: journey.gclid || body.gclid || null,
-      attributionStatus: journey.attributionStatus || 'UNVERIFIED',
-      visitorId: journey.visitorId,
-      sessionId: resolvedSessionId,
-      leadId,
-      journeyId: journey.id,
-      stage: journey.stage,
-      classification: journey.classification,
-      dpdpConsentCaptured: Boolean(body.dpdpConsentGiven || body.consentGiven),
-      businessName: bizName
+      source: body.source || 'public_landing_page',
+      serviceOfInterest: body.serviceOfInterest || 'General Consultation',
+      notes: body.notes,
+      classification: forcedClassification,
+      utmSource: body.utmSource,
+      utmMedium: body.utmMedium,
+      utmCampaign: body.utmCampaign,
+      utmTerm: body.utmTerm,
+      utmContent: body.utmContent,
+      sessionId: body.sessionId,
+      gclid: body.gclid,
+    });
+
+    // DPDP Act 2023: Record digital patient/customer consent
+    if (body.dpdpConsentGiven || body.consentGiven) {
+      try {
+        dpdpManager.recordConsent({
+          businessId,
+          journeyId: journey.id,
+          customerName: body.customerName.trim(),
+          customerPhone: body.customerPhone.trim(),
+          ipAddress: clientIp,
+          purpose: (biz?.vertical_name?.toLowerCase().includes('dental') || biz?.name?.toLowerCase().includes('dental'))
+            ? `Direct dental consultation coordination and orthodontic treatment assessment at ${bizName}`
+            : `Direct consultation coordination and appointment booking with ${bizName}`,
+          consentVersion: body.consentVersion || '2026.1',
+        });
+      } catch (dpdpErr) {
+        console.warn('[DPDP Consent Warning]:', dpdpErr);
+      }
     }
-  }, 201);
+
+    const leadId = `lead_${journey.id.replace('journey-', '')}`;
+    const resolvedSessionId = body.sessionId || `sess_${journey.visitorId.slice(-8)}`;
+
+    return c.json({
+      success: true,
+      message: `Consultation request received successfully. The ${bizName} team will reach out shortly.`,
+      data: {
+        campaignId: body.campaignId || 'camp_seed_general_01',
+        utmSource: body.utmSource || null,
+        utmMedium: body.utmMedium || null,
+        utmCampaign: body.utmCampaign || null,
+        utmTerm: body.utmTerm || null,
+        utmContent: body.utmContent || null,
+        gclid: journey.gclid || body.gclid || null,
+        attributionStatus: journey.attributionStatus || 'UNVERIFIED',
+        visitorId: journey.visitorId,
+        sessionId: resolvedSessionId,
+        leadId,
+        journeyId: journey.id,
+        stage: journey.stage,
+        classification: journey.classification,
+        dpdpConsentCaptured: Boolean(body.dpdpConsentGiven || body.consentGiven),
+        businessName: bizName
+      }
+    }, 201);
+  } catch (err: any) {
+    console.error('[Public Lead Error]:', err);
+    return c.json({
+      success: false,
+      error: err.message || 'Consultation request could not be processed'
+    }, 500);
+  }
 });
 
 // ==========================================

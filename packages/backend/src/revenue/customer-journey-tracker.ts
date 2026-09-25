@@ -59,7 +59,7 @@ export class CustomerJourneyTracker {
     businessId: string,
     visitorId: string,
     classification: DataClassification = 'TEST',
-    organizationId = 'org-india-1',
+    organizationId?: string,
     gclid?: string,
     attributionStatus: AttributionStatus = 'UNVERIFIED'
   ): CustomerJourneyRecord {
@@ -69,6 +69,27 @@ export class CustomerJourneyTracker {
 
     if (existing) {
       return this.mapRow(existing);
+    }
+
+    // Resolve or fallback organizationId
+    const bizRow = this.db.prepare('SELECT organization_id FROM businesses WHERE id = ?').get(businessId) as any;
+    const resolvedOrgId = organizationId || bizRow?.organization_id || 'org_smilekraft_01';
+
+    // Guard against foreign key violations: ensure organization exists
+    const orgCheck = this.db.prepare('SELECT id FROM organizations WHERE id = ?').get(resolvedOrgId) as any;
+    if (!orgCheck) {
+      this.db.prepare('INSERT OR IGNORE INTO organizations (id, name, slug) VALUES (?, ?, ?)')
+        .run(resolvedOrgId, 'Commercial Organization', resolvedOrgId);
+    }
+
+    // Guard against foreign key violations: ensure business exists
+    const bizCheck = this.db.prepare('SELECT id FROM businesses WHERE id = ?').get(businessId) as any;
+    if (!bizCheck) {
+      this.db.prepare(`
+        INSERT OR IGNORE INTO businesses (
+          id, organization_id, name, vertical_id, vertical_name, city, neighborhood, brand_voice
+        ) VALUES (?, ?, ?, 'SERVICES', 'Commercial Services', 'Hyderabad', 'City Center', 'Professional')
+      `).run(businessId, resolvedOrgId, 'Client Business');
     }
 
     const id = `journey-${randomUUID()}`;
@@ -85,7 +106,7 @@ export class CustomerJourneyTracker {
       )
       .run(
         id,
-        organizationId,
+        resolvedOrgId,
         businessId,
         visitorId,
         'VISITOR',

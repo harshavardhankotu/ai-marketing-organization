@@ -2,7 +2,11 @@ export function getApiBaseUrl(): string {
   if (typeof window !== 'undefined') {
     const custom = localStorage.getItem('AI_MARKETING_API_URL');
     if (custom && custom.trim().length > 0) {
-      return custom.trim().replace(/\/+$/, '');
+      if (custom.includes('loca.lt')) {
+        localStorage.removeItem('AI_MARKETING_API_URL');
+      } else {
+        return custom.trim().replace(/\/+$/, '');
+      }
     }
   }
   const envUrl = (import.meta as any).env?.VITE_API_BASE_URL;
