@@ -386,7 +386,7 @@ export interface QuotaStatus {
   throttledMode: boolean;
 }
 
-export type DataClassification = 'REAL' | 'TEST' | 'SIMULATED';
+export type DataClassification = 'REAL' | 'TEST' | 'SIMULATED' | 'MANUAL_VERIFIED';
 
 export type CustomerJourneyStage = 
   | 'VISITOR' 
@@ -546,6 +546,7 @@ export interface RevenueTruthSummary {
   unattributedRealRevenueINR: number;
   testRevenueINR: number;
   simulatedRevenueINR: number;
+  manualVerifiedRevenueINR?: number;
   // Aliases for clear reporting
   simulatedValueINR: number;
   aiCost: number;

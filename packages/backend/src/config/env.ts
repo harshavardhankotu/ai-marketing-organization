@@ -1,3 +1,49 @@
+import fs from 'fs';
+import path from 'path';
+
+/**
+ * Loads key-value pairs from .env or .env.local into process.env if they exist.
+ */
+export function loadLocalEnvFile(): void {
+  const candidatePaths = [
+    path.resolve(process.cwd(), '.env.local'),
+    path.resolve(process.cwd(), '.env'),
+    path.resolve(process.cwd(), '.env.txt'),
+    path.resolve(process.cwd(), 'packages/backend/.env.local'),
+    path.resolve(process.cwd(), 'packages/backend/.env'),
+    path.resolve(process.cwd(), 'packages/backend/.env.txt'),
+    path.resolve(process.cwd(), '../.env.local'),
+    path.resolve(process.cwd(), '../.env'),
+    path.resolve(process.cwd(), '../.env.txt'),
+    path.resolve(process.cwd(), '../../.env.local'),
+    path.resolve(process.cwd(), '../../.env'),
+    path.resolve(process.cwd(), '../../.env.txt')
+  ];
+
+  for (const p of candidatePaths) {
+    if (fs.existsSync(p)) {
+      try {
+        const text = fs.readFileSync(p, 'utf-8');
+        for (const line of text.split('\n')) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith('#')) continue;
+          const eqIdx = trimmed.indexOf('=');
+          if (eqIdx !== -1) {
+            const key = trimmed.substring(0, eqIdx).trim();
+            let val = trimmed.substring(eqIdx + 1).trim();
+            if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+              val = val.slice(1, -1);
+            }
+            if (!process.env[key]) {
+              process.env[key] = val;
+            }
+          }
+        }
+      } catch {}
+    }
+  }
+}
+
 /**
  * Production Environment and Secrets Validator
  * 

@@ -647,11 +647,13 @@ export class RevenueReconciliationEngine {
     let realRevenueRecordedINR = 0;
     let testRevenueINR = 0;
     let simulatedRevenueINR = 0;
+    let manualVerifiedRevenueINR = 0;
 
     for (const r of revRows) {
       if (r.classification === 'REAL') realRevenueRecordedINR = r.total_rev;
       else if (r.classification === 'TEST') testRevenueINR = r.total_rev;
       else if (r.classification === 'SIMULATED') simulatedRevenueINR = r.total_rev;
+      else if (r.classification === 'MANUAL_VERIFIED') manualVerifiedRevenueINR = r.total_rev;
     }
 
     // 2. Independently verified real revenue (from external payment gateways or audited owner entries)
@@ -792,6 +794,7 @@ export class RevenueReconciliationEngine {
 
     return {
       realRevenueRecordedINR,
+      manualVerifiedRevenueINR,
       realRevenueIndependentlyVerifiedINR,
       realMarketingAttributedRevenueINR,
       unattributedRealRevenueINR,

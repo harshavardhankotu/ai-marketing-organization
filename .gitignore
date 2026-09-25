@@ -6,6 +6,8 @@ build/
 .wrangler/
 .env
 .env.local
+.env.txt
+*.env*
 *.db*
 *.sqlite*
 *.log

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Sparkles, 
   MapPin, 
@@ -23,9 +23,9 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
-  const [location, setLocation] = useState('Gachibowli');
-  const [treatment, setTreatment] = useState('Invisible Clear Aligners');
-  const [date, setDate] = useState('2026-09-15');
+  const [location, setLocation] = useState('');
+  const [treatment, setTreatment] = useState('');
+  const [date, setDate] = useState(() => new Date(Date.now() + 86400000).toISOString().split('T')[0]);
   const [notes, setNotes] = useState('');
   const [consentGiven, setConsentGiven] = useState(false);
   const [botTrap, setBotTrap] = useState('');
@@ -43,15 +43,86 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
   const [showUPIModal, setShowUPIModal] = useState(false);
   const [manualUtr, setManualUtr] = useState('');
 
-  // Extract UTM parameters, GCLID, and campaign tracking context from URL
+  // Extract UTM parameters, GCLID, target business, and campaign tracking context
   const searchParams = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '');
+  const urlBizId = searchParams.get('businessId') || searchParams.get('biz');
+  const storedBiz = typeof window !== 'undefined' ? (() => {
+    try { return JSON.parse(localStorage.getItem('ai_marketing_active_business') || '{}'); } catch { return {}; }
+  })() : {};
+
+  const [business, setBusiness] = useState<any>(storedBiz?.name ? storedBiz : null);
+
+  useEffect(() => {
+    async function loadBiz() {
+      try {
+        const idToLoad = urlBizId || storedBiz?.id;
+        if (idToLoad) {
+          const res = await api.getBusiness(idToLoad);
+          if (res.data) setBusiness(res.data);
+        }
+      } catch (err) {
+        console.warn('Could not fetch business for booking page', err);
+      }
+    }
+    loadBiz();
+  }, [urlBizId]);
+
+  const targetBizId = business?.id || urlBizId || storedBiz?.id || '';
+  const targetOrgId = business?.organization_id || storedBiz?.organization_id || '';
+  const bizName = business?.name || '';
+  const upiVpa = ((import.meta as any).env?.VITE_UPI_VPA as string) || business?.upi_vpa || '';
+
+  // Locations dynamic list
+  const availableLocations: string[] = (() => {
+    if (Array.isArray(business?.locations) && business.locations.length > 0) {
+      return business.locations;
+    }
+    if (business?.neighborhood && business?.city) {
+      return [`${business.neighborhood} (${business.city})`];
+    }
+    if (business?.city) {
+      return [`${business.city} Main Branch`];
+    }
+    return ['Main Location'];
+  })();
+
+  // Offerings / Services dynamic list
+  const availableServices: { title: string; priceINR?: number }[] = (() => {
+    let parsedOfferings: any[] = [];
+    if (typeof business?.offerings_json === 'string') {
+      try { parsedOfferings = JSON.parse(business.offerings_json); } catch {}
+    } else if (Array.isArray(business?.offerings)) {
+      parsedOfferings = business.offerings;
+    } else if (Array.isArray(business?.services)) {
+      parsedOfferings = business.services;
+    }
+
+    if (Array.isArray(parsedOfferings) && parsedOfferings.length > 0) {
+      return parsedOfferings.map((o: any) => typeof o === 'string' ? { title: o } : { title: o.title || o.name || 'Consultation', priceINR: o.priceINR || o.price });
+    }
+
+    return [
+      { title: `General ${business?.vertical_name || 'Service'} Consultation` },
+      { title: `Comprehensive Assessment & Strategy` }
+    ];
+  })();
+
+  useEffect(() => {
+    if (!location && availableLocations.length > 0) {
+      setLocation(availableLocations[0]);
+    }
+    if (!treatment && availableServices.length > 0) {
+      setTreatment(availableServices[0].title);
+    }
+  }, [business]);
+
   const gclid = searchParams.get('gclid') || undefined;
   const utmSource = searchParams.get('utm_source') || 'google';
   const utmMedium = searchParams.get('utm_medium') || 'cpc';
-  const utmCampaign = searchParams.get('utm_campaign') || 'aligners_hyd_search';
-  const utmTerm = searchParams.get('utm_term') || 'clear aligners hyderabad';
-  const utmContent = searchParams.get('utm_content') || 'instant_whatsapp';
-  const campaignId = searchParams.get('campaignId') || searchParams.get('campaign_id') || 'camp_seed_aligners_01';
+  const utmCampaign = searchParams.get('utm_campaign') || 'local_search';
+  const utmTerm = searchParams.get('utm_term') || `${business?.vertical_name || 'consultation'} inquiry`;
+  const utmContent = searchParams.get('utm_content') || 'instant_booking';
+  const campaignId = searchParams.get('campaignId') || searchParams.get('campaign_id') || 'camp_live_inbound';
 
   const loadRazorpayScript = (): Promise<boolean> => {
     return new Promise((resolve) => {
@@ -79,8 +150,8 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
     setSubmitting(true);
 
     const payload = {
-      businessId: 'biz_smilekraft_hyd',
-      organizationId: 'org_smilekraft_01',
+      businessId: targetBizId,
+      organizationId: targetOrgId,
       customerName: name,
       customerPhone: phone,
       customerEmail: email || undefined,
@@ -100,63 +171,52 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
       website_url_hp: botTrap
     };
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s timeout for potential cold starts
+
     try {
       const base = getApiBaseUrl();
       const res = await fetch(`${base}/public/lead`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        headers: {
+          'Content-Type': 'application/json',
+          'bypass-tunnel-reminder': '1'
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal
       });
 
       const contentType = res.headers.get('content-type') || '';
       const text = await res.text();
 
-      // If backend returns HTML (Firebase rewrite interceptor), fallback gracefully to local client confirmation
-      if (contentType.includes('text/html') || text.trim().startsWith('<!doctype')) {
-        setConfirmedBooking({
-          visitorId: `pat_${Date.now().toString().slice(-6)}`,
-          stage: 'CONSULTATION_SCHEDULED',
-          classification: 'REAL',
-          utmCampaign,
-          utmSource,
-          utmMedium,
-          utmTerm,
-          gclid: gclid || 'None (Direct Booking)',
-          attributionStatus: gclid ? 'VERIFIED' : 'ORGANIC_VERIFIED',
-          location,
-          treatment
-        });
-        return;
+      // Intercept HTML responses from static hosting rewrite fallback (backend down / not reached)
+      if (contentType.includes('text/html') || text.trim().startsWith('<!doctype') || text.trim().startsWith('<html')) {
+        throw new Error(
+          'Booking server could not be reached (cloud host returned static HTML instead of API response). Your appointment was NOT saved.'
+        );
       }
 
       let json: any;
       try {
         json = JSON.parse(text);
       } catch {
-        throw new Error('Server returned invalid data format.');
+        throw new Error('Booking server returned an invalid response format. Your appointment was NOT saved.');
       }
 
       if (!res.ok || !json.success) {
-        throw new Error(json.error || 'Failed to submit consultation request');
+        throw new Error(json.error || `Server error (${res.status}): Your consultation request could not be processed.`);
       }
 
+      // ONLY set confirmed booking upon verified successful server response
       setConfirmedBooking(json.data);
     } catch (err: any) {
-      // Create confirmed client booking record so the patient appointment is never lost
-      setConfirmedBooking({
-        visitorId: `pat_${Date.now().toString().slice(-6)}`,
-        stage: 'CONSULTATION_SCHEDULED',
-        classification: 'REAL',
-        utmCampaign,
-        utmSource,
-        utmMedium,
-        utmTerm,
-        gclid: gclid || 'None (Direct Booking)',
-        attributionStatus: 'ORGANIC_VERIFIED',
-        location,
-        treatment
-      });
+      const isTimeout = err.name === 'AbortError';
+      const message = isTimeout
+        ? 'Connection timed out while contacting the booking server. Your appointment was NOT saved. Please check your connection, retry, or contact us directly.'
+        : (err.message || 'Unable to connect to the booking server. Your appointment was NOT saved. Please try again.');
+      setErrorMsg(message);
     } finally {
+      clearTimeout(timeoutId);
       setSubmitting(false);
     }
   };
@@ -169,7 +229,7 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
       let orderData: any = null;
       try {
         const orderRes = await api.createPaymentOrder({
-          businessId: 'biz_smilekraft_hyd',
+          businessId: targetBizId,
           journeyId: confirmedBooking?.id || confirmedBooking?.visitorId,
           amountINR: amount,
           receipt: `rcpt_${Date.now()}`,
@@ -187,7 +247,7 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
         console.warn('Backend order pre-generation skipped, using client checkout options', err);
       }
 
-      const keyId = orderData?.keyId || 'rzp_live_smilekraft_banjara';
+      const keyId = orderData?.keyId || 'rzp_live_default';
       const orderId = orderData?.orderId || `order_${Date.now()}`;
 
       const loaded = await loadRazorpayScript();
@@ -201,9 +261,9 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
         key: keyId,
         amount: amount * 100,
         currency: 'INR',
-        name: 'SmileKraft Dental Clinic',
-        description: `Doctor Consultation & Assessment (${treatment})`,
-        image: 'https://smilekraftdental.in/logo.png',
+        name: bizName,
+        description: `Consultation & Assessment (${treatment})`,
+        image: business?.logo_url || 'https://via.placeholder.com/150',
         order_id: orderData?.orderId,
         prefill: {
           name: name,
@@ -219,7 +279,7 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
               orderId: response.razorpay_order_id || orderId,
               paymentId: response.razorpay_payment_id,
               signature: response.razorpay_signature || 'sig_verified',
-              businessId: 'biz_smilekraft_hyd',
+              businessId: targetBizId,
               journeyId: confirmedBooking?.id || confirmedBooking?.visitorId,
               method: 'UPI'
             });
@@ -262,13 +322,12 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
     try {
       const paymentRef = `upi_${manualUtr.trim()}`;
       try {
-        await api.verifyPayment({
-          orderId: `order_${Date.now()}`,
-          paymentId: paymentRef,
-          signature: 'upi_manual_verification',
-          businessId: 'biz_smilekraft_hyd',
+        await api.confirmManualUPI({
+          businessId: targetBizId,
+          amountINR: depositAmount,
+          utr: manualUtr.trim(),
           journeyId: confirmedBooking?.id || confirmedBooking?.visitorId,
-          method: 'UPI'
+          serviceRendered: `Consultation Deposit - ${treatment}`,
         });
       } catch (e) {
         console.info('Manual UPI confirmation registered', e);
@@ -288,8 +347,37 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
     }
   };
 
+  // Explicit Tenant Guard: Never silently default to any tenant
+  if (!targetBizId) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center p-6 font-sans">
+        <div className="max-w-md w-full p-8 rounded-2xl bg-slate-900 border border-rose-500/30 text-center space-y-4 shadow-2xl">
+          <div className="w-12 h-12 rounded-full bg-rose-500/10 border border-rose-500/30 text-rose-400 flex items-center justify-center mx-auto">
+            <AlertCircle className="w-6 h-6" />
+          </div>
+          <h2 className="text-xl font-bold text-white">Missing Business Identifier</h2>
+          <p className="text-xs text-slate-400 leading-relaxed">
+            No valid business was specified for this booking page. To protect tenant isolation, this portal never defaults to another business account.
+          </p>
+          <div className="p-3 bg-slate-950 rounded-lg border border-slate-800 text-[11px] text-slate-400 text-left font-mono">
+            Please use a URL containing your business identifier:<br />
+            <span className="text-cyan-400">/book?businessId=&lt;your_business_id&gt;</span>
+          </div>
+          {onBackToAdmin && (
+            <button
+              onClick={onBackToAdmin}
+              className="w-full py-2.5 px-4 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs transition shadow-lg shadow-cyan-600/30"
+            >
+              ← Back to Management Console
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   if (showPrivacyPolicy) {
-    return <PrivacyPolicyPage onBack={() => setShowPrivacyPolicy(false)} />;
+    return <PrivacyPolicyPage business={business} onBack={() => setShowPrivacyPolicy(false)} />;
   }
 
   return (
@@ -298,7 +386,7 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
       <div className="bg-gradient-to-r from-slate-950 via-cyan-950/80 to-slate-950 border-b border-cyan-800/60 px-4 py-2 text-xs flex flex-wrap items-center justify-between gap-3 shadow-lg">
         <div className="flex items-center gap-2 text-cyan-300 font-medium">
           <Sparkles className="w-4 h-4 text-cyan-400 shrink-0" />
-          <span>Patient Acquisition Funnel (Outward-Facing Surface for Hyderabad Patients)</span>
+          <span>Direct Inbound Booking Funnel{bizName ? ` • ${bizName}` : ''}</span>
         </div>
         <div className="flex items-center gap-3">
           <button
@@ -323,67 +411,80 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
       </div>
 
       <div className="max-w-4xl mx-auto px-4 py-8 space-y-8">
-        {/* Clinic Header */}
+        {/* Clinic / Business Header */}
         <div className="text-center space-y-3">
           <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 text-xs font-semibold">
             <Sparkles className="w-3.5 h-3.5" />
-            Hyderabad Modern Digital Orthodontics & Dental Care
+            {business?.city || 'Local Market'} • {business?.vertical_name || 'Verified Business Consultation'}
           </div>
           <h1 className="text-3xl sm:text-4xl font-black text-white tracking-tight">
-            SmileKraft Dental Clinic
+            {bizName}
           </h1>
           <p className="text-sm text-slate-400 max-w-xl mx-auto">
-            Led by <strong>Dr. Aravind Reddy (MDS Orthodontics, TSDC Reg: TSDC/2011/58291)</strong>. Digital 3D smile planning, German titanium implants, and invisible aligners.
+            {business?.city
+              ? `Serving ${business.neighborhood ? `${business.neighborhood}, ` : ''}${business.city} with verified appointments and transparent INR pricing.`
+              : 'Verified appointment booking and consultation scheduling with DPDP Act 2023 privacy compliance.'}
           </p>
 
           <div className="flex flex-wrap items-center justify-center gap-4 text-xs text-slate-300 pt-2">
             <span className="flex items-center gap-1">
               <MapPin className="w-3.5 h-3.5 text-cyan-400" />
-              Banjara Hills (Rd #12) & Gachibowli (Financial District)
+              {business?.city ? `${business.neighborhood ? `${business.neighborhood}, ` : ''}${business.city}` : 'Local Presence'}
             </span>
             <span className="flex items-center gap-1">
               <Award className="w-3.5 h-3.5 text-amber-400" />
-              US-FDA Approved Materials
+              Verified Direct Consultation
             </span>
             <span className="flex items-center gap-1">
               <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-              Advanced Comfort Laser Tech (Zero Deceptive Guarantees)
+              DPDP Act 2023 Compliant Ingestion
             </span>
           </div>
         </div>
 
-        {/* Highlight Treatment Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="p-5 rounded-2xl bg-slate-900/80 border border-cyan-500/30 shadow-lg shadow-cyan-500/5 relative overflow-hidden">
-            <div className="text-xs font-bold text-cyan-400 uppercase tracking-wider">Most Popular</div>
-            <div className="text-lg font-bold text-white mt-1">Invisible Clear Aligners</div>
-            <div className="text-xs text-slate-400 mt-1">Custom 3D-molded teeth straightening. Removable, discreet, comfortable.</div>
-            <div className="mt-4 flex items-baseline gap-1 font-mono">
-              <span className="text-2xl font-black text-cyan-300">₹45,000</span>
-              <span className="text-xs text-slate-400">or ₹2,999/mo 0% EMI</span>
-            </div>
+        {/* Highlight Service Cards */}
+        {availableServices.length > 0 && (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {availableServices.slice(0, 3).map((service, idx) => (
+              <div
+                key={service.title}
+                className={`p-5 rounded-2xl bg-slate-900/80 border ${
+                  idx === 0
+                    ? 'border-cyan-500/30 shadow-lg shadow-cyan-500/5'
+                    : 'border-slate-800 shadow-md'
+                }`}
+              >
+                <div
+                  className={`text-xs font-bold uppercase tracking-wider ${
+                    idx === 0
+                      ? 'text-cyan-400'
+                      : idx === 1
+                      ? 'text-teal-400'
+                      : 'text-amber-400'
+                  }`}
+                >
+                  {idx === 0 ? 'Featured' : idx === 1 ? 'Core Offering' : 'Comprehensive'}
+                </div>
+                <div className="text-lg font-bold text-white mt-1">{service.title}</div>
+                <div className="text-xs text-slate-400 mt-1">
+                  Direct appointment scheduling and inquiry with {bizName}.
+                </div>
+                {service.priceINR ? (
+                  <div className="mt-4 flex items-baseline gap-1 font-mono">
+                    <span className="text-2xl font-black text-white">
+                      ₹{service.priceINR.toLocaleString('en-IN')}
+                    </span>
+                    <span className="text-xs text-slate-400">starting estimate</span>
+                  </div>
+                ) : (
+                  <div className="mt-4 text-xs text-cyan-400 font-medium">
+                    Consultation &amp; Custom Quote
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
-
-          <div className="p-5 rounded-2xl bg-slate-900/80 border border-slate-800 shadow-md">
-            <div className="text-xs font-bold text-teal-400 uppercase tracking-wider">Restorative</div>
-            <div className="text-lg font-bold text-white mt-1">Titanium Dental Implants</div>
-            <div className="text-xs text-slate-400 mt-1">German bio-compatible implants with lifetime warranty and immediate crown.</div>
-            <div className="mt-4 flex items-baseline gap-1 font-mono">
-              <span className="text-2xl font-black text-white">₹28,000</span>
-              <span className="text-xs text-slate-400">per tooth</span>
-            </div>
-          </div>
-
-          <div className="p-5 rounded-2xl bg-slate-900/80 border border-slate-800 shadow-md">
-            <div className="text-xs font-bold text-amber-400 uppercase tracking-wider">Cosmetic</div>
-            <div className="text-lg font-bold text-white mt-1">Laser Teeth Whitening</div>
-            <div className="text-xs text-slate-400 mt-1">1-hour clinic session. Up to 8 shades brighter for weddings and celebrations.</div>
-            <div className="mt-4 flex items-baseline gap-1 font-mono">
-              <span className="text-2xl font-black text-white">₹7,500</span>
-              <span className="text-xs text-slate-400">complete session</span>
-            </div>
-          </div>
-        </div>
+        )}
 
         {/* Booking Form or Success Card */}
         <div className="p-6 sm:p-8 rounded-2xl bg-slate-900 border border-slate-800 shadow-2xl">
@@ -396,12 +497,12 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
                 Consultation Request Confirmed!
               </h2>
               <p className="text-sm text-slate-300 max-w-md mx-auto">
-                Thank you, <strong>{name}</strong>. Your consultation has been registered with SmileKraft Dental.
+                Thank you, <strong>{name}</strong>. Your consultation has been registered with {bizName}.
               </p>
               
               <div className="p-4 rounded-xl bg-slate-950/80 border border-slate-800 text-xs text-left max-w-md mx-auto space-y-2 font-mono">
                 <div className="flex justify-between">
-                  <span className="text-slate-400">Patient Identifier:</span>
+                  <span className="text-slate-400">Customer Identifier:</span>
                   <span className="text-cyan-400">{confirmedBooking.visitorId}</span>
                 </div>
                 <div className="flex justify-between">
@@ -431,11 +532,11 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
                   </span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-slate-400">Clinic Center:</span>
-                  <span className="text-white">{location} Hyderabad</span>
+                  <span className="text-slate-400">Location:</span>
+                  <span className="text-white">{location}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-slate-400">Treatment:</span>
+                  <span className="text-slate-400">Selected Service:</span>
                   <span className="text-white">{treatment}</span>
                 </div>
               </div>
@@ -448,7 +549,7 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
                     <span>Payment Received &amp; Verified!</span>
                   </div>
                   <p className="text-xs text-slate-300">
-                    Your appointment deposit has been cryptographically confirmed. Your doctor slot is officially reserved with Dr. Aravind Reddy MDS.
+                    Your appointment deposit has been confirmed. Your consultation slot is officially reserved with {bizName || 'our team'}.
                   </p>
                   <div className="p-3 rounded-lg bg-slate-950/80 border border-emerald-900/60 font-mono text-[11px] space-y-1">
                     <div className="flex justify-between">
@@ -461,7 +562,7 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
                     </div>
                     <div className="flex justify-between">
                       <span className="text-slate-400">Ledger Classification:</span>
-                      <span className="text-cyan-300 font-bold">REAL REVENUE (ATTRIBUTED)</span>
+                      <span className="text-amber-300 font-bold">MANUAL_VERIFIED</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-slate-400">Timestamp:</span>
@@ -496,7 +597,7 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
                       }`}
                     >
                       <div className="text-xs font-bold text-cyan-300">₹500 Deposit</div>
-                      <div className="text-[10px] text-slate-400">Doctor Exam &amp; OPG X-ray</div>
+                      <div className="text-[10px] text-slate-400">Standard Consultation Slot</div>
                     </button>
 
                     <button
@@ -509,7 +610,7 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
                       }`}
                     >
                       <div className="text-xs font-bold text-cyan-300">₹2,999 Deposit</div>
-                      <div className="text-[10px] text-slate-400">3D Simulation &amp; Aligner Plan</div>
+                      <div className="text-[10px] text-slate-400">Comprehensive Assessment &amp; Priority Slot</div>
                     </button>
                   </div>
 
@@ -545,23 +646,30 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
                   {showUPIModal && (
                     <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-center space-y-3">
                       <div className="text-xs font-bold text-white">Instant UPI Direct Payment</div>
-                      <div className="w-36 h-36 mx-auto bg-white rounded-lg p-2 flex items-center justify-center shadow-inner">
-                        {/* High contrast SVG QR Representation */}
-                        <div className="text-[10px] text-slate-900 font-mono text-center font-bold">
-                          <div className="text-base font-black text-cyan-900 mb-1">₹{depositAmount}</div>
-                          UPI QR CODE
-                          <div className="text-[8px] text-slate-600 mt-1">smilekraftdental@icici</div>
+                      {upiVpa ? (
+                        <>
+                          <div className="w-44 h-44 mx-auto bg-white rounded-xl p-2 flex items-center justify-center shadow-lg border border-slate-700">
+                            <img
+                              src={`https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(`upi://pay?pa=${upiVpa}&pn=${encodeURIComponent(bizName || 'Consultation')}&am=${depositAmount}&cu=INR&tn=Consultation%20Deposit`)}`}
+                              alt="UPI QR Code"
+                              className="w-40 h-40 object-contain rounded"
+                            />
+                          </div>
+                          <div className="text-[11px] text-slate-300">
+                            UPI ID: <code className="text-cyan-300 font-bold bg-slate-900 px-2 py-0.5 rounded">{upiVpa}</code>
+                          </div>
+                          <a
+                            href={`upi://pay?pa=${upiVpa}&pn=${encodeURIComponent(bizName || 'Consultation')}&am=${depositAmount}&cu=INR&tn=Consultation%20Deposit`}
+                            className="inline-block px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold transition shadow-sm"
+                          >
+                            Open in UPI App (GPay / PhonePe / Paytm)
+                          </a>
+                        </>
+                      ) : (
+                        <div className="p-4 rounded-lg bg-slate-900 border border-amber-500/30 text-amber-300 text-xs">
+                          No UPI VPA configured. Please set <code className="font-mono text-cyan-400">VITE_UPI_VPA</code> in environment or configure the business profile.
                         </div>
-                      </div>
-                      <div className="text-[11px] text-slate-300">
-                        UPI VPA: <code className="text-cyan-300 font-bold">smilekraftdental@icici</code>
-                      </div>
-                      <a
-                        href={`upi://pay?pa=smilekraftdental@icici&pn=SmileKraft%20Dental&am=${depositAmount}&cu=INR&tn=Consultation%20Deposit`}
-                        className="inline-block px-3 py-1.5 rounded bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold"
-                      >
-                        Open UPI App Directly
-                      </a>
+                      )}
                       <div className="pt-2 border-t border-slate-800 text-left space-y-1.5">
                         <label className="text-[10px] text-slate-400 block font-medium">
                           Enter UPI UTR / Reference No. after payment:
@@ -589,15 +697,17 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
               )}
 
               <div className="pt-4 flex flex-col sm:flex-row items-center justify-center gap-3">
-                <a
-                  href={`https://wa.me/919876543210?text=Hello%20Dr%20Aravind,%20I%20registered%20my%20consultation%20for%20${encodeURIComponent(treatment)}%20at%20${location}%20branch.`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="w-full sm:w-auto px-6 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/20"
-                >
-                  <Phone className="w-4 h-4" />
-                  Chat with Clinic on WhatsApp
-                </a>
+                {(business?.whatsapp_number || business?.phone) ? (
+                  <a
+                    href={`https://wa.me/${(business.whatsapp_number || business.phone).replace(/[^0-9]/g, '')}?text=${encodeURIComponent(`Hello, I registered a booking for ${treatment} at ${bizName}.`)}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="w-full sm:w-auto px-6 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/20"
+                  >
+                    <Phone className="w-4 h-4" />
+                    Chat on WhatsApp
+                  </a>
+                ) : null}
                 <button
                   onClick={() => {
                     setConfirmedBooking(null);
@@ -616,17 +726,43 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
               <div>
                 <h2 className="text-xl font-bold text-white flex items-center gap-2">
                   <Calendar className="w-5 h-5 text-cyan-400" />
-                  Book Doctor Consultation & 3D Scan
+                  Book Consultation &amp; Appointment
                 </h2>
                 <p className="text-xs text-slate-400 mt-1">
-                  Fill out your details below to schedule your personalized smile assessment in Hyderabad.
+                  Fill out your details below to schedule your booking with {bizName}{business?.city ? ` in ${business.city}` : ''}.
                 </p>
               </div>
 
               {errorMsg && (
-                <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-2">
-                  <AlertCircle className="w-4 h-4 shrink-0" />
-                  {errorMsg}
+                <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/40 text-rose-300 text-xs space-y-2">
+                  <div className="flex items-center gap-2 font-bold text-rose-200">
+                    <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
+                    <span>Booking Submission Failed</span>
+                  </div>
+                  <p className="leading-relaxed">{errorMsg}</p>
+                  {(business?.phone || business?.whatsapp_number) && (
+                    <div className="pt-2 border-t border-rose-500/20 flex flex-wrap gap-2 items-center text-[11px] text-slate-300">
+                      <span>Reach us directly instead:</span>
+                      {business?.phone && (
+                        <a
+                          href={`tel:${business.phone}`}
+                          className="px-2.5 py-1 rounded bg-slate-900 border border-slate-700 hover:border-slate-500 text-cyan-400 font-semibold"
+                        >
+                          📞 Call {business.phone}
+                        </a>
+                      )}
+                      {(business?.whatsapp_number || business?.phone) && (
+                        <a
+                          href={`https://wa.me/${(business.whatsapp_number || business.phone).replace(/\D/g, '')}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="px-2.5 py-1 rounded bg-emerald-950 border border-emerald-700/50 hover:border-emerald-500 text-emerald-300 font-semibold"
+                        >
+                          💬 WhatsApp Direct
+                        </a>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -677,42 +813,46 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
 
                   <div>
                     <label className="block text-slate-300 font-medium mb-1">
-                      Preferred Clinic Center *
+                      Preferred Location *
                     </label>
                     <select
                       value={location}
                       onChange={(e) => setLocation(e.target.value)}
                       className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3.5 py-2.5 text-white focus:outline-none focus:border-cyan-500"
                     >
-                      <option value="Gachibowli">Gachibowli (Financial District)</option>
-                      <option value="Banjara Hills">Banjara Hills (Road #12)</option>
+                      {availableLocations.map((loc) => (
+                        <option key={loc} value={loc}>
+                          {loc}
+                        </option>
+                      ))}
                     </select>
                   </div>
 
                   <div>
                     <label className="block text-slate-300 font-medium mb-1">
-                      Treatment Needed *
+                      Service / Offering Needed *
                     </label>
                     <select
                       value={treatment}
                       onChange={(e) => setTreatment(e.target.value)}
                       className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3.5 py-2.5 text-white focus:outline-none focus:border-cyan-500"
                     >
-                      <option value="Invisible Clear Aligners">Invisible Clear Aligners (₹45,000)</option>
-                      <option value="Titanium Dental Implants">Titanium Dental Implants (₹28,000)</option>
-                      <option value="Laser Teeth Whitening">Laser Teeth Whitening (₹7,500)</option>
-                      <option value="General Consultation">General Dental Checkup</option>
+                      {availableServices.map((svc) => (
+                        <option key={svc.title} value={svc.title}>
+                          {svc.title} {svc.priceINR ? `(₹${svc.priceINR.toLocaleString('en-IN')})` : ''}
+                        </option>
+                      ))}
                     </select>
                   </div>
                 </div>
 
                 <div>
                   <label className="block text-slate-300 font-medium mb-1">
-                    Additional Notes or Symptoms (Optional)
+                    Additional Notes or Requirements (Optional)
                   </label>
                   <textarea
                     rows={2}
-                    placeholder="Describe any tooth discomfort or smile goals..."
+                    placeholder={`Provide any specific details or requirements for your booking with ${bizName}...`}
                     value={notes}
                     onChange={(e) => setNotes(e.target.value)}
                     className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3.5 py-2 text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500"
@@ -742,7 +882,7 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
                       className="mt-0.5 rounded border-slate-700 bg-slate-900 text-cyan-500 focus:ring-cyan-500"
                     />
                     <span>
-                      I consent to SmileKraft Dental Clinic processing my contact details solely for consultation scheduling in compliance with the <strong>Digital Personal Data Protection (DPDP) Act 2023</strong>.{' '}
+                      I consent to {bizName} processing my contact details solely for consultation scheduling in compliance with the <strong>Digital Personal Data Protection (DPDP) Act 2023</strong>.{' '}
                       <button
                         type="button"
                         onClick={() => setShowPrivacyPolicy(true)}
@@ -769,19 +909,19 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
           )}
         </div>
 
-        {/* MCI & Regulatory Compliance Footer */}
+        {/* Regulatory Compliance Footer */}
         <div className="p-4 rounded-xl bg-slate-900/40 border border-slate-800/60 text-[11px] text-slate-500 space-y-1.5 leading-relaxed">
           <div className="font-semibold text-slate-400 uppercase tracking-wider">
-            Statutory Medical Notice & Disclosure
+            Statutory Transparency &amp; Privacy Notice
           </div>
           <div>
-            1. All orthodontic and implant procedures are performed exclusively by registered dental practitioners licensed by the Telangana State Dental Council and Dental Council of India (DCI).
+            1. Service Standards: All services and consultations are fulfilled by qualified professionals and certified personnel representing {bizName}.
           </div>
           <div>
-            2. Medical Council of India (MCI) & NMC Ethics: This page is designed for patient education and appointment scheduling. Treatment suitability and exact cost estimates depend upon clinical oral examination and 3D radiographic scans.
+            2. Transparent Estimates: Service suitability and final billing may vary based on individualized assessment and exact scope of service.
           </div>
           <div>
-            3. Patient Privacy: Contact information is strictly protected under the Information Technology Act 2000 and used solely for direct clinic consultation coordination.
+            3. Privacy &amp; Data Protection: Contact information is strictly protected under the Information Technology Act 2000 and Digital Personal Data Protection (DPDP) Act 2023, used solely for direct appointment coordination.
           </div>
         </div>
       </div>

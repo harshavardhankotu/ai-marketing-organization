@@ -18,6 +18,7 @@ import { Activity } from './pages/Activity.js';
 import { Simulation } from './pages/Simulation.js';
 import { Settings } from './pages/Settings.js';
 import { HealthStatusCard } from './components/common/HealthStatusCard.js';
+import { BusinessOnboarding } from './components/onboarding/BusinessOnboarding.js';
 import { api } from './services/api.js';
 import { 
   DEFAULT_BUSINESS, 
@@ -166,7 +167,7 @@ export const App: React.FC = () => {
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         <Navbar
-          businessName={business?.name || 'SmileKraft Dental Clinic'}
+          businessName={business?.name || 'Onboard a Business'}
           autonomyMode={business?.autonomy_mode || 'ASSISTED'}
           killSwitchActive={business?.kill_switch_active === 1}
           onOpenKillSwitchModal={() => setIsKillModalOpen(true)}
@@ -199,7 +200,17 @@ export const App: React.FC = () => {
 
           <HealthStatusCard />
 
-          {currentTab === 'dashboard' && (
+          {(currentTab === 'onboarding' || (!business && currentTab === 'dashboard')) && (
+            <BusinessOnboarding
+              onCompleted={(newBiz) => {
+                setBusiness(newBiz);
+                loadAllData();
+                setCurrentTab('dashboard');
+              }}
+            />
+          )}
+
+          {currentTab === 'dashboard' && business && (
             <Dashboard
               metrics={analyticsData.metrics}
               business={business}
@@ -238,11 +249,15 @@ export const App: React.FC = () => {
           )}
 
           {currentTab === 'content' && (
-            <ContentStudio contentAssets={contentAssets} />
+            <ContentStudio contentAssets={contentAssets} business={business} />
           )}
 
           {currentTab === 'research' && (
-            <Research findings={researchFindings} />
+            <Research
+              findings={researchFindings}
+              businessId={business?.id}
+              onRefresh={loadAllData}
+            />
           )}
 
           {currentTab === 'analytics' && (

@@ -14,11 +14,13 @@ import {
   PlayCircle,
   IndianRupee,
   Users,
-  Globe
+  Globe,
+  Building2
 } from 'lucide-react';
 
 export type NavTab = 
   | 'dashboard'
+  | 'onboarding'
   | 'public_landing'
   | 'revenue'
   | 'journey'
@@ -43,13 +45,13 @@ interface SidebarProps {
 export const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab, pendingApprovalsCount }) => {
   const navItems = [
     { id: 'dashboard', label: 'Overview', icon: LayoutDashboard },
-    { id: 'public_landing', label: 'Public Patient Page', icon: Globe },
+    { id: 'onboarding', label: 'Onboard Business', icon: Building2 },
+    { id: 'research', label: 'Research & Intel', icon: Search },
     { id: 'revenue', label: 'Revenue & UPI', icon: IndianRupee },
     { id: 'journey', label: 'Customer Funnel', icon: Users },
     { id: 'agents', label: 'AI Org (80 Agents)', icon: Bot },
     { id: 'campaigns', label: 'Campaigns', icon: Compass },
     { id: 'content', label: 'Content Studio', icon: FileText },
-    { id: 'research', label: 'Research & Intel', icon: Search },
     { id: 'analytics', label: 'Analytics & Attribution', icon: BarChart3 },
     { id: 'experiments', label: 'Experiments Lab', icon: FlaskConical },
     { id: 'evolution', label: 'Evolution & Decisions', icon: History },
@@ -102,13 +104,25 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab, pendi
       </nav>
 
       {/* Footer Info */}
-      <div className="p-4 border-t border-slate-800 text-xs text-slate-500 flex flex-col gap-1">
-        <div className="flex items-center justify-between text-slate-400 font-medium">
-          <span>Target Business</span>
-          <span className="text-cyan-400">Hyderabad</span>
-        </div>
-        <div>SmileKraft Dental (₹50k/mo)</div>
-      </div>
+      {(() => {
+        let activeBiz: any = null;
+        try {
+          const raw = localStorage.getItem('ai_marketing_active_business');
+          if (raw) activeBiz = JSON.parse(raw);
+        } catch {}
+
+        return (
+          <div className="p-4 border-t border-slate-800 text-xs text-slate-500 flex flex-col gap-1">
+            <div className="flex items-center justify-between text-slate-400 font-medium">
+              <span>Target Business</span>
+              <span className="text-cyan-400 font-mono">{activeBiz?.city || 'Local Market'}</span>
+            </div>
+            <div className="font-semibold text-slate-300 truncate">
+              {activeBiz?.name || 'Active Business'} {activeBiz?.monthly_budget_inr ? `(₹${(activeBiz.monthly_budget_inr / 1000).toFixed(0)}k/mo)` : ''}
+            </div>
+          </div>
+        );
+      })()}
     </aside>
   );
 };

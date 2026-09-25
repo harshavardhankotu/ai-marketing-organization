@@ -105,23 +105,23 @@ export const Dashboard: React.FC<DashboardProps> = ({
         <div>
           <div className="flex items-center gap-2 text-cyan-400 text-xs font-bold uppercase tracking-wider mb-1">
             <Zap className="w-3.5 h-3.5" />
-            Autonomous Marketing Closed Loop Active
+            Autonomous Marketing Engine
           </div>
           <h2 className="text-2xl font-extrabold text-white tracking-tight">
-            {business?.name || 'SmileKraft Dental Clinic Hyderabad'}
+            {business?.name || 'Onboarded Business'}
           </h2>
           <p className="text-slate-300 text-sm mt-1">
-            {business?.city || 'Hyderabad'} ({business?.neighborhood || 'Banjara Hills & Gachibowli'}) • Serving high-intent dental implant & clear aligner patients.
+            {business?.city ? `${business.city}${business.neighborhood ? ` (${business.neighborhood})` : ''}` : 'Location unconfigured'} • {business?.vertical_name || 'Multi-Tenant Commercial Operation'}
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
           <button
-            onClick={() => onNavigateTab('public_landing')}
-            className="px-4 py-2.5 rounded-xl text-xs font-bold bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white shadow-md shadow-emerald-600/20 transition-all flex items-center gap-1.5"
+            onClick={() => onNavigateTab('research')}
+            className="px-4 py-2.5 rounded-xl text-xs font-bold bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white shadow-md shadow-cyan-600/20 transition-all flex items-center gap-1.5"
           >
-            <Globe className="w-3.5 h-3.5" />
-            View Patient Booking Page
+            <Search className="w-3.5 h-3.5" />
+            Live Market Research
           </button>
           <button
             onClick={() => onNavigateTab('agents')}
@@ -132,39 +132,10 @@ export const Dashboard: React.FC<DashboardProps> = ({
           <button
             onClick={onTriggerCycle}
             disabled={isCycleRunning}
-            className="px-4 py-2.5 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 shadow-md shadow-cyan-500/20 disabled:opacity-50 transition-all flex items-center gap-1.5"
+            className="px-4 py-2.5 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 shadow-md shadow-emerald-500/20 disabled:opacity-50 transition-all flex items-center gap-1.5"
           >
             <Sparkles className="w-3.5 h-3.5" />
-            {isCycleRunning ? 'Autonomous Cycle Running...' : 'Trigger Next Learning Cycle'}
-          </button>
-        </div>
-      </div>
-
-      {/* Platform & Product Architecture Clarifier */}
-      <div className="p-4 rounded-xl bg-slate-900/90 border border-indigo-500/30 shadow-md flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-        <div className="flex items-start gap-3">
-          <div className="p-2 rounded-lg bg-indigo-500/20 text-indigo-400 mt-0.5">
-            <Layers className="w-5 h-5" />
-          </div>
-          <div>
-            <h4 className="text-sm font-bold text-white flex flex-wrap items-center gap-2">
-              Two Systems Working Together:
-              <span className="text-cyan-400 font-medium">1. Autonomous AI Agency (80 Agents)</span>
-              <span className="text-slate-400 font-normal">&bull;</span>
-              <span className="text-emerald-400 font-medium">2. Client Website & Patient Booking Funnel</span>
-            </h4>
-            <p className="text-xs text-slate-300 mt-1 leading-relaxed">
-              This dashboard is the <strong>Internal AI Marketing Agency Command Center</strong> (orchestrating 80 autonomous agents, multi-lingual creatives, Google/Meta campaigns, multi-touch attribution, and live double-entry ledger). The <strong>Patient Booking Page</strong> (<code className="text-emerald-300 font-mono">/aligners-hyderabad</code>) is the live conversion destination created by the AI agents to attract, book, and collect ₹500/₹5,000 deposits from real Hyderabad patients via Razorpay UPI.
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          <button
-            onClick={() => onNavigateTab('public_landing')}
-            className="px-3.5 py-2 rounded-lg text-xs font-semibold bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 transition-all flex items-center gap-1.5"
-          >
-            <Globe className="w-3.5 h-3.5" />
-            Open Patient Booking Page &rarr;
+            {isCycleRunning ? 'Autonomous Cycle Running...' : 'Trigger Growth Cycle'}
           </button>
         </div>
       </div>
@@ -177,9 +148,6 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping inline-block" />
               OPERATING MILESTONE: {operatingState}
             </span>
-            <span className="text-xs text-slate-400">
-              (Next Milestone: <strong className="text-purple-300">FIRST_REAL_CUSTOMER</strong>)
-            </span>
           </div>
           <div className="text-xs text-slate-400 font-mono">
             Scientific Truth • Zero Synthetic Revenue
@@ -188,27 +156,27 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
           <div className="p-3 rounded-lg bg-slate-950/70 border border-slate-800">
-            <span className="text-slate-500 text-[11px] block">Verified Real Lead</span>
-            <div className="font-bold text-white mt-0.5">Suresh Reddy</div>
-            <span className="text-[10px] text-cyan-400">+91 9849123456 (Hyderabad)</span>
+            <span className="text-slate-500 text-[11px] block">Verified Inbound Leads</span>
+            <div className="font-bold text-white mt-0.5">{realLeads > 0 ? `${realLeads} Inbound Inquiry` : 'Awaiting Inquiries'}</div>
+            <span className="text-[10px] text-cyan-400">{realLeads > 0 ? 'Verified Inbound Record' : 'Zero Synthetic Data'}</span>
           </div>
 
           <div className="p-3 rounded-lg bg-slate-950/70 border border-slate-800">
-            <span className="text-slate-500 text-[11px] block">Consultation Status</span>
-            <div className="font-bold text-cyan-300 mt-0.5">CONFIRMED (Scan Booked)</div>
-            <span className="text-[10px] text-slate-400">Banjara Hills Clinic Center</span>
+            <span className="text-slate-500 text-[11px] block">Conversion Pipeline</span>
+            <div className="font-bold text-cyan-300 mt-0.5">{realConsultations > 0 ? `${realConsultations} Confirmed` : 'Pipeline Ready'}</div>
+            <span className="text-[10px] text-slate-400">Multi-Channel Inbound</span>
           </div>
 
           <div className="p-3 rounded-lg bg-slate-950/70 border border-slate-800">
-            <span className="text-slate-500 text-[11px] block">Google Ads Attribution</span>
-            <div className="font-bold text-amber-400 mt-0.5">UNVERIFIED</div>
-            <span className="text-[10px] text-slate-400">Pending live Google API verification</span>
+            <span className="text-slate-500 text-[11px] block">Attribution Status</span>
+            <div className="font-bold text-amber-400 mt-0.5">TRUTH-GATED</div>
+            <span className="text-[10px] text-slate-400">Cryptographic audit active</span>
           </div>
 
           <div className="p-3 rounded-lg bg-slate-950/70 border border-slate-800">
-            <span className="text-slate-500 text-[11px] block">Treatment Acceptance</span>
-            <div className="font-bold text-slate-300 mt-0.5">Awaiting Clinic Decision</div>
-            <span className="text-[10px] text-slate-400">Advances to FIRST_REAL_CUSTOMER</span>
+            <span className="text-slate-500 text-[11px] block">Paying Customers</span>
+            <div className="font-bold text-slate-300 mt-0.5">{realCustomers} Verified</div>
+            <span className="text-[10px] text-slate-400">{realRevenueINR > 0 ? `₹${realRevenueINR.toLocaleString('en-IN')}` : '₹0 Verified Revenue'}</span>
           </div>
         </div>
       </div>
@@ -217,18 +185,18 @@ export const Dashboard: React.FC<DashboardProps> = ({
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 shadow-sm">
           <div className="flex items-center justify-between text-slate-400 text-xs font-medium">
-            <span>Verified Real Inquiries</span>
+            <span>Verified Inquiries</span>
             <Users className="w-4 h-4 text-cyan-400" />
           </div>
           <div className="mt-2 flex items-baseline gap-2">
             <span className="text-2xl font-bold text-white">{realLeads}</span>
-            <span className="text-xs text-slate-400">({realConsultations} consultation confirmed)</span>
+            <span className="text-xs text-slate-400">({realConsultations} confirmed)</span>
           </div>
           <div className="mt-3 w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
             <div className="bg-cyan-500 h-1.5 rounded-full" style={{ width: `${Math.min(100, realLeads * 10)}%` }}></div>
           </div>
           <p className="text-xs text-cyan-400 mt-2 flex items-center gap-1 font-medium">
-            <CheckCircle2 className="w-3 h-3" /> Suresh Reddy (WhatsApp Inbound)
+            <CheckCircle2 className="w-3 h-3" /> {realLeads > 0 ? `${realLeads} Verified Inbound Lead(s)` : 'No Inquiries Yet'}
           </p>
         </div>
 
@@ -298,24 +266,30 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <div className="space-y-2 text-xs">
                 <div className="flex justify-between items-center p-2 rounded bg-slate-950/60 border border-slate-800/80">
                   <span className="text-slate-400">Real Leads</span>
-                  <span className="font-bold text-cyan-400 font-mono">{realLeads} (Suresh Reddy)</span>
+                  <span className="font-bold text-cyan-400 font-mono">
+                    {realLeads} {realLeads > 0 ? '(Live Inbound)' : '(0 Inbound Captured)'}
+                  </span>
                 </div>
                 <div className="flex justify-between items-center p-2 rounded bg-slate-950/60 border border-slate-800/80">
                   <span className="text-slate-400">Real Consultations</span>
-                  <span className="font-bold text-purple-400 font-mono">{realConsultations} (appt_suresh_001)</span>
+                  <span className="font-bold text-purple-400 font-mono">
+                    {realConsultations} {realConsultations > 0 ? '(Scheduled)' : '(None Scheduled)'}
+                  </span>
                 </div>
                 <div className="flex justify-between items-center p-2 rounded bg-slate-950/60 border border-slate-800/80">
                   <span className="text-slate-400">Real Customers</span>
-                  <span className="font-bold text-slate-400 font-mono">{realCustomers} (Awaiting Acceptance)</span>
+                  <span className="font-bold text-slate-400 font-mono">{realCustomers} (Verified Conversions)</span>
                 </div>
                 <div className="flex justify-between items-center p-2 rounded bg-slate-950/60 border border-slate-800/80">
                   <span className="text-slate-400">Lead → Consult Rate</span>
-                  <span className="font-bold text-emerald-400 font-mono">100.0%</span>
+                  <span className="font-bold text-emerald-400 font-mono">
+                    {realLeads > 0 ? ((realConsultations / realLeads) * 100).toFixed(1) + '%' : '0.0%'}
+                  </span>
                 </div>
               </div>
             </div>
             <div className="mt-3 pt-2 border-t border-slate-800/80 text-[11px] text-slate-400">
-              Consultation Date: <strong className="text-slate-200 font-mono">2026-09-15T10:30:00Z</strong>
+              Pipeline Status: <strong className="text-slate-200 font-mono">{realLeads > 0 ? `${realLeads} Real Inbound Customers Active` : 'Share your Live Booking Page to acquire leads'}</strong>
             </div>
           </div>
 
@@ -682,20 +656,20 @@ export const Dashboard: React.FC<DashboardProps> = ({
           </div>
           <div className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800">
             <span className="text-[11px] text-slate-400 font-medium">Real Leads</span>
-            <div className="text-lg font-bold text-cyan-400 font-mono mt-1">{economics?.organicLeads ?? 1}</div>
-            <span className="text-[10px] text-amber-400 font-mono">Suresh (UNVERIFIED_SRC)</span>
+            <div className="text-lg font-bold text-cyan-400 font-mono mt-1">{realLeads}</div>
+            <span className="text-[10px] text-cyan-400 font-mono">{realLeads > 0 ? 'Live Inbound Active' : '0 Inbound Captured'}</span>
           </div>
           <div className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800">
             <span className="text-[11px] text-slate-400 font-medium">Verified Organic Leads</span>
             <div className="text-lg font-bold text-cyan-400 font-mono mt-1">
-              {trafficStats?.verifiedOrganicLeads ?? economics?.verifiedOrganicLeads ?? 0}
+              {trafficStats?.verifiedOrganicLeads ?? economics?.verifiedOrganicLeads ?? realLeads ?? 0}
             </div>
-            <span className="text-[10px] text-slate-500">Target: 1 External Lead</span>
+            <span className="text-[10px] text-slate-500">Live External Traffic</span>
           </div>
           <div className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800">
             <span className="text-[11px] text-slate-400 font-medium">Consultations / Cust.</span>
-            <div className="text-lg font-bold text-purple-400 font-mono mt-1">1 / 0</div>
-            <span className="text-[10px] text-slate-500">appt_suresh_001 (Sep 15)</span>
+            <div className="text-lg font-bold text-purple-400 font-mono mt-1">{realConsultations} / {realCustomers}</div>
+            <span className="text-[10px] text-slate-500">{realConsultations > 0 ? `${realConsultations} Scheduled` : 'Live Pipeline Ready'}</span>
           </div>
           <div className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800">
             <span className="text-[11px] text-slate-400 font-medium">GBP OAuth State</span>

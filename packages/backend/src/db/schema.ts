@@ -424,6 +424,18 @@ CREATE TABLE IF NOT EXISTS quota_records (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- 20b. Universal Free-Tier Quota Locks (Strict Daily Circuit Breaker)
+CREATE TABLE IF NOT EXISTS universal_quota_locks (
+  service TEXT NOT NULL,
+  date_key TEXT NOT NULL,
+  requests_count INTEGER NOT NULL DEFAULT 0,
+  max_free_requests INTEGER NOT NULL,
+  is_locked INTEGER NOT NULL DEFAULT 0,
+  lock_reason TEXT,
+  locked_at TEXT,
+  PRIMARY KEY (service, date_key)
+);
+
 -- 21. Audit Logs
 CREATE TABLE IF NOT EXISTS audit_logs (
   id TEXT PRIMARY KEY,
@@ -953,8 +965,6 @@ CREATE TABLE IF NOT EXISTS patient_dpdp_consents (
   FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_dpdp_biz ON patient_dpdp_consents(business_id);
-CREATE INDEX IF NOT EXISTS idx_dpdp_phone ON patient_dpdp_consents(customer_phone);
-
 -- 47. Automated Payment Orders & Gateway Reconciliation
 CREATE TABLE IF NOT EXISTS payment_orders (
   id TEXT PRIMARY KEY,
@@ -973,4 +983,49 @@ CREATE TABLE IF NOT EXISTS payment_orders (
 );
 CREATE INDEX IF NOT EXISTS idx_pay_orders_biz ON payment_orders(business_id);
 CREATE INDEX IF NOT EXISTS idx_pay_orders_ref ON payment_orders(order_id);
+
+-- 48. Search Cache for Google Custom Search JSON API
+CREATE TABLE IF NOT EXISTS search_cache (
+  id TEXT PRIMARY KEY,
+  query_normalized TEXT UNIQUE NOT NULL,
+  provider TEXT NOT NULL DEFAULT 'google_custom_search',
+  raw_response_json TEXT NOT NULL,
+  results_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_search_cache_query ON search_cache(query_normalized);
+
+-- 49. Search Query Audit Log (Audit trail of every external outbound query)
+CREATE TABLE IF NOT EXISTS search_queries_log (
+  id TEXT PRIMARY KEY,
+  business_id TEXT,
+  query_text TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  endpoint_url TEXT NOT NULL,
+  status_code INTEGER NOT NULL,
+  is_cached INTEGER NOT NULL DEFAULT 0,
+  latency_ms INTEGER NOT NULL,
+  results_count INTEGER NOT NULL DEFAULT 0,
+  raw_response_json TEXT NOT NULL,
+  error_message TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_search_log_biz ON search_queries_log(business_id);
+
+-- 50. Subscriptions & Multi-Tenant Billing
+CREATE TABLE IF NOT EXISTS subscriptions (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL,
+  plan_tier TEXT NOT NULL DEFAULT 'GROWTH',
+  status TEXT NOT NULL DEFAULT 'ACTIVE',
+  monthly_price_inr REAL NOT NULL DEFAULT 4999,
+  razorpay_subscription_id TEXT,
+  current_period_start TEXT NOT NULL DEFAULT (datetime('now')),
+  current_period_end TEXT NOT NULL DEFAULT (datetime('now', '+30 days')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_sub_org ON subscriptions(organization_id);
 `;

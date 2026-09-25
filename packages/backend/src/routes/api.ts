@@ -37,6 +37,10 @@ import { GoogleBusinessProfileAdapter } from '../organic/gbp-integration.js';
 import { TrafficProvenanceEngine } from '../organic/traffic-provenance.js';
 import { RazorpayAdapter } from '../integrations/razorpay.js';
 import { DPDPComplianceManager } from '../compliance/dpdp-manager.js';
+import { MarketResearchPipeline } from '../research/market-research-pipeline.js';
+import { GoogleSearchClient } from '../research/google-search-client.js';
+import { StrategyMatchingEngine } from '../strategy/matching-engine.js';
+import { UniversalLockManager } from '../quota/universal-lock-manager.js';
 
 export type AppVariables = {
   organizationId: string;
@@ -145,6 +149,12 @@ apiRouter.get('/health', (c) => {
 apiRouter.get('/quota', (c) => {
   const status = QuotaManager.getInstance().getStatus();
   return c.json({ success: true, data: status });
+});
+
+// Universal Free-Tier Quota Lock Observability
+apiRouter.get('/quota/locks', (c) => {
+  const report = UniversalLockManager.getInstance().getStatus();
+  return c.json({ success: true, data: report });
 });
 
 // 80 Agents Registry
@@ -322,9 +332,75 @@ apiRouter.get('/content', (c) => {
 // Research Findings
 apiRouter.get('/research', (c) => {
   const orgId = c.get('organizationId');
+  const businessId = c.req.query('businessId') || c.req.header('x-business-id');
   const db = getDb();
-  const findings = db.prepare('SELECT * FROM research_findings WHERE organization_id = ? ORDER BY created_at DESC').all(orgId);
+
+  let findings;
+  if (businessId) {
+    findings = db.prepare('SELECT * FROM research_findings WHERE organization_id = ? AND business_id = ? ORDER BY created_at DESC').all(orgId, businessId);
+  } else {
+    findings = db.prepare('SELECT * FROM research_findings WHERE organization_id = ? ORDER BY created_at DESC').all(orgId);
+  }
   return c.json({ success: true, data: findings });
+});
+
+// Run Live Market Research Pipeline via Google Custom Search API
+apiRouter.post('/research/run', async (c) => {
+  const orgId = c.get('organizationId');
+  const body = await c.req.json().catch(() => ({}));
+  const businessId = body.businessId || c.req.query('businessId') || c.req.header('x-business-id');
+
+  if (!businessId) {
+    return c.json({ success: false, error: 'businessId is required to run market research' }, 400);
+  }
+
+  const pipeline = new MarketResearchPipeline();
+  try {
+    const result = await pipeline.runPipeline(businessId, orgId);
+    return c.json({ success: true, data: result });
+  } catch (err: any) {
+    return c.json({
+      success: false,
+      error: err.message,
+      code: err.code || 'RESEARCH_EXECUTION_ERROR'
+    }, 500);
+  }
+});
+
+// Outbound Search Query Audit Logs
+apiRouter.get('/research/logs', (c) => {
+  const businessId = c.req.query('businessId') || c.req.header('x-business-id');
+  const client = GoogleSearchClient.getInstance();
+  const logs = client.getAuditLogs(businessId);
+  return c.json({ success: true, data: logs });
+});
+
+// Strategy Matching Engine API
+apiRouter.post('/strategy/compute', async (c) => {
+  const orgId = c.get('organizationId');
+  const body = await c.req.json();
+  const db = getDb();
+
+  let business = null;
+  if (body.businessId) {
+    business = db.prepare('SELECT * FROM businesses WHERE id = ?').get(body.businessId) as any;
+  }
+
+  const matchingEngine = StrategyMatchingEngine.getInstance();
+  const computed = matchingEngine.computeStrategy({
+    businessId: body.businessId || 'biz_manual',
+    businessName: body.businessName || business?.name || 'Local Business',
+    verticalId: body.verticalId || business?.vertical_id || 'GENERAL_SMB',
+    verticalName: body.verticalName || business?.vertical_name || 'General SMB',
+    city: body.city || business?.city || 'India',
+    neighborhood: body.neighborhood || business?.neighborhood,
+    monthlyBudgetINR: body.monthlyBudgetINR ?? business ? JSON.parse(business.constraints_json || '{}').monthlyBudgetINR : 25000,
+    targetGoalTitle: body.targetGoalTitle,
+    targetValue: body.targetValue,
+    researchFindings: body.researchFindings || []
+  });
+
+  return c.json({ success: true, data: computed });
 });
 
 // Analytics & Dashboard KPIs
@@ -750,12 +826,19 @@ apiRouter.post('/public/lead', async (c) => {
   const businessId = body.businessId || 'biz_smilekraft_hyd';
   const orgId = body.organizationId || 'org_smilekraft_01';
 
+  const db = getDb();
+  let biz: any = null;
+  try {
+    biz = db.prepare('SELECT name, vertical_name, city, neighborhood FROM businesses WHERE id = ?').get(businessId) as any;
+  } catch {}
+  const bizName = biz?.name || 'Business';
+
   // 1. Anti-Bot Honeypot Defense: Silently absorb scrapers
   if (body.website_url_hp || body.bot_trap) {
     return c.json({
       success: true,
       message: 'Consultation request received successfully.',
-      data: { leadId: 'lead_hp_bot', status: 'FILTERED', clinic: 'SmileKraft Dental Clinic' }
+      data: { leadId: 'lead_hp_bot', status: 'FILTERED', businessName: bizName }
     }, 200);
   }
 
@@ -766,7 +849,7 @@ apiRouter.post('/public/lead', async (c) => {
   if (timestamps.length >= 10) {
     return c.json({
       success: false,
-      error: 'Rate limit exceeded: Too many consultation requests from this network. Please wait a few minutes or contact the clinic directly via phone.'
+      error: 'Rate limit exceeded: Too many consultation requests from this network. Please wait a few minutes or contact the business directly.'
     }, 429);
   }
   timestamps.push(nowMs);
@@ -793,9 +876,9 @@ apiRouter.post('/public/lead', async (c) => {
     customerPhone: body.customerPhone.trim(),
     customerEmail: body.customerEmail ? body.customerEmail.trim() : undefined,
     channel: body.channel || 'WHATSAPP',
-    campaignId: body.campaignId || 'camp_seed_aligners_01',
+    campaignId: body.campaignId || 'camp_seed_general_01',
     source: body.source || 'public_landing_page',
-    serviceOfInterest: body.serviceOfInterest || 'Invisible Clear Aligners',
+    serviceOfInterest: body.serviceOfInterest || 'General Consultation',
     notes: body.notes,
     classification: forcedClassification,
     utmSource: body.utmSource,
@@ -807,7 +890,7 @@ apiRouter.post('/public/lead', async (c) => {
     gclid: body.gclid,
   });
 
-  // DPDP Act 2023: Record digital patient consent
+  // DPDP Act 2023: Record digital patient/customer consent
   if (body.dpdpConsentGiven || body.consentGiven) {
     dpdpManager.recordConsent({
       businessId,
@@ -815,7 +898,9 @@ apiRouter.post('/public/lead', async (c) => {
       customerName: body.customerName.trim(),
       customerPhone: body.customerPhone.trim(),
       ipAddress: clientIp,
-      purpose: 'Direct dental consultation coordination and orthodontic treatment assessment at SmileKraft Dental Clinic',
+      purpose: (biz?.vertical_name?.toLowerCase().includes('dental') || biz?.name?.toLowerCase().includes('dental'))
+        ? `Direct dental consultation coordination and orthodontic treatment assessment at ${bizName}`
+        : `Direct consultation coordination and appointment booking with ${bizName}`,
       consentVersion: body.consentVersion || '2026.1',
     });
   }
@@ -825,9 +910,9 @@ apiRouter.post('/public/lead', async (c) => {
 
   return c.json({
     success: true,
-    message: 'Consultation request received successfully. Our clinic team will reach out via WhatsApp.',
+    message: `Consultation request received successfully. The ${bizName} team will reach out shortly.`,
     data: {
-      campaignId: body.campaignId || 'camp_seed_aligners_01',
+      campaignId: body.campaignId || 'camp_seed_general_01',
       utmSource: body.utmSource || null,
       utmMedium: body.utmMedium || null,
       utmCampaign: body.utmCampaign || null,
@@ -842,7 +927,7 @@ apiRouter.post('/public/lead', async (c) => {
       stage: journey.stage,
       classification: journey.classification,
       dpdpConsentCaptured: Boolean(body.dpdpConsentGiven || body.consentGiven),
-      clinic: 'SmileKraft Dental Clinic Banjara Hills & Gachibowli'
+      businessName: bizName
     }
   }, 201);
 });
@@ -1064,9 +1149,13 @@ apiRouter.post('/webhooks/payments/:gateway', async (c) => {
   // Basic validation of webhook body
   const invoiceNumber = payload.invoice_number || payload.order_id || `INV-WH-${Date.now()}`;
   const amountINR = payload.amount || payload.payment?.amount || 0;
-  const transactionRef = payload.payment_id || payload.transaction_id || `ref-${Date.now()}`;
-  const businessId = payload.business_id || 'biz_smilekraft_hyd';
-  const orgId = payload.organization_id || 'org_smilekraft_01';
+  const businessId = payload.business_id || payload.businessId;
+  const orgId = payload.organization_id || payload.organizationId;
+  const transactionRef = payload.payment_id || payload.payment?.id || payload.transaction_ref || payload.transactionRef || `pay_${Date.now()}`;
+
+  if (!businessId || !orgId) {
+    return c.json({ success: false, error: 'Missing required business_id or organization_id in payment webhook payload' }, 400);
+  }
 
   try {
     const tx = revenueEngine.recordTransaction({
@@ -1088,6 +1177,60 @@ apiRouter.post('/webhooks/payments/:gateway', async (c) => {
   } catch (err: any) {
     // Return 200 on duplicate to prevent webhook retry storms, but report status
     return c.json({ success: false, duplicate: true, error: err.message }, 200);
+  }
+});
+
+// ==========================================
+// MANUAL UPI PAYMENT CONFIRMATION (HONEST NON-REAL VERIFICATION)
+// ==========================================
+apiRouter.post('/payments/manual-upi/confirm', async (c) => {
+  const orgId = c.get('organizationId');
+  const body = await c.req.json();
+
+  const businessId = body.businessId;
+  const amountINR = Number(body.amountINR);
+  const utr = body.utr ? String(body.utr).trim() : `utr_${Date.now()}`;
+  const journeyId = body.journeyId;
+  const invoiceNumber = body.invoiceNumber || `INV-UPI-${Date.now()}`;
+  const serviceRendered = body.serviceRendered || 'Manual UPI Payment - Owner Confirmed';
+
+  if (!businessId || !amountINR || amountINR <= 0) {
+    return c.json({ success: false, error: 'Missing required fields: businessId, positive amountINR' }, 400);
+  }
+
+  try {
+    const tx = revenueEngine.recordTransaction({
+      businessId,
+      organizationId: orgId,
+      journeyId,
+      invoiceNumber,
+      amountINR,
+      paymentMethod: 'UPI',
+      paymentGateway: 'MANUAL',
+      transactionRef: utr,
+      status: 'SUCCESS',
+      classification: 'MANUAL_VERIFIED',
+      serviceRendered,
+    });
+
+    if (journeyId) {
+      try {
+        journeyTracker.advanceStage({
+          businessId,
+          visitorId: journeyId,
+          targetStage: 'CUSTOMER',
+        });
+      } catch {}
+    }
+
+    return c.json({
+      success: true,
+      message: 'Payment confirmed manually by business owner. Tagged as MANUAL_VERIFIED.',
+      transaction: tx,
+      classification: 'MANUAL_VERIFIED'
+    }, 201);
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 400);
   }
 });
 

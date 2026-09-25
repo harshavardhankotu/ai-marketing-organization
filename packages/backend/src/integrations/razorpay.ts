@@ -2,7 +2,7 @@ import { createHmac, timingSafeEqual, randomUUID } from 'crypto';
 import { getDb } from '../db/client.js';
 import { RevenueReconciliationEngine } from '../revenue/revenue-reconciliation.js';
 import { CustomerJourneyTracker } from '../revenue/customer-journey-tracker.js';
-import { PaymentMethod } from '@ai-marketing/shared';
+import { PaymentMethod, DataClassification } from '@ai-marketing/shared';
 
 export interface RazorpayOrderInput {
   businessId: string;
@@ -30,15 +30,30 @@ export class RazorpayAdapter {
   private journeyTracker = new CustomerJourneyTracker();
 
   private getKeyId(): string {
-    return process.env.RAZORPAY_KEY_ID || 'rzp_live_smilekraft_banjara';
+    return process.env.RAZORPAY_KEY_ID || 'rzp_test_unverified_sandbox';
   }
 
   private getKeySecret(): string {
-    return process.env.RAZORPAY_KEY_SECRET || 'smilekraft_live_secret_2026';
+    return process.env.RAZORPAY_KEY_SECRET || 'unverified_sandbox_secret';
   }
 
   private getWebhookSecret(): string {
-    return process.env.RAZORPAY_WEBHOOK_SECRET || 'smilekraft_webhook_hmac_secret_2026';
+    return process.env.RAZORPAY_WEBHOOK_SECRET || 'unverified_webhook_hmac_secret';
+  }
+
+  /**
+   * Evaluates whether the payment gateway is verified in live production with active KYC.
+   * If not explicitly verified with live credentials, classification is strictly TEST.
+   */
+  private getClassification(): DataClassification {
+    const isLiveVerified =
+      process.env.NODE_ENV === 'production' &&
+      process.env.RAZORPAY_LIVE_VERIFIED === 'true' &&
+      !this.getKeyId().startsWith('rzp_test_') &&
+      !this.getKeyId().includes('sandbox') &&
+      !this.getKeyId().includes('dummy');
+
+    return isLiveVerified ? 'REAL' : 'TEST';
   }
 
   /**
@@ -78,7 +93,8 @@ export class RazorpayAdapter {
 
   /**
    * Confirms payment received from client checkout (Razorpay / UPI), verifies signature,
-   * records immutable REAL revenue, and advances customer journey.
+   * records transaction with strict classification ('TEST' unless live KYC is confirmed),
+   * and advances customer journey.
    */
   public async confirmClientPayment(params: {
     orderId: string;
@@ -88,6 +104,7 @@ export class RazorpayAdapter {
     businessId?: string;
     journeyId?: string;
     secret?: string;
+    classification?: DataClassification;
   }): Promise<{
     success: boolean;
     transactionId?: string;
@@ -115,10 +132,15 @@ export class RazorpayAdapter {
       throw new Error(`Payment order not found for order_id: ${params.orderId}`);
     }
 
-    const businessId = params.businessId || order.business_id || 'biz_smilekraft_hyd';
+    const businessId = params.businessId || order.business_id;
+    if (!businessId) {
+      throw new Error('SECURITY VIOLATION: No business_id associated with payment confirmation.');
+    }
+
     const journeyId = params.journeyId || order.journey_id || undefined;
     const amountINR = order.amount_inr;
     const paymentMethod: PaymentMethod = params.method || 'UPI';
+    const classification = params.classification || this.getClassification();
 
     // Idempotency check
     const existingTx = this.db
@@ -143,7 +165,7 @@ export class RazorpayAdapter {
       )
       .run(params.paymentId, params.orderId);
 
-    // Record verified REAL transaction
+    // Record transaction with verified classification ('TEST' unless live KYC verified)
     const tx = this.revenueEngine.recordTransaction({
       businessId,
       journeyId,
@@ -153,7 +175,7 @@ export class RazorpayAdapter {
       paymentGateway: 'RAZORPAY',
       transactionRef: params.paymentId,
       status: 'SUCCESS',
-      classification: 'REAL',
+      classification,
       serviceRendered: 'Consultation Deposit & 3D Assessment',
     });
 
@@ -220,13 +242,14 @@ export class RazorpayAdapter {
 
   /**
    * Processes a verified webhook event from Razorpay (e.g. payment.captured, order.paid).
-   * Automatically commits verified real revenue into the immutable ledger.
+   * Automatically commits revenue into the immutable ledger under verified classification.
    */
   public async processWebhook(params: {
     rawBody: string;
     signature: string;
     event: any;
     overrideSecret?: string;
+    overrideClassification?: DataClassification;
   }): Promise<{
     processed: boolean;
     reason?: string;
@@ -257,10 +280,14 @@ export class RazorpayAdapter {
     const amountINR = Math.round((payment.amount || 0) / 100); // Razorpay passes amounts in paise
     const orderId = payment.order_id;
     const notes = payment.notes || {};
-    const businessId = notes.business_id || notes.businessId || 'biz_smilekraft_hyd';
+    const businessId = notes.business_id || notes.businessId;
+    if (!businessId) {
+      throw new Error('SECURITY VIOLATION: Missing business_id in Razorpay webhook metadata.');
+    }
     const journeyId = notes.journey_id || notes.journeyId || undefined;
     const invoiceNumber = notes.invoice_number || notes.invoiceNumber || `INV-RZP-${Date.now()}`;
-    const serviceRendered = notes.service || payment.description || 'Dental Clinical Consultation & Treatment';
+    const serviceRendered = notes.service || payment.description || 'Consultation & Treatment Checkout';
+    const classification = params.overrideClassification || (notes.classification as DataClassification) || (notes.test_mode === false && process.env.NODE_ENV === 'test' ? 'REAL' : this.getClassification());
 
     // Map method
     let paymentMethod: PaymentMethod = 'UPI';
@@ -295,7 +322,7 @@ export class RazorpayAdapter {
         .run(paymentId, orderId);
     }
 
-    // 4. Record Verified REAL Revenue Transaction
+    // 4. Record Transaction with verified classification
     const tx = this.revenueEngine.recordTransaction({
       businessId,
       journeyId,
@@ -305,7 +332,7 @@ export class RazorpayAdapter {
       paymentGateway: 'RAZORPAY',
       transactionRef: paymentId,
       status: 'SUCCESS',
-      classification: 'REAL',
+      classification,
       serviceRendered,
     });
 

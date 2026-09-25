@@ -6,6 +6,8 @@ import { LearningManager } from '../control-plane/learning-manager.js';
 import { EventTracker } from '../analytics/event-tracker.js';
 import { ExperimentEngine } from '../experiments/experiment-engine.js';
 import { WhatsAppAdapter, MetaAdapter, GoogleAdapter } from '../integrations/adapter-base.js';
+import { MarketResearchPipeline } from '../research/market-research-pipeline.js';
+import { StrategyMatchingEngine } from '../strategy/matching-engine.js';
 
 export interface RunCycleInput {
   organizationId: string;
@@ -46,7 +48,7 @@ export class ClosedLoopMarketingCycle {
     const result = await this.workflowEngine.runWorkflow(workflowId, {
       type: 'CLOSED_LOOP_MARKETING_CYCLE',
       steps: [
-        // 1. Research Stage
+        // 1. Real Market Research Stage (Google Custom Search API + Evidence Structuring)
         {
           name: 'RESEARCH',
           agentId: 'res-20',
@@ -55,44 +57,43 @@ export class ClosedLoopMarketingCycle {
             const taskId = `task_res_${Date.now()}`;
             db.prepare(`
               INSERT INTO tasks (id, organization_id, workflow_id, agent_id, title, idempotency_key)
-              VALUES (?, ?, ?, 'res-20', 'Synthesize Local Market Intelligence', ?)
+              VALUES (?, ?, ?, 'res-20', 'Synthesize Local Market Intelligence via Google Search API', ?)
             `).run(taskId, input.organizationId, workflowId, taskId);
 
-            const res = await this.runtime.execute({
-              agentId: 'res-20',
-              businessId: input.businessId,
-              organizationId: input.organizationId,
-              taskId,
-              workflowId,
-              prompt: `Conduct localized research for ${biz.name} in ${biz.city} (${biz.neighborhood}). Analyze patient inquiry triggers, local search demand, and pricing expectations.`
-            });
-            return res.data;
+            const researchPipeline = new MarketResearchPipeline();
+            const researchResult = await researchPipeline.runPipeline(input.businessId, input.organizationId);
+            return researchResult;
           }
         },
 
-        // 2. Strategy Formulation
+        // 2. Real Strategy Formulation (Deterministic Matching Engine)
         {
           name: 'STRATEGY',
           agentId: 'mkt-01',
           priority: 'CRITICAL',
-          execute: async () => {
+          execute: async (ctx) => {
             const strategyId = `strat_v1_${input.businessId}`;
             const taskId = `task_strat_${Date.now()}`;
             db.prepare(`
               INSERT INTO tasks (id, organization_id, workflow_id, agent_id, title, idempotency_key)
-              VALUES (?, ?, ?, 'mkt-01', 'Architect Initial Go-To-Market Strategy', ?)
+              VALUES (?, ?, ?, 'mkt-01', 'Architect Go-To-Market Strategy via Matching Engine', ?)
             `).run(taskId, input.organizationId, workflowId, taskId);
 
-            const stratResult = await this.runtime.execute({
-              agentId: 'mkt-01',
+            const researchFindings = ctx.RESEARCH?.findings || [];
+            const matchingEngine = StrategyMatchingEngine.getInstance();
+            const computedStrategy = matchingEngine.computeStrategy({
               businessId: input.businessId,
-              organizationId: input.organizationId,
-              taskId,
-              workflowId,
-              prompt: `Architect marketing strategy for ${biz.name} to achieve goal: "${goal.title}" with ₹${goal.budget_allocated_inr} budget.`
+              businessName: biz.name,
+              verticalId: biz.vertical_id,
+              verticalName: biz.vertical_name,
+              city: biz.city,
+              neighborhood: biz.neighborhood,
+              monthlyBudgetINR: goal.budget_allocated_inr,
+              targetGoalTitle: goal.title,
+              targetValue: goal.target_value,
+              researchFindings
             });
 
-            const stratData = stratResult.data as any;
             db.prepare(`
               INSERT OR REPLACE INTO strategies (
                 id, organization_id, business_id, goal_id, version, title,
@@ -103,19 +104,15 @@ export class ClosedLoopMarketingCycle {
               input.organizationId,
               input.businessId,
               input.goalId,
-              stratData.strategyTitle || 'Hyderabad High-Intent Local Conversion Blitz',
-              stratData.rationale || 'Targeting Western Hyderabad tech corridors via WhatsApp and Google Business Profile.',
-              stratData.positioning || 'Premier Pain-Free Digital Dentistry with Transparent INR Pricing',
-              JSON.stringify(stratData.channels || [
-                { channel: 'WHATSAPP', allocation: 40, rationale: 'Primary booking engine' },
-                { channel: 'GOOGLE_BUSINESS_PROFILE', allocation: 30, rationale: 'Local search capture' },
-                { channel: 'INSTAGRAM', allocation: 30, rationale: 'Aesthetic visual trust' }
-              ]),
-              goal.target_value,
-              Math.round(goal.budget_allocated_inr / goal.target_value)
+              computedStrategy.strategyTitle,
+              computedStrategy.rationale,
+              computedStrategy.positioning,
+              JSON.stringify(computedStrategy.channelStrategy),
+              computedStrategy.expectedLeads,
+              computedStrategy.expectedCPQLINR
             );
 
-            return { strategyId, ...stratData };
+            return { strategyId, ...computedStrategy };
           }
         },
 

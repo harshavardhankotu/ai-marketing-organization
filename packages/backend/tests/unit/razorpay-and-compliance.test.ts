@@ -90,6 +90,7 @@ describe('Razorpay Automated Payment Gateway & DPDP Compliance Suite', () => {
         signature,
         event: eventPayload,
         overrideSecret: testSecret,
+        overrideClassification: 'REAL',
       });
 
       expect(res.processed).toBe(true);
@@ -173,7 +174,8 @@ describe('Razorpay Automated Payment Gateway & DPDP Compliance Suite', () => {
         signature: validSig,
         businessId,
         journeyId: 'journey-961c351f-71d2-4d7b-a842-b6858984b288',
-        secret: testKeySecret
+        secret: testKeySecret,
+        classification: 'REAL'
       });
 
       expect(confirmed.success).toBe(true);

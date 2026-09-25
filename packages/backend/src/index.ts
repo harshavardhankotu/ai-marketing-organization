@@ -7,7 +7,10 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { apiRouter } from './routes/api.js';
 import { seedDatabase } from './db/seed.js';
-import { validateProductionSecrets } from './config/env.js';
+import { validateProductionSecrets, loadLocalEnvFile } from './config/env.js';
+
+// Safely load local .env or .env.local if present
+loadLocalEnvFile();
 
 // Enforce production secret validation immediately
 try {
@@ -25,7 +28,7 @@ const app = new Hono();
 app.use('*', cors({
   origin: '*',
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowHeaders: ['Content-Type', 'Authorization', 'x-organization-id', 'x-user-id']
+  allowHeaders: ['Content-Type', 'Authorization', 'x-organization-id', 'x-business-id', 'x-user-id', 'x-test-mode', 'bypass-tunnel-reminder']
 }));
 
 // Request Logger

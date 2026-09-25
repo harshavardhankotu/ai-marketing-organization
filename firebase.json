@@ -1,6 +1,6 @@
 {
   "hosting": {
-    "site": "smilekraft-marketing-hyd",
+    "site": "ai-marketing-platform-core",
     "public": "packages/frontend/dist",
     "ignore": [
       "firebase.json",

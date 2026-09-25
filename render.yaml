@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: ai-marketing-backend
+    env: node
+    plan: free
+    region: singapore
+    buildCommand: npm install && npm run build --workspace=packages/shared && npm run build --workspace=packages/backend
+    startCommand: node packages/backend/dist/index.js
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000

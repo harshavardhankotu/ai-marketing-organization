@@ -420,6 +420,18 @@ CREATE TABLE IF NOT EXISTS quota_records (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- 20b. Universal Free-Tier Quota Locks (Strict Daily Circuit Breaker)
+CREATE TABLE IF NOT EXISTS universal_quota_locks (
+  service TEXT NOT NULL,
+  date_key TEXT NOT NULL,
+  requests_count INTEGER NOT NULL DEFAULT 0,
+  max_free_requests INTEGER NOT NULL,
+  is_locked INTEGER NOT NULL DEFAULT 0,
+  lock_reason TEXT,
+  locked_at TEXT,
+  PRIMARY KEY (service, date_key)
+);
+
 -- 21. Audit Logs
 CREATE TABLE IF NOT EXISTS audit_logs (
   id TEXT PRIMARY KEY,

@@ -27,10 +27,25 @@ export async function fetchApi<T = any>(endpoint: string, options?: RequestInit)
   const normalizedEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
   const url = `${base}${normalizedEndpoint}`;
 
+  let activeOrg = '';
+  let activeBizId = '';
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = localStorage.getItem('ai_marketing_active_business');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed.organization_id) activeOrg = parsed.organization_id;
+        if (parsed.id) activeBizId = parsed.id;
+      }
+    } catch {}
+  }
+
   const res = await fetch(url, {
     headers: {
       'Content-Type': 'application/json',
-      'x-organization-id': 'org_smilekraft_01',
+      'bypass-tunnel-reminder': '1',
+      ...(activeOrg ? { 'x-organization-id': activeOrg } : {}),
+      ...(activeBizId ? { 'x-business-id': activeBizId } : {}),
       'x-user-id': 'usr_owner_01',
       ...(options?.headers || {})
     },
@@ -67,13 +82,17 @@ export const api = {
   getQuota: () => fetchApi('/quota'),
   getAgents: () => fetchApi('/agents'),
   getAgentById: (id: string) => fetchApi(`/agents/${id}`),
-  getBusiness: () => fetchApi('/business'),
+  getBusiness: (id?: string) => fetchApi(id ? `/business?id=${id}` : '/business'),
   createBusiness: (data: any) => fetchApi('/business', { method: 'POST', body: JSON.stringify(data) }),
   getGoals: () => fetchApi('/goals'),
   createGoal: (data: any) => fetchApi('/goals', { method: 'POST', body: JSON.stringify(data) }),
   getCampaigns: () => fetchApi('/campaigns'),
   getContent: () => fetchApi('/content'),
-  getResearch: () => fetchApi('/research'),
+  getResearch: (businessId?: string) => fetchApi(`/research${businessId ? `?businessId=${businessId}` : ''}`),
+  runResearchPipeline: (businessId: string) => fetchApi('/research/run', { method: 'POST', body: JSON.stringify({ businessId }) }),
+  getResearchLogs: (businessId?: string) => fetchApi(`/research/logs${businessId ? `?businessId=${businessId}` : ''}`),
+  getUniversalLocks: () => fetchApi('/quota/locks'),
+  computeStrategy: (data: any) => fetchApi('/strategy/compute', { method: 'POST', body: JSON.stringify(data) }),
   getDashboardAnalytics: () => fetchApi('/analytics/dashboard'),
   getExperiments: () => fetchApi('/experiments'),
   getEvolution: () => fetchApi('/evolution'),
@@ -135,6 +154,8 @@ export const api = {
     fetchApi('/payments/razorpay/create-order', { method: 'POST', body: JSON.stringify(data) }),
   verifyPayment: (data: { orderId: string; paymentId: string; signature: string; businessId?: string; journeyId?: string; method?: string }) =>
     fetchApi('/payments/razorpay/verify', { method: 'POST', body: JSON.stringify(data) }),
+  confirmManualUPI: (data: { businessId: string; amountINR: number; utr?: string; journeyId?: string; invoiceNumber?: string; serviceRendered?: string }) =>
+    fetchApi('/payments/manual-upi/confirm', { method: 'POST', body: JSON.stringify(data) }),
   // DPDP Statutory Compliance
   recordDPDPConsent: (data: any) =>
     fetchApi('/compliance/dpdp/consent', { method: 'POST', body: JSON.stringify(data) }),

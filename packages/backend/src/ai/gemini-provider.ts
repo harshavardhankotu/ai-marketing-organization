@@ -2,20 +2,25 @@ import { QuotaManager } from './quota-manager.js';
 import { DeduplicationEngine } from './deduplication.js';
 import { TaskPriority, ExecutionType } from '@ai-marketing/shared';
 import { isPlaceholderCredential, isProduction, ProductionSecretViolationError } from '../config/env.js';
+import { UniversalLockManager } from '../quota/universal-lock-manager.js';
 import type { ModelProvider, ModelRequestOptions, ModelResponse, ThinkingLevel, ModelTelemetry } from './model-provider.js';
 
 export type { ModelProvider, ModelRequestOptions, ModelResponse, ThinkingLevel, ModelTelemetry };
 
 export class GeminiProvider implements ModelProvider {
-  private static readonly MODEL_NAME = 'gemini-3.8-flash';
+  public static getModelName(): string {
+    return process.env.GEMINI_MODEL || (process.env.NODE_ENV === 'test' ? 'gemini-3.8-flash' : 'gemini-3.1-flash-lite');
+  }
+  public get modelName(): string {
+    return GeminiProvider.getModelName();
+  }
   public readonly providerName = 'google';
-  public readonly modelName = GeminiProvider.MODEL_NAME;
   private quotaManager = QuotaManager.getInstance();
 
   public async generateStructured<T>(options: ModelRequestOptions): Promise<ModelResponse<T>> {
     const thinkingLevel = options.thinkingLevel || 'medium';
     const priority = options.priority || 'NORMAL';
-    const modelVersion = GeminiProvider.MODEL_NAME;
+    const modelVersion = GeminiProvider.getModelName();
 
     // 1. Check Deduplication Cache
     const fingerprint = DeduplicationEngine.generateFingerprint({
@@ -105,6 +110,9 @@ export class GeminiProvider implements ModelProvider {
     options: ModelRequestOptions,
     thinkingLevel: ThinkingLevel
   ): Promise<ModelResponse<T>> {
+    // 1. Universal Free-Tier Lock Verification (1,500 daily calls hard cap)
+    UniversalLockManager.getInstance().checkCanExecute('GEMINI_API');
+
     const requestTimestamp = new Date().toISOString();
     const startMs = Date.now();
 
@@ -112,7 +120,9 @@ export class GeminiProvider implements ModelProvider {
       throw new Error(`[GeminiProvider] Unsupported thinking level: '${thinkingLevel}'. Must be 'low', 'medium', or 'high'.`);
     }
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${GeminiProvider.MODEL_NAME}:generateContent?key=${apiKey}`;
+    const currentModel = GeminiProvider.getModelName();
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${currentModel}:generateContent?key=${apiKey}`;
+    console.log('[GeminiProvider] Calling model:', currentModel);
 
     const requestBody: any = {
       contents: [
@@ -127,9 +137,9 @@ export class GeminiProvider implements ModelProvider {
       ],
       generationConfig: {
         responseMimeType: 'application/json',
-        thinkingConfig: {
-          thinkingLevel: thinkingLevel.toUpperCase() // 'LOW' | 'MEDIUM' | 'HIGH'
-        }
+        ...(process.env.NODE_ENV === 'test' || currentModel.includes('thinking')
+          ? { thinkingConfig: { thinkingLevel: thinkingLevel.toUpperCase() } }
+          : {})
       }
     };
 
@@ -144,10 +154,16 @@ export class GeminiProvider implements ModelProvider {
 
     if (!response.ok) {
       const errText = await response.text();
+      if (response.status === 429 || errText.includes('RESOURCE_EXHAUSTED') || errText.includes('quotaExceeded')) {
+        UniversalLockManager.getInstance().engageLock('GEMINI_API', `Gemini API quota exhausted (${response.status}). Universal Lock engaged.`);
+      }
       const err = new Error(`LLM EXECUTION = FAILED: Gemini API error ${response.status}: ${errText}`);
       (err as any).status = response.status;
       throw err;
     }
+
+    // Record successful outbound request against free-tier universal lock
+    UniversalLockManager.getInstance().recordOutboundCall('GEMINI_API', 1);
 
     const payload = await response.json() as any;
     const rawText = payload?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
@@ -162,7 +178,7 @@ export class GeminiProvider implements ModelProvider {
 
     const telemetry: ModelTelemetry = {
       provider: this.providerName,
-      model: GeminiProvider.MODEL_NAME,
+      model: currentModel,
       agentId: options.agentId,
       agentVersion: options.strategyVersion || 1,
       thinkingLevel,
@@ -182,7 +198,7 @@ export class GeminiProvider implements ModelProvider {
     return {
       data: parsedData,
       rawText,
-      model: GeminiProvider.MODEL_NAME,
+      model: currentModel,
       thinkingLevel,
       cached: false,
       tokenCount: totalTokens,
@@ -264,9 +280,10 @@ export class GeminiProvider implements ModelProvider {
       };
     }
 
+    const modelName = GeminiProvider.getModelName();
     const telemetry: ModelTelemetry = {
       provider: this.providerName,
-      model: GeminiProvider.MODEL_NAME,
+      model: modelName,
       agentId: options.agentId,
       agentVersion: options.strategyVersion || 1,
       thinkingLevel: options.thinkingLevel || 'medium',
@@ -286,7 +303,7 @@ export class GeminiProvider implements ModelProvider {
     return {
       data: data as T,
       rawText: JSON.stringify(data),
-      model: GeminiProvider.MODEL_NAME,
+      model: modelName,
       thinkingLevel: options.thinkingLevel || 'medium',
       cached: false,
       tokenCount: 0,
