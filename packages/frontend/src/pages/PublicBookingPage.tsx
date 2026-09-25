@@ -32,6 +32,7 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
   const [showPrivacyPolicy, setShowPrivacyPolicy] = useState(false);
   
   const [submitting, setSubmitting] = useState(false);
+  const [isColdStarting, setIsColdStarting] = useState(false);
   const [confirmedBooking, setConfirmedBooking] = useState<any>(null);
   const [errorMsg, setErrorMsg] = useState('');
 
@@ -171,8 +172,13 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
       website_url_hp: botTrap
     };
 
+    setIsColdStarting(false);
+    const coldStartTimer = setTimeout(() => {
+      setIsColdStarting(true);
+    }, 3500); // Trigger graceful cold-start notice after 3.5s
+
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s timeout for potential cold starts
+    const timeoutId = setTimeout(() => controller.abort(), 45000); // 45s timeout to allow full Render cold-start
 
     try {
       const base = getApiBaseUrl();
@@ -212,11 +218,13 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
     } catch (err: any) {
       const isTimeout = err.name === 'AbortError';
       const message = isTimeout
-        ? 'Connection timed out while contacting the booking server. Your appointment was NOT saved. Please check your connection, retry, or contact us directly.'
+        ? 'The booking server took longer than 45 seconds to wake up. Your appointment was NOT saved. Please click "Confirm Booking" again now — it should connect immediately.'
         : (err.message || 'Unable to connect to the booking server. Your appointment was NOT saved. Please try again.');
       setErrorMsg(message);
     } finally {
+      clearTimeout(coldStartTimer);
       clearTimeout(timeoutId);
+      setIsColdStarting(false);
       setSubmitting(false);
     }
   };
@@ -898,11 +906,25 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
                   <button
                     type="submit"
                     disabled={submitting}
-                    className="w-full py-3 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-bold text-sm tracking-wide shadow-xl shadow-cyan-500/20 transition-all flex items-center justify-center gap-2"
+                    className="w-full py-3 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-bold text-sm tracking-wide shadow-xl shadow-cyan-500/20 transition-all flex items-center justify-center gap-2 disabled:opacity-75"
                   >
-                    {submitting ? 'Registering Consultation...' : 'Confirm Doctor Consultation'}
+                    {submitting ? (
+                      isColdStarting
+                        ? 'Waking up secure booking server (~15s)...'
+                        : 'Registering Consultation...'
+                    ) : (
+                      'Confirm Appointment & Consultation'
+                    )}
                     <ChevronRight className="w-4 h-4" />
                   </button>
+                  {isColdStarting && (
+                    <div className="mt-2.5 p-3 rounded-xl bg-cyan-950/70 border border-cyan-500/40 text-cyan-200 text-xs flex items-center gap-2.5 animate-pulse">
+                      <Clock className="w-4 h-4 text-cyan-400 shrink-0" />
+                      <span>
+                        Secure cloud server is booting from idle mode (free-tier cold start). Please keep this page open for 10–25 seconds...
+                      </span>
+                    </div>
+                  )}
                 </div>
               </form>
             </div>
