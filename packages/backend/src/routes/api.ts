@@ -1756,23 +1756,20 @@ apiRouter.post('/webhooks/whatsapp', async (c) => {
 
   // Meta X-Hub-Signature-256 validation in production
   const metaAppSecret = process.env.META_APP_SECRET || process.env.WHATSAPP_APP_SECRET;
-  if (isProduction() && metaAppSecret && !isPlaceholderCredential(metaAppSecret)) {
+  if (isProduction()) {
+    if (!metaAppSecret || isPlaceholderCredential(metaAppSecret)) {
+      return c.json({ error: 'SECURITY VIOLATION: WhatsApp webhooks in production require META_APP_SECRET or WHATSAPP_APP_SECRET configured.' }, 403);
+    }
     const signature = c.req.header('x-hub-signature-256') || '';
     if (!signature.startsWith('sha256=')) {
       return c.json({ error: 'SECURITY VIOLATION: Missing Meta webhook signature' }, 401);
     }
-    const { createHmac } = await import('crypto');
+    const { createHmac, timingSafeEqual } = await import('crypto');
     const expectedSig = 'sha256=' + createHmac('sha256', metaAppSecret).update(rawBody).digest('hex');
     const sigBuffer = Buffer.from(signature);
     const expectedBuffer = Buffer.from(expectedSig);
-    if (sigBuffer.length !== expectedBuffer.length || !require('crypto').timingSafeEqual(sigBuffer, expectedBuffer)) {
+    if (sigBuffer.length !== expectedBuffer.length || !timingSafeEqual(sigBuffer, expectedBuffer)) {
       return c.json({ error: 'SECURITY VIOLATION: Invalid Meta webhook signature' }, 401);
-    }
-  } else if (isProduction() && !metaAppSecret) {
-    // In production without Meta app secret, reject normalized arbitrary payloads
-    // Only accept the Meta Cloud API standard format
-    if (!body.object || body.object !== 'whatsapp_business_account') {
-      return c.json({ error: 'SECURITY VIOLATION: Non-Meta webhook payload rejected in production without META_APP_SECRET' }, 401);
     }
   }
 
@@ -1789,27 +1786,23 @@ apiRouter.post('/webhooks/whatsapp', async (c) => {
             const messageText = msg.text?.body || msg.type || '';
             const externalMessageId = msg.id;
 
-            // Determine tenant from the phone_number_id mapping
+            // Spec § 7: Determine tenant strictly from integration_phone_mappings (NO fallback to biz_platform_aro)
             const phoneNumberId = val?.metadata?.phone_number_id;
             let bizResult: any = null;
             if (phoneNumberId) {
-              // Try mapping table first
               bizResult = db.prepare(`
                 SELECT b.id, b.organization_id FROM businesses b
                 JOIN integration_phone_mappings ipm ON ipm.business_id = b.id
                 WHERE ipm.provider = 'WHATSAPP' AND ipm.external_phone_number_id = ? LIMIT 1
               `).get(phoneNumberId) as any;
             }
+
             if (!bizResult) {
-              // Fallback to platform business if phone number not mapped
-              bizResult = db.prepare('SELECT id, organization_id FROM businesses WHERE id = ?').get('biz_platform_aro') as any;
-            }
-            if (!bizResult) {
-              // No mapping, no platform business — cannot determine tenant
               console.error(`[WhatsApp Webhook] BLOCKED_UNMAPPED_PROVIDER: Could not determine tenant for phone_number_id=${phoneNumberId}`);
-              results.push({ blocked: true, reason: 'BLOCKED_UNMAPPED_PROVIDER' });
+              results.push({ blocked: true, reason: 'BLOCKED_UNMAPPED_PROVIDER', phone_number_id: phoneNumberId });
               continue;
             }
+
             const businessId = bizResult.id;
             const organizationId = bizResult.organization_id || OwnerAuthService.OWNER_ORGANIZATION_ID;
 
@@ -1827,10 +1820,15 @@ apiRouter.post('/webhooks/whatsapp', async (c) => {
         }
       }
     }
+
+    if (results.length > 0 && results.every(r => r.blocked)) {
+      return c.json({ error: 'BLOCKED_UNMAPPED_PROVIDER: Unknown or unmapped phone_number_id in incoming webhook', data: results }, 400);
+    }
+
     return c.json({ success: true, processed: results.length, data: results });
   }
 
-  // 2. Direct / Normalized payload format — only allowed in non-production
+  // 2. Direct / Normalized payload format — strictly test/dev only
   if (body.senderContact && body.messageText) {
     if (isProduction()) {
       return c.json({ error: 'SECURITY VIOLATION: Arbitrary normalized webhook payloads are rejected in production. Use Meta Cloud API format.' }, 401);
@@ -1859,7 +1857,7 @@ apiRouter.post('/webhooks/whatsapp', async (c) => {
   return c.json({ success: false, error: 'Invalid WhatsApp webhook payload structure.' }, 400);
 });
 
-// Email Webhook Inbound Message Ingestion
+// Email Webhook Inbound Message Ingestion (Spec § 8)
 apiRouter.post('/webhooks/email', async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const sce = SalesConversationEngine.getInstance();
@@ -1872,27 +1870,39 @@ apiRouter.post('/webhooks/email', async (c) => {
     return c.json({ success: false, error: 'Sender email and message text are required.' }, 400);
   }
 
-  // In production, do not trust caller-supplied businessId as authoritative tenant identity
-  // Email providers should be configured with a sender mapping
-  const incomingBusinessId = body.businessId;
-  let businessId = 'biz_platform_aro';
-  if (incomingBusinessId) {
-    if (isProduction()) {
-      // Verify business exists before using caller-supplied ID
-      const bizRow = db.prepare('SELECT id, organization_id FROM businesses WHERE id = ?').get(incomingBusinessId) as any;
-      if (!bizRow) {
-        return c.json({ error: 'SECURITY VIOLATION: Unknown businessId in email webhook — tenant cannot be determined from caller input' }, 400);
-      }
-      businessId = bizRow.id;
-    } else {
-      businessId = incomingBusinessId;
+  // Spec § 8: Do not trust caller-provided businessId as tenant authority in production.
+  // Use trusted provider/account mapping via integration_phone_mappings (provider = 'EMAIL').
+  const recipient = body.to || body.recipientEmail || body.mailboxId || body.accountId;
+  let bizResult: any = null;
+  if (recipient) {
+    bizResult = db.prepare(`
+      SELECT b.id, b.organization_id FROM businesses b
+      JOIN integration_phone_mappings ipm ON ipm.business_id = b.id
+      WHERE ipm.provider = 'EMAIL' AND ipm.external_phone_number_id = ? LIMIT 1
+    `).get(recipient) as any;
+  }
+
+  if (isProduction()) {
+    if (!bizResult) {
+      console.error(`[Email Webhook] BLOCKED_UNMAPPED_PROVIDER: Incoming email rejected. recipient='${recipient}' has no mapping in integration_phone_mappings.`);
+      return c.json({ error: 'BLOCKED_UNMAPPED_PROVIDER: Unknown email provider identity or unmapped recipient address in production.' }, 401);
+    }
+  } else {
+    // Non-production test/dev fallback
+    if (!bizResult && body.businessId) {
+      bizResult = db.prepare('SELECT id, organization_id FROM businesses WHERE id = ?').get(body.businessId) as any;
+    }
+    if (!bizResult) {
+      bizResult = db.prepare('SELECT id, organization_id FROM businesses WHERE id = ?').get('biz_platform_aro') as any;
     }
   }
-  let organizationId = body.organizationId;
-  if (!organizationId) {
-    const biz = db.prepare('SELECT organization_id FROM businesses WHERE id = ?').get(businessId) as any;
-    organizationId = biz?.organization_id || OwnerAuthService.OWNER_ORGANIZATION_ID;
+
+  if (!bizResult) {
+    return c.json({ error: 'BLOCKED_UNMAPPED_PROVIDER: Tenant could not be determined for incoming email.' }, 401);
   }
+
+  const businessId = bizResult.id;
+  const organizationId = bizResult.organization_id || OwnerAuthService.OWNER_ORGANIZATION_ID;
 
   const res = await sce.handleInboundMessage({
     businessId,
@@ -2164,21 +2174,34 @@ apiRouter.post('/payments/razorpay/create-payment-link', async (c) => {
   const orgId = c.get('organizationId');
   const body = await c.req.json();
 
-  if (!body.amountINR || !body.description) {
-    return c.json({ success: false, error: 'Missing amountINR or description for payment link' }, 400);
+  const businessId = body.businessId || OwnerAuthService.PLATFORM_BUSINESS_ID;
+  const offerId = body.offerId || (businessId === OwnerAuthService.PLATFORM_BUSINESS_ID ? 'PLATFORM_SETUP' : undefined);
+
+  if (!offerId) {
+    return c.json({ success: false, error: 'Missing offerId for payment link. Authoritative offer is required.' }, 400);
   }
 
   try {
     const link = await razorpayAdapter.createPaymentLink({
       organizationId: orgId,
-      businessId: body.businessId || OwnerAuthService.PLATFORM_BUSINESS_ID,
+      businessId,
+      offerId,
       prospectId: body.prospectId,
+      opportunityId: body.opportunityId,
       journeyId: body.journeyId,
       proposalId: body.proposalId,
-      amountINR: Number(body.amountINR),
+      amountINR: body.amountINR ? Number(body.amountINR) : undefined,
       description: body.description,
       customer: body.customer
     });
+
+    if (link.status === 'RECONCILIATION_REQUIRED' || link.reconciliationRequired) {
+      return c.json({
+        success: false,
+        error: 'RECONCILIATION_REQUIRED: Provider payment link was created but internal canonical persistence failed. Manual reconciliation required.',
+        data: link
+      }, 500);
+    }
 
     return c.json({ success: true, data: link }, 201);
   } catch (err: any) {

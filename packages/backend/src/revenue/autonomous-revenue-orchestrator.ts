@@ -745,6 +745,16 @@ export class AutonomousRevenueOrchestrator {
           };
         }
 
+        // Spec § 2: Payment link persistence must not fail silently — reject if reconciliation required
+        if (linkResult.status === 'RECONCILIATION_REQUIRED' || linkResult.reconciliationRequired) {
+          return {
+            status: 'BLOCKED_AUTHORIZATION',
+            actionClassification: 'BLOCKED_AUTHORIZATION',
+            isRevenueAction: false,
+            error: `RECONCILIATION_REQUIRED: Provider link ${linkResult.providerLinkId} was created but internal canonical persistence failed. Manual reconciliation required.`
+          };
+        }
+
         // Send the exact payment link to the prospect if phone available
         if (prospectPhone) {
           const wa = new WhatsAppAdapter();

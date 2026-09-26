@@ -296,13 +296,24 @@ export class LiveProviderActivation {
           keySecret && !isPlaceholderCredential(keySecret) &&
           !keyId.startsWith('rzp_test_')
         );
+        let hasLiveTx = false;
+        try {
+          const db = getDb();
+          const txRow = db.prepare(`SELECT COUNT(*) as cnt FROM transactions WHERE payment_gateway = 'RAZORPAY' AND status = 'SUCCESS' AND classification = 'REAL'`).get() as any;
+          hasLiveTx = Boolean(txRow?.cnt > 0);
+        } catch {}
+
+        let state: ProviderActivationState = 'NOT_CONFIGURED';
+        if (hasLiveTx) state = 'LIVE_VERIFIED';
+        else if (hasCreds) state = 'AUTHORIZED';
+
         return {
           provider,
           category: 'TRANSACTION',
-          state: hasCreds ? 'AUTHORIZED' : 'NOT_CONFIGURED',
-          isLiveVerified: false,
+          state,
+          isLiveVerified: hasLiveTx,
           lastHealthCheck: now,
-          lastVerifiedAt: null,
+          lastVerifiedAt: hasLiveTx ? now : null,
           failureReason: hasCreds ? undefined : 'RAZORPAY_KEY_ID or RAZORPAY_KEY_SECRET is missing, placeholder, or in test mode',
           requiredCredentials: ['RAZORPAY_KEY_ID', 'RAZORPAY_KEY_SECRET', 'RAZORPAY_WEBHOOK_SECRET']
         };
@@ -342,15 +353,17 @@ export class LiveProviderActivation {
 
       case 'STORAGE': {
         const isD1 = D1Client.getInstance().isRemoteD1Configured();
+        const d1Usage = D1Client.getInstance().getUsage();
+        const hasLiveD1Evidence = isD1 && (d1Usage.rowsReadToday > 0 || d1Usage.rowsWrittenToday > 0);
         return {
           provider,
           category: 'INFRASTRUCTURE',
-          state: isD1 ? 'LIVE_VERIFIED' : 'HEALTHY', // Persistent SQLite is always healthy locally
-          isLiveVerified: isD1,
+          state: hasLiveD1Evidence ? 'LIVE_VERIFIED' : (isD1 ? 'CONFIGURED' : 'HEALTHY'),
+          isLiveVerified: hasLiveD1Evidence,
           lastHealthCheck: now,
-          lastVerifiedAt: now,
-          externalIdentifier: isD1 ? 'CLOUDFLARE_D1' : 'SQLITE_PERSISTENT',
-          requiredCredentials: ['CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_D1_DATABASE_ID', 'CLOUDFLARE_API_TOKEN']
+          lastVerifiedAt: hasLiveD1Evidence ? now : null,
+          externalIdentifier: hasLiveD1Evidence ? 'CLOUDFLARE_D1' : (isD1 ? 'D1_CONFIGURED' : 'SQLITE_PERSISTENT'),
+          requiredCredentials: ['CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_D1_DATABASE_ID', 'CLOUDFLARE_D1_API_TOKEN']
         };
       }
     }

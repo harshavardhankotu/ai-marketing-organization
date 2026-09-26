@@ -59,6 +59,7 @@ export interface RealityReport {
   persistence: {
     configuredStore: string;
     d1Configured: boolean;
+    d1LiveVerified?: boolean;
     rowsReadToday: number;
     rowsWrittenToday: number;
     readSafetyCap: number;
@@ -99,6 +100,12 @@ export interface RealityReport {
     razorpayConfigured: boolean;
     paymentRequestsCreated: number;
     verifiedTransactions: number;
+    stages?: {
+      PAYMENT_REQUESTED: number;
+      PAYMENT_CAPTURED: number;
+      PAYMENT_VERIFIED: number;
+      REVENUE_RECORDED: number;
+    };
   };
   revenue: {
     verifiedClientRevenueINR: number;
@@ -238,7 +245,12 @@ export class RealityReportGenerator {
       !process.env.RAZORPAY_KEY_ID.startsWith('rzp_test_')
     );
     const paymentRequestsCreated = (db.prepare(`SELECT COUNT(*) as cnt FROM payment_requests WHERE business_id = ?`).get(effectiveBizId) as any)?.cnt || 0;
+    const paymentOrdersPaid = (db.prepare(`SELECT COUNT(*) as cnt FROM payment_orders WHERE business_id = ? AND status = 'PAID'`).get(effectiveBizId) as any)?.cnt || 0;
     const verifiedTransactions = (db.prepare(`SELECT COUNT(*) as cnt FROM transactions WHERE business_id = ? AND classification = 'REAL' AND status = 'SUCCESS'`).get(effectiveBizId) as any)?.cnt || 0;
+    let revenueRecordsCount = 0;
+    try {
+      revenueRecordsCount = (db.prepare(`SELECT COUNT(*) as cnt FROM revenue_records WHERE business_id = ? AND verified = 1`).get(effectiveBizId) as any)?.cnt || 0;
+    } catch {}
 
     // 10. Revenue Breakdown
     const clientRev = (db.prepare(`SELECT COALESCE(SUM(amount_inr), 0) as total FROM transactions WHERE business_id = ? AND classification = 'REAL' AND status = 'SUCCESS'`).get(effectiveBizId) as any)?.total || 0;
@@ -348,8 +360,9 @@ export class RealityReportGenerator {
         lastPingAt: lastPing
       },
       persistence: {
-        configuredStore: d1Usage.rowsReadToday > 0 && this.d1Client.isRemoteD1Configured() ? 'CLOUDFLARE_D1' : 'PERSISTENT_SQLITE',
+        configuredStore: (d1Usage.rowsReadToday > 0 || d1Usage.rowsWrittenToday > 0) && this.d1Client.isRemoteD1Configured() ? 'CLOUDFLARE_D1' : 'PERSISTENT_SQLITE',
         d1Configured: this.d1Client.isRemoteD1Configured(),
+        d1LiveVerified: Boolean(this.d1Client.isRemoteD1Configured() && (d1Usage.rowsReadToday > 0 || d1Usage.rowsWrittenToday > 0)),
         rowsReadToday: d1Usage.rowsReadToday,
         rowsWrittenToday: d1Usage.rowsWrittenToday,
         readSafetyCap: d1Usage.maxReadCap,
@@ -389,7 +402,13 @@ export class RealityReportGenerator {
       payments: {
         razorpayConfigured: isRazorpayLive,
         paymentRequestsCreated,
-        verifiedTransactions
+        verifiedTransactions,
+        stages: {
+          PAYMENT_REQUESTED: paymentRequestsCreated,
+          PAYMENT_CAPTURED: paymentOrdersPaid,
+          PAYMENT_VERIFIED: verifiedTransactions,
+          REVENUE_RECORDED: revenueRecordsCount
+        }
       },
       revenue: {
         verifiedClientRevenueINR: clientRev,

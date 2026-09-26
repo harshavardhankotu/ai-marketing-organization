@@ -66,6 +66,19 @@ export class D1Client {
     }
   }
 
+  /**
+   * Production Revenue State Assertion (Spec § 9)
+   * In production, irreversible revenue operations on critical tables require durable Cloudflare D1 persistence.
+   */
+  public assertDurableStorageForEntity(entityName: string): void {
+    const isProd = process.env.NODE_ENV === 'production';
+    if (isProd && !this.isRemoteD1Configured()) {
+      throw new Error(
+        `PERSISTENCE_FAULT: Irreversible action on '${entityName}' blocked. Production requires durable Cloudflare D1 persistence (CLOUDFLARE_D1_DATABASE_ID, CLOUDFLARE_D1_API_TOKEN) to ensure state survives container restarts.`
+      );
+    }
+  }
+
   private ensureUsageTable(): void {
     try {
       const db = getDb();

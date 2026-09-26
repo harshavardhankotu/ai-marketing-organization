@@ -118,6 +118,12 @@ describe('Razorpay Automated Payment Gateway & DPDP Compliance Suite', () => {
           0, 'REAL', datetime('now'), datetime('now'))
       `).run(journeyId, orgId, businessId);
 
+      db.prepare(`
+        INSERT OR REPLACE INTO payment_orders (
+          id, business_id, order_id, amount_inr, currency, status, receipt, created_at, updated_at
+        ) VALUES ('pord_test_45k', ?, 'order_rzp_plan_45k', 45000, 'INR', 'CREATED', 'rcpt_test_45k', datetime('now'), datetime('now'))
+      `).run(businessId);
+
       const eventPayload = {
         event: 'payment.captured',
         payload: {
@@ -170,6 +176,13 @@ describe('Razorpay Automated Payment Gateway & DPDP Compliance Suite', () => {
     });
 
     it('enforces idempotency and suppresses duplicate ledger entries on replayed webhooks', async () => {
+      const db = getDb();
+      db.prepare(`
+        INSERT OR REPLACE INTO payment_orders (
+          id, business_id, order_id, amount_inr, currency, status, receipt, created_at, updated_at
+        ) VALUES ('pord_idem_01', ?, 'order_idem_01', 20000, 'INR', 'CREATED', 'rcpt_idem_01', datetime('now'), datetime('now'))
+      `).run(businessId);
+
       const eventPayload = {
         event: 'payment.captured',
         payload: {
@@ -179,6 +192,7 @@ describe('Razorpay Automated Payment Gateway & DPDP Compliance Suite', () => {
               amount: 2000000,
               currency: 'INR',
               status: 'captured',
+              order_id: 'order_idem_01',
               method: 'upi',
               notes: {
                 business_id: businessId,
@@ -200,8 +214,6 @@ describe('Razorpay Automated Payment Gateway & DPDP Compliance Suite', () => {
       const second = await adapter.processWebhook({ rawBody, signature, event: eventPayload, overrideSecret: testSecret });
       expect(second.processed).toBe(true);
       expect(second.reason).toContain('already processed');
-
-      const db = getDb();
       const txCount = db.prepare("SELECT COUNT(*) as cnt FROM transactions WHERE transaction_ref = 'pay_rzp_idempotent_112'").get() as any;
       expect(txCount.cnt).toBe(1); // Exactly 1 ledger entry
     });
