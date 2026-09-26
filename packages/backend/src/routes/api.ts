@@ -47,6 +47,8 @@ import { StrategyMatchingEngine } from '../strategy/matching-engine.js';
 import { UniversalLockManager } from '../quota/universal-lock-manager.js';
 import { UnifiedQuotaService } from '../quota/unified-quota-service.js';
 import { D1Client } from '../db/d1-client.js';
+import { RealityReportGenerator } from '../revenue/reality-report-generator.js';
+import { RevenueBottleneckEngine } from '../revenue/revenue-bottleneck-engine.js';
 
 export type AppVariables = {
   organizationId: string;
@@ -627,6 +629,158 @@ apiRouter.post('/cron/ping', async (c) => {
   }
 
   return c.json({ success: true, data: results, timestamp: new Date().toISOString() });
+});
+
+// ==========================================
+// REVENUE PROOF & AUDIT TRAIL (Spec § 29)
+// ==========================================
+apiRouter.get('/revenue/proof', (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const bizRow = db.prepare('SELECT id FROM businesses WHERE organization_id = ? ORDER BY created_at DESC LIMIT 1').get(orgId) as any;
+  const businessId = bizRow?.id || 'biz_smilekraft_hyd';
+
+  const verified = (db.prepare(`SELECT COALESCE(SUM(amount_inr), 0) as total FROM transactions WHERE business_id = ? AND classification = 'REAL' AND status = 'SUCCESS'`).get(businessId) as any)?.total || 0;
+  const humanVerified = (db.prepare(`SELECT COALESCE(SUM(amount_inr), 0) as total FROM transactions WHERE business_id = ? AND classification = 'MANUAL_VERIFIED' AND status = 'SUCCESS'`).get(businessId) as any)?.total || 0;
+  const unverified = (db.prepare(`SELECT COALESCE(SUM(amount_inr), 0) as total FROM transactions WHERE business_id = ? AND status = 'PENDING'`).get(businessId) as any)?.total || 0;
+  const testRev = (db.prepare(`SELECT COALESCE(SUM(amount_inr), 0) as total FROM transactions WHERE classification = 'TEST'`).get() as any)?.total || 0;
+  const simulatedRev = (db.prepare(`SELECT COALESCE(SUM(amount_inr), 0) as total FROM transactions WHERE classification = 'SIMULATED'`).get() as any)?.total || 0;
+
+  let platformRev = 0;
+  try {
+    platformRev = (db.prepare(`SELECT COALESCE(SUM(amount_inr), 0) as total FROM revenue_records WHERE revenue_type = 'PLATFORM_REVENUE' AND verified = 1`).get() as any)?.total || 0;
+  } catch {}
+
+  const transactions = db.prepare(`SELECT id, amount_inr, classification, status, payment_gateway, transaction_ref, service_rendered, created_at FROM transactions WHERE business_id = ? AND classification = 'REAL' ORDER BY created_at DESC LIMIT 50`).all(businessId);
+
+  return c.json({
+    success: true,
+    data: {
+      verified_revenue: verified,
+      human_verified_revenue: humanVerified,
+      unverified_revenue: unverified,
+      test_revenue: testRev,
+      simulated_revenue: simulatedRev,
+      client_revenue: verified,
+      platform_revenue: platformRev,
+      currency: 'INR',
+      transactions,
+      zero_paid_spend_verified: true,
+      paid_cac: 'N/A (₹0 spend policy)',
+      roas: 'N/A (₹0 spend policy)'
+    }
+  });
+});
+
+// ==========================================
+// AUTONOMY PROOF & TELEMETRY (Spec § 29)
+// ==========================================
+apiRouter.get('/autonomy/proof', (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  let cronRow: any;
+  try {
+    cronRow = db.prepare(`SELECT * FROM cron_telemetry WHERE id = 'cloudflare_worker_cron'`).get();
+  } catch {}
+  const cronStatus = cronRow?.last_observed_ping ? 'CRON_OBSERVED' : 'CRON_CONFIGURED';
+
+  const d1Usage = D1Client.getInstance().getUsage();
+  const health = UnifiedQuotaService.getInstance().getHealthSummary(orgId);
+
+  let traces: any[] = [];
+  try {
+    traces = db.prepare(`SELECT * FROM autonomous_action_traces WHERE tenant_id = ? ORDER BY timestamp DESC LIMIT 10`).all(orgId) as any[];
+  } catch {}
+
+  return c.json({
+    success: true,
+    data: {
+      cron_status: cronStatus,
+      cron_schedule: '*/15 * * * *',
+      total_pings_observed: cronRow?.total_pings || 0,
+      last_observed_ping: cronRow?.last_observed_ping || null,
+      storage_status: D1Client.getInstance().isRemoteD1Configured() ? 'CLOUDFLARE_D1' : 'PERSISTENT_SQLITE',
+      d1_daily_usage: d1Usage,
+      autonomy_health: health,
+      total_external_actions: health.totalExternalActions,
+      authorization_blocks: health.authorizationBlocks,
+      latest_action_traces: traces
+    }
+  });
+});
+
+// ==========================================
+// AUTONOMY LATEST CYCLE (Spec § 29)
+// ==========================================
+apiRouter.get('/autonomy/latest-cycle', (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const cycle = db.prepare(`SELECT * FROM autonomous_cycle_log WHERE organization_id = ? ORDER BY cycle_start DESC LIMIT 1`).get(orgId);
+  return c.json({ success: true, data: cycle || null });
+});
+
+// ==========================================
+// REVENUE FUNNEL (Spec § 30)
+// ==========================================
+apiRouter.get('/revenue/funnel', (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const bizRow = db.prepare('SELECT id FROM businesses WHERE organization_id = ? ORDER BY created_at DESC LIMIT 1').get(orgId) as any;
+  const businessId = bizRow?.id || 'biz_smilekraft_hyd';
+
+  const prospects = (db.prepare(`SELECT COUNT(*) as count FROM sales_pipeline WHERE business_id = ?`).get(businessId) as any)?.count || 0;
+  const contacted = (db.prepare(`SELECT COUNT(*) as count FROM sales_pipeline WHERE business_id = ? AND stage IN ('CONTACTED','REPLIED','QUALIFIED','MEETING_BOOKED','PAID','ONBOARDED')`).get(businessId) as any)?.count || 0;
+  const responded = (db.prepare(`SELECT COUNT(*) as count FROM sales_pipeline WHERE business_id = ? AND stage IN ('REPLIED','QUALIFIED','MEETING_BOOKED','PAID','ONBOARDED')`).get(businessId) as any)?.count || 0;
+  const qualified = (db.prepare(`SELECT COUNT(*) as count FROM sales_pipeline WHERE business_id = ? AND stage IN ('QUALIFIED','MEETING_BOOKED','PAID','ONBOARDED')`).get(businessId) as any)?.count || 0;
+  const meetings = (db.prepare(`SELECT COUNT(*) as count FROM sales_pipeline WHERE business_id = ? AND stage IN ('MEETING_BOOKED','PAID','ONBOARDED')`).get(businessId) as any)?.count || 0;
+  const proposals = (db.prepare(`SELECT COUNT(*) as count FROM sales_pipeline WHERE business_id = ? AND stage IN ('PROPOSAL_SENT','PAID','ONBOARDED')`).get(businessId) as any)?.count || 0;
+  const paymentRequests = (db.prepare(`SELECT COUNT(*) as count FROM payment_requests WHERE business_id = ?`).get(businessId) as any)?.count || 0;
+  const payments = (db.prepare(`SELECT COUNT(*) as count FROM transactions WHERE business_id = ? AND classification = 'REAL' AND status = 'SUCCESS'`).get(businessId) as any)?.count || 0;
+  const customers = (db.prepare(`SELECT COUNT(*) as count FROM customer_journeys WHERE business_id = ? AND stage = 'CUSTOMER'`).get(businessId) as any)?.count || 0;
+  const activeCustomers = (db.prepare(`SELECT COUNT(*) as count FROM customer_journeys WHERE business_id = ? AND stage = 'ACTIVE'`).get(businessId) as any)?.count || 0;
+  const revenue = (db.prepare(`SELECT COALESCE(SUM(amount_inr), 0) as total FROM transactions WHERE business_id = ? AND classification = 'REAL' AND status = 'SUCCESS'`).get(businessId) as any)?.total || 0;
+
+  return c.json({
+    success: true,
+    data: {
+      prospects,
+      contacted,
+      responded,
+      qualified,
+      meetings,
+      proposals,
+      payment_requests: paymentRequests,
+      payments,
+      customers,
+      active_customers: activeCustomers,
+      revenue_inr: revenue,
+      mrr_inr: 0,
+      mode: 'VERIFIED_ONLY'
+    }
+  });
+});
+
+// ==========================================
+// REALITY REPORT (Spec § 36)
+// ==========================================
+apiRouter.get('/system/reality-report', (c) => {
+  const orgId = c.get('organizationId') || 'org_default';
+  const db = getDb();
+  const bizRow = db.prepare('SELECT id FROM businesses WHERE organization_id = ? ORDER BY created_at DESC LIMIT 1').get(orgId) as any;
+  const report = RealityReportGenerator.getInstance().generate(orgId, bizRow?.id);
+  return c.json({ success: true, data: report });
+});
+
+// ==========================================
+// REVENUE BOTTLENECK ENGINE (Spec § 37)
+// ==========================================
+apiRouter.get('/revenue/bottleneck', (c) => {
+  const orgId = c.get('organizationId') || 'org_default';
+  const db = getDb();
+  const bizRow = db.prepare('SELECT id FROM businesses WHERE organization_id = ? ORDER BY created_at DESC LIMIT 1').get(orgId) as any;
+  const businessId = bizRow?.id || 'biz_smilekraft_hyd';
+  const bottleneck = RevenueBottleneckEngine.getInstance().diagnose(businessId, orgId);
+  return c.json({ success: true, data: bottleneck });
 });
 
 

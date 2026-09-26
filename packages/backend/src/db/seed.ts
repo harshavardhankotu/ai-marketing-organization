@@ -77,9 +77,10 @@ export function seedDatabase(options: SeedOptions = {}): void {
     seedDemoBusiness(db, orgId);
   }
 
-  // 6. Seed foundational business profile (SmileKraft Dental Clinic) if database has no businesses
+  // 6. Seed foundational test fixtures ONLY in test/demo/local-dev environments, NEVER in production
+  const isProduction = process.env.NODE_ENV === 'production';
   const existingBiz = db.prepare('SELECT count(*) as count FROM businesses').get() as any;
-  if (options.withTestFixtures || process.env.NODE_ENV === 'test' || !process.env.NODE_ENV || !existingBiz || existingBiz.count === 0) {
+  if (!isProduction && (options.withTestFixtures || process.env.NODE_ENV === 'test' || !existingBiz || existingBiz.count === 0)) {
     seedTestFixtures(db);
   }
 }

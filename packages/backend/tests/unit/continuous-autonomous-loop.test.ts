@@ -22,8 +22,12 @@ describe('Continuous Autonomous Revenue Loop — Spec § 33 Verification', () =>
 
   // 1 & 2. Cron configuration exists and is configured for */15 * * * *
   it('1 & 2. Cloudflare Worker cron configuration exists and triggers every 15 minutes', () => {
-    const wranglerPath = path.resolve(process.cwd(), '../cloudflare-worker/wrangler.toml');
-    const workerPath = path.resolve(process.cwd(), '../cloudflare-worker/src/worker.ts');
+    let wranglerPath = path.resolve(process.cwd(), 'packages/cloudflare-worker/wrangler.toml');
+    let workerPath = path.resolve(process.cwd(), 'packages/cloudflare-worker/src/worker.ts');
+    if (!fs.existsSync(wranglerPath)) {
+      wranglerPath = path.resolve(process.cwd(), '../cloudflare-worker/wrangler.toml');
+      workerPath = path.resolve(process.cwd(), '../cloudflare-worker/src/worker.ts');
+    }
 
     expect(fs.existsSync(wranglerPath)).toBe(true);
     expect(fs.existsSync(workerPath)).toBe(true);

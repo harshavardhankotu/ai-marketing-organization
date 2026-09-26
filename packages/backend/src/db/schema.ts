@@ -1297,4 +1297,177 @@ CREATE TABLE IF NOT EXISTS action_cooldowns (
   PRIMARY KEY (target_id, action_type)
 );
 CREATE INDEX IF NOT EXISTS idx_cooldowns_eligible ON action_cooldowns(next_eligible_at);
+
+-- 63. Autonomous Action Traces (Spec § 31: Full audit trace of every autonomous action)
+CREATE TABLE IF NOT EXISTS autonomous_action_traces (
+  id TEXT PRIMARY KEY,
+  cycle_id TEXT NOT NULL,
+  action_id TEXT NOT NULL,
+  tenant_id TEXT NOT NULL,
+  action_type TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  expected_value REAL NOT NULL DEFAULT 0.0,
+  authorization TEXT NOT NULL,
+  quota_reservation TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  request_id TEXT,
+  provider_response TEXT,
+  classification TEXT NOT NULL,
+  result TEXT NOT NULL,
+  external_id TEXT,
+  cost REAL NOT NULL DEFAULT 0.0,
+  timestamp TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_aat_cycle ON autonomous_action_traces(cycle_id);
+CREATE INDEX IF NOT EXISTS idx_aat_tenant ON autonomous_action_traces(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_aat_class ON autonomous_action_traces(classification);
+
+-- 64. Sales Pipeline Transitions (Spec § 4: Durable pipeline state transition audit log)
+CREATE TABLE IF NOT EXISTS pipeline_transitions (
+  id TEXT PRIMARY KEY,
+  pipeline_id TEXT NOT NULL,
+  business_id TEXT NOT NULL,
+  previous_state TEXT NOT NULL,
+  new_state TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (pipeline_id) REFERENCES sales_pipeline(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_pipe_trans_id ON pipeline_transitions(pipeline_id);
+
+-- 65. Offers & Value Propositions (Spec § 6: OfferEngine catalogue & generated offers)
+CREATE TABLE IF NOT EXISTS offers (
+  id TEXT PRIMARY KEY,
+  business_id TEXT NOT NULL,
+  organization_id TEXT NOT NULL,
+  offer_name TEXT NOT NULL,
+  offer_type TEXT NOT NULL,
+  problem TEXT NOT NULL,
+  solution TEXT NOT NULL,
+  deliverables_json TEXT NOT NULL DEFAULT '[]',
+  price_inr REAL NOT NULL,
+  pricing_model TEXT NOT NULL DEFAULT 'ONE_TIME',
+  expected_customer_value_inr REAL NOT NULL,
+  delivery_time_days INTEGER NOT NULL DEFAULT 7,
+  guarantee_or_terms TEXT,
+  sales_message TEXT NOT NULL,
+  qualification_questions_json TEXT NOT NULL DEFAULT '[]',
+  payment_method TEXT NOT NULL DEFAULT 'RAZORPAY',
+  status TEXT NOT NULL DEFAULT 'ACTIVE',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE,
+  FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_offers_biz ON offers(business_id);
+
+-- 66. Meetings & Calendar Bookings (Spec § 10: MeetingEngine appointments)
+CREATE TABLE IF NOT EXISTS meetings (
+  id TEXT PRIMARY KEY,
+  business_id TEXT NOT NULL,
+  organization_id TEXT NOT NULL,
+  pipeline_id TEXT,
+  lead_id TEXT,
+  provider TEXT NOT NULL DEFAULT 'INTERNAL',
+  external_event_id TEXT,
+  title TEXT NOT NULL,
+  start_time TEXT NOT NULL,
+  end_time TEXT NOT NULL,
+  timezone TEXT NOT NULL DEFAULT 'Asia/Kolkata',
+  attendees_json TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL DEFAULT 'SCHEDULED',
+  action_classification TEXT NOT NULL DEFAULT 'INTERNAL_AUTOMATION',
+  provider_response_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE,
+  FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_meetings_biz ON meetings(business_id);
+CREATE INDEX IF NOT EXISTS idx_meetings_pipe ON meetings(pipeline_id);
+
+-- 67. Revenue Records (Spec § 12: Split Client Revenue vs Platform Revenue)
+CREATE TABLE IF NOT EXISTS revenue_records (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL,
+  business_id TEXT,
+  revenue_type TEXT NOT NULL,
+  source TEXT NOT NULL,
+  transaction_id TEXT,
+  amount_inr REAL NOT NULL,
+  currency TEXT NOT NULL DEFAULT 'INR',
+  verified INTEGER NOT NULL DEFAULT 0,
+  verification_method TEXT NOT NULL,
+  classification TEXT NOT NULL DEFAULT 'REAL',
+  recurring_model TEXT NOT NULL DEFAULT 'ONE_TIME',
+  timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_rev_records_org ON revenue_records(organization_id);
+CREATE INDEX IF NOT EXISTS idx_rev_records_type ON revenue_records(revenue_type, verified);
+
+-- 68. Learning Records (Spec § 16: Empirical observations with provenance)
+CREATE TABLE IF NOT EXISTS learning_records (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL,
+  business_id TEXT,
+  learning_type TEXT NOT NULL,
+  decision TEXT NOT NULL,
+  hypothesis TEXT NOT NULL,
+  action TEXT NOT NULL,
+  audience TEXT NOT NULL,
+  offer TEXT NOT NULL,
+  channel TEXT NOT NULL,
+  result TEXT NOT NULL,
+  revenue_inr REAL NOT NULL DEFAULT 0.0,
+  cost_inr REAL NOT NULL DEFAULT 0.0,
+  time_taken_hours REAL NOT NULL DEFAULT 0.0,
+  confidence REAL NOT NULL DEFAULT 0.5,
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_lrn_records_org ON learning_records(organization_id);
+CREATE INDEX IF NOT EXISTS idx_lrn_records_type ON learning_records(learning_type);
+
+-- 69. Autonomy Policy Configuration (Spec § 23: Machine-enforced bounds)
+CREATE TABLE IF NOT EXISTS autonomy_policy_config (
+  organization_id TEXT PRIMARY KEY,
+  max_actions_per_wake INTEGER NOT NULL DEFAULT 1,
+  max_external_actions_per_day INTEGER NOT NULL DEFAULT 50,
+  max_messages_per_contact INTEGER NOT NULL DEFAULT 3,
+  followup_cooldown_hours INTEGER NOT NULL DEFAULT 24,
+  payment_retry_policy_json TEXT NOT NULL DEFAULT '{"maxRetries":3,"backoffHours":24}',
+  research_daily_budget_credits INTEGER NOT NULL DEFAULT 800,
+  ai_daily_budget_requests INTEGER NOT NULL DEFAULT 1200,
+  marketing_budget_inr REAL NOT NULL DEFAULT 0.0,
+  paid_acquisition_allowed INTEGER NOT NULL DEFAULT 0,
+  allowed_channels_json TEXT NOT NULL DEFAULT '["WHATSAPP","EMAIL","LOCAL_SEARCH"]',
+  allowed_regions_json TEXT NOT NULL DEFAULT '["IN"]',
+  consent_policy TEXT NOT NULL DEFAULT 'DPDP_2023_EXPLICIT',
+  kill_switch INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+);
+
+-- 70. Customer Delivery Tasks (Spec § 14: Post-payment delivery lifecycle)
+CREATE TABLE IF NOT EXISTS delivery_tasks (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL,
+  business_id TEXT NOT NULL,
+  customer_journey_id TEXT NOT NULL,
+  service_type TEXT NOT NULL,
+  stage TEXT NOT NULL DEFAULT 'ONBOARDING',
+  deliverables_json TEXT NOT NULL DEFAULT '[]',
+  results_json TEXT NOT NULL DEFAULT '{}',
+  action_classification TEXT NOT NULL DEFAULT 'INTERNAL_AUTOMATION',
+  completed_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE,
+  FOREIGN KEY (customer_journey_id) REFERENCES customer_journeys(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_delivery_tasks_journey ON delivery_tasks(customer_journey_id);
 `;

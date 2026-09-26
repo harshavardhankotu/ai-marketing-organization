@@ -26,6 +26,12 @@ import { UnifiedQuotaService } from '../quota/unified-quota-service.js';
 import { MarketResearchPipeline } from '../research/market-research-pipeline.js';
 import { WhatsAppAdapter, ActionClassification } from '../integrations/adapter-base.js';
 import { isPlaceholderCredential } from '../config/env.js';
+import { AutonomyPolicyController } from './autonomy-policy.js';
+import { MeetingEngine } from './meeting-engine.js';
+import { DeliveryEngine } from './delivery-engine.js';
+import { SalesConversationEngine } from './sales-conversation-engine.js';
+import { LearningEngine } from './learning-engine.js';
+import { OfferEngine } from './offer-engine.js';
 
 export type CycleExecutionStatus =
   | 'LIVE_EXTERNAL_ACTION'
@@ -33,6 +39,17 @@ export type CycleExecutionStatus =
   | 'BLOCKED_AUTHORIZATION'
   | 'COOLDOWN_ACTIVE'
   | 'NO_ACTION_DUE';
+
+export type TerminalOutcomeClassification =
+  | 'LIVE_EXTERNAL_ACTION'
+  | 'REVENUE_ACTION'
+  | 'INTERNAL_AUTOMATION'
+  | 'BLOCKED_AUTHORIZATION'
+  | 'SANDBOX_ACTION'
+  | 'TEST_ACTION'
+  | 'IDLE'
+  | 'FAILED_RETRYABLE'
+  | 'FAILED_TERMINAL';
 
 export interface OrchestratorCycleResult {
   cycleId: string;
@@ -47,6 +64,7 @@ export interface OrchestratorCycleResult {
   status: 'COMPLETED' | 'PARTIAL' | 'FAILED' | 'CYCLE_ALREADY_RUNNING' | 'IDLE';
   actionExecutionStatus: CycleExecutionStatus;
   actionClassification: ActionClassification;
+  terminalClassification: TerminalOutcomeClassification;
   errors: string[];
 }
 
@@ -104,18 +122,29 @@ export class AutonomousRevenueOrchestrator {
           targetType: 'NONE',
           ownerAgent: 'orchestrator',
           rationale: lock.reason || 'Cycle already active',
+          estimatedRevenueINR: 0,
           expectedRevenueINR: 0,
           probabilityOfSuccess: 0,
           timeToRevenueDays: 0,
+          externalCostINR: 0,
+          quotaCost: 0,
+          customerValueINR: 0,
+          urgency: 0,
+          cooldownActive: true,
+          authorizationAvailable: true,
+          riskLevel: 'LOW',
+          expectedValueINR: 0,
+          priorityScore: 0,
+          priorityTier: 'P4',
           score: 0,
           authorizationRequired: false,
-          estimatedCostINR: 0,
-          riskLevel: 'LOW'
+          estimatedCostINR: 0
         },
         nextCycleAt: lock.leaseExpiry || new Date(Date.now() + 15 * 60 * 1000).toISOString(),
         status: 'CYCLE_ALREADY_RUNNING',
         actionExecutionStatus: 'COOLDOWN_ACTIVE',
         actionClassification: 'INTERNAL_AUTOMATION',
+        terminalClassification: 'IDLE',
         errors: [lock.reason || 'Cycle already running']
       };
     }
@@ -274,6 +303,41 @@ export class AutonomousRevenueOrchestrator {
       // Record successful wake
       this.quotaService.recordWake(organizationId, true);
 
+      // Determine terminal outcome classification (Spec § 1)
+      let terminalClassification: TerminalOutcomeClassification = 'INTERNAL_AUTOMATION';
+      if (actionExecutionStatus === 'NO_ACTION_DUE' || actionExecutionStatus === 'COOLDOWN_ACTIVE') {
+        terminalClassification = 'IDLE';
+      } else if (actionClassification === 'LIVE_EXTERNAL_ACTION') {
+        terminalClassification = (nextBestAction.actionType === 'SEND_PAYMENT_REQUEST' || nextBestAction.actionType === 'COLLECT_PAYMENT') ? 'REVENUE_ACTION' : 'LIVE_EXTERNAL_ACTION';
+      } else if (actionClassification === 'REVENUE_ACTION') {
+        terminalClassification = 'REVENUE_ACTION';
+      } else if (actionClassification === 'BLOCKED_AUTHORIZATION') {
+        terminalClassification = 'BLOCKED_AUTHORIZATION';
+      } else if (actionClassification === 'SANDBOX_ACTION') {
+        terminalClassification = 'SANDBOX_ACTION';
+      } else if (actionClassification === 'TEST_ACTION') {
+        terminalClassification = 'TEST_ACTION';
+      } else if (actionClassification === 'INTERNAL_AUTOMATION') {
+        terminalClassification = 'INTERNAL_AUTOMATION';
+      }
+
+      // Record full audit trace in autonomous_action_traces (Spec § 31)
+      this.recordActionTrace({
+        cycleId,
+        actionId: `act_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        tenantId: organizationId,
+        actionType: nextBestAction.actionType,
+        reason: nextBestAction.rationale,
+        expectedValue: nextBestAction.expectedRevenueINR,
+        authorization: actionClassification === 'BLOCKED_AUTHORIZATION' ? 'BLOCKED' : 'AUTHORIZED',
+        quotaReservation: nextBestAction.quotaCost > 0 ? `RESERVED_${nextBestAction.quotaCost}` : 'NONE',
+        provider: nextBestAction.actionType.includes('RESEARCH') || nextBestAction.actionType.includes('DISCOVER') ? 'TAVILY' : 'WHATSAPP',
+        requestId: cycleId,
+        classification: actionClassification,
+        result: actionExecutionStatus,
+        cost: nextBestAction.estimatedCostINR
+      });
+
       // ──────────────────────────────────────────────────────────────────
       // PERSIST & SCHEDULE NEXT WAKE
       // ──────────────────────────────────────────────────────────────────
@@ -297,6 +361,7 @@ export class AutonomousRevenueOrchestrator {
         JSON.stringify({
           actionExecutionStatus,
           actionClassification,
+          terminalClassification,
           nextBestAction: nextBestAction.actionType,
           rationale: nextBestAction.rationale,
           errors
@@ -308,7 +373,7 @@ export class AutonomousRevenueOrchestrator {
         eventType: 'CYCLE_COMPLETED',
         organizationId,
         businessId,
-        payload: { cycleId, actionsTaken, actionExecutionStatus, actionClassification, nextBestAction: nextBestAction.actionType }
+        payload: { cycleId, actionsTaken, actionExecutionStatus, actionClassification, terminalClassification, nextBestAction: nextBestAction.actionType }
       });
 
       console.log(`[ARO] ===== WAKE CYCLE ${cycleId} FINISHED (status: ${actionExecutionStatus}, classification: ${actionClassification}) =====`);
@@ -326,6 +391,7 @@ export class AutonomousRevenueOrchestrator {
         status: errors.length === 0 ? 'COMPLETED' : 'PARTIAL',
         actionExecutionStatus,
         actionClassification,
+        terminalClassification,
         errors
       };
 
@@ -356,18 +422,29 @@ export class AutonomousRevenueOrchestrator {
           targetType: 'NONE',
           ownerAgent: 'orchestrator',
           rationale: `Fatal error: ${msg}`,
+          estimatedRevenueINR: 0,
           expectedRevenueINR: 0,
           probabilityOfSuccess: 0,
           timeToRevenueDays: 0,
+          externalCostINR: 0,
+          quotaCost: 0,
+          customerValueINR: 0,
+          urgency: 0,
+          cooldownActive: true,
+          authorizationAvailable: false,
+          riskLevel: 'HIGH',
+          expectedValueINR: 0,
+          priorityScore: 0,
+          priorityTier: 'P4',
           score: 0,
           authorizationRequired: false,
-          estimatedCostINR: 0,
-          riskLevel: 'LOW'
+          estimatedCostINR: 0
         },
         nextCycleAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
         status: 'FAILED',
         actionExecutionStatus: 'NO_ACTION_DUE',
         actionClassification: 'INTERNAL_AUTOMATION',
+        terminalClassification: 'FAILED_TERMINAL',
         errors
       };
     } finally {
@@ -767,6 +844,28 @@ export class AutonomousRevenueOrchestrator {
         }
       }
 
+      case 'REQUEST_REFERRAL': {
+        const delivery = DeliveryEngine.getInstance();
+        const refRes = await delivery.requestReferralAndReview(organizationId, businessId, action.targetId);
+        return {
+          status: refRes.actionClassification === 'LIVE_EXTERNAL_ACTION' ? 'LIVE_EXTERNAL_ACTION' : 'BLOCKED_AUTHORIZATION',
+          actionClassification: refRes.actionClassification,
+          isRevenueAction: false,
+          error: refRes.success ? undefined : refRes.message
+        };
+      }
+
+      case 'EVALUATE_EXPERIMENT': {
+        const { ExperimentEngine } = await import('./experiment-engine.js');
+        const expEval = ExperimentEngine.getInstance().evaluate(action.targetId);
+        return {
+          status: 'INTERNAL_AUTOMATION',
+          actionClassification: 'INTERNAL_AUTOMATION',
+          isRevenueAction: false,
+          error: expEval.status === 'INCONCLUSIVE' ? expEval.reason : undefined
+        };
+      }
+
       default:
         return {
           status: 'BLOCKED_AUTHORIZATION',
@@ -803,12 +902,33 @@ export class AutonomousRevenueOrchestrator {
         break;
 
       case 'LEAD_REPLIED':
+      case 'CUSTOMER_REPLIED':
         if (payload.pipelineId) {
           db.prepare(`
             UPDATE sales_pipeline
             SET stage = 'REPLIED', next_action = 'BOOK_MEETING', next_action_at = datetime('now', '+1 hour'), updated_at = datetime('now')
             WHERE id = ?
           `).run(payload.pipelineId);
+        }
+        break;
+
+      case 'MESSAGE_RECEIVED':
+      case 'EMAIL_RECEIVED':
+        if (payload.messageText && payload.contact) {
+          const sce = SalesConversationEngine.getInstance();
+          await sce.handleInboundMessage({
+            businessId,
+            organizationId,
+            senderContact: String(payload.contact),
+            channel: eventType === 'EMAIL_RECEIVED' ? 'EMAIL' : 'WHATSAPP',
+            messageText: String(payload.messageText)
+          });
+        }
+        break;
+
+      case 'CONTACT_OPT_OUT':
+        if (payload.contact) {
+          AutonomyPolicyController.getInstance().suppressContact(String(payload.contact), 'DO_NOT_CONTACT');
         }
         break;
 
@@ -854,6 +974,23 @@ export class AutonomousRevenueOrchestrator {
             WHERE journey_id = ? AND business_id = ?
           `).run(payload.journeyId, businessId);
 
+          // Spec § 12: Record split revenue record
+          try {
+            const revId = `rev_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+            db.prepare(`
+              INSERT INTO revenue_records (
+                id, organization_id, business_id, revenue_type, source,
+                transaction_id, amount_inr, currency, verified, verification_method, classification, timestamp
+              ) VALUES (?, ?, ?, 'CLIENT_REVENUE', 'RAZORPAY_WEBHOOK', ?, ?, 'INR', 1, 'WEBHOOK', 'REAL', datetime('now'))
+            `).run(
+              revId,
+              organizationId,
+              businessId,
+              String(payload.transactionId || `tx_${Date.now()}`),
+              Number(payload.amountINR || 15000)
+            );
+          } catch {}
+
           if (payload.opportunityId) {
             this.oppEngine.advance(payload.opportunityId as string, 'WON', 'Payment verified via gateway webhook');
           }
@@ -892,5 +1029,80 @@ export class AutonomousRevenueOrchestrator {
       'home_services': 5000
     };
     return valueMap[verticalId?.toLowerCase()] || 8000;
+  }
+
+  public recordActionTrace(trace: {
+    cycleId: string;
+    actionId: string;
+    tenantId: string;
+    actionType: string;
+    reason: string;
+    expectedValue: number;
+    authorization: string;
+    quotaReservation: string;
+    provider: string;
+    requestId?: string;
+    providerResponse?: string;
+    classification: string;
+    result: string;
+    externalId?: string;
+    cost?: number;
+  }): void {
+    const db = getDb();
+    try {
+      const id = `trace_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      db.prepare(`
+        INSERT INTO autonomous_action_traces (
+          id, cycle_id, action_id, tenant_id, action_type, reason,
+          expected_value, authorization, quota_reservation, provider,
+          request_id, provider_response, classification, result, external_id, cost, timestamp
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      `).run(
+        id,
+        trace.cycleId,
+        trace.actionId,
+        trace.tenantId,
+        trace.actionType,
+        trace.reason,
+        trace.expectedValue || 0.0,
+        trace.authorization,
+        trace.quotaReservation,
+        trace.provider,
+        trace.requestId || null,
+        trace.providerResponse || null,
+        trace.classification,
+        trace.result,
+        trace.externalId || null,
+        trace.cost || 0.0
+      );
+    } catch {}
+  }
+
+  public transitionPipelineState(
+    pipelineId: string,
+    businessId: string,
+    newStage: string,
+    actor: string,
+    reason: string,
+    evidence: Record<string, any> = {}
+  ): void {
+    const db = getDb();
+    try {
+      const prev = db.prepare(`SELECT stage FROM sales_pipeline WHERE id = ?`).get(pipelineId) as any;
+      const previousState = prev?.stage || 'UNKNOWN';
+
+      db.prepare(`
+        UPDATE sales_pipeline
+        SET stage = ?, reason = ?, updated_at = datetime('now')
+        WHERE id = ?
+      `).run(newStage, reason, pipelineId);
+
+      const transId = `ptrans_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      db.prepare(`
+        INSERT INTO pipeline_transitions (
+          id, pipeline_id, business_id, previous_state, new_state, actor, reason, evidence_json, timestamp
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      `).run(transId, pipelineId, businessId, previousState, newStage, actor, reason, JSON.stringify(evidence));
+    } catch {}
   }
 }

@@ -133,6 +133,8 @@ export class D1Client {
       }
     }
 
+    const isProduction = process.env.NODE_ENV === 'production';
+
     if (this.isRemoteD1Configured()) {
       const url = `https://api.cloudflare.com/client/v4/accounts/${this.accountId}/d1/database/${this.databaseId}/query`;
       try {
@@ -154,13 +156,24 @@ export class D1Client {
 
           this.recordUsage(rowsRead, rowsWritten);
           return { results, rowsAffected: rowsWritten, source: 'CLOUDFLARE_D1' };
+        } else {
+          const errText = await response.text();
+          if (isProduction) {
+            throw new Error(`[D1 PERSISTENCE ERROR] D1 returned HTTP ${response.status}: ${errText}`);
+          }
+          console.warn(`[D1Client] Cloudflare D1 HTTP ${response.status} (${errText}) — falling back to dev store`);
         }
       } catch (err: any) {
-        console.warn(`[D1Client] Cloudflare D1 query failed (${err.message}) — falling back to local persistent store`);
+        if (isProduction) {
+          throw new Error(`[D1 PERSISTENCE FAULT] Production Cloudflare D1 unavailable (${err.message}). Halting to prevent non-durable state divergence.`);
+        }
+        console.warn(`[D1Client] Cloudflare D1 query failed (${err.message}) — falling back to local store in dev/test`);
       }
+    } else if (isProduction && process.env.REQUIRE_REMOTE_D1 === 'true') {
+      throw new Error('[D1 CONFIGURATION FAULT] Production requires remote Cloudflare D1 credentials. Local storage not permitted.');
     }
 
-    // Local / SQLite execution
+    // Local / SQLite execution (Dev / Test / Offline)
     const db = getDb();
     if (isWrite) {
       const stmt = db.prepare(sql);
