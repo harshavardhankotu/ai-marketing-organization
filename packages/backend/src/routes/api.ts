@@ -45,6 +45,7 @@ import { DurableEventBus } from '../revenue/durable-event-bus.js';
 import { GoogleSearchClient } from '../research/google-search-client.js';
 import { StrategyMatchingEngine } from '../strategy/matching-engine.js';
 import { UniversalLockManager } from '../quota/universal-lock-manager.js';
+import { UnifiedQuotaService } from '../quota/unified-quota-service.js';
 
 export type AppVariables = {
   organizationId: string;
@@ -396,7 +397,7 @@ apiRouter.get('/revenue/pipeline', (c) => {
   return c.json({ success: true, data: pipeline, total: pipeline.length });
 });
 
-// GET /revenue/ceo-dashboard — ARO CEO dashboard (revenue, pipeline, NBA, bottleneck)
+// GET /revenue/ceo-dashboard — ARO CEO dashboard (Spec §§ 31 & 32)
 apiRouter.get('/revenue/ceo-dashboard', (c) => {
   const orgId = c.get('organizationId');
   const db = getDb();
@@ -408,8 +409,20 @@ apiRouter.get('/revenue/ceo-dashboard', (c) => {
     `SELECT COALESCE(SUM(amount_inr), 0) as total FROM transactions WHERE business_id = ? AND classification = 'REAL' AND status = 'SUCCESS'`
   ).get(businessId) as any)?.total || 0 : 0;
 
+  const revenueToday = businessId ? (db.prepare(
+    `SELECT COALESCE(SUM(amount_inr), 0) as total FROM transactions WHERE business_id = ? AND classification = 'REAL' AND status = 'SUCCESS' AND created_at >= date('now')`
+  ).get(businessId) as any)?.total || 0 : 0;
+
+  const revenueThisMonth = businessId ? (db.prepare(
+    `SELECT COALESCE(SUM(amount_inr), 0) as total FROM transactions WHERE business_id = ? AND classification = 'REAL' AND status = 'SUCCESS' AND created_at >= date('now', 'start of month')`
+  ).get(businessId) as any)?.total || 0 : 0;
+
   const pipeline = businessId ? (db.prepare(
     `SELECT COALESCE(SUM(expected_revenue_inr), 0) as total FROM sales_pipeline WHERE business_id = ? AND stage NOT IN ('LOST')`
+  ).get(businessId) as any)?.total || 0 : 0;
+
+  const expectedRevenue = businessId ? (db.prepare(
+    `SELECT COALESCE(SUM(expected_revenue_inr), 0) as total FROM opportunities WHERE business_id = ? AND status NOT IN ('WON', 'LOST', 'IGNORED')`
   ).get(businessId) as any)?.total || 0 : 0;
 
   const customers = businessId ? (db.prepare(
@@ -418,6 +431,26 @@ apiRouter.get('/revenue/ceo-dashboard', (c) => {
 
   const leads = businessId ? (db.prepare(
     `SELECT COUNT(*) as cnt FROM customer_journeys WHERE business_id = ? AND stage IN ('LEAD','QUALIFIED_LEAD') AND classification = 'REAL'`
+  ).get(businessId) as any)?.cnt || 0 : 0;
+
+  const prospects = businessId ? (db.prepare(
+    `SELECT COUNT(*) as cnt FROM sales_pipeline WHERE business_id = ? AND stage = 'PROSPECT'`
+  ).get(businessId) as any)?.cnt || 0 : 0;
+
+  const replies = businessId ? (db.prepare(
+    `SELECT COUNT(*) as cnt FROM sales_pipeline WHERE business_id = ? AND stage = 'REPLIED'`
+  ).get(businessId) as any)?.cnt || 0 : 0;
+
+  const meetings = businessId ? (db.prepare(
+    `SELECT COUNT(*) as cnt FROM sales_pipeline WHERE business_id = ? AND stage = 'MEETING_BOOKED'`
+  ).get(businessId) as any)?.cnt || 0 : 0;
+
+  const offers = businessId ? (db.prepare(
+    `SELECT COUNT(*) as cnt FROM sales_pipeline WHERE business_id = ? AND stage = 'PROPOSAL_SENT'`
+  ).get(businessId) as any)?.cnt || 0 : 0;
+
+  const paymentPending = businessId ? (db.prepare(
+    `SELECT COUNT(*) as cnt FROM payment_requests WHERE business_id = ? AND status IN ('SENT', 'PENDING', 'PAYMENT_INITIATED')`
   ).get(businessId) as any)?.cnt || 0 : 0;
 
   const activeOpps = businessId ? (db.prepare(
@@ -429,46 +462,77 @@ apiRouter.get('/revenue/ceo-dashboard', (c) => {
   ).get(orgId) as any);
 
   const nba = businessId ? NextBestActionEngine.getInstance().choose(businessId, orgId) : null;
+  const quota = UnifiedQuotaService.getInstance().getStatus();
+  const health = UnifiedQuotaService.getInstance().getHealthSummary(orgId);
+
+  const bottleneck = leads > 0 && customers === 0
+    ? 'LEADS NOT CONVERTING — needs outreach'
+    : activeOpps === 0 && leads === 0
+    ? 'NO PIPELINE — needs prospect discovery'
+    : verified === 0
+    ? 'NO REVENUE — needs payment collection'
+    : 'GROWING';
 
   return c.json({
     success: true,
     data: {
+      autonomy: {
+        status: health.status,
+        lastWake: lastCycle?.cycle_start || null,
+        nextWake: lastCycle?.next_cycle_at || null,
+        currentAction: nba?.actionType || 'IDLE',
+        currentBottleneck: bottleneck
+      },
+      gemini: {
+        usedToday: quota.GEMINI?.used ?? 0,
+        safetyLimit: quota.GEMINI?.applicationLimit ?? 1200,
+        remaining: quota.GEMINI?.remainingAllowance ?? 1200,
+        reset: quota.GEMINI?.nextReset ?? null,
+        mode: quota.GEMINI?.mode ?? 'NORMAL'
+      },
+      tavily: {
+        creditsUsedThisMonth: quota.TAVILY?.used ?? 0,
+        safetyLimit: quota.TAVILY?.applicationLimit ?? 800,
+        remaining: quota.TAVILY?.remainingAllowance ?? 800,
+        reset: quota.TAVILY?.nextReset ?? null,
+        mode: quota.TAVILY?.mode ?? 'NORMAL'
+      },
+      sales: {
+        prospects,
+        leads,
+        replies,
+        meetings,
+        offers,
+        paymentPending,
+        customers
+      },
+      revenue: {
+        verifiedRevenue: verified,
+        pipelineValue: pipeline,
+        expectedRevenue,
+        revenueToday,
+        revenueThisMonth
+      },
+      health,
+      // Backward-compatible properties for existing consumers
       verifiedRevenueINR: verified,
       pipelineValueINR: pipeline,
       customers,
       leads,
       activeOpportunities: activeOpps,
-      lastCycle: lastCycle ? {
-        id: lastCycle.id,
-        status: lastCycle.status,
-        startedAt: lastCycle.cycle_start,
-        actionsTaken: lastCycle.actions_taken
-      } : null,
-      nextBestAction: nba ? {
-        actionType: nba.actionType,
-        rationale: nba.rationale,
-        expectedRevenueINR: nba.expectedRevenueINR,
-        score: nba.score
-      } : null,
-      currentBottleneck: leads > 0 && customers === 0
-        ? 'LEADS NOT CONVERTING — needs outreach'
-        : activeOpps === 0 && leads === 0
-        ? 'NO PIPELINE — needs prospect discovery'
-        : verified === 0
-        ? 'NO REVENUE — needs payment collection'
-        : 'GROWING'
+      nextBestAction: nba,
+      currentBottleneck: bottleneck
     }
   });
 });
 
-// Public Cloudflare Worker cron ping endpoint (no auth — Cloudflare Worker calls this)
-// This keeps Render alive and triggers an ARO cycle on schedule
+// Public Cloudflare Worker cron ping endpoint (Spec § 2)
 apiRouter.post('/cron/ping', async (c) => {
-  const secret = c.req.header('x-cron-secret') || '';
+  const secret = c.req.header('x-cron-secret') || c.req.header('X-Cron-Secret') || '';
   const expectedSecret = process.env.CRON_PING_SECRET || 'cron_ping_default_dev';
 
   if (secret !== expectedSecret) {
-    return c.json({ error: 'Unauthorized' }, 401);
+    return c.json({ error: 'Unauthorized: Invalid X-Cron-Secret' }, 401);
   }
 
   const db = getDb();
@@ -481,7 +545,14 @@ apiRouter.post('/cron/ping', async (c) => {
     try {
       const aro = AutonomousRevenueOrchestrator.getInstance();
       const result = await aro.runCycle(org.id, biz.id, 'CLOUDFLARE_CRON');
-      results.push({ organizationId: org.id, status: result.status, actionsTaken: result.actionsTaken });
+      results.push({
+        organizationId: org.id,
+        businessId: biz.id,
+        status: result.status,
+        actionExecutionStatus: result.actionExecutionStatus,
+        actionsTaken: result.actionsTaken,
+        nextBestAction: result.nextBestAction.actionType
+      });
     } catch (err: any) {
       results.push({ organizationId: org.id, status: 'ERROR', error: err.message });
     }

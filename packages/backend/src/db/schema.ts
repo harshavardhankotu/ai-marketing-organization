@@ -1235,4 +1235,66 @@ CREATE TABLE IF NOT EXISTS autonomous_cycle_log (
 );
 CREATE INDEX IF NOT EXISTS idx_cycle_log_org ON autonomous_cycle_log(organization_id);
 CREATE INDEX IF NOT EXISTS idx_cycle_log_status ON autonomous_cycle_log(status);
+
+-- 59. Provider Quota State (unified quota manager — one row per provider)
+CREATE TABLE IF NOT EXISTS provider_quota_state (
+  id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL UNIQUE,
+  provider_limit INTEGER,
+  application_limit INTEGER NOT NULL DEFAULT 1200,
+  requests_today INTEGER NOT NULL DEFAULT 0,
+  credits_consumed_month INTEGER NOT NULL DEFAULT 0,
+  credits_estimated_remaining INTEGER,
+  rate_limit_responses INTEGER NOT NULL DEFAULT 0,
+  successful_requests INTEGER NOT NULL DEFAULT 0,
+  failed_requests INTEGER NOT NULL DEFAULT 0,
+  is_locked INTEGER NOT NULL DEFAULT 0,
+  lock_reason TEXT,
+  last_reset TEXT,
+  next_reset TEXT,
+  reset_window_hours INTEGER NOT NULL DEFAULT 24,
+  last_successful_request TEXT,
+  last_rate_limit TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 60. Automation Health (one row per organization)
+CREATE TABLE IF NOT EXISTS automation_health (
+  organization_id TEXT PRIMARY KEY,
+  last_successful_wake TEXT,
+  last_successful_external_action TEXT,
+  last_successful_revenue_action TEXT,
+  consecutive_wake_failures INTEGER NOT NULL DEFAULT 0,
+  consecutive_action_failures INTEGER NOT NULL DEFAULT 0,
+  provider_failures_json TEXT NOT NULL DEFAULT '{}',
+  quota_locks_json TEXT NOT NULL DEFAULT '[]',
+  authorization_blocks INTEGER NOT NULL DEFAULT 0,
+  total_wakes INTEGER NOT NULL DEFAULT 0,
+  total_external_actions INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 61. Business Autonomy Lock (prevents concurrent ARO cycles)
+CREATE TABLE IF NOT EXISTS business_autonomy_lock (
+  business_id TEXT PRIMARY KEY,
+  locked_at TEXT NOT NULL,
+  lock_owner TEXT NOT NULL,
+  lease_expiry TEXT NOT NULL
+);
+
+-- 62. Action Cooldowns (prevents rapid repeated execution per action and target)
+CREATE TABLE IF NOT EXISTS action_cooldowns (
+  target_id TEXT NOT NULL,
+  action_type TEXT NOT NULL,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  last_executed_at TEXT NOT NULL,
+  next_eligible_at TEXT NOT NULL,
+  max_attempts INTEGER NOT NULL DEFAULT 3,
+  exhausted INTEGER NOT NULL DEFAULT 0,
+  escalated INTEGER NOT NULL DEFAULT 0,
+  last_succeeded INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (target_id, action_type)
+);
+CREATE INDEX IF NOT EXISTS idx_cooldowns_eligible ON action_cooldowns(next_eligible_at);
 `;
