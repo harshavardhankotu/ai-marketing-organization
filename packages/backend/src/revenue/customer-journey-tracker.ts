@@ -121,7 +121,7 @@ export class CustomerJourneyTracker {
 
     return {
       id,
-      organizationId,
+      organizationId: resolvedOrgId,
       businessId,
       visitorId,
       stage: 'VISITOR',

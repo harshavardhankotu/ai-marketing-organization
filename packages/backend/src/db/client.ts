@@ -108,7 +108,46 @@ export function getDb(dbPath?: string): Database.Database {
     db.exec(`ALTER TABLE agent_scorecards ADD COLUMN is_top_performer INTEGER NOT NULL DEFAULT 0`);
   } catch {}
 
-  // Initialize schema
+  // Autonomous Revenue Organization — new table migration guards
+  // These are safe no-ops if the tables already exist (SCHEMA_SQL handles full creation)
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS opportunities (
+      id TEXT PRIMARY KEY, business_id TEXT NOT NULL, organization_id TEXT NOT NULL,
+      source TEXT NOT NULL, evidence_json TEXT NOT NULL DEFAULT '[]',
+      estimated_value_inr REAL NOT NULL DEFAULT 0, probability REAL NOT NULL DEFAULT 0,
+      acquisition_cost_inr REAL NOT NULL DEFAULT 0, time_to_revenue_days INTEGER NOT NULL DEFAULT 30,
+      authorization_requirements_json TEXT NOT NULL DEFAULT '[]', risk_level TEXT NOT NULL DEFAULT 'MEDIUM',
+      next_best_action TEXT, status TEXT NOT NULL DEFAULT 'DISCOVERED',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE,
+      FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+    )`);
+  } catch {}
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS durable_events (
+      id TEXT PRIMARY KEY, event_type TEXT NOT NULL, business_id TEXT,
+      organization_id TEXT NOT NULL, payload_json TEXT NOT NULL DEFAULT '{}',
+      processed INTEGER NOT NULL DEFAULT 0, processed_at TEXT,
+      triggered_agents_json TEXT NOT NULL DEFAULT '[]', error_message TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+    )`);
+  } catch {}
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS autonomous_cycle_log (
+      id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, business_id TEXT,
+      trigger_source TEXT NOT NULL DEFAULT 'SCHEDULER', cycle_start TEXT NOT NULL DEFAULT (datetime('now')),
+      cycle_end TEXT, status TEXT NOT NULL DEFAULT 'RUNNING',
+      opportunities_discovered INTEGER NOT NULL DEFAULT 0, opportunities_qualified INTEGER NOT NULL DEFAULT 0,
+      actions_taken INTEGER NOT NULL DEFAULT 0, revenue_recorded_inr REAL NOT NULL DEFAULT 0,
+      next_best_action TEXT, next_cycle_at TEXT, error_message TEXT,
+      summary_json TEXT NOT NULL DEFAULT '{}',
+      FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+    )`);
+  } catch {}
+
+  // Initialize schema (creates all tables if not exist — safe for both fresh and existing DBs)
+
   db.exec(SCHEMA_SQL);
 
   dbInstance = db;

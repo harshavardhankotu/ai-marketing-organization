@@ -1028,4 +1028,211 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_sub_org ON subscriptions(organization_id);
+
+-- ============================================================
+-- AUTONOMOUS REVENUE ORGANIZATION — New Tables (Spec 2026-09)
+-- ============================================================
+
+-- 51. Opportunities (OpportunityEngine — every discovered revenue opportunity)
+CREATE TABLE IF NOT EXISTS opportunities (
+  id TEXT PRIMARY KEY,
+  business_id TEXT NOT NULL,
+  organization_id TEXT NOT NULL,
+  source TEXT NOT NULL, -- ORGANIC_SEARCH | SOCIAL | REFERRAL | LOCAL_PARTNERSHIP | COMPETITOR_GAP | INBOUND | OUTBOUND_PROSPECT
+  evidence_json TEXT NOT NULL DEFAULT '[]', -- array of real-world evidence references (URLs, Tavily results, etc.)
+  estimated_value_inr REAL NOT NULL DEFAULT 0,
+  probability REAL NOT NULL DEFAULT 0, -- 0-1
+  acquisition_cost_inr REAL NOT NULL DEFAULT 0,
+  time_to_revenue_days INTEGER NOT NULL DEFAULT 30,
+  authorization_requirements_json TEXT NOT NULL DEFAULT '[]',
+  risk_level TEXT NOT NULL DEFAULT 'MEDIUM', -- LOW | MEDIUM | HIGH
+  next_best_action TEXT,
+  status TEXT NOT NULL DEFAULT 'DISCOVERED', -- DISCOVERED | QUALIFIED | ENGAGING | CONVERTING | WON | LOST | IGNORED
+  expected_revenue_inr REAL GENERATED ALWAYS AS (estimated_value_inr * probability) VIRTUAL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE,
+  FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_opp_biz_status ON opportunities(business_id, status);
+CREATE INDEX IF NOT EXISTS idx_opp_org ON opportunities(organization_id);
+
+-- 52. Sales Pipeline (end-to-end lead progression with owner agent)
+CREATE TABLE IF NOT EXISTS sales_pipeline (
+  id TEXT PRIMARY KEY,
+  opportunity_id TEXT,
+  business_id TEXT NOT NULL,
+  organization_id TEXT NOT NULL,
+  outbound_contact_id TEXT,
+  journey_id TEXT,
+  stage TEXT NOT NULL DEFAULT 'PROSPECT',
+  -- PROSPECT | CONTACTED | REPLIED | QUALIFIED | MEETING_BOOKED | PROPOSAL_SENT | PAYMENT_PENDING | PAID | ONBOARDED | RETAINED | LOST
+  owner_agent TEXT NOT NULL DEFAULT 'orchestrator',
+  next_action TEXT,
+  next_action_at TEXT,
+  reason TEXT,
+  probability REAL NOT NULL DEFAULT 0,
+  expected_revenue_inr REAL NOT NULL DEFAULT 0,
+  lost_reason TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE,
+  FOREIGN KEY (opportunity_id) REFERENCES opportunities(id) ON DELETE SET NULL,
+  FOREIGN KEY (journey_id) REFERENCES customer_journeys(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pipeline_biz_stage ON sales_pipeline(business_id, stage);
+CREATE INDEX IF NOT EXISTS idx_pipeline_opp ON sales_pipeline(opportunity_id);
+CREATE INDEX IF NOT EXISTS idx_pipeline_next_action ON sales_pipeline(next_action_at);
+
+-- 53. Outbound Contacts (prospects for platform and client outbound sales)
+CREATE TABLE IF NOT EXISTS outbound_contacts (
+  id TEXT PRIMARY KEY,
+  business_id TEXT NOT NULL, -- which business is doing the outreach
+  organization_id TEXT NOT NULL,
+  prospect_name TEXT NOT NULL,
+  prospect_business_name TEXT,
+  prospect_email TEXT,
+  prospect_phone TEXT,
+  prospect_website TEXT,
+  prospect_city TEXT,
+  prospect_vertical TEXT,
+  source TEXT NOT NULL DEFAULT 'MANUAL', -- TAVILY_RESEARCH | GBP_DISCOVERY | REFERRAL | MANUAL
+  discovery_evidence_json TEXT NOT NULL DEFAULT '{}', -- raw source data
+  is_opted_out INTEGER NOT NULL DEFAULT 0,
+  is_bounced INTEGER NOT NULL DEFAULT 0,
+  is_suppressed INTEGER NOT NULL DEFAULT 0,
+  suppression_reason TEXT,
+  last_contacted_at TEXT,
+  contact_count INTEGER NOT NULL DEFAULT 0,
+  cooldown_until TEXT, -- cannot contact before this time
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE,
+  UNIQUE (business_id, prospect_email)
+);
+CREATE INDEX IF NOT EXISTS idx_outbound_biz ON outbound_contacts(business_id);
+CREATE INDEX IF NOT EXISTS idx_outbound_opted_out ON outbound_contacts(is_opted_out);
+CREATE INDEX IF NOT EXISTS idx_outbound_suppressed ON outbound_contacts(is_suppressed);
+
+-- 54. Durable Events (autonomous event bus — every event that triggers agent action)
+CREATE TABLE IF NOT EXISTS durable_events (
+  id TEXT PRIMARY KEY,
+  event_type TEXT NOT NULL,
+  -- NEW_PROSPECT | NEW_RESEARCH | NEW_LEAD | LEAD_NO_RESPONSE | LEAD_REPLIED |
+  -- APPOINTMENT_BOOKED | APPOINTMENT_COMPLETED | OFFER_SENT | PAYMENT_REQUESTED |
+  -- PAYMENT_RECEIVED | CUSTOMER_CREATED | CUSTOMER_LOST | EXPERIMENT_RESULT | REVENUE_RECORDED
+  business_id TEXT,
+  organization_id TEXT NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  processed INTEGER NOT NULL DEFAULT 0, -- 0=pending, 1=processed
+  processed_at TEXT,
+  triggered_agents_json TEXT NOT NULL DEFAULT '[]', -- which agents handled this event
+  error_message TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_events_org_type ON durable_events(organization_id, event_type);
+CREATE INDEX IF NOT EXISTS idx_events_unprocessed ON durable_events(processed, created_at);
+CREATE INDEX IF NOT EXISTS idx_events_biz ON durable_events(business_id);
+
+-- 55. Platform Prospects (the platform's own outbound self-sales pipeline)
+CREATE TABLE IF NOT EXISTS platform_prospects (
+  id TEXT PRIMARY KEY,
+  prospect_business_name TEXT NOT NULL,
+  prospect_owner_name TEXT,
+  prospect_email TEXT,
+  prospect_phone TEXT,
+  prospect_website TEXT,
+  prospect_city TEXT NOT NULL,
+  prospect_vertical TEXT NOT NULL, -- dental | salon | clinic | tuition | fitness | legal | home_services
+  discovery_source TEXT NOT NULL DEFAULT 'TAVILY_RESEARCH',
+  discovery_evidence_json TEXT NOT NULL DEFAULT '{}',
+  audit_score REAL, -- estimated opportunity value if we onboard them
+  stage TEXT NOT NULL DEFAULT 'DISCOVERED',
+  -- DISCOVERED | AUDITED | CONTACTED | REPLIED | DEMO_DONE | PROPOSAL_SENT | PAID | LOST
+  is_opted_out INTEGER NOT NULL DEFAULT 0,
+  last_contacted_at TEXT,
+  contact_count INTEGER NOT NULL DEFAULT 0,
+  monthly_fee_inr REAL,
+  notes TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_platform_prospects_email ON platform_prospects(prospect_email) WHERE prospect_email IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_platform_prospects_stage ON platform_prospects(stage);
+CREATE INDEX IF NOT EXISTS idx_platform_prospects_vertical ON platform_prospects(prospect_vertical);
+
+-- 56. Payment Requests (PaymentRequestEngine — tracks every payment request lifecycle)
+CREATE TABLE IF NOT EXISTS payment_requests (
+  id TEXT PRIMARY KEY,
+  opportunity_id TEXT,
+  journey_id TEXT,
+  business_id TEXT NOT NULL,
+  organization_id TEXT NOT NULL,
+  offer_description TEXT NOT NULL,
+  amount_inr REAL NOT NULL,
+  currency TEXT NOT NULL DEFAULT 'INR',
+  classification TEXT NOT NULL DEFAULT 'REAL', -- REAL | MANUAL_VERIFIED | TEST | SIMULATED
+  status TEXT NOT NULL DEFAULT 'PENDING',
+  -- PENDING | SENT | VIEWED | PAYMENT_INITIATED | PAID | EXPIRED | CANCELLED | FAILED
+  payment_link TEXT,
+  razorpay_order_id TEXT,
+  payment_verified_at TEXT,
+  payment_evidence_json TEXT NOT NULL DEFAULT '{}',
+  fulfilment_triggered INTEGER NOT NULL DEFAULT 0,
+  revenue_recorded INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE,
+  FOREIGN KEY (opportunity_id) REFERENCES opportunities(id) ON DELETE SET NULL,
+  FOREIGN KEY (journey_id) REFERENCES customer_journeys(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_payrq_biz_status ON payment_requests(business_id, status);
+CREATE INDEX IF NOT EXISTS idx_payrq_opp ON payment_requests(opportunity_id);
+
+-- 57. Revenue Attribution Chain (full chain: customer → opportunity → source → campaign)
+CREATE TABLE IF NOT EXISTS revenue_attribution_chain (
+  id TEXT PRIMARY KEY,
+  transaction_id TEXT,
+  journey_id TEXT,
+  opportunity_id TEXT,
+  campaign_id TEXT,
+  content_asset_id TEXT,
+  channel TEXT,
+  acquisition_source TEXT,
+  strategy_id TEXT,
+  evidence_confidence TEXT NOT NULL DEFAULT 'INFERRED', -- DIRECT | CORRELATED | INFERRED | UNKNOWN
+  attribution_method TEXT NOT NULL DEFAULT 'LAST_TOUCH',
+  revenue_inr REAL NOT NULL DEFAULT 0,
+  classification TEXT NOT NULL DEFAULT 'REAL',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE SET NULL,
+  FOREIGN KEY (journey_id) REFERENCES customer_journeys(id) ON DELETE SET NULL,
+  FOREIGN KEY (opportunity_id) REFERENCES opportunities(id) ON DELETE SET NULL,
+  FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_attr_chain_journey ON revenue_attribution_chain(journey_id);
+CREATE INDEX IF NOT EXISTS idx_attr_chain_opp ON revenue_attribution_chain(opportunity_id);
+
+-- 58. Autonomous Cycle Log (audit log for every AutonomousRevenueOrchestrator execution)
+CREATE TABLE IF NOT EXISTS autonomous_cycle_log (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL,
+  business_id TEXT,
+  trigger_source TEXT NOT NULL DEFAULT 'SCHEDULER', -- SCHEDULER | EVENT | MANUAL | CLOUDFLARE_CRON
+  cycle_start TEXT NOT NULL DEFAULT (datetime('now')),
+  cycle_end TEXT,
+  status TEXT NOT NULL DEFAULT 'RUNNING', -- RUNNING | COMPLETED | FAILED | PARTIAL
+  opportunities_discovered INTEGER NOT NULL DEFAULT 0,
+  opportunities_qualified INTEGER NOT NULL DEFAULT 0,
+  actions_taken INTEGER NOT NULL DEFAULT 0,
+  revenue_recorded_inr REAL NOT NULL DEFAULT 0,
+  next_best_action TEXT,
+  next_cycle_at TEXT,
+  error_message TEXT,
+  summary_json TEXT NOT NULL DEFAULT '{}',
+  FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_cycle_log_org ON autonomous_cycle_log(organization_id);
+CREATE INDEX IF NOT EXISTS idx_cycle_log_status ON autonomous_cycle_log(status);
 `;

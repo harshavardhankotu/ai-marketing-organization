@@ -3,9 +3,8 @@ import { DurableWorkflowEngine } from './workflow-engine.js';
 import { AgentRuntime } from '../agents/agent-runtime.js';
 import { ApprovalManager } from '../control-plane/approval-manager.js';
 import { LearningManager } from '../control-plane/learning-manager.js';
-import { EventTracker } from '../analytics/event-tracker.js';
 import { ExperimentEngine } from '../experiments/experiment-engine.js';
-import { WhatsAppAdapter, MetaAdapter, GoogleAdapter } from '../integrations/adapter-base.js';
+import { WhatsAppAdapter } from '../integrations/adapter-base.js';
 import { MarketResearchPipeline } from '../research/market-research-pipeline.js';
 import { StrategyMatchingEngine } from '../strategy/matching-engine.js';
 
@@ -22,7 +21,7 @@ export class ClosedLoopMarketingCycle {
   public async executeCompleteCycle(input: RunCycleInput): Promise<{
     workflowId: string;
     strategyId: string;
-    evolvedStrategyId: string;
+    evolvedStrategyId: string | undefined;
     campaignId: string;
     contentAssetIds: string[];
     experimentId: string;
@@ -222,100 +221,54 @@ export class ClosedLoopMarketingCycle {
           }
         },
 
-        // 6. Telemetry Ingestion (Simulated Real-world Ingestion)
-        {
-          name: 'TELEMETRY',
-          agentId: 'anl-01',
-          priority: 'LOW',
-          execute: async (ctx) => {
-            const campaignId = ctx.CAMPAIGN.campaignId;
-            const contentAssetId = ctx.CONTENT.contentAssetIds[0];
-
-            // Ingest sample batch of realistic events
-            EventTracker.ingest({
-              organizationId: input.organizationId,
-              businessId: input.businessId,
-              campaignId,
-              contentAssetId,
-              channel: 'WHATSAPP',
-              eventType: 'impression'
-            });
-
-            EventTracker.ingest({
-              organizationId: input.organizationId,
-              businessId: input.businessId,
-              campaignId,
-              contentAssetId,
-              channel: 'WHATSAPP',
-              eventType: 'click'
-            });
-
-            const leadEventId = EventTracker.ingest({
-              organizationId: input.organizationId,
-              businessId: input.businessId,
-              campaignId,
-              contentAssetId,
-              channel: 'WHATSAPP',
-              eventType: 'qualified_lead',
-              revenueINR: 0
-            });
-
-            return { leadEventId };
-          }
-        },
-
-        // 7. Experimentation
+        // 6. Experiment Registration (DRAFT only — awaits real traffic data)
         {
           name: 'EXPERIMENT',
           agentId: 'anl-18',
           priority: 'NORMAL',
           execute: async (ctx) => {
+            // Register an experiment in DRAFT state. It will not be evaluated until
+            // real traffic data from actual channel connections is collected.
+            // No synthetic sample sizes, no hardcoded p-values, no simulated uplifts.
             const expId = ExperimentEngine.createExperiment({
               organizationId: input.organizationId,
               businessId: input.businessId,
               campaignId: ctx.CAMPAIGN.campaignId,
-              title: 'WhatsApp Ad Headline: Transparent EMI vs Generic Free Consultation',
-              hypothesis: 'Stating "Easy EMI from ₹2,999/mo" upfront generates +30% qualified patient leads in Hyderabad tech corridors.',
-              baseline: 'Complimentary Dental Checkup in Banjara Hills',
-              treatment: 'Custom Invisible Aligners with ₹2,999/mo Zero-Cost EMI',
+              title: `${biz.vertical_name} Channel Mix Experiment`,
+              hypothesis: 'Channel allocation from strategy matching engine will be validated once real inbound leads are tracked.',
+              baseline: 'Current brand messaging',
+              treatment: 'Strategy-engine-recommended messaging',
               successMetric: 'Qualified Lead Conversion Rate',
-              expectedEffect: '+30% qualified consultation inquiries',
-              minimumEvidenceRequirement: 20
+              expectedEffect: 'TBD — requires real traffic data',
+              minimumEvidenceRequirement: 50 // must see 50 real data points before evaluating
             });
 
-            // Evaluate with conclusive sample data
-            const evalResult = ExperimentEngine.evaluateExperiment(expId, {
-              baselineSamples: 150,
-              baselineConversions: 8,
-              treatmentSamples: 150,
-              treatmentConversions: 19
-            });
-
-            return { experimentId: expId, ...evalResult };
+            // DO NOT call evaluateExperiment here — there is no real data yet.
+            // Evaluation happens autonomously when AutonomousRevenueOrchestrator
+            // sees sufficient real-world evidence arrive.
+            return { experimentId: expId, status: 'DRAFT_AWAITING_REAL_DATA' };
           }
         },
 
-        // 8. Strategy Evolution & Closed Loop Repeat
+        // 7. Learning Checkpoint (observational only — no synthetic inference)
         {
-          name: 'EVOLUTION',
+          name: 'LEARNING_CHECKPOINT',
           agentId: 'anl-20',
-          priority: 'HIGH',
-          execute: async (ctx) => {
-            const evolved = LearningManager.evolveStrategy(
-              input.organizationId,
-              input.businessId,
-              input.goalId,
-              'Uplift verified in Experiment exp-01: Scale WhatsApp transparent EMI allocation to 50% of budget.',
-              [
-                { channel: 'WHATSAPP', allocation: 50, rationale: 'Highest CPQL efficiency' },
-                { channel: 'GOOGLE_BUSINESS_PROFILE', allocation: 30, rationale: 'High localized intent' },
-                { channel: 'INSTAGRAM', allocation: 20, rationale: 'Visual branding' }
-              ],
-              ['Painless 3D Dentistry', 'Zero-Cost Monthly EMI in INR', 'Senior Implantologist Reviews'],
-              'REAL_WORLD_LEARNING'
-            );
+          priority: 'NORMAL',
+          execute: async (_ctx) => {
+            // Record that this cycle ran and what it produced.
+            // Strategy evolution only happens when real experiment results arrive.
+            // LearningManager.evolveStrategy() must NOT be called with synthetic data.
+            const checkpointId = `chk_${Date.now()}`;
+            db.prepare(`
+              INSERT OR IGNORE INTO tasks (id, organization_id, workflow_id, agent_id, title, idempotency_key)
+              VALUES (?, ?, ?, 'anl-20', 'Cycle Completion Checkpoint — Awaiting Real Evidence', ?)
+            `).run(checkpointId, input.organizationId, workflowId, checkpointId);
 
-            return { evolved };
+            return {
+              checkpointId,
+              note: 'Strategy evolution deferred until AutonomousRevenueOrchestrator collects real-world evidence'
+            };
           }
         }
       ]
@@ -325,11 +278,11 @@ export class ClosedLoopMarketingCycle {
     return {
       workflowId,
       strategyId: finalCtx.STRATEGY?.strategyId,
-      evolvedStrategyId: finalCtx.EVOLUTION?.evolved?.strategyId,
+      evolvedStrategyId: undefined, // Set by AutonomousRevenueOrchestrator after real evidence
       campaignId: finalCtx.CAMPAIGN?.campaignId,
       contentAssetIds: finalCtx.CONTENT?.contentAssetIds || [],
       experimentId: finalCtx.EXPERIMENT?.experimentId,
-      learningId: `lrn_auto_${Date.now()}`
+      learningId: finalCtx.LEARNING_CHECKPOINT?.checkpointId || `chk_${Date.now()}`
     };
   }
 }

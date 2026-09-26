@@ -38,6 +38,10 @@ import { TrafficProvenanceEngine } from '../organic/traffic-provenance.js';
 import { RazorpayAdapter } from '../integrations/razorpay.js';
 import { DPDPComplianceManager } from '../compliance/dpdp-manager.js';
 import { MarketResearchPipeline } from '../research/market-research-pipeline.js';
+import { AutonomousRevenueOrchestrator } from '../revenue/autonomous-revenue-orchestrator.js';
+import { OpportunityEngine } from '../revenue/opportunity-engine.js';
+import { NextBestActionEngine } from '../revenue/next-best-action-engine.js';
+import { DurableEventBus } from '../revenue/durable-event-bus.js';
 import { GoogleSearchClient } from '../research/google-search-client.js';
 import { StrategyMatchingEngine } from '../strategy/matching-engine.js';
 import { UniversalLockManager } from '../quota/universal-lock-manager.js';
@@ -62,7 +66,8 @@ apiRouter.use('*', async (c, next) => {
     path.includes('/compliance/') ||
     path.includes('/landing-pages') ||
     path.includes('/organic/sessions') ||
-    path.includes('/organic/leads')
+    path.includes('/organic/leads') ||
+    path.includes('/cron/') // Cloudflare Worker cron ping — has its own secret validation
   ) {
     c.set('organizationId', c.req.header('x-organization-id') || 'org_smilekraft_01');
     c.set('userId', 'usr_public_lead');
@@ -315,6 +320,176 @@ apiRouter.post('/workflows/trigger-cycle', async (c) => {
     }, 500);
   }
 });
+
+// ──────────────────────────────────────────────────────────────────────────────
+// AUTONOMOUS REVENUE ORCHESTRATOR (ARO) — CEO Loop
+// ──────────────────────────────────────────────────────────────────────────────
+
+// POST /workflows/autonomous-cycle — trigger a full ARO cycle
+apiRouter.post('/workflows/autonomous-cycle', async (c) => {
+  const orgId = c.get('organizationId');
+  const body = await c.req.json().catch(() => ({}));
+  const db = getDb();
+
+  const bizRow = body.businessId
+    ? db.prepare('SELECT id FROM businesses WHERE id = ?').get(body.businessId) as any
+    : db.prepare('SELECT id FROM businesses WHERE organization_id = ? ORDER BY created_at DESC LIMIT 1').get(orgId) as any;
+
+  if (!bizRow) {
+    return c.json({ success: false, error: 'No business found. Create a business first.' }, 400);
+  }
+
+  const triggerSource = body.triggerSource || 'MANUAL';
+
+  try {
+    const aro = AutonomousRevenueOrchestrator.getInstance();
+    const result = await aro.runCycle(orgId, bizRow.id, triggerSource);
+    return c.json({ success: true, data: result });
+  } catch (err: any) {
+    console.error('[ARO CYCLE ERROR]:', err);
+    return c.json({ success: false, error: err.message }, 500);
+  }
+});
+
+// GET /revenue/opportunities — list opportunities ranked by expected value
+apiRouter.get('/revenue/opportunities', (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const bizRow = db.prepare('SELECT id FROM businesses WHERE organization_id = ? ORDER BY created_at DESC LIMIT 1').get(orgId) as any;
+  if (!bizRow) return c.json({ success: true, data: [] });
+
+  const engine = OpportunityEngine.getInstance();
+  const ranked = engine.scoreAndRank(bizRow.id);
+  return c.json({ success: true, data: ranked, total: ranked.length });
+});
+
+// GET /revenue/next-best-action — what should the system do right now?
+apiRouter.get('/revenue/next-best-action', (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const bizRow = db.prepare('SELECT id FROM businesses WHERE organization_id = ? ORDER BY created_at DESC LIMIT 1').get(orgId) as any;
+  if (!bizRow) return c.json({ success: false, error: 'No business found' }, 400);
+
+  const nba = NextBestActionEngine.getInstance().choose(bizRow.id, orgId);
+  return c.json({ success: true, data: nba });
+});
+
+// GET /revenue/events — inspect the durable event bus (recent 50 events)
+apiRouter.get('/revenue/events', (c) => {
+  const orgId = c.get('organizationId');
+  const events = DurableEventBus.listRecent(orgId, 50);
+  return c.json({ success: true, data: events, total: events.length });
+});
+
+// GET /revenue/pipeline — full sales pipeline for the business
+apiRouter.get('/revenue/pipeline', (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+  const pipeline = db.prepare(`
+    SELECT sp.*, cj.customer_name, cj.customer_phone, cj.customer_email
+    FROM sales_pipeline sp
+    LEFT JOIN customer_journeys cj ON sp.journey_id = cj.id
+    WHERE sp.organization_id = ?
+    ORDER BY sp.expected_revenue_inr DESC, sp.created_at DESC
+    LIMIT 100
+  `).all(orgId) as any[];
+  return c.json({ success: true, data: pipeline, total: pipeline.length });
+});
+
+// GET /revenue/ceo-dashboard — ARO CEO dashboard (revenue, pipeline, NBA, bottleneck)
+apiRouter.get('/revenue/ceo-dashboard', (c) => {
+  const orgId = c.get('organizationId');
+  const db = getDb();
+
+  const bizRow = db.prepare('SELECT * FROM businesses WHERE organization_id = ? ORDER BY created_at DESC LIMIT 1').get(orgId) as any;
+  const businessId = bizRow?.id;
+
+  const verified = businessId ? (db.prepare(
+    `SELECT COALESCE(SUM(amount_inr), 0) as total FROM transactions WHERE business_id = ? AND classification = 'REAL' AND status = 'SUCCESS'`
+  ).get(businessId) as any)?.total || 0 : 0;
+
+  const pipeline = businessId ? (db.prepare(
+    `SELECT COALESCE(SUM(expected_revenue_inr), 0) as total FROM sales_pipeline WHERE business_id = ? AND stage NOT IN ('LOST')`
+  ).get(businessId) as any)?.total || 0 : 0;
+
+  const customers = businessId ? (db.prepare(
+    `SELECT COUNT(*) as cnt FROM customer_journeys WHERE business_id = ? AND stage = 'CUSTOMER' AND classification = 'REAL'`
+  ).get(businessId) as any)?.cnt || 0 : 0;
+
+  const leads = businessId ? (db.prepare(
+    `SELECT COUNT(*) as cnt FROM customer_journeys WHERE business_id = ? AND stage IN ('LEAD','QUALIFIED_LEAD') AND classification = 'REAL'`
+  ).get(businessId) as any)?.cnt || 0 : 0;
+
+  const activeOpps = businessId ? (db.prepare(
+    `SELECT COUNT(*) as cnt FROM opportunities WHERE business_id = ? AND status NOT IN ('WON','LOST','IGNORED')`
+  ).get(businessId) as any)?.cnt || 0 : 0;
+
+  const lastCycle = (db.prepare(
+    `SELECT * FROM autonomous_cycle_log WHERE organization_id = ? ORDER BY cycle_start DESC LIMIT 1`
+  ).get(orgId) as any);
+
+  const nba = businessId ? NextBestActionEngine.getInstance().choose(businessId, orgId) : null;
+
+  return c.json({
+    success: true,
+    data: {
+      verifiedRevenueINR: verified,
+      pipelineValueINR: pipeline,
+      customers,
+      leads,
+      activeOpportunities: activeOpps,
+      lastCycle: lastCycle ? {
+        id: lastCycle.id,
+        status: lastCycle.status,
+        startedAt: lastCycle.cycle_start,
+        actionsTaken: lastCycle.actions_taken
+      } : null,
+      nextBestAction: nba ? {
+        actionType: nba.actionType,
+        rationale: nba.rationale,
+        expectedRevenueINR: nba.expectedRevenueINR,
+        score: nba.score
+      } : null,
+      currentBottleneck: leads > 0 && customers === 0
+        ? 'LEADS NOT CONVERTING — needs outreach'
+        : activeOpps === 0 && leads === 0
+        ? 'NO PIPELINE — needs prospect discovery'
+        : verified === 0
+        ? 'NO REVENUE — needs payment collection'
+        : 'GROWING'
+    }
+  });
+});
+
+// Public Cloudflare Worker cron ping endpoint (no auth — Cloudflare Worker calls this)
+// This keeps Render alive and triggers an ARO cycle on schedule
+apiRouter.post('/cron/ping', async (c) => {
+  const secret = c.req.header('x-cron-secret') || '';
+  const expectedSecret = process.env.CRON_PING_SECRET || 'cron_ping_default_dev';
+
+  if (secret !== expectedSecret) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+
+  const db = getDb();
+  const orgs = db.prepare('SELECT id FROM organizations LIMIT 5').all() as any[];
+  const results: any[] = [];
+
+  for (const org of orgs) {
+    const biz = db.prepare('SELECT id FROM businesses WHERE organization_id = ? LIMIT 1').get(org.id) as any;
+    if (!biz) continue;
+    try {
+      const aro = AutonomousRevenueOrchestrator.getInstance();
+      const result = await aro.runCycle(org.id, biz.id, 'CLOUDFLARE_CRON');
+      results.push({ organizationId: org.id, status: result.status, actionsTaken: result.actionsTaken });
+    } catch (err: any) {
+      results.push({ organizationId: org.id, status: 'ERROR', error: err.message });
+    }
+  }
+
+  return c.json({ success: true, data: results, timestamp: new Date().toISOString() });
+});
+
 
 // Campaigns
 apiRouter.get('/campaigns', (c) => {

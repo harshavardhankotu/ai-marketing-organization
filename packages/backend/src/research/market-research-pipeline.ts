@@ -167,31 +167,12 @@ export class MarketResearchPipeline {
     }
 
 
+    // Real findings are returned as-is. If allExtractedFindings is empty,
+    // that is the honest result — it means no Tavily API key was provided
+    // or search returned nothing. Callers must handle empty findings gracefully.
+    // DO NOT inject synthetic or fixture-based findings — per spec, research
+    // must come exclusively from REAL_EXTERNAL_EVIDENCE (Tavily → search → source extraction).
 
-    // If in test environment without live credentials, run test harness fixture
-    if (process.env.NODE_ENV === 'test' && allExtractedFindings.length === 0) {
-      const testSearchRes = await this.searchClient.search(queries[0].query, businessId);
-      const structured = await this.structureSearchItems(
-        queries[0].type,
-        queries[0].query,
-        testSearchRes.items,
-        testSearchRes.logId,
-        business,
-        organizationId
-      );
-      for (const f of structured) {
-        allExtractedFindings.push(f);
-      }
-      executionSummary.push({
-        type: queries[0].type,
-        query: queries[0].query,
-        resultsCount: testSearchRes.resultsCount,
-        cached: false,
-        logId: testSearchRes.logId,
-        provider: 'GOOGLE_CUSTOM_SEARCH_TEST_FIXTURE'
-      });
-      providersUsed.push('GOOGLE_CUSTOM_SEARCH_TEST_FIXTURE');
-    }
 
     return {
       businessId,
