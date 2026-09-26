@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { PrivacyPolicyPage } from './PrivacyPolicyPage';
 import { api, getApiBaseUrl } from '../services/api';
+import QRCode from 'qrcode';
 
 export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ onBackToAdmin }) => {
   const [name, setName] = useState('');
@@ -43,6 +44,8 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
   const [paidReceipt, setPaidReceipt] = useState<any>(null);
   const [showUPIModal, setShowUPIModal] = useState(false);
   const [manualUtr, setManualUtr] = useState('');
+  const [qrDataUrl, setQrDataUrl] = useState<string>('');
+  const [manualClaimSuccess, setManualClaimSuccess] = useState<string>('');
 
   // Extract UTM parameters, GCLID, target business, and campaign tracking context
   const searchParams = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '');
@@ -229,34 +232,42 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
     }
   };
 
+  // Local QR code generation effect (Spec § 14: Never use third-party api.qrserver.com in production)
+  useEffect(() => {
+    if (upiVpa) {
+      const upiPayload = `upi://pay?pa=${upiVpa}&pn=${encodeURIComponent(bizName || 'Consultation')}&am=${depositAmount}&cu=INR&tn=Consultation%20Deposit`;
+      QRCode.toDataURL(upiPayload, { width: 180, margin: 1, errorCorrectionLevel: 'M' })
+        .then(url => setQrDataUrl(url))
+        .catch(err => console.error('Local QR generation error:', err));
+    }
+  }, [upiVpa, depositAmount, bizName]);
+
   const handleRazorpayPayment = async (amount: number) => {
     setPaymentLoading(true);
     setPaymentError('');
 
     try {
-      let orderData: any = null;
-      try {
-        const orderRes = await api.createPaymentOrder({
-          businessId: targetBizId,
-          journeyId: confirmedBooking?.id || confirmedBooking?.visitorId,
-          amountINR: amount,
-          receipt: `rcpt_${Date.now()}`,
-          notes: {
-            patientName: name,
-            patientPhone: phone,
-            treatment: treatment,
-            location: location
-          }
-        });
-        if (orderRes.success && orderRes.data) {
-          orderData = orderRes.data;
+      // 1. Create real order on server
+      const orderRes = await api.createPaymentOrder({
+        businessId: targetBizId,
+        journeyId: confirmedBooking?.id || confirmedBooking?.visitorId,
+        amountINR: amount,
+        service: `Consultation & Assessment (${treatment || 'General'})`,
+        notes: {
+          patientName: name,
+          patientPhone: phone,
+          treatment: treatment,
+          location: location
         }
-      } catch (err) {
-        console.warn('Backend order pre-generation skipped, using client checkout options', err);
+      });
+
+      if (!orderRes.success || !orderRes.data?.orderId) {
+        throw new Error(orderRes.error || 'Failed to create payment order with payment gateway.');
       }
 
-      const keyId = orderData?.keyId || 'rzp_live_default';
-      const orderId = orderData?.orderId || `order_${Date.now()}`;
+      const orderData = orderRes.data;
+      const orderId = orderData.orderId;
+      const keyId = orderData.keyId;
 
       const loaded = await loadRazorpayScript();
       if (!loaded || !(window as any).Razorpay) {
@@ -271,8 +282,8 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
         currency: 'INR',
         name: bizName,
         description: `Consultation & Assessment (${treatment})`,
-        image: business?.logo_url || 'https://via.placeholder.com/150',
-        order_id: orderData?.orderId,
+        image: business?.logo_url || undefined,
+        order_id: orderId,
         prefill: {
           name: name,
           contact: phone,
@@ -282,24 +293,32 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
           color: '#0891b2'
         },
         handler: async function (response: any) {
+          setPaymentLoading(true);
           try {
-            await api.verifyPayment({
-              orderId: response.razorpay_order_id || orderId,
+            // Cryptographic server-side verification required before receipt display
+            const verifyRes = await api.verifyPayment({
+              orderId: response.razorpay_order_id,
               paymentId: response.razorpay_payment_id,
-              signature: response.razorpay_signature || 'sig_verified',
-              businessId: targetBizId,
-              journeyId: confirmedBooking?.id || confirmedBooking?.visitorId,
+              signature: response.razorpay_signature,
               method: 'UPI'
             });
-          } catch (e) {
-            console.info('Payment recorded on client', e);
+
+            if (!verifyRes.success) {
+              throw new Error(verifyRes.error || 'Payment signature verification failed on server.');
+            }
+
+            setPaidReceipt({
+              paymentId: response.razorpay_payment_id,
+              amountINR: amount,
+              date: new Date().toLocaleDateString('en-IN'),
+              orderId: response.razorpay_order_id
+            });
+          } catch (err: any) {
+            setPaymentError(err.message || 'Payment signature could not be verified by server. Status: PAYMENT_UNVERIFIED.');
+            setPaidReceipt(null);
+          } finally {
+            setPaymentLoading(false);
           }
-          setPaidReceipt({
-            paymentId: response.razorpay_payment_id || `rzp_pay_${Date.now()}`,
-            amountINR: amount,
-            date: new Date().toLocaleDateString('en-IN'),
-            orderId: response.razorpay_order_id || orderId
-          });
         },
         modal: {
           ondismiss: function () {
@@ -321,32 +340,30 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
     }
   };
 
-  const handleManualUPIConfirm = async () => {
-    if (!manualUtr || manualUtr.trim().length < 6) {
-      setPaymentError('Please enter a valid 12-digit UPI Reference / UTR number from your payment app.');
+  const handleManualUPIClaim = async () => {
+    if (!manualUtr || manualUtr.trim().length < 6 || manualUtr.trim().startsWith('utr_')) {
+      setPaymentError('Please enter a valid banking UTR / transaction reference number (min 6 digits) from your UPI app.');
       return;
     }
     setPaymentLoading(true);
+    setPaymentError('');
     try {
-      const paymentRef = `upi_${manualUtr.trim()}`;
-      try {
-        await api.confirmManualUPI({
-          businessId: targetBizId,
-          amountINR: depositAmount,
-          utr: manualUtr.trim(),
-          journeyId: confirmedBooking?.id || confirmedBooking?.visitorId,
-          serviceRendered: `Consultation Deposit - ${treatment}`,
-        });
-      } catch (e) {
-        console.info('Manual UPI confirmation registered', e);
+      const claimRes = await api.claimManualUPI({
+        businessId: targetBizId,
+        amountINR: depositAmount,
+        utr: manualUtr.trim(),
+        journeyId: confirmedBooking?.id || confirmedBooking?.visitorId,
+        serviceRendered: `Consultation Deposit - ${treatment}`,
+        notes: `Claimed by customer ${name} (${phone})`
+      });
+
+      if (!claimRes.success) {
+        throw new Error(claimRes.error || 'Could not register payment claim.');
       }
 
-      setPaidReceipt({
-        paymentId: paymentRef,
-        amountINR: depositAmount,
-        date: new Date().toLocaleDateString('en-IN'),
-        orderId: `order_upi_${Date.now()}`
-      });
+      setManualClaimSuccess(
+        `Payment claim registered. Reference UTR: ${manualUtr.trim()}. The owner will verify the transaction with the bank before confirming.`
+      );
       setShowUPIModal(false);
     } catch (err: any) {
       setPaymentError(err.message || 'Payment confirmation error.');
@@ -629,6 +646,16 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
                     </div>
                   )}
 
+                  {manualClaimSuccess && (
+                    <div className="p-3 rounded-lg bg-cyan-950/80 border border-cyan-500/40 text-cyan-200 text-xs flex items-start gap-2 shadow-md">
+                      <FileCheck className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
+                      <div>
+                        <div className="font-bold text-white">Payment Submitted for Verification</div>
+                        <div className="text-[11px] text-cyan-300/90 mt-0.5 leading-relaxed">{manualClaimSuccess}</div>
+                      </div>
+                    </div>
+                  )}
+
                   <div className="flex flex-col gap-2 pt-1">
                     <button
                       type="button"
@@ -657,11 +684,17 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
                       {upiVpa ? (
                         <>
                           <div className="w-44 h-44 mx-auto bg-white rounded-xl p-2 flex items-center justify-center shadow-lg border border-slate-700">
-                            <img
-                              src={`https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(`upi://pay?pa=${upiVpa}&pn=${encodeURIComponent(bizName || 'Consultation')}&am=${depositAmount}&cu=INR&tn=Consultation%20Deposit`)}`}
-                              alt="UPI QR Code"
-                              className="w-40 h-40 object-contain rounded"
-                            />
+                            {qrDataUrl ? (
+                              <img
+                                src={qrDataUrl}
+                                alt="UPI QR Code"
+                                className="w-40 h-40 object-contain rounded"
+                              />
+                            ) : (
+                              <div className="w-40 h-40 flex items-center justify-center text-xs text-slate-600">
+                                Generating QR...
+                              </div>
+                            )}
                           </div>
                           <div className="text-[11px] text-slate-300">
                             UPI ID: <code className="text-cyan-300 font-bold bg-slate-900 px-2 py-0.5 rounded">{upiVpa}</code>
@@ -692,12 +725,15 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
                           />
                           <button
                             type="button"
-                            onClick={handleManualUPIConfirm}
-                            className="px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs"
+                            onClick={handleManualUPIClaim}
+                            className="px-3 py-1.5 rounded bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs"
                           >
-                            Verify
+                            Submit Claim
                           </button>
                         </div>
+                        <p className="text-[10px] text-slate-500">
+                          UTR will be verified against banking records before appointment confirmation.
+                        </p>
                       </div>
                     </div>
                   )}

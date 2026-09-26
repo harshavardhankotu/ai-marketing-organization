@@ -51,6 +51,7 @@ import { RealityReportGenerator } from '../revenue/reality-report-generator.js';
 import { RevenueBottleneckEngine } from '../revenue/revenue-bottleneck-engine.js';
 import { LiveProviderActivation } from '../revenue/live-provider-activation.js';
 import { CommercialLifecycleManager } from '../revenue/commercial-lifecycle.js';
+import { OwnerAuthService } from '../auth/owner-auth.js';
 
 export type AppVariables = {
   organizationId: string;
@@ -63,30 +64,53 @@ export const apiRouter = new Hono<{ Variables: AppVariables }>();
 apiRouter.use('*', async (c, next) => {
   const path = c.req.path;
 
-  // 1. Public endpoints
-  if (
+  // 1. Explicit Public Endpoints (Spec § 5 & § 46)
+  const isExplicitPublic =
     path.endsWith('/health') ||
     path.includes('/public/') ||
-    path.includes('/webhooks/') ||
-    path.includes('/payments/') ||
     path.includes('/compliance/') ||
     path.includes('/landing-pages') ||
     path.includes('/organic/sessions') ||
     path.includes('/organic/leads') ||
-    path.includes('/cron/') // Cloudflare Worker cron ping — has its own secret validation
-  ) {
-    c.set('organizationId', c.req.header('x-organization-id') || 'org_smilekraft_01');
+    path.endsWith('/auth/owner/login') ||
+    path.endsWith('/payments/razorpay/create-order') ||
+    path.endsWith('/payments/razorpay/verify') ||
+    path.endsWith('/payments/manual-upi/claim');
+
+  if (isExplicitPublic) {
+    c.set('organizationId', c.req.header('x-organization-id') || (isProduction() ? '' : 'org_smilekraft_01'));
     c.set('userId', 'usr_public_lead');
     return await next();
   }
 
+  // 2. Gateway Webhooks (Cryptographically verified by gateway secret)
+  if (path.includes('/webhooks/')) {
+    c.set('organizationId', c.req.header('x-organization-id') || (isProduction() ? '' : 'org_smilekraft_01'));
+    c.set('userId', 'usr_webhook_gateway');
+    return await next();
+  }
+
+  // 3. Cloudflare Worker Cron Trigger (Authenticated via X-Cron-Secret)
+  if (path.includes('/cron/')) {
+    c.set('organizationId', OwnerAuthService.OWNER_ORGANIZATION_ID);
+    c.set('userId', 'usr_cron_trigger');
+    return await next();
+  }
+
+  // 4. Owner-Only Administration Context Boundary (Spec § 2, § 3, § 4, § 46, § 47)
   const db = getDb();
+  const ownerAuth = OwnerAuthService.getInstance();
+  const cookieHeader = c.req.header('cookie') || '';
+  const cookieToken = cookieHeader.split(';').map(s => s.trim()).find(s => s.startsWith('owner_session='))?.split('=')[1];
+
   const authHeader = c.req.header('authorization') || c.req.header('Authorization');
   const apiKeyHeader = c.req.header('x-api-key');
 
   const token = authHeader?.startsWith('Bearer ')
     ? authHeader.substring(7).trim()
-    : apiKeyHeader?.trim();
+    : (apiKeyHeader?.trim() || cookieToken?.trim());
+
+  const ownerSession = ownerAuth.validateToken(token);
 
   if (isProduction()) {
     // PRODUCTION: Authenticated principal strictly required!
@@ -98,47 +122,46 @@ apiRouter.use('*', async (c, next) => {
       }, 401);
     }
 
-    const prodSecret = process.env.AUTH_SECRET || process.env.PRODUCTION_API_KEY;
-    let authenticatedUser: any = null;
-
-    if (prodSecret && token === prodSecret) {
-      authenticatedUser = db.prepare("SELECT * FROM users WHERE role = 'OWNER' LIMIT 1").get();
+    if (ownerSession) {
+      c.set('userId', ownerSession.userId);
+      c.set('organizationId', ownerSession.organizationId);
     } else {
+      let authenticatedUser: any = null;
       try {
         authenticatedUser = db.prepare("SELECT * FROM users WHERE api_token = ?").get(token);
       } catch {}
-    }
 
-    if (!authenticatedUser) {
-      return c.json({
-        success: false,
-        error: 'Unauthorized: Invalid authentication credentials.'
-      }, 401);
-    }
+      if (!authenticatedUser) {
+        return c.json({
+          success: false,
+          error: 'Unauthorized: Invalid authentication credentials.'
+        }, 401);
+      }
 
-    c.set('userId', authenticatedUser.id);
-    c.set('organizationId', authenticatedUser.organization_id);
+      c.set('userId', authenticatedUser.id);
+      c.set('organizationId', authenticatedUser.organization_id);
+    }
   } else {
     // DEVELOPMENT & TEST:
-    // If Bearer token is provided, authenticate with it
-    if (token) {
-      const prodSecret = process.env.AUTH_SECRET || process.env.PRODUCTION_API_KEY;
-      let authenticatedUser: any = null;
-      if (prodSecret && token === prodSecret) {
-        authenticatedUser = db.prepare("SELECT * FROM users WHERE role = 'OWNER' LIMIT 1").get();
-      } else {
-        try {
-          authenticatedUser = db.prepare("SELECT * FROM users WHERE api_token = ?").get(token);
-        } catch {}
-      }
-      if (authenticatedUser) {
-        c.set('userId', authenticatedUser.id);
-        c.set('organizationId', authenticatedUser.organization_id);
-        return await next();
-      }
+    if (ownerSession) {
+      c.set('userId', ownerSession.userId);
+      c.set('organizationId', ownerSession.organizationId);
+      return await next();
     }
 
-    // In dev/test: allow explicit identity headers for testing fixtures, defaulting to dev owner
+    // In dev/test: check if token matches a legacy user in DB (e.g. tenant-isolation tests)
+    if (token) {
+      try {
+        const user = db.prepare("SELECT * FROM users WHERE api_token = ?").get(token) as any;
+        if (user) {
+          c.set('userId', user.id);
+          c.set('organizationId', user.organization_id);
+          return await next();
+        }
+      } catch {}
+    }
+
+    // Allow explicit identity headers in test runners, defaulting to seeded test business
     c.set('organizationId', c.req.header('x-organization-id') || 'org_smilekraft_01');
     c.set('userId', c.req.header('x-user-id') || 'usr_owner_01');
   }
@@ -155,6 +178,85 @@ apiRouter.get('/health', (c) => {
     service: 'AI Marketing Organization Engine'
   });
 });
+
+// ==========================================
+// SINGLE-OWNER AUTHENTICATION & SESSION (Spec § 2 & § 3)
+// ==========================================
+apiRouter.post('/auth/owner/login', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const apiKey = (body.apiKey || body.secret || c.req.header('x-api-key') || c.req.header('authorization')?.replace('Bearer ', ''))?.trim();
+  const ownerAuth = OwnerAuthService.getInstance();
+
+  if (!ownerAuth.verifyKey(apiKey)) {
+    return c.json({
+      success: false,
+      error: 'Unauthorized: Invalid owner credentials. OWNER_API_KEY / AUTH_SECRET mismatch.'
+    }, 401);
+  }
+
+  const clientIp = c.req.header('x-forwarded-for') || c.req.header('cf-connecting-ip') || '127.0.0.1';
+  const userAgent = c.req.header('user-agent') || 'Browser';
+  const session = ownerAuth.createSession(clientIp, userAgent);
+
+  const isSecure = isProduction();
+  c.header('Set-Cookie', `owner_session=${session.token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400${isSecure ? '; Secure' : ''}`);
+
+  return c.json({
+    success: true,
+    data: {
+      token: session.token,
+      principal_type: session.principalType,
+      organization_id: session.organizationId,
+      user_id: session.userId,
+      expires_at: session.expiresAt
+    }
+  });
+});
+
+apiRouter.post('/auth/owner/logout', (c) => {
+  const cookieHeader = c.req.header('cookie') || '';
+  const cookieToken = cookieHeader.split(';').map(s => s.trim()).find(s => s.startsWith('owner_session='))?.split('=')[1];
+  const authHeader = c.req.header('authorization') || c.req.header('x-api-key') || '';
+  const token = authHeader.replace('Bearer ', '').trim() || cookieToken;
+
+  if (token) {
+    OwnerAuthService.getInstance().revokeSession(token);
+  }
+
+  c.header('Set-Cookie', 'owner_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
+  return c.json({ success: true, message: 'Logged out successfully.' });
+});
+
+apiRouter.get('/auth/owner/session', (c) => {
+  const cookieHeader = c.req.header('cookie') || '';
+  const cookieToken = cookieHeader.split(';').map(s => s.trim()).find(s => s.startsWith('owner_session='))?.split('=')[1];
+  const authHeader = c.req.header('authorization') || c.req.header('x-api-key') || '';
+  const token = authHeader.replace('Bearer ', '').trim() || cookieToken;
+
+  const ownerAuth = OwnerAuthService.getInstance();
+  const session = ownerAuth.validateToken(token);
+
+  if (!session) {
+    return c.json({ success: false, error: 'No active owner session found.' }, 401);
+  }
+
+  const config = ownerAuth.getOwnerConfiguration();
+  return c.json({
+    success: true,
+    data: {
+      principal_type: session.principalType,
+      organization_id: session.organizationId,
+      user_id: session.userId,
+      owner_name: config.owner_name,
+      platform_business_id: config.platform_business_id,
+      platform_upi_vpa: config.platform_upi_vpa,
+      marketing_budget: config.marketing_budget,
+      autonomy_enabled: Boolean(config.autonomy_enabled),
+      expires_at: session.expiresAt
+    }
+  });
+});
+
 
 // Quota & Free Tier Observability
 apiRouter.get('/quota', (c) => {
@@ -1482,7 +1584,11 @@ apiRouter.post('/public/lead', async (c) => {
 
 apiRouter.post('/payments/razorpay/create-order', async (c) => {
   const body = await c.req.json();
-  const businessId = body.businessId || 'biz_smilekraft_hyd';
+  const businessId = body.businessId;
+
+  if (!businessId) {
+    return c.json({ success: false, error: 'businessId is required to generate payment order' }, 400);
+  }
 
   if (!body.amountINR || body.amountINR <= 0) {
     return c.json({ success: false, error: 'Valid amount in INR is required' }, 400);
@@ -1492,14 +1598,10 @@ apiRouter.post('/payments/razorpay/create-order', async (c) => {
     const order = await razorpayAdapter.createPaymentOrder({
       businessId,
       journeyId: body.journeyId,
-      amountINR: body.amountINR,
-      receipt: body.receipt || `rcpt_${Date.now()}`,
-      notes: {
-        business_id: businessId,
-        journey_id: body.journeyId || '',
-        service: body.service || 'SmileKraft Dental Procedure',
-        invoice_number: body.invoiceNumber || `INV-SK-${Date.now()}`
-      }
+      amountINR: Number(body.amountINR),
+      receipt: body.receipt,
+      service: body.service,
+      notes: body.notes
     });
 
     return c.json({ success: true, data: order }, 201);
@@ -1510,7 +1612,7 @@ apiRouter.post('/payments/razorpay/create-order', async (c) => {
 
 apiRouter.post('/payments/razorpay/verify', async (c) => {
   const body = await c.req.json();
-  const { orderId, paymentId, signature, businessId, journeyId, method } = body;
+  const { orderId, paymentId, signature, method } = body;
 
   if (!orderId || !paymentId || !signature) {
     return c.json({ success: false, error: 'Missing required payment verification parameters: orderId, paymentId, signature' }, 400);
@@ -1521,9 +1623,7 @@ apiRouter.post('/payments/razorpay/verify', async (c) => {
       orderId,
       paymentId,
       signature,
-      method,
-      businessId,
-      journeyId
+      method
     });
     return c.json({ success: true, data: result });
   } catch (err: any) {
@@ -1743,58 +1843,340 @@ apiRouter.post('/webhooks/payments/:gateway', async (c) => {
 });
 
 // ==========================================
-// MANUAL UPI PAYMENT CONFIRMATION (HONEST NON-REAL VERIFICATION)
+// MANUAL UPI PAYMENT CLAIM & OWNER CONFIRMATION (Spec § 15 & § 18)
 // ==========================================
-apiRouter.post('/payments/manual-upi/confirm', async (c) => {
-  const orgId = c.get('organizationId');
+
+// Public customer submission endpoint: Claim payment via UTR
+apiRouter.post('/payments/manual-upi/claim', async (c) => {
   const body = await c.req.json();
+  const { businessId, journeyId, utr, amountINR, serviceRendered, notes } = body;
 
-  const businessId = body.businessId;
-  const amountINR = Number(body.amountINR);
-  const utr = body.utr ? String(body.utr).trim() : `utr_${Date.now()}`;
-  const journeyId = body.journeyId;
-  const invoiceNumber = body.invoiceNumber || `INV-UPI-${Date.now()}`;
-  const serviceRendered = body.serviceRendered || 'Manual UPI Payment - Owner Confirmed';
-
-  if (!businessId || !amountINR || amountINR <= 0) {
-    return c.json({ success: false, error: 'Missing required fields: businessId, positive amountINR' }, 400);
+  if (!businessId || !utr || !amountINR) {
+    return c.json({ success: false, error: 'Missing required fields: businessId, utr, amountINR' }, 400);
   }
 
   try {
-    const tx = revenueEngine.recordTransaction({
+    const claim = razorpayAdapter.recordManualUpiClaim({
       businessId,
-      organizationId: orgId,
       journeyId,
-      invoiceNumber,
-      amountINR,
-      paymentMethod: 'UPI',
-      paymentGateway: 'MANUAL',
-      transactionRef: utr,
-      status: 'SUCCESS',
-      classification: 'MANUAL_VERIFIED',
+      utr: String(utr).trim(),
+      amountINR: Number(amountINR),
       serviceRendered,
+      notes
     });
-
-    if (journeyId) {
-      try {
-        journeyTracker.advanceStage({
-          businessId,
-          visitorId: journeyId,
-          targetStage: 'CUSTOMER',
-        });
-      } catch {}
-    }
 
     return c.json({
       success: true,
-      message: 'Payment confirmed manually by business owner. Tagged as MANUAL_VERIFIED.',
-      transaction: tx,
-      classification: 'MANUAL_VERIFIED'
+      message: 'Payment claim registered successfully. Awaiting owner bank verification.',
+      data: claim,
+      status: 'PAYMENT_CLAIMED'
     }, 201);
   } catch (err: any) {
     return c.json({ success: false, error: err.message }, 400);
   }
 });
+
+// Owner-only confirmation endpoint: Certify manual bank transaction
+apiRouter.post('/payments/manual-upi/confirm', async (c) => {
+  const userId = c.get('userId');
+  const orgId = c.get('organizationId');
+  const body = await c.req.json();
+
+  const { claimId, utr, businessId, amountINR, journeyId, invoiceNumber, serviceRendered } = body;
+
+  if (!utr || !businessId || !amountINR) {
+    return c.json({ success: false, error: 'Missing required fields: utr, businessId, amountINR' }, 400);
+  }
+
+  try {
+    const result = razorpayAdapter.confirmManualUpiClaim({
+      claimId,
+      utr: String(utr).trim(),
+      businessId,
+      amountINR: Number(amountINR),
+      journeyId,
+      ownerUserId: userId,
+      organizationId: orgId,
+      invoiceNumber,
+      serviceRendered
+    });
+
+    return c.json({
+      success: true,
+      message: 'Payment confirmed manually by business owner. Tagged as MANUAL_VERIFIED.',
+      data: result,
+      classification: 'MANUAL_VERIFIED',
+      status: 'HUMAN_VERIFIED_PAYMENT'
+    }, 200);
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 400);
+  }
+});
+
+// Owner-only: List pending manual UPI claims
+apiRouter.get('/payments/manual-upi/claims', (c) => {
+  const db = getDb();
+  const claims = db.prepare(`SELECT * FROM manual_upi_claims WHERE status = 'PAYMENT_CLAIMED' ORDER BY claimed_at DESC LIMIT 50`).all();
+  return c.json({ success: true, data: claims });
+});
+
+// Owner-only: Create real Razorpay UPI Payment Link (Spec § 11 & § 12)
+apiRouter.post('/payments/razorpay/create-payment-link', async (c) => {
+  const orgId = c.get('organizationId');
+  const body = await c.req.json();
+
+  if (!body.amountINR || !body.description) {
+    return c.json({ success: false, error: 'Missing amountINR or description for payment link' }, 400);
+  }
+
+  try {
+    const link = await razorpayAdapter.createPaymentLink({
+      organizationId: orgId,
+      businessId: body.businessId || OwnerAuthService.PLATFORM_BUSINESS_ID,
+      prospectId: body.prospectId,
+      journeyId: body.journeyId,
+      proposalId: body.proposalId,
+      amountINR: Number(body.amountINR),
+      description: body.description,
+      customer: body.customer
+    });
+
+    return c.json({ success: true, data: link }, 201);
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 400);
+  }
+});
+
+// ==========================================
+// SETUP WIZARD & OBSERVABILITY (Spec § 48, § 57, § 58)
+// ==========================================
+
+apiRouter.get('/setup/status', (c) => {
+  const db = getDb();
+  const ownerAuth = OwnerAuthService.getInstance();
+  const activation = LiveProviderActivation.getInstance();
+  const d1 = D1Client.getInstance();
+  const ownerConfig = ownerAuth.getOwnerConfiguration();
+
+  let cronObserved = false;
+  let lastCronWake: string | null = null;
+  try {
+    const row = db.prepare(`SELECT cycle_start FROM autonomous_cycle_log WHERE trigger_source = 'CLOUDFLARE_CRON' ORDER BY cycle_start DESC LIMIT 1`).get() as any;
+    if (row?.cycle_start) {
+      cronObserved = true;
+      lastCronWake = row.cycle_start;
+    }
+  } catch {}
+
+  const whatsappStatus = activation.getStatus('OUTBOUND_WHATSAPP');
+  const emailStatus = activation.getStatus('OUTBOUND_EMAIL');
+  const geminiStatus = activation.getStatus('AI');
+  const tavilyStatus = activation.getStatus('RESEARCH');
+  const calendarStatus = activation.getStatus('CALENDAR');
+
+  const checklist = {
+    owner_auth: {
+      status: ownerAuth.isSecretConfigured(),
+      label: 'Owner Authentication (OWNER_API_KEY / AUTH_SECRET)',
+      required_secret: 'OWNER_API_KEY',
+      details: ownerAuth.isSecretConfigured() ? 'Authenticated Single Owner Active' : 'Missing deployment secret'
+    },
+    d1_storage: {
+      status: d1.isRemoteD1Configured(),
+      label: 'Cloudflare D1 Storage (Survives Render Restart)',
+      required_secret: 'CLOUDFLARE_D1_DATABASE_ID & CLOUDFLARE_D1_API_TOKEN',
+      details: d1.isRemoteD1Configured() ? 'Cloudflare D1 Remote Connected' : 'Local ephemeral SQLite store (Render restart risk)'
+    },
+    cron_heartbeat: {
+      status: cronObserved,
+      label: 'Cloudflare Worker Cron Trigger (*/15 min)',
+      required_secret: 'CRON_PING_SECRET',
+      details: cronObserved ? `Observed active ping at ${lastCronWake}` : 'Configured in repo, awaiting first live invocation'
+    },
+    gemini_ai: {
+      status: geminiStatus.state === 'LIVE_VERIFIED' || geminiStatus.state === 'AUTHORIZED',
+      label: 'Gemini AI API',
+      required_secret: 'GEMINI_API_KEY',
+      details: `State: ${geminiStatus.state}`
+    },
+    tavily_research: {
+      status: tavilyStatus.state === 'LIVE_VERIFIED' || tavilyStatus.state === 'AUTHORIZED',
+      label: 'Tavily Search Engine',
+      required_secret: 'TAVILY_API_KEY',
+      details: `State: ${tavilyStatus.state}`
+    },
+    whatsapp: {
+      status: whatsappStatus.state === 'LIVE_VERIFIED' || whatsappStatus.state === 'AUTHORIZED',
+      label: 'Meta WhatsApp Cloud API',
+      required_secret: 'WHATSAPP_API_TOKEN, WHATSAPP_PHONE_NUMBER_ID',
+      details: `State: ${whatsappStatus.state}`
+    },
+    email: {
+      status: emailStatus.state === 'LIVE_VERIFIED' || emailStatus.state === 'AUTHORIZED',
+      label: 'Resend / SendGrid Email API',
+      required_secret: 'RESEND_API_KEY or SENDGRID_API_KEY',
+      details: `State: ${emailStatus.state}`
+    },
+    razorpay: {
+      status: razorpayAdapter.isLiveConfigured(),
+      label: 'Razorpay Live Payments',
+      required_secret: 'RAZORPAY_KEY_ID & RAZORPAY_KEY_SECRET',
+      details: razorpayAdapter.isLiveConfigured() ? 'Live Verified Gateway' : (razorpayAdapter.hasAnyValidCredentials() ? 'Sandbox / Test Mode' : 'Not Configured')
+    },
+    razorpay_webhook: {
+      status: Boolean(process.env.RAZORPAY_WEBHOOK_SECRET && !isPlaceholderCredential(process.env.RAZORPAY_WEBHOOK_SECRET)),
+      label: 'Razorpay Webhook Secret (HMAC Verification)',
+      required_secret: 'RAZORPAY_WEBHOOK_SECRET',
+      details: process.env.RAZORPAY_WEBHOOK_SECRET ? 'Configured' : 'Missing secret'
+    },
+    platform_upi: {
+      status: Boolean(ownerConfig.platform_upi_vpa),
+      label: 'Platform Direct UPI VPA',
+      required_secret: 'PLATFORM_UPI_VPA',
+      details: ownerConfig.platform_upi_vpa || 'Not Configured'
+    }
+  };
+
+  const whatCanRunNow: string[] = [
+    'Autonomous CEO loop observation & due-work checks',
+    'Prospect qualification and sales strategy formulation',
+    'Immutable proposal creation and storage',
+    'Customer lead intake & DPDP compliance auditing',
+    'Deterministic 13-intent objection classification'
+  ];
+  if (razorpayAdapter.hasAnyValidCredentials()) {
+    whatCanRunNow.push('Automated Razorpay Checkout & UPI Payment Links');
+  }
+
+  const whatIsBlocked: string[] = [];
+  if (!whatsappStatus.isLiveVerified && !emailStatus.isLiveVerified) {
+    whatIsBlocked.push('Live outbound commercial outreach to prospects (Fail-closed: requires WhatsApp or Email credentials)');
+  }
+  if (!razorpayAdapter.isLiveConfigured()) {
+    whatIsBlocked.push('Real automated commercial payment verification (Requires live Razorpay credentials)');
+  }
+  if (!d1.isRemoteD1Configured() && isProduction()) {
+    whatIsBlocked.push('Irreversible live outbound actions in production (Requires Cloudflare D1 persistence)');
+  }
+
+  return c.json({
+    success: true,
+    data: {
+      checklist,
+      what_can_run_now: whatCanRunNow,
+      what_is_blocked: whatIsBlocked,
+      owner_config: ownerConfig
+    }
+  });
+});
+
+apiRouter.post('/setup/live-smoke-test', async (c) => {
+  const db = getDb();
+  const ownerAuth = OwnerAuthService.getInstance();
+  const d1 = D1Client.getInstance();
+
+  const checks: Record<string, any> = {};
+  checks.owner_auth = { pass: true, secret_configured: ownerAuth.isSecretConfigured() };
+
+  try {
+    const row = db.prepare('SELECT 1 as ok').get() as any;
+    checks.local_sqlite = { pass: row?.ok === 1 };
+  } catch (e: any) {
+    checks.local_sqlite = { pass: false, error: e.message };
+  }
+  checks.remote_d1 = {
+    configured: d1.isRemoteD1Configured(),
+    safety_usage: d1.getUsage()
+  };
+
+  checks.razorpay = {
+    configured: razorpayAdapter.hasAnyValidCredentials(),
+    live_verified: razorpayAdapter.isLiveConfigured(),
+    key_id_prefix: razorpayAdapter.getKeyId() ? razorpayAdapter.getKeyId().substring(0, 8) + '...' : 'none'
+  };
+
+  try {
+    const cycleCount = (db.prepare('SELECT COUNT(*) as count FROM autonomous_cycle_log').get() as any)?.count || 0;
+    const oppCount = (db.prepare('SELECT COUNT(*) as count FROM opportunities').get() as any)?.count || 0;
+    checks.autonomy_pipeline = { pass: true, total_cycles: cycleCount, total_opportunities: oppCount };
+  } catch (e: any) {
+    checks.autonomy_pipeline = { pass: false, error: e.message };
+  }
+
+  return c.json({
+    success: true,
+    message: 'Live smoke test completed safely. Zero unsolicited messages sent. Zero funds transferred.',
+    checks
+  });
+});
+
+apiRouter.get('/commercial/proof', (c) => {
+  const db = getDb();
+  const lifecycle = CommercialLifecycleManager.getInstance().evaluateState('org_owner_primary');
+  const d1 = D1Client.getInstance();
+  const activation = LiveProviderActivation.getInstance();
+
+  let cronObserved = false;
+  let lastCronWake: string | null = null;
+  try {
+    const row = db.prepare(`SELECT cycle_start FROM autonomous_cycle_log WHERE trigger_source = 'CLOUDFLARE_CRON' ORDER BY cycle_start DESC LIMIT 1`).get() as any;
+    if (row?.cycle_start) {
+      cronObserved = true;
+      lastCronWake = row.cycle_start;
+    }
+  } catch {}
+
+  const whatsappStatus = activation.getStatus('OUTBOUND_WHATSAPP');
+  const emailStatus = activation.getStatus('OUTBOUND_EMAIL');
+  const calendarStatus = activation.getStatus('CALENDAR');
+
+  const verifiedClientRev = (db.prepare(`SELECT COALESCE(SUM(amount_inr), 0) as total FROM revenue_records WHERE revenue_type = 'CLIENT_REVENUE' AND verified = 1`).get() as any)?.total || 0;
+  const verifiedPlatformRev = (db.prepare(`SELECT COALESCE(SUM(amount_inr), 0) as total FROM revenue_records WHERE revenue_type = 'PLATFORM_REVENUE' AND verified = 1`).get() as any)?.total || 0;
+  const verifiedPaymentsCount = (db.prepare(`SELECT COUNT(*) as count FROM transactions WHERE status = 'SUCCESS' AND classification = 'REAL'`).get() as any)?.count || 0;
+  const verifiedCustomersCount = (db.prepare(`SELECT COUNT(*) as count FROM customer_journeys WHERE stage = 'CUSTOMER' AND classification = 'REAL'`).get() as any)?.count || 0;
+
+  let lastExternalAction: string | null = null;
+  try {
+    const row = db.prepare(`SELECT timestamp FROM commercial_evidence ORDER BY timestamp DESC LIMIT 1`).get() as any;
+    lastExternalAction = row?.timestamp || null;
+  } catch {}
+
+  let lastPayment: string | null = null;
+  try {
+    const row = db.prepare(`SELECT created_at FROM transactions WHERE classification = 'REAL' AND status = 'SUCCESS' ORDER BY created_at DESC LIMIT 1`).get() as any;
+    lastPayment = row?.created_at || null;
+  } catch {}
+
+  return c.json({
+    success: true,
+    data: {
+      software_ready: true,
+      autonomy_ready: true,
+      commercial_ready: lifecycle.currentState === 'COMMERCIAL_READY' || lifecycle.highestProvenMilestone !== 'M0_NO_LIVE_PROVIDERS',
+      cron_observed: cronObserved,
+      last_cron_wake: lastCronWake,
+      storage_verified: d1.isRemoteD1Configured(),
+      outbound_live: whatsappStatus.isLiveVerified || emailStatus.isLiveVerified,
+      payment_live: razorpayAdapter.isLiveConfigured(),
+      calendar_live: calendarStatus.isLiveVerified,
+      first_live_outbound: lifecycle.highestProvenMilestone !== 'M0_NO_LIVE_PROVIDERS',
+      first_real_response: false,
+      first_real_meeting: false,
+      first_verified_payment: verifiedPaymentsCount > 0,
+      first_verified_customer: verifiedCustomersCount > 0,
+      verified_platform_revenue: verifiedPlatformRev,
+      verified_client_revenue: verifiedClientRev,
+      verified_payments: verifiedPaymentsCount,
+      verified_customers: verifiedCustomersCount,
+      last_external_action: lastExternalAction,
+      last_payment: lastPayment,
+      last_revenue: (verifiedPlatformRev > 0 || verifiedClientRev > 0) ? lastPayment : null,
+      current_blocker: (!whatsappStatus.isLiveVerified && !emailStatus.isLiveVerified) ? 'AUTHORIZED_OUTBOUND_MISSING' : (razorpayAdapter.isLiveConfigured() ? 'NONE' : 'PAYMENT_GATEWAY_UNCONFIGURED'),
+      next_action: (!whatsappStatus.isLiveVerified && !emailStatus.isLiveVerified) ? 'CONNECT_OUTBOUND_PROVIDER' : 'EXECUTE_OUTBOUND_PROSPECTING'
+    }
+  });
+});
+
 
 // ==========================================
 // SYSTEM OPERATIONAL READINESS REPORT

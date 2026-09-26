@@ -22,6 +22,7 @@ import { getDb } from '../db/client.js';
 import { LiveProviderActivation } from './live-provider-activation.js';
 import { OutboundEngine, OutboundMessageRequest, OutboundDispatchResult } from './outbound-engine.js';
 import { CommercialLifecycleManager } from './commercial-lifecycle.js';
+import { D1Client } from '../db/d1-client.js';
 
 export interface FirstLiveOutboundRequest {
   organizationId: string;
@@ -69,6 +70,21 @@ export class FirstLiveCommercialActionManager {
   public async executeFirstOutbound(request: FirstLiveOutboundRequest): Promise<FirstLiveOutboundResult> {
     const db = getDb();
     const idempotencyKey = `outreach:${request.opportunityId}:${request.sequenceStep}`;
+
+    // 0. Check D1 Durability in Production (Spec § 37)
+    try {
+      D1Client.getInstance().assertDurableStorageForExternalAction();
+    } catch (err: any) {
+      return {
+        executed: false,
+        actionClassification: 'BLOCKED_AUTHORIZATION',
+        provider: request.channel,
+        milestoneAchieved: false,
+        liveExternalActionsCount: this.getLiveExternalActionCount(request.organizationId),
+        reason: err.message,
+        idempotencyKey
+      };
+    }
 
     // 1. Idempotency Check (§ 31)
     try {

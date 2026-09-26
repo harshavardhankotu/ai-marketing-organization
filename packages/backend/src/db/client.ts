@@ -309,6 +309,41 @@ export function getDb(dbPath?: string): Database.Database {
       status TEXT NOT NULL DEFAULT 'EXECUTED', result_json TEXT NOT NULL DEFAULT '{}'
     )`);
   } catch {}
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS owner_configuration (
+      id TEXT PRIMARY KEY, owner_name TEXT NOT NULL DEFAULT 'Harsha Vardhan Kotu',
+      organization_id TEXT NOT NULL DEFAULT 'org_owner_primary', platform_business_id TEXT NOT NULL DEFAULT 'biz_platform_aro',
+      platform_upi_vpa TEXT, platform_currency TEXT NOT NULL DEFAULT 'INR',
+      platform_timezone TEXT NOT NULL DEFAULT 'Asia/Kolkata', marketing_budget REAL NOT NULL DEFAULT 0.0,
+      autonomy_enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+  } catch {}
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS payment_provider_links (
+      id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, business_id TEXT NOT NULL,
+      prospect_id TEXT, journey_id TEXT, proposal_id TEXT, provider TEXT NOT NULL DEFAULT 'RAZORPAY',
+      provider_link_id TEXT NOT NULL, short_url TEXT NOT NULL, reference_id TEXT NOT NULL,
+      amount_inr REAL NOT NULL, currency TEXT NOT NULL DEFAULT 'INR', status TEXT NOT NULL DEFAULT 'CREATED',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')), paid_at TEXT, payment_id TEXT,
+      provider_response_json TEXT NOT NULL DEFAULT '{}'
+    )`);
+  } catch {}
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS manual_upi_claims (
+      id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, business_id TEXT NOT NULL,
+      journey_id TEXT, utr TEXT NOT NULL, amount_inr REAL NOT NULL, service_rendered TEXT,
+      status TEXT NOT NULL DEFAULT 'PAYMENT_CLAIMED', claimed_at TEXT NOT NULL DEFAULT (datetime('now')),
+      verified_at TEXT, verified_by TEXT, rejection_reason TEXT, notes TEXT
+    )`);
+  } catch {}
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS owner_sessions (
+      id TEXT PRIMARY KEY, principal_type TEXT NOT NULL DEFAULT 'OWNER',
+      organization_id TEXT NOT NULL, user_id TEXT NOT NULL, ip_address TEXT,
+      user_agent TEXT, expires_at TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+  } catch {}
 
   // Initialize schema (creates all tables if not exist — safe for both fresh and existing DBs)
 

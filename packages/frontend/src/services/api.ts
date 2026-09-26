@@ -154,12 +154,29 @@ export const api = {
   getGBPOAuthStatus: () => fetchApi('/organic/gbp/oauth/status'),
   recordPublicationEvidence: (id: string, data: any) => fetchApi(`/organic/content/${id}/publish-evidence`, { method: 'POST', body: JSON.stringify(data) }),
   // Live Payment Gateway (Razorpay & Inbound UPI)
-  createPaymentOrder: (data: { businessId?: string; journeyId?: string; amountINR: number; receipt?: string; notes?: any }) =>
+  createPaymentOrder: (data: { businessId?: string; journeyId?: string; amountINR: number; receipt?: string; service?: string; notes?: any }) =>
     fetchApi('/payments/razorpay/create-order', { method: 'POST', body: JSON.stringify(data) }),
-  verifyPayment: (data: { orderId: string; paymentId: string; signature: string; businessId?: string; journeyId?: string; method?: string }) =>
+  verifyPayment: (data: { orderId: string; paymentId: string; signature: string; method?: string }) =>
     fetchApi('/payments/razorpay/verify', { method: 'POST', body: JSON.stringify(data) }),
-  confirmManualUPI: (data: { businessId: string; amountINR: number; utr?: string; journeyId?: string; invoiceNumber?: string; serviceRendered?: string }) =>
+  claimManualUPI: (data: { businessId: string; amountINR: number; utr: string; journeyId?: string; serviceRendered?: string; notes?: string }) =>
+    fetchApi('/payments/manual-upi/claim', { method: 'POST', body: JSON.stringify(data) }),
+  confirmManualUPI: (data: { claimId?: string; businessId: string; amountINR: number; utr: string; journeyId?: string; invoiceNumber?: string; serviceRendered?: string }) =>
     fetchApi('/payments/manual-upi/confirm', { method: 'POST', body: JSON.stringify(data) }),
+  getPendingUpiClaims: () =>
+    fetchApi('/payments/manual-upi/claims'),
+  createRazorpayPaymentLink: (data: { businessId?: string; amountINR: number; description: string; customer?: any; proposalId?: string; prospectId?: string }) =>
+    fetchApi('/payments/razorpay/create-payment-link', { method: 'POST', body: JSON.stringify(data) }),
+  // Single-Owner Auth & Administration
+  loginOwner: (apiKey: string) =>
+    fetchApi('/auth/owner/login', { method: 'POST', body: JSON.stringify({ apiKey }) }),
+  logoutOwner: () =>
+    fetchApi('/auth/owner/logout', { method: 'POST' }),
+  getOwnerSession: () =>
+    fetchApi('/auth/owner/session'),
+  // Setup Wizard & Commercial Proof
+  getSetupStatus: () => fetchApi('/setup/status'),
+  runLiveSmokeTest: () => fetchApi('/setup/live-smoke-test', { method: 'POST' }),
+  getCommercialProof: () => fetchApi('/commercial/proof'),
   // DPDP Statutory Compliance
   recordDPDPConsent: (data: any) =>
     fetchApi('/compliance/dpdp/consent', { method: 'POST', body: JSON.stringify(data) }),

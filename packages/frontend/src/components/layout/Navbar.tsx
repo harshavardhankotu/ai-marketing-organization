@@ -46,6 +46,10 @@ export const Navbar: React.FC<NavbarProps> = ({
       {/* Business & Mode Context */}
       <div className="flex items-center gap-3">
         <span className="font-semibold text-slate-200 text-sm">{businessName}</span>
+        <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-500/10 text-amber-300 border border-amber-500/30">
+          <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+          OWNER: ME
+        </div>
         <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/30">
           {autonomyMode} Mode
         </span>

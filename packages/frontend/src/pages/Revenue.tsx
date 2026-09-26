@@ -200,6 +200,31 @@ export const Revenue: React.FC = () => {
           </div>
         </div>
 
+        {/* Spec § 23, § 24, § 42: Strict Separation of Platform Revenue vs Client Revenue */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-5">
+          <div className="p-4 rounded-xl bg-gradient-to-r from-purple-950/40 via-slate-900 to-slate-950 border border-purple-500/30">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold uppercase tracking-wider text-purple-400">Platform Commercial Revenue</span>
+              <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-purple-500/20 text-purple-300 border border-purple-500/40">AI Marketing Org</span>
+            </div>
+            <div className="text-2xl font-black text-white mt-1">₹0</div>
+            <p className="text-[11px] text-slate-400 mt-1">
+              Software setup (₹15,000) &amp; retainers (₹8,000/mo) paid to our organization.
+            </p>
+          </div>
+
+          <div className="p-4 rounded-xl bg-gradient-to-r from-cyan-950/40 via-slate-900 to-slate-950 border border-cyan-500/30">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold uppercase tracking-wider text-cyan-400">Client Business Revenue</span>
+              <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">Client Ledgers</span>
+            </div>
+            <div className="text-2xl font-black text-white mt-1">{formatINR(summary?.realRevenueIndependentlyVerifiedINR ?? 0)}</div>
+            <p className="text-[11px] text-slate-400 mt-1">
+              Direct patient deposits &amp; treatments collected into client merchant accounts.
+            </p>
+          </div>
+        </div>
+
         {/* 6-Column Truth Matrix */}
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-5">
           {/* 1. Real Revenue Recorded */}

@@ -53,6 +53,19 @@ export class D1Client {
     return Boolean(this.accountId && this.databaseId && this.apiToken);
   }
 
+  /**
+   * Spec § 37: D1 Production Persistence Assertion
+   * In production, if Cloudflare D1 is unavailable or unconfigured, halt irreversible external actions.
+   */
+  public assertDurableStorageForExternalAction(): void {
+    const isProd = process.env.NODE_ENV === 'production';
+    if (isProd && !this.isRemoteD1Configured()) {
+      throw new Error(
+        'PERSISTENCE_FAULT: Irreversible external action blocked. Production requires durable Cloudflare D1 persistence (CLOUDFLARE_D1_DATABASE_ID, CLOUDFLARE_D1_API_TOKEN) to ensure state survives container restarts.'
+      );
+    }
+  }
+
   private ensureUsageTable(): void {
     try {
       const db = getDb();

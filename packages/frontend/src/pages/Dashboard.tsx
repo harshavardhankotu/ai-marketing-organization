@@ -100,6 +100,28 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* Single Owner Console Header (Spec § 27) */}
+      <div className="p-4 rounded-xl bg-gradient-to-r from-amber-500/10 via-slate-900 to-slate-900 border border-amber-500/30 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-lg bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 font-bold text-sm">
+            ME
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-black uppercase tracking-wider text-amber-400">YOU ARE THE OWNER</span>
+              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">Sole Operator</span>
+            </div>
+            <p className="text-xs text-slate-300 mt-0.5">
+              Organization Owner Console • Single-tenant control plane for all client funnels and platform revenue.
+            </p>
+          </div>
+        </div>
+        <div className="text-right hidden sm:block">
+          <span className="text-[10px] text-slate-500 font-mono block">Operator ID: usr_owner_primary</span>
+          <span className="text-xs text-slate-300 font-semibold">Harsha Vardhan Kotu</span>
+        </div>
+      </div>
+
       {/* Welcome Banner */}
       <div className="p-6 rounded-2xl bg-gradient-to-r from-slate-900 via-slate-800 to-cyan-950/40 border border-slate-700/80 shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
