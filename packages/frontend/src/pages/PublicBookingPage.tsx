@@ -54,26 +54,40 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
     try { return JSON.parse(localStorage.getItem('ai_marketing_active_business') || '{}'); } catch { return {}; }
   })() : {};
 
-  const [business, setBusiness] = useState<any>(storedBiz?.name ? storedBiz : null);
+  const [business, setBusiness] = useState<any>(storedBiz?.id ? storedBiz : null);
+  const [bizLoading, setBizLoading] = useState<boolean>(Boolean(urlBizId || storedBiz?.id));
+  const [bizNotFound, setBizNotFound] = useState<boolean>(!urlBizId && !storedBiz?.id);
 
   useEffect(() => {
     async function loadBiz() {
+      const idToLoad = urlBizId || storedBiz?.id;
+      if (!idToLoad) {
+        setBizLoading(false);
+        setBizNotFound(true);
+        return;
+      }
       try {
-        const idToLoad = urlBizId || storedBiz?.id;
-        if (idToLoad) {
-          const res = await api.getBusiness(idToLoad);
-          if (res.data) setBusiness(res.data);
+        setBizLoading(true);
+        const res = await api.getBusiness(idToLoad);
+        if (res?.data?.id) {
+          setBusiness(res.data);
+          setBizNotFound(false);
+        } else {
+          setBizNotFound(true);
         }
       } catch (err) {
         console.warn('Could not fetch business for booking page', err);
+        setBizNotFound(true);
+      } finally {
+        setBizLoading(false);
       }
     }
     loadBiz();
   }, [urlBizId]);
 
-  const targetBizId = business?.id || urlBizId || storedBiz?.id || 'biz_1790373784467';
-  const targetOrgId = business?.organization_id || storedBiz?.organization_id || 'org_default';
-  const bizName = business?.name || 'SmileKraft Dental Clinic Hyderabad';
+  const targetBizId = business?.id;
+  const targetOrgId = business?.organization_id;
+  const bizName = business?.name || '';
   const upiVpa = ((import.meta as any).env?.VITE_UPI_VPA as string) || business?.upi_vpa || '';
 
   // Locations dynamic list
@@ -121,12 +135,12 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
   }, [business]);
 
   const gclid = searchParams.get('gclid') || undefined;
-  const utmSource = searchParams.get('utm_source') || 'google';
-  const utmMedium = searchParams.get('utm_medium') || 'cpc';
-  const utmCampaign = searchParams.get('utm_campaign') || 'local_search';
-  const utmTerm = searchParams.get('utm_term') || `${business?.vertical_name || 'consultation'} inquiry`;
-  const utmContent = searchParams.get('utm_content') || 'instant_booking';
-  const campaignId = searchParams.get('campaignId') || searchParams.get('campaign_id') || 'camp_live_inbound';
+  const utmSource = searchParams.get('utm_source') || undefined;
+  const utmMedium = searchParams.get('utm_medium') || undefined;
+  const utmCampaign = searchParams.get('utm_campaign') || undefined;
+  const utmTerm = searchParams.get('utm_term') || undefined;
+  const utmContent = searchParams.get('utm_content') || undefined;
+  const campaignId = searchParams.get('campaignId') || searchParams.get('campaign_id') || undefined;
 
   const loadRazorpayScript = (): Promise<boolean> => {
     return new Promise((resolve) => {
@@ -161,7 +175,7 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
       customerEmail: email || undefined,
       channel: 'WHATSAPP',
       campaignId: campaignId,
-      source: `${utmSource}_${utmMedium}`,
+      source: (utmSource && utmMedium) ? `${utmSource}_${utmMedium}` : (utmSource || 'direct_organic'),
       serviceOfInterest: treatment,
       notes: `Preferred Location: ${location}, Date: ${date}. ${notes}`,
       gclid,
@@ -372,20 +386,20 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
     }
   };
 
-  // Explicit Tenant Guard: Never silently default to any tenant
-  if (!targetBizId) {
+  // Explicit Tenant Guard: Never silently default to any tenant (Spec § 28 & § 29)
+  if (bizNotFound || !targetBizId) {
     return (
       <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center p-6 font-sans">
         <div className="max-w-md w-full p-8 rounded-2xl bg-slate-900 border border-rose-500/30 text-center space-y-4 shadow-2xl">
           <div className="w-12 h-12 rounded-full bg-rose-500/10 border border-rose-500/30 text-rose-400 flex items-center justify-center mx-auto">
             <AlertCircle className="w-6 h-6" />
           </div>
-          <h2 className="text-xl font-bold text-white">Missing Business Identifier</h2>
+          <h2 className="text-xl font-bold text-white">404 - Business Not Found</h2>
           <p className="text-xs text-slate-400 leading-relaxed">
-            No valid business was specified for this booking page. To protect tenant isolation, this portal never defaults to another business account.
+            The requested business profile does not exist or has not been configured. To protect tenant isolation and data integrity, this portal never defaults to another business account.
           </p>
           <div className="p-3 bg-slate-950 rounded-lg border border-slate-800 text-[11px] text-slate-400 text-left font-mono">
-            Please use a URL containing your business identifier:<br />
+            Please use a URL containing your valid business identifier:<br />
             <span className="text-cyan-400">/book?businessId=&lt;your_business_id&gt;</span>
           </div>
           {onBackToAdmin && (

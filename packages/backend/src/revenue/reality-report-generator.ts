@@ -243,10 +243,10 @@ export class RealityReportGenerator {
     const simRev = (db.prepare(`SELECT COALESCE(SUM(amount_inr), 0) as total FROM transactions WHERE classification = 'SIMULATED'`).get() as any)?.total || 0;
     const unverifiedRev = (db.prepare(`SELECT COALESCE(SUM(amount_inr), 0) as total FROM transactions WHERE status = 'PENDING'`).get() as any)?.total || 0;
 
-    // Platform revenue
+    // Platform revenue (Spec § 1: strictly real-world verified revenue only)
     let platformRev = 0;
     try {
-      platformRev = (db.prepare(`SELECT COALESCE(SUM(amount_inr), 0) as total FROM revenue_records WHERE revenue_type = 'PLATFORM_REVENUE' AND verified = 1`).get() as any)?.total || 0;
+      platformRev = (db.prepare(`SELECT COALESCE(SUM(amount_inr), 0) as total FROM revenue_records WHERE revenue_type = 'PLATFORM_REVENUE' AND verified = 1 AND classification = 'REAL'`).get() as any)?.total || 0;
     } catch {}
 
     // 11. Delivery

@@ -15,17 +15,26 @@ import { isPlaceholderCredential } from '../config/env.js';
 
 export type RevenueBottleneckType =
   | 'NO_PROSPECTS'
+  | 'NO_RESEARCH'
+  | 'NO_OFFER'
   | 'AUTHORIZED_OUTBOUND_MISSING'
   | 'NO_RESPONSES'
   | 'NO_QUALIFIED_LEADS'
   | 'NO_MEETINGS'
+  | 'NO_PROPOSALS'
+  | 'NO_PAYMENT_PROVIDER'
   | 'NO_PAYMENT_METHOD'
+  | 'NO_PAYMENT_REQUEST'
+  | 'NO_PAYMENT'
+  | 'NO_VERIFIED_PAYMENT'
   | 'NO_CUSTOMER'
   | 'NO_DELIVERY_CAPABILITY'
   | 'NO_RETENTION_DATA'
   | 'QUOTA_LIMITED'
+  | 'POLICY_BLOCKED'
   | 'PROVIDER_DOWN'
   | 'PERSISTENCE_DOWN'
+  | 'D1_DOWN'
   | 'NONE_REVENUE_FLOWING';
 
 export interface BottleneckDiagnosis {

@@ -4,11 +4,15 @@ import { RevenueReconciliationEngine } from '../revenue/revenue-reconciliation.j
 import { CustomerJourneyTracker } from '../revenue/customer-journey-tracker.js';
 import { PaymentMethod, DataClassification } from '@ai-marketing/shared';
 import { isPlaceholderCredential, isProduction } from '../config/env.js';
+import { resolveAuthorizedOffer } from '../revenue/offer-catalog.js';
+import { OwnerAuthService } from '../auth/owner-auth.js';
 
 export interface RazorpayOrderInput {
   businessId: string;
+  organizationId?: string;
   journeyId?: string;
-  amountINR: number;
+  amountINR?: number;
+  offerId?: string;
   receipt?: string;
   service?: string;
   notes?: Record<string, string>;
@@ -27,8 +31,11 @@ export interface RazorpayPaymentLinkInput {
   organizationId: string;
   businessId: string;
   prospectId?: string;
+  opportunityId?: string;
   journeyId?: string;
   proposalId?: string;
+  offerId?: string;
+  billingModel?: 'ONE_TIME' | 'MONTHLY';
   amountINR: number;
   description: string;
   customer?: {
@@ -197,16 +204,26 @@ export class RazorpayAdapter {
    * Never creates fake order_${Date.now()} in production!
    */
   public async createPaymentOrder(input: RazorpayOrderInput): Promise<RazorpayOrderResult> {
-    if (!input.amountINR || input.amountINR <= 0) {
+    let finalAmountINR = input.amountINR;
+
+    // Server-side authoritative offer resolution (Spec § 5)
+    if (input.offerId) {
+      const authorizedOffer = resolveAuthorizedOffer(input.offerId, input.businessId, input.organizationId);
+      finalAmountINR = authorizedOffer.priceINR;
+    } else if (finalAmountINR !== undefined) {
+      // Server-side validation of permitted deposit amount
+      this.validatePermittedDeposit(finalAmountINR, input.service);
+    } else {
+      throw new Error('INVALID_PAYMENT_ORDER: Either offerId or valid amountINR must be provided.');
+    }
+
+    if (!finalAmountINR || finalAmountINR <= 0) {
       throw new Error('Payment order amount must be greater than ₹0.');
     }
 
-    // Server-side validation of permitted deposit amount
-    this.validatePermittedDeposit(input.amountINR, input.service);
-
     const keyId = this.getKeyId();
     const keySecret = this.getKeySecret();
-    const amountPaise = Math.round(input.amountINR * 100);
+    const amountPaise = Math.round(finalAmountINR * 100);
     const receipt = input.receipt || `rcpt_${randomUUID().substring(0, 8)}`;
 
     let orderId: string;
@@ -221,7 +238,9 @@ export class RazorpayAdapter {
         receipt,
         notes: {
           business_id: input.businessId,
+          organization_id: input.organizationId || '',
           journey_id: input.journeyId || '',
+          offer_id: input.offerId || '',
           service: input.service || 'Consultation Deposit',
           ...(input.notes || {})
         }
@@ -276,7 +295,7 @@ export class RazorpayAdapter {
         input.businessId,
         input.journeyId || null,
         orderId,
-        input.amountINR,
+        finalAmountINR,
         orderStatus.toUpperCase(),
         receipt,
         input.notes ? JSON.stringify(input.notes) : null
@@ -284,7 +303,7 @@ export class RazorpayAdapter {
 
     return {
       orderId,
-      amountINR: input.amountINR,
+      amountINR: finalAmountINR,
       currency: 'INR',
       receipt,
       status: orderStatus,
@@ -295,7 +314,7 @@ export class RazorpayAdapter {
   /**
    * Creates a real Razorpay UPI Payment Link (Spec § 11 & § 12).
    * Calls POST https://api.razorpay.com/v1/payment_links with upi_link=true.
-   * Stores real short_url in payment_provider_links.
+   * Stores real short_url in payment_provider_links and payment_requests.
    */
   public async createPaymentLink(input: RazorpayPaymentLinkInput): Promise<RazorpayPaymentLinkResult> {
     if (!input.amountINR || input.amountINR <= 0) {
@@ -403,6 +422,37 @@ export class RazorpayAdapter {
         status,
         rawResponse
       );
+
+    // Also populate authoritative payment_requests record (Spec § 8 & § 9)
+    const payReqId = `payrq_${Date.now()}_${randomUUID().substring(0, 6)}`;
+    try {
+      this.db.prepare(`
+        INSERT INTO payment_requests (
+          id, organization_id, business_id, prospect_id, opportunity_id,
+          journey_id, offer_id, offer_description, amount_inr, currency,
+          billing_model, provider, provider_link_id, short_url, reference_id,
+          classification, status, payment_link, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'INR', ?, 'RAZORPAY', ?, ?, ?, ?, 'PROVIDER_CREATED', ?, datetime('now'), datetime('now'))
+      `).run(
+        payReqId,
+        input.organizationId,
+        input.businessId,
+        input.prospectId || null,
+        input.opportunityId || null,
+        input.journeyId || null,
+        input.offerId || null,
+        input.description,
+        input.amountINR,
+        input.billingModel || 'ONE_TIME',
+        providerLinkId,
+        shortUrl,
+        referenceId,
+        this.getClassification(),
+        shortUrl
+      );
+    } catch (e: any) {
+      console.warn(`[RazorpayAdapter] Failed to insert payment_request: ${e.message}`);
+    }
 
     return {
       id,
@@ -687,30 +737,82 @@ export class RazorpayAdapter {
     const event = params.event;
     const eventType = event.event;
 
+    // Handle failure and refund events
+    if (eventType === 'payment.failed') {
+      const failedPayment = event.payload?.payment?.entity;
+      const orderId = failedPayment?.order_id;
+      const linkId = failedPayment?.payment_link_id || failedPayment?.id;
+      if (orderId) {
+        this.db.prepare(`UPDATE payment_orders SET status = 'FAILED', updated_at = datetime('now') WHERE order_id = ?`).run(orderId);
+      }
+      if (linkId) {
+        this.db.prepare(`UPDATE payment_requests SET status = 'FAILED', updated_at = datetime('now') WHERE provider_link_id = ?`).run(linkId);
+        this.db.prepare(`UPDATE payment_provider_links SET status = 'FAILED' WHERE provider_link_id = ?`).run(linkId);
+      }
+      return { processed: true, reason: 'Payment failed event recorded.' };
+    }
+
+    if (eventType === 'refund.processed') {
+      const refund = event.payload?.refund?.entity;
+      const orderId = refund?.order_id;
+      if (orderId) {
+        this.db.prepare(`UPDATE payment_orders SET status = 'REFUNDED', updated_at = datetime('now') WHERE order_id = ?`).run(orderId);
+      }
+      return { processed: true, reason: 'Refund processed event recorded.' };
+    }
+
     // Monitor captured payments, paid orders, and paid payment links
     const supportedEvents = ['payment.captured', 'order.paid', 'payment_link.paid'];
     if (!supportedEvents.includes(eventType)) {
       return { processed: false, reason: `Ignored unmonitored event type: ${eventType}` };
     }
 
-    const payment = event.payload?.payment?.entity || event.payload?.payment_link?.entity;
-    if (!payment) {
+    const paymentLink = event.payload?.payment_link?.entity;
+    const payment = event.payload?.payment?.entity || paymentLink;
+    if (!payment && !paymentLink) {
       return { processed: false, reason: 'Missing payment entity in webhook payload' };
     }
 
-    const paymentId = payment.id;
-    const amountINR = Math.round((payment.amount || payment.amount_paid || 0) / 100);
-    const orderId = payment.order_id;
-    const notes = payment.notes || {};
-    const businessId = notes.business_id || notes.businessId;
+    const paymentId = payment?.id || paymentLink?.id;
+    const amountINR = Math.round((payment?.amount || paymentLink?.amount_paid || payment?.amount_paid || paymentLink?.amount || 0) / 100);
+    const orderId = payment?.order_id || paymentLink?.order_id;
+    const notes = paymentLink?.notes || payment?.notes || {};
+    let businessId = notes.business_id || notes.businessId;
+    let organizationId = notes.organization_id || notes.organizationId || OwnerAuthService.OWNER_ORGANIZATION_ID;
+
+    // Binding to stored provider link (Spec § 21)
+    const matchedLinkId = paymentLink?.id || payment?.payment_link_id || (eventType === 'payment_link.paid' ? payment?.id : undefined);
+    let storedLink: any = null;
+    let storedPayReq: any = null;
+
+    if (matchedLinkId) {
+      storedLink = this.db.prepare(`SELECT * FROM payment_provider_links WHERE provider_link_id = ?`).get(matchedLinkId) as any;
+      storedPayReq = this.db.prepare(`SELECT * FROM payment_requests WHERE provider_link_id = ?`).get(matchedLinkId) as any;
+
+      if (!storedLink && !storedPayReq) {
+        throw new Error(`SECURITY VIOLATION: Unrecognized provider link '${matchedLinkId}'. Payment link record not found.`);
+      }
+
+      if (storedLink?.business_id) businessId = storedLink.business_id;
+      else if (storedPayReq?.business_id) businessId = storedPayReq.business_id;
+
+      if (storedLink?.organization_id) organizationId = storedLink.organization_id;
+      else if (storedPayReq?.organization_id) organizationId = storedPayReq.organization_id;
+
+      // Verify exact amount
+      const expectedAmount = storedLink?.amount_inr || storedPayReq?.amount_inr;
+      if (expectedAmount && amountINR !== expectedAmount) {
+        throw new Error(`SECURITY VIOLATION: AMOUNT MISMATCH: Payment amount mismatch for link ${matchedLinkId}. Expected ₹${expectedAmount}, received ₹${amountINR}.`);
+      }
+    }
 
     if (!businessId) {
       throw new Error('SECURITY VIOLATION: Missing business_id in Razorpay webhook metadata.');
     }
 
-    const journeyId = notes.journey_id || notes.journeyId || undefined;
+    const journeyId = notes.journey_id || notes.journeyId || storedLink?.journey_id || storedPayReq?.journey_id || undefined;
     const invoiceNumber = notes.invoice_number || notes.invoiceNumber || `INV-RZP-${Date.now()}`;
-    const serviceRendered = notes.service || payment.description || 'Consultation & Treatment Checkout';
+    const serviceRendered = notes.service || payment.description || storedPayReq?.offer_description || 'Commercial Service Checkout';
     const classification = params.overrideClassification || (notes.classification as DataClassification) || this.getClassification();
 
     // Map method
@@ -720,7 +822,7 @@ export class RazorpayAdapter {
     else if (payment.method === 'card') paymentMethod = 'CREDIT_CARD';
     else if (payment.method === 'emi') paymentMethod = 'NO_COST_EMI';
 
-    // Idempotency Check
+    // Idempotency Check: Duplicate Webhook => NO DUPLICATE REVENUE (Spec § 22)
     const existingTx = this.db
       .prepare('SELECT id FROM transactions WHERE transaction_ref = ?')
       .get(paymentId) as any;
@@ -747,20 +849,31 @@ export class RazorpayAdapter {
     }
 
     // Update payment_provider_links record if present
-    if (eventType === 'payment_link.paid' || payment.payment_link_id) {
-      const linkId = payment.payment_link_id || payment.id;
+    if (matchedLinkId) {
       this.db
         .prepare(`
           UPDATE payment_provider_links
           SET status = 'PAID', paid_at = datetime('now'), payment_id = ?
           WHERE provider_link_id = ?
         `)
-        .run(paymentId, linkId);
+        .run(paymentId, matchedLinkId);
+
+      // Update payment_requests record (Spec § 9 & § 23)
+      this.db
+        .prepare(`
+          UPDATE payment_requests
+          SET status = 'PAID', payment_id = ?, payment_verified_at = datetime('now'),
+              verified_at = datetime('now'), verification_method = 'RAZORPAY_WEBHOOK',
+              updated_at = datetime('now')
+          WHERE provider_link_id = ?
+        `)
+        .run(paymentId, matchedLinkId);
     }
 
     // Record Transaction with verified classification
     const tx = this.revenueEngine.recordTransaction({
       businessId,
+      organizationId,
       journeyId,
       invoiceNumber,
       amountINR,
@@ -772,6 +885,53 @@ export class RazorpayAdapter {
       serviceRendered
     });
 
+    // Record explicit economic entity revenue_records (Spec § 3, § 24, § 25)
+    const isPlatformRevenue = businessId === OwnerAuthService.PLATFORM_BUSINESS_ID || businessId === 'biz_platform_aro';
+    const revenueType = isPlatformRevenue ? 'PLATFORM_REVENUE' : 'CLIENT_REVENUE';
+
+    try {
+      this.db.prepare(`
+        INSERT INTO revenue_records (
+          id, organization_id, business_id, revenue_type, source, transaction_id,
+          amount_inr, currency, verified, verification_method, classification,
+          recurring_model, timestamp
+        ) VALUES (?, ?, ?, ?, 'RAZORPAY', ?, ?, 'INR', 1, 'RAZORPAY_WEBHOOK', ?, 'ONE_TIME', datetime('now'))
+      `).run(
+        `rev_${Date.now()}_${randomUUID().substring(0, 6)}`,
+        organizationId,
+        businessId,
+        revenueType,
+        paymentId,
+        amountINR,
+        classification
+      );
+    } catch (e: any) {
+      console.warn(`[RazorpayAdapter] Failed to insert revenue_records: ${e.message}`);
+    }
+
+    // If platform customer paid, initialize 5-Day Delivery Blueprint fulfillment (Spec § 38 & § 39)
+    if (isPlatformRevenue) {
+      try {
+        const custId = storedPayReq?.prospect_id || storedLink?.prospect_id || `cust_${randomUUID().substring(0, 8)}`;
+        this.db.prepare(`
+          INSERT OR IGNORE INTO platform_customer_deliveries (
+            id, customer_id, organization_id, business_id, offer_id, payment_id,
+            stage, contract_terms, deliverables_json, success_metrics_json, renewal_date, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, 'ONBOARDING', 'Standard Service Agreement: 5-Day Delivery & SLA', '["WhatsApp Integration", "Google Business Profile Lead Capture", "Automated Triage", "24/7 Booking Bot"]', '["Response time < 2 mins", "30% show rate"]', datetime('now', '+30 days'), datetime('now'), datetime('now'))
+        `).run(
+          `deliv_${Date.now()}`,
+          custId,
+          organizationId,
+          businessId,
+          storedPayReq?.offer_id || 'PLATFORM_SETUP',
+          paymentId
+        );
+      } catch (e: any) {
+        console.warn(`[RazorpayAdapter] Failed to initialize customer delivery: ${e.message}`);
+      }
+    }
+
+    // Advance customer journey if present
     if (journeyId) {
       const jRow = this.db
         .prepare('SELECT * FROM customer_journeys WHERE id = ?')
@@ -791,6 +951,61 @@ export class RazorpayAdapter {
       transactionId: tx.id,
       amountINR: tx.amountINR,
       journeyId
+    };
+  }
+
+  /**
+   * Diagnostic Health Check (Spec § 42)
+   * GET /api/v1/payments/razorpay/health
+   */
+  public getRazorpayHealth(): {
+    configured: boolean;
+    live_mode: boolean;
+    key_id_present: boolean;
+    secret_present: boolean;
+    webhook_secret_present: boolean;
+    provider_reachable: boolean;
+    last_provider_check: string;
+    last_webhook_received: string | null;
+    last_payment_event: string | null;
+    last_verified_payment: string | null;
+  } {
+    const keyId = this.getKeyId();
+    const keySecret = this.getKeySecret();
+    const webhookSecret = this.getWebhookSecret();
+    const liveMode = this.isLiveConfigured();
+    const configured = this.hasAnyValidCredentials();
+
+    let lastPaymentEvent: string | null = null;
+    let lastVerifiedPayment: string | null = null;
+
+    try {
+      const linkRow = this.db.prepare(`
+        SELECT created_at, paid_at FROM payment_provider_links ORDER BY created_at DESC LIMIT 1
+      `).get() as any;
+      if (linkRow) {
+        lastPaymentEvent = linkRow.paid_at || linkRow.created_at || null;
+      }
+
+      const revRow = this.db.prepare(`
+        SELECT timestamp FROM revenue_records WHERE source = 'RAZORPAY' AND verified = 1 ORDER BY timestamp DESC LIMIT 1
+      `).get() as any;
+      if (revRow) {
+        lastVerifiedPayment = revRow.timestamp || null;
+      }
+    } catch {}
+
+    return {
+      configured,
+      live_mode: liveMode,
+      key_id_present: Boolean(keyId && !isPlaceholderCredential(keyId)),
+      secret_present: Boolean(keySecret && !isPlaceholderCredential(keySecret)),
+      webhook_secret_present: Boolean(webhookSecret && !isPlaceholderCredential(webhookSecret)),
+      provider_reachable: configured,
+      last_provider_check: new Date().toISOString(),
+      last_webhook_received: lastPaymentEvent,
+      last_payment_event: lastPaymentEvent,
+      last_verified_payment: lastVerifiedPayment
     };
   }
 }

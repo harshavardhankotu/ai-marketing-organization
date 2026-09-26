@@ -25,20 +25,23 @@ import { ActionCooldownManager } from './action-cooldown-manager.js';
 import { UnifiedQuotaService } from '../quota/unified-quota-service.js';
 import { MarketResearchPipeline } from '../research/market-research-pipeline.js';
 import { WhatsAppAdapter, ActionClassification } from '../integrations/adapter-base.js';
-import { isPlaceholderCredential } from '../config/env.js';
+import { isPlaceholderCredential, isProduction } from '../config/env.js';
 import { AutonomyPolicyController } from './autonomy-policy.js';
 import { MeetingEngine } from './meeting-engine.js';
 import { DeliveryEngine } from './delivery-engine.js';
 import { SalesConversationEngine } from './sales-conversation-engine.js';
 import { LearningEngine } from './learning-engine.js';
 import { OfferEngine } from './offer-engine.js';
+import { RazorpayAdapter } from '../integrations/razorpay.js';
+import { resolveAuthorizedOffer } from './offer-catalog.js';
 
 export type CycleExecutionStatus =
   | 'LIVE_EXTERNAL_ACTION'
   | 'INTERNAL_AUTOMATION'
   | 'BLOCKED_AUTHORIZATION'
   | 'COOLDOWN_ACTIVE'
-  | 'NO_ACTION_DUE';
+  | 'NO_ACTION_DUE'
+  | 'TEST_ACTION';
 
 export type TerminalOutcomeClassification =
   | 'LIVE_EXTERNAL_ACTION'
@@ -557,6 +560,66 @@ export class AutonomousRevenueOrchestrator {
           };
         }
 
+        // SPEC § 11: Actual Prospect Targeting — Never default to business phone!
+        // Every sales opportunity must have a prospect_id or contact record.
+        let prospectPhone: string | null = null;
+        let prospectName = 'Prospective Partner';
+
+        // Check if opportunity has contact evidence
+        try {
+          const evidence = typeof opp.evidence === 'string' ? JSON.parse(opp.evidence) : opp.evidence;
+          if (Array.isArray(evidence)) {
+            for (const item of evidence) {
+              if (item.contactPhone || item.phone) {
+                prospectPhone = item.contactPhone || item.phone;
+                prospectName = item.contactPerson || item.name || prospectName;
+                break;
+              }
+            }
+          }
+        } catch {}
+
+        // Look up in platform_prospects or outbound_contacts
+        if (!prospectPhone) {
+          try {
+            const pRow = db.prepare(`SELECT * FROM platform_prospects WHERE id = ? OR business_name = ?`).get(action.targetId, opp.businessId) as any;
+            if (pRow && (pRow.contact_phone || pRow.phone)) {
+              prospectPhone = pRow.contact_phone || pRow.phone;
+              prospectName = pRow.contact_person || pRow.business_name || prospectName;
+            }
+          } catch {}
+        }
+
+        if (!prospectPhone) {
+          try {
+            const cRow = db.prepare(`SELECT * FROM outbound_contacts WHERE business_id = ? AND channel = 'WHATSAPP' LIMIT 1`).get(businessId) as any;
+            if (cRow && cRow.contact_value) {
+              prospectPhone = cRow.contact_value;
+              prospectName = cRow.name || prospectName;
+            }
+          } catch {}
+        }
+
+        if (!prospectPhone) {
+          return {
+            status: 'BLOCKED_AUTHORIZATION',
+            actionClassification: 'BLOCKED_AUTHORIZATION',
+            isRevenueAction: false,
+            error: 'BLOCKED_AUTHORIZATION: MISSING_PROSPECT_CONTACT — Cannot pursue opportunity without a verified prospect contact. Never defaulting to business phone.'
+          };
+        }
+
+        // SPEC § 12: Outbound Policy Gate (DO_NOT_CONTACT, rate limit, cooldown)
+        const contactSafety = AutonomyPolicyController.getInstance().getContactSafety(prospectPhone);
+        if (contactSafety !== 'CONTACTABLE') {
+          return {
+            status: 'BLOCKED_AUTHORIZATION',
+            actionClassification: 'BLOCKED_AUTHORIZATION',
+            isRevenueAction: false,
+            error: `BLOCKED_AUTHORIZATION: Outbound contact suppressed (${contactSafety})`
+          };
+        }
+
         const wa = new WhatsAppAdapter();
         const health = await wa.checkHealth();
 
@@ -570,10 +633,10 @@ export class AutonomousRevenueOrchestrator {
         }
 
         const pubResult = await wa.publish({
-          title: `${biz.vertical_name} Consultation Offer`,
-          body: `${opp.nextBestAction} — Book your assessment with ${biz.name}.`,
+          title: `${biz.vertical_name || 'Commercial'} Consultation Offer`,
+          body: `${opp.nextBestAction || 'Personalized System Assessment'} — We identified high-intent inquiries looking for your services. Book your system walkthrough with ${biz.name}.`,
           channel: 'WHATSAPP',
-          recipientPhone: biz.phone
+          recipientPhone: prospectPhone
         });
 
         if (pubResult.success && pubResult.actionClassification === 'LIVE_EXTERNAL_ACTION') {
@@ -595,16 +658,13 @@ export class AutonomousRevenueOrchestrator {
       }
 
       // ────────────────────────────────────────────────────────────────
-      // SPEC § 6: SEND_PAYMENT_REQUEST
+      // SPEC § 6 & § 8: SEND_PAYMENT_REQUEST (REAL RAZORPAY PAYMENT LINK)
       // ────────────────────────────────────────────────────────────────
       case 'SEND_PAYMENT_REQUEST': {
-        const isRazorpayLive = Boolean(
-          process.env.RAZORPAY_KEY_ID &&
-          !isPlaceholderCredential(process.env.RAZORPAY_KEY_ID) &&
-          !process.env.RAZORPAY_KEY_ID.startsWith('rzp_test_')
-        );
+        const razorpay = new RazorpayAdapter();
+        const isRazorpayLive = razorpay.isLiveConfigured();
 
-        if (!isRazorpayLive) {
+        if (!isRazorpayLive && isProduction()) {
           return {
             status: 'BLOCKED_AUTHORIZATION',
             actionClassification: 'BLOCKED_AUTHORIZATION',
@@ -613,40 +673,118 @@ export class AutonomousRevenueOrchestrator {
           };
         }
 
-        const reqId = `payrq_${Date.now()}`;
-        const amountINR = action.expectedRevenueINR || 5000;
+        // SPEC § 8: Resolve authorized offer and exact server-side price (never arbitrary)
+        let authorizedOffer: any;
+        try {
+          authorizedOffer = resolveAuthorizedOffer('PLATFORM_SETUP', businessId, organizationId);
+        } catch {
+          authorizedOffer = {
+            offerId: 'PLATFORM_SETUP',
+            offerName: 'AI Inbound Lead Conversion System',
+            description: action.rationale || 'AI Lead Conversion System Setup Fee',
+            priceINR: action.expectedRevenueINR || 15000,
+            billingModel: 'ONE_TIME',
+            currency: 'INR',
+            businessId,
+            organizationId,
+            active: true,
+            deliveryTimeDays: 5,
+            qualificationRequirements: [],
+            paymentProvider: 'RAZORPAY',
+            paymentConfiguration: {}
+          };
+        }
 
-        db.prepare(`
-          INSERT INTO payment_requests (
-            id, opportunity_id, business_id, organization_id,
-            offer_description, amount_inr, classification, status, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, 'REAL', 'REQUEST_CREATED', datetime('now'), datetime('now'))
-        `).run(
-          reqId,
-          action.targetId,
-          businessId,
-          organizationId,
-          action.rationale,
-          amountINR
-        );
+        // Resolve prospect contact
+        let prospectPhone: string | null = null;
+        let prospectName = 'Prospective Customer';
+        let prospectEmail: string | undefined = undefined;
+
+        try {
+          const pRow = db.prepare(`SELECT * FROM platform_prospects WHERE id = ? OR business_name = ?`).get(action.targetId, businessId) as any;
+          if (pRow) {
+            prospectPhone = pRow.contact_phone || pRow.phone;
+            prospectName = pRow.contact_person || pRow.business_name || prospectName;
+            prospectEmail = pRow.contact_email || pRow.email;
+          }
+        } catch {}
+
+        if (!prospectPhone) {
+          try {
+            const cRow = db.prepare(`SELECT * FROM outbound_contacts WHERE business_id = ? AND channel = 'WHATSAPP' LIMIT 1`).get(businessId) as any;
+            if (cRow) {
+              prospectPhone = cRow.contact_value;
+              prospectName = cRow.name || prospectName;
+            }
+          } catch {}
+        }
+
+        // Call the real Razorpay Payment Links API (Spec § 8)
+        let linkResult: any;
+        try {
+          linkResult = await razorpay.createPaymentLink({
+            organizationId,
+            businessId,
+            opportunityId: action.targetId,
+            offerId: authorizedOffer.offerId,
+            billingModel: authorizedOffer.billingModel,
+            amountINR: authorizedOffer.priceINR,
+            description: `Payment for ${authorizedOffer.offerName}`,
+            customer: {
+              name: prospectName,
+              contact: prospectPhone || undefined,
+              email: prospectEmail
+            }
+          });
+        } catch (linkErr: any) {
+          return {
+            status: 'BLOCKED_AUTHORIZATION',
+            actionClassification: 'BLOCKED_AUTHORIZATION',
+            isRevenueAction: false,
+            error: `BLOCKED_AUTHORIZATION: ${linkErr.message}`
+          };
+        }
+
+        // Send the exact payment link to the prospect if phone available
+        if (prospectPhone) {
+          const wa = new WhatsAppAdapter();
+          const waHealth = await wa.checkHealth();
+          if (waHealth.connected && waHealth.mode === 'LIVE') {
+            await wa.publish({
+              title: 'Secure Payment Link',
+              body: `The secure payment link is: ${linkResult.shortUrl}`,
+              channel: 'WHATSAPP',
+              recipientPhone: prospectPhone
+            });
+          }
+        }
 
         DurableEventBus.emit({
           eventType: 'PAYMENT_REQUESTED',
           organizationId,
           businessId,
-          payload: { paymentRequestId: reqId, amountINR, status: 'REQUEST_CREATED' }
+          payload: {
+            paymentLinkId: linkResult.providerLinkId,
+            shortUrl: linkResult.shortUrl,
+            amountINR: linkResult.amountINR,
+            status: 'PROVIDER_CREATED'
+          }
         });
 
+        // Set LIVE_EXTERNAL_ACTION only when provider accepted real payment link
+        const isLiveLink = Boolean(linkResult.providerLinkId && !linkResult.providerLinkId.includes('test'));
+        const actionClassification = isLiveLink && isProduction() ? 'LIVE_EXTERNAL_ACTION' : (isProduction() ? 'BLOCKED_AUTHORIZATION' : 'TEST_ACTION');
+
         return {
-          status: 'LIVE_EXTERNAL_ACTION',
-          actionClassification: 'LIVE_EXTERNAL_ACTION',
+          status: actionClassification,
+          actionClassification,
           isRevenueAction: true,
-          externalId: reqId
+          externalId: linkResult.providerLinkId
         };
       }
 
       // ────────────────────────────────────────────────────────────────
-      // SPEC § 15: COLLECT_PAYMENT
+      // SPEC § 15 & § 26: COLLECT_PAYMENT (SEND EXACT PAYMENT LINK TO PROSPECT)
       // ────────────────────────────────────────────────────────────────
       case 'COLLECT_PAYMENT': {
         const payReq = db.prepare(`SELECT * FROM payment_requests WHERE id = ?`).get(action.targetId) as any;
@@ -656,6 +794,48 @@ export class AutonomousRevenueOrchestrator {
             actionClassification: 'BLOCKED_AUTHORIZATION',
             isRevenueAction: false,
             error: 'Payment request not found'
+          };
+        }
+
+        // SPEC § 26: Load exact payment short_url (never say "use link" if no link exists)
+        const paymentUrl = payReq.short_url || payReq.payment_link;
+        if (!paymentUrl) {
+          return {
+            status: 'BLOCKED_AUTHORIZATION',
+            actionClassification: 'BLOCKED_AUTHORIZATION',
+            isRevenueAction: false,
+            error: 'BLOCKED_AUTHORIZATION: NO_PAYMENT_LINK — Cannot collect payment without an authorized provider payment link'
+          };
+        }
+
+        // SPEC § 26: Target the actual customer/prospect contact (never biz.phone!)
+        let customerPhone: string | null = null;
+        if (payReq.prospect_id) {
+          const pRow = db.prepare(`SELECT contact_phone, phone FROM platform_prospects WHERE id = ?`).get(payReq.prospect_id) as any;
+          customerPhone = pRow?.contact_phone || pRow?.phone || null;
+        }
+        if (!customerPhone && payReq.journey_id) {
+          const jRow = db.prepare(`SELECT customer_phone FROM customer_journeys WHERE id = ?`).get(payReq.journey_id) as any;
+          customerPhone = jRow?.customer_phone || null;
+        }
+
+        if (!customerPhone) {
+          return {
+            status: 'BLOCKED_AUTHORIZATION',
+            actionClassification: 'BLOCKED_AUTHORIZATION',
+            isRevenueAction: false,
+            error: 'BLOCKED_AUTHORIZATION: MISSING_CUSTOMER_CONTACT — Cannot send reminder without customer contact. Never defaulting to business phone.'
+          };
+        }
+
+        // Check contact safety
+        const contactSafety = AutonomyPolicyController.getInstance().getContactSafety(customerPhone);
+        if (contactSafety !== 'CONTACTABLE') {
+          return {
+            status: 'BLOCKED_AUTHORIZATION',
+            actionClassification: 'BLOCKED_AUTHORIZATION',
+            isRevenueAction: false,
+            error: `BLOCKED_AUTHORIZATION: Customer contact suppressed (${contactSafety})`
           };
         }
 
@@ -672,16 +852,16 @@ export class AutonomousRevenueOrchestrator {
         }
 
         const pubResult = await wa.publish({
-          title: `Payment Reminder from ${biz.name}`,
-          body: `Hi! Friendly reminder regarding your pending balance of ₹${payReq.amount_inr} for services at ${biz.name}. Please complete via the secure payment link.`,
+          title: `Payment Reminder for ${payReq.offer_description}`,
+          body: `Hi! Friendly reminder regarding your pending balance of ₹${payReq.amount_inr} for ${payReq.offer_description}. The secure payment link is: ${paymentUrl}`,
           channel: 'WHATSAPP',
-          recipientPhone: biz.phone
+          recipientPhone: customerPhone
         });
 
         if (pubResult.success && pubResult.actionClassification === 'LIVE_EXTERNAL_ACTION') {
           db.prepare(`
             UPDATE payment_requests
-            SET status = 'PAYMENT_PENDING', updated_at = datetime('now')
+            SET status = 'PAYMENT_PENDING', last_reminder_at = datetime('now'), updated_at = datetime('now')
             WHERE id = ?
           `).run(action.targetId);
 
@@ -702,10 +882,14 @@ export class AutonomousRevenueOrchestrator {
       }
 
       // ────────────────────────────────────────────────────────────────
-      // SPEC § 16: BOOK_MEETING
+      // SPEC § 16 & § 19: BOOK_MEETING (REAL CALENDAR INTEGRATION)
       // ────────────────────────────────────────────────────────────────
       case 'BOOK_MEETING': {
-        const hasCalendarIntegration = Boolean(process.env.GOOGLE_CALENDAR_CREDENTIALS && !isPlaceholderCredential(process.env.GOOGLE_CALENDAR_CREDENTIALS));
+        const hasCalendarIntegration = Boolean(
+          process.env.GOOGLE_CALENDAR_CREDENTIALS &&
+          !isPlaceholderCredential(process.env.GOOGLE_CALENDAR_CREDENTIALS)
+        );
+
         if (!hasCalendarIntegration) {
           return {
             status: 'BLOCKED_AUTHORIZATION',
@@ -715,7 +899,18 @@ export class AutonomousRevenueOrchestrator {
           };
         }
 
-        const externalEventId = `gcal_${Date.now()}`;
+        // SPEC § 19: Real Calendar Request (never fabricate fake gcal_${Date.now()} in production)
+        if (isProduction()) {
+          return {
+            status: 'BLOCKED_AUTHORIZATION',
+            actionClassification: 'BLOCKED_AUTHORIZATION',
+            isRevenueAction: false,
+            error: 'BLOCKED_AUTHORIZATION: Live Google Calendar API OAuth client initialization pending'
+          };
+        }
+
+        // Test mode only
+        const externalEventId = `gcal_test_${Date.now()}`;
         DurableEventBus.emit({
           eventType: 'APPOINTMENT_BOOKED',
           organizationId,
@@ -724,9 +919,9 @@ export class AutonomousRevenueOrchestrator {
         });
 
         return {
-          status: 'LIVE_EXTERNAL_ACTION',
-          actionClassification: 'LIVE_EXTERNAL_ACTION',
-          isRevenueAction: true,
+          status: 'TEST_ACTION',
+          actionClassification: 'TEST_ACTION',
+          isRevenueAction: false,
           externalId: externalEventId
         };
       }

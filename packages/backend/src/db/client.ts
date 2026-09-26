@@ -344,6 +344,29 @@ export function getDb(dbPath?: string): Database.Database {
       user_agent TEXT, expires_at TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`);
   } catch {}
+  try { db.exec(`ALTER TABLE payment_requests ADD COLUMN prospect_id TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE payment_requests ADD COLUMN offer_id TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE payment_requests ADD COLUMN billing_model TEXT NOT NULL DEFAULT 'ONE_TIME'`); } catch {}
+  try { db.exec(`ALTER TABLE payment_requests ADD COLUMN provider TEXT NOT NULL DEFAULT 'RAZORPAY'`); } catch {}
+  try { db.exec(`ALTER TABLE payment_requests ADD COLUMN provider_link_id TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE payment_requests ADD COLUMN provider_order_id TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE payment_requests ADD COLUMN short_url TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE payment_requests ADD COLUMN reference_id TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE payment_requests ADD COLUMN payment_id TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE payment_requests ADD COLUMN verified_at TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE payment_requests ADD COLUMN verification_method TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE payment_requests ADD COLUMN last_reminder_at TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE payment_requests ADD COLUMN expires_at TEXT`); } catch {}
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS platform_customer_deliveries (
+      id TEXT PRIMARY KEY, customer_id TEXT NOT NULL, organization_id TEXT NOT NULL,
+      business_id TEXT NOT NULL, offer_id TEXT NOT NULL, payment_id TEXT NOT NULL,
+      stage TEXT NOT NULL DEFAULT 'ONBOARDING', contract_terms TEXT NOT NULL,
+      deliverables_json TEXT NOT NULL DEFAULT '[]', success_metrics_json TEXT NOT NULL DEFAULT '[]',
+      renewal_date TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+  } catch {}
 
   // Initialize schema (creates all tables if not exist — safe for both fresh and existing DBs)
 

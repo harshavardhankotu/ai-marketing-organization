@@ -52,30 +52,51 @@ import { RevenueBottleneckEngine } from '../revenue/revenue-bottleneck-engine.js
 import { LiveProviderActivation } from '../revenue/live-provider-activation.js';
 import { CommercialLifecycleManager } from '../revenue/commercial-lifecycle.js';
 import { OwnerAuthService } from '../auth/owner-auth.js';
+import { SalesConversationEngine } from '../revenue/sales-conversation-engine.js';
 
 export type AppVariables = {
   organizationId: string;
   userId: string;
 };
 
+export const EXACT_ROUTE_POLICY = {
+  PUBLIC: [
+    '/health',
+    '/public/lead',
+    '/landing-pages',
+    '/organic/sessions',
+    '/organic/leads',
+    '/auth/owner/login',
+    '/payments/razorpay/create-order',
+    '/payments/razorpay/verify',
+    '/payments/manual-upi/claim',
+    '/compliance/dpdp/consent',
+    '/compliance/dpdp/erasure',
+    '/payments/razorpay/health'
+  ],
+  WEBHOOK: [
+    '/webhooks/razorpay',
+    '/webhooks/whatsapp',
+    '/webhooks/email',
+    '/webhooks/payments'
+  ],
+  SYSTEM: [
+    '/cron/ping',
+    '/cron/status'
+  ]
+};
+
 export const apiRouter = new Hono<{ Variables: AppVariables }>();
 
 // Middleware: Authentication & Tenant Context Boundary
 apiRouter.use('*', async (c, next) => {
-  const path = c.req.path;
+  const rawPath = c.req.path;
+  const path = rawPath.replace(/^\/api\/v1/, '') || '/';
 
-  // 1. Explicit Public Endpoints (Spec § 5 & § 46)
-  const isExplicitPublic =
-    path.endsWith('/health') ||
-    path.includes('/public/') ||
-    path.includes('/compliance/') ||
-    path.includes('/landing-pages') ||
-    path.includes('/organic/sessions') ||
-    path.includes('/organic/leads') ||
-    path.endsWith('/auth/owner/login') ||
-    path.endsWith('/payments/razorpay/create-order') ||
-    path.endsWith('/payments/razorpay/verify') ||
-    path.endsWith('/payments/manual-upi/claim');
+  // 1. Explicit Public Endpoints (Spec § 5, § 46, § 47)
+  const isExplicitPublic = EXACT_ROUTE_POLICY.PUBLIC.some(
+    p => path === p || path.startsWith(p + '/')
+  );
 
   if (isExplicitPublic) {
     c.set('organizationId', c.req.header('x-organization-id') || (isProduction() ? '' : 'org_smilekraft_01'));
@@ -84,14 +105,22 @@ apiRouter.use('*', async (c, next) => {
   }
 
   // 2. Gateway Webhooks (Cryptographically verified by gateway secret)
-  if (path.includes('/webhooks/')) {
+  const isWebhook = EXACT_ROUTE_POLICY.WEBHOOK.some(
+    p => path === p || path.startsWith(p + '/')
+  );
+
+  if (isWebhook) {
     c.set('organizationId', c.req.header('x-organization-id') || (isProduction() ? '' : 'org_smilekraft_01'));
     c.set('userId', 'usr_webhook_gateway');
     return await next();
   }
 
   // 3. Cloudflare Worker Cron Trigger (Authenticated via X-Cron-Secret)
-  if (path.includes('/cron/')) {
+  const isSystem = EXACT_ROUTE_POLICY.SYSTEM.some(
+    p => path === p || path.startsWith(p + '/')
+  );
+
+  if (isSystem) {
     c.set('organizationId', OwnerAuthService.OWNER_ORGANIZATION_ID);
     c.set('userId', 'usr_cron_trigger');
     return await next();
@@ -1457,14 +1486,35 @@ apiRouter.post('/ai-costs/log', async (c) => {
 // ==========================================
 apiRouter.post('/public/lead', async (c) => {
   const body = await c.req.json();
-  const businessId = body.businessId || 'biz_smilekraft_hyd';
-  const orgId = body.organizationId || 'org_smilekraft_01';
-
   const db = getDb();
+  let businessId = body.businessId;
   let biz: any = null;
-  try {
-    biz = db.prepare('SELECT name, vertical_name, city, neighborhood FROM businesses WHERE id = ?').get(businessId) as any;
-  } catch {}
+
+  if (businessId) {
+    try {
+      biz = db.prepare('SELECT id, organization_id, name, vertical_name, city, neighborhood FROM businesses WHERE id = ?').get(businessId) as any;
+    } catch {}
+    if (!biz) {
+      return c.json({
+        success: false,
+        error: `PUBLIC_BUSINESS_NOT_FOUND: The requested business profile '${businessId}' was not found or is inactive.`
+      }, 404);
+    }
+  } else {
+    // If not specified, look for primary/seeded active business in database
+    try {
+      biz = db.prepare('SELECT id, organization_id, name, vertical_name, city, neighborhood FROM businesses ORDER BY created_at ASC LIMIT 1').get() as any;
+    } catch {}
+    if (!biz) {
+      return c.json({
+        success: false,
+        error: 'PUBLIC_BUSINESS_NOT_FOUND: No active business profile is available to receive consultation requests.'
+      }, 404);
+    }
+    businessId = biz.id;
+  }
+
+  const orgId = biz.organization_id;
   const bizName = biz?.name || 'Business';
 
   // 1. Anti-Bot Honeypot Defense: Silently absorb scrapers
@@ -1511,8 +1561,8 @@ apiRouter.post('/public/lead', async (c) => {
       customerPhone: body.customerPhone.trim(),
       customerEmail: body.customerEmail ? body.customerEmail.trim() : undefined,
       channel: body.channel || 'WHATSAPP',
-      campaignId: body.campaignId || 'camp_seed_general_01',
-      source: body.source || 'public_landing_page',
+      campaignId: body.campaignId || undefined,
+      source: body.source || (body.utmSource ? `${body.utmSource}_${body.utmMedium || 'direct'}` : 'direct_organic'),
       serviceOfInterest: body.serviceOfInterest || 'General Consultation',
       notes: body.notes,
       classification: forcedClassification,
@@ -1631,6 +1681,11 @@ apiRouter.post('/payments/razorpay/verify', async (c) => {
   }
 });
 
+apiRouter.get('/payments/razorpay/health', (c) => {
+  const health = razorpayAdapter.getRazorpayHealth();
+  return c.json({ success: true, data: health });
+});
+
 apiRouter.post('/webhooks/razorpay', async (c) => {
   // Hard-fail immediately in production if RAZORPAY_WEBHOOK_SECRET is missing or default/placeholder
   const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
@@ -1667,6 +1722,126 @@ apiRouter.post('/webhooks/razorpay', async (c) => {
     const status = err.message?.includes('SECURITY VIOLATION') ? 403 : 400;
     return c.json({ success: false, error: err.message }, status);
   }
+});
+
+// WhatsApp Webhook Verification (Meta Cloud API Challenge)
+apiRouter.get('/webhooks/whatsapp', (c) => {
+  const mode = c.req.query('hub.mode');
+  const token = c.req.query('hub.verify_token');
+  const challenge = c.req.query('hub.challenge');
+
+  const verifyToken = process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN || 'ai_marketing_whatsapp_token';
+
+  if (mode === 'subscribe' && token === verifyToken) {
+    return c.text(challenge || 'ok', 200);
+  }
+
+  // Allow challenge return in test/dev
+  if (!isProduction() && challenge) {
+    return c.text(challenge, 200);
+  }
+
+  return c.text('Forbidden: Invalid verification token', 403);
+});
+
+// WhatsApp Webhook Inbound Message Ingestion
+apiRouter.post('/webhooks/whatsapp', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const sce = SalesConversationEngine.getInstance();
+  const db = getDb();
+
+  // 1. Meta Cloud API standard format
+  if (body.object === 'whatsapp_business_account' && Array.isArray(body.entry)) {
+    const results: any[] = [];
+    for (const entry of body.entry) {
+      for (const change of entry.changes || []) {
+        const val = change.value;
+        if (val?.messages && Array.isArray(val.messages)) {
+          for (const msg of val.messages) {
+            const senderContact = msg.from || val.contacts?.[0]?.wa_id || '';
+            const senderName = val.contacts?.[0]?.profile?.name || '';
+            const messageText = msg.text?.body || msg.type || '';
+            const externalMessageId = msg.id;
+
+            const biz = db.prepare('SELECT id, organization_id FROM businesses LIMIT 1').get() as any;
+            const businessId = biz?.id || 'biz_platform_aro';
+            const organizationId = biz?.organization_id || OwnerAuthService.OWNER_ORGANIZATION_ID;
+
+            const res = await sce.handleInboundMessage({
+              businessId,
+              organizationId,
+              senderContact,
+              senderName,
+              channel: 'WHATSAPP',
+              messageText,
+              externalMessageId
+            });
+            results.push(res);
+          }
+        }
+      }
+    }
+    return c.json({ success: true, processed: results.length, data: results });
+  }
+
+  // 2. Direct / Normalized payload format
+  if (body.senderContact && body.messageText) {
+    const businessId = body.businessId || 'biz_platform_aro';
+    let organizationId = body.organizationId;
+    if (!organizationId) {
+      const biz = db.prepare('SELECT organization_id FROM businesses WHERE id = ?').get(businessId) as any;
+      organizationId = biz?.organization_id || OwnerAuthService.OWNER_ORGANIZATION_ID;
+    }
+
+    const res = await sce.handleInboundMessage({
+      businessId,
+      organizationId,
+      senderContact: body.senderContact,
+      senderName: body.senderName,
+      channel: 'WHATSAPP',
+      messageText: body.messageText,
+      externalMessageId: body.externalMessageId,
+      journeyId: body.journeyId
+    });
+
+    return c.json({ success: true, data: res });
+  }
+
+  return c.json({ success: false, error: 'Invalid WhatsApp webhook payload structure.' }, 400);
+});
+
+// Email Webhook Inbound Message Ingestion
+apiRouter.post('/webhooks/email', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const sce = SalesConversationEngine.getInstance();
+  const db = getDb();
+
+  const senderContact = body.from || body.senderContact || body.senderEmail;
+  const messageText = body.text || body.messageText || body.body || '';
+
+  if (!senderContact || !messageText) {
+    return c.json({ success: false, error: 'Sender email and message text are required.' }, 400);
+  }
+
+  const businessId = body.businessId || 'biz_platform_aro';
+  let organizationId = body.organizationId;
+  if (!organizationId) {
+    const biz = db.prepare('SELECT organization_id FROM businesses WHERE id = ?').get(businessId) as any;
+    organizationId = biz?.organization_id || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  }
+
+  const res = await sce.handleInboundMessage({
+    businessId,
+    organizationId,
+    senderContact,
+    senderName: body.fromName || body.senderName,
+    channel: 'EMAIL',
+    messageText,
+    externalMessageId: body.messageId || body.externalMessageId,
+    journeyId: body.journeyId
+  });
+
+  return c.json({ success: true, data: res });
 });
 
 // ==========================================

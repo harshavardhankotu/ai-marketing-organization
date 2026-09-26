@@ -1162,25 +1162,38 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_platform_prospects_email ON platform_prosp
 CREATE INDEX IF NOT EXISTS idx_platform_prospects_stage ON platform_prospects(stage);
 CREATE INDEX IF NOT EXISTS idx_platform_prospects_vertical ON platform_prospects(prospect_vertical);
 
--- 56. Payment Requests (PaymentRequestEngine — tracks every payment request lifecycle)
+-- 56. Payment Requests (PaymentRequestEngine — tracks every payment request lifecycle, Spec § 9)
 CREATE TABLE IF NOT EXISTS payment_requests (
   id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL,
+  business_id TEXT NOT NULL,
+  prospect_id TEXT,
   opportunity_id TEXT,
   journey_id TEXT,
-  business_id TEXT NOT NULL,
-  organization_id TEXT NOT NULL,
-  offer_description TEXT NOT NULL,
+  offer_id TEXT,
+  offer_description TEXT NOT NULL DEFAULT 'Commercial Service',
   amount_inr REAL NOT NULL,
   currency TEXT NOT NULL DEFAULT 'INR',
+  billing_model TEXT NOT NULL DEFAULT 'ONE_TIME',
+  provider TEXT NOT NULL DEFAULT 'RAZORPAY',
+  provider_link_id TEXT,
+  provider_order_id TEXT,
+  short_url TEXT,
+  reference_id TEXT,
   classification TEXT NOT NULL DEFAULT 'REAL', -- REAL | MANUAL_VERIFIED | TEST | SIMULATED
-  status TEXT NOT NULL DEFAULT 'PENDING',
-  -- PENDING | SENT | VIEWED | PAYMENT_INITIATED | PAID | EXPIRED | CANCELLED | FAILED
+  status TEXT NOT NULL DEFAULT 'DRAFT',
+  -- DRAFT | REQUEST_CREATED | PROVIDER_CREATED | SENT | VIEWED | PAYMENT_PENDING | PAID | FAILED | EXPIRED | CANCELLED | REFUNDED | CHARGEBACK
   payment_link TEXT,
   razorpay_order_id TEXT,
+  payment_id TEXT,
   payment_verified_at TEXT,
+  verified_at TEXT,
+  verification_method TEXT,
   payment_evidence_json TEXT NOT NULL DEFAULT '{}',
   fulfilment_triggered INTEGER NOT NULL DEFAULT 0,
   revenue_recorded INTEGER NOT NULL DEFAULT 0,
+  last_reminder_at TEXT,
+  expires_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE,
@@ -1189,6 +1202,7 @@ CREATE TABLE IF NOT EXISTS payment_requests (
 );
 CREATE INDEX IF NOT EXISTS idx_payrq_biz_status ON payment_requests(business_id, status);
 CREATE INDEX IF NOT EXISTS idx_payrq_opp ON payment_requests(opportunity_id);
+CREATE INDEX IF NOT EXISTS idx_payrq_provider_link ON payment_requests(provider_link_id);
 
 -- 57. Revenue Attribution Chain (full chain: customer → opportunity → source → campaign)
 CREATE TABLE IF NOT EXISTS revenue_attribution_chain (
@@ -1626,4 +1640,22 @@ CREATE TABLE IF NOT EXISTS owner_sessions (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_owner_sess_exp ON owner_sessions(expires_at);
+
+-- 80. Platform Customer Deliveries (Spec § 38 & § 39: Onboarding, SLAs and outcome milestones)
+CREATE TABLE IF NOT EXISTS platform_customer_deliveries (
+  id TEXT PRIMARY KEY,
+  customer_id TEXT NOT NULL,
+  organization_id TEXT NOT NULL,
+  business_id TEXT NOT NULL,
+  offer_id TEXT NOT NULL,
+  payment_id TEXT NOT NULL,
+  stage TEXT NOT NULL DEFAULT 'ONBOARDING', -- ONBOARDING | DAY_1_INTEGRATION | DAY_2_AUDIT | DAY_3_WORKFLOWS | DAY_4_CALENDAR | DAY_5_HANDOVER | COMPLETED
+  contract_terms TEXT NOT NULL,
+  deliverables_json TEXT NOT NULL DEFAULT '[]',
+  success_metrics_json TEXT NOT NULL DEFAULT '[]',
+  renewal_date TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_pcd_cust ON platform_customer_deliveries(customer_id);
 `;

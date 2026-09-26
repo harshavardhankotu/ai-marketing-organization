@@ -301,7 +301,7 @@ export class SalesConversationEngine {
     }
 
     // 2. Purchase / payment readiness
-    if (/ready to buy|send payment link|how do i pay|i want to purchase|send invoice|i accept|proceed with booking|book my slot|send payment/.test(lower)) {
+    if (/ready to (buy|proceed|move forward|purchase)|send payment link|how do i pay|i want to purchase|send invoice|i accept|proceed with booking|book my slot|send payment/.test(lower)) {
       return 'READY_TO_BUY';
     }
 

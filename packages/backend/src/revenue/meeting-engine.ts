@@ -67,10 +67,21 @@ export class MeetingEngine {
     let providerResponse = {};
 
     if (hasLiveGoogleCalendar) {
-      // In live environment with Google Calendar API
+      if (process.env.NODE_ENV === 'production') {
+        return {
+          success: false,
+          meetingId,
+          actionClassification: 'BLOCKED_AUTHORIZATION',
+          provider: 'GOOGLE_CALENDAR',
+          startTime: request.startTime,
+          endTime: request.endTime,
+          status: 'FAILED',
+          message: 'BLOCKED_AUTHORIZATION: Live Google Calendar API integration requires verified OAuth client initialization.'
+        };
+      }
       provider = 'GOOGLE_CALENDAR';
-      externalEventId = `gcal_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      actionClassification = 'LIVE_EXTERNAL_ACTION';
+      externalEventId = `gcal_test_${Date.now()}`;
+      actionClassification = 'TEST_ACTION';
       providerResponse = { status: 'confirmed', htmlLink: `https://calendar.google.com/event?eid=${externalEventId}` };
     }
 
@@ -127,7 +138,7 @@ export class MeetingEngine {
         startTime: request.startTime,
         endTime: request.endTime,
         status: 'SCHEDULED',
-        message: actionClassification === 'LIVE_EXTERNAL_ACTION'
+        message: (actionClassification as string) === 'LIVE_EXTERNAL_ACTION'
           ? `Meeting scheduled on live Google Calendar (${externalEventId})`
           : 'Appointment scheduled internally in clinic management system'
       };
