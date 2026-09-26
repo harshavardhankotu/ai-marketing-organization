@@ -99,7 +99,7 @@ apiRouter.use('*', async (c, next) => {
   );
 
   if (isExplicitPublic) {
-    c.set('organizationId', c.req.header('x-organization-id') || (isProduction() ? '' : 'org_smilekraft_01'));
+    c.set('organizationId', c.req.header('x-organization-id') || (isProduction() ? '' : 'org_owner_primary'));
     c.set('userId', 'usr_public_lead');
     return await next();
   }
@@ -110,7 +110,7 @@ apiRouter.use('*', async (c, next) => {
   );
 
   if (isWebhook) {
-    c.set('organizationId', c.req.header('x-organization-id') || (isProduction() ? '' : 'org_smilekraft_01'));
+    c.set('organizationId', c.req.header('x-organization-id') || (isProduction() ? '' : 'org_owner_primary'));
     c.set('userId', 'usr_webhook_gateway');
     return await next();
   }
@@ -191,7 +191,7 @@ apiRouter.use('*', async (c, next) => {
     }
 
     // Allow explicit identity headers in test runners, defaulting to seeded test business
-    c.set('organizationId', c.req.header('x-organization-id') || 'org_smilekraft_01');
+    c.set('organizationId', c.req.header('x-organization-id') || (isProduction() ? '' : 'org_owner_primary'));
     c.set('userId', c.req.header('x-user-id') || 'usr_owner_01');
   }
 
@@ -233,11 +233,13 @@ apiRouter.post('/auth/owner/login', async (c) => {
   return c.json({
     success: true,
     data: {
-      token: session.token,
+      // token is intentionally omitted from JSON body in production — it is set via HttpOnly cookie only
+      // API clients should use x-api-key header authentication instead of extracting the cookie token
       principal_type: session.principalType,
       organization_id: session.organizationId,
       user_id: session.userId,
-      expires_at: session.expiresAt
+      expires_at: session.expiresAt,
+      ...(isProduction() ? {} : { token: session.token }) // Only expose in non-production for testing
     }
   });
 });
@@ -1746,9 +1748,33 @@ apiRouter.get('/webhooks/whatsapp', (c) => {
 
 // WhatsApp Webhook Inbound Message Ingestion
 apiRouter.post('/webhooks/whatsapp', async (c) => {
-  const body = await c.req.json().catch(() => ({}));
+  const rawBody = await c.req.text().catch(() => '');
+  let body: any = {};
+  try { body = JSON.parse(rawBody); } catch { body = {}; }
   const sce = SalesConversationEngine.getInstance();
   const db = getDb();
+
+  // Meta X-Hub-Signature-256 validation in production
+  const metaAppSecret = process.env.META_APP_SECRET || process.env.WHATSAPP_APP_SECRET;
+  if (isProduction() && metaAppSecret && !isPlaceholderCredential(metaAppSecret)) {
+    const signature = c.req.header('x-hub-signature-256') || '';
+    if (!signature.startsWith('sha256=')) {
+      return c.json({ error: 'SECURITY VIOLATION: Missing Meta webhook signature' }, 401);
+    }
+    const { createHmac } = await import('crypto');
+    const expectedSig = 'sha256=' + createHmac('sha256', metaAppSecret).update(rawBody).digest('hex');
+    const sigBuffer = Buffer.from(signature);
+    const expectedBuffer = Buffer.from(expectedSig);
+    if (sigBuffer.length !== expectedBuffer.length || !require('crypto').timingSafeEqual(sigBuffer, expectedBuffer)) {
+      return c.json({ error: 'SECURITY VIOLATION: Invalid Meta webhook signature' }, 401);
+    }
+  } else if (isProduction() && !metaAppSecret) {
+    // In production without Meta app secret, reject normalized arbitrary payloads
+    // Only accept the Meta Cloud API standard format
+    if (!body.object || body.object !== 'whatsapp_business_account') {
+      return c.json({ error: 'SECURITY VIOLATION: Non-Meta webhook payload rejected in production without META_APP_SECRET' }, 401);
+    }
+  }
 
   // 1. Meta Cloud API standard format
   if (body.object === 'whatsapp_business_account' && Array.isArray(body.entry)) {
@@ -1763,9 +1789,29 @@ apiRouter.post('/webhooks/whatsapp', async (c) => {
             const messageText = msg.text?.body || msg.type || '';
             const externalMessageId = msg.id;
 
-            const biz = db.prepare('SELECT id, organization_id FROM businesses LIMIT 1').get() as any;
-            const businessId = biz?.id || 'biz_platform_aro';
-            const organizationId = biz?.organization_id || OwnerAuthService.OWNER_ORGANIZATION_ID;
+            // Determine tenant from the phone_number_id mapping
+            const phoneNumberId = val?.metadata?.phone_number_id;
+            let bizResult: any = null;
+            if (phoneNumberId) {
+              // Try mapping table first
+              bizResult = db.prepare(`
+                SELECT b.id, b.organization_id FROM businesses b
+                JOIN integration_phone_mappings ipm ON ipm.business_id = b.id
+                WHERE ipm.provider = 'WHATSAPP' AND ipm.external_phone_number_id = ? LIMIT 1
+              `).get(phoneNumberId) as any;
+            }
+            if (!bizResult) {
+              // Fallback to platform business if phone number not mapped
+              bizResult = db.prepare('SELECT id, organization_id FROM businesses WHERE id = ?').get('biz_platform_aro') as any;
+            }
+            if (!bizResult) {
+              // No mapping, no platform business — cannot determine tenant
+              console.error(`[WhatsApp Webhook] BLOCKED_UNMAPPED_PROVIDER: Could not determine tenant for phone_number_id=${phoneNumberId}`);
+              results.push({ blocked: true, reason: 'BLOCKED_UNMAPPED_PROVIDER' });
+              continue;
+            }
+            const businessId = bizResult.id;
+            const organizationId = bizResult.organization_id || OwnerAuthService.OWNER_ORGANIZATION_ID;
 
             const res = await sce.handleInboundMessage({
               businessId,
@@ -1784,8 +1830,11 @@ apiRouter.post('/webhooks/whatsapp', async (c) => {
     return c.json({ success: true, processed: results.length, data: results });
   }
 
-  // 2. Direct / Normalized payload format
+  // 2. Direct / Normalized payload format — only allowed in non-production
   if (body.senderContact && body.messageText) {
+    if (isProduction()) {
+      return c.json({ error: 'SECURITY VIOLATION: Arbitrary normalized webhook payloads are rejected in production. Use Meta Cloud API format.' }, 401);
+    }
     const businessId = body.businessId || 'biz_platform_aro';
     let organizationId = body.organizationId;
     if (!organizationId) {
@@ -1823,7 +1872,22 @@ apiRouter.post('/webhooks/email', async (c) => {
     return c.json({ success: false, error: 'Sender email and message text are required.' }, 400);
   }
 
-  const businessId = body.businessId || 'biz_platform_aro';
+  // In production, do not trust caller-supplied businessId as authoritative tenant identity
+  // Email providers should be configured with a sender mapping
+  const incomingBusinessId = body.businessId;
+  let businessId = 'biz_platform_aro';
+  if (incomingBusinessId) {
+    if (isProduction()) {
+      // Verify business exists before using caller-supplied ID
+      const bizRow = db.prepare('SELECT id, organization_id FROM businesses WHERE id = ?').get(incomingBusinessId) as any;
+      if (!bizRow) {
+        return c.json({ error: 'SECURITY VIOLATION: Unknown businessId in email webhook — tenant cannot be determined from caller input' }, 400);
+      }
+      businessId = bizRow.id;
+    } else {
+      businessId = incomingBusinessId;
+    }
+  }
   let organizationId = body.organizationId;
   if (!organizationId) {
     const biz = db.prepare('SELECT organization_id FROM businesses WHERE id = ?').get(businessId) as any;

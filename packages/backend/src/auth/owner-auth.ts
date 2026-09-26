@@ -30,6 +30,7 @@ export class OwnerAuthService {
   public static readonly OWNER_ORGANIZATION_ID = 'org_owner_primary';
   public static readonly OWNER_USER_ID = 'usr_owner_primary';
   public static readonly PLATFORM_BUSINESS_ID = 'biz_platform_aro';
+  public static readonly PLATFORM_RAZORPAY_PAYMENT_PAGE_URL = 'https://razorpay.me/@venkatasaiharshavardhankotu';
 
   private constructor() {
     this.ensureInitialized();

@@ -179,9 +179,12 @@ export class RealityReportGenerator {
     return RealityReportGenerator.instance;
   }
 
-  public generate(organizationId: string = 'org_smilekraft_01', businessId?: string): RealityReport {
+  public generate(organizationId: string = 'org_owner_primary', businessId?: string): RealityReport {
     const db = getDb();
-    const effectiveBizId = businessId || (db.prepare(`SELECT id FROM businesses LIMIT 1`).get() as any)?.id || 'biz_smilekraft_hyd';
+    // Default to the platform business if no businessId provided
+    const effectiveBizId = businessId ||
+      (db.prepare(`SELECT id FROM businesses WHERE organization_id = ? LIMIT 1`).get(organizationId) as any)?.id ||
+      'biz_platform_aro';
 
     // 1. Runtime
     const runtime = {

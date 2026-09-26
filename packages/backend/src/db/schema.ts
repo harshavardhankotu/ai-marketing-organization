@@ -1658,4 +1658,18 @@ CREATE TABLE IF NOT EXISTS platform_customer_deliveries (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_pcd_cust ON platform_customer_deliveries(customer_id);
+
+-- 81. Integration Phone Mappings (WhatsApp phone_number_id → business mapping)
+CREATE TABLE IF NOT EXISTS integration_phone_mappings (
+  id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL DEFAULT 'WHATSAPP',
+  external_phone_number_id TEXT NOT NULL,
+  organization_id TEXT NOT NULL,
+  business_id TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE,
+  UNIQUE(provider, external_phone_number_id)
+);
+CREATE INDEX IF NOT EXISTS idx_phone_map_provider ON integration_phone_mappings(provider, external_phone_number_id);
 `;

@@ -154,24 +154,12 @@ export class DeliveryBlueprintManager {
       `).run(measurement.customerBusinessRevenueINR, measurement.customerJourneyId);
     } catch {}
 
-    // Record verified platform revenue in revenue_records
-    if (measurement.platformRevenueINR > 0) {
-      try {
-        db.prepare(`
-          INSERT INTO revenue_records (
-            id, organization_id, business_id, revenue_type, source, transaction_id,
-            amount_inr, currency, verified, verification_method, classification,
-            recurring_model, timestamp
-          ) VALUES (?, ?, ?, 'PLATFORM_REVENUE', 'DELIVERY_BLUEPRINT', ?, ?, 'INR', 1, 'RAZORPAY_WEBHOOK', 'REAL', 'MONTHLY', datetime('now'))
-        `).run(
-          `rev_${Date.now()}`,
-          measurement.organizationId,
-          measurement.businessId,
-          measurement.customerJourneyId,
-          measurement.platformRevenueINR
-        );
-      } catch {}
-    }
+    // NOTE: Platform revenue is NEVER recorded from outcome measurements.
+    // Platform revenue may only originate from Razorpay-verified captured payments or
+    // owner-confirmed MANUAL_VERIFIED payments. Customer outcome metrics record
+    // the customer's business performance only — not platform subscription fees.
+    // If platformRevenueINR is nonzero in the measurement, it is a reference to an
+    // existing verified transaction, not an instruction to create new revenue.
 
     return record;
   }

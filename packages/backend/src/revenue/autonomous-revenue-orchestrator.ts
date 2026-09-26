@@ -778,7 +778,7 @@ export class AutonomousRevenueOrchestrator {
         return {
           status: actionClassification,
           actionClassification,
-          isRevenueAction: true,
+          isRevenueAction: false, // Payment link creation is NOT revenue — payment capture is revenue
           externalId: linkResult.providerLinkId
         };
       }
@@ -868,7 +868,7 @@ export class AutonomousRevenueOrchestrator {
           return {
             status: 'LIVE_EXTERNAL_ACTION',
             actionClassification: 'LIVE_EXTERNAL_ACTION',
-            isRevenueAction: true,
+            isRevenueAction: false, // Sending payment reminder is NOT revenue — payment capture is revenue
             externalId: pubResult.externalId
           };
         }
@@ -1022,11 +1022,14 @@ export class AutonomousRevenueOrchestrator {
             payload: { cycleId, totalFindings: result.totalFindingsSaved }
           });
 
+          // externalId is the internal pipeline cycle reference (not a provider-issued ID)
+          // Research queries are LIVE_EXTERNAL_ACTIONs because they hit a live external provider,
+          // but we do NOT fabricate a provider-issued ID. The audit reference is the pipeline record.
           return {
             status: 'LIVE_EXTERNAL_ACTION',
             actionClassification: 'LIVE_EXTERNAL_ACTION',
             isRevenueAction: false,
-            externalId: `tavily_batch_${Date.now()}`
+            externalId: `research_pipeline_${cycleId}` // Internal cycle reference, not a Tavily-issued ID
           };
         } catch (resErr: any) {
           this.quotaService.reconcile(gate.reservationId, 1, false);

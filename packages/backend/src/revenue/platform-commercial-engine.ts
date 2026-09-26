@@ -126,19 +126,28 @@ export class PlatformCommercialEngine {
     hasGoogleListing?: boolean;
   }): CommercialProspect {
     const hasWebsite = Boolean(prospect.websiteUrl);
-    const hasGbp = Boolean(prospect.hasGoogleListing ?? true);
-    const hasBot = Boolean(prospect.hasInstantWhatsAppBot ?? false);
-    const responseHours = prospect.observedResponseTimeHours ?? 4;
+    // hasGoogleListing: null/undefined means UNKNOWN — do not assume true
+    const hasGbp = prospect.hasGoogleListing === true;
+    const hasGbpKnown = prospect.hasGoogleListing !== undefined && prospect.hasGoogleListing !== null;
+    // hasInstantWhatsAppBot: null/undefined means UNKNOWN — do not assume false (could give wrong gap)
+    const hasBot = prospect.hasInstantWhatsAppBot === true;
+    const hasBotKnown = prospect.hasInstantWhatsAppBot !== undefined && prospect.hasInstantWhatsAppBot !== null;
+    // observedResponseTimeHours: null/undefined means NOT OBSERVED — do not fabricate a 4h delay
+    const responseHoursKnown = prospect.observedResponseTimeHours !== undefined && prospect.observedResponseTimeHours !== null;
+    const responseHours = responseHoursKnown ? prospect.observedResponseTimeHours! : null;
 
-    let gapObserved = 'No automated triage; manual response delay observed';
-    let fitScore = 0.75;
+    let gapObserved = 'No automated triage observed.';
+    let fitScore = 0.70;
 
-    if (!hasBot && responseHours >= 2) {
-      gapObserved = `Inquiries experience average ${responseHours}h delay outside working hours. Leads risk going cold.`;
+    if (hasBotKnown && !hasBot && responseHoursKnown && responseHours !== null && responseHours >= 2) {
+      gapObserved = `Observed: No automated triage. Inquiries experience an average ${responseHours}h delay outside working hours. Leads risk going cold.`;
       fitScore = 0.90;
-    } else if (!hasBot) {
-      gapObserved = 'Manual staff messaging handles all inquiries. No automated qualification or evening triage.';
+    } else if (hasBotKnown && !hasBot) {
+      gapObserved = 'Observed: Manual staff messaging handles all inquiries. No automated qualification or evening triage verified.';
       fitScore = 0.80;
+    } else if (!hasBotKnown && !responseHoursKnown) {
+      gapObserved = 'Evidence pending: Automated triage and response time not yet verified for this prospect.';
+      fitScore = 0.60;
     }
 
     return {
@@ -152,8 +161,8 @@ export class PlatformCommercialEngine {
       observedEvidence: {
         hasWebsite,
         hasGooglePresence: hasGbp,
-        hasAppointmentCTA: true,
-        leadResponseMechanism: hasBot ? 'AUTOMATED_BOT' : 'MANUAL_STAFF',
+        hasAppointmentCTA: hasGbpKnown ? hasGbp : false, // unknown defaults to false (unknown ≠ present)
+        leadResponseMechanism: hasBotKnown ? (hasBot ? 'AUTOMATED_BOT' : 'MANUAL_STAFF') : 'UNKNOWN',
         gapObserved
       },
       offerFitScore: fitScore,
@@ -168,11 +177,15 @@ export class PlatformCommercialEngine {
     const offer = this.getStandardOffer();
 
     if (channel === 'WHATSAPP') {
+      const evidenceSummary = prospect.observedEvidence.gapObserved
+        ? `I reviewed ${prospect.businessName}'s online presence and noticed: ${prospect.observedEvidence.gapObserved}`
+        : `I was reviewing local ${prospect.vertical} businesses in ${prospect.city} and came across ${prospect.businessName}.`;
+
       const message =
         `Hello ${prospect.contactPerson || prospect.businessName},\n\n` +
-        `I noticed that ${prospect.businessName} receives inquiries via your Google listing, but after-hours requests have a delay before staff can reply.\n\n` +
-        `We provide an automated lead triage and appointment conversion system for clinics and local businesses in ${prospect.city}. It responds in under 2 minutes, qualifies patient inquiries, and books consultations directly.\n\n` +
-        `Would you be open to a 10-minute live demonstration this week to see how it handles patient bookings?`;
+        `${evidenceSummary}\n\n` +
+        `We provide an automated 24/7 lead qualification and appointment booking system for local businesses in ${prospect.city}. It responds in under 2 minutes, qualifies inquiries, and books consultations directly — with ₹0 advertising spend.\n\n` +
+        `Would you be open to a 10-minute demonstration this week to see exactly how it handles bookings for your business?`;
 
       return {
         prospectId: prospect.id,
@@ -185,7 +198,7 @@ export class PlatformCommercialEngine {
       const subject = `Improving consultation response time for ${prospect.businessName}`;
       const message =
         `Dear ${prospect.contactPerson || 'Team'},\n\n` +
-        `While reviewing local services in ${prospect.city}, I noticed ${prospect.businessName}'s strong online reputation. However, prospective patients reaching out in the evenings often wait several hours for a response.\n\n` +
+        `While reviewing local ${prospect.vertical} businesses in ${prospect.city}, I came across ${prospect.businessName}. ${prospect.observedEvidence.gapObserved ? `I observed the following: ${prospect.observedEvidence.gapObserved}` : `I would like to understand how your business currently handles incoming inquiries.`}\n\n` +
         `Our platform deploys an automated 24/7 lead qualification system that responds in under 2 minutes, answers clinical FAQs, and schedules appointments automatically.\n\n` +
         `Setup takes 5 business days with ₹0 advertising spend required.\n\n` +
         `Would you be interested in reviewing a brief 1-page summary of how it works for clinics in ${prospect.city}?`;

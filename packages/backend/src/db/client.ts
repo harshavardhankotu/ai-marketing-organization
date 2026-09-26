@@ -362,9 +362,15 @@ export function getDb(dbPath?: string): Database.Database {
       id TEXT PRIMARY KEY, customer_id TEXT NOT NULL, organization_id TEXT NOT NULL,
       business_id TEXT NOT NULL, offer_id TEXT NOT NULL, payment_id TEXT NOT NULL,
       stage TEXT NOT NULL DEFAULT 'ONBOARDING', contract_terms TEXT NOT NULL,
-      deliverables_json TEXT NOT NULL DEFAULT '[]', success_metrics_json TEXT NOT NULL DEFAULT '[]',
       renewal_date TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+  } catch {}
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS integration_phone_mappings (
+      id TEXT PRIMARY KEY, provider TEXT NOT NULL DEFAULT 'WHATSAPP',
+      external_phone_number_id TEXT NOT NULL, organization_id TEXT NOT NULL,
+      business_id TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`);
   } catch {}
 

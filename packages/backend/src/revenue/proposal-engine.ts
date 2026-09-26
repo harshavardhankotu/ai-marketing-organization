@@ -12,6 +12,7 @@
  */
 
 import { getDb } from '../db/client.js';
+import { OwnerAuthService } from '../auth/owner-auth.js';
 
 export interface CommercialProposal {
   id: string;
@@ -148,7 +149,15 @@ export class ProposalEngine {
     return null;
   }
 
-  public acceptProposal(proposalId: string): { proposal: CommercialProposal; paymentLink: string } {
+  /**
+   * Marks proposal ACCEPTED and creates a payment_request record.
+   * Does NOT create a fake payment URL.
+   * Returns:
+   *   - paymentLink: null (caller must use RazorpayAdapter.createPaymentLink to get a real link)
+   *   - manualPaymentPage: the canonical Razorpay.me direct payment page (fallback only, not a transaction)
+   * The proposal remains status=ACCEPTED/PENDING_PAYMENT until provider-verified payment occurs.
+   */
+  public acceptProposal(proposalId: string): { proposal: CommercialProposal; paymentLink: string | null; manualPaymentPage: string; status: 'PAYMENT_LINK_NOT_CREATED' } {
     const db = getDb();
     const now = new Date().toISOString();
 
@@ -158,31 +167,44 @@ export class ProposalEngine {
       WHERE id = ?
     `).run(now, proposalId);
 
-    const proposal = this.getProposal(proposalId)!;
-    const paymentLink = `https://rzp.io/l/lead-conversion-setup-${proposal.id}`;
+    const proposal = this.getProposal(proposalId);
+    if (!proposal) {
+      throw new Error(`PROPOSAL_NOT_FOUND: Proposal ${proposalId} not found after acceptance.`);
+    }
 
-    // Create payment_request entry
+    // Create payment_request in DRAFT state — no payment link yet
     const payReqId = `payrq_${Date.now()}`;
-    try {
-      db.prepare(`
-        INSERT INTO payment_requests (
-          id, business_id, organization_id, lead_id, offer_description,
-          amount_inr, payment_link_url, status, classification, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'SENT', 'REAL', datetime('now'))
-      `).run(
-        payReqId,
-        proposal.businessId,
-        proposal.organizationId,
-        proposal.prospectId,
-        `Setup fee: ${proposal.title}`,
-        proposal.setupPriceINR,
-        paymentLink
-      );
-    } catch {}
+    const paymentRequestCreated = (() => {
+      try {
+        db.prepare(`
+          INSERT INTO payment_requests (
+            id, business_id, organization_id, prospect_id, offer_description,
+            amount_inr, status, classification, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, 'DRAFT', 'REAL', datetime('now'), datetime('now'))
+        `).run(
+          payReqId,
+          proposal.businessId,
+          proposal.organizationId,
+          proposal.prospectId,
+          `Setup fee: ${proposal.title}`,
+          proposal.setupPriceINR
+        );
+        return true;
+      } catch (e: any) {
+        console.error(`[ProposalEngine] Failed to create payment_request for proposal ${proposalId}: ${e.message}`);
+        return false;
+      }
+    })();
+
+    if (!paymentRequestCreated) {
+      throw new Error(`PERSISTENCE_FAULT: Could not persist payment_request for proposal ${proposalId}. Manual intervention required.`);
+    }
 
     return {
       proposal,
-      paymentLink
+      paymentLink: null, // Caller must call RazorpayAdapter.createPaymentLink() to get the real link
+      manualPaymentPage: OwnerAuthService.PLATFORM_RAZORPAY_PAYMENT_PAGE_URL,
+      status: 'PAYMENT_LINK_NOT_CREATED'
     };
   }
 

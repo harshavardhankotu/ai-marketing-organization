@@ -1,4 +1,4 @@
-﻿import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import app from '../../src/index.js';
 import { resetDbForTesting } from '../../src/db/client.js';
 import { seedDatabase } from '../../src/db/seed.js';
@@ -36,7 +36,9 @@ describe('API Contract & Endpoint Verification', () => {
   });
 
   it('GET /api/v1/business returns the seeded Hyderabad Dental Clinic profile', async () => {
-    const res = await app.request('/api/v1/business');
+    const res = await app.request('/api/v1/business', {
+      headers: { 'x-organization-id': 'org_smilekraft_01' }
+    });
     expect(res.status).toBe(200);
     const json = await res.json() as any;
     expect(json.success).toBe(true);
@@ -46,7 +48,9 @@ describe('API Contract & Endpoint Verification', () => {
   });
 
   it('GET /api/v1/goals returns business goals with KPIs', async () => {
-    const res = await app.request('/api/v1/goals');
+    const res = await app.request('/api/v1/goals', {
+      headers: { 'x-organization-id': 'org_smilekraft_01' }
+    });
     expect(res.status).toBe(200);
     const json = await res.json() as any;
     expect(json.success).toBe(true);
@@ -79,7 +83,9 @@ describe('API Contract & Endpoint Verification', () => {
     expect(jsonTrigger.killSwitchActive).toBe(true);
 
     // Verify business state in API
-    const bizRes = await app.request('/api/v1/business');
+    const bizRes = await app.request('/api/v1/business', {
+      headers: { 'x-organization-id': 'org_smilekraft_01' }
+    });
     const bizJson = await bizRes.json() as any;
     expect(bizJson.data.kill_switch_active).toBe(1);
 

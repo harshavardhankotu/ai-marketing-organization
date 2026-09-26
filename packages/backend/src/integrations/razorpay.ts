@@ -773,15 +773,25 @@ export class RazorpayAdapter {
       return { processed: false, reason: 'Missing payment entity in webhook payload' };
     }
 
-    const paymentId = payment?.id || paymentLink?.id;
-    const amountINR = Math.round((payment?.amount || paymentLink?.amount_paid || payment?.amount_paid || paymentLink?.amount || 0) / 100);
+    // Correctly separate provider link ID (plink_...) from payment ID (pay_...)
+    // NEVER substitute one for the other
+    const providerLinkId: string | undefined = paymentLink?.id; // plink_... identifier
+    const paymentId: string | undefined =
+      eventType === 'payment_link.paid'
+        ? (event.payload?.payment?.entity?.id)  // actual pay_... from payment_link.paid webhook
+        : (payment?.id);                          // direct pay_... from payment.captured / order.paid
+
+    // Use integer paise for all internal comparisons — convert to INR only for display
+    const receivedAmountPaise = Number(payment?.amount || paymentLink?.amount_paid || payment?.amount_paid || paymentLink?.amount || 0);
+    const amountINR = Math.round(receivedAmountPaise / 100);
     const orderId = payment?.order_id || paymentLink?.order_id;
     const notes = paymentLink?.notes || payment?.notes || {};
     let businessId = notes.business_id || notes.businessId;
     let organizationId = notes.organization_id || notes.organizationId || OwnerAuthService.OWNER_ORGANIZATION_ID;
 
     // Binding to stored provider link (Spec § 21)
-    const matchedLinkId = paymentLink?.id || payment?.payment_link_id || (eventType === 'payment_link.paid' ? payment?.id : undefined);
+    // The matched link ID is always the plink_... identifier — never pay_...
+    const matchedLinkId: string | undefined = providerLinkId || payment?.payment_link_id;
     let storedLink: any = null;
     let storedPayReq: any = null;
 
@@ -799,10 +809,13 @@ export class RazorpayAdapter {
       if (storedLink?.organization_id) organizationId = storedLink.organization_id;
       else if (storedPayReq?.organization_id) organizationId = storedPayReq.organization_id;
 
-      // Verify exact amount
-      const expectedAmount = storedLink?.amount_inr || storedPayReq?.amount_inr;
-      if (expectedAmount && amountINR !== expectedAmount) {
-        throw new Error(`SECURITY VIOLATION: AMOUNT MISMATCH: Payment amount mismatch for link ${matchedLinkId}. Expected ₹${expectedAmount}, received ₹${amountINR}.`);
+      // Verify exact amount in paise (integer comparison, no floating point)
+      const expectedAmountINR = storedLink?.amount_inr || storedPayReq?.amount_inr;
+      if (expectedAmountINR !== undefined && expectedAmountINR !== null) {
+        const expectedAmountPaise = Math.round(Number(expectedAmountINR) * 100);
+        if (receivedAmountPaise !== expectedAmountPaise) {
+          throw new Error(`SECURITY VIOLATION: AMOUNT MISMATCH: Payment amount mismatch for link ${matchedLinkId}. Expected ₹${expectedAmountINR} (${expectedAmountPaise} paise), received ${receivedAmountPaise} paise.`);
+        }
       }
     }
 

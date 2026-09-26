@@ -239,7 +239,11 @@ describe('Commercial Activation & Live Sales Reality Suite (Spec §§ 2–34)', 
     // Accept proposal
     const acceptRes = proposalEngine.acceptProposal(proposal.id);
     expect(acceptRes.proposal.status).toBe('ACCEPTED');
-    expect(acceptRes.paymentLink).toContain('lead-conversion-setup-');
+    // paymentLink is null — caller must use RazorpayAdapter to create a real link
+    expect(acceptRes.paymentLink).toBeNull();
+    // manualPaymentPage is the canonical Razorpay.me page — NOT a transaction ID
+    expect(acceptRes.manualPaymentPage).toBe('https://razorpay.me/@venkatasaiharshavardhankotu');
+    expect(acceptRes.status).toBe('PAYMENT_LINK_NOT_CREATED');
   });
 
   // 9. DeliveryBlueprint: 5-Day fulfillment and outcome measurement
@@ -274,8 +278,9 @@ describe('Commercial Activation & Live Sales Reality Suite (Spec §§ 2–34)', 
 
     // Verify segregation: client business revenue vs platform subscription revenue
     const db = getDb();
+    // Platform revenue is NOT created from delivery-blueprint outcome measurements
     const platRevenue = db.prepare(`SELECT SUM(amount_inr) as total FROM revenue_records WHERE revenue_type = 'PLATFORM_REVENUE'`).get() as any;
-    expect(platRevenue.total).toBe(15000);
+    expect(platRevenue.total ?? 0).toBe(0);
   });
 
   // 10. Complete Test Simulation Path (Spec § 30)

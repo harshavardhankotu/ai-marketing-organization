@@ -158,6 +158,13 @@ export class OfferCatalogService {
 
     // Check platform offers first
     if (trimmedOfferId === OfferCatalogService.PLATFORM_SETUP_OFFER_ID || trimmedOfferId === 'PLATFORM_SETUP') {
+      // Scope enforcement: platform offers are ONLY valid for the platform business/org
+      if (businessId && businessId !== OwnerAuthService.PLATFORM_BUSINESS_ID) {
+        throw new Error(`UNAUTHORIZED_OFFER: PLATFORM_SETUP offer is restricted to the platform business (${OwnerAuthService.PLATFORM_BUSINESS_ID}). Caller supplied businessId='${businessId}'.`);
+      }
+      if (organizationId && organizationId !== OwnerAuthService.OWNER_ORGANIZATION_ID) {
+        throw new Error(`UNAUTHORIZED_OFFER: PLATFORM_SETUP offer is restricted to the owner organization (${OwnerAuthService.OWNER_ORGANIZATION_ID}). Caller supplied organizationId='${organizationId}'.`);
+      }
       return {
         offerId: OfferCatalogService.PLATFORM_SETUP_OFFER_ID,
         offerName: 'AI Inbound Lead Conversion System — Day 0-5 Setup & Integration',
@@ -183,6 +190,13 @@ export class OfferCatalogService {
     }
 
     if (trimmedOfferId === OfferCatalogService.PLATFORM_MONTHLY_OFFER_ID || trimmedOfferId === 'PLATFORM_MONTHLY') {
+      // Scope enforcement: platform offers are ONLY valid for the platform business/org
+      if (businessId && businessId !== OwnerAuthService.PLATFORM_BUSINESS_ID) {
+        throw new Error(`UNAUTHORIZED_OFFER: PLATFORM_MONTHLY offer is restricted to the platform business (${OwnerAuthService.PLATFORM_BUSINESS_ID}). Caller supplied businessId='${businessId}'.`);
+      }
+      if (organizationId && organizationId !== OwnerAuthService.OWNER_ORGANIZATION_ID) {
+        throw new Error(`UNAUTHORIZED_OFFER: PLATFORM_MONTHLY offer is restricted to the owner organization (${OwnerAuthService.OWNER_ORGANIZATION_ID}). Caller supplied organizationId='${organizationId}'.`);
+      }
       return {
         offerId: OfferCatalogService.PLATFORM_MONTHLY_OFFER_ID,
         offerName: 'AI Inbound Lead Conversion System — Monthly Retainer & SLA',
@@ -247,7 +261,10 @@ export class OfferCatalogService {
 
     // Standard client business fallback for consultations/booking deposits
     if (trimmedOfferId === 'CONSULTATION_DEPOSIT' || trimmedOfferId === 'standard_consultation') {
-      const targetBiz = businessId || 'biz_platform_aro';
+      if (!businessId) {
+        throw new Error(`UNAUTHORIZED_OFFER: CONSULTATION_DEPOSIT requires an explicit businessId. Production scope must be specified.`);
+      }
+      const targetBiz = businessId;
       const targetOrg = organizationId || OwnerAuthService.OWNER_ORGANIZATION_ID;
       return {
         offerId: 'CONSULTATION_DEPOSIT',

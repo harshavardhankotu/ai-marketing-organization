@@ -178,7 +178,7 @@ export class LiveProviderActivation {
   /**
    * Diagnoses what is currently blocking real revenue generation and what human action is required (Spec § 25).
    */
-  public getMissingProviderDiagnostic(businessId: string = 'biz_smilekraft_hyd', organizationId: string = 'org_smilekraft_01'): MissingProviderDiagnostic {
+  public getMissingProviderDiagnostic(businessId?: string, organizationId?: string): MissingProviderDiagnostic {
     const statuses = this.getAllStatuses();
     const unconfigured: CommercialProvider[] = [];
 

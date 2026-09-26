@@ -180,7 +180,18 @@ export class RevenueBottleneckEngine {
       };
     }
 
-    // 11. Pipeline is flowing!
+    // 11. Check actual verified revenue before claiming "flowing"
+    if (metrics.verifiedRevenueINR <= 0) {
+      return {
+        bottleneck: 'NO_PAYMENT',
+        severity: 'HIGH',
+        effect: 'Meetings booked and customers exist in the system, but verified provider-captured revenue is still zero.',
+        bestNextAction: 'Send payment request, create Razorpay payment link, and collect verified payment.',
+        details: metrics
+      };
+    }
+
+    // 12. Revenue is verified and flowing
     return {
       bottleneck: 'NONE_REVENUE_FLOWING',
       severity: 'LOW',
