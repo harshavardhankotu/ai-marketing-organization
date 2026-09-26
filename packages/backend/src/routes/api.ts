@@ -46,6 +46,7 @@ import { GoogleSearchClient } from '../research/google-search-client.js';
 import { StrategyMatchingEngine } from '../strategy/matching-engine.js';
 import { UniversalLockManager } from '../quota/universal-lock-manager.js';
 import { UnifiedQuotaService } from '../quota/unified-quota-service.js';
+import { D1Client } from '../db/d1-client.js';
 
 export type AppVariables = {
   organizationId: string;
@@ -514,6 +515,20 @@ apiRouter.get('/revenue/ceo-dashboard', (c) => {
         revenueThisMonth
       },
       health,
+      d1Usage: D1Client.getInstance().getUsage(),
+      cron: (() => {
+        let row: any;
+        try {
+          row = db.prepare(`SELECT * FROM cron_telemetry WHERE id = 'cloudflare_worker_cron'`).get();
+        } catch {}
+        const isObserved = Boolean(row?.last_observed_ping);
+        return {
+          status: isObserved ? 'CRON_OBSERVED' : (process.env.CLOUDFLARE_WORKER_DEPLOYED === 'true' ? 'CRON_DEPLOYED' : 'CRON_CONFIGURED'),
+          cronExpression: '*/15 * * * *',
+          lastObservedPing: row?.last_observed_ping || null,
+          totalPings: row?.total_pings || 0
+        };
+      })(),
       // Backward-compatible properties for existing consumers
       verifiedRevenueINR: verified,
       pipelineValueINR: pipeline,
@@ -526,7 +541,32 @@ apiRouter.get('/revenue/ceo-dashboard', (c) => {
   });
 });
 
-// Public Cloudflare Worker cron ping endpoint (Spec § 2)
+// GET /cron/status — Verify Cloudflare Cron status (Spec § 16: CRON_CONFIGURED | CRON_DEPLOYED | CRON_OBSERVED)
+apiRouter.get('/cron/status', (c) => {
+  const db = getDb();
+  let row: any;
+  try {
+    row = db.prepare(`SELECT * FROM cron_telemetry WHERE id = 'cloudflare_worker_cron'`).get();
+  } catch {}
+
+  const isObserved = Boolean(row?.last_observed_ping);
+  const status: 'CRON_OBSERVED' | 'CRON_DEPLOYED' | 'CRON_CONFIGURED' = isObserved
+    ? 'CRON_OBSERVED'
+    : (process.env.CLOUDFLARE_WORKER_DEPLOYED === 'true' ? 'CRON_DEPLOYED' : 'CRON_CONFIGURED');
+
+  return c.json({
+    success: true,
+    data: {
+      status,
+      cronExpression: '*/15 * * * *',
+      totalPings: row?.total_pings || 0,
+      lastObservedPing: row?.last_observed_ping || null,
+      lastUserAgent: row?.last_user_agent || null
+    }
+  });
+});
+
+// Public Cloudflare Worker cron ping endpoint (Spec § 2 & § 16)
 apiRouter.post('/cron/ping', async (c) => {
   const secret = c.req.header('x-cron-secret') || c.req.header('X-Cron-Secret') || '';
   const expectedSecret = process.env.CRON_PING_SECRET || 'cron_ping_default_dev';
@@ -536,6 +576,33 @@ apiRouter.post('/cron/ping', async (c) => {
   }
 
   const db = getDb();
+
+  // Record observed cron execution in cron_telemetry (Spec § 16)
+  try {
+    db.prepare(`
+      CREATE TABLE IF NOT EXISTS cron_telemetry (
+        id TEXT PRIMARY KEY,
+        status TEXT NOT NULL,
+        last_observed_ping TEXT,
+        total_pings INTEGER NOT NULL DEFAULT 0,
+        last_user_agent TEXT,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `).run();
+
+    const userAgent = c.req.header('user-agent') || 'cloudflare-cron-worker';
+    db.prepare(`
+      INSERT INTO cron_telemetry (id, status, last_observed_ping, total_pings, last_user_agent, updated_at)
+      VALUES ('cloudflare_worker_cron', 'CRON_OBSERVED', datetime('now'), 1, ?, datetime('now'))
+      ON CONFLICT(id) DO UPDATE SET
+        status = 'CRON_OBSERVED',
+        last_observed_ping = datetime('now'),
+        total_pings = total_pings + 1,
+        last_user_agent = ?,
+        updated_at = datetime('now')
+    `).run(userAgent, userAgent);
+  } catch {}
+
   const orgs = db.prepare('SELECT id FROM organizations LIMIT 5').all() as any[];
   const results: any[] = [];
 
@@ -550,6 +617,7 @@ apiRouter.post('/cron/ping', async (c) => {
         businessId: biz.id,
         status: result.status,
         actionExecutionStatus: result.actionExecutionStatus,
+        actionClassification: result.actionClassification,
         actionsTaken: result.actionsTaken,
         nextBestAction: result.nextBestAction.actionType
       });

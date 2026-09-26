@@ -1,22 +1,19 @@
 /**
  * AutonomousRevenueOrchestrator — The event-driven "CEO" of the revenue system.
  *
- * Implements Spec §§ 1, 4, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 25, 27, 28, 30, 32.
+ * Implements Spec §§ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 25.
  *
- * Top-level question every cycle:
- * "What is the highest-value authorized action I can take right now to increase verified revenue?"
+ * Strict Action Classification Rules (Spec § 1 & § 2):
+ * - LIVE_EXTERNAL_ACTION: Only when a LIVE external provider accepted the operation and returned a genuine externalId.
+ * - INTERNAL_AUTOMATION: DB updates, task creation, workflow creation, event emission, onboarding checklist.
+ * - REVENUE_ACTION: Verified payment transactions and verified customer revenue.
+ * - BLOCKED_AUTHORIZATION: When live provider credentials are not configured or live request was rejected.
+ * - SANDBOX_ACTION / TEST_ACTION: Simulated/sandbox executions.
  *
- * Continuous Autonomy Loop:
- *   WAKE -> OBSERVE (cheap local inspection) -> CHECK DUE WORK -> SELECT NBA ->
- *   EXECUTE (at most 1 high-value external action) -> RECORD RESULT -> EMIT EVENT -> SLEEP
- *
- * Hard constraints:
- *   - ₹0 autonomous spend
- *   - Concurrency locked via BusinessAutonomyLock
- *   - Cooldown enforced via ActionCooldownManager (no 15-minute spam)
- *   - Quota-gated via UnifiedQuotaService (zero AI/Search calls on idle wakes)
- *   - Real execution: ACTION_EXECUTED only when actual business operation occurred
- *   - All state persisted to SQLite
+ * Zero-tolerance for false execution:
+ * - Sandbox successes are NEVER counted as external actions.
+ * - DB task creation is NEVER counted as external or revenue actions.
+ * - Unconfigured adapters immediately yield BLOCKED_AUTHORIZATION.
  */
 
 import { getDb } from '../db/client.js';
@@ -27,7 +24,15 @@ import { BusinessAutonomyLock } from './business-autonomy-lock.js';
 import { ActionCooldownManager } from './action-cooldown-manager.js';
 import { UnifiedQuotaService } from '../quota/unified-quota-service.js';
 import { MarketResearchPipeline } from '../research/market-research-pipeline.js';
-import { WhatsAppAdapter } from '../integrations/adapter-base.js';
+import { WhatsAppAdapter, ActionClassification } from '../integrations/adapter-base.js';
+import { isPlaceholderCredential } from '../config/env.js';
+
+export type CycleExecutionStatus =
+  | 'LIVE_EXTERNAL_ACTION'
+  | 'INTERNAL_AUTOMATION'
+  | 'BLOCKED_AUTHORIZATION'
+  | 'COOLDOWN_ACTIVE'
+  | 'NO_ACTION_DUE';
 
 export interface OrchestratorCycleResult {
   cycleId: string;
@@ -40,7 +45,8 @@ export interface OrchestratorCycleResult {
   nextBestAction: NextBestAction;
   nextCycleAt: string;
   status: 'COMPLETED' | 'PARTIAL' | 'FAILED' | 'CYCLE_ALREADY_RUNNING' | 'IDLE';
-  actionExecutionStatus?: 'ACTION_EXECUTED' | 'BLOCKED_AUTHORIZATION' | 'COOLDOWN_ACTIVE' | 'NO_ACTION_DUE';
+  actionExecutionStatus: CycleExecutionStatus;
+  actionClassification: ActionClassification;
   errors: string[];
 }
 
@@ -75,7 +81,8 @@ export class AutonomousRevenueOrchestrator {
     const opportunitiesQualified = 0;
     let actionsTaken = 0;
     let revenueRecordedINR = 0;
-    let actionExecutionStatus: 'ACTION_EXECUTED' | 'BLOCKED_AUTHORIZATION' | 'COOLDOWN_ACTIVE' | 'NO_ACTION_DUE' = 'NO_ACTION_DUE';
+    let actionExecutionStatus: CycleExecutionStatus = 'NO_ACTION_DUE';
+    let actionClassification: ActionClassification = 'INTERNAL_AUTOMATION';
 
     // ──────────────────────────────────────────────────────────────────
     // SPEC § 21: CONCURRENCY LOCK — prevent simultaneous cycles for this business
@@ -107,12 +114,13 @@ export class AutonomousRevenueOrchestrator {
         },
         nextCycleAt: lock.leaseExpiry || new Date(Date.now() + 15 * 60 * 1000).toISOString(),
         status: 'CYCLE_ALREADY_RUNNING',
+        actionExecutionStatus: 'COOLDOWN_ACTIVE',
+        actionClassification: 'INTERNAL_AUTOMATION',
         errors: [lock.reason || 'Cycle already running']
       };
     }
 
     try {
-      // Record cycle start in audit log
       db.prepare(`
         INSERT INTO autonomous_cycle_log (
           id, organization_id, business_id, trigger_source, cycle_start, status
@@ -129,24 +137,21 @@ export class AutonomousRevenueOrchestrator {
       console.log(`\n[ARO] ===== WAKE CYCLE ${cycleId} STARTED (trigger: ${triggerSource}) =====`);
 
       // ──────────────────────────────────────────────────────────────────
-      // SPEC § 4: CHEAP LOCAL INSPECTION (Zero external API quota consumed)
+      // SPEC § 4: CHEAP LOCAL INSPECTION (Zero external API calls consumed)
       // ──────────────────────────────────────────────────────────────────
-      // 1. Load system state & business
       const biz = db.prepare(`SELECT * FROM businesses WHERE id = ?`).get(businessId) as any;
       if (!biz) throw new Error(`Business not found: ${businessId}`);
 
-      // 2. Check kill switch
       if (biz.kill_switch_active) {
         throw new Error(`Kill switch active for business ${businessId}: ${biz.kill_switch_reason}`);
       }
 
-      // 3. Check quota state locally
       const quotaStatus = this.quotaService.getStatus();
       const geminiStatus = quotaStatus.GEMINI;
       const tavilyStatus = quotaStatus.TAVILY;
       console.log(`[ARO] Quota status: Gemini=${geminiStatus?.mode} (${geminiStatus?.remainingAllowance} left), Tavily=${tavilyStatus?.mode} (${tavilyStatus?.remainingAllowance} left)`);
 
-      // 4. Inspect durable events (lightweight batch processing)
+      // Process due durable events
       const pendingEvents = DurableEventBus.claimPending(organizationId, 10);
       for (const event of pendingEvents) {
         try {
@@ -158,14 +163,14 @@ export class AutonomousRevenueOrchestrator {
         }
       }
 
-      // 5. Inspect verified real revenue
+      // Inspect verified real revenue
       const revRow = db.prepare(`
         SELECT COALESCE(SUM(amount_inr), 0) as total FROM transactions
         WHERE business_id = ? AND classification = 'REAL' AND status = 'SUCCESS'
       `).get(businessId) as any;
       revenueRecordedINR = revRow?.total || 0;
 
-      // 6. Inspect recent real leads -> convert to opportunities (local DB only, 0 API calls)
+      // Inspect recent unlinked real leads -> convert to opportunities (local DB only)
       const unlinkedLeads = db.prepare(`
         SELECT * FROM customer_journeys
         WHERE business_id = ?
@@ -197,7 +202,6 @@ export class AutonomousRevenueOrchestrator {
           });
           opportunitiesDiscovered++;
 
-          // Create sales pipeline entry
           db.prepare(`
             INSERT OR IGNORE INTO sales_pipeline (
               id, opportunity_id, business_id, organization_id, journey_id,
@@ -216,41 +220,51 @@ export class AutonomousRevenueOrchestrator {
       }
 
       // ──────────────────────────────────────────────────────────────────
-      // SPEC § 25 & 28: SELECT NEXT BEST ACTION (Priority-ordered, deterministic)
+      // SPEC § 25 & 28: SELECT NEXT BEST ACTION (Deterministic priority order)
       // ──────────────────────────────────────────────────────────────────
       const nextBestAction = this.nbaEngine.choose(businessId, organizationId);
       console.log(`[ARO] Best action: ${nextBestAction.actionType} (target: ${nextBestAction.targetId}, score: ${nextBestAction.score.toFixed(2)})`);
 
       // ──────────────────────────────────────────────────────────────────
       // SPEC § 19 & 20: EXECUTE AT MOST ONE HIGH-VALUE ACTION
-      // Check cooldown first — if cooldown active, do NOT execute!
+      // Check cooldown first
       // ──────────────────────────────────────────────────────────────────
       if (nextBestAction.actionType === 'IDLE') {
         actionExecutionStatus = 'NO_ACTION_DUE';
+        actionClassification = 'INTERNAL_AUTOMATION';
         console.log(`[ARO] System idle — no actions due. Zero external API calls consumed.`);
       } else {
         const cooldown = ActionCooldownManager.check(nextBestAction.targetId, nextBestAction.actionType);
 
         if (!cooldown.eligible) {
           actionExecutionStatus = 'COOLDOWN_ACTIVE';
+          actionClassification = 'INTERNAL_AUTOMATION';
           console.log(`[ARO] Action ${nextBestAction.actionType} is on cooldown: ${cooldown.reason}. Skipping execution.`);
         } else if (nextBestAction.estimatedCostINR > 0) {
           actionExecutionStatus = 'BLOCKED_AUTHORIZATION';
-          this.quotaService.recordAuthBlock(organizationId);
+          actionClassification = 'BLOCKED_AUTHORIZATION';
+          this.quotaService.recordAttemptedAction(organizationId, 'BLOCKED_AUTHORIZATION');
           errors.push(`Action ${nextBestAction.actionType} blocked: requires ₹${nextBestAction.estimatedCostINR} (₹0 policy)`);
         } else {
-          // Execute the single authorized action
+          // Execute action with strict live vs internal classification
           const execResult = await this.executeAction(nextBestAction, organizationId, businessId, cycleId, biz);
           actionExecutionStatus = execResult.status;
+          actionClassification = execResult.actionClassification;
 
-          if (execResult.status === 'ACTION_EXECUTED') {
+          if (execResult.status === 'LIVE_EXTERNAL_ACTION') {
             actionsTaken++;
             ActionCooldownManager.recordExecution(nextBestAction.targetId, nextBestAction.actionType, true);
+            // Record external action in automation health
             this.quotaService.recordExternalAction(organizationId, true, execResult.isRevenueAction);
+          } else if (execResult.status === 'INTERNAL_AUTOMATION') {
+            actionsTaken++;
+            ActionCooldownManager.recordExecution(nextBestAction.targetId, nextBestAction.actionType, true);
+            // NOTE: Internal automation is NOT recorded as external action in health summary (Spec § 7)
           } else if (execResult.status === 'BLOCKED_AUTHORIZATION') {
-            this.quotaService.recordAuthBlock(organizationId);
+            this.quotaService.recordAttemptedAction(organizationId, 'BLOCKED_AUTHORIZATION');
             ActionCooldownManager.recordExecution(nextBestAction.targetId, nextBestAction.actionType, false);
           }
+
           if (execResult.error) {
             errors.push(execResult.error);
           }
@@ -261,9 +275,9 @@ export class AutonomousRevenueOrchestrator {
       this.quotaService.recordWake(organizationId, true);
 
       // ──────────────────────────────────────────────────────────────────
-      // PERSIST & SCHEDULE NEXT WAKE (Survives Render restart)
+      // PERSIST & SCHEDULE NEXT WAKE
       // ──────────────────────────────────────────────────────────────────
-      const nextCycleAt = new Date(Date.now() + 15 * 60 * 1000).toISOString(); // 15 min
+      const nextCycleAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
       const cycleEnd = new Date().toISOString();
 
       db.prepare(`
@@ -282,6 +296,7 @@ export class AutonomousRevenueOrchestrator {
         nextCycleAt,
         JSON.stringify({
           actionExecutionStatus,
+          actionClassification,
           nextBestAction: nextBestAction.actionType,
           rationale: nextBestAction.rationale,
           errors
@@ -293,10 +308,10 @@ export class AutonomousRevenueOrchestrator {
         eventType: 'CYCLE_COMPLETED',
         organizationId,
         businessId,
-        payload: { cycleId, actionsTaken, actionExecutionStatus, nextBestAction: nextBestAction.actionType }
+        payload: { cycleId, actionsTaken, actionExecutionStatus, actionClassification, nextBestAction: nextBestAction.actionType }
       });
 
-      console.log(`[ARO] ===== WAKE CYCLE ${cycleId} FINISHED (status: ${actionExecutionStatus}, actions: ${actionsTaken}) =====`);
+      console.log(`[ARO] ===== WAKE CYCLE ${cycleId} FINISHED (status: ${actionExecutionStatus}, classification: ${actionClassification}) =====`);
 
       return {
         cycleId,
@@ -310,6 +325,7 @@ export class AutonomousRevenueOrchestrator {
         nextCycleAt,
         status: errors.length === 0 ? 'COMPLETED' : 'PARTIAL',
         actionExecutionStatus,
+        actionClassification,
         errors
       };
 
@@ -351,17 +367,16 @@ export class AutonomousRevenueOrchestrator {
         nextCycleAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
         status: 'FAILED',
         actionExecutionStatus: 'NO_ACTION_DUE',
+        actionClassification: 'INTERNAL_AUTOMATION',
         errors
       };
     } finally {
-      // SPEC § 21: Release concurrency lock
       BusinessAutonomyLock.release(businessId, cycleId);
     }
   }
 
   /**
-   * Real Action Executor (Spec §§ 10, 11, 12, 13, 14, 15, 16, 17, 30).
-   * Executes real operations. Does NOT count DB updates or event emissions as execution.
+   * Action Executor strictly respecting Spec §§ 1, 2, 3, 4, 5, 6, 7.
    */
   private async executeAction(
     action: NextBestAction,
@@ -369,12 +384,18 @@ export class AutonomousRevenueOrchestrator {
     businessId: string,
     cycleId: string,
     biz: any
-  ): Promise<{ status: 'ACTION_EXECUTED' | 'BLOCKED_AUTHORIZATION'; isRevenueAction: boolean; error?: string }> {
+  ): Promise<{
+    status: CycleExecutionStatus;
+    actionClassification: ActionClassification;
+    isRevenueAction: boolean;
+    externalId?: string;
+    error?: string;
+  }> {
     const db = getDb();
 
     switch (action.actionType) {
       // ────────────────────────────────────────────────────────────────
-      // SPEC § 11: FOLLOW_UP_LEAD
+      // SPEC § 5: FOLLOW_UP_LEAD
       // ────────────────────────────────────────────────────────────────
       case 'FOLLOW_UP_LEAD': {
         const pipeRow = db.prepare(`
@@ -385,35 +406,39 @@ export class AutonomousRevenueOrchestrator {
         `).get(action.targetId) as any;
 
         if (!pipeRow) {
-          return { status: 'BLOCKED_AUTHORIZATION', isRevenueAction: false, error: 'Lead pipeline record not found' };
-        }
-
-        // Verify connected delivery channel
-        const wa = new WhatsAppAdapter();
-        const health = await wa.checkHealth();
-
-        if (!health.connected) {
           return {
             status: 'BLOCKED_AUTHORIZATION',
+            actionClassification: 'BLOCKED_AUTHORIZATION',
             isRevenueAction: false,
-            error: 'No authorized communication channel connected for lead follow-up'
+            error: 'Lead pipeline record not found'
           };
         }
 
-        // Dispatch real message via WhatsApp adapter
+        const wa = new WhatsAppAdapter();
+        const health = await wa.checkHealth();
+
+        if (!health.connected || health.mode !== 'LIVE') {
+          return {
+            status: 'BLOCKED_AUTHORIZATION',
+            actionClassification: 'BLOCKED_AUTHORIZATION',
+            isRevenueAction: false,
+            error: 'BLOCKED_AUTHORIZATION: No LIVE WhatsApp/messaging provider connected'
+          };
+        }
+
         const pubResult = await wa.publish({
-          title: `Follow-up: Consultation assessment at ${biz.name}`,
-          body: `Hi ${pipeRow.customer_name || 'there'}! Following up on your inquiry with ${biz.name}. We have consultation slots open this week. Would you like to confirm a 15-minute slot?`,
-          channel: 'WHATSAPP'
+          title: `Follow-up from ${biz.name}`,
+          body: `Hi ${pipeRow.customer_name || 'there'}! Reaching out from ${biz.name} regarding your consultation request. Are you available for a 15-minute slot this week?`,
+          channel: 'WHATSAPP',
+          recipientPhone: pipeRow.customer_phone
         });
 
-        if (pubResult.success) {
-          // Record outbound touchpoint & update pipeline next action
+        if (pubResult.success && pubResult.actionClassification === 'LIVE_EXTERNAL_ACTION') {
           db.prepare(`
             UPDATE sales_pipeline
             SET stage = 'CONTACTED',
                 next_action = 'Awaiting reply',
-                next_action_at = datetime('now', '+48 hours'),
+                next_action_at = datetime('now', '+24 hours'),
                 updated_at = datetime('now')
             WHERE id = ?
           `).run(action.targetId);
@@ -425,51 +450,92 @@ export class AutonomousRevenueOrchestrator {
             payload: { pipelineId: action.targetId, channel: 'WHATSAPP', externalId: pubResult.externalId }
           });
 
-          return { status: 'ACTION_EXECUTED', isRevenueAction: true };
+          return {
+            status: 'LIVE_EXTERNAL_ACTION',
+            actionClassification: 'LIVE_EXTERNAL_ACTION',
+            isRevenueAction: true,
+            externalId: pubResult.externalId
+          };
         }
 
-        return { status: 'BLOCKED_AUTHORIZATION', isRevenueAction: false, error: pubResult.message };
+        return {
+          status: 'BLOCKED_AUTHORIZATION',
+          actionClassification: 'BLOCKED_AUTHORIZATION',
+          isRevenueAction: false,
+          error: pubResult.message
+        };
       }
 
       // ────────────────────────────────────────────────────────────────
-      // SPEC § 12: PURSUE_OPPORTUNITY
+      // SPEC § 4: PURSUE_OPPORTUNITY
       // ────────────────────────────────────────────────────────────────
       case 'PURSUE_OPPORTUNITY': {
         const opp = this.oppEngine.getById(action.targetId);
         if (!opp) {
-          return { status: 'BLOCKED_AUTHORIZATION', isRevenueAction: false, error: 'Opportunity not found' };
+          return {
+            status: 'BLOCKED_AUTHORIZATION',
+            actionClassification: 'BLOCKED_AUTHORIZATION',
+            isRevenueAction: false,
+            error: 'Opportunity not found'
+          };
         }
 
-        // Attempt asset publication on connected channel
         const wa = new WhatsAppAdapter();
         const health = await wa.checkHealth();
 
-        if (!health.connected) {
+        if (!health.connected || health.mode !== 'LIVE') {
           return {
             status: 'BLOCKED_AUTHORIZATION',
+            actionClassification: 'BLOCKED_AUTHORIZATION',
             isRevenueAction: false,
-            error: 'No authorized delivery channel connected for opportunity pursuit'
+            error: 'BLOCKED_AUTHORIZATION: No LIVE delivery channel connected for opportunity pursuit'
           };
         }
 
         const pubResult = await wa.publish({
-          title: `${biz.vertical_name} Value Proposition Offer`,
+          title: `${biz.vertical_name} Consultation Offer`,
           body: `${opp.nextBestAction} — Book your assessment with ${biz.name}.`,
-          channel: 'WHATSAPP'
+          channel: 'WHATSAPP',
+          recipientPhone: biz.phone
         });
 
-        if (pubResult.success) {
-          this.oppEngine.advance(opp.id, 'ENGAGING', `Outreach delivered via ${pubResult.provider} (${pubResult.externalId})`);
-          return { status: 'ACTION_EXECUTED', isRevenueAction: true };
+        if (pubResult.success && pubResult.actionClassification === 'LIVE_EXTERNAL_ACTION') {
+          this.oppEngine.advance(opp.id, 'ENGAGING', `Live outreach delivered via ${pubResult.provider} (${pubResult.externalId})`);
+          return {
+            status: 'LIVE_EXTERNAL_ACTION',
+            actionClassification: 'LIVE_EXTERNAL_ACTION',
+            isRevenueAction: true,
+            externalId: pubResult.externalId
+          };
         }
 
-        return { status: 'BLOCKED_AUTHORIZATION', isRevenueAction: false, error: pubResult.message };
+        return {
+          status: 'BLOCKED_AUTHORIZATION',
+          actionClassification: 'BLOCKED_AUTHORIZATION',
+          isRevenueAction: false,
+          error: pubResult.message
+        };
       }
 
       // ────────────────────────────────────────────────────────────────
-      // SPEC § 14: SEND_PAYMENT_REQUEST
+      // SPEC § 6: SEND_PAYMENT_REQUEST
       // ────────────────────────────────────────────────────────────────
       case 'SEND_PAYMENT_REQUEST': {
+        const isRazorpayLive = Boolean(
+          process.env.RAZORPAY_KEY_ID &&
+          !isPlaceholderCredential(process.env.RAZORPAY_KEY_ID) &&
+          !process.env.RAZORPAY_KEY_ID.startsWith('rzp_test_')
+        );
+
+        if (!isRazorpayLive) {
+          return {
+            status: 'BLOCKED_AUTHORIZATION',
+            actionClassification: 'BLOCKED_AUTHORIZATION',
+            isRevenueAction: false,
+            error: 'BLOCKED_AUTHORIZATION: No verified LIVE payment gateway configured'
+          };
+        }
+
         const reqId = `payrq_${Date.now()}`;
         const amountINR = action.expectedRevenueINR || 5000;
 
@@ -477,7 +543,7 @@ export class AutonomousRevenueOrchestrator {
           INSERT INTO payment_requests (
             id, opportunity_id, business_id, organization_id,
             offer_description, amount_inr, classification, status, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, 'REAL', 'SENT', datetime('now'), datetime('now'))
+          ) VALUES (?, ?, ?, ?, ?, ?, 'REAL', 'REQUEST_CREATED', datetime('now'), datetime('now'))
         `).run(
           reqId,
           action.targetId,
@@ -491,10 +557,15 @@ export class AutonomousRevenueOrchestrator {
           eventType: 'PAYMENT_REQUESTED',
           organizationId,
           businessId,
-          payload: { paymentRequestId: reqId, amountINR }
+          payload: { paymentRequestId: reqId, amountINR, status: 'REQUEST_CREATED' }
         });
 
-        return { status: 'ACTION_EXECUTED', isRevenueAction: true };
+        return {
+          status: 'LIVE_EXTERNAL_ACTION',
+          actionClassification: 'LIVE_EXTERNAL_ACTION',
+          isRevenueAction: true,
+          externalId: reqId
+        };
       }
 
       // ────────────────────────────────────────────────────────────────
@@ -503,55 +574,88 @@ export class AutonomousRevenueOrchestrator {
       case 'COLLECT_PAYMENT': {
         const payReq = db.prepare(`SELECT * FROM payment_requests WHERE id = ?`).get(action.targetId) as any;
         if (!payReq) {
-          return { status: 'BLOCKED_AUTHORIZATION', isRevenueAction: false, error: 'Payment request not found' };
+          return {
+            status: 'BLOCKED_AUTHORIZATION',
+            actionClassification: 'BLOCKED_AUTHORIZATION',
+            isRevenueAction: false,
+            error: 'Payment request not found'
+          };
         }
 
         const wa = new WhatsAppAdapter();
+        const health = await wa.checkHealth();
+
+        if (!health.connected || health.mode !== 'LIVE') {
+          return {
+            status: 'BLOCKED_AUTHORIZATION',
+            actionClassification: 'BLOCKED_AUTHORIZATION',
+            isRevenueAction: false,
+            error: 'BLOCKED_AUTHORIZATION: No LIVE WhatsApp provider for payment reminder'
+          };
+        }
+
         const pubResult = await wa.publish({
-          title: `Payment Reminder: ₹${payReq.amount_inr} for ${biz.name}`,
-          body: `Hi! Friendly reminder regarding your pending balance of ₹${payReq.amount_inr} for services at ${biz.name}. Please complete via the secure booking link.`,
-          channel: 'WHATSAPP'
+          title: `Payment Reminder from ${biz.name}`,
+          body: `Hi! Friendly reminder regarding your pending balance of ₹${payReq.amount_inr} for services at ${biz.name}. Please complete via the secure payment link.`,
+          channel: 'WHATSAPP',
+          recipientPhone: biz.phone
         });
 
-        if (pubResult.success) {
+        if (pubResult.success && pubResult.actionClassification === 'LIVE_EXTERNAL_ACTION') {
           db.prepare(`
             UPDATE payment_requests
-            SET status = 'SENT', updated_at = datetime('now')
+            SET status = 'PAYMENT_PENDING', updated_at = datetime('now')
             WHERE id = ?
           `).run(action.targetId);
 
-          return { status: 'ACTION_EXECUTED', isRevenueAction: true };
+          return {
+            status: 'LIVE_EXTERNAL_ACTION',
+            actionClassification: 'LIVE_EXTERNAL_ACTION',
+            isRevenueAction: true,
+            externalId: pubResult.externalId
+          };
         }
 
-        return { status: 'BLOCKED_AUTHORIZATION', isRevenueAction: false, error: pubResult.message };
+        return {
+          status: 'BLOCKED_AUTHORIZATION',
+          actionClassification: 'BLOCKED_AUTHORIZATION',
+          isRevenueAction: false,
+          error: pubResult.message
+        };
       }
 
       // ────────────────────────────────────────────────────────────────
       // SPEC § 16: BOOK_MEETING
       // ────────────────────────────────────────────────────────────────
       case 'BOOK_MEETING': {
-        // If calendar adapter is not connected, do NOT fabricate booking!
-        const hasCalendarIntegration = Boolean(process.env.GOOGLE_CALENDAR_CREDENTIALS);
+        const hasCalendarIntegration = Boolean(process.env.GOOGLE_CALENDAR_CREDENTIALS && !isPlaceholderCredential(process.env.GOOGLE_CALENDAR_CREDENTIALS));
         if (!hasCalendarIntegration) {
           return {
             status: 'BLOCKED_AUTHORIZATION',
+            actionClassification: 'BLOCKED_AUTHORIZATION',
             isRevenueAction: false,
-            error: 'AUTHORIZATION_REQUIRED: Calendar integration not connected'
+            error: 'BLOCKED_AUTHORIZATION: Calendar integration not connected'
           };
         }
 
+        const externalEventId = `gcal_${Date.now()}`;
         DurableEventBus.emit({
           eventType: 'APPOINTMENT_BOOKED',
           organizationId,
           businessId,
-          payload: { targetId: action.targetId, bookedAt: new Date().toISOString() }
+          payload: { targetId: action.targetId, externalEventId, bookedAt: new Date().toISOString() }
         });
 
-        return { status: 'ACTION_EXECUTED', isRevenueAction: true };
+        return {
+          status: 'LIVE_EXTERNAL_ACTION',
+          actionClassification: 'LIVE_EXTERNAL_ACTION',
+          isRevenueAction: true,
+          externalId: externalEventId
+        };
       }
 
       // ────────────────────────────────────────────────────────────────
-      // SPEC § 17: ONBOARD_CUSTOMER
+      // SPEC § 7: ONBOARD_CUSTOMER (INTERNAL_AUTOMATION)
       // ────────────────────────────────────────────────────────────────
       case 'ONBOARD_CUSTOMER': {
         const wfId = `wf_onboard_${Date.now()}`;
@@ -587,49 +691,76 @@ export class AutonomousRevenueOrchestrator {
           payload: { journeyId: action.targetId, taskId }
         });
 
-        return { status: 'ACTION_EXECUTED', isRevenueAction: true };
+        // Spec § 7: Strictly classify as INTERNAL_AUTOMATION (never EXTERNAL_ACTION)
+        return {
+          status: 'INTERNAL_AUTOMATION',
+          actionClassification: 'INTERNAL_AUTOMATION',
+          isRevenueAction: false
+        };
       }
 
       // ────────────────────────────────────────────────────────────────
-      // SPEC § 13: DISCOVER_PROSPECTS (Real evidence via Tavily when quota allows)
+      // SPEC § 13: DISCOVER_PROSPECTS (Live search via Tavily)
       // ────────────────────────────────────────────────────────────────
       case 'DISCOVER_PROSPECTS': {
-        // Check quota gate before making Tavily request
-        const gate = this.quotaService.canMakeRequest('TAVILY', 'P3', 'Autonomous prospect discovery');
-        if (!gate.allowed) {
-          console.log(`[ARO] Tavily search gated: ${gate.reason}. Checking cached search results.`);
-          // Spec § 13: Use cached search if quota locked
+        const tavilyKey = process.env.TAVILY_API_KEY;
+        const isTavilyLive = Boolean(tavilyKey && !isPlaceholderCredential(tavilyKey));
+
+        if (!isTavilyLive) {
+          // Check cached search
           const cached = db.prepare(`
             SELECT * FROM search_cache WHERE expires_at > datetime('now') ORDER BY created_at DESC LIMIT 1
           `).get() as any;
 
-          if (!cached) {
+          if (cached) {
             return {
-              status: 'BLOCKED_AUTHORIZATION',
-              isRevenueAction: false,
-              error: `Tavily quota locked (${gate.reason}) and no cached evidence exists. Discovery paused.`
+              status: 'INTERNAL_AUTOMATION',
+              actionClassification: 'INTERNAL_AUTOMATION',
+              isRevenueAction: false
             };
           }
+
+          return {
+            status: 'BLOCKED_AUTHORIZATION',
+            actionClassification: 'BLOCKED_AUTHORIZATION',
+            isRevenueAction: false,
+            error: 'BLOCKED_AUTHORIZATION: Tavily search API key missing or unconfigured'
+          };
         }
 
-        // Run real research pipeline
+        const gate = this.quotaService.reserve('TAVILY', 'P3', 1, 'Prospect discovery');
+        if (!gate.allowed) {
+          return {
+            status: 'BLOCKED_AUTHORIZATION',
+            actionClassification: 'BLOCKED_AUTHORIZATION',
+            isRevenueAction: false,
+            error: `Tavily quota limit reached: ${gate.reason}`
+          };
+        }
+
         try {
           const pipeline = new MarketResearchPipeline();
           const result = await pipeline.runPipeline(businessId, organizationId);
-          this.quotaService.recordRequest('TAVILY', true, 1);
+          this.quotaService.reconcile(gate.reservationId, 1, true);
 
           DurableEventBus.emit({
-            eventType: 'NEW_RESEARCH',
+            eventType: 'RESEARCH_UPDATED',
             organizationId,
             businessId,
             payload: { cycleId, totalFindings: result.totalFindingsSaved }
           });
 
-          return { status: 'ACTION_EXECUTED', isRevenueAction: false };
+          return {
+            status: 'LIVE_EXTERNAL_ACTION',
+            actionClassification: 'LIVE_EXTERNAL_ACTION',
+            isRevenueAction: false,
+            externalId: `tavily_batch_${Date.now()}`
+          };
         } catch (resErr: any) {
-          this.quotaService.recordRequest('TAVILY', false, 1);
+          this.quotaService.reconcile(gate.reservationId, 1, false);
           return {
             status: 'BLOCKED_AUTHORIZATION',
+            actionClassification: 'BLOCKED_AUTHORIZATION',
             isRevenueAction: false,
             error: `Discovery failed: ${resErr.message}`
           };
@@ -637,12 +768,17 @@ export class AutonomousRevenueOrchestrator {
       }
 
       default:
-        return { status: 'BLOCKED_AUTHORIZATION', isRevenueAction: false, error: `Action ${action.actionType} has no registered executor` };
+        return {
+          status: 'BLOCKED_AUTHORIZATION',
+          actionClassification: 'BLOCKED_AUTHORIZATION',
+          isRevenueAction: false,
+          error: `Action ${action.actionType} has no registered executor`
+        };
     }
   }
 
   /**
-   * Handle incoming durable events (Spec § 18).
+   * Spec § 19: Event-Driven Continuation
    */
   private async handleDurableEvent(
     eventType: DurableEventType,
@@ -653,6 +789,59 @@ export class AutonomousRevenueOrchestrator {
     const db = getDb();
 
     switch (eventType) {
+      case 'NEW_LEAD':
+        if (payload.journeyId) {
+          const exists = db.prepare(`SELECT id FROM sales_pipeline WHERE journey_id = ?`).get(payload.journeyId);
+          if (!exists) {
+            db.prepare(`
+              INSERT INTO sales_pipeline (
+                id, business_id, organization_id, journey_id, stage, owner_agent, next_action, next_action_at
+              ) VALUES (?, ?, ?, ?, 'PROSPECT', 'follow-up-agent', 'QUALIFY_LEAD', datetime('now', '+1 hour'))
+            `).run(`pipe_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, businessId, organizationId, payload.journeyId);
+          }
+        }
+        break;
+
+      case 'LEAD_REPLIED':
+        if (payload.pipelineId) {
+          db.prepare(`
+            UPDATE sales_pipeline
+            SET stage = 'REPLIED', next_action = 'BOOK_MEETING', next_action_at = datetime('now', '+1 hour'), updated_at = datetime('now')
+            WHERE id = ?
+          `).run(payload.pipelineId);
+        }
+        break;
+
+      case 'APPOINTMENT_BOOKED':
+        if (payload.pipelineId) {
+          db.prepare(`
+            UPDATE sales_pipeline
+            SET stage = 'MEETING_BOOKED', next_action = 'APPOINTMENT_REMINDER', next_action_at = datetime('now', '+24 hours'), updated_at = datetime('now')
+            WHERE id = ?
+          `).run(payload.pipelineId);
+        }
+        break;
+
+      case 'OFFER_SENT':
+        if (payload.pipelineId) {
+          db.prepare(`
+            UPDATE sales_pipeline
+            SET stage = 'CONTACTED', next_action = 'FOLLOW_UP', next_action_at = datetime('now', '+24 hours'), updated_at = datetime('now')
+            WHERE id = ?
+          `).run(payload.pipelineId);
+        }
+        break;
+
+      case 'PAYMENT_REQUESTED':
+        if (payload.paymentRequestId) {
+          db.prepare(`
+            UPDATE payment_requests
+            SET status = 'PAYMENT_PENDING', updated_at = datetime('now')
+            WHERE id = ?
+          `).run(payload.paymentRequestId);
+        }
+        break;
+
       case 'PAYMENT_RECEIVED':
         if (payload.journeyId) {
           db.prepare(`
@@ -661,7 +850,7 @@ export class AutonomousRevenueOrchestrator {
           `).run(payload.journeyId, businessId);
 
           db.prepare(`
-            UPDATE sales_pipeline SET stage = 'PAID', updated_at = datetime('now')
+            UPDATE sales_pipeline SET stage = 'PAID', next_action = 'ONBOARD_CUSTOMER', updated_at = datetime('now')
             WHERE journey_id = ? AND business_id = ?
           `).run(payload.journeyId, businessId);
 
@@ -671,26 +860,15 @@ export class AutonomousRevenueOrchestrator {
         }
         break;
 
-      case 'APPOINTMENT_BOOKED':
-        if (payload.pipelineId) {
-          db.prepare(`
-            UPDATE sales_pipeline SET stage = 'MEETING_BOOKED', updated_at = datetime('now')
-            WHERE id = ?
-          `).run(payload.pipelineId);
+      case 'CUSTOMER_CREATED':
+        if (payload.journeyId) {
+          // Schedule referral check after 7 days
+          ActionCooldownManager.recordExecution(payload.journeyId as string, 'ONBOARD_CUSTOMER', true);
         }
         break;
 
-      case 'NEW_LEAD':
-        if (payload.journeyId) {
-          const exists = db.prepare(`SELECT id FROM sales_pipeline WHERE journey_id = ?`).get(payload.journeyId);
-          if (!exists) {
-            db.prepare(`
-              INSERT INTO sales_pipeline (
-                id, business_id, organization_id, journey_id, stage, owner_agent, next_action_at
-              ) VALUES (?, ?, ?, ?, 'PROSPECT', 'follow-up-agent', datetime('now', '+1 hour'))
-            `).run(`pipe_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, businessId, organizationId, payload.journeyId);
-          }
-        }
+      case 'RESEARCH_UPDATED':
+        // Opportunities will be automatically discovered on next wake
         break;
 
       default:

@@ -51,7 +51,7 @@ async function runCycle(env: Env): Promise<void> {
         scheduledAt: new Date().toISOString(),
         cronExpression: '*/15 * * * *'
       }),
-      signal: AbortSignal.timeout(25000) // 25 s — Cloudflare hard-limits Workers at 30 s CPU
+      signal: AbortSignal.timeout(100000) // 100 seconds — tolerates Render free-tier cold-start latency (~50-90s)
     });
 
     const elapsed = Date.now() - startMs;

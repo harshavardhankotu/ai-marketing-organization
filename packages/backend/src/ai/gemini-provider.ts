@@ -2,7 +2,7 @@ import { QuotaManager } from './quota-manager.js';
 import { DeduplicationEngine } from './deduplication.js';
 import { TaskPriority, ExecutionType } from '@ai-marketing/shared';
 import { isPlaceholderCredential, isProduction, ProductionSecretViolationError } from '../config/env.js';
-import { UniversalLockManager } from '../quota/universal-lock-manager.js';
+import { UnifiedQuotaService } from '../quota/unified-quota-service.js';
 import type { ModelProvider, ModelRequestOptions, ModelResponse, ThinkingLevel, ModelTelemetry } from './model-provider.js';
 
 export type { ModelProvider, ModelRequestOptions, ModelResponse, ThinkingLevel, ModelTelemetry };
@@ -110,8 +110,12 @@ export class GeminiProvider implements ModelProvider {
     options: ModelRequestOptions,
     thinkingLevel: ThinkingLevel
   ): Promise<ModelResponse<T>> {
-    // 1. Universal Free-Tier Lock Verification (1,500 daily calls hard cap)
-    UniversalLockManager.getInstance().checkCanExecute('GEMINI_API');
+    // 1. Quota Reservation via UnifiedQuotaService (Spec § 9 & § 13)
+    const quotaService = UnifiedQuotaService.getInstance();
+    const reservation = quotaService.reserve('GEMINI', 'P2', 1, options.agentId);
+    if (!reservation.allowed) {
+      throw new Error(`[QUOTA LOCK ACTIVE] Gemini calls paused: ${reservation.reason}`);
+    }
 
     const requestTimestamp = new Date().toISOString();
     const startMs = Date.now();
@@ -154,16 +158,19 @@ export class GeminiProvider implements ModelProvider {
 
     if (!response.ok) {
       const errText = await response.text();
-      if (response.status === 429 || errText.includes('RESOURCE_EXHAUSTED') || errText.includes('quotaExceeded')) {
-        UniversalLockManager.getInstance().engageLock('GEMINI_API', `Gemini API quota exhausted (${response.status}). Universal Lock engaged.`);
+      const isRateLimit = response.status === 429 || errText.includes('RESOURCE_EXHAUSTED') || errText.includes('quotaExceeded');
+      quotaService.reconcile(reservation.reservationId, 1, false, undefined, isRateLimit);
+
+      if (isRateLimit) {
+        quotaService.lockProvider('GEMINI', `Gemini API quota exhausted (${response.status})`);
       }
       const err = new Error(`LLM EXECUTION = FAILED: Gemini API error ${response.status}: ${errText}`);
       (err as any).status = response.status;
       throw err;
     }
 
-    // Record successful outbound request against free-tier universal lock
-    UniversalLockManager.getInstance().recordOutboundCall('GEMINI_API', 1);
+    // Reconcile successful reservation
+    quotaService.reconcile(reservation.reservationId, 1, true);
 
     const payload = await response.json() as any;
     const rawText = payload?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';

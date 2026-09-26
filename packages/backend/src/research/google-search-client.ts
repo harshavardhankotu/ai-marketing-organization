@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { getDb } from '../db/client.js';
-import { UniversalLockManager } from '../quota/universal-lock-manager.js';
+import { UnifiedQuotaService } from '../quota/unified-quota-service.js';
 
 export interface SearchResultItem {
   title: string;
@@ -142,10 +142,13 @@ export class GoogleSearchClient {
     }
 
     const providerName = useTavily ? 'tavily' : 'google_custom_search';
-    const lockService = useTavily ? 'TAVILY_SEARCH' : 'GOOGLE_CUSTOM_SEARCH';
 
-    // 3. Universal Free-Tier Lock Verification
-    UniversalLockManager.getInstance().checkCanExecute(lockService);
+    // 3. Quota Reservation via UnifiedQuotaService (Spec § 9 & § 14)
+    const quotaService = UnifiedQuotaService.getInstance();
+    const reservation = quotaService.reserve('TAVILY', 'P3', 1, query);
+    if (!reservation.allowed) {
+      throw new SearchQuotaExceededError(`[QUOTA LOCK ACTIVE] Tavily search paused: ${reservation.reason}`);
+    }
 
     // 4. Make Outbound Live HTTP Call
     let endpoint: string;
@@ -176,6 +179,7 @@ export class GoogleSearchClient {
     try {
       response = await fetch(endpoint, requestOptions);
     } catch (netErr: any) {
+      quotaService.reconcile(reservation.reservationId, 1, false);
       const latencyMs = Date.now() - startMs;
       db.prepare(`
         INSERT INTO search_queries_log (
@@ -190,12 +194,11 @@ export class GoogleSearchClient {
     const latencyMs = Date.now() - startMs;
     const rawText = await response.text();
 
-    // 5. Handle Quota Exhaustion (HTTP 429 / RESOURCE_EXHAUSTED / Daily Quota Reached)
+    // 5. Handle Quota Exhaustion (HTTP 429 / RESOURCE_EXHAUSTED / Monthly Cap Reached)
     if (response.status === 429 || rawText.includes('RESOURCE_EXHAUSTED') || rawText.includes('quotaExceeded') || rawText.includes('dailyLimitExceeded') || rawText.includes('rate_limit_exceeded')) {
-      const errorMsg = useTavily
-        ? 'research paused — monthly search quota reached (Tavily free tier 1,000/month limit). Universal Lock engaged.'
-        : 'research paused — daily search quota reached (Google Custom Search 100 queries/day limit). Universal Lock engaged.';
-      UniversalLockManager.getInstance().engageLock(lockService, errorMsg);
+      const errorMsg = 'research paused — monthly search quota reached (Tavily free tier 1,000/month limit). Quota lock engaged.';
+      quotaService.reconcile(reservation.reservationId, 1, false, undefined, true);
+      quotaService.lockProvider('TAVILY', errorMsg);
 
       db.prepare(`
         INSERT INTO search_queries_log (
@@ -208,6 +211,7 @@ export class GoogleSearchClient {
     }
 
     if (!response.ok) {
+      quotaService.reconcile(reservation.reservationId, 1, false);
       db.prepare(`
         INSERT INTO search_queries_log (
           id, business_id, query_text, provider, endpoint_url,
@@ -217,6 +221,9 @@ export class GoogleSearchClient {
 
       throw new Error(`${providerName} returned HTTP ${response.status}: ${rawText}`);
     }
+
+    // Reconcile successful search
+    quotaService.reconcile(reservation.reservationId, 1, true);
 
     let parsed: any;
     try {
@@ -261,9 +268,6 @@ export class GoogleSearchClient {
         status_code, is_cached, latency_ms, results_count, raw_response_json
       ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
     `).run(logId, businessId || null, query, providerName, endpoint.split('?')[0], response.status, latencyMs, items.length, rawText);
-
-    // 8. Update Universal Free-Tier Lock Counter
-    UniversalLockManager.getInstance().recordOutboundCall(lockService, 1);
 
     return {
       query,

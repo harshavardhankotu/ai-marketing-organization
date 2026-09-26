@@ -17,6 +17,7 @@ import { getDb } from '../db/client.js';
 export type DurableEventType =
   | 'NEW_PROSPECT'
   | 'NEW_RESEARCH'
+  | 'RESEARCH_UPDATED'
   | 'NEW_LEAD'
   | 'LEAD_NO_RESPONSE'
   | 'LEAD_REPLIED'
