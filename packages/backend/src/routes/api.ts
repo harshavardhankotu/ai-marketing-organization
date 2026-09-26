@@ -49,6 +49,8 @@ import { UnifiedQuotaService } from '../quota/unified-quota-service.js';
 import { D1Client } from '../db/d1-client.js';
 import { RealityReportGenerator } from '../revenue/reality-report-generator.js';
 import { RevenueBottleneckEngine } from '../revenue/revenue-bottleneck-engine.js';
+import { LiveProviderActivation } from '../revenue/live-provider-activation.js';
+import { CommercialLifecycleManager } from '../revenue/commercial-lifecycle.js';
 
 export type AppVariables = {
   organizationId: string;
@@ -781,6 +783,49 @@ apiRouter.get('/revenue/bottleneck', (c) => {
   const businessId = bizRow?.id || 'biz_smilekraft_hyd';
   const bottleneck = RevenueBottleneckEngine.getInstance().diagnose(businessId, orgId);
   return c.json({ success: true, data: bottleneck });
+});
+
+// ==========================================
+// NEXT REAL ACTION (Spec § 32)
+// ==========================================
+apiRouter.get('/autonomy/next-real-action', (c) => {
+  const orgId = c.get('organizationId') || 'org_smilekraft_01';
+  const db = getDb();
+  const bizRow = db.prepare('SELECT id FROM businesses WHERE organization_id = ? ORDER BY created_at DESC LIMIT 1').get(orgId) as any;
+  const businessId = bizRow?.id || 'biz_smilekraft_hyd';
+  const report = RealityReportGenerator.getInstance().generate(orgId, businessId);
+  return c.json({ success: true, data: report.nextRealAction });
+});
+
+// ==========================================
+// COMMERCIAL LIFECYCLE & MILESTONES (Spec § 2 & § 22)
+// ==========================================
+apiRouter.get('/commercial/lifecycle', (c) => {
+  const orgId = c.get('organizationId') || 'org_smilekraft_01';
+  const db = getDb();
+  const bizRow = db.prepare('SELECT id FROM businesses WHERE organization_id = ? ORDER BY created_at DESC LIMIT 1').get(orgId) as any;
+  const businessId = bizRow?.id || 'biz_smilekraft_hyd';
+  const lifecycle = CommercialLifecycleManager.getInstance().evaluateState(orgId, businessId);
+  return c.json({ success: true, data: lifecycle });
+});
+
+// ==========================================
+// LIVE PROVIDER ACTIVATIONS (Spec § 3 & § 4)
+// ==========================================
+apiRouter.get('/commercial/providers', (c) => {
+  const statuses = LiveProviderActivation.getInstance().getAllStatuses();
+  const diagnostic = LiveProviderActivation.getInstance().getMissingProviderDiagnostic();
+  return c.json({ success: true, data: { providers: statuses, diagnostic } });
+});
+
+apiRouter.post('/commercial/providers/verify', async (c) => {
+  const body = await c.req.json().catch(() => ({})) as any;
+  if (body.provider) {
+    const verified = await LiveProviderActivation.getInstance().verifyProvider(body.provider);
+    return c.json({ success: true, data: verified });
+  }
+  const all = await LiveProviderActivation.getInstance().verifyAll();
+  return c.json({ success: true, data: all });
 });
 
 

@@ -1470,4 +1470,89 @@ CREATE TABLE IF NOT EXISTS delivery_tasks (
   FOREIGN KEY (customer_journey_id) REFERENCES customer_journeys(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_delivery_tasks_journey ON delivery_tasks(customer_journey_id);
+
+-- 71. Commercial Lifecycle State (Spec § 2 & § 22: Stage & highest milestone)
+CREATE TABLE IF NOT EXISTS commercial_lifecycle_state (
+  organization_id TEXT PRIMARY KEY,
+  lifecycle_state TEXT NOT NULL DEFAULT 'COMMERCIAL_READY',
+  highest_proven_milestone TEXT NOT NULL DEFAULT 'M0',
+  total_live_external_actions INTEGER NOT NULL DEFAULT 0,
+  total_verified_customers INTEGER NOT NULL DEFAULT 0,
+  verified_client_revenue_inr REAL NOT NULL DEFAULT 0.0,
+  verified_platform_revenue_inr REAL NOT NULL DEFAULT 0.0,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+);
+
+-- 72. Live Provider Activations (Spec § 3 & § 4: Provider states and verification)
+CREATE TABLE IF NOT EXISTS live_provider_activations (
+  id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL UNIQUE,
+  category TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'NOT_CONFIGURED',
+  is_live_verified INTEGER NOT NULL DEFAULT 0,
+  last_health_check TEXT,
+  last_verified_at TEXT,
+  verification_evidence_json TEXT NOT NULL DEFAULT '{}',
+  external_identifier TEXT,
+  failure_reason TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_live_prov_state ON live_provider_activations(state);
+
+-- 73. Commercial Evidence (Spec § 24: Real-world audit logs with external identifiers)
+CREATE TABLE IF NOT EXISTS commercial_evidence (
+  id TEXT PRIMARY KEY,
+  milestone TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  external_id TEXT NOT NULL,
+  timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+  request_reference TEXT NOT NULL,
+  tenant_id TEXT NOT NULL,
+  business_id TEXT NOT NULL,
+  classification TEXT NOT NULL DEFAULT 'REAL',
+  verification_source TEXT NOT NULL,
+  details_json TEXT NOT NULL DEFAULT '{}',
+  FOREIGN KEY (tenant_id) REFERENCES organizations(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_comm_ev_milestone ON commercial_evidence(milestone);
+CREATE INDEX IF NOT EXISTS idx_comm_ev_ext_id ON commercial_evidence(external_id);
+
+-- 74. Commercial Proposals (Spec § 15: Immutable approved customer proposals)
+CREATE TABLE IF NOT EXISTS proposals (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL,
+  business_id TEXT NOT NULL,
+  prospect_id TEXT NOT NULL,
+  offer_id TEXT,
+  title TEXT NOT NULL,
+  customer_problem TEXT NOT NULL,
+  proposed_solution TEXT NOT NULL,
+  deliverables_json TEXT NOT NULL DEFAULT '[]',
+  timeline_days INTEGER NOT NULL DEFAULT 5,
+  setup_price_inr REAL NOT NULL DEFAULT 15000.0,
+  monthly_price_inr REAL NOT NULL DEFAULT 8000.0,
+  payment_terms TEXT NOT NULL,
+  scope_boundary TEXT NOT NULL,
+  next_step TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'DRAFT',
+  idempotency_key TEXT UNIQUE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_proposals_biz ON proposals(business_id);
+CREATE INDEX IF NOT EXISTS idx_proposals_status ON proposals(status);
+
+-- 75. Idempotent Actions (Spec § 31: Enforces zero-duplicate external mutations)
+CREATE TABLE IF NOT EXISTS idempotent_actions (
+  idempotency_key TEXT PRIMARY KEY,
+  action_type TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  tenant_id TEXT NOT NULL,
+  executed_at TEXT NOT NULL DEFAULT (datetime('now')),
+  status TEXT NOT NULL DEFAULT 'EXECUTED',
+  result_json TEXT NOT NULL DEFAULT '{}'
+);
 `;

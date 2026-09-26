@@ -265,6 +265,50 @@ export function getDb(dbPath?: string): Database.Database {
       completed_at TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`);
   } catch {}
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS commercial_lifecycle_state (
+      organization_id TEXT PRIMARY KEY, lifecycle_state TEXT NOT NULL DEFAULT 'COMMERCIAL_READY',
+      highest_proven_milestone TEXT NOT NULL DEFAULT 'M0', total_live_external_actions INTEGER NOT NULL DEFAULT 0,
+      total_verified_customers INTEGER NOT NULL DEFAULT 0, verified_client_revenue_inr REAL NOT NULL DEFAULT 0.0,
+      verified_platform_revenue_inr REAL NOT NULL DEFAULT 0.0, updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+  } catch {}
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS live_provider_activations (
+      id TEXT PRIMARY KEY, provider TEXT NOT NULL UNIQUE, category TEXT NOT NULL,
+      state TEXT NOT NULL DEFAULT 'NOT_CONFIGURED', is_live_verified INTEGER NOT NULL DEFAULT 0,
+      last_health_check TEXT, last_verified_at TEXT, verification_evidence_json TEXT NOT NULL DEFAULT '{}',
+      external_identifier TEXT, failure_reason TEXT, updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+  } catch {}
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS commercial_evidence (
+      id TEXT PRIMARY KEY, milestone TEXT NOT NULL, provider TEXT NOT NULL,
+      external_id TEXT NOT NULL, timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+      request_reference TEXT NOT NULL, tenant_id TEXT NOT NULL, business_id TEXT NOT NULL,
+      classification TEXT NOT NULL DEFAULT 'REAL', verification_source TEXT NOT NULL,
+      details_json TEXT NOT NULL DEFAULT '{}'
+    )`);
+  } catch {}
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS proposals (
+      id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, business_id TEXT NOT NULL,
+      prospect_id TEXT NOT NULL, offer_id TEXT, title TEXT NOT NULL,
+      customer_problem TEXT NOT NULL, proposed_solution TEXT NOT NULL,
+      deliverables_json TEXT NOT NULL DEFAULT '[]', timeline_days INTEGER NOT NULL DEFAULT 5,
+      setup_price_inr REAL NOT NULL DEFAULT 15000.0, monthly_price_inr REAL NOT NULL DEFAULT 8000.0,
+      payment_terms TEXT NOT NULL, scope_boundary TEXT NOT NULL, next_step TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'DRAFT', idempotency_key TEXT UNIQUE,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+  } catch {}
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS idempotent_actions (
+      idempotency_key TEXT PRIMARY KEY, action_type TEXT NOT NULL, target_id TEXT NOT NULL,
+      tenant_id TEXT NOT NULL, executed_at TEXT NOT NULL DEFAULT (datetime('now')),
+      status TEXT NOT NULL DEFAULT 'EXECUTED', result_json TEXT NOT NULL DEFAULT '{}'
+    )`);
+  } catch {}
 
   // Initialize schema (creates all tables if not exist — safe for both fresh and existing DBs)
 
