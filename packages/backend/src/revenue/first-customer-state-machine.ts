@@ -88,13 +88,32 @@ export class FirstCustomerStateMachine {
     const custRow = db.prepare(`SELECT COUNT(*) as count FROM customer_journeys WHERE organization_id = ? AND stage IN ('CUSTOMER', 'CONVERTED')`).get(organizationId) as any;
     const customerCount = Number(custRow?.count || 0);
 
+    // Compute actual prospect count from DB (never hardcode)
+    const prospectCountRow = db.prepare(`SELECT COUNT(*) as count FROM platform_prospects WHERE is_opted_out = 0`).get() as any;
+    const prospectCount = Number(prospectCountRow?.count || 0);
+
+    // Compute actual outreach sent from DB (any CONTACTED pipeline row)
+    const outreachRow = db.prepare(`SELECT COUNT(*) as count FROM sales_pipeline WHERE organization_id = ? AND stage IN ('CONTACTED', 'REPLIED', 'QUALIFIED')`).get(organizationId) as any;
+    const outreachSent = Number(outreachRow?.count || 0) > 0;
+
+    // Compute actual response received from DB
+    const responseRow = db.prepare(`SELECT COUNT(*) as count FROM sales_pipeline WHERE organization_id = ? AND stage IN ('REPLIED', 'QUALIFIED')`).get(organizationId) as any;
+    const responseReceived = Number(responseRow?.count || 0) > 0;
+
+    // Compute actual verified revenue from DB
+    const revForCustomer = db.prepare(`
+      SELECT COALESCE(SUM(amount_inr), 0) as total FROM revenue_records
+      WHERE organization_id = ? AND verified = 1 AND revenue_type = 'PLATFORM_REVENUE'
+    `).get(organizationId) as any;
+    const verifiedRevenueForCustomer = Number(revForCustomer?.total || 0);
+
     // Check onboarded workflow
     const wfRow = db.prepare(`SELECT COUNT(*) as count FROM workflows WHERE organization_id = ? AND status = 'COMPLETED'`).get(organizationId) as any;
     if (customerCount > 0 && Number(wfRow?.count || 0) > 0) {
       return {
         currentStage: 'ONBOARDED',
         executable: false,
-        evidence: { prospectCount: 1, outreachSent: true, responseReceived: true, verifiedRevenueINR: 15000, customerCount }
+        evidence: { prospectCount, outreachSent, responseReceived, verifiedRevenueINR: verifiedRevenueForCustomer, customerCount }
       };
     }
 
@@ -103,7 +122,7 @@ export class FirstCustomerStateMachine {
         currentStage: 'CUSTOMER',
         nextStage: 'ONBOARDED',
         executable: true,
-        evidence: { prospectCount: 1, outreachSent: true, responseReceived: true, verifiedRevenueINR: 15000, customerCount }
+        evidence: { prospectCount, outreachSent, responseReceived, verifiedRevenueINR: verifiedRevenueForCustomer, customerCount }
       };
     }
 
@@ -119,7 +138,7 @@ export class FirstCustomerStateMachine {
         currentStage: 'REVENUE_RECORDED',
         nextStage: 'CUSTOMER',
         executable: true,
-        evidence: { prospectCount: 1, outreachSent: true, responseReceived: true, verifiedRevenueINR, customerCount: 0 }
+        evidence: { prospectCount, outreachSent, responseReceived, verifiedRevenueINR, customerCount: 0 }
       };
     }
 
@@ -135,7 +154,7 @@ export class FirstCustomerStateMachine {
         currentStage: 'PAYMENT_VERIFIED',
         nextStage: 'REVENUE_RECORDED',
         executable: true,
-        evidence: { prospectCount: 1, outreachSent: true, responseReceived: true, verifiedRevenueINR: 0, customerCount: 0 }
+        evidence: { prospectCount, outreachSent, responseReceived, verifiedRevenueINR: 0, customerCount: 0 }
       };
     }
 
@@ -154,10 +173,10 @@ export class FirstCustomerStateMachine {
         executable: false,
         blockageReason: 'BLOCKED_AWAITING_PAYMENT_CAPTURE: Razorpay payment link dispatched to prospect; awaiting external payment completion.',
         evidence: {
-          prospectCount: 1,
+          prospectCount,
           activeProspectId: activeReq.prospect_id,
-          outreachSent: true,
-          responseReceived: true,
+          outreachSent: true,  // payment link implies outreach was sent
+          responseReceived: true,  // payment link implies response was received
           paymentLinkUrl: linkUrl,
           verifiedRevenueINR: 0,
           customerCount: 0
@@ -178,10 +197,10 @@ export class FirstCustomerStateMachine {
         nextStage: 'PAYMENT_REQUESTED',
         executable: true,
         evidence: {
-          prospectCount: 1,
+          prospectCount,
           activeProspectId: propAccepted.prospect_id,
-          outreachSent: true,
-          responseReceived: true,
+          outreachSent: true,  // proposal accepted implies outreach was sent
+          responseReceived: true,  // proposal accepted implies response was received
           proposalId: propAccepted.id,
           verifiedRevenueINR: 0,
           customerCount: 0
@@ -202,10 +221,10 @@ export class FirstCustomerStateMachine {
         executable: false,
         blockageReason: 'BLOCKED_AWAITING_PROPOSAL_ACCEPTANCE: Commercial proposal dispatched; awaiting client confirmation.',
         evidence: {
-          prospectCount: 1,
+          prospectCount,
           activeProspectId: propSent.prospect_id,
-          outreachSent: true,
-          responseReceived: true,
+          outreachSent: true,  // proposal sent implies outreach was done
+          responseReceived: true,  // proposal sent implies response was received
           proposalId: propSent.id,
           verifiedRevenueINR: 0,
           customerCount: 0
@@ -227,9 +246,9 @@ export class FirstCustomerStateMachine {
         nextStage: stage === 'RESPONSE_RECEIVED' ? 'QUALIFIED' : 'PROPOSAL_SENT',
         executable: true,
         evidence: {
-          prospectCount: 1,
+          prospectCount,
           activeProspectId: qualPipe.outbound_contact_id,
-          outreachSent: true,
+          outreachSent: true,  // QUALIFIED/REPLIED implies outreach and response
           responseReceived: true,
           verifiedRevenueINR: 0,
           customerCount: 0
@@ -251,9 +270,9 @@ export class FirstCustomerStateMachine {
         executable: false,
         blockageReason: 'BLOCKED_AWAITING_PROSPECT_RESPONSE: Live outbound pitch delivered; waiting for prospect inbound webhook response.',
         evidence: {
-          prospectCount: 1,
+          prospectCount,
           activeProspectId: contactedPipe.outbound_contact_id,
-          outreachSent: true,
+          outreachSent: true,  // CONTACTED stage means outreach was sent
           responseReceived: false,
           verifiedRevenueINR: 0,
           customerCount: 0
@@ -278,7 +297,7 @@ export class FirstCustomerStateMachine {
           executable: false,
           blockageReason: `BLOCKED_QUIET_HOURS: ${dispatch.reason}`,
           evidence: {
-            prospectCount: 1,
+            prospectCount,
             activeProspectId: prospects.id,
             outreachSent: false,
             responseReceived: false,
@@ -297,7 +316,7 @@ export class FirstCustomerStateMachine {
           executable: false,
           blockageReason: `BLOCKED_AUTHORIZATION: Contact is suppressed (${contactSafety})`,
           evidence: {
-            prospectCount: 1,
+            prospectCount,
             activeProspectId: prospects.id,
             outreachSent: false,
             responseReceived: false,
@@ -312,7 +331,7 @@ export class FirstCustomerStateMachine {
         nextStage: 'CONTACTED',
         executable: true,
         evidence: {
-          prospectCount: 1,
+          prospectCount,
           activeProspectId: prospects.id,
           outreachSent: false,
           responseReceived: false,

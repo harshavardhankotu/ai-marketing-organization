@@ -204,22 +204,35 @@ export class PlatformProspectDiscoveryEngine {
 
   /**
    * Validates that a candidate has real-world evidence and is not a seed or system contact.
+   * In production, candidates with sourceType === 'TEST_DATA' are blocked.
    */
-  public validateCandidate(c: DiscoveredProspectCandidate): boolean {
+  public validateCandidate(c: DiscoveredProspectCandidate & { sourceType?: string; classification?: string; dataSource?: string }): boolean {
     if (!c.businessName || c.businessName.trim().length < 3) return false;
     const nameLower = c.businessName.toLowerCase();
     if (nameLower.includes('smilekraft') || nameLower.includes('antigravity') || nameLower.includes('demo business') || nameLower.includes('test clinic')) {
+      return false;
+    }
+    // In production, also reject fixtures that have TEST_FIXTURE prefix
+    if (isProduction() && nameLower.startsWith('test_fixture_')) {
+      return false;
+    }
+
+    // Production assertion: reject synthetic / test data
+    if (isProduction() && (c.sourceType === 'TEST_DATA' || c.classification === 'TEST_DATA' || c.dataSource === 'DETERMINISTIC_TEST_FIXTURE')) {
+      console.error(`[PlatformProspectDiscoveryEngine] BLOCKED_SYNTHETIC_DATA: Production received TEST_DATA candidate '${c.businessName}'. Rejecting.`);
       return false;
     }
 
     // Must have city
     if (!c.city || c.city.trim().length < 2) return false;
 
-    // Must have valid website or Google presence URL
+    // Must have valid website or Google presence URL (not .local or synthetic in production)
     if (!c.websiteUrl || !c.websiteUrl.startsWith('http')) return false;
+    if (isProduction() && (c.websiteUrl.includes('.local') || c.websiteUrl.includes('test-fixture'))) return false;
 
     // Must have source URL
     if (!c.evidenceSourceUrl || !c.evidenceSourceUrl.startsWith('http')) return false;
+    if (isProduction() && (c.evidenceSourceUrl.includes('.local') || c.evidenceSourceUrl.includes('test-fixture'))) return false;
 
     // Must have at least one valid contact (phone or email)
     const phone = c.contactPhone?.trim();
@@ -237,6 +250,8 @@ export class PlatformProspectDiscoveryEngine {
 
     if (email) {
       if (PlatformProspectDiscoveryEngine.FORBIDDEN_CONTACTS.has(email)) return false;
+      // Reject .local emails (clearly synthetic) in production only
+      if (isProduction() && email.endsWith('.local')) return false;
       const safety = AutonomyPolicyController.getInstance().getContactSafety(email);
       if (safety !== 'CONTACTABLE') return false;
     }
@@ -519,11 +534,75 @@ Return a JSON array of candidates.`;
       'real_estate',
       'professional_services'
     ];
-    return verticals[Math.floor(Math.random() * verticals.length)];
+    // Deterministic rotation: find least-recently-targeted vertical in DB
+    try {
+      const db = getDb();
+      const countRows = db.prepare(`
+        SELECT prospect_vertical, COUNT(*) as cnt
+        FROM platform_prospects
+        WHERE prospect_vertical IS NOT NULL
+        GROUP BY prospect_vertical
+      `).all() as Array<{ prospect_vertical: string; cnt: number }>;
+
+      const verticalCounts = new Map<string, number>(
+        verticals.map(v => [v, 0])
+      );
+      for (const row of countRows) {
+        if (verticalCounts.has(row.prospect_vertical)) {
+          verticalCounts.set(row.prospect_vertical, row.cnt);
+        }
+      }
+      // Pick the vertical with the lowest count (least targeted)
+      let minCount = Infinity;
+      let chosen: typeof verticals[0] = verticals[0];
+      for (const v of verticals) {
+        const c = verticalCounts.get(v) ?? 0;
+        if (c < minCount) {
+          minCount = c;
+          chosen = v;
+        }
+      }
+      return chosen;
+    } catch {
+      // Fallback: deterministic first element (no randomness)
+      return verticals[0];
+    }
   }
 
   private pickNextTargetCity(): string {
     const cities = ['Hyderabad', 'Bengaluru', 'Mumbai', 'Pune', 'Delhi NCR', 'Chennai'];
-    return cities[Math.floor(Math.random() * cities.length)];
+    // Deterministic rotation: find least-recently-targeted city in DB
+    try {
+      const db = getDb();
+      const countRows = db.prepare(`
+        SELECT prospect_city, COUNT(*) as cnt
+        FROM platform_prospects
+        WHERE prospect_city IS NOT NULL
+        GROUP BY prospect_city
+      `).all() as Array<{ prospect_city: string; cnt: number }>;
+
+      const cityCounts = new Map<string, number>(
+        cities.map(c => [c, 0])
+      );
+      for (const row of countRows) {
+        if (cityCounts.has(row.prospect_city)) {
+          cityCounts.set(row.prospect_city, row.cnt);
+        }
+      }
+      // Pick the city with the lowest count (least targeted)
+      let minCount = Infinity;
+      let chosen: string = cities[0];
+      for (const city of cities) {
+        const c = cityCounts.get(city) ?? 0;
+        if (c < minCount) {
+          minCount = c;
+          chosen = city;
+        }
+      }
+      return chosen;
+    } catch {
+      // Fallback: deterministic first element (no randomness)
+      return cities[0];
+    }
   }
 }

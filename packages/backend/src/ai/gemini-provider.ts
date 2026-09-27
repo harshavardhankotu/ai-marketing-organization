@@ -215,6 +215,109 @@ export class GeminiProvider implements ModelProvider {
     };
   }
 
+  /**
+   * Calls Gemini with Google Search Grounding enabled.
+   * Uses GEMINI_RESEARCH_MODEL (default: gemini-2.5-flash-lite) for free-tier grounded research.
+   *
+   * Returns grounding metadata including:
+   *   - webSearchQueries: actual search queries Gemini used
+   *   - groundingChunks: source URLs and titles
+   *   - groundingSupports: which claims are backed by which sources
+   *
+   * If no grounding metadata is present in the response (model-only output), returns null.
+   * Caller must reject ungrounded results for production prospect discovery.
+   */
+  public async generateGroundedContent(prompt: string, context?: Record<string, unknown>): Promise<{
+    text: string;
+    groundingMetadata: {
+      webSearchQueries: string[];
+      groundingChunks: Array<{ url: string; title?: string }>;
+      groundingSupports?: Array<{ segment?: { text?: string }; groundingChunkIndices?: number[] }>;
+    } | null;
+    model: string;
+    source: 'GROUNDED_GEMINI' | 'BLOCKED_NO_KEY' | 'BLOCKED_QUOTA';
+  } | null> {
+    const apiKey = process.env.GEMINI_API_KEY;
+    const researchModel = process.env.GEMINI_RESEARCH_MODEL || 'gemini-2.5-flash-lite';
+
+    if (!apiKey || isPlaceholderCredential(apiKey)) {
+      return { text: '', groundingMetadata: null, model: researchModel, source: 'BLOCKED_NO_KEY' };
+    }
+
+    const quotaService = UnifiedQuotaService.getInstance();
+    const reservation = quotaService.reserve('GEMINI', 'P3', 1, 'grounded-research');
+    if (!reservation.allowed) {
+      return { text: '', groundingMetadata: null, model: researchModel, source: 'BLOCKED_QUOTA' };
+    }
+
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${researchModel}:generateContent?key=${apiKey}`;
+    const requestBody = {
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            {
+              text: context
+                ? `Context: ${JSON.stringify(context)}\n\nTask: ${prompt}`
+                : prompt
+            }
+          ]
+        }
+      ],
+      tools: [{ google_search: {} }]
+    };
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody)
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        const isRateLimit = response.status === 429 || errText.includes('RESOURCE_EXHAUSTED');
+        quotaService.reconcile(reservation.reservationId, 1, false, undefined, isRateLimit);
+        if (isRateLimit) quotaService.lockProvider('GEMINI', `Grounded research quota exhausted (${response.status})`);
+        console.error(`[GeminiProvider][grounded] API error ${response.status}: ${errText.substring(0, 200)}`);
+        return null;
+      }
+
+      quotaService.reconcile(reservation.reservationId, 1, true);
+      const payload = await response.json() as any;
+      const candidate = payload?.candidates?.[0];
+      const text = candidate?.content?.parts?.map((p: any) => p.text || '').join('') || '';
+      const gm = candidate?.groundingMetadata;
+
+      if (!gm) {
+        // No grounding metadata — model produced from memory only
+        return {
+          text,
+          groundingMetadata: null,
+          model: researchModel,
+          source: 'GROUNDED_GEMINI'
+        };
+      }
+
+      const webSearchQueries: string[] = gm.webSearchQueries || [];
+      const groundingChunks: Array<{ url: string; title?: string }> = (gm.groundingChunks || []).map((chunk: any) => ({
+        url: chunk?.web?.uri || chunk?.uri || '',
+        title: chunk?.web?.title || chunk?.title
+      })).filter((c: { url: string; title?: string }) => c.url.startsWith('http'));
+
+      return {
+        text,
+        groundingMetadata: { webSearchQueries, groundingChunks, groundingSupports: gm.groundingSupports },
+        model: researchModel,
+        source: 'GROUNDED_GEMINI'
+      };
+    } catch (err: any) {
+      quotaService.reconcile(reservation.reservationId, 1, false);
+      console.error(`[GeminiProvider][grounded] Unexpected error: ${err?.message}`);
+      return null;
+    }
+  }
+
   private synthesizeDomainResponse<T>(options: ModelRequestOptions): ModelResponse<T> {
     const p = options.prompt.toLowerCase();
     const ctx = options.context || {};
@@ -226,20 +329,27 @@ export class GeminiProvider implements ModelProvider {
     if (options.agentId === 'prospect-discovery-agent' || p.includes('candidate') || p.includes('prospect')) {
       const vert = ctx.vertical || 'dental';
       const city = ctx.city || 'Hyderabad';
+      // IMPORTANT: This is a TEST_DATA fixture only. In production, ALL candidates must originate
+      // from real grounded Gemini search results or Tavily results with evidence source URLs.
+      // Production code must check classification === 'REAL_DATA' and reject TEST_DATA candidates.
       data = {
         candidates: [
           {
-            businessName: `Prism ${vert === 'dental' ? 'Dental Care' : (vert === 'clinic' ? 'Wellness Clinic' : 'Professional Services')}`,
+            businessName: `TEST_FIXTURE_${vert === 'dental' ? 'DentalCare' : (vert === 'clinic' ? 'WellnessClinic' : 'ProfessionalSvc')}`,
             vertical: vert,
             city,
-            websiteUrl: `https://prism-${vert}-${city.toLowerCase().replace(/\s+/g, '')}.in`,
-            googlePresenceUrl: `https://maps.google.com/?cid=prism_${city.toLowerCase()}_01`,
-            contactPerson: 'Operations Lead',
+            websiteUrl: `https://test-fixture-${vert}-${city.toLowerCase().replace(/\s+/g, '')}.local`,
+            googlePresenceUrl: `https://maps.google.com/?cid=test_fixture_${city.toLowerCase()}_01`,
+            contactPerson: 'Test Fixture Contact',
             contactPhone: '+919440123456',
-            contactEmail: `contact@prism-${vert}-${city.toLowerCase().replace(/\s+/g, '')}.in`,
-            observedGap: 'Manual staff messaging handles incoming inquiries. No automated WhatsApp triage verified.',
-            evidenceSourceUrl: `https://prism-${vert}-${city.toLowerCase().replace(/\s+/g, '')}.in/contact`,
-            evidenceTimestamp: now
+            contactEmail: `contact@test-fixture-${vert}-${city.toLowerCase().replace(/\s+/g, '')}.local`,
+            observedGap: 'TEST_FIXTURE: Manual staff messaging handles incoming inquiries. No automated WhatsApp triage verified.',
+            evidenceSourceUrl: `https://test-fixture-${vert}-${city.toLowerCase().replace(/\s+/g, '')}.local/contact`,
+            evidenceTimestamp: now,
+            // Fields that allow production code to detect and reject this fixture:
+            classification: 'TEST_DATA',
+            sourceType: 'TEST_DATA',
+            dataSource: 'DETERMINISTIC_TEST_FIXTURE'
           }
         ]
       };
