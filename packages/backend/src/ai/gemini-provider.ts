@@ -223,7 +223,27 @@ export class GeminiProvider implements ModelProvider {
 
     // Strictly honest deterministic test fixtures:
     // NO fake search volume claims, NO fake surveys, NO fake p-values, NO fake external observations.
-    if (p.includes('research') || p.includes('market') || options.agentId.startsWith('res-')) {
+    if (options.agentId === 'prospect-discovery-agent' || p.includes('candidate') || p.includes('prospect')) {
+      const vert = ctx.vertical || 'dental';
+      const city = ctx.city || 'Hyderabad';
+      data = {
+        candidates: [
+          {
+            businessName: `Prism ${vert === 'dental' ? 'Dental Care' : (vert === 'clinic' ? 'Wellness Clinic' : 'Professional Services')}`,
+            vertical: vert,
+            city,
+            websiteUrl: `https://prism-${vert}-${city.toLowerCase().replace(/\s+/g, '')}.in`,
+            googlePresenceUrl: `https://maps.google.com/?cid=prism_${city.toLowerCase()}_01`,
+            contactPerson: 'Operations Lead',
+            contactPhone: '+919440123456',
+            contactEmail: `contact@prism-${vert}-${city.toLowerCase().replace(/\s+/g, '')}.in`,
+            observedGap: 'Manual staff messaging handles incoming inquiries. No automated WhatsApp triage verified.',
+            evidenceSourceUrl: `https://prism-${vert}-${city.toLowerCase().replace(/\s+/g, '')}.in/contact`,
+            evidenceTimestamp: now
+          }
+        ]
+      };
+    } else if (p.includes('research') || p.includes('market') || options.agentId.startsWith('res-')) {
       data = {
         findings: [
           {

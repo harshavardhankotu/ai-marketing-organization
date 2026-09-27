@@ -1,5 +1,5 @@
 import { GoogleAdsClient, GoogleAdsCredentials } from './google-ads.js';
-import { isPlaceholderCredential } from '../config/env.js';
+import { isPlaceholderCredential, isProduction } from '../config/env.js';
 
 export type IntegrationProvider = 
   | 'GOOGLE_BUSINESS_PROFILE'
@@ -332,35 +332,21 @@ export class GoogleAdapter implements IChannelAdapter {
   }
 
   async publish(payload: PublishPayload): Promise<PublishResult> {
-    const isLive = this.isLiveConfigured();
     const publishedAt = new Date().toISOString();
-
-    if (!isLive) {
-      return {
-        success: false,
-        mode: 'UNCONFIGURED',
-        provider: this.provider,
-        providerStatus: 'BLOCKED_AUTHORIZATION',
-        verificationStatus: 'UNVERIFIED',
-        actionClassification: 'BLOCKED_AUTHORIZATION',
-        publishedAt,
-        message: 'BLOCKED_AUTHORIZATION: Google Business Profile credentials missing'
-      };
-    }
-
     return {
-      success: true,
-      externalId: `gbp_${Date.now()}`,
-      mode: 'LIVE',
+      success: false,
+      mode: 'UNCONFIGURED',
       provider: this.provider,
-      providerStatus: 'PUBLISHED',
-      verificationStatus: 'VERIFIED',
-      actionClassification: 'LIVE_EXTERNAL_ACTION',
+      providerStatus: 'BLOCKED_AUTHORIZATION',
+      verificationStatus: 'UNVERIFIED',
+      actionClassification: 'BLOCKED_AUTHORIZATION',
       publishedAt,
-      message: 'Google Business Profile local update published'
+      message: 'BLOCKED_AUTHORIZATION: Real Google Business Profile API publishing endpoint not implemented. Fabricated actions are forbidden.'
     };
   }
 }
+
+export { GoogleAdapter as GoogleBusinessProfileAdapter };
 
 // 4. Google Ads Adapter
 export class GoogleAdsAdapter implements IChannelAdapter {
@@ -385,33 +371,16 @@ export class GoogleAdsAdapter implements IChannelAdapter {
   }
 
   async publish(payload: PublishPayload): Promise<PublishResult> {
-    const isLive = this.client.isConfigured();
     const publishedAt = new Date().toISOString();
-
-    if (!isLive) {
-      return {
-        success: false,
-        mode: 'UNCONFIGURED',
-        provider: this.provider,
-        providerStatus: 'BLOCKED_AUTHORIZATION',
-        verificationStatus: 'UNVERIFIED',
-        actionClassification: 'BLOCKED_AUTHORIZATION',
-        publishedAt,
-        message: 'BLOCKED_AUTHORIZATION: Google Ads API not configured'
-      };
-    }
-
-    const campaignId = `gads_${Date.now()}`;
     return {
-      success: true,
-      externalId: campaignId,
-      mode: 'LIVE',
+      success: false,
+      mode: 'UNCONFIGURED',
       provider: this.provider,
-      providerStatus: 'ACTIVE',
-      verificationStatus: 'VERIFIED',
-      actionClassification: 'LIVE_EXTERNAL_ACTION',
+      providerStatus: 'BLOCKED_AUTHORIZATION',
+      verificationStatus: 'UNVERIFIED',
+      actionClassification: 'BLOCKED_AUTHORIZATION',
       publishedAt,
-      message: `Google Search Ad created (Campaign ID: ${campaignId})`
+      message: 'BLOCKED_AUTHORIZATION: Real Google Ads API campaign creation endpoint not implemented. Fabricated actions are forbidden.'
     };
   }
 }
@@ -472,6 +441,30 @@ export class EmailAdapter implements IChannelAdapter {
         };
       }
 
+      // Platform email sender identity
+      let senderEmail = process.env.PLATFORM_SENDER_EMAIL || process.env.SENDER_EMAIL;
+      let senderName = process.env.PLATFORM_SENDER_NAME || 'AI Marketing Organization';
+
+      if (isProduction()) {
+        if (!senderEmail || isPlaceholderCredential(senderEmail) || senderEmail.includes('smilekraft.in')) {
+          return {
+            success: false,
+            mode: 'LIVE',
+            provider: this.provider,
+            providerStatus: 'BLOCKED_AUTHORIZATION',
+            verificationStatus: 'UNVERIFIED',
+            actionClassification: 'BLOCKED_AUTHORIZATION',
+            publishedAt,
+            message: 'BLOCKED_AUTHORIZATION: PLATFORM_SENDER_EMAIL is required in production and must not use clinic identity.'
+          };
+        }
+      } else {
+        if (!senderEmail || senderEmail.includes('smilekraft.in')) {
+          senderEmail = 'platform@aimarketing.local';
+          senderName = 'AI Marketing Organization';
+        }
+      }
+
       // Live SendGrid API request
       const res = await fetch('https://api.sendgrid.com/v3/mail/send', {
         method: 'POST',
@@ -481,13 +474,13 @@ export class EmailAdapter implements IChannelAdapter {
         },
         body: JSON.stringify({
           personalizations: [{ to: [{ email: recipient }] }],
-          from: { email: process.env.SENDER_EMAIL || 'support@smilekraft.in', name: 'SmileKraft Dental' },
+          from: { email: senderEmail, name: senderName },
           subject: payload.title,
           content: [{ type: 'text/plain', value: payload.body }]
         })
       });
 
-      const messageId = res.headers.get('x-message-id') || `msg_${Date.now()}`;
+      const messageId = res.headers.get('x-message-id');
       if (!res.ok && res.status !== 202) {
         const errText = await res.text();
         return {
@@ -499,6 +492,19 @@ export class EmailAdapter implements IChannelAdapter {
           actionClassification: 'BLOCKED_AUTHORIZATION',
           publishedAt,
           message: `Email provider error (${res.status}): ${errText}`
+        };
+      }
+
+      if (!messageId) {
+        return {
+          success: false,
+          mode: 'LIVE',
+          provider: this.provider,
+          providerStatus: 'PROVIDER_MISSING_ID',
+          verificationStatus: 'FAILED',
+          actionClassification: 'BLOCKED_AUTHORIZATION',
+          publishedAt,
+          message: 'Email provider accepted message but returned no verifiable x-message-id.'
         };
       }
 

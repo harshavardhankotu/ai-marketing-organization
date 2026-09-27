@@ -38,6 +38,7 @@ export type DurableEventType =
   | 'MEETING_REPLY'
   | 'PAYMENT_FAILED'
   | 'CUSTOMER_REPLIED'
+  | 'PROPOSAL_ACCEPTED'
   | 'CONTACT_OPT_OUT'
   | 'CYCLE_STARTED'
   | 'CYCLE_COMPLETED';

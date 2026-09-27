@@ -182,10 +182,27 @@ export class AutonomyPolicyController {
     };
   }
 
+  public static readonly FORBIDDEN_CONTACTS = new Set([
+    '+919999999999',
+    '9999999999',
+    'support@smilekraft.in',
+    'admin@smilekraft.in',
+    'platform@aimarketing.local',
+    'owner@aimarketing.local'
+  ]);
+
   /**
    * Verifies the contact safety and suppression status of a lead or outbound contact.
    */
   public getContactSafety(contactIdOrPhoneOrEmail: string): ContactSafetyStatus {
+    const raw = contactIdOrPhoneOrEmail.trim();
+    const cleanPhone = raw.replace(/[^0-9+]/g, '');
+
+    // 1. Check forbidden system and seed contacts
+    if (AutonomyPolicyController.FORBIDDEN_CONTACTS.has(raw) || AutonomyPolicyController.FORBIDDEN_CONTACTS.has(cleanPhone)) {
+      return 'BLOCKED';
+    }
+
     const db = getDb();
     try {
       // Check outbound_contacts table
@@ -193,7 +210,7 @@ export class AutonomyPolicyController {
         SELECT is_opted_out, is_bounced, is_suppressed, suppression_reason
         FROM outbound_contacts
         WHERE id = ? OR prospect_email = ? OR prospect_phone = ?
-      `).get(contactIdOrPhoneOrEmail, contactIdOrPhoneOrEmail, contactIdOrPhoneOrEmail) as any;
+      `).get(raw, raw, raw) as any;
 
       if (outbound) {
         if (outbound.is_opted_out || outbound.suppression_reason === 'DO_NOT_CONTACT') return 'DO_NOT_CONTACT';
@@ -202,12 +219,23 @@ export class AutonomyPolicyController {
         if (outbound.is_suppressed) return 'BLOCKED';
       }
 
+      // Check platform_prospects table
+      const prospect = db.prepare(`
+        SELECT is_opted_out, stage
+        FROM platform_prospects
+        WHERE id = ? OR prospect_email = ? OR prospect_phone = ?
+      `).get(raw, raw, raw) as any;
+
+      if (prospect) {
+        if (prospect.is_opted_out || prospect.stage === 'DO_NOT_CONTACT') return 'DO_NOT_CONTACT';
+      }
+
       // Check customer_journeys DPDP consent / opt-out
       const journey = db.prepare(`
         SELECT dpdp_consent_status, stage
         FROM customer_journeys
         WHERE id = ? OR customer_email = ? OR customer_phone = ?
-      `).get(contactIdOrPhoneOrEmail, contactIdOrPhoneOrEmail, contactIdOrPhoneOrEmail) as any;
+      `).get(raw, raw, raw) as any;
 
       if (journey) {
         if (journey.stage === 'DO_NOT_CONTACT') return 'DO_NOT_CONTACT';
@@ -240,6 +268,12 @@ export class AutonomyPolicyController {
           ) VALUES (?, 'biz_smilekraft_hyd', 'org_default', 'Suppressed Contact', ?, ?, 'OPT_OUT', 1, 1, ?)
         `).run(suppId, isEmail ? contactIdentifier : null, isEmail ? null : contactIdentifier, reason);
       }
+
+      db.prepare(`
+        UPDATE platform_prospects
+        SET is_opted_out = 1, stage = 'LOST', notes = 'DO_NOT_CONTACT', updated_at = datetime('now')
+        WHERE prospect_email = ? OR prospect_phone = ? OR id = ?
+      `).run(contactIdentifier, contactIdentifier, contactIdentifier);
 
       db.prepare(`
         UPDATE customer_journeys

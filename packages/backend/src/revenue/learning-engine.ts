@@ -52,10 +52,14 @@ export class LearningEngine {
    */
   public recordObservation(input: LearningObservationInput): LearningRecord {
     // Invariant: Test or simulation evidence cannot masquerade as real-world learning
+    // Real-world learning must only be produced from: verified external action + real response/result + real commercial state
     if (input.learningType === 'REAL_WORLD_LEARNING') {
+      const hasVerifiedAction = Boolean(input.evidence?.externalActionId || input.evidence?.actionExternalId || input.evidence?.transactionId);
+      const hasRealResult = Boolean(input.result && input.result.trim().length > 0 && !input.evidence?.isSimulation);
       const isTestContext = process.env.NODE_ENV === 'test' || input.evidence?.isTestFixture;
-      if (isTestContext && !input.evidence?.forceRealAudit) {
-        input.learningType = 'TEST_LEARNING';
+
+      if (!hasVerifiedAction || !hasRealResult || (isTestContext && !input.evidence?.forceRealAudit)) {
+        input.learningType = input.evidence?.isSimulation ? 'SIMULATION_INSIGHT' : 'TEST_LEARNING';
       }
     }
 
@@ -63,35 +67,44 @@ export class LearningEngine {
     const id = `lrn_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const now = new Date().toISOString();
 
+    const sql = `
+      INSERT INTO learning_records (
+        id, organization_id, business_id, learning_type, decision, hypothesis,
+        action, audience, offer, channel, result, revenue_inr, cost_inr,
+        time_taken_hours, confidence, evidence_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `;
+    const params = [
+      id,
+      input.organizationId,
+      input.businessId || null,
+      input.learningType,
+      input.decision,
+      input.hypothesis,
+      input.action,
+      input.audience,
+      input.offer,
+      input.channel,
+      input.result,
+      input.revenueINR || 0.0,
+      input.costINR || 0.0,
+      input.timeTakenHours || 0.0,
+      input.confidence || 0.5,
+      JSON.stringify(input.evidence || {}),
+      now
+    ];
+
     try {
-      db.prepare(`
-        INSERT INTO learning_records (
-          id, organization_id, business_id, learning_type, decision, hypothesis,
-          action, audience, offer, channel, result, revenue_inr, cost_inr,
-          time_taken_hours, confidence, evidence_json, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        id,
-        input.organizationId,
-        input.businessId || null,
-        input.learningType,
-        input.decision,
-        input.hypothesis,
-        input.action,
-        input.audience,
-        input.offer,
-        input.channel,
-        input.result,
-        input.revenueINR || 0.0,
-        input.costINR || 0.0,
-        input.timeTakenHours || 0.0,
-        input.confidence || 0.5,
-        JSON.stringify(input.evidence || {}),
-        now
-      );
+      db.prepare(sql).run(...params);
     } catch (err: any) {
-      console.warn(`[LearningEngine] Failed to persist observation: ${err.message}`);
+      console.warn(`[LearningEngine] Failed to persist observation in SQLite: ${err.message}`);
     }
+
+    // In production, execute durable write through D1 repository
+    try {
+      const { D1RevenueRepository } = require('../db/d1-revenue-repository.js');
+      D1RevenueRepository.getInstance().executeWrite('learning_records', sql, params).catch(() => {});
+    } catch {}
 
     return {
       id,

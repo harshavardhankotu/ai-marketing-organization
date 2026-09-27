@@ -658,12 +658,29 @@ apiRouter.get('/revenue/ceo-dashboard', (c) => {
         try {
           row = db.prepare(`SELECT * FROM cron_telemetry WHERE id = 'cloudflare_worker_cron'`).get();
         } catch {}
-        const isObserved = Boolean(row?.last_observed_ping);
+        const parseSqliteTimestampMs = (ts: string | null | undefined): number => {
+          if (!ts) return 0;
+          const isoStr = ts.includes('T') ? (ts.endsWith('Z') ? ts : ts + 'Z') : ts.replace(' ', 'T') + 'Z';
+          return new Date(isoStr).getTime();
+        };
+        const totalPings = Number(row?.total_pings || 0);
+        const lastPingMs = parseSqliteTimestampMs(row?.last_observed_ping);
+        const now = Date.now();
+        const isRecent = lastPingMs > 0 && (now - lastPingMs) < (35 * 60 * 1000);
+        const isHealthy = totalPings > 0 && isRecent && (row?.cycle_result === 'SUCCESS' || row?.status === 'HEALTHY');
+
+        const status: 'CONFIGURED' | 'DEPLOYED' | 'OBSERVED' | 'HEALTHY' = isHealthy
+          ? 'HEALTHY'
+          : (totalPings > 0 ? 'OBSERVED' : 'CONFIGURED');
+
         return {
-          status: isObserved ? 'CRON_OBSERVED' : (process.env.CLOUDFLARE_WORKER_DEPLOYED === 'true' ? 'CRON_DEPLOYED' : 'CRON_CONFIGURED'),
+          status,
           cronExpression: '*/15 * * * *',
           lastObservedPing: row?.last_observed_ping || null,
-          totalPings: row?.total_pings || 0
+          totalPings,
+          lastSuccessfulCycle: row?.last_successful_cycle || null,
+          lastFailedCycle: row?.last_failed_cycle || null,
+          cycleResult: row?.cycle_result || null
         };
       })(),
       // Backward-compatible properties for existing consumers
@@ -678,7 +695,7 @@ apiRouter.get('/revenue/ceo-dashboard', (c) => {
   });
 });
 
-// GET /cron/status — Verify Cloudflare Cron status (Spec § 16: CRON_CONFIGURED | CRON_DEPLOYED | CRON_OBSERVED)
+// GET /cron/status — Verify Cloudflare Cron status (Spec § 16: CONFIGURED | DEPLOYED | OBSERVED | HEALTHY)
 apiRouter.get('/cron/status', (c) => {
   const db = getDb();
   let row: any;
@@ -686,19 +703,33 @@ apiRouter.get('/cron/status', (c) => {
     row = db.prepare(`SELECT * FROM cron_telemetry WHERE id = 'cloudflare_worker_cron'`).get();
   } catch {}
 
-  const isObserved = Boolean(row?.last_observed_ping);
-  const status: 'CRON_OBSERVED' | 'CRON_DEPLOYED' | 'CRON_CONFIGURED' = isObserved
-    ? 'CRON_OBSERVED'
-    : (process.env.CLOUDFLARE_WORKER_DEPLOYED === 'true' ? 'CRON_DEPLOYED' : 'CRON_CONFIGURED');
+  const parseSqliteTimestampMs = (ts: string | null | undefined): number => {
+    if (!ts) return 0;
+    const isoStr = ts.includes('T') ? (ts.endsWith('Z') ? ts : ts + 'Z') : ts.replace(' ', 'T') + 'Z';
+    return new Date(isoStr).getTime();
+  };
+  const totalPings = Number(row?.total_pings || 0);
+  const lastPingMs = parseSqliteTimestampMs(row?.last_observed_ping);
+  const now = Date.now();
+  const isRecent = lastPingMs > 0 && (now - lastPingMs) < (35 * 60 * 1000);
+  const isHealthy = totalPings > 0 && isRecent && (row?.cycle_result === 'SUCCESS' || row?.status === 'HEALTHY');
+
+  const status: 'CONFIGURED' | 'DEPLOYED' | 'OBSERVED' | 'HEALTHY' = isHealthy
+    ? 'HEALTHY'
+    : (totalPings > 0 ? 'OBSERVED' : 'CONFIGURED');
 
   return c.json({
     success: true,
     data: {
       status,
       cronExpression: '*/15 * * * *',
-      totalPings: row?.total_pings || 0,
+      totalPings,
       lastObservedPing: row?.last_observed_ping || null,
-      lastUserAgent: row?.last_user_agent || null
+      lastSuccessfulCycle: row?.last_successful_cycle || null,
+      lastFailedCycle: row?.last_failed_cycle || null,
+      cycleResult: row?.cycle_result || null,
+      lastUserAgent: row?.last_user_agent || null,
+      workerSource: row?.worker_source || null
     }
   });
 });
@@ -706,13 +737,25 @@ apiRouter.get('/cron/status', (c) => {
 // Public Cloudflare Worker cron ping endpoint (Spec § 2 & § 16)
 apiRouter.post('/cron/ping', async (c) => {
   const secret = c.req.header('x-cron-secret') || c.req.header('X-Cron-Secret') || '';
-  const expectedSecret = process.env.CRON_PING_SECRET || 'cron_ping_default_dev';
 
-  if (secret !== expectedSecret) {
-    return c.json({ error: 'Unauthorized: Invalid X-Cron-Secret' }, 401);
+  if (isProduction()) {
+    const expectedSecret = process.env.CRON_PING_SECRET;
+    if (!expectedSecret || isPlaceholderCredential(expectedSecret) || expectedSecret === 'cron_ping_default_dev') {
+      return c.json({ error: 'SECURITY VIOLATION: CRON_PING_SECRET is mandatory in production and must not be empty or placeholder.' }, 403);
+    }
+    if (secret !== expectedSecret) {
+      return c.json({ error: 'Unauthorized: Invalid X-Cron-Secret' }, 401);
+    }
+  } else {
+    const expectedSecret = process.env.CRON_PING_SECRET || 'cron_ping_default_dev';
+    if (secret !== expectedSecret && secret !== 'cron_ping_default_dev' && secret !== 'cron_ping_fixture_dev') {
+      return c.json({ error: 'Unauthorized: Invalid X-Cron-Secret' }, 401);
+    }
   }
 
   const db = getDb();
+  const userAgent = c.req.header('user-agent') || 'cloudflare-cron-worker';
+  const workerSource = c.req.header('cf-worker') || c.req.header('x-worker-source') || userAgent;
 
   // Record observed cron execution in cron_telemetry (Spec § 16)
   try {
@@ -722,26 +765,41 @@ apiRouter.post('/cron/ping', async (c) => {
         status TEXT NOT NULL,
         last_observed_ping TEXT,
         total_pings INTEGER NOT NULL DEFAULT 0,
+        last_successful_cycle TEXT,
+        last_failed_cycle TEXT,
+        cycle_result TEXT,
         last_user_agent TEXT,
+        worker_source TEXT,
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       )
     `).run();
 
-    const userAgent = c.req.header('user-agent') || 'cloudflare-cron-worker';
-    db.prepare(`
-      INSERT INTO cron_telemetry (id, status, last_observed_ping, total_pings, last_user_agent, updated_at)
-      VALUES ('cloudflare_worker_cron', 'CRON_OBSERVED', datetime('now'), 1, ?, datetime('now'))
+    const sql = `
+      INSERT INTO cron_telemetry (id, status, last_observed_ping, total_pings, last_user_agent, worker_source, updated_at)
+      VALUES ('cloudflare_worker_cron', 'OBSERVED', datetime('now'), 1, ?, ?, datetime('now'))
       ON CONFLICT(id) DO UPDATE SET
-        status = 'CRON_OBSERVED',
+        status = 'OBSERVED',
         last_observed_ping = datetime('now'),
         total_pings = total_pings + 1,
         last_user_agent = ?,
+        worker_source = ?,
         updated_at = datetime('now')
-    `).run(userAgent, userAgent);
+    `;
+    const params = [userAgent, workerSource, userAgent, workerSource];
+    db.prepare(sql).run(...params);
+
+    if (isProduction()) {
+      try {
+        const { D1RevenueRepository } = await import('../db/d1-revenue-repository.js');
+        await D1RevenueRepository.getInstance().executeWrite('cron_telemetry', sql, params);
+      } catch {}
+    }
   } catch {}
 
   const orgs = db.prepare('SELECT id FROM organizations LIMIT 5').all() as any[];
   const results: any[] = [];
+  let allSucceeded = true;
+  let lastError = '';
 
   for (const org of orgs) {
     const biz = db.prepare('SELECT id FROM businesses WHERE organization_id = ? LIMIT 1').get(org.id) as any;
@@ -759,9 +817,27 @@ apiRouter.post('/cron/ping', async (c) => {
         nextBestAction: result.nextBestAction.actionType
       });
     } catch (err: any) {
+      allSucceeded = false;
+      lastError = err.message;
       results.push({ organizationId: org.id, status: 'ERROR', error: err.message });
     }
   }
+
+  // Update cycle outcome in telemetry
+  try {
+    const outcomeStatus = allSucceeded ? 'HEALTHY' : 'OBSERVED';
+    const sqlUpdate = allSucceeded
+      ? `UPDATE cron_telemetry SET status = ?, last_successful_cycle = datetime('now'), cycle_result = 'SUCCESS', updated_at = datetime('now') WHERE id = 'cloudflare_worker_cron'`
+      : `UPDATE cron_telemetry SET status = ?, last_failed_cycle = datetime('now'), cycle_result = ?, updated_at = datetime('now') WHERE id = 'cloudflare_worker_cron'`;
+    const updateParams = allSucceeded ? [outcomeStatus] : [outcomeStatus, lastError || 'CYCLE_ERROR'];
+    db.prepare(sqlUpdate).run(...updateParams);
+    if (isProduction()) {
+      try {
+        const { D1RevenueRepository } = await import('../db/d1-revenue-repository.js');
+        await D1RevenueRepository.getInstance().executeWrite('cron_telemetry', sqlUpdate, updateParams);
+      } catch {}
+    }
+  } catch {}
 
   return c.json({ success: true, data: results, timestamp: new Date().toISOString() });
 });

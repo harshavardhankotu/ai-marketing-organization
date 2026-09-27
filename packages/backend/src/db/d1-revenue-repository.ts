@@ -16,7 +16,9 @@ export const D1_REVENUE_CRITICAL_TABLES = [
   'autonomous_action_traces',
   'autonomous_cycle_log',
   'platform_customer_deliveries',
-  'owner_sessions'
+  'owner_sessions',
+  'cron_telemetry',
+  'learning_records'
 ] as const;
 
 export type D1RevenueCriticalTable = typeof D1_REVENUE_CRITICAL_TABLES[number];
@@ -49,9 +51,18 @@ export class D1RevenueRepository {
     params: any[] = []
   ): Promise<{ rowsAffected: number; source: 'CLOUDFLARE_D1' | 'PERSISTENT_SQLITE' }> {
     this.assertDurableStorage(table);
-    if (isProduction() && this.d1.isRemoteD1Configured()) {
-      const res = await this.d1.executeQuery(sql, params, true, 'P0');
-      return { rowsAffected: res.rowsAffected, source: 'CLOUDFLARE_D1' };
+    if (isProduction()) {
+      if (this.d1.isRemoteD1Configured()) {
+        const res = await this.d1.executeQuery(sql, params, true, 'P0');
+        // Update local SQLite as read-cache
+        try {
+          const db = getDb();
+          db.prepare(sql).run(...params);
+        } catch {}
+        return { rowsAffected: res.rowsAffected, source: 'CLOUDFLARE_D1' };
+      } else {
+        throw new Error(`PRODUCTION SECURITY ERROR: Table ${table} write requires durable Cloudflare D1 storage in production.`);
+      }
     }
     const db = getDb();
     const info = db.prepare(sql).run(...params);

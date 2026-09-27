@@ -157,7 +157,7 @@ export class OfferCatalogService {
     const db = getDb();
 
     // Check platform offers first
-    if (trimmedOfferId === OfferCatalogService.PLATFORM_SETUP_OFFER_ID || trimmedOfferId === 'PLATFORM_SETUP') {
+    if (trimmedOfferId === OfferCatalogService.PLATFORM_SETUP_OFFER_ID || trimmedOfferId === 'PLATFORM_SETUP' || trimmedOfferId === 'offer_platform_setup') {
       // Scope enforcement: platform offers are ONLY valid for the platform business/org
       if (businessId && businessId !== OwnerAuthService.PLATFORM_BUSINESS_ID) {
         throw new Error(`UNAUTHORIZED_OFFER: PLATFORM_SETUP offer is restricted to the platform business (${OwnerAuthService.PLATFORM_BUSINESS_ID}). Caller supplied businessId='${businessId}'.`);
@@ -189,7 +189,7 @@ export class OfferCatalogService {
       };
     }
 
-    if (trimmedOfferId === OfferCatalogService.PLATFORM_MONTHLY_OFFER_ID || trimmedOfferId === 'PLATFORM_MONTHLY') {
+    if (trimmedOfferId === OfferCatalogService.PLATFORM_MONTHLY_OFFER_ID || trimmedOfferId === 'PLATFORM_MONTHLY' || trimmedOfferId === 'offer_platform_monthly') {
       // Scope enforcement: platform offers are ONLY valid for the platform business/org
       if (businessId && businessId !== OwnerAuthService.PLATFORM_BUSINESS_ID) {
         throw new Error(`UNAUTHORIZED_OFFER: PLATFORM_MONTHLY offer is restricted to the platform business (${OwnerAuthService.PLATFORM_BUSINESS_ID}). Caller supplied businessId='${businessId}'.`);

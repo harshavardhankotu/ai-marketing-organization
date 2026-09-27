@@ -167,6 +167,12 @@ export class SalesConversationEngine {
     // 5. PRICE_QUESTION: Pricing breakdown
     if (intent === 'PRICE_QUESTION') {
       this.updatePipelineStage(event.senderContact, 'QUALIFIED', 'Pricing inquiry received', event.journeyId);
+      DurableEventBus.emit({
+        eventType: 'LEAD_REPLIED',
+        organizationId: event.organizationId,
+        businessId: event.businessId,
+        payload: { contact: event.senderContact, intent: 'PRICE_QUESTION', nextAction: 'SEND_PRICING_DETAILS' }
+      });
       return {
         intent,
         confidence: 0.9,

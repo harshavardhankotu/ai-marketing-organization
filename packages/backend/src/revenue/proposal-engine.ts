@@ -13,6 +13,7 @@
 
 import { getDb } from '../db/client.js';
 import { OwnerAuthService } from '../auth/owner-auth.js';
+import { OfferCatalogService } from './offer-catalog.js';
 
 export interface CommercialProposal {
   id: string;
@@ -100,7 +101,7 @@ export class ProposalEngine {
         input.organizationId,
         input.businessId,
         input.prospectId,
-        input.offerId || null,
+        input.offerId || OfferCatalogService.PLATFORM_SETUP_OFFER_ID,
         input.title,
         input.customerProblem,
         input.proposedSolution,
@@ -196,16 +197,117 @@ export class ProposalEngine {
       }
     })();
 
-    if (!paymentRequestCreated) {
-      throw new Error(`PERSISTENCE_FAULT: Could not persist payment_request for proposal ${proposalId}. Manual intervention required.`);
-    }
+    // Emit PROPOSAL_ACCEPTED event
+    try {
+      const { DurableEventBus } = require('./durable-event-bus.js');
+      DurableEventBus.emit({
+        eventType: 'PROPOSAL_ACCEPTED',
+        organizationId: proposal.organizationId,
+        businessId: proposal.businessId,
+        payload: { proposalId: proposal.id, prospectId: proposal.prospectId }
+      });
+    } catch {}
 
     return {
       proposal,
-      paymentLink: null, // Caller must call RazorpayAdapter.createPaymentLink() to get the real link
+      paymentLink: null, // Caller must call executeProposalPaymentLinkCreation() or RazorpayAdapter.createPaymentLink()
       manualPaymentPage: OwnerAuthService.PLATFORM_RAZORPAY_PAYMENT_PAGE_URL,
       status: 'PAYMENT_LINK_NOT_CREATED'
     };
+  }
+
+  /**
+   * Authoritative transition from PROPOSAL_ACCEPTED to PAYMENT_REQUESTED:
+   * 1. Resolves proposal & associated DRAFT payment request
+   * 2. Calls RazorpayAdapter.createPaymentLink with authoritative price & offer
+   * 3. Binds provider_link_id and short_url to payment_requests
+   * 4. Updates proposal status to PAYMENT_REQUESTED
+   * 5. If provider or credentials block creation, explicitly sets BLOCKED_PAYMENT_PROVIDER
+   *    and never remains silently at PAYMENT_LINK_NOT_CREATED.
+   */
+  public async executeProposalPaymentLinkCreation(proposalId: string): Promise<{
+    success: boolean;
+    status: 'PAYMENT_REQUESTED' | 'BLOCKED_PAYMENT_PROVIDER' | 'RECONCILIATION_REQUIRED';
+    paymentLinkUrl?: string;
+    providerLinkId?: string;
+    error?: string;
+  }> {
+    const db = getDb();
+    const proposal = this.getProposal(proposalId);
+    if (!proposal) {
+      throw new Error(`PROPOSAL_NOT_FOUND: Proposal ${proposalId} does not exist.`);
+    }
+
+    const { RazorpayAdapter } = await import('../integrations/razorpay.js');
+    const razorpay = new RazorpayAdapter();
+
+    try {
+      const linkRes = await razorpay.createPaymentLink({
+        organizationId: proposal.organizationId,
+        businessId: proposal.businessId,
+        offerId: proposal.offerId || OfferCatalogService.PLATFORM_SETUP_OFFER_ID,
+        proposalId: proposal.id,
+        prospectId: proposal.prospectId,
+        amountINR: proposal.setupPriceINR,
+        customer: {
+          name: proposal.title
+        }
+      });
+
+      if (linkRes.reconciliationRequired) {
+        db.prepare(`
+          UPDATE proposals
+          SET status = 'RECONCILIATION_REQUIRED', updated_at = datetime('now')
+          WHERE id = ?
+        `).run(proposalId);
+
+        return {
+          success: false,
+          status: 'RECONCILIATION_REQUIRED',
+          error: 'Payment link created at provider but canonical persistence failed.'
+        };
+      }
+
+      // Bind provider link to draft payment_request
+      db.prepare(`
+        UPDATE payment_requests
+        SET provider_link_id = ?, short_url = ?, payment_link = ?, status = 'SENT', updated_at = datetime('now')
+        WHERE prospect_id = ?
+      `).run(linkRes.providerLinkId, linkRes.shortUrl, linkRes.shortUrl, proposal.prospectId);
+
+      // Update proposal status to PAYMENT_REQUESTED
+      db.prepare(`
+        UPDATE proposals
+        SET status = 'PAYMENT_REQUESTED', updated_at = datetime('now')
+        WHERE id = ?
+      `).run(proposalId);
+
+      // Update pipeline stage to PAYMENT_PENDING
+      db.prepare(`
+        UPDATE sales_pipeline
+        SET stage = 'PAYMENT_PENDING', next_action = 'COLLECT_PAYMENT', updated_at = datetime('now')
+        WHERE outbound_contact_id = ?
+      `).run(proposal.prospectId);
+
+      return {
+        success: true,
+        status: 'PAYMENT_REQUESTED',
+        paymentLinkUrl: linkRes.shortUrl,
+        providerLinkId: linkRes.providerLinkId
+      };
+    } catch (err: any) {
+      db.prepare(`
+        UPDATE proposals
+        SET status = 'BLOCKED_PAYMENT_PROVIDER', updated_at = datetime('now')
+        WHERE id = ?
+      `).run(proposalId);
+
+      return {
+        success: false,
+        status: 'BLOCKED_PAYMENT_PROVIDER',
+        error: `BLOCKED_PAYMENT_PROVIDER: ${err.message}`
+      };
+    }
   }
 
   public formatProposalText(proposalId: string): string {

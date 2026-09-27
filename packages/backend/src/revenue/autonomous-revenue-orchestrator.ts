@@ -28,6 +28,7 @@ import { WhatsAppAdapter, ActionClassification } from '../integrations/adapter-b
 import { isPlaceholderCredential, isProduction } from '../config/env.js';
 import { AutonomyPolicyController } from './autonomy-policy.js';
 import { MeetingEngine } from './meeting-engine.js';
+import { OwnerAuthService } from '../auth/owner-auth.js';
 import { DeliveryEngine } from './delivery-engine.js';
 import { SalesConversationEngine } from './sales-conversation-engine.js';
 import { LearningEngine } from './learning-engine.js';
@@ -311,7 +312,7 @@ export class AutonomousRevenueOrchestrator {
       if (actionExecutionStatus === 'NO_ACTION_DUE' || actionExecutionStatus === 'COOLDOWN_ACTIVE') {
         terminalClassification = 'IDLE';
       } else if (actionClassification === 'LIVE_EXTERNAL_ACTION') {
-        terminalClassification = (nextBestAction.actionType === 'SEND_PAYMENT_REQUEST' || nextBestAction.actionType === 'COLLECT_PAYMENT') ? 'REVENUE_ACTION' : 'LIVE_EXTERNAL_ACTION';
+        terminalClassification = 'LIVE_EXTERNAL_ACTION';
       } else if (actionClassification === 'REVENUE_ACTION') {
         terminalClassification = 'REVENUE_ACTION';
       } else if (actionClassification === 'BLOCKED_AUTHORIZATION') {
@@ -533,7 +534,7 @@ export class AutonomousRevenueOrchestrator {
           return {
             status: 'LIVE_EXTERNAL_ACTION',
             actionClassification: 'LIVE_EXTERNAL_ACTION',
-            isRevenueAction: true,
+            isRevenueAction: false,
             externalId: pubResult.externalId
           };
         }
@@ -582,10 +583,14 @@ export class AutonomousRevenueOrchestrator {
         // Look up in platform_prospects or outbound_contacts
         if (!prospectPhone) {
           try {
-            const pRow = db.prepare(`SELECT * FROM platform_prospects WHERE id = ? OR business_name = ?`).get(action.targetId, opp.businessId) as any;
-            if (pRow && (pRow.contact_phone || pRow.phone)) {
-              prospectPhone = pRow.contact_phone || pRow.phone;
-              prospectName = pRow.contact_person || pRow.business_name || prospectName;
+            const pRow = db.prepare(`
+              SELECT * FROM platform_prospects
+              WHERE id = ? OR id IN (SELECT outbound_contact_id FROM sales_pipeline WHERE opportunity_id = ?)
+                 OR prospect_business_name = ?
+            `).get(action.targetId, opp.id, opp.businessId) as any;
+            if (pRow && (pRow.prospect_phone || pRow.contact_phone || pRow.phone)) {
+              prospectPhone = pRow.prospect_phone || pRow.contact_phone || pRow.phone;
+              prospectName = pRow.prospect_owner_name || pRow.contact_person || pRow.prospect_business_name || pRow.business_name || prospectName;
             }
           } catch {}
         }
@@ -641,10 +646,16 @@ export class AutonomousRevenueOrchestrator {
 
         if (pubResult.success && pubResult.actionClassification === 'LIVE_EXTERNAL_ACTION') {
           this.oppEngine.advance(opp.id, 'ENGAGING', `Live outreach delivered via ${pubResult.provider} (${pubResult.externalId})`);
+          db.prepare(`
+            UPDATE sales_pipeline
+            SET stage = 'CONTACTED', updated_at = datetime('now')
+            WHERE opportunity_id = ?
+          `).run(opp.id);
+
           return {
             status: 'LIVE_EXTERNAL_ACTION',
             actionClassification: 'LIVE_EXTERNAL_ACTION',
-            isRevenueAction: true,
+            isRevenueAction: false,
             externalId: pubResult.externalId
           };
         }
@@ -982,74 +993,52 @@ export class AutonomousRevenueOrchestrator {
       }
 
       // ────────────────────────────────────────────────────────────────
-      // SPEC § 13: DISCOVER_PROSPECTS (Live search via Tavily)
+      // SPEC § 13: DISCOVER_PROSPECTS (Free Gemini-First Discovery Engine)
       // ────────────────────────────────────────────────────────────────
       case 'DISCOVER_PROSPECTS': {
-        const tavilyKey = process.env.TAVILY_API_KEY;
-        const isTavilyLive = Boolean(tavilyKey && !isPlaceholderCredential(tavilyKey));
+        const { PlatformProspectDiscoveryEngine } = await import('./platform-prospect-discovery-engine.js');
+        const discEngine = PlatformProspectDiscoveryEngine.getInstance();
+        const discResult = await discEngine.discoverProspects(businessId, organizationId);
 
-        if (!isTavilyLive) {
-          // Check cached search
-          const cached = db.prepare(`
-            SELECT * FROM search_cache WHERE expires_at > datetime('now') ORDER BY created_at DESC LIMIT 1
-          `).get() as any;
-
-          if (cached) {
-            return {
-              status: 'INTERNAL_AUTOMATION',
-              actionClassification: 'INTERNAL_AUTOMATION',
-              isRevenueAction: false
-            };
-          }
-
+        if (discResult.status === 'BLOCKED_NO_FREE_RESEARCH_CAPABILITY') {
           return {
             status: 'BLOCKED_AUTHORIZATION',
             actionClassification: 'BLOCKED_AUTHORIZATION',
             isRevenueAction: false,
-            error: 'BLOCKED_AUTHORIZATION: Tavily search API key missing or unconfigured'
+            error: 'BLOCKED_NO_FREE_RESEARCH_CAPABILITY: Neither free Gemini nor search provider available for prospect discovery'
           };
         }
 
-        const gate = this.quotaService.reserve('TAVILY', 'P3', 1, 'Prospect discovery');
-        if (!gate.allowed) {
+        if (discResult.status === 'BLOCKED_AUTHORIZATION') {
           return {
             status: 'BLOCKED_AUTHORIZATION',
             actionClassification: 'BLOCKED_AUTHORIZATION',
             isRevenueAction: false,
-            error: `Tavily quota limit reached: ${gate.reason}`
+            error: discResult.reason || 'BLOCKED_AUTHORIZATION: Discovery blocked'
           };
         }
 
-        try {
-          const pipeline = new MarketResearchPipeline();
-          const result = await pipeline.runPipeline(businessId, organizationId);
-          this.quotaService.reconcile(gate.reservationId, 1, true);
-
+        if (discResult.count > 0) {
           DurableEventBus.emit({
             eventType: 'RESEARCH_UPDATED',
             organizationId,
             businessId,
-            payload: { cycleId, totalFindings: result.totalFindingsSaved }
+            payload: { cycleId, totalFindings: discResult.count, source: discResult.source }
           });
 
-          // externalId is the internal pipeline cycle reference (not a provider-issued ID)
-          // Research queries are LIVE_EXTERNAL_ACTIONs because they hit a live external provider,
-          // but we do NOT fabricate a provider-issued ID. The audit reference is the pipeline record.
           return {
-            status: 'LIVE_EXTERNAL_ACTION',
-            actionClassification: 'LIVE_EXTERNAL_ACTION',
+            status: discResult.source === 'TAVILY_RESEARCH' || discResult.source === 'GEMINI_RESEARCH' ? 'LIVE_EXTERNAL_ACTION' : 'INTERNAL_AUTOMATION',
+            actionClassification: discResult.source === 'TAVILY_RESEARCH' || discResult.source === 'GEMINI_RESEARCH' ? 'LIVE_EXTERNAL_ACTION' : 'INTERNAL_AUTOMATION',
             isRevenueAction: false,
-            externalId: `research_pipeline_${cycleId}` // Internal cycle reference, not a Tavily-issued ID
-          };
-        } catch (resErr: any) {
-          this.quotaService.reconcile(gate.reservationId, 1, false);
-          return {
-            status: 'BLOCKED_AUTHORIZATION',
-            actionClassification: 'BLOCKED_AUTHORIZATION',
-            isRevenueAction: false,
-            error: `Discovery failed: ${resErr.message}`
+            externalId: `discovery_pipeline_${cycleId}`
           };
         }
+
+        return {
+          status: 'INTERNAL_AUTOMATION',
+          actionClassification: 'INTERNAL_AUTOMATION',
+          isRevenueAction: false
+        };
       }
 
       case 'REQUEST_REFERRAL': {
@@ -1087,11 +1076,11 @@ export class AutonomousRevenueOrchestrator {
   /**
    * Spec § 19: Event-Driven Continuation
    */
-  private async handleDurableEvent(
+  public async handleDurableEvent(
     eventType: DurableEventType,
     payload: Record<string, unknown>,
-    organizationId: string,
-    businessId: string
+    organizationId: string = OwnerAuthService.OWNER_ORGANIZATION_ID,
+    businessId: string = OwnerAuthService.PLATFORM_BUSINESS_ID
   ): Promise<void> {
     const db = getDb();
 
@@ -1110,15 +1099,43 @@ export class AutonomousRevenueOrchestrator {
         break;
 
       case 'LEAD_REPLIED':
-      case 'CUSTOMER_REPLIED':
+      case 'CUSTOMER_REPLIED': {
+        const nextAction = payload.nextAction || (
+          payload.intent === 'READY_TO_BUY' ? 'SEND_PAYMENT_REQUEST' :
+          (payload.intent === 'DEMO_REQUEST' || payload.intent === 'ASKING_FOR_DEMO') ? 'BOOK_MEETING' :
+          (payload.intent === 'PRICE_QUESTION') ? 'SEND_PRICING_DETAILS' : 'BOOK_MEETING'
+        );
+        const targetStage = payload.intent === 'READY_TO_BUY' ? 'PAYMENT_PENDING' :
+                            (payload.intent === 'DEMO_REQUEST' || payload.intent === 'ASKING_FOR_DEMO') ? 'MEETING_BOOKED' :
+                            (payload.intent === 'PRICE_QUESTION') ? 'QUALIFIED' : 'REPLIED';
+
         if (payload.pipelineId) {
           db.prepare(`
             UPDATE sales_pipeline
-            SET stage = 'REPLIED', next_action = 'BOOK_MEETING', next_action_at = datetime('now', '+1 hour'), updated_at = datetime('now')
+            SET stage = ?, next_action = ?, next_action_at = datetime('now'), updated_at = datetime('now')
             WHERE id = ?
-          `).run(payload.pipelineId);
+          `).run(targetStage, nextAction, payload.pipelineId);
+        } else if (payload.contact) {
+          db.prepare(`
+            UPDATE sales_pipeline
+            SET stage = ?, next_action = ?, next_action_at = datetime('now'), updated_at = datetime('now')
+            WHERE outbound_contact_id = ? OR outbound_contact_id IN (
+              SELECT id FROM platform_prospects WHERE prospect_phone = ? OR prospect_email = ?
+            )
+          `).run(targetStage, nextAction, payload.contact, payload.contact, payload.contact);
         }
         break;
+      }
+
+      case 'PROPOSAL_ACCEPTED': {
+        if (payload.proposalId) {
+          const { ProposalEngine } = await import('./proposal-engine.js');
+          ProposalEngine.getInstance().executeProposalPaymentLinkCreation(String(payload.proposalId)).catch(err => {
+            console.error(`[ARO] Auto-creation of payment link on proposal acceptance failed: ${err.message}`);
+          });
+        }
+        break;
+      }
 
       case 'MESSAGE_RECEIVED':
       case 'EMAIL_RECEIVED':
