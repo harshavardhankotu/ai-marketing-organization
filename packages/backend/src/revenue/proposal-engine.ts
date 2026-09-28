@@ -14,6 +14,7 @@
 import { getDb } from '../db/client.js';
 import { OwnerAuthService } from '../auth/owner-auth.js';
 import { OfferCatalogService } from './offer-catalog.js';
+import { DurableEventBus } from './durable-event-bus.js';
 
 export interface CommercialProposal {
   id: string;
@@ -84,6 +85,8 @@ export class ProposalEngine {
     const timelineDays = input.timelineDays || 5;
     const setupPriceINR = input.setupPriceINR !== undefined ? input.setupPriceINR : 15000;
     const monthlyPriceINR = input.monthlyPriceINR !== undefined ? input.monthlyPriceINR : 8000;
+    const customerProblem = input.customerProblem || 'Inquiries experience response delays outside business hours.';
+    const proposedSolution = input.proposedSolution || 'Deploy 24/7 AI-driven lead qualification and automated WhatsApp/booking integration.';
     const paymentTerms = input.paymentTerms || '50% upfront setup on approval, 50% on Day 5 delivery handover. Monthly subscription begins Day 30.';
     const scopeBoundary = input.scopeBoundary || 'Includes WhatsApp Business integration and GBP optimization. Does not include paid media advertising spend or third-party CRM software licenses.';
     const nextStep = input.nextStep || 'Authorize online via secure Razorpay payment link to initiate Day 0 onboarding.';
@@ -103,8 +106,8 @@ export class ProposalEngine {
         input.prospectId,
         input.offerId || OfferCatalogService.PLATFORM_SETUP_OFFER_ID,
         input.title,
-        input.customerProblem,
-        input.proposedSolution,
+        customerProblem,
+        proposedSolution,
         JSON.stringify(input.deliverables),
         timelineDays,
         setupPriceINR,
@@ -116,7 +119,10 @@ export class ProposalEngine {
         now,
         now
       );
-    } catch {}
+    } catch (e: any) {
+      console.error(`[ProposalEngine] Failed to create proposal ${id}: ${e.message}`);
+      throw new Error(`PERSISTENCE_FAULT: Could not persist proposal ${id}: ${e.message}`);
+    }
 
     return {
       id,
@@ -125,8 +131,8 @@ export class ProposalEngine {
       prospectId: input.prospectId,
       offerId: input.offerId,
       title: input.title,
-      customerProblem: input.customerProblem,
-      proposedSolution: input.proposedSolution,
+      customerProblem,
+      proposedSolution,
       deliverables: input.deliverables,
       timelineDays,
       setupPriceINR,
@@ -173,40 +179,45 @@ export class ProposalEngine {
       throw new Error(`PROPOSAL_NOT_FOUND: Proposal ${proposalId} not found after acceptance.`);
     }
 
-    // Create payment_request in DRAFT state — no payment link yet
-    const payReqId = `payrq_${Date.now()}`;
-    const paymentRequestCreated = (() => {
+    // Check if payment_request already exists for this proposal (idempotency)
+    const existingReq = db.prepare(`SELECT * FROM payment_requests WHERE proposal_id = ? LIMIT 1`).get(proposalId) as any;
+    let payReqId = existingReq?.id;
+
+    if (!existingReq) {
+      // Create payment_request in DRAFT state — no payment link yet
+      payReqId = `payrq_${Date.now()}`;
       try {
         db.prepare(`
           INSERT INTO payment_requests (
-            id, business_id, organization_id, prospect_id, offer_description,
+            id, business_id, organization_id, prospect_id, proposal_id, offer_description,
             amount_inr, status, classification, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, 'DRAFT', 'REAL', datetime('now'), datetime('now'))
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'DRAFT', 'REAL', datetime('now'), datetime('now'))
         `).run(
           payReqId,
           proposal.businessId,
           proposal.organizationId,
           proposal.prospectId,
+          proposal.id,
           `Setup fee: ${proposal.title}`,
           proposal.setupPriceINR
         );
-        return true;
       } catch (e: any) {
         console.error(`[ProposalEngine] Failed to create payment_request for proposal ${proposalId}: ${e.message}`);
-        return false;
+        throw new Error(`PERSISTENCE_FAULT: Could not persist payment_request for proposal ${proposalId}: ${e.message}`);
       }
-    })();
+    }
 
     // Emit PROPOSAL_ACCEPTED event
     try {
-      const { DurableEventBus } = require('./durable-event-bus.js');
       DurableEventBus.emit({
         eventType: 'PROPOSAL_ACCEPTED',
         organizationId: proposal.organizationId,
         businessId: proposal.businessId,
         payload: { proposalId: proposal.id, prospectId: proposal.prospectId }
       });
-    } catch {}
+    } catch (err: any) {
+      console.warn(`[ProposalEngine] Failed to emit PROPOSAL_ACCEPTED event: ${err.message}`);
+    }
 
     return {
       proposal,
@@ -219,11 +230,10 @@ export class ProposalEngine {
   /**
    * Authoritative transition from PROPOSAL_ACCEPTED to PAYMENT_REQUESTED:
    * 1. Resolves proposal & associated DRAFT payment request
-   * 2. Calls RazorpayAdapter.createPaymentLink with authoritative price & offer
-   * 3. Binds provider_link_id and short_url to payment_requests
-   * 4. Updates proposal status to PAYMENT_REQUESTED
-   * 5. If provider or credentials block creation, explicitly sets BLOCKED_PAYMENT_PROVIDER
-   *    and never remains silently at PAYMENT_LINK_NOT_CREATED.
+   * 2. Checks if an active provider link already exists (idempotency)
+   * 3. Calls RazorpayAdapter.createPaymentLink with authoritative price & offer if needed
+   * 4. Binds provider_link_id and short_url to payment_requests WHERE proposal_id = ?
+   * 5. Updates proposal status to PAYMENT_REQUESTED
    */
   public async executeProposalPaymentLinkCreation(proposalId: string): Promise<{
     success: boolean;
@@ -236,6 +246,25 @@ export class ProposalEngine {
     const proposal = this.getProposal(proposalId);
     if (!proposal) {
       throw new Error(`PROPOSAL_NOT_FOUND: Proposal ${proposalId} does not exist.`);
+    }
+
+    // Idempotency: check if an active payment link already exists for this proposal
+    const existingReq = db.prepare(`
+      SELECT * FROM payment_requests
+      WHERE proposal_id = ? AND (provider_link_id IS NOT NULL OR short_url IS NOT NULL OR payment_link IS NOT NULL)
+      LIMIT 1
+    `).get(proposalId) as any;
+
+    if (existingReq) {
+      const existingUrl = existingReq.short_url || existingReq.payment_link;
+      if (existingUrl) {
+        return {
+          success: true,
+          status: 'PAYMENT_REQUESTED',
+          paymentLinkUrl: existingUrl,
+          providerLinkId: existingReq.provider_link_id
+        };
+      }
     }
 
     const { RazorpayAdapter } = await import('../integrations/razorpay.js');
@@ -268,12 +297,12 @@ export class ProposalEngine {
         };
       }
 
-      // Bind provider link to draft payment_request
+      // Bind provider link to payment_request by proposal_id (Spec § 21 & § 23)
       db.prepare(`
         UPDATE payment_requests
         SET provider_link_id = ?, short_url = ?, payment_link = ?, status = 'SENT', updated_at = datetime('now')
-        WHERE prospect_id = ?
-      `).run(linkRes.providerLinkId, linkRes.shortUrl, linkRes.shortUrl, proposal.prospectId);
+        WHERE proposal_id = ?
+      `).run(linkRes.providerLinkId, linkRes.shortUrl, linkRes.shortUrl, proposalId);
 
       // Update proposal status to PAYMENT_REQUESTED
       db.prepare(`
@@ -286,8 +315,8 @@ export class ProposalEngine {
       db.prepare(`
         UPDATE sales_pipeline
         SET stage = 'PAYMENT_PENDING', next_action = 'COLLECT_PAYMENT', updated_at = datetime('now')
-        WHERE outbound_contact_id = ?
-      `).run(proposal.prospectId);
+        WHERE outbound_contact_id = ? OR opportunity_id IN (SELECT id FROM opportunities WHERE prospect_id = ?)
+      `).run(proposal.prospectId, proposal.prospectId);
 
       return {
         success: true,

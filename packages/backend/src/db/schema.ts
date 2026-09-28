@@ -991,6 +991,8 @@ CREATE TABLE IF NOT EXISTS search_cache (
   provider TEXT NOT NULL DEFAULT 'google_custom_search',
   raw_response_json TEXT NOT NULL,
   results_count INTEGER NOT NULL DEFAULT 0,
+  data_classification TEXT NOT NULL DEFAULT 'UNKNOWN', -- REAL_DATA | TEST_DATA | UNKNOWN
+  source_verified INTEGER NOT NULL DEFAULT 0, -- 1 when verified against real web source
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   expires_at TEXT NOT NULL
 );
@@ -1038,6 +1040,7 @@ CREATE TABLE IF NOT EXISTS opportunities (
   id TEXT PRIMARY KEY,
   business_id TEXT NOT NULL,
   organization_id TEXT NOT NULL,
+  prospect_id TEXT, -- explicit lineage to platform_prospects.id
   source TEXT NOT NULL, -- ORGANIC_SEARCH | SOCIAL | REFERRAL | LOCAL_PARTNERSHIP | COMPETITOR_GAP | INBOUND | OUTBOUND_PROSPECT
   evidence_json TEXT NOT NULL DEFAULT '[]', -- array of real-world evidence references (URLs, Tavily results, etc.)
   estimated_value_inr REAL NOT NULL DEFAULT 0,
@@ -1056,6 +1059,7 @@ CREATE TABLE IF NOT EXISTS opportunities (
 );
 CREATE INDEX IF NOT EXISTS idx_opp_biz_status ON opportunities(business_id, status);
 CREATE INDEX IF NOT EXISTS idx_opp_org ON opportunities(organization_id);
+CREATE INDEX IF NOT EXISTS idx_opp_prospect ON opportunities(prospect_id);
 
 -- 52. Sales Pipeline (end-to-end lead progression with owner agent)
 CREATE TABLE IF NOT EXISTS sales_pipeline (
@@ -1096,6 +1100,11 @@ CREATE TABLE IF NOT EXISTS outbound_contacts (
   prospect_website TEXT,
   prospect_city TEXT,
   prospect_vertical TEXT,
+  channel TEXT NOT NULL DEFAULT 'EMAIL', -- EMAIL | WHATSAPP
+  email_authorized INTEGER NOT NULL DEFAULT 0, -- 1 when email is verified business contact
+  whatsapp_opt_in INTEGER NOT NULL DEFAULT 0, -- 1 ONLY when explicit consent evidence exists
+  authorization_source TEXT, -- PUBLIC_BUSINESS_CONTACT | EXPLICIT_CONSENT | INBOUND_REQUEST
+  authorization_evidence_json TEXT NOT NULL DEFAULT '{}',
   source TEXT NOT NULL DEFAULT 'MANUAL', -- TAVILY_RESEARCH | GBP_DISCOVERY | REFERRAL | MANUAL
   discovery_evidence_json TEXT NOT NULL DEFAULT '{}', -- raw source data
   is_opted_out INTEGER NOT NULL DEFAULT 0,
@@ -1113,6 +1122,7 @@ CREATE TABLE IF NOT EXISTS outbound_contacts (
 CREATE INDEX IF NOT EXISTS idx_outbound_biz ON outbound_contacts(business_id);
 CREATE INDEX IF NOT EXISTS idx_outbound_opted_out ON outbound_contacts(is_opted_out);
 CREATE INDEX IF NOT EXISTS idx_outbound_suppressed ON outbound_contacts(is_suppressed);
+CREATE INDEX IF NOT EXISTS idx_outbound_channel ON outbound_contacts(channel);
 
 -- 54. Durable Events (autonomous event bus — every event that triggers agent action)
 CREATE TABLE IF NOT EXISTS durable_events (
@@ -1170,6 +1180,7 @@ CREATE TABLE IF NOT EXISTS payment_requests (
   prospect_id TEXT,
   opportunity_id TEXT,
   journey_id TEXT,
+  proposal_id TEXT, -- explicit lineage to proposals.id
   offer_id TEXT,
   offer_description TEXT NOT NULL DEFAULT 'Commercial Service',
   amount_inr REAL NOT NULL,
@@ -1203,6 +1214,7 @@ CREATE TABLE IF NOT EXISTS payment_requests (
 CREATE INDEX IF NOT EXISTS idx_payrq_biz_status ON payment_requests(business_id, status);
 CREATE INDEX IF NOT EXISTS idx_payrq_opp ON payment_requests(opportunity_id);
 CREATE INDEX IF NOT EXISTS idx_payrq_provider_link ON payment_requests(provider_link_id);
+CREATE INDEX IF NOT EXISTS idx_payrq_proposal ON payment_requests(proposal_id);
 
 -- 57. Revenue Attribution Chain (full chain: customer → opportunity → source → campaign)
 CREATE TABLE IF NOT EXISTS revenue_attribution_chain (
@@ -1672,4 +1684,52 @@ CREATE TABLE IF NOT EXISTS integration_phone_mappings (
   UNIQUE(provider, external_phone_number_id)
 );
 CREATE INDEX IF NOT EXISTS idx_phone_map_provider ON integration_phone_mappings(provider, external_phone_number_id);
+
+-- 82. Cron Telemetry (Cloudflare Worker cron heartbeat & execution trace, Spec § 16 & § 31)
+CREATE TABLE IF NOT EXISTS cron_telemetry (
+  id TEXT PRIMARY KEY,
+  status TEXT NOT NULL DEFAULT 'CONFIGURED', -- CONFIGURED | DEPLOYED | OBSERVED | HEALTHY | DEGRADED | FAILED
+  received_at TEXT NOT NULL DEFAULT (datetime('now')),
+  execution_started_at TEXT,
+  execution_finished_at TEXT,
+  cycle_id TEXT,
+  http_status INTEGER,
+  error_message TEXT,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  last_observed_ping TEXT,
+  total_pings INTEGER NOT NULL DEFAULT 0,
+  last_user_agent TEXT,
+  worker_source TEXT,
+  last_successful_cycle TEXT,
+  last_failed_cycle TEXT,
+  cycle_result TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_cron_tel_status ON cron_telemetry(status);
+CREATE INDEX IF NOT EXISTS idx_cron_tel_rec ON cron_telemetry(received_at);
+
+-- 83. Outbound Action Ledger (Durable action identity & strict send idempotency, Spec § 16)
+CREATE TABLE IF NOT EXISTS outbound_action_ledger (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL,
+  business_id TEXT NOT NULL,
+  opportunity_id TEXT NOT NULL,
+  outbound_contact_id TEXT NOT NULL,
+  sequence_number INTEGER NOT NULL DEFAULT 1,
+  channel TEXT NOT NULL, -- EMAIL | WHATSAPP
+  action_key TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  provider_external_id TEXT,
+  status TEXT NOT NULL DEFAULT 'PENDING', -- PENDING | SENT | DELIVERED | FAILED | REJECTED
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
+  FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE,
+  FOREIGN KEY (opportunity_id) REFERENCES opportunities(id) ON DELETE CASCADE,
+  UNIQUE (organization_id, opportunity_id, outbound_contact_id, sequence_number, channel)
+);
+CREATE INDEX IF NOT EXISTS idx_outbound_ledger_opp ON outbound_action_ledger(opportunity_id);
+CREATE INDEX IF NOT EXISTS idx_outbound_ledger_contact ON outbound_action_ledger(outbound_contact_id);
+CREATE INDEX IF NOT EXISTS idx_outbound_ledger_status ON outbound_action_ledger(status);
 `;

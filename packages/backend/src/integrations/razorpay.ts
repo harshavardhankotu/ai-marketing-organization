@@ -285,6 +285,8 @@ export class RazorpayAdapter {
 
     const id = `po_${randomUUID().substring(0, 10)}`;
 
+    D1RevenueRepository.getInstance().assertDurableStorage('payment_orders');
+
     this.db
       .prepare(
         `INSERT INTO payment_orders (
@@ -1015,6 +1017,16 @@ export class RazorpayAdapter {
         journeyId
       };
     }
+
+    // Assert D1 durable storage in production before state transitions
+    if (orderId) {
+      D1RevenueRepository.getInstance().assertDurableStorage('payment_orders');
+    }
+    if (providerLinkId) {
+      D1RevenueRepository.getInstance().assertDurableStorage('payment_provider_links');
+      D1RevenueRepository.getInstance().assertDurableStorage('payment_requests');
+    }
+    D1RevenueRepository.getInstance().assertDurableStorage('transactions');
 
     // Update payment_orders record if present
     if (orderId) {

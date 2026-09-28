@@ -24,7 +24,7 @@ import { BusinessAutonomyLock } from './business-autonomy-lock.js';
 import { ActionCooldownManager } from './action-cooldown-manager.js';
 import { UnifiedQuotaService } from '../quota/unified-quota-service.js';
 import { MarketResearchPipeline } from '../research/market-research-pipeline.js';
-import { WhatsAppAdapter, ActionClassification } from '../integrations/adapter-base.js';
+import { WhatsAppAdapter, EmailAdapter, ActionClassification } from '../integrations/adapter-base.js';
 import { isPlaceholderCredential, isProduction } from '../config/env.js';
 import { AutonomyPolicyController } from './autonomy-policy.js';
 import { MeetingEngine } from './meeting-engine.js';
@@ -35,6 +35,9 @@ import { LearningEngine } from './learning-engine.js';
 import { OfferEngine } from './offer-engine.js';
 import { RazorpayAdapter } from '../integrations/razorpay.js';
 import { resolveAuthorizedOffer } from './offer-catalog.js';
+import { ChannelSelectionEngine } from './channel-selection-engine.js';
+import { OutboundActionLedger } from './outbound-action-ledger.js';
+import { randomUUID } from 'crypto';
 
 export type CycleExecutionStatus =
   | 'LIVE_EXTERNAL_ACTION'
@@ -325,6 +328,18 @@ export class AutonomousRevenueOrchestrator {
         terminalClassification = 'INTERNAL_AUTOMATION';
       }
 
+      // Determine audit trace provider dynamically (Spec § 31)
+      let traceProvider = 'NONE';
+      if (nextBestAction.actionType.includes('RESEARCH') || nextBestAction.actionType.includes('DISCOVER')) {
+        traceProvider = 'TAVILY';
+      } else if (nextBestAction.actionType.includes('PAYMENT')) {
+        traceProvider = 'RAZORPAY';
+      } else if (nextBestAction.actionType === 'PURSUE_OPPORTUNITY' || nextBestAction.actionType.includes('OUTREACH') || nextBestAction.actionType.includes('FOLLOW_UP')) {
+        traceProvider = actionExecutionStatus === 'LIVE_EXTERNAL_ACTION' ? 'WHATSAPP' : 'NONE';
+      } else if (nextBestAction.actionType.includes('MEETING')) {
+        traceProvider = 'CALENDAR';
+      }
+
       // Record full audit trace in autonomous_action_traces (Spec § 31)
       this.recordActionTrace({
         cycleId,
@@ -335,7 +350,7 @@ export class AutonomousRevenueOrchestrator {
         expectedValue: nextBestAction.expectedRevenueINR,
         authorization: actionClassification === 'BLOCKED_AUTHORIZATION' ? 'BLOCKED' : 'AUTHORIZED',
         quotaReservation: nextBestAction.quotaCost > 0 ? `RESERVED_${nextBestAction.quotaCost}` : 'NONE',
-        provider: nextBestAction.actionType.includes('RESEARCH') || nextBestAction.actionType.includes('DISCOVER') ? 'TAVILY' : 'WHATSAPP',
+        provider: traceProvider,
         requestId: cycleId,
         classification: actionClassification,
         result: actionExecutionStatus,
@@ -562,50 +577,60 @@ export class AutonomousRevenueOrchestrator {
         }
 
         // SPEC § 11: Actual Prospect Targeting — Never default to business phone!
-        // Every sales opportunity must have a prospect_id or contact record.
+        // Strict Lineage: platform_prospects.id -> opportunities.prospect_id -> sales_pipeline.outbound_contact_id -> outbound_contacts.id
         let prospectPhone: string | null = null;
+        let prospectEmail: string | null = null;
         let prospectName = 'Prospective Partner';
+        let outboundContactId: string | null = null;
+        let contactRow: any = null;
+        let prospectRow: any = null;
 
-        // Check if opportunity has contact evidence
-        try {
-          const evidence = typeof opp.evidence === 'string' ? JSON.parse(opp.evidence) : opp.evidence;
-          if (Array.isArray(evidence)) {
-            for (const item of evidence) {
-              if (item.contactPhone || item.phone) {
-                prospectPhone = item.contactPhone || item.phone;
-                prospectName = item.contactPerson || item.name || prospectName;
-                break;
-              }
-            }
-          }
-        } catch {}
+        const targetProspectId = (opp as any).prospect_id;
 
-        // Look up in platform_prospects or outbound_contacts
-        if (!prospectPhone) {
-          try {
-            const pRow = db.prepare(`
-              SELECT * FROM platform_prospects
-              WHERE id = ? OR id IN (SELECT outbound_contact_id FROM sales_pipeline WHERE opportunity_id = ?)
-                 OR prospect_business_name = ?
-            `).get(action.targetId, opp.id, opp.businessId) as any;
-            if (pRow && (pRow.prospect_phone || pRow.contact_phone || pRow.phone)) {
-              prospectPhone = pRow.prospect_phone || pRow.contact_phone || pRow.phone;
-              prospectName = pRow.prospect_owner_name || pRow.contact_person || pRow.prospect_business_name || pRow.business_name || prospectName;
-            }
-          } catch {}
+        // 1. Look up sales_pipeline entry for opportunity
+        let pipeRow = db.prepare(`SELECT * FROM sales_pipeline WHERE opportunity_id = ? LIMIT 1`).get(opp.id) as any;
+        if (pipeRow?.outbound_contact_id) {
+          outboundContactId = pipeRow.outbound_contact_id;
         }
 
-        if (!prospectPhone) {
-          try {
-            const cRow = db.prepare(`SELECT * FROM outbound_contacts WHERE business_id = ? AND channel = 'WHATSAPP' LIMIT 1`).get(businessId) as any;
-            if (cRow && cRow.contact_value) {
-              prospectPhone = cRow.contact_value;
-              prospectName = cRow.name || prospectName;
-            }
-          } catch {}
+        // 2. Look up outbound_contacts
+        if (outboundContactId) {
+          contactRow = db.prepare(`SELECT * FROM outbound_contacts WHERE id = ?`).get(outboundContactId) as any;
+        }
+        if (!contactRow && targetProspectId) {
+          contactRow = db.prepare(`SELECT * FROM outbound_contacts WHERE id = ? OR prospect_email IN (SELECT prospect_email FROM platform_prospects WHERE id = ?)`).get(targetProspectId, targetProspectId) as any;
+        }
+        if (!contactRow) {
+          // Check by business_id if targeting platform or specific campaign
+          contactRow = db.prepare(`SELECT * FROM outbound_contacts WHERE business_id = ? AND (prospect_phone IS NOT NULL OR prospect_email IS NOT NULL) LIMIT 1`).get(businessId) as any;
         }
 
-        if (!prospectPhone) {
+        // 3. Look up platform_prospects
+        if (targetProspectId) {
+          prospectRow = db.prepare(`SELECT * FROM platform_prospects WHERE id = ?`).get(targetProspectId) as any;
+        }
+        if (!prospectRow && contactRow?.prospect_business_name) {
+          prospectRow = db.prepare(`SELECT * FROM platform_prospects WHERE prospect_business_name = ? LIMIT 1`).get(contactRow.prospect_business_name) as any;
+        }
+
+        // 4. Resolve contact credentials from lineage records (never from biz phone!)
+        if (contactRow) {
+          prospectPhone = contactRow.prospect_phone || null;
+          prospectEmail = contactRow.prospect_email || null;
+          prospectName = contactRow.prospect_name || contactRow.prospect_business_name || prospectName;
+          outboundContactId = contactRow.id;
+        }
+        if (!prospectPhone && prospectRow?.prospect_phone) {
+          prospectPhone = prospectRow.prospect_phone;
+        }
+        if (!prospectEmail && prospectRow?.prospect_email) {
+          prospectEmail = prospectRow.prospect_email;
+        }
+        if (prospectRow) {
+          prospectName = prospectRow.prospect_owner_name || prospectRow.contact_person || prospectRow.prospect_business_name || prospectName;
+        }
+
+        if (!prospectPhone && !prospectEmail) {
           return {
             status: 'BLOCKED_AUTHORIZATION',
             actionClassification: 'BLOCKED_AUTHORIZATION',
@@ -614,8 +639,38 @@ export class AutonomousRevenueOrchestrator {
           };
         }
 
+        // SPEC § 12: Deterministic Channel Selection
+        const whatsappOptIn = Boolean(contactRow?.whatsapp_opt_in === 1);
+        const emailAuthorized = Boolean(contactRow?.email_authorized === 1 || prospectEmail || prospectRow?.source_url);
+        const preferredChannel = (contactRow?.channel as 'EMAIL' | 'WHATSAPP') || (whatsappOptIn ? 'WHATSAPP' : 'EMAIL');
+
+        const channelDecision = ChannelSelectionEngine.getInstance().selectChannel({
+          prospect: {
+            contactEmail: prospectEmail || undefined,
+            contactPhone: prospectPhone || undefined
+          },
+          outboundContact: {
+            emailAuthorized: emailAuthorized ? 1 : 0,
+            whatsappOptIn: whatsappOptIn ? 1 : 0,
+            channel: preferredChannel
+          },
+          approvedTemplateName: 'commercial_outreach_initial'
+        });
+
+        if (!channelDecision.allowed || !channelDecision.channel) {
+          return {
+            status: 'BLOCKED_AUTHORIZATION',
+            actionClassification: 'BLOCKED_AUTHORIZATION',
+            isRevenueAction: false,
+            error: `BLOCKED_AUTHORIZATION: ${channelDecision.reason}`
+          };
+        }
+
+        const selectedChannel = channelDecision.channel;
+        const targetRecipient = selectedChannel === 'EMAIL' ? prospectEmail! : prospectPhone!;
+
         // SPEC § 12: Outbound Policy Gate (DO_NOT_CONTACT, rate limit, cooldown)
-        const contactSafety = AutonomyPolicyController.getInstance().getContactSafety(prospectPhone);
+        const contactSafety = AutonomyPolicyController.getInstance().getContactSafety(targetRecipient);
         if (contactSafety !== 'CONTACTABLE') {
           return {
             status: 'BLOCKED_AUTHORIZATION',
@@ -625,32 +680,120 @@ export class AutonomousRevenueOrchestrator {
           };
         }
 
-        const wa = new WhatsAppAdapter();
-        const health = await wa.checkHealth();
-
-        if (!health.connected || health.mode !== 'LIVE') {
+        // SPEC § 13: Outbound Action Ledger Idempotency Gate
+        const ledger = OutboundActionLedger.getInstance();
+        const contactIdForLedger = outboundContactId || opp.id;
+        const isSent = await ledger.isAlreadySent(
+          organizationId,
+          opp.id,
+          contactIdForLedger,
+          1,
+          selectedChannel
+        );
+        if (isSent) {
           return {
-            status: 'BLOCKED_AUTHORIZATION',
-            actionClassification: 'BLOCKED_AUTHORIZATION',
+            status: 'INTERNAL_AUTOMATION',
+            actionClassification: 'INTERNAL_AUTOMATION',
             isRevenueAction: false,
-            error: 'BLOCKED_AUTHORIZATION: No LIVE delivery channel connected for opportunity pursuit'
+            externalId: undefined,
+            error: 'Outbound already recorded in ledger for this opportunity and channel'
           };
         }
 
-        const pubResult = await wa.publish({
-          title: `${biz.vertical_name || 'Commercial'} Consultation Offer`,
-          body: `${opp.nextBestAction || 'Personalized System Assessment'} — We identified high-intent inquiries looking for your services. Book your system walkthrough with ${biz.name}.`,
-          channel: 'WHATSAPP',
-          recipientPhone: prospectPhone
-        });
+        let pubResult: any;
+        if (selectedChannel === 'EMAIL') {
+          const emailAdapter = new EmailAdapter();
+          const health = await emailAdapter.checkHealth();
+          if (!health.connected || health.mode !== 'LIVE') {
+            return {
+              status: 'BLOCKED_AUTHORIZATION',
+              actionClassification: 'BLOCKED_AUTHORIZATION',
+              isRevenueAction: false,
+              error: 'BLOCKED_AUTHORIZATION: No LIVE email delivery channel connected for opportunity pursuit'
+            };
+          }
+          pubResult = await emailAdapter.publish({
+            title: `${biz.vertical_name || 'Commercial'} Consultation Offer`,
+            body: `${opp.nextBestAction || 'Personalized System Assessment'} — We identified high-intent inquiries looking for your services. Book your system walkthrough with ${biz.name}.`,
+            channel: 'EMAIL',
+            recipientEmail: targetRecipient
+          });
+        } else {
+          const wa = new WhatsAppAdapter();
+          const health = await wa.checkHealth();
+          if (!health.connected || health.mode !== 'LIVE') {
+            return {
+              status: 'BLOCKED_AUTHORIZATION',
+              actionClassification: 'BLOCKED_AUTHORIZATION',
+              isRevenueAction: false,
+              error: 'BLOCKED_AUTHORIZATION: No LIVE WhatsApp delivery channel connected for opportunity pursuit'
+            };
+          }
+          pubResult = await wa.publish({
+            title: `${biz.vertical_name || 'Commercial'} Consultation Offer`,
+            body: `${opp.nextBestAction || 'Personalized System Assessment'} — We identified high-intent inquiries looking for your services. Book your system walkthrough with ${biz.name}.`,
+            channel: 'WHATSAPP',
+            recipientPhone: targetRecipient
+          });
+        }
 
         if (pubResult.success && pubResult.actionClassification === 'LIVE_EXTERNAL_ACTION') {
+          await ledger.recordAction({
+            id: `oal_${Date.now()}_${randomUUID().slice(0, 6)}`,
+            organizationId,
+            businessId,
+            opportunityId: opp.id,
+            outboundContactId: contactIdForLedger,
+            sequenceNumber: 1,
+            channel: selectedChannel,
+            actionKey: `outreach_${opp.id}_${selectedChannel}`,
+            provider: pubResult.provider,
+            providerExternalId: pubResult.externalId,
+            status: 'DELIVERED'
+          });
+
+          if (outboundContactId) {
+            try {
+              db.prepare(`
+                UPDATE outbound_contacts
+                SET last_contacted_at = datetime('now'),
+                    contact_count = contact_count + 1,
+                    updated_at = datetime('now')
+                WHERE id = ?
+              `).run(outboundContactId);
+            } catch {}
+          }
+
           this.oppEngine.advance(opp.id, 'ENGAGING', `Live outreach delivered via ${pubResult.provider} (${pubResult.externalId})`);
+
           db.prepare(`
             UPDATE sales_pipeline
             SET stage = 'CONTACTED', updated_at = datetime('now')
             WHERE opportunity_id = ?
           `).run(opp.id);
+
+          try {
+            db.prepare(`
+              INSERT INTO commercial_evidence (
+                id, milestone, provider, external_id, timestamp, request_reference,
+                tenant_id, business_id, classification, verification_source, details_json
+              ) VALUES (?, 'M1_FIRST_LIVE_OUTBOUND', ?, ?, datetime('now'), ?, ?, ?, 'REAL', 'PROVIDER_DISPATCH_ACK', ?)
+            `).run(
+              `ev_m1_${Date.now()}_${randomUUID().slice(0, 6)}`,
+              pubResult.provider,
+              pubResult.externalId,
+              `dispatch_${opp.id}`,
+              organizationId,
+              opp.businessId,
+              JSON.stringify({
+                channel: selectedChannel,
+                recipient: targetRecipient,
+                opportunityId: opp.id,
+                provider: pubResult.provider,
+                externalId: pubResult.externalId
+              })
+            );
+          } catch {}
 
           return {
             status: 'LIVE_EXTERNAL_ACTION',
@@ -1027,10 +1170,10 @@ export class AutonomousRevenueOrchestrator {
           });
 
           return {
-            status: discResult.source === 'TAVILY_RESEARCH' || discResult.source === 'GEMINI_RESEARCH' ? 'LIVE_EXTERNAL_ACTION' : 'INTERNAL_AUTOMATION',
-            actionClassification: discResult.source === 'TAVILY_RESEARCH' || discResult.source === 'GEMINI_RESEARCH' ? 'LIVE_EXTERNAL_ACTION' : 'INTERNAL_AUTOMATION',
+            status: 'INTERNAL_AUTOMATION',
+            actionClassification: 'INTERNAL_AUTOMATION',
             isRevenueAction: false,
-            externalId: `discovery_pipeline_${cycleId}`
+            externalId: undefined
           };
         }
 
@@ -1199,22 +1342,17 @@ export class AutonomousRevenueOrchestrator {
             WHERE journey_id = ? AND business_id = ?
           `).run(payload.journeyId, businessId);
 
-          // Spec § 12: Record split revenue record
-          try {
-            const revId = `rev_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-            db.prepare(`
-              INSERT INTO revenue_records (
-                id, organization_id, business_id, revenue_type, source,
-                transaction_id, amount_inr, currency, verified, verification_method, classification, timestamp
-              ) VALUES (?, ?, ?, 'CLIENT_REVENUE', 'RAZORPAY_WEBHOOK', ?, ?, 'INR', 1, 'WEBHOOK', 'REAL', datetime('now'))
-            `).run(
-              revId,
-              organizationId,
-              businessId,
-              String(payload.transactionId || `tx_${Date.now()}`),
-              Number(payload.amountINR || 15000)
-            );
-          } catch {}
+          // Spec § 8: Razorpay webhook layer is the sole revenue authority.
+          // PAYMENT_RECEIVED event handler in ARO MUST NOT create revenue records.
+          if (payload.transactionId) {
+            const canonicalRev = db.prepare(`
+              SELECT id FROM revenue_records
+              WHERE transaction_id = ? AND organization_id = ? AND verified = 1
+            `).get(payload.transactionId, organizationId);
+            if (!canonicalRev) {
+              console.warn(`[ARO] BLOCKED_REVENUE_EVIDENCE_MISSING: No verified revenue_record found for transaction ${payload.transactionId}. ARO will not fabricate revenue.`);
+            }
+          }
 
           if (payload.opportunityId) {
             this.oppEngine.advance(payload.opportunityId as string, 'WON', 'Payment verified via gateway webhook');

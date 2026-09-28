@@ -8,11 +8,17 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { resetDbForTesting } from '../../src/db/client.js';
+import { resetDbForTesting, getDb } from '../../src/db/client.js';
 import { PlatformProspectDiscoveryEngine } from '../../src/revenue/platform-prospect-discovery-engine.js';
 import { FirstCustomerStateMachine } from '../../src/revenue/first-customer-state-machine.js';
 import { OwnerAuthService } from '../../src/auth/owner-auth.js';
 import { UnifiedQuotaService } from '../../src/quota/unified-quota-service.js';
+import { ChannelSelectionEngine } from '../../src/revenue/channel-selection-engine.js';
+import { OutboundActionLedger } from '../../src/revenue/outbound-action-ledger.js';
+import { ProspectEvidenceVerifier } from '../../src/revenue/prospect-evidence-verifier.js';
+import { LearningEngine } from '../../src/revenue/learning-engine.js';
+import { readFileSync, readdirSync, statSync } from 'fs';
+import { join } from 'path';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -492,6 +498,157 @@ describe('Production False-Live Guards', () => {
       expect(state.evidence.verifiedRevenueINR).toBe(0);
       expect(state.evidence.customerCount).toBe(0);
     }
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // GROUP 8: Channel Gating, Idempotency & SSRF Guards
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  it('37. ChannelSelectionEngine strictly blocks WhatsApp outbound when whatsapp_opt_in is false', () => {
+    const engine = ChannelSelectionEngine.getInstance();
+    const result = engine.selectChannel({
+      prospect: {
+        contactPhone: '+919988776655'
+      },
+      outboundContact: {
+        channel: 'WHATSAPP',
+        emailAuthorized: false,
+        whatsappOptIn: false
+      },
+      approvedTemplateName: 'template_01'
+    });
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain('BLOCKED_WHATSAPP_NO_OPT_IN');
+  });
+
+  it('38. ChannelSelectionEngine prioritizes verified EMAIL over WhatsApp when opt-in is absent', () => {
+    const engine = ChannelSelectionEngine.getInstance();
+    const result = engine.selectChannel({
+      prospect: {
+        contactEmail: 'owner@localclinic.in',
+        contactPhone: '+919988776655'
+      },
+      outboundContact: {
+        channel: 'WHATSAPP',
+        emailAuthorized: true,
+        whatsappOptIn: false
+      },
+      approvedTemplateName: 'template_01'
+    });
+    expect(result.allowed).toBe(true);
+    expect(result.channel).toBe('EMAIL');
+  });
+
+  it('39. OutboundActionLedger strictly prevents duplicate outbound dispatch', async () => {
+    const ledger = OutboundActionLedger.getInstance();
+    const db = getDb();
+    const oppId = `opp_${Date.now()}`;
+    const contactId = `cnt_${Date.now()}`;
+
+    db.prepare(`INSERT OR IGNORE INTO organizations (id, name, slug) VALUES ('org_test_owner', 'Test Org', 'test-org')`).run();
+    db.prepare(`INSERT OR IGNORE INTO businesses (id, organization_id, name, vertical_id, vertical_name, city, neighborhood, brand_voice) VALUES ('biz_test_owner', 'org_test_owner', 'Platform', 'v_tech', 'Technology', 'Hyderabad', 'Banjara Hills', 'Professional')`).run();
+    db.prepare(`INSERT OR IGNORE INTO opportunities (id, organization_id, business_id, source) VALUES (?, 'org_test_owner', 'biz_test_owner', 'OUTBOUND_PROSPECT')`).run(oppId);
+    db.prepare(`INSERT OR IGNORE INTO outbound_contacts (id, organization_id, business_id, prospect_name, channel) VALUES (?, 'org_test_owner', 'biz_test_owner', 'Contact', 'EMAIL')`).run(contactId);
+
+    const alreadyBefore = await ledger.isAlreadySent('org_test_owner', oppId, contactId, 1, 'EMAIL');
+    expect(alreadyBefore).toBe(false);
+
+    await ledger.recordAction({
+      id: `act_${Date.now()}`,
+      organizationId: 'org_test_owner',
+      businessId: 'biz_test_owner',
+      opportunityId: oppId,
+      outboundContactId: contactId,
+      sequenceNumber: 1,
+      channel: 'EMAIL',
+      actionKey: `outreach_${oppId}_EMAIL`,
+      provider: 'MOCK_EMAIL',
+      providerExternalId: 'msg_ext_12345',
+      status: 'DELIVERED'
+    });
+
+    const alreadyAfter = await ledger.isAlreadySent('org_test_owner', oppId, contactId, 1, 'EMAIL');
+    expect(alreadyAfter).toBe(true);
+  });
+
+  it('40. ProspectEvidenceVerifier rejects loopback and non-http schemes', async () => {
+    const verifier = ProspectEvidenceVerifier.getInstance();
+    expect(verifier.isSyntacticallyValidExternalUrl('http://127.0.0.1:8080/admin')).toBe(false);
+    expect(verifier.isSyntacticallyValidExternalUrl('ftp://example.com/file')).toBe(false);
+    expect(verifier.isSyntacticallyValidExternalUrl('https://example.com/contact')).toBe(true);
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // GROUP 9: Static Source Code Scans for Forbidden Fallbacks & Fake IDs
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  function getAllTsFiles(dir: string, fileList: string[] = []): string[] {
+    const files = readdirSync(dir);
+    for (const file of files) {
+      const fullPath = join(dir, file);
+      const stat = statSync(fullPath);
+      if (stat.isDirectory()) {
+        getAllTsFiles(fullPath, fileList);
+      } else if (file.endsWith('.ts') && !file.endsWith('.d.ts')) {
+        fileList.push(fullPath);
+      }
+    }
+    return fileList;
+  }
+
+  it('41. Source tree contains ZERO occurrences of tx_${Date.now()}', () => {
+    const srcDir = join(__dirname, '../../src');
+    const tsFiles = getAllTsFiles(srcDir);
+    for (const filePath of tsFiles) {
+      const content = readFileSync(filePath, 'utf-8');
+      expect(content).not.toContain('tx_${Date.now()}');
+    }
+  });
+
+  it('42. Source tree contains ZERO occurrences of discovery_pipeline_${', () => {
+    const srcDir = join(__dirname, '../../src');
+    const tsFiles = getAllTsFiles(srcDir);
+    for (const filePath of tsFiles) {
+      const content = readFileSync(filePath, 'utf-8');
+      expect(content).not.toContain('discovery_pipeline_${');
+    }
+  });
+
+  it('43. Source tree contains ZERO dynamic require("./durable-event-bus', () => {
+    const srcDir = join(__dirname, '../../src');
+    const tsFiles = getAllTsFiles(srcDir);
+    for (const filePath of tsFiles) {
+      const content = readFileSync(filePath, 'utf-8');
+      expect(content).not.toContain("require('./durable-event-bus");
+    }
+  });
+
+  it('44. Source tree contains ZERO amountINR || 150000 fallback patterns', () => {
+    const srcDir = join(__dirname, '../../src');
+    const tsFiles = getAllTsFiles(srcDir);
+    for (const filePath of tsFiles) {
+      const content = readFileSync(filePath, 'utf-8');
+      expect(content).not.toContain('amountINR || 150000');
+    }
+  });
+
+  it('45. LearningEngine rejects REAL_WORLD_LEARNING without externalResultId', () => {
+    const engine = LearningEngine.getInstance();
+    const outcome = engine.recordObservation({
+      organizationId: OwnerAuthService.OWNER_ORGANIZATION_ID,
+      businessId: OwnerAuthService.PLATFORM_BUSINESS_ID,
+      learningType: 'REAL_WORLD_LEARNING',
+      decision: 'Pitch with gap',
+      hypothesis: 'Direct pitching works',
+      action: 'Sent email pitch',
+      audience: 'Dental clinic',
+      offer: 'Setup fee',
+      channel: 'EMAIL',
+      result: 'No response',
+      evidence: {} // No externalActionId or transactionId
+    });
+
+    expect(outcome.learningType).not.toBe('REAL_WORLD_LEARNING');
   });
 
 });

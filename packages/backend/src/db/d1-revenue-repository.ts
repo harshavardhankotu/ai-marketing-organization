@@ -11,14 +11,18 @@ export const D1_REVENUE_CRITICAL_TABLES = [
   'platform_prospects',
   'opportunities',
   'sales_pipeline',
+  'outbound_contacts',
+  'outbound_action_ledger',
   'proposals',
   'commercial_evidence',
   'autonomous_action_traces',
   'autonomous_cycle_log',
   'platform_customer_deliveries',
   'owner_sessions',
+  'durable_events',
   'cron_telemetry',
-  'learning_records'
+  'learning_records',
+  'search_cache'
 ] as const;
 
 export type D1RevenueCriticalTable = typeof D1_REVENUE_CRITICAL_TABLES[number];

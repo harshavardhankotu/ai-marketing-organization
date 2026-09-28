@@ -2522,8 +2522,16 @@ apiRouter.get('/commercial/proof', (c) => {
 apiRouter.get('/system/readiness', (c) => {
   const orgId = c.get('organizationId');
   const db = getDb();
-  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
-  const businessId = business?.id || 'biz_smilekraft_hyd';
+  let businessId = c.req.query('businessId');
+  if (!businessId) {
+    const business = db.prepare("SELECT id FROM businesses WHERE organization_id = ? AND id != 'biz_platform_aro'").get(orgId) as any
+      || db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+    businessId = business?.id;
+  }
+  if (!businessId || businessId === 'biz_platform_aro') {
+    const clientBiz = db.prepare("SELECT id FROM businesses WHERE id != 'biz_platform_aro' LIMIT 1").get() as any;
+    businessId = clientBiz?.id || 'biz_smilekraft_hyd';
+  }
   const report = SystemReadinessEngine.evaluateReadiness(businessId);
   return c.json({ success: true, data: report });
 });

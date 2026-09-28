@@ -80,7 +80,7 @@ export class FirstCustomerAutomationPipeline {
 
     // Separate Quote vs Payment Amount
     const paidAmountINR = params.paidAmountINR ?? params.amountINR ?? 0;
-    const quotedAmountINR = params.quotedAmountINR ?? (params.amountINR || 150000);
+    const quotedAmountINR = params.quotedAmountINR ?? params.amountINR ?? paidAmountINR;
 
     // 0. Idempotency Check (Invariant 6)
     const dedupKey = params.idempotencyKey || `first-cust-${params.journeyId}-${params.invoiceNumber}`;

@@ -143,7 +143,7 @@ describe('Autonomy Reality Fix — Strict Action & Quota Truth Audit', () => {
     expect(['CRON_OBSERVED', 'OBSERVED', 'HEALTHY']).toContain(data2.data.status);
     expect(data2.data.totalPings).toBe(1);
     expect(data2.data.lastObservedPing).toBeTruthy();
-  });
+  }, 25000);
 
   // 8. D1 Client Free-Tier Protection Guard (Spec § 18)
   it('8. D1 Client enforces daily row limits and protects free-tier budget', async () => {

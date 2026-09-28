@@ -27,6 +27,24 @@ export function seedDatabase(options: SeedOptions = {}): void {
     VALUES (?, ?, ?)
   `).run(orgId, 'Primary Commercial Organization', 'primary-org');
 
+  // 1b. Platform Owner Organization & Platform Autonomous Revenue Business
+  db.prepare(`
+    INSERT OR REPLACE INTO organizations (id, name, slug)
+    VALUES ('org_owner_primary', 'Platform Owner Organization', 'owner-primary')
+  `).run();
+
+  db.prepare(`
+    INSERT OR REPLACE INTO businesses (
+      id, organization_id, name, vertical_id, vertical_name, risk_tier,
+      country, currency, timezone, city, neighborhood,
+      brand_voice, autonomy_mode, kill_switch_active
+    ) VALUES (
+      'biz_platform_aro', 'org_owner_primary', 'Platform Autonomous Revenue System', 'TECHNOLOGY', 'AI & Technology Services', 'LOW',
+      'IN', 'INR', 'Asia/Kolkata', 'Hyderabad', 'Banjara Hills',
+      'Direct, consultative, authoritative', 'ASSISTED', 0
+    )
+  `).run();
+
   // 2. Platform Administrator User
   db.prepare(`
     INSERT OR REPLACE INTO users (id, organization_id, email, name, role, api_token)

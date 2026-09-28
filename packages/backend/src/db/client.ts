@@ -357,6 +357,15 @@ export function getDb(dbPath?: string): Database.Database {
   try { db.exec(`ALTER TABLE payment_requests ADD COLUMN verification_method TEXT`); } catch {}
   try { db.exec(`ALTER TABLE payment_requests ADD COLUMN last_reminder_at TEXT`); } catch {}
   try { db.exec(`ALTER TABLE payment_requests ADD COLUMN expires_at TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE payment_requests ADD COLUMN proposal_id TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE opportunities ADD COLUMN prospect_id TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE outbound_contacts ADD COLUMN channel TEXT NOT NULL DEFAULT 'EMAIL'`); } catch {}
+  try { db.exec(`ALTER TABLE outbound_contacts ADD COLUMN email_authorized INTEGER NOT NULL DEFAULT 0`); } catch {}
+  try { db.exec(`ALTER TABLE outbound_contacts ADD COLUMN whatsapp_opt_in INTEGER NOT NULL DEFAULT 0`); } catch {}
+  try { db.exec(`ALTER TABLE outbound_contacts ADD COLUMN authorization_source TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE outbound_contacts ADD COLUMN authorization_evidence_json TEXT NOT NULL DEFAULT '{}'`); } catch {}
+  try { db.exec(`ALTER TABLE search_cache ADD COLUMN data_classification TEXT NOT NULL DEFAULT 'UNKNOWN'`); } catch {}
+  try { db.exec(`ALTER TABLE search_cache ADD COLUMN source_verified INTEGER NOT NULL DEFAULT 0`); } catch {}
   try {
     db.exec(`CREATE TABLE IF NOT EXISTS platform_customer_deliveries (
       id TEXT PRIMARY KEY, customer_id TEXT NOT NULL, organization_id TEXT NOT NULL,

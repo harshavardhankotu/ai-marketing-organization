@@ -172,7 +172,7 @@ export class DeliveryEngine {
             clinic_confirmation, channel, status, external_review_platform, created_at
           ) VALUES (?, ?, ?, ?, 'app_referral', 'CONFIRMED', 'WHATSAPP', 'QUEUED', 'GOOGLE_MAPS', datetime('now'))
         `).run(
-          `rev_${Date.now()}`,
+          `rr_${Date.now()}`,
           businessId,
           customer.id,
           customerJourneyId

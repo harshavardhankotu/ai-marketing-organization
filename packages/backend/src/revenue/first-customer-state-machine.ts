@@ -92,13 +92,33 @@ export class FirstCustomerStateMachine {
     const prospectCountRow = db.prepare(`SELECT COUNT(*) as count FROM platform_prospects WHERE is_opted_out = 0`).get() as any;
     const prospectCount = Number(prospectCountRow?.count || 0);
 
-    // Compute actual outreach sent from DB (any CONTACTED pipeline row)
-    const outreachRow = db.prepare(`SELECT COUNT(*) as count FROM sales_pipeline WHERE organization_id = ? AND stage IN ('CONTACTED', 'REPLIED', 'QUALIFIED')`).get(organizationId) as any;
-    const outreachSent = Number(outreachRow?.count || 0) > 0;
+    // Compute actual outreach sent from DB (sales_pipeline, outbound_action_ledger, M1 milestone)
+    let outreachSentCount = 0;
+    try {
+      const outreachRow = db.prepare(`SELECT COUNT(*) as count FROM sales_pipeline WHERE organization_id = ? AND stage IN ('CONTACTED', 'REPLIED', 'QUALIFIED')`).get(organizationId) as any;
+      outreachSentCount += Number(outreachRow?.count || 0);
+    } catch {}
+    try {
+      const ledgerRow = db.prepare(`SELECT COUNT(*) as count FROM outbound_action_ledger WHERE tenant_id = ?`).get(organizationId) as any;
+      outreachSentCount += Number(ledgerRow?.count || 0);
+    } catch {}
+    try {
+      const evRow = db.prepare(`SELECT COUNT(*) as count FROM commercial_evidence WHERE tenant_id = ? AND milestone = 'M1_FIRST_LIVE_OUTBOUND'`).get(organizationId) as any;
+      outreachSentCount += Number(evRow?.count || 0);
+    } catch {}
+    const outreachSent = outreachSentCount > 0;
 
-    // Compute actual response received from DB
-    const responseRow = db.prepare(`SELECT COUNT(*) as count FROM sales_pipeline WHERE organization_id = ? AND stage IN ('REPLIED', 'QUALIFIED')`).get(organizationId) as any;
-    const responseReceived = Number(responseRow?.count || 0) > 0;
+    // Compute actual response received from DB (sales_pipeline, durable_events)
+    let responseReceivedCount = 0;
+    try {
+      const responseRow = db.prepare(`SELECT COUNT(*) as count FROM sales_pipeline WHERE organization_id = ? AND stage IN ('REPLIED', 'QUALIFIED')`).get(organizationId) as any;
+      responseReceivedCount += Number(responseRow?.count || 0);
+    } catch {}
+    try {
+      const eventRow = db.prepare(`SELECT COUNT(*) as count FROM durable_events WHERE organization_id = ? AND event_type IN ('LEAD_REPLIED', 'QUALIFICATION_COMPLETED', 'PROPOSAL_ACCEPTED')`).get(organizationId) as any;
+      responseReceivedCount += Number(eventRow?.count || 0);
+    } catch {}
+    const responseReceived = responseReceivedCount > 0;
 
     // Compute actual verified revenue from DB
     const revForCustomer = db.prepare(`
@@ -175,8 +195,8 @@ export class FirstCustomerStateMachine {
         evidence: {
           prospectCount,
           activeProspectId: activeReq.prospect_id,
-          outreachSent: true,  // payment link implies outreach was sent
-          responseReceived: true,  // payment link implies response was received
+          outreachSent,
+          responseReceived,
           paymentLinkUrl: linkUrl,
           verifiedRevenueINR: 0,
           customerCount: 0
@@ -199,8 +219,8 @@ export class FirstCustomerStateMachine {
         evidence: {
           prospectCount,
           activeProspectId: propAccepted.prospect_id,
-          outreachSent: true,  // proposal accepted implies outreach was sent
-          responseReceived: true,  // proposal accepted implies response was received
+          outreachSent,
+          responseReceived,
           proposalId: propAccepted.id,
           verifiedRevenueINR: 0,
           customerCount: 0
@@ -223,8 +243,8 @@ export class FirstCustomerStateMachine {
         evidence: {
           prospectCount,
           activeProspectId: propSent.prospect_id,
-          outreachSent: true,  // proposal sent implies outreach was done
-          responseReceived: true,  // proposal sent implies response was received
+          outreachSent,
+          responseReceived,
           proposalId: propSent.id,
           verifiedRevenueINR: 0,
           customerCount: 0
@@ -248,8 +268,8 @@ export class FirstCustomerStateMachine {
         evidence: {
           prospectCount,
           activeProspectId: qualPipe.outbound_contact_id,
-          outreachSent: true,  // QUALIFIED/REPLIED implies outreach and response
-          responseReceived: true,
+          outreachSent,
+          responseReceived,
           verifiedRevenueINR: 0,
           customerCount: 0
         }
@@ -272,8 +292,8 @@ export class FirstCustomerStateMachine {
         evidence: {
           prospectCount,
           activeProspectId: contactedPipe.outbound_contact_id,
-          outreachSent: true,  // CONTACTED stage means outreach was sent
-          responseReceived: false,
+          outreachSent,
+          responseReceived,
           verifiedRevenueINR: 0,
           customerCount: 0
         }

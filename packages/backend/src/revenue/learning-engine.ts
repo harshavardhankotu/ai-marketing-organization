@@ -1,16 +1,19 @@
 /**
  * LearningEngine — Empirical closed-loop learning from real-world business outcomes.
  *
- * Implements Spec § 16:
+ * Implements Spec § 16 & § 28:
  * - Rigorously segregated learning categories:
  *     REAL_WORLD_LEARNING: Derived strictly from verified live external actions and verified customer revenue.
  *     TEST_LEARNING: Isolated to automated testing fixtures and mock harness execution.
  *     SIMULATION_INSIGHT: Model-based projections and counterfactual reasoning.
  * - Invariant: TEST or SIMULATION findings can NEVER graduate into REAL_WORLD_LEARNING.
- * - Stores immutable observation logs with full provenance.
+ * - Stores immutable observation logs with full provenance in D1 (production) and SQLite (dev/test).
  */
 
 import { getDb } from '../db/client.js';
+import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
+import { isProduction } from '../config/env.js';
+import { randomUUID } from 'crypto';
 
 export type LearningType = 'REAL_WORLD_LEARNING' | 'TEST_LEARNING' | 'SIMULATION_INSIGHT';
 
@@ -39,6 +42,7 @@ export interface LearningRecord extends LearningObservationInput {
 
 export class LearningEngine {
   private static instance: LearningEngine;
+  private d1Repo = D1RevenueRepository.getInstance();
 
   public static getInstance(): LearningEngine {
     if (!LearningEngine.instance) {
@@ -55,16 +59,14 @@ export class LearningEngine {
     // Real-world learning must only be produced from: verified external action + real response/result + real commercial state
     if (input.learningType === 'REAL_WORLD_LEARNING') {
       const hasVerifiedAction = Boolean(input.evidence?.externalActionId || input.evidence?.actionExternalId || input.evidence?.transactionId);
-      const hasRealResult = Boolean(input.result && input.result.trim().length > 0 && !input.evidence?.isSimulation);
-      const isTestContext = process.env.NODE_ENV === 'test' || input.evidence?.isTestFixture;
+      const hasRealResult = Boolean(input.result && input.result.trim().length > 0 && !input.evidence?.isSimulation && !input.evidence?.simulation);
 
-      if (!hasVerifiedAction || !hasRealResult || (isTestContext && !input.evidence?.forceRealAudit)) {
-        input.learningType = input.evidence?.isSimulation ? 'SIMULATION_INSIGHT' : 'TEST_LEARNING';
+      if (!hasVerifiedAction || !hasRealResult) {
+        input.learningType = (input.evidence?.isSimulation || input.evidence?.simulation) ? 'SIMULATION_INSIGHT' : 'TEST_LEARNING';
       }
     }
 
-    const db = getDb();
-    const id = `lrn_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const id = `lrn_${Date.now()}_${randomUUID().substring(0, 6)}`;
     const now = new Date().toISOString();
 
     const sql = `
@@ -95,16 +97,18 @@ export class LearningEngine {
     ];
 
     try {
+      const db = getDb();
       db.prepare(sql).run(...params);
     } catch (err: any) {
       console.warn(`[LearningEngine] Failed to persist observation in SQLite: ${err.message}`);
     }
 
     // In production, execute durable write through D1 repository
-    try {
-      const { D1RevenueRepository } = require('../db/d1-revenue-repository.js');
-      D1RevenueRepository.getInstance().executeWrite('learning_records', sql, params).catch(() => {});
-    } catch {}
+    if (isProduction()) {
+      this.d1Repo.executeWrite('learning_records', sql, params).catch(err => {
+        console.error(`[LearningEngine] D1 write failed: ${err.message}`);
+      });
+    }
 
     return {
       id,
@@ -117,17 +121,18 @@ export class LearningEngine {
    * Retrieves verified empirical insights for decision optimization.
    */
   public getRealWorldInsights(organizationId: string, channel?: string): LearningRecord[] {
-    const db = getDb();
+    let query = `SELECT * FROM learning_records WHERE organization_id = ? AND learning_type = 'REAL_WORLD_LEARNING'`;
+    const params: any[] = [organizationId];
+
+    if (channel) {
+      query += ` AND channel = ?`;
+      params.push(channel);
+    }
+
+    query += ` ORDER BY created_at DESC LIMIT 20`;
+
     try {
-      let query = `SELECT * FROM learning_records WHERE organization_id = ? AND learning_type = 'REAL_WORLD_LEARNING'`;
-      const params: any[] = [organizationId];
-
-      if (channel) {
-        query += ` AND channel = ?`;
-        params.push(channel);
-      }
-
-      query += ` ORDER BY created_at DESC LIMIT 20`;
+      const db = getDb();
       const rows = db.prepare(query).all(...params) as any[];
 
       return rows.map(r => ({
@@ -152,5 +157,49 @@ export class LearningEngine {
     } catch {
       return [];
     }
+  }
+
+  /**
+   * Async D1-authoritative retrieval for production.
+   */
+  public async getRealWorldInsightsAsync(organizationId: string, channel?: string): Promise<LearningRecord[]> {
+    let query = `SELECT * FROM learning_records WHERE organization_id = ? AND learning_type = 'REAL_WORLD_LEARNING'`;
+    const params: any[] = [organizationId];
+
+    if (channel) {
+      query += ` AND channel = ?`;
+      params.push(channel);
+    }
+
+    query += ` ORDER BY created_at DESC LIMIT 20`;
+
+    if (isProduction()) {
+      try {
+        const res = await this.d1Repo.executeRead('learning_records', query, params);
+        return (res.results || []).map((r: any) => ({
+          id: r.id,
+          organizationId: r.organization_id,
+          businessId: r.business_id,
+          learningType: r.learning_type,
+          decision: r.decision,
+          hypothesis: r.hypothesis,
+          action: r.action,
+          audience: r.audience,
+          offer: r.offer,
+          channel: r.channel,
+          result: r.result,
+          revenueINR: r.revenue_inr,
+          costINR: r.cost_inr,
+          timeTakenHours: r.time_taken_hours,
+          confidence: r.confidence,
+          evidence: JSON.parse(r.evidence_json || '{}'),
+          createdAt: r.created_at
+        }));
+      } catch (err: any) {
+        console.warn(`[LearningEngine] D1 read failed, falling back to local: ${err.message}`);
+      }
+    }
+
+    return this.getRealWorldInsights(organizationId, channel);
   }
 }
