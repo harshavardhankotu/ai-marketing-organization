@@ -64,6 +64,7 @@ export type AppVariables = {
 export const EXACT_ROUTE_POLICY = {
   PUBLIC: [
     '/health',
+    '/diagnostic/env',
     '/public/lead',
     '/landing-pages',
     '/organic/sessions',
@@ -89,6 +90,14 @@ export const EXACT_ROUTE_POLICY = {
 };
 
 export const apiRouter = new Hono<{ Variables: AppVariables }>();
+
+apiRouter.get('/diagnostic/env', (c) => {
+  return c.json({
+    CRON_PING_SECRET: process.env.CRON_PING_SECRET ? (process.env.CRON_PING_SECRET.length > 5 ? 'CONFIGURED' : 'TOO_SHORT') : 'MISSING',
+    OWNER_API_KEY: process.env.OWNER_API_KEY ? (process.env.OWNER_API_KEY.length > 5 ? 'CONFIGURED' : 'TOO_SHORT') : 'MISSING'
+  });
+});
+
 
 // Middleware: Authentication & Tenant Context Boundary
 apiRouter.use('*', async (c, next) => {
@@ -203,7 +212,7 @@ apiRouter.use('*', async (c, next) => {
 });
 
 // Health check
-apiRouter.get('/health', (c) => {
+apiRouter.get('/health', (c) => c.json({ status: 'healthy' })); apiRouter.get('/health', (c) => {
   return c.json({
     status: 'healthy',
     timestamp: new Date().toISOString(),
