@@ -193,7 +193,8 @@ export class RealityReportGenerator {
     }
     const db = getDb();
     const effectiveBizId = businessId ||
-      (db.prepare(`SELECT id FROM businesses WHERE organization_id = ? LIMIT 1`).get(organizationId) as any)?.id;
+      (db.prepare(`SELECT id FROM businesses WHERE organization_id = ? LIMIT 1`).get(organizationId) as any)?.id ||
+      (organizationId === OwnerAuthService.OWNER_ORGANIZATION_ID ? OwnerAuthService.PLATFORM_BUSINESS_ID : undefined);
     if (!effectiveBizId) {
       throw new Error(`BUSINESS_REQUIRED: No business found for organizationId='${organizationId}'. Explicit businessId required.`);
     }

@@ -71,16 +71,6 @@ if (distDir) {
   // Serve compiled frontend assets
   app.use('/assets/*', serveStatic({ root: relRoot }));
 
-  // Explicit landing routes for patient ads (Google Search, Meta, etc.)
-  app.get('/aligners-hyderabad', (c) => {
-    if (indexHtml) return c.html(indexHtml);
-    return c.text('SmileKraft Dental Clinic Hyderabad - Clear Aligners Landing Page', 200);
-  });
-  app.get('/aligners', (c) => {
-    if (indexHtml) return c.html(indexHtml);
-    return c.text('SmileKraft Dental Clinic Hyderabad - Clear Aligners Landing Page', 200);
-  });
-
   // SPA fallback for all non-API web traffic
   app.get('*', (c, next) => {
     if (c.req.path.startsWith('/api')) {
@@ -111,7 +101,11 @@ if (process.env.NODE_ENV !== 'test') {
           }
         })
         .catch(err => {
-          console.warn('[D1 Auto-Migrate] Warning during D1 migration:', err.message);
+          console.error('[D1 Auto-Migrate FATAL] Error during D1 migration:', err.message);
+          if (process.env.NODE_ENV === 'production') {
+            console.error('[D1 Auto-Migrate FATAL] Production database migration failed. Exiting process to prevent split-brain.');
+            process.exit(1);
+          }
         });
     }
   });
@@ -127,7 +121,7 @@ if (process.env.NODE_ENV !== 'test') {
   console.log(`🚀 AI Marketing Organization Backend Service Running`);
   console.log(`📡 URL: http://localhost:${PORT}`);
   console.log(`📊 API Health: http://localhost:${PORT}/api/v1/health`);
-  console.log(`🏢 Seed Business: SmileKraft Dental Hyderabad (₹50k INR Budget)`);
+  console.log(`🏢 Commercial Engine: Universal Multi-Tenant Ready`);
   console.log(`🤖 Agents Active: 80 Specialized Autonomous Agents`);
   console.log(`⏱️ Daily Autonomous Research Scheduler: RUNNING`);
   console.log(`======================================================\n`);

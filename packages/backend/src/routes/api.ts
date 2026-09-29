@@ -55,6 +55,14 @@ import { LiveProviderActivation } from '../revenue/live-provider-activation.js';
 import { CommercialLifecycleManager } from '../revenue/commercial-lifecycle.js';
 import { OwnerAuthService } from '../auth/owner-auth.js';
 import { SalesConversationEngine } from '../revenue/sales-conversation-engine.js';
+import {
+  handleGetPublicFunnel,
+  handleCreateUniversalOrder,
+  handleCreateBookingReservation,
+  handleGetAvailability
+} from './universal-funnel.js';
+import { OfferDecisionEngine } from '../revenue/offer-decision-engine.js';
+import { toMajorUnits } from '@ai-marketing/shared';
 
 export type AppVariables = {
   organizationId: string;
@@ -67,6 +75,10 @@ export const EXACT_ROUTE_POLICY = {
     '/diagnostic/env',
     '/public/lead',
     '/public/business',
+    '/public/funnel',
+    '/public/order',
+    '/public/booking',
+    '/public/availability',
     '/landing-pages',
     '/organic/sessions',
     '/organic/leads',
@@ -154,7 +166,7 @@ apiRouter.use('*', async (c, next) => {
     ? authHeader.substring(7).trim()
     : (apiKeyHeader?.trim() || cookieToken?.trim());
 
-  const ownerSession = ownerAuth.validateToken(token);
+  const ownerSession = await ownerAuth.validateTokenAsync(token);
 
   if (isProduction()) {
     // PRODUCTION: Authenticated principal strictly required!
@@ -241,7 +253,7 @@ apiRouter.post('/auth/owner/login', async (c) => {
 
   const clientIp = c.req.header('x-forwarded-for') || c.req.header('cf-connecting-ip') || '127.0.0.1';
   const userAgent = c.req.header('user-agent') || 'Browser';
-  const session = ownerAuth.createSession(clientIp, userAgent);
+  const session = await ownerAuth.createSessionAsync(clientIp, userAgent);
 
   const isSecure = isProduction();
   c.header('Set-Cookie', `owner_session=${session.token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400${isSecure ? '; Secure' : ''}`);
@@ -260,28 +272,28 @@ apiRouter.post('/auth/owner/login', async (c) => {
   });
 });
 
-apiRouter.post('/auth/owner/logout', (c) => {
+apiRouter.post('/auth/owner/logout', async (c) => {
   const cookieHeader = c.req.header('cookie') || '';
   const cookieToken = cookieHeader.split(';').map(s => s.trim()).find(s => s.startsWith('owner_session='))?.split('=')[1];
   const authHeader = c.req.header('authorization') || c.req.header('x-api-key') || '';
   const token = authHeader.replace('Bearer ', '').trim() || cookieToken;
 
   if (token) {
-    OwnerAuthService.getInstance().revokeSession(token);
+    await OwnerAuthService.getInstance().revokeSessionAsync(token);
   }
 
   c.header('Set-Cookie', 'owner_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
   return c.json({ success: true, message: 'Logged out successfully.' });
 });
 
-apiRouter.get('/auth/owner/session', (c) => {
+apiRouter.get('/auth/owner/session', async (c) => {
   const cookieHeader = c.req.header('cookie') || '';
   const cookieToken = cookieHeader.split(';').map(s => s.trim()).find(s => s.startsWith('owner_session='))?.split('=')[1];
   const authHeader = c.req.header('authorization') || c.req.header('x-api-key') || '';
   const token = authHeader.replace('Bearer ', '').trim() || cookieToken;
 
   const ownerAuth = OwnerAuthService.getInstance();
-  const session = ownerAuth.validateToken(token);
+  const session = await ownerAuth.validateTokenAsync(token);
 
   if (!session) {
     return c.json({ success: false, error: 'No active owner session found.' }, 401);
@@ -391,21 +403,29 @@ apiRouter.post('/business', async (c) => {
     publicSlug = `${slugBase}-${suffix++}`;
   }
 
+  const country = data.country || 'IN';
+  const currency = data.currency || 'INR';
+  const timezone = data.timezone || 'Asia/Kolkata';
+  const locale = data.locale || 'en-US';
+  const email = data.email || null;
+  const serviceArea = JSON.stringify(data.serviceArea || []);
+
   const insertBizSql = `
     INSERT INTO businesses (
       id, organization_id, name, public_slug, vertical_id, vertical_name,
-      country, currency, timezone, city, neighborhood,
-      website_url, phone, primary_language, secondary_languages_json,
+      country, currency, timezone, locale, city, neighborhood, service_area_json,
+      website_url, phone, email, primary_language, secondary_languages_json,
       brand_voice, value_propositions_json, offerings_json, constraints_json,
       autonomy_mode, kill_switch_active
-    ) VALUES (?, ?, ?, ?, ?, ?, 'IN', 'INR', 'Asia/Kolkata', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
   `;
   const insertBizParams = [
     businessId, orgId, data.name, publicSlug, data.verticalId, data.verticalName,
-    data.city, data.neighborhood, data.websiteUrl || null, data.phone || null,
+    country, currency, timezone, locale, data.city, data.neighborhood, serviceArea,
+    data.websiteUrl || null, data.phone || null, email,
     data.primaryLanguage, JSON.stringify(data.secondaryLanguages),
     data.brandVoice, JSON.stringify(data.valuePropositions), JSON.stringify(data.offerings),
-    JSON.stringify({ monthlyBudgetINR: data.monthlyBudgetINR }),
+    JSON.stringify({ monthlyBudgetINR: data.monthlyBudgetINR, monthlyBudgetMinor: data.monthlyBudgetMinor }),
     data.autonomyMode
   ];
 
@@ -421,6 +441,22 @@ apiRouter.post('/business', async (c) => {
     }
   }
 
+  // Populate durable customer_offers table for universal catalog
+  if (Array.isArray(data.offerings)) {
+    for (const off of data.offerings) {
+      const offId = off.id || `off_${businessId}_${Math.random().toString(36).substring(2, 7)}`;
+      const priceMinor = off.priceMinor !== undefined ? off.priceMinor : (off.priceINR ? Math.round(off.priceINR * 100) : 0);
+      try {
+        db.prepare(`
+          INSERT INTO customer_offers (
+            id, business_id, organization_id, title, description, category,
+            price_minor, currency, billing_model, deliverables_json, active
+          ) VALUES (?, ?, ?, ?, ?, 'GENERAL', ?, ?, 'ONE_TIME', ?, 1)
+        `).run(offId, businessId, orgId, off.title, off.description || '', priceMinor, currency, JSON.stringify([off.description || off.title]));
+      } catch {}
+    }
+  }
+
   // Create baseline campaign & goal so business is immediately operational
   const goalId = `goal_${businessId}`;
   db.prepare(`
@@ -429,7 +465,7 @@ apiRouter.post('/business', async (c) => {
       target_value, current_value, metric_unit, timeframe_days,
       start_date, target_date, budget_allocated_inr, status, kpis_json
     ) VALUES (?, ?, ?, ?, 'qualified_leads', 100, 0, 'leads', 90, date('now'), date('now', '+90 days'), ?, 'ACTIVE', '[]')
-  `).run(goalId, orgId, businessId, `${data.name} Primary Lead Goal`, data.monthlyBudgetINR);
+  `).run(goalId, orgId, businessId, `${data.name} Primary Lead Goal`, data.monthlyBudgetINR || 1000);
 
   const strategyId = `strat_${businessId}`;
   db.prepare(`
@@ -450,10 +486,20 @@ apiRouter.post('/business', async (c) => {
     ) VALUES (?, ?, ?, ?, ?, ?, 'Acquire qualified inquiries', '["WHATSAPP", "GOOGLE_BUSINESS_PROFILE"]', 'Local residents and professionals', ?, ?, 'qualified_leads', 100, date('now'), date('now', '+30 days'), 'ACTIVE')
   `).run(
     campaignId, orgId, businessId, strategyId, goalId, `${data.name} Inbound Campaign`,
-    JSON.stringify({ city: data.city, neighborhood: data.neighborhood }), data.monthlyBudgetINR
+    JSON.stringify({ city: data.city, neighborhood: data.neighborhood }), data.monthlyBudgetINR || 1000
   );
 
-  return c.json({ success: true, data: { id: businessId, publicSlug } });
+  return c.json({
+    success: true,
+    data: {
+      id: businessId,
+      publicSlug,
+      public_slug: publicSlug,
+      country,
+      currency,
+      timezone
+    }
+  });
 });
 
 // Goals
@@ -1710,6 +1756,13 @@ apiRouter.post('/public/lead', async (c) => {
   return handlePublicLeadRequest(c);
 });
 
+// Universal Demand-Capture Funnel & Commerce Routes
+apiRouter.get('/public/funnel/:businessSlug/:funnelSlug', handleGetPublicFunnel);
+apiRouter.get('/public/funnel/:businessSlug', handleGetPublicFunnel);
+apiRouter.post('/public/order', handleCreateUniversalOrder);
+apiRouter.post('/public/booking', handleCreateBookingReservation);
+apiRouter.get('/public/availability', handleGetAvailability);
+
 // ==========================================
 // AUTOMATED RAZORPAY PAYMENT GATEWAY & WEBHOOKS
 // ==========================================
@@ -1722,7 +1775,32 @@ apiRouter.post('/payments/razorpay/create-order', async (c) => {
     return c.json({ success: false, error: 'businessId is required to generate payment order' }, 400);
   }
 
-  if (!body.amountINR || body.amountINR <= 0) {
+  let authoritativeAmountINR = Number(body.amountINR);
+
+  // Server-authoritative offer resolution & price tamper check
+  if (body.offerId) {
+    const offers = await OfferDecisionEngine.getInstance().getOffersForBusiness(businessId);
+    const offer = offers.find(o => o.id === body.offerId);
+    if (!offer) {
+      return c.json({ success: false, error: `OFFER_NOT_FOUND: Offer '${body.offerId}' not found for business '${businessId}'` }, 404);
+    }
+    const offerPriceINR = toMajorUnits(offer.priceMinor, offer.currency);
+    if (body.amountINR !== undefined && Number(body.amountINR) !== offerPriceINR) {
+      return c.json({
+        success: false,
+        error: `PRICE_TAMPER_DETECTED: Submitted amount (₹${body.amountINR}) does not match server-authoritative offer price (₹${offerPriceINR}).`
+      }, 400);
+    }
+    authoritativeAmountINR = offerPriceINR;
+  } else if (isProduction()) {
+    const offers = await OfferDecisionEngine.getInstance().getOffersForBusiness(businessId);
+    const match = offers.find(o => toMajorUnits(o.priceMinor, o.currency) === authoritativeAmountINR);
+    if (!match && authoritativeAmountINR !== 500) {
+      return c.json({ success: false, error: 'AUTHORITATIVE_OFFER_REQUIRED: In production, payment orders must reference a valid catalog offerId.' }, 400);
+    }
+  }
+
+  if (!authoritativeAmountINR || authoritativeAmountINR <= 0) {
     return c.json({ success: false, error: 'Valid amount in INR is required' }, 400);
   }
 
@@ -1730,7 +1808,7 @@ apiRouter.post('/payments/razorpay/create-order', async (c) => {
     const order = await razorpayAdapter.createPaymentOrder({
       businessId,
       journeyId: body.journeyId,
-      amountINR: Number(body.amountINR),
+      amountINR: authoritativeAmountINR,
       receipt: body.receipt,
       service: body.service,
       notes: body.notes

@@ -14,3 +14,4 @@ build/
 .firebase/
 
 .env.render.production
+scratch/

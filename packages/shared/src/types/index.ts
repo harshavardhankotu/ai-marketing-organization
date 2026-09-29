@@ -83,9 +83,24 @@ export interface User {
   createdAt: string;
 }
 
+export interface OfferingItem {
+  id?: string;
+  title: string;
+  description: string;
+  priceMinor?: number; // Integer minor units (e.g. 4500000 paise or 5000 cents)
+  priceINR?: number;   // Backward-compatible major units for INR
+  price?: number;      // Major units in business currency
+  currency?: string;
+  billingModel?: 'ONE_TIME' | 'MONTHLY' | 'ANNUAL' | 'DEPOSIT' | 'USAGE' | 'CUSTOM';
+  targetSegment?: string;
+  deliverables?: string[];
+  qualificationRules?: string[];
+}
+
 export interface BusinessProfile {
   id: string;
   organizationId: string;
+  publicSlug?: string;
   name: string;
   verticalId: string;
   verticalName: string;
@@ -93,26 +108,26 @@ export interface BusinessProfile {
   country: string;
   currency: string;
   timezone: string;
+  locale?: string;
   city: string;
   neighborhood: string;
+  serviceArea?: string[];
   websiteUrl?: string;
   phone?: string;
-  primaryLanguage: IndianLanguage;
-  secondaryLanguages: IndianLanguage[];
+  email?: string;
+  primaryLanguage: string;
+  secondaryLanguages: string[];
   brandVoice: string;
   valuePropositions: string[];
-  offerings: {
-    id: string;
-    title: string;
-    description: string;
-    priceINR: number;
-    targetSegment: string;
-  }[];
+  offerings: OfferingItem[];
   constraints: {
-    monthlyBudgetINR: number;
-    maxDailySpendINR: number;
+    monthlyBudgetMinor?: number;
+    monthlyBudgetINR?: number;
+    maxDailySpendMinor?: number;
+    maxDailySpendINR?: number;
     excludedTopics: string[];
     complianceMandates: string[];
+    operatingHours?: Record<string, { open: string; close: string }>;
   };
   autonomyMode: AutonomyMode;
   killSwitchActive: boolean;
@@ -1254,4 +1269,252 @@ export interface AcquisitionEvidenceRecord {
   verifiedOrganic: boolean;
   evidenceDetails: string;
   timestamp: string;
+}
+
+// ==========================================
+// UNIVERSAL COMMERCIAL OPERATING SYSTEM (UCOS)
+// ==========================================
+
+export interface Money {
+  amountMinor: number; // e.g. 50000 paise for ₹500, 2500 cents for $25.00
+  currency: string;    // ISO-4217 code (INR, USD, GBP, EUR, AED, AUD, CAD, SGD)
+}
+
+export function toMinorUnits(amountMajor: number, currency: string = 'INR'): number {
+  const zeroDecimal = ['JPY', 'KRW', 'VND', 'CLP', 'BIF', 'DJF', 'GNF', 'KMF', 'MGA', 'PYG', 'RWF', 'UGX'];
+  const threeDecimal = ['BHD', 'JOD', 'KWD', 'OMR', 'TND'];
+  const cur = (currency || 'INR').toUpperCase();
+  if (zeroDecimal.includes(cur)) return Math.round(amountMajor);
+  if (threeDecimal.includes(cur)) return Math.round(amountMajor * 1000);
+  return Math.round(amountMajor * 100);
+}
+
+export function toMajorUnits(amountMinor: number, currency: string = 'INR'): number {
+  const zeroDecimal = ['JPY', 'KRW', 'VND', 'CLP', 'BIF', 'DJF', 'GNF', 'KMF', 'MGA', 'PYG', 'RWF', 'UGX'];
+  const threeDecimal = ['BHD', 'JOD', 'KWD', 'OMR', 'TND'];
+  const cur = (currency || 'INR').toUpperCase();
+  if (zeroDecimal.includes(cur)) return amountMinor;
+  if (threeDecimal.includes(cur)) return amountMinor / 1000;
+  return amountMinor / 100;
+}
+
+export function formatMoney(amountMinor: number, currency: string = 'INR', locale: string = 'en-US'): string {
+  const major = toMajorUnits(amountMinor, currency);
+  try {
+    return new Intl.NumberFormat(locale, { style: 'currency', currency }).format(major);
+  } catch {
+    return `${currency} ${major.toFixed(2)}`;
+  }
+}
+
+// 1. Universal Funnel Domain
+export type FunnelType = 
+  | 'CONSULTATION'
+  | 'BOOKING'
+  | 'QUOTE_REQUEST'
+  | 'HIGH_TICKET'
+  | 'DIRECT_PURCHASE'
+  | 'LEAD_MAGNET'
+  | 'DEMO'
+  | 'CONTACT'
+  | 'EVENT_REGISTRATION'
+  | 'EMERGENCY'
+  | 'UNIVERSAL';
+
+export interface Funnel {
+  id: string;
+  businessId: string;
+  organizationId: string;
+  publicSlug: string;
+  status: 'ACTIVE' | 'DRAFT' | 'ARCHIVED';
+  funnelType: FunnelType;
+  objective: string;
+  targetIntent?: string;
+  audience?: string;
+  headline?: string;
+  subheadline?: string;
+  proofPoints: string[];
+  offerIds: string[];
+  ctaStrategy: string;
+  qualificationStrategy?: string;
+  schedulingStrategy?: string;
+  paymentStrategy?: 'REQUIRED' | 'DEPOSIT' | 'OPTIONAL' | 'NONE';
+  language: string;
+  currency: string;
+  designConfig: Record<string, any>;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FunnelPublicProfile {
+  business: {
+    id: string;
+    publicSlug: string;
+    name: string;
+    verticalId: string;
+    verticalName: string;
+    country: string;
+    currency: string;
+    timezone: string;
+    city: string;
+    neighborhood?: string;
+    websiteUrl?: string;
+    phone?: string;
+    email?: string;
+    valuePropositions: string[];
+  };
+  funnel: {
+    id: string;
+    publicSlug: string;
+    funnelType: FunnelType;
+    headline: string;
+    subheadline?: string;
+    proofPoints: string[];
+    ctaStrategy: string;
+    paymentStrategy: 'REQUIRED' | 'DEPOSIT' | 'OPTIONAL' | 'NONE';
+    currency: string;
+  };
+  offers: OfferingItem[];
+}
+
+// 2. Universal Offer Domain
+export type BillingModel = 'ONE_TIME' | 'MONTHLY' | 'ANNUAL' | 'DEPOSIT' | 'USAGE' | 'CUSTOM';
+
+export interface CustomerOffer {
+  id: string;
+  businessId: string;
+  organizationId: string;
+  title: string;
+  description: string;
+  category: string;
+  priceMinor: number;
+  currency: string;
+  billingModel: BillingModel;
+  depositMinor?: number;
+  targetSegment?: string;
+  deliverables: string[];
+  qualificationRules: string[];
+  availabilityRules: Record<string, any>;
+  fulfillmentType: 'APPOINTMENT' | 'SERVICE_DELIVERY' | 'DIGITAL' | 'SHIPMENT' | 'SUBSCRIPTION' | 'CONSULTATION';
+  active: boolean;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// 3. Structured Intent Model
+export type IntentUrgency = 'IMMEDIATE' | 'HIGH' | 'MEDIUM' | 'LOW';
+export type PurchaseStage = 'AWARENESS' | 'EVALUATING' | 'READY_TO_BUY';
+
+export interface StructuredIntent {
+  problem?: string;
+  serviceOrProduct?: string;
+  urgency?: IntentUrgency;
+  location?: string;
+  preferredDate?: string;
+  preferredTime?: string;
+  budgetRange?: { minMinor?: number; maxMinor?: number; currency?: string };
+  customerType?: 'B2B' | 'B2C';
+  purchaseStage?: PurchaseStage;
+  quantity?: number;
+  preferredChannel?: MarketingChannel;
+  language?: string;
+  confidence: number;
+  rawText: string;
+}
+
+// 4. Universal Qualification Model
+export type QualificationStatus = 
+  | 'QUALIFIED'
+  | 'PARTIALLY_QUALIFIED'
+  | 'NEEDS_INFORMATION'
+  | 'INELIGIBLE';
+
+export interface QualificationResult {
+  status: QualificationStatus;
+  fitScore: number;
+  reasons: string[];
+  missingFields: string[];
+  eligibleOfferIds: string[];
+  suggestedAction: string;
+}
+
+// 5. Universal Availability & Scheduling Model
+export interface AvailabilitySlot {
+  slotId: string;
+  businessId: string;
+  resourceId?: string;
+  resourceType: 'STAFF' | 'PRACTITIONER' | 'ROOM' | 'TABLE' | 'VEHICLE' | 'VIRTUAL';
+  startTime: string; // ISO 8601
+  endTime: string;   // ISO 8601
+  isAvailable: boolean;
+  capacity: number;
+  reservedCount: number;
+}
+
+export interface BookingReservation {
+  id: string;
+  businessId: string;
+  organizationId: string;
+  slotId: string;
+  customerName: string;
+  customerContact: string;
+  serviceTitle: string;
+  status: 'PENDING_CONFIRMATION' | 'CONFIRMED' | 'CANCELLED' | 'COMPLETED' | 'NO_SHOW';
+  startTime: string;
+  endTime: string;
+  metadata?: Record<string, any>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// 6. Universal Order & Checkout Model
+export type OrderStatus = 
+  | 'QUOTE'
+  | 'CHECKOUT'
+  | 'ORDER'
+  | 'PAYMENT_PENDING'
+  | 'PAID'
+  | 'FULFILLMENT'
+  | 'COMPLETED'
+  | 'CANCELLED'
+  | 'REFUNDED';
+
+export interface UniversalOrder {
+  id: string;
+  businessId: string;
+  organizationId: string;
+  offerId: string;
+  customerName: string;
+  customerEmail?: string;
+  customerPhone: string;
+  amountMinor: number;
+  currency: string;
+  status: OrderStatus;
+  paymentProvider?: 'RAZORPAY' | 'STRIPE' | 'MANUAL';
+  providerOrderId?: string;
+  providerPaymentId?: string;
+  fulfillmentStatus: 'PENDING' | 'SCHEDULED' | 'IN_PROGRESS' | 'DELIVERED' | 'ACKNOWLEDGED';
+  metadata: Record<string, any>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// 7. Universal Fulfillment Model
+export interface FulfillmentTask {
+  id: string;
+  orderId: string;
+  businessId: string;
+  organizationId: string;
+  title: string;
+  fulfillmentType: string;
+  assignedOwner?: string;
+  slaHours: number;
+  state: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'BLOCKED';
+  deliverables: string[];
+  evidence: string[];
+  completedAt?: string;
+  createdAt: string;
+  updatedAt: string;
 }

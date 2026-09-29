@@ -89,6 +89,14 @@ export const api = {
   getAgentById: (id: string) => fetchApi(`/agents/${id}`),
   getBusiness: (id?: string) => fetchApi(id ? `/business?id=${id}` : '/business'),
   getPublicBusiness: (slug: string) => fetchApi(`/public/business/${encodeURIComponent(slug)}`),
+  getPublicFunnel: (businessSlug: string, funnelSlug?: string) =>
+    fetchApi(`/public/funnel/${encodeURIComponent(businessSlug)}${funnelSlug ? `/${encodeURIComponent(funnelSlug)}` : ''}`),
+  createUniversalOrder: (data: any) =>
+    fetchApi('/public/order', { method: 'POST', body: JSON.stringify(data) }),
+  createBookingReservation: (data: any) =>
+    fetchApi('/public/booking', { method: 'POST', body: JSON.stringify(data) }),
+  getAvailability: (businessSlug: string) =>
+    fetchApi(`/public/availability?businessSlug=${encodeURIComponent(businessSlug)}`),
   createBusiness: (data: any) => fetchApi('/business', { method: 'POST', body: JSON.stringify(data) }),
   getGoals: () => fetchApi('/goals'),
   createGoal: (data: any) => fetchApi('/goals', { method: 'POST', body: JSON.stringify(data) }),

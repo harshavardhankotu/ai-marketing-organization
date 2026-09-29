@@ -105,6 +105,8 @@ export const UniversalFunnelPage: React.FC = () => {
   );
 
   const [business, setBusiness] = useState<PublicBusiness | null>(null);
+  const [funnel, setFunnel] = useState<any>(null);
+  const [customOffers, setCustomOffers] = useState<Offering[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [submitted, setSubmitted] = useState<any>(null);
@@ -132,27 +134,43 @@ export const UniversalFunnelPage: React.FC = () => {
       }
 
       try {
-        const res: any = await api.getPublicBusiness(businessId);
-        if (!res?.data?.id) {
-          throw new Error('Business profile not found.');
+        let res: any = null;
+        try {
+          res = await api.getPublicFunnel(businessId, funnelSlug);
+        } catch {
+          res = await api.getPublicBusiness(businessId);
         }
 
         if (cancelled) return;
 
-        const nextBusiness = res.data as PublicBusiness;
-        setBusiness(nextBusiness);
-
-        const offers = parseOfferings(nextBusiness);
-
-        if (offers.length > 0) {
-          setSelectedOffer((current) => current || offers[0].title);
+        if (res?.data?.business) {
+          const nextBusiness = res.data.business as PublicBusiness;
+          setBusiness(nextBusiness);
+          setFunnel(res.data.funnel);
+          if (Array.isArray(res.data.offers) && res.data.offers.length > 0) {
+            setCustomOffers(res.data.offers);
+            setSelectedOffer((current) => current || res.data.offers[0].title);
+          }
+          setLocation((current) => current || (
+            nextBusiness.neighborhood
+              ? `${nextBusiness.neighborhood}${nextBusiness.city ? `, ${nextBusiness.city}` : ''}`
+              : nextBusiness.city || ''
+          ));
+        } else if (res?.data?.id) {
+          const nextBusiness = res.data as PublicBusiness;
+          setBusiness(nextBusiness);
+          const offers = parseOfferings(nextBusiness);
+          if (offers.length > 0) {
+            setSelectedOffer((current) => current || offers[0].title);
+          }
+          setLocation((current) => current || (
+            nextBusiness.neighborhood
+              ? `${nextBusiness.neighborhood}${nextBusiness.city ? `, ${nextBusiness.city}` : ''}`
+              : nextBusiness.city || ''
+          ));
+        } else {
+          throw new Error('Business profile not found.');
         }
-
-        setLocation((current) => current || (
-          nextBusiness.neighborhood
-            ? `${nextBusiness.neighborhood}${nextBusiness.city ? `, ${nextBusiness.city}` : ''}`
-            : nextBusiness.city || ''
-        ));
       } catch (e: any) {
         if (!cancelled) {
           setLoadError(e?.message || 'Could not load this business funnel.');
@@ -167,13 +185,16 @@ export const UniversalFunnelPage: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [businessId]);
+  }, [businessId, funnelSlug]);
 
-  const offerings = useMemo(() => parseOfferings(business), [business]);
+  const offerings = useMemo(() => {
+    if (customOffers.length > 0) return customOffers;
+    return parseOfferings(business);
+  }, [business, customOffers]);
 
   const headline = intentFromQuery
     ? `Get the right solution for “${intentFromQuery}”`
-    : `Tell ${business?.name || 'the business'} what you need`;
+    : (funnel?.headline || `Tell ${business?.name || 'the business'} what you need`);
 
   async function submitLead(event: React.FormEvent) {
     event.preventDefault();

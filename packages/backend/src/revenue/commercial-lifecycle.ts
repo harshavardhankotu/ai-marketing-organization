@@ -20,6 +20,8 @@
  */
 
 import { getDb } from '../db/client.js';
+import { OwnerAuthService } from '../auth/owner-auth.js';
+import { isProduction } from '../config/env.js';
 
 export type CommercialLifecycleState =
   | 'SOFTWARE_READY'
@@ -91,8 +93,12 @@ export class CommercialLifecycleManager {
       bizId = biz?.id;
     }
     if (!bizId) {
-      const biz = db.prepare('SELECT id FROM businesses LIMIT 1').get() as any;
-      bizId = biz?.id;
+      if (organizationId === OwnerAuthService.OWNER_ORGANIZATION_ID) {
+        bizId = OwnerAuthService.PLATFORM_BUSINESS_ID;
+      } else if (!isProduction()) {
+        const biz = db.prepare('SELECT id FROM businesses LIMIT 1').get() as any;
+        bizId = biz?.id;
+      }
     }
 
     // 1. Query verified evidence records

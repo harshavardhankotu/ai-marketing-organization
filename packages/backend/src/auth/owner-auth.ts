@@ -1,6 +1,7 @@
 import { randomUUID, timingSafeEqual } from 'crypto';
 import { getDb } from '../db/client.js';
 import { isProduction, isPlaceholderCredential } from '../config/env.js';
+import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 
 export interface OwnerSessionInfo {
   token: string;
@@ -128,6 +129,22 @@ export class OwnerAuthService {
     };
   }
 
+  public async createSessionAsync(ip?: string, userAgent?: string): Promise<OwnerSessionInfo> {
+    const session = this.createSession(ip, userAgent);
+    if (isProduction()) {
+      try {
+        await D1RevenueRepository.getInstance().executeWrite(
+          'owner_sessions',
+          `INSERT OR REPLACE INTO owner_sessions (id, principal_type, organization_id, user_id, ip_address, user_agent, expires_at, created_at) VALUES (?, 'OWNER', ?, ?, ?, ?, ?, datetime('now'))`,
+          [session.token, session.organizationId, session.userId, ip || null, userAgent || null, session.expiresAt]
+        );
+      } catch (err: any) {
+        console.warn(`[OwnerAuth] Could not write session to D1: ${err.message}`);
+      }
+    }
+    return session;
+  }
+
   public validateToken(token?: string): OwnerSessionInfo | null {
     if (!token) return null;
     const trimmed = token.trim();
@@ -165,11 +182,59 @@ export class OwnerAuthService {
     return null;
   }
 
+  public async validateTokenAsync(token?: string): Promise<OwnerSessionInfo | null> {
+    if (!token) return null;
+    const syncRes = this.validateToken(token);
+    if (syncRes) return syncRes;
+
+    if (isProduction()) {
+      try {
+        const repo = D1RevenueRepository.getInstance();
+        const row = await repo.queryOne(
+          'owner_sessions',
+          `SELECT * FROM owner_sessions WHERE id = ? AND expires_at > datetime('now')`,
+          [token.trim()]
+        );
+        if (row) {
+          try {
+            const db = getDb();
+            db.prepare(`
+              INSERT OR REPLACE INTO owner_sessions (id, principal_type, organization_id, user_id, ip_address, user_agent, expires_at, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            `).run(row.id, row.principal_type || 'OWNER', row.organization_id, row.user_id, row.ip_address || null, row.user_agent || null, row.expires_at, row.created_at || new Date().toISOString());
+          } catch {}
+
+          return {
+            token: row.id,
+            principalType: 'OWNER',
+            organizationId: row.organization_id || OwnerAuthService.OWNER_ORGANIZATION_ID,
+            userId: row.user_id || OwnerAuthService.OWNER_USER_ID,
+            expiresAt: row.expires_at
+          };
+        }
+      } catch {}
+    }
+    return null;
+  }
+
   public revokeSession(token: string): void {
     try {
       const db = getDb();
       db.prepare('DELETE FROM owner_sessions WHERE id = ?').run(token.trim());
     } catch {}
+  }
+
+  public async revokeSessionAsync(token: string): Promise<void> {
+    this.revokeSession(token);
+    if (isProduction()) {
+      try {
+        await D1RevenueRepository.getInstance().executeWrite(
+          'owner_sessions',
+          `DELETE FROM owner_sessions WHERE id = ?`,
+          [token.trim()]
+        );
+      } catch {}
+    }
   }
 
   public getOwnerConfiguration(): OwnerConfiguration {

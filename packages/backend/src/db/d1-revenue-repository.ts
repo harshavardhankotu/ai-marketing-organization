@@ -33,7 +33,13 @@ export const D1_REVENUE_CRITICAL_TABLES = [
   'business_autonomy_lock',
   'analytics_events',
   'campaigns',
-  'business_goals'
+  'business_goals',
+  'funnels',
+  'customer_offers',
+  'availability_slots',
+  'booking_reservations',
+  'universal_orders',
+  'fulfillment_tasks'
 ] as const;
 
 export type D1RevenueCriticalTable = typeof D1_REVENUE_CRITICAL_TABLES[number] | string;

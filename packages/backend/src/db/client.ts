@@ -385,6 +385,15 @@ export function getDb(dbPath?: string): Database.Database {
       business_id TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`);
   } catch {}
+  try {
+    db.exec(`ALTER TABLE businesses ADD COLUMN locale TEXT DEFAULT 'en-US'`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE businesses ADD COLUMN email TEXT`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE businesses ADD COLUMN service_area_json TEXT DEFAULT '[]'`);
+  } catch {}
 
   // Initialize schema (creates all tables if not exist — safe for both fresh and existing DBs)
 

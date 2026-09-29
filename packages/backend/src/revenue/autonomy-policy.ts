@@ -12,6 +12,7 @@
  */
 
 import { getDb } from '../db/client.js';
+import { OwnerAuthService } from '../auth/owner-auth.js';
 
 export type ContactSafetyStatus =
   | 'CONTACTABLE'
@@ -300,13 +301,8 @@ export class AutonomyPolicyController {
         const isEmail = contactIdentifier.includes('@');
         const suppId = `supp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
         const existingJourney = db.prepare('SELECT business_id, organization_id FROM customer_journeys WHERE customer_email = ? OR customer_phone = ? OR id = ?').get(contactIdentifier, contactIdentifier, contactIdentifier) as any;
-        let targetBizId = existingJourney?.business_id;
-        let targetOrgId = existingJourney?.organization_id;
-        if (!targetBizId || !targetOrgId) {
-          const biz = db.prepare('SELECT id, organization_id FROM businesses LIMIT 1').get() as any;
-          targetBizId = targetBizId || biz?.id;
-          targetOrgId = targetOrgId || biz?.organization_id;
-        }
+        let targetBizId = existingJourney?.business_id || OwnerAuthService.PLATFORM_BUSINESS_ID;
+        let targetOrgId = existingJourney?.organization_id || OwnerAuthService.OWNER_ORGANIZATION_ID;
         if (targetBizId && targetOrgId) {
           db.prepare(`
             INSERT INTO outbound_contacts (
