@@ -94,7 +94,9 @@ export const apiRouter = new Hono<{ Variables: AppVariables }>();
 apiRouter.get('/diagnostic/env', (c) => {
   return c.json({
     CRON_PING_SECRET: process.env.CRON_PING_SECRET ? (process.env.CRON_PING_SECRET.length > 5 ? 'CONFIGURED' : 'TOO_SHORT') : 'MISSING',
-    OWNER_API_KEY: process.env.OWNER_API_KEY ? (process.env.OWNER_API_KEY.length > 5 ? 'CONFIGURED' : 'TOO_SHORT') : 'MISSING'
+    OWNER_API_KEY: process.env.OWNER_API_KEY ? (process.env.OWNER_API_KEY.length > 5 ? 'CONFIGURED' : 'TOO_SHORT') : 'MISSING',
+    GEMINI_API_KEY: process.env.GEMINI_API_KEY ? (process.env.GEMINI_API_KEY.length > 5 ? 'CONFIGURED' : 'TOO_SHORT') : 'MISSING',
+    TAVILY_API_KEY: process.env.TAVILY_API_KEY ? (process.env.TAVILY_API_KEY.length > 5 ? 'CONFIGURED' : 'TOO_SHORT') : 'MISSING'
   });
 });
 
