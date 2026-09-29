@@ -104,7 +104,7 @@ jobs:
       - name: Smoke test - Backend /health
         run: |
           echo "Running smoke test against $BACKEND_URL/api/v1/health"
-          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$BACKEND_URL/api/v1/health" --max-time 45 || echo "000")
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$BACKEND_URL/api/v1/health" --max-time 45)
           echo "HTTP Status: $HTTP_STATUS"
           if [ "$HTTP_STATUS" = "200" ]; then
             echo "✅ /api/v1/health returned 200 OK"
@@ -120,7 +120,7 @@ jobs:
             -H "Content-Type: application/json" \
             -H "X-Cron-Secret: $CRON_PING_SECRET" \
             -d "{\"triggerSource\":\"CLOUDFLARE_CRON\",\"scheduledAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"cronExpression\":\"0 * * * *\"}" \
-            --retry 3 --retry-delay 10 --max-time 60 || echo "000")
+            --retry 3 --retry-delay 10 --max-time 60)
 
           echo "Ping HTTP status: $PING_STATUS"
           cat ping_response.json || true
@@ -151,7 +151,7 @@ jobs:
         run: |
           echo "Checking cron status at $BACKEND_URL/api/v1/cron/status..."
           HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$BACKEND_URL/api/v1/cron/status" \
-            -H "X-Cron-Secret: $CRON_PING_SECRET" --max-time 30 || echo "000")
+            -H "X-Cron-Secret: $CRON_PING_SECRET" --max-time 30)
           echo "Cron status HTTP: $HTTP_STATUS"
           if [ "$HTTP_STATUS" = "200" ]; then
             echo "✅ /api/v1/cron/status OK (HTTP 200)"
@@ -164,7 +164,7 @@ jobs:
         run: |
           echo "Probing /api/v1/system/readiness with OWNER_API_KEY..."
           READINESS_STATUS=$(curl -s -o readiness_response.json -w "%{http_code}" "$BACKEND_URL/api/v1/system/readiness" \
-            -H "x-api-key: $OWNER_API_KEY" --max-time 30 || echo "000")
+            -H "x-api-key: $OWNER_API_KEY" --max-time 30)
           echo "Readiness HTTP status: $READINESS_STATUS"
           cat readiness_response.json || true
           echo ""
