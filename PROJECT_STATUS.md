@@ -16,14 +16,14 @@
 
 | Item | Status | Last Verified Date | Proving Command / Live Endpoint | Evidence & Notes |
 | :--- | :---: | :---: | :--- | :--- |
-| **Render Web Service** | **PASS** | 2026-09-30 | Render API `GET /v1/services` | Service: `ai-marketing-organization`<br>Service ID: `srv-darecoc9v7es73ea8t2g`<br>Runtime: Docker (`./Dockerfile`, context `.`, Oregon)<br>Deploy ID: `dep-dau3p1u0tbcc738mljmg` (live) |
-| **Deployed Production Commit** | **PASS** | 2026-09-30 | Render API `GET /v1/services/.../deploys` | Commit SHA: `4903abd`<br>Tracks `main` and `feat/general-purpose-multi-tenant` |
+| **Render Web Service** | **PASS** | 2026-09-30 | Render API `GET /v1/services` | Service: `ai-marketing-organization`<br>Service ID: `srv-darecoc9v7es73ea8t2g`<br>Runtime: Docker (`./Dockerfile`, context `.`, Oregon)<br>Deploy ID: `dep-dau46is9v7es73b78b0g` (live) |
+| **Deployed Production Commit** | **PASS** | 2026-09-30 | Render API `GET /v1/services/.../deploys` | Commit SHA: `abf879f`<br>Tracks `main` and `feat/general-purpose-multi-tenant` |
 | **Production Runtime Secrets** | **PASS** | 2026-09-30 | `GET /api/v1/diagnostic/env` | `CRON_PING_SECRET`: **CONFIGURED**<br>`OWNER_API_KEY`: **CONFIGURED**<br>`GEMINI_API_KEY`: **CONFIGURED**<br>`TAVILY_API_KEY`: **CONFIGURED**<br>Directly injected via Render REST API |
 | **Render Health Endpoint** | **PASS** | 2026-09-30 | `GET /api/v1/health` | Returns `HTTP 200 OK`<br>`{"status":"healthy","version":"1.0.0"}` |
 | **Cloudflare Worker** | **PASS** | 2026-09-30 | `GET https://ai-marketing-cron-worker.vardhankotu.workers.dev/health` | Returns `HTTP 200 OK`<br>`{"status":"ok","worker":"ai-marketing-cron-worker"}`<br>Schedule: `0 * * * *` (hourly UTC) |
 | **Cloudflare D1 Database** | **PASS** | 2026-09-30 | Cloudflare D1 HTTP API & Backend D1Client | Database configured & remote connected.<br>Migrations: `0001`, `0002`, `0003`, `0004` applied.<br>All 94 durable tables present in D1 schema (funnels, customer_offers, universal_orders, booking_reservations, availability_slots, fulfillment_tasks). |
 | **Cron Trigger & Ping Route** | **PASS** | 2026-09-30 | `POST /api/v1/cron/ping` | Returns `HTTP 200 OK` when authenticated with `X-Cron-Secret`. Runs async autonomy lock & durable cycle logging cleanly. |
-| **Cron Heartbeat & Telemetry** | **PASS** | 2026-09-30 | `GET /api/v1/cron/status` | Returns `HTTP 200 OK`.<br>Status: **`HEALTHY`**<br>Total Pings: **`11`**<br>Last Observed Ping: `2026-09-29 22:36:37`<br>Last Successful Cycle: `2026-09-29 22:36:42`<br>Cycle Result: `SUCCESS`<br>Worker Source: `node` / `cloudflare-cron-worker` |
+| **Cron Heartbeat & Telemetry** | **PASS** | 2026-09-30 | `GET /api/v1/cron/status` | Returns `HTTP 200 OK`.<br>Status: **`HEALTHY`**<br>Total Pings: **`16`**<br>Last Observed Ping: `2026-09-29 23:02:40`<br>Last Successful Cycle: `2026-09-29 23:02:46`<br>Cycle Result: `SUCCESS`<br>Worker Source: `node` / `cloudflare-cron-worker` |
 | **Authenticated System Readiness** | **PASS** | 2026-09-30 | `GET /api/v1/system/readiness` | Returns `HTTP 200 OK` when authenticated with `x-api-key: [OWNER_API_KEY]`.<br>12/12 checks passed (`operatingState: 'FIRST_REAL_LEAD'`). |
 | **Test Suite & Build** | **PASS** | 2026-09-30 | `npm run build && npm test` | Build exit code: `0` (monorepo root covers `shared`, `backend`, `frontend`, `cloudflare-worker`)<br>Test files: `42 passed (42)`<br>Tests: `401 passed (401)`<br>Failed: `0` |
 
