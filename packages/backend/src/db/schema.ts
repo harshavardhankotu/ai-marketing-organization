@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS businesses (
   id TEXT PRIMARY KEY,
   organization_id TEXT NOT NULL,
   name TEXT NOT NULL,
+  public_slug TEXT,
   vertical_id TEXT NOT NULL,
   vertical_name TEXT NOT NULL,
   risk_tier TEXT NOT NULL DEFAULT 'MEDIUM',
@@ -54,6 +55,9 @@ CREATE TABLE IF NOT EXISTS businesses (
   FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_businesses_org ON businesses(organization_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_businesses_public_slug
+  ON businesses(public_slug)
+  WHERE public_slug IS NOT NULL AND public_slug != '';
 
 -- 4. Business Goals & KPIs
 CREATE TABLE IF NOT EXISTS business_goals (

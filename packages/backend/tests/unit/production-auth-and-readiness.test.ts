@@ -81,6 +81,7 @@ describe('Production Authentication, Learning Isolation & Truth Integrity', () =
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          businessId: 'biz_smilekraft_hyd',
           customerName: 'Public Patient',
           customerPhone: '+91 98480 22338',
           customerEmail: 'public.patient@smilekraft.org',

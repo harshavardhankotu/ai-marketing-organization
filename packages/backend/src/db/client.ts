@@ -39,6 +39,9 @@ export function getDb(dbPath?: string): Database.Database {
 
   // Safe schema migrations for existing persistent SQLite databases before index creation
   try {
+    db.exec(`ALTER TABLE businesses ADD COLUMN public_slug TEXT`);
+  } catch {}
+  try {
     db.exec(`ALTER TABLE customer_journeys ADD COLUMN gclid TEXT`);
   } catch {}
   try {
@@ -386,6 +389,34 @@ export function getDb(dbPath?: string): Database.Database {
   // Initialize schema (creates all tables if not exist — safe for both fresh and existing DBs)
 
   db.exec(SCHEMA_SQL);
+
+  // Backfill public slugs for existing businesses without ever guessing a
+  // tenant at request time. Collisions are resolved deterministically.
+  try {
+    const businesses = db
+      .prepare(`SELECT id, name, public_slug FROM businesses WHERE public_slug IS NULL OR trim(public_slug) = ''`)
+      .all() as any[];
+
+    const exists = db.prepare('SELECT 1 FROM businesses WHERE public_slug = ? LIMIT 1');
+    const update = db.prepare(`UPDATE businesses SET public_slug = ?, updated_at = datetime('now') WHERE id = ?`);
+
+    for (const business of businesses) {
+      const base = String(business.name || business.id)
+        .toLowerCase()
+        .normalize('NFKD')
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '') || `business-${String(business.id)}`;
+
+      let slug = base;
+      let suffix = 2;
+      while (exists.get(slug)) {
+        slug = `${base}-${suffix++}`;
+      }
+      update.run(slug, business.id);
+    }
+  } catch (err) {
+    console.warn('[DB] Business public slug backfill skipped:', err);
+  }
 
   dbInstance = db;
   return dbInstance;

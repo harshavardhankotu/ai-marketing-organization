@@ -6,6 +6,7 @@ import { Dashboard } from './pages/Dashboard.js';
 import { Revenue } from './pages/Revenue.js';
 import { CustomerJourney } from './pages/CustomerJourney.js';
 import { PublicBookingPage } from './pages/PublicBookingPage.js';
+import { UniversalFunnelPage } from './pages/UniversalFunnelPage.js';
 import { Agents } from './pages/Agents.js';
 import { Campaigns } from './pages/Campaigns.js';
 import { ContentStudio } from './pages/ContentStudio.js';
@@ -112,9 +113,23 @@ export const App: React.FC = () => {
     }
   };
 
+  // Universal public demand funnels.
+  // Canonical shape: /f/<business-public-slug>/<funnel-slug>
+  // Also accepts /book/<business-public-slug>/<funnel-slug> for simple links.
+  const isPublicFunnelRoute = typeof window !== 'undefined' && (
+    window.location.pathname === '/book' ||
+    window.location.pathname.startsWith('/book/') ||
+    window.location.pathname.startsWith('/f/')
+  );
+
   useEffect(() => {
-    loadAllData();
-  }, []);
+    // Public demand funnels must not fan out into authenticated owner APIs.
+    if (!isPublicFunnelRoute) {
+      loadAllData();
+    } else {
+      setLoading(false);
+    }
+  }, [isPublicFunnelRoute]);
 
   const handleTriggerCycle = async () => {
     setIsCycleRunning(true);
@@ -143,16 +158,8 @@ export const App: React.FC = () => {
 
   const pendingApprovalsCount = approvals.filter(a => a.status === 'PENDING').length;
 
-  // Direct public patient route (e.g. ad landing page /aligners-hyderabad)
-  const isDirectPublicLanding = typeof window !== 'undefined' && (
-    window.location.pathname === '/aligners-hyderabad' ||
-    window.location.pathname === '/aligners' ||
-    window.location.pathname.startsWith('/booking') ||
-    window.location.pathname.startsWith('/public')
-  );
-
-  if (isDirectPublicLanding) {
-    return <PublicBookingPage />;
+  if (isPublicFunnelRoute) {
+    return <UniversalFunnelPage />;
   }
 
   return (

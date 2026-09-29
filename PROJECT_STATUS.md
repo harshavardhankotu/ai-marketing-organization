@@ -25,7 +25,7 @@
 | **Cron Trigger & Ping Route** | **PASS** | 2026-09-30 | `POST /api/v1/cron/ping` | Returns `HTTP 200 OK` when authenticated with `X-Cron-Secret`. Previous 403 fail-closed block resolved. |
 | **Cron Heartbeat & Telemetry** | **PASS** | 2026-09-30 | `GET /api/v1/cron/status` | Returns `HTTP 200 OK`.<br>Status: **`HEALTHY`**<br>Total Pings: **`1`** (moved off zero)<br>Last Observed Ping: `2026-09-29 20:37:15`<br>Last Successful Cycle: `2026-09-29 20:37:16`<br>Cycle Result: `SUCCESS`<br>Worker Source: `cloudflare-cron-worker` |
 | **Authenticated System Readiness** | **PASS** | 2026-09-30 | `GET /api/v1/system/readiness` | Returns `HTTP 200 OK` when authenticated with `x-api-key: [OWNER_API_KEY]`.<br>Evaluated on test business `biz_1790714233800` (11/12 checks passed). |
-| **Test Suite & Build** | **PASS** | 2026-09-30 | `npm run build && npm test` | Build exit code: `0`<br>Test files: `40 passed (40)`<br>Tests: `380 passed (380)`<br>Failed: `0` |
+| **Test Suite & Build** | **PASS** | 2026-09-30 | `npm run build && npm test` | Build exit code: `0`<br>Test files: `41 passed (41)`<br>Tests: `386 passed (386)`<br>Failed: `0` |
 
 ---
 
@@ -69,6 +69,7 @@
 10. **2026-09-30 — Server-Side Environment Variables Missing on Render (`19fc793`):** Dashboard saves failed to inject env vars into the container; verified `[]` empty array via Render REST API and directly injected all secrets (`CRON_PING_SECRET`, `OWNER_API_KEY`, `GEMINI_API_KEY`, `TAVILY_API_KEY`, `CLOUDFLARE_D1_*`) via `PUT /v1/services/{serviceId}/env-vars`.
 11. **2026-09-30 — System Readiness Route 400 on Empty Database (`19fc793`):** `/api/v1/system/readiness` failed closed when zero non-platform businesses existed in fresh SQLite; onboarded real `SmileKraft Dental Clinic` profile, resolving check to HTTP 200.
 12. **2026-09-30 — Cloudflare D1 Remote Telemetry Write (`19fc793`):** Backend `D1RevenueRepository` required Cloudflare D1 credentials on Render to persist `cron_telemetry`; injected credentials, enabling `POST /cron/ping` to write directly to Cloudflare D1 and `GET /cron/status` to report `totalPings = 1` and `HEALTHY`.
+13. **2026-09-30 — Universal Demand-Capture Funnel & Auth Isolation:** Replaced hardcoded `/aligners-hyderabad` routes with tenant-aware `/f/:businessSlug/:funnelSlug` and `/book/:businessSlug/:funnelSlug` funnels. Prevented unauthenticated visitors from triggering authenticated owner APIs (`loadAllData()`). Hardened `POST /public/lead` to mandate explicit tenant identity (`businessId` or `businessSlug`) with zero unsafe fallbacks. Generalized phone sanity checks to international format (8–15 digits).
 
 ---
 

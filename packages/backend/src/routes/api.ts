@@ -66,6 +66,7 @@ export const EXACT_ROUTE_POLICY = {
     '/health',
     '/diagnostic/env',
     '/public/lead',
+    '/public/business',
     '/landing-pages',
     '/organic/sessions',
     '/organic/leads',
@@ -379,16 +380,27 @@ apiRouter.post('/business', async (c) => {
   const db = getDb();
   const businessId = `biz_${Date.now()}`;
 
+  const slugBase = data.name
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || `business-${Date.now()}`;
+  let publicSlug = slugBase;
+  let suffix = 2;
+  while (db.prepare('SELECT 1 FROM businesses WHERE public_slug = ? LIMIT 1').get(publicSlug)) {
+    publicSlug = `${slugBase}-${suffix++}`;
+  }
+
   db.prepare(`
     INSERT INTO businesses (
-      id, organization_id, name, vertical_id, vertical_name,
+      id, organization_id, name, public_slug, vertical_id, vertical_name,
       country, currency, timezone, city, neighborhood,
       website_url, phone, primary_language, secondary_languages_json,
       brand_voice, value_propositions_json, offerings_json, constraints_json,
       autonomy_mode, kill_switch_active
-    ) VALUES (?, ?, ?, ?, ?, 'IN', 'INR', 'Asia/Kolkata', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+    ) VALUES (?, ?, ?, ?, ?, ?, 'IN', 'INR', 'Asia/Kolkata', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
   `).run(
-    businessId, orgId, data.name, data.verticalId, data.verticalName,
+    businessId, orgId, data.name, publicSlug, data.verticalId, data.verticalName,
     data.city, data.neighborhood, data.websiteUrl || null, data.phone || null,
     data.primaryLanguage, JSON.stringify(data.secondaryLanguages),
     data.brandVoice, JSON.stringify(data.valuePropositions), JSON.stringify(data.offerings),
@@ -396,7 +408,7 @@ apiRouter.post('/business', async (c) => {
     data.autonomyMode
   );
 
-  return c.json({ success: true, data: { id: businessId } });
+  return c.json({ success: true, data: { id: businessId, publicSlug } });
 });
 
 // Goals
@@ -1584,6 +1596,71 @@ apiRouter.post('/ai-costs/log', async (c) => {
 // ==========================================
 // REAL LEAD CAPTURE & PUBLIC BOOKING API
 // ==========================================
+// Public-safe business resolver. It intentionally exposes only fields needed
+// to render a demand funnel; owner credentials, budgets, integration secrets
+// and operational controls never cross this boundary.
+apiRouter.get('/public/business/:slug', async (c) => {
+  const slug = decodeURIComponent(c.req.param('slug') || '').trim();
+  if (!slug) {
+    return c.json({ success: false, error: 'PUBLIC_BUSINESS_SLUG_REQUIRED' }, 400);
+  }
+
+  try {
+    const d1Repo = D1RevenueRepository.getInstance();
+    const business = await d1Repo.queryOne(
+      'businesses',
+      `SELECT id, organization_id, name, public_slug, vertical_id, vertical_name,
+              country, currency, timezone, city, neighborhood, website_url, phone,
+              primary_language, secondary_languages_json,
+              value_propositions_json, offerings_json
+         FROM businesses
+        WHERE lower(public_slug) = ? OR lower(id) = ?
+        LIMIT 1`,
+      [slug.toLowerCase(), slug.toLowerCase()]
+    );
+
+    if (!business) {
+      return c.json({ success: false, error: `PUBLIC_BUSINESS_NOT_FOUND: '${slug}'` }, 404);
+    }
+
+    let secondaryLanguages = [];
+    let valuePropositions = [];
+    let offerings = [];
+    try { secondaryLanguages = JSON.parse(business.secondary_languages_json || '[]'); } catch {}
+    try { valuePropositions = JSON.parse(business.value_propositions_json || '[]'); } catch {}
+    try { offerings = JSON.parse(business.offerings_json || '[]'); } catch {}
+
+    return c.json({
+      success: true,
+      data: {
+        id: business.id,
+        public_slug: business.public_slug || business.id,
+        name: business.name,
+        vertical_id: business.vertical_id,
+        vertical_name: business.vertical_name,
+        country: business.country,
+        currency: business.currency,
+        timezone: business.timezone,
+        city: business.city,
+        neighborhood: business.neighborhood,
+        website_url: business.website_url,
+        phone: business.phone,
+        primary_language: business.primary_language,
+        secondary_languages: secondaryLanguages,
+        value_propositions: valuePropositions,
+        offerings
+      }
+    });
+  } catch (err: any) {
+    return c.json({
+      success: false,
+      error: isProduction()
+        ? `STORAGE_FAULT: Public business lookup failed: ${err?.message || 'unknown error'}`
+        : 'PUBLIC_BUSINESS_NOT_FOUND: Could not load business profile.'
+    }, isProduction() ? 503 : 404);
+  }
+});
+
 apiRouter.post('/public/lead', async (c) => {
   return handlePublicLeadRequest(c);
 });

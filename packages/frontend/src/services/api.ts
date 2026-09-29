@@ -30,6 +30,7 @@ export async function fetchApi<T = any>(endpoint: string, options?: RequestInit)
   const base = getApiBaseUrl();
   const normalizedEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
   const url = `${base}${normalizedEndpoint}`;
+  const isPublicEndpoint = normalizedEndpoint.startsWith('/public/');
 
   let activeOrg = '';
   let activeBizId = '';
@@ -48,9 +49,9 @@ export async function fetchApi<T = any>(endpoint: string, options?: RequestInit)
     headers: {
       'Content-Type': 'application/json',
       'bypass-tunnel-reminder': '1',
-      ...(activeOrg ? { 'x-organization-id': activeOrg } : {}),
-      ...(activeBizId ? { 'x-business-id': activeBizId } : {}),
-      'x-user-id': 'usr_owner_01',
+      ...(isPublicEndpoint ? {} : (activeOrg ? { 'x-organization-id': activeOrg } : {})),
+      ...(isPublicEndpoint ? {} : (activeBizId ? { 'x-business-id': activeBizId } : {})),
+      ...(isPublicEndpoint ? {} : { 'x-user-id': 'usr_owner_01' }),
       ...(options?.headers || {})
     },
     ...options
@@ -87,6 +88,7 @@ export const api = {
   getAgents: () => fetchApi('/agents'),
   getAgentById: (id: string) => fetchApi(`/agents/${id}`),
   getBusiness: (id?: string) => fetchApi(id ? `/business?id=${id}` : '/business'),
+  getPublicBusiness: (slug: string) => fetchApi(`/public/business/${encodeURIComponent(slug)}`),
   createBusiness: (data: any) => fetchApi('/business', { method: 'POST', body: JSON.stringify(data) }),
   getGoals: () => fetchApi('/goals'),
   createGoal: (data: any) => fetchApi('/goals', { method: 'POST', body: JSON.stringify(data) }),

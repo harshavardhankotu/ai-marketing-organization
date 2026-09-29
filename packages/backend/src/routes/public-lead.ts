@@ -19,34 +19,39 @@ const dpdpManager = new DPDPComplianceManager();
 export async function handlePublicLeadRequest(c: Context): Promise<Response> {
   const d1Repo = D1RevenueRepository.getInstance();
   const body = await c.req.json().catch(() => ({}));
-  let businessId = body.businessId;
+  const businessId = typeof body.businessId === 'string' ? body.businessId.trim() : '';
+  const businessSlug = typeof body.businessSlug === 'string' ? body.businessSlug.trim().toLowerCase() : '';
   let biz: any = null;
+
+  // Public requests must identify their tenant explicitly. Never fall back to
+  // the first/oldest business; that is a cross-tenant data-integrity hazard.
+  if (!businessId && !businessSlug) {
+    return c.json({
+      success: false,
+      error: 'PUBLIC_BUSINESS_REQUIRED: Provide businessId or businessSlug.'
+    }, 400);
+  }
 
   try {
     if (businessId) {
       biz = await d1Repo.queryOne(
         'businesses',
-        'SELECT id, organization_id, name, vertical_name, city, neighborhood FROM businesses WHERE id = ?',
+        'SELECT id, organization_id, name, vertical_name, country, city, neighborhood FROM businesses WHERE id = ?',
         [businessId]
       );
-      if (!biz) {
-        return c.json({
-          success: false,
-          error: `PUBLIC_BUSINESS_NOT_FOUND: The requested business profile '${businessId}' was not found or is inactive.`
-        }, 404);
-      }
     } else {
       biz = await d1Repo.queryOne(
         'businesses',
-        'SELECT id, organization_id, name, vertical_name, city, neighborhood FROM businesses ORDER BY created_at ASC LIMIT 1'
+        'SELECT id, organization_id, name, vertical_name, country, city, neighborhood FROM businesses WHERE lower(public_slug) = ? LIMIT 1',
+        [businessSlug]
       );
-      if (!biz) {
-        return c.json({
-          success: false,
-          error: 'PUBLIC_BUSINESS_NOT_FOUND: No active business profile is available to receive consultation requests.'
-        }, 404);
-      }
-      businessId = biz.id;
+    }
+
+    if (!biz) {
+      return c.json({
+        success: false,
+        error: `PUBLIC_BUSINESS_NOT_FOUND: The requested business '${businessId || businessSlug}' was not found or is inactive.`
+      }, 404);
     }
   } catch (err: any) {
     if (isProduction()) {
@@ -61,6 +66,7 @@ export async function handlePublicLeadRequest(c: Context): Promise<Response> {
     }, 404);
   }
 
+  const resolvedBusinessId = biz.id;
   const orgId = biz.organization_id;
   const bizName = biz?.name || 'Business';
 
@@ -90,10 +96,14 @@ export async function handlePublicLeadRequest(c: Context): Promise<Response> {
     return c.json({ success: false, error: 'Full name and mobile phone number are required' }, 400);
   }
 
-  // Validate Indian Phone format (10+ digits)
-  const cleanPhone = body.customerPhone.replace(/\D/g, '');
-  if (cleanPhone.length < 10) {
-    return c.json({ success: false, error: 'Invalid phone number. Must be a valid 10-digit mobile number' }, 400);
+  // Universal phone sanity check. Formatting/prefix is intentionally
+  // business-country agnostic; downstream systems may normalize to E.164.
+  const cleanPhone = String(body.customerPhone || '').replace(/\D/g, '');
+  if (cleanPhone.length < 8 || cleanPhone.length > 15) {
+    return c.json({
+      success: false,
+      error: 'Invalid phone number. Please provide a valid international phone number.'
+    }, 400);
   }
 
   // Check test mode headers or explicit classification
@@ -102,7 +112,7 @@ export async function handlePublicLeadRequest(c: Context): Promise<Response> {
 
   try {
     const journey = journeyTracker.recordRealLead({
-      businessId,
+      businessId: resolvedBusinessId,
       organizationId: orgId,
       customerName: body.customerName.trim(),
       customerPhone: body.customerPhone.trim(),
@@ -111,7 +121,13 @@ export async function handlePublicLeadRequest(c: Context): Promise<Response> {
       campaignId: body.campaignId || undefined,
       source: body.source || (body.utmSource ? `${body.utmSource}_${body.utmMedium || 'direct'}` : 'direct_organic'),
       serviceOfInterest: body.serviceOfInterest || 'General Consultation',
-      notes: body.notes,
+      notes: [
+        body.notes,
+        body.intent ? `Intent: ${String(body.intent).slice(0, 100)}` : '',
+        body.funnelSlug ? `Funnel: ${String(body.funnelSlug).slice(0, 80)}` : '',
+        body.landingPage ? `Landing: ${String(body.landingPage).slice(0, 200)}` : '',
+        body.location ? `Location: ${String(body.location).slice(0, 120)}` : ''
+      ].filter(Boolean).join(' | '),
       classification: forcedClassification,
       utmSource: body.utmSource,
       utmMedium: body.utmMedium,
@@ -126,7 +142,7 @@ export async function handlePublicLeadRequest(c: Context): Promise<Response> {
     if (body.dpdpConsentGiven || body.consentGiven) {
       try {
         dpdpManager.recordConsent({
-          businessId,
+          businessId: resolvedBusinessId,
           journeyId: journey.id,
           customerName: body.customerName.trim(),
           customerPhone: body.customerPhone.trim(),

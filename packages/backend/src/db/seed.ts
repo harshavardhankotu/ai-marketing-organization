@@ -35,11 +35,11 @@ export function seedDatabase(options: SeedOptions = {}): void {
 
   db.prepare(`
     INSERT OR REPLACE INTO businesses (
-      id, organization_id, name, vertical_id, vertical_name, risk_tier,
+      id, organization_id, name, public_slug, vertical_id, vertical_name, risk_tier,
       country, currency, timezone, city, neighborhood,
       brand_voice, autonomy_mode, kill_switch_active
     ) VALUES (
-      'biz_platform_aro', 'org_owner_primary', 'Platform Autonomous Revenue System', 'TECHNOLOGY', 'AI & Technology Services', 'LOW',
+      'biz_platform_aro', 'org_owner_primary', 'Platform Autonomous Revenue System', 'platform-aro', 'TECHNOLOGY', 'AI & Technology Services', 'LOW',
       'IN', 'INR', 'Asia/Kolkata', 'Hyderabad', 'Banjara Hills',
       'Direct, consultative, authoritative', 'ASSISTED', 0
     )
@@ -172,12 +172,12 @@ export function seedTestFixtures(db: any): void {
 
   db.prepare(`
     INSERT OR REPLACE INTO businesses (
-      id, organization_id, name, vertical_id, vertical_name, risk_tier,
+      id, organization_id, name, public_slug, vertical_id, vertical_name, risk_tier,
       country, currency, timezone, city, neighborhood,
       website_url, phone, primary_language, secondary_languages_json,
       brand_voice, value_propositions_json, offerings_json, constraints_json,
       autonomy_mode, kill_switch_active
-    ) VALUES (?, ?, ?, 'HEALTHCARE_CLINIC', 'Healthcare Clinic (Dental/Orthodontics)', 'HIGH', 'IN', 'INR', 'Asia/Kolkata', 'Hyderabad', 'Banjara Hills', 'https://smilekraftdental.in', '+91-98491-23456', 'English', '["Telugu", "Hindi"]', 'Clinical, reassuring, transparent, technologically progressive', '["AI 3D Smile Scanning", "Zero-Cost EMI Financing"]', ?, '{"monthlyBudgetINR": 50000, "maxCACINR": 2500}', 'CONTROLLED_AUTONOMY', 0)
+    ) VALUES (?, ?, ?, 'smilekraft-dental-clinic', 'HEALTHCARE_CLINIC', 'Healthcare Clinic (Dental/Orthodontics)', 'HIGH', 'IN', 'INR', 'Asia/Kolkata', 'Hyderabad', 'Banjara Hills', 'https://smilekraftdental.in', '+91-98491-23456', 'English', '["Telugu", "Hindi"]', 'Clinical, reassuring, transparent, technologically progressive', '["AI 3D Smile Scanning", "Zero-Cost EMI Financing"]', ?, '{"monthlyBudgetINR": 50000, "maxCACINR": 2500}', 'CONTROLLED_AUTONOMY', 0)
   `).run(businessId, orgId, 'SmileKraft Dental Clinic Hyderabad', JSON.stringify(offerings));
 
   // Test Goal
