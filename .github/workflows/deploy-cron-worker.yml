@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - feat/general-purpose-multi-tenant
   workflow_dispatch:
 
 jobs:
@@ -36,6 +35,7 @@ jobs:
   deploy-cron-worker:
     name: Deploy Cloudflare Worker & Verify Cron
     needs: build-and-test
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -43,6 +43,7 @@ jobs:
       CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
       CLOUDFLARE_D1_API_TOKEN: ${{ secrets.CLOUDFLARE_D1_API_TOKEN || secrets.CLOUDFLARE_API_TOKEN }}
       CRON_PING_SECRET: ${{ secrets.CRON_PING_SECRET }}
+      OWNER_API_KEY: ${{ secrets.OWNER_API_KEY }}
       BACKEND_URL: ${{ vars.BACKEND_URL || 'https://ai-marketing-organization.onrender.com' }}
     steps:
       - name: Checkout repository
@@ -54,6 +55,25 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
+      - name: Validate Required Deployment Secrets
+        run: |
+          echo "Validating required deployment secrets..."
+          MISSING=""
+          [ -z "$CLOUDFLARE_API_TOKEN" ] && MISSING="$MISSING CLOUDFLARE_API_TOKEN"
+          [ -z "$CLOUDFLARE_ACCOUNT_ID" ] && MISSING="$MISSING CLOUDFLARE_ACCOUNT_ID"
+          [ -z "$CLOUDFLARE_D1_DATABASE_ID" ] && MISSING="$MISSING CLOUDFLARE_D1_DATABASE_ID"
+          [ -z "$CRON_PING_SECRET" ] && MISSING="$MISSING CRON_PING_SECRET"
+
+          if [ -n "$MISSING" ]; then
+            echo "❌ FATAL: The following required secrets are missing or empty in GitHub Actions repository secrets:$MISSING"
+            echo "Please configure them under: https://github.com/harshavardhankotu/ai-marketing-organization/settings/secrets/actions"
+            exit 1
+          fi
+          echo "✅ All required deployment secrets are present in environment."
+
+      - name: Install dependencies
+        run: npm ci
+
       - name: Install wrangler
         run: npm install -g wrangler
 
@@ -62,32 +82,40 @@ jobs:
         run: npm install --ignore-scripts || true
 
       - name: Run Cloudflare D1 Migrations
-        if: env.CLOUDFLARE_D1_DATABASE_ID != '' && env.CLOUDFLARE_D1_API_TOKEN != ''
         run: |
+          echo "Running D1 migrations against database $CLOUDFLARE_D1_DATABASE_ID..."
           npx tsx packages/backend/src/db/d1-migrations/index.ts
 
       - name: Deploy Cloudflare Worker
-        if: env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != ''
+        id: deploy_worker
         working-directory: packages/cloudflare-worker
-        run: wrangler deploy
+        run: |
+          echo "Executing wrangler deploy..."
+          DEPLOY_OUTPUT=$(wrangler deploy 2>&1)
+          echo "$DEPLOY_OUTPUT"
+
+          # Extract assigned worker URL if present
+          WORKER_URL=$(echo "$DEPLOY_OUTPUT" | grep -oE 'https://[a-zA-Z0-9.-]+\.workers\.dev' | head -n 1 || true)
+          if [ -n "$WORKER_URL" ]; then
+            echo "Assigned Worker URL: $WORKER_URL"
+            echo "worker_url=$WORKER_URL" >> $GITHUB_OUTPUT
+          fi
 
       - name: Smoke test - Backend /health
-        if: env.BACKEND_URL != ''
         run: |
-          echo "Running smoke test against $BACKEND_URL"
+          echo "Running smoke test against $BACKEND_URL/api/v1/health"
           HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$BACKEND_URL/api/v1/health" --max-time 45 || echo "000")
           echo "HTTP Status: $HTTP_STATUS"
           if [ "$HTTP_STATUS" = "200" ]; then
             echo "✅ /api/v1/health returned 200 OK"
           elif [ "$HTTP_STATUS" = "000" ]; then
-            echo "⚠️  /api/v1/health timed out — Render may be cold-starting (expected on free tier)"
+            echo "⚠️  /api/v1/health timed out — Render may be cold-starting"
           else
             echo "❌ /api/v1/health returned $HTTP_STATUS — unexpected"
             exit 1
           fi
 
-      - name: Trigger Real Cron Ping & Verify D1 Telemetry
-        if: env.CRON_PING_SECRET != ''
+      - name: Smoke test - Cron ping & D1 verification
         run: |
           echo "Triggering real cron ping to $BACKEND_URL/api/v1/cron/ping..."
           PING_STATUS=$(curl -s -o ping_response.json -w "%{http_code}" -X POST "$BACKEND_URL/api/v1/cron/ping" \
@@ -106,33 +134,49 @@ jobs:
           fi
           echo "✅ Live cron ping succeeded (HTTP 200)"
 
-          if [ -n "$CLOUDFLARE_ACCOUNT_ID" ] && [ -n "$CLOUDFLARE_D1_DATABASE_ID" ] && [ -n "$CLOUDFLARE_D1_API_TOKEN" ]; then
-            echo "Verifying cron_telemetry record in Cloudflare D1..."
-            D1_RES=$(curl -s -X POST "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/$CLOUDFLARE_D1_DATABASE_ID/query" \
-              -H "Authorization: Bearer $CLOUDFLARE_D1_API_TOKEN" \
-              -H "Content-Type: application/json" \
-              -d '{"sql":"SELECT id, status, received_at, http_status, worker_source FROM cron_telemetry ORDER BY received_at DESC LIMIT 1;"}')
+          echo "Verifying cron_telemetry record in Cloudflare D1..."
+          D1_TOKEN="${CLOUDFLARE_D1_API_TOKEN:-$CLOUDFLARE_API_TOKEN}"
+          D1_RES=$(curl -s -X POST "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/$CLOUDFLARE_D1_DATABASE_ID/query" \
+            -H "Authorization: Bearer $D1_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"sql":"SELECT id, status, received_at, http_status, worker_source FROM cron_telemetry ORDER BY received_at DESC LIMIT 1;"}')
 
-            echo "Cloudflare D1 Query Result: $D1_RES"
-            if echo "$D1_RES" | grep -q '"success":true'; then
-              echo "✅ cron_telemetry row verified in Cloudflare D1"
-            else
-              echo "❌ Cloudflare D1 query verification failed"
-              exit 1
-            fi
+          echo "Cloudflare D1 Query Result: $D1_RES"
+          if echo "$D1_RES" | grep -q '"success":true'; then
+            echo "✅ cron_telemetry row verified in Cloudflare D1"
+          else
+            echo "❌ Cloudflare D1 query verification failed"
+            exit 1
           fi
 
       - name: Smoke test - Cron status
-        if: env.BACKEND_URL != '' && env.CRON_PING_SECRET != ''
         run: |
-          echo "Checking cron status..."
+          echo "Checking cron status at $BACKEND_URL/api/v1/cron/status..."
           HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$BACKEND_URL/api/v1/cron/status" \
             -H "X-Cron-Secret: $CRON_PING_SECRET" --max-time 30 || echo "000")
           echo "Cron status HTTP: $HTTP_STATUS"
           if [ "$HTTP_STATUS" = "200" ]; then
-            echo "✅ /api/v1/cron/status OK"
-          elif [ "$HTTP_STATUS" = "000" ]; then
-            echo "⚠️  Cron status timed out (cold start)"
+            echo "✅ /api/v1/cron/status OK (HTTP 200)"
           else
-            echo "⚠️  Cron status returned $HTTP_STATUS"
+            echo "❌ /api/v1/cron/status returned $HTTP_STATUS"
+            exit 1
+          fi
+
+      - name: Smoke test - Authenticated System Readiness
+        run: |
+          if [ -n "$OWNER_API_KEY" ]; then
+            echo "Probing /api/v1/system/readiness with OWNER_API_KEY..."
+            READINESS_STATUS=$(curl -s -o readiness_response.json -w "%{http_code}" "$BACKEND_URL/api/v1/system/readiness" \
+              -H "x-api-key: $OWNER_API_KEY" --max-time 30 || echo "000")
+            echo "Readiness HTTP status: $READINESS_STATUS"
+            cat readiness_response.json || true
+            echo ""
+            if [ "$READINESS_STATUS" = "200" ]; then
+              echo "✅ /api/v1/system/readiness returned 200 OK"
+            else
+              echo "❌ /api/v1/system/readiness returned $READINESS_STATUS"
+              exit 1
+            fi
+          else
+            echo "⚠️  OWNER_API_KEY not configured in GitHub repository secrets — skipping authenticated readiness check in CI."
           fi

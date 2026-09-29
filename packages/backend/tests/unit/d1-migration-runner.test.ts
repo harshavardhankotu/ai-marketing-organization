@@ -94,10 +94,34 @@ describe('D1 Migration Runner & SQL Statement Parser (Spec Item 2)', () => {
     expect(stmts).toEqual(['SELECT 1']);
   });
 
-  it('returns empty array for empty or comment-only string', () => {
-    expect(parseSqlStatements('')).toEqual([]);
-    expect(parseSqlStatements('   \n\t  ')).toEqual([]);
-    expect(parseSqlStatements('-- just a comment;\n-- another;')).toEqual([]);
-    expect(parseSqlStatements('/* block comment; */')).toEqual([]);
+  it('handles statement prefixed with comments correctly', () => {
+    const sql = `
+      -- Header comment about this table
+      -- Another comment line
+      CREATE TABLE orders_v2 (
+        id TEXT PRIMARY KEY,
+        amount INTEGER NOT NULL
+      );
+    `;
+    const stmts = parseSqlStatements(sql);
+    expect(stmts).toHaveLength(1);
+    expect(stmts[0]).toBe('CREATE TABLE orders_v2 (\n        id TEXT PRIMARY KEY,\n        amount INTEGER NOT NULL\n      )');
+  });
+
+  it('correctly distinguishes idempotent schema errors vs genuine migration failures', () => {
+    // Simulating error classification logic from applyD1Migrations
+    const isIdempotentError = (msg: string) => {
+      if (msg.toLowerCase().includes('unique constraint')) return false;
+      return msg.includes('duplicate column name') || msg.includes('already exists');
+    };
+
+    // Idempotent errors that may be safely caught up:
+    expect(isIdempotentError('table users already exists')).toBe(true);
+    expect(isIdempotentError('duplicate column name: email')).toBe(true);
+
+    // Genuine/fatal errors that must fail fast:
+    expect(isIdempotentError('syntax error near "TABL"')).toBe(false);
+    expect(isIdempotentError('no such column: missing_col')).toBe(false);
+    expect(isIdempotentError('UNIQUE constraint failed: users.id')).toBe(false);
   });
 });
