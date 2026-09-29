@@ -1,19 +1,14 @@
 services:
   - type: web
+    runtime: docker
     name: ai-marketing-organization
-    env: node
     plan: free
-    region: singapore
     branch: main
     autoDeployTrigger: commit
-    buildCommand: npm install && npm run build --workspace=packages/shared && npm run build --workspace=packages/backend
-    startCommand: node packages/backend/dist/index.js
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
     healthCheckPath: /api/v1/health
     envVars:
-      - key: NODE_ENV
-        value: production
-      - key: PORT
-        value: 10000
       - key: CRON_PING_SECRET
         sync: false
       - key: OWNER_API_KEY
