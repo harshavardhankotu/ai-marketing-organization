@@ -45,6 +45,73 @@ export function seedDatabase(options: SeedOptions = {}): void {
     )
   `).run();
 
+  // 1c. Baseline Reference Client Business (SmileKraft Dental Clinic Hyderabad)
+  db.prepare(`
+    INSERT OR REPLACE INTO organizations (id, name, slug)
+    VALUES ('org_smilekraft_01', 'SmileKraft Healthcare Solutions', 'smilekraft-healthcare')
+  `).run();
+
+  db.prepare(`
+    INSERT OR REPLACE INTO businesses (
+      id, organization_id, name, public_slug, vertical_id, vertical_name, risk_tier,
+      country, currency, timezone, city, neighborhood,
+      website_url, phone, primary_language, secondary_languages_json,
+      brand_voice, value_propositions_json, offerings_json, constraints_json,
+      autonomy_mode, kill_switch_active
+    ) VALUES (
+      'biz_smilekraft_hyd', 'org_smilekraft_01', 'SmileKraft Dental Clinic Hyderabad', 'smilekraft-dental-clinic', 'HEALTHCARE_CLINIC', 'Healthcare Clinic (Dental/Orthodontics)', 'HIGH',
+      'IN', 'INR', 'Asia/Kolkata', 'Hyderabad', 'Banjara Hills',
+      'https://smilekraftdental.in', '+91-98491-23456', 'English', '["Telugu", "Hindi"]',
+      'Clinical, reassuring, transparent, technologically progressive',
+      '["AI 3D Smile Scanning", "Zero-Cost EMI Financing"]',
+      '[{"id":"off_aligners","title":"Invisible Clear Aligners & Orthodontics","description":"Custom-molded digital invisible aligners with 3D smile design preview. Painless teeth straightening in 6-9 months.","priceINR":45000,"targetSegment":"Young professionals and college students in Gachibowli & Hitec City"}]',
+      '{"monthlyBudgetINR": 50000, "maxCACINR": 2500}',
+      'CONTROLLED_AUTONOMY', 0
+    )
+  `).run();
+
+  db.prepare(`
+    INSERT OR REPLACE INTO business_goals (
+      id, organization_id, business_id, title, target_metric,
+      target_value, current_value, metric_unit, timeframe_days,
+      start_date, target_date, budget_allocated_inr, status, kpis_json
+    ) VALUES (
+      'goal_100_leads_hyd', 'org_smilekraft_01', 'biz_smilekraft_hyd', 'Acquire 100 High-Intent Patient Consultations',
+      'qualified_leads', 100, 0, 'leads', 90, date('now'), date('now', '+90 days'), 50000, 'ACTIVE', '[]'
+    )
+  `).run();
+
+  db.prepare(`
+    INSERT OR REPLACE INTO strategies (
+      id, organization_id, business_id, goal_id, version,
+      title, rationale, positioning, target_audience_json,
+      channel_strategy_json, content_themes_json, expected_leads,
+      expected_cpql_inr, status, created_at, updated_at
+    ) VALUES (
+      'strat_core', 'org_smilekraft_01', 'biz_smilekraft_hyd', 'goal_100_leads_hyd', 1,
+      'SmileKraft Core Inbound Lead Generation Strategy',
+      'Target prospective patients in Banjara Hills and Hyderabad via localized WhatsApp triage and search funnels.',
+      'Premier Pain-Free Digital Smile Clinic in Hyderabad',
+      '["Professionals and families in Hyderabad"]',
+      '["WHATSAPP", "GOOGLE_BUSINESS_PROFILE"]',
+      '["Invisible Aligners", "General Consultation"]',
+      100, 500, 'ACTIVE', date('now'), date('now')
+    )
+  `).run();
+
+  db.prepare(`
+    INSERT OR REPLACE INTO campaigns (
+      id, organization_id, business_id, strategy_id, goal_id,
+      title, objective, channels_json, target_audience, geography_json,
+      budget_inr, primary_kpi, target_qualified_leads, start_date, end_date, status
+    ) VALUES (
+      'camp_smilekraft_core_01', 'org_smilekraft_01', 'biz_smilekraft_hyd', 'strat_core', 'goal_100_leads_hyd',
+      'SmileKraft Core Inbound Lead Generation', 'Acquire qualified patient consultations for Clear Aligners',
+      '["WHATSAPP", "GOOGLE_BUSINESS_PROFILE"]', 'Hyderabad professionals and families in Banjara Hills and Hitec City',
+      '{"city":"Hyderabad","neighborhoods":["Banjara Hills"]}', 50000, 'qualified_leads', 100, date('now'), date('now', '+30 days'), 'ACTIVE'
+    )
+  `).run();
+
   // 2. Platform Administrator User
   db.prepare(`
     INSERT OR REPLACE INTO users (id, organization_id, email, name, role, api_token)

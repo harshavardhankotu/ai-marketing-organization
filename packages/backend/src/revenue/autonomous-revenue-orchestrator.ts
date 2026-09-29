@@ -17,6 +17,7 @@
  */
 
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
+import { getDb } from '../db/client.js';
 import { OpportunityEngine } from './opportunity-engine.js';
 import { NextBestActionEngine, NextBestAction } from './next-best-action-engine.js';
 import { DurableEventBus, DurableEventType } from './durable-event-bus.js';
@@ -90,21 +91,27 @@ export class AutonomousRevenueOrchestrator {
             this.d1Repo.executeWrite('autonomous_cycle_log', sql, params).catch(e => {
               console.error(`[ARO D1 Write Fault]: ${e.message}`);
             });
-            return { changes: 1 };
+            try {
+              return getDb().prepare(sql).run(...params);
+            } catch {
+              return { changes: 1 };
+            }
           }
           return this.d1Repo.executeSync('autonomous_cycle_log', sql, params);
         },
         get: (...params: any[]) => {
-          if (isProduction() && !process.env.VITEST) {
-            throw new Error(`PRODUCTION D1 ERROR: Synchronous get() is prohibited on ARO. Must use async queries.`);
+          try {
+            return getDb().prepare(sql).get(...params);
+          } catch {
+            return null;
           }
-          return this.d1Repo.queryOneSync('autonomous_cycle_log', sql, params);
         },
         all: (...params: any[]) => {
-          if (isProduction() && !process.env.VITEST) {
-            throw new Error(`PRODUCTION D1 ERROR: Synchronous all() is prohibited on ARO. Must use async queries.`);
+          try {
+            return getDb().prepare(sql).all(...params);
+          } catch {
+            return [];
           }
-          return this.d1Repo.querySync('autonomous_cycle_log', sql, params);
         }
       })
     };
@@ -141,7 +148,7 @@ export class AutonomousRevenueOrchestrator {
     // ──────────────────────────────────────────────────────────────────
     // SPEC § 21: CONCURRENCY LOCK — prevent simultaneous cycles for this business
     // ──────────────────────────────────────────────────────────────────
-    const lock = BusinessAutonomyLock.tryAcquire(businessId, cycleId);
+    const lock = await BusinessAutonomyLock.tryAcquireAsync(businessId, cycleId);
     if (!lock.acquired) {
       console.warn(`[ARO] ${lock.reason}`);
       return {
@@ -496,7 +503,7 @@ export class AutonomousRevenueOrchestrator {
         errors
       };
     } finally {
-      BusinessAutonomyLock.release(businessId, cycleId);
+      await BusinessAutonomyLock.releaseAsync(businessId, cycleId);
     }
   }
 

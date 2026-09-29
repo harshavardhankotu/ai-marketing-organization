@@ -391,7 +391,7 @@ apiRouter.post('/business', async (c) => {
     publicSlug = `${slugBase}-${suffix++}`;
   }
 
-  db.prepare(`
+  const insertBizSql = `
     INSERT INTO businesses (
       id, organization_id, name, public_slug, vertical_id, vertical_name,
       country, currency, timezone, city, neighborhood,
@@ -399,13 +399,58 @@ apiRouter.post('/business', async (c) => {
       brand_voice, value_propositions_json, offerings_json, constraints_json,
       autonomy_mode, kill_switch_active
     ) VALUES (?, ?, ?, ?, ?, ?, 'IN', 'INR', 'Asia/Kolkata', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-  `).run(
+  `;
+  const insertBizParams = [
     businessId, orgId, data.name, publicSlug, data.verticalId, data.verticalName,
     data.city, data.neighborhood, data.websiteUrl || null, data.phone || null,
     data.primaryLanguage, JSON.stringify(data.secondaryLanguages),
     data.brandVoice, JSON.stringify(data.valuePropositions), JSON.stringify(data.offerings),
     JSON.stringify({ monthlyBudgetINR: data.monthlyBudgetINR }),
     data.autonomyMode
+  ];
+
+  db.prepare(insertBizSql).run(...insertBizParams);
+
+  // Durable write to Cloudflare D1 in production
+  if (isProduction() && !process.env.VITEST) {
+    try {
+      const d1Repo = D1RevenueRepository.getInstance();
+      await d1Repo.executeWrite('businesses', insertBizSql, insertBizParams);
+    } catch (d1Err: any) {
+      console.warn(`[POST /business D1 Write Warning]: ${d1Err.message}`);
+    }
+  }
+
+  // Create baseline campaign & goal so business is immediately operational
+  const goalId = `goal_${businessId}`;
+  db.prepare(`
+    INSERT OR REPLACE INTO business_goals (
+      id, organization_id, business_id, title, target_metric,
+      target_value, current_value, metric_unit, timeframe_days,
+      start_date, target_date, budget_allocated_inr, status, kpis_json
+    ) VALUES (?, ?, ?, ?, 'qualified_leads', 100, 0, 'leads', 90, date('now'), date('now', '+90 days'), ?, 'ACTIVE', '[]')
+  `).run(goalId, orgId, businessId, `${data.name} Primary Lead Goal`, data.monthlyBudgetINR);
+
+  const strategyId = `strat_${businessId}`;
+  db.prepare(`
+    INSERT OR REPLACE INTO strategies (
+      id, organization_id, business_id, goal_id, version,
+      title, rationale, positioning, target_audience_json,
+      channel_strategy_json, content_themes_json, expected_leads,
+      expected_cpql_inr, status, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, 1, ?, 'Acquire qualified inquiries via direct digital funnels', ?, '["Target market in city"]', '["WHATSAPP", "GOOGLE_BUSINESS_PROFILE"]', '["Core Service"]', 100, 500, 'ACTIVE', date('now'), date('now'))
+  `).run(strategyId, orgId, businessId, goalId, `${data.name} Growth Strategy`, data.brandVoice);
+
+  const campaignId = `cmp_${businessId}`;
+  db.prepare(`
+    INSERT OR REPLACE INTO campaigns (
+      id, organization_id, business_id, strategy_id, goal_id,
+      title, objective, channels_json, target_audience, geography_json,
+      budget_inr, primary_kpi, target_qualified_leads, start_date, end_date, status
+    ) VALUES (?, ?, ?, ?, ?, ?, 'Acquire qualified inquiries', '["WHATSAPP", "GOOGLE_BUSINESS_PROFILE"]', 'Local residents and professionals', ?, ?, 'qualified_leads', 100, date('now'), date('now', '+30 days'), 'ACTIVE')
+  `).run(
+    campaignId, orgId, businessId, strategyId, goalId, `${data.name} Inbound Campaign`,
+    JSON.stringify({ city: data.city, neighborhood: data.neighborhood }), data.monthlyBudgetINR
   );
 
   return c.json({ success: true, data: { id: businessId, publicSlug } });
@@ -2494,12 +2539,10 @@ apiRouter.get('/system/readiness', (c) => {
   let businessId = c.req.query('businessId');
   if (!businessId) {
     const business = db.prepare("SELECT id FROM businesses WHERE organization_id = ? AND id != 'biz_platform_aro'").get(orgId) as any
-      || db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+      || db.prepare("SELECT id FROM businesses WHERE id != 'biz_platform_aro' LIMIT 1").get() as any
+      || db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any
+      || db.prepare('SELECT id FROM businesses LIMIT 1').get() as any;
     businessId = business?.id;
-  }
-  if (!businessId || businessId === 'biz_platform_aro') {
-    const clientBiz = db.prepare("SELECT id FROM businesses WHERE id != 'biz_platform_aro' LIMIT 1").get() as any;
-    businessId = clientBiz?.id;
   }
   if (!businessId) {
     return c.json({ success: false, error: 'BUSINESS_REQUIRED: No business found for readiness check' }, 400);

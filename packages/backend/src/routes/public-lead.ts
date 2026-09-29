@@ -92,13 +92,17 @@ export async function handlePublicLeadRequest(c: Context): Promise<Response> {
   timestamps.push(nowMs);
   publicRateLimitMap.set(clientIp, timestamps);
 
-  if (!body.customerName || !body.customerPhone) {
+  const customerName = (body.customerName || body.fullName || body.name || '').trim();
+  const customerPhone = (body.customerPhone || body.phone || body.phoneNumber || '').trim();
+  const customerEmail = (body.customerEmail || body.email || '').trim();
+
+  if (!customerName || !customerPhone) {
     return c.json({ success: false, error: 'Full name and mobile phone number are required' }, 400);
   }
 
   // Universal phone sanity check. Formatting/prefix is intentionally
   // business-country agnostic; downstream systems may normalize to E.164.
-  const cleanPhone = String(body.customerPhone || '').replace(/\D/g, '');
+  const cleanPhone = String(customerPhone).replace(/\D/g, '');
   if (cleanPhone.length < 8 || cleanPhone.length > 15) {
     return c.json({
       success: false,
@@ -114,9 +118,9 @@ export async function handlePublicLeadRequest(c: Context): Promise<Response> {
     const journey = journeyTracker.recordRealLead({
       businessId: resolvedBusinessId,
       organizationId: orgId,
-      customerName: body.customerName.trim(),
-      customerPhone: body.customerPhone.trim(),
-      customerEmail: body.customerEmail ? body.customerEmail.trim() : undefined,
+      customerName,
+      customerPhone,
+      customerEmail: customerEmail || undefined,
       channel: body.channel || 'WHATSAPP',
       campaignId: body.campaignId || undefined,
       source: body.source || (body.utmSource ? `${body.utmSource}_${body.utmMedium || 'direct'}` : 'direct_organic'),
@@ -144,8 +148,8 @@ export async function handlePublicLeadRequest(c: Context): Promise<Response> {
         dpdpManager.recordConsent({
           businessId: resolvedBusinessId,
           journeyId: journey.id,
-          customerName: body.customerName.trim(),
-          customerPhone: body.customerPhone.trim(),
+          customerName,
+          customerPhone,
           ipAddress: clientIp,
           purpose: (biz?.vertical_name?.toLowerCase().includes('dental') || biz?.name?.toLowerCase().includes('dental'))
             ? `Direct dental consultation coordination and orthodontic treatment assessment at ${bizName}`
