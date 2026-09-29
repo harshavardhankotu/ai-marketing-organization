@@ -108,8 +108,6 @@ jobs:
           echo "HTTP Status: $HTTP_STATUS"
           if [ "$HTTP_STATUS" = "200" ]; then
             echo "✅ /api/v1/health returned 200 OK"
-          elif [ "$HTTP_STATUS" = "000" ]; then
-            echo "⚠️  /api/v1/health timed out — Render may be cold-starting"
           else
             echo "❌ /api/v1/health returned $HTTP_STATUS — unexpected"
             exit 1
@@ -164,19 +162,15 @@ jobs:
 
       - name: Smoke test - Authenticated System Readiness
         run: |
-          if [ -n "$OWNER_API_KEY" ]; then
-            echo "Probing /api/v1/system/readiness with OWNER_API_KEY..."
-            READINESS_STATUS=$(curl -s -o readiness_response.json -w "%{http_code}" "$BACKEND_URL/api/v1/system/readiness" \
-              -H "x-api-key: $OWNER_API_KEY" --max-time 30 || echo "000")
-            echo "Readiness HTTP status: $READINESS_STATUS"
-            cat readiness_response.json || true
-            echo ""
-            if [ "$READINESS_STATUS" = "200" ]; then
-              echo "✅ /api/v1/system/readiness returned 200 OK"
-            else
-              echo "❌ /api/v1/system/readiness returned $READINESS_STATUS"
-              exit 1
-            fi
+          echo "Probing /api/v1/system/readiness with OWNER_API_KEY..."
+          READINESS_STATUS=$(curl -s -o readiness_response.json -w "%{http_code}" "$BACKEND_URL/api/v1/system/readiness" \
+            -H "x-api-key: $OWNER_API_KEY" --max-time 30 || echo "000")
+          echo "Readiness HTTP status: $READINESS_STATUS"
+          cat readiness_response.json || true
+          echo ""
+          if [ "$READINESS_STATUS" = "200" ]; then
+            echo "✅ /api/v1/system/readiness returned 200 OK"
           else
-            echo "⚠️  OWNER_API_KEY not configured in GitHub repository secrets — skipping authenticated readiness check in CI."
+            echo "❌ /api/v1/system/readiness returned $READINESS_STATUS"
+            exit 1
           fi

@@ -212,7 +212,7 @@ apiRouter.use('*', async (c, next) => {
 });
 
 // Health check
-apiRouter.get('/health', (c) => c.json({ status: 'healthy' })); apiRouter.get('/health', (c) => {
+apiRouter.get('/health', (c) => {
   return c.json({
     status: 'healthy',
     timestamp: new Date().toISOString(),
