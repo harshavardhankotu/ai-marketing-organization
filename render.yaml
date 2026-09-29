@@ -1,9 +1,11 @@
 services:
   - type: web
-    name: ai-marketing-backend
+    name: ai-marketing-organization
     env: node
     plan: free
     region: singapore
+    branch: main
+    autoDeployTrigger: commit
     buildCommand: npm install && npm run build --workspace=packages/shared && npm run build --workspace=packages/backend
     startCommand: node packages/backend/dist/index.js
     healthCheckPath: /api/v1/health
