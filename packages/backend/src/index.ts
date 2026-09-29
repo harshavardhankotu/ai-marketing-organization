@@ -99,6 +99,23 @@ if (process.env.NODE_ENV !== 'test') {
   // Auto-seed if running fresh
   seedDatabase();
 
+  // Auto-migrate remote Cloudflare D1 if configured in production
+  import('./db/d1-client.js').then(({ D1Client }) => {
+    const d1 = D1Client.getInstance();
+    if (d1.isRemoteD1Configured()) {
+      import('./db/d1-migrations/index.js')
+        .then(m => m.applyD1Migrations())
+        .then(res => {
+          if (res.applied.length > 0) {
+            console.log(`[D1 Auto-Migrate] Applied migrations: ${res.applied.join(', ')}`);
+          }
+        })
+        .catch(err => {
+          console.warn('[D1 Auto-Migrate] Warning during D1 migration:', err.message);
+        });
+    }
+  });
+
   // Start autonomous background scheduler for continuous market intelligence & research
   try {
     DailyMarketResearchScheduler.getInstance().startScheduler();

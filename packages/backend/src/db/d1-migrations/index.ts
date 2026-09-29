@@ -173,7 +173,24 @@ export async function applyD1Migrations(): Promise<{ applied: string[]; tables: 
   );
   const appliedSet = new Set((existingRows.results || []).map(r => r.migration_name));
 
-  const files = fs.readdirSync(__dirname)
+  const possibleDirs = [
+    __dirname,
+    path.resolve(__dirname, '../../../src/db/d1-migrations'),
+    path.resolve(process.cwd(), 'packages/backend/src/db/d1-migrations'),
+    path.resolve(process.cwd(), 'src/db/d1-migrations'),
+    path.resolve(process.cwd(), 'packages/backend/dist/db/d1-migrations'),
+    path.resolve(process.cwd(), 'dist/db/d1-migrations')
+  ];
+
+  let migrationsDir = __dirname;
+  for (const d of possibleDirs) {
+    if (fs.existsSync(d) && fs.readdirSync(d).some(f => f.endsWith('.sql'))) {
+      migrationsDir = d;
+      break;
+    }
+  }
+
+  const files = fs.readdirSync(migrationsDir)
     .filter(f => f.endsWith('.sql'))
     .sort();
 
@@ -183,7 +200,7 @@ export async function applyD1Migrations(): Promise<{ applied: string[]; tables: 
       continue;
     }
 
-    const filePath = path.join(__dirname, file);
+    const filePath = path.join(migrationsDir, file);
     const content = fs.readFileSync(filePath, 'utf-8');
     const statements = parseSqlStatements(content);
 
