@@ -1,4 +1,4 @@
-﻿name: CI
+name: CI
 
 on:
   push:
@@ -31,6 +31,9 @@ jobs:
 
       - name: Build Frontend Application
         run: npm run build --workspace=packages/frontend
+
+      - name: Build Cloudflare Worker
+        run: npm run build --workspace=packages/cloudflare-worker
 
       - name: Run Test Suite
         run: npm run test --workspace=packages/backend
