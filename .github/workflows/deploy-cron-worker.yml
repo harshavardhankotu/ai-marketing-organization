@@ -34,14 +34,16 @@ jobs:
         run: npm test --workspace=packages/backend
 
   deploy-cron-worker:
-    name: Deploy Cloudflare Worker
+    name: Deploy Cloudflare Worker & Verify Cron
     needs: build-and-test
     runs-on: ubuntu-latest
-    # Only deploy if Cloudflare secrets are configured
-    if: |
-      github.ref == 'refs/heads/main' &&
-      secrets.CLOUDFLARE_API_TOKEN != '' &&
-      secrets.CLOUDFLARE_ACCOUNT_ID != ''
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
+      CLOUDFLARE_D1_API_TOKEN: ${{ secrets.CLOUDFLARE_D1_API_TOKEN || secrets.CLOUDFLARE_API_TOKEN }}
+      CRON_PING_SECRET: ${{ secrets.CRON_PING_SECRET }}
+      BACKEND_URL: ${{ vars.BACKEND_URL || 'https://ai-marketing-organization.onrender.com' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -60,43 +62,68 @@ jobs:
         run: npm install --ignore-scripts || true
 
       - name: Run Cloudflare D1 Migrations
-        if: secrets.CLOUDFLARE_D1_DATABASE_ID != '' && (secrets.CLOUDFLARE_D1_API_TOKEN != '' || secrets.CLOUDFLARE_API_TOKEN != '')
-        env:
-          CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
-          CLOUDFLARE_D1_API_TOKEN: ${{ secrets.CLOUDFLARE_D1_API_TOKEN || secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        if: env.CLOUDFLARE_D1_DATABASE_ID != '' && env.CLOUDFLARE_D1_API_TOKEN != ''
         run: |
-          npx tsx packages/backend/src/db/d1-migrations/index.ts || echo "D1 migrations skipped or completed"
+          npx tsx packages/backend/src/db/d1-migrations/index.ts
 
       - name: Deploy Cloudflare Worker
+        if: env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != ''
         working-directory: packages/cloudflare-worker
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: wrangler deploy
 
       - name: Smoke test - Backend /health
         if: env.BACKEND_URL != ''
-        env:
-          BACKEND_URL: ${{ vars.BACKEND_URL || 'https://ai-marketing-organization.onrender.com' }}
         run: |
           echo "Running smoke test against $BACKEND_URL"
-          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$BACKEND_URL/api/health" --max-time 30 || echo "000")
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$BACKEND_URL/api/v1/health" --max-time 45 || echo "000")
           echo "HTTP Status: $HTTP_STATUS"
           if [ "$HTTP_STATUS" = "200" ]; then
-            echo "✅ /api/health returned 200 OK"
+            echo "✅ /api/v1/health returned 200 OK"
           elif [ "$HTTP_STATUS" = "000" ]; then
-            echo "⚠️  /api/health timed out — Render may be cold-starting (expected on free tier)"
+            echo "⚠️  /api/v1/health timed out — Render may be cold-starting (expected on free tier)"
           else
-            echo "❌ /api/health returned $HTTP_STATUS — unexpected"
+            echo "❌ /api/v1/health returned $HTTP_STATUS — unexpected"
             exit 1
+          fi
+
+      - name: Trigger Real Cron Ping & Verify D1 Telemetry
+        if: env.CRON_PING_SECRET != ''
+        run: |
+          echo "Triggering real cron ping to $BACKEND_URL/api/v1/cron/ping..."
+          PING_STATUS=$(curl -s -o ping_response.json -w "%{http_code}" -X POST "$BACKEND_URL/api/v1/cron/ping" \
+            -H "Content-Type: application/json" \
+            -H "X-Cron-Secret: $CRON_PING_SECRET" \
+            -d "{\"triggerSource\":\"CLOUDFLARE_CRON\",\"scheduledAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"cronExpression\":\"0 * * * *\"}" \
+            --retry 3 --retry-delay 10 --max-time 60 || echo "000")
+
+          echo "Ping HTTP status: $PING_STATUS"
+          cat ping_response.json || true
+          echo ""
+
+          if [ "$PING_STATUS" != "200" ]; then
+            echo "❌ Live cron ping failed with status $PING_STATUS"
+            exit 1
+          fi
+          echo "✅ Live cron ping succeeded (HTTP 200)"
+
+          if [ -n "$CLOUDFLARE_ACCOUNT_ID" ] && [ -n "$CLOUDFLARE_D1_DATABASE_ID" ] && [ -n "$CLOUDFLARE_D1_API_TOKEN" ]; then
+            echo "Verifying cron_telemetry record in Cloudflare D1..."
+            D1_RES=$(curl -s -X POST "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/$CLOUDFLARE_D1_DATABASE_ID/query" \
+              -H "Authorization: Bearer $CLOUDFLARE_D1_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d '{"sql":"SELECT id, status, received_at, http_status, worker_source FROM cron_telemetry ORDER BY received_at DESC LIMIT 1;"}')
+
+            echo "Cloudflare D1 Query Result: $D1_RES"
+            if echo "$D1_RES" | grep -q '"success":true'; then
+              echo "✅ cron_telemetry row verified in Cloudflare D1"
+            else
+              echo "❌ Cloudflare D1 query verification failed"
+              exit 1
+            fi
           fi
 
       - name: Smoke test - Cron status
         if: env.BACKEND_URL != '' && env.CRON_PING_SECRET != ''
-        env:
-          BACKEND_URL: ${{ vars.BACKEND_URL || 'https://ai-marketing-organization.onrender.com' }}
-          CRON_PING_SECRET: ${{ secrets.CRON_PING_SECRET }}
         run: |
           echo "Checking cron status..."
           HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$BACKEND_URL/api/v1/cron/status" \

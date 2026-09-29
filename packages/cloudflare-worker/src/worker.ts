@@ -16,7 +16,7 @@ export default {
     return new Response('Not found', { status: 404 });
   },
 
-  // Scheduled handler — fires every 15 minutes via `*/15 * * * *`
+  // Scheduled handler — fires hourly via `0 * * * *`
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(runCycle(env));
   }
@@ -49,7 +49,7 @@ async function runCycle(env: Env): Promise<void> {
       body: JSON.stringify({
         triggerSource: 'CLOUDFLARE_CRON',
         scheduledAt: new Date().toISOString(),
-        cronExpression: '*/15 * * * *'
+        cronExpression: '0 * * * *'
       }),
       signal: AbortSignal.timeout(100000) // 100 seconds — tolerates Render free-tier cold-start latency (~50-90s)
     });

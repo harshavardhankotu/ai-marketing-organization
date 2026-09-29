@@ -1,4 +1,6 @@
 import { Hono } from 'hono';
+import { handlePublicLeadRequest } from './public-lead.js';
+import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { getDb } from '../db/client.js';
 import { QuotaManager } from '../ai/quota-manager.js';
 import { KillSwitchController } from '../control-plane/kill-switch.js';
@@ -127,7 +129,8 @@ apiRouter.use('*', async (c, next) => {
   }
 
   // 4. Owner-Only Administration Context Boundary (Spec § 2, § 3, § 4, § 46, § 47)
-  const db = getDb();
+  let db: any = null;
+  try { db = getDb(); } catch {}
   const ownerAuth = OwnerAuthService.getInstance();
   const cookieHeader = c.req.header('cookie') || '';
   const cookieToken = cookieHeader.split(';').map(s => s.trim()).find(s => s.startsWith('owner_session='))?.split('=')[1];
@@ -157,6 +160,7 @@ apiRouter.use('*', async (c, next) => {
     } else {
       let authenticatedUser: any = null;
       try {
+        const db = getDb();
         authenticatedUser = db.prepare("SELECT * FROM users WHERE api_token = ?").get(token);
       } catch {}
 
@@ -430,7 +434,10 @@ apiRouter.post('/workflows/trigger-cycle', async (c) => {
   const bizRow = body.businessId
     ? db.prepare('SELECT id FROM businesses WHERE id = ?').get(body.businessId) as any
     : db.prepare('SELECT id FROM businesses WHERE organization_id = ? ORDER BY created_at DESC LIMIT 1').get(orgId) as any;
-  const businessId = bizRow?.id || body.businessId || 'biz_smilekraft_hyd';
+  const businessId = bizRow?.id || body.businessId;
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required or business must exist for organization' }, 400);
+  }
 
   // Auto-resolve goal if not explicitly provided
   const goalRow = body.goalId
@@ -675,7 +682,7 @@ apiRouter.get('/revenue/ceo-dashboard', (c) => {
 
         return {
           status,
-          cronExpression: '*/15 * * * *',
+          cronExpression: '0 * * * *',
           lastObservedPing: row?.last_observed_ping || null,
           totalPings,
           lastSuccessfulCycle: row?.last_successful_cycle || null,
@@ -696,11 +703,11 @@ apiRouter.get('/revenue/ceo-dashboard', (c) => {
 });
 
 // GET /cron/status — Verify Cloudflare Cron status (Spec § 16: CONFIGURED | DEPLOYED | OBSERVED | HEALTHY)
-apiRouter.get('/cron/status', (c) => {
-  const db = getDb();
-  let row: any;
+apiRouter.get('/cron/status', async (c) => {
+  const d1Repo = D1RevenueRepository.getInstance();
+  let row: any = null;
   try {
-    row = db.prepare(`SELECT * FROM cron_telemetry WHERE id = 'cloudflare_worker_cron'`).get();
+    row = await d1Repo.queryOne('cron_telemetry', `SELECT * FROM cron_telemetry WHERE id = 'cloudflare_worker_cron'`);
   } catch {}
 
   const parseSqliteTimestampMs = (ts: string | null | undefined): number => {
@@ -711,7 +718,7 @@ apiRouter.get('/cron/status', (c) => {
   const totalPings = Number(row?.total_pings || 0);
   const lastPingMs = parseSqliteTimestampMs(row?.last_observed_ping);
   const now = Date.now();
-  const isRecent = lastPingMs > 0 && (now - lastPingMs) < (35 * 60 * 1000);
+  const isRecent = lastPingMs > 0 && (now - lastPingMs) < (75 * 60 * 1000);
   const isHealthy = totalPings > 0 && isRecent && (row?.cycle_result === 'SUCCESS' || row?.status === 'HEALTHY');
 
   const status: 'CONFIGURED' | 'DEPLOYED' | 'OBSERVED' | 'HEALTHY' = isHealthy
@@ -722,7 +729,7 @@ apiRouter.get('/cron/status', (c) => {
     success: true,
     data: {
       status,
-      cronExpression: '*/15 * * * *',
+      cronExpression: '0 * * * *',
       totalPings,
       lastObservedPing: row?.last_observed_ping || null,
       lastSuccessfulCycle: row?.last_successful_cycle || null,
@@ -753,27 +760,12 @@ apiRouter.post('/cron/ping', async (c) => {
     }
   }
 
-  const db = getDb();
+  const d1Repo = D1RevenueRepository.getInstance();
   const userAgent = c.req.header('user-agent') || 'cloudflare-cron-worker';
   const workerSource = c.req.header('cf-worker') || c.req.header('x-worker-source') || userAgent;
 
   // Record observed cron execution in cron_telemetry (Spec § 16)
   try {
-    db.prepare(`
-      CREATE TABLE IF NOT EXISTS cron_telemetry (
-        id TEXT PRIMARY KEY,
-        status TEXT NOT NULL,
-        last_observed_ping TEXT,
-        total_pings INTEGER NOT NULL DEFAULT 0,
-        last_successful_cycle TEXT,
-        last_failed_cycle TEXT,
-        cycle_result TEXT,
-        last_user_agent TEXT,
-        worker_source TEXT,
-        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-      )
-    `).run();
-
     const sql = `
       INSERT INTO cron_telemetry (id, status, last_observed_ping, total_pings, last_user_agent, worker_source, updated_at)
       VALUES ('cloudflare_worker_cron', 'OBSERVED', datetime('now'), 1, ?, ?, datetime('now'))
@@ -786,24 +778,27 @@ apiRouter.post('/cron/ping', async (c) => {
         updated_at = datetime('now')
     `;
     const params = [userAgent, workerSource, userAgent, workerSource];
-    db.prepare(sql).run(...params);
+    await d1Repo.executeWrite('cron_telemetry', sql, params);
+  } catch (err: any) {
+    console.error(`[Cron Ping] Telemetry write failed: ${err.message}`);
+  }
 
-    if (isProduction()) {
-      try {
-        const { D1RevenueRepository } = await import('../db/d1-revenue-repository.js');
-        await D1RevenueRepository.getInstance().executeWrite('cron_telemetry', sql, params);
-      } catch {}
-    }
+  let orgs: any[] = [];
+  try {
+    orgs = await d1Repo.query('organizations', 'SELECT id FROM organizations LIMIT 5');
   } catch {}
 
-  const orgs = db.prepare('SELECT id FROM organizations LIMIT 5').all() as any[];
   const results: any[] = [];
   let allSucceeded = true;
   let lastError = '';
 
   for (const org of orgs) {
-    const biz = db.prepare('SELECT id FROM businesses WHERE organization_id = ? LIMIT 1').get(org.id) as any;
+    let biz: any = null;
+    try {
+      biz = await d1Repo.queryOne('businesses', 'SELECT id FROM businesses WHERE organization_id = ? LIMIT 1', [org.id]);
+    } catch {}
     if (!biz) continue;
+
     try {
       const aro = AutonomousRevenueOrchestrator.getInstance();
       const result = await aro.runCycle(org.id, biz.id, 'CLOUDFLARE_CRON');
@@ -830,13 +825,7 @@ apiRouter.post('/cron/ping', async (c) => {
       ? `UPDATE cron_telemetry SET status = ?, last_successful_cycle = datetime('now'), cycle_result = 'SUCCESS', updated_at = datetime('now') WHERE id = 'cloudflare_worker_cron'`
       : `UPDATE cron_telemetry SET status = ?, last_failed_cycle = datetime('now'), cycle_result = ?, updated_at = datetime('now') WHERE id = 'cloudflare_worker_cron'`;
     const updateParams = allSucceeded ? [outcomeStatus] : [outcomeStatus, lastError || 'CYCLE_ERROR'];
-    db.prepare(sqlUpdate).run(...updateParams);
-    if (isProduction()) {
-      try {
-        const { D1RevenueRepository } = await import('../db/d1-revenue-repository.js');
-        await D1RevenueRepository.getInstance().executeWrite('cron_telemetry', sqlUpdate, updateParams);
-      } catch {}
-    }
+    await d1Repo.executeWrite('cron_telemetry', sqlUpdate, updateParams);
   } catch {}
 
   return c.json({ success: true, data: results, timestamp: new Date().toISOString() });
@@ -849,7 +838,10 @@ apiRouter.get('/revenue/proof', (c) => {
   const orgId = c.get('organizationId');
   const db = getDb();
   const bizRow = db.prepare('SELECT id FROM businesses WHERE organization_id = ? ORDER BY created_at DESC LIMIT 1').get(orgId) as any;
-  const businessId = bizRow?.id || 'biz_smilekraft_hyd';
+  const businessId = c.req.query('businessId') || bizRow?.id;
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: No business found for organization' }, 400);
+  }
 
   const verified = (db.prepare(`SELECT COALESCE(SUM(amount_inr), 0) as total FROM transactions WHERE business_id = ? AND classification = 'REAL' AND status = 'SUCCESS'`).get(businessId) as any)?.total || 0;
   const humanVerified = (db.prepare(`SELECT COALESCE(SUM(amount_inr), 0) as total FROM transactions WHERE business_id = ? AND classification = 'MANUAL_VERIFIED' AND status = 'SUCCESS'`).get(businessId) as any)?.total || 0;
@@ -907,7 +899,7 @@ apiRouter.get('/autonomy/proof', (c) => {
     success: true,
     data: {
       cron_status: cronStatus,
-      cron_schedule: '*/15 * * * *',
+      cron_schedule: '0 * * * *',
       total_pings_observed: cronRow?.total_pings || 0,
       last_observed_ping: cronRow?.last_observed_ping || null,
       storage_status: D1Client.getInstance().isRemoteD1Configured() ? 'CLOUDFLARE_D1' : 'PERSISTENT_SQLITE',
@@ -937,7 +929,10 @@ apiRouter.get('/revenue/funnel', (c) => {
   const orgId = c.get('organizationId');
   const db = getDb();
   const bizRow = db.prepare('SELECT id FROM businesses WHERE organization_id = ? ORDER BY created_at DESC LIMIT 1').get(orgId) as any;
-  const businessId = bizRow?.id || 'biz_smilekraft_hyd';
+  const businessId = c.req.query('businessId') || bizRow?.id;
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: No business found for organization' }, 400);
+  }
 
   const prospects = (db.prepare(`SELECT COUNT(*) as count FROM sales_pipeline WHERE business_id = ?`).get(businessId) as any)?.count || 0;
   const contacted = (db.prepare(`SELECT COUNT(*) as count FROM sales_pipeline WHERE business_id = ? AND stage IN ('CONTACTED','REPLIED','QUALIFIED','MEETING_BOOKED','PAID','ONBOARDED')`).get(businessId) as any)?.count || 0;
@@ -975,7 +970,7 @@ apiRouter.get('/revenue/funnel', (c) => {
 // REALITY REPORT (Spec § 36)
 // ==========================================
 apiRouter.get('/system/reality-report', (c) => {
-  const orgId = c.get('organizationId') || 'org_default';
+  const orgId = c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
   const db = getDb();
   const bizRow = db.prepare('SELECT id FROM businesses WHERE organization_id = ? ORDER BY created_at DESC LIMIT 1').get(orgId) as any;
   const report = RealityReportGenerator.getInstance().generate(orgId, bizRow?.id);
@@ -986,10 +981,13 @@ apiRouter.get('/system/reality-report', (c) => {
 // REVENUE BOTTLENECK ENGINE (Spec § 37)
 // ==========================================
 apiRouter.get('/revenue/bottleneck', (c) => {
-  const orgId = c.get('organizationId') || 'org_default';
+  const orgId = c.get('organizationId');
   const db = getDb();
   const bizRow = db.prepare('SELECT id FROM businesses WHERE organization_id = ? ORDER BY created_at DESC LIMIT 1').get(orgId) as any;
-  const businessId = bizRow?.id || 'biz_smilekraft_hyd';
+  const businessId = c.req.query('businessId') || bizRow?.id;
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: No business found for organization' }, 400);
+  }
   const bottleneck = RevenueBottleneckEngine.getInstance().diagnose(businessId, orgId);
   return c.json({ success: true, data: bottleneck });
 });
@@ -998,10 +996,13 @@ apiRouter.get('/revenue/bottleneck', (c) => {
 // NEXT REAL ACTION (Spec § 32)
 // ==========================================
 apiRouter.get('/autonomy/next-real-action', (c) => {
-  const orgId = c.get('organizationId') || 'org_smilekraft_01';
+  const orgId = c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
   const db = getDb();
   const bizRow = db.prepare('SELECT id FROM businesses WHERE organization_id = ? ORDER BY created_at DESC LIMIT 1').get(orgId) as any;
-  const businessId = bizRow?.id || 'biz_smilekraft_hyd';
+  const businessId = c.req.query('businessId') || bizRow?.id;
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: No business found for organization' }, 400);
+  }
   const report = RealityReportGenerator.getInstance().generate(orgId, businessId);
   return c.json({ success: true, data: report.nextRealAction });
 });
@@ -1010,10 +1011,13 @@ apiRouter.get('/autonomy/next-real-action', (c) => {
 // COMMERCIAL LIFECYCLE & MILESTONES (Spec § 2 & § 22)
 // ==========================================
 apiRouter.get('/commercial/lifecycle', (c) => {
-  const orgId = c.get('organizationId') || 'org_smilekraft_01';
+  const orgId = c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
   const db = getDb();
   const bizRow = db.prepare('SELECT id FROM businesses WHERE organization_id = ? ORDER BY created_at DESC LIMIT 1').get(orgId) as any;
-  const businessId = bizRow?.id || 'biz_smilekraft_hyd';
+  const businessId = c.req.query('businessId') || bizRow?.id;
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: No business found for organization' }, 400);
+  }
   const lifecycle = CommercialLifecycleManager.getInstance().evaluateState(orgId, businessId);
   return c.json({ success: true, data: lifecycle });
 });
@@ -1149,7 +1153,10 @@ apiRouter.get('/analytics/dashboard', (c) => {
   const orgId = c.get('organizationId');
   const db = getDb();
   const biz = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
-  const businessId = biz?.id || 'biz_smilekraft_hyd';
+  const businessId = c.req.query('businessId') || biz?.id;
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: No business found for organization' }, 400);
+  }
 
   const metrics = EventTracker.getDashboardMetrics(businessId);
   const events = db.prepare('SELECT * FROM analytics_events WHERE business_id = ? ORDER BY created_at DESC LIMIT 50').all(businessId);
@@ -1182,8 +1189,12 @@ apiRouter.get('/experiments', (c) => {
 
 apiRouter.post('/experiments', async (c) => {
   const orgId = c.get('organizationId');
+  const db = getDb();
   const body = await c.req.json();
-  const businessId = body.businessId || 'biz_smilekraft_hyd';
+  const businessId = body.businessId || (db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any)?.id;
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required' }, 400);
+  }
 
   const id = ExperimentEngine.createExperiment({
     organizationId: orgId,
@@ -1563,147 +1574,7 @@ apiRouter.post('/ai-costs/log', async (c) => {
 // REAL LEAD CAPTURE & PUBLIC BOOKING API
 // ==========================================
 apiRouter.post('/public/lead', async (c) => {
-  const body = await c.req.json();
-  const db = getDb();
-  let businessId = body.businessId;
-  let biz: any = null;
-
-  if (businessId) {
-    try {
-      biz = db.prepare('SELECT id, organization_id, name, vertical_name, city, neighborhood FROM businesses WHERE id = ?').get(businessId) as any;
-    } catch {}
-    if (!biz) {
-      return c.json({
-        success: false,
-        error: `PUBLIC_BUSINESS_NOT_FOUND: The requested business profile '${businessId}' was not found or is inactive.`
-      }, 404);
-    }
-  } else {
-    // If not specified, look for primary/seeded active business in database
-    try {
-      biz = db.prepare('SELECT id, organization_id, name, vertical_name, city, neighborhood FROM businesses ORDER BY created_at ASC LIMIT 1').get() as any;
-    } catch {}
-    if (!biz) {
-      return c.json({
-        success: false,
-        error: 'PUBLIC_BUSINESS_NOT_FOUND: No active business profile is available to receive consultation requests.'
-      }, 404);
-    }
-    businessId = biz.id;
-  }
-
-  const orgId = biz.organization_id;
-  const bizName = biz?.name || 'Business';
-
-  // 1. Anti-Bot Honeypot Defense: Silently absorb scrapers
-  if (body.website_url_hp || body.bot_trap) {
-    return c.json({
-      success: true,
-      message: 'Consultation request received successfully.',
-      data: { leadId: 'lead_hp_bot', status: 'FILTERED', businessName: bizName }
-    }, 200);
-  }
-
-  // 2. Sliding-Window Rate Limiter (Max 10 requests per 10 mins per IP)
-  const clientIp = c.req.header('x-forwarded-for') || c.req.header('cf-connecting-ip') || '127.0.0.1';
-  const nowMs = Date.now();
-  const timestamps = (publicRateLimitMap.get(clientIp) || []).filter(t => nowMs - t < 10 * 60 * 1000);
-  if (timestamps.length >= 10) {
-    return c.json({
-      success: false,
-      error: 'Rate limit exceeded: Too many consultation requests from this network. Please wait a few minutes or contact the business directly.'
-    }, 429);
-  }
-  timestamps.push(nowMs);
-  publicRateLimitMap.set(clientIp, timestamps);
-
-  if (!body.customerName || !body.customerPhone) {
-    return c.json({ success: false, error: 'Full name and mobile phone number are required' }, 400);
-  }
-
-  // Validate Indian Phone format (10+ digits)
-  const cleanPhone = body.customerPhone.replace(/\D/g, '');
-  if (cleanPhone.length < 10) {
-    return c.json({ success: false, error: 'Invalid phone number. Must be a valid 10-digit mobile number' }, 400);
-  }
-
-  // Check test mode headers or explicit classification
-  const testHeader = c.req.header('x-test-mode');
-  const forcedClassification = (testHeader === 'true' || testHeader === '1') ? 'TEST' : body.classification;
-
-  try {
-    const journey = journeyTracker.recordRealLead({
-      businessId,
-      organizationId: orgId,
-      customerName: body.customerName.trim(),
-      customerPhone: body.customerPhone.trim(),
-      customerEmail: body.customerEmail ? body.customerEmail.trim() : undefined,
-      channel: body.channel || 'WHATSAPP',
-      campaignId: body.campaignId || undefined,
-      source: body.source || (body.utmSource ? `${body.utmSource}_${body.utmMedium || 'direct'}` : 'direct_organic'),
-      serviceOfInterest: body.serviceOfInterest || 'General Consultation',
-      notes: body.notes,
-      classification: forcedClassification,
-      utmSource: body.utmSource,
-      utmMedium: body.utmMedium,
-      utmCampaign: body.utmCampaign,
-      utmTerm: body.utmTerm,
-      utmContent: body.utmContent,
-      sessionId: body.sessionId,
-      gclid: body.gclid,
-    });
-
-    // DPDP Act 2023: Record digital patient/customer consent
-    if (body.dpdpConsentGiven || body.consentGiven) {
-      try {
-        dpdpManager.recordConsent({
-          businessId,
-          journeyId: journey.id,
-          customerName: body.customerName.trim(),
-          customerPhone: body.customerPhone.trim(),
-          ipAddress: clientIp,
-          purpose: (biz?.vertical_name?.toLowerCase().includes('dental') || biz?.name?.toLowerCase().includes('dental'))
-            ? `Direct dental consultation coordination and orthodontic treatment assessment at ${bizName}`
-            : `Direct consultation coordination and appointment booking with ${bizName}`,
-          consentVersion: body.consentVersion || '2026.1',
-        });
-      } catch (dpdpErr) {
-        console.warn('[DPDP Consent Warning]:', dpdpErr);
-      }
-    }
-
-    const leadId = `lead_${journey.id.replace('journey-', '')}`;
-    const resolvedSessionId = body.sessionId || `sess_${journey.visitorId.slice(-8)}`;
-
-    return c.json({
-      success: true,
-      message: `Consultation request received successfully. The ${bizName} team will reach out shortly.`,
-      data: {
-        campaignId: body.campaignId || 'camp_seed_general_01',
-        utmSource: body.utmSource || null,
-        utmMedium: body.utmMedium || null,
-        utmCampaign: body.utmCampaign || null,
-        utmTerm: body.utmTerm || null,
-        utmContent: body.utmContent || null,
-        gclid: journey.gclid || body.gclid || null,
-        attributionStatus: journey.attributionStatus || 'UNVERIFIED',
-        visitorId: journey.visitorId,
-        sessionId: resolvedSessionId,
-        leadId,
-        journeyId: journey.id,
-        stage: journey.stage,
-        classification: journey.classification,
-        dpdpConsentCaptured: Boolean(body.dpdpConsentGiven || body.consentGiven),
-        businessName: bizName
-      }
-    }, 201);
-  } catch (err: any) {
-    console.error('[Public Lead Error]:', err);
-    return c.json({
-      success: false,
-      error: err.message || 'Consultation request could not be processed'
-    }, 500);
-  }
+  return handlePublicLeadRequest(c);
 });
 
 // ==========================================
@@ -1797,7 +1668,11 @@ apiRouter.post('/webhooks/razorpay', async (c) => {
 
     return c.json({ success: true, data: result }, 200);
   } catch (err: any) {
-    const status = err.message?.includes('SECURITY VIOLATION') ? 403 : 400;
+    const status = err.message?.includes('SECURITY VIOLATION')
+      ? 403
+      : (err.message?.includes('REVENUE_PERSISTENCE_FAILED') || err.message?.includes('D1_WRITE_FAILED'))
+        ? 500
+        : 400;
     return c.json({ success: false, error: err.message }, status);
   }
 });
@@ -1909,7 +1784,10 @@ apiRouter.post('/webhooks/whatsapp', async (c) => {
     if (isProduction()) {
       return c.json({ error: 'SECURITY VIOLATION: Arbitrary normalized webhook payloads are rejected in production. Use Meta Cloud API format.' }, 401);
     }
-    const businessId = body.businessId || 'biz_platform_aro';
+    const businessId = body.businessId;
+    if (!businessId) {
+      return c.json({ error: 'BUSINESS_REQUIRED: Explicit businessId required for direct webhook in non-production.' }, 400);
+    }
     let organizationId = body.organizationId;
     if (!organizationId) {
       const biz = db.prepare('SELECT organization_id FROM businesses WHERE id = ?').get(businessId) as any;
@@ -1968,13 +1846,10 @@ apiRouter.post('/webhooks/email', async (c) => {
     if (!bizResult && body.businessId) {
       bizResult = db.prepare('SELECT id, organization_id FROM businesses WHERE id = ?').get(body.businessId) as any;
     }
-    if (!bizResult) {
-      bizResult = db.prepare('SELECT id, organization_id FROM businesses WHERE id = ?').get('biz_platform_aro') as any;
-    }
   }
 
   if (!bizResult) {
-    return c.json({ error: 'BLOCKED_UNMAPPED_PROVIDER: Tenant could not be determined for incoming email.' }, 401);
+    return c.json({ error: 'BUSINESS_REQUIRED: Tenant could not be determined for incoming email.' }, 400);
   }
 
   const businessId = bizResult.id;
@@ -2000,7 +1875,10 @@ apiRouter.post('/webhooks/email', async (c) => {
 
 apiRouter.post('/compliance/dpdp/consent', async (c) => {
   const body = await c.req.json();
-  const businessId = body.businessId || 'biz_smilekraft_hyd';
+  const businessId = body.businessId;
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required' }, 400);
+  }
 
   if (!body.customerName || !body.purpose) {
     return c.json({ success: false, error: 'Customer name and explicit purpose are required' }, 400);
@@ -2022,7 +1900,10 @@ apiRouter.post('/compliance/dpdp/consent', async (c) => {
 
 apiRouter.post('/compliance/dpdp/erasure', async (c) => {
   const body = await c.req.json();
-  const businessId = body.businessId || 'biz_smilekraft_hyd';
+  const businessId = body.businessId;
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required' }, 400);
+  }
 
   if (!body.phoneOrJourneyId) {
     return c.json({ success: false, error: 'Phone number or Journey ID required for Section 12 erasure request' }, 400);
@@ -2327,7 +2208,7 @@ apiRouter.get('/setup/status', (c) => {
     },
     cron_heartbeat: {
       status: cronObserved,
-      label: 'Cloudflare Worker Cron Trigger (*/15 min)',
+      label: 'Cloudflare Worker Cron Trigger (Hourly)',
       required_secret: 'CRON_PING_SECRET',
       details: cronObserved ? `Observed active ping at ${lastCronWake}` : 'Configured in repo, awaiting first live invocation'
     },
@@ -2530,7 +2411,10 @@ apiRouter.get('/system/readiness', (c) => {
   }
   if (!businessId || businessId === 'biz_platform_aro') {
     const clientBiz = db.prepare("SELECT id FROM businesses WHERE id != 'biz_platform_aro' LIMIT 1").get() as any;
-    businessId = clientBiz?.id || 'biz_smilekraft_hyd';
+    businessId = clientBiz?.id;
+  }
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: No business found for readiness check' }, 400);
   }
   const report = SystemReadinessEngine.evaluateReadiness(businessId);
   return c.json({ success: true, data: report });
@@ -2541,8 +2425,12 @@ apiRouter.get('/system/readiness', (c) => {
 // ==========================================
 apiRouter.post('/workflows/trigger-cycle', async (c) => {
   const orgId = c.get('organizationId');
+  const db = getDb();
   const body = await c.req.json();
-  const businessId = body.businessId || 'biz_smilekraft_hyd';
+  const businessId = body.businessId || (db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any)?.id;
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required' }, 400);
+  }
   const goalId = body.goalId || 'goal_100_leads_hyd';
 
   const cycle = new ClosedLoopMarketingCycle();
@@ -2575,7 +2463,10 @@ apiRouter.get('/economics/summary', (c) => {
   const orgId = c.get('organizationId');
   const db = getDb();
   const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
-  const businessId = business?.id || 'biz_smilekraft_hyd';
+  const businessId = c.req.query('businessId') || business?.id;
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: No business found for organization' }, 400);
+  }
   const summary = realEconomics.calculate(businessId);
   return c.json({ success: true, data: summary });
 });
@@ -2587,7 +2478,10 @@ apiRouter.get('/autonomy/status', (c) => {
   const orgId = c.get('organizationId');
   const db = getDb();
   const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
-  const businessId = business?.id || 'biz_smilekraft_hyd';
+  const businessId = c.req.query('businessId') || business?.id;
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: No business found for organization' }, 400);
+  }
   const policy = autonomyController.getBudgetPolicy(businessId);
   return c.json({ success: true, data: policy });
 });
@@ -2595,9 +2489,12 @@ apiRouter.get('/autonomy/status', (c) => {
 apiRouter.post('/autonomy/mode', async (c) => {
   const orgId = c.get('organizationId');
   const db = getDb();
-  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
-  const businessId = business?.id || 'biz_smilekraft_hyd';
   const body = await c.req.json();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  const businessId = body.businessId || business?.id;
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required or business must exist for organization' }, 400);
+  }
   const result = autonomyController.setOperatingMode(businessId, body.mode);
   if (!result.success) {
     return c.json({ success: false, error: result.rationale }, 403);
@@ -2609,7 +2506,10 @@ apiRouter.get('/autonomy/proposals', (c) => {
   const orgId = c.get('organizationId');
   const db = getDb();
   const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
-  const businessId = business?.id || 'biz_smilekraft_hyd';
+  const businessId = c.req.query('businessId') || business?.id;
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: No business found for organization' }, 400);
+  }
   const proposals = autonomyController.generateOptimizationProposals(businessId);
   return c.json({ success: true, data: proposals, total: proposals.length });
 });
@@ -2618,7 +2518,10 @@ apiRouter.get('/autonomy/experiments', (c) => {
   const orgId = c.get('organizationId');
   const db = getDb();
   const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
-  const businessId = business?.id || 'biz_smilekraft_hyd';
+  const businessId = c.req.query('businessId') || business?.id;
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: No business found for organization' }, 400);
+  }
   const candidates = autonomyController.generateExperimentCandidates(businessId);
   return c.json({ success: true, data: candidates, total: candidates.length });
 });
@@ -2631,9 +2534,12 @@ apiRouter.get('/autonomy/stop-conditions', (c) => {
 apiRouter.post('/autonomy/stop-conditions', async (c) => {
   const orgId = c.get('organizationId');
   const db = getDb();
-  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
-  const businessId = business?.id || 'biz_smilekraft_hyd';
   const body = await c.req.json();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  const businessId = body.businessId || business?.id;
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required or business must exist for organization' }, 400);
+  }
   const event = autonomyController.triggerStopCondition(
     businessId,
     body.condition,
@@ -2657,7 +2563,10 @@ apiRouter.get('/marketing-memory', (c) => {
   const orgId = c.get('organizationId');
   const db = getDb();
   const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
-  const businessId = business?.id || 'biz_smilekraft_hyd';
+  const businessId = c.req.query('businessId') || business?.id;
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: No business found for organization' }, 400);
+  }
   const dimension = c.req.query('dimension') as any;
   const memories = marketingMemory.listMemories(businessId, dimension);
   return c.json({ success: true, data: memories, total: memories.length });
@@ -2666,9 +2575,12 @@ apiRouter.get('/marketing-memory', (c) => {
 apiRouter.post('/marketing-memory', async (c) => {
   const orgId = c.get('organizationId');
   const db = getDb();
-  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
-  const businessId = business?.id || 'biz_smilekraft_hyd';
   const body = await c.req.json();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  const businessId = body.businessId || business?.id;
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required or business must exist for organization' }, 400);
+  }
   const mem = marketingMemory.recordMemory({
     businessId,
     dimension: body.dimension,
@@ -2688,7 +2600,10 @@ apiRouter.get('/knowledge-graph', (c) => {
   const orgId = c.get('organizationId');
   const db = getDb();
   const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
-  const businessId = business?.id || 'biz_smilekraft_hyd';
+  const businessId = c.req.query('businessId') || business?.id;
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: No business found for organization' }, 400);
+  }
   campaignKnowledgeGraph.syncFromLiveEntities(businessId);
   const graph = campaignKnowledgeGraph.getGraph();
   return c.json({ success: true, data: graph });
@@ -2701,7 +2616,10 @@ apiRouter.get('/truth/events', (c) => {
   const orgId = c.get('organizationId');
   const db = getDb();
   const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
-  const businessId = business?.id || 'biz_smilekraft_hyd';
+  const businessId = c.req.query('businessId') || business?.id;
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: No business found for organization' }, 400);
+  }
   const journeyId = c.req.query('journeyId');
   const events = revenueEngine.listImmutableTruthEvents(businessId, journeyId);
   return c.json({ success: true, data: events, total: events.length });
@@ -2719,9 +2637,12 @@ apiRouter.get('/treatment-plans/:journeyId', (c) => {
 apiRouter.post('/treatment-plans', async (c) => {
   const orgId = c.get('organizationId');
   const db = getDb();
-  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
-  const businessId = business?.id || 'biz_smilekraft_hyd';
   const body = await c.req.json();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  const businessId = body.businessId || business?.id;
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required or business must exist for organization' }, 400);
+  }
 
   if (!body.journeyId || !body.service || !body.quotedAmountINR || !body.doctorNotes) {
     return c.json({
@@ -2754,9 +2675,12 @@ apiRouter.post('/treatment-plans', async (c) => {
 apiRouter.post('/campaigns/optimize', async (c) => {
   const orgId = c.get('organizationId');
   const db = getDb();
-  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
-  const businessId = business?.id || 'biz_smilekraft_hyd';
   const body = await c.req.json();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  const businessId = body.businessId || business?.id;
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required or business must exist for organization' }, 400);
+  }
 
   if (!body.evidence || body.evidence.trim().length === 0) {
     return c.json({
@@ -2791,9 +2715,12 @@ apiRouter.post('/campaigns/optimize', async (c) => {
 apiRouter.post('/autonomy/kill-switch', async (c) => {
   const orgId = c.get('organizationId');
   const db = getDb();
-  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
-  const businessId = business?.id || 'biz_smilekraft_hyd';
   const body = await c.req.json();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  const businessId = body.businessId || business?.id;
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required or business must exist for organization' }, 400);
+  }
   const reason = body.reason || 'Manual emergency kill switch triggered by operator';
   autonomyController.activateKillSwitch(businessId, reason);
   return c.json({ success: true, message: 'Kill switch activated. All autonomous actions halted.', reason });
@@ -2805,9 +2732,12 @@ apiRouter.post('/autonomy/kill-switch', async (c) => {
 apiRouter.post('/workflows/first-customer', async (c) => {
   const orgId = c.get('organizationId');
   const db = getDb();
-  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
-  const businessId = business?.id || 'biz_smilekraft_hyd';
   const body = await c.req.json();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  const businessId = body.businessId || business?.id;
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required or business must exist for organization' }, 400);
+  }
   const result = await firstCustomerPipeline.executePipeline({
     businessId,
     journeyId: body.journeyId,
@@ -2833,9 +2763,12 @@ apiRouter.post('/workflows/first-customer', async (c) => {
 apiRouter.post('/clinic/confirm-treatment-acceptance', async (c) => {
   const orgId = c.get('organizationId');
   const db = getDb();
-  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
-  const businessId = business?.id || 'biz_smilekraft_hyd';
   const body = await c.req.json();
+  const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
+  const businessId = body.businessId || business?.id;
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required or business must exist for organization' }, 400);
+  }
 
   if (!body.journeyId || !body.doctorNotes || !body.serviceRendered) {
     return c.json({ success: false, error: 'Missing required clinical acceptance fields: journeyId, doctorNotes, serviceRendered' }, 400);
@@ -2896,16 +2829,37 @@ const landingPages = new LocalLandingPageEngine();
 const reviewReferral = new ReviewAndReferralEngine();
 const gbpAdapter = new GoogleBusinessProfileAdapter();
 
+function resolveRequestBusinessId(c: any, explicitId?: string): string | null {
+  if (explicitId && typeof explicitId === 'string' && explicitId.trim().length > 0) {
+    return explicitId.trim();
+  }
+  const orgId = c.get('organizationId');
+  if (orgId) {
+    try {
+      const db = getDb();
+      const biz = db.prepare('SELECT id FROM businesses WHERE organization_id = ? LIMIT 1').get(orgId) as any;
+      if (biz?.id) return biz.id;
+    } catch {}
+  }
+  return null;
+}
+
 // 1. Organic Channels Portfolio
 apiRouter.get('/organic/channels', async (c) => {
-  const businessId = c.req.query('businessId') || 'biz_smilekraft_hyd';
+  const businessId = resolveRequestBusinessId(c, c.req.query('businessId'));
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required or business must exist for organization' }, 400);
+  }
   const channels = organicChannels.listChannels(businessId);
   return c.json({ success: true, count: channels.length, data: channels });
 });
 
 // 2. Organic Content Drafts & Assets
 apiRouter.get('/organic/content', async (c) => {
-  const businessId = c.req.query('businessId') || 'biz_smilekraft_hyd';
+  const businessId = resolveRequestBusinessId(c, c.req.query('businessId'));
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required or business must exist for organization' }, 400);
+  }
   const channel = c.req.query('channel') as any;
   const status = c.req.query('status') as any;
   const assets = organicContent.listContent({ businessId, channel, approvalStatus: status });
@@ -2915,7 +2869,10 @@ apiRouter.get('/organic/content', async (c) => {
 // 3. Create Content Draft (Medical Compliance Check)
 apiRouter.post('/organic/content', async (c) => {
   const body = await c.req.json();
-  const businessId = body.businessId || 'biz_smilekraft_hyd';
+  const businessId = resolveRequestBusinessId(c, body.businessId);
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required or business must exist for organization' }, 400);
+  }
   const userId = c.get('userId') || 'usr_owner_01';
 
   try {
@@ -2977,7 +2934,10 @@ apiRouter.get('/organic/landing-pages/:slug', async (c) => {
 // 7. Clinical Review Requests (Post-Consultation)
 apiRouter.post('/organic/reviews/request', async (c) => {
   const body = await c.req.json();
-  const businessId = body.businessId || 'biz_smilekraft_hyd';
+  const businessId = resolveRequestBusinessId(c, body.businessId);
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required or business must exist for organization' }, 400);
+  }
 
   try {
     const req = reviewReferral.createReviewRequest({
@@ -2994,7 +2954,10 @@ apiRouter.post('/organic/reviews/request', async (c) => {
 });
 
 apiRouter.get('/organic/reviews', async (c) => {
-  const businessId = c.req.query('businessId') || 'biz_smilekraft_hyd';
+  const businessId = resolveRequestBusinessId(c, c.req.query('businessId'));
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required or business must exist for organization' }, 400);
+  }
   const reviews = reviewReferral.listReviewRequests(businessId);
   return c.json({ success: true, count: reviews.length, data: reviews });
 });
@@ -3002,7 +2965,10 @@ apiRouter.get('/organic/reviews', async (c) => {
 // 8. Referral Partnerships
 apiRouter.post('/organic/referrals', async (c) => {
   const body = await c.req.json();
-  const businessId = body.businessId || 'biz_smilekraft_hyd';
+  const businessId = resolveRequestBusinessId(c, body.businessId);
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required or business must exist for organization' }, 400);
+  }
 
   try {
     const proposal = reviewReferral.createReferralProposal({
@@ -3020,7 +2986,10 @@ apiRouter.post('/organic/referrals', async (c) => {
 });
 
 apiRouter.get('/organic/referrals', async (c) => {
-  const businessId = c.req.query('businessId') || 'biz_smilekraft_hyd';
+  const businessId = resolveRequestBusinessId(c, c.req.query('businessId'));
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required or business must exist for organization' }, 400);
+  }
   const proposals = reviewReferral.listReferralPartnerships(businessId);
   return c.json({ success: true, count: proposals.length, data: proposals });
 });
@@ -3028,7 +2997,10 @@ apiRouter.get('/organic/referrals', async (c) => {
 // 9. Ethical Direct Outreach
 apiRouter.post('/organic/outreach', async (c) => {
   const body = await c.req.json();
-  const businessId = body.businessId || 'biz_smilekraft_hyd';
+  const businessId = resolveRequestBusinessId(c, body.businessId);
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required or business must exist for organization' }, 400);
+  }
 
   try {
     const draft = reviewReferral.createOutreachDraft({
@@ -3060,28 +3032,40 @@ apiRouter.post('/organic/outreach/:id/dispatch', async (c) => {
 });
 
 apiRouter.get('/organic/outreach', async (c) => {
-  const businessId = c.req.query('businessId') || 'biz_smilekraft_hyd';
+  const businessId = resolveRequestBusinessId(c, c.req.query('businessId'));
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required or business must exist for organization' }, 400);
+  }
   const logs = reviewReferral.listOutreachLogs(businessId);
   return c.json({ success: true, count: logs.length, data: logs });
 });
 
 // 10. Google Business Profile Insights
 apiRouter.get('/organic/gbp', async (c) => {
-  const businessId = c.req.query('businessId') || 'biz_smilekraft_hyd';
+  const businessId = resolveRequestBusinessId(c, c.req.query('businessId'));
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required or business must exist for organization' }, 400);
+  }
   const insights = gbpAdapter.getLocationInsights(businessId);
   return c.json({ success: true, data: insights });
 });
 
 // 11. Organic Economics
 apiRouter.get('/organic/economics', async (c) => {
-  const businessId = c.req.query('businessId') || 'biz_smilekraft_hyd';
+  const businessId = resolveRequestBusinessId(c, c.req.query('businessId'));
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required or business must exist for organization' }, 400);
+  }
   const economics = realEconomics.calculate(businessId);
   return c.json({ success: true, data: economics });
 });
 
 // 12. Zero-Budget Organic Experiments
 apiRouter.get('/organic/experiments', async (c) => {
-  const businessId = c.req.query('businessId') || 'biz_smilekraft_hyd';
+  const businessId = resolveRequestBusinessId(c, c.req.query('businessId'));
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required or business must exist for organization' }, 400);
+  }
   const experiments = autonomyController.generateZeroBudgetExperiments(businessId);
   return c.json({ success: true, count: experiments.length, data: experiments });
 });
@@ -3091,6 +3075,10 @@ const trafficProvenance = new TrafficProvenanceEngine();
 
 apiRouter.post('/organic/sessions', async (c) => {
   const body = await c.req.json().catch(() => ({}));
+  const businessId = resolveRequestBusinessId(c, body.businessId);
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required or business must exist for organization' }, 400);
+  }
   const ipAddress =
     c.req.header('x-forwarded-for')?.split(',')[0].trim() ||
     c.req.header('cf-connecting-ip') ||
@@ -3100,7 +3088,7 @@ apiRouter.post('/organic/sessions', async (c) => {
   const referrer = body.referrer || c.req.header('referer') || '';
 
   const session = trafficProvenance.recordSession({
-    businessId: body.businessId || 'biz_smilekraft_hyd',
+    businessId,
     visitorId: body.visitorId,
     sessionId: body.sessionId,
     landingPage: body.landingPage || '/aligners-hyderabad',
@@ -3119,7 +3107,10 @@ apiRouter.post('/organic/sessions', async (c) => {
 
 // 14. List Traffic Sessions
 apiRouter.get('/organic/sessions', async (c) => {
-  const businessId = c.req.query('businessId') || 'biz_smilekraft_hyd';
+  const businessId = resolveRequestBusinessId(c, c.req.query('businessId'));
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required or business must exist for organization' }, 400);
+  }
   const status = c.req.query('status') as any;
   const sessions = trafficProvenance.listSessions({ businessId, trafficEvidenceStatus: status });
   return c.json({ success: true, count: sessions.length, data: sessions });
@@ -3128,15 +3119,28 @@ apiRouter.get('/organic/sessions', async (c) => {
 // 15. Ingest Real Organic Lead (Tied to Existing Session Provenance)
 apiRouter.post('/organic/leads', async (c) => {
   const body = await c.req.json();
-  const businessId = body.businessId || 'biz_smilekraft_hyd';
+  const businessId = resolveRequestBusinessId(c, body.businessId);
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required or business must exist for organization' }, 400);
+  }
 
   if (!body.customerName || body.customerName.trim().length === 0) {
     return c.json({ success: false, error: 'Customer name is required' }, 400);
   }
 
+  const db = getDb();
+  let organizationId = c.get('organizationId');
+  if (!organizationId) {
+    const biz = db.prepare('SELECT organization_id FROM businesses WHERE id = ?').get(businessId) as any;
+    organizationId = biz?.organization_id;
+  }
+  if (!organizationId) {
+    return c.json({ success: false, error: 'ORGANIZATION_REQUIRED: Could not resolve organization for business' }, 400);
+  }
+
   const result = trafficProvenance.recordLead({
     businessId,
-    organizationId: c.get('organizationId') || 'org_smilekraft_01',
+    organizationId,
     customerName: body.customerName,
     customerPhone: body.customerPhone,
     customerEmail: body.customerEmail,
@@ -3150,7 +3154,10 @@ apiRouter.post('/organic/leads', async (c) => {
 
 // 16. Traffic Stats & External Organic Distribution Counts
 apiRouter.get('/organic/traffic-stats', async (c) => {
-  const businessId = c.req.query('businessId') || 'biz_smilekraft_hyd';
+  const businessId = resolveRequestBusinessId(c, c.req.query('businessId'));
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required or business must exist for organization' }, 400);
+  }
   const stats = trafficProvenance.getOrganicDistributionStats(businessId);
   return c.json({ success: true, data: stats });
 });
@@ -3188,21 +3195,33 @@ apiRouter.post('/organic/content/:id/publish-evidence', async (c) => {
 
 // 19. Google Business Profile OAuth Endpoints
 apiRouter.get('/organic/gbp/oauth/status', async (c) => {
-  const businessId = c.req.query('businessId') || 'biz_smilekraft_hyd';
+  const businessId = resolveRequestBusinessId(c, c.req.query('businessId'));
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required or business must exist for organization' }, 400);
+  }
   const status = gbpAdapter.getOAuthStatus(businessId);
   return c.json({ success: true, data: status });
 });
 
 apiRouter.get('/organic/gbp/oauth/authorize', async (c) => {
-  const businessId = c.req.query('businessId') || 'biz_smilekraft_hyd';
-  const redirectUri = c.req.query('redirectUri') || 'https://smilekraftdental.in/api/v1/organic/gbp/oauth/callback';
+  const businessId = resolveRequestBusinessId(c, c.req.query('businessId'));
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required or business must exist for organization' }, 400);
+  }
+  const redirectUri = c.req.query('redirectUri');
+  if (!redirectUri) {
+    return c.json({ success: false, error: 'REDIRECT_URI_REQUIRED: redirectUri is required' }, 400);
+  }
   const authUrl = gbpAdapter.getAuthorizationUrl(businessId, redirectUri);
   return c.json({ success: true, data: authUrl });
 });
 
 apiRouter.post('/organic/gbp/oauth/callback', async (c) => {
   const body = await c.req.json();
-  const businessId = body.businessId || 'biz_smilekraft_hyd';
+  const businessId = resolveRequestBusinessId(c, body.businessId);
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required or business must exist for organization' }, 400);
+  }
 
   try {
     const auth = gbpAdapter.handleOAuthCallback({
@@ -3220,7 +3239,10 @@ apiRouter.post('/organic/gbp/oauth/callback', async (c) => {
 
 apiRouter.post('/organic/gbp/posts', async (c) => {
   const body = await c.req.json();
-  const businessId = body.businessId || 'biz_smilekraft_hyd';
+  const businessId = resolveRequestBusinessId(c, body.businessId);
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required or business must exist for organization' }, 400);
+  }
 
   const result = gbpAdapter.createPostDraft({
     businessId,
@@ -3234,7 +3256,10 @@ apiRouter.post('/organic/gbp/posts', async (c) => {
 
 apiRouter.post('/organic/gbp/faqs', async (c) => {
   const body = await c.req.json();
-  const businessId = body.businessId || 'biz_smilekraft_hyd';
+  const businessId = resolveRequestBusinessId(c, body.businessId);
+  if (!businessId) {
+    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required or business must exist for organization' }, 400);
+  }
 
   const draft = gbpAdapter.createFaqDraft({
     businessId,

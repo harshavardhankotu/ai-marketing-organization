@@ -7,16 +7,16 @@ A **Cloudflare Worker** that wakes the Render backend every 15 minutes and trigg
 | Property | Value |
 |---|---|
 | Worker name | `ai-marketing-cron-worker` |
-| Cron schedule | `*/15 * * * *` (every 15 minutes, UTC) |
+| Cron schedule | `0 * * * *` (every hour, UTC) |
 | Target | `POST https://ai-marketing-organization.onrender.com/api/v1/cron/ping` |
 | Auth header | `X-Cron-Secret: <CRON_PING_SECRET>` |
 
 ### What it does
 
-1. Fires every 15 minutes via Cloudflare's built-in cron trigger.
+1. Fires hourly via Cloudflare's built-in cron trigger.
 2. POSTs to the Render backend's `/api/v1/cron/ping` endpoint with a signed secret.
-3. The backend wakes from Render's free-tier sleep and kicks off the autonomous revenue cycle.
-4. Logs the response (or a friendly cold-start warning on timeout) to Cloudflare's Workers logs.
+3. The backend wakes and kicks off the autonomous revenue cycle.
+4. Logs the response to Cloudflare's Workers logs.
 
 > [!NOTE]
 > Render's free tier spins down after ~15 minutes of inactivity. The first ping after a cold-start may time out (25 s limit). The Worker logs a warning and the **next** ping 15 minutes later will succeed once Render is warm.
@@ -108,7 +108,7 @@ curl http://localhost:8787/health
 
 | Metric | Cloudflare Free Limit | This Worker |
 |---|---|---|
-| Requests / day | 100,000 | **96** (`*/15` = 4/hr × 24 hr) |
+| Requests / day | 100,000 | **24** (`0 * * * *` = 1/hr × 24 hr) |
 | CPU time / invocation | 10 ms (free) | < 1 ms overhead; network I/O is free |
 
 Well within free tier limits. No billing surprises.

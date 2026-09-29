@@ -20,6 +20,7 @@ import { NextBestActionEngine } from './next-best-action-engine.js';
 import { isPlaceholderCredential } from '../config/env.js';
 import { LiveProviderActivation, ProviderActivationStatus, MissingProviderDiagnostic } from './live-provider-activation.js';
 import { CommercialLifecycleManager, LifecycleEvaluation, RevenueMilestone } from './commercial-lifecycle.js';
+import { OwnerAuthService } from '../auth/owner-auth.js';
 
 export interface RealityReport {
   generatedAt: string;
@@ -186,12 +187,16 @@ export class RealityReportGenerator {
     return RealityReportGenerator.instance;
   }
 
-  public generate(organizationId: string = 'org_owner_primary', businessId?: string): RealityReport {
+  public generate(organizationId: string = OwnerAuthService.OWNER_ORGANIZATION_ID, businessId?: string): RealityReport {
+    if (!organizationId) {
+      throw new Error('ORGANIZATION_REQUIRED: Explicit organizationId required for reality report generation');
+    }
     const db = getDb();
-    // Default to the platform business if no businessId provided
     const effectiveBizId = businessId ||
-      (db.prepare(`SELECT id FROM businesses WHERE organization_id = ? LIMIT 1`).get(organizationId) as any)?.id ||
-      'biz_platform_aro';
+      (db.prepare(`SELECT id FROM businesses WHERE organization_id = ? LIMIT 1`).get(organizationId) as any)?.id;
+    if (!effectiveBizId) {
+      throw new Error(`BUSINESS_REQUIRED: No business found for organizationId='${organizationId}'. Explicit businessId required.`);
+    }
 
     // 1. Runtime
     const runtime = {
@@ -355,7 +360,7 @@ export class RealityReportGenerator {
       missingProviderDiagnostics: missingDiagnostic,
       cron: {
         status: cronStatus,
-        schedule: '*/15 * * * *',
+        schedule: '0 * * * *',
         totalPingsObserved: cronCount,
         lastPingAt: lastPing
       },

@@ -72,7 +72,10 @@ export class GoogleBusinessProfileAdapter {
   /**
    * Retrieves current OAuth authorization record for GBP.
    */
-  public getOAuthStatus(businessId: string = 'biz_smilekraft_hyd'): GBPOAuthRecord {
+  public getOAuthStatus(businessId: string): GBPOAuthRecord {
+    if (!businessId) {
+      throw new Error('BUSINESS_REQUIRED: Explicit businessId required for GBP OAuth status');
+    }
     const row = this.db
       .prepare('SELECT * FROM gbp_oauth_authorizations WHERE business_id = ?')
       .get(businessId) as any;
@@ -104,9 +107,12 @@ export class GoogleBusinessProfileAdapter {
    * Generates genuine Google OAuth 2.0 authorization URL.
    */
   public getAuthorizationUrl(
-    businessId: string = 'biz_smilekraft_hyd',
+    businessId: string,
     redirectUri: string = 'https://smilekraftdental.in/api/v1/organic/gbp/oauth/callback'
   ): { url: string; state: string } {
+    if (!businessId) {
+      throw new Error('BUSINESS_REQUIRED: Explicit businessId required for GBP authorization URL');
+    }
     const state = `gbp_auth_${randomUUID().substring(0, 16)}`;
     const clientId = process.env.GOOGLE_CLIENT_ID || 'dummy_gbp_client_id.apps.googleusercontent.com';
     const scope = encodeURIComponent('https://www.googleapis.com/auth/business.manage');
@@ -265,7 +271,10 @@ export class GoogleBusinessProfileAdapter {
   /**
    * Retrieves GBP location insights without fabricating unverified metrics.
    */
-  public getLocationInsights(businessId: string = 'biz_smilekraft_hyd'): GBPLocationInsights {
+  public getLocationInsights(businessId: string): GBPLocationInsights {
+    if (!businessId) {
+      throw new Error('BUSINESS_REQUIRED: Explicit businessId required for GBP location insights');
+    }
     const row = this.db
       .prepare('SELECT * FROM gbp_interactions WHERE business_id = ?')
       .get(businessId) as any;

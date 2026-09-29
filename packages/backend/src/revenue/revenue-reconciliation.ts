@@ -406,7 +406,14 @@ export class RevenueReconciliationEngine {
 
     const id = `tx-${randomUUID()}`;
     const now = new Date().toISOString();
-    const orgId = params.organizationId || 'org_smilekraft_01';
+    let orgId = params.organizationId;
+    if (!orgId) {
+      const biz = this.db.prepare('SELECT organization_id FROM businesses WHERE id = ?').get(params.businessId) as any;
+      orgId = biz?.organization_id;
+    }
+    if (!orgId) {
+      throw new Error(`EXACT_LINEAGE_VIOLATION: organizationId is required to record transaction for business ${params.businessId}`);
+    }
     const status = params.status || 'SUCCESS';
     const classification = params.classification || 'TEST';
     const gateway = params.paymentGateway || (classification === 'REAL' ? 'MANUAL' : 'SIMULATED');
@@ -505,7 +512,14 @@ export class RevenueReconciliationEngine {
     campaignId?: string;
     serviceRendered?: string;
   }): TransactionRecord {
-    const orgId = params.organizationId || 'org_smilekraft_01';
+    let orgId = params.organizationId;
+    if (!orgId) {
+      const biz = this.db.prepare('SELECT organization_id FROM businesses WHERE id = ?').get(params.businessId) as any;
+      orgId = biz?.organization_id;
+    }
+    if (!orgId) {
+      throw new Error(`EXACT_LINEAGE_VIOLATION: organizationId is required to verify revenue for business ${params.businessId}`);
+    }
     const service = params.serviceRendered || 'Verified In-Clinic Treatment';
 
     // 1. Single Trusted Authority Enforcement: Caller must be authenticated clinic OWNER

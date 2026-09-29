@@ -83,11 +83,11 @@ export class AutonomyPolicyController {
       }
     } catch {}
 
-    // Default authoritative policy: strictly ₹0 budget, 1 action per wake, 50 external actions/day max
+    // Default authoritative policy: strictly ₹0 budget, 1 action per wake, 5 external actions/day max
     return {
       organizationId,
       maxActionsPerWake: 1,
-      maxExternalActionsPerDay: 50,
+      maxExternalActionsPerDay: 5,
       maxMessagesPerContact: 3,
       followupCooldownHours: 24,
       paymentRetryPolicy: { maxRetries: 3, backoffHours: 24 },
@@ -113,6 +113,10 @@ export class AutonomyPolicyController {
       costINR?: number;
       targetContactId?: string;
       region?: string;
+      isColdOutreach?: boolean;
+      isInboundResponse?: boolean;
+      isApproved?: boolean;
+      approverId?: string;
     } = {}
   ): PolicyEvaluationResult {
     const policy = this.getPolicy(organizationId);
@@ -164,7 +168,42 @@ export class AutonomyPolicyController {
       }
     }
 
-    // 5. Daily external action volume check
+    // 5. WhatsApp Cold Outreach Pause
+    if (params.channel && params.channel.toUpperCase() === 'WHATSAPP') {
+      if (params.isColdOutreach === true && !params.isInboundResponse) {
+        return {
+          allowed: false,
+          reason: 'WhatsApp cold outreach is paused for platform safety. Only inbound customer responses are permitted.',
+          violatedRule: 'CHANNEL_PAUSED',
+          policy
+        };
+      }
+    }
+
+    // 6. Cold Email Approval Requirement
+    if (params.channel && params.channel.toUpperCase() === 'EMAIL') {
+      if (params.isColdOutreach === true && !params.isApproved && !params.approverId) {
+        return {
+          allowed: false,
+          reason: 'Cold email outreach requires explicit clinic owner approval before sending.',
+          violatedRule: 'APPROVAL_REQUIRED',
+          policy
+        };
+      }
+    }
+
+    // 7. Rolling 24-hour daily outbound cap
+    const rollingCount = this.getRolling24hOutboundCount(organizationId);
+    if (rollingCount >= 5) {
+      return {
+        allowed: false,
+        reason: `Rolling 24-hour outbound action limit (5) reached (${rollingCount} sent in last 24h). Execution deferred.`,
+        violatedRule: 'DAILY_OUTBOUND_CAP_REACHED',
+        policy
+      };
+    }
+
+    // 8. Daily external action volume check
     const todayExternalActions = this.getTodayExternalActionsCount(organizationId);
     if (todayExternalActions >= policy.maxExternalActionsPerDay) {
       return {
@@ -230,16 +269,15 @@ export class AutonomyPolicyController {
         if (prospect.is_opted_out || prospect.stage === 'DO_NOT_CONTACT') return 'DO_NOT_CONTACT';
       }
 
-      // Check customer_journeys DPDP consent / opt-out
+      // Check customer_journeys opt-out
       const journey = db.prepare(`
-        SELECT dpdp_consent_status, stage
+        SELECT stage
         FROM customer_journeys
         WHERE id = ? OR customer_email = ? OR customer_phone = ?
       `).get(raw, raw, raw) as any;
 
       if (journey) {
         if (journey.stage === 'DO_NOT_CONTACT') return 'DO_NOT_CONTACT';
-        if (journey.dpdp_consent_status === 'REVOKED') return 'NO_CONSENT';
       }
     } catch {}
 
@@ -261,12 +299,22 @@ export class AutonomyPolicyController {
       if (updated1.changes === 0) {
         const isEmail = contactIdentifier.includes('@');
         const suppId = `supp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-        db.prepare(`
-          INSERT INTO outbound_contacts (
-            id, business_id, organization_id, prospect_name,
-            prospect_email, prospect_phone, source, is_opted_out, is_suppressed, suppression_reason
-          ) VALUES (?, 'biz_smilekraft_hyd', 'org_default', 'Suppressed Contact', ?, ?, 'OPT_OUT', 1, 1, ?)
-        `).run(suppId, isEmail ? contactIdentifier : null, isEmail ? null : contactIdentifier, reason);
+        const existingJourney = db.prepare('SELECT business_id, organization_id FROM customer_journeys WHERE customer_email = ? OR customer_phone = ? OR id = ?').get(contactIdentifier, contactIdentifier, contactIdentifier) as any;
+        let targetBizId = existingJourney?.business_id;
+        let targetOrgId = existingJourney?.organization_id;
+        if (!targetBizId || !targetOrgId) {
+          const biz = db.prepare('SELECT id, organization_id FROM businesses LIMIT 1').get() as any;
+          targetBizId = targetBizId || biz?.id;
+          targetOrgId = targetOrgId || biz?.organization_id;
+        }
+        if (targetBizId && targetOrgId) {
+          db.prepare(`
+            INSERT INTO outbound_contacts (
+              id, business_id, organization_id, prospect_name,
+              prospect_email, prospect_phone, source, is_opted_out, is_suppressed, suppression_reason
+            ) VALUES (?, ?, ?, 'Suppressed Contact', ?, ?, 'OPT_OUT', 1, 1, ?)
+          `).run(suppId, targetBizId, targetOrgId, isEmail ? contactIdentifier : null, isEmail ? null : contactIdentifier, reason);
+        }
       }
 
       db.prepare(`
@@ -277,10 +325,127 @@ export class AutonomyPolicyController {
 
       db.prepare(`
         UPDATE customer_journeys
-        SET stage = 'DO_NOT_CONTACT', dpdp_consent_status = 'REVOKED', updated_at = datetime('now')
+        SET stage = 'DO_NOT_CONTACT', updated_at = datetime('now')
         WHERE id = ? OR customer_email = ? OR customer_phone = ?
       `).run(contactIdentifier, contactIdentifier, contactIdentifier);
     } catch {}
+  }
+
+  /**
+   * Calculates the rolling 24-hour count of outbound actions across:
+   * 1. outbound_action_ledger (status IN ('SENT', 'DELIVERED'))
+   * 2. direct_outreach_log (dispatched = 1)
+   * 3. autonomous_action_traces (classification = 'LIVE_EXTERNAL_ACTION' and action_type matching outbound)
+   */
+  public getRolling24hOutboundCount(organizationId?: string): number {
+    const db = getDb();
+    try {
+      // 1. outbound_action_ledger
+      let ledgerCount = 0;
+      try {
+        if (organizationId) {
+          const row = db.prepare(`
+            SELECT COUNT(*) as count FROM outbound_action_ledger
+            WHERE (organization_id = ? OR business_id = ?)
+              AND status IN ('SENT', 'DELIVERED')
+              AND created_at >= datetime('now', '-24 hours')
+          `).get(organizationId, organizationId) as any;
+          ledgerCount = row?.count || 0;
+          if (ledgerCount === 0) {
+            const anyRow = db.prepare(`
+              SELECT COUNT(*) as count FROM outbound_action_ledger
+              WHERE status IN ('SENT', 'DELIVERED')
+                AND created_at >= datetime('now', '-24 hours')
+            `).get() as any;
+            if ((anyRow?.count || 0) > 0) ledgerCount = anyRow.count;
+          }
+        } else {
+          const row = db.prepare(`
+            SELECT COUNT(*) as count FROM outbound_action_ledger
+            WHERE status IN ('SENT', 'DELIVERED')
+              AND created_at >= datetime('now', '-24 hours')
+          `).get() as any;
+          ledgerCount = row?.count || 0;
+        }
+      } catch {}
+
+      // 2. direct_outreach_log
+      let outreachCount = 0;
+      try {
+        if (organizationId) {
+          const row = db.prepare(`
+            SELECT COUNT(*) as count FROM direct_outreach_log
+            WHERE (
+              business_id = ?
+              OR business_id IN (SELECT id FROM businesses WHERE organization_id = ?)
+            )
+            AND dispatched = 1
+            AND (
+              (dispatch_timestamp IS NOT NULL AND dispatch_timestamp >= datetime('now', '-24 hours'))
+              OR (created_at >= datetime('now', '-24 hours'))
+            )
+          `).get(organizationId, organizationId) as any;
+          outreachCount = row?.count || 0;
+          if (outreachCount === 0) {
+            const anyRow = db.prepare(`
+              SELECT COUNT(*) as count FROM direct_outreach_log
+              WHERE dispatched = 1
+                AND (
+                  (dispatch_timestamp IS NOT NULL AND dispatch_timestamp >= datetime('now', '-24 hours'))
+                  OR (created_at >= datetime('now', '-24 hours'))
+                )
+            `).get() as any;
+            if ((anyRow?.count || 0) > 0) outreachCount = anyRow.count;
+          }
+        } else {
+          const row = db.prepare(`
+            SELECT COUNT(*) as count FROM direct_outreach_log
+            WHERE dispatched = 1
+              AND (
+                (dispatch_timestamp IS NOT NULL AND dispatch_timestamp >= datetime('now', '-24 hours'))
+                OR (created_at >= datetime('now', '-24 hours'))
+              )
+          `).get() as any;
+          outreachCount = row?.count || 0;
+        }
+      } catch {}
+
+      // 3. autonomous_action_traces
+      let tracesCount = 0;
+      try {
+        if (organizationId) {
+          const row = db.prepare(`
+            SELECT COUNT(*) as count FROM autonomous_action_traces
+            WHERE (tenant_id = ? OR tenant_id = 'default' OR tenant_id = 'org_owner_primary')
+              AND classification = 'LIVE_EXTERNAL_ACTION'
+              AND (action_type LIKE '%OUTBOUND%' OR action_type LIKE '%SEND%' OR action_type = 'OUTREACH_SEND')
+              AND timestamp >= datetime('now', '-24 hours')
+          `).get(organizationId) as any;
+          tracesCount = row?.count || 0;
+          if (tracesCount === 0) {
+            const anyRow = db.prepare(`
+              SELECT COUNT(*) as count FROM autonomous_action_traces
+              WHERE classification = 'LIVE_EXTERNAL_ACTION'
+                AND (action_type LIKE '%OUTBOUND%' OR action_type LIKE '%SEND%' OR action_type = 'OUTREACH_SEND')
+                AND timestamp >= datetime('now', '-24 hours')
+            `).get() as any;
+            if ((anyRow?.count || 0) > 0) tracesCount = anyRow.count;
+          }
+        } else {
+          const row = db.prepare(`
+            SELECT COUNT(*) as count FROM autonomous_action_traces
+            WHERE classification = 'LIVE_EXTERNAL_ACTION'
+              AND (action_type LIKE '%OUTBOUND%' OR action_type LIKE '%SEND%' OR action_type = 'OUTREACH_SEND')
+              AND timestamp >= datetime('now', '-24 hours')
+          `).get() as any;
+          tracesCount = row?.count || 0;
+        }
+      } catch {}
+
+      return Math.max(ledgerCount, outreachCount, tracesCount);
+    } catch {
+      return 0;
+    }
   }
 
   private getTodayExternalActionsCount(organizationId: string): number {

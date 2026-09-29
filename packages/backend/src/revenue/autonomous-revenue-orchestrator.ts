@@ -16,7 +16,7 @@
  * - Unconfigured adapters immediately yield BLOCKED_AUTHORIZATION.
  */
 
-import { getDb } from '../db/client.js';
+import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { OpportunityEngine } from './opportunity-engine.js';
 import { NextBestActionEngine, NextBestAction } from './next-best-action-engine.js';
 import { DurableEventBus, DurableEventType } from './durable-event-bus.js';
@@ -80,6 +80,35 @@ export class AutonomousRevenueOrchestrator {
   private oppEngine = OpportunityEngine.getInstance();
   private nbaEngine = NextBestActionEngine.getInstance();
   private quotaService = UnifiedQuotaService.getInstance();
+  private d1Repo = D1RevenueRepository.getInstance();
+
+  private get db() {
+    return {
+      prepare: (sql: string) => ({
+        run: (...params: any[]) => {
+          if (isProduction() && !process.env.VITEST) {
+            this.d1Repo.executeWrite('autonomous_cycle_log', sql, params).catch(e => {
+              console.error(`[ARO D1 Write Fault]: ${e.message}`);
+            });
+            return { changes: 1 };
+          }
+          return this.d1Repo.executeSync('autonomous_cycle_log', sql, params);
+        },
+        get: (...params: any[]) => {
+          if (isProduction() && !process.env.VITEST) {
+            throw new Error(`PRODUCTION D1 ERROR: Synchronous get() is prohibited on ARO. Must use async queries.`);
+          }
+          return this.d1Repo.queryOneSync('autonomous_cycle_log', sql, params);
+        },
+        all: (...params: any[]) => {
+          if (isProduction() && !process.env.VITEST) {
+            throw new Error(`PRODUCTION D1 ERROR: Synchronous all() is prohibited on ARO. Must use async queries.`);
+          }
+          return this.d1Repo.querySync('autonomous_cycle_log', sql, params);
+        }
+      })
+    };
+  }
 
   public static getInstance(): AutonomousRevenueOrchestrator {
     if (!AutonomousRevenueOrchestrator.instance) {
@@ -97,7 +126,7 @@ export class AutonomousRevenueOrchestrator {
     businessId: string,
     triggerSource: 'SCHEDULER' | 'EVENT' | 'MANUAL' | 'CLOUDFLARE_CRON' = 'MANUAL'
   ): Promise<OrchestratorCycleResult> {
-    const db = getDb();
+    const db = this.db;
     const cycleId = `cycle_${Date.now()}`;
     const cycleStart = new Date().toISOString();
     const errors: string[] = [];
@@ -487,7 +516,7 @@ export class AutonomousRevenueOrchestrator {
     externalId?: string;
     error?: string;
   }> {
-    const db = getDb();
+    const db = this.db;
 
     switch (action.actionType) {
       // ────────────────────────────────────────────────────────────────
@@ -680,77 +709,76 @@ export class AutonomousRevenueOrchestrator {
           };
         }
 
-        // SPEC § 13: Outbound Action Ledger Idempotency Gate
+        // SPEC § 13 & Item 4: Atomic Outbound Action Ledger Reservation
         const ledger = OutboundActionLedger.getInstance();
         const contactIdForLedger = outboundContactId || opp.id;
-        const isSent = await ledger.isAlreadySent(
+        const reservation = await ledger.reserve({
           organizationId,
-          opp.id,
-          contactIdForLedger,
-          1,
-          selectedChannel
-        );
-        if (isSent) {
+          businessId,
+          opportunityId: opp.id,
+          outboundContactId: contactIdForLedger,
+          sequenceNumber: 1,
+          channel: selectedChannel,
+          actionKey: `outreach_${opp.id}_${selectedChannel}`,
+          provider: selectedChannel === 'EMAIL' ? 'RESEND' : 'META_WHATSAPP'
+        });
+
+        if (!reservation.success) {
           return {
             status: 'INTERNAL_AUTOMATION',
             actionClassification: 'INTERNAL_AUTOMATION',
             isRevenueAction: false,
             externalId: undefined,
-            error: 'Outbound already recorded in ledger for this opportunity and channel'
+            error: reservation.reason
           };
         }
 
         let pubResult: any;
-        if (selectedChannel === 'EMAIL') {
-          const emailAdapter = new EmailAdapter();
-          const health = await emailAdapter.checkHealth();
-          if (!health.connected || health.mode !== 'LIVE') {
-            return {
-              status: 'BLOCKED_AUTHORIZATION',
-              actionClassification: 'BLOCKED_AUTHORIZATION',
-              isRevenueAction: false,
-              error: 'BLOCKED_AUTHORIZATION: No LIVE email delivery channel connected for opportunity pursuit'
-            };
+        try {
+          if (selectedChannel === 'EMAIL') {
+            const emailAdapter = new EmailAdapter();
+            const health = await emailAdapter.checkHealth();
+            if (!health.connected || health.mode !== 'LIVE') {
+              await ledger.markFailed(reservation.ledgerId, 'No LIVE email delivery channel connected');
+              return {
+                status: 'BLOCKED_AUTHORIZATION',
+                actionClassification: 'BLOCKED_AUTHORIZATION',
+                isRevenueAction: false,
+                error: 'BLOCKED_AUTHORIZATION: No LIVE email delivery channel connected for opportunity pursuit'
+              };
+            }
+            pubResult = await emailAdapter.publish({
+              title: `${biz.vertical_name || 'Commercial'} Consultation Offer`,
+              body: `${opp.nextBestAction || 'Personalized System Assessment'} — We identified high-intent inquiries looking for your services. Book your system walkthrough with ${biz.name}.`,
+              channel: 'EMAIL',
+              recipientEmail: targetRecipient
+            });
+          } else {
+            const wa = new WhatsAppAdapter();
+            const health = await wa.checkHealth();
+            if (!health.connected || health.mode !== 'LIVE') {
+              await ledger.markFailed(reservation.ledgerId, 'No LIVE WhatsApp delivery channel connected');
+              return {
+                status: 'BLOCKED_AUTHORIZATION',
+                actionClassification: 'BLOCKED_AUTHORIZATION',
+                isRevenueAction: false,
+                error: 'BLOCKED_AUTHORIZATION: No LIVE WhatsApp delivery channel connected for opportunity pursuit'
+              };
+            }
+            pubResult = await wa.publish({
+              title: `${biz.vertical_name || 'Commercial'} Consultation Offer`,
+              body: `${opp.nextBestAction || 'Personalized System Assessment'} — We identified high-intent inquiries looking for your services. Book your system walkthrough with ${biz.name}.`,
+              channel: 'WHATSAPP',
+              recipientPhone: targetRecipient
+            });
           }
-          pubResult = await emailAdapter.publish({
-            title: `${biz.vertical_name || 'Commercial'} Consultation Offer`,
-            body: `${opp.nextBestAction || 'Personalized System Assessment'} — We identified high-intent inquiries looking for your services. Book your system walkthrough with ${biz.name}.`,
-            channel: 'EMAIL',
-            recipientEmail: targetRecipient
-          });
-        } else {
-          const wa = new WhatsAppAdapter();
-          const health = await wa.checkHealth();
-          if (!health.connected || health.mode !== 'LIVE') {
-            return {
-              status: 'BLOCKED_AUTHORIZATION',
-              actionClassification: 'BLOCKED_AUTHORIZATION',
-              isRevenueAction: false,
-              error: 'BLOCKED_AUTHORIZATION: No LIVE WhatsApp delivery channel connected for opportunity pursuit'
-            };
-          }
-          pubResult = await wa.publish({
-            title: `${biz.vertical_name || 'Commercial'} Consultation Offer`,
-            body: `${opp.nextBestAction || 'Personalized System Assessment'} — We identified high-intent inquiries looking for your services. Book your system walkthrough with ${biz.name}.`,
-            channel: 'WHATSAPP',
-            recipientPhone: targetRecipient
-          });
+        } catch (dispatchErr: any) {
+          await ledger.markFailed(reservation.ledgerId, dispatchErr?.message || 'Dispatch exception');
+          throw dispatchErr;
         }
 
         if (pubResult.success && pubResult.actionClassification === 'LIVE_EXTERNAL_ACTION') {
-          await ledger.recordAction({
-            id: `oal_${Date.now()}_${randomUUID().slice(0, 6)}`,
-            organizationId,
-            businessId,
-            opportunityId: opp.id,
-            outboundContactId: contactIdForLedger,
-            sequenceNumber: 1,
-            channel: selectedChannel,
-            actionKey: `outreach_${opp.id}_${selectedChannel}`,
-            provider: pubResult.provider,
-            providerExternalId: pubResult.externalId,
-            status: 'DELIVERED'
-          });
+          await ledger.markSent(reservation.ledgerId, pubResult.externalId);
 
           if (outboundContactId) {
             try {
@@ -803,11 +831,13 @@ export class AutonomousRevenueOrchestrator {
           };
         }
 
+        await ledger.markFailed(reservation.ledgerId, pubResult.error || pubResult.message || 'Dispatch failed');
+
         return {
           status: 'BLOCKED_AUTHORIZATION',
           actionClassification: 'BLOCKED_AUTHORIZATION',
           isRevenueAction: false,
-          error: pubResult.message
+          error: pubResult.message || pubResult.error
         };
       }
 
@@ -1225,8 +1255,7 @@ export class AutonomousRevenueOrchestrator {
     organizationId: string = OwnerAuthService.OWNER_ORGANIZATION_ID,
     businessId: string = OwnerAuthService.PLATFORM_BUSINESS_ID
   ): Promise<void> {
-    const db = getDb();
-
+    const db = this.db;
     switch (eventType) {
       case 'NEW_LEAD':
         if (payload.journeyId) {
@@ -1411,10 +1440,9 @@ export class AutonomousRevenueOrchestrator {
     externalId?: string;
     cost?: number;
   }): void {
-    const db = getDb();
     try {
       const id = `trace_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-      db.prepare(`
+      this.db.prepare(`
         INSERT INTO autonomous_action_traces (
           id, cycle_id, action_id, tenant_id, action_type, reason,
           expected_value, authorization, quota_reservation, provider,
@@ -1449,19 +1477,18 @@ export class AutonomousRevenueOrchestrator {
     reason: string,
     evidence: Record<string, any> = {}
   ): void {
-    const db = getDb();
     try {
-      const prev = db.prepare(`SELECT stage FROM sales_pipeline WHERE id = ?`).get(pipelineId) as any;
+      const prev = this.db.prepare(`SELECT stage FROM sales_pipeline WHERE id = ?`).get(pipelineId) as any;
       const previousState = prev?.stage || 'UNKNOWN';
 
-      db.prepare(`
+      this.db.prepare(`
         UPDATE sales_pipeline
         SET stage = ?, reason = ?, updated_at = datetime('now')
         WHERE id = ?
       `).run(newStage, reason, pipelineId);
 
       const transId = `ptrans_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-      db.prepare(`
+      this.db.prepare(`
         INSERT INTO pipeline_transitions (
           id, pipeline_id, business_id, previous_state, new_state, actor, reason, evidence_json, timestamp
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))

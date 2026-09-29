@@ -376,7 +376,7 @@ export class SalesConversationEngine {
 
       if (!targetJourneyId) {
         const journey = db.prepare(`
-          SELECT id FROM customer_journeys
+          SELECT id, business_id FROM customer_journeys
           WHERE customer_phone = ? OR customer_email = ?
         `).get(contact, contact) as any;
         targetJourneyId = journey?.id;
@@ -395,12 +395,17 @@ export class SalesConversationEngine {
           WHERE id = ?
         `).run(newStage, targetJourneyId);
 
-        const transId = `ptrans_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-        db.prepare(`
-          INSERT INTO pipeline_transitions (
-            id, pipeline_id, business_id, previous_state, new_state, actor, reason, timestamp
-          ) VALUES (?, ?, 'biz_smilekraft_hyd', 'AUTOMATED_INBOUND', ?, 'sales-conversation-engine', ?, datetime('now'))
-        `).run(transId, targetJourneyId, newStage, reason);
+        const targetBizId = (db.prepare('SELECT business_id FROM customer_journeys WHERE id = ?').get(targetJourneyId) as any)?.business_id ||
+          (db.prepare('SELECT business_id FROM sales_pipeline WHERE journey_id = ? LIMIT 1').get(targetJourneyId) as any)?.business_id;
+
+        if (targetBizId) {
+          const transId = `ptrans_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+          db.prepare(`
+            INSERT INTO pipeline_transitions (
+              id, pipeline_id, business_id, previous_state, new_state, actor, reason, timestamp
+            ) VALUES (?, ?, ?, 'AUTOMATED_INBOUND', ?, 'sales-conversation-engine', ?, datetime('now'))
+          `).run(transId, targetJourneyId, targetBizId, newStage, reason);
+        }
       }
     } catch {}
   }

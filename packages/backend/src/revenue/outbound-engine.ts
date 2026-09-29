@@ -29,6 +29,10 @@ export interface OutboundMessageRequest {
   body: string;
   campaignId?: string;
   offerId?: string;
+  isColdOutreach?: boolean;
+  isInboundResponse?: boolean;
+  isApproved?: boolean;
+  approverId?: string;
 }
 
 export interface OutboundDispatchResult {
@@ -37,7 +41,15 @@ export interface OutboundDispatchResult {
   provider: IntegrationProvider;
   externalId?: string;
   error?: string;
-  status: 'DELIVERED' | 'BLOCKED_AUTHORIZATION' | 'SANDBOX_DELIVERED' | 'SUPPRESSED' | 'FAILED';
+  status:
+    | 'DELIVERED'
+    | 'BLOCKED_AUTHORIZATION'
+    | 'SANDBOX_DELIVERED'
+    | 'SUPPRESSED'
+    | 'FAILED'
+    | 'CHANNEL_PAUSED'
+    | 'APPROVAL_REQUIRED'
+    | 'DAILY_OUTBOUND_CAP_REACHED';
   dispatchedAt: string;
 }
 
@@ -125,20 +137,76 @@ export class OutboundEngine {
       };
     }
 
-    // 2. Autonomy Policy Gate (§ 23)
-    const policyResult = this.policyController.evaluateAction(request.organizationId, 'OUTBOUND_SEND', {
-      channel: request.channel,
-      costINR: 0,
-      targetContactId: request.recipientContact
-    });
-
-    if (!policyResult.allowed) {
+    // 2. Rolling 24-hour daily outbound cap (5 sends max across platform)
+    const rollingCount = this.policyController.getRolling24hOutboundCount(request.organizationId);
+    if (rollingCount >= 5) {
       return {
         success: false,
         actionClassification: 'BLOCKED_AUTHORIZATION',
         provider: request.channel === 'EMAIL' ? 'EMAIL' : 'WHATSAPP',
+        error: `DAILY_OUTBOUND_CAP_REACHED: Rolling 24-hour limit of 5 outbound actions reached (${rollingCount} sent in last 24h).`,
+        status: 'DAILY_OUTBOUND_CAP_REACHED',
+        dispatchedAt
+      };
+    }
+
+    // 3. WhatsApp Cold Outreach Pause (paused for platform safety; only inbound responses allowed)
+    if (request.channel === 'WHATSAPP' && !request.isInboundResponse) {
+      return {
+        success: false,
+        actionClassification: 'BLOCKED_AUTHORIZATION',
+        provider: 'WHATSAPP',
+        error: 'CHANNEL_PAUSED: WhatsApp cold outreach is paused for platform safety. Only inbound customer responses are permitted.',
+        status: 'CHANNEL_PAUSED',
+        dispatchedAt
+      };
+    }
+
+    // 4. Cold Email Approval Requirement
+    const isColdEmail = request.channel === 'EMAIL' && (request.isColdOutreach === true || (!request.isInboundResponse && request.isColdOutreach !== false));
+    if (isColdEmail && !request.isApproved && !request.approverId) {
+      this.recordPendingDraft(request, 'APPROVAL_REQUIRED');
+      return {
+        success: false,
+        actionClassification: 'APPROVAL_REQUIRED',
+        provider: 'EMAIL',
+        error: 'APPROVAL_REQUIRED: Cold email outreach requires explicit clinic owner approval before sending.',
+        status: 'APPROVAL_REQUIRED',
+        dispatchedAt
+      };
+    }
+
+    // 5. Autonomy Policy Gate (§ 23)
+    const isCold = request.isColdOutreach ?? (!request.isInboundResponse);
+    const policyResult = this.policyController.evaluateAction(request.organizationId, 'OUTBOUND_SEND', {
+      channel: request.channel,
+      costINR: 0,
+      targetContactId: request.recipientContact,
+      isColdOutreach: isCold,
+      isInboundResponse: request.isInboundResponse,
+      isApproved: request.isApproved,
+      approverId: request.approverId
+    });
+
+    if (!policyResult.allowed) {
+      const violated = policyResult.violatedRule;
+      let finalStatus: OutboundDispatchResult['status'] = 'BLOCKED_AUTHORIZATION';
+      let classification: ActionClassification = 'BLOCKED_AUTHORIZATION';
+      if (violated === 'CHANNEL_PAUSED') {
+        finalStatus = 'CHANNEL_PAUSED';
+      } else if (violated === 'APPROVAL_REQUIRED') {
+        finalStatus = 'APPROVAL_REQUIRED';
+        classification = 'APPROVAL_REQUIRED';
+        this.recordPendingDraft(request, 'APPROVAL_REQUIRED');
+      } else if (violated === 'DAILY_OUTBOUND_CAP_REACHED') {
+        finalStatus = 'DAILY_OUTBOUND_CAP_REACHED';
+      }
+      return {
+        success: false,
+        actionClassification: classification,
+        provider: request.channel === 'EMAIL' ? 'EMAIL' : 'WHATSAPP',
         error: `Policy violation: ${policyResult.reason}`,
-        status: 'BLOCKED_AUTHORIZATION',
+        status: finalStatus,
         dispatchedAt
       };
     }
@@ -276,5 +344,30 @@ export class OutboundEngine {
         WHERE prospect_phone = ? OR prospect_email = ?
       `).run(request.recipientContact, request.recipientContact);
     } catch {}
+  }
+
+  public recordPendingDraft(
+    request: OutboundMessageRequest,
+    status: string = 'APPROVAL_REQUIRED'
+  ): string {
+    const db = getDb();
+    const logId = `draft_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    try {
+      db.prepare(`
+        INSERT INTO direct_outreach_log (
+          id, business_id, segment, prospect_name, channel,
+          message_draft, compliance_checked, human_approved,
+          dispatched, dispatch_timestamp, response_status, created_at
+        ) VALUES (?, ?, 'OUTBOUND_PROSPECT', ?, ?, ?, 1, 0, 0, NULL, ?, datetime('now'))
+      `).run(
+        logId,
+        request.businessId,
+        request.recipientName || request.recipientContact,
+        request.channel,
+        request.body,
+        status
+      );
+    } catch {}
+    return logId;
   }
 }

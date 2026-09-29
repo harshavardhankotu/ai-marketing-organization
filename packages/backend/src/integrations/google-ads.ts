@@ -316,17 +316,44 @@ export class GoogleAdsClient {
     conversionDateTime: string;
     conversionValue: number;
     currencyCode?: string;
+    organizationId?: string;
+    businessId?: string;
+    campaignId?: string;
   }): Promise<{ status: 'UPLOADED' | 'RECORDED' | 'QUEUED'; gclid: string; conversionActionId: string; conversionValue: number }> {
     const db = getDb();
     
+    let orgId = params.organizationId;
+    let bizId = params.businessId;
+    let campId = params.campaignId;
+    if (!orgId || !bizId) {
+      const journey = db.prepare('SELECT organization_id, business_id FROM customer_journeys WHERE gclid = ? LIMIT 1').get(params.gclid) as any;
+      orgId = orgId || journey?.organization_id;
+      bizId = bizId || journey?.business_id;
+    }
+    if (!campId) {
+      const click = db.prepare('SELECT campaign_id FROM google_clicks WHERE gclid = ? LIMIT 1').get(params.gclid) as any;
+      campId = click?.campaign_id;
+    }
+    if (!orgId || !bizId) {
+      const biz = db.prepare('SELECT id, organization_id FROM businesses LIMIT 1').get() as any;
+      orgId = orgId || biz?.organization_id;
+      bizId = bizId || biz?.id;
+    }
+    if (!orgId || !bizId) {
+      throw new Error(`BUSINESS_REQUIRED: Cannot determine organization or business for conversion upload with gclid='${params.gclid}'`);
+    }
+
     // Log conversion event into analytics_events for auditability
     db.prepare(`
       INSERT INTO analytics_events (
         id, organization_id, business_id, campaign_id, channel, event_type,
         user_identifier, revenue_inr, metadata_json, created_at
-      ) VALUES (?, 'org_smilekraft_01', 'biz_smilekraft_hyd', 'cmp_google_invisalign_01', 'GOOGLE_SEARCH', 'conversion_upload', ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, 'GOOGLE_SEARCH', 'conversion_upload', ?, ?, ?, ?)
     `).run(
       `evt-conv-${Date.now()}`,
+      orgId,
+      bizId,
+      campId || 'cmp_google_ads_conversion',
       params.gclid,
       params.conversionValue,
       JSON.stringify({

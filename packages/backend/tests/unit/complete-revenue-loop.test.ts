@@ -243,6 +243,32 @@ describe('Complete Autonomous Revenue Loop — Truthful End-to-End System Tests'
       evidence: { simulation: true }
     });
 
+    const db = getDb();
+    db.prepare(`
+      INSERT OR IGNORE INTO platform_prospects (id, prospect_business_name, prospect_city, prospect_vertical, discovery_source, stage)
+      VALUES ('pp_loop_01', 'SmileKraft Dental', 'Hyderabad', 'dental', 'INTERNAL', 'QUALIFIED')
+    `).run();
+    db.prepare(`
+      INSERT OR IGNORE INTO opportunities (id, business_id, organization_id, prospect_id, source, status)
+      VALUES ('opp_loop_01', ?, ?, 'pp_loop_01', 'INBOUND', 'OPEN')
+    `).run(bizId, orgId);
+    db.prepare(`
+      INSERT OR IGNORE INTO outbound_contacts (id, business_id, organization_id, prospect_name, prospect_business_name, channel, source)
+      VALUES ('oc_loop_01', ?, ?, 'Patient Lead', 'SmileKraft Dental', 'WHATSAPP', 'INBOUND')
+    `).run(bizId, orgId);
+    db.prepare(`
+      INSERT OR IGNORE INTO outbound_action_ledger (
+        id, organization_id, business_id, opportunity_id, outbound_contact_id,
+        sequence_number, channel, action_key, provider, provider_external_id, status
+      ) VALUES ('oal_loop_01', ?, ?, 'opp_loop_01', 'oc_loop_01', 1, 'WHATSAPP', 'action_01', 'WHATSAPP', 'wamid_loop_01', 'DELIVERED')
+    `).run(orgId, bizId);
+    db.prepare(`
+      INSERT OR IGNORE INTO revenue_records (
+        id, organization_id, business_id, revenue_type, source, transaction_id,
+        amount_inr, verified, verification_method, classification
+      ) VALUES ('rev_loop_01', ?, ?, 'CLIENT_REVENUE', 'RAZORPAY', 'txn_real_01', 15000, 1, 'RAZORPAY_WEBHOOK', 'REAL')
+    `).run(orgId, bizId);
+
     learningEngine.recordObservation({
       organizationId: orgId,
       businessId: bizId,
@@ -254,10 +280,9 @@ describe('Complete Autonomous Revenue Loop — Truthful End-to-End System Tests'
       offer: 'Aligner consultation',
       channel: 'WHATSAPP',
       result: 'Verified patient payment received',
-      evidence: { forceRealAudit: true, transactionId: 'txn_real_01' }
+      evidence: { forceRealAudit: true, transactionId: 'txn_real_01', outboundActionId: 'oal_loop_01' }
     });
 
-    const db = getDb();
     const realRecords = db.prepare(`SELECT * FROM learning_records WHERE business_id = ? AND learning_type = 'REAL_WORLD_LEARNING'`).all(bizId);
     expect(realRecords.length).toBe(1);
 

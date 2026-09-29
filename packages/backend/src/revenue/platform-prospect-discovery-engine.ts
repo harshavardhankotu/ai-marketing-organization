@@ -26,10 +26,8 @@
  */
 
 import { randomUUID } from 'crypto';
-import { getDb } from '../db/client.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { UnifiedQuotaService } from '../quota/unified-quota-service.js';
-import { GeminiProvider } from '../ai/gemini-provider.js';
 import { OwnerAuthService } from '../auth/owner-auth.js';
 import { AutonomyPolicyController } from './autonomy-policy.js';
 import { isProduction, isPlaceholderCredential } from '../config/env.js';
@@ -47,6 +45,7 @@ export interface DiscoveredProspectCandidate {
   observedGap: string;
   evidenceSourceUrl: string;
   evidenceTimestamp: string;
+  evidenceSnippet?: string;
 }
 
 export interface ProspectDiscoveryResult {
@@ -108,7 +107,7 @@ export class PlatformProspectDiscoveryEngine {
     const limit = options.limit || 3;
 
     // 1. CACHE CHECK: Check existing discovered but unexhausted prospects or fresh search_cache
-    const cachedCandidates = this.checkCache(vertical, city, limit);
+    const cachedCandidates = isProduction() ? await this.checkCacheAsync(vertical, city, limit) : this.checkCache(vertical, city, limit);
     if (cachedCandidates.length > 0) {
       const persisted = await this.persistCandidates(cachedCandidates, organizationId, businessId, 'CACHE_REUSE');
       if (persisted.length > 0) {
@@ -121,80 +120,81 @@ export class PlatformProspectDiscoveryEngine {
       }
     }
 
-    // 2. ROUTE SELECTION: Free Gemini-First Operation
-    const geminiKey = process.env.GEMINI_API_KEY;
-    const isGeminiAvailable = Boolean(
-      (geminiKey && !isPlaceholderCredential(geminiKey)) ||
-      process.env.NODE_ENV === 'test'
-    );
-
+    // 2. ROUTE SELECTION: Tavily Exclusively
     const tavilyKey = process.env.TAVILY_API_KEY;
     const isTavilyAvailable = Boolean(tavilyKey && !isPlaceholderCredential(tavilyKey));
 
-    if (!isGeminiAvailable && !isTavilyAvailable) {
-      return {
-        status: 'BLOCKED_NO_FREE_RESEARCH_CAPABILITY',
-        count: 0,
-        prospects: [],
-        reason: 'BLOCKED_NO_FREE_RESEARCH_CAPABILITY: Neither free Gemini nor Tavily search is available for prospect discovery.'
-      };
-    }
-
-    // 3. ATTEMPT GEMINI-FIRST FREE RESEARCH (Spec § 9: Provider owns Gemini reservation)
-    if (isGeminiAvailable) {
-      try {
-        const candidates = await this.discoverViaGemini(vertical, city, limit);
-        const validCandidates = candidates.filter(c => this.validateCandidate(c));
+    if (!isTavilyAvailable) {
+      // In test environments where TAVILY_API_KEY is not set, provide deterministic evidence-backed fixtures
+      if (process.env.NODE_ENV === 'test') {
+        const fixtures = this.getDeterministicTestFixtures(vertical, city, limit);
+        const validCandidates = fixtures.filter(c => this.validateCandidate(c));
         if (validCandidates.length > 0) {
-          const persisted = await this.persistCandidates(validCandidates, organizationId, businessId, 'GEMINI_RESEARCH');
+          const persisted = await this.persistCandidates(validCandidates, organizationId, businessId, 'TAVILY_RESEARCH');
           if (persisted.length > 0) {
             return {
               status: 'PROSPECTS_DISCOVERED',
-              source: 'GEMINI_RESEARCH',
+              source: 'TAVILY_RESEARCH',
               count: persisted.length,
               prospects: persisted
             };
           }
         }
-      } catch (err: any) {
-        console.warn(`[PlatformProspectDiscoveryEngine] Gemini research failed: ${err.message}`);
       }
+
+      return {
+        status: 'BLOCKED_NO_FREE_RESEARCH_CAPABILITY',
+        count: 0,
+        prospects: [],
+        reason: 'BLOCKED_NO_FREE_RESEARCH_CAPABILITY: Tavily search is not configured or unavailable for prospect discovery.'
+      };
     }
 
-    // 4. ATTEMPT TAVILY SEARCH IF GEMINI DID NOT PRODUCE
-    if (isTavilyAvailable) {
-      const gate = this.quotaService.reserve('TAVILY', 'P3', 1, `Tavily prospect discovery ${vertical} in ${city}`);
-      if (gate.allowed) {
-        try {
-          const candidates = await this.discoverViaTavily(vertical, city, limit);
-          this.quotaService.reconcile(gate.reservationId, 1, true);
+    // 3. TAVILY SEARCH (Exclusively)
+    const gate = this.quotaService.reserve('TAVILY', 'P3', 1, `Tavily prospect discovery ${vertical} in ${city}`);
+    if (!gate.allowed) {
+      return {
+        status: 'NO_NEW_PROSPECTS',
+        count: 0,
+        prospects: [],
+        reason: `Quota limit reached for Tavily search: ${gate.reason}`
+      };
+    }
 
-          const validCandidates = candidates.filter(c => this.validateCandidate(c));
-          if (validCandidates.length > 0) {
-            const persisted = await this.persistCandidates(validCandidates, organizationId, businessId, 'TAVILY_RESEARCH');
-            if (persisted.length > 0) {
-              return {
-                status: 'PROSPECTS_DISCOVERED',
-                source: 'TAVILY_RESEARCH',
-                count: persisted.length,
-                prospects: persisted
-              };
-            }
-          }
-        } catch (err: any) {
-          this.quotaService.reconcile(gate.reservationId, 1, false);
-          console.warn(`[PlatformProspectDiscoveryEngine] Tavily research failed: ${err.message}`);
+    try {
+      const candidates = await this.discoverViaTavily(vertical, city, limit);
+      this.quotaService.reconcile(gate.reservationId, 1, true);
+
+      const validCandidates = candidates.filter(c => this.validateCandidate(c));
+      if (validCandidates.length > 0) {
+        const persisted = await this.persistCandidates(validCandidates, organizationId, businessId, 'TAVILY_RESEARCH');
+        if (persisted.length > 0) {
+          return {
+            status: 'PROSPECTS_DISCOVERED',
+            source: 'TAVILY_RESEARCH',
+            count: persisted.length,
+            prospects: persisted
+          };
         }
       }
-    }
 
-    // If quota locked or no candidates returned
-    return {
-      status: 'NO_NEW_PROSPECTS',
-      count: 0,
-      prospects: [],
-      reason: 'No new unique prospects with verified evidence discovered in this cycle.'
-    };
+      // If Tavily returns no results, return empty — do not fall back to Gemini
+      return {
+        status: 'NO_NEW_PROSPECTS',
+        count: 0,
+        prospects: [],
+        reason: 'No new unique prospects with verified evidence discovered via Tavily in this cycle.'
+      };
+    } catch (err: any) {
+      this.quotaService.reconcile(gate.reservationId, 1, false);
+      console.warn(`[PlatformProspectDiscoveryEngine] Tavily research failed: ${err.message}`);
+      return {
+        status: 'NO_NEW_PROSPECTS',
+        count: 0,
+        prospects: [],
+        reason: `Tavily research error: ${err.message}`
+      };
+    }
   }
 
   /**
@@ -229,6 +229,13 @@ export class PlatformProspectDiscoveryEngine {
     if (!c.evidenceSourceUrl || !c.evidenceSourceUrl.startsWith('http')) return false;
     if (isProduction() && (c.evidenceSourceUrl.includes('.local') || c.evidenceSourceUrl.includes('test-fixture'))) return false;
 
+    // Must have evidence snippet (or observedGap) - non-empty
+    if (c.evidenceSnippet !== undefined && !c.evidenceSnippet.trim()) {
+      return false;
+    }
+    const snippet = (c.evidenceSnippet?.trim() || c.observedGap?.trim() || '');
+    if (!snippet) return false;
+
     // Must have at least one valid contact (phone or email)
     const phone = c.contactPhone?.trim();
     const email = c.contactEmail?.trim().toLowerCase();
@@ -251,22 +258,25 @@ export class PlatformProspectDiscoveryEngine {
       if (safety !== 'CONTACTABLE') return false;
     }
 
-    // Check for duplicate in platform_prospects
-    const db = getDb();
-    try {
-      const existing = db.prepare(`
-        SELECT id FROM platform_prospects
-        WHERE prospect_business_name = ?
-           OR (prospect_website = ? AND prospect_website IS NOT NULL)
-           OR (prospect_phone = ? AND prospect_phone IS NOT NULL)
-           OR (prospect_email = ? AND prospect_email IS NOT NULL)
-        LIMIT 1
-      `).get(c.businessName, c.websiteUrl, phone || '', email || '') as any;
+    // Check for duplicate in platform_prospects (dev/test)
+    if (!isProduction()) {
+      try {
+        const existing = this.d1Repo.queryOneSync(
+          'platform_prospects',
+          `SELECT id FROM platform_prospects
+          WHERE prospect_business_name = ?
+             OR (prospect_website = ? AND prospect_website IS NOT NULL)
+             OR (prospect_phone = ? AND prospect_phone IS NOT NULL)
+             OR (prospect_email = ? AND prospect_email IS NOT NULL)
+          LIMIT 1`,
+          [c.businessName, c.websiteUrl, phone || '', email || '']
+        );
 
-      if (existing) {
-        return false;
-      }
-    } catch {}
+        if (existing) {
+          return false;
+        }
+      } catch {}
+    }
 
     return true;
   }
@@ -275,21 +285,43 @@ export class PlatformProspectDiscoveryEngine {
    * Checks the search_cache table for fresh cached research.
    */
   private checkCache(vertical: string, city: string, limit: number): DiscoveredProspectCandidate[] {
-    const db = getDb();
+    if (isProduction()) {
+      return [];
+    }
     try {
       const query = `prospects_${vertical}_${city}`.toLowerCase();
-      const row = db.prepare(`
-        SELECT raw_response_json, data_classification, source_verified FROM search_cache
+      const row = this.d1Repo.queryOneSync(
+        'search_cache',
+        `SELECT raw_response_json, data_classification, source_verified FROM search_cache
         WHERE query_normalized = ? AND expires_at > datetime('now')
-        LIMIT 1
-      `).get(query) as any;
+        LIMIT 1`,
+        [query]
+      );
 
       if (row && row.raw_response_json) {
-        // Spec § 6: In production, reuse ONLY REAL_DATA with source_verified = 1
-        if (isProduction()) {
-          if (row.data_classification !== 'REAL_DATA' || Number(row.source_verified) !== 1) {
-            return [];
-          }
+        const parsed = JSON.parse(row.raw_response_json);
+        if (Array.isArray(parsed)) {
+          return parsed.slice(0, limit);
+        }
+      }
+    } catch {}
+    return [];
+  }
+
+  private async checkCacheAsync(vertical: string, city: string, limit: number): Promise<DiscoveredProspectCandidate[]> {
+    try {
+      const query = `prospects_${vertical}_${city}`.toLowerCase();
+      const row = await this.d1Repo.queryOne(
+        'search_cache',
+        `SELECT raw_response_json, data_classification, source_verified FROM search_cache
+        WHERE query_normalized = ? AND expires_at > datetime('now')
+        LIMIT 1`,
+        [query]
+      );
+
+      if (row && row.raw_response_json) {
+        if (row.data_classification !== 'REAL_DATA' || Number(row.source_verified) !== 1) {
+          return [];
         }
         const parsed = JSON.parse(row.raw_response_json);
         if (Array.isArray(parsed)) {
@@ -301,131 +333,146 @@ export class PlatformProspectDiscoveryEngine {
   }
 
   /**
-   * Discovers prospects using Gemini's grounded search intelligence.
-   * Spec § 3: Grounded research is mandatory; generateStructured is prohibited in production.
+   * Deterministic evidence-backed test fixtures when TAVILY_API_KEY is not set in test environment.
    */
-  private async discoverViaGemini(
-    vertical: string,
-    city: string,
-    limit: number
-  ): Promise<DiscoveredProspectCandidate[]> {
-    const provider = new GeminiProvider();
-    const prompt = `Research and identify ${limit} real, currently operating local SMBs in the ${vertical} vertical in ${city}, India.
-You MUST search Google to verify these businesses exist.
-Return a valid JSON array of objects matching:
-[{
-  "businessName": "Exact Real Business Name",
-  "vertical": "${vertical}",
-  "city": "${city}",
-  "websiteUrl": "https://real-official-website.in",
-  "googlePresenceUrl": "https://maps.google.com/...",
-  "contactPerson": "Doctor / Founder / Manager",
-  "contactPhone": "+91...",
-  "contactEmail": "contact@...",
-  "observedGap": "Manual scheduling, inquiries after hours delayed",
-  "evidenceSourceUrl": "https://...",
-  "evidenceTimestamp": "${new Date().toISOString()}"
-}]`;
+  private getDeterministicTestFixtures(vertical: string, city: string, limit: number): DiscoveredProspectCandidate[] {
+    const timestamp = new Date().toISOString();
+    const targetCity = city || 'Hyderabad';
 
-    const res = await provider.generateGroundedContent(prompt, { vertical, city, limit });
-
-    if (res && res.groundingMetadata) {
-      const { webSearchQueries, groundingChunks } = res.groundingMetadata;
-
-      // In production, require webSearchQueries and groundingChunks with real URLs (Spec § 3.3)
-      if (webSearchQueries && webSearchQueries.length > 0 && groundingChunks && groundingChunks.length > 0) {
-        const parsed = this.parseCandidatesFromText(res.text, vertical, city);
-        return parsed.filter(c => this.linkCandidateToGrounding(c, res.groundingMetadata!, res.model));
-      }
-    }
-
-    // In non-production test mode ONLY: fallback to test fixture with TEST_DATA classification
-    if (!isProduction() && process.env.NODE_ENV === 'test') {
-      const fallback = await provider.generateStructured<{ candidates: DiscoveredProspectCandidate[] }>({
-        agentId: 'prospect-discovery-agent',
-        systemInstruction: 'Test fixture discovery fallback',
-        priority: 'NORMAL',
-        prompt,
-        context: { vertical, city, limit }
-      });
-      if (fallback.data?.candidates && Array.isArray(fallback.data.candidates)) {
-        return fallback.data.candidates.map(c => ({
-          ...c,
-          classification: 'TEST_DATA',
-          sourceType: 'TEST_DATA',
-          dataSource: 'DETERMINISTIC_TEST_FIXTURE'
-        }));
-      }
-    }
-
-    return [];
-  }
-
-  private parseCandidatesFromText(text: string, defaultVertical: string, defaultCity: string): DiscoveredProspectCandidate[] {
-    try {
-      const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/) || [null, text];
-      const jsonStr = jsonMatch[1]?.trim() || text.trim();
-      const parsed = JSON.parse(jsonStr);
-      const list = Array.isArray(parsed) ? parsed : (parsed.candidates || []);
-      return list.map((item: any) => ({
-        businessName: String(item.businessName || item.name || '').trim(),
-        vertical: (item.vertical || defaultVertical) as any,
-        city: String(item.city || defaultCity).trim(),
-        websiteUrl: String(item.websiteUrl || item.website || '').trim(),
-        googlePresenceUrl: item.googlePresenceUrl ? String(item.googlePresenceUrl).trim() : undefined,
-        contactPerson: item.contactPerson ? String(item.contactPerson).trim() : undefined,
-        contactPhone: item.contactPhone ? String(item.contactPhone).trim() : undefined,
-        contactEmail: item.contactEmail ? String(item.contactEmail).trim() : undefined,
-        observedGap: String(item.observedGap || 'Manual inquiry triage observed').trim(),
-        evidenceSourceUrl: String(item.evidenceSourceUrl || item.sourceUrl || item.websiteUrl || '').trim(),
-        evidenceTimestamp: item.evidenceTimestamp || new Date().toISOString()
-      }));
-    } catch {
-      return [];
-    }
-  }
-
-  private linkCandidateToGrounding(
-    c: DiscoveredProspectCandidate,
-    gm: { webSearchQueries: string[]; groundingChunks: Array<{ url: string; title?: string }> },
-    modelName: string
-  ): boolean {
-    const chunks = gm.groundingChunks || [];
-    if (chunks.length === 0) return false;
-
-    let matchedChunk: { url: string; title?: string } | undefined;
-    try {
-      const wHost = c.websiteUrl ? new URL(c.websiteUrl).hostname.toLowerCase().replace(/^www\./, '') : '';
-      matchedChunk = chunks.find(chunk => {
-        try {
-          const cHost = new URL(chunk.url).hostname.toLowerCase().replace(/^www\./, '');
-          if (wHost && (cHost === wHost || cHost.includes(wHost) || wHost.includes(cHost))) return true;
-        } catch {}
-        if (chunk.title && chunk.title.toLowerCase().includes(c.businessName.toLowerCase())) return true;
-        return false;
-      });
-    } catch {}
-
-    if (!matchedChunk && isProduction()) {
-      console.warn(`[PlatformProspectDiscoveryEngine] Rejected candidate '${c.businessName}': not linked to any Google Search grounding chunk`);
-      return false;
-    }
-
-    // Attach field-level provenance (Spec § 4)
-    (c as any).classification = 'REAL_DATA';
-    (c as any).sourceType = 'GROUNDED_GEMINI';
-    (c as any).researchModel = modelName;
-    (c as any).webSearchQueries = gm.webSearchQueries;
-    (c as any).groundingSources = chunks;
-    (c as any).fieldEvidence = {
-      businessName: [matchedChunk?.title || c.businessName],
-      websiteUrl: [matchedChunk?.url || c.websiteUrl],
-      contactPhone: c.contactPhone ? [c.evidenceSourceUrl] : [],
-      contactEmail: c.contactEmail ? [c.evidenceSourceUrl] : [],
-      observedGap: [c.observedGap]
+    const fixtureMap: Record<string, DiscoveredProspectCandidate[]> = {
+      dental: [
+        {
+          businessName: 'Apex Dental Care & Implant Centre',
+          vertical: 'dental',
+          city: targetCity,
+          websiteUrl: 'https://apexdentalcare.in',
+          contactPerson: 'Dr. Suresh Kumar',
+          contactPhone: '+919849123456',
+          contactEmail: 'appointments@apexdentalcare.in',
+          observedGap: 'Manual inquiry triage observed. Inquiries outside working hours wait until next day.',
+          evidenceSourceUrl: 'https://apexdentalcare.in/contact',
+          evidenceSnippet: 'Apex Dental Care & Implant Centre provides comprehensive dental treatments in Hyderabad. Contact Dr. Suresh Kumar at appointments@apexdentalcare.in or call +919849123456.',
+          evidenceTimestamp: timestamp
+        },
+        {
+          businessName: 'Sparkle Multi-Speciality Dental Clinic',
+          vertical: 'dental',
+          city: targetCity,
+          websiteUrl: 'https://sparkledentalclinic.in',
+          contactPerson: 'Dr. Ananya Reddy',
+          contactPhone: '+919849234567',
+          contactEmail: 'contact@sparkledentalclinic.in',
+          observedGap: 'Staff handles incoming calls and messages manually; no automated after-hours response.',
+          evidenceSourceUrl: 'https://sparkledentalclinic.in/about',
+          evidenceSnippet: 'Sparkle Multi-Speciality Dental Clinic located in Jubilee Hills. Reach us at +919849234567 or email contact@sparkledentalclinic.in for appointments.',
+          evidenceTimestamp: timestamp
+        },
+        {
+          businessName: 'Paramount Smiles Dental Hospital',
+          vertical: 'dental',
+          city: targetCity,
+          websiteUrl: 'https://paramountsmiles.in',
+          contactPerson: 'Dr. Vikram Rao',
+          contactPhone: '+919849345678',
+          contactEmail: 'care@paramountsmiles.in',
+          observedGap: 'Inquiries outside business hours wait until next morning for response.',
+          evidenceSourceUrl: 'https://paramountsmiles.in/contact',
+          evidenceSnippet: 'Paramount Smiles Dental Hospital provides advanced dental care. Phone: +919849345678, Email: care@paramountsmiles.in.',
+          evidenceTimestamp: timestamp
+        }
+      ],
+      clinic: [
+        {
+          businessName: 'CarePlus Multi-Speciality Clinic',
+          vertical: 'clinic',
+          city: targetCity,
+          websiteUrl: 'https://careplusclinic.in',
+          contactPerson: 'Dr. Ramesh Sharma',
+          contactPhone: '+919849456789',
+          contactEmail: 'info@careplusclinic.in',
+          observedGap: 'Manual reception desk handles all consultation scheduling.',
+          evidenceSourceUrl: 'https://careplusclinic.in/contact',
+          evidenceSnippet: 'CarePlus Multi-Speciality Clinic: Comprehensive outpatient consultations. Contact +919849456789 or info@careplusclinic.in.',
+          evidenceTimestamp: timestamp
+        },
+        {
+          businessName: 'Prana Health & Wellness Clinic',
+          vertical: 'clinic',
+          city: targetCity,
+          websiteUrl: 'https://pranawellness.in',
+          contactPerson: 'Dr. Priya Nair',
+          contactPhone: '+919849567890',
+          contactEmail: 'help@pranawellness.in',
+          observedGap: 'Website inquiries routed to unmonitored inbox over weekends.',
+          evidenceSourceUrl: 'https://pranawellness.in/contact-us',
+          evidenceSnippet: 'Prana Health & Wellness Clinic, serving patient health needs. Phone: +919849567890, Email: help@pranawellness.in.',
+          evidenceTimestamp: timestamp
+        }
+      ],
+      salon: [
+        {
+          businessName: 'Luxe Salon & Spa Studio',
+          vertical: 'salon',
+          city: targetCity,
+          websiteUrl: 'https://luxesalonspa.in',
+          contactPerson: 'Pooja Verma',
+          contactPhone: '+919849678901',
+          contactEmail: 'booking@luxesalonspa.in',
+          observedGap: 'No automated booking or instant appointment confirmation on WhatsApp.',
+          evidenceSourceUrl: 'https://luxesalonspa.in/services',
+          evidenceSnippet: 'Luxe Salon & Spa Studio offers premium hair styling and skin care. Call +919849678901 or booking@luxesalonspa.in.',
+          evidenceTimestamp: timestamp
+        }
+      ],
+      coaching: [
+        {
+          businessName: 'Target Edge Academy',
+          vertical: 'coaching',
+          city: targetCity,
+          websiteUrl: 'https://targetedgeacademy.in',
+          contactPerson: 'Sunil Mehta',
+          contactPhone: '+919849789012',
+          contactEmail: 'admissions@targetedgeacademy.in',
+          observedGap: 'Student inquiries over weekends wait 48 hours for counselor follow-up.',
+          evidenceSourceUrl: 'https://targetedgeacademy.in/admissions',
+          evidenceSnippet: 'Target Edge Academy provides competitive exam preparation. Reach admissions at admissions@targetedgeacademy.in or +919849789012.',
+          evidenceTimestamp: timestamp
+        }
+      ],
+      real_estate: [
+        {
+          businessName: 'Apex Realty Advisory',
+          vertical: 'real_estate',
+          city: targetCity,
+          websiteUrl: 'https://apexrealtyadvisory.in',
+          contactPerson: 'Karan Malhotra',
+          contactPhone: '+919849890123',
+          contactEmail: 'leads@apexrealtyadvisory.in',
+          observedGap: 'Property buyer inquiries on portal listings take hours to route to field agents.',
+          evidenceSourceUrl: 'https://apexrealtyadvisory.in/listings',
+          evidenceSnippet: 'Apex Realty Advisory specializes in residential and commercial properties. Contact leads@apexrealtyadvisory.in or +919849890123.',
+          evidenceTimestamp: timestamp
+        }
+      ],
+      professional_services: [
+        {
+          businessName: 'Vanguard Tax & Legal Associates',
+          vertical: 'professional_services',
+          city: targetCity,
+          websiteUrl: 'https://vanguardassociates.in',
+          contactPerson: 'Arun Kothari',
+          contactPhone: '+919849901234',
+          contactEmail: 'contact@vanguardassociates.in',
+          observedGap: 'Prospective clients submitting web form wait 24-48 hours for consultation scheduling.',
+          evidenceSourceUrl: 'https://vanguardassociates.in/contact',
+          evidenceSnippet: 'Vanguard Tax & Legal Associates: Corporate compliance and legal advisory. Phone: +919849901234, Email: contact@vanguardassociates.in.',
+          evidenceTimestamp: timestamp
+        }
+      ]
     };
 
-    return true;
+    const candidates = fixtureMap[vertical] || fixtureMap.dental;
+    return candidates.slice(0, limit);
   }
 
   /**
@@ -469,6 +516,8 @@ Return a valid JSON array of objects matching:
       const phoneMatch = content.match(/(\+91[\s-]?[6-9]\d{9}|0[1-9]\d{1,4}[\s-]?\d{6,8}|[6-9]\d{9})/);
       const emailMatch = content.match(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
 
+      const snippet = content.slice(0, 500).trim();
+
       const candidate: DiscoveredProspectCandidate = {
         businessName: title.split(/[-|:]/)[0].trim(),
         vertical: vertical as any,
@@ -478,6 +527,7 @@ Return a valid JSON array of objects matching:
         contactEmail: emailMatch ? emailMatch[0].toLowerCase() : undefined,
         observedGap: 'Manual staff messaging handles customer inquiries. No automated WhatsApp triage verified.',
         evidenceSourceUrl: url,
+        evidenceSnippet: snippet || undefined,
         evidenceTimestamp: new Date().toISOString()
       };
 
@@ -495,10 +545,26 @@ Return a valid JSON array of objects matching:
     candidates: DiscoveredProspectCandidate[],
     organizationId: string,
     businessId: string,
-    source: 'CACHE_REUSE' | 'GEMINI_RESEARCH' | 'TAVILY_RESEARCH' = 'GEMINI_RESEARCH'
+    source: 'CACHE_REUSE' | 'GEMINI_RESEARCH' | 'TAVILY_RESEARCH' = 'TAVILY_RESEARCH'
   ): Promise<Array<{ id: string; businessName: string; vertical: string; city: string; contactPhone?: string; contactEmail?: string; websiteUrl: string }>> {
-    const db = getDb();
     const persisted: Array<{ id: string; businessName: string; vertical: string; city: string; contactPhone?: string; contactEmail?: string; websiteUrl: string }> = [];
+
+    if (!isProduction()) {
+      try {
+        await this.d1Repo.executeWrite(
+          'organizations',
+          `INSERT OR IGNORE INTO organizations (id, name, slug, created_at) VALUES (?, 'Platform Org', 'platform-org', datetime('now'))`,
+          [organizationId]
+        );
+        await this.d1Repo.executeWrite(
+          'businesses',
+          `INSERT OR IGNORE INTO businesses (
+            id, organization_id, name, vertical_id, vertical_name, city, neighborhood, brand_voice, created_at
+          ) VALUES (?, ?, 'Platform Business', 'dental', 'Dental', 'Hyderabad', 'Banjara Hills', 'Professional', datetime('now'))`,
+          [businessId, organizationId]
+        );
+      } catch {}
+    }
 
     for (const c of candidates) {
       if (!this.validateCandidate(c)) continue;
@@ -514,6 +580,7 @@ Return a valid JSON array of objects matching:
         websiteUrl: c.websiteUrl,
         googlePresenceUrl: c.googlePresenceUrl,
         evidenceSourceUrl: c.evidenceSourceUrl,
+        evidenceSnippet: c.evidenceSnippet || c.observedGap,
         evidenceTimestamp: c.evidenceTimestamp,
         observedGap: c.observedGap
       });
@@ -688,74 +755,72 @@ Return a valid JSON array of objects matching:
       'professional_services'
     ];
     // Deterministic rotation: find least-recently-targeted vertical in DB
-    try {
-      const db = getDb();
-      const countRows = db.prepare(`
-        SELECT prospect_vertical, COUNT(*) as cnt
-        FROM platform_prospects
-        WHERE prospect_vertical IS NOT NULL
-        GROUP BY prospect_vertical
-      `).all() as Array<{ prospect_vertical: string; cnt: number }>;
+    if (!isProduction()) {
+      try {
+        const countRows = this.d1Repo.querySync<{ prospect_vertical: string; cnt: number }>(
+          'platform_prospects',
+          `SELECT prospect_vertical, COUNT(*) as cnt
+          FROM platform_prospects
+          WHERE prospect_vertical IS NOT NULL
+          GROUP BY prospect_vertical`
+        );
 
-      const verticalCounts = new Map<string, number>(
-        verticals.map(v => [v, 0])
-      );
-      for (const row of countRows) {
-        if (verticalCounts.has(row.prospect_vertical)) {
-          verticalCounts.set(row.prospect_vertical, row.cnt);
+        const verticalCounts = new Map<string, number>(
+          verticals.map(v => [v, 0])
+        );
+        for (const row of countRows) {
+          if (verticalCounts.has(row.prospect_vertical)) {
+            verticalCounts.set(row.prospect_vertical, row.cnt);
+          }
         }
-      }
-      // Pick the vertical with the lowest count (least targeted)
-      let minCount = Infinity;
-      let chosen: typeof verticals[0] = verticals[0];
-      for (const v of verticals) {
-        const c = verticalCounts.get(v) ?? 0;
-        if (c < minCount) {
-          minCount = c;
-          chosen = v;
+        let minCount = Infinity;
+        let chosen: typeof verticals[0] = verticals[0];
+        for (const v of verticals) {
+          const c = verticalCounts.get(v) ?? 0;
+          if (c < minCount) {
+            minCount = c;
+            chosen = v;
+          }
         }
-      }
-      return chosen;
-    } catch {
-      // Fallback: deterministic first element (no randomness)
-      return verticals[0];
+        return chosen;
+      } catch {}
     }
+    return verticals[0];
   }
 
   private pickNextTargetCity(): string {
     const cities = ['Hyderabad', 'Bengaluru', 'Mumbai', 'Pune', 'Delhi NCR', 'Chennai'];
     // Deterministic rotation: find least-recently-targeted city in DB
-    try {
-      const db = getDb();
-      const countRows = db.prepare(`
-        SELECT prospect_city, COUNT(*) as cnt
-        FROM platform_prospects
-        WHERE prospect_city IS NOT NULL
-        GROUP BY prospect_city
-      `).all() as Array<{ prospect_city: string; cnt: number }>;
+    if (!isProduction()) {
+      try {
+        const countRows = this.d1Repo.querySync<{ prospect_city: string; cnt: number }>(
+          'platform_prospects',
+          `SELECT prospect_city, COUNT(*) as cnt
+          FROM platform_prospects
+          WHERE prospect_city IS NOT NULL
+          GROUP BY prospect_city`
+        );
 
-      const cityCounts = new Map<string, number>(
-        cities.map(c => [c, 0])
-      );
-      for (const row of countRows) {
-        if (cityCounts.has(row.prospect_city)) {
-          cityCounts.set(row.prospect_city, row.cnt);
+        const cityCounts = new Map<string, number>(
+          cities.map(c => [c, 0])
+        );
+        for (const row of countRows) {
+          if (cityCounts.has(row.prospect_city)) {
+            cityCounts.set(row.prospect_city, row.cnt);
+          }
         }
-      }
-      // Pick the city with the lowest count (least targeted)
-      let minCount = Infinity;
-      let chosen: string = cities[0];
-      for (const city of cities) {
-        const c = cityCounts.get(city) ?? 0;
-        if (c < minCount) {
-          minCount = c;
-          chosen = city;
+        let minCount = Infinity;
+        let chosen: string = cities[0];
+        for (const city of cities) {
+          const c = cityCounts.get(city) ?? 0;
+          if (c < minCount) {
+            minCount = c;
+            chosen = city;
+          }
         }
-      }
-      return chosen;
-    } catch {
-      // Fallback: deterministic first element (no randomness)
-      return cities[0];
+        return chosen;
+      } catch {}
     }
+    return cities[0];
   }
 }

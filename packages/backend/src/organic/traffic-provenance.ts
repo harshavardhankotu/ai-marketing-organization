@@ -216,7 +216,10 @@ export class TrafficProvenanceEngine {
    * Ingests and records an organic visitor session.
    */
   public recordSession(params: IngestSessionParams): VisitorSessionRecord {
-    const businessId = params.businessId || 'biz_smilekraft_hyd';
+    if (!params.businessId) {
+      throw new Error('BUSINESS_REQUIRED: Explicit businessId required to record traffic session');
+    }
+    const businessId = params.businessId;
     const id = `sess_org_${randomUUID().substring(0, 12)}`;
     const visitorId = params.visitorId || `vis_${randomUUID().substring(0, 12)}`;
     const sessionId = params.sessionId || `s_${randomUUID().substring(0, 12)}`;
@@ -291,8 +294,18 @@ export class TrafficProvenanceEngine {
     leadId: string;
     acquisitionEvidence: AcquisitionEvidenceRecord;
   } {
-    const orgId = params.organizationId || 'org_smilekraft_01';
-    const businessId = params.businessId || 'biz_smilekraft_hyd';
+    if (!params.businessId) {
+      throw new Error('BUSINESS_REQUIRED: Explicit businessId required to record organic lead');
+    }
+    const businessId = params.businessId;
+    let orgId = params.organizationId;
+    if (!orgId) {
+      const biz = this.db.prepare('SELECT organization_id FROM businesses WHERE id = ?').get(businessId) as any;
+      orgId = biz?.organization_id;
+    }
+    if (!orgId) {
+      throw new Error('ORGANIZATION_REQUIRED: Explicit organizationId required to record organic lead');
+    }
     const leadId = `lead_${randomUUID().substring(0, 10)}`;
     const journeyId = `journey_${randomUUID()}`;
     const now = new Date().toISOString();
@@ -423,11 +436,14 @@ export class TrafficProvenanceEngine {
    * Lists traffic sessions with evidence status filtering.
    */
   public listSessions(params: {
-    businessId?: string;
+    businessId: string;
     trafficEvidenceStatus?: TrafficEvidenceStatus;
     limit?: number;
   }): VisitorSessionRecord[] {
-    const businessId = params.businessId || 'biz_smilekraft_hyd';
+    if (!params.businessId) {
+      throw new Error('BUSINESS_REQUIRED: Explicit businessId required to list sessions');
+    }
+    const businessId = params.businessId;
     const limit = params.limit || 50;
 
     let query = 'SELECT * FROM traffic_sessions WHERE business_id = ?';
@@ -468,7 +484,10 @@ export class TrafficProvenanceEngine {
   /**
    * Computes external organic distribution counts based strictly on verified records.
    */
-  public getOrganicDistributionStats(businessId: string = 'biz_smilekraft_hyd') {
+  public getOrganicDistributionStats(businessId: string) {
+    if (!businessId) {
+      throw new Error('BUSINESS_REQUIRED: Explicit businessId required for organic distribution stats');
+    }
     const externalSessionsRow = this.db
       .prepare(
         `SELECT 

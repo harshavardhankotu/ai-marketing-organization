@@ -71,9 +71,12 @@ export class CustomerJourneyTracker {
       return this.mapRow(existing);
     }
 
-    // Resolve or fallback organizationId
+    // Resolve organizationId from business or parameter
     const bizRow = this.db.prepare('SELECT organization_id FROM businesses WHERE id = ?').get(businessId) as any;
-    const resolvedOrgId = organizationId || bizRow?.organization_id || 'org_smilekraft_01';
+    const resolvedOrgId = organizationId || bizRow?.organization_id;
+    if (!resolvedOrgId) {
+      throw new Error(`EXACT_LINEAGE_VIOLATION: organizationId is required to start customer journey for business ${businessId}`);
+    }
 
     // Guard against foreign key violations: ensure organization exists
     const orgCheck = this.db.prepare('SELECT id FROM organizations WHERE id = ?').get(resolvedOrgId) as any;
@@ -329,7 +332,14 @@ export class CustomerJourneyTracker {
     const classification: DataClassification = isTest ? 'TEST' : (params.classification || 'REAL');
     const visitorPrefix = classification === 'REAL' ? 'vis_real_' : 'vis_test_';
     const visitorId = `${visitorPrefix}${randomUUID().slice(0, 8)}`;
-    const orgId = params.organizationId || 'org_smilekraft_01';
+    let orgId = params.organizationId;
+    if (!orgId) {
+      const bizRow = this.db.prepare('SELECT organization_id FROM businesses WHERE id = ?').get(params.businessId) as any;
+      orgId = bizRow?.organization_id;
+    }
+    if (!orgId) {
+      throw new Error(`EXACT_LINEAGE_VIOLATION: organizationId is required to start customer journey for business ${params.businessId}`);
+    }
 
     // Determine attribution status
     let attributionStatus: AttributionStatus = params.attributionStatus || 'UNVERIFIED';

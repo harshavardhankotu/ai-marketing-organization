@@ -1,13 +1,13 @@
 /**
- * DurableEventBus — persists all autonomous events to Cloudflare D1 and SQLite.
+ * DurableEventBus — persists all autonomous events to Cloudflare D1.
  *
  * Implements Spec § 16 & § 26:
  * Every event survives server restart, container restarts, and process crashes.
- * In production, writes and reads route through Cloudflare D1.
- * SQLite serves as local cache and dev/test runner store.
+ * In production, writes and reads route through Cloudflare D1 exclusively.
+ * SQLite serves for dev/test runner store only via D1RevenueRepository.
+ * Zero getDb() imports in this production path.
  */
 
-import { getDb } from '../db/client.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { isProduction } from '../config/env.js';
 import { randomUUID } from 'crypto';
@@ -65,8 +65,9 @@ export class DurableEventBus {
   private static d1Repo = D1RevenueRepository.getInstance();
 
   /**
-   * Emit a durable event. Safe to call synchronously from any agent.
-   * Persists immediately to SQLite and queues D1 write in production.
+   * Emit a durable event.
+   * In dev/test: writes synchronously to SQLite via D1RevenueRepository.
+   * In production: writes to Cloudflare D1 with zero SQLite fallback.
    */
   public static emit(input: EmitEventInput): string {
     const id = `evt_${Date.now()}_${randomUUID().substring(0, 6)}`;
@@ -87,17 +88,12 @@ export class DurableEventBus {
       now
     ];
 
-    try {
-      const db = getDb();
-      db.prepare(sql).run(...params);
-    } catch (err: any) {
-      console.warn(`[DurableEventBus] Local SQLite write failed: ${err.message}`);
-    }
-
     if (isProduction()) {
       DurableEventBus.d1Repo.executeWrite('durable_events', sql, params).catch(err => {
         console.error(`[DurableEventBus] D1 event persistence failed: ${err.message}`);
       });
+    } else {
+      DurableEventBus.d1Repo.executeSync('durable_events', sql, params);
     }
 
     return id;
@@ -130,22 +126,22 @@ export class DurableEventBus {
   }
 
   /**
-   * Claim unprocessed events for processing by the orchestrator.
-   * Returns up to `limit` events ordered by creation time.
+   * Claim unprocessed events for processing.
    */
   public static claimPending(organizationId: string, limit = 50): DurableEvent[] {
-    const db = getDb();
-    const rows = db.prepare(`
+    const sql = `
       SELECT * FROM durable_events
       WHERE organization_id = ? AND processed = 0
       ORDER BY created_at ASC
       LIMIT ?
-    `).all(organizationId, limit) as any[];
+    `;
+    const rows = DurableEventBus.d1Repo.querySync<any>('durable_events', sql, [organizationId, limit]);
     return rows.map(DurableEventBus.mapRow);
   }
 
   /**
    * Async D1 claim for production orchestrator cycles.
+   * Fails closed if D1 fails — zero SQLite fallback in production.
    */
   public static async claimPendingAsync(organizationId: string, limit = 50): Promise<DurableEvent[]> {
     const sql = `
@@ -154,27 +150,16 @@ export class DurableEventBus {
       ORDER BY created_at ASC
       LIMIT ?
     `;
-    const params = [organizationId, limit];
-
-    if (isProduction()) {
-      try {
-        const res = await DurableEventBus.d1Repo.executeRead('durable_events', sql, params);
-        return (res.results || []).map(DurableEventBus.mapRow);
-      } catch (err: any) {
-        console.warn(`[DurableEventBus] D1 claim failed, falling back to local: ${err.message}`);
-      }
-    }
-
-    return DurableEventBus.claimPending(organizationId, limit);
+    const res = await DurableEventBus.d1Repo.executeRead('durable_events', sql, [organizationId, limit]);
+    return (res.results || []).map(DurableEventBus.mapRow);
   }
 
   /**
    * Mark an event as processed by a specific agent.
    */
   public static markProcessed(eventId: string, agentId: string, error?: string): void {
-    const db = getDb();
     const now = new Date().toISOString();
-    const row = db.prepare(`SELECT triggered_agents_json FROM durable_events WHERE id = ?`).get(eventId) as any;
+    const row = DurableEventBus.d1Repo.queryOneSync<any>('durable_events', `SELECT triggered_agents_json FROM durable_events WHERE id = ?`, [eventId]);
     const agents: string[] = JSON.parse(row?.triggered_agents_json || '[]');
     if (!agents.includes(agentId)) agents.push(agentId);
 
@@ -185,38 +170,24 @@ export class DurableEventBus {
     `;
     const params = [now, JSON.stringify(agents), error || null, eventId];
 
-    try {
-      db.prepare(sql).run(...params);
-    } catch {}
-
     if (isProduction()) {
       DurableEventBus.d1Repo.executeWrite('durable_events', sql, params).catch(err => {
         console.error(`[DurableEventBus] D1 markProcessed failed: ${err.message}`);
       });
+    } else {
+      DurableEventBus.d1Repo.executeSync('durable_events', sql, params);
     }
   }
 
   /**
    * Async D1 markProcessed for production orchestrator.
+   * Fails closed if D1 fails — zero SQLite fallback in production.
    */
   public static async markProcessedAsync(eventId: string, agentId: string, error?: string): Promise<void> {
     const now = new Date().toISOString();
     const sqlGet = `SELECT triggered_agents_json FROM durable_events WHERE id = ? LIMIT 1`;
-    let agents: string[] = [];
-
-    if (isProduction()) {
-      try {
-        const res = await DurableEventBus.d1Repo.executeRead('durable_events', sqlGet, [eventId]);
-        const row = res.results?.[0] as any;
-        agents = JSON.parse(row?.triggered_agents_json || '[]');
-      } catch {}
-    } else {
-      try {
-        const db = getDb();
-        const row = db.prepare(sqlGet).get(eventId) as any;
-        agents = JSON.parse(row?.triggered_agents_json || '[]');
-      } catch {}
-    }
+    const row = await DurableEventBus.d1Repo.queryOne<any>('durable_events', sqlGet, [eventId]);
+    const agents: string[] = JSON.parse(row?.triggered_agents_json || '[]');
 
     if (!agents.includes(agentId)) agents.push(agentId);
 
@@ -234,13 +205,24 @@ export class DurableEventBus {
    * List recent events for dashboard/audit.
    */
   public static listRecent(organizationId: string, limit = 100): DurableEvent[] {
-    const db = getDb();
-    const rows = db.prepare(`
+    const sql = `
       SELECT * FROM durable_events
       WHERE organization_id = ?
       ORDER BY created_at DESC
       LIMIT ?
-    `).all(organizationId, limit) as any[];
+    `;
+    const rows = DurableEventBus.d1Repo.querySync<any>('durable_events', sql, [organizationId, limit]);
+    return rows.map(DurableEventBus.mapRow);
+  }
+
+  public static async listRecentAsync(organizationId: string, limit = 100): Promise<DurableEvent[]> {
+    const sql = `
+      SELECT * FROM durable_events
+      WHERE organization_id = ?
+      ORDER BY created_at DESC
+      LIMIT ?
+    `;
+    const rows = await DurableEventBus.d1Repo.query<any>('durable_events', sql, [organizationId, limit]);
     return rows.map(DurableEventBus.mapRow);
   }
 

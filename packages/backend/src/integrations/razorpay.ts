@@ -1,5 +1,4 @@
 import { createHmac, timingSafeEqual, randomUUID } from 'crypto';
-import { getDb } from '../db/client.js';
 import { RevenueReconciliationEngine } from '../revenue/revenue-reconciliation.js';
 import { CustomerJourneyTracker } from '../revenue/customer-journey-tracker.js';
 import { PaymentMethod, DataClassification } from '@ai-marketing/shared';
@@ -67,8 +66,34 @@ export interface ManualUpiClaimInput {
 }
 
 export class RazorpayAdapter {
+  private d1Repo = D1RevenueRepository.getInstance();
+
   private get db() {
-    return getDb();
+    return {
+      prepare: (sql: string) => ({
+        run: (...params: any[]) => {
+          if (isProduction()) {
+            this.d1Repo.executeWrite('revenue_records', sql, params).catch(e => {
+              console.error(`[RazorpayAdapter D1 Write Fault]: ${e.message}`);
+            });
+            return { changes: 1 };
+          }
+          return this.d1Repo.executeSync('revenue_records', sql, params);
+        },
+        get: (...params: any[]) => {
+          if (isProduction()) {
+            throw new Error(`PRODUCTION D1 ERROR: Synchronous get() is prohibited in RazorpayAdapter in production. All reads must go through D1.`);
+          }
+          return this.d1Repo.queryOneSync('revenue_records', sql, params);
+        },
+        all: (...params: any[]) => {
+          if (isProduction()) {
+            throw new Error(`PRODUCTION D1 ERROR: Synchronous all() is prohibited in RazorpayAdapter in production. All reads must go through D1.`);
+          }
+          return this.d1Repo.querySync('revenue_records', sql, params);
+        }
+      })
+    };
   }
 
   private revenueEngine = new RevenueReconciliationEngine();
@@ -360,6 +385,18 @@ export class RazorpayAdapter {
     const amountPaise = Math.round(authoritativeAmountINR * 100);
     const referenceId = `ref_${randomUUID().substring(0, 12)}`;
 
+    let resolvedProspectId = input.prospectId;
+    const custEmail = input.customer?.email || (input as any).customerEmail;
+    const custPhone = input.customer?.contact || (input as any).customerPhone;
+    if (!resolvedProspectId && (custEmail || custPhone)) {
+      const pRow = this.db.prepare(`
+        SELECT id FROM platform_prospects
+        WHERE (prospect_email = ? AND ? != '') OR (prospect_phone = ? AND ? != '')
+        LIMIT 1
+      `).get(custEmail || '', custEmail || '', custPhone || '', custPhone || '') as any;
+      resolvedProspectId = pRow?.id;
+    }
+
     let providerLinkId: string;
     let shortUrl: string;
     let status = 'CREATED';
@@ -382,7 +419,7 @@ export class RazorpayAdapter {
           organization_id: input.organizationId,
           business_id: input.businessId,
           proposal_id: input.proposalId || '',
-          prospect_id: input.prospectId || ''
+          prospect_id: resolvedProspectId || ''
         }
       };
 
@@ -449,7 +486,7 @@ export class RazorpayAdapter {
           id,
           input.organizationId,
           input.businessId,
-          input.prospectId || null,
+          resolvedProspectId || null,
           input.journeyId || null,
           input.proposalId || null,
           providerLinkId,
@@ -471,7 +508,7 @@ export class RazorpayAdapter {
         payReqId,
         input.organizationId,
         input.businessId,
-        input.prospectId || null,
+        resolvedProspectId || null,
         input.opportunityId || null,
         input.journeyId || null,
         input.offerId,
@@ -963,7 +1000,14 @@ export class RazorpayAdapter {
 
     // 4. Derive tenant strictly from stored internal record
     const businessId = storedLink?.business_id || storedPayReq?.business_id || storedOrder?.business_id;
-    const organizationId = storedLink?.organization_id || storedPayReq?.organization_id || storedOrder?.organization_id || OwnerAuthService.OWNER_ORGANIZATION_ID;
+    let organizationId = storedLink?.organization_id || storedPayReq?.organization_id || storedOrder?.organization_id;
+    if (!organizationId && businessId) {
+      const bizRow = this.db.prepare('SELECT organization_id FROM businesses WHERE id = ?').get(businessId) as any;
+      organizationId = bizRow?.organization_id;
+    }
+    if (!organizationId) {
+      organizationId = OwnerAuthService.OWNER_ORGANIZATION_ID;
+    }
 
     if (!businessId) {
       throw new Error('SECURITY VIOLATION: Stored internal payment record has no associated business_id.');
@@ -1028,7 +1072,76 @@ export class RazorpayAdapter {
     }
     D1RevenueRepository.getInstance().assertDurableStorage('transactions');
 
-    // Update payment_orders record if present
+    // Record explicit economic entity revenue_records in D1 durable storage (Spec § 3, § 24, § 25, Item 6: Fail-Closed)
+    const isPlatformRevenue = businessId === OwnerAuthService.PLATFORM_BUSINESS_ID || businessId === 'biz_platform_aro';
+    const revenueType = isPlatformRevenue ? 'PLATFORM_REVENUE' : 'CLIENT_REVENUE';
+    const matchedLinkId = providerLinkId;
+    const revRecordId = `rev_${Date.now()}_${randomUUID().substring(0, 6)}`;
+    const d1Repo = D1RevenueRepository.getInstance();
+
+    // Assert D1 durable storage in production before state transitions
+    if (orderId) {
+      d1Repo.assertDurableStorage('payment_orders');
+    }
+    if (providerLinkId) {
+      d1Repo.assertDurableStorage('payment_provider_links');
+      d1Repo.assertDurableStorage('payment_requests');
+    }
+    d1Repo.assertDurableStorage('transactions');
+    d1Repo.assertDurableStorage('revenue_records');
+
+    // Fail-Closed Gate: Write revenue_records to D1 repository FIRST.
+    // If writing revenue_records to D1 throws or fails, payment status MUST NOT transition to PAID
+    // or success, and the customer MUST NOT be marked ONBOARDED.
+    // Set status to RECONCILIATION_REQUIRED, log error, and throw so webhook returns 500 and Razorpay retries.
+    try {
+      await d1Repo.executeWrite(
+        'revenue_records',
+        `INSERT INTO revenue_records (
+          id, organization_id, business_id, revenue_type, source, transaction_id,
+          amount_inr, currency, verified, verification_method, classification,
+          recurring_model, timestamp
+        ) VALUES (?, ?, ?, ?, 'RAZORPAY', ?, ?, 'INR', 1, 'RAZORPAY_WEBHOOK', ?, 'ONE_TIME', datetime('now'))`,
+        [
+          revRecordId,
+          organizationId,
+          businessId,
+          revenueType,
+          paymentId,
+          amountINR,
+          classification
+        ]
+      );
+    } catch (d1Err: any) {
+      console.error(`[RazorpayAdapter] FAIL-CLOSED: Failed to write revenue_records to D1 for payment ${paymentId}: ${d1Err.message}. Transitioning status to RECONCILIATION_REQUIRED.`);
+      
+      if (orderId) {
+        this.db.prepare(`
+          UPDATE payment_orders 
+          SET status = 'RECONCILIATION_REQUIRED', payment_id = ?, updated_at = datetime('now')
+          WHERE order_id = ?
+        `).run(paymentId, orderId);
+      }
+      if (matchedLinkId) {
+        this.db.prepare(`
+          UPDATE payment_provider_links
+          SET status = 'RECONCILIATION_REQUIRED', payment_id = ?
+          WHERE provider_link_id = ?
+        `).run(paymentId, matchedLinkId);
+
+        this.db.prepare(`
+          UPDATE payment_requests
+          SET status = 'RECONCILIATION_REQUIRED', payment_id = ?, updated_at = datetime('now')
+          WHERE provider_link_id = ?
+        `).run(paymentId, matchedLinkId);
+      }
+
+      throw new Error(`REVENUE_PERSISTENCE_FAILED: D1 write failed for revenue_records: ${d1Err.message}`);
+    }
+
+    // --- ONLY REACHED IF D1 WRITE SUCCEEDED ---
+
+    // Update payment_orders record to PAID
     if (orderId) {
       this.db
         .prepare(
@@ -1039,8 +1152,7 @@ export class RazorpayAdapter {
         .run(paymentId, orderId);
     }
 
-    // Update payment_provider_links record if present
-    const matchedLinkId = providerLinkId;
+    // Update payment_provider_links and payment_requests records to PAID
     if (matchedLinkId) {
       this.db
         .prepare(`
@@ -1050,7 +1162,6 @@ export class RazorpayAdapter {
         `)
         .run(paymentId, matchedLinkId);
 
-      // Update payment_requests record (Spec § 9 & § 23)
       this.db
         .prepare(`
           UPDATE payment_requests
@@ -1077,37 +1188,32 @@ export class RazorpayAdapter {
       serviceRendered
     });
 
-    // Record explicit economic entity revenue_records (Spec § 3, § 24, § 25)
-    const isPlatformRevenue = businessId === OwnerAuthService.PLATFORM_BUSINESS_ID || businessId === 'biz_platform_aro';
-    const revenueType = isPlatformRevenue ? 'PLATFORM_REVENUE' : 'CLIENT_REVENUE';
-
-    // Spec § 9: Assert D1 durable storage for revenue_records in production
-    D1RevenueRepository.getInstance().assertDurableStorage('revenue_records');
-
-    try {
-      this.db.prepare(`
-        INSERT INTO revenue_records (
-          id, organization_id, business_id, revenue_type, source, transaction_id,
-          amount_inr, currency, verified, verification_method, classification,
-          recurring_model, timestamp
-        ) VALUES (?, ?, ?, ?, 'RAZORPAY', ?, ?, 'INR', 1, 'RAZORPAY_WEBHOOK', ?, 'ONE_TIME', datetime('now'))
-      `).run(
-        `rev_${Date.now()}_${randomUUID().substring(0, 6)}`,
-        organizationId,
-        businessId,
-        revenueType,
-        paymentId,
-        amountINR,
-        classification
-      );
-    } catch (e: any) {
-      console.warn(`[RazorpayAdapter] Failed to insert revenue_records: ${e.message}`);
-    }
-
     // If platform customer paid, initialize 5-Day Delivery Blueprint fulfillment (Spec § 38 & § 39)
     if (isPlatformRevenue) {
       try {
-        const custId = storedPayReq?.prospect_id || storedLink?.prospect_id || `cust_${randomUUID().substring(0, 8)}`;
+        const payerEmail = payment?.email || paymentLink?.customer?.email;
+        const payerPhone = payment?.contact || paymentLink?.customer?.contact;
+        let candidateCustId = storedPayReq?.prospect_id || storedLink?.prospect_id || (journeyId ? (this.db.prepare('SELECT prospect_id, id FROM customer_journeys WHERE id = ?').get(journeyId) as any)?.prospect_id || journeyId : undefined);
+        if (!candidateCustId && (payerEmail || payerPhone)) {
+          const prospect = this.db.prepare(`
+            SELECT id FROM platform_prospects
+            WHERE (prospect_email = ? AND ? != '') OR (prospect_phone = ? AND ? != '')
+            LIMIT 1
+          `).get(payerEmail || '', payerEmail || '', payerPhone || '', payerPhone || '') as any;
+          candidateCustId = prospect?.id;
+        }
+        if (!candidateCustId && (payerEmail || payerPhone)) {
+          const journey = this.db.prepare(`
+            SELECT id FROM customer_journeys
+            WHERE (customer_email = ? AND ? != '') OR (customer_phone = ? AND ? != '')
+            LIMIT 1
+          `).get(payerEmail || '', payerEmail || '', payerPhone || '', payerPhone || '') as any;
+          candidateCustId = journey?.id;
+        }
+        if (!candidateCustId) {
+          throw new Error(`EXACT_LINEAGE_VIOLATION: Cannot trace customer ID to a real opportunity, lead, or customer journey for link ${matchedLinkId}. Fabricated customer IDs are strictly prohibited.`);
+        }
+        const custId = candidateCustId;
         this.db.prepare(`
           INSERT OR IGNORE INTO platform_customer_deliveries (
             id, customer_id, organization_id, business_id, offer_id, payment_id,

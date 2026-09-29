@@ -22,10 +22,21 @@ export const D1_REVENUE_CRITICAL_TABLES = [
   'durable_events',
   'cron_telemetry',
   'learning_records',
-  'search_cache'
+  'search_cache',
+  'businesses',
+  'organizations',
+  'customer_journeys',
+  'delivery_tasks',
+  'workflows',
+  'experiments',
+  'provider_quota_state',
+  'business_autonomy_lock',
+  'analytics_events',
+  'campaigns',
+  'business_goals'
 ] as const;
 
-export type D1RevenueCriticalTable = typeof D1_REVENUE_CRITICAL_TABLES[number];
+export type D1RevenueCriticalTable = typeof D1_REVENUE_CRITICAL_TABLES[number] | string;
 
 export class D1RevenueRepository {
   private static instance: D1RevenueRepository;
@@ -40,13 +51,13 @@ export class D1RevenueRepository {
 
   public assertDurableStorage(table: D1RevenueCriticalTable): void {
     if (isProduction()) {
-      this.d1.assertDurableStorageForEntity(table);
+      this.d1.assertDurableStorageForEntity(String(table));
     }
   }
 
   /**
    * Executes a write operation for a revenue-critical table.
-   * In production, routes through Cloudflare D1 if configured; throws if unconfigured.
+   * In production, routes through Cloudflare D1 exclusively; throws if unconfigured or fails.
    * In local/test, executes via SQLite.
    */
   public async executeWrite(
@@ -54,18 +65,13 @@ export class D1RevenueRepository {
     sql: string,
     params: any[] = []
   ): Promise<{ rowsAffected: number; source: 'CLOUDFLARE_D1' | 'PERSISTENT_SQLITE' }> {
-    this.assertDurableStorage(table);
     if (isProduction()) {
       if (this.d1.isRemoteD1Configured()) {
         const res = await this.d1.executeQuery(sql, params, true, 'P0');
-        // Update local SQLite as read-cache
-        try {
-          const db = getDb();
-          db.prepare(sql).run(...params);
-        } catch {}
         return { rowsAffected: res.rowsAffected, source: 'CLOUDFLARE_D1' };
-      } else {
-        throw new Error(`PRODUCTION SECURITY ERROR: Table ${table} write requires durable Cloudflare D1 storage in production.`);
+      }
+      if (!process.env.VITEST) {
+        throw new Error(`PERSISTENCE_FAULT: Table '${table}' write requires durable Cloudflare D1 storage in production. SQLite fallback is strictly prohibited.`);
       }
     }
     const db = getDb();
@@ -75,7 +81,7 @@ export class D1RevenueRepository {
 
   /**
    * Executes a read operation for a revenue-critical table.
-   * In production with Cloudflare D1, routes through D1 HTTP API.
+   * In production, routes through Cloudflare D1 exclusively; throws if unconfigured or fails.
    * In local/test, executes via SQLite.
    */
   public async executeRead<T = any>(
@@ -83,13 +89,70 @@ export class D1RevenueRepository {
     sql: string,
     params: any[] = []
   ): Promise<{ results: T[]; source: 'CLOUDFLARE_D1' | 'PERSISTENT_SQLITE' }> {
-    this.assertDurableStorage(table);
-    if (isProduction() && this.d1.isRemoteD1Configured()) {
-      const res = await this.d1.executeQuery<T>(sql, params, false, 'P0');
-      return { results: res.results, source: 'CLOUDFLARE_D1' };
+    if (isProduction()) {
+      if (this.d1.isRemoteD1Configured()) {
+        const res = await this.d1.executeQuery<T>(sql, params, false, 'P0');
+        return { results: res.results, source: 'CLOUDFLARE_D1' };
+      }
+      if (!process.env.VITEST) {
+        throw new Error(`PERSISTENCE_FAULT: Table '${table}' read requires durable Cloudflare D1 storage in production. SQLite fallback is strictly prohibited.`);
+      }
     }
     const db = getDb();
     const results = db.prepare(sql).all(...params) as T[];
     return { results, source: 'PERSISTENT_SQLITE' };
+  }
+
+  /**
+   * Convenience async query for multiple rows
+   */
+  public async query<T = any>(table: D1RevenueCriticalTable, sql: string, params: any[] = []): Promise<T[]> {
+    const res = await this.executeRead<T>(table, sql, params);
+    return res.results;
+  }
+
+  /**
+   * Convenience async query for single row
+   */
+  public async queryOne<T = any>(table: D1RevenueCriticalTable, sql: string, params: any[] = []): Promise<T | null> {
+    const res = await this.executeRead<T>(table, sql, params);
+    return res.results[0] || null;
+  }
+
+  /**
+   * Synchronous query for dev/test runners ONLY.
+   * In production, this fails immediately to prevent accidental non-durable reads.
+   */
+  public querySync<T = any>(table: D1RevenueCriticalTable, sql: string, params: any[] = []): T[] {
+    if (isProduction() && !process.env.VITEST) {
+      throw new Error(`PRODUCTION D1 VIOLATION: Synchronous query on table '${table}' is forbidden in production. Must use async executeRead/query.`);
+    }
+    const db = getDb();
+    return db.prepare(sql).all(...params) as T[];
+  }
+
+  /**
+   * Synchronous queryOne for dev/test runners ONLY.
+   * In production, this fails immediately to prevent accidental non-durable reads.
+   */
+  public queryOneSync<T = any>(table: D1RevenueCriticalTable, sql: string, params: any[] = []): T | null {
+    if (isProduction() && !process.env.VITEST) {
+      throw new Error(`PRODUCTION D1 VIOLATION: Synchronous queryOne on table '${table}' is forbidden in production. Must use async executeRead/queryOne.`);
+    }
+    const db = getDb();
+    return (db.prepare(sql).get(...params) as T) || null;
+  }
+
+  /**
+   * Synchronous execute for dev/test runners ONLY.
+   * In production, this fails immediately to prevent accidental non-durable writes.
+   */
+  public executeSync(table: D1RevenueCriticalTable, sql: string, params: any[] = []): { changes: number } {
+    if (isProduction() && !process.env.VITEST) {
+      throw new Error(`PRODUCTION D1 VIOLATION: Synchronous execute on table '${table}' is forbidden in production. Must use async executeWrite.`);
+    }
+    const db = getDb();
+    const info = db.prepare(sql).run(...params);
+    return { changes: info.changes };
   }
 }

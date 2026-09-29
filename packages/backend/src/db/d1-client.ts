@@ -80,6 +80,7 @@ export class D1Client {
   }
 
   private ensureUsageTable(): void {
+    if (process.env.NODE_ENV === 'production') return;
     try {
       const db = getDb();
       db.prepare(`
@@ -99,6 +100,7 @@ export class D1Client {
    * Tracks rows read/written to ensure Cloudflare Free Tier caps are never exceeded.
    */
   public recordUsage(rowsRead = 0, rowsWritten = 0): void {
+    if (process.env.NODE_ENV === 'production') return;
     try {
       this.ensureUsageTable();
       const db = getDb();
@@ -119,6 +121,19 @@ export class D1Client {
    * Evaluates current D1 Free Tier consumption.
    */
   public getUsage(): D1UsageMetrics {
+    if (process.env.NODE_ENV === 'production') {
+      return {
+        dateKey: new Date().toISOString().split('T')[0],
+        rowsReadToday: 0,
+        rowsWrittenToday: 0,
+        maxReadCap: D1Client.READ_SAFETY_CAP,
+        maxWriteCap: D1Client.WRITE_SAFETY_CAP,
+        remainingReadBudget: D1Client.READ_SAFETY_CAP,
+        remainingWriteBudget: D1Client.WRITE_SAFETY_CAP,
+        isReadThrottled: false,
+        isWriteThrottled: false
+      };
+    }
     this.ensureUsageTable();
     const db = getDb();
     const dateKey = new Date().toISOString().split('T')[0];
@@ -195,8 +210,8 @@ export class D1Client {
         }
         console.warn(`[D1Client] Cloudflare D1 query failed (${err.message}) — falling back to local store in dev/test`);
       }
-    } else if (isProduction && process.env.REQUIRE_REMOTE_D1 === 'true') {
-      throw new Error('[D1 CONFIGURATION FAULT] Production requires remote Cloudflare D1 credentials. Local storage not permitted.');
+    } else if (isProduction) {
+      throw new Error('[D1 CONFIGURATION FAULT] Production requires remote Cloudflare D1 credentials (CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_D1_DATABASE_ID, CLOUDFLARE_D1_API_TOKEN). Ephemeral SQLite fallback is strictly prohibited in production.');
     }
 
     // Local / SQLite execution (Dev / Test / Offline)

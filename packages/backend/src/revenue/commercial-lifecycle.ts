@@ -80,8 +80,20 @@ export class CommercialLifecycleManager {
   /**
    * Evaluates the current commercial state derived 100% from persisted database evidence.
    */
-  public evaluateState(organizationId: string = 'org_smilekraft_01', businessId: string = 'biz_smilekraft_hyd'): LifecycleEvaluation {
+  public evaluateState(organizationId: string, businessId?: string): LifecycleEvaluation {
+    if (!organizationId) {
+      throw new Error('ORGANIZATION_REQUIRED: Explicit organizationId required for commercial lifecycle evaluation');
+    }
     const db = getDb();
+    let bizId = businessId;
+    if (!bizId) {
+      const biz = db.prepare('SELECT id FROM businesses WHERE organization_id = ? LIMIT 1').get(organizationId) as any;
+      bizId = biz?.id;
+    }
+    if (!bizId) {
+      const biz = db.prepare('SELECT id FROM businesses LIMIT 1').get() as any;
+      bizId = biz?.id;
+    }
 
     // 1. Query verified evidence records
     let evidenceRows: any[] = [];

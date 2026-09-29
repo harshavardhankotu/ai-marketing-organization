@@ -1,5 +1,6 @@
 import { GoogleAdsClient, GoogleAdsCredentials } from './google-ads.js';
 import { isPlaceholderCredential, isProduction } from '../config/env.js';
+import { AutonomyPolicyController } from '../revenue/autonomy-policy.js';
 
 export type IntegrationProvider = 
   | 'GOOGLE_BUSINESS_PROFILE'
@@ -17,7 +18,8 @@ export type ActionClassification =
   | 'SANDBOX_ACTION'
   | 'TEST_ACTION'
   | 'LIVE_EXTERNAL_ACTION'
-  | 'BLOCKED_AUTHORIZATION';
+  | 'BLOCKED_AUTHORIZATION'
+  | 'APPROVAL_REQUIRED';
 
 export interface PublishPayload {
   title: string;
@@ -441,6 +443,22 @@ export class EmailAdapter implements IChannelAdapter {
         };
       }
 
+      // Ensure recipient suppression check
+      const policyController = AutonomyPolicyController.getInstance();
+      const contactSafety = policyController.getContactSafety(recipient);
+      if (contactSafety !== 'CONTACTABLE') {
+        return {
+          success: false,
+          mode: isLive ? 'LIVE' : 'UNCONFIGURED',
+          provider: this.provider,
+          providerStatus: 'SUPPRESSED',
+          verificationStatus: 'FAILED',
+          actionClassification: 'BLOCKED_AUTHORIZATION',
+          publishedAt,
+          message: `Email blocked: Recipient ${recipient} is suppressed (${contactSafety}).`
+        };
+      }
+
       // Platform email sender identity
       let senderEmail = process.env.PLATFORM_SENDER_EMAIL || process.env.SENDER_EMAIL;
       let senderName = process.env.PLATFORM_SENDER_NAME || 'AI Marketing Organization';
@@ -465,6 +483,15 @@ export class EmailAdapter implements IChannelAdapter {
         }
       }
 
+      // Append working unsubscribe link
+      const baseUrl = process.env.APP_BASE_URL || process.env.BACKEND_URL || 'https://ai-marketing-organization.onrender.com';
+      const encodedRecipient = encodeURIComponent(recipient);
+      const unsubscribeUrl = `${baseUrl.replace(/\/$/, '')}/api/v1/unsubscribe?email=${encodedRecipient}`;
+      let emailBody = payload.body;
+      if (!emailBody.includes('/unsubscribe') && !emailBody.toLowerCase().includes('unsubscribe:')) {
+        emailBody = `${emailBody}\n\n---\nTo unsubscribe from future communications: ${unsubscribeUrl}`;
+      }
+
       // Live SendGrid API request
       const res = await fetch('https://api.sendgrid.com/v3/mail/send', {
         method: 'POST',
@@ -476,7 +503,7 @@ export class EmailAdapter implements IChannelAdapter {
           personalizations: [{ to: [{ email: recipient }] }],
           from: { email: senderEmail, name: senderName },
           subject: payload.title,
-          content: [{ type: 'text/plain', value: payload.body }]
+          content: [{ type: 'text/plain', value: emailBody }]
         })
       });
 

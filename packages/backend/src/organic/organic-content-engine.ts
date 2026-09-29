@@ -374,7 +374,10 @@ export class OrganicContentEngine {
   /**
    * Computes content publication metrics.
    */
-  public getContentStats(businessId: string = 'biz_smilekraft_hyd') {
+  public getContentStats(businessId: string) {
+    if (!businessId) {
+      throw new Error('BUSINESS_REQUIRED: Explicit businessId required for content stats');
+    }
     const row = this.db
       .prepare(
         `SELECT 

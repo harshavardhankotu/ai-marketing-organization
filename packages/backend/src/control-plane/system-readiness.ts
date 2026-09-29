@@ -2,7 +2,10 @@ import { getDb } from '../db/client.js';
 import { SystemReadinessReport, SystemReadinessCheck, SystemOperatingState } from '@ai-marketing/shared';
 
 export class SystemReadinessEngine {
-  public static evaluateReadiness(businessId: string = 'biz_smilekraft_hyd'): SystemReadinessReport {
+  public static evaluateReadiness(businessId: string): SystemReadinessReport {
+    if (!businessId) {
+      throw new Error('BUSINESS_REQUIRED: Explicit businessId required for system readiness evaluation');
+    }
     const db = getDb();
     const checks: SystemReadinessCheck[] = [];
 
