@@ -69,6 +69,7 @@ export interface OrchestratorCycleResult {
   actionsTaken: number;
   revenueRecordedINR: number;
   nextBestAction: NextBestAction;
+  discoveredProspects?: any[];
   nextCycleAt: string;
   status: 'COMPLETED' | 'PARTIAL' | 'FAILED' | 'CYCLE_ALREADY_RUNNING' | 'IDLE';
   actionExecutionStatus: CycleExecutionStatus;
@@ -134,6 +135,7 @@ export class AutonomousRevenueOrchestrator {
     let revenueRecordedINR = 0;
     let actionExecutionStatus: CycleExecutionStatus = 'NO_ACTION_DUE';
     let actionClassification: ActionClassification = 'INTERNAL_AUTOMATION';
+    let execResult: any = null;
 
     // ──────────────────────────────────────────────────────────────────
     // SPEC § 21: CONCURRENCY LOCK — prevent simultaneous cycles for this business
@@ -321,9 +323,13 @@ export class AutonomousRevenueOrchestrator {
           errors.push(`Action ${nextBestAction.actionType} blocked: requires ₹${nextBestAction.estimatedCostINR} (₹0 policy)`);
         } else {
           // Execute action with strict live vs internal classification
-          const execResult = await this.executeAction(nextBestAction, organizationId, businessId, cycleId, biz);
+          execResult = await this.executeAction(nextBestAction, organizationId, businessId, cycleId, biz);
           actionExecutionStatus = execResult.status;
           actionClassification = execResult.actionClassification;
+
+          if ((execResult as any).opportunitiesDiscovered) {
+            opportunitiesDiscovered += (execResult as any).opportunitiesDiscovered;
+          }
 
           if (execResult.status === 'LIVE_EXTERNAL_ACTION') {
             actionsTaken++;
@@ -421,6 +427,7 @@ export class AutonomousRevenueOrchestrator {
           terminalClassification,
           nextBestAction: nextBestAction.actionType,
           rationale: nextBestAction.rationale,
+          discoveredProspects: (execResult as any)?.discoveredProspects || [],
           errors
         }),
         cycleId
@@ -444,6 +451,7 @@ export class AutonomousRevenueOrchestrator {
         actionsTaken,
         revenueRecordedINR,
         nextBestAction,
+        discoveredProspects: (execResult as any)?.discoveredProspects || [],
         nextCycleAt,
         status: errors.length === 0 ? 'COMPLETED' : 'PARTIAL',
         actionExecutionStatus,
@@ -524,6 +532,8 @@ export class AutonomousRevenueOrchestrator {
     isRevenueAction: boolean;
     externalId?: string;
     error?: string;
+    opportunitiesDiscovered?: number;
+    discoveredProspects?: any[];
   }> {
     const db = this.db;
 
@@ -1212,6 +1222,8 @@ export class AutonomousRevenueOrchestrator {
             status: 'INTERNAL_AUTOMATION',
             actionClassification: 'INTERNAL_AUTOMATION',
             isRevenueAction: false,
+            opportunitiesDiscovered: discResult.count,
+            discoveredProspects: discResult.prospects,
             externalId: undefined
           };
         }
@@ -1219,7 +1231,10 @@ export class AutonomousRevenueOrchestrator {
         return {
           status: 'INTERNAL_AUTOMATION',
           actionClassification: 'INTERNAL_AUTOMATION',
-          isRevenueAction: false
+          isRevenueAction: false,
+          opportunitiesDiscovered: 0,
+          discoveredProspects: [],
+          error: discResult.reason
         };
       }
 

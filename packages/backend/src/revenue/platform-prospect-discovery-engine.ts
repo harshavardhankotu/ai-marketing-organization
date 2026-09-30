@@ -484,7 +484,7 @@ export class PlatformProspectDiscoveryEngine {
     limit: number
   ): Promise<DiscoveredProspectCandidate[]> {
     const apiKey = process.env.TAVILY_API_KEY!;
-    const query = `top ${vertical} in ${city} India official website contact phone`;
+    const query = `top ${vertical} clinic in ${city} India official contact phone email website`;
 
     const res = await fetch('https://api.tavily.com/search', {
       method: 'POST',
@@ -493,8 +493,8 @@ export class PlatformProspectDiscoveryEngine {
         api_key: apiKey,
         query,
         search_depth: 'advanced',
-        include_domains: ['.in', '.com', '.org'],
-        max_results: limit + 2
+        exclude_domains: ['justdial.com', 'practo.com', 'sulekha.com', 'rentechdigital.com', 'indiamart.com', 'quikr.com', 'jdmagicbox.com', 'lybrate.com', 'threebestrated.in', 'scribd.com'],
+        max_results: Math.max(limit + 5, 8)
       })
     });
 
@@ -509,11 +509,15 @@ export class PlatformProspectDiscoveryEngine {
     for (const item of results) {
       const url = item.url || '';
       if (!url.startsWith('http')) continue;
+      const lowerUrl = url.toLowerCase();
+      if (lowerUrl.includes('scribd.com') || lowerUrl.includes('wikipedia.org') || lowerUrl.includes('instagram.com/reel/')) {
+        continue;
+      }
       const title = item.title || '';
       const content = item.content || '';
 
       // Extract phone / email if present
-      const phoneMatch = content.match(/(\+91[\s-]?[6-9]\d{9}|0[1-9]\d{1,4}[\s-]?\d{6,8}|[6-9]\d{9})/);
+      const phoneMatch = content.match(/(\+91[\s-]?[6-9]\d{9}|0[1-9]\d{1,4}[\s-]?\d{6,8}|[6-9]\d{9}|\b[6-9]\d{4}[\s-]?\d{5}\b)/);
       const emailMatch = content.match(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
 
       const snippet = content.slice(0, 500).trim();
