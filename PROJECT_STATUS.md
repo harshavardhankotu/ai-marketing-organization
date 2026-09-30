@@ -16,14 +16,14 @@
 
 | Item | Status | Last Verified Date | Proving Command / Live Endpoint | Evidence & Notes |
 | :--- | :---: | :---: | :--- | :--- |
-| **Local Repository HEAD** | **PASS** | 2026-09-30 | `git rev-parse HEAD` | Commit SHA: `fd1ab33`<br>Branch: `main` |
-| **Deployed Production Commit (Render)** | **PASS** | 2026-09-30 | Render API `GET /v1/services/.../deploys` | Last Deployed Commit SHA: `abf879f`<br>Status: Running `abf879f` on Render (pending new deploy of `fd1ab33` latest hardening) |
-| **Render Web Service (Live HTTP)** | **NOT_VERIFIED** | — | `GET https://ai-marketing-organization.onrender.com/api/v1/health` | Remote HTTP reachability unverified from current local agent environment. |
+| **Local Repository HEAD** | **PASS** | 2026-09-30 | `git rev-parse HEAD` | Commit SHA: `e2fc200`<br>Branch: `main` |
+| **Deployed Production Commit (Render)** | **PASS** | 2026-09-30 | Render API `GET /v1/services/srv-darecoc9v7es73ea8t2g/deploys` | Active Deploy ID: `dep-daugpfuq1p3s738jlva0`<br>Deployed Commit SHA: `e2fc200`<br>Status: `live` |
+| **Render Web Service (Live HTTP)** | **PASS** | 2026-09-30 | `GET https://ai-marketing-organization.onrender.com/api/v1/health` | HTTP 200 OK<br>`{"status":"healthy","timestamp":"2026-09-30T13:25:05.899Z","version":"1.0.0","service":"AI Marketing Organization Engine"}` |
 | **Production Runtime Secrets** | **PASS** | 2026-09-30 | Render REST API `GET /v1/services/{id}/env-vars` | `CRON_PING_SECRET`: **CONFIGURED**<br>`OWNER_API_KEY`: **CONFIGURED**<br>`GEMINI_API_KEY`: **CONFIGURED**<br>`TAVILY_API_KEY`: **CONFIGURED** |
 | **Cloudflare Worker (Live HTTP)** | **NOT_VERIFIED** | — | `GET https://ai-marketing-cron-worker.vardhankotu.workers.dev/health` | Remote HTTP reachability unverified from current local agent environment. |
 | **Cloudflare D1 Database** | **PASS** | 2026-09-30 | Cloudflare D1 HTTP API & Backend D1Client | Remote database configured.<br>Migrations: `0001` through `0005` in source and build.<br>All critical tables tracked via `D1_REVENUE_CRITICAL_TABLES` (including `idempotent_actions`). |
-| **Authenticated System Readiness (Live)** | **NOT_VERIFIED** | — | `GET /api/v1/system/readiness` | Remote HTTP reachability unverified from current local agent environment. |
-| **Test Suite & Build** | **PASS** | 2026-09-30 | `npm run build && npm run typecheck && npm test` | Build exit code: `0` (monorepo root covers `shared`, `backend`, `frontend`, `cloudflare-worker`)<br>Typecheck exit code: `0` across all 4 packages<br>Test files: `45 passed (45)`<br>Tests: `426 passed (426)`<br>Failed: `0` |
+| **Authenticated System Readiness (Live)** | **PASS** | 2026-09-30 | `GET /api/v1/system/readiness` | HTTP 200 OK with authenticated `owner_session` cookie.<br>Unauthenticated request strictly fail-closed with HTTP 401. |
+| **Test Suite & Build** | **PASS** | 2026-09-30 | `npm run build && npm run typecheck && npm test` | Build exit code: `0` (monorepo root covers `shared`, `backend`, `frontend`, `cloudflare-worker`)<br>Typecheck exit code: `0` across all 4 packages<br>Test files: `46 passed (46)`<br>Tests: `442 passed (442)`<br>Failed: `0` |
 
 ---
 
@@ -97,6 +97,12 @@
     - **Atomic Webhook Idempotency:** Replaced check-then-insert pattern with atomic unique-constraint insertion into `idempotent_actions` table first. Duplicate or concurrent webhooks conflict on `idempotency_key` PRIMARY KEY, stop processing immediately, and return idempotent cached response without duplicate transactions.
     - **PROJECT_STATUS.md Ground Truth:** Reconciled real repository commit vs deployed Render commit (`abf879f`), marked remote HTTP endpoints unverified from local environment as `NOT_VERIFIED`.
     - **Verification Results:** All 45 test files passed (426 tests passed, 0 failed). Monorepo typecheck and build passed with exit code 0 across all 4 workspaces (`shared`, `backend`, `frontend`, `cloudflare-worker`).
+21. **2026-09-30 — Production Admin Session Authentication Bootstrap & Owner Login UI (`e2fc200`):**
+    - **Frontend Session-Based Auth Bootstrap:** Refactored `packages/frontend/src/App.tsx` with explicit auth states (`BOOTING`, `AUTHENTICATED`, `UNAUTHENTICATED`). Replaced premature unauthenticated fanning out to 10+ protected endpoints with session check via `GET /api/v1/auth/owner/session` before loading protected data.
+    - **Production Owner Login Screen:** Built `OwnerLogin.tsx` component with single-owner sign-in, key visibility toggle, and instant feedback. Strictly avoids persisting sensitive credentials in `localStorage` or `sessionStorage`.
+    - **API Client Credentials & Identity Sanitization:** Configured `fetchApi()` in `packages/frontend/src/services/api.ts` with `credentials: 'include'`. Completely removed spoofed identity headers (`x-organization-id`, `x-user-id: usr_owner_01`) as an authentication substitute. Distinguishes 401 unauthenticated errors and transitions UI cleanly without infinite retry loops.
+    - **Credentialed CORS & Origin Restriction:** Replaced wildcard `*` CORS in `packages/backend/src/index.ts` with credentialed explicit origin resolver supporting dynamic `FRONTEND_ORIGIN` env var, production Render origin, and local dev hosts. Strictly prohibits wildcard `*` with credentials.
+    - **Full Live Verification:** Deployed commit `e2fc200` to Render (`dep-daugpfuq1p3s738jlva0`). Proved unauthenticated 401 fail-closed protection, successful owner login establishing HttpOnly `owner_session` cookie, authenticated session, `/business` and `/system/readiness` 200 responses, clean logout session revocation, and unhindered public endpoint access. All 46 test suites (442 tests) passing with 0 failures.
 
 ---
 
