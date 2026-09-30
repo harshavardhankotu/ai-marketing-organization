@@ -217,24 +217,8 @@ describe('Admin Authentication, Session Cookies & CORS Security', () => {
     });
   });
 
-  describe('3. CORS Credential & Origin Security (Requirement 7 & 15)', () => {
-    it('sets Access-Control-Allow-Origin matching production Render host and credentials true (never wildcard)', async () => {
-      process.env.NODE_ENV = 'production';
-
-      const res = await app.request('/api/v1/health', {
-        method: 'OPTIONS',
-        headers: {
-          'Origin': 'https://ai-marketing-organization.onrender.com',
-          'Access-Control-Request-Method': 'GET'
-        }
-      });
-
-      expect(res.headers.get('access-control-allow-origin')).toBe('https://ai-marketing-organization.onrender.com');
-      expect(res.headers.get('access-control-allow-origin')).not.toBe('*');
-      expect(res.headers.get('access-control-allow-credentials')).toBe('true');
-    });
-
-    it('supports explicitly configured FRONTEND_ORIGIN with credentials: true', async () => {
+  describe('3. CORS Credential & Origin Security (Task 1 Requirements)', () => {
+    it('accepts explicitly configured FRONTEND_ORIGIN with credentials: true', async () => {
       process.env.NODE_ENV = 'production';
       process.env.FRONTEND_ORIGIN = 'https://my-marketing-admin.vercel.app';
 
@@ -251,7 +235,51 @@ describe('Admin Authentication, Session Cookies & CORS Security', () => {
       expect(res.headers.get('access-control-allow-credentials')).toBe('true');
     });
 
-    it('does not allow arbitrary unauthorized cross-origin requests', async () => {
+    it('accepts exact known production Render frontend origin with credentials: true', async () => {
+      process.env.NODE_ENV = 'production';
+
+      const res = await app.request('/api/v1/health', {
+        method: 'OPTIONS',
+        headers: {
+          'Origin': 'https://ai-marketing-organization.onrender.com',
+          'Access-Control-Request-Method': 'GET'
+        }
+      });
+
+      expect(res.headers.get('access-control-allow-origin')).toBe('https://ai-marketing-organization.onrender.com');
+      expect(res.headers.get('access-control-allow-origin')).not.toBe('*');
+      expect(res.headers.get('access-control-allow-credentials')).toBe('true');
+    });
+
+    it('rejects malicious origin containing legitimate hostname as substring (suffix attack)', async () => {
+      process.env.NODE_ENV = 'production';
+
+      const res = await app.request('/api/v1/health', {
+        method: 'OPTIONS',
+        headers: {
+          'Origin': 'https://ai-marketing-organization.onrender.com.evil-attacker.com',
+          'Access-Control-Request-Method': 'GET'
+        }
+      });
+
+      expect(res.headers.get('access-control-allow-origin')).toBeNull();
+    });
+
+    it('rejects malicious origin containing legitimate hostname as substring (prefix attack)', async () => {
+      process.env.NODE_ENV = 'production';
+
+      const res = await app.request('/api/v1/health', {
+        method: 'OPTIONS',
+        headers: {
+          'Origin': 'https://attacker-ai-marketing-organization.onrender.com',
+          'Access-Control-Request-Method': 'GET'
+        }
+      });
+
+      expect(res.headers.get('access-control-allow-origin')).toBeNull();
+    });
+
+    it('rejects unknown origins in production', async () => {
       process.env.NODE_ENV = 'production';
       delete process.env.FRONTEND_ORIGIN;
 
@@ -263,8 +291,23 @@ describe('Admin Authentication, Session Cookies & CORS Security', () => {
         }
       });
 
-      // Must not grant allow-origin to untrusted origins
       expect(res.headers.get('access-control-allow-origin')).toBeNull();
+    });
+
+    it('preserves credentialed CORS on actual requests for legitimate frontend origin', async () => {
+      process.env.NODE_ENV = 'production';
+
+      const res = await app.request('/api/v1/health', {
+        method: 'GET',
+        headers: {
+          'Origin': 'https://ai-marketing-organization.onrender.com'
+        }
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get('access-control-allow-origin')).toBe('https://ai-marketing-organization.onrender.com');
+      expect(res.headers.get('access-control-allow-origin')).not.toBe('*');
+      expect(res.headers.get('access-control-allow-credentials')).toBe('true');
     });
   });
 

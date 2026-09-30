@@ -25,7 +25,7 @@ try {
 
 const app = new Hono();
 
-// Enable credentialed CORS with explicit allowlisted origins (no wildcard with credentials)
+// Enable credentialed CORS with strict exact-match allowlisted origins (no wildcard, no loose substring matching)
 app.use('*', cors({
   origin: (requestOrigin, c) => {
     if (!requestOrigin) return null;
@@ -40,32 +40,25 @@ app.use('*', cors({
       return requestOrigin;
     }
 
-    // 2. Production Render default domain
+    // 2. Exact known production Render frontend origin
     if (requestOrigin === 'https://ai-marketing-organization.onrender.com') {
       return requestOrigin;
     }
 
-    // 3. Local development origins in non-production
+    // 3. Local development origins strictly allowed only in non-production
     if (process.env.NODE_ENV !== 'production') {
-      if (
-        requestOrigin.startsWith('http://localhost:') ||
-        requestOrigin.startsWith('http://127.0.0.1:') ||
-        requestOrigin === 'http://localhost' ||
-        requestOrigin === 'http://127.0.0.1'
-      ) {
-        return requestOrigin;
-      }
+      try {
+        const parsed = new URL(requestOrigin);
+        if (
+          (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
+          (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1')
+        ) {
+          return requestOrigin;
+        }
+      } catch {}
     }
 
-    // 4. Same-host or matching host header
-    const host = c.req.header('host');
-    if (host) {
-      const hostWithoutPort = host.split(':')[0];
-      if (requestOrigin.includes(hostWithoutPort)) {
-        return requestOrigin;
-      }
-    }
-
+    // Strictly reject all other origins — never dynamically trust substring matches or host headers
     return null;
   },
   credentials: true,
