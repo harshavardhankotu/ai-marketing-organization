@@ -149,10 +149,27 @@ async function run() {
   if (postLogoutBizRes.status !== 401) throw new Error(`Expected 401 after logout, got ${postLogoutBizRes.status}`);
   console.log('');
 
-  // Step 12: Verify Public Endpoint works without login
-  console.log('12. Verifying public funnel endpoint accessibility without authentication...');
-  const publicRes = await fetch(`${BASE_URL}/api/v1/health`);
-  console.log(`   HTTP ${publicRes.status} (Public /health accessible without login)`);
+  // Step 12: Verify Real Public Funnel works without authentication
+  console.log('12. Verifying real public acquisition funnel without authentication...');
+  const funnelUrl = `${BASE_URL}/api/v1/public/funnel/smilekraft-dental-clinic/main`;
+  const funnelRes = await fetch(funnelUrl);
+  const funnelJson = await funnelRes.json();
+  console.log(`   GET /api/v1/public/funnel/smilekraft-dental-clinic/main -> HTTP ${funnelRes.status}`);
+  console.log(`   Business: ${funnelJson?.data?.business?.name} (${funnelJson?.data?.business?.city})`);
+  console.log(`   Funnel: ${funnelJson?.data?.funnel?.headline}`);
+  console.log(`   Offers count: ${funnelJson?.data?.offers?.length || 0}`);
+  if (funnelRes.status !== 200 || !funnelJson?.success || !funnelJson?.data?.funnel) {
+    throw new Error(`Real public funnel verification failed with status ${funnelRes.status}`);
+  }
+
+  // Also verify alternate configured funnel and availability
+  const makeoverRes = await fetch(`${BASE_URL}/api/v1/public/funnel/smilekraft-dental-clinic/smile-makeover`);
+  if (makeoverRes.status !== 200) throw new Error(`Makeover funnel failed: ${makeoverRes.status}`);
+  console.log(`   GET /api/v1/public/funnel/smilekraft-dental-clinic/smile-makeover -> HTTP ${makeoverRes.status}`);
+
+  const availRes = await fetch(`${BASE_URL}/api/v1/public/availability?businessSlug=smilekraft-dental-clinic`);
+  if (availRes.status !== 200) throw new Error(`Availability check failed: ${availRes.status}`);
+  console.log(`   GET /api/v1/public/availability?businessSlug=smilekraft-dental-clinic -> HTTP ${availRes.status}`);
 
   console.log('\n====================================================');
   console.log('ALL LIVE PRODUCTION CHECKS COMPLETED AND PASSED!');
