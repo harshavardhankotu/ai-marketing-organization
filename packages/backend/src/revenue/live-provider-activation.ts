@@ -260,7 +260,16 @@ export class LiveProviderActivation {
 
       case 'OUTBOUND_EMAIL': {
         const key = process.env.SENDGRID_API_KEY;
-        const hasCreds = Boolean(key && !isPlaceholderCredential(key));
+        const sender = process.env.PLATFORM_SENDER_EMAIL || process.env.EMAIL_FROM_ADDRESS || process.env.SENDER_EMAIL;
+        const hasKey = Boolean(key && !isPlaceholderCredential(key));
+        const hasSender = Boolean(sender && !isPlaceholderCredential(sender) && !sender.includes('smilekraft.in'));
+        const hasCreds = hasKey && hasSender;
+        let failureReason: string | undefined;
+        if (!hasKey) {
+          failureReason = 'SENDGRID_API_KEY is missing or placeholder';
+        } else if (!hasSender) {
+          failureReason = 'PLATFORM_SENDER_EMAIL or EMAIL_FROM_ADDRESS is missing, placeholder, or invalid';
+        }
         return {
           provider,
           category: 'COMMUNICATION',
@@ -268,8 +277,8 @@ export class LiveProviderActivation {
           isLiveVerified: false,
           lastHealthCheck: now,
           lastVerifiedAt: null,
-          failureReason: hasCreds ? undefined : 'SENDGRID_API_KEY is missing or placeholder',
-          requiredCredentials: ['SENDGRID_API_KEY', 'EMAIL_FROM_ADDRESS']
+          failureReason,
+          requiredCredentials: ['SENDGRID_API_KEY', 'PLATFORM_SENDER_EMAIL or EMAIL_FROM_ADDRESS']
         };
       }
 
@@ -372,7 +381,7 @@ export class LiveProviderActivation {
   private getRequiredCredentials(provider: CommercialProvider): string[] {
     switch (provider) {
       case 'OUTBOUND_WHATSAPP': return ['WHATSAPP_ACCESS_TOKEN', 'WHATSAPP_PHONE_NUMBER_ID'];
-      case 'OUTBOUND_EMAIL': return ['SENDGRID_API_KEY', 'EMAIL_FROM_ADDRESS'];
+      case 'OUTBOUND_EMAIL': return ['SENDGRID_API_KEY', 'PLATFORM_SENDER_EMAIL / EMAIL_FROM_ADDRESS'];
       case 'CALENDAR': return ['GOOGLE_CALENDAR_CREDENTIALS'];
       case 'PAYMENTS': return ['RAZORPAY_KEY_ID', 'RAZORPAY_KEY_SECRET', 'RAZORPAY_WEBHOOK_SECRET'];
       case 'RESEARCH': return ['TAVILY_API_KEY'];

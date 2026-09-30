@@ -460,7 +460,7 @@ export class EmailAdapter implements IChannelAdapter {
       }
 
       // Platform email sender identity
-      let senderEmail = process.env.PLATFORM_SENDER_EMAIL || process.env.SENDER_EMAIL;
+      let senderEmail = process.env.PLATFORM_SENDER_EMAIL || process.env.EMAIL_FROM_ADDRESS || process.env.SENDER_EMAIL;
       let senderName = process.env.PLATFORM_SENDER_NAME || 'AI Marketing Organization';
 
       if (isProduction()) {
@@ -473,7 +473,7 @@ export class EmailAdapter implements IChannelAdapter {
             verificationStatus: 'UNVERIFIED',
             actionClassification: 'BLOCKED_AUTHORIZATION',
             publishedAt,
-            message: 'BLOCKED_AUTHORIZATION: PLATFORM_SENDER_EMAIL is required in production and must not use clinic identity.'
+            message: 'BLOCKED_AUTHORIZATION: PLATFORM_SENDER_EMAIL is required in production (or EMAIL_FROM_ADDRESS) and must not use clinic identity.'
           };
         }
       } else {
