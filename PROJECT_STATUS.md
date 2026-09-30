@@ -16,8 +16,8 @@
 
 | Item | Status | Last Verified Date | Proving Command / Live Endpoint | Evidence & Notes |
 | :--- | :---: | :---: | :--- | :--- |
-| **Local Repository HEAD** | **PASS** | 2026-09-30 | `git rev-parse HEAD` | Commit SHA: `9d8baab`<br>Branch: `main` |
-| **Deployed Production Commit (Render)** | **PASS** | 2026-09-30 | Render API `GET /v1/services/.../deploys` | Last Deployed Commit SHA: `abf879f`<br>Status: Running `abf879f` on Render (pending new deploy of `9d8baab` latest hardening) |
+| **Local Repository HEAD** | **PASS** | 2026-09-30 | `git rev-parse HEAD` | Commit SHA: `fd1ab33`<br>Branch: `main` |
+| **Deployed Production Commit (Render)** | **PASS** | 2026-09-30 | Render API `GET /v1/services/.../deploys` | Last Deployed Commit SHA: `abf879f`<br>Status: Running `abf879f` on Render (pending new deploy of `fd1ab33` latest hardening) |
 | **Render Web Service (Live HTTP)** | **NOT_VERIFIED** | — | `GET https://ai-marketing-organization.onrender.com/api/v1/health` | Remote HTTP reachability unverified from current local agent environment. |
 | **Production Runtime Secrets** | **PASS** | 2026-09-30 | Render REST API `GET /v1/services/{id}/env-vars` | `CRON_PING_SECRET`: **CONFIGURED**<br>`OWNER_API_KEY`: **CONFIGURED**<br>`GEMINI_API_KEY`: **CONFIGURED**<br>`TAVILY_API_KEY`: **CONFIGURED** |
 | **Cloudflare Worker (Live HTTP)** | **NOT_VERIFIED** | — | `GET https://ai-marketing-cron-worker.vardhankotu.workers.dev/health` | Remote HTTP reachability unverified from current local agent environment. |
