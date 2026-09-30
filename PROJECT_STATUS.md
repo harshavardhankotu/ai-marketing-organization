@@ -16,8 +16,8 @@
 
 | Item | Status | Last Verified Date | Proving Command / Live Endpoint | Evidence & Notes |
 | :--- | :---: | :---: | :--- | :--- |
-| **Local Repository HEAD** | **PASS** | 2026-09-30 | `git rev-parse HEAD` | Current Branch: `main` |
-| **Deployed Production Commit (Render)** | **PASS** | 2026-09-30 | Render API `GET /v1/services/srv-darecoc9v7es73ea8t2g/deploys` | Active Deploy ID: `dep-dauhho60tbcc7395omlg`<br>Deployed Commit SHA: `3dfb191294c5fcdbcfeff7077f65b06a444d8d6a`<br>Status: `live`<br>Finished: `2026-09-30T14:13:35.372Z` |
+| **Local Repository HEAD** | **PASS** | 2026-09-30 | `git rev-parse HEAD` | Commit SHA: `307d88c`<br>Branch: `main` |
+| **Deployed Production Commit (Render)** | **PASS** | 2026-09-30 | Render API `GET /v1/services/srv-darecoc9v7es73ea8t2g/deploys` | Active Deploy ID: `dep-dauhpcs9v7es73bm1l20`<br>Deployed Commit SHA: `307d88c0419b0963f00aefb480772cd2e93fb264`<br>Status: `live`<br>Finished: `2026-09-30T14:30:06.406Z` |
 | **Render Web Service (Live HTTP)** | **PASS** | 2026-09-30 | `GET https://ai-marketing-organization.onrender.com/api/v1/health` | HTTP 200 OK<br>`{"status":"healthy","timestamp":"2026-09-30T14:26:49.741Z","version":"1.0.0","service":"AI Marketing Organization Engine"}` |
 | **Public Demand Funnel (Live HTTP)** | **PASS** | 2026-09-30 | `GET https://ai-marketing-organization.onrender.com/api/v1/public/funnel/smilekraft-dental-clinic/main` | HTTP 200 OK without authentication.<br>Real business (`SmileKraft Dental Clinic Hyderabad`), active funnel (`fnl_smilekraft_main`), and verified customer offers (`Invisible Clear Aligners & Orthodontics`) returned.<br>Alternate funnel (`smile-makeover`) and `/public/availability` verified. |
 | **Production Runtime Secrets** | **PASS** | 2026-09-30 | Render REST API `GET /v1/services/{id}/env-vars` | `CRON_PING_SECRET`: **CONFIGURED**<br>`OWNER_API_KEY`: **CONFIGURED**<br>`GEMINI_API_KEY`: **CONFIGURED**<br>`TAVILY_API_KEY`: **CONFIGURED** |
