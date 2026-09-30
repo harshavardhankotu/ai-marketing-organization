@@ -16,13 +16,13 @@
 
 | Item | Status | Last Verified Date | Proving Command / Live Endpoint | Evidence & Notes |
 | :--- | :---: | :---: | :--- | :--- |
-| **Local Repository HEAD** | **PASS** | 2026-09-30 | `git rev-parse HEAD` | Commit SHA: `307d88c`<br>Branch: `main` |
-| **Deployed Production Commit (Render)** | **PASS** | 2026-09-30 | Render API `GET /v1/services/srv-darecoc9v7es73ea8t2g/deploys` | Active Deploy ID: `dep-dauhpcs9v7es73bm1l20`<br>Deployed Commit SHA: `307d88c0419b0963f00aefb480772cd2e93fb264`<br>Status: `live`<br>Finished: `2026-09-30T14:30:06.406Z` |
-| **Render Web Service (Live HTTP)** | **PASS** | 2026-09-30 | `GET https://ai-marketing-organization.onrender.com/api/v1/health` | HTTP 200 OK<br>`{"status":"healthy","timestamp":"2026-09-30T14:26:49.741Z","version":"1.0.0","service":"AI Marketing Organization Engine"}` |
+| **Local Repository HEAD** | **PASS** | 2026-09-30 | `git rev-parse HEAD` | Commit SHA: `a1cb55b`<br>Branch: `main` |
+| **Deployed Production Commit (Render)** | **PASS** | 2026-09-30 | Render API `GET /v1/services/srv-darecoc9v7es73ea8t2g/deploys` | Active Deploy ID: `dep-dauiopff3r2c73fv03n0`<br>Deployed Commit SHA: `a1cb55b`<br>Status: `live`<br>Finished: `2026-09-30T15:37:05.632Z` |
+| **Render Web Service (Live HTTP)** | **PASS** | 2026-09-30 | `GET https://ai-marketing-organization.onrender.com/api/v1/health` | HTTP 200 OK<br>`{"status":"healthy","timestamp":"2026-09-30T15:37:47.037Z","version":"1.0.0","service":"AI Marketing Organization Engine"}` |
 | **Public Demand Funnel (Live HTTP)** | **PASS** | 2026-09-30 | `GET https://ai-marketing-organization.onrender.com/api/v1/public/funnel/smilekraft-dental-clinic/main` | HTTP 200 OK without authentication.<br>Real business (`SmileKraft Dental Clinic Hyderabad`), active funnel (`fnl_smilekraft_main`), and verified customer offers (`Invisible Clear Aligners & Orthodontics`) returned.<br>Alternate funnel (`smile-makeover`) and `/public/availability` verified. |
 | **Production Runtime Secrets** | **PASS** | 2026-09-30 | Render REST API `GET /v1/services/{id}/env-vars` | `CRON_PING_SECRET`: **CONFIGURED**<br>`OWNER_API_KEY`: **CONFIGURED**<br>`GEMINI_API_KEY`: **CONFIGURED**<br>`TAVILY_API_KEY`: **CONFIGURED** |
 | **Cloudflare Worker (Live HTTP)** | **NOT_VERIFIED** | — | `GET https://ai-marketing-cron-worker.vardhankotu.workers.dev/health` | Remote HTTP reachability unverified from current local agent environment. |
-| **Cloudflare D1 Database** | **PASS** | 2026-09-30 | Cloudflare D1 HTTP API & Backend D1Client | Remote database configured.<br>Migrations: `0001` through `0006` in source and build.<br>All critical tables tracked via `D1_REVENUE_CRITICAL_TABLES` (including `idempotent_actions` and `funnels`). |
+| **Cloudflare D1 Database** | **PASS** | 2026-09-30 | Cloudflare D1 HTTP API & Backend D1Client | Remote database configured.<br>Migrations: `0001` through `0007` applied and recorded.<br>All critical tables tracked via `D1_REVENUE_CRITICAL_TABLES` (including `idempotent_actions`, `platform_prospects`, `opportunities`, `sales_pipeline`, `outbound_contacts`, `commercial_evidence`). |
 | **Authenticated System Readiness (Live)** | **PASS** | 2026-09-30 | `GET /api/v1/system/readiness` | HTTP 200 OK with authenticated `owner_session` cookie.<br>Unauthenticated request strictly fail-closed with HTTP 401. |
 | **Test Suite & Build** | **PASS** | 2026-09-30 | `npm run build && npm run typecheck && npm test` | Build exit code: `0` (monorepo root covers `shared`, `backend`, `frontend`, `cloudflare-worker`)<br>Typecheck exit code: `0` across all 4 packages<br>Test files: `46 passed (46)`<br>Tests: `445 passed (445)`<br>Failed: `0` |
 
@@ -34,12 +34,12 @@
 
 | Stage | Status | First Real Date | Current Evidence & Ground Truth |
 | :--- | :---: | :---: | :--- |
-| **Real Prospect Discovered** | **NOT_VERIFIED** | — | Zero prospects scraped, queued, or stored. |
-| **Real Outbound Contact** | **NOT_VERIFIED** | — | No emails or WhatsApp messages dispatched. |
-| **Real Prospect Inbound Response** | **NOT_VERIFIED** | — | Zero external customer responses. |
-| **Real Commercial Proposal** | **NOT_VERIFIED** | — | Zero commercial proposals generated or sent. |
-| **Real Razorpay Payment** | **NOT_VERIFIED** | — | Zero payment links paid, zero transactions captured. |
-| **Verified Real Revenue** | **NOT_VERIFIED** | — | `realRevenueINR = 0` (Zero synthetic transactions permitted). |
+| **Real Prospect Discovered** | **PASS** | 2026-09-30 | Live Tavily research executed during ARO cycle `cycle_1790782691968` for `biz_platform_aro`. Real Indian practice contact discovered and persisted across all 5 durable D1 tables (`platform_prospects`, `opportunities`, `outbound_contacts`, `commercial_evidence`, `sales_pipeline`). |
+| **Real Outbound Contact** | **BLOCKED_AUTHORIZATION** | — | Zero outbound messages dispatched. Halted safely: live outbound credentials (`SENDGRID_API_KEY` / Meta Cloud WhatsApp) not configured on Render. Cold WhatsApp prohibited without explicit opt-in. |
+| **Real Prospect Inbound Response** | **NOT_VERIFIED** | — | Zero external customer responses (no outbound dispatched). |
+| **Real Commercial Proposal** | **NOT_VERIFIED** | — | Zero commercial proposals dispatched. |
+| **Real Razorpay Payment** | **NOT_CONFIGURED** | — | Zero payment links generated, zero payments captured. Live Razorpay credentials (`RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`) unconfigured on Render. |
+| **Verified Real Revenue** | **VERIFIED_ZERO** | 2026-09-30 | `verifiedRevenueINR = 0` (Confirmed via direct D1 query on `revenue_records` for `biz_platform_aro`). |
 | **Real Paying Customer** | **NOT_VERIFIED** | — | Zero customers active in paid status. |
 | **Real Deliverable Handover** | **NOT_VERIFIED** | — | Zero delivery blueprints executed. |
 | **Real Referral / Retention Loop** | **NOT_VERIFIED** | — | Post-sale expansion loops idle. |
@@ -110,6 +110,14 @@
     - **Non-Production Dev Guard:** Allowed `localhost` and `127.0.0.1` strictly when `process.env.NODE_ENV !== 'production'`.
     - **Fail-Closed CORS Defense:** Unmatched or hostile origins (including prefix/suffix subdomains) receive `access-control-allow-origin: null`, entirely preventing cross-origin browser reads while preserving `credentials: true` for legitimate origins.
     - **Live Deployment & Verification:** Live on Render (`dep-dauhfre0tbcc7395m24g`, commit `2a78a17`). Verified live via OPTIONS preflights and live admin session lifecycle. Monorepo builds clean (exit 0), typechecks clean (0 errors), all 46 test suites (445 tests) passing with 0 failures.
+23. **2026-09-30 — First Real Commercial Run & D1 Schema Alignment (`a1cb55b`):**
+    - **Sender Identity Unification:** Harmonized `PLATFORM_SENDER_EMAIL` and `EMAIL_FROM_ADDRESS` across `EmailAdapter` and `LiveProviderActivation`.
+    - **Async Event Claiming:** Converted synchronous `durable_events` queries in ARO to `DurableEventBus.claimPendingAsync` and `markProcessedAsync`.
+    - **Manual Cycle Discovery Cooldown Bypass:** Enabled `triggerSource: 'MANUAL'` in ARO to bypass discovery cooldown in `NextBestActionEngine.choose`.
+    - **Tavily Research Hardening:** Removed restrictive domain inclusion filters, excluded aggregator directory domains, added regex parsing for Indian business phone numbers and contact emails.
+    - **D1 Schema Alignment:** Created and applied migration `0007_align_prospects_and_opportunities_schema.sql` aligning `platform_prospects` and `opportunities` between Cloudflare D1 and SQLite; updated `persistCandidates` to dual-populate columns.
+    - **First Real Commercial Run Verification:** Executed live `POST /api/v1/workflows/autonomous-cycle` on Render for `biz_platform_aro` with `triggerSource = MANUAL`. Real Indian practice contact discovered and successfully persisted across all 5 durable D1 tables (`platform_prospects`, `opportunities`, `outbound_contacts`, `commercial_evidence`, `sales_pipeline`).
+    - **Fail-Closed Outbound & Payment Defense:** Outbound outreach halted cleanly with `BLOCKED_AUTHORIZATION` due to unconfigured live SendGrid/Meta WhatsApp credentials. Real revenue strictly confirmed as ₹0 via Cloudflare D1 query.
 
 ---
 
