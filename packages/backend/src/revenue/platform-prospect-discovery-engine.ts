@@ -594,20 +594,28 @@ export class PlatformProspectDiscoveryEngine {
         await this.d1Repo.executeWrite(
           'platform_prospects',
           `INSERT INTO platform_prospects (
-            id, prospect_business_name, prospect_owner_name, prospect_email, prospect_phone,
-            prospect_website, prospect_city, prospect_vertical, discovery_source,
-            discovery_evidence_json, audit_score, stage, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0.85, 'DISCOVERED', ?, ?)`,
+            id, business_name, prospect_business_name, vertical, prospect_vertical,
+            city, prospect_city, website_url, prospect_website, phone, prospect_phone,
+            email, prospect_email, source, discovery_source, status, stage, fit_score,
+            audit_score, observed_evidence_json, discovery_evidence_json, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DISCOVERED', 'DISCOVERED', 0.85, 0.85, ?, ?, ?, ?)`,
           [
             prospectId,
             c.businessName,
-            c.contactPerson || null,
-            c.contactEmail || null,
-            c.contactPhone || null,
-            c.websiteUrl,
-            c.city,
+            c.businessName,
             c.vertical,
+            c.vertical,
+            c.city,
+            c.city,
+            c.websiteUrl,
+            c.websiteUrl,
+            c.contactPhone || null,
+            c.contactPhone || null,
+            c.contactEmail || null,
+            c.contactEmail || null,
             source,
+            source,
+            evidenceJson,
             evidenceJson,
             now,
             now
@@ -618,15 +626,17 @@ export class PlatformProspectDiscoveryEngine {
         await this.d1Repo.executeWrite(
           'opportunities',
           `INSERT INTO opportunities (
-            id, business_id, organization_id, prospect_id, source, evidence_json,
-            estimated_value_inr, probability, acquisition_cost_inr, time_to_revenue_days,
-            authorization_requirements_json, risk_level, next_best_action, status, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, 'OUTBOUND_PROSPECT', ?, 15000, 0.20, 0, 7, '[]', 'LOW', 'PURSUE_OPPORTUNITY', 'DISCOVERED', ?, ?)`,
+            id, business_id, organization_id, prospect_id, title, status,
+            estimated_value_inr, confidence_score, source, evidence_json, probability,
+            acquisition_cost_inr, time_to_revenue_days, authorization_requirements_json,
+            risk_level, next_best_action, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, 'DISCOVERED', 15000, 0.20, 'OUTBOUND_PROSPECT', ?, 0.20, 0, 7, '[]', 'LOW', 'PURSUE_OPPORTUNITY', ?, ?)`,
           [
             oppId,
             businessId,
             organizationId,
             prospectId,
+            `PLATFORM_SETUP for ${c.businessName}`,
             evidenceJson,
             now,
             now

@@ -110,6 +110,18 @@ export function getDb(dbPath?: string): Database.Database {
   try {
     db.exec(`ALTER TABLE agent_scorecards ADD COLUMN is_top_performer INTEGER NOT NULL DEFAULT 0`);
   } catch {}
+  try { db.exec(`ALTER TABLE platform_prospects ADD COLUMN business_name TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE platform_prospects ADD COLUMN vertical TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE platform_prospects ADD COLUMN city TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE platform_prospects ADD COLUMN phone TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE platform_prospects ADD COLUMN email TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE platform_prospects ADD COLUMN website_url TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE platform_prospects ADD COLUMN source TEXT DEFAULT 'TAVILY_RESEARCH'`); } catch {}
+  try { db.exec(`ALTER TABLE platform_prospects ADD COLUMN status TEXT DEFAULT 'DISCOVERED'`); } catch {}
+  try { db.exec(`ALTER TABLE platform_prospects ADD COLUMN fit_score REAL DEFAULT 0.85`); } catch {}
+  try { db.exec(`ALTER TABLE platform_prospects ADD COLUMN observed_evidence_json TEXT DEFAULT '{}'`); } catch {}
+  try { db.exec(`ALTER TABLE opportunities ADD COLUMN title TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE opportunities ADD COLUMN confidence_score REAL DEFAULT 0.5`); } catch {}
 
   // Autonomous Revenue Organization — new table migration guards
   // These are safe no-ops if the tables already exist (SCHEMA_SQL handles full creation)

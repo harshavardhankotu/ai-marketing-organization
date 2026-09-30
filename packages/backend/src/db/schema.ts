@@ -1048,10 +1048,12 @@ CREATE TABLE IF NOT EXISTS opportunities (
   business_id TEXT NOT NULL,
   organization_id TEXT NOT NULL,
   prospect_id TEXT, -- explicit lineage to platform_prospects.id
+  title TEXT,
   source TEXT NOT NULL, -- ORGANIC_SEARCH | SOCIAL | REFERRAL | LOCAL_PARTNERSHIP | COMPETITOR_GAP | INBOUND | OUTBOUND_PROSPECT
   evidence_json TEXT NOT NULL DEFAULT '[]', -- array of real-world evidence references (URLs, Tavily results, etc.)
   estimated_value_inr REAL NOT NULL DEFAULT 0,
   probability REAL NOT NULL DEFAULT 0, -- 0-1
+  confidence_score REAL NOT NULL DEFAULT 0.5,
   acquisition_cost_inr REAL NOT NULL DEFAULT 0,
   time_to_revenue_days INTEGER NOT NULL DEFAULT 30,
   authorization_requirements_json TEXT NOT NULL DEFAULT '[]',
@@ -1155,16 +1157,26 @@ CREATE INDEX IF NOT EXISTS idx_events_biz ON durable_events(business_id);
 -- 55. Platform Prospects (the platform's own outbound self-sales pipeline)
 CREATE TABLE IF NOT EXISTS platform_prospects (
   id TEXT PRIMARY KEY,
+  business_name TEXT,
   prospect_business_name TEXT NOT NULL,
   prospect_owner_name TEXT,
+  email TEXT,
   prospect_email TEXT,
+  phone TEXT,
   prospect_phone TEXT,
+  website_url TEXT,
   prospect_website TEXT,
+  city TEXT,
   prospect_city TEXT NOT NULL,
+  vertical TEXT,
   prospect_vertical TEXT NOT NULL, -- dental | salon | clinic | tuition | fitness | legal | home_services
+  source TEXT DEFAULT 'TAVILY_RESEARCH',
   discovery_source TEXT NOT NULL DEFAULT 'TAVILY_RESEARCH',
   discovery_evidence_json TEXT NOT NULL DEFAULT '{}',
+  observed_evidence_json TEXT NOT NULL DEFAULT '{}',
+  fit_score REAL DEFAULT 0.85,
   audit_score REAL, -- estimated opportunity value if we onboard them
+  status TEXT DEFAULT 'DISCOVERED',
   stage TEXT NOT NULL DEFAULT 'DISCOVERED',
   -- DISCOVERED | AUDITED | CONTACTED | REPLIED | DEMO_DONE | PROPOSAL_SENT | PAID | LOST
   is_opted_out INTEGER NOT NULL DEFAULT 0,
