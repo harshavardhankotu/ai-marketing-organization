@@ -294,7 +294,9 @@ export class AutonomousRevenueOrchestrator {
       // ──────────────────────────────────────────────────────────────────
       // SPEC § 25 & 28: SELECT NEXT BEST ACTION (Deterministic priority order)
       // ──────────────────────────────────────────────────────────────────
-      const nextBestAction = this.nbaEngine.choose(businessId, organizationId);
+      const nextBestAction = this.nbaEngine.choose(businessId, organizationId, {
+        ignoreCooldown: triggerSource === 'MANUAL'
+      });
       console.log(`[ARO] Best action: ${nextBestAction.actionType} (target: ${nextBestAction.targetId}, score: ${nextBestAction.score.toFixed(2)})`);
 
       // ──────────────────────────────────────────────────────────────────
@@ -308,7 +310,7 @@ export class AutonomousRevenueOrchestrator {
       } else {
         const cooldown = ActionCooldownManager.check(nextBestAction.targetId, nextBestAction.actionType);
 
-        if (!cooldown.eligible) {
+        if (!cooldown.eligible && triggerSource !== 'MANUAL') {
           actionExecutionStatus = 'COOLDOWN_ACTIVE';
           actionClassification = 'INTERNAL_AUTOMATION';
           console.log(`[ARO] Action ${nextBestAction.actionType} is on cooldown: ${cooldown.reason}. Skipping execution.`);

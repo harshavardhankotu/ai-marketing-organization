@@ -86,14 +86,14 @@ export class NextBestActionEngine {
    *   7. Prospect discovery -> DISCOVER_PROSPECTS
    *   8. IDLE
    */
-  public choose(businessId: string, organizationId: string): NextBestAction {
+  public choose(businessId: string, organizationId: string, options?: { ignoreCooldown?: boolean }): NextBestAction {
     const candidates: NextBestAction[] = [];
 
     // Priority 1 (P0): Paid customers who need onboarding
     const pendingOnboarding = this.getPendingOnboardingCustomers(businessId);
     for (const cust of pendingOnboarding) {
       const cooldown = ActionCooldownManager.check(cust.id, 'ONBOARD_CUSTOMER');
-      if (cooldown.eligible) {
+      if (cooldown.eligible || options?.ignoreCooldown) {
         const estRev = cust.total_lifetime_value_inr || 15000;
         candidates.push({
           actionType: 'ONBOARD_CUSTOMER',
@@ -126,7 +126,7 @@ export class NextBestActionEngine {
     const unpaidRequests = this.getUnpaidPaymentRequests(businessId);
     for (const req of unpaidRequests) {
       const cooldown = ActionCooldownManager.check(req.id, 'COLLECT_PAYMENT');
-      if (cooldown.eligible) {
+      if (cooldown.eligible || options?.ignoreCooldown) {
         candidates.push(this.buildCollectPaymentAction(req));
       }
     }
@@ -135,7 +135,7 @@ export class NextBestActionEngine {
     const overduePipeline = this.getOverduePipelineItems(businessId);
     for (const item of overduePipeline) {
       const cooldown = ActionCooldownManager.check(item.id, 'FOLLOW_UP_LEAD');
-      if (cooldown.eligible) {
+      if (cooldown.eligible || options?.ignoreCooldown) {
         candidates.push(this.buildFollowUpAction(item));
       }
     }
@@ -144,7 +144,7 @@ export class NextBestActionEngine {
     const opportunities = this.oppEngine.scoreAndRank(businessId);
     for (const opp of opportunities.slice(0, 10)) {
       const cooldown = ActionCooldownManager.check(opp.id, 'PURSUE_OPPORTUNITY');
-      if (cooldown.eligible) {
+      if (cooldown.eligible || options?.ignoreCooldown) {
         candidates.push(this.buildOpportunityAction(opp));
       }
     }
@@ -153,7 +153,7 @@ export class NextBestActionEngine {
     const referralEligible = this.getReferralEligibleCustomers(businessId);
     for (const cust of referralEligible) {
       const cooldown = ActionCooldownManager.check(cust.id, 'REQUEST_REFERRAL');
-      if (cooldown.eligible) {
+      if (cooldown.eligible || options?.ignoreCooldown) {
         const estRev = 5000;
         const prob = 0.3;
         const timeDays = 14;
@@ -196,7 +196,7 @@ export class NextBestActionEngine {
     const activePipelineCount = this.getActivePipelineCount(businessId);
     if (activePipelineCount < 5) {
       const cooldown = ActionCooldownManager.check(businessId, 'DISCOVER_PROSPECTS');
-      if (cooldown.eligible) {
+      if (cooldown.eligible || options?.ignoreCooldown) {
         const estRev = 15000;
         const prob = 0.2;
         const timeDays = 45;
