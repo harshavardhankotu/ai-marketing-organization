@@ -16,16 +16,14 @@
 
 | Item | Status | Last Verified Date | Proving Command / Live Endpoint | Evidence & Notes |
 | :--- | :---: | :---: | :--- | :--- |
-| **Render Web Service** | **PASS** | 2026-09-30 | Render API `GET /v1/services` | Service: `ai-marketing-organization`<br>Service ID: `srv-darecoc9v7es73ea8t2g`<br>Runtime: Docker (`./Dockerfile`, context `.`, Oregon)<br>Deploy ID: `dep-dau46is9v7es73b78b0g` (live) |
-| **Deployed Production Commit** | **PASS** | 2026-09-30 | Render API `GET /v1/services/.../deploys` | Commit SHA: `abf879f`<br>Tracks `main` and `feat/general-purpose-multi-tenant` |
-| **Production Runtime Secrets** | **PASS** | 2026-09-30 | `GET /api/v1/diagnostic/env` | `CRON_PING_SECRET`: **CONFIGURED**<br>`OWNER_API_KEY`: **CONFIGURED**<br>`GEMINI_API_KEY`: **CONFIGURED**<br>`TAVILY_API_KEY`: **CONFIGURED**<br>Directly injected via Render REST API |
-| **Render Health Endpoint** | **PASS** | 2026-09-30 | `GET /api/v1/health` | Returns `HTTP 200 OK`<br>`{"status":"healthy","version":"1.0.0"}` |
-| **Cloudflare Worker** | **PASS** | 2026-09-30 | `GET https://ai-marketing-cron-worker.vardhankotu.workers.dev/health` | Returns `HTTP 200 OK`<br>`{"status":"ok","worker":"ai-marketing-cron-worker"}`<br>Schedule: `0 * * * *` (hourly UTC) |
-| **Cloudflare D1 Database** | **PASS** | 2026-09-30 | Cloudflare D1 HTTP API & Backend D1Client | Database configured & remote connected.<br>Migrations: `0001`, `0002`, `0003`, `0004` applied.<br>All 94 durable tables present in D1 schema (funnels, customer_offers, universal_orders, booking_reservations, availability_slots, fulfillment_tasks). |
-| **Cron Trigger & Ping Route** | **PASS** | 2026-09-30 | `POST /api/v1/cron/ping` | Returns `HTTP 200 OK` when authenticated with `X-Cron-Secret`. Runs async autonomy lock & durable cycle logging cleanly. |
-| **Cron Heartbeat & Telemetry** | **PASS** | 2026-09-30 | `GET /api/v1/cron/status` | Returns `HTTP 200 OK`.<br>Status: **`HEALTHY`**<br>Total Pings: **`16`**<br>Last Observed Ping: `2026-09-29 23:02:40`<br>Last Successful Cycle: `2026-09-29 23:02:46`<br>Cycle Result: `SUCCESS`<br>Worker Source: `node` / `cloudflare-cron-worker` |
-| **Authenticated System Readiness** | **PASS** | 2026-09-30 | `GET /api/v1/system/readiness` | Returns `HTTP 200 OK` when authenticated with `x-api-key: [OWNER_API_KEY]`.<br>12/12 checks passed (`operatingState: 'FIRST_REAL_LEAD'`). |
-| **Test Suite & Build** | **PASS** | 2026-09-30 | `npm run build && npm run typecheck && npm test` | Build exit code: `0` (monorepo root covers `shared`, `backend`, `frontend`, `cloudflare-worker`)<br>Typecheck exit code: `0` across all 4 packages<br>Test files: `45 passed (45)`<br>Tests: `425 passed (425)`<br>Failed: `0` |
+| **Local Repository HEAD** | **PASS** | 2026-09-30 | `git rev-parse HEAD` | Commit SHA: `9d8baab`<br>Branch: `main` |
+| **Deployed Production Commit (Render)** | **PASS** | 2026-09-30 | Render API `GET /v1/services/.../deploys` | Last Deployed Commit SHA: `abf879f`<br>Status: Running `abf879f` on Render (pending new deploy of `9d8baab` latest hardening) |
+| **Render Web Service (Live HTTP)** | **NOT_VERIFIED** | — | `GET https://ai-marketing-organization.onrender.com/api/v1/health` | Remote HTTP reachability unverified from current local agent environment. |
+| **Production Runtime Secrets** | **PASS** | 2026-09-30 | Render REST API `GET /v1/services/{id}/env-vars` | `CRON_PING_SECRET`: **CONFIGURED**<br>`OWNER_API_KEY`: **CONFIGURED**<br>`GEMINI_API_KEY`: **CONFIGURED**<br>`TAVILY_API_KEY`: **CONFIGURED** |
+| **Cloudflare Worker (Live HTTP)** | **NOT_VERIFIED** | — | `GET https://ai-marketing-cron-worker.vardhankotu.workers.dev/health` | Remote HTTP reachability unverified from current local agent environment. |
+| **Cloudflare D1 Database** | **PASS** | 2026-09-30 | Cloudflare D1 HTTP API & Backend D1Client | Remote database configured.<br>Migrations: `0001` through `0005` in source and build.<br>All critical tables tracked via `D1_REVENUE_CRITICAL_TABLES` (including `idempotent_actions`). |
+| **Authenticated System Readiness (Live)** | **NOT_VERIFIED** | — | `GET /api/v1/system/readiness` | Remote HTTP reachability unverified from current local agent environment. |
+| **Test Suite & Build** | **PASS** | 2026-09-30 | `npm run build && npm run typecheck && npm test` | Build exit code: `0` (monorepo root covers `shared`, `backend`, `frontend`, `cloudflare-worker`)<br>Typecheck exit code: `0` across all 4 packages<br>Test files: `45 passed (45)`<br>Tests: `426 passed (426)`<br>Failed: `0` |
 
 ---
 
@@ -93,6 +91,12 @@
     - **Recoverable Payment Order Failure State:** Added `PROVIDER_CREATED_D1_UPDATE_FAILED` state if an external payment provider order is generated but D1 status update encounters a persistence error.
     - **D1 Migration 0005:** Created `0005_revenue_neutrality_and_tenancy.sql` adding `amount_minor` to `revenue_records`, `offer_title`/`recovery_state`/`failure_reason` to `universal_orders`, and `integration_phone_mappings`.
     - **Test Coverage:** All 45 test suites (425 tests) passing with zero failures. Monorepo build and typecheck clean across all 4 packages.
+20. **2026-09-30 — Single-Owner INR & Razorpay Hardening (Items 1–3, 5):**
+    - **Payment Provider Not Browser-Controlled:** Removed `body.paymentProvider` entirely from order creation. Orders are routed server-authoritatively (Razorpay for INR business operations) without client influence.
+    - **Zero Fire-and-Forget D1 Writes in Payment Path:** Eliminated fabricated `{ changes: 1 }` and unawaited `.catch()` promises from `RazorpayAdapter` and `RevenueReconciliationEngine`. All writes in `createPaymentOrder`, `createPaymentLink`, `confirmClientPayment`, `confirmManualUpiClaim`, and `processWebhook` are strictly awaited via `d1Repo.executeWrite`. Synchronous unawaited writes throw immediate violations in production.
+    - **Atomic Webhook Idempotency:** Replaced check-then-insert pattern with atomic unique-constraint insertion into `idempotent_actions` table first. Duplicate or concurrent webhooks conflict on `idempotency_key` PRIMARY KEY, stop processing immediately, and return idempotent cached response without duplicate transactions.
+    - **PROJECT_STATUS.md Ground Truth:** Reconciled real repository commit vs deployed Render commit (`abf879f`), marked remote HTTP endpoints unverified from local environment as `NOT_VERIFIED`.
+    - **Verification Results:** All 45 test files passed (426 tests passed, 0 failed). Monorepo typecheck and build passed with exit code 0 across all 4 workspaces (`shared`, `backend`, `frontend`, `cloudflare-worker`).
 
 ---
 

@@ -218,6 +218,59 @@ describe('Razorpay Automated Payment Gateway & DPDP Compliance Suite', () => {
       expect(txCount.cnt).toBe(1); // Exactly 1 ledger entry
     });
 
+    it('enforces atomic webhook idempotency via unique constraint on idempotent_actions', async () => {
+      const db = getDb();
+      const orderId = 'order_atomic_idem_01';
+      db.prepare(`
+        INSERT OR REPLACE INTO payment_orders (
+          id, business_id, order_id, amount_inr, currency, status, receipt, created_at, updated_at
+        ) VALUES ('pord_atom_01', ?, ?, 5000, 'INR', 'CREATED', 'rcpt_atom_01', datetime('now'), datetime('now'))
+      `).run(businessId, orderId);
+
+      const paymentId = 'pay_atomic_idem_999';
+      const eventPayload = {
+        id: 'evt_atomic_unique_999',
+        event: 'payment.captured',
+        payload: {
+          payment: {
+            entity: {
+              id: paymentId,
+              amount: 500000,
+              currency: 'INR',
+              status: 'captured',
+              order_id: orderId,
+              method: 'upi',
+              notes: {
+                business_id: businessId,
+                invoice_number: 'INV-ATOM-001'
+              }
+            }
+          }
+        }
+      };
+
+      const rawBody = JSON.stringify(eventPayload);
+      const signature = createHmac('sha256', testSecret).update(rawBody).digest('hex');
+
+      // First delivery: successfully inserts into idempotent_actions and processes
+      const first = await adapter.processWebhook({ rawBody, signature, event: eventPayload, overrideSecret: testSecret });
+      expect(first.processed).toBe(true);
+
+      // Verify idempotent_actions table has recorded this event atomically
+      const actionRow = db.prepare("SELECT * FROM idempotent_actions WHERE idempotency_key = 'evt_atomic_unique_999'").get() as any;
+      expect(actionRow).toBeTruthy();
+      expect(actionRow.status).toBe('EXECUTED');
+
+      // Concurrent / replayed delivery: unique constraint conflicts atomically and stops processing
+      const second = await adapter.processWebhook({ rawBody, signature, event: eventPayload, overrideSecret: testSecret });
+      expect(second.processed).toBe(true);
+      expect(second.reason).toContain('already processed');
+
+      // Transactions row count is strictly 1
+      const txCount = db.prepare("SELECT COUNT(*) as cnt FROM transactions WHERE transaction_ref = ?").get(paymentId) as any;
+      expect(txCount.cnt).toBe(1);
+    });
+
     it('creates payment order, verifies checkout signature, and confirms patient deposit', async () => {
       const order = await adapter.createPaymentOrder({
         businessId,

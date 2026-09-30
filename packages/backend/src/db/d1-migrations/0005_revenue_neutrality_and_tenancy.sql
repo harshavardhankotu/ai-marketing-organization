@@ -22,3 +22,15 @@ CREATE TABLE IF NOT EXISTS integration_phone_mappings (
   UNIQUE(provider, external_phone_number_id)
 );
 CREATE INDEX IF NOT EXISTS idx_phone_map_provider ON integration_phone_mappings(provider, external_phone_number_id);
+
+-- 4. Idempotent Actions Table for Atomic Webhook & Outbound Deduplication
+CREATE TABLE IF NOT EXISTS idempotent_actions (
+  idempotency_key TEXT PRIMARY KEY,
+  action_type TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  tenant_id TEXT NOT NULL,
+  executed_at TEXT NOT NULL DEFAULT (datetime('now')),
+  status TEXT NOT NULL DEFAULT 'EXECUTED',
+  result_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_idempotent_actions_target ON idempotent_actions(target_id);

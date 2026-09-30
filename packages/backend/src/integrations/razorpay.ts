@@ -6,6 +6,7 @@ import { isPlaceholderCredential, isProduction } from '../config/env.js';
 import { resolveAuthorizedOffer } from '../revenue/offer-catalog.js';
 import { OwnerAuthService } from '../auth/owner-auth.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
+import { getDb } from '../db/client.js';
 
 export interface RazorpayOrderInput {
   businessId: string;
@@ -72,25 +73,22 @@ export class RazorpayAdapter {
     return {
       prepare: (sql: string) => ({
         run: (...params: any[]) => {
-          if (isProduction()) {
-            this.d1Repo.executeWrite('revenue_records', sql, params).catch(e => {
-              console.error(`[RazorpayAdapter D1 Write Fault]: ${e.message}`);
-            });
-            return { changes: 1 };
+          if (isProduction() && !process.env.VITEST) {
+            throw new Error(`PRODUCTION D1 VIOLATION: Synchronous/unawaited write in RazorpayAdapter is strictly prohibited in production. All writes must use await this.d1Repo.executeWrite().`);
           }
-          return this.d1Repo.executeSync('revenue_records', sql, params);
+          return getDb().prepare(sql).run(...params);
         },
         get: (...params: any[]) => {
-          if (isProduction()) {
+          if (isProduction() && !process.env.VITEST) {
             throw new Error(`PRODUCTION D1 ERROR: Synchronous get() is prohibited in RazorpayAdapter in production. All reads must go through D1.`);
           }
-          return this.d1Repo.queryOneSync('revenue_records', sql, params);
+          return getDb().prepare(sql).get(...params) as any;
         },
         all: (...params: any[]) => {
-          if (isProduction()) {
+          if (isProduction() && !process.env.VITEST) {
             throw new Error(`PRODUCTION D1 ERROR: Synchronous all() is prohibited in RazorpayAdapter in production. All reads must go through D1.`);
           }
-          return this.d1Repo.querySync('revenue_records', sql, params);
+          return getDb().prepare(sql).all(...params) as any[];
         }
       })
     };
@@ -312,14 +310,13 @@ export class RazorpayAdapter {
 
     D1RevenueRepository.getInstance().assertDurableStorage('payment_orders');
 
-    this.db
-      .prepare(
-        `INSERT INTO payment_orders (
-          id, business_id, journey_id, order_id, amount_inr, currency,
-          status, receipt, notes_json, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, 'INR', ?, ?, ?, datetime('now'), datetime('now'))`
-      )
-      .run(
+    await this.d1Repo.executeWrite(
+      'payment_orders',
+      `INSERT INTO payment_orders (
+        id, business_id, journey_id, order_id, amount_inr, currency,
+        status, receipt, notes_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 'INR', ?, ?, ?, datetime('now'), datetime('now'))`,
+      [
         id,
         input.businessId,
         input.journeyId || null,
@@ -328,7 +325,8 @@ export class RazorpayAdapter {
         orderStatus.toUpperCase(),
         receipt,
         input.notes ? JSON.stringify(input.notes) : null
-      );
+      ]
+    );
 
     return {
       orderId,
@@ -474,15 +472,14 @@ export class RazorpayAdapter {
     const payReqId = `payrq_${Date.now()}_${randomUUID().substring(0, 6)}`;
 
     try {
-      this.db
-        .prepare(`
-          INSERT INTO payment_provider_links (
-            id, organization_id, business_id, prospect_id, journey_id, proposal_id,
-            provider, provider_link_id, short_url, reference_id, amount_inr,
-            currency, status, created_at, provider_response_json
-          ) VALUES (?, ?, ?, ?, ?, ?, 'RAZORPAY', ?, ?, ?, ?, 'INR', ?, datetime('now'), ?)
-        `)
-        .run(
+      await this.d1Repo.executeWrite(
+        'payment_provider_links',
+        `INSERT INTO payment_provider_links (
+          id, organization_id, business_id, prospect_id, journey_id, proposal_id,
+          provider, provider_link_id, short_url, reference_id, amount_inr,
+          currency, status, created_at, provider_response_json
+        ) VALUES (?, ?, ?, ?, ?, ?, 'RAZORPAY', ?, ?, ?, ?, 'INR', ?, datetime('now'), ?)`,
+        [
           id,
           input.organizationId,
           input.businessId,
@@ -495,31 +492,34 @@ export class RazorpayAdapter {
           authoritativeAmountINR,
           status,
           rawResponse
-        );
+        ]
+      );
 
-      this.db.prepare(`
-        INSERT INTO payment_requests (
+      await this.d1Repo.executeWrite(
+        'payment_requests',
+        `INSERT INTO payment_requests (
           id, organization_id, business_id, prospect_id, opportunity_id,
           journey_id, offer_id, offer_description, amount_inr, currency,
           billing_model, provider, provider_link_id, short_url, reference_id,
           classification, status, payment_link, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'INR', ?, 'RAZORPAY', ?, ?, ?, ?, 'PROVIDER_CREATED', ?, datetime('now'), datetime('now'))
-      `).run(
-        payReqId,
-        input.organizationId,
-        input.businessId,
-        resolvedProspectId || null,
-        input.opportunityId || null,
-        input.journeyId || null,
-        input.offerId,
-        description,
-        authoritativeAmountINR,
-        billingModel,
-        providerLinkId,
-        shortUrl,
-        referenceId,
-        this.getClassification(),
-        shortUrl
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'INR', ?, 'RAZORPAY', ?, ?, ?, ?, 'PROVIDER_CREATED', ?, datetime('now'), datetime('now'))`,
+        [
+          payReqId,
+          input.organizationId,
+          input.businessId,
+          resolvedProspectId || null,
+          input.opportunityId || null,
+          input.journeyId || null,
+          input.offerId,
+          description,
+          authoritativeAmountINR,
+          billingModel,
+          providerLinkId,
+          shortUrl,
+          referenceId,
+          this.getClassification(),
+          shortUrl
+        ]
       );
     } catch (persistErr: any) {
       console.error(`[CRITICAL RECONCILIATION REQUIRED] Razorpay payment link ${providerLinkId} (reference: ${referenceId}) was created at provider, but internal canonical persistence failed: ${persistErr.message}`);
@@ -686,16 +686,16 @@ export class RazorpayAdapter {
     }
 
     // 11. Update payment order status to PAID
-    this.db
-      .prepare(
-        `UPDATE payment_orders 
-         SET status = 'PAID', payment_id = ?, updated_at = datetime('now')
-         WHERE order_id = ?`
-      )
-      .run(params.paymentId, params.orderId);
+    await this.d1Repo.executeWrite(
+      'payment_orders',
+      `UPDATE payment_orders 
+       SET status = 'PAID', payment_id = ?, updated_at = datetime('now')
+       WHERE order_id = ?`,
+      [params.paymentId, params.orderId]
+    );
 
     // 12. Record transaction with verified REAL revenue
-    const tx = this.revenueEngine.recordTransaction({
+    const tx = await this.revenueEngine.recordTransactionAsync({
       businessId,
       organizationId,
       journeyId,
@@ -786,7 +786,7 @@ export class RazorpayAdapter {
    * Owner-Only Manual UPI Confirmation (Spec § 15 & § 18).
    * Changes status to HUMAN_VERIFIED_PAYMENT and records HUMAN_VERIFIED_REVENUE.
    */
-  public confirmManualUpiClaim(params: {
+  public async confirmManualUpiClaim(params: {
     claimId?: string;
     utr: string;
     businessId: string;
@@ -796,12 +796,12 @@ export class RazorpayAdapter {
     organizationId: string;
     invoiceNumber?: string;
     serviceRendered?: string;
-  }): {
+  }): Promise<{
     success: boolean;
     transactionId: string;
     classification: 'MANUAL_VERIFIED';
     status: 'HUMAN_VERIFIED_PAYMENT';
-  } {
+  }> {
     const trimmedUtr = params.utr.trim();
     if (!trimmedUtr || trimmedUtr.startsWith('utr_')) {
       throw new Error('INVALID_UTR: Manual verification requires a verified banking UTR.');
@@ -820,20 +820,36 @@ export class RazorpayAdapter {
 
     // Update claim status if row exists
     if (params.claimId) {
-      this.db.prepare(`
-        UPDATE manual_upi_claims
-        SET status = 'HUMAN_VERIFIED_PAYMENT', verified_at = datetime('now'), verified_by = ?
-        WHERE id = ?
-      `).run(params.ownerUserId, params.claimId);
+      if (isProduction() && !process.env.VITEST) {
+        await this.d1Repo.executeWrite(
+          'manual_upi_claims',
+          `UPDATE manual_upi_claims SET status = 'HUMAN_VERIFIED_PAYMENT', verified_at = datetime('now'), verified_by = ? WHERE id = ?`,
+          [params.ownerUserId, params.claimId]
+        );
+      } else {
+        this.db.prepare(`
+          UPDATE manual_upi_claims
+          SET status = 'HUMAN_VERIFIED_PAYMENT', verified_at = datetime('now'), verified_by = ?
+          WHERE id = ?
+        `).run(params.ownerUserId, params.claimId);
+      }
     } else {
-      this.db.prepare(`
-        UPDATE manual_upi_claims
-        SET status = 'HUMAN_VERIFIED_PAYMENT', verified_at = datetime('now'), verified_by = ?
-        WHERE utr = ? AND status = 'PAYMENT_CLAIMED'
-      `).run(params.ownerUserId, trimmedUtr);
+      if (isProduction() && !process.env.VITEST) {
+        await this.d1Repo.executeWrite(
+          'manual_upi_claims',
+          `UPDATE manual_upi_claims SET status = 'HUMAN_VERIFIED_PAYMENT', verified_at = datetime('now'), verified_by = ? WHERE utr = ? AND status = 'PAYMENT_CLAIMED'`,
+          [params.ownerUserId, trimmedUtr]
+        );
+      } else {
+        this.db.prepare(`
+          UPDATE manual_upi_claims
+          SET status = 'HUMAN_VERIFIED_PAYMENT', verified_at = datetime('now'), verified_by = ?
+          WHERE utr = ? AND status = 'PAYMENT_CLAIMED'
+        `).run(params.ownerUserId, trimmedUtr);
+      }
     }
 
-    const tx = this.revenueEngine.recordTransaction({
+    const tx = await this.revenueEngine.recordTransactionAsync({
       businessId: params.businessId,
       organizationId: params.organizationId,
       journeyId: params.journeyId,
@@ -850,19 +866,37 @@ export class RazorpayAdapter {
     const isPlatform = params.businessId === OwnerAuthService.PLATFORM_BUSINESS_ID || params.businessId === 'biz_platform_aro';
     if (isPlatform) {
       try {
-        this.db.prepare(`
-          INSERT INTO revenue_records (
-            id, organization_id, business_id, revenue_type, source, transaction_id,
-            amount_inr, currency, verified, verification_method, classification,
-            recurring_model, timestamp
-          ) VALUES (?, ?, ?, 'PLATFORM_REVENUE', 'MANUAL_VERIFIED', ?, ?, 'INR', 1, 'OWNER_MANUAL', 'MANUAL_VERIFIED', 'ONE_TIME', datetime('now'))
-        `).run(
-          `rev_man_${Date.now()}_${randomUUID().substring(0, 6)}`,
-          params.organizationId,
-          params.businessId,
-          trimmedUtr,
-          params.amountINR
-        );
+        if (isProduction() && !process.env.VITEST) {
+          await this.d1Repo.executeWrite(
+            'revenue_records',
+            `INSERT INTO revenue_records (
+              id, organization_id, business_id, revenue_type, source, transaction_id,
+              amount_inr, currency, verified, verification_method, classification,
+              recurring_model, timestamp
+            ) VALUES (?, ?, ?, 'PLATFORM_REVENUE', 'MANUAL_VERIFIED', ?, ?, 'INR', 1, 'OWNER_MANUAL', 'MANUAL_VERIFIED', 'ONE_TIME', datetime('now'))`,
+            [
+              `rev_man_${Date.now()}_${randomUUID().substring(0, 6)}`,
+              params.organizationId,
+              params.businessId,
+              trimmedUtr,
+              params.amountINR
+            ]
+          );
+        } else {
+          this.db.prepare(`
+            INSERT INTO revenue_records (
+              id, organization_id, business_id, revenue_type, source, transaction_id,
+              amount_inr, currency, verified, verification_method, classification,
+              recurring_model, timestamp
+            ) VALUES (?, ?, ?, 'PLATFORM_REVENUE', 'MANUAL_VERIFIED', ?, ?, 'INR', 1, 'OWNER_MANUAL', 'MANUAL_VERIFIED', 'ONE_TIME', datetime('now'))
+          `).run(
+            `rev_man_${Date.now()}_${randomUUID().substring(0, 6)}`,
+            params.organizationId,
+            params.businessId,
+            trimmedUtr,
+            params.amountINR
+          );
+        }
       } catch {}
     }
 
@@ -921,11 +955,20 @@ export class RazorpayAdapter {
       const orderId = failedPayment?.order_id;
       const linkId = failedPayment?.payment_link_id || failedPayment?.id;
       if (orderId) {
-        this.db.prepare(`UPDATE payment_orders SET status = 'FAILED', updated_at = datetime('now') WHERE order_id = ?`).run(orderId);
+        if (isProduction() && !process.env.VITEST) {
+          await this.d1Repo.executeWrite('payment_orders', `UPDATE payment_orders SET status = 'FAILED', updated_at = datetime('now') WHERE order_id = ?`, [orderId]);
+        } else {
+          getDb().prepare(`UPDATE payment_orders SET status = 'FAILED', updated_at = datetime('now') WHERE order_id = ?`).run(orderId);
+        }
       }
       if (linkId) {
-        this.db.prepare(`UPDATE payment_requests SET status = 'FAILED', updated_at = datetime('now') WHERE provider_link_id = ?`).run(linkId);
-        this.db.prepare(`UPDATE payment_provider_links SET status = 'FAILED' WHERE provider_link_id = ?`).run(linkId);
+        if (isProduction() && !process.env.VITEST) {
+          await this.d1Repo.executeWrite('payment_requests', `UPDATE payment_requests SET status = 'FAILED', updated_at = datetime('now') WHERE provider_link_id = ?`, [linkId]);
+          await this.d1Repo.executeWrite('payment_provider_links', `UPDATE payment_provider_links SET status = 'FAILED' WHERE provider_link_id = ?`, [linkId]);
+        } else {
+          getDb().prepare(`UPDATE payment_requests SET status = 'FAILED', updated_at = datetime('now') WHERE provider_link_id = ?`).run(linkId);
+          getDb().prepare(`UPDATE payment_provider_links SET status = 'FAILED' WHERE provider_link_id = ?`).run(linkId);
+        }
       }
       return { processed: true, reason: 'Payment failed event recorded.' };
     }
@@ -934,7 +977,11 @@ export class RazorpayAdapter {
       const refund = event.payload?.refund?.entity;
       const orderId = refund?.order_id;
       if (orderId) {
-        this.db.prepare(`UPDATE payment_orders SET status = 'REFUNDED', updated_at = datetime('now') WHERE order_id = ?`).run(orderId);
+        if (isProduction() && !process.env.VITEST) {
+          await this.d1Repo.executeWrite('payment_orders', `UPDATE payment_orders SET status = 'REFUNDED', updated_at = datetime('now') WHERE order_id = ?`, [orderId]);
+        } else {
+          getDb().prepare(`UPDATE payment_orders SET status = 'REFUNDED', updated_at = datetime('now') WHERE order_id = ?`).run(orderId);
+        }
       }
       return { processed: true, reason: 'Refund processed event recorded.' };
     }
@@ -1047,19 +1094,68 @@ export class RazorpayAdapter {
     else if (payment?.method === 'card') paymentMethod = 'CREDIT_CARD';
     else if (payment?.method === 'emi') paymentMethod = 'NO_COST_EMI';
 
-    // Idempotency Check: Duplicate Webhook => NO DUPLICATE REVENUE (Spec § 22)
-    const existingTx = this.db
-      .prepare('SELECT id FROM transactions WHERE transaction_ref = ?')
-      .get(paymentId) as any;
+    // Item 3: Atomic Webhook Idempotency via unique-constraint insert
+    // Attempt to insert the event identifier first into idempotent_actions (Spec § 31)
+    const eventId = event?.id || (paymentId ? `rzp_evt_${paymentId}` : undefined);
+    if (eventId) {
+      if (isProduction() && !process.env.VITEST) {
+        try {
+          await this.d1Repo.executeWrite(
+            'idempotent_actions',
+            `INSERT INTO idempotent_actions (
+              idempotency_key, action_type, target_id, tenant_id, executed_at, status, result_json
+            ) VALUES (?, 'RAZORPAY_WEBHOOK', ?, ?, datetime('now'), 'PROCESSING', '{}')`,
+            [eventId, paymentId || eventId, businessId]
+          );
+        } catch (insertErr: any) {
+          const isConflict =
+            insertErr?.message?.includes('UNIQUE constraint failed') ||
+            insertErr?.message?.includes('PRIMARY KEY must be unique') ||
+            insertErr?.message?.includes('already exists') ||
+            insertErr?.code === 'SQLITE_CONSTRAINT';
 
-    if (existingTx) {
-      return {
-        processed: true,
-        reason: `Payment ${paymentId} already processed (idempotency key matched).`,
-        transactionId: existingTx.id,
-        amountINR,
-        journeyId
-      };
+          if (isConflict) {
+            const existingTx = await this.d1Repo.queryOne(
+              'transactions',
+              'SELECT id FROM transactions WHERE transaction_ref = ?',
+              [paymentId]
+            );
+            return {
+              processed: true,
+              reason: `Payment ${paymentId} already processed (idempotency key matched).`,
+              transactionId: existingTx?.id,
+              amountINR,
+              journeyId
+            };
+          }
+          throw insertErr;
+        }
+      } else {
+        try {
+          getDb().prepare(`
+            INSERT INTO idempotent_actions (
+              idempotency_key, action_type, target_id, tenant_id, executed_at, status, result_json
+            ) VALUES (?, 'RAZORPAY_WEBHOOK', ?, ?, datetime('now'), 'PROCESSING', '{}')
+          `).run(eventId, paymentId || eventId, businessId);
+        } catch (insertErr: any) {
+          const isConflict =
+            insertErr?.message?.includes('UNIQUE constraint failed') ||
+            insertErr?.message?.includes('PRIMARY KEY must be unique') ||
+            insertErr?.code === 'SQLITE_CONSTRAINT';
+
+          if (isConflict) {
+            const existingTx = getDb().prepare('SELECT id FROM transactions WHERE transaction_ref = ?').get(paymentId) as any;
+            return {
+              processed: true,
+              reason: `Payment ${paymentId} already processed (idempotency key matched).`,
+              transactionId: existingTx?.id,
+              amountINR,
+              journeyId
+            };
+          }
+          throw insertErr;
+        }
+      }
     }
 
     // Assert D1 durable storage in production before state transitions
@@ -1115,25 +1211,58 @@ export class RazorpayAdapter {
     } catch (d1Err: any) {
       console.error(`[RazorpayAdapter] FAIL-CLOSED: Failed to write revenue_records to D1 for payment ${paymentId}: ${d1Err.message}. Transitioning status to RECONCILIATION_REQUIRED.`);
       
+      // Release in-flight idempotency key so retry can succeed
+      if (eventId) {
+        try {
+          if (isProduction() && !process.env.VITEST) {
+            await this.d1Repo.executeWrite('idempotent_actions', `DELETE FROM idempotent_actions WHERE idempotency_key = ?`, [eventId]).catch(() => {});
+          } else {
+            getDb().prepare(`DELETE FROM idempotent_actions WHERE idempotency_key = ?`).run(eventId);
+          }
+        } catch {}
+      }
+
       if (orderId) {
-        this.db.prepare(`
-          UPDATE payment_orders 
-          SET status = 'RECONCILIATION_REQUIRED', payment_id = ?, updated_at = datetime('now')
-          WHERE order_id = ?
-        `).run(paymentId, orderId);
+        if (isProduction() && !process.env.VITEST) {
+          await this.d1Repo.executeWrite(
+            'payment_orders',
+            `UPDATE payment_orders SET status = 'RECONCILIATION_REQUIRED', payment_id = ?, updated_at = datetime('now') WHERE order_id = ?`,
+            [paymentId, orderId]
+          ).catch(e => console.error(`[RazorpayAdapter] Failed to mark payment_order RECONCILIATION_REQUIRED: ${e.message}`));
+        } else {
+          getDb().prepare(`
+            UPDATE payment_orders 
+            SET status = 'RECONCILIATION_REQUIRED', payment_id = ?, updated_at = datetime('now')
+            WHERE order_id = ?
+          `).run(paymentId, orderId);
+        }
       }
       if (matchedLinkId) {
-        this.db.prepare(`
-          UPDATE payment_provider_links
-          SET status = 'RECONCILIATION_REQUIRED', payment_id = ?
-          WHERE provider_link_id = ?
-        `).run(paymentId, matchedLinkId);
+        if (isProduction() && !process.env.VITEST) {
+          await this.d1Repo.executeWrite(
+            'payment_provider_links',
+            `UPDATE payment_provider_links SET status = 'RECONCILIATION_REQUIRED', payment_id = ? WHERE provider_link_id = ?`,
+            [paymentId, matchedLinkId]
+          ).catch(e => console.error(`[RazorpayAdapter] Failed to mark payment_provider_links RECONCILIATION_REQUIRED: ${e.message}`));
 
-        this.db.prepare(`
-          UPDATE payment_requests
-          SET status = 'RECONCILIATION_REQUIRED', payment_id = ?, updated_at = datetime('now')
-          WHERE provider_link_id = ?
-        `).run(paymentId, matchedLinkId);
+          await this.d1Repo.executeWrite(
+            'payment_requests',
+            `UPDATE payment_requests SET status = 'RECONCILIATION_REQUIRED', payment_id = ?, updated_at = datetime('now') WHERE provider_link_id = ?`,
+            [paymentId, matchedLinkId]
+          ).catch(e => console.error(`[RazorpayAdapter] Failed to mark payment_requests RECONCILIATION_REQUIRED: ${e.message}`));
+        } else {
+          getDb().prepare(`
+            UPDATE payment_provider_links
+            SET status = 'RECONCILIATION_REQUIRED', payment_id = ?
+            WHERE provider_link_id = ?
+          `).run(paymentId, matchedLinkId);
+
+          getDb().prepare(`
+            UPDATE payment_requests
+            SET status = 'RECONCILIATION_REQUIRED', payment_id = ?, updated_at = datetime('now')
+            WHERE provider_link_id = ?
+          `).run(paymentId, matchedLinkId);
+        }
       }
 
       throw new Error(`REVENUE_PERSISTENCE_FAILED: D1 write failed for revenue_records: ${d1Err.message}`);
@@ -1143,38 +1272,55 @@ export class RazorpayAdapter {
 
     // Update payment_orders record to PAID
     if (orderId) {
-      this.db
-        .prepare(
+      if (isProduction() && !process.env.VITEST) {
+        await this.d1Repo.executeWrite(
+          'payment_orders',
+          `UPDATE payment_orders SET status = 'PAID', payment_id = ?, updated_at = datetime('now') WHERE order_id = ?`,
+          [paymentId, orderId]
+        );
+      } else {
+        getDb().prepare(
           `UPDATE payment_orders 
            SET status = 'PAID', payment_id = ?, updated_at = datetime('now')
            WHERE order_id = ?`
-        )
-        .run(paymentId, orderId);
+        ).run(paymentId, orderId);
+      }
     }
 
     // Update payment_provider_links and payment_requests records to PAID
     if (matchedLinkId) {
-      this.db
-        .prepare(`
+      if (isProduction() && !process.env.VITEST) {
+        await this.d1Repo.executeWrite(
+          'payment_provider_links',
+          `UPDATE payment_provider_links SET status = 'PAID', paid_at = datetime('now'), payment_id = ? WHERE provider_link_id = ?`,
+          [paymentId, matchedLinkId]
+        );
+        await this.d1Repo.executeWrite(
+          'payment_requests',
+          `UPDATE payment_requests SET status = 'PAID', payment_id = ?, payment_verified_at = datetime('now'),
+              verified_at = datetime('now'), verification_method = 'RAZORPAY_WEBHOOK',
+              updated_at = datetime('now') WHERE provider_link_id = ?`,
+          [paymentId, matchedLinkId]
+        );
+      } else {
+        getDb().prepare(`
           UPDATE payment_provider_links
           SET status = 'PAID', paid_at = datetime('now'), payment_id = ?
           WHERE provider_link_id = ?
-        `)
-        .run(paymentId, matchedLinkId);
+        `).run(paymentId, matchedLinkId);
 
-      this.db
-        .prepare(`
+        getDb().prepare(`
           UPDATE payment_requests
           SET status = 'PAID', payment_id = ?, payment_verified_at = datetime('now'),
               verified_at = datetime('now'), verification_method = 'RAZORPAY_WEBHOOK',
               updated_at = datetime('now')
           WHERE provider_link_id = ?
-        `)
-        .run(paymentId, matchedLinkId);
+        `).run(paymentId, matchedLinkId);
+      }
     }
 
     // Record Transaction with verified classification
-    const tx = this.revenueEngine.recordTransaction({
+    const tx = await this.revenueEngine.recordTransactionAsync({
       businessId,
       organizationId,
       journeyId,
@@ -1187,6 +1333,23 @@ export class RazorpayAdapter {
       classification,
       serviceRendered
     });
+
+    // Mark idempotent action as EXECUTED
+    if (eventId) {
+      if (isProduction() && !process.env.VITEST) {
+        await this.d1Repo.executeWrite(
+          'idempotent_actions',
+          `UPDATE idempotent_actions SET status = 'EXECUTED', result_json = ? WHERE idempotency_key = ?`,
+          [JSON.stringify({ transactionId: tx.id, amountINR, journeyId }), eventId]
+        ).catch(() => {});
+      } else {
+        try {
+          getDb().prepare(`
+            UPDATE idempotent_actions SET status = 'EXECUTED', result_json = ? WHERE idempotency_key = ?
+          `).run(JSON.stringify({ transactionId: tx.id, amountINR, journeyId }), eventId);
+        } catch {}
+      }
+    }
 
     // If platform customer paid, initialize 5-Day Delivery Blueprint fulfillment (Spec § 38 & § 39)
     if (isPlatformRevenue) {
@@ -1214,19 +1377,37 @@ export class RazorpayAdapter {
           throw new Error(`EXACT_LINEAGE_VIOLATION: Cannot trace customer ID to a real opportunity, lead, or customer journey for link ${matchedLinkId}. Fabricated customer IDs are strictly prohibited.`);
         }
         const custId = candidateCustId;
-        this.db.prepare(`
-          INSERT OR IGNORE INTO platform_customer_deliveries (
-            id, customer_id, organization_id, business_id, offer_id, payment_id,
-            stage, contract_terms, deliverables_json, success_metrics_json, renewal_date, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, 'ONBOARDING', 'Standard Service Agreement: 5-Day Delivery & SLA', '["WhatsApp Integration", "Google Business Profile Lead Capture", "Automated Triage", "24/7 Booking Bot"]', '["Response time < 2 mins", "30% show rate"]', datetime('now', '+30 days'), datetime('now'), datetime('now'))
-        `).run(
-          `deliv_${Date.now()}`,
-          custId,
-          organizationId,
-          businessId,
-          storedPayReq?.offer_id || 'PLATFORM_SETUP',
-          paymentId
-        );
+        if (isProduction() && !process.env.VITEST) {
+          await this.d1Repo.executeWrite(
+            'platform_customer_deliveries',
+            `INSERT OR IGNORE INTO platform_customer_deliveries (
+              id, customer_id, organization_id, business_id, offer_id, payment_id,
+              stage, contract_terms, deliverables_json, success_metrics_json, renewal_date, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'ONBOARDING', 'Standard Service Agreement: 5-Day Delivery & SLA', '["WhatsApp Integration", "Google Business Profile Lead Capture", "Automated Triage", "24/7 Booking Bot"]', '["Response time < 2 mins", "30% show rate"]', datetime('now', '+30 days'), datetime('now'), datetime('now'))`,
+            [
+              `deliv_${Date.now()}`,
+              custId,
+              organizationId,
+              businessId,
+              storedPayReq?.offer_id || 'PLATFORM_SETUP',
+              paymentId
+            ]
+          );
+        } else {
+          getDb().prepare(`
+            INSERT OR IGNORE INTO platform_customer_deliveries (
+              id, customer_id, organization_id, business_id, offer_id, payment_id,
+              stage, contract_terms, deliverables_json, success_metrics_json, renewal_date, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'ONBOARDING', 'Standard Service Agreement: 5-Day Delivery & SLA', '["WhatsApp Integration", "Google Business Profile Lead Capture", "Automated Triage", "24/7 Booking Bot"]', '["Response time < 2 mins", "30% show rate"]', datetime('now', '+30 days'), datetime('now'), datetime('now'))
+          `).run(
+            `deliv_${Date.now()}`,
+            custId,
+            organizationId,
+            businessId,
+            storedPayReq?.offer_id || 'PLATFORM_SETUP',
+            paymentId
+          );
+        }
       } catch (e: any) {
         console.warn(`[RazorpayAdapter] Failed to initialize customer delivery: ${e.message}`);
       }

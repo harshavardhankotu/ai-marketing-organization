@@ -39,7 +39,8 @@ export const D1_REVENUE_CRITICAL_TABLES = [
   'availability_slots',
   'booking_reservations',
   'universal_orders',
-  'fulfillment_tasks'
+  'fulfillment_tasks',
+  'idempotent_actions'
 ] as const;
 
 export type D1RevenueCriticalTable = typeof D1_REVENUE_CRITICAL_TABLES[number] | string;

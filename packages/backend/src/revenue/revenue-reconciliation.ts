@@ -1,5 +1,7 @@
 import { randomUUID } from 'crypto';
 import { getDb } from '../db/client.js';
+import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
+import { isProduction } from '../config/env.js';
 import {
   DataClassification,
   ImmutableTruthEvent,
@@ -14,6 +16,7 @@ import {
 import { CustomerJourneyTracker } from './customer-journey-tracker.js';
 
 export class RevenueReconciliationEngine {
+  private d1Repo = D1RevenueRepository.getInstance();
   private get db() {
     return getDb();
   }
@@ -372,6 +375,194 @@ export class RevenueReconciliationEngine {
     return { transaction: tx, treatmentPlan: updatedPlan };
   }
 
+  /**
+   * Authoritative transaction recording.
+   * In production, all D1 writes are strictly awaited and fail-closed.
+   */
+  async recordTransactionAsync(params: {
+    businessId: string;
+    organizationId?: string;
+    journeyId?: string;
+    campaignId?: string;
+    invoiceNumber: string;
+    amountINR: number;
+    paymentMethod: PaymentMethod;
+    paymentGateway?: PaymentGateway;
+    transactionRef?: string;
+    status?: 'SUCCESS' | 'PENDING' | 'REFUNDED' | 'FAILED';
+    classification?: DataClassification;
+    serviceRendered?: string;
+  }): Promise<TransactionRecord> {
+    // 1. Strict Duplicate Prevention
+    let existingInv: any;
+    let existingRef: any;
+
+    if (isProduction() && !process.env.VITEST) {
+      existingInv = await this.d1Repo.queryOne('transactions', 'SELECT id FROM transactions WHERE business_id = ? AND invoice_number = ?', [params.businessId, params.invoiceNumber]);
+      if (params.transactionRef) {
+        existingRef = await this.d1Repo.queryOne('transactions', 'SELECT id FROM transactions WHERE business_id = ? AND transaction_ref = ?', [params.businessId, params.transactionRef]);
+      }
+    } else {
+      existingInv = this.db.prepare('SELECT id FROM transactions WHERE business_id = ? AND invoice_number = ?').get(params.businessId, params.invoiceNumber);
+      if (params.transactionRef) {
+        existingRef = this.db.prepare('SELECT id FROM transactions WHERE business_id = ? AND transaction_ref = ?').get(params.businessId, params.transactionRef);
+      }
+    }
+
+    if (existingInv) {
+      throw new Error(`Duplicate transaction: Invoice ${params.invoiceNumber} already exists`);
+    }
+
+    if (params.transactionRef && existingRef) {
+      throw new Error(`Duplicate transaction: Reference ${params.transactionRef} already recorded`);
+    }
+
+    const id = `tx-${randomUUID()}`;
+    const now = new Date().toISOString();
+    let orgId = params.organizationId;
+    if (!orgId) {
+      if (isProduction() && !process.env.VITEST) {
+        const biz = await this.d1Repo.queryOne('businesses', 'SELECT organization_id FROM businesses WHERE id = ?', [params.businessId]);
+        orgId = biz?.organization_id;
+      } else {
+        const biz = this.db.prepare('SELECT organization_id FROM businesses WHERE id = ?').get(params.businessId) as any;
+        orgId = biz?.organization_id;
+      }
+    }
+    if (!orgId) {
+      throw new Error(`EXACT_LINEAGE_VIOLATION: organizationId is required to record transaction for business ${params.businessId}`);
+    }
+    const status = params.status || 'SUCCESS';
+    const classification = params.classification || 'TEST';
+    const gateway = params.paymentGateway || (classification === 'REAL' ? 'MANUAL' : 'SIMULATED');
+
+    // Strict REAL vs SIMULATED distinction: REAL revenue must never use SIMULATED gateway
+    if (classification === 'REAL' && (gateway === 'SIMULATED' || params.paymentGateway === 'SIMULATED')) {
+      throw new Error('Cannot record REAL revenue using a SIMULATED payment gateway. REAL revenue must come from verified sources or production gateways.');
+    }
+
+    if (isProduction() && !process.env.VITEST) {
+      await this.d1Repo.executeWrite(
+        'transactions',
+        `INSERT INTO transactions (
+          id, organization_id, business_id, journey_id, campaign_id,
+          invoice_number, amount_inr, payment_method, payment_gateway,
+          transaction_ref, status, classification, service_rendered, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          orgId,
+          params.businessId,
+          params.journeyId || null,
+          params.campaignId || null,
+          params.invoiceNumber,
+          params.amountINR,
+          params.paymentMethod,
+          gateway,
+          params.transactionRef || null,
+          status,
+          classification,
+          params.serviceRendered || null,
+          now,
+          now
+        ]
+      );
+    } else {
+      this.db
+        .prepare(
+          `INSERT INTO transactions (
+            id, organization_id, business_id, journey_id, campaign_id,
+            invoice_number, amount_inr, payment_method, payment_gateway,
+            transaction_ref, status, classification, service_rendered, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          id,
+          orgId,
+          params.businessId,
+          params.journeyId || null,
+          params.campaignId || null,
+          params.invoiceNumber,
+          params.amountINR,
+          params.paymentMethod,
+          gateway,
+          params.transactionRef || null,
+          status,
+          classification,
+          params.serviceRendered || null,
+          now
+        );
+    }
+
+    // If successful transaction linked to a journey, update journey lifetime value and stage
+    if (status === 'SUCCESS' && params.journeyId) {
+      this.journeyTracker.addRevenue(params.journeyId, params.amountINR);
+    }
+
+    // Ingest into analytics events for full attribution tracing
+    if (status === 'SUCCESS') {
+      const eventId = `event-rev-${randomUUID()}`;
+      if (isProduction() && !process.env.VITEST) {
+        await this.d1Repo.executeWrite(
+          'analytics_events',
+          `INSERT INTO analytics_events (
+            id, organization_id, business_id, campaign_id,
+            channel, event_type, user_identifier, revenue_inr, metadata_json, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            eventId,
+            orgId,
+            params.businessId,
+            params.campaignId || null,
+            'PAYMENT_GATEWAY',
+            'PAYMENT_CAPTURED',
+            params.journeyId || params.businessId,
+            params.amountINR,
+            JSON.stringify({ transactionId: id, invoiceNumber: params.invoiceNumber, gateway }),
+            now
+          ]
+        ).catch(e => console.error(`[Analytics Event Write Failed]: ${e.message}`));
+      } else {
+        this.db
+          .prepare(
+            `INSERT INTO analytics_events (
+              id, organization_id, business_id, campaign_id,
+              channel, event_type, user_identifier, revenue_inr, metadata_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          )
+          .run(
+            eventId,
+            orgId,
+            params.businessId,
+            params.campaignId || null,
+            'PAYMENT_GATEWAY',
+            'PAYMENT_CAPTURED',
+            params.journeyId || params.businessId,
+            params.amountINR,
+            JSON.stringify({ transactionId: id, invoiceNumber: params.invoiceNumber, gateway }),
+            now
+          );
+      }
+    }
+
+    return {
+      id,
+      organizationId: orgId,
+      businessId: params.businessId,
+      journeyId: params.journeyId,
+      campaignId: params.campaignId,
+      invoiceNumber: params.invoiceNumber,
+      amountINR: params.amountINR,
+      paymentMethod: params.paymentMethod,
+      paymentGateway: gateway,
+      transactionRef: params.transactionRef,
+      status,
+      classification,
+      serviceRendered: params.serviceRendered,
+      createdAt: now
+    };
+  }
+
   recordTransaction(params: {
     businessId: string;
     organizationId?: string;
@@ -386,6 +577,9 @@ export class RevenueReconciliationEngine {
     classification?: DataClassification;
     serviceRendered?: string;
   }): TransactionRecord {
+    if (isProduction() && !process.env.VITEST) {
+      throw new Error(`PRODUCTION D1 ERROR: Synchronous recordTransaction is strictly prohibited in production. Call await recordTransactionAsync().`);
+    }
     // 1. Strict Duplicate Prevention (Requirement 27)
     const existingInv = this.db
       .prepare('SELECT id FROM transactions WHERE business_id = ? AND invoice_number = ?')

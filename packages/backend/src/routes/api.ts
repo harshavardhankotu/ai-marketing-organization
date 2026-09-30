@@ -1516,7 +1516,7 @@ apiRouter.post('/revenue/transactions', async (c) => {
   }
 
   try {
-    const tx = revenueEngine.recordTransaction({
+    const tx = await revenueEngine.recordTransactionAsync({
       businessId: business.id,
       organizationId: orgId,
       journeyId: body.journeyId,
@@ -2530,7 +2530,7 @@ apiRouter.post('/webhooks/payments/:gateway', async (c) => {
   }
 
   try {
-    const tx = revenueEngine.recordTransaction({
+    const tx = await revenueEngine.recordTransactionAsync({
       businessId,
       organizationId: orgId,
       journeyId: payload.journey_id,
@@ -2599,7 +2599,7 @@ apiRouter.post('/payments/manual-upi/confirm', async (c) => {
   }
 
   try {
-    const result = razorpayAdapter.confirmManualUpiClaim({
+    const result = await razorpayAdapter.confirmManualUpiClaim({
       claimId,
       utr: String(utr).trim(),
       businessId,

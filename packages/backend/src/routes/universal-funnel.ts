@@ -202,7 +202,9 @@ export async function handleCreateUniversalOrder(c: Context): Promise<Response> 
   }
 
   const orderId = `uord_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-  const provider = (body.paymentProvider || (orderCurrency === 'INR' ? 'RAZORPAY' : 'STRIPE')).toUpperCase();
+  // Item 1: Provider MUST NOT be browser-controlled (body.paymentProvider completely removed).
+  // Single-business India operations use Razorpay exclusively; non-INR operations map to Stripe.
+  const provider = orderCurrency === 'INR' ? 'RAZORPAY' : 'STRIPE';
 
   // 4. Persistence First: Insert internal order into D1 BEFORE provider creation
   const initialStatus = serverAmountMinor === 0 ? 'PAID' : 'PAYMENT_PENDING';
@@ -240,19 +242,9 @@ export async function handleCreateUniversalOrder(c: Context): Promise<Response> 
   let providerOrderId: string | undefined;
   let providerClientSecret: string | undefined;
 
-  // 5. Initiate payment with respective provider
+  // 5. Initiate payment with server-authoritative provider
   try {
-    if (provider === 'RAZORPAY') {
-      const rzp = new RazorpayAdapter();
-      const rzpOrder = await rzp.createPaymentOrder({
-        businessId: resolvedBusinessId,
-        amountINR: toMajorUnits(serverAmountMinor, orderCurrency),
-        receipt: orderId,
-        service: targetOffer.title,
-        notes: { orderId, offerId, customerName, customerPhone }
-      });
-      providerOrderId = rzpOrder.orderId;
-    } else if (provider === 'STRIPE') {
+    if (provider === 'STRIPE') {
       const stripe = StripeAdapter.getInstance();
       const stripeIntent = await stripe.createPaymentIntent({
         businessId: resolvedBusinessId,
@@ -265,6 +257,16 @@ export async function handleCreateUniversalOrder(c: Context): Promise<Response> 
       });
       providerOrderId = stripeIntent.paymentIntentId;
       providerClientSecret = stripeIntent.clientSecret;
+    } else {
+      const rzp = new RazorpayAdapter();
+      const rzpOrder = await rzp.createPaymentOrder({
+        businessId: resolvedBusinessId,
+        amountINR: toMajorUnits(serverAmountMinor, orderCurrency),
+        receipt: orderId,
+        service: targetOffer.title,
+        notes: { orderId, offerId, customerName, customerPhone }
+      });
+      providerOrderId = rzpOrder.orderId;
     }
 
     // Update order with provider details — handle recoverable failure if D1 write fails
