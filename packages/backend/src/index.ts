@@ -25,11 +25,62 @@ try {
 
 const app = new Hono();
 
-// Enable CORS for frontend
+// Enable credentialed CORS with explicit allowlisted origins (no wildcard with credentials)
 app.use('*', cors({
-  origin: '*',
+  origin: (requestOrigin, c) => {
+    if (!requestOrigin) return null;
+
+    // 1. Explicitly configured frontend origins via FRONTEND_ORIGIN (evaluated dynamically)
+    const allowedFrontendOrigins = (process.env.FRONTEND_ORIGIN || '')
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean);
+
+    if (allowedFrontendOrigins.includes(requestOrigin)) {
+      return requestOrigin;
+    }
+
+    // 2. Production Render default domain
+    if (requestOrigin === 'https://ai-marketing-organization.onrender.com') {
+      return requestOrigin;
+    }
+
+    // 3. Local development origins in non-production
+    if (process.env.NODE_ENV !== 'production') {
+      if (
+        requestOrigin.startsWith('http://localhost:') ||
+        requestOrigin.startsWith('http://127.0.0.1:') ||
+        requestOrigin === 'http://localhost' ||
+        requestOrigin === 'http://127.0.0.1'
+      ) {
+        return requestOrigin;
+      }
+    }
+
+    // 4. Same-host or matching host header
+    const host = c.req.header('host');
+    if (host) {
+      const hostWithoutPort = host.split(':')[0];
+      if (requestOrigin.includes(hostWithoutPort)) {
+        return requestOrigin;
+      }
+    }
+
+    return null;
+  },
+  credentials: true,
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowHeaders: ['Content-Type', 'Authorization', 'x-organization-id', 'x-business-id', 'x-user-id', 'x-test-mode', 'bypass-tunnel-reminder']
+  allowHeaders: [
+    'Content-Type',
+    'Authorization',
+    'x-api-key',
+    'x-organization-id',
+    'x-business-id',
+    'x-user-id',
+    'x-test-mode',
+    'bypass-tunnel-reminder'
+  ],
+  exposeHeaders: ['Set-Cookie']
 }));
 
 // Request Logger

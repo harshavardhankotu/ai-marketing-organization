@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { AlertOctagon, Play, ShieldAlert, Cpu, Sparkles, Server, Globe, Check, X } from 'lucide-react';
+import { AlertOctagon, Play, ShieldAlert, Cpu, Sparkles, Server, Globe, Check, X, LogOut } from 'lucide-react';
 import { getApiBaseUrl, setApiBaseUrl } from '../../services/api';
 
 interface NavbarProps {
@@ -9,6 +9,7 @@ interface NavbarProps {
   onOpenKillSwitchModal: () => void;
   onTriggerCycle: () => void;
   isCycleRunning: boolean;
+  onLogout?: () => void;
   quotaInfo?: {
     requestsToday: number;
     maxRequests: number;
@@ -24,6 +25,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenKillSwitchModal,
   onTriggerCycle,
   isCycleRunning,
+  onLogout,
   quotaInfo,
   operatingMilestone
 }) => {
@@ -132,6 +134,18 @@ export const Navbar: React.FC<NavbarProps> = ({
           <ShieldAlert className="w-4 h-4" />
           <span>{killSwitchActive ? 'Reset Kill Switch' : 'Kill Switch'}</span>
         </button>
+
+        {/* Owner Logout Button */}
+        {onLogout && (
+          <button
+            onClick={onLogout}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold text-slate-400 hover:text-rose-300 bg-slate-800/80 hover:bg-rose-500/10 border border-slate-700 hover:border-rose-500/30 transition-all"
+            title="Sign out of Owner Session"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Sign Out</span>
+          </button>
+        )}
       </div>
 
       {/* Backend API Configuration Modal */}

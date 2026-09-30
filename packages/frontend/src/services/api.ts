@@ -26,45 +26,74 @@ export function setApiBaseUrl(url: string): void {
   }
 }
 
+export class ApiError extends Error {
+  status: number;
+  data: any;
+  constructor(message: string, status: number, data?: any) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.data = data;
+  }
+}
+
+export type UnauthorizedHandler = () => void;
+let unauthorizedHandler: UnauthorizedHandler | null = null;
+
+export function onUnauthorized(handler: UnauthorizedHandler | null): void {
+  unauthorizedHandler = handler;
+}
+
 export async function fetchApi<T = any>(endpoint: string, options?: RequestInit): Promise<T> {
   const base = getApiBaseUrl();
   const normalizedEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
   const url = `${base}${normalizedEndpoint}`;
-  const isPublicEndpoint = normalizedEndpoint.startsWith('/public/');
+  const isPublicEndpoint = normalizedEndpoint.startsWith('/public/') ||
+    normalizedEndpoint === '/health' ||
+    normalizedEndpoint.startsWith('/health/') ||
+    normalizedEndpoint.startsWith('/payments/razorpay/health') ||
+    normalizedEndpoint.startsWith('/compliance/dpdp/');
+  const isAuthCheckOrLogin = normalizedEndpoint.startsWith('/auth/owner/session') ||
+    normalizedEndpoint.startsWith('/auth/owner/login') ||
+    normalizedEndpoint.startsWith('/auth/owner/logout');
 
-  let activeOrg = '';
+  // Business context is purely for route filtering/selection, NEVER an authentication mechanism
   let activeBizId = '';
   if (typeof window !== 'undefined') {
     try {
       const raw = localStorage.getItem('ai_marketing_active_business');
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (parsed.organization_id) activeOrg = parsed.organization_id;
         if (parsed.id) activeBizId = parsed.id;
       }
     } catch {}
   }
 
-  const res = await fetch(url, {
-    headers: {
-      'Content-Type': 'application/json',
-      'bypass-tunnel-reminder': '1',
-      ...(isPublicEndpoint ? {} : (activeOrg ? { 'x-organization-id': activeOrg } : {})),
-      ...(isPublicEndpoint ? {} : (activeBizId ? { 'x-business-id': activeBizId } : {})),
-      ...(isPublicEndpoint ? {} : { 'x-user-id': 'usr_owner_01' }),
-      ...(options?.headers || {})
-    },
-    ...options
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        'bypass-tunnel-reminder': '1',
+        ...(activeBizId ? { 'x-business-id': activeBizId } : {}),
+        ...(options?.headers || {})
+      },
+      ...options
+    });
+  } catch (netErr: any) {
+    throw new ApiError(`Network error: Could not connect to API server at ${url}. ${netErr?.message || ''}`, 0);
+  }
 
   const contentType = res.headers.get('content-type') || '';
   const text = await res.text();
 
   // Intercept HTML responses from static SPA hosting rewrites (e.g. Firebase Hosting index.html fallback)
   if (contentType.includes('text/html') || text.trim().startsWith('<!doctype') || text.trim().startsWith('<html')) {
-    throw new Error(
+    throw new ApiError(
       `Backend API server not reached at ${url}. The cloud host returned static HTML instead of JSON. ` +
-      `Ensure the local backend is running (npm start) and configure the API URL in Settings/Navbar.`
+      `Ensure the local backend is running (npm start) and configure the API URL in Settings/Navbar.`,
+      res.status
     );
   }
 
@@ -72,11 +101,16 @@ export async function fetchApi<T = any>(endpoint: string, options?: RequestInit)
   try {
     json = JSON.parse(text);
   } catch (parseErr) {
-    throw new Error(`Invalid JSON response from ${url} (status ${res.status}): ${text.slice(0, 100)}...`);
+    throw new ApiError(`Invalid JSON response from ${url} (status ${res.status}): ${text.slice(0, 100)}...`, res.status);
   }
 
   if (!res.ok) {
-    throw new Error(json.error || `Request failed with status ${res.status}`);
+    const errorMsg = json?.error || `Request failed with status ${res.status}`;
+    // If 401 on an authenticated admin endpoint, transition UI cleanly to unauthenticated state
+    if (res.status === 401 && !isPublicEndpoint && !isAuthCheckOrLogin) {
+      unauthorizedHandler?.();
+    }
+    throw new ApiError(errorMsg, res.status, json);
   }
 
   return json;

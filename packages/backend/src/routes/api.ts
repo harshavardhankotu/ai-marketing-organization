@@ -85,6 +85,7 @@ export const EXACT_ROUTE_POLICY = {
     '/organic/sessions',
     '/organic/leads',
     '/auth/owner/login',
+    '/auth/owner/logout',
     '/payments/razorpay/create-order',
     '/payments/razorpay/verify',
     '/payments/manual-upi/claim',
@@ -251,7 +252,9 @@ apiRouter.post('/auth/owner/login', async (c) => {
   const session = await ownerAuth.createSessionAsync(clientIp, userAgent);
 
   const isSecure = isProduction();
-  c.header('Set-Cookie', `owner_session=${session.token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400${isSecure ? '; Secure' : ''}`);
+  const isCrossOrigin = Boolean(process.env.FRONTEND_ORIGIN && !process.env.FRONTEND_ORIGIN.includes('onrender.com'));
+  const sameSite = process.env.COOKIE_SAMESITE || (isSecure && isCrossOrigin ? 'None' : 'Lax');
+  c.header('Set-Cookie', `owner_session=${session.token}; Path=/; HttpOnly; SameSite=${sameSite}; Max-Age=86400${isSecure ? '; Secure' : ''}`);
 
   return c.json({
     success: true,
@@ -277,7 +280,10 @@ apiRouter.post('/auth/owner/logout', async (c) => {
     await OwnerAuthService.getInstance().revokeSessionAsync(token);
   }
 
-  c.header('Set-Cookie', 'owner_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
+  const isSecure = isProduction();
+  const isCrossOrigin = Boolean(process.env.FRONTEND_ORIGIN && !process.env.FRONTEND_ORIGIN.includes('onrender.com'));
+  const sameSite = process.env.COOKIE_SAMESITE || (isSecure && isCrossOrigin ? 'None' : 'Lax');
+  c.header('Set-Cookie', `owner_session=; Path=/; HttpOnly; SameSite=${sameSite}; Max-Age=0${isSecure ? '; Secure' : ''}`);
   return c.json({ success: true, message: 'Logged out successfully.' });
 });
 

@@ -20,45 +20,35 @@ import { Simulation } from './pages/Simulation.js';
 import { Settings } from './pages/Settings.js';
 import { HealthStatusCard } from './components/common/HealthStatusCard.js';
 import { BusinessOnboarding } from './components/onboarding/BusinessOnboarding.js';
-import { api } from './services/api.js';
-import { 
-  DEFAULT_BUSINESS, 
-  DEFAULT_GOALS, 
-  DEFAULT_CAMPAIGNS, 
-  DEFAULT_CONTENT_ASSETS, 
-  DEFAULT_RESEARCH, 
-  DEFAULT_EXPERIMENTS, 
-  DEFAULT_EVOLUTION, 
-  DEFAULT_METRICS, 
-  DEFAULT_APPROVALS, 
-  DEFAULT_INTEGRATIONS, 
-  DEFAULT_QUOTA, 
-  DEFAULT_READINESS,
-  AGENT_REGISTRY 
-} from './services/seed-defaults.js';
+import { OwnerLogin } from './components/auth/OwnerLogin.js';
+import { api, onUnauthorized } from './services/api.js';
+import { AGENT_REGISTRY } from './services/seed-defaults.js';
+
+export type AuthState = 'BOOTING' | 'AUTHENTICATED' | 'UNAUTHENTICATED';
 
 export const App: React.FC = () => {
+  const [authState, setAuthState] = useState<AuthState>('BOOTING');
   const [currentTab, setCurrentTab] = useState<NavTab>('dashboard');
   const [loading, setLoading] = useState<boolean>(true);
   const [isCycleRunning, setIsCycleRunning] = useState<boolean>(false);
   const [isKillModalOpen, setIsKillModalOpen] = useState<boolean>(false);
   const [cycleError, setCycleError] = useState<string | null>(null);
 
-  // Core domain states with rich canonical defaults
-  const [business, setBusiness] = useState<any>(DEFAULT_BUSINESS);
-  const [goals, setGoals] = useState<any[]>(DEFAULT_GOALS);
+  // Core domain states populated strictly from the authenticated backend
+  const [business, setBusiness] = useState<any>(null);
+  const [goals, setGoals] = useState<any[]>([]);
   const [agents, setAgents] = useState<any[]>(AGENT_REGISTRY);
-  const [campaigns, setCampaigns] = useState<any[]>(DEFAULT_CAMPAIGNS);
-  const [contentAssets, setContentAssets] = useState<any[]>(DEFAULT_CONTENT_ASSETS);
-  const [researchFindings, setResearchFindings] = useState<any[]>(DEFAULT_RESEARCH);
-  const [analyticsData, setAnalyticsData] = useState<any>({ metrics: DEFAULT_METRICS, events: [], attributions: [] });
-  const [experiments, setExperiments] = useState<any[]>(DEFAULT_EXPERIMENTS);
-  const [evolutionData, setEvolutionData] = useState<any>(DEFAULT_EVOLUTION);
-  const [approvals, setApprovals] = useState<any[]>(DEFAULT_APPROVALS);
-  const [quota, setQuota] = useState<any>(DEFAULT_QUOTA);
-  const [integrations, setIntegrations] = useState<any[]>(DEFAULT_INTEGRATIONS);
+  const [campaigns, setCampaigns] = useState<any[]>([]);
+  const [contentAssets, setContentAssets] = useState<any[]>([]);
+  const [researchFindings, setResearchFindings] = useState<any[]>([]);
+  const [analyticsData, setAnalyticsData] = useState<any>({ metrics: null, events: [], attributions: [] });
+  const [experiments, setExperiments] = useState<any[]>([]);
+  const [evolutionData, setEvolutionData] = useState<any>(null);
+  const [approvals, setApprovals] = useState<any[]>([]);
+  const [quota, setQuota] = useState<any>(null);
+  const [integrations, setIntegrations] = useState<any[]>([]);
   const [activityLogs, setActivityLogs] = useState<any[]>([]);
-  const [readiness, setReadiness] = useState<any>(DEFAULT_READINESS);
+  const [readiness, setReadiness] = useState<any>(null);
 
   const loadAllData = async () => {
     try {
@@ -94,20 +84,20 @@ export const App: React.FC = () => {
         api.getSystemReadiness().catch(() => ({ data: null }))
       ]);
 
-      setBusiness(bizRes.data || DEFAULT_BUSINESS);
-      setGoals(goalsRes.data && goalsRes.data.length > 0 ? goalsRes.data : DEFAULT_GOALS);
+      setBusiness(bizRes.data || null);
+      setGoals(goalsRes.data || []);
       setAgents(agentsRes.data && agentsRes.data.length > 0 ? agentsRes.data : AGENT_REGISTRY);
-      setCampaigns(campRes.data && campRes.data.length > 0 ? campRes.data : DEFAULT_CAMPAIGNS);
-      setContentAssets(cntRes.data && cntRes.data.length > 0 ? cntRes.data : DEFAULT_CONTENT_ASSETS);
-      setResearchFindings(resRes.data && resRes.data.length > 0 ? resRes.data : DEFAULT_RESEARCH);
-      setAnalyticsData(anaRes.data?.metrics?.impressions ? anaRes.data : { metrics: DEFAULT_METRICS, events: [], attributions: [] });
-      setExperiments(expRes.data && expRes.data.length > 0 ? expRes.data : DEFAULT_EXPERIMENTS);
-      setEvolutionData(evoRes.data?.strategies?.length > 0 ? evoRes.data : DEFAULT_EVOLUTION);
-      setApprovals(appRes.data && appRes.data.length > 0 ? appRes.data : DEFAULT_APPROVALS);
-      setQuota(quoRes.data || DEFAULT_QUOTA);
-      setIntegrations(intRes.data && intRes.data.length > 0 ? intRes.data : DEFAULT_INTEGRATIONS);
+      setCampaigns(campRes.data || []);
+      setContentAssets(cntRes.data || []);
+      setResearchFindings(resRes.data || []);
+      setAnalyticsData(anaRes.data || { metrics: null, events: [], attributions: [] });
+      setExperiments(expRes.data || []);
+      setEvolutionData(evoRes.data || null);
+      setApprovals(appRes.data || []);
+      setQuota(quoRes.data || null);
+      setIntegrations(intRes.data || []);
       setActivityLogs(actRes.data || []);
-      setReadiness(readyRes.data || DEFAULT_READINESS);
+      setReadiness(readyRes.data || null);
     } finally {
       setLoading(false);
     }
@@ -122,14 +112,63 @@ export const App: React.FC = () => {
     window.location.pathname.startsWith('/f/')
   );
 
-  useEffect(() => {
-    // Public demand funnels must not fan out into authenticated owner APIs.
-    if (!isPublicFunnelRoute) {
-      loadAllData();
-    } else {
+  const bootstrapOwnerSession = async () => {
+    setAuthState('BOOTING');
+    setLoading(true);
+    try {
+      const sessionRes = await api.getOwnerSession();
+      if (sessionRes?.data?.principal_type === 'OWNER' || sessionRes?.data?.user_id) {
+        setAuthState('AUTHENTICATED');
+        await loadAllData();
+      } else {
+        setAuthState('UNAUTHENTICATED');
+        setLoading(false);
+      }
+    } catch {
+      setAuthState('UNAUTHENTICATED');
       setLoading(false);
     }
+  };
+
+  useEffect(() => {
+    // Public demand funnels must not fan out into authenticated owner APIs
+    if (isPublicFunnelRoute) {
+      setLoading(false);
+      return;
+    }
+
+    onUnauthorized(() => {
+      setAuthState('UNAUTHENTICATED');
+    });
+
+    bootstrapOwnerSession();
   }, [isPublicFunnelRoute]);
+
+  const handleLoginSuccess = async () => {
+    setAuthState('AUTHENTICATED');
+    setLoading(true);
+    await loadAllData();
+  };
+
+  const handleLogout = async () => {
+    try {
+      await api.logoutOwner();
+    } catch {}
+    setAuthState('UNAUTHENTICATED');
+    setBusiness(null);
+    setGoals([]);
+    setCampaigns([]);
+    setContentAssets([]);
+    setResearchFindings([]);
+    setAnalyticsData({ metrics: null, events: [], attributions: [] });
+    setExperiments([]);
+    setEvolutionData(null);
+    setApprovals([]);
+    setQuota(null);
+    setIntegrations([]);
+    setActivityLogs([]);
+    setReadiness(null);
+  };
 
   const handleTriggerCycle = async () => {
     setIsCycleRunning(true);
@@ -162,6 +201,20 @@ export const App: React.FC = () => {
     return <UniversalFunnelPage />;
   }
 
+  if (authState === 'BOOTING') {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-slate-400 font-sans">
+        <div className="w-10 h-10 border-2 border-cyan-500/20 border-t-cyan-400 rounded-full animate-spin mb-4" />
+        <p className="text-sm font-medium text-slate-300">Verifying Owner Session...</p>
+        <p className="text-xs text-slate-500 mt-1">Connecting to Secure Boundary</p>
+      </div>
+    );
+  }
+
+  if (authState === 'UNAUTHENTICATED') {
+    return <OwnerLogin onLoginSuccess={handleLoginSuccess} />;
+  }
+
   return (
     <div className="flex h-screen bg-slate-950 text-slate-100 overflow-hidden font-sans">
       {/* Sidebar */}
@@ -180,8 +233,9 @@ export const App: React.FC = () => {
           onOpenKillSwitchModal={() => setIsKillModalOpen(true)}
           onTriggerCycle={handleTriggerCycle}
           isCycleRunning={isCycleRunning}
+          onLogout={handleLogout}
           quotaInfo={{
-            requestsToday: quota?.geminiRequestsToday || 14,
+            requestsToday: quota?.geminiRequestsToday || 0,
             maxRequests: quota?.geminiMaxDailyRequests || 1500,
             isTripped: quota?.circuitBreakerTripped || false
           }}
