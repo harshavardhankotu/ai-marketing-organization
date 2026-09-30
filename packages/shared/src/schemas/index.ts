@@ -4,17 +4,17 @@ export const CreateBusinessProfileSchema = z.object({
   name: z.string().min(2, 'Business name must be at least 2 characters'),
   verticalId: z.string(),
   verticalName: z.string(),
-  country: z.string().default('IN'),
-  currency: z.string().default('INR'),
-  timezone: z.string().default('Asia/Kolkata'),
+  country: z.string().min(2),
+  currency: z.string().min(3).max(3),
+  timezone: z.string().min(3),
   locale: z.string().default('en-US'),
   city: z.string().min(2),
   neighborhood: z.string().min(2),
   serviceArea: z.array(z.string()).optional(),
-  primaryLanguage: z.string().default('English'),
-  secondaryLanguages: z.array(z.string()).default(['Hindi']),
+  primaryLanguage: z.string().min(2),
+  secondaryLanguages: z.array(z.string()).default([]),
   brandVoice: z.string().min(5),
-  monthlyBudgetINR: z.number().min(0).optional().default(1000),
+  monthlyBudgetINR: z.number().min(0).optional(),
   monthlyBudgetMinor: z.number().min(0).optional(),
   autonomyMode: z.enum(['SAFE', 'ASSISTED', 'AUTONOMOUS']).default('ASSISTED'),
   offerings: z.array(z.object({
@@ -31,6 +31,14 @@ export const CreateBusinessProfileSchema = z.object({
   phone: z.string().optional(),
   email: z.string().optional()
 });
+
+export const IndiaOnboardingPreset = {
+  country: 'IN',
+  currency: 'INR',
+  timezone: 'Asia/Kolkata',
+  primaryLanguage: 'English',
+  secondaryLanguages: ['Hindi']
+};
 
 export const CreateGoalSchema = z.object({
   businessId: z.string(),

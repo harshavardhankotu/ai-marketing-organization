@@ -1275,37 +1275,7 @@ export interface AcquisitionEvidenceRecord {
 // UNIVERSAL COMMERCIAL OPERATING SYSTEM (UCOS)
 // ==========================================
 
-export interface Money {
-  amountMinor: number; // e.g. 50000 paise for ₹500, 2500 cents for $25.00
-  currency: string;    // ISO-4217 code (INR, USD, GBP, EUR, AED, AUD, CAD, SGD)
-}
-
-export function toMinorUnits(amountMajor: number, currency: string = 'INR'): number {
-  const zeroDecimal = ['JPY', 'KRW', 'VND', 'CLP', 'BIF', 'DJF', 'GNF', 'KMF', 'MGA', 'PYG', 'RWF', 'UGX'];
-  const threeDecimal = ['BHD', 'JOD', 'KWD', 'OMR', 'TND'];
-  const cur = (currency || 'INR').toUpperCase();
-  if (zeroDecimal.includes(cur)) return Math.round(amountMajor);
-  if (threeDecimal.includes(cur)) return Math.round(amountMajor * 1000);
-  return Math.round(amountMajor * 100);
-}
-
-export function toMajorUnits(amountMinor: number, currency: string = 'INR'): number {
-  const zeroDecimal = ['JPY', 'KRW', 'VND', 'CLP', 'BIF', 'DJF', 'GNF', 'KMF', 'MGA', 'PYG', 'RWF', 'UGX'];
-  const threeDecimal = ['BHD', 'JOD', 'KWD', 'OMR', 'TND'];
-  const cur = (currency || 'INR').toUpperCase();
-  if (zeroDecimal.includes(cur)) return amountMinor;
-  if (threeDecimal.includes(cur)) return amountMinor / 1000;
-  return amountMinor / 100;
-}
-
-export function formatMoney(amountMinor: number, currency: string = 'INR', locale: string = 'en-US'): string {
-  const major = toMajorUnits(amountMinor, currency);
-  try {
-    return new Intl.NumberFormat(locale, { style: 'currency', currency }).format(major);
-  } catch {
-    return `${currency} ${major.toFixed(2)}`;
-  }
-}
+export * from './currency.js';
 
 // 1. Universal Funnel Domain
 export type FunnelType = 

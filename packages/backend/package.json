@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc && node -e \"const fs = require('fs'), path = require('path'); const src = path.resolve('src/db/d1-migrations'), dst = path.resolve('dist/db/d1-migrations'); if (fs.existsSync(src)) { fs.mkdirSync(dst, { recursive: true }); fs.readdirSync(src).filter(f => f.endsWith('.sql')).forEach(f => fs.copyFileSync(path.join(src, f), path.join(dst, f))); }\"",
+    "typecheck": "tsc --noEmit",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
     "test": "vitest run",

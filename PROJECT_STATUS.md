@@ -25,7 +25,7 @@
 | **Cron Trigger & Ping Route** | **PASS** | 2026-09-30 | `POST /api/v1/cron/ping` | Returns `HTTP 200 OK` when authenticated with `X-Cron-Secret`. Runs async autonomy lock & durable cycle logging cleanly. |
 | **Cron Heartbeat & Telemetry** | **PASS** | 2026-09-30 | `GET /api/v1/cron/status` | Returns `HTTP 200 OK`.<br>Status: **`HEALTHY`**<br>Total Pings: **`16`**<br>Last Observed Ping: `2026-09-29 23:02:40`<br>Last Successful Cycle: `2026-09-29 23:02:46`<br>Cycle Result: `SUCCESS`<br>Worker Source: `node` / `cloudflare-cron-worker` |
 | **Authenticated System Readiness** | **PASS** | 2026-09-30 | `GET /api/v1/system/readiness` | Returns `HTTP 200 OK` when authenticated with `x-api-key: [OWNER_API_KEY]`.<br>12/12 checks passed (`operatingState: 'FIRST_REAL_LEAD'`). |
-| **Test Suite & Build** | **PASS** | 2026-09-30 | `npm run build && npm test` | Build exit code: `0` (monorepo root covers `shared`, `backend`, `frontend`, `cloudflare-worker`)<br>Test files: `42 passed (42)`<br>Tests: `401 passed (401)`<br>Failed: `0` |
+| **Test Suite & Build** | **PASS** | 2026-09-30 | `npm run build && npm run typecheck && npm test` | Build exit code: `0` (monorepo root covers `shared`, `backend`, `frontend`, `cloudflare-worker`)<br>Typecheck exit code: `0` across all 4 packages<br>Test files: `44 passed (44)`<br>Tests: `415 passed (415)`<br>Failed: `0` |
 
 ---
 
@@ -74,6 +74,16 @@
 15. **2026-09-30 — Cloudflare D1 Missing Concurrency & Cycle Log Tables (`4903abd`):** Remote D1 database lacked `business_autonomy_lock`, `autonomous_cycle_log`, and other revenue-critical tables; created and applied migration `0003_d1_revenue_critical_tables.sql` (now 33 tables in D1).
 16. **2026-09-30 — Baseline Reference Tenant Seeding & Auto-Sync (`3ad910f`):** Ephemeral SQLite on Render lacked baseline client business on boot, causing `/system/readiness` to return 400; seeded `biz_smilekraft_hyd` and initial campaign/goal into SQLite, bringing readiness check to 12/12 PASS (`FIRST_REAL_LEAD`).
 17. **2026-09-30 — Universal Commercial Operating System (UCOS) Transformation:** Generalized entire system architecture away from hardcoded Indian/dental assumptions. Implemented currency neutrality (`Money` minor integer units + ISO 4217), first-class durable `funnels` entity in D1, decoupled `customer_offers` from platform setup fees, server-authoritative checkout & pricing with `PRICE_TAMPER_DETECTED` guards, `OfferDecisionEngine` for structured intent matching, `StripeAdapter` for multi-currency payment intents, unified Cloudflare Worker workspace in root CI/monorepo, applied D1 migration `0004` bringing D1 to 94 durable tables, and expanded unit test suite to 42 files and 401 passing tests.
+18. **2026-09-30 — UCOS Production Hardening, D1 Session Authority & Atomic Booking Engine:**
+    - Eliminated synthetic runtime funnel synthesis; missing funnels return genuine 404 `FUNNEL_NOT_FOUND`. Frontend fails closed on missing funnel without falling back to business profile.
+    - Built atomic `AvailabilityEngine` preventing double-booking under concurrency with conditional SQL updates on slot capacity (`reserved_count < capacity`). Disallowed client-manipulable start/end times.
+    - `OwnerAuthService` made Cloudflare D1 the sole authority in production with fail-closed `PERSISTENCE_FAULT` on D1 error, eliminating SQLite split-brain auth sessions.
+    - Integrated full Stripe webhook lifecycle (`payment_intent.succeeded`, `charge.refunded`, etc.) with server-authoritative order updates, ledger revenue records, compensating negative revenue entries on refunds, and fulfillment task triggers.
+    - Hardened `AutonomousRevenueOrchestrator` to await all D1 cycle and audit writes (`d1Repo.executeWrite`), eliminating unawaited fire-and-forget writes and `{ changes: 1 }` fallback.
+    - Refactored `SystemReadinessEngine` around capability-based dimensions (`DATABASE`, `AUTH`, `STRIPE`, `RAZORPAY`, `PROVIDER`) without hardcoded `passed: true` or dental/Indian assumptions.
+    - Removed Indian country/currency/timezone defaults from `CreateBusinessProfileSchema` into an explicit `IndiaOnboardingPreset` alongside authoritative ISO-4217 Currency Metadata Registry.
+    - Iterated all eligible businesses across all organizations during cron ping without `LIMIT 5` suppression.
+    - Test suite expanded to 44 files, 415 passing tests (0 failures). Full monorepo build and typecheck passing across all 4 packages.
 
 ---
 

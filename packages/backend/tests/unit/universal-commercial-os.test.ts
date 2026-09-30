@@ -200,6 +200,25 @@ describe('Universal Commercial Operating System (UCOS)', () => {
         ])
       );
 
+      db.prepare(`
+        INSERT INTO funnels (
+          id, business_id, organization_id, public_slug, status, objective, headline, subheadline
+        ) VALUES (
+          'fnl_lumiere_main', ?, 'org_global_test', 'main', 'ACTIVE', 'Bookings', 'Luxury Hair Care at Lumiere Hair & Spa',
+          'Exclusive experiences in Downtown Dubai'
+        )
+      `).run(bizId);
+
+      db.prepare(`
+        INSERT INTO customer_offers (
+          id, business_id, organization_id, title, description, category,
+          price_minor, currency, billing_model, deliverables_json, active
+        ) VALUES (
+          'off_balayage', ?, 'org_global_test', 'Signature Balayage & Treatment',
+          'Custom color gloss, bond repair, and styling', 'SERVICE', 65000, 'AED', 'ONE_TIME', '["Custom color gloss"]', 1
+        )
+      `).run(bizId);
+
       const res = await app.request('/api/v1/public/funnel/lumiere-dubai/main');
       expect(res.status).toBe(200);
       const json = await res.json();
@@ -372,17 +391,22 @@ describe('Universal Commercial Operating System (UCOS)', () => {
         )
       `).run(bizId);
 
+      const availRes = await app.request('/api/v1/public/availability?businessSlug=horizon-toronto');
+      expect(availRes.status).toBe(200);
+      const availJson = await availRes.json();
+      expect(availJson.data.slots.length).toBeGreaterThan(0);
+      const targetSlot = availJson.data.slots[0];
+
       const res = await app.request('/api/v1/public/booking', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           businessSlug: 'horizon-toronto',
+          slotId: targetSlot.slotId || targetSlot.id,
           customerName: 'David Chen',
           customerContact: '+14165551234',
           customerEmail: 'david.chen@example.com',
-          serviceTitle: 'Executive Strategy Intake Session',
-          startTime: '2026-10-05T14:00:00Z',
-          endTime: '2026-10-05T15:00:00Z'
+          serviceTitle: 'Executive Strategy Intake Session'
         })
       });
 

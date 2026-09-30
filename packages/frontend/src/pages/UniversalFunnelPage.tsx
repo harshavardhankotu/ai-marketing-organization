@@ -15,7 +15,9 @@ type Offering = {
   id?: string;
   title: string;
   description?: string;
+  priceMinor?: number;
   priceINR?: number;
+  currency?: string;
   targetSegment?: string;
 };
 
@@ -134,16 +136,11 @@ export const UniversalFunnelPage: React.FC = () => {
       }
 
       try {
-        let res: any = null;
-        try {
-          res = await api.getPublicFunnel(businessId, funnelSlug);
-        } catch {
-          res = await api.getPublicBusiness(businessId);
-        }
+        const res = await api.getPublicFunnel(businessId, funnelSlug);
 
         if (cancelled) return;
 
-        if (res?.data?.business) {
+        if (res?.data?.business && res?.data?.funnel) {
           const nextBusiness = res.data.business as PublicBusiness;
           setBusiness(nextBusiness);
           setFunnel(res.data.funnel);
@@ -156,24 +153,12 @@ export const UniversalFunnelPage: React.FC = () => {
               ? `${nextBusiness.neighborhood}${nextBusiness.city ? `, ${nextBusiness.city}` : ''}`
               : nextBusiness.city || ''
           ));
-        } else if (res?.data?.id) {
-          const nextBusiness = res.data as PublicBusiness;
-          setBusiness(nextBusiness);
-          const offers = parseOfferings(nextBusiness);
-          if (offers.length > 0) {
-            setSelectedOffer((current) => current || offers[0].title);
-          }
-          setLocation((current) => current || (
-            nextBusiness.neighborhood
-              ? `${nextBusiness.neighborhood}${nextBusiness.city ? `, ${nextBusiness.city}` : ''}`
-              : nextBusiness.city || ''
-          ));
         } else {
-          throw new Error('Business profile not found.');
+          throw new Error(`Funnel '${funnelSlug}' not found for this business.`);
         }
       } catch (e: any) {
         if (!cancelled) {
-          setLoadError(e?.message || 'Could not load this business funnel.');
+          setLoadError(e?.message || `Funnel '${funnelSlug}' could not be loaded. Please ensure the funnel is published and active.`);
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -433,9 +418,11 @@ export const UniversalFunnelPage: React.FC = () => {
                 {offerings.map((offer) => (
                   <option key={`${offer.id || offer.title}`} value={offer.title}>
                     {offer.title}
-                    {business.currency === 'INR' && typeof offer.priceINR === 'number'
-                      ? ` — ₹${offer.priceINR.toLocaleString('en-IN')}`
-                      : ''}
+                    {typeof offer.priceMinor === 'number'
+                      ? ` — ${(offer.priceMinor / 100).toLocaleString(undefined, { style: 'currency', currency: business.currency || 'USD' })}`
+                      : typeof offer.priceINR === 'number'
+                        ? ` — ₹${offer.priceINR.toLocaleString('en-IN')}`
+                        : ''}
                   </option>
                 ))}
               </select>

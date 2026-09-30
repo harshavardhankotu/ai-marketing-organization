@@ -16,7 +16,7 @@
  * - Unconfigured adapters immediately yield BLOCKED_AUTHORIZATION.
  */
 
-import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
+import { D1RevenueRepository, D1RevenueCriticalTable } from '../db/d1-revenue-repository.js';
 import { getDb } from '../db/client.js';
 import { OpportunityEngine } from './opportunity-engine.js';
 import { NextBestActionEngine, NextBestAction } from './next-best-action-engine.js';
@@ -39,6 +39,7 @@ import { resolveAuthorizedOffer } from './offer-catalog.js';
 import { ChannelSelectionEngine } from './channel-selection-engine.js';
 import { OutboundActionLedger } from './outbound-action-ledger.js';
 import { randomUUID } from 'crypto';
+export { ActionClassification } from '../integrations/adapter-base.js';
 
 export type CycleExecutionStatus =
   | 'LIVE_EXTERNAL_ACTION'
@@ -86,32 +87,21 @@ export class AutonomousRevenueOrchestrator {
   private get db() {
     return {
       prepare: (sql: string) => ({
-        run: (...params: any[]) => {
-          if (isProduction() && !process.env.VITEST) {
-            this.d1Repo.executeWrite('autonomous_cycle_log', sql, params).catch(e => {
-              console.error(`[ARO D1 Write Fault]: ${e.message}`);
-            });
-            try {
-              return getDb().prepare(sql).run(...params);
-            } catch {
-              return { changes: 1 };
-            }
-          }
-          return this.d1Repo.executeSync('autonomous_cycle_log', sql, params);
+        run: async (...params: any[]) => {
+          const tableMatch = sql.match(/(?:INSERT\s+(?:OR\s+\w+\s+)?INTO|UPDATE|DELETE\s+FROM)\s+([a-zA-Z0-9_]+)/i);
+          const table = (tableMatch ? tableMatch[1] : 'autonomous_cycle_log') as D1RevenueCriticalTable;
+          const res = await this.d1Repo.executeWrite(table, sql, params);
+          return { changes: res.rowsAffected };
         },
-        get: (...params: any[]) => {
-          try {
-            return getDb().prepare(sql).get(...params);
-          } catch {
-            return null;
-          }
+        get: async <T = any>(...params: any[]) => {
+          const tableMatch = sql.match(/FROM\s+([a-zA-Z0-9_]+)/i);
+          const table = (tableMatch ? tableMatch[1] : 'businesses') as D1RevenueCriticalTable;
+          return await this.d1Repo.queryOne<T>(table, sql, params);
         },
-        all: (...params: any[]) => {
-          try {
-            return getDb().prepare(sql).all(...params);
-          } catch {
-            return [];
-          }
+        all: async <T = any>(...params: any[]) => {
+          const tableMatch = sql.match(/FROM\s+([a-zA-Z0-9_]+)/i);
+          const table = (tableMatch ? tableMatch[1] : 'customer_journeys') as D1RevenueCriticalTable;
+          return await this.d1Repo.query<T>(table, sql, params);
         }
       })
     };
@@ -193,7 +183,7 @@ export class AutonomousRevenueOrchestrator {
     }
 
     try {
-      db.prepare(`
+      await db.prepare(`
         INSERT INTO autonomous_cycle_log (
           id, organization_id, business_id, trigger_source, cycle_start, status
         ) VALUES (?, ?, ?, ?, ?, 'RUNNING')
@@ -211,7 +201,7 @@ export class AutonomousRevenueOrchestrator {
       // ──────────────────────────────────────────────────────────────────
       // SPEC § 4: CHEAP LOCAL INSPECTION (Zero external API calls consumed)
       // ──────────────────────────────────────────────────────────────────
-      const biz = db.prepare(`SELECT * FROM businesses WHERE id = ?`).get(businessId) as any;
+      const biz = await db.prepare(`SELECT * FROM businesses WHERE id = ?`).get(businessId) as any;
       if (!biz) throw new Error(`Business not found: ${businessId}`);
 
       if (biz.kill_switch_active) {
@@ -236,21 +226,21 @@ export class AutonomousRevenueOrchestrator {
       }
 
       // Inspect verified real revenue
-      const revRow = db.prepare(`
+      const revRow = await db.prepare(`
         SELECT COALESCE(SUM(amount_inr), 0) as total FROM transactions
         WHERE business_id = ? AND classification = 'REAL' AND status = 'SUCCESS'
       `).get(businessId) as any;
       revenueRecordedINR = revRow?.total || 0;
 
       // Inspect recent unlinked real leads -> convert to opportunities (local DB only)
-      const unlinkedLeads = db.prepare(`
+      const unlinkedLeads = (await db.prepare(`
         SELECT * FROM customer_journeys
         WHERE business_id = ?
           AND classification = 'REAL'
           AND stage IN ('LEAD', 'QUALIFIED_LEAD')
           AND id NOT IN (SELECT journey_id FROM sales_pipeline WHERE journey_id IS NOT NULL)
         LIMIT 5
-      `).all(businessId) as any[];
+      `).all(businessId)) as any[];
 
       for (const lead of unlinkedLeads) {
         try {
@@ -274,7 +264,7 @@ export class AutonomousRevenueOrchestrator {
           });
           opportunitiesDiscovered++;
 
-          db.prepare(`
+          await db.prepare(`
             INSERT OR IGNORE INTO sales_pipeline (
               id, opportunity_id, business_id, organization_id, journey_id,
               stage, owner_agent, next_action, next_action_at, probability, expected_revenue_inr
@@ -377,7 +367,7 @@ export class AutonomousRevenueOrchestrator {
       }
 
       // Record full audit trace in autonomous_action_traces (Spec § 31)
-      this.recordActionTrace({
+      await this.recordActionTrace({
         cycleId,
         actionId: `act_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         tenantId: organizationId,
@@ -399,7 +389,7 @@ export class AutonomousRevenueOrchestrator {
       const nextCycleAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
       const cycleEnd = new Date().toISOString();
 
-      db.prepare(`
+      await db.prepare(`
         UPDATE autonomous_cycle_log
         SET status = 'COMPLETED', cycle_end = ?, opportunities_discovered = ?,
             opportunities_qualified = ?, actions_taken = ?, revenue_recorded_inr = ?,
@@ -457,7 +447,7 @@ export class AutonomousRevenueOrchestrator {
 
       this.quotaService.recordWake(organizationId, false, msg);
 
-      db.prepare(`
+      await db.prepare(`
         UPDATE autonomous_cycle_log
         SET status = 'FAILED', cycle_end = ?, error_message = ?
         WHERE id = ?
@@ -530,12 +520,12 @@ export class AutonomousRevenueOrchestrator {
       // SPEC § 5: FOLLOW_UP_LEAD
       // ────────────────────────────────────────────────────────────────
       case 'FOLLOW_UP_LEAD': {
-        const pipeRow = db.prepare(`
+        const pipeRow = (await db.prepare(`
           SELECT sp.*, cj.customer_name, cj.customer_phone, cj.customer_email
           FROM sales_pipeline sp
           LEFT JOIN customer_journeys cj ON sp.journey_id = cj.id
           WHERE sp.id = ?
-        `).get(action.targetId) as any;
+        `).get(action.targetId)) as any;
 
         if (!pipeRow) {
           return {
@@ -566,7 +556,7 @@ export class AutonomousRevenueOrchestrator {
         });
 
         if (pubResult.success && pubResult.actionClassification === 'LIVE_EXTERNAL_ACTION') {
-          db.prepare(`
+          await db.prepare(`
             UPDATE sales_pipeline
             SET stage = 'CONTACTED',
                 next_action = 'Awaiting reply',
@@ -624,29 +614,29 @@ export class AutonomousRevenueOrchestrator {
         const targetProspectId = (opp as any).prospect_id;
 
         // 1. Look up sales_pipeline entry for opportunity
-        let pipeRow = db.prepare(`SELECT * FROM sales_pipeline WHERE opportunity_id = ? LIMIT 1`).get(opp.id) as any;
+        let pipeRow = (await db.prepare(`SELECT * FROM sales_pipeline WHERE opportunity_id = ? LIMIT 1`).get(opp.id)) as any;
         if (pipeRow?.outbound_contact_id) {
           outboundContactId = pipeRow.outbound_contact_id;
         }
 
         // 2. Look up outbound_contacts
         if (outboundContactId) {
-          contactRow = db.prepare(`SELECT * FROM outbound_contacts WHERE id = ?`).get(outboundContactId) as any;
+          contactRow = (await db.prepare(`SELECT * FROM outbound_contacts WHERE id = ?`).get(outboundContactId)) as any;
         }
         if (!contactRow && targetProspectId) {
-          contactRow = db.prepare(`SELECT * FROM outbound_contacts WHERE id = ? OR prospect_email IN (SELECT prospect_email FROM platform_prospects WHERE id = ?)`).get(targetProspectId, targetProspectId) as any;
+          contactRow = (await db.prepare(`SELECT * FROM outbound_contacts WHERE id = ? OR prospect_email IN (SELECT prospect_email FROM platform_prospects WHERE id = ?)`).get(targetProspectId, targetProspectId)) as any;
         }
         if (!contactRow) {
           // Check by business_id if targeting platform or specific campaign
-          contactRow = db.prepare(`SELECT * FROM outbound_contacts WHERE business_id = ? AND (prospect_phone IS NOT NULL OR prospect_email IS NOT NULL) LIMIT 1`).get(businessId) as any;
+          contactRow = (await db.prepare(`SELECT * FROM outbound_contacts WHERE business_id = ? AND (prospect_phone IS NOT NULL OR prospect_email IS NOT NULL) LIMIT 1`).get(businessId)) as any;
         }
 
         // 3. Look up platform_prospects
         if (targetProspectId) {
-          prospectRow = db.prepare(`SELECT * FROM platform_prospects WHERE id = ?`).get(targetProspectId) as any;
+          prospectRow = (await db.prepare(`SELECT * FROM platform_prospects WHERE id = ?`).get(targetProspectId)) as any;
         }
         if (!prospectRow && contactRow?.prospect_business_name) {
-          prospectRow = db.prepare(`SELECT * FROM platform_prospects WHERE prospect_business_name = ? LIMIT 1`).get(contactRow.prospect_business_name) as any;
+          prospectRow = (await db.prepare(`SELECT * FROM platform_prospects WHERE prospect_business_name = ? LIMIT 1`).get(contactRow.prospect_business_name)) as any;
         }
 
         // 4. Resolve contact credentials from lineage records (never from biz phone!)
@@ -789,7 +779,7 @@ export class AutonomousRevenueOrchestrator {
 
           if (outboundContactId) {
             try {
-              db.prepare(`
+              await db.prepare(`
                 UPDATE outbound_contacts
                 SET last_contacted_at = datetime('now'),
                     contact_count = contact_count + 1,
@@ -801,14 +791,14 @@ export class AutonomousRevenueOrchestrator {
 
           this.oppEngine.advance(opp.id, 'ENGAGING', `Live outreach delivered via ${pubResult.provider} (${pubResult.externalId})`);
 
-          db.prepare(`
+          await db.prepare(`
             UPDATE sales_pipeline
             SET stage = 'CONTACTED', updated_at = datetime('now')
             WHERE opportunity_id = ?
           `).run(opp.id);
 
           try {
-            db.prepare(`
+            await db.prepare(`
               INSERT INTO commercial_evidence (
                 id, milestone, provider, external_id, timestamp, request_reference,
                 tenant_id, business_id, classification, verification_source, details_json
@@ -892,7 +882,7 @@ export class AutonomousRevenueOrchestrator {
         let prospectEmail: string | undefined = undefined;
 
         try {
-          const pRow = db.prepare(`SELECT * FROM platform_prospects WHERE id = ? OR business_name = ?`).get(action.targetId, businessId) as any;
+          const pRow = (await db.prepare(`SELECT * FROM platform_prospects WHERE id = ? OR business_name = ?`).get(action.targetId, businessId)) as any;
           if (pRow) {
             prospectPhone = pRow.contact_phone || pRow.phone;
             prospectName = pRow.contact_person || pRow.business_name || prospectName;
@@ -902,7 +892,7 @@ export class AutonomousRevenueOrchestrator {
 
         if (!prospectPhone) {
           try {
-            const cRow = db.prepare(`SELECT * FROM outbound_contacts WHERE business_id = ? AND channel = 'WHATSAPP' LIMIT 1`).get(businessId) as any;
+            const cRow = (await db.prepare(`SELECT * FROM outbound_contacts WHERE business_id = ? AND channel = 'WHATSAPP' LIMIT 1`).get(businessId)) as any;
             if (cRow) {
               prospectPhone = cRow.contact_value;
               prospectName = cRow.name || prospectName;
@@ -988,7 +978,7 @@ export class AutonomousRevenueOrchestrator {
       // SPEC § 15 & § 26: COLLECT_PAYMENT (SEND EXACT PAYMENT LINK TO PROSPECT)
       // ────────────────────────────────────────────────────────────────
       case 'COLLECT_PAYMENT': {
-        const payReq = db.prepare(`SELECT * FROM payment_requests WHERE id = ?`).get(action.targetId) as any;
+        const payReq = (await db.prepare(`SELECT * FROM payment_requests WHERE id = ?`).get(action.targetId)) as any;
         if (!payReq) {
           return {
             status: 'BLOCKED_AUTHORIZATION',
@@ -1012,11 +1002,11 @@ export class AutonomousRevenueOrchestrator {
         // SPEC § 26: Target the actual customer/prospect contact (never biz.phone!)
         let customerPhone: string | null = null;
         if (payReq.prospect_id) {
-          const pRow = db.prepare(`SELECT contact_phone, phone FROM platform_prospects WHERE id = ?`).get(payReq.prospect_id) as any;
+          const pRow = (await db.prepare(`SELECT contact_phone, phone FROM platform_prospects WHERE id = ?`).get(payReq.prospect_id)) as any;
           customerPhone = pRow?.contact_phone || pRow?.phone || null;
         }
         if (!customerPhone && payReq.journey_id) {
-          const jRow = db.prepare(`SELECT customer_phone FROM customer_journeys WHERE id = ?`).get(payReq.journey_id) as any;
+          const jRow = (await db.prepare(`SELECT customer_phone FROM customer_journeys WHERE id = ?`).get(payReq.journey_id)) as any;
           customerPhone = jRow?.customer_phone || null;
         }
 
@@ -1060,7 +1050,7 @@ export class AutonomousRevenueOrchestrator {
         });
 
         if (pubResult.success && pubResult.actionClassification === 'LIVE_EXTERNAL_ACTION') {
-          db.prepare(`
+          await db.prepare(`
             UPDATE payment_requests
             SET status = 'PAYMENT_PENDING', last_reminder_at = datetime('now'), updated_at = datetime('now')
             WHERE id = ?
@@ -1132,14 +1122,14 @@ export class AutonomousRevenueOrchestrator {
       // ────────────────────────────────────────────────────────────────
       case 'ONBOARD_CUSTOMER': {
         const wfId = `wf_onboard_${Date.now()}`;
-        db.prepare(`
+        await db.prepare(`
           INSERT INTO workflows (
             id, organization_id, business_id, workflow_type, status, current_step
           ) VALUES (?, ?, ?, 'CUSTOMER_ONBOARDING', 'COMPLETED', 'ONBOARDED')
         `).run(wfId, organizationId, businessId);
 
         const taskId = `task_onboard_${Date.now()}`;
-        db.prepare(`
+        await db.prepare(`
           INSERT INTO tasks (
             id, organization_id, workflow_id, agent_id, title, status, idempotency_key, created_at
           ) VALUES (?, ?, ?, 'onboarding-agent', ?, 'COMPLETED', ?, datetime('now'))
@@ -1151,7 +1141,7 @@ export class AutonomousRevenueOrchestrator {
           taskId
         );
 
-        db.prepare(`
+        await db.prepare(`
           UPDATE sales_pipeline
           SET stage = 'ONBOARDED', updated_at = datetime('now')
           WHERE journey_id = ?
@@ -1266,9 +1256,9 @@ export class AutonomousRevenueOrchestrator {
     switch (eventType) {
       case 'NEW_LEAD':
         if (payload.journeyId) {
-          const exists = db.prepare(`SELECT id FROM sales_pipeline WHERE journey_id = ?`).get(payload.journeyId);
+          const exists = await db.prepare(`SELECT id FROM sales_pipeline WHERE journey_id = ?`).get(payload.journeyId);
           if (!exists) {
-            db.prepare(`
+            await db.prepare(`
               INSERT INTO sales_pipeline (
                 id, business_id, organization_id, journey_id, stage, owner_agent, next_action, next_action_at
               ) VALUES (?, ?, ?, ?, 'PROSPECT', 'follow-up-agent', 'QUALIFY_LEAD', datetime('now', '+1 hour'))
@@ -1289,13 +1279,13 @@ export class AutonomousRevenueOrchestrator {
                             (payload.intent === 'PRICE_QUESTION') ? 'QUALIFIED' : 'REPLIED';
 
         if (payload.pipelineId) {
-          db.prepare(`
+          await db.prepare(`
             UPDATE sales_pipeline
             SET stage = ?, next_action = ?, next_action_at = datetime('now'), updated_at = datetime('now')
             WHERE id = ?
           `).run(targetStage, nextAction, payload.pipelineId);
         } else if (payload.contact) {
-          db.prepare(`
+          await db.prepare(`
             UPDATE sales_pipeline
             SET stage = ?, next_action = ?, next_action_at = datetime('now'), updated_at = datetime('now')
             WHERE outbound_contact_id = ? OR outbound_contact_id IN (
@@ -1338,7 +1328,7 @@ export class AutonomousRevenueOrchestrator {
 
       case 'APPOINTMENT_BOOKED':
         if (payload.pipelineId) {
-          db.prepare(`
+          await db.prepare(`
             UPDATE sales_pipeline
             SET stage = 'MEETING_BOOKED', next_action = 'APPOINTMENT_REMINDER', next_action_at = datetime('now', '+24 hours'), updated_at = datetime('now')
             WHERE id = ?
@@ -1348,7 +1338,7 @@ export class AutonomousRevenueOrchestrator {
 
       case 'OFFER_SENT':
         if (payload.pipelineId) {
-          db.prepare(`
+          await db.prepare(`
             UPDATE sales_pipeline
             SET stage = 'CONTACTED', next_action = 'FOLLOW_UP', next_action_at = datetime('now', '+24 hours'), updated_at = datetime('now')
             WHERE id = ?
@@ -1358,7 +1348,7 @@ export class AutonomousRevenueOrchestrator {
 
       case 'PAYMENT_REQUESTED':
         if (payload.paymentRequestId) {
-          db.prepare(`
+          await db.prepare(`
             UPDATE payment_requests
             SET status = 'PAYMENT_PENDING', updated_at = datetime('now')
             WHERE id = ?
@@ -1368,12 +1358,12 @@ export class AutonomousRevenueOrchestrator {
 
       case 'PAYMENT_RECEIVED':
         if (payload.journeyId) {
-          db.prepare(`
+          await db.prepare(`
             UPDATE customer_journeys SET stage = 'CUSTOMER', updated_at = datetime('now')
             WHERE id = ? AND business_id = ?
           `).run(payload.journeyId, businessId);
 
-          db.prepare(`
+          await db.prepare(`
             UPDATE sales_pipeline SET stage = 'PAID', next_action = 'ONBOARD_CUSTOMER', updated_at = datetime('now')
             WHERE journey_id = ? AND business_id = ?
           `).run(payload.journeyId, businessId);
@@ -1381,7 +1371,7 @@ export class AutonomousRevenueOrchestrator {
           // Spec § 8: Razorpay webhook layer is the sole revenue authority.
           // PAYMENT_RECEIVED event handler in ARO MUST NOT create revenue records.
           if (payload.transactionId) {
-            const canonicalRev = db.prepare(`
+            const canonicalRev = await db.prepare(`
               SELECT id FROM revenue_records
               WHERE transaction_id = ? AND organization_id = ? AND verified = 1
             `).get(payload.transactionId, organizationId);
@@ -1430,7 +1420,7 @@ export class AutonomousRevenueOrchestrator {
     return valueMap[verticalId?.toLowerCase()] || 8000;
   }
 
-  public recordActionTrace(trace: {
+  public async recordActionTrace(trace: {
     cycleId: string;
     actionId: string;
     tenantId: string;
@@ -1446,10 +1436,10 @@ export class AutonomousRevenueOrchestrator {
     result: string;
     externalId?: string;
     cost?: number;
-  }): void {
+  }): Promise<void> {
     try {
       const id = `trace_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-      this.db.prepare(`
+      await this.db.prepare(`
         INSERT INTO autonomous_action_traces (
           id, cycle_id, action_id, tenant_id, action_type, reason,
           expected_value, authorization, quota_reservation, provider,
@@ -1476,26 +1466,26 @@ export class AutonomousRevenueOrchestrator {
     } catch {}
   }
 
-  public transitionPipelineState(
+  public async transitionPipelineState(
     pipelineId: string,
     businessId: string,
     newStage: string,
     actor: string,
     reason: string,
     evidence: Record<string, any> = {}
-  ): void {
+  ): Promise<void> {
     try {
-      const prev = this.db.prepare(`SELECT stage FROM sales_pipeline WHERE id = ?`).get(pipelineId) as any;
+      const prev = (await this.db.prepare(`SELECT stage FROM sales_pipeline WHERE id = ?`).get(pipelineId)) as any;
       const previousState = prev?.stage || 'UNKNOWN';
 
-      this.db.prepare(`
+      await this.db.prepare(`
         UPDATE sales_pipeline
         SET stage = ?, reason = ?, updated_at = datetime('now')
         WHERE id = ?
       `).run(newStage, reason, pipelineId);
 
       const transId = `ptrans_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-      this.db.prepare(`
+      await this.db.prepare(`
         INSERT INTO pipeline_transitions (
           id, pipeline_id, business_id, previous_state, new_state, actor, reason, evidence_json, timestamp
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))

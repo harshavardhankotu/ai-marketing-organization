@@ -96,7 +96,7 @@ export class OfferDecisionEngine {
   public async matchOffers(
     businessId: string,
     intent: StructuredIntent
-  ): Promise<QualificationResult & { recommendedOffers: CustomerOffer[] }> {
+  ): Promise<QualificationResult & { recommendedOffers: CustomerOffer[]; rejectedOffers: { offerId: string; reason: string }[] }> {
     const offers = await this.getOffersForBusiness(businessId);
 
     if (offers.length === 0) {
@@ -106,93 +106,154 @@ export class OfferDecisionEngine {
         reasons: ['No active offers configured for this business'],
         missingFields: [],
         eligibleOfferIds: [],
+        rejectedOffers: [],
         suggestedAction: 'REQUEST_MORE_INFO',
         recommendedOffers: []
       };
     }
 
-    const scoredOffers: { offer: CustomerOffer; score: number; reasons: string[] }[] = [];
+    const eligibleOffers: { offer: CustomerOffer; score: number; reasons: string[] }[] = [];
+    const rejectedOffers: { offerId: string; reason: string }[] = [];
     const intentText = (
       `${intent.problem || ''} ${intent.serviceOrProduct || ''} ${intent.rawText || ''}`
     ).toLowerCase();
 
     for (const offer of offers) {
-      let score = 0.5; // Baseline score
+      // ─────────────────────────────────────────────────────────────
+      // Stage 1: Hard Eligibility Filters (Separated from scoring)
+      // ─────────────────────────────────────────────────────────────
+      if (!offer.active) {
+        rejectedOffers.push({ offerId: offer.id, reason: 'OFFER_INACTIVE: Offer is marked inactive in catalog' });
+        continue;
+      }
+
+      // Hard budget ceiling filter
+      if (intent.budgetRange?.maxMinor !== undefined && intent.budgetRange.maxMinor > 0) {
+        if (offer.priceMinor > intent.budgetRange.maxMinor * 1.5) {
+          rejectedOffers.push({
+            offerId: offer.id,
+            reason: `BUDGET_INELIGIBLE: Offer price (${offer.priceMinor}) significantly exceeds customer budget ceiling (${intent.budgetRange.maxMinor})`
+          });
+          continue;
+        }
+      }
+
+      // Hard location filter (if qualification rules specify required location)
+      if (intent.location && Array.isArray(offer.qualificationRules)) {
+        const locRule = offer.qualificationRules.find(r => r.toLowerCase().startsWith('location:'));
+        if (locRule) {
+          const reqLoc = locRule.substring(9).trim().toLowerCase();
+          if (!intent.location.toLowerCase().includes(reqLoc)) {
+            rejectedOffers.push({
+              offerId: offer.id,
+              reason: `LOCATION_INELIGIBLE: Offer requires service location '${reqLoc}', but lead is in '${intent.location}'`
+            });
+            continue;
+          }
+        }
+      }
+
+      // ─────────────────────────────────────────────────────────────
+      // Stage 2: Fit Scoring (Starts at 0.0, earned by evidence)
+      // ─────────────────────────────────────────────────────────────
+      let score = 0.0;
       const reasons: string[] = [];
 
       // Keyword match with title & description
       const offerTitle = offer.title.toLowerCase();
       const offerDesc = offer.description.toLowerCase();
-      
       const keywords = intentText.split(/\s+/).filter(w => w.length > 2);
+      
       let matches = 0;
       for (const kw of keywords) {
-        if (offerTitle.includes(kw) || offerDesc.includes(kw)) {
-          matches++;
-        }
+        if (offerTitle.includes(kw)) matches += 2;
+        else if (offerDesc.includes(kw)) matches += 1;
       }
 
       if (matches > 0) {
-        score += Math.min(0.35, matches * 0.1);
-        reasons.push(`Matched ${matches} keywords in offer title/description`);
+        const keywordScore = Math.min(0.50, matches * 0.12);
+        score += keywordScore;
+        reasons.push(`Matched ${matches} relevance points in offer title/description (+${keywordScore.toFixed(2)})`);
       }
 
-      // Budget evaluation
-      if (intent.budgetRange) {
-        const { minMinor, maxMinor } = intent.budgetRange;
-        if (maxMinor !== undefined && offer.priceMinor <= maxMinor) {
+      // Direct service match bonus
+      if (intent.serviceOrProduct && offerTitle.includes(intent.serviceOrProduct.toLowerCase())) {
+        score += 0.25;
+        reasons.push(`Direct service match for '${intent.serviceOrProduct}' (+0.25)`);
+      }
+
+      // Budget fit evaluation
+      if (intent.budgetRange?.maxMinor !== undefined && intent.budgetRange.maxMinor > 0) {
+        if (offer.priceMinor <= intent.budgetRange.maxMinor) {
           score += 0.15;
-          reasons.push('Offer price is within customer budget limit');
-        } else if (maxMinor !== undefined && offer.priceMinor > maxMinor) {
-          score -= 0.25;
-          reasons.push('Offer price exceeds customer budget ceiling');
+          reasons.push('Offer price is fully within customer budget limit (+0.15)');
         }
-        if (minMinor !== undefined && offer.priceMinor >= minMinor) {
-          score += 0.05;
-        }
+      } else if (offer.priceMinor === 0) {
+        // Free consultation / triage deposit
+        score += 0.10;
+        reasons.push('Complimentary or low-barrier introductory offer (+0.10)');
       }
 
       // Customer segment evaluation
       if (intent.customerType && offer.targetSegment) {
         if (offer.targetSegment.toLowerCase().includes(intent.customerType.toLowerCase())) {
-          score += 0.1;
-          reasons.push(`Matches target segment (${intent.customerType})`);
+          score += 0.10;
+          reasons.push(`Matches target customer segment '${intent.customerType}' (+0.10)`);
         }
       }
 
-      // Urgency boost
+      // Urgency alignment
       if (intent.urgency === 'IMMEDIATE' || intent.urgency === 'HIGH') {
         score += 0.05;
+        reasons.push('High intent urgency boost (+0.05)');
       }
 
-      const clampedScore = Math.max(0.1, Math.min(1.0, score));
-      scoredOffers.push({ offer, score: clampedScore, reasons });
+      const clampedScore = Math.max(0.0, Math.min(1.0, score));
+      if (clampedScore > 0.15) {
+        eligibleOffers.push({ offer, score: clampedScore, reasons });
+      } else {
+        rejectedOffers.push({ offerId: offer.id, reason: 'LOW_RELEVANCE: Insufficient intent match points' });
+      }
     }
 
-    // Sort descending by match score
-    scoredOffers.sort((a, b) => b.score - a.score);
+    // Sort descending by earned match score
+    eligibleOffers.sort((a, b) => b.score - a.score);
 
-    const eligible = scoredOffers.filter(s => s.score >= 0.5);
-    const topOffer = eligible[0]?.offer;
+    const topOffer = eligibleOffers[0]?.offer;
+    const topScore = eligibleOffers[0]?.score || 0;
 
-    let status: QualificationResult['status'] = 'QUALIFIED';
-    let suggestedAction = 'BOOK_APPOINTMENT';
+    let status: QualificationResult['status'] = 'INELIGIBLE';
+    let suggestedAction = 'REQUEST_MORE_INFO';
 
-    if (eligible.length === 0) {
+    if (topScore >= 0.50) {
+      status = 'QUALIFIED';
+      suggestedAction = topOffer?.fulfillmentType === 'APPOINTMENT' || topOffer?.fulfillmentType === 'CONSULTATION'
+        ? 'BOOK_APPOINTMENT'
+        : 'INSTANT_PURCHASE';
+    } else if (topScore >= 0.25) {
+      status = 'PARTIALLY_QUALIFIED';
+      suggestedAction = 'SCHEDULE_CONSULTATION';
+    } else if (eligibleOffers.length === 0 && rejectedOffers.length > 0) {
+      status = 'INELIGIBLE';
+      suggestedAction = 'DECLINE_OR_REFER';
+    } else {
       status = 'NEEDS_INFORMATION';
       suggestedAction = 'REQUEST_MORE_INFO';
-    } else if (topOffer?.fulfillmentType === 'DIGITAL' || topOffer?.billingModel === 'ONE_TIME') {
-      suggestedAction = topOffer.priceMinor > 0 ? 'INSTANT_PURCHASE' : 'BOOK_APPOINTMENT';
     }
+
+    const missingFields: string[] = [];
+    if (!intent.problem && !intent.serviceOrProduct) missingFields.push('problem_or_service_description');
+    if (!intent.location && !intent.preferredDate) missingFields.push('scheduling_or_location_preference');
 
     return {
       status,
-      fitScore: eligible[0]?.score || 0.4,
-      reasons: eligible[0]?.reasons || ['Default offer recommendation based on catalog availability'],
-      missingFields: !intent.problem && !intent.serviceOrProduct ? ['problem_description'] : [],
-      eligibleOfferIds: eligible.map(e => e.offer.id),
+      fitScore: topScore,
+      reasons: eligibleOffers[0]?.reasons || (rejectedOffers.length > 0 ? [rejectedOffers[0].reason] : ['No matching offers found']),
+      missingFields,
+      eligibleOfferIds: eligibleOffers.map(e => e.offer.id),
+      rejectedOffers,
       suggestedAction,
-      recommendedOffers: eligible.map(e => e.offer)
+      recommendedOffers: eligibleOffers.map(e => e.offer)
     };
   }
 }

@@ -103,22 +103,24 @@ export class OwnerAuthService {
   }
 
   public createSession(ip?: string, userAgent?: string): OwnerSessionInfo {
-    const db = getDb();
     const token = `sess_own_${randomUUID().replace(/-/g, '')}`;
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
-    db.prepare(`
-      INSERT INTO owner_sessions (
-        id, principal_type, organization_id, user_id, ip_address, user_agent, expires_at, created_at
-      ) VALUES (?, 'OWNER', ?, ?, ?, ?, ?, datetime('now'))
-    `).run(
-      token,
-      OwnerAuthService.OWNER_ORGANIZATION_ID,
-      OwnerAuthService.OWNER_USER_ID,
-      ip || null,
-      userAgent || null,
-      expiresAt
-    );
+    if (!isProduction() || process.env.VITEST) {
+      const db = getDb();
+      db.prepare(`
+        INSERT INTO owner_sessions (
+          id, principal_type, organization_id, user_id, ip_address, user_agent, expires_at, created_at
+        ) VALUES (?, 'OWNER', ?, ?, ?, ?, ?, datetime('now'))
+      `).run(
+        token,
+        OwnerAuthService.OWNER_ORGANIZATION_ID,
+        OwnerAuthService.OWNER_USER_ID,
+        ip || null,
+        userAgent || null,
+        expiresAt
+      );
+    }
 
     return {
       token,
@@ -130,8 +132,17 @@ export class OwnerAuthService {
   }
 
   public async createSessionAsync(ip?: string, userAgent?: string): Promise<OwnerSessionInfo> {
-    const session = this.createSession(ip, userAgent);
-    if (isProduction()) {
+    const token = `sess_own_${randomUUID().replace(/-/g, '')}`;
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    const session: OwnerSessionInfo = {
+      token,
+      principalType: 'OWNER',
+      organizationId: OwnerAuthService.OWNER_ORGANIZATION_ID,
+      userId: OwnerAuthService.OWNER_USER_ID,
+      expiresAt
+    };
+
+    if (isProduction() && !process.env.VITEST) {
       try {
         await D1RevenueRepository.getInstance().executeWrite(
           'owner_sessions',
@@ -139,9 +150,27 @@ export class OwnerAuthService {
           [session.token, session.organizationId, session.userId, ip || null, userAgent || null, session.expiresAt]
         );
       } catch (err: any) {
-        console.warn(`[OwnerAuth] Could not write session to D1: ${err.message}`);
+        console.error(`[OwnerAuth] D1 session persistence failed: ${err.message}`);
+        throw new Error(`PERSISTENCE_FAULT: Failed to persist owner session to Cloudflare D1: ${err.message}`);
       }
+      return session;
     }
+
+    // Local / test mode uses SQLite
+    const db = getDb();
+    db.prepare(`
+      INSERT OR REPLACE INTO owner_sessions (
+        id, principal_type, organization_id, user_id, ip_address, user_agent, expires_at, created_at
+      ) VALUES (?, 'OWNER', ?, ?, ?, ?, ?, datetime('now'))
+    `).run(
+      session.token,
+      session.organizationId,
+      session.userId,
+      ip || null,
+      userAgent || null,
+      session.expiresAt
+    );
+
     return session;
   }
 
@@ -160,7 +189,12 @@ export class OwnerAuthService {
       };
     }
 
-    // 2. Stateful session lookup
+    // 2. Synchronous local/test session lookup
+    if (isProduction() && !process.env.VITEST) {
+      // In production, synchronous SQLite lookup is strictly forbidden
+      return null;
+    }
+
     try {
       const db = getDb();
       const row = db.prepare(`
@@ -184,26 +218,29 @@ export class OwnerAuthService {
 
   public async validateTokenAsync(token?: string): Promise<OwnerSessionInfo | null> {
     if (!token) return null;
-    const syncRes = this.validateToken(token);
-    if (syncRes) return syncRes;
+    const trimmed = token.trim();
 
-    if (isProduction()) {
+    // 1. Direct API Key authentication (in-memory secret verification)
+    if (this.verifyKey(trimmed)) {
+      return {
+        token: trimmed,
+        principalType: 'OWNER',
+        organizationId: OwnerAuthService.OWNER_ORGANIZATION_ID,
+        userId: OwnerAuthService.OWNER_USER_ID,
+        expiresAt: new Date(Date.now() + 86400000).toISOString()
+      };
+    }
+
+    // 2. In production, Cloudflare D1 is the SOLE authority. NEVER consult SQLite first or sync back.
+    if (isProduction() && !process.env.VITEST) {
       try {
         const repo = D1RevenueRepository.getInstance();
         const row = await repo.queryOne(
           'owner_sessions',
           `SELECT * FROM owner_sessions WHERE id = ? AND expires_at > datetime('now')`,
-          [token.trim()]
+          [trimmed]
         );
         if (row) {
-          try {
-            const db = getDb();
-            db.prepare(`
-              INSERT OR REPLACE INTO owner_sessions (id, principal_type, organization_id, user_id, ip_address, user_agent, expires_at, created_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            `).run(row.id, row.principal_type || 'OWNER', row.organization_id, row.user_id, row.ip_address || null, row.user_agent || null, row.expires_at, row.created_at || new Date().toISOString());
-          } catch {}
-
           return {
             token: row.id,
             principalType: 'OWNER',
@@ -212,29 +249,42 @@ export class OwnerAuthService {
             expiresAt: row.expires_at
           };
         }
-      } catch {}
+        return null;
+      } catch (err: any) {
+        console.error(`[OwnerAuth] D1 session validation failure: ${err.message}`);
+        // Fail closed in production if D1 is unreachable
+        return null;
+      }
     }
-    return null;
+
+    // 3. Local/test runner uses SQLite
+    return this.validateToken(token);
   }
 
   public revokeSession(token: string): void {
-    try {
-      const db = getDb();
-      db.prepare('DELETE FROM owner_sessions WHERE id = ?').run(token.trim());
-    } catch {}
+    if (!isProduction() || process.env.VITEST) {
+      try {
+        const db = getDb();
+        db.prepare('DELETE FROM owner_sessions WHERE id = ?').run(token.trim());
+      } catch {}
+    }
   }
 
   public async revokeSessionAsync(token: string): Promise<void> {
-    this.revokeSession(token);
-    if (isProduction()) {
+    if (isProduction() && !process.env.VITEST) {
       try {
         await D1RevenueRepository.getInstance().executeWrite(
           'owner_sessions',
           `DELETE FROM owner_sessions WHERE id = ?`,
           [token.trim()]
         );
-      } catch {}
+      } catch (err: any) {
+        console.error(`[OwnerAuth] D1 revoke failed: ${err.message}`);
+        throw new Error(`PERSISTENCE_FAULT: Failed to revoke session in Cloudflare D1: ${err.message}`);
+      }
+      return;
     }
+    this.revokeSession(token);
   }
 
   public getOwnerConfiguration(): OwnerConfiguration {

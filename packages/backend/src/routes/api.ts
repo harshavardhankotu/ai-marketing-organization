@@ -38,6 +38,7 @@ import { ReviewAndReferralEngine } from '../organic/review-and-referral-engine.j
 import { GoogleBusinessProfileAdapter } from '../organic/gbp-integration.js';
 import { TrafficProvenanceEngine } from '../organic/traffic-provenance.js';
 import { RazorpayAdapter } from '../integrations/razorpay.js';
+import { StripeAdapter } from '../integrations/stripe.js';
 import { DPDPComplianceManager } from '../compliance/dpdp-manager.js';
 import { MarketResearchPipeline } from '../research/market-research-pipeline.js';
 import { AutonomousRevenueOrchestrator } from '../revenue/autonomous-revenue-orchestrator.js';
@@ -92,6 +93,7 @@ export const EXACT_ROUTE_POLICY = {
   ],
   WEBHOOK: [
     '/webhooks/razorpay',
+    '/webhooks/stripe',
     '/webhooks/whatsapp',
     '/webhooks/email',
     '/webhooks/payments'
@@ -125,7 +127,8 @@ apiRouter.use('*', async (c, next) => {
   );
 
   if (isExplicitPublic) {
-    c.set('organizationId', c.req.header('x-organization-id') || (isProduction() ? '' : 'org_owner_primary'));
+    // In production, public requests MUST ignore client-supplied x-organization-id headers
+    c.set('organizationId', isProduction() ? '' : (c.req.header('x-organization-id') || 'org_owner_primary'));
     c.set('userId', 'usr_public_lead');
     return await next();
   }
@@ -897,28 +900,27 @@ apiRouter.post('/cron/ping', async (c) => {
     console.error(`[Cron Ping] Telemetry write failed: ${err.message}`);
   }
 
-  let orgs: any[] = [];
+  let eligibleBusinesses: any[] = [];
   try {
-    orgs = await d1Repo.query('organizations', 'SELECT id FROM organizations LIMIT 5');
+    eligibleBusinesses = await d1Repo.query('businesses', `
+      SELECT b.id as business_id, b.organization_id 
+      FROM businesses b
+      JOIN organizations o ON b.organization_id = o.id
+      ORDER BY b.created_at ASC
+    `);
   } catch {}
 
   const results: any[] = [];
   let allSucceeded = true;
   let lastError = '';
 
-  for (const org of orgs) {
-    let biz: any = null;
-    try {
-      biz = await d1Repo.queryOne('businesses', 'SELECT id FROM businesses WHERE organization_id = ? LIMIT 1', [org.id]);
-    } catch {}
-    if (!biz) continue;
-
+  for (const item of eligibleBusinesses) {
     try {
       const aro = AutonomousRevenueOrchestrator.getInstance();
-      const result = await aro.runCycle(org.id, biz.id, 'CLOUDFLARE_CRON');
+      const result = await aro.runCycle(item.organization_id, item.business_id, 'CLOUDFLARE_CRON');
       results.push({
-        organizationId: org.id,
-        businessId: biz.id,
+        organizationId: item.organization_id,
+        businessId: item.business_id,
         status: result.status,
         actionExecutionStatus: result.actionExecutionStatus,
         actionClassification: result.actionClassification,
@@ -928,7 +930,7 @@ apiRouter.post('/cron/ping', async (c) => {
     } catch (err: any) {
       allSucceeded = false;
       lastError = err.message;
-      results.push({ organizationId: org.id, status: 'ERROR', error: err.message });
+      results.push({ organizationId: item.organization_id, businessId: item.business_id, status: 'ERROR', error: err.message });
     }
   }
 
@@ -1886,6 +1888,192 @@ apiRouter.post('/webhooks/razorpay', async (c) => {
         : 400;
     return c.json({ success: false, error: err.message }, status);
   }
+});
+
+apiRouter.post('/webhooks/stripe', async (c) => {
+  const stripe = StripeAdapter.getInstance();
+  const rawBody = await c.req.text();
+  const signature = c.req.header('stripe-signature') || '';
+
+  if (isProduction() && !process.env.VITEST) {
+    if (!signature) {
+      return c.json({ success: false, error: 'SECURITY VIOLATION: Missing stripe-signature header' }, 401);
+    }
+  }
+
+  const isValid = stripe.verifyWebhookSignature(rawBody, signature);
+  if (!isValid) {
+    return c.json({ success: false, error: 'SECURITY VIOLATION: Invalid Stripe signature' }, 401);
+  }
+
+  let event: any;
+  try {
+    event = JSON.parse(rawBody);
+  } catch {
+    return c.json({ success: false, error: 'Invalid JSON payload' }, 400);
+  }
+
+  const eventId = event?.id;
+  if (!eventId) {
+    return c.json({ success: false, error: 'Missing event id' }, 400);
+  }
+
+  const d1Repo = D1RevenueRepository.getInstance();
+
+  // Idempotency: check if event has already been recorded
+  try {
+    const existing = await d1Repo.queryOne<any>(
+      'idempotent_actions',
+      `SELECT id FROM idempotent_actions WHERE id = ?`,
+      [`stripe_${eventId}`]
+    );
+    if (existing) {
+      return c.json({ success: true, duplicate: true, message: 'Event already processed' }, 200);
+    }
+  } catch {}
+
+  const eventType = event.type;
+
+  if (eventType === 'payment_intent.succeeded') {
+    const pi = event.data?.object;
+    const paymentIntentId = pi?.id;
+    const amountMinor = Number(pi?.amount || 0);
+    const currency = (pi?.currency || 'USD').toUpperCase();
+    const orderIdFromMeta = pi?.metadata?.orderId;
+
+    // Find order
+    let order: any = null;
+    if (orderIdFromMeta) {
+      order = await d1Repo.queryOne<any>('universal_orders', `SELECT * FROM universal_orders WHERE id = ?`, [orderIdFromMeta]);
+    }
+    if (!order && paymentIntentId) {
+      order = await d1Repo.queryOne<any>('universal_orders', `SELECT * FROM universal_orders WHERE provider_order_id = ?`, [paymentIntentId]);
+    }
+
+    if (!order) {
+      console.warn(`[Stripe Webhook] Order not found for PaymentIntent ${paymentIntentId}`);
+      return c.json({ success: true, warning: 'ORDER_NOT_FOUND', paymentIntentId }, 200);
+    }
+
+    // Check if already paid
+    if (order.status === 'PAID') {
+      return c.json({ success: true, duplicate: true, orderId: order.id, status: 'PAID' }, 200);
+    }
+
+    // Update order status to PAID
+    await d1Repo.executeWrite(
+      'universal_orders',
+      `UPDATE universal_orders SET status = 'PAID', provider_payment_id = ?, updated_at = datetime('now') WHERE id = ?`,
+      [paymentIntentId, order.id]
+    );
+
+    // Record verified revenue entry in revenue_records
+    const revId = `rev_str_${Date.now()}_${paymentIntentId.slice(-8)}`;
+    await d1Repo.executeWrite(
+      'revenue_records',
+      `INSERT INTO revenue_records (
+        id, organization_id, business_id, revenue_type, source, transaction_id,
+        amount_inr, currency, verified, verification_method, classification,
+        recurring_model, timestamp
+      ) VALUES (?, ?, ?, 'PAYMENT_CAPTURE', 'STRIPE_WEBHOOK', ?, ?, ?, 1, 'STRIPE_WEBHOOK', 'REAL', 'ONE_TIME', datetime('now'))`,
+      [
+        revId,
+        order.organization_id,
+        order.business_id,
+        paymentIntentId,
+        toMajorUnits(amountMinor, currency),
+        currency
+      ]
+    );
+
+    // Trigger fulfillment task
+    const ftId = `ft_${Date.now()}_${order.id.slice(-6)}`;
+    await d1Repo.executeWrite(
+      'fulfillment_tasks',
+      `INSERT INTO fulfillment_tasks (
+        id, order_id, business_id, organization_id, title,
+        fulfillment_type, sla_hours, state, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 'SERVICE_DELIVERY', 24, 'PENDING', datetime('now'), datetime('now'))`,
+      [
+        ftId,
+        order.id,
+        order.business_id,
+        order.organization_id,
+        `Fulfillment for Order ${order.id}`
+      ]
+    );
+  } else if (eventType === 'payment_intent.payment_failed') {
+    const pi = event.data?.object;
+    const paymentIntentId = pi?.id;
+    if (paymentIntentId) {
+      await d1Repo.executeWrite(
+        'universal_orders',
+        `UPDATE universal_orders SET status = 'PAYMENT_FAILED', updated_at = datetime('now') WHERE provider_order_id = ?`,
+        [paymentIntentId]
+      );
+    }
+  } else if (eventType === 'payment_intent.canceled') {
+    const pi = event.data?.object;
+    const paymentIntentId = pi?.id;
+    if (paymentIntentId) {
+      await d1Repo.executeWrite(
+        'universal_orders',
+        `UPDATE universal_orders SET status = 'CANCELLED', updated_at = datetime('now') WHERE provider_order_id = ?`,
+        [paymentIntentId]
+      );
+    }
+  } else if (eventType === 'charge.refunded') {
+    const charge = event.data?.object;
+    const paymentIntentId = charge?.payment_intent;
+    const refundAmountMinor = Number(charge?.amount_refunded || 0);
+    const currency = (charge?.currency || 'USD').toUpperCase();
+
+    if (paymentIntentId) {
+      const order = await d1Repo.queryOne<any>(
+        'universal_orders',
+        `SELECT * FROM universal_orders WHERE provider_order_id = ?`,
+        [paymentIntentId]
+      );
+
+      if (order) {
+        await d1Repo.executeWrite(
+          'universal_orders',
+          `UPDATE universal_orders SET status = 'REFUNDED', updated_at = datetime('now') WHERE id = ?`,
+          [order.id]
+        );
+
+        // Compensating ledger entry in revenue_records
+        const revRefundId = `rev_ref_${Date.now()}_${paymentIntentId.slice(-8)}`;
+        await d1Repo.executeWrite(
+          'revenue_records',
+          `INSERT INTO revenue_records (
+            id, organization_id, business_id, revenue_type, source, transaction_id,
+            amount_inr, currency, verified, verification_method, classification,
+            recurring_model, timestamp
+          ) VALUES (?, ?, ?, 'REFUND', 'STRIPE_WEBHOOK', ?, ?, ?, 1, 'STRIPE_WEBHOOK', 'REAL', 'ONE_TIME', datetime('now'))`,
+          [
+            revRefundId,
+            order.organization_id,
+            order.business_id,
+            paymentIntentId,
+            -toMajorUnits(refundAmountMinor, currency),
+            currency
+          ]
+        );
+      }
+    }
+  }
+
+  // Record idempotency
+  try {
+    await d1Repo.executeWrite(
+      'idempotent_actions',
+      `INSERT OR IGNORE INTO idempotent_actions (id, action_type, payload_hash, expires_at, created_at) VALUES (?, 'STRIPE_WEBHOOK', ?, datetime('now', '+7 days'), datetime('now'))`,
+      [`stripe_${eventId}`, eventType]
+    );
+  } catch {}
+
+  return c.json({ success: true, event: eventType, processed: true }, 200);
 });
 
 // WhatsApp Webhook Verification (Meta Cloud API Challenge)
