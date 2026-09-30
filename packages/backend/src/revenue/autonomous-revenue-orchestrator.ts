@@ -214,13 +214,23 @@ export class AutonomousRevenueOrchestrator {
       console.log(`[ARO] Quota status: Gemini=${geminiStatus?.mode} (${geminiStatus?.remainingAllowance} left), Tavily=${tavilyStatus?.mode} (${tavilyStatus?.remainingAllowance} left)`);
 
       // Process due durable events
-      const pendingEvents = DurableEventBus.claimPending(organizationId, 10);
+      const pendingEvents = isProduction()
+        ? await DurableEventBus.claimPendingAsync(organizationId, 10)
+        : DurableEventBus.claimPending(organizationId, 10);
       for (const event of pendingEvents) {
         try {
           await this.handleDurableEvent(event.eventType, event.payload, organizationId, businessId);
-          DurableEventBus.markProcessed(event.id, 'aro-orchestrator');
+          if (isProduction()) {
+            await DurableEventBus.markProcessedAsync(event.id, 'aro-orchestrator');
+          } else {
+            DurableEventBus.markProcessed(event.id, 'aro-orchestrator');
+          }
         } catch (evtErr: any) {
-          DurableEventBus.markProcessed(event.id, 'aro-orchestrator', evtErr.message);
+          if (isProduction()) {
+            await DurableEventBus.markProcessedAsync(event.id, 'aro-orchestrator', evtErr.message);
+          } else {
+            DurableEventBus.markProcessed(event.id, 'aro-orchestrator', evtErr.message);
+          }
           errors.push(`Event ${event.id} failed: ${evtErr.message}`);
         }
       }
