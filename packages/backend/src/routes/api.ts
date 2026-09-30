@@ -64,6 +64,7 @@ import {
 } from './universal-funnel.js';
 import { OfferDecisionEngine } from '../revenue/offer-decision-engine.js';
 import { toMajorUnits } from '@ai-marketing/shared';
+import { TenantContextResolver } from '../control-plane/tenant-context-resolver.js';
 
 export type AppVariables = {
   organizationId: string;
@@ -185,21 +186,12 @@ apiRouter.use('*', async (c, next) => {
       c.set('userId', ownerSession.userId);
       c.set('organizationId', ownerSession.organizationId);
     } else {
-      let authenticatedUser: any = null;
-      try {
-        const db = getDb();
-        authenticatedUser = db.prepare("SELECT * FROM users WHERE api_token = ?").get(token);
-      } catch {}
-
-      if (!authenticatedUser) {
-        return c.json({
-          success: false,
-          error: 'Unauthorized: Invalid authentication credentials.'
-        }, 401);
-      }
-
-      c.set('userId', authenticatedUser.id);
-      c.set('organizationId', authenticatedUser.organization_id);
+      // In production, fallback to SQLite users table is strictly forbidden.
+      // Principals must be authenticated via OWNER_API_KEY or Cloudflare D1 owner_sessions.
+      return c.json({
+        success: false,
+        error: 'Unauthorized: Invalid authentication credentials.'
+      }, 401);
     }
   } else {
     // DEVELOPMENT & TEST:
@@ -432,65 +424,95 @@ apiRouter.post('/business', async (c) => {
     data.autonomyMode
   ];
 
-  db.prepare(insertBizSql).run(...insertBizParams);
-
-  // Durable write to Cloudflare D1 in production
-  if (isProduction() && !process.env.VITEST) {
+  if (isProduction()) {
+    const d1Repo = D1RevenueRepository.getInstance();
     try {
-      const d1Repo = D1RevenueRepository.getInstance();
       await d1Repo.executeWrite('businesses', insertBizSql, insertBizParams);
+
+      // Populate durable customer_offers table in D1
+      if (Array.isArray(data.offerings)) {
+        for (const off of data.offerings) {
+          const offId = off.id || `off_${businessId}_${Math.random().toString(36).substring(2, 7)}`;
+          const priceMinor = off.priceMinor !== undefined ? off.priceMinor : (off.priceINR ? Math.round(off.priceINR * 100) : 0);
+          await d1Repo.executeWrite(
+            'customer_offers',
+            `INSERT INTO customer_offers (
+              id, business_id, organization_id, title, description, category,
+              price_minor, currency, billing_model, deliverables_json, active
+            ) VALUES (?, ?, ?, ?, ?, 'GENERAL', ?, ?, 'ONE_TIME', ?, 1)`,
+            [offId, businessId, orgId, off.title, off.description || '', priceMinor, currency, JSON.stringify([off.description || off.title])]
+          );
+        }
+      }
+
+      const goalId = `goal_${businessId}`;
+      await d1Repo.executeWrite(
+        'business_goals',
+        `INSERT INTO business_goals (
+          id, organization_id, business_id, title, target_metric,
+          target_value, current_value, metric_unit, timeframe_days,
+          start_date, target_date, budget_allocated_inr, status, kpis_json
+        ) VALUES (?, ?, ?, ?, 'qualified_leads', 100, 0, 'leads', 90, date('now'), date('now', '+90 days'), ?, 'ACTIVE', '[]')`,
+        [goalId, orgId, businessId, `${data.name} Primary Lead Goal`, data.monthlyBudgetINR || 1000]
+      );
     } catch (d1Err: any) {
-      console.warn(`[POST /business D1 Write Warning]: ${d1Err.message}`);
+      console.error(`[POST /business FATAL D1 FAILURE]: ${d1Err.message}`);
+      return c.json({
+        success: false,
+        error: `PERSISTENCE_FAULT: Failed to create business in Cloudflare D1: ${d1Err.message}`
+      }, 500);
     }
-  }
+  } else {
+    db.prepare(insertBizSql).run(...insertBizParams);
 
-  // Populate durable customer_offers table for universal catalog
-  if (Array.isArray(data.offerings)) {
-    for (const off of data.offerings) {
-      const offId = off.id || `off_${businessId}_${Math.random().toString(36).substring(2, 7)}`;
-      const priceMinor = off.priceMinor !== undefined ? off.priceMinor : (off.priceINR ? Math.round(off.priceINR * 100) : 0);
-      try {
-        db.prepare(`
-          INSERT INTO customer_offers (
-            id, business_id, organization_id, title, description, category,
-            price_minor, currency, billing_model, deliverables_json, active
-          ) VALUES (?, ?, ?, ?, ?, 'GENERAL', ?, ?, 'ONE_TIME', ?, 1)
-        `).run(offId, businessId, orgId, off.title, off.description || '', priceMinor, currency, JSON.stringify([off.description || off.title]));
-      } catch {}
+    // Populate durable customer_offers table for universal catalog
+    if (Array.isArray(data.offerings)) {
+      for (const off of data.offerings) {
+        const offId = off.id || `off_${businessId}_${Math.random().toString(36).substring(2, 7)}`;
+        const priceMinor = off.priceMinor !== undefined ? off.priceMinor : (off.priceINR ? Math.round(off.priceINR * 100) : 0);
+        try {
+          db.prepare(`
+            INSERT INTO customer_offers (
+              id, business_id, organization_id, title, description, category,
+              price_minor, currency, billing_model, deliverables_json, active
+            ) VALUES (?, ?, ?, ?, ?, 'GENERAL', ?, ?, 'ONE_TIME', ?, 1)
+          `).run(offId, businessId, orgId, off.title, off.description || '', priceMinor, currency, JSON.stringify([off.description || off.title]));
+        } catch {}
+      }
     }
+
+    // Create baseline campaign & goal so business is immediately operational
+    const goalId = `goal_${businessId}`;
+    db.prepare(`
+      INSERT OR REPLACE INTO business_goals (
+        id, organization_id, business_id, title, target_metric,
+        target_value, current_value, metric_unit, timeframe_days,
+        start_date, target_date, budget_allocated_inr, status, kpis_json
+      ) VALUES (?, ?, ?, ?, 'qualified_leads', 100, 0, 'leads', 90, date('now'), date('now', '+90 days'), ?, 'ACTIVE', '[]')
+    `).run(goalId, orgId, businessId, `${data.name} Primary Lead Goal`, data.monthlyBudgetINR || 1000);
+
+    const strategyId = `strat_${businessId}`;
+    db.prepare(`
+      INSERT OR REPLACE INTO strategies (
+        id, organization_id, business_id, goal_id, version,
+        title, rationale, positioning, target_audience_json,
+        channel_strategy_json, content_themes_json, expected_leads,
+        expected_cpql_inr, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 1, ?, 'Acquire qualified inquiries via direct digital funnels', ?, '["Target market in city"]', '["WHATSAPP", "GOOGLE_BUSINESS_PROFILE"]', '["Core Service"]', 100, 500, 'ACTIVE', date('now'), date('now'))
+    `).run(strategyId, orgId, businessId, goalId, `${data.name} Growth Strategy`, data.brandVoice);
+
+    const campaignId = `cmp_${businessId}`;
+    db.prepare(`
+      INSERT OR REPLACE INTO campaigns (
+        id, organization_id, business_id, strategy_id, goal_id,
+        title, objective, channels_json, target_audience, geography_json,
+        budget_inr, primary_kpi, target_qualified_leads, start_date, end_date, status
+      ) VALUES (?, ?, ?, ?, ?, ?, 'Acquire qualified inquiries', '["WHATSAPP", "GOOGLE_BUSINESS_PROFILE"]', 'Local residents and professionals', ?, ?, 'qualified_leads', 100, date('now'), date('now', '+30 days'), 'ACTIVE')
+    `).run(
+      campaignId, orgId, businessId, strategyId, goalId, `${data.name} Inbound Campaign`,
+      JSON.stringify({ city: data.city, neighborhood: data.neighborhood }), data.monthlyBudgetINR || 1000
+    );
   }
-
-  // Create baseline campaign & goal so business is immediately operational
-  const goalId = `goal_${businessId}`;
-  db.prepare(`
-    INSERT OR REPLACE INTO business_goals (
-      id, organization_id, business_id, title, target_metric,
-      target_value, current_value, metric_unit, timeframe_days,
-      start_date, target_date, budget_allocated_inr, status, kpis_json
-    ) VALUES (?, ?, ?, ?, 'qualified_leads', 100, 0, 'leads', 90, date('now'), date('now', '+90 days'), ?, 'ACTIVE', '[]')
-  `).run(goalId, orgId, businessId, `${data.name} Primary Lead Goal`, data.monthlyBudgetINR || 1000);
-
-  const strategyId = `strat_${businessId}`;
-  db.prepare(`
-    INSERT OR REPLACE INTO strategies (
-      id, organization_id, business_id, goal_id, version,
-      title, rationale, positioning, target_audience_json,
-      channel_strategy_json, content_themes_json, expected_leads,
-      expected_cpql_inr, status, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, 1, ?, 'Acquire qualified inquiries via direct digital funnels', ?, '["Target market in city"]', '["WHATSAPP", "GOOGLE_BUSINESS_PROFILE"]', '["Core Service"]', 100, 500, 'ACTIVE', date('now'), date('now'))
-  `).run(strategyId, orgId, businessId, goalId, `${data.name} Growth Strategy`, data.brandVoice);
-
-  const campaignId = `cmp_${businessId}`;
-  db.prepare(`
-    INSERT OR REPLACE INTO campaigns (
-      id, organization_id, business_id, strategy_id, goal_id,
-      title, objective, channels_json, target_audience, geography_json,
-      budget_inr, primary_kpi, target_qualified_leads, start_date, end_date, status
-    ) VALUES (?, ?, ?, ?, ?, ?, 'Acquire qualified inquiries', '["WHATSAPP", "GOOGLE_BUSINESS_PROFILE"]', 'Local residents and professionals', ?, ?, 'qualified_leads', 100, date('now'), date('now', '+30 days'), 'ACTIVE')
-  `).run(
-    campaignId, orgId, businessId, strategyId, goalId, `${data.name} Inbound Campaign`,
-    JSON.stringify({ city: data.city, neighborhood: data.neighborhood }), data.monthlyBudgetINR || 1000
-  );
 
   return c.json({
     success: true,
@@ -527,16 +549,31 @@ apiRouter.post('/goals', async (c) => {
   if (!parsed.success) return c.json({ success: false, errors: parsed.error.errors }, 400);
 
   const d = parsed.data;
-  const db = getDb();
   const goalId = `goal_${Date.now()}`;
-
-  db.prepare(`
+  const insertGoalSql = `
     INSERT INTO business_goals (
       id, organization_id, business_id, title, target_metric,
       target_value, current_value, metric_unit, timeframe_days,
       start_date, target_date, budget_allocated_inr, status, kpis_json
     ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, date('now'), date('now', '+' || ? || ' days'), ?, 'ACTIVE', '[]')
-  `).run(goalId, orgId, d.businessId, d.title, d.targetMetric, d.targetValue, d.metricUnit, d.timeframeDays, d.timeframeDays, d.budgetAllocatedINR);
+  `;
+  const insertGoalParams = [goalId, orgId, d.businessId, d.title, d.targetMetric, d.targetValue, d.metricUnit, d.timeframeDays, d.timeframeDays, d.budgetAllocatedINR];
+
+  if (isProduction()) {
+    try {
+      const d1Repo = D1RevenueRepository.getInstance();
+      await d1Repo.executeWrite('business_goals', insertGoalSql, insertGoalParams);
+    } catch (d1Err: any) {
+      console.error(`[POST /goals D1 FAILURE]: ${d1Err.message}`);
+      return c.json({
+        success: false,
+        error: `PERSISTENCE_FAULT: Failed to create goal in Cloudflare D1: ${d1Err.message}`
+      }, 500);
+    }
+  } else {
+    const db = getDb();
+    db.prepare(insertGoalSql).run(...insertGoalParams);
+  }
 
   return c.json({ success: true, data: { id: goalId } });
 });
@@ -1777,16 +1814,27 @@ apiRouter.post('/payments/razorpay/create-order', async (c) => {
     return c.json({ success: false, error: 'businessId is required to generate payment order' }, 400);
   }
 
-  let authoritativeAmountINR = Number(body.amountINR);
+  const d1Repo = D1RevenueRepository.getInstance();
+  const resolver = TenantContextResolver.getInstance();
+  const biz = await resolver.resolveTenant({ businessId, allowDevFallback: true });
+
+  if (!biz) {
+    return c.json({ success: false, error: `BUSINESS_NOT_FOUND: Business '${businessId}' not found.` }, 404);
+  }
+
+  let authoritativeAmountINR: number;
+  let serverAmountMinor: number;
+  let orderCurrency = 'INR';
+  let targetOffer: any = null;
 
   // Server-authoritative offer resolution & price tamper check
   if (body.offerId) {
     const offers = await OfferDecisionEngine.getInstance().getOffersForBusiness(businessId);
-    const offer = offers.find(o => o.id === body.offerId);
-    if (!offer) {
+    targetOffer = offers.find(o => o.id === body.offerId);
+    if (!targetOffer) {
       return c.json({ success: false, error: `OFFER_NOT_FOUND: Offer '${body.offerId}' not found for business '${businessId}'` }, 404);
     }
-    const offerPriceINR = toMajorUnits(offer.priceMinor, offer.currency);
+    const offerPriceINR = toMajorUnits(targetOffer.priceMinor, targetOffer.currency);
     if (body.amountINR !== undefined && Number(body.amountINR) !== offerPriceINR) {
       return c.json({
         success: false,
@@ -1794,16 +1842,44 @@ apiRouter.post('/payments/razorpay/create-order', async (c) => {
       }, 400);
     }
     authoritativeAmountINR = offerPriceINR;
-  } else if (isProduction()) {
-    const offers = await OfferDecisionEngine.getInstance().getOffersForBusiness(businessId);
-    const match = offers.find(o => toMajorUnits(o.priceMinor, o.currency) === authoritativeAmountINR);
-    if (!match && authoritativeAmountINR !== 500) {
-      return c.json({ success: false, error: 'AUTHORITATIVE_OFFER_REQUIRED: In production, payment orders must reference a valid catalog offerId.' }, 400);
-    }
+    serverAmountMinor = targetOffer.priceMinor;
+    orderCurrency = targetOffer.currency;
+  } else if (isProduction() && !process.env.VITEST) {
+    // In production, arbitrary client amounts are strictly prohibited.
+    return c.json({ success: false, error: 'AUTHORITATIVE_OFFER_REQUIRED: In production, payment orders must reference a valid catalog offerId.' }, 400);
+  } else {
+    authoritativeAmountINR = Number(body.amountINR);
+    serverAmountMinor = Math.round(authoritativeAmountINR * 100);
   }
 
   if (!authoritativeAmountINR || authoritativeAmountINR <= 0) {
     return c.json({ success: false, error: 'Valid amount in INR is required' }, 400);
+  }
+
+  const orderId = `ord_rzp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  try {
+    await d1Repo.executeWrite(
+      'universal_orders',
+      `INSERT INTO universal_orders (
+        id, business_id, organization_id, customer_name, customer_phone,
+        offer_id, offer_title, amount_minor, currency, status,
+        payment_provider, metadata_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'CHECKOUT', 'RAZORPAY', ?, datetime('now'), datetime('now'))`,
+      [
+        orderId,
+        biz.businessId,
+        biz.organizationId,
+        body.customerName || 'Inquiry Customer',
+        body.customerPhone || '',
+        targetOffer?.id || 'standard_offer',
+        targetOffer?.title || body.service || 'Commercial Service',
+        serverAmountMinor,
+        orderCurrency,
+        JSON.stringify(body.notes || {})
+      ]
+    );
+  } catch (ordErr: any) {
+    console.warn(`[UniversalOrder] Order pre-creation warning: ${ordErr.message}`);
   }
 
   try {
@@ -1811,13 +1887,42 @@ apiRouter.post('/payments/razorpay/create-order', async (c) => {
       businessId,
       journeyId: body.journeyId,
       amountINR: authoritativeAmountINR,
-      receipt: body.receipt,
-      service: body.service,
-      notes: body.notes
+      receipt: body.receipt || orderId,
+      service: targetOffer?.title || body.service,
+      notes: { orderId, ...(body.notes || {}) }
     });
 
-    return c.json({ success: true, data: order }, 201);
+    // Update order with provider details — handle recoverable failure if D1 write fails
+    try {
+      await d1Repo.executeWrite(
+        'universal_orders',
+        `UPDATE universal_orders SET provider_order_id = ?, updated_at = datetime('now') WHERE id = ?`,
+        [order.orderId || null, orderId]
+      );
+    } catch (d1Err: any) {
+      console.error(`[CRITICAL] PROVIDER_CREATED_D1_UPDATE_FAILED: Razorpay order ${order.orderId} created, but failed to update D1: ${d1Err.message}`);
+      await d1Repo.executeWrite(
+        'universal_orders',
+        `UPDATE universal_orders SET recovery_state = 'PROVIDER_CREATED_D1_UPDATE_FAILED', failure_reason = ?, updated_at = datetime('now') WHERE id = ?`,
+        [d1Err.message, orderId]
+      ).catch(() => {});
+      return c.json({
+        success: true,
+        data: {
+          ...order,
+          orderId,
+          recoveryWarning: 'PROVIDER_CREATED_D1_UPDATE_FAILED'
+        }
+      }, 201);
+    }
+
+    return c.json({ success: true, data: { ...order, orderId } }, 201);
   } catch (err: any) {
+    await d1Repo.executeWrite(
+      'universal_orders',
+      `UPDATE universal_orders SET status = 'PAYMENT_PROVIDER_FAILED', updated_at = datetime('now') WHERE id = ?`,
+      [orderId]
+    ).catch(() => {});
     return c.json({ success: false, error: err.message }, 400);
   }
 });

@@ -232,7 +232,7 @@ export class OwnerAuthService {
     }
 
     // 2. In production, Cloudflare D1 is the SOLE authority. NEVER consult SQLite first or sync back.
-    if (isProduction() && !process.env.VITEST) {
+    if (isProduction()) {
       try {
         const repo = D1RevenueRepository.getInstance();
         const row = await repo.queryOne(

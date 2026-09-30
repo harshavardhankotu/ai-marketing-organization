@@ -394,6 +394,10 @@ export function getDb(dbPath?: string): Database.Database {
   try {
     db.exec(`ALTER TABLE businesses ADD COLUMN service_area_json TEXT DEFAULT '[]'`);
   } catch {}
+  try { db.exec(`ALTER TABLE revenue_records ADD COLUMN amount_minor INTEGER`); } catch {}
+  try { db.exec(`ALTER TABLE universal_orders ADD COLUMN offer_title TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE universal_orders ADD COLUMN recovery_state TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE universal_orders ADD COLUMN failure_reason TEXT`); } catch {}
 
   // Initialize schema (creates all tables if not exist — safe for both fresh and existing DBs)
 

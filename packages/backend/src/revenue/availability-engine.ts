@@ -1,11 +1,39 @@
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { AvailabilitySlot, BookingReservation } from '@ai-marketing/shared';
 
+import { isProduction } from '../config/env.js';
+
 export interface AvailabilityQueryOptions {
   startDate?: string;
   endDate?: string;
   resourceId?: string;
   resourceType?: string;
+}
+
+export function localTimeToUtcIso(dateStr: string, hour: number, minute: number, timeZone: string = 'UTC'): string {
+  const hhStr = String(hour).padStart(2, '0');
+  const mmStr = String(minute).padStart(2, '0');
+  const guess = new Date(`${dateStr}T${hhStr}:${mmStr}:00.000Z`);
+  try {
+    const dtf = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      year: 'numeric', month: 'numeric', day: 'numeric',
+      hour: 'numeric', minute: 'numeric', second: 'numeric',
+      hour12: false
+    });
+    const parts = dtf.formatToParts(guess);
+    const p: Record<string, string> = {};
+    parts.forEach(({ type, value }) => { p[type] = value; });
+    const targetLocalH = hour;
+    const targetLocalM = minute;
+    const actualLocalH = parseInt(p.hour === '24' ? '0' : p.hour, 10);
+    const actualLocalM = parseInt(p.minute, 10);
+    const diffMinutes = (targetLocalH * 60 + targetLocalM) - (actualLocalH * 60 + actualLocalM);
+    const adjusted = new Date(guess.getTime() + diffMinutes * 60 * 1000);
+    return adjusted.toISOString();
+  } catch {
+    return guess.toISOString();
+  }
 }
 
 export interface ReservationRequest {
@@ -71,7 +99,7 @@ export class AvailabilityEngine implements AvailabilityProvider {
         for (const m of [0, 30]) {
           const hhStr = String(h).padStart(2, '0');
           const mmStr = String(m).padStart(2, '0');
-          const startIso = `${datePrefix}T${hhStr}:${mmStr}:00.000Z`;
+          const startIso = localTimeToUtcIso(datePrefix, h, m, timezone);
           
           const endD = new Date(new Date(startIso).getTime() + 30 * 60 * 1000);
           const endIso = endD.toISOString();
@@ -162,7 +190,12 @@ export class AvailabilityEngine implements AvailabilityProvider {
       }));
     }
 
-    // Auto-seed if business exists and slots are empty
+    // In production, availability must be explicitly created. Never auto-seed synthetic slots on query.
+    if (isProduction() && !process.env.VITEST) {
+      return [];
+    }
+
+    // Auto-seed in dev/test if business exists and slots are empty
     const biz = await this.repo.queryOne<any>(
       'businesses',
       `SELECT id, organization_id, timezone FROM businesses WHERE id = ?`,
@@ -198,14 +231,61 @@ export class AvailabilityEngine implements AvailabilityProvider {
         [slotId]
       );
     } else if (params.preferredDate) {
-      // Find slot matching date
-      targetSlot = await this.repo.queryOne<any>(
-        'availability_slots',
-        `SELECT * FROM availability_slots 
-         WHERE business_id = ? AND start_time LIKE ? AND is_available = 1 AND reserved_count < capacity
-         ORDER BY start_time ASC LIMIT 1`,
-        [businessId, `${params.preferredDate}%`]
-      );
+      if (params.preferredTime) {
+        const allDateSlots = await this.repo.query<any>(
+          'availability_slots',
+          `SELECT * FROM availability_slots 
+           WHERE business_id = ? AND start_time LIKE ? AND is_available = 1 AND reserved_count < capacity
+           ORDER BY start_time ASC`,
+          [businessId, `${params.preferredDate}%`]
+        );
+
+        if (allDateSlots.length === 0) {
+          return {
+            success: false,
+            status: 'UNAVAILABLE',
+            error: `NO_AVAILABILITY_ON_DATE: No available appointment slots on date ${params.preferredDate}.`
+          };
+        }
+
+        const timeMatch = params.preferredTime.match(/(\d{1,2}):(\d{2})/);
+        if (timeMatch) {
+          const targetMin = parseInt(timeMatch[1], 10) * 60 + parseInt(timeMatch[2], 10);
+          let closestSlot: any = null;
+          let minDiff = Infinity;
+
+          for (const s of allDateSlots) {
+            const slotD = new Date(s.start_time);
+            const slotMin = slotD.getUTCHours() * 60 + slotD.getUTCMinutes();
+            const diff = Math.abs(slotMin - targetMin);
+            if (diff < minDiff) {
+              minDiff = diff;
+              closestSlot = s;
+            }
+          }
+
+          if (minDiff <= 45 && closestSlot) {
+            targetSlot = closestSlot;
+          } else {
+            return {
+              success: false,
+              status: 'UNAVAILABLE',
+              error: `TIME_NOT_AVAILABLE: No appointment slot available near requested time '${params.preferredTime}'.`
+            };
+          }
+        } else {
+          targetSlot = allDateSlots[0];
+        }
+      } else {
+        // Find slot matching date
+        targetSlot = await this.repo.queryOne<any>(
+          'availability_slots',
+          `SELECT * FROM availability_slots 
+           WHERE business_id = ? AND start_time LIKE ? AND is_available = 1 AND reserved_count < capacity
+           ORDER BY start_time ASC LIMIT 1`,
+          [businessId, `${params.preferredDate}%`]
+        );
+      }
     }
 
     if (!targetSlot) {
@@ -278,29 +358,57 @@ export class AvailabilityEngine implements AvailabilityProvider {
 
     // 6. Write confirmed reservation with server-authoritative timestamps from slot
     const reservationId = `res_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const organizationId = targetSlot.organization_id || 'org_owner_primary';
+    let organizationId = targetSlot.organization_id;
+    if (!organizationId) {
+      const biz = await this.repo.queryOne<any>('businesses', `SELECT organization_id FROM businesses WHERE id = ?`, [businessId]);
+      organizationId = biz?.organization_id;
+    }
+    if (!organizationId) {
+      // Rollback reservation counter if organization cannot be resolved
+      await this.repo.executeWrite(
+        'availability_slots',
+        `UPDATE availability_slots SET reserved_count = MAX(0, reserved_count - 1), updated_at = datetime('now') WHERE id = ?`,
+        [targetSlot.id]
+      ).catch(() => {});
+      return {
+        success: false,
+        status: 'BLOCKED',
+        error: 'TENANT_NOT_FOUND: Organization identity could not be resolved for booking.'
+      };
+    }
 
-    await this.repo.executeWrite(
-      'booking_reservations',
-      `INSERT INTO booking_reservations (
-        id, business_id, organization_id, slot_id,
-        customer_name, customer_contact, customer_email, service_title,
-        status, start_time, end_time, metadata_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'CONFIRMED', ?, ?, ?, datetime('now'), datetime('now'))`,
-      [
-        reservationId,
-        businessId,
-        organizationId,
-        targetSlot.id,
-        customerName.trim(),
-        customerContact.trim(),
-        customerEmail ? customerEmail.trim() : null,
-        serviceTitle || 'Service Consultation',
-        targetSlot.start_time, // Server authoritative!
-        targetSlot.end_time,   // Server authoritative!
-        JSON.stringify(params.metadata || {})
-      ]
-    );
+    try {
+      await this.repo.executeWrite(
+        'booking_reservations',
+        `INSERT INTO booking_reservations (
+          id, business_id, organization_id, slot_id,
+          customer_name, customer_contact, customer_email, service_title,
+          status, start_time, end_time, metadata_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'CONFIRMED', ?, ?, ?, datetime('now'), datetime('now'))`,
+        [
+          reservationId,
+          businessId,
+          organizationId,
+          targetSlot.id,
+          customerName.trim(),
+          customerContact.trim(),
+          customerEmail ? customerEmail.trim() : null,
+          serviceTitle || 'Service Consultation',
+          targetSlot.start_time, // Server authoritative!
+          targetSlot.end_time,   // Server authoritative!
+          JSON.stringify(params.metadata || {})
+        ]
+      );
+    } catch (insertErr: any) {
+      // Compensating rollback on failure
+      await this.repo.executeWrite(
+        'availability_slots',
+        `UPDATE availability_slots SET reserved_count = MAX(0, reserved_count - 1), updated_at = datetime('now') WHERE id = ?`,
+        [targetSlot.id]
+      ).catch(e => console.error(`[CRITICAL] Failed compensating rollback for slot ${targetSlot.id}: ${e.message}`));
+
+      throw insertErr;
+    }
 
     const reservation: BookingReservation = {
       id: reservationId,

@@ -25,7 +25,7 @@
 | **Cron Trigger & Ping Route** | **PASS** | 2026-09-30 | `POST /api/v1/cron/ping` | Returns `HTTP 200 OK` when authenticated with `X-Cron-Secret`. Runs async autonomy lock & durable cycle logging cleanly. |
 | **Cron Heartbeat & Telemetry** | **PASS** | 2026-09-30 | `GET /api/v1/cron/status` | Returns `HTTP 200 OK`.<br>Status: **`HEALTHY`**<br>Total Pings: **`16`**<br>Last Observed Ping: `2026-09-29 23:02:40`<br>Last Successful Cycle: `2026-09-29 23:02:46`<br>Cycle Result: `SUCCESS`<br>Worker Source: `node` / `cloudflare-cron-worker` |
 | **Authenticated System Readiness** | **PASS** | 2026-09-30 | `GET /api/v1/system/readiness` | Returns `HTTP 200 OK` when authenticated with `x-api-key: [OWNER_API_KEY]`.<br>12/12 checks passed (`operatingState: 'FIRST_REAL_LEAD'`). |
-| **Test Suite & Build** | **PASS** | 2026-09-30 | `npm run build && npm run typecheck && npm test` | Build exit code: `0` (monorepo root covers `shared`, `backend`, `frontend`, `cloudflare-worker`)<br>Typecheck exit code: `0` across all 4 packages<br>Test files: `44 passed (44)`<br>Tests: `415 passed (415)`<br>Failed: `0` |
+| **Test Suite & Build** | **PASS** | 2026-09-30 | `npm run build && npm run typecheck && npm test` | Build exit code: `0` (monorepo root covers `shared`, `backend`, `frontend`, `cloudflare-worker`)<br>Typecheck exit code: `0` across all 4 packages<br>Test files: `45 passed (45)`<br>Tests: `425 passed (425)`<br>Failed: `0` |
 
 ---
 
@@ -83,7 +83,16 @@
     - Refactored `SystemReadinessEngine` around capability-based dimensions (`DATABASE`, `AUTH`, `STRIPE`, `RAZORPAY`, `PROVIDER`) without hardcoded `passed: true` or dental/Indian assumptions.
     - Removed Indian country/currency/timezone defaults from `CreateBusinessProfileSchema` into an explicit `IndiaOnboardingPreset` alongside authoritative ISO-4217 Currency Metadata Registry.
     - Iterated all eligible businesses across all organizations during cron ping without `LIMIT 5` suppression.
-    - Test suite expanded to 44 files, 415 passing tests (0 failures). Full monorepo build and typecheck passing across all 4 packages.
+19. **2026-09-30 — UCOS Final Production Safety & Durability Hardening (`feat/ucos-final-integrity-complete`):**
+    - **Zero SQLite Auth Fallback in Production:** Removed all production fallback queries against SQLite `users.api_token` in `OwnerAuthService` and `api.ts`. Production requests authenticate strictly against `OWNER_API_KEY` (env secret) or Cloudflare D1 `owner_sessions`. D1 outages fail closed without falling back to local SQLite.
+    - **D1-First/Authoritative Writes:** `POST /business` and `POST /goals` execute authoritative writes directly to Cloudflare D1 in production, with fail-closed HTTP 500 responses if D1 persistence fails, eliminating split-brain.
+    - **D1 Migration Startup Sequencing Gate:** Converted backend startup to async `startServer()` in `src/index.ts` which strictly verifies D1 connectivity, applies pending migrations, and validates schema before `serve()` accepts incoming HTTP traffic. Process halts with code 1 if migration fails in production.
+    - **Centralized `TenantContextResolver`:** Created `src/control-plane/tenant-context-resolver.ts` to centralize multi-tenant context lookups across public funnels, orders, bookings, and admin endpoints. Completely eliminates `LIMIT 1` and `'org_owner_primary'` fallbacks and enforces organization boundaries.
+    - **Atomic Booking Concurrency & Rollback:** Slot capacity reservation utilizes conditional atomic SQL updates with immediate compensating rollback if reservation record insertion fails.
+    - **Timezone Correctness & Slot Matching:** Implemented `localTimeToUtcIso` converting international business hours (e.g. `America/New_York`, `Asia/Kolkata`, `Europe/London`) to exact UTC ISO instants. Strict `preferredTime` matching returns `TIME_NOT_AVAILABLE` if no slot exists within tolerance. Disabled synthetic availability auto-seeding in production.
+    - **Recoverable Payment Order Failure State:** Added `PROVIDER_CREATED_D1_UPDATE_FAILED` state if an external payment provider order is generated but D1 status update encounters a persistence error.
+    - **D1 Migration 0005:** Created `0005_revenue_neutrality_and_tenancy.sql` adding `amount_minor` to `revenue_records`, `offer_title`/`recovery_state`/`failure_reason` to `universal_orders`, and `integration_phone_mappings`.
+    - **Test Coverage:** All 45 test suites (425 tests) passing with zero failures. Monorepo build and typecheck clean across all 4 packages.
 
 ---
 

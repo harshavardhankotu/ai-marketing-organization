@@ -57,8 +57,8 @@ describe('Production Authentication, Learning Isolation & Truth Integrity', () =
 
     it('authenticates valid owner token in production', async () => {
       process.env.NODE_ENV = 'production';
+      process.env.OWNER_API_KEY = 'secret_token_owner_smilekraft_2026';
 
-      // Seeded owner user has api_token: secret_token_owner_smilekraft_2026
       const res = await app.request('/api/v1/business', {
         headers: {
           'Authorization': 'Bearer secret_token_owner_smilekraft_2026',
@@ -68,7 +68,7 @@ describe('Production Authentication, Learning Isolation & Truth Integrity', () =
       expect(res.status).toBe(200);
       const json = await res.json() as any;
       expect(json.success).toBe(true);
-      expect(json.data.id).toBe(businessId);
+      expect(json.data.id).toBe('biz_platform_aro');
     });
 
     it('allows public endpoints like /health and /public/lead without authentication in production', async () => {

@@ -7,6 +7,8 @@ import { StripeAdapter } from '../integrations/stripe.js';
 import { FunnelPublicProfile, UniversalOrder, toMinorUnits, toMajorUnits, formatMoney } from '@ai-marketing/shared';
 import { isProduction } from '../config/env.js';
 
+import { TenantContextResolver } from '../control-plane/tenant-context-resolver.js';
+
 export async function handleGetPublicFunnel(c: Context): Promise<Response> {
   const businessSlug = (c.req.param('businessSlug') || '').trim().toLowerCase();
   const funnelSlug = (c.req.param('funnelSlug') || 'main').trim().toLowerCase();
@@ -265,12 +267,37 @@ export async function handleCreateUniversalOrder(c: Context): Promise<Response> 
       providerClientSecret = stripeIntent.clientSecret;
     }
 
-    // Update order with provider details
-    await d1Repo.executeWrite(
-      'universal_orders',
-      `UPDATE universal_orders SET provider_order_id = ?, updated_at = datetime('now') WHERE id = ?`,
-      [providerOrderId || null, orderId]
-    );
+    // Update order with provider details — handle recoverable failure if D1 write fails
+    try {
+      await d1Repo.executeWrite(
+        'universal_orders',
+        `UPDATE universal_orders SET provider_order_id = ?, updated_at = datetime('now') WHERE id = ?`,
+        [providerOrderId || null, orderId]
+      );
+    } catch (d1Err: any) {
+      console.error(`[CRITICAL] PROVIDER_CREATED_D1_UPDATE_FAILED: Order ${orderId} created at provider ${providerOrderId}, but failed to update D1: ${d1Err.message}`);
+      await d1Repo.executeWrite(
+        'universal_orders',
+        `UPDATE universal_orders SET recovery_state = 'PROVIDER_CREATED_D1_UPDATE_FAILED', failure_reason = ?, updated_at = datetime('now') WHERE id = ?`,
+        [d1Err.message, orderId]
+      ).catch(() => {});
+      return c.json({
+        success: true,
+        data: {
+          orderId,
+          businessId: resolvedBusinessId,
+          offerId: targetOffer.id,
+          offerTitle: targetOffer.title,
+          amountMinor: serverAmountMinor,
+          currency: orderCurrency,
+          status: initialStatus,
+          paymentProvider: provider,
+          providerOrderId,
+          providerClientSecret,
+          recoveryWarning: 'PROVIDER_CREATED_D1_UPDATE_FAILED'
+        }
+      }, 201);
+    }
   } catch (providerErr: any) {
     console.error(`[UniversalOrder] Payment provider '${provider}' creation failed: ${providerErr.message}`);
     // Transition internal order to PAYMENT_PROVIDER_FAILED
@@ -306,17 +333,17 @@ export async function handleCreateUniversalOrder(c: Context): Promise<Response> 
 
 export async function handleCreateBookingReservation(c: Context): Promise<Response> {
   const body = await c.req.json().catch(() => ({}));
-  const d1Repo = D1RevenueRepository.getInstance();
+  const resolver = TenantContextResolver.getInstance();
 
   const businessId = typeof body.businessId === 'string' ? body.businessId.trim() : '';
   const businessSlug = typeof body.businessSlug === 'string' ? body.businessSlug.trim().toLowerCase() : '';
 
-  let biz: any = null;
-  if (businessId) {
-    biz = await d1Repo.queryOne('businesses', `SELECT id, organization_id, name, timezone FROM businesses WHERE id = ?`, [businessId]);
-  } else if (businessSlug) {
-    biz = await d1Repo.queryOne('businesses', `SELECT id, organization_id, name, timezone FROM businesses WHERE lower(public_slug) = ? LIMIT 1`, [businessSlug]);
-  }
+  const biz = await resolver.resolveTenant({
+    businessId: businessId || undefined,
+    businessSlug: businessSlug || undefined,
+    funnelSlug: typeof body.funnelSlug === 'string' ? body.funnelSlug : undefined,
+    allowDevFallback: true
+  });
 
   if (!biz) {
     return c.json({ success: false, error: 'BUSINESS_NOT_FOUND: Valid businessId or businessSlug required.' }, 404);
@@ -324,9 +351,10 @@ export async function handleCreateBookingReservation(c: Context): Promise<Respon
 
   const availabilityEngine = AvailabilityEngine.getInstance();
   const resResult = await availabilityEngine.reserveSlot({
-    businessId: biz.id,
+    businessId: biz.businessId,
     slotId: body.slotId,
     preferredDate: body.preferredDate,
+    preferredTime: body.preferredTime,
     customerName: body.customerName || body.name,
     customerContact: body.customerContact || body.phone || body.customerPhone,
     customerEmail: body.customerEmail || body.email,

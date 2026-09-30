@@ -85,32 +85,35 @@ if (distDir) {
 
 const PORT = Number(process.env.PORT) || 3001;
 
-if (process.env.NODE_ENV !== 'test') {
-  // Auto-seed if running fresh
+export async function startServer(): Promise<any> {
+  // 1. Auto-seed SQLite if running local fresh
   seedDatabase();
 
-  // Auto-migrate remote Cloudflare D1 if configured in production
-  import('./db/d1-client.js').then(({ D1Client }) => {
-    const d1 = D1Client.getInstance();
-    if (d1.isRemoteD1Configured()) {
-      import('./db/d1-migrations/index.js')
-        .then(m => m.applyD1Migrations())
-        .then(res => {
-          if (res.applied.length > 0) {
-            console.log(`[D1 Auto-Migrate] Applied migrations: ${res.applied.join(', ')}`);
-          }
-        })
-        .catch(err => {
-          console.error('[D1 Auto-Migrate FATAL] Error during D1 migration:', err.message);
-          if (process.env.NODE_ENV === 'production') {
-            console.error('[D1 Auto-Migrate FATAL] Production database migration failed. Exiting process to prevent split-brain.');
-            process.exit(1);
-          }
-        });
-    }
-  });
+  // 2. D1 Migrations Gate: Must complete and verify schema before accepting traffic in production
+  const { D1Client } = await import('./db/d1-client.js');
+  const d1 = D1Client.getInstance();
+  const isProd = process.env.NODE_ENV === 'production';
 
-  // Start autonomous background scheduler for continuous market intelligence & research
+  if (d1.isRemoteD1Configured() || isProd) {
+    try {
+      console.log('[D1 Migration Gate] Verifying and applying remote D1 migrations before opening traffic...');
+      const { applyD1Migrations } = await import('./db/d1-migrations/index.js');
+      const res = await applyD1Migrations();
+      if (res.applied.length > 0) {
+        console.log(`[D1 Migration Gate] Applied migrations: ${res.applied.join(', ')}`);
+      }
+      console.log(`[D1 Migration Gate] Schema verified with ${res.tables.length} tables in Cloudflare D1.`);
+    } catch (err: any) {
+      console.error('[D1 Migration Gate FATAL] Error during D1 migration:', err.message);
+      if (isProd) {
+        console.error('[D1 Migration Gate FATAL] Production database migration failed. Halting process before listening for traffic.');
+        process.exit(1);
+      }
+      throw err;
+    }
+  }
+
+  // 3. Start autonomous background scheduler for continuous market intelligence & research
   try {
     DailyMarketResearchScheduler.getInstance().startScheduler();
   } catch (err: any) {
@@ -126,9 +129,18 @@ if (process.env.NODE_ENV !== 'test') {
   console.log(`⏱️ Daily Autonomous Research Scheduler: RUNNING`);
   console.log(`======================================================\n`);
 
-  serve({
+  return serve({
     fetch: app.fetch,
     port: PORT
+  });
+}
+
+if (process.env.NODE_ENV !== 'test') {
+  startServer().catch(err => {
+    console.error('[SERVER BOOT ERROR]', err);
+    if (process.env.NODE_ENV === 'production') {
+      process.exit(1);
+    }
   });
 }
 
