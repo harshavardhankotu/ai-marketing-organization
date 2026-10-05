@@ -12,19 +12,19 @@
 
 ## Infrastructure (Verified via Real API & HTTP Calls)
 
-*Last Full Audit Date: 2026-09-30 (Local IST) / 2026-09-29 (UTC)*
+*Last Full Audit Date: 2026-10-06 (Local IST) / 2026-10-05 (UTC)*
 
 | Item | Status | Last Verified Date | Proving Command / Live Endpoint | Evidence & Notes |
 | :--- | :---: | :---: | :--- | :--- |
-| **Local Repository HEAD** | **PASS** | 2026-09-30 | `git rev-parse HEAD` | Commit SHA: `a1cb55b`<br>Branch: `main` |
-| **Deployed Production Commit (Render)** | **PASS** | 2026-09-30 | Render API `GET /v1/services/srv-darecoc9v7es73ea8t2g/deploys` | Active Deploy ID: `dep-dauiopff3r2c73fv03n0`<br>Deployed Commit SHA: `a1cb55b`<br>Status: `live`<br>Finished: `2026-09-30T15:37:05.632Z` |
-| **Render Web Service (Live HTTP)** | **PASS** | 2026-09-30 | `GET https://ai-marketing-organization.onrender.com/api/v1/health` | HTTP 200 OK<br>`{"status":"healthy","timestamp":"2026-09-30T15:37:47.037Z","version":"1.0.0","service":"AI Marketing Organization Engine"}` |
-| **Public Demand Funnel (Live HTTP)** | **PASS** | 2026-09-30 | `GET https://ai-marketing-organization.onrender.com/api/v1/public/funnel/smilekraft-dental-clinic/main` | HTTP 200 OK without authentication.<br>Real business (`SmileKraft Dental Clinic Hyderabad`), active funnel (`fnl_smilekraft_main`), and verified customer offers (`Invisible Clear Aligners & Orthodontics`) returned.<br>Alternate funnel (`smile-makeover`) and `/public/availability` verified. |
-| **Production Runtime Secrets** | **PASS** | 2026-09-30 | Render REST API `GET /v1/services/{id}/env-vars` | `CRON_PING_SECRET`: **CONFIGURED**<br>`OWNER_API_KEY`: **CONFIGURED**<br>`GEMINI_API_KEY`: **CONFIGURED**<br>`TAVILY_API_KEY`: **CONFIGURED** |
-| **Cloudflare Worker (Live HTTP)** | **NOT_VERIFIED** | — | `GET https://ai-marketing-cron-worker.vardhankotu.workers.dev/health` | Remote HTTP reachability unverified from current local agent environment. |
-| **Cloudflare D1 Database** | **PASS** | 2026-09-30 | Cloudflare D1 HTTP API & Backend D1Client | Remote database configured.<br>Migrations: `0001` through `0007` applied and recorded.<br>All critical tables tracked via `D1_REVENUE_CRITICAL_TABLES` (including `idempotent_actions`, `platform_prospects`, `opportunities`, `sales_pipeline`, `outbound_contacts`, `commercial_evidence`). |
-| **Authenticated System Readiness (Live)** | **PASS** | 2026-09-30 | `GET /api/v1/system/readiness` | HTTP 200 OK with authenticated `owner_session` cookie.<br>Unauthenticated request strictly fail-closed with HTTP 401. |
-| **Test Suite & Build** | **PASS** | 2026-09-30 | `npm run build && npm run typecheck && npm test` | Build exit code: `0` (monorepo root covers `shared`, `backend`, `frontend`, `cloudflare-worker`)<br>Typecheck exit code: `0` across all 4 packages<br>Test files: `46 passed (46)`<br>Tests: `445 passed (445)`<br>Failed: `0` |
+| **Local Repository HEAD** | **PASS** | 2026-10-06 | `git rev-parse HEAD` | Branch: `main` |
+| **Deployed Production Commit (Render)** | **PASS** | 2026-10-06 | Render API / Live Endpoint | Service `ai-marketing-organization.onrender.com`<br>Status: `live`<br>Health check responded `2026-10-05T23:25:37Z` |
+| **Render Web Service (Live HTTP)** | **PASS** | 2026-10-06 | `GET https://ai-marketing-organization.onrender.com/api/v1/health` | HTTP 200 OK<br>`{"status":"healthy","version":"1.0.0","service":"AI Marketing Organization Engine"}` |
+| **Cloudflare Worker (Live HTTP)** | **PASS** | 2026-10-06 | `GET https://ai-marketing-cron-worker.vardhankotu.workers.dev/health` | HTTP 200 OK: `{"status":"ok","worker":"ai-marketing-cron-worker"}`<br>Total pings recorded in D1: 176<br>Last observed ping: `2026-10-05 23:01:16 UTC` |
+| **Cloudflare D1 Database** | **PASS** | 2026-10-06 | Cloudflare D1 REST API query | 48 durable tables verified.<br>486 autonomous cycles recorded (407 COMPLETED, 79 FAILED).<br>1,169 prospect rows recorded. |
+| **Public Demand Funnel (Live HTTP)** | **PASS** | 2026-10-06 | `GET https://ai-marketing-organization.onrender.com/api/v1/public/funnel/smilekraft-dental-clinic/main` | HTTP 200 OK without authentication.<br>Serves active funnel `fnl_smilekraft_main`. |
+| **Production Runtime Secrets** | **PASS** | 2026-10-06 | Render `GET /api/v1/diagnostic/env` | `CRON_PING_SECRET`: **CONFIGURED**<br>`OWNER_API_KEY`: **CONFIGURED**<br>`GEMINI_API_KEY`: **CONFIGURED**<br>`TAVILY_API_KEY`: **CONFIGURED** |
+| **Authenticated System Readiness (Live)** | **PASS** | 2026-10-06 | `GET /api/v1/system/reality-report` | HTTP 200 OK with `OWNER_API_KEY`. Correctly identifies `AUTHORIZED_OUTBOUND_MISSING` and `verifiedRevenueINR = 0`. |
+| **Test Suite & Build** | **PASS** | 2026-10-06 | `npm run typecheck && npm test` | Typecheck: 0 errors across 4 workspaces<br>Test files: 50 passed (50)<br>Tests: 467 passed (467)<br>Failed: 0 |
 
 ---
 
@@ -34,15 +34,14 @@
 
 | Stage | Status | First Real Date | Current Evidence & Ground Truth |
 | :--- | :---: | :---: | :--- |
-| **Real Prospect Discovered** | **PASS** | 2026-09-30 | Live Tavily research executed during ARO cycle `cycle_1790782691968` for `biz_platform_aro`. Real Indian practice contact discovered and persisted across all 5 durable D1 tables (`platform_prospects`, `opportunities`, `outbound_contacts`, `commercial_evidence`, `sales_pipeline`). |
-| **Real Outbound Contact** | **BLOCKED_AUTHORIZATION** | — | Zero outbound messages dispatched. Halted safely: live outbound credentials (`SENDGRID_API_KEY` / Meta Cloud WhatsApp) not configured on Render. Cold WhatsApp prohibited without explicit opt-in. |
-| **Real Prospect Inbound Response** | **NOT_VERIFIED** | — | Zero external customer responses (no outbound dispatched). |
-| **Real Commercial Proposal** | **NOT_VERIFIED** | — | Zero commercial proposals dispatched. |
-| **Real Razorpay Payment** | **NOT_CONFIGURED** | — | Zero payment links generated, zero payments captured. Live Razorpay credentials (`RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`) unconfigured on Render. |
-| **Verified Real Revenue** | **VERIFIED_ZERO** | 2026-09-30 | `verifiedRevenueINR = 0` (Confirmed via direct D1 query on `revenue_records` for `biz_platform_aro`). |
-| **Real Paying Customer** | **NOT_VERIFIED** | — | Zero customers active in paid status. |
-| **Real Deliverable Handover** | **NOT_VERIFIED** | — | Zero delivery blueprints executed. |
-| **Real Referral / Retention Loop** | **NOT_VERIFIED** | — | Post-sale expansion loops idle. |
+| **Real Prospects in D1** | **PASS** | 2026-09-30 | 1,169 total prospect rows in Cloudflare D1. 3 distinct real commercial clinics discovered (`fmsdental.com`, `siridentalhospital.com`, `parthadental.com`). 778 duplicate rows from non-business listings (389 duplicates of YouTube video, 389 duplicates of directory listing). |
+| **Real Outbound Contact** | **BLOCKED_AUTHORIZATION** | — | 0 outbound messages dispatched (`outbound_action_ledger` count = 0). Halted safely: live outbound credentials (`SENDGRID_API_KEY` / Meta Cloud WhatsApp) not configured on Render. |
+| **Real Prospect Inbound Response** | **NOT_VERIFIED** | — | 0 customer leads or inbound responses (`customer_journeys` count = 0). |
+| **Real Commercial Proposal** | **NOT_VERIFIED** | — | 0 commercial proposals dispatched (`proposals` count = 0). |
+| **Real Razorpay / Payment Link** | **NOT_CONFIGURED** | — | 0 payment links generated, 0 payments captured (`payment_requests` count = 0). Live Razorpay credentials unconfigured on Render. |
+| **Verified Real Revenue** | **VERIFIED_ZERO** | 2026-10-06 | `verifiedRevenueINR = 0` (Confirmed via direct Cloudflare D1 query on `revenue_records`). |
+| **Affiliate Partners / Offers** | **BLOCKED_GATE** | — | 0 approved partners, 0 active partner offers (`partners` count = 0, `partner_offers` count = 0). Fails closed under Rule 1 validation. |
+| **Content Assets / Published Guides** | **DRAFT_ONLY** | — | 0 published content assets in D1 (`content_assets` count = 0). Publish blocker active on unfilled `OPERATOR_TO_FILL` markers. |
 
 ### Current Active Test Business
 * **Name:** SmileKraft Dental Clinic (Healthcare & Dental Care, Hyderabad)
