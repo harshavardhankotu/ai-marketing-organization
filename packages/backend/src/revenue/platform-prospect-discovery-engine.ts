@@ -98,7 +98,7 @@ export interface DiscoveredProspectCandidate {
 }
 
 export interface ProspectDiscoveryResult {
-  status: 'PROSPECTS_DISCOVERED' | 'NO_NEW_PROSPECTS' | 'BLOCKED_NO_FREE_RESEARCH_CAPABILITY' | 'BLOCKED_AUTHORIZATION';
+  status: 'PROSPECTS_DISCOVERED' | 'NO_NEW_PROSPECTS' | 'BLOCKED_NO_FREE_RESEARCH_CAPABILITY' | 'BLOCKED_AUTHORIZATION' | 'DISCOVERY_COOLDOWN_CHECK_FAILED';
   source?: 'CACHE_REUSE' | 'GEMINI_RESEARCH' | 'TAVILY_RESEARCH';
   count: number;
   prospects: Array<{
@@ -175,7 +175,15 @@ export class PlatformProspectDiscoveryEngine {
             reason: `DISCOVERY_COOLDOWN_ACTIVE: Query '${queryKey}' was executed within last 7 days (expires at ${recentCache.expires_at || '7 days'}). Automatic re-runs are skipped for 7 days.`
           };
         }
-      } catch {}
+      } catch (err: any) {
+        console.warn(`[PlatformProspectDiscoveryEngine] 7-day cooldown check failed against D1: ${err?.message}. Failing closed to prevent unmonitored search.`);
+        return {
+          status: 'DISCOVERY_COOLDOWN_CHECK_FAILED',
+          count: 0,
+          prospects: [],
+          reason: `DISCOVERY_COOLDOWN_CHECK_FAILED: Could not verify 7-day query cooldown with D1: ${err?.message || 'unknown error'}. Skipped discovery to fail closed.`
+        };
+      }
     }
 
     // Preload existing tenant domains and source URLs to deduplicate discovery

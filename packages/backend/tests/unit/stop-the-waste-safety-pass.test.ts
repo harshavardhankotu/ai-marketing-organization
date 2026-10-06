@@ -164,6 +164,39 @@ describe('Stop-The-Waste & Safety Pass Test Suite', () => {
       expect(manualRes.status).toBe('PROSPECTS_DISCOVERED');
     }, 15000);
 
+    it('fails closed with DISCOVERY_COOLDOWN_CHECK_FAILED when D1 cooldown check errors, making zero search calls', async () => {
+      const discEngine = PlatformProspectDiscoveryEngine.getInstance();
+      const d1Repo = (discEngine as any).d1Repo;
+      const originalQueryOne = d1Repo.queryOne;
+      let searchCalled = false;
+      const originalDiscoverViaTavily = (discEngine as any).discoverViaTavily;
+      (discEngine as any).discoverViaTavily = async () => {
+        searchCalled = true;
+        return [];
+      };
+
+      try {
+        // Simulate D1 database query error
+        d1Repo.queryOne = async () => {
+          throw new Error('D1_NETWORK_FAILURE: Connection to Cloudflare edge timed out');
+        };
+
+        const result = await discEngine.discoverProspects('biz_platform_aro', 'org_owner_primary', {
+          vertical: 'dental',
+          city: 'Hyderabad',
+          isManual: false
+        });
+
+        expect(result.status).toBe('DISCOVERY_COOLDOWN_CHECK_FAILED');
+        expect(result.count).toBe(0);
+        expect(result.reason).toContain('DISCOVERY_COOLDOWN_CHECK_FAILED');
+        expect(searchCalled).toBe(false);
+      } finally {
+        d1Repo.queryOne = originalQueryOne;
+        (discEngine as any).discoverViaTavily = originalDiscoverViaTavily;
+      }
+    });
+
     it('skips candidates whose domain or source URL already exists in platform_prospects', async () => {
       const db = getDb();
       const discEngine = PlatformProspectDiscoveryEngine.getInstance();
@@ -307,7 +340,7 @@ describe('Stop-The-Waste & Safety Pass Test Suite', () => {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'X-Forwarded-For': `${ipA}, 10.0.0.1`
+            'X-Forwarded-For': `10.0.0.1, ${ipA}`
           },
           body: JSON.stringify({ businessSlug: 'rate-limit-test' }) // no name/phone — does not create real lead
         });
@@ -320,7 +353,7 @@ describe('Stop-The-Waste & Safety Pass Test Suite', () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Forwarded-For': `${ipA}, 10.0.0.1`
+          'X-Forwarded-For': `10.0.0.1, ${ipA}`
         },
         body: JSON.stringify({ businessSlug: 'rate-limit-test' })
       });
@@ -333,14 +366,14 @@ describe('Stop-The-Waste & Safety Pass Test Suite', () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Forwarded-For': `${ipB}, 10.0.0.1`
+          'X-Forwarded-For': `10.0.0.1, ${ipB}`
         },
         body: JSON.stringify({ businessSlug: 'rate-limit-test' })
       });
       expect(resB1.status).toBe(400); // allowed by rate limiter, rejected by body validation
     });
 
-    it('proves spoofed cf-connecting-ip cannot create unlimited buckets and is ignored in favor of trusted x-forwarded-for', async () => {
+    it('proves spoofed cf-connecting-ip cannot create unlimited buckets and is ignored in favor of trusted rightmost proxy IP', async () => {
       const db = getDb();
       db.prepare(`
         INSERT OR REPLACE INTO businesses (
@@ -352,14 +385,14 @@ describe('Stop-The-Waste & Safety Pass Test Suite', () => {
 
       const realIp = '198.51.100.77';
 
-      // Send 10 requests from the same X-Forwarded-For IP, each with a different spoofed CF-Connecting-IP
+      // Send 10 requests from the same rightmost IP, each with a different spoofed CF-Connecting-IP
       for (let i = 1; i <= 10; i++) {
         const spoofedIp = `10.99.${i}.${i}`;
         const res = await app.request('/api/v1/public/lead', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'X-Forwarded-For': `${realIp}, 172.70.1.1`,
+            'X-Forwarded-For': `172.70.1.1, ${realIp}`,
             'CF-Connecting-IP': spoofedIp
           },
           body: JSON.stringify({ businessSlug: 'spoof-test' })
@@ -372,7 +405,7 @@ describe('Stop-The-Waste & Safety Pass Test Suite', () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Forwarded-For': `${realIp}, 172.70.1.1`,
+          'X-Forwarded-For': `172.70.1.1, ${realIp}`,
           'CF-Connecting-IP': '10.99.11.11'
         },
         body: JSON.stringify({ businessSlug: 'spoof-test' })
@@ -380,6 +413,62 @@ describe('Stop-The-Waste & Safety Pass Test Suite', () => {
       expect(res11.status).toBe(429);
       const json11 = await res11.json() as any;
       expect(json11.error).toContain('Rate limit exceeded');
+    });
+
+    it('proves 11 requests with different left-hand XFF values but same rightmost proxy IP share one bucket and the 11th returns 429, while different rightmost values get separate buckets', async () => {
+      const db = getDb();
+      db.prepare(`
+        INSERT OR REPLACE INTO businesses (
+          id, organization_id, name, public_slug, vertical_id, vertical_name,
+          city, neighborhood, brand_voice, country, public_live, created_at
+        ) VALUES ('biz_proxy_ip_test', 'org_owner_primary', 'Proxy IP Clinic', 'proxy-ip-test',
+          'clinic', 'Clinic', 'Hyderabad', 'Banjara Hills', 'Professional', 'IN', 1, datetime('now'))
+      `).run();
+
+      const sharedRightmostIp = '203.0.113.195';
+      const limiter = DurableRateLimiter.getInstance();
+      db.prepare(`DELETE FROM durable_rate_limits WHERE ip_hash = ?`).run(limiter.hashIp(sharedRightmostIp));
+
+      // 10 requests with different left-hand XFF values but the same rightmost value share one bucket
+      for (let i = 1; i <= 10; i++) {
+        const leftSpoofedIp = `192.168.1.${i}`;
+        const res = await app.request('/api/v1/public/lead', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Forwarded-For': `${leftSpoofedIp}, 10.0.0.1, ${sharedRightmostIp}`
+          },
+          body: JSON.stringify({ businessSlug: 'proxy-ip-test' })
+        });
+        expect(res.status).toBe(400); // within limit, rejected by body validation
+      }
+
+      // 11th request with different left-hand XFF but same rightmost IP must return 429
+      const res11 = await app.request('/api/v1/public/lead', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Forwarded-For': `172.16.0.99, 10.0.0.1, ${sharedRightmostIp}`
+        },
+        body: JSON.stringify({ businessSlug: 'proxy-ip-test' })
+      });
+      expect(res11.status).toBe(429);
+      const json11 = await res11.json() as any;
+      expect(json11.error).toContain('Rate limit exceeded');
+
+      // Request with a DIFFERENT rightmost IP gets a separate bucket and returns 400 (not 429)
+      const diffRightmostIp = '203.0.113.196';
+      db.prepare(`DELETE FROM durable_rate_limits WHERE ip_hash = ?`).run(limiter.hashIp(diffRightmostIp));
+
+      const resDiff = await app.request('/api/v1/public/lead', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Forwarded-For': `10.0.0.1, ${diffRightmostIp}`
+        },
+        body: JSON.stringify({ businessSlug: 'proxy-ip-test' })
+      });
+      expect(resDiff.status).toBe(400); // separate bucket, within limit
     });
 
     it('enforces stricter limit of 5 requests for the unknown IP bucket when x-forwarded-for is missing', async () => {
@@ -676,6 +765,44 @@ describe('Stop-The-Waste & Safety Pass Test Suite', () => {
         body: JSON.stringify({ businessSlug: 'platform-aro' })
       });
       expect(aroLead.status).toBe(404);
+    });
+
+    it('returns 200 for published content and disclosure routes, and 404 for nonexistent slugs', async () => {
+      const db = getDb();
+      db.prepare(`
+        INSERT OR REPLACE INTO commission_content_assets (
+          id, organization_id, slug, title, content_markdown, status, category, asset_type,
+          intent_target, disclosure_markdown, view_count, created_at, updated_at
+        ) VALUES ('asset_content_fix_02', 'org_owner_primary', 'published-implant-guide', 'Published Implant Guide',
+          '# Implant Guide Content', 'PUBLISHED', 'DENTAL', 'GUIDE',
+          'implants', 'Factual Disclosure Text: We may earn an affiliate commission.', 0, datetime('now'), datetime('now'))
+      `).run();
+
+      // 1. GET /public/content/:slug with real published slug -> 200
+      const resContent200 = await app.request('/api/v1/public/content/published-implant-guide');
+      expect(resContent200.status).toBe(200);
+      const contentJson = await resContent200.json() as any;
+      expect(contentJson.success).toBe(true);
+      expect(contentJson.data.title).toBe('Published Implant Guide');
+
+      // 2. GET /public/disclosure/:slug with real published slug -> 200
+      const resDisc200 = await app.request('/api/v1/public/disclosure/published-implant-guide');
+      expect(resDisc200.status).toBe(200);
+      const discJson = await resDisc200.json() as any;
+      expect(discJson.success).toBe(true);
+      expect(discJson.data.disclosure_text).toContain('Factual Disclosure Text');
+
+      // 3. GET /public/content/:slug with nonexistent slug -> 404
+      const resContent404 = await app.request('/api/v1/public/content/nonexistent-implant-guide-xyz');
+      expect(resContent404.status).toBe(404);
+      const content404Json = await resContent404.json() as any;
+      expect(content404Json.error).toBe('CONTENT_NOT_FOUND');
+
+      // 4. GET /public/disclosure/:slug with nonexistent slug -> 404
+      const resDisc404 = await app.request('/api/v1/public/disclosure/nonexistent-implant-guide-xyz');
+      expect(resDisc404.status).toBe(404);
+      const disc404Json = await resDisc404.json() as any;
+      expect(disc404Json.error).toBe('CONTENT_NOT_FOUND');
     });
   });
 });
