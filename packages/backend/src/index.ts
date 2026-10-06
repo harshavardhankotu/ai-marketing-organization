@@ -238,6 +238,15 @@ export async function startServer(): Promise<any> {
     console.warn('[Quota Gate] Quota synchronization failed:', err.message);
   }
 
+  // 3b. Durable Action Cooldown Gate: Synchronize cooldowns from Cloudflare D1
+  try {
+    const { ActionCooldownManager } = await import('./revenue/action-cooldown-manager.js');
+    await ActionCooldownManager.syncFromD1Async();
+    console.log('[Cooldown Gate] Synchronized durable action cooldowns from Cloudflare D1.');
+  } catch (err: any) {
+    console.warn('[Cooldown Gate] Action cooldown synchronization failed:', err.message);
+  }
+
   // 4. Start autonomous background scheduler for continuous market intelligence & research
   try {
     DailyMarketResearchScheduler.getInstance().startScheduler();

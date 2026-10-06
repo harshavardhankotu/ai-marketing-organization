@@ -30,6 +30,10 @@ export class DurableRateLimiter {
     return DurableRateLimiter.instance;
   }
 
+  public static resetInstanceForTesting(): void {
+    DurableRateLimiter.instance = undefined as any;
+  }
+
   public hashIp(clientIp: string): string {
     return createHash('sha256').update(clientIp || '127.0.0.1').digest('hex').substring(0, 16);
   }

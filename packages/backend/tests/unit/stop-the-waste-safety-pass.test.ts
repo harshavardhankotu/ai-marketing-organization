@@ -226,6 +226,23 @@ describe('Stop-The-Waste & Safety Pass Test Suite', () => {
       expect(status2.GEMINI.used).toBe(geminiRow.requests_today);
       expect(status2.TAVILY.used).toBe(tavilyRow.credits_consumed_month);
     });
+
+    it('creates a FRESH UnifiedQuotaService instance and reads quota counts back from database', async () => {
+      const quota1 = UnifiedQuotaService.getInstance();
+      quota1.ensureInitialized();
+      for (let i = 0; i < 7; i++) {
+        quota1.recordRequest('GEMINI', true);
+      }
+      quota1.recordRequest('TAVILY', true, 12);
+
+      // Force creation of a fresh instance
+      UnifiedQuotaService.resetInstanceForTesting();
+      const quotaFresh = UnifiedQuotaService.getInstance();
+
+      const status = quotaFresh.getStatus();
+      expect(status.GEMINI.used).toBeGreaterThanOrEqual(7);
+      expect(status.TAVILY.used).toBeGreaterThanOrEqual(12);
+    });
   });
 
   describe('4. Durable Rate Limiter', () => {
@@ -254,6 +271,73 @@ describe('Stop-The-Waste & Safety Pass Test Suite', () => {
       const db = getDb();
       const row = db.prepare(`SELECT request_count FROM durable_rate_limits WHERE ip_hash = ?`).get(limiter.hashIp(ip)) as any;
       expect(row.request_count).toBe(4);
+    });
+
+    it('creates a FRESH DurableRateLimiter instance and reads rate-limit buckets back from database', async () => {
+      const limiter1 = DurableRateLimiter.getInstance();
+      const testIp = '198.51.100.99';
+      const r1 = await limiter1.checkRateLimit('/public/lead', testIp, 5, 300);
+      expect(r1.allowed).toBe(true);
+      expect(r1.remaining).toBe(4);
+
+      // Reset instance and create a fresh instance
+      DurableRateLimiter.resetInstanceForTesting();
+      const limiterFresh = DurableRateLimiter.getInstance();
+      const r2 = await limiterFresh.checkRateLimit('/public/lead', testIp, 5, 300);
+      expect(r2.allowed).toBe(true);
+      expect(r2.remaining).toBe(3); // count is now 2 across instances
+    });
+
+    it('derives client IP from X-Forwarded-For, assigns separate buckets to different IPs, and blocks 11th request with 429 without creating real leads', async () => {
+      const db = getDb();
+      db.prepare(`
+        INSERT OR REPLACE INTO businesses (
+          id, organization_id, name, public_slug, vertical_id, vertical_name,
+          city, neighborhood, brand_voice, country, public_live, created_at
+        ) VALUES ('biz_rate_limit_test', 'org_owner_primary', 'Rate Limit Test Clinic', 'rate-limit-test',
+          'clinic', 'Clinic', 'Hyderabad', 'Banjara Hills', 'Professional', 'IN', 1, datetime('now'))
+      `).run();
+
+      const ipA = '198.51.100.1';
+      const ipB = '198.51.100.2';
+
+      // 10 requests from ipA with empty lead details (only businessSlug)
+      for (let i = 1; i <= 10; i++) {
+        const res = await app.request('/api/v1/public/lead', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Forwarded-For': `${ipA}, 10.0.0.1`
+          },
+          body: JSON.stringify({ businessSlug: 'rate-limit-test' }) // no name/phone — does not create real lead
+        });
+        // Returns 400 (validation error), but increments rate limit bucket
+        expect(res.status).toBe(400);
+      }
+
+      // 11th request from ipA should be blocked with 429
+      const resA11 = await app.request('/api/v1/public/lead', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Forwarded-For': `${ipA}, 10.0.0.1`
+        },
+        body: JSON.stringify({ businessSlug: 'rate-limit-test' })
+      });
+      expect(resA11.status).toBe(429);
+      const jsonA11 = await resA11.json() as any;
+      expect(jsonA11.error).toContain('Rate limit exceeded');
+
+      // Request from ipB should have its own separate bucket and return 400 (not 429)
+      const resB1 = await app.request('/api/v1/public/lead', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Forwarded-For': `${ipB}, 10.0.0.1`
+        },
+        body: JSON.stringify({ businessSlug: 'rate-limit-test' })
+      });
+      expect(resB1.status).toBe(400); // allowed by rate limiter, rejected by body validation
     });
   });
 

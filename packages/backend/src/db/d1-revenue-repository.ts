@@ -48,7 +48,8 @@ export const D1_REVENUE_CRITICAL_TABLES = [
   'commission_content_assets',
   'demand_signals',
   'durable_rate_limits',
-  'provider_call_logs'
+  'provider_call_logs',
+  'action_cooldowns'
 ] as const;
 
 export type D1RevenueCriticalTable = typeof D1_REVENUE_CRITICAL_TABLES[number] | string;

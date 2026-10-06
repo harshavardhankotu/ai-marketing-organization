@@ -15,6 +15,8 @@
  */
 
 import { getDb } from '../db/client.js';
+import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
+import { isProduction } from '../config/env.js';
 import type { ActionType } from './next-best-action-engine.js';
 
 export interface CooldownPolicy {
@@ -234,6 +236,71 @@ export class ActionCooldownManager {
       // ON CONFLICT SET
       currentAttempt, now, nextEligibleAt, exhausted, escalated, succeeded ? 1 : 0, now
     );
+
+    if (isProduction()) {
+      D1RevenueRepository.getInstance().executeWrite(
+        'action_cooldowns',
+        `INSERT INTO action_cooldowns (
+          target_id, action_type, attempt_count, last_executed_at, next_eligible_at,
+          max_attempts, exhausted, escalated, last_succeeded, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(target_id, action_type) DO UPDATE SET
+          attempt_count = ?,
+          last_executed_at = ?,
+          next_eligible_at = ?,
+          exhausted = ?,
+          escalated = ?,
+          last_succeeded = ?,
+          updated_at = ?`,
+        [
+          targetId, actionType, currentAttempt, now, nextEligibleAt,
+          policy.maxAttempts, exhausted, escalated, succeeded ? 1 : 0, now,
+          currentAttempt, now, nextEligibleAt, exhausted, escalated, succeeded ? 1 : 0, now
+        ]
+      ).catch((err: any) => {
+        console.warn(`[ActionCooldownManager] Failed to persist cooldown to D1: ${err.message}`);
+      });
+    }
+  }
+
+  /**
+   * Syncs cooldown state from durable D1 into local SQLite on startup / cycle wake.
+   */
+  public static async syncFromD1Async(): Promise<void> {
+    if (!isProduction()) return;
+    try {
+      const d1Repo = D1RevenueRepository.getInstance();
+      const rows = await d1Repo.query<any>(
+        'action_cooldowns',
+        'SELECT * FROM action_cooldowns',
+        []
+      );
+      if (!rows || rows.length === 0) return;
+      const db = getDb();
+      const stmt = db.prepare(`
+        INSERT INTO action_cooldowns (
+          target_id, action_type, attempt_count, last_executed_at, next_eligible_at,
+          max_attempts, exhausted, escalated, last_succeeded, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(target_id, action_type) DO UPDATE SET
+          attempt_count = ?,
+          last_executed_at = ?,
+          next_eligible_at = ?,
+          exhausted = ?,
+          escalated = ?,
+          last_succeeded = ?,
+          updated_at = ?
+      `);
+      for (const r of rows) {
+        stmt.run(
+          r.target_id, r.action_type, r.attempt_count, r.last_executed_at, r.next_eligible_at,
+          r.max_attempts, r.exhausted, r.escalated, r.last_succeeded, r.updated_at,
+          r.attempt_count, r.last_executed_at, r.next_eligible_at, r.exhausted, r.escalated, r.last_succeeded, r.updated_at
+        );
+      }
+    } catch (err: any) {
+      console.warn(`[ActionCooldownManager] Failed to sync cooldowns from D1: ${err.message}`);
+    }
   }
 
   /**
@@ -243,6 +310,13 @@ export class ActionCooldownManager {
     getDb().prepare(`
       DELETE FROM action_cooldowns WHERE target_id = ? AND action_type = ?
     `).run(targetId, actionType);
+    if (isProduction()) {
+      D1RevenueRepository.getInstance().executeWrite(
+        'action_cooldowns',
+        `DELETE FROM action_cooldowns WHERE target_id = ? AND action_type = ?`,
+        [targetId, actionType]
+      ).catch(() => {});
+    }
   }
 
   /**

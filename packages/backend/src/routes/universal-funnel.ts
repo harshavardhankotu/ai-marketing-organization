@@ -383,7 +383,7 @@ export async function handleCreateBookingReservation(c: Context): Promise<Respon
 
   // Hide demo businesses
   if (isDemoBusiness(businessId) || isDemoBusiness(businessSlug)) {
-    return c.json({ success: false, error: 'BUSINESS_NOT_FOUND: Valid businessId or businessSlug required.' }, 404);
+    return c.json({ success: false, error: 'BUSINESS_NOT_FOUND: Valid public live business required.' }, 404);
   }
 
   let bizRow: any = null;

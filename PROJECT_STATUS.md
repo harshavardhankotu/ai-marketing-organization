@@ -126,6 +126,13 @@
     - **Durable Rate Limiter:** Replaced in-memory limiter with D1-backed sliding window limiter (`durable_rate_limits`, SHA-256 IP hash) covering `/public/lead`, `/public/checkout`, `/public/order`, `/public/booking`, and `/organic/*`.
     - **Live Verification:** Deploy `dep-db24q67lot8c73dravtg` live on Render. Verified live: `/api/v1/health` (HTTP 200), demo slug 404s (HTTP 404), single-business cron ping (HTTP 200, only `biz_platform_aro`), and `/cron/status` (HTTP 200). 51 test files (478 tests) passing.
 
+25. **2026-10-06 — Verify & Reconcile Pass on Stop-The-Waste (`HEAD`):**
+    - **Commit Parity Verified:** Verified commit difference between `f14cebb` and `ec801bb` is strictly documentation-only (`PROJECT_STATUS.md` +18/-10).
+    - **Scheduled Cron Observed Live:** Observed real top-of-hour cron run at `2026-10-06T02:00:21.370Z` (`cycle_1791252021370`), triggered by `CLOUDFLARE_CRON`, processing exclusively `biz_platform_aro` (0 errors). Selected action was `DISCOVER_PARTNER`, safely halted with `BLOCKED_AUTHORIZATION` due to 0 configured partners, consuming 0 Tavily/Gemini calls.
+    - **Prospect & Contact Reconciliation in D1:** Formally quarantined all 392 duplicate `fmsdental.com` prospects/opportunities to `REJECTED` (`DUPLICATE_DOMAIN`), keeping oldest row `ppros_4eae425a-8`. Quarantined duplicate outbound contacts with `is_suppressed = 1`. Final D1 counts: `platform_prospects` 3 `DISCOVERED` / 1,178 `REJECTED`; `opportunities` 3 `DISCOVERED` / 1,178 `REJECTED`; `outbound_contacts` 3 `ACTIVE` / 398 `REJECTED` (`is_suppressed = 1`).
+    - **Durable Quota & Action Cooldown Durability:** Made application limits configurable via `GEMINI_APPLICATION_LIMIT` (default 1200) and `TAVILY_APPLICATION_LIMIT` (default 800); real limits marked UNKNOWN (`NULL`) in `provider_quota_state`. Added `action_cooldowns` to `D1_REVENUE_CRITICAL_TABLES` and wired `ActionCooldownManager.syncFromD1Async()` into server boot and `/cron/ping`.
+    - **Rate Limiter IP Isolation & Route Coverage:** Proved X-Forwarded-For client IP derivation, separate per-IP sliding buckets, and 429 blocking on 11th request without creating real leads. Verified live 404 coverage across all public routes for demo businesses. 51 test files (481 tests) passing.
+
 ---
 
 ## Manual Steps Still Owed by Human Owner

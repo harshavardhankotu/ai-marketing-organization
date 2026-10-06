@@ -1003,6 +1003,12 @@ apiRouter.post('/cron/ping', async (c) => {
     await UnifiedQuotaService.getInstance().syncFromD1Async();
   } catch {}
 
+  // Sync durable action cooldowns from D1 before cycle execution
+  try {
+    const { ActionCooldownManager } = await import('../revenue/action-cooldown-manager.js');
+    await ActionCooldownManager.syncFromD1Async();
+  } catch {}
+
   let eligibleBusinesses: any[] = [];
   try {
     eligibleBusinesses = await d1Repo.query('businesses', `

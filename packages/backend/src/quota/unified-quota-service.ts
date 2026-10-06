@@ -91,6 +91,10 @@ export class UnifiedQuotaService {
     return UnifiedQuotaService.instance;
   }
 
+  public static resetInstanceForTesting(): void {
+    UnifiedQuotaService.instance = undefined as any;
+  }
+
   /**
    * Returns current calendar month string e.g. "2026-09"
    */
@@ -119,6 +123,9 @@ export class UnifiedQuotaService {
       const monthKey = UnifiedQuotaService.getCurrentCalendarMonth();
       const nextMonthReset = UnifiedQuotaService.getNextCalendarMonthReset();
 
+      const geminiAppLimit = parseInt(process.env.GEMINI_APPLICATION_LIMIT || '1200', 10);
+      const tavilyAppLimit = parseInt(process.env.TAVILY_APPLICATION_LIMIT || '800', 10);
+
       // Gemini row: providerLimit = NULL (UNKNOWN until verified from provider headers)
       const gemini = db.prepare(`SELECT id FROM provider_quota_state WHERE provider = 'GEMINI'`).get();
       if (!gemini) {
@@ -128,14 +135,14 @@ export class UnifiedQuotaService {
             credits_consumed_month, rate_limit_responses, is_locked,
             last_reset, next_reset, reset_window_hours, updated_at
           ) VALUES (
-            'gemini', 'GEMINI', NULL, 1200, 0,
+            'gemini', 'GEMINI', NULL, ?, 0,
             0, 0, 0,
             ?, ?, 24, ?
           )
-        `).run(now, new Date(Date.now() + 24 * 3600 * 1000).toISOString(), now);
+        `).run(geminiAppLimit, now, new Date(Date.now() + 24 * 3600 * 1000).toISOString(), now);
       }
 
-      // Tavily row: 1000 provider allowance, 800 application safety cap, calendar month reset
+      // Tavily row: providerLimit = NULL (UNKNOWN until verified from official docs), calendar month reset
       const tavily = db.prepare(`SELECT id FROM provider_quota_state WHERE provider = 'TAVILY'`).get();
       if (!tavily) {
         db.prepare(`
@@ -144,11 +151,11 @@ export class UnifiedQuotaService {
             credits_consumed_month, credits_estimated_remaining, rate_limit_responses, is_locked,
             last_reset, next_reset, reset_window_hours, updated_at
           ) VALUES (
-            'tavily', 'TAVILY', 1000, 800, 0,
-            0, 800, 0, 0,
+            'tavily', 'TAVILY', NULL, ?, 0,
+            0, ?, 0, 0,
             ?, ?, 720, ?
           )
-        `).run(monthKey, nextMonthReset, now);
+        `).run(tavilyAppLimit, tavilyAppLimit, monthKey, nextMonthReset, now);
       }
     } catch {
       // test runner database swaps
