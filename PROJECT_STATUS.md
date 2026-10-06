@@ -173,6 +173,20 @@
     - **Public Write Routes Rate Limit Inventory:** Fully inventoried durable rate limiters and security gates across all 19 public write endpoints.
     - **Full Verification:** All 52 test suites (516 tests) passing. Monorepo builds and typechecks clean across all packages.
 
+30. **2026-10-06 — Fixes & Launch Gates Pass (`1023266`, deployed as live `dep-db2nhgqd0e5s73egkn5g`):**
+    - **No Overclaims & Honest Statuses:** In `GET /api/v1/commission/money-path` and `/launch-checklist`, `PARTNER APPROVAL` shows `OPERATOR_CONFIRMED_PROVISIONAL` and `PARTNER TERMS` shows `OPERATOR_TO_CONFIRM` until human operator records `terms_read_confirmed: true` in partner evidence. Removed "accepted and verified" wording ("Operating agreement and commission schedules under operator review"). Verified live on Render.
+    - **Quota Logging & Cache Hits:** Eliminated duplicate `logCall` in `PlatformProspectDiscoveryEngine` (1 Tavily call = 1 `provider_call_logs` row). Classified `search_cache` hits as `CACHE_HIT` and `INTERNAL_AUTOMATION` in `AutonomousRevenueOrchestrator`, preventing false external action counts.
+    - **Cron Source & Caller IP Attribution:** Derived `triggerSource` from caller `User-Agent`: worker user-agents (`ai-marketing-cron-worker` / `cloudflare-cron-worker`) -> `CLOUDFLARE_CRON`; anything else -> `MANUAL_PING`. Store user-agent and SHA-256 salted IP hash per cycle in `autonomous_cycle_log.summary_json`.
+    - **Prospect Discovery Pause Gate:** Added `PROSPECT_DISCOVERY_ENABLED` flag (default `false`) in `PlatformProspectDiscoveryEngine`, halting prospect external search calls cleanly with `PROSPECT_DISCOVERY_PAUSED` while leaving `DISCOVER_DEMAND` active.
+    - **Public Write Abuse Protection:** Added `DurableRateLimiter` (trusted IP, 10 req/10 min) to `POST /payments/razorpay/create-order`, `POST /payments/manual-upi/claim`, `POST /compliance/dpdp/consent`, and `POST /compliance/dpdp/erasure`. Tested: 11th request from same IP returns 429 and writes 0 DB rows.
+    - **Conversion Webhook Hardening:** In `POST /api/v1/webhooks/conversion/:partnerId`: forged bodies with missing or invalid webhook secret are rejected with 401 and write 0 DB rows; webhooks for `AMAZON_ASSOCIATES` are rejected with 400 (`WEBHOOK_NOT_SUPPORTED`) as Amazon does not provide conversion webhooks.
+    - **Credential Hygiene:** Leaked key from 2026-09-29 tested against live production (`GET /api/v1/diagnostic/env`) returning 401 Unauthorized (confirmed inactive). Secrets regex scan completed across working tree, git log, and docs with zero unredacted secrets committed.
+    - **Crawler & Static Asset Assessment:** Confirmed raw GET on `/guides/:slug` returns empty client-rendered `<div id="root"></div>`. Measured 3 cold health requests (~0.89s avg). Proposed publish-time static HTML generation to Firebase Hosting.
+    - **Direct Amazon Links & Click Beacon:** Directly rendered tagged Amazon India URLs (`target="_blank" rel="sponsored nofollow noopener"`) for `AMAZON_ASSOCIATES` offers. Implemented `POST /api/v1/referrals/beacon` validating active offers, durable rate-limited, recording non-revenue click events with salted IP hash, and ignoring bots. Missing affiliate tag strictly blocks guide publishing. Real visitor fetch records 1 view; bot fetch records 0 views.
+    - **Ledger Integrity:** Enforced `hasProviderProof` in `ConversionVerificationAdapter.reconcileCommission` (`EXPECTED -> PENDING -> VERIFIED -> PAID` requires proof, throwing `PROVIDER_PROOF_REQUIRED`). Manual conversion without evidence throws `EVIDENCE_REQUIRED`.
+    - **Content Lint Gate:** Hardened `ContentAssetEngine.lintContentAsset` to block forbidden commercial claims ("certified", "lowest price", rupee prices, star ratings) and enforce exact statutory Amazon Associate disclosure.
+    - **Monorepo Build, Tests & Deploy:** Monorepo builds clean (exit 0) across all 4 packages. All 35 launch-gates unit tests pass. Live deployment `dep-db2nhgqd0e5s73egkn5g` verified healthy and responding with 401 unauthenticated and 200 authenticated.
+
 ---
 
 ## Manual Steps Still Owed by Human Owner
