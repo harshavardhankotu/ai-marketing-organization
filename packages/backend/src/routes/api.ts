@@ -120,6 +120,7 @@ export const EXACT_ROUTE_POLICY = {
   PUBLIC: [
     '/health',
     '/diagnostic/env',
+    '/diag',
     '/public/lead',
     '/public/business',
     '/public/funnel',
