@@ -45,7 +45,7 @@ import { ContentAssetEngine } from '../commission/content-asset-engine.js';
 import { ReferralTrackingEngine } from '../commission/referral-tracking.js';
 import { PartnerRegistryEngine } from '../commission/partner-registry.js';
 import { randomUUID } from 'crypto';
-export { ActionClassification } from '../integrations/adapter-base.js';
+export type { ActionClassification } from '../integrations/adapter-base.js';
 
 export type CycleExecutionStatus =
   | 'LIVE_EXTERNAL_ACTION'
@@ -302,6 +302,11 @@ export class AutonomousRevenueOrchestrator {
       // ──────────────────────────────────────────────────────────────────
       // SPEC § 25 & 28: SELECT NEXT BEST ACTION (Deterministic priority order)
       // ──────────────────────────────────────────────────────────────────
+      if (isProduction()) {
+        try {
+          await ActionCooldownManager.syncFromD1Async();
+        } catch {}
+      }
       const nextBestAction = this.nbaEngine.choose(businessId, organizationId, {
         ignoreCooldown: triggerSource === 'MANUAL'
       });
@@ -326,6 +331,7 @@ export class AutonomousRevenueOrchestrator {
           actionExecutionStatus = 'BLOCKED_AUTHORIZATION';
           actionClassification = 'BLOCKED_AUTHORIZATION';
           this.quotaService.recordAttemptedAction(organizationId, 'BLOCKED_AUTHORIZATION');
+          ActionCooldownManager.recordExecution(nextBestAction.targetId, nextBestAction.actionType, false);
           errors.push(`Action ${nextBestAction.actionType} blocked: requires ₹${nextBestAction.estimatedCostINR} (₹0 policy)`);
         } else {
           // Execute action with strict live vs internal classification

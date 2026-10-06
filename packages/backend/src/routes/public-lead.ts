@@ -13,6 +13,7 @@ import { DPDPComplianceManager } from '../compliance/dpdp-manager.js';
 import { isProduction } from '../config/env.js';
 import { isDemoBusiness, isPublicLiveBusiness } from '../security/public-tenant-guard.js';
 import { DurableRateLimiter } from '../security/durable-rate-limiter.js';
+import { getTrustedClientIp } from '../security/client-ip.js';
 
 const journeyTracker = new CustomerJourneyTracker();
 const dpdpManager = new DPDPComplianceManager();
@@ -88,10 +89,11 @@ export async function handlePublicLeadRequest(c: Context): Promise<Response> {
     }, 200);
   }
 
-  // 2. Durable Sliding-Window Rate Limiter (Max 10 requests per 10 mins per IP hash)
-  const clientIp = c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for')?.split(',')[0]?.trim() || '127.0.0.1';
+  // 2. Durable Sliding-Window Rate Limiter (Trusted Render proxy IP, stricter on unknown)
+  const clientInfo = getTrustedClientIp(c, 10, 5);
+  const clientIp = clientInfo.ip;
   const limiter = DurableRateLimiter.getInstance();
-  const rateLimit = await limiter.checkRateLimit('/public/lead', clientIp, 10, 600);
+  const rateLimit = await limiter.checkRateLimit('/public/lead', clientIp, clientInfo.maxRequests, 600);
   if (!rateLimit.allowed) {
     return c.json({
       success: false,

@@ -3657,13 +3657,10 @@ apiRouter.get('/organic/experiments', async (c) => {
 const trafficProvenance = new TrafficProvenanceEngine();
 
 apiRouter.post('/organic/sessions', async (c) => {
-  const clientIp =
-    c.req.header('cf-connecting-ip') ||
-    c.req.header('x-forwarded-for')?.split(',')[0].trim() ||
-    c.req.header('x-real-ip') ||
-    '127.0.0.1';
+  const { getTrustedClientIp } = await import('../security/client-ip.js');
+  const clientInfo = getTrustedClientIp(c, 30, 10);
   const { DurableRateLimiter } = await import('../security/durable-rate-limiter.js');
-  const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/organic/sessions', clientIp, 30, 600);
+  const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/organic/sessions', clientInfo.ip, clientInfo.maxRequests, 600);
   if (!rateLimit.allowed) {
     return c.json({ success: false, error: 'RATE_LIMIT_EXCEEDED', retryAfterSeconds: rateLimit.retryAfterSeconds }, 429);
   }
@@ -3686,7 +3683,7 @@ apiRouter.post('/organic/sessions', async (c) => {
     utmMedium: body.utmMedium,
     utmCampaign: body.utmCampaign,
     utmContent: body.utmContent,
-    ipAddress: clientIp,
+    ipAddress: clientInfo.ip,
     userAgent,
     isTestHarness: body.isTestHarness,
   });
@@ -3707,13 +3704,10 @@ apiRouter.get('/organic/sessions', async (c) => {
 
 // 15. Ingest Real Organic Lead (Tied to Existing Session Provenance)
 apiRouter.post('/organic/leads', async (c) => {
-  const clientIp =
-    c.req.header('cf-connecting-ip') ||
-    c.req.header('x-forwarded-for')?.split(',')[0].trim() ||
-    c.req.header('x-real-ip') ||
-    '127.0.0.1';
+  const { getTrustedClientIp } = await import('../security/client-ip.js');
+  const clientInfo = getTrustedClientIp(c, 10, 5);
   const { DurableRateLimiter } = await import('../security/durable-rate-limiter.js');
-  const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/organic/leads', clientIp, 10, 600);
+  const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/organic/leads', clientInfo.ip, clientInfo.maxRequests, 600);
   if (!rateLimit.allowed) {
     return c.json({ success: false, error: 'RATE_LIMIT_EXCEEDED', retryAfterSeconds: rateLimit.retryAfterSeconds }, 429);
   }

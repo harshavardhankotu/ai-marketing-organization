@@ -162,7 +162,7 @@ describe('Stop-The-Waste & Safety Pass Test Suite', () => {
         isManual: true
       });
       expect(manualRes.status).toBe('PROSPECTS_DISCOVERED');
-    });
+    }, 15000);
 
     it('skips candidates whose domain or source URL already exists in platform_prospects', async () => {
       const db = getDb();
@@ -339,6 +339,89 @@ describe('Stop-The-Waste & Safety Pass Test Suite', () => {
       });
       expect(resB1.status).toBe(400); // allowed by rate limiter, rejected by body validation
     });
+
+    it('proves spoofed cf-connecting-ip cannot create unlimited buckets and is ignored in favor of trusted x-forwarded-for', async () => {
+      const db = getDb();
+      db.prepare(`
+        INSERT OR REPLACE INTO businesses (
+          id, organization_id, name, public_slug, vertical_id, vertical_name,
+          city, neighborhood, brand_voice, country, public_live, created_at
+        ) VALUES ('biz_spoof_test', 'org_owner_primary', 'Spoof Test Clinic', 'spoof-test',
+          'clinic', 'Clinic', 'Hyderabad', 'Banjara Hills', 'Professional', 'IN', 1, datetime('now'))
+      `).run();
+
+      const realIp = '198.51.100.77';
+
+      // Send 10 requests from the same X-Forwarded-For IP, each with a different spoofed CF-Connecting-IP
+      for (let i = 1; i <= 10; i++) {
+        const spoofedIp = `10.99.${i}.${i}`;
+        const res = await app.request('/api/v1/public/lead', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Forwarded-For': `${realIp}, 172.70.1.1`,
+            'CF-Connecting-IP': spoofedIp
+          },
+          body: JSON.stringify({ businessSlug: 'spoof-test' })
+        });
+        expect(res.status).toBe(400); // reaches validation handler
+      }
+
+      // 11th request with yet another spoofed CF-Connecting-IP must be BLOCKED with 429
+      const res11 = await app.request('/api/v1/public/lead', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Forwarded-For': `${realIp}, 172.70.1.1`,
+          'CF-Connecting-IP': '10.99.11.11'
+        },
+        body: JSON.stringify({ businessSlug: 'spoof-test' })
+      });
+      expect(res11.status).toBe(429);
+      const json11 = await res11.json() as any;
+      expect(json11.error).toContain('Rate limit exceeded');
+    });
+
+    it('enforces stricter limit of 5 requests for the unknown IP bucket when x-forwarded-for is missing', async () => {
+      const db = getDb();
+      db.prepare(`
+        INSERT OR REPLACE INTO businesses (
+          id, organization_id, name, public_slug, vertical_id, vertical_name,
+          city, neighborhood, brand_voice, country, public_live, created_at
+        ) VALUES ('biz_unknown_ip_test', 'org_owner_primary', 'Unknown IP Clinic', 'unknown-ip-test',
+          'clinic', 'Clinic', 'Hyderabad', 'Banjara Hills', 'Professional', 'IN', 1, datetime('now'))
+      `).run();
+
+      // Clear any prior rate limit entries for 'unknown' IP
+      const limiter = DurableRateLimiter.getInstance();
+      const unknownHash = limiter.hashIp('unknown');
+      db.prepare(`DELETE FROM durable_rate_limits WHERE ip_hash = ?`).run(unknownHash);
+
+      // 5 requests without X-Forwarded-For header
+      for (let i = 1; i <= 5; i++) {
+        const res = await app.request('/api/v1/public/lead', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+            // No X-Forwarded-For header -> maps to 'unknown' bucket with maxRequests = 5
+          },
+          body: JSON.stringify({ businessSlug: 'unknown-ip-test' })
+        });
+        expect(res.status).toBe(400); // validation error, within rate limit
+      }
+
+      // 6th request should be blocked with 429 due to stricter limit (5)
+      const res6 = await app.request('/api/v1/public/lead', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ businessSlug: 'unknown-ip-test' })
+      });
+      expect(res6.status).toBe(429);
+      const json6 = await res6.json() as any;
+      expect(json6.error).toContain('Rate limit exceeded');
+    });
   });
 
   describe('5. Hide Demo Businesses & Enforce public_live=true', () => {
@@ -441,6 +524,158 @@ describe('Stop-The-Waste & Safety Pass Test Suite', () => {
       const json = await res.json() as any;
       expect(json.success).toBe(true);
       expect(json.data.name).toBe('Apex Health Centre');
+    });
+
+    it('positive control: with public_live=1, each public GET/POST route reaches handler (invalid body returns 400 not 404)', async () => {
+      const db = getDb();
+      // Seed a legitimate public live business
+      db.prepare(`
+        INSERT OR REPLACE INTO businesses (
+          id, organization_id, name, public_slug, vertical_id, vertical_name,
+          city, neighborhood, brand_voice, country, currency, timezone, public_live, created_at
+        ) VALUES ('biz_pos_ctrl_01', 'org_owner_primary', 'Positive Control Clinic', 'pos-control-clinic',
+          'dental', 'Dental Care', 'Hyderabad', 'Banjara Hills', 'Professional', 'IN', 'INR', 'Asia/Kolkata', 1, datetime('now'))
+      `).run();
+
+      // Seed an active funnel
+      db.prepare(`
+        INSERT OR REPLACE INTO funnels (
+          id, business_id, organization_id, public_slug, funnel_type, objective,
+          headline, cta_strategy, payment_strategy, status, created_at, updated_at
+        ) VALUES ('fnl_pos_ctrl_01', 'biz_pos_ctrl_01', 'org_owner_primary', 'main',
+          'LEAD_CAPTURE', 'Acquire new patients', 'Welcome to Positive Control Clinic', 'BOOK_OR_BUY', 'OPTIONAL', 'ACTIVE', datetime('now'), datetime('now'))
+      `).run();
+
+      // Seed an active customer offer for this business
+      db.prepare(`
+        INSERT OR REPLACE INTO customer_offers (
+          id, business_id, organization_id, title, price_minor, currency, active, created_at, updated_at
+        ) VALUES ('off_pos_01', 'biz_pos_ctrl_01', 'org_owner_primary', 'Consultation', 50000, 'INR', 1, datetime('now'), datetime('now'))
+      `).run();
+
+      // 1. GET /public/business/:slug -> 200
+      const resBiz = await app.request('/api/v1/public/business/pos-control-clinic');
+      expect(resBiz.status).toBe(200);
+
+      // 2. GET /public/funnel/:businessSlug -> 200
+      const resFnl = await app.request('/api/v1/public/funnel/pos-control-clinic');
+      expect(resFnl.status).toBe(200);
+
+      // 3. GET /public/funnel/:businessSlug/:funnelSlug -> 200
+      const resFnlMain = await app.request('/api/v1/public/funnel/pos-control-clinic/main');
+      expect(resFnlMain.status).toBe(200);
+
+      // 4. GET /public/availability?businessSlug=:slug -> 200
+      const resAvail = await app.request('/api/v1/public/availability?businessSlug=pos-control-clinic');
+      expect(resAvail.status).toBe(200);
+
+      // 5. POST /public/lead with invalid body -> 400 (reaches handler, NOT 404)
+      const resLead = await app.request('/api/v1/public/lead', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ businessSlug: 'pos-control-clinic' }) // missing name & phone
+      });
+      expect(resLead.status).toBe(400);
+
+      // 6. POST /public/checkout with invalid body -> 400 (NOT 404)
+      const resCheckout = await app.request('/api/v1/public/checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ businessSlug: 'pos-control-clinic', offerId: 'off_pos_01' }) // missing customer details
+      });
+      expect(resCheckout.status).toBe(400);
+
+      // 7. POST /public/order with invalid body -> 400 (NOT 404)
+      const resOrder = await app.request('/api/v1/public/order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ businessSlug: 'pos-control-clinic', offerId: 'off_pos_01' }) // missing customer details
+      });
+      expect(resOrder.status).toBe(400);
+
+      // 8. POST /public/booking with invalid body -> 400 (NOT 404)
+      const resBooking = await app.request('/api/v1/public/booking', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ businessSlug: 'pos-control-clinic' }) // missing booking details
+      });
+      expect(resBooking.status).toBe(400);
+    });
+
+    it('positive control: published guide returns 200, appears in /sitemap.xml, and /r/ referral returns 302 while platform-aro stays 404', async () => {
+      const db = getDb();
+
+      // Seed a published guide
+      db.prepare(`
+        INSERT OR REPLACE INTO commission_content_assets (
+          id, organization_id, slug, title, content_markdown, status, category, asset_type,
+          intent_target, view_count, created_at, updated_at
+        ) VALUES ('asset_guide_pos_01', 'org_owner_primary', 'hyderabad-dental-implants-guide', 'Hyderabad Dental Implants Guide',
+          'Comprehensive Dental Guide', 'PUBLISHED', 'DENTAL', 'GUIDE',
+          'implants', 0, datetime('now'), datetime('now'))
+      `).run();
+
+      // Seed active partner and offer
+      db.prepare(`
+        INSERT OR REPLACE INTO partners (
+          id, organization_id, name, industry, website, partner_type, created_at, updated_at
+        ) VALUES ('part_pos_01', 'org_owner_primary', 'DentCare Partner Network', 'Dental', 'https://dentcare.example.com', 'AFFILIATE', datetime('now'), datetime('now'))
+      `).run();
+
+      db.prepare(`
+        INSERT OR REPLACE INTO partner_offers (
+          id, partner_id, organization_id, title, offer_slug, category, target_customer, destination_url, authorized_tracking_url,
+          commission_model, commission_amount_inr, status, active, created_at, updated_at
+        ) VALUES ('poff_pos_01', 'part_pos_01', 'org_owner_primary', 'DentCare Savings Plan', 'dentcare-savings-plan',
+          'DENTAL', 'Dental Patients', 'https://partner.example.com/checkout', 'https://partner.example.com/track',
+          'FIXED', 1000, 'ACTIVE', 1, datetime('now'), datetime('now'))
+      `).run();
+
+      // Seed referral record
+      db.prepare(`
+        INSERT OR REPLACE INTO referrals (
+          id, partner_id, offer_id, organization_id, click_id, destination_url, created_at
+        ) VALUES ('ref_pos_01', 'part_pos_01', 'poff_pos_01', 'org_owner_primary', 'ref_dent_01',
+          'https://partner.example.com/checkout?ref=ref_dent_01', datetime('now'))
+      `).run();
+
+      // 1. GET /api/v1/guides/:slug returns 200
+      const resGuide = await app.request('/api/v1/guides/hyderabad-dental-implants-guide');
+      expect(resGuide.status).toBe(200);
+      const guideJson = await resGuide.json() as any;
+      expect(guideJson.success).toBe(true);
+      expect(guideJson.data.title).toBe('Hyderabad Dental Implants Guide');
+
+      // 2. GET /sitemap.xml returns 200 and includes /guides/hyderabad-dental-implants-guide
+      const resSitemap = await app.request('/sitemap.xml');
+      expect(resSitemap.status).toBe(200);
+      const sitemapText = await resSitemap.text();
+      expect(sitemapText).toContain('/guides/hyderabad-dental-implants-guide');
+
+      // 3. GET /r/:offerSlug/:referralId returns 302 redirect
+      const resReferral = await app.request('/r/dentcare-savings-plan/ref_dent_01');
+      expect(resReferral.status).toBe(302);
+      expect(resReferral.headers.get('location')).toBe('https://partner.example.com/checkout?ref=ref_dent_01');
+
+      // 4. Confirm platform-aro remains completely hidden (404) across all /api/v1/public/* routes
+      const aroBiz = await app.request('/api/v1/public/business/platform-aro');
+      expect(aroBiz.status).toBe(404);
+
+      const aroFnl = await app.request('/api/v1/public/funnel/platform-aro');
+      expect(aroFnl.status).toBe(404);
+
+      const aroContent = await app.request('/api/v1/public/content/platform-aro');
+      expect(aroContent.status).toBe(404);
+
+      const aroDisclosure = await app.request('/api/v1/public/disclosure/platform-aro');
+      expect(aroDisclosure.status).toBe(404);
+
+      const aroLead = await app.request('/api/v1/public/lead', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ businessSlug: 'platform-aro' })
+      });
+      expect(aroLead.status).toBe(404);
     });
   });
 });

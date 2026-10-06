@@ -160,10 +160,10 @@ export class PlatformProspectDiscoveryEngine {
     // 0. 7-DAY QUERY COOLDOWN: Do not rerun the same query within 7 days unless triggered manually
     if (!options.isManual) {
       try {
-        const recentCache = await this.d1Repo.queryOne<{ id: string; created_at: string }>(
+        const recentCache = await this.d1Repo.queryOne<{ id: string; created_at: string; expires_at: string }>(
           'search_cache',
-          `SELECT id, created_at FROM search_cache
-           WHERE query_normalized = ? AND created_at > datetime('now', '-7 days')
+          `SELECT id, created_at, expires_at FROM search_cache
+           WHERE query_normalized = ? AND (expires_at > datetime('now') OR created_at > datetime('now', '-7 days'))
            LIMIT 1`,
           [queryKey]
         );
@@ -172,7 +172,7 @@ export class PlatformProspectDiscoveryEngine {
             status: 'NO_NEW_PROSPECTS',
             count: 0,
             prospects: [],
-            reason: `DISCOVERY_COOLDOWN_ACTIVE: Query '${queryKey}' was executed within last 7 days (at ${recentCache.created_at}). Automatic re-runs are skipped for 7 days.`
+            reason: `DISCOVERY_COOLDOWN_ACTIVE: Query '${queryKey}' was executed within last 7 days (expires at ${recentCache.expires_at || '7 days'}). Automatic re-runs are skipped for 7 days.`
           };
         }
       } catch {}

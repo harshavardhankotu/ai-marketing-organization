@@ -8,6 +8,7 @@ import { FunnelPublicProfile, UniversalOrder, toMinorUnits, toMajorUnits, format
 import { isProduction } from '../config/env.js';
 import { isDemoBusiness, isPublicLiveBusiness } from '../security/public-tenant-guard.js';
 import { DurableRateLimiter } from '../security/durable-rate-limiter.js';
+import { getTrustedClientIp } from '../security/client-ip.js';
 
 import { TenantContextResolver } from '../control-plane/tenant-context-resolver.js';
 
@@ -127,10 +128,10 @@ export async function handleCreateUniversalOrder(c: Context): Promise<Response> 
     return c.json({ success: false, error: 'OFFER_REQUIRED: offerId must be specified for checkout.' }, 400);
   }
 
-  // 0. Durable Rate Limiter (Max 10 per 10 mins per IP hash)
-  const clientIp = c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for')?.split(',')[0]?.trim() || '127.0.0.1';
+  // 0. Durable Rate Limiter (Trusted Render proxy IP, stricter on unknown)
+  const clientInfo = getTrustedClientIp(c, 10, 5);
   const limiter = DurableRateLimiter.getInstance();
-  const rateLimit = await limiter.checkRateLimit('/public/order', clientIp, 10, 600);
+  const rateLimit = await limiter.checkRateLimit('/public/order', clientInfo.ip, clientInfo.maxRequests, 600);
   if (!rateLimit.allowed) {
     return c.json({
       success: false,
@@ -369,10 +370,10 @@ export async function handleCreateBookingReservation(c: Context): Promise<Respon
   const businessId = typeof body.businessId === 'string' ? body.businessId.trim() : '';
   const businessSlug = typeof body.businessSlug === 'string' ? body.businessSlug.trim().toLowerCase() : '';
 
-  // 0. Durable Rate Limiter (Max 10 per 10 mins per IP hash)
-  const clientIp = c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for')?.split(',')[0]?.trim() || '127.0.0.1';
+  // 0. Durable Rate Limiter (Trusted Render proxy IP, stricter on unknown)
+  const clientInfo = getTrustedClientIp(c, 10, 5);
   const limiter = DurableRateLimiter.getInstance();
-  const rateLimit = await limiter.checkRateLimit('/public/booking', clientIp, 10, 600);
+  const rateLimit = await limiter.checkRateLimit('/public/booking', clientInfo.ip, clientInfo.maxRequests, 600);
   if (!rateLimit.allowed) {
     return c.json({
       success: false,

@@ -8,6 +8,7 @@ import { StripeAdapter } from '../integrations/stripe.js';
 import { getCurrencyMetadata, toMajorUnits } from '@ai-marketing/shared';
 import { isDemoBusiness, isPublicLiveBusiness } from '../security/public-tenant-guard.js';
 import { DurableRateLimiter } from '../security/durable-rate-limiter.js';
+import { getTrustedClientIp } from '../security/client-ip.js';
 
 export interface UniversalCheckoutInput {
   businessId?: string;
@@ -58,10 +59,10 @@ export async function handleUniversalCheckout(c: Context): Promise<Response> {
     return c.json({ success: false, error: 'OFFER_REQUIRED: offerId must be specified for checkout.' }, 400);
   }
 
-  // 0. Durable Rate Limiter (Max 10 per 10 mins per IP hash)
-  const clientIp = c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for')?.split(',')[0]?.trim() || '127.0.0.1';
+  // 0. Durable Rate Limiter (Trusted Render proxy IP, stricter on unknown)
+  const clientInfo = getTrustedClientIp(c, 10, 5);
   const limiter = DurableRateLimiter.getInstance();
-  const rateLimit = await limiter.checkRateLimit('/public/checkout', clientIp, 10, 600);
+  const rateLimit = await limiter.checkRateLimit('/public/checkout', clientInfo.ip, clientInfo.maxRequests, 600);
   if (!rateLimit.allowed) {
     return c.json({
       success: false,
@@ -75,17 +76,6 @@ export async function handleUniversalCheckout(c: Context): Promise<Response> {
     return c.json({ success: false, error: 'BUSINESS_NOT_FOUND: Valid businessId or businessSlug required.' }, 404);
   }
 
-  const customerName = (body.customerName || '').trim();
-  const customerPhone = (body.customerPhone || '').trim();
-  const customerEmail = (body.customerEmail || '').trim();
-  if (!customerName || !customerPhone) {
-    return c.json({ success: false, error: 'CUSTOMER_DETAILS_REQUIRED: Name and phone are required.' }, 400);
-  }
-  const digits = customerPhone.replace(/\D/g, '');
-  if (digits.length < 8 || digits.length > 15) {
-    return c.json({ success: false, error: 'INVALID_PHONE: Provide a valid international phone number.' }, 400);
-  }
-
   // 1. Resolve business
   let biz: any = null;
   if (businessId) {
@@ -95,6 +85,17 @@ export async function handleUniversalCheckout(c: Context): Promise<Response> {
   }
   if (!biz || !isPublicLiveBusiness(biz)) {
     return c.json({ success: false, error: 'BUSINESS_NOT_FOUND: Valid businessId or businessSlug required.' }, 404);
+  }
+
+  const customerName = (body.customerName || '').trim();
+  const customerPhone = (body.customerPhone || '').trim();
+  const customerEmail = (body.customerEmail || '').trim();
+  if (!customerName || !customerPhone) {
+    return c.json({ success: false, error: 'CUSTOMER_DETAILS_REQUIRED: Name and phone are required.' }, 400);
+  }
+  const digits = customerPhone.replace(/\D/g, '');
+  if (digits.length < 8 || digits.length > 15) {
+    return c.json({ success: false, error: 'INVALID_PHONE: Provide a valid international phone number.' }, 400);
   }
 
   // 2. Resolve offer at server price
