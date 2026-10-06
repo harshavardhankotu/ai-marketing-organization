@@ -112,7 +112,9 @@ describe('Autonomy Reality Fix — Strict Action & Quota Truth Audit', () => {
 
   // 6. Cloudflare Worker cron timeout: at least 90-120 seconds (Spec § 15)
   it('6. Cloudflare Worker fetch timeout is configured >= 90 seconds for Render cold-starts', () => {
-    const workerFile = path.resolve(process.cwd(), '../cloudflare-worker/src/worker.ts');
+    const candidate1 = path.resolve(process.cwd(), 'packages/cloudflare-worker/src/worker.ts');
+    const candidate2 = path.resolve(process.cwd(), '../cloudflare-worker/src/worker.ts');
+    const workerFile = fs.existsSync(candidate1) ? candidate1 : candidate2;
     const content = fs.readFileSync(workerFile, 'utf-8');
 
     expect(content).toContain('AbortSignal.timeout(100000)');

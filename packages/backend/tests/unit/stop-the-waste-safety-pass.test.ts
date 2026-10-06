@@ -717,7 +717,7 @@ describe('Stop-The-Waste & Safety Pass Test Suite', () => {
           id, partner_id, organization_id, title, offer_slug, category, target_customer, destination_url, authorized_tracking_url,
           commission_model, commission_amount_inr, status, active, created_at, updated_at
         ) VALUES ('poff_pos_01', 'part_pos_01', 'org_owner_primary', 'DentCare Savings Plan', 'dentcare-savings-plan',
-          'DENTAL', 'Dental Patients', 'https://partner.example.com/checkout', 'https://partner.example.com/track',
+          'DENTAL', 'Dental Patients', 'https://www.amazon.in/dp/B08N5WRWNW', 'https://www.amazon.in/dp/B08N5WRWNW',
           'FIXED', 1000, 'ACTIVE', 1, datetime('now'), datetime('now'))
       `).run();
 
@@ -726,7 +726,7 @@ describe('Stop-The-Waste & Safety Pass Test Suite', () => {
         INSERT OR REPLACE INTO referrals (
           id, partner_id, offer_id, organization_id, click_id, destination_url, created_at
         ) VALUES ('ref_pos_01', 'part_pos_01', 'poff_pos_01', 'org_owner_primary', 'ref_dent_01',
-          'https://partner.example.com/checkout?ref=ref_dent_01', datetime('now'))
+          'https://www.amazon.in/dp/B08N5WRWNW?ref=ref_dent_01', datetime('now'))
       `).run();
 
       // 1. GET /api/v1/guides/:slug returns 200
@@ -745,7 +745,7 @@ describe('Stop-The-Waste & Safety Pass Test Suite', () => {
       // 3. GET /r/:offerSlug/:referralId returns 302 redirect
       const resReferral = await app.request('/r/dentcare-savings-plan/ref_dent_01');
       expect(resReferral.status).toBe(302);
-      expect(resReferral.headers.get('location')).toBe('https://partner.example.com/checkout?ref=ref_dent_01');
+      expect(resReferral.headers.get('location')).toBe('https://www.amazon.in/dp/B08N5WRWNW?ref=ref_dent_01');
 
       // 4. Confirm platform-aro remains completely hidden (404) across all /api/v1/public/* routes
       const aroBiz = await app.request('/api/v1/public/business/platform-aro');
@@ -813,52 +813,66 @@ describe('Stop-The-Waste & Safety Pass Test Suite', () => {
       expect(res.status).toBe(404);
     });
 
-    it('derives trusted client IP by dropping trailing private and Cloudflare proxy IPs', () => {
-      const mockContext = (headers: Record<string, string>) => ({
-        req: {
-          header: (name: string) => {
-            const lower = name.toLowerCase();
-            for (const [k, v] of Object.entries(headers)) {
-              if (k.toLowerCase() === lower) return v;
-            }
-            return undefined;
+    const mockContext = (headers: Record<string, string>) => ({
+      req: {
+        header: (name: string) => {
+          const lower = name.toLowerCase();
+          for (const [k, v] of Object.entries(headers)) {
+            if (k.toLowerCase() === lower) return v;
           }
+          return undefined;
         }
-      } as any);
+      }
+    } as any);
 
-      // Exact sample 1: "110.235.225.146, 172.69.86.91, 10.194.16.2" -> 110.235.225.146
-      const res1 = getTrustedClientIp(mockContext({
+    it('client-ip case 1: "110.235.225.146, 172.69.86.91, 10.194.16.2" -> 110.235.225.146', () => {
+      const res = getTrustedClientIp(mockContext({
         'x-forwarded-for': '110.235.225.146, 172.69.86.91, 10.194.16.2'
       }));
-      expect(res1.ip).toBe('110.235.225.146');
-      expect(res1.isUnknown).toBe(false);
-
-      // Exact sample 2: "9.9.9.9,110.235.225.146, 172.68.175.61, 10.199.92.5" -> 110.235.225.146
-      const res2 = getTrustedClientIp(mockContext({
-        'x-forwarded-for': '9.9.9.9,110.235.225.146, 172.68.175.61, 10.199.92.5'
-      }));
-      expect(res2.ip).toBe('110.235.225.146');
-      expect(res2.isUnknown).toBe(false);
-      // Spoofed leftmost value is never selected
-      expect(res2.ip).not.toBe('9.9.9.9');
-
-      // Exact sample 3: header with only private IPs -> "unknown"
-      const res3 = getTrustedClientIp(mockContext({
-        'x-forwarded-for': '10.0.0.1, 172.16.0.1, 192.168.1.1, 127.0.0.1'
-      }));
-      expect(res3.ip).toBe('unknown');
-      expect(res3.isUnknown).toBe(true);
-
-      // Missing header -> "unknown"
-      const res4 = getTrustedClientIp(mockContext({}));
-      expect(res4.ip).toBe('unknown');
-      expect(res4.isUnknown).toBe(true);
+      expect(res.ip).toBe('110.235.225.146');
+      expect(res.isUnknown).toBe(false);
     });
 
-    it('rejects junk discovery candidates across all 7 real-world edge cases and rules', () => {
-      const discEngine = PlatformProspectDiscoveryEngine.getInstance();
+    it('client-ip case 2: "9.9.9.9,110.235.225.146, 172.68.175.61, 10.199.92.5" -> 110.235.225.146', () => {
+      const res = getTrustedClientIp(mockContext({
+        'x-forwarded-for': '9.9.9.9,110.235.225.146, 172.68.175.61, 10.199.92.5'
+      }));
+      expect(res.ip).toBe('110.235.225.146');
+      expect(res.isUnknown).toBe(false);
+    });
 
-      // Rule: Reject /clinic-locator (Apollo Clinics India)
+    it('client-ip case 3: only-private header -> "unknown"', () => {
+      const res = getTrustedClientIp(mockContext({
+        'x-forwarded-for': '10.0.0.1, 172.16.0.1, 192.168.1.1, 127.0.0.1'
+      }));
+      expect(res.ip).toBe('unknown');
+      expect(res.isUnknown).toBe(true);
+    });
+
+    it('client-ip case 4: spoofed leftmost value is never selected', () => {
+      const res = getTrustedClientIp(mockContext({
+        'x-forwarded-for': '9.9.9.9,110.235.225.146, 172.68.175.61, 10.199.92.5'
+      }));
+      expect(res.ip).not.toBe('9.9.9.9');
+      expect(res.ip).toBe('110.235.225.146');
+    });
+
+    it('filter rule: rejects .pdf and .gov URLs (Karnataka Govt Hospital PDF)', () => {
+      const discEngine = PlatformProspectDiscoveryEngine.getInstance();
+      expect(discEngine.validateCandidate({
+        businessName: 'Sl.No. Hospital Name Govt/Pvt',
+        vertical: 'clinic',
+        city: 'Bengaluru',
+        websiteUrl: 'https://sahakarasindhu.karnataka.gov.in/storage/pdf-files/Latest_Hospital_List_Dec2023.pdf',
+        evidenceSourceUrl: 'https://sahakarasindhu.karnataka.gov.in/storage/pdf-files/Latest_Hospital_List_Dec2023.pdf',
+        evidenceTimestamp: new Date().toISOString(),
+        contactPhone: '+919449206481',
+        observedGap: 'Manual staff messaging'
+      })).toBe(false);
+    });
+
+    it('filter rule: rejects /clinic-locator URLs (Apollo Clinics India & Bengaluru)', () => {
+      const discEngine = PlatformProspectDiscoveryEngine.getInstance();
       expect(discEngine.validateCandidate({
         businessName: 'Best Clinics in India',
         vertical: 'clinic',
@@ -870,7 +884,6 @@ describe('Stop-The-Waste & Safety Pass Test Suite', () => {
         observedGap: 'Manual staff messaging'
       })).toBe(false);
 
-      // Rule: Reject /clinic-locator (Apollo Clinics Bengaluru)
       expect(discEngine.validateCandidate({
         businessName: 'Best Clinics in Bengaluru',
         vertical: 'clinic',
@@ -881,22 +894,12 @@ describe('Stop-The-Waste & Safety Pass Test Suite', () => {
         contactPhone: '+918049549024',
         observedGap: 'Manual staff messaging'
       })).toBe(false);
+    });
 
-      // Rule: Reject .pdf and .gov.in URLs (Karnataka Govt Hospital PDF)
+    it('filter rule: rejects /company/ and known data-broker salezshark.com', () => {
+      const discEngine = PlatformProspectDiscoveryEngine.getInstance();
       expect(discEngine.validateCandidate({
-        businessName: 'Sl.No. Hospital Name Govt/Pvt',
-        vertical: 'clinic',
-        city: 'Bengaluru',
-        websiteUrl: 'https://sahakarasindhu.karnataka.gov.in/storage/pdf-files/Latest_Hospital_List_Dec2023.pdf',
-        evidenceSourceUrl: 'https://sahakarasindhu.karnataka.gov.in/storage/pdf-files/Latest_Hospital_List_Dec2023.pdf',
-        evidenceTimestamp: new Date().toISOString(),
-        contactPhone: '+919449206481',
-        observedGap: 'Manual staff messaging'
-      })).toBe(false);
-
-      // Rule: Reject data-broker domain salezshark.com, /company/, and "email id" in title
-      expect(discEngine.validateCandidate({
-        businessName: 'The Bangalore Hospital Email ID Format',
+        businessName: 'The Bangalore Hospital Staff Directory',
         vertical: 'clinic',
         city: 'Bengaluru',
         websiteUrl: 'https://www.salezshark.com/company/the-bangalore-hospital',
@@ -905,8 +908,35 @@ describe('Stop-The-Waste & Safety Pass Test Suite', () => {
         contactEmail: 'contact@bangalorehospital.co.in',
         observedGap: 'Manual staff messaging'
       })).toBe(false);
+    });
 
-      // Rule: Reject "list of" in title
+    it('filter rule: rejects view_listing, listing, and directory URLs', () => {
+      const discEngine = PlatformProspectDiscoveryEngine.getInstance();
+      expect(discEngine.validateCandidate({
+        businessName: 'Dental Hospital View Listing',
+        vertical: 'clinic',
+        city: 'Bengaluru',
+        websiteUrl: 'https://etacky.com/view_listing.php?id=1188',
+        evidenceSourceUrl: 'https://etacky.com/view_listing.php?id=1188',
+        evidenceTimestamp: new Date().toISOString(),
+        contactPhone: '+919849123456',
+        observedGap: 'Manual staff messaging'
+      })).toBe(false);
+    });
+
+    it('filter rule: rejects "list of" and "email id" in title', () => {
+      const discEngine = PlatformProspectDiscoveryEngine.getInstance();
+      expect(discEngine.validateCandidate({
+        businessName: 'The Bangalore Hospital Email ID Format',
+        vertical: 'clinic',
+        city: 'Bengaluru',
+        websiteUrl: 'https://directory.example.com/company/bangalore-hospital',
+        evidenceSourceUrl: 'https://directory.example.com/company/bangalore-hospital',
+        evidenceTimestamp: new Date().toISOString(),
+        contactEmail: 'contact@bangalorehospital.co.in',
+        observedGap: 'Manual staff messaging'
+      })).toBe(false);
+
       expect(discEngine.validateCandidate({
         businessName: 'List of Top Hospitals in India',
         vertical: 'clinic',
@@ -917,8 +947,10 @@ describe('Stop-The-Waste & Safety Pass Test Suite', () => {
         contactPhone: '+919849123456',
         observedGap: 'Manual staff messaging'
       })).toBe(false);
+    });
 
-      // Rule: Reject candidate whose city does not match query (Apollo Bannerghatta in Bengaluru when querying Hyderabad)
+    it('filter rule: rejects candidate whose city does not match query (Apollo Bannerghatta in Bengaluru vs Hyderabad)', () => {
+      const discEngine = PlatformProspectDiscoveryEngine.getInstance();
       expect(discEngine.validateCandidate({
         businessName: 'Apollo Hospitals Bannerghatta Road',
         vertical: 'clinic',
@@ -929,8 +961,10 @@ describe('Stop-The-Waste & Safety Pass Test Suite', () => {
         contactPhone: '+918026304050',
         observedGap: 'Manual staff messaging'
       }, { vertical: 'clinic', city: 'Hyderabad' })).toBe(false);
+    });
 
-      // Rule: Reject candidate whose vertical does not match query (United Hospitals surgery/clinic when querying dental)
+    it('filter rule: rejects candidate whose vertical does not match query (United Hospitals surgery vs dental)', () => {
+      const discEngine = PlatformProspectDiscoveryEngine.getInstance();
       expect(discEngine.validateCandidate({
         businessName: 'United Hospitals Surgery Centre',
         vertical: 'clinic',
@@ -941,8 +975,10 @@ describe('Stop-The-Waste & Safety Pass Test Suite', () => {
         contactPhone: '+918045666666',
         observedGap: 'Manual staff messaging'
       }, { vertical: 'dental', city: 'Hyderabad' })).toBe(false);
+    });
 
-      // Rule: Reject candidate with both vertical and city mismatch (Manipal multispeciality clinic in Bengaluru when querying dental in Hyderabad)
+    it('filter rule: rejects candidate with both vertical and city mismatch (Manipal multispeciality vs dental in Hyderabad)', () => {
+      const discEngine = PlatformProspectDiscoveryEngine.getInstance();
       expect(discEngine.validateCandidate({
         businessName: 'Best Multispeciality Hospital In India',
         vertical: 'clinic',

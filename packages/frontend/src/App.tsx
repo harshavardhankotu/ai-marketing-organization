@@ -21,6 +21,7 @@ import { Settings } from './pages/Settings.js';
 import { HealthStatusCard } from './components/common/HealthStatusCard.js';
 import { BusinessOnboarding } from './components/onboarding/BusinessOnboarding.js';
 import { OwnerLogin } from './components/auth/OwnerLogin.js';
+import { PublicCompliancePage } from './pages/PublicCompliancePage.js';
 import { api, onUnauthorized } from './services/api.js';
 import { AGENT_REGISTRY } from './services/seed-defaults.js';
 
@@ -103,13 +104,27 @@ export const App: React.FC = () => {
     }
   };
 
-  // Universal public demand funnels.
-  // Canonical shape: /f/<business-public-slug>/<funnel-slug>
-  // Also accepts /book/<business-public-slug>/<funnel-slug> for simple links.
-  const isPublicFunnelRoute = typeof window !== 'undefined' && (
-    window.location.pathname === '/book' ||
-    window.location.pathname.startsWith('/book/') ||
-    window.location.pathname.startsWith('/f/')
+  // Universal public demand funnels & compliance routes
+  const [currentPathname, setCurrentPathname] = useState<string>(
+    typeof window !== 'undefined' ? window.location.pathname : '/'
+  );
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setCurrentPathname(window.location.pathname);
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  const isPublicFunnelRoute =
+    currentPathname === '/book' ||
+    currentPathname.startsWith('/book/') ||
+    currentPathname.startsWith('/f/');
+
+  const compliancePaths = ['/privacy', '/terms', '/about', '/contact', '/affiliate-disclosure'];
+  const isComplianceRoute = compliancePaths.some(
+    p => currentPathname === p || currentPathname.startsWith(p + '/')
   );
 
   const bootstrapOwnerSession = async () => {
@@ -131,8 +146,8 @@ export const App: React.FC = () => {
   };
 
   useEffect(() => {
-    // Public demand funnels must not fan out into authenticated owner APIs
-    if (isPublicFunnelRoute) {
+    // Public demand funnels and compliance routes must not fan out into authenticated owner APIs
+    if (isPublicFunnelRoute || isComplianceRoute) {
       setLoading(false);
       return;
     }
@@ -142,7 +157,7 @@ export const App: React.FC = () => {
     });
 
     bootstrapOwnerSession();
-  }, [isPublicFunnelRoute]);
+  }, [isPublicFunnelRoute, isComplianceRoute]);
 
   const handleLoginSuccess = async () => {
     setAuthState('AUTHENTICATED');
@@ -196,6 +211,20 @@ export const App: React.FC = () => {
   };
 
   const pendingApprovalsCount = approvals.filter(a => a.status === 'PENDING').length;
+
+  if (isComplianceRoute) {
+    return (
+      <PublicCompliancePage
+        path={currentPathname}
+        onNavigate={(newPath) => {
+          if (typeof window !== 'undefined') {
+            window.history.pushState({}, '', newPath);
+          }
+          setCurrentPathname(newPath);
+        }}
+      />
+    );
+  }
 
   if (isPublicFunnelRoute) {
     return <UniversalFunnelPage />;
@@ -359,6 +388,24 @@ export const App: React.FC = () => {
               integrations={integrations}
             />
           )}
+
+          {/* Compliance & Legal Footer */}
+          <footer className="mt-12 pt-6 border-t border-slate-800 text-center text-xs text-slate-500">
+            <div className="flex flex-wrap justify-center gap-4 text-xs font-medium text-slate-400 mb-2">
+              <a href="/privacy" className="hover:text-cyan-400">Privacy Policy</a>
+              <span>•</span>
+              <a href="/terms" className="hover:text-cyan-400">Terms of Service</a>
+              <span>•</span>
+              <a href="/affiliate-disclosure" className="hover:text-cyan-400">Affiliate Disclosure</a>
+              <span>•</span>
+              <a href="/about" className="hover:text-cyan-400">About Us</a>
+              <span>•</span>
+              <a href="/contact" className="hover:text-cyan-400">Contact &amp; Grievance</a>
+            </div>
+            <p className="text-[11px] text-slate-600">
+              DPDP Act 2023 &amp; IT Act 2000 Registered. Preliminary drafts subject to legal review.
+            </p>
+          </footer>
         </main>
       </div>
 

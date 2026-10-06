@@ -78,6 +78,17 @@ app.use('*', cors({
   exposeHeaders: ['Set-Cookie']
 }));
 
+// Pre-launch security headers middleware (HSTS, nosniff, Referrer-Policy, CSP)
+app.use('*', async (c, next) => {
+  await next();
+  c.header('X-Content-Type-Options', 'nosniff');
+  c.header('Referrer-Policy', 'strict-origin-when-cross-origin');
+  c.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  if (!c.res.headers.has('Content-Security-Policy')) {
+    c.header('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' https:; style-src 'self' 'unsafe-inline' https:; img-src 'self' data: https:; font-src 'self' data: https:; connect-src 'self' https:; frame-ancestors 'none';");
+  }
+});
+
 // Request Logger
 app.use('*', async (c, next) => {
   const start = Date.now();
@@ -104,18 +115,21 @@ app.get('/r/:offerSlug/:referralId', async (c) => {
   try {
     const { ReferralTrackingEngine } = await import('./commission/referral-tracking.js');
     const trackingEngine = ReferralTrackingEngine.getInstance();
+    const isTestMode = c.req.header('x-test-mode') === 'true' || c.req.header('x-test-traffic') === 'true' || c.req.query('test_traffic') === 'true';
     const clickData = {
       ip: getTrustedClientIp(c).ip,
       userAgent: c.req.header('user-agent'),
       referer: c.req.header('referer'),
       source: c.req.query('utm_source') || c.req.query('source'),
       medium: c.req.query('utm_medium') || c.req.query('medium'),
-      campaign: c.req.query('utm_campaign') || c.req.query('campaign')
+      campaign: c.req.query('utm_campaign') || c.req.query('campaign'),
+      isTestTraffic: isTestMode
     };
     const result = await trackingEngine.resolveReferralClick(offerSlug, referralId, clickData);
     return c.redirect(result.destinationUrl, 302);
   } catch (err: any) {
-    return c.json({ error: 'REFERRAL_NOT_FOUND', message: err.message }, 404);
+    const sanitizedMsg = (err.message || '').replace(/([?&]tag=)[^&]+/gi, '$1[REDACTED]');
+    return c.json({ error: 'REFERRAL_NOT_FOUND', message: sanitizedMsg }, 404);
   }
 });
 

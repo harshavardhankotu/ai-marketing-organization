@@ -74,6 +74,7 @@ import { CommissionLedgerEngine } from '../commission/commission-ledger.js';
 import { DemandDiscoveryEngine } from '../commission/demand-discovery.js';
 import { DirectPaymentProviderAdapter } from '../commission/direct-payment-adapter.js';
 import { getTrustedClientIp } from '../security/client-ip.js';
+import { DurableRateLimiter } from '../security/durable-rate-limiter.js';
 
 export type AppVariables = {
   organizationId: string;
@@ -293,6 +294,15 @@ apiRouter.get('/health', (c) => {
 // SINGLE-OWNER AUTHENTICATION & SESSION (Spec § 2 & § 3)
 // ==========================================
 apiRouter.post('/auth/owner/login', async (c) => {
+  const clientIp = getTrustedClientIp(c).ip;
+  const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/auth/owner/login', clientIp, 5, 300);
+  if (!rateLimit.allowed) {
+    return c.json({
+      success: false,
+      error: `Too Many Requests: Brute-force protection activated. Please wait ${rateLimit.retryAfterSeconds} seconds.`
+    }, 429);
+  }
+
   const body = await c.req.json().catch(() => ({}));
   const apiKey = (body.apiKey || body.secret || c.req.header('x-api-key') || c.req.header('authorization')?.replace('Bearer ', ''))?.trim();
   const ownerAuth = OwnerAuthService.getInstance();
@@ -304,7 +314,6 @@ apiRouter.post('/auth/owner/login', async (c) => {
     }, 401);
   }
 
-  const clientIp = getTrustedClientIp(c).ip;
   const userAgent = c.req.header('user-agent') || 'Browser';
   const session = await ownerAuth.createSessionAsync(clientIp, userAgent);
 
@@ -3879,6 +3888,7 @@ apiRouter.get('/r/:offerSlug/:referralId', async (c) => {
   const trackingEngine = ReferralTrackingEngine.getInstance();
 
   try {
+    const isTestMode = c.req.header('x-test-mode') === 'true' || c.req.header('x-test-traffic') === 'true' || c.req.query('test_traffic') === 'true';
     const clickData = {
       ip: getTrustedClientIp(c).ip,
       userAgent: c.req.header('user-agent'),
@@ -3896,14 +3906,16 @@ apiRouter.get('/r/:offerSlug/:referralId', async (c) => {
       placement: c.req.query('placement') || undefined,
       keyword: c.req.query('keyword') || c.req.query('utm_term') || undefined,
       deviceClass: c.req.header('sec-ch-ua-mobile') === '?1' ? 'mobile' : (c.req.header('user-agent')?.includes('Mobile') ? 'mobile' : 'desktop'),
-      country: c.req.header('cf-ipcountry') || undefined
+      country: c.req.header('cf-ipcountry') || undefined,
+      isTestTraffic: isTestMode
     };
 
     const result = await trackingEngine.resolveReferralClick(offerSlug, referralId, clickData);
     return c.redirect(result.destinationUrl, 302);
   } catch (err: any) {
-    console.error(`[Referral Tracking] Redirect error for /r/${offerSlug}/${referralId}:`, err.message);
-    return c.json({ error: 'REFERRAL_NOT_FOUND', message: err.message }, 404);
+    const sanitizedMsg = (err.message || '').replace(/([?&]tag=)[^&]+/gi, '$1[REDACTED]');
+    console.error(`[Referral Tracking] Redirect error for /r/${offerSlug}/${referralId}:`, sanitizedMsg);
+    return c.json({ error: 'REFERRAL_NOT_FOUND', message: sanitizedMsg }, 404);
   }
 });
 

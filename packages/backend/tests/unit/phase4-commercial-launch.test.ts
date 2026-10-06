@@ -124,7 +124,7 @@ describe('Phase 4: Commercial Launch & Money-Path Verification (Spec §§ 1–30
       category: 'software',
       location: 'India',
       intentTarget: 'small business accounting',
-      contentMarkdown: 'When selecting accounting software for Indian small businesses, owners need GST compliance, invoicing automation, and multi-user support. This guide compares leading options based on pricing, ease of use, bank reconciliation, and local customer service to help you choose the best solution for your business.',
+      contentMarkdown: 'As an Amazon Associate I earn from qualifying purchases.\n\nWhen selecting accounting software for Indian small businesses, owners need GST compliance, invoicing automation, and multi-user support. This guide compares leading options based on pricing, ease of use, bank reconciliation, and local customer service to help you choose a suitable solution for your business.',
       primaryOfferId: offer.id
     });
 

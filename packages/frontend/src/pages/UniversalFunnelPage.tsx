@@ -563,6 +563,18 @@ export const UniversalFunnelPage: React.FC = () => {
             pricing, timelines and service suitability are determined by the business.
             The system records campaign context for attribution and operational follow-up.
           </div>
+
+          <footer className="mt-6 pt-4 border-t border-slate-800 text-center text-[11px] text-slate-500">
+            <div className="flex flex-wrap justify-center gap-3">
+              <a href="/privacy" className="hover:text-cyan-400">Privacy Policy</a>
+              <span>•</span>
+              <a href="/terms" className="hover:text-cyan-400">Terms</a>
+              <span>•</span>
+              <a href="/affiliate-disclosure" className="hover:text-cyan-400">Affiliate Disclosure</a>
+              <span>•</span>
+              <a href="/contact" className="hover:text-cyan-400">Contact &amp; Grievance</a>
+            </div>
+          </footer>
         </section>
       </main>
     </div>

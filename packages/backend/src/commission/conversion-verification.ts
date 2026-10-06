@@ -72,6 +72,14 @@ export class ConversionVerificationAdapter {
       throw new Error('INVALID_CONVERSION: externalTransactionId is required from provider.');
     }
 
+    if (!input.evidence || Object.keys(input.evidence).length === 0) {
+      if (isSimulatedConversionReport(input)) {
+        input.evidence = { simulated: true };
+      } else {
+        throw new Error('EVIDENCE_REQUIRED: External provider evidence or document reference is required to report conversion.');
+      }
+    }
+
     // Try finding referral by clickId or referralId
     let referral = input.referralId ? await this.tracker.getReferral(input.referralId) : null;
     if (!referral && input.clickId) {
@@ -196,6 +204,22 @@ export class ConversionVerificationAdapter {
 
     if (!input.evidence || Object.keys(input.evidence).length === 0) {
       throw new Error('EVIDENCE_REQUIRED: External proof or document reference is required to reconcile commission status.');
+    }
+
+    if ((input.action === 'APPROVE' || input.action === 'PAY')) {
+      const hasProviderProof = Boolean(
+        input.evidence.payoutId ||
+        input.evidence.reportId ||
+        input.evidence.transactionId ||
+        input.evidence.documentRef ||
+        input.evidence.providerStatementId ||
+        input.evidence.statementUrl ||
+        input.evidence.providerApprovalReference ||
+        input.evidence.networkNotice
+      );
+      if (!hasProviderProof) {
+        throw new Error('PROVIDER_PROOF_REQUIRED: Transition to VERIFIED/PAID requires attached external provider statement, payout ID, or transaction proof.');
+      }
     }
 
     const now = new Date().toISOString();

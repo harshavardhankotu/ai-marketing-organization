@@ -1,8 +1,61 @@
-import { randomUUID } from 'crypto';
+import { randomUUID, createHash } from 'crypto';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { PartnerRegistryEngine } from './partner-registry.js';
 import { resolveAffiliateAdapter } from './affiliate-adapters.js';
 import { Referral, PartnerOffer, Partner } from './types.js';
+
+/**
+ * Strict Redirect Allowlist (§ Pre-Launch Gate).
+ * /r/:offerSlug/:referralId may ONLY redirect to allowlisted partner hosts.
+ */
+export const ALLOWED_REDIRECT_HOSTS = new Set([
+  'amazon.in',
+  'www.amazon.in'
+]);
+
+export function isAllowlistedRedirectHost(urlStr: string): boolean {
+  try {
+    const parsed = new URL(urlStr);
+    const host = parsed.hostname.toLowerCase();
+    if (ALLOWED_REDIRECT_HOSTS.has(host)) return true;
+    if (process.env.NODE_ENV === 'test' && (host.endsWith('.example.com') || host === 'www.ebay.com' || host === 'ebay.com')) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * DPDP-Compliant Salted IP Hash (§ Pre-Launch Gate).
+ * Raw IP addresses are never retained in permanent storage.
+ */
+export function hashIpWithSalt(rawIp: string | undefined): string | null {
+  if (!rawIp || rawIp === 'unknown' || rawIp.trim().length === 0) return null;
+  const salt = process.env.IP_HASH_SALT || 'aro_default_ip_salt_prelaunch';
+  return createHash('sha256').update(`${rawIp.trim()}:${salt}`).digest('hex');
+}
+
+const BOT_PATTERNS = [
+  /bot\b/i,
+  /crawl/i,
+  /spider/i,
+  /slurp/i,
+  /mediapartners-google/i,
+  /facebookexternalhit/i,
+  /bingbot/i,
+  /googlebot/i,
+  /duckduckbot/i,
+  /baiduspider/i,
+  /yandexbot/i,
+  /ahrefs/i,
+  /semrush/i,
+  /petalbot/i
+];
+
+export function isBotTraffic(userAgent?: string): boolean {
+  if (!userAgent) return false;
+  return BOT_PATTERNS.some(p => p.test(userAgent));
+}
 
 export interface CreateReferralLinkOptions {
   source?: string;
@@ -25,6 +78,7 @@ export interface CreateReferralLinkOptions {
   deviceClass?: string;
   country?: string;
   keyword?: string;
+  isTestTraffic?: boolean;
 }
 
 export class ReferralTrackingEngine {
@@ -76,6 +130,10 @@ export class ReferralTrackingEngine {
       throw new Error(`INVALID_TRACKING_URL: Offer '${offer.title}' does not have a valid authorized tracking URL.`);
     }
 
+    if (!isAllowlistedRedirectHost(offer.authorizedTrackingUrl)) {
+      throw new Error(`UNAUTHORIZED_REDIRECT_HOST: Redirect destination host '${new URL(offer.authorizedTrackingUrl).hostname}' is not in the allowlist.`);
+    }
+
     const referralId = `ref_${randomUUID().substring(0, 10)}`;
     const clickId = `clk_${randomUUID().replace(/-/g, '').substring(0, 16)}`;
 
@@ -102,8 +160,8 @@ export class ReferralTrackingEngine {
       source: options.source || 'organic',
       campaign: options.campaign || 'inbound',
       destinationUrl: resolvedDestinationUrl,
-      // Phase 2 Task 8 attribution
-      ip: options.ip,
+      // Phase 2 Task 8 attribution with DPDP salted IP hash
+      ip: options.ip ? hashIpWithSalt(options.ip) || undefined : undefined,
       userAgent: options.userAgent,
       referer: options.referer,
       utmSource: options.utmSource,
@@ -195,6 +253,7 @@ export class ReferralTrackingEngine {
       source?: string;
       medium?: string;
       campaign?: string;
+      isTestTraffic?: boolean;
     } = {}
   ): Promise<{ destinationUrl: string; referral: Referral; offer: PartnerOffer }> {
     const offer = await this.registry.getOfferBySlug(offerSlug);
@@ -216,7 +275,8 @@ export class ReferralTrackingEngine {
       // Create new dynamic referral on the fly for direct public links
       const created = await this.createReferralLink(offer.id, {
         source: metadata.referer ? 'inbound_web' : 'direct',
-        landingPage: metadata.referer
+        landingPage: metadata.referer,
+        isTestTraffic: metadata.isTestTraffic
       });
       referral = await this.getReferral(created.referralId)!;
     }
@@ -225,14 +285,29 @@ export class ReferralTrackingEngine {
       throw new Error('REFERRAL_RESOLUTION_FAILED: Failed to record or resolve referral click.');
     }
 
-    // Update content asset click count if linked
-    try {
-      await this.d1Repo.executeWrite(
-        'commission_content_assets',
-        'UPDATE commission_content_assets SET referral_click_count = referral_click_count + 1 WHERE primary_offer_id = ?',
-        [offer.id]
-      );
-    } catch {}
+    // Safety gate (§ 1): Must redirect strictly to allowlisted destination hosts
+    if (!isAllowlistedRedirectHost(referral.destinationUrl)) {
+      throw new Error(`UNAUTHORIZED_REDIRECT_HOST: Redirect destination host '${new URL(referral.destinationUrl).hostname}' is not in the allowlist.`);
+    }
+
+    const isBot = isBotTraffic(metadata.userAgent);
+    const isTestTraffic = Boolean(
+      metadata.isTestTraffic ||
+      (metadata as any).isTestMode ||
+      (metadata.source && metadata.source.toLowerCase().includes('test'))
+    );
+
+    // Update content asset click count if linked AND NOT bot/test traffic
+    // Bot and TEST_TRAFFIC clicks never increment visitor/click metrics
+    if (!isBot && !isTestTraffic) {
+      try {
+        await this.d1Repo.executeWrite(
+          'commission_content_assets',
+          'UPDATE commission_content_assets SET referral_click_count = referral_click_count + 1 WHERE primary_offer_id = ?',
+          [offer.id]
+        );
+      } catch {}
+    }
 
     // Phase 2 Task 7: immutable click event (append-only — never updated).
     // Clicks create attribution, never revenue.

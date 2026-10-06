@@ -210,6 +210,7 @@ describe('Phase 2 affiliate launch — adapters, registry, referral, conversion,
     const partner = await makeAuthorizedPartner('Guide Store', 'https://guidestore.example.com');
     const offer = await makeActiveOffer(partner.id, 'guide-widget-p2', 'https://guidestore.example.com/w?ref=1');
     const body = '# Complete Guide: choosing a widget for home use\n\n' +
+      'As an Amazon Associate I earn from qualifying purchases.\n\n' +
       'Finding the right widget means comparing build quality, warranty terms, and after-sales support across verified sellers. '.repeat(8) +
       '\n\nWe may earn an affiliate commission if you purchase through our links.';
     const good = await engine.validateForPublish({

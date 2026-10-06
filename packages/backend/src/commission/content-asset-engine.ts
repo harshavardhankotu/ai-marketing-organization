@@ -18,6 +18,96 @@ export interface CreateContentAssetInput {
   disclosureMarkdown?: string;
 }
 
+export interface ContentGateLintResult {
+  passed: boolean;
+  violations: string[];
+}
+
+/**
+ * Publish-Time Content Gate Lint (§ Pre-Launch Gate).
+ * Prohibits deceptive superlativeness, invented pricing, unverified claims, and
+ * enforces exact Amazon Associates statutory disclosure near the top.
+ */
+export function lintContentAsset(
+  contentMarkdown: string,
+  options?: {
+    hasVerifiedRecord?: boolean;
+    disclosureMarkdown?: string;
+  }
+): ContentGateLintResult {
+  const violations: string[] = [];
+  const text = contentMarkdown || '';
+  const lower = text.toLowerCase();
+
+  // 1. "certified"
+  if (/\bcertified\b/i.test(lower)) {
+    violations.push('FORBIDDEN_CLAIM: "certified" is prohibited.');
+  }
+
+  // 2. "verified" (unless a verified record exists)
+  if (/\bverified\b/i.test(lower) && !options?.hasVerifiedRecord) {
+    violations.push('UNVERIFIED_CLAIM: "verified" is prohibited without attached verification proof.');
+  }
+
+  // 3. "best"
+  if (/\bbest\b/i.test(lower)) {
+    violations.push('FORBIDDEN_SUPERLATIVE: "best" is prohibited.');
+  }
+
+  // 4. "#1"
+  if (/#1\b/i.test(text)) {
+    violations.push('FORBIDDEN_SUPERLATIVE: "#1" ranking claim is prohibited.');
+  }
+
+  // 5. "guaranteed" / "guarantee"
+  if (/\bguaranteed?\b/i.test(lower)) {
+    violations.push('FORBIDDEN_CLAIM: "guaranteed" or guarantee claims are prohibited.');
+  }
+
+  // 6. "lowest price"
+  if (/\blowest\s+price\b/i.test(lower)) {
+    violations.push('FORBIDDEN_CLAIM: "lowest price" claim is prohibited.');
+  }
+
+  // 7. any rupee price or discount
+  // e.g. ₹ 1,999, ₹1999, INR 500, Rs. 500, 20% off, 50% discount
+  if (/₹\s*[\d,]+|\b(?:inr|rs\.?)\s*[\d,]+|\b\d+%\s*(?:off|discount)\b/i.test(text)) {
+    violations.push('FORBIDDEN_PRICING: hardcoded rupee prices or discount percentages are prohibited; use dynamic provider links.');
+  }
+
+  // 8. "in stock"
+  if (/\bin\s+stock\b/i.test(lower)) {
+    violations.push('FORBIDDEN_INVENTORY_CLAIM: "in stock" is prohibited.');
+  }
+
+  // 9. "limited time"
+  if (/\blimited\s+time\b/i.test(lower)) {
+    violations.push('FORBIDDEN_URGENCY: "limited time" urgency claims are prohibited.');
+  }
+
+  // 10. star ratings
+  if (/★|\b\d+(?:\.\d+)?\s*stars?(?:\s*rating)?\b|\bstar\s*ratings?\b/i.test(lower)) {
+    violations.push('FORBIDDEN_RATING: star ratings are prohibited.');
+  }
+
+  // 11. fabricated testimonials
+  if (/"[^"]{10,120}"\s*[-—–]\s*[A-Z][a-z]+|\btestimonial\b/i.test(text)) {
+    violations.push('FABRICATED_TESTIMONIAL: fabricated customer testimonials are prohibited.');
+  }
+
+  // 12. Required exact disclosure: "As an Amazon Associate I earn from qualifying purchases." near the top
+  const REQUIRED_AMAZON_DISCLOSURE = 'As an Amazon Associate I earn from qualifying purchases.';
+  const topSlice = text.substring(0, 600) + ' ' + (options?.disclosureMarkdown || '').substring(0, 600);
+  if (!topSlice.includes(REQUIRED_AMAZON_DISCLOSURE)) {
+    violations.push(`MISSING_AMAZON_DISCLOSURE: Mandatory disclosure required near top of content: "${REQUIRED_AMAZON_DISCLOSURE}"`);
+  }
+
+  return {
+    passed: violations.length === 0,
+    violations
+  };
+}
+
 export class ContentAssetEngine {
   private static instance: ContentAssetEngine;
   private d1Repo = D1RevenueRepository.getInstance();
@@ -117,7 +207,21 @@ export class ContentAssetEngine {
       body.includes('affiliate') || body.includes('commission') || body.includes('referral');
     if (!checks.disclosurePresent) failures.push('DISCLOSURE_MISSING: affiliate disclosure is required.');
 
+    // Pre-launch content gate lint (§ Pre-Launch Gate 4)
+    const lintResult = lintContentAsset(input.contentMarkdown, {
+      hasVerifiedRecord: checks.evidencePresent && checks.offersActive,
+      disclosureMarkdown: input.disclosureMarkdown
+    });
+    checks.contentGateLint = lintResult.passed;
+    if (!lintResult.passed) {
+      failures.push(...lintResult.violations);
+    }
+
     return { passed: failures.length === 0, failures, checks };
+  }
+
+  public lintContent(markdown: string, options?: { hasVerifiedRecord?: boolean; disclosureMarkdown?: string }): ContentGateLintResult {
+    return lintContentAsset(markdown, options);
   }
 
   /**
@@ -130,7 +234,7 @@ export class ContentAssetEngine {
     const cleanSlug = input.slug.trim().toLowerCase().replace(/[^a-z0-9-_]/g, '-');
 
     const defaultDisclosure =
-      '**Affiliate & Referral Disclosure:** We provide independent analysis and recommendations. When you purchase or sign up through our referral links, we may earn an affiliate commission at no extra cost to you. All prices, terms, and specifications are subject to provider confirmation.';
+      '**Affiliate & Referral Disclosure:** As an Amazon Associate I earn from qualifying purchases. We provide independent analysis and recommendations. When you purchase or sign up through our referral links, we may earn an affiliate commission at no extra cost to you. All prices, terms, and specifications are subject to provider confirmation.';
 
     const gate = await this.validateForPublish(input);
 
@@ -260,6 +364,7 @@ export class ContentAssetEngine {
 
     // Build genuine factual comparison content
     let contentMarkdown = `# Complete Guide: ${intent}\n\n`;
+    contentMarkdown += `As an Amazon Associate I earn from qualifying purchases.\n\n`;
     contentMarkdown += `Finding the right solution for **${intent}** in ${location} requires evaluating verified providers, genuine customer outcomes, and pricing.\n\n`;
     contentMarkdown += `## Recommended Provider: ${primaryMatch.partner.name}\n\n`;
     contentMarkdown += `**${primaryMatch.offer.title}**\n\n`;
