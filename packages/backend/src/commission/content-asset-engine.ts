@@ -374,15 +374,41 @@ export class ContentAssetEngine {
       contentMarkdown += `* **Price Range:** ${primaryMatch.offer.priceRange}\n`;
     }
     contentMarkdown += `* **Key Advantage:** Direct verified booking with dedicated support and transparent terms.\n\n`;
-    contentMarkdown += `[Check Official Pricing & Availability on ${primaryMatch.partner.name}](/r/${primaryMatch.offer.offerSlug}/${primaryMatch.offer.id})\n\n`;
+    const isAmazonPrimary = primaryMatch.partner.network === 'AMAZON_ASSOCIATES' || (primaryMatch.offer.authorizedTrackingUrl || '').includes('amazon.');
+    if (isAmazonPrimary) {
+      const tag = process.env.AMAZON_AFFILIATE_TAG || 'marketing98-21';
+      let directUrl = primaryMatch.offer.authorizedTrackingUrl || primaryMatch.offer.destinationUrl;
+      try {
+        const u = new URL(directUrl);
+        if (!u.searchParams.has('tag') && tag) u.searchParams.set('tag', tag);
+        if (!u.searchParams.has('linkCode')) u.searchParams.set('linkCode', 'osi');
+        directUrl = u.toString();
+      } catch {}
+      contentMarkdown += `<a href="${directUrl}" target="_blank" rel="sponsored nofollow noopener">Check Official Pricing & Availability on ${primaryMatch.partner.name}</a>\n\n`;
+    } else {
+      contentMarkdown += `[Check Official Pricing & Availability on ${primaryMatch.partner.name}](/r/${primaryMatch.offer.offerSlug}/${primaryMatch.offer.id})\n\n`;
+    }
 
     if (matches.length > 1) {
       contentMarkdown += `## Alternatives to Consider\n\n`;
       for (let i = 1; i < matches.length; i++) {
         const alt = matches[i];
+        const isAmazonAlt = alt.partner.network === 'AMAZON_ASSOCIATES' || (alt.offer.authorizedTrackingUrl || '').includes('amazon.');
         contentMarkdown += `### ${i}. ${alt.partner.name} — ${alt.offer.title}\n`;
         contentMarkdown += `* Focus: ${alt.offer.targetCustomer}\n`;
-        contentMarkdown += `* [View details and availability](/r/${alt.offer.offerSlug}/${alt.offer.id})\n\n`;
+        if (isAmazonAlt) {
+          const tag = process.env.AMAZON_AFFILIATE_TAG || 'marketing98-21';
+          let directUrl = alt.offer.authorizedTrackingUrl || alt.offer.destinationUrl;
+          try {
+            const u = new URL(directUrl);
+            if (!u.searchParams.has('tag') && tag) u.searchParams.set('tag', tag);
+            if (!u.searchParams.has('linkCode')) u.searchParams.set('linkCode', 'osi');
+            directUrl = u.toString();
+          } catch {}
+          contentMarkdown += `* <a href="${directUrl}" target="_blank" rel="sponsored nofollow noopener">View details and availability on ${alt.partner.name}</a>\n\n`;
+        } else {
+          contentMarkdown += `* [View details and availability](/r/${alt.offer.offerSlug}/${alt.offer.id})\n\n`;
+        }
       }
     }
 

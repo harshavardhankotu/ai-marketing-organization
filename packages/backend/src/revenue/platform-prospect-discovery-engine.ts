@@ -156,6 +156,17 @@ export class PlatformProspectDiscoveryEngine {
     const vertical = options.vertical || (isProduction() ? await this.pickNextTargetVerticalAsync() : this.pickNextTargetVertical());
     const city = options.city || (isProduction() ? await this.pickNextTargetCityAsync() : this.pickNextTargetCity());
     const limit = options.limit || 3;
+    // 0. PROSPECT DISCOVERY GATE: Enforced before any Tavily call or search
+    const prospectDiscoveryEnabled = process.env.PROSPECT_DISCOVERY_ENABLED === 'true';
+    if (!prospectDiscoveryEnabled) {
+      return {
+        status: 'NO_NEW_PROSPECTS',
+        count: 0,
+        prospects: [],
+        reason: 'PROSPECT_DISCOVERY_PAUSED: Automated prospect discovery is paused (PROSPECT_DISCOVERY_ENABLED=false).'
+      };
+    }
+
     const queryKey = `prospects_${vertical}_${city}`.toLowerCase();
 
     // 0. 7-DAY QUERY COOLDOWN: Do not rerun the same query within 7 days unless triggered manually
@@ -282,7 +293,6 @@ export class PlatformProspectDiscoveryEngine {
     try {
       const candidates = await this.discoverViaTavily(vertical, city, limit);
       this.quotaService.reconcile(gate.reservationId, 1, true);
-      this.quotaService.logCall('TAVILY', 'DISCOVER_PROSPECTS', 'P3', 1, true, false);
 
       const validCandidates = filterCandidates(candidates);
       if (validCandidates.length > 0) {
@@ -328,7 +338,6 @@ export class PlatformProspectDiscoveryEngine {
       };
     } catch (err: any) {
       this.quotaService.reconcile(gate.reservationId, 1, false);
-      this.quotaService.logCall('TAVILY', 'DISCOVER_PROSPECTS', 'P3', 1, false, false, err.message);
       console.warn(`[PlatformProspectDiscoveryEngine] Tavily research failed: ${err.message}`);
       return {
         status: 'NO_NEW_PROSPECTS',

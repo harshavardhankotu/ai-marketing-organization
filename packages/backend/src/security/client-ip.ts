@@ -1,9 +1,18 @@
 import type { Context } from 'hono';
+import { createHash } from 'crypto';
 
 export interface TrustedClientIpInfo {
   ip: string;
   isUnknown: boolean;
   maxRequests: number;
+}
+
+/**
+ * Computes a salted cryptographic hash of the client IP address (DPDP compliant).
+ */
+export function hashClientIp(rawIp: string): string {
+  const salt = process.env.IP_HASH_SALT || 'aro_default_ip_salt_prelaunch';
+  return createHash('sha256').update(`${(rawIp || 'unknown').trim()}:${salt}`).digest('hex');
 }
 
 /**

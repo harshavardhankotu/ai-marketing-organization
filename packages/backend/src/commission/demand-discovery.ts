@@ -57,6 +57,11 @@ export class DemandDiscoveryEngine {
   private d1Repo = D1RevenueRepository.getInstance();
   private quotaService = UnifiedQuotaService.getInstance();
   private gemini = new GeminiProvider();
+  private lastSource: 'CACHE_HIT' | 'LIVE_EXTERNAL_ACTION' | 'FIXTURE' = 'FIXTURE';
+
+  public getLastSource(): 'CACHE_HIT' | 'LIVE_EXTERNAL_ACTION' | 'FIXTURE' {
+    return this.lastSource;
+  }
 
   public static getInstance(): DemandDiscoveryEngine {
     if (!DemandDiscoveryEngine.instance) {
@@ -81,7 +86,7 @@ export class DemandDiscoveryEngine {
     const cacheKey = `demand_${category}_${location}`.toLowerCase().replace(/\s+/g, '_');
     const cached = await this.d1Repo.queryOne<any>(
       'search_cache',
-      'SELECT raw_response_json FROM search_cache WHERE query_normalized = ? AND expires_at > datetime("now")',
+      "SELECT raw_response_json FROM search_cache WHERE query_normalized = ? AND expires_at > datetime('now')",
       [cacheKey]
     );
 
@@ -89,6 +94,7 @@ export class DemandDiscoveryEngine {
       try {
         const parsed = JSON.parse(cached.raw_response_json);
         if (Array.isArray(parsed) && parsed.length > 0) {
+          this.lastSource = 'CACHE_HIT';
           return await this.persistSignals(parsed.slice(0, limit), organizationId);
         }
       } catch {}
@@ -97,6 +103,7 @@ export class DemandDiscoveryEngine {
     const tavilyKey = process.env.TAVILY_API_KEY;
     if (!tavilyKey || tavilyKey.includes('placeholder')) {
       // Return deterministic factual signals when Tavily key absent
+      this.lastSource = 'FIXTURE';
       const fixtures = this.getFactualDemandFixtures(category, location, limit);
       return await this.persistSignals(fixtures, organizationId);
     }
@@ -105,6 +112,7 @@ export class DemandDiscoveryEngine {
     const gate = this.quotaService.reserve('TAVILY', 'P3', 1, `Demand discovery for ${category} in ${location}`);
     if (!gate.allowed) {
       console.warn(`[DemandDiscoveryEngine] Quota blocked: ${gate.reason}`);
+      this.lastSource = 'FIXTURE';
       const fixtures = this.getFactualDemandFixtures(category, location, limit);
       return await this.persistSignals(fixtures, organizationId);
     }
@@ -157,6 +165,7 @@ export class DemandDiscoveryEngine {
         );
       } catch {}
 
+      this.lastSource = 'LIVE_EXTERNAL_ACTION';
       return await this.persistSignals(signals.slice(0, limit), organizationId);
     } catch (err: any) {
       this.quotaService.reconcile(gate.reservationId, 1, false);

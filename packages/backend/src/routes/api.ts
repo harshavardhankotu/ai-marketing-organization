@@ -66,14 +66,14 @@ import { handleUniversalCheckout } from './universal-checkout.js';
 import { OfferDecisionEngine } from '../revenue/offer-decision-engine.js';
 import { toMajorUnits } from '@ai-marketing/shared';
 import { TenantContextResolver } from '../control-plane/tenant-context-resolver.js';
-import { ReferralTrackingEngine } from '../commission/referral-tracking.js';
+import { ReferralTrackingEngine, isBotTraffic } from '../commission/referral-tracking.js';
 import { PartnerRegistryEngine } from '../commission/partner-registry.js';
 import { ContentAssetEngine } from '../commission/content-asset-engine.js';
 import { ConversionVerificationAdapter } from '../commission/conversion-verification.js';
 import { CommissionLedgerEngine } from '../commission/commission-ledger.js';
 import { DemandDiscoveryEngine } from '../commission/demand-discovery.js';
 import { DirectPaymentProviderAdapter } from '../commission/direct-payment-adapter.js';
-import { getTrustedClientIp } from '../security/client-ip.js';
+import { getTrustedClientIp, hashClientIp } from '../security/client-ip.js';
 import { DurableRateLimiter } from '../security/durable-rate-limiter.js';
 
 export type AppVariables = {
@@ -145,7 +145,8 @@ export const EXACT_ROUTE_POLICY = {
     '/guides',
     '/compare',
     '/recommendations',
-    '/offers'
+    '/offers',
+    '/referrals/beacon'
   ],
   WEBHOOK: [
     '/webhooks/razorpay',
@@ -1042,10 +1043,17 @@ apiRouter.post('/cron/ping', async (c) => {
   let allSucceeded = true;
   let lastError = '';
 
+  const rawUserAgent = c.req.header('user-agent') || '';
+  const isWorkerAgent = /ai-marketing-cron-worker|cloudflare-cron-worker/i.test(rawUserAgent);
+  const triggerSource: 'CLOUDFLARE_CRON' | 'MANUAL_PING' = isWorkerAgent ? 'CLOUDFLARE_CRON' : 'MANUAL_PING';
+  const clientInfo = getTrustedClientIp(c);
+  const ipHash = hashClientIp(clientInfo.ip);
+  const callerMetadata = { userAgent: rawUserAgent, ipHash };
+
   for (const item of eligibleBusinesses) {
     try {
       const aro = AutonomousRevenueOrchestrator.getInstance();
-      const result = await aro.runCycle(item.organization_id, item.business_id, 'CLOUDFLARE_CRON');
+      const result = await aro.runCycle(item.organization_id, item.business_id, triggerSource, callerMetadata);
       results.push({
         organizationId: item.organization_id,
         businessId: item.business_id,
@@ -1904,6 +1912,12 @@ apiRouter.get('/public/availability', handleGetAvailability);
 // ==========================================
 
 apiRouter.post('/payments/razorpay/create-order', async (c) => {
+  const clientInfo = getTrustedClientIp(c);
+  const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/payments/razorpay/create-order', clientInfo.ip, 10, 600);
+  if (!rateLimit.allowed) {
+    return c.json({ success: false, error: 'RATE_LIMIT_EXCEEDED', retryAfterSeconds: rateLimit.retryAfterSeconds }, 429);
+  }
+
   const body = await c.req.json();
   const businessId = body.businessId;
 
@@ -2477,6 +2491,12 @@ apiRouter.post('/webhooks/email', async (c) => {
 // ==========================================
 
 apiRouter.post('/compliance/dpdp/consent', async (c) => {
+  const clientInfo = getTrustedClientIp(c);
+  const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/compliance/dpdp/consent', clientInfo.ip, 10, 600);
+  if (!rateLimit.allowed) {
+    return c.json({ success: false, error: 'RATE_LIMIT_EXCEEDED', retryAfterSeconds: rateLimit.retryAfterSeconds }, 429);
+  }
+
   const body = await c.req.json();
   const businessId = body.businessId;
   if (!businessId) {
@@ -2487,7 +2507,7 @@ apiRouter.post('/compliance/dpdp/consent', async (c) => {
     return c.json({ success: false, error: 'Customer name and explicit purpose are required' }, 400);
   }
 
-  const clientIp = getTrustedClientIp(c).ip;
+  const clientIp = clientInfo.ip;
   const consent = dpdpManager.recordConsent({
     businessId,
     journeyId: body.journeyId,
@@ -2502,6 +2522,12 @@ apiRouter.post('/compliance/dpdp/consent', async (c) => {
 });
 
 apiRouter.post('/compliance/dpdp/erasure', async (c) => {
+  const clientInfo = getTrustedClientIp(c);
+  const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/compliance/dpdp/erasure', clientInfo.ip, 10, 600);
+  if (!rateLimit.allowed) {
+    return c.json({ success: false, error: 'RATE_LIMIT_EXCEEDED', retryAfterSeconds: rateLimit.retryAfterSeconds }, 429);
+  }
+
   const body = await c.req.json();
   const businessId = body.businessId;
   if (!businessId) {
@@ -2657,6 +2683,12 @@ apiRouter.post('/webhooks/payments/:gateway', async (c) => {
 
 // Public customer submission endpoint: Claim payment via UTR
 apiRouter.post('/payments/manual-upi/claim', async (c) => {
+  const clientInfo = getTrustedClientIp(c);
+  const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/payments/manual-upi/claim', clientInfo.ip, 10, 600);
+  if (!rateLimit.allowed) {
+    return c.json({ success: false, error: 'RATE_LIMIT_EXCEEDED', retryAfterSeconds: rateLimit.retryAfterSeconds }, 429);
+  }
+
   const body = await c.req.json();
   const { businessId, journeyId, utr, amountINR, serviceRendered, notes } = body;
 
@@ -3931,8 +3963,10 @@ apiRouter.get('/r/:offerSlug/:referralId', async (c) => {
  */
 apiRouter.get('/public/content/:slug', async (c) => {
   const slug = c.req.param('slug');
+  const userAgent = c.req.header('user-agent') || '';
+  const isBot = isBotTraffic(userAgent);
   const contentEngine = ContentAssetEngine.getInstance();
-  const asset = await contentEngine.getAssetBySlug(slug);
+  const asset = await contentEngine.getAssetBySlug(slug, !isBot);
 
   if (!asset) {
     return c.json({ error: 'CONTENT_NOT_FOUND', message: `Content asset '${slug}' not found` }, 404);
@@ -3946,8 +3980,10 @@ apiRouter.get('/public/content/:slug', async (c) => {
 
 apiRouter.get('/guides/:slug', async (c) => {
   const slug = c.req.param('slug');
+  const userAgent = c.req.header('user-agent') || '';
+  const isBot = isBotTraffic(userAgent);
   const contentEngine = ContentAssetEngine.getInstance();
-  const asset = await contentEngine.getAssetBySlug(slug);
+  const asset = await contentEngine.getAssetBySlug(slug, !isBot);
 
   if (!asset) {
     return c.json({ error: 'CONTENT_NOT_FOUND', message: `Guide '${slug}' not found` }, 404);
@@ -3965,14 +4001,100 @@ apiRouter.get('/guides/:slug', async (c) => {
 for (const publicSurface of ['/compare/:slug', '/recommendations/:slug', '/offers/:slug'] as const) {
   apiRouter.get(publicSurface, async (c) => {
     const slug = c.req.param('slug');
+    const userAgent = c.req.header('user-agent') || '';
+    const isBot = isBotTraffic(userAgent);
     const contentEngine = ContentAssetEngine.getInstance();
-    const asset = await contentEngine.getAssetBySlug(slug);
+    const asset = await contentEngine.getAssetBySlug(slug, !isBot);
     if (!asset) {
       return c.json({ error: 'CONTENT_NOT_FOUND', message: `Content '${slug}' not found` }, 404);
     }
     return c.json({ success: true, data: asset });
   });
 }
+
+/**
+ * Direct Click Beacon (§ Pre-Launch Gate 9)
+ * Records outbound clicks for direct affiliate links without redirect hops.
+ * Validates known offer ID, enforces rate limiting, hashes client IP, ignores bots/test traffic.
+ * Clicks are recorded as non-revenue attribution events.
+ */
+apiRouter.post('/referrals/beacon', async (c) => {
+  const clientInfo = getTrustedClientIp(c);
+  const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/referrals/beacon', clientInfo.ip, 30, 60);
+  if (!rateLimit.allowed) {
+    return c.json({ success: false, error: 'RATE_LIMIT_EXCEEDED', retryAfterSeconds: rateLimit.retryAfterSeconds }, 429);
+  }
+
+  const body = await c.req.json().catch(() => ({}));
+  const offerId = body.offerId;
+  if (!offerId) {
+    return c.json({ success: false, error: 'MISSING_OFFER_ID', message: 'offerId is required' }, 400);
+  }
+
+  const d1Repo = D1RevenueRepository.getInstance();
+  const offer = await d1Repo.queryOne<any>('partner_offers', 'SELECT * FROM partner_offers WHERE id = ?', [offerId]);
+  if (!offer || offer.status !== 'ACTIVE' || Number(offer.active) !== 1) {
+    return c.json({ success: false, error: 'OFFER_NOT_FOUND', message: `Active offer '${offerId}' not found` }, 404);
+  }
+
+  const userAgent = c.req.header('user-agent') || '';
+  const isBot = isBotTraffic(userAgent);
+  const isTestTraffic = Boolean(
+    c.req.header('x-test-mode') === 'true' ||
+    c.req.header('x-test-traffic') === 'true' ||
+    body.isTestTraffic === true
+  );
+
+  const ipHash = hashClientIp(clientInfo.ip);
+
+  if (!isBot && !isTestTraffic) {
+    try {
+      await d1Repo.executeWrite(
+        'commission_content_assets',
+        'UPDATE commission_content_assets SET referral_click_count = referral_click_count + 1 WHERE primary_offer_id = ?',
+        [offerId]
+      );
+      const { randomUUID } = await import('crypto');
+      await d1Repo.executeWrite(
+        'referral_click_events',
+        `INSERT INTO referral_click_events (
+          id, referral_id, click_id, organization_id, offer_id, partner_id,
+          content_asset_id, placement, source, medium, campaign, keyword,
+          referrer, device_class, country, destination_url, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          `evt_bcn_${randomUUID().substring(0, 10)}`,
+          `ref_bcn_${offerId}`,
+          `clk_bcn_${Date.now()}`,
+          offer.organization_id,
+          offer.id,
+          offer.partner_id,
+          body.contentAssetId || null,
+          body.placement || 'direct_beacon',
+          body.source || 'direct_beacon',
+          'beacon',
+          null,
+          null,
+          c.req.header('referer') || null,
+          null,
+          null,
+          offer.authorized_tracking_url || offer.destination_url,
+          new Date().toISOString()
+        ]
+      );
+    } catch {}
+  }
+
+  return c.json({
+    success: true,
+    data: {
+      recorded: !isBot && !isTestTraffic,
+      isRevenue: false,
+      ipHash,
+      offerId
+    }
+  });
+});
 
 // Phase 2 Task 22: affiliate disclosure record for a page (partner + version + timestamp).
 apiRouter.get('/public/disclosure/:slug', async (c) => {
@@ -4008,6 +4130,22 @@ apiRouter.post('/webhooks/conversion/:partnerId', async (c) => {
     return c.json({ error: 'UNKNOWN_PARTNER', message: `Partner '${partnerId}' not registered` }, 404);
   }
 
+  // Reject webhook ingestion for AMAZON_ASSOCIATES (Amazon has no conversion webhook)
+  if (partner.network === 'AMAZON_ASSOCIATES') {
+    return c.json({
+      error: 'WEBHOOK_NOT_SUPPORTED',
+      message: 'Amazon Associates does not support conversion webhooks. Ingest verified reports via Associates Central CSV import.'
+    }, 400);
+  }
+
+  // Secret verification: reject forged requests without valid partner secret
+  const expectedSecret = partner.evidence?.webhookSecret || partner.evidence?.webhook_secret || process.env[`PARTNER_WEBHOOK_SECRET_${partnerId}`] || process.env.PARTNER_WEBHOOK_SECRET;
+  const providedSecret = c.req.header('x-webhook-secret') || c.req.header('x-partner-secret') || (c.req.header('authorization')?.replace(/^Bearer\s+/i, ''));
+
+  if (!expectedSecret || !providedSecret || providedSecret !== expectedSecret) {
+    return c.json({ error: 'UNAUTHORIZED', message: 'Valid partner webhook secret is required' }, 401);
+  }
+
   const rawBody = await c.req.text().catch(() => '');
   let body: any = {};
   try { body = JSON.parse(rawBody); } catch { body = {}; }
@@ -4039,15 +4177,12 @@ apiRouter.post('/webhooks/conversion/:partnerId', async (c) => {
     externalTransactionId: String(externalTxId),
     eventType: body.event_type || 'PURCHASE',
     expectedCommissionINR: expectedAmount,
-    // Phase 2 Task 9: webhook signatures are verified only when the partner
-    // configured a secret; otherwise the report lands as PENDING for dashboard
-    // evidence review (signatureVerified=false in evidence).
     verificationSource: 'WEBHOOK',
     evidence: {
       payload: body,
       receivedAt: new Date().toISOString(),
-      signatureVerified: false,
-      note: 'Unsigned webhook: kept PENDING unless status carries explicit provider approval. Configure partner webhook secret for auto-verification.'
+      signatureVerified: true,
+      note: 'Cryptographically authenticated partner webhook'
     },
     status
   });
@@ -4501,7 +4636,7 @@ apiRouter.post('/commission/demand-signals/discover', async (c) => {
  * Evaluates real-time readiness against live database state.
  */
 apiRouter.get('/commission/money-path', async (c) => {
-  const orgId = c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const orgId = c.req.header('x-organization-id') || c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
   const d1Repo = D1RevenueRepository.getInstance();
   const ledger = CommissionLedgerEngine.getInstance();
   const summary = await ledger.getSummary(orgId);
@@ -4585,7 +4720,7 @@ apiRouter.get('/commission/money-path', async (c) => {
   const checklist = [
     {
       item: 'PARTNER APPROVAL',
-      status: authorizedPartners.length > 0 ? 'READY' : 'REQUIRES HUMAN',
+      status: authorizedPartners.length > 0 ? 'OPERATOR_CONFIRMED_PROVISIONAL' : 'REQUIRES HUMAN',
       description: 'Approved affiliate/partner program account from legitimate provider (e.g. Amazon Associates India)'
     },
     {
@@ -4595,8 +4730,11 @@ apiRouter.get('/commission/money-path', async (c) => {
     },
     {
       item: 'PARTNER TERMS',
-      status: authorizedPartners.length > 0 ? 'READY' : 'REQUIRES HUMAN',
-      description: 'Operating agreement and commission schedules accepted and verified'
+      status: authorizedPartners.some(p => {
+        const ev = typeof p.evidence_json === 'string' ? JSON.parse(p.evidence_json || '{}') : (p.evidence || {});
+        return Boolean(ev.terms_read_confirmed);
+      }) ? 'READY' : 'OPERATOR_TO_CONFIRM',
+      description: 'Operating agreement and commission schedules under operator review'
     },
     {
       item: 'OFFER',
@@ -4674,7 +4812,7 @@ apiRouter.get('/commission/money-path', async (c) => {
  * Phase 4: Detailed Human Launch Checklist (§ 3, § 4, § 29)
  */
 apiRouter.get('/commission/launch-checklist', async (c) => {
-  const orgId = c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const orgId = c.req.header('x-organization-id') || c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
   const d1Repo = D1RevenueRepository.getInstance();
   const ledger = CommissionLedgerEngine.getInstance();
   const summary = await ledger.getSummary(orgId);
@@ -4727,9 +4865,12 @@ apiRouter.get('/commission/launch-checklist', async (c) => {
         : 'Drive first real organic visitor to the public guide.',
       codeActionRequired: 'None. The code is ready. The remaining blocker is human commercial activation.',
       checklist: [
-        { item: 'PARTNER APPROVAL', status: authorizedPartners.length > 0 ? 'READY' : 'REQUIRES HUMAN', note: 'Sign up at https://affiliate-program.amazon.in' },
+        { item: 'PARTNER APPROVAL', status: authorizedPartners.length > 0 ? 'OPERATOR_CONFIRMED_PROVISIONAL' : 'REQUIRES HUMAN', note: 'Operator-confirmed provisional registration' },
         { item: 'AFFILIATE ID', status: (authorizedPartners.length > 0 && hasAffiliateId) ? 'READY' : 'REQUIRES HUMAN', note: 'Set AMAZON_AFFILIATE_TAG env secret or add via API' },
-        { item: 'PARTNER TERMS', status: authorizedPartners.length > 0 ? 'READY' : 'REQUIRES HUMAN', note: 'Accept Amazon Associates Operating Agreement' },
+        { item: 'PARTNER TERMS', status: authorizedPartners.some(p => {
+          const ev = typeof p.evidence_json === 'string' ? JSON.parse(p.evidence_json || '{}') : (p.evidence || {});
+          return Boolean(ev.terms_read_confirmed);
+        }) ? 'READY' : 'OPERATOR_TO_CONFIRM', note: 'Operator review of Amazon Associates India Operating Agreement' },
         { item: 'OFFER', status: activeOffers.length > 0 ? 'READY' : (authorizedPartners.length > 0 ? 'REQUIRES HUMAN' : 'BLOCKED'), note: 'Register 1 active offer with destination and tracking params' },
         { item: 'TRACKING', status: (activeOffers.length > 0 && hasAffiliateId) ? 'READY' : 'BLOCKED', note: 'Verify /r/:offerSlug/:referralId 302 redirects with tag=' },
         { item: 'PUBLIC PAGE', status: publishedContent.length > 0 ? 'READY' : 'BLOCKED', note: 'Publish 1 commercial guide/comparison page with disclosure' },

@@ -53,7 +53,8 @@ export type CycleExecutionStatus =
   | 'BLOCKED_AUTHORIZATION'
   | 'COOLDOWN_ACTIVE'
   | 'NO_ACTION_DUE'
-  | 'TEST_ACTION';
+  | 'TEST_ACTION'
+  | 'CACHE_HIT';
 
 export type TerminalOutcomeClassification =
   | 'LIVE_EXTERNAL_ACTION'
@@ -63,6 +64,7 @@ export type TerminalOutcomeClassification =
   | 'SANDBOX_ACTION'
   | 'TEST_ACTION'
   | 'IDLE'
+  | 'CACHE_HIT'
   | 'FAILED_RETRYABLE'
   | 'FAILED_TERMINAL';
 
@@ -128,7 +130,8 @@ export class AutonomousRevenueOrchestrator {
   public async runCycle(
     organizationId: string,
     businessId: string,
-    triggerSource: 'SCHEDULER' | 'EVENT' | 'MANUAL' | 'CLOUDFLARE_CRON' = 'MANUAL'
+    triggerSource: 'SCHEDULER' | 'EVENT' | 'MANUAL' | 'CLOUDFLARE_CRON' | 'MANUAL_PING' = 'MANUAL',
+    callerMetadata?: { userAgent?: string; ipHash?: string }
   ): Promise<OrchestratorCycleResult> {
     const db = this.db;
     const cycleId = `cycle_${Date.now()}`;
@@ -193,9 +196,19 @@ export class AutonomousRevenueOrchestrator {
     try {
       await db.prepare(`
         INSERT INTO autonomous_cycle_log (
-          id, organization_id, business_id, trigger_source, cycle_start, status
-        ) VALUES (?, ?, ?, ?, ?, 'RUNNING')
-      `).run(cycleId, organizationId, businessId, triggerSource, cycleStart);
+          id, organization_id, business_id, trigger_source, cycle_start, status, summary_json
+        ) VALUES (?, ?, ?, ?, ?, 'RUNNING', ?)
+      `).run(
+        cycleId,
+        organizationId,
+        businessId,
+        triggerSource,
+        cycleStart,
+        JSON.stringify({
+          userAgent: callerMetadata?.userAgent,
+          ipHash: callerMetadata?.ipHash
+        })
+      );
 
       DurableEventBus.emit({
         eventType: 'CYCLE_STARTED',
@@ -348,10 +361,10 @@ export class AutonomousRevenueOrchestrator {
             ActionCooldownManager.recordExecution(nextBestAction.targetId, nextBestAction.actionType, true);
             // Record external action in automation health
             this.quotaService.recordExternalAction(organizationId, true, execResult.isRevenueAction);
-          } else if (execResult.status === 'INTERNAL_AUTOMATION') {
+          } else if (execResult.status === 'INTERNAL_AUTOMATION' || execResult.status === 'CACHE_HIT') {
             actionsTaken++;
             ActionCooldownManager.recordExecution(nextBestAction.targetId, nextBestAction.actionType, true);
-            // NOTE: Internal automation is NOT recorded as external action in health summary (Spec § 7)
+            // NOTE: Internal automation & cache hits are NOT recorded as external actions in health summary (Spec § 7)
           } else if (execResult.status === 'BLOCKED_AUTHORIZATION') {
             this.quotaService.recordAttemptedAction(organizationId, 'BLOCKED_AUTHORIZATION');
             ActionCooldownManager.recordExecution(nextBestAction.targetId, nextBestAction.actionType, false);
@@ -442,6 +455,8 @@ export class AutonomousRevenueOrchestrator {
           nextBestAction: nextBestAction.actionType,
           rationale: nextBestAction.rationale,
           discoveredProspects: (execResult as any)?.discoveredProspects || [],
+          userAgent: callerMetadata?.userAgent,
+          ipHash: callerMetadata?.ipHash,
           errors
         }),
         cycleId
@@ -667,11 +682,12 @@ export class AutonomousRevenueOrchestrator {
         }
         const demandEngine = DemandDiscoveryEngine.getInstance();
         const signals = await demandEngine.discoverDemand(organizationId, { category: 'best accounting software small business India', location: 'India', limit: 5 });
+        const isCacheHit = demandEngine.getLastSource() === 'CACHE_HIT';
         return {
-          status: 'LIVE_EXTERNAL_ACTION',
-          actionClassification: 'LIVE_EXTERNAL_ACTION',
+          status: isCacheHit ? 'CACHE_HIT' : 'LIVE_EXTERNAL_ACTION',
+          actionClassification: isCacheHit ? 'INTERNAL_AUTOMATION' : 'LIVE_EXTERNAL_ACTION',
           isRevenueAction: false,
-          externalId: `demand_discovery_${cycleId}`,
+          externalId: isCacheHit ? undefined : `demand_discovery_${cycleId}`,
           opportunitiesDiscovered: signals.length
         };
       }
