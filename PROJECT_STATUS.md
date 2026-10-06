@@ -157,6 +157,22 @@
     - **Diag Route Removed:** Removed temporary route `GET /api/v1/diag/headers` from `routes/api.ts` and `EXACT_ROUTE_POLICY.SYSTEM`. Verified returning 404 in tests and production.
     - **Monorepo Tests & Build:** All 51 test suites (493 tests) passing. Monorepo builds and typechecks clean.
 
+29. **2026-10-06 — Small Config Task & Single-Owner Security Enforcement (`019cee6`, deployed as live `dep-db2mo5ijnfac73f7ibgg`):**
+    - **Amazon Affiliate Tag Configured on Render:** Injected `AMAZON_AFFILIATE_TAG=marketing98-21` via Render single-key REST API endpoint (`PUT /v1/services/srv-darecoc9v7es73ea8t2g/env-vars/AMAZON_AFFILIATE_TAG`). Confirmed variable names grew from 8 to 9 (`AMAZON_AFFILIATE_TAG` added) with zero existing secrets replaced or dropped.
+    - **Tag Status Recorded Honestly:** Tag recorded as `FORMAT_VALID, OPERATOR_CONFIRMED, NOT_VERIFIED_WITH_AMAZON`. Never marked "Verified".
+    - **D1 Partner Record Provisioned:** Inserted partner record `part_amazon_in_01` into Cloudflare D1 (`name = 'Amazon India Associates'`, `partner_network = 'AMAZON_ASSOCIATES'`, `partner_type = 'AFFILIATE'`, `country = 'India'`, `approval_status = 'APPROVED'`, `authorization_status = 'AUTHORIZED'`, provisional operator-confirmed, `commission_rate = null` [UNVERIFIED], `APPLICATION_DATE = 'UNKNOWN'`, `deadline_180_days = 'UNKNOWN'`). Zero offers, pages, or content created.
+    - **Single-Owner Authentication Enforced on Sensitive Endpoints:** Moved `GET /api/v1/diagnostic/env`, `GET /api/v1/commission/money-path`, and `GET /api/v1/commission/launch-checklist` under single-owner authentication in `packages/backend/src/routes/api.ts`. Verified live in production: returns 401 Unauthorized without credentials, returns 200 OK with owner key.
+    - **Money-Path State Progression:** In `GET /api/v1/commission/money-path`:
+      - `PARTNER APPROVAL`: progressed from `REQUIRES HUMAN` to `READY`
+      - `AFFILIATE ID`: progressed from `REQUIRES HUMAN` to `READY`
+      - `PARTNER TERMS`: `READY`
+      - Single biggest blocker: `NO_ACTIVE_OFFER` (human action required: create/activate at least one verified commercial offer).
+    - **Tavily Quota Reconciled:** Reconciled 2 Tavily HTTP calls against `provider_quota_state` (`successful_requests: 2`, `credits_consumed_month: 2`). Call 1 (04:00 UTC, demand discovery) and Call 2 (05:00 UTC, prospect discovery) consumed 1 credit each. Active 24-hr search cache entry at 11:00 UTC avoided external search. `provider_call_logs` has 3 rows due to duplicate `logCall` in prospect discovery.
+    - **Cron Source & Hardcoding:** Verified `ai-marketing-cron-worker` executes top-of-hour pings (User-Agent: `ai-marketing-cron-worker/1.0`, cron schedule: `0 * * * *`). Proved `POST /api/v1/cron/ping` hardcodes `triggerSource = 'CLOUDFLARE_CRON'` and does not parse request body.
+    - **Prospecting Config & 7-Day Cooldown:** Proved `biz_platform_aro` configured as `vertical_id = 'TECHNOLOGY'`, `city = 'Hyderabad'`. Prospect engine dynamically rotates across verticals/cities based on least-represented non-rejected prospect count, explaining rotation to `clinic` / `Bengaluru`. Proved 7-day cooldown applies per query key (`prospects_${vertical}_${city}`) in `search_cache`.
+    - **Public Write Routes Rate Limit Inventory:** Fully inventoried durable rate limiters and security gates across all 19 public write endpoints.
+    - **Full Verification:** All 52 test suites (516 tests) passing. Monorepo builds and typechecks clean across all packages.
+
 ---
 
 ## Manual Steps Still Owed by Human Owner
