@@ -158,8 +158,7 @@ export const EXACT_ROUTE_POLICY = {
   ],
   SYSTEM: [
     '/cron/ping',
-    '/cron/status',
-    '/diag/headers'
+    '/cron/status'
   ]
 };
 
@@ -958,47 +957,6 @@ apiRouter.get('/cron/status', async (c) => {
   });
 });
 
-// Temporary Live Diagnostic Route: GET /api/v1/diag/headers (Protected by X-Cron-Secret)
-apiRouter.get('/diag/headers', async (c) => {
-  const secret = c.req.header('x-cron-secret') || c.req.header('X-Cron-Secret') || '';
-
-  if (isProduction()) {
-    const expectedSecret = process.env.CRON_PING_SECRET;
-    if (!expectedSecret || isPlaceholderCredential(expectedSecret) || expectedSecret === 'cron_ping_default_dev') {
-      return c.json({ error: 'SECURITY VIOLATION: CRON_PING_SECRET is mandatory in production and must not be empty or placeholder.' }, 403);
-    }
-    if (secret !== expectedSecret) {
-      return c.json({ error: 'Unauthorized: Invalid X-Cron-Secret' }, 401);
-    }
-  } else {
-    const expectedSecret = process.env.CRON_PING_SECRET || 'cron_ping_default_dev';
-    if (secret !== expectedSecret && secret !== 'cron_ping_default_dev' && secret !== 'cron_ping_fixture_dev') {
-      return c.json({ error: 'Unauthorized: Invalid X-Cron-Secret' }, 401);
-    }
-  }
-
-  const rawXff = c.req.header('x-forwarded-for') || null;
-  const parts = rawXff ? rawXff.split(',').map((p: string) => p.trim()).filter(Boolean) : [];
-  const entryCount = parts.length;
-  const cfConnectingIp = c.req.header('cf-connecting-ip') || null;
-  const trueClientIp = c.req.header('true-client-ip') || null;
-  const xRealIp = c.req.header('x-real-ip') || null;
-  const clientInfo = getTrustedClientIp(c);
-
-  return c.json({
-    'raw x-forwarded-for': rawXff,
-    'entry count': entryCount,
-    'cf-connecting-ip': cfConnectingIp,
-    'true-client-ip': trueClientIp,
-    'x-real-ip': xRealIp,
-    'selectedIp': clientInfo.ip,
-    rawXForwardedFor: rawXff,
-    entryCount,
-    cfConnectingIp,
-    trueClientIp,
-    xRealIp
-  });
-});
 
 // Public Cloudflare Worker cron ping endpoint (Spec § 2 & § 16)
 apiRouter.post('/cron/ping', async (c) => {

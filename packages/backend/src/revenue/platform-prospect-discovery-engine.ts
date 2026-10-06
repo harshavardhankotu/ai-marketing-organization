@@ -48,7 +48,8 @@ export const JUNK_AND_DIRECTORY_DOMAINS = new Set([
   'yellowpages.in',
   'practo.com',
   'scribd.com',
-  'wikipedia.org'
+  'wikipedia.org',
+  'salezshark.com'
 ]);
 
 export function normalizeDomain(urlOrDomain: string): string {
@@ -213,7 +214,7 @@ export class PlatformProspectDiscoveryEngine {
 
     const filterCandidates = (candidatesList: DiscoveredProspectCandidate[]) => {
       return candidatesList.filter(c => {
-        if (!this.validateCandidate(c)) return false;
+        if (!this.validateCandidate(c, { vertical, city })) return false;
         const dom = normalizeDomain(c.websiteUrl);
         const srcUrl = normalizeUrl(c.evidenceSourceUrl);
         if (dom && existingDomains.has(dom)) return false;
@@ -342,7 +343,10 @@ export class PlatformProspectDiscoveryEngine {
    * Validates that a candidate has real-world evidence and is not a seed or system contact.
    * In production, candidates with sourceType === 'TEST_DATA' are blocked.
    */
-  public validateCandidate(c: DiscoveredProspectCandidate & { sourceType?: string; classification?: string; dataSource?: string }): boolean {
+  public validateCandidate(
+    c: DiscoveredProspectCandidate & { sourceType?: string; classification?: string; dataSource?: string; rawTitle?: string },
+    queryContext?: { vertical?: string; city?: string }
+  ): boolean {
     if (!c.businessName || c.businessName.trim().length < 3) return false;
     const nameLower = c.businessName.toLowerCase();
     if (nameLower.includes('smilekraft') || nameLower.includes('antigravity') || nameLower.includes('demo business') || nameLower.includes('test clinic')) {
@@ -370,11 +374,78 @@ export class PlatformProspectDiscoveryEngine {
     if (!c.evidenceSourceUrl || !c.evidenceSourceUrl.startsWith('http')) return false;
     if (isProduction() && (c.evidenceSourceUrl.includes('.local') || c.evidenceSourceUrl.includes('test-fixture'))) return false;
 
-    // Reject junk, directory, or aggregator domains
     const websiteDomain = normalizeDomain(c.websiteUrl);
     const sourceDomain = normalizeDomain(c.evidenceSourceUrl);
-    if (JUNK_AND_DIRECTORY_DOMAINS.has(websiteDomain) || JUNK_AND_DIRECTORY_DOMAINS.has(sourceDomain)) {
+
+    // 1. Reject .pdf and .gov.in / .gov URLs
+    const isPdfOrGov = (url: string, domain: string) => {
+      const lowerUrl = (url || '').toLowerCase();
+      const lowerDomain = (domain || '').toLowerCase();
+      if (lowerUrl.includes('.pdf') || /\.pdf(\?|$|#)/i.test(lowerUrl)) return true;
+      if (
+        lowerDomain.endsWith('.gov') ||
+        lowerDomain.endsWith('.gov.in') ||
+        lowerDomain.endsWith('.nic.in') ||
+        lowerDomain.includes('.gov.') ||
+        lowerDomain.includes('.nic.') ||
+        lowerUrl.includes('.gov.in') ||
+        lowerUrl.includes('.gov/')
+      ) {
+        return true;
+      }
       return false;
+    };
+    if (isPdfOrGov(c.websiteUrl, websiteDomain) || isPdfOrGov(c.evidenceSourceUrl, sourceDomain)) {
+      return false;
+    }
+
+    // 2. Reject URLs containing /clinic-locator, /company/, /listing, view_listing, directory
+    const JUNK_URL_PATTERNS = [
+      '/clinic-locator',
+      '/company/',
+      '/listing',
+      'view_listing',
+      'directory'
+    ];
+    const hasJunkUrlPattern = (url: string) => {
+      if (!url) return false;
+      const lower = url.toLowerCase();
+      return JUNK_URL_PATTERNS.some(pat => lower.includes(pat));
+    };
+    if (hasJunkUrlPattern(c.websiteUrl) || hasJunkUrlPattern(c.evidenceSourceUrl)) {
+      return false;
+    }
+
+    // 3. Reject "list of" or "email id" in title or business name
+    const titleToCheck = `${c.businessName || ''} ${(c as any).rawTitle || ''}`.toLowerCase();
+    if (titleToCheck.includes('list of') || titleToCheck.includes('email id')) {
+      return false;
+    }
+
+    // 4. Reject junk, directory, aggregator, or data-broker domains
+    if (
+      JUNK_AND_DIRECTORY_DOMAINS.has(websiteDomain) ||
+      JUNK_AND_DIRECTORY_DOMAINS.has(sourceDomain) ||
+      websiteDomain.includes('salezshark.com') ||
+      sourceDomain.includes('salezshark.com')
+    ) {
+      return false;
+    }
+
+    // 5. Reject candidate whose city/vertical does not match query
+    if (queryContext?.city) {
+      const qCity = queryContext.city.trim().toLowerCase();
+      const cCity = (c.city || '').trim().toLowerCase();
+      if (!cCity || cCity !== qCity) {
+        return false;
+      }
+    }
+    if (queryContext?.vertical) {
+      const qVert = queryContext.vertical.trim().toLowerCase();
+      const cVert = (c.vertical || '').trim().toLowerCase();
+      if (!cVert || cVert !== qVert) {
+        return false;
+      }
     }
 
     // Must have evidence snippet (or observedGap) - non-empty
@@ -680,8 +751,9 @@ export class PlatformProspectDiscoveryEngine {
         observedGap: 'Manual staff messaging handles customer inquiries. No automated WhatsApp triage verified.',
         evidenceSourceUrl: url,
         evidenceSnippet: snippet || undefined,
-        evidenceTimestamp: new Date().toISOString()
-      };
+        evidenceTimestamp: new Date().toISOString(),
+        rawTitle: title
+      } as any;
 
       candidates.push(candidate);
     }

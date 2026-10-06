@@ -13,6 +13,7 @@ import {
 import { UnifiedQuotaService } from '../../src/quota/unified-quota-service.js';
 import { DurableRateLimiter } from '../../src/security/durable-rate-limiter.js';
 import { isDemoBusiness, isPublicLiveBusiness } from '../../src/security/public-tenant-guard.js';
+import { getTrustedClientIp } from '../../src/security/client-ip.js';
 import app from '../../src/index.js';
 
 describe('Stop-The-Waste & Safety Pass Test Suite', () => {
@@ -806,35 +807,152 @@ describe('Stop-The-Waste & Safety Pass Test Suite', () => {
     });
   });
 
-  describe('7. Micro-Verify Pass: Client-IP Topology & Durable Outbound Hold', () => {
-    it('protects GET /api/v1/diag/headers with X-Cron-Secret and returns full topology', async () => {
-      // 1. Without X-Cron-Secret -> 401
-      const res401 = await app.request('/api/v1/diag/headers');
-      expect(res401.status).toBe(401);
-      const json401 = await res401.json() as any;
-      expect(json401.error).toContain('Unauthorized: Invalid X-Cron-Secret');
+  describe('7. Small Fix Pass: Client IP, Candidate Edge Cases & Diag Removal', () => {
+    it('verifies GET /api/v1/diag/headers is removed and returns 404', async () => {
+      const res = await app.request('/api/v1/diag/headers');
+      expect(res.status).toBe(404);
+    });
 
-      // 2. With valid X-Cron-Secret -> 200 with raw headers and selected IP
-      const secret = process.env.CRON_PING_SECRET || 'cron_ping_fixture_dev';
-      const res200 = await app.request('/api/v1/diag/headers', {
-        headers: {
-          'X-Cron-Secret': secret,
-          'X-Forwarded-For': '203.0.113.195, 10.0.0.1, 198.51.100.24',
-          'CF-Connecting-IP': '192.0.2.1',
-          'True-Client-IP': '192.0.2.2',
-          'X-Real-IP': '192.0.2.3'
+    it('derives trusted client IP by dropping trailing private and Cloudflare proxy IPs', () => {
+      const mockContext = (headers: Record<string, string>) => ({
+        req: {
+          header: (name: string) => {
+            const lower = name.toLowerCase();
+            for (const [k, v] of Object.entries(headers)) {
+              if (k.toLowerCase() === lower) return v;
+            }
+            return undefined;
+          }
         }
-      });
+      } as any);
 
-      expect(res200.status).toBe(200);
-      const data = await res200.json() as any;
-      expect(data['raw x-forwarded-for']).toBe('203.0.113.195, 10.0.0.1, 198.51.100.24');
-      expect(data['entry count']).toBe(3);
-      expect(data['cf-connecting-ip']).toBe('192.0.2.1');
-      expect(data['true-client-ip']).toBe('192.0.2.2');
-      expect(data['x-real-ip']).toBe('192.0.2.3');
-      // With default TRUSTED_PROXY_HOPS=1 and TRUST_CF_HEADER=false, rightmost XFF entry is selected
-      expect(data['selectedIp']).toBe('198.51.100.24');
+      // Exact sample 1: "110.235.225.146, 172.69.86.91, 10.194.16.2" -> 110.235.225.146
+      const res1 = getTrustedClientIp(mockContext({
+        'x-forwarded-for': '110.235.225.146, 172.69.86.91, 10.194.16.2'
+      }));
+      expect(res1.ip).toBe('110.235.225.146');
+      expect(res1.isUnknown).toBe(false);
+
+      // Exact sample 2: "9.9.9.9,110.235.225.146, 172.68.175.61, 10.199.92.5" -> 110.235.225.146
+      const res2 = getTrustedClientIp(mockContext({
+        'x-forwarded-for': '9.9.9.9,110.235.225.146, 172.68.175.61, 10.199.92.5'
+      }));
+      expect(res2.ip).toBe('110.235.225.146');
+      expect(res2.isUnknown).toBe(false);
+      // Spoofed leftmost value is never selected
+      expect(res2.ip).not.toBe('9.9.9.9');
+
+      // Exact sample 3: header with only private IPs -> "unknown"
+      const res3 = getTrustedClientIp(mockContext({
+        'x-forwarded-for': '10.0.0.1, 172.16.0.1, 192.168.1.1, 127.0.0.1'
+      }));
+      expect(res3.ip).toBe('unknown');
+      expect(res3.isUnknown).toBe(true);
+
+      // Missing header -> "unknown"
+      const res4 = getTrustedClientIp(mockContext({}));
+      expect(res4.ip).toBe('unknown');
+      expect(res4.isUnknown).toBe(true);
+    });
+
+    it('rejects junk discovery candidates across all 7 real-world edge cases and rules', () => {
+      const discEngine = PlatformProspectDiscoveryEngine.getInstance();
+
+      // Rule: Reject /clinic-locator (Apollo Clinics India)
+      expect(discEngine.validateCandidate({
+        businessName: 'Best Clinics in India',
+        vertical: 'clinic',
+        city: 'Bengaluru',
+        websiteUrl: 'https://www.apolloclinic.com/clinic-locator/india',
+        evidenceSourceUrl: 'https://www.apolloclinic.com/clinic-locator/india',
+        evidenceTimestamp: new Date().toISOString(),
+        contactPhone: '+919330003352',
+        observedGap: 'Manual staff messaging'
+      })).toBe(false);
+
+      // Rule: Reject /clinic-locator (Apollo Clinics Bengaluru)
+      expect(discEngine.validateCandidate({
+        businessName: 'Best Clinics in Bengaluru',
+        vertical: 'clinic',
+        city: 'Bengaluru',
+        websiteUrl: 'https://www.apolloclinic.com/clinic-locator/india/karnataka/bengaluru',
+        evidenceSourceUrl: 'https://www.apolloclinic.com/clinic-locator/india/karnataka/bengaluru',
+        evidenceTimestamp: new Date().toISOString(),
+        contactPhone: '+918049549024',
+        observedGap: 'Manual staff messaging'
+      })).toBe(false);
+
+      // Rule: Reject .pdf and .gov.in URLs (Karnataka Govt Hospital PDF)
+      expect(discEngine.validateCandidate({
+        businessName: 'Sl.No. Hospital Name Govt/Pvt',
+        vertical: 'clinic',
+        city: 'Bengaluru',
+        websiteUrl: 'https://sahakarasindhu.karnataka.gov.in/storage/pdf-files/Latest_Hospital_List_Dec2023.pdf',
+        evidenceSourceUrl: 'https://sahakarasindhu.karnataka.gov.in/storage/pdf-files/Latest_Hospital_List_Dec2023.pdf',
+        evidenceTimestamp: new Date().toISOString(),
+        contactPhone: '+919449206481',
+        observedGap: 'Manual staff messaging'
+      })).toBe(false);
+
+      // Rule: Reject data-broker domain salezshark.com, /company/, and "email id" in title
+      expect(discEngine.validateCandidate({
+        businessName: 'The Bangalore Hospital Email ID Format',
+        vertical: 'clinic',
+        city: 'Bengaluru',
+        websiteUrl: 'https://www.salezshark.com/company/the-bangalore-hospital',
+        evidenceSourceUrl: 'https://www.salezshark.com/company/the-bangalore-hospital',
+        evidenceTimestamp: new Date().toISOString(),
+        contactEmail: 'contact@bangalorehospital.co.in',
+        observedGap: 'Manual staff messaging'
+      })).toBe(false);
+
+      // Rule: Reject "list of" in title
+      expect(discEngine.validateCandidate({
+        businessName: 'List of Top Hospitals in India',
+        vertical: 'clinic',
+        city: 'Bengaluru',
+        websiteUrl: 'https://healthguide.example.com/hospitals',
+        evidenceSourceUrl: 'https://healthguide.example.com/hospitals',
+        evidenceTimestamp: new Date().toISOString(),
+        contactPhone: '+919849123456',
+        observedGap: 'Manual staff messaging'
+      })).toBe(false);
+
+      // Rule: Reject candidate whose city does not match query (Apollo Bannerghatta in Bengaluru when querying Hyderabad)
+      expect(discEngine.validateCandidate({
+        businessName: 'Apollo Hospitals Bannerghatta Road',
+        vertical: 'clinic',
+        city: 'Bengaluru',
+        websiteUrl: 'https://www.apollohospitals.com/hospitals/apollo-hospitals-bannerghatta-road',
+        evidenceSourceUrl: 'https://www.apollohospitals.com/hospitals/apollo-hospitals-bannerghatta-road',
+        evidenceTimestamp: new Date().toISOString(),
+        contactPhone: '+918026304050',
+        observedGap: 'Manual staff messaging'
+      }, { vertical: 'clinic', city: 'Hyderabad' })).toBe(false);
+
+      // Rule: Reject candidate whose vertical does not match query (United Hospitals surgery/clinic when querying dental)
+      expect(discEngine.validateCandidate({
+        businessName: 'United Hospitals Surgery Centre',
+        vertical: 'clinic',
+        city: 'Hyderabad',
+        websiteUrl: 'https://unitedhospitals.com',
+        evidenceSourceUrl: 'https://unitedhospitals.com',
+        evidenceTimestamp: new Date().toISOString(),
+        contactPhone: '+918045666666',
+        observedGap: 'Manual staff messaging'
+      }, { vertical: 'dental', city: 'Hyderabad' })).toBe(false);
+
+      // Rule: Reject candidate with both vertical and city mismatch (Manipal multispeciality clinic in Bengaluru when querying dental in Hyderabad)
+      expect(discEngine.validateCandidate({
+        businessName: 'Best Multispeciality Hospital In India',
+        vertical: 'clinic',
+        city: 'Bengaluru',
+        websiteUrl: 'https://www.manipalhospitals.com',
+        evidenceSourceUrl: 'https://www.manipalhospitals.com',
+        evidenceTimestamp: new Date().toISOString(),
+        contactPhone: '+918022221111',
+        observedGap: 'Manual staff messaging'
+      }, { vertical: 'dental', city: 'Hyderabad' })).toBe(false);
     });
 
     it('proves that with OUTBOUND_ENABLED=false and fake provider configured, dispatch returns BLOCKED', async () => {

@@ -7,21 +7,98 @@ export interface TrustedClientIpInfo {
 }
 
 /**
- * Derives trusted client IP behind Render's reverse proxy.
+ * Converts an IPv4 string into an unsigned 32-bit integer.
+ */
+function ipToLong(ip: string): number | null {
+  const parts = ip.split('.');
+  if (parts.length !== 4) return null;
+  let num = 0;
+  for (let i = 0; i < 4; i++) {
+    const octet = parseInt(parts[i], 10);
+    if (isNaN(octet) || octet < 0 || octet > 255) return null;
+    num = (num << 8) | octet;
+  }
+  return num >>> 0;
+}
+
+interface CidrRange {
+  base: number;
+  mask: number;
+}
+
+function parseCidr(cidr: string): CidrRange {
+  const [ipStr, bitsStr] = cidr.split('/');
+  const base = ipToLong(ipStr)!;
+  const bits = parseInt(bitsStr, 10);
+  const mask = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0;
+  return { base: (base & mask) >>> 0, mask };
+}
+
+/**
+ * Standard private / reserved IPv4 address ranges (RFC 1918, RFC 1122, RFC 3927).
+ */
+const PRIVATE_AND_RESERVED_CIDRS: string[] = [
+  '10.0.0.0/8',
+  '172.16.0.0/12',
+  '192.168.0.0/16',
+  '127.0.0.0/8',
+  '169.254.0.0/16'
+];
+
+/**
+ * Cloudflare published IPv4 address ranges (source: https://www.cloudflare.com/ips-v4, retrieved 2026-10-06).
+ */
+const CLOUDFLARE_PUBLISHED_IPV4_CIDRS: string[] = [
+  '173.245.48.0/20',
+  '103.21.244.0/22',
+  '103.22.200.0/22',
+  '103.31.4.0/22',
+  '141.101.64.0/18',
+  '108.162.192.0/18',
+  '190.93.240.0/20',
+  '188.114.96.0/20',
+  '197.234.240.0/22',
+  '198.41.128.0/17',
+  '162.158.0.0/15',
+  '104.16.0.0/13',
+  '104.24.0.0/14',
+  '172.64.0.0/13',
+  '131.0.72.0/22'
+];
+
+const DROPPABLE_PROXY_RANGES: CidrRange[] = [
+  ...PRIVATE_AND_RESERVED_CIDRS,
+  ...CLOUDFLARE_PUBLISHED_IPV4_CIDRS
+].map(parseCidr);
+
+/**
+ * Returns true if an IP is a private address or within Cloudflare's published edge ranges.
+ */
+export function isPrivateOrCloudflareIp(ip: string): boolean {
+  const trimmed = ip.trim().toLowerCase();
+  if (trimmed === 'unknown' || trimmed === '127.0.0.1' || trimmed === '::1' || trimmed === 'localhost') {
+    return true;
+  }
+  const num = ipToLong(trimmed);
+  if (num === null) {
+    return trimmed.startsWith('10.') || trimmed.startsWith('192.168.') || trimmed.startsWith('172.');
+  }
+  return DROPPABLE_PROXY_RANGES.some(r => ((num & r.mask) >>> 0) === r.base);
+}
+
+/**
+ * Derives trusted client IP behind Cloudflare and Render reverse proxies.
  *
- * Proxy Header Semantics:
- * - When an HTTP request passes through a reverse proxy (e.g. Render's load balancer/Envoy),
- *   the proxy appends the client IP it observed to the right-hand end of the X-Forwarded-For header:
- *     X-Forwarded-For: <client_untrusted_left>, ..., <appended_by_proxy_right>
- * - In Render's architecture, Render's edge terminates TLS and appends the connecting client IP.
- *   The exact internal proxy tier depth beyond the outer ingress is labeled UNKNOWN in official docs.
- * - Therefore, we take the entry appended by the platform proxy (rightmost, configurable via
- *   TRUSTED_PROXY_HOPS, default 1) and ignore all client-controlled entries to its left.
- * - cf-connecting-ip is ignored unless process.env.TRUST_CF_HEADER === 'true'.
- *
- * Fallback Policy:
- * - If X-Forwarded-For is missing or resolves to local (127.0.0.1)/empty, requests map to a
- *   single 'unknown' bucket with a stricter rate limit (unknownLimit, default 5 requests per window).
+ * Trailing Proxy Dropping Semantics:
+ * - When an HTTP request passes through Cloudflare and Render's reverse proxy tiers,
+ *   the proxies append their observed egress / gateway IPs to the right-hand end of X-Forwarded-For:
+ *     X-Forwarded-For: <client_untrusted_left>, ..., <client_real>, <cloudflare_proxy>, <render_proxy>
+ * - We take the XFF list, drop trailing entries that are private/reserved addresses
+ *   (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8) and Cloudflare published IP ranges,
+ *   then select the rightmost remaining entry.
+ * - This makes client IP derivation robust to hop count changes across reverse proxies.
+ * - cf-connecting-ip is ignored unless process.env.TRUST_CF_HEADER === 'true' (default: false).
+ * - If only private/proxy IPs remain or header is missing, maps to 'unknown' with stricter limit.
  */
 export function getTrustedClientIp(
   c: Context,
@@ -46,18 +123,17 @@ export function getTrustedClientIp(
 
   if (xff) {
     const parts = xff.split(',').map(p => p.trim()).filter(Boolean);
+    // Drop trailing entries that are private/reserved addresses or Cloudflare published ranges
+    while (parts.length > 0 && isPrivateOrCloudflareIp(parts[parts.length - 1])) {
+      parts.pop();
+    }
     if (parts.length > 0) {
-      const hops = parseInt(process.env.TRUSTED_PROXY_HOPS || '1', 10);
-      const targetIndex = parts.length - hops;
-      if (targetIndex >= 0 && targetIndex < parts.length) {
-        candidateIp = parts[targetIndex];
-      } else {
-        candidateIp = parts[parts.length - 1];
-      }
+      // Use the rightmost remaining entry
+      candidateIp = parts[parts.length - 1];
     }
   }
 
-  const isUnknown = !candidateIp || candidateIp === '127.0.0.1' || candidateIp.toLowerCase() === 'unknown';
+  const isUnknown = !candidateIp || candidateIp.toLowerCase() === 'unknown' || isPrivateOrCloudflareIp(candidateIp);
   const ip = isUnknown ? 'unknown' : candidateIp;
   const maxRequests = isUnknown ? unknownLimit : standardLimit;
 
