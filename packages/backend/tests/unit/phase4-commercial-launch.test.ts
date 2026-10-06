@@ -11,19 +11,27 @@ describe('Phase 4: Commercial Launch & Money-Path Verification (Spec §§ 1–30
   const cleanup = () => {
     const db = getDb();
     try {
-      db.prepare('DELETE FROM commission_records').run();
-      db.prepare('DELETE FROM referrals').run();
-      db.prepare('DELETE FROM commission_content_assets').run();
-      db.prepare('DELETE FROM partner_offers').run();
-      db.prepare('DELETE FROM partners').run();
+      db.prepare('DELETE FROM commission_records WHERE organization_id = ?').run(orgId);
+      db.prepare('DELETE FROM referrals WHERE organization_id = ?').run(orgId);
+      db.prepare('DELETE FROM commission_content_assets WHERE organization_id = ?').run(orgId);
+      db.prepare('DELETE FROM partner_offers WHERE organization_id = ?').run(orgId);
+      db.prepare('DELETE FROM partners WHERE organization_id = ?').run(orgId);
     } catch {}
   };
 
   beforeEach(cleanup);
   afterAll(cleanup);
 
-  it('1. GET /api/v1/commission/money-path is public and returns BLOCKED when zero partners exist', async () => {
-    const res = await app.request('/api/v1/commission/money-path');
+  it('1. GET /api/v1/commission/money-path requires owner authentication', async () => {
+    // 1. Unauthenticated request returns 401
+    const unauthRes = await app.request('/api/v1/commission/money-path');
+    expect(unauthRes.status).toBe(401);
+
+    // 2. Owner authenticated request returns 200 with checklist
+    const session = OwnerAuthService.getInstance().createSession();
+    const res = await app.request('/api/v1/commission/money-path', {
+      headers: { 'Authorization': `Bearer ${session.token}` }
+    });
     expect(res.status).toBe(200);
 
     const json = await res.json() as any;
@@ -53,8 +61,16 @@ describe('Phase 4: Commercial Launch & Money-Path Verification (Spec §§ 1–30
     expect(partnerCheck.status).toBe('REQUIRES HUMAN');
   });
 
-  it('2. GET /api/v1/commission/launch-checklist returns recommended first partner and actionable checklist', async () => {
-    const res = await app.request('/api/v1/commission/launch-checklist');
+  it('2. GET /api/v1/commission/launch-checklist requires owner authentication', async () => {
+    // 1. Unauthenticated request returns 401
+    const unauthRes = await app.request('/api/v1/commission/launch-checklist');
+    expect(unauthRes.status).toBe(401);
+
+    // 2. Owner authenticated request returns 200 with checklist
+    const session = OwnerAuthService.getInstance().createSession();
+    const res = await app.request('/api/v1/commission/launch-checklist', {
+      headers: { 'Authorization': `Bearer ${session.token}` }
+    });
     expect(res.status).toBe(200);
 
     const json = await res.json() as any;
@@ -129,7 +145,10 @@ describe('Phase 4: Commercial Launch & Money-Path Verification (Spec §§ 1–30
     });
 
     // Re-check money-path
-    const res = await app.request('/api/v1/commission/money-path');
+    const session = OwnerAuthService.getInstance().createSession();
+    const res = await app.request('/api/v1/commission/money-path', {
+      headers: { 'Authorization': `Bearer ${session.token}` }
+    });
     expect(res.status).toBe(200);
 
     const json = await res.json() as any;

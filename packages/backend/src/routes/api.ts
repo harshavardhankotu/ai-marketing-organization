@@ -120,7 +120,6 @@ export function parseCommissionCsv(csv: string): Record<string, string>[] {
 export const EXACT_ROUTE_POLICY = {
   PUBLIC: [
     '/health',
-    '/diagnostic/env',
     '/diag',
     '/public/lead',
     '/public/business',
@@ -146,9 +145,7 @@ export const EXACT_ROUTE_POLICY = {
     '/guides',
     '/compare',
     '/recommendations',
-    '/offers',
-    '/commission/money-path',
-    '/commission/launch-checklist'
+    '/offers'
   ],
   WEBHOOK: [
     '/webhooks/razorpay',
@@ -165,15 +162,6 @@ export const EXACT_ROUTE_POLICY = {
 };
 
 export const apiRouter = new Hono<{ Variables: AppVariables }>();
-
-apiRouter.get('/diagnostic/env', (c) => {
-  return c.json({
-    CRON_PING_SECRET: process.env.CRON_PING_SECRET ? (process.env.CRON_PING_SECRET.length > 5 ? 'CONFIGURED' : 'TOO_SHORT') : 'MISSING',
-    OWNER_API_KEY: process.env.OWNER_API_KEY ? (process.env.OWNER_API_KEY.length > 5 ? 'CONFIGURED' : 'TOO_SHORT') : 'MISSING',
-    GEMINI_API_KEY: process.env.GEMINI_API_KEY ? (process.env.GEMINI_API_KEY.length > 5 ? 'CONFIGURED' : 'TOO_SHORT') : 'MISSING',
-    TAVILY_API_KEY: process.env.TAVILY_API_KEY ? (process.env.TAVILY_API_KEY.length > 5 ? 'CONFIGURED' : 'TOO_SHORT') : 'MISSING'
-  });
-});
 
 
 // Middleware: Authentication & Tenant Context Boundary
@@ -272,12 +260,30 @@ apiRouter.use('*', async (c, next) => {
       } catch {}
     }
 
+    // Require valid owner session for sensitive owner-only read endpoints across all environments
+    if (!ownerSession && (path === '/diagnostic/env' || path.startsWith('/commission/money-path') || path.startsWith('/commission/launch-checklist'))) {
+      return c.json({
+        success: false,
+        error: 'Unauthorized: Owner authentication is required via Bearer token or x-api-key.'
+      }, 401);
+    }
+
     // Allow explicit identity headers in test runners, defaulting to seeded test business
     c.set('organizationId', c.req.header('x-organization-id') || (isProduction() ? '' : 'org_owner_primary'));
     c.set('userId', c.req.header('x-user-id') || 'usr_owner_01');
   }
 
   await next();
+});
+
+// Environment variable status diagnostic (Owner authenticated)
+apiRouter.get('/diagnostic/env', (c) => {
+  return c.json({
+    CRON_PING_SECRET: process.env.CRON_PING_SECRET ? (process.env.CRON_PING_SECRET.length > 5 ? 'CONFIGURED' : 'TOO_SHORT') : 'MISSING',
+    OWNER_API_KEY: process.env.OWNER_API_KEY ? (process.env.OWNER_API_KEY.length > 5 ? 'CONFIGURED' : 'TOO_SHORT') : 'MISSING',
+    GEMINI_API_KEY: process.env.GEMINI_API_KEY ? (process.env.GEMINI_API_KEY.length > 5 ? 'CONFIGURED' : 'TOO_SHORT') : 'MISSING',
+    TAVILY_API_KEY: process.env.TAVILY_API_KEY ? (process.env.TAVILY_API_KEY.length > 5 ? 'CONFIGURED' : 'TOO_SHORT') : 'MISSING'
+  });
 });
 
 // Health check

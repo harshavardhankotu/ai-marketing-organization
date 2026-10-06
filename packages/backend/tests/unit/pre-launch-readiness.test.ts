@@ -433,4 +433,42 @@ Before selecting hardware, shopkeepers should evaluate paper roll loading mechan
       expect(ledgerSummary.externalConversions).toBe(0);
     });
   });
+
+  // =========================================================================
+  // ITEM 5: OWNER-AUTHENTICATED SENSITIVE READ ENDPOINTS
+  // =========================================================================
+  describe('5. Owner-Authenticated Read Endpoints', () => {
+    it('enforces owner authentication on /diagnostic/env, /commission/money-path, and /commission/launch-checklist', async () => {
+      const { OwnerAuthService } = await import('../../src/auth/owner-auth.js');
+      const ownerAuth = OwnerAuthService.getInstance();
+      const session = ownerAuth.createSession();
+
+      // 1. Unauthenticated requests return 401
+      const resEnvUnauth = await app.request('/api/v1/diagnostic/env');
+      expect(resEnvUnauth.status).toBe(401);
+
+      const resMoneyUnauth = await app.request('/api/v1/commission/money-path');
+      expect(resMoneyUnauth.status).toBe(401);
+
+      const resChecklistUnauth = await app.request('/api/v1/commission/launch-checklist');
+      expect(resChecklistUnauth.status).toBe(401);
+
+      // 2. Owner-authenticated requests return 200
+      const resEnvAuth = await app.request('/api/v1/diagnostic/env', {
+        headers: { 'Authorization': `Bearer ${session.token}` }
+      });
+      expect(resEnvAuth.status).toBe(200);
+
+      const resMoneyAuth = await app.request('/api/v1/commission/money-path', {
+        headers: { 'Authorization': `Bearer ${session.token}` }
+      });
+      expect(resMoneyAuth.status).toBe(200);
+
+      const resChecklistAuth = await app.request('/api/v1/commission/launch-checklist', {
+        headers: { 'Authorization': `Bearer ${session.token}` }
+      });
+      expect(resChecklistAuth.status).toBe(200);
+    });
+  });
 });
+
