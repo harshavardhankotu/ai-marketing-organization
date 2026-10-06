@@ -215,6 +215,17 @@ export class AutonomyPolicyController {
       };
     }
 
+    // 9. Durable Outbound Hold Gate (OUTBOUND_ENABLED, default false)
+    const outboundEnabled = process.env.OUTBOUND_ENABLED === 'true';
+    if (!outboundEnabled && (actionType === 'OUTBOUND_SEND' || actionType === 'OUTBOUND_DISPATCH')) {
+      return {
+        allowed: false,
+        reason: 'Outbound dispatch is globally disabled (OUTBOUND_ENABLED is false).',
+        violatedRule: 'OUTBOUND_DISABLED',
+        policy
+      };
+    }
+
     return {
       allowed: true,
       reason: 'Action conforms to all autonomy and safety policies.',
@@ -253,6 +264,7 @@ export class AutonomyPolicyController {
       `).get(raw, raw, raw) as any;
 
       if (outbound) {
+        if (outbound.status === 'HOLD_REQUIRES_APPROVAL') return 'BLOCKED';
         if (outbound.status === 'REJECTED' || outbound.suppression_reason === 'REJECTED') return 'BLOCKED';
         if (outbound.is_opted_out || outbound.suppression_reason === 'DO_NOT_CONTACT') return 'DO_NOT_CONTACT';
         if (outbound.suppression_reason === 'UNSUBSCRIBED') return 'UNSUBSCRIBED';

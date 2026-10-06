@@ -805,4 +805,102 @@ describe('Stop-The-Waste & Safety Pass Test Suite', () => {
       expect(disc404Json.error).toBe('CONTENT_NOT_FOUND');
     });
   });
+
+  describe('7. Micro-Verify Pass: Client-IP Topology & Durable Outbound Hold', () => {
+    it('protects GET /api/v1/diag/headers with X-Cron-Secret and returns full topology', async () => {
+      // 1. Without X-Cron-Secret -> 401
+      const res401 = await app.request('/api/v1/diag/headers');
+      expect(res401.status).toBe(401);
+      const json401 = await res401.json() as any;
+      expect(json401.error).toContain('Unauthorized: Invalid X-Cron-Secret');
+
+      // 2. With valid X-Cron-Secret -> 200 with raw headers and selected IP
+      const secret = process.env.CRON_PING_SECRET || 'cron_ping_fixture_dev';
+      const res200 = await app.request('/api/v1/diag/headers', {
+        headers: {
+          'X-Cron-Secret': secret,
+          'X-Forwarded-For': '203.0.113.195, 10.0.0.1, 198.51.100.24',
+          'CF-Connecting-IP': '192.0.2.1',
+          'True-Client-IP': '192.0.2.2',
+          'X-Real-IP': '192.0.2.3'
+        }
+      });
+
+      expect(res200.status).toBe(200);
+      const data = await res200.json() as any;
+      expect(data['raw x-forwarded-for']).toBe('203.0.113.195, 10.0.0.1, 198.51.100.24');
+      expect(data['entry count']).toBe(3);
+      expect(data['cf-connecting-ip']).toBe('192.0.2.1');
+      expect(data['true-client-ip']).toBe('192.0.2.2');
+      expect(data['x-real-ip']).toBe('192.0.2.3');
+      // With default TRUSTED_PROXY_HOPS=1 and TRUST_CF_HEADER=false, rightmost XFF entry is selected
+      expect(data['selectedIp']).toBe('198.51.100.24');
+    });
+
+    it('proves that with OUTBOUND_ENABLED=false and fake provider configured, dispatch returns BLOCKED', async () => {
+      const prevVal = process.env.OUTBOUND_ENABLED;
+      try {
+        process.env.OUTBOUND_ENABLED = 'false';
+
+        // Configure a fake provider scenario (Email with credentials simulated)
+        const outboundEngine = OutboundEngine.getInstance();
+        const fakeRequest = {
+          businessId: 'biz_platform_aro',
+          organizationId: 'org_owner_primary',
+          channel: 'EMAIL' as const,
+          recipientId: 'rec_fake_01',
+          recipientContact: 'dr.test@fakedental.com',
+          recipientName: 'Dr. Test',
+          subject: 'System Check',
+          body: 'Testing outbound hold',
+          isColdOutreach: true,
+          isApproved: true,
+          approverId: 'usr_owner_01'
+        };
+
+        const result = await outboundEngine.dispatch(fakeRequest);
+        expect(result.success).toBe(false);
+        expect(result.actionClassification).toBe('BLOCKED_AUTHORIZATION');
+        expect(result.status).toBe('BLOCKED_AUTHORIZATION');
+        expect(result.error).toContain('Outbound dispatch is globally disabled');
+      } finally {
+        if (prevVal !== undefined) {
+          process.env.OUTBOUND_ENABLED = prevVal;
+        } else {
+          delete process.env.OUTBOUND_ENABLED;
+        }
+      }
+    });
+
+    it('proves that outbound contacts with status HOLD_REQUIRES_APPROVAL return BLOCKED from getContactSafety', async () => {
+      const db = getDb();
+      const contactId = 'ocont_hold_test_01';
+      db.prepare(`
+        INSERT INTO outbound_contacts (
+          id, business_id, organization_id, prospect_name,
+          prospect_email, channel, status, is_suppressed, suppression_reason, created_at, updated_at
+        ) VALUES (?, 'biz_platform_aro', 'org_owner_primary', 'Dr. Hold Test',
+          'dr.hold@example.com', 'EMAIL', 'HOLD_REQUIRES_APPROVAL', 0, 'PREV_STATUS:ACTIVE', datetime('now'), datetime('now'))
+      `).run(contactId);
+
+      const safety = AutonomyPolicyController.getInstance().getContactSafety('dr.hold@example.com');
+      expect(safety).toBe('BLOCKED');
+
+      const outboundEngine = OutboundEngine.getInstance();
+      const dispatchRes = await outboundEngine.dispatch({
+        organizationId: 'org_owner_primary',
+        businessId: 'biz_platform_aro',
+        channel: 'EMAIL',
+        recipientId: contactId,
+        recipientContact: 'dr.hold@example.com',
+        body: 'Should be suppressed',
+        isColdOutreach: false
+      });
+
+      expect(dispatchRes.success).toBe(false);
+      expect(dispatchRes.actionClassification).toBe('BLOCKED_AUTHORIZATION');
+      expect(dispatchRes.status).toBe('SUPPRESSED');
+      expect(dispatchRes.error).toContain('Contact has status BLOCKED');
+    });
+  });
 });

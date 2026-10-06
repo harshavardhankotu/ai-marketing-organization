@@ -10,6 +10,7 @@ import { seedDatabase } from './db/seed.js';
 import { validateProductionSecrets, loadLocalEnvFile } from './config/env.js';
 import { DailyMarketResearchScheduler } from './scheduler/daily-research-scheduler.js';
 import { UnifiedQuotaService } from './quota/unified-quota-service.js';
+import { getTrustedClientIp } from './security/client-ip.js';
 
 // Safely load local .env or .env.local if present
 loadLocalEnvFile();
@@ -104,7 +105,7 @@ app.get('/r/:offerSlug/:referralId', async (c) => {
     const { ReferralTrackingEngine } = await import('./commission/referral-tracking.js');
     const trackingEngine = ReferralTrackingEngine.getInstance();
     const clickData = {
-      ip: c.req.header('x-forwarded-for') || c.req.header('cf-connecting-ip') || '127.0.0.1',
+      ip: getTrustedClientIp(c).ip,
       userAgent: c.req.header('user-agent'),
       referer: c.req.header('referer'),
       source: c.req.query('utm_source') || c.req.query('source'),

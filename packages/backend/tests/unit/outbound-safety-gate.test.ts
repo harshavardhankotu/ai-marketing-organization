@@ -13,6 +13,7 @@ describe('Outbound Safety Gate & WhatsApp Cold Outreach Pause (Spec Item 9)', ()
   let policyController: AutonomyPolicyController;
 
   beforeEach(() => {
+    process.env.OUTBOUND_ENABLED = 'true';
     resetDbForTesting();
     seedDatabase();
     (OutboundEngine as any).instance = undefined;

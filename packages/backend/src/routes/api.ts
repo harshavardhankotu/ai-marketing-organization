@@ -73,6 +73,7 @@ import { ConversionVerificationAdapter } from '../commission/conversion-verifica
 import { CommissionLedgerEngine } from '../commission/commission-ledger.js';
 import { DemandDiscoveryEngine } from '../commission/demand-discovery.js';
 import { DirectPaymentProviderAdapter } from '../commission/direct-payment-adapter.js';
+import { getTrustedClientIp } from '../security/client-ip.js';
 
 export type AppVariables = {
   organizationId: string;
@@ -157,7 +158,8 @@ export const EXACT_ROUTE_POLICY = {
   ],
   SYSTEM: [
     '/cron/ping',
-    '/cron/status'
+    '/cron/status',
+    '/diag/headers'
   ]
 };
 
@@ -302,7 +304,7 @@ apiRouter.post('/auth/owner/login', async (c) => {
     }, 401);
   }
 
-  const clientIp = c.req.header('x-forwarded-for') || c.req.header('cf-connecting-ip') || '127.0.0.1';
+  const clientIp = getTrustedClientIp(c).ip;
   const userAgent = c.req.header('user-agent') || 'Browser';
   const session = await ownerAuth.createSessionAsync(clientIp, userAgent);
 
@@ -953,6 +955,48 @@ apiRouter.get('/cron/status', async (c) => {
       lastUserAgent: row?.last_user_agent || null,
       workerSource: row?.worker_source || null
     }
+  });
+});
+
+// Temporary Live Diagnostic Route: GET /api/v1/diag/headers (Protected by X-Cron-Secret)
+apiRouter.get('/diag/headers', async (c) => {
+  const secret = c.req.header('x-cron-secret') || c.req.header('X-Cron-Secret') || '';
+
+  if (isProduction()) {
+    const expectedSecret = process.env.CRON_PING_SECRET;
+    if (!expectedSecret || isPlaceholderCredential(expectedSecret) || expectedSecret === 'cron_ping_default_dev') {
+      return c.json({ error: 'SECURITY VIOLATION: CRON_PING_SECRET is mandatory in production and must not be empty or placeholder.' }, 403);
+    }
+    if (secret !== expectedSecret) {
+      return c.json({ error: 'Unauthorized: Invalid X-Cron-Secret' }, 401);
+    }
+  } else {
+    const expectedSecret = process.env.CRON_PING_SECRET || 'cron_ping_default_dev';
+    if (secret !== expectedSecret && secret !== 'cron_ping_default_dev' && secret !== 'cron_ping_fixture_dev') {
+      return c.json({ error: 'Unauthorized: Invalid X-Cron-Secret' }, 401);
+    }
+  }
+
+  const rawXff = c.req.header('x-forwarded-for') || null;
+  const parts = rawXff ? rawXff.split(',').map((p: string) => p.trim()).filter(Boolean) : [];
+  const entryCount = parts.length;
+  const cfConnectingIp = c.req.header('cf-connecting-ip') || null;
+  const trueClientIp = c.req.header('true-client-ip') || null;
+  const xRealIp = c.req.header('x-real-ip') || null;
+  const clientInfo = getTrustedClientIp(c);
+
+  return c.json({
+    'raw x-forwarded-for': rawXff,
+    'entry count': entryCount,
+    'cf-connecting-ip': cfConnectingIp,
+    'true-client-ip': trueClientIp,
+    'x-real-ip': xRealIp,
+    'selectedIp': clientInfo.ip,
+    rawXForwardedFor: rawXff,
+    entryCount,
+    cfConnectingIp,
+    trueClientIp,
+    xRealIp
   });
 });
 
@@ -2469,7 +2513,7 @@ apiRouter.post('/compliance/dpdp/consent', async (c) => {
     return c.json({ success: false, error: 'Customer name and explicit purpose are required' }, 400);
   }
 
-  const clientIp = c.req.header('x-forwarded-for') || c.req.header('cf-connecting-ip') || '127.0.0.1';
+  const clientIp = getTrustedClientIp(c).ip;
   const consent = dpdpManager.recordConsent({
     businessId,
     journeyId: body.journeyId,
@@ -3657,7 +3701,6 @@ apiRouter.get('/organic/experiments', async (c) => {
 const trafficProvenance = new TrafficProvenanceEngine();
 
 apiRouter.post('/organic/sessions', async (c) => {
-  const { getTrustedClientIp } = await import('../security/client-ip.js');
   const clientInfo = getTrustedClientIp(c, 30, 10);
   const { DurableRateLimiter } = await import('../security/durable-rate-limiter.js');
   const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/organic/sessions', clientInfo.ip, clientInfo.maxRequests, 600);
@@ -3704,7 +3747,6 @@ apiRouter.get('/organic/sessions', async (c) => {
 
 // 15. Ingest Real Organic Lead (Tied to Existing Session Provenance)
 apiRouter.post('/organic/leads', async (c) => {
-  const { getTrustedClientIp } = await import('../security/client-ip.js');
   const clientInfo = getTrustedClientIp(c, 10, 5);
   const { DurableRateLimiter } = await import('../security/durable-rate-limiter.js');
   const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/organic/leads', clientInfo.ip, clientInfo.maxRequests, 600);
@@ -3879,7 +3921,7 @@ apiRouter.get('/r/:offerSlug/:referralId', async (c) => {
 
   try {
     const clickData = {
-      ip: c.req.header('x-forwarded-for') || c.req.header('cf-connecting-ip') || '127.0.0.1',
+      ip: getTrustedClientIp(c).ip,
       userAgent: c.req.header('user-agent'),
       referer: c.req.header('referer'),
       source: c.req.query('utm_source') || c.req.query('source'),

@@ -18,6 +18,7 @@ describe('Complete Autonomous Revenue Loop — Truthful End-to-End System Tests'
   const bizId = 'biz_smilekraft_hyd';
 
   beforeEach(() => {
+    process.env.OUTBOUND_ENABLED = 'true';
     resetDbForTesting();
     seedDatabase();
   });
