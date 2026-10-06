@@ -22,6 +22,15 @@ import { OpportunityEngine, Opportunity } from './opportunity-engine.js';
 import { ActionCooldownManager } from './action-cooldown-manager.js';
 
 export type ActionType =
+  | 'RECONCILE_COMMISSION'     // reconcile pending partner conversions to verified commissions
+  | 'RECONCILE_CONVERSION'     // process incoming/pending conversion reports
+  | 'CREATE_CONTENT_ASSET'     // generate public comparison/guide/recommendation page
+  | 'CREATE_REFERRAL_LINK'     // generate tracked referral link for active offer
+  | 'OPTIMIZE_FUNNEL'          // tune high-intent conversion paths
+  | 'DISCOVER_PARTNER'         // discover new legitimate affiliate/referral programs
+  | 'DISCOVER_OFFER'           // discover new commercial offers for verified partners
+  | 'DISCOVER_DEMAND'          // autonomous research of high-intent search queries
+  | 'QUARANTINE_BAD_PROVIDER'  // isolate broken or unverified partner/offer
   | 'PURSUE_OPPORTUNITY'       // advance a qualified opportunity
   | 'FOLLOW_UP_LEAD'           // contact a lead that hasn't responded
   | 'SEND_PAYMENT_REQUEST'     // request payment from a qualified prospect
@@ -40,7 +49,7 @@ export interface NextBestAction {
   actionType: ActionType;
   /** Subject of the action (opportunityId, journeyId, leadId, etc.) */
   targetId: string;
-  targetType: 'OPPORTUNITY' | 'LEAD' | 'PAYMENT_REQUEST' | 'EXPERIMENT' | 'RESEARCH_GAP' | 'PROSPECT' | 'NONE';
+  targetType: 'OPPORTUNITY' | 'LEAD' | 'PAYMENT_REQUEST' | 'EXPERIMENT' | 'RESEARCH_GAP' | 'PROSPECT' | 'COMMISSION_RECORD' | 'DEMAND_SIGNAL' | 'PARTNER' | 'OFFER' | 'CONTENT_ASSET' | 'NONE';
   ownerAgent: string;
   rationale: string;
   estimatedRevenueINR: number;
@@ -88,6 +97,71 @@ export class NextBestActionEngine {
    */
   public choose(businessId: string, organizationId: string, options?: { ignoreCooldown?: boolean }): NextBestAction {
     const candidates: NextBestAction[] = [];
+
+    // Priority 0.1 (P0): Verified commission reconciliation (Spec § 22)
+    const pendingCommissions = this.getPendingCommissions(organizationId);
+    for (const comm of pendingCommissions) {
+      const cooldown = ActionCooldownManager.check(comm.id, 'RECONCILE_COMMISSION');
+      if (cooldown.eligible || options?.ignoreCooldown) {
+        const estRev = comm.expected_commission_inr || 1000;
+        candidates.push({
+          actionType: 'RECONCILE_COMMISSION',
+          targetId: comm.id,
+          targetType: 'COMMISSION_RECORD',
+          ownerAgent: 'commission-reconciliation-agent',
+          rationale: `Pending commission record ${comm.id} (${comm.event_type} on partner ${comm.partner_id}, expected ₹${estRev}). Provider reconciliation needed.`,
+          estimatedRevenueINR: estRev,
+          expectedRevenueINR: estRev,
+          probabilityOfSuccess: 0.9,
+          timeToRevenueDays: 1,
+          externalCostINR: 0,
+          quotaCost: 0,
+          customerValueINR: estRev,
+          urgency: 1.0,
+          cooldownActive: false,
+          authorizationAvailable: true,
+          riskLevel: 'LOW',
+          expectedValueINR: estRev,
+          priorityScore: 1200,
+          priorityTier: 'P0',
+          score: 1200,
+          authorizationRequired: false,
+          estimatedCostINR: 0
+        });
+      }
+    }
+
+    // Priority 0.2 (P0): Quarantine broken partner offers affecting live traffic
+    const brokenOffers = this.getBrokenOffers(organizationId);
+    for (const off of brokenOffers) {
+      const cooldown = ActionCooldownManager.check(off.id, 'QUARANTINE_BAD_PROVIDER');
+      if (cooldown.eligible || options?.ignoreCooldown) {
+        candidates.push({
+          actionType: 'QUARANTINE_BAD_PROVIDER',
+          targetId: off.id,
+          targetType: 'OFFER',
+          ownerAgent: 'partner-compliance-agent',
+          rationale: `Offer ${off.title} (${off.id}) has invalid or missing tracking destination. Quarantine to protect user experience.`,
+          estimatedRevenueINR: 0,
+          expectedRevenueINR: 0,
+          probabilityOfSuccess: 1.0,
+          timeToRevenueDays: 0,
+          externalCostINR: 0,
+          quotaCost: 0,
+          customerValueINR: 0,
+          urgency: 0.98,
+          cooldownActive: false,
+          authorizationAvailable: true,
+          riskLevel: 'HIGH',
+          expectedValueINR: 0,
+          priorityScore: 1100,
+          priorityTier: 'P0',
+          score: 1100,
+          authorizationRequired: false,
+          estimatedCostINR: 0
+        });
+      }
+    }
 
     // Priority 1 (P0): Paid customers who need onboarding
     const pendingOnboarding = this.getPendingOnboardingCustomers(businessId);
@@ -180,6 +254,140 @@ export class NextBestActionEngine {
           priorityScore: pScore + 50,
           priorityTier: 'P1',
           score: pScore + 50,
+          authorizationRequired: false,
+          estimatedCostINR: 0
+        });
+      }
+    }
+
+    // Priority 5.1 (P1): Demand signals ready for acquisition content asset generation (Spec § 21 & § 22)
+    // STOP CONDITION (Spec § 21): If zero active offers exist, stop building commercial content to avoid unmonetized dead ends.
+    if (this.getActiveOffersCount(organizationId) > 0) {
+      const demandSignals = this.getUnfulfilledDemandSignals(organizationId);
+      for (const sig of demandSignals) {
+        const cooldown = ActionCooldownManager.check(sig.id, 'CREATE_CONTENT_ASSET');
+        if (cooldown.eligible || options?.ignoreCooldown) {
+          const estRev = 2500;
+          const prob = 0.35;
+          const ev = estRev * prob;
+          candidates.push({
+            actionType: 'CREATE_CONTENT_ASSET',
+            targetId: sig.id,
+            targetType: 'DEMAND_SIGNAL',
+            ownerAgent: 'content-asset-engine',
+            rationale: `Commercial demand discovered for '${sig.topic}' (Est. monthly volume: ${sig.estimated_monthly_volume}). Create acquisition comparison/guide asset with tracked referrals.`,
+            estimatedRevenueINR: estRev,
+            expectedRevenueINR: ev,
+            probabilityOfSuccess: prob,
+            timeToRevenueDays: 7,
+            externalCostINR: 0,
+            quotaCost: 1,
+            customerValueINR: estRev,
+            urgency: 0.85,
+            cooldownActive: false,
+            authorizationAvailable: true,
+            riskLevel: 'LOW',
+            expectedValueINR: ev,
+            priorityScore: 850,
+            priorityTier: 'P1',
+            score: 850,
+            authorizationRequired: false,
+            estimatedCostINR: 0
+          });
+        }
+      }
+    }
+
+    // Priority 5.2 (P1): Active partner offers needing tracked referral links
+    const offersNeedingLinks = this.getOffersNeedingReferralLinks(organizationId);
+    for (const off of offersNeedingLinks) {
+      const cooldown = ActionCooldownManager.check(off.id, 'CREATE_REFERRAL_LINK');
+      if (cooldown.eligible || options?.ignoreCooldown) {
+        candidates.push({
+          actionType: 'CREATE_REFERRAL_LINK',
+          targetId: off.id,
+          targetType: 'OFFER',
+          ownerAgent: 'referral-tracking-engine',
+          rationale: `Active offer '${off.title}' has no referral link created. Generate first-party attribution tracking link.`,
+          estimatedRevenueINR: off.commission_amount_inr || 1000,
+          expectedRevenueINR: (off.commission_amount_inr || 1000) * 0.4,
+          probabilityOfSuccess: 0.8,
+          timeToRevenueDays: 3,
+          externalCostINR: 0,
+          quotaCost: 0,
+          customerValueINR: off.price_inr || 5000,
+          urgency: 0.8,
+          cooldownActive: false,
+          authorizationAvailable: true,
+          riskLevel: 'LOW',
+          expectedValueINR: (off.commission_amount_inr || 1000) * 0.4,
+          priorityScore: 800,
+          priorityTier: 'P1',
+          score: 800,
+          authorizationRequired: false,
+          estimatedCostINR: 0
+        });
+      }
+    }
+
+    // Priority 5.3 (P2): Partner / Offer discovery if catalog is thin (Spec § 22)
+    const partnerCount = this.getActivePartnersCount(organizationId);
+    if (partnerCount < 3) {
+      const cooldown = ActionCooldownManager.check(businessId, 'DISCOVER_PARTNER');
+      if (cooldown.eligible || options?.ignoreCooldown) {
+        candidates.push({
+          actionType: 'DISCOVER_PARTNER',
+          targetId: businessId,
+          targetType: 'PARTNER',
+          ownerAgent: 'partner-discovery-agent',
+          rationale: `Active verified partner catalog thin (${partnerCount} partners). Discover verified Indian affiliate & referral partner programs.`,
+          estimatedRevenueINR: 5000,
+          expectedRevenueINR: 1000,
+          probabilityOfSuccess: 0.3,
+          timeToRevenueDays: 14,
+          externalCostINR: 0,
+          quotaCost: 1,
+          customerValueINR: 5000,
+          urgency: 0.65,
+          cooldownActive: false,
+          authorizationAvailable: true,
+          riskLevel: 'LOW',
+          expectedValueINR: 1000,
+          priorityScore: 500,
+          priorityTier: 'P2',
+          score: 500,
+          authorizationRequired: false,
+          estimatedCostINR: 0
+        });
+      }
+    }
+
+    // Priority 5.4 (P3): Demand discovery if demand signals are thin (Spec § 22)
+    const demandCount = this.getDemandSignalsCount(organizationId);
+    if (demandCount < 3) {
+      const cooldown = ActionCooldownManager.check(businessId, 'DISCOVER_DEMAND');
+      if (cooldown.eligible || options?.ignoreCooldown) {
+        candidates.push({
+          actionType: 'DISCOVER_DEMAND',
+          targetId: businessId,
+          targetType: 'DEMAND_SIGNAL',
+          ownerAgent: 'demand-discovery-engine',
+          rationale: `Demand signals thin (${demandCount} active). Discover high-intent Indian purchase and comparison queries via Tavily/Gemini.`,
+          estimatedRevenueINR: 3000,
+          expectedRevenueINR: 600,
+          probabilityOfSuccess: 0.4,
+          timeToRevenueDays: 10,
+          externalCostINR: 0,
+          quotaCost: 1,
+          customerValueINR: 3000,
+          urgency: 0.6,
+          cooldownActive: false,
+          authorizationAvailable: true,
+          riskLevel: 'LOW',
+          expectedValueINR: 600,
+          priorityScore: 250,
+          priorityTier: 'P3',
+          score: 250,
           authorizationRequired: false,
           estimatedCostINR: 0
         });
@@ -482,5 +690,90 @@ export class NextBestActionEngine {
       WHERE business_id = ? AND stage NOT IN ('LOST', 'RETAINED')
     `).get(businessId) as any;
     return row?.cnt || 0;
+  }
+
+  private getPendingCommissions(organizationId: string): any[] {
+    const db = getDb();
+    try {
+      return db.prepare(`
+        SELECT * FROM commission_records
+        WHERE status IN ('COMMISSION_PENDING', 'CONVERSION_REPORTED', 'EXTERNAL_CONVERSION_PENDING')
+        ORDER BY created_at ASC
+        LIMIT 5
+      `).all() as any[];
+    } catch {
+      return [];
+    }
+  }
+
+  private getBrokenOffers(organizationId: string): any[] {
+    const db = getDb();
+    try {
+      return db.prepare(`
+        SELECT * FROM partner_offers
+        WHERE active = 1 AND (authorized_tracking_url IS NULL OR trim(authorized_tracking_url) = '' OR destination_url IS NULL OR trim(destination_url) = '')
+        LIMIT 5
+      `).all() as any[];
+    } catch {
+      return [];
+    }
+  }
+
+  private getUnfulfilledDemandSignals(organizationId: string): any[] {
+    const db = getDb();
+    try {
+      return db.prepare(`
+        SELECT ds.* FROM demand_signals ds
+        WHERE ds.status IN ('DISCOVERED', 'MATCHED')
+        ORDER BY ds.urgency DESC, ds.estimated_monthly_volume DESC
+        LIMIT 5
+      `).all() as any[];
+    } catch {
+      return [];
+    }
+  }
+
+  private getOffersNeedingReferralLinks(organizationId: string): any[] {
+    const db = getDb();
+    try {
+      return db.prepare(`
+        SELECT po.* FROM partner_offers po
+        LEFT JOIN referrals r ON po.id = r.offer_id
+        WHERE po.active = 1 AND r.id IS NULL
+        LIMIT 5
+      `).all() as any[];
+    } catch {
+      return [];
+    }
+  }
+
+  private getActivePartnersCount(organizationId: string): number {
+    const db = getDb();
+    try {
+      const row = db.prepare(`SELECT COUNT(*) as cnt FROM partners WHERE active_status = 1`).get() as any;
+      return row?.cnt || 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  private getActiveOffersCount(organizationId: string): number {
+    const db = getDb();
+    try {
+      const row = db.prepare(`SELECT COUNT(*) as cnt FROM partner_offers WHERE active = 1 AND status = 'ACTIVE'`).get() as any;
+      return row?.cnt || 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  private getDemandSignalsCount(organizationId: string): number {
+    const db = getDb();
+    try {
+      const row = db.prepare(`SELECT COUNT(*) as cnt FROM demand_signals`).get() as any;
+      return row?.cnt || 0;
+    } catch {
+      return 0;
+    }
   }
 }

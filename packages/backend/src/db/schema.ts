@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS businesses (
   autonomy_mode TEXT NOT NULL DEFAULT 'ASSISTED',
   kill_switch_active INTEGER NOT NULL DEFAULT 0,
   kill_switch_reason TEXT,
+  public_live INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
@@ -1120,6 +1121,7 @@ CREATE TABLE IF NOT EXISTS outbound_contacts (
   is_bounced INTEGER NOT NULL DEFAULT 0,
   is_suppressed INTEGER NOT NULL DEFAULT 0,
   suppression_reason TEXT,
+  status TEXT NOT NULL DEFAULT 'ACTIVE', -- ACTIVE | REJECTED
   last_contacted_at TEXT,
   contact_count INTEGER NOT NULL DEFAULT 0,
   cooldown_until TEXT, -- cannot contact before this time
@@ -1902,4 +1904,237 @@ CREATE TABLE IF NOT EXISTS fulfillment_tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_fulfill_tasks_order ON fulfillment_tasks(order_id);
 CREATE INDEX IF NOT EXISTS idx_fulfill_tasks_biz ON fulfillment_tasks(business_id);
+
+-- 90. Partners Registry (Autonomous Commission & Referral Engine)
+CREATE TABLE IF NOT EXISTS partners (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  industry TEXT NOT NULL,
+  country TEXT NOT NULL DEFAULT 'India',
+  city TEXT,
+  website TEXT NOT NULL,
+  partner_type TEXT NOT NULL DEFAULT 'AFFILIATE', -- AFFILIATE | REFERRAL | CPL | CLOSED_SALE
+  program_name TEXT,
+  commission_type TEXT NOT NULL DEFAULT 'PERCENTAGE', -- PERCENTAGE | FIXED | HYBRID
+  commission_rate REAL,
+  fixed_commission_inr REAL,
+  cookie_window_days INTEGER NOT NULL DEFAULT 30,
+  qualifying_event TEXT NOT NULL DEFAULT 'PURCHASE', -- PURCHASE | QUALIFIED_LEAD | APPLICATION | BOOKING
+  approval_status TEXT NOT NULL DEFAULT 'APPROVED', -- PENDING | APPROVED | REJECTED | SUSPENDED
+  active_status INTEGER NOT NULL DEFAULT 1,
+  source TEXT NOT NULL DEFAULT 'DIRECT_PARTNER',
+  terms_url TEXT,
+  disclosure_required INTEGER NOT NULL DEFAULT 1,
+  network TEXT NOT NULL DEFAULT 'OTHER_AUTHORIZED_PARTNER',
+  tracking_type TEXT NOT NULL DEFAULT 'AFFILIATE_LINK',
+  authorization_status TEXT NOT NULL DEFAULT 'AUTHORIZED',
+  program_url TEXT,
+  coverage TEXT NOT NULL DEFAULT 'India',
+  category TEXT,
+  destination_requirements TEXT,
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  last_verified_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_partners_org_status ON partners(organization_id, active_status);
+CREATE INDEX IF NOT EXISTS idx_partners_industry ON partners(industry);
+
+-- 91. Partner Offers Registry
+CREATE TABLE IF NOT EXISTS partner_offers (
+  id TEXT PRIMARY KEY,
+  partner_id TEXT NOT NULL,
+  organization_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  offer_slug TEXT NOT NULL UNIQUE,
+  category TEXT NOT NULL,
+  target_customer TEXT NOT NULL,
+  price_inr REAL,
+  price_range TEXT,
+  commission_model TEXT NOT NULL DEFAULT 'PERCENTAGE', -- PERCENTAGE | FIXED
+  commission_amount_inr REAL NOT NULL DEFAULT 0,
+  conversion_action TEXT NOT NULL DEFAULT 'PURCHASE',
+  destination_url TEXT NOT NULL,
+  authorized_tracking_url TEXT NOT NULL,
+  geographic_availability TEXT NOT NULL DEFAULT 'India',
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'ACTIVE',
+  description TEXT NOT NULL DEFAULT '',
+  currency TEXT NOT NULL DEFAULT 'INR',
+  availability TEXT NOT NULL DEFAULT 'IN_STOCK',
+  active INTEGER NOT NULL DEFAULT 1,
+  last_verified_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (partner_id) REFERENCES partners(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_partner_offers_partner ON partner_offers(partner_id);
+CREATE INDEX IF NOT EXISTS idx_partner_offers_category ON partner_offers(category);
+CREATE INDEX IF NOT EXISTS idx_partner_offers_active ON partner_offers(active);
+
+-- 92. Referrals Tracking
+CREATE TABLE IF NOT EXISTS referrals (
+  id TEXT PRIMARY KEY,
+  partner_id TEXT NOT NULL,
+  offer_id TEXT NOT NULL,
+  organization_id TEXT NOT NULL,
+  anonymous_session_id TEXT,
+  click_id TEXT NOT NULL UNIQUE,
+  tracking_parameters_json TEXT NOT NULL DEFAULT '{}',
+  landing_page TEXT,
+  source TEXT,
+  campaign TEXT,
+  destination_url TEXT NOT NULL,
+  ip TEXT,
+  user_agent TEXT,
+  referer TEXT,
+  utm_source TEXT,
+  utm_medium TEXT,
+  utm_campaign TEXT,
+  utm_term TEXT,
+  utm_content TEXT,
+  content_asset_id TEXT,
+  placement TEXT,
+  device_class TEXT,
+  country TEXT,
+  keyword TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (partner_id) REFERENCES partners(id) ON DELETE CASCADE,
+  FOREIGN KEY (offer_id) REFERENCES partner_offers(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_referrals_offer ON referrals(offer_id);
+CREATE INDEX IF NOT EXISTS idx_referrals_click ON referrals(click_id);
+CREATE INDEX IF NOT EXISTS idx_referrals_created ON referrals(created_at);
+CREATE INDEX IF NOT EXISTS idx_referrals_asset ON referrals(content_asset_id);
+CREATE INDEX IF NOT EXISTS idx_referrals_org ON referrals(organization_id);
+
+-- 92b. Immutable referral click events (append-only)
+CREATE TABLE IF NOT EXISTS referral_click_events (
+  id TEXT PRIMARY KEY,
+  referral_id TEXT NOT NULL,
+  click_id TEXT NOT NULL,
+  organization_id TEXT NOT NULL,
+  offer_id TEXT NOT NULL,
+  partner_id TEXT NOT NULL,
+  content_asset_id TEXT,
+  placement TEXT,
+  source TEXT,
+  medium TEXT,
+  campaign TEXT,
+  keyword TEXT,
+  referrer TEXT,
+  device_class TEXT,
+  country TEXT,
+  destination_url TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (referral_id) REFERENCES referrals(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_click_events_referral ON referral_click_events(referral_id);
+CREATE INDEX IF NOT EXISTS idx_click_events_offer ON referral_click_events(offer_id);
+CREATE INDEX IF NOT EXISTS idx_click_events_asset ON referral_click_events(content_asset_id);
+
+-- 93. Commission Records Ledger
+CREATE TABLE IF NOT EXISTS commission_records (
+  id TEXT PRIMARY KEY,
+  referral_id TEXT,
+  partner_id TEXT NOT NULL,
+  offer_id TEXT,
+  organization_id TEXT NOT NULL,
+  external_transaction_id TEXT,
+  event_type TEXT NOT NULL DEFAULT 'PURCHASE',
+  external_status TEXT NOT NULL DEFAULT 'PENDING', -- PENDING | APPROVED | PAID | REJECTED | CANCELLED | REFUNDED
+  expected_commission_inr REAL NOT NULL DEFAULT 0,
+  verified_commission_inr REAL NOT NULL DEFAULT 0,
+  received_commission_inr REAL NOT NULL DEFAULT 0,
+  verification_source TEXT NOT NULL, -- PARTNER_API | WEBHOOK | DASHBOARD_EXPORT | MANUAL_VERIFICATION | REFERENCE_CODE
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'COMMISSION_PENDING',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  verified_at TEXT,
+  paid_at TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (partner_id) REFERENCES partners(id) ON DELETE CASCADE,
+  FOREIGN KEY (referral_id) REFERENCES referrals(id) ON DELETE SET NULL,
+  FOREIGN KEY (offer_id) REFERENCES partner_offers(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_commissions_partner ON commission_records(partner_id);
+CREATE INDEX IF NOT EXISTS idx_commissions_status ON commission_records(status);
+CREATE INDEX IF NOT EXISTS idx_commissions_referral ON commission_records(referral_id);
+CREATE INDEX IF NOT EXISTS idx_commissions_org ON commission_records(organization_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_commissions_partner_tx ON commission_records(partner_id, external_transaction_id);
+
+-- 94. Commission Content Assets (Organic Inbound Pages; renamed to avoid collision with marketing content_assets)
+CREATE TABLE IF NOT EXISTS commission_content_assets (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL,
+  slug TEXT NOT NULL UNIQUE,
+  asset_type TEXT NOT NULL, -- COMPARISON | RECOMMENDATION | GUIDE | SERVICE_DIRECTORY | OFFER_DETAIL
+  title TEXT NOT NULL,
+  category TEXT NOT NULL,
+  location TEXT,
+  intent_target TEXT NOT NULL,
+  content_markdown TEXT NOT NULL,
+  primary_offer_id TEXT,
+  matched_offer_ids_json TEXT NOT NULL DEFAULT '[]',
+  disclosure_markdown TEXT NOT NULL DEFAULT 'Disclosure: We may earn a referral commission at no additional cost to you when you purchase through our links.',
+  status TEXT NOT NULL DEFAULT 'PUBLISHED', -- DRAFT | PUBLISHED | ARCHIVED
+  view_count INTEGER NOT NULL DEFAULT 0,
+  referral_click_count INTEGER NOT NULL DEFAULT 0,
+  quality_gate_json TEXT NOT NULL DEFAULT '{}',
+  disclosure_version TEXT NOT NULL DEFAULT '2026.1',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (primary_offer_id) REFERENCES partner_offers(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_commission_content_assets_slug ON commission_content_assets(slug);
+CREATE INDEX IF NOT EXISTS idx_commission_content_assets_category ON commission_content_assets(category);
+
+-- 95. Demand Signals (Discovered Organic Intent)
+CREATE TABLE IF NOT EXISTS demand_signals (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL,
+  topic TEXT NOT NULL,
+  category TEXT NOT NULL,
+  location TEXT,
+  intent_type TEXT NOT NULL DEFAULT 'SEARCH_QUERY', -- SEARCH_QUERY | PROBLEM_DESCRIPTION | PRODUCT_COMPARISON
+  raw_query TEXT NOT NULL,
+  evidence_snippet TEXT NOT NULL,
+  source_url TEXT NOT NULL,
+  urgency REAL NOT NULL DEFAULT 0.5,
+  estimated_monthly_volume INTEGER NOT NULL DEFAULT 100,
+  status TEXT NOT NULL DEFAULT 'DISCOVERED', -- DISCOVERED | MATCHED | ADDRESSED | QUARANTINED
+  intent_class TEXT NOT NULL DEFAULT 'RESEARCH',
+  commercial_score REAL NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_demand_signals_topic ON demand_signals(topic);
+CREATE INDEX IF NOT EXISTS idx_demand_signals_status ON demand_signals(status);
+CREATE INDEX IF NOT EXISTS idx_demand_signals_intent ON demand_signals(intent_class);
+
+-- 96. Durable Rate Limits (Per-IP hash window limiter)
+CREATE TABLE IF NOT EXISTS durable_rate_limits (
+  key TEXT PRIMARY KEY,
+  route TEXT NOT NULL,
+  ip_hash TEXT NOT NULL,
+  request_count INTEGER NOT NULL DEFAULT 1,
+  window_start INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_rate_limit_expires ON durable_rate_limits(expires_at);
+
+-- 97. Provider Call Audit Logs (D1-persisted call logging)
+CREATE TABLE IF NOT EXISTS provider_call_logs (
+  id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  action_type TEXT NOT NULL,
+  priority TEXT NOT NULL,
+  units INTEGER NOT NULL DEFAULT 1,
+  success INTEGER NOT NULL DEFAULT 1,
+  is_rate_limit INTEGER NOT NULL DEFAULT 0,
+  error TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_call_logs_provider_created ON provider_call_logs(provider, created_at);
 `;

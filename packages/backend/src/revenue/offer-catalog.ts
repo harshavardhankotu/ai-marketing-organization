@@ -220,6 +220,46 @@ export class OfferCatalogService {
       };
     }
 
+    // Lookup in customer_offers (Universal Commercial OS first-class offers: coff_*)
+    // This bridges UniversalFunnel (OfferDecisionEngine) pricing with Razorpay checkout.
+    try {
+      const custRow: any = db.prepare('SELECT * FROM customer_offers WHERE id = ?').get(trimmedOfferId);
+      if (custRow) {
+        if (Number(custRow.active) !== 1) {
+          throw new Error(`UNAUTHORIZED_OFFER: Offer '${trimmedOfferId}' is inactive or archived.`);
+        }
+        if (businessId && custRow.business_id && custRow.business_id !== businessId) {
+          throw new Error(`UNAUTHORIZED_OFFER: Offer '${trimmedOfferId}' does not belong to business '${businessId}'.`);
+        }
+        const custCurrency = (custRow.currency || 'INR').toUpperCase();
+        const priceMinor = Number(custRow.price_minor || 0);
+        // Convert minor units to major for legacy priceINR field using currency decimals
+        const decimals = custCurrency === 'JPY' || custCurrency === 'KRW' ? 0 : (custCurrency === 'KWD' || custCurrency === 'BHD' || custCurrency === 'OMR' ? 3 : 2);
+        const priceMajor = priceMinor / Math.pow(10, decimals);
+        let custDeliverables: string[] = [];
+        try { custDeliverables = JSON.parse(custRow.deliverables_json || '[]'); } catch {}
+        return {
+          offerId: custRow.id,
+          offerName: custRow.title,
+          description: custRow.description || custRow.title,
+          deliverables: custDeliverables,
+          priceINR: priceMajor,
+          billingModel: custRow.billing_model === 'MONTHLY' ? 'MONTHLY' : 'ONE_TIME',
+          currency: custCurrency,
+          businessId: custRow.business_id,
+          organizationId: custRow.organization_id,
+          active: true,
+          deliveryTimeDays: 5,
+          qualificationRequirements: [],
+          paymentProvider: custCurrency === 'INR' ? 'RAZORPAY' : 'STRIPE',
+          paymentConfiguration: {}
+        };
+      }
+    } catch (e: any) {
+      if (e?.message?.startsWith('UNAUTHORIZED_OFFER')) throw e;
+      // table may not exist in older sqlite — fall through
+    }
+
     // Lookup in database offers table
     let offerRow: any = null;
     try {

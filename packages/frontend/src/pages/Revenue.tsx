@@ -78,17 +78,17 @@ export const Revenue: React.FC = () => {
           transactionRef: transactionRef.trim(),
           verificationSource,
           serviceRendered: service,
-          campaignId: 'camp_seed_aligners_01'
+          campaignId: undefined
         });
       } else {
         await api.recordTransaction({
           invoiceNumber,
           amountINR: parseFloat(amount),
           paymentMethod: method,
-          paymentGateway: method === 'UPI' ? 'PHONEPE_PG' : 'RAZORPAY',
+          paymentGateway: method === 'UPI' ? 'RAZORPAY' : 'RAZORPAY',
           classification,
           serviceRendered: service,
-          campaignId: 'camp_seed_aligners_01'
+          campaignId: undefined
         });
       }
       setShowModal(false);
@@ -207,7 +207,7 @@ export const Revenue: React.FC = () => {
               <span className="text-xs font-bold uppercase tracking-wider text-purple-400">Platform Commercial Revenue</span>
               <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-purple-500/20 text-purple-300 border border-purple-500/40">AI Marketing Org</span>
             </div>
-            <div className="text-2xl font-black text-white mt-1">₹0</div>
+            <div className="text-2xl font-black text-white mt-1">{formatINR((summary as any)?.platformRevenueINR ?? 0)}</div>
             <p className="text-[11px] text-slate-400 mt-1">
               Software setup (₹15,000) &amp; retainers (₹8,000/mo) paid to our organization.
             </p>

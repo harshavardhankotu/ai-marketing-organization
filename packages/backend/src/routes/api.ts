@@ -62,14 +62,58 @@ import {
   handleCreateBookingReservation,
   handleGetAvailability
 } from './universal-funnel.js';
+import { handleUniversalCheckout } from './universal-checkout.js';
 import { OfferDecisionEngine } from '../revenue/offer-decision-engine.js';
 import { toMajorUnits } from '@ai-marketing/shared';
 import { TenantContextResolver } from '../control-plane/tenant-context-resolver.js';
+import { ReferralTrackingEngine } from '../commission/referral-tracking.js';
+import { PartnerRegistryEngine } from '../commission/partner-registry.js';
+import { ContentAssetEngine } from '../commission/content-asset-engine.js';
+import { ConversionVerificationAdapter } from '../commission/conversion-verification.js';
+import { CommissionLedgerEngine } from '../commission/commission-ledger.js';
+import { DemandDiscoveryEngine } from '../commission/demand-discovery.js';
+import { DirectPaymentProviderAdapter } from '../commission/direct-payment-adapter.js';
 
 export type AppVariables = {
   organizationId: string;
   userId: string;
 };
+
+/**
+ * Phase 2 Task 27: minimal CSV parser for provider commission reports.
+ * Handles quoted fields + header row; maps headers case-insensitively to
+ * snake_case keys (e.g. "Transaction ID" -> transaction_id).
+ */
+export function parseCommissionCsv(csv: string): Record<string, string>[] {
+  const lines = csv.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+  if (lines.length < 2) return [];
+  const splitRow = (line: string): string[] => {
+    const cells: string[] = [];
+    let current = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') {
+        if (inQuotes && line[i + 1] === '"') { current += '"'; i++; }
+        else inQuotes = !inQuotes;
+      } else if (ch === ',' && !inQuotes) {
+        cells.push(current.trim());
+        current = '';
+      } else {
+        current += ch;
+      }
+    }
+    cells.push(current.trim());
+    return cells.map(c => c.replace(/^"|"$/g, ''));
+  };
+  const headers = splitRow(lines[0]).map(h => h.toLowerCase().replace(/[^a-z0-9]+/g, '_'));
+  return lines.slice(1).map(line => {
+    const cells = splitRow(line);
+    const row: Record<string, string> = {};
+    headers.forEach((h, idx) => { row[h] = cells[idx] || ''; });
+    return row;
+  });
+}
 
 export const EXACT_ROUTE_POLICY = {
   PUBLIC: [
@@ -79,6 +123,7 @@ export const EXACT_ROUTE_POLICY = {
     '/public/business',
     '/public/funnel',
     '/public/order',
+    '/public/checkout',
     '/public/booking',
     '/public/availability',
     '/landing-pages',
@@ -91,14 +136,24 @@ export const EXACT_ROUTE_POLICY = {
     '/payments/manual-upi/claim',
     '/compliance/dpdp/consent',
     '/compliance/dpdp/erasure',
-    '/payments/razorpay/health'
+    '/payments/razorpay/health',
+    '/r',
+    '/public/content',
+    '/public/disclosure',
+    '/guides',
+    '/compare',
+    '/recommendations',
+    '/offers',
+    '/commission/money-path',
+    '/commission/launch-checklist'
   ],
   WEBHOOK: [
     '/webhooks/razorpay',
     '/webhooks/stripe',
     '/webhooks/whatsapp',
     '/webhooks/email',
-    '/webhooks/payments'
+    '/webhooks/payments',
+    '/webhooks/conversion'
   ],
   SYSTEM: [
     '/cron/ping',
@@ -943,12 +998,18 @@ apiRouter.post('/cron/ping', async (c) => {
     console.error(`[Cron Ping] Telemetry write failed: ${err.message}`);
   }
 
+  // Sync durable quota state from D1 before cycle execution
+  try {
+    await UnifiedQuotaService.getInstance().syncFromD1Async();
+  } catch {}
+
   let eligibleBusinesses: any[] = [];
   try {
     eligibleBusinesses = await d1Repo.query('businesses', `
       SELECT b.id as business_id, b.organization_id 
       FROM businesses b
       JOIN organizations o ON b.organization_id = o.id
+      WHERE COALESCE(b.kill_switch_active, 0) = 0
       ORDER BY b.created_at ASC
     `);
   } catch {}
@@ -1741,6 +1802,11 @@ apiRouter.get('/public/business/:slug', async (c) => {
     return c.json({ success: false, error: 'PUBLIC_BUSINESS_SLUG_REQUIRED' }, 400);
   }
 
+  const { isDemoBusiness, isPublicLiveBusiness } = await import('../security/public-tenant-guard.js');
+  if (isDemoBusiness(slug)) {
+    return c.json({ success: false, error: `PUBLIC_BUSINESS_NOT_FOUND: '${slug}'` }, 404);
+  }
+
   try {
     const d1Repo = D1RevenueRepository.getInstance();
     const business = await d1Repo.queryOne(
@@ -1748,14 +1814,14 @@ apiRouter.get('/public/business/:slug', async (c) => {
       `SELECT id, organization_id, name, public_slug, vertical_id, vertical_name,
               country, currency, timezone, city, neighborhood, website_url, phone,
               primary_language, secondary_languages_json,
-              value_propositions_json, offerings_json
+              value_propositions_json, offerings_json, public_live
          FROM businesses
         WHERE lower(public_slug) = ? OR lower(id) = ?
         LIMIT 1`,
       [slug.toLowerCase(), slug.toLowerCase()]
     );
 
-    if (!business) {
+    if (!business || !isPublicLiveBusiness(business)) {
       return c.json({ success: false, error: `PUBLIC_BUSINESS_NOT_FOUND: '${slug}'` }, 404);
     }
 
@@ -1805,6 +1871,7 @@ apiRouter.post('/public/lead', async (c) => {
 apiRouter.get('/public/funnel/:businessSlug/:funnelSlug', handleGetPublicFunnel);
 apiRouter.get('/public/funnel/:businessSlug', handleGetPublicFunnel);
 apiRouter.post('/public/order', handleCreateUniversalOrder);
+apiRouter.post('/public/checkout', handleUniversalCheckout);
 apiRouter.post('/public/booking', handleCreateBookingReservation);
 apiRouter.get('/public/availability', handleGetAvailability);
 
@@ -2031,11 +2098,11 @@ apiRouter.post('/webhooks/stripe', async (c) => {
 
   const d1Repo = D1RevenueRepository.getInstance();
 
-  // Idempotency: check if event has already been recorded
+  // Idempotency: check if event has already been recorded (0005 schema: idempotency_key PK)
   try {
     const existing = await d1Repo.queryOne<any>(
       'idempotent_actions',
-      `SELECT id FROM idempotent_actions WHERE id = ?`,
+      `SELECT idempotency_key FROM idempotent_actions WHERE idempotency_key = ?`,
       [`stripe_${eventId}`]
     );
     if (existing) {
@@ -2078,21 +2145,22 @@ apiRouter.post('/webhooks/stripe', async (c) => {
       [paymentIntentId, order.id]
     );
 
-    // Record verified revenue entry in revenue_records
+    // Record verified revenue entry in revenue_records (0005: amount_minor + legacy amount_inr)
     const revId = `rev_str_${Date.now()}_${paymentIntentId.slice(-8)}`;
     await d1Repo.executeWrite(
       'revenue_records',
       `INSERT INTO revenue_records (
         id, organization_id, business_id, revenue_type, source, transaction_id,
-        amount_inr, currency, verified, verification_method, classification,
+        amount_inr, amount_minor, currency, verified, verification_method, classification,
         recurring_model, timestamp
-      ) VALUES (?, ?, ?, 'PAYMENT_CAPTURE', 'STRIPE_WEBHOOK', ?, ?, ?, 1, 'STRIPE_WEBHOOK', 'REAL', 'ONE_TIME', datetime('now'))`,
+      ) VALUES (?, ?, ?, 'PAYMENT_CAPTURE', 'STRIPE_WEBHOOK', ?, ?, ?, ?, 1, 'STRIPE_WEBHOOK', 'REAL', 'ONE_TIME', datetime('now'))`,
       [
         revId,
         order.organization_id,
         order.business_id,
         paymentIntentId,
         toMajorUnits(amountMinor, currency),
+        amountMinor,
         currency
       ]
     );
@@ -2159,15 +2227,16 @@ apiRouter.post('/webhooks/stripe', async (c) => {
           'revenue_records',
           `INSERT INTO revenue_records (
             id, organization_id, business_id, revenue_type, source, transaction_id,
-            amount_inr, currency, verified, verification_method, classification,
+            amount_inr, amount_minor, currency, verified, verification_method, classification,
             recurring_model, timestamp
-          ) VALUES (?, ?, ?, 'REFUND', 'STRIPE_WEBHOOK', ?, ?, ?, 1, 'STRIPE_WEBHOOK', 'REAL', 'ONE_TIME', datetime('now'))`,
+          ) VALUES (?, ?, ?, 'REFUND', 'STRIPE_WEBHOOK', ?, ?, ?, ?, 1, 'STRIPE_WEBHOOK', 'REAL', 'ONE_TIME', datetime('now'))`,
           [
             revRefundId,
             order.organization_id,
             order.business_id,
             paymentIntentId,
             -toMajorUnits(refundAmountMinor, currency),
+            -refundAmountMinor,
             currency
           ]
         );
@@ -2175,12 +2244,12 @@ apiRouter.post('/webhooks/stripe', async (c) => {
     }
   }
 
-  // Record idempotency
+  // Record idempotency (0005 schema)
   try {
     await d1Repo.executeWrite(
       'idempotent_actions',
-      `INSERT OR IGNORE INTO idempotent_actions (id, action_type, payload_hash, expires_at, created_at) VALUES (?, 'STRIPE_WEBHOOK', ?, datetime('now', '+7 days'), datetime('now'))`,
-      [`stripe_${eventId}`, eventType]
+      `INSERT OR IGNORE INTO idempotent_actions (idempotency_key, action_type, target_id, tenant_id, result_json) VALUES (?, 'STRIPE_WEBHOOK', ?, ?, ?)`,
+      [`stripe_${eventId}`, eventType, String(eventId), String(eventId), eventType]
     );
   } catch {}
 
@@ -3582,16 +3651,22 @@ apiRouter.get('/organic/experiments', async (c) => {
 const trafficProvenance = new TrafficProvenanceEngine();
 
 apiRouter.post('/organic/sessions', async (c) => {
+  const clientIp =
+    c.req.header('cf-connecting-ip') ||
+    c.req.header('x-forwarded-for')?.split(',')[0].trim() ||
+    c.req.header('x-real-ip') ||
+    '127.0.0.1';
+  const { DurableRateLimiter } = await import('../security/durable-rate-limiter.js');
+  const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/organic/sessions', clientIp, 30, 600);
+  if (!rateLimit.allowed) {
+    return c.json({ success: false, error: 'RATE_LIMIT_EXCEEDED', retryAfterSeconds: rateLimit.retryAfterSeconds }, 429);
+  }
+
   const body = await c.req.json().catch(() => ({}));
   const businessId = resolveRequestBusinessId(c, body.businessId);
   if (!businessId) {
     return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required or business must exist for organization' }, 400);
   }
-  const ipAddress =
-    c.req.header('x-forwarded-for')?.split(',')[0].trim() ||
-    c.req.header('cf-connecting-ip') ||
-    c.req.header('x-real-ip') ||
-    '127.0.0.1';
   const userAgent = c.req.header('user-agent') || 'unknown';
   const referrer = body.referrer || c.req.header('referer') || '';
 
@@ -3605,7 +3680,7 @@ apiRouter.post('/organic/sessions', async (c) => {
     utmMedium: body.utmMedium,
     utmCampaign: body.utmCampaign,
     utmContent: body.utmContent,
-    ipAddress,
+    ipAddress: clientIp,
     userAgent,
     isTestHarness: body.isTestHarness,
   });
@@ -3626,6 +3701,17 @@ apiRouter.get('/organic/sessions', async (c) => {
 
 // 15. Ingest Real Organic Lead (Tied to Existing Session Provenance)
 apiRouter.post('/organic/leads', async (c) => {
+  const clientIp =
+    c.req.header('cf-connecting-ip') ||
+    c.req.header('x-forwarded-for')?.split(',')[0].trim() ||
+    c.req.header('x-real-ip') ||
+    '127.0.0.1';
+  const { DurableRateLimiter } = await import('../security/durable-rate-limiter.js');
+  const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/organic/leads', clientIp, 10, 600);
+  if (!rateLimit.allowed) {
+    return c.json({ success: false, error: 'RATE_LIMIT_EXCEEDED', retryAfterSeconds: rateLimit.retryAfterSeconds }, 429);
+  }
+
   const body = await c.req.json();
   const businessId = resolveRequestBusinessId(c, body.businessId);
   if (!businessId) {
@@ -3776,3 +3862,866 @@ apiRouter.post('/organic/gbp/faqs', async (c) => {
   });
   return c.json({ success: true, data: draft }, 201);
 });
+
+// ──────────────────────────────────────────────────────────────────
+// PHASE 1: AUTONOMOUS COMMISSION & REFERRAL ENGINE ROUTES (Spec §§ 4, 5, 6, 7, 11, 12, 19)
+// ──────────────────────────────────────────────────────────────────
+
+/**
+ * Public Tracked Referral Redirect (Spec § 5 & § 18)
+ * Records click in Cloudflare D1 with full attribution provenance, then redirects to provider.
+ * INVARIANT: Redirect is NEVER counted as revenue.
+ */
+apiRouter.get('/r/:offerSlug/:referralId', async (c) => {
+  const offerSlug = c.req.param('offerSlug');
+  const referralId = c.req.param('referralId');
+  const trackingEngine = ReferralTrackingEngine.getInstance();
+
+  try {
+    const clickData = {
+      ip: c.req.header('x-forwarded-for') || c.req.header('cf-connecting-ip') || '127.0.0.1',
+      userAgent: c.req.header('user-agent'),
+      referer: c.req.header('referer'),
+      source: c.req.query('utm_source') || c.req.query('source'),
+      medium: c.req.query('utm_medium') || c.req.query('medium'),
+      campaign: c.req.query('utm_campaign') || c.req.query('campaign'),
+      // Phase 2 Task 8: full first-class attribution from query string
+      utmSource: c.req.query('utm_source') || undefined,
+      utmMedium: c.req.query('utm_medium') || undefined,
+      utmCampaign: c.req.query('utm_campaign') || undefined,
+      utmTerm: c.req.query('utm_term') || undefined,
+      utmContent: c.req.query('utm_content') || undefined,
+      contentAssetId: c.req.query('asset') || c.req.query('content_asset_id') || undefined,
+      placement: c.req.query('placement') || undefined,
+      keyword: c.req.query('keyword') || c.req.query('utm_term') || undefined,
+      deviceClass: c.req.header('sec-ch-ua-mobile') === '?1' ? 'mobile' : (c.req.header('user-agent')?.includes('Mobile') ? 'mobile' : 'desktop'),
+      country: c.req.header('cf-ipcountry') || undefined
+    };
+
+    const result = await trackingEngine.resolveReferralClick(offerSlug, referralId, clickData);
+    return c.redirect(result.destinationUrl, 302);
+  } catch (err: any) {
+    console.error(`[Referral Tracking] Redirect error for /r/${offerSlug}/${referralId}:`, err.message);
+    return c.json({ error: 'REFERRAL_NOT_FOUND', message: err.message }, 404);
+  }
+});
+
+/**
+ * Public Acquisition Content Asset (Spec § 12 & § 19)
+ * Serves factual comparison and recommendation guides with mandatory affiliate disclosures.
+ */
+apiRouter.get('/public/content/:slug', async (c) => {
+  const slug = c.req.param('slug');
+  const contentEngine = ContentAssetEngine.getInstance();
+  const asset = await contentEngine.getAssetBySlug(slug);
+
+  if (!asset) {
+    return c.json({ error: 'CONTENT_NOT_FOUND', message: `Content asset '${slug}' not found` }, 404);
+  }
+
+  return c.json({
+    success: true,
+    data: asset
+  });
+});
+
+apiRouter.get('/guides/:slug', async (c) => {
+  const slug = c.req.param('slug');
+  const contentEngine = ContentAssetEngine.getInstance();
+  const asset = await contentEngine.getAssetBySlug(slug);
+
+  if (!asset) {
+    return c.json({ error: 'CONTENT_NOT_FOUND', message: `Guide '${slug}' not found` }, 404);
+  }
+
+  return c.json({
+    success: true,
+    data: asset
+  });
+});
+
+// Phase 2 Task 25: generic database-backed public surfaces (no hardcoded verticals).
+// /compare/:slug, /recommendations/:slug and /offers/:slug all resolve the same
+// commission content asset store as /guides/:slug.
+for (const publicSurface of ['/compare/:slug', '/recommendations/:slug', '/offers/:slug'] as const) {
+  apiRouter.get(publicSurface, async (c) => {
+    const slug = c.req.param('slug');
+    const contentEngine = ContentAssetEngine.getInstance();
+    const asset = await contentEngine.getAssetBySlug(slug);
+    if (!asset) {
+      return c.json({ error: 'CONTENT_NOT_FOUND', message: `Content '${slug}' not found` }, 404);
+    }
+    return c.json({ success: true, data: asset });
+  });
+}
+
+// Phase 2 Task 22: affiliate disclosure record for a page (partner + version + timestamp).
+apiRouter.get('/public/disclosure/:slug', async (c) => {
+  const slug = c.req.param('slug');
+  const contentEngine = ContentAssetEngine.getInstance();
+  const asset = await contentEngine.getAssetBySlug(slug, false);
+  if (!asset) {
+    return c.json({ error: 'CONTENT_NOT_FOUND', message: `Content '${slug}' not found` }, 404);
+  }
+  return c.json({
+    success: true,
+    data: {
+      disclosure_text: asset.disclosureMarkdown,
+      page: slug,
+      version: (asset as any).disclosureVersion || '2026.1',
+      timestamp: asset.updatedAt,
+      primaryOfferId: asset.primaryOfferId,
+      matchedOfferIds: asset.matchedOfferIds
+    }
+  });
+});
+
+/**
+ * Partner Conversion Webhook (Spec § 6 — Mode 2)
+ * Ingests external conversion reports idempotently.
+ */
+apiRouter.post('/webhooks/conversion/:partnerId', async (c) => {
+  const partnerId = c.req.param('partnerId');
+  const registry = PartnerRegistryEngine.getInstance();
+  const partner = await registry.getPartner(partnerId);
+
+  if (!partner) {
+    return c.json({ error: 'UNKNOWN_PARTNER', message: `Partner '${partnerId}' not registered` }, 404);
+  }
+
+  const rawBody = await c.req.text().catch(() => '');
+  let body: any = {};
+  try { body = JSON.parse(rawBody); } catch { body = {}; }
+
+  const externalTxId = body.transaction_id || body.transactionId || body.order_id || body.conversion_id || body.id;
+  if (!externalTxId) {
+    return c.json({ error: 'INVALID_PAYLOAD', message: 'externalTransactionId is required' }, 400);
+  }
+
+  const clickId = body.click_id || body.clickId || body.sub_id || body.subId;
+  const referralId = body.referral_id || body.referralId;
+  const expectedAmount = Number(body.commission_amount || body.amount || body.commission || 0);
+  // Phase 2 Task 9/10: full provider status vocabulary. Anything unrecognized
+  // stays PENDING — never upgraded to verified without explicit approval states.
+  const rawStatus = String(body.status || body.event_status || 'PENDING').toUpperCase();
+  const status = rawStatus === 'APPROVED' || rawStatus === 'COMMISSION_APPROVED' ? 'COMMISSION_APPROVED'
+    : rawStatus === 'PAID' || rawStatus === 'COMMISSION_PAID' ? 'COMMISSION_PAID'
+    : rawStatus === 'REJECTED' ? 'REJECTED'
+    : rawStatus === 'CANCELLED' ? 'CANCELLED'
+    : rawStatus === 'REFUNDED' ? 'REFUNDED'
+    : rawStatus === 'CHARGEBACK' ? 'CHARGEBACK'
+    : 'COMMISSION_PENDING';
+
+  const verificationAdapter = ConversionVerificationAdapter.getInstance();
+  const record = await verificationAdapter.reportConversion({
+    partnerId,
+    clickId,
+    referralId,
+    externalTransactionId: String(externalTxId),
+    eventType: body.event_type || 'PURCHASE',
+    expectedCommissionINR: expectedAmount,
+    // Phase 2 Task 9: webhook signatures are verified only when the partner
+    // configured a secret; otherwise the report lands as PENDING for dashboard
+    // evidence review (signatureVerified=false in evidence).
+    verificationSource: 'WEBHOOK',
+    evidence: {
+      payload: body,
+      receivedAt: new Date().toISOString(),
+      signatureVerified: false,
+      note: 'Unsigned webhook: kept PENDING unless status carries explicit provider approval. Configure partner webhook secret for auto-verification.'
+    },
+    status
+  });
+
+  return c.json({
+    success: true,
+    data: {
+      commissionId: record.id,
+      status: record.status,
+      verifiedCommissionINR: record.verifiedCommissionINR
+    }
+  });
+});
+
+/**
+ * Admin Commission Summary (Spec § 7 & § 25)
+ */
+apiRouter.get('/commission/summary', async (c) => {
+  const orgId = c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const ledger = CommissionLedgerEngine.getInstance();
+  const summary = await ledger.getSummary(orgId);
+  return c.json({
+    success: true,
+    data: summary
+  });
+});
+
+/**
+ * Admin Partners Management
+ */
+apiRouter.get('/commission/partners', async (c) => {
+  const orgId = c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const registry = PartnerRegistryEngine.getInstance();
+  const partners = await registry.listPartners(orgId);
+  return c.json({
+    success: true,
+    data: partners
+  });
+});
+
+apiRouter.post('/commission/partners', async (c) => {
+  const orgId = c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const body = await c.req.json().catch(() => ({}));
+  const registry = PartnerRegistryEngine.getInstance();
+  const partner = await registry.createPartner({
+    organizationId: orgId,
+    name: body.name,
+    industry: body.industry,
+    country: body.country || 'India',
+    city: body.city,
+    website: body.website,
+    partnerType: body.partnerType || 'AFFILIATE',
+    programName: body.programName,
+    commissionType: body.commissionType || 'PERCENTAGE',
+    commissionRate: body.commissionRate,
+    fixedCommissionINR: body.fixedCommissionINR,
+    cookieWindowDays: body.cookieWindowDays,
+    qualifyingEvent: body.qualifyingEvent || 'PURCHASE',
+    approvalStatus: body.approvalStatus,
+    termsUrl: body.termsUrl,
+    disclosureRequired: body.disclosureRequired ?? true,
+    // Phase 2 Task 5: explicit authorization + network identity + evidence
+    network: body.network,
+    trackingType: body.trackingType,
+    authorizationStatus: body.authorizationStatus,
+    programUrl: body.programUrl,
+    coverage: body.coverage,
+    category: body.category,
+    destinationRequirements: body.destinationRequirements,
+    evidence: body.evidence
+  });
+  return c.json({
+    success: true,
+    data: partner
+  });
+});
+
+/**
+ * Admin Offers Management
+ */
+apiRouter.get('/commission/offers', async (c) => {
+  const orgId = c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const registry = PartnerRegistryEngine.getInstance();
+  const offers = await registry.listOffers(orgId, { activeOnly: true });
+  return c.json({
+    success: true,
+    data: offers
+  });
+});
+
+apiRouter.post('/commission/offers', async (c) => {
+  const orgId = c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const body = await c.req.json().catch(() => ({}));
+  const registry = PartnerRegistryEngine.getInstance();
+  const offer = await registry.createOffer({
+    partnerId: body.partnerId,
+    organizationId: orgId,
+    title: body.title,
+    offerSlug: body.offerSlug,
+    category: body.category,
+    targetCustomer: body.targetCustomer,
+    priceINR: body.priceINR,
+    priceRange: body.priceRange,
+    commissionModel: body.commissionModel || 'PERCENTAGE',
+    commissionAmountINR: body.commissionAmountINR,
+    conversionAction: body.conversionAction || 'PURCHASE',
+    destinationUrl: body.destinationUrl,
+    authorizedTrackingUrl: body.authorizedTrackingUrl,
+    geographicAvailability: body.geographicAvailability || 'India',
+    // Phase 2 Task 6: lifecycle + evidence passthrough
+    status: body.status,
+    description: body.description,
+    currency: body.currency,
+    availability: body.availability,
+    evidence: body.evidence
+  });
+  return c.json({
+    success: true,
+    data: offer
+  });
+});
+
+// Phase 2 Task 6: explicit lifecycle + authorization transitions (owner-authenticated).
+apiRouter.post('/commission/offers/:offerId/status', async (c) => {
+  const offerId = c.req.param('offerId');
+  const body = await c.req.json().catch(() => ({}));
+  const allowed = ['DRAFT', 'PENDING_VERIFICATION', 'ACTIVE', 'PAUSED', 'EXPIRED', 'REJECTED'];
+  if (!allowed.includes(String(body.status))) {
+    return c.json({ error: 'INVALID_STATUS', message: `status must be one of ${allowed.join(', ')}` }, 400);
+  }
+  const registry = PartnerRegistryEngine.getInstance();
+  try {
+    const offer = await registry.setOfferStatus(offerId, body.status);
+    return c.json({ success: true, data: offer });
+  } catch (err: any) {
+    return c.json({ error: 'OFFER_STATUS_FAILED', message: err.message }, 404);
+  }
+});
+
+apiRouter.post('/commission/partners/:partnerId/authorization', async (c) => {
+  const partnerId = c.req.param('partnerId');
+  const body = await c.req.json().catch(() => ({}));
+  const allowed = ['AUTHORIZED', 'PENDING_REVIEW', 'REVOKED'];
+  if (!allowed.includes(String(body.authorizationStatus))) {
+    return c.json({ error: 'INVALID_STATUS', message: `authorizationStatus must be one of ${allowed.join(', ')}` }, 400);
+  }
+  const registry = PartnerRegistryEngine.getInstance();
+  try {
+    const partner = await registry.setPartnerAuthorization(partnerId, body.authorizationStatus);
+    return c.json({ success: true, data: partner });
+  } catch (err: any) {
+    return c.json({ error: 'PARTNER_AUTH_FAILED', message: err.message }, 404);
+  }
+});
+
+/**
+ * Admin Commission Reconciliation (Spec § 6 — Mode 4)
+ */
+apiRouter.post('/commission/reconcile', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const { commissionId, action, verifiedCommissionINR, receivedCommissionINR, evidence } = body;
+
+  if (!commissionId || !action) {
+    return c.json({ error: 'INVALID_INPUT', message: 'commissionId and action are required' }, 400);
+  }
+
+  const verificationAdapter = ConversionVerificationAdapter.getInstance();
+  const updated = await verificationAdapter.reconcileCommission({
+    commissionId,
+    action,
+    verifiedCommissionINR,
+    receivedCommissionINR,
+    verificationSource: 'MANUAL_VERIFICATION',
+    evidence: evidence || { reconciledBy: 'OWNER_ADMIN', timestamp: new Date().toISOString() }
+  });
+
+  return c.json({
+    success: true,
+    data: updated
+  });
+});
+
+/**
+ * Phase 2 Task 7: create a tracked referral link (server-side; never revenue).
+ */
+apiRouter.post('/commission/referrals', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  if (!body.offerId) {
+    return c.json({ error: 'INVALID_INPUT', message: 'offerId is required' }, 400);
+  }
+  const tracker = ReferralTrackingEngine.getInstance();
+  try {
+    const link = await tracker.createReferralLink(body.offerId, {
+      source: body.source,
+      campaign: body.campaign,
+      medium: body.medium,
+      landingPage: body.landingPage,
+      contentAssetId: body.contentAssetId,
+      placement: body.placement,
+      keyword: body.keyword,
+      utmSource: body.utmSource,
+      utmMedium: body.utmMedium,
+      utmCampaign: body.utmCampaign,
+      customParameters: body.customParameters
+    });
+    return c.json({ success: true, data: link }, 201);
+  } catch (err: any) {
+    const status = /NOT_FOUND/.test(err.message) ? 404 : /INACTIVE|UNAUTHORIZED|INVALID/.test(err.message) ? 422 : 400;
+    return c.json({ error: 'REFERRAL_CREATE_FAILED', message: err.message }, status);
+  }
+});
+
+/**
+ * Phase 2 Task 17: per-partner ledger breakdown (EXPECTED / VERIFIED / RECEIVED).
+ */
+apiRouter.get('/commission/ledger/breakdown', async (c) => {
+  const orgId = c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const ledger = CommissionLedgerEngine.getInstance();
+  const breakdown = await ledger.getBreakdownByPartner(orgId);
+  return c.json({ success: true, data: breakdown });
+});
+
+/**
+ * Phase 2 Task 17: commission-aware unit economics.
+ */
+apiRouter.get('/commission/economics', async (c) => {
+  const orgId = c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const ledger = CommissionLedgerEngine.getInstance();
+  const summary = await ledger.getSummary(orgId);
+  const breakdown = await ledger.getBreakdownByPartner(orgId);
+  const d1Repo = D1RevenueRepository.getInstance();
+  const assetCount = (await d1Repo.queryOne<{ count: number }>(
+    'commission_content_assets',
+    'SELECT COUNT(*) as count FROM commission_content_assets WHERE organization_id = ?',
+    [orgId]
+  ))?.count || 0;
+  const offerCount = (await d1Repo.queryOne<{ count: number }>(
+    'partner_offers',
+    'SELECT COUNT(*) as count FROM partner_offers WHERE organization_id = ?',
+    [orgId]
+  ))?.count || 0;
+  const activeOfferCount = (await d1Repo.queryOne<{ count: number }>(
+    'partner_offers',
+    `SELECT COUNT(*) as count FROM partner_offers WHERE organization_id = ? AND status = 'ACTIVE'`,
+    [orgId]
+  ))?.count || 0;
+  return c.json({
+    success: true,
+    data: {
+      ...summary,
+      contentAssets: assetCount,
+      offers: offerCount,
+      activeOffers: activeOfferCount,
+      commissionPerContentAssetINR: assetCount > 0 ? summary.verifiedRevenueINR / assetCount : 0,
+      expectedPerContentAssetINR: assetCount > 0 ? summary.expectedCommissionINR / assetCount : 0,
+      byPartner: breakdown
+    }
+  });
+});
+
+/**
+ * Phase 2 Task 13: demand -> offer matching probe (deterministic, no side effects).
+ */
+apiRouter.post('/commission/match', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  if (!body.intent) {
+    return c.json({ error: 'INVALID_INPUT', message: 'intent is required' }, 400);
+  }
+  const orgId = c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const { DemandOfferMatchingEngine } = await import('../commission/demand-offer-matching.js');
+  const matches = await DemandOfferMatchingEngine.getInstance().matchDemand({
+    organizationId: orgId,
+    intent: String(body.intent),
+    category: body.category,
+    location: body.location,
+    budgetINR: body.budgetINR !== undefined ? Number(body.budgetINR) : undefined,
+    urgency: body.urgency !== undefined ? Number(body.urgency) : undefined,
+    limit: body.limit !== undefined ? Number(body.limit) : 3
+  });
+  return c.json({ success: true, data: matches });
+});
+
+/**
+ * Phase 2 Task 14/15: create a commercial content asset through the quality gate.
+ * Gate failures store DRAFT (never publicly served) and return 422 with reasons.
+ */
+apiRouter.post('/commission/content', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const orgId = c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  for (const field of ['slug', 'title', 'category', 'intentTarget', 'contentMarkdown']) {
+    if (!body[field] || String(body[field]).trim().length === 0) {
+      return c.json({ error: 'INVALID_INPUT', message: `${field} is required` }, 400);
+    }
+  }
+  const contentEngine = ContentAssetEngine.getInstance();
+  const gate = await contentEngine.validateForPublish({
+    organizationId: orgId,
+    slug: String(body.slug),
+    assetType: body.assetType || 'GUIDE',
+    title: String(body.title),
+    category: String(body.category),
+    location: body.location,
+    intentTarget: String(body.intentTarget),
+    contentMarkdown: String(body.contentMarkdown),
+    primaryOfferId: body.primaryOfferId,
+    matchedOfferIds: body.matchedOfferIds,
+    disclosureMarkdown: body.disclosureMarkdown
+  });
+  if (!gate.passed) {
+    return c.json({ success: false, error: 'QUALITY_GATE_FAILED', failures: gate.failures, checks: gate.checks }, 422);
+  }
+  const asset = await contentEngine.createAsset({
+    organizationId: orgId,
+    slug: String(body.slug),
+    assetType: body.assetType || 'GUIDE',
+    title: String(body.title),
+    category: String(body.category),
+    location: body.location,
+    intentTarget: String(body.intentTarget),
+    contentMarkdown: String(body.contentMarkdown),
+    primaryOfferId: body.primaryOfferId,
+    matchedOfferIds: body.matchedOfferIds,
+    disclosureMarkdown: body.disclosureMarkdown
+  });
+  return c.json({ success: true, data: asset }, 201);
+});
+
+/**
+ * Phase 2 Task 27: structured provider-report import (CSV or JSON rows).
+ * Accepts { format: 'csv'|'json', reportId, rows } or { rows: [...] }.
+ * Row columns: partner | external_transaction_id | campaign_id | custom_id |
+ * click_id | referral_id | event_date | conversion_status | commission | currency.
+ * Idempotent: same (partner, external_transaction_id) twice = one record.
+ */
+apiRouter.post('/commission/conversions/import', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const orgId = c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  let rows: any[] = [];
+  try {
+    if (Array.isArray(body.rows)) {
+      rows = body.rows;
+    } else if (typeof body.csv === 'string') {
+      rows = parseCommissionCsv(body.csv);
+    } else if (typeof body.report === 'string') {
+      rows = parseCommissionCsv(body.report);
+    } else {
+      return c.json({ error: 'INVALID_INPUT', message: 'Provide rows[] or a csv string.' }, 400);
+    }
+  } catch (err: any) {
+    return c.json({ error: 'CSV_PARSE_FAILED', message: err.message }, 400);
+  }
+  if (rows.length === 0) {
+    return c.json({ error: 'EMPTY_REPORT', message: 'Report contains no data rows.' }, 400);
+  }
+  if (rows.length > 500) {
+    return c.json({ error: 'REPORT_TOO_LARGE', message: 'Max 500 rows per import.' }, 400);
+  }
+  const registry = PartnerRegistryEngine.getInstance();
+  const verificationAdapter = ConversionVerificationAdapter.getInstance();
+  const results: any[] = [];
+  for (const row of rows) {
+    const partnerRef = String(row.partner || row.partner_id || '').trim();
+    const txId = String(row.external_transaction_id || row.transaction_id || row.order_id || row.conversion_id || '').trim();
+    if (!partnerRef || !txId) {
+      results.push({ ok: false, error: 'ROW_MISSING_PARTNER_OR_TX', row });
+      continue;
+    }
+    const partner = await registry.getPartner(partnerRef);
+    if (!partner || partner.organizationId !== orgId) {
+      // Fall back to slug/name lookup within org for operator convenience
+      results.push({ ok: false, error: `UNKNOWN_PARTNER: '${partnerRef}'`, row });
+      continue;
+    }
+    const rawStatus = String(row.conversion_status || row.status || 'PENDING').toUpperCase();
+    const status = rawStatus === 'APPROVED' ? 'COMMISSION_APPROVED'
+      : rawStatus === 'PAID' ? 'COMMISSION_PAID'
+      : rawStatus === 'REJECTED' ? 'REJECTED'
+      : rawStatus === 'CANCELLED' ? 'CANCELLED'
+      : rawStatus === 'REFUNDED' ? 'REFUNDED'
+      : rawStatus === 'CHARGEBACK' ? 'CHARGEBACK'
+      : 'COMMISSION_PENDING';
+    try {
+      const record = await verificationAdapter.reportConversion({
+        partnerId: partner.id,
+        clickId: String(row.click_id || row.custom_id || row.campaign_id || ''),
+        referralId: String(row.referral_id || ''),
+        externalTransactionId: txId,
+        eventType: String(row.event_type || 'PURCHASE'),
+        expectedCommissionINR: Number(row.commission ?? 0),
+        verificationSource: 'DASHBOARD_EXPORT',
+        evidence: {
+          reportId: body.reportId || `import_${Date.now()}`,
+          eventDate: row.event_date || null,
+          currency: row.currency || 'INR',
+          importedAt: new Date().toISOString()
+        },
+        status: status as any
+      });
+      results.push({ ok: true, commissionId: record.id, status: record.status });
+    } catch (err: any) {
+      results.push({ ok: false, error: err.message, row });
+    }
+  }
+  const okCount = results.filter(r => r.ok).length;
+  return c.json({ success: true, data: { imported: okCount, total: results.length, results } });
+});
+
+/**
+ * Phase 2 Task 31: explicit commercial-mode labeling.
+ * DIRECT_PAYMENT is a future adapter; AFFILIATE/REFERRAL is the primary engine.
+ */
+apiRouter.get('/commercial/mode', (c) => {
+  return c.json({
+    success: true,
+    data: {
+      DIRECT_PAYMENT: 'FUTURE_DISABLED',
+      AFFILIATE_REFERRAL: 'PHASE_2_PRIMARY',
+      directPayment: DirectPaymentProviderAdapter.getInstance().getStatus()
+    }
+  });
+});
+
+/**
+ * Admin Demand Signals
+ */
+apiRouter.get('/commission/demand-signals', async (c) => {
+  const orgId = c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const demandEngine = DemandDiscoveryEngine.getInstance();
+  const signals = await demandEngine.discoverDemand(orgId, { limit: 50 });
+  return c.json({
+    success: true,
+    data: signals
+  });
+});
+
+apiRouter.post('/commission/demand-signals/discover', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const orgId = c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const topic = body.topic || 'best accounting software small business India';
+  const location = body.location || 'India';
+  const demandEngine = DemandDiscoveryEngine.getInstance();
+  const signals = await demandEngine.discoverDemand(orgId, { category: topic, location, limit: 5 });
+  return c.json({
+    success: true,
+    data: signals
+  });
+});
+
+/**
+ * Phase 4: Money-Path Real-Time State Gate (Spec § 16, § 21, § 29)
+ * Evaluates real-time readiness against live database state.
+ */
+apiRouter.get('/commission/money-path', async (c) => {
+  const orgId = c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const d1Repo = D1RevenueRepository.getInstance();
+  const ledger = CommissionLedgerEngine.getInstance();
+  const summary = await ledger.getSummary(orgId);
+
+  // 1. Check approved/authorized partners
+  const partners = await d1Repo.query<any>(
+    'partners',
+    'SELECT * FROM partners WHERE organization_id = ?',
+    [orgId]
+  );
+  const authorizedPartners = partners.filter(p =>
+    p.authorization_status === 'AUTHORIZED' || p.approval_status === 'APPROVED'
+  );
+
+  // 2. Check active offers
+  const activeOffers = await d1Repo.query<any>(
+    'partner_offers',
+    "SELECT * FROM partner_offers WHERE organization_id = ? AND status = 'ACTIVE' AND active = 1",
+    [orgId]
+  );
+
+  // 3. Check published content assets
+  const publishedContent = await d1Repo.query<any>(
+    'commission_content_assets',
+    "SELECT * FROM commission_content_assets WHERE organization_id = ? AND status = 'PUBLISHED'",
+    [orgId]
+  );
+
+  const assetViewsRow = await d1Repo.queryOne<{ totalViews: number; totalClicks: number }>(
+    'commission_content_assets',
+    'SELECT COALESCE(SUM(view_count), 0) as totalViews, COALESCE(SUM(referral_click_count), 0) as totalClicks FROM commission_content_assets WHERE organization_id = ?',
+    [orgId]
+  );
+  const totalViews = assetViewsRow?.totalViews || 0;
+
+  // 4. Check affiliate tracking ID configuration
+  const hasAffiliateId = Boolean(
+    process.env.AMAZON_AFFILIATE_TAG ||
+    process.env.EBAY_CAMPID ||
+    process.env.PARTNER_AFFILIATE_ID ||
+    authorizedPartners.some(p => {
+      const ev = typeof p.evidence_json === 'string' ? p.evidence_json : JSON.stringify(p.evidence || {});
+      return ev.includes('affiliateTag') || ev.includes('affiliateId') || ev.includes('tag');
+    })
+  );
+
+  // Evaluate Money-Path State Hierarchy (§ 16)
+  let moneyPath: 'READY' | 'BLOCKED' = 'BLOCKED';
+  let reason = '';
+  let singleBiggestBlocker = '';
+  let humanActionRequired = '';
+
+  if (authorizedPartners.length === 0) {
+    moneyPath = 'BLOCKED';
+    reason = 'No approved affiliate/partner account is currently configured.';
+    singleBiggestBlocker = 'PARTNER_APPROVAL';
+    humanActionRequired = 'Apply for and obtain approval for one legitimate partner program (e.g. Amazon Associates India at affiliate-program.amazon.in) and register it in the partner registry.';
+  } else if (!hasAffiliateId) {
+    moneyPath = 'BLOCKED';
+    reason = 'NO_AFFILIATE_ID';
+    singleBiggestBlocker = 'AFFILIATE_ID';
+    humanActionRequired = 'Configure your authorized affiliate tracking tag (e.g. AMAZON_AFFILIATE_TAG) in environment secrets or offer configuration.';
+  } else if (activeOffers.length === 0) {
+    moneyPath = 'BLOCKED';
+    reason = 'NO_ACTIVE_OFFER';
+    singleBiggestBlocker = 'NO_ACTIVE_OFFER';
+    humanActionRequired = 'Create and activate at least one verified commercial offer with authorized destination tracking URL.';
+  } else if (publishedContent.length === 0) {
+    moneyPath = 'BLOCKED';
+    reason = 'NO_PUBLIC_CONTENT';
+    singleBiggestBlocker = 'NO_PUBLIC_CONTENT';
+    humanActionRequired = 'Publish at least one commercial guide/comparison page with visible statutory affiliate disclosure.';
+  } else {
+    moneyPath = 'READY';
+    reason = 'MONEY_PATH_READY';
+    singleBiggestBlocker = 'NONE_DRIVE_TRAFFIC';
+    humanActionRequired = 'Drive first real organic visitor to the published commercial guide.';
+  }
+
+  // 11-step human launch checklist (§ 3)
+  const checklist = [
+    {
+      item: 'PARTNER APPROVAL',
+      status: authorizedPartners.length > 0 ? 'READY' : 'REQUIRES HUMAN',
+      description: 'Approved affiliate/partner program account from legitimate provider (e.g. Amazon Associates India)'
+    },
+    {
+      item: 'AFFILIATE ID',
+      status: (authorizedPartners.length > 0 && hasAffiliateId) ? 'READY' : 'REQUIRES HUMAN',
+      description: 'Authorized associate tag / affiliate tracking ID configured and injected'
+    },
+    {
+      item: 'PARTNER TERMS',
+      status: authorizedPartners.length > 0 ? 'READY' : 'REQUIRES HUMAN',
+      description: 'Operating agreement and commission schedules accepted and verified'
+    },
+    {
+      item: 'OFFER',
+      status: activeOffers.length > 0 ? 'READY' : (authorizedPartners.length > 0 ? 'REQUIRES HUMAN' : 'BLOCKED'),
+      description: 'At least one active commercial offer catalog item configured'
+    },
+    {
+      item: 'TRACKING',
+      status: (activeOffers.length > 0 && hasAffiliateId) ? 'READY' : 'BLOCKED',
+      description: 'First-party tracked referral redirect (/r/:offerSlug/:referralId) tested and working'
+    },
+    {
+      item: 'PUBLIC PAGE',
+      status: publishedContent.length > 0 ? 'READY' : 'BLOCKED',
+      description: 'Publicly reachable commercial guide/comparison page with statutory affiliate disclosure'
+    },
+    {
+      item: 'TRAFFIC',
+      status: totalViews > 0 ? 'READY' : 'BLOCKED',
+      description: 'Real organic visitors viewing the commercial content'
+    },
+    {
+      item: 'REFERRAL',
+      status: summary.clicks > 0 ? 'READY' : 'BLOCKED',
+      description: 'Real clicks on tracked affiliate links with ₹0 synthetic revenue attribution'
+    },
+    {
+      item: 'CONVERSION',
+      status: summary.externalConversions > 0 ? 'READY' : 'BLOCKED',
+      description: 'Real qualifying purchase or lead recorded at external provider'
+    },
+    {
+      item: 'COMMISSION',
+      status: summary.verifiedRevenueINR > 0 ? 'READY' : 'BLOCKED',
+      description: 'Provider-verified commission acknowledged in official report or dashboard'
+    },
+    {
+      item: 'PAYOUT',
+      status: summary.receivedCashINR > 0 ? 'READY' : 'BLOCKED',
+      description: 'Real bank payout (NEFT / direct deposit) received in INR'
+    }
+  ];
+
+  return c.json({
+    success: true,
+    data: {
+      moneyPath,
+      reason,
+      singleBiggestBlocker,
+      humanActionRequired,
+      codeActionRequired: 'None. The code is ready. The remaining blocker is human commercial activation.',
+      checklist,
+      metrics: {
+        partners: { authorized: authorizedPartners.length, total: partners.length },
+        offers: { active: activeOffers.length },
+        content: { published: publishedContent.length },
+        traffic: { views: totalViews, clicks: summary.clicks },
+        conversions: {
+          reported: summary.externalConversions,
+          approved: summary.approvedCommissionsCount,
+          rejected: summary.rejectedCommissionsCount
+        },
+        money: {
+          expectedINR: summary.expectedCommissionINR,
+          pendingINR: Math.max(0, summary.expectedCommissionINR - summary.verifiedRevenueINR),
+          verifiedINR: summary.verifiedRevenueINR,
+          cashReceivedINR: summary.receivedCashINR
+        }
+      }
+    }
+  });
+});
+
+/**
+ * Phase 4: Detailed Human Launch Checklist (§ 3, § 4, § 29)
+ */
+apiRouter.get('/commission/launch-checklist', async (c) => {
+  const orgId = c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const d1Repo = D1RevenueRepository.getInstance();
+  const ledger = CommissionLedgerEngine.getInstance();
+  const summary = await ledger.getSummary(orgId);
+
+  const partners = await d1Repo.query<any>('partners', 'SELECT * FROM partners WHERE organization_id = ?', [orgId]);
+  const authorizedPartners = partners.filter(p => p.authorization_status === 'AUTHORIZED' || p.approval_status === 'APPROVED');
+  const activeOffers = await d1Repo.query<any>('partner_offers', "SELECT * FROM partner_offers WHERE organization_id = ? AND status = 'ACTIVE' AND active = 1", [orgId]);
+  const publishedContent = await d1Repo.query<any>('commission_content_assets', "SELECT * FROM commission_content_assets WHERE organization_id = ? AND status = 'PUBLISHED'", [orgId]);
+
+  const assetViewsRow = await d1Repo.queryOne<{ totalViews: number; totalClicks: number }>(
+    'commission_content_assets',
+    'SELECT COALESCE(SUM(view_count), 0) as totalViews, COALESCE(SUM(referral_click_count), 0) as totalClicks FROM commission_content_assets WHERE organization_id = ?',
+    [orgId]
+  );
+  const totalViews = assetViewsRow?.totalViews || 0;
+
+  const hasAffiliateId = Boolean(
+    process.env.AMAZON_AFFILIATE_TAG ||
+    process.env.EBAY_CAMPID ||
+    process.env.PARTNER_AFFILIATE_ID ||
+    authorizedPartners.some(p => {
+      const ev = typeof p.evidence_json === 'string' ? p.evidence_json : JSON.stringify(p.evidence || {});
+      return ev.includes('affiliateTag') || ev.includes('affiliateId') || ev.includes('tag');
+    })
+  );
+
+  const isReady = authorizedPartners.length > 0 && activeOffers.length > 0 && publishedContent.length > 0;
+
+  return c.json({
+    success: true,
+    data: {
+      moneyPath: isReady ? 'READY' : 'BLOCKED',
+      recommendedFirstPartner: {
+        name: 'Amazon Associates India (Amazon.in)',
+        network: 'AMAZON_ASSOCIATES',
+        portalUrl: 'https://affiliate-program.amazon.in',
+        commissionRates: '1% - 9% standard category rates',
+        payoutMethod: 'Direct bank transfer (NEFT) in INR',
+        payoutThresholdINR: 1000,
+        cookieDurationHours: 24,
+        rationale: 'Instant self-serve signup, lowest checkout friction in India (millions of users with saved UPI/cards), massive organic intent for buying guides under ₹X, direct NEFT bank payout in INR.'
+      },
+      singleBiggestBlocker: authorizedPartners.length === 0 ? 'PARTNER_APPROVAL' : activeOffers.length === 0 ? 'NO_ACTIVE_OFFER' : publishedContent.length === 0 ? 'NO_PUBLIC_CONTENT' : 'NONE',
+      humanActionRequired: authorizedPartners.length === 0
+        ? 'Sign up at https://affiliate-program.amazon.in, obtain your Associates Store ID (e.g. yourname-21), and configure AMAZON_AFFILIATE_TAG.'
+        : activeOffers.length === 0
+        ? 'Register 1 active offer in partner_offers with destination and tracking parameters.'
+        : publishedContent.length === 0
+        ? 'Publish 1 commercial guide/comparison page with disclosure.'
+        : 'Drive first real organic visitor to the public guide.',
+      codeActionRequired: 'None. The code is ready. The remaining blocker is human commercial activation.',
+      checklist: [
+        { item: 'PARTNER APPROVAL', status: authorizedPartners.length > 0 ? 'READY' : 'REQUIRES HUMAN', note: 'Sign up at https://affiliate-program.amazon.in' },
+        { item: 'AFFILIATE ID', status: (authorizedPartners.length > 0 && hasAffiliateId) ? 'READY' : 'REQUIRES HUMAN', note: 'Set AMAZON_AFFILIATE_TAG env secret or add via API' },
+        { item: 'PARTNER TERMS', status: authorizedPartners.length > 0 ? 'READY' : 'REQUIRES HUMAN', note: 'Accept Amazon Associates Operating Agreement' },
+        { item: 'OFFER', status: activeOffers.length > 0 ? 'READY' : (authorizedPartners.length > 0 ? 'REQUIRES HUMAN' : 'BLOCKED'), note: 'Register 1 active offer with destination and tracking params' },
+        { item: 'TRACKING', status: (activeOffers.length > 0 && hasAffiliateId) ? 'READY' : 'BLOCKED', note: 'Verify /r/:offerSlug/:referralId 302 redirects with tag=' },
+        { item: 'PUBLIC PAGE', status: publishedContent.length > 0 ? 'READY' : 'BLOCKED', note: 'Publish 1 commercial guide/comparison page with disclosure' },
+        { item: 'TRAFFIC', status: totalViews > 0 ? 'READY' : 'BLOCKED', note: 'Real organic visitors to public guide' },
+        { item: 'REFERRAL', status: summary.clicks > 0 ? 'READY' : 'BLOCKED', note: 'Tracked outbound referral click (₹0 revenue)' },
+        { item: 'CONVERSION', status: summary.externalConversions > 0 ? 'READY' : 'BLOCKED', note: 'Customer purchase on Amazon.in' },
+        { item: 'COMMISSION', status: summary.verifiedRevenueINR > 0 ? 'READY' : 'BLOCKED', note: 'Import or verify commission report from Associates Central' },
+        { item: 'PAYOUT', status: summary.receivedCashINR > 0 ? 'READY' : 'BLOCKED', note: 'NEFT credit to Indian bank account' }
+      ]
+    }
+  });
+});
+
+

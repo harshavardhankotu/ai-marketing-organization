@@ -81,7 +81,7 @@ const COOLDOWN_POLICIES: Record<ActionType, CooldownPolicy> = {
   },
   DISCOVER_PROSPECTS: {
     maxAttempts: 999,
-    cooldownHoursPerAttempt: [6],  // min 6h between discovery runs
+    cooldownHoursPerAttempt: [168],  // min 168h (7 days) between automated discovery runs
     escalateAfterMax: 'STOP'
   },
   RUN_RESEARCH: {
@@ -95,6 +95,51 @@ const COOLDOWN_POLICIES: Record<ActionType, CooldownPolicy> = {
     escalateAfterMax: 'STOP'
   },
   IDLE: {
+    maxAttempts: 999,
+    cooldownHoursPerAttempt: [0],
+    escalateAfterMax: 'STOP'
+  },
+  RECONCILE_COMMISSION: {
+    maxAttempts: 5,
+    cooldownHoursPerAttempt: [1, 6, 24, 48, 72],
+    escalateAfterMax: 'STOP'
+  },
+  RECONCILE_CONVERSION: {
+    maxAttempts: 5,
+    cooldownHoursPerAttempt: [1, 6, 24, 48, 72],
+    escalateAfterMax: 'STOP'
+  },
+  CREATE_CONTENT_ASSET: {
+    maxAttempts: 999,
+    cooldownHoursPerAttempt: [24],
+    escalateAfterMax: 'STOP'
+  },
+  CREATE_REFERRAL_LINK: {
+    maxAttempts: 999,
+    cooldownHoursPerAttempt: [0],
+    escalateAfterMax: 'STOP'
+  },
+  OPTIMIZE_FUNNEL: {
+    maxAttempts: 999,
+    cooldownHoursPerAttempt: [24],
+    escalateAfterMax: 'STOP'
+  },
+  DISCOVER_PARTNER: {
+    maxAttempts: 999,
+    cooldownHoursPerAttempt: [24],
+    escalateAfterMax: 'STOP'
+  },
+  DISCOVER_OFFER: {
+    maxAttempts: 999,
+    cooldownHoursPerAttempt: [24],
+    escalateAfterMax: 'STOP'
+  },
+  DISCOVER_DEMAND: {
+    maxAttempts: 999,
+    cooldownHoursPerAttempt: [6],
+    escalateAfterMax: 'STOP'
+  },
+  QUARANTINE_BAD_PROVIDER: {
     maxAttempts: 999,
     cooldownHoursPerAttempt: [0],
     escalateAfterMax: 'STOP'

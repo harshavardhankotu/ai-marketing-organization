@@ -4,8 +4,10 @@ import { OfferDecisionEngine } from '../revenue/offer-decision-engine.js';
 import { AvailabilityEngine } from '../revenue/availability-engine.js';
 import { RazorpayAdapter } from '../integrations/razorpay.js';
 import { StripeAdapter } from '../integrations/stripe.js';
-import { FunnelPublicProfile, UniversalOrder, toMinorUnits, toMajorUnits, formatMoney } from '@ai-marketing/shared';
+import { FunnelPublicProfile, UniversalOrder, toMinorUnits, toMajorUnits, formatMoney, getCurrencyMetadata } from '@ai-marketing/shared';
 import { isProduction } from '../config/env.js';
+import { isDemoBusiness, isPublicLiveBusiness } from '../security/public-tenant-guard.js';
+import { DurableRateLimiter } from '../security/durable-rate-limiter.js';
 
 import { TenantContextResolver } from '../control-plane/tenant-context-resolver.js';
 
@@ -17,16 +19,20 @@ export async function handleGetPublicFunnel(c: Context): Promise<Response> {
     return c.json({ success: false, error: 'BUSINESS_SLUG_REQUIRED: Provide a valid business slug in path.' }, 400);
   }
 
+  if (isDemoBusiness(businessSlug)) {
+    return c.json({ success: false, error: `BUSINESS_NOT_FOUND: No business registered with slug '${businessSlug}'.` }, 404);
+  }
+
   const d1Repo = D1RevenueRepository.getInstance();
 
   try {
     const biz = await d1Repo.queryOne<any>(
       'businesses',
-      `SELECT id, organization_id, name, public_slug, vertical_id, vertical_name, country, currency, timezone, city, neighborhood, website_url, phone, email, brand_voice, value_propositions_json, offerings_json FROM businesses WHERE lower(public_slug) = ? LIMIT 1`,
+      `SELECT id, organization_id, name, public_slug, vertical_id, vertical_name, country, currency, timezone, city, neighborhood, website_url, phone, email, brand_voice, value_propositions_json, offerings_json, public_live FROM businesses WHERE lower(public_slug) = ? LIMIT 1`,
       [businessSlug]
     );
 
-    if (!biz) {
+    if (!biz || !isPublicLiveBusiness(biz)) {
       return c.json({ success: false, error: `BUSINESS_NOT_FOUND: No business registered with slug '${businessSlug}'.` }, 404);
     }
 
@@ -121,6 +127,23 @@ export async function handleCreateUniversalOrder(c: Context): Promise<Response> 
     return c.json({ success: false, error: 'OFFER_REQUIRED: offerId must be specified for checkout.' }, 400);
   }
 
+  // 0. Durable Rate Limiter (Max 10 per 10 mins per IP hash)
+  const clientIp = c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for')?.split(',')[0]?.trim() || '127.0.0.1';
+  const limiter = DurableRateLimiter.getInstance();
+  const rateLimit = await limiter.checkRateLimit('/public/order', clientIp, 10, 600);
+  if (!rateLimit.allowed) {
+    return c.json({
+      success: false,
+      error: 'RATE_LIMIT_EXCEEDED: Too many order attempts. Please wait a few minutes.',
+      retryAfterSeconds: rateLimit.retryAfterSeconds
+    }, 429);
+  }
+
+  // Hide demo businesses
+  if (isDemoBusiness(businessId) || isDemoBusiness(businessSlug)) {
+    return c.json({ success: false, error: 'BUSINESS_NOT_FOUND: Valid businessId or businessSlug required.' }, 404);
+  }
+
   // 1. Resolve business
   let biz: any = null;
   if (businessId) {
@@ -129,7 +152,7 @@ export async function handleCreateUniversalOrder(c: Context): Promise<Response> 
     biz = await d1Repo.queryOne('businesses', `SELECT * FROM businesses WHERE lower(public_slug) = ? LIMIT 1`, [businessSlug]);
   }
 
-  if (!biz) {
+  if (!biz || !isPublicLiveBusiness(biz)) {
     return c.json({ success: false, error: 'BUSINESS_NOT_FOUND: Valid businessId or businessSlug required.' }, 404);
   }
 
@@ -203,8 +226,13 @@ export async function handleCreateUniversalOrder(c: Context): Promise<Response> 
 
   const orderId = `uord_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
   // Item 1: Provider MUST NOT be browser-controlled (body.paymentProvider completely removed).
-  // Single-business India operations use Razorpay exclusively; non-INR operations map to Stripe.
-  const provider = orderCurrency === 'INR' ? 'RAZORPAY' : 'STRIPE';
+  // Resolve via CURRENCY_REGISTRY: INR prefers RAZORPAY, all others STRIPE. Fail closed on unknown currency.
+  const normalizedCurrency = (orderCurrency || 'USD').toUpperCase();
+  const currencyMeta = getCurrencyMetadata(normalizedCurrency);
+  const provider = normalizedCurrency === 'INR' ? 'RAZORPAY' : 'STRIPE';
+  if (!currencyMeta.supportedPaymentProviders.includes(provider as any)) {
+    return c.json({ success: false, error: `PROVIDER_UNSUPPORTED: ${provider} does not support ${normalizedCurrency}.` }, 400);
+  }
 
   // 4. Persistence First: Insert internal order into D1 BEFORE provider creation
   const initialStatus = serverAmountMinor === 0 ? 'PAID' : 'PAYMENT_PENDING';
@@ -264,7 +292,8 @@ export async function handleCreateUniversalOrder(c: Context): Promise<Response> 
         amountINR: toMajorUnits(serverAmountMinor, orderCurrency),
         receipt: orderId,
         service: targetOffer.title,
-        notes: { orderId, offerId, customerName, customerPhone }
+        notes: { orderId, offerId, customerName, customerPhone },
+        offerId: targetOffer.id,
       });
       providerOrderId = rzpOrder.orderId;
     }
@@ -335,25 +364,42 @@ export async function handleCreateUniversalOrder(c: Context): Promise<Response> 
 
 export async function handleCreateBookingReservation(c: Context): Promise<Response> {
   const body = await c.req.json().catch(() => ({}));
-  const resolver = TenantContextResolver.getInstance();
+  const d1Repo = D1RevenueRepository.getInstance();
 
   const businessId = typeof body.businessId === 'string' ? body.businessId.trim() : '';
   const businessSlug = typeof body.businessSlug === 'string' ? body.businessSlug.trim().toLowerCase() : '';
 
-  const biz = await resolver.resolveTenant({
-    businessId: businessId || undefined,
-    businessSlug: businessSlug || undefined,
-    funnelSlug: typeof body.funnelSlug === 'string' ? body.funnelSlug : undefined,
-    allowDevFallback: true
-  });
+  // 0. Durable Rate Limiter (Max 10 per 10 mins per IP hash)
+  const clientIp = c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for')?.split(',')[0]?.trim() || '127.0.0.1';
+  const limiter = DurableRateLimiter.getInstance();
+  const rateLimit = await limiter.checkRateLimit('/public/booking', clientIp, 10, 600);
+  if (!rateLimit.allowed) {
+    return c.json({
+      success: false,
+      error: 'RATE_LIMIT_EXCEEDED: Too many booking attempts. Please wait a few minutes.',
+      retryAfterSeconds: rateLimit.retryAfterSeconds
+    }, 429);
+  }
 
-  if (!biz) {
+  // Hide demo businesses
+  if (isDemoBusiness(businessId) || isDemoBusiness(businessSlug)) {
     return c.json({ success: false, error: 'BUSINESS_NOT_FOUND: Valid businessId or businessSlug required.' }, 404);
+  }
+
+  let bizRow: any = null;
+  if (businessId) {
+    bizRow = await d1Repo.queryOne('businesses', `SELECT id, organization_id, public_slug, public_live FROM businesses WHERE id = ?`, [businessId]);
+  } else if (businessSlug) {
+    bizRow = await d1Repo.queryOne('businesses', `SELECT id, organization_id, public_slug, public_live FROM businesses WHERE lower(public_slug) = ? LIMIT 1`, [businessSlug]);
+  }
+
+  if (!bizRow || !isPublicLiveBusiness(bizRow)) {
+    return c.json({ success: false, error: 'BUSINESS_NOT_FOUND: Valid public live business required.' }, 404);
   }
 
   const availabilityEngine = AvailabilityEngine.getInstance();
   const resResult = await availabilityEngine.reserveSlot({
-    businessId: biz.businessId,
+    businessId: bizRow.id,
     slotId: body.slotId,
     preferredDate: body.preferredDate,
     preferredTime: body.preferredTime,
@@ -391,16 +437,20 @@ export async function handleGetAvailability(c: Context): Promise<Response> {
   const resourceId = c.req.query('resourceId');
   const resourceType = c.req.query('resourceType');
 
+  if (isDemoBusiness(businessId) || isDemoBusiness(businessSlug)) {
+    return c.json({ success: false, error: 'BUSINESS_NOT_FOUND: Provide valid businessId or businessSlug query param.' }, 404);
+  }
+
   const d1Repo = D1RevenueRepository.getInstance();
 
   let biz: any = null;
   if (businessId) {
-    biz = await d1Repo.queryOne('businesses', `SELECT id, name, timezone FROM businesses WHERE id = ?`, [businessId]);
+    biz = await d1Repo.queryOne('businesses', `SELECT id, name, timezone, public_slug, public_live FROM businesses WHERE id = ?`, [businessId]);
   } else if (businessSlug) {
-    biz = await d1Repo.queryOne('businesses', `SELECT id, name, timezone FROM businesses WHERE lower(public_slug) = ? LIMIT 1`, [businessSlug.toLowerCase()]);
+    biz = await d1Repo.queryOne('businesses', `SELECT id, name, timezone, public_slug, public_live FROM businesses WHERE lower(public_slug) = ? LIMIT 1`, [businessSlug.toLowerCase()]);
   }
 
-  if (!biz) {
+  if (!biz || !isPublicLiveBusiness(biz)) {
     return c.json({ success: false, error: 'BUSINESS_NOT_FOUND: Provide valid businessId or businessSlug query param.' }, 404);
   }
 

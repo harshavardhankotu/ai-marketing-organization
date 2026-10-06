@@ -42,6 +42,12 @@ export function getDb(dbPath?: string): Database.Database {
     db.exec(`ALTER TABLE businesses ADD COLUMN public_slug TEXT`);
   } catch {}
   try {
+    db.exec(`ALTER TABLE businesses ADD COLUMN public_live INTEGER NOT NULL DEFAULT 0`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE outbound_contacts ADD COLUMN status TEXT NOT NULL DEFAULT 'ACTIVE'`);
+  } catch {}
+  try {
     db.exec(`ALTER TABLE customer_journeys ADD COLUMN gclid TEXT`);
   } catch {}
   try {
@@ -325,6 +331,90 @@ export function getDb(dbPath?: string): Database.Database {
     )`);
   } catch {}
   try {
+    db.exec(`CREATE TABLE IF NOT EXISTS partners (
+      id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, name TEXT NOT NULL, industry TEXT NOT NULL,
+      country TEXT NOT NULL DEFAULT 'India', city TEXT, website TEXT NOT NULL,
+      partner_type TEXT NOT NULL DEFAULT 'AFFILIATE', program_name TEXT,
+      commission_type TEXT NOT NULL DEFAULT 'PERCENTAGE', commission_rate REAL, fixed_commission_inr REAL,
+      cookie_window_days INTEGER NOT NULL DEFAULT 30, qualifying_event TEXT NOT NULL DEFAULT 'PURCHASE',
+      approval_status TEXT NOT NULL DEFAULT 'APPROVED', active_status INTEGER NOT NULL DEFAULT 1,
+      source TEXT NOT NULL DEFAULT 'DIRECT_PARTNER', terms_url TEXT, disclosure_required INTEGER NOT NULL DEFAULT 1,
+      network TEXT NOT NULL DEFAULT 'OTHER_AUTHORIZED_PARTNER', tracking_type TEXT NOT NULL DEFAULT 'AFFILIATE_LINK',
+      authorization_status TEXT NOT NULL DEFAULT 'AUTHORIZED', program_url TEXT, coverage TEXT NOT NULL DEFAULT 'India',
+      category TEXT, destination_requirements TEXT, evidence_json TEXT NOT NULL DEFAULT '{}',
+      last_verified_at TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+  } catch {}
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS partner_offers (
+      id TEXT PRIMARY KEY, partner_id TEXT NOT NULL, organization_id TEXT NOT NULL,
+      title TEXT NOT NULL, offer_slug TEXT NOT NULL UNIQUE, category TEXT NOT NULL,
+      target_customer TEXT NOT NULL, price_inr REAL, price_range TEXT,
+      commission_model TEXT NOT NULL DEFAULT 'PERCENTAGE', commission_amount_inr REAL NOT NULL DEFAULT 0,
+      conversion_action TEXT NOT NULL DEFAULT 'PURCHASE', destination_url TEXT NOT NULL,
+      authorized_tracking_url TEXT NOT NULL, geographic_availability TEXT NOT NULL DEFAULT 'India',
+      evidence_json TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'ACTIVE',
+      description TEXT NOT NULL DEFAULT '', currency TEXT NOT NULL DEFAULT 'INR',
+      availability TEXT NOT NULL DEFAULT 'IN_STOCK', active INTEGER NOT NULL DEFAULT 1,
+      last_verified_at TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+  } catch {}
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS referrals (
+      id TEXT PRIMARY KEY, partner_id TEXT NOT NULL, offer_id TEXT NOT NULL,
+      organization_id TEXT NOT NULL, anonymous_session_id TEXT, click_id TEXT NOT NULL UNIQUE,
+      tracking_parameters_json TEXT NOT NULL DEFAULT '{}', landing_page TEXT,
+      source TEXT, campaign TEXT, destination_url TEXT NOT NULL,
+      ip TEXT, user_agent TEXT, referer TEXT, utm_source TEXT, utm_medium TEXT, utm_campaign TEXT,
+      utm_term TEXT, utm_content TEXT, content_asset_id TEXT, placement TEXT, device_class TEXT,
+      country TEXT, keyword TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+    db.exec(`CREATE TABLE IF NOT EXISTS referral_click_events (
+      id TEXT PRIMARY KEY, referral_id TEXT NOT NULL, click_id TEXT NOT NULL,
+      organization_id TEXT NOT NULL, offer_id TEXT NOT NULL, partner_id TEXT NOT NULL,
+      content_asset_id TEXT, placement TEXT, source TEXT, medium TEXT, campaign TEXT,
+      keyword TEXT, referrer TEXT, device_class TEXT, country TEXT,
+      destination_url TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+  } catch {}
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS commission_records (
+      id TEXT PRIMARY KEY, referral_id TEXT, partner_id TEXT NOT NULL, offer_id TEXT,
+      organization_id TEXT NOT NULL, external_transaction_id TEXT, event_type TEXT NOT NULL DEFAULT 'PURCHASE',
+      external_status TEXT NOT NULL DEFAULT 'PENDING', expected_commission_inr REAL NOT NULL DEFAULT 0,
+      verified_commission_inr REAL NOT NULL DEFAULT 0, received_commission_inr REAL NOT NULL DEFAULT 0,
+      verification_source TEXT NOT NULL, evidence_json TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL DEFAULT 'COMMISSION_PENDING', created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      verified_at TEXT, paid_at TEXT, updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+  } catch {}
+  try {
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_commissions_partner_tx ON commission_records(partner_id, external_transaction_id)`);
+  } catch {}
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS commission_content_assets (
+      id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, slug TEXT NOT NULL UNIQUE,
+      asset_type TEXT NOT NULL, title TEXT NOT NULL, category TEXT NOT NULL,
+      location TEXT, intent_target TEXT NOT NULL, content_markdown TEXT NOT NULL,
+      primary_offer_id TEXT, matched_offer_ids_json TEXT NOT NULL DEFAULT '[]',
+      disclosure_markdown TEXT NOT NULL DEFAULT 'Disclosure: We may earn a referral commission at no additional cost to you when you purchase through our links.',
+      status TEXT NOT NULL DEFAULT 'PUBLISHED', view_count INTEGER NOT NULL DEFAULT 0,
+      referral_click_count INTEGER NOT NULL DEFAULT 0, quality_gate_json TEXT NOT NULL DEFAULT '{}',
+      disclosure_version TEXT NOT NULL DEFAULT '2026.1', created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+  } catch {}
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS demand_signals (
+      id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, topic TEXT NOT NULL,
+      category TEXT NOT NULL, location TEXT, intent_type TEXT NOT NULL DEFAULT 'SEARCH_QUERY',
+      raw_query TEXT NOT NULL, evidence_snippet TEXT NOT NULL, source_url TEXT NOT NULL,
+      urgency REAL NOT NULL DEFAULT 0.5, estimated_monthly_volume INTEGER NOT NULL DEFAULT 100,
+      status TEXT NOT NULL DEFAULT 'DISCOVERED', intent_class TEXT NOT NULL DEFAULT 'RESEARCH',
+      commercial_score REAL NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+  } catch {}
+  try {
     db.exec(`CREATE TABLE IF NOT EXISTS owner_configuration (
       id TEXT PRIMARY KEY, owner_name TEXT NOT NULL DEFAULT 'Harsha Vardhan Kotu',
       organization_id TEXT NOT NULL DEFAULT 'org_owner_primary', platform_business_id TEXT NOT NULL DEFAULT 'biz_platform_aro',
@@ -373,6 +463,36 @@ export function getDb(dbPath?: string): Database.Database {
   try { db.exec(`ALTER TABLE payment_requests ADD COLUMN last_reminder_at TEXT`); } catch {}
   try { db.exec(`ALTER TABLE payment_requests ADD COLUMN expires_at TEXT`); } catch {}
   try { db.exec(`ALTER TABLE payment_requests ADD COLUMN proposal_id TEXT`); } catch {}
+  // Phase 2 catch-up columns for pre-existing local databases
+  try { db.exec(`ALTER TABLE partners ADD COLUMN network TEXT NOT NULL DEFAULT 'OTHER_AUTHORIZED_PARTNER'`); } catch {}
+  try { db.exec(`ALTER TABLE partners ADD COLUMN tracking_type TEXT NOT NULL DEFAULT 'AFFILIATE_LINK'`); } catch {}
+  try { db.exec(`ALTER TABLE partners ADD COLUMN authorization_status TEXT NOT NULL DEFAULT 'AUTHORIZED'`); } catch {}
+  try { db.exec(`ALTER TABLE partners ADD COLUMN program_url TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE partners ADD COLUMN coverage TEXT NOT NULL DEFAULT 'India'`); } catch {}
+  try { db.exec(`ALTER TABLE partners ADD COLUMN category TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE partners ADD COLUMN destination_requirements TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE partners ADD COLUMN evidence_json TEXT NOT NULL DEFAULT '{}'`); } catch {}
+  try { db.exec(`ALTER TABLE partner_offers ADD COLUMN status TEXT NOT NULL DEFAULT 'ACTIVE'`); } catch {}
+  try { db.exec(`ALTER TABLE partner_offers ADD COLUMN description TEXT NOT NULL DEFAULT ''`); } catch {}
+  try { db.exec(`ALTER TABLE partner_offers ADD COLUMN currency TEXT NOT NULL DEFAULT 'INR'`); } catch {}
+  try { db.exec(`ALTER TABLE partner_offers ADD COLUMN availability TEXT NOT NULL DEFAULT 'IN_STOCK'`); } catch {}
+  try { db.exec(`ALTER TABLE referrals ADD COLUMN ip TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE referrals ADD COLUMN user_agent TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE referrals ADD COLUMN referer TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE referrals ADD COLUMN utm_source TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE referrals ADD COLUMN utm_medium TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE referrals ADD COLUMN utm_campaign TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE referrals ADD COLUMN utm_term TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE referrals ADD COLUMN utm_content TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE referrals ADD COLUMN content_asset_id TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE referrals ADD COLUMN placement TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE referrals ADD COLUMN device_class TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE referrals ADD COLUMN country TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE referrals ADD COLUMN keyword TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE demand_signals ADD COLUMN intent_class TEXT NOT NULL DEFAULT 'RESEARCH'`); } catch {}
+  try { db.exec(`ALTER TABLE demand_signals ADD COLUMN commercial_score REAL NOT NULL DEFAULT 0`); } catch {}
+  try { db.exec(`ALTER TABLE commission_content_assets ADD COLUMN quality_gate_json TEXT NOT NULL DEFAULT '{}'`); } catch {}
+  try { db.exec(`ALTER TABLE commission_content_assets ADD COLUMN disclosure_version TEXT NOT NULL DEFAULT '2026.1'`); } catch {}
   try { db.exec(`ALTER TABLE opportunities ADD COLUMN prospect_id TEXT`); } catch {}
   try { db.exec(`ALTER TABLE outbound_contacts ADD COLUMN channel TEXT NOT NULL DEFAULT 'EMAIL'`); } catch {}
   try { db.exec(`ALTER TABLE outbound_contacts ADD COLUMN email_authorized INTEGER NOT NULL DEFAULT 0`); } catch {}

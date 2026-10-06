@@ -38,6 +38,12 @@ import { RazorpayAdapter } from '../integrations/razorpay.js';
 import { resolveAuthorizedOffer } from './offer-catalog.js';
 import { ChannelSelectionEngine } from './channel-selection-engine.js';
 import { OutboundActionLedger } from './outbound-action-ledger.js';
+import { ConversionVerificationAdapter } from '../commission/conversion-verification.js';
+import { DemandDiscoveryEngine } from '../commission/demand-discovery.js';
+import { DemandOfferMatchingEngine } from '../commission/demand-offer-matching.js';
+import { ContentAssetEngine } from '../commission/content-asset-engine.js';
+import { ReferralTrackingEngine } from '../commission/referral-tracking.js';
+import { PartnerRegistryEngine } from '../commission/partner-registry.js';
 import { randomUUID } from 'crypto';
 export { ActionClassification } from '../integrations/adapter-base.js';
 
@@ -345,7 +351,7 @@ export class AutonomousRevenueOrchestrator {
             ActionCooldownManager.recordExecution(nextBestAction.targetId, nextBestAction.actionType, false);
           }
 
-          if (execResult.error) {
+          if (execResult.error && execResult.status !== 'BLOCKED_AUTHORIZATION') {
             errors.push(execResult.error);
           }
         }
@@ -376,6 +382,8 @@ export class AutonomousRevenueOrchestrator {
       let traceProvider = 'NONE';
       if (nextBestAction.actionType.includes('RESEARCH') || nextBestAction.actionType.includes('DISCOVER')) {
         traceProvider = 'TAVILY';
+      } else if (nextBestAction.actionType.includes('COMMISSION') || nextBestAction.actionType.includes('CONVERSION')) {
+        traceProvider = 'EXTERNAL_PARTNER';
       } else if (nextBestAction.actionType.includes('PAYMENT')) {
         traceProvider = 'RAZORPAY';
       } else if (nextBestAction.actionType === 'PURSUE_OPPORTUNITY' || nextBestAction.actionType.includes('OUTREACH') || nextBestAction.actionType.includes('FOLLOW_UP')) {
@@ -539,6 +547,180 @@ export class AutonomousRevenueOrchestrator {
 
     switch (action.actionType) {
       // ────────────────────────────────────────────────────────────────
+      // SPEC § 21 & § 22: RECONCILE_COMMISSION / RECONCILE_CONVERSION
+      // ────────────────────────────────────────────────────────────────
+      case 'RECONCILE_COMMISSION':
+      case 'RECONCILE_CONVERSION': {
+        const commAdapter = ConversionVerificationAdapter.getInstance();
+        const record = await commAdapter.getCommission(action.targetId);
+        if (!record) {
+          return {
+            status: 'INTERNAL_AUTOMATION',
+            actionClassification: 'INTERNAL_AUTOMATION',
+            isRevenueAction: false,
+            error: `Commission record ${action.targetId} not found`
+          };
+        }
+        if (record.status === 'COMMISSION_APPROVED' || record.status === 'COMMISSION_PAID') {
+          return {
+            status: 'LIVE_EXTERNAL_ACTION',
+            actionClassification: 'LIVE_EXTERNAL_ACTION',
+            isRevenueAction: true,
+            externalId: record.externalTransactionId || record.id
+          };
+        }
+        return {
+          status: 'INTERNAL_AUTOMATION',
+          actionClassification: 'INTERNAL_AUTOMATION',
+          isRevenueAction: false,
+          externalId: record.id
+        };
+      }
+
+      // ────────────────────────────────────────────────────────────────
+      // SPEC § 21 & § 22: CREATE_CONTENT_ASSET
+      // ────────────────────────────────────────────────────────────────
+      case 'CREATE_CONTENT_ASSET': {
+        const matchingEngine = DemandOfferMatchingEngine.getInstance();
+        const contentEngine = ContentAssetEngine.getInstance();
+
+        const signal = (await this.d1Repo.queryOne<any>('demand_signals', 'SELECT * FROM demand_signals WHERE id = ?', [action.targetId]));
+        if (!signal) {
+          return {
+            status: 'INTERNAL_AUTOMATION',
+            actionClassification: 'INTERNAL_AUTOMATION',
+            isRevenueAction: false,
+            error: `Demand signal ${action.targetId} not found`
+          };
+        }
+
+        const matches = await matchingEngine.matchDemand({
+          organizationId,
+          intent: `${signal.topic} ${signal.raw_query || ''}`.slice(0, 300),
+          category: signal.category,
+          location: signal.location || undefined,
+          limit: 3
+        });
+
+        const primaryOffer = matches.length > 0 ? matches[0].offer : undefined;
+        const matchedOfferIds = matches.map(m => m.offer.id);
+
+        const slugBase = signal.topic.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+        const asset = await contentEngine.createAsset({
+          organizationId,
+          slug: `${slugBase}-${signal.id.slice(0, 8)}`,
+          assetType: 'COMPARISON',
+          title: `Comprehensive Guide: ${signal.topic}`,
+          category: signal.category,
+          location: signal.location || undefined,
+          intentTarget: signal.raw_query,
+          primaryOfferId: primaryOffer?.id,
+          matchedOfferIds,
+          contentMarkdown: `# ${signal.topic}\n\nEvidence-based recommendation and options guide.\n\n### Overview\n${signal.evidence_snippet}\n\n${primaryOffer ? `### Recommended Option\n**${primaryOffer.title}**\n- Category: ${primaryOffer.category}\n- Details: ${primaryOffer.targetCustomer}\n` : ''}`
+        });
+
+        await this.d1Repo.executeWrite('demand_signals', 'UPDATE demand_signals SET status = ? WHERE id = ?', ['CONVERTED_TO_CONTENT', signal.id]);
+
+        return {
+          status: 'INTERNAL_AUTOMATION',
+          actionClassification: 'INTERNAL_AUTOMATION',
+          isRevenueAction: false,
+          externalId: asset.id
+        };
+      }
+
+      // ────────────────────────────────────────────────────────────────
+      // SPEC § 21 & § 22: CREATE_REFERRAL_LINK
+      // ────────────────────────────────────────────────────────────────
+      case 'CREATE_REFERRAL_LINK': {
+        const tracker = ReferralTrackingEngine.getInstance();
+        const refLink = await tracker.createReferralLink(action.targetId, {
+          source: 'autonomous_loop',
+          campaign: `cycle_${cycleId}`
+        });
+        return {
+          status: 'INTERNAL_AUTOMATION',
+          actionClassification: 'INTERNAL_AUTOMATION',
+          isRevenueAction: false,
+          externalId: refLink.referralId
+        };
+      }
+
+      // ────────────────────────────────────────────────────────────────
+      // SPEC § 21 & § 22: DISCOVER_DEMAND
+      // ────────────────────────────────────────────────────────────────
+      case 'DISCOVER_DEMAND': {
+        const quotaGate = this.quotaService.canMakeRequest('TAVILY', 'P3', 'demand_discovery');
+        if (!quotaGate.allowed) {
+          return {
+            status: 'COOLDOWN_ACTIVE',
+            actionClassification: 'INTERNAL_AUTOMATION',
+            isRevenueAction: false,
+            error: `Quota gate paused demand discovery: ${quotaGate.reason}`
+          };
+        }
+        const demandEngine = DemandDiscoveryEngine.getInstance();
+        const signals = await demandEngine.discoverDemand(organizationId, { category: 'best accounting software small business India', location: 'India', limit: 5 });
+        return {
+          status: 'LIVE_EXTERNAL_ACTION',
+          actionClassification: 'LIVE_EXTERNAL_ACTION',
+          isRevenueAction: false,
+          externalId: `demand_discovery_${cycleId}`,
+          opportunitiesDiscovered: signals.length
+        };
+      }
+
+      // ────────────────────────────────────────────────────────────────
+      // SPEC § 2, § 21 & § 22: DISCOVER_PARTNER / DISCOVER_OFFER
+      // Never fabricate partner approval; halt cleanly if human operator has not configured an approved partner.
+      // ────────────────────────────────────────────────────────────────
+      case 'DISCOVER_PARTNER':
+      case 'DISCOVER_OFFER': {
+        const registry = PartnerRegistryEngine.getInstance();
+        const existingPartners = await registry.listPartners(organizationId);
+        if (existingPartners.length === 0) {
+          return {
+            status: 'BLOCKED_AUTHORIZATION',
+            actionClassification: 'BLOCKED_AUTHORIZATION',
+            isRevenueAction: false,
+            error: 'MONEY_PATH_BLOCKED: No approved affiliate/partner account is currently configured. Operator action required.'
+          };
+        }
+        const partnerId = existingPartners[0].id;
+        return {
+          status: 'INTERNAL_AUTOMATION',
+          actionClassification: 'INTERNAL_AUTOMATION',
+          isRevenueAction: false,
+          externalId: partnerId
+        };
+      }
+
+      // ────────────────────────────────────────────────────────────────
+      // SPEC § 21: QUARANTINE_BAD_PROVIDER
+      // ────────────────────────────────────────────────────────────────
+      case 'QUARANTINE_BAD_PROVIDER': {
+        await this.d1Repo.executeWrite('partner_offers', 'UPDATE partner_offers SET active = 0, updated_at = ? WHERE id = ?', [new Date().toISOString(), action.targetId]);
+        return {
+          status: 'INTERNAL_AUTOMATION',
+          actionClassification: 'INTERNAL_AUTOMATION',
+          isRevenueAction: false,
+          externalId: action.targetId
+        };
+      }
+
+      // ────────────────────────────────────────────────────────────────
+      // SPEC § 21: OPTIMIZE_FUNNEL
+      // ────────────────────────────────────────────────────────────────
+      case 'OPTIMIZE_FUNNEL': {
+        return {
+          status: 'INTERNAL_AUTOMATION',
+          actionClassification: 'INTERNAL_AUTOMATION',
+          isRevenueAction: false,
+          externalId: action.targetId
+        };
+      }
+
+      // ────────────────────────────────────────────────────────────────
       // SPEC § 5: FOLLOW_UP_LEAD
       // ────────────────────────────────────────────────────────────────
       case 'FOLLOW_UP_LEAD': {
@@ -615,12 +797,12 @@ export class AutonomousRevenueOrchestrator {
       // ────────────────────────────────────────────────────────────────
       case 'PURSUE_OPPORTUNITY': {
         const opp = this.oppEngine.getById(action.targetId);
-        if (!opp) {
+        if (!opp || opp.status === 'REJECTED') {
           return {
             status: 'BLOCKED_AUTHORIZATION',
             actionClassification: 'BLOCKED_AUTHORIZATION',
             isRevenueAction: false,
-            error: 'Opportunity not found'
+            error: !opp ? 'Opportunity not found' : 'BLOCKED_AUTHORIZATION: Opportunity is REJECTED.'
           };
         }
 
@@ -676,6 +858,20 @@ export class AutonomousRevenueOrchestrator {
         }
         if (prospectRow) {
           prospectName = prospectRow.prospect_owner_name || prospectRow.contact_person || prospectRow.prospect_business_name || prospectName;
+        }
+
+        if (
+          prospectRow?.status === 'REJECTED' ||
+          contactRow?.status === 'REJECTED' ||
+          contactRow?.is_suppressed === 1 ||
+          contactRow?.suppression_reason === 'REJECTED'
+        ) {
+          return {
+            status: 'BLOCKED_AUTHORIZATION',
+            actionClassification: 'BLOCKED_AUTHORIZATION',
+            isRevenueAction: false,
+            error: 'BLOCKED_AUTHORIZATION: Cannot pursue REJECTED or suppressed opportunity/prospect/contact.'
+          };
         }
 
         if (!prospectPhone && !prospectEmail) {

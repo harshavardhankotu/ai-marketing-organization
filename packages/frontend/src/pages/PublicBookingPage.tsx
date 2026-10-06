@@ -261,11 +261,12 @@ export const PublicBookingPage: React.FC<{ onBackToAdmin?: () => void }> = ({ on
     setPaymentError('');
 
     try {
-      // 1. Create real order on server
+      // 1. Create real order on server (offerId-first: server-authoritative price)
       const orderRes = await api.createPaymentOrder({
         businessId: targetBizId,
         journeyId: confirmedBooking?.id || confirmedBooking?.visitorId,
         amountINR: amount,
+        offerId: 'CONSULTATION_DEPOSIT',
         service: `Consultation & Assessment (${treatment || 'General'})`,
         notes: {
           patientName: name,

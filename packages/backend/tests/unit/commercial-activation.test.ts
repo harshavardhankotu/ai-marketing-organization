@@ -33,11 +33,11 @@ describe('Commercial Activation & Live Sales Reality Suite (Spec §§ 2–34)', 
     // Storage is always healthy (SQLite in local/test)
     expect(statuses.STORAGE.isLiveVerified).toBe(false);
 
-    // Diagnostics report exact setup required
+    // Diagnostics report exact setup required (Phase 1: commission engine — research/AI/storage are the gates)
     const diagnostic = activation.getMissingProviderDiagnostic(bizId, orgId);
-    expect(diagnostic.blocker).toBe('OUTBOUND_UNAVAILABLE');
-    expect(diagnostic.nextHumanSetup).toContain('Configure one approved outbound provider');
-    expect(diagnostic.expectedUnlock).toContain('LIVE_EXTERNAL_ACTION');
+    expect(diagnostic.blocker).toBe('NONE_COMMISSION_ENGINE_ACTIVE');
+    expect(diagnostic.nextHumanSetup).toContain('None required');
+    expect(diagnostic.expectedUnlock).toContain('referral');
   });
 
   // 2. Commercial Lifecycle State evaluates to COMMERCIAL_READY without false promotion
@@ -345,7 +345,7 @@ describe('Commercial Activation & Live Sales Reality Suite (Spec §§ 2–34)', 
     const provJson = await provRes.json() as any;
     expect(provJson.success).toBe(true);
     expect(provJson.data.providers.OUTBOUND_WHATSAPP).toBeDefined();
-    expect(provJson.data.diagnostic.blocker).toBe('OUTBOUND_UNAVAILABLE');
+    expect(provJson.data.diagnostic.blocker).toBe('NONE_COMMISSION_ENGINE_ACTIVE');
 
     // 4. Reality Report Software vs Commercial separation
     const reportRes = await app.request('/api/v1/system/reality-report');

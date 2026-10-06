@@ -5,8 +5,8 @@ import { seedDatabase } from '../../src/db/seed.js';
 
 describe('Universal Demand-Capture Funnel and Tenant Resolution', () => {
   const originalEnv = { ...process.env };
-  const orgId = 'org_smilekraft_01';
-  const businessId = 'biz_smilekraft_hyd';
+  const orgId = 'org_owner_primary';
+  const businessId = 'biz_test_live';
 
   beforeEach(() => {
     process.env = { ...originalEnv };
@@ -31,7 +31,7 @@ describe('Universal Demand-Capture Funnel and Tenant Resolution', () => {
     const json = await res.json() as any;
     expect(json.success).toBe(true);
     expect(json.data.id).toBe(businessId);
-    expect(json.data.name).toBe('SmileKraft Dental Clinic Hyderabad');
+    expect(json.data.name).toBe('Apex Health Centre');
     expect(json.data.public_slug).toBe(biz.public_slug);
     // Ensure sensitive fields (kill switch, constraints, brand voice, budget) are not leaked
     expect(json.data.kill_switch_active).toBeUndefined();

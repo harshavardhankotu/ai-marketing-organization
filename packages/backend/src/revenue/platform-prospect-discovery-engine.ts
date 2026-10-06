@@ -33,6 +33,55 @@ import { AutonomyPolicyController } from './autonomy-policy.js';
 import { isProduction, isPlaceholderCredential } from '../config/env.js';
 import { ProspectEvidenceVerifier } from './prospect-evidence-verifier.js';
 
+export const JUNK_AND_DIRECTORY_DOMAINS = new Set([
+  'youtube.com',
+  'youtu.be',
+  'm.youtube.com',
+  'etacky.com',
+  'justdial.com',
+  'sulekha.com',
+  'quikr.com',
+  'indiamart.com',
+  'jdmagicbox.com',
+  'lybrate.com',
+  'threebestrated.in',
+  'yellowpages.in',
+  'practo.com',
+  'scribd.com',
+  'wikipedia.org'
+]);
+
+export function normalizeDomain(urlOrDomain: string): string {
+  if (!urlOrDomain) return '';
+  try {
+    let s = urlOrDomain.trim().toLowerCase();
+    if (!s.startsWith('http://') && !s.startsWith('https://')) {
+      s = 'http://' + s;
+    }
+    const u = new URL(s);
+    return u.hostname.replace(/^www\./, '');
+  } catch {
+    return urlOrDomain.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
+  }
+}
+
+export function normalizeUrl(rawUrl: string): string {
+  if (!rawUrl) return '';
+  try {
+    const u = new URL(rawUrl.trim());
+    const searchParams = new URLSearchParams(u.search);
+    for (const key of Array.from(searchParams.keys())) {
+      if (key.startsWith('utm_') || key === 'ref' || key === 'source') {
+        searchParams.delete(key);
+      }
+    }
+    const cleanSearch = searchParams.toString();
+    return `${u.protocol}//${u.hostname.replace(/^www\./, '')}${u.pathname.replace(/\/+$/, '')}${cleanSearch ? '?' + cleanSearch : ''}`.toLowerCase();
+  } catch {
+    return rawUrl.trim().toLowerCase().replace(/\/+$/, '');
+  }
+}
+
 export interface DiscoveredProspectCandidate {
   businessName: string;
   vertical: 'clinic' | 'dental' | 'salon' | 'coaching' | 'real_estate' | 'professional_services';
@@ -100,16 +149,76 @@ export class PlatformProspectDiscoveryEngine {
       vertical?: 'clinic' | 'dental' | 'salon' | 'coaching' | 'real_estate' | 'professional_services';
       city?: string;
       limit?: number;
+      isManual?: boolean;
     } = {}
   ): Promise<ProspectDiscoveryResult> {
-    const vertical = options.vertical || this.pickNextTargetVertical();
-    const city = options.city || this.pickNextTargetCity();
+    const vertical = options.vertical || (isProduction() ? await this.pickNextTargetVerticalAsync() : this.pickNextTargetVertical());
+    const city = options.city || (isProduction() ? await this.pickNextTargetCityAsync() : this.pickNextTargetCity());
     const limit = options.limit || 3;
+    const queryKey = `prospects_${vertical}_${city}`.toLowerCase();
+
+    // 0. 7-DAY QUERY COOLDOWN: Do not rerun the same query within 7 days unless triggered manually
+    if (!options.isManual) {
+      try {
+        const recentCache = await this.d1Repo.queryOne<{ id: string; created_at: string }>(
+          'search_cache',
+          `SELECT id, created_at FROM search_cache
+           WHERE query_normalized = ? AND created_at > datetime('now', '-7 days')
+           LIMIT 1`,
+          [queryKey]
+        );
+        if (recentCache) {
+          return {
+            status: 'NO_NEW_PROSPECTS',
+            count: 0,
+            prospects: [],
+            reason: `DISCOVERY_COOLDOWN_ACTIVE: Query '${queryKey}' was executed within last 7 days (at ${recentCache.created_at}). Automatic re-runs are skipped for 7 days.`
+          };
+        }
+      } catch {}
+    }
+
+    // Preload existing tenant domains and source URLs to deduplicate discovery
+    const existingDomains = new Set<string>();
+    const existingSourceUrls = new Set<string>();
+    try {
+      const existingRows = await this.d1Repo.query<{
+        website_url?: string;
+        prospect_website?: string;
+        discovery_evidence_json?: string;
+        observed_evidence_json?: string;
+      }>(
+        'platform_prospects',
+        `SELECT website_url, prospect_website, discovery_evidence_json, observed_evidence_json
+         FROM platform_prospects`
+      );
+      for (const row of existingRows) {
+        if (row.website_url) existingDomains.add(normalizeDomain(row.website_url));
+        if (row.prospect_website) existingDomains.add(normalizeDomain(row.prospect_website));
+        try {
+          const ev = JSON.parse(row.discovery_evidence_json || row.observed_evidence_json || '{}');
+          if (ev.evidenceSourceUrl) existingSourceUrls.add(normalizeUrl(ev.evidenceSourceUrl));
+          if (ev.websiteUrl) existingDomains.add(normalizeDomain(ev.websiteUrl));
+        } catch {}
+      }
+    } catch {}
+
+    const filterCandidates = (candidatesList: DiscoveredProspectCandidate[]) => {
+      return candidatesList.filter(c => {
+        if (!this.validateCandidate(c)) return false;
+        const dom = normalizeDomain(c.websiteUrl);
+        const srcUrl = normalizeUrl(c.evidenceSourceUrl);
+        if (dom && existingDomains.has(dom)) return false;
+        if (srcUrl && existingSourceUrls.has(srcUrl)) return false;
+        return true;
+      });
+    };
 
     // 1. CACHE CHECK: Check existing discovered but unexhausted prospects or fresh search_cache
     const cachedCandidates = isProduction() ? await this.checkCacheAsync(vertical, city, limit) : this.checkCache(vertical, city, limit);
-    if (cachedCandidates.length > 0) {
-      const persisted = await this.persistCandidates(cachedCandidates, organizationId, businessId, 'CACHE_REUSE');
+    const validCached = filterCandidates(cachedCandidates);
+    if (validCached.length > 0) {
+      const persisted = await this.persistCandidates(validCached, organizationId, businessId, 'CACHE_REUSE');
       if (persisted.length > 0) {
         return {
           status: 'PROSPECTS_DISCOVERED',
@@ -128,7 +237,7 @@ export class PlatformProspectDiscoveryEngine {
       // In test environments where TAVILY_API_KEY is not set, provide deterministic evidence-backed fixtures
       if (process.env.NODE_ENV === 'test') {
         const fixtures = this.getDeterministicTestFixtures(vertical, city, limit);
-        const validCandidates = fixtures.filter(c => this.validateCandidate(c));
+        const validCandidates = filterCandidates(fixtures);
         if (validCandidates.length > 0) {
           const persisted = await this.persistCandidates(validCandidates, organizationId, businessId, 'TAVILY_RESEARCH');
           if (persisted.length > 0) {
@@ -164,8 +273,9 @@ export class PlatformProspectDiscoveryEngine {
     try {
       const candidates = await this.discoverViaTavily(vertical, city, limit);
       this.quotaService.reconcile(gate.reservationId, 1, true);
+      this.quotaService.logCall('TAVILY', 'DISCOVER_PROSPECTS', 'P3', 1, true, false);
 
-      const validCandidates = candidates.filter(c => this.validateCandidate(c));
+      const validCandidates = filterCandidates(candidates);
       if (validCandidates.length > 0) {
         const persisted = await this.persistCandidates(validCandidates, organizationId, businessId, 'TAVILY_RESEARCH');
         if (persisted.length > 0) {
@@ -178,15 +288,38 @@ export class PlatformProspectDiscoveryEngine {
         }
       }
 
-      // If Tavily returns no results, return empty — do not fall back to Gemini
+      // Record query in search_cache so 7-day cooldown holds even when all candidates were duplicates
+      try {
+        await this.d1Repo.executeWrite(
+          'search_cache',
+          `INSERT INTO search_cache (
+            id, query_normalized, provider, raw_response_json, results_count,
+            data_classification, source_verified, created_at, expires_at
+          ) VALUES (?, ?, 'tavily', ?, ?, ?, 1, datetime('now'), datetime('now', '+7 days'))
+          ON CONFLICT(query_normalized) DO UPDATE SET
+            results_count = excluded.results_count,
+            expires_at = datetime('now', '+7 days')`,
+          [
+            `sc_${Date.now()}`,
+            queryKey,
+            JSON.stringify(candidates.map(c => ({ businessName: c.businessName, websiteUrl: c.websiteUrl }))),
+            candidates.length,
+            isProduction() ? 'REAL_DATA' : 'TEST_DATA'
+          ]
+        );
+      } catch {}
+
       return {
         status: 'NO_NEW_PROSPECTS',
         count: 0,
         prospects: [],
-        reason: 'No new unique prospects with verified evidence discovered via Tavily in this cycle.'
+        reason: candidates.length > 0
+          ? 'All discovered candidates from query already exist for tenant.'
+          : 'No new unique prospects with verified evidence discovered via Tavily in this cycle.'
       };
     } catch (err: any) {
       this.quotaService.reconcile(gate.reservationId, 1, false);
+      this.quotaService.logCall('TAVILY', 'DISCOVER_PROSPECTS', 'P3', 1, false, false, err.message);
       console.warn(`[PlatformProspectDiscoveryEngine] Tavily research failed: ${err.message}`);
       return {
         status: 'NO_NEW_PROSPECTS',
@@ -228,6 +361,13 @@ export class PlatformProspectDiscoveryEngine {
     // Must have source URL
     if (!c.evidenceSourceUrl || !c.evidenceSourceUrl.startsWith('http')) return false;
     if (isProduction() && (c.evidenceSourceUrl.includes('.local') || c.evidenceSourceUrl.includes('test-fixture'))) return false;
+
+    // Reject junk, directory, or aggregator domains
+    const websiteDomain = normalizeDomain(c.websiteUrl);
+    const sourceDomain = normalizeDomain(c.evidenceSourceUrl);
+    if (JUNK_AND_DIRECTORY_DOMAINS.has(websiteDomain) || JUNK_AND_DIRECTORY_DOMAINS.has(sourceDomain)) {
+      return false;
+    }
 
     // Must have evidence snippet (or observedGap) - non-empty
     if (c.evidenceSnippet !== undefined && !c.evidenceSnippet.trim()) {
@@ -736,13 +876,13 @@ export class PlatformProspectDiscoveryEngine {
           `INSERT INTO search_cache (
             id, query_normalized, provider, raw_response_json, results_count,
             data_classification, source_verified, created_at, expires_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now', '+24 hours'))
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now', '+7 days'))
           ON CONFLICT(query_normalized) DO UPDATE SET
             raw_response_json = excluded.raw_response_json,
             results_count = excluded.results_count,
             data_classification = excluded.data_classification,
             source_verified = excluded.source_verified,
-            expires_at = datetime('now', '+24 hours')`,
+            expires_at = datetime('now', '+7 days')`,
           [
             `sc_${Date.now()}`,
             cacheKey,
@@ -759,7 +899,82 @@ export class PlatformProspectDiscoveryEngine {
     return persisted;
   }
 
-  private pickNextTargetVertical(): 'clinic' | 'dental' | 'salon' | 'coaching' | 'real_estate' | 'professional_services' {
+  public async pickNextTargetVerticalAsync(): Promise<'clinic' | 'dental' | 'salon' | 'coaching' | 'real_estate' | 'professional_services'> {
+    const verticals: Array<'clinic' | 'dental' | 'salon' | 'coaching' | 'real_estate' | 'professional_services'> = [
+      'dental',
+      'clinic',
+      'salon',
+      'coaching',
+      'real_estate',
+      'professional_services'
+    ];
+    try {
+      const countRows = await this.d1Repo.query<{ prospect_vertical: string; cnt: number }>(
+        'platform_prospects',
+        `SELECT prospect_vertical, COUNT(*) as cnt
+        FROM platform_prospects
+        WHERE prospect_vertical IS NOT NULL AND status != 'REJECTED'
+        GROUP BY prospect_vertical`
+      );
+
+      const verticalCounts = new Map<string, number>(
+        verticals.map(v => [v, 0])
+      );
+      for (const row of countRows) {
+        if (verticalCounts.has(row.prospect_vertical as any)) {
+          verticalCounts.set(row.prospect_vertical, Number(row.cnt));
+        }
+      }
+      let minCount = Infinity;
+      let chosen: typeof verticals[0] = verticals[0];
+      for (const v of verticals) {
+        const c = verticalCounts.get(v) ?? 0;
+        if (c < minCount) {
+          minCount = c;
+          chosen = v;
+        }
+      }
+      return chosen;
+    } catch {
+      return this.pickNextTargetVertical();
+    }
+  }
+
+  public async pickNextTargetCityAsync(): Promise<string> {
+    const cities = ['Hyderabad', 'Bengaluru', 'Mumbai', 'Pune', 'Delhi NCR', 'Chennai'];
+    try {
+      const countRows = await this.d1Repo.query<{ prospect_city: string; cnt: number }>(
+        'platform_prospects',
+        `SELECT prospect_city, COUNT(*) as cnt
+        FROM platform_prospects
+        WHERE prospect_city IS NOT NULL AND status != 'REJECTED'
+        GROUP BY prospect_city`
+      );
+
+      const cityCounts = new Map<string, number>(
+        cities.map(c => [c, 0])
+      );
+      for (const row of countRows) {
+        if (cityCounts.has(row.prospect_city)) {
+          cityCounts.set(row.prospect_city, Number(row.cnt));
+        }
+      }
+      let minCount = Infinity;
+      let chosen: string = cities[0];
+      for (const city of cities) {
+        const c = cityCounts.get(city) ?? 0;
+        if (c < minCount) {
+          minCount = c;
+          chosen = city;
+        }
+      }
+      return chosen;
+    } catch {
+      return this.pickNextTargetCity();
+    }
+  }
+
+  public pickNextTargetVertical(): 'clinic' | 'dental' | 'salon' | 'coaching' | 'real_estate' | 'professional_services' {
     const verticals: Array<'clinic' | 'dental' | 'salon' | 'coaching' | 'real_estate' | 'professional_services'> = [
       'dental',
       'clinic',
@@ -775,7 +990,7 @@ export class PlatformProspectDiscoveryEngine {
           'platform_prospects',
           `SELECT prospect_vertical, COUNT(*) as cnt
           FROM platform_prospects
-          WHERE prospect_vertical IS NOT NULL
+          WHERE prospect_vertical IS NOT NULL AND status != 'REJECTED'
           GROUP BY prospect_vertical`
         );
 
@@ -802,7 +1017,7 @@ export class PlatformProspectDiscoveryEngine {
     return verticals[0];
   }
 
-  private pickNextTargetCity(): string {
+  public pickNextTargetCity(): string {
     const cities = ['Hyderabad', 'Bengaluru', 'Mumbai', 'Pune', 'Delhi NCR', 'Chennai'];
     // Deterministic rotation: find least-recently-targeted city in DB
     if (!isProduction()) {
@@ -811,7 +1026,7 @@ export class PlatformProspectDiscoveryEngine {
           'platform_prospects',
           `SELECT prospect_city, COUNT(*) as cnt
           FROM platform_prospects
-          WHERE prospect_city IS NOT NULL
+          WHERE prospect_city IS NOT NULL AND status != 'REJECTED'
           GROUP BY prospect_city`
         );
 

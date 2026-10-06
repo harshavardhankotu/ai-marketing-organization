@@ -188,53 +188,41 @@ export class LiveProviderActivation {
       }
     }
 
-    // 1. Primary Blocker: Outbound communication unavailable
-    const wa = statuses.OUTBOUND_WHATSAPP;
-    const email = statuses.OUTBOUND_EMAIL;
-    if (!wa.isLiveVerified && !email.isLiveVerified) {
+    // Phase 1 Requirements (§ 1, § 16, § 17):
+    // Active commercial model is Autonomous Commission / Referral Engine.
+    // Core prerequisites are RESEARCH (Tavily), AI (Gemini), and STORAGE (D1).
+    // OUTBOUND_EMAIL, OUTBOUND_WHATSAPP, and PAYMENTS are optional future adapters.
+    const research = statuses.RESEARCH;
+    if (!research.isLiveVerified) {
       return {
-        blocker: 'OUTBOUND_UNAVAILABLE',
-        cause: 'No authorized WhatsApp or Email provider is configured with live credentials',
-        consequence: 'Organization cannot contact newly discovered prospects or follow up with leads',
-        nextHumanSetup: 'Configure one approved outbound provider (META_ACCESS_TOKEN + WHATSAPP_PHONE_NUMBER_ID or SENDGRID_API_KEY) in environment',
-        expectedUnlock: 'Enables LIVE_EXTERNAL_ACTION capability and direct commercial outreach to target SMBs',
+        blocker: 'RESEARCH_UNAVAILABLE',
+        cause: 'Tavily research API key not verified or quota exhausted',
+        consequence: 'System cannot discover real organic search demand or verify external partner offers',
+        nextHumanSetup: 'Configure valid TAVILY_API_KEY in environment',
+        expectedUnlock: 'Enables autonomous market research, intent discovery, and partner verification',
         unconfiguredProviders: unconfigured
       };
     }
 
-    // 2. Secondary Blocker: Payment collection unavailable
-    const payment = statuses.PAYMENTS;
-    if (!payment.isLiveVerified) {
+    const ai = statuses.AI;
+    if (!ai.isLiveVerified) {
       return {
-        blocker: 'PAYMENTS_UNAVAILABLE',
-        cause: 'Razorpay live credentials not verified (RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET missing or in test mode)',
-        consequence: 'System cannot issue legally binding payment links or collect verified commercial revenue',
-        nextHumanSetup: 'Configure live RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in environment',
-        expectedUnlock: 'Enables instant proposal payment link generation and VERIFIED_REVENUE recording',
-        unconfiguredProviders: unconfigured
-      };
-    }
-
-    // 3. Tertiary Blocker: Calendar unavailable
-    const cal = statuses.CALENDAR;
-    if (!cal.isLiveVerified) {
-      return {
-        blocker: 'CALENDAR_UNAVAILABLE',
-        cause: 'Google Calendar API credentials not authenticated',
-        consequence: 'Consultations recorded as internal appointments rather than live synced calendar events',
-        nextHumanSetup: 'Authenticate Google Calendar OAuth in environment (GOOGLE_CALENDAR_CREDENTIALS)',
-        expectedUnlock: 'Enables real-time calendar synchronization for client sales discovery calls',
+        blocker: 'AI_UNAVAILABLE',
+        cause: 'Gemini API key not verified or quota exhausted',
+        consequence: 'System cannot analyze demand signals or generate quality acquisition content',
+        nextHumanSetup: 'Configure valid GEMINI_API_KEY in environment',
+        expectedUnlock: 'Enables autonomous reasoning, content generation, and demand-offer matching',
         unconfiguredProviders: unconfigured
       };
     }
 
     return {
-      blocker: 'NONE_ALL_PROVIDERS_READY',
-      cause: 'All commercial providers are verified and active',
-      consequence: 'Full end-to-end commercial autonomous revenue loop is operational',
-      nextHumanSetup: 'None. Maintain autonomous monitoring loop.',
-      expectedUnlock: 'Continuous discovery, outreach, and revenue generation',
-      unconfiguredProviders: []
+      blocker: 'NONE_COMMISSION_ENGINE_ACTIVE',
+      cause: 'Phase 1 Autonomous Commission & Referral Engine is fully operational with live Tavily research, Gemini AI, and durable Cloudflare D1 storage.',
+      consequence: 'System operates autonomously via organic demand discovery, content assets, and external partner referrals.',
+      nextHumanSetup: 'None required for Phase 1. (Optional: direct email/WhatsApp/payment credentials when expanding beyond Phase 1).',
+      expectedUnlock: 'Continuous demand discovery, content asset generation, referral attribution, and verified commission reconciliation',
+      unconfiguredProviders: unconfigured
     };
   }
 

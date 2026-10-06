@@ -30,7 +30,8 @@ export type OpportunityStatus =
   | 'CONVERTING'
   | 'WON'
   | 'LOST'
-  | 'IGNORED';
+  | 'IGNORED'
+  | 'REJECTED';
 
 export interface OpportunityEvidence {
   type: 'TAVILY_RESULT' | 'INBOUND_LEAD' | 'REFERRAL' | 'GBP_DATA' | 'CUSTOMER_SIGNAL';

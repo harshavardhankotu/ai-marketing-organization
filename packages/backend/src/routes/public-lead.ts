@@ -11,8 +11,9 @@ import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { CustomerJourneyTracker } from '../revenue/customer-journey-tracker.js';
 import { DPDPComplianceManager } from '../compliance/dpdp-manager.js';
 import { isProduction } from '../config/env.js';
+import { isDemoBusiness, isPublicLiveBusiness } from '../security/public-tenant-guard.js';
+import { DurableRateLimiter } from '../security/durable-rate-limiter.js';
 
-const publicRateLimitMap = new Map<string, number[]>();
 const journeyTracker = new CustomerJourneyTracker();
 const dpdpManager = new DPDPComplianceManager();
 
@@ -32,22 +33,30 @@ export async function handlePublicLeadRequest(c: Context): Promise<Response> {
     }, 400);
   }
 
+  // Hide demo businesses
+  if (isDemoBusiness(businessId) || isDemoBusiness(businessSlug)) {
+    return c.json({
+      success: false,
+      error: `PUBLIC_BUSINESS_NOT_FOUND: The requested business '${businessId || businessSlug}' was not found or is inactive.`
+    }, 404);
+  }
+
   try {
     if (businessId) {
       biz = await d1Repo.queryOne(
         'businesses',
-        'SELECT id, organization_id, name, vertical_name, country, city, neighborhood FROM businesses WHERE id = ?',
+        'SELECT id, organization_id, name, vertical_name, country, city, neighborhood, public_live FROM businesses WHERE id = ?',
         [businessId]
       );
     } else {
       biz = await d1Repo.queryOne(
         'businesses',
-        'SELECT id, organization_id, name, vertical_name, country, city, neighborhood FROM businesses WHERE lower(public_slug) = ? LIMIT 1',
+        'SELECT id, organization_id, name, vertical_name, country, city, neighborhood, public_live FROM businesses WHERE lower(public_slug) = ? LIMIT 1',
         [businessSlug]
       );
     }
 
-    if (!biz) {
+    if (!biz || !isPublicLiveBusiness(biz)) {
       return c.json({
         success: false,
         error: `PUBLIC_BUSINESS_NOT_FOUND: The requested business '${businessId || businessSlug}' was not found or is inactive.`
@@ -79,18 +88,17 @@ export async function handlePublicLeadRequest(c: Context): Promise<Response> {
     }, 200);
   }
 
-  // 2. Sliding-Window Rate Limiter (Max 10 requests per 10 mins per IP)
-  const clientIp = c.req.header('x-forwarded-for') || c.req.header('cf-connecting-ip') || '127.0.0.1';
-  const nowMs = Date.now();
-  const timestamps = (publicRateLimitMap.get(clientIp) || []).filter(t => nowMs - t < 10 * 60 * 1000);
-  if (timestamps.length >= 10) {
+  // 2. Durable Sliding-Window Rate Limiter (Max 10 requests per 10 mins per IP hash)
+  const clientIp = c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for')?.split(',')[0]?.trim() || '127.0.0.1';
+  const limiter = DurableRateLimiter.getInstance();
+  const rateLimit = await limiter.checkRateLimit('/public/lead', clientIp, 10, 600);
+  if (!rateLimit.allowed) {
     return c.json({
       success: false,
-      error: 'Rate limit exceeded: Too many consultation requests from this network. Please wait a few minutes or contact the business directly.'
+      error: 'Rate limit exceeded: Too many consultation requests from this network. Please wait a few minutes or contact the business directly.',
+      retryAfterSeconds: rateLimit.retryAfterSeconds
     }, 429);
   }
-  timestamps.push(nowMs);
-  publicRateLimitMap.set(clientIp, timestamps);
 
   const customerName = (body.customerName || body.fullName || body.name || '').trim();
   const customerPhone = (body.customerPhone || body.phone || body.phoneNumber || '').trim();

@@ -146,7 +146,7 @@ export const UniversalFunnelPage: React.FC = () => {
           setFunnel(res.data.funnel);
           if (Array.isArray(res.data.offers) && res.data.offers.length > 0) {
             setCustomOffers(res.data.offers);
-            setSelectedOffer((current) => current || res.data.offers[0].title);
+            setSelectedOffer((current) => current || res.data.offers[0].id);
           }
           setLocation((current) => current || (
             nextBusiness.neighborhood
@@ -193,6 +193,46 @@ export const UniversalFunnelPage: React.FC = () => {
     setSubmitting(true);
 
     try {
+      const matchedOffer = customOffers.find((o) => o.id === selectedOffer || o.title === selectedOffer);
+      const idempotencyKey = `funnel_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+      // Universal checkout: lead + order + provider in ONE call (final money path).
+      if (matchedOffer?.id && business?.id) {
+        try {
+          const checkout: any = await api.universalCheckout({
+            businessId: business.id,
+            businessSlug: (business as any)?.public_slug || undefined,
+            offerId: matchedOffer.id,
+            funnelSlug,
+            funnelId: funnel?.id || undefined,
+            customerName: name.trim(),
+            customerPhone: phone.trim(),
+            customerEmail: email.trim() || undefined,
+            paymentMethod: 'AUTO',
+            idempotencyKey,
+            consentGiven: true,
+            utmSource: searchParams.get('utm_source') || undefined,
+            utmMedium: searchParams.get('utm_medium') || undefined,
+            utmCampaign: searchParams.get('utm_campaign') || undefined,
+            metadata: {
+              serviceOfInterest: matchedOffer.title || need.trim() || 'General enquiry',
+              intent: need.trim() || intentFromQuery || undefined,
+              location: location.trim() || undefined,
+              notes: notes.trim() || undefined,
+              landingPage: typeof window !== 'undefined' ? window.location.pathname : `/f/${businessId}/${funnelSlug}`,
+              website_url_hp: honeypot || undefined,
+            },
+          });
+          if (checkout?.success) {
+            setSubmitted({ ...checkout.data, leadId: checkout.data?.orderId, checkout: checkout.data, selectedOfferId: matchedOffer.id, isUniversalCheckout: true });
+            return;
+          }
+          throw new Error(checkout?.error || 'Checkout failed.');
+        } catch (checkoutErr: any) {
+          console.warn('[Funnel] universal checkout failed, falling back to lead-only:', checkoutErr?.message);
+        }
+      }
+
       const payload = {
         businessId: business?.id,
         businessSlug: business?.public_slug || undefined,
@@ -230,7 +270,28 @@ export const UniversalFunnelPage: React.FC = () => {
         throw new Error(res?.error || 'Lead submission failed.');
       }
 
-      setSubmitted(res.data);
+      // Money fix: immediately create a server-authoritative universal order so
+      // funnel captures payment, not just a free lead. Best-effort — lead still counts if checkout fails.
+      const fallbackOffer = customOffers.find((o) => o.id === selectedOffer || o.title === selectedOffer);
+      let checkout: any = null;
+      if (fallbackOffer?.id && business?.id) {
+        try {
+          checkout = await api.createUniversalOrder({
+            businessId: business.id,
+            businessSlug: business.public_slug || undefined,
+            offerId: fallbackOffer.id,
+            funnelId: funnel?.id || undefined,
+            customerName: name.trim(),
+            customerPhone: phone.trim(),
+            customerEmail: email.trim() || undefined,
+            idempotencyKey: res?.data?.leadId || `lead_${Date.now()}`,
+          });
+        } catch (checkoutErr: any) {
+          console.warn('[Funnel] checkout creation failed after lead:', checkoutErr?.message);
+        }
+      }
+
+      setSubmitted({ ...res.data, checkout: checkout?.data || null, selectedOfferId: fallbackOffer?.id || selectedOffer });
     } catch (e: any) {
       setSubmitError(e?.message || 'Unable to submit your request. Please try again.');
     } finally {
@@ -416,10 +477,10 @@ export const UniversalFunnelPage: React.FC = () => {
                 className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-3 text-sm outline-none focus:border-cyan-500"
               >
                 {offerings.map((offer) => (
-                  <option key={`${offer.id || offer.title}`} value={offer.title}>
+                  <option key={`${offer.id || offer.title}`} value={offer.id || offer.title}>
                     {offer.title}
-                    {typeof offer.priceMinor === 'number'
-                      ? ` — ${(offer.priceMinor / 100).toLocaleString(undefined, { style: 'currency', currency: business.currency || 'USD' })}`
+                    {typeof offer.priceMinor === 'number' && offer.currency
+                      ? ` — ${(offer.priceMinor / Math.pow(10, offer.currency === 'JPY' || offer.currency === 'KRW' ? 0 : (offer.currency === 'KWD' || offer.currency === 'BHD' || offer.currency === 'OMR' ? 3 : 2))).toLocaleString(undefined, { style: 'currency', currency: offer.currency })}`
                       : typeof offer.priceINR === 'number'
                         ? ` — ₹${offer.priceINR.toLocaleString('en-IN')}`
                         : ''}

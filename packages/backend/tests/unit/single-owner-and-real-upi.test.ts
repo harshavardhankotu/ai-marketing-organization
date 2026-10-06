@@ -119,7 +119,7 @@ describe('Single Owner, Real UPI & Production Commercial Architecture (Spec §§
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          businessId: 'biz_smilekraft_hyd',
+          businessId: 'biz_test_live',
           customerName: 'Sanjay Reddy',
           customerPhone: '+91-99887-76655',
           utmSource: 'DIRECT'

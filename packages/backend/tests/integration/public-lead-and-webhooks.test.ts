@@ -4,7 +4,7 @@ import { resetDbForTesting, getDb } from '../../src/db/client.js';
 import { seedDatabase } from '../../src/db/seed.js';
 
 describe('Public Lead Capture & Payment Webhook Ingestion (Integration)', () => {
-  const businessId = 'biz_smilekraft_hyd';
+  const businessId = 'biz_test_live';
   const orgId = 'org_smilekraft_01';
 
   beforeEach(() => {

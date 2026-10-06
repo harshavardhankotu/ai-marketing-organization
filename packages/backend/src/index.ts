@@ -9,6 +9,7 @@ import { apiRouter } from './routes/api.js';
 import { seedDatabase } from './db/seed.js';
 import { validateProductionSecrets, loadLocalEnvFile } from './config/env.js';
 import { DailyMarketResearchScheduler } from './scheduler/daily-research-scheduler.js';
+import { UnifiedQuotaService } from './quota/unified-quota-service.js';
 
 // Safely load local .env or .env.local if present
 loadLocalEnvFile();
@@ -95,6 +96,78 @@ app.get('/api/health', (c) => {
 // Mount domain routes under /api/v1
 app.route('/api/v1', apiRouter);
 
+// Top-level public referral redirect route: /r/:offerSlug/:referralId (Spec § 5 & § 18)
+app.get('/r/:offerSlug/:referralId', async (c) => {
+  const offerSlug = c.req.param('offerSlug');
+  const referralId = c.req.param('referralId');
+  try {
+    const { ReferralTrackingEngine } = await import('./commission/referral-tracking.js');
+    const trackingEngine = ReferralTrackingEngine.getInstance();
+    const clickData = {
+      ip: c.req.header('x-forwarded-for') || c.req.header('cf-connecting-ip') || '127.0.0.1',
+      userAgent: c.req.header('user-agent'),
+      referer: c.req.header('referer'),
+      source: c.req.query('utm_source') || c.req.query('source'),
+      medium: c.req.query('utm_medium') || c.req.query('medium'),
+      campaign: c.req.query('utm_campaign') || c.req.query('campaign')
+    };
+    const result = await trackingEngine.resolveReferralClick(offerSlug, referralId, clickData);
+    return c.redirect(result.destinationUrl, 302);
+  } catch (err: any) {
+    return c.json({ error: 'REFERRAL_NOT_FOUND', message: err.message }, 404);
+  }
+});
+
+// Search Engine Discoverability (Spec § 12)
+app.get('/robots.txt', async (c) => {
+  const host = c.req.header('host') || 'ai-marketing-organization.onrender.com';
+  const proto = c.req.header('x-forwarded-proto') || 'https';
+  const baseUrl = `${proto}://${host}`;
+  const robotsTxt = [
+    'User-agent: *',
+    'Allow: /',
+    'Disallow: /api/v1/auth/',
+    'Disallow: /admin',
+    `Sitemap: ${baseUrl}/sitemap.xml`
+  ].join('\n');
+  return c.text(robotsTxt, 200, { 'Content-Type': 'text/plain; charset=utf-8' });
+});
+
+app.get('/sitemap.xml', async (c) => {
+  const host = c.req.header('host') || 'ai-marketing-organization.onrender.com';
+  const proto = c.req.header('x-forwarded-proto') || 'https';
+  const baseUrl = `${proto}://${host}`;
+
+  let publishedSlugs: { slug: string; updated_at?: string }[] = [];
+  try {
+    const { D1RevenueRepository } = await import('./db/d1-revenue-repository.js');
+    const d1Repo = D1RevenueRepository.getInstance();
+    publishedSlugs = await d1Repo.query<any>(
+      'commission_content_assets',
+      `SELECT slug, updated_at FROM commission_content_assets WHERE status = 'PUBLISHED' ORDER BY updated_at DESC`,
+      []
+    );
+  } catch {
+    publishedSlugs = [];
+  }
+
+  const staticUrls = [
+    `${baseUrl}/`,
+    `${baseUrl}/public/disclosure`
+  ];
+
+  const contentUrls = publishedSlugs.map(a => `${baseUrl}/guides/${a.slug}`);
+  const allUrls = [...staticUrls, ...contentUrls];
+
+  const xmlEntries = allUrls
+    .map(url => `  <url>\n    <loc>${url}</loc>\n    <changefreq>daily</changefreq>\n    <priority>0.8</priority>\n  </url>`)
+    .join('\n');
+
+  const sitemapXml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${xmlEntries}\n</urlset>`;
+
+  return c.text(sitemapXml, 200, { 'Content-Type': 'application/xml; charset=utf-8' });
+});
+
 // Static frontend assets and public landing page routing
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -157,7 +230,15 @@ export async function startServer(): Promise<any> {
     }
   }
 
-  // 3. Start autonomous background scheduler for continuous market intelligence & research
+  // 3. Durable Quota Gate: Synchronize counters from Cloudflare D1
+  try {
+    await UnifiedQuotaService.getInstance().syncFromD1Async();
+    console.log('[Quota Gate] Synchronized durable quota counters from Cloudflare D1.');
+  } catch (err: any) {
+    console.warn('[Quota Gate] Quota synchronization failed:', err.message);
+  }
+
+  // 4. Start autonomous background scheduler for continuous market intelligence & research
   try {
     DailyMarketResearchScheduler.getInstance().startScheduler();
   } catch (err: any) {

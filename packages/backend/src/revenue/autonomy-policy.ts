@@ -247,12 +247,13 @@ export class AutonomyPolicyController {
     try {
       // Check outbound_contacts table
       const outbound = db.prepare(`
-        SELECT is_opted_out, is_bounced, is_suppressed, suppression_reason
+        SELECT is_opted_out, is_bounced, is_suppressed, suppression_reason, status
         FROM outbound_contacts
         WHERE id = ? OR prospect_email = ? OR prospect_phone = ?
       `).get(raw, raw, raw) as any;
 
       if (outbound) {
+        if (outbound.status === 'REJECTED' || outbound.suppression_reason === 'REJECTED') return 'BLOCKED';
         if (outbound.is_opted_out || outbound.suppression_reason === 'DO_NOT_CONTACT') return 'DO_NOT_CONTACT';
         if (outbound.suppression_reason === 'UNSUBSCRIBED') return 'UNSUBSCRIBED';
         if (outbound.is_bounced) return 'BOUNCED';
@@ -261,12 +262,13 @@ export class AutonomyPolicyController {
 
       // Check platform_prospects table
       const prospect = db.prepare(`
-        SELECT is_opted_out, stage
+        SELECT is_opted_out, stage, status
         FROM platform_prospects
         WHERE id = ? OR prospect_email = ? OR prospect_phone = ?
       `).get(raw, raw, raw) as any;
 
       if (prospect) {
+        if (prospect.status === 'REJECTED') return 'BLOCKED';
         if (prospect.is_opted_out || prospect.stage === 'DO_NOT_CONTACT') return 'DO_NOT_CONTACT';
       }
 

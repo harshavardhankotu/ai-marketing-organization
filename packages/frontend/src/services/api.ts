@@ -127,6 +127,8 @@ export const api = {
     fetchApi(`/public/funnel/${encodeURIComponent(businessSlug)}${funnelSlug ? `/${encodeURIComponent(funnelSlug)}` : ''}`),
   createUniversalOrder: (data: any) =>
     fetchApi('/public/order', { method: 'POST', body: JSON.stringify(data) }),
+  universalCheckout: (data: any) =>
+    fetchApi('/public/checkout', { method: 'POST', body: JSON.stringify(data) }),
   createBookingReservation: (data: any) =>
     fetchApi('/public/booking', { method: 'POST', body: JSON.stringify(data) }),
   getAvailability: (businessSlug: string) =>
@@ -198,7 +200,7 @@ export const api = {
   getGBPOAuthStatus: () => fetchApi('/organic/gbp/oauth/status'),
   recordPublicationEvidence: (id: string, data: any) => fetchApi(`/organic/content/${id}/publish-evidence`, { method: 'POST', body: JSON.stringify(data) }),
   // Live Payment Gateway (Razorpay & Inbound UPI)
-  createPaymentOrder: (data: { businessId?: string; journeyId?: string; amountINR: number; receipt?: string; service?: string; notes?: any }) =>
+  createPaymentOrder: (data: { businessId?: string; journeyId?: string; amountINR: number; receipt?: string; service?: string; notes?: any; offerId?: string; organizationId?: string }) =>
     fetchApi('/payments/razorpay/create-order', { method: 'POST', body: JSON.stringify(data) }),
   verifyPayment: (data: { orderId: string; paymentId: string; signature: string; method?: string }) =>
     fetchApi('/payments/razorpay/verify', { method: 'POST', body: JSON.stringify(data) }),
@@ -208,7 +210,7 @@ export const api = {
     fetchApi('/payments/manual-upi/confirm', { method: 'POST', body: JSON.stringify(data) }),
   getPendingUpiClaims: () =>
     fetchApi('/payments/manual-upi/claims'),
-  createRazorpayPaymentLink: (data: { businessId?: string; amountINR: number; description: string; customer?: any; proposalId?: string; prospectId?: string }) =>
+  createRazorpayPaymentLink: (data: { businessId?: string; amountINR: number; description: string; customer?: any; proposalId?: string; prospectId?: string; offerId: string; organizationId?: string }) =>
     fetchApi('/payments/razorpay/create-payment-link', { method: 'POST', body: JSON.stringify(data) }),
   // Single-Owner Auth & Administration
   loginOwner: (apiKey: string) =>

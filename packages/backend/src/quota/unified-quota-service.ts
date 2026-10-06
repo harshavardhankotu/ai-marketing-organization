@@ -23,6 +23,8 @@
  */
 
 import { getDb } from '../db/client.js';
+import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
+import { isProduction } from '../config/env.js';
 
 export type QuotaPriority = 'P0' | 'P1' | 'P2' | 'P3' | 'P4';
 export type ProviderName = 'GEMINI' | 'TAVILY';
@@ -76,6 +78,7 @@ export interface AutomationHealthSummary {
 export class UnifiedQuotaService {
   private static instance: UnifiedQuotaService;
   private activeReservations: Map<string, QuotaReservation> = new Map();
+  private d1Repo = D1RevenueRepository.getInstance();
 
   private constructor() {
     this.ensureInitialized();
@@ -384,6 +387,74 @@ export class UnifiedQuotaService {
     };
   }
 
+  public async canMakeRequestAsync(provider: ProviderName, priority: QuotaPriority, purpose: string) {
+    await this.syncFromD1Async();
+    return this.canMakeRequest(provider, priority, purpose);
+  }
+
+  public async syncFromD1Async(): Promise<void> {
+    if (!isProduction()) return;
+    try {
+      const rows = await this.d1Repo.query('provider_quota_state', `SELECT * FROM provider_quota_state`);
+      if (Array.isArray(rows) && rows.length > 0) {
+        const db = getDb();
+        for (const row of rows) {
+          db.prepare(`
+            INSERT INTO provider_quota_state (
+              id, provider, provider_limit, application_limit, requests_today,
+              credits_consumed_month, credits_estimated_remaining, rate_limit_responses,
+              successful_requests, failed_requests, is_locked, lock_reason,
+              last_reset, next_reset, reset_window_hours, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(provider) DO UPDATE SET
+              requests_today = excluded.requests_today,
+              credits_consumed_month = excluded.credits_consumed_month,
+              credits_estimated_remaining = excluded.credits_estimated_remaining,
+              rate_limit_responses = excluded.rate_limit_responses,
+              successful_requests = excluded.successful_requests,
+              failed_requests = excluded.failed_requests,
+              is_locked = excluded.is_locked,
+              lock_reason = excluded.lock_reason,
+              last_reset = excluded.last_reset,
+              next_reset = excluded.next_reset,
+              updated_at = excluded.updated_at
+          `).run(
+            row.id, row.provider, row.provider_limit, row.application_limit, row.requests_today,
+            row.credits_consumed_month, row.credits_estimated_remaining, row.rate_limit_responses,
+            row.successful_requests || 0, row.failed_requests || 0, row.is_locked, row.lock_reason,
+            row.last_reset, row.next_reset, row.reset_window_hours, row.updated_at
+          );
+        }
+      }
+    } catch (err: any) {
+      console.warn(`[UnifiedQuotaService] syncFromD1Async error: ${err.message}`);
+    }
+  }
+
+  public logCall(
+    provider: ProviderName,
+    actionType: string,
+    priority: string,
+    units: number,
+    success: boolean,
+    isRateLimit: boolean,
+    error?: string
+  ): void {
+    const id = `call_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const sql = `
+      INSERT INTO provider_call_logs (
+        id, provider, action_type, priority, units, success, is_rate_limit, error, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    `;
+    const params = [id, provider, actionType, priority, units, success ? 1 : 0, isRateLimit ? 1 : 0, error || null];
+    if (isProduction()) {
+      this.d1Repo.executeWrite('provider_call_logs', sql, params).catch(() => {});
+    }
+    try {
+      getDb().prepare(sql).run(...params);
+    } catch {}
+  }
+
   public recordRequest(
     provider: ProviderName,
     success: boolean,
@@ -421,6 +492,28 @@ export class UnifiedQuotaService {
         isRateLimit ? 1 : 0, now,
         nextReset, now, provider
       );
+
+      if (isProduction()) {
+        this.d1Repo.executeWrite(
+          'provider_quota_state',
+          `UPDATE provider_quota_state
+           SET requests_today = requests_today + 1,
+               successful_requests = successful_requests + ?,
+               failed_requests = failed_requests + ?,
+               rate_limit_responses = rate_limit_responses + ?,
+               last_successful_request = IIF(?, ?, last_successful_request),
+               last_rate_limit = IIF(?, ?, last_rate_limit),
+               next_reset = COALESCE(?, next_reset),
+               updated_at = ?
+           WHERE provider = 'GEMINI'`,
+          [
+            success ? 1 : 0, success ? 0 : 1, isRateLimit ? 1 : 0,
+            success ? 1 : 0, now,
+            isRateLimit ? 1 : 0, now,
+            nextReset || null, now
+          ]
+        ).catch(() => {});
+      }
     } else if (provider === 'TAVILY') {
       const credits = (row.credits_consumed_month || 0) + creditsConsumed;
       const appLimit = row.application_limit || 800;
@@ -442,7 +535,32 @@ export class UnifiedQuotaService {
         isRateLimit ? 1 : 0, now,
         now, provider
       );
+
+      if (isProduction()) {
+        this.d1Repo.executeWrite(
+          'provider_quota_state',
+          `UPDATE provider_quota_state
+           SET credits_consumed_month = credits_consumed_month + ?,
+               credits_estimated_remaining = MAX(0, application_limit - (credits_consumed_month + ?)),
+               successful_requests = successful_requests + ?,
+               failed_requests = failed_requests + ?,
+               rate_limit_responses = rate_limit_responses + ?,
+               last_successful_request = IIF(?, ?, last_successful_request),
+               last_rate_limit = IIF(?, ?, last_rate_limit),
+               updated_at = ?
+           WHERE provider = 'TAVILY'`,
+          [
+            creditsConsumed, creditsConsumed,
+            success ? 1 : 0, success ? 0 : 1, isRateLimit ? 1 : 0,
+            success ? 1 : 0, now,
+            isRateLimit ? 1 : 0, now,
+            now
+          ]
+        ).catch(() => {});
+      }
     }
+
+    this.logCall(provider, 'api_request', 'P3', creditsConsumed, success, isRateLimit);
   }
 
   public recordProviderMetadata(provider: ProviderName, verifiedLimit: number, resetWindowMs?: number): void {
@@ -466,6 +584,14 @@ export class UnifiedQuotaService {
       SET is_locked = 1, lock_reason = ?, updated_at = ?
       WHERE provider = ?
     `).run(reason, now, provider);
+
+    if (isProduction()) {
+      this.d1Repo.executeWrite(
+        'provider_quota_state',
+        `UPDATE provider_quota_state SET is_locked = 1, lock_reason = ?, updated_at = ? WHERE provider = ?`,
+        [reason, now, provider]
+      ).catch(() => {});
+    }
   }
 
   public unlockProvider(provider: ProviderName): void {
@@ -477,6 +603,14 @@ export class UnifiedQuotaService {
       SET is_locked = 0, lock_reason = NULL, updated_at = ?
       WHERE provider = ?
     `).run(now, provider);
+
+    if (isProduction()) {
+      this.d1Repo.executeWrite(
+        'provider_quota_state',
+        `UPDATE provider_quota_state SET is_locked = 0, lock_reason = NULL, updated_at = ? WHERE provider = ?`,
+        [now, provider]
+      ).catch(() => {});
+    }
   }
 
   public getStatus(): Record<ProviderName, ProviderQuotaStatus> {
