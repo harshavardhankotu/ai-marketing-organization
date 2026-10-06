@@ -16,15 +16,15 @@
 
 | Item | Status | Last Verified Date | Proving Command / Live Endpoint | Evidence & Notes |
 | :--- | :---: | :---: | :--- | :--- |
-| **Local Repository HEAD** | **PASS** | 2026-10-06 | `git rev-parse HEAD` | Branch: `main` |
-| **Deployed Production Commit (Render)** | **PASS** | 2026-10-06 | Render API / Live Endpoint | Service `ai-marketing-organization.onrender.com`<br>Status: `live`<br>Health check responded `2026-10-05T23:25:37Z` |
-| **Render Web Service (Live HTTP)** | **PASS** | 2026-10-06 | `GET https://ai-marketing-organization.onrender.com/api/v1/health` | HTTP 200 OK<br>`{"status":"healthy","version":"1.0.0","service":"AI Marketing Organization Engine"}` |
-| **Cloudflare Worker (Live HTTP)** | **PASS** | 2026-10-06 | `GET https://ai-marketing-cron-worker.vardhankotu.workers.dev/health` | HTTP 200 OK: `{"status":"ok","worker":"ai-marketing-cron-worker"}`<br>Total pings recorded in D1: 176<br>Last observed ping: `2026-10-05 23:01:16 UTC` |
-| **Cloudflare D1 Database** | **PASS** | 2026-10-06 | Cloudflare D1 REST API query | 48 durable tables verified.<br>486 autonomous cycles recorded (407 COMPLETED, 79 FAILED).<br>1,169 prospect rows recorded. |
-| **Public Demand Funnel (Live HTTP)** | **PASS** | 2026-10-06 | `GET https://ai-marketing-organization.onrender.com/api/v1/public/funnel/smilekraft-dental-clinic/main` | HTTP 200 OK without authentication.<br>Serves active funnel `fnl_smilekraft_main`. |
+| **Local Repository HEAD** | **PASS** | 2026-10-06 | `git rev-parse HEAD` | Commit SHA: `f14cebb`<br>Branch: `main` |
+| **Deployed Production Commit (Render)** | **PASS** | 2026-10-06 | Render API / Live Endpoint | Service `ai-marketing-organization.onrender.com`<br>Deploy ID: `dep-db24q67lot8c73dravtg`<br>Commit: `f14cebb`<br>Status: `live`<br>Finished: `2026-10-06T01:22:22.794978Z` |
+| **Render Web Service (Live HTTP)** | **PASS** | 2026-10-06 | `GET https://ai-marketing-organization.onrender.com/api/v1/health` | HTTP 200 OK<br>`{"status":"healthy","version":"1.0.0","service":"AI Marketing Organization Engine"}` (timestamp: `2026-10-06T01:22:51.967Z`) |
+| **Cloudflare Worker (Live HTTP)** | **PASS** | 2026-10-06 | `GET https://ai-marketing-cron-worker.vardhankotu.workers.dev/health` | HTTP 200 OK: `{"status":"ok","worker":"ai-marketing-cron-worker"}`<br>Total pings recorded in D1: 180<br>Last observed ping: `2026-10-06 01:23:41 UTC` |
+| **Cloudflare D1 Database** | **PASS** | 2026-10-06 | Cloudflare D1 REST API query | 52 durable tables verified through migration `0011`.<br>1,181 total prospect rows reconciled.<br>784 rows quarantined as `REJECTED`, 397 rows `DISCOVERED`.<br>Durable rate limits (`durable_rate_limits`) and provider call audit logs (`provider_call_logs`) active. |
+| **Demo Businesses Privacy Quarantine (Live HTTP)** | **PASS** | 2026-10-06 | `GET /api/v1/public/business/:slug` | HTTP 404 returned on all `/api/v1/public/*` routes for demo businesses:<br>- `smilekraft-dental-clinic`: HTTP 404 `PUBLIC_BUSINESS_NOT_FOUND`<br>- `smilekraft-dental-clinic-2`: HTTP 404 `PUBLIC_BUSINESS_NOT_FOUND`<br>- `platform-aro`: HTTP 404 `PUBLIC_BUSINESS_NOT_FOUND`<br>- `fnl_smilekraft_main`: HTTP 404 `BUSINESS_NOT_FOUND` |
+| **Single-Business Cron Execution (Live HTTP)** | **PASS** | 2026-10-06 | `POST /api/v1/cron/ping` with `CRON_PING_SECRET` | HTTP 200 OK. Exactly 1 business processed: `biz_platform_aro` (`COMPLETED`, `BLOCKED_AUTHORIZATION`, `actionsTaken: 0`).<br>Fixtures `biz_smilekraft_hyd` and `biz_1790714233800` paused via kill switch (`PAUSED_FIXTURE_CYCLE`).<br>`GET /cron/status`: `totalPings: 180`, `lastSuccessfulCycle: 2026-10-06 01:23:52`. |
 | **Production Runtime Secrets** | **PASS** | 2026-10-06 | Render `GET /api/v1/diagnostic/env` | `CRON_PING_SECRET`: **CONFIGURED**<br>`OWNER_API_KEY`: **CONFIGURED**<br>`GEMINI_API_KEY`: **CONFIGURED**<br>`TAVILY_API_KEY`: **CONFIGURED** |
-| **Authenticated System Readiness (Live)** | **PASS** | 2026-10-06 | `GET /api/v1/system/reality-report` | HTTP 200 OK with `OWNER_API_KEY`. Correctly identifies `AUTHORIZED_OUTBOUND_MISSING` and `verifiedRevenueINR = 0`. |
-| **Test Suite & Build** | **PASS** | 2026-10-06 | `npm run typecheck && npm test` | Typecheck: 0 errors across 4 workspaces<br>Test files: 50 passed (50)<br>Tests: 467 passed (467)<br>Failed: 0 |
+| **Test Suite & Monorepo Build** | **PASS** | 2026-10-06 | `npm run typecheck && npm test` | Typecheck: 0 errors across 4 workspaces<br>Test files: 51 passed (51)<br>Tests: 478 passed (478)<br>Failed: 0 |
 
 ---
 
@@ -34,8 +34,8 @@
 
 | Stage | Status | First Real Date | Current Evidence & Ground Truth |
 | :--- | :---: | :---: | :--- |
-| **Real Prospects in D1** | **PASS** | 2026-09-30 | 1,169 total prospect rows in Cloudflare D1. 3 distinct real commercial clinics discovered (`fmsdental.com`, `siridentalhospital.com`, `parthadental.com`). 778 duplicate rows from non-business listings (389 duplicates of YouTube video, 389 duplicates of directory listing). |
-| **Real Outbound Contact** | **BLOCKED_AUTHORIZATION** | — | 0 outbound messages dispatched (`outbound_action_ledger` count = 0). Halted safely: live outbound credentials (`SENDGRID_API_KEY` / Meta Cloud WhatsApp) not configured on Render. |
+| **Real Prospects in D1** | **PASS** | 2026-10-06 | 1,181 total prospect rows in Cloudflare D1.<br>- **Quarantined (`REJECTED`):** 784 rows (392 YouTube video URLs + 392 Etacky listicle directory URLs).<br>- **Real Discovered Clinics:** 397 rows (393 duplicate rows of `fmsdental.com` from pre-deduplication cycles + 1 `siridentalhospital.com` + 1 `parthadental.com`).<br>- Discovery deduplication and 7-day query cooldown active (expected ~5.14 cycles/day platform-wide). |
+| **Real Outbound Contact** | **BLOCKED_AUTHORIZATION** | — | 0 outbound messages dispatched (`outbound_action_ledger` count = 0). 395 junk contacts quarantined as `REJECTED` and `is_suppressed = 1`. Fail-closed guards prevent dispatching `REJECTED` contacts even if provider credentials are later added. |
 | **Real Prospect Inbound Response** | **NOT_VERIFIED** | — | 0 customer leads or inbound responses (`customer_journeys` count = 0). |
 | **Real Commercial Proposal** | **NOT_VERIFIED** | — | 0 commercial proposals dispatched (`proposals` count = 0). |
 | **Real Razorpay / Payment Link** | **NOT_CONFIGURED** | — | 0 payment links generated, 0 payments captured (`payment_requests` count = 0). Live Razorpay credentials unconfigured on Render. |
@@ -117,6 +117,14 @@
     - **D1 Schema Alignment:** Created and applied migration `0007_align_prospects_and_opportunities_schema.sql` aligning `platform_prospects` and `opportunities` between Cloudflare D1 and SQLite; updated `persistCandidates` to dual-populate columns.
     - **First Real Commercial Run Verification:** Executed live `POST /api/v1/workflows/autonomous-cycle` on Render for `biz_platform_aro` with `triggerSource = MANUAL`. Real Indian practice contact discovered and successfully persisted across all 5 durable D1 tables (`platform_prospects`, `opportunities`, `outbound_contacts`, `commercial_evidence`, `sales_pipeline`).
     - **Fail-Closed Outbound & Payment Defense:** Outbound outreach halted cleanly with `BLOCKED_AUTHORIZATION` due to unconfigured live SendGrid/Meta WhatsApp credentials. Real revenue strictly confirmed as ₹0 via Cloudflare D1 query.
+24. **2026-10-06 — Stop-The-Waste & Safety Pass (`f14cebb`, live deploy `dep-db24q67lot8c73dravtg`):**
+    - **Fixture Cycles Paused via Kill Switch:** Paused autonomous cycles for fixtures `biz_smilekraft_hyd` and `biz_1790714233800` using `kill_switch_active = 1` and `kill_switch_reason = 'PAUSED_FIXTURE_CYCLE'` without deleting records. Verified live on Render: `POST /cron/ping` processes exclusively `biz_platform_aro` (1 business).
+    - **Discovery Deduplication & 7-Day Cooldown:** Implemented `normalizeDomain()` / `normalizeUrl()`, URL/domain pre-checking against existing tenant candidates, and a 7-day query cooldown via `search_cache` for automated cycles. Bounds maximum automated discovery cycles to ~5.14 per day across 36 vertical/city combinations.
+    - **Data Quarantine & Reversible Status Filtering:** Marked 784 junk prospects (392 YouTube, 392 Etacky) as `REJECTED`, 784 corresponding opportunities as `REJECTED`, and 395 outbound contacts as `REJECTED` and `is_suppressed = 1`. Reconciled all 1,181 rows in D1 (784 junk + 393 duplicate `fmsdental.com` rows from pre-deduplication runs + 1 `siridentalhospital.com` + 1 `parthadental.com`). Implemented fail-closed outbound guard ensuring `REJECTED` contacts can never be dispatched.
+    - **Durable Quota Counters:** Seeded `provider_quota_state` (Gemini: 1,200 requests/day, Tavily: 800 credits/month) and created `provider_call_logs` table in D1. Quota checks synchronize from D1 on server boot.
+    - **Demo Businesses Privacy Lockdown:** Returned HTTP 404 on all `/api/v1/public/*` routes for `smilekraft-dental-clinic`, `smilekraft-dental-clinic-2`, and `platform-aro`. Added `public_live` column to `businesses` table, rejecting public lead, checkout, booking, order, and availability writes for any business not explicitly marked `public_live = 1`.
+    - **Durable Rate Limiter:** Replaced in-memory limiter with D1-backed sliding window limiter (`durable_rate_limits`, SHA-256 IP hash) covering `/public/lead`, `/public/checkout`, `/public/order`, `/public/booking`, and `/organic/*`.
+    - **Live Verification:** Deploy `dep-db24q67lot8c73dravtg` live on Render. Verified live: `/api/v1/health` (HTTP 200), demo slug 404s (HTTP 404), single-business cron ping (HTTP 200, only `biz_platform_aro`), and `/cron/status` (HTTP 200). 51 test files (478 tests) passing.
 
 ---
 
