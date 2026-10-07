@@ -459,6 +459,62 @@ export class OwnerControlCenterEngine {
       outcome: 'SIMULATION_BLOCK_ENFORCED',
       cause: 'Demo entities (smilekraft, platform-aro) and placeholder API credentials trigger false-live external calls and corrupt production ledgers',
       rule: 'Quarantine demo businesses behind 404 on public routes and block live external operations when placeholder credentials are detected'
+    },
+    {
+      id: 'lrn_block_health_skincare_supplements',
+      what: 'HEALTH_SKINCARE_SUPPLEMENTS_CATEGORY',
+      outcome: 'CATEGORY_STRICTLY_BLOCKED',
+      cause: 'Health, skincare, sunscreen, supplements, and medical devices carry elevated statutory liability, medical claims restrictions under Drugs and Magic Remedies Act, and high refund/dispute rates.',
+      rule: 'BLOCK health, skincare, sunscreen, supplement, and medical categories from product discovery and proposal approval.'
+    },
+    {
+      id: 'lrn_prefer_objective_spec_hardware',
+      what: 'OBJECTIVE_SPEC_HARDWARE',
+      outcome: 'PREFERRED_CATEGORY_SELECTION',
+      cause: 'Commercial logistics hardware, POS equipment, and office supplies have verifiable manufacturer technical specifications and low return rates.',
+      rule: 'PREFER objective-spec products with an authoritative manufacturer specification source and low return rate.'
+    },
+    {
+      id: 'lrn_discourage_apparel_footwear',
+      what: 'APPAREL_FOOTWEAR_SIZING',
+      outcome: 'DISCOURAGED_CATEGORY_AVOIDANCE',
+      cause: 'Apparel and footwear products suffer from high return and exchange rates (20-30%) due to sizing variance, eliminating net affiliate commissions.',
+      rule: 'DISCOURAGE apparel and footwear categories due to sizing variance and high return rates.'
+    },
+    {
+      id: 'lrn_agent_selected_as_owner_verified',
+      what: 'AGENT_SELECTED_AS_OWNER_VERIFIED',
+      outcome: 'INVALID_AGENT_WRITE_REJECTED',
+      cause: 'Allowing autonomous agents or tests to create intake records or approve proposals violates statutory operator attestation.',
+      rule: 'Reject any agent or test write to owner_intake or product approval; require authenticated owner session.'
+    },
+    {
+      id: 'lrn_invented_site_identity',
+      what: 'INVENTED_SITE_IDENTITY',
+      outcome: 'BUILD_FAILURE_ENFORCED',
+      cause: 'Hardcoding synthetic site names, editorial authors, and compliance emails violates transparency and Amazon Associates Operating Agreement.',
+      rule: 'StaticSiteGenerator must fail the build unless site identity is explicitly provided via owner_intake or environment variables.'
+    },
+    {
+      id: 'lrn_link_amazon_codes',
+      what: 'LINK_AMAZON_SHORTENERS',
+      outcome: 'SHORTENED_URL_REJECTED',
+      cause: 'Link shorteners (link.amazon, amzn.to, a.co) obscure destination ASIN, break canonical tracking URL validation, and risk cloaking violations.',
+      rule: 'Reject link.amazon, amzn.to, a.co and any link shorteners; require full canonical https://www.amazon.in/dp/<10-char uppercase ASIN>.'
+    },
+    {
+      id: 'lrn_unsourced_tavily_logs',
+      what: 'UNSOURCED_TAVILY_LOGS',
+      outcome: 'UNSOURCED_PROPOSAL_HIDDEN',
+      cause: 'Linking product proposals to unrelated Tavily discovery log IDs creates false provenance without verifying real manufacturer spec retrieval.',
+      rule: 'Require real provider_call_logs row with matching query and URL plus verbatim page text snippet; hide unsourced proposals.'
+    },
+    {
+      id: 'lrn_fallback_values_hiding_config',
+      what: 'FALLBACK_VALUES_HIDING_MISSING_CONFIG',
+      outcome: 'FAIL_CLOSED_CONFIGURATION',
+      cause: 'Silent default values conceal missing environment variables and database records, leading to undetected misconfiguration.',
+      rule: 'Fail closed immediately with explicit error listing all missing configurations rather than supplying silent defaults.'
     }
   ];
 
@@ -584,6 +640,10 @@ export class OwnerControlCenterEngine {
     organizationId: string = 'org_owner_primary',
     category: string = 'Office & Commercial Supplies'
   ): Promise<ProductProposal[]> {
+    if (await this.isCategoryBlocked(organizationId, category)) {
+      throw new Error(`CATEGORY_BLOCKED: Category '${category}' is blocked by learning policy. Health, skincare, sunscreen, supplement, and medical products are prohibited.`);
+    }
+
     const existing = await this.getProposals(organizationId);
     if (existing.length > 0) {
       return existing;
@@ -657,6 +717,32 @@ export class OwnerControlCenterEngine {
     return created;
   }
 
+  public async isCategoryBlocked(organizationId: string = 'org_owner_primary', category: string): Promise<boolean> {
+    const cat = (category || '').toLowerCase().trim();
+    const blockedKeywords = ['health', 'skincare', 'sunscreen', 'supplement', 'medical', 'cosmetic', 'pharma', 'drug', 'medicine'];
+    if (blockedKeywords.some(kw => cat.includes(kw))) {
+      return true;
+    }
+    const sql = "SELECT * FROM learning_records WHERE organization_id = ? AND (decision LIKE '%HEALTH%' OR decision LIKE '%CATEGORY%')";
+    let rules: any[] = [];
+    if (isProduction()) {
+      rules = await this.d1Repo.query<any>('learning_records', sql, [organizationId]);
+    } else {
+      try {
+        rules = getDb().prepare(sql).all(organizationId) as any[];
+      } catch {
+        rules = [];
+      }
+    }
+    for (const r of rules) {
+      const action = (r.action || '').toLowerCase();
+      if (action.includes('block') && blockedKeywords.some(kw => cat.includes(kw))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   public async approveProposal(
     organizationId: string = 'org_owner_primary',
     proposalId: string,
@@ -664,15 +750,21 @@ export class OwnerControlCenterEngine {
       amazonUrl: string;
       productChecked: boolean;
       displayName?: string;
-      listingFacts?: Array<{ fact: string; date: string }>;
+      listingFacts?: Array<{ fact: string; date: string; type?: string }>;
       fact1?: string;
       fact1Date?: string;
       fact2?: string;
       fact2Date?: string;
       fact3?: string;
       fact3Date?: string;
+      writtenBy?: 'OWNER_FORM' | 'AGENT' | 'TEST';
     }
   ): Promise<{ proposal: ProductProposal; offer: any }> {
+    const writtenBy = input.writtenBy || 'OWNER_FORM';
+    if (isProduction() && writtenBy !== 'OWNER_FORM') {
+      throw new Error('FORBIDDEN_AGENT_WRITE: Automated agents or tests cannot approve proposals in production.');
+    }
+
     if (input.productChecked !== true) {
       throw new Error('APPROVAL_ERROR: productChecked must be explicitly true. Owner verification required.');
     }
@@ -680,22 +772,47 @@ export class OwnerControlCenterEngine {
       throw new Error('APPROVAL_ERROR: amazonUrl is required.');
     }
 
+    const rawUrl = input.amazonUrl.trim();
+    // Reject link.amazon, amzn.to, a.co and any link shorteners
+    if (/link\.amazon|amzn\.to|a\.co|bit\.ly|tinyurl|t\.co/i.test(rawUrl)) {
+      throw new Error('APPROVAL_ERROR: Link shorteners (link.amazon, amzn.to, a.co) are strictly prohibited. Provide the full canonical https://www.amazon.in/dp/<ASIN> URL.');
+    }
+
+    // Must match full canonical format: https://www.amazon.in/dp/<ASIN>
+    const amzMatch = rawUrl.match(/^https:\/\/(?:www\.)?amazon\.in\/dp\/([A-Za-z0-9]+)(?:[/?#]|$)/);
+    if (!amzMatch) {
+      throw new Error('APPROVAL_ERROR: Amazon URL must be a full canonical URL starting with https://www.amazon.in/dp/<ASIN>.');
+    }
+
+    const rawAsin = amzMatch[1];
+    if (rawAsin.length !== 10) {
+      throw new Error(`APPROVAL_ERROR: ASIN must be exactly 10 alphanumeric characters. Received ${rawAsin.length} characters ('${rawAsin}').`);
+    }
+    if (/[a-z]/.test(rawAsin)) {
+      throw new Error(`APPROVAL_ERROR: ASIN must contain uppercase characters only. Lowercase ASIN '${rawAsin}' is rejected.`);
+    }
+    if (!/^[A-Z0-9]{10}$/.test(rawAsin)) {
+      throw new Error('APPROVAL_ERROR: ASIN must be exactly 10 uppercase alphanumeric characters.');
+    }
+    const asin = rawAsin;
+
     const displayName = (input.displayName || '').trim();
     if (!displayName) {
       throw new Error('APPROVAL_ERROR: displayName is required and cannot be empty.');
     }
 
-    let facts: Array<{ fact: string; date: string }> = [];
+    let facts: Array<{ fact: string; date: string; type?: string }> = [];
     if (Array.isArray(input.listingFacts) && input.listingFacts.length > 0) {
       facts = input.listingFacts.map(f => ({
         fact: (f.fact || '').trim(),
-        date: (f.date || '').trim()
+        date: (f.date || '').trim(),
+        type: (f as any).type ? String((f as any).type).trim() : 'spec'
       }));
     } else {
       facts = [
-        { fact: (input.fact1 || '').trim(), date: (input.fact1Date || '').trim() },
-        { fact: (input.fact2 || '').trim(), date: (input.fact2Date || '').trim() },
-        { fact: (input.fact3 || '').trim(), date: (input.fact3Date || '').trim() }
+        { fact: (input.fact1 || '').trim(), date: (input.fact1Date || '').trim(), type: 'spec' },
+        { fact: (input.fact2 || '').trim(), date: (input.fact2Date || '').trim(), type: 'spec' },
+        { fact: (input.fact3 || '').trim(), date: (input.fact3Date || '').trim(), type: 'spec' }
       ];
     }
 
@@ -703,34 +820,40 @@ export class OwnerControlCenterEngine {
       throw new Error('APPROVAL_ERROR: Exactly 3 listing facts with dates are required to approve proposal and activate offer.');
     }
 
-    // Validate Amazon URL
+    // Lint facts: max 160 chars, type 'spec' only, block review language, superlatives, health/skin claims, rupee prices
+    const reviewRegex = /\b(customers?|reviewers?|users?|buyers?)\s*(praise|praises|note|notes|say|says|state|states|claim|claims|report|reports|love|loves|prefer|prefers)|customer\s*reviews?|user\s*feedback/i;
+    const superlativeRegex = /\b(premium|best|ultimate|perfect|#1|top-rated|unmatched|flawless|superior)\b/i;
+    const healthRegex = /\b(skin|skincare|sunscreen|spf|anti-aging|wrinkle|acne|cure|treats?|healing|therapeutic|medical|health\s+benefits?|supplement)\b/i;
+    const priceRegex = /₹\s*[\d,]+|\b(?:inr|rs\.?)\s*[\d,]+|\b\d+%\s*(?:off|discount)\b/i;
+
+    for (const f of facts) {
+      if (f.fact.length > 160) {
+        throw new Error(`APPROVAL_ERROR: Listing fact exceeds maximum limit of 160 characters (${f.fact.length} chars): "${f.fact.substring(0, 40)}..."`);
+      }
+      if (f.type && f.type !== 'spec') {
+        throw new Error(`APPROVAL_ERROR: Fact type must be 'spec' only. Received '${f.type}'.`);
+      }
+      if (reviewRegex.test(f.fact)) {
+        throw new Error(`APPROVAL_ERROR: Review language (customers, reviewers, users praise/note/say) is prohibited in listing facts.`);
+      }
+      if (superlativeRegex.test(f.fact)) {
+        throw new Error(`APPROVAL_ERROR: Superlatives (premium, best, ultimate, perfect) are prohibited in listing facts.`);
+      }
+      if (healthRegex.test(f.fact)) {
+        throw new Error(`APPROVAL_ERROR: Health and skincare claims are prohibited in listing facts.`);
+      }
+      if (priceRegex.test(f.fact)) {
+        throw new Error(`APPROVAL_ERROR: Rupee prices and discounts are prohibited in listing facts; use dynamic provider links.`);
+      }
+    }
+
+    // Check for foreign tag
     let parsedUrl: URL;
     try {
-      parsedUrl = new URL(input.amazonUrl.trim());
+      parsedUrl = new URL(rawUrl);
     } catch {
       throw new Error('APPROVAL_ERROR: Invalid Amazon URL.');
     }
-
-    if (parsedUrl.protocol !== 'https:') {
-      throw new Error("APPROVAL_ERROR: Amazon URL must use 'https:' protocol.");
-    }
-
-    const host = parsedUrl.hostname.toLowerCase();
-    if (host !== 'amazon.in' && host !== 'www.amazon.in') {
-      throw new Error(`APPROVAL_ERROR: Host '${host}' is invalid. Must be amazon.in or www.amazon.in.`);
-    }
-
-    const asinMatch = parsedUrl.pathname.match(/(?:\/dp\/|\/gp\/product\/|\/product\/)([^/?#]+)/i);
-    if (!asinMatch || !asinMatch[1]) {
-      throw new Error('APPROVAL_ERROR: Could not locate 10-character ASIN in URL path.');
-    }
-    const rawAsin = asinMatch[1].trim();
-    if (rawAsin.length !== 10 || !/^[A-Za-z0-9]{10}$/.test(rawAsin)) {
-      throw new Error('APPROVAL_ERROR: ASIN must be exactly 10 alphanumeric characters.');
-    }
-    const asin = rawAsin.toUpperCase();
-
-    // Check for foreign tag
     const configuredTag = (process.env.AMAZON_AFFILIATE_TAG || '').trim();
     const existingTag = parsedUrl.searchParams.get('tag');
     if (existingTag && configuredTag && existingTag !== configuredTag) {
@@ -745,6 +868,11 @@ export class OwnerControlCenterEngine {
     const proposal = proposals.find(p => p.id === proposalId);
     if (!proposal) {
       throw new Error(`PROPOSAL_NOT_FOUND: Product proposal '${proposalId}' not found.`);
+    }
+
+    // Category policy check: consult learning rules
+    if (await this.isCategoryBlocked(organizationId, proposal.category)) {
+      throw new Error(`APPROVAL_ERROR: Category '${proposal.category}' is BLOCKED by learning policy. Health, skincare, sunscreen, supplement, and medical products are prohibited.`);
     }
 
     // Check if operator attestation exists
@@ -1137,89 +1265,7 @@ export class OwnerControlCenterEngine {
     // 7. Learning insights
     const learningInsights = await this.getStructuredLearningRules(organizationId);
 
-    // 8. Dynamic OPEN ACTIONS List
-    const openActions: OpenActionItem[] = [];
-
-    // Condition 1: Owner intake completed
-    if (!intake) {
-      openActions.push({
-        id: 'act_complete_intake',
-        type: 'HUMAN',
-        title: 'Complete Owner Intake',
-        description: 'Record Amazon application date, listed site URLs, and Operating Agreement confirmation.',
-        resolutionCondition: 'owner_intake record persisted',
-        resolved: false
-      });
-    }
-
-    // Condition 2: Commit deployment match
-    if (!commitMatch) {
-      openActions.push({
-        id: 'act_deploy_commits',
-        type: 'HUMAN',
-        title: 'Synchronize Deployments',
-        description: `Deploy git commit to Render and Firebase Hosting (${mismatchDetails}).`,
-        resolutionCondition: 'Git HEAD, Render, and Firebase commits match',
-        resolved: false
-      });
-    }
-
-    // Condition 3: Commercial offer active
-    const offers = await this.registry.listOffers(organizationId);
-    const activeOffers = offers.filter(o => o.status === 'ACTIVE' && o.active === 1);
-    if (activeOffers.length === 0) {
-      openActions.push({
-        id: 'act_approve_offer',
-        type: 'HUMAN',
-        title: 'Approve Commercial Offer',
-        description: 'Review candidate product proposal, supply Amazon.in URL, and attest product_checked.',
-        resolutionCondition: 'At least 1 active commercial offer in catalog',
-        resolved: false
-      });
-    }
-
-    // Condition 4: Content publishing
-    const assets = isProduction()
-      ? await this.d1Repo.query<any>('commission_content_assets', 'SELECT id, status FROM commission_content_assets WHERE organization_id = ? AND status = ?', [organizationId, 'PUBLISHED'])
-      : (getDb().prepare('SELECT id, status FROM commission_content_assets WHERE organization_id = ? AND status = ?').all(organizationId, 'PUBLISHED') as any[]);
-
-    if (assets.length === 0) {
-      openActions.push({
-        id: 'act_publish_content',
-        type: 'AUTOMATED',
-        title: 'AUTOMATED: pending',
-        description: 'Awaiting autonomous guide generation and publishing for active commercial offer.',
-        resolutionCondition: 'At least 1 published commercial guide',
-        resolved: false
-      });
-    }
-
-    // Condition 5: 3 qualifying sales before 180-day deadline
-    const ledgerSummary = await this.ledger.getSummary(organizationId);
-    if (ledgerSummary.externalConversions < 3) {
-      openActions.push({
-        id: 'act_qualifying_sales',
-        type: 'AUTOMATED',
-        title: 'AUTOMATED: pending',
-        description: `Awaiting 3 qualifying organic conversions before 180-day deadline (current: ${ledgerSummary.externalConversions}/3).`,
-        resolutionCondition: '3 verified qualifying conversions recorded in ledger',
-        resolved: false
-      });
-    }
-
-    // If no open actions remaining
-    if (openActions.length === 0) {
-      openActions.push({
-        id: 'act_all_clear',
-        type: 'AUTOMATED',
-        title: 'AUTOMATED: pending',
-        description: 'All launch gates resolved. Autonomous revenue cycle running on schedule.',
-        resolutionCondition: 'Continuous autonomous operation',
-        resolved: true
-      });
-    }
-
-    // 9. Compute Owner 'TODAY' Action Items (Item 7)
+    // 8. Compute Proposals, Guides & External Signals for Open Actions & Today Items
     const proposals = await this.getProposals(organizationId);
     const candidateProposals = proposals.filter(p => p.status === 'PROPOSED');
 
@@ -1259,6 +1305,81 @@ export class OwnerControlCenterEngine {
         status: 'NOT_READY'
       };
     }
+
+    const offers = await this.registry.listOffers(organizationId);
+    const activeOffers = offers.filter(o => o.status === 'ACTIVE' && o.active === 1);
+
+    const clickCountRow = isProduction()
+      ? await this.d1Repo.queryOne<any>('referral_click_events', 'SELECT count(*) as c FROM referral_click_events WHERE organization_id = ?', [organizationId])
+      : (() => {
+          try {
+            return getDb().prepare('SELECT count(*) as c FROM referral_click_events WHERE organization_id = ?').get(organizationId) as any;
+          } catch {
+            return { c: 0 };
+          }
+        })();
+
+    const recentReportRow = isProduction()
+      ? await this.d1Repo.queryOne<any>('conversions', "SELECT count(*) as c FROM conversions WHERE organization_id = ? AND verification_source = 'DASHBOARD_EXPORT' AND created_at >= datetime('now', '-7 days')", [organizationId])
+      : (() => {
+          try {
+            return getDb().prepare("SELECT count(*) as c FROM conversions WHERE organization_id = ? AND verification_source = 'DASHBOARD_EXPORT' AND created_at >= datetime('now', '-7 days')").get(organizationId) as any;
+          } catch {
+            return { c: 0 };
+          }
+        })();
+
+    // Dynamic OPEN ACTIONS List — Exactly 5 canonical items (Spec § 9)
+    // 1) complete intake, 2) approve product, 3) publish guide, 4) share URL, 5) upload Associates report weekly
+    // Each appears once, resolves automatically, never repeats.
+    const isIntakeValid = Boolean(intake && intake.status === 'VALID');
+    const hasActiveOffer = activeOffers.length > 0;
+    const hasPublishedGuide = publishedGuides.length > 0;
+    const hasReferralClicks = Boolean(clickCountRow && clickCountRow.c > 0);
+    const hasRecentReport = Boolean(recentReportRow && recentReportRow.c > 0);
+
+    const openActions: OpenActionItem[] = [
+      {
+        id: 'act_complete_intake',
+        type: 'HUMAN',
+        title: 'complete intake',
+        description: 'Record Amazon application date, listed site URLs, Operating Agreement confirmation, and site identity metadata.',
+        resolutionCondition: 'owner_intake record persisted with status VALID',
+        resolved: isIntakeValid
+      },
+      {
+        id: 'act_approve_product',
+        type: 'HUMAN',
+        title: 'approve product',
+        description: 'Review candidate product proposal, verify on Amazon.in, and attest product_checked with exactly 3 listing facts.',
+        resolutionCondition: 'At least 1 active commercial offer in catalog',
+        resolved: hasActiveOffer
+      },
+      {
+        id: 'act_publish_guide',
+        type: 'AUTOMATED',
+        title: 'publish guide',
+        description: 'Generate static buyer guide with verified facts and mandatory Amazon statutory disclosure.',
+        resolutionCondition: 'At least 1 published commercial guide in commission_content_assets',
+        resolved: hasPublishedGuide
+      },
+      {
+        id: 'act_share_url',
+        type: 'HUMAN',
+        title: 'share URL',
+        description: 'Distribute clean published buyer guide page URL to drive initial organic buyer sessions (never distribute raw or tagged affiliate links).',
+        resolutionCondition: 'At least 1 referral click event recorded on published guide URL',
+        resolved: hasReferralClicks
+      },
+      {
+        id: 'act_upload_associates_report',
+        type: 'HUMAN',
+        title: 'upload Associates report weekly',
+        description: 'Export and upload Associates Central earnings report (CSV/TSV/JSON) weekly to reconcile pending and verified commissions.',
+        resolutionCondition: 'Verified Associates report ingested within past 7 days',
+        resolved: hasRecentReport
+      }
+    ];
 
     const todayItems = {
       intakeCompleted: Boolean(intake && intake.status === 'VALID'),
@@ -1351,12 +1472,23 @@ export class OwnerControlCenterEngine {
 
   public renderHtmlDashboard(snapshot: OwnerStatusSnapshot): string {
     const escape = (s?: string) => (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const lastRule = snapshot.learningInsights && snapshot.learningInsights.length > 0 ? snapshot.learningInsights[0] : null;
+    const lastLearnedText = lastRule ? `${lastRule.what}: ${lastRule.rule}` : 'No learning records ingested yet';
 
     const openActionRows = snapshot.openActions.map(a => `
       <tr style="border-bottom: 1px solid #1e293b;">
         <td style="padding: 12px 16px;">
-          <span style="display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 700; background: ${a.type === 'HUMAN' ? 'rgba(239, 68, 68, 0.2)' : 'rgba(59, 130, 246, 0.2)'}; color: ${a.type === 'HUMAN' ? '#f87171' : '#60a5fa'}; border: 1px solid ${a.type === 'HUMAN' ? 'rgba(239, 68, 68, 0.4)' : 'rgba(59, 130, 246, 0.4)'};">
+          <div style="font-weight: 700; color: #f1f5f9; font-size: 0.88rem; margin-bottom: 4px;">
             ${escape(a.title)}
+          </div>
+          <span style="display: inline-block; padding: 3px 8px; border-radius: 4px; font-size: 0.72rem; font-weight: 700; ${
+            a.resolved
+              ? 'background: rgba(34, 197, 94, 0.2); color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.4);'
+              : a.type === 'HUMAN'
+              ? 'background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4);'
+              : 'background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.4);'
+          }">
+            ${a.resolved ? 'RESOLVED (Automatic)' : a.type === 'HUMAN' ? 'ACTION REQUIRED' : 'AUTOMATED: pending'}
           </span>
         </td>
         <td style="padding: 12px 16px; color: #e2e8f0; font-size: 0.9rem;">${escape(a.description)}</td>
@@ -1516,6 +1648,17 @@ export class OwnerControlCenterEngine {
         </span>
       </div>
     </header>
+
+    <!-- Prominent LAST LEARNED & AGENT CATALOG banner -->
+    <div style="background: #111827; border: 1px solid #1e293b; border-radius: 6px; padding: 12px 16px; margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+      <div>
+        <span style="font-weight: 700; color: #38bdf8; font-size: 0.85rem; text-transform: uppercase;">LAST LEARNED:</span>
+        <span style="font-size: 0.85rem; color: #e2e8f0; margin-left: 8px;">${escape(lastLearnedText)}</span>
+      </div>
+      <div>
+        <span style="font-weight: 700; color: #94a3b8; font-size: 0.82rem; background: #1e293b; padding: 4px 10px; border-radius: 4px; border: 1px solid #334155;">AGENT CATALOG: not wired (80)</span>
+      </div>
+    </div>
 
     <!-- ================================================================= -->
     <!-- OWNER 'TODAY' ACTION SECTION (§ 7)                                -->
@@ -1726,6 +1869,42 @@ export class OwnerControlCenterEngine {
       </div>
 
       <button type="submit">Save Intake Permanently</button>
+    </form>
+  </div>
+</body>
+</html>`;
+  }
+
+  public renderHtmlLoginForm(error?: string): string {
+    const escape = (s?: string) => (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Owner Login — Control Center</title>
+  <style>
+    :root { color-scheme: dark; --bg: #090d16; --card: #0f172a; --border: #1e293b; --text: #f1f5f9; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); padding: 32px; display: flex; align-items: center; justify-content: center; min-height: 80vh; margin: 0; }
+    .card { width: 100%; max-width: 440px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 28px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
+    h1 { font-size: 1.4rem; color: #fff; margin-top: 0; margin-bottom: 8px; }
+    p { color: #94a3b8; font-size: 0.85rem; margin-bottom: 20px; line-height: 1.4; }
+    label { display: block; font-size: 0.85rem; color: #cbd5e1; margin-bottom: 6px; font-weight: 500; }
+    input[type="password"] { width: 100%; box-sizing: border-box; background: #1e293b; border: 1px solid #334155; color: #fff; padding: 10px 12px; border-radius: 6px; font-size: 0.95rem; }
+    input[type="password"]:focus { outline: none; border-color: #3b82f6; }
+    button { width: 100%; margin-top: 20px; background: #2563eb; color: #fff; border: none; padding: 10px 20px; border-radius: 6px; font-weight: 600; font-size: 0.95rem; cursor: pointer; transition: background 0.2s; }
+    button:hover { background: #1d4ed8; }
+    .error { background: rgba(239, 68, 68, 0.15); border: 1px solid #f87171; color: #fca5a5; padding: 10px 12px; border-radius: 6px; font-size: 0.85rem; margin-bottom: 16px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Owner Authentication</h1>
+    <p>Sign in to access the Owner Control Center and administrative management routes.</p>
+    ${error ? `<div class="error">${escape(error)}</div>` : ''}
+    <form method="POST" action="/api/v1/auth/owner/login">
+      <label for="apiKey">Owner API Key / Secret</label>
+      <input type="password" id="apiKey" name="apiKey" placeholder="Enter OWNER_API_KEY" required autocomplete="current-password" autofocus />
+      <button type="submit">Log In to Control Center</button>
     </form>
   </div>
 </body>

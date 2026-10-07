@@ -54,13 +54,59 @@ async function main() {
   }
   fs.mkdirSync(frontendDist, { recursive: true });
 
-  // 3. Resolve public site configuration without hardcoded fixtures
+  // 3. Resolve public site configuration from owner_intake or environment variables
+  console.log('\n[3/4] Resolving public site configuration from owner_intake or environment variables...');
+  let siteName = process.env.PUBLIC_SITE_NAME?.trim();
+  let authorName = (process.env.PUBLIC_AUTHOR_NAME || process.env.PUBLIC_SITE_AUTHOR)?.trim();
+  let contactEmail = (process.env.PUBLIC_CONTACT_EMAIL || process.env.PUBLIC_SITE_EMAIL)?.trim();
+
+  if (!siteName || !authorName || !contactEmail) {
+    try {
+      const intakeRes = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/d1/database/${dbId}/query`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${cfToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          sql: "SELECT site_name, author_name, contact_email FROM owner_intake WHERE status = 'VALID' LIMIT 1;"
+        })
+      });
+      const intakeData = await intakeRes.json();
+      const intakeRow = intakeData.result?.[0]?.results?.[0];
+      if (intakeRow) {
+        siteName = siteName || intakeRow.site_name;
+        authorName = authorName || intakeRow.author_name;
+        contactEmail = contactEmail || intakeRow.contact_email;
+      }
+    } catch (err) {
+      console.warn('[PREPARE-DEPLOY] Could not read owner_intake from D1:', err.message);
+    }
+  }
+
+  const missingConfig = [];
+  if (!siteName) missingConfig.push('siteName (missing in owner_intake.site_name and PUBLIC_SITE_NAME)');
+  if (!authorName) missingConfig.push('authorName (missing in owner_intake.author_name and PUBLIC_AUTHOR_NAME)');
+  if (!contactEmail) missingConfig.push('contactEmail (missing in owner_intake.contact_email and PUBLIC_CONTACT_EMAIL)');
+
+  if (missingConfig.length > 0) {
+    console.error('\n❌ [PREPARE-DEPLOY ERROR]: CONFIG_ERROR: Missing required public site configuration: ' + missingConfig.join(', '));
+    console.error('Site identity must come strictly from owner_intake or environment variables. No invented fallbacks allowed.');
+    process.exit(1);
+  }
+
   const { StaticSiteGenerator } = await import('../packages/backend/dist/commission/static-site-generator.js');
   const generator = StaticSiteGenerator.getInstance();
 
-  console.log('\n[3/3] Rendering static landing page, guides, and legal pages...');
+  console.log('\n[4/4] Rendering static landing page, guides, and legal pages...');
   const buildResult = await generator.build({
-    outputDir: frontendDist
+    outputDir: frontendDist,
+    config: {
+      siteName,
+      authorName,
+      contactEmail,
+      siteUrl: (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-platform-core.web.app').replace(/\/$/, '')
+    }
   });
 
   // Verify that the React dashboard app bundle is NOT present in the public distribution

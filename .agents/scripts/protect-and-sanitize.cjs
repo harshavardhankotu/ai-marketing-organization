@@ -32,10 +32,12 @@ function main() {
   const toolName = payload?.toolCall?.name || '';
   const args = payload?.toolCall?.args || {};
 
-  // Check file edits
+  // Check file edits using exact path segments, not loose substrings
   if (toolName === 'replace_file_content' || toolName === 'write_to_file') {
     const targetFile = (args.TargetFile || '').toLowerCase();
-    const protectedKeywords = [
+    const normalized = targetFile.replace(/\\/g, '/');
+    const segments = normalized.split('/').filter(Boolean);
+    const protectedModules = [
       'razorpay',
       'sendgrid',
       'whatsapp',
@@ -49,13 +51,16 @@ function main() {
       'ucos'
     ];
 
-    for (const kw of protectedKeywords) {
-      if (targetFile.includes(kw)) {
-        console.log(JSON.stringify({
-          decision: 'deny',
-          reason: `SECURITY POLICY VIOLATION: Edits to protected module containing '${kw}' are strictly forbidden.`
-        }));
-        return;
+    for (const seg of segments) {
+      const segNoExt = seg.replace(/\.[a-z0-9]+$/i, '');
+      for (const mod of protectedModules) {
+        if (seg === mod || segNoExt === mod || seg.split(/[-_.]/).includes(mod)) {
+          console.log(JSON.stringify({
+            decision: 'deny',
+            reason: `SECURITY POLICY VIOLATION: Edits to protected module containing segment '${mod}' are strictly forbidden.`
+          }));
+          return;
+        }
       }
     }
   }

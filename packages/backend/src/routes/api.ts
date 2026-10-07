@@ -135,6 +135,7 @@ export const EXACT_ROUTE_POLICY = {
     '/organic/leads',
     '/auth/owner/login',
     '/auth/owner/logout',
+    '/owner/login',
     '/payments/razorpay/create-order',
     '/payments/razorpay/verify',
     '/payments/manual-upi/claim',
@@ -222,6 +223,34 @@ apiRouter.use('*', async (c, next) => {
 
   const ownerSession = await ownerAuth.validateTokenAsync(token);
 
+  // Strictly validate Origin for owner POST routes to prevent cross-site request forgery
+  if (c.req.method === 'POST' && (path.startsWith('/owner') || path.startsWith('/commission') || path.startsWith('/build'))) {
+    const origin = c.req.header('origin');
+    if (origin) {
+      const host = c.req.header('host') || '';
+      let originHost = '';
+      try { originHost = new URL(origin).host; } catch {}
+      const allowedOrigins = [
+        'https://ai-marketing-organization.onrender.com',
+        'https://ai-marketing-platform-core.web.app',
+        'https://ai-marketing-platform-core.firebaseapp.com'
+      ];
+      if (process.env.FRONTEND_ORIGIN) {
+        allowedOrigins.push(...process.env.FRONTEND_ORIGIN.split(',').map(s => s.trim()).filter(Boolean));
+      }
+      const isAllowedOrigin = allowedOrigins.includes(origin);
+      const isSameHost = originHost && (originHost === host || host.startsWith(originHost));
+      const isLocalhost = !isProduction() && (originHost.includes('localhost') || originHost.includes('127.0.0.1'));
+
+      if (!isAllowedOrigin && !isSameHost && !isLocalhost) {
+        return c.json({
+          success: false,
+          error: `FORBIDDEN: Untrusted Origin '${origin}' rejected for owner POST operations.`
+        }, 403);
+      }
+    }
+  }
+
   if (isProduction()) {
     // PRODUCTION: Authenticated principal strictly required!
     // Arbitrary client-provided identity headers (x-user-id / x-organization-id) are rejected.
@@ -275,7 +304,7 @@ apiRouter.use('*', async (c, next) => {
     )) {
       return c.json({
         success: false,
-        error: 'Unauthorized: Owner authentication is required via Bearer token or x-api-key.'
+        error: 'Unauthorized: Owner authentication is required via Bearer token, x-api-key, or owner_session cookie.'
       }, 401);
     }
 
@@ -320,11 +349,21 @@ apiRouter.post('/auth/owner/login', async (c) => {
     }, 429);
   }
 
-  const body = await c.req.json().catch(() => ({}));
-  const apiKey = (body.apiKey || body.secret || c.req.header('x-api-key') || c.req.header('authorization')?.replace('Bearer ', ''))?.trim();
+  let body: any = {};
+  const contentType = c.req.header('content-type') || '';
+  if (contentType.includes('application/x-www-form-urlencoded') || contentType.includes('multipart/form-data')) {
+    body = await c.req.parseBody().catch(() => ({}));
+  } else {
+    body = await c.req.json().catch(() => ({}));
+  }
+  const apiKey = (body.apiKey || body.secret || body.password || c.req.header('x-api-key') || c.req.header('authorization')?.replace('Bearer ', ''))?.trim();
   const ownerAuth = OwnerAuthService.getInstance();
 
   if (!ownerAuth.verifyKey(apiKey)) {
+    const accept = c.req.header('accept') || '';
+    if (accept.includes('text/html') || contentType.includes('application/x-www-form-urlencoded')) {
+      return c.html(OwnerControlCenterEngine.getInstance().renderHtmlLoginForm('Invalid owner credentials. Please try again.'), 401);
+    }
     return c.json({
       success: false,
       error: 'Unauthorized: Invalid owner credentials. OWNER_API_KEY / AUTH_SECRET mismatch.'
@@ -338,6 +377,11 @@ apiRouter.post('/auth/owner/login', async (c) => {
   const isCrossOrigin = Boolean(process.env.FRONTEND_ORIGIN && !process.env.FRONTEND_ORIGIN.includes('onrender.com'));
   const sameSite = process.env.COOKIE_SAMESITE || (isSecure && isCrossOrigin ? 'None' : 'Lax');
   c.header('Set-Cookie', `owner_session=${session.token}; Path=/; HttpOnly; SameSite=${sameSite}; Max-Age=86400${isSecure ? '; Secure' : ''}`);
+
+  const accept = c.req.header('accept') || '';
+  if (accept.includes('text/html') || contentType.includes('application/x-www-form-urlencoded')) {
+    return c.redirect('/owner/status', 303);
+  }
 
   return c.json({
     success: true,
@@ -4757,6 +4801,14 @@ apiRouter.post('/owner/intake', async (c) => {
       message: err.message
     }, 400);
   }
+});
+
+/**
+ * Owner Login Page (HTML Form for Browser Authentication)
+ */
+apiRouter.get('/owner/login', (c) => {
+  const engine = OwnerControlCenterEngine.getInstance();
+  return c.html(engine.renderHtmlLoginForm());
 });
 
 /**

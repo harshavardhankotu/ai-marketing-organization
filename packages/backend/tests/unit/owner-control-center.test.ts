@@ -5,6 +5,7 @@ import { PartnerRegistryEngine } from '../../src/commission/partner-registry.js'
 import { CommissionLedgerEngine } from '../../src/commission/commission-ledger.js';
 import { NextBestActionEngine } from '../../src/revenue/next-best-action-engine.js';
 import { DemandDiscoveryEngine } from '../../src/commission/demand-discovery.js';
+import { StaticSiteGenerator } from '../../src/commission/static-site-generator.js';
 import { app } from '../../src/index.js';
 
 describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)', () => {
@@ -231,28 +232,32 @@ describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)
       expect(snapshot.openActions.length).toBeGreaterThan(0);
     });
 
-    it('every open action names exactly one human action or "AUTOMATED: pending"', async () => {
+    it('open actions list contains exactly the 5 canonical items', async () => {
       const snapshot = await engine.computeStatus(orgId);
+      expect(snapshot.openActions).toHaveLength(5);
+
+      const canonicalTitles = [
+        'complete intake',
+        'approve product',
+        'publish guide',
+        'share URL',
+        'upload Associates report weekly'
+      ];
 
       for (const action of snapshot.openActions) {
-        if (action.type === 'AUTOMATED') {
-          expect(action.title).toBe('AUTOMATED: pending');
-        } else {
-          expect(action.type).toBe('HUMAN');
-          expect(action.title.length).toBeGreaterThan(0);
-          expect(action.title).not.toBe('AUTOMATED: pending');
-        }
+        expect(canonicalTitles).toContain(action.title);
         expect(action.description).toBeDefined();
         expect(action.resolutionCondition).toBeDefined();
       }
     });
 
     it('marks open actions resolved automatically when conditions clear', async () => {
-      // Without intake, act_complete_intake is present
+      // Without intake, act_complete_intake is present and unresolved
       const initial = await engine.computeStatus(orgId);
       const intakeAction = initial.openActions.find(a => a.id === 'act_complete_intake');
       expect(intakeAction).toBeDefined();
       expect(intakeAction?.type).toBe('HUMAN');
+      expect(intakeAction?.resolved).toBe(false);
 
       // Complete intake
       await engine.saveIntake(orgId, {
@@ -268,8 +273,9 @@ describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)
       // Recompute status
       const updated = await engine.computeStatus(orgId);
       const updatedIntakeAction = updated.openActions.find(a => a.id === 'act_complete_intake');
-      // Automatically cleared!
-      expect(updatedIntakeAction).toBeUndefined();
+      // Automatically resolved!
+      expect(updatedIntakeAction).toBeDefined();
+      expect(updatedIntakeAction?.resolved).toBe(true);
 
       // Deadline countdown is now active
       expect(updated.deadline180Days.daysRemaining).toBeGreaterThan(0);
@@ -329,7 +335,7 @@ describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)
   describe('Part C: Learning Ingest (Tables, structured rows, SQL lookups)', () => {
     it('ingests 5 structured empirical learning rules into learning_records', async () => {
       const rules = await engine.ingestInitialLearningRules(orgId);
-      expect(rules.length).toBe(5);
+      expect(rules.length).toBeGreaterThanOrEqual(5);
 
       const whats = rules.map(r => r.what);
       expect(whats).toContain('FIXTURE_LOOP_DUPLICATES');
@@ -337,6 +343,7 @@ describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)
       expect(whats).toContain('CLAIMS_LINT_FAILURES');
       expect(whats).toContain('IP_TOPOLOGY');
       expect(whats).toContain('PLACEHOLDER_REJECTIONS');
+      expect(whats).toContain('HEALTH_SKINCARE_SUPPLEMENTS_CATEGORY');
 
       // Verify each rule has what, outcome, cause, rule
       for (const rule of rules) {
@@ -453,7 +460,7 @@ describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)
         ...validFacts,
         amazonUrl: 'https://notamazon.in/dp/B08P13WGLX',
         productChecked: true
-      })).rejects.toThrow("Host 'notamazon.in' is invalid");
+      })).rejects.toThrow('Amazon URL must be a full canonical URL starting with https://www.amazon.in/dp/<ASIN>');
 
       // Invalid ASIN length (9 characters)
       await expect(engine.approveProposal(orgId, target.id, {
@@ -551,7 +558,7 @@ describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)
           applicationDate: '2026-03-15',
           listedSiteUrls: ['https://reviewhub.in'],
           agreementReadConfirmed: true,
-          siteName: 'India Commercial Review',
+          siteName: 'Test Commercial Review',
           authorName: 'Editorial Staff',
           contactEmail: 'contact@reviewhub.in',
           tavilyKeyRotated: true
@@ -560,7 +567,7 @@ describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)
       expect(res.status).toBe(200);
       const json = await res.json() as any;
       expect(json.success).toBe(true);
-      expect(json.data.siteName).toBe('India Commercial Review');
+      expect(json.data.siteName).toBe('Test Commercial Review');
     });
 
     it('GET /api/v1/owner/status returns dashboard HTML or JSON based on Accept header', async () => {
@@ -647,6 +654,172 @@ describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)
       const json = await res.json() as any;
       expect(json.success).toBe(true);
       expect(json.data.commissionsVerified).toBe(1);
+    });
+  });
+
+  // ==========================================================================
+  // Part G: Hardening Pass Launch Gates & Invariant Verification
+  // ==========================================================================
+  describe('Hardening Pass Invariants & Validations', () => {
+    it('StaticSiteGenerator fails if site identity fields are missing', async () => {
+      const generator = StaticSiteGenerator.getInstance();
+      const oldSite = process.env.PUBLIC_SITE_NAME;
+      const oldAuthor = process.env.PUBLIC_AUTHOR_NAME;
+      const oldEmail = process.env.PUBLIC_CONTACT_EMAIL;
+
+      try {
+        delete process.env.PUBLIC_SITE_NAME;
+        delete process.env.PUBLIC_AUTHOR_NAME;
+        delete process.env.PUBLIC_SITE_AUTHOR;
+        delete process.env.PUBLIC_CONTACT_EMAIL;
+
+        expect(() => generator.validateConfig()).toThrow('CONFIG_ERROR: Missing required public site configuration');
+      } finally {
+        if (oldSite) process.env.PUBLIC_SITE_NAME = oldSite;
+        if (oldAuthor) process.env.PUBLIC_AUTHOR_NAME = oldAuthor;
+        if (oldEmail) process.env.PUBLIC_CONTACT_EMAIL = oldEmail;
+      }
+    });
+
+    it('approveProposal rejects link shorteners (link.amazon, amzn.to, a.co)', async () => {
+      const proposals = await engine.discoverProductProposals(orgId);
+      const propId = proposals[0].id;
+
+      const shorteners = [
+        'https://amzn.to/3Xyz123',
+        'https://link.amazon.in/abc456',
+        'https://a.co/d/789xyz'
+      ];
+
+      for (const url of shorteners) {
+        await expect(engine.approveProposal(orgId, propId, {
+          amazonUrl: url,
+          productChecked: true,
+          displayName: 'Test Product',
+          fact1: 'Spec 1', fact1Date: '2026-03-25',
+          fact2: 'Spec 2', fact2Date: '2026-03-25',
+          fact3: 'Spec 3', fact3Date: '2026-03-25'
+        })).rejects.toThrow('Link shorteners (link.amazon, amzn.to, a.co) are strictly prohibited');
+      }
+    });
+
+    it('approveProposal rejects non-canonical, lowercase, and invalid length ASINs', async () => {
+      const proposals = await engine.discoverProductProposals(orgId);
+      const propId = proposals[0].id;
+
+      // Lowercase ASIN
+      await expect(engine.approveProposal(orgId, propId, {
+        amazonUrl: 'https://www.amazon.in/dp/b08p13wglx',
+        productChecked: true,
+        displayName: 'Test Product',
+        fact1: 'Spec 1', fact1Date: '2026-03-25',
+        fact2: 'Spec 2', fact2Date: '2026-03-25',
+        fact3: 'Spec 3', fact3Date: '2026-03-25'
+      })).rejects.toThrow("ASIN must contain uppercase characters only");
+
+      // 9-character ASIN
+      await expect(engine.approveProposal(orgId, propId, {
+        amazonUrl: 'https://www.amazon.in/dp/B08P13WGL',
+        productChecked: true,
+        displayName: 'Test Product',
+        fact1: 'Spec 1', fact1Date: '2026-03-25',
+        fact2: 'Spec 2', fact2Date: '2026-03-25',
+        fact3: 'Spec 3', fact3Date: '2026-03-25'
+      })).rejects.toThrow("ASIN must be exactly 10 alphanumeric characters");
+
+      // 11-character ASIN
+      await expect(engine.approveProposal(orgId, propId, {
+        amazonUrl: 'https://www.amazon.in/dp/B08P13WGLXX',
+        productChecked: true,
+        displayName: 'Test Product',
+        fact1: 'Spec 1', fact1Date: '2026-03-25',
+        fact2: 'Spec 2', fact2Date: '2026-03-25',
+        fact3: 'Spec 3', fact3Date: '2026-03-25'
+      })).rejects.toThrow("ASIN must be exactly 10 alphanumeric characters");
+    });
+
+    it('approveProposal enforces exactly 3 facts and rejects prohibited fact language', async () => {
+      const proposals = await engine.discoverProductProposals(orgId);
+      const propId = proposals[0].id;
+
+      // Missing fact
+      await expect(engine.approveProposal(orgId, propId, {
+        amazonUrl: 'https://www.amazon.in/dp/B08P13WGLX',
+        productChecked: true,
+        displayName: 'Test Product',
+        fact1: 'Spec 1', fact1Date: '2026-03-25',
+        fact2: 'Spec 2', fact2Date: '2026-03-25',
+        fact3: '', fact3Date: ''
+      })).rejects.toThrow('Exactly 3 listing facts with dates are required');
+
+      // Review language prohibited
+      await expect(engine.approveProposal(orgId, propId, {
+        amazonUrl: 'https://www.amazon.in/dp/B08P13WGLX',
+        productChecked: true,
+        displayName: 'Test Product',
+        fact1: 'Customers praise the fast shipping speed', fact1Date: '2026-03-25',
+        fact2: 'Direct Thermal 203 DPI', fact2Date: '2026-03-25',
+        fact3: 'Bluetooth and USB connectivity', fact3Date: '2026-03-25'
+      })).rejects.toThrow('Review language (customers, reviewers, users praise/note/say) is prohibited');
+
+      // Superlatives prohibited
+      await expect(engine.approveProposal(orgId, propId, {
+        amazonUrl: 'https://www.amazon.in/dp/B08P13WGLX',
+        productChecked: true,
+        displayName: 'Test Product',
+        fact1: 'The best label printer in India', fact1Date: '2026-03-25',
+        fact2: 'Direct Thermal 203 DPI', fact2Date: '2026-03-25',
+        fact3: 'Bluetooth and USB connectivity', fact3Date: '2026-03-25'
+      })).rejects.toThrow('Superlatives (premium, best, ultimate, perfect) are prohibited');
+
+      // Health / skincare claims prohibited
+      await expect(engine.approveProposal(orgId, propId, {
+        amazonUrl: 'https://www.amazon.in/dp/B08P13WGLX',
+        productChecked: true,
+        displayName: 'Test Product',
+        fact1: 'Provides skincare benefits and anti-aging protection', fact1Date: '2026-03-25',
+        fact2: 'Direct Thermal 203 DPI', fact2Date: '2026-03-25',
+        fact3: 'Bluetooth and USB connectivity', fact3Date: '2026-03-25'
+      })).rejects.toThrow('Health and skincare claims are prohibited');
+
+      // Rupee prices prohibited
+      await expect(engine.approveProposal(orgId, propId, {
+        amazonUrl: 'https://www.amazon.in/dp/B08P13WGLX',
+        productChecked: true,
+        displayName: 'Test Product',
+        fact1: 'Available for ₹3,499 only', fact1Date: '2026-03-25',
+        fact2: 'Direct Thermal 203 DPI', fact2Date: '2026-03-25',
+        fact3: 'Bluetooth and USB connectivity', fact3Date: '2026-03-25'
+      })).rejects.toThrow('Rupee prices and discounts are prohibited');
+    });
+
+    it('category policy blocks health/skincare/sunscreen/supplement/medical categories via SQL', async () => {
+      expect(await engine.isCategoryBlocked(orgId, 'Health & Personal Care')).toBe(true);
+      expect(await engine.isCategoryBlocked(orgId, 'Skincare & Sunscreen')).toBe(true);
+      expect(await engine.isCategoryBlocked(orgId, 'Dietary Supplement')).toBe(true);
+      expect(await engine.isCategoryBlocked(orgId, 'Medical Equipment')).toBe(true);
+
+      // Permitted categories
+      expect(await engine.isCategoryBlocked(orgId, 'Office & Commercial Supplies')).toBe(false);
+      expect(await engine.isCategoryBlocked(orgId, 'Industrial Logistics & Labeling')).toBe(false);
+    });
+
+    it('snapshot openActions contains exactly 5 items and dashboard renders LAST LEARNED and AGENT CATALOG', async () => {
+      const snapshot = await engine.computeStatus(orgId);
+      expect(snapshot.openActions).toHaveLength(5);
+
+      const actionTitles = snapshot.openActions.map(a => a.title);
+      expect(actionTitles).toEqual([
+        'complete intake',
+        'approve product',
+        'publish guide',
+        'share URL',
+        'upload Associates report weekly'
+      ]);
+
+      const html = engine.renderHtmlDashboard(snapshot);
+      expect(html).toContain('LAST LEARNED:');
+      expect(html).toContain('AGENT CATALOG: not wired (80)');
     });
   });
 });

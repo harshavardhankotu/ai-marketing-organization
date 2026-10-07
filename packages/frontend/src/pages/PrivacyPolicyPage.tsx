@@ -108,7 +108,7 @@ export const PrivacyPolicyPage: React.FC<PrivacyPolicyPageProps> = ({ onBack, bu
           <ul className="list-disc pl-5 space-y-1.5 text-xs text-slate-300">
             <li><strong>Contact Information:</strong> Full name, mobile phone number, email address (for booking confirmations, appointment reminders, and customer service).</li>
             <li><strong>Service Requirements:</strong> Inquiry details, preferred services, or requested consultation notes.</li>
-            <li><strong>Technical Telemetry:</strong> Anonymized session identifiers, referral channel provenance, and IP address strictly for rate limiting, cybersecurity, and fraud prevention.</li>
+            <li><strong>Technical Telemetry:</strong> Hashed (pseudonymised) session identifiers, referral channel provenance, and IP address strictly for rate limiting, cybersecurity, and fraud prevention.</li>
           </ul>
           <p className="text-xs text-slate-400">
             We strictly do NOT sell, license, or barter your personal information to third-party ad brokers or unauthorized commercial aggregators.
@@ -125,7 +125,7 @@ export const PrivacyPolicyPage: React.FC<PrivacyPolicyPageProps> = ({ onBack, bu
             You have the statutory right to withdraw your consent and request erasure of your personal data at any time. Upon receiving an erasure request via our online portal or by emailing our designated Grievance Officer (<span className="text-cyan-300 font-mono">{grievanceEmail}</span>):
           </p>
           <ul className="list-disc pl-5 space-y-1.5 text-xs text-slate-300">
-            <li>Your contact phone, name, and email are permanently scrubbed/anonymized across active marketing and notification tables.</li>
+            <li>Your contact phone, name, and email are permanently scrubbed/hashed (pseudonymised) across active marketing and notification tables.</li>
             <li>Tax, GST, and statutory financial records are retained strictly as mandated under Indian taxation statutes and statutory retention periods.</li>
           </ul>
         </section>

@@ -39,8 +39,8 @@ export class StaticSiteGenerator {
    */
   public async resolveConfig(organizationId: string = 'org_owner_primary'): Promise<StaticSiteConfig> {
     let siteName = process.env.PUBLIC_SITE_NAME?.trim();
-    let authorName = process.env.PUBLIC_AUTHOR_NAME?.trim();
-    let contactEmail = process.env.PUBLIC_CONTACT_EMAIL?.trim();
+    let authorName = (process.env.PUBLIC_AUTHOR_NAME || process.env.PUBLIC_SITE_AUTHOR || process.env.PUBLIC_AUTHOR)?.trim();
+    let contactEmail = (process.env.PUBLIC_CONTACT_EMAIL || process.env.PUBLIC_SITE_EMAIL || process.env.PUBLIC_EMAIL)?.trim();
     const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-platform-core.web.app').replace(/\/$/, '');
 
     if (!siteName || !authorName || !contactEmail) {
@@ -70,12 +70,12 @@ export class StaticSiteGenerator {
     }
 
     const missing: string[] = [];
-    if (!siteName) missing.push('PUBLIC_SITE_NAME (or owner_intake.site_name)');
-    if (!authorName) missing.push('PUBLIC_AUTHOR_NAME (or owner_intake.author_name)');
-    if (!contactEmail) missing.push('PUBLIC_CONTACT_EMAIL (or owner_intake.contact_email)');
+    if (!siteName) missing.push('siteName (missing in owner_intake.site_name and PUBLIC_SITE_NAME)');
+    if (!authorName) missing.push('authorName (missing in owner_intake.author_name and PUBLIC_AUTHOR_NAME)');
+    if (!contactEmail) missing.push('contactEmail (missing in owner_intake.contact_email and PUBLIC_CONTACT_EMAIL)');
 
     if (missing.length > 0) {
-      throw new Error(`CONFIG_ERROR: Missing required public site configuration: ${missing.join(', ')}. Must come from owner intake or environment variables.`);
+      throw new Error(`CONFIG_ERROR: Missing required public site configuration: ${missing.join(', ')}. Must come from owner intake or environment variables. Zero invented fallbacks allowed.`);
     }
 
     return {
@@ -90,16 +90,14 @@ export class StaticSiteGenerator {
    * Validates required public configuration synchronously from environment.
    */
   public validateConfig(): StaticSiteConfig {
+    const siteName = process.env.PUBLIC_SITE_NAME?.trim();
+    const authorName = (process.env.PUBLIC_AUTHOR_NAME || process.env.PUBLIC_SITE_AUTHOR || process.env.PUBLIC_AUTHOR)?.trim();
+    const contactEmail = (process.env.PUBLIC_CONTACT_EMAIL || process.env.PUBLIC_SITE_EMAIL || process.env.PUBLIC_EMAIL)?.trim();
+
     const missing: string[] = [];
-    if (!process.env.PUBLIC_SITE_NAME || !process.env.PUBLIC_SITE_NAME.trim()) {
-      missing.push('PUBLIC_SITE_NAME');
-    }
-    if (!process.env.PUBLIC_AUTHOR_NAME || !process.env.PUBLIC_AUTHOR_NAME.trim()) {
-      missing.push('PUBLIC_AUTHOR_NAME');
-    }
-    if (!process.env.PUBLIC_CONTACT_EMAIL || !process.env.PUBLIC_CONTACT_EMAIL.trim()) {
-      missing.push('PUBLIC_CONTACT_EMAIL');
-    }
+    if (!siteName) missing.push('PUBLIC_SITE_NAME');
+    if (!authorName) missing.push('PUBLIC_AUTHOR_NAME');
+    if (!contactEmail) missing.push('PUBLIC_CONTACT_EMAIL');
 
     if (missing.length > 0) {
       throw new Error(`CONFIG_ERROR: Missing required public site configuration: ${missing.join(', ')}`);
@@ -108,9 +106,9 @@ export class StaticSiteGenerator {
     const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-platform-core.web.app').replace(/\/$/, '');
 
     return {
-      siteName: process.env.PUBLIC_SITE_NAME!.trim(),
-      authorName: process.env.PUBLIC_AUTHOR_NAME!.trim(),
-      contactEmail: process.env.PUBLIC_CONTACT_EMAIL!.trim(),
+      siteName: siteName!,
+      authorName: authorName!,
+      contactEmail: contactEmail!,
       siteUrl
     };
   }
@@ -118,12 +116,16 @@ export class StaticSiteGenerator {
   /**
    * Renders all published guides, landing page, and legal pages to static HTML.
    */
-  public async build(options: { outputDir?: string; orgId?: string } = {}): Promise<StaticSiteBuildResult> {
+  public async build(options: { outputDir?: string; orgId?: string; config?: StaticSiteConfig } = {}): Promise<StaticSiteBuildResult> {
     let config: StaticSiteConfig;
-    try {
-      config = this.validateConfig();
-    } catch {
-      config = await this.resolveConfig(options.orgId);
+    if (options.config) {
+      config = options.config;
+    } else {
+      try {
+        config = this.validateConfig();
+      } catch {
+        config = await this.resolveConfig(options.orgId);
+      }
     }
 
     // Default output directory: frontend dist folder for Firebase Hosting
@@ -286,7 +288,6 @@ export class StaticSiteGenerator {
       <a href="/disclosure">Affiliate Disclosure</a>
     </nav>
     <p>&copy; ${new Date().getFullYear()} ${this.escapeHtml(config.siteName)}. All rights reserved.</p>
-    <p class="legal-notice">This informational document is a technical compliance template and needs human legal review prior to final commercial reliance.</p>
   </footer>
 </body>
 </html>`;
@@ -408,7 +409,7 @@ export class StaticSiteGenerator {
       <p><em>Last updated: October 2026</em></p>
       <p>${this.escapeHtml(config.siteName)} operates this informational website. This policy describes our adherence to the Digital Personal Data Protection (DPDP) Act, 2023 regarding visitor data.</p>
       <h2>Data We Collect</h2>
-      <p>We believe in minimal data collection. We do not maintain user registration accounts for general readers. When you browse our guides, we record anonymous, aggregated server request metrics. Outbound click beacons store a cryptographically salted one-way hash of client IP addresses to guard against abuse without recording raw identifiable personal data.</p>
+      <p>We believe in minimal data collection. We do not maintain user registration accounts for general readers. When you browse our guides, we record anonymous, aggregated server request metrics. Outbound click beacons store a cryptographically salted one-way hash (pseudonymised) of client IP addresses to guard against abuse without recording raw identifiable personal data.</p>
       <h2>Cookies &amp; Third-Party Referral Links</h2>
       <p>Our recommendation guides contain tracked outbound links to authorized merchant platforms including Amazon India. When you click an external link, the receiving merchant platform may set cookies in accordance with their privacy policy to attribute qualifying purchases.</p>
       <h2>Your Rights Under DPDP Act 2023</h2>
@@ -488,8 +489,6 @@ export class StaticSiteGenerator {
       <a href="/disclosure">Affiliate Disclosure</a>
     </nav>
     <p>&copy; ${new Date().getFullYear()} ${this.escapeHtml(config.siteName)}. All rights reserved.</p>
-    <!-- Needs human legal review -->
-    <p class="legal-notice" style="font-size: 0.75rem; color: #64748b; margin-top: 1rem;">This informational document is a technical compliance template and needs human legal review prior to final commercial reliance.</p>
   </footer>
 </body>
 </html>`;
