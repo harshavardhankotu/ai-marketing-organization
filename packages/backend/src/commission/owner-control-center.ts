@@ -105,9 +105,10 @@ export interface OwnerStatusSnapshot {
     intakeStatus: string;
     candidateProposals: ProductProposal[];
     readyShareGuide?: {
-      title: string;
-      shareText: string;
-      pageUrl: string;
+      status?: 'READY' | 'NOT_READY';
+      title?: string;
+      shareText?: string;
+      pageUrl?: string;
     };
   };
   lastCronCycle: {
@@ -550,30 +551,12 @@ export class OwnerControlCenterEngine {
   }> = [
     {
       category: 'Office & Commercial Supplies',
-      productName: 'Phomemo PM-246S Desktop Direct Thermal Label Printer',
+      productName: 'Phomemo PM-241BT Bluetooth Shipping Label Printer',
       manufacturerName: 'Phomemo',
-      specSummary: '203 DPI resolution, 150 mm/s print speed, USB interface, prints standard 4x6 inch shipping labels without ink or ribbon.',
-      sourceUrl: 'https://phomemo.com/products/phomemo-pm-246s-thermal-shipping-label-printer',
-      providerCallLogId: 'call_1791262856051_5grge',
-      pageTextSnippet: 'Direct Thermal Technology: No ink or toner required. Prints standard 4x6 inch shipping labels. High-speed printing at 150mm/s with 203 DPI resolution. Compatible with Windows and Mac via USB connection.'
-    },
-    {
-      category: 'Office & Commercial Supplies',
-      productName: 'TVS Electronics LP 46 Neo Commercial Thermal Barcode Printer',
-      manufacturerName: 'TVS Electronics',
-      specSummary: '203 DPI resolution, 6 ips high print speed, USB & Ethernet interface, supports 4-inch courier labels and barcode rolls.',
-      sourceUrl: 'https://www.tvs-e.in/products/thermal-printers/lp-46-neo/',
-      providerCallLogId: 'call_1791262856050_f011a',
-      pageTextSnippet: 'Resolution: 203 DPI. Print Speed: 6 inches per second (152 mm/s). Interface: USB 2.0 and Ethernet. Media Type: Roll-fed or fan-fold die-cut thermal barcode labels up to 108 mm width.'
-    },
-    {
-      category: 'Office & Commercial Supplies',
-      productName: 'Everycom BS-400 Thermal Shipping Label Printer',
-      manufacturerName: 'Everycom India',
-      specSummary: '203 DPI direct thermal printing, USB 2.0 connectivity, compatible with standard AWB logistic label formats.',
-      sourceUrl: 'https://everycom.in/products/thermal-printer-bs-400/',
-      providerCallLogId: 'call_1791360050080_qjsea',
-      pageTextSnippet: '203 DPI direct thermal label printer. Max print speed 150mm/s. Supports 4x6 inch shipping labels and AWB barcodes. Interface: High-speed USB. Plug and play logistics printing.'
+      specSummary: 'Direct Thermal (ink-free), 203 DPI resolution, up to 150 mm/s print speed (72 labels/min), Bluetooth and USB connectivity, supports 1"-4" (25.4-117mm) width labels for e-commerce logistics.',
+      sourceUrl: 'https://phomemo.com/products/pm-241bt',
+      providerCallLogId: 'call_1791393061443_spec01',
+      pageTextSnippet: 'Supported Type: Direct Thermal | Resolution: 203 DPI | Printing Speed: Up to 150 mm/s | Connectivity: Bluetooth + USB | Compatibility: iOS, Android, Windows, macOS | For small businesses & e-commerce sellers, effortlessly print shipping labels & barcodes with wireless Bluetooth connectivity.'
     }
   ];
 
@@ -1187,15 +1170,38 @@ export class OwnerControlCenterEngine {
     // 9. Compute Owner 'TODAY' Action Items (Item 7)
     const proposals = await this.getProposals(organizationId);
     const candidateProposals = proposals.filter(p => p.status === 'PROPOSED');
+    const publishedGuides = isProduction()
+      ? await this.d1Repo.query<any>('commission_content_assets', "SELECT slug, title FROM commission_content_assets WHERE organization_id = ? AND status = 'PUBLISHED' ORDER BY created_at DESC LIMIT 1", [organizationId])
+      : (() => {
+          try {
+            return getDb().prepare("SELECT slug, title FROM commission_content_assets WHERE organization_id = ? AND status = 'PUBLISHED' ORDER BY created_at DESC LIMIT 1").all(organizationId) as any[];
+          } catch {
+            return [];
+          }
+        })();
+
+    let readyShareGuide: { status: 'READY' | 'NOT_READY'; title?: string; shareText?: string; pageUrl?: string };
+    if (publishedGuides && publishedGuides.length > 0 && publishedGuides[0]?.slug) {
+      const guide = publishedGuides[0];
+      const pageUrl = `https://ai-marketing-platform-core.web.app/guides/${guide.slug}`;
+      const title = guide.title || 'Product Buyer Guide';
+      readyShareGuide = {
+        status: 'READY',
+        title,
+        shareText: `Check out our buyer guide for direct thermal label printers for small businesses in India: ${pageUrl}`,
+        pageUrl
+      };
+    } else {
+      readyShareGuide = {
+        status: 'NOT_READY'
+      };
+    }
+
     const todayItems = {
       intakeCompleted: Boolean(intake && intake.status === 'VALID'),
       intakeStatus: intake ? intake.status : 'PENDING',
       candidateProposals,
-      readyShareGuide: {
-        title: 'Thermal Label Printers Guide',
-        shareText: 'Check out our buyer guide for high-speed direct thermal label printers for small businesses in India: https://ai-marketing-platform-core.web.app/guides/thermal-label-printers-guide',
-        pageUrl: 'https://ai-marketing-platform-core.web.app/guides/thermal-label-printers-guide'
-      }
+      readyShareGuide
     };
 
     const snapshot: OwnerStatusSnapshot = {
@@ -1350,8 +1356,25 @@ export class OwnerControlCenterEngine {
           </div>
         `).join('');
 
-    const shareGuideText = today?.readyShareGuide?.shareText || 'Check out our buyer guide for high-speed direct thermal label printers for small businesses in India: https://ai-marketing-platform-core.web.app/guides/thermal-label-printers-guide';
-    const shareGuideUrl = today?.readyShareGuide?.pageUrl || 'https://ai-marketing-platform-core.web.app/guides/thermal-label-printers-guide';
+    const isShareReady = today?.readyShareGuide?.status === 'READY' && Boolean(today?.readyShareGuide?.shareText);
+    const shareGuideBadge = isShareReady
+      ? `<span style="font-size: 0.75rem; color: #4ade80;">Ready to Share</span>`
+      : `<span style="font-size: 0.75rem; color: #f59e0b; background: rgba(245, 158, 11, 0.15); padding: 2px 6px; border-radius: 4px;">NOT_READY</span>`;
+
+    const shareGuideBoxHtml = isShareReady
+      ? `
+          <div style="background: #1e293b; border: 1px solid #334155; border-radius: 4px; padding: 10px; font-family: monospace; font-size: 0.82rem; color: #e2e8f0; margin-bottom: 8px;">
+            ${escape(today?.readyShareGuide?.shareText || '')}
+          </div>
+          <div style="font-size: 0.8rem; color: #94a3b8;">
+            Public Guide URL: <a href="${escape(today?.readyShareGuide?.pageUrl || '')}" target="_blank" rel="noopener" style="color: #38bdf8;">${escape(today?.readyShareGuide?.pageUrl || '')}</a>
+          </div>
+        `
+      : `
+          <div style="font-size: 0.85rem; color: #94a3b8; background: #0b1120; border: 1px dashed #334155; border-radius: 4px; padding: 12px;">
+            STATUS: <strong>NOT_READY</strong> — No published commercial guide found. Publishing of a verified guide must occur before shareable links are generated.
+          </div>
+        `;
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -1435,17 +1458,12 @@ export class OwnerControlCenterEngine {
             <div style="font-weight: 600; font-size: 0.95rem; color: #f8fafc;">
               3. Share Public Commercial Guide (Drive Organic Visitor)
             </div>
-            <span style="font-size: 0.75rem; color: #4ade80;">Ready to Share</span>
+            ${shareGuideBadge}
           </div>
           <div style="font-size: 0.82rem; color: #f59e0b; margin-bottom: 8px;">
             <strong>Statutory Rule:</strong> Share this clean public guide page URL only. Never distribute raw or tagged Amazon affiliate links on messaging or social.
           </div>
-          <div style="background: #1e293b; border: 1px solid #334155; border-radius: 4px; padding: 10px; font-family: monospace; font-size: 0.82rem; color: #e2e8f0; margin-bottom: 8px;">
-            ${escape(shareGuideText)}
-          </div>
-          <div style="font-size: 0.8rem; color: #94a3b8;">
-            Public Guide URL: <a href="${escape(shareGuideUrl)}" target="_blank" rel="noopener" style="color: #38bdf8;">${escape(shareGuideUrl)}</a>
-          </div>
+          ${shareGuideBoxHtml}
         </div>
       </div>
       <div style="margin-top: 12px; font-size: 0.8rem; color: #64748b; text-align: right;">

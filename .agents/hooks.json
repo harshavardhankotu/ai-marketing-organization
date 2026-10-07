@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node .agents/scripts/protect-and-sanitize.cjs",
+            "command": "node -e \"require('fs').existsSync('scripts/protect-and-sanitize.cjs')?require('./scripts/protect-and-sanitize.cjs'):require('./.agents/scripts/protect-and-sanitize.cjs')\"",
             "timeout": 10
           }
         ]
