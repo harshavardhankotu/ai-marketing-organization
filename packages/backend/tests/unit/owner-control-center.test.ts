@@ -6,6 +6,9 @@ import { CommissionLedgerEngine } from '../../src/commission/commission-ledger.j
 import { NextBestActionEngine } from '../../src/revenue/next-best-action-engine.js';
 import { DemandDiscoveryEngine } from '../../src/commission/demand-discovery.js';
 import { StaticSiteGenerator } from '../../src/commission/static-site-generator.js';
+import { FirecrawlAdapter } from '../../src/research/firecrawl-adapter.js';
+import { AutomaticProductPipeline } from '../../src/commission/automatic-product-pipeline.js';
+import { ShareKitService } from '../../src/commission/share-kit-service.js';
 import { app } from '../../src/index.js';
 
 describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)', () => {
@@ -460,7 +463,7 @@ describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)
         ...validFacts,
         amazonUrl: 'https://notamazon.in/dp/B08P13WGLX',
         productChecked: true
-      })).rejects.toThrow('Amazon URL must be a full canonical URL starting with https://www.amazon.in/dp/<ASIN>');
+      })).rejects.toThrow(/Invalid Amazon host 'notamazon\.in'/);
 
       // Invalid ASIN length (9 characters)
       await expect(engine.approveProposal(orgId, target.id, {
@@ -820,6 +823,118 @@ describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)
       const html = engine.renderHtmlDashboard(snapshot);
       expect(html).toContain('LAST LEARNED:');
       expect(html).toContain('AGENT CATALOG: not wired (80)');
+    });
+
+    it('normalizeAmazonInUrl accepts long browser URLs and extracts canonical URL without query parameters', () => {
+      const longUrl = 'https://www.amazon.in/Phomemo-PM-241BT-Bluetooth-Shipping-Compatible/dp/B08P13WGLX?ref_=ast_sto_dp&th=1';
+      const result = OwnerControlCenterEngine.normalizeAmazonInUrl(longUrl);
+      expect(result.canonicalUrl).toBe('https://www.amazon.in/dp/B08P13WGLX');
+      expect(result.asin).toBe('B08P13WGLX');
+    });
+
+    it('normalizeAmazonInUrl rejects lookalike hosts amazon.in.evil.com and notamazon.in', () => {
+      expect(() => OwnerControlCenterEngine.normalizeAmazonInUrl('https://amazon.in.evil.com/dp/B08P13WGLX'))
+        .toThrow(/Invalid Amazon host 'amazon\.in\.evil\.com'/);
+      expect(() => OwnerControlCenterEngine.normalizeAmazonInUrl('https://notamazon.in/dp/B08P13WGLX'))
+        .toThrow(/Invalid Amazon host 'notamazon\.in'/);
+    });
+
+    it('category policy evaluates label printer as allowed, sunscreen as blocked, sneakers as discouraged', async () => {
+      const allowed = await engine.evaluateCategoryPolicy(orgId, 'Label Printer & Logistics');
+      expect(allowed.status).toBe('ALLOWED');
+      expect(await engine.isCategoryBlocked(orgId, 'Label Printer & Logistics')).toBe(false);
+
+      const blocked = await engine.evaluateCategoryPolicy(orgId, 'Sunscreen & SPF Skincare');
+      expect(blocked.status).toBe('BLOCKED');
+      expect(await engine.isCategoryBlocked(orgId, 'Sunscreen & SPF Skincare')).toBe(true);
+
+      const discouraged = await engine.evaluateCategoryPolicy(orgId, 'Athletic Sneakers & Footwear');
+      expect(discouraged.status).toBe('DISCOURAGED');
+      expect(await engine.isCategoryBlocked(orgId, 'Athletic Sneakers & Footwear')).toBe(false);
+    });
+
+    it('fact lint uses whole-word matching: wholesale is allowed, customers praise is blocked', async () => {
+      const proposals = await engine.discoverProductProposals(orgId);
+      const propId = proposals[0].id;
+
+      // "wholesale" allowed
+      await expect(engine.approveProposal(orgId, propId, {
+        amazonUrl: 'https://www.amazon.in/Phomemo-PM-241BT/dp/B08P13WGLX?ref_=ast_sto_dp',
+        productChecked: true,
+        displayName: 'Phomemo Label Printer',
+        fact1: 'Supports wholesale direct thermal shipping labels 4x6 inch', fact1Date: '2026-03-25',
+        fact2: 'Direct Thermal 203 DPI resolution', fact2Date: '2026-03-25',
+        fact3: 'Bluetooth and USB connectivity', fact3Date: '2026-03-25'
+      })).resolves.toBeDefined();
+
+      // "customers praise" blocked
+      await expect(engine.approveProposal(orgId, propId, {
+        amazonUrl: 'https://www.amazon.in/Phomemo-PM-241BT/dp/B08P13WGLX',
+        productChecked: true,
+        displayName: 'Phomemo Label Printer',
+        fact1: 'Customers praise print speed and reliability', fact1Date: '2026-03-25',
+        fact2: 'Direct Thermal 203 DPI resolution', fact2Date: '2026-03-25',
+        fact3: 'Bluetooth and USB connectivity', fact3Date: '2026-03-25'
+      })).rejects.toThrow('Review language (customers, reviewers, users praise/note/say) is prohibited');
+    });
+
+    it('FirecrawlAdapter blocks amazon.in URLs and uses 0 credits on second fetch', async () => {
+      try {
+        db.prepare("DELETE FROM spec_page_cache WHERE url LIKE '%phomemo%'").run();
+      } catch {}
+      const adapter = FirecrawlAdapter.getInstance();
+
+      // Block amazon.in URLs
+      await expect(adapter.scrapeManufacturerSpec('https://www.amazon.in/dp/B08P13WGLX'))
+        .rejects.toThrow(/Firecrawl is strictly forbidden from scraping any amazon\.\* domain/);
+
+      // Scrape approved manufacturer URL (mocked in test)
+      const res1 = await adapter.scrapeManufacturerSpec('https://phomemo.com/products/pm-241bt');
+      expect(res1.fromCache).toBe(false);
+      expect(res1.creditsConsumed).toBe(1);
+
+      // Second fetch of same URL uses cache with 0 credits
+      const res2 = await adapter.scrapeManufacturerSpec('https://phomemo.com/products/pm-241bt');
+      expect(res2.fromCache).toBe(true);
+      expect(res2.creditsConsumed).toBe(0);
+    });
+
+    it('AutomaticProductPipeline produces state machine diagram and enforces weekly batching', async () => {
+      const pipeline = AutomaticProductPipeline.getInstance();
+      const diagram = pipeline.getStateMachineDiagram();
+      expect(diagram).toContain('[AUTOMATED]');
+      expect(diagram).toContain('[OWNER]');
+
+      // First batch succeeds
+      const batch1 = await pipeline.runWeeklyBatch(orgId, { force: true });
+      expect(batch1.batchCreated).toBe(true);
+      expect(batch1.proposals.length).toBeGreaterThan(0);
+
+      // Subsequent batch within 7 days is gated by cooldown
+      const batch2 = await pipeline.runWeeklyBatch(orgId);
+      expect(batch2.batchCreated).toBe(false);
+      expect(batch2.reason).toContain('COOLDOWN_ACTIVE');
+    });
+
+    it('ShareKitService does nothing when no guide has status PUBLISHED', async () => {
+      const kit = ShareKitService.getInstance();
+      const result = await kit.generateWeeklyShareKit(orgId);
+      expect(result.active).toBe(false);
+      expect(result.reason).toContain('NO_PUBLISHED_GUIDES');
+      expect(result.drafts).toHaveLength(0);
+    });
+
+    it('snapshot includes Mistakes Board, Bugs, and Version info', async () => {
+      const snapshot = await engine.computeStatus(orgId);
+      expect(snapshot.mistakesBoard).toBeDefined();
+      expect(snapshot.bugs).toBeDefined();
+      expect(snapshot.versionInfo).toBeDefined();
+      expect(snapshot.versionInfo?.lastD1Migration).toBe('0016');
+
+      const html = engine.renderHtmlDashboard(snapshot);
+      expect(html).toContain('MISTAKES BOARD');
+      expect(html).toContain('BUGS');
+      expect(html).toContain('VERSION &amp; DEPLOYMENT INTEGRITY');
     });
   });
 });

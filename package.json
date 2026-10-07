@@ -17,6 +17,8 @@
     "dev:frontend": "npm run dev --workspace=packages/frontend",
     "test": "npm run test --workspace=packages/backend",
     "seed": "npm run seed --workspace=packages/backend",
+    "board:sync": "node scripts/board-sync.mjs",
+    "board:preflight": "node scripts/board-preflight.mjs",
     "floki:orchestrate": "python scripts/floki_marketing_runner.py"
   },
   "devDependencies": {

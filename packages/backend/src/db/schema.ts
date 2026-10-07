@@ -1302,6 +1302,10 @@ CREATE TABLE IF NOT EXISTS provider_quota_state (
   reset_window_hours INTEGER NOT NULL DEFAULT 24,
   last_successful_request TEXT,
   last_rate_limit TEXT,
+  source TEXT DEFAULT 'SYSTEM',
+  unlogged_credits INTEGER DEFAULT 0,
+  unlogged_reason TEXT,
+  limit_source TEXT,
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -2201,5 +2205,22 @@ CREATE TABLE IF NOT EXISTS owner_status_snapshots (
   learning_insights_json TEXT NOT NULL DEFAULT '[]',
   open_actions_json TEXT NOT NULL DEFAULT '[]',
   computed_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 101. Mistakes Board (Empirical incident tracking and guardrails)
+CREATE TABLE IF NOT EXISTS mistakes_board (
+  id TEXT PRIMARY KEY,
+  first_seen TEXT NOT NULL,
+  last_seen TEXT NOT NULL,
+  title TEXT NOT NULL,
+  what_happened TEXT NOT NULL,
+  cause TEXT NOT NULL,
+  rule TEXT NOT NULL,
+  severity TEXT NOT NULL CHECK(severity IN ('P1', 'P2', 'P3')),
+  status TEXT NOT NULL CHECK(status IN ('OPEN', 'FIXED', 'MONITORING')),
+  recurrence_count INTEGER NOT NULL DEFAULT 1,
+  guard_type TEXT NOT NULL CHECK(guard_type IN ('TEST', 'HOOK', 'LINT', 'NONE')),
+  guard_ref TEXT,
+  source_report TEXT NOT NULL
 );
 `;
