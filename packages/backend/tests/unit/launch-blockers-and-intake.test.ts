@@ -18,10 +18,10 @@ describe('Launch Blockers & Intake Test Suite', () => {
     process.env = { ...originalEnv };
     process.env.NODE_ENV = 'test';
     process.env.OWNER_API_KEY = ownerKey;
-    process.env.AMAZON_AFFILIATE_TAG = 'marketing98-21';
+    process.env.AMAZON_AFFILIATE_TAG = 'mock-assoc-21';
     process.env.PUBLIC_SITE_NAME = 'AI Marketing Organization';
-    process.env.PUBLIC_AUTHOR_NAME = 'Venkata Sai Harsha Vardhan Kotu';
-    process.env.PUBLIC_CONTACT_EMAIL = 'privacy@ai-marketing-organization.onrender.com';
+    process.env.PUBLIC_AUTHOR_NAME = 'Platform Operator';
+    process.env.PUBLIC_CONTACT_EMAIL = 'contact@example.com';
     process.env.PUBLIC_SITE_URL = 'https://ai-marketing-platform-core.web.app';
 
     const db = getDb();
@@ -156,6 +156,24 @@ describe('Launch Blockers & Intake Test Suite', () => {
       expect(resValid.status).toBe(200);
       const resJson = await resValid.json();
       expect(resJson.success).toBe(true);
+
+      // 4. Global PARTNER_WEBHOOK_SECRET fallback removed: per-partner secret only
+      process.env.PARTNER_WEBHOOK_SECRET = 'global_secret_ignored';
+      delete process.env.PARTNER_WEBHOOK_SECRET_PART_CPL_01;
+      const resGlobalIgnored = await app.request('/api/v1/webhooks/conversion/part_cpl_01', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-webhook-secret': 'global_secret_ignored'
+        },
+        body: JSON.stringify({
+          transaction_id: 'cpl_tx_global_attempt',
+          amount: 500,
+          status: 'APPROVED'
+        })
+      });
+      // Returns 404 because no partner-specific secret is configured
+      expect(resGlobalIgnored.status).toBe(404);
     });
   });
 
@@ -239,10 +257,10 @@ describe('Launch Blockers & Intake Test Suite', () => {
           view_count, referral_click_count, created_at, updated_at
         ) VALUES (
           'asset_test_01', ?, 'off_test_01',
-          'Best Thermal Shipping Label Printers in India', 'best-thermal-shipping-label-printers',
-          'In-depth independent analysis of commercial 4x6 thermal label printers.',
+          'Commercial Thermal Shipping Label Printers in India', 'commercial-thermal-shipping-label-printers',
+          'Commercial overview of 4x6 thermal label printers for logistics.',
           'Office & Commercial Supplies', 'GUIDE',
-          '# Thermal Printers for Logistics\r\n\r\nReview of top industrial desktop printers for high volume shipping.\r\n\r\n[Check Phomemo PM-246S on Amazon](https://www.amazon.in/dp/B08N5WRWNW?tag=marketing98-21)\r\n\r\nThermal direct technology eliminates ink and ribbon costs.',
+          '# Thermal Printers for Logistics\r\n\r\nOverview of top industrial desktop printers for high volume shipping.\r\n\r\n[Check Phomemo PM-246S on Amazon](https://www.amazon.in/dp/B08N5WRWNW?tag=mock-assoc-21)\r\n\r\nThermal direct technology eliminates ink and ribbon costs.',
           'PUBLISHED',
           0, 0, datetime('now'), datetime('now')
         )
@@ -255,34 +273,35 @@ describe('Launch Blockers & Intake Test Suite', () => {
       expect(res.guidesRendered).toBe(1);
 
       // Verify guide HTML file
-      const guideFile = path.join(tempDir, 'guides', 'best-thermal-shipping-label-printers', 'index.html');
+      const guideFile = path.join(tempDir, 'guides', 'commercial-thermal-shipping-label-printers', 'index.html');
       expect(fs.existsSync(guideFile)).toBe(true);
       const guideHtml = fs.readFileSync(guideFile, 'utf-8');
 
       // 1. title
-      expect(guideHtml).toContain('<title>Best Thermal Shipping Label Printers in India | AI Marketing Organization</title>');
+      expect(guideHtml).toContain('<title>Commercial Thermal Shipping Label Printers in India | AI Marketing Organization</title>');
       // 2. meta description
-      expect(guideHtml).toContain('<meta name="description" content="In-depth independent analysis of commercial 4x6 thermal label printers.">');
+      expect(guideHtml).toContain('<meta name="description" content="Commercial overview of 4x6 thermal label printers for logistics.">');
       // 3. canonical URL
-      expect(guideHtml).toContain('<link rel="canonical" href="https://ai-marketing-platform-core.web.app/guides/best-thermal-shipping-label-printers">');
+      expect(guideHtml).toContain('<link rel="canonical" href="https://ai-marketing-platform-core.web.app/guides/commercial-thermal-shipping-label-printers">');
       // 4. og:title
-      expect(guideHtml).toContain('<meta property="og:title" content="Best Thermal Shipping Label Printers in India">');
+      expect(guideHtml).toContain('<meta property="og:title" content="Commercial Thermal Shipping Label Printers in India">');
       // 5. og:description
-      expect(guideHtml).toContain('<meta property="og:description" content="In-depth independent analysis of commercial 4x6 thermal label printers.">');
+      expect(guideHtml).toContain('<meta property="og:description" content="Commercial overview of 4x6 thermal label printers for logistics.">');
       // 6. og:url
-      expect(guideHtml).toContain('<meta property="og:url" content="https://ai-marketing-platform-core.web.app/guides/best-thermal-shipping-label-printers">');
+      expect(guideHtml).toContain('<meta property="og:url" content="https://ai-marketing-platform-core.web.app/guides/commercial-thermal-shipping-label-printers">');
       // 7. Statutory disclosure in the first 500 characters of <body>
       const bodyIndex = guideHtml.indexOf('<body>');
       const disclosureIndex = guideHtml.indexOf('As an Amazon Associate I earn from qualifying purchases.');
       expect(bodyIndex).toBeGreaterThan(-1);
       expect(disclosureIndex).toBeGreaterThan(-1);
       expect(disclosureIndex - bodyIndex).toBeLessThan(500);
+      expect(guideHtml).toContain('We do not test products or show prices; check current details on Amazon.in.');
 
       // 8. Full article text
       expect(guideHtml).toContain('Thermal direct technology eliminates ink and ribbon costs.');
       // 9. Direct tagged Amazon link with target=_blank and rel="sponsored nofollow noopener"
       expect(guideHtml).toContain('rel="sponsored nofollow noopener"');
-      expect(guideHtml).toContain('href="https://www.amazon.in/dp/B08N5WRWNW?tag=marketing98-21"');
+      expect(guideHtml).toContain('href="https://www.amazon.in/dp/B08N5WRWNW?tag=mock-assoc-21"');
       // 10. Footer links to legal pages
       expect(guideHtml).toContain('href="/about"');
       expect(guideHtml).toContain('href="/contact"');
@@ -300,6 +319,91 @@ describe('Launch Blockers & Intake Test Suite', () => {
       expect(fs.existsSync(path.join(tempDir, 'robots.txt'))).toBe(true);
 
       fs.rmSync(tempDir, { recursive: true, force: true });
+    });
+  });
+
+  describe('3. Publish Lint vs Prohibited Claims & Generator Template', () => {
+    it('blocks "Best", "Independent technical review", and "independent technical research"', () => {
+      const contentEngine = ContentAssetEngine.getInstance();
+
+      // Failing example 1: "Best"
+      const resBest = contentEngine.lintContent('Best Thermal Printer for Indian Logistics\n\nAs an Amazon Associate I earn from qualifying purchases.');
+      expect(resBest.passed).toBe(false);
+      expect(resBest.violations.some(v => v.includes('FORBIDDEN_SUPERLATIVE') && v.includes('best'))).toBe(true);
+
+      // Failing example 2: "Independent technical review"
+      const resReview = contentEngine.lintContent('Independent technical review of 4x6 desktop printers.\n\nAs an Amazon Associate I earn from qualifying purchases.');
+      expect(resReview.passed).toBe(false);
+      expect(resReview.violations.some(v => v.includes('Independent technical review'))).toBe(true);
+
+      // Failing example 3: "independent technical research"
+      const resResearch = contentEngine.lintContent('Based on our independent technical research, we present these specs.\n\nAs an Amazon Associate I earn from qualifying purchases.');
+      expect(resResearch.passed).toBe(false);
+      expect(resResearch.violations.some(v => v.includes('independent technical research'))).toBe(true);
+    });
+
+    it('running publish lint on the item-5 fixture page with prohibited claims fails; passes with compliant overview disclaimer', () => {
+      const contentEngine = ContentAssetEngine.getInstance();
+
+      // Prohibited fixture content containing "Best", "Independent technical review", "independent technical research"
+      const prohibitedFixture = `
+# Best Thermal Shipping Label Printers in India
+
+As an Amazon Associate I earn from qualifying purchases.
+
+Independent technical review of commercial 4x6 label printers.
+Our independent technical research highlights key hardware specs.
+      `.trim();
+
+      const failResult = contentEngine.lintContent(prohibitedFixture);
+      expect(failResult.passed).toBe(false);
+      expect(failResult.violations.some(v => v.includes('best'))).toBe(true);
+      expect(failResult.violations.some(v => v.includes('Independent technical review'))).toBe(true);
+      expect(failResult.violations.some(v => v.includes('independent technical research'))).toBe(true);
+
+      // Compliant content with: "We do not test products or show prices; check current details on Amazon.in."
+      const compliantFixture = `
+# Commercial Thermal Shipping Label Printers in India
+
+As an Amazon Associate I earn from qualifying purchases. We do not test products or show prices; check current details on Amazon.in.
+
+Commercial product overview for desktop 4x6 label printing hardware.
+Specifications checked against manufacturer documentation.
+      `.trim();
+
+      const passResult = contentEngine.lintContent(compliantFixture);
+      expect(passResult.passed).toBe(true);
+      expect(passResult.violations).toHaveLength(0);
+    });
+
+    it('generator templates contain compliant disclaimer and omit prohibited claims', () => {
+      const staticGen = StaticSiteGenerator.getInstance();
+      const config = {
+        siteName: 'Commerce Equipment Guide',
+        siteUrl: 'https://ai-marketing-platform-core.web.app',
+        authorName: 'Platform Operator',
+        contactEmail: 'contact@example.com'
+      };
+
+      const aboutHtml = staticGen.renderAboutHtml(config);
+      const contactHtml = staticGen.renderContactHtml(config);
+      const disclosureHtml = staticGen.renderDisclosureHtml(config);
+      const guideHtml = staticGen.renderGuideHtml({
+        title: 'Commercial Thermal Printers in India',
+        slug: 'commercial-thermal-printers',
+        content_markdown: 'As an Amazon Associate I earn from qualifying purchases. We do not test products or show prices; check current details on Amazon.in.\n\nHardware overview.'
+      }, config);
+
+      const allHtml = `${aboutHtml}\n${contactHtml}\n${disclosureHtml}\n${guideHtml}`;
+
+      // Must not contain prohibited claims
+      expect(allHtml).not.toMatch(/\bIndependent\s+technical\s+review\b/i);
+      expect(allHtml).not.toMatch(/\bindependent\s+technical\s+research\b/i);
+      expect(allHtml).not.toMatch(/\bVerified Editorial Analysis\b/i);
+      expect(allHtml).not.toMatch(/\bEditorial Research\b/i);
+
+      // Must contain replacement text
+      expect(allHtml).toContain('We do not test products or show prices; check current details on Amazon.in.');
     });
   });
 
@@ -374,12 +478,142 @@ describe('Launch Blockers & Intake Test Suite', () => {
 
       // Normalization check
       expect(offer.destinationUrl).toBe('https://www.amazon.in/dp/B08N5WRWNW');
-      expect(offer.authorizedTrackingUrl).toBe('https://www.amazon.in/dp/B08N5WRWNW?tag=marketing98-21');
+      expect(offer.authorizedTrackingUrl).toBe(`https://www.amazon.in/dp/B08N5WRWNW?tag=${process.env.AMAZON_AFFILIATE_TAG}`);
       expect(offer.status).toBe('DRAFT');
       expect(offer.active).toBe(0);
       // No price stored
       expect(offer.priceINR == null || offer.priceINR === 0).toBe(true);
       expect(offer.evidence.listing_facts).toContain('203 DPI, USB connectivity');
+    });
+
+    it('rejects amazon.in.evil.com host with 400 INVALID_HOST', async () => {
+      const res = await app.request('/api/v1/commission/offers/asin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': ownerKey },
+        body: JSON.stringify({
+          url: 'https://amazon.in.evil.com/dp/B08N5WRWNW',
+          displayName: 'Thermal Printer',
+          listingFacts: '4x6 label printer'
+        })
+      });
+      expect(res.status).toBe(400);
+      const json = await res.json();
+      expect(json.error).toBe('INVALID_HOST');
+    });
+
+    it('rejects notamazon.in host with 400 INVALID_HOST', async () => {
+      const res = await app.request('/api/v1/commission/offers/asin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': ownerKey },
+        body: JSON.stringify({
+          url: 'https://notamazon.in/dp/B08N5WRWNW',
+          displayName: 'Thermal Printer',
+          listingFacts: '4x6 label printer'
+        })
+      });
+      expect(res.status).toBe(400);
+      const json = await res.json();
+      expect(json.error).toBe('INVALID_HOST');
+    });
+
+    it('rejects http:// scheme with 400 INVALID_SCHEME', async () => {
+      const res = await app.request('/api/v1/commission/offers/asin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': ownerKey },
+        body: JSON.stringify({
+          url: 'http://www.amazon.in/dp/B08N5WRWNW',
+          displayName: 'Thermal Printer',
+          listingFacts: '4x6 label printer'
+        })
+      });
+      expect(res.status).toBe(400);
+      const json = await res.json();
+      expect(json.error).toBe('INVALID_SCHEME');
+    });
+
+    it('rejects 9-character ASIN with 400 INVALID_ASIN', async () => {
+      const res = await app.request('/api/v1/commission/offers/asin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': ownerKey },
+        body: JSON.stringify({
+          url: 'https://www.amazon.in/dp/B08N5WRWN',
+          displayName: 'Thermal Printer',
+          listingFacts: '4x6 label printer'
+        })
+      });
+      expect(res.status).toBe(400);
+      const json = await res.json();
+      expect(json.error).toBe('INVALID_ASIN');
+    });
+
+    it('rejects 11-character ASIN with 400 INVALID_ASIN', async () => {
+      const res = await app.request('/api/v1/commission/offers/asin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': ownerKey },
+        body: JSON.stringify({
+          url: 'https://www.amazon.in/dp/B08N5WRWNW1',
+          displayName: 'Thermal Printer',
+          listingFacts: '4x6 label printer'
+        })
+      });
+      expect(res.status).toBe(400);
+      const json = await res.json();
+      expect(json.error).toBe('INVALID_ASIN');
+    });
+
+    it('accepts lowercase ASIN and normalizes to uppercase', async () => {
+      const res = await app.request('/api/v1/commission/offers/asin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': ownerKey },
+        body: JSON.stringify({
+          url: 'https://www.amazon.in/dp/b08n5wrwnw',
+          displayName: 'Thermal Printer',
+          listingFacts: '4x6 label printer'
+        })
+      });
+      expect(res.status).toBe(201);
+      const json = await res.json();
+      expect(json.data.destinationUrl).toBe('https://www.amazon.in/dp/B08N5WRWNW');
+      expect(json.data.evidence.asin).toBe('B08N5WRWNW');
+    });
+
+    it('accepts URL containing own tag, accepts and strips it into canonical destination', async () => {
+      const res = await app.request('/api/v1/commission/offers/asin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': ownerKey },
+        body: JSON.stringify({
+          url: `https://www.amazon.in/dp/B08N5WRWNW?tag=${process.env.AMAZON_AFFILIATE_TAG}&ref=dp_title&th=1`,
+          displayName: 'Thermal Printer',
+          listingFacts: '4x6 label printer'
+        })
+      });
+      expect(res.status).toBe(201);
+      const json = await res.json();
+      expect(json.data.destinationUrl).toBe('https://www.amazon.in/dp/B08N5WRWNW');
+      expect(json.data.authorizedTrackingUrl).toBe(`https://www.amazon.in/dp/B08N5WRWNW?tag=${process.env.AMAZON_AFFILIATE_TAG}`);
+    });
+
+    it('strips extra query parameters and stores no price or rating', async () => {
+      const res = await app.request('/api/v1/commission/offers/asin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': ownerKey },
+        body: JSON.stringify({
+          url: 'https://www.amazon.in/Phomemo-PM-246S-Shipping-Label-Printer/dp/B08N5WRWNW?ref_=ast_sto_dp&th=1&psc=1&qid=1728250000',
+          displayName: 'Phomemo PM-246S Thermal Label Printer',
+          listingFacts: '203 DPI, USB connectivity, prints 4x6 shipping labels without ink, dated 2026-10-06'
+        })
+      });
+      expect(res.status).toBe(201);
+      const json = await res.json();
+      const offer = json.data;
+      expect(offer.destinationUrl).toBe('https://www.amazon.in/dp/B08N5WRWNW');
+      expect(offer.authorizedTrackingUrl).toBe(`https://www.amazon.in/dp/B08N5WRWNW?tag=${process.env.AMAZON_AFFILIATE_TAG}`);
+      // Zero price or rating stored
+      expect(offer.priceINR == null || offer.priceINR === 0).toBe(true);
+      expect((offer as any).rating).toBeUndefined();
+      expect((offer as any).stars).toBeUndefined();
+      expect(offer.availability).toBe('UNKNOWN');
+      expect(offer.evidence.listing_facts).toBe('203 DPI, USB connectivity, prints 4x6 shipping labels without ink, dated 2026-10-06');
     });
   });
 
@@ -518,7 +752,7 @@ Direct thermal printing eliminates replacement ribbon and ink cartridge costs fo
 - 203 DPI resolution
 - Compatible with 4x6 courier labels
 
-[Check Phomemo PM-246S on Amazon](https://www.amazon.in/dp/B08N5WRWNW?tag=marketing98-21)
+[Check Phomemo PM-246S on Amazon](https://www.amazon.in/dp/B08N5WRWNW?tag=mock-assoc-21)
 
 All specifications checked against manufacturer technical documentation.
       `.trim();
@@ -527,9 +761,9 @@ All specifications checked against manufacturer technical documentation.
       const asset = await contentEngine.createAsset({
         organizationId: testOrgId,
         primaryOfferId: offerId,
-        title: 'Thermal Shipping Label Printers: Technical Review for Logistics',
+        title: 'Thermal Shipping Label Printers: Product Overview for Logistics',
         slug: 'thermal-shipping-label-printers-review',
-        intentTarget: 'Detailed evaluation of 4x6 direct thermal shipping label printers for small businesses.',
+        intentTarget: 'Commercial overview of 4x6 direct thermal shipping label printers for small businesses.',
         category: 'Office & Commercial Supplies',
         assetType: 'GUIDE',
         contentMarkdown: guideBody,

@@ -163,7 +163,7 @@ export class StaticSiteGenerator {
    */
   public renderGuideHtml(guide: any, config: StaticSiteConfig): string {
     const title = guide.title || 'Product Evaluation & Buying Guide';
-    const description = guide.intent_target || guide.meta_description || guide.description || 'Comprehensive independent evaluation and technical breakdown.';
+    const description = guide.intent_target || guide.meta_description || guide.description || 'Commercial product overview and specification details.';
     const canonicalUrl = `${config.siteUrl}/guides/${guide.slug}`;
     const fullBody = guide.content_markdown || guide.body_markdown || guide.body || '';
 
@@ -208,17 +208,17 @@ export class StaticSiteGenerator {
 <body>
   <header>
     <a href="/" class="brand">${this.escapeHtml(config.siteName)}</a>
-    <span style="font-size: 0.85rem; color: #94a3b8;">Editorial Research</span>
+    <span style="font-size: 0.85rem; color: #94a3b8;">Product Overview</span>
   </header>
   <main>
     <aside class="disclosure-box" aria-label="Affiliate Disclosure">
-      <strong>Disclosure:</strong> As an Amazon Associate I earn from qualifying purchases.
+      <strong>Disclosure:</strong> As an Amazon Associate I earn from qualifying purchases. We do not test products or show prices; check current details on Amazon.in.
     </aside>
     <article class="content">
       <h1>${this.escapeHtml(title)}</h1>
       <div class="meta-bar">
         <span>Published by <strong>${this.escapeHtml(config.authorName)}</strong></span> &bull;
-        <span>Verified Editorial Analysis</span>
+        <span>Product Overview</span>
       </div>
       <div>
         ${formattedBody}
@@ -242,22 +242,22 @@ export class StaticSiteGenerator {
   public renderAboutHtml(config: StaticSiteConfig): string {
     return this.renderLegalLayout('About Us', config, `
       <h1>About ${this.escapeHtml(config.siteName)}</h1>
-      <p>${this.escapeHtml(config.siteName)} is an independent research and product evaluation platform. We examine equipment, commercial supplies, and productivity tools to deliver structured, evidence-based buying guides for professionals and small businesses across India.</p>
+      <p>${this.escapeHtml(config.siteName)} is an informational platform for commercial supplies and equipment. We do not test products or show prices; check current details on Amazon.in.</p>
       <h2>Editorial Principles</h2>
       <ul>
         <li><strong>Zero Fabricated Reviews:</strong> We never create, publish, or endorse artificial customer testimonials or unverified star ratings.</li>
-        <li><strong>Specification-First Analysis:</strong> Products are evaluated against manufacturer data sheets, physical compatibility, and genuine commercial standards.</li>
+        <li><strong>Specification-First Overview:</strong> Products are listed based on manufacturer data sheets and physical compatibility.</li>
         <li><strong>Commercial Independence:</strong> Recommendations are not paid placements. Commercial relationships are transparently disclosed.</li>
       </ul>
-      <h2>Author & Research Lead</h2>
-      <p>Research and publication oversight is led by <strong>${this.escapeHtml(config.authorName)}</strong>.</p>
+      <h2>Editorial Oversight</h2>
+      <p>Publication oversight is managed by <strong>${this.escapeHtml(config.authorName)}</strong>.</p>
     `);
   }
 
   public renderContactHtml(config: StaticSiteConfig): string {
     return this.renderLegalLayout('Contact & Grievance Redressal', config, `
       <h1>Contact &amp; Grievance Redressal</h1>
-      <p>For questions regarding our research guides, editorial inquiries, or statutory grievance redressal under the Digital Personal Data Protection (DPDP) Act, 2023, please contact our team:</p>
+      <p>For questions regarding our product guides, editorial inquiries, or statutory grievance redressal under the Digital Personal Data Protection (DPDP) Act, 2023, please contact our team:</p>
       <div style="background: #111827; border: 1px solid #1e293b; border-radius: 8px; padding: 1.5rem; margin: 1.5rem 0;">
         <p><strong>Entity:</strong> ${this.escapeHtml(config.siteName)}</p>
         <p><strong>Primary Contact &amp; Grievance Officer:</strong> ${this.escapeHtml(config.authorName)}</p>
@@ -300,7 +300,7 @@ export class StaticSiteGenerator {
     return this.renderLegalLayout('Affiliate & Commercial Referral Disclosure', config, `
       <h1>Affiliate &amp; Commercial Referral Disclosure</h1>
       <div style="background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.35); border-radius: 8px; padding: 1.2rem; margin: 1.5rem 0; font-size: 1.1rem; color: #fde68a; font-weight: 600;">
-        "As an Amazon Associate I earn from qualifying purchases."
+        "As an Amazon Associate I earn from qualifying purchases. We do not test products or show prices; check current details on Amazon.in."
       </div>
       <h2>Transparency and Compliance</h2>
       <p>${this.escapeHtml(config.siteName)} participates in the Amazon Associates India Program, an affiliate advertising initiative designed to provide a means for sites to earn advertising fees by linking to Amazon.in.</p>

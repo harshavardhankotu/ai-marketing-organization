@@ -4171,8 +4171,7 @@ apiRouter.post('/webhooks/conversion/:partnerId', async (c) => {
 
   const envSecret =
     process.env[`PARTNER_WEBHOOK_SECRET_${partnerId.toUpperCase()}`] ||
-    process.env[`PARTNER_WEBHOOK_SECRET_${partnerId}`] ||
-    process.env.PARTNER_WEBHOOK_SECRET;
+    process.env[`PARTNER_WEBHOOK_SECRET_${partnerId}`];
 
   const hashedSecretHex = evidence.webhook_secret_sha256 || evidence.webhook_secret_hash;
 
@@ -4450,7 +4449,7 @@ apiRouter.post('/commission/offers/asin', async (c) => {
     return c.json({ success: false, error: 'SHORTENED_URL_REJECTED', message: 'Shortened URLs (amzn.to, a.co) are rejected. Provide the authoritative amazon.in URL.' }, 400);
   }
 
-  // Parse URL and validate host
+  // Parse URL and validate scheme and host
   let parsedUrl: URL;
   try {
     parsedUrl = new URL(rawUrl);
@@ -4458,25 +4457,30 @@ apiRouter.post('/commission/offers/asin', async (c) => {
     return c.json({ success: false, error: 'INVALID_URL', message: 'Could not parse product URL' }, 400);
   }
 
+  if (parsedUrl.protocol !== 'https:') {
+    return c.json({ success: false, error: 'INVALID_SCHEME', message: `Scheme '${parsedUrl.protocol}' is rejected. Product URL must use HTTPS.` }, 400);
+  }
+
   const host = parsedUrl.hostname.toLowerCase();
   if (host !== 'amazon.in' && host !== 'www.amazon.in') {
     return c.json({ success: false, error: 'INVALID_HOST', message: `Host '${host}' is rejected. Must be amazon.in or www.amazon.in.` }, 400);
   }
 
-  // Extract 10-char ASIN
-  const asinMatch = parsedUrl.pathname.match(/(?:\/dp\/|\/gp\/product\/|\/product\/|\/)([A-Z0-9]{10})(?:[/?]|$)/i);
+  // Extract exactly 10-char ASIN
+  const asinMatch = parsedUrl.pathname.match(/(?:\/dp\/|\/gp\/product\/|\/product\/)([^/?#]+)/i);
   if (!asinMatch || !asinMatch[1]) {
     return c.json({ success: false, error: 'INVALID_ASIN', message: 'Could not locate valid 10-character ASIN in URL path' }, 400);
   }
-  const asin = asinMatch[1].toUpperCase();
-  if (!/^[A-Z0-9]{10}$/.test(asin)) {
+  const rawAsin = asinMatch[1].trim();
+  if (rawAsin.length !== 10 || !/^[A-Za-z0-9]{10}$/.test(rawAsin)) {
     return c.json({ success: false, error: 'INVALID_ASIN', message: 'ASIN must be exactly 10 alphanumeric characters' }, 400);
   }
+  const asin = rawAsin.toUpperCase();
 
-  // Reject URL if it already carries a different affiliate tag
-  const configuredTag = process.env.AMAZON_AFFILIATE_TAG || 'marketing98-21';
+  // Reject URL if it already carries a different affiliate tag; accept and strip own tag
+  const configuredTag = (process.env.AMAZON_AFFILIATE_TAG || '').trim();
   const existingTag = parsedUrl.searchParams.get('tag');
-  if (existingTag && existingTag !== configuredTag) {
+  if (existingTag && configuredTag && existingTag !== configuredTag) {
     return c.json({
       success: false,
       error: 'FOREIGN_TAG_REJECTED',
@@ -4484,9 +4488,9 @@ apiRouter.post('/commission/offers/asin', async (c) => {
     }, 400);
   }
 
-  // Canonical destination URL with all other query parameters stripped
+  // Canonical destination URL with all query parameters stripped
   const canonicalDestinationUrl = `https://www.amazon.in/dp/${asin}`;
-  const authorizedTrackingUrl = `${canonicalDestinationUrl}?tag=${configuredTag}`;
+  const authorizedTrackingUrl = configuredTag ? `${canonicalDestinationUrl}?tag=${configuredTag}` : canonicalDestinationUrl;
 
   // Find Amazon partner
   const registry = PartnerRegistryEngine.getInstance();
@@ -4512,7 +4516,7 @@ apiRouter.post('/commission/offers/asin', async (c) => {
     status: 'DRAFT',
     description: `ASIN ${asin} - ${displayName}`,
     currency: 'INR',
-    availability: 'IN_STOCK',
+    availability: 'UNKNOWN',
     evidence: {
       asin,
       canonical_destination: canonicalDestinationUrl,

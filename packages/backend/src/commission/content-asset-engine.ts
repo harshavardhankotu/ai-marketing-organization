@@ -102,6 +102,14 @@ export function lintContentAsset(
     violations.push(`MISSING_AMAZON_DISCLOSURE: Mandatory disclosure required near top of content: "${REQUIRED_AMAZON_DISCLOSURE}"`);
   }
 
+  // 13. "Independent technical review" / "independent technical research"
+  if (/\bindependent\s+technical\s+review\b/i.test(text)) {
+    violations.push('FORBIDDEN_CLAIM: "Independent technical review" is prohibited.');
+  }
+  if (/\bindependent\s+technical\s+research\b/i.test(text)) {
+    violations.push('FORBIDDEN_CLAIM: "independent technical research" is prohibited.');
+  }
+
   return {
     passed: violations.length === 0,
     violations
@@ -208,7 +216,8 @@ export class ContentAssetEngine {
     if (!checks.disclosurePresent) failures.push('DISCLOSURE_MISSING: affiliate disclosure is required.');
 
     // Pre-launch content gate lint (§ Pre-Launch Gate 4)
-    const lintResult = lintContentAsset(input.contentMarkdown, {
+    const fullTextToLint = `${input.title}\n\n${input.intentTarget || ''}\n\n${input.contentMarkdown}`;
+    const lintResult = lintContentAsset(fullTextToLint, {
       hasVerifiedRecord: checks.evidencePresent && checks.offersActive,
       disclosureMarkdown: input.disclosureMarkdown
     });
@@ -234,7 +243,7 @@ export class ContentAssetEngine {
     const cleanSlug = input.slug.trim().toLowerCase().replace(/[^a-z0-9-_]/g, '-');
 
     const defaultDisclosure =
-      '**Affiliate & Referral Disclosure:** As an Amazon Associate I earn from qualifying purchases. We provide independent analysis and recommendations. When you purchase or sign up through our referral links, we may earn an affiliate commission at no extra cost to you. All prices, terms, and specifications are subject to provider confirmation.';
+      '**Affiliate & Referral Disclosure:** As an Amazon Associate I earn from qualifying purchases. We do not test products or show prices; check current details on Amazon.in.';
 
     const gate = await this.validateForPublish(input);
 
@@ -376,7 +385,7 @@ export class ContentAssetEngine {
     contentMarkdown += `* **Key Advantage:** Direct verified booking with dedicated support and transparent terms.\n\n`;
     const isAmazonPrimary = primaryMatch.partner.network === 'AMAZON_ASSOCIATES' || (primaryMatch.offer.authorizedTrackingUrl || '').includes('amazon.');
     if (isAmazonPrimary) {
-      const tag = process.env.AMAZON_AFFILIATE_TAG || 'marketing98-21';
+      const tag = (process.env.AMAZON_AFFILIATE_TAG || '').trim();
       let directUrl = primaryMatch.offer.authorizedTrackingUrl || primaryMatch.offer.destinationUrl;
       try {
         const u = new URL(directUrl);
@@ -397,7 +406,7 @@ export class ContentAssetEngine {
         contentMarkdown += `### ${i}. ${alt.partner.name} — ${alt.offer.title}\n`;
         contentMarkdown += `* Focus: ${alt.offer.targetCustomer}\n`;
         if (isAmazonAlt) {
-          const tag = process.env.AMAZON_AFFILIATE_TAG || 'marketing98-21';
+          const tag = (process.env.AMAZON_AFFILIATE_TAG || '').trim();
           let directUrl = alt.offer.authorizedTrackingUrl || alt.offer.destinationUrl;
           try {
             const u = new URL(directUrl);

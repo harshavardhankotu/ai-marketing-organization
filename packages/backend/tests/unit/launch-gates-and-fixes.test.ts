@@ -488,8 +488,8 @@ describe('Launch Gates and Fixes Verification Test Suite', () => {
         commissionModel: 'FIXED',
         commissionAmountINR: 50,
         status: 'ACTIVE',
-        destinationUrl: 'https://www.amazon.in/dp/B08XYZ1234?tag=marketing98-21',
-        authorizedTrackingUrl: 'https://www.amazon.in/dp/B08XYZ1234?tag=marketing98-21'
+        destinationUrl: 'https://www.amazon.in/dp/B08XYZ1234?tag=mock-assoc-21',
+        authorizedTrackingUrl: 'https://www.amazon.in/dp/B08XYZ1234?tag=mock-assoc-21'
       });
 
       const guide = await contentEngine.createAsset({
@@ -500,7 +500,7 @@ describe('Launch Gates and Fixes Verification Test Suite', () => {
         category: 'POS Hardware',
         location: 'Hyderabad',
         intentTarget: 'POS printer paper rolls',
-        contentMarkdown: `# POS Printer Paper Rolls Guide for Hyderabad\n\nAs an Amazon Associate I earn from qualifying purchases.\n\nEvaluating thermal printer rolls requires checking width, coating quality, and shelf life for daily business point-of-sale receipt terminals.\n\nWhen buying paper rolls, consider lint-free options that keep printheads operating cleanly over prolonged operational cycles.\n\n[Check Official Pricing & Availability on Amazon India](https://www.amazon.in/dp/B08XYZ1234?tag=marketing98-21)\n\n## Evaluation Checklist\nVerify roll dimensions, GSM, and core diameter before ordering in bulk.`,
+        contentMarkdown: `# POS Printer Paper Rolls Guide for Hyderabad\n\nAs an Amazon Associate I earn from qualifying purchases.\n\nEvaluating thermal printer rolls requires checking width, coating quality, and shelf life for daily business point-of-sale receipt terminals.\n\nWhen buying paper rolls, consider lint-free options that keep printheads operating cleanly over prolonged operational cycles.\n\n[Check Official Pricing & Availability on Amazon India](https://www.amazon.in/dp/B08XYZ1234?tag=mock-assoc-21)\n\n## Evaluation Checklist\nVerify roll dimensions, GSM, and core diameter before ordering in bulk.`,
         primaryOfferId: offer.id,
         matchedOfferIds: [offer.id]
       });
@@ -550,8 +550,8 @@ describe('Launch Gates and Fixes Verification Test Suite', () => {
         commissionModel: 'FIXED',
         commissionAmountINR: 80,
         status: 'ACTIVE',
-        destinationUrl: 'https://www.amazon.in/dp/B07XYZ9999?tag=marketing98-21',
-        authorizedTrackingUrl: 'https://www.amazon.in/dp/B07XYZ9999?tag=marketing98-21'
+        destinationUrl: 'https://www.amazon.in/dp/B07XYZ9999?tag=mock-assoc-21',
+        authorizedTrackingUrl: 'https://www.amazon.in/dp/B07XYZ9999?tag=mock-assoc-21'
       });
 
       // 1. Unknown offer -> 404
