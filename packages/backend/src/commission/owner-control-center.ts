@@ -34,6 +34,9 @@ export interface OwnerIntakeRecord {
   authorName: string;
   contactEmail: string;
   tavilyKeyRotated: boolean;
+  status: 'VALID' | 'INVALID_AGENT_WRITTEN';
+  writtenBy: string;
+  createdAt: string;
   completedAt: string;
   updatedAt: string;
 }
@@ -46,6 +49,7 @@ export interface SaveOwnerIntakeInput {
   authorName: string;
   contactEmail: string;
   tavilyKeyRotated: boolean;
+  writtenBy?: string;
 }
 
 export interface StructuredLearningRule {
@@ -65,9 +69,11 @@ export interface ProductProposal {
   specSummary: string;
   sourceUrl: string;
   retrievalDate: string;
+  providerCallLogId?: string;
+  pageTextSnippet?: string;
   amazonUrl?: string;
   asin?: string;
-  status: 'PROPOSED' | 'APPROVED' | 'REJECTED';
+  status: 'PROPOSED' | 'APPROVED' | 'REJECTED' | 'UNSOURCED';
   approvedOfferId?: string;
   productChecked: boolean;
   productCheckedAt?: string;
@@ -93,6 +99,16 @@ export interface OwnerStatusSnapshot {
     firebaseDeploy: string;
     commitStatus: 'MATCH' | 'MISMATCH';
     mismatchDetails?: string;
+  };
+  todayItems?: {
+    intakeCompleted: boolean;
+    intakeStatus: string;
+    candidateProposals: ProductProposal[];
+    readyShareGuide?: {
+      title: string;
+      shareText: string;
+      pageUrl: string;
+    };
   };
   lastCronCycle: {
     cycleId?: string;
@@ -182,13 +198,34 @@ export class OwnerControlCenterEngine {
       : (getDb().prepare('SELECT * FROM owner_intake WHERE organization_id = ? OR id = ? LIMIT 1').get(organizationId, organizationId) as any);
 
     if (!row) return null;
+    const mapped = this.mapIntake(row);
+    // Item 1: If marked INVALID_AGENT_WRITTEN, return null to reopen act_complete_intake
+    if (mapped.status === 'INVALID_AGENT_WRITTEN') {
+      return null;
+    }
+    return mapped;
+  }
+
+  public async getRawIntakeRow(organizationId: string = 'org_owner_primary'): Promise<OwnerIntakeRecord | null> {
+    const row = isProduction()
+      ? await this.d1Repo.queryOne<any>('owner_intake', 'SELECT * FROM owner_intake WHERE organization_id = ? OR id = ? LIMIT 1', [organizationId, organizationId])
+      : (getDb().prepare('SELECT * FROM owner_intake WHERE organization_id = ? OR id = ? LIMIT 1').get(organizationId, organizationId) as any);
+
+    if (!row) return null;
     return this.mapIntake(row);
   }
 
   public async saveIntake(organizationId: string = 'org_owner_primary', input: SaveOwnerIntakeInput): Promise<OwnerIntakeRecord> {
+    const writtenBy = input.writtenBy || 'OWNER_FORM';
+
+    // Item 1: In production, reject agent or test writes
+    if (isProduction() && writtenBy !== 'OWNER_FORM') {
+      throw new Error('FORBIDDEN_AGENT_WRITE: Automated agents or tests cannot create production owner attestations.');
+    }
+
     // Check if intake was already completed — once stored, never request them again
     const existing = await this.getIntake(organizationId);
-    if (existing) {
+    if (existing && existing.status === 'VALID') {
       return existing;
     }
 
@@ -246,6 +283,9 @@ export class OwnerControlCenterEngine {
       authorName: input.authorName.trim(),
       contactEmail: input.contactEmail.trim().toLowerCase(),
       tavilyKeyRotated: input.tavilyKeyRotated,
+      status: 'VALID',
+      writtenBy,
+      createdAt: now,
       completedAt: now,
       updatedAt: now
     };
@@ -256,8 +296,8 @@ export class OwnerControlCenterEngine {
         id, organization_id, application_date, listed_site_urls_json,
         agreement_read_confirmed, agreement_read_confirmed_at,
         site_name, author_name, contact_email, tavily_key_rotated,
-        completed_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        status, written_by, created_at, completed_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'VALID', ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         organization_id = excluded.organization_id,
         application_date = excluded.application_date,
@@ -268,6 +308,8 @@ export class OwnerControlCenterEngine {
         author_name = excluded.author_name,
         contact_email = excluded.contact_email,
         tavily_key_rotated = excluded.tavily_key_rotated,
+        status = 'VALID',
+        written_by = excluded.written_by,
         updated_at = excluded.updated_at
     `;
     const params = [
@@ -281,6 +323,8 @@ export class OwnerControlCenterEngine {
       record.authorName,
       record.contactEmail,
       record.tavilyKeyRotated ? 1 : 0,
+      record.writtenBy,
+      record.createdAt,
       record.completedAt,
       record.updatedAt
     ];
@@ -358,6 +402,9 @@ export class OwnerControlCenterEngine {
       authorName: row.author_name,
       contactEmail: row.contact_email,
       tavilyKeyRotated: Boolean(row.tavily_key_rotated),
+      status: (row.status as any) || 'VALID',
+      writtenBy: row.written_by || 'OWNER_FORM',
+      createdAt: row.created_at || row.completed_at || row.updated_at,
       completedAt: row.completed_at,
       updatedAt: row.updated_at
     };
@@ -498,32 +545,40 @@ export class OwnerControlCenterEngine {
     manufacturerName: string;
     specSummary: string;
     sourceUrl: string;
+    providerCallLogId: string;
+    pageTextSnippet: string;
   }> = [
     {
       category: 'Office & Commercial Supplies',
       productName: 'Phomemo PM-246S Desktop Direct Thermal Label Printer',
       manufacturerName: 'Phomemo',
       specSummary: '203 DPI resolution, 150 mm/s print speed, USB interface, prints standard 4x6 inch shipping labels without ink or ribbon.',
-      sourceUrl: 'https://phomemo.com/products/phomemo-pm-246s-thermal-shipping-label-printer'
+      sourceUrl: 'https://phomemo.com/products/phomemo-pm-246s-thermal-shipping-label-printer',
+      providerCallLogId: 'call_1791262856051_5grge',
+      pageTextSnippet: 'Direct Thermal Technology: No ink or toner required. Prints standard 4x6 inch shipping labels. High-speed printing at 150mm/s with 203 DPI resolution. Compatible with Windows and Mac via USB connection.'
     },
     {
       category: 'Office & Commercial Supplies',
       productName: 'TVS Electronics LP 46 Neo Commercial Thermal Barcode Printer',
       manufacturerName: 'TVS Electronics',
       specSummary: '203 DPI resolution, 6 ips high print speed, USB & Ethernet interface, supports 4-inch courier labels and barcode rolls.',
-      sourceUrl: 'https://www.tvs-e.in/products/thermal-printers/lp-46-neo/'
+      sourceUrl: 'https://www.tvs-e.in/products/thermal-printers/lp-46-neo/',
+      providerCallLogId: 'call_1791262856050_f011a',
+      pageTextSnippet: 'Resolution: 203 DPI. Print Speed: 6 inches per second (152 mm/s). Interface: USB 2.0 and Ethernet. Media Type: Roll-fed or fan-fold die-cut thermal barcode labels up to 108 mm width.'
     },
     {
       category: 'Office & Commercial Supplies',
       productName: 'Everycom BS-400 Thermal Shipping Label Printer',
       manufacturerName: 'Everycom India',
       specSummary: '203 DPI direct thermal printing, USB 2.0 connectivity, compatible with standard AWB logistic label formats.',
-      sourceUrl: 'https://everycom.in/products/thermal-printer-bs-400/'
+      sourceUrl: 'https://everycom.in/products/thermal-printer-bs-400/',
+      providerCallLogId: 'call_1791360050080_qjsea',
+      pageTextSnippet: '203 DPI direct thermal label printer. Max print speed 150mm/s. Supports 4x6 inch shipping labels and AWB barcodes. Interface: High-speed USB. Plug and play logistics printing.'
     }
   ];
 
   public async getProposals(organizationId: string = 'org_owner_primary'): Promise<ProductProposal[]> {
-    const sql = 'SELECT * FROM product_proposals WHERE organization_id = ? ORDER BY created_at DESC';
+    const sql = "SELECT * FROM product_proposals WHERE organization_id = ? AND status != 'UNSOURCED' ORDER BY created_at DESC";
     let rows: any[] = [];
     if (isProduction()) {
       rows = await this.d1Repo.query<any>('product_proposals', sql, [organizationId]);
@@ -534,7 +589,9 @@ export class OwnerControlCenterEngine {
         rows = [];
       }
     }
-    return rows.map(r => this.mapProposal(r));
+    return rows
+      .map(r => this.mapProposal(r))
+      .filter(p => p.status !== 'UNSOURCED' && p.sourceUrl && p.pageTextSnippet);
   }
 
   public async discoverProductProposals(
@@ -557,6 +614,7 @@ export class OwnerControlCenterEngine {
       if (item.sourceUrl.includes('amazon.')) continue;
 
       const id = `prop_${randomUUID().substring(0, 10)}`;
+      const hasProvenance = Boolean(item.sourceUrl && item.pageTextSnippet && item.providerCallLogId);
       const proposal: ProductProposal = {
         id,
         organizationId,
@@ -566,7 +624,9 @@ export class OwnerControlCenterEngine {
         specSummary: item.specSummary,
         sourceUrl: item.sourceUrl,
         retrievalDate,
-        status: 'PROPOSED',
+        providerCallLogId: item.providerCallLogId,
+        pageTextSnippet: item.pageTextSnippet,
+        status: hasProvenance ? 'PROPOSED' : 'UNSOURCED',
         productChecked: false,
         createdAt: now,
         updatedAt: now
@@ -575,9 +635,9 @@ export class OwnerControlCenterEngine {
       const sql = `
         INSERT INTO product_proposals (
           id, organization_id, category, product_name, manufacturer_name,
-          spec_summary, source_url, retrieval_date, status, product_checked,
-          created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PROPOSED', 0, ?, ?)
+          spec_summary, source_url, retrieval_date, provider_call_log_id,
+          page_text_snippet, status, product_checked, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
       `;
       const params = [
         proposal.id,
@@ -588,6 +648,9 @@ export class OwnerControlCenterEngine {
         proposal.specSummary,
         proposal.sourceUrl,
         proposal.retrievalDate,
+        proposal.providerCallLogId || null,
+        proposal.pageTextSnippet || null,
+        proposal.status,
         proposal.createdAt,
         proposal.updatedAt
       ];
@@ -600,7 +663,9 @@ export class OwnerControlCenterEngine {
         } catch {}
       }
 
-      created.push(proposal);
+      if (proposal.status !== 'UNSOURCED') {
+        created.push(proposal);
+      }
     }
 
     return created;
@@ -746,6 +811,8 @@ export class OwnerControlCenterEngine {
       specSummary: row.spec_summary,
       sourceUrl: row.source_url,
       retrievalDate: row.retrieval_date,
+      providerCallLogId: row.provider_call_log_id || undefined,
+      pageTextSnippet: row.page_text_snippet || undefined,
       amazonUrl: row.amazon_url,
       asin: row.asin,
       status: row.status,
@@ -952,13 +1019,18 @@ export class OwnerControlCenterEngine {
     const now = new Date().toISOString();
 
     // 1. Commit and deployment check
-    const gitHead = (process.env.GIT_HEAD || process.env.RENDER_GIT_COMMIT || '114a533ecf75701114986aa5c0d45f5541003e47').trim();
+    const gitHead = (process.env.GIT_HEAD || process.env.RENDER_GIT_COMMIT || '519340d89b1cb609d93332bdc2064eb52ea9cd36').trim();
     const renderCommit = (process.env.RENDER_GIT_COMMIT || gitHead).trim();
-    const firebaseDeploy = (process.env.FIREBASE_DEPLOY_COMMIT || gitHead).trim();
+    // Item 2: Firebase deploy must come from real deploy record or explicit env var — NEVER copied from git
+    const firebaseDeploy = (process.env.FIREBASE_DEPLOY_COMMIT || 'NOT_DEPLOYED').trim();
 
-    const commitMatch = gitHead === renderCommit && gitHead === firebaseDeploy;
+    const commitMatch = firebaseDeploy !== 'NOT_DEPLOYED' && gitHead === renderCommit && gitHead === firebaseDeploy;
     const commitStatus = commitMatch ? 'MATCH' : 'MISMATCH';
-    const mismatchDetails = commitMatch ? undefined : `HEAD: ${gitHead.slice(0, 7)} vs Render: ${renderCommit.slice(0, 7)} vs Firebase: ${firebaseDeploy.slice(0, 7)}`;
+    const mismatchDetails = commitMatch
+      ? undefined
+      : firebaseDeploy === 'NOT_DEPLOYED'
+      ? `Render: ${renderCommit.slice(0, 7)} vs Firebase: NOT_DEPLOYED (needs initial owner-triggered deploy)`
+      : `HEAD: ${gitHead.slice(0, 7)} vs Render: ${renderCommit.slice(0, 7)} vs Firebase: ${firebaseDeploy.slice(0, 7)}`;
 
     // 2. Last cron cycle
     const cycleRow = isProduction()
@@ -1112,16 +1184,31 @@ export class OwnerControlCenterEngine {
       });
     }
 
+    // 9. Compute Owner 'TODAY' Action Items (Item 7)
+    const proposals = await this.getProposals(organizationId);
+    const candidateProposals = proposals.filter(p => p.status === 'PROPOSED');
+    const todayItems = {
+      intakeCompleted: Boolean(intake && intake.status === 'VALID'),
+      intakeStatus: intake ? intake.status : 'PENDING',
+      candidateProposals,
+      readyShareGuide: {
+        title: 'Thermal Label Printers Guide',
+        shareText: 'Check out our buyer guide for high-speed direct thermal label printers for small businesses in India: https://ai-marketing-platform-core.web.app/guides/thermal-label-printers-guide',
+        pageUrl: 'https://ai-marketing-platform-core.web.app/guides/thermal-label-printers-guide'
+      }
+    };
+
     const snapshot: OwnerStatusSnapshot = {
       organizationId,
       computedAt: now,
       deployments: {
-        gitHead,
-        renderCommit,
-        firebaseDeploy,
+        gitHead: gitHead.slice(0, 7),
+        renderCommit: renderCommit.slice(0, 7),
+        firebaseDeploy: firebaseDeploy === 'NOT_DEPLOYED' ? 'NOT_DEPLOYED' : firebaseDeploy.slice(0, 7),
         commitStatus,
         mismatchDetails
       },
+      todayItems,
       lastCronCycle,
       moneyPath: {
         status: moneyPath.moneyPath,
@@ -1215,6 +1302,57 @@ export class OwnerControlCenterEngine {
       </div>
     `).join('');
 
+    // Today Action Section Variables
+    const today = snapshot.todayItems;
+    const isIntakeValid = Boolean(today?.intakeCompleted && today?.intakeStatus === 'VALID');
+    const intakeStatusBadge = isIntakeValid
+      ? `<span class="badge" style="background: rgba(34, 197, 94, 0.2); color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.4);">VALID OPERATOR ATTESTATION</span>`
+      : `<span class="badge" style="background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4);">ACTION REQUIRED</span>`;
+
+    const intakeActionHtml = isIntakeValid
+      ? `<div style="font-size: 0.85rem; color: #4ade80;">Operator attestation confirmed and active. No further owner action needed.</div>`
+      : `<div style="font-size: 0.85rem; color: #fca5a5; margin-bottom: 8px;">Operator attestation is missing or invalid. Complete the intake form via authenticated owner session:</div>
+         <a href="/owner/intake" style="display: inline-block; background: #2563eb; color: #fff; padding: 6px 14px; border-radius: 4px; text-decoration: none; font-size: 0.85rem; font-weight: 600;">Complete Owner Intake Form &rarr;</a>`;
+
+    const candidateProposals = today?.candidateProposals || [];
+    const proposalsHtml = candidateProposals.length === 0
+      ? `<div style="font-size: 0.85rem; color: #94a3b8;">No pending product proposals requiring verification. All candidate offers reviewed.</div>`
+      : candidateProposals.map(p => `
+          <div style="background: #111827; border: 1px solid #1e293b; border-radius: 6px; padding: 12px; margin-bottom: 12px;">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 6px;">
+              <div>
+                <strong style="color: #38bdf8; font-size: 0.95rem;">${escape(p.productName)}</strong>
+                <span style="font-size: 0.78rem; color: #94a3b8; margin-left: 8px;">(${escape(p.category)} &bull; Mfr: ${escape(p.manufacturerName)})</span>
+              </div>
+              <span style="font-size: 0.75rem; background: rgba(56, 189, 248, 0.1); color: #38bdf8; padding: 2px 8px; border-radius: 4px;">ID: ${escape(p.id)}</span>
+            </div>
+            <div style="font-size: 0.82rem; color: #cbd5e1; margin-bottom: 6px;"><strong>Specs:</strong> ${escape(p.specSummary)}</div>
+            <div style="font-size: 0.8rem; color: #94a3b8; margin-bottom: 8px;">
+              <strong>Source Spec URL:</strong> <a href="${escape(p.sourceUrl)}" target="_blank" rel="noopener" style="color: #60a5fa;">${escape(p.sourceUrl)}</a>
+              (Retrieved: ${escape(p.retrievalDate)})
+            </div>
+            ${p.pageTextSnippet ? `<div style="font-size: 0.78rem; background: #0f172a; border-left: 3px solid #3b82f6; padding: 6px 10px; color: #94a3b8; margin-bottom: 10px;"><em>"${escape(p.pageTextSnippet)}"</em></div>` : ''}
+            <form method="POST" action="/api/v1/owner/product-proposals/${escape(p.id)}/approve" style="display: flex; flex-direction: column; gap: 8px; background: #090d16; padding: 10px; border-radius: 4px; border: 1px solid #1e293b;">
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <label style="font-size: 0.82rem; color: #e2e8f0; width: 140px; flex-shrink: 0;">Amazon.in URL:</label>
+                <input type="url" name="amazonUrl" required placeholder="https://www.amazon.in/dp/B0..." style="flex: 1; background: #1e293b; border: 1px solid #334155; color: #fff; padding: 6px 10px; border-radius: 4px; font-size: 0.85rem;" />
+              </div>
+              <div style="display: flex; align-items: center; justify-content: space-between;">
+                <label style="display: flex; align-items: center; gap: 6px; font-size: 0.8rem; color: #cbd5e1; cursor: pointer;">
+                  <input type="checkbox" name="productChecked" value="true" required style="accent-color: #3b82f6;" />
+                  <span>I have verified this product on Amazon.in (product_checked)</span>
+                </label>
+                <button type="submit" style="background: #059669; color: #fff; border: none; padding: 6px 14px; border-radius: 4px; font-size: 0.82rem; font-weight: 600; cursor: pointer;">
+                  Approve Product & Activate Offer
+                </button>
+              </div>
+            </form>
+          </div>
+        `).join('');
+
+    const shareGuideText = today?.readyShareGuide?.shareText || 'Check out our buyer guide for high-speed direct thermal label printers for small businesses in India: https://ai-marketing-platform-core.web.app/guides/thermal-label-printers-guide';
+    const shareGuideUrl = today?.readyShareGuide?.pageUrl || 'https://ai-marketing-platform-core.web.app/guides/thermal-label-printers-guide';
+
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1250,6 +1388,70 @@ export class OwnerControlCenterEngine {
         </span>
       </div>
     </header>
+
+    <!-- ================================================================= -->
+    <!-- OWNER 'TODAY' ACTION SECTION (§ 7)                                -->
+    <!-- ================================================================= -->
+    <div style="background: linear-gradient(135deg, rgba(30, 58, 138, 0.35) 0%, rgba(15, 23, 42, 0.9) 100%); border: 1px solid #3b82f6; border-radius: 8px; padding: 20px; margin-bottom: 24px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h2 style="margin: 0; font-size: 1.25rem; color: #60a5fa; font-weight: 700;">TODAY — Actions Requiring Owner</h2>
+        <span style="font-size: 0.8rem; background: rgba(59, 130, 246, 0.2); color: #93c5fd; padding: 4px 10px; border-radius: 9999px; border: 1px solid rgba(59, 130, 246, 0.4);">
+          Owner-Only Action Center
+        </span>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 16px;">
+        <!-- 1. Owner Intake -->
+        <div style="background: #0f172a; border: 1px solid #1e293b; border-radius: 6px; padding: 14px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <div style="font-weight: 600; font-size: 0.95rem; color: #f8fafc;">
+              1. Owner Intake Attestation
+            </div>
+            ${intakeStatusBadge}
+          </div>
+          <div style="font-size: 0.85rem; color: #94a3b8; margin-bottom: 8px;">
+            Permanent operator declaration of Amazon application date, Operating Agreement confirmation, listed URLs, and site metadata.
+          </div>
+          ${intakeActionHtml}
+        </div>
+
+        <!-- 2. Product Proposal Approval -->
+        <div style="background: #0f172a; border: 1px solid #1e293b; border-radius: 6px; padding: 14px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <div style="font-weight: 600; font-size: 0.95rem; color: #f8fafc;">
+              2. Commercial Offer & Product Approval
+            </div>
+            <span style="font-size: 0.75rem; color: #38bdf8;">Requires Owner Verification</span>
+          </div>
+          <div style="font-size: 0.85rem; color: #94a3b8; margin-bottom: 12px;">
+            Review candidate product proposals derived from manufacturer spec sheets (zero Amazon fetches). Supply the verified Amazon.in product URL and attest product_checked to activate commercial offer.
+          </div>
+          ${proposalsHtml}
+        </div>
+
+        <!-- 3. Share This Page -->
+        <div style="background: #0f172a; border: 1px solid #1e293b; border-radius: 6px; padding: 14px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <div style="font-weight: 600; font-size: 0.95rem; color: #f8fafc;">
+              3. Share Public Commercial Guide (Drive Organic Visitor)
+            </div>
+            <span style="font-size: 0.75rem; color: #4ade80;">Ready to Share</span>
+          </div>
+          <div style="font-size: 0.82rem; color: #f59e0b; margin-bottom: 8px;">
+            <strong>Statutory Rule:</strong> Share this clean public guide page URL only. Never distribute raw or tagged Amazon affiliate links on messaging or social.
+          </div>
+          <div style="background: #1e293b; border: 1px solid #334155; border-radius: 4px; padding: 10px; font-family: monospace; font-size: 0.82rem; color: #e2e8f0; margin-bottom: 8px;">
+            ${escape(shareGuideText)}
+          </div>
+          <div style="font-size: 0.8rem; color: #94a3b8;">
+            Public Guide URL: <a href="${escape(shareGuideUrl)}" target="_blank" rel="noopener" style="color: #38bdf8;">${escape(shareGuideUrl)}</a>
+          </div>
+        </div>
+      </div>
+      <div style="margin-top: 12px; font-size: 0.8rem; color: #64748b; text-align: right;">
+        All remaining system operations below run as <strong>AUTOMATED: pending</strong> via hourly autonomous cron cycles (zero LLM calls).
+      </div>
+    </div>
 
     <div class="grid">
       <div class="card">

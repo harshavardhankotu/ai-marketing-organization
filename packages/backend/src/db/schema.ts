@@ -2150,6 +2150,9 @@ CREATE TABLE IF NOT EXISTS owner_intake (
   author_name TEXT NOT NULL,
   contact_email TEXT NOT NULL,
   tavily_key_rotated INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'VALID',
+  written_by TEXT NOT NULL DEFAULT 'OWNER_FORM',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
   completed_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -2164,6 +2167,8 @@ CREATE TABLE IF NOT EXISTS product_proposals (
   spec_summary TEXT NOT NULL,
   source_url TEXT NOT NULL,
   retrieval_date TEXT NOT NULL,
+  provider_call_log_id TEXT,
+  page_text_snippet TEXT,
   amazon_url TEXT,
   asin TEXT,
   status TEXT NOT NULL DEFAULT 'PROPOSED',

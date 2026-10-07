@@ -144,6 +144,52 @@ describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)
       expect(second.completedAt).toBe(first.completedAt);
     });
 
+    it('rejects agent or test writes in production mode (FORBIDDEN_AGENT_WRITE)', async () => {
+      const origEnv = process.env.NODE_ENV;
+      process.env.NODE_ENV = 'production';
+      try {
+        await expect(engine.saveIntake('org_prod_test_01', {
+          ...validInput,
+          writtenBy: 'TEST_AGENT'
+        })).rejects.toThrow('FORBIDDEN_AGENT_WRITE');
+      } finally {
+        process.env.NODE_ENV = origEnv;
+      }
+    });
+
+    it('ignores INVALID_AGENT_WRITTEN rows, returns null for intake and reopens act_complete_intake', async () => {
+      const invalidOrgId = 'org_invalid_agent_' + Date.now();
+      const now = new Date().toISOString();
+      db.prepare(`
+        INSERT INTO owner_intake (
+          id, organization_id, application_date, listed_site_urls_json,
+          agreement_read_confirmed, agreement_read_confirmed_at, site_name,
+          author_name, contact_email, tavily_key_rotated, completed_at,
+          status, written_by, created_at, updated_at
+        ) VALUES (
+          ?, ?, '2026-03-01', '["https://example.com"]',
+          1, ?, 'Fake Site', 'Fake Agent', 'agent@fake.com', 1, ?,
+          'INVALID_AGENT_WRITTEN', 'TEST_AGENT', ?, ?
+        )
+      `).run(invalidOrgId, invalidOrgId, now, now, now, now);
+
+      try {
+        const intake = await engine.getIntake(invalidOrgId);
+        expect(intake).toBeNull();
+
+        const status = await engine.computeStatus(invalidOrgId);
+        const intakeAction = status.openActions.find(a => a.id === 'act_complete_intake');
+        expect(intakeAction).toBeDefined();
+        expect(intakeAction?.resolved).toBe(false);
+        expect(status.todayItems?.intakeCompleted).toBe(false);
+      } finally {
+        try {
+          db.prepare('DELETE FROM owner_intake WHERE id = ?').run(invalidOrgId);
+          db.prepare('DELETE FROM owner_status_snapshots WHERE id = ?').run(invalidOrgId);
+        } catch {}
+      }
+    });
+
     it('renders HTML intake form when pending and summary when completed', async () => {
       // Pending form
       const pendingHtml = engine.renderHtmlIntakeForm(null);

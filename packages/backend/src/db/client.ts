@@ -530,6 +530,11 @@ export function getDb(dbPath?: string): Database.Database {
   try { db.exec(`ALTER TABLE universal_orders ADD COLUMN offer_title TEXT`); } catch {}
   try { db.exec(`ALTER TABLE universal_orders ADD COLUMN recovery_state TEXT`); } catch {}
   try { db.exec(`ALTER TABLE universal_orders ADD COLUMN failure_reason TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE owner_intake ADD COLUMN status TEXT NOT NULL DEFAULT 'VALID'`); } catch {}
+  try { db.exec(`ALTER TABLE owner_intake ADD COLUMN written_by TEXT NOT NULL DEFAULT 'OWNER_FORM'`); } catch {}
+  try { db.exec(`ALTER TABLE owner_intake ADD COLUMN created_at TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE product_proposals ADD COLUMN provider_call_log_id TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE product_proposals ADD COLUMN page_text_snippet TEXT`); } catch {}
 
   // Initialize schema (creates all tables if not exist — safe for both fresh and existing DBs)
 
