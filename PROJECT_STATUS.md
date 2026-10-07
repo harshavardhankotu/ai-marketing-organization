@@ -16,9 +16,9 @@
 
 | Item | Status | Last Verified Date | Proving Command / Live Endpoint | Evidence & Notes |
 | :--- | :---: | :---: | :--- | :--- |
-| **Local Repository HEAD** | **PASS** | 2026-10-07 | `git rev-parse HEAD` | Commit SHA: `15ce98c`<br>Branch: `main` |
-| **Deployed Production Commit (Render)** | **PASS** | 2026-10-07 | Render API / Live Endpoint | Service `ai-marketing-organization.onrender.com`<br>Commit: `15ce98c`<br>Status: `live`<br>Health: HTTP 200 OK |
-| **Render Web Service (Live HTTP)** | **PASS** | 2026-10-07 | `GET https://ai-marketing-organization.onrender.com/api/v1/health` | HTTP 200 OK<br>`{"status":"healthy","version":"1.0.0","service":"AI Marketing Organization Engine"}` (timestamp: `2026-10-07T15:21:10.134Z`) |
+| **Local Repository HEAD** | **PASS** | 2026-10-07 | `git rev-parse HEAD` | Commit SHA: `93e6012`<br>Branch: `main` |
+| **Deployed Production Commit (Render)** | **PASS** | 2026-10-07 | Render API / Live Endpoint | Service `ai-marketing-organization.onrender.com`<br>Commit: `93e6012`<br>Status: `live`<br>Health: HTTP 200 OK |
+| **Render Web Service (Live HTTP)** | **PASS** | 2026-10-07 | `GET https://ai-marketing-organization.onrender.com/api/v1/health` | HTTP 200 OK<br>`{"status":"healthy","version":"1.0.0","service":"AI Marketing Organization Engine"}` (timestamp: `2026-10-07T20:09:02.743Z`) |
 | **Cloudflare Worker (Live HTTP)** | **PASS** | 2026-10-06 | `GET https://ai-marketing-cron-worker.vardhankotu.workers.dev/health` | HTTP 200 OK: `{"status":"ok","worker":"ai-marketing-cron-worker"}`<br>Total pings recorded in D1: 180<br>Last observed ping: `2026-10-06 01:23:41 UTC` |
 | **Cloudflare D1 Database** | **PASS** | 2026-10-07 | Cloudflare D1 REST API query | 52 durable tables verified through migration `0013`.<br>1,181 total prospect rows reconciled.<br>784 rows quarantined as `REJECTED`, 397 rows `DISCOVERED`.<br>Durable rate limits (`durable_rate_limits`) and provider call audit logs (`provider_call_logs`) active. |
 | **Demo Businesses Privacy Quarantine (Live HTTP)** | **PASS** | 2026-10-06 | `GET /api/v1/public/business/:slug` | HTTP 404 returned on all `/api/v1/public/*` routes for demo businesses:<br>- `smilekraft-dental-clinic`: HTTP 404 `PUBLIC_BUSINESS_NOT_FOUND`<br>- `smilekraft-dental-clinic-2`: HTTP 404 `PUBLIC_BUSINESS_NOT_FOUND`<br>- `platform-aro`: HTTP 404 `PUBLIC_BUSINESS_NOT_FOUND`<br>- `fnl_smilekraft_main`: HTTP 404 `BUSINESS_NOT_FOUND` |
