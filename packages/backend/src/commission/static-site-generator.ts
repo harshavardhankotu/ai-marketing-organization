@@ -34,7 +34,60 @@ export class StaticSiteGenerator {
   }
 
   /**
-   * Validates required public configuration without inventing defaults.
+   * Resolves required public configuration from environment variables or stored owner intake.
+   * Never fabricates fake defaults.
+   */
+  public async resolveConfig(organizationId: string = 'org_owner_primary'): Promise<StaticSiteConfig> {
+    let siteName = process.env.PUBLIC_SITE_NAME?.trim();
+    let authorName = process.env.PUBLIC_AUTHOR_NAME?.trim();
+    let contactEmail = process.env.PUBLIC_CONTACT_EMAIL?.trim();
+    const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-platform-core.web.app').replace(/\/$/, '');
+
+    if (!siteName || !authorName || !contactEmail) {
+      let intakeRow: any = null;
+      if (isProduction()) {
+        const d1 = D1RevenueRepository.getInstance();
+        intakeRow = await d1.queryOne<any>('owner_intake', 'SELECT * FROM owner_intake WHERE status = ? LIMIT 1', ['VALID']);
+      } else {
+        try {
+          const d1 = D1RevenueRepository.getInstance();
+          intakeRow = await d1.queryOne<any>('owner_intake', 'SELECT * FROM owner_intake WHERE status = ? LIMIT 1', ['VALID']);
+        } catch {
+          intakeRow = null;
+        }
+        if (!intakeRow) {
+          try {
+            intakeRow = getDb().prepare("SELECT * FROM owner_intake WHERE status = 'VALID' LIMIT 1").get() as any;
+          } catch {}
+        }
+      }
+
+      if (intakeRow) {
+        siteName = siteName || intakeRow.site_name;
+        authorName = authorName || intakeRow.author_name;
+        contactEmail = contactEmail || intakeRow.contact_email;
+      }
+    }
+
+    const missing: string[] = [];
+    if (!siteName) missing.push('PUBLIC_SITE_NAME (or owner_intake.site_name)');
+    if (!authorName) missing.push('PUBLIC_AUTHOR_NAME (or owner_intake.author_name)');
+    if (!contactEmail) missing.push('PUBLIC_CONTACT_EMAIL (or owner_intake.contact_email)');
+
+    if (missing.length > 0) {
+      throw new Error(`CONFIG_ERROR: Missing required public site configuration: ${missing.join(', ')}. Must come from owner intake or environment variables.`);
+    }
+
+    return {
+      siteName: siteName!,
+      authorName: authorName!,
+      contactEmail: contactEmail!,
+      siteUrl
+    };
+  }
+
+  /**
+   * Validates required public configuration synchronously from environment.
    */
   public validateConfig(): StaticSiteConfig {
     const missing: string[] = [];
@@ -63,10 +116,15 @@ export class StaticSiteGenerator {
   }
 
   /**
-   * Renders all published guides and legal pages to static HTML.
+   * Renders all published guides, landing page, and legal pages to static HTML.
    */
   public async build(options: { outputDir?: string; orgId?: string } = {}): Promise<StaticSiteBuildResult> {
-    const config = this.validateConfig();
+    let config: StaticSiteConfig;
+    try {
+      config = this.validateConfig();
+    } catch {
+      config = await this.resolveConfig(options.orgId);
+    }
 
     // Default output directory: frontend dist folder for Firebase Hosting
     const targetDir = options.outputDir || path.resolve(__dirname, '../../../frontend/dist');
@@ -118,7 +176,13 @@ export class StaticSiteGenerator {
       filesGenerated.push(filePath);
     }
 
-    // 3. Render legal and static informational pages
+    // 3. Render root static landing page (replaces internal React dashboard)
+    const landingHtml = this.renderLandingPageHtml(publishedGuides, config);
+    const landingPath = path.join(targetDir, 'index.html');
+    fs.writeFileSync(landingPath, landingHtml, 'utf-8');
+    filesGenerated.push(landingPath);
+
+    // 4. Render legal and static informational pages
     const legalPages = [
       { path: 'about', title: 'About Us', render: () => this.renderAboutHtml(config) },
       { path: 'contact', title: 'Contact & Grievance Redressal', render: () => this.renderContactHtml(config) },
@@ -137,13 +201,13 @@ export class StaticSiteGenerator {
       filesGenerated.push(filePath);
     }
 
-    // 4. Generate sitemap.xml
+    // 5. Generate sitemap.xml
     const sitemapPath = path.join(targetDir, 'sitemap.xml');
     const sitemapContent = this.generateSitemapXml(publishedGuides, config);
     fs.writeFileSync(sitemapPath, sitemapContent, 'utf-8');
     filesGenerated.push(sitemapPath);
 
-    // 5. Generate robots.txt
+    // 6. Generate robots.txt
     const robotsPath = path.join(targetDir, 'robots.txt');
     const robotsContent = `User-agent: *\nAllow: /\n\nSitemap: ${config.siteUrl}/sitemap.xml\n`;
     fs.writeFileSync(robotsPath, robotsContent, 'utf-8');
@@ -156,6 +220,76 @@ export class StaticSiteGenerator {
       guidesRendered: publishedGuides.length,
       config
     };
+  }
+
+  /**
+   * Generates standalone static HTML for the root landing page (/index.html).
+   */
+  public renderLandingPageHtml(publishedGuides: any[], config: StaticSiteConfig): string {
+    const title = `${config.siteName} | Commercial Equipment & Supplies Overview`;
+    const canonicalUrl = `${config.siteUrl}/`;
+
+    const guideItems = publishedGuides.length === 0
+      ? `<p style="color: #94a3b8; font-size: 0.95rem;">No published commercial guides available at this time. Guides will be displayed here once verified and published.</p>`
+      : publishedGuides.map(g => `
+          <div style="background: #111827; border: 1px solid #1e293b; border-radius: 8px; padding: 1.25rem 1.5rem; margin-bottom: 1.25rem;">
+            <h2 style="margin: 0 0 0.5rem 0; font-size: 1.25rem;"><a href="/guides/${this.escapeHtml(g.slug)}" style="color: #38bdf8; text-decoration: none;">${this.escapeHtml(g.title)}</a></h2>
+            <p style="color: #94a3b8; font-size: 0.88rem; margin: 0 0 0.75rem 0;">${this.escapeHtml(g.intent_target || g.description || 'Commercial product specifications and comparison overview.')}</p>
+            <a href="/guides/${this.escapeHtml(g.slug)}" style="color: #06b6d4; font-weight: 600; text-decoration: none; font-size: 0.88rem;">Read Full Guide &rarr;</a>
+          </div>
+        `).join('');
+
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${this.escapeHtml(title)}</title>
+  <meta name="description" content="Independent commercial equipment, supplies, and specification overviews.">
+  <link rel="canonical" href="${canonicalUrl}">
+  <meta name="robots" content="index, follow">
+  <style>
+    :root { color-scheme: dark; --bg: #090d16; --card: #111827; --text: #e2e8f0; --accent: #06b6d4; --border: #1e293b; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); margin: 0; line-height: 1.6; }
+    header { border-bottom: 1px solid var(--border); padding: 1.25rem 2rem; display: flex; justify-content: space-between; align-items: center; max-width: 900px; margin: 0 auto; }
+    header a.brand { font-weight: 700; color: #fff; text-decoration: none; font-size: 1.2rem; }
+    main { max-width: 820px; margin: 2rem auto; padding: 0 1.5rem; }
+    .disclosure-box { background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 8px; padding: 0.9rem 1.2rem; margin-bottom: 2rem; font-size: 0.88rem; color: #fde68a; font-weight: 500; }
+    footer { border-top: 1px solid var(--border); padding: 3rem 1.5rem; margin-top: 4rem; text-align: center; font-size: 0.88rem; color: #64748b; }
+    footer nav { display: flex; justify-content: center; flex-wrap: wrap; gap: 1.25rem; margin-bottom: 1rem; }
+    footer a { color: #94a3b8; text-decoration: none; }
+    footer a:hover { color: var(--accent); }
+    .legal-notice { font-size: 0.75rem; color: #64748b; margin-top: 1rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <a href="/" class="brand">${this.escapeHtml(config.siteName)}</a>
+    <span style="font-size: 0.85rem; color: #94a3b8;">Commercial Guides &amp; Overviews</span>
+  </header>
+  <main>
+    <aside class="disclosure-box" aria-label="Affiliate Disclosure">
+      <strong>Disclosure:</strong> As an Amazon Associate I earn from qualifying purchases. We do not test products or show prices; check current details on Amazon.in.
+    </aside>
+    <section>
+      <h1 style="color: #fff; font-size: 1.85rem; margin-bottom: 0.5rem;">Commercial Supplies &amp; Equipment Guides</h1>
+      <p style="color: #94a3b8; margin-bottom: 2rem; font-size: 0.95rem;">Factual product evaluations and technical specifications for commercial equipment and business supplies.</p>
+      ${guideItems}
+    </section>
+  </main>
+  <footer>
+    <nav>
+      <a href="/about">About</a>
+      <a href="/contact">Contact</a>
+      <a href="/privacy">Privacy Policy</a>
+      <a href="/terms">Terms of Service</a>
+      <a href="/disclosure">Affiliate Disclosure</a>
+    </nav>
+    <p>&copy; ${new Date().getFullYear()} ${this.escapeHtml(config.siteName)}. All rights reserved.</p>
+    <p class="legal-notice">This informational document is a technical compliance template and needs human legal review prior to final commercial reliance.</p>
+  </footer>
+</body>
+</html>`;
   }
 
   /**
@@ -354,6 +488,8 @@ export class StaticSiteGenerator {
       <a href="/disclosure">Affiliate Disclosure</a>
     </nav>
     <p>&copy; ${new Date().getFullYear()} ${this.escapeHtml(config.siteName)}. All rights reserved.</p>
+    <!-- Needs human legal review -->
+    <p class="legal-notice" style="font-size: 0.75rem; color: #64748b; margin-top: 1rem;">This informational document is a technical compliance template and needs human legal review prior to final commercial reliance.</p>
   </footer>
 </body>
 </html>`;

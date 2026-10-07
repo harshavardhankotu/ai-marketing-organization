@@ -116,6 +116,18 @@ app.get('/api/health', (c) => {
 // Mount domain routes under /api/v1
 app.route('/api/v1', apiRouter);
 
+// Top-level /owner/* routing: forwarded to /api/v1/owner/* so owner authentication is strictly enforced
+app.all('/owner/*', async (c) => {
+  const targetPath = '/api/v1' + c.req.path;
+  const newReq = new Request(new URL(targetPath, c.req.url).toString(), {
+    method: c.req.method,
+    headers: c.req.raw.headers,
+    body: ['GET', 'HEAD'].includes(c.req.method) ? undefined : await c.req.raw.clone().blob()
+  });
+  return app.fetch(newReq);
+});
+app.all('/owner', (c) => c.redirect('/owner/status', 302));
+
 // Top-level public referral redirect route: /r/:offerSlug/:referralId (Spec § 5 & § 18)
 app.get('/r/:offerSlug/:referralId', async (c) => {
   const offerSlug = c.req.param('offerSlug');

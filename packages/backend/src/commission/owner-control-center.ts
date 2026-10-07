@@ -71,6 +71,8 @@ export interface ProductProposal {
   retrievalDate: string;
   providerCallLogId?: string;
   pageTextSnippet?: string;
+  displayName?: string;
+  listingFacts?: Array<{ fact: string; date: string }>;
   amazonUrl?: string;
   asin?: string;
   status: 'PROPOSED' | 'APPROVED' | 'REJECTED' | 'UNSOURCED';
@@ -104,6 +106,7 @@ export interface OwnerStatusSnapshot {
     intakeCompleted: boolean;
     intakeStatus: string;
     candidateProposals: ProductProposal[];
+    publishReadyGuides?: any[];
     readyShareGuide?: {
       status?: 'READY' | 'NOT_READY';
       title?: string;
@@ -657,13 +660,47 @@ export class OwnerControlCenterEngine {
   public async approveProposal(
     organizationId: string = 'org_owner_primary',
     proposalId: string,
-    input: { amazonUrl: string; productChecked: boolean }
+    input: {
+      amazonUrl: string;
+      productChecked: boolean;
+      displayName?: string;
+      listingFacts?: Array<{ fact: string; date: string }>;
+      fact1?: string;
+      fact1Date?: string;
+      fact2?: string;
+      fact2Date?: string;
+      fact3?: string;
+      fact3Date?: string;
+    }
   ): Promise<{ proposal: ProductProposal; offer: any }> {
     if (input.productChecked !== true) {
       throw new Error('APPROVAL_ERROR: productChecked must be explicitly true. Owner verification required.');
     }
     if (!input.amazonUrl || typeof input.amazonUrl !== 'string') {
       throw new Error('APPROVAL_ERROR: amazonUrl is required.');
+    }
+
+    const displayName = (input.displayName || '').trim();
+    if (!displayName) {
+      throw new Error('APPROVAL_ERROR: displayName is required and cannot be empty.');
+    }
+
+    let facts: Array<{ fact: string; date: string }> = [];
+    if (Array.isArray(input.listingFacts) && input.listingFacts.length > 0) {
+      facts = input.listingFacts.map(f => ({
+        fact: (f.fact || '').trim(),
+        date: (f.date || '').trim()
+      }));
+    } else {
+      facts = [
+        { fact: (input.fact1 || '').trim(), date: (input.fact1Date || '').trim() },
+        { fact: (input.fact2 || '').trim(), date: (input.fact2Date || '').trim() },
+        { fact: (input.fact3 || '').trim(), date: (input.fact3Date || '').trim() }
+      ];
+    }
+
+    if (facts.length !== 3 || facts.some(f => !f.fact || !f.date)) {
+      throw new Error('APPROVAL_ERROR: Exactly 3 listing facts with dates are required to approve proposal and activate offer.');
     }
 
     // Validate Amazon URL
@@ -725,7 +762,7 @@ export class OwnerControlCenterEngine {
     const offer = await this.registry.createOffer({
       partnerId,
       organizationId,
-      title: proposal.productName,
+      title: displayName,
       offerSlug,
       category: proposal.category,
       targetCustomer: 'Small retail merchants, warehouses, and logistics operators',
@@ -743,7 +780,8 @@ export class OwnerControlCenterEngine {
         asin,
         canonical_destination: canonicalDestination,
         authorized_tracking_url: authorizedTrackingUrl,
-        listing_facts: `${proposal.specSummary} (Manufacturer: ${proposal.manufacturerName}, Source: ${proposal.sourceUrl}, Retrieved: ${proposal.retrievalDate})`,
+        display_name: displayName,
+        listing_facts: facts,
         listing_facts_recorded_at: now,
         product_checked: true,
         product_checked_at: now,
@@ -753,6 +791,8 @@ export class OwnerControlCenterEngine {
 
     // Update proposal
     proposal.status = 'APPROVED';
+    proposal.displayName = displayName;
+    proposal.listingFacts = facts;
     proposal.amazonUrl = canonicalDestination;
     proposal.asin = asin;
     proposal.approvedOfferId = offer.id;
@@ -763,6 +803,7 @@ export class OwnerControlCenterEngine {
     const sql = `
       UPDATE product_proposals
       SET status = 'APPROVED', amazon_url = ?, asin = ?, approved_offer_id = ?,
+          display_name = ?, listing_facts_json = ?,
           product_checked = 1, product_checked_at = ?, updated_at = ?
       WHERE id = ?
     `;
@@ -770,6 +811,8 @@ export class OwnerControlCenterEngine {
       proposal.amazonUrl,
       proposal.asin,
       proposal.approvedOfferId,
+      displayName,
+      JSON.stringify(facts),
       proposal.productCheckedAt,
       proposal.updatedAt,
       proposal.id
@@ -785,6 +828,13 @@ export class OwnerControlCenterEngine {
   }
 
   private mapProposal(row: any): ProductProposal {
+    let listingFacts: Array<{ fact: string; date: string }> | undefined;
+    try {
+      if (row.listing_facts_json) {
+        listingFacts = JSON.parse(row.listing_facts_json);
+      }
+    } catch {}
+
     return {
       id: row.id,
       organizationId: row.organization_id,
@@ -796,6 +846,8 @@ export class OwnerControlCenterEngine {
       retrievalDate: row.retrieval_date,
       providerCallLogId: row.provider_call_log_id || undefined,
       pageTextSnippet: row.page_text_snippet || undefined,
+      displayName: row.display_name || undefined,
+      listingFacts,
       amazonUrl: row.amazon_url,
       asin: row.asin,
       status: row.status,
@@ -1170,6 +1222,17 @@ export class OwnerControlCenterEngine {
     // 9. Compute Owner 'TODAY' Action Items (Item 7)
     const proposals = await this.getProposals(organizationId);
     const candidateProposals = proposals.filter(p => p.status === 'PROPOSED');
+
+    const publishReadyGuides = isProduction()
+      ? await this.d1Repo.query<any>('commission_content_assets', "SELECT id, slug, title, category FROM commission_content_assets WHERE organization_id = ? AND status = 'PUBLISH_READY' ORDER BY created_at DESC", [organizationId])
+      : (() => {
+          try {
+            return getDb().prepare("SELECT id, slug, title, category FROM commission_content_assets WHERE organization_id = ? AND status = 'PUBLISH_READY' ORDER BY created_at DESC").all(organizationId) as any[];
+          } catch {
+            return [];
+          }
+        })();
+
     const publishedGuides = isProduction()
       ? await this.d1Repo.query<any>('commission_content_assets', "SELECT slug, title FROM commission_content_assets WHERE organization_id = ? AND status = 'PUBLISHED' ORDER BY created_at DESC LIMIT 1", [organizationId])
       : (() => {
@@ -1201,6 +1264,7 @@ export class OwnerControlCenterEngine {
       intakeCompleted: Boolean(intake && intake.status === 'VALID'),
       intakeStatus: intake ? intake.status : 'PENDING',
       candidateProposals,
+      publishReadyGuides,
       readyShareGuide
     };
 
@@ -1338,12 +1402,31 @@ export class OwnerControlCenterEngine {
               (Retrieved: ${escape(p.retrievalDate)})
             </div>
             ${p.pageTextSnippet ? `<div style="font-size: 0.78rem; background: #0f172a; border-left: 3px solid #3b82f6; padding: 6px 10px; color: #94a3b8; margin-bottom: 10px;"><em>"${escape(p.pageTextSnippet)}"</em></div>` : ''}
-            <form method="POST" action="/api/v1/owner/product-proposals/${escape(p.id)}/approve" style="display: flex; flex-direction: column; gap: 8px; background: #090d16; padding: 10px; border-radius: 4px; border: 1px solid #1e293b;">
+            <form method="POST" action="/api/v1/owner/product-proposals/${escape(p.id)}/approve" style="display: flex; flex-direction: column; gap: 10px; background: #090d16; padding: 12px; border-radius: 4px; border: 1px solid #1e293b;">
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <label style="font-size: 0.82rem; color: #e2e8f0; width: 140px; flex-shrink: 0;">Display Name:</label>
+                <input type="text" name="displayName" value="${escape(p.productName)}" required placeholder="e.g. Phomemo PM-241BT Shipping Label Printer" style="flex: 1; background: #1e293b; border: 1px solid #334155; color: #fff; padding: 6px 10px; border-radius: 4px; font-size: 0.85rem;" />
+              </div>
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <label style="font-size: 0.82rem; color: #e2e8f0; width: 140px; flex-shrink: 0;">Fact 1 &amp; Date:</label>
+                <input type="text" name="fact1" required placeholder="Listing Fact 1 (e.g. Direct Thermal 203 DPI)" style="flex: 2; background: #1e293b; border: 1px solid #334155; color: #fff; padding: 6px 10px; border-radius: 4px; font-size: 0.85rem;" />
+                <input type="date" name="fact1Date" value="${escape(p.retrievalDate)}" required style="flex: 1; background: #1e293b; border: 1px solid #334155; color: #fff; padding: 6px 10px; border-radius: 4px; font-size: 0.85rem;" />
+              </div>
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <label style="font-size: 0.82rem; color: #e2e8f0; width: 140px; flex-shrink: 0;">Fact 2 &amp; Date:</label>
+                <input type="text" name="fact2" required placeholder="Listing Fact 2 (e.g. Up to 150 mm/s print speed)" style="flex: 2; background: #1e293b; border: 1px solid #334155; color: #fff; padding: 6px 10px; border-radius: 4px; font-size: 0.85rem;" />
+                <input type="date" name="fact2Date" value="${escape(p.retrievalDate)}" required style="flex: 1; background: #1e293b; border: 1px solid #334155; color: #fff; padding: 6px 10px; border-radius: 4px; font-size: 0.85rem;" />
+              </div>
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <label style="font-size: 0.82rem; color: #e2e8f0; width: 140px; flex-shrink: 0;">Fact 3 &amp; Date:</label>
+                <input type="text" name="fact3" required placeholder="Listing Fact 3 (e.g. Supports 1 to 4 inch label widths)" style="flex: 2; background: #1e293b; border: 1px solid #334155; color: #fff; padding: 6px 10px; border-radius: 4px; font-size: 0.85rem;" />
+                <input type="date" name="fact3Date" value="${escape(p.retrievalDate)}" required style="flex: 1; background: #1e293b; border: 1px solid #334155; color: #fff; padding: 6px 10px; border-radius: 4px; font-size: 0.85rem;" />
+              </div>
               <div style="display: flex; gap: 8px; align-items: center;">
                 <label style="font-size: 0.82rem; color: #e2e8f0; width: 140px; flex-shrink: 0;">Amazon.in URL:</label>
                 <input type="url" name="amazonUrl" required placeholder="https://www.amazon.in/dp/B0..." style="flex: 1; background: #1e293b; border: 1px solid #334155; color: #fff; padding: 6px 10px; border-radius: 4px; font-size: 0.85rem;" />
               </div>
-              <div style="display: flex; align-items: center; justify-content: space-between;">
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 4px;">
                 <label style="display: flex; align-items: center; gap: 6px; font-size: 0.8rem; color: #cbd5e1; cursor: pointer;">
                   <input type="checkbox" name="productChecked" value="true" required style="accent-color: #3b82f6;" />
                   <span>I have verified this product on Amazon.in (product_checked)</span>
@@ -1355,6 +1438,28 @@ export class OwnerControlCenterEngine {
             </form>
           </div>
         `).join('');
+
+    const publishReadyGuides = today?.publishReadyGuides || [];
+    const publishReadyHtml = publishReadyGuides.length === 0
+      ? ''
+      : `
+        <div style="margin-top: 16px; border-top: 1px solid #1e293b; padding-top: 14px;">
+          <h4 style="margin: 0 0 10px; color: #a78bfa; font-size: 0.9rem;">Guides Ready to Publish (${publishReadyGuides.length})</h4>
+          ${publishReadyGuides.map(g => `
+            <div style="background: #111827; border: 1px solid #334155; border-radius: 6px; padding: 12px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
+              <div>
+                <strong style="color: #e2e8f0; font-size: 0.9rem;">${escape(g.title)}</strong>
+                <div style="font-size: 0.78rem; color: #94a3b8;">Slug: /guides/${escape(g.slug)} &bull; Category: ${escape(g.category)}</div>
+              </div>
+              <form method="POST" action="/api/v1/owner/guides/${escape(g.id)}/publish" style="margin: 0;">
+                <button type="submit" style="background: #7c3aed; color: #fff; border: none; padding: 6px 16px; border-radius: 4px; font-size: 0.82rem; font-weight: 600; cursor: pointer;">
+                  Publish Guide
+                </button>
+              </form>
+            </div>
+          `).join('')}
+        </div>
+      `;
 
     const isShareReady = today?.readyShareGuide?.status === 'READY' && Boolean(today?.readyShareGuide?.shareText);
     const shareGuideBadge = isShareReady
@@ -1450,6 +1555,7 @@ export class OwnerControlCenterEngine {
             Review candidate product proposals derived from manufacturer spec sheets (zero Amazon fetches). Supply the verified Amazon.in product URL and attest product_checked to activate commercial offer.
           </div>
           ${proposalsHtml}
+          ${publishReadyHtml}
         </div>
 
         <!-- 3. Share This Page -->
@@ -1598,10 +1704,10 @@ export class OwnerControlCenterEngine {
       <input type="date" id="applicationDate" name="applicationDate" required>
 
       <label for="siteName">Site Name</label>
-      <input type="text" id="siteName" name="siteName" placeholder="e.g. India Commercial Review" required>
+      <input type="text" id="siteName" name="siteName" placeholder="Enter site name" required>
 
       <label for="authorName">Author / Editorial Name</label>
-      <input type="text" id="authorName" name="authorName" placeholder="e.g. Editorial Review Staff" required>
+      <input type="text" id="authorName" name="authorName" placeholder="Enter author or team name" required>
 
       <label for="contactEmail">Contact Email</label>
       <input type="email" id="contactEmail" name="contactEmail" placeholder="e.g. contact@domain.in" required>

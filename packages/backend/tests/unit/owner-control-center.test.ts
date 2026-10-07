@@ -405,13 +405,22 @@ describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)
       });
 
       const result = await engine.approveProposal(orgId, target.id, {
+        displayName: 'Phomemo PM-241BT Shipping Label Printer',
         amazonUrl: 'https://www.amazon.in/dp/B08P13WGLX',
-        productChecked: true
+        productChecked: true,
+        fact1: 'Direct Thermal 203 DPI',
+        fact1Date: '2026-10-07',
+        fact2: '150 mm/s print speed',
+        fact2Date: '2026-10-07',
+        fact3: 'Supports 1-4 inch width',
+        fact3Date: '2026-10-07'
       });
 
       expect(result.proposal.status).toBe('APPROVED');
       expect(result.proposal.asin).toBe('B08P13WGLX');
       expect(result.proposal.productChecked).toBe(true);
+      expect(result.proposal.displayName).toBe('Phomemo PM-241BT Shipping Label Printer');
+      expect(result.proposal.listingFacts).toHaveLength(3);
       expect(result.proposal.amazonUrl).toBe('https://www.amazon.in/dp/B08P13WGLX');
       expect(result.offer).toBeDefined();
       expect(result.offer.status).toBe('ACTIVE');
@@ -422,20 +431,33 @@ describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)
       const proposals = await engine.discoverProductProposals(orgId);
       const target = proposals[0];
 
+      const validFacts = {
+        displayName: 'Phomemo PM-241BT Shipping Label Printer',
+        fact1: 'Direct Thermal 203 DPI',
+        fact1Date: '2026-10-07',
+        fact2: '150 mm/s print speed',
+        fact2Date: '2026-10-07',
+        fact3: 'Supports 1-4 inch width',
+        fact3Date: '2026-10-07'
+      };
+
       // Without productChecked: true
       await expect(engine.approveProposal(orgId, target.id, {
+        ...validFacts,
         amazonUrl: 'https://www.amazon.in/dp/B08P13WGLX',
         productChecked: false
       })).rejects.toThrow('productChecked must be explicitly true');
 
       // Invalid host
       await expect(engine.approveProposal(orgId, target.id, {
+        ...validFacts,
         amazonUrl: 'https://notamazon.in/dp/B08P13WGLX',
         productChecked: true
       })).rejects.toThrow("Host 'notamazon.in' is invalid");
 
       // Invalid ASIN length (9 characters)
       await expect(engine.approveProposal(orgId, target.id, {
+        ...validFacts,
         amazonUrl: 'https://www.amazon.in/dp/B08P13WGL',
         productChecked: true
       })).rejects.toThrow('ASIN must be exactly 10 alphanumeric characters');

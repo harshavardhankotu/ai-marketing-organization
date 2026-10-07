@@ -4845,18 +4845,43 @@ apiRouter.post('/owner/product-proposals/discover', async (c) => {
 });
 
 /**
- * Approve product proposal with Amazon URL and product_checked attestation (Owner-only)
+ * Approve product proposal with Amazon URL, 3 listing facts, and product_checked attestation (Owner-only)
  */
 apiRouter.post('/owner/product-proposals/:id/approve', async (c) => {
   const orgId = c.req.header('x-organization-id') || c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
   const proposalId = c.req.param('id');
-  const body = await c.req.json().catch(() => ({}));
+  let body: any = {};
+  try {
+    const contentType = c.req.header('content-type') || '';
+    if (contentType.includes('application/json')) {
+      body = await c.req.json().catch(() => ({}));
+    } else {
+      body = await c.req.parseBody().catch(() => ({}));
+    }
+  } catch {
+    body = {};
+  }
+
   const engine = OwnerControlCenterEngine.getInstance();
   try {
     const result = await engine.approveProposal(orgId, proposalId, {
       amazonUrl: body.amazonUrl,
-      productChecked: body.productChecked === true || body.productChecked === 'true'
+      productChecked: body.productChecked === true || body.productChecked === 'true' || body.productChecked === 'on',
+      displayName: body.displayName,
+      listingFacts: body.listingFacts,
+      fact1: body.fact1,
+      fact1Date: body.fact1Date,
+      fact2: body.fact2,
+      fact2Date: body.fact2Date,
+      fact3: body.fact3,
+      fact3Date: body.fact3Date
     });
+
+    const contentType = c.req.header('content-type') || '';
+    if (contentType.includes('form')) {
+      return c.redirect('/owner/status', 303);
+    }
+
     return c.json({
       success: true,
       data: result
@@ -4868,6 +4893,48 @@ apiRouter.post('/owner/product-proposals/:id/approve', async (c) => {
       message: err.message
     }, 400);
   }
+});
+
+/**
+ * Publish a PUBLISH_READY guide (Owner-only)
+ */
+apiRouter.post('/owner/guides/:id/publish', async (c) => {
+  const orgId = c.req.header('x-organization-id') || c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const guideId = c.req.param('id');
+  const d1Repo = D1RevenueRepository.getInstance();
+  const db = getDb();
+  const now = new Date().toISOString();
+
+  const guide = isProduction()
+    ? await d1Repo.queryOne<any>('commission_content_assets', "SELECT * FROM commission_content_assets WHERE id = ? AND organization_id = ?", [guideId, orgId])
+    : (db.prepare("SELECT * FROM commission_content_assets WHERE id = ? AND organization_id = ?").get(guideId, orgId) as any);
+
+  if (!guide) {
+    return c.json({ success: false, error: 'GUIDE_NOT_FOUND', message: `Guide '${guideId}' not found.` }, 404);
+  }
+
+  if (guide.status !== 'PUBLISH_READY' && guide.status !== 'DRAFT') {
+    return c.json({ success: false, error: 'INVALID_STATUS', message: `Guide status is '${guide.status}'. Only PUBLISH_READY or DRAFT guides can be published.` }, 400);
+  }
+
+  const sql = "UPDATE commission_content_assets SET status = 'PUBLISHED', updated_at = ? WHERE id = ?";
+  const params = [now, guideId];
+
+  if (isProduction()) {
+    await d1Repo.executeWrite('commission_content_assets', sql, params);
+  } else {
+    db.prepare(sql).run(...params);
+  }
+
+  const contentType = c.req.header('content-type') || '';
+  if (contentType.includes('form')) {
+    return c.redirect('/owner/status', 303);
+  }
+
+  return c.json({
+    success: true,
+    data: { id: guideId, status: 'PUBLISHED', publishedAt: now }
+  });
 });
 
 /**

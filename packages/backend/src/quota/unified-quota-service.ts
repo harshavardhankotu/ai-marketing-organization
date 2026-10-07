@@ -445,15 +445,28 @@ export class UnifiedQuotaService {
     units: number,
     success: boolean,
     isRateLimit: boolean,
-    error?: string
+    error?: string,
+    query?: string,
+    url?: string
   ): void {
     const id = `call_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const sql = `
       INSERT INTO provider_call_logs (
-        id, provider, action_type, priority, units, success, is_rate_limit, error, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        id, provider, action_type, priority, units, success, is_rate_limit, error, query, url, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     `;
-    const params = [id, provider, actionType, priority, units, success ? 1 : 0, isRateLimit ? 1 : 0, error || null];
+    const params = [
+      id,
+      provider,
+      actionType,
+      priority,
+      units,
+      success ? 1 : 0,
+      isRateLimit ? 1 : 0,
+      error || null,
+      query || null,
+      url || null
+    ];
     if (isProduction()) {
       this.d1Repo.executeWrite('provider_call_logs', sql, params).catch(() => {});
     }
@@ -467,7 +480,8 @@ export class UnifiedQuotaService {
     success: boolean,
     creditsConsumed = 1,
     resetWindowMs?: number,
-    isRateLimit = false
+    isRateLimit = false,
+    options?: { actionType?: string; priority?: string; error?: string; query?: string; url?: string; skipLog?: boolean }
   ): void {
     this.ensureInitialized();
     const db = getDb();
@@ -567,7 +581,19 @@ export class UnifiedQuotaService {
       }
     }
 
-    this.logCall(provider, 'api_request', 'P3', creditsConsumed, success, isRateLimit);
+    if (!options?.skipLog) {
+      this.logCall(
+        provider,
+        options?.actionType || 'api_request',
+        options?.priority || 'P3',
+        creditsConsumed,
+        success,
+        isRateLimit,
+        options?.error,
+        options?.query,
+        options?.url
+      );
+    }
   }
 
   public recordProviderMetadata(provider: ProviderName, verifiedLimit: number, resetWindowMs?: number): void {

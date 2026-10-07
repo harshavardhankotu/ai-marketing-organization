@@ -62,26 +62,55 @@ function main() {
 
   // Check shell commands for secret exposure
   if (toolName === 'run_command') {
-    const cmd = (args.CommandLine || '').toLowerCase();
-    const unsafePatterns = [
-      'printenv',
-      'env |',
-      'env >',
-      'echo $env:',
-      'dir env:',
-      'get-childitem env:',
-      'type .env',
-      'cat .env'
-    ];
+    const cmd = (args.CommandLine || '').trim();
+    const lowerCmd = cmd.toLowerCase();
 
-    for (const pat of unsafePatterns) {
-      if (cmd.includes(pat)) {
-        console.log(JSON.stringify({
-          decision: 'deny',
-          reason: `SECURITY POLICY VIOLATION: Command containing pattern '${pat}' may leak environment secrets and is blocked.`
-        }));
-        return;
-      }
+    // 1. printenv
+    if (/\bprintenv\b/i.test(cmd)) {
+      console.log(JSON.stringify({
+        decision: 'deny',
+        reason: "SECURITY POLICY VIOLATION: 'printenv' may leak environment secrets and is blocked."
+      }));
+      return;
+    }
+
+    // 2. PowerShell / CMD environment enumeration
+    if (/(get-childitem|dir|gci|ls)\s+env:/i.test(cmd)) {
+      console.log(JSON.stringify({
+        decision: 'deny',
+        reason: "SECURITY POLICY VIOLATION: Environment drive enumeration (Env:) is blocked."
+      }));
+      return;
+    }
+
+    // 3. 'set' alone (displays all environment variables)
+    if (/(^|[;&|])\s*set\s*([;&|]|$)/i.test(cmd)) {
+      console.log(JSON.stringify({
+        decision: 'deny',
+        reason: "SECURITY POLICY VIOLATION: Running 'set' alone prints all environment variables and is blocked."
+      }));
+      return;
+    }
+
+    // 4. Any command printing or writing $env: values to stdout or file
+    if (/(\$env:[a-zA-Z0-9_]+.*(>|>>|out-file|set-content|add-content|tee-object|clip))|(echo|write-host|write-output)\s+.*\$env:/i.test(cmd) ||
+        /\$env:.*>\s*\S+/i.test(cmd)) {
+      console.log(JSON.stringify({
+        decision: 'deny',
+        reason: "SECURITY POLICY VIOLATION: Printing or redirecting $env: values is blocked to prevent secret exfiltration."
+      }));
+      return;
+    }
+
+    // 5. Reading .env files
+    if (/(cat|type|get-content|gc|head|tail|more|less|grep|findstr|select-string)\s+[^\n\r;&|]*\.env/i.test(cmd) ||
+        /[^\n\r;&|]*\.env\b.*\|\s*(cat|type|head|tail|grep|findstr|select-string)/i.test(cmd) ||
+        /<\s*[^\n\r;&|]*\.env\b/i.test(cmd)) {
+      console.log(JSON.stringify({
+        decision: 'deny',
+        reason: "SECURITY POLICY VIOLATION: Reading .env files directly is blocked to protect secrets."
+      }));
+      return;
     }
   }
 
@@ -89,3 +118,4 @@ function main() {
 }
 
 main();
+

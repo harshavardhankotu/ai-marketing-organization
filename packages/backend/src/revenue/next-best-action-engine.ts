@@ -271,6 +271,41 @@ export class NextBestActionEngine {
       }
     }
 
+    // Priority 5.0 (P1): Active partner offers needing a buyer guide generated
+    const unguidedActiveOffers = this.getUnguidedActiveOffers(organizationId);
+    for (const off of unguidedActiveOffers) {
+      const cooldown = ActionCooldownManager.check(off.id, 'CREATE_CONTENT_ASSET');
+      if (cooldown.eligible || options?.ignoreCooldown) {
+        const estRev = 3000;
+        const prob = 0.5;
+        const ev = estRev * prob;
+        candidates.push({
+          actionType: 'CREATE_CONTENT_ASSET',
+          targetId: off.id,
+          targetType: 'OFFER',
+          ownerAgent: 'content-asset-engine',
+          rationale: `Active offer '${off.title}' (${off.id}) has no published or ready guide. Generate guide DRAFT using verified listing facts and advance to PUBLISH_READY.`,
+          estimatedRevenueINR: estRev,
+          expectedRevenueINR: ev,
+          probabilityOfSuccess: prob,
+          timeToRevenueDays: 3,
+          externalCostINR: 0,
+          quotaCost: 1,
+          customerValueINR: estRev,
+          urgency: 0.95,
+          cooldownActive: false,
+          authorizationAvailable: true,
+          riskLevel: 'LOW',
+          expectedValueINR: ev,
+          priorityScore: 900,
+          priorityTier: 'P1',
+          score: 900,
+          authorizationRequired: false,
+          estimatedCostINR: 0
+        });
+      }
+    }
+
     // Priority 5.1 (P1): Demand signals ready for acquisition content asset generation (Spec § 21 & § 22)
     // STOP CONDITION (Spec § 21): If zero active offers exist, stop building commercial content to avoid unmonetized dead ends.
     if (this.getActiveOffersCount(organizationId) > 0) {
@@ -725,6 +760,24 @@ export class NextBestActionEngine {
         WHERE active = 1 AND (authorized_tracking_url IS NULL OR trim(authorized_tracking_url) = '' OR destination_url IS NULL OR trim(destination_url) = '')
         LIMIT 5
       `).all() as any[];
+    } catch {
+      return [];
+    }
+  }
+
+  private getUnguidedActiveOffers(organizationId: string): any[] {
+    const db = getDb();
+    try {
+      return db.prepare(`
+        SELECT po.* FROM partner_offers po
+        WHERE po.organization_id = ? AND po.status = 'ACTIVE' AND po.active = 1
+          AND po.id NOT IN (
+            SELECT COALESCE(primary_offer_id, '') FROM commission_content_assets
+            WHERE status IN ('PUBLISHED', 'PUBLISH_READY')
+          )
+        ORDER BY po.created_at DESC
+        LIMIT 5
+      `).all(organizationId) as any[];
     } catch {
       return [];
     }

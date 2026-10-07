@@ -219,7 +219,7 @@ export interface ContentAsset {
   primaryOfferId?: string;
   matchedOfferIds: string[];
   disclosureMarkdown: string;
-  status: 'DRAFT' | 'PUBLISHED' | 'ARCHIVED';
+  status: 'DRAFT' | 'PUBLISHED' | 'ARCHIVED' | 'PUBLISH_READY';
   viewCount: number;
   referralClickCount: number;
   createdAt: string;

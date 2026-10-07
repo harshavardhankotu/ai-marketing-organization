@@ -2134,6 +2134,8 @@ CREATE TABLE IF NOT EXISTS provider_call_logs (
   success INTEGER NOT NULL DEFAULT 1,
   is_rate_limit INTEGER NOT NULL DEFAULT 0,
   error TEXT,
+  query TEXT,
+  url TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_call_logs_provider_created ON provider_call_logs(provider, created_at);
@@ -2169,6 +2171,8 @@ CREATE TABLE IF NOT EXISTS product_proposals (
   retrieval_date TEXT NOT NULL,
   provider_call_log_id TEXT,
   page_text_snippet TEXT,
+  display_name TEXT,
+  listing_facts_json TEXT,
   amazon_url TEXT,
   asin TEXT,
   status TEXT NOT NULL DEFAULT 'PROPOSED',

@@ -813,4 +813,174 @@ All specifications checked against manufacturer technical documentation.
       fs.rmSync(tempDir, { recursive: true, force: true });
     });
   });
+
+  describe('8. Product Card Fields & Pipeline Progression Gate', () => {
+    it('blocks proposal approval and offer activation when displayName or listing facts are missing', async () => {
+      const { OwnerControlCenterEngine } = await import('../../src/commission/owner-control-center.js');
+      const occ = OwnerControlCenterEngine.getInstance();
+      const db = getDb();
+
+      // Seed proposal
+      const propId = 'prop_test_gate_01';
+      db.prepare(`
+        INSERT OR REPLACE INTO product_proposals (
+          id, organization_id, category, product_name, manufacturer_name,
+          spec_summary, source_url, retrieval_date, provider_call_log_id,
+          page_text_snippet, status, product_checked, created_at, updated_at
+        ) VALUES (
+          ?, ?, 'Office & Commercial Supplies', 'Phomemo PM-241BT', 'Phomemo',
+          '203 DPI Direct Thermal', 'https://phomemo.com/products/pm-241bt', '2026-10-07', 'call_1791393061443_spec01',
+          'Direct Thermal 203 DPI', 'PROPOSED', 0, datetime('now'), datetime('now')
+        )
+      `).run(propId, testOrgId);
+
+      // Missing displayName
+      await expect(occ.approveProposal(testOrgId, propId, {
+        displayName: '',
+        amazonUrl: 'https://www.amazon.in/dp/B08N5WRWNW',
+        productChecked: true,
+        fact1: 'Direct Thermal 203 DPI', fact1Date: '2026-10-07',
+        fact2: '150 mm/s print speed', fact2Date: '2026-10-07',
+        fact3: 'Supports 1-4 inch width', fact3Date: '2026-10-07'
+      })).rejects.toThrow('APPROVAL_ERROR: displayName is required and cannot be empty.');
+
+      // Missing fact 3
+      await expect(occ.approveProposal(testOrgId, propId, {
+        displayName: 'Phomemo PM-241BT Printer',
+        amazonUrl: 'https://www.amazon.in/dp/B08N5WRWNW',
+        productChecked: true,
+        fact1: 'Direct Thermal 203 DPI', fact1Date: '2026-10-07',
+        fact2: '150 mm/s print speed', fact2Date: '2026-10-07',
+        fact3: '', fact3Date: '2026-10-07'
+      })).rejects.toThrow('APPROVAL_ERROR: Exactly 3 listing facts with dates are required to approve proposal and activate offer.');
+
+      // Missing fact date
+      await expect(occ.approveProposal(testOrgId, propId, {
+        displayName: 'Phomemo PM-241BT Printer',
+        amazonUrl: 'https://www.amazon.in/dp/B08N5WRWNW',
+        productChecked: true,
+        fact1: 'Direct Thermal 203 DPI', fact1Date: '2026-10-07',
+        fact2: '150 mm/s print speed', fact2Date: '',
+        fact3: 'Supports 1-4 inch width', fact3Date: '2026-10-07'
+      })).rejects.toThrow('APPROVAL_ERROR: Exactly 3 listing facts with dates are required to approve proposal and activate offer.');
+    });
+
+    it('advances pipeline state automatically: offer ACTIVE -> guide DRAFT (1 Gemini call logged) -> lint -> PUBLISH_READY -> owner publishes -> PUBLISHED', async () => {
+      const { OwnerControlCenterEngine } = await import('../../src/commission/owner-control-center.js');
+      const { ContentAssetEngine } = await import('../../src/commission/content-asset-engine.js');
+      const { UnifiedQuotaService } = await import('../../src/quota/unified-quota-service.js');
+      const occ = OwnerControlCenterEngine.getInstance();
+      const contentEngine = ContentAssetEngine.getInstance();
+      const db = getDb();
+
+      // 0. Seed Amazon partner
+      db.prepare(`
+        INSERT INTO partners (
+          id, organization_id, name, industry, country, website,
+          partner_type, commission_type, cookie_window_days, qualifying_event,
+          approval_status, active_status, source, network, tracking_type,
+          authorization_status, evidence_json, created_at, updated_at
+        ) VALUES (
+          'part_amazon_in_01', ?, 'Amazon India Associates', 'Retail', 'India', 'https://associates.amazon.in',
+          'AFFILIATE', 'PERCENTAGE', 1, 'PURCHASE',
+          'APPROVED', 1, 'OPERATOR_PROVISIONAL', 'AMAZON_ASSOCIATES', 'AFFILIATE_LINK',
+          'AUTHORIZED', '{}', datetime('now'), datetime('now')
+        )
+      `).run(testOrgId);
+
+      // 1. Seed valid owner intake
+      await occ.saveIntake(testOrgId, {
+        applicationDate: '2026-09-01',
+        listedSiteUrls: ['https://ai-marketing-platform-core.web.app'],
+        agreementReadConfirmed: true,
+        siteName: 'Verified Reviews India',
+        authorName: 'Platform Operator',
+        contactEmail: 'operator@example.com',
+        tavilyKeyRotated: true
+      });
+
+      // 2. Seed proposal
+      const propId = 'prop_test_pipeline_01';
+      db.prepare(`
+        INSERT OR REPLACE INTO product_proposals (
+          id, organization_id, category, product_name, manufacturer_name,
+          spec_summary, source_url, retrieval_date, provider_call_log_id,
+          page_text_snippet, status, product_checked, created_at, updated_at
+        ) VALUES (
+          ?, ?, 'Office & Commercial Supplies', 'Phomemo PM-241BT', 'Phomemo',
+          '203 DPI Direct Thermal', 'https://phomemo.com/products/pm-241bt', '2026-10-07', 'call_1791393061443_spec01',
+          'Direct Thermal 203 DPI', 'PROPOSED', 0, datetime('now'), datetime('now')
+        )
+      `).run(propId, testOrgId);
+
+      // 3. OWNER approves proposal with display name + exactly 3 facts with dates
+      const approval = await occ.approveProposal(testOrgId, propId, {
+        displayName: 'Phomemo PM-241BT Bluetooth Shipping Label Printer',
+        amazonUrl: 'https://www.amazon.in/dp/B08N5WRWNW',
+        productChecked: true,
+        fact1: 'Direct Thermal ink-free mechanism at 203 DPI resolution',
+        fact1Date: '2026-10-07',
+        fact2: 'Prints at up to 150 mm per second speed',
+        fact2Date: '2026-10-07',
+        fact3: 'Supports label widths from 1 to 4 inches',
+        fact3Date: '2026-10-07'
+      });
+
+      expect(approval.offer.status).toBe('ACTIVE');
+      const offerId = approval.offer.id;
+
+      // 4. Count initial Gemini calls in provider_call_logs
+      const initialLogs = (db.prepare("SELECT COUNT(*) as c FROM provider_call_logs WHERE provider = 'GEMINI'").get() as any).c;
+
+      // 5. AUTOMATED cron tick: generates guide draft for active offer
+      const guide = await contentEngine.generateGuideForApprovedOffer(offerId, testOrgId);
+
+      // Verify guide status is PUBLISH_READY (lint passed)
+      expect(guide.status).toBe('PUBLISH_READY');
+      expect(guide.contentMarkdown).toContain('Phomemo PM-241BT Bluetooth Shipping Label Printer');
+      expect(guide.contentMarkdown).toContain('Direct Thermal ink-free mechanism at 203 DPI resolution');
+      expect(guide.contentMarkdown).toContain('As an Amazon Associate I earn from qualifying purchases.');
+
+      // Verify exactly ONE Gemini call logged
+      const afterLogs = (db.prepare("SELECT COUNT(*) as c FROM provider_call_logs WHERE provider = 'GEMINI'").get() as any).c;
+      expect(afterLogs).toBe(initialLogs + 1);
+
+      // Verify guide appears in TODAY items as publishReadyGuides
+      const snapshot = await occ.computeStatus(testOrgId);
+      expect(snapshot.todayItems?.publishReadyGuides?.some(g => g.id === guide.id)).toBe(true);
+
+      // 6. OWNER publishes guide via publish endpoint
+      const pubRes = await app.request(`/api/v1/owner/guides/${guide.id}/publish`, {
+        method: 'POST',
+        headers: {
+          'x-api-key': ownerKey
+        }
+      });
+      expect(pubRes.status).toBe(200);
+      const pubJson = await pubRes.json();
+      expect(pubJson.data.status).toBe('PUBLISHED');
+
+      // 7. Verify status in DB is now PUBLISHED
+      const updatedRow = db.prepare("SELECT status FROM commission_content_assets WHERE id = ?").get(guide.id) as any;
+      expect(updatedRow.status).toBe('PUBLISHED');
+    });
+
+    it('returns 401 when anonymous user requests /owner/status or /owner/intake', async () => {
+      const resStatus = await app.request('/owner/status', {
+        method: 'GET'
+      });
+      expect(resStatus.status).toBe(401);
+
+      const resIntake = await app.request('/owner/intake', {
+        method: 'GET'
+      });
+      expect(resIntake.status).toBe(401);
+
+      const resApiStatus = await app.request('/api/v1/owner/status', {
+        method: 'GET'
+      });
+      expect(resApiStatus.status).toBe(401);
+    });
+  });
 });
+

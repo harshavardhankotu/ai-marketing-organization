@@ -610,8 +610,28 @@ export class AutonomousRevenueOrchestrator {
       // SPEC § 21 & § 22: CREATE_CONTENT_ASSET
       // ────────────────────────────────────────────────────────────────
       case 'CREATE_CONTENT_ASSET': {
-        const matchingEngine = DemandOfferMatchingEngine.getInstance();
         const contentEngine = ContentAssetEngine.getInstance();
+
+        if (action.targetType === 'OFFER') {
+          try {
+            const asset = await contentEngine.generateGuideForApprovedOffer(action.targetId, organizationId);
+            return {
+              status: 'INTERNAL_AUTOMATION',
+              actionClassification: 'INTERNAL_AUTOMATION',
+              isRevenueAction: false,
+              externalId: asset.id
+            };
+          } catch (err: any) {
+            return {
+              status: 'INTERNAL_AUTOMATION',
+              actionClassification: 'INTERNAL_AUTOMATION',
+              isRevenueAction: false,
+              error: `Guide generation failed for offer ${action.targetId}: ${err.message}`
+            };
+          }
+        }
+
+        const matchingEngine = DemandOfferMatchingEngine.getInstance();
 
         const signal = (await this.d1Repo.queryOne<any>('demand_signals', 'SELECT * FROM demand_signals WHERE id = ?', [action.targetId]));
         if (!signal) {

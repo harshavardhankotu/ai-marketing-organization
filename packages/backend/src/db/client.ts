@@ -535,6 +535,10 @@ export function getDb(dbPath?: string): Database.Database {
   try { db.exec(`ALTER TABLE owner_intake ADD COLUMN created_at TEXT`); } catch {}
   try { db.exec(`ALTER TABLE product_proposals ADD COLUMN provider_call_log_id TEXT`); } catch {}
   try { db.exec(`ALTER TABLE product_proposals ADD COLUMN page_text_snippet TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE product_proposals ADD COLUMN display_name TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE product_proposals ADD COLUMN listing_facts_json TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE provider_call_logs ADD COLUMN query TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE provider_call_logs ADD COLUMN url TEXT`); } catch {}
 
   // Initialize schema (creates all tables if not exist — safe for both fresh and existing DBs)
 
