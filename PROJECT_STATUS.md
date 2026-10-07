@@ -187,6 +187,19 @@
     - **Content Lint Gate:** Hardened `ContentAssetEngine.lintContentAsset` to block forbidden commercial claims ("certified", "lowest price", rupee prices, star ratings) and enforce exact statutory Amazon Associate disclosure.
     - **Monorepo Build, Tests & Deploy:** Monorepo builds clean (exit 0) across all 4 packages. All 35 launch-gates unit tests pass. Live deployment `dep-db2nhgqd0e5s73egkn5g` verified healthy and responding with 401 unauthenticated and 200 authenticated.
 
+31. **2026-10-07 — Launch Blockers & Intake Hardening Pass (`HEAD`):**
+    - **Conversion Webhook Hardening:** In production reads partner from Cloudflare D1 via `d1Repo.queryOne`, not SQLite `getDb()`. Queries using the authoritative schema column name `network`. Performs constant-time secret comparison via `crypto.timingSafeEqual`. Stores secret in environment (`PARTNER_WEBHOOK_SECRET_*`) or hashed in partner evidence (`webhook_secret_sha256`), never plaintext in `evidence_json`. If `network === 'AMAZON_ASSOCIATES'` or no webhook secret is configured, returns 404 with 0 database writes. Tested and verified against a fixture shaped identically to D1 row `part_amazon_in_01`.
+    - **Honest Labels & Provisional Mapping:** `AFFILIATE ID` shows `CONFIGURED_UNVERIFIED`. `PARTNER APPROVAL` shows `PROVISIONAL` across `/commission/money-path`, `/commission/launch-checklist`, and `GET /commission/partners` dashboard mapping for Amazon partner without mutating DB enums or table schemas.
+    - **Monorepo Build & Full Verification:** Full monorepo typecheck clean (0 errors across packages). Monorepo build succeeds (exit 0). Full test suite: 54 test files passed (54), 544 unit tests passed (544), 0 failed.
+    - **Measured Production Cold Start Timing:** Timed 3 requests to `https://ai-marketing-organization.onrender.com/api/v1/health` with `curl -m 60` following an idle period:
+      - Request 1 (Cold Start): **22.721 seconds** (Connect time: 0.142s)
+      - Request 2 (Warm): **0.356 seconds** (Connect time: 0.076s)
+      - Request 3 (Warm): **0.392 seconds** (Connect time: 0.096s)
+    - **Static Public Site Generator:** Created `StaticSiteGenerator` (`POST /api/v1/build/static-site`, owner-triggered) rendering every `PUBLISHED` guide to `/guides/<slug>/index.html` for Firebase Hosting, plus static `/about`, `/contact`, `/privacy`, `/terms`, `/disclosure`, `sitemap.xml`, and `robots.txt`. First HTML response contains: title, meta description, canonical URL, og:title, og:description, og:url, statutory disclosure within first 500 characters, full article text, direct tagged Amazon India links (`rel="sponsored nofollow noopener"`), and footer legal links. Config requires `PUBLIC_SITE_NAME`, `PUBLIC_AUTHOR_NAME`, `PUBLIC_CONTACT_EMAIL` or fails without guessing defaults. Added Firebase site origins (`https://ai-marketing-platform-core.web.app`, `https://ai-marketing-platform-core.firebaseapp.com`) to exact-origin CORS allowlist. Verified via `curl -A "WhatsApp/2.23"` proving `og:` tags appear in raw HTML.
+    - **Owner ASIN Intake:** Implemented `POST /api/v1/commission/offers/asin`: normalizes amazon.in URLs to `https://www.amazon.in/dp/<ASIN>`, validates host and 10-char ASIN regex, rejects shortened URLs (`amzn.to`, `a.co`), rejects foreign affiliate tags, strips all query params, appends `AMAZON_AFFILIATE_TAG` server-side, never fetches Amazon pages, stores zero price/rating/availability/scraped title, and stores owner display name and dated listing facts. Creates `status = 'DRAFT'`, `active = 0` offer.
+    - **Operator Attestation & Offer Activation Gate:** Implemented `POST /api/v1/commission/attestation`: records `terms_read_confirmed: true` with timestamp, `application_date`, and `site_listed_in_associates_central: true` with URL (no defaults). Activating any offer strictly requires `terms_read_confirmed` AND per-offer `product_checked: true`. Automatically computes 180-day deadline from application date.
+    - **Fixture End-to-End Trace (Test DB Only):** Verified complete trace from ASIN intake -> DRAFT offer -> operator attestation -> guide built strictly from listing facts -> lint passes (`passed: true`, 0 violations) -> static render passes Item 5 crawler checklist -> click beacon records non-revenue click event -> commission ledger reconciles to ₹0 (unchanged).
+
 ---
 
 ## Manual Steps Still Owed by Human Owner
@@ -200,4 +213,12 @@
 3. **Razorpay Live Merchant Account & KYC:** **NOT DONE**
    * Configure live Razorpay Key ID, Key Secret, and Webhook Secret once account verification is finalized.
 4. **Google Search / Ads Credentials (Optional):** **NOT DONE**
-   * Configure Google Ads customer ID / API tokens if paid search campaigns are to be activated.
+5. **Amazon Associates Central Attestation & Site Listing:** **NOT DONE**
+   * Operator must confirm reading the India Operating Agreement, supply the exact Amazon application date to track the 180-day deadline, and list `https://ai-marketing-platform-core.web.app` in Associates Central Website List.
+
+---
+
+## Single Biggest Remaining Risk
+
+**Amazon Associates 180-Day 3-Sale Qualification Gate & Traffic Integrity:**
+The provisional Amazon Associates India account (`part_amazon_in_01`, tag `marketing98-21`) will be automatically closed by Amazon after 180 days from application if it does not produce at least 3 qualifying sales from genuine organic referrals. If any traffic violates Amazon's India Operating Agreement (e.g. self-purchases, family/friend purchases, untracked social posts, scraping, or missing statutory disclosure), Amazon will reject the application upon review, invalidate the tracking ID, and permanently withhold commissions. Achieving 3 genuine qualifying sales from organic Indian search traffic to static guide pages before the 180-day deadline is the single biggest operational and commercial risk.

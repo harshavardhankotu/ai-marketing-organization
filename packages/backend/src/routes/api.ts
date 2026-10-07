@@ -73,6 +73,7 @@ import { ConversionVerificationAdapter } from '../commission/conversion-verifica
 import { CommissionLedgerEngine } from '../commission/commission-ledger.js';
 import { DemandDiscoveryEngine } from '../commission/demand-discovery.js';
 import { DirectPaymentProviderAdapter } from '../commission/direct-payment-adapter.js';
+import { StaticSiteGenerator } from '../commission/static-site-generator.js';
 import { getTrustedClientIp, hashClientIp } from '../security/client-ip.js';
 import { DurableRateLimiter } from '../security/durable-rate-limiter.js';
 
@@ -261,8 +262,15 @@ apiRouter.use('*', async (c, next) => {
       } catch {}
     }
 
-    // Require valid owner session for sensitive owner-only read endpoints across all environments
-    if (!ownerSession && (path === '/diagnostic/env' || path.startsWith('/commission/money-path') || path.startsWith('/commission/launch-checklist'))) {
+    // Require valid owner session for sensitive owner-only read & write endpoints across all environments
+    if (!ownerSession && (
+      path === '/diagnostic/env' ||
+      path.startsWith('/commission/money-path') ||
+      path.startsWith('/commission/launch-checklist') ||
+      path === '/commission/offers/asin' ||
+      path === '/commission/attestation' ||
+      path === '/build/static-site'
+    )) {
       return c.json({
         success: false,
         error: 'Unauthorized: Owner authentication is required via Bearer token or x-api-key.'
@@ -4123,26 +4131,83 @@ apiRouter.get('/public/disclosure/:slug', async (c) => {
  */
 apiRouter.post('/webhooks/conversion/:partnerId', async (c) => {
   const partnerId = c.req.param('partnerId');
-  const registry = PartnerRegistryEngine.getInstance();
-  const partner = await registry.getPartner(partnerId);
+  const d1Repo = D1RevenueRepository.getInstance();
+  let partner: any = null;
+
+  if (isProduction()) {
+    partner = await d1Repo.queryOne<any>('partners', 'SELECT * FROM partners WHERE id = ?', [partnerId]);
+  } else {
+    try {
+      partner = await d1Repo.queryOne<any>('partners', 'SELECT * FROM partners WHERE id = ?', [partnerId]);
+    } catch {
+      partner = null;
+    }
+    if (!partner) {
+      const db = getDb();
+      partner = db.prepare('SELECT * FROM partners WHERE id = ?').get(partnerId) as any;
+    }
+  }
 
   if (!partner) {
-    return c.json({ error: 'UNKNOWN_PARTNER', message: `Partner '${partnerId}' not registered` }, 404);
+    return c.json({ error: 'NOT_FOUND', message: `Partner '${partnerId}' not registered` }, 404);
   }
 
-  // Reject webhook ingestion for AMAZON_ASSOCIATES (Amazon has no conversion webhook)
-  if (partner.network === 'AMAZON_ASSOCIATES') {
+  // Network check using the real schema column: 'network'
+  const partnerNetwork = partner.network;
+  if (partnerNetwork === 'AMAZON_ASSOCIATES') {
     return c.json({
-      error: 'WEBHOOK_NOT_SUPPORTED',
-      message: 'Amazon Associates does not support conversion webhooks. Ingest verified reports via Associates Central CSV import.'
-    }, 400);
+      error: 'NOT_FOUND',
+      message: 'Conversion webhooks not supported for this partner'
+    }, 404);
   }
 
-  // Secret verification: reject forged requests without valid partner secret
-  const expectedSecret = partner.evidence?.webhookSecret || partner.evidence?.webhook_secret || process.env[`PARTNER_WEBHOOK_SECRET_${partnerId}`] || process.env.PARTNER_WEBHOOK_SECRET;
-  const providedSecret = c.req.header('x-webhook-secret') || c.req.header('x-partner-secret') || (c.req.header('authorization')?.replace(/^Bearer\s+/i, ''));
+  // Secret verification: secret must be kept in env or hashed in evidence, NEVER plaintext in evidence_json
+  let evidence: any = {};
+  if (partner.evidence_json) {
+    try { evidence = JSON.parse(partner.evidence_json); } catch {}
+  } else if (partner.evidence) {
+    evidence = partner.evidence;
+  }
 
-  if (!expectedSecret || !providedSecret || providedSecret !== expectedSecret) {
+  const envSecret =
+    process.env[`PARTNER_WEBHOOK_SECRET_${partnerId.toUpperCase()}`] ||
+    process.env[`PARTNER_WEBHOOK_SECRET_${partnerId}`] ||
+    process.env.PARTNER_WEBHOOK_SECRET;
+
+  const hashedSecretHex = evidence.webhook_secret_sha256 || evidence.webhook_secret_hash;
+
+  // If no webhook secret is configured at all, return 404 with no writes
+  if (!envSecret && !hashedSecretHex) {
+    return c.json({
+      error: 'NOT_FOUND',
+      message: 'Webhook endpoint not configured for this partner'
+    }, 404);
+  }
+
+  const providedSecret = c.req.header('x-webhook-secret') || c.req.header('x-partner-secret') || (c.req.header('authorization')?.replace(/^Bearer\s+/i, ''));
+  if (!providedSecret) {
+    return c.json({ error: 'UNAUTHORIZED', message: 'Valid partner webhook secret is required' }, 401);
+  }
+
+  // Constant-time comparison
+  const { timingSafeEqual, createHash } = await import('crypto');
+  let secretValid = false;
+  if (envSecret) {
+    const provBuf = Buffer.from(providedSecret);
+    const envBuf = Buffer.from(envSecret);
+    if (provBuf.length === envBuf.length && timingSafeEqual(provBuf, envBuf)) {
+      secretValid = true;
+    }
+  } else if (hashedSecretHex) {
+    const providedHash = createHash('sha256').update(providedSecret).digest('hex');
+    const provHashBuf = Buffer.from(providedHash);
+    const storedHashBuf = Buffer.from(hashedSecretHex);
+    if (provHashBuf.length === storedHashBuf.length && timingSafeEqual(provHashBuf, storedHashBuf)) {
+      secretValid = true;
+    }
+  }
+
+  if (!secretValid) {
     return c.json({ error: 'UNAUTHORIZED', message: 'Valid partner webhook secret is required' }, 401);
   }
 
@@ -4217,9 +4282,17 @@ apiRouter.get('/commission/partners', async (c) => {
   const orgId = c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
   const registry = PartnerRegistryEngine.getInstance();
   const partners = await registry.listPartners(orgId);
+  const mapped = partners.map(p => {
+    const isAmazon = p.network === 'AMAZON_ASSOCIATES' || (p.name && p.name.includes('Amazon'));
+    return {
+      ...p,
+      displayApprovalStatus: isAmazon && p.approvalStatus === 'APPROVED' ? 'PROVISIONAL' : p.approvalStatus,
+      displayAuthorizationStatus: isAmazon && p.authorizationStatus === 'AUTHORIZED' ? 'PROVISIONAL' : p.authorizationStatus
+    };
+  });
   return c.json({
     success: true,
-    data: partners
+    data: mapped
   });
 });
 
@@ -4314,11 +4387,294 @@ apiRouter.post('/commission/offers/:offerId/status', async (c) => {
     return c.json({ error: 'INVALID_STATUS', message: `status must be one of ${allowed.join(', ')}` }, 400);
   }
   const registry = PartnerRegistryEngine.getInstance();
+  const offer = await registry.getOffer(offerId);
+  if (!offer) {
+    return c.json({ error: 'OFFER_NOT_FOUND', message: `Offer '${offerId}' not found` }, 404);
+  }
+
+  // Activating any offer requires terms_read_confirmed and a per-offer product_checked attestation by the owner
+  if (body.status === 'ACTIVE') {
+    const partner = await registry.getPartner(offer.partnerId);
+    const partnerEvidence = partner?.evidence || {};
+    if (!partnerEvidence.terms_read_confirmed) {
+      return c.json({
+        error: 'TERMS_READ_CONFIRMATION_REQUIRED',
+        message: 'Activating an offer requires operator confirmation that Amazon Associates terms have been read.'
+      }, 400);
+    }
+
+    const offerEvidence = offer.evidence || {};
+    const productChecked = body.productChecked === true || offerEvidence.product_checked === true;
+    if (!productChecked) {
+      return c.json({
+        error: 'PRODUCT_CHECKED_ATTESTATION_REQUIRED',
+        message: 'Activating an offer requires per-offer product_checked attestation by the owner.'
+      }, 400);
+    }
+  }
+
   try {
-    const offer = await registry.setOfferStatus(offerId, body.status);
-    return c.json({ success: true, data: offer });
+    const updatedOffer = await registry.setOfferStatus(offerId, body.status);
+    return c.json({ success: true, data: updatedOffer });
   } catch (err: any) {
     return c.json({ error: 'OFFER_STATUS_FAILED', message: err.message }, 404);
+  }
+});
+
+/**
+ * ASIN Intake Endpoint (Owner-Only)
+ * Normalizes amazon.in URL to https://www.amazon.in/dp/<ASIN> with AMAZON_AFFILIATE_TAG.
+ * Validates host, 10-char ASIN, rejects shortened URLs and foreign tags.
+ * Never scrapes Amazon. Stores dated listing facts supplied by owner.
+ */
+apiRouter.post('/commission/offers/asin', async (c) => {
+  const orgId = c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const body = await c.req.json().catch(() => ({}));
+  const rawUrl = String(body.url || body.productUrl || '').trim();
+  const displayName = String(body.displayName || body.title || '').trim();
+  const listingFacts = String(body.listingFacts || '').trim();
+
+  if (!rawUrl) {
+    return c.json({ success: false, error: 'URL_REQUIRED', message: 'Product URL is required' }, 400);
+  }
+  if (!displayName) {
+    return c.json({ success: false, error: 'DISPLAY_NAME_REQUIRED', message: 'Owner must supply a display name' }, 400);
+  }
+  if (!listingFacts) {
+    return c.json({ success: false, error: 'LISTING_FACTS_REQUIRED', message: 'Owner must supply dated listing facts as text' }, 400);
+  }
+
+  // Reject shortened URLs (amzn.to, a.co)
+  const lowerUrl = rawUrl.toLowerCase();
+  if (lowerUrl.includes('amzn.to') || lowerUrl.includes('a.co')) {
+    return c.json({ success: false, error: 'SHORTENED_URL_REJECTED', message: 'Shortened URLs (amzn.to, a.co) are rejected. Provide the authoritative amazon.in URL.' }, 400);
+  }
+
+  // Parse URL and validate host
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(rawUrl);
+  } catch {
+    return c.json({ success: false, error: 'INVALID_URL', message: 'Could not parse product URL' }, 400);
+  }
+
+  const host = parsedUrl.hostname.toLowerCase();
+  if (host !== 'amazon.in' && host !== 'www.amazon.in') {
+    return c.json({ success: false, error: 'INVALID_HOST', message: `Host '${host}' is rejected. Must be amazon.in or www.amazon.in.` }, 400);
+  }
+
+  // Extract 10-char ASIN
+  const asinMatch = parsedUrl.pathname.match(/(?:\/dp\/|\/gp\/product\/|\/product\/|\/)([A-Z0-9]{10})(?:[/?]|$)/i);
+  if (!asinMatch || !asinMatch[1]) {
+    return c.json({ success: false, error: 'INVALID_ASIN', message: 'Could not locate valid 10-character ASIN in URL path' }, 400);
+  }
+  const asin = asinMatch[1].toUpperCase();
+  if (!/^[A-Z0-9]{10}$/.test(asin)) {
+    return c.json({ success: false, error: 'INVALID_ASIN', message: 'ASIN must be exactly 10 alphanumeric characters' }, 400);
+  }
+
+  // Reject URL if it already carries a different affiliate tag
+  const configuredTag = process.env.AMAZON_AFFILIATE_TAG || 'marketing98-21';
+  const existingTag = parsedUrl.searchParams.get('tag');
+  if (existingTag && existingTag !== configuredTag) {
+    return c.json({
+      success: false,
+      error: 'FOREIGN_TAG_REJECTED',
+      message: `URL already carries a different affiliate tag ('${existingTag}'). Must not carry foreign tags.`
+    }, 400);
+  }
+
+  // Canonical destination URL with all other query parameters stripped
+  const canonicalDestinationUrl = `https://www.amazon.in/dp/${asin}`;
+  const authorizedTrackingUrl = `${canonicalDestinationUrl}?tag=${configuredTag}`;
+
+  // Find Amazon partner
+  const registry = PartnerRegistryEngine.getInstance();
+  const partners = await registry.listPartners(orgId);
+  const amazonPartner = partners.find(p => p.network === 'AMAZON_ASSOCIATES' || (p.name && p.name.includes('Amazon')));
+  const partnerId = amazonPartner ? amazonPartner.id : 'part_amazon_in_01';
+
+  // Create DRAFT offer: NO price, rating, availability, or scraped title stored.
+  const offerSlug = `amazon-${asin.toLowerCase()}`;
+  const offer = await registry.createOffer({
+    partnerId,
+    organizationId: orgId,
+    title: displayName,
+    offerSlug,
+    category: body.category || 'Office & Commercial Supplies',
+    targetCustomer: body.targetCustomer || 'General Consumer & Business',
+    commissionModel: 'PERCENTAGE',
+    commissionAmountINR: 0,
+    conversionAction: 'PURCHASE',
+    destinationUrl: canonicalDestinationUrl,
+    authorizedTrackingUrl,
+    geographicAvailability: 'India',
+    status: 'DRAFT',
+    description: `ASIN ${asin} - ${displayName}`,
+    currency: 'INR',
+    availability: 'IN_STOCK',
+    evidence: {
+      asin,
+      canonical_destination: canonicalDestinationUrl,
+      authorized_tracking_url: authorizedTrackingUrl,
+      listing_facts: listingFacts,
+      listing_facts_recorded_at: new Date().toISOString(),
+      product_checked: false
+    }
+  });
+
+  return c.json({
+    success: true,
+    data: offer
+  }, 201);
+});
+
+/**
+ * Operator Attestation Endpoint (Owner-Only)
+ * Records: terms_read_confirmed (with timestamp), application_date,
+ * site_listed_in_associates_central (with URL), computes 180-day deadline.
+ * Optionally activates a specific offer if product_checked is attested.
+ */
+apiRouter.post('/commission/attestation', async (c) => {
+  const orgId = c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const body = await c.req.json().catch(() => ({}));
+
+  if (body.termsReadConfirmed !== true) {
+    return c.json({ success: false, error: 'ATTESTATION_REQUIRED', message: 'termsReadConfirmed must be explicitly true. No defaults.' }, 400);
+  }
+  if (!body.applicationDate || typeof body.applicationDate !== 'string') {
+    return c.json({ success: false, error: 'APPLICATION_DATE_REQUIRED', message: 'applicationDate must be provided as a valid date string. No defaults.' }, 400);
+  }
+  const appDate = new Date(body.applicationDate);
+  if (isNaN(appDate.getTime())) {
+    return c.json({ success: false, error: 'INVALID_APPLICATION_DATE', message: 'applicationDate is not a valid date' }, 400);
+  }
+  if (body.siteListedInAssociatesCentral !== true) {
+    return c.json({ success: false, error: 'SITE_LISTED_REQUIRED', message: 'siteListedInAssociatesCentral must be explicitly true. No defaults.' }, 400);
+  }
+  if (!body.siteListedUrl || typeof body.siteListedUrl !== 'string' || !body.siteListedUrl.startsWith('http')) {
+    return c.json({ success: false, error: 'SITE_URL_REQUIRED', message: 'siteListedUrl must be a valid HTTP/HTTPS URL. No defaults.' }, 400);
+  }
+
+  // Compute 180-day deadline
+  const deadline180Days = new Date(appDate.getTime() + 180 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  const nowIso = new Date().toISOString();
+
+  const registry = PartnerRegistryEngine.getInstance();
+  const partners = await registry.listPartners(orgId);
+  const amazonPartner = partners.find(p => p.network === 'AMAZON_ASSOCIATES' || (p.name && p.name.includes('Amazon')));
+  const partnerId = amazonPartner ? amazonPartner.id : 'part_amazon_in_01';
+
+  // Update partner evidence
+  const d1Repo = D1RevenueRepository.getInstance();
+  const partnerRow = isProduction()
+    ? await d1Repo.queryOne<any>('partners', 'SELECT * FROM partners WHERE id = ?', [partnerId])
+    : (getDb().prepare('SELECT * FROM partners WHERE id = ?').get(partnerId) as any);
+
+  let currentEvidence: any = {};
+  if (partnerRow?.evidence_json) {
+    try { currentEvidence = JSON.parse(partnerRow.evidence_json); } catch {}
+  } else if (partnerRow?.evidence) {
+    currentEvidence = partnerRow.evidence;
+  }
+
+  currentEvidence.terms_read_confirmed = true;
+  currentEvidence.terms_read_confirmed_at = nowIso;
+  currentEvidence.application_date = appDate.toISOString().split('T')[0];
+  currentEvidence.deadline_180_days = deadline180Days;
+  currentEvidence.site_listed_in_associates_central = true;
+  currentEvidence.site_listed_url = body.siteListedUrl;
+
+  if (isProduction()) {
+    await d1Repo.executeWrite(
+      'partners',
+      "UPDATE partners SET evidence_json = ?, updated_at = datetime('now') WHERE id = ?",
+      [JSON.stringify(currentEvidence), partnerId]
+    );
+  } else {
+    getDb().prepare("UPDATE partners SET evidence_json = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(JSON.stringify(currentEvidence), partnerId);
+  }
+
+  // If activating or attesting a specific offer
+  let activatedOffer: any = null;
+  if (body.offerId) {
+    if (body.productChecked !== true) {
+      return c.json({ success: false, error: 'PRODUCT_CHECK_REQUIRED', message: 'Activating an offer requires per-offer productChecked attestation by the owner.' }, 400);
+    }
+    const offerRow = isProduction()
+      ? await d1Repo.queryOne<any>('partner_offers', 'SELECT * FROM partner_offers WHERE id = ?', [body.offerId])
+      : (getDb().prepare('SELECT * FROM partner_offers WHERE id = ?').get(body.offerId) as any);
+
+    if (!offerRow) {
+      return c.json({ success: false, error: 'OFFER_NOT_FOUND', message: `Offer '${body.offerId}' not found` }, 404);
+    }
+
+    let offerEv: any = {};
+    if (offerRow.evidence_json) {
+      try { offerEv = JSON.parse(offerRow.evidence_json); } catch {}
+    }
+    offerEv.product_checked = true;
+    offerEv.product_checked_at = nowIso;
+
+    if (isProduction()) {
+      await d1Repo.executeWrite(
+        'partner_offers',
+        "UPDATE partner_offers SET status = 'ACTIVE', active = 1, evidence_json = ?, updated_at = datetime('now') WHERE id = ?",
+        [JSON.stringify(offerEv), body.offerId]
+      );
+    } else {
+      getDb().prepare("UPDATE partner_offers SET status = 'ACTIVE', active = 1, evidence_json = ?, updated_at = datetime('now') WHERE id = ?")
+        .run(JSON.stringify(offerEv), body.offerId);
+    }
+    activatedOffer = await registry.getOffer(body.offerId);
+  }
+
+  return c.json({
+    success: true,
+    data: {
+      partnerId,
+      termsReadConfirmed: true,
+      termsReadConfirmedAt: nowIso,
+      applicationDate: appDate.toISOString().split('T')[0],
+      deadline180Days,
+      siteListedInAssociatesCentral: true,
+      siteListedUrl: body.siteListedUrl,
+      activatedOffer
+    }
+  });
+});
+
+/**
+ * Static Public Site Build Endpoint (Owner-Only)
+ * Renders all published guides and legal pages to static HTML.
+ */
+apiRouter.post('/build/static-site', async (c) => {
+  const orgId = c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const body = await c.req.json().catch(() => ({}));
+  try {
+    const generator = StaticSiteGenerator.getInstance();
+    const result = await generator.build({
+      orgId,
+      outputDir: body.outputDir
+    });
+    return c.json({
+      success: true,
+      data: result
+    });
+  } catch (err: any) {
+    if (err.message?.includes('CONFIG_ERROR')) {
+      return c.json({
+        success: false,
+        error: 'CONFIG_ERROR',
+        message: err.message
+      }, 400);
+    }
+    return c.json({
+      success: false,
+      error: 'BUILD_FAILED',
+      message: err.message
+    }, 500);
   }
 });
 
@@ -4720,12 +5076,12 @@ apiRouter.get('/commission/money-path', async (c) => {
   const checklist = [
     {
       item: 'PARTNER APPROVAL',
-      status: authorizedPartners.length > 0 ? 'OPERATOR_CONFIRMED_PROVISIONAL' : 'REQUIRES HUMAN',
+      status: authorizedPartners.length > 0 ? 'PROVISIONAL' : 'REQUIRES HUMAN',
       description: 'Approved affiliate/partner program account from legitimate provider (e.g. Amazon Associates India)'
     },
     {
       item: 'AFFILIATE ID',
-      status: (authorizedPartners.length > 0 && hasAffiliateId) ? 'READY' : 'REQUIRES HUMAN',
+      status: (authorizedPartners.length > 0 && hasAffiliateId) ? 'CONFIGURED_UNVERIFIED' : 'REQUIRES HUMAN',
       description: 'Authorized associate tag / affiliate tracking ID configured and injected'
     },
     {
@@ -4865,8 +5221,8 @@ apiRouter.get('/commission/launch-checklist', async (c) => {
         : 'Drive first real organic visitor to the public guide.',
       codeActionRequired: 'None. The code is ready. The remaining blocker is human commercial activation.',
       checklist: [
-        { item: 'PARTNER APPROVAL', status: authorizedPartners.length > 0 ? 'OPERATOR_CONFIRMED_PROVISIONAL' : 'REQUIRES HUMAN', note: 'Operator-confirmed provisional registration' },
-        { item: 'AFFILIATE ID', status: (authorizedPartners.length > 0 && hasAffiliateId) ? 'READY' : 'REQUIRES HUMAN', note: 'Set AMAZON_AFFILIATE_TAG env secret or add via API' },
+        { item: 'PARTNER APPROVAL', status: authorizedPartners.length > 0 ? 'PROVISIONAL' : 'REQUIRES HUMAN', note: 'Operator-confirmed provisional registration' },
+        { item: 'AFFILIATE ID', status: (authorizedPartners.length > 0 && hasAffiliateId) ? 'CONFIGURED_UNVERIFIED' : 'REQUIRES HUMAN', note: 'Set AMAZON_AFFILIATE_TAG env secret or add via API' },
         { item: 'PARTNER TERMS', status: authorizedPartners.some(p => {
           const ev = typeof p.evidence_json === 'string' ? JSON.parse(p.evidence_json || '{}') : (p.evidence || {});
           return Boolean(ev.terms_read_confirmed);

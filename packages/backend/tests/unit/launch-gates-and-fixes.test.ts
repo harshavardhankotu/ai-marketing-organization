@@ -68,7 +68,7 @@ describe('Launch Gates and Fixes Verification Test Suite', () => {
 
       const approvalItem = checklist.find((i: any) => i.item === 'PARTNER APPROVAL');
       expect(approvalItem).toBeDefined();
-      expect(approvalItem.status).toBe('OPERATOR_CONFIRMED_PROVISIONAL');
+      expect(approvalItem.status).toBe('PROVISIONAL');
 
       const termsItem = checklist.find((i: any) => i.item === 'PARTNER TERMS');
       expect(termsItem).toBeDefined();
@@ -390,10 +390,10 @@ describe('Launch Gates and Fixes Verification Test Suite', () => {
         approvalStatus: 'APPROVED',
         authorizationStatus: 'AUTHORIZED',
         network: 'OTHER_AUTHORIZED_PARTNER',
-        evidence: {
-          webhookSecret: 'secret_partner_authenticated_2026'
-        }
+        evidence: {}
       });
+
+      process.env[`PARTNER_WEBHOOK_SECRET_${partner.id.toUpperCase()}`] = 'secret_partner_authenticated_2026';
 
       const forgedPayload = JSON.stringify({
         transaction_id: 'tx_forged_9999',
@@ -428,7 +428,7 @@ describe('Launch Gates and Fixes Verification Test Suite', () => {
       expect(revCount).toBe(0);
     });
 
-    it('rejects conversion webhook ingestion for AMAZON_ASSOCIATES (400)', async () => {
+    it('rejects conversion webhook ingestion for AMAZON_ASSOCIATES (404)', async () => {
       const registry = PartnerRegistryEngine.getInstance();
       const amazonPartner = await registry.createPartner({
         organizationId: orgId,
@@ -454,10 +454,9 @@ describe('Launch Gates and Fixes Verification Test Suite', () => {
         body: payload
       });
 
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(404);
       const json = await res.json();
-      expect(json.error).toBe('WEBHOOK_NOT_SUPPORTED');
-      expect(json.message).toContain('Amazon Associates does not support conversion webhooks');
+      expect(json.error).toBe('NOT_FOUND');
     });
   });
 

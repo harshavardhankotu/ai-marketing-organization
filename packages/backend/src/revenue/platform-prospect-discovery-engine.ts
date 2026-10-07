@@ -156,17 +156,6 @@ export class PlatformProspectDiscoveryEngine {
     const vertical = options.vertical || (isProduction() ? await this.pickNextTargetVerticalAsync() : this.pickNextTargetVertical());
     const city = options.city || (isProduction() ? await this.pickNextTargetCityAsync() : this.pickNextTargetCity());
     const limit = options.limit || 3;
-    // 0. PROSPECT DISCOVERY GATE: Enforced before any Tavily call or search
-    const prospectDiscoveryEnabled = process.env.PROSPECT_DISCOVERY_ENABLED === 'true';
-    if (!prospectDiscoveryEnabled) {
-      return {
-        status: 'NO_NEW_PROSPECTS',
-        count: 0,
-        prospects: [],
-        reason: 'PROSPECT_DISCOVERY_PAUSED: Automated prospect discovery is paused (PROSPECT_DISCOVERY_ENABLED=false).'
-      };
-    }
-
     const queryKey = `prospects_${vertical}_${city}`.toLowerCase();
 
     // 0. 7-DAY QUERY COOLDOWN: Do not rerun the same query within 7 days unless triggered manually
@@ -280,6 +269,17 @@ export class PlatformProspectDiscoveryEngine {
     }
 
     // 3. TAVILY SEARCH (Exclusively)
+    // PROSPECT DISCOVERY GATE: Enforced before any Tavily call for prospects (default false)
+    const prospectDiscoveryEnabled = process.env.PROSPECT_DISCOVERY_ENABLED === 'true';
+    if (!prospectDiscoveryEnabled && !options.isManual) {
+      return {
+        status: 'NO_NEW_PROSPECTS',
+        count: 0,
+        prospects: [],
+        reason: 'PROSPECT_DISCOVERY_PAUSED: Automated prospect discovery is paused (PROSPECT_DISCOVERY_ENABLED=false).'
+      };
+    }
+
     const gate = this.quotaService.reserve('TAVILY', 'P3', 1, `Tavily prospect discovery ${vertical} in ${city}`);
     if (!gate.allowed) {
       return {

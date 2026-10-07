@@ -47,6 +47,14 @@ app.use('*', cors({
       return requestOrigin;
     }
 
+    // 2b. Exact Firebase Hosting site origins for static site beacons
+    if (
+      requestOrigin === 'https://ai-marketing-platform-core.web.app' ||
+      requestOrigin === 'https://ai-marketing-platform-core.firebaseapp.com'
+    ) {
+      return requestOrigin;
+    }
+
     // 3. Local development origins strictly allowed only in non-production
     if (process.env.NODE_ENV !== 'production') {
       try {
@@ -203,10 +211,21 @@ if (distDir) {
   // Serve compiled frontend assets
   app.use('/assets/*', serveStatic({ root: relRoot }));
 
-  // SPA fallback for all non-API web traffic
+  // SPA and static pre-rendered file fallback for all non-API web traffic
   app.get('*', (c, next) => {
     if (c.req.path.startsWith('/api')) {
       return next();
+    }
+    const cleanPath = c.req.path.replace(/^\//, '').replace(/\/$/, '');
+    if (cleanPath) {
+      const directStaticHtml = path.join(distDir, cleanPath, 'index.html');
+      if (fs.existsSync(directStaticHtml)) {
+        return c.html(fs.readFileSync(directStaticHtml, 'utf-8'));
+      }
+      const directFile = path.join(distDir, `${cleanPath}.html`);
+      if (fs.existsSync(directFile)) {
+        return c.html(fs.readFileSync(directFile, 'utf-8'));
+      }
     }
     if (indexHtml) {
       return c.html(indexHtml);
@@ -293,4 +312,5 @@ if (process.env.NODE_ENV !== 'test') {
   });
 }
 
+export { app };
 export default app;
