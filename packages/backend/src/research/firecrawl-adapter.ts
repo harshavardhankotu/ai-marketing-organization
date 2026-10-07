@@ -11,30 +11,116 @@ export interface FirecrawlScrapeResult {
   creditsConsumed: number;
 }
 
+export interface ManufacturerHostRecord {
+  host: string;
+  reason: string;
+  status: 'OWNER_APPROVAL_REQUIRED' | 'APPROVED';
+  approved: boolean;
+}
+
 export class FirecrawlAdapter {
   private static instance: FirecrawlAdapter;
   private d1Repo = D1RevenueRepository.getInstance();
 
-  public static readonly APPLICATION_LIMIT = 300; // 30% of 1,000 monthly free credits
-  public static readonly MONTHLY_FREE_ALLOWANCE = 1000;
+  public static readonly APPLICATION_LIMIT = 'UNKNOWN_OWNER_TO_CHECK';
+  public static readonly MONTHLY_FREE_ALLOWANCE = 'UNKNOWN_OWNER_TO_CHECK';
 
-  public static readonly APPROVED_MANUFACTURER_HOSTS = new Set([
-    'phomemo.com',
-    'www.phomemo.com',
-    'everycom.in',
-    'www.everycom.in',
-    'tvs-e.in',
-    'www.tvs-e.in',
-    'tvs-electronics.com',
-    'www.tvs-electronics.com',
-    'zebra.com',
-    'www.zebra.com',
-    'epson.co.in',
-    'www.epson.co.in',
-    'epson.com',
-    'brother.in',
-    'www.brother.in'
-  ]);
+  /**
+   * Candidate manufacturer hosts.
+   * Every host is OWNER_APPROVAL_REQUIRED by default and blocked from fetching until approved by owner.
+   */
+  public static readonly OWNER_APPROVED_HOSTS: Record<string, ManufacturerHostRecord> = {
+    'phomemo.com': {
+      host: 'phomemo.com',
+      reason: 'Direct manufacturer of thermal shipping label printers (PM-241BT, PM-246S) with official specification sheets.',
+      status: 'OWNER_APPROVAL_REQUIRED',
+      approved: false
+    },
+    'www.phomemo.com': {
+      host: 'www.phomemo.com',
+      reason: 'Alternate www subdomain for Phomemo official manufacturer site.',
+      status: 'OWNER_APPROVAL_REQUIRED',
+      approved: false
+    },
+    'everycom.in': {
+      host: 'everycom.in',
+      reason: 'Indian manufacturer and importer of thermal barcode and receipt printers (BS-400) for e-commerce dispatch.',
+      status: 'OWNER_APPROVAL_REQUIRED',
+      approved: false
+    },
+    'www.everycom.in': {
+      host: 'www.everycom.in',
+      reason: 'Alternate www subdomain for Everycom India.',
+      status: 'OWNER_APPROVAL_REQUIRED',
+      approved: false
+    },
+    'tvs-e.in': {
+      host: 'tvs-e.in',
+      reason: 'TVS Electronics India — domestic manufacturer of commercial thermal barcode and POS printers (LP 46 Neo).',
+      status: 'OWNER_APPROVAL_REQUIRED',
+      approved: false
+    },
+    'www.tvs-e.in': {
+      host: 'www.tvs-e.in',
+      reason: 'Alternate www subdomain for TVS Electronics India.',
+      status: 'OWNER_APPROVAL_REQUIRED',
+      approved: false
+    },
+    'tvs-electronics.com': {
+      host: 'tvs-electronics.com',
+      reason: 'Corporate domain for TVS Electronics commercial printing hardware.',
+      status: 'OWNER_APPROVAL_REQUIRED',
+      approved: false
+    },
+    'www.tvs-electronics.com': {
+      host: 'www.tvs-electronics.com',
+      reason: 'Alternate www subdomain for TVS Electronics.',
+      status: 'OWNER_APPROVAL_REQUIRED',
+      approved: false
+    },
+    'zebra.com': {
+      host: 'zebra.com',
+      reason: 'Global industrial manufacturer of commercial barcode and RFID logistics printers (ZD220, ZD421).',
+      status: 'OWNER_APPROVAL_REQUIRED',
+      approved: false
+    },
+    'www.zebra.com': {
+      host: 'www.zebra.com',
+      reason: 'Alternate www subdomain for Zebra Technologies.',
+      status: 'OWNER_APPROVAL_REQUIRED',
+      approved: false
+    },
+    'epson.co.in': {
+      host: 'epson.co.in',
+      reason: 'Epson India official manufacturer portal for thermal receipt and commercial POS label printers.',
+      status: 'OWNER_APPROVAL_REQUIRED',
+      approved: false
+    },
+    'www.epson.co.in': {
+      host: 'www.epson.co.in',
+      reason: 'Alternate www subdomain for Epson India.',
+      status: 'OWNER_APPROVAL_REQUIRED',
+      approved: false
+    },
+    'epson.com': {
+      host: 'epson.com',
+      reason: 'Global manufacturer portal for Epson thermal printing hardware.',
+      status: 'OWNER_APPROVAL_REQUIRED',
+      approved: false
+    },
+    'brother.in': {
+      host: 'brother.in',
+      reason: 'Brother India official manufacturer of commercial desktop label and barcode printers (QL/TD series).',
+      status: 'OWNER_APPROVAL_REQUIRED',
+      approved: false
+    },
+    'www.brother.in': {
+      host: 'www.brother.in',
+      reason: 'Alternate www subdomain for Brother India.',
+      status: 'OWNER_APPROVAL_REQUIRED',
+      approved: false
+    }
+  };
 
   private constructor() {
     this.ensureCacheTable();
@@ -49,6 +135,14 @@ export class FirecrawlAdapter {
 
   public static resetInstanceForTesting(): void {
     FirecrawlAdapter.instance = undefined as any;
+  }
+
+  public static approveHostByOwner(host: string): void {
+    const key = (host || '').toLowerCase().trim();
+    if (FirecrawlAdapter.OWNER_APPROVED_HOSTS[key]) {
+      FirecrawlAdapter.OWNER_APPROVED_HOSTS[key].status = 'APPROVED';
+      FirecrawlAdapter.OWNER_APPROVED_HOSTS[key].approved = true;
+    }
   }
 
   private ensureCacheTable(): void {
@@ -82,20 +176,20 @@ export class FirecrawlAdapter {
   }
 
   /**
-   * Validates if a host is on the approved manufacturer source allowlist.
+   * Validates if a host is on the owner-approved manufacturer source list.
    */
   public isApprovedHost(hostname: string): boolean {
     const host = (hostname || '').toLowerCase().trim();
-    return FirecrawlAdapter.APPROVED_MANUFACTURER_HOSTS.has(host);
+    return Boolean(FirecrawlAdapter.OWNER_APPROVED_HOSTS[host]?.approved);
   }
 
   /**
    * Scrapes a manufacturer specification page.
    * Rules:
    * 1. Blocks every amazon.* host.
-   * 2. Scrapes only approved manufacturer hosts.
+   * 2. Scrapes only owner-approved manufacturer hosts.
    * 3. Uses 30-day cache (second fetch consumes 0 credits).
-   * 4. Logs to provider_call_logs with query=null, url=targetUrl.
+   * 4. Logs credits actually returned by API; otherwise marks UNMEASURED.
    */
   public async scrapeManufacturerSpec(
     targetUrl: string,
@@ -120,9 +214,9 @@ export class FirecrawlAdapter {
       throw new Error('SECURITY_ERROR: Firecrawl is strictly forbidden from scraping any amazon.* domain. Direct or redirected Amazon fetching is prohibited.');
     }
 
-    // RULE 2: Only fetch hosts on the approved manufacturer source list
+    // RULE 2: Only fetch hosts approved by the owner
     if (!this.isApprovedHost(host)) {
-      throw new Error(`SECURITY_ERROR: Host '${host}' is not in the approved manufacturer source allowlist. Only official manufacturer domains are allowed.`);
+      throw new Error(`SECURITY_ERROR: Host '${host}' has status OWNER_APPROVAL_REQUIRED and is not approved by owner. Nothing is fetched until approved.`);
     }
 
     // RULE 3: 30-day Cache Check
@@ -184,15 +278,20 @@ export class FirecrawlAdapter {
     // Cache scraped markdown for 30 days
     await this.cacheSpec(rawUrl, markdown, title);
 
-    // Record 1 call in provider_call_logs with query and url
-    await this.logCall(rawUrl, 1, options.caller || 'firecrawl-adapter');
+    // Extract credits used from API response if provided
+    const reportedCredits = result.creditsUsed ?? result.data?.creditsUsed ?? result.metadata?.credits;
+    const creditsConsumed = typeof reportedCredits === 'number' ? reportedCredits : 0;
+    const flag = typeof reportedCredits === 'number' ? undefined : 'UNMEASURED';
+
+    // Record call in provider_call_logs
+    await this.logCall(rawUrl, creditsConsumed, options.caller || 'firecrawl-adapter', flag);
 
     return {
       markdown,
       title,
       sourceUrl: rawUrl,
       fromCache: false,
-      creditsConsumed: 1
+      creditsConsumed
     };
   }
 
@@ -232,20 +331,20 @@ export class FirecrawlAdapter {
     } catch {}
   }
 
-  private async logCall(url: string, credits: number, caller: string): Promise<void> {
+  private async logCall(url: string, credits: number, caller: string, flag?: string): Promise<void> {
     const callId = `call_${Date.now()}_${randomUUID().substring(0, 5)}`;
     const sql = `
       INSERT INTO provider_call_logs (
         id, provider, action_type, priority, units, success, is_rate_limit,
-        query, url, duplicate_of, created_at
-      ) VALUES (?, 'FIRECRAWL', 'SPEC_SCRAPE', 'P3', ?, 1, 0, NULL, ?, NULL, datetime('now'));
+        query, url, duplicate_of, flag, created_at
+      ) VALUES (?, 'FIRECRAWL', 'SPEC_SCRAPE', 'P3', ?, 1, 0, NULL, ?, NULL, ?, datetime('now'));
     `;
     if (isProduction()) {
-      await this.d1Repo.executeWrite('provider_call_logs', sql, [callId, credits, url]).catch(() => {});
+      await this.d1Repo.executeWrite('provider_call_logs', sql, [callId, credits, url, flag || null]).catch(() => {});
       return;
     }
     try {
-      getDb().prepare(sql).run(callId, credits, url);
+      getDb().prepare(sql).run(callId, credits, url, flag || null);
     } catch {}
   }
 }

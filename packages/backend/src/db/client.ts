@@ -540,6 +540,7 @@ export function getDb(dbPath?: string): Database.Database {
   try { db.exec(`ALTER TABLE provider_call_logs ADD COLUMN query TEXT`); } catch {}
   try { db.exec(`ALTER TABLE provider_call_logs ADD COLUMN url TEXT`); } catch {}
   try { db.exec(`ALTER TABLE provider_call_logs ADD COLUMN duplicate_of TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE provider_call_logs ADD COLUMN flag TEXT`); } catch {}
   try { db.exec(`ALTER TABLE provider_quota_state ADD COLUMN source TEXT DEFAULT 'SYSTEM'`); } catch {}
   try { db.exec(`ALTER TABLE provider_quota_state ADD COLUMN unlogged_credits INTEGER DEFAULT 0`); } catch {}
   try { db.exec(`ALTER TABLE provider_quota_state ADD COLUMN unlogged_reason TEXT`); } catch {}

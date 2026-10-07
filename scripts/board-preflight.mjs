@@ -1,7 +1,19 @@
 import fs from 'fs';
 import path from 'path';
 
-const cfToken = process.env.CLOUDFLARE_D1_API_TOKEN;
+function getCfToken() {
+  if (process.env.CLOUDFLARE_D1_API_TOKEN) return process.env.CLOUDFLARE_D1_API_TOKEN;
+  if (process.env.CLOUDFLARE_API_TOKEN) return process.env.CLOUDFLARE_API_TOKEN;
+  const envPath = path.resolve('.env.deploy_secrets');
+  if (fs.existsSync(envPath)) {
+    const content = fs.readFileSync(envPath, 'utf8');
+    const match = content.match(/CLOUDFLARE_API_TOKEN=([^\r\n]+)/);
+    if (match) return match[1].trim();
+  }
+  return null;
+}
+
+const cfToken = getCfToken();
 const accountId = process.env.CLOUDFLARE_ACCOUNT_ID || '9b7511ff69e507dd3a00a7266fec11a3';
 const dbId = process.env.CLOUDFLARE_D1_DATABASE_ID || '0563bb85-f6d2-483f-8b0f-0784e3d604c7';
 
@@ -15,20 +27,21 @@ async function fetchOpenMistakes() {
 
   if (cfToken) {
     try {
-    const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/d1/database/${dbId}/query`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${cfToken}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ sql })
-    });
-    const data = await res.json();
-    if (data.success && data.result?.[0]?.results) {
-      return data.result[0].results;
+      const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/d1/database/${dbId}/query`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${cfToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ sql })
+      });
+      const data = await res.json();
+      if (data.success && data.result?.[0]?.results) {
+        return data.result[0].results;
+      }
+    } catch (err) {
+      console.warn('[BOARD:PREFLIGHT] D1 query failed, checking local SQLite:', err.message);
     }
-  } catch (err) {
-    console.warn('[BOARD:PREFLIGHT] D1 query failed, checking local SQLite:', err.message);
   }
 
   try {

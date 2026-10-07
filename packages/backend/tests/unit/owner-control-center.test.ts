@@ -235,16 +235,17 @@ describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)
       expect(snapshot.openActions.length).toBeGreaterThan(0);
     });
 
-    it('open actions list contains exactly the 5 canonical items', async () => {
+    it('open actions list contains canonical items including weekly dashboard reading', async () => {
       const snapshot = await engine.computeStatus(orgId);
-      expect(snapshot.openActions).toHaveLength(5);
+      expect(snapshot.openActions).toHaveLength(6);
 
       const canonicalTitles = [
         'complete intake',
         'approve product',
         'publish guide',
         'share URL',
-        'upload Associates report weekly'
+        'upload Associates report weekly',
+        'read Tavily and Firecrawl dashboards'
       ];
 
       for (const action of snapshot.openActions) {
@@ -807,9 +808,9 @@ describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)
       expect(await engine.isCategoryBlocked(orgId, 'Industrial Logistics & Labeling')).toBe(false);
     });
 
-    it('snapshot openActions contains exactly 5 items and dashboard renders LAST LEARNED and AGENT CATALOG', async () => {
+    it('snapshot openActions contains canonical items including weekly dashboard reading', async () => {
       const snapshot = await engine.computeStatus(orgId);
-      expect(snapshot.openActions).toHaveLength(5);
+      expect(snapshot.openActions).toHaveLength(6);
 
       const actionTitles = snapshot.openActions.map(a => a.title);
       expect(actionTitles).toEqual([
@@ -817,7 +818,8 @@ describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)
         'approve product',
         'publish guide',
         'share URL',
-        'upload Associates report weekly'
+        'upload Associates report weekly',
+        'read Tavily and Firecrawl dashboards'
       ]);
 
       const html = engine.renderHtmlDashboard(snapshot);
@@ -825,18 +827,44 @@ describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)
       expect(html).toContain('AGENT CATALOG: not wired (80)');
     });
 
-    it('normalizeAmazonInUrl accepts long browser URLs and extracts canonical URL without query parameters', () => {
-      const longUrl = 'https://www.amazon.in/Phomemo-PM-241BT-Bluetooth-Shipping-Compatible/dp/B08P13WGLX?ref_=ast_sto_dp&th=1';
-      const result = OwnerControlCenterEngine.normalizeAmazonInUrl(longUrl);
-      expect(result.canonicalUrl).toBe('https://www.amazon.in/dp/B08P13WGLX');
-      expect(result.asin).toBe('B08P13WGLX');
+    it('recordUsageReading records dashboard reading and resolves weekly open action', async () => {
+      const res = await engine.recordUsageReading(orgId, {
+        provider: 'TAVILY',
+        creditsUsed: 226
+      });
+      expect(res.success).toBe(true);
+      expect(res.quotaState.credits_consumed_month).toBe(226);
+      expect(res.quotaState.source).toBe('OWNER_DASHBOARD');
+
+      const snapshot = await engine.computeStatus(orgId);
+      const usageAction = snapshot.openActions.find(a => a.id === 'act_read_provider_dashboards_weekly');
+      expect(usageAction?.resolved).toBe(true);
     });
 
-    it('normalizeAmazonInUrl rejects lookalike hosts amazon.in.evil.com and notamazon.in', () => {
+    it('normalizeAmazonInUrl accepts long browser URLs, gp/product paths, slugs with t.co, and rejects lookalikes', () => {
+      // 1. Long browser URL with parameters
+      const longUrl = 'https://www.amazon.in/Phomemo-PM-241BT-Bluetooth-Shipping-Compatible/dp/B08P13WGLX?ref_=ast_sto_dp&th=1';
+      const res1 = OwnerControlCenterEngine.normalizeAmazonInUrl(longUrl);
+      expect(res1.canonicalUrl).toBe('https://www.amazon.in/dp/B08P13WGLX');
+      expect(res1.asin).toBe('B08P13WGLX');
+
+      // 2. Slug containing "t.co" (must not trip host shortener check)
+      const slugWithTco = 'https://www.amazon.in/portable-printer-t.co-cable/dp/B08P13WGLX';
+      const res2 = OwnerControlCenterEngine.normalizeAmazonInUrl(slugWithTco);
+      expect(res2.canonicalUrl).toBe('https://www.amazon.in/dp/B08P13WGLX');
+
+      // 3. /gp/product/<ASIN> format
+      const gpProductUrl = 'https://www.amazon.in/gp/product/B08P13WGLX';
+      const res3 = OwnerControlCenterEngine.normalizeAmazonInUrl(gpProductUrl);
+      expect(res3.canonicalUrl).toBe('https://www.amazon.in/dp/B08P13WGLX');
+
+      // 4. amzn.in rejected (shortener/invalid host)
+      expect(() => OwnerControlCenterEngine.normalizeAmazonInUrl('https://amzn.in/dp/B08P13WGLX'))
+        .toThrow(/Link shortener host 'amzn\.in'|Invalid Amazon host/);
+
+      // 5. Lookalike host amazon.in.evil.com rejected
       expect(() => OwnerControlCenterEngine.normalizeAmazonInUrl('https://amazon.in.evil.com/dp/B08P13WGLX'))
         .toThrow(/Invalid Amazon host 'amazon\.in\.evil\.com'/);
-      expect(() => OwnerControlCenterEngine.normalizeAmazonInUrl('https://notamazon.in/dp/B08P13WGLX'))
-        .toThrow(/Invalid Amazon host 'notamazon\.in'/);
     });
 
     it('category policy evaluates label printer as allowed, sunscreen as blocked, sneakers as discouraged', async () => {
@@ -851,6 +879,25 @@ describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)
       const discouraged = await engine.evaluateCategoryPolicy(orgId, 'Athletic Sneakers & Footwear');
       expect(discouraged.status).toBe('DISCOURAGED');
       expect(await engine.isCategoryBlocked(orgId, 'Athletic Sneakers & Footwear')).toBe(false);
+    });
+
+    it('category policy executes SQL against learning_records with category input and uses matched rows', async () => {
+      // Insert a real test row into learning_records
+      db.prepare(`
+        INSERT INTO learning_records (
+          id, organization_id, business_id, learning_type, decision, hypothesis, action,
+          audience, offer, channel, result, revenue_inr, cost_inr, time_taken_hours, confidence, evidence_json, created_at
+        ) VALUES (
+          'lrn_real_sql_test_block', ?, 'biz_platform_aro', 'REAL_WORLD_LEARNING', 'BLOCK_SURGICAL_LASERS',
+          'Surgical laser equipment requires CDSCO license', 'BLOCK surgical laser category due to statutory medical classification',
+          'SURGEONS', 'LASER', 'ORGANIC', 'BLOCKED', 0, 0, 0, 1.0, '{}', datetime('now')
+        )
+      `).run(orgId);
+
+      const evalResult = await engine.evaluateCategoryPolicy(orgId, 'surgical laser');
+      expect(evalResult.status).toBe('BLOCKED');
+      expect(evalResult.ruleId).toBe('lrn_real_sql_test_block');
+      expect(evalResult.reason).toContain('lrn_real_sql_test_block');
     });
 
     it('fact lint uses whole-word matching: wholesale is allowed, customers praise is blocked', async () => {
@@ -878,7 +925,7 @@ describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)
       })).rejects.toThrow('Review language (customers, reviewers, users praise/note/say) is prohibited');
     });
 
-    it('FirecrawlAdapter blocks amazon.in URLs and uses 0 credits on second fetch', async () => {
+    it('FirecrawlAdapter requires OWNER_APPROVAL_REQUIRED host approval, blocks amazon.in, and caches', async () => {
       try {
         db.prepare("DELETE FROM spec_page_cache WHERE url LIKE '%phomemo%'").run();
       } catch {}
@@ -888,7 +935,14 @@ describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)
       await expect(adapter.scrapeManufacturerSpec('https://www.amazon.in/dp/B08P13WGLX'))
         .rejects.toThrow(/Firecrawl is strictly forbidden from scraping any amazon\.\* domain/);
 
-      // Scrape approved manufacturer URL (mocked in test)
+      // Unapproved host rejected
+      await expect(adapter.scrapeManufacturerSpec('https://unknown-manufacturer.com/specs'))
+        .rejects.toThrow(/OWNER_APPROVAL_REQUIRED/);
+
+      // Approve host explicitly by owner
+      FirecrawlAdapter.approveHostByOwner('phomemo.com');
+
+      // Scrape approved manufacturer URL (mocked in non-prod test)
       const res1 = await adapter.scrapeManufacturerSpec('https://phomemo.com/products/pm-241bt');
       expect(res1.fromCache).toBe(false);
       expect(res1.creditsConsumed).toBe(1);

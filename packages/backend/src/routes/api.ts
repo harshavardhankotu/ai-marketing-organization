@@ -4844,6 +4844,21 @@ apiRouter.post('/owner/status/compute', async (c) => {
 });
 
 /**
+ * Record provider usage reading from dashboard (Owner-only)
+ */
+apiRouter.post('/owner/usage-reading', async (c) => {
+  const orgId = c.req.header('x-organization-id') || c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const body = await c.req.json().catch(() => ({}));
+  const engine = OwnerControlCenterEngine.getInstance();
+  try {
+    const result = await engine.recordUsageReading(orgId, body);
+    return c.json(result);
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 400);
+  }
+});
+
+/**
  * Get structured empirical learning rules (Owner-only)
  */
 apiRouter.get('/owner/learning-rules', async (c) => {

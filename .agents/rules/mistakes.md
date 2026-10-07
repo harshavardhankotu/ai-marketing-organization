@@ -1,7 +1,7 @@
 # Mistakes Board — Active Rules & Guardrails
 
-> Auto-generated from Cloudflare D1 mistakes_board at 2026-10-07T22:38:48.300Z
-> Total Open Rules: 10
+> Auto-generated from Cloudflare D1 mistakes_board at 2026-10-07T23:05:45.654Z
+> Total Open Rules: 12
 > Antigravity loads this file at session start. Do not delete.
 
 ## Active Guardrails (Sorted by Severity, then Recurrence)
@@ -54,12 +54,28 @@
 - **Cause:** Pipeline advanced from proposal to guide draft without gating on status = APPROVED.
 - **Guard:** NONE
 
-### [P1] Category block query has no category input
-- **ID:** `mst_13_category_block_query_no_input`
-- **Severity:** P1 | **Recurrence:** 1 | **Status:** OPEN
-- **Rule:** **isCategoryBlocked must take product category as argument and execute parameterized SQL against learning_records.**
-- **What Happened:** Reported SQL query for isCategoryBlocked did not accept or match the specific product category parameter.
-- **Cause:** Hardcoded SQL query template used in documentation and engine without binding category parameter.
+### [P2] Cooldown check failed open
+- **ID:** `mst_09_cooldown_failed_open`
+- **Severity:** P2 | **Recurrence:** 2 | **Status:** OPEN
+- **Rule:** **Enforce 7-day query cooldown on all automated discovery queries before dispatching external calls.**
+- **What Happened:** Search queries bypassed 7-day cooldown when cache lookups failed or returned undefined.
+- **Cause:** Missing fail-closed error handling around search cache query.
+- **Guard:** NONE
+
+### [P2] Rate limiter used a proxy IP
+- **ID:** `mst_10_ratelimiter_used_proxy_ip`
+- **Severity:** P2 | **Recurrence:** 2 | **Status:** OPEN
+- **Rule:** **Resolve client IP strictly from cf-connecting-ip or first untampered public proxy segment with HMAC salt.**
+- **What Happened:** Rate limiter used socket address or untrusted x-forwarded-for headers rather than validated Cloudflare connecting IP.
+- **Cause:** Missing header precedence and proxy trust validation in client IP resolution.
+- **Guard:** NONE
+
+### [P2] Discovery loop made duplicate rows
+- **ID:** `mst_11_discovery_loop_duplicate_rows`
+- **Severity:** P2 | **Recurrence:** 2 | **Status:** OPEN
+- **Rule:** **Deduplicate discovery intents and call logs with unique keys and skip duplicate logging.**
+- **What Happened:** Repeated cron ticks generated duplicate prospect and call log entries.
+- **Cause:** Missing unique constraints and deduplication keys on external research requests.
 - **Guard:** NONE
 
 ### [P2] Placeholder text left in prompts

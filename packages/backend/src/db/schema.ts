@@ -2141,6 +2141,7 @@ CREATE TABLE IF NOT EXISTS provider_call_logs (
   query TEXT,
   url TEXT,
   duplicate_of TEXT,
+  flag TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_call_logs_provider_created ON provider_call_logs(provider, created_at);

@@ -747,11 +747,6 @@ export class OwnerControlCenterEngine {
       throw new Error('APPROVAL_ERROR: amazonUrl is required and cannot be empty.');
     }
 
-    // Reject shorteners explicitly
-    if (/link\.amazon|amzn\.to|a\.co|bit\.ly|tinyurl|t\.co/i.test(trimmed)) {
-      throw new Error('APPROVAL_ERROR: Link shorteners (link.amazon, amzn.to, a.co) are strictly prohibited. Provide the full Amazon.in URL.');
-    }
-
     let parsed: URL;
     try {
       parsed = new URL(trimmed);
@@ -764,14 +759,22 @@ export class OwnerControlCenterEngine {
     }
 
     const hostname = parsed.hostname.toLowerCase();
+
+    // 1. Shortener check applied to HOST ONLY
+    const shortenerHosts = ['link.amazon', 'amzn.to', 'a.co', 'bit.ly', 'tinyurl.com', 't.co', 'amzn.in'];
+    if (shortenerHosts.some(s => hostname === s || hostname.startsWith(s) || hostname.includes(s))) {
+      throw new Error(`APPROVAL_ERROR: Link shorteners (link.amazon, amzn.to, a.co) are strictly prohibited. Link shortener host '${hostname}' is rejected.`);
+    }
+
+    // 2. Exact host check: host must be strictly 'amazon.in' or 'www.amazon.in'
     if (hostname !== 'amazon.in' && hostname !== 'www.amazon.in') {
       throw new Error(`APPROVAL_ERROR: Invalid Amazon host '${hostname}'. Host must be strictly 'amazon.in' or 'www.amazon.in'. Lookalike domains are rejected.`);
     }
 
-    // Accept /dp/<ASIN> or /<slug>/dp/<ASIN>
-    const match = parsed.pathname.match(/^(?:\/[^/]+)?\/dp\/([A-Za-z0-9]+)(?:\/|$)/);
+    // 3. Support /dp/<ASIN> and /gp/product/<ASIN> with or without preceding slug
+    const match = parsed.pathname.match(/(?:\/dp\/|\/gp\/product\/)([A-Za-z0-9]+)(?:\/|$)/);
     if (!match) {
-      throw new Error('APPROVAL_ERROR: Amazon URL must contain /dp/<ASIN> or /<slug>/dp/<ASIN>.');
+      throw new Error('APPROVAL_ERROR: Amazon URL must contain /dp/<ASIN> or /gp/product/<ASIN>.');
     }
 
     const rawAsin = match[1];
@@ -802,7 +805,7 @@ export class OwnerControlCenterEngine {
   ): Promise<{ status: 'ALLOWED' | 'BLOCKED' | 'DISCOURAGED'; reason?: string; ruleId?: string }> {
     const cat = (category || '').toLowerCase().trim();
     if (!cat) {
-      return { status: 'BLOCKED', reason: 'Category cannot be empty.' };
+      return { status: 'BLOCKED', reason: 'Category cannot be empty.', ruleId: 'OWNER_POLICY_HARDCODED' };
     }
 
     // Parameterized SQL query taking category as input to match against learning_records
@@ -810,7 +813,6 @@ export class OwnerControlCenterEngine {
       SELECT id, decision, action, result, hypothesis
       FROM learning_records
       WHERE organization_id = ?
-        AND learning_type = 'REAL_WORLD_LEARNING'
         AND (
           lower(action) LIKE '%' || ? || '%'
           OR lower(hypothesis) LIKE '%' || ? || '%'
@@ -818,12 +820,6 @@ export class OwnerControlCenterEngine {
         )
       LIMIT 10;
     `;
-
-    const blockedTerms = ['health', 'skincare', 'sunscreen', 'supplement', 'medical', 'cosmetic', 'pharma', 'drug', 'medicine', 'spf'];
-    const discouragedTerms = ['apparel', 'clothing', 'footwear', 'shoes', 'sneakers', 'garments', 'fashion'];
-
-    const matchedBlocked = blockedTerms.find(term => cat.includes(term));
-    const matchedDiscouraged = discouragedTerms.find(term => cat.includes(term));
 
     let rules: any[] = [];
     if (isProduction()) {
@@ -836,11 +832,38 @@ export class OwnerControlCenterEngine {
       }
     }
 
+    // Really check and use the rows returned by the SQL query
+    for (const r of rules) {
+      const act = (r.action || '').toUpperCase();
+      const dec = (r.decision || '').toUpperCase();
+      if (act.includes('BLOCK') || dec.includes('BLOCK')) {
+        return {
+          status: 'BLOCKED',
+          reason: `Category '${category}' is blocked by learning_records rule '${r.id}': ${r.action}`,
+          ruleId: r.id
+        };
+      }
+      if (act.includes('DISCOURAGE') || dec.includes('DISCOURAGE')) {
+        return {
+          status: 'DISCOURAGED',
+          reason: `Category '${category}' is discouraged by learning_records rule '${r.id}': ${r.action}`,
+          ruleId: r.id
+        };
+      }
+    }
+
+    // Fallback owner policy checks if learning_records table is empty or unseeded
+    const blockedTerms = ['health', 'skincare', 'sunscreen', 'supplement', 'medical', 'cosmetic', 'pharma', 'drug', 'medicine', 'spf'];
+    const discouragedTerms = ['apparel', 'clothing', 'footwear', 'shoes', 'sneakers', 'garments', 'fashion'];
+
+    const matchedBlocked = blockedTerms.find(term => cat.includes(term));
+    const matchedDiscouraged = discouragedTerms.find(term => cat.includes(term));
+
     if (matchedBlocked) {
       return {
         status: 'BLOCKED',
-        reason: `Category '${category}' contains prohibited term '${matchedBlocked}'. Blocked by empirical category safety policy.`,
-        ruleId: 'lrn_block_health_skincare_supplements'
+        reason: `Category '${category}' contains prohibited term '${matchedBlocked}'. Blocked by owner policy.`,
+        ruleId: 'OWNER_POLICY_HARDCODED'
       };
     }
 
@@ -848,11 +871,15 @@ export class OwnerControlCenterEngine {
       return {
         status: 'DISCOURAGED',
         reason: `Category '${category}' contains discouraged term '${matchedDiscouraged}'. High sizing return rate in Indian e-commerce.`,
-        ruleId: 'lrn_discourage_apparel_footwear'
+        ruleId: 'OWNER_POLICY_HARDCODED'
       };
     }
 
-    return { status: 'ALLOWED' };
+    return {
+      status: 'ALLOWED',
+      reason: `Category '${category}' is permitted under objective specification policy.`,
+      ruleId: 'OWNER_POLICY_HARDCODED'
+    };
   }
 
   public async approveProposal(
@@ -1265,6 +1292,48 @@ export class OwnerControlCenterEngine {
     return rows;
   }
 
+  public async recordUsageReading(
+    organizationId: string = 'org_owner_primary',
+    input: { provider: 'TAVILY' | 'GEMINI' | 'FIRECRAWL' | string; creditsUsed: number; readingDate?: string }
+  ): Promise<{ success: boolean; quotaState: any }> {
+    const prov = (input.provider || '').toUpperCase().trim();
+    if (!['TAVILY', 'GEMINI', 'FIRECRAWL'].includes(prov)) {
+      throw new Error(`USAGE_READING_ERROR: Invalid provider '${input.provider}'. Must be TAVILY, GEMINI, or FIRECRAWL.`);
+    }
+    const credits = Number(input.creditsUsed);
+    if (isNaN(credits) || credits < 0) {
+      throw new Error('USAGE_READING_ERROR: creditsUsed must be a non-negative number.');
+    }
+    const readingDate = input.readingDate || new Date().toISOString();
+    const id = prov.toLowerCase();
+
+    const sql = `
+      INSERT INTO provider_quota_state (
+        id, provider, application_limit, credits_consumed_month,
+        source, updated_at
+      ) VALUES (?, ?, ?, ?, 'OWNER_DASHBOARD', ?)
+      ON CONFLICT(id) DO UPDATE SET
+        credits_consumed_month = excluded.credits_consumed_month,
+        source = 'OWNER_DASHBOARD',
+        credits_estimated_remaining = CASE WHEN provider_limit IS NOT NULL THEN provider_limit - excluded.credits_consumed_month ELSE NULL END,
+        updated_at = excluded.updated_at;
+    `;
+    const appLimit = prov === 'TAVILY' ? 700 : (prov === 'GEMINI' ? 50 : 300);
+    const params = [id, prov, appLimit, credits, readingDate];
+
+    if (isProduction()) {
+      await this.d1Repo.executeWrite('provider_quota_state', sql, params);
+    } else {
+      getDb().prepare(sql).run(...params);
+    }
+
+    const quotaRow = isProduction()
+      ? await this.d1Repo.queryOne<any>('provider_quota_state', 'SELECT * FROM provider_quota_state WHERE id = ?', [id])
+      : (getDb().prepare('SELECT * FROM provider_quota_state WHERE id = ?').get(id) as any);
+
+    return { success: true, quotaState: quotaRow };
+  }
+
   // ──────────────────────────────────────────────────────────────────────────
   // B. STATUS PAGE (Owner-only, auto-refresh, hourly computed without LLM)
   // ──────────────────────────────────────────────────────────────────────────
@@ -1420,14 +1489,23 @@ export class OwnerControlCenterEngine {
           }
         })();
 
-    // Dynamic OPEN ACTIONS List — Exactly 5 canonical items (Spec § 9)
-    // 1) complete intake, 2) approve product, 3) publish guide, 4) share URL, 5) upload Associates report weekly
-    // Each appears once, resolves automatically, never repeats.
+    const recentUsageRow = isProduction()
+      ? await this.d1Repo.queryOne<any>('provider_quota_state', "SELECT count(*) as c FROM provider_quota_state WHERE source = 'OWNER_DASHBOARD' AND updated_at >= datetime('now', '-7 days')", [])
+      : (() => {
+          try {
+            return getDb().prepare("SELECT count(*) as c FROM provider_quota_state WHERE source = 'OWNER_DASHBOARD' AND updated_at >= datetime('now', '-7 days')").get() as any;
+          } catch {
+            return { c: 0 };
+          }
+        })();
+
+    // Dynamic OPEN ACTIONS List
     const isIntakeValid = Boolean(intake && intake.status === 'VALID');
     const hasActiveOffer = activeOffers.length > 0;
     const hasPublishedGuide = publishedGuides.length > 0;
     const hasReferralClicks = Boolean(clickCountRow && clickCountRow.c > 0);
     const hasRecentReport = Boolean(recentReportRow && recentReportRow.c > 0);
+    const hasRecentUsage = Boolean(recentUsageRow && recentUsageRow.c > 0);
 
     const openActions: OpenActionItem[] = [
       {
@@ -1469,6 +1547,14 @@ export class OwnerControlCenterEngine {
         description: 'Export and upload Associates Central earnings report (CSV/TSV/JSON) weekly to reconcile pending and verified commissions.',
         resolutionCondition: 'Verified Associates report ingested within past 7 days',
         resolved: hasRecentReport
+      },
+      {
+        id: 'act_read_provider_dashboards_weekly',
+        type: 'HUMAN',
+        title: 'read Tavily and Firecrawl dashboards',
+        description: 'Read Tavily and Firecrawl provider dashboards weekly and record readings via POST /api/v1/owner/usage-reading.',
+        resolutionCondition: 'Usage reading recorded within past 7 days',
+        resolved: hasRecentUsage
       }
     ];
 
