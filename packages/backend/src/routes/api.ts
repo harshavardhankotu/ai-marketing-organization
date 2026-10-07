@@ -74,6 +74,7 @@ import { CommissionLedgerEngine } from '../commission/commission-ledger.js';
 import { DemandDiscoveryEngine } from '../commission/demand-discovery.js';
 import { DirectPaymentProviderAdapter } from '../commission/direct-payment-adapter.js';
 import { StaticSiteGenerator } from '../commission/static-site-generator.js';
+import { OwnerControlCenterEngine } from '../commission/owner-control-center.js';
 import { getTrustedClientIp, hashClientIp } from '../security/client-ip.js';
 import { DurableRateLimiter } from '../security/durable-rate-limiter.js';
 
@@ -269,7 +270,8 @@ apiRouter.use('*', async (c, next) => {
       path.startsWith('/commission/launch-checklist') ||
       path === '/commission/offers/asin' ||
       path === '/commission/attestation' ||
-      path === '/build/static-site'
+      path === '/build/static-site' ||
+      path.startsWith('/owner')
     )) {
       return c.json({
         success: false,
@@ -4679,6 +4681,242 @@ apiRouter.post('/build/static-site', async (c) => {
       error: 'BUILD_FAILED',
       message: err.message
     }, 500);
+  }
+});
+
+// ============================================================================
+// OWNER CONTROL CENTER (Spec: Single-owner system, zero LLM tokens in A-D)
+// ============================================================================
+
+/**
+ * Owner Intake Status & HTML Form (Owner-only, one-time setup)
+ */
+apiRouter.get('/owner/intake', async (c) => {
+  const orgId = c.req.header('x-organization-id') || c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const engine = OwnerControlCenterEngine.getInstance();
+  const intake = await engine.getIntake(orgId);
+
+  const accept = c.req.header('Accept') || '';
+  if (accept.includes('text/html') || c.req.query('format') === 'html') {
+    return c.html(engine.renderHtmlIntakeForm(intake));
+  }
+
+  return c.json({
+    success: true,
+    completed: Boolean(intake),
+    data: intake
+  });
+});
+
+/**
+ * Owner Intake Submission (Owner-only, one-time, never asked twice, zero defaults)
+ */
+apiRouter.post('/owner/intake', async (c) => {
+  const orgId = c.req.header('x-organization-id') || c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const engine = OwnerControlCenterEngine.getInstance();
+
+  let body: any = {};
+  const contentType = c.req.header('content-type') || '';
+  if (contentType.includes('application/json')) {
+    body = await c.req.json().catch(() => ({}));
+  } else if (contentType.includes('application/x-www-form-urlencoded') || contentType.includes('multipart/form-data')) {
+    const form = await c.req.parseBody().catch(() => ({})) as Record<string, any>;
+    let siteUrls: string[] = [];
+    if (typeof form.listedSiteUrls === 'string') {
+      siteUrls = (form.listedSiteUrls as string).split(/[\r\n,]+/).map((s: string) => s.trim()).filter(Boolean);
+    } else if (Array.isArray(form.listedSiteUrls)) {
+      siteUrls = form.listedSiteUrls.map(String);
+    }
+    body = {
+      applicationDate: form.applicationDate,
+      siteName: form.siteName,
+      authorName: form.authorName,
+      contactEmail: form.contactEmail,
+      listedSiteUrls: siteUrls,
+      agreementReadConfirmed: form.agreementReadConfirmed === 'true' || form.agreementReadConfirmed === true || form.agreementReadConfirmed === 'on',
+      tavilyKeyRotated: form.tavilyKeyRotated === 'true' || form.tavilyKeyRotated === true || form.tavilyKeyRotated === 'on'
+    };
+  } else {
+    body = await c.req.json().catch(() => ({}));
+  }
+
+  try {
+    const record = await engine.saveIntake(orgId, body);
+    const accept = c.req.header('Accept') || '';
+    if (accept.includes('text/html')) {
+      return c.html(engine.renderHtmlIntakeForm(record));
+    }
+    return c.json({
+      success: true,
+      data: record
+    });
+  } catch (err: any) {
+    return c.json({
+      success: false,
+      error: 'INTAKE_FAILED',
+      message: err.message
+    }, 400);
+  }
+});
+
+/**
+ * Owner Status Dashboard (Owner-only, auto-refresh, hourly computed without LLM)
+ */
+apiRouter.get('/owner/status', async (c) => {
+  const orgId = c.req.header('x-organization-id') || c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const engine = OwnerControlCenterEngine.getInstance();
+  const snapshot = await engine.computeStatus(orgId);
+
+  const accept = c.req.header('Accept') || '';
+  if (accept.includes('text/html') || c.req.query('format') === 'html') {
+    return c.html(engine.renderHtmlDashboard(snapshot));
+  }
+
+  return c.json({
+    success: true,
+    data: snapshot
+  });
+});
+
+/**
+ * Compute and persist owner status snapshot (Owner-only, zero LLM calls)
+ */
+apiRouter.post('/owner/status/compute', async (c) => {
+  const orgId = c.req.header('x-organization-id') || c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const engine = OwnerControlCenterEngine.getInstance();
+  const snapshot = await engine.computeAndPersistStatus(orgId);
+  return c.json({
+    success: true,
+    data: snapshot
+  });
+});
+
+/**
+ * Get structured empirical learning rules (Owner-only)
+ */
+apiRouter.get('/owner/learning-rules', async (c) => {
+  const orgId = c.req.header('x-organization-id') || c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const engine = OwnerControlCenterEngine.getInstance();
+  const rules = await engine.getStructuredLearningRules(orgId);
+  return c.json({
+    success: true,
+    data: rules
+  });
+});
+
+/**
+ * Ingest initial structured learning rules (Owner-only)
+ */
+apiRouter.post('/owner/learning-rules/ingest', async (c) => {
+  const orgId = c.req.header('x-organization-id') || c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const engine = OwnerControlCenterEngine.getInstance();
+  const rules = await engine.ingestInitialLearningRules(orgId);
+  return c.json({
+    success: true,
+    data: rules
+  });
+});
+
+/**
+ * Get candidate product proposals (Owner-only)
+ */
+apiRouter.get('/owner/product-proposals', async (c) => {
+  const orgId = c.req.header('x-organization-id') || c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const engine = OwnerControlCenterEngine.getInstance();
+  const proposals = await engine.getProposals(orgId);
+  return c.json({
+    success: true,
+    data: proposals
+  });
+});
+
+/**
+ * Discover product proposals from manufacturer spec pages (Owner-only, zero LLM tokens, zero Amazon fetches)
+ */
+apiRouter.post('/owner/product-proposals/discover', async (c) => {
+  const orgId = c.req.header('x-organization-id') || c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const body = await c.req.json().catch(() => ({}));
+  const engine = OwnerControlCenterEngine.getInstance();
+  const proposals = await engine.discoverProductProposals(orgId, body.category);
+  return c.json({
+    success: true,
+    data: proposals
+  });
+});
+
+/**
+ * Approve product proposal with Amazon URL and product_checked attestation (Owner-only)
+ */
+apiRouter.post('/owner/product-proposals/:id/approve', async (c) => {
+  const orgId = c.req.header('x-organization-id') || c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const proposalId = c.req.param('id');
+  const body = await c.req.json().catch(() => ({}));
+  const engine = OwnerControlCenterEngine.getInstance();
+  try {
+    const result = await engine.approveProposal(orgId, proposalId, {
+      amazonUrl: body.amazonUrl,
+      productChecked: body.productChecked === true || body.productChecked === 'true'
+    });
+    return c.json({
+      success: true,
+      data: result
+    });
+  } catch (err: any) {
+    return c.json({
+      success: false,
+      error: 'APPROVAL_FAILED',
+      message: err.message
+    }, 400);
+  }
+});
+
+/**
+ * Ingest Associates earnings and orders export (Owner-only)
+ */
+apiRouter.post('/owner/reports/associates-export', async (c) => {
+  const orgId = c.req.header('x-organization-id') || c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const engine = OwnerControlCenterEngine.getInstance();
+  let content = '';
+  let filename = 'associates_export.csv';
+
+  const contentType = c.req.header('content-type') || '';
+  if (contentType.includes('multipart/form-data')) {
+    const form = await c.req.parseBody().catch(() => ({})) as Record<string, any>;
+    if (form.file && typeof form.file === 'object' && 'text' in (form.file as any)) {
+      content = await (form.file as any).text();
+      filename = (form.file as any).name || filename;
+    } else if (typeof form.content === 'string') {
+      content = form.content;
+      if (typeof form.filename === 'string') filename = form.filename;
+    }
+  } else if (contentType.includes('text/csv') || contentType.includes('text/plain') || contentType.includes('text/tab-separated-values')) {
+    content = await c.req.text().catch(() => '');
+  } else {
+    const body = await c.req.json().catch(() => ({}));
+    content = body.content || body.reportContent || (typeof body === 'string' ? body : '');
+    if (body.filename) filename = body.filename;
+  }
+
+  if (!content || !content.trim()) {
+    return c.json({
+      success: false,
+      error: 'EMPTY_REPORT',
+      message: 'No report content provided in request'
+    }, 400);
+  }
+
+  try {
+    const result = await engine.ingestAssociatesReport(orgId, content, filename);
+    return c.json({
+      success: true,
+      data: result
+    });
+  } catch (err: any) {
+    return c.json({
+      success: false,
+      error: 'INGEST_FAILED',
+      message: err.message
+    }, 400);
   }
 });
 

@@ -100,6 +100,22 @@ export class DemandDiscoveryEngine {
       } catch {}
     }
 
+    // SQL lookup: Structured empirical learning rules from learning_records before external search (Spec Part C)
+    try {
+      const activeRules = await this.d1Repo.query<any>(
+        'learning_records',
+        "SELECT decision as what, action as rule FROM learning_records WHERE learning_type = 'REAL_WORLD_LEARNING'",
+        []
+      );
+      if (activeRules && activeRules.length > 0) {
+        // Enforce fixture loop cooldown rule if query was executed recently
+        const loopRule = activeRules.find((r: any) => r.what === 'FIXTURE_LOOP_DUPLICATES');
+        if (loopRule && cached) {
+          this.lastSource = 'CACHE_HIT';
+        }
+      }
+    } catch {}
+
     const tavilyKey = process.env.TAVILY_API_KEY;
     if (!tavilyKey || tavilyKey.includes('placeholder')) {
       // Return deterministic factual signals when Tavily key absent

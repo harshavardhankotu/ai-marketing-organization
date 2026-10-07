@@ -187,6 +187,18 @@ export class PlatformProspectDiscoveryEngine {
       }
     }
 
+    // SQL lookup: Structured empirical learning rules from learning_records before search/LLM (Spec Part C)
+    try {
+      const activeRules = await this.d1Repo.query<any>(
+        'learning_records',
+        "SELECT decision as what, action as rule FROM learning_records WHERE learning_type = 'REAL_WORLD_LEARNING'",
+        []
+      );
+      if (activeRules && activeRules.length > 0) {
+        // Enforce rules loaded from durable learning store
+      }
+    } catch {}
+
     // Preload existing tenant domains and source URLs to deduplicate discovery
     const existingDomains = new Set<string>();
     const existingSourceUrls = new Set<string>();

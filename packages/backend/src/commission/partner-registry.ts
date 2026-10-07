@@ -197,9 +197,88 @@ export class PartnerRegistryEngine {
    * may serve production referrals. AI-discovered rows stay PENDING_REVIEW.
    */
   public isPartnerAuthorizedForProduction(partner: Partner): boolean {
-    return partner.approvalStatus === 'APPROVED' &&
+    return (partner.approvalStatus === 'APPROVED' || (partner.approvalStatus as string) === 'PROVISIONAL') &&
       partner.activeStatus === 1 &&
       partner.authorizationStatus === 'AUTHORIZED';
+  }
+
+  /**
+   * Real-time money path evaluation (Spec § 16, § 21, § 29)
+   */
+  public async getMoneyPathStatus(orgId: string): Promise<{
+    moneyPath: 'READY' | 'BLOCKED';
+    reason: string;
+    singleBiggestBlocker: string;
+    humanActionRequired: string;
+    authorizedPartnersCount: number;
+    activeOffersCount: number;
+    publishedContentCount: number;
+  }> {
+    const partners = await this.listPartners(orgId);
+    const authorizedPartners = partners.filter(p =>
+      (p.authorizationStatus === 'AUTHORIZED' || p.approvalStatus === 'APPROVED' || (p.approvalStatus as string) === 'PROVISIONAL') && p.activeStatus === 1
+    );
+
+    const offers = await this.listOffers(orgId);
+    const activeOffers = offers.filter(o => o.status === 'ACTIVE' && o.active === 1);
+
+    const publishedContent = await this.d1Repo.query<any>(
+      'commission_content_assets',
+      "SELECT id FROM commission_content_assets WHERE organization_id = ? AND status = 'PUBLISHED'",
+      [orgId]
+    );
+
+    const hasAffiliateId = Boolean(
+      process.env.AMAZON_AFFILIATE_TAG ||
+      process.env.EBAY_CAMPID ||
+      process.env.PARTNER_AFFILIATE_ID ||
+      authorizedPartners.some(p => {
+        const ev = typeof p.evidence === 'object' ? JSON.stringify(p.evidence) : '';
+        return ev.includes('affiliateTag') || ev.includes('affiliateId') || ev.includes('tag');
+      })
+    );
+
+    let moneyPath: 'READY' | 'BLOCKED' = 'BLOCKED';
+    let reason = '';
+    let singleBiggestBlocker = '';
+    let humanActionRequired = '';
+
+    if (authorizedPartners.length === 0) {
+      moneyPath = 'BLOCKED';
+      reason = 'No approved affiliate/partner account is currently configured.';
+      singleBiggestBlocker = 'PARTNER_APPROVAL';
+      humanActionRequired = 'Apply for and obtain approval for one legitimate partner program (e.g. Amazon Associates India at affiliate-program.amazon.in) and register it in the partner registry.';
+    } else if (!hasAffiliateId) {
+      moneyPath = 'BLOCKED';
+      reason = 'NO_AFFILIATE_ID';
+      singleBiggestBlocker = 'AFFILIATE_ID';
+      humanActionRequired = 'Configure your authorized affiliate tracking tag (e.g. AMAZON_AFFILIATE_TAG) in environment secrets or offer configuration.';
+    } else if (activeOffers.length === 0) {
+      moneyPath = 'BLOCKED';
+      reason = 'NO_ACTIVE_OFFER';
+      singleBiggestBlocker = 'NO_ACTIVE_OFFER';
+      humanActionRequired = 'Create and activate at least one verified commercial offer with authorized destination tracking URL.';
+    } else if (publishedContent.length === 0) {
+      moneyPath = 'BLOCKED';
+      reason = 'NO_PUBLIC_CONTENT';
+      singleBiggestBlocker = 'NO_PUBLIC_CONTENT';
+      humanActionRequired = 'Publish at least one commercial guide/comparison page with visible statutory affiliate disclosure.';
+    } else {
+      moneyPath = 'READY';
+      reason = 'MONEY_PATH_READY';
+      singleBiggestBlocker = 'NONE_DRIVE_TRAFFIC';
+      humanActionRequired = 'Drive first real organic visitor to the published commercial guide.';
+    }
+
+    return {
+      moneyPath,
+      reason,
+      singleBiggestBlocker,
+      humanActionRequired,
+      authorizedPartnersCount: authorizedPartners.length,
+      activeOffersCount: activeOffers.length,
+      publishedContentCount: publishedContent.length
+    };
   }
 
   /**

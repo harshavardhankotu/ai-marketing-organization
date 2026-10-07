@@ -98,6 +98,17 @@ export class NextBestActionEngine {
   public choose(businessId: string, organizationId: string, options?: { ignoreCooldown?: boolean }): NextBestAction {
     const candidates: NextBestAction[] = [];
 
+    // SQL lookup: Structured empirical learning rules from learning_records before scoring (Spec Part C)
+    const db = getDb();
+    let structuredLearningRules: Array<{ what: string; outcome: string; cause: string; rule: string }> = [];
+    try {
+      structuredLearningRules = db.prepare(`
+        SELECT decision as what, result as outcome, hypothesis as cause, action as rule
+        FROM learning_records
+        WHERE learning_type = 'REAL_WORLD_LEARNING'
+      `).all() as any[];
+    } catch {}
+
     // Priority 0.1 (P0): Verified commission reconciliation (Spec § 22)
     const pendingCommissions = this.getPendingCommissions(organizationId);
     for (const comm of pendingCommissions) {

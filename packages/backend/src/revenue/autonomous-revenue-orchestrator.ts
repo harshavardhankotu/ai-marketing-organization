@@ -469,6 +469,14 @@ export class AutonomousRevenueOrchestrator {
         payload: { cycleId, actionsTaken, actionExecutionStatus, actionClassification, terminalClassification, nextBestAction: nextBestAction.actionType }
       });
 
+      // Compute and persist owner status snapshot without LLM calls (Owner Control Center Part B)
+      try {
+        const { OwnerControlCenterEngine } = await import('../commission/owner-control-center.js');
+        await OwnerControlCenterEngine.getInstance().computeAndPersistStatus(organizationId);
+      } catch (occErr: any) {
+        console.warn(`[ARO] Failed to persist owner status snapshot: ${occErr.message}`);
+      }
+
       console.log(`[ARO] ===== WAKE CYCLE ${cycleId} FINISHED (status: ${actionExecutionStatus}, classification: ${actionClassification}) =====`);
 
       return {
