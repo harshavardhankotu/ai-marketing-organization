@@ -63,6 +63,19 @@ function main() {
         }
       }
     }
+
+    // Block writing mutation queries to Cloudflare D1 REST API in scratch/ or scripts/
+    if (segments.includes('scratch') || segments.includes('scripts')) {
+      const content = (args.CodeContent || args.ReplacementContent || '');
+      if (/api\.cloudflare\.com.*\/d1\/database.*\/query/i.test(content) &&
+          /\b(insert\s+into|update\s+\w+\s+set|delete\s+from|alter\s+table|drop\s+table)\b/i.test(content)) {
+        console.log(JSON.stringify({
+          decision: 'deny',
+          reason: "SECURITY POLICY VIOLATION: Mutation queries (INSERT/UPDATE/DELETE) against Cloudflare D1 REST API from scratch/ or scripts/ are strictly prohibited."
+        }));
+        return;
+      }
+    }
   }
 
   // Check shell commands for secret exposure
@@ -116,6 +129,35 @@ function main() {
         reason: "SECURITY POLICY VIOLATION: Reading .env files directly is blocked to protect secrets."
       }));
       return;
+    }
+
+    // 6. Direct D1 REST query mutation
+    if (/api\.cloudflare\.com.*\/d1\/database.*\/query/i.test(cmd) &&
+        /\b(insert\s+into|update\s+\w+\s+set|delete\s+from|alter\s+table|drop\s+table)\b/i.test(cmd)) {
+      console.log(JSON.stringify({
+        decision: 'deny',
+        reason: "SECURITY POLICY VIOLATION: Mutation queries (INSERT/UPDATE/DELETE) against Cloudflare D1 REST API are strictly prohibited."
+      }));
+      return;
+    }
+
+    // 7. Execution of scratch or script files containing D1 mutations
+    const scriptMatch = cmd.match(/\bnode\s+([^\s;&|]+\.m?js)\b/i);
+    if (scriptMatch) {
+      const scriptPath = scriptMatch[1].replace(/\\/g, '/');
+      if ((scriptPath.startsWith('scratch/') || scriptPath.startsWith('scripts/')) && fs.existsSync(scriptMatch[1])) {
+        try {
+          const scriptContent = fs.readFileSync(scriptMatch[1], 'utf8');
+          if (/api\.cloudflare\.com.*\/d1\/database.*\/query/i.test(scriptContent) &&
+              /\b(insert\s+into|update\s+\w+\s+set|delete\s+from|alter\s+table|drop\s+table)\b/i.test(scriptContent)) {
+            console.log(JSON.stringify({
+              decision: 'deny',
+              reason: `SECURITY POLICY VIOLATION: Execution of '${scriptMatch[1]}' blocked. Mutation queries (INSERT/UPDATE/DELETE) against Cloudflare D1 REST API from scratch/ or scripts/ are strictly prohibited.`
+            }));
+            return;
+          }
+        } catch {}
+      }
     }
   }
 

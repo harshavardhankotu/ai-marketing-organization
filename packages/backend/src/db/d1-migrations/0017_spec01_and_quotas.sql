@@ -1,11 +1,11 @@
 -- 0017_spec01_and_quotas.sql
--- Add flag column to provider_call_logs, flag call_1791393061443_spec01, and update application limits
+-- Add flag column to provider_call_logs, flag unlogged unknown origin rows, and update application limits
 
 ALTER TABLE provider_call_logs ADD COLUMN flag TEXT;
 
 UPDATE provider_call_logs
 SET flag = 'UNLOGGED_UNKNOWN_ORIGIN'
-WHERE id = 'call_1791393061443_spec01';
+WHERE flag IS NULL AND action_type = 'SPEC_PAGE_FETCH';
 
 UPDATE provider_quota_state
 SET application_limit = 700,

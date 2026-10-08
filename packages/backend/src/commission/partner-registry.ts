@@ -74,6 +74,9 @@ export function detectPartnerNetwork(website: string): PartnerNetwork {
   const lower = (website || '').toLowerCase();
   if (lower.includes('amazon.')) return 'AMAZON_ASSOCIATES';
   if (lower.includes('ebay.')) return 'EBAY_PARTNER_NETWORK';
+  if (lower.includes('vcommission.')) return 'VCOMMISSION';
+  if (lower.includes('cuelinks.') || lower.includes('linksredirect.')) return 'CUELINKS';
+  if (lower.includes('earnkaro.')) return 'EARNKARO';
   return 'OTHER_AUTHORIZED_PARTNER';
 }
 

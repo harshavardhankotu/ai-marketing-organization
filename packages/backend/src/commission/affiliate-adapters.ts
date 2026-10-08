@@ -7,6 +7,15 @@
 export interface TrackedDestinationInput {
   baseUrl: string;
   clickId: string;
+  template?: string;
+  variables?: Record<string, string>;
+  partner?: {
+    id?: string;
+    network?: string;
+    approvalStatus?: string;
+    authorizationStatus?: string;
+    trackingTemplate?: string;
+  };
 }
 
 export interface AffiliateNetworkAdapter {
@@ -143,9 +152,183 @@ export class DirectReferralAdapter implements AffiliateNetworkAdapter {
   }
 }
 
+export class VCommissionAdapter implements AffiliateNetworkAdapter {
+  readonly network = 'VCOMMISSION';
+
+  handles(hostname: string): boolean {
+    const h = hostname.toLowerCase();
+    return h.includes('vcommission.') || h.includes('tracking.vcommission.');
+  }
+
+  buildTrackedDestination({ baseUrl, clickId, variables }: TrackedDestinationInput): string {
+    const offerId = variables?.offerId || getEnv('VCOMMISSION_OFFER_ID') || '101';
+    const affId = variables?.affId || getEnv('VCOMMISSION_AFF_ID') || 'aff_owner';
+    const template = variables?.template || 'https://tracking.vcommission.com/aff_c?offer_id={offerId}&aff_id={affId}&aff_sub={clickId}&url={encodedUrl}';
+    return PartnerTrackingLinkBuilder.buildFromTemplate(template, {
+      baseUrl,
+      clickId,
+      offerId,
+      affId,
+      extra: variables
+    });
+  }
+
+  hasAttribution(url: URL): boolean {
+    return url.searchParams.has('aff_sub') || getEnv('VCOMMISSION_AFF_ID').length > 0;
+  }
+
+  missingAttributionMessage(): string {
+    return 'MISSING_AFFILIATE_ID: vCommission link has no aff_sub tracking and VCOMMISSION_AFF_ID is unset.';
+  }
+
+  getPartnerMetadata() {
+    return { network: this.network, trackingType: 'AFFILIATE_LINK' };
+  }
+}
+
+export class CuelinksAdapter implements AffiliateNetworkAdapter {
+  readonly network = 'CUELINKS';
+
+  handles(hostname: string): boolean {
+    const h = hostname.toLowerCase();
+    return h.includes('cuelinks.') || h.includes('linksredirect.');
+  }
+
+  buildTrackedDestination({ baseUrl, clickId, variables }: TrackedDestinationInput): string {
+    const campaignId = variables?.campaignId || getEnv('CUELINKS_CAMPAIGN_ID') || '1001';
+    const template = variables?.template || 'https://linksredirect.com/?cid={campaignId}&subid={clickId}&url={encodedUrl}';
+    return PartnerTrackingLinkBuilder.buildFromTemplate(template, {
+      baseUrl,
+      clickId,
+      campaignId,
+      extra: variables
+    });
+  }
+
+  hasAttribution(url: URL): boolean {
+    return url.searchParams.has('subid') || url.searchParams.has('cid') || getEnv('CUELINKS_CAMPAIGN_ID').length > 0;
+  }
+
+  missingAttributionMessage(): string {
+    return 'MISSING_AFFILIATE_ID: Cuelinks link has no subid tracking and CUELINKS_CAMPAIGN_ID is unset.';
+  }
+
+  getPartnerMetadata() {
+    return { network: this.network, trackingType: 'AFFILIATE_LINK' };
+  }
+}
+
+export class EarnKaroAdapter implements AffiliateNetworkAdapter {
+  readonly network = 'EARNKARO';
+
+  handles(hostname: string): boolean {
+    return hostname.toLowerCase().includes('earnkaro.');
+  }
+
+  buildTrackedDestination({ baseUrl, clickId, variables }: TrackedDestinationInput): string {
+    const referralId = variables?.referralId || getEnv('EARNKARO_REFERRAL_ID') || 'ref_owner';
+    const template = variables?.template || 'https://earnkaro.com/deal?r={referralId}&url={encodedUrl}&subid={clickId}';
+    return PartnerTrackingLinkBuilder.buildFromTemplate(template, {
+      baseUrl,
+      clickId,
+      referralId,
+      extra: variables
+    });
+  }
+
+  hasAttribution(url: URL): boolean {
+    return url.searchParams.has('r') || getEnv('EARNKARO_REFERRAL_ID').length > 0;
+  }
+
+  missingAttributionMessage(): string {
+    return 'MISSING_AFFILIATE_ID: EarnKaro link has no referral identifier and EARNKARO_REFERRAL_ID is unset.';
+  }
+
+  getPartnerMetadata() {
+    return { network: this.network, trackingType: 'AFFILIATE_LINK' };
+  }
+}
+
+export class PartnerTrackingLinkBuilder {
+  /**
+   * Builds a tracked destination URL from a template string with variable substitution.
+   * Supported tokens:
+   *   {baseUrl}, {url}, {encodedUrl}, {clickId}, {subId}, {subid}, {aff_sub}, {affId}, {offerId}, {campaignId}, {referralId}
+   */
+  public static buildFromTemplate(
+    template: string,
+    vars: {
+      baseUrl: string;
+      clickId: string;
+      offerId?: string;
+      affId?: string;
+      campaignId?: string;
+      referralId?: string;
+      extra?: Record<string, string>;
+    }
+  ): string {
+    let result = template;
+    const encodedUrl = encodeURIComponent(vars.baseUrl);
+
+    const replacements: Record<string, string> = {
+      '{baseUrl}': vars.baseUrl,
+      '{url}': vars.baseUrl,
+      '{encodedUrl}': encodedUrl,
+      '{clickId}': vars.clickId,
+      '{subId}': vars.clickId,
+      '{subid}': vars.clickId,
+      '{aff_sub}': vars.clickId,
+      '{affId}': vars.affId || '',
+      '{offerId}': vars.offerId || '',
+      '{campaignId}': vars.campaignId || '',
+      '{referralId}': vars.referralId || '',
+      ...(vars.extra || {})
+    };
+
+    for (const [token, value] of Object.entries(replacements)) {
+      result = result.split(token).join(value);
+    }
+    return result;
+  }
+
+  /**
+   * Main entry point to build a tracked link for a partner.
+   * Fail-closed: Refuses to build a link for an unapproved partner unless running in test/mock mode.
+   */
+  public static buildPartnerLink(input: TrackedDestinationInput): string {
+    if (input.partner) {
+      const isApproved = input.partner.approvalStatus === 'APPROVED' && input.partner.authorizationStatus === 'AUTHORIZED';
+      if (!isApproved) {
+        throw new Error(
+          `UNAPPROVED_PARTNER_ERROR: Partner '${input.partner.id || 'unknown'}' is not approved by the owner. ` +
+          `Status: approvalStatus=${input.partner.approvalStatus || 'PENDING'}, authorizationStatus=${input.partner.authorizationStatus || 'PENDING_REVIEW'}. ` +
+          `The owner must apply and prove partner authorization before building links.`
+        );
+      }
+    }
+
+    // 1. If explicit template provided on input or partner, use template builder
+    const template = input.template || input.partner?.trackingTemplate;
+    if (template) {
+      return PartnerTrackingLinkBuilder.buildFromTemplate(template, {
+        baseUrl: input.baseUrl,
+        clickId: input.clickId,
+        extra: input.variables
+      });
+    }
+
+    // 2. Otherwise use the registered adapter
+    const adapter = resolveAffiliateAdapter(input.baseUrl);
+    return adapter.buildTrackedDestination(input);
+  }
+}
+
 const ADAPTERS: AffiliateNetworkAdapter[] = [
   new AmazonAdapter(),
   new EbayAdapter(),
+  new VCommissionAdapter(),
+  new CuelinksAdapter(),
+  new EarnKaroAdapter(),
   new GenericAffiliateAdapter(),
 ];
 

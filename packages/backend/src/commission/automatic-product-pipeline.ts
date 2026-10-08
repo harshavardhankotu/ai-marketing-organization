@@ -140,6 +140,7 @@ export class AutomaticProductPipeline {
         retrievalDate,
         pageTextSnippet: `"${specSnippet.substring(0, 180)}"`,
         status: 'PROPOSED',
+        provenance: 'APP_LOGGED_CALL',
         productChecked: false,
         createdAt: now,
         updatedAt: now
@@ -202,13 +203,13 @@ export class AutomaticProductPipeline {
       INSERT INTO product_proposals (
         id, organization_id, category, product_name, manufacturer_name,
         spec_summary, source_url, retrieval_date, page_text_snippet,
-        status, product_checked, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+        status, product_checked, provenance, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
     `;
     const params = [
       p.id, p.organizationId, p.category, p.productName, p.manufacturerName,
       p.specSummary, p.sourceUrl, p.retrievalDate, p.pageTextSnippet || null,
-      p.status, p.createdAt, p.updatedAt
+      p.status, p.provenance || 'APP_LOGGED_CALL', p.createdAt, p.updatedAt
     ];
     if (isProduction()) {
       await this.d1Repo.executeWrite('product_proposals', sql, params).catch(() => {});

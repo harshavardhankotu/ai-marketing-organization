@@ -52,7 +52,8 @@ export const D1_REVENUE_CRITICAL_TABLES = [
   'action_cooldowns',
   'owner_intake',
   'product_proposals',
-  'owner_status_snapshots'
+  'owner_status_snapshots',
+  'provider_drift_records'
 ] as const;
 
 export type D1RevenueCriticalTable = typeof D1_REVENUE_CRITICAL_TABLES[number] | string;

@@ -303,8 +303,8 @@ export class PlatformProspectDiscoveryEngine {
     }
 
     try {
-      const candidates = await this.discoverViaTavily(vertical, city, limit);
-      this.quotaService.reconcile(gate.reservationId, 1, true);
+      const { candidates, usageCredits } = await this.discoverViaTavily(vertical, city, limit);
+      this.quotaService.reconcile(gate.reservationId, usageCredits, true);
 
       const validCandidates = filterCandidates(candidates);
       if (validCandidates.length > 0) {
@@ -722,7 +722,7 @@ export class PlatformProspectDiscoveryEngine {
     vertical: string,
     city: string,
     limit: number
-  ): Promise<DiscoveredProspectCandidate[]> {
+  ): Promise<{ candidates: DiscoveredProspectCandidate[]; usageCredits: number }> {
     const apiKey = process.env.TAVILY_API_KEY!;
     const query = `top ${vertical} clinic in ${city} India official contact phone email website`;
 
@@ -733,6 +733,7 @@ export class PlatformProspectDiscoveryEngine {
         api_key: apiKey,
         query,
         search_depth: 'advanced',
+        include_usage: true,
         exclude_domains: ['justdial.com', 'practo.com', 'sulekha.com', 'rentechdigital.com', 'indiamart.com', 'quikr.com', 'jdmagicbox.com', 'lybrate.com', 'threebestrated.in', 'scribd.com'],
         max_results: Math.max(limit + 5, 8)
       })
@@ -743,6 +744,9 @@ export class PlatformProspectDiscoveryEngine {
     }
 
     const data = await res.json() as any;
+    const usageCredits = typeof data?.usage?.credits === 'number'
+      ? data.usage.credits
+      : (typeof data?.usage === 'number' ? data.usage : 1);
     const results = data.results || [];
     const candidates: DiscoveredProspectCandidate[] = [];
 
@@ -779,7 +783,7 @@ export class PlatformProspectDiscoveryEngine {
       candidates.push(candidate);
     }
 
-    return candidates;
+    return { candidates, usageCredits };
   }
 
   /**

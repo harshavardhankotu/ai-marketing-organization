@@ -42,18 +42,6 @@ export class FirecrawlAdapter {
       status: 'OWNER_APPROVAL_REQUIRED',
       approved: false
     },
-    'everycom.in': {
-      host: 'everycom.in',
-      reason: 'Indian manufacturer and importer of thermal barcode and receipt printers (BS-400) for e-commerce dispatch.',
-      status: 'OWNER_APPROVAL_REQUIRED',
-      approved: false
-    },
-    'www.everycom.in': {
-      host: 'www.everycom.in',
-      reason: 'Alternate www subdomain for Everycom India.',
-      status: 'OWNER_APPROVAL_REQUIRED',
-      approved: false
-    },
     'tvs-e.in': {
       host: 'tvs-e.in',
       reason: 'TVS Electronics India — domestic manufacturer of commercial thermal barcode and POS printers (LP 46 Neo).',
@@ -63,18 +51,6 @@ export class FirecrawlAdapter {
     'www.tvs-e.in': {
       host: 'www.tvs-e.in',
       reason: 'Alternate www subdomain for TVS Electronics India.',
-      status: 'OWNER_APPROVAL_REQUIRED',
-      approved: false
-    },
-    'tvs-electronics.com': {
-      host: 'tvs-electronics.com',
-      reason: 'Corporate domain for TVS Electronics commercial printing hardware.',
-      status: 'OWNER_APPROVAL_REQUIRED',
-      approved: false
-    },
-    'www.tvs-electronics.com': {
-      host: 'www.tvs-electronics.com',
-      reason: 'Alternate www subdomain for TVS Electronics.',
       status: 'OWNER_APPROVAL_REQUIRED',
       approved: false
     },
@@ -108,15 +84,9 @@ export class FirecrawlAdapter {
       status: 'OWNER_APPROVAL_REQUIRED',
       approved: false
     },
-    'brother.in': {
-      host: 'brother.in',
-      reason: 'Brother India official manufacturer of commercial desktop label and barcode printers (QL/TD series).',
-      status: 'OWNER_APPROVAL_REQUIRED',
-      approved: false
-    },
     'www.brother.in': {
       host: 'www.brother.in',
-      reason: 'Alternate www subdomain for Brother India.',
+      reason: 'Brother India official manufacturer of commercial desktop label and barcode printers (QL/TD series).',
       status: 'OWNER_APPROVAL_REQUIRED',
       approved: false
     }
@@ -184,6 +154,38 @@ export class FirecrawlAdapter {
   }
 
   /**
+   * Validates if Firecrawl allowance has been recorded from the credit-usage API endpoint.
+   */
+  public async isAllowanceRecorded(): Promise<{ recorded: boolean; limit?: number; reason?: string }> {
+    const sql = `SELECT * FROM provider_quota_state WHERE provider = 'FIRECRAWL' LIMIT 1;`;
+    let row: any = null;
+    if (isProduction()) {
+      row = await this.d1Repo.queryOne<any>('provider_quota_state', sql);
+    } else {
+      try {
+        row = getDb().prepare(sql).get();
+      } catch {
+        row = null;
+      }
+    }
+
+    if (!row) {
+      return { recorded: false, reason: 'NO_FIRECRAWL_QUOTA_ROW' };
+    }
+    if (row.source !== 'PROVIDER_API') {
+      return { recorded: false, reason: `SOURCE_NOT_PROVIDER_API (${row.source || 'UNKNOWN'})` };
+    }
+    if (row.unlogged_reason === 'NO_USAGE_API_FREE_PLAN') {
+      return { recorded: false, reason: 'NO_USAGE_API_FREE_PLAN' };
+    }
+    if (typeof row.provider_limit !== 'number' || row.provider_limit <= 0) {
+      return { recorded: false, reason: 'PROVIDER_LIMIT_NOT_SET' };
+    }
+
+    return { recorded: true, limit: row.provider_limit };
+  }
+
+  /**
    * Scrapes a manufacturer specification page.
    * Rules:
    * 1. Blocks every amazon.* host.
@@ -233,23 +235,30 @@ export class FirecrawlAdapter {
       }
     }
 
-    // RULE 4: Perform Scrape
+    // RULE 4: Refuse to run unless FIRECRAWL_API_KEY is set
     const apiKey = process.env.FIRECRAWL_API_KEY;
     if (!apiKey || isPlaceholderCredential(apiKey)) {
-      // In non-production testing with missing API key, return mock specimen
-      if (!isProduction()) {
-        const mockMarkdown = `# ${host} Manufacturer Specifications\n\n- Direct Thermal 203 DPI\n- Bluetooth and USB connectivity\n- Max print speed 150 mm/s`;
-        await this.cacheSpec(rawUrl, mockMarkdown, 'Mock Manufacturer Spec');
-        await this.logCall(rawUrl, 1, options.caller || 'firecrawl-adapter');
-        return {
-          markdown: mockMarkdown,
-          title: 'Mock Manufacturer Spec',
-          sourceUrl: rawUrl,
-          fromCache: false,
-          creditsConsumed: 1
-        };
-      }
-      throw new Error('CONFIG_ERROR: FIRECRAWL_API_KEY is not configured in production.');
+      throw new Error('CONFIG_ERROR: FIRECRAWL_API_KEY is not configured. Refusing to run.');
+    }
+
+    // RULE 5: Refuse to run unless allowance is recorded from credit-usage response
+    const allowanceCheck = await this.isAllowanceRecorded();
+    if (!allowanceCheck.recorded) {
+      throw new Error(`ALLOWANCE_ERROR: Firecrawl allowance is not recorded from credit-usage response (${allowanceCheck.reason}). Refusing to run.`);
+    }
+
+    // RULE 6: Zero live Firecrawl calls policy
+    if (process.env.FIRECRAWL_ENABLE_LIVE !== 'true') {
+      const mockMarkdown = `# ${host} Manufacturer Specifications\n\n- Direct Thermal 203 DPI\n- Bluetooth and USB connectivity\n- Max print speed 150 mm/s`;
+      await this.cacheSpec(rawUrl, mockMarkdown, 'Mock Manufacturer Spec');
+      await this.logCall(rawUrl, 1, options.caller || 'firecrawl-adapter');
+      return {
+        markdown: mockMarkdown,
+        title: 'Mock Manufacturer Spec',
+        sourceUrl: rawUrl,
+        fromCache: false,
+        creditsConsumed: 1
+      };
     }
 
     const response = await fetch('https://api.firecrawl.dev/v1/scrape', {

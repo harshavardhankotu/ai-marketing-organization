@@ -27,7 +27,7 @@ describe('Launch Blockers & Intake Test Suite', () => {
     const db = getDb();
     // Clean test tables
     try {
-      db.prepare("DELETE FROM partners WHERE organization_id = ?").run(testOrgId);
+      db.prepare("DELETE FROM partners WHERE id = 'part_amazon_in_01' OR organization_id = ?").run(testOrgId);
       db.prepare("DELETE FROM partner_offers WHERE organization_id = ?").run(testOrgId);
       db.prepare("DELETE FROM commission_content_assets WHERE organization_id = ?").run(testOrgId);
       db.prepare("DELETE FROM commission_records WHERE organization_id = ?").run(testOrgId);
@@ -44,7 +44,7 @@ describe('Launch Blockers & Intake Test Suite', () => {
       const db = getDb();
       // Insert partner shaped exactly like the Cloudflare D1 row for part_amazon_in_01
       db.prepare(`
-        INSERT INTO partners (
+        INSERT OR REPLACE INTO partners (
           id, organization_id, name, industry, country, website,
           partner_type, commission_type, cookie_window_days, qualifying_event,
           approval_status, active_status, source, network, tracking_type,
@@ -84,7 +84,7 @@ describe('Launch Blockers & Intake Test Suite', () => {
     it('returns 404 when partner has no webhook secret configured in env or evidence', async () => {
       const db = getDb();
       db.prepare(`
-        INSERT INTO partners (
+        INSERT OR REPLACE INTO partners (
           id, organization_id, name, industry, website,
           network, approval_status, authorization_status, evidence_json
         ) VALUES (
@@ -110,7 +110,7 @@ describe('Launch Blockers & Intake Test Suite', () => {
     it('uses constant-time comparison and validates secret when configured in env', async () => {
       const db = getDb();
       db.prepare(`
-        INSERT INTO partners (
+        INSERT OR REPLACE INTO partners (
           id, organization_id, name, industry, website,
           network, approval_status, authorization_status, evidence_json
         ) VALUES (
@@ -182,7 +182,7 @@ describe('Launch Blockers & Intake Test Suite', () => {
       const db = getDb();
       // Provision Amazon partner in DB
       db.prepare(`
-        INSERT INTO partners (
+        INSERT OR REPLACE INTO partners (
           id, organization_id, name, industry, website,
           network, approval_status, authorization_status, evidence_json
         ) VALUES (
@@ -411,7 +411,7 @@ Specifications checked against manufacturer documentation.
     beforeEach(() => {
       const db = getDb();
       db.prepare(`
-        INSERT INTO partners (
+        INSERT OR REPLACE INTO partners (
           id, organization_id, name, industry, website,
           network, approval_status, authorization_status
         ) VALUES (
@@ -623,7 +623,7 @@ Specifications checked against manufacturer documentation.
     beforeEach(async () => {
       const db = getDb();
       db.prepare(`
-        INSERT INTO partners (
+        INSERT OR REPLACE INTO partners (
           id, organization_id, name, industry, website,
           network, approval_status, authorization_status, evidence_json
         ) VALUES (
@@ -699,7 +699,7 @@ Specifications checked against manufacturer documentation.
 
       // 1. Provision partner
       db.prepare(`
-        INSERT INTO partners (
+        INSERT OR REPLACE INTO partners (
           id, organization_id, name, industry, website,
           network, approval_status, authorization_status, evidence_json
         ) VALUES (
@@ -829,7 +829,7 @@ All specifications checked against manufacturer technical documentation.
           page_text_snippet, status, product_checked, created_at, updated_at
         ) VALUES (
           ?, ?, 'Office & Commercial Supplies', 'Phomemo PM-241BT', 'Phomemo',
-          '203 DPI Direct Thermal', 'https://phomemo.com/products/pm-241bt', '2026-10-07', 'call_1791393061443_spec01',
+          '203 DPI Direct Thermal', 'https://phomemo.com/products/pm-241bt', '2026-10-07', 'call_test_spec_01',
           'Direct Thermal 203 DPI', 'PROPOSED', 0, datetime('now'), datetime('now')
         )
       `).run(propId, testOrgId);
@@ -875,7 +875,7 @@ All specifications checked against manufacturer technical documentation.
 
       // 0. Seed Amazon partner
       db.prepare(`
-        INSERT INTO partners (
+        INSERT OR REPLACE INTO partners (
           id, organization_id, name, industry, country, website,
           partner_type, commission_type, cookie_window_days, qualifying_event,
           approval_status, active_status, source, network, tracking_type,
@@ -908,7 +908,7 @@ All specifications checked against manufacturer technical documentation.
           page_text_snippet, status, product_checked, created_at, updated_at
         ) VALUES (
           ?, ?, 'Office & Commercial Supplies', 'Phomemo PM-241BT', 'Phomemo',
-          '203 DPI Direct Thermal', 'https://phomemo.com/products/pm-241bt', '2026-10-07', 'call_1791393061443_spec01',
+          '203 DPI Direct Thermal', 'https://phomemo.com/products/pm-241bt', '2026-10-07', 'call_test_spec_01',
           'Direct Thermal 203 DPI', 'PROPOSED', 0, datetime('now'), datetime('now')
         )
       `).run(propId, testOrgId);

@@ -537,6 +537,7 @@ export function getDb(dbPath?: string): Database.Database {
   try { db.exec(`ALTER TABLE product_proposals ADD COLUMN page_text_snippet TEXT`); } catch {}
   try { db.exec(`ALTER TABLE product_proposals ADD COLUMN display_name TEXT`); } catch {}
   try { db.exec(`ALTER TABLE product_proposals ADD COLUMN listing_facts_json TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE product_proposals ADD COLUMN provenance TEXT DEFAULT 'APP_LOGGED_CALL'`); } catch {}
   try { db.exec(`ALTER TABLE provider_call_logs ADD COLUMN query TEXT`); } catch {}
   try { db.exec(`ALTER TABLE provider_call_logs ADD COLUMN url TEXT`); } catch {}
   try { db.exec(`ALTER TABLE provider_call_logs ADD COLUMN duplicate_of TEXT`); } catch {}
@@ -554,6 +555,58 @@ export function getDb(dbPath?: string): Database.Database {
       recurrence_count INTEGER NOT NULL DEFAULT 1,
       guard_type TEXT NOT NULL CHECK(guard_type IN ('TEST', 'HOOK', 'LINT', 'NONE')),
       guard_ref TEXT, source_report TEXT NOT NULL
+    )`);
+  } catch {}
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS provider_drift_records (
+      id TEXT PRIMARY KEY, provider TEXT NOT NULL,
+      local_count INTEGER NOT NULL, provider_count INTEGER NOT NULL,
+      drift_percentage REAL NOT NULL, status TEXT NOT NULL,
+      details_json TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+  } catch {}
+  try { db.exec(`ALTER TABLE learning_records ADD COLUMN what TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE learning_records ADD COLUMN outcome TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE learning_records ADD COLUMN cause TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE learning_records ADD COLUMN rule TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE learning_records ADD COLUMN evidence_ref TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE learning_records ADD COLUMN source_file TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE learning_records ADD COLUMN date TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE learning_records ADD COLUMN content_hash TEXT`); } catch {}
+  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_lrn_content_hash ON learning_records(content_hash)`); } catch {}
+  try { db.exec(`ALTER TABLE demand_signals ADD COLUMN source_host TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE demand_signals ADD COLUMN url TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE demand_signals ADD COLUMN excerpt TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE demand_signals ADD COLUMN author_hash TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE demand_signals ADD COLUMN language TEXT DEFAULT 'en'`); } catch {}
+  try { db.exec(`ALTER TABLE demand_signals ADD COLUMN city TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE demand_signals ADD COLUMN intent_score INTEGER DEFAULT 0`); } catch {}
+  try { db.exec(`ALTER TABLE demand_signals ADD COLUMN budget_hint TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE demand_signals ADD COLUMN found_at TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE demand_signals ADD COLUMN dedupe_hash TEXT`); } catch {}
+  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_demand_signals_dedupe ON demand_signals(dedupe_hash)`); } catch {}
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS demand_matches (
+      id TEXT PRIMARY KEY, signal_id TEXT NOT NULL, offer_id TEXT NOT NULL,
+      expected_value REAL NOT NULL DEFAULT 0.0, ev_basis TEXT NOT NULL DEFAULT 'ESTIMATED',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+  } catch {}
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS outreach_drafts (
+      id TEXT PRIMARY KEY, signal_id TEXT NOT NULL,
+      channel TEXT NOT NULL DEFAULT 'COMMUNITY_FORUM',
+      draft_text TEXT NOT NULL, landing_url TEXT NOT NULL, disclosure_text TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'DRAFTED', expires_at TEXT NOT NULL,
+      posted_at TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+  } catch {}
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS source_rules (
+      host TEXT PRIMARY KEY, allows_links INTEGER NOT NULL DEFAULT 1,
+      allows_affiliate INTEGER NOT NULL DEFAULT 0, needs_disclosure INTEGER NOT NULL DEFAULT 1,
+      automation_allowed INTEGER NOT NULL DEFAULT 0, owner_approved INTEGER NOT NULL DEFAULT 0,
+      notes TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`);
   } catch {}
 

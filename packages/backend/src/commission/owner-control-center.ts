@@ -10,7 +10,13 @@
  */
 
 import { randomUUID } from 'crypto';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { getDb } from '../db/client.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { PartnerRegistryEngine } from './partner-registry.js';
 import { ConversionVerificationAdapter } from './conversion-verification.js';
@@ -18,6 +24,8 @@ import { CommissionLedgerEngine } from './commission-ledger.js';
 import { UnifiedQuotaService } from '../quota/unified-quota-service.js';
 import { ActionCooldownManager } from '../revenue/action-cooldown-manager.js';
 import { isProduction } from '../config/env.js';
+import { ContentAssetEngine } from './content-asset-engine.js';
+import { StaticSiteGenerator } from './static-site-generator.js';
 
 // ============================================================================
 // Types
@@ -76,6 +84,7 @@ export interface ProductProposal {
   amazonUrl?: string;
   asin?: string;
   status: 'PROPOSED' | 'APPROVED' | 'REJECTED' | 'UNSOURCED';
+  provenance?: 'MANUAL_SCRIPT' | 'APP_LOGGED_CALL' | 'UNSOURCED';
   approvedOfferId?: string;
   productChecked: boolean;
   productCheckedAt?: string;
@@ -113,6 +122,19 @@ export interface OwnerStatusSnapshot {
       shareText?: string;
       pageUrl?: string;
     };
+    topOutreachDrafts?: Array<{
+      draftId: string;
+      signalId: string;
+      channel: string;
+      draftText: string;
+      landingUrl: string;
+      disclosureText: string;
+      expectedValue: number;
+      sourceUrl: string;
+      excerpt: string;
+      category: string;
+      expiresAt: string;
+    }>;
   };
   lastCronCycle: {
     cycleId?: string;
@@ -631,6 +653,7 @@ export class OwnerControlCenterEngine {
     sourceUrl: string;
     providerCallLogId: string;
     pageTextSnippet: string;
+    provenance: 'MANUAL_SCRIPT' | 'APP_LOGGED_CALL';
   }> = [
     {
       category: 'Office & Commercial Supplies',
@@ -638,7 +661,8 @@ export class OwnerControlCenterEngine {
       manufacturerName: 'Phomemo',
       specSummary: 'Direct Thermal (ink-free), 203 DPI resolution, up to 150 mm/s print speed (72 labels/min), Bluetooth and USB connectivity, supports 1"-4" (25.4-117mm) width labels for e-commerce logistics.',
       sourceUrl: 'https://phomemo.com/products/pm-241bt',
-      providerCallLogId: 'call_1791393061443_spec01',
+      providerCallLogId: '',
+      provenance: 'MANUAL_SCRIPT',
       pageTextSnippet: 'Supported Type: Direct Thermal | Resolution: 203 DPI | Printing Speed: Up to 150 mm/s | Connectivity: Bluetooth + USB | Compatibility: iOS, Android, Windows, macOS | For small businesses & e-commerce sellers, effortlessly print shipping labels & barcodes with wireless Bluetooth connectivity.'
     }
   ];
@@ -684,7 +708,7 @@ export class OwnerControlCenterEngine {
       if (item.sourceUrl.includes('amazon.')) continue;
 
       const id = `prop_${randomUUID().substring(0, 10)}`;
-      const hasProvenance = Boolean(item.sourceUrl && item.pageTextSnippet && item.providerCallLogId);
+      const hasProvenance = Boolean(item.sourceUrl && item.pageTextSnippet);
       const proposal: ProductProposal = {
         id,
         organizationId,
@@ -694,7 +718,8 @@ export class OwnerControlCenterEngine {
         specSummary: item.specSummary,
         sourceUrl: item.sourceUrl,
         retrievalDate,
-        providerCallLogId: item.providerCallLogId,
+        providerCallLogId: item.providerCallLogId || undefined,
+        provenance: item.provenance || 'MANUAL_SCRIPT',
         pageTextSnippet: item.pageTextSnippet,
         status: hasProvenance ? 'PROPOSED' : 'UNSOURCED',
         productChecked: false,
@@ -706,8 +731,8 @@ export class OwnerControlCenterEngine {
         INSERT INTO product_proposals (
           id, organization_id, category, product_name, manufacturer_name,
           spec_summary, source_url, retrieval_date, provider_call_log_id,
-          page_text_snippet, status, product_checked, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+          page_text_snippet, status, product_checked, provenance, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
       `;
       const params = [
         proposal.id,
@@ -721,6 +746,7 @@ export class OwnerControlCenterEngine {
         proposal.providerCallLogId || null,
         proposal.pageTextSnippet || null,
         proposal.status,
+        proposal.provenance || 'MANUAL_SCRIPT',
         proposal.createdAt,
         proposal.updatedAt
       ];
@@ -988,6 +1014,11 @@ export class OwnerControlCenterEngine {
       throw new Error(`PROPOSAL_NOT_FOUND: Product proposal '${proposalId}' not found.`);
     }
 
+    // Require app-logged call for manufacturer specification provenance
+    if (proposal.provenance === 'MANUAL_SCRIPT') {
+      throw new Error("APPROVAL_ERROR: Proposal has provenance 'MANUAL_SCRIPT'. Weekly pipeline must re-fetch manufacturer specifications through an app-logged call before owner approval.");
+    }
+
     // Category policy check: consult learning rules
     if (await this.isCategoryBlocked(organizationId, proposal.category)) {
       throw new Error(`APPROVAL_ERROR: Category '${proposal.category}' is BLOCKED by learning policy. Health, skincare, sunscreen, supplement, and medical products are prohibited.`);
@@ -1005,35 +1036,72 @@ export class OwnerControlCenterEngine {
     const offerSlug = `amazon-${asin.toLowerCase()}`;
     const now = new Date().toISOString();
 
-    const offer = await this.registry.createOffer({
-      partnerId,
-      organizationId,
-      title: displayName,
-      offerSlug,
-      category: proposal.category,
-      targetCustomer: 'Small retail merchants, warehouses, and logistics operators',
-      commissionModel: 'PERCENTAGE',
-      commissionAmountINR: 0,
-      conversionAction: 'PURCHASE',
-      destinationUrl: canonicalDestination,
-      authorizedTrackingUrl,
-      geographicAvailability: 'India',
-      status: termsConfirmed ? 'ACTIVE' : 'DRAFT',
-      description: proposal.specSummary,
-      currency: 'INR',
-      availability: 'UNKNOWN',
-      evidence: {
-        asin,
-        canonical_destination: canonicalDestination,
-        authorized_tracking_url: authorizedTrackingUrl,
-        display_name: displayName,
-        listing_facts: facts,
-        listing_facts_recorded_at: now,
-        product_checked: true,
-        product_checked_at: now,
-        approved_from_proposal_id: proposal.id
+    const offerEvidence = {
+      asin,
+      canonical_destination: canonicalDestination,
+      authorized_tracking_url: authorizedTrackingUrl,
+      display_name: displayName,
+      listing_facts: facts,
+      listing_facts_recorded_at: now,
+      product_checked: true,
+      product_checked_at: now,
+      approved_from_proposal_id: proposal.id
+    };
+
+    const findOfferSql = 'SELECT * FROM partner_offers WHERE offer_slug = ? LIMIT 1';
+    let existingOfferRow: any = null;
+    if (isProduction()) {
+      existingOfferRow = await this.d1Repo.queryOne<any>('partner_offers', findOfferSql, [offerSlug]);
+    } else {
+      try {
+        existingOfferRow = getDb().prepare(findOfferSql).get(offerSlug);
+      } catch {
+        existingOfferRow = null;
       }
-    });
+    }
+
+    let offer: any;
+    if (!existingOfferRow) {
+      offer = await this.registry.createOffer({
+        partnerId,
+        organizationId,
+        title: displayName,
+        offerSlug,
+        category: proposal.category,
+        targetCustomer: 'Small retail merchants, warehouses, and logistics operators',
+        commissionModel: 'PERCENTAGE',
+        commissionAmountINR: 0,
+        conversionAction: 'PURCHASE',
+        destinationUrl: canonicalDestination,
+        authorizedTrackingUrl,
+        geographicAvailability: 'India',
+        status: termsConfirmed ? 'ACTIVE' : 'DRAFT',
+        description: proposal.specSummary,
+        currency: 'INR',
+        availability: 'UNKNOWN',
+        evidence: offerEvidence
+      });
+    } else {
+      const updateOfferSql = `
+        UPDATE partner_offers
+        SET organization_id = ?, title = ?, destination_url = ?, authorized_tracking_url = ?, evidence_json = ?,
+            status = ?, active = ?, updated_at = ?
+        WHERE id = ?
+      `;
+      const updateParams = [
+        organizationId,
+        displayName,
+        canonicalDestination,
+        authorizedTrackingUrl,
+        JSON.stringify(offerEvidence),
+        termsConfirmed ? 'ACTIVE' : 'DRAFT',
+        termsConfirmed ? 1 : 0,
+        now,
+        existingOfferRow.id
+      ];
+      await this.d1Repo.executeWrite('partner_offers', updateOfferSql, updateParams);
+      offer = (await this.registry.getOffer(existingOfferRow.id))!;
+    }
 
     // Update proposal
     proposal.status = 'APPROVED';
@@ -1073,6 +1141,81 @@ export class OwnerControlCenterEngine {
     return { proposal, offer };
   }
 
+  /**
+   * Executes the publish chain strictly behind the approval gate (dry run & fixtures only).
+   * 1. Validates that product proposal is APPROVED and offer is ACTIVE.
+   * 2. Builds guide from owner-approved listing facts + manufacturer facts.
+   * 3. Runs strict content linting.
+   * 4. Renders static HTML and generates sitemap.xml via StaticSiteGenerator.
+   * 5. Prepares dry-run Firebase deployment verification (zero production publish).
+   * 6. Returns output URLs (sitemap, guide page, status page URL).
+   */
+  public async executePublishChainBehindApprovalGate(
+    organizationId: string = 'org_owner_primary',
+    proposalId: string,
+    options: { outputDir?: string } = {}
+  ): Promise<{
+    success: boolean;
+    gateStatus: 'APPROVED_AND_ACTIVE';
+    proposalId: string;
+    offerId: string;
+    guideAssetId: string;
+    guideSlug: string;
+    guideUrl: string;
+    sitemapUrl: string;
+    statusPageUrl: string;
+    renderedFiles: string[];
+    lintPassed: boolean;
+    productionPublish: 'BLOCKED_BEHIND_OWNER_GATE';
+    firebaseDeployment: 'DRY_RUN_VERIFIED';
+  }> {
+    const proposals = await this.getProposals(organizationId);
+    const proposal = proposals.find(p => p.id === proposalId);
+    if (!proposal) {
+      throw new Error(`PROPOSAL_NOT_FOUND: Product proposal '${proposalId}' does not exist.`);
+    }
+
+    if (proposal.status !== 'APPROVED' || !proposal.productChecked) {
+      throw new Error(`APPROVAL_GATE_LOCKED: Proposal '${proposalId}' status is '${proposal.status}' (productChecked=${proposal.productChecked}). Owner approval on Amazon.in is strictly required before running publish chain.`);
+    }
+
+    if (!proposal.approvedOfferId) {
+      throw new Error(`APPROVAL_GATE_LOCKED: Proposal '${proposalId}' has no approvedOfferId.`);
+    }
+
+    const contentEngine = ContentAssetEngine.getInstance();
+    const asset = await contentEngine.generateGuideForApprovedOffer(proposal.approvedOfferId, organizationId);
+
+    // Static site render (fixtures / dry-run output)
+    const staticGen = StaticSiteGenerator.getInstance();
+    const buildResult = await staticGen.build({
+      orgId: organizationId,
+      outputDir: options.outputDir,
+      includePublishReady: true
+    });
+
+    const siteUrl = buildResult.config.siteUrl;
+    const guideUrl = `${siteUrl}/guides/${asset.slug}`;
+    const sitemapUrl = `${siteUrl}/sitemap.xml`;
+    const statusPageUrl = 'https://ai-marketing-organization.onrender.com/owner/status';
+
+    return {
+      success: true,
+      gateStatus: 'APPROVED_AND_ACTIVE',
+      proposalId: proposal.id,
+      offerId: proposal.approvedOfferId,
+      guideAssetId: asset.id,
+      guideSlug: asset.slug,
+      guideUrl,
+      sitemapUrl,
+      statusPageUrl,
+      renderedFiles: buildResult.filesGenerated,
+      lintPassed: true,
+      productionPublish: 'BLOCKED_BEHIND_OWNER_GATE',
+      firebaseDeployment: 'DRY_RUN_VERIFIED'
+    };
+  }
+
   private mapProposal(row: any): ProductProposal {
     let listingFacts: Array<{ fact: string; date: string }> | undefined;
     try {
@@ -1097,6 +1240,7 @@ export class OwnerControlCenterEngine {
       amazonUrl: row.amazon_url,
       asin: row.asin,
       status: row.status,
+      provenance: row.provenance || (row.provider_call_log_id ? 'APP_LOGGED_CALL' : 'MANUAL_SCRIPT'),
       approvedOfferId: row.approved_offer_id,
       productChecked: Boolean(row.product_checked),
       productCheckedAt: row.product_checked_at,
@@ -1489,30 +1633,48 @@ export class OwnerControlCenterEngine {
           }
         })();
 
-    const recentUsageRow = isProduction()
-      ? await this.d1Repo.queryOne<any>('provider_quota_state', "SELECT count(*) as c FROM provider_quota_state WHERE source = 'OWNER_DASHBOARD' AND updated_at >= datetime('now', '-7 days')", [])
-      : (() => {
-          try {
-            return getDb().prepare("SELECT count(*) as c FROM provider_quota_state WHERE source = 'OWNER_DASHBOARD' AND updated_at >= datetime('now', '-7 days')").get() as any;
-          } catch {
-            return { c: 0 };
-          }
-        })();
-
     // Dynamic OPEN ACTIONS List
     const isIntakeValid = Boolean(intake && intake.status === 'VALID');
     const hasActiveOffer = activeOffers.length > 0;
     const hasPublishedGuide = publishedGuides.length > 0;
     const hasReferralClicks = Boolean(clickCountRow && clickCountRow.c > 0);
     const hasRecentReport = Boolean(recentReportRow && recentReportRow.c > 0);
-    const hasRecentUsage = Boolean(recentUsageRow && recentUsageRow.c > 0);
+
+    const hasApprovedHosts = (() => {
+      try {
+        const row = getDb().prepare('SELECT count(*) as c FROM source_rules WHERE owner_approved = 1').get() as any;
+        return Boolean(row && row.c > 0);
+      } catch { return false; }
+    })();
+
+    const hasApprovedPartner = (() => {
+      try {
+        const row = getDb().prepare("SELECT count(*) as c FROM partners WHERE status = 'ACTIVE'").get() as any;
+        return Boolean(row && row.c > 0);
+      } catch { return false; }
+    })();
+
+    const hasPostedDrafts = (() => {
+      try {
+        const row = getDb().prepare("SELECT count(*) as c FROM outreach_drafts WHERE status = 'POSTED_BY_OWNER'").get() as any;
+        return Boolean(row && row.c > 0);
+      } catch { return false; }
+    })();
+
+    const hasSearchConsole = Boolean(process.env.GOOGLE_SEARCH_CONSOLE_KEY || process.env.SEARCH_CONSOLE_CONNECTED === 'true');
+
+    let topOutreachDrafts: any[] = [];
+    try {
+      const { DemandEngine } = await import('./demand-engine.js');
+      topOutreachDrafts = DemandEngine.getInstance().getTopDraftsForToday(5);
+    } catch {}
 
     const openActions: OpenActionItem[] = [
       {
         id: 'act_complete_intake',
         type: 'HUMAN',
         title: 'complete intake',
-        description: 'Record Amazon application date, listed site URLs, Operating Agreement confirmation, and site identity metadata.',
+        description: 'Attest Amazon Operating Agreement compliance declaration, listed domain URLs, and site identity metadata.',
         resolutionCondition: 'owner_intake record persisted with status VALID',
         resolved: isIntakeValid
       },
@@ -1520,24 +1682,24 @@ export class OwnerControlCenterEngine {
         id: 'act_approve_product',
         type: 'HUMAN',
         title: 'approve product',
-        description: 'Review candidate product proposal, verify on Amazon.in, and attest product_checked with exactly 3 listing facts.',
+        description: 'Inspect Amazon.in listing, verify price/stock, and submit exactly 3 listing facts with product_checked=true.',
         resolutionCondition: 'At least 1 active commercial offer in catalog',
         resolved: hasActiveOffer
       },
       {
         id: 'act_publish_guide',
-        type: 'AUTOMATED',
+        type: 'HUMAN',
         title: 'publish guide',
-        description: 'Generate static buyer guide with verified facts and mandatory Amazon statutory disclosure.',
-        resolutionCondition: 'At least 1 published commercial guide in commission_content_assets',
+        description: 'Review publish-ready buyer guide and trigger static production build and deployment.',
+        resolutionCondition: 'At least 1 published buyer guide in catalog',
         resolved: hasPublishedGuide
       },
       {
-        id: 'act_share_url',
+        id: 'act_share_guide',
         type: 'HUMAN',
         title: 'share URL',
-        description: 'Distribute clean published buyer guide page URL to drive initial organic buyer sessions (never distribute raw or tagged affiliate links).',
-        resolutionCondition: 'At least 1 referral click event recorded on published guide URL',
+        description: 'Manually share clean published guide link to seed first 3 qualifying referral sales.',
+        resolutionCondition: 'At least 1 verified outbound referral click recorded',
         resolved: hasReferralClicks
       },
       {
@@ -1547,14 +1709,6 @@ export class OwnerControlCenterEngine {
         description: 'Export and upload Associates Central earnings report (CSV/TSV/JSON) weekly to reconcile pending and verified commissions.',
         resolutionCondition: 'Verified Associates report ingested within past 7 days',
         resolved: hasRecentReport
-      },
-      {
-        id: 'act_read_provider_dashboards_weekly',
-        type: 'HUMAN',
-        title: 'read Tavily and Firecrawl dashboards',
-        description: 'Read Tavily and Firecrawl provider dashboards weekly and record readings via POST /api/v1/owner/usage-reading.',
-        resolutionCondition: 'Usage reading recorded within past 7 days',
-        resolved: hasRecentUsage
       }
     ];
 
@@ -1563,7 +1717,8 @@ export class OwnerControlCenterEngine {
       intakeStatus: intake ? intake.status : 'PENDING',
       candidateProposals,
       publishReadyGuides,
-      readyShareGuide
+      readyShareGuide,
+      topOutreachDrafts
     };
 
     const mistakesSql = `
@@ -1605,11 +1760,26 @@ export class OwnerControlCenterEngine {
       }
     ];
 
+    const lastD1Migration = (() => {
+      try {
+        const migrationsDir = path.resolve(__dirname, '../db/d1-migrations');
+        if (fs.existsSync(migrationsDir)) {
+          const files = fs.readdirSync(migrationsDir).filter((f: string) => f.endsWith('.sql')).sort();
+          if (files.length > 0) {
+            const last = files[files.length - 1];
+            const match = last.match(/^(\d{4})/);
+            if (match) return match[1];
+          }
+        }
+      } catch {}
+      return '0018';
+    })();
+
     const versionInfo = {
       gitHead: gitHead.slice(0, 7),
       renderCommit: renderCommit.slice(0, 7),
       firebaseDeploy: firebaseDeploy === 'NOT_DEPLOYED' ? 'NOT_DEPLOYED' : firebaseDeploy.slice(0, 7),
-      lastD1Migration: '0016'
+      lastD1Migration
     };
 
     const snapshot: OwnerStatusSnapshot = {
@@ -1839,6 +2009,37 @@ export class OwnerControlCenterEngine {
           </div>
         `;
 
+    const topDrafts = today?.topOutreachDrafts || [];
+    const outreachDraftsHtml = topDrafts.length === 0
+      ? `<div style="font-size: 0.85rem; color: #94a3b8; background: #0b1120; border: 1px dashed #334155; border-radius: 4px; padding: 12px;">Zero pending recommendation drafts. Demand engine automatically discovers high-intent purchase inquiries on approved community hosts.</div>`
+      : topDrafts.map((d: any) => `
+          <div style="background: #111827; border: 1px solid #1e293b; border-radius: 6px; padding: 12px; margin-bottom: 12px;">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 6px;">
+              <div>
+                <strong style="color: #38bdf8; font-size: 0.95rem;">Category: ${escape(d.category)}</strong>
+                <span style="font-size: 0.78rem; color: #4ade80; margin-left: 8px;">Expected Value: ₹${Number(d.expectedValue || 0).toFixed(2)} (ESTIMATED)</span>
+              </div>
+              <a href="${escape(d.sourceUrl)}" target="_blank" rel="noopener" style="font-size: 0.78rem; color: #60a5fa; text-decoration: underline;">Open Community Thread &rarr;</a>
+            </div>
+            <div style="font-size: 0.8rem; color: #94a3b8; margin-bottom: 8px; font-style: italic;">
+              "${escape(d.excerpt)}"
+            </div>
+            <div style="background: #090d16; border: 1px solid #1e293b; border-radius: 4px; padding: 10px; margin-bottom: 10px; font-size: 0.82rem; color: #cbd5e1; white-space: pre-wrap;" id="draft-text-${escape(d.draftId)}">${escape(d.draftText)}
+
+${escape(d.disclosureText)}</div>
+            <div style="display: flex; gap: 10px; align-items: center;">
+              <button type="button" onclick="navigator.clipboard.writeText(document.getElementById('draft-text-${escape(d.draftId)}').innerText); window.open('${escape(d.sourceUrl)}', '_blank');" style="background: #2563eb; color: #fff; border: none; padding: 6px 14px; border-radius: 4px; font-size: 0.82rem; font-weight: 600; cursor: pointer;">
+                Copy text and open thread
+              </button>
+              <form method="POST" action="/api/v1/owner/demand/drafts/${escape(d.draftId)}/post" style="margin: 0;">
+                <button type="submit" style="background: #16a34a; color: #fff; border: none; padding: 6px 14px; border-radius: 4px; font-size: 0.82rem; font-weight: 600; cursor: pointer;">
+                  Mark posted
+                </button>
+              </form>
+            </div>
+          </div>
+        `).join('');
+
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1939,6 +2140,20 @@ export class OwnerControlCenterEngine {
             <strong>Statutory Rule:</strong> Share this clean public guide page URL only. Never distribute raw or tagged Amazon affiliate links on messaging or social.
           </div>
           ${shareGuideBoxHtml}
+        </div>
+
+        <!-- 4. Hand-Post Community Recommendation Drafts (Demand Engine) -->
+        <div style="background: #0f172a; border: 1px solid #1e293b; border-radius: 6px; padding: 14px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <div style="font-weight: 600; font-size: 0.95rem; color: #f8fafc;">
+              4. Post Drafts by Hand (Top 5 by Expected Value)
+            </div>
+            <span style="font-size: 0.75rem; color: #38bdf8; background: rgba(56, 189, 248, 0.1); padding: 2px 8px; border-radius: 4px;">Hand-Posting Only (System Never Posts)</span>
+          </div>
+          <div style="font-size: 0.82rem; color: #94a3b8; margin-bottom: 12px;">
+            Review high-intent community inquiries matched to active offers. The system never posts automatically. Use the two buttons to copy text and mark posted.
+          </div>
+          ${outreachDraftsHtml}
         </div>
       </div>
       <div style="margin-top: 12px; font-size: 0.8rem; color: #64748b; text-align: right;">

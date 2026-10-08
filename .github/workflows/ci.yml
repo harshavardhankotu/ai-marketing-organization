@@ -1,4 +1,4 @@
-name: CI
+name: CI & Deployment Pipeline
 
 on:
   push:
@@ -7,7 +7,8 @@ on:
     branches: [ main ]
 
 jobs:
-  build-and-test:
+  validate-build-test:
+    name: Typecheck, Guardrails, Build & Test
     runs-on: ubuntu-latest
 
     steps:
@@ -23,20 +24,46 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build Shared Package
-        run: npm run build --workspace=packages/shared
+      - name: Guardrail - Check No Scratch/Scripts D1 REST Mutations
+        run: npm run check:no-scratch-writes
 
-      - name: Build Backend Service
-        run: npm run build --workspace=packages/backend
+      - name: Guardrail - Verify Mistakes Board Fixed Guards Resolve
+        run: npm run board:verify
 
-      - name: Build Frontend Application
-        run: npm run build --workspace=packages/frontend
+      - name: Monorepo Typecheck
+        run: npm run typecheck
 
-      - name: Build Cloudflare Worker
-        run: npm run build --workspace=packages/cloudflare-worker
+      - name: Build All Workspaces
+        run: npm run build
 
-      - name: Run Test Suite
-        run: npm run test --workspace=packages/backend
+      - name: Run Unit & Regression Tests
+        run: npm run test
 
       - name: Verify Database Seeding
         run: npx tsx packages/backend/src/db/seed.ts
+
+      - name: Verify Publish Chain Behind Approval Gate & Firebase Hosting Dry-Run
+        run: |
+          npx vitest run packages/backend/tests/unit/publish-chain-approval-gate.test.ts --test-timeout=30000
+          node -e "const cfg = require('./firebase.json'); if (!cfg.hosting || !cfg.hosting.site) throw new Error('Invalid firebase.json'); console.log('Firebase Hosting Configuration Verified (Dry-Run):', cfg.hosting.site, '-> public dir:', cfg.hosting.public);"
+
+  deploy-render:
+    name: Deploy to Render (Green Main Only)
+    needs: validate-build-test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Trigger Render Production Deploy
+        run: |
+          if [ -n "${{ secrets.RENDER_API_KEY }}" ]; then
+            echo "Triggering Render deploy via API..."
+            curl -m 30 -sS -X POST "https://api.render.com/v1/services/srv-darecoc9v7es73ea8t2g/deploys" \
+              -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
+              -H "Accept: application/json"
+          elif [ -n "${{ secrets.RENDER_DEPLOY_HOOK_URL }}" ]; then
+            echo "Triggering Render deploy via deploy hook..."
+            curl -m 30 -sS -X POST "${{ secrets.RENDER_DEPLOY_HOOK_URL }}"
+          else
+            echo "Render deploy credentials not configured in GitHub Secrets; deploy on green checked via Render Git integration."
+          fi

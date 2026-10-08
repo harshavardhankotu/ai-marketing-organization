@@ -24,7 +24,7 @@
 
 import { getDb } from '../db/client.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
-import { isProduction } from '../config/env.js';
+import { isProduction, isPlaceholderCredential } from '../config/env.js';
 
 export type QuotaPriority = 'P0' | 'P1' | 'P2' | 'P3' | 'P4';
 export type ProviderName = 'GEMINI' | 'TAVILY';
@@ -771,5 +771,193 @@ export class UnifiedQuotaService {
       totalWakes: row?.total_wakes || 0,
       totalExternalActions: row?.total_external_actions || 0
     };
+  }
+
+  /**
+   * Automatic provider usage sync (Daily Cron / On-Demand).
+   * Calls GET https://api.tavily.com/usage (Doc: https://docs.tavily.com/documentation/api-reference/endpoint/usage)
+   * If FIRECRAWL_API_KEY is configured: calls GET https://api.firecrawl.dev/v2/team/credit-usage (Doc: https://docs.firecrawl.dev/api-reference/endpoint/credit-usage)
+   * Writes result to provider_quota_state with source 'PROVIDER_API'.
+   * If difference > 10%, records a DRIFT row in provider_drift_records.
+   * If free plan returns 403, records NO_USAGE_API_FREE_PLAN.
+   */
+  public async syncProviderUsage(): Promise<{
+    tavily: { status: string; usage?: number; limit?: number; driftPercent?: number; driftDetected?: boolean; error?: string };
+    firecrawl?: { status: string; usage?: number; error?: string };
+  }> {
+    const db = getDb();
+    const result: any = {
+      tavily: { status: 'UNKNOWN' }
+    };
+
+    // 1. TAVILY USAGE CHECK
+    // Doc: https://docs.tavily.com/documentation/api-reference/endpoint/usage
+    const tavilyKey = process.env.TAVILY_API_KEY;
+    if (!tavilyKey || isPlaceholderCredential(tavilyKey)) {
+      result.tavily = { status: 'SKIPPED_NO_KEY' };
+    } else {
+      try {
+        const res = await fetch('https://api.tavily.com/usage', {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${tavilyKey}`,
+            'Accept': 'application/json'
+          },
+          signal: AbortSignal.timeout(30000)
+        });
+
+        if (res.status === 403) {
+          const bodyText = await res.text().catch(() => '');
+          db.prepare(`
+            UPDATE provider_quota_state
+            SET source = 'PROVIDER_API', unlogged_reason = 'NO_USAGE_API_FREE_PLAN', updated_at = datetime('now')
+            WHERE provider = 'TAVILY'
+          `).run();
+          if (isProduction()) {
+            await this.d1Repo.executeWrite(
+              'provider_quota_state',
+              `UPDATE provider_quota_state SET source = 'PROVIDER_API', unlogged_reason = 'NO_USAGE_API_FREE_PLAN', updated_at = datetime('now') WHERE provider = 'TAVILY'`,
+              []
+            ).catch(() => {});
+          }
+          result.tavily = { status: 'NO_USAGE_API_FREE_PLAN', error: bodyText };
+        } else if (!res.ok) {
+          result.tavily = { status: `HTTP_${res.status}`, error: await res.text().catch(() => '') };
+        } else {
+          const data = (await res.json()) as any;
+          const usage = typeof data?.key?.usage === 'number'
+            ? data.key.usage
+            : (typeof data?.account?.plan_usage === 'number' ? data.account.plan_usage : (typeof data?.usage === 'number' ? data.usage : 0));
+          const limit = typeof data?.key?.limit === 'number'
+            ? data.key.limit
+            : (typeof data?.account?.plan_limit === 'number' ? data.account.plan_limit : 1000);
+
+          const current = db.prepare(`SELECT * FROM provider_quota_state WHERE provider = 'TAVILY'`).get() as any;
+          const localCount = current?.credits_consumed_month || 0;
+          const drift = Math.abs(usage - localCount);
+          const driftPercent = localCount > 0 ? (drift / localCount) * 100 : (usage > 0 ? 100 : 0);
+          const driftDetected = driftPercent > 10;
+
+          if (driftDetected) {
+            const driftId = `drift_tavily_${Date.now()}`;
+            const details = JSON.stringify({
+              docUrl: 'https://docs.tavily.com/documentation/api-reference/endpoint/usage',
+              localCount,
+              providerUsage: usage,
+              limit,
+              driftPercent: Number(driftPercent.toFixed(2))
+            });
+            const driftSql = `
+              INSERT INTO provider_drift_records (id, provider, local_count, provider_count, drift_percentage, status, details_json, created_at)
+              VALUES (?, 'TAVILY', ?, ?, ?, 'DRIFT_DETECTED', ?, datetime('now'))
+            `;
+            db.prepare(driftSql).run(driftId, localCount, usage, driftPercent, details);
+            if (isProduction()) {
+              await this.d1Repo.executeWrite('provider_drift_records', driftSql, [driftId, localCount, usage, driftPercent, details]).catch(() => {});
+            }
+          }
+
+          const appLimit = Math.floor(limit * 0.7); // 70% free allowance cap rule
+          const unlogged = Math.max(0, usage - localCount);
+          const updateSql = `
+            UPDATE provider_quota_state
+            SET credits_consumed_month = ?,
+                provider_limit = ?,
+                application_limit = ?,
+                source = 'PROVIDER_API',
+                limit_source = 'PROVIDER_API',
+                unlogged_credits = ?,
+                unlogged_reason = ?,
+                updated_at = datetime('now')
+            WHERE provider = 'TAVILY'
+          `;
+          const updateParams = [usage, limit, appLimit, unlogged, driftDetected ? 'PROVIDER_API_DRIFT_SYNC' : 'PROVIDER_API_SYNC'];
+          db.prepare(updateSql).run(...updateParams);
+          if (isProduction()) {
+            await this.d1Repo.executeWrite('provider_quota_state', updateSql, updateParams).catch(() => {});
+          }
+
+          result.tavily = {
+            status: 'SUCCESS',
+            usage,
+            limit,
+            driftPercent: Number(driftPercent.toFixed(2)),
+            driftDetected
+          };
+        }
+      } catch (err: any) {
+        result.tavily = { status: 'ERROR', error: err.message };
+      }
+    }
+
+    // 2. FIRECRAWL USAGE CHECK
+    // Doc: https://docs.firecrawl.dev/api-reference/endpoint/credit-usage
+    const firecrawlKey = process.env.FIRECRAWL_API_KEY;
+    if (firecrawlKey && !isPlaceholderCredential(firecrawlKey)) {
+      try {
+        const fcRes = await fetch('https://api.firecrawl.dev/v2/team/credit-usage', {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${firecrawlKey}`,
+            'Accept': 'application/json'
+          },
+          signal: AbortSignal.timeout(30000)
+        });
+
+        if (fcRes.status === 403) {
+          const bodyText = await fcRes.text().catch(() => '');
+          const fc403Sql = `
+            INSERT INTO provider_quota_state (
+              id, provider, source, limit_source, unlogged_reason, updated_at
+            ) VALUES ('firecrawl', 'FIRECRAWL', 'PROVIDER_API', 'ASSUMPTION', 'NO_USAGE_API_FREE_PLAN', datetime('now'))
+            ON CONFLICT(id) DO UPDATE SET
+              source = 'PROVIDER_API',
+              unlogged_reason = 'NO_USAGE_API_FREE_PLAN',
+              updated_at = datetime('now')
+          `;
+          db.prepare(fc403Sql).run();
+          if (isProduction()) {
+            await this.d1Repo.executeWrite('provider_quota_state', fc403Sql).catch(() => {});
+          }
+          result.firecrawl = { status: 'NO_USAGE_API_FREE_PLAN', error: bodyText };
+        } else if (!fcRes.ok) {
+          result.firecrawl = { status: `HTTP_${fcRes.status}`, error: await fcRes.text().catch(() => '') };
+        } else {
+          const fcData = (await fcRes.json()) as any;
+          const totalCredits = fcData?.data?.total_credits_allocated ?? fcData?.total_credits_allocated ?? fcData?.data?.totalCredits ?? fcData?.totalCredits ?? null;
+          const remainingCredits = fcData?.data?.remaining_credits ?? fcData?.remaining_credits ?? fcData?.data?.remainingCredits ?? fcData?.remainingCredits ?? null;
+          const appLimit = typeof totalCredits === 'number' ? Math.floor(totalCredits * 0.7) : null;
+          const usedCredits = (typeof totalCredits === 'number' && typeof remainingCredits === 'number') ? Math.max(0, totalCredits - remainingCredits) : 0;
+
+          if (typeof totalCredits === 'number') {
+            const fcSql = `
+              INSERT INTO provider_quota_state (
+                id, provider, provider_limit, application_limit, credits_consumed_month,
+                credits_estimated_remaining, source, limit_source, updated_at
+              ) VALUES ('firecrawl', 'FIRECRAWL', ?, ?, ?, ?, 'PROVIDER_API', 'PROVIDER_API', datetime('now'))
+              ON CONFLICT(id) DO UPDATE SET
+                provider_limit = excluded.provider_limit,
+                application_limit = excluded.application_limit,
+                credits_consumed_month = excluded.credits_consumed_month,
+                credits_estimated_remaining = excluded.credits_estimated_remaining,
+                source = 'PROVIDER_API',
+                limit_source = 'PROVIDER_API',
+                unlogged_reason = NULL,
+                updated_at = datetime('now')
+            `;
+            const fcParams = [totalCredits, appLimit, usedCredits, remainingCredits];
+            db.prepare(fcSql).run(...fcParams);
+            if (isProduction()) {
+              await this.d1Repo.executeWrite('provider_quota_state', fcSql, fcParams).catch(() => {});
+            }
+          }
+          result.firecrawl = { status: 'SUCCESS', data: fcData, allowance: totalCredits, remaining: remainingCredits };
+        }
+      } catch (err: any) {
+        result.firecrawl = { status: 'ERROR', error: err.message };
+      }
+    }
+
+    return result;
   }
 }

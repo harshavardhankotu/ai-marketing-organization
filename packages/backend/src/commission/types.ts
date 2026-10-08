@@ -14,6 +14,9 @@ export type PartnerNetwork =
   | 'EBAY_PARTNER_NETWORK'
   | 'DIRECT_REFERRAL'
   | 'CPL_PARTNER'
+  | 'VCOMMISSION'
+  | 'CUELINKS'
+  | 'EARNKARO'
   | 'OTHER_AUTHORIZED_PARTNER';
 
 /** Phase 2: how attribution is carried to the provider */

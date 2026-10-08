@@ -1478,11 +1478,20 @@ CREATE TABLE IF NOT EXISTS learning_records (
   time_taken_hours REAL NOT NULL DEFAULT 0.0,
   confidence REAL NOT NULL DEFAULT 0.5,
   evidence_json TEXT NOT NULL DEFAULT '{}',
+  what TEXT,
+  outcome TEXT,
+  cause TEXT,
+  rule TEXT,
+  evidence_ref TEXT,
+  source_file TEXT,
+  date TEXT,
+  content_hash TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_lrn_records_org ON learning_records(organization_id);
 CREATE INDEX IF NOT EXISTS idx_lrn_records_type ON learning_records(learning_type);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_lrn_content_hash ON learning_records(content_hash);
 
 -- 69. Autonomy Policy Configuration (Spec § 23: Machine-enforced bounds)
 CREATE TABLE IF NOT EXISTS autonomy_policy_config (
@@ -2110,11 +2119,22 @@ CREATE TABLE IF NOT EXISTS demand_signals (
   status TEXT NOT NULL DEFAULT 'DISCOVERED', -- DISCOVERED | MATCHED | ADDRESSED | QUARANTINED
   intent_class TEXT NOT NULL DEFAULT 'RESEARCH',
   commercial_score REAL NOT NULL DEFAULT 0,
+  source_host TEXT,
+  url TEXT,
+  excerpt TEXT,
+  author_hash TEXT,
+  language TEXT DEFAULT 'en',
+  city TEXT,
+  intent_score INTEGER DEFAULT 0,
+  budget_hint TEXT,
+  found_at TEXT,
+  dedupe_hash TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_demand_signals_topic ON demand_signals(topic);
 CREATE INDEX IF NOT EXISTS idx_demand_signals_status ON demand_signals(status);
 CREATE INDEX IF NOT EXISTS idx_demand_signals_intent ON demand_signals(intent_class);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_demand_signals_dedupe ON demand_signals(dedupe_hash);
 
 -- 96. Durable Rate Limits (Per-IP hash window limiter)
 CREATE TABLE IF NOT EXISTS durable_rate_limits (
@@ -2182,6 +2202,7 @@ CREATE TABLE IF NOT EXISTS product_proposals (
   amazon_url TEXT,
   asin TEXT,
   status TEXT NOT NULL DEFAULT 'PROPOSED',
+  provenance TEXT DEFAULT 'APP_LOGGED_CALL',
   approved_offer_id TEXT,
   product_checked INTEGER NOT NULL DEFAULT 0,
   product_checked_at TEXT,
@@ -2223,5 +2244,60 @@ CREATE TABLE IF NOT EXISTS mistakes_board (
   guard_type TEXT NOT NULL CHECK(guard_type IN ('TEST', 'HOOK', 'LINT', 'NONE')),
   guard_ref TEXT,
   source_report TEXT NOT NULL
+);
+
+-- 102. Provider Usage Drift Records
+CREATE TABLE IF NOT EXISTS provider_drift_records (
+  id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  local_count INTEGER NOT NULL,
+  provider_count INTEGER NOT NULL,
+  drift_percentage REAL NOT NULL,
+  status TEXT NOT NULL,
+  details_json TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 103. Demand Matches
+CREATE TABLE IF NOT EXISTS demand_matches (
+  id TEXT PRIMARY KEY,
+  signal_id TEXT NOT NULL,
+  offer_id TEXT NOT NULL,
+  expected_value REAL NOT NULL DEFAULT 0.0,
+  ev_basis TEXT NOT NULL DEFAULT 'ESTIMATED',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (signal_id) REFERENCES demand_signals(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_demand_matches_signal ON demand_matches(signal_id);
+CREATE INDEX IF NOT EXISTS idx_demand_matches_offer ON demand_matches(offer_id);
+
+-- 104. Outreach Drafts
+CREATE TABLE IF NOT EXISTS outreach_drafts (
+  id TEXT PRIMARY KEY,
+  signal_id TEXT NOT NULL,
+  channel TEXT NOT NULL DEFAULT 'COMMUNITY_FORUM',
+  draft_text TEXT NOT NULL,
+  landing_url TEXT NOT NULL,
+  disclosure_text TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'DRAFTED' CHECK(status IN ('DRAFTED', 'APPROVED', 'POSTED_BY_OWNER', 'EXPIRED')),
+  expires_at TEXT NOT NULL,
+  posted_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (signal_id) REFERENCES demand_signals(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_outreach_drafts_signal ON outreach_drafts(signal_id);
+CREATE INDEX IF NOT EXISTS idx_outreach_drafts_status ON outreach_drafts(status);
+
+-- 105. Source Rules (host allowlist and policies)
+CREATE TABLE IF NOT EXISTS source_rules (
+  host TEXT PRIMARY KEY,
+  allows_links INTEGER NOT NULL DEFAULT 1,
+  allows_affiliate INTEGER NOT NULL DEFAULT 0,
+  needs_disclosure INTEGER NOT NULL DEFAULT 1,
+  automation_allowed INTEGER NOT NULL DEFAULT 0,
+  owner_approved INTEGER NOT NULL DEFAULT 0,
+  notes TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 `;

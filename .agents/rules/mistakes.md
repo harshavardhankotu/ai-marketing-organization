@@ -1,6 +1,6 @@
 # Mistakes Board — Active Rules & Guardrails
 
-> Auto-generated from Cloudflare D1 mistakes_board at 2026-10-07T23:05:45.654Z
+> Auto-generated from Cloudflare D1 mistakes_board at 2026-10-08T22:08:45.756Z
 > Total Open Rules: 12
 > Antigravity loads this file at session start. Do not delete.
 
@@ -54,28 +54,28 @@
 - **Cause:** Pipeline advanced from proposal to guide draft without gating on status = APPROVED.
 - **Guard:** NONE
 
-### [P2] Cooldown check failed open
-- **ID:** `mst_09_cooldown_failed_open`
-- **Severity:** P2 | **Recurrence:** 2 | **Status:** OPEN
-- **Rule:** **Enforce 7-day query cooldown on all automated discovery queries before dispatching external calls.**
-- **What Happened:** Search queries bypassed 7-day cooldown when cache lookups failed or returned undefined.
-- **Cause:** Missing fail-closed error handling around search cache query.
+### [P1] Production log row written by script and shown as app provenance
+- **ID:** `mst_14_production_log_row_script_provenance`
+- **Severity:** P1 | **Recurrence:** 1 | **Status:** OPEN
+- **Rule:** **Never write production log rows by script. Application provenance requires logged runtime calls through the app.**
+- **What Happened:** Agent wrote a production log row (call_1791393061443_spec01) by script and presented it as app provenance
+- **Cause:** Manual script executed direct insert into production D1 bypassing application call stack
 - **Guard:** NONE
 
-### [P2] Rate limiter used a proxy IP
-- **ID:** `mst_10_ratelimiter_used_proxy_ip`
-- **Severity:** P2 | **Recurrence:** 2 | **Status:** OPEN
-- **Rule:** **Resolve client IP strictly from cf-connecting-ip or first untampered public proxy segment with HMAC salt.**
-- **What Happened:** Rate limiter used socket address or untrusted x-forwarded-for headers rather than validated Cloudflare connecting IP.
-- **Cause:** Missing header precedence and proxy trust validation in client IP resolution.
+### [P1] Tavily credits rose from 226 (owner, Oct 8) to 257 (API) with no log
+- **ID:** `mst_15_tavily_credits_unlogged_rise`
+- **Severity:** P1 | **Recurrence:** 1 | **Status:** OPEN
+- **Rule:** **Log actual credits on every Tavily call with include_usage, run daily usage sync, and flag drift >10%.**
+- **What Happened:** Tavily credit usage rose from 226 to 257 on provider API check with no corresponding application call log
+- **Cause:** Tavily API calls executed outside the logged application runtime without include_usage tracking
 - **Guard:** NONE
 
-### [P2] Discovery loop made duplicate rows
-- **ID:** `mst_11_discovery_loop_duplicate_rows`
-- **Severity:** P2 | **Recurrence:** 2 | **Status:** OPEN
-- **Rule:** **Deduplicate discovery intents and call logs with unique keys and skip duplicate logging.**
-- **What Happened:** Repeated cron ticks generated duplicate prospect and call log entries.
-- **Cause:** Missing unique constraints and deduplication keys on external research requests.
+### [P1] Boilerplate "biggest risk" repeated without data
+- **ID:** `mst_16_boilerplate_biggest_risk_repeated`
+- **Severity:** P1 | **Recurrence:** 1 | **Status:** OPEN
+- **Rule:** **Compute top blockers directly from open mistakes board items and money path, citing measured data and monetary impact.**
+- **What Happened:** Repeated generic boilerplate risk text across reports without computing risk from measured data
+- **Cause:** Risk assessment was hardcoded rather than dynamically computed from open blockers and money path
 - **Guard:** NONE
 
 ### [P2] Placeholder text left in prompts

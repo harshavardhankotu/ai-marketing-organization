@@ -9,6 +9,7 @@ import { StaticSiteGenerator } from '../../src/commission/static-site-generator.
 import { FirecrawlAdapter } from '../../src/research/firecrawl-adapter.js';
 import { AutomaticProductPipeline } from '../../src/commission/automatic-product-pipeline.js';
 import { ShareKitService } from '../../src/commission/share-kit-service.js';
+import { UnifiedQuotaService } from '../../src/quota/unified-quota-service.js';
 import { app } from '../../src/index.js';
 
 describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)', () => {
@@ -235,17 +236,16 @@ describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)
       expect(snapshot.openActions.length).toBeGreaterThan(0);
     });
 
-    it('open actions list contains canonical items including weekly dashboard reading', async () => {
+    it('open actions list contains canonical items (manual provider reading retired in favor of automatic sync)', async () => {
       const snapshot = await engine.computeStatus(orgId);
-      expect(snapshot.openActions).toHaveLength(6);
+      expect(snapshot.openActions).toHaveLength(5);
 
       const canonicalTitles = [
         'complete intake',
         'approve product',
         'publish guide',
         'share URL',
-        'upload Associates report weekly',
-        'read Tavily and Firecrawl dashboards'
+        'upload Associates report weekly'
       ];
 
       for (const action of snapshot.openActions) {
@@ -400,9 +400,10 @@ describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)
       }
     });
 
-    it('approves proposal with valid amazon.in URL and product_checked attestation', async () => {
+    it('approves proposal with valid amazon.in URL and product_checked attestation after app-logged re-fetch', async () => {
       const proposals = await engine.discoverProductProposals(orgId);
       const target = proposals[0];
+      expect(target.provenance).toBe('MANUAL_SCRIPT');
 
       // Provide owner intake first so offer activates
       await engine.saveIntake(orgId, {
@@ -415,6 +416,27 @@ describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)
         tavilyKeyRotated: true
       });
 
+      // 1. Initial proposal has MANUAL_SCRIPT provenance and MUST be rejected
+      await expect(engine.approveProposal(orgId, target.id, {
+        displayName: 'Phomemo PM-241BT Shipping Label Printer',
+        amazonUrl: 'https://www.amazon.in/dp/B08P13WGLX',
+        productChecked: true,
+        fact1: 'Direct Thermal 203 DPI',
+        fact1Date: '2026-10-07',
+        fact2: '150 mm/s print speed',
+        fact2Date: '2026-10-07',
+        fact3: 'Supports 1-4 inch width',
+        fact3Date: '2026-10-07'
+      })).rejects.toThrow("Proposal has provenance 'MANUAL_SCRIPT'");
+
+      // 2. Weekly pipeline re-fetches specifications through app's own logged call
+      db.prepare(`
+        UPDATE product_proposals
+        SET provenance = 'APP_LOGGED_CALL', provider_call_log_id = 'call_test_logged_spec_01'
+        WHERE id = ?
+      `).run(target.id);
+
+      // 3. Approval succeeds once provenance is APP_LOGGED_CALL
       const result = await engine.approveProposal(orgId, target.id, {
         displayName: 'Phomemo PM-241BT Shipping Label Printer',
         amazonUrl: 'https://www.amazon.in/dp/B08P13WGLX',
@@ -808,9 +830,9 @@ describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)
       expect(await engine.isCategoryBlocked(orgId, 'Industrial Logistics & Labeling')).toBe(false);
     });
 
-    it('snapshot openActions contains canonical items including weekly dashboard reading', async () => {
+    it('snapshot openActions contains canonical items (manual provider reading retired)', async () => {
       const snapshot = await engine.computeStatus(orgId);
-      expect(snapshot.openActions).toHaveLength(6);
+      expect(snapshot.openActions).toHaveLength(5);
 
       const actionTitles = snapshot.openActions.map(a => a.title);
       expect(actionTitles).toEqual([
@@ -818,8 +840,7 @@ describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)
         'approve product',
         'publish guide',
         'share URL',
-        'upload Associates report weekly',
-        'read Tavily and Firecrawl dashboards'
+        'upload Associates report weekly'
       ]);
 
       const html = engine.renderHtmlDashboard(snapshot);
@@ -827,7 +848,7 @@ describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)
       expect(html).toContain('AGENT CATALOG: not wired (80)');
     });
 
-    it('recordUsageReading records dashboard reading and resolves weekly open action', async () => {
+    it('recordUsageReading records dashboard reading and weekly manual action is retired in favor of automatic sync', async () => {
       const res = await engine.recordUsageReading(orgId, {
         provider: 'TAVILY',
         creditsUsed: 226
@@ -838,7 +859,8 @@ describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)
 
       const snapshot = await engine.computeStatus(orgId);
       const usageAction = snapshot.openActions.find(a => a.id === 'act_read_provider_dashboards_weekly');
-      expect(usageAction?.resolved).toBe(true);
+      // Automatic usage checks have replaced manual owner reading action
+      expect(usageAction).toBeUndefined();
     });
 
     it('normalizeAmazonInUrl accepts long browser URLs, gp/product paths, slugs with t.co, and rejects lookalikes', () => {
@@ -903,6 +925,7 @@ describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)
     it('fact lint uses whole-word matching: wholesale is allowed, customers praise is blocked', async () => {
       const proposals = await engine.discoverProductProposals(orgId);
       const propId = proposals[0].id;
+      db.prepare("UPDATE product_proposals SET provenance = 'APP_LOGGED_CALL', provider_call_log_id = 'call_test_01' WHERE id = ?").run(propId);
 
       // "wholesale" allowed
       await expect(engine.approveProposal(orgId, propId, {
@@ -928,29 +951,57 @@ describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)
     it('FirecrawlAdapter requires OWNER_APPROVAL_REQUIRED host approval, blocks amazon.in, and caches', async () => {
       try {
         db.prepare("DELETE FROM spec_page_cache WHERE url LIKE '%phomemo%'").run();
+        db.prepare("DELETE FROM provider_quota_state WHERE provider = 'FIRECRAWL'").run();
       } catch {}
       const adapter = FirecrawlAdapter.getInstance();
+      const prevKey = process.env.FIRECRAWL_API_KEY;
 
-      // Block amazon.in URLs
-      await expect(adapter.scrapeManufacturerSpec('https://www.amazon.in/dp/B08P13WGLX'))
-        .rejects.toThrow(/Firecrawl is strictly forbidden from scraping any amazon\.\* domain/);
+      try {
+        // Block amazon.in URLs unconditionally
+        await expect(adapter.scrapeManufacturerSpec('https://www.amazon.in/dp/B08P13WGLX'))
+          .rejects.toThrow(/Firecrawl is strictly forbidden from scraping any amazon\.\* domain/);
 
-      // Unapproved host rejected
-      await expect(adapter.scrapeManufacturerSpec('https://unknown-manufacturer.com/specs'))
-        .rejects.toThrow(/OWNER_APPROVAL_REQUIRED/);
+        // Unapproved host rejected
+        await expect(adapter.scrapeManufacturerSpec('https://unknown-manufacturer.com/specs'))
+          .rejects.toThrow(/OWNER_APPROVAL_REQUIRED/);
 
-      // Approve host explicitly by owner
-      FirecrawlAdapter.approveHostByOwner('phomemo.com');
+        // Approve host explicitly by owner
+        FirecrawlAdapter.approveHostByOwner('phomemo.com');
 
-      // Scrape approved manufacturer URL (mocked in non-prod test)
-      const res1 = await adapter.scrapeManufacturerSpec('https://phomemo.com/products/pm-241bt');
-      expect(res1.fromCache).toBe(false);
-      expect(res1.creditsConsumed).toBe(1);
+        // Refuse to run when FIRECRAWL_API_KEY is not configured
+        delete process.env.FIRECRAWL_API_KEY;
+        await expect(adapter.scrapeManufacturerSpec('https://phomemo.com/products/pm-241bt'))
+          .rejects.toThrow(/FIRECRAWL_API_KEY is not configured/);
 
-      // Second fetch of same URL uses cache with 0 credits
-      const res2 = await adapter.scrapeManufacturerSpec('https://phomemo.com/products/pm-241bt');
-      expect(res2.fromCache).toBe(true);
-      expect(res2.creditsConsumed).toBe(0);
+        // Refuse to run when allowance is not recorded from credit-usage response
+        process.env.FIRECRAWL_API_KEY = 'fc_test_key_valid';
+        await expect(adapter.scrapeManufacturerSpec('https://phomemo.com/products/pm-241bt'))
+          .rejects.toThrow(/Firecrawl allowance is not recorded from credit-usage response/);
+
+        // Record allowance in provider_quota_state with source PROVIDER_API
+        db.prepare(`
+          INSERT OR REPLACE INTO provider_quota_state (
+            id, provider, provider_limit, application_limit, credits_consumed_month,
+            credits_estimated_remaining, source, limit_source, updated_at
+          ) VALUES ('firecrawl', 'FIRECRAWL', 500, 350, 0, 500, 'PROVIDER_API', 'PROVIDER_API', datetime('now'))
+        `).run();
+
+        // Scrape approved manufacturer URL (mocked in non-prod test, zero live calls)
+        const res1 = await adapter.scrapeManufacturerSpec('https://phomemo.com/products/pm-241bt');
+        expect(res1.fromCache).toBe(false);
+        expect(res1.creditsConsumed).toBe(1);
+
+        // Second fetch of same URL uses cache with 0 credits
+        const res2 = await adapter.scrapeManufacturerSpec('https://phomemo.com/products/pm-241bt');
+        expect(res2.fromCache).toBe(true);
+        expect(res2.creditsConsumed).toBe(0);
+      } finally {
+        if (prevKey) {
+          process.env.FIRECRAWL_API_KEY = prevKey;
+        } else {
+          delete process.env.FIRECRAWL_API_KEY;
+        }
+      }
     });
 
     it('AutomaticProductPipeline produces state machine diagram and enforces weekly batching', async () => {
@@ -983,12 +1034,94 @@ describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)
       expect(snapshot.mistakesBoard).toBeDefined();
       expect(snapshot.bugs).toBeDefined();
       expect(snapshot.versionInfo).toBeDefined();
-      expect(snapshot.versionInfo?.lastD1Migration).toBe('0016');
+      expect(snapshot.versionInfo?.lastD1Migration).toMatch(/^\d{4}$/);
 
       const html = engine.renderHtmlDashboard(snapshot);
       expect(html).toContain('MISTAKES BOARD');
       expect(html).toContain('BUGS');
       expect(html).toContain('VERSION &amp; DEPLOYMENT INTEGRITY');
+    });
+
+    it('syncProviderUsage detects drift > 10%, logs DRIFT row, and updates quota with PROVIDER_API', async () => {
+      const quotaService = UnifiedQuotaService.getInstance();
+      const db = getDb();
+
+      // Seed local Tavily quota with 200 credits
+      db.prepare(`
+        UPDATE provider_quota_state
+        SET credits_consumed_month = 200, source = 'LOCAL_COUNTER'
+        WHERE provider = 'TAVILY'
+      `).run();
+
+      // Mock global fetch for Tavily usage
+      const originalFetch = globalThis.fetch;
+      process.env.TAVILY_API_KEY = 'tvly_test_live_key_999';
+
+      globalThis.fetch = async (url: any, init?: any) => {
+        const urlStr = String(url);
+        if (urlStr.includes('api.tavily.com/usage')) {
+          expect(init?.headers?.Authorization).toBe('Bearer tvly_test_live_key_999');
+          return new Response(JSON.stringify({
+            key: { usage: 257, limit: 1000 },
+            account: { plan_usage: 257, plan_limit: 1000 }
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+        return originalFetch(url, init);
+      };
+
+      try {
+        const res = await quotaService.syncProviderUsage();
+        expect(res.tavily.status).toBe('SUCCESS');
+        expect(res.tavily.usage).toBe(257);
+        expect(res.tavily.driftDetected).toBe(true);
+        expect(res.tavily.driftPercent).toBeGreaterThan(10); // |257 - 200| / 200 = 28.5%
+
+        // Verify provider_quota_state updated
+        const updatedQuota = db.prepare(`SELECT * FROM provider_quota_state WHERE provider = 'TAVILY'`).get() as any;
+        expect(updatedQuota.credits_consumed_month).toBe(257);
+        expect(updatedQuota.source).toBe('PROVIDER_API');
+        expect(updatedQuota.limit_source).toBe('PROVIDER_API');
+        expect(updatedQuota.application_limit).toBe(700);
+
+        // Verify DRIFT row recorded in provider_drift_records
+        const driftRow = db.prepare(`SELECT * FROM provider_drift_records WHERE provider = 'TAVILY' ORDER BY created_at DESC LIMIT 1`).get() as any;
+        expect(driftRow).toBeDefined();
+        expect(driftRow.local_count).toBe(200);
+        expect(driftRow.provider_count).toBe(257);
+        expect(driftRow.status).toBe('DRIFT_DETECTED');
+        expect(driftRow.details_json).toContain('docs.tavily.com');
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it('syncProviderUsage records NO_USAGE_API_FREE_PLAN when provider usage returns 403', async () => {
+      const quotaService = UnifiedQuotaService.getInstance();
+      const db = getDb();
+      const originalFetch = globalThis.fetch;
+      process.env.TAVILY_API_KEY = 'tvly_free_plan_key_403';
+
+      globalThis.fetch = async (url: any, init?: any) => {
+        const urlStr = String(url);
+        if (urlStr.includes('api.tavily.com/usage')) {
+          return new Response(JSON.stringify({ error: 'Usage endpoint not available on Free tier' }), {
+            status: 403,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+        return originalFetch(url, init);
+      };
+
+      try {
+        const res = await quotaService.syncProviderUsage();
+        expect(res.tavily.status).toBe('NO_USAGE_API_FREE_PLAN');
+
+        const updatedQuota = db.prepare(`SELECT * FROM provider_quota_state WHERE provider = 'TAVILY'`).get() as any;
+        expect(updatedQuota.source).toBe('PROVIDER_API');
+        expect(updatedQuota.unlogged_reason).toBe('NO_USAGE_API_FREE_PLAN');
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
     });
   });
 });

@@ -1074,6 +1074,7 @@ apiRouter.post('/cron/ping', async (c) => {
   // Sync durable quota state from D1 before cycle execution
   try {
     await UnifiedQuotaService.getInstance().syncFromD1Async();
+    await UnifiedQuotaService.getInstance().syncProviderUsage();
   } catch {}
 
   // Sync durable action cooldowns from D1 before cycle execution
@@ -4859,6 +4860,19 @@ apiRouter.post('/owner/usage-reading', async (c) => {
 });
 
 /**
+ * Trigger automatic provider usage sync (Owner-only)
+ */
+apiRouter.post('/owner/quota/sync', async (c) => {
+  const quotaService = UnifiedQuotaService.getInstance();
+  try {
+    const result = await quotaService.syncProviderUsage();
+    return c.json({ success: true, data: result });
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 500);
+  }
+});
+
+/**
  * Get structured empirical learning rules (Owner-only)
  */
 apiRouter.get('/owner/learning-rules', async (c) => {
@@ -5614,6 +5628,65 @@ apiRouter.get('/commission/launch-checklist', async (c) => {
       ]
     }
   });
+});
+
+/**
+ * Demand Engine — Top 5 Outreach Drafts for TODAY Page (Owner-only)
+ */
+apiRouter.get('/owner/demand/drafts', async (c) => {
+  const { DemandEngine } = await import('../commission/demand-engine.js');
+  const drafts = DemandEngine.getInstance().getTopDraftsForToday(5);
+  return c.json({ success: true, data: drafts });
+});
+
+/**
+ * Demand Engine — Mark Outreach Draft Posted by Owner
+ */
+apiRouter.post('/owner/demand/drafts/:id/post', async (c) => {
+  const draftId = c.req.param('id');
+  const { DemandEngine } = await import('../commission/demand-engine.js');
+  try {
+    const result = DemandEngine.getInstance().markPostedByOwner(draftId);
+    const contentType = c.req.header('content-type') || '';
+    if (contentType.includes('form')) {
+      return c.redirect('/owner/status', 303);
+    }
+    return c.json({ success: true, data: result });
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 400);
+  }
+});
+
+/**
+ * Demand Engine — Source Rules Status
+ */
+apiRouter.get('/owner/demand/source-rules', async (c) => {
+  const db = getDb();
+  const rules = db.prepare('SELECT * FROM source_rules ORDER BY host ASC').all();
+  return c.json({ success: true, data: rules });
+});
+
+/**
+ * Demand Engine — Owner Approves Source Host
+ */
+apiRouter.post('/owner/demand/source-rules/:host/approve', async (c) => {
+  const host = c.req.param('host');
+  const db = getDb();
+  db.prepare("UPDATE source_rules SET owner_approved = 1, updated_at = datetime('now') WHERE host = ?").run(host);
+  const contentType = c.req.header('content-type') || '';
+  if (contentType.includes('form')) {
+    return c.redirect('/owner/status', 303);
+  }
+  return c.json({ success: true, data: { host, owner_approved: true } });
+});
+
+/**
+ * Demand Engine — Funnel Metrics
+ */
+apiRouter.get('/owner/demand/funnel', async (c) => {
+  const { DemandEngine } = await import('../commission/demand-engine.js');
+  const metrics = DemandEngine.getInstance().getFunnelMetrics();
+  return c.json({ success: true, data: metrics });
 });
 
 

@@ -164,7 +164,8 @@ export class GoogleSearchClient {
           query: query,
           search_depth: 'basic',
           include_answer: false,
-          max_results: 10
+          max_results: 10,
+          include_usage: true
         })
       };
     } else {
@@ -222,15 +223,19 @@ export class GoogleSearchClient {
       throw new Error(`${providerName} returned HTTP ${response.status}: ${rawText}`);
     }
 
-    // Reconcile successful search
-    quotaService.reconcile(reservation.reservationId, 1, true);
-
     let parsed: any;
     try {
       parsed = JSON.parse(rawText);
     } catch {
+      quotaService.reconcile(reservation.reservationId, 1, false);
       throw new Error(`${providerName} returned invalid JSON`);
     }
+
+    // Reconcile successful search with actual credits charged if available
+    const actualCredits = typeof parsed?.usage?.credits === 'number'
+      ? parsed.usage.credits
+      : (typeof parsed?.usage === 'number' ? parsed.usage : 1);
+    quotaService.reconcile(reservation.reservationId, actualCredits, true);
 
     let items: SearchResultItem[];
     if (useTavily) {

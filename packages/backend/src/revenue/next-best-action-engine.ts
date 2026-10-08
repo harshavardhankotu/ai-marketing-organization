@@ -98,14 +98,17 @@ export class NextBestActionEngine {
   public choose(businessId: string, organizationId: string, options?: { ignoreCooldown?: boolean }): NextBestAction {
     const candidates: NextBestAction[] = [];
 
-    // SQL lookup: Structured empirical learning rules from learning_records before scoring (Spec Part C)
+    // SQL lookup: Structured empirical learning rules from learning_records before scoring (Spec Part C & Step 1)
     const db = getDb();
-    let structuredLearningRules: Array<{ what: string; outcome: string; cause: string; rule: string }> = [];
+    let failedRules: Array<{ what: string; outcome: string; cause: string; rule: string }> = [];
     try {
-      structuredLearningRules = db.prepare(`
-        SELECT decision as what, result as outcome, hypothesis as cause, action as rule
+      failedRules = db.prepare(`
+        SELECT coalesce(what, decision) as what,
+               coalesce(outcome, result) as outcome,
+               coalesce(cause, hypothesis) as cause,
+               coalesce(rule, action) as rule
         FROM learning_records
-        WHERE learning_type = 'REAL_WORLD_LEARNING'
+        WHERE outcome = 'FAILED' OR result = 'FAILED'
       `).all() as any[];
     } catch {}
 
@@ -511,6 +514,43 @@ export class NextBestActionEngine {
       };
     }
 
+    // Filter out candidates blocked by learning records with outcome = 'FAILED'
+    const eligibleCandidates = candidates.filter(c => {
+      const blockCheck = this.isActionBlockedByFailedRules(c, failedRules);
+      if (blockCheck.blocked) {
+        console.warn(`[NextBestActionEngine] Candidate action ${c.actionType} blocked by FAILED learning rule: ${blockCheck.matchingRule?.rule || blockCheck.matchingRule?.what}`);
+        return false;
+      }
+      return true;
+    });
+
+    if (eligibleCandidates.length === 0) {
+      return {
+        actionType: 'IDLE',
+        targetId: businessId,
+        targetType: 'NONE',
+        ownerAgent: 'orchestrator',
+        rationale: 'All candidate actions were blocked by FAILED empirical learning rules or are on cooldown.',
+        estimatedRevenueINR: 0,
+        expectedRevenueINR: 0,
+        probabilityOfSuccess: 0,
+        timeToRevenueDays: 0,
+        externalCostINR: 0,
+        quotaCost: 0,
+        customerValueINR: 0,
+        urgency: 0,
+        cooldownActive: false,
+        authorizationAvailable: true,
+        riskLevel: 'LOW',
+        expectedValueINR: 0,
+        priorityScore: 0,
+        priorityTier: 'P4',
+        score: 0,
+        authorizationRequired: false,
+        estimatedCostINR: 0
+      };
+    }
+
     // Sort by priority tier first, then by priority score descending
     const tierWeights: Record<ActionPriorityTier, number> = {
       P0: 1000000,
@@ -520,13 +560,13 @@ export class NextBestActionEngine {
       P4: 1
     };
 
-    candidates.sort((a, b) => {
+    eligibleCandidates.sort((a, b) => {
       const scoreA = (tierWeights[a.priorityTier] || 0) + a.score;
       const scoreB = (tierWeights[b.priorityTier] || 0) + b.score;
       return scoreB - scoreA;
     });
 
-    const best = candidates[0];
+    const best = eligibleCandidates[0];
 
     console.log(
       `[NextBestActionEngine] Selected action for ${businessId}: ${best.actionType} ` +
@@ -534,6 +574,57 @@ export class NextBestActionEngine {
     );
 
     return best;
+  }
+
+  /**
+   * Evaluates if a given action is blocked by any learning record with outcome = 'FAILED'.
+   */
+  public isActionBlockedByFailedRules(
+    action: { actionType: string; targetId?: string; targetType?: string; rationale?: string },
+    failedRules?: Array<{ what: string; rule: string; cause?: string; outcome?: string }>
+  ): { blocked: boolean; matchingRule?: any } {
+    if (!failedRules) {
+      try {
+        const db = getDb();
+        failedRules = db.prepare(`
+          SELECT coalesce(what, decision) as what,
+                 coalesce(outcome, result) as outcome,
+                 coalesce(cause, hypothesis) as cause,
+                 coalesce(rule, action) as rule
+          FROM learning_records
+          WHERE outcome = 'FAILED' OR result = 'FAILED'
+        `).all() as any[];
+      } catch {
+        failedRules = [];
+      }
+    }
+
+    for (const r of failedRules) {
+      const whatLower = (r.what || '').toLowerCase().trim();
+      const ruleLower = (r.rule || '').toLowerCase().trim();
+      const actionTypeLower = action.actionType.toLowerCase().trim();
+
+      // Explicit action type matching
+      if (
+        whatLower === actionTypeLower ||
+        ruleLower === `block_${actionTypeLower}` ||
+        ruleLower === `block:${actionTypeLower}` ||
+        ruleLower.includes(`block_${actionTypeLower}`) ||
+        ruleLower.includes(`block action: ${actionTypeLower}`) ||
+        whatLower.includes(`block_${actionTypeLower}`) ||
+        whatLower.includes(`block:${actionTypeLower}`) ||
+        (ruleLower.includes('block') && ruleLower.includes(actionTypeLower))
+      ) {
+        return { blocked: true, matchingRule: r };
+      }
+
+      // Target matching if applicable
+      if (action.targetId && (whatLower.includes(action.targetId.toLowerCase()) || ruleLower.includes(action.targetId.toLowerCase()))) {
+        return { blocked: true, matchingRule: r };
+      }
+    }
+
+    return { blocked: false };
   }
 
   public rankAll(businessId: string, organizationId: string): NextBestAction[] {

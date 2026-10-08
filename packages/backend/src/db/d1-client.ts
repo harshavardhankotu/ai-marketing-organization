@@ -36,9 +36,9 @@ export class D1Client {
   public static readonly WRITE_SAFETY_CAP = 80_000;
 
   private constructor() {
-    this.accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
-    this.databaseId = process.env.CLOUDFLARE_D1_DATABASE_ID;
-    this.apiToken = process.env.CLOUDFLARE_D1_API_TOKEN;
+    this.accountId = process.env.CLOUDFLARE_ACCOUNT_ID || '9b7511ff69e507dd3a00a7266fec11a3';
+    this.databaseId = process.env.CLOUDFLARE_D1_DATABASE_ID || '0563bb85-f6d2-483f-8b0f-0784e3d604c7';
+    this.apiToken = process.env.CLOUDFLARE_D1_API_TOKEN || process.env.CLOUDFLARE_API_TOKEN;
     this.ensureUsageTable();
   }
 

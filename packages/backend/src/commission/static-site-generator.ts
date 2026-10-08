@@ -116,7 +116,7 @@ export class StaticSiteGenerator {
   /**
    * Renders all published guides, landing page, and legal pages to static HTML.
    */
-  public async build(options: { outputDir?: string; orgId?: string; config?: StaticSiteConfig } = {}): Promise<StaticSiteBuildResult> {
+  public async build(options: { outputDir?: string; orgId?: string; config?: StaticSiteConfig; includePublishReady?: boolean } = {}): Promise<StaticSiteBuildResult> {
     let config: StaticSiteConfig;
     if (options.config) {
       config = options.config;
@@ -136,20 +136,21 @@ export class StaticSiteGenerator {
 
     const filesGenerated: string[] = [];
 
-    // 1. Fetch published guides
+    // 1. Fetch published (or publish-ready for preview/dry-run) guides
+    const statusClause = options.includePublishReady ? "status IN ('PUBLISHED', 'PUBLISH_READY')" : "status = 'PUBLISHED'";
     let publishedGuides: any[] = [];
     if (isProduction()) {
       const d1 = D1RevenueRepository.getInstance();
       publishedGuides = await d1.query<any>(
         'commission_content_assets',
-        "SELECT * FROM commission_content_assets WHERE status = 'PUBLISHED'"
+        `SELECT * FROM commission_content_assets WHERE ${statusClause}`
       );
     } else {
       try {
         const d1 = D1RevenueRepository.getInstance();
         publishedGuides = await d1.query<any>(
           'commission_content_assets',
-          "SELECT * FROM commission_content_assets WHERE status = 'PUBLISHED'"
+          `SELECT * FROM commission_content_assets WHERE ${statusClause}`
         );
       } catch {
         publishedGuides = [];
@@ -157,7 +158,7 @@ export class StaticSiteGenerator {
       if (publishedGuides.length === 0) {
         const db = getDb();
         try {
-          publishedGuides = db.prepare("SELECT * FROM commission_content_assets WHERE status = 'PUBLISHED'").all() as any[];
+          publishedGuides = db.prepare(`SELECT * FROM commission_content_assets WHERE ${statusClause}`).all() as any[];
         } catch {
           publishedGuides = [];
         }

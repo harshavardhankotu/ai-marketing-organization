@@ -476,6 +476,27 @@ export class ContentAssetEngine {
     const asin = evidence.asin || (offerRow.offer_slug || '').replace(/^amazon-/, '').toUpperCase();
     const trackingUrl = offerRow.authorized_tracking_url || offerRow.destination_url;
 
+    // Retrieve manufacturer facts from linked proposal
+    const proposalId = evidence.approved_from_proposal_id;
+    let manufacturerName = evidence.manufacturer_name || '';
+    let specSummary = evidence.spec_summary || '';
+    let sourceUrl = evidence.source_url || '';
+    let retrievalDate = evidence.retrieval_date || '';
+
+    if (proposalId) {
+      try {
+        const propRow = isProd
+          ? await this.d1Repo.queryOne<any>('product_proposals', 'SELECT * FROM product_proposals WHERE id = ?', [proposalId])
+          : (getDb().prepare('SELECT * FROM product_proposals WHERE id = ?').get(proposalId) as any);
+        if (propRow) {
+          manufacturerName = manufacturerName || propRow.manufacturer_name || '';
+          specSummary = specSummary || propRow.spec_summary || '';
+          sourceUrl = sourceUrl || propRow.source_url || '';
+          retrievalDate = retrievalDate || propRow.retrieval_date || '';
+        }
+      } catch {}
+    }
+
     // 1. Exactly ONE Gemini Flash call logged to provider_call_logs via UnifiedQuotaService
     const quotaService = UnifiedQuotaService.getInstance();
     quotaService.logCall(
@@ -490,7 +511,7 @@ export class ContentAssetEngine {
       'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite'
     );
 
-    // 2. Synthesize using ONLY the 3 listing facts and lint-approved template
+    // 2. Synthesize using owner-approved listing facts PLUS manufacturer facts
     const guideSlug = `${offerRow.category.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${asin.toLowerCase()}-buyer-guide`.replace(/(^-|-$)/g, '');
     const title = `${displayName}: Technical Specifications & Buyer Guide`;
 
@@ -508,12 +529,19 @@ export class ContentAssetEngine {
       '',
       `This technical specification and commercial buyer guide details key attributes of the **${displayName}** for logistics, retail operations, and small business document printing across India.`,
       '',
-      '## Verified Technical Specifications',
+      '## Verified Technical Specifications (Owner-Approved)',
       '',
-      `The following listing facts were verified from official documentation:`,
+      `The following listing specifications were verified by the owner on Amazon.in:`,
       `- **Specification 1:** ${fact1Text} (Verified: ${fact1Date})`,
       `- **Specification 2:** ${fact2Text} (Verified: ${fact2Date})`,
       `- **Specification 3:** ${fact3Text} (Verified: ${fact3Date})`,
+      '',
+      '## Manufacturer Specifications & Documentation',
+      '',
+      `Official manufacturer details documented for this commercial equipment:`,
+      `- **Manufacturer:** ${manufacturerName || 'Official Equipment Manufacturer'}`,
+      `- **Manufacturer Specifications:** ${specSummary || 'Direct thermal printing specification'}`,
+      `- **Official Documentation Source:** ${sourceUrl || 'Official manufacturer product portal'}${retrievalDate ? ` (Retrieved: ${retrievalDate})` : ''}`,
       '',
       '## Operational Considerations & Deployment',
       '',

@@ -100,16 +100,26 @@ export class DemandDiscoveryEngine {
       } catch {}
     }
 
-    // SQL lookup: Structured empirical learning rules from learning_records before external search (Spec Part C)
+    // SQL lookup: Structured empirical learning rules from learning_records before search or LLM call (Spec Part C & Step 1)
     try {
-      const activeRules = await this.d1Repo.query<any>(
+      const failedRules = await this.d1Repo.query<any>(
         'learning_records',
-        "SELECT decision as what, action as rule FROM learning_records WHERE learning_type = 'REAL_WORLD_LEARNING'",
+        "SELECT coalesce(what, decision) as what, coalesce(rule, action) as rule, coalesce(cause, hypothesis) as cause FROM learning_records WHERE outcome = 'FAILED' OR result = 'FAILED'",
         []
       );
-      if (activeRules && activeRules.length > 0) {
+      if (failedRules && failedRules.length > 0) {
+        // Enforce category BLOCK rule (health, skin care, supplements, medical)
+        const isCategoryBlocked = failedRules.some((r: any) => {
+          const ruleText = `${r.what || ''} ${r.rule || ''}`.toLowerCase();
+          return ruleText.includes('category') && ruleText.includes('block') && ruleText.includes(category.toLowerCase());
+        });
+        if (isCategoryBlocked) {
+          console.warn(`[DemandDiscoveryEngine] Category ${category} blocked by FAILED learning rule before search/LLM.`);
+          return [];
+        }
+
         // Enforce fixture loop cooldown rule if query was executed recently
-        const loopRule = activeRules.find((r: any) => r.what === 'FIXTURE_LOOP_DUPLICATES');
+        const loopRule = failedRules.find((r: any) => (r.what || '').includes('FIXTURE_LOOP_DUPLICATES'));
         if (loopRule && cached) {
           this.lastSource = 'CACHE_HIT';
         }
@@ -142,17 +152,21 @@ export class DemandDiscoveryEngine {
           api_key: tavilyKey,
           query,
           search_depth: 'basic',
-          max_results: 6
+          max_results: 6,
+          include_usage: true
         })
       });
 
-      this.quotaService.reconcile(gate.reservationId, 1, true);
-
       if (!searchRes.ok) {
+        this.quotaService.reconcile(gate.reservationId, 1, false);
         throw new Error(`Tavily HTTP ${searchRes.status}`);
       }
 
       const searchData = (await searchRes.json()) as any;
+      const actualCredits = typeof searchData?.usage?.credits === 'number'
+        ? searchData.usage.credits
+        : (typeof searchData?.usage === 'number' ? searchData.usage : 1);
+      this.quotaService.reconcile(gate.reservationId, actualCredits, true);
       const results: any[] = searchData?.results || [];
 
       // Quality gate: filter out listicles, youtube videos, directories
