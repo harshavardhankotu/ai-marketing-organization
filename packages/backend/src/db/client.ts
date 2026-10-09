@@ -609,6 +609,18 @@ export function getDb(dbPath?: string): Database.Database {
       notes TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`);
   } catch {}
+  try { db.exec(`ALTER TABLE source_rules ADD COLUMN terms_checked_at TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE product_proposals ADD COLUMN approved_at TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE product_proposals ADD COLUMN owner_session_id TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE learning_records ADD COLUMN provenance TEXT DEFAULT 'APP_LOGGED_CALL'`); } catch {}
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS stored_reports (
+      id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, filename TEXT NOT NULL,
+      content_hash TEXT NOT NULL UNIQUE, byte_size INTEGER NOT NULL, row_count INTEGER NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+  } catch {}
+
 
   // Initialize schema (creates all tables if not exist — safe for both fresh and existing DBs)
 

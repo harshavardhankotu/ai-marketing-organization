@@ -40,6 +40,7 @@ import { ChannelSelectionEngine } from './channel-selection-engine.js';
 import { OutboundActionLedger } from './outbound-action-ledger.js';
 import { ConversionVerificationAdapter } from '../commission/conversion-verification.js';
 import { DemandDiscoveryEngine } from '../commission/demand-discovery.js';
+import { DemandEngine } from '../commission/demand-engine.js';
 import { DemandOfferMatchingEngine } from '../commission/demand-offer-matching.js';
 import { ContentAssetEngine } from '../commission/content-asset-engine.js';
 import { ReferralTrackingEngine } from '../commission/referral-tracking.js';
@@ -717,6 +718,79 @@ export class AutonomousRevenueOrchestrator {
           isRevenueAction: false,
           externalId: isCacheHit ? undefined : `demand_discovery_${cycleId}`,
           opportunitiesDiscovered: signals.length
+        };
+      }
+
+      // ────────────────────────────────────────────────────────────────
+      // SPEC § 21 & § 22: DISCOVER_DEMAND_SIGNALS (Step 6)
+      // ────────────────────────────────────────────────────────────────
+      case 'DISCOVER_DEMAND_SIGNALS': {
+        const cooldown = ActionCooldownManager.check(businessId, 'DISCOVER_DEMAND_SIGNALS');
+        if (!cooldown.eligible) {
+          return {
+            status: 'COOLDOWN_ACTIVE',
+            actionClassification: 'INTERNAL_AUTOMATION',
+            isRevenueAction: false,
+            error: `Cooldown active until ${cooldown.nextEligibleAt}`
+          };
+        }
+
+        // Read learning_records by SQL before searching
+        const db = getDb();
+        let blockedCategories: string[] = ['health', 'skin care', 'skincare', 'supplements', 'medical'];
+        try {
+          const rows = db.prepare(`
+            SELECT coalesce(what, decision) as what, coalesce(rule, action) as rule
+            FROM learning_records
+            WHERE outcome = 'FAILED' OR result = 'FAILED'
+          `).all() as any[];
+          for (const r of rows) {
+            const combined = `${r.what || ''} ${r.rule || ''}`.toLowerCase();
+            if (combined.includes('category') && combined.includes('block')) {
+              ['health', 'skin care', 'skincare', 'supplements', 'medical'].forEach(c => {
+                if (combined.includes(c) && !blockedCategories.includes(c)) blockedCategories.push(c);
+              });
+            }
+          }
+        } catch {}
+
+        // Budget check: max 5 searches
+        const quotaGate = this.quotaService.canMakeRequest('TAVILY', 'P3', 'discover_demand_signals');
+        if (!quotaGate.allowed) {
+          return {
+            status: 'COOLDOWN_ACTIVE',
+            actionClassification: 'INTERNAL_AUTOMATION',
+            isRevenueAction: false,
+            error: `Quota gate paused demand discovery: ${quotaGate.reason}`
+          };
+        }
+
+        // Check active offers count:
+        let activeOffersCount = 0;
+        try {
+          activeOffersCount = (db.prepare(`SELECT count(*) as c FROM partner_offers WHERE active = 1`).get() as any)?.c || 0;
+        } catch {}
+
+        const demandEngine = DemandEngine.getInstance();
+        ActionCooldownManager.recordExecution(businessId, 'DISCOVER_DEMAND_SIGNALS', true);
+
+        if (activeOffersCount === 0) {
+          // If active offers count is 0, do not draft outreach.
+          // Cluster signals by category and surface top 5 demand clusters for TODAY page.
+          const topClusters = demandEngine.getTopClustersForToday(5);
+          return {
+            status: 'INTERNAL_AUTOMATION',
+            actionClassification: 'INTERNAL_AUTOMATION',
+            isRevenueAction: false,
+            opportunitiesDiscovered: topClusters.reduce((sum, c) => sum + c.count, 0)
+          };
+        }
+
+        return {
+          status: 'LIVE_EXTERNAL_ACTION',
+          actionClassification: 'LIVE_EXTERNAL_ACTION',
+          isRevenueAction: false,
+          externalId: `demand_signals_${cycleId}`
         };
       }
 

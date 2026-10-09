@@ -141,6 +141,11 @@ const COOLDOWN_POLICIES: Record<ActionType, CooldownPolicy> = {
     cooldownHoursPerAttempt: [6],
     escalateAfterMax: 'STOP'
   },
+  DISCOVER_DEMAND_SIGNALS: {
+    maxAttempts: 999,
+    cooldownHoursPerAttempt: [24],
+    escalateAfterMax: 'STOP'
+  },
   QUARANTINE_BAD_PROVIDER: {
     maxAttempts: 999,
     cooldownHoursPerAttempt: [0],

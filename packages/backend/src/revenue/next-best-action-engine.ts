@@ -30,6 +30,7 @@ export type ActionType =
   | 'DISCOVER_PARTNER'         // discover new legitimate affiliate/referral programs
   | 'DISCOVER_OFFER'           // discover new commercial offers for verified partners
   | 'DISCOVER_DEMAND'          // autonomous research of high-intent search queries
+  | 'DISCOVER_DEMAND_SIGNALS'  // intent-based demand signal discovery (24h cooldown, max 5 searches)
   | 'QUARANTINE_BAD_PROVIDER'  // isolate broken or unverified partner/offer
   | 'PURSUE_OPPORTUNITY'       // advance a qualified opportunity
   | 'FOLLOW_UP_LEAD'           // contact a lead that hasn't responded
@@ -441,6 +442,35 @@ export class NextBestActionEngine {
           estimatedCostINR: 0
         });
       }
+    }
+
+    // Priority 5.5 (P3): Demand Signals discovery (Step 6 / 24h cooldown, max 5 searches)
+    const demandSignalsCooldown = ActionCooldownManager.check(businessId, 'DISCOVER_DEMAND_SIGNALS');
+    if (demandSignalsCooldown.eligible || options?.ignoreCooldown) {
+      candidates.push({
+        actionType: 'DISCOVER_DEMAND_SIGNALS',
+        targetId: businessId,
+        targetType: 'DEMAND_SIGNAL',
+        ownerAgent: 'demand-engine',
+        rationale: 'Discover high-intent customer purchase inquiries across owner-approved hosts, gated by 24h cooldown and max 5 searches.',
+        estimatedRevenueINR: 0,
+        expectedRevenueINR: 0,
+        probabilityOfSuccess: 0.3,
+        timeToRevenueDays: 14,
+        externalCostINR: 0,
+        quotaCost: 1,
+        customerValueINR: 0,
+        urgency: 0.5,
+        cooldownActive: false,
+        authorizationAvailable: true,
+        riskLevel: 'LOW',
+        expectedValueINR: 0,
+        priorityScore: 260,
+        priorityTier: 'P3',
+        score: 260,
+        authorizationRequired: false,
+        estimatedCostINR: 0
+      });
     }
 
     // Priority 6 (P3): Experiments ready to evaluate

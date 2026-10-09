@@ -2206,6 +2206,8 @@ CREATE TABLE IF NOT EXISTS product_proposals (
   approved_offer_id TEXT,
   product_checked INTEGER NOT NULL DEFAULT 0,
   product_checked_at TEXT,
+  approved_at TEXT,
+  owner_session_id TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -2297,7 +2299,20 @@ CREATE TABLE IF NOT EXISTS source_rules (
   automation_allowed INTEGER NOT NULL DEFAULT 0,
   owner_approved INTEGER NOT NULL DEFAULT 0,
   notes TEXT,
+  terms_checked_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- 106. Stored Reports (Uploaded Associates earnings reports)
+CREATE TABLE IF NOT EXISTS stored_reports (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL,
+  filename TEXT NOT NULL,
+  content_hash TEXT NOT NULL UNIQUE,
+  byte_size INTEGER NOT NULL,
+  row_count INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_stored_reports_org ON stored_reports(organization_id);
 `;

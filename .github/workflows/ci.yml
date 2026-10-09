@@ -30,11 +30,14 @@ jobs:
       - name: Guardrail - Verify Mistakes Board Fixed Guards Resolve
         run: npm run board:verify
 
-      - name: Monorepo Typecheck
-        run: npm run typecheck
+      - name: Guardrail - Lint No Unbacked Rupee Estimates
+        run: npm run lint:rupee-estimates
 
       - name: Build All Workspaces
         run: npm run build
+
+      - name: Monorepo Typecheck
+        run: npm run typecheck
 
       - name: Run Unit & Regression Tests
         run: npm run test

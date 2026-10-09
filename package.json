@@ -20,6 +20,7 @@
     "board:sync": "node scripts/board-sync.mjs",
     "board:preflight": "node scripts/board-preflight.mjs",
     "board:verify": "node scripts/board-verify.mjs",
+    "lint:rupee-estimates": "node scripts/lint-no-unbacked-rupee-estimates.mjs",
     "check:no-scratch-writes": "node scripts/check-no-scratch-writes.mjs",
     "status:generate": "node scripts/generate-status.mjs",
     "system-map:generate": "node scripts/generate-system-map.mjs",

@@ -9,7 +9,7 @@
  * E. Weekly Report Ingest (parses Associates earnings/orders export, moves EXPECTED -> PENDING -> VERIFIED)
  */
 
-import { randomUUID } from 'crypto';
+import crypto, { randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -135,6 +135,14 @@ export interface OwnerStatusSnapshot {
       category: string;
       expiresAt: string;
     }>;
+    topDemandClusters?: Array<{
+      need: string;
+      category: string;
+      count: number;
+      sampleExcerpt: string;
+      sourceHost: string;
+      action: string;
+    }>;
   };
   lastCronCycle: {
     cycleId?: string;
@@ -147,6 +155,10 @@ export interface OwnerStatusSnapshot {
     status: string;
     reason: string;
     singleBiggestBlocker: string;
+  };
+  pipelineBlockers?: {
+    stages: Array<{ stage: string; name: string; count: number; status: 'BLOCKED' | 'CLEAR'; description: string }>;
+    topBlocker: { stage: string; name: string; count: number; description: string };
   };
   deadline180Days: {
     applicationDate?: string;
@@ -922,6 +934,7 @@ export class OwnerControlCenterEngine {
       fact2Date?: string;
       fact3?: string;
       fact3Date?: string;
+      ownerSessionId?: string;
       writtenBy?: 'OWNER_FORM' | 'AGENT' | 'TEST';
     }
   ): Promise<{ proposal: ProductProposal; offer: any }> {
@@ -1114,11 +1127,13 @@ export class OwnerControlCenterEngine {
     proposal.productCheckedAt = now;
     proposal.updatedAt = now;
 
+    const ownerSessionId = input.ownerSessionId || null;
+
     const sql = `
       UPDATE product_proposals
       SET status = 'APPROVED', amazon_url = ?, asin = ?, approved_offer_id = ?,
           display_name = ?, listing_facts_json = ?,
-          product_checked = 1, product_checked_at = ?, updated_at = ?
+          product_checked = 1, product_checked_at = ?, approved_at = ?, owner_session_id = ?, updated_at = ?
       WHERE id = ?
     `;
     const params = [
@@ -1128,6 +1143,8 @@ export class OwnerControlCenterEngine {
       displayName,
       JSON.stringify(facts),
       proposal.productCheckedAt,
+      now,
+      ownerSessionId,
       proposal.updatedAt,
       proposal.id
     ];
@@ -1263,6 +1280,29 @@ export class OwnerControlCenterEngine {
       throw new Error('REPORT_ERROR: No valid data rows found in report export.');
     }
 
+    const contentHash = crypto.createHash('sha256').update(content).digest('hex');
+    const reportId = `rep_${contentHash.substring(0, 16)}`;
+    const now = new Date().toISOString();
+
+    // Persist uploaded report evidence to stored_reports
+    try {
+      if (isProduction()) {
+        await this.d1Repo.executeWrite(
+          'stored_reports',
+          'INSERT INTO stored_reports (id, organization_id, filename, content_hash, byte_size, row_count, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING',
+          [reportId, organizationId, filename, contentHash, Buffer.byteLength(content, 'utf8'), rows.length, now]
+        );
+      } else {
+        getDb().prepare(`
+          INSERT INTO stored_reports (id, organization_id, filename, content_hash, byte_size, row_count, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO NOTHING
+        `).run(reportId, organizationId, filename, contentHash, Buffer.byteLength(content, 'utf8'), rows.length, now);
+      }
+    } catch (e: any) {
+      console.warn('[OwnerControlCenter] Failed to record stored_report:', e.message);
+    }
+
     const partners = await this.registry.listPartners(organizationId);
     const amazonPartner = partners.find(p => p.network === 'AMAZON_ASSOCIATES' || (p.name && p.name.includes('Amazon')));
     const partnerId = amazonPartner ? amazonPartner.id : 'part_amazon_in_01';
@@ -1271,7 +1311,6 @@ export class OwnerControlCenterEngine {
     let verifiedCount = 0;
     let totalEarnings = 0;
     const details: string[] = [];
-    const now = new Date().toISOString();
 
     for (const row of rows) {
       if (!row.asin) continue;
@@ -1297,6 +1336,8 @@ export class OwnerControlCenterEngine {
             verifiedCommissionINR: earned,
             verificationSource: 'DASHBOARD_EXPORT',
             evidence: {
+              reportId,
+              transactionId: txId,
               reportFilename: filename,
               reportDate: row.date,
               asin: row.asin,
@@ -1613,32 +1654,55 @@ export class OwnerControlCenterEngine {
     const offers = await this.registry.listOffers(organizationId);
     const activeOffers = offers.filter(o => o.status === 'ACTIVE' && o.active === 1);
 
-    const clickCountRow = isProduction()
-      ? await this.d1Repo.queryOne<any>('referral_click_events', 'SELECT count(*) as c FROM referral_click_events WHERE organization_id = ?', [organizationId])
+    // Step 1c: "approve product: one proposal with status APPROVED, an owner session id, and one partner_offers row with active = 1"
+    const approvedProposalRow = isProduction()
+      ? await this.d1Repo.queryOne<any>('product_proposals', "SELECT count(*) as c FROM product_proposals WHERE organization_id = ? AND status = 'APPROVED' AND owner_session_id IS NOT NULL AND length(owner_session_id) > 0", [organizationId])
       : (() => {
           try {
-            return getDb().prepare('SELECT count(*) as c FROM referral_click_events WHERE organization_id = ?').get(organizationId) as any;
+            return getDb().prepare("SELECT count(*) as c FROM product_proposals WHERE organization_id = ? AND status = 'APPROVED' AND owner_session_id IS NOT NULL AND length(owner_session_id) > 0").get(organizationId) as any;
+          } catch {
+            return { c: 0 };
+          }
+        })();
+    const hasApprovedProposalWithSession = Boolean(approvedProposalRow && approvedProposalRow.c > 0);
+
+    // Step 1c: "share URL: at least one real visit recorded by the click beacon"
+    const beaconVisitRow = isProduction()
+      ? await this.d1Repo.queryOne<any>('referral_click_events', "SELECT count(*) as c FROM referral_click_events WHERE organization_id = ? AND (medium = 'beacon' OR source = 'direct_beacon' OR referral_id LIKE 'ref_bcn_%')", [organizationId])
+      : (() => {
+          try {
+            return getDb().prepare("SELECT count(*) as c FROM referral_click_events WHERE organization_id = ? AND (medium = 'beacon' OR source = 'direct_beacon' OR referral_id LIKE 'ref_bcn_%')").get(organizationId) as any;
           } catch {
             return { c: 0 };
           }
         })();
 
-    const recentReportRow = isProduction()
-      ? await this.d1Repo.queryOne<any>('conversions', "SELECT count(*) as c FROM conversions WHERE organization_id = ? AND verification_source = 'DASHBOARD_EXPORT' AND created_at >= datetime('now', '-7 days')", [organizationId])
+    // Step 1c: "upload report: one stored report file with a hash"
+    const storedReportRow = isProduction()
+      ? await this.d1Repo.queryOne<any>('stored_reports', "SELECT count(*) as c FROM stored_reports WHERE organization_id = ? AND content_hash IS NOT NULL AND length(content_hash) > 0", [organizationId])
       : (() => {
           try {
-            return getDb().prepare("SELECT count(*) as c FROM conversions WHERE organization_id = ? AND verification_source = 'DASHBOARD_EXPORT' AND created_at >= datetime('now', '-7 days')").get(organizationId) as any;
+            return getDb().prepare("SELECT count(*) as c FROM stored_reports WHERE organization_id = ? AND content_hash IS NOT NULL AND length(content_hash) > 0").get(organizationId) as any;
           } catch {
             return { c: 0 };
           }
         })();
 
-    // Dynamic OPEN ACTIONS List
-    const isIntakeValid = Boolean(intake && intake.status === 'VALID');
-    const hasActiveOffer = activeOffers.length > 0;
+    // Dynamic OPEN ACTIONS List - Strict Evidence Gates
+    // 1. complete intake: one owner_intake row with status VALID and written_by OWNER_FORM
+    const isIntakeValid = Boolean(intake && intake.status === 'VALID' && intake.writtenBy === 'OWNER_FORM');
+
+    // 2. approve product: one proposal with status APPROVED, an owner session id, and one partner_offers row with active = 1
+    const hasApprovedProductAndOffer = hasApprovedProposalWithSession && activeOffers.length > 0;
+
+    // 3. publish guide: one guide with status PUBLISHED
     const hasPublishedGuide = publishedGuides.length > 0;
-    const hasReferralClicks = Boolean(clickCountRow && clickCountRow.c > 0);
-    const hasRecentReport = Boolean(recentReportRow && recentReportRow.c > 0);
+
+    // 4. share URL: at least one real visit recorded by the click beacon
+    const hasReferralClicks = Boolean(beaconVisitRow && beaconVisitRow.c > 0);
+
+    // 5. upload report: one stored report file with a hash
+    const hasRecentReport = Boolean(storedReportRow && storedReportRow.c > 0);
 
     const hasApprovedHosts = (() => {
       try {
@@ -1663,10 +1727,16 @@ export class OwnerControlCenterEngine {
 
     const hasSearchConsole = Boolean(process.env.GOOGLE_SEARCH_CONSOLE_KEY || process.env.SEARCH_CONSOLE_CONNECTED === 'true');
 
+    // Step 6c: If active offers count is 0, do not draft replies. Cluster signals by intent and surface top 5 demand hints.
     let topOutreachDrafts: any[] = [];
+    let topDemandClusters: any[] = [];
     try {
       const { DemandEngine } = await import('./demand-engine.js');
-      topOutreachDrafts = DemandEngine.getInstance().getTopDraftsForToday(5);
+      if (activeOffers.length > 0) {
+        topOutreachDrafts = DemandEngine.getInstance().getTopDraftsForToday(5);
+      } else {
+        topDemandClusters = DemandEngine.getInstance().getTopClustersForToday(5);
+      }
     } catch {}
 
     const openActions: OpenActionItem[] = [
@@ -1675,7 +1745,7 @@ export class OwnerControlCenterEngine {
         type: 'HUMAN',
         title: 'complete intake',
         description: 'Attest Amazon Operating Agreement compliance declaration, listed domain URLs, and site identity metadata.',
-        resolutionCondition: 'owner_intake record persisted with status VALID',
+        resolutionCondition: 'One owner_intake record with status VALID and written_by OWNER_FORM',
         resolved: isIntakeValid
       },
       {
@@ -1683,8 +1753,8 @@ export class OwnerControlCenterEngine {
         type: 'HUMAN',
         title: 'approve product',
         description: 'Inspect Amazon.in listing, verify price/stock, and submit exactly 3 listing facts with product_checked=true.',
-        resolutionCondition: 'At least 1 active commercial offer in catalog',
-        resolved: hasActiveOffer
+        resolutionCondition: 'One proposal with status APPROVED, an owner session id, and one partner_offers row with active = 1',
+        resolved: hasApprovedProductAndOffer
       },
       {
         id: 'act_publish_guide',
@@ -1699,7 +1769,7 @@ export class OwnerControlCenterEngine {
         type: 'HUMAN',
         title: 'share URL',
         description: 'Manually share clean published guide link to seed first 3 qualifying referral sales.',
-        resolutionCondition: 'At least 1 verified outbound referral click recorded',
+        resolutionCondition: 'At least 1 real visit recorded by the click beacon',
         resolved: hasReferralClicks
       },
       {
@@ -1707,18 +1777,19 @@ export class OwnerControlCenterEngine {
         type: 'HUMAN',
         title: 'upload Associates report weekly',
         description: 'Export and upload Associates Central earnings report (CSV/TSV/JSON) weekly to reconcile pending and verified commissions.',
-        resolutionCondition: 'Verified Associates report ingested within past 7 days',
+        resolutionCondition: 'At least 1 stored report file with a verified content hash',
         resolved: hasRecentReport
       }
     ];
 
     const todayItems = {
-      intakeCompleted: Boolean(intake && intake.status === 'VALID'),
+      intakeCompleted: Boolean(intake && intake.status === 'VALID' && intake.writtenBy === 'OWNER_FORM'),
       intakeStatus: intake ? intake.status : 'PENDING',
       candidateProposals,
       publishReadyGuides,
       readyShareGuide,
-      topOutreachDrafts
+      topOutreachDrafts,
+      topDemandClusters
     };
 
     const mistakesSql = `
@@ -1782,6 +1853,63 @@ export class OwnerControlCenterEngine {
       lastD1Migration
     };
 
+    // Step 3d: Rank blockers by pipeline stage (offers -> guides published -> visits -> outbound clicks -> reported conversions -> verified commission)
+    const publishedGuidesCount = (publishedGuides || []).length;
+    const visitsCount = isProduction()
+      ? (await this.d1Repo.queryOne<any>('referral_click_events', "SELECT count(*) as c FROM referral_click_events WHERE organization_id = ? AND (placement = 'direct_beacon' OR source = 'direct_beacon' OR medium = 'beacon')", [organizationId]))?.c || 0
+      : (() => {
+          try {
+            return (getDb().prepare("SELECT count(*) as c FROM referral_click_events WHERE organization_id = ? AND (placement = 'direct_beacon' OR source = 'direct_beacon' OR medium = 'beacon')").get(organizationId) as any)?.c || 0;
+          } catch { return 0; }
+        })();
+
+    const outboundClicksCount = isProduction()
+      ? (await this.d1Repo.queryOne<any>('referral_click_events', "SELECT count(*) as c FROM referral_click_events WHERE organization_id = ? AND placement != 'direct_beacon'", [organizationId]))?.c || 0
+      : (() => {
+          try {
+            return (getDb().prepare("SELECT count(*) as c FROM referral_click_events WHERE organization_id = ? AND placement != 'direct_beacon'").get(organizationId) as any)?.c || 0;
+          } catch { return 0; }
+        })();
+
+    const conversionsCount = isProduction()
+      ? (await this.d1Repo.queryOne<any>('commission_records', "SELECT count(*) as c FROM commission_records WHERE organization_id = ? AND status IN ('ORDERED', 'SHIPPED', 'COMMISSION_PENDING', 'COMMISSION_APPROVED', 'PAID')", [organizationId]))?.c || 0
+      : (() => {
+          try {
+            return (getDb().prepare("SELECT count(*) as c FROM commission_records WHERE organization_id = ? AND status IN ('ORDERED', 'SHIPPED', 'COMMISSION_PENDING', 'COMMISSION_APPROVED', 'PAID')").get(organizationId) as any)?.c || 0;
+          } catch { return 0; }
+        })();
+
+    const verifiedCommCount = isProduction()
+      ? (await this.d1Repo.queryOne<any>('commission_records', "SELECT count(*) as c FROM commission_records WHERE organization_id = ? AND status IN ('COMMISSION_APPROVED', 'PAID') AND verified_commission_inr > 0", [organizationId]))?.c || 0
+      : (() => {
+          try {
+            return (getDb().prepare("SELECT count(*) as c FROM commission_records WHERE organization_id = ? AND status IN ('COMMISSION_APPROVED', 'PAID') AND verified_commission_inr > 0").get(organizationId) as any)?.c || 0;
+          } catch { return 0; }
+        })();
+
+    const pipelineStages = [
+      { stage: 'offers', name: 'Approved Partner Offers', count: activeOffers.length, description: 'Approved active partner offers (active = 1)' },
+      { stage: 'guides published', name: 'Published Buyer Guides', count: publishedGuidesCount, description: 'Published buyer guides live on static site' },
+      { stage: 'visits', name: 'Guide Visits (Click Beacon)', count: visitsCount, description: 'Real guide visits recorded by click beacon' },
+      { stage: 'outbound clicks', name: 'Outbound Partner Clicks', count: outboundClicksCount, description: 'Outbound click events to partner' },
+      { stage: 'reported conversions', name: 'Reported Conversions', count: conversionsCount, description: 'Reported qualifying conversions' },
+      { stage: 'verified commission', name: 'Verified Commission', count: verifiedCommCount, description: 'Verified commission payouts' }
+    ];
+
+    const firstZeroStage = pipelineStages.find(s => s.count === 0) || pipelineStages[pipelineStages.length - 1];
+    const pipelineBlockers = {
+      stages: pipelineStages.map(s => ({
+        ...s,
+        status: (s.count === 0 ? 'BLOCKED' : 'CLEAR') as 'BLOCKED' | 'CLEAR'
+      })),
+      topBlocker: {
+        stage: firstZeroStage.stage,
+        name: firstZeroStage.name,
+        count: firstZeroStage.count,
+        description: firstZeroStage.description
+      }
+    };
+
     const snapshot: OwnerStatusSnapshot = {
       organizationId,
       computedAt: now,
@@ -1797,8 +1925,9 @@ export class OwnerControlCenterEngine {
       moneyPath: {
         status: moneyPath.moneyPath,
         reason: moneyPath.reason,
-        singleBiggestBlocker: moneyPath.singleBiggestBlocker
+        singleBiggestBlocker: firstZeroStage.stage.toUpperCase()
       },
+      pipelineBlockers,
       deadline180Days,
       quotas,
       cooldowns,
@@ -2195,6 +2324,49 @@ ${escape(d.disclosureText)}</div>
         </div>
         <div style="font-size: 0.85rem; color: #94a3b8;">Next Action: ${escape(snapshot.lastCronCycle.nextBestAction || 'None')}</div>
       </div>
+    </div>
+
+    <!-- Pipeline Stage Blocker Ranking -->
+    <div class="card" style="margin-bottom: 24px; padding: 16px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+        <h3 style="margin: 0;">Pipeline Stage Blocker Ranking (Funnel Order)</h3>
+        <span style="font-size: 0.8rem; background: rgba(239, 68, 68, 0.2); color: #f87171; padding: 3px 8px; border-radius: 4px; font-weight: 700;">
+          Top Blocker: ${escape(snapshot.pipelineBlockers?.topBlocker?.name || 'Offers')} (${snapshot.pipelineBlockers?.topBlocker?.count ?? 0})
+        </span>
+      </div>
+      <div style="font-size: 0.85rem; color: #94a3b8; margin-bottom: 12px;">
+        Ranked strictly by pipeline stage: <strong>offers &rarr; guides published &rarr; visits &rarr; outbound clicks &rarr; reported conversions &rarr; verified commission</strong>. Top blocker is the first stage with count 0.
+      </div>
+      <table style="width: 100%; border-collapse: collapse;">
+        <thead>
+          <tr>
+            <th style="width: 200px;">Stage</th>
+            <th style="width: 90px; text-align: center;">Count</th>
+            <th style="width: 130px;">Funnel Status</th>
+            <th>Diagnostic &amp; Action Required</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${(snapshot.pipelineBlockers?.stages || []).map((s, idx) => `
+            <tr style="border-bottom: 1px solid #1e293b;">
+              <td style="padding: 10px 14px; font-weight: 600; color: #f1f5f9;">${idx + 1}. ${escape(s.name)}</td>
+              <td style="padding: 10px 14px; text-align: center; font-weight: 700; color: ${s.count === 0 ? '#f87171' : '#4ade80'};">${s.count}</td>
+              <td style="padding: 10px 14px;">
+                <span style="display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.72rem; font-weight: 700; ${
+                  s.status === 'CLEAR'
+                    ? 'background: rgba(34, 197, 94, 0.2); color: #4ade80;'
+                    : snapshot.pipelineBlockers?.topBlocker?.stage === s.stage
+                    ? 'background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4);'
+                    : 'background: rgba(148, 163, 184, 0.15); color: #94a3b8;'
+                }">
+                  ${s.status === 'CLEAR' ? 'CLEAR' : snapshot.pipelineBlockers?.topBlocker?.stage === s.stage ? 'TOP BLOCKER' : 'BLOCKED'}
+                </span>
+              </td>
+              <td style="padding: 10px 14px; font-size: 0.85rem; color: #cbd5e1;">${escape(s.description)}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
     </div>
 
     <div class="card" style="margin-bottom: 24px; padding: 0; overflow: hidden;">

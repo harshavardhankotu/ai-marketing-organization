@@ -436,6 +436,11 @@ export class DemandEngine {
     const match = db.prepare('SELECT * FROM demand_matches WHERE signal_id = ?').get(signalId) as any;
     if (!match) throw new Error(`MATCH_NOT_FOUND: Signal ${signalId} has no match.`);
 
+    const activeOffersCount = (db.prepare(`SELECT count(*) as c FROM partner_offers WHERE active = 1`).get() as any)?.c || 0;
+    if (activeOffersCount === 0) {
+      throw new Error(`NO_ACTIVE_OFFERS: Cannot draft outreach responses when active partner offers count is 0.`);
+    }
+
     const offer = db.prepare('SELECT * FROM partner_offers WHERE id = ?').get(match.offer_id) as any;
     if (!offer) throw new Error(`OFFER_NOT_FOUND: Offer ${match.offer_id} not found.`);
 
@@ -549,6 +554,42 @@ export class DemandEngine {
     `).all(limit) as any[];
 
     return rows;
+  }
+
+  /**
+   * 2c: When active offers count is 0, cluster signals by intent and surface demand hints.
+   * Format: need, count, sample excerpt, "find a product for this need".
+   */
+  public getTopClustersForToday(limit = 5): Array<{
+    need: string;
+    category: string;
+    count: number;
+    sampleExcerpt: string;
+    sourceHost: string;
+    action: string;
+  }> {
+    const db = getDb();
+    const rows = db.prepare(`
+      SELECT
+        coalesce(category, 'general_consumer') as category,
+        COUNT(id) as count,
+        min(excerpt) as sampleExcerpt,
+        min(source_host) as sourceHost
+      FROM demand_signals
+      WHERE status IN ('SIGNAL', 'QUALIFIED', 'NO_OFFER', 'DISCOVERED')
+      GROUP BY category
+      ORDER BY count DESC
+      LIMIT ?
+    `).all(limit) as any[];
+
+    return rows.map(r => ({
+      need: `High-intent buyer recommendations for ${r.category.replace(/_/g, ' ')}`,
+      category: r.category,
+      count: Number(r.count),
+      sampleExcerpt: r.sampleExcerpt || 'Buyer seeking specific product recommendation in India',
+      sourceHost: r.sourceHost || 'community',
+      action: 'find a product for this need'
+    }));
   }
 
   /**

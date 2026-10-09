@@ -152,6 +152,32 @@ export class DirectReferralAdapter implements AffiliateNetworkAdapter {
   }
 }
 
+export const PARTNER_OFFICIAL_SIGNUP_DIRECTORY: Record<string, {
+  officialSignupUrl: string;
+  retrievalDate: string;
+  networkDetailsStatus: 'UNVERIFIED';
+  notes: string;
+}> = {
+  VCOMMISSION: {
+    officialSignupUrl: 'https://tools.vcommission.com/affiliates/signup.php',
+    retrievalDate: '2026-10-09',
+    networkDetailsStatus: 'UNVERIFIED',
+    notes: 'All third-party scraped claims (payout, KYC, cookies) marked UNVERIFIED. Tracking templates must be owner-entered.'
+  },
+  CUELINKS: {
+    officialSignupUrl: 'https://www.cuelinks.com/signup',
+    retrievalDate: '2026-10-09',
+    networkDetailsStatus: 'UNVERIFIED',
+    notes: 'All third-party scraped claims (payout, KYC, cookies) marked UNVERIFIED. Tracking templates must be owner-entered.'
+  },
+  EARNKARO: {
+    officialSignupUrl: 'https://earnkaro.com/',
+    retrievalDate: '2026-10-09',
+    networkDetailsStatus: 'UNVERIFIED',
+    notes: 'All third-party scraped claims (payout, KYC, cookies) marked UNVERIFIED. Tracking templates must be owner-entered.'
+  }
+};
+
 export class VCommissionAdapter implements AffiliateNetworkAdapter {
   readonly network = 'VCOMMISSION';
 
@@ -160,10 +186,13 @@ export class VCommissionAdapter implements AffiliateNetworkAdapter {
     return h.includes('vcommission.') || h.includes('tracking.vcommission.');
   }
 
-  buildTrackedDestination({ baseUrl, clickId, variables }: TrackedDestinationInput): string {
-    const offerId = variables?.offerId || getEnv('VCOMMISSION_OFFER_ID') || '101';
-    const affId = variables?.affId || getEnv('VCOMMISSION_AFF_ID') || 'aff_owner';
-    const template = variables?.template || 'https://tracking.vcommission.com/aff_c?offer_id={offerId}&aff_id={affId}&aff_sub={clickId}&url={encodedUrl}';
+  buildTrackedDestination({ baseUrl, clickId, template: explicitTemplate, partner, variables }: TrackedDestinationInput): string {
+    const template = partner?.trackingTemplate || explicitTemplate || variables?.template;
+    if (!template) {
+      throw new Error('MISSING_PARTNER_TRACKING_TEMPLATE: vCommission adapter refuses to build link because owner-entered tracking template is missing from partner record.');
+    }
+    const offerId = variables?.offerId || getEnv('VCOMMISSION_OFFER_ID') || '';
+    const affId = variables?.affId || getEnv('VCOMMISSION_AFF_ID') || '';
     return PartnerTrackingLinkBuilder.buildFromTemplate(template, {
       baseUrl,
       clickId,
@@ -194,9 +223,12 @@ export class CuelinksAdapter implements AffiliateNetworkAdapter {
     return h.includes('cuelinks.') || h.includes('linksredirect.');
   }
 
-  buildTrackedDestination({ baseUrl, clickId, variables }: TrackedDestinationInput): string {
-    const campaignId = variables?.campaignId || getEnv('CUELINKS_CAMPAIGN_ID') || '1001';
-    const template = variables?.template || 'https://linksredirect.com/?cid={campaignId}&subid={clickId}&url={encodedUrl}';
+  buildTrackedDestination({ baseUrl, clickId, template: explicitTemplate, partner, variables }: TrackedDestinationInput): string {
+    const template = partner?.trackingTemplate || explicitTemplate || variables?.template;
+    if (!template) {
+      throw new Error('MISSING_PARTNER_TRACKING_TEMPLATE: Cuelinks adapter refuses to build link because owner-entered tracking template is missing from partner record.');
+    }
+    const campaignId = variables?.campaignId || getEnv('CUELINKS_CAMPAIGN_ID') || '';
     return PartnerTrackingLinkBuilder.buildFromTemplate(template, {
       baseUrl,
       clickId,
@@ -225,9 +257,12 @@ export class EarnKaroAdapter implements AffiliateNetworkAdapter {
     return hostname.toLowerCase().includes('earnkaro.');
   }
 
-  buildTrackedDestination({ baseUrl, clickId, variables }: TrackedDestinationInput): string {
-    const referralId = variables?.referralId || getEnv('EARNKARO_REFERRAL_ID') || 'ref_owner';
-    const template = variables?.template || 'https://earnkaro.com/deal?r={referralId}&url={encodedUrl}&subid={clickId}';
+  buildTrackedDestination({ baseUrl, clickId, template: explicitTemplate, partner, variables }: TrackedDestinationInput): string {
+    const template = partner?.trackingTemplate || explicitTemplate || variables?.template;
+    if (!template) {
+      throw new Error('MISSING_PARTNER_TRACKING_TEMPLATE: EarnKaro adapter refuses to build link because owner-entered tracking template is missing from partner record.');
+    }
+    const referralId = variables?.referralId || getEnv('EARNKARO_REFERRAL_ID') || '';
     return PartnerTrackingLinkBuilder.buildFromTemplate(template, {
       baseUrl,
       clickId,

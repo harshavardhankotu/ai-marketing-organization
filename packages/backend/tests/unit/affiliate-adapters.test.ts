@@ -20,13 +20,40 @@ describe('Non-Amazon Affiliate Adapters & Tracking Link Builder (Indian Networks
     delete process.env.EARNKARO_REFERRAL_ID;
   });
 
-  it('vCommission adapter resolves host and formats HasOffers tracking link with aff_sub', () => {
+  it('adapter refuses to build link if owner-entered template is missing', () => {
+    const vcAdapter = new VCommissionAdapter();
+    expect(() => {
+      vcAdapter.buildTrackedDestination({
+        baseUrl: 'https://store.example.com/product-123',
+        clickId: 'clk_vc_missing',
+      });
+    }).toThrow(/MISSING_PARTNER_TRACKING_TEMPLATE/);
+
+    const cueAdapter = new CuelinksAdapter();
+    expect(() => {
+      cueAdapter.buildTrackedDestination({
+        baseUrl: 'https://store.example.com/product-123',
+        clickId: 'clk_cue_missing',
+      });
+    }).toThrow(/MISSING_PARTNER_TRACKING_TEMPLATE/);
+
+    const ekAdapter = new EarnKaroAdapter();
+    expect(() => {
+      ekAdapter.buildTrackedDestination({
+        baseUrl: 'https://store.example.com/product-123',
+        clickId: 'clk_ek_missing',
+      });
+    }).toThrow(/MISSING_PARTNER_TRACKING_TEMPLATE/);
+  });
+
+  it('vCommission adapter resolves host and formats HasOffers tracking link with aff_sub using partner template', () => {
     const adapter = resolveAffiliateAdapter('https://tracking.vcommission.com/aff_c?offer_id=555');
     expect(adapter.network).toBe('VCOMMISSION');
 
     const tracked = adapter.buildTrackedDestination({
       baseUrl: 'https://store.example.com/product-123',
       clickId: 'clk_vc_001',
+      template: 'https://tracking.vcommission.com/aff_c?offer_id={offerId}&aff_id={affId}&aff_sub={clickId}&url={encodedUrl}',
       variables: { offerId: '890' },
     });
 
@@ -40,13 +67,14 @@ describe('Non-Amazon Affiliate Adapters & Tracking Link Builder (Indian Networks
     expect(adapter.hasAttribution(urlWithAttribution)).toBe(true);
   });
 
-  it('Cuelinks adapter resolves host and formats redirect link with subid', () => {
+  it('Cuelinks adapter resolves host and formats redirect link with subid using partner template', () => {
     const adapter = resolveAffiliateAdapter('https://linksredirect.com/?cid=123');
     expect(adapter.network).toBe('CUELINKS');
 
     const tracked = adapter.buildTrackedDestination({
       baseUrl: 'https://store.example.com/item-456',
       clickId: 'clk_cue_002',
+      template: 'https://linksredirect.com/?cid={campaignId}&subid={clickId}&url={encodedUrl}',
       variables: { campaignId: '777' },
     });
 
@@ -58,13 +86,14 @@ describe('Non-Amazon Affiliate Adapters & Tracking Link Builder (Indian Networks
     expect(adapter.hasAttribution(urlWithAttribution)).toBe(true);
   });
 
-  it('EarnKaro adapter resolves host and formats deal redirect link with referralId and subid', () => {
+  it('EarnKaro adapter resolves host and formats deal redirect link with referralId and subid using partner template', () => {
     const adapter = resolveAffiliateAdapter('https://earnkaro.com/share');
     expect(adapter.network).toBe('EARNKARO');
 
     const tracked = adapter.buildTrackedDestination({
       baseUrl: 'https://store.example.com/deal-789',
       clickId: 'clk_ek_003',
+      template: 'https://earnkaro.com/deal?r={referralId}&url={encodedUrl}&subid={clickId}',
       variables: { referralId: 'my_ek_id' },
     });
 
@@ -113,6 +142,7 @@ describe('Non-Amazon Affiliate Adapters & Tracking Link Builder (Indian Networks
         id: 'part_cuelinks_fixture',
         approvalStatus: 'APPROVED',
         authorizationStatus: 'AUTHORIZED',
+        trackingTemplate: 'https://linksredirect.com/?cid={campaignId}&subid={clickId}&url={encodedUrl}',
       },
     });
 

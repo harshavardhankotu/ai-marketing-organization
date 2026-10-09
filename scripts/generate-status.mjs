@@ -78,6 +78,37 @@ async function main() {
 
   const timestamp = new Date().toISOString();
 
+  const offersCount = (await queryD1("SELECT count(*) as count FROM partner_offers WHERE active = 1;"))?.[0]?.count ?? 0;
+  const guidesPublishedCount = (await queryD1("SELECT count(*) as count FROM commission_content_assets WHERE status = 'PUBLISHED';"))?.[0]?.count ?? 0;
+  const visitsCount = (await queryD1("SELECT count(*) as count FROM referral_click_events WHERE placement = 'direct_beacon' OR source = 'direct_beacon' OR medium = 'beacon';"))?.[0]?.count ?? 0;
+  const outboundClicksCount = (await queryD1("SELECT count(*) as count FROM referral_click_events WHERE placement != 'direct_beacon';"))?.[0]?.count ?? 0;
+  const conversionsCount = (await queryD1("SELECT count(*) as count FROM commission_records WHERE status IN ('ORDERED', 'SHIPPED', 'COMMISSION_PENDING', 'COMMISSION_APPROVED', 'PAID');"))?.[0]?.count ?? 0;
+  const verifiedCommissionCount = (await queryD1("SELECT count(*) as count FROM commission_records WHERE status IN ('COMMISSION_APPROVED', 'PAID') AND verified_commission_inr > 0;"))?.[0]?.count ?? 0;
+
+  const pipelineStages = [
+    { stage: 'offers', name: 'Approved Partner Offers', count: offersCount, blockerDesc: 'Zero active partner offers. Owner must approve a product proposal and link an active partner offer.' },
+    { stage: 'guides published', name: 'Published Buyer Guides', count: guidesPublishedCount, blockerDesc: 'Zero published guides. Owner must review and approve publishing a buyer guide.' },
+    { stage: 'visits', name: 'Guide Visits (Click Beacon)', count: visitsCount, blockerDesc: 'Zero guide visits recorded. Published guide URL has not received any visitors.' },
+    { stage: 'outbound clicks', name: 'Outbound Partner Clicks', count: outboundClicksCount, blockerDesc: 'Zero outbound clicks to partner destination. Visitors have not clicked through to partner.' },
+    { stage: 'reported conversions', name: 'Reported Conversions', count: conversionsCount, blockerDesc: 'Zero reported conversions. Partner report has not reported any qualifying transactions.' },
+    { stage: 'verified commission', name: 'Verified Commission', count: verifiedCommissionCount, blockerDesc: 'Zero verified commission. No commission has been verified by external statement.' }
+  ];
+
+  const firstZeroStage = pipelineStages.find(s => s.count === 0) || pipelineStages[pipelineStages.length - 1];
+
+  let blockerRankingRows = '';
+  let hitZero = false;
+  for (const s of pipelineStages) {
+    let statusBadge = 'CLEAR';
+    if (s.count === 0 && !hitZero) {
+      statusBadge = '**TOP BLOCKER**';
+      hitZero = true;
+    } else if (s.count === 0) {
+      statusBadge = 'BLOCKED (DOWNSTREAM)';
+    }
+    blockerRankingRows += `| **${s.name}** | \`${s.count}\` | ${statusBadge} | ${s.blockerDesc} |\n`;
+  }
+
   const content = `# Project Status & Verification Truth Record
 
 > **Single Source of Truth** for verified infrastructure, commercial progress, known resolutions, and pending owner actions.
@@ -104,7 +135,21 @@ async function main() {
 
 ---
 
-## 2. Commercial State (Never Inferred, Only Real Evidence)
+## 2. Pipeline Stage Blocker Ranking (Ranked by Pipeline Stage, Not Money)
+
+> Blockers are ranked strictly by sequential pipeline stage:
+> **offers → guides published → visits → outbound clicks → reported conversions → verified commission**.
+> The **TOP BLOCKER** is the first stage with a count of 0.
+
+| Pipeline Stage | Measured Count | Funnel Status | Blocker Diagnostic & Required Action |
+| :--- | :---: | :---: | :--- |
+${blockerRankingRows}
+
+**Active Top Blocker:** **Stage: ${firstZeroStage.stage}** (Measured Count: \`${firstZeroStage.count}\`) — ${firstZeroStage.blockerDesc}
+
+---
+
+## 3. Commercial State (Never Inferred, Only Real Evidence)
 
 *All commercial stages remain strictly unexecuted until real external interactions are confirmed.*
 
@@ -118,7 +163,7 @@ async function main() {
 
 ---
 
-## 3. Historical Record & Superseded Claims
+## 4. Historical Record & Superseded Claims
 
 > [!WARNING]
 > **SUPERSEDED HISTORICAL CLAIMS:**
@@ -128,7 +173,7 @@ async function main() {
 
 ---
 
-## 4. Known Resolved Issues (Do Not Re-Diagnose)
+## 5. Known Resolved Issues (Do Not Re-Diagnose)
 
 1. **2026-09-29 — Fake Booking Success Screen (\`c276790\`):** Hardened consultation booking to require backend verification.
 2. **2026-09-29 — Razorpay Default Webhook Secret Fallback (\`c276790\`, \`47f880d\`):** Replaced with strict production fail-closed signature verification.
@@ -137,6 +182,8 @@ async function main() {
 5. **2026-10-07 — Owner Control Center & Intake Blocker (\`0012\`, \`0013\`):** Enforced single-owner control center, statutory intake attestation, and 180-day review deadline.
 6. **2026-10-08 — Mistakes Board & Automated Guards (\`0016\`):** Created empirical mistakes board; automated sync and preflight checks.
 7. **2026-10-09 — Automatic Usage Checks & Guardrail Verification (\`0018\`, \`0019\`):** Automated provider usage API checks against \`https://api.tavily.com/usage\`, automated drift detection (>10%), verified test links for rows 9-11 and 13, and added CI enforcement.
+8. **2026-10-09 — Owner Action Truth & Demand Engine Wiring (\`0023\`):** Enforced proof gates on all 5 canonical owner actions (OPEN until verified evidence), eliminated hardcoded affiliate tracking templates, and wired demand discovery engine with 24h cooldown.
+
 `;
 
   fs.writeFileSync('PROJECT_STATUS.md', content, 'utf8');
