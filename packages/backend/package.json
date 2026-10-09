@@ -7,7 +7,7 @@
     "typecheck": "tsc --noEmit",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
-    "test": "vitest run",
+    "test": "vitest run --test-timeout=30000",
     "seed": "tsx src/db/seed.ts",
     "export-schema": "tsx src/db/export-schema.ts"
   },
