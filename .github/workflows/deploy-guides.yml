@@ -41,4 +41,6 @@ jobs:
           firebaseServiceAccount: '${{ secrets.FIREBASE_SERVICE_ACCOUNT }}'
           channelId: live
           projectId: ai-marketing-organization
-        if: ${{ secrets.FIREBASE_SERVICE_ACCOUNT != '' }}
+        env:
+          HAS_FIREBASE_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        if: env.HAS_FIREBASE_KEY != ''
