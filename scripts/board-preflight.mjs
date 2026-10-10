@@ -4,11 +4,13 @@ import path from 'path';
 function getCfToken() {
   if (process.env.CLOUDFLARE_D1_API_TOKEN) return process.env.CLOUDFLARE_D1_API_TOKEN;
   if (process.env.CLOUDFLARE_API_TOKEN) return process.env.CLOUDFLARE_API_TOKEN;
-  const envPath = path.resolve('.env.deploy_secrets');
-  if (fs.existsSync(envPath)) {
-    const content = fs.readFileSync(envPath, 'utf8');
-    const match = content.match(/CLOUDFLARE_API_TOKEN=([^\r\n]+)/);
-    if (match) return match[1].trim();
+  for (const envFile of ['.env.local', '.env.deploy_secrets']) {
+    const envPath = path.resolve(envFile);
+    if (fs.existsSync(envPath)) {
+      const content = fs.readFileSync(envPath, 'utf8');
+      const match = content.match(/CLOUDFLARE_API_TOKEN=([^\r\n]+)/);
+      if (match) return match[1].trim();
+    }
   }
   return null;
 }

@@ -135,6 +135,12 @@ export interface OwnerStatusSnapshot {
       category: string;
       expiresAt: string;
     }>;
+    candidateHosts?: Array<{
+      host: string;
+      termsUrl: string | null;
+      termsCheckedAt: string | null;
+      ownerApproved: boolean;
+    }>;
     topDemandClusters?: Array<{
       need: string;
       category: string;
@@ -142,6 +148,8 @@ export interface OwnerStatusSnapshot {
       sampleExcerpt: string;
       sourceHost: string;
       action: string;
+      affiliateIdea?: string;
+      ownOfferIdea?: string;
     }>;
   };
   lastCronCycle: {
@@ -1727,16 +1735,48 @@ export class OwnerControlCenterEngine {
 
     const hasSearchConsole = Boolean(process.env.GOOGLE_SEARCH_CONSOLE_KEY || process.env.SEARCH_CONSOLE_CONNECTED === 'true');
 
-    // Step 6c: If active offers count is 0, do not draft replies. Cluster signals by intent and surface top 5 demand hints.
+    // Step 6c: Candidate source hosts query
+    let candidateHosts: Array<{
+      host: string;
+      termsUrl: string | null;
+      termsCheckedAt: string | null;
+      ownerApproved: boolean;
+    }> = [];
+    try {
+      const sourceRulesSql = `SELECT host, terms_url, terms_checked_at, owner_approved FROM source_rules ORDER BY host ASC`;
+      let ruleRows: any[] = [];
+      if (isProduction()) {
+        ruleRows = await this.d1Repo.query<any>('source_rules', sourceRulesSql, []).catch(() => []);
+      } else {
+        ruleRows = getDb().prepare(sourceRulesSql).all() as any[];
+      }
+      candidateHosts = ruleRows.map(r => ({
+        host: r.host,
+        termsUrl: r.terms_url || (
+          r.host === 'reddit.com' ? 'https://www.redditinc.com/policies/user-agreement' :
+          r.host === 'quora.com' ? 'https://www.quora.com/about/tos' :
+          r.host === 'techenclave.com' ? 'https://techenclave.com/help/terms/' :
+          r.host === 'desidime.com' ? 'https://www.desidime.com/terms-and-conditions' : null
+        ),
+        termsCheckedAt: r.terms_checked_at || null,
+        ownerApproved: Boolean(r.owner_approved === 1 || r.owner_approved === true)
+      }));
+    } catch {}
+
+    // Step 6c & 6d: Top drafts and demand clusters (offer ideas for affiliate and own offers)
     let topOutreachDrafts: any[] = [];
     let topDemandClusters: any[] = [];
     try {
       const { DemandEngine } = await import('./demand-engine.js');
       if (activeOffers.length > 0) {
         topOutreachDrafts = DemandEngine.getInstance().getTopDraftsForToday(5);
-      } else {
-        topDemandClusters = DemandEngine.getInstance().getTopClustersForToday(5);
       }
+      const rawClusters = DemandEngine.getInstance().getTopClustersForToday(5);
+      topDemandClusters = rawClusters.map(c => ({
+        ...c,
+        affiliateIdea: `Find an Amazon.in affiliate product for "${c.category}" and submit listing facts`,
+        ownOfferIdea: `Create an OWN_OFFER (Service / Consulting / Resource with manual Razorpay link) for "${c.category}"`
+      }));
     } catch {}
 
     const openActions: OpenActionItem[] = [
@@ -1786,6 +1826,7 @@ export class OwnerControlCenterEngine {
       intakeCompleted: Boolean(intake && intake.status === 'VALID' && intake.writtenBy === 'OWNER_FORM'),
       intakeStatus: intake ? intake.status : 'PENDING',
       candidateProposals,
+      candidateHosts,
       publishReadyGuides,
       readyShareGuide,
       topOutreachDrafts,
@@ -2169,6 +2210,75 @@ ${escape(d.disclosureText)}</div>
           </div>
         `).join('');
 
+    const candidateHosts = today?.candidateHosts || [];
+    const candidateHostsHtml = candidateHosts.length === 0
+      ? `<div style="font-size: 0.85rem; color: #94a3b8; background: #0b1120; border: 1px dashed #334155; border-radius: 4px; padding: 12px;">No candidate hosts registered in source_rules.</div>`
+      : candidateHosts.map((h: any) => `
+          <div style="background: #111827; border: 1px solid #1e293b; border-radius: 6px; padding: 12px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+            <div>
+              <div style="font-weight: 700; color: #f1f5f9; font-size: 0.92rem;">
+                ${escape(h.host)}
+              </div>
+              <div style="font-size: 0.8rem; color: #94a3b8; margin-top: 2px;">
+                <strong>Terms:</strong>
+                ${h.termsUrl ? `<a href="${escape(h.termsUrl)}" target="_blank" rel="noopener" style="color: #60a5fa; text-decoration: underline;">${escape(h.termsUrl)}</a>` : 'Not specified'}
+              </div>
+            </div>
+            <div style="display: flex; gap: 8px; align-items: center;">
+              ${h.ownerApproved
+                ? `<span style="background: rgba(34, 197, 94, 0.2); color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.4); padding: 4px 10px; border-radius: 4px; font-weight: 700; font-size: 0.78rem;">APPROVED</span>`
+                : h.termsCheckedAt
+                ? `
+                  <span style="background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.4); padding: 4px 8px; border-radius: 4px; font-size: 0.75rem;">Terms Read: ${escape(h.termsCheckedAt.substring(0, 16))}</span>
+                  <form method="POST" action="/api/v1/owner/demand/source-rules/${escape(h.host)}/approve" style="margin: 0;">
+                    <button type="submit" style="background: #059669; color: #fff; border: none; padding: 6px 14px; border-radius: 4px; font-size: 0.82rem; font-weight: 600; cursor: pointer;">
+                      Approve Host
+                    </button>
+                  </form>
+                `
+                : `
+                  <form method="POST" action="/api/v1/owner/demand/source-rules/${escape(h.host)}/check-terms" style="margin: 0;">
+                    <button type="submit" style="background: #2563eb; color: #fff; border: none; padding: 6px 14px; border-radius: 4px; font-size: 0.82rem; font-weight: 600; cursor: pointer;">
+                      I read the terms
+                    </button>
+                  </form>
+                  <button type="button" disabled title="Click 'I read the terms' first" style="background: #1e293b; color: #64748b; border: 1px solid #334155; padding: 6px 14px; border-radius: 4px; font-size: 0.82rem; font-weight: 600; cursor: not-allowed;">
+                    Approve Host
+                  </button>
+                `
+              }
+            </div>
+          </div>
+        `).join('');
+
+    const demandClusters = today?.topDemandClusters || [];
+    const demandClustersHtml = demandClusters.length === 0
+      ? `<div style="font-size: 0.85rem; color: #94a3b8; background: #0b1120; border: 1px dashed #334155; border-radius: 4px; padding: 12px;">Zero active demand clusters discovered. Scan approved community hosts to surface real buyer intent.</div>`
+      : demandClusters.map((c: any) => `
+          <div style="background: #111827; border: 1px solid #1e293b; border-radius: 6px; padding: 12px; margin-bottom: 12px;">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 6px;">
+              <div>
+                <strong style="color: #38bdf8; font-size: 0.95rem;">Category: ${escape(c.category)}</strong>
+                <span style="font-size: 0.78rem; background: rgba(56, 189, 248, 0.1); color: #38bdf8; padding: 2px 8px; border-radius: 4px; margin-left: 8px;">${c.count} high-intent inquiry signals</span>
+              </div>
+              <span style="font-size: 0.75rem; color: #94a3b8;">Source: ${escape(c.sourceHost)}</span>
+            </div>
+            <div style="font-size: 0.8rem; color: #cbd5e1; margin-bottom: 10px; font-style: italic;">
+              "${escape(c.sampleExcerpt)}"
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; background: #090d16; padding: 10px; border-radius: 4px; border: 1px solid #1e293b;">
+              <div>
+                <div style="font-size: 0.75rem; font-weight: 700; color: #f59e0b; text-transform: uppercase; margin-bottom: 2px;">Affiliate Offer Idea</div>
+                <div style="font-size: 0.8rem; color: #e2e8f0;">${escape(c.affiliateIdea || `Source an Amazon.in affiliate product for ${c.category}`)}</div>
+              </div>
+              <div>
+                <div style="font-size: 0.75rem; font-weight: 700; color: #10b981; text-transform: uppercase; margin-bottom: 2px;">Own Offer Idea (Razorpay Manual Link)</div>
+                <div style="font-size: 0.8rem; color: #e2e8f0;">${escape(c.ownOfferIdea || `Launch an OWN_OFFER (service/resource) with payment link for ${c.category}`)}</div>
+              </div>
+            </div>
+          </div>
+        `).join('');
+
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2271,11 +2381,25 @@ ${escape(d.disclosureText)}</div>
           ${shareGuideBoxHtml}
         </div>
 
-        <!-- 4. Hand-Post Community Recommendation Drafts (Demand Engine) -->
+        <!-- 4. Candidate Source Hosts (Terms Review & Approval) -->
         <div style="background: #0f172a; border: 1px solid #1e293b; border-radius: 6px; padding: 14px;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
             <div style="font-weight: 600; font-size: 0.95rem; color: #f8fafc;">
-              4. Post Drafts by Hand (Top 5 by Expected Value)
+              4. Candidate Source Hosts (Terms Review &amp; Approval)
+            </div>
+            <span style="font-size: 0.75rem; color: #38bdf8; background: rgba(56, 189, 248, 0.1); padding: 2px 8px; border-radius: 4px;">Approval Gated on Terms Reading</span>
+          </div>
+          <div style="font-size: 0.85rem; color: #94a3b8; margin-bottom: 12px;">
+            Review each candidate community host's terms of service. You must click <strong>"I read the terms"</strong> to record verified reading before the host can be approved for demand scanning.
+          </div>
+          ${candidateHostsHtml}
+        </div>
+
+        <!-- 5. Hand-Post Community Recommendation Drafts (Demand Engine) -->
+        <div style="background: #0f172a; border: 1px solid #1e293b; border-radius: 6px; padding: 14px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <div style="font-weight: 600; font-size: 0.95rem; color: #f8fafc;">
+              5. Post Drafts by Hand (Top 5 by Expected Value)
             </div>
             <span style="font-size: 0.75rem; color: #38bdf8; background: rgba(56, 189, 248, 0.1); padding: 2px 8px; border-radius: 4px;">Hand-Posting Only (System Never Posts)</span>
           </div>
@@ -2283,6 +2407,20 @@ ${escape(d.disclosureText)}</div>
             Review high-intent community inquiries matched to active offers. The system never posts automatically. Use the two buttons to copy text and mark posted.
           </div>
           ${outreachDraftsHtml}
+        </div>
+
+        <!-- 6. Demand Clusters as Offer Ideas (Affiliate & Own Offers) -->
+        <div style="background: #0f172a; border: 1px solid #1e293b; border-radius: 6px; padding: 14px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <div style="font-weight: 600; font-size: 0.95rem; color: #f8fafc;">
+              6. Demand Clusters as Offer Ideas (Affiliate &amp; Own Offers)
+            </div>
+            <span style="font-size: 0.75rem; color: #a78bfa; background: rgba(167, 139, 250, 0.1); padding: 2px 8px; border-radius: 4px;">Validated Demand</span>
+          </div>
+          <div style="font-size: 0.82rem; color: #94a3b8; margin-bottom: 12px;">
+            Commercial inquiries clustered by buyer intent. Use these validated demand clusters to source Amazon.in affiliate products or launch your own service/resource offer with a manual Razorpay payment link.
+          </div>
+          ${demandClustersHtml}
         </div>
       </div>
       <div style="margin-top: 12px; font-size: 0.8rem; color: #64748b; text-align: right;">

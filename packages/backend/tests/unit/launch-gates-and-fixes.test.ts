@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import app from '../../src/index.js';
 import { getDb } from '../../src/db/client.js';
+import { seedDatabase } from '../../src/db/seed.js';
 import { PartnerRegistryEngine } from '../../src/commission/partner-registry.js';
 import { DemandDiscoveryEngine } from '../../src/commission/demand-discovery.js';
 import { PlatformProspectDiscoveryEngine } from '../../src/revenue/platform-prospect-discovery-engine.js';
@@ -17,6 +18,7 @@ describe('Launch Gates and Fixes Verification Test Suite', () => {
 
   beforeEach(() => {
     const db = getDb();
+    seedDatabase({ forceSeed: true });
     try {
       db.prepare(`DELETE FROM referral_click_events WHERE organization_id = ?`).run(orgId);
       db.prepare(`DELETE FROM referrals WHERE organization_id = ?`).run(orgId);

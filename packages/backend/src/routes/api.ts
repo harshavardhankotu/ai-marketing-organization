@@ -5667,12 +5667,74 @@ apiRouter.get('/owner/demand/source-rules', async (c) => {
 });
 
 /**
- * Demand Engine — Owner Approves Source Host
+ * Demand Engine — Owner Confirms Reading Host Terms
+ */
+apiRouter.post('/owner/demand/source-rules/:host/check-terms', async (c) => {
+  const host = c.req.param('host');
+  const now = new Date().toISOString();
+  if (isProduction()) {
+    const { D1Client } = await import('../db/d1-client.js');
+    await D1Client.getInstance().executeQuery(
+      "UPDATE source_rules SET terms_checked_at = ?, updated_at = datetime('now') WHERE host = ?",
+      [now, host],
+      true,
+      'P0'
+    );
+  } else {
+    const db = getDb();
+    db.prepare("UPDATE source_rules SET terms_checked_at = ?, updated_at = datetime('now') WHERE host = ?").run(now, host);
+  }
+  const contentType = c.req.header('content-type') || '';
+  if (contentType.includes('form')) {
+    return c.redirect('/owner/status', 303);
+  }
+  return c.json({ success: true, data: { host, terms_checked_at: now } });
+});
+
+/**
+ * Demand Engine — Owner Approves Source Host (Gated on terms_checked_at)
  */
 apiRouter.post('/owner/demand/source-rules/:host/approve', async (c) => {
   const host = c.req.param('host');
-  const db = getDb();
-  db.prepare("UPDATE source_rules SET owner_approved = 1, updated_at = datetime('now') WHERE host = ?").run(host);
+  let row: any = null;
+  if (isProduction()) {
+    const { D1Client } = await import('../db/d1-client.js');
+    const res = await D1Client.getInstance().executeQuery<any>(
+      'SELECT terms_checked_at FROM source_rules WHERE host = ?',
+      [host],
+      false,
+      'P0'
+    );
+    row = res.results?.[0];
+  } else {
+    const db = getDb();
+    row = db.prepare('SELECT terms_checked_at FROM source_rules WHERE host = ?').get(host) as any;
+  }
+
+  if (!row || !row.terms_checked_at) {
+    const contentType = c.req.header('content-type') || '';
+    if (contentType.includes('form')) {
+      return c.html(`<h3>TERMS NOT CHECKED</h3><p>Cannot approve host '${host}' before confirming you read the terms.</p><a href="/owner/status">Return to Dashboard</a>`, 400);
+    }
+    return c.json({
+      success: false,
+      error: `TERMS_NOT_CHECKED: Cannot approve host '${host}' before terms_checked_at is set.`
+    }, 400);
+  }
+
+  if (isProduction()) {
+    const { D1Client } = await import('../db/d1-client.js');
+    await D1Client.getInstance().executeQuery(
+      "UPDATE source_rules SET owner_approved = 1, updated_at = datetime('now') WHERE host = ?",
+      [host],
+      true,
+      'P0'
+    );
+  } else {
+    const db = getDb();
+    db.prepare("UPDATE source_rules SET owner_approved = 1, updated_at = datetime('now') WHERE host = ?").run(host);
+  }
+
   const contentType = c.req.header('content-type') || '';
   if (contentType.includes('form')) {
     return c.redirect('/owner/status', 303);

@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import { getDb } from '../db/client.js';
 import { UnifiedQuotaService } from '../quota/unified-quota-service.js';
+import { isPlaceholderCredential } from '../config/env.js';
 
 export interface SearchResultItem {
   title: string;
@@ -105,8 +106,9 @@ export class GoogleSearchClient {
     const googleApiKey = process.env.GOOGLE_SEARCH_API_KEY;
     const googleCx = process.env.GOOGLE_SEARCH_CX;
 
-    const useTavily = Boolean(tavilyKey);
-    const useGoogle = Boolean(googleApiKey && googleCx);
+    const isTestKey = (key?: string) => !key || isPlaceholderCredential(key) || key.startsWith('tvly-test') || key.includes('fixture') || key.startsWith('test') || key.includes('test');
+    const useTavily = Boolean(tavilyKey && !isTestKey(tavilyKey));
+    const useGoogle = Boolean(googleApiKey && googleCx && !isTestKey(googleApiKey));
 
     if (!useTavily && !useGoogle) {
       if (process.env.NODE_ENV === 'test') {

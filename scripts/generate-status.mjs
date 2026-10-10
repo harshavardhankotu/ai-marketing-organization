@@ -3,14 +3,19 @@ import path from 'path';
 import { execSync } from 'child_process';
 
 function getSecret(file, key) {
-  if (!fs.existsSync(file)) return null;
-  const content = fs.readFileSync(file, 'utf8');
-  const match = content.match(new RegExp(`^${key}=(.*)$`, 'm'));
-  return match ? match[1].trim() : null;
+  if (process.env[key]) return process.env[key];
+  for (const candidate of ['.env.local', file, '.env.admin_secret', '.env.deploy_secrets']) {
+    if (candidate && fs.existsSync(candidate)) {
+      const content = fs.readFileSync(candidate, 'utf8');
+      const match = content.match(new RegExp(`^${key}=(.*)$`, 'm'));
+      if (match && match[1].trim()) return match[1].trim();
+    }
+  }
+  return null;
 }
 
-const renderApiKey = getSecret('.env.admin_secret', 'RENDER_API_KEY');
-const cfToken = getSecret('.env.deploy_secrets', 'CLOUDFLARE_API_TOKEN');
+const renderApiKey = getSecret('.env.local', 'RENDER_API_KEY');
+const cfToken = getSecret('.env.local', 'CLOUDFLARE_API_TOKEN');
 const accountId = '9b7511ff69e507dd3a00a7266fec11a3';
 const dbId = '0563bb85-f6d2-483f-8b0f-0784e3d604c7';
 const renderServiceId = 'srv-darecoc9v7es73ea8t2g';

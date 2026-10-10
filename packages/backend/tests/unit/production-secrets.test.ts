@@ -136,4 +136,47 @@ describe('Production Secrets & Data Classification Enforcement', () => {
       expect(updatedSummary.realRevenueINR).not.toBe(updatedSummary.testRevenueINR);
     });
   });
+
+  describe('3. Git Ignore Enforcement for Secret Files (Step 1d)', () => {
+    it('fails when any secret file pattern is not matched by .gitignore', async () => {
+      const fs = await import('fs');
+      const path = await import('path');
+      const candidatePaths = [
+        path.resolve(process.cwd(), '.gitignore'),
+        path.resolve(process.cwd(), '../../.gitignore'),
+        path.resolve(process.cwd(), '../.gitignore')
+      ];
+      let gitignoreContent = '';
+      for (const p of candidatePaths) {
+        if (fs.existsSync(p)) {
+          gitignoreContent = fs.readFileSync(p, 'utf8');
+          break;
+        }
+      }
+      if (!gitignoreContent) {
+        throw new Error('.gitignore not found in workspace candidate paths');
+      }
+      const lines = gitignoreContent.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));
+
+      const requiredSecretFiles = [
+        '.env',
+        '.env.local',
+        '.env.admin_secret',
+        '.env.deploy_secrets',
+        '.env.render.production',
+        '.env.txt'
+      ];
+
+      for (const secretFile of requiredSecretFiles) {
+        // Matches exact pattern or wildcard pattern like *.env*
+        const isIgnored = lines.some(pattern => {
+          if (pattern === secretFile) return true;
+          if (pattern === '*.env*' && secretFile.includes('.env')) return true;
+          if (pattern === '.env*' && secretFile.startsWith('.env')) return true;
+          return false;
+        });
+        expect(isIgnored, `Secret file ${secretFile} must be explicitly ignored in .gitignore`).toBe(true);
+      }
+    });
+  });
 });

@@ -86,7 +86,8 @@ export class GeminiProvider implements ModelProvider {
       }
 
       // Non-production (development, test) execution
-      if (apiKey && !isPlaceholderCredential(apiKey)) {
+      const isTestKey = (k?: string) => !k || isPlaceholderCredential(k) || k.startsWith('AIzaSyTestFixture') || k.includes('fixture');
+      if (apiKey && !isTestKey(apiKey)) {
         try {
           return await this.callLiveGeminiAPI<T>(apiKey, options, thinkingLevel);
         } catch (error: any) {

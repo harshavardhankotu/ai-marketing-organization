@@ -1,6 +1,6 @@
 # Mistakes Board — Active Rules & Guardrails
 
-> Auto-generated from Cloudflare D1 mistakes_board at 2026-10-09T00:28:25.851Z
+> Auto-generated from Cloudflare D1 mistakes_board at 2026-10-10T13:46:47.869Z
 > Total Open Rules: 12
 > Antigravity loads this file at session start. Do not delete.
 

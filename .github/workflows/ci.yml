@@ -41,6 +41,15 @@ jobs:
 
       - name: Run Unit & Regression Tests
         run: npm run test
+        env:
+          NODE_ENV: test
+          CI: true
+          PORT: 3001
+          TAVILY_API_KEY: tvly-test-fixture-ci-key
+          GEMINI_API_KEY: AIzaSyTestFixtureKeyForUnitTests12345
+          OWNER_API_KEY: test_owner_key_for_ci_pipeline_only
+          AUTH_SECRET: test_owner_key_for_ci_pipeline_only
+          CRON_PING_SECRET: test_cron_secret_for_ci_pipeline_only
 
       - name: Verify Database Seeding
         run: npx tsx packages/backend/src/db/seed.ts

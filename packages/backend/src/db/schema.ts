@@ -2299,6 +2299,7 @@ CREATE TABLE IF NOT EXISTS source_rules (
   automation_allowed INTEGER NOT NULL DEFAULT 0,
   owner_approved INTEGER NOT NULL DEFAULT 0,
   notes TEXT,
+  terms_url TEXT,
   terms_checked_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))

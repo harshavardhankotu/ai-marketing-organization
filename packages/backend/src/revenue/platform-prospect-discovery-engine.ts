@@ -144,7 +144,7 @@ export class PlatformProspectDiscoveryEngine {
    * Discovers new real Indian SMB prospects using cache, free Gemini, or Tavily search.
    */
   public async discoverProspects(
-    businessId: string = OwnerAuthService.PLATFORM_BUSINESS_ID,
+    businessId: any = OwnerAuthService.PLATFORM_BUSINESS_ID,
     organizationId: string = OwnerAuthService.OWNER_ORGANIZATION_ID,
     options: {
       vertical?: 'clinic' | 'dental' | 'salon' | 'coaching' | 'real_estate' | 'professional_services';
@@ -153,13 +153,40 @@ export class PlatformProspectDiscoveryEngine {
       isManual?: boolean;
     } = {}
   ): Promise<ProspectDiscoveryResult> {
-    const vertical = options.vertical || (isProduction() ? await this.pickNextTargetVerticalAsync() : this.pickNextTargetVertical());
-    const city = options.city || (isProduction() ? await this.pickNextTargetCityAsync() : this.pickNextTargetCity());
-    const limit = options.limit || 3;
+    let actualBizId = OwnerAuthService.PLATFORM_BUSINESS_ID;
+    let actualOrgId = OwnerAuthService.OWNER_ORGANIZATION_ID;
+    let actualOptions: {
+      vertical?: 'clinic' | 'dental' | 'salon' | 'coaching' | 'real_estate' | 'professional_services';
+      city?: string;
+      limit?: number;
+      isManual?: boolean;
+    } = {};
+
+    if (typeof businessId === 'object' && businessId !== null) {
+      actualOptions = businessId;
+    } else {
+      if (typeof businessId === 'string') actualBizId = businessId;
+      if (typeof organizationId === 'string') actualOrgId = organizationId;
+      actualOptions = options || {};
+    }
+
+    // PROSPECT DISCOVERY GATE: Enforced before any search or fixture generation
+    if (process.env.PROSPECT_DISCOVERY_ENABLED === 'false' && !actualOptions.isManual) {
+      return {
+        status: 'NO_NEW_PROSPECTS',
+        count: 0,
+        prospects: [],
+        reason: 'PROSPECT_DISCOVERY_PAUSED: Automated prospect discovery is paused (PROSPECT_DISCOVERY_ENABLED=false).'
+      };
+    }
+
+    const vertical = actualOptions.vertical || (isProduction() ? await this.pickNextTargetVerticalAsync() : this.pickNextTargetVertical());
+    const city = actualOptions.city || (isProduction() ? await this.pickNextTargetCityAsync() : this.pickNextTargetCity());
+    const limit = actualOptions.limit || 3;
     const queryKey = `prospects_${vertical}_${city}`.toLowerCase();
 
     // 0. 7-DAY QUERY COOLDOWN: Do not rerun the same query within 7 days unless triggered manually
-    if (!options.isManual) {
+    if (!actualOptions.isManual) {
       try {
         const recentCache = await this.d1Repo.queryOne<{ id: string; created_at: string; expires_at: string }>(
           'search_cache',
@@ -252,15 +279,16 @@ export class PlatformProspectDiscoveryEngine {
 
     // 2. ROUTE SELECTION: Tavily Exclusively
     const tavilyKey = process.env.TAVILY_API_KEY;
-    const isTavilyAvailable = Boolean(tavilyKey && !isPlaceholderCredential(tavilyKey));
+    const isTestKey = (k?: string) => !k || isPlaceholderCredential(k) || k.startsWith('tvly-test') || k.includes('fixture');
+    const isTavilyAvailable = Boolean(tavilyKey && !isTestKey(tavilyKey));
 
     if (!isTavilyAvailable) {
-      // In test environments where TAVILY_API_KEY is not set, provide deterministic evidence-backed fixtures
+      // In test environments where live TAVILY_API_KEY is not set, provide deterministic evidence-backed fixtures
       if (process.env.NODE_ENV === 'test') {
         const fixtures = this.getDeterministicTestFixtures(vertical, city, limit);
         const validCandidates = filterCandidates(fixtures);
         if (validCandidates.length > 0) {
-          const persisted = await this.persistCandidates(validCandidates, organizationId, businessId, 'TAVILY_RESEARCH');
+          const persisted = await this.persistCandidates(validCandidates, actualOrgId, actualBizId, 'TAVILY_RESEARCH');
           if (persisted.length > 0) {
             return {
               status: 'PROSPECTS_DISCOVERED',
@@ -270,6 +298,12 @@ export class PlatformProspectDiscoveryEngine {
             };
           }
         }
+        return {
+          status: 'NO_NEW_PROSPECTS',
+          count: 0,
+          prospects: [],
+          reason: 'Deduplicated: No new candidates after filtering existing domains/URLs.'
+        };
       }
 
       return {
@@ -283,7 +317,7 @@ export class PlatformProspectDiscoveryEngine {
     // 3. TAVILY SEARCH (Exclusively)
     // PROSPECT DISCOVERY GATE: Enforced before any Tavily call for prospects (default false)
     const prospectDiscoveryEnabled = process.env.PROSPECT_DISCOVERY_ENABLED === 'true';
-    if (!prospectDiscoveryEnabled && !options.isManual) {
+    if (!prospectDiscoveryEnabled && !actualOptions.isManual) {
       return {
         status: 'NO_NEW_PROSPECTS',
         count: 0,

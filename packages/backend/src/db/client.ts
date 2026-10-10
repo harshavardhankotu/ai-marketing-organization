@@ -610,6 +610,7 @@ export function getDb(dbPath?: string): Database.Database {
     )`);
   } catch {}
   try { db.exec(`ALTER TABLE source_rules ADD COLUMN terms_checked_at TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE source_rules ADD COLUMN terms_url TEXT`); } catch {}
   try { db.exec(`ALTER TABLE product_proposals ADD COLUMN approved_at TEXT`); } catch {}
   try { db.exec(`ALTER TABLE product_proposals ADD COLUMN owner_session_id TEXT`); } catch {}
   try { db.exec(`ALTER TABLE learning_records ADD COLUMN provenance TEXT DEFAULT 'APP_LOGGED_CALL'`); } catch {}
