@@ -52,6 +52,17 @@ describe('Step 2: Demand Engine State Machine & Safeguards (Fixtures Only)', () 
         'https://www.amazon.in/dp/B08X4B6F77?tag=testtag-21', 1, 'ACTIVE'
       )
     `).run();
+
+    db.prepare(`
+      INSERT OR IGNORE INTO commission_content_assets (
+        id, organization_id, slug, asset_type, title, category, intent_target,
+        content_markdown, primary_offer_id, status
+      ) VALUES (
+        'ast_phomemo_guide', 'org_owner_primary', 'phomemo-pm241bt-printer', 'GUIDE',
+        'Phomemo PM-241BT Buyer Guide', 'office_electronics', 'office_electronics',
+        'Phomemo buyer guide specifications and review.', 'off_phomemo_pm241', 'PUBLISHED'
+      )
+    `).run();
   });
 
   it('2a-2d: A good fixture post becomes a draft with clean landing URL and statutory disclosure', async () => {

@@ -128,6 +128,7 @@ export function getDb(dbPath?: string): Database.Database {
   try { db.exec(`ALTER TABLE platform_prospects ADD COLUMN observed_evidence_json TEXT DEFAULT '{}'`); } catch {}
   try { db.exec(`ALTER TABLE opportunities ADD COLUMN title TEXT`); } catch {}
   try { db.exec(`ALTER TABLE opportunities ADD COLUMN confidence_score REAL DEFAULT 0.5`); } catch {}
+  try { db.exec(`ALTER TABLE learning_records ADD COLUMN source TEXT DEFAULT 'UNKNOWN'`); } catch {}
 
   // Autonomous Revenue Organization — new table migration guards
   // These are safe no-ops if the tables already exist (SCHEMA_SQL handles full creation)

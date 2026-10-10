@@ -39,14 +39,15 @@ jobs:
       - name: Monorepo Typecheck
         run: npm run typecheck
 
+      - name: Verify Hermetic Tests & Provider Spend Blockers (Step 1)
+        run: npx vitest run packages/backend/tests/unit/hermetic-tests.test.ts --test-timeout=30000
+
       - name: Run Unit & Regression Tests
         run: npm run test
         env:
           NODE_ENV: test
           CI: true
           PORT: 3001
-          TAVILY_API_KEY: tvly-test-fixture-ci-key
-          GEMINI_API_KEY: AIzaSyTestFixtureKeyForUnitTests12345
           OWNER_API_KEY: test_owner_key_for_ci_pipeline_only
           AUTH_SECRET: test_owner_key_for_ci_pipeline_only
           CRON_PING_SECRET: test_cron_secret_for_ci_pipeline_only

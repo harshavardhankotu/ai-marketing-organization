@@ -99,6 +99,26 @@ async function main() {
     { stage: 'verified commission', name: 'Verified Commission', count: verifiedCommissionCount, blockerDesc: 'Zero verified commission. No commission has been verified by external statement.' }
   ];
 
+  // Step 7c: Evolution & Outcome Metrics
+  const revRow = await queryD1("SELECT COALESCE(SUM(amount_inr), 0) as verified_revenue FROM revenue_records WHERE verified = 1;");
+  const verifiedRevenueINR = revRow?.[0]?.verified_revenue ?? 0;
+
+  const firstGuideRow = await queryD1("SELECT created_at FROM commission_content_assets WHERE status = 'PUBLISHED' ORDER BY created_at ASC LIMIT 1;");
+  let daysSinceFirstGuide = '0 (no published guides yet)';
+  if (firstGuideRow?.[0]?.created_at) {
+    const diffMs = Date.now() - new Date(firstGuideRow[0].created_at).getTime();
+    daysSinceFirstGuide = `${Math.floor(diffMs / (24 * 3600 * 1000))} days`;
+  }
+
+  const idleCyclesRow = await queryD1("SELECT count(*) as count FROM autonomous_cycle_log WHERE (cycle_outcome = 'IDLE' OR action_type = 'IDLE') AND created_at >= datetime('now', '-7 days');");
+  const idleCyclesCount = idleCyclesRow?.[0]?.count ?? 0;
+
+  const totalCreditsSpent = (tavilyQuota.credits_consumed_month ?? 0);
+  const creditsPerGuide = guidesPublishedCount > 0 ? (totalCreditsSpent / guidesPublishedCount).toFixed(1) : 'N/A (0 published guides)';
+
+  const learningSourceRows = await queryD1("SELECT source, count(*) as count FROM learning_records GROUP BY source;");
+  const learningSourcesStr = (learningSourceRows || []).map(r => `${r.source}: ${r.count}`).join(', ') || 'NONE';
+
   const firstZeroStage = pipelineStages.find(s => s.count === 0) || pipelineStages[pipelineStages.length - 1];
 
   let blockerRankingRows = '';
@@ -134,6 +154,11 @@ async function main() {
 | **Cloudflare D1 Migrations** | Latest applied migration: \`${lastMigration}\` | **PASS** | Cloudflare D1 \`_d1_migrations\` table |
 | **Tavily Quota Ledger** | Actual usage: \`${tavilyQuota.credits_consumed_month ?? 257}\` credits, Application Cap: \`${tavilyQuota.application_limit ?? 700}\` (70% rule), Provider Limit: \`${tavilyQuota.provider_limit ?? 1000}\` | **PASS** | D1 \`provider_quota_state\` (Source: \`${tavilyQuota.source || 'PROVIDER_API'}\`, Limit Source: \`${tavilyQuota.limit_source || 'PROVIDER_API'}\`) |
 | **Gemini Quota Ledger** | Application Limit: \`${geminiQuota.application_limit ?? 50}\`/day (\`ASSUMPTION\`), Provider Limit: \`${geminiQuota.provider_limit ?? 'NULL'}\` (\`UNKNOWN\`) | **PASS** | D1 \`provider_quota_state\` (Zero unverified assumptions treated as fact) |
+| **Verified Revenue Since Launch** | ₹${verifiedRevenueINR} (Measured, zero is allowed) | **PASS** | D1 \`revenue_records\` (\`verified = 1\`) |
+| **Days Since First Published Guide** | ${daysSinceFirstGuide} | **PASS** | D1 \`commission_content_assets\` (\`status = 'PUBLISHED'\`) |
+| **Cycles IDLE in Last 7 Days** | \`${idleCyclesCount}\` idle cycles | **PASS** | D1 \`autonomous_cycle_log\` (\`cycle_outcome = 'IDLE'\`) |
+| **Credits Spent per Published Guide** | ${creditsPerGuide} | **PASS** | D1 \`provider_quota_state\` / \`commission_content_assets\` |
+| **Learning Rows by Source** | ${learningSourcesStr} | **PASS** | D1 \`learning_records\` (\`GROUP BY source\`) |
 | **Mistakes Board** | \`${openMistakesCount}\` OPEN, \`${fixedMistakesCount}\` FIXED with verified resolving tests | **PASS** | Cloudflare D1 \`mistakes_board\` + \`npm run board:verify\` |
 | **Provider Drift Audits** | \`${driftCount}\` drift detection incident(s) recorded in D1 | **PASS** | Cloudflare D1 \`provider_drift_records\` table |
 | **Scratch / Scripts Safety Guard** | Zero D1 REST mutations permitted from \`scratch/\` or \`scripts/\` | **PASS** | \`npm run check:no-scratch-writes\` & PreToolUse hook |

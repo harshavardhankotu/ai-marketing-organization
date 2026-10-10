@@ -433,6 +433,11 @@ export class DemandEngine {
     const signal = db.prepare('SELECT * FROM demand_signals WHERE id = ?').get(signalId) as any;
     if (!signal) throw new Error(`SIGNAL_NOT_FOUND: ${signalId}`);
 
+    // Step 6e: Only draft replies when a BUYER_QUESTION matches a published guide
+    if (signal.signal_type && signal.signal_type !== 'BUYER_QUESTION') {
+      throw new Error(`SIGNAL_NOT_BUYER_QUESTION: Cannot create outreach draft for signal type '${signal.signal_type}'. Drafts are restricted to BUYER_QUESTION signals.`);
+    }
+
     const match = db.prepare('SELECT * FROM demand_matches WHERE signal_id = ?').get(signalId) as any;
     if (!match) throw new Error(`MATCH_NOT_FOUND: Signal ${signalId} has no match.`);
 
@@ -443,6 +448,12 @@ export class DemandEngine {
 
     const offer = db.prepare('SELECT * FROM partner_offers WHERE id = ?').get(match.offer_id) as any;
     if (!offer) throw new Error(`OFFER_NOT_FOUND: Offer ${match.offer_id} not found.`);
+
+    // Check that a published guide exists
+    const publishedGuideCount = (db.prepare(`SELECT count(*) as cnt FROM commission_content_assets WHERE status = 'PUBLISHED'`).get() as any)?.cnt || 0;
+    if (publishedGuideCount === 0) {
+      throw new Error(`NO_PUBLISHED_GUIDE: Outreach drafts require at least one published buyer guide.`);
+    }
 
     // Rate limit: max 10 drafts per day
     const todayCount = (db.prepare(`

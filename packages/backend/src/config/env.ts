@@ -5,6 +5,10 @@ import path from 'path';
  * Loads key-value pairs from .env or .env.local into process.env if they exist.
  */
 export function loadLocalEnvFile(): void {
+  // Step 1a: Tests must never load .env.local or local secret files
+  if (process.env.NODE_ENV === 'test' || Boolean(process.env.VITEST)) {
+    return;
+  }
   const candidatePaths = [
     path.resolve(process.cwd(), '.env.local'),
     path.resolve(process.cwd(), '.env'),

@@ -1486,6 +1486,7 @@ CREATE TABLE IF NOT EXISTS learning_records (
   source_file TEXT,
   date TEXT,
   content_hash TEXT,
+  source TEXT DEFAULT 'UNKNOWN',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
 );

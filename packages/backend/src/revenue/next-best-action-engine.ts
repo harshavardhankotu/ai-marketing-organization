@@ -99,8 +99,20 @@ export class NextBestActionEngine {
   public choose(businessId: string, organizationId: string, options?: { ignoreCooldown?: boolean }): NextBestAction {
     const candidates: NextBestAction[] = [];
 
-    // SQL lookup: Structured empirical learning rules from learning_records before scoring (Spec Part C & Step 1)
+    // SQL lookup: Structured empirical learning rules from learning_records before scoring (Step 7d)
     const db = getDb();
+
+    // 1. Read OUTCOME rows by SQL first before any other rule
+    let outcomeRules: any[] = [];
+    try {
+      outcomeRules = db.prepare(`
+        SELECT id, decision, action, result, confidence, evidence_json, created_at
+        FROM learning_records
+        WHERE source = 'OUTCOME'
+        ORDER BY created_at DESC
+      `).all() as any[];
+    } catch {}
+
     let failedRules: Array<{ what: string; outcome: string; cause: string; rule: string }> = [];
     try {
       failedRules = db.prepare(`

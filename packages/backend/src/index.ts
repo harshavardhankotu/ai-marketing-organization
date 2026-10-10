@@ -8,12 +8,25 @@ import { fileURLToPath } from 'url';
 import { apiRouter } from './routes/api.js';
 import { seedDatabase } from './db/seed.js';
 import { validateProductionSecrets, loadLocalEnvFile } from './config/env.js';
+import { initOwnerEnvIntake } from './config/owner-env-intake.js';
 import { DailyMarketResearchScheduler } from './scheduler/daily-research-scheduler.js';
 import { UnifiedQuotaService } from './quota/unified-quota-service.js';
 import { getTrustedClientIp } from './security/client-ip.js';
 
 // Safely load local .env or .env.local if present
 loadLocalEnvFile();
+
+// Initialize owner intake from environment variables if present (Step 5)
+try {
+  const envIntakeRes = initOwnerEnvIntake();
+  if (envIntakeRes.initialized) {
+    console.log('✅ Owner intake successfully validated and initialized from environment variables.');
+  } else if (envIntakeRes.validation.missingFields.length > 0) {
+    console.log(`ℹ️ Owner intake not initialized (missing env vars: ${envIntakeRes.validation.missingFields.join(', ')})`);
+  }
+} catch (err: any) {
+  console.warn('⚠️ Could not initialize owner intake at boot:', err.message);
+}
 
 // Enforce production secret validation
 try {
