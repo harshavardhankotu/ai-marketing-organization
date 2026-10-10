@@ -200,7 +200,13 @@ export class PartnerRegistryEngine {
    * may serve production referrals. AI-discovered rows stay PENDING_REVIEW.
    */
   public isPartnerAuthorizedForProduction(partner: Partner): boolean {
-    return (partner.approvalStatus === 'APPROVED' || (partner.approvalStatus as string) === 'PROVISIONAL') &&
+    const isPermittedStatus =
+      partner.approvalStatus === 'APPROVED' ||
+      partner.approvalStatus === 'QUALIFYING_SALES_IN_PROGRESS' ||
+      partner.approvalStatus === 'TRACKING_ID_ISSUED' ||
+      (partner.approvalStatus as string) === 'PROVISIONAL';
+
+    return isPermittedStatus &&
       partner.activeStatus === 1 &&
       partner.authorizationStatus === 'AUTHORIZED';
   }
@@ -300,7 +306,7 @@ export class PartnerRegistryEngine {
     const params: any[] = [organizationId];
 
     if (filter?.activeOnly) {
-      sql += ` AND active_status = 1 AND approval_status = 'APPROVED'`;
+      sql += ` AND active_status = 1 AND approval_status IN ('APPROVED', 'QUALIFYING_SALES_IN_PROGRESS', 'TRACKING_ID_ISSUED', 'PROVISIONAL')`;
     }
     if (filter?.industry) {
       sql += ' AND industry = ?';

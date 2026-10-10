@@ -6,7 +6,17 @@
 export type PartnerType = 'AFFILIATE' | 'REFERRAL' | 'CPL' | 'CLOSED_SALE';
 export type CommissionType = 'PERCENTAGE' | 'FIXED' | 'HYBRID';
 export type QualifyingEvent = 'PURCHASE' | 'QUALIFIED_LEAD' | 'APPLICATION' | 'BOOKING';
-export type PartnerApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'SUSPENDED';
+export type PartnerApprovalStatus =
+  | 'NOT_APPLIED'
+  | 'APPLICATION_SUBMITTED'
+  | 'TRACKING_ID_ISSUED'
+  | 'QUALIFYING_SALES_IN_PROGRESS'
+  | 'UNDER_REVIEW'
+  | 'APPROVED'
+  | 'REJECTED'
+  | 'SUSPENDED'
+  | 'PROVISIONAL'
+  | 'PENDING';
 
 /** Phase 2: monetization network identity */
 export type PartnerNetwork =

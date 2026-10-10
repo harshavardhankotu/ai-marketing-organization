@@ -5394,7 +5394,8 @@ apiRouter.get('/commission/money-path', async (c) => {
     [orgId]
   );
   const authorizedPartners = partners.filter(p =>
-    p.authorization_status === 'AUTHORIZED' || p.approval_status === 'APPROVED'
+    p.authorization_status === 'AUTHORIZED' &&
+    (p.approval_status === 'APPROVED' || p.approval_status === 'QUALIFYING_SALES_IN_PROGRESS' || p.approval_status === 'PROVISIONAL')
   );
 
   // 2. Check active offers
@@ -5564,7 +5565,10 @@ apiRouter.get('/commission/launch-checklist', async (c) => {
   const summary = await ledger.getSummary(orgId);
 
   const partners = await d1Repo.query<any>('partners', 'SELECT * FROM partners WHERE organization_id = ?', [orgId]);
-  const authorizedPartners = partners.filter(p => p.authorization_status === 'AUTHORIZED' || p.approval_status === 'APPROVED');
+  const authorizedPartners = partners.filter(p =>
+    p.authorization_status === 'AUTHORIZED' &&
+    (p.approval_status === 'APPROVED' || p.approval_status === 'QUALIFYING_SALES_IN_PROGRESS' || p.approval_status === 'PROVISIONAL')
+  );
   const activeOffers = await d1Repo.query<any>('partner_offers', "SELECT * FROM partner_offers WHERE organization_id = ? AND status = 'ACTIVE' AND active = 1", [orgId]);
   const publishedContent = await d1Repo.query<any>('commission_content_assets', "SELECT * FROM commission_content_assets WHERE organization_id = ? AND status = 'PUBLISHED'", [orgId]);
 
