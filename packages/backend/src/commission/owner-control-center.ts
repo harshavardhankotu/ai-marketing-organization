@@ -26,6 +26,7 @@ import { ActionCooldownManager } from '../revenue/action-cooldown-manager.js';
 import { isProduction } from '../config/env.js';
 import { ContentAssetEngine } from './content-asset-engine.js';
 import { StaticSiteGenerator } from './static-site-generator.js';
+import { validateOwnerEnvFacts } from '../config/owner-env-intake.js';
 
 // ============================================================================
 // Types
@@ -2077,9 +2078,18 @@ export class OwnerControlCenterEngine {
       ? `<span class="badge" style="background: rgba(34, 197, 94, 0.2); color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.4);">VALID OPERATOR ATTESTATION</span>`
       : `<span class="badge" style="background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4);">ACTION REQUIRED</span>`;
 
+    const envValidation = validateOwnerEnvFacts();
+    const missingNames = envValidation.missingFields.concat(envValidation.invalidFields.map(f => `${f.field} (${f.reason})`));
+
     const intakeActionHtml = isIntakeValid
       ? `<div style="font-size: 0.85rem; color: #4ade80;">Operator attestation confirmed and active. No further owner action needed.</div>`
-      : `<div style="font-size: 0.85rem; color: #fca5a5; margin-bottom: 8px;">Operator attestation is missing or invalid. Complete the intake form via authenticated owner session:</div>
+      : `<div style="font-size: 0.85rem; color: #fca5a5; margin-bottom: 8px;">
+           <strong>BLOCKED_ON_OWNER_FACTS:</strong> The following mandatory owner facts are missing or invalid:
+           <ul style="margin: 6px 0 10px 20px; color: #fca5a5; font-family: monospace; font-size: 0.82rem;">
+             ${missingNames.map(f => `<li>${escape(f)}</li>`).join('')}
+           </ul>
+           Complete the intake form via authenticated owner session:
+         </div>
          <a href="/owner/intake" style="display: inline-block; background: #2563eb; color: #fff; padding: 6px 14px; border-radius: 4px; text-decoration: none; font-size: 0.85rem; font-weight: 600;">Complete Owner Intake Form &rarr;</a>`;
 
     const candidateProposals = today?.candidateProposals || [];
@@ -2540,27 +2550,42 @@ ${escape(d.disclosureText)}</div>
         <span style="font-size: 0.8rem; color: #f87171; background: rgba(239, 68, 68, 0.15); padding: 2px 8px; border-radius: 4px; font-weight: 600;">ACTIVE GUARDRAILS</span>
       </div>
       <div>
-        ${(snapshot.mistakesBoard || []).length === 0
-          ? '<div style="font-size: 0.85rem; color: #4ade80;">Zero open mistakes. All guardrails active and verified.</div>'
-          : (snapshot.mistakesBoard || []).map(m => `
-            <div style="background: #111827; border: 1px solid #1e293b; border-radius: 6px; padding: 12px; margin-bottom: 10px;">
-              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                <div>
-                  <span style="display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.72rem; font-weight: 700; ${
-                    m.severity === 'P1'
-                      ? 'background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4);'
-                      : 'background: rgba(245, 158, 11, 0.2); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.4);'
-                  }">${escape(m.severity)}</span>
-                  <strong style="color: #f1f5f9; font-size: 0.9rem; margin-left: 8px;">${escape(m.title)}</strong>
-                  <span style="color: #94a3b8; font-size: 0.75rem; margin-left: 6px;">(Recurrence: ${m.recurrenceCount})</span>
-                </div>
-                <span style="font-size: 0.75rem; color: #94a3b8;">Guard: ${escape(m.guardType)}${m.guardRef ? ` (${escape(m.guardRef)})` : ''}</span>
+        ${(() => {
+          const rows = snapshot.mistakesBoard || [];
+          if (rows.length === 0) {
+            return '<div style="font-size: 0.85rem; color: #4ade80;">Zero open mistakes. All guardrails active and verified.</div>';
+          }
+          const severities = ['P1', 'P2', 'P3'];
+          return severities.map(sev => {
+            const sevRows = rows.filter(m => m.severity === sev);
+            if (sevRows.length === 0) return '';
+            return `
+              <div style="margin-bottom: 16px;">
+                <h4 style="margin: 0 0 8px; font-size: 0.85rem; color: ${sev === 'P1' ? '#f87171' : sev === 'P2' ? '#f59e0b' : '#38bdf8'}; font-weight: 700;">
+                  Severity ${sev} (${sevRows.length} Open)
+                </h4>
+                ${sevRows.map(m => `
+                  <div style="background: #111827; border: 1px solid #1e293b; border-radius: 6px; padding: 12px; margin-bottom: 10px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                      <div>
+                        <span style="display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.72rem; font-weight: 700; ${
+                          m.severity === 'P1'
+                            ? 'background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4);'
+                            : 'background: rgba(245, 158, 11, 0.2); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.4);'
+                        }">${escape(m.severity)}</span>
+                        <strong style="color: #f1f5f9; font-size: 0.9rem; margin-left: 8px;">${escape(m.title)}</strong>
+                        <span style="color: #94a3b8; font-size: 0.75rem; margin-left: 6px;">(Recurrence: ${m.recurrenceCount})</span>
+                      </div>
+                      <span style="font-size: 0.75rem; color: #94a3b8;">Guard: ${escape(m.guardType)}${m.guardRef ? ` (${escape(m.guardRef)})` : ''}</span>
+                    </div>
+                    <div style="font-size: 0.82rem; color: #fca5a5; margin-bottom: 4px;"><strong>Rule:</strong> ${escape(m.rule)}</div>
+                    <div style="font-size: 0.78rem; color: #94a3b8;"><strong>What Happened:</strong> ${escape(m.whatHappened)} &bull; <strong>Cause:</strong> ${escape(m.cause)}</div>
+                  </div>
+                `).join('')}
               </div>
-              <div style="font-size: 0.82rem; color: #fca5a5; margin-bottom: 4px;"><strong>Rule:</strong> ${escape(m.rule)}</div>
-              <div style="font-size: 0.78rem; color: #94a3b8;"><strong>What Happened:</strong> ${escape(m.whatHappened)} &bull; <strong>Cause:</strong> ${escape(m.cause)}</div>
-            </div>
-          `).join('')
-        }
+            `;
+          }).join('');
+        })()}
       </div>
     </div>
 

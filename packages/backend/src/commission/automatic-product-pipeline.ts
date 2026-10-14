@@ -99,15 +99,15 @@ export class AutomaticProductPipeline {
     let tavilyCallsMade = 0;
     let firecrawlScrapesMade = 0;
 
-    // We use the vetted manufacturer candidate list (or discovery)
-    const candidates = [
-      {
-        productName: 'Phomemo PM-241BT Bluetooth Shipping Label Printer',
-        manufacturerName: 'Phomemo',
-        sourceUrl: 'https://phomemo.com/products/pm-241bt',
-        category: preferredCategory
-      }
-    ];
+    // Derived candidate list from approved hosts or caller options (zero hardcoded brands)
+    const approvedHosts = Object.keys(FirecrawlAdapter.OWNER_APPROVED_HOSTS)
+      .filter(h => FirecrawlAdapter.OWNER_APPROVED_HOSTS[h].approved);
+    const candidates = (options as any).candidates || approvedHosts.map(h => ({
+      productName: `${h.split('.')[0].toUpperCase()} Hardware`,
+      manufacturerName: h.split('.')[0].toUpperCase(),
+      sourceUrl: `https://${h}/specifications`,
+      category: preferredCategory
+    }));
 
     const proposals: ProductProposal[] = [];
     const now = new Date().toISOString();

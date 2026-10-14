@@ -1621,7 +1621,7 @@ CREATE TABLE IF NOT EXISTS idempotent_actions (
 -- 76. Owner Configuration (Spec § 28: Single operator configuration)
 CREATE TABLE IF NOT EXISTS owner_configuration (
   id TEXT PRIMARY KEY,
-  owner_name TEXT NOT NULL DEFAULT 'Harsha Vardhan Kotu',
+  owner_name TEXT,
   organization_id TEXT NOT NULL DEFAULT 'org_owner_primary',
   platform_business_id TEXT NOT NULL DEFAULT 'biz_platform_aro',
   platform_upi_vpa TEXT,
@@ -2130,6 +2130,7 @@ CREATE TABLE IF NOT EXISTS demand_signals (
   budget_hint TEXT,
   found_at TEXT,
   dedupe_hash TEXT,
+  signal_type TEXT NOT NULL DEFAULT 'BUYER_QUESTION',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_demand_signals_topic ON demand_signals(topic);

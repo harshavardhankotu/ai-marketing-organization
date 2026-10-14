@@ -412,12 +412,12 @@ export function getDb(dbPath?: string): Database.Database {
       raw_query TEXT NOT NULL, evidence_snippet TEXT NOT NULL, source_url TEXT NOT NULL,
       urgency REAL NOT NULL DEFAULT 0.5, estimated_monthly_volume INTEGER NOT NULL DEFAULT 100,
       status TEXT NOT NULL DEFAULT 'DISCOVERED', intent_class TEXT NOT NULL DEFAULT 'RESEARCH',
-      commercial_score REAL NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      commercial_score REAL NOT NULL DEFAULT 0, signal_type TEXT NOT NULL DEFAULT 'BUYER_QUESTION', created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`);
   } catch {}
   try {
     db.exec(`CREATE TABLE IF NOT EXISTS owner_configuration (
-      id TEXT PRIMARY KEY, owner_name TEXT NOT NULL DEFAULT 'Harsha Vardhan Kotu',
+      id TEXT PRIMARY KEY, owner_name TEXT,
       organization_id TEXT NOT NULL DEFAULT 'org_owner_primary', platform_business_id TEXT NOT NULL DEFAULT 'biz_platform_aro',
       platform_upi_vpa TEXT, platform_currency TEXT NOT NULL DEFAULT 'INR',
       platform_timezone TEXT NOT NULL DEFAULT 'Asia/Kolkata', marketing_budget REAL NOT NULL DEFAULT 0.0,
@@ -492,6 +492,7 @@ export function getDb(dbPath?: string): Database.Database {
   try { db.exec(`ALTER TABLE referrals ADD COLUMN keyword TEXT`); } catch {}
   try { db.exec(`ALTER TABLE demand_signals ADD COLUMN intent_class TEXT NOT NULL DEFAULT 'RESEARCH'`); } catch {}
   try { db.exec(`ALTER TABLE demand_signals ADD COLUMN commercial_score REAL NOT NULL DEFAULT 0`); } catch {}
+  try { db.exec(`ALTER TABLE demand_signals ADD COLUMN signal_type TEXT DEFAULT 'BUYER_QUESTION'`); } catch {}
   try { db.exec(`ALTER TABLE commission_content_assets ADD COLUMN quality_gate_json TEXT NOT NULL DEFAULT '{}'`); } catch {}
   try { db.exec(`ALTER TABLE commission_content_assets ADD COLUMN disclosure_version TEXT NOT NULL DEFAULT '2026.1'`); } catch {}
   try { db.exec(`ALTER TABLE opportunities ADD COLUMN prospect_id TEXT`); } catch {}

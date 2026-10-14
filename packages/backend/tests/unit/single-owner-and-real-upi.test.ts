@@ -68,6 +68,7 @@ describe('Single Owner, Real UPI & Production Commercial Architecture (Spec §§
 
     it('validates active session and retrieves owner configuration', async () => {
       process.env.OWNER_API_KEY = 'secret_owner_live_key_999';
+      process.env.PUBLIC_AUTHOR_NAME = 'Authorized Test Owner';
       const ownerAuth = OwnerAuthService.getInstance();
       const session = ownerAuth.createSession('127.0.0.1', 'Vitest');
 
@@ -81,7 +82,7 @@ describe('Single Owner, Real UPI & Production Commercial Architecture (Spec §§
       const json = await res.json() as any;
       expect(json.success).toBe(true);
       expect(json.data.principal_type).toBe('OWNER');
-      expect(json.data.owner_name).toBe('Harsha Vardhan Kotu');
+      expect(json.data.owner_name).toBe('Authorized Test Owner');
     });
 
     it('logs out and revokes active session', async () => {

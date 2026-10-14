@@ -247,7 +247,7 @@ export class StaticSiteGenerator {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${this.escapeHtml(title)}</title>
+  ${this.getGoogleSiteVerificationMeta()}<title>${this.escapeHtml(title)}</title>
   <meta name="description" content="Independent commercial equipment, supplies, and specification overviews.">
   <link rel="canonical" href="${canonicalUrl}">
   <meta name="robots" content="index, follow">
@@ -311,7 +311,7 @@ export class StaticSiteGenerator {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${this.escapeHtml(title)} | ${this.escapeHtml(config.siteName)}</title>
+  ${this.getGoogleSiteVerificationMeta()}<title>${this.escapeHtml(title)} | ${this.escapeHtml(config.siteName)}</title>
   <meta name="description" content="${this.escapeHtml(description)}">
   <link rel="canonical" href="${canonicalUrl}">
   <meta property="og:title" content="${this.escapeHtml(title)}">
@@ -454,7 +454,7 @@ export class StaticSiteGenerator {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${this.escapeHtml(title)} | ${this.escapeHtml(config.siteName)}</title>
+  ${this.getGoogleSiteVerificationMeta()}<title>${this.escapeHtml(title)} | ${this.escapeHtml(config.siteName)}</title>
   <link rel="canonical" href="${canonicalUrl}">
   <meta name="robots" content="index, follow">
   <style>
@@ -546,6 +546,12 @@ export class StaticSiteGenerator {
       })
       .filter(Boolean)
       .join('\n');
+  }
+
+  private getGoogleSiteVerificationMeta(): string {
+    const code = process.env.GOOGLE_SITE_VERIFICATION?.trim();
+    if (!code) return '';
+    return `<meta name="google-site-verification" content="${this.escapeHtml(code)}">\n  `;
   }
 
   private escapeHtml(str: string): string {

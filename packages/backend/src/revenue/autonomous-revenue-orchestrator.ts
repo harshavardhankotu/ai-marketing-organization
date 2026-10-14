@@ -45,6 +45,8 @@ import { DemandOfferMatchingEngine } from '../commission/demand-offer-matching.j
 import { ContentAssetEngine } from '../commission/content-asset-engine.js';
 import { ReferralTrackingEngine } from '../commission/referral-tracking.js';
 import { PartnerRegistryEngine } from '../commission/partner-registry.js';
+import { AutomaticOfferLane } from '../commission/automatic-offer-lane.js';
+import { validateOwnerEnvFacts } from '../config/owner-env-intake.js';
 import { randomUUID } from 'crypto';
 export type { ActionClassification } from '../integrations/adapter-base.js';
 
@@ -55,7 +57,9 @@ export type CycleExecutionStatus =
   | 'COOLDOWN_ACTIVE'
   | 'NO_ACTION_DUE'
   | 'TEST_ACTION'
-  | 'CACHE_HIT';
+  | 'CACHE_HIT'
+  | 'NEEDS_MORE_SIGNALS'
+  | 'BLOCKED_ON_OWNER_FACTS';
 
 export type TerminalOutcomeClassification =
   | 'LIVE_EXTERNAL_ACTION'
@@ -383,7 +387,7 @@ export class AutonomousRevenueOrchestrator {
 
       // Determine terminal outcome classification (Spec § 1)
       let terminalClassification: TerminalOutcomeClassification = 'INTERNAL_AUTOMATION';
-      if (actionExecutionStatus === 'NO_ACTION_DUE' || actionExecutionStatus === 'COOLDOWN_ACTIVE') {
+      if (actionExecutionStatus === 'NO_ACTION_DUE' || actionExecutionStatus === 'COOLDOWN_ACTIVE' || actionExecutionStatus === 'NEEDS_MORE_SIGNALS' || actionExecutionStatus === 'BLOCKED_ON_OWNER_FACTS') {
         terminalClassification = 'IDLE';
       } else if (actionClassification === 'LIVE_EXTERNAL_ACTION') {
         terminalClassification = 'LIVE_EXTERNAL_ACTION';
@@ -571,6 +575,7 @@ export class AutonomousRevenueOrchestrator {
     isRevenueAction: boolean;
     externalId?: string;
     error?: string;
+    details?: string;
     opportunitiesDiscovered?: number;
     discoveredProspects?: any[];
   }> {
@@ -824,6 +829,32 @@ export class AutonomousRevenueOrchestrator {
       // Materialize commercial offer for authorized partner from validated buyer demand
       // ────────────────────────────────────────────────────────────────
       case 'DISCOVER_OFFER': {
+        // 1. Cooldown Gate: DISCOVER_OFFER has a strict 24-hour cooldown
+        const cooldownTarget = action.targetId || businessId || 'discover_offer_autonomous';
+        const cooldownCheck = ActionCooldownManager.check(cooldownTarget, 'DISCOVER_OFFER');
+        if (!cooldownCheck.eligible && (action as any).triggerSource !== 'MANUAL') {
+          return {
+            status: 'COOLDOWN_ACTIVE',
+            actionClassification: 'INTERNAL_AUTOMATION',
+            isRevenueAction: false,
+            details: `DISCOVER_OFFER 24h cooldown active: ${cooldownCheck.reason}`
+          };
+        }
+
+        // 2. Daily credit budget gate
+        const quotaService = UnifiedQuotaService.getInstance();
+        const quotaStatus = quotaService.getStatus();
+        const tavilyAllowance = quotaStatus.TAVILY?.remainingAllowance ?? 0;
+        if (quotaStatus.TAVILY?.isLocked || (quotaStatus.TAVILY?.providerLimitStatus === 'PROVIDER_LIMIT_VERIFIED' && tavilyAllowance <= 0)) {
+          return {
+            status: 'BLOCKED_AUTHORIZATION',
+            actionClassification: 'BLOCKED_AUTHORIZATION',
+            isRevenueAction: false,
+            error: 'DISCOVER_OFFER_BUDGET_EXCEEDED: Daily/monthly research credit budget limit reached or provider locked.'
+          };
+        }
+
+        // 3. Eligible partner check
         const registry = PartnerRegistryEngine.getInstance();
         const existingPartners = await registry.listPartners(organizationId, { activeOnly: true });
         const eligiblePartner = existingPartners.length > 0 ? existingPartners[0] : (await registry.listPartners(organizationId))[0];
@@ -836,7 +867,7 @@ export class AutonomousRevenueOrchestrator {
           };
         }
 
-        // Check if an active offer already exists
+        // 4. Check if an active offer already exists
         const existingOffers = await registry.listOffers(organizationId, { activeOnly: true });
         if (existingOffers.length > 0) {
           return {
@@ -847,45 +878,176 @@ export class AutonomousRevenueOrchestrator {
           };
         }
 
-        // Materialize commercial offer for verified partner
+        // 4b. Owner intake check: All 6 owner facts must be valid before discovering or activating offer
+        const intake = (await db.prepare(`SELECT * FROM owner_intake WHERE status = 'VALID' LIMIT 1`).get()) as any;
+        if (!intake) {
+          const validation = validateOwnerEnvFacts();
+          return {
+            status: 'BLOCKED_ON_OWNER_FACTS',
+            actionClassification: 'INTERNAL_AUTOMATION',
+            isRevenueAction: false,
+            details: `Offer activation blocked: owner_intake is not VALID. Missing: ${validation.missingFields.join(', ')}`
+          };
+        }
+
+        // 5. Read BUYER_QUESTION demand signals and drop blocked categories
+        const blockedCategories = ['health', 'skin care', 'skincare', 'supplements', 'medical', 'medicine', 'pharma'];
+        const placeholders = blockedCategories.map(() => '?').join(', ');
+        const topNeed = (await db.prepare(`
+          SELECT category, COUNT(*) as cnt
+          FROM demand_signals
+          WHERE signal_type = 'BUYER_QUESTION'
+            AND lower(category) NOT IN (${placeholders})
+          GROUP BY category
+          ORDER BY cnt DESC
+          LIMIT 1;
+        `).get(...blockedCategories)) as any;
+
+        // Require at least 3 signals. If count < 3, halt with status NEEDS_MORE_SIGNALS
+        if (!topNeed || topNeed.cnt < 3) {
+          return {
+            status: 'NEEDS_MORE_SIGNALS',
+            actionClassification: 'INTERNAL_AUTOMATION',
+            isRevenueAction: false,
+            details: `DISCOVER_OFFER stopped: Top demand category '${topNeed?.category || 'NONE'}' has ${topNeed?.cnt || 0} BUYER_QUESTION signals (minimum 3 required).`
+          };
+        }
+
+        const signals = (await db.prepare(`
+          SELECT id, topic, raw_query, excerpt, source_url
+          FROM demand_signals
+          WHERE signal_type = 'BUYER_QUESTION'
+            AND category = ?
+          LIMIT 5;
+        `).all(topNeed.category)) as any[];
+
+        // 6. Find official brand site with at most 1 Tavily search (reject marketplaces, review sites, social sites, video sites, PDFs)
+        const offerLane = AutomaticOfferLane.getInstance();
+        let brand = '';
+        let model = topNeed.category;
+        let officialSiteUrl = '';
+
+        const tavilyKey = process.env.TAVILY_API_KEY;
+        const isTavilyAvailable = Boolean(tavilyKey && !isPlaceholderCredential(tavilyKey) && process.env.NODE_ENV !== 'test');
+
+        if (isTavilyAvailable) {
+          try {
+            const gate = quotaService.reserve('TAVILY', 'P3', 1, `Brand site discovery for ${topNeed.category}`);
+            if (gate.allowed) {
+              const searchRes = await fetch('https://api.tavily.com/search', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  api_key: tavilyKey,
+                  query: `official manufacturer website specifications ${topNeed.category} India`,
+                  search_depth: 'basic',
+                  max_results: 5
+                })
+              });
+              if (searchRes.ok) {
+                const searchData = (await searchRes.json()) as any;
+                for (const item of (searchData.results || [])) {
+                  const policy = offerLane.checkDomainPolicy(item.url);
+                  if (policy.allowed) {
+                    officialSiteUrl = item.url;
+                    try {
+                      const hostname = new URL(item.url).hostname.replace(/^www\./, '');
+                      brand = hostname.split('.')[0];
+                      brand = brand.charAt(0).toUpperCase() + brand.slice(1);
+                    } catch {
+                      brand = 'Hardware';
+                    }
+                    break;
+                  }
+                }
+              }
+            }
+          } catch (err: any) {
+            console.warn(`[DISCOVER_OFFER] Tavily search error: ${err.message}`);
+          }
+        }
+
+        if (!officialSiteUrl) {
+          // Derive dynamically from signal context without network calls
+          const sampleText = `${signals[0]?.topic || ''} ${signals[0]?.raw_query || ''}`.trim();
+          const words = sampleText.split(/\s+/).filter((w: string) =>
+            w.length > 3 &&
+            !['best', 'india', 'price', 'compare', 'services', 'review', 'printers', 'printer'].includes(w.toLowerCase())
+          );
+          brand = words.length > 0 ? words[0] : 'Hardware';
+          const candidateDomain = `${brand.toLowerCase()}.com`;
+          const policy = offerLane.checkDomainPolicy(candidateDomain);
+          if (policy.allowed) {
+            officialSiteUrl = `https://${candidateDomain}/specifications`;
+          } else {
+            officialSiteUrl = `https://specs.hardware-manufacturer.org/${brand.toLowerCase()}`;
+          }
+        }
+
+        // Reject invalid domains strictly
+        const policyCheck = offerLane.checkDomainPolicy(officialSiteUrl);
+        if (!policyCheck.allowed) {
+          return {
+            status: 'INTERNAL_AUTOMATION',
+            actionClassification: 'INTERNAL_AUTOMATION',
+            isRevenueAction: false,
+            error: `DISCOVER_OFFER source domain rejected (${policyCheck.rejectClass}): ${policyCheck.reason}`
+          };
+        }
+
+        // 7. Fetch spec page with Firecrawl (max 3 pages, cache), store quoted spec lines
+        const productId = `prod_${brand.toLowerCase()}_${model.toLowerCase().replace(/[^a-z0-9]+/g, '_')}`;
+        const specLines = await offerLane.fetchAndStoreBrandSpecs(productId, brand, model, officialSiteUrl);
+        if (specLines.length === 0) {
+          return {
+            status: 'INTERNAL_AUTOMATION',
+            actionClassification: 'INTERNAL_AUTOMATION',
+            isRevenueAction: false,
+            error: `DISCOVER_OFFER: No objective manufacturer spec lines retrieved from ${officialSiteUrl}. Offer not created.`
+          };
+        }
+
+        // 8. Build Amazon search link with masked tag and disclaimer
         const isAmazon = eligiblePartner.network === 'AMAZON_ASSOCIATES' || eligiblePartner.name.toLowerCase().includes('amazon');
         const affiliateTag = (process.env.AMAZON_AFFILIATE_TAG || '').trim();
-        const effectiveTag = affiliateTag || (isProduction() ? '' : 'test-tag-21');
-
+        const searchQuery = `${brand} ${model}`.trim();
         const destinationUrl = isAmazon
-          ? 'https://www.amazon.in/s?k=thermal+label+printer'
+          ? `https://www.amazon.in/s?k=${encodeURIComponent(searchQuery)}`
           : eligiblePartner.website;
-
         const authorizedTrackingUrl = isAmazon
-          ? (effectiveTag
-              ? `https://www.amazon.in/s?k=thermal+label+printer&tag=${effectiveTag}&linkCode=osi`
-              : 'https://www.amazon.in/s?k=thermal+label+printer&linkCode=osi')
+          ? (affiliateTag
+              ? `https://www.amazon.in/s?k=${encodeURIComponent(searchQuery)}&tag=${encodeURIComponent(affiliateTag)}`
+              : destinationUrl)
           : destinationUrl;
 
         const now = new Date().toISOString();
         const offerEvidence = {
-          asin: 'B08P13WGLX',
           canonical_destination: destinationUrl,
           authorized_tracking_url: authorizedTrackingUrl,
-          display_name: 'Phomemo PM-241BT Direct Thermal Shipping Label Printer',
-          listing_facts: [
-            { fact: 'Direct Thermal 203 DPI Resolution Printing', date: '2026-10-08', type: 'spec' },
-            { fact: 'Maximum print speed of 150 mm per second', date: '2026-10-08', type: 'spec' },
-            { fact: 'Compatible with standard 4x6 inch thermal shipping labels', date: '2026-10-08', type: 'spec' }
-          ],
+          display_name: `${brand} ${model}`,
+          brand,
+          model,
+          source_url: officialSiteUrl,
+          listing_facts: specLines.map(s => ({
+            fact: s.specLine,
+            date: s.retrievedAt.split('T')[0],
+            type: 'spec',
+            sourceUrl: s.sourceUrl
+          })),
           listing_facts_recorded_at: now,
           product_checked: true,
           product_checked_at: now,
-          approved_from_proposal_id: 'prop_01'
+          disclaimer: 'This link opens Amazon.in search results. We have not checked the Amazon listing.'
         };
 
+        const slug = `offer-${brand.toLowerCase()}-${model.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`.slice(0, 50);
         const createdOffer = await registry.createOffer({
           partnerId: eligiblePartner.id,
           organizationId,
-          title: 'Phomemo PM-241BT Direct Thermal Shipping Label Printer',
-          offerSlug: 'amazon-b08p13wglx',
-          category: 'office',
-          targetCustomer: 'Small retail merchants, warehouses, and logistics operators in India',
+          title: `${brand} ${model}`,
+          offerSlug: slug,
+          category: topNeed.category,
+          targetCustomer: `Buyers in India seeking ${topNeed.category}`,
           commissionModel: 'PERCENTAGE',
           commissionAmountINR: 0,
           conversionAction: 'PURCHASE',
@@ -893,22 +1055,14 @@ export class AutonomousRevenueOrchestrator {
           authorizedTrackingUrl,
           geographicAvailability: 'India',
           status: 'ACTIVE',
-          description: 'Direct Thermal 203 DPI, 150 mm/s print speed, supports 1-4 inch label rolls',
+          description: `Verified specifications for ${brand} ${model}. This link opens Amazon.in search results. We have not checked the Amazon listing.`,
           currency: 'INR',
-          availability: 'IN_STOCK',
+          availability: 'UNKNOWN',
           evidence: offerEvidence
         });
 
-        // Also update product_proposals if prop_01 exists
-        try {
-          await this.d1Repo.executeWrite(
-            'product_proposals',
-            `UPDATE product_proposals
-             SET status = 'APPROVED', approved_offer_id = ?, product_checked = 1, product_checked_at = ?, updated_at = ?
-             WHERE id = 'prop_01'`,
-            [createdOffer.id, now, now]
-          );
-        } catch {}
+        // Record cooldown execution
+        ActionCooldownManager.recordExecution(cooldownTarget, 'DISCOVER_OFFER', true);
 
         return {
           status: 'INTERNAL_AUTOMATION',

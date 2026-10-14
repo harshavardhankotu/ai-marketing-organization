@@ -1,57 +1,59 @@
 import fs from 'fs';
+import path from 'path';
 
-function loadSecrets() {
-  const envContent = fs.readFileSync('.env.deploy_secrets', 'utf8');
-  const secrets = {};
-  for (const line of envContent.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    const [key, ...rest] = trimmed.split('=');
-    secrets[key.trim()] = rest.join('=').trim();
+function getCfToken() {
+  if (process.env.CLOUDFLARE_D1_API_TOKEN) return process.env.CLOUDFLARE_D1_API_TOKEN;
+  if (process.env.CLOUDFLARE_API_TOKEN) return process.env.CLOUDFLARE_API_TOKEN;
+  for (const envFile of ['.env.local', '.env.deploy_secrets']) {
+    const envPath = path.resolve(envFile);
+    if (fs.existsSync(envPath)) {
+      const content = fs.readFileSync(envPath, 'utf8');
+      const match = content.match(/CLOUDFLARE_API_TOKEN=([^\r\n]+)/);
+      if (match) return match[1].trim();
+    }
   }
-  return secrets;
+  return null;
 }
 
-const secrets = loadSecrets();
-const accountId = secrets.CLOUDFLARE_ACCOUNT_ID || '9b7511ff69e507dd3a00a7266fec11a3';
-const databaseId = secrets.CLOUDFLARE_D1_DATABASE_ID || '0563bb85-f6d2-483f-8b0f-0784e3d604c7';
-const apiToken = secrets.CLOUDFLARE_API_TOKEN;
+const cfToken = getCfToken();
+const accountId = process.env.CLOUDFLARE_ACCOUNT_ID || '9b7511ff69e507dd3a00a7266fec11a3';
+const dbId = process.env.CLOUDFLARE_D1_DATABASE_ID || '0563bb85-f6d2-483f-8b0f-0784e3d604c7';
 
-async function queryD1(sql, params = []) {
-  const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/d1/database/${databaseId}/query`;
-  const res = await fetch(url, {
+async function queryD1(sql) {
+  const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/d1/database/${dbId}/query`, {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${apiToken}`,
+      'Authorization': `Bearer ${cfToken}`,
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify({ sql, params })
+    body: JSON.stringify({ sql })
   });
-  if (!res.ok) {
-    throw new Error(`D1 HTTP ${res.status}: ${await res.text()}`);
-  }
-  const data = await res.json();
-  return data.result?.[0]?.results || [];
+  return await res.json();
 }
 
-async function run() {
-  const sql = `
-    SELECT id, severity, status, recurrence_count, title, rule, guard_type, guard_ref, first_seen, last_seen
-    FROM mistakes_board
-    ORDER BY CASE status WHEN 'OPEN' THEN 1 ELSE 2 END,
-             CASE severity WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 WHEN 'P3' THEN 3 ELSE 4 END,
-             id ASC;
-  `;
-  const rows = await queryD1(sql);
-  console.log(`\n=== MISTAKES BOARD: ALL ROWS (${rows.length} total) ===\n`);
-  for (const r of rows) {
-    console.log(`[${r.status}] [${r.severity}] ${r.id} (recurr: ${r.recurrence_count})`);
-    console.log(`  Title: ${r.title}`);
-    console.log(`  Rule: ${r.rule}`);
-    console.log(`  Guard: ${r.guard_type} -> ${r.guard_ref || 'NONE'}`);
-    console.log(`  Dates: ${r.first_seen} to ${r.last_seen}`);
-    console.log('');
+async function main() {
+  const sqlPrompt = 'SELECT id, status, severity, guard_type, guard_ref, updated_at FROM mistakes_board ORDER BY updated_at;';
+  console.log('=== RUNNING PROMPT QUERY ===');
+  console.log('Query:', sqlPrompt);
+  try {
+    const resPrompt = await queryD1(sqlPrompt);
+    console.log('D1 Response:', JSON.stringify(resPrompt, null, 2));
+  } catch (err) {
+    console.log('D1 Error:', err.message);
+  }
+
+  const sqlActual = 'SELECT id, status, severity, guard_type, guard_ref, last_seen FROM mistakes_board ORDER BY id ASC;';
+  console.log('\n=== RUNNING ACTUAL SCHEMA QUERY ===');
+  console.log('Query:', sqlActual);
+  const resActual = await queryD1(sqlActual);
+  if (resActual.success && resActual.result?.[0]?.results) {
+    console.log(`Total rows: ${resActual.result[0].results.length}`);
+    for (const r of resActual.result[0].results) {
+      console.log(`- [${r.status}] [${r.severity}] ${r.id} | guard: ${r.guard_type} (${r.guard_ref}) | last_seen: ${r.last_seen}`);
+    }
+  } else {
+    console.log('D1 Response:', JSON.stringify(resActual, null, 2));
   }
 }
 
-run().catch(console.error);
+main().catch(console.error);

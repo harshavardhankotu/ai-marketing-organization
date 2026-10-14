@@ -13,7 +13,7 @@ export interface OwnerSessionInfo {
 
 export interface OwnerConfiguration {
   id: string;
-  owner_name: string;
+  owner_name: string | null;
   organization_id: string;
   platform_business_id: string;
   platform_upi_vpa: string | null;
@@ -47,8 +47,11 @@ export class OwnerAuthService {
   private ensureInitialized(): void {
     try {
       const db = getDb();
-      const existing = db.prepare('SELECT id FROM owner_configuration WHERE id = ?').get('owner_primary');
-      if (!existing) {
+      const existing = db.prepare('SELECT id, owner_name FROM owner_configuration WHERE id = ?').get('owner_primary') as any;
+      if (existing && existing.owner_name === 'Harsha Vardhan Kotu') {
+        db.prepare('UPDATE owner_configuration SET owner_name = ?, updated_at = datetime(\'now\') WHERE id = ?')
+          .run(process.env.PUBLIC_AUTHOR_NAME || null, 'owner_primary');
+      } else if (!existing) {
         db.prepare(`
           INSERT INTO owner_configuration (
             id, owner_name, organization_id, platform_business_id,
@@ -57,7 +60,7 @@ export class OwnerAuthService {
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
         `).run(
           'owner_primary',
-          'Harsha Vardhan Kotu',
+          process.env.PUBLIC_AUTHOR_NAME || null,
           OwnerAuthService.OWNER_ORGANIZATION_ID,
           OwnerAuthService.PLATFORM_BUSINESS_ID,
           process.env.PLATFORM_UPI_VPA || null,
@@ -291,11 +294,16 @@ export class OwnerAuthService {
     this.ensureInitialized();
     const db = getDb();
     const row = db.prepare('SELECT * FROM owner_configuration WHERE id = ?').get('owner_primary') as any;
-    if (row) return row;
+    if (row) {
+      if (row.owner_name === 'Harsha Vardhan Kotu') {
+        row.owner_name = process.env.PUBLIC_AUTHOR_NAME || null;
+      }
+      return row;
+    }
 
     return {
       id: 'owner_primary',
-      owner_name: 'Harsha Vardhan Kotu',
+      owner_name: process.env.PUBLIC_AUTHOR_NAME || null,
       organization_id: OwnerAuthService.OWNER_ORGANIZATION_ID,
       platform_business_id: OwnerAuthService.PLATFORM_BUSINESS_ID,
       platform_upi_vpa: null,

@@ -1,0 +1,227 @@
+<USER_REQUEST>
+ANTIGRAVITY TASK: MAKE THE EXISTING SYSTEM EARN (FREE TIER ONLY)
+=================================================================
+
+PRECEDENCE
+----------
+This prompt replaces the two long "mission" prompts and the earlier
+automation prompt where they conflict.
+Finish any step of the earlier automation prompt that is not proven PASS.
+
+MAIN GOAL
+---------
+This system has one owner. It is not for other users.
+The goal is verified cash from real customers in India.
+Use the existing code. Do not rebuild working parts.
+Use free API plans only. Never start a paid plan, overage, or ad spend.
+Drafts, clicks, page views, and payment-page visits are not revenue.
+
+WARNING
+-------
+Do not set, guess, or default any owner fact in Render or in code.
+Owner facts are: ASSOCIATES_APPLICATION_DATE, ASSOCIATES_LISTED_SITE_URL,
+ASSOCIATES_AGREEMENT_READ, PUBLIC_SITE_NAME, PUBLIC_AUTHOR_NAME,
+PUBLIC_CONTACT_EMAIL.
+Do not use the owner's legal name anywhere unless the owner sets it.
+Do not fetch, scrape, or extract any amazon.* page.
+Do not post, reply, or message anyone for the owner.
+Do not use cold email or WhatsApp.
+Do not edit existing Razorpay, SendGrid, WhatsApp, Stripe, Ads, GBP, Brevo,
+agent registry, or UCOS files. You may add NEW files.
+Do not delete production rows. Do not write to production D1 from scripts/.
+Do not print secrets, the affiliate tag, or local user paths.
+Do not deploy while CI is red.
+Do not write rupee estimates. Use a measured value or write UNKNOWN.
+
+RULES FOR ALL OUTPUT
+--------------------
+1. Run npm run board:preflight first. Show every row, open and closed.
+2. Paste raw command output. Do not summarize it.
+3. PASS needs raw proof. PARTIAL means only a script or fixture ran.
+   Anything else is FAIL.
+4. If you do not know a cause, write UNKNOWN.
+5. Use curl -m 30. Use vitest run --test-timeout=30000.
+   Stop any command that runs longer than 60 seconds.
+6. Every code change needs a new test. Show the test count before and after.
+7. Report each step when it is done.
+
+STEP 1. VERIFY THE LAST PUSH
+----------------------------
+The last progress note says commit b73f0c5 is live. It shows no CI run
+and no deploy record. It shows health at /api/health with the body
+{"status":"ok","service":"ai-marketing-organization"}.
+All earlier raw health output used /api/v1/health with a different body.
+a) Show the GitHub Actions run for b73f0c5: id, conclusion, job steps.
+b) Show the Render deploy record: id, commit, trigger, status, finishedAt.
+c) Run: curl -m 30 -i https://ai-marketing-organization.onrender.com/api/v1/health
+   Paste the raw output. Explain the other health route and its body.
+d) The note shows 74 files and 686 tests before and after the change.
+   The change added scoring, offer creation, and database mirroring.
+   Show the new tests, or write FAIL. Add the missing tests.
+e) Show git diff --stat for b73f0c5. List every file and why it changed.
+
+STEP 2. REMOVE THE HARDCODED OFFER
+----------------------------------
+The note says DISCOVER_OFFER creates the Phomemo PM-241BT offer
+"with verified listing facts" and a "canonical destination URL".
+Nobody verified a listing. Phomemo was the product with a script-written
+provenance row. Hardcoding it breaks the automation rule.
+a) Show the code that creates this offer. Show where the facts come from.
+b) Remove every hardcoded product, brand, spec line, and URL.
+c) DISCOVER_OFFER must follow this path:
+   1. Read BUYER_QUESTION demand signals. Group them by need.
+   2. Drop blocked categories (health, skin care, supplements, medical).
+   3. Pick the need with the most signals. Require at least 3 signals.
+      If no need has 3, stop with status NEEDS_MORE_SIGNALS.
+   4. Find the brand's own site with at most 1 Tavily search.
+      Reject marketplaces, review sites, social sites, video sites, PDFs.
+   5. Fetch the spec page with Firecrawl. At most 3 pages. Use the cache.
+   6. Store quoted spec lines, source URL, and retrieval date.
+   7. Build the link: https://www.amazon.in/s?k=<brand model>&tag=<TAG>
+      Mask the tag in every log. Never fetch the link.
+   8. Show no price, rating, or availability.
+      Write: "This link opens Amazon.in search results.
+      We have not checked the Amazon listing."
+d) Add a cooldown of 24 hours and a daily credit budget to DISCOVER_OFFER.
+   It must not run every 15 minutes.
+e) Tests:
+   - No hardcoded brand exists in the source (grep test).
+   - A need with 2 signals does not create an offer.
+   - A marketplace domain is rejected as a source.
+   - The action respects the cooldown and the budget.
+   - The code never calls fetch on an amazon.* host.
+
+STEP 3. NO DEFAULT IDENTITY
+---------------------------
+The note says PUBLIC_SITE_NAME and PUBLIC_AUTHOR_NAME have defaults,
+including the owner's full name. This repeats mistakes mst "invented site
+identity" and "fallback hides missing config".
+a) Show the code with the defaults. Remove them.
+b) The boot validator needs all six owner facts. List the missing names.
+c) Until all six are valid: no offer activates, no guide publishes,
+   and the TODAY page lists only the missing names.
+d) Test: each missing name blocks publishing. A default never appears
+   in any generated page.
+e) Add mistake P1: "Default identity reintroduced". Link the test.
+
+STEP 4. BOARD TRUTH
+-------------------
+The preflight showed 12 OPEN rows before. The note says 0 open now.
+a) Run SELECT id, status, severity, guard_type, guard_ref, updated_at
+   FROM mistakes_board ORDER BY updated_at; Paste the raw output.
+b) For each row that changed from OPEN to another status, show who changed it
+   and which guard exists. If no guard exists, set it back to OPEN.
+c) Run board:verify. Paste the raw output.
+d) Make the status page show open rows by severity.
+
+STEP 5. REVENUE LANES MAP (GENERATED FROM CODE)
+-----------------------------------------------
+Write REVENUE_LANES.md with a script. Read the code, not the README.
+For each lane show: entry point, how a customer pays or clicks,
+how revenue is proven, current status
+(LIVE_VERIFIED, BUILT_UNVERIFIED, DORMANT, BLOCKED), the blocker,
+the owner action, the free credits used per week, and the compliance risk.
+Do not give a time estimate. Write UNKNOWN.
+Lanes to check:
+ A. Amazon search-link guides.
+ B. Razorpay.me page and the PLATFORM_SETUP and PLATFORM_MONTHLY offers.
+ C. Own offer with a Razorpay manual link.
+ D. Manual UPI claim and owner confirm routes.
+ E. Tenant funnels, booking, and lead routes. State if any real tenant exists.
+ F. Other affiliate networks (needs owner KYC).
+ G. Owned Telegram channel.
+ H. The 80 catalog agents. State if any is wired.
+Lane B fact: the Razorpay.me page shows no product, no delivery time,
+and no refund terms. The platform business is hidden from public routes.
+Do not expose it. Do not weaken the tenant guard.
+Lane B opens only when the owner writes, in OWN_OFFER.md:
+what the buyer gets, the delivery time, the price, and the refund terms.
+Then build one public static page from that file and test the payment
+verification path with fixtures. Never count a claim or a redirect as paid.
+
+STEP 6. RUN THE AUTOMATIC OFFER LANE
+------------------------------------
+If owner_intake is VALID:
+   Let the normal cron run DISCOVER_OFFER. Do not trigger it by hand.
+   Show the cycle row, the action row, the credits used, the offer row,
+   the stored spec lines, and the guide row.
+   If the guide passes the lint, let it publish and deploy.
+   Open the live page in the browser. Check: HTTP 200, canonical URL,
+   disclosure in the first 500 characters, link host and tag (masked),
+   mobile layout, structured data. Save a screenshot.
+If owner_intake is not VALID:
+   Write BLOCKED_ON_OWNER_FACTS with the missing names. Do steps 7 to 9.
+
+STEP 7. FREE DISTRIBUTION (POLICY-SAFE)
+---------------------------------------
+No tool can create traffic from nothing. Build what is allowed.
+a) After each deploy, submit the sitemap with IndexNow.
+b) Add Google Search Console verification from GOOGLE_SITE_VERIFICATION.
+c) Link each guide from the home page and from related guides.
+d) Daily share kit (no LLM call if possible):
+   Take up to 3 BUYER_QUESTION signals that match a published guide.
+   Draft a short helpful answer for each. Put the guide URL in it.
+   Never include a tagged link. Never post. Show the drafts on the TODAY page
+   with "Copy" and "Mark posted".
+e) Measure with the beacon: visits, outbound clicks, per guide.
+   Clicks are not revenue.
+f) If the owner connects Search Console, read impressions and queries
+   with the official API. Mark the source SEARCH_CONSOLE.
+g) Optional: the Telegram adapter stays off until the owner sets the variables.
+
+STEP 8. FREE-TIER CHECK
+-----------------------
+a) Show the Tavily usage endpoint. Tavily showed 312 used on the last report.
+   Show the sum of provider_call_logs units. Explain the gap, or write UNKNOWN.
+b) Run the full test suite with real keys in the shell.
+   Show usage before and after for Tavily and Firecrawl. The change must be 0.
+c) Show the Firecrawl credit-usage response and the plan.
+d) Stop each provider at 70 percent of its free allowance.
+   Show the daily budget for the rest of the month.
+e) Show the service uptime pattern. The cron now runs every 15 minutes.
+   State whether the Render free plan allows this. Cite the Render docs.
+
+STEP 9. USE ANTIGRAVITY FEATURES
+--------------------------------
+a) Read the Antigravity docs for skills, subagents, hooks, browser, and
+   scheduled tasks. Cite the URLs.
+b) Run four read-only investigations in parallel if subagents exist:
+   production and data, revenue path, demand evidence, reliability.
+   Each returns evidence only. The main agent merges them.
+   Use separate worktrees for code changes.
+c) The notes say the old workflow format stops working on 2026-10-19.
+   Cite the doc URL. Check .agents for workflow files.
+   Migrate them to skills if they exist.
+d) Open the project folder as the workspace.
+   Trigger one blocked action through a real tool call. Quote the hook log.
+e) Create a skill named revenue-ops with the steps of this prompt.
+   Keep the rules file short.
+f) Keep one scheduled task: daily, read-only, write the status summary.
+
+STEP 10. FINISH
+---------------
+Run typecheck and build for all workspaces.
+Run all tests. Show file and test counts. They must be higher than 686.
+Show the green CI run. Deploy only through CI.
+Show the Render deploy record and the raw /api/v1/health output.
+Run npm run board:sync, board:verify, and status:generate.
+Write the final report with these lines, all measured:
+ owner_intake state; active offers; published guides; visits;
+ outbound clicks; reported conversions; verified commission;
+ cash received; Tavily and Firecrawl used and remaining;
+ top blocker by pipeline stage; the single next owner action.
+Use UNKNOWN when you cannot measure. Stop.
+
+OWNER-ONLY LIST (ASK FOR NOTHING ELSE)
+--------------------------------------
+1. Set the six owner facts in Render > Environment.
+2. Add missing GitHub secret names for the Firebase deploy.
+3. Open the project folder as the Antigravity workspace.
+4. Optional: write OWN_OFFER.md to open Lane B.
+5. Optional: verify Search Console; set Telegram variables.
+6. Post the daily drafts by hand. The system must not post for you.
+7. Upload the Associates report or the Razorpay export when sales appear.
+</USER_REQUEST>
+<ADDITIONAL_METADATA>
+The current local time is: 2026-10-14T22:06:45+05:30.
+</ADDITIONAL_METADATA>
