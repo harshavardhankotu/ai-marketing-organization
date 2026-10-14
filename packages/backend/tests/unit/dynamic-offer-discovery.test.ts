@@ -49,6 +49,22 @@ describe('Step 2: Dynamic Offer Discovery Suite', () => {
         );
       `);
     } catch {}
+    // Ensure partner exists for hermetic test execution
+    try {
+      db.prepare(`
+        INSERT INTO partners (
+          id, organization_id, name, industry, country, website,
+          partner_type, approval_status, active_status, network, tracking_type,
+          authorization_status, program_url, coverage, disclosure_required, evidence_json,
+          created_at, updated_at
+        ) VALUES (
+          'part_amazon_in_test', ?, 'Amazon Associates India', 'ecommerce', 'India',
+          'https://affiliate-program.amazon.in', 'AFFILIATE', 'PROVISIONAL', 1,
+          'AMAZON_ASSOCIATES', 'DIRECT_ID_TAG', 'AUTHORIZED', 'https://affiliate-program.amazon.in',
+          'India', 1, '{}', datetime('now'), datetime('now')
+        ) ON CONFLICT(id) DO UPDATE SET organization_id = excluded.organization_id, active_status = 1, approval_status = 'PROVISIONAL', authorization_status = 'AUTHORIZED'
+      `).run(orgId);
+    } catch {}
     // Reset partner offers and demand signals for hermetic tests
     db.prepare("DELETE FROM partner_offers WHERE organization_id = ?").run(orgId);
     db.prepare("DELETE FROM action_cooldowns WHERE action_type = 'DISCOVER_OFFER'").run();
