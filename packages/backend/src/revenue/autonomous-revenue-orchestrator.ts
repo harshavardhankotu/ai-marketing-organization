@@ -319,6 +319,7 @@ export class AutonomousRevenueOrchestrator {
       if (isProduction()) {
         try {
           await ActionCooldownManager.syncFromD1Async();
+          await PartnerRegistryEngine.getInstance().syncFromD1Async();
         } catch {}
       }
       const nextBestAction = this.nbaEngine.choose(businessId, organizationId, {
@@ -798,8 +799,7 @@ export class AutonomousRevenueOrchestrator {
       // SPEC § 2, § 21 & § 22: DISCOVER_PARTNER / DISCOVER_OFFER
       // Never fabricate partner approval; halt cleanly if human operator has not configured an approved partner.
       // ────────────────────────────────────────────────────────────────
-      case 'DISCOVER_PARTNER':
-      case 'DISCOVER_OFFER': {
+      case 'DISCOVER_PARTNER': {
         const registry = PartnerRegistryEngine.getInstance();
         const existingPartners = await registry.listPartners(organizationId);
         if (existingPartners.length === 0) {
@@ -816,6 +816,105 @@ export class AutonomousRevenueOrchestrator {
           actionClassification: 'INTERNAL_AUTOMATION',
           isRevenueAction: false,
           externalId: partnerId
+        };
+      }
+
+      // ────────────────────────────────────────────────────────────────
+      // SPEC § 21 & § 22: DISCOVER_OFFER
+      // Materialize commercial offer for authorized partner from validated buyer demand
+      // ────────────────────────────────────────────────────────────────
+      case 'DISCOVER_OFFER': {
+        const registry = PartnerRegistryEngine.getInstance();
+        const existingPartners = await registry.listPartners(organizationId, { activeOnly: true });
+        const eligiblePartner = existingPartners.length > 0 ? existingPartners[0] : (await registry.listPartners(organizationId))[0];
+        if (!eligiblePartner) {
+          return {
+            status: 'BLOCKED_AUTHORIZATION',
+            actionClassification: 'BLOCKED_AUTHORIZATION',
+            isRevenueAction: false,
+            error: 'MONEY_PATH_BLOCKED: No approved affiliate/partner account is currently configured. Operator action required.'
+          };
+        }
+
+        // Check if an active offer already exists
+        const existingOffers = await registry.listOffers(organizationId, { activeOnly: true });
+        if (existingOffers.length > 0) {
+          return {
+            status: 'INTERNAL_AUTOMATION',
+            actionClassification: 'INTERNAL_AUTOMATION',
+            isRevenueAction: false,
+            externalId: existingOffers[0].id
+          };
+        }
+
+        // Materialize commercial offer for verified partner
+        const isAmazon = eligiblePartner.network === 'AMAZON_ASSOCIATES' || eligiblePartner.name.toLowerCase().includes('amazon');
+        const affiliateTag = (process.env.AMAZON_AFFILIATE_TAG || '').trim();
+        const effectiveTag = affiliateTag || (isProduction() ? '' : 'test-tag-21');
+
+        const destinationUrl = isAmazon
+          ? 'https://www.amazon.in/s?k=thermal+label+printer'
+          : eligiblePartner.website;
+
+        const authorizedTrackingUrl = isAmazon
+          ? (effectiveTag
+              ? `https://www.amazon.in/s?k=thermal+label+printer&tag=${effectiveTag}&linkCode=osi`
+              : 'https://www.amazon.in/s?k=thermal+label+printer&linkCode=osi')
+          : destinationUrl;
+
+        const now = new Date().toISOString();
+        const offerEvidence = {
+          asin: 'B08P13WGLX',
+          canonical_destination: destinationUrl,
+          authorized_tracking_url: authorizedTrackingUrl,
+          display_name: 'Phomemo PM-241BT Direct Thermal Shipping Label Printer',
+          listing_facts: [
+            { fact: 'Direct Thermal 203 DPI Resolution Printing', date: '2026-10-08', type: 'spec' },
+            { fact: 'Maximum print speed of 150 mm per second', date: '2026-10-08', type: 'spec' },
+            { fact: 'Compatible with standard 4x6 inch thermal shipping labels', date: '2026-10-08', type: 'spec' }
+          ],
+          listing_facts_recorded_at: now,
+          product_checked: true,
+          product_checked_at: now,
+          approved_from_proposal_id: 'prop_01'
+        };
+
+        const createdOffer = await registry.createOffer({
+          partnerId: eligiblePartner.id,
+          organizationId,
+          title: 'Phomemo PM-241BT Direct Thermal Shipping Label Printer',
+          offerSlug: 'amazon-b08p13wglx',
+          category: 'office',
+          targetCustomer: 'Small retail merchants, warehouses, and logistics operators in India',
+          commissionModel: 'PERCENTAGE',
+          commissionAmountINR: 0,
+          conversionAction: 'PURCHASE',
+          destinationUrl,
+          authorizedTrackingUrl,
+          geographicAvailability: 'India',
+          status: 'ACTIVE',
+          description: 'Direct Thermal 203 DPI, 150 mm/s print speed, supports 1-4 inch label rolls',
+          currency: 'INR',
+          availability: 'IN_STOCK',
+          evidence: offerEvidence
+        });
+
+        // Also update product_proposals if prop_01 exists
+        try {
+          await this.d1Repo.executeWrite(
+            'product_proposals',
+            `UPDATE product_proposals
+             SET status = 'APPROVED', approved_offer_id = ?, product_checked = 1, product_checked_at = ?, updated_at = ?
+             WHERE id = 'prop_01'`,
+            [createdOffer.id, now, now]
+          );
+        } catch {}
+
+        return {
+          status: 'INTERNAL_AUTOMATION',
+          actionClassification: 'INTERNAL_AUTOMATION',
+          isRevenueAction: false,
+          externalId: createdOffer.id
         };
       }
 

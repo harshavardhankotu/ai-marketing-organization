@@ -287,6 +287,39 @@ export class NextBestActionEngine {
       }
     }
 
+    // Priority 4.9 (P1): Active partner exists but zero active offers -> DISCOVER_OFFER
+    const activeOffersCount = this.getActiveOffersCount(organizationId);
+    const partnerCount = this.getActivePartnersCount(organizationId);
+    if (partnerCount > 0 && activeOffersCount === 0) {
+      const cooldown = ActionCooldownManager.check(businessId, 'DISCOVER_OFFER');
+      if (cooldown.eligible || options?.ignoreCooldown) {
+        candidates.push({
+          actionType: 'DISCOVER_OFFER',
+          targetId: businessId,
+          targetType: 'OFFER',
+          ownerAgent: 'partner-discovery-agent',
+          rationale: `Authorized partner configured (${partnerCount} active) but zero active commercial offers in catalog. Register high-demand commercial offer from top buyer demand cluster.`,
+          estimatedRevenueINR: 5000,
+          expectedRevenueINR: 2500,
+          probabilityOfSuccess: 0.8,
+          timeToRevenueDays: 3,
+          externalCostINR: 0,
+          quotaCost: 0,
+          customerValueINR: 5000,
+          urgency: 0.95,
+          cooldownActive: false,
+          authorizationAvailable: true,
+          riskLevel: 'LOW',
+          expectedValueINR: 2500,
+          priorityScore: 950,
+          priorityTier: 'P1',
+          score: 950,
+          authorizationRequired: false,
+          estimatedCostINR: 0
+        });
+      }
+    }
+
     // Priority 5.0 (P1): Active partner offers needing a buyer guide generated
     const unguidedActiveOffers = this.getUnguidedActiveOffers(organizationId);
     for (const off of unguidedActiveOffers) {
@@ -393,7 +426,6 @@ export class NextBestActionEngine {
     }
 
     // Priority 5.3 (P2): Partner / Offer discovery if catalog is thin (Spec § 22)
-    const partnerCount = this.getActivePartnersCount(organizationId);
     if (partnerCount < 3) {
       const cooldown = ActionCooldownManager.check(businessId, 'DISCOVER_PARTNER');
       if (cooldown.eligible || options?.ignoreCooldown) {
@@ -418,6 +450,36 @@ export class NextBestActionEngine {
           priorityScore: 500,
           priorityTier: 'P2',
           score: 500,
+          authorizationRequired: false,
+          estimatedCostINR: 0
+        });
+      }
+    }
+
+    if (partnerCount > 0 && activeOffersCount > 0 && activeOffersCount < 3) {
+      const cooldown = ActionCooldownManager.check(businessId, 'DISCOVER_OFFER');
+      if (cooldown.eligible || options?.ignoreCooldown) {
+        candidates.push({
+          actionType: 'DISCOVER_OFFER',
+          targetId: businessId,
+          targetType: 'OFFER',
+          ownerAgent: 'partner-discovery-agent',
+          rationale: `Active commercial offers thin (${activeOffersCount} active). Discover additional commercial offers for verified partners.`,
+          estimatedRevenueINR: 4000,
+          expectedRevenueINR: 1000,
+          probabilityOfSuccess: 0.5,
+          timeToRevenueDays: 7,
+          externalCostINR: 0,
+          quotaCost: 0,
+          customerValueINR: 4000,
+          urgency: 0.7,
+          cooldownActive: false,
+          authorizationAvailable: true,
+          riskLevel: 'LOW',
+          expectedValueINR: 1000,
+          priorityScore: 450,
+          priorityTier: 'P2',
+          score: 450,
           authorizationRequired: false,
           estimatedCostINR: 0
         });

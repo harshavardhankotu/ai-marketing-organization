@@ -1,4 +1,6 @@
 import { randomUUID } from 'crypto';
+import { getDb } from '../db/client.js';
+import { isProduction } from '../config/env.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { resolveAffiliateAdapter } from './affiliate-adapters.js';
 import {
@@ -597,5 +599,82 @@ export class PartnerRegistryEngine {
       createdAt: row.created_at,
       updatedAt: row.updated_at
     };
+  }
+
+  /**
+   * Syncs partners and partner_offers from durable Cloudflare D1 into local SQLite mirror.
+   */
+  public async syncFromD1Async(): Promise<void> {
+    if (!isProduction()) return;
+    try {
+      const db = getDb();
+      // 1. Sync partners
+      const partners = await this.d1Repo.query<any>('partners', 'SELECT * FROM partners');
+      if (partners.length > 0) {
+        const stmtP = db.prepare(`
+          INSERT INTO partners (
+            id, organization_id, name, industry, country, city, website,
+            partner_type, program_name, commission_type, commission_rate, fixed_commission_inr,
+            cookie_window_days, qualifying_event, approval_status, active_status, source,
+            terms_url, disclosure_required, network, tracking_type, authorization_status,
+            program_url, coverage, evidence_json, last_verified_at, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            approval_status = excluded.approval_status,
+            active_status = excluded.active_status,
+            authorization_status = excluded.authorization_status,
+            evidence_json = excluded.evidence_json,
+            updated_at = excluded.updated_at
+        `);
+        for (const p of partners) {
+          try {
+            stmtP.run(
+              p.id, p.organization_id, p.name, p.industry, p.country, p.city, p.website,
+              p.partner_type, p.program_name, p.commission_type, p.commission_rate, p.fixed_commission_inr,
+              p.cookie_window_days, p.qualifying_event, p.approval_status, p.active_status, p.source,
+              p.terms_url, p.disclosure_required, p.network, p.tracking_type, p.authorization_status,
+              p.program_url, p.coverage, p.evidence_json, p.last_verified_at, p.created_at, p.updated_at
+            );
+          } catch {}
+        }
+      }
+
+      // 2. Sync partner_offers
+      const offers = await this.d1Repo.query<any>('partner_offers', 'SELECT * FROM partner_offers');
+      if (offers.length > 0) {
+        const stmtO = db.prepare(`
+          INSERT INTO partner_offers (
+            id, partner_id, organization_id, title, offer_slug, category,
+            target_customer, price_inr, price_range, commission_model,
+            commission_amount_inr, conversion_action, destination_url,
+            authorized_tracking_url, geographic_availability, evidence_json,
+            status, description, currency, availability, active,
+            last_verified_at, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            title = excluded.title,
+            destination_url = excluded.destination_url,
+            authorized_tracking_url = excluded.authorized_tracking_url,
+            evidence_json = excluded.evidence_json,
+            status = excluded.status,
+            active = excluded.active,
+            updated_at = excluded.updated_at
+        `);
+        for (const o of offers) {
+          try {
+            stmtO.run(
+              o.id, o.partner_id, o.organization_id, o.title, o.offer_slug, o.category,
+              o.target_customer, o.price_inr, o.price_range, o.commission_model,
+              o.commission_amount_inr, o.conversion_action, o.destination_url,
+              o.authorized_tracking_url, o.geographic_availability, o.evidence_json,
+              o.status, o.description, o.currency, o.availability, o.active,
+              o.last_verified_at, o.created_at, o.updated_at
+            );
+          } catch {}
+        }
+      }
+    } catch (err: any) {
+      console.warn(`[PartnerRegistryEngine] syncFromD1Async error: ${err.message}`);
+    }
   }
 }

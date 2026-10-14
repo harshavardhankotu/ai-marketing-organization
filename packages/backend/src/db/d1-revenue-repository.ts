@@ -89,6 +89,10 @@ export class D1RevenueRepository {
     if (isProduction()) {
       if (this.d1.isRemoteD1Configured()) {
         const res = await this.d1.executeQuery(sql, params, true, 'P0');
+        try {
+          const db = getDb();
+          db.prepare(sql).run(...params);
+        } catch {}
         return { rowsAffected: res.rowsAffected, source: 'CLOUDFLARE_D1' };
       }
       if (!process.env.VITEST) {

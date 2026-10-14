@@ -1,5 +1,6 @@
 import { getDb } from '../db/client.js';
 import { isProduction, isPlaceholderCredential } from '../config/env.js';
+import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { FirecrawlAdapter } from '../research/firecrawl-adapter.js';
 import { UnifiedQuotaService } from '../quota/unified-quota-service.js';
 
@@ -453,30 +454,42 @@ ${specBullets}
 
     // Insert published asset
     const assetId = `asset_${guide.productId}_${Date.now()}`;
-    db.prepare(`
+    const insertAssetSql = `
       INSERT INTO commission_content_assets (
         id, organization_id, slug, asset_type, title, category,
         intent_target, content_markdown, status, created_at, updated_at
       ) VALUES (?, 'org_owner_primary', ?, 'GUIDE', ?, 'CONSUMER_HARDWARE', 'BUYER_RESEARCH', ?, 'PUBLISHED', datetime('now'), datetime('now'))
-    `).run(
+    `;
+    const assetParams = [
       assetId,
       guide.slug,
       guide.title,
       guide.contentMarkdown
-    );
+    ];
+
+    db.prepare(insertAssetSql).run(...assetParams);
+
+    if (isProduction()) {
+      D1RevenueRepository.getInstance().executeWrite('commission_content_assets', insertAssetSql, assetParams)
+        .catch(err => console.warn(`[AutomaticOfferLane] D1 asset write warning: ${err.message}`));
+    }
 
     // Write INFO row to mistakes_board (Step 4a)
+    const mistakeId = `info_pub_${guide.slug}_${Date.now()}`;
+    const mistakeDesc = `Published buyer guide '${guide.title}' to static site catalog linking to Amazon.in search query.`;
+    const insertMistakeSql = `
+      INSERT INTO mistakes_board (
+        id, first_seen, last_seen, title, what_happened, cause, rule, severity, status, recurrence_count, source_report
+      ) VALUES (
+        ?, datetime('now'), datetime('now'), 'Guide Published', ?, 'AUTOMATIC_OFFER_LANE', 'AUTO_PUBLISH', 'INFO', 'INFO', 1, 'AUTO_PUBLISH_SYSTEM'
+      )
+    `;
     try {
-      db.prepare(`
-        INSERT INTO mistakes_board (
-          id, first_seen, last_seen, title, what_happened, cause, rule, severity, status, recurrence_count, source_report
-        ) VALUES (
-          ?, datetime('now'), datetime('now'), 'Guide Published', ?, 'AUTOMATIC_OFFER_LANE', 'AUTO_PUBLISH', 'INFO', 'INFO', 1, 'AUTO_PUBLISH_SYSTEM'
-        )
-      `).run(
-        `info_pub_${guide.slug}_${Date.now()}`,
-        `Published buyer guide '${guide.title}' to static site catalog linking to Amazon.in search query.`
-      );
+      db.prepare(insertMistakeSql).run(mistakeId, mistakeDesc);
+      if (isProduction()) {
+        D1RevenueRepository.getInstance().executeWrite('mistakes_board', insertMistakeSql, [mistakeId, mistakeDesc])
+          .catch(err => console.warn(`[AutomaticOfferLane] D1 mistake write warning: ${err.message}`));
+      }
     } catch {}
 
     return { published: true };
