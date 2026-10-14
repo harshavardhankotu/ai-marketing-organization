@@ -623,6 +623,38 @@ export function getDb(dbPath?: string): Database.Database {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`);
   } catch {}
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS domain_policy (
+      id TEXT PRIMARY KEY, domain TEXT NOT NULL UNIQUE,
+      policy TEXT NOT NULL DEFAULT 'REJECT', reject_class TEXT,
+      reason TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+  } catch {}
+  try {
+    db.exec(`INSERT OR IGNORE INTO domain_policy (id, domain, policy, reject_class, reason) VALUES
+      ('dp_amazon', 'amazon.in', 'REJECT', 'MARKETPLACE', 'Amazon pages must never be scraped or fetched'),
+      ('dp_amazon_com', 'amazon.com', 'REJECT', 'MARKETPLACE', 'Amazon pages must never be scraped or fetched'),
+      ('dp_flipkart', 'flipkart.com', 'REJECT', 'MARKETPLACE', 'Marketplace domain rejected as brand source'),
+      ('dp_snapdeal', 'snapdeal.com', 'REJECT', 'MARKETPLACE', 'Marketplace domain rejected as brand source'),
+      ('dp_pcmag', 'pcmag.com', 'REJECT', 'REVIEW_SITE', 'Third-party review publisher rejected as brand source'),
+      ('dp_techradar', 'techradar.com', 'REJECT', 'REVIEW_SITE', 'Third-party review publisher rejected as brand source'),
+      ('dp_reddit', 'reddit.com', 'REJECT', 'SOCIAL_NETWORK', 'Community forum rejected as brand source'),
+      ('dp_youtube', 'youtube.com', 'REJECT', 'VIDEO_SITE', 'Video platform rejected as brand source'),
+      ('dp_pdf', '*.pdf', 'REJECT', 'FILE_TYPE', 'Binary PDF documents rejected as web spec source')`);
+  } catch {}
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS brand_spec_lines (
+      id TEXT PRIMARY KEY, product_id TEXT NOT NULL, brand TEXT NOT NULL,
+      model TEXT NOT NULL, spec_line TEXT NOT NULL, source_url TEXT NOT NULL,
+      retrieved_at TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+  } catch {}
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS competitor_topics (
+      id TEXT PRIMARY KEY, topic TEXT NOT NULL, category TEXT,
+      publisher_url TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+  } catch {}
 
 
   // Initialize schema (creates all tables if not exist — safe for both fresh and existing DBs)

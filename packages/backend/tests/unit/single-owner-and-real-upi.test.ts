@@ -25,6 +25,8 @@ describe('Single Owner, Real UPI & Production Commercial Architecture (Spec §§
   });
 
   afterEach(() => {
+    delete process.env.PUBLIC_AUTHOR_NAME;
+    delete process.env.OWNER_API_KEY;
     process.env = { ...originalEnv };
   });
 

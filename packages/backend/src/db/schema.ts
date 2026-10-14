@@ -2318,4 +2318,63 @@ CREATE TABLE IF NOT EXISTS stored_reports (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_stored_reports_org ON stored_reports(organization_id);
+
+-- 107. Domain Policy (Brand site verification and domain reject classes)
+CREATE TABLE IF NOT EXISTS domain_policy (
+  id TEXT PRIMARY KEY,
+  domain TEXT NOT NULL UNIQUE,
+  policy TEXT NOT NULL DEFAULT 'REJECT', -- 'ALLOW_BRAND' | 'REJECT'
+  reject_class TEXT,                     -- 'MARKETPLACE' | 'REVIEW_SITE' | 'SOCIAL_NETWORK' | 'VIDEO_SITE' | 'FILE_TYPE'
+  reason TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Seed domain_policy with canonical reject classes
+INSERT INTO domain_policy (id, domain, policy, reject_class, reason) VALUES
+  ('dp_amazon', 'amazon.in', 'REJECT', 'MARKETPLACE', 'Amazon pages must never be scraped or fetched'),
+  ('dp_amazon_com', 'amazon.com', 'REJECT', 'MARKETPLACE', 'Amazon pages must never be scraped or fetched'),
+  ('dp_flipkart', 'flipkart.com', 'REJECT', 'MARKETPLACE', 'Marketplace domain rejected as brand source'),
+  ('dp_snapdeal', 'snapdeal.com', 'REJECT', 'MARKETPLACE', 'Marketplace domain rejected as brand source'),
+  ('dp_jiomart', 'jiomart.com', 'REJECT', 'MARKETPLACE', 'Marketplace domain rejected as brand source'),
+  ('dp_meesho', 'meesho.com', 'REJECT', 'MARKETPLACE', 'Marketplace domain rejected as brand source'),
+  ('dp_indiamart', 'indiamart.com', 'REJECT', 'MARKETPLACE', 'B2B marketplace domain rejected as brand source'),
+  ('dp_ebay', 'ebay.com', 'REJECT', 'MARKETPLACE', 'Marketplace domain rejected as brand source'),
+  ('dp_pcmag', 'pcmag.com', 'REJECT', 'REVIEW_SITE', 'Third-party review publisher rejected as brand source'),
+  ('dp_techradar', 'techradar.com', 'REJECT', 'REVIEW_SITE', 'Third-party review publisher rejected as brand source'),
+  ('dp_cnet', 'cnet.com', 'REJECT', 'REVIEW_SITE', 'Third-party review publisher rejected as brand source'),
+  ('dp_tomsguide', 'tomsguide.com', 'REJECT', 'REVIEW_SITE', 'Third-party review publisher rejected as brand source'),
+  ('dp_wirecutter', 'nytimes.com', 'REJECT', 'REVIEW_SITE', 'Third-party review publisher rejected as brand source'),
+  ('dp_gsmarena', 'gsmarena.com', 'REJECT', 'REVIEW_SITE', 'Third-party review publisher rejected as brand source'),
+  ('dp_rtings', 'rtings.com', 'REJECT', 'REVIEW_SITE', 'Third-party review publisher rejected as brand source'),
+  ('dp_reddit', 'reddit.com', 'REJECT', 'SOCIAL_NETWORK', 'Community forum rejected as brand source'),
+  ('dp_quora', 'quora.com', 'REJECT', 'SOCIAL_NETWORK', 'Community forum rejected as brand source'),
+  ('dp_facebook', 'facebook.com', 'REJECT', 'SOCIAL_NETWORK', 'Social network rejected as brand source'),
+  ('dp_twitter', 'twitter.com', 'REJECT', 'SOCIAL_NETWORK', 'Social network rejected as brand source'),
+  ('dp_x', 'x.com', 'REJECT', 'SOCIAL_NETWORK', 'Social network rejected as brand source'),
+  ('dp_instagram', 'instagram.com', 'REJECT', 'SOCIAL_NETWORK', 'Social network rejected as brand source'),
+  ('dp_youtube', 'youtube.com', 'REJECT', 'VIDEO_SITE', 'Video platform rejected as brand source'),
+  ('dp_pdf', '*.pdf', 'REJECT', 'FILE_TYPE', 'Binary PDF documents rejected as web spec source')
+ON CONFLICT(domain) DO NOTHING;
+
+-- 108. Brand Spec Lines (Verified manufacturer specs)
+CREATE TABLE IF NOT EXISTS brand_spec_lines (
+  id TEXT PRIMARY KEY,
+  product_id TEXT NOT NULL,
+  brand TEXT NOT NULL,
+  model TEXT NOT NULL,
+  spec_line TEXT NOT NULL,
+  source_url TEXT NOT NULL,
+  retrieved_at TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_spec_lines_prod ON brand_spec_lines(product_id);
+
+-- 109. Competitor Topics (Publisher articles separated from demand signals)
+CREATE TABLE IF NOT EXISTS competitor_topics (
+  id TEXT PRIMARY KEY,
+  topic TEXT NOT NULL,
+  category TEXT,
+  publisher_url TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `;
