@@ -125,13 +125,21 @@ async function main() {
   let hitZero = false;
   for (const s of pipelineStages) {
     let statusBadge = 'CLEAR';
+    let diagnosticDesc = '';
     if (s.count === 0 && !hitZero) {
       statusBadge = '**TOP BLOCKER**';
+      diagnosticDesc = s.blockerDesc;
       hitZero = true;
     } else if (s.count === 0) {
       statusBadge = 'BLOCKED (DOWNSTREAM)';
+      diagnosticDesc = s.blockerDesc;
+    } else {
+      statusBadge = 'CLEAR';
+      diagnosticDesc = s.stage === 'offers'
+        ? `${s.count} active partner offer(s) configured; awaiting published buyer guide.`
+        : `Stage satisfied (${s.count} recorded); advancing downstream.`;
     }
-    blockerRankingRows += `| **${s.name}** | \`${s.count}\` | ${statusBadge} | ${s.blockerDesc} |\n`;
+    blockerRankingRows += `| **${s.name}** | \`${s.count}\` | ${statusBadge} | ${diagnosticDesc} |\n`;
   }
 
   const content = `# Project Status & Verification Truth Record

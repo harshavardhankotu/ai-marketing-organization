@@ -451,37 +451,9 @@ export class AgentScorecardEngine {
    * Lists all agent scorecards.
    */
   public listScorecards(): AgentScorecardRecord[] {
-    let rows = this.db
+    const rows = this.db
       .prepare('SELECT * FROM agent_scorecards ORDER BY outcome_quality_score DESC')
       .all() as any[];
-
-    if (rows.length === 0) {
-      // Seed core agents with 1 real decision (PILOT_SAMPLE, confidence LOW)
-      this.recordAgentAction('agt_growth_lead_01', 'Growth Marketing Lead', 'MARKETING_GROWTH', {
-        isReal: true,
-        wasAccepted: true,
-        wasSuccessful: true,
-      });
-      this.recordAgentAction('agt_cro_01', 'CRO Specialist', 'MARKETING_GROWTH', {
-        isReal: true,
-        wasAccepted: true,
-        wasSuccessful: true,
-      });
-      this.recordAgentAction('agt_paid_search_01', 'Paid Search Specialist', 'MARKETING_GROWTH', {
-        isReal: true,
-        wasAccepted: true,
-        wasSuccessful: true,
-      });
-      this.recordAgentAction('agt_rev_ops_01', 'Revenue Operations Analyst', 'ANALYTICS_LEARNING', {
-        isReal: true,
-        wasAccepted: true,
-        wasSuccessful: true,
-      });
-
-      rows = this.db
-        .prepare('SELECT * FROM agent_scorecards ORDER BY outcome_quality_score DESC')
-        .all() as any[];
-    }
 
     return rows.map((row) => ({
       agentId: row.agent_id,

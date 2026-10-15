@@ -121,6 +121,11 @@ const COOLDOWN_POLICIES: Record<ActionType, CooldownPolicy> = {
     cooldownHoursPerAttempt: [0],
     escalateAfterMax: 'STOP'
   },
+  AWAIT_OWNER_INTAKE: {
+    maxAttempts: 999,
+    cooldownHoursPerAttempt: [1],
+    escalateAfterMax: 'STOP'
+  },
   OPTIMIZE_FUNNEL: {
     maxAttempts: 999,
     cooldownHoursPerAttempt: [24],

@@ -1,4 +1,4 @@
-﻿import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Bot, 
   Search, 
@@ -13,6 +13,7 @@ import {
   X
 } from 'lucide-react';
 import { AgentDescriptor, formatINR } from '@ai-marketing/shared';
+import { api } from '../services/api.js';
 
 interface AgentsProps {
   agents: AgentDescriptor[];
@@ -22,6 +23,25 @@ export const Agents: React.FC<AgentsProps> = ({ agents }) => {
   const [activeCategory, setActiveCategory] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedAgent, setSelectedAgent] = useState<AgentDescriptor | null>(null);
+  const [scorecards, setScorecards] = useState<Record<string, any>>({});
+
+  useEffect(() => {
+    let isMounted = true;
+    api.getAgentScorecards()
+      .then((res: any) => {
+        if (!isMounted) return;
+        const list = res?.data || [];
+        const map: Record<string, any> = {};
+        for (const sc of list) {
+          if (sc.agentId) {
+            map[sc.agentId] = sc;
+          }
+        }
+        setScorecards(map);
+      })
+      .catch(() => {});
+    return () => { isMounted = false; };
+  }, []);
 
   const categories = [
     { id: 'ALL', label: 'All 80 Agents', count: agents.length },
@@ -115,8 +135,17 @@ export const Agents: React.FC<AgentsProps> = ({ agents }) => {
             </div>
 
             <div className="mt-4 pt-3 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-500">
-              <span>Success: <strong className="text-slate-300">{(agent.performanceMetrics.completionRate * 100).toFixed(0)}%</strong></span>
-              <span>Memory: <strong className="text-slate-300">{agent.memoryScope}</strong></span>
+              {scorecards[agent.id] && scorecards[agent.id].realDecisionsCount > 0 ? (
+                <>
+                  <span>Decisions: <strong className="text-slate-300">{scorecards[agent.id].realDecisionsCount}</strong></span>
+                  <span>Quality: <strong className="text-slate-300">{(scorecards[agent.id].outcomeQualityScore * 100).toFixed(0)}%</strong></span>
+                </>
+              ) : (
+                <>
+                  <span className="font-mono text-[9px] text-slate-500 font-semibold tracking-wide">NO_VERIFIED_EXECUTION_DATA</span>
+                  <span>Scope: <strong className="text-slate-400">{agent.memoryScope}</strong></span>
+                </>
+              )}
             </div>
           </div>
         ))}
@@ -183,21 +212,32 @@ export const Agents: React.FC<AgentsProps> = ({ agents }) => {
 
               {/* Metrics */}
               <div>
-                <label className="block text-slate-400 font-semibold mb-1">Telemetry & Cost Metrics</label>
-                <div className="grid grid-cols-3 gap-2 p-3 bg-slate-850 rounded-lg border border-slate-800 text-center">
-                  <div>
-                    <div className="text-slate-500 text-[10px]">Avg Latency</div>
-                    <div className="font-bold text-slate-200 text-sm">{selectedAgent.performanceMetrics.avgLatencyMs}ms</div>
+                <label className="block text-slate-400 font-semibold mb-1">Measured Performance & Telemetry</label>
+                {selectedAgent && scorecards[selectedAgent.id] && scorecards[selectedAgent.id].realDecisionsCount > 0 ? (
+                  <div className="grid grid-cols-4 gap-2 p-3 bg-slate-850 rounded-lg border border-slate-800 text-center">
+                    <div>
+                      <div className="text-slate-500 text-[10px]">Real Decisions</div>
+                      <div className="font-bold text-slate-200 text-sm">{scorecards[selectedAgent.id].realDecisionsCount}</div>
+                    </div>
+                    <div>
+                      <div className="text-slate-500 text-[10px]">Successful</div>
+                      <div className="font-bold text-slate-200 text-sm">{scorecards[selectedAgent.id].successfulActions}</div>
+                    </div>
+                    <div>
+                      <div className="text-slate-500 text-[10px]">Quality Score</div>
+                      <div className="font-bold text-cyan-400 text-sm">{(scorecards[selectedAgent.id].outcomeQualityScore * 100).toFixed(0)}%</div>
+                    </div>
+                    <div>
+                      <div className="text-slate-500 text-[10px]">Revenue Influenced</div>
+                      <div className="font-bold text-emerald-400 text-sm">{formatINR(scorecards[selectedAgent.id].realRevenueInfluencedINR || 0)}</div>
+                    </div>
                   </div>
-                  <div>
-                    <div className="text-slate-500 text-[10px]">Executions</div>
-                    <div className="font-bold text-slate-200 text-sm">{selectedAgent.performanceMetrics.totalExecutions}</div>
+                ) : (
+                  <div className="p-3 bg-slate-850 rounded-lg border border-slate-800 text-center">
+                    <div className="font-mono text-xs font-semibold text-amber-400 mb-1">NO_VERIFIED_EXECUTION_DATA</div>
+                    <div className="text-slate-500 text-[11px]">Zero verified production executions recorded for {selectedAgent?.name}. Telemetry populates as autonomous cycles execute real tasks.</div>
                   </div>
-                  <div>
-                    <div className="text-slate-500 text-[10px]">Cost Incurred</div>
-                    <div className="font-bold text-emerald-400 text-sm">{formatINR(selectedAgent.performanceMetrics.costIncurredINR)}</div>
-                  </div>
-                </div>
+                )}
               </div>
             </div>
           </div>

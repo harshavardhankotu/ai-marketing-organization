@@ -705,6 +705,19 @@ export class AutonomousRevenueOrchestrator {
       }
 
       // ────────────────────────────────────────────────────────────────
+      // SPEC § 21 & § 22: AWAIT_OWNER_INTAKE
+      // ────────────────────────────────────────────────────────────────
+      case 'AWAIT_OWNER_INTAKE': {
+        ActionCooldownManager.recordExecution(action.targetId, 'AWAIT_OWNER_INTAKE', false);
+        return {
+          status: 'BLOCKED_ON_OWNER_FACTS',
+          actionClassification: 'INTERNAL_AUTOMATION',
+          isRevenueAction: false,
+          details: action.rationale
+        };
+      }
+
+      // ────────────────────────────────────────────────────────────────
       // SPEC § 21 & § 22: DISCOVER_DEMAND
       // ────────────────────────────────────────────────────────────────
       case 'DISCOVER_DEMAND': {

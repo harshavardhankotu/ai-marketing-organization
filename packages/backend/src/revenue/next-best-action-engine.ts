@@ -20,12 +20,14 @@
 import { getDb } from '../db/client.js';
 import { OpportunityEngine, Opportunity } from './opportunity-engine.js';
 import { ActionCooldownManager } from './action-cooldown-manager.js';
+import { validateOwnerEnvFacts } from '../config/owner-env-intake.js';
 
 export type ActionType =
   | 'RECONCILE_COMMISSION'     // reconcile pending partner conversions to verified commissions
   | 'RECONCILE_CONVERSION'     // process incoming/pending conversion reports
   | 'CREATE_CONTENT_ASSET'     // generate public comparison/guide/recommendation page
   | 'CREATE_REFERRAL_LINK'     // generate tracked referral link for active offer
+  | 'AWAIT_OWNER_INTAKE'       // guide ready for publish but awaiting owner intake facts
   | 'OPTIMIZE_FUNNEL'          // tune high-intent conversion paths
   | 'DISCOVER_PARTNER'         // discover new legitimate affiliate/referral programs
   | 'DISCOVER_OFFER'           // discover new commercial offers for verified partners
@@ -402,33 +404,72 @@ export class NextBestActionEngine {
       }
     }
 
-    // Priority 5.2 (P1): Active partner offers needing tracked referral links
+    // Priority 5.2 (P1): Active partner offers needing tracked referral links (ONLY if guide is PUBLISHED)
     const offersNeedingLinks = this.getOffersNeedingReferralLinks(organizationId);
     for (const off of offersNeedingLinks) {
       const cooldown = ActionCooldownManager.check(off.id, 'CREATE_REFERRAL_LINK');
       if (cooldown.eligible || options?.ignoreCooldown) {
+        const commAmount = typeof off.commission_amount_inr === 'number' && off.commission_amount_inr > 0 ? off.commission_amount_inr : 0;
+        const commKnown = typeof off.commission_amount_inr === 'number' && off.commission_amount_inr > 0;
+        const priceAmount = typeof off.price_inr === 'number' && off.price_inr > 0 ? off.price_inr : 0;
         candidates.push({
           actionType: 'CREATE_REFERRAL_LINK',
           targetId: off.id,
           targetType: 'OFFER',
           ownerAgent: 'referral-tracking-engine',
-          rationale: `Active offer '${off.title}' has no referral link created. Generate first-party attribution tracking link.`,
-          estimatedRevenueINR: off.commission_amount_inr || 1000,
-          expectedRevenueINR: (off.commission_amount_inr || 1000) * 0.4,
+          rationale: `Active offer '${off.title}' has published guide but no tracked referral link. Generate first-party attribution tracking link.${commKnown ? ` Commission estimate: ₹${commAmount}.` : ' Commission estimate: UNKNOWN.'}`,
+          estimatedRevenueINR: commAmount,
+          expectedRevenueINR: 0,
           probabilityOfSuccess: 0.8,
           timeToRevenueDays: 3,
           externalCostINR: 0,
           quotaCost: 0,
-          customerValueINR: off.price_inr || 5000,
+          customerValueINR: priceAmount,
           urgency: 0.8,
           cooldownActive: false,
           authorizationAvailable: true,
           riskLevel: 'LOW',
-          expectedValueINR: (off.commission_amount_inr || 1000) * 0.4,
+          expectedValueINR: 0,
           priorityScore: 800,
           priorityTier: 'P1',
           score: 800,
           authorizationRequired: false,
+          estimatedCostINR: 0
+        });
+      }
+    }
+
+    // Priority 5.25 (P2): Pending publication guides awaiting owner facts / owner approval
+    const pendingGuides = this.getPendingPublicationGuides(organizationId);
+    for (const guide of pendingGuides) {
+      const cooldown = ActionCooldownManager.check(guide.id, 'AWAIT_OWNER_INTAKE');
+      if (cooldown.eligible || options?.ignoreCooldown) {
+        const validation = validateOwnerEnvFacts();
+        const intakeMissing = !validation.valid;
+        candidates.push({
+          actionType: 'AWAIT_OWNER_INTAKE',
+          targetId: guide.id,
+          targetType: 'CONTENT_ASSET',
+          ownerAgent: 'content-asset-engine',
+          rationale: intakeMissing
+            ? `Guide '${guide.title}' is ready for publication (PUBLISH_READY), but owner intake is incomplete. Missing: ${validation.missingFields.join(', ')}. Awaiting owner intake submission.`
+            : `Guide '${guide.title}' is ready for publication (PUBLISH_READY). Awaiting owner publication approval via /owner/guides/${guide.id}/publish.`,
+          estimatedRevenueINR: 0,
+          expectedRevenueINR: 0,
+          probabilityOfSuccess: 0,
+          timeToRevenueDays: 0,
+          externalCostINR: 0,
+          quotaCost: 0,
+          customerValueINR: 0,
+          urgency: 0.85,
+          cooldownActive: false,
+          authorizationAvailable: false,
+          riskLevel: 'LOW',
+          expectedValueINR: 0,
+          priorityScore: 700,
+          priorityTier: 'P2',
+          score: 700,
+          authorizationRequired: true,
           estimatedCostINR: 0
         });
       }
@@ -1006,10 +1047,34 @@ export class NextBestActionEngine {
     try {
       return db.prepare(`
         SELECT po.* FROM partner_offers po
-        LEFT JOIN referrals r ON po.id = r.offer_id
-        WHERE po.active = 1 AND r.id IS NULL
+        INNER JOIN commission_content_assets cca 
+          ON po.id = cca.primary_offer_id 
+          AND po.organization_id = cca.organization_id 
+          AND cca.status = 'PUBLISHED'
+        LEFT JOIN referrals r 
+          ON po.id = r.offer_id 
+          AND po.organization_id = r.organization_id
+        WHERE po.organization_id = ? 
+          AND po.active = 1 
+          AND po.status = 'ACTIVE'
+          AND r.id IS NULL
         LIMIT 5
-      `).all() as any[];
+      `).all(organizationId) as any[];
+    } catch {
+      return [];
+    }
+  }
+
+  private getPendingPublicationGuides(organizationId: string): any[] {
+    const db = getDb();
+    try {
+      return db.prepare(`
+        SELECT cca.*, po.title as offer_title FROM commission_content_assets cca
+        LEFT JOIN partner_offers po ON cca.primary_offer_id = po.id
+        WHERE cca.organization_id = ? AND cca.status = 'PUBLISH_READY'
+        ORDER BY cca.created_at DESC
+        LIMIT 5
+      `).all(organizationId) as any[];
     } catch {
       return [];
     }
