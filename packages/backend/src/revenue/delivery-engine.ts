@@ -54,15 +54,47 @@ export class DeliveryEngine {
   }
 
   /**
+   * Resolves service-specific deliverables rather than forcing healthcare/patient tasks onto all businesses.
+   */
+  public static getDeliverablesForService(serviceType: string): string[] {
+    const normalized = (serviceType || '').toUpperCase().trim();
+    if (normalized === 'PLATFORM_SETUP' || normalized === 'AI_LEAD_CONVERSION_SETUP') {
+      return [
+        'Custom WhatsApp triage and FAQ response bot',
+        'Google Business Profile instant lead capture',
+        'Multi-touch follow-up workflow',
+        'Direct calendar booking integration',
+        'Live system handover report'
+      ];
+    }
+    if (normalized === 'PLATFORM_MONTHLY' || normalized === 'AI_LEAD_CONVERSION_MONTHLY') {
+      return [
+        '24/7 automated lead response under 2 minutes',
+        'Ongoing prompt & qualification rubric tuning',
+        'Weekly appointment show-rate reporting',
+        'Continuous DPDP compliance monitoring'
+      ];
+    }
+    if (normalized === 'CLINICAL' || normalized === 'DENTAL_CARE' || normalized === 'PATIENT_CARE') {
+      return [
+        'Welcome pack and patient orientation checklist',
+        'Clinical consultation and digital scan schedule setup',
+        'Dedicated care coordinator assignment'
+      ];
+    }
+    return [
+      'Client onboarding intake and service scope definition',
+      'System configuration and integration setup',
+      'Handover documentation and live verification review'
+    ];
+  }
+
+  /**
    * Activates fulfillment asynchronously (production-safe Cloudflare D1 execution).
    */
   public async activateCustomerAsync(input: ActivateCustomerInput): Promise<DeliveryExecutionResult> {
     const taskId = `deliv_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    const deliverables = [
-      'Welcome pack and patient orientation checklist',
-      'Clinical consultation and digital scan schedule setup',
-      'Dedicated care coordinator assignment'
-    ];
+    const deliverables = DeliveryEngine.getDeliverablesForService(input.serviceType);
 
     try {
       await this.d1Repo.executeWrite(
@@ -142,11 +174,7 @@ export class DeliveryEngine {
     }
 
     const taskId = `deliv_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    const deliverables = [
-      'Welcome pack and patient orientation checklist',
-      'Clinical consultation and digital scan schedule setup',
-      'Dedicated care coordinator assignment'
-    ];
+    const deliverables = DeliveryEngine.getDeliverablesForService(input.serviceType);
 
     try {
       this.d1Repo.executeSync(
@@ -253,9 +281,16 @@ export class DeliveryEngine {
       };
     }
 
+    const isClinical = (biz.vertical_id || biz.vertical || '').toLowerCase().includes('health') ||
+      (biz.vertical_id || biz.vertical || '').toLowerCase().includes('clinic') ||
+      (biz.vertical_id || biz.vertical || '').toLowerCase().includes('dental');
+    const reviewTarget = isClinical ? 'other patients' : 'other businesses';
+    const appreciation = isClinical ? 'with your care' : 'with your onboarding';
+    const referralOffer = isClinical ? 'complimentary consultation' : 'complimentary strategy review';
+
     const pubResult = await wa.publish({
       title: `Review request from ${biz.name}`,
-      body: `Hi ${customer.customer_name || 'there'}! Thank you for trusting ${biz.name} with your care. Would you mind sharing a quick 1-minute review on Google to help other patients? You can also refer a friend for a complimentary consultation!`,
+      body: `Hi ${customer.customer_name || 'there'}! Thank you for trusting ${biz.name} ${appreciation}. Would you mind sharing a quick 1-minute review on Google to help ${reviewTarget}? You can also refer a colleague for a ${referralOffer}!`,
       channel: 'WHATSAPP',
       recipientPhone: customer.customer_phone
     });

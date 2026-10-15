@@ -117,7 +117,7 @@ export class OfferCatalogService {
               expected_customer_value_inr, delivery_time_days, guarantee_or_terms,
               sales_message, qualification_questions_json, payment_method, status,
               created_at, updated_at
-            ) VALUES (?, ?, ?, ?, 'APPOINTMENT_CONVERSION_SYSTEM', ?, ?, ?, ?, ?, ?, ?, '100% money back if not live within 5 days', ?, ?, 'RAZORPAY', 'ACTIVE', datetime('now'), datetime('now'))
+            ) VALUES (?, ?, ?, ?, 'APPOINTMENT_CONVERSION_SYSTEM', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'RAZORPAY', 'ACTIVE', datetime('now'), datetime('now'))
           `).run(
             off.id,
             bizId,
@@ -130,6 +130,9 @@ export class OfferCatalogService {
             off.billingModel,
             off.priceINR * 5,
             off.deliveryTimeDays,
+            off.id === OfferCatalogService.PLATFORM_SETUP_OFFER_ID
+              ? '100% money back if not live within 5 days'
+              : 'Cancel anytime prior to next billing date. Prorated refunds on request.',
             off.description,
             JSON.stringify(off.qualificationRequirements)
           );

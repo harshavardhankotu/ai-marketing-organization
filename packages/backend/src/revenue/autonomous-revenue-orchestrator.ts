@@ -59,7 +59,9 @@ export type CycleExecutionStatus =
   | 'TEST_ACTION'
   | 'CACHE_HIT'
   | 'NEEDS_MORE_SIGNALS'
-  | 'BLOCKED_ON_OWNER_FACTS';
+  | 'BLOCKED_ON_OWNER_FACTS'
+  | 'OFFICIAL_SOURCE_UNAVAILABLE'
+  | 'NEEDS_FIRECRAWL';
 
 export type TerminalOutcomeClassification =
   | 'LIVE_EXTERNAL_ACTION'
@@ -867,14 +869,15 @@ export class AutonomousRevenueOrchestrator {
           };
         }
 
-        // 4. Check if an active offer already exists
+        // 4. Check if catalog limit (max 3 offers) is reached
         const existingOffers = await registry.listOffers(organizationId, { activeOnly: true });
-        if (existingOffers.length > 0) {
+        if (existingOffers.length >= 3) {
           return {
             status: 'INTERNAL_AUTOMATION',
             actionClassification: 'INTERNAL_AUTOMATION',
             isRevenueAction: false,
-            externalId: existingOffers[0].id
+            externalId: existingOffers[0].id,
+            details: 'Catalog capacity reached: 3 active commercial offers already configured.'
           };
         }
 
@@ -882,6 +885,7 @@ export class AutonomousRevenueOrchestrator {
         const intake = (await db.prepare(`SELECT * FROM owner_intake WHERE status = 'VALID' LIMIT 1`).get()) as any;
         if (!intake) {
           const validation = validateOwnerEnvFacts();
+          ActionCooldownManager.recordExecution(cooldownTarget, 'DISCOVER_OFFER', false);
           return {
             status: 'BLOCKED_ON_OWNER_FACTS',
             actionClassification: 'INTERNAL_AUTOMATION',
@@ -890,26 +894,45 @@ export class AutonomousRevenueOrchestrator {
           };
         }
 
-        // 5. Read BUYER_QUESTION demand signals and drop blocked categories
-        const blockedCategories = ['health', 'skin care', 'skincare', 'supplements', 'medical', 'medicine', 'pharma'];
-        const placeholders = blockedCategories.map(() => '?').join(', ');
+        // 5. Read BUYER_QUESTION demand signals and exclude blocked categories (wildcard match)
         const topNeed = (await db.prepare(`
           SELECT category, COUNT(*) as cnt
           FROM demand_signals
           WHERE signal_type = 'BUYER_QUESTION'
-            AND lower(category) NOT IN (${placeholders})
+            AND lower(category) NOT LIKE '%health%'
+            AND lower(category) NOT LIKE '%skin%'
+            AND lower(category) NOT LIKE '%supplement%'
+            AND lower(category) NOT LIKE '%medical%'
+            AND lower(category) NOT LIKE '%medicine%'
+            AND lower(category) NOT LIKE '%pharma%'
+            AND lower(category) NOT LIKE '%apparel%'
+            AND lower(category) NOT LIKE '%footwear%'
+            AND lower(category) NOT LIKE '%clothing%'
+            AND lower(category) NOT LIKE '%shoes%'
           GROUP BY category
           ORDER BY cnt DESC
           LIMIT 1;
-        `).get(...blockedCategories)) as any;
+        `).get()) as any;
 
         // Require at least 3 signals. If count < 3, halt with status NEEDS_MORE_SIGNALS
         if (!topNeed || topNeed.cnt < 3) {
+          ActionCooldownManager.recordExecution(cooldownTarget, 'DISCOVER_OFFER', false);
           return {
             status: 'NEEDS_MORE_SIGNALS',
             actionClassification: 'INTERNAL_AUTOMATION',
             isRevenueAction: false,
             details: `DISCOVER_OFFER stopped: Top demand category '${topNeed?.category || 'NONE'}' has ${topNeed?.cnt || 0} BUYER_QUESTION signals (minimum 3 required).`
+          };
+        }
+
+        // Avoid duplicating category if active offer already exists for it
+        if (existingOffers.some(o => o.category?.toLowerCase() === topNeed.category?.toLowerCase())) {
+          ActionCooldownManager.recordExecution(cooldownTarget, 'DISCOVER_OFFER', false);
+          return {
+            status: 'INTERNAL_AUTOMATION',
+            actionClassification: 'INTERNAL_AUTOMATION',
+            isRevenueAction: false,
+            details: `Active offer already exists for category '${topNeed.category}'.`
           };
         }
 
@@ -921,7 +944,20 @@ export class AutonomousRevenueOrchestrator {
           LIMIT 5;
         `).all(topNeed.category)) as any[];
 
-        // 6. Find official brand site with at most 1 Tavily search (reject marketplaces, review sites, social sites, video sites, PDFs)
+        // 6. Check live Firecrawl availability: return NEEDS_FIRECRAWL when live Firecrawl is off or unconfigured
+        const firecrawlKey = (process.env.FIRECRAWL_API_KEY || '').trim();
+        const firecrawlLive = process.env.FIRECRAWL_ENABLE_LIVE === 'true';
+        if (!firecrawlKey || isPlaceholderCredential(firecrawlKey) || !firecrawlLive) {
+          ActionCooldownManager.recordExecution(cooldownTarget, 'DISCOVER_OFFER', false);
+          return {
+            status: 'NEEDS_FIRECRAWL',
+            actionClassification: 'INTERNAL_AUTOMATION',
+            isRevenueAction: false,
+            error: 'DISCOVER_OFFER: Live Firecrawl is off or unconfigured. Cannot verify manufacturer specifications without live Firecrawl.'
+          };
+        }
+
+        // 7. Find official brand site with at most 1 Tavily search (reject marketplaces, review sites, social sites, video sites, PDFs)
         const offerLane = AutomaticOfferLane.getInstance();
         let brand = '';
         let model = topNeed.category;
@@ -967,26 +1003,21 @@ export class AutonomousRevenueOrchestrator {
           }
         }
 
+        // Zero synthetic fallback: if no verified source found, halt cleanly without inventing domains
         if (!officialSiteUrl) {
-          // Derive dynamically from signal context without network calls
-          const sampleText = `${signals[0]?.topic || ''} ${signals[0]?.raw_query || ''}`.trim();
-          const words = sampleText.split(/\s+/).filter((w: string) =>
-            w.length > 3 &&
-            !['best', 'india', 'price', 'compare', 'services', 'review', 'printers', 'printer'].includes(w.toLowerCase())
-          );
-          brand = words.length > 0 ? words[0] : 'Hardware';
-          const candidateDomain = `${brand.toLowerCase()}.com`;
-          const policy = offerLane.checkDomainPolicy(candidateDomain);
-          if (policy.allowed) {
-            officialSiteUrl = `https://${candidateDomain}/specifications`;
-          } else {
-            officialSiteUrl = `https://specs.hardware-manufacturer.org/${brand.toLowerCase()}`;
-          }
+          ActionCooldownManager.recordExecution(cooldownTarget, 'DISCOVER_OFFER', false);
+          return {
+            status: 'OFFICIAL_SOURCE_UNAVAILABLE',
+            actionClassification: 'INTERNAL_AUTOMATION',
+            isRevenueAction: false,
+            error: `DISCOVER_OFFER: No verified official manufacturer specification source found for '${topNeed.category}'. Synthetic domain generation is prohibited.`
+          };
         }
 
         // Reject invalid domains strictly
         const policyCheck = offerLane.checkDomainPolicy(officialSiteUrl);
         if (!policyCheck.allowed) {
+          ActionCooldownManager.recordExecution(cooldownTarget, 'DISCOVER_OFFER', false);
           return {
             status: 'INTERNAL_AUTOMATION',
             actionClassification: 'INTERNAL_AUTOMATION',
@@ -995,10 +1026,23 @@ export class AutonomousRevenueOrchestrator {
           };
         }
 
-        // 7. Fetch spec page with Firecrawl (max 3 pages, cache), store quoted spec lines
+        // Fetch spec page with Firecrawl (max 3 pages, cache), store quoted spec lines
         const productId = `prod_${brand.toLowerCase()}_${model.toLowerCase().replace(/[^a-z0-9]+/g, '_')}`;
-        const specLines = await offerLane.fetchAndStoreBrandSpecs(productId, brand, model, officialSiteUrl);
+        let specLines: any[] = [];
+        try {
+          specLines = await offerLane.fetchAndStoreBrandSpecs(productId, brand, model, officialSiteUrl);
+        } catch (specErr: any) {
+          ActionCooldownManager.recordExecution(cooldownTarget, 'DISCOVER_OFFER', false);
+          return {
+            status: 'INTERNAL_AUTOMATION',
+            actionClassification: 'INTERNAL_AUTOMATION',
+            isRevenueAction: false,
+            error: `DISCOVER_OFFER: Failed to fetch manufacturer specifications from ${officialSiteUrl}: ${specErr.message}`
+          };
+        }
+
         if (specLines.length === 0) {
+          ActionCooldownManager.recordExecution(cooldownTarget, 'DISCOVER_OFFER', false);
           return {
             status: 'INTERNAL_AUTOMATION',
             actionClassification: 'INTERNAL_AUTOMATION',

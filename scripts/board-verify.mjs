@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { execSync } from 'child_process';
 
 function getCfToken() {
   if (process.env.CLOUDFLARE_D1_API_TOKEN) return process.env.CLOUDFLARE_D1_API_TOKEN;
@@ -107,7 +108,17 @@ async function main() {
         }
       }
 
-      console.log(`✓ [PASS] ${id}: Verified TEST guard in ${filePath}`);
+      // Execute the test using vitest to prove guard is actively passing
+      try {
+        const testRel = filePath.replace(/^packages\/backend\//, '');
+        const testArgs = testName ? `-t "${testName.replace(/"/g, '\\"')}"` : '';
+        const cmd = `npx vitest run --root packages/backend "${testRel}" ${testArgs} --test-timeout=30000`;
+        execSync(cmd, { stdio: 'pipe', encoding: 'utf8' });
+        console.log(`✓ [PASS] ${id}: Executed and verified TEST guard in ${filePath}`);
+      } catch (err) {
+        console.error(`❌ [FAIL] ${id}: Test execution failed for ${filePath}: ${err.message}`);
+        failures++;
+      }
     } else if (guardType === 'HOOK') {
       const resolvedPath = path.resolve(guardRef);
       if (!fs.existsSync(resolvedPath)) {
@@ -115,7 +126,14 @@ async function main() {
         failures++;
         continue;
       }
-      console.log(`✓ [PASS] ${id}: Verified HOOK guard in ${guardRef}`);
+
+      try {
+        execSync(`node --check "${resolvedPath}"`, { stdio: 'pipe', encoding: 'utf8' });
+        console.log(`✓ [PASS] ${id}: Verified and checked HOOK guard in ${guardRef}`);
+      } catch (err) {
+        console.error(`❌ [FAIL] ${id}: Hook syntax check failed for ${guardRef}: ${err.message}`);
+        failures++;
+      }
     } else if (guardType === 'LINT') {
       const resolvedPath = path.resolve(guardRef);
       if (!fs.existsSync(resolvedPath)) {
@@ -123,7 +141,18 @@ async function main() {
         failures++;
         continue;
       }
-      console.log(`✓ [PASS] ${id}: Verified LINT guard in ${guardRef}`);
+
+      try {
+        if (guardRef.includes('lint-')) {
+          execSync(`node "${resolvedPath}"`, { stdio: 'pipe', encoding: 'utf8' });
+        } else {
+          execSync(`node --check "${resolvedPath}"`, { stdio: 'pipe', encoding: 'utf8' });
+        }
+        console.log(`✓ [PASS] ${id}: Executed and verified LINT guard in ${guardRef}`);
+      } catch (err) {
+        console.error(`❌ [FAIL] ${id}: Lint execution failed for ${guardRef}: ${err.message}`);
+        failures++;
+      }
     } else {
       console.error(`❌ [FAIL] ${id}: Unknown guard_type '${guardType}'`);
       failures++;

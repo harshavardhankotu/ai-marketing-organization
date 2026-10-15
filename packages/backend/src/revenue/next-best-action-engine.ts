@@ -232,6 +232,15 @@ export class NextBestActionEngine {
       }
     }
 
+    // Priority 2.5 (P0): Inbound lead requests (hot voluntary buyer intent from tools)
+    const inboundRequests = this.getPendingInboundRequests();
+    for (const req of inboundRequests) {
+      const cooldown = ActionCooldownManager.check(req.id, 'BOOK_MEETING');
+      if (cooldown.eligible || options?.ignoreCooldown) {
+        candidates.push(this.buildInboundRequestAction(req));
+      }
+    }
+
     // Priority 3 (P1): Overdue pipeline follow-ups (hot leads)
     const overduePipeline = this.getOverduePipelineItems(businessId);
     for (const item of overduePipeline) {
@@ -1034,5 +1043,48 @@ export class NextBestActionEngine {
     } catch {
       return 0;
     }
+  }
+
+  private getPendingInboundRequests(): any[] {
+    const db = getDb();
+    try {
+      return db.prepare(`
+        SELECT * FROM platform_prospects
+        WHERE stage = 'INBOUND_REQUEST' OR status = 'INBOUND_REQUEST'
+        ORDER BY created_at ASC
+        LIMIT 5
+      `).all() as any[];
+    } catch {
+      return [];
+    }
+  }
+
+  private buildInboundRequestAction(req: any): NextBestAction {
+    const businessName = req.prospect_business_name || req.business_name || 'Inbound Lead';
+    const city = req.prospect_city || req.city || 'India';
+    return {
+      actionType: 'BOOK_MEETING',
+      targetId: req.id,
+      targetType: 'PROSPECT',
+      ownerAgent: 'commercial-operator-agent',
+      rationale: `Inbound prospect '${businessName}' (${city}) requested lead flow architecture review. Manual operator qualification & meeting booking required.`,
+      estimatedRevenueINR: 15000,
+      expectedRevenueINR: 15000,
+      probabilityOfSuccess: 0.6,
+      timeToRevenueDays: 5,
+      externalCostINR: 0,
+      quotaCost: 0,
+      customerValueINR: 15000,
+      urgency: 0.95,
+      cooldownActive: false,
+      authorizationAvailable: true,
+      riskLevel: 'LOW',
+      expectedValueINR: 9000,
+      priorityScore: 950,
+      priorityTier: 'P0',
+      score: 950,
+      authorizationRequired: true,
+      estimatedCostINR: 0
+    };
   }
 }

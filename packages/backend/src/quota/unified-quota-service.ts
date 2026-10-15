@@ -859,9 +859,11 @@ export class UnifiedQuotaService {
 
           const appLimit = Math.floor(limit * 0.7); // 70% free allowance cap rule
           const unlogged = Math.max(0, usage - localCount);
+          const remainingCredits = Math.max(0, appLimit - usage);
           const updateSql = `
             UPDATE provider_quota_state
             SET credits_consumed_month = ?,
+                credits_estimated_remaining = ?,
                 provider_limit = ?,
                 application_limit = ?,
                 source = 'PROVIDER_API',
@@ -871,7 +873,7 @@ export class UnifiedQuotaService {
                 updated_at = datetime('now')
             WHERE provider = 'TAVILY'
           `;
-          const updateParams = [usage, limit, appLimit, unlogged, driftDetected ? 'PROVIDER_API_DRIFT_SYNC' : 'PROVIDER_API_SYNC'];
+          const updateParams = [usage, remainingCredits, limit, appLimit, unlogged, driftDetected ? 'PROVIDER_API_DRIFT_SYNC' : 'PROVIDER_API_SYNC'];
           db.prepare(updateSql).run(...updateParams);
           if (isProduction()) {
             await this.d1Repo.executeWrite('provider_quota_state', updateSql, updateParams).catch(() => {});

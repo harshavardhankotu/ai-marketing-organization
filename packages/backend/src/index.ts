@@ -141,6 +141,23 @@ app.all('/owner/*', async (c) => {
 });
 app.all('/owner', (c) => c.redirect('/owner/status', 302));
 
+// Top-level public calculator and capabilities routing
+app.get('/tools/lead-leakage-calculator', async (c) => {
+  const { LeadLeakageCalculator } = await import('./revenue/lead-leakage-calculator.js');
+  const siteName = (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
+  const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').trim();
+  const contactEmail = (process.env.PUBLIC_CONTACT_EMAIL || 'contact@aimarketing.org').trim();
+  const html = LeadLeakageCalculator.getInstance().renderCalculatorHtml({ siteName, siteUrl, contactEmail });
+  return c.html(html);
+});
+app.get('/capabilities', async (c) => {
+  const targetUrl = new URL('/api/v1/capabilities', c.req.url);
+  return app.fetch(new Request(targetUrl.toString(), {
+    method: 'GET',
+    headers: c.req.raw.headers
+  }));
+});
+
 // Top-level public referral redirect route: /r/:offerSlug/:referralId (Spec § 5 & § 18)
 app.get('/r/:offerSlug/:referralId', async (c) => {
   const offerSlug = c.req.param('offerSlug');

@@ -8,6 +8,9 @@ describe('Step 4: Automatic Publish & Deploy Dry-Run Verification', () => {
 
   beforeEach(() => {
     const db = getDb();
+    try {
+      db.prepare('DELETE FROM commission_content_assets').run();
+    } catch {}
     db.exec(`
       CREATE TABLE IF NOT EXISTS owner_intake (
         id TEXT PRIMARY KEY,
@@ -39,6 +42,15 @@ describe('Step 4: Automatic Publish & Deploy Dry-Run Verification', () => {
         id TEXT PRIMARY KEY,
         placement TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS brand_spec_lines (
+        id TEXT PRIMARY KEY,
+        product_id TEXT NOT NULL,
+        brand TEXT NOT NULL,
+        model TEXT NOT NULL,
+        spec_line TEXT NOT NULL,
+        source_url TEXT NOT NULL,
+        retrieved_at TEXT NOT NULL
+      );
     `);
   });
 
@@ -63,7 +75,7 @@ describe('Step 4: Automatic Publish & Deploy Dry-Run Verification', () => {
     const specLines: SpecLineRecord[] = [
       {
         id: 'spec_1',
-        productId: 'prod_dryrun',
+        productId: 'prod_phomemo_m110',
         brand: 'Phomemo',
         model: 'M110',
         specLine: 'Print speed: 150mm/s direct thermal printing',
@@ -71,6 +83,11 @@ describe('Step 4: Automatic Publish & Deploy Dry-Run Verification', () => {
         retrievedAt: new Date().toISOString()
       }
     ];
+
+    db.prepare(`
+      INSERT OR REPLACE INTO brand_spec_lines (id, product_id, brand, model, spec_line, source_url, retrieved_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(specLines[0].id, specLines[0].productId, specLines[0].brand, specLines[0].model, specLines[0].specLine, specLines[0].sourceUrl, specLines[0].retrievedAt);
 
     // 3. Generate guide
     const guide: GeneratedGuide = lane.generateGuide(

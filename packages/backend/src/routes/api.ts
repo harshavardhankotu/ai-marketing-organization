@@ -149,7 +149,9 @@ export const EXACT_ROUTE_POLICY = {
     '/compare',
     '/recommendations',
     '/offers',
-    '/referrals/beacon'
+    '/referrals/beacon',
+    '/capabilities',
+    '/tools'
   ],
   WEBHOOK: [
     '/webhooks/razorpay',
@@ -2598,6 +2600,11 @@ apiRouter.post('/compliance/dpdp/erasure', async (c) => {
     phoneOrJourneyId: body.phoneOrJourneyId,
     reason: body.reason || 'Patient consent withdrawal'
   });
+
+  try {
+    const { LeadLeakageCalculator } = await import('../revenue/lead-leakage-calculator.js');
+    await LeadLeakageCalculator.getInstance().requestErasure(body.phoneOrJourneyId);
+  } catch {}
 
   return c.json({ success: true, data: result }, 200);
 });
@@ -5754,5 +5761,98 @@ apiRouter.get('/owner/demand/funnel', async (c) => {
   const metrics = DemandEngine.getInstance().getFunnelMetrics();
   return c.json({ success: true, data: metrics });
 });
+
+/**
+ * Capability Registry — Live capability status & offer readiness check
+ */
+apiRouter.get('/capabilities', async (c) => {
+  const { CapabilityRegistry } = await import('../revenue/capability-registry.js');
+  const reg = CapabilityRegistry.getInstance();
+  const offerId = c.req.query('offerId') || 'PLATFORM_SETUP';
+  const { OfferCatalogService } = await import('../revenue/offer-catalog.js');
+  const catalog = OfferCatalogService.getInstance();
+  let deliverables: string[] = [];
+  try {
+    const offer = catalog.resolveAuthorizedOffer(offerId);
+    deliverables = offer.deliverables;
+  } catch {}
+  const readiness = deliverables.length > 0
+    ? reg.validateOfferReadiness(offerId, deliverables)
+    : null;
+  return c.json({
+    success: true,
+    data: {
+      capabilities: reg.getCapabilities(),
+      offerReadiness: readiness
+    }
+  });
+});
+
+/**
+ * Free Interactive Acquisition Tool — Inbound Lead Leakage Calculator Page
+ */
+apiRouter.get('/tools/lead-leakage-calculator', async (c) => {
+  const { LeadLeakageCalculator } = await import('../revenue/lead-leakage-calculator.js');
+  const siteName = (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
+  const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').trim();
+  const contactEmail = (process.env.PUBLIC_CONTACT_EMAIL || 'contact@aimarketing.org').trim();
+  const html = LeadLeakageCalculator.getInstance().renderCalculatorHtml({ siteName, siteUrl, contactEmail });
+  return c.html(html);
+});
+
+/**
+ * Lead Leakage Calculator — Pure API calculation (zero storage, zero AI tokens)
+ */
+const handleLeakageCalculation = async (c: any) => {
+  const { LeadLeakageCalculator } = await import('../revenue/lead-leakage-calculator.js');
+  const body = await c.req.json().catch(() => ({}));
+  const result = LeadLeakageCalculator.getInstance().calculate(body);
+  return c.json({ success: true, data: result });
+};
+apiRouter.post('/tools/lead-leakage-audit/calculate', handleLeakageCalculation);
+apiRouter.post('/api/v1/tools/lead-leakage-audit/calculate', handleLeakageCalculation);
+
+/**
+ * Lead Leakage Calculator — Optional voluntary architecture review submission
+ */
+const handleLeakageSubmission = async (c: any) => {
+  const { LeadLeakageCalculator } = await import('../revenue/lead-leakage-calculator.js');
+  const body = await c.req.json().catch(() => ({}));
+  const clientIp = getTrustedClientIp(c).ip;
+  const clientIpHash = hashClientIp(clientIp);
+
+  // Rate limiting by real client IP (max 5 requests per hour)
+  const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/tools/lead-leakage-audit/submit', clientIp, 5, 3600);
+  if (!rateLimit.allowed) {
+    return c.json({ success: false, message: 'RATE_LIMIT_EXCEEDED: Too many submission requests. Please try again later.' }, 429);
+  }
+
+  // Input validation
+  const contactInfo = typeof body.contactPhoneOrEmail === 'string' ? body.contactPhoneOrEmail.trim() : '';
+  if (!contactInfo || contactInfo.length < 5) {
+    return c.json({ success: false, message: 'INVALID_CONTACT: Please provide a valid WhatsApp number or email address.' }, 400);
+  }
+
+  const result = await LeadLeakageCalculator.getInstance().processSubmission({
+    businessName: typeof body.businessName === 'string' ? body.businessName.trim() : 'Local Business',
+    contactName: typeof body.contactName === 'string' ? body.contactName.trim() : 'Business Owner',
+    contactPhoneOrEmail: contactInfo,
+    city: typeof body.city === 'string' ? body.city.trim() : 'India',
+    vertical: typeof body.vertical === 'string' ? body.vertical.trim() : 'local_service',
+    calculatorInputs: body.calculatorInputs || {
+      monthlyInquiries: body.monthlyInquiries,
+      averageCustomerValueINR: body.averageCustomerValueINR,
+      currentResponseTimeHours: body.currentResponseTimeHours
+    },
+    consentGiven: Boolean(body.consentGiven),
+    clientIpHash
+  });
+
+  return c.json(result, result.success ? 200 : 400);
+};
+apiRouter.post('/tools/lead-leakage-audit/submit', handleLeakageSubmission);
+apiRouter.post('/api/v1/tools/lead-leakage-audit/submit', handleLeakageSubmission);
+
+
 
 

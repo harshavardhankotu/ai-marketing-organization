@@ -251,6 +251,15 @@ export class StaticSiteGenerator {
   <meta name="description" content="Independent commercial equipment, supplies, and specification overviews.">
   <link rel="canonical" href="${canonicalUrl}">
   <meta name="robots" content="index, follow">
+  <script type="application/ld+json">
+  ${JSON.stringify({
+    '@context': 'https://schema.org',
+    '@type': 'WebSite',
+    name: config.siteName,
+    url: config.siteUrl,
+    description: 'Independent commercial equipment, supplies, and specification overviews.'
+  })}
+  </script>
   <style>
     :root { color-scheme: dark; --bg: #090d16; --card: #111827; --text: #e2e8f0; --accent: #06b6d4; --border: #1e293b; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); margin: 0; line-height: 1.6; }
@@ -321,6 +330,26 @@ export class StaticSiteGenerator {
   <meta property="og:site_name" content="${this.escapeHtml(config.siteName)}">
   <meta name="author" content="${this.escapeHtml(config.authorName)}">
   <meta name="robots" content="index, follow">
+  <script type="application/ld+json">
+  ${JSON.stringify({
+    '@context': 'https://schema.org',
+    '@type': 'Article',
+    headline: title,
+    description: description,
+    url: canonicalUrl,
+    author: {
+      '@type': 'Person',
+      name: config.authorName
+    },
+    publisher: {
+      '@type': 'Organization',
+      name: config.siteName,
+      url: config.siteUrl
+    },
+    datePublished: guide.created_at || new Date().toISOString(),
+    dateModified: guide.updated_at || guide.created_at || new Date().toISOString()
+  })}
+  </script>
   <style>
     :root { color-scheme: dark; --bg: #090d16; --card: #111827; --text: #e2e8f0; --accent: #06b6d4; --border: #1e293b; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); margin: 0; line-height: 1.6; }
@@ -448,7 +477,20 @@ export class StaticSiteGenerator {
   }
 
   private renderLegalLayout(title: string, config: StaticSiteConfig, bodyHtml: string): string {
-    const canonicalUrl = `${config.siteUrl}/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+    const slugMap: Record<string, string> = {
+      'about': 'about',
+      'about us': 'about',
+      'contact': 'contact',
+      'contact & grievance redressal': 'contact',
+      'privacy': 'privacy',
+      'privacy policy': 'privacy',
+      'terms': 'terms',
+      'terms of service': 'terms',
+      'disclosure': 'disclosure',
+      'affiliate & commercial referral disclosure': 'disclosure'
+    };
+    const path = slugMap[title.toLowerCase()] || title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    const canonicalUrl = `${config.siteUrl}/${path}`;
     return `<!DOCTYPE html>
 <html lang="en">
 <head>

@@ -64,32 +64,34 @@ export class AutomaticOfferLane {
   public pickProductCategory(): { category: string; demandCount: number } | null {
     const db = getDb();
 
-    // Blocked categories per policy
-    const forbiddenCategories = [
-      'health', 'skin care', 'skincare', 'supplements', 'medical', 'medicine',
-      'pharma', 'apparel', 'footwear', 'clothing', 'shoes'
-    ];
-
-    const placeholders = forbiddenCategories.map(() => '?').join(', ');
     const sql = `
       SELECT category, count(*) as cnt
       FROM demand_signals
       WHERE signal_type = 'BUYER_QUESTION'
-        AND lower(category) NOT IN (${placeholders})
+        AND lower(category) NOT LIKE '%health%'
+        AND lower(category) NOT LIKE '%skin%'
+        AND lower(category) NOT LIKE '%supplement%'
+        AND lower(category) NOT LIKE '%medical%'
+        AND lower(category) NOT LIKE '%medicine%'
+        AND lower(category) NOT LIKE '%pharma%'
+        AND lower(category) NOT LIKE '%apparel%'
+        AND lower(category) NOT LIKE '%footwear%'
+        AND lower(category) NOT LIKE '%clothing%'
+        AND lower(category) NOT LIKE '%shoes%'
       GROUP BY category
       ORDER BY cnt DESC
       LIMIT 1;
     `;
 
     try {
-      const row = db.prepare(sql).get(...forbiddenCategories) as any;
+      const row = db.prepare(sql).get() as any;
       if (row && row.category) {
         return { category: row.category, demandCount: row.cnt };
       }
     } catch {}
 
-    // Fallback default eligible objective hardware category
-    return { category: 'thermal label printer small business India', demandCount: 1 };
+    // No valid signals found; do not invent a category
+    return null;
   }
 
   /**
@@ -100,16 +102,26 @@ export class AutomaticOfferLane {
   public checkDomainPolicy(urlOrHost: string): DomainPolicyCheckResult {
     const db = getDb();
     let hostname = urlOrHost.toLowerCase().trim();
+    let pathname = '';
 
     if (hostname.includes('://')) {
       try {
-        hostname = new URL(hostname).hostname.toLowerCase();
+        const parsed = new URL(hostname);
+        hostname = parsed.hostname.toLowerCase();
+        pathname = parsed.pathname.toLowerCase();
       } catch {
         return { allowed: false, reason: 'INVALID_URL' };
       }
+    } else {
+      const slashIdx = hostname.indexOf('/');
+      if (slashIdx !== -1) {
+        pathname = hostname.slice(slashIdx).split('?')[0].split('#')[0];
+        hostname = hostname.slice(0, slashIdx);
+      }
     }
 
-    if (urlOrHost.toLowerCase().endsWith('.pdf')) {
+    const cleanUrl = urlOrHost.toLowerCase().split('?')[0].split('#')[0];
+    if (cleanUrl.endsWith('.pdf') || pathname.endsWith('.pdf')) {
       return { allowed: false, rejectClass: 'FILE_TYPE', reason: 'PDF documents cannot be used as brand web sources' };
     }
 
@@ -182,8 +194,15 @@ export class AutomaticOfferLane {
       }));
     }
 
-    // In test environment or offline, return deterministic verifiable spec lines
-    if (process.env.NODE_ENV === 'test' || !process.env.FIRECRAWL_API_KEY) {
+    // In production, never fabricate specs under any condition
+    if (isProduction()) {
+      if (!process.env.FIRECRAWL_API_KEY || isPlaceholderCredential(process.env.FIRECRAWL_API_KEY)) {
+        return []; // Never fabricate specs in production when Firecrawl is unavailable
+      }
+    }
+
+    // In hermetic test runner ONLY, provide deterministic verifiable spec lines
+    if (!isProduction() && process.env.NODE_ENV === 'test') {
       const mockLines = [
         'Print speed: 150mm/s direct thermal printing',
         'Resolution: 203 DPI (8 dots/mm)',
@@ -252,7 +271,10 @@ export class AutomaticOfferLane {
    * Does NOT fetch the URL. Does NOT show price, rating, or availability.
    */
   public buildAmazonSearchUrl(brand: string, model: string): string {
-    const affiliateTag = process.env.AMAZON_AFFILIATE_TAG || 'marketing98-21';
+    const affiliateTag = (process.env.AMAZON_AFFILIATE_TAG || '').trim();
+    if (!affiliateTag) {
+      throw new Error('MISSING_AFFILIATE_TAG: AMAZON_AFFILIATE_TAG is not configured in environment.');
+    }
     const query = `${brand} ${model}`.trim();
     return `https://www.amazon.in/s?k=${encodeURIComponent(query)}&tag=${encodeURIComponent(affiliateTag)}`;
   }
@@ -375,11 +397,14 @@ ${specBullets}
       }
     }
 
-    // 6. Stored spec lines validation
-    const storedSet = new Set(storedSpecLines.map(s => s.specLine));
+    // 6. Stored spec lines validation: every product fact must have a stored manufacturer source URL and retrieval date
+    const storedMap = new Map(storedSpecLines.map(s => [s.specLine, s]));
     for (const claimedSpec of guide.specLines) {
-      if (!storedSet.has(claimedSpec)) {
+      const match = storedMap.get(claimedSpec);
+      if (!match) {
         errors.push(`LINT_ERROR: Unsourced product fact detected: '${claimedSpec}'. Every fact must have a stored manufacturer source line.`);
+      } else if (!match.sourceUrl || !match.sourceUrl.trim() || !match.retrievedAt || !match.retrievedAt.trim()) {
+        errors.push(`LINT_ERROR: Product fact '${claimedSpec}' lacks a stored source URL or retrieval date. Publishing refused.`);
       }
     }
 
@@ -429,12 +454,12 @@ ${specBullets}
       return { published: false, reason: 'PARTNER_REQUIRED: Amazon Associates partner record required.' };
     }
 
-    // Rate limit: at most 1 new guide every 3 days
+    // Rate limit: at most 1 new guide every 3 days (exclude current guide if updating)
     const lastPublished = db.prepare(`
-      SELECT created_at FROM content_assets
-      WHERE status = 'PUBLISHED'
+      SELECT created_at FROM commission_content_assets
+      WHERE status = 'PUBLISHED' AND slug != ?
       ORDER BY created_at DESC LIMIT 1
-    `).get() as any;
+    `).get(guide.slug) as any;
 
     if (lastPublished) {
       const lastTime = new Date(lastPublished.created_at).getTime();
@@ -447,18 +472,27 @@ ${specBullets}
     // Volume limit: at most 5 active guides until at least 1 real click exists
     const publishedCount = (db.prepare(`SELECT count(*) as cnt FROM commission_content_assets WHERE status = 'PUBLISHED'`).get() as any)?.cnt || 0;
     const realClicksCount = (db.prepare(`SELECT count(*) as cnt FROM referral_click_events WHERE placement != 'direct_beacon'`).get() as any)?.cnt || 0;
-
     if (publishedCount >= 5 && realClicksCount === 0) {
       return { published: false, reason: 'VOLUME_CAP_REACHED: Maximum 5 active guides until at least 1 real click exists.' };
     }
 
-    // Insert published asset
+    // Verify stored product facts in database: every product fact must have a stored source URL and retrieval date
+    const dbSpecs = db.prepare(`SELECT * FROM brand_spec_lines WHERE product_id = ?`).all(guide.productId) as any[];
+    if (dbSpecs.length === 0 || dbSpecs.some((r: any) => !r.source_url || !r.source_url.trim() || !r.retrieved_at || !r.retrieved_at.trim())) {
+      return { published: false, reason: 'UNSOURCED_PRODUCT_FACT: Every product fact must have a stored manufacturer source URL and retrieval date.' };
+    }
+
+    // Insert published asset (idempotent ON CONFLICT update)
     const assetId = `asset_${guide.productId}_${Date.now()}`;
     const insertAssetSql = `
       INSERT INTO commission_content_assets (
         id, organization_id, slug, asset_type, title, category,
         intent_target, content_markdown, status, created_at, updated_at
       ) VALUES (?, 'org_owner_primary', ?, 'GUIDE', ?, 'CONSUMER_HARDWARE', 'BUYER_RESEARCH', ?, 'PUBLISHED', datetime('now'), datetime('now'))
+      ON CONFLICT(slug) DO UPDATE SET
+        content_markdown = excluded.content_markdown,
+        title = excluded.title,
+        updated_at = datetime('now')
     `;
     const assetParams = [
       assetId,

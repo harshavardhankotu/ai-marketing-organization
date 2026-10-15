@@ -7,7 +7,8 @@ import path from 'path';
 const filesToCheck = [
   'scripts/generate-status.mjs',
   'scripts/prepare-deploy.mjs',
-  'packages/backend/src/commission/owner-control-center.ts'
+  'packages/backend/src/commission/owner-control-center.ts',
+  'packages/backend/src/commission/automatic-offer-lane.ts'
 ];
 
 let violations = 0;
@@ -18,8 +19,9 @@ for (const relPath of filesToCheck) {
 
   const content = fs.readFileSync(fullPath, 'utf8');
 
-  // Check 1: Raw unmasked tag literal in source (marketing98-21)
-  if (content.includes('marketing98-21') && !relPath.includes('vitest.config.ts')) {
+  // Check 1: Raw unmasked tag literal in source
+  const rawTagLiteral = ['marketing98', '21'].join('-');
+  if (content.includes(rawTagLiteral) && !relPath.includes('vitest.config.ts')) {
     // If it's a test file or config it's allowed, but in reporting code it's forbidden
     if (!relPath.includes('test')) {
       console.error(`❌ [FAIL] ${relPath}: Unmasked affiliate tag literal found in source.`);
