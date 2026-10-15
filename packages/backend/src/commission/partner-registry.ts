@@ -79,6 +79,7 @@ export function detectPartnerNetwork(website: string): PartnerNetwork {
   if (lower.includes('vcommission.')) return 'VCOMMISSION';
   if (lower.includes('cuelinks.') || lower.includes('linksredirect.')) return 'CUELINKS';
   if (lower.includes('earnkaro.')) return 'EARNKARO';
+  if (lower.includes('admitad.')) return 'ADMITAD';
   return 'OTHER_AUTHORIZED_PARTNER';
 }
 
@@ -125,8 +126,8 @@ export class PartnerRegistryEngine {
       partnerType: input.partnerType || 'AFFILIATE',
       programName: input.programName?.trim(),
       commissionType: input.commissionType || 'PERCENTAGE',
-      commissionRate: input.commissionRate ?? 0.10,
-      fixedCommissionINR: input.fixedCommissionINR ?? 0,
+      commissionRate: input.commissionRate ?? undefined,
+      fixedCommissionINR: input.fixedCommissionINR ?? undefined,
       cookieWindowDays: input.cookieWindowDays || 30,
       qualifyingEvent: input.qualifyingEvent || 'PURCHASE',
       approvalStatus: input.approvalStatus || 'APPROVED',

@@ -58,21 +58,39 @@ export class ShareKitService {
     const publicSiteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-platform-core.web.app').replace(/\/$/, '');
     const cleanGuideUrl = `${publicSiteUrl}/guides/${publishedGuide.slug}`;
 
-    // Sample question templates answered by the guide
-    const drafts: ShareKitDraft[] = [
-      {
-        questionText: `What is a reliable ink-free label printer for shipping labels in India?`,
-        sourceContext: `Public e-commerce logistics inquiry`,
-        draftAnswer: `For standard 4x6 inch shipping labels, direct thermal printers with 203 DPI and 150 mm/s print speed are typical for small e-commerce operations. We compiled verified manufacturer specifications and connectivity comparisons in our detailed buyer guide: ${cleanGuideUrl}`,
-        guideUrl: cleanGuideUrl
-      },
-      {
-        questionText: `Can I connect thermal shipping label printers via Bluetooth to mobile phones?`,
-        sourceContext: `Public merchant setup inquiry`,
-        draftAnswer: `Yes, modern direct thermal models support both Bluetooth and USB connectivity across iOS, Android, and desktop operating systems. See verified specifications and supported label widths in our comprehensive guide: ${cleanGuideUrl}`,
-        guideUrl: cleanGuideUrl
+    const guideCategory = publishedGuide.category || 'General';
+    const guideTitle = publishedGuide.title || 'Commercial Hardware';
+
+    // Check for real buyer questions in demand_signals for this category
+    const buyerSignals = this.getCategoryBuyerQuestions(organizationId, guideCategory);
+
+    const drafts: ShareKitDraft[] = [];
+    if (buyerSignals.length > 0) {
+      for (const sig of buyerSignals.slice(0, 3)) {
+        drafts.push({
+          questionText: sig.topic || `How to choose the best ${guideCategory} in India?`,
+          sourceContext: `Verified buyer inquiry in ${guideCategory}`,
+          draftAnswer: `When selecting ${guideTitle}, key evaluation criteria include verified technical specifications, compatibility, and real-world durability for users in India. We compiled an objective comparison and comprehensive review here: ${cleanGuideUrl}`,
+          guideUrl: cleanGuideUrl
+        });
       }
-    ];
+    } else {
+      // Dynamic category-based questions
+      drafts.push(
+        {
+          questionText: `What are the key specifications to verify when buying ${guideTitle} in India?`,
+          sourceContext: `Category comparison: ${guideCategory}`,
+          draftAnswer: `Key factors include verified manufacturer specifications, real-world duty cycles, and local service support. Check our independent, specification-backed comparison guide: ${cleanGuideUrl}`,
+          guideUrl: cleanGuideUrl
+        },
+        {
+          questionText: `How does ${guideTitle} compare with alternatives in ${guideCategory}?`,
+          sourceContext: `Market comparison: ${guideCategory}`,
+          draftAnswer: `Performance, connectivity options, and long-term operating costs vary significantly across brands. Review our detailed side-by-side analysis: ${cleanGuideUrl}`,
+          guideUrl: cleanGuideUrl
+        }
+      );
+    }
 
     // Assert safety: zero tagged Amazon links in drafts
     for (const d of drafts) {
@@ -102,6 +120,21 @@ export class ShareKitService {
       return getDb().prepare(sql).get(organizationId);
     } catch {
       return null;
+    }
+  }
+
+  private getCategoryBuyerQuestions(organizationId: string, category: string): any[] {
+    const sql = `
+      SELECT topic, raw_query FROM demand_signals
+      WHERE organization_id = ?
+        AND signal_type = 'BUYER_QUESTION'
+        AND lower(category) = lower(?)
+      LIMIT 3;
+    `;
+    try {
+      return getDb().prepare(sql).all(organizationId, category) as any[];
+    } catch {
+      return [];
     }
   }
 }

@@ -77,6 +77,7 @@ import { StaticSiteGenerator } from '../commission/static-site-generator.js';
 import { OwnerControlCenterEngine } from '../commission/owner-control-center.js';
 import { getTrustedClientIp, hashClientIp } from '../security/client-ip.js';
 import { DurableRateLimiter } from '../security/durable-rate-limiter.js';
+import { validateOwnerEnvFacts } from '../config/owner-env-intake.js';
 
 export type AppVariables = {
   organizationId: string;
@@ -5558,6 +5559,146 @@ apiRouter.get('/commission/money-path', async (c) => {
           cashReceivedINR: summary.receivedCashINR
         }
       }
+    }
+  });
+});
+
+/**
+ * 15-Stage Commercial Affiliate Funnel Endpoint
+ * Returns strictly empirical counts with explicit provenance for each stage
+ */
+apiRouter.get('/commission/funnel', async (c) => {
+  const orgId = c.req.header('x-organization-id') || c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const d1Repo = D1RevenueRepository.getInstance();
+  const ledger = CommissionLedgerEngine.getInstance();
+  const summary = await ledger.getSummary(orgId);
+
+  // Empirical counts
+  const demandSignalsTotalRow = await d1Repo.queryOne<{ cnt: number }>(
+    'demand_signals',
+    'SELECT COUNT(*) as cnt FROM demand_signals WHERE organization_id = ?',
+    [orgId]
+  );
+  const demandSignalsCount = demandSignalsTotalRow?.cnt || 0;
+
+  const buyerQuestionsRow = await d1Repo.queryOne<{ cnt: number }>(
+    'demand_signals',
+    "SELECT COUNT(*) as cnt FROM demand_signals WHERE organization_id = ? AND signal_type = 'BUYER_QUESTION'",
+    [orgId]
+  );
+  const buyerQuestionsCount = buyerQuestionsRow?.cnt || 0;
+
+  const distinctCategoriesRow = await d1Repo.queryOne<{ cnt: number }>(
+    'demand_signals',
+    'SELECT COUNT(DISTINCT category) as cnt FROM demand_signals WHERE organization_id = ?',
+    [orgId]
+  );
+  const opportunitiesCount = distinctCategoriesRow?.cnt || 0;
+
+  const partners = await d1Repo.query<any>('partners', 'SELECT * FROM partners WHERE organization_id = ?', [orgId]);
+  const approvedPartnersCount = partners.filter(p =>
+    p.active_status === 1 && (p.approval_status === 'APPROVED' || p.approval_status === 'PROVISIONAL')
+  ).length;
+
+  const activeOffers = await d1Repo.query<any>(
+    'partner_offers',
+    "SELECT * FROM partner_offers WHERE organization_id = ? AND status = 'ACTIVE' AND active = 1",
+    [orgId]
+  );
+  const activeOffersCount = activeOffers.length;
+
+  const draftGuidesRow = await d1Repo.queryOne<{ cnt: number }>(
+    'commission_content_assets',
+    "SELECT COUNT(*) as cnt FROM commission_content_assets WHERE organization_id = ? AND status = 'DRAFT'",
+    [orgId]
+  );
+  const draftGuidesCount = draftGuidesRow?.cnt || 0;
+
+  const publishReadyGuidesRow = await d1Repo.queryOne<{ cnt: number }>(
+    'commission_content_assets',
+    "SELECT COUNT(*) as cnt FROM commission_content_assets WHERE organization_id = ? AND status = 'PUBLISH_READY'",
+    [orgId]
+  );
+  const publishReadyGuidesCount = publishReadyGuidesRow?.cnt || 0;
+
+  const intakeCheck = validateOwnerEnvFacts();
+  const ownerIntakeAttested = intakeCheck.valid ? 1 : 0;
+
+  const publishedGuidesRow = await d1Repo.queryOne<{ cnt: number }>(
+    'commission_content_assets',
+    "SELECT COUNT(*) as cnt FROM commission_content_assets WHERE organization_id = ? AND status = 'PUBLISHED'",
+    [orgId]
+  );
+  const publishedGuidesCount = publishedGuidesRow?.cnt || 0;
+
+  const assetViewsRow = await d1Repo.queryOne<{ totalViews: number; totalClicks: number }>(
+    'commission_content_assets',
+    'SELECT COALESCE(SUM(view_count), 0) as totalViews, COALESCE(SUM(referral_click_count), 0) as totalClicks FROM commission_content_assets WHERE organization_id = ?',
+    [orgId]
+  );
+  const guideVisitsCount = assetViewsRow?.totalViews || 0;
+  const outboundClicksCount = Math.max(assetViewsRow?.totalClicks || 0, summary.clicks);
+
+  const reportedOrdersCount = summary.externalConversions;
+  const pendingCommissionsCount = summary.pendingCommissionsCount;
+  const approvedCommissionsCount = summary.approvedCommissionsCount;
+  const verifiedPaymentsCount = summary.verifiedRevenueINR > 0 ? 1 : 0;
+
+  const rawCounts = [
+    { key: 'DEMAND_SIGNALS_DISCOVERED', name: 'Demand Signals Discovered', count: demandSignalsCount, provenance: 'OBSERVED' as const },
+    { key: 'BUYER_QUESTIONS_VALIDATED', name: 'Buyer Questions Validated', count: buyerQuestionsCount, provenance: 'OBSERVED' as const },
+    { key: 'OPPORTUNITIES_EVALUATED', name: 'Product Categories Evaluated', count: opportunitiesCount, provenance: 'OBSERVED' as const },
+    { key: 'APPROVED_PARTNERS', name: 'Approved Partner Networks', count: approvedPartnersCount, provenance: 'OBSERVED' as const },
+    { key: 'ACTIVE_OFFERS', name: 'Active Commercial Offers', count: activeOffersCount, provenance: 'OBSERVED' as const },
+    { key: 'DRAFT_GUIDES', name: 'Draft Guides Generated', count: draftGuidesCount, provenance: 'OBSERVED' as const },
+    { key: 'PUBLISH_READY_GUIDES', name: 'Guides Ready for Publication', count: publishReadyGuidesCount, provenance: 'OBSERVED' as const },
+    { key: 'OWNER_INTAKE_ATTESTED', name: 'Owner Intake Attestation', count: ownerIntakeAttested, provenance: 'OWNER_CONFIRMED' as const },
+    { key: 'PUBLISHED_GUIDES', name: 'Published Commercial Guides', count: publishedGuidesCount, provenance: 'OBSERVED' as const },
+    { key: 'GUIDE_VISITS', name: 'Organic Guide Visitors', count: guideVisitsCount, provenance: 'OBSERVED' as const },
+    { key: 'OUTBOUND_CLICKS', name: 'Outbound Referral Clicks', count: outboundClicksCount, provenance: 'OBSERVED' as const },
+    { key: 'REPORTED_ORDERS', name: 'Reported Partner Orders', count: reportedOrdersCount, provenance: 'OBSERVED' as const },
+    { key: 'PENDING_COMMISSIONS', name: 'Pending Commission Records', count: pendingCommissionsCount, provenance: 'OBSERVED' as const },
+    { key: 'APPROVED_COMMISSIONS', name: 'Approved Commission Records', count: approvedCommissionsCount, provenance: 'OBSERVED' as const },
+    { key: 'VERIFIED_PAYMENTS', name: 'Verified Received Payments', count: verifiedPaymentsCount, provenance: 'OBSERVED' as const }
+  ];
+
+  let topBlockerFound = false;
+  let activeTopBlocker: { stageIndex: number; stageKey: string; stageName: string } | null = null;
+
+  const stages = rawCounts.map((item, idx) => {
+    const stageIndex = idx + 1;
+    const prevCount = idx > 0 ? rawCounts[idx - 1].count : null;
+    const conversionRate = prevCount !== null && prevCount > 0 ? Number((item.count / prevCount).toFixed(4)) : null;
+
+    let status: 'CLEAR' | 'CURRENT_BOTTLENECK' | 'BLOCKED_DOWNSTREAM';
+    if (item.count > 0) {
+      status = 'CLEAR';
+    } else if (!topBlockerFound) {
+      status = 'CURRENT_BOTTLENECK';
+      topBlockerFound = true;
+      activeTopBlocker = { stageIndex, stageKey: item.key, stageName: item.name };
+    } else {
+      status = 'BLOCKED_DOWNSTREAM';
+    }
+
+    return {
+      stageIndex,
+      stageKey: item.key,
+      stageName: item.name,
+      count: item.count,
+      conversionRateFromPrevious: conversionRate,
+      provenance: item.provenance,
+      status
+    };
+  });
+
+  return c.json({
+    success: true,
+    data: {
+      reportingPeriod: 'ALL_TIME',
+      lastUpdatedAt: new Date().toISOString(),
+      activeTopBlocker: activeTopBlocker || { stageIndex: 15, stageKey: 'NONE', stageName: 'Funnel Flowing' },
+      stages
     }
   });
 });

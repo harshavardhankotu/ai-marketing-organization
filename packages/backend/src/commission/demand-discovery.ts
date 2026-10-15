@@ -180,8 +180,8 @@ export class DemandDiscoveryEngine {
         rawQuery: query,
         evidenceSnippet: r.content?.substring(0, 300) || r.title,
         sourceUrl: r.url,
-        urgency: 0.6,
-        estimatedMonthlyVolume: 250
+        urgency: 0.5,
+        estimatedMonthlyVolume: 0 // Unmeasured volume remains 0 (UNKNOWN)
       }));
 
       // Cache raw results
@@ -257,7 +257,7 @@ export class DemandDiscoveryEngine {
         evidenceSnippet: s.evidenceSnippet || '',
         sourceUrl: s.sourceUrl || '',
         urgency: s.urgency ?? 0.5,
-        estimatedMonthlyVolume: s.estimatedMonthlyVolume ?? 100,
+        estimatedMonthlyVolume: s.estimatedMonthlyVolume ?? 0,
         status: 'DISCOVERED',
         intentClass: s.intentClass || classification.intentClass,
         commercialScore: s.commercialScore ?? classification.commercialScore,

@@ -67,18 +67,28 @@ export class DemandOfferMatchingEngine {
       // 2. Verified partner quality factor (0.5 to 1.0)
       const partnerQuality = partner.approvalStatus === 'APPROVED' ? 1.0 : 0.5;
 
-      // 3. Conversion probability estimation (baseline 0.05 to 0.25 based on commission model)
-      const conversionProbability = offer.commissionModel === 'PERCENTAGE' ? 0.08 : 0.12;
+      // 3. Conversion probability: NEVER fabricate static probabilities.
+      // Retain null (UNKNOWN) unless verified empirical conversion data exists.
+      const conversionProbability: number | null = null;
+      const conversionProvenance = 'UNKNOWN';
 
-      // 4. Expected Net Revenue in INR
-      const expectedNetRevenueINR = offer.commissionAmountINR || (offer.priceINR ? offer.priceINR * (partner.commissionRate || 0.1) : 500);
+      // 4. Expected Net Revenue in INR: strictly from verified inputs only (no arbitrary 500 fallback)
+      let expectedNetRevenueINR = 0;
+      let expectedRevenueProvenance: 'OBSERVED' | 'UNKNOWN' = 'UNKNOWN';
 
-      // Composite multi-objective score (§ 11)
+      if (typeof offer.commissionAmountINR === 'number' && offer.commissionAmountINR > 0) {
+        expectedNetRevenueINR = offer.commissionAmountINR;
+        expectedRevenueProvenance = 'OBSERVED';
+      } else if (typeof offer.priceINR === 'number' && offer.priceINR > 0 && typeof partner.commissionRate === 'number' && partner.commissionRate > 0) {
+        expectedNetRevenueINR = Math.round(offer.priceINR * partner.commissionRate);
+        expectedRevenueProvenance = 'OBSERVED';
+      }
+
+      // Composite multi-objective score (§ 11): driven by genuine relevance, partner quality, and verified economics
       const matchScore =
         relevanceScore *
-        conversionProbability *
         partnerQuality *
-        Math.log10(Math.max(10, expectedNetRevenueINR));
+        (expectedNetRevenueINR > 0 ? Math.log10(Math.max(10, expectedNetRevenueINR)) : 1.0);
 
       matches.push({
         offer,
@@ -86,7 +96,10 @@ export class DemandOfferMatchingEngine {
         matchScore,
         relevanceScore,
         expectedNetRevenueINR,
-        reason: `Matched intent '${input.intent.slice(0, 40)}' with ${partner.name}'s verified offer '${offer.title}' (category: ${offer.category}).`,
+        expectedRevenueProvenance,
+        conversionProbability,
+        conversionProvenance,
+        reason: `Matched intent '${input.intent.slice(0, 40)}' with ${partner.name}'s verified offer '${offer.title}' (category: ${offer.category}). Expected commission: ${expectedRevenueProvenance === 'OBSERVED' ? `₹${expectedNetRevenueINR}` : 'UNKNOWN'}.`,
         evidence: `Verified partner active since ${partner.createdAt.slice(0, 10)}. Validated tracking destination.`,
         disclosureRequired: partner.disclosureRequired === 1
       });

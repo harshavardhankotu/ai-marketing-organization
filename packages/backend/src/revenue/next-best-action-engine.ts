@@ -132,16 +132,16 @@ export class NextBestActionEngine {
     for (const comm of pendingCommissions) {
       const cooldown = ActionCooldownManager.check(comm.id, 'RECONCILE_COMMISSION');
       if (cooldown.eligible || options?.ignoreCooldown) {
-        const estRev = comm.expected_commission_inr || 1000;
+        const estRev = typeof comm.expected_commission_inr === 'number' && comm.expected_commission_inr > 0 ? comm.expected_commission_inr : 0;
         candidates.push({
           actionType: 'RECONCILE_COMMISSION',
           targetId: comm.id,
           targetType: 'COMMISSION_RECORD',
           ownerAgent: 'commission-reconciliation-agent',
-          rationale: `Pending commission record ${comm.id} (${comm.event_type} on partner ${comm.partner_id}, expected ₹${estRev}). Provider reconciliation needed.`,
+          rationale: `Pending commission record ${comm.id} (${comm.event_type} on partner ${comm.partner_id}, expected: ${estRev > 0 ? `₹${estRev}` : 'UNKNOWN'}). Provider reconciliation needed.`,
           estimatedRevenueINR: estRev,
           expectedRevenueINR: estRev,
-          probabilityOfSuccess: 0.9,
+          probabilityOfSuccess: 1.0,
           timeToRevenueDays: 1,
           externalCostINR: 0,
           quotaCost: 0,
@@ -197,7 +197,7 @@ export class NextBestActionEngine {
     for (const cust of pendingOnboarding) {
       const cooldown = ActionCooldownManager.check(cust.id, 'ONBOARD_CUSTOMER');
       if (cooldown.eligible || options?.ignoreCooldown) {
-        const estRev = cust.total_lifetime_value_inr || 15000;
+        const estRev = cust.total_lifetime_value_inr || 0;
         candidates.push({
           actionType: 'ONBOARD_CUSTOMER',
           targetId: cust.id,
@@ -266,11 +266,11 @@ export class NextBestActionEngine {
     for (const cust of referralEligible) {
       const cooldown = ActionCooldownManager.check(cust.id, 'REQUEST_REFERRAL');
       if (cooldown.eligible || options?.ignoreCooldown) {
-        const estRev = 5000;
-        const prob = 0.3;
+        const estRev = 0;
+        const prob = 0;
         const timeDays = 14;
-        const ev = estRev * prob;
-        const pScore = ev / timeDays;
+        const ev = 0;
+        const pScore = 50;
         candidates.push({
           actionType: 'REQUEST_REFERRAL',
           targetId: cust.id,
@@ -289,9 +289,9 @@ export class NextBestActionEngine {
           authorizationAvailable: true,
           riskLevel: 'LOW',
           expectedValueINR: ev,
-          priorityScore: pScore + 50,
+          priorityScore: pScore,
           priorityTier: 'P1',
-          score: pScore + 50,
+          score: pScore,
           authorizationRequired: false,
           estimatedCostINR: 0
         });
@@ -310,18 +310,18 @@ export class NextBestActionEngine {
           targetType: 'OFFER',
           ownerAgent: 'partner-discovery-agent',
           rationale: `Authorized partner configured (${partnerCount} active) but zero active commercial offers in catalog. Register high-demand commercial offer from top buyer demand cluster.`,
-          estimatedRevenueINR: 5000,
-          expectedRevenueINR: 2500,
-          probabilityOfSuccess: 0.8,
+          estimatedRevenueINR: 0,
+          expectedRevenueINR: 0,
+          probabilityOfSuccess: 0,
           timeToRevenueDays: 3,
           externalCostINR: 0,
           quotaCost: 0,
-          customerValueINR: 5000,
+          customerValueINR: 0,
           urgency: 0.95,
           cooldownActive: false,
           authorizationAvailable: true,
           riskLevel: 'LOW',
-          expectedValueINR: 2500,
+          expectedValueINR: 0,
           priorityScore: 950,
           priorityTier: 'P1',
           score: 950,
@@ -336,27 +336,24 @@ export class NextBestActionEngine {
     for (const off of unguidedActiveOffers) {
       const cooldown = ActionCooldownManager.check(off.id, 'CREATE_CONTENT_ASSET');
       if (cooldown.eligible || options?.ignoreCooldown) {
-        const estRev = 3000;
-        const prob = 0.5;
-        const ev = estRev * prob;
         candidates.push({
           actionType: 'CREATE_CONTENT_ASSET',
           targetId: off.id,
           targetType: 'OFFER',
           ownerAgent: 'content-asset-engine',
           rationale: `Active offer '${off.title}' (${off.id}) has no published or ready guide. Generate guide DRAFT using verified listing facts and advance to PUBLISH_READY.`,
-          estimatedRevenueINR: estRev,
-          expectedRevenueINR: ev,
-          probabilityOfSuccess: prob,
+          estimatedRevenueINR: 0,
+          expectedRevenueINR: 0,
+          probabilityOfSuccess: 0,
           timeToRevenueDays: 3,
           externalCostINR: 0,
           quotaCost: 1,
-          customerValueINR: estRev,
+          customerValueINR: 0,
           urgency: 0.95,
           cooldownActive: false,
           authorizationAvailable: true,
           riskLevel: 'LOW',
-          expectedValueINR: ev,
+          expectedValueINR: 0,
           priorityScore: 900,
           priorityTier: 'P1',
           score: 900,
@@ -373,27 +370,24 @@ export class NextBestActionEngine {
       for (const sig of demandSignals) {
         const cooldown = ActionCooldownManager.check(sig.id, 'CREATE_CONTENT_ASSET');
         if (cooldown.eligible || options?.ignoreCooldown) {
-          const estRev = 2500;
-          const prob = 0.35;
-          const ev = estRev * prob;
           candidates.push({
             actionType: 'CREATE_CONTENT_ASSET',
             targetId: sig.id,
             targetType: 'DEMAND_SIGNAL',
             ownerAgent: 'content-asset-engine',
             rationale: `Commercial demand discovered for '${sig.topic}' (Est. monthly volume: ${sig.estimated_monthly_volume}). Create acquisition comparison/guide asset with tracked referrals.`,
-            estimatedRevenueINR: estRev,
-            expectedRevenueINR: ev,
-            probabilityOfSuccess: prob,
+            estimatedRevenueINR: 0,
+            expectedRevenueINR: 0,
+            probabilityOfSuccess: 0,
             timeToRevenueDays: 7,
             externalCostINR: 0,
             quotaCost: 1,
-            customerValueINR: estRev,
+            customerValueINR: 0,
             urgency: 0.85,
             cooldownActive: false,
             authorizationAvailable: true,
             riskLevel: 'LOW',
-            expectedValueINR: ev,
+            expectedValueINR: 0,
             priorityScore: 850,
             priorityTier: 'P1',
             score: 850,
@@ -485,18 +479,18 @@ export class NextBestActionEngine {
           targetType: 'PARTNER',
           ownerAgent: 'partner-discovery-agent',
           rationale: `Active verified partner catalog thin (${partnerCount} partners). Discover verified Indian affiliate & referral partner programs.`,
-          estimatedRevenueINR: 5000,
-          expectedRevenueINR: 1000,
-          probabilityOfSuccess: 0.3,
+          estimatedRevenueINR: 0,
+          expectedRevenueINR: 0,
+          probabilityOfSuccess: 0,
           timeToRevenueDays: 14,
           externalCostINR: 0,
           quotaCost: 1,
-          customerValueINR: 5000,
+          customerValueINR: 0,
           urgency: 0.65,
           cooldownActive: false,
           authorizationAvailable: true,
           riskLevel: 'LOW',
-          expectedValueINR: 1000,
+          expectedValueINR: 0,
           priorityScore: 500,
           priorityTier: 'P2',
           score: 500,
@@ -515,18 +509,18 @@ export class NextBestActionEngine {
           targetType: 'OFFER',
           ownerAgent: 'partner-discovery-agent',
           rationale: `Active commercial offers thin (${activeOffersCount} active). Discover additional commercial offers for verified partners.`,
-          estimatedRevenueINR: 4000,
-          expectedRevenueINR: 1000,
-          probabilityOfSuccess: 0.5,
+          estimatedRevenueINR: 0,
+          expectedRevenueINR: 0,
+          probabilityOfSuccess: 0,
           timeToRevenueDays: 7,
           externalCostINR: 0,
           quotaCost: 0,
-          customerValueINR: 4000,
+          customerValueINR: 0,
           urgency: 0.7,
           cooldownActive: false,
           authorizationAvailable: true,
           riskLevel: 'LOW',
-          expectedValueINR: 1000,
+          expectedValueINR: 0,
           priorityScore: 450,
           priorityTier: 'P2',
           score: 450,
@@ -547,18 +541,18 @@ export class NextBestActionEngine {
           targetType: 'DEMAND_SIGNAL',
           ownerAgent: 'demand-discovery-engine',
           rationale: `Demand signals thin (${demandCount} active). Discover high-intent Indian purchase and comparison queries via Tavily/Gemini.`,
-          estimatedRevenueINR: 3000,
-          expectedRevenueINR: 600,
-          probabilityOfSuccess: 0.4,
+          estimatedRevenueINR: 0,
+          expectedRevenueINR: 0,
+          probabilityOfSuccess: 0,
           timeToRevenueDays: 10,
           externalCostINR: 0,
           quotaCost: 1,
-          customerValueINR: 3000,
+          customerValueINR: 0,
           urgency: 0.6,
           cooldownActive: false,
           authorizationAvailable: true,
           riskLevel: 'LOW',
-          expectedValueINR: 600,
+          expectedValueINR: 0,
           priorityScore: 250,
           priorityTier: 'P3',
           score: 250,
@@ -579,7 +573,7 @@ export class NextBestActionEngine {
         rationale: 'Discover high-intent customer purchase inquiries across owner-approved hosts, gated by 24h cooldown and max 5 searches.',
         estimatedRevenueINR: 0,
         expectedRevenueINR: 0,
-        probabilityOfSuccess: 0.3,
+        probabilityOfSuccess: 0,
         timeToRevenueDays: 14,
         externalCostINR: 0,
         quotaCost: 1,
@@ -608,11 +602,11 @@ export class NextBestActionEngine {
     if (activePipelineCount < 5) {
       const cooldown = ActionCooldownManager.check(businessId, 'DISCOVER_PROSPECTS');
       if (cooldown.eligible || options?.ignoreCooldown) {
-        const estRev = 15000;
-        const prob = 0.2;
+        const estRev = 0;
+        const prob = 0;
         const timeDays = 45;
-        const ev = estRev * prob;
-        const pScore = ev / timeDays;
+        const ev = 0;
+        const pScore = 200;
         candidates.push({
           actionType: 'DISCOVER_PROSPECTS',
           targetId: businessId,
@@ -820,10 +814,10 @@ export class NextBestActionEngine {
 
   private buildFollowUpAction(item: any): NextBestAction {
     const daysSinceContact = Math.max(1, item.days_since_contact || 1);
-    const estRev = item.expected_revenue_inr || 8000;
-    const prob = item.probability || 0.25;
+    const estRev = item.expected_revenue_inr || 0;
+    const prob = item.probability || 0;
     const ev = estRev * prob;
-    const score = ev / Math.max(1, daysSinceContact);
+    const score = ev > 0 ? ev / Math.max(1, daysSinceContact) : 10;
     const finalScore = Math.max(10, score);
 
     return {

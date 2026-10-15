@@ -125,7 +125,8 @@ export class AutomaticProductPipeline {
         firecrawlScrapesMade++;
         specSnippet = scrapeRes.markdown.substring(0, 300).replace(/\n+/g, ' ');
       } catch (err: any) {
-        specSnippet = 'Direct Thermal 203 DPI resolution, Bluetooth and USB connectivity, supports 1-4 inch label widths.';
+        console.warn(`[AutomaticProductPipeline] Scrape failed for ${cand.sourceUrl}: ${err.message}`);
+        specSnippet = (cand as any).specSummary || (cand as any).specSnippet || '';
       }
 
       const proposalId = `prop_${randomUUID().substring(0, 10)}`;
@@ -138,7 +139,7 @@ export class AutomaticProductPipeline {
         specSummary: specSnippet,
         sourceUrl: cand.sourceUrl,
         retrievalDate,
-        pageTextSnippet: `"${specSnippet.substring(0, 180)}"`,
+        pageTextSnippet: specSnippet ? `"${specSnippet.substring(0, 180)}"` : '',
         status: 'PROPOSED',
         provenance: 'APP_LOGGED_CALL',
         productChecked: false,
@@ -160,6 +161,28 @@ export class AutomaticProductPipeline {
   }
 
   private async resolvePreferredCategory(organizationId: string): Promise<string> {
+    const demandSql = `
+      SELECT category, count(*) as count
+      FROM demand_signals
+      WHERE organization_id = ?
+        AND status IN ('DISCOVERED', 'MATCHED')
+        AND lower(category) NOT IN ('health', 'medical', 'medicine', 'supplement', 'supplements', 'skincare', 'pharmaceutical', 'pharma')
+      GROUP BY category
+      ORDER BY count DESC
+      LIMIT 1;
+    `;
+    let topDemandCategory: any = null;
+    if (isProduction()) {
+      topDemandCategory = await this.d1Repo.queryOne<any>('demand_signals', demandSql, [organizationId]);
+    } else {
+      try {
+        topDemandCategory = getDb().prepare(demandSql).get(organizationId);
+      } catch {}
+    }
+    if (topDemandCategory?.category) {
+      return topDemandCategory.category;
+    }
+
     const sql = `
       SELECT decision, action
       FROM learning_records
@@ -176,7 +199,10 @@ export class AutomaticProductPipeline {
         row = getDb().prepare(sql).get(organizationId);
       } catch {}
     }
-    return 'Office & Commercial Supplies';
+    if (row?.action && row.action.startsWith('PREFER_CATEGORY:')) {
+      return row.action.replace('PREFER_CATEGORY:', '').trim();
+    }
+    return 'Electronics & Accessories';
   }
 
   private async isEligibleForBatch(organizationId: string): Promise<boolean> {

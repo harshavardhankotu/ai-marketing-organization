@@ -81,17 +81,17 @@ export const Dashboard: React.FC<DashboardProps> = ({
   }, []);
 
   const primaryGoal = goal || {
-    title: 'Acquire 100 Qualified Patient Consultations in Hyderabad',
+    title: business?.name ? `Commercial Growth for ${business.name}` : 'Generate Verified Commission & Direct Commercial Revenue',
     target_value: 100,
-    current_value: 32,
-    budget_allocated_inr: 50000
+    current_value: readiness?.metrics?.realCustomersCount ?? 0,
+    budget_allocated_inr: 0
   };
 
-  const progressPercent = Math.min(100, Math.round(((primaryGoal.current_value || 32) / (primaryGoal.target_value || 100)) * 100));
+  const progressPercent = Math.min(100, Math.round(((primaryGoal.current_value || 0) / (primaryGoal.target_value || 100)) * 100));
 
-  const operatingState = readiness?.operatingState || readiness?.status || 'FIRST_REAL_CONSULTATION';
-  const realLeads = readiness?.metrics?.realLeadsCount ?? 1;
-  const realConsultations = readiness?.metrics?.realConsultationsCount ?? 1;
+  const operatingState = readiness?.operatingState || readiness?.status || 'COMMERCE_READY';
+  const realLeads = readiness?.metrics?.realLeadsCount ?? 0;
+  const realConsultations = readiness?.metrics?.realConsultationsCount ?? 0;
   const realCustomers = readiness?.metrics?.realCustomersCount ?? 0;
   const realRevenueINR = readiness?.metrics?.realRevenueINR ?? 0;
   const realAttributedRevenueINR = readiness?.metrics?.realAttributedRevenueINR ?? 0;

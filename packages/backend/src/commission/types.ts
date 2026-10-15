@@ -27,7 +27,10 @@ export type PartnerNetwork =
   | 'VCOMMISSION'
   | 'CUELINKS'
   | 'EARNKARO'
+  | 'ADMITAD'
   | 'OTHER_AUTHORIZED_PARTNER';
+
+export type MetricProvenance = 'OBSERVED' | 'OWNER_CONFIRMED' | 'ASSUMPTION' | 'UNKNOWN';
 
 /** Phase 2: how attribution is carried to the provider */
 export type PartnerTrackingType =
@@ -279,6 +282,9 @@ export interface DemandMatchResult {
   matchScore: number;
   relevanceScore: number;
   expectedNetRevenueINR: number;
+  expectedRevenueProvenance?: MetricProvenance;
+  conversionProbability?: number | null;
+  conversionProvenance?: MetricProvenance;
   reason: string;
   evidence: string;
   disclosureRequired: boolean;

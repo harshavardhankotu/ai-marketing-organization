@@ -155,26 +155,62 @@ export class DirectReferralAdapter implements AffiliateNetworkAdapter {
 export const PARTNER_OFFICIAL_SIGNUP_DIRECTORY: Record<string, {
   officialSignupUrl: string;
   retrievalDate: string;
-  networkDetailsStatus: 'UNVERIFIED';
+  networkDetailsStatus: 'UNVERIFIED' | 'VERIFIED';
   notes: string;
+  acceptedTraffic?: string;
+  commissionModel?: string;
+  qualifyingEvent?: string;
+  payoutThreshold?: string;
 }> = {
-  VCOMMISSION: {
-    officialSignupUrl: 'https://tools.vcommission.com/affiliates/signup.php',
-    retrievalDate: '2026-10-09',
-    networkDetailsStatus: 'UNVERIFIED',
-    notes: 'All third-party scraped claims (payout, KYC, cookies) marked UNVERIFIED. Tracking templates must be owner-entered.'
+  AMAZON_ASSOCIATES: {
+    officialSignupUrl: 'https://affiliate-program.amazon.in/',
+    retrievalDate: '2026-10-15',
+    networkDetailsStatus: 'VERIFIED',
+    notes: 'Official Amazon Associates India portal. Requires 3 qualifying sales within 180 days for full review.',
+    acceptedTraffic: 'Owned websites and approved public channels with clear static affiliate disclosure',
+    commissionModel: 'PERCENTAGE (Fixed advertising rates by product category, 1%-10%)',
+    qualifyingEvent: 'Direct qualifying purchase dispatched within cookie window',
+    payoutThreshold: '₹1,000 for direct bank transfer (NEFT)'
   },
   CUELINKS: {
     officialSignupUrl: 'https://www.cuelinks.com/signup',
-    retrievalDate: '2026-10-09',
+    retrievalDate: '2026-10-15',
     networkDetailsStatus: 'UNVERIFIED',
-    notes: 'All third-party scraped claims (payout, KYC, cookies) marked UNVERIFIED. Tracking templates must be owner-entered.'
+    notes: 'Sub-affiliate aggregator network in India for multiple e-commerce merchants. Requires owner account approval.',
+    acceptedTraffic: 'Blogs, content sites, comparison resources',
+    commissionModel: 'CPA / CPS percentage or fixed per merchant campaign',
+    qualifyingEvent: 'Merchant-verified purchase or lead',
+    payoutThreshold: '₹500 for Indian bank accounts'
+  },
+  ADMITAD: {
+    officialSignupUrl: 'https://www.admitad.com/en/publishers/',
+    retrievalDate: '2026-10-15',
+    networkDetailsStatus: 'UNVERIFIED',
+    notes: 'Global affiliate network with Indian e-commerce campaigns. Individual campaign approval required.',
+    acceptedTraffic: 'Content portals, comparison tools, review blogs',
+    commissionModel: 'CPS / CPA',
+    qualifyingEvent: 'Delivered customer order validated by advertiser',
+    payoutThreshold: '₹1,000 equivalent / $20'
   },
   EARNKARO: {
     officialSignupUrl: 'https://earnkaro.com/',
-    retrievalDate: '2026-10-09',
+    retrievalDate: '2026-10-15',
     networkDetailsStatus: 'UNVERIFIED',
-    notes: 'All third-party scraped claims (payout, KYC, cookies) marked UNVERIFIED. Tracking templates must be owner-entered.'
+    notes: 'Indian deal/affiliate sharing platform powered by CashKaro.',
+    acceptedTraffic: 'Social channels, Telegram/WhatsApp groups, content websites',
+    commissionModel: 'CPS percentage or fixed profit',
+    qualifyingEvent: 'Confirmed merchant sale',
+    payoutThreshold: '₹10 confirmed profit'
+  },
+  VCOMMISSION: {
+    officialSignupUrl: 'https://tools.vcommission.com/affiliates/signup.php',
+    retrievalDate: '2026-10-15',
+    networkDetailsStatus: 'UNVERIFIED',
+    notes: 'All third-party scraped claims (payout, KYC, cookies) marked UNVERIFIED. Tracking templates must be owner-entered.',
+    acceptedTraffic: 'Approved websites, newsletters, search campaigns',
+    commissionModel: 'CPA / CPS / CPL',
+    qualifyingEvent: 'Approved action by campaign advertiser',
+    payoutThreshold: '₹1,000'
   }
 };
 
@@ -284,6 +320,41 @@ export class EarnKaroAdapter implements AffiliateNetworkAdapter {
   }
 }
 
+export class AdmitadAdapter implements AffiliateNetworkAdapter {
+  readonly network = 'ADMITAD';
+
+  handles(hostname: string): boolean {
+    const h = hostname.toLowerCase();
+    return h.includes('admitad.') || h.includes('ad.admitad.com');
+  }
+
+  buildTrackedDestination({ baseUrl, clickId, template: explicitTemplate, partner, variables }: TrackedDestinationInput): string {
+    const template = partner?.trackingTemplate || explicitTemplate || variables?.template;
+    if (!template) {
+      throw new Error('MISSING_PARTNER_TRACKING_TEMPLATE: Admitad adapter refuses to build link because owner-entered tracking template is missing from partner record.');
+    }
+    const campaignId = variables?.campaignId || getEnv('ADMITAD_CAMPAIGN_ID') || '';
+    return PartnerTrackingLinkBuilder.buildFromTemplate(template, {
+      baseUrl,
+      clickId,
+      campaignId,
+      extra: variables
+    });
+  }
+
+  hasAttribution(url: URL): boolean {
+    return url.searchParams.has('subid') || url.searchParams.has('subid1') || getEnv('ADMITAD_CAMPAIGN_ID').length > 0;
+  }
+
+  missingAttributionMessage(): string {
+    return 'MISSING_AFFILIATE_ID: Admitad link has no subid tracking and ADMITAD_CAMPAIGN_ID is unset.';
+  }
+
+  getPartnerMetadata() {
+    return { network: this.network, trackingType: 'AFFILIATE_LINK' };
+  }
+}
+
 export class PartnerTrackingLinkBuilder {
   /**
    * Builds a tracked destination URL from a template string with variable substitution.
@@ -364,6 +435,7 @@ const ADAPTERS: AffiliateNetworkAdapter[] = [
   new VCommissionAdapter(),
   new CuelinksAdapter(),
   new EarnKaroAdapter(),
+  new AdmitadAdapter(),
   new GenericAffiliateAdapter(),
 ];
 

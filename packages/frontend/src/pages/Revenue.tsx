@@ -30,9 +30,9 @@ export const Revenue: React.FC = () => {
   const [showModal, setShowModal] = useState(false);
 
   // Form states for transaction entry
-  const [amount, setAmount] = useState('45000');
+  const [amount, setAmount] = useState('');
   const [method, setMethod] = useState('UPI');
-  const [service, setService] = useState('Invisible Clear Aligners - Phase 1');
+  const [service, setService] = useState('Platform Setup / Commercial Service');
   const [classification, setClassification] = useState<'TEST' | 'REAL'>('TEST');
   const [verificationSource, setVerificationSource] = useState('BANK_STATEMENT');
   const [transactionRef, setTransactionRef] = useState('');
