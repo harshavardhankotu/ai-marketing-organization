@@ -298,10 +298,14 @@ export class NextBestActionEngine {
       }
     }
 
+    // Pending publication gate (§ 2): When a PUBLISH_READY guide exists, do not churn
+    // new offers or additional affiliate content. Surface the current publication blocker.
+    const pendingGuides = this.getPendingPublicationGuides(organizationId);
+
     // Priority 4.9 (P1): Active partner exists but zero active offers -> DISCOVER_OFFER
     const activeOffersCount = this.getActiveOffersCount(organizationId);
     const partnerCount = this.getActivePartnersCount(organizationId);
-    if (partnerCount > 0 && activeOffersCount === 0) {
+    if (partnerCount > 0 && activeOffersCount === 0 && pendingGuides.length === 0) {
       const cooldown = ActionCooldownManager.check(businessId, 'DISCOVER_OFFER');
       if (cooldown.eligible || options?.ignoreCooldown) {
         candidates.push({
@@ -364,8 +368,9 @@ export class NextBestActionEngine {
     }
 
     // Priority 5.1 (P1): Demand signals ready for acquisition content asset generation (Spec § 21 & § 22)
-    // STOP CONDITION (Spec § 21): If zero active offers exist, stop building commercial content to avoid unmonetized dead ends.
-    if (this.getActiveOffersCount(organizationId) > 0) {
+    // STOP CONDITION (Spec § 21): If zero active offers exist, OR if an existing guide is PUBLISH_READY and awaiting publication,
+    // stop building commercial content to avoid unmonetized dead ends and preserve quota.
+    if (this.getActiveOffersCount(organizationId) > 0 && pendingGuides.length === 0) {
       const demandSignals = this.getUnfulfilledDemandSignals(organizationId);
       for (const sig of demandSignals) {
         const cooldown = ActionCooldownManager.check(sig.id, 'CREATE_CONTENT_ASSET');
@@ -434,7 +439,6 @@ export class NextBestActionEngine {
     }
 
     // Priority 5.25 (P2): Pending publication guides awaiting owner facts / owner approval
-    const pendingGuides = this.getPendingPublicationGuides(organizationId);
     for (const guide of pendingGuides) {
       const cooldown = ActionCooldownManager.check(guide.id, 'AWAIT_OWNER_INTAKE');
       if (cooldown.eligible || options?.ignoreCooldown) {

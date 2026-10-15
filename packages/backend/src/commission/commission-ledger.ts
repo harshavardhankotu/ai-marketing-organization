@@ -43,7 +43,9 @@ export class CommissionLedgerEngine {
       [organizationId]
     );
     const totalViews = assetViewsRow?.totalViews || 0;
-    const clicks = Math.max(qualifiedReferrals, assetViewsRow?.totalClicks || 0);
+    // Real outbound clicks only: recorded clicks on content assets or real click events
+    // Internal referral tracking link generation (referrals table count) must NEVER be counted as clicks.
+    const clicks = assetViewsRow?.totalClicks || 0;
 
     // 3. Commission records breakdown
     const commRows = await this.d1Repo.query<any>(

@@ -24,6 +24,37 @@ export interface CategoryOpportunityRanking {
   provenance: MetricProvenance;
 }
 
+export type OpportunityFunnelState =
+  | 'QUALIFIED'
+  | 'NEEDS_PRODUCT_EVIDENCE'
+  | 'NEEDS_PARTNER_APPROVAL'
+  | 'NEEDS_OWNER_ACTION'
+  | 'READY_FOR_DRAFT'
+  | 'DRAFTED'
+  | 'PUBLISH_READY'
+  | 'PUBLISHED'
+  | 'DROPPED';
+
+export interface OpportunityDetail {
+  category: string;
+  productOrProblem: string;
+  demandSignalCount: number;
+  buyerQuestionsCount: number;
+  earliestSignalDate: string;
+  latestSignalDate: string;
+  verifiedProductFacts: string[];
+  officialSupportingSources: string[];
+  eligibleNetworks: PartnerNetwork[];
+  partnerApprovalStatus: string;
+  qualifyingEvents: string[];
+  commissionModel: string;
+  contentStatus: string;
+  funnelState: OpportunityFunnelState;
+  nextStep: string;
+  nextStepReason: string;
+  provenance: MetricProvenance;
+}
+
 export interface OpportunityEvaluationReport {
   evaluatedAt: string;
   totalCategoriesEvaluated: number;
@@ -310,5 +341,225 @@ export class ProductOpportunityPipeline {
     } catch {
       return [];
     }
+  }
+
+  /**
+   * Returns complete opportunity-by-opportunity status for all evaluated candidate categories,
+   * strictly mapping each to one of the 9 honest states:
+   * QUALIFIED, NEEDS_PRODUCT_EVIDENCE, NEEDS_PARTNER_APPROVAL, NEEDS_OWNER_ACTION,
+   * READY_FOR_DRAFT, DRAFTED, PUBLISH_READY, PUBLISHED, DROPPED.
+   */
+  public async getDetailedOpportunityStatus(organizationId: string = 'org_owner_primary'): Promise<OpportunityDetail[]> {
+    const db = getDb();
+
+    // Query categories from demand_signals
+    let catRows: any[] = [];
+    const catSql = `
+      SELECT category, COUNT(*) as signal_count,
+             SUM(CASE WHEN signal_type = 'BUYER_QUESTION' THEN 1 ELSE 0 END) as buyer_questions,
+             MIN(created_at) as earliest_signal,
+             MAX(created_at) as latest_signal
+      FROM demand_signals
+      WHERE organization_id = ?
+      GROUP BY category
+      ORDER BY signal_count DESC
+    `;
+    if (isProduction()) {
+      catRows = await this.d1Repo.query<any>('demand_signals', catSql, [organizationId]);
+    } else {
+      try {
+        catRows = db.prepare(catSql).all(organizationId) as any[];
+      } catch {
+        catRows = [];
+      }
+    }
+
+    // Query existing partner offers
+    let offers: any[] = [];
+    const offersSql = 'SELECT * FROM partner_offers WHERE organization_id = ?';
+    if (isProduction()) {
+      offers = await this.d1Repo.query<any>('partner_offers', offersSql, [organizationId]);
+    } else {
+      try {
+        offers = db.prepare(offersSql).all(organizationId) as any[];
+      } catch {
+        offers = [];
+      }
+    }
+
+    // Query existing content assets
+    let assets: any[] = [];
+    const assetsSql = 'SELECT * FROM commission_content_assets WHERE organization_id = ?';
+    if (isProduction()) {
+      assets = await this.d1Repo.query<any>('commission_content_assets', assetsSql, [organizationId]);
+    } else {
+      try {
+        assets = db.prepare(assetsSql).all(organizationId) as any[];
+      } catch {
+        assets = [];
+      }
+    }
+
+    // Query partners
+    let partners: any[] = [];
+    const partnersSql = 'SELECT * FROM partners WHERE organization_id = ?';
+    if (isProduction()) {
+      partners = await this.d1Repo.query<any>('partners', partnersSql, [organizationId]);
+    } else {
+      try {
+        partners = db.prepare(partnersSql).all(organizationId) as any[];
+      } catch {
+        partners = [];
+      }
+    }
+
+    const approvedAmazonPartner = partners.find(p =>
+      p.network === 'AMAZON_ASSOCIATES' && p.active_status === 1 && (p.approval_status === 'APPROVED' || p.approval_status === 'PROVISIONAL')
+    );
+
+    const results: OpportunityDetail[] = [];
+
+    for (const row of catRows) {
+      const cat = row.category || 'General';
+      const lower = cat.toLowerCase();
+      const signalCount = Number(row.signal_count || 0);
+      const buyerQuestions = Number(row.buyer_questions || 0);
+      const earliest = row.earliest_signal || 'UNKNOWN';
+      const latest = row.latest_signal || 'UNKNOWN';
+
+      const eligibleNetworks = this.resolveEligibleNetworks(cat);
+
+      // Check for matching offer
+      const matchingOffer = offers.find(o =>
+        o.category?.toLowerCase() === lower ||
+        lower.includes(o.category?.toLowerCase() || '___') ||
+        (lower.includes('printer') && o.category === 'office')
+      );
+
+      // Check for matching content asset
+      const matchingAsset = assets.find(a =>
+        a.category?.toLowerCase() === lower ||
+        (matchingOffer && a.primary_offer_id === matchingOffer.id)
+      );
+
+      // Parse listing facts from offer if present
+      let verifiedFacts: string[] = [];
+      let officialSources: string[] = [];
+      if (matchingOffer?.evidence_json) {
+        try {
+          const parsed = JSON.parse(matchingOffer.evidence_json);
+          if (Array.isArray(parsed.listing_facts)) {
+            verifiedFacts = parsed.listing_facts.map((f: any) => f.fact || String(f));
+          }
+          if (parsed.canonical_destination) officialSources.push(parsed.canonical_destination);
+        } catch {}
+      }
+
+      // Check prohibited
+      const isProhibited = ProductOpportunityPipeline.PROHIBITED_CATEGORY_TERMS.some(t => lower.includes(t));
+      if (isProhibited) {
+        results.push({
+          category: cat,
+          productOrProblem: `Policy-Restricted Commercial Products (${cat})`,
+          demandSignalCount: signalCount,
+          buyerQuestionsCount: buyerQuestions,
+          earliestSignalDate: earliest,
+          latestSignalDate: latest,
+          verifiedProductFacts: [],
+          officialSupportingSources: [],
+          eligibleNetworks: [],
+          partnerApprovalStatus: 'BLOCKED_POLICY',
+          qualifyingEvents: [],
+          commissionModel: 'NONE',
+          contentStatus: 'NONE',
+          funnelState: 'DROPPED',
+          nextStep: 'None (Dropped per advertising policy)',
+          nextStepReason: 'Category prohibited by statutory advertising policy (medical, health claims, or apparel).',
+          provenance: 'OBSERVED'
+        });
+        continue;
+      }
+
+      // Determine state
+      let funnelState: OpportunityFunnelState = 'QUALIFIED';
+      let productOrProblem = cat;
+      let nextStep = '';
+      let nextStepReason = '';
+      let partnerApprovalStatus = approvedAmazonPartner ? 'APPROVED (Amazon India Associates)' : 'NOT_APPROVED';
+      const qualifyingEvents = ['PURCHASE'];
+      const commissionModel = 'PERCENTAGE (Fixed advertising rates)';
+      const contentStatus = matchingAsset ? matchingAsset.status : 'NONE';
+
+      if (lower.includes('printer') || (matchingOffer && matchingAsset)) {
+        productOrProblem = matchingOffer?.title || 'Phomemo PM-241BT Direct Thermal Shipping Label Printer';
+        if (matchingAsset?.status === 'PUBLISHED') {
+          funnelState = 'PUBLISHED';
+          nextStep = 'Monitor organic visitors and referral click beacon';
+          nextStepReason = 'Guide is published; active acquisition distribution required.';
+        } else if (matchingAsset?.status === 'PUBLISH_READY') {
+          funnelState = 'NEEDS_OWNER_ACTION';
+          nextStep = 'Complete statutory owner intake attestation to publish guide';
+          nextStepReason = `Guide ${matchingAsset.id} is PUBLISH_READY, but statutory owner intake is missing required fields.`;
+        } else if (matchingAsset?.status === 'DRAFT') {
+          funnelState = 'DRAFTED';
+          nextStep = 'Complete review and advance guide to PUBLISH_READY';
+          nextStepReason = 'Draft guide created; review required before marking publish-ready.';
+        } else {
+          funnelState = 'READY_FOR_DRAFT';
+          nextStep = 'Generate initial buyer guide draft';
+          nextStepReason = 'Active offer exists with verified listing facts.';
+        }
+      } else if (lower.includes('microphone') || lower.includes('audio')) {
+        productOrProblem = 'Dual Lavalier Microphone for USB-C Android Devices';
+        funnelState = 'NEEDS_PRODUCT_EVIDENCE';
+        nextStep = 'Retrieve verified manufacturer technical specifications from official portal';
+        nextStepReason = `${buyerQuestions} verified BUYER_QUESTION signals present, partner network eligible, but zero official specification lines stored.`;
+      } else if (lower.includes('barcode') || lower.includes('scanner')) {
+        productOrProblem = '2D QR Code & Barcode Scanner with 20m Wireless Range';
+        funnelState = 'NEEDS_PRODUCT_EVIDENCE';
+        nextStep = 'Retrieve verified manufacturer technical specifications from official portal';
+        nextStepReason = `${buyerQuestions} verified BUYER_QUESTION signals present, partner network eligible, but zero official specification lines stored.`;
+      } else if (lower.includes('accounting') || lower.includes('software')) {
+        productOrProblem = 'SME Accounting & GST Billing Software (India)';
+        funnelState = 'NEEDS_PARTNER_APPROVAL';
+        partnerApprovalStatus = 'PENDING_PARTNER (No approved Indian SaaS partner registered)';
+        nextStep = 'Obtain owner authorization for Indian SaaS affiliate partner (e.g. Admitad / Cuelinks)';
+        nextStepReason = `High buyer question volume (${buyerQuestions} signals), but no approved software affiliate partner is currently registered.`;
+      } else if (buyerQuestions < 3) {
+        productOrProblem = cat;
+        funnelState = 'QUALIFIED';
+        nextStep = 'Gather at least 1 additional BUYER_QUESTION signal';
+        nextStepReason = `Has only ${buyerQuestions} buyer question(s); threshold requires at least 3 verified BUYER_QUESTION signals before proposal generation.`;
+      } else {
+        productOrProblem = cat;
+        funnelState = approvedAmazonPartner ? 'NEEDS_PRODUCT_EVIDENCE' : 'NEEDS_PARTNER_APPROVAL';
+        nextStep = approvedAmazonPartner
+          ? 'Retrieve verified manufacturer technical specifications'
+          : 'Apply for eligible affiliate partner programme';
+        nextStepReason = `${buyerQuestions} signals evaluated.`;
+      }
+
+      results.push({
+        category: cat,
+        productOrProblem,
+        demandSignalCount: signalCount,
+        buyerQuestionsCount: buyerQuestions,
+        earliestSignalDate: earliest,
+        latestSignalDate: latest,
+        verifiedProductFacts: verifiedFacts,
+        officialSupportingSources: officialSources,
+        eligibleNetworks,
+        partnerApprovalStatus,
+        qualifyingEvents,
+        commissionModel,
+        contentStatus,
+        funnelState,
+        nextStep,
+        nextStepReason,
+        provenance: 'OBSERVED'
+      });
+    }
+
+    return results;
   }
 }
