@@ -158,6 +158,17 @@ app.get('/capabilities', async (c) => {
   }));
 });
 
+// Top-level public direct commercial offer routes (Part E)
+app.get('/offer', async (c) => {
+  const { DirectCommercialOfferPage } = await import('./revenue/direct-offer-page.js');
+  const siteName = (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
+  const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').trim();
+  const contactEmail = (process.env.PUBLIC_CONTACT_EMAIL || 'contact@aimarketing.org').trim();
+  const html = DirectCommercialOfferPage.getInstance().renderOfferHtml({ siteName, siteUrl, contactEmail });
+  return c.html(html);
+});
+app.get('/offers/lead-conversion-system', (c) => c.redirect('/offer', 301));
+
 // Top-level public referral redirect route: /r/:offerSlug/:referralId (Spec § 5 & § 18)
 app.get('/r/:offerSlug/:referralId', async (c) => {
   const offerSlug = c.req.param('offerSlug');

@@ -568,6 +568,121 @@ export class DemandEngine {
   }
 
   /**
+   * Part G: Distribution Experiment — Daily Reply Desk.
+   * Takes up to 3 valid BUYER_QUESTION rows with source URLs, formatting factual answers
+   * pointing to direct offer or published guides with "Copy" and "Mark posted".
+   */
+  public getDailyReplyDesk(limit = 3): Array<{
+    draftId: string;
+    signalId: string;
+    channel: string;
+    draftText: string;
+    landingUrl: string;
+    disclosureText: string;
+    expectedValue: number;
+    sourceUrl: string;
+    excerpt: string;
+    category: string;
+    expiresAt: string;
+  }> {
+    const db = getDb();
+    // 1. Auto-expire stale drafts
+    db.prepare(`UPDATE outreach_drafts SET status = 'EXPIRED' WHERE status = 'DRAFTED' AND expires_at <= datetime('now')`).run();
+
+    // 2. Query existing drafted replies
+    const existingDrafts = db.prepare(`
+      SELECT od.id as draftId, od.signal_id as signalId, od.channel, od.draft_text as draftText,
+             od.landing_url as landingUrl, od.disclosure_text as disclosureText, od.expires_at as expiresAt,
+             coalesce(dm.expected_value, 0) as expectedValue, ds.source_url as sourceUrl, ds.evidence_snippet as excerpt, ds.category
+      FROM outreach_drafts od
+      JOIN demand_signals ds ON ds.id = od.signal_id
+      LEFT JOIN demand_matches dm ON dm.signal_id = od.signal_id
+      WHERE od.status = 'DRAFTED' AND od.expires_at > datetime('now')
+        AND ds.status NOT IN ('SEEDED', 'UNSOURCED', 'QUARANTINED', 'POSTED_BY_OWNER')
+        AND ds.source_url LIKE 'http%'
+        AND ds.source_url NOT LIKE '%search.community%'
+      ORDER BY od.created_at DESC
+      LIMIT ?
+    `).all(limit) as any[];
+
+    if (existingDrafts.length >= limit) {
+      return existingDrafts;
+    }
+
+    const needed = limit - existingDrafts.length;
+
+    // 3. Find valid BUYER_QUESTION rows that don't yet have active or posted drafts
+    const buyerQuestions = db.prepare(`
+      SELECT id, category, topic, raw_query, evidence_snippet, source_url, created_at
+      FROM demand_signals
+      WHERE signal_type = 'BUYER_QUESTION'
+        AND status NOT IN ('SEEDED', 'UNSOURCED', 'QUARANTINED', 'POSTED_BY_OWNER')
+        AND source_url LIKE 'http%'
+        AND source_url NOT LIKE '%search.community%'
+        AND id NOT IN (SELECT signal_id FROM outreach_drafts WHERE status IN ('DRAFTED', 'POSTED_BY_OWNER'))
+      ORDER BY created_at DESC
+      LIMIT ?
+    `).all(needed) as any[];
+
+    // Check if any published guide exists
+    const publishedGuide = db.prepare(`
+      SELECT slug, title, category FROM commission_content_assets
+      WHERE status = 'PUBLISHED' LIMIT 1
+    `).get() as any;
+
+    const baseHost = 'https://ai-marketing-organization.onrender.com';
+    const expiresAt = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
+    const disclosureText = MANDATORY_STATUTORY_DISCLOSURE || 'Disclosure: I am affiliated with the resources recommended above.';
+
+    for (const q of buyerQuestions) {
+      const draftId = `drft_rdesk_${q.id.replace(/^sig_|^dsig_/, '')}`;
+      let landingUrl: string;
+      let draftText: string;
+
+      if (publishedGuide && publishedGuide.category?.toLowerCase() === q.category?.toLowerCase()) {
+        landingUrl = `${baseHost}/guides/${publishedGuide.slug}?ref=${draftId}`;
+        draftText = [
+          `For ${q.category || 'this requirement'}: verified specifications, comparative benchmarks, and hands-on testing are covered in detail in this guide: ${landingUrl}`,
+          `Key factors to consider include manufacturer warranty, input compatibility, and long-term operating costs.`
+        ].join('\n\n');
+      } else {
+        landingUrl = `${baseHost}/offer?ref=${draftId}`;
+        draftText = [
+          `For local businesses in India handling high inquiry volume: an automated 24/7 lead qualification system with under 2-minute response via WhatsApp & Google Business Profile: ${landingUrl}`,
+          `Provides instant FAQ answering, appointment scheduling, and lead leakage prevention.`
+        ].join('\n\n');
+      }
+
+      try {
+        db.prepare(`
+          INSERT INTO outreach_drafts (
+            id, signal_id, channel, draft_text, landing_url, disclosure_text,
+            status, expires_at, created_at
+          ) VALUES (?, ?, 'COMMUNITY_FORUM', ?, ?, ?, 'DRAFTED', ?, datetime('now'))
+        `).run(draftId, q.id, draftText, landingUrl, disclosureText, expiresAt);
+
+        existingDrafts.push({
+          draftId,
+          signalId: q.id,
+          channel: 'COMMUNITY_FORUM',
+          draftText,
+          landingUrl,
+          disclosureText,
+          expectedValue: 0,
+          sourceUrl: q.source_url,
+          excerpt: q.evidence_snippet || q.raw_query || q.topic || 'Inquiry regarding ' + q.category,
+          category: q.category,
+          expiresAt
+        });
+      } catch (err: any) {
+        console.warn(`[DemandEngine] Could not create reply desk draft: ${err.message}`);
+      }
+    }
+
+    return existingDrafts;
+  }
+
+  /**
    * 2c: When active offers count is 0, cluster signals by intent and surface demand hints.
    * Format: need, count, sample excerpt, "find a product for this need".
    */

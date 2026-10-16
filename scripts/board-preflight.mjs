@@ -59,6 +59,14 @@ async function fetchOpenMistakes() {
 }
 
 async function main() {
+  // Synchronize LESSONS.md from mistakes_board, learning_records, and git log (§ Part H)
+  try {
+    const { execSync } = await import('child_process');
+    execSync('node scripts/generate-lessons.mjs', { stdio: 'inherit' });
+  } catch (err) {
+    console.warn('[BOARD:PREFLIGHT] Note: Could not auto-sync LESSONS.md:', err.message);
+  }
+
   console.log('\n======================================================');
   console.log('             MISTAKES BOARD PREFLIGHT AUDIT           ');
   console.log('======================================================\n');

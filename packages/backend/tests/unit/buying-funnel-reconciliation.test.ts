@@ -304,17 +304,17 @@ describe('Buying Funnel Reconciliation & Opportunity Progression Suite', () => {
       expect(accOpp!.funnelState).toBe('NEEDS_PARTNER_APPROVAL');
       expect(accOpp!.nextStep).toContain('Obtain owner authorization for Indian SaaS affiliate partner');
 
-      // Verify mechanical keypad (< 3 signals) -> QUALIFIED
+      // Verify mechanical keypad (< 3 signals) -> INSUFFICIENT_EVIDENCE
       const keyOpp = opportunities.find(o => o.category === 'mechanical keypad');
       expect(keyOpp).toBeDefined();
-      expect(keyOpp!.funnelState).toBe('QUALIFIED');
-      expect(keyOpp!.nextStep).toContain('Gather at least 1 additional BUYER_QUESTION signal');
+      expect(keyOpp!.funnelState).toBe('INSUFFICIENT_EVIDENCE');
+      expect(keyOpp!.nextStep).toContain('Gather at least 3 verified BUYER_QUESTION signals');
 
-      // Verify coffee grinder (< 3 signals) -> QUALIFIED
+      // Verify coffee grinder (< 3 signals) -> INSUFFICIENT_EVIDENCE
       const cofOpp = opportunities.find(o => o.category === 'coffee grinder');
       expect(cofOpp).toBeDefined();
-      expect(cofOpp!.funnelState).toBe('QUALIFIED');
-      expect(cofOpp!.nextStep).toContain('Gather at least 1 additional BUYER_QUESTION signal');
+      expect(cofOpp!.funnelState).toBe('INSUFFICIENT_EVIDENCE');
+      expect(cofOpp!.nextStep).toContain('Gather at least 3 verified BUYER_QUESTION signals');
     });
   });
 });

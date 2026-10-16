@@ -1032,6 +1032,9 @@ export class NextBestActionEngine {
       return db.prepare(`
         SELECT ds.* FROM demand_signals ds
         WHERE ds.status IN ('DISCOVERED', 'MATCHED')
+          AND ds.status NOT IN ('QUARANTINED', 'SEEDED', 'UNSOURCED')
+          AND ds.source_url LIKE 'http%'
+          AND ds.source_url NOT LIKE '%search.community%'
         ORDER BY ds.urgency DESC, ds.estimated_monthly_volume DESC
         LIMIT 5
       `).all() as any[];
@@ -1101,7 +1104,12 @@ export class NextBestActionEngine {
   private getDemandSignalsCount(organizationId: string): number {
     const db = getDb();
     try {
-      const row = db.prepare(`SELECT COUNT(*) as cnt FROM demand_signals`).get() as any;
+      const row = db.prepare(`
+        SELECT COUNT(*) as cnt FROM demand_signals
+        WHERE status NOT IN ('QUARANTINED', 'SEEDED', 'UNSOURCED')
+          AND source_url LIKE 'http%'
+          AND source_url NOT LIKE '%search.community%'
+      `).get() as any;
       return row?.cnt || 0;
     } catch {
       return 0;

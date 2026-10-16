@@ -216,6 +216,18 @@ export interface OwnerStatusSnapshot {
     firebaseDeploy: string;
     lastD1Migration: string;
   };
+  weeklyChannelReport?: {
+    reportingPeriod: string;
+    startDate: string;
+    endDate: string;
+    channels: {
+      search: { visits: number; clicks: number; sharePercent: number };
+      direct: { visits: number; clicks: number; sharePercent: number };
+      referral: { visits: number; clicks: number; sharePercent: number };
+    };
+    totalVisits: number;
+    totalClicks: number;
+  };
 }
 
 export interface AssociatesReportRow {
@@ -1528,6 +1540,98 @@ export class OwnerControlCenterEngine {
     return { success: true, quotaState: quotaRow };
   }
 
+  /**
+   * Part G: Weekly Channel Report (Search, Direct, Referral Traffic).
+   * Aggregates real referral visits and outbound click events over the past 7 days.
+   */
+  public async getWeeklyChannelReport(organizationId: string = 'org_owner_primary'): Promise<{
+    reportingPeriod: string;
+    startDate: string;
+    endDate: string;
+    channels: {
+      search: { visits: number; clicks: number; sharePercent: number };
+      direct: { visits: number; clicks: number; sharePercent: number };
+      referral: { visits: number; clicks: number; sharePercent: number };
+    };
+    totalVisits: number;
+    totalClicks: number;
+  }> {
+    const now = new Date();
+    const past7Days = new Date(now.getTime() - 7 * 24 * 3600 * 1000).toISOString();
+
+    let referrals: any[] = [];
+    let clicks: any[] = [];
+    const refSql = `
+      SELECT id, source, referer, utm_source, utm_medium, landing_page, created_at
+      FROM referrals
+      WHERE organization_id = ? AND created_at >= ?
+    `;
+    const clickSql = `
+      SELECT id, placement, source, medium, referrer, created_at
+      FROM referral_click_events
+      WHERE organization_id = ? AND created_at >= ?
+    `;
+
+    if (isProduction()) {
+      referrals = await this.d1Repo.query<any>('referrals', refSql, [organizationId, past7Days]).catch(() => []);
+      clicks = await this.d1Repo.query<any>('referral_click_events', clickSql, [organizationId, past7Days]).catch(() => []);
+    } else {
+      try {
+        referrals = getDb().prepare(refSql).all(organizationId, past7Days) as any[];
+      } catch { referrals = []; }
+      try {
+        clicks = getDb().prepare(clickSql).all(organizationId, past7Days) as any[];
+      } catch { clicks = []; }
+    }
+
+    let searchVisits = 0, directVisits = 0, referralVisits = 0;
+    for (const r of referrals) {
+      const ref = (r.referer || '').toLowerCase();
+      const src = (r.source || '').toLowerCase();
+      const med = (r.utm_medium || '').toLowerCase();
+
+      if (ref.includes('google') || ref.includes('bing') || ref.includes('search') || med === 'organic' || src === 'organic') {
+        searchVisits++;
+      } else if ((ref && !ref.includes('localhost') && !ref.includes('onrender.com')) || med === 'referral') {
+        referralVisits++;
+      } else {
+        directVisits++;
+      }
+    }
+
+    let searchClicks = 0, directClicks = 0, referralClicks = 0;
+    for (const c of clicks) {
+      const ref = (c.referrer || '').toLowerCase();
+      const med = (c.medium || '').toLowerCase();
+      const plc = (c.placement || '').toLowerCase();
+
+      if (ref.includes('google') || ref.includes('bing') || ref.includes('search') || med === 'organic') {
+        searchClicks++;
+      } else if (plc === 'community_forum' || med === 'referral' || (ref && !ref.includes('localhost') && !ref.includes('onrender.com'))) {
+        referralClicks++;
+      } else {
+        directClicks++;
+      }
+    }
+
+    const totalVisits = searchVisits + directVisits + referralVisits;
+    const totalClicks = searchClicks + directClicks + referralClicks;
+    const calcPct = (val: number, total: number) => total > 0 ? Math.round((val / total) * 100) : 0;
+
+    return {
+      reportingPeriod: 'Past 7 Days',
+      startDate: past7Days.split('T')[0],
+      endDate: now.toISOString().split('T')[0],
+      channels: {
+        search: { visits: searchVisits, clicks: searchClicks, sharePercent: calcPct(searchVisits, totalVisits) },
+        direct: { visits: directVisits, clicks: directClicks, sharePercent: calcPct(directVisits, totalVisits) },
+        referral: { visits: referralVisits, clicks: referralClicks, sharePercent: calcPct(referralVisits, totalVisits) }
+      },
+      totalVisits,
+      totalClicks
+    };
+  }
+
   // ──────────────────────────────────────────────────────────────────────────
   // B. STATUS PAGE (Owner-only, auto-refresh, hourly computed without LLM)
   // ──────────────────────────────────────────────────────────────────────────
@@ -1764,14 +1868,12 @@ export class OwnerControlCenterEngine {
       }));
     } catch {}
 
-    // Step 6c & 6d: Top drafts and demand clusters (offer ideas for affiliate and own offers)
+    // Step 6c & 6d: Daily Reply Desk and demand clusters (offer ideas for affiliate and own offers)
     let topOutreachDrafts: any[] = [];
     let topDemandClusters: any[] = [];
     try {
       const { DemandEngine } = await import('./demand-engine.js');
-      if (activeOffers.length > 0) {
-        topOutreachDrafts = DemandEngine.getInstance().getTopDraftsForToday(5);
-      }
+      topOutreachDrafts = DemandEngine.getInstance().getDailyReplyDesk(3);
       const rawClusters = DemandEngine.getInstance().getTopClustersForToday(5);
       topDemandClusters = rawClusters.map(c => ({
         ...c,
@@ -1952,6 +2054,8 @@ export class OwnerControlCenterEngine {
       }
     };
 
+    const weeklyChannelReport = await this.getWeeklyChannelReport(organizationId);
+
     const snapshot: OwnerStatusSnapshot = {
       organizationId,
       computedAt: now,
@@ -1977,7 +2081,8 @@ export class OwnerControlCenterEngine {
       openActions,
       mistakesBoard,
       bugs,
-      versionInfo
+      versionInfo,
+      weeklyChannelReport
     };
 
     return snapshot;
@@ -2405,16 +2510,16 @@ ${escape(d.disclosureText)}</div>
           ${candidateHostsHtml}
         </div>
 
-        <!-- 5. Hand-Post Community Recommendation Drafts (Demand Engine) -->
+        <!-- 5. Daily Reply Desk (Distribution Experiment — Max 3 Questions/Day) -->
         <div style="background: #0f172a; border: 1px solid #1e293b; border-radius: 6px; padding: 14px;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
             <div style="font-weight: 600; font-size: 0.95rem; color: #f8fafc;">
-              5. Post Drafts by Hand (Top 5 by Expected Value)
+              5. Daily Reply Desk (Distribution Experiment — Max 3 Questions/Day)
             </div>
             <span style="font-size: 0.75rem; color: #38bdf8; background: rgba(56, 189, 248, 0.1); padding: 2px 8px; border-radius: 4px;">Hand-Posting Only (System Never Posts)</span>
           </div>
           <div style="font-size: 0.82rem; color: #94a3b8; margin-bottom: 12px;">
-            Review high-intent community inquiries matched to active offers. The system never posts automatically. Use the two buttons to copy text and mark posted.
+            Real buyer questions discovered from community sources, formatted with helpful answers pointing to the direct commercial offer or verified guides. Use 'Copy text and open thread', then click 'Mark posted'.
           </div>
           ${outreachDraftsHtml}
         </div>
@@ -2471,6 +2576,39 @@ ${escape(d.disclosureText)}</div>
           Trigger: <strong>${escape(snapshot.lastCronCycle.triggerSource || 'None')}</strong> &bull; Status: <strong>${escape(snapshot.lastCronCycle.status || 'None')}</strong>
         </div>
         <div style="font-size: 0.85rem; color: #94a3b8;">Next Action: ${escape(snapshot.lastCronCycle.nextBestAction || 'None')}</div>
+      </div>
+    </div>
+
+    <!-- Weekly Channel Traffic Report (§ Part G) -->
+    <div class="card" style="margin-bottom: 24px; padding: 16px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+        <h3 style="margin: 0;">Weekly Channel Traffic Report (${escape(snapshot.weeklyChannelReport?.reportingPeriod || 'Past 7 Days')})</h3>
+        <span style="font-size: 0.8rem; background: rgba(56, 189, 248, 0.15); color: #38bdf8; padding: 3px 8px; border-radius: 4px; font-weight: 700;">
+          Total: ${snapshot.weeklyChannelReport?.totalVisits ?? 0} Visits &bull; ${snapshot.weeklyChannelReport?.totalClicks ?? 0} Outbound Clicks
+        </span>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;">
+        <div style="background: #111827; border: 1px solid #1e293b; border-radius: 6px; padding: 12px;">
+          <div style="font-size: 0.75rem; color: #94a3b8; text-transform: uppercase; font-weight: 700;">Search Traffic (Organic)</div>
+          <div style="font-size: 1.4rem; font-weight: 700; color: #38bdf8; margin: 4px 0;">${snapshot.weeklyChannelReport?.channels.search.visits ?? 0}</div>
+          <div style="font-size: 0.8rem; color: #94a3b8;">
+            Clicks: <strong>${snapshot.weeklyChannelReport?.channels.search.clicks ?? 0}</strong> &bull; Share: <strong>${snapshot.weeklyChannelReport?.channels.search.sharePercent ?? 0}%</strong>
+          </div>
+        </div>
+        <div style="background: #111827; border: 1px solid #1e293b; border-radius: 6px; padding: 12px;">
+          <div style="font-size: 0.75rem; color: #94a3b8; text-transform: uppercase; font-weight: 700;">Direct Traffic (Navigation)</div>
+          <div style="font-size: 1.4rem; font-weight: 700; color: #10b981; margin: 4px 0;">${snapshot.weeklyChannelReport?.channels.direct.visits ?? 0}</div>
+          <div style="font-size: 0.8rem; color: #94a3b8;">
+            Clicks: <strong>${snapshot.weeklyChannelReport?.channels.direct.clicks ?? 0}</strong> &bull; Share: <strong>${snapshot.weeklyChannelReport?.channels.direct.sharePercent ?? 0}%</strong>
+          </div>
+        </div>
+        <div style="background: #111827; border: 1px solid #1e293b; border-radius: 6px; padding: 12px;">
+          <div style="font-size: 0.75rem; color: #94a3b8; text-transform: uppercase; font-weight: 700;">Referral Traffic (Community / Forums)</div>
+          <div style="font-size: 1.4rem; font-weight: 700; color: #f59e0b; margin: 4px 0;">${snapshot.weeklyChannelReport?.channels.referral.visits ?? 0}</div>
+          <div style="font-size: 0.8rem; color: #94a3b8;">
+            Clicks: <strong>${snapshot.weeklyChannelReport?.channels.referral.clicks ?? 0}</strong> &bull; Share: <strong>${snapshot.weeklyChannelReport?.channels.referral.sharePercent ?? 0}%</strong>
+          </div>
+        </div>
       </div>
     </div>
 

@@ -151,7 +151,10 @@ export const EXACT_ROUTE_POLICY = {
     '/compare',
     '/recommendations',
     '/offers',
+    '/offer',
+    '/payments/page-view',
     '/referrals/beacon',
+    '/owner/facts-status',
     '/capabilities',
     '/tools'
   ],
@@ -2742,6 +2745,27 @@ apiRouter.post('/webhooks/payments/:gateway', async (c) => {
 });
 
 // ==========================================
+// DIRECT COMMERCIAL OFFER PAGE & 4-STATE PAYMENT TRUTH (Part E)
+// ==========================================
+
+apiRouter.get('/offer', async (c) => {
+  const { DirectCommercialOfferPage } = await import('../revenue/direct-offer-page.js');
+  const siteName = (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
+  const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').trim();
+  const contactEmail = (process.env.PUBLIC_CONTACT_EMAIL || 'contact@aimarketing.org').trim();
+  const html = DirectCommercialOfferPage.getInstance().renderOfferHtml({ siteName, siteUrl, contactEmail });
+  return c.html(html);
+});
+
+apiRouter.post('/payments/page-view', async (c) => {
+  const { DirectCommercialOfferPage } = await import('../revenue/direct-offer-page.js');
+  const clientInfo = getTrustedClientIp(c);
+  const body = await c.req.json().catch(() => ({}));
+  await DirectCommercialOfferPage.getInstance().recordPageView(clientInfo.ip, c.req.header('user-agent'), body.referer);
+  return c.json({ success: true, status: 'PAYMENT_PAGE_VIEW', isRevenue: false });
+});
+
+// ==========================================
 // MANUAL UPI PAYMENT CLAIM & OWNER CONFIRMATION (Spec § 15 & § 18)
 // ==========================================
 
@@ -4743,6 +4767,47 @@ apiRouter.post('/build/static-site', async (c) => {
 // ============================================================================
 
 /**
+ * Read-only Owner Facts Status (Part D.2)
+ * Returns each fact as SET / MISSING and VALID / INVALID. Never returns values.
+ */
+apiRouter.get('/owner/facts-status', async (c) => {
+  const { validateOwnerEnvFacts } = await import('../config/owner-env-intake.js');
+  const validation = validateOwnerEnvFacts();
+  const fields = [
+    'ASSOCIATES_APPLICATION_DATE',
+    'ASSOCIATES_LISTED_SITE_URL',
+    'ASSOCIATES_AGREEMENT_READ',
+    'PUBLIC_SITE_NAME',
+    'PUBLIC_AUTHOR_NAME',
+    'PUBLIC_CONTACT_EMAIL'
+  ];
+
+  const facts = fields.map(field => {
+    const isMissing = validation.missingFields.includes(field);
+    const invalidErr = validation.invalidFields.find(i => i.field === field);
+    return {
+      field,
+      status: isMissing ? 'MISSING' : 'SET',
+      validity: isMissing ? 'INVALID' : (invalidErr ? 'INVALID' : 'VALID'),
+      reason: isMissing ? 'Environment variable not set' : (invalidErr ? invalidErr.reason : 'Valid')
+    };
+  });
+
+  const autoPublishEnabled = process.env.AUTO_PUBLISH_ENABLED === 'true';
+
+  return c.json({
+    success: true,
+    data: {
+      allValid: validation.valid,
+      missingCount: validation.missingFields.length,
+      invalidCount: validation.invalidFields.length,
+      autoPublishEnabled,
+      facts
+    }
+  });
+});
+
+/**
  * Owner Intake Status & HTML Form (Owner-only, one-time setup)
  */
 apiRouter.get('/owner/intake', async (c) => {
@@ -5574,31 +5639,31 @@ apiRouter.get('/commission/funnel', async (c) => {
   const ledger = CommissionLedgerEngine.getInstance();
   const summary = await ledger.getSummary(orgId);
 
-  // Empirical counts
+  // Empirical counts (Excluding SEEDED, UNSOURCED, QUARANTINED, and synthetic mock URLs)
   const demandSignalsTotalRow = await d1Repo.queryOne<{ cnt: number }>(
     'demand_signals',
-    'SELECT COUNT(*) as cnt FROM demand_signals WHERE organization_id = ?',
+    "SELECT COUNT(*) as cnt FROM demand_signals WHERE organization_id = ? AND status NOT IN ('QUARANTINED', 'SEEDED', 'UNSOURCED') AND source_url LIKE 'http%' AND source_url NOT LIKE '%search.community%'",
     [orgId]
   );
   const demandSignalsCount = demandSignalsTotalRow?.cnt || 0;
 
   const buyerQuestionsRow = await d1Repo.queryOne<{ cnt: number }>(
     'demand_signals',
-    "SELECT COUNT(*) as cnt FROM demand_signals WHERE organization_id = ? AND signal_type = 'BUYER_QUESTION'",
+    "SELECT COUNT(*) as cnt FROM demand_signals WHERE organization_id = ? AND status NOT IN ('QUARANTINED', 'SEEDED', 'UNSOURCED') AND source_url LIKE 'http%' AND source_url NOT LIKE '%search.community%' AND signal_type = 'BUYER_QUESTION'",
     [orgId]
   );
   const buyerQuestionsCount = buyerQuestionsRow?.cnt || 0;
 
   const distinctCategoriesRow = await d1Repo.queryOne<{ cnt: number }>(
     'demand_signals',
-    'SELECT COUNT(DISTINCT category) as cnt FROM demand_signals WHERE organization_id = ?',
+    "SELECT COUNT(DISTINCT category) as cnt FROM demand_signals WHERE organization_id = ? AND status NOT IN ('QUARANTINED', 'SEEDED', 'UNSOURCED') AND source_url LIKE 'http%' AND source_url NOT LIKE '%search.community%'",
     [orgId]
   );
   const opportunitiesCount = distinctCategoriesRow?.cnt || 0;
 
   const partners = await d1Repo.query<any>('partners', 'SELECT * FROM partners WHERE organization_id = ?', [orgId]);
   const approvedPartnersCount = partners.filter(p =>
-    p.active_status === 1 && (p.approval_status === 'APPROVED' || p.approval_status === 'PROVISIONAL')
+    p.active_status === 1 && (p.approval_status === 'APPROVED' || p.approval_status === 'PROVISIONAL' || p.approval_status === 'OPERATOR_CONFIRMED_PROVISIONAL')
   ).length;
 
   const activeOffers = await d1Repo.query<any>(
@@ -5806,6 +5871,16 @@ apiRouter.get('/owner/demand/drafts', async (c) => {
   const { DemandEngine } = await import('../commission/demand-engine.js');
   const drafts = DemandEngine.getInstance().getTopDraftsForToday(5);
   return c.json({ success: true, data: drafts });
+});
+
+/**
+ * Owner Control Center — Weekly Channel Traffic Report (Part G)
+ */
+apiRouter.get('/owner/channel-report', async (c) => {
+  const orgId = c.get('organizationId') || 'org_owner_primary';
+  const { OwnerControlCenterEngine } = await import('../commission/owner-control-center.js');
+  const report = await OwnerControlCenterEngine.getInstance().getWeeklyChannelReport(orgId);
+  return c.json({ success: true, data: report });
 });
 
 /**

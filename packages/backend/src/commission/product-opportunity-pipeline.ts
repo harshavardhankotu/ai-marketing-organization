@@ -25,19 +25,23 @@ export interface CategoryOpportunityRanking {
 }
 
 export type OpportunityFunnelState =
+  | 'INSUFFICIENT_EVIDENCE'
   | 'QUALIFIED'
   | 'NEEDS_PRODUCT_EVIDENCE'
+  | 'NEEDS_REWRITE'
   | 'NEEDS_PARTNER_APPROVAL'
   | 'NEEDS_OWNER_ACTION'
   | 'READY_FOR_DRAFT'
   | 'DRAFTED'
   | 'PUBLISH_READY'
   | 'PUBLISHED'
+  | 'UNSUPPORTED_BY_DEMAND'
   | 'DROPPED';
 
 export interface OpportunityDetail {
   category: string;
   productOrProblem: string;
+  monetizationType: 'AFFILIATE' | 'OWN_OFFER' | 'NONE';
   demandSignalCount: number;
   buyerQuestionsCount: number;
   earliestSignalDate: string;
@@ -330,6 +334,9 @@ export class ProductOpportunityPipeline {
       SELECT id, category, topic, raw_query, signal_type, urgency, estimated_monthly_volume
       FROM demand_signals
       WHERE organization_id = ?
+        AND status NOT IN ('QUARANTINED', 'SEEDED', 'UNSOURCED')
+        AND source_url LIKE 'http%'
+        AND source_url NOT LIKE '%search.community%'
         AND signal_type = 'BUYER_QUESTION'
       ORDER BY created_at DESC;
     `;
@@ -345,14 +352,14 @@ export class ProductOpportunityPipeline {
 
   /**
    * Returns complete opportunity-by-opportunity status for all evaluated candidate categories,
-   * strictly mapping each to one of the 9 honest states:
-   * QUALIFIED, NEEDS_PRODUCT_EVIDENCE, NEEDS_PARTNER_APPROVAL, NEEDS_OWNER_ACTION,
+   * strictly mapping each to one of the 10 honest states:
+   * QUALIFIED, NEEDS_PRODUCT_EVIDENCE, NEEDS_REWRITE, NEEDS_PARTNER_APPROVAL, NEEDS_OWNER_ACTION,
    * READY_FOR_DRAFT, DRAFTED, PUBLISH_READY, PUBLISHED, DROPPED.
    */
   public async getDetailedOpportunityStatus(organizationId: string = 'org_owner_primary'): Promise<OpportunityDetail[]> {
     const db = getDb();
 
-    // Query categories from demand_signals
+    // Query categories from demand_signals excluding SEEDED, UNSOURCED, QUARANTINED
     let catRows: any[] = [];
     const catSql = `
       SELECT category, COUNT(*) as signal_count,
@@ -361,6 +368,9 @@ export class ProductOpportunityPipeline {
              MAX(created_at) as latest_signal
       FROM demand_signals
       WHERE organization_id = ?
+        AND status NOT IN ('QUARANTINED', 'SEEDED', 'UNSOURCED')
+        AND source_url LIKE 'http%'
+        AND source_url NOT LIKE '%search.community%'
       GROUP BY category
       ORDER BY signal_count DESC
     `;
@@ -371,6 +381,28 @@ export class ProductOpportunityPipeline {
         catRows = db.prepare(catSql).all(organizationId) as any[];
       } catch {
         catRows = [];
+      }
+    }
+
+    // Ensure all candidate opportunity clusters are evaluated
+    const CANDIDATE_OPPORTUNITY_CATEGORIES = [
+      'best accounting software small business India',
+      'thermal label printer',
+      'wireless microphone',
+      'barcode scanner',
+      'mechanical keypad',
+      'coffee grinder'
+    ];
+    const presentCats = new Set((catRows || []).map(r => (r.category || '').toLowerCase()));
+    for (const cand of CANDIDATE_OPPORTUNITY_CATEGORIES) {
+      if (!presentCats.has(cand.toLowerCase())) {
+        catRows.push({
+          category: cand,
+          signal_count: 0,
+          buyer_questions: 0,
+          earliest_signal: null,
+          latest_signal: null
+        });
       }
     }
 
@@ -461,6 +493,7 @@ export class ProductOpportunityPipeline {
         results.push({
           category: cat,
           productOrProblem: `Policy-Restricted Commercial Products (${cat})`,
+          monetizationType: 'NONE',
           demandSignalCount: signalCount,
           buyerQuestionsCount: buyerQuestions,
           earliestSignalDate: earliest,
@@ -492,7 +525,15 @@ export class ProductOpportunityPipeline {
 
       if (lower.includes('printer') || (matchingOffer && matchingAsset)) {
         productOrProblem = matchingOffer?.title || 'Phomemo PM-241BT Direct Thermal Shipping Label Printer';
-        if (matchingAsset?.status === 'PUBLISHED') {
+        if (matchingAsset?.status === 'UNSUPPORTED_BY_DEMAND' || matchingOffer?.status === 'PAUSED_SEEDED_DEMAND') {
+          funnelState = 'UNSUPPORTED_BY_DEMAND';
+          nextStep = 'Paused: Hardware demand was seeded by fixture migration 0026 without real buyer questions';
+          nextStepReason = 'Offer and guide paused. Thermal printer proposal had zero real buyer questions and claims lacked stored manufacturer spec lines.';
+        } else if (matchingAsset?.status === 'NEEDS_REWRITE') {
+          funnelState = 'NEEDS_REWRITE';
+          nextStep = 'Rewrite guide to match approved offer specifications and verify stored brand spec lines';
+          nextStepReason = `Guide ${matchingAsset.id} has product/model mismatch (PM-241BT vs M110) or unverified claims lacking stored brand_spec_lines.`;
+        } else if (matchingAsset?.status === 'PUBLISHED') {
           funnelState = 'PUBLISHED';
           nextStep = 'Monitor organic visitors and referral click beacon';
           nextStepReason = 'Guide is published; active acquisition distribution required.';
@@ -509,6 +550,23 @@ export class ProductOpportunityPipeline {
           nextStep = 'Generate initial buyer guide draft';
           nextStepReason = 'Active offer exists with verified listing facts.';
         }
+      } else if (buyerQuestions < 3) {
+        productOrProblem = lower.includes('software') || lower.includes('accounting')
+          ? 'SME Accounting & GST Billing Software (India)'
+          : lower.includes('microphone') || lower.includes('audio')
+          ? 'Dual Lavalier Microphone for USB-C Android Devices'
+          : lower.includes('scanner') || lower.includes('barcode')
+          ? '2D QR Code & Barcode Scanner with 20m Wireless Range'
+          : lower.includes('keypad')
+          ? 'Mechanical Numpad with Hot-Swappable Switches'
+          : lower.includes('grinder')
+          ? 'Manual Coffee Hand Grinder with Conical Burrs'
+          : cat;
+        funnelState = 'INSUFFICIENT_EVIDENCE';
+        nextStep = 'Gather at least 3 verified BUYER_QUESTION signals from live buyer demand';
+        nextStepReason = signalCount > 0
+          ? `Category has ${signalCount} publisher article signals, but ${buyerQuestions} verified BUYER_QUESTION signals. Minimum 3 buyer questions required before proposal generation.`
+          : `0 verified BUYER_QUESTION signals present (seeded fixtures excluded). Minimum 3 verified BUYER_QUESTION signals required before proposal generation.`;
       } else if (lower.includes('microphone') || lower.includes('audio')) {
         productOrProblem = 'Dual Lavalier Microphone for USB-C Android Devices';
         funnelState = 'NEEDS_PRODUCT_EVIDENCE';
@@ -525,11 +583,6 @@ export class ProductOpportunityPipeline {
         partnerApprovalStatus = 'PENDING_PARTNER (No approved Indian SaaS partner registered)';
         nextStep = 'Obtain owner authorization for Indian SaaS affiliate partner (e.g. Admitad / Cuelinks)';
         nextStepReason = `High buyer question volume (${buyerQuestions} signals), but no approved software affiliate partner is currently registered.`;
-      } else if (buyerQuestions < 3) {
-        productOrProblem = cat;
-        funnelState = 'QUALIFIED';
-        nextStep = 'Gather at least 1 additional BUYER_QUESTION signal';
-        nextStepReason = `Has only ${buyerQuestions} buyer question(s); threshold requires at least 3 verified BUYER_QUESTION signals before proposal generation.`;
       } else {
         productOrProblem = cat;
         funnelState = approvedAmazonPartner ? 'NEEDS_PRODUCT_EVIDENCE' : 'NEEDS_PARTNER_APPROVAL';
@@ -539,9 +592,15 @@ export class ProductOpportunityPipeline {
         nextStepReason = `${buyerQuestions} signals evaluated.`;
       }
 
+      let monetizationType: 'AFFILIATE' | 'OWN_OFFER' | 'NONE' = 'AFFILIATE';
+      if (lower.includes('lead conversion') || lower.includes('own offer') || lower.includes('platform setup') || lower.includes('consultation')) {
+        monetizationType = 'OWN_OFFER';
+      }
+
       results.push({
         category: cat,
         productOrProblem,
+        monetizationType,
         demandSignalCount: signalCount,
         buyerQuestionsCount: buyerQuestions,
         earliestSignalDate: earliest,

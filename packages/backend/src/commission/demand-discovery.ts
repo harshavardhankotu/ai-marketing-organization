@@ -52,6 +52,47 @@ export function classifyDemandIntent(text: string): { intentClass: DemandIntentC
   return { intentClass: 'RESEARCH', commercialScore: 0.3 };
 }
 
+/**
+ * Classifies signal type into BUYER_QUESTION vs PUBLISHER_ARTICLE.
+ * Publisher review articles, rankings, directories, and buying guides must NOT be classified as buyer questions.
+ */
+export function classifySignalType(title: string, snippet: string, url: string): 'BUYER_QUESTION' | 'PUBLISHER_ARTICLE' {
+  const lowerTitle = (title || '').toLowerCase();
+  const lowerUrl = (url || '').toLowerCase();
+  const lowerSnippet = (snippet || '').toLowerCase();
+
+  const isPublisher =
+    lowerUrl.includes('/blog/') ||
+    lowerUrl.includes('/article/') ||
+    lowerUrl.includes('/reviews/') ||
+    lowerUrl.includes('/picks/') ||
+    lowerUrl.includes('/categories/') ||
+    lowerTitle.includes('best ') ||
+    lowerTitle.includes('top ') ||
+    lowerTitle.includes('reviews') ||
+    lowerTitle.includes('tested') ||
+    lowerTitle.includes('guide') ||
+    lowerTitle.includes('ranking') ||
+    lowerTitle.includes('pricing');
+
+  if (isPublisher) {
+    return 'PUBLISHER_ARTICLE';
+  }
+
+  const isQuestion =
+    lowerTitle.endsWith('?') ||
+    lowerTitle.startsWith('how ') ||
+    lowerTitle.startsWith('which ') ||
+    lowerTitle.startsWith('can ') ||
+    lowerTitle.startsWith('suggest ') ||
+    lowerTitle.startsWith('what ') ||
+    lowerTitle.startsWith('does ') ||
+    lowerSnippet.includes('?') ||
+    lowerSnippet.startsWith('how ');
+
+  return isQuestion ? 'BUYER_QUESTION' : 'PUBLISHER_ARTICLE';
+}
+
 export class DemandDiscoveryEngine {
   private static instance: DemandDiscoveryEngine;
   private d1Repo = D1RevenueRepository.getInstance();
@@ -134,6 +175,59 @@ export class DemandDiscoveryEngine {
       return await this.persistSignals(fixtures, organizationId);
     }
 
+    // Daily limit: max 3 Tavily searches per calendar day
+    const todayStr = new Date().toISOString().substring(0, 10);
+    const dailyCountRow = await this.d1Repo.queryOne<{ cnt: number }>(
+      'demand_signals',
+      `SELECT COUNT(*) as cnt FROM demand_signals 
+       WHERE status = 'DISCOVERED' AND created_at >= ?`,
+      [`${todayStr}T00:00:00.000Z`]
+    );
+    if ((dailyCountRow?.cnt || 0) >= 3) {
+      console.warn(`[DemandDiscoveryEngine] Daily Tavily search budget reached (max 3 discovery searches/day). Skipping live search.`);
+      return [];
+    }
+
+    // Spec Task A.8: If a week of discovery finds < 3 real buyer questions for category, record OUTCOME in learning_records and halt credit spend
+    const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const weekStats = await this.d1Repo.queryOne<{ total_signals: number; buyer_questions: number }>(
+      'demand_signals',
+      `SELECT COUNT(*) as total_signals,
+              SUM(CASE WHEN signal_type = 'BUYER_QUESTION' AND status = 'DISCOVERED' THEN 1 ELSE 0 END) as buyer_questions
+       FROM demand_signals
+       WHERE category = ? AND created_at >= ?`,
+      [category, weekAgo]
+    );
+
+    if (weekStats && weekStats.total_signals >= 5 && (weekStats.buyer_questions || 0) < 3) {
+      console.warn(`[DemandDiscoveryEngine] Category '${category}' yielded < 3 buyer questions over 7 days (${weekStats.total_signals} total signals, ${weekStats.buyer_questions || 0} questions). Recording OUTCOME in learning_records and halting search spend.`);
+      const lrnId = `lrn_weak_demand_${category.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+      try {
+        await this.d1Repo.executeWrite(
+          'learning_records',
+          `INSERT INTO learning_records (
+            id, organization_id, learning_type, decision, hypothesis, action, audience, offer, channel,
+            result, confidence, what, outcome, cause, rule, source, created_at
+          ) VALUES (?, ?, 'DEMAND_EXPERIMENT', 'STOP_SPENDING_CREDITS', ?, ?, 'SMALL_BUSINESS', ?, 'ORGANIC_SEARCH',
+            'FAILED', 0.9, 'SEARCH_DEMAND_NOT_REACHING_BUYERS', 'ZERO_BUYER_QUESTIONS_AFTER_WEEK',
+            'Search engine queries return commercial publisher articles instead of real buyer intent',
+            'Halt Tavily credit spend on category when 7-day buyer question yield is below 3',
+            'OUTCOME', datetime('now')
+          ) ON CONFLICT(id) DO UPDATE SET
+            outcome = 'ZERO_BUYER_QUESTIONS_AFTER_WEEK',
+            confidence = 0.95;`,
+          [
+            lrnId,
+            organizationId,
+            `Search queries for ${category} yield high-intent buyer questions`,
+            `Halt search discovery for ${category}`,
+            category
+          ]
+        );
+      } catch {}
+      return [];
+    }
+
     // Reserve Tavily quota (P3 priority)
     const gate = this.quotaService.reserve('TAVILY', 'P3', 1, `Demand discovery for ${category} in ${location}`);
     if (!gate.allowed) {
@@ -144,7 +238,21 @@ export class DemandDiscoveryEngine {
     }
 
     try {
-      const query = `best ${category} price compare services ${location} review`;
+      // Question-style phrasing targeting buyer discussions rather than review aggregator keywords
+      let query = `which ${category} do small business buyers recommend in ${location}?`;
+      const lowerCat = category.toLowerCase();
+      if (lowerCat.includes('software') || lowerCat.includes('accounting')) {
+        query = 'which accounting or GST billing software do small businesses in India actually use?';
+      } else if (lowerCat.includes('printer')) {
+        query = 'which direct thermal shipping label printer do small ecommerce sellers recommend in India?';
+      } else if (lowerCat.includes('microphone')) {
+        query = 'which wireless lapel microphone connects directly to Android USB-C without adapter?';
+      } else if (lowerCat.includes('scanner')) {
+        query = 'which wireless 2D barcode scanner reliably reads QR codes off phone screens?';
+      }
+
+      // Tavily REST API options: https://docs.tavily.com/docs/tavily-api/rest_api
+      // include_domains targets community forums; exclude_domains filters known commercial review publishers
       const searchRes = await fetch('https://api.tavily.com/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -152,7 +260,31 @@ export class DemandDiscoveryEngine {
           api_key: tavilyKey,
           query,
           search_depth: 'basic',
-          max_results: 6,
+          max_results: 5,
+          include_domains: [
+            'reddit.com',
+            'quora.com',
+            'desidime.com',
+            'techenclave.com',
+            'community.intuit.com'
+          ],
+          exclude_domains: [
+            'pcmag.com',
+            'businessnewsdaily.com',
+            'aiaccountant.com',
+            'invoicecrowd.com',
+            'business.com',
+            'pilot.com',
+            'mybillbook.in',
+            'busy.in',
+            'cnbc.com',
+            'yahoo.com',
+            'indeed.com',
+            'quickenaccounting.com',
+            'youtube.com',
+            'amazon.in',
+            'flipkart.com'
+          ],
           include_usage: true
         })
       });
@@ -264,14 +396,39 @@ export class DemandDiscoveryEngine {
         createdAt: new Date().toISOString()
       };
 
+      const normalizedUrl = (s.sourceUrl || '').toLowerCase().trim();
+      if (normalizedUrl && normalizedUrl.startsWith('http')) {
+        try {
+          const existing = await this.d1Repo.queryOne<any>(
+            'demand_signals',
+            'SELECT id FROM demand_signals WHERE LOWER(TRIM(source_url)) = ? LIMIT 1',
+            [normalizedUrl]
+          );
+          if (existing) {
+            console.log(`[DemandDiscoveryEngine] Dedupe: Skipping already stored URL: ${normalizedUrl}`);
+            continue;
+          }
+        } catch {}
+      }
+
+      let initialStatus = 'DISCOVERED';
+      if (!s.sourceUrl || !s.sourceUrl.startsWith('http')) {
+        initialStatus = 'UNSOURCED';
+      } else if (s.sourceUrl.includes('search.community') || this.lastSource === 'FIXTURE') {
+        initialStatus = 'SEEDED';
+      }
+
+      const signalType = classifySignalType(signal.topic, signal.evidenceSnippet, signal.sourceUrl);
+
       try {
         await this.d1Repo.executeWrite(
           'demand_signals',
           `INSERT INTO demand_signals (
             id, organization_id, topic, category, location, intent_type,
             raw_query, evidence_snippet, source_url, urgency,
-            estimated_monthly_volume, status, intent_class, commercial_score, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DISCOVERED', ?, ?, ?)`,
+            estimated_monthly_volume, status, intent_class, commercial_score,
+            signal_type, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             signal.id,
             signal.organizationId,
@@ -284,12 +441,14 @@ export class DemandDiscoveryEngine {
             signal.sourceUrl,
             signal.urgency,
             signal.estimatedMonthlyVolume,
+            initialStatus,
             signal.intentClass,
             signal.commercialScore,
+            signalType,
             signal.createdAt
           ]
         );
-        persisted.push(signal);
+        persisted.push({ ...signal, status: initialStatus as any });
       } catch (err: any) {
         console.warn(`[DemandDiscoveryEngine] Failed to persist signal: ${err.message}`);
       }

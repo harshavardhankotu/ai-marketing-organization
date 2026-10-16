@@ -14,6 +14,7 @@ describe('Revenue Engine 2.0: Capability-Backed Commercial Loop', () => {
       db.prepare(`DELETE FROM platform_prospects WHERE source = 'INBOUND_LEAKAGE_CALCULATOR'`).run();
       db.prepare(`DELETE FROM delivery_tasks`).run();
       db.prepare(`DELETE FROM action_cooldowns`).run();
+      db.prepare(`DELETE FROM durable_rate_limits`).run();
     } catch {}
   };
 

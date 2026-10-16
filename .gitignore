@@ -14,4 +14,5 @@ build/
 .firebase/
 
 .env.render.production
+.env.owner_facts
 scratch/
