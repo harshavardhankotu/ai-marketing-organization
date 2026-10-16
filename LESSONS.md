@@ -179,6 +179,7 @@
 ## 4. Recent Verified Git Commits
 
 ```text
+* 51dc511 - 2026-10-16: feat: demand provenance repair, direct commercial offer lane, owner fact gates, and multi-category co-design
 * c9741fc - 2026-10-16: docs: sync PROJECT_STATUS.md with commit bd877ba and deploy dep-db8m28tbedkc73cn5r40
 * bd877ba - 2026-10-16: feat: reconcile 15-stage funnel metrics, click attribution, and multi-category opportunities
 * 5b70027 - 2026-10-16: docs: sync PROJECT_STATUS.md with commit 6ccf8b5 and deploy dep-db8gj83m8hqs738d85b0
@@ -190,7 +191,6 @@
 * 2b5b4f3 - 2026-10-15: feat: complete revenue engine 2.0 commercial loop, board truth guards, and dpdp lead leakage calculator
 * 2722046 - 2026-10-14: docs: sync status records and mistakes board after Step 10 live deployment
 * d2032f4 - 2026-10-14: test: ensure partner exists in hermetic dynamic-offer-discovery beforeEach
-* cadac97 - 2026-10-14: fix(db): ensure domain_policy and brand_spec_lines tables are initialized in SCHEMA_SQL and client stubs
 ```
 
 ---

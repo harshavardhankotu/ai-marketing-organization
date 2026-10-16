@@ -6,6 +6,10 @@ import app from '../../src/index.js';
 
 describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
   const cleanDb = () => {
+    delete process.env.DIRECT_OFFER_TERMS_ATTESTED;
+    delete process.env.OWN_OFFER_CONFIRMED;
+    delete process.env.PLATFORM_UPI_VPA;
+    delete process.env.PUBLIC_WHATSAPP_NUMBER;
     const db = getDb();
     try {
       db.prepare(`DELETE FROM referrals WHERE landing_page = '/offer'`).run();
@@ -19,7 +23,10 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
   afterEach(cleanDb);
 
   describe('1. Static Offer Page Content & Commercial Terms', () => {
-    it('renders two authoritative tiers matching OWN_OFFER.md exactly', () => {
+    it('renders safe un-attested overview with zero prices and noindex when terms are pending owner confirmation', () => {
+      delete process.env.DIRECT_OFFER_TERMS_ATTESTED;
+      delete process.env.OWN_OFFER_CONFIRMED;
+
       const page = DirectCommercialOfferPage.getInstance();
       const html = page.renderOfferHtml({
         siteName: 'SupplySpecs India',
@@ -27,50 +34,45 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
         contactEmail: 'contact@supplyspecs.in'
       });
 
-      // Tier 1: PLATFORM_SETUP (₹15,000, 5 days, 14-day guarantee)
-      expect(html).toContain('Day 0-5 Setup &amp; Integration');
-      expect(html).toContain('₹15,000');
-      expect(html).toContain('5 Business Days Delivery SLA');
-      expect(html).toContain('14-Day Performance Guarantee');
-      expect(html).toContain('Custom WhatsApp Triage &amp; FAQ Bot');
-      expect(html).toContain('Google Business Profile (GBP) Integration');
-      expect(html).toContain('Multi-Touch Follow-Up Workflow');
-      expect(html).toContain('Direct Calendar Booking');
-      expect(html).toContain('Handover Report &amp; Verification Run');
-
-      // Tier 2: PLATFORM_MONTHLY (₹8,000, continuous 30-day, cancel anytime)
-      expect(html).toContain('Monthly Retainer &amp; SLA');
-      expect(html).toContain('₹8,000');
-      expect(html).toContain('Continuous 30-Day SLA &bull; Cancel Anytime');
-      expect(html).toContain('24/7 Automated Lead Triage');
-      expect(html).toContain('Bi-Weekly Prompt &amp; Rubric Tuning');
-      expect(html).toContain('Continuous DPDP Act Compliance');
+      expect(html).toContain('AI Inbound Lead Conversion System');
+      expect(html).toContain('Configuration Pending Owner Attestation');
+      expect(html).toContain('noindex, nofollow');
+      expect(html).toContain('Direct online checkout is disabled');
+      expect(html).not.toContain('upi://pay');
+      expect(html).not.toContain('harshavardhan.kotu');
     });
 
-    it('includes all required payment options and statutory compliance note', () => {
+    it('renders authoritative tiers with attested prices when owner confirms commercial terms', () => {
+      process.env.DIRECT_OFFER_TERMS_ATTESTED = 'true';
+      process.env.OWN_OFFER_CONFIRMED = 'true';
+      process.env.PLATFORM_UPI_VPA = 'owner@okhdfcbank';
+      process.env.PUBLIC_WHATSAPP_NUMBER = '919876543210';
+
       const page = DirectCommercialOfferPage.getInstance();
       const html = page.renderOfferHtml({
-        upiVpa: 'harshavardhan.kotu@okhdfcbank',
-        razorpayMeUrl: 'https://razorpay.me/@venkatasaiharshavardhankotu'
+        siteName: 'SupplySpecs India',
+        siteUrl: 'https://supplyspecs.in',
+        contactEmail: 'contact@supplyspecs.in',
+        upiVpa: 'owner@okhdfcbank'
       });
 
-      // Payment option 1: UPI URI and QR code
-      expect(html).toContain('upi://pay?pa=');
+      // Tier 1: PLATFORM_SETUP (₹15,000)
+      expect(html).toContain('Day 0–5 Setup &amp; Integration');
+      expect(html).toContain('₹15,000');
+      expect(html).toContain('Custom WhatsApp qualification &amp; FAQ bot');
+
+      // Tier 2: PLATFORM_MONTHLY (₹8,000)
+      expect(html).toContain('Monthly Retainer &amp; SLA');
+      expect(html).toContain('₹8,000');
+
+      // Payment option: UPI
+      expect(html).toContain('upi://pay?pa=owner%40okhdfcbank');
       expect(html).toContain('am=15000');
-      expect(html).toContain('cu=INR');
-      expect(html).toContain('Order Ref:');
 
-      // Payment option 2: Razorpay fallback
-      expect(html).toContain('https://razorpay.me/@venkatasaiharshavardhankotu');
-      expect(html).toContain('manual remittance fallback');
-
-      // Payment option 3: WhatsApp discussion link
-      expect(html).toContain('https://wa.me/');
-      expect(html).toContain('Chat on WhatsApp');
-
-      // Statutory NPCI / RBI compliance notice
-      expect(html).toContain('Statutory Regulatory Notice (NPCI / RBI UPI Guidelines)');
-      expect(html).toContain('personal peer-to-peer (P2P) UPI VPAs are restricted');
+      delete process.env.DIRECT_OFFER_TERMS_ATTESTED;
+      delete process.env.OWN_OFFER_CONFIRMED;
+      delete process.env.PLATFORM_UPI_VPA;
+      delete process.env.PUBLIC_WHATSAPP_NUMBER;
     });
   });
 
@@ -181,18 +183,34 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
   });
 
   describe('3. Public Routing & Calculator Integration', () => {
-    it('serves GET /offer and GET /api/v1/offer with complete HTML content', async () => {
+    it('serves safe overview on GET /offer and GET /api/v1/offer when unattested', async () => {
       const resTop = await app.request('/offer');
       expect(resTop.status).toBe(200);
       const htmlTop = await resTop.text();
       expect(htmlTop).toContain('AI Inbound Lead Conversion System');
-      expect(htmlTop).toContain('Day 0-5 Setup &amp; Integration');
-      expect(htmlTop).toContain('Four-State Payment Truth Protocol');
+      expect(htmlTop).toContain('Configuration Pending Owner Attestation');
+      expect(htmlTop).toContain('noindex, nofollow');
 
       const resApi = await app.request('/api/v1/offer');
       expect(resApi.status).toBe(200);
       const htmlApi = await resApi.text();
       expect(htmlApi).toContain('AI Inbound Lead Conversion System');
+    });
+
+    it('serves attested commercial tiers on GET /offer when owner confirms commercial terms', async () => {
+      process.env.DIRECT_OFFER_TERMS_ATTESTED = 'true';
+      process.env.OWN_OFFER_CONFIRMED = 'true';
+      process.env.PLATFORM_UPI_VPA = 'owner@okhdfcbank';
+      process.env.PUBLIC_WHATSAPP_NUMBER = '919876543210';
+
+      const res = await app.request('/offer');
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain('AI Inbound Lead Conversion System');
+      expect(html).toContain('Day 0–5 Setup &amp; Integration');
+      expect(html).toContain('Monthly Retainer &amp; SLA');
+      expect(html).toContain('₹15,000');
+      expect(html).toContain('₹8,000');
     });
 
     it('lead leakage calculator includes a direct link to the offer page', () => {

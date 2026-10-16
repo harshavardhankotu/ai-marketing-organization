@@ -2131,11 +2131,13 @@ CREATE TABLE IF NOT EXISTS demand_signals (
   found_at TEXT,
   dedupe_hash TEXT,
   signal_type TEXT NOT NULL DEFAULT 'BUYER_QUESTION',
+  canonical_url TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_demand_signals_topic ON demand_signals(topic);
 CREATE INDEX IF NOT EXISTS idx_demand_signals_status ON demand_signals(status);
 CREATE INDEX IF NOT EXISTS idx_demand_signals_intent ON demand_signals(intent_class);
+CREATE INDEX IF NOT EXISTS idx_demand_signals_canonical ON demand_signals(canonical_url);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_demand_signals_dedupe ON demand_signals(dedupe_hash);
 
 -- 96. Durable Rate Limits (Per-IP hash window limiter)
@@ -2377,4 +2379,43 @@ CREATE TABLE IF NOT EXISTS competitor_topics (
   publisher_url TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- 110. Search Attempts Ledger (Max 3 Tavily searches per India-local calendar day)
+CREATE TABLE IF NOT EXISTS search_attempts (
+  id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL DEFAULT 'TAVILY',
+  category TEXT NOT NULL,
+  query TEXT NOT NULL,
+  query_version TEXT NOT NULL DEFAULT 'v1',
+  kolkata_date TEXT NOT NULL,
+  status TEXT NOT NULL, -- 'ATTEMPTED', 'SUCCESS', 'FAILED', 'QUOTA_EXHAUSTED', 'BUDGET_EXCEEDED'
+  results_count INTEGER NOT NULL DEFAULT 0,
+  credits_used INTEGER NOT NULL DEFAULT 0,
+  error_message TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_search_attempts_date ON search_attempts(provider, kolkata_date);
+CREATE INDEX IF NOT EXISTS idx_search_attempts_query ON search_attempts(category, query_version);
+
+-- 111. Direct Commercial Offer Attestation (Lane B Owner Attestation Gate)
+CREATE TABLE IF NOT EXISTS direct_offer_attestation (
+  id TEXT PRIMARY KEY,
+  offer_id TEXT NOT NULL,
+  offer_version TEXT NOT NULL,
+  setup_price_inr INTEGER,
+  monthly_price_inr INTEGER,
+  deliverables_json TEXT,
+  sla_days INTEGER,
+  refund_terms TEXT,
+  contact_email TEXT,
+  contact_phone TEXT,
+  upi_vpa TEXT,
+  payment_url TEXT,
+  attested_by TEXT NOT NULL DEFAULT 'OWNER_FORM',
+  status TEXT NOT NULL DEFAULT 'PENDING', -- 'ATTESTED' | 'PENDING' | 'REJECTED'
+  attested_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_offer_attestation_status ON direct_offer_attestation(offer_id, status);
 `;

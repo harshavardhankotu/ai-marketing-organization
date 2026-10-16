@@ -50,6 +50,17 @@ describe('Buying Funnel Reconciliation & Opportunity Progression Suite', () => {
       const db = getDb();
 
       // Ensure single offer and single PUBLISH_READY guide (matching production reality)
+      db.prepare("DELETE FROM partner_offers WHERE organization_id = ?").run(ORG);
+      db.prepare(`
+        INSERT INTO partner_offers (
+          id, partner_id, organization_id, offer_slug, title, category, destination_url,
+          authorized_tracking_url, target_customer, status, active, created_at, updated_at
+        ) VALUES (
+          'poff_6fd7d0d3-7', 'part_amazon_in_01', ?, 'test-offer', 'Test Thermal Printer', 'office',
+          'https://amazon.in/dp/test', 'https://amazon.in/dp/test?tag=masked-21', 'Small Businesses', 'ACTIVE', 1, datetime('now'), datetime('now')
+        )
+      `).run(ORG);
+
       db.prepare("DELETE FROM commission_content_assets WHERE organization_id = ?").run(ORG);
       db.prepare(`
         INSERT INTO commission_content_assets (
@@ -69,7 +80,7 @@ describe('Buying Funnel Reconciliation & Opportunity Progression Suite', () => {
           estimated_monthly_volume, status, evidence_snippet, source_url, created_at
         ) VALUES (
           'sig_test_01', ?, 'office', 'thermal printer', 'thermal shipping printer',
-          'BUYER_QUESTION', 0.8, 200, 'DISCOVERED', 'Thermal printer evidence', 'https://example.com/test', datetime('now')
+          'BUYER_QUESTION', 0.8, 200, 'DISCOVERED', 'Thermal printer evidence', 'https://techenclave.com/threads/test', datetime('now')
         )
       `).run(ORG);
 
@@ -179,7 +190,7 @@ describe('Buying Funnel Reconciliation & Opportunity Progression Suite', () => {
         ) VALUES (
           'sig_unfulfilled_01', ?, 'wireless microphone', 'Best wireless mic',
           'which wireless mic is best for interview', 'BUYER_QUESTION', 0.9, 300, 'DISCOVERED',
-          'Looking for a wireless mic for youtube interviews with type-c port', 'https://example.com/q1', datetime('now')
+          'Looking for a wireless mic for youtube interviews with type-c port', 'https://techenclave.com/threads/q1', datetime('now')
         )
       `).run(ORG);
 
@@ -223,7 +234,7 @@ describe('Buying Funnel Reconciliation & Opportunity Progression Suite', () => {
           INSERT INTO demand_signals (
             id, organization_id, category, topic, raw_query, signal_type, urgency,
             estimated_monthly_volume, status, evidence_snippet, source_url, created_at
-          ) VALUES (?, ?, 'best accounting software small business India', 'GST accounting software', 'best accounting software for small business India', 'BUYER_QUESTION', 0.7, 500, 'DISCOVERED', 'Looking for GST invoice software', 'https://example.com/soft', datetime('now'))
+          ) VALUES (?, ?, 'best accounting software small business India', 'GST accounting software', 'best accounting software for small business India', 'BUYER_QUESTION', 0.7, 500, 'DISCOVERED', 'Looking for GST invoice software', 'https://techenclave.com/threads/soft', datetime('now'))
         `).run(`sig_acc_${i}`, ORG);
       }
 
@@ -233,7 +244,7 @@ describe('Buying Funnel Reconciliation & Opportunity Progression Suite', () => {
           INSERT INTO demand_signals (
             id, organization_id, category, topic, raw_query, signal_type, urgency,
             estimated_monthly_volume, status, evidence_snippet, source_url, created_at
-          ) VALUES (?, ?, 'thermal label printer', 'Thermal label printer', 'which thermal printer prints 4x6 shipping labels', 'BUYER_QUESTION', 0.8, 200, 'DISCOVERED', 'Need 4x6 shipping label printer for e-commerce', 'https://example.com/print', datetime('now'))
+          ) VALUES (?, ?, 'thermal label printer', 'Thermal label printer', 'which thermal printer prints 4x6 shipping labels', 'BUYER_QUESTION', 0.8, 200, 'DISCOVERED', 'Need 4x6 shipping label printer for e-commerce', 'https://techenclave.com/threads/print', datetime('now'))
         `).run(`sig_prn_${i}`, ORG);
       }
 
@@ -243,7 +254,7 @@ describe('Buying Funnel Reconciliation & Opportunity Progression Suite', () => {
           INSERT INTO demand_signals (
             id, organization_id, category, topic, raw_query, signal_type, urgency,
             estimated_monthly_volume, status, evidence_snippet, source_url, created_at
-          ) VALUES (?, ?, 'wireless microphone', 'Wireless microphone', 'which wireless lav mic connects to usb-c android', 'BUYER_QUESTION', 0.8, 150, 'DISCOVERED', 'Dual lav mic usb-c android for street interviews', 'https://example.com/mic', datetime('now'))
+          ) VALUES (?, ?, 'wireless microphone', 'Wireless microphone', 'which wireless lav mic connects to usb-c android', 'BUYER_QUESTION', 0.8, 150, 'DISCOVERED', 'Dual lav mic usb-c android for street interviews', 'https://techenclave.com/threads/mic', datetime('now'))
         `).run(`sig_mic_${i}`, ORG);
       }
 
@@ -253,7 +264,7 @@ describe('Buying Funnel Reconciliation & Opportunity Progression Suite', () => {
           INSERT INTO demand_signals (
             id, organization_id, category, topic, raw_query, signal_type, urgency,
             estimated_monthly_volume, status, evidence_snippet, source_url, created_at
-          ) VALUES (?, ?, 'barcode scanner', 'Barcode scanner', 'which 2d barcode scanner reads qr codes', 'BUYER_QUESTION', 0.8, 120, 'DISCOVERED', '2D wireless qr code scanner 20m range', 'https://example.com/bar', datetime('now'))
+          ) VALUES (?, ?, 'barcode scanner', 'Barcode scanner', 'which 2d barcode scanner reads qr codes', 'BUYER_QUESTION', 0.8, 120, 'DISCOVERED', '2D wireless qr code scanner 20m range', 'https://techenclave.com/threads/bar', datetime('now'))
         `).run(`sig_bar_${i}`, ORG);
       }
 
@@ -263,7 +274,7 @@ describe('Buying Funnel Reconciliation & Opportunity Progression Suite', () => {
           INSERT INTO demand_signals (
             id, organization_id, category, topic, raw_query, signal_type, urgency,
             estimated_monthly_volume, status, evidence_snippet, source_url, created_at
-          ) VALUES (?, ?, 'mechanical keypad', 'Mechanical keypad', 'which mechanical numpad has hot swappable switches', 'BUYER_QUESTION', 0.6, 60, 'DISCOVERED', 'Silent hot swappable numpad mechanical keypad', 'https://example.com/key', datetime('now'))
+          ) VALUES (?, ?, 'mechanical keypad', 'Mechanical keypad', 'which mechanical numpad has hot swappable switches', 'BUYER_QUESTION', 0.6, 60, 'DISCOVERED', 'Silent hot swappable numpad mechanical keypad', 'https://techenclave.com/threads/key', datetime('now'))
         `).run(`sig_key_${i}`, ORG);
       }
 
@@ -273,7 +284,7 @@ describe('Buying Funnel Reconciliation & Opportunity Progression Suite', () => {
           INSERT INTO demand_signals (
             id, organization_id, category, topic, raw_query, signal_type, urgency,
             estimated_monthly_volume, status, evidence_snippet, source_url, created_at
-          ) VALUES (?, ?, 'coffee grinder', 'Coffee grinder', 'which manual coffee hand grinder has conical burrs', 'BUYER_QUESTION', 0.7, 80, 'DISCOVERED', 'Manual hand coffee grinder with conical burrs', 'https://example.com/cof', datetime('now'))
+          ) VALUES (?, ?, 'coffee grinder', 'Coffee grinder', 'which manual coffee hand grinder has conical burrs', 'BUYER_QUESTION', 0.7, 80, 'DISCOVERED', 'Manual hand coffee grinder with conical burrs', 'https://techenclave.com/threads/cof', datetime('now'))
         `).run(`sig_cof_${i}`, ORG);
       }
 

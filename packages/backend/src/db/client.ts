@@ -412,8 +412,33 @@ export function getDb(dbPath?: string): Database.Database {
       raw_query TEXT NOT NULL, evidence_snippet TEXT NOT NULL, source_url TEXT NOT NULL,
       urgency REAL NOT NULL DEFAULT 0.5, estimated_monthly_volume INTEGER NOT NULL DEFAULT 100,
       status TEXT NOT NULL DEFAULT 'DISCOVERED', intent_class TEXT NOT NULL DEFAULT 'RESEARCH',
-      commercial_score REAL NOT NULL DEFAULT 0, signal_type TEXT NOT NULL DEFAULT 'BUYER_QUESTION', created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      commercial_score REAL NOT NULL DEFAULT 0, signal_type TEXT NOT NULL DEFAULT 'BUYER_QUESTION',
+      canonical_url TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_demand_signals_canonical ON demand_signals(canonical_url)`);
+  } catch {}
+  try { db.exec(`ALTER TABLE demand_signals ADD COLUMN canonical_url TEXT`); } catch {}
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS search_attempts (
+      id TEXT PRIMARY KEY, provider TEXT NOT NULL DEFAULT 'TAVILY',
+      category TEXT NOT NULL, query TEXT NOT NULL, query_version TEXT NOT NULL DEFAULT 'v1',
+      kolkata_date TEXT NOT NULL, status TEXT NOT NULL,
+      results_count INTEGER NOT NULL DEFAULT 0, credits_used INTEGER NOT NULL DEFAULT 0,
+      error_message TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_search_attempts_date ON search_attempts(provider, kolkata_date)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_search_attempts_query ON search_attempts(category, query_version)`);
+  } catch {}
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS direct_offer_attestation (
+      id TEXT PRIMARY KEY, offer_id TEXT NOT NULL, offer_version TEXT NOT NULL,
+      setup_price_inr INTEGER, monthly_price_inr INTEGER,
+      deliverables_json TEXT, sla_days INTEGER, refund_terms TEXT,
+      contact_email TEXT, contact_phone TEXT, upi_vpa TEXT, payment_url TEXT,
+      attested_by TEXT NOT NULL DEFAULT 'OWNER_FORM', status TEXT NOT NULL DEFAULT 'PENDING',
+      attested_at TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_offer_attestation_status ON direct_offer_attestation(offer_id, status)`);
   } catch {}
   try {
     db.exec(`CREATE TABLE IF NOT EXISTS owner_configuration (

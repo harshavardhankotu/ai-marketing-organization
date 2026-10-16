@@ -79,6 +79,8 @@ import { getTrustedClientIp, hashClientIp } from '../security/client-ip.js';
 import { DurableRateLimiter } from '../security/durable-rate-limiter.js';
 import { validateOwnerEnvFacts } from '../config/owner-env-intake.js';
 import { ProductOpportunityPipeline } from '../commission/product-opportunity-pipeline.js';
+import { GENUINE_BUYER_DEMAND_SQL_CONDITION } from '../commission/demand-signal-eligibility.js';
+import { DirectCommercialOfferPage } from '../revenue/direct-offer-page.js';
 
 export type AppVariables = {
   organizationId: string;
@@ -5639,30 +5641,30 @@ apiRouter.get('/commission/funnel', async (c) => {
   const ledger = CommissionLedgerEngine.getInstance();
   const summary = await ledger.getSummary(orgId);
 
-  // Empirical counts (Excluding SEEDED, UNSOURCED, QUARANTINED, and synthetic mock URLs)
+  // Empirical counts (Excluding SEEDED, UNSOURCED, QUARANTINED, DUPLICATE, and synthetic mock URLs)
   const demandSignalsTotalRow = await d1Repo.queryOne<{ cnt: number }>(
     'demand_signals',
-    "SELECT COUNT(*) as cnt FROM demand_signals WHERE organization_id = ? AND status NOT IN ('QUARANTINED', 'SEEDED', 'UNSOURCED') AND source_url LIKE 'http%' AND source_url NOT LIKE '%search.community%'",
+    `SELECT COUNT(*) as cnt FROM demand_signals WHERE organization_id = ? AND status NOT IN ('QUARANTINED', 'SEEDED', 'SEEDED_MIGRATION_0026', 'UNSOURCED', 'DUPLICATE', 'UNSUPPORTED', 'UNSUPPORTED_BY_DEMAND', 'PAUSED_SEEDED_DEMAND') AND source_url LIKE 'http%' AND source_url NOT LIKE '%search.community%' AND source_url NOT LIKE '%localhost%' AND source_url NOT LIKE '%example.com%' AND source_url NOT LIKE '%test.local%'`,
     [orgId]
   );
   const demandSignalsCount = demandSignalsTotalRow?.cnt || 0;
 
   const buyerQuestionsRow = await d1Repo.queryOne<{ cnt: number }>(
     'demand_signals',
-    "SELECT COUNT(*) as cnt FROM demand_signals WHERE organization_id = ? AND status NOT IN ('QUARANTINED', 'SEEDED', 'UNSOURCED') AND source_url LIKE 'http%' AND source_url NOT LIKE '%search.community%' AND signal_type = 'BUYER_QUESTION'",
+    `SELECT COUNT(*) as cnt FROM demand_signals WHERE organization_id = ? AND ${GENUINE_BUYER_DEMAND_SQL_CONDITION}`,
     [orgId]
   );
   const buyerQuestionsCount = buyerQuestionsRow?.cnt || 0;
 
   const distinctCategoriesRow = await d1Repo.queryOne<{ cnt: number }>(
     'demand_signals',
-    "SELECT COUNT(DISTINCT category) as cnt FROM demand_signals WHERE organization_id = ? AND status NOT IN ('QUARANTINED', 'SEEDED', 'UNSOURCED') AND source_url LIKE 'http%' AND source_url NOT LIKE '%search.community%'",
+    `SELECT COUNT(DISTINCT category) as cnt FROM demand_signals WHERE organization_id = ? AND ${GENUINE_BUYER_DEMAND_SQL_CONDITION}`,
     [orgId]
   );
   const opportunitiesCount = distinctCategoriesRow?.cnt || 0;
 
   const partners = await d1Repo.query<any>('partners', 'SELECT * FROM partners WHERE organization_id = ?', [orgId]);
-  const approvedPartnersCount = partners.filter(p =>
+  const approvedPartnersCount = (partners || []).filter(p =>
     p.active_status === 1 && (p.approval_status === 'APPROVED' || p.approval_status === 'PROVISIONAL' || p.approval_status === 'OPERATOR_CONFIRMED_PROVISIONAL')
   ).length;
 
@@ -5671,7 +5673,13 @@ apiRouter.get('/commission/funnel', async (c) => {
     "SELECT * FROM partner_offers WHERE organization_id = ? AND status = 'ACTIVE' AND active = 1",
     [orgId]
   );
-  const activeOffersCount = activeOffers.length;
+  const isDirectOfferAttested = DirectCommercialOfferPage.isDirectOfferAttested();
+  const activeOffersCount = (activeOffers || []).filter(o => {
+    if (o.id === 'offer_platform_setup' || o.id === 'PLATFORM_SETUP' || o.partner_id === 'part_direct_own_01') {
+      return isDirectOfferAttested;
+    }
+    return true;
+  }).length;
 
   // Cumulative Guides Drafted (Ever reached draft status or beyond)
   const draftGuidesRow = await d1Repo.queryOne<{ cnt: number }>(

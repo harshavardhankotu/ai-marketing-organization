@@ -14,6 +14,8 @@
 
 import { getDb } from '../db/client.js';
 import { OwnerAuthService } from '../auth/owner-auth.js';
+import { DirectCommercialOfferPage } from './direct-offer-page.js';
+import { isProduction } from '../config/env.js';
 
 export interface AuthorizedOffer {
   offerId: string;
@@ -168,6 +170,10 @@ export class OfferCatalogService {
       if (organizationId && organizationId !== OwnerAuthService.OWNER_ORGANIZATION_ID) {
         throw new Error(`UNAUTHORIZED_OFFER: PLATFORM_SETUP offer is restricted to the owner organization (${OwnerAuthService.OWNER_ORGANIZATION_ID}). Caller supplied organizationId='${organizationId}'.`);
       }
+      // Gate: In production (or strict test mode), direct commercial terms must be explicitly attested by owner
+      if ((isProduction() || process.env.STRICT_DIRECT_OFFER_ATTESTATION === 'true') && !DirectCommercialOfferPage.isDirectOfferAttested()) {
+        throw new Error(`COMMERCIAL_TERMS_UNATTESTED: Platform direct offer (${trimmedOfferId}) terms have not been attested by the owner. Commercial payment flows are blocked in production.`);
+      }
       return {
         offerId: OfferCatalogService.PLATFORM_SETUP_OFFER_ID,
         offerName: 'AI Inbound Lead Conversion System — Day 0-5 Setup & Integration',
@@ -199,6 +205,10 @@ export class OfferCatalogService {
       }
       if (organizationId && organizationId !== OwnerAuthService.OWNER_ORGANIZATION_ID) {
         throw new Error(`UNAUTHORIZED_OFFER: PLATFORM_MONTHLY offer is restricted to the owner organization (${OwnerAuthService.OWNER_ORGANIZATION_ID}). Caller supplied organizationId='${organizationId}'.`);
+      }
+      // Gate: In production (or strict test mode), direct commercial terms must be explicitly attested by owner
+      if ((isProduction() || process.env.STRICT_DIRECT_OFFER_ATTESTATION === 'true') && !DirectCommercialOfferPage.isDirectOfferAttested()) {
+        throw new Error(`COMMERCIAL_TERMS_UNATTESTED: Platform direct offer (${trimmedOfferId}) terms have not been attested by the owner. Commercial payment flows are blocked in production.`);
       }
       return {
         offerId: OfferCatalogService.PLATFORM_MONTHLY_OFFER_ID,

@@ -2,6 +2,7 @@ import { getDb } from '../db/client.js';
 import { isProduction } from '../config/env.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { PartnerNetwork, MetricProvenance } from './types.js';
+import { GENUINE_BUYER_DEMAND_SQL_CONDITION } from './demand-signal-eligibility.js';
 
 export interface SupportedCategoryDef {
   category: string;
@@ -334,10 +335,7 @@ export class ProductOpportunityPipeline {
       SELECT id, category, topic, raw_query, signal_type, urgency, estimated_monthly_volume
       FROM demand_signals
       WHERE organization_id = ?
-        AND status NOT IN ('QUARANTINED', 'SEEDED', 'UNSOURCED')
-        AND source_url LIKE 'http%'
-        AND source_url NOT LIKE '%search.community%'
-        AND signal_type = 'BUYER_QUESTION'
+        AND ${GENUINE_BUYER_DEMAND_SQL_CONDITION}
       ORDER BY created_at DESC;
     `;
     if (isProduction()) {
@@ -359,18 +357,21 @@ export class ProductOpportunityPipeline {
   public async getDetailedOpportunityStatus(organizationId: string = 'org_owner_primary'): Promise<OpportunityDetail[]> {
     const db = getDb();
 
-    // Query categories from demand_signals excluding SEEDED, UNSOURCED, QUARANTINED
+    // Query categories from demand_signals excluding SEEDED, UNSOURCED, QUARANTINED, DUPLICATE, SEEDED_MIGRATION_0026
     let catRows: any[] = [];
     const catSql = `
       SELECT category, COUNT(*) as signal_count,
-             SUM(CASE WHEN signal_type = 'BUYER_QUESTION' THEN 1 ELSE 0 END) as buyer_questions,
+             SUM(CASE WHEN ${GENUINE_BUYER_DEMAND_SQL_CONDITION} THEN 1 ELSE 0 END) as buyer_questions,
              MIN(created_at) as earliest_signal,
              MAX(created_at) as latest_signal
       FROM demand_signals
       WHERE organization_id = ?
-        AND status NOT IN ('QUARANTINED', 'SEEDED', 'UNSOURCED')
+        AND status NOT IN ('QUARANTINED', 'SEEDED', 'SEEDED_MIGRATION_0026', 'UNSOURCED', 'DUPLICATE', 'UNSUPPORTED', 'UNSUPPORTED_BY_DEMAND', 'PAUSED_SEEDED_DEMAND')
         AND source_url LIKE 'http%'
         AND source_url NOT LIKE '%search.community%'
+        AND source_url NOT LIKE '%localhost%'
+        AND source_url NOT LIKE '%example.com%'
+        AND source_url NOT LIKE '%test.local%'
       GROUP BY category
       ORDER BY signal_count DESC
     `;
@@ -523,33 +524,36 @@ export class ProductOpportunityPipeline {
       const commissionModel = 'PERCENTAGE (Fixed advertising rates)';
       const contentStatus = matchingAsset ? matchingAsset.status : 'NONE';
 
-      if (lower.includes('printer') || (matchingOffer && matchingAsset)) {
+      if (matchingAsset?.status === 'UNSUPPORTED_BY_DEMAND' || matchingOffer?.status === 'PAUSED_SEEDED_DEMAND' || (lower.includes('printer') && buyerQuestions === 0 && (!matchingOffer || matchingOffer.status !== 'ACTIVE'))) {
         productOrProblem = matchingOffer?.title || 'Phomemo PM-241BT Direct Thermal Shipping Label Printer';
-        if (matchingAsset?.status === 'UNSUPPORTED_BY_DEMAND' || matchingOffer?.status === 'PAUSED_SEEDED_DEMAND') {
-          funnelState = 'UNSUPPORTED_BY_DEMAND';
-          nextStep = 'Paused: Hardware demand was seeded by fixture migration 0026 without real buyer questions';
-          nextStepReason = 'Offer and guide paused. Thermal printer proposal had zero real buyer questions and claims lacked stored manufacturer spec lines.';
-        } else if (matchingAsset?.status === 'NEEDS_REWRITE') {
-          funnelState = 'NEEDS_REWRITE';
-          nextStep = 'Rewrite guide to match approved offer specifications and verify stored brand spec lines';
-          nextStepReason = `Guide ${matchingAsset.id} has product/model mismatch (PM-241BT vs M110) or unverified claims lacking stored brand_spec_lines.`;
-        } else if (matchingAsset?.status === 'PUBLISHED') {
-          funnelState = 'PUBLISHED';
-          nextStep = 'Monitor organic visitors and referral click beacon';
-          nextStepReason = 'Guide is published; active acquisition distribution required.';
-        } else if (matchingAsset?.status === 'PUBLISH_READY') {
-          funnelState = 'NEEDS_OWNER_ACTION';
-          nextStep = 'Complete statutory owner intake attestation to publish guide';
-          nextStepReason = `Guide ${matchingAsset.id} is PUBLISH_READY, but statutory owner intake is missing required fields.`;
-        } else if (matchingAsset?.status === 'DRAFT') {
-          funnelState = 'DRAFTED';
-          nextStep = 'Complete review and advance guide to PUBLISH_READY';
-          nextStepReason = 'Draft guide created; review required before marking publish-ready.';
-        } else {
-          funnelState = 'READY_FOR_DRAFT';
-          nextStep = 'Generate initial buyer guide draft';
-          nextStepReason = 'Active offer exists with verified listing facts.';
-        }
+        funnelState = 'UNSUPPORTED_BY_DEMAND';
+        nextStep = 'Paused: Hardware demand was seeded by fixture migration 0026 without real buyer questions';
+        nextStepReason = 'Offer and guide paused. Thermal printer proposal had zero real buyer questions and claims lacked stored manufacturer spec lines.';
+      } else if (matchingAsset?.status === 'NEEDS_REWRITE') {
+        productOrProblem = matchingOffer?.title || 'Phomemo PM-241BT Direct Thermal Shipping Label Printer';
+        funnelState = 'NEEDS_REWRITE';
+        nextStep = 'Rewrite guide to match approved offer specifications and verify stored brand spec lines';
+        nextStepReason = `Guide ${matchingAsset.id} has product/model mismatch (PM-241BT vs M110) or unverified claims lacking stored brand_spec_lines.`;
+      } else if (matchingAsset?.status === 'PUBLISHED') {
+        productOrProblem = matchingOffer?.title || 'Phomemo PM-241BT Direct Thermal Shipping Label Printer';
+        funnelState = 'PUBLISHED';
+        nextStep = 'Monitor organic visitors and referral click beacon';
+        nextStepReason = 'Guide is published; active acquisition distribution required.';
+      } else if (matchingAsset?.status === 'PUBLISH_READY') {
+        productOrProblem = matchingOffer?.title || 'Phomemo PM-241BT Direct Thermal Shipping Label Printer';
+        funnelState = 'NEEDS_OWNER_ACTION';
+        nextStep = 'Complete statutory owner intake attestation to publish guide';
+        nextStepReason = `Guide ${matchingAsset.id} is PUBLISH_READY, but statutory owner intake is missing required fields.`;
+      } else if (matchingAsset?.status === 'DRAFT') {
+        productOrProblem = matchingOffer?.title || 'Phomemo PM-241BT Direct Thermal Shipping Label Printer';
+        funnelState = 'DRAFTED';
+        nextStep = 'Complete review and advance guide to PUBLISH_READY';
+        nextStepReason = 'Draft guide created; review required before marking publish-ready.';
+      } else if (matchingOffer && matchingOffer.status === 'ACTIVE' && matchingOffer.active === 1 && buyerQuestions >= 3) {
+        productOrProblem = matchingOffer.title;
+        funnelState = 'READY_FOR_DRAFT';
+        nextStep = 'Generate initial buyer guide draft';
+        nextStepReason = 'Active offer exists with verified listing facts.';
       } else if (buyerQuestions < 3) {
         productOrProblem = lower.includes('software') || lower.includes('accounting')
           ? 'SME Accounting & GST Billing Software (India)'

@@ -33,7 +33,7 @@ describe('Multi-Category Revenue Engine Suite (Real Money Only)', () => {
           INSERT INTO demand_signals (
             id, organization_id, category, topic, raw_query, evidence_snippet, source_url, signal_type,
             urgency, estimated_monthly_volume, status, created_at
-          ) VALUES (?, ?, 'Electronics & Accessories', ?, ?, 'spec evidence', 'https://example.com/audio', 'BUYER_QUESTION', 0.8, 150, 'DISCOVERED', datetime('now'))
+          ) VALUES (?, ?, 'Electronics & Accessories', ?, ?, 'spec evidence', 'https://techenclave.com/community/audio', 'BUYER_QUESTION', 0.8, 150, 'DISCOVERED', datetime('now'))
         `).run(`sig_elec_${i}`, ORG, `best wireless microphone vs lavalier ${i}`, `which wireless mic is best for interview ${i}`);
       }
 
@@ -43,7 +43,7 @@ describe('Multi-Category Revenue Engine Suite (Real Money Only)', () => {
           INSERT INTO demand_signals (
             id, organization_id, category, topic, raw_query, evidence_snippet, source_url, signal_type,
             urgency, estimated_monthly_volume, status, created_at
-          ) VALUES (?, ?, 'Home & Kitchen', ?, ?, 'spec evidence', 'https://example.com/coffee', 'BUYER_QUESTION', 0.7, 80, 'DISCOVERED', datetime('now'))
+          ) VALUES (?, ?, 'Home & Kitchen', ?, ?, 'spec evidence', 'https://techenclave.com/community/coffee', 'BUYER_QUESTION', 0.7, 80, 'DISCOVERED', datetime('now'))
         `).run(`sig_home_${i}`, ORG, `coffee grinder conical burr ${i}`, `best coffee grinder for espresso ${i}`);
       }
 
@@ -53,7 +53,7 @@ describe('Multi-Category Revenue Engine Suite (Real Money Only)', () => {
           INSERT INTO demand_signals (
             id, organization_id, category, topic, raw_query, evidence_snippet, source_url, signal_type,
             urgency, estimated_monthly_volume, status, created_at
-          ) VALUES (?, ?, 'Skincare & Supplements', ?, ?, 'spec evidence', 'https://example.com/health', 'BUYER_QUESTION', 0.9, 500, 'DISCOVERED', datetime('now'))
+          ) VALUES (?, ?, 'Skincare & Supplements', ?, ?, 'spec evidence', 'https://techenclave.com/community/health', 'BUYER_QUESTION', 0.9, 500, 'DISCOVERED', datetime('now'))
         `).run(`sig_med_${i}`, ORG, `best vitamin supplement ${i}`, `collagen supplement dosage ${i}`);
       }
 

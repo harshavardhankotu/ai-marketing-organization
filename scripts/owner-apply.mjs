@@ -14,7 +14,7 @@ import fs from 'fs';
 import path from 'path';
 
 // ==========================================
-// 1. AGENT DENY RULE
+// 1. AGENT DENY RULE (Strict Interactive Human Owner Execution Only)
 // ==========================================
 const isAgent = Boolean(
   process.env.GEMINI_API_KEY ||
@@ -25,10 +25,10 @@ const isAgent = Boolean(
   !process.stdin.isTTY
 );
 
-if (isAgent && process.env.FORCE_OWNER_RUN !== 'true') {
+if (isAgent) {
   console.error('\n❌ [SECURITY DENIAL] AGENT ACCESS REJECTED.');
   console.error('scripts/owner-apply.mjs can ONLY be executed manually by the human owner in an interactive terminal.');
-  console.error('Agents are strictly prohibited from defaulting, guessing, or setting statutory owner facts.\n');
+  console.error('Agents are strictly prohibited from defaulting, guessing, setting, or bypassing statutory owner facts.\n');
   process.exit(1);
 }
 
