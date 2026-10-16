@@ -187,6 +187,7 @@ export interface AgentDescriptor {
     successfulExecutions: number;
     failedExecutions: number;
     costIncurredINR: number;
+    statusText?: string;
   };
   memoryScope: 'BUSINESS' | 'MARKET' | 'CAMPAIGN' | 'AGENT' | 'SYSTEM';
   evaluationCriteria: string[];

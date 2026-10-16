@@ -32,6 +32,8 @@ export interface AgentExecutionResult<T = any> {
   decisionId?: string;
   toolExecution?: ToolExecutionResult;
   error?: string;
+  isPartialSuccess?: boolean;
+  retryCount?: number;
 }
 
 export class AgentRuntime {
@@ -145,6 +147,96 @@ export class AgentRuntime {
         );
       }
 
+      // 7b. Check tool execution outcome (Defect 5.A)
+      if (toolExecution && !toolExecution.success) {
+        if (response.telemetry) {
+          const costId = `cost_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+          const estimatedCostINR = response.telemetry.tokenUsageStatus === 'VERIFIED'
+            ? ((response.telemetry.totalTokens / 1000) * 0.05)
+            : 0;
+
+          db.prepare(`
+            INSERT INTO ai_cost_logs (
+              id, organization_id, business_id, agent_id, division,
+              model, thinking_level, input_tokens, output_tokens, total_tokens,
+              latency_ms, estimated_cost_inr, purpose, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+          `).run(
+            costId,
+            options.organizationId,
+            options.businessId,
+            agent.id,
+            agent.category,
+            response.telemetry.model,
+            response.telemetry.thinkingLevel,
+            response.telemetry.inputTokens,
+            response.telemetry.outputTokens,
+            response.telemetry.totalTokens,
+            response.telemetry.latencyMs,
+            estimatedCostINR,
+            options.prompt.substring(0, 100)
+          );
+
+          const eventId = `evt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+          db.prepare(`
+            INSERT INTO analytics_events (
+              id, organization_id, business_id, channel, event_type,
+              revenue_inr, metadata_json, created_at
+            ) VALUES (?, ?, ?, 'AI_AGENT', 'AGENT_TOOL_FAILED', 0, ?, datetime('now'))
+          `).run(
+            eventId,
+            options.organizationId,
+            options.businessId,
+            JSON.stringify({
+              agentId: agent.id,
+              tool: toolExecution.tool,
+              error: toolExecution.error
+            })
+          );
+        }
+
+        // State Machine Consistency: Failed tools CANNOT produce successful task or idle agent state!
+        db.prepare(`
+          UPDATE agents
+          SET status = 'ERROR',
+              updated_at = datetime('now')
+          WHERE id = ?
+        `).run(agent.id);
+
+        const taskFailureOutput = {
+          ...(typeof response.data === 'object' && response.data !== null ? response.data : { result: response.data }),
+          decisionId,
+          toolExecution,
+          error: toolExecution.error || 'Tool execution failed',
+          failedAt: new Date().toISOString()
+        };
+
+        db.prepare(`
+          UPDATE tasks 
+          SET status = 'FAILED',
+              outputs_json = ?,
+              completed_at = datetime('now')
+          WHERE id = ?
+        `).run(JSON.stringify(taskFailureOutput), options.taskId);
+
+        return {
+          success: false,
+          error: `Tool execution failed for agent '${agent.id}' (${toolExecution.tool}): ${toolExecution.error}`,
+          data: response.data,
+          agentId: agent.id,
+          agentName: agent.name,
+          cached: response.cached,
+          confidence: 0,
+          executionType: response.executionType,
+          model: response.model,
+          telemetry: response.telemetry,
+          tokenUsageStatus: response.tokenUsageStatus,
+          decisionId,
+          toolExecution,
+          isPartialSuccess: false
+        };
+      }
+
       // 8. Record Telemetry in ai_cost_logs and analytics_events
       if (response.telemetry) {
         const costId = `cost_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
@@ -219,7 +311,7 @@ export class AgentRuntime {
         WHERE id = ?
       `).run(JSON.stringify(taskOutput), options.taskId);
 
-      // 11. Persist Findings to Memory if Research Agent
+      // 11. Persist Findings to Memory if Research Agent (Defect 5.C)
       if (agent.category === 'RESEARCH_INTELLIGENCE' && (response.data as any).findings) {
         const findings = (response.data as any).findings as any[];
         const insertFinding = db.prepare(`
@@ -231,6 +323,18 @@ export class AgentRuntime {
         `);
 
         for (const f of findings) {
+          const rawSource = String(f.source || f.sourceReference || '').trim();
+          const hasValidHttpSource = /^https?:\/\//i.test(rawSource);
+          const hasEvidence = Boolean(f.evidence || f.extractedEvidence);
+
+          // P0 Integrity: Never treat fixtures or missing sources as OBSERVED production evidence
+          const isFixture = !hasValidHttpSource || /fixture|test_data|mock|synthetic|search\.community/i.test(rawSource);
+          const evidenceStatus = isFixture ? 'QUARANTINED' : (f.evidenceStatus || 'VERIFIED');
+          const dataClassification = isFixture ? 'UNSOURCED' : (f.dataClassification || 'REAL');
+          const certainty = isFixture ? 'HYPOTHESIZED' : (f.certainty || 'OBSERVED');
+          const cleanSource = hasValidHttpSource ? rawSource : 'UNSOURCED';
+          const cleanEvidence = hasEvidence ? (f.evidence || f.extractedEvidence) : 'EVIDENCE_PENDING_VERIFICATION';
+
           insertFinding.run(
             `fnd_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
             options.organizationId,
@@ -239,16 +343,16 @@ export class AgentRuntime {
             f.topic || 'Market Insight',
             f.market || combinedContext.business?.city || 'India',
             f.finding || '',
-            f.evidence || f.extractedEvidence || 'NO_REAL_WORLD_EVIDENCE',
-            f.source || 'DETERMINISTIC_TEST_FIXTURE',
-            f.certainty || 'OBSERVED',
-            f.confidence || 0.5,
-            0.9,
-            f.sourceType || 'TEST_DATA',
-            f.sourceReference || 'DETERMINISTIC_TEST_FIXTURE',
+            cleanEvidence,
+            cleanSource,
+            certainty,
+            isFixture ? 0.2 : (f.confidence || 0.8),
+            isFixture ? 0.3 : 0.9,
+            isFixture ? 'UNSOURCED' : (f.sourceType || 'EXTERNAL_WEB'),
+            cleanSource,
             f.retrievedAt || new Date().toISOString(),
-            f.evidenceStatus || 'NO_REAL_WORLD_EVIDENCE',
-            f.dataClassification || 'TEST_DATA'
+            evidenceStatus,
+            dataClassification
           );
         }
       }
@@ -271,9 +375,19 @@ export class AgentRuntime {
       db.prepare(`
         UPDATE tasks 
         SET status = 'FAILED',
-            outputs_json = ?
+            outputs_json = ?,
+            completed_at = datetime('now')
         WHERE id = ?
-      `).run(JSON.stringify({ error: error.message }), options.taskId);
+      `).run(JSON.stringify({ error: error.message, failedAt: new Date().toISOString() }), options.taskId);
+
+      try {
+        db.prepare(`
+          UPDATE agents
+          SET status = 'ERROR',
+              updated_at = datetime('now')
+          WHERE id = ?
+        `).run(options.agentId);
+      } catch {}
 
       throw error;
     }
