@@ -23,6 +23,7 @@
     "lint:rupee-estimates": "node scripts/lint-no-unbacked-rupee-estimates.mjs",
     "check:no-scratch-writes": "node scripts/check-no-scratch-writes.mjs",
     "status:generate": "node scripts/generate-status.mjs",
+    "offer:hash": "node scripts/offer-hash.mjs",
     "system-map:generate": "node scripts/generate-system-map.mjs",
     "floki:orchestrate": "python scripts/floki_marketing_runner.py"
   },

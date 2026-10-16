@@ -519,7 +519,7 @@ export class ProductOpportunityPipeline {
       let productOrProblem = cat;
       let nextStep = '';
       let nextStepReason = '';
-      let partnerApprovalStatus = approvedAmazonPartner ? 'APPROVED (Amazon India Associates)' : 'NOT_APPROVED';
+      let partnerApprovalStatus = approvedAmazonPartner ? 'PROVISIONAL (Amazon India Associates)' : 'NOT_APPROVED';
       const qualifyingEvents = ['PURCHASE'];
       const commissionModel = 'PERCENTAGE (Fixed advertising rates)';
       const contentStatus = matchingAsset ? matchingAsset.status : 'NONE';

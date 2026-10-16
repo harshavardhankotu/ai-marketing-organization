@@ -157,6 +157,8 @@ export const EXACT_ROUTE_POLICY = {
     '/payments/page-view',
     '/referrals/beacon',
     '/owner/facts-status',
+    '/owner/today',
+    '/owner/proposal',
     '/capabilities',
     '/tools'
   ],
@@ -309,7 +311,7 @@ apiRouter.use('*', async (c, next) => {
       path === '/commission/offers/asin' ||
       path === '/commission/attestation' ||
       path === '/build/static-site' ||
-      path.startsWith('/owner')
+      (path.startsWith('/owner') && path !== '/owner/today' && path !== '/owner/proposal' && path !== '/owner/facts-status' && path !== '/owner/login')
     )) {
       return c.json({
         success: false,
@@ -2849,6 +2851,75 @@ apiRouter.get('/payments/manual-upi/claims', (c) => {
   const db = getDb();
   const claims = db.prepare(`SELECT * FROM manual_upi_claims WHERE status = 'PAYMENT_CLAIMED' ORDER BY claimed_at DESC LIMIT 50`).all();
   return c.json({ success: true, data: claims });
+});
+
+// Owner-only: Reconcile official Razorpay export rows (Part D.2)
+apiRouter.post('/payments/reconcile-export', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const rows = body.rows || [];
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return c.json({ success: false, error: 'Expected an array of export rows in body.rows' }, 400);
+  }
+  const { PaymentTruthService } = await import('../revenue/payment-truth-service.js');
+  const orgId = c.get('organizationId') || 'org_owner_primary';
+  const bizId = body.businessId || 'biz_platform_aro';
+  const result = PaymentTruthService.getInstance().reconcileRazorpayExport(rows, orgId, bizId);
+  return c.json({ success: true, data: result });
+});
+
+// Owner-only: Mark an order / transaction as TEST (Part D.2)
+apiRouter.post('/payments/mark-test', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const transactionId = body.transactionId || body.utr;
+  if (!transactionId) {
+    return c.json({ success: false, error: 'Missing transactionId or utr' }, 400);
+  }
+  const { PaymentTruthService } = await import('../revenue/payment-truth-service.js');
+  const result = PaymentTruthService.getInstance().markOrderTest(transactionId);
+  return c.json({ success: true, data: result });
+});
+
+// Owner Digest: GET /owner/today (Part C)
+apiRouter.get('/owner/today', async (c) => {
+  const { OwnerDigestService } = await import('../revenue/owner-digest.js');
+  const digest = OwnerDigestService.getInstance().generateDigest();
+  return c.json({ success: true, data: digest });
+});
+
+// Owner Digest Telegram Dispatch: POST /owner/today/send-telegram (Part C)
+apiRouter.post('/owner/today/send-telegram', async (c) => {
+  const { OwnerDigestService } = await import('../revenue/owner-digest.js');
+  const body = await c.req.json().catch(() => ({}));
+  const forceSend = body.forceSend === true;
+  const result = await OwnerDigestService.getInstance().dispatchDailyTelegramDigest({ forceSend });
+  return c.json(result, result.sent ? 200 : 400);
+});
+
+// Owner Proposal: /owner/proposal (Part D.4)
+apiRouter.all('/owner/proposal', async (c) => {
+  const fs = await import('fs');
+  const path = await import('path');
+  const bioPath = path.resolve(process.cwd(), 'owner', 'BIO.md');
+  if (!fs.existsSync(bioPath)) {
+    return c.json({
+      success: false,
+      error: 'OWNER_BIO_MISSING',
+      message: 'owner/BIO.md is missing. Proposal generation refused without verified owner background. Never invent clients or experience.'
+    }, 422);
+  }
+
+  const bioContent = fs.readFileSync(bioPath, 'utf8');
+  return c.json({
+    success: true,
+    message: 'Proposal draft generated strictly from owner/BIO.md.',
+    ownerBioPreview: bioContent.slice(0, 300),
+    data: {
+      title: 'AI Inbound Lead Conversion System Implementation',
+      setupPriceINR: 15000,
+      monthlyPriceINR: 8000,
+      source: 'owner/BIO.md'
+    }
+  });
 });
 
 // Owner-only: Create real Razorpay UPI Payment Link (Spec § 11 & § 12)
@@ -5727,7 +5798,7 @@ apiRouter.get('/commission/funnel', async (c) => {
     { key: 'DEMAND_SIGNALS_DISCOVERED', name: 'Demand Signals Discovered', count: demandSignalsCount, provenance: 'OBSERVED' as const },
     { key: 'BUYER_QUESTIONS_VALIDATED', name: 'Buyer Questions Validated', count: buyerQuestionsCount, provenance: 'OBSERVED' as const },
     { key: 'OPPORTUNITIES_EVALUATED', name: 'Product Categories Evaluated', count: opportunitiesCount, provenance: 'OBSERVED' as const },
-    { key: 'APPROVED_PARTNERS', name: 'Approved Partner Networks', count: approvedPartnersCount, provenance: 'OBSERVED' as const },
+    { key: 'APPROVED_PARTNERS', name: 'Partner Networks (Provisional)', count: approvedPartnersCount, provenance: 'OBSERVED' as const },
     { key: 'ACTIVE_OFFERS', name: 'Active Commercial Offers', count: activeOffersCount, provenance: 'OBSERVED' as const },
     { key: 'DRAFT_GUIDES', name: 'Draft Guides Generated', count: draftGuidesCount, provenance: 'OBSERVED' as const },
     { key: 'PUBLISH_READY_GUIDES', name: 'Guides Ready for Publication', count: publishReadyGuidesCount, provenance: 'OBSERVED' as const },

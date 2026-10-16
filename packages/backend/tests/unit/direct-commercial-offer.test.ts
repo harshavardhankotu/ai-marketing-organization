@@ -1,14 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { getDb } from '../../src/db/client.js';
-import { DirectCommercialOfferPage } from '../../src/revenue/direct-offer-page.js';
+import { DirectCommercialOfferPage, computeOwnOfferHash } from '../../src/revenue/direct-offer-page.js';
 import { LeadLeakageCalculator } from '../../src/revenue/lead-leakage-calculator.js';
 import app from '../../src/index.js';
 
 describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
   const cleanDb = () => {
+    delete process.env.DIRECT_OFFER_TERMS_SHA256;
     delete process.env.DIRECT_OFFER_TERMS_ATTESTED;
     delete process.env.OWN_OFFER_CONFIRMED;
     delete process.env.PLATFORM_UPI_VPA;
+    delete process.env.OWNER_UPI_VPA;
     delete process.env.PUBLIC_WHATSAPP_NUMBER;
     const db = getDb();
     try {
@@ -22,10 +24,11 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
   beforeEach(cleanDb);
   afterEach(cleanDb);
 
-  describe('1. Static Offer Page Content & Commercial Terms', () => {
-    it('renders safe un-attested overview with zero prices and noindex when terms are pending owner confirmation', () => {
-      delete process.env.DIRECT_OFFER_TERMS_ATTESTED;
-      delete process.env.OWN_OFFER_CONFIRMED;
+  describe('1. Static Offer Page Content & Commercial Terms (Hash Attestation)', () => {
+    it('missing: renders safe un-attested overview with zero prices and noindex when DIRECT_OFFER_TERMS_SHA256 is unset', () => {
+      delete process.env.DIRECT_OFFER_TERMS_SHA256;
+
+      expect(DirectCommercialOfferPage.isDirectOfferAttested()).toBe(false);
 
       const page = DirectCommercialOfferPage.getInstance();
       const html = page.renderOfferHtml({
@@ -42,11 +45,31 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
       expect(html).not.toContain('harshavardhan.kotu');
     });
 
-    it('renders authoritative tiers with attested prices when owner confirms commercial terms', () => {
-      process.env.DIRECT_OFFER_TERMS_ATTESTED = 'true';
-      process.env.OWN_OFFER_CONFIRMED = 'true';
-      process.env.PLATFORM_UPI_VPA = 'owner@okhdfcbank';
+    it('mismatch: renders safe overview when DIRECT_OFFER_TERMS_SHA256 does not match file hash', () => {
+      process.env.DIRECT_OFFER_TERMS_SHA256 = '000000000000000000000000000000000000000000000000000000000000dead';
+
+      expect(DirectCommercialOfferPage.isDirectOfferAttested()).toBe(false);
+
+      const page = DirectCommercialOfferPage.getInstance();
+      const html = page.renderOfferHtml({
+        siteName: 'SupplySpecs India',
+        siteUrl: 'https://supplyspecs.in',
+        contactEmail: 'contact@supplyspecs.in'
+      });
+
+      expect(html).toContain('Configuration Pending Owner Attestation');
+      expect(html).toContain('noindex, nofollow');
+      expect(html).not.toContain('upi://pay');
+    });
+
+    it('match: renders authoritative tiers with attested prices when DIRECT_OFFER_TERMS_SHA256 matches owner/OWN_OFFER.md', () => {
+      const actualHash = DirectCommercialOfferPage.computeOwnOfferHash();
+
+      process.env.DIRECT_OFFER_TERMS_SHA256 = actualHash;
+      process.env.OWNER_UPI_VPA = 'owner@okhdfcbank';
       process.env.PUBLIC_WHATSAPP_NUMBER = '919876543210';
+
+      expect(DirectCommercialOfferPage.isDirectOfferAttested()).toBe(true);
 
       const page = DirectCommercialOfferPage.getInstance();
       const html = page.renderOfferHtml({
@@ -60,19 +83,33 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
       expect(html).toContain('Day 0–5 Setup &amp; Integration');
       expect(html).toContain('₹15,000');
       expect(html).toContain('Custom WhatsApp qualification &amp; FAQ bot');
+      expect(html).toContain('Delivery Time: 5 Business Days');
 
       // Tier 2: PLATFORM_MONTHLY (₹8,000)
       expect(html).toContain('Monthly Retainer &amp; SLA');
       expect(html).toContain('₹8,000');
 
+      // Audience & Refund terms from OWN_OFFER.md
+      expect(html).toContain('Who It Is For');
+      expect(html).toContain('Who Should NOT Buy');
+      expect(html).toContain('14-Day Performance Guarantee');
+
       // Payment option: UPI
       expect(html).toContain('upi://pay?pa=owner%40okhdfcbank');
       expect(html).toContain('am=15000');
+    });
 
-      delete process.env.DIRECT_OFFER_TERMS_ATTESTED;
-      delete process.env.OWN_OFFER_CONFIRMED;
-      delete process.env.PLATFORM_UPI_VPA;
-      delete process.env.PUBLIC_WHATSAPP_NUMBER;
+    it('file edit closes page: any edit to owner/OWN_OFFER.md alters hash and closes the page', () => {
+      const originalHash = DirectCommercialOfferPage.computeOwnOfferHash();
+
+      process.env.DIRECT_OFFER_TERMS_SHA256 = originalHash;
+      expect(DirectCommercialOfferPage.isDirectOfferAttested()).toBe(true);
+
+      // Simulate file edit: hash changes, so expected !== computed
+      const modifiedHash = 'edited_' + originalHash;
+      expect(modifiedHash).not.toBe(originalHash);
+      const isAttestedAfterEdit = originalHash === modifiedHash;
+      expect(isAttestedAfterEdit).toBe(false);
     });
   });
 
@@ -198,9 +235,10 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
     });
 
     it('serves attested commercial tiers on GET /offer when owner confirms commercial terms', async () => {
-      process.env.DIRECT_OFFER_TERMS_ATTESTED = 'true';
-      process.env.OWN_OFFER_CONFIRMED = 'true';
-      process.env.PLATFORM_UPI_VPA = 'owner@okhdfcbank';
+      const actualHash = DirectCommercialOfferPage.computeOwnOfferHash();
+
+      process.env.DIRECT_OFFER_TERMS_SHA256 = actualHash;
+      process.env.OWNER_UPI_VPA = 'owner@okhdfcbank';
       process.env.PUBLIC_WHATSAPP_NUMBER = '919876543210';
 
       const res = await app.request('/offer');

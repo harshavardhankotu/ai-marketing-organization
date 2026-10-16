@@ -164,7 +164,7 @@ export async function generateStatusContent() {
     { num: 1, name: 'Demand Signals Discovered', count: s1Count, sql: s1Sql },
     { num: 2, name: 'Buyer Questions Validated', count: s2Count, sql: s2Sql },
     { num: 3, name: 'Product Categories Evaluated', count: s3Count, sql: s3Sql },
-    { num: 4, name: 'Approved Partner Networks', count: s4Count, sql: s4Sql },
+    { num: 4, name: 'Partner Networks (Provisional)', count: s4Count, sql: s4Sql },
     { num: 5, name: 'Active Commercial Offers', count: s5Count, sql: s5Sql },
     { num: 6, name: 'Draft Guides Generated', count: s6Count, sql: s6Sql },
     { num: 7, name: 'Guides Ready for Publication', count: s7Count, sql: s7Sql },

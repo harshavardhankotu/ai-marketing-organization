@@ -167,7 +167,8 @@ function main() {
       'ASSOCIATES_AGREEMENT_READ',
       'PUBLIC_SITE_NAME',
       'PUBLIC_AUTHOR_NAME',
-      'PUBLIC_CONTACT_EMAIL'
+      'PUBLIC_CONTACT_EMAIL',
+      'DIRECT_OFFER_TERMS_SHA256'
     ];
     if (/api\.render\.com.*\/env-vars/i.test(cmd)) {
       for (const ov of ownerFactVars) {

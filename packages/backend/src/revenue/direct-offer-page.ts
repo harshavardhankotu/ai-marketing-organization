@@ -11,10 +11,34 @@
  * - Platform checkout endpoints fail closed.
  */
 
+import fs from 'fs';
+import path from 'path';
+import crypto from 'crypto';
 import { isProduction } from '../config/env.js';
 import { getDb } from '../db/client.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { OwnerAuthService } from '../auth/owner-auth.js';
+
+export function computeOwnOfferHash(customFilePath?: string): string | null {
+  try {
+    let filePath = customFilePath;
+    if (!filePath) {
+      const candidates = [
+        path.resolve(process.cwd(), 'owner', 'OWN_OFFER.md'),
+        path.resolve(process.cwd(), '..', 'owner', 'OWN_OFFER.md'),
+        path.resolve(process.cwd(), '..', '..', 'owner', 'OWN_OFFER.md')
+      ];
+      filePath = candidates.find(c => fs.existsSync(c));
+    }
+    if (!filePath || !fs.existsSync(filePath)) {
+      return null;
+    }
+    const content = fs.readFileSync(filePath);
+    return crypto.createHash('sha256').update(content).digest('hex');
+  } catch {
+    return null;
+  }
+}
 
 export interface OfferPageConfig {
   siteName?: string;
@@ -29,6 +53,10 @@ export class DirectCommercialOfferPage {
   private static instance: DirectCommercialOfferPage;
   private d1Repo = D1RevenueRepository.getInstance();
 
+  public static computeOwnOfferHash(customFilePath?: string): string | null {
+    return computeOwnOfferHash(customFilePath);
+  }
+
   public static getInstance(): DirectCommercialOfferPage {
     if (!DirectCommercialOfferPage.instance) {
       DirectCommercialOfferPage.instance = new DirectCommercialOfferPage();
@@ -38,18 +66,19 @@ export class DirectCommercialOfferPage {
 
   /**
    * P0 Safety Gate: Checks whether Lane B commercial terms have been explicitly attested by the owner.
-   * Does NOT treat unconfirmed repo drafts or default environment fallbacks as owner approval.
+   * /offer opens only when Render env DIRECT_OFFER_TERMS_SHA256 equals SHA-256 of owner/OWN_OFFER.md.
+   * Any file edit to owner/OWN_OFFER.md alters the hash and closes the page immediately.
    */
-  public static isDirectOfferAttested(): boolean {
-    if (process.env.DIRECT_OFFER_TERMS_ATTESTED === 'true' && process.env.OWN_OFFER_CONFIRMED === 'true') {
-      return true;
+  public static isDirectOfferAttested(customFilePath?: string): boolean {
+    const expectedHash = process.env.DIRECT_OFFER_TERMS_SHA256?.trim();
+    if (!expectedHash) {
+      return false;
     }
-    try {
-      const db = getDb();
-      const row = db.prepare("SELECT id FROM direct_offer_attestation WHERE offer_id = 'PLATFORM_SETUP' AND status = 'ATTESTED' LIMIT 1").get() as any;
-      if (row) return true;
-    } catch {}
-    return false;
+    const computedHash = computeOwnOfferHash(customFilePath);
+    if (!computedHash) {
+      return false;
+    }
+    return computedHash.toLowerCase() === expectedHash.toLowerCase();
   }
 
   /**
@@ -103,8 +132,8 @@ export class DirectCommercialOfferPage {
    * Renders the HTML offer page.
    * If commercial terms are un-attested, renders a safe informational overview with zero payment links.
    */
-  public renderOfferHtml(config: Partial<OfferPageConfig> = {}): string {
-    const isAttested = DirectCommercialOfferPage.isDirectOfferAttested();
+  public renderOfferHtml(config: Partial<OfferPageConfig> = {}, customOfferPath?: string): string {
+    const isAttested = DirectCommercialOfferPage.isDirectOfferAttested(customOfferPath);
     const siteName = config.siteName || (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
     const siteUrl = config.siteUrl || (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').trim();
     const contactEmail = config.contactEmail || (process.env.PUBLIC_CONTACT_EMAIL ? process.env.PUBLIC_CONTACT_EMAIL.trim() : null);
@@ -428,17 +457,17 @@ export class DirectCommercialOfferPage {
       <!-- Tier 1 -->
       <div class="tier-card featured">
         <h2 class="tier-name">Day 0–5 Setup &amp; Integration</h2>
-        <p class="tier-desc">Complete setup, qualification rules, and 24/7 lead conversion activation.</p>
+        <p class="tier-desc">Complete setup, qualification rules, and 24/7 lead conversion activation. Delivery Time: 5 Business Days.</p>
         <div class="price-box">
           <span class="price-amount">₹${setupPriceINR.toLocaleString('en-IN')}</span>
-          <span class="price-period">one-time investment</span>
+          <span class="price-period">one-time investment (5-day delivery)</span>
         </div>
         <ul class="feature-list">
-          <li>✓ Custom WhatsApp qualification &amp; FAQ bot</li>
+          <li>✓ Custom WhatsApp qualification &amp; FAQ bot (&lt; 2 min response)</li>
           <li>✓ Google Business Profile instant lead capture</li>
-          <li>✓ Multi-touch follow-up sequence</li>
-          <li>✓ Direct appointment scheduling integration</li>
-          <li>✓ Live system handover report</li>
+          <li>✓ 3-step multi-touch follow-up workflow</li>
+          <li>✓ Direct calendar booking integration</li>
+          <li>✓ Live system handover report &amp; staff walkthrough</li>
         </ul>
         ${upiUri ? `<a href="${upiUri}" class="btn">Pay ₹${setupPriceINR.toLocaleString('en-IN')} via UPI</a>` : ''}
         ${razorpayUrl ? `<a href="${razorpayUrl}" class="btn btn-secondary" target="_blank" rel="noopener">Pay via Razorpay</a>` : ''}
@@ -447,18 +476,36 @@ export class DirectCommercialOfferPage {
       <!-- Tier 2 -->
       <div class="tier-card">
         <h2 class="tier-name">Monthly Retainer &amp; SLA</h2>
-        <p class="tier-desc">Continuous triage optimization, reminder workflows, and monthly conversion reporting.</p>
+        <p class="tier-desc">Continuous triage optimization, reminder workflows, and monthly conversion reporting. Continuous 30-day service.</p>
         <div class="price-box">
           <span class="price-amount">₹${monthlyPriceINR.toLocaleString('en-IN')}</span>
           <span class="price-period">/ month (cancel anytime)</span>
         </div>
         <ul class="feature-list">
           <li>✓ 24/7 automated lead response under 2 minutes</li>
-          <li>✓ Ongoing prompt & qualification tuning</li>
+          <li>✓ Ongoing prompt &amp; qualification tuning</li>
           <li>✓ Weekly show-rate and conversion reporting</li>
           <li>✓ Continuous DPDP compliance monitoring</li>
         </ul>
         ${whatsappNum ? `<a href="https://wa.me/${whatsappNum}?text=${encodeURIComponent(`Hi, I would like to subscribe to the AI Lead Conversion Monthly Retainer for my business.`)}" class="btn btn-secondary" target="_blank" rel="noopener">Inquire via WhatsApp</a>` : ''}
+      </div>
+    </div>
+
+    <!-- Commercial Terms & Scope from owner/OWN_OFFER.md -->
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; margin-bottom: 2rem;">
+      <div style="background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 1.5rem;">
+        <h3 style="color: #38bdf8; font-size: 1.1rem; margin-bottom: 0.75rem;">Who It Is For</h3>
+        <p style="color: #cbd5e1; font-size: 0.9rem; line-height: 1.5;">Local service businesses, healthcare practices, clinics, dental centers, coaching institutes, and professional service firms in India seeking automated 24/7 inquiry triage without extra ad spend.</p>
+      </div>
+
+      <div style="background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 1.5rem;">
+        <h3 style="color: #f87171; font-size: 1.1rem; margin-bottom: 0.75rem;">Who Should NOT Buy</h3>
+        <p style="color: #cbd5e1; font-size: 0.9rem; line-height: 1.5;">E-commerce stores without inquiry response delays, or businesses without an active WhatsApp Business number or without a claimed Google Business Profile.</p>
+      </div>
+
+      <div style="background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 1.5rem;">
+        <h3 style="color: #34d399; font-size: 1.1rem; margin-bottom: 0.75rem;">Refund Terms &amp; Guarantee</h3>
+        <p style="color: #cbd5e1; font-size: 0.9rem; line-height: 1.5;"><strong>14-Day Performance Guarantee:</strong> 100% full refund of ₹15,000 setup fee if the automated triage fails to capture inquiries within 14 days due to unresolved platform defect. Monthly Retainer: Cancel anytime before the next billing cycle.</p>
       </div>
     </div>
 

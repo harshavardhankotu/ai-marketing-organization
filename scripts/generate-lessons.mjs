@@ -1,152 +1,53 @@
 import fs from 'fs';
 import path from 'path';
-import { execSync } from 'child_process';
-
-function getCfToken() {
-  if (process.env.CLOUDFLARE_D1_API_TOKEN) return process.env.CLOUDFLARE_D1_API_TOKEN;
-  if (process.env.CLOUDFLARE_API_TOKEN) return process.env.CLOUDFLARE_API_TOKEN;
-  for (const envFile of ['.env.local', '.env.deploy_secrets']) {
-    const envPath = path.resolve(envFile);
-    if (fs.existsSync(envPath)) {
-      const content = fs.readFileSync(envPath, 'utf8');
-      const match = content.match(/CLOUDFLARE_API_TOKEN=([^\r\n]+)/);
-      if (match) return match[1].trim();
-    }
-  }
-  return null;
-}
-
-const cfToken = getCfToken();
-const accountId = process.env.CLOUDFLARE_ACCOUNT_ID || '9b7511ff69e507dd3a00a7266fec11a3';
-const dbId = process.env.CLOUDFLARE_D1_DATABASE_ID || '0563bb85-f6d2-483f-8b0f-0784e3d604c7';
-
-async function queryD1(sql, params = []) {
-  if (!cfToken) return [];
-  try {
-    const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/d1/database/${dbId}/query`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${cfToken}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ sql, params })
-    });
-    const data = await res.json();
-    return data.result?.[0]?.results || [];
-  } catch {
-    return [];
-  }
-}
-
-async function queryData(sql, params = []) {
-  if (cfToken) {
-    const res = await queryD1(sql, params);
-    if (res && res.length > 0) return res;
-  }
-  try {
-    const Database = (await import('better-sqlite3')).default;
-    const dbPath = path.resolve('packages/backend/marketing.db');
-    if (fs.existsSync(dbPath)) {
-      const db = new Database(dbPath);
-      return db.prepare(sql).all(...params);
-    }
-  } catch {}
-  return [];
-}
 
 async function generateLessons() {
   console.log('=== GENERATING LESSONS.MD ===');
 
-  // 1. Fetch Mistakes
-  const mistakes = await queryData(`
-    SELECT id, severity, recurrence_count, title, rule, what_happened, cause, guard_type, guard_ref, status
-    FROM mistakes_board
-    ORDER BY CASE severity WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 WHEN 'P3' THEN 3 ELSE 4 END, recurrence_count DESC;
-  `);
-
-  // 2. Fetch Learning Records
-  const learnings = await queryData(`
-    SELECT id, what, outcome, cause, rule, source, created_at
-    FROM learning_records
-    ORDER BY created_at DESC LIMIT 20;
-  `);
-
-  // 3. Git commit log
-  let gitHistory = '';
-  try {
-    gitHistory = execSync('git log -n 12 --pretty=format:"* %h - %cd: %s" --date=short').toString().trim();
-  } catch {
-    gitHistory = '* Local git commit history unavailable';
-  }
-
   const dateStr = new Date().toISOString().split('T')[0];
 
-  let md = `# Engineering & Operational Lessons Learned
+  const md = `# Engineering & Operational Lessons Learned
 
-> **Generated:** ${dateStr}
-> **Repository:** \`harshavardhankotu/ai-marketing-organization\`
+> **Generated:** ${dateStr}  
+> **Repository:** \`harshavardhankotu/ai-marketing-organization\`  
 > **Core Principle:** Zero synthetic metrics, zero fabricated demand, zero unverified revenue, zero agent default assumptions.
 
 ---
 
-## 1. Executive Summary & Foundational Rules
+## Five Core Operational Lessons
 
-1. **Demand Provenance Gate:** Every demand signal must trace to an external URL. Fixtures or mock signals (\`search.community\`) must never enter production D1, count toward 3-signal gates, or justify offer creation.
-2. **Four-State Payment Truth:** Commercial revenue is NEVER recorded from page visits, proposal creations, or self-reported claims. Truth progresses through:
-   \`PAYMENT_PAGE_VIEW\` (traffic only) &rarr; \`PAYMENT_CLAIMED\` (customer UTR entered, ₹0 ledgered) &rarr; \`MANUAL_VERIFIED\` (owner confirms bank statement credit) &rarr; \`EXPORT_VERIFIED\` (reconciled against bank/gateway settlement export).
-3. **Statutory Owner Boundary:** The system strictly prohibits agents from setting, guessing, or defaulting statutory owner facts (PAN, GST, UPI VPA, Amazon Associates dates). All owner facts require explicit manual entry via \`scripts/owner-apply.mjs\` or owner form.
-4. **Hermetic Test Isolation:** Tests must NEVER spend live provider credits (Tavily, Gemini, Firecrawl) or mutate production storage.
-5. **Deployment Parity:** Production deployments must strictly match local git HEAD (\`HEAD === render_commit\`), and no code may deploy while CI is red.
+### 1. Seeded demand counted as real
+- **What happened:** Migration 0026 seeded fixture URLs (\`search.community/q1\` to \`q14\`) into production D1, which were counted as real buyer questions, leading to partner offers and commercial guides created on fake demand.
+- **Root cause:** Test fixtures were persisted directly into production database tables without provenance validation, conflating mock test artifacts with measured consumer intent.
+- **Permanent rule:** Never seed fixture, mock, or test URLs into production databases. Every production signal must trace to a verified external HTTP URL. Fixture fallback is eliminated from production entirely.
 
 ---
 
-## 2. Lessons from Mistakes Board (Root Cause & Permanent Guards)
-
-| Mistake ID | Sev | What Failed | Root Cause | Permanent Guard | New Operational Behavior |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-`;
-
-  for (const m of mistakes) {
-    const guardDesc = `${m.guard_type}${m.guard_ref ? ` (\`${m.guard_ref}\`)` : ''}`;
-    md += `| **${m.id}** | \`${m.severity}\` | ${m.what_happened || m.title} | ${m.cause || 'Unchecked assumption'} | ${guardDesc} | ${m.rule} |\n`;
-  }
-
-  md += `\n---
-
-## 3. Empirical Learning Records (From Production Engine)
-
-`;
-
-  if (learnings.length === 0) {
-    md += `*No empirical learning records found in database.*\\n`;
-  } else {
-    for (const l of learnings) {
-      md += `### ${l.what} (${l.outcome})\n`;
-      md += `- **Date:** ${l.created_at || 'Recorded'}\n`;
-      md += `- **Root Cause:** ${l.cause}\n`;
-      md += `- **Governing Rule:** ${l.rule}\n`;
-      if (l.source) md += `- **Source:** \`${l.source}\`\n`;
-      md += `\n`;
-    }
-  }
-
-  md += `---
-
-## 4. Recent Verified Git Commits
-
-\`\`\`text
-${gitHistory}
-\`\`\`
+### 2. Guards that only check a file exists
+- **What happened:** Integrity and compliance guards previously checked only whether files like \`owner/OWN_OFFER.md\` or \`owner/affiliate-candidates.md\` existed on the filesystem, rather than validating their semantic contents, schema invariants, or factual attestation.
+- **Root cause:** Shallow file-presence assertions created a false sense of security while permitting empty, malformed, or unverified draft content to pass into production workflows.
+- **Permanent rule:** Content, revenue, and security guards must verify semantic invariants, cryptographic digests, and live proofs—never merely filesystem file presence.
 
 ---
 
-## 5. Verification Checklist for Future Changes
+### 3. Env-boolean attestation
+- **What happened:** Commercial offer terms were gated by boolean environment flags (\`DIRECT_OFFER_TERMS_ATTESTED=true\`), which allowed modified or stale terms to be served without re-verification whenever offer text was edited.
+- **Root cause:** Boolean flags decouple authorization from content state: once set, they remain true regardless of subsequent modifications to the underlying terms.
+- **Permanent rule:** Offer attestation must use a cryptographic SHA-256 digest of \`owner/OWN_OFFER.md\` (\`DIRECT_OFFER_TERMS_SHA256\`). Any file edit immediately changes the computed hash and closes the \`/offer\` page until the owner explicitly attests to the updated content.
 
-- [ ] Run \`npm run board:preflight\` before starting any task.
-- [ ] Run \`npm run board:verify\` after making changes to verify all guards pass.
-- [ ] Ensure 0 test fixtures are present in production D1 migrations (\`no-fixture-migrations.test.ts\`).
-- [ ] Ensure all 6 statutory owner facts remain unguested (\`owner-facts-and-publish-gate.test.ts\`).
-- [ ] Ensure test suite executes 100% hermetically with 0 API credit consumption.
+---
+
+### 4. Agent commits authored as the owner
+- **What happened:** Autonomous agent runs executed git commits using the human owner's name and email, creating a misleading audit trail that obscured machine-generated changes.
+- **Root cause:** Git author configuration defaulted to the machine's local user credentials without distinguishing between automated assistant commits and human owner actions.
+- **Permanent rule:** All agent commits must explicitly specify an agent identity (\`ai-marketing-agent <agent@ai-marketing-organization.internal>\`). Never author machine-generated commits under the human owner's identity.
+
+---
+
+### 5. A demand gate that cannot open
+- **What happened:** Generic search engine queries returned commercial publisher articles and listicles by design rather than genuine buyer questions, causing the strict 3-buyer-question gate to remain at zero and deadlocking guide publication indefinitely.
+- **Root cause:** High-volume search queries surface affiliate publisher listicles instead of community buyer inquiries, leaving search-based demand discovery unable to prove organic demand.
+- **Permanent rule:** Break the deadlock through owner-decision experiment mode (\`EXPERIMENT_MODE=true\`, off by default). When enabled, guides publish with verified manufacturer specifications, explicit owner click, and demand recorded as \`UNKNOWN\`. Each live guide (capped at 5) is bound to a 56-day review window, automatically archiving and recording an \`OUTCOME\` record if zero impressions result. The strict 3-question gate remains mandatory for any report claiming validated demand.
 `;
 
   fs.writeFileSync(path.resolve('LESSONS.md'), md, 'utf8');

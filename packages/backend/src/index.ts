@@ -169,6 +169,44 @@ app.get('/offer', async (c) => {
 });
 app.get('/offers/lead-conversion-system', (c) => c.redirect('/offer', 301));
 
+// Top-level Owner Digest (Part C)
+app.get('/owner/today', async (c) => {
+  const { OwnerDigestService } = await import('./revenue/owner-digest.js');
+  const digest = OwnerDigestService.getInstance().generateDigest();
+  if (c.req.header('accept')?.includes('text/html')) {
+    const formatted = OwnerDigestService.getInstance().formatTelegramMessage(digest);
+    return c.html(`<!DOCTYPE html><html><body style="background:#090d16;color:#f8fafc;padding:2rem;"><pre style="font-family:monospace;white-space:pre-wrap;">${formatted}</pre></body></html>`);
+  }
+  return c.json({ success: true, data: digest });
+});
+
+// Top-level Owner Proposal Generator (Part D.4)
+app.all('/owner/proposal', async (c) => {
+  const fs = await import('fs');
+  const path = await import('path');
+  const bioPath = path.resolve(process.cwd(), 'owner', 'BIO.md');
+  if (!fs.existsSync(bioPath)) {
+    return c.json({
+      success: false,
+      error: 'OWNER_BIO_MISSING',
+      message: 'owner/BIO.md is missing. Proposal generation refused without verified owner background. Never invent clients or experience.'
+    }, 422);
+  }
+
+  const bioContent = fs.readFileSync(bioPath, 'utf8');
+  return c.json({
+    success: true,
+    message: 'Proposal draft generated strictly from owner/BIO.md.',
+    ownerBioPreview: bioContent.slice(0, 300),
+    data: {
+      title: 'AI Inbound Lead Conversion System Implementation',
+      setupPriceINR: 15000,
+      monthlyPriceINR: 8000,
+      source: 'owner/BIO.md'
+    }
+  });
+});
+
 // Top-level public referral redirect route: /r/:offerSlug/:referralId (Spec § 5 & § 18)
 app.get('/r/:offerSlug/:referralId', async (c) => {
   const offerSlug = c.req.param('offerSlug');
