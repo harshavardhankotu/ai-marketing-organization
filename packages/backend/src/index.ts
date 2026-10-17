@@ -176,7 +176,9 @@ app.get('/images/razorpay-upi-qr.jpg', async (c) => {
     path.resolve(process.cwd(), 'public/images/razorpay-upi-qr.jpg'),
     path.resolve(__dirname, '../public/images/razorpay-upi-qr.jpg'),
     path.resolve(__dirname, '../../frontend/public/images/razorpay-upi-qr.jpg'),
-    path.resolve(process.cwd(), 'packages/frontend/public/images/razorpay-upi-qr.jpg')
+    path.resolve(process.cwd(), 'packages/frontend/public/images/razorpay-upi-qr.jpg'),
+    path.resolve(process.cwd(), 'packages/frontend/dist/images/razorpay-upi-qr.jpg'),
+    path.resolve(__dirname, '../../frontend/dist/images/razorpay-upi-qr.jpg')
   ];
   const found = candidatePaths.find(p => fs.existsSync(p));
   if (found) {
