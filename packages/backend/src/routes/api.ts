@@ -3122,11 +3122,11 @@ apiRouter.post('/offer/inquiry', async (c) => {
   }
 
   const body = await c.req.json().catch(() => ({}));
-  const customerName = (body.customerName || body.name || '').trim();
-  const customerPhone = (body.customerPhone || body.phone || '').trim();
+  const customerName = (body.customerName || body.name || body.contactName || body.contact_name || '').trim();
+  const customerPhone = (body.customerPhone || body.phone || body.phoneNumber || body.phone_number || '').trim();
   const customerEmail = (body.customerEmail || body.email || '').trim();
-  const practiceNameAndCity = (body.serviceOfInterest || body.practiceName || '').trim();
-  const notes = (body.notes || '').trim();
+  const practiceNameAndCity = (body.serviceOfInterest || body.practiceName || body.businessName || body.business_name || '').trim();
+  const notes = (body.notes || body.challengeNotes || body.challenge_notes || '').trim();
 
   if (!customerName || !customerPhone) {
     return c.json({ success: false, error: 'Full name and mobile phone number are required' }, 400);
@@ -3140,15 +3140,16 @@ apiRouter.post('/offer/inquiry', async (c) => {
   const db = getDb();
   const d1Repo = D1RevenueRepository.getInstance();
   const prospectId = `prospect_offer_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-  const journeyId = `jrn_offer_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const oppId = `opp_offer_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const pipelineId = `pipe_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
   // Parse clinic name and city
   const parts = practiceNameAndCity.split(',').map((p: string) => p.trim());
   const clinicName = parts[0] || customerName;
-  const city = parts[1] || 'India';
+  const city = parts[1] || 'Hyderabad';
 
   try {
-    // 1. Record in platform_prospects
+    // 1. Record in platform_prospects (durable in D1 and local SQLite)
     const prospectSql = `
       INSERT OR REPLACE INTO platform_prospects (
         id, business_name, prospect_business_name, prospect_owner_name,
@@ -3168,7 +3169,7 @@ apiRouter.post('/offer/inquiry', async (c) => {
       db.prepare(prospectSql).run(...prospectParams);
     }
 
-    // 2. Record in customer_journeys via journeyTracker
+    // 2. Record in customer_journeys via journeyTracker (local SQLite)
     const journey = journeyTracker.recordRealLead({
       businessId: OwnerAuthService.PLATFORM_BUSINESS_ID,
       organizationId: OwnerAuthService.OWNER_ORGANIZATION_ID,
@@ -3182,17 +3183,45 @@ apiRouter.post('/offer/inquiry', async (c) => {
       classification: 'REAL'
     });
 
-    // 3. Record in sales_pipeline
+    // 3. Record in opportunities (durable in D1 and local SQLite)
+    const oppSql = `
+      INSERT INTO opportunities (
+        id, business_id, organization_id, prospect_id, title, status,
+        estimated_value_inr, confidence_score, source, evidence_json, probability,
+        acquisition_cost_inr, time_to_revenue_days, authorization_requirements_json,
+        risk_level, next_best_action, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 'QUALIFIED', 15000, 0.90, 'INBOUND', '[]', 0.50, 0, 5, '[]', 'LOW', 'QUALIFY_LEAD', datetime('now'), datetime('now'))
+    `;
+    const oppParams = [
+      oppId,
+      OwnerAuthService.PLATFORM_BUSINESS_ID,
+      OwnerAuthService.OWNER_ORGANIZATION_ID,
+      prospectId,
+      `Inbound Triage Request: ${clinicName}`
+    ];
+    if (isProduction()) {
+      await d1Repo.executeWrite('opportunities', oppSql, oppParams);
+    } else {
+      db.prepare(oppSql).run(...oppParams);
+    }
+
+    // 4. Record in sales_pipeline (durable in D1 and local SQLite)
+    // In production D1, journey_id is null to avoid foreign key failures against customer_journeys,
+    // while opportunity_id maintains strict lineage to the opportunities table.
+    // In local SQLite, journey_id is also preserved for unit test verification.
+    const journeyIdParam = isProduction() ? null : journey.id;
     const pipelineSql = `
       INSERT INTO sales_pipeline (
-        id, organization_id, business_id, journey_id,
-        stage, owner_agent, probability, expected_revenue_inr, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, 'LEAD', 'orchestrator', 0.5, 15000, datetime('now'), datetime('now'))
+        id, opportunity_id, business_id, organization_id, journey_id,
+        stage, owner_agent, probability, expected_revenue_inr, next_action, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 'LEAD', 'orchestrator', 0.5, 15000, 'SCHEDULE_DEMO', datetime('now'), datetime('now'))
     `;
-    const pipelineId = `pipe_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const pipelineParams = [
-      pipelineId, OwnerAuthService.OWNER_ORGANIZATION_ID, OwnerAuthService.PLATFORM_BUSINESS_ID,
-      journey.id
+      pipelineId,
+      oppId,
+      OwnerAuthService.PLATFORM_BUSINESS_ID,
+      OwnerAuthService.OWNER_ORGANIZATION_ID,
+      journeyIdParam
     ];
     if (isProduction()) {
       await d1Repo.executeWrite('sales_pipeline', pipelineSql, pipelineParams);
@@ -3204,7 +3233,8 @@ apiRouter.post('/offer/inquiry', async (c) => {
       success: true,
       message: 'Consultation inquiry received successfully. Automated architecture review scheduled.',
       journeyId: journey.id,
-      prospectId
+      prospectId,
+      opportunityId: oppId
     }, 200);
   } catch (err: any) {
     return c.json({ success: false, error: err.message }, 500);
