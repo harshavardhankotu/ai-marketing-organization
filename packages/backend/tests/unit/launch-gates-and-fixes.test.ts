@@ -32,6 +32,7 @@ describe('Launch Gates and Fixes Verification Test Suite', () => {
       db.prepare(`DELETE FROM durable_rate_limits`).run();
       db.prepare(`DELETE FROM business_autonomy_lock`).run();
       db.prepare(`DELETE FROM autonomous_cycle_log`).run();
+      db.prepare(`DELETE FROM manual_upi_claims`).run();
     } catch {}
   });
 
@@ -341,6 +342,7 @@ describe('Launch Gates and Fixes Verification Test Suite', () => {
     it('rejects 11th request with 429 on POST /payments/manual-upi/claim', async () => {
       const db = getDb();
       db.prepare(`DELETE FROM durable_rate_limits`).run();
+      db.prepare(`DELETE FROM manual_upi_claims`).run();
 
       const payload = (idx: number) => JSON.stringify({
         businessId: realBizId,

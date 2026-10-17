@@ -588,6 +588,95 @@ export class DirectCommercialOfferPage {
       </div>
     </div>
 
+    <!-- Verified Payment Methods: Method A (Razorpay Dynamic Link) & Method B (Attached UPI QR) -->
+    <div style="background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 16px; padding: 2rem; margin-bottom: 2.5rem;">
+      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.5rem;">
+        <div>
+          <h2 style="font-size: 1.5rem; color: #fff;">Verified Payment Options</h2>
+          <p style="color: var(--text-muted); font-size: 0.95rem; margin-top: 0.25rem;">Choose between authenticated server-side Razorpay checkout or instant UPI scan.</p>
+        </div>
+        <div style="background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); padding: 0.4rem 0.8rem; border-radius: 8px; font-size: 0.8rem; color: #fca5a5;">
+          Fixed ₹100 legacy links permanently deactivated
+        </div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.75rem;">
+        <!-- Method A -->
+        <div style="background: #0b1120; border: 1px solid #1e293b; border-radius: 12px; padding: 1.5rem; display: flex; flex-direction: column;">
+          <h3 style="color: #38bdf8; font-size: 1.15rem; margin-bottom: 0.5rem;">Method A — Razorpay Payment Link</h3>
+          <p style="color: var(--text-muted); font-size: 0.88rem; margin-bottom: 1.25rem; flex-grow: 1;">
+            Generate an authenticated Razorpay payment link for the exact approved invoice amount. Supports Credit/Debit Cards, Netbanking, and UPI with instant webhook verification.
+          </p>
+          <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+            <button onclick="createDynamicLink('PLATFORM_SETUP', 'Day 0-5 Setup', 15000)" class="btn" style="padding: 0.75rem; font-size: 0.92rem;">
+              Generate ₹15,000 Setup Link
+            </button>
+            <button onclick="createDynamicLink('PLATFORM_MONTHLY', 'Monthly Retainer', 8000)" class="btn btn-secondary" style="padding: 0.75rem; font-size: 0.92rem; margin-top: 0;">
+              Generate ₹8,000 Retainer Link
+            </button>
+          </div>
+          <div id="dynamic-link-box" style="display: none; margin-top: 1rem; padding: 0.85rem; background: rgba(56, 189, 248, 0.1); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 8px;">
+            <p style="font-size: 0.82rem; color: #bae6fd; margin-bottom: 0.5rem;" id="dynamic-link-desc"></p>
+            <a id="dynamic-link-anchor" href="#" target="_blank" rel="noopener" class="btn" style="padding: 0.6rem; font-size: 0.9rem;">
+              Proceed to Razorpay Checkout →
+            </a>
+          </div>
+        </div>
+
+        <!-- Method B -->
+        <div style="background: #0b1120; border: 1px solid #1e293b; border-radius: 12px; padding: 1.5rem; text-align: center;">
+          <h3 style="color: #34d399; font-size: 1.15rem; margin-bottom: 0.5rem;">Method B — Authentic Razorpay UPI QR</h3>
+          <p style="color: var(--text-muted); font-size: 0.88rem; margin-bottom: 1rem;">
+            Scan with Google Pay, PhonePe, Paytm, or BHIM. Enter invoice amount (₹15,000 Setup or ₹8,000 Retainer).
+          </p>
+          <div style="background: #111827; border: 1px solid #1e293b; border-radius: 10px; padding: 1rem; display: inline-block;">
+            <img src="${OwnerAuthService.PLATFORM_QR_ASSET_PATH}" alt="Razorpay UPI QR" style="max-width: 200px; width: 100%; border-radius: 8px; cursor: pointer; border: 2px solid #334155;" onclick="window.open(this.src, '_blank')">
+            <p style="font-size: 0.85rem; color: #fff; font-weight: 700; margin-top: 0.5rem;">${OwnerAuthService.PLATFORM_MERCHANT_NAME}</p>
+            <p style="font-size: 0.8rem; color: #94a3b8; margin-top: 0.15rem;"><code>${OwnerAuthService.PLATFORM_UPI_VPA}</code></p>
+            <p style="font-size: 0.75rem; color: #64748b; margin-top: 0.25rem;">Invoice Ref: <strong>${orderRef}</strong></p>
+          </div>
+          <button class="btn btn-secondary" style="margin-top: 0.75rem; font-size: 0.85rem;" onclick="navigator.clipboard.writeText('${OwnerAuthService.PLATFORM_UPI_VPA}'); alert('Merchant UPI ID copied: ${OwnerAuthService.PLATFORM_UPI_VPA}')">
+            Copy Merchant UPI ID
+          </button>
+        </div>
+      </div>
+
+      <!-- Interactive UTR Submission Form -->
+      <div id="upi-claim-card" style="margin-top: 2rem; border-top: 1px solid var(--card-border); padding-top: 1.5rem;">
+        <h3 style="font-size: 1.15rem; color: #fff; margin-bottom: 0.5rem;">Report Paid UPI Transaction (UTR Claim)</h3>
+        <p style="color: var(--text-muted); font-size: 0.88rem; margin-bottom: 1.25rem;">
+          If you completed payment via UPI QR, submit the 12-digit Bank Transaction ID (UTR) from your payment receipt for reconciliation.
+        </p>
+        <form id="offer-upi-claim-form" onsubmit="handleOfferUpiSubmit(event)">
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1rem;">
+            <div>
+              <label style="display: block; font-size: 0.82rem; color: #94a3b8; margin-bottom: 0.25rem;">Business / Contact Name *</label>
+              <input type="text" id="offer-payer-name" required placeholder="Dr. Rajesh Sharma" style="width: 100%; padding: 0.6rem; border-radius: 8px; border: 1px solid #334155; background: #0b1120; color: #fff; font-size: 0.9rem;">
+            </div>
+            <div>
+              <label style="display: block; font-size: 0.82rem; color: #94a3b8; margin-bottom: 0.25rem;">Mobile / WhatsApp *</label>
+              <input type="tel" id="offer-payer-phone" required placeholder="9876543210" style="width: 100%; padding: 0.6rem; border-radius: 8px; border: 1px solid #334155; background: #0b1120; color: #fff; font-size: 0.9rem;">
+            </div>
+            <div>
+              <label style="display: block; font-size: 0.82rem; color: #94a3b8; margin-bottom: 0.25rem;">Service Tier Paid *</label>
+              <select id="offer-service-tier" style="width: 100%; padding: 0.6rem; border-radius: 8px; border: 1px solid #334155; background: #0b1120; color: #fff; font-size: 0.9rem;" onchange="updateOfferAmount(this.value)">
+                <option value="15000">Day 0-5 Setup (₹15,000)</option>
+                <option value="8000">Monthly Retainer (₹8,000)</option>
+              </select>
+            </div>
+            <div>
+              <label style="display: block; font-size: 0.82rem; color: #94a3b8; margin-bottom: 0.25rem;">12-Digit Bank UTR / Reference *</label>
+              <input type="text" id="offer-payer-utr" required placeholder="e.g. 428901234567" minlength="6" style="width: 100%; padding: 0.6rem; border-radius: 8px; border: 1px solid #334155; background: #0b1120; color: #fff; font-size: 0.9rem;">
+            </div>
+          </div>
+          <button type="submit" id="offer-claim-btn" class="btn" style="max-width: 320px;">
+            Submit UPI Payment Claim
+          </button>
+          <div id="offer-claim-msg" style="display: none; margin-top: 1rem; padding: 0.85rem; border-radius: 8px; font-size: 0.9rem;"></div>
+        </form>
+      </div>
+    </div>
+
     <!-- Commercial Terms & Scope from owner/OWN_OFFER.md -->
     <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; margin-bottom: 2rem;">
       <div style="background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 1.5rem;">
@@ -611,6 +700,82 @@ export class DirectCommercialOfferPage {
       ${contactEmail ? `<p style="margin-top: 0.35rem;">Contact: <a href="mailto:${contactEmail}" style="color: var(--accent);">${contactEmail}</a></p>` : ''}
     </footer>
   </div>
+
+  <script>
+    async function createDynamicLink(offerId, title, amount) {
+      var box = document.getElementById('dynamic-link-box');
+      var desc = document.getElementById('dynamic-link-desc');
+      var anchor = document.getElementById('dynamic-link-anchor');
+      desc.innerText = 'Creating verified link for ' + title + ' (₹' + amount.toLocaleString('en-IN') + ')...';
+      box.style.display = 'block';
+
+      try {
+        var res = await fetch('/api/v1/payments/public/create-link', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            offerId: offerId,
+            customerName: 'Commercial Client - ' + title
+          })
+        });
+        var data = await res.json();
+        if (data.success && data.data && data.data.paymentLinkUrl) {
+          desc.innerHTML = '✓ Link Ready: <strong>' + data.data.providerLinkId + '</strong> (₹' + data.data.amountINR.toLocaleString('en-IN') + ')';
+          anchor.href = data.data.paymentLinkUrl;
+        } else {
+          throw new Error(data.error || 'Failed to create payment link');
+        }
+      } catch (err) {
+        desc.innerText = 'Error: ' + err.message;
+      }
+    }
+
+    async function handleOfferUpiSubmit(e) {
+      e.preventDefault();
+      var btn = document.getElementById('offer-claim-btn');
+      var msg = document.getElementById('offer-claim-msg');
+      btn.disabled = true;
+      btn.innerText = 'Submitting Claim...';
+
+      var amount = Number(document.getElementById('offer-service-tier').value);
+      var payload = {
+        businessId: 'biz_platform_aro',
+        invoiceRef: '${orderRef}',
+        payerName: document.getElementById('offer-payer-name').value.trim(),
+        payerPhone: document.getElementById('offer-payer-phone').value.trim(),
+        amountINR: amount,
+        utr: document.getElementById('offer-payer-utr').value.trim(),
+        serviceRendered: amount === 15000 ? 'Day 0-5 Setup & Integration' : 'Monthly Retainer & SLA'
+      };
+
+      try {
+        var res = await fetch('/api/v1/payments/manual-upi/claim', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        var data = await res.json();
+        if (data.success) {
+          msg.style.display = 'block';
+          msg.style.background = 'rgba(16, 185, 129, 0.15)';
+          msg.style.color = '#34d399';
+          msg.style.border = '1px solid rgba(16, 185, 129, 0.3)';
+          msg.innerHTML = '<strong>✓ Payment Claim Registered!</strong><br>Status: <code>PAYMENT_CLAIMED</code><br>Claim Ref: ' + data.data.claimId + '<br>Awaiting owner bank statement verification. Zero revenue recognized until confirmed by owner.';
+          btn.style.display = 'none';
+        } else {
+          throw new Error(data.error || 'Submission failed');
+        }
+      } catch (err) {
+        msg.style.display = 'block';
+        msg.style.background = 'rgba(239, 68, 68, 0.15)';
+        msg.style.color = '#f87171';
+        msg.style.border = '1px solid rgba(239, 68, 68, 0.3)';
+        msg.innerText = 'Error: ' + err.message;
+        btn.disabled = false;
+        btn.innerText = 'Submit UPI Payment Claim';
+      }
+    }
+  </script>
 </body>
 </html>`;
   }

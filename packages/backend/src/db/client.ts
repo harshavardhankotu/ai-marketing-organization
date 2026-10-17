@@ -482,11 +482,17 @@ export function getDb(dbPath?: string): Database.Database {
   try {
     db.exec(`CREATE TABLE IF NOT EXISTS manual_upi_claims (
       id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, business_id TEXT NOT NULL,
-      journey_id TEXT, utr TEXT NOT NULL, amount_inr REAL NOT NULL, service_rendered TEXT,
+      journey_id TEXT, proposal_id TEXT, invoice_ref TEXT, payer_name TEXT, payer_phone TEXT, payer_vpa TEXT,
+      utr TEXT NOT NULL, amount_inr REAL NOT NULL, service_rendered TEXT,
       status TEXT NOT NULL DEFAULT 'PAYMENT_CLAIMED', claimed_at TEXT NOT NULL DEFAULT (datetime('now')),
       verified_at TEXT, verified_by TEXT, rejection_reason TEXT, notes TEXT
     )`);
   } catch {}
+  try { db.exec(`ALTER TABLE manual_upi_claims ADD COLUMN proposal_id TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE manual_upi_claims ADD COLUMN invoice_ref TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE manual_upi_claims ADD COLUMN payer_name TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE manual_upi_claims ADD COLUMN payer_phone TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE manual_upi_claims ADD COLUMN payer_vpa TEXT`); } catch {}
   try {
     db.exec(`CREATE TABLE IF NOT EXISTS owner_sessions (
       id TEXT PRIMARY KEY, principal_type TEXT NOT NULL DEFAULT 'OWNER',

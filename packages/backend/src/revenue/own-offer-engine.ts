@@ -1,5 +1,6 @@
 import { OwnOffer, OwnOfferClickEvent } from './own-offer-types.js';
 import { getDb } from '../db/client.js';
+import { OwnerAuthService } from '../auth/owner-auth.js';
 
 export class OwnOfferEngine {
   private static instance: OwnOfferEngine;
@@ -14,10 +15,14 @@ export class OwnOfferEngine {
   /**
    * Validates Razorpay Payment Link / Page URL.
    * Permitted hostnames: strictly 'rzp.io', 'razorpay.com', 'pages.razorpay.com'.
-   * Rejects lookalikes, subdomains, phishing domains, non-HTTPS protocols.
+   * Rejects lookalikes, subdomains, phishing domains, non-HTTPS protocols,
+   * and disallowed fixed-amount test links (e.g. ₹100 paQqSni).
    */
   public static validateRazorpayUrl(rawUrl: string): boolean {
     try {
+      if (OwnerAuthService.isDisallowedFixedPaymentLink(rawUrl)) {
+        return false;
+      }
       const parsed = new URL(rawUrl);
       if (parsed.protocol !== 'https:') return false;
 
@@ -36,6 +41,10 @@ export class OwnOfferEngine {
    * Creates and registers a new Own Offer with strict field and host validation.
    */
   public createOwnOffer(input: Omit<OwnOffer, 'id' | 'offerType' | 'paymentMode' | 'deliveryMethod' | 'createdAt' | 'updatedAt'>): OwnOffer {
+    if (OwnerAuthService.isDisallowedFixedPaymentLink(input.paymentLinkUrl)) {
+      throw new Error(`SECURITY VIOLATION: DISALLOWED_FIXED_PAYMENT_LINK: The payment link '${input.paymentLinkUrl}' is a fixed ₹100 test link and cannot be used for commercial checkout.`);
+    }
+
     if (!OwnOfferEngine.validateRazorpayUrl(input.paymentLinkUrl)) {
       throw new Error(`INVALID_PAYMENT_URL: Payment link '${input.paymentLinkUrl}' is not an authorized Razorpay host. Only https://rzp.io and https://razorpay.com are permitted.`);
     }

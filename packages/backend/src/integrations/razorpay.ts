@@ -60,6 +60,11 @@ export interface RazorpayPaymentLinkResult {
 export interface ManualUpiClaimInput {
   businessId: string;
   journeyId?: string;
+  proposalId?: string;
+  invoiceRef?: string;
+  payerName?: string;
+  payerPhone?: string;
+  payerVpa?: string;
   utr: string;
   amountINR: number;
   serviceRendered?: string;
@@ -447,6 +452,9 @@ export class RazorpayAdapter {
         const data = await res.json() as any;
         providerLinkId = data.id; // e.g. plink_...
         shortUrl = data.short_url; // Real provider URL returned by Razorpay
+        if (OwnerAuthService.isDisallowedFixedPaymentLink(shortUrl) || OwnerAuthService.isDisallowedFixedPaymentLink(providerLinkId)) {
+          throw new Error(`SECURITY VIOLATION: DISALLOWED_FIXED_PAYMENT_LINK: Razorpay returned a known fixed test link (${shortUrl}). Refusing to register for commercial invoice.`);
+        }
         status = (data.status || 'CREATED').toUpperCase();
         rawResponse = JSON.stringify(data);
       } catch (err: any) {
@@ -741,10 +749,26 @@ export class RazorpayAdapter {
     status: 'PAYMENT_CLAIMED';
     utr: string;
     amountINR: number;
+    invoiceRef?: string;
+    proposalId?: string;
   } {
     const trimmedUtr = (input.utr || '').trim();
     if (!trimmedUtr || trimmedUtr.length < 6 || trimmedUtr.startsWith('utr_')) {
       throw new Error('INVALID_UTR: Please provide a valid bank UTR / transaction reference (min 6 characters). Auto-generated UTRs are rejected.');
+    }
+
+    if (
+      OwnerAuthService.isDisallowedFixedPaymentLink(trimmedUtr) ||
+      OwnerAuthService.isDisallowedFixedPaymentLink(input.notes) ||
+      OwnerAuthService.isDisallowedFixedPaymentLink(input.invoiceRef)
+    ) {
+      throw new Error('SECURITY VIOLATION: DISALLOWED_FIXED_PAYMENT_LINK: Fixed ₹100 test payment links cannot be used as UTR reference or payment notes.');
+    }
+
+    // Check duplicate UTR submissions
+    const existingClaim = this.db.prepare('SELECT id, status FROM manual_upi_claims WHERE utr = ?').get(trimmedUtr) as any;
+    if (existingClaim) {
+      throw new Error(`DUPLICATE_CLAIM: UTR '${trimmedUtr}' has already been registered (current status: ${existingClaim.status}). Duplicate submissions are rejected.`);
     }
 
     // Validate business exists
@@ -753,32 +777,61 @@ export class RazorpayAdapter {
       throw new Error(`BUSINESS_NOT_FOUND: Business ${input.businessId} does not exist.`);
     }
 
-    // Validate deposit amount
-    this.validatePermittedDeposit(input.amountINR, input.serviceRendered);
+    // Validate deposit amount against proposal or permitted deposit amounts
+    if (input.proposalId) {
+      const prop = this.db.prepare('SELECT id, setup_price_inr FROM proposals WHERE id = ?').get(input.proposalId) as any;
+      if (!prop) {
+        throw new Error(`PROPOSAL_NOT_FOUND: Proposal '${input.proposalId}' does not exist.`);
+      }
+      if (Math.round(input.amountINR) !== Math.round(prop.setup_price_inr)) {
+        throw new Error(`AMOUNT_MISMATCH: Claim amount ₹${input.amountINR} does not match proposal invoice amount ₹${prop.setup_price_inr}.`);
+      }
+    } else {
+      this.validatePermittedDeposit(input.amountINR, input.serviceRendered);
+    }
 
     const claimId = `claim_upi_${randomUUID().substring(0, 10)}`;
 
     this.db.prepare(`
       INSERT INTO manual_upi_claims (
-        id, organization_id, business_id, journey_id, utr,
-        amount_inr, service_rendered, status, claimed_at, notes
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'PAYMENT_CLAIMED', datetime('now'), ?)
+        id, organization_id, business_id, journey_id, proposal_id, invoice_ref,
+        payer_name, payer_phone, payer_vpa, utr, amount_inr, service_rendered,
+        status, claimed_at, notes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PAYMENT_CLAIMED', datetime('now'), ?)
     `).run(
       claimId,
       biz.organization_id,
       input.businessId,
       input.journeyId || null,
+      input.proposalId || null,
+      input.invoiceRef || null,
+      input.payerName || null,
+      input.payerPhone || null,
+      input.payerVpa || null,
       trimmedUtr,
       input.amountINR,
       input.serviceRendered || 'Manual UPI Payment Claim',
       input.notes || null
     );
 
+    // If attached to a proposal, update payment_request status to PAYMENT_CLAIMED
+    if (input.proposalId) {
+      try {
+        this.db.prepare(`
+          UPDATE payment_requests
+          SET status = 'PAYMENT_CLAIMED', updated_at = datetime('now')
+          WHERE proposal_id = ?
+        `).run(input.proposalId);
+      } catch {}
+    }
+
     return {
       claimId,
       status: 'PAYMENT_CLAIMED',
       utr: trimmedUtr,
-      amountINR: input.amountINR
+      amountINR: input.amountINR,
+      invoiceRef: input.invoiceRef,
+      proposalId: input.proposalId
     };
   }
 
@@ -818,6 +871,15 @@ export class RazorpayAdapter {
       };
     }
 
+    // Find linked proposal if present
+    let linkedProposalId: string | undefined;
+    try {
+      const claimRow = params.claimId
+        ? (this.db.prepare('SELECT proposal_id FROM manual_upi_claims WHERE id = ?').get(params.claimId) as any)
+        : (this.db.prepare('SELECT proposal_id FROM manual_upi_claims WHERE utr = ?').get(trimmedUtr) as any);
+      linkedProposalId = claimRow?.proposal_id;
+    } catch {}
+
     // Update claim status if row exists
     if (params.claimId) {
       if (isProduction() && !process.env.VITEST) {
@@ -847,6 +909,19 @@ export class RazorpayAdapter {
           WHERE utr = ? AND status = 'PAYMENT_CLAIMED'
         `).run(params.ownerUserId, trimmedUtr);
       }
+    }
+
+    // If claim is tied to a proposal, mark proposal and payment_request PAID
+    if (linkedProposalId) {
+      try {
+        if (isProduction() && !process.env.VITEST) {
+          await this.d1Repo.executeWrite('proposals', `UPDATE proposals SET status = 'PAID', updated_at = datetime('now') WHERE id = ?`, [linkedProposalId]);
+          await this.d1Repo.executeWrite('payment_requests', `UPDATE payment_requests SET status = 'PAID', updated_at = datetime('now') WHERE proposal_id = ?`, [linkedProposalId]);
+        } else {
+          this.db.prepare(`UPDATE proposals SET status = 'PAID', updated_at = datetime('now') WHERE id = ?`).run(linkedProposalId);
+          this.db.prepare(`UPDATE payment_requests SET status = 'PAID', updated_at = datetime('now') WHERE proposal_id = ?`).run(linkedProposalId);
+        }
+      } catch {}
     }
 
     const tx = await this.revenueEngine.recordTransactionAsync({

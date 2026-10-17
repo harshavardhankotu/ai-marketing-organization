@@ -32,6 +32,22 @@ export class OwnerAuthService {
   public static readonly OWNER_USER_ID = 'usr_owner_primary';
   public static readonly PLATFORM_BUSINESS_ID = 'biz_platform_aro';
   public static readonly PLATFORM_RAZORPAY_PAYMENT_PAGE_URL = 'https://razorpay.me/@venkatasaiharshavardhankotu';
+  public static readonly PLATFORM_UPI_VPA = 'venkatasaiharsh149768.rzp@rxairtel';
+  public static readonly PLATFORM_MERCHANT_NAME = 'VENKATA SAI HARSHAVARDHAN KOTU';
+  public static readonly PLATFORM_QR_ASSET_PATH = '/images/razorpay-upi-qr.jpg';
+
+  /**
+   * Identifies disallowed fixed-amount test payment links (e.g. legacy ₹100 paQqSni link).
+   * Prevents using fixed ₹100 links for higher-value commercial invoices.
+   */
+  public static isDisallowedFixedPaymentLink(url?: string): boolean {
+    if (!url) return false;
+    const normalized = url.toLowerCase().trim();
+    return (
+      normalized.includes('paqqsni') ||
+      normalized.includes('tow5k0qoixcq8g')
+    );
+  }
 
   private constructor() {
     this.ensureInitialized();
