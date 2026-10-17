@@ -3309,11 +3309,99 @@ apiRouter.post('/payments/public/create-link', async (c) => {
   }
 
   const body = await c.req.json().catch(() => ({}));
-  const { offerId, customerName, customerEmail, customerPhone, proposalId } = body;
+  const { offerId, customerName, customerEmail, customerPhone, proposalId, amountINR, amount } = body;
 
   const validOfferId = offerId === 'PLATFORM_MONTHLY' || offerId === OfferCatalogService.PLATFORM_MONTHLY_OFFER_ID
     ? OfferCatalogService.PLATFORM_MONTHLY_OFFER_ID
     : OfferCatalogService.PLATFORM_SETUP_OFFER_ID;
+
+  // Resolve authoritative offer price to prevent price tampering
+  const offer = OfferCatalogService.getInstance().resolveAuthorizedOffer(
+    validOfferId,
+    OwnerAuthService.PLATFORM_BUSINESS_ID,
+    OwnerAuthService.OWNER_ORGANIZATION_ID
+  );
+  const expectedPriceINR = offer.priceINR;
+
+  // Check for client-supplied price tampering
+  const suppliedAmount = amountINR !== undefined ? Number(amountINR) : (amount !== undefined ? Number(amount) : undefined);
+  if (suppliedAmount !== undefined && !Number.isNaN(suppliedAmount) && suppliedAmount !== expectedPriceINR) {
+    return c.json({
+      success: false,
+      error: 'PRICE_TAMPERING_REJECTED',
+      message: `Supplied amount ₹${suppliedAmount} does not match authoritative offer price ₹${expectedPriceINR}. Price tampering is rejected.`
+    }, 400);
+  }
+
+  // If proposalId is provided, validate its existence, status, and reuse existing active link
+  let verifiedProposal: any = null;
+  if (proposalId) {
+    const pe = ProposalEngine.getInstance();
+    verifiedProposal = isProduction()
+      ? await pe.getProposalAsync(proposalId)
+      : pe.getProposal(proposalId);
+
+    if (!verifiedProposal) {
+      return c.json({
+        success: false,
+        error: 'PROPOSAL_NOT_FOUND',
+        message: `Proposal '${proposalId}' not found.`
+      }, 404);
+    }
+
+    if (verifiedProposal.status === 'PAID') {
+      return c.json({
+        success: false,
+        error: 'PROPOSAL_ALREADY_PAID',
+        message: `Proposal '${proposalId}' has already been paid in full.`
+      }, 400);
+    }
+
+    const eligibleStatuses = ['APPROVED', 'ACCEPTED', 'SENT'];
+    if (!eligibleStatuses.includes(verifiedProposal.status)) {
+      return c.json({
+        success: false,
+        error: 'INVALID_PROPOSAL_STATUS',
+        message: `Proposal '${proposalId}' is in '${verifiedProposal.status}' state and not eligible for checkout.`
+      }, 400);
+    }
+
+    // Idempotency check: Reuse existing active payment link for this proposal if one exists
+    let existingLink: any = null;
+    if (isProduction()) {
+      const d1 = D1RevenueRepository.getInstance();
+      existingLink = await d1.queryOne(
+        'payment_provider_links',
+        `SELECT short_url, provider_link_id, amount_inr, status FROM payment_provider_links
+         WHERE proposal_id = ? AND status IN ('CREATED', 'ACTIVE')
+         ORDER BY created_at DESC LIMIT 1`,
+        [proposalId]
+      );
+    } else {
+      const db = getDb();
+      try {
+        existingLink = db.prepare(
+          `SELECT short_url, provider_link_id, amount_inr, status FROM payment_provider_links
+           WHERE proposal_id = ? AND status IN ('CREATED', 'ACTIVE')
+           ORDER BY created_at DESC LIMIT 1`
+        ).get(proposalId) as any;
+      } catch {}
+    }
+
+    if (existingLink && existingLink.short_url) {
+      return c.json({
+        success: true,
+        data: {
+          paymentLinkUrl: existingLink.short_url,
+          providerLinkId: existingLink.provider_link_id,
+          amountINR: existingLink.amount_inr,
+          status: existingLink.status,
+          currency: 'INR',
+          reused: true
+        }
+      }, 200);
+    }
+  }
 
   try {
     const linkRes = await razorpayAdapter.createPaymentLink({
@@ -3322,8 +3410,8 @@ apiRouter.post('/payments/public/create-link', async (c) => {
       offerId: validOfferId,
       proposalId: proposalId || undefined,
       customer: {
-        name: customerName || 'Valued Commercial Client',
-        email: customerEmail || undefined,
+        name: customerName || (verifiedProposal ? verifiedProposal.prospectName : 'Valued Commercial Client'),
+        email: customerEmail || (verifiedProposal ? verifiedProposal.prospectEmail : undefined),
         contact: customerPhone || undefined
       }
     });
@@ -3335,7 +3423,8 @@ apiRouter.post('/payments/public/create-link', async (c) => {
         providerLinkId: linkRes.providerLinkId,
         amountINR: linkRes.amountINR,
         status: linkRes.status,
-        currency: 'INR'
+        currency: 'INR',
+        reused: false
       }
     }, 201);
   } catch (err: any) {
@@ -3355,9 +3444,17 @@ apiRouter.get('/proposals/:id/checkout', async (c) => {
     return c.json({ success: false, error: 'PROPOSAL_NOT_FOUND', message: `Proposal '${proposalId}' not found.` }, 404);
   }
 
-  const db = getDb();
-  const existingReq = db.prepare('SELECT * FROM payment_requests WHERE proposal_id = ? LIMIT 1').get(proposalId) as any;
-  const existingClaim = db.prepare('SELECT * FROM manual_upi_claims WHERE proposal_id = ? ORDER BY claimed_at DESC LIMIT 1').get(proposalId) as any;
+  let existingReq: any = null;
+  let existingClaim: any = null;
+  if (isProduction()) {
+    const d1Repo = D1RevenueRepository.getInstance();
+    existingReq = await d1Repo.queryOne('payment_requests', 'SELECT * FROM payment_requests WHERE proposal_id = ? LIMIT 1', [proposalId]);
+    existingClaim = await d1Repo.queryOne('manual_upi_claims', 'SELECT * FROM manual_upi_claims WHERE proposal_id = ? ORDER BY claimed_at DESC LIMIT 1', [proposalId]);
+  } else {
+    const db = getDb();
+    existingReq = db.prepare('SELECT * FROM payment_requests WHERE proposal_id = ? LIMIT 1').get(proposalId) as any;
+    existingClaim = db.prepare('SELECT * FROM manual_upi_claims WHERE proposal_id = ? ORDER BY claimed_at DESC LIMIT 1').get(proposalId) as any;
+  }
 
   return c.json({
     success: true,

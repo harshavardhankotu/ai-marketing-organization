@@ -546,4 +546,148 @@ describe('Comprehensive Razorpay & UPI QR Payment Collection System (Prompt Sect
     expect(row.proposal_id).toBeNull();
     expect(row.amount_inr).toBe(15000);
   });
+
+  // 21. Price tampering protection on POST /payments/public/create-link
+  it('Case 21: Rejects price tampering attempts on public create-link endpoint', async () => {
+    const res = await app.request('/api/v1/payments/public/create-link', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        offerId: 'PLATFORM_SETUP',
+        amountINR: 100 // Tampered amount (should be 15,000)
+      })
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json() as any;
+    expect(body.error).toBe('PRICE_TAMPERING_REJECTED');
+    expect(body.message).toContain('100');
+  });
+
+  // 22. Proposal existence verification on POST /payments/public/create-link
+  it('Case 22: Validates proposal existence and rejects non-existent proposal ID', async () => {
+    const res = await app.request('/api/v1/payments/public/create-link', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        proposalId: 'prop_non_existent_999999'
+      })
+    });
+    expect(res.status).toBe(404);
+    const body = await res.json() as any;
+    expect(body.error).toBe('PROPOSAL_NOT_FOUND');
+  });
+
+  // 23. Rejection of already paid proposals
+  it('Case 23: Rejects payment link generation for already PAID proposals', async () => {
+    const db = getDb();
+    const paidPropId = 'prop_test_already_paid_01';
+    db.prepare(`
+      INSERT INTO proposals (
+        id, organization_id, business_id, prospect_id, title,
+        customer_problem, proposed_solution, deliverables_json,
+        timeline_days, setup_price_inr, monthly_price_inr,
+        payment_terms, scope_boundary, next_step,
+        status, idempotency_key, created_at, updated_at
+      ) VALUES (?, ?, ?, 'prosp_test_01', 'Test Proposal', 'Problem', 'Solution', '[]', 5, 15000, 8000, '50-50', 'WhatsApp GBP', 'Pay', 'PAID', 'test_paid_key', datetime('now'), datetime('now'))
+    `).run(paidPropId, ORG_ID, BIZ_ID);
+
+    const res = await app.request('/api/v1/payments/public/create-link', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        proposalId: paidPropId
+      })
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json() as any;
+    expect(body.error).toBe('PROPOSAL_ALREADY_PAID');
+  });
+
+  // 24. Idempotency reuse of active payment link
+  it('Case 24: Reuses existing active payment link for proposal idempotency', async () => {
+    const db = getDb();
+    const eligiblePropId = 'prop_test_eligible_01';
+    db.prepare(`
+      INSERT INTO proposals (
+        id, organization_id, business_id, prospect_id, title,
+        customer_problem, proposed_solution, deliverables_json,
+        timeline_days, setup_price_inr, monthly_price_inr,
+        payment_terms, scope_boundary, next_step,
+        status, idempotency_key, created_at, updated_at
+      ) VALUES (?, ?, ?, 'prosp_test_02', 'Eligible Proposal', 'Problem', 'Solution', '[]', 5, 15000, 8000, '50-50', 'WhatsApp GBP', 'Pay', 'APPROVED', 'test_eligible_key', datetime('now'), datetime('now'))
+    `).run(eligiblePropId, ORG_ID, BIZ_ID);
+
+    // Pre-insert an active payment provider link
+    const existingShortUrl = 'https://rzp.io/i/test_existing_link_99';
+    db.prepare(`
+      INSERT INTO payment_provider_links (
+        id, organization_id, business_id, proposal_id, provider,
+        provider_link_id, short_url, reference_id, amount_inr, currency, status, created_at
+      ) VALUES ('ppl_test_exist', ?, ?, ?, 'RAZORPAY', 'plink_test_exist', ?, 'ref_test_exist', 15000, 'INR', 'CREATED', datetime('now'))
+    `).run(ORG_ID, BIZ_ID, eligiblePropId, existingShortUrl);
+
+    const res = await app.request('/api/v1/payments/public/create-link', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        proposalId: eligiblePropId
+      })
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as any;
+    expect(body.success).toBe(true);
+    expect(body.data.paymentLinkUrl).toBe(existingShortUrl);
+    expect(body.data.reused).toBe(true);
+  });
+
+  // 25. Proposal checkout endpoint inspection
+  it('Case 25: Public checkout endpoint exposes both Method A and Method B for approved proposals', async () => {
+    const db = getDb();
+    const propId = 'prop_test_checkout_inspect_01';
+    db.prepare(`
+      INSERT INTO proposals (
+        id, organization_id, business_id, prospect_id, title,
+        customer_problem, proposed_solution, deliverables_json,
+        timeline_days, setup_price_inr, monthly_price_inr,
+        payment_terms, scope_boundary, next_step,
+        status, idempotency_key, created_at, updated_at
+      ) VALUES (?, ?, ?, 'prosp_test_03', 'Inspect Proposal', 'Problem', 'Solution', '[]', 5, 15000, 8000, '50-50', 'WhatsApp GBP', 'Pay', 'SENT', 'test_inspect_key', datetime('now'), datetime('now'))
+    `).run(propId, ORG_ID, BIZ_ID);
+
+    const res = await app.request(`/api/v1/proposals/${propId}/checkout`);
+    expect(res.status).toBe(200);
+    const body = await res.json() as any;
+    expect(body.success).toBe(true);
+    expect(body.data.proposal.id).toBe(propId);
+    expect(body.data.paymentMethods.methodA.amountINR).toBe(15000);
+    expect(body.data.paymentMethods.methodB.upiVpa).toBe('venkatasaiharsh149768.rzp@rxairtel');
+    expect(body.data.paymentMethods.methodB.merchantName).toBe('VENKATA SAI HARSHAVARDHAN KOTU');
+    expect(body.data.paymentMethods.methodB.qrAssetPath).toBe('/images/razorpay-upi-qr.jpg');
+  });
+
+  // 26. RazorpayAdapter supports test key fallback without claiming live
+  it('Case 26: RazorpayAdapter picks up RAZORPAY_TEST_KEY_ID while keeping isLiveConfigured false', () => {
+    const origKeyId = process.env.RAZORPAY_KEY_ID;
+    const origKeySecret = process.env.RAZORPAY_KEY_SECRET;
+    const origTestKeyId = process.env.RAZORPAY_TEST_KEY_ID;
+    const origTestKeySecret = process.env.RAZORPAY_TEST_KEY_SECRET;
+
+    try {
+      delete process.env.RAZORPAY_KEY_ID;
+      delete process.env.RAZORPAY_KEY_SECRET;
+      process.env.RAZORPAY_TEST_KEY_ID = 'rzp_test_mockkey12345';
+      process.env.RAZORPAY_TEST_KEY_SECRET = 'mocksecret67890';
+
+      const adapter = new RazorpayAdapter();
+      expect(adapter.getKeyId()).toBe('rzp_test_mockkey12345');
+      expect(adapter.getKeySecret()).toBe('mocksecret67890');
+      expect(adapter.hasAnyValidCredentials()).toBe(true);
+      expect(adapter.isLiveConfigured()).toBe(false);
+    } finally {
+      if (origKeyId !== undefined) process.env.RAZORPAY_KEY_ID = origKeyId; else delete process.env.RAZORPAY_KEY_ID;
+      if (origKeySecret !== undefined) process.env.RAZORPAY_KEY_SECRET = origKeySecret; else delete process.env.RAZORPAY_KEY_SECRET;
+      if (origTestKeyId !== undefined) process.env.RAZORPAY_TEST_KEY_ID = origTestKeyId; else delete process.env.RAZORPAY_TEST_KEY_ID;
+      if (origTestKeySecret !== undefined) process.env.RAZORPAY_TEST_KEY_SECRET = origTestKeySecret; else delete process.env.RAZORPAY_TEST_KEY_SECRET;
+    }
+  });
 });

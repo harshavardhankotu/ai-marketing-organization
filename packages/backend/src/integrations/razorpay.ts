@@ -108,20 +108,20 @@ export class RazorpayAdapter {
   public static readonly PLATFORM_MONTHLY_FEE_INR = 8000;
 
   public getKeyId(): string {
-    return (process.env.RAZORPAY_KEY_ID || '').trim();
+    return (process.env.RAZORPAY_KEY_ID || process.env.RAZORPAY_TEST_KEY_ID || '').trim();
   }
 
   public getKeySecret(): string {
-    return (process.env.RAZORPAY_KEY_SECRET || '').trim();
+    return (process.env.RAZORPAY_KEY_SECRET || process.env.RAZORPAY_TEST_KEY_SECRET || '').trim();
   }
 
   private getWebhookSecret(): string {
-    return (process.env.RAZORPAY_WEBHOOK_SECRET || '').trim();
+    return (process.env.RAZORPAY_WEBHOOK_SECRET || process.env.RAZORPAY_TEST_WEBHOOK_SECRET || '').trim();
   }
 
   public isLiveConfigured(): boolean {
-    const keyId = this.getKeyId();
-    const keySecret = this.getKeySecret();
+    const keyId = (process.env.RAZORPAY_KEY_ID || '').trim();
+    const keySecret = (process.env.RAZORPAY_KEY_SECRET || '').trim();
     return Boolean(
       keyId &&
       keySecret &&
@@ -304,7 +304,7 @@ export class RazorpayAdapter {
     } else {
       if (isProduction()) {
         throw new Error(
-          'CREDENTIAL_FAULT: Production payment orders require valid RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET. Simulated orders are prohibited.'
+          'CREDENTIAL_FAULT: Production payment orders require valid RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET (or RAZORPAY_TEST_KEY_ID and RAZORPAY_TEST_KEY_SECRET for sandbox testing). Simulated orders are prohibited.'
         );
       }
       // Non-production test environment fallback
@@ -468,7 +468,7 @@ export class RazorpayAdapter {
     } else {
       if (isProduction()) {
         throw new Error(
-          'CREDENTIAL_FAULT: Production payment links require valid RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET.'
+          'CREDENTIAL_FAULT: Production payment links require valid RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET (or RAZORPAY_TEST_KEY_ID and RAZORPAY_TEST_KEY_SECRET for sandbox testing).'
         );
       }
       providerLinkId = `plink_test_${randomUUID().replace(/-/g, '').substring(0, 14)}`;
@@ -507,10 +507,10 @@ export class RazorpayAdapter {
         'payment_requests',
         `INSERT INTO payment_requests (
           id, organization_id, business_id, prospect_id, opportunity_id,
-          journey_id, offer_id, offer_description, amount_inr, currency,
+          journey_id, proposal_id, offer_id, offer_description, amount_inr, currency,
           billing_model, provider, provider_link_id, short_url, reference_id,
           classification, status, payment_link, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'INR', ?, 'RAZORPAY', ?, ?, ?, ?, 'PROVIDER_CREATED', ?, datetime('now'), datetime('now'))`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'INR', ?, 'RAZORPAY', ?, ?, ?, ?, 'PROVIDER_CREATED', ?, datetime('now'), datetime('now'))`,
         [
           payReqId,
           input.organizationId,
@@ -518,6 +518,7 @@ export class RazorpayAdapter {
           resolvedProspectId || null,
           input.opportunityId || null,
           input.journeyId || null,
+          input.proposalId || null,
           input.offerId,
           description,
           authoritativeAmountINR,
