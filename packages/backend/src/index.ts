@@ -168,6 +168,14 @@ app.get('/offer', async (c) => {
   return c.html(html);
 });
 app.get('/offers/lead-conversion-system', (c) => c.redirect('/offer', 301));
+app.post('/offer/inquiry', async (c) => {
+  const targetUrl = new URL('/api/v1/offer/inquiry', c.req.url);
+  return app.fetch(new Request(targetUrl.toString(), {
+    method: 'POST',
+    headers: c.req.raw.headers,
+    body: c.req.raw.body
+  }));
+});
 
 // Top-level Owner Digest (Part C)
 app.get('/owner/today', async (c) => {

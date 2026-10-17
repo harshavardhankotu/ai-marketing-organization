@@ -441,6 +441,25 @@ export function getDb(dbPath?: string): Database.Database {
     db.exec(`CREATE INDEX IF NOT EXISTS idx_offer_attestation_status ON direct_offer_attestation(offer_id, status)`);
   } catch {}
   try {
+    db.exec(`CREATE TABLE IF NOT EXISTS reply_desk_drafts (
+      id TEXT PRIMARY KEY, source_url TEXT NOT NULL UNIQUE, title TEXT NOT NULL,
+      snippet TEXT NOT NULL, draft_answer TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'DRAFT',
+      intent_class TEXT DEFAULT 'DIRECT_NEED', qualification_status TEXT DEFAULT 'QUALIFIED',
+      qualification_reason TEXT, next_permitted_action TEXT DEFAULT 'OWNER_REVIEW_AND_MANUAL_POST',
+      query_date TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_reply_desk_drafts_date ON reply_desk_drafts(query_date, status)`);
+  } catch {}
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS reply_desk_query_runs (
+      id TEXT PRIMARY KEY, query TEXT NOT NULL, run_date TEXT NOT NULL,
+      provider TEXT NOT NULL DEFAULT 'TAVILY', execution_time_ms INTEGER DEFAULT 0,
+      success INTEGER NOT NULL DEFAULT 1, result_count INTEGER NOT NULL DEFAULT 0,
+      error_message TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_reply_desk_runs_date ON reply_desk_query_runs(run_date)`);
+  } catch {}
+  try {
     db.exec(`CREATE TABLE IF NOT EXISTS owner_configuration (
       id TEXT PRIMARY KEY, owner_name TEXT,
       organization_id TEXT NOT NULL DEFAULT 'org_owner_primary', platform_business_id TEXT NOT NULL DEFAULT 'biz_platform_aro',

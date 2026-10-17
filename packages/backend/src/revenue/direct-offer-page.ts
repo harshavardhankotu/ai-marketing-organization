@@ -288,6 +288,43 @@ export class DirectCommercialOfferPage {
       </div>
     </div>
 
+    <div class="card" id="inquiry-card">
+      <h2>Request Lead Triage Demonstration</h2>
+      <p style="color: #94a3b8; font-size: 0.95rem; margin-bottom: 1.25rem;">
+        Are inquiries falling through the cracks outside clinic hours? Submit your practice details for a confidential system demonstration and architecture walkthrough.
+      </p>
+      <form id="lead-inquiry-form" onsubmit="handleInquirySubmit(event)">
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; margin-bottom: 1rem;">
+          <div>
+            <label style="display: block; font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.25rem;">Doctor / Contact Name *</label>
+            <input type="text" id="cust-name" required placeholder="Dr. Rajesh Sharma" style="width: 100%; padding: 0.6rem; border-radius: 8px; border: 1px solid #334155; background: #0b1120; color: #fff; font-size: 0.9rem;">
+          </div>
+          <div>
+            <label style="display: block; font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.25rem;">WhatsApp / Mobile Number *</label>
+            <input type="tel" id="cust-phone" required placeholder="9876543210" style="width: 100%; padding: 0.6rem; border-radius: 8px; border: 1px solid #334155; background: #0b1120; color: #fff; font-size: 0.9rem;">
+          </div>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; margin-bottom: 1rem;">
+          <div>
+            <label style="display: block; font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.25rem;">Clinic / Practice Name &amp; City *</label>
+            <input type="text" id="cust-service" required placeholder="Apex Dental Clinic, Hyderabad" style="width: 100%; padding: 0.6rem; border-radius: 8px; border: 1px solid #334155; background: #0b1120; color: #fff; font-size: 0.9rem;">
+          </div>
+          <div>
+            <label style="display: block; font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.25rem;">Email (Optional)</label>
+            <input type="email" id="cust-email" placeholder="contact@apexdental.com" style="width: 100%; padding: 0.6rem; border-radius: 8px; border: 1px solid #334155; background: #0b1120; color: #fff; font-size: 0.9rem;">
+          </div>
+        </div>
+        <div style="margin-bottom: 1.25rem;">
+          <label style="display: block; font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.25rem;">Primary Inquiry Challenge (e.g. evening patient calls, WhatsApp FAQ automation)</label>
+          <textarea id="cust-notes" rows="2" placeholder="Patients reaching out after 8 PM wait until next morning. Want instant 24/7 WhatsApp qualification." style="width: 100%; padding: 0.6rem; border-radius: 8px; border: 1px solid #334155; background: #0b1120; color: #fff; font-size: 0.9rem; font-family: inherit;"></textarea>
+        </div>
+        <button type="submit" id="submit-btn" style="background: #0284c7; color: #fff; border: none; padding: 0.75rem 1.5rem; border-radius: 8px; font-weight: 600; cursor: pointer; font-size: 0.95rem; width: 100%;">
+          Request Lead Triage Demonstration
+        </button>
+        <div id="form-msg" style="display: none; margin-top: 1rem; padding: 0.75rem; border-radius: 8px; text-align: center; font-size: 0.9rem;"></div>
+      </form>
+    </div>
+
     <div class="card">
       <h2>Contact & Commercial Verification</h2>
       <p style="color: #cbd5e1; font-size: 0.95rem;">
@@ -300,6 +337,66 @@ export class DirectCommercialOfferPage {
       <p style="margin-top: 0.35rem;">Technical overview page • Not an offer to contract until terms are owner-attested.</p>
     </footer>
   </div>
+
+  <script>
+    async function handleInquirySubmit(e) {
+      e.preventDefault();
+      var btn = document.getElementById('submit-btn');
+      var msg = document.getElementById('form-msg');
+      btn.disabled = true;
+      btn.innerText = 'Submitting...';
+
+      var payload = {
+        customerName: document.getElementById('cust-name').value.trim(),
+        customerPhone: document.getElementById('cust-phone').value.trim(),
+        customerEmail: document.getElementById('cust-email').value.trim() || undefined,
+        serviceOfInterest: document.getElementById('cust-service').value.trim(),
+        notes: document.getElementById('cust-notes').value.trim(),
+        source: 'offer_page_inquiry',
+        channel: 'WHATSAPP'
+      };
+
+      try {
+        var res = await fetch('/api/v1/offer/inquiry', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        var data = await res.json();
+        if (data.success) {
+          msg.style.display = 'block';
+          msg.style.background = 'rgba(16, 185, 129, 0.15)';
+          msg.style.color = '#34d399';
+          msg.style.border = '1px solid rgba(16, 185, 129, 0.3)';
+          msg.innerText = '✓ Thank you! Your consultation inquiry has been logged. Our systems have scheduled an automated architecture review.';
+          document.getElementById('lead-inquiry-form').reset();
+          btn.style.display = 'none';
+        } else {
+          throw new Error(data.error || 'Submission failed');
+        }
+      } catch (err) {
+        msg.style.display = 'block';
+        msg.style.background = 'rgba(239, 68, 68, 0.15)';
+        msg.style.color = '#f87171';
+        msg.style.border = '1px solid rgba(239, 68, 68, 0.3)';
+        msg.innerText = 'Error: ' + err.message;
+        btn.disabled = false;
+        btn.innerText = 'Request Lead Triage Demonstration';
+      }
+    }
+
+    try {
+      fetch('/api/v1/referrals/beacon', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          placement: 'offer_page_view',
+          source: 'direct_offer_overview',
+          contentSlug: 'offer'
+        })
+      }).catch(function() {});
+    } catch (e) {}
+  </script>
 </body>
 </html>`;
   }

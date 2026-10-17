@@ -155,6 +155,7 @@ export const EXACT_ROUTE_POLICY = {
     '/recommendations',
     '/offers',
     '/offer',
+    '/offer/inquiry',
     '/payments/page-view',
     '/referrals/beacon',
     '/owner/facts-status',
@@ -1478,15 +1479,25 @@ apiRouter.get('/revenue/funnel', (c) => {
   const verifiedRevenueINR = (verifiedAffiliatePayoutRow?.total || 0) + (verifiedDirectRevenueRow?.total || 0);
   const netRealizedRevenueINR = verifiedRevenueINR; // External ad/tool cost is strictly ₹0
 
-  // Build the 12 stages
+  // Proposals pipeline amounts derived strictly from database proposals
+  const draftProposalsSumRow = db.prepare(`SELECT COALESCE(SUM(setup_price_inr), 0) as total FROM proposals WHERE organization_id = ? AND status IN ('DRAFT', 'SENT', 'ACCEPTED')`).get(orgId) as any;
+  const draftProposalsSumINR = Number(draftProposalsSumRow?.total || 0);
+
+  const pendingProposalsSumRow = db.prepare(`SELECT COALESCE(SUM(setup_price_inr), 0) as total FROM proposals WHERE organization_id = ? AND status = 'DRAFT'`).get(orgId) as any;
+  const pendingProposalsSumINR = Number(pendingProposalsSumRow?.total || 0);
+
+  const acceptedProposalsSumRow = db.prepare(`SELECT COALESCE(SUM(setup_price_inr), 0) as total FROM proposals WHERE organization_id = ? AND status IN ('SENT', 'ACCEPTED')`).get(orgId) as any;
+  const acceptedProposalsSumINR = Number(acceptedProposalsSumRow?.total || 0);
+
+  // Build the 12 stages — strict financial measurement integrity (zero unbacked guesses on marketing assets)
   const rawStages = [
-    { key: 'DISCOVERED', name: 'Discovered Demand Signals & Prospects', count: totalDiscovered, amountINR: (platformProspectsCount * 15000), provenance: 'OBSERVED' as const },
-    { key: 'QUALIFIED', name: 'Qualified Buyer Intent & Offer Fit', count: totalQualified, amountINR: (qualifiedProspectsCount * 15000), provenance: 'OBSERVED' as const },
-    { key: 'VERIFIED', name: 'Verified Commercial Offers & Attestations', count: totalVerifiedOffers, amountINR: 15000, provenance: 'OBSERVED' as const },
-    { key: 'DRAFTED', name: 'Drafted Guides & Commercial Proposals', count: totalDrafted, amountINR: (draftProposalsCount * 15000), provenance: 'OBSERVED' as const },
-    { key: 'AWAITING_APPROVAL', name: 'Assets Awaiting Owner Approval & Intake', count: totalAwaitingApproval, amountINR: (pendingProposalsCount * 15000), provenance: 'OBSERVED' as const },
-    { key: 'APPROVED', name: 'Approved Commercial Assets & Proposals', count: totalApproved, amountINR: (acceptedProposalsCount * 15000), provenance: 'OWNER_CONFIRMED' as const },
-    { key: 'PUBLISHED', name: 'Published Commercial Assets & Live Offers', count: totalPublished, amountINR: 15000, provenance: 'OBSERVED' as const },
+    { key: 'DISCOVERED', name: 'Discovered Demand Signals & Prospects', count: totalDiscovered, amountINR: 0, provenance: 'OBSERVED' as const },
+    { key: 'QUALIFIED', name: 'Qualified Buyer Intent & Offer Fit', count: totalQualified, amountINR: 0, provenance: 'OBSERVED' as const },
+    { key: 'VERIFIED', name: 'Verified Commercial Offers & Attestations', count: totalVerifiedOffers, amountINR: 0, provenance: 'OBSERVED' as const },
+    { key: 'DRAFTED', name: 'Drafted Guides & Commercial Proposals', count: totalDrafted, amountINR: draftProposalsSumINR, provenance: 'OBSERVED' as const },
+    { key: 'AWAITING_APPROVAL', name: 'Assets Awaiting Owner Approval & Intake', count: totalAwaitingApproval, amountINR: pendingProposalsSumINR, provenance: 'OBSERVED' as const },
+    { key: 'APPROVED', name: 'Approved Commercial Assets & Proposals', count: totalApproved, amountINR: acceptedProposalsSumINR, provenance: 'OWNER_CONFIRMED' as const },
+    { key: 'PUBLISHED', name: 'Published Commercial Assets & Live Offers', count: totalPublished, amountINR: 0, provenance: 'OBSERVED' as const },
     { key: 'VISITS', name: 'Measured Organic & Offer Visits', count: totalVisits, amountINR: 0, provenance: 'OBSERVED' as const },
     { key: 'OUTBOUND_CLICKS', name: 'Outbound Referral & Payment Link Clicks', count: totalClicks, amountINR: 0, provenance: 'OBSERVED' as const },
     { key: 'ATTRIBUTED_ORDERS', name: 'Attributed Partner Orders & Payment Claims', count: totalAttributedOrders, amountINR: reportedCommissionsINR, provenance: 'OBSERVED' as const },
@@ -1572,6 +1583,44 @@ apiRouter.get('/revenue/funnel', (c) => {
       mrr_inr: 0,
       mode: 'VERIFIED_ONLY',
       stages,
+      directSalesWorkflow: {
+        name: 'Direct Sales (AI Inbound Lead Conversion System)',
+        targetNiche: 'Indian Dental Clinics & Healthcare Practices',
+        stages: [
+          { stage: 'PROSPECTS_DISCOVERED', count: platformProspectsCount, pipelineINR: 0 },
+          { stage: 'PROSPECTS_QUALIFIED', count: qualifiedProspectsCount, pipelineINR: 0 },
+          { stage: 'REPLY_DESK_DRAFTS', count: (db.prepare(`SELECT COUNT(*) as count FROM reply_desk_drafts`).get() as any)?.count || 0, pipelineINR: 0 },
+          { stage: 'PROPOSALS_DRAFTED', count: draftProposalsCount, pipelineINR: draftProposalsSumINR },
+          { stage: 'PROPOSALS_AWAITING_APPROVAL', count: pendingProposalsCount, pipelineINR: pendingProposalsSumINR },
+          { stage: 'PROPOSALS_ACCEPTED', count: acceptedProposalsCount, pipelineINR: acceptedProposalsSumINR },
+          { stage: 'PAYMENT_REQUESTS_SENT', count: paymentRequests, pipelineINR: acceptedProposalsSumINR },
+          { stage: 'CAPTURED_PAYMENTS', count: capturedTransactionsCount, realizedINR: (verifiedDirectRevenueRow?.total || 0) },
+          { stage: 'ONBOARDED_CUSTOMERS', count: customers, realizedINR: (verifiedDirectRevenueRow?.total || 0) },
+          { stage: 'ACTIVE_RETAINERS', count: activeCustomers, mrrINR: (activeCustomers * 8000) }
+        ]
+      },
+      contentAudienceWorkflow: {
+        name: 'Content & Audience Acquisition',
+        stages: [
+          { stage: 'BUYER_QUESTIONS_DISCOVERED', count: buyerQuestionsCount },
+          { stage: 'GUIDES_DRAFTED', count: draftGuidesCount },
+          { stage: 'GUIDES_PUBLISH_READY', count: publishReadyGuidesCount },
+          { stage: 'GUIDES_PUBLISHED', count: publishedGuidesCount },
+          { stage: 'PAGE_VISITS', count: assetMetrics.views || 0 },
+          { stage: 'OUTBOUND_CLICKS', count: assetMetrics.clicks || 0 },
+          { stage: 'ATTRIBUTED_COMMISSIONS', count: reportedOrdersCount, amountINR: projectedCommissionsINR }
+        ]
+      },
+      affiliateWorkflow: {
+        name: 'Partner & Affiliate Programs',
+        stages: [
+          { stage: 'PARTNERS_DISCOVERED', count: (db.prepare(`SELECT COUNT(*) as count FROM partner_offers WHERE organization_id = ?`).get(orgId) as any)?.count || 0 },
+          { stage: 'PARTNERS_ACTIVE', count: activePartnerOffersCount },
+          { stage: 'REPORTED_ORDERS', count: reportedOrdersCount, amountINR: projectedCommissionsINR },
+          { stage: 'CONFIRMED_COMMISSIONS', count: approvedCommissionsCount, amountINR: confirmedCommissionsINR },
+          { stage: 'SETTLED_PAYOUTS', count: paidCommissionsCount, amountINR: (verifiedAffiliatePayoutRow?.total || 0) }
+        ]
+      },
       primaryBottleneck,
       nextBestAction,
       financials: {
@@ -3062,6 +3111,104 @@ apiRouter.get('/offer', async (c) => {
   const contactEmail = (process.env.PUBLIC_CONTACT_EMAIL || 'contact@aimarketing.org').trim();
   const html = DirectCommercialOfferPage.getInstance().renderOfferHtml({ siteName, siteUrl, contactEmail });
   return c.html(html);
+});
+
+apiRouter.post('/offer/inquiry', async (c) => {
+  const clientInfo = getTrustedClientIp(c);
+  const limiter = DurableRateLimiter.getInstance();
+  const rateLimit = await limiter.checkRateLimit('/offer/inquiry', clientInfo.ip, 10, 600);
+  if (!rateLimit.allowed) {
+    return c.json({ success: false, error: 'RATE_LIMIT_EXCEEDED' }, 429);
+  }
+
+  const body = await c.req.json().catch(() => ({}));
+  const customerName = (body.customerName || body.name || '').trim();
+  const customerPhone = (body.customerPhone || body.phone || '').trim();
+  const customerEmail = (body.customerEmail || body.email || '').trim();
+  const practiceNameAndCity = (body.serviceOfInterest || body.practiceName || '').trim();
+  const notes = (body.notes || '').trim();
+
+  if (!customerName || !customerPhone) {
+    return c.json({ success: false, error: 'Full name and mobile phone number are required' }, 400);
+  }
+
+  const cleanPhone = String(customerPhone).replace(/\D/g, '');
+  if (cleanPhone.length < 8 || cleanPhone.length > 15) {
+    return c.json({ success: false, error: 'Invalid phone number. Please provide a valid phone number.' }, 400);
+  }
+
+  const db = getDb();
+  const d1Repo = D1RevenueRepository.getInstance();
+  const prospectId = `prospect_offer_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const journeyId = `jrn_offer_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+
+  // Parse clinic name and city
+  const parts = practiceNameAndCity.split(',').map((p: string) => p.trim());
+  const clinicName = parts[0] || customerName;
+  const city = parts[1] || 'India';
+
+  try {
+    // 1. Record in platform_prospects
+    const prospectSql = `
+      INSERT OR REPLACE INTO platform_prospects (
+        id, business_name, prospect_business_name, prospect_owner_name,
+        phone, prospect_phone, email, prospect_email, city, prospect_city,
+        vertical, prospect_vertical, source, discovery_source, fit_score,
+        status, stage, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'dental', 'dental', 'OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', 0.95, 'QUALIFIED', 'QUALIFIED', datetime('now'), datetime('now'))
+    `;
+    const prospectParams = [
+      prospectId, clinicName, clinicName, customerName,
+      customerPhone, customerPhone, customerEmail || null, customerEmail || null,
+      city, city
+    ];
+    if (isProduction()) {
+      await d1Repo.executeWrite('platform_prospects', prospectSql, prospectParams);
+    } else {
+      db.prepare(prospectSql).run(...prospectParams);
+    }
+
+    // 2. Record in customer_journeys via journeyTracker
+    const journey = journeyTracker.recordRealLead({
+      businessId: OwnerAuthService.PLATFORM_BUSINESS_ID,
+      organizationId: OwnerAuthService.OWNER_ORGANIZATION_ID,
+      customerName,
+      customerPhone,
+      customerEmail: customerEmail || undefined,
+      channel: 'WHATSAPP',
+      source: 'offer_page_inquiry',
+      serviceOfInterest: practiceNameAndCity || 'AI Inbound Lead Conversion System',
+      notes: notes || 'Direct inquiry from /offer landing page',
+      classification: 'REAL'
+    });
+
+    // 3. Record in sales_pipeline
+    const pipelineSql = `
+      INSERT INTO sales_pipeline (
+        id, organization_id, business_id, journey_id,
+        stage, owner_agent, probability, expected_revenue_inr, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'LEAD', 'orchestrator', 0.5, 15000, datetime('now'), datetime('now'))
+    `;
+    const pipelineId = `pipe_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const pipelineParams = [
+      pipelineId, OwnerAuthService.OWNER_ORGANIZATION_ID, OwnerAuthService.PLATFORM_BUSINESS_ID,
+      journey.id
+    ];
+    if (isProduction()) {
+      await d1Repo.executeWrite('sales_pipeline', pipelineSql, pipelineParams);
+    } else {
+      db.prepare(pipelineSql).run(...pipelineParams);
+    }
+
+    return c.json({
+      success: true,
+      message: 'Consultation inquiry received successfully. Automated architecture review scheduled.',
+      journeyId: journey.id,
+      prospectId
+    }, 200);
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 500);
+  }
 });
 
 apiRouter.post('/payments/page-view', async (c) => {
