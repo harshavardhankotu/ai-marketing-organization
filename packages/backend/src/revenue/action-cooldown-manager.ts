@@ -66,6 +66,16 @@ const COOLDOWN_POLICIES: Record<ActionType, CooldownPolicy> = {
     cooldownHoursPerAttempt: [48, 72, 96],
     escalateAfterMax: 'STOP'
   },
+  GENERATE_PROPOSAL: {
+    maxAttempts: 3,
+    cooldownHoursPerAttempt: [24, 72, 168],
+    escalateAfterMax: 'STOP'
+  },
+  REPLY_DESK_DISCOVER: {
+    maxAttempts: 999,
+    cooldownHoursPerAttempt: [12],
+    escalateAfterMax: 'STOP'
+  },
   BOOK_MEETING: {
     maxAttempts: 3,
     cooldownHoursPerAttempt: [24, 48, 72],

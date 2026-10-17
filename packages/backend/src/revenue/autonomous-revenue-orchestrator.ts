@@ -47,6 +47,9 @@ import { ReferralTrackingEngine } from '../commission/referral-tracking.js';
 import { PartnerRegistryEngine } from '../commission/partner-registry.js';
 import { AutomaticOfferLane } from '../commission/automatic-offer-lane.js';
 import { validateOwnerEnvFacts } from '../config/owner-env-intake.js';
+import { ProposalEngine } from './proposal-engine.js';
+import { ReplyDeskService } from './reply-desk.js';
+import { CoordinatedAgentOrchestrator } from '../agents/coordinated-orchestrator.js';
 import { randomUUID } from 'crypto';
 export type { ActionClassification } from '../integrations/adapter-base.js';
 
@@ -616,14 +619,89 @@ export class AutonomousRevenueOrchestrator {
       }
 
       // ────────────────────────────────────────────────────────────────
+      // SPEC Part D.4: GENERATE_PROPOSAL (Lane B Direct Commercial Proposal)
+      // ────────────────────────────────────────────────────────────────
+      case 'GENERATE_PROPOSAL': {
+        const proposalEngine = ProposalEngine.getInstance();
+        const prospectRow = (await db.prepare(`SELECT * FROM platform_prospects WHERE id = ?`).get(action.targetId)) as any;
+        const businessName = prospectRow?.business_name || prospectRow?.prospect_business_name || 'Prospective Business Client';
+        const city = prospectRow?.city || prospectRow?.prospect_city || 'India';
+        const vertical = prospectRow?.vertical || prospectRow?.prospect_vertical || 'service business';
+
+        const proposal = await proposalEngine.createProposalAsync({
+          prospectId: action.targetId,
+          organizationId,
+          businessId,
+          title: `AI Inbound Lead Conversion System Setup — ${businessName}`,
+          customerProblem: `Prospective inquiries at ${businessName} experience response delays outside working hours. High-intent leads risk going cold.`,
+          proposedSolution: `Deploy 24/7 automated WhatsApp/GBP lead qualification, CRM triage under 2 minutes, and calendar booking integration for ${vertical} businesses in ${city}.`,
+          deliverables: [
+            'Custom WhatsApp triage and FAQ response bot under 2 minutes',
+            'Google Business Profile instant lead capture integration',
+            'Multi-touch automated follow-up workflow',
+            'Direct calendar booking link integration',
+            'Live system handover report and 14-day performance guarantee'
+          ],
+          setupPriceINR: 15000,
+          monthlyPriceINR: 8000,
+          timelineDays: 5,
+          offerId: 'PLATFORM_SETUP',
+          paymentTerms: '₹15,000 setup fee via secure Razorpay payment link. Monthly retainer ₹8,000 starts Day 30.',
+          scopeBoundary: 'Includes WhatsApp Business integration and GBP optimization. Does not include paid ad spend.'
+        });
+
+        ActionCooldownManager.recordExecution(action.targetId, 'GENERATE_PROPOSAL', true);
+
+        return {
+          status: 'INTERNAL_AUTOMATION',
+          actionClassification: 'INTERNAL_AUTOMATION',
+          isRevenueAction: false,
+          externalId: proposal.id,
+          details: `Generated proposal ${proposal.id} (₹15,000) for ${businessName}. Ready in Owner Digest.`
+        };
+      }
+
+      // ────────────────────────────────────────────────────────────────
+      // SPEC Part D.3: REPLY_DESK_DISCOVER (Max 2 Tavily searches/day, zero names, draft only)
+      // ────────────────────────────────────────────────────────────────
+      case 'REPLY_DESK_DISCOVER': {
+        const replyDesk = ReplyDeskService.getInstance();
+        const res = await replyDesk.discoverAndDraftReplies();
+        ActionCooldownManager.recordExecution(action.targetId || businessId, 'REPLY_DESK_DISCOVER', true);
+        return {
+          status: 'INTERNAL_AUTOMATION',
+          actionClassification: 'INTERNAL_AUTOMATION',
+          isRevenueAction: false,
+          details: res.message
+        };
+      }
+
+      // ────────────────────────────────────────────────────────────────
       // SPEC § 21 & § 22: CREATE_CONTENT_ASSET
       // ────────────────────────────────────────────────────────────────
       case 'CREATE_CONTENT_ASSET': {
         const contentEngine = ContentAssetEngine.getInstance();
+        const coordOrchestrator = CoordinatedAgentOrchestrator.getInstance();
 
         if (action.targetType === 'OFFER') {
           try {
             const asset = await contentEngine.generateGuideForApprovedOffer(action.targetId, organizationId);
+
+            // Invoke Coordinated 80-Agent Orchestrator across all 4 divisions
+            try {
+              const offerRow = db.prepare('SELECT title, category FROM partner_offers WHERE id = ?').get(action.targetId) as any;
+              await coordOrchestrator.executeCoordinatedCampaign({
+                briefId: `brief_${asset.id}`,
+                organizationId,
+                businessId,
+                title: asset.title,
+                category: asset.category || offerRow?.category || 'office',
+                targetAudience: 'Indian small retail, logistics, and office buyers'
+              });
+            } catch (coordErr: any) {
+              console.warn(`[ARO] Coordinated campaign orchestration note: ${coordErr.message}`);
+            }
+
             return {
               status: 'INTERNAL_AUTOMATION',
               actionClassification: 'INTERNAL_AUTOMATION',

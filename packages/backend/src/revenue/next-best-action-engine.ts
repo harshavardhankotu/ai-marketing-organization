@@ -21,10 +21,14 @@ import { getDb } from '../db/client.js';
 import { OpportunityEngine, Opportunity } from './opportunity-engine.js';
 import { ActionCooldownManager } from './action-cooldown-manager.js';
 import { validateOwnerEnvFacts } from '../config/owner-env-intake.js';
+import { ReplyDeskService } from './reply-desk.js';
+import { DirectCommercialOfferPage } from './direct-offer-page.js';
 
 export type ActionType =
   | 'RECONCILE_COMMISSION'     // reconcile pending partner conversions to verified commissions
   | 'RECONCILE_CONVERSION'     // process incoming/pending conversion reports
+  | 'GENERATE_PROPOSAL'        // draft official commercial proposal for qualified prospect
+  | 'REPLY_DESK_DISCOVER'      // discover public requests matching offer and draft answers (max 2/day)
   | 'CREATE_CONTENT_ASSET'     // generate public comparison/guide/recommendation page
   | 'CREATE_REFERRAL_LINK'     // generate tracked referral link for active offer
   | 'AWAIT_OWNER_INTAKE'       // guide ready for publish but awaiting owner intake facts
@@ -233,6 +237,74 @@ export class NextBestActionEngine {
         candidates.push(this.buildCollectPaymentAction(req));
       }
     }
+
+    // Priority 2.1 (P0): Direct Commercial Proposal Generation for qualified prospects
+    const unproposedProspects = this.getUnproposedProspects(businessId);
+    for (const p of unproposedProspects) {
+      const cooldown = ActionCooldownManager.check(p.id, 'GENERATE_PROPOSAL');
+      if (cooldown.eligible || options?.ignoreCooldown) {
+        const estRev = 15000;
+        candidates.push({
+          actionType: 'GENERATE_PROPOSAL',
+          targetId: p.id,
+          targetType: 'PROSPECT',
+          ownerAgent: 'proposal-generator-agent',
+          rationale: `Qualified prospect '${p.business_name || p.id}' has no commercial proposal. Generate DRAFT setup proposal (₹15,000) for owner review.`,
+          estimatedRevenueINR: estRev,
+          expectedRevenueINR: estRev,
+          probabilityOfSuccess: 0.8,
+          timeToRevenueDays: 5,
+          externalCostINR: 0,
+          quotaCost: 0,
+          customerValueINR: estRev,
+          urgency: 0.95,
+          cooldownActive: false,
+          authorizationAvailable: true,
+          riskLevel: 'LOW',
+          expectedValueINR: estRev * 0.8,
+          priorityScore: 1050,
+          priorityTier: 'P0',
+          score: 1050,
+          authorizationRequired: false,
+          estimatedCostINR: 0
+        });
+      }
+    }
+
+    // Priority 2.2 (P0): Reply Desk public inquiry discovery (Part D.3, max 2 queries/day)
+    try {
+      const replyDesk = ReplyDeskService.getInstance();
+      const queriesRun = replyDesk.getQueriesRunToday();
+      if (queriesRun < 2 && DirectCommercialOfferPage.isDirectOfferAttested()) {
+        const cooldown = ActionCooldownManager.check(businessId, 'REPLY_DESK_DISCOVER');
+        if (cooldown.eligible || options?.ignoreCooldown) {
+          candidates.push({
+            actionType: 'REPLY_DESK_DISCOVER',
+            targetId: businessId,
+            targetType: 'NONE',
+            ownerAgent: 'reply-desk-agent',
+            rationale: `Reply Desk has ${2 - queriesRun} queries remaining today. Discover public buyer inquiries matching AI Inbound Lead Conversion offer and draft evidence-based answers.`,
+            estimatedRevenueINR: 15000,
+            expectedRevenueINR: 5000,
+            probabilityOfSuccess: 0.35,
+            timeToRevenueDays: 7,
+            externalCostINR: 0,
+            quotaCost: 1,
+            customerValueINR: 15000,
+            urgency: 0.90,
+            cooldownActive: false,
+            authorizationAvailable: true,
+            riskLevel: 'LOW',
+            expectedValueINR: 5000,
+            priorityScore: 950,
+            priorityTier: 'P0',
+            score: 950,
+            authorizationRequired: false,
+            estimatedCostINR: 0
+          });
+        }
+      }
+    } catch {}
 
     // Priority 2.5 (P0): Inbound lead requests (hot voluntary buyer intent from tools)
     const inboundRequests = this.getPendingInboundRequests();
@@ -985,9 +1057,28 @@ export class NextBestActionEngine {
     const db = getDb();
     try {
       return db.prepare(`
-        SELECT * FROM commission_records
-        WHERE status IN ('COMMISSION_PENDING', 'CONVERSION_REPORTED', 'EXTERNAL_CONVERSION_PENDING')
-        ORDER BY created_at ASC
+        SELECT cr.* FROM commission_records cr
+        LEFT JOIN partners p ON cr.partner_id = p.id
+        WHERE cr.status IN ('COMMISSION_PENDING', 'CONVERSION_REPORTED', 'EXTERNAL_CONVERSION_PENDING')
+          AND cr.partner_id != 'part_test'
+          AND (cr.external_transaction_id IS NOT NULL OR (p.id IS NOT NULL AND p.active_status = 1))
+        ORDER BY cr.created_at ASC
+        LIMIT 5
+      `).all() as any[];
+    } catch {
+      return [];
+    }
+  }
+
+  private getUnproposedProspects(businessId: string): any[] {
+    const db = getDb();
+    try {
+      return db.prepare(`
+        SELECT p.* FROM platform_prospects p
+        WHERE p.status = 'QUALIFIED'
+          AND p.stage NOT IN ('INBOUND_REQUEST')
+          AND p.id NOT IN (SELECT COALESCE(prospect_id, '') FROM proposals)
+        ORDER BY p.created_at DESC
         LIMIT 5
       `).all() as any[];
     } catch {
@@ -1151,9 +1242,9 @@ export class NextBestActionEngine {
       authorizationAvailable: true,
       riskLevel: 'LOW',
       expectedValueINR: 9000,
-      priorityScore: 950,
+      priorityScore: 1100,
       priorityTier: 'P0',
-      score: 950,
+      score: 1100,
       authorizationRequired: true,
       estimatedCostINR: 0
     };
