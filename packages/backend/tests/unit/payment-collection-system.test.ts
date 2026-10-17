@@ -60,7 +60,7 @@ describe('Comprehensive Razorpay & UPI QR Payment Collection System (Prompt Sect
   });
 
   // 2. Prevention of the old fixed ₹100 link being used incorrectly
-  it('Case 2: Prevents the old fixed ₹100 link (paQqSni / Tow5k0qoIXcQ8g) from being used', () => {
+  it('Case 2: Prevents the old fixed ₹100 link (paQqSni / Tow5k0qoIXcQ8g) from being used', async () => {
     const badUrl = 'https://rzp.io/rzp/paQqSni';
     expect(OwnerAuthService.isDisallowedFixedPaymentLink(badUrl)).toBe(true);
     expect(OwnerAuthService.isDisallowedFixedPaymentLink('https://rzp.io/i/Tow5k0qoIXcQ8g')).toBe(true);
@@ -85,13 +85,13 @@ describe('Comprehensive Razorpay & UPI QR Payment Collection System (Prompt Sect
       });
     }).toThrow(/DISALLOWED_FIXED_PAYMENT_LINK/);
 
-    expect(() => {
-      razorpay.recordManualUpiClaim({
+    await expect(async () => {
+      await razorpay.recordManualUpiClaim({
         businessId: BIZ_ID,
         utr: 'https://rzp.io/rzp/paQqSni',
         amountINR: 15000
       });
-    }).toThrow(/DISALLOWED_FIXED_PAYMENT_LINK/);
+    }).rejects.toThrow(/DISALLOWED_FIXED_PAYMENT_LINK/);
   });
 
   // 3. Exact amount and currency validation
@@ -406,7 +406,7 @@ describe('Comprehensive Razorpay & UPI QR Payment Collection System (Prompt Sect
     const utr = 'test_bank_utr_428901';
 
     // Step 1: Customer submits claim
-    const claimRes = razorpay.recordManualUpiClaim({
+    const claimRes = await razorpay.recordManualUpiClaim({
       businessId: BIZ_ID,
       utr,
       amountINR: 15000,

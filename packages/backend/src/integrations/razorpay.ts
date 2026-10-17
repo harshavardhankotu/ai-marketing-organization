@@ -744,14 +744,14 @@ export class RazorpayAdapter {
    * Records a customer-claimed manual UPI payment (Spec § 15 & § 18).
    * Status is set to PAYMENT_CLAIMED, NOT verified revenue!
    */
-  public recordManualUpiClaim(input: ManualUpiClaimInput): {
+  public async recordManualUpiClaim(input: ManualUpiClaimInput): Promise<{
     claimId: string;
     status: 'PAYMENT_CLAIMED';
     utr: string;
     amountINR: number;
     invoiceRef?: string;
     proposalId?: string;
-  } {
+  }> {
     const trimmedUtr = (input.utr || '').trim();
     if (!trimmedUtr || trimmedUtr.length < 6 || trimmedUtr.startsWith('utr_')) {
       throw new Error('INVALID_UTR: Please provide a valid bank UTR / transaction reference (min 6 characters). Auto-generated UTRs are rejected.');
@@ -766,20 +766,35 @@ export class RazorpayAdapter {
     }
 
     // Check duplicate UTR submissions
-    const existingClaim = this.db.prepare('SELECT id, status FROM manual_upi_claims WHERE utr = ?').get(trimmedUtr) as any;
+    let existingClaim: any = null;
+    let biz: any = null;
+    let prop: any = null;
+
+    if (isProduction() && !process.env.VITEST) {
+      existingClaim = await this.d1Repo.queryOne<any>('manual_upi_claims', 'SELECT id, status FROM manual_upi_claims WHERE utr = ?', [trimmedUtr]);
+      biz = await this.d1Repo.queryOne<any>('businesses', 'SELECT id, organization_id FROM businesses WHERE id = ?', [input.businessId]);
+      if (input.proposalId) {
+        prop = await this.d1Repo.queryOne<any>('proposals', 'SELECT id, setup_price_inr FROM proposals WHERE id = ?', [input.proposalId]);
+      }
+    } else {
+      existingClaim = getDb().prepare('SELECT id, status FROM manual_upi_claims WHERE utr = ?').get(trimmedUtr) as any;
+      biz = getDb().prepare('SELECT id, organization_id FROM businesses WHERE id = ?').get(input.businessId) as any;
+      if (input.proposalId) {
+        prop = getDb().prepare('SELECT id, setup_price_inr FROM proposals WHERE id = ?').get(input.proposalId) as any;
+      }
+    }
+
     if (existingClaim) {
       throw new Error(`DUPLICATE_CLAIM: UTR '${trimmedUtr}' has already been registered (current status: ${existingClaim.status}). Duplicate submissions are rejected.`);
     }
 
     // Validate business exists
-    const biz = this.db.prepare('SELECT id, organization_id FROM businesses WHERE id = ?').get(input.businessId) as any;
     if (!biz) {
       throw new Error(`BUSINESS_NOT_FOUND: Business ${input.businessId} does not exist.`);
     }
 
     // Validate deposit amount against proposal or permitted deposit amounts
     if (input.proposalId) {
-      const prop = this.db.prepare('SELECT id, setup_price_inr FROM proposals WHERE id = ?').get(input.proposalId) as any;
       if (!prop) {
         throw new Error(`PROPOSAL_NOT_FOUND: Proposal '${input.proposalId}' does not exist.`);
       }
@@ -792,13 +807,14 @@ export class RazorpayAdapter {
 
     const claimId = `claim_upi_${randomUUID().substring(0, 10)}`;
 
-    this.db.prepare(`
+    const insertSql = `
       INSERT INTO manual_upi_claims (
         id, organization_id, business_id, journey_id, proposal_id, invoice_ref,
         payer_name, payer_phone, payer_vpa, utr, amount_inr, service_rendered,
         status, claimed_at, notes
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PAYMENT_CLAIMED', datetime('now'), ?)
-    `).run(
+    `;
+    const insertParams = [
       claimId,
       biz.organization_id,
       input.businessId,
@@ -812,17 +828,30 @@ export class RazorpayAdapter {
       input.amountINR,
       input.serviceRendered || 'Manual UPI Payment Claim',
       input.notes || null
-    );
+    ];
 
-    // If attached to a proposal, update payment_request status to PAYMENT_CLAIMED
-    if (input.proposalId) {
-      try {
-        this.db.prepare(`
-          UPDATE payment_requests
-          SET status = 'PAYMENT_CLAIMED', updated_at = datetime('now')
-          WHERE proposal_id = ?
-        `).run(input.proposalId);
-      } catch {}
+    if (isProduction() && !process.env.VITEST) {
+      await this.d1Repo.executeWrite('manual_upi_claims', insertSql, insertParams);
+      if (input.proposalId) {
+        try {
+          await this.d1Repo.executeWrite(
+            'payment_requests',
+            `UPDATE payment_requests SET status = 'PAYMENT_CLAIMED', updated_at = datetime('now') WHERE proposal_id = ?`,
+            [input.proposalId]
+          );
+        } catch {}
+      }
+    } else {
+      getDb().prepare(insertSql).run(...insertParams);
+      if (input.proposalId) {
+        try {
+          getDb().prepare(`
+            UPDATE payment_requests
+            SET status = 'PAYMENT_CLAIMED', updated_at = datetime('now')
+            WHERE proposal_id = ?
+          `).run(input.proposalId);
+        } catch {}
+      }
     }
 
     return {
@@ -861,7 +890,25 @@ export class RazorpayAdapter {
     }
 
     // Check existing transaction
-    const existing = this.db.prepare('SELECT id FROM transactions WHERE transaction_ref = ?').get(trimmedUtr) as any;
+    let existing: any = null;
+    let claimRow: any = null;
+
+    if (isProduction() && !process.env.VITEST) {
+      existing = await this.d1Repo.queryOne<any>('transactions', 'SELECT id FROM transactions WHERE transaction_ref = ?', [trimmedUtr]);
+      if (params.claimId) {
+        claimRow = await this.d1Repo.queryOne<any>('manual_upi_claims', 'SELECT proposal_id FROM manual_upi_claims WHERE id = ?', [params.claimId]);
+      } else {
+        claimRow = await this.d1Repo.queryOne<any>('manual_upi_claims', 'SELECT proposal_id FROM manual_upi_claims WHERE utr = ?', [trimmedUtr]);
+      }
+    } else {
+      existing = getDb().prepare('SELECT id FROM transactions WHERE transaction_ref = ?').get(trimmedUtr) as any;
+      if (params.claimId) {
+        claimRow = getDb().prepare('SELECT proposal_id FROM manual_upi_claims WHERE id = ?').get(params.claimId) as any;
+      } else {
+        claimRow = getDb().prepare('SELECT proposal_id FROM manual_upi_claims WHERE utr = ?').get(trimmedUtr) as any;
+      }
+    }
+
     if (existing) {
       return {
         success: true,
@@ -871,14 +918,7 @@ export class RazorpayAdapter {
       };
     }
 
-    // Find linked proposal if present
-    let linkedProposalId: string | undefined;
-    try {
-      const claimRow = params.claimId
-        ? (this.db.prepare('SELECT proposal_id FROM manual_upi_claims WHERE id = ?').get(params.claimId) as any)
-        : (this.db.prepare('SELECT proposal_id FROM manual_upi_claims WHERE utr = ?').get(trimmedUtr) as any);
-      linkedProposalId = claimRow?.proposal_id;
-    } catch {}
+    const linkedProposalId: string | undefined = claimRow?.proposal_id;
 
     // Update claim status if row exists
     if (params.claimId) {

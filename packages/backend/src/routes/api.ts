@@ -3275,7 +3275,7 @@ apiRouter.post('/payments/manual-upi/claim', async (c) => {
   }
 
   try {
-    const claim = razorpayAdapter.recordManualUpiClaim({
+    const claim = await razorpayAdapter.recordManualUpiClaim({
       businessId,
       journeyId,
       proposalId,
