@@ -1,132 +1,122 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import http from 'http';
-import { TelegramBotAdapter } from '../../src/integrations/telegram-adapter.js';
-import { getDb } from '../../src/db/client.js';
+import { TelegramBotAdapter } from '../../src/notifications/telegram-adapter.js';
 
-describe('Step 9: Telegram Bot API Adapter for Owned Channel', () => {
-  const adapter = TelegramBotAdapter.getInstance();
+describe('Telegram Bot Adapter for Owner-Only Alerts (Step 5)', () => {
   let server: http.Server;
-  let receivedRequests: Array<{ url: string; body: any }> = [];
-  let port: number;
+  let serverPort: number;
+  let receivedRequests: any[] = [];
+
+  const originalToken = process.env.TELEGRAM_BOT_TOKEN;
+  const originalChatId = process.env.TELEGRAM_OWNER_CHAT_ID;
+  const originalEnabled = process.env.TELEGRAM_ENABLED;
 
   beforeEach(async () => {
     receivedRequests = [];
-    const db = getDb();
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS telegram_posts_log (
-        id TEXT PRIMARY KEY,
-        channel_id TEXT NOT NULL,
-        guide_url TEXT NOT NULL,
-        message_id INTEGER,
-        created_at TEXT NOT NULL DEFAULT (datetime('now'))
-      );
-    `);
-    db.prepare(`DELETE FROM telegram_posts_log`).run();
-
-    // Start fake Telegram HTTP server
-    server = http.createServer(async (req, res) => {
+    server = http.createServer((req, res) => {
       let body = '';
-      for await (const chunk of req) {
-        body += chunk;
-      }
-      const parsedBody = body ? JSON.parse(body) : {};
-      receivedRequests.push({ url: req.url || '', body: parsedBody });
-
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        ok: true,
-        result: {
-          message_id: 42,
-          date: Math.floor(Date.now() / 1000),
-          chat: { id: parsedBody.chat_id }
-        }
-      }));
+      req.on('data', chunk => { body += chunk; });
+      req.on('end', () => {
+        receivedRequests.push({
+          method: req.method,
+          url: req.url,
+          body: body ? JSON.parse(body) : null
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, result: { message_id: 12345 } }));
+      });
     });
 
     await new Promise<void>((resolve) => {
       server.listen(0, '127.0.0.1', () => {
         const addr = server.address() as any;
-        port = addr.port;
+        serverPort = addr.port;
         resolve();
       });
     });
+
+    TelegramBotAdapter.getInstance().setCustomBaseUrl(`http://127.0.0.1:${serverPort}`);
   });
 
   afterEach(async () => {
+    TelegramBotAdapter.getInstance().setCustomBaseUrl(undefined);
+    if (server) {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+
+    if (originalToken) process.env.TELEGRAM_BOT_TOKEN = originalToken;
+    else delete process.env.TELEGRAM_BOT_TOKEN;
+
+    if (originalChatId) process.env.TELEGRAM_OWNER_CHAT_ID = originalChatId;
+    else delete process.env.TELEGRAM_OWNER_CHAT_ID;
+
+    if (originalEnabled) process.env.TELEGRAM_ENABLED = originalEnabled;
+    else delete process.env.TELEGRAM_ENABLED;
+  });
+
+  it('1. Returns TELEGRAM_DISABLED_OR_UNCONFIGURED when variables are unset', async () => {
     delete process.env.TELEGRAM_ENABLED;
     delete process.env.TELEGRAM_BOT_TOKEN;
-    delete process.env.TELEGRAM_CHANNEL_ID;
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    delete process.env.TELEGRAM_OWNER_CHAT_ID;
+
+    const adapter = TelegramBotAdapter.getInstance();
+    const result = await adapter.sendMessage('Test');
+
+    expect(result.sent).toBe(false);
+    expect(result.reason).toBe('TELEGRAM_DISABLED_OR_UNCONFIGURED');
+    expect(receivedRequests.length).toBe(0);
   });
 
-  it('stays off by default when environment variables are not configured (Step 9)', async () => {
-    delete process.env.TELEGRAM_ENABLED;
-    expect(adapter.isEnabled()).toBe(false);
-
-    const res = await adapter.postPublishedGuide({
-      guideTitle: 'Phomemo M110 Buyer Guide',
-      guideUrl: 'https://aimarketing.org/guides/guide-phomemo-m110.html'
-    });
-
-    expect(res.posted).toBe(false);
-    expect(res.reason).toContain('TELEGRAM_DISABLED');
-  });
-
-  it('posts a guide with disclosure text using the official API when enabled (Step 9)', async () => {
+  it('2. Rejects broadcast channels (-100 prefix) to prevent messaging non-owner audiences', async () => {
     process.env.TELEGRAM_ENABLED = 'true';
-    process.env.TELEGRAM_BOT_TOKEN = 'mock-bot-token-12345';
-    process.env.TELEGRAM_CHANNEL_ID = '@my_owned_channel';
+    process.env.TELEGRAM_BOT_TOKEN = '123456789:AAFakeTokenForTestPurposeOnly';
+    process.env.TELEGRAM_OWNER_CHAT_ID = '-1001234567890'; // Channel ID
 
-    expect(adapter.isEnabled()).toBe(true);
+    const adapter = TelegramBotAdapter.getInstance();
+    const result = await adapter.sendMessage('Test');
 
-    // Mock fetchFn redirecting to our local fake server
-    const fakeFetch: typeof fetch = async (input, init) => {
-      const url = `http://127.0.0.1:${port}/botmock-bot-token-12345/sendMessage`;
-      return fetch(url, init);
-    };
+    expect(result.sent).toBe(false);
+    expect(result.reason).toContain('SECURITY_VIOLATION');
+    expect(receivedRequests.length).toBe(0);
+  });
 
-    const res = await adapter.postPublishedGuide({
-      guideTitle: 'Phomemo M110 Buyer Guide',
-      guideUrl: 'https://aimarketing.org/guides/guide-phomemo-m110.html',
-      fetchFn: fakeFetch
+  it('3. Successfully dispatches inquiry alert to owner chat on mock server', async () => {
+    process.env.TELEGRAM_ENABLED = 'true';
+    process.env.TELEGRAM_BOT_TOKEN = '123456789:AAFakeTokenForTestPurposeOnly';
+    process.env.TELEGRAM_OWNER_CHAT_ID = '987654321'; // Personal user ID
+
+    const adapter = TelegramBotAdapter.getInstance();
+    const result = await adapter.notifyInquiry({
+      customerName: 'Dr. Ramesh Sharma',
+      customerPhone: '9876543210',
+      customerEmail: 'ramesh@clinic.in',
+      clinicName: 'Ramesh Dental Care'
     });
 
-    expect(res.posted).toBe(true);
-    expect(res.messageId).toBe(42);
-
+    expect(result.sent).toBe(true);
     expect(receivedRequests.length).toBe(1);
-    const req = receivedRequests[0];
-    expect(req.body.chat_id).toBe('@my_owned_channel');
-    expect(req.body.text).toContain('Phomemo M110 Buyer Guide');
-    expect(req.body.text).toContain('https://aimarketing.org/guides/guide-phomemo-m110.html');
-    expect(req.body.text).toContain('Disclosure: As an Amazon Associate I earn from qualifying purchases.');
+    expect(receivedRequests[0].body.chat_id).toBe('987654321');
+    expect(receivedRequests[0].body.text).toContain('Ramesh Dental Care');
+    expect(receivedRequests[0].body.text).toContain('Dr. Ramesh Sharma');
   });
 
-  it('enforces rate limit of at most 1 post per day (Step 9)', async () => {
+  it('4. Successfully dispatches manual payment claim alert to owner chat on mock server', async () => {
     process.env.TELEGRAM_ENABLED = 'true';
-    process.env.TELEGRAM_BOT_TOKEN = 'mock-bot-token-12345';
-    process.env.TELEGRAM_CHANNEL_ID = '@my_owned_channel';
+    process.env.TELEGRAM_BOT_TOKEN = '123456789:AAFakeTokenForTestPurposeOnly';
+    process.env.TELEGRAM_OWNER_CHAT_ID = '987654321';
 
-    const fakeFetch: typeof fetch = async (input, init) => {
-      const url = `http://127.0.0.1:${port}/botmock-bot-token-12345/sendMessage`;
-      return fetch(url, init);
-    };
-
-    // First post succeeds
-    const firstRes = await adapter.postPublishedGuide({
-      guideTitle: 'First Guide',
-      guideUrl: 'https://aimarketing.org/guides/guide-first.html',
-      fetchFn: fakeFetch
+    const adapter = TelegramBotAdapter.getInstance();
+    const result = await adapter.notifyPaymentClaim({
+      utr: 'BANK1122334455',
+      payerName: 'Dr. Anand',
+      amountINR: 15000,
+      proposalId: 'prop_real_01'
     });
-    expect(firstRes.posted).toBe(true);
 
-    // Second post on same day is blocked
-    const secondRes = await adapter.postPublishedGuide({
-      guideTitle: 'Second Guide',
-      guideUrl: 'https://aimarketing.org/guides/guide-second.html',
-      fetchFn: fakeFetch
-    });
-    expect(secondRes.posted).toBe(false);
-    expect(secondRes.reason).toContain('DAILY_LIMIT_EXCEEDED');
+    expect(result.sent).toBe(true);
+    expect(receivedRequests.length).toBe(1);
+    expect(receivedRequests[0].body.chat_id).toBe('987654321');
+    expect(receivedRequests[0].body.text).toContain('BANK1122334455');
+    expect(receivedRequests[0].body.text).toContain('₹15,000');
   });
 });

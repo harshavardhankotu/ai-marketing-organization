@@ -3154,6 +3154,15 @@ apiRouter.post('/offer/inquiry', async (c) => {
   const clinicName = parts[0] || customerName;
   const city = parts[1] || 'Hyderabad';
 
+  // Step 1e Guard: a new prospect with "test" in the name or email is flagged NEEDS_OWNER_REVIEW
+  // and counts nowhere until the owner clears it.
+  const isTestProspect = /test|fixture|mock|example\.com/i.test(`${customerName} ${customerEmail} ${clinicName}`);
+  const initialStatus = isTestProspect ? 'NEEDS_OWNER_REVIEW' : 'QUALIFIED';
+  const initialStage = isTestProspect ? 'NEEDS_OWNER_REVIEW' : 'QUALIFIED';
+  const initialPipelineStage = isTestProspect ? 'NEEDS_OWNER_REVIEW' : 'LEAD';
+  const fitScore = isTestProspect ? 0.0 : 0.95;
+  const isTestFlag = isTestProspect ? 1 : 0;
+
   try {
     // 1. Record in platform_prospects (durable in D1 and local SQLite)
     const prospectSql = `
@@ -3161,13 +3170,13 @@ apiRouter.post('/offer/inquiry', async (c) => {
         id, business_name, prospect_business_name, prospect_owner_name,
         phone, prospect_phone, email, prospect_email, city, prospect_city,
         vertical, prospect_vertical, source, discovery_source, fit_score,
-        status, stage, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'dental', 'dental', 'OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', 0.95, 'QUALIFIED', 'QUALIFIED', datetime('now'), datetime('now'))
+        status, stage, is_test, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'dental', 'dental', 'OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', ?, ?, ?, ?, datetime('now'), datetime('now'))
     `;
     const prospectParams = [
       prospectId, clinicName, clinicName, customerName,
       customerPhone, customerPhone, customerEmail || null, customerEmail || null,
-      city, city
+      city, city, fitScore, initialStatus, initialStage, isTestFlag
     ];
     if (isProduction()) {
       await d1Repo.executeWrite('platform_prospects', prospectSql, prospectParams);
@@ -3186,24 +3195,27 @@ apiRouter.post('/offer/inquiry', async (c) => {
       source: 'offer_page_inquiry',
       serviceOfInterest: practiceNameAndCity || 'AI Inbound Lead Conversion System',
       notes: notes || 'Direct inquiry from /offer landing page',
-      classification: 'REAL'
+      classification: isTestProspect ? 'TEST' : 'REAL'
     });
 
     // 3. Record in opportunities (durable in D1 and local SQLite)
+    // Step 1d/g: Estimated value is strictly 0 until owner approves a commercial proposal.
     const oppSql = `
       INSERT INTO opportunities (
         id, business_id, organization_id, prospect_id, title, status,
         estimated_value_inr, confidence_score, source, evidence_json, probability,
         acquisition_cost_inr, time_to_revenue_days, authorization_requirements_json,
-        risk_level, next_best_action, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, 'QUALIFIED', 15000, 0.90, 'INBOUND', '[]', 0.50, 0, 5, '[]', 'LOW', 'QUALIFY_LEAD', datetime('now'), datetime('now'))
+        risk_level, next_best_action, is_test, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 0, 0.90, 'INBOUND', '[]', 0.50, 0, 5, '[]', 'LOW', 'QUALIFY_LEAD', ?, datetime('now'), datetime('now'))
     `;
     const oppParams = [
       oppId,
       OwnerAuthService.PLATFORM_BUSINESS_ID,
       OwnerAuthService.OWNER_ORGANIZATION_ID,
       prospectId,
-      `Inbound Triage Request: ${clinicName}`
+      `Inbound Triage Request: ${clinicName}`,
+      initialStatus,
+      isTestFlag
     ];
     if (isProduction()) {
       await d1Repo.executeWrite('opportunities', oppSql, oppParams);
@@ -3212,22 +3224,22 @@ apiRouter.post('/offer/inquiry', async (c) => {
     }
 
     // 4. Record in sales_pipeline (durable in D1 and local SQLite)
-    // In production D1, journey_id is null to avoid foreign key failures against customer_journeys,
-    // while opportunity_id maintains strict lineage to the opportunities table.
-    // In local SQLite, journey_id is also preserved for unit test verification.
+    // Step 1d/g: Expected revenue is strictly 0 until owner approves a commercial proposal.
     const journeyIdParam = isProduction() ? null : journey.id;
     const pipelineSql = `
       INSERT INTO sales_pipeline (
         id, opportunity_id, business_id, organization_id, journey_id,
-        stage, owner_agent, probability, expected_revenue_inr, next_action, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, 'LEAD', 'orchestrator', 0.5, 15000, 'SCHEDULE_DEMO', datetime('now'), datetime('now'))
+        stage, owner_agent, probability, expected_revenue_inr, next_action, is_test, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'orchestrator', 0.5, 0, 'SCHEDULE_DEMO', ?, datetime('now'), datetime('now'))
     `;
     const pipelineParams = [
       pipelineId,
       oppId,
       OwnerAuthService.PLATFORM_BUSINESS_ID,
       OwnerAuthService.OWNER_ORGANIZATION_ID,
-      journeyIdParam
+      journeyIdParam,
+      initialPipelineStage,
+      isTestFlag
     ];
     if (isProduction()) {
       await d1Repo.executeWrite('sales_pipeline', pipelineSql, pipelineParams);
@@ -3235,12 +3247,28 @@ apiRouter.post('/offer/inquiry', async (c) => {
       db.prepare(pipelineSql).run(...pipelineParams);
     }
 
+    // Step 5: Trigger owner Telegram alert (non-blocking, hermetic safe)
+    try {
+      const { TelegramBotAdapter } = await import('../notifications/telegram-adapter.js');
+      await TelegramBotAdapter.getInstance().notifyInquiry({
+        customerName,
+        customerPhone,
+        customerEmail,
+        clinicName,
+        isTest: isTestProspect
+      });
+    } catch {}
+
     return c.json({
       success: true,
-      message: 'Consultation inquiry received successfully. Automated architecture review scheduled.',
+      message: isTestProspect
+        ? 'Test inquiry received and flagged for owner review. Quarantined from revenue funnels.'
+        : 'Consultation inquiry received successfully. Automated architecture review scheduled.',
       journeyId: journey.id,
       prospectId,
-      opportunityId: oppId
+      opportunityId: oppId,
+      status: initialStatus,
+      isTest: isTestProspect
     }, 200);
   } catch (err: any) {
     return c.json({ success: false, error: err.message }, 500);
@@ -3288,6 +3316,19 @@ apiRouter.post('/payments/manual-upi/claim', async (c) => {
       serviceRendered,
       notes
     });
+
+    // Step 5: Trigger owner Telegram alert on new payment claim (non-blocking, hermetic safe)
+    try {
+      const { TelegramBotAdapter } = await import('../notifications/telegram-adapter.js');
+      const isTestClaim = /test|mock/i.test(`${payerName || ''} ${utr || ''}`);
+      await TelegramBotAdapter.getInstance().notifyPaymentClaim({
+        utr: String(utr).trim(),
+        payerName,
+        amountINR: Number(amountINR),
+        proposalId,
+        isTest: isTestClaim
+      });
+    } catch {}
 
     return c.json({
       success: true,
@@ -5518,8 +5559,10 @@ apiRouter.post('/build/static-site', async (c) => {
  */
 apiRouter.get('/owner/facts-status', async (c) => {
   const { validateOwnerEnvFacts } = await import('../config/owner-env-intake.js');
+  const { computeOwnOfferHash } = await import('../revenue/direct-offer-page.js');
   const validation = validateOwnerEnvFacts();
-  const fields = [
+
+  const statutoryFields = [
     'ASSOCIATES_APPLICATION_DATE',
     'ASSOCIATES_LISTED_SITE_URL',
     'ASSOCIATES_AGREEMENT_READ',
@@ -5528,18 +5571,104 @@ apiRouter.get('/owner/facts-status', async (c) => {
     'PUBLIC_CONTACT_EMAIL'
   ];
 
-  const facts = fields.map(field => {
+  const facts: Array<{
+    field: string;
+    status: 'SET' | 'MISSING';
+    validity: 'VALID' | 'INVALID';
+    reason: string;
+    note?: string;
+  }> = [];
+
+  for (const field of statutoryFields) {
     const isMissing = validation.missingFields.includes(field);
     const invalidErr = validation.invalidFields.find(i => i.field === field);
-    return {
+    facts.push({
       field,
       status: isMissing ? 'MISSING' : 'SET',
       validity: isMissing ? 'INVALID' : (invalidErr ? 'INVALID' : 'VALID'),
       reason: isMissing ? 'Environment variable not set' : (invalidErr ? invalidErr.reason : 'Valid')
-    };
+    });
+  }
+
+  // 7. OWN_OFFER_CONFIRMED
+  const ownOfferConfirmedVal = process.env.OWN_OFFER_CONFIRMED?.trim();
+  const isOwnOfferConfirmed = ownOfferConfirmedVal?.toLowerCase() === 'true';
+  facts.push({
+    field: 'OWN_OFFER_CONFIRMED',
+    status: ownOfferConfirmedVal ? 'SET' : 'MISSING',
+    validity: isOwnOfferConfirmed ? 'VALID' : 'INVALID',
+    reason: ownOfferConfirmedVal
+      ? (isOwnOfferConfirmed ? 'Valid (Owner confirmed)' : 'Invalid (Must be explicitly "true")')
+      : 'Environment variable not set (Requires manual human confirmation)'
   });
 
-  const autoPublishEnabled = process.env.AUTO_PUBLISH_ENABLED === 'true';
+  // 8. DIRECT_OFFER_TERMS_SHA256
+  const termsHashVal = process.env.DIRECT_OFFER_TERMS_SHA256?.trim();
+  const currentComputedHash = computeOwnOfferHash();
+  const isHashMatch = Boolean(termsHashVal && currentComputedHash && termsHashVal.toLowerCase() === currentComputedHash.toLowerCase());
+  facts.push({
+    field: 'DIRECT_OFFER_TERMS_SHA256',
+    status: termsHashVal ? 'SET' : 'MISSING',
+    validity: (termsHashVal && isHashMatch && isOwnOfferConfirmed) ? 'VALID' : 'INVALID',
+    reason: !termsHashVal
+      ? 'Environment variable not set'
+      : (!isOwnOfferConfirmed
+        ? 'Invalid (Gated: requires OWN_OFFER_CONFIRMED=true set by owner script)'
+        : (isHashMatch ? 'Valid (Matches owner/OWN_OFFER.md)' : 'Invalid (Hash mismatch with owner/OWN_OFFER.md)')),
+    note: 'A hash match proves the page equals the file. It does not prove that the owner wrote or approved the file.'
+  });
+
+  // 9. OWNER_WHATSAPP_NUMBER
+  const whatsappNum = process.env.OWNER_WHATSAPP_NUMBER?.trim();
+  const isWhatsappValid = Boolean(whatsappNum && /^\+?[1-9]\d{9,14}$/.test(whatsappNum.replace(/\s+/g, '')));
+  facts.push({
+    field: 'OWNER_WHATSAPP_NUMBER',
+    status: whatsappNum ? 'SET' : 'MISSING',
+    validity: isWhatsappValid ? 'VALID' : 'INVALID',
+    reason: whatsappNum
+      ? (isWhatsappValid ? 'Valid' : 'Invalid format (Must be valid phone with country code, e.g. +91XXXXXXXXXX)')
+      : 'Environment variable not set (No default allowed)'
+  });
+
+  // 10. TELEGRAM_BOT_TOKEN
+  const tgToken = process.env.TELEGRAM_BOT_TOKEN?.trim();
+  const isTgTokenValid = Boolean(tgToken && tgToken.length > 20 && tgToken.includes(':'));
+  facts.push({
+    field: 'TELEGRAM_BOT_TOKEN',
+    status: tgToken ? 'SET' : 'MISSING',
+    validity: isTgTokenValid ? 'VALID' : 'INVALID',
+    reason: tgToken
+      ? (isTgTokenValid ? 'Valid' : 'Invalid format (Expected format: 123456789:ABCdef...)')
+      : 'Environment variable not set'
+  });
+
+  // 11. TELEGRAM_OWNER_CHAT_ID
+  const tgChatId = process.env.TELEGRAM_OWNER_CHAT_ID?.trim();
+  const isTgChatIdValid = Boolean(tgChatId && /^-?\d+$/.test(tgChatId) && !tgChatId.startsWith('-100'));
+  facts.push({
+    field: 'TELEGRAM_OWNER_CHAT_ID',
+    status: tgChatId ? 'SET' : 'MISSING',
+    validity: isTgChatIdValid ? 'VALID' : 'INVALID',
+    reason: tgChatId
+      ? (isTgChatIdValid ? 'Valid' : 'Invalid format (Must be owner personal chat ID, not a channel -100 prefix)')
+      : 'Environment variable not set'
+  });
+
+  // 12. TELEGRAM_ENABLED
+  const tgEnabled = process.env.TELEGRAM_ENABLED?.trim();
+  const isTgEnabledValid = Boolean(tgEnabled && ['true', 'false'].includes(tgEnabled.toLowerCase()));
+  facts.push({
+    field: 'TELEGRAM_ENABLED',
+    status: tgEnabled ? 'SET' : 'MISSING',
+    validity: isTgEnabledValid ? 'VALID' : 'INVALID',
+    reason: tgEnabled
+      ? (isTgEnabledValid ? 'Valid' : 'Invalid (Must be "true" or "false")')
+      : 'Environment variable not set (Defaults to disabled)'
+  });
+
+  const statutoryFacts = facts.filter(f => statutoryFields.includes(f.field));
+  const autoPublishEnabled = validation.valid && process.env.AUTO_PUBLISH_ENABLED === 'true';
+  const isAllScope = c.req.query('scope') === 'all' || c.req.query('all') === 'true';
 
   return c.json({
     success: true,
@@ -5548,9 +5677,60 @@ apiRouter.get('/owner/facts-status', async (c) => {
       missingCount: validation.missingFields.length,
       invalidCount: validation.invalidFields.length,
       autoPublishEnabled,
-      facts
+      attestationNotice: 'A hash match proves the page equals the file. It does not prove that the owner wrote or approved the file.',
+      facts: isAllScope ? facts : statutoryFacts,
+      allFacts: facts
     }
   });
+});
+
+/**
+ * Outreach Log Endpoints (Step 7: Manual Owner Conversation Tracking)
+ */
+apiRouter.get('/owner/outreach', (c) => {
+  const db = getDb();
+  const rows = db.prepare(`SELECT * FROM outreach_log ORDER BY created_at DESC LIMIT 100`).all();
+  return c.json({ success: true, data: rows });
+});
+
+apiRouter.post('/owner/outreach', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const businessName = (body.businessName || body.business_name || '').trim();
+  const channel = (body.channel || 'IN_PERSON').trim();
+  const status = (body.status || 'LOGGED').trim();
+  const notes = (body.notes || '').trim();
+
+  if (!businessName) {
+    return c.json({ success: false, error: 'Business name is required' }, 400);
+  }
+
+  const db = getDb();
+  const id = `outreach_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  db.prepare(`
+    INSERT INTO outreach_log (id, business_name, channel, status, notes, logged_date, created_at)
+    VALUES (?, ?, ?, ?, ?, date('now'), datetime('now'))
+  `).run(id, businessName, channel, status, notes);
+
+  return c.json({
+    success: true,
+    data: { id, businessName, channel, status, notes, loggedDate: new Date().toISOString().slice(0, 10) }
+  }, 201);
+});
+
+apiRouter.patch('/owner/outreach/:id', async (c) => {
+  const id = c.req.param('id');
+  const body = await c.req.json().catch(() => ({}));
+  const db = getDb();
+  const existing = db.prepare('SELECT * FROM outreach_log WHERE id = ?').get(id) as any;
+  if (!existing) {
+    return c.json({ success: false, error: 'Outreach record not found' }, 404);
+  }
+
+  const newStatus = body.status !== undefined ? String(body.status).trim() : existing.status;
+  const newNotes = body.notes !== undefined ? String(body.notes).trim() : existing.notes;
+
+  db.prepare('UPDATE outreach_log SET status = ?, notes = ? WHERE id = ?').run(newStatus, newNotes, id);
+  return c.json({ success: true, data: { id, status: newStatus, notes: newNotes } });
 });
 
 /**

@@ -1061,6 +1061,7 @@ CREATE TABLE IF NOT EXISTS opportunities (
   risk_level TEXT NOT NULL DEFAULT 'MEDIUM', -- LOW | MEDIUM | HIGH
   next_best_action TEXT,
   status TEXT NOT NULL DEFAULT 'DISCOVERED', -- DISCOVERED | QUALIFIED | ENGAGING | CONVERTING | WON | LOST | IGNORED
+  is_test INTEGER NOT NULL DEFAULT 0,
   expected_revenue_inr REAL GENERATED ALWAYS AS (estimated_value_inr * probability) VIRTUAL,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -1088,6 +1089,7 @@ CREATE TABLE IF NOT EXISTS sales_pipeline (
   probability REAL NOT NULL DEFAULT 0,
   expected_revenue_inr REAL NOT NULL DEFAULT 0,
   lost_reason TEXT,
+  is_test INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE,
@@ -1186,6 +1188,7 @@ CREATE TABLE IF NOT EXISTS platform_prospects (
   contact_count INTEGER NOT NULL DEFAULT 0,
   monthly_fee_inr REAL,
   notes TEXT,
+  is_test INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -1226,6 +1229,7 @@ CREATE TABLE IF NOT EXISTS payment_requests (
   revenue_recorded INTEGER NOT NULL DEFAULT 0,
   last_reminder_at TEXT,
   expires_at TEXT,
+  is_test INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE,
@@ -1599,6 +1603,7 @@ CREATE TABLE IF NOT EXISTS proposals (
   next_step TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'DRAFT',
   idempotency_key TEXT UNIQUE,
+  is_test INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE,
@@ -1676,7 +1681,8 @@ CREATE TABLE IF NOT EXISTS manual_upi_claims (
   verified_at TEXT,
   verified_by TEXT,
   rejection_reason TEXT,
-  notes TEXT
+  notes TEXT,
+  is_test INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_manual_upi_utr ON manual_upi_claims(utr);
 CREATE INDEX IF NOT EXISTS idx_manual_upi_status ON manual_upi_claims(status);
@@ -1893,6 +1899,7 @@ CREATE TABLE IF NOT EXISTS universal_orders (
   recovery_state TEXT,
   failure_reason TEXT,
   metadata_json TEXT NOT NULL DEFAULT '{}',
+  is_test INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE,
@@ -2438,6 +2445,7 @@ CREATE TABLE IF NOT EXISTS reply_desk_drafts (
   qualification_reason TEXT,
   next_permitted_action TEXT DEFAULT 'OWNER_REVIEW_AND_MANUAL_POST',
   query_date TEXT NOT NULL,
+  is_test INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_reply_desk_drafts_date ON reply_desk_drafts(query_date, status);
@@ -2455,4 +2463,16 @@ CREATE TABLE IF NOT EXISTS reply_desk_query_runs (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_reply_desk_runs_date ON reply_desk_query_runs(run_date);
+
+-- 114. Outreach Log (Manual Owner Prospect Outreach Conversations, Step 7)
+CREATE TABLE IF NOT EXISTS outreach_log (
+  id TEXT PRIMARY KEY,
+  business_name TEXT NOT NULL,
+  channel TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'LOGGED',
+  notes TEXT,
+  logged_date TEXT NOT NULL DEFAULT (date('now')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_outreach_log_date ON outreach_log(logged_date);
 `;

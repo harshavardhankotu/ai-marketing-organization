@@ -19,6 +19,7 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
       db.prepare(`DELETE FROM revenue_records WHERE source = 'MANUAL_UPI'`).run();
       db.prepare(`DELETE FROM durable_rate_limits`).run();
     } catch {}
+    delete process.env.OWN_OFFER_CONFIRMED;
   };
 
   beforeEach(cleanDb);
@@ -66,6 +67,7 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
       const actualHash = DirectCommercialOfferPage.computeOwnOfferHash();
 
       process.env.DIRECT_OFFER_TERMS_SHA256 = actualHash;
+      process.env.OWN_OFFER_CONFIRMED = 'true';
       process.env.OWNER_UPI_VPA = 'owner@okhdfcbank';
       process.env.PUBLIC_WHATSAPP_NUMBER = '919876543210';
 
@@ -103,6 +105,7 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
       const originalHash = DirectCommercialOfferPage.computeOwnOfferHash();
 
       process.env.DIRECT_OFFER_TERMS_SHA256 = originalHash;
+      process.env.OWN_OFFER_CONFIRMED = 'true';
       expect(DirectCommercialOfferPage.isDirectOfferAttested()).toBe(true);
 
       // Simulate file edit: hash changes, so expected !== computed
@@ -238,6 +241,7 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
       const actualHash = DirectCommercialOfferPage.computeOwnOfferHash();
 
       process.env.DIRECT_OFFER_TERMS_SHA256 = actualHash;
+      process.env.OWN_OFFER_CONFIRMED = 'true';
       process.env.OWNER_UPI_VPA = 'owner@okhdfcbank';
       process.env.PUBLIC_WHATSAPP_NUMBER = '919876543210';
 
@@ -249,6 +253,7 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
       expect(html).toContain('Monthly Retainer &amp; SLA');
       expect(html).toContain('₹15,000');
       expect(html).toContain('₹8,000');
+      delete process.env.OWN_OFFER_CONFIRMED;
     });
 
     it('lead leakage calculator includes a direct link to the offer page', () => {

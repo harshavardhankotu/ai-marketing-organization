@@ -34,12 +34,23 @@ export interface ProposalDigestItem {
   status: string;
 }
 
+export interface OutreachDigestItem {
+  id: string;
+  businessName: string;
+  channel: string;
+  status: string;
+  loggedDate: string;
+  draftMessage: string;
+  auditLink: string;
+}
+
 export interface OwnerTodayDigest {
   date: string;
   yesterdayDate: string;
   missingOwnerFacts: string[];
   replyDrafts: ReplyDraft[];
   proposalDrafts: ProposalDigestItem[];
+  outreachRows: OutreachDigestItem[];
   yesterdayMetrics: OwnerDigestMetrics;
   nextAction: string;
 }
@@ -91,25 +102,46 @@ export class OwnerDigestService {
     // 2. Up to 3 reply drafts
     const replyDrafts = this.replyDesk.getRecentDrafts(3);
 
-    // 3. Up to 2 proposal drafts
+    // 3. Up to 2 proposal drafts (for real, non-quarantined prospects only)
     const db = getDb();
     let proposalDrafts: ProposalDigestItem[] = [];
     try {
       const rows = db.prepare(`
         SELECT id, title, setup_price_inr as priceINR, status
         FROM proposals
+        WHERE is_test = 0 AND status != 'TEST_QUARANTINED'
         ORDER BY created_at DESC
         LIMIT 2
       `).all() as any[];
       proposalDrafts = rows.map(r => ({
         id: r.id,
         title: r.title || 'Lead Conversion Setup Proposal',
-        priceINR: Number(r.priceINR || 15000),
+        priceINR: Number(r.priceINR || 0),
         status: r.status || 'DRAFT'
       }));
     } catch {}
 
-    // 4. Yesterday's measured metrics (UNKNOWN allowed)
+    // 4. Outreach Log rows (Manual Owner Conversations, Step 7)
+    let outreachRows: OutreachDigestItem[] = [];
+    try {
+      const rows = db.prepare(`
+        SELECT id, business_name, channel, status, logged_date
+        FROM outreach_log
+        ORDER BY created_at DESC
+        LIMIT 10
+      `).all() as any[];
+      outreachRows = rows.map(r => ({
+        id: r.id,
+        businessName: r.business_name,
+        channel: r.channel,
+        status: r.status,
+        loggedDate: r.logged_date,
+        draftMessage: `Hi, I was reviewing how ${r.business_name} handles inquiries and set up a short demonstration of our automated lead conversion architecture. Would you be open to a 10-minute walkthrough this week?`,
+        auditLink: `/offer`
+      }));
+    } catch {}
+
+    // 5. Yesterday's measured metrics (UNKNOWN allowed)
     let visits: number | 'UNKNOWN' = 'UNKNOWN';
     let clicks: number | 'UNKNOWN' = 'UNKNOWN';
     let leads: number | 'UNKNOWN' = 'UNKNOWN';
@@ -143,15 +175,15 @@ export class OwnerDigestService {
       }
     } catch {}
 
-    // 5. One next action (deterministic priority order)
+    // 6. One next action (deterministic priority order)
     let nextAction = 'Review inbound traffic and organic referral click activity.';
     if (missingOwnerFacts.length > 0) {
       nextAction = `Set statutory owner variables in Render environment (${ownerValidation.missingFields.concat(ownerValidation.invalidFields.map(f => f.field)).join(', ')}).`;
     } else if (!DirectCommercialOfferPage.isDirectOfferAttested()) {
-      nextAction = 'Attest Lane B commercial offer by setting DIRECT_OFFER_TERMS_SHA256 in Render.';
+      nextAction = 'Attest Lane B commercial offer by setting DIRECT_OFFER_TERMS_SHA256 and OWN_OFFER_CONFIRMED=true.';
     } else {
       try {
-        const pendingClaims = db.prepare(`SELECT COUNT(*) as c FROM manual_upi_claims WHERE status = 'PAYMENT_CLAIMED'`).get() as any;
+        const pendingClaims = db.prepare(`SELECT COUNT(*) as c FROM manual_upi_claims WHERE status = 'PAYMENT_CLAIMED' AND is_test = 0 AND status != 'TEST_QUARANTINED'`).get() as any;
         if (pendingClaims && pendingClaims.c > 0) {
           nextAction = `Verify bank statement credit for ${pendingClaims.c} pending manual payment claim(s).`;
         }
@@ -164,6 +196,7 @@ export class OwnerDigestService {
       missingOwnerFacts,
       replyDrafts,
       proposalDrafts,
+      outreachRows,
       yesterdayMetrics: { visits, clicks, leads, payments },
       nextAction
     };

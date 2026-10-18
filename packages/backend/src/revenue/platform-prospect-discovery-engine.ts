@@ -909,7 +909,7 @@ export class PlatformProspectDiscoveryEngine {
             estimated_value_inr, confidence_score, source, evidence_json, probability,
             acquisition_cost_inr, time_to_revenue_days, authorization_requirements_json,
             risk_level, next_best_action, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, 'DISCOVERED', 15000, 0.20, 'OUTBOUND_PROSPECT', ?, 0.20, 0, 7, '[]', 'LOW', 'PURSUE_OPPORTUNITY', ?, ?)`,
+          ) VALUES (?, ?, ?, ?, ?, 'DISCOVERED', 0, 0.20, 'OUTBOUND_PROSPECT', ?, 0.20, 0, 7, '[]', 'LOW', 'PURSUE_OPPORTUNITY', ?, ?)`,
           [
             oppId,
             businessId,

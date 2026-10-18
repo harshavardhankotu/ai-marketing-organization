@@ -126,6 +126,29 @@ export function getDb(dbPath?: string): Database.Database {
   try { db.exec(`ALTER TABLE platform_prospects ADD COLUMN status TEXT DEFAULT 'DISCOVERED'`); } catch {}
   try { db.exec(`ALTER TABLE platform_prospects ADD COLUMN fit_score REAL DEFAULT 0.85`); } catch {}
   try { db.exec(`ALTER TABLE platform_prospects ADD COLUMN observed_evidence_json TEXT DEFAULT '{}'`); } catch {}
+  try { db.exec(`ALTER TABLE platform_prospects ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0`); } catch {}
+  try { db.exec(`ALTER TABLE opportunities ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0`); } catch {}
+  try { db.exec(`ALTER TABLE sales_pipeline ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0`); } catch {}
+  try { db.exec(`ALTER TABLE proposals ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0`); } catch {}
+  try { db.exec(`ALTER TABLE manual_upi_claims ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0`); } catch {}
+  try { db.exec(`ALTER TABLE universal_orders ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0`); } catch {}
+  try { db.exec(`ALTER TABLE payment_requests ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0`); } catch {}
+  try { db.exec(`ALTER TABLE reply_desk_drafts ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0`); } catch {}
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS outreach_log (
+      id TEXT PRIMARY KEY,
+      business_name TEXT NOT NULL,
+      channel TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'LOGGED',
+      notes TEXT,
+      logged_date TEXT NOT NULL DEFAULT (date('now')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+  } catch {}
+  try { db.exec(`ALTER TABLE outreach_log ADD COLUMN logged_date TEXT NOT NULL DEFAULT (date('now'))`); } catch {}
+  try { db.exec(`ALTER TABLE outreach_log ADD COLUMN status TEXT NOT NULL DEFAULT 'LOGGED'`); } catch {}
+  try { db.exec(`ALTER TABLE outreach_log ADD COLUMN notes TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE outreach_log ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0`); } catch {}
   try { db.exec(`ALTER TABLE opportunities ADD COLUMN title TEXT`); } catch {}
   try { db.exec(`ALTER TABLE opportunities ADD COLUMN confidence_score REAL DEFAULT 0.5`); } catch {}
   try { db.exec(`ALTER TABLE learning_records ADD COLUMN source TEXT DEFAULT 'UNKNOWN'`); } catch {}

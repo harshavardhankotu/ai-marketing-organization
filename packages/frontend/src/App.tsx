@@ -22,6 +22,7 @@ import { HealthStatusCard } from './components/common/HealthStatusCard.js';
 import { BusinessOnboarding } from './components/onboarding/BusinessOnboarding.js';
 import { OwnerLogin } from './components/auth/OwnerLogin.js';
 import { PublicCompliancePage } from './pages/PublicCompliancePage.js';
+import { PublicOfferPage } from './pages/PublicOfferPage.js';
 import { api, onUnauthorized } from './services/api.js';
 import { AGENT_REGISTRY } from './services/seed-defaults.js';
 
@@ -122,6 +123,10 @@ export const App: React.FC = () => {
     currentPathname.startsWith('/book/') ||
     currentPathname.startsWith('/f/');
 
+  const isOfferRoute =
+    currentPathname === '/offer' ||
+    currentPathname.startsWith('/offer/');
+
   const compliancePaths = ['/privacy', '/terms', '/about', '/contact', '/affiliate-disclosure'];
   const isComplianceRoute = compliancePaths.some(
     p => currentPathname === p || currentPathname.startsWith(p + '/')
@@ -146,8 +151,8 @@ export const App: React.FC = () => {
   };
 
   useEffect(() => {
-    // Public demand funnels and compliance routes must not fan out into authenticated owner APIs
-    if (isPublicFunnelRoute || isComplianceRoute) {
+    // Public demand funnels, offer page, and compliance routes must not fan out into authenticated owner APIs
+    if (isPublicFunnelRoute || isComplianceRoute || isOfferRoute) {
       setLoading(false);
       return;
     }
@@ -228,6 +233,10 @@ export const App: React.FC = () => {
 
   if (isPublicFunnelRoute) {
     return <UniversalFunnelPage />;
+  }
+
+  if (isOfferRoute) {
+    return <PublicOfferPage />;
   }
 
   if (authState === 'BOOTING') {

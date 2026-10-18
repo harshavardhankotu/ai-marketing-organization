@@ -70,6 +70,12 @@ export class DirectCommercialOfferPage {
    * Any file edit to owner/OWN_OFFER.md alters the hash and closes the page immediately.
    */
   public static isDirectOfferAttested(customFilePath?: string): boolean {
+    // Step 2e: DIRECT_OFFER_TERMS_SHA256 counts as valid ONLY when OWN_OFFER_CONFIRMED=true is set by the owner script.
+    // A hash match proves the page equals the file; it does not prove that the owner approved it without explicit confirmation.
+    const isConfirmed = (process.env.OWN_OFFER_CONFIRMED || '').trim().toLowerCase() === 'true';
+    if (!isConfirmed) {
+      return false;
+    }
     const expectedHash = process.env.DIRECT_OFFER_TERMS_SHA256?.trim();
     if (!expectedHash) {
       return false;
@@ -257,35 +263,19 @@ export class DirectCommercialOfferPage {
   <div class="container">
     <header>
       <div class="status-badge">Configuration Pending Owner Attestation</div>
+      <p style="color: #94a3b8; font-size: 0.85rem; margin-top: 0.5rem; margin-bottom: 0.75rem;">Direct online checkout is disabled until commercial terms are attested by the owner.</p>
       <h1>AI Inbound Lead Conversion System</h1>
       <p class="subtitle">24/7 automated inquiry qualification, WhatsApp response bot, and CRM integration architecture for local service businesses in India.</p>
     </header>
 
     <div class="card">
-      <h2>Commercial Terms & Direct Checkout Status</h2>
-      <div class="pending-notice">
-        <p><strong>Commercial terms, pricing, and payment destinations are currently pending owner attestation.</strong></p>
-        <p style="margin-top: 0.5rem;">Direct online checkout is disabled. In accordance with platform governance rules, no unconfirmed pricing, payment rails, or statutory guarantees are displayed until explicitly confirmed by the authorized owner.</p>
-      </div>
-    </div>
-
-    <div class="grid-2">
-      <div class="card">
-        <h2>What The System Delivers</h2>
-        <ul class="check-list">
-          <li>✓ Custom WhatsApp automated inquiry qualification bot</li>
-          <li>✓ Google Business Profile instant lead capture</li>
-          <li>✓ Multi-touch follow-up workflow for after-hours leads</li>
-          <li>✓ Direct appointment scheduling integration</li>
-          <li>✓ System handover report and response logs</li>
-        </ul>
-      </div>
-
-      <div class="card">
-        <h2>Target Fit Criteria</h2>
-        <p style="color: #94a3b8; font-size: 0.95rem; margin-bottom: 0.75rem;"><strong>Ideal for:</strong> High-ticket local service businesses (dental clinics, diagnostic centers, specialized repair services, consultancy firms) receiving &gt; 50 inquiries/month.</p>
-        <p style="color: #94a3b8; font-size: 0.95rem;"><strong>Not suitable for:</strong> E-commerce stores without after-hours inquiry delays, or businesses without an active WhatsApp Business number.</p>
-      </div>
+      <h2>The Problem</h2>
+      <p style="color: #cbd5e1; font-size: 1.05rem; line-height: 1.6; margin-bottom: 0.75rem;">
+        Local service businesses lose prospective clients every day when inquiries arrive outside working hours. When high-intent prospective customers reach out via online profiles or WhatsApp in the evening, responses often wait until the next morning — by which time they have already contacted a competitor.
+      </p>
+      <p style="color: #94a3b8; font-size: 0.95rem; line-height: 1.6;">
+        Our automated inquiry triage architecture qualifies new inquiries within minutes and coordinates calendar appointments without manual messaging delay.
+      </p>
     </div>
 
     <div class="card" id="inquiry-card">

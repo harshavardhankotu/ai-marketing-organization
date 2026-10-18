@@ -2138,21 +2138,10 @@ export class AutonomousRevenueOrchestrator {
   }
 
   private estimateOpportunityValue(verticalId: string): number {
-    const valueMap: Record<string, number> = {
-      'dental': 15000,
-      'dental_clinic': 15000,
-      'salon': 3000,
-      'beauty_salon': 3000,
-      'clinic': 8000,
-      'medical_clinic': 8000,
-      'tuition': 5000,
-      'coaching': 5000,
-      'fitness': 4000,
-      'gym': 4000,
-      'legal': 25000,
-      'home_services': 5000
-    };
-    return valueMap[verticalId?.toLowerCase()] || 8000;
+    // Step 1d/g: Rupee estimates for discovery actions are strictly prohibited.
+    // Unapproved discovery actions have an estimated value of 0.
+    // Value is recognized only when the owner approves a proposal with an explicit asking price.
+    return 0;
   }
 
   public async recordActionTrace(trace: {

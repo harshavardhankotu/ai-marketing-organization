@@ -181,6 +181,25 @@ function main() {
         }
       }
     }
+
+    // 9. Block curl -X POST (and POST fetch/requests) against the production host
+    if (/(curl|invoke-webrequest|iwr|irm|invoke-restmethod)\b.*(-x\s+post|--request\s+post|-method\s+post)\b.*ai-marketing-organization\.onrender\.com/i.test(cmd) ||
+        /(curl|invoke-webrequest|iwr|irm|invoke-restmethod)\b.*ai-marketing-organization\.onrender\.com.*(-x\s+post|--request\s+post|-method\s+post)/i.test(cmd)) {
+      console.log(JSON.stringify({
+        decision: 'deny',
+        reason: "SECURITY POLICY VIOLATION: Calling production write endpoints (POST against ai-marketing-organization.onrender.com) is strictly forbidden. Test on local server and test database only."
+      }));
+      return;
+    }
+
+    // 10. Block agent from running owner-apply.mjs
+    if (/\bowner-apply\.m?js\b/i.test(cmd)) {
+      console.log(JSON.stringify({
+        decision: 'deny',
+        reason: "SECURITY POLICY VIOLATION: Agent is strictly forbidden from executing scripts/owner-apply.mjs. Only the human owner may run this script."
+      }));
+      return;
+    }
   }
 
   console.log(JSON.stringify({ decision: 'allow' }));
