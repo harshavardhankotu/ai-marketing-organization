@@ -9,6 +9,19 @@ export interface OwnerEnvFacts {
   contactEmail: string;
 }
 
+export interface SiteIdentityFacts {
+  siteName: string;
+  authorName: string;
+  contactEmail: string;
+}
+
+export interface SiteIdentityValidationResult {
+  valid: boolean;
+  facts?: SiteIdentityFacts;
+  missingFields: string[];
+  invalidFields: { field: string; reason: string }[];
+}
+
 export interface OwnerEnvValidationResult {
   valid: boolean;
   facts?: OwnerEnvFacts;
@@ -118,6 +131,61 @@ export function validateOwnerEnvFacts(env: Record<string, string | undefined> = 
       deadlineDate,
       label: 'owner-reported, verify in Associates Central'
     }
+  };
+}
+
+/**
+ * Validates the 3 site identity environment variables (PUBLIC_SITE_NAME, PUBLIC_AUTHOR_NAME, PUBLIC_CONTACT_EMAIL).
+ * Unlocks the content lane and direct offer pages without waiting for Amazon Associates facts.
+ */
+export function validateSiteIdentityFacts(env: Record<string, string | undefined> = process.env): SiteIdentityValidationResult {
+  const missingFields: string[] = [];
+  const invalidFields: { field: string; reason: string }[] = [];
+
+  const siteName = env.PUBLIC_SITE_NAME?.trim();
+  const authorName = env.PUBLIC_AUTHOR_NAME?.trim();
+  const contactEmail = env.PUBLIC_CONTACT_EMAIL?.trim();
+
+  // 1. PUBLIC_SITE_NAME
+  if (!siteName) {
+    missingFields.push('PUBLIC_SITE_NAME');
+  } else if (PLACEHOLDER_PATTERN.test(siteName)) {
+    invalidFields.push({ field: 'PUBLIC_SITE_NAME', reason: 'Contains placeholder or bracketed text' });
+  }
+
+  // 2. PUBLIC_AUTHOR_NAME
+  if (!authorName) {
+    missingFields.push('PUBLIC_AUTHOR_NAME');
+  } else if (PLACEHOLDER_PATTERN.test(authorName)) {
+    invalidFields.push({ field: 'PUBLIC_AUTHOR_NAME', reason: 'Contains placeholder or bracketed text' });
+  }
+
+  // 3. PUBLIC_CONTACT_EMAIL
+  if (!contactEmail) {
+    missingFields.push('PUBLIC_CONTACT_EMAIL');
+  } else if (PLACEHOLDER_PATTERN.test(contactEmail)) {
+    invalidFields.push({ field: 'PUBLIC_CONTACT_EMAIL', reason: 'Contains placeholder or bracketed text' });
+  } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactEmail)) {
+    invalidFields.push({ field: 'PUBLIC_CONTACT_EMAIL', reason: 'Invalid email address format' });
+  }
+
+  if (missingFields.length > 0 || invalidFields.length > 0) {
+    return {
+      valid: false,
+      missingFields,
+      invalidFields
+    };
+  }
+
+  return {
+    valid: true,
+    facts: {
+      siteName: siteName!,
+      authorName: authorName!,
+      contactEmail: contactEmail!
+    },
+    missingFields: [],
+    invalidFields: []
   };
 }
 

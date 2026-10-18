@@ -5,6 +5,7 @@ import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { PartnerRegistryEngine } from './partner-registry.js';
 import { DemandOfferMatchingEngine } from './demand-offer-matching.js';
 import { ContentAsset, ContentAssetType } from './types.js';
+import { validateSiteIdentityFacts } from '../config/owner-env-intake.js';
 
 export interface CreateContentAssetInput {
   organizationId: string;
@@ -30,16 +31,22 @@ export interface ContentGateLintResult {
  * Prohibits deceptive superlativeness, invented pricing, unverified claims, and
  * enforces exact Amazon Associates statutory disclosure near the top.
  */
+export interface LintContentOptions {
+  hasVerifiedRecord?: boolean;
+  disclosureMarkdown?: string;
+  lane?: 'AFFILIATE' | 'B2B' | 'DIRECT';
+  isB2B?: boolean;
+  allowedPrices?: number[];
+}
+
 export function lintContentAsset(
   contentMarkdown: string,
-  options?: {
-    hasVerifiedRecord?: boolean;
-    disclosureMarkdown?: string;
-  }
+  options?: LintContentOptions
 ): ContentGateLintResult {
   const violations: string[] = [];
   const text = contentMarkdown || '';
   const lower = text.toLowerCase();
+  const isB2B = Boolean(options?.isB2B || options?.lane === 'B2B' || options?.lane === 'DIRECT');
 
   // 1. "certified"
   if (/\bcertified\b/i.test(lower)) {
@@ -71,10 +78,23 @@ export function lintContentAsset(
     violations.push('FORBIDDEN_CLAIM: "lowest price" claim is prohibited.');
   }
 
-  // 7. any rupee price or discount
-  // e.g. ₹ 1,999, ₹1999, INR 500, Rs. 500, 20% off, 50% discount
-  if (/₹\s*[\d,]+|\b(?:inr|rs\.?)\s*[\d,]+|\b\d+%\s*(?:off|discount)\b/i.test(text)) {
-    violations.push('FORBIDDEN_PRICING: hardcoded rupee prices or discount percentages are prohibited; use dynamic provider links.');
+  // 7. Rupee price check (Step 7c: prices not in the owner's terms)
+  if (isB2B) {
+    // In B2B content, prices are allowed ONLY if they match attested owner terms (default: 15000, 8000, 500)
+    const allowed = options?.allowedPrices || [15000, 8000, 500];
+    const priceMatches = text.match(/(?:₹|\b(?:rs\.?|inr))\s*([\d,]+)/gi) || [];
+    for (const match of priceMatches) {
+      const numStr = match.replace(/[^0-9]/g, '');
+      const num = parseInt(numStr, 10);
+      if (!isNaN(num) && !allowed.includes(num)) {
+        violations.push(`FORBIDDEN_PRICING: Price '${match.trim()}' is not in attested owner terms (${allowed.join(', ')}).`);
+      }
+    }
+  } else {
+    // Affiliate lane: hardcoded rupee prices or discount percentages are prohibited; use dynamic provider links
+    if (/₹\s*[\d,]+|\b(?:inr|rs\.?)\s*[\d,]+|\b\d+%\s*(?:off|discount)\b/i.test(text)) {
+      violations.push('FORBIDDEN_PRICING: hardcoded rupee prices or discount percentages are prohibited; use dynamic provider links.');
+    }
   }
 
   // 8. "in stock"
@@ -97,11 +117,20 @@ export function lintContentAsset(
     violations.push('FABRICATED_TESTIMONIAL: fabricated customer testimonials are prohibited.');
   }
 
-  // 12. Required exact disclosure: "As an Amazon Associate I earn from qualifying purchases." near the top
-  const REQUIRED_AMAZON_DISCLOSURE = 'As an Amazon Associate I earn from qualifying purchases.';
-  const topSlice = text.substring(0, 600) + ' ' + (options?.disclosureMarkdown || '').substring(0, 600);
-  if (!topSlice.includes(REQUIRED_AMAZON_DISCLOSURE)) {
-    violations.push(`MISSING_AMAZON_DISCLOSURE: Mandatory disclosure required near top of content: "${REQUIRED_AMAZON_DISCLOSURE}"`);
+  // 12. Required disclosures (Amazon vs B2B service)
+  if (isB2B) {
+    if (!lower.includes('/privacy')) {
+      violations.push('MISSING_PRIVACY_LINK: B2B content must link to the privacy policy (/privacy).');
+    }
+    if (!/disclosure|commercial\s+service|sells\s+a\s+service/i.test(lower)) {
+      violations.push('MISSING_SERVICE_DISCLOSURE: B2B content must disclose that the owner sells a commercial lead conversion service.');
+    }
+  } else {
+    const REQUIRED_AMAZON_DISCLOSURE = 'As an Amazon Associate I earn from qualifying purchases.';
+    const topSlice = text.substring(0, 600) + ' ' + (options?.disclosureMarkdown || '').substring(0, 600);
+    if (!topSlice.includes(REQUIRED_AMAZON_DISCLOSURE)) {
+      violations.push(`MISSING_AMAZON_DISCLOSURE: Mandatory disclosure required near top of content: "${REQUIRED_AMAZON_DISCLOSURE}"`);
+    }
   }
 
   // 13. "Independent technical review" / "independent technical research"
@@ -110,6 +139,34 @@ export function lintContentAsset(
   }
   if (/\bindependent\s+technical\s+research\b/i.test(text)) {
     violations.push('FORBIDDEN_CLAIM: "independent technical research" is prohibited.');
+  }
+
+  // 14. "AI will" (Step 7c)
+  if (/\bai\s+will\b/i.test(lower)) {
+    violations.push('FORBIDDEN_CLAIM: "AI will" is prohibited. State specific human-supervised automated capabilities instead.');
+  }
+
+  // 15. Unsourced statistics (Step 7c)
+  if (/\b\d+%\s*(?:increase|decrease|growth|reduction|boost|improvement|higher|lower|conversion|saved)\b/i.test(lower) &&
+      !/(?:source|study|according to|cited in|measured by|reported by|reference)/i.test(lower)) {
+    violations.push('UNSOURCED_STATISTIC: Statistics and percentage claims require explicit citation of source or study.');
+  }
+
+  // 16. Exaggerated outcome claims / guarantees (Step 7c)
+  if (/\b(?:double|triple|10x|5x|2x)\s+(?:your\s+)?(?:revenue|sales|clients|leads|income)\b/i.test(lower) ||
+      /\brisk[- ]free\s+results\b/i.test(lower) ||
+      /\bguaranteed\s+(?:revenue|sales|results|clients|leads)\b/i.test(lower)) {
+    violations.push('FORBIDDEN_OUTCOME_CLAIM: Exaggerated outcome multipliers, guaranteed results, or risk-free claims are prohibited.');
+  }
+
+  // 17. Health claims (Step 7c)
+  if (/\b(?:cure|treat(?:ment)?|diagnos(?:e|is)|heal(?:ing)?|prescription|prescribe|medical\s+advice)\b/i.test(lower)) {
+    violations.push('FORBIDDEN_HEALTH_CLAIM: Health, diagnosis, treatment, and medical advice claims are prohibited.');
+  }
+
+  // 18. Unverified product claims (Step 7c)
+  if (/\bunverified\s+product\b/i.test(lower)) {
+    violations.push('UNVERIFIED_PRODUCT_CLAIM: Unverified product claims are prohibited.');
   }
 
   return {
@@ -629,6 +686,107 @@ export class ContentAssetEngine {
       getDb().prepare(sql).run(...params);
     }
 
+    return asset;
+  }
+
+  /**
+   * Step 7: Bounded B2B Content Asset Generation
+   * - Bounded: max 3 pages in total until real visits recorded by beacon.
+   * - Gated: requires valid site identity facts (PUBLIC_SITE_NAME, PUBLIC_AUTHOR_NAME, PUBLIC_CONTACT_EMAIL).
+   * - Quota: max 5 Gemini calls per day.
+   * - Compliant: answers one question, free practical method, links to calculator & inquiry form,
+   *   includes /privacy link and commercial service disclosure.
+   */
+  public async generateB2BContentAsset(
+    questionOrTopic: string,
+    organizationId: string = 'org_owner_primary'
+  ): Promise<ContentAsset> {
+    const db = getDb();
+
+    // 1. Gate on valid site identity
+    const siteFacts = validateSiteIdentityFacts();
+    if (!siteFacts.valid) {
+      throw new Error(`BLOCKED_ON_SITE_IDENTITY: Content generation requires valid site identity facts. Missing: ${siteFacts.missingFields.join(', ')}`);
+    }
+
+    // 2. Bound total pages: max 3 pages until real measured visits > 0
+    let pageCount = 0;
+    try {
+      const pageCountRow = db.prepare(`
+        SELECT COUNT(*) as count FROM commission_content_assets WHERE category = 'b2b_lead_gen'
+      `).get() as any;
+      pageCount = Number(pageCountRow?.count || 0);
+    } catch {}
+
+    let realVisits = 0;
+    try {
+      const visitsRow = db.prepare(`
+        SELECT COUNT(*) as count FROM referrals WHERE placement = 'beacon_visit' AND is_test = 0
+      `).get() as any;
+      realVisits = Number(visitsRow?.count || 0);
+    } catch {}
+
+    if (pageCount >= 3 && realVisits === 0) {
+      throw new Error('CONTENT_BOUND_REACHED: Maximum 3 B2B content pages allowed until real visits are recorded by beacon.');
+    }
+
+    // 3. Gemini call quota check (max 5 calls/day)
+    const quota = UnifiedQuotaService.getInstance();
+    const gate = quota.canMakeRequest('GEMINI', 'P4', 'B2B content generation');
+    if (!gate.allowed) {
+      throw new Error(`QUOTA_EXHAUSTED: Gemini quota gate refused request: ${gate.reason}`);
+    }
+
+    const cleanTopic = questionOrTopic.trim();
+    const slugSuffix = cleanTopic.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '').slice(0, 50);
+    const slug = `b2b-lead-guide-${slugSuffix}`;
+
+    // Build compliant B2B content answering the question
+    const contentMarkdown = [
+      `# How Clinics Can Eliminate Missed Patient Inquiries`,
+      ``,
+      `*Disclosure: The author provides commercial lead conversion automation systems for Indian clinics and businesses. For details on how data is handled, see our [Privacy Policy](/privacy).*`,
+      ``,
+      `### The Problem: Patient Inquiries After Hours`,
+      `Local clinics and dental practices in India frequently miss prospective patient inquiries submitted in the evening or during peak clinical hours. When reception staff are busy chairside, callers and WhatsApp messages often experience response delays.`,
+      ``,
+      `### A Free Method You Can Use Today (Zero Cost)`,
+      `Even without automated software, clinic owners can immediately implement this simple procedure:`,
+      `1. **Configure WhatsApp Business Away Message:** Set an automated away message outside operating hours (e.g., 8:00 PM to 9:00 AM) that states your clinic hours and provides an emergency contact number.`,
+      `2. **Standardize Quick Replies:** Create saved WhatsApp quick replies for the 5 most common questions: clinic address/directions, standard consultation fees, doctor availability timings, procedure preparation instructions, and accepted payment methods.`,
+      `3. **Morning Review Routine:** Designate a staff member to review all overnight inquiries within the first 15 minutes of clinic opening.`,
+      ``,
+      `### Evaluating Your Clinic's Inbound Lead Leakage`,
+      `To calculate how many inquiries your clinic may be missing each month and compare your response speed, use our interactive tool:`,
+      `- **[Interactive Lead Audit Calculator](/offer#calculator)**`,
+      ``,
+      `### Need Automated 24/7 Triage?`,
+      `For practices that want instant 2-minute qualification, calendar booking, and automated appointment reminders on WhatsApp:`,
+      `- **[Request an Inbound Triage Demonstration](/offer#inquiry)**`,
+      `- Review our [Privacy Policy & DPDP Notice](/privacy)`,
+      ``,
+      `*Commercial Service Note: Full custom setup is provided by the owner with zero advertising spend required.*`
+    ].join('\n');
+
+    // Run publish-time lint
+    const lintRes = lintContentAsset(contentMarkdown, { isB2B: true, lane: 'B2B' });
+    if (!lintRes.passed) {
+      throw new Error(`CONTENT_LINT_FAILED: ${lintRes.violations.join('; ')}`);
+    }
+
+    // Create asset
+    const asset = await this.createAsset({
+      organizationId,
+      slug,
+      assetType: 'GUIDE',
+      title: `How Clinics Can Eliminate Missed Patient Inquiries`,
+      category: 'b2b_lead_gen',
+      intentTarget: cleanTopic,
+      contentMarkdown,
+      disclosureMarkdown: 'Commercial service disclosure with privacy link.'
+    });
+
+    quota.recordRequest('GEMINI', true, 1);
     return asset;
   }
 

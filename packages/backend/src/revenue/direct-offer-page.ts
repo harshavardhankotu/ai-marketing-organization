@@ -26,7 +26,10 @@ export function computeOwnOfferHash(customFilePath?: string): string | null {
       const candidates = [
         path.resolve(process.cwd(), 'owner', 'OWN_OFFER.md'),
         path.resolve(process.cwd(), '..', 'owner', 'OWN_OFFER.md'),
-        path.resolve(process.cwd(), '..', '..', 'owner', 'OWN_OFFER.md')
+        path.resolve(process.cwd(), '..', '..', 'owner', 'OWN_OFFER.md'),
+        path.resolve(process.cwd(), 'owner', 'OWN_OFFER.legacy_agent_written.md'),
+        path.resolve(process.cwd(), '..', 'owner', 'OWN_OFFER.legacy_agent_written.md'),
+        path.resolve(process.cwd(), '..', '..', 'owner', 'OWN_OFFER.legacy_agent_written.md')
       ];
       filePath = candidates.find(c => fs.existsSync(c));
     }
@@ -405,7 +408,8 @@ export class DirectCommercialOfferPage {
           msg.style.background = 'rgba(16, 185, 129, 0.15)';
           msg.style.color = '#34d399';
           msg.style.border = '1px solid rgba(16, 185, 129, 0.3)';
-          msg.innerText = '✓ Thank you. The owner will contact you on the number you gave.';
+          var delCodeNotice = data.deletionCode ? '<br><small style="color:#94a3b8;font-size:0.85rem;display:block;margin-top:0.5rem;">Your DPDP deletion code: <strong style="color:#38bdf8;">' + data.deletionCode + '</strong> (keep this to request data deletion)</small>' : '';
+          msg.innerHTML = '✓ ' + (data.message || 'Thank you. The owner will contact you on the number you gave.') + delCodeNotice;
           document.getElementById('lead-inquiry-form').reset();
           btn.style.display = 'none';
         } else {
@@ -421,6 +425,24 @@ export class DirectCommercialOfferPage {
         btn.innerText = 'Request Lead Triage Demonstration';
       }
     }
+
+    try {
+      if (typeof window !== 'undefined' && window.location) {
+        var params = new URLSearchParams(window.location.search);
+        if (params.get('test') === 'true') {
+          var elName = document.getElementById('cust-name');
+          var elPhone = document.getElementById('cust-phone');
+          var elSvc = document.getElementById('cust-service');
+          var elNotes = document.getElementById('cust-notes');
+          var elConsent = document.getElementById('cust-consent');
+          if (elName) elName.value = 'Dr. Smoke Test (TEST)';
+          if (elPhone) elPhone.value = '9999988888';
+          if (elSvc) elSvc.value = 'Smoke Test Clinic, Hyderabad';
+          if (elNotes) elNotes.value = 'Owner end-to-end smoke test inquiry';
+          if (elConsent) elConsent.checked = true;
+        }
+      }
+    } catch (e) {}
 
     try {
       fetch('/api/v1/referrals/beacon', {

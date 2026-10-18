@@ -115,9 +115,13 @@ export class DemandEngine {
    * - Excerpt clamped to max 300 characters
    * - Content deduplication hash
    */
-  public async ingestSignal(candidate: RawCandidateSignal): Promise<{ signalId: string; status: DemandSignalStatus; dedupeHash: string }> {
+  public async ingestSignal(
+    candidate: RawCandidateSignal,
+    options?: { snippetMode?: boolean }
+  ): Promise<{ signalId: string; status: DemandSignalStatus; dedupeHash: string }> {
     const cleanHost = candidate.sourceHost.toLowerCase().trim().replace(/^https?:\/\//, '').split('/')[0];
-    if (!this.isHostApproved(cleanHost)) {
+    // Step 5a: Remove host-approval gate for snippet mode (reading Tavily search snippet without scraping)
+    if (!options?.snippetMode && !this.isHostApproved(cleanHost)) {
       throw new Error(`HOST_NOT_APPROVED: Host '${cleanHost}' is not approved by owner in source_rules. Reading forbidden.`);
     }
 

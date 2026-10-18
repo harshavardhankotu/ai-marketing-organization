@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { createHash, randomUUID } from 'node:crypto';
 import { handlePublicLeadRequest } from './public-lead.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { getDb } from '../db/client.js';
@@ -1260,6 +1261,13 @@ apiRouter.post('/cron/ping', async (c) => {
     await ActionCooldownManager.syncFromD1Async();
   } catch {}
 
+  // Step 9d: Daily DPDP 30-day retention purge job
+  let purgeResult: { purgedCount: number; timestamp: string } = { purgedCount: 0, timestamp: new Date().toISOString() };
+  try {
+    const { DPDPComplianceManager } = await import('../compliance/dpdp-manager.js');
+    purgeResult = DPDPComplianceManager.getInstance().purgeExpiredInquiries(30);
+  } catch {}
+
   let eligibleBusinesses: any[] = [];
   try {
     eligibleBusinesses = await d1Repo.query('businesses', `
@@ -1312,7 +1320,7 @@ apiRouter.post('/cron/ping', async (c) => {
     await d1Repo.executeWrite('cron_telemetry', sqlUpdate, updateParams);
   } catch {}
 
-  return c.json({ success: true, data: results, timestamp: new Date().toISOString() });
+  return c.json({ success: true, data: results, dpdpPurge: purgeResult, timestamp: new Date().toISOString() });
 });
 
 // ==========================================
@@ -1409,77 +1417,86 @@ apiRouter.get('/autonomy/latest-cycle', (c) => {
 // ==========================================
 // REVENUE FUNNEL (Spec § 30)
 // ==========================================
-apiRouter.get('/revenue/funnel', (c) => {
+apiRouter.get('/revenue/funnel', async (c) => {
   const orgId = c.req.header('x-organization-id') || c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
   const db = getDb();
-  const bizRow = db.prepare('SELECT id FROM businesses WHERE organization_id = ? ORDER BY created_at DESC LIMIT 1').get(orgId) as any;
+  const d1Repo = D1RevenueRepository.getInstance();
+
+  const runQueryOne = async (table: string, sql: string, params: any[] = []): Promise<any> => {
+    if (isProduction()) {
+      return await d1Repo.queryOne(table, sql, params);
+    }
+    return db.prepare(sql).get(...params);
+  };
+
+  const bizRow = (await runQueryOne('businesses', 'SELECT id FROM businesses WHERE organization_id = ? ORDER BY created_at DESC LIMIT 1', [orgId])) as any;
   const businessId = c.req.query('businessId') || bizRow?.id || 'biz_platform_aro';
 
   // 1. Backward-compatible sales pipeline counts
-  const prospects = (db.prepare(`SELECT COUNT(*) as count FROM sales_pipeline WHERE business_id = ?`).get(businessId) as any)?.count || 0;
-  const contacted = (db.prepare(`SELECT COUNT(*) as count FROM sales_pipeline WHERE business_id = ? AND stage IN ('CONTACTED','REPLIED','QUALIFIED','MEETING_BOOKED','PAID','ONBOARDED')`).get(businessId) as any)?.count || 0;
-  const responded = (db.prepare(`SELECT COUNT(*) as count FROM sales_pipeline WHERE business_id = ? AND stage IN ('REPLIED','QUALIFIED','MEETING_BOOKED','PAID','ONBOARDED')`).get(businessId) as any)?.count || 0;
-  const qualified = (db.prepare(`SELECT COUNT(*) as count FROM sales_pipeline WHERE business_id = ? AND stage IN ('QUALIFIED','MEETING_BOOKED','PAID','ONBOARDED')`).get(businessId) as any)?.count || 0;
-  const meetings = (db.prepare(`SELECT COUNT(*) as count FROM sales_pipeline WHERE business_id = ? AND stage IN ('MEETING_BOOKED','PAID','ONBOARDED')`).get(businessId) as any)?.count || 0;
-  const proposals = (db.prepare(`SELECT COUNT(*) as count FROM sales_pipeline WHERE business_id = ? AND stage IN ('PROPOSAL_SENT','PAID','ONBOARDED')`).get(businessId) as any)?.count || 0;
-  const paymentRequests = (db.prepare(`SELECT COUNT(*) as count FROM payment_requests WHERE business_id = ?`).get(businessId) as any)?.count || 0;
-  const payments = (db.prepare(`SELECT COUNT(*) as count FROM transactions WHERE business_id = ? AND classification = 'REAL' AND status = 'SUCCESS'`).get(businessId) as any)?.count || 0;
-  const customers = (db.prepare(`SELECT COUNT(*) as count FROM customer_journeys WHERE business_id = ? AND stage = 'CUSTOMER'`).get(businessId) as any)?.count || 0;
-  const activeCustomers = (db.prepare(`SELECT COUNT(*) as count FROM customer_journeys WHERE business_id = ? AND stage = 'ACTIVE'`).get(businessId) as any)?.count || 0;
-  const revenue = (db.prepare(`SELECT COALESCE(SUM(amount_inr), 0) as total FROM transactions WHERE business_id = ? AND classification = 'REAL' AND status = 'SUCCESS'`).get(businessId) as any)?.total || 0;
+  const prospects = ((await runQueryOne('sales_pipeline', `SELECT COUNT(*) as count FROM sales_pipeline WHERE business_id = ?`, [businessId])) as any)?.count || 0;
+  const contacted = ((await runQueryOne('sales_pipeline', `SELECT COUNT(*) as count FROM sales_pipeline WHERE business_id = ? AND stage IN ('CONTACTED','REPLIED','QUALIFIED','MEETING_BOOKED','PAID','ONBOARDED')`, [businessId])) as any)?.count || 0;
+  const responded = ((await runQueryOne('sales_pipeline', `SELECT COUNT(*) as count FROM sales_pipeline WHERE business_id = ? AND stage IN ('REPLIED','QUALIFIED','MEETING_BOOKED','PAID','ONBOARDED')`, [businessId])) as any)?.count || 0;
+  const qualified = ((await runQueryOne('sales_pipeline', `SELECT COUNT(*) as count FROM sales_pipeline WHERE business_id = ? AND stage IN ('QUALIFIED','MEETING_BOOKED','PAID','ONBOARDED')`, [businessId])) as any)?.count || 0;
+  const meetings = ((await runQueryOne('sales_pipeline', `SELECT COUNT(*) as count FROM sales_pipeline WHERE business_id = ? AND stage IN ('MEETING_BOOKED','PAID','ONBOARDED')`, [businessId])) as any)?.count || 0;
+  const proposals = ((await runQueryOne('sales_pipeline', `SELECT COUNT(*) as count FROM sales_pipeline WHERE business_id = ? AND stage IN ('PROPOSAL_SENT','PAID','ONBOARDED')`, [businessId])) as any)?.count || 0;
+  const paymentRequests = ((await runQueryOne('payment_requests', `SELECT COUNT(*) as count FROM payment_requests WHERE business_id = ?`, [businessId])) as any)?.count || 0;
+  const payments = ((await runQueryOne('transactions', `SELECT COUNT(*) as count FROM transactions WHERE business_id = ? AND classification = 'REAL' AND status = 'SUCCESS'`, [businessId])) as any)?.count || 0;
+  const customers = ((await runQueryOne('customer_journeys', `SELECT COUNT(*) as count FROM customer_journeys WHERE business_id = ? AND stage = 'CUSTOMER'`, [businessId])) as any)?.count || 0;
+  const activeCustomers = ((await runQueryOne('customer_journeys', `SELECT COUNT(*) as count FROM customer_journeys WHERE business_id = ? AND stage = 'ACTIVE'`, [businessId])) as any)?.count || 0;
+  const revenue = ((await runQueryOne('transactions', `SELECT COALESCE(SUM(amount_inr), 0) as total FROM transactions WHERE business_id = ? AND classification = 'REAL' AND status = 'SUCCESS'`, [businessId])) as any)?.total || 0;
 
   // 2. Exact 12-Stage Commercial Lifecycle (Spec Phase 6)
   // DISCOVERED → QUALIFIED → VERIFIED → DRAFTED → AWAITING_APPROVAL → APPROVED → PUBLISHED → VISITS → OUTBOUND_CLICKS → ATTRIBUTED_ORDERS → CONFIRMED_COMMISSION → VERIFIED_PAYOUT
-  const demandSignalsCount = (db.prepare(`SELECT COUNT(*) as count FROM demand_signals WHERE organization_id = ? AND status NOT IN ('QUARANTINED', 'SEEDED', 'SEEDED_MIGRATION_0026', 'UNSOURCED', 'DUPLICATE', 'UNSUPPORTED', 'UNSUPPORTED_BY_DEMAND', 'PAUSED_SEEDED_DEMAND') AND source_url LIKE 'http%' AND source_url NOT LIKE '%search.community%' AND source_url NOT LIKE '%localhost%' AND source_url NOT LIKE '%example.com%' AND source_url NOT LIKE '%test.local%'`).get(orgId) as any)?.count || 0;
-  const platformProspectsCount = (db.prepare(`SELECT COUNT(*) as count FROM platform_prospects`).get() as any)?.count || 0;
+  const demandSignalsCount = ((await runQueryOne('demand_signals', `SELECT COUNT(*) as count FROM demand_signals WHERE organization_id = ? AND status NOT IN ('QUARANTINED', 'SEEDED', 'SEEDED_MIGRATION_0026', 'UNSOURCED', 'DUPLICATE', 'UNSUPPORTED', 'UNSUPPORTED_BY_DEMAND', 'PAUSED_SEEDED_DEMAND') AND source_url LIKE 'http%' AND source_url NOT LIKE '%search.community%' AND source_url NOT LIKE '%localhost%' AND source_url NOT LIKE '%example.com%' AND source_url NOT LIKE '%test.local%'`, [orgId])) as any)?.count || 0;
+  const platformProspectsCount = ((await runQueryOne('platform_prospects', `SELECT COUNT(*) as count FROM platform_prospects WHERE is_test = 0 AND is_junk = 0`)) as any)?.count || 0;
   const totalDiscovered = demandSignalsCount + platformProspectsCount;
 
-  const buyerQuestionsCount = (db.prepare(`SELECT COUNT(*) as count FROM demand_signals WHERE organization_id = ? AND ${GENUINE_BUYER_DEMAND_SQL_CONDITION}`).get(orgId) as any)?.count || 0;
-  const qualifiedProspectsCount = (db.prepare(`SELECT COUNT(*) as count FROM platform_prospects WHERE fit_score >= 0.70 OR status = 'QUALIFIED'`).get() as any)?.count || 0;
+  const buyerQuestionsCount = ((await runQueryOne('demand_signals', `SELECT COUNT(*) as count FROM demand_signals WHERE organization_id = ? AND ${GENUINE_BUYER_DEMAND_SQL_CONDITION}`, [orgId])) as any)?.count || 0;
+  const qualifiedProspectsCount = ((await runQueryOne('platform_prospects', `SELECT COUNT(*) as count FROM platform_prospects WHERE is_test = 0 AND is_junk = 0 AND (fit_score >= 0.70 OR status = 'QUALIFIED')`)) as any)?.count || 0;
   const totalQualified = buyerQuestionsCount + qualifiedProspectsCount;
 
-  const activePartnerOffersCount = (db.prepare(`SELECT COUNT(*) as count FROM partner_offers WHERE organization_id = ? AND status = 'ACTIVE' AND active = 1`).get(orgId) as any)?.count || 0;
+  const activePartnerOffersCount = ((await runQueryOne('partner_offers', `SELECT COUNT(*) as count FROM partner_offers WHERE organization_id = ? AND status = 'ACTIVE' AND active = 1`, [orgId])) as any)?.count || 0;
   const isDirectOfferAttested = DirectCommercialOfferPage.isDirectOfferAttested();
   const totalVerifiedOffers = activePartnerOffersCount + (isDirectOfferAttested ? 1 : 0);
 
-  const draftGuidesCount = (db.prepare(`SELECT COUNT(*) as count FROM commission_content_assets WHERE organization_id = ? AND status IN ('DRAFT', 'PUBLISH_READY', 'PUBLISHED')`).get(orgId) as any)?.count || 0;
-  const draftProposalsCount = (db.prepare(`SELECT COUNT(*) as count FROM proposals WHERE status IN ('DRAFT', 'SENT', 'ACCEPTED')`).get() as any)?.count || 0;
+  const draftGuidesCount = ((await runQueryOne('commission_content_assets', `SELECT COUNT(*) as count FROM commission_content_assets WHERE organization_id = ? AND status IN ('DRAFT', 'PUBLISH_READY', 'PUBLISHED')`, [orgId])) as any)?.count || 0;
+  const draftProposalsCount = ((await runQueryOne('proposals', `SELECT COUNT(*) as count FROM proposals WHERE is_test = 0 AND status IN ('DRAFT', 'SENT', 'ACCEPTED')`)) as any)?.count || 0;
   const totalDrafted = draftGuidesCount + draftProposalsCount;
 
-  const publishReadyGuidesCount = (db.prepare(`SELECT COUNT(*) as count FROM commission_content_assets WHERE organization_id = ? AND status = 'PUBLISH_READY'`).get(orgId) as any)?.count || 0;
-  const pendingProposalsCount = (db.prepare(`SELECT COUNT(*) as count FROM proposals WHERE status = 'DRAFT'`).get() as any)?.count || 0;
+  const publishReadyGuidesCount = ((await runQueryOne('commission_content_assets', `SELECT COUNT(*) as count FROM commission_content_assets WHERE organization_id = ? AND status = 'PUBLISH_READY'`, [orgId])) as any)?.count || 0;
+  const pendingProposalsCount = ((await runQueryOne('proposals', `SELECT COUNT(*) as count FROM proposals WHERE is_test = 0 AND status = 'DRAFT'`)) as any)?.count || 0;
   const totalAwaitingApproval = publishReadyGuidesCount + pendingProposalsCount;
 
   const intakeCheck = validateOwnerEnvFacts();
   const approvedGuidesCount = intakeCheck.valid
-    ? (db.prepare(`SELECT COUNT(*) as count FROM commission_content_assets WHERE organization_id = ? AND status IN ('PUBLISH_READY', 'PUBLISHED')`).get(orgId) as any)?.count || 0
+    ? (((await runQueryOne('commission_content_assets', `SELECT COUNT(*) as count FROM commission_content_assets WHERE organization_id = ? AND status IN ('PUBLISH_READY', 'PUBLISHED')`, [orgId])) as any)?.count || 0)
     : 0;
-  const acceptedProposalsCount = (db.prepare(`SELECT COUNT(*) as count FROM proposals WHERE status IN ('SENT', 'ACCEPTED')`).get() as any)?.count || 0;
+  const acceptedProposalsCount = ((await runQueryOne('proposals', `SELECT COUNT(*) as count FROM proposals WHERE is_test = 0 AND status IN ('SENT', 'ACCEPTED')`)) as any)?.count || 0;
   const totalApproved = approvedGuidesCount + acceptedProposalsCount;
 
-  const publishedGuidesCount = (db.prepare(`SELECT COUNT(*) as count FROM commission_content_assets WHERE organization_id = ? AND status = 'PUBLISHED'`).get(orgId) as any)?.count || 0;
+  const publishedGuidesCount = ((await runQueryOne('commission_content_assets', `SELECT COUNT(*) as count FROM commission_content_assets WHERE organization_id = ? AND status = 'PUBLISHED'`, [orgId])) as any)?.count || 0;
   const totalPublished = publishedGuidesCount + (isDirectOfferAttested ? 1 : 0);
 
-  const assetMetrics = (db.prepare(`SELECT COALESCE(SUM(view_count), 0) as views, COALESCE(SUM(referral_click_count), 0) as clicks FROM commission_content_assets WHERE organization_id = ?`).get(orgId) as any) || { views: 0, clicks: 0 };
-  const upiMetrics = (db.prepare(`SELECT COUNT(CASE WHEN status = 'PAYMENT_PAGE_VIEW' THEN 1 END) as page_views, COUNT(CASE WHEN status = 'PAYMENT_CLAIMED' THEN 1 END) as claims, COUNT(CASE WHEN status IN ('OWNER_CONFIRMED', 'EXPORT_VERIFIED') THEN 1 END) as confirmed FROM manual_upi_claims`).get() as any) || { page_views: 0, claims: 0, confirmed: 0 };
+  const assetMetrics = ((await runQueryOne('commission_content_assets', `SELECT COALESCE(SUM(view_count), 0) as views, COALESCE(SUM(referral_click_count), 0) as clicks FROM commission_content_assets WHERE organization_id = ?`, [orgId])) as any) || { views: 0, clicks: 0 };
+  const upiMetrics = ((await runQueryOne('manual_upi_claims', `SELECT COUNT(CASE WHEN status = 'PAYMENT_PAGE_VIEW' THEN 1 END) as page_views, COUNT(CASE WHEN status = 'PAYMENT_CLAIMED' THEN 1 END) as claims, COUNT(CASE WHEN status IN ('OWNER_CONFIRMED', 'EXPORT_VERIFIED') THEN 1 END) as confirmed FROM manual_upi_claims WHERE is_test = 0`)) as any) || { page_views: 0, claims: 0, confirmed: 0 };
   const totalVisits = (assetMetrics.views || 0) + (upiMetrics.page_views || 0);
   const totalClicks = (assetMetrics.clicks || 0);
 
-  const reportedOrdersCount = (db.prepare(`SELECT COUNT(*) as count FROM commission_records WHERE organization_id = ? AND status IN ('CONVERSION_REPORTED', 'COMMISSION_PENDING', 'COMMISSION_APPROVED', 'COMMISSION_PAID')`).get(orgId) as any)?.count || 0;
+  const reportedOrdersCount = ((await runQueryOne('commission_records', `SELECT COUNT(*) as count FROM commission_records WHERE organization_id = ? AND status IN ('CONVERSION_REPORTED', 'COMMISSION_PENDING', 'COMMISSION_APPROVED', 'COMMISSION_PAID')`, [orgId])) as any)?.count || 0;
   const totalAttributedOrders = reportedOrdersCount + (upiMetrics.claims || 0);
 
-  const approvedCommissionsCount = (db.prepare(`SELECT COUNT(*) as count FROM commission_records WHERE organization_id = ? AND status IN ('COMMISSION_APPROVED', 'COMMISSION_PAID')`).get(orgId) as any)?.count || 0;
+  const approvedCommissionsCount = ((await runQueryOne('commission_records', `SELECT COUNT(*) as count FROM commission_records WHERE organization_id = ? AND status IN ('COMMISSION_APPROVED', 'COMMISSION_PAID')`, [orgId])) as any)?.count || 0;
   const totalConfirmedCommissions = approvedCommissionsCount + (upiMetrics.confirmed || 0);
 
-  const paidCommissionsCount = (db.prepare(`SELECT COUNT(*) as count FROM commission_records WHERE organization_id = ? AND status = 'COMMISSION_PAID'`).get(orgId) as any)?.count || 0;
-  const capturedTransactionsCount = (db.prepare(`SELECT COUNT(*) as count FROM transactions WHERE business_id = ? AND classification = 'REAL' AND status = 'SUCCESS'`).get(businessId) as any)?.count || 0;
+  const paidCommissionsCount = ((await runQueryOne('commission_records', `SELECT COUNT(*) as count FROM commission_records WHERE organization_id = ? AND status = 'COMMISSION_PAID'`, [orgId])) as any)?.count || 0;
+  const capturedTransactionsCount = ((await runQueryOne('transactions', `SELECT COUNT(*) as count FROM transactions WHERE business_id = ? AND classification = 'REAL' AND status = 'SUCCESS'`, [businessId])) as any)?.count || 0;
   const totalVerifiedPayouts = paidCommissionsCount + capturedTransactionsCount;
 
   // 3. Financial calculations
-  const projectedCommissionsRow = db.prepare(`SELECT COALESCE(SUM(expected_commission_inr), 0) as total FROM commission_records WHERE organization_id = ? AND status IN ('COMMISSION_PENDING', 'CONVERSION_REPORTED', 'EXTERNAL_CONVERSION_PENDING')`).get(orgId) as any;
-  const confirmedCommissionsRow = db.prepare(`SELECT COALESCE(SUM(verified_commission_inr), 0) as total FROM commission_records WHERE organization_id = ? AND status = 'COMMISSION_APPROVED'`).get(orgId) as any;
-  const verifiedAffiliatePayoutRow = db.prepare(`SELECT COALESCE(SUM(received_commission_inr), 0) as total FROM commission_records WHERE organization_id = ? AND status = 'COMMISSION_PAID'`).get(orgId) as any;
-  const verifiedDirectRevenueRow = db.prepare(`SELECT COALESCE(SUM(amount_inr), 0) as total FROM transactions WHERE business_id = ? AND classification = 'REAL' AND status = 'SUCCESS'`).get(businessId) as any;
+  const projectedCommissionsRow = (await runQueryOne('commission_records', `SELECT COALESCE(SUM(expected_commission_inr), 0) as total FROM commission_records WHERE organization_id = ? AND status IN ('COMMISSION_PENDING', 'CONVERSION_REPORTED', 'EXTERNAL_CONVERSION_PENDING')`, [orgId])) as any;
+  const confirmedCommissionsRow = (await runQueryOne('commission_records', `SELECT COALESCE(SUM(verified_commission_inr), 0) as total FROM commission_records WHERE organization_id = ? AND status = 'COMMISSION_APPROVED'`, [orgId])) as any;
+  const verifiedAffiliatePayoutRow = (await runQueryOne('commission_records', `SELECT COALESCE(SUM(received_commission_inr), 0) as total FROM commission_records WHERE organization_id = ? AND status = 'COMMISSION_PAID'`, [orgId])) as any;
+  const verifiedDirectRevenueRow = (await runQueryOne('transactions', `SELECT COALESCE(SUM(amount_inr), 0) as total FROM transactions WHERE business_id = ? AND classification = 'REAL' AND status = 'SUCCESS'`, [businessId])) as any;
 
   const projectedCommissionsINR = projectedCommissionsRow?.total || 0;
   const reportedCommissionsINR = projectedCommissionsINR;
@@ -1488,13 +1505,13 @@ apiRouter.get('/revenue/funnel', (c) => {
   const netRealizedRevenueINR = verifiedRevenueINR; // External ad/tool cost is strictly ₹0
 
   // Proposals pipeline amounts derived strictly from database proposals
-  const draftProposalsSumRow = db.prepare(`SELECT COALESCE(SUM(setup_price_inr), 0) as total FROM proposals WHERE organization_id = ? AND status IN ('DRAFT', 'SENT', 'ACCEPTED')`).get(orgId) as any;
+  const draftProposalsSumRow = (await runQueryOne('proposals', `SELECT COALESCE(SUM(setup_price_inr), 0) as total FROM proposals WHERE is_test = 0 AND status IN ('DRAFT', 'SENT', 'ACCEPTED')`)) as any;
   const draftProposalsSumINR = Number(draftProposalsSumRow?.total || 0);
 
-  const pendingProposalsSumRow = db.prepare(`SELECT COALESCE(SUM(setup_price_inr), 0) as total FROM proposals WHERE organization_id = ? AND status = 'DRAFT'`).get(orgId) as any;
+  const pendingProposalsSumRow = (await runQueryOne('proposals', `SELECT COALESCE(SUM(setup_price_inr), 0) as total FROM proposals WHERE is_test = 0 AND status = 'DRAFT'`)) as any;
   const pendingProposalsSumINR = Number(pendingProposalsSumRow?.total || 0);
 
-  const acceptedProposalsSumRow = db.prepare(`SELECT COALESCE(SUM(setup_price_inr), 0) as total FROM proposals WHERE organization_id = ? AND status IN ('SENT', 'ACCEPTED')`).get(orgId) as any;
+  const acceptedProposalsSumRow = (await runQueryOne('proposals', `SELECT COALESCE(SUM(setup_price_inr), 0) as total FROM proposals WHERE is_test = 0 AND status IN ('SENT', 'ACCEPTED')`)) as any;
   const acceptedProposalsSumINR = Number(acceptedProposalsSumRow?.total || 0);
 
   // Build the 12 stages — strict financial measurement integrity (zero unbacked guesses on marketing assets)
@@ -3195,6 +3212,10 @@ apiRouter.post('/offer/inquiry', async (c) => {
   const fitScore = isTestProspect ? 0.0 : 0.95;
   const isTestFlag = isTestProspect ? 1 : 0;
 
+  const deletionCode = 'del_' + randomUUID().replace(/-/g, '').slice(0, 16);
+  const deletionCodeHash = createHash('sha256').update(deletionCode).digest('hex');
+  const combinedNotes = [notes || 'Direct inquiry from /offer landing page', `deletion_code_hash:${deletionCodeHash}`].filter(Boolean).join(' | ');
+
   try {
     // 1. Record in platform_prospects (durable in D1 and local SQLite)
     const prospectSql = `
@@ -3202,13 +3223,13 @@ apiRouter.post('/offer/inquiry', async (c) => {
         id, business_name, prospect_business_name, prospect_owner_name,
         phone, prospect_phone, email, prospect_email, city, prospect_city,
         vertical, prospect_vertical, source, discovery_source, fit_score,
-        status, stage, is_test, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'dental', 'dental', 'OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', ?, ?, ?, ?, datetime('now'), datetime('now'))
+        status, stage, notes, is_test, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'dental', 'dental', 'OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
     `;
     const prospectParams = [
       prospectId, clinicName, clinicName, customerName,
       customerPhone, customerPhone, customerEmail || null, customerEmail || null,
-      city, city, fitScore, initialStatus, initialStage, isTestFlag
+      city, city, fitScore, initialStatus, initialStage, combinedNotes, isTestFlag
     ];
     if (isProduction()) {
       await d1Repo.executeWrite('platform_prospects', prospectSql, prospectParams);
@@ -3226,7 +3247,7 @@ apiRouter.post('/offer/inquiry', async (c) => {
       channel: 'WHATSAPP',
       source: 'offer_page_inquiry',
       serviceOfInterest: practiceNameAndCity || 'AI Inbound Lead Conversion System',
-      notes: notes || 'Direct inquiry from /offer landing page',
+      notes: combinedNotes,
       classification: isTestProspect ? 'TEST' : 'REAL'
     });
 
@@ -3297,6 +3318,7 @@ apiRouter.post('/offer/inquiry', async (c) => {
       message: isTestProspect
         ? 'Test inquiry received and flagged for owner review. Quarantined from revenue funnels.'
         : 'Thank you. The owner will contact you on the number you gave.',
+      deletionCode,
       journeyId: journey.id,
       prospectId,
       opportunityId: oppId,
@@ -3308,14 +3330,20 @@ apiRouter.post('/offer/inquiry', async (c) => {
   }
 });
 
-// Step 4d: Deletion route for lead triage inquiries (DPDP Act 2023)
+// Step 4d & Step 9e: Deletion route for lead triage inquiries (DPDP Act 2023)
 apiRouter.post('/offer/inquiry/delete-request', async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const phone = (body.phone || body.phoneNumber || body.customerPhone || '').trim();
   const reason = (body.reason || 'User requested deletion pursuant to DPDP Act 2023').trim();
+  const code = (body.deletionCode || body.deletion_code || body.code || '').trim();
+  const isOwnerAuth = Boolean(c.req.header('x-api-key') && c.req.header('x-api-key') === (process.env.OWNER_API_KEY || ''));
 
   if (!phone) {
     return c.json({ success: false, error: 'Phone number is required for deletion request.' }, 400);
+  }
+
+  if (!code && !isOwnerAuth) {
+    return c.json({ success: false, error: 'DELETION_CODE_REQUIRED: Deletion code provided at inquiry time is required.' }, 400);
   }
 
   const cleanPhone = phone.replace(/\D/g, '');
@@ -3325,6 +3353,22 @@ apiRouter.post('/offer/inquiry/delete-request', async (c) => {
 
   const db = getDb();
   const d1Repo = D1RevenueRepository.getInstance();
+
+  if (code && !isOwnerAuth) {
+    const codeHash = createHash('sha256').update(code).digest('hex');
+    const existingProspect = (isProduction()
+      ? await d1Repo.queryOne('platform_prospects', 'SELECT id, notes FROM platform_prospects WHERE phone LIKE ? OR prospect_phone LIKE ? LIMIT 1', [`%${cleanPhone}%`, `%${cleanPhone}%`])
+      : db.prepare('SELECT id, notes FROM platform_prospects WHERE phone LIKE ? OR prospect_phone LIKE ? LIMIT 1').get(`%${cleanPhone}%`, `%${cleanPhone}%`)) as any;
+
+    if (!existingProspect) {
+      return c.json({ success: false, error: 'NOT_FOUND: No inquiry found matching this phone number.' }, 404);
+    }
+
+    const hasMatchingHash = existingProspect.notes && existingProspect.notes.includes(`deletion_code_hash:${codeHash}`);
+    if (!hasMatchingHash) {
+      return c.json({ success: false, error: 'INVALID_DELETION_CODE: Deletion code does not match this inquiry record.' }, 403);
+    }
+  }
 
   const prospectSql = `
     UPDATE platform_prospects
@@ -3359,8 +3403,112 @@ apiRouter.post('/offer/inquiry/delete-request', async (c) => {
 
   return c.json({
     success: true,
-    message: 'Deletion request received. Personal contact details flagged for permanent erasure within 30 days pursuant to DPDP Act 2023.'
+    message: 'Deletion request verified. Personal contact details flagged for permanent erasure pursuant to DPDP Act 2023.'
   }, 200);
+});
+
+// Step 9f: Owner Smoke Test Page (/owner/smoke-test) — Owner only, agent never runs this
+apiRouter.get('/owner/smoke-test', async (c) => {
+  const db = getDb();
+  const d1Repo = D1RevenueRepository.getInstance();
+
+  // 1. Check recent test inquiries
+  let recentTestLead: any = null;
+  try {
+    if (isProduction()) {
+      recentTestLead = await d1Repo.queryOne('platform_prospects', `SELECT id, prospect_business_name, prospect_phone, status, stage, notes, created_at FROM platform_prospects WHERE is_test = 1 ORDER BY created_at DESC LIMIT 1`);
+    } else {
+      recentTestLead = db.prepare(`SELECT id, prospect_business_name, prospect_phone, status, stage, notes, created_at FROM platform_prospects WHERE is_test = 1 ORDER BY created_at DESC LIMIT 1`).get();
+    }
+  } catch {}
+
+  const tgEnabled = process.env.TELEGRAM_ENABLED === 'true' && Boolean(process.env.TELEGRAM_BOT_TOKEN);
+  const rowInD1Status = recentTestLead ? `✓ PASS: Test lead recorded in D1 (${recentTestLead.id}, ${recentTestLead.prospect_business_name})` : 'PENDING: No test lead recorded yet';
+  const alertStatus = tgEnabled ? '✓ Telegram alerting active' : '✓ Fallback: Displayed on TODAY digest & dashboard badge';
+
+  return c.html(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Owner Smoke Test | AI Marketing Organization</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #f8fafc; padding: 2rem 1rem; max-width: 760px; margin: 0 auto; line-height: 1.6; }
+    h1 { color: #38bdf8; font-size: 1.6rem; margin-bottom: 0.5rem; }
+    .card { background: #1e293b; border-radius: 12px; padding: 1.5rem; margin-bottom: 1.25rem; border: 1px solid #334155; }
+    .status-item { margin-bottom: 1rem; padding: 0.75rem 1rem; border-radius: 8px; background: #0b1120; border-left: 4px solid #38bdf8; }
+    .btn { display: inline-block; background: #0284c7; color: #fff; padding: 0.6rem 1.2rem; border-radius: 6px; text-decoration: none; font-weight: 600; margin-top: 0.5rem; border: none; cursor: pointer; }
+    .btn-test { background: #10b981; }
+    code { background: #0f172a; padding: 0.2rem 0.4rem; border-radius: 4px; font-size: 0.85rem; color: #38bdf8; }
+  </style>
+</head>
+<body>
+  <h1>Owner Lead Pipeline Smoke Test</h1>
+  <p style="color: #94a3b8; font-size: 0.95rem; margin-bottom: 1.5rem;">
+    Strictly for the human owner to verify live lead conversion from mobile or browser. The AI agent never runs this test.
+  </p>
+
+  <div class="card">
+    <h2>1. Form Reachable</h2>
+    <p>Verify that the public direct offer page loads and inquiry form can be submitted.</p>
+    <a href="/offer" target="_blank" class="btn">Open Live /offer Page</a>
+    <a href="/offer?test=true" target="_blank" class="btn btn-test">Mark TEST (Prefill Test Lead)</a>
+  </div>
+
+  <div class="card">
+    <h2>2. Row in D1 (Durable Inbound Queue)</h2>
+    <p>Inquiries must write directly to Cloudflare D1 before claiming success.</p>
+    <div class="status-item">
+      <strong>Status:</strong> ${rowInD1Status}
+      ${recentTestLead ? `<br><small style="color:#94a3b8;">Created: ${recentTestLead.created_at} | Status: ${recentTestLead.status}</small>` : ''}
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>3. Alert Received</h2>
+    <p>Immediate owner notification via Telegram or fallback to TODAY digest.</p>
+    <div class="status-item">
+      <strong>Status:</strong> ${alertStatus}
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>4. Deletion Code Works (DPDP 2023)</h2>
+    <p>Every inquiry receives a unique deletion code on screen. Test redaction below:</p>
+    <form onsubmit="testDeletion(event)" style="margin-top: 1rem;">
+      <input type="tel" id="del-phone" required placeholder="Phone number used in test" style="padding: 0.5rem; border-radius: 6px; border: 1px solid #334155; background: #0b1120; color: #fff; margin-right: 0.5rem; margin-bottom: 0.5rem;">
+      <input type="text" id="del-code" required placeholder="Deletion code (del_...)" style="padding: 0.5rem; border-radius: 6px; border: 1px solid #334155; background: #0b1120; color: #fff; margin-right: 0.5rem; margin-bottom: 0.5rem;">
+      <button type="submit" class="btn" style="background: #e11d48;">Verify Deletion</button>
+      <div id="del-result" style="margin-top: 0.75rem; display: none;"></div>
+    </form>
+    <script>
+      async function testDeletion(e) {
+        e.preventDefault();
+        var phone = document.getElementById('del-phone').value.trim();
+        var code = document.getElementById('del-code').value.trim();
+        var resDiv = document.getElementById('del-result');
+        resDiv.style.display = 'block';
+        resDiv.innerText = 'Verifying deletion...';
+        try {
+          var res = await fetch('/api/v1/offer/inquiry/delete-request', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phone: phone, deletionCode: code, reason: 'Owner smoke test deletion' })
+          });
+          var data = await res.json();
+          if (res.ok && data.success) {
+            resDiv.innerHTML = '<span style=\"color:#34d399;\">✓ PASS: Deletion code verified! Record redacted.</span>';
+          } else {
+            resDiv.innerHTML = '<span style=\"color:#f87171;\">✗ FAILED: ' + (data.error || 'Invalid code') + '</span>';
+          }
+        } catch (err) {
+          resDiv.innerHTML = '<span style=\"color:#f87171;\">Error: ' + err.message + '</span>';
+        }
+      }
+    </script>
+  </div>
+</body>
+</html>`);
 });
 
 // Step 4a: Public Privacy Policy Route
@@ -3716,7 +3864,13 @@ apiRouter.post('/payments/mark-test', async (c) => {
 // Owner Digest: GET /owner/today (Part C)
 apiRouter.get('/owner/today', async (c) => {
   const { OwnerDigestService } = await import('../revenue/owner-digest.js');
-  const digest = OwnerDigestService.getInstance().generateDigest();
+  const service = OwnerDigestService.getInstance();
+  const digest = service.generateDigest();
+
+  if (c.req.header('accept')?.includes('text/html')) {
+    return c.html(service.renderHtml(digest));
+  }
+
   return c.json({
     success: true,
     data: {
@@ -5685,9 +5839,10 @@ apiRouter.post('/build/static-site', async (c) => {
  * Returns each fact as SET / MISSING and VALID / INVALID. Never returns values.
  */
 apiRouter.get('/owner/facts-status', async (c) => {
-  const { validateOwnerEnvFacts } = await import('../config/owner-env-intake.js');
+  const { validateOwnerEnvFacts, validateSiteIdentityFacts } = await import('../config/owner-env-intake.js');
   const { computeOwnOfferHash } = await import('../revenue/direct-offer-page.js');
   const validation = validateOwnerEnvFacts();
+  const siteIdentityValidation = validateSiteIdentityFacts();
 
   const statutoryFields = [
     'ASSOCIATES_APPLICATION_DATE',
@@ -5799,13 +5954,25 @@ apiRouter.get('/owner/facts-status', async (c) => {
   const autoPublishEnabled = validation.valid && process.env.AUTO_PUBLISH_ENABLED === 'true';
   const isAllScope = c.req.query('scope') === 'all' || c.req.query('all') === 'true';
 
-  // Step 3 Lane Grouping:
-  // affiliate lane = the six Associates and site facts
+  // Step 6 Lane Grouping:
+  // 1. site identity lane = PUBLIC_SITE_NAME, PUBLIC_AUTHOR_NAME, PUBLIC_CONTACT_EMAIL
+  const siteIdentityFields = ['PUBLIC_SITE_NAME', 'PUBLIC_AUTHOR_NAME', 'PUBLIC_CONTACT_EMAIL'];
+  const siteIdentityMissingNames = siteIdentityFields.filter(f => siteIdentityValidation.missingFields.includes(f));
+  const siteIdentityInvalidNames = siteIdentityValidation.invalidFields.map(f => f.field);
+  const siteIdentityLaneReady = siteIdentityMissingNames.length === 0 && siteIdentityInvalidNames.length === 0;
+  const siteIdentityFacts = facts.filter(f => siteIdentityFields.includes(f.field));
+
+  // 2. content lane = needs ONLY site identity!
+  const contentLaneReady = siteIdentityLaneReady;
+  const contentMissingNames = siteIdentityMissingNames;
+  const contentInvalidNames = siteIdentityInvalidNames;
+
+  // 3. affiliate lane = the six Associates and site facts
   const affiliateMissingNames = statutoryFields.filter(f => validation.missingFields.includes(f));
   const affiliateInvalidNames = validation.invalidFields.filter(f => statutoryFields.includes(f.field)).map(f => f.field);
   const affiliateLaneReady = affiliateMissingNames.length === 0 && affiliateInvalidNames.length === 0;
 
-  // direct lane = OWN_OFFER_CONFIRMED, DIRECT_OFFER_TERMS_SHA256
+  // 4. direct lane = OWN_OFFER_CONFIRMED, DIRECT_OFFER_TERMS_SHA256
   const directMissingNames: string[] = [];
   const directInvalidNames: string[] = [];
   if (!ownOfferConfirmedVal) {
@@ -5821,7 +5988,7 @@ apiRouter.get('/owner/facts-status', async (c) => {
   }
   const directLaneReady = directMissingNames.length === 0 && directInvalidNames.length === 0;
 
-  // optional lane = OWNER_WHATSAPP_NUMBER, and the three telegram vars (never changes ready state of lanes)
+  // 5. optional lane = OWNER_WHATSAPP_NUMBER, and the three telegram vars (never changes ready state of lanes)
   const optionalMissingNames: string[] = [];
   const optionalInvalidNames: string[] = [];
   if (!whatsappNum) optionalMissingNames.push('OWNER_WHATSAPP_NUMBER');
@@ -5841,6 +6008,34 @@ apiRouter.get('/owner/facts-status', async (c) => {
 
   return c.json({
     success: true,
+    siteIdentityLane: {
+      missing: siteIdentityMissingNames,
+      missingNames: siteIdentityMissingNames,
+      invalidNames: siteIdentityInvalidNames,
+      ready: siteIdentityLaneReady,
+      facts: siteIdentityFacts
+    },
+    contentLane: {
+      missing: contentMissingNames,
+      missingNames: contentMissingNames,
+      invalidNames: contentInvalidNames,
+      ready: contentLaneReady,
+      facts: siteIdentityFacts
+    },
+    affiliateLane: {
+      missing: affiliateMissingNames,
+      missingNames: affiliateMissingNames,
+      invalidNames: affiliateInvalidNames,
+      ready: affiliateLaneReady,
+      facts: statutoryFacts
+    },
+    directLane: {
+      missing: directMissingNames,
+      missingNames: directMissingNames,
+      invalidNames: directInvalidNames,
+      ready: directLaneReady,
+      facts: directFacts
+    },
     data: {
       allValid: validation.valid,
       missingCount: validation.missingFields.length,
@@ -5849,25 +6044,52 @@ apiRouter.get('/owner/facts-status', async (c) => {
       attestationNotice: 'A hash match proves the page equals the file. It does not prove that the owner wrote or approved the file.',
       facts: isAllScope ? facts : statutoryFacts,
       allFacts: facts,
+      siteIdentityLane: {
+        missing: siteIdentityMissingNames,
+        missingNames: siteIdentityMissingNames,
+        invalidNames: siteIdentityInvalidNames,
+        ready: siteIdentityLaneReady,
+        facts: siteIdentityFacts
+      },
+      contentLane: {
+        missing: contentMissingNames,
+        missingNames: contentMissingNames,
+        invalidNames: contentInvalidNames,
+        ready: contentLaneReady,
+        facts: siteIdentityFacts
+      },
       affiliateLane: {
+        missing: affiliateMissingNames,
         missingNames: affiliateMissingNames,
         invalidNames: affiliateInvalidNames,
         ready: affiliateLaneReady,
         facts: statutoryFacts
       },
       directLane: {
+        missing: directMissingNames,
         missingNames: directMissingNames,
         invalidNames: directInvalidNames,
         ready: directLaneReady,
         facts: directFacts
       },
       optional: {
+        missing: optionalMissingNames,
         missingNames: optionalMissingNames,
         invalidNames: optionalInvalidNames,
         ready: optionalMissingNames.length === 0 && optionalInvalidNames.length === 0,
         facts: optionalFacts
       },
       lanes: {
+        siteIdentityLane: {
+          missingNames: siteIdentityMissingNames,
+          invalidNames: siteIdentityInvalidNames,
+          ready: siteIdentityLaneReady
+        },
+        contentLane: {
+          missingNames: contentMissingNames,
+          invalidNames: contentInvalidNames,
+          ready: contentLaneReady
+        },
         affiliateLane: {
           missingNames: affiliateMissingNames,
           invalidNames: affiliateInvalidNames,

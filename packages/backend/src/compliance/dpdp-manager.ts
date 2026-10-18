@@ -25,8 +25,50 @@ export interface ConsentRecord {
 }
 
 export class DPDPComplianceManager {
+  private static instance: DPDPComplianceManager;
+
+  public static getInstance(): DPDPComplianceManager {
+    if (!DPDPComplianceManager.instance) {
+      DPDPComplianceManager.instance = new DPDPComplianceManager();
+    }
+    return DPDPComplianceManager.instance;
+  }
+
   private get db() {
     return getDb();
+  }
+
+  /**
+   * Step 9d: Daily 30-Day Retention Purge Job (DPDP Act 2023)
+   * Purges unconverted lead inquiries older than 30 days.
+   * Clears personal identifiable data (phone, email, contact name) and marks status 'PURGED_RETENTION_EXPIRED'.
+   */
+  public purgeExpiredInquiries(retentionDays: number = 30): { purgedCount: number; timestamp: string } {
+    const db = getDb();
+    const thresholdDateStr = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+
+    const result = db.prepare(`
+      UPDATE platform_prospects
+      SET
+        phone = NULL,
+        prospect_phone = NULL,
+        email = NULL,
+        prospect_email = NULL,
+        prospect_owner_name = '[PURGED_RETENTION_EXPIRED]',
+        status = 'PURGED_RETENTION_EXPIRED',
+        stage = 'PURGED_RETENTION_EXPIRED',
+        notes = COALESCE(notes, '') || ' | Purged after 30-day retention period pursuant to DPDP policy',
+        updated_at = datetime('now')
+      WHERE created_at < ?
+        AND status != 'CONVERTED'
+        AND status != 'PURGED_RETENTION_EXPIRED'
+        AND (source = 'OFFER_PAGE_INQUIRY' OR discovery_source = 'DIRECT_INBOUND')
+    `).run(thresholdDateStr);
+
+    return {
+      purgedCount: result.changes,
+      timestamp: new Date().toISOString()
+    };
   }
 
   /**

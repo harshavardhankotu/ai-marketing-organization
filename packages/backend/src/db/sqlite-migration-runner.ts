@@ -60,27 +60,38 @@ export function applySqliteMigrations(db: Database.Database): { applied: string[
     const content = fs.readFileSync(filePath, 'utf-8');
     const statements = parseSqlStatements(content);
 
-    for (const stmt of statements) {
-      try {
-        db.exec(stmt);
-      } catch (err: any) {
-        const msg = String(err.message || '').toLowerCase();
-        // Allow safe idempotent catch-up on existing databases
-        if (
-          msg.includes('duplicate column name') ||
-          msg.includes('already exists') ||
-          msg.includes('duplicate index name')
-        ) {
-          continue;
+    // Run each migration file in one transaction.
+    // If any statement fails (other than safe duplicate column / already exists), the transaction rolls back
+    // and the migration record is NOT written. Boot fails immediately.
+    const executeMigrationTransaction = db.transaction(() => {
+      for (const stmt of statements) {
+        db.exec('SAVEPOINT sp_migration_stmt');
+        try {
+          db.exec(stmt);
+          db.exec('RELEASE sp_migration_stmt');
+        } catch (err: any) {
+          const msg = String(err.message || '').toLowerCase();
+          // Ignore ONLY duplicate column name and already exists
+          if (
+            msg.includes('duplicate column name') ||
+            msg.includes('already exists') ||
+            msg.includes('duplicate index name')
+          ) {
+            db.exec('ROLLBACK TO sp_migration_stmt');
+            db.exec('RELEASE sp_migration_stmt');
+            continue;
+          }
+          db.exec('ROLLBACK TO sp_migration_stmt');
+          db.exec('RELEASE sp_migration_stmt');
+          throw new Error(`SQLITE_MIGRATION_FAILED: Migration '${file}' failed on statement:\n${stmt}\nError: ${err.message}`);
         }
-        if (msg.includes('unique constraint')) {
-          throw new Error(`SQLITE_MIGRATION_FAILED: Unique constraint violation in '${file}': ${err.message}`);
-        }
-        throw new Error(`SQLITE_MIGRATION_FAILED: Migration '${file}' failed on statement:\n${stmt}\nError: ${err.message}`);
       }
-    }
 
-    db.prepare(`INSERT INTO _sqlite_migrations (migration_name) VALUES (?)`).run(file);
+      // Record migration ONLY after all statements have succeeded
+      db.prepare(`INSERT INTO _sqlite_migrations (migration_name) VALUES (?)`).run(file);
+    });
+
+    executeMigrationTransaction();
     applied.push(file);
   }
 

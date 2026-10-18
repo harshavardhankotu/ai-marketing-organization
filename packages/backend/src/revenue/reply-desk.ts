@@ -55,15 +55,28 @@ export const BLOCKED_DIRECTORY_DOMAINS = new Set([
   'slideshare.net',
   'facebook.com',
   'instagram.com',
-  'youtube.com'
+  'youtube.com',
+  // Step 5d: Blocked publisher, news, and article aggregator domains
+  'yahoo.com',
+  'cnbc.com',
+  'pcmag.com',
+  'business.com',
+  'businessnewsdaily.com',
+  'invoicecrowd.com',
+  'indeed.com',
+  'pilot.com',
+  'busy.in',
+  'quickenaccounting.com',
+  'mybillbook.in'
 ]);
 
 export function assessPublicSignal(title: string, snippet: string, url: string): AssessedSignal {
   const lowerUrl = (url || '').toLowerCase();
   const lowerTitle = (title || '').toLowerCase();
   const lowerSnippet = (snippet || '').toLowerCase();
+  const combinedText = `${lowerTitle} ${lowerSnippet}`;
 
-  // 1. Check blocked directory, aggregator, or social domains
+  // 1. Check blocked directory, aggregator, publisher, or social domains
   for (const domain of BLOCKED_DIRECTORY_DOMAINS) {
     if (lowerUrl.includes(domain)) {
       return {
@@ -74,16 +87,26 @@ export function assessPublicSignal(title: string, snippet: string, url: string):
     }
   }
 
-  // 2. Filter listicles and promotional directories
-  if (/^(top\s+\d+|\d+\s+top|best\s+\d+|\d+\s+best)\s+/i.test(lowerTitle)) {
+  // 2. Filter listicles, reviews, and promotional roundups (Step 5d)
+  if (/^(top\s+\d+|\d+\s+top|best\s+\d+|\d+\s+best|\d+\s+ways|\d+\s+tips|reviews?|guide|vs|features?)\b/i.test(lowerTitle)) {
     return {
       intentClass: 'JUNK',
       qualified: false,
-      reason: 'Filtered: Directory listicle or promotional roundup'
+      reason: 'Filtered: Directory listicle, guide, or promotional roundup'
     };
   }
 
-  // 3. Check for clinic / SMB lead handling intent signals
+  // 3. Step 5d: A signal qualifies only if a person asks for help or a recommendation
+  const isHelpOrRecommendation = /\b(how\s+to|how\s+can|how\s+do|suggest|recommend|recommendation|looking\s+for|anyone\s+know|what\s+do\s+you\s+use|need\s+help|struggling\s+with|problem\s+with|any\s+advice|tips\s+for|inquiry\s+delay|missed\s+call)\b/i.test(combinedText);
+  if (!isHelpOrRecommendation) {
+    return {
+      intentClass: 'RESEARCH',
+      qualified: false,
+      reason: 'Filtered: Not a request for help or recommendation (publisher article, announcement, or informational text)'
+    };
+  }
+
+  // 4. Check for clinic / SMB lead handling intent signals
   const highIntentKeywords = [
     'missed call', 'missed lead', 'after hours', 'receptionist',
     'whatsapp booking', 'patient response', 'inquiry delay', 'appointment booking',
@@ -167,6 +190,45 @@ export class ReplyDeskService {
     try { db.prepare(`ALTER TABLE reply_desk_query_runs ADD COLUMN success INTEGER NOT NULL DEFAULT 1`).run(); } catch {}
     try { db.prepare(`ALTER TABLE reply_desk_query_runs ADD COLUMN result_count INTEGER NOT NULL DEFAULT 0`).run(); } catch {}
     try { db.prepare(`ALTER TABLE reply_desk_query_runs ADD COLUMN error_message TEXT`).run(); } catch {}
+
+    // Step 5b: Table for rotated niche discovery queries with reasoning
+    db.prepare(`
+      CREATE TABLE IF NOT EXISTS reply_desk_queries (
+        query TEXT PRIMARY KEY,
+        reason TEXT NOT NULL,
+        last_run_at TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `).run();
+
+    const existingQ = db.prepare(`SELECT COUNT(*) as count FROM reply_desk_queries`).get() as any;
+    if (!existingQ || existingQ.count === 0) {
+      const initialQueries = [
+        {
+          q: 'how to handle missed patient calls dental clinic whatsapp India',
+          r: 'Dentists asking how to capture evening missed patient calls without night receptionist'
+        },
+        {
+          q: 'whatsapp appointment booking auto reply for salon clinic India',
+          r: 'Salons and clinics seeking automated appointment booking auto-responders on WhatsApp'
+        },
+        {
+          q: 'receptionist missing patient inquiries after hours clinic automation',
+          r: 'Practice managers seeking to eliminate lead loss when physical front desk is closed'
+        },
+        {
+          q: 'dental clinic patient inquiry follow up system whatsapp',
+          r: 'Clinics asking how to follow up with unconfirmed patient inquiries with zero advertising spend'
+        }
+      ];
+      for (const item of initialQueries) {
+        db.prepare(`
+          INSERT INTO reply_desk_queries (query, reason, last_run_at, created_at)
+          VALUES (?, ?, NULL, datetime('now'))
+          ON CONFLICT(query) DO NOTHING
+        `).run(item.q, item.r);
+      }
+    }
   }
 
   /**
@@ -198,12 +260,27 @@ export class ReplyDeskService {
     }
 
     const availableQueries = 2 - currentRuns;
-    const queries = [
-      'how to handle missed lead calls dental clinic whatsapp India',
-      'after hours customer inquiry triage small business automation'
-    ].slice(0, availableQueries);
-
     const db = getDb();
+
+    // Step 5b: Rotate queries, do not repeat within 7 days
+    let queries: string[] = [];
+    try {
+      const queryRows = db.prepare(`
+        SELECT query FROM reply_desk_queries
+        WHERE last_run_at IS NULL OR last_run_at < datetime('now', '-7 days')
+        ORDER BY last_run_at ASC
+        LIMIT ?
+      `).all(availableQueries) as any[];
+      queries = queryRows.map(r => r.query);
+    } catch {}
+
+    if (queries.length === 0) {
+      queries = [
+        'how to handle missed patient calls dental clinic whatsapp India',
+        'whatsapp appointment booking auto reply for salon clinic India'
+      ].slice(0, availableQueries);
+    }
+
     let totalNewDrafts = 0;
 
     for (const q of queries) {
@@ -259,6 +336,11 @@ export class ReplyDeskService {
         VALUES (?, ?, ?, 'TAVILY', ?, ?, ?, ?)
       `).run(runId, q, dateStr, elapsedMs, success, items.length, errorMessage);
 
+      // Step 5b: Mark query last_run_at
+      try {
+        db.prepare(`UPDATE reply_desk_queries SET last_run_at = datetime('now') WHERE query = ?`).run(q);
+      } catch {}
+
       for (const item of items) {
         // Enforce intent assessment and reject directory / listicle / unbacked content
         const assessment = assessPublicSignal(item.title, item.snippet, item.url);
@@ -293,6 +375,28 @@ export class ReplyDeskService {
         } catch {}
       }
     }
+
+    // Step 5f: If a week gives fewer than 3 qualified signals, write an OUTCOME row and change queries
+    try {
+      const pastWeekQualified = db.prepare(`
+        SELECT COUNT(*) as count FROM reply_desk_drafts
+        WHERE qualification_status = 'QUALIFIED'
+          AND created_at >= datetime('now', '-7 days')
+      `).get() as any;
+      if (pastWeekQualified && pastWeekQualified.count < 3) {
+        db.prepare(`
+          INSERT INTO learning_records (
+            id, organization_id, cycle_id, action_type, hypothesis, rationale, outcome,
+            metric_before, metric_after, delta, impact_classification, created_at
+          ) VALUES (?, 'org_owner_primary', 'cron_reply_desk', 'REPLY_DESK_QUERY_ROTATION',
+            'Weekly qualified intent signals yield >= 3 drafts',
+            'Evaluated past 7-day reply desk yield',
+            'LESS_THAN_3_QUALIFIED_SIGNALS: Recorded ' || ? || ' qualified drafts; rotating query pool',
+            3, ?, ? - 3, 'NEUTRAL', datetime('now')
+          )
+        `).run(`lr_reply_desk_${Date.now()}`, pastWeekQualified.count, pastWeekQualified.count, pastWeekQualified.count);
+      }
+    } catch {}
 
     return {
       queriesRun: queries.length,

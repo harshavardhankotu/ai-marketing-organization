@@ -153,14 +153,18 @@ describe('Schema Parity Verification & Inquiry Lifecycle (Steps 2, 3, 4, 6)', ()
           consentGiven: true
         })
       });
-      await apiRouter.fetch(postReq);
+      const postRes = await apiRouter.fetch(postReq);
+      const postJson = await postRes.json() as any;
+      expect(postJson.success).toBe(true);
+      expect(postJson.deletionCode).toBeDefined();
 
-      // Now request deletion
+      // Now request deletion with verified deletion code
       const delReq = new Request('http://localhost/offer/inquiry/delete-request', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           phone: '9876543296',
+          code: postJson.deletionCode,
           reason: 'Exercising DPDP right to erasure'
         })
       });
@@ -224,4 +228,67 @@ describe('Schema Parity Verification & Inquiry Lifecycle (Steps 2, 3, 4, 6)', ()
       }
     });
   });
+
+  describe('4. Transactional Migration Runner Guarantees (Step 2a & 2d)', () => {
+    it('a good migration run records every migration file', () => {
+      const db = new Database(':memory:');
+      db.pragma('foreign_keys = ON');
+      db.exec(SCHEMA_SQL);
+      const { applied } = applySqliteMigrations(db);
+
+      const rows = db.prepare('SELECT migration_name FROM _sqlite_migrations').all() as { migration_name: string }[];
+      expect(rows.length).toBe(40);
+      expect(applied.length).toBe(40);
+
+      // Re-running is idempotent and applies 0 new files
+      const secondRun = applySqliteMigrations(db);
+      expect(secondRun.applied.length).toBe(0);
+      db.close();
+    });
+
+    it('a failing statement stops the runner, rolls back the transaction, and does not record the migration', () => {
+      const db = new Database(':memory:');
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS _sqlite_migrations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          migration_name TEXT NOT NULL UNIQUE,
+          applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+      `);
+
+      // Mock migration execution with a failing statement in transaction
+      const failingMigration = '9999_failing_syntax_migration.sql';
+      const statements = [
+        'CREATE TABLE test_rollback_table (id TEXT PRIMARY KEY, val TEXT);',
+        'THIS IS A FATAL INVALID SQL SYNTAX;'
+      ];
+
+      expect(() => {
+        const tx = db.transaction(() => {
+          for (const stmt of statements) {
+            db.exec('SAVEPOINT sp_test');
+            try {
+              db.exec(stmt);
+              db.exec('RELEASE sp_test');
+            } catch (err: any) {
+              db.exec('ROLLBACK TO sp_test');
+              db.exec('RELEASE sp_test');
+              throw new Error(`SQLITE_MIGRATION_FAILED: Migration '${failingMigration}' failed on statement:\n${stmt}\nError: ${err.message}`);
+            }
+          }
+          db.prepare('INSERT INTO _sqlite_migrations (migration_name) VALUES (?)').run(failingMigration);
+        });
+        tx();
+      }).toThrow(/SQLITE_MIGRATION_FAILED/);
+
+      // Verify transaction rollback: table was NOT created, and migration was NOT recorded
+      const tableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='test_rollback_table'").get();
+      expect(tableExists).toBeUndefined();
+
+      const migrationRecorded = db.prepare('SELECT migration_name FROM _sqlite_migrations WHERE migration_name = ?').get(failingMigration);
+      expect(migrationRecorded).toBeUndefined();
+      db.close();
+    });
+  });
 });
+

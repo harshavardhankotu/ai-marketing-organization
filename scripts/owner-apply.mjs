@@ -18,6 +18,53 @@ console.log('======================================================');
 console.log('       HUMAN OWNER FACT ATTESTATION & RENDER SYNC     ');
 console.log('======================================================\n');
 
+// Step 10b: Known agent-written legacy terms SHA-256 hashes
+export const LEGACY_AGENT_TERMS_SHA256 = [
+  '778922fd08bda0745e74ff4baa368d58d6ba3729634c25dfa03b65a0fe684934'
+];
+
+// Determine target offer file
+const offerFileArg = process.argv.find(a => a.startsWith('--offer-file='));
+const targetOfferFile = offerFileArg ? path.resolve(process.cwd(), offerFileArg.split('=')[1]) : path.resolve(process.cwd(), 'owner', 'OWN_OFFER.md');
+
+let offerFileHash = null;
+if (fs.existsSync(targetOfferFile)) {
+  const fileContent = fs.readFileSync(targetOfferFile, 'utf8');
+  const computedHash = crypto.createHash('sha256').update(fileContent).digest('hex');
+  offerFileHash = computedHash;
+
+  if (LEGACY_AGENT_TERMS_SHA256.includes(computedHash.toLowerCase())) {
+    console.error(`\n[REFUSAL] The file '${targetOfferFile}' matches a known agent-written legacy terms template (${computedHash}).`);
+    console.error(`REFUSAL: Cannot attest legacy agent-written offer terms: ${computedHash}`);
+    console.error('The human owner must write or edit the offer terms personally.');
+    console.error('Edit owner/OWN_OFFER.draft.md into your own terms and save it as owner/OWN_OFFER.md.');
+    process.exit(1);
+  }
+
+  // Step 10d: Deliverable verification against capability registry
+  console.log('Auditing deliverables against capability registry...');
+  const verifiedCapabilities = new Set([
+    'Custom WhatsApp triage and FAQ response bot',
+    'Google Business Profile instant lead capture',
+    'Multi-touch follow-up workflow',
+    'Direct calendar booking integration',
+    'Live system handover report'
+  ]);
+
+  const deliverableMatches = fileContent.match(/^\s*[-*]\s+(.*)$/gm) || [];
+  for (const rawLine of deliverableMatches) {
+    const item = rawLine.replace(/^\s*[-*]\s+/, '').trim();
+    if (item && !verifiedCapabilities.has(item) && !item.toLowerCase().includes('manual')) {
+      console.warn(`[WARNING] Deliverable '${item}' is not verified as MANUAL_BY_OWNER or IMPLEMENTED_VERIFIED in capability registry.`);
+    }
+  }
+
+  if (offerFileArg && !process.argv.includes('--apply')) {
+    console.log(`✓ Offer file audited successfully: ${computedHash}`);
+    process.exit(0);
+  }
+}
+
 // 1. Read .env.owner_facts
 const factsPath = path.resolve(process.cwd(), '.env.owner_facts');
 if (!fs.existsSync(factsPath)) {
@@ -63,13 +110,10 @@ if (envVars.OWN_OFFER_CONFIRMED && envVars.OWN_OFFER_CONFIRMED !== 'true') {
   errors.push('OWN_OFFER_CONFIRMED must be "true" to confirm your own offer terms');
 }
 
-// Compute DIRECT_OFFER_TERMS_SHA256 from owner/OWN_OFFER.md
-const ownOfferPath = path.resolve(process.cwd(), 'owner', 'OWN_OFFER.md');
-if (fs.existsSync(ownOfferPath)) {
-  const fileContent = fs.readFileSync(ownOfferPath);
-  envVars.DIRECT_OFFER_TERMS_SHA256 = crypto.createHash('sha256').update(fileContent).digest('hex');
-  console.log(`✓ Computed DIRECT_OFFER_TERMS_SHA256 from owner/OWN_OFFER.md: ${envVars.DIRECT_OFFER_TERMS_SHA256.slice(0, 16)}...`);
-}
+  if (offerFileHash) {
+    envVars.DIRECT_OFFER_TERMS_SHA256 = offerFileHash;
+    console.log(`✓ Computed DIRECT_OFFER_TERMS_SHA256: ${envVars.DIRECT_OFFER_TERMS_SHA256.slice(0, 16)}...`);
+  }
 
 // WhatsApp phone format validation
 if (envVars.OWNER_WHATSAPP_NUMBER) {
