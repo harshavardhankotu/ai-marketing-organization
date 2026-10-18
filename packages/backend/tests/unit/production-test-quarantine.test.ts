@@ -18,7 +18,8 @@ describe('Production Test Record Quarantine & Guard (mst_p1_agent_wrote_test_dat
         customerName: 'Dr. Test Harsha',
         customerPhone: '9876543210',
         customerEmail: 'harsha@example.com',
-        serviceOfInterest: 'SmileKraft Test Clinic, Hyderabad'
+        serviceOfInterest: 'SmileKraft Test Clinic, Hyderabad',
+        consentGiven: true
       })
     });
 
@@ -59,7 +60,8 @@ describe('Production Test Record Quarantine & Guard (mst_p1_agent_wrote_test_dat
         customerName: 'Dr. Anand Kumar',
         customerPhone: '9876543211',
         customerEmail: 'anand@realclinic.in',
-        serviceOfInterest: 'Anand Dental Hospital, Hyderabad'
+        serviceOfInterest: 'Anand Dental Hospital, Hyderabad',
+        consentGiven: true
       })
     });
 

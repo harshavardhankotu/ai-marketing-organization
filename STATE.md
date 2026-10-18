@@ -12,6 +12,7 @@
 9. Raw output only. PASS needs raw proof. Never invent a number.
 10. The 80 agents are a catalog. No run has produced output yet.
 11. Known failures: fixture data in production, hardcoded product and tag, agent-written owner terms, guards that only check a file path, reports with invented output, tests that spend credits.
+12. FEATURES_FROZEN = true. System is in stabilization and owner-action phase. No new migrations after 0040. No new feature routes or agent types.
 
 ## 2. Last Verified Commit
 - Commit Hash: `d9ac281`
@@ -34,13 +35,13 @@
 - `PUBLIC_AUTHOR_NAME`: MISSING
 - `PUBLIC_CONTACT_EMAIL`: MISSING
 - `OWN_OFFER_CONFIRMED`: MISSING
-- `DIRECT_OFFER_TERMS_SHA256`: SET (gated behind OWN_OFFER_CONFIRMED=true; offer page in safe un-attested inquiry mode)
+- `DIRECT_OFFER_TERMS_SHA256`: SET (SET_BY_UNKNOWN without confirmation; gated behind OWN_OFFER_CONFIRMED=true; offer page in safe un-attested inquiry mode)
 - `OWNER_WHATSAPP_NUMBER`: MISSING
 - `TELEGRAM_BOT_TOKEN`: MISSING
 - `TELEGRAM_OWNER_CHAT_ID`: MISSING
 - `TELEGRAM_ENABLED`: MISSING
 
-## 5. Funnel Counts (is_test = 0 only)
+## 5. Funnel Counts (is_test = 0 AND is_junk = 0 only)
 ### Direct Sales Funnel
 - Signals: 0
 - Qualified Prospects: 0
@@ -69,4 +70,4 @@
 - Cash Received / Payout: ₹0
 
 ## 6. Single Next Action
-- Owner action required: Review `owner/OWN_OFFER.draft.md`, edit into owner terms if selling, and execute `scripts/owner-apply.mjs` with owner facts.
+- Owner action required: Review `owner/OWN_OFFER.draft.md`, edit into owner terms if selling, and execute `scripts/owner-apply.mjs` with owner facts. Features are frozen (FEATURES_FROZEN = true).

@@ -308,6 +308,15 @@ export class DirectCommercialOfferPage {
           <label style="display: block; font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.25rem;">Primary Inquiry Challenge (e.g. evening patient calls, WhatsApp FAQ automation)</label>
           <textarea id="cust-notes" rows="2" placeholder="Patients reaching out after 8 PM wait until next morning. Want instant 24/7 WhatsApp qualification." style="width: 100%; padding: 0.6rem; border-radius: 8px; border: 1px solid #334155; background: #0b1120; color: #fff; font-size: 0.9rem; font-family: inherit;"></textarea>
         </div>
+        <div style="margin-bottom: 1.25rem;">
+          <label style="display: flex; align-items: flex-start; gap: 0.5rem; font-size: 0.85rem; color: #cbd5e1; cursor: pointer;">
+            <input type="checkbox" id="cust-consent" required style="margin-top: 0.2rem; cursor: pointer;">
+            <span>I agree that the name and contact number I submit will be used by the owner to respond to this inquiry. Data is kept for 30 days and deleted on request. See <a href="/privacy" target="_blank" style="color: var(--accent); text-decoration: underline;">/privacy</a>.</span>
+          </label>
+        </div>
+        <div style="position: absolute; left: -9999px; opacity: 0; pointer-events: none;" aria-hidden="true">
+          <input type="text" name="website_trap" id="cust-trap" tabindex="-1" autocomplete="off" value="">
+        </div>
         <button type="submit" id="submit-btn" style="background: #0284c7; color: #fff; border: none; padding: 0.75rem 1.5rem; border-radius: 8px; font-weight: 600; cursor: pointer; font-size: 0.95rem; width: 100%;">
           Request Lead Triage Demonstration
         </button>
@@ -324,7 +333,7 @@ export class DirectCommercialOfferPage {
 
     <footer>
       <p>&copy; ${new Date().getFullYear()} ${siteName}. All rights reserved.</p>
-      <p style="margin-top: 0.35rem;">Technical overview page • Not an offer to contract until terms are owner-attested.</p>
+      <p style="margin-top: 0.35rem;">Technical overview page • Not an offer to contract until terms are owner-attested. • <a href="/privacy" style="color: var(--text-muted); text-decoration: underline;">Privacy Policy</a></p>
     </footer>
   </div>
 
@@ -333,8 +342,23 @@ export class DirectCommercialOfferPage {
       e.preventDefault();
       var btn = document.getElementById('submit-btn');
       var msg = document.getElementById('form-msg');
+      var consent = document.getElementById('cust-consent');
+      if (!consent || !consent.checked) {
+        msg.style.display = 'block';
+        msg.style.background = 'rgba(239, 68, 68, 0.15)';
+        msg.style.color = '#f87171';
+        msg.style.border = '1px solid rgba(239, 68, 68, 0.3)';
+        msg.innerText = 'Error: Explicit consent is required to submit an inquiry.';
+        return;
+      }
+
       btn.disabled = true;
-      btn.innerText = 'Submitting...';
+      btn.innerText = 'Sending...';
+      msg.style.display = 'block';
+      msg.style.background = 'rgba(56, 189, 248, 0.15)';
+      msg.style.color = '#38bdf8';
+      msg.style.border = '1px solid rgba(56, 189, 248, 0.3)';
+      msg.innerText = 'Connecting to server...';
 
       var payload = {
         customerName: document.getElementById('cust-name').value.trim(),
@@ -342,23 +366,46 @@ export class DirectCommercialOfferPage {
         customerEmail: document.getElementById('cust-email').value.trim() || undefined,
         serviceOfInterest: document.getElementById('cust-service').value.trim(),
         notes: document.getElementById('cust-notes').value.trim(),
+        website_trap: (document.getElementById('cust-trap') || {}).value || '',
+        consentGiven: true,
         source: 'offer_page_inquiry',
         channel: 'WHATSAPP'
       };
 
+      async function doFetchWithTimeout(timeoutMs) {
+        var controller = new AbortController();
+        var timer = setTimeout(function() { controller.abort(); }, timeoutMs);
+        try {
+          var response = await fetch('/api/v1/offer/inquiry', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            signal: controller.signal
+          });
+          clearTimeout(timer);
+          return response;
+        } catch (err) {
+          clearTimeout(timer);
+          throw err;
+        }
+      }
+
       try {
-        var res = await fetch('/api/v1/offer/inquiry', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
+        var res;
+        try {
+          res = await doFetchWithTimeout(15000);
+        } catch (fetchErr) {
+          msg.innerText = 'Server is waking up (takes ~30s on free tier). Retrying...';
+          res = await doFetchWithTimeout(35000);
+        }
+
         var data = await res.json();
         if (data.success) {
           msg.style.display = 'block';
           msg.style.background = 'rgba(16, 185, 129, 0.15)';
           msg.style.color = '#34d399';
           msg.style.border = '1px solid rgba(16, 185, 129, 0.3)';
-          msg.innerText = '✓ Thank you! Your consultation inquiry has been logged. Our systems have scheduled an automated architecture review.';
+          msg.innerText = '✓ Thank you. The owner will contact you on the number you gave.';
           document.getElementById('lead-inquiry-form').reset();
           btn.style.display = 'none';
         } else {

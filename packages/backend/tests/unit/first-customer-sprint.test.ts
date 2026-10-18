@@ -232,7 +232,8 @@ describe('First Real Customer Sprint — Commercial Feasibility & Measurement In
           serviceOfInterest: 'Sprint Multispeciality Dental, Bengaluru',
           notes: 'Losing 20+ weekend patient inquiries on WhatsApp. Need 24/7 automated FAQ triage.',
           source: 'offer_page_inquiry',
-          channel: 'WHATSAPP'
+          channel: 'WHATSAPP',
+          consentGiven: true
         })
       });
 

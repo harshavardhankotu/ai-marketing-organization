@@ -19,7 +19,8 @@ describe('Pipeline Asking Price Truth & Zero Rupee Estimates (mst_p1_expected_va
         customerName: 'Dr. Suresh Reddy',
         customerPhone: '9876543212',
         customerEmail: 'suresh@hyderabad-dental.in',
-        serviceOfInterest: 'Suresh Dental Clinic, Hyderabad'
+        serviceOfInterest: 'Suresh Dental Clinic, Hyderabad',
+        consentGiven: true
       })
     });
 

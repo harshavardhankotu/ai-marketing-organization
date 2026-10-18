@@ -1062,6 +1062,7 @@ CREATE TABLE IF NOT EXISTS opportunities (
   next_best_action TEXT,
   status TEXT NOT NULL DEFAULT 'DISCOVERED', -- DISCOVERED | QUALIFIED | ENGAGING | CONVERTING | WON | LOST | IGNORED
   is_test INTEGER NOT NULL DEFAULT 0,
+  is_junk INTEGER NOT NULL DEFAULT 0,
   expected_revenue_inr REAL GENERATED ALWAYS AS (estimated_value_inr * probability) VIRTUAL,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -1090,6 +1091,7 @@ CREATE TABLE IF NOT EXISTS sales_pipeline (
   expected_revenue_inr REAL NOT NULL DEFAULT 0,
   lost_reason TEXT,
   is_test INTEGER NOT NULL DEFAULT 0,
+  is_junk INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE,
@@ -1189,6 +1191,7 @@ CREATE TABLE IF NOT EXISTS platform_prospects (
   monthly_fee_inr REAL,
   notes TEXT,
   is_test INTEGER NOT NULL DEFAULT 0,
+  is_junk INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -2472,6 +2475,7 @@ CREATE TABLE IF NOT EXISTS outreach_log (
   status TEXT NOT NULL DEFAULT 'LOGGED',
   notes TEXT,
   logged_date TEXT NOT NULL DEFAULT (date('now')),
+  is_test INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_outreach_log_date ON outreach_log(logged_date);

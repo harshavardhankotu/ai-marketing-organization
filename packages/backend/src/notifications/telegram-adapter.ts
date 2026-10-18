@@ -20,6 +20,7 @@ export interface InquiryAlertPayload {
   customerPhone: string;
   customerEmail?: string | null;
   clinicName: string;
+  need?: string | null;
   isTest?: boolean;
 }
 
@@ -103,16 +104,21 @@ export class TelegramBotAdapter {
 
   /**
    * Sends an alert when a prospective client submits an inquiry on /offer.
+   * Enforces privacy: masks phone number to last 4 digits only.
    */
   public async notifyInquiry(payload: InquiryAlertPayload): Promise<TelegramAlertResult> {
     const testTag = payload.isTest ? '⚠️ [TEST RECORD - NEEDS OWNER REVIEW]\n' : '';
+    const cleanDigits = (payload.customerPhone || '').replace(/\D/g, '');
+    const maskedPhone = cleanDigits.length >= 4 ? `******${cleanDigits.slice(-4)}` : '****';
+    const needSummary = payload.need ? `*Primary Need:* ${payload.need}\n` : '';
+
     const message =
       `${testTag}🎯 *New Commercial Inquiry Received*\n\n` +
       `*Clinic / Practice:* ${payload.clinicName}\n` +
       `*Contact Person:* ${payload.customerName}\n` +
-      `*Phone / WhatsApp:* ${payload.customerPhone}\n` +
-      `*Email:* ${payload.customerEmail || 'Not provided'}\n\n` +
-      `Action: Open owner dashboard to review intake and schedule demonstration.`;
+      `*Phone (Masked):* ${maskedPhone}\n` +
+      `${needSummary}` +
+      `\nAction: Open /owner/today to review inquiry and coordinate demonstration.`;
 
     return this.sendMessage(message);
   }

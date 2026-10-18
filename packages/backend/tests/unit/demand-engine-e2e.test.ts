@@ -18,7 +18,7 @@ describe('Demand Engine End-to-End Fixture Test (Step 6d)', () => {
 
     // 2. Seed approved source host
     db.prepare(`
-      INSERT OR IGNORE INTO source_rules (
+      INSERT OR REPLACE INTO source_rules (
         host, allows_links, allows_affiliate, needs_disclosure, automation_allowed, owner_approved, notes, terms_checked_at
       ) VALUES (
         'reddit.com', 1, 0, 1, 0, 1, 'Approved community forum for manual owner replies only', datetime('now')

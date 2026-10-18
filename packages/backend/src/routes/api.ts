@@ -160,6 +160,8 @@ export const EXACT_ROUTE_POLICY = {
     '/offers',
     '/offer',
     '/offer/inquiry',
+    '/offer/inquiry/delete-request',
+    '/privacy',
     '/payments/page-view',
     '/referrals/beacon',
     '/owner/facts-status',
@@ -3128,6 +3130,36 @@ apiRouter.post('/offer/inquiry', async (c) => {
   }
 
   const body = await c.req.json().catch(() => ({}));
+
+  // Step 4b: Hidden honeypot field (website_trap / hp_company).
+  // If filled, return 200 with generic success, do not save lead, increment counter.
+  const honeypot = (body.website_trap || body.hp_company || '').trim();
+  if (honeypot) {
+    try {
+      const db = getDb();
+      db.prepare(`
+        CREATE TABLE IF NOT EXISTS honeypot_counters (
+          id TEXT PRIMARY KEY, count INTEGER NOT NULL DEFAULT 0, last_seen TEXT
+        )
+      `).run();
+      db.prepare(`
+        INSERT INTO honeypot_counters (id, count, last_seen)
+        VALUES ('offer_inquiry_trap', 1, datetime('now'))
+        ON CONFLICT(id) DO UPDATE SET count = count + 1, last_seen = datetime('now')
+      `).run();
+    } catch {}
+    return c.json({
+      success: true,
+      message: 'Thank you. The owner will contact you on the number you gave.'
+    }, 200);
+  }
+
+  // Step 4a: Explicit consent checkbox enforcement
+  const hasConsent = body.consentGiven === true || body.consent === true || body.consent_given === true;
+  if (!hasConsent) {
+    return c.json({ success: false, error: 'Explicit consent is required to submit an inquiry. See /privacy.' }, 400);
+  }
+
   const customerName = (body.customerName || body.name || body.contactName || body.contact_name || '').trim();
   const customerPhone = (body.customerPhone || body.phone || body.phoneNumber || body.phone_number || '').trim();
   const customerEmail = (body.customerEmail || body.email || '').trim();
@@ -3247,7 +3279,7 @@ apiRouter.post('/offer/inquiry', async (c) => {
       db.prepare(pipelineSql).run(...pipelineParams);
     }
 
-    // Step 5: Trigger owner Telegram alert (non-blocking, hermetic safe)
+    // Step 4e: Trigger owner Telegram alert (non-blocking, masked phone, business name & need)
     try {
       const { TelegramBotAdapter } = await import('../notifications/telegram-adapter.js');
       await TelegramBotAdapter.getInstance().notifyInquiry({
@@ -3255,6 +3287,7 @@ apiRouter.post('/offer/inquiry', async (c) => {
         customerPhone,
         customerEmail,
         clinicName,
+        need: notes || practiceNameAndCity,
         isTest: isTestProspect
       });
     } catch {}
@@ -3263,7 +3296,7 @@ apiRouter.post('/offer/inquiry', async (c) => {
       success: true,
       message: isTestProspect
         ? 'Test inquiry received and flagged for owner review. Quarantined from revenue funnels.'
-        : 'Consultation inquiry received successfully. Automated architecture review scheduled.',
+        : 'Thank you. The owner will contact you on the number you gave.',
       journeyId: journey.id,
       prospectId,
       opportunityId: oppId,
@@ -3273,6 +3306,93 @@ apiRouter.post('/offer/inquiry', async (c) => {
   } catch (err: any) {
     return c.json({ success: false, error: err.message }, 500);
   }
+});
+
+// Step 4d: Deletion route for lead triage inquiries (DPDP Act 2023)
+apiRouter.post('/offer/inquiry/delete-request', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const phone = (body.phone || body.phoneNumber || body.customerPhone || '').trim();
+  const reason = (body.reason || 'User requested deletion pursuant to DPDP Act 2023').trim();
+
+  if (!phone) {
+    return c.json({ success: false, error: 'Phone number is required for deletion request.' }, 400);
+  }
+
+  const cleanPhone = phone.replace(/\D/g, '');
+  if (cleanPhone.length < 8) {
+    return c.json({ success: false, error: 'Valid phone number is required.' }, 400);
+  }
+
+  const db = getDb();
+  const d1Repo = D1RevenueRepository.getInstance();
+
+  const prospectSql = `
+    UPDATE platform_prospects
+    SET status = 'DELETION_REQUESTED',
+        stage = 'DELETION_REQUESTED',
+        prospect_owner_name = '[DELETION_REQUESTED]',
+        email = NULL,
+        prospect_email = NULL,
+        notes = ?,
+        updated_at = datetime('now')
+    WHERE phone LIKE ? OR prospect_phone LIKE ?
+  `;
+  const prospectParams = [`Deletion requested: ${reason}`, `%${cleanPhone}%`, `%${cleanPhone}%`];
+
+  const journeySql = `
+    UPDATE customer_journeys
+    SET stage = 'DELETION_REQUESTED',
+        customer_name = '[DELETION_REQUESTED]',
+        customer_email = NULL,
+        updated_at = datetime('now')
+    WHERE customer_phone LIKE ?
+  `;
+  const journeyParams = [`%${cleanPhone}%`];
+
+  if (isProduction()) {
+    await d1Repo.executeWrite('platform_prospects', prospectSql, prospectParams);
+    await d1Repo.executeWrite('customer_journeys', journeySql, journeyParams);
+  } else {
+    db.prepare(prospectSql).run(...prospectParams);
+    db.prepare(journeySql).run(...journeyParams);
+  }
+
+  return c.json({
+    success: true,
+    message: 'Deletion request received. Personal contact details flagged for permanent erasure within 30 days pursuant to DPDP Act 2023.'
+  }, 200);
+});
+
+// Step 4a: Public Privacy Policy Route
+apiRouter.get('/privacy', (c) => {
+  return c.html(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Privacy Policy | AI Marketing Organization</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #f8fafc; line-height: 1.6; padding: 2rem 1rem; max-width: 800px; margin: 0 auto; }
+    h1, h2 { color: #38bdf8; }
+    a { color: #38bdf8; }
+    .card { background: #1e293b; border-radius: 8px; padding: 1.5rem; margin-top: 1rem; border: 1px solid #334155; }
+  </style>
+</head>
+<body>
+  <h1>Privacy Policy &amp; Consent Notice</h1>
+  <p style="color: #94a3b8;">Last updated: October 2026 • Digital Personal Data Protection (DPDP) Act 2023 Compliance</p>
+  <div class="card">
+    <h2>1. Information We Collect</h2>
+    <p>When you submit an inquiry via our commercial offer page (/offer), we collect your contact name, mobile/WhatsApp number, clinic/practice name, and inquiry notes.</p>
+    <h2>2. Purpose of Collection</h2>
+    <p>Your details are used solely by the owner to respond directly to your lead triage demonstration inquiry and verify compatibility. We do not engage in automated cold marketing or spam.</p>
+    <h2>3. Data Retention &amp; Erasure</h2>
+    <p>Inquiry records are retained for a maximum of 30 days. You may request immediate deletion of your contact details at any time by submitting a request via <code>POST /api/v1/offer/inquiry/delete-request</code> with your submitted phone number.</p>
+    <h2>4. Zero Third-Party Sharing</h2>
+    <p>Your data is never sold, rented, or shared with third-party advertisers.</p>
+  </div>
+</body>
+</html>`);
 });
 
 apiRouter.post('/payments/page-view', async (c) => {
@@ -3597,7 +3717,14 @@ apiRouter.post('/payments/mark-test', async (c) => {
 apiRouter.get('/owner/today', async (c) => {
   const { OwnerDigestService } = await import('../revenue/owner-digest.js');
   const digest = OwnerDigestService.getInstance().generateDigest();
-  return c.json({ success: true, data: digest });
+  return c.json({
+    success: true,
+    data: {
+      ...digest,
+      freezeMessage: 'Feature development is frozen. System is in stabilization and owner-action phase.'
+    },
+    freezeNotice: 'Feature development is frozen. System is in stabilization and owner-action phase.'
+  });
 });
 
 // Owner Digest Telegram Dispatch: POST /owner/today/send-telegram (Part C)
@@ -5606,16 +5733,18 @@ apiRouter.get('/owner/facts-status', async (c) => {
   const termsHashVal = process.env.DIRECT_OFFER_TERMS_SHA256?.trim();
   const currentComputedHash = computeOwnOfferHash();
   const isHashMatch = Boolean(termsHashVal && currentComputedHash && termsHashVal.toLowerCase() === currentComputedHash.toLowerCase());
+  const isSetWithoutConfirmation = Boolean(termsHashVal && !isOwnOfferConfirmed);
+
   facts.push({
     field: 'DIRECT_OFFER_TERMS_SHA256',
-    status: termsHashVal ? 'SET' : 'MISSING',
+    status: isSetWithoutConfirmation ? ('SET_BY_UNKNOWN' as any) : (termsHashVal ? 'SET' : 'MISSING'),
     validity: (termsHashVal && isHashMatch && isOwnOfferConfirmed) ? 'VALID' : 'INVALID',
     reason: !termsHashVal
       ? 'Environment variable not set'
       : (!isOwnOfferConfirmed
-        ? 'Invalid (Gated: requires OWN_OFFER_CONFIRMED=true set by owner script)'
+        ? 'Invalid (Set without OWN_OFFER_CONFIRMED: delete it in Render or let owner-apply.mjs overwrite it)'
         : (isHashMatch ? 'Valid (Matches owner/OWN_OFFER.md)' : 'Invalid (Hash mismatch with owner/OWN_OFFER.md)')),
-    note: 'A hash match proves the page equals the file. It does not prove that the owner wrote or approved the file.'
+    note: 'A hash match proves the page equals the file. It does not prove that the owner wrote or approved the file. Delete it in Render or let owner-apply.mjs overwrite it.'
   });
 
   // 9. OWNER_WHATSAPP_NUMBER
@@ -5670,6 +5799,46 @@ apiRouter.get('/owner/facts-status', async (c) => {
   const autoPublishEnabled = validation.valid && process.env.AUTO_PUBLISH_ENABLED === 'true';
   const isAllScope = c.req.query('scope') === 'all' || c.req.query('all') === 'true';
 
+  // Step 3 Lane Grouping:
+  // affiliate lane = the six Associates and site facts
+  const affiliateMissingNames = statutoryFields.filter(f => validation.missingFields.includes(f));
+  const affiliateInvalidNames = validation.invalidFields.filter(f => statutoryFields.includes(f.field)).map(f => f.field);
+  const affiliateLaneReady = affiliateMissingNames.length === 0 && affiliateInvalidNames.length === 0;
+
+  // direct lane = OWN_OFFER_CONFIRMED, DIRECT_OFFER_TERMS_SHA256
+  const directMissingNames: string[] = [];
+  const directInvalidNames: string[] = [];
+  if (!ownOfferConfirmedVal) {
+    directMissingNames.push('OWN_OFFER_CONFIRMED');
+  } else if (!isOwnOfferConfirmed) {
+    directInvalidNames.push('OWN_OFFER_CONFIRMED');
+  }
+
+  if (!termsHashVal) {
+    directMissingNames.push('DIRECT_OFFER_TERMS_SHA256');
+  } else if (!isOwnOfferConfirmed || !isHashMatch) {
+    directInvalidNames.push('DIRECT_OFFER_TERMS_SHA256');
+  }
+  const directLaneReady = directMissingNames.length === 0 && directInvalidNames.length === 0;
+
+  // optional lane = OWNER_WHATSAPP_NUMBER, and the three telegram vars (never changes ready state of lanes)
+  const optionalMissingNames: string[] = [];
+  const optionalInvalidNames: string[] = [];
+  if (!whatsappNum) optionalMissingNames.push('OWNER_WHATSAPP_NUMBER');
+  else if (!isWhatsappValid) optionalInvalidNames.push('OWNER_WHATSAPP_NUMBER');
+
+  if (!tgToken) optionalMissingNames.push('TELEGRAM_BOT_TOKEN');
+  else if (!isTgTokenValid) optionalInvalidNames.push('TELEGRAM_BOT_TOKEN');
+
+  if (!tgChatId) optionalMissingNames.push('TELEGRAM_OWNER_CHAT_ID');
+  else if (!isTgChatIdValid) optionalInvalidNames.push('TELEGRAM_OWNER_CHAT_ID');
+
+  if (!tgEnabled) optionalMissingNames.push('TELEGRAM_ENABLED');
+  else if (!isTgEnabledValid) optionalInvalidNames.push('TELEGRAM_ENABLED');
+
+  const directFacts = facts.filter(f => ['OWN_OFFER_CONFIRMED', 'DIRECT_OFFER_TERMS_SHA256'].includes(f.field));
+  const optionalFacts = facts.filter(f => ['OWNER_WHATSAPP_NUMBER', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_OWNER_CHAT_ID', 'TELEGRAM_ENABLED'].includes(f.field));
+
   return c.json({
     success: true,
     data: {
@@ -5679,7 +5848,42 @@ apiRouter.get('/owner/facts-status', async (c) => {
       autoPublishEnabled,
       attestationNotice: 'A hash match proves the page equals the file. It does not prove that the owner wrote or approved the file.',
       facts: isAllScope ? facts : statutoryFacts,
-      allFacts: facts
+      allFacts: facts,
+      affiliateLane: {
+        missingNames: affiliateMissingNames,
+        invalidNames: affiliateInvalidNames,
+        ready: affiliateLaneReady,
+        facts: statutoryFacts
+      },
+      directLane: {
+        missingNames: directMissingNames,
+        invalidNames: directInvalidNames,
+        ready: directLaneReady,
+        facts: directFacts
+      },
+      optional: {
+        missingNames: optionalMissingNames,
+        invalidNames: optionalInvalidNames,
+        ready: optionalMissingNames.length === 0 && optionalInvalidNames.length === 0,
+        facts: optionalFacts
+      },
+      lanes: {
+        affiliateLane: {
+          missingNames: affiliateMissingNames,
+          invalidNames: affiliateInvalidNames,
+          ready: affiliateLaneReady
+        },
+        directLane: {
+          missingNames: directMissingNames,
+          invalidNames: directInvalidNames,
+          ready: directLaneReady
+        },
+        optional: {
+          missingNames: optionalMissingNames,
+          invalidNames: optionalInvalidNames,
+          ready: optionalMissingNames.length === 0 && optionalInvalidNames.length === 0
+        }
+      }
     }
   });
 });

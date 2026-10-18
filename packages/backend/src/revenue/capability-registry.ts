@@ -28,7 +28,7 @@ export interface SystemCapability {
   requiredCredentials: string[];
   configurationStatus: 'CONFIGURED' | 'MISSING_CREDENTIALS' | 'NOT_APPLICABLE';
   testEvidence: string;
-  deliveryMethod: 'AUTOMATED_SYSTEM' | 'MANUAL_ASSISTED' | 'DOCUMENTATION';
+  deliveryMethod: 'AUTOMATED_SYSTEM' | 'MANUAL_ASSISTED' | 'DOCUMENTATION' | 'MANUAL_BY_OWNER';
   knownLimitations: string;
   ownerApprovalRequired: boolean;
   ownerApproved: boolean;
@@ -110,29 +110,29 @@ export class CapabilityRegistry {
       {
         id: 'CAP_MULTI_TOUCH_FOLLOWUP',
         deliverableName: 'Multi-touch follow-up workflow',
-        description: '3-step automated follow-up sequence for inquiries that stop responding before booking.',
-        status: 'AVAILABLE',
-        requiredIntegrations: ['INTERNAL_SCHEDULER'],
-        requiredCredentials: [],
-        configurationStatus: 'NOT_APPLICABLE',
+        description: '3-step follow-up sequence for inquiries that stop responding before booking.',
+        status: 'MANUAL_DELIVERY_ONLY',
+        requiredIntegrations: ['MESSAGING_PROVIDER'],
+        requiredCredentials: ['WHATSAPP_API_TOKEN'],
+        configurationStatus: 'MISSING_CREDENTIALS',
         testEvidence: 'packages/backend/tests/unit/customer-journey.test.ts',
-        deliveryMethod: 'AUTOMATED_SYSTEM',
-        knownLimitations: 'WhatsApp messaging outside 24-hour service window requires pre-approved Meta message templates.',
-        ownerApprovalRequired: false,
+        deliveryMethod: 'MANUAL_BY_OWNER',
+        knownLimitations: 'Follow-up cadences are executed manually by the owner until automated messaging provider credentials are configured.',
+        ownerApprovalRequired: true,
         ownerApproved: true
       },
       {
         id: 'CAP_CALENDAR_BOOKING',
         deliverableName: 'Direct calendar booking integration',
         description: 'Frictionless appointment scheduling link connected to practitioner or staff calendar.',
-        status: 'AVAILABLE',
+        status: 'MANUAL_DELIVERY_ONLY',
         requiredIntegrations: ['CALENDAR_WEBHOOK'],
-        requiredCredentials: [],
-        configurationStatus: 'NOT_APPLICABLE',
+        requiredCredentials: ['CALENDAR_API_KEY'],
+        configurationStatus: 'MISSING_CREDENTIALS',
         testEvidence: 'packages/backend/tests/unit/universal-funnel.test.ts',
-        deliveryMethod: 'AUTOMATED_SYSTEM',
-        knownLimitations: 'Requires client to provide an accessible calendar booking URL (e.g., Cal.com, Calendly).',
-        ownerApprovalRequired: false,
+        deliveryMethod: 'MANUAL_BY_OWNER',
+        knownLimitations: 'Direct booking link is configured manually by the owner to practitioner calendar until cal.com or google calendar API is configured.',
+        ownerApprovalRequired: true,
         ownerApproved: true
       },
       {

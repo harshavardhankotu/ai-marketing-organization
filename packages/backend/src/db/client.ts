@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 import { SCHEMA_SQL } from './schema.js';
+import { applySqliteMigrations } from './sqlite-migration-runner.js';
 
 let dbInstance: Database.Database | null = null;
 
@@ -127,8 +128,11 @@ export function getDb(dbPath?: string): Database.Database {
   try { db.exec(`ALTER TABLE platform_prospects ADD COLUMN fit_score REAL DEFAULT 0.85`); } catch {}
   try { db.exec(`ALTER TABLE platform_prospects ADD COLUMN observed_evidence_json TEXT DEFAULT '{}'`); } catch {}
   try { db.exec(`ALTER TABLE platform_prospects ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0`); } catch {}
+  try { db.exec(`ALTER TABLE platform_prospects ADD COLUMN is_junk INTEGER NOT NULL DEFAULT 0`); } catch {}
   try { db.exec(`ALTER TABLE opportunities ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0`); } catch {}
+  try { db.exec(`ALTER TABLE opportunities ADD COLUMN is_junk INTEGER NOT NULL DEFAULT 0`); } catch {}
   try { db.exec(`ALTER TABLE sales_pipeline ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0`); } catch {}
+  try { db.exec(`ALTER TABLE sales_pipeline ADD COLUMN is_junk INTEGER NOT NULL DEFAULT 0`); } catch {}
   try { db.exec(`ALTER TABLE proposals ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0`); } catch {}
   try { db.exec(`ALTER TABLE manual_upi_claims ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0`); } catch {}
   try { db.exec(`ALTER TABLE universal_orders ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0`); } catch {}
@@ -752,6 +756,11 @@ export function getDb(dbPath?: string): Database.Database {
   // Initialize schema (creates all tables if not exist — safe for both fresh and existing DBs)
 
   db.exec(SCHEMA_SQL);
+  try {
+    applySqliteMigrations(db);
+  } catch (mErr) {
+    console.warn('[DB] SQLite migration runner notice:', mErr);
+  }
 
   // Backfill public slugs for existing businesses without ever guessing a
   // tenant at request time. Collisions are resolved deterministically.
@@ -800,6 +809,11 @@ export function resetDbForTesting(): Database.Database {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA_SQL);
+  try {
+    applySqliteMigrations(db);
+  } catch (mErr) {
+    console.warn('[DB] Test SQLite migration runner notice:', mErr);
+  }
   dbInstance = db;
   return dbInstance;
 }

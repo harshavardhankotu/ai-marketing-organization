@@ -18,7 +18,7 @@ describe('Step 2: Demand Engine State Machine & Safeguards (Fixtures Only)', () 
 
     // Seed approved source host
     db.prepare(`
-      INSERT OR IGNORE INTO source_rules (
+      INSERT OR REPLACE INTO source_rules (
         host, allows_links, allows_affiliate, needs_disclosure, automation_allowed, owner_approved, notes
       ) VALUES (
         'reddit.com', 1, 0, 1, 0, 1, 'Approved community forum for hand-posted buyer replies'
@@ -27,7 +27,7 @@ describe('Step 2: Demand Engine State Machine & Safeguards (Fixtures Only)', () 
 
     // Seed unapproved host
     db.prepare(`
-      INSERT OR IGNORE INTO source_rules (
+      INSERT OR REPLACE INTO source_rules (
         host, allows_links, allows_affiliate, needs_disclosure, automation_allowed, owner_approved, notes
       ) VALUES (
         'unapproved-community.com', 1, 0, 1, 0, 0, 'Unapproved candidate host'
