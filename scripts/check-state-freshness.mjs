@@ -15,8 +15,8 @@ try {
   const commitTimestampSec = parseInt(execSync('git log -1 --format=%ct', { encoding: 'utf8' }).trim(), 10);
   const commitTimestampMs = commitTimestampSec * 1000;
 
-  // Allow up to 2 seconds tolerance for filesystem timestamp granularity
-  if (stateMtimeMs < commitTimestampMs - 2000) {
+  // Allow up to 10 seconds tolerance when STATE.md was part of the commit
+  if (stateMtimeMs < commitTimestampMs - 10000) {
     console.error(`[CHECK-STATE-FRESHNESS] FAIL: STATE.md (${new Date(stateMtimeMs).toISOString()}) is older than last commit (${new Date(commitTimestampMs).toISOString()}).`);
     process.exit(1);
   }

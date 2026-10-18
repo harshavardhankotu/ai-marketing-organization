@@ -14,9 +14,9 @@
 11. Known failures: fixture data in production, hardcoded product and tag, agent-written owner terms, guards that only check a file path, reports with invented output, tests that spend credits.
 
 ## 2. Last Verified Commit
-- Commit Hash: `f7b49ea`
+- Commit Hash: `d9ac281`
 - Commit Message: `feat: quarantine test records, owner attestation gate, delivery playbook, and telegram alerts (Steps 0-11)`
-- Render Production Deploy: `dep-db9nr6m1egvs73cv9kr0` (Status: live; pending CI deploy of `f7b49ea`)
+- Render Production Deploy: `dep-db9nr6m1egvs73cv9kr0` (Status: live; pending CI deploy of `d9ac281`)
 
 ## 3. Open P1 Mistake Items
 - Total Open P1 Mistakes: 0
