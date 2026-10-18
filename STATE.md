@@ -15,9 +15,9 @@
 12. FEATURES_FROZEN = true. Feature freeze is strictly reinstated following completion of Steps 1-13. No new migrations after 0040. No new feature routes or agent types.
 
 ## 2. Last Verified Commit
-- Commit Hash: `18ad2a3`
-- Commit Message: `feat: stabilize schema, lane facts, inquiry form, and freeze features`
-- Render Production Deploy: `dep-dbadp07lk1mc73cobfo0` (Status: live; verified healthy)
+- Commit Hash: `32813a6`
+- Commit Message: `feat: complete automation loop, b2b content engine, dpdp retention purge, and ungate discovery`
+- Render Production Deploy: `dep-dbadp07lk1mc73cobfo0` (Live with 18ad2a3; pending CI deploy of 32813a6)
 
 ## 3. Open P1 Mistake Items
 - Total Open P1 Mistakes: 0
