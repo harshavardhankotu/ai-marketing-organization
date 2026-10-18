@@ -74,8 +74,7 @@ export function applySqliteMigrations(db: Database.Database): { applied: string[
           // Ignore ONLY duplicate column name and already exists
           if (
             msg.includes('duplicate column name') ||
-            msg.includes('already exists') ||
-            msg.includes('duplicate index name')
+            msg.includes('already exists')
           ) {
             db.exec('ROLLBACK TO sp_migration_stmt');
             db.exec('RELEASE sp_migration_stmt');
