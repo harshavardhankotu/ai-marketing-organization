@@ -62,7 +62,7 @@ During the onboarding kickoff with the clinic owner/doctor, gather these 8 opera
 3. **Top 5 Inbound Inquiries:** The 5 most frequent patient questions (e.g. root canal cost, implant charges, teeth cleaning duration, dental braces consultation).
 4. **Emergency Escalation:** Exact phone number and instructions for acute emergencies (e.g., severe toothache, trauma, post-extraction bleeding).
 5. **Booking Rules:** Can patients self-schedule online, or does reception need to confirm practitioner chair time first?
-6. **Consultation Fee & Payment:** Standard OPD/consultation fee (e.g., ₹300, ₹500), accepted payment modes (UPI, Cash, Cards).
+6. **Consultation Fee & Payment:** Standard OPD/consultation fee (client-defined), accepted payment modes (UPI, Cash, Cards).
 7. **Reception Staff Contact:** Name and mobile number of primary front-desk staff member who will manage WhatsApp Business desktop.
 8. **DPDP Compliance Sign-off:** Confirmation that the clinic seeks patient consent before recording numbers for appointment reminders.
 
@@ -160,7 +160,7 @@ The pilot is officially complete and accepted when the client signs off on each 
 
 ## 9. Post-Delivery Invoicing & Financial Reconciliation
 
-- **Pricing Status:** `TBD / OWNER REVIEW REQUIRED`. Suggested pilot range: ₹5,000 to ₹15,000 depending on clinic size and owner approval.
+- **Pricing Status:** Price: TBD. Owner decides.
 - **Payment Method Options:**
   - **Option 1 (Direct UPI QR / VPA):** Client scans owner UPI QR (`venkatasaiharsh149768.rzp@rxairtel`) or transfers to VPA. Client submits UTR; owner verifies bank statement credit.
   - **Option 2 (Razorpay Link):** Dynamic provider payment link generated for exact invoice amount.

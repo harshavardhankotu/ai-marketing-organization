@@ -3,7 +3,7 @@ import { ReplyDeskService, PublicRequestItem } from '../../src/revenue/reply-des
 import { NextBestActionEngine } from '../../src/revenue/next-best-action-engine.js';
 import { OwnerDigestService } from '../../src/revenue/owner-digest.js';
 import { D1RevenueRepository } from '../../src/db/d1-revenue-repository.js';
-import { getDb } from '../../src/db/client.js';
+import { getDb, resetDbForTesting } from '../../src/db/client.js';
 import { OwnerAuthService } from '../../src/auth/owner-auth.js';
 
 describe('Production Quota Safety & D1 Fail-Closed Architecture (Section C)', () => {
@@ -20,12 +20,7 @@ describe('Production Quota Safety & D1 Fail-Closed Architecture (Section C)', ()
   beforeEach(() => {
     process.env.NODE_ENV = 'production';
     vi.restoreAllMocks();
-
-    const db = getDb();
-    try {
-      db.prepare('DELETE FROM reply_desk_query_runs').run();
-      db.prepare('DELETE FROM reply_desk_drafts').run();
-    } catch {}
+    resetDbForTesting();
   });
 
   afterEach(() => {
