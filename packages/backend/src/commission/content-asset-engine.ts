@@ -703,8 +703,8 @@ export class ContentAssetEngine {
   ): Promise<ContentAsset> {
     const db = getDb();
 
-    // 1. Gate on valid site identity (allows verified organization defaults)
-    const siteFacts = validateSiteIdentityFacts(process.env, { allowInferableDefaults: true });
+    // 1. Gate on valid site identity
+    const siteFacts = validateSiteIdentityFacts();
     if (!siteFacts.valid) {
       throw new Error(`BLOCKED_ON_SITE_IDENTITY: Content generation requires valid site identity facts. Missing: ${siteFacts.missingFields.join(', ')}`);
     }

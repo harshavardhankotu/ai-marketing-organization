@@ -408,18 +408,19 @@ export class ReplyDeskService {
       `;
       const runParams = [runId, q, dateStr, elapsedMs, success, items.length, errorMessage];
 
-      db.prepare(sqlRun).run(...runParams);
-
       if (isProduction()) {
         try {
           const writeRes = await this.d1Repo.executeWrite('reply_desk_query_runs', sqlRun, runParams);
           if (writeRes.rowsAffected === 0) {
             throw new Error('D1 query run write affected 0 rows');
           }
+          db.prepare(sqlRun).run(...runParams);
         } catch (d1Err: any) {
           console.error(`[ReplyDesk] Failed to write query run to D1: ${d1Err.message}`);
           throw new Error(`D1_PERSISTENCE_FAILED: Failed to record query run in D1: ${d1Err.message}`);
         }
+      } else {
+        db.prepare(sqlRun).run(...runParams);
       }
 
       for (const item of items) {
@@ -455,23 +456,20 @@ export class ReplyDeskService {
         ];
 
         try {
-          db.prepare(sqlDraft).run(...draftParams);
-          totalNewDrafts++;
-
           if (isProduction()) {
-            try {
-              const draftRes = await this.d1Repo.executeWrite('reply_desk_drafts', sqlDraft, draftParams);
-              if (draftRes.rowsAffected === 0) {
-                throw new Error('D1 draft write affected 0 rows');
-              }
-            } catch (err: any) {
-              console.error(`[ReplyDesk] Failed to write draft to D1: ${err.message}`);
-              throw new Error(`D1_PERSISTENCE_FAILED: Failed to record draft in D1: ${err.message}`);
+            const draftRes = await this.d1Repo.executeWrite('reply_desk_drafts', sqlDraft, draftParams);
+            if (draftRes.rowsAffected === 0) {
+              throw new Error('D1 draft write affected 0 rows');
             }
+            db.prepare(sqlDraft).run(...draftParams);
+          } else {
+            db.prepare(sqlDraft).run(...draftParams);
           }
+          totalNewDrafts++;
         } catch (draftErr: any) {
-          if (isProduction() && draftErr.message?.includes('D1_PERSISTENCE_FAILED')) {
-            throw draftErr;
+          if (isProduction()) {
+            console.error(`[ReplyDesk] Failed to persist draft: ${draftErr.message}`);
+            throw new Error(`D1_PERSISTENCE_FAILED: Failed to record draft in D1: ${draftErr.message}`);
           }
         }
       }

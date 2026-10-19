@@ -28,7 +28,7 @@ jobs:
       - name: Check Published Guides in D1 & Build Static Site
         id: build-guides
         run: |
-          npx tsx scripts/prepare-deploy-guides.mjs
+          node scripts/prepare-deploy-guides.mjs --allow-empty
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

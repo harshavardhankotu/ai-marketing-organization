@@ -1267,8 +1267,8 @@ apiRouter.get('/cron/status', async (c) => {
     success: true,
     data: {
       status,
-      cronExpression: '*/15 * * * *',
-      cadenceMinutes: 15,
+      cronExpression: '0 * * * *',
+      cadenceMinutes: 60,
       totalPings,
       lastObservedPing: row?.last_observed_ping || null,
       lastSuccessfulCycle: row?.last_successful_cycle || null,

@@ -3,19 +3,19 @@ import { ReplyDeskService } from '../../src/revenue/reply-desk.js';
 import { NextBestActionEngine } from '../../src/revenue/next-best-action-engine.js';
 import { OwnerDigestService } from '../../src/revenue/owner-digest.js';
 import { D1RevenueRepository } from '../../src/db/d1-revenue-repository.js';
-import { validateSiteIdentityFacts, resolveSiteIdentity } from '../../src/config/owner-env-intake.js';
+import { validateSiteIdentityFacts } from '../../src/config/owner-env-intake.js';
 import { apiRouter } from '../../src/routes/api.js';
 import { getDb } from '../../src/db/client.js';
 
-describe('Mission Automation: Discovery Persistence, Scheduling Parity & Identity Defaults', () => {
+describe('Mission Automation: Discovery Persistence, Scheduling Parity & Identity Safety', () => {
   const db = getDb();
   const d1Repo = D1RevenueRepository.getInstance();
   const originalEnv = { ...process.env };
 
   beforeEach(() => {
     try {
-      db.prepare(`DELETE FROM reply_desk_query_runs`).run();
-      db.prepare(`DELETE FROM reply_desk_drafts`).run();
+      db.prepare(`DELETE FROM reply_desk_query_runs WHERE id LIKE 'run_test_%' OR query LIKE '%dental clinic%' OR query LIKE '%test_mission%'`).run();
+      db.prepare(`DELETE FROM reply_desk_drafts WHERE id LIKE 'rdraft_%' AND (source_url LIKE '%test_mission%' OR source_url LIKE '%dental%')`).run();
       db.prepare(`DELETE FROM partner_offers WHERE organization_id LIKE 'org_test_%' OR id LIKE 'test_%'`).run();
       db.prepare(`DELETE FROM partners WHERE organization_id LIKE 'org_test_%' OR id LIKE 'test_%'`).run();
     } catch {}
@@ -24,8 +24,8 @@ describe('Mission Automation: Discovery Persistence, Scheduling Parity & Identit
   afterEach(() => {
     process.env = { ...originalEnv };
     try {
-      db.prepare(`DELETE FROM reply_desk_query_runs`).run();
-      db.prepare(`DELETE FROM reply_desk_drafts`).run();
+      db.prepare(`DELETE FROM reply_desk_query_runs WHERE id LIKE 'run_test_%' OR query LIKE '%dental clinic%' OR query LIKE '%test_mission%'`).run();
+      db.prepare(`DELETE FROM reply_desk_drafts WHERE id LIKE 'rdraft_%' AND (source_url LIKE '%test_mission%' OR source_url LIKE '%dental%')`).run();
       db.prepare(`DELETE FROM partner_offers WHERE organization_id LIKE 'org_test_%' OR id LIKE 'test_%'`).run();
       db.prepare(`DELETE FROM partners WHERE organization_id LIKE 'org_test_%' OR id LIKE 'test_%'`).run();
     } catch {}
@@ -187,15 +187,15 @@ describe('Mission Automation: Discovery Persistence, Scheduling Parity & Identit
     }
   });
 
-  it('4. /api/v1/cron/status reports */15 * * * * schedule and distinct pipeline metrics', async () => {
+  it('4. /api/v1/cron/status reports 0 * * * * schedule and distinct pipeline metrics', async () => {
     const req = new Request('http://localhost/cron/status', { method: 'GET' });
     const res = await apiRouter.fetch(req);
     expect(res.status).toBe(200);
 
     const json = await res.json() as any;
     expect(json.success).toBe(true);
-    expect(json.data.cronExpression).toBe('*/15 * * * *');
-    expect(json.data.cadenceMinutes).toBe(15);
+    expect(json.data.cronExpression).toBe('0 * * * *');
+    expect(json.data.cadenceMinutes).toBe(60);
 
     const metrics = json.data.metrics;
     expect(metrics).toBeDefined();
@@ -225,7 +225,7 @@ describe('Mission Automation: Discovery Persistence, Scheduling Parity & Identit
     expect(blocker2?.metric).toMatch(/idle cycles/);
   });
 
-  it('6. validateSiteIdentityFacts supports inferable organization defaults without breaking strict validation', () => {
+  it('6. validateSiteIdentityFacts strictly rejects missing facts and never returns or infers defaults', () => {
     delete process.env.PUBLIC_SITE_NAME;
     delete process.env.PUBLIC_AUTHOR_NAME;
     delete process.env.PUBLIC_CONTACT_EMAIL;
@@ -236,19 +236,13 @@ describe('Mission Automation: Discovery Persistence, Scheduling Parity & Identit
     expect(strictRes.missingFields).toContain('PUBLIC_SITE_NAME');
     expect(strictRes.missingFields).toContain('PUBLIC_AUTHOR_NAME');
     expect(strictRes.missingFields).toContain('PUBLIC_CONTACT_EMAIL');
+    expect(strictRes.facts).toBeUndefined();
 
-    // Inferable defaults succeed with organization identity and contact route
-    const inferableRes = validateSiteIdentityFacts(process.env, { allowInferableDefaults: true });
-    expect(inferableRes.valid).toBe(true);
-    expect(inferableRes.facts?.siteName).toBe('AI Marketing Organization');
-    expect(inferableRes.facts?.authorName).toBe('AI Marketing Organization');
-    expect(inferableRes.facts?.contactRoute).toBe('/offer#inquiry');
-    expect(inferableRes.facts?.contactEmail).toBeUndefined(); // never fabricates an unverified email address
-
-    // resolveSiteIdentity helper
-    const resolved = resolveSiteIdentity();
-    expect(resolved.siteName).toBe('AI Marketing Organization');
-    expect(resolved.contactRoute).toBe('/offer#inquiry');
+    // Passing empty env must strictly fail and NEVER return defaults
+    const emptyRes = validateSiteIdentityFacts({});
+    expect(emptyRes.valid).toBe(false);
+    expect(emptyRes.facts).toBeUndefined();
+    expect(emptyRes.missingFields.length).toBe(3);
   });
 
   it('7. prepareDeployGuides handles zero published guides as a skipped no-op when allowEmpty is true', async () => {
@@ -263,5 +257,29 @@ describe('Mission Automation: Discovery Persistence, Scheduling Parity & Identit
     const res = await prepareDeployGuides({ dryRun: true, mockGuides: [], allowEmpty: true });
     expect(res.publishedCount).toBe(0);
     expect(res.skipped).toBe(true);
+  });
+
+  it('8. ReplyDeskService in production fails closed with D1_PERSISTENCE_FAILED when D1 write fails', async () => {
+    process.env.NODE_ENV = 'production';
+    const replyDesk = ReplyDeskService.getInstance();
+
+    vi.spyOn(d1Repo, 'executeWrite').mockRejectedValue(new Error('Cloudflare D1 network timeout'));
+
+    const mockSearch = async () => [
+      {
+        title: 'Need help with missed patient calls in dental clinic whatsapp India',
+        snippet: 'How can our dental clinic avoid inquiry delay and handle missed calls on whatsapp outside hours?',
+        url: 'https://test_mission_d1_failure.in/q/99999',
+        date: '2026-10-19'
+      }
+    ];
+
+    await expect(
+      replyDesk.discoverAndDraftReplies('2026-10-19', mockSearch)
+    ).rejects.toThrow(/D1_PERSISTENCE_FAILED/);
+
+    // Verify local SQLite was NOT written because D1 failed first
+    const row = db.prepare('SELECT * FROM reply_desk_drafts WHERE source_url = ?').get('https://test_mission_d1_failure.in/q/99999');
+    expect(row).toBeUndefined();
   });
 });
