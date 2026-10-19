@@ -12,6 +12,8 @@
 
 import { getDb } from '../db/client.js';
 import { isProduction } from '../config/env.js';
+import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
+import { DirectCommercialOfferPage } from './direct-offer-page.js';
 
 export interface PublicRequestItem {
   title: string;
@@ -69,6 +71,13 @@ export const BLOCKED_DIRECTORY_DOMAINS = new Set([
   'quickenaccounting.com',
   'mybillbook.in'
 ]);
+
+export const DEFAULT_REPLY_DESK_QUERIES = [
+  'how to handle missed patient calls dental clinic whatsapp India',
+  'whatsapp appointment booking auto reply for salon clinic India',
+  'receptionist missing patient inquiries after hours clinic automation',
+  'dental clinic patient inquiry follow up system whatsapp'
+];
 
 export function assessPublicSignal(title: string, snippet: string, url: string): AssessedSignal {
   const lowerUrl = (url || '').toLowerCase();
@@ -231,6 +240,44 @@ export class ReplyDeskService {
     }
   }
 
+  private d1Repo = D1RevenueRepository.getInstance();
+
+  /**
+   * Syncs today's reply desk query runs from durable D1 into local SQLite on startup / cron wake.
+   */
+  public async syncFromD1Async(): Promise<void> {
+    if (!isProduction()) return;
+    try {
+      this.ensureTable();
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const rows = await this.d1Repo.query<any>(
+        'reply_desk_query_runs',
+        'SELECT * FROM reply_desk_query_runs WHERE run_date = ?',
+        [todayStr]
+      );
+      if (rows && rows.length > 0) {
+        const db = getDb();
+        const stmt = db.prepare(`
+          INSERT INTO reply_desk_query_runs (
+            id, query, run_date, provider, execution_time_ms, success, result_count, error_message, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO NOTHING
+        `);
+        for (const r of rows) {
+          try {
+            stmt.run(
+              r.id, r.query, r.run_date, r.provider || 'TAVILY',
+              r.execution_time_ms || 0, r.success ?? 1, r.result_count || 0,
+              r.error_message || null, r.created_at || new Date().toISOString()
+            );
+          } catch {}
+        }
+      }
+    } catch (err: any) {
+      console.warn(`[ReplyDesk] Failed to sync query runs from D1: ${err.message}`);
+    }
+  }
+
   /**
    * Checks the number of Tavily queries executed today (max 2 per day).
    */
@@ -242,6 +289,25 @@ export class ReplyDeskService {
   }
 
   /**
+   * Async check of queries run today, querying D1 first in production.
+   */
+  public async getQueriesRunTodayAsync(dateStr: string = new Date().toISOString().slice(0, 10)): Promise<number> {
+    if (isProduction()) {
+      try {
+        const row = await this.d1Repo.queryOne<{ count: number }>(
+          'reply_desk_query_runs',
+          'SELECT COUNT(*) as count FROM reply_desk_query_runs WHERE run_date = ?',
+          [dateStr]
+        );
+        if (row && typeof row.count === 'number') {
+          return row.count;
+        }
+      } catch {}
+    }
+    return this.getQueriesRunToday(dateStr);
+  }
+
+  /**
    * Runs the reply desk discovery process with strict 2 queries/day cap.
    * Accepts customSearchFn for hermetic testing.
    */
@@ -250,7 +316,10 @@ export class ReplyDeskService {
     customSearchFn?: (query: string) => Promise<PublicRequestItem[]>
   ): Promise<{ queriesRun: number; newDraftsCount: number; message: string }> {
     this.ensureTable();
-    const currentRuns = this.getQueriesRunToday(dateStr);
+    if (isProduction()) {
+      await this.syncFromD1Async();
+    }
+    const currentRuns = await this.getQueriesRunTodayAsync(dateStr);
     if (currentRuns >= 2) {
       return {
         queriesRun: 0,
@@ -262,23 +331,25 @@ export class ReplyDeskService {
     const availableQueries = 2 - currentRuns;
     const db = getDb();
 
-    // Step 5b: Rotate queries, do not repeat within 7 days
+    // Step 5b: Rotate queries based on durable run history, avoiding re-running the same query within 7 days
     let queries: string[] = [];
     try {
-      const queryRows = db.prepare(`
-        SELECT query FROM reply_desk_queries
-        WHERE last_run_at IS NULL OR last_run_at < datetime('now', '-7 days')
-        ORDER BY last_run_at ASC
-        LIMIT ?
-      `).all(availableQueries) as any[];
-      queries = queryRows.map(r => r.query);
+      let recentQueries: string[] = [];
+      if (isProduction()) {
+        const rows = await this.d1Repo.query<{ query: string }>(
+          'reply_desk_query_runs',
+          "SELECT DISTINCT query FROM reply_desk_query_runs WHERE created_at >= datetime('now', '-7 days')"
+        );
+        recentQueries = (rows || []).map(r => r.query);
+      } else {
+        const rows = db.prepare(`SELECT DISTINCT query FROM reply_desk_query_runs WHERE created_at >= datetime('now', '-7 days')`).all() as any[];
+        recentQueries = rows.map(r => r.query);
+      }
+      queries = DEFAULT_REPLY_DESK_QUERIES.filter(q => !recentQueries.includes(q)).slice(0, availableQueries);
     } catch {}
 
     if (queries.length === 0) {
-      queries = [
-        'how to handle missed patient calls dental clinic whatsapp India',
-        'whatsapp appointment booking auto reply for salon clinic India'
-      ].slice(0, availableQueries);
+      queries = DEFAULT_REPLY_DESK_QUERIES.slice(0, availableQueries);
     }
 
     let totalNewDrafts = 0;
@@ -330,16 +401,26 @@ export class ReplyDeskService {
 
       const elapsedMs = Date.now() - startMs;
 
-      // Record query run with telemetry
-      db.prepare(`
+      // Record query run with telemetry locally and to Cloudflare D1
+      const sqlRun = `
         INSERT INTO reply_desk_query_runs (id, query, run_date, provider, execution_time_ms, success, result_count, error_message)
         VALUES (?, ?, ?, 'TAVILY', ?, ?, ?, ?)
-      `).run(runId, q, dateStr, elapsedMs, success, items.length, errorMessage);
+      `;
+      const runParams = [runId, q, dateStr, elapsedMs, success, items.length, errorMessage];
 
-      // Step 5b: Mark query last_run_at
-      try {
-        db.prepare(`UPDATE reply_desk_queries SET last_run_at = datetime('now') WHERE query = ?`).run(q);
-      } catch {}
+      db.prepare(sqlRun).run(...runParams);
+
+      if (isProduction()) {
+        try {
+          const writeRes = await this.d1Repo.executeWrite('reply_desk_query_runs', sqlRun, runParams);
+          if (writeRes.rowsAffected === 0) {
+            throw new Error('D1 query run write affected 0 rows');
+          }
+        } catch (d1Err: any) {
+          console.error(`[ReplyDesk] Failed to write query run to D1: ${d1Err.message}`);
+          throw new Error(`D1_PERSISTENCE_FAILED: Failed to record query run in D1: ${d1Err.message}`);
+        }
+      }
 
       for (const item of items) {
         // Enforce intent assessment and reject directory / listicle / unbacked content
@@ -352,49 +433,80 @@ export class ReplyDeskService {
         const draftAnswer = this.composeDraftAnswer(item.title, item.snippet);
         const draftId = `rdraft_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
+        const sqlDraft = `
+          INSERT INTO reply_desk_drafts (
+            id, source_url, title, snippet, draft_answer, status,
+            intent_class, qualification_status, qualification_reason, next_permitted_action, query_date, is_test
+          )
+          VALUES (?, ?, ?, ?, ?, 'DRAFT', ?, 'QUALIFIED', ?, 'OWNER_REVIEW_AND_MANUAL_POST', ?, 0)
+          ON CONFLICT(source_url) DO UPDATE SET
+            title = excluded.title,
+            snippet = excluded.snippet,
+            draft_answer = excluded.draft_answer,
+            intent_class = excluded.intent_class,
+            qualification_status = excluded.qualification_status,
+            qualification_reason = excluded.qualification_reason,
+            query_date = excluded.query_date,
+            is_test = excluded.is_test
+        `;
+        const draftParams = [
+          draftId, item.url, item.title, item.snippet, draftAnswer,
+          assessment.intentClass, assessment.reason, dateStr
+        ];
+
         try {
-          db.prepare(`
-            INSERT INTO reply_desk_drafts (
-              id, source_url, title, snippet, draft_answer, status,
-              intent_class, qualification_status, qualification_reason, next_permitted_action, query_date
-            )
-            VALUES (?, ?, ?, ?, ?, 'DRAFT', ?, 'QUALIFIED', ?, 'OWNER_REVIEW_AND_MANUAL_POST', ?)
-            ON CONFLICT(source_url) DO UPDATE SET
-              title = excluded.title,
-              snippet = excluded.snippet,
-              draft_answer = excluded.draft_answer,
-              intent_class = excluded.intent_class,
-              qualification_status = excluded.qualification_status,
-              qualification_reason = excluded.qualification_reason,
-              query_date = excluded.query_date
-          `).run(
-            draftId, item.url, item.title, item.snippet, draftAnswer,
-            assessment.intentClass, assessment.reason, dateStr
-          );
+          db.prepare(sqlDraft).run(...draftParams);
           totalNewDrafts++;
-        } catch {}
+
+          if (isProduction()) {
+            try {
+              const draftRes = await this.d1Repo.executeWrite('reply_desk_drafts', sqlDraft, draftParams);
+              if (draftRes.rowsAffected === 0) {
+                throw new Error('D1 draft write affected 0 rows');
+              }
+            } catch (err: any) {
+              console.error(`[ReplyDesk] Failed to write draft to D1: ${err.message}`);
+              throw new Error(`D1_PERSISTENCE_FAILED: Failed to record draft in D1: ${err.message}`);
+            }
+          }
+        } catch (draftErr: any) {
+          if (isProduction() && draftErr.message?.includes('D1_PERSISTENCE_FAILED')) {
+            throw draftErr;
+          }
+        }
       }
     }
 
-    // Step 5f: If a week gives fewer than 3 qualified signals, write an OUTCOME row and change queries
+    // Step 5f: If a week gives fewer than 3 qualified signals, write an OUTCOME row idempotently
     try {
       const pastWeekQualified = db.prepare(`
         SELECT COUNT(*) as count FROM reply_desk_drafts
         WHERE qualification_status = 'QUALIFIED'
+          AND is_test = 0
           AND created_at >= datetime('now', '-7 days')
       `).get() as any;
       if (pastWeekQualified && pastWeekQualified.count < 3) {
-        db.prepare(`
-          INSERT INTO learning_records (
+        const sqlLearning = `
+          INSERT OR REPLACE INTO learning_records (
             id, organization_id, cycle_id, action_type, hypothesis, rationale, outcome,
             metric_before, metric_after, delta, impact_classification, created_at
-          ) VALUES (?, 'org_owner_primary', 'cron_reply_desk', 'REPLY_DESK_QUERY_ROTATION',
+          ) VALUES (
+            'lrn_reply_desk_zero_buyer_signals',
+            'org_owner_primary', 'cron_reply_desk', 'REPLY_DESK_QUERY_ROTATION',
             'Weekly qualified intent signals yield >= 3 drafts',
             'Evaluated past 7-day reply desk yield',
             'LESS_THAN_3_QUALIFIED_SIGNALS: Recorded ' || ? || ' qualified drafts; rotating query pool',
             3, ?, ? - 3, 'NEUTRAL', datetime('now')
           )
-        `).run(`lr_reply_desk_${Date.now()}`, pastWeekQualified.count, pastWeekQualified.count, pastWeekQualified.count);
+        `;
+        const lrParams = [pastWeekQualified.count, pastWeekQualified.count, pastWeekQualified.count];
+        db.prepare(sqlLearning).run(...lrParams);
+
+        if (isProduction()) {
+          await this.d1Repo.executeWrite('learning_records', sqlLearning, lrParams).catch((err: any) => {
+            console.error(`[ReplyDesk] Failed to record learning outcome to D1: ${err.message}`);
+          });
+        }
       }
     } catch {}
 
@@ -409,12 +521,20 @@ export class ReplyDeskService {
    * Deterministically crafts a short answer strictly using owner/OWN_OFFER.md specifications.
    * Never posts externally.
    */
-  private composeDraftAnswer(title: string, snippet: string): string {
+  public composeDraftAnswer(title: string, snippet: string): string {
+    const isAttested = DirectCommercialOfferPage.isDirectOfferAttested();
+    if (isAttested) {
+      return (
+        `[INTERNAL OWNER DRAFT] Inquiry regarding operational lead response: ` +
+        `Direct commercial solution for after-hours business inquiries (automated WhatsApp qualification bot). ` +
+        `Deliverables and SLAs defined in approved commercial terms. For owner review and manual posting only.`
+      );
+    }
     return (
-      `For inquiries regarding after-hours lead conversion: ` +
-      `Local businesses can implement an automated WhatsApp qualification bot that responds in under 2 minutes, ` +
-      `qualifies inquiries across predefined FAQs, and routes high-intent appointments directly into calendar schedules. ` +
-      `This prevents leads from going cold outside business hours with ₹0 additional advertising spend.`
+      `[INTERNAL EVIDENCE SUMMARY] Observed buyer intent inquiry: "${title}". ` +
+      `Context: ${snippet.slice(0, 200)}. ` +
+      `Solution category: automated WhatsApp qualification bot. ` +
+      `Commercial offer unattested. Internal intelligence record for owner review only. No external claims or pricing promised.`
     );
   }
 
@@ -430,10 +550,36 @@ export class ReplyDeskService {
              qualification_status as qualificationStatus, qualification_reason as qualificationReason,
              next_permitted_action as nextPermittedAction, created_at as createdAt
       FROM reply_desk_drafts
-      WHERE status = 'DRAFT'
+      WHERE status = 'DRAFT' AND is_test = 0
       ORDER BY created_at DESC
       LIMIT ?
     `).all(limit) as ReplyDraft[];
     return rows;
+  }
+
+  /**
+   * Returns up to 3 recent reply drafts from D1 in production, falling back to local SQLite.
+   */
+  public async getRecentDraftsAsync(limit: number = 3): Promise<ReplyDraft[]> {
+    if (isProduction()) {
+      try {
+        const rows = await this.d1Repo.query<any>(
+          'reply_desk_drafts',
+          `SELECT id, source_url as sourceUrl, title as requestTitle, snippet as requestSnippet,
+                  draft_answer as draftAnswer, status, intent_class as intentClass,
+                  qualification_status as qualificationStatus, qualification_reason as qualificationReason,
+                  next_permitted_action as nextPermittedAction, created_at as createdAt
+           FROM reply_desk_drafts
+           WHERE status = 'DRAFT' AND is_test = 0
+           ORDER BY created_at DESC
+           LIMIT ?`,
+          [limit]
+        );
+        if (rows && rows.length > 0) {
+          return rows as ReplyDraft[];
+        }
+      } catch {}
+    }
+    return this.getRecentDrafts(limit);
   }
 }

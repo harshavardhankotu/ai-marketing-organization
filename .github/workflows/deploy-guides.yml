@@ -26,6 +26,7 @@ jobs:
         run: npm ci
 
       - name: Check Published Guides in D1 & Build Static Site
+        id: build-guides
         run: |
           npx tsx scripts/prepare-deploy-guides.mjs
         env:
@@ -43,4 +44,4 @@ jobs:
           projectId: ai-marketing-organization
         env:
           HAS_FIREBASE_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-        if: env.HAS_FIREBASE_KEY != ''
+        if: steps.build-guides.outputs.skipped != 'true' && env.HAS_FIREBASE_KEY != ''

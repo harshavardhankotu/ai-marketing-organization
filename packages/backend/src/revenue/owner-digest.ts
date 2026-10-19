@@ -279,17 +279,24 @@ export class OwnerDigestService {
 
     // 2. Idle cycle share
     let idleCycleShare = 0;
+    let idleMetricText = '0% idle cycles';
     try {
-      const totalCyclesRow = db.prepare(`SELECT COUNT(*) as count FROM autonomous_cycles`).get() as any;
+      const totalCyclesRow = db.prepare(`SELECT COUNT(*) as count FROM autonomous_cycle_log`).get() as any;
       const totalCycles = Number(totalCyclesRow?.count || 0);
-      const idleCyclesRow = db.prepare(`SELECT COUNT(*) as count FROM autonomous_cycles WHERE action_classification = 'NO_ACTION' OR action_classification = 'INTERNAL_AUTOMATION'`).get() as any;
+      const idleCyclesRow = db.prepare(`SELECT COUNT(*) as count FROM autonomous_cycle_log WHERE actions_taken = 0 OR summary_json LIKE '%"terminalClassification":"IDLE"%'`).get() as any;
       const idleCycles = Number(idleCyclesRow?.count || 0);
-      idleCycleShare = totalCycles > 0 ? Math.round((idleCycles / totalCycles) * 100) : 0;
+      if (totalCycles === 0) {
+        idleCycleShare = 100;
+        idleMetricText = '100% idle cycles (0 cycles executed)';
+      } else {
+        idleCycleShare = Math.round((idleCycles / totalCycles) * 100);
+        idleMetricText = `${idleCycleShare}% idle cycles (${idleCycles}/${totalCycles} cycles)`;
+      }
     } catch {}
     topPainPoints.push({
       rank: 2,
       title: 'Idle Autonomous Cycle Share',
-      metric: `${idleCycleShare}% idle cycles`,
+      metric: idleMetricText,
       ownerAction: 'AUTOMATED: pending (cron wakes every 15 min, rotates discovery queries)'
     });
 

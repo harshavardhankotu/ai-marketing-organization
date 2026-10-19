@@ -12,7 +12,13 @@ export interface OwnerEnvFacts {
 export interface SiteIdentityFacts {
   siteName: string;
   authorName: string;
-  contactEmail: string;
+  contactEmail?: string;
+  contactRoute?: string;
+  inferredDefaults?: boolean;
+}
+
+export interface SiteIdentityValidationOptions {
+  allowInferableDefaults?: boolean;
 }
 
 export interface SiteIdentityValidationResult {
@@ -137,36 +143,64 @@ export function validateOwnerEnvFacts(env: Record<string, string | undefined> = 
 /**
  * Validates the 3 site identity environment variables (PUBLIC_SITE_NAME, PUBLIC_AUTHOR_NAME, PUBLIC_CONTACT_EMAIL).
  * Unlocks the content lane and direct offer pages without waiting for Amazon Associates facts.
+ * When options.allowInferableDefaults is true, safely uses verified organization defaults:
+ * - Organization name 'AI Marketing Organization' as default publisher
+ * - Inquiry endpoint '/offer#inquiry' as default customer contact route (never invents email)
  */
-export function validateSiteIdentityFacts(env: Record<string, string | undefined> = process.env): SiteIdentityValidationResult {
+export function validateSiteIdentityFacts(
+  env: Record<string, string | undefined> = process.env,
+  options?: SiteIdentityValidationOptions
+): SiteIdentityValidationResult {
   const missingFields: string[] = [];
   const invalidFields: { field: string; reason: string }[] = [];
 
-  const siteName = env.PUBLIC_SITE_NAME?.trim();
-  const authorName = env.PUBLIC_AUTHOR_NAME?.trim();
-  const contactEmail = env.PUBLIC_CONTACT_EMAIL?.trim();
+  const allowDefaults = options?.allowInferableDefaults === true;
+
+  let siteName = env.PUBLIC_SITE_NAME?.trim();
+  let authorName = env.PUBLIC_AUTHOR_NAME?.trim();
+  let contactEmail = env.PUBLIC_CONTACT_EMAIL?.trim();
+  let contactRoute: string | undefined = undefined;
+  let inferredDefaults = false;
 
   // 1. PUBLIC_SITE_NAME
   if (!siteName) {
-    missingFields.push('PUBLIC_SITE_NAME');
+    if (allowDefaults) {
+      siteName = 'AI Marketing Organization';
+      inferredDefaults = true;
+    } else {
+      missingFields.push('PUBLIC_SITE_NAME');
+    }
   } else if (PLACEHOLDER_PATTERN.test(siteName)) {
     invalidFields.push({ field: 'PUBLIC_SITE_NAME', reason: 'Contains placeholder or bracketed text' });
   }
 
   // 2. PUBLIC_AUTHOR_NAME
   if (!authorName) {
-    missingFields.push('PUBLIC_AUTHOR_NAME');
+    if (allowDefaults) {
+      authorName = 'AI Marketing Organization';
+      inferredDefaults = true;
+    } else {
+      missingFields.push('PUBLIC_AUTHOR_NAME');
+    }
   } else if (PLACEHOLDER_PATTERN.test(authorName)) {
     invalidFields.push({ field: 'PUBLIC_AUTHOR_NAME', reason: 'Contains placeholder or bracketed text' });
   }
 
-  // 3. PUBLIC_CONTACT_EMAIL
+  // 3. PUBLIC_CONTACT_EMAIL / CONTACT ROUTE
   if (!contactEmail) {
-    missingFields.push('PUBLIC_CONTACT_EMAIL');
+    if (allowDefaults) {
+      // Functional inquiry form on /offer is the verified customer contact route — never invent fake email
+      contactRoute = '/offer#inquiry';
+      inferredDefaults = true;
+    } else {
+      missingFields.push('PUBLIC_CONTACT_EMAIL');
+    }
   } else if (PLACEHOLDER_PATTERN.test(contactEmail)) {
     invalidFields.push({ field: 'PUBLIC_CONTACT_EMAIL', reason: 'Contains placeholder or bracketed text' });
   } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactEmail)) {
     invalidFields.push({ field: 'PUBLIC_CONTACT_EMAIL', reason: 'Invalid email address format' });
+  } else {
+    contactRoute = `mailto:${contactEmail}`;
   }
 
   if (missingFields.length > 0 || invalidFields.length > 0) {
@@ -182,11 +216,21 @@ export function validateSiteIdentityFacts(env: Record<string, string | undefined
     facts: {
       siteName: siteName!,
       authorName: authorName!,
-      contactEmail: contactEmail!
+      contactEmail: contactEmail || undefined,
+      contactRoute: contactRoute || '/offer#inquiry',
+      inferredDefaults
     },
     missingFields: [],
     invalidFields: []
   };
+}
+
+/**
+ * Resolves the effective site identity, applying safe organization defaults if env vars are omitted.
+ */
+export function resolveSiteIdentity(env: Record<string, string | undefined> = process.env): SiteIdentityFacts {
+  const result = validateSiteIdentityFacts(env, { allowInferableDefaults: true });
+  return result.facts!;
 }
 
 /**

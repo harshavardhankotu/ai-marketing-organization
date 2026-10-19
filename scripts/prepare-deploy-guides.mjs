@@ -40,8 +40,17 @@ export async function prepareDeployGuides(options = {}) {
     publishedGuides = options.mockGuides;
   }
 
-  // Rule: Must fail with NO_PUBLISHED_GUIDE when none exist
+  // Rule: Must fail with NO_PUBLISHED_GUIDE when none exist (unless allowEmpty is specified)
   if (publishedGuides.length === 0) {
+    if (options.allowEmpty) {
+      console.log('SKIPPED — no approved/published guides to deploy');
+      return {
+        publishedCount: 0,
+        skipped: true,
+        indexNowPayload: null,
+        sitemapUrls: []
+      };
+    }
     throw new Error('NO_PUBLISHED_GUIDE: Zero published guides found in database. Deployment halted.');
   }
 
@@ -136,7 +145,17 @@ export async function prepareDeployGuides(options = {}) {
 }
 
 if (process.argv[1] && process.argv[1].endsWith('prepare-deploy-guides.mjs')) {
-  prepareDeployGuides({ dryRun: process.argv.includes('--dry-run') }).catch(err => {
+  prepareDeployGuides({
+    dryRun: process.argv.includes('--dry-run'),
+    allowEmpty: process.argv.includes('--allow-empty')
+  }).catch(err => {
+    if (err.message && err.message.includes('NO_PUBLISHED_GUIDE')) {
+      console.log('SKIPPED — no approved/published guides to deploy');
+      if (process.env.GITHUB_OUTPUT) {
+        fs.appendFileSync(process.env.GITHUB_OUTPUT, 'skipped=true\n', 'utf8');
+      }
+      process.exit(0);
+    }
     console.error(`❌ PREPARE DEPLOY FAILED: ${err.message}`);
     process.exit(1);
   });

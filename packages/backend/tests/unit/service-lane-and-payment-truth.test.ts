@@ -15,7 +15,7 @@ describe('Part D: Service Lane, 4-State Truth & Reply Desk', () => {
       db.prepare(`DELETE FROM manual_upi_claims WHERE utr LIKE 'utr_test_%'`).run();
       db.prepare(`DELETE FROM razorpay_export_records WHERE payment_id LIKE 'pay_test_%'`).run();
       db.prepare(`DELETE FROM reply_desk_query_runs`).run();
-      db.prepare(`DELETE FROM reply_desk_drafts WHERE source_url LIKE '%test%'`).run();
+      db.prepare(`DELETE FROM reply_desk_drafts WHERE source_url LIKE '%test%' OR source_url LIKE '%example%'`).run();
     } catch {}
   };
 
