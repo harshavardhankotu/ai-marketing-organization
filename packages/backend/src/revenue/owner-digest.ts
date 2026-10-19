@@ -209,7 +209,8 @@ export class OwnerDigestService {
       const inqRows = db.prepare(`
         SELECT id, prospect_owner_name, phone, prospect_phone, prospect_business_name, notes, status, is_test, created_at
         FROM platform_prospects
-        WHERE source = 'OFFER_PAGE_INQUIRY' OR discovery_source = 'DIRECT_INBOUND'
+        WHERE source IN ('OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR')
+           OR discovery_source IN ('DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR')
         ORDER BY created_at DESC
         LIMIT 10
       `).all() as any[];
@@ -223,7 +224,7 @@ export class OwnerDigestService {
         const replyOnWhatsAppUrl = formattedPhone ? `https://wa.me/${formattedPhone}?text=${encodeURIComponent(draft)}` : '';
         const createdAtTime = new Date(r.created_at).getTime();
         const ageHours = Math.round((Date.now() - createdAtTime) / (1000 * 60 * 60));
-        const needsReminder = ageHours >= 24 && r.status === 'QUALIFIED';
+        const needsReminder = ageHours >= 24 && (r.status === 'QUALIFIED' || r.status === 'INBOUND_REQUEST');
 
         return {
           id: r.id,
@@ -306,7 +307,7 @@ export class OwnerDigestService {
     });
 
     // 3. Unanswered inquiries
-    const unansweredCount = inquiries.filter(i => i.status === 'QUALIFIED').length;
+    const unansweredCount = inquiries.filter(i => i.status === 'QUALIFIED' || i.status === 'INBOUND_REQUEST').length;
     const reminderCount = inquiries.filter(i => i.needsReminder).length;
     topPainPoints.push({
       rank: 3,
@@ -499,7 +500,8 @@ export class OwnerDigestService {
         'platform_prospects',
         `SELECT id, prospect_owner_name, phone, prospect_phone, prospect_business_name, notes, status, is_test, created_at
          FROM platform_prospects
-         WHERE source = 'OFFER_PAGE_INQUIRY' OR discovery_source = 'DIRECT_INBOUND'
+         WHERE source IN ('OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR')
+            OR discovery_source IN ('DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR')
          ORDER BY created_at DESC
          LIMIT 10`
       );
@@ -513,7 +515,7 @@ export class OwnerDigestService {
         const replyOnWhatsAppUrl = formattedPhone ? `https://wa.me/${formattedPhone}?text=${encodeURIComponent(draft)}` : '';
         const createdAtTime = new Date(r.created_at).getTime();
         const ageHours = Math.round((Date.now() - createdAtTime) / (1000 * 60 * 60));
-        const needsReminder = ageHours >= 24 && r.status === 'QUALIFIED';
+        const needsReminder = ageHours >= 24 && (r.status === 'QUALIFIED' || r.status === 'INBOUND_REQUEST');
 
         return {
           id: r.id,
@@ -610,7 +612,7 @@ export class OwnerDigestService {
     });
 
     // 3. Unanswered inquiries
-    const unansweredCount = inquiries.filter(i => i.status === 'QUALIFIED').length;
+    const unansweredCount = inquiries.filter(i => i.status === 'QUALIFIED' || i.status === 'INBOUND_REQUEST').length;
     const reminderCount = inquiries.filter(i => i.needsReminder).length;
     topPainPoints.push({
       rank: 3,

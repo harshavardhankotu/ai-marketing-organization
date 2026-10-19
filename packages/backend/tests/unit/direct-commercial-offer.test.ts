@@ -265,7 +265,23 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
       });
 
       expect(html).toContain('href="/offer"');
-      expect(html).toContain('View Commercial Offer &amp; Pricing');
+      expect(html).toContain('View Technical Overview');
+
+      // When attested by owner, links to commercial pricing
+      const computedHash = DirectCommercialOfferPage.computeOwnOfferHash();
+      if (computedHash) {
+        process.env.OWN_OFFER_CONFIRMED = 'true';
+        process.env.DIRECT_OFFER_TERMS_SHA256 = computedHash;
+        const attestedHtml = calc.renderCalculatorHtml({
+          siteName: 'SupplySpecs India',
+          siteUrl: 'https://supplyspecs.in',
+          contactEmail: 'contact@supplyspecs.in'
+        });
+        expect(attestedHtml).toContain('href="/offer"');
+        expect(attestedHtml).toContain('View Commercial Offer &amp; Pricing');
+        delete process.env.OWN_OFFER_CONFIRMED;
+        delete process.env.DIRECT_OFFER_TERMS_SHA256;
+      }
     });
   });
 });

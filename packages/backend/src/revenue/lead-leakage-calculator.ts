@@ -13,6 +13,7 @@
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { getDb } from '../db/client.js';
 import { isProduction } from '../config/env.js';
+import { DirectCommercialOfferPage } from './direct-offer-page.js';
 
 export interface LeadLeakageInput {
   monthlyInquiries: number;
@@ -275,15 +276,19 @@ export class LeadLeakageCalculator {
   /**
    * Generates a self-contained, mobile-responsive standalone HTML page.
    */
-  public renderCalculatorHtml(siteConfig: { siteName: string; siteUrl: string; contactEmail: string }): string {
+  public renderCalculatorHtml(siteConfig: { siteName: string; siteUrl: string; contactEmail?: string | null }, customOfferPath?: string): string {
+    const isAttested = DirectCommercialOfferPage.isDirectOfferAttested(customOfferPath);
+    const siteName = (siteConfig.siteName || '').trim() || 'AI Marketing Organization';
+    const siteUrl = (siteConfig.siteUrl || '').trim() || 'https://ai-marketing-organization.onrender.com';
+    const contactEmail = siteConfig.contactEmail ? siteConfig.contactEmail.trim() : null;
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Inbound Lead Leakage Calculator | ${siteConfig.siteName}</title>
+  <title>Inbound Lead Leakage Calculator | ${siteName}</title>
   <meta name="description" content="Free audit tool for local businesses in India: Estimate potential inquiry loss from after-hours response delays. 100% free, private, no signup required.">
-  <link rel="canonical" href="${siteConfig.siteUrl}/tools/lead-leakage-calculator">
+  <link rel="canonical" href="${siteUrl}/tools/lead-leakage-calculator">
   <meta name="robots" content="index, follow">
   <style>
     :root { color-scheme: dark; --bg: #090d16; --card: #111827; --text: #e2e8f0; --accent: #06b6d4; --border: #1e293b; --muted: #94a3b8; }
@@ -329,7 +334,7 @@ export class LeadLeakageCalculator {
 
     <div class="card">
       <div style="text-align: center; margin-bottom: 1.25rem; color: #38bdf8; font-size: 0.88rem; font-weight: 600;">
-        Interactive Audit &bull; Results: Illustrative, from your inputs
+        Interactive Audit &bull; Results: Illustrative, from your inputs (Theoretical Estimate Only)
       </div>
 
       <div class="input-group">
@@ -398,17 +403,30 @@ export class LeadLeakageCalculator {
         </ul>
       </div>
 
-      <!-- Direct Commercial Offer Link (Part E.4) -->
+      <!-- Direct Commercial Offer / Technical Overview Link -->
+      ${isAttested ? `
       <div style="background: linear-gradient(135deg, rgba(6, 182, 212, 0.12) 0%, rgba(30, 41, 59, 0.8) 100%); border: 1px solid rgba(6, 182, 212, 0.4); border-radius: 12px; padding: 1.5rem; margin-top: 1.5rem; text-align: center;">
-        <h3 style="font-size: 1.25rem; color: #fff; margin-bottom: 0.5rem;">Stop Inquiry Leakage with Automated 2-Minute Triage</h3>
+        <h3 style="font-size: 1.25rem; color: #fff; margin-bottom: 0.5rem;">Stop Inquiry Leakage with Automated Inbound Lead Triage</h3>
         <p style="color: var(--muted); font-size: 0.92rem; margin-bottom: 1.25rem; max-width: 600px; margin-left: auto; margin-right: auto;">Deploy our complete AI Inbound Lead Conversion System with WhatsApp &amp; Google Business Profile integration in 5 business days.</p>
         <a href="/offer" class="btn" style="display: inline-block; width: auto; padding: 0.75rem 2rem;">View Commercial Offer &amp; Pricing (₹15,000 Setup) &rarr;</a>
       </div>
+      ` : `
+      <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; margin-top: 1.5rem; text-align: center;">
+        <h3 style="font-size: 1.25rem; color: #fff; margin-bottom: 0.5rem;">Explore Inbound Lead Triage Architecture</h3>
+        <p style="color: var(--muted); font-size: 0.92rem; margin-bottom: 1.25rem; max-width: 600px; margin-left: auto; margin-right: auto;">Review our technical inquiry triage and response-flow architecture for local service businesses in India.</p>
+        <a href="/offer" class="btn" style="display: inline-block; width: auto; padding: 0.75rem 2rem;">View Technical Overview &rarr;</a>
+      </div>
+      `}
     </div>
 
     <div class="cta-card">
-      <h2>Want to see how automated 2-minute triage eliminates after-hours delay?</h2>
+      ${isAttested ? `
+      <h2>Want to see how automated lead triage eliminates response delay?</h2>
       <p style="color: var(--muted); margin-bottom: 1.25rem; font-size: 0.95rem;">Request a free, private 10-minute architecture review for your business. We will show you exactly how automated WhatsApp &amp; Google lead qualification works with zero advertising spend.</p>
+      ` : `
+      <h2>Request a Manual Inquiry-Flow Review</h2>
+      <p style="color: var(--muted); margin-bottom: 1.25rem; font-size: 0.95rem;">Request a free, confidential 10-minute inquiry-flow review for your business. We will manually evaluate your intake response flow and show you how structured triage reduces response delay without advertising spend.</p>
+      `}
 
       <form id="auditForm" onsubmit="handleFormSubmit(event)">
         <div class="form-row">
@@ -436,7 +454,7 @@ export class LeadLeakageCalculator {
         <div style="margin-bottom: 1.25rem;">
           <label style="font-weight: 400; font-size: 0.85rem; color: #cbd5e1; display: flex; align-items: flex-start; gap: 0.5rem; cursor: pointer;">
             <input type="checkbox" id="consentBox" required style="margin-top: 0.25rem;">
-            <span>I agree to receive a one-time architecture review message from ${siteConfig.siteName} regarding automated inquiry conversion. I understand my contact details will be used solely for this review under the DPDP Act 2023.</span>
+            <span>I agree to receive a one-time architecture review message from ${siteName} regarding automated inquiry conversion. I understand my contact details will be used solely for this review under the DPDP Act 2023.</span>
           </label>
         </div>
 
@@ -446,8 +464,8 @@ export class LeadLeakageCalculator {
     </div>
 
     <footer>
-      <p>&copy; ${new Date().getFullYear()} ${siteConfig.siteName}. All rights reserved.</p>
-      <p style="margin-top: 0.5rem;"><a href="/privacy">Privacy Policy</a> &bull; <a href="/terms">Terms</a> &bull; <a href="mailto:${siteConfig.contactEmail}">${siteConfig.contactEmail}</a></p>
+      <p>&copy; ${new Date().getFullYear()} ${siteName}. All rights reserved.</p>
+      <p style="margin-top: 0.5rem;"><a href="/privacy">Privacy Policy</a> &bull; <a href="/terms">Terms</a>${contactEmail ? ` &bull; <a href="mailto:${contactEmail}">${contactEmail}</a>` : ''}</p>
     </footer>
   </div>
 

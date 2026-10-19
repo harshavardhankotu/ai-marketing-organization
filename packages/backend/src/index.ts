@@ -146,7 +146,7 @@ app.get('/tools/lead-leakage-calculator', async (c) => {
   const { LeadLeakageCalculator } = await import('./revenue/lead-leakage-calculator.js');
   const siteName = (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
   const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').trim();
-  const contactEmail = (process.env.PUBLIC_CONTACT_EMAIL || 'contact@aimarketing.org').trim();
+  const contactEmail = process.env.PUBLIC_CONTACT_EMAIL ? process.env.PUBLIC_CONTACT_EMAIL.trim() : undefined;
   const html = LeadLeakageCalculator.getInstance().renderCalculatorHtml({ siteName, siteUrl, contactEmail });
   return c.html(html);
 });
@@ -163,7 +163,7 @@ app.get('/offer', async (c) => {
   const { DirectCommercialOfferPage } = await import('./revenue/direct-offer-page.js');
   const siteName = (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
   const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').trim();
-  const contactEmail = (process.env.PUBLIC_CONTACT_EMAIL || 'contact@aimarketing.org').trim();
+  const contactEmail = process.env.PUBLIC_CONTACT_EMAIL ? process.env.PUBLIC_CONTACT_EMAIL.trim() : undefined;
   const html = DirectCommercialOfferPage.getInstance().renderOfferHtml({ siteName, siteUrl, contactEmail });
   return c.html(html);
 });

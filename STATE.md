@@ -18,6 +18,10 @@
 - Production Commit Hash: `60c569e208d34abd878ca59becfb8adaa2a312cc`
 - Feature Branch: `chore/migration-atomicity-and-inquiry-tests`
 - Render Production Deploy: `dep-dbaermoae00c739mft90` (Live with 60c569e)
+- Branch Local Verification: 106 unique test files (351 suites), 907 passed tests, 0 failed (100% PASS, out.json)
+- Acquisition Page Gating: Lead leakage calculator gated via DirectCommercialOfferPage.isDirectOfferAttested(); unconfirmed pricing (₹15,000), 5-day delivery claim, and 2-minute SLA removed in unattested mode.
+- Inbound Inquiries Wired: INBOUND_LEAKAGE_CALCULATOR inquiries surfaced in /owner/today and OwnerDigestService.
+- Pilot Delivery Specification: Created owner/PILOT_DELIVERY_SPEC.md for first paid Indian SMB pilot (dental clinic) with 100% free owner tools.
 
 ## 3. Open P1 Mistake Items
 - Total Open P1 Mistakes: 0
@@ -72,4 +76,4 @@
 - Cash Received / Payout: ₹0
 
 ## 6. Single Next Action
-- Owner action required: Review `owner/OWN_OFFER.draft.md`, edit into owner terms if selling, and execute `scripts/owner-apply.mjs` with owner facts. Features are frozen (FEATURES_FROZEN = true).
+- Owner action required: Review `owner/OWN_OFFER.draft.md` and `owner/PILOT_DELIVERY_SPEC.md`, edit into owner terms if selling, attest via `scripts/owner-apply.mjs`, and review PR via compare URL. Features remain frozen (FEATURES_FROZEN = true).

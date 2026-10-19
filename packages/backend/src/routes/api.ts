@@ -1239,7 +1239,7 @@ apiRouter.get('/cron/status', async (c) => {
 
   let customerInquiries = 0;
   try {
-    const inqRow = await d1Repo.queryOne<{ cnt: number }>('platform_prospects', "SELECT COUNT(*) as cnt FROM platform_prospects WHERE source = 'OFFER_PAGE_INQUIRY' OR discovery_source = 'DIRECT_INBOUND'");
+    const inqRow = await d1Repo.queryOne<{ cnt: number }>('platform_prospects', "SELECT COUNT(*) as cnt FROM platform_prospects WHERE source IN ('OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR') OR discovery_source IN ('DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR')");
     customerInquiries = inqRow?.cnt || 0;
   } catch {}
 
@@ -1263,6 +1263,17 @@ apiRouter.get('/cron/status', async (c) => {
 
   const idleCycleShare = totalCycles > 0 ? Math.round((idleCycles / totalCycles) * 100) : 100;
 
+  let recentPings24h: number | 'UNKNOWN' = 'UNKNOWN';
+  try {
+    const since24h = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    const recentRow = await d1Repo.queryOne<{ cnt: number }>('autonomous_cycle_log', `SELECT COUNT(*) as cnt FROM autonomous_cycle_log WHERE started_at >= ?`, [since24h]);
+    if (recentRow && typeof recentRow.cnt === 'number') {
+      recentPings24h = recentRow.cnt;
+    }
+  } catch {
+    recentPings24h = 'UNKNOWN';
+  }
+
   return c.json({
     success: true,
     data: {
@@ -1270,6 +1281,8 @@ apiRouter.get('/cron/status', async (c) => {
       cronExpression: '0 * * * *',
       cadenceMinutes: 60,
       totalPings,
+      totalLifetimePings: totalPings,
+      recentPings24h,
       lastObservedPing: row?.last_observed_ping || null,
       lastSuccessfulCycle: row?.last_successful_cycle || null,
       lastFailedCycle: row?.last_failed_cycle || null,
@@ -3231,7 +3244,7 @@ apiRouter.get('/offer', async (c) => {
   const { DirectCommercialOfferPage } = await import('../revenue/direct-offer-page.js');
   const siteName = (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
   const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').trim();
-  const contactEmail = (process.env.PUBLIC_CONTACT_EMAIL || 'contact@aimarketing.org').trim();
+  const contactEmail = process.env.PUBLIC_CONTACT_EMAIL ? process.env.PUBLIC_CONTACT_EMAIL.trim() : undefined;
   const html = DirectCommercialOfferPage.getInstance().renderOfferHtml({ siteName, siteUrl, contactEmail });
   return c.html(html);
 });
@@ -7484,7 +7497,7 @@ apiRouter.get('/tools/lead-leakage-calculator', async (c) => {
   const { LeadLeakageCalculator } = await import('../revenue/lead-leakage-calculator.js');
   const siteName = (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
   const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').trim();
-  const contactEmail = (process.env.PUBLIC_CONTACT_EMAIL || 'contact@aimarketing.org').trim();
+  const contactEmail = process.env.PUBLIC_CONTACT_EMAIL ? process.env.PUBLIC_CONTACT_EMAIL.trim() : undefined;
   const html = LeadLeakageCalculator.getInstance().renderCalculatorHtml({ siteName, siteUrl, contactEmail });
   return c.html(html);
 });
