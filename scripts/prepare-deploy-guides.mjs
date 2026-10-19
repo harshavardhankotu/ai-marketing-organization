@@ -70,7 +70,7 @@ export async function prepareDeployGuides(options = {}) {
 
   console.log(`Found ${publishedGuides.length} PUBLISHED guide(s).`);
 
-  const publicDir = path.resolve('public');
+  const publicDir = options.outputDir ? path.resolve(options.outputDir) : path.resolve('public');
   if (!fs.existsSync(publicDir)) {
     fs.mkdirSync(publicDir, { recursive: true });
   }
@@ -158,7 +158,8 @@ export async function prepareDeployGuides(options = {}) {
   return {
     publishedCount: publishedGuides.length,
     indexNowPayload,
-    sitemapUrls: urls
+    sitemapUrls: urls,
+    outputDir: publicDir
   };
 }
 

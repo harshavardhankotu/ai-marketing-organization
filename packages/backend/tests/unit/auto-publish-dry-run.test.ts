@@ -1,3 +1,6 @@
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { AutomaticOfferLane, GeneratedGuide, SpecLineRecord } from '../../src/commission/automatic-offer-lane.js';
 import { prepareDeployGuides } from '../../../../scripts/prepare-deploy-guides.mjs';
@@ -119,21 +122,27 @@ describe('Step 4: Automatic Publish & Deploy Dry-Run Verification', () => {
       expect(asset.status).toBe('PUBLISHED');
 
       // 6. Run prepareDeployGuides dry run
-      const deployRes = await prepareDeployGuides({
-        dryRun: true,
-        mockGuides: [{
-          id: asset.id,
-          title: asset.title,
-          slug: asset.slug,
-          body: asset.content_markdown,
-          created_at: asset.created_at
-        }]
-      });
+      const tempOutputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'guide-dry-run-'));
+      try {
+        const deployRes = await prepareDeployGuides({
+          dryRun: true,
+          outputDir: tempOutputDir,
+          mockGuides: [{
+            id: asset.id,
+            title: asset.title,
+            slug: asset.slug,
+            body: asset.content_markdown,
+            created_at: asset.created_at
+          }]
+        });
 
-      expect(deployRes.publishedCount).toBeGreaterThan(0);
-      expect(deployRes.indexNowPayload.host).toBeDefined();
-      expect(deployRes.indexNowPayload.key).toBeDefined();
-      expect(deployRes.indexNowPayload.urlList.length).toBeGreaterThan(0);
+        expect(deployRes.publishedCount).toBeGreaterThan(0);
+        expect(deployRes.indexNowPayload.host).toBeDefined();
+        expect(deployRes.indexNowPayload.key).toBeDefined();
+        expect(deployRes.indexNowPayload.urlList.length).toBeGreaterThan(0);
+      } finally {
+        fs.rmSync(tempOutputDir, { recursive: true, force: true });
+      }
     } finally {
       process.env.AUTO_PUBLISH_ENABLED = prevEnv;
     }
@@ -143,5 +152,89 @@ describe('Step 4: Automatic Publish & Deploy Dry-Run Verification', () => {
     await expect(
       prepareDeployGuides({ dryRun: true, mockGuides: [] })
     ).rejects.toThrow(/NO_PUBLISHED_GUIDE/);
+  });
+
+  it('builds positive one-published-guide catalog in temporary directory without dirtying public/ (Section B)', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'guide-positive-test-'));
+    try {
+      const mockGuide = {
+        id: 'guide_phomemo_test',
+        title: 'Thermal Label Printer Buyer Guide',
+        slug: 'thermal-label-printer-guide',
+        body: '<p>Comprehensive thermal printer guide</p>',
+        created_at: new Date().toISOString()
+      };
+
+      const res = await prepareDeployGuides({
+        outputDir: tempDir,
+        mockGuides: [mockGuide]
+      });
+
+      expect(res.skipped).toBeUndefined();
+      expect(res.publishedCount).toBe(1);
+      expect(res.sitemapUrls).toHaveLength(2); // Root + 1 guide
+      expect(res.sitemapUrls[1]).toContain(mockGuide.slug);
+
+      // Verify files written to temporary directory only
+      const guideFile = path.join(tempDir, 'guides', `${mockGuide.slug}.html`);
+      expect(fs.existsSync(guideFile)).toBe(true);
+      const guideContent = fs.readFileSync(guideFile, 'utf8');
+      expect(guideContent).toContain(mockGuide.title);
+
+      const indexFile = path.join(tempDir, 'index.html');
+      expect(fs.existsSync(indexFile)).toBe(true);
+      expect(fs.readFileSync(indexFile, 'utf8')).toContain(mockGuide.title);
+
+      const sitemapFile = path.join(tempDir, 'sitemap.xml');
+      expect(fs.existsSync(sitemapFile)).toBe(true);
+      expect(fs.readFileSync(sitemapFile, 'utf8')).toContain(`/guides/${mockGuide.slug}.html`);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('verifies deploy-guides.yml has credential check and emits exact notice when firebase key is missing', () => {
+    const rootDir = fs.existsSync(path.resolve(process.cwd(), '.github'))
+      ? process.cwd()
+      : path.resolve(process.cwd(), '../..');
+    const workflowPath = path.resolve(rootDir, '.github/workflows/deploy-guides.yml');
+    expect(fs.existsSync(workflowPath)).toBe(true);
+    const content = fs.readFileSync(workflowPath, 'utf8');
+
+    // 1. Workflow file contains the check step and notice
+    expect(content).toContain('Check Firebase Deployment Credentials');
+    expect(content).toContain('id: check-firebase');
+    expect(content).toContain('echo "::notice::deploy skipped: key missing"');
+    expect(content).toContain('steps.check-firebase.outputs.can_deploy == \'true\'');
+
+    // 2. Exact simulation of workflow logic
+    const simulateWorkflowKeyCheck = (hasKey: boolean, skippedOutput: string): { canDeploy: boolean; noticeEmitted: string | null } => {
+      let canDeploy = false;
+      let noticeEmitted: string | null = null;
+      if (hasKey) {
+        canDeploy = true;
+      } else {
+        canDeploy = false;
+        if (skippedOutput !== 'true') {
+          noticeEmitted = '::notice::deploy skipped: key missing';
+        }
+      }
+      return { canDeploy, noticeEmitted };
+    };
+
+    // When key is missing and published guides exist (skipped != 'true')
+    const resultMissing = simulateWorkflowKeyCheck(false, 'false');
+    expect(resultMissing.canDeploy).toBe(false);
+    expect(resultMissing.noticeEmitted).toBe('::notice::deploy skipped: key missing');
+
+    // When key is present and guides exist
+    const resultPresent = simulateWorkflowKeyCheck(true, 'false');
+    expect(resultPresent.canDeploy).toBe(true);
+    expect(resultPresent.noticeEmitted).toBeNull();
+
+    // When skipped is true (no published guides), no notice even if key is missing
+    const resultSkipped = simulateWorkflowKeyCheck(false, 'true');
+    expect(resultSkipped.canDeploy).toBe(false);
+    expect(resultSkipped.noticeEmitted).toBeNull();
   });
 });

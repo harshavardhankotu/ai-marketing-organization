@@ -411,7 +411,7 @@ app.post('/offer/inquiry', async (c) => {
 // Top-level Owner Digest (Part C)
 app.get('/owner/today', async (c) => {
   const { OwnerDigestService } = await import('./revenue/owner-digest.js');
-  const digest = OwnerDigestService.getInstance().generateDigest();
+  const digest = await OwnerDigestService.getInstance().generateDigestAsync();
   if (c.req.header('accept')?.includes('text/html')) {
     const formatted = OwnerDigestService.getInstance().formatTelegramMessage(digest);
     return c.html(`<!DOCTYPE html><html><body style="background:#090d16;color:#f8fafc;padding:2rem;"><pre style="font-family:monospace;white-space:pre-wrap;">${formatted}</pre></body></html>`);

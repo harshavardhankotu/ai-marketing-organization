@@ -289,7 +289,9 @@ export class ReplyDeskService {
   }
 
   /**
-   * Async check of queries run today, querying D1 first in production.
+   * Async check of queries run today, querying D1 strictly in production.
+   * If D1 read fails or returns invalid result in production, throws D1_QUOTA_READ_FAILED
+   * to fail closed rather than falling back to local SQLite.
    */
   public async getQueriesRunTodayAsync(dateStr: string = new Date().toISOString().slice(0, 10)): Promise<number> {
     if (isProduction()) {
@@ -302,7 +304,10 @@ export class ReplyDeskService {
         if (row && typeof row.count === 'number') {
           return row.count;
         }
-      } catch {}
+        throw new Error('D1 returned invalid count payload');
+      } catch (err: any) {
+        throw new Error(`D1_QUOTA_READ_FAILED: Could not read reply desk query count from D1 in production: ${err.message}`);
+      }
     }
     return this.getQueriesRunToday(dateStr);
   }
@@ -556,9 +561,10 @@ export class ReplyDeskService {
   }
 
   /**
-   * Returns up to 3 recent reply drafts from D1 in production, falling back to local SQLite.
+   * Returns up to recent reply drafts from D1 in production.
+   * Returns 'UNKNOWN' on D1 query error without falling back to local SQLite.
    */
-  public async getRecentDraftsAsync(limit: number = 3): Promise<ReplyDraft[]> {
+  public async getRecentDraftsAsync(limit: number = 3): Promise<ReplyDraft[] | 'UNKNOWN'> {
     if (isProduction()) {
       try {
         const rows = await this.d1Repo.query<any>(
@@ -573,10 +579,10 @@ export class ReplyDeskService {
            LIMIT ?`,
           [limit]
         );
-        if (rows && rows.length > 0) {
-          return rows as ReplyDraft[];
-        }
-      } catch {}
+        return (rows || []) as ReplyDraft[];
+      } catch {
+        return 'UNKNOWN';
+      }
     }
     return this.getRecentDrafts(limit);
   }

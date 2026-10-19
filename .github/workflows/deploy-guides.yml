@@ -35,6 +35,20 @@ jobs:
           CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
           GOOGLE_SITE_VERIFICATION: ${{ secrets.GOOGLE_SITE_VERIFICATION }}
 
+      - name: Check Firebase Deployment Credentials
+        id: check-firebase
+        run: |
+          if [ "$HAS_KEY" = "true" ]; then
+            echo "can_deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "can_deploy=false" >> "$GITHUB_OUTPUT"
+            if [ "${{ steps.build-guides.outputs.skipped }}" != "true" ]; then
+              echo "::notice::deploy skipped: key missing"
+            fi
+          fi
+        env:
+          HAS_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT != '' }}
+
       - name: Deploy to Firebase Hosting
         uses: FirebaseExtended/action-hosting-deploy@v0
         with:
@@ -42,6 +56,4 @@ jobs:
           firebaseServiceAccount: '${{ secrets.FIREBASE_SERVICE_ACCOUNT }}'
           channelId: live
           projectId: ai-marketing-organization
-        env:
-          HAS_FIREBASE_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-        if: steps.build-guides.outputs.skipped != 'true' && env.HAS_FIREBASE_KEY != ''
+        if: steps.build-guides.outputs.skipped != 'true' && steps.check-firebase.outputs.can_deploy == 'true'

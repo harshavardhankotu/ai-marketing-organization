@@ -16,6 +16,8 @@
  */
 
 import { getDb } from '../db/client.js';
+import { isProduction } from '../config/env.js';
+import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { validateOwnerEnvFacts } from '../config/owner-env-intake.js';
 import { ReplyDeskService, ReplyDraft } from './reply-desk.js';
 import { DirectCommercialOfferPage } from './direct-offer-page.js';
@@ -69,7 +71,7 @@ export interface OwnerTodayDigest {
   date: string;
   yesterdayDate: string;
   missingOwnerFacts: string[];
-  replyDrafts: ReplyDraft[];
+  replyDrafts: ReplyDraft[] | 'UNKNOWN';
   proposalDrafts: ProposalDigestItem[];
   outreachRows: OutreachDigestItem[];
   inquiries: InquiryDigestItem[];
@@ -81,6 +83,7 @@ export interface OwnerTodayDigest {
 export class OwnerDigestService {
   private static instance: OwnerDigestService;
   private replyDesk = ReplyDeskService.getInstance();
+  private d1Repo = D1RevenueRepository.getInstance();
 
   public static getInstance(): OwnerDigestService {
     if (!OwnerDigestService.instance) {
@@ -123,7 +126,9 @@ export class OwnerDigestService {
     }
 
     // 2. Up to 3 reply drafts
-    const replyDrafts = this.replyDesk.getRecentDrafts(3);
+    const replyDrafts: ReplyDraft[] | 'UNKNOWN' = isProduction()
+      ? 'UNKNOWN'
+      : this.replyDesk.getRecentDrafts(3);
 
     // 3. Up to 2 proposal drafts (for real, non-quarantined prospects only)
     const db = getDb();
@@ -322,12 +327,18 @@ export class OwnerDigestService {
     });
 
     // 5. Credits left
-    const replyDeskQueriesToday = this.replyDesk.getQueriesRunToday();
-    const tavilySearchesLeft = Math.max(0, 2 - replyDeskQueriesToday);
+    let tavilySearchesMetric: string;
+    if (isProduction()) {
+      tavilySearchesMetric = 'Tavily searches today: UNKNOWN (use async digest in production) | Gemini: bounded 5 calls/day';
+    } else {
+      const replyDeskQueriesToday = this.replyDesk.getQueriesRunToday();
+      const tavilySearchesLeft = Math.max(0, 2 - replyDeskQueriesToday);
+      tavilySearchesMetric = `Tavily searches today: ${tavilySearchesLeft}/2 remaining | Gemini: bounded 5 calls/day`;
+    }
     topPainPoints.push({
       rank: 5,
       title: 'Provider Credits Remaining',
-      metric: `Tavily searches today: ${tavilySearchesLeft}/2 remaining | Gemini: bounded 5 calls/day`,
+      metric: tavilySearchesMetric,
       ownerAction: 'AUTOMATED: pending (free-tier safety caps strictly active)'
     });
 
@@ -340,6 +351,313 @@ export class OwnerDigestService {
     } else {
       try {
         const pendingClaims = db.prepare(`SELECT COUNT(*) as c FROM manual_upi_claims WHERE status = 'PAYMENT_CLAIMED' AND is_test = 0 AND status != 'TEST_QUARANTINED'`).get() as any;
+        if (pendingClaims && pendingClaims.c > 0) {
+          nextAction = `Verify bank statement credit for ${pendingClaims.c} pending manual payment claim(s).`;
+        }
+      } catch {}
+    }
+
+    return {
+      date: todayStr,
+      yesterdayDate: yesterdayStr,
+      missingOwnerFacts,
+      replyDrafts,
+      proposalDrafts,
+      outreachRows,
+      inquiries,
+      topPainPoints,
+      yesterdayMetrics: { visits, clicks, leads, payments },
+      nextAction
+    };
+  }
+
+  /**
+   * Generates owner digest data asynchronously.
+   * In non-production, delegates to synchronous generateDigest.
+   * In production, queries Cloudflare D1 as the single source of truth without falling back to local SQLite.
+   */
+  public async generateDigestAsync(asOfDate: Date = new Date()): Promise<OwnerTodayDigest> {
+    if (!isProduction()) {
+      return this.generateDigest(asOfDate);
+    }
+
+    const todayStr = asOfDate.toISOString().slice(0, 10);
+    const yesterdayDate = new Date(asOfDate.getTime() - 24 * 60 * 60 * 1000);
+    const yesterdayStr = yesterdayDate.toISOString().slice(0, 10);
+
+    // 1. Missing owner facts
+    const ownerValidation = validateOwnerEnvFacts();
+    const missingOwnerFacts: string[] = [];
+    if (!ownerValidation.valid) {
+      for (const m of ownerValidation.missingFields) {
+        missingOwnerFacts.push(`Missing env: ${m}`);
+      }
+      for (const inv of ownerValidation.invalidFields) {
+        missingOwnerFacts.push(`Invalid env: ${inv.field} (${inv.reason})`);
+      }
+    }
+
+    // 2. Up to 3 reply drafts from D1
+    const replyDrafts = await this.replyDesk.getRecentDraftsAsync(3);
+
+    // 3. Up to 2 proposal drafts from D1
+    let proposalDrafts: ProposalDigestItem[] = [];
+    try {
+      const rows = await this.d1Repo.query<any>(
+        'proposals',
+        `SELECT id, title, setup_price_inr as priceINR, status
+         FROM proposals
+         WHERE is_test = 0 AND status != 'TEST_QUARANTINED'
+         ORDER BY created_at DESC
+         LIMIT 2`
+      );
+      proposalDrafts = (rows || []).map(r => ({
+        id: r.id,
+        title: r.title || 'Lead Conversion Setup Proposal',
+        priceINR: Number(r.priceINR || 0),
+        status: r.status || 'DRAFT'
+      }));
+    } catch {
+      proposalDrafts = [];
+    }
+
+    // 4. Outreach Log rows from D1
+    let outreachRows: OutreachDigestItem[] = [];
+    try {
+      const rows = await this.d1Repo.query<any>(
+        'outreach_log',
+        `SELECT id, business_name, channel, status, logged_date
+         FROM outreach_log
+         ORDER BY created_at DESC
+         LIMIT 10`
+      );
+      outreachRows = (rows || []).map(r => ({
+        id: r.id,
+        businessName: r.business_name,
+        channel: r.channel,
+        status: r.status,
+        loggedDate: r.logged_date,
+        draftMessage: `Hi, I was reviewing how ${r.business_name} handles inquiries and set up a short demonstration of our automated lead conversion architecture. Would you be open to a 10-minute walkthrough this week?`,
+        auditLink: `/offer`
+      }));
+    } catch {
+      outreachRows = [];
+    }
+
+    // 5. Yesterday's measured metrics from D1
+    let visits: number | 'UNKNOWN' = 'UNKNOWN';
+    let clicks: number | 'UNKNOWN' = 'UNKNOWN';
+    let leads: number | 'UNKNOWN' = 'UNKNOWN';
+    let payments: number | 'UNKNOWN' = 'UNKNOWN';
+
+    try {
+      const visitRow = await this.d1Repo.queryOne<{ c: number }>(
+        'referrals',
+        `SELECT COUNT(*) as c FROM referrals WHERE created_at LIKE ?`,
+        [`${yesterdayStr}%`]
+      );
+      if (visitRow && typeof visitRow.c === 'number') visits = visitRow.c;
+    } catch {}
+
+    try {
+      const clickRow = await this.d1Repo.queryOne<{ c: number }>(
+        'referral_click_events',
+        `SELECT COUNT(*) as c FROM referral_click_events WHERE created_at LIKE ?`,
+        [`${yesterdayStr}%`]
+      );
+      if (clickRow && typeof clickRow.c === 'number') clicks = clickRow.c;
+    } catch {}
+
+    try {
+      const leadRow = await this.d1Repo.queryOne<{ c: number }>(
+        'prospects',
+        `SELECT COUNT(*) as c FROM prospects WHERE created_at LIKE ?`,
+        [`${yesterdayStr}%`]
+      );
+      if (leadRow && typeof leadRow.c === 'number') leads = leadRow.c;
+    } catch {}
+
+    try {
+      const payRow = await this.d1Repo.queryOne<{ total: number }>(
+        'revenue_records',
+        `SELECT SUM(amount_inr) as total FROM revenue_records
+         WHERE (classification = 'OWNER_CONFIRMED' OR classification = 'EXPORT_VERIFIED' OR classification = 'REAL')
+           AND verified = 1 AND is_test = 0 AND timestamp LIKE ?`,
+        [`${yesterdayStr}%`]
+      );
+      if (payRow && payRow.total !== null && typeof payRow.total === 'number') {
+        payments = payRow.total;
+      } else {
+        payments = 0;
+      }
+    } catch {}
+
+    // 6. Inquiries from D1
+    let inquiries: InquiryDigestItem[] = [];
+    try {
+      const inqRows = await this.d1Repo.query<any>(
+        'platform_prospects',
+        `SELECT id, prospect_owner_name, phone, prospect_phone, prospect_business_name, notes, status, is_test, created_at
+         FROM platform_prospects
+         WHERE source = 'OFFER_PAGE_INQUIRY' OR discovery_source = 'DIRECT_INBOUND'
+         ORDER BY created_at DESC
+         LIMIT 10`
+      );
+
+      inquiries = (inqRows || []).map(r => {
+        const rawPhone = (r.phone || r.prospect_phone || '').trim();
+        const cleanPhone = rawPhone.replace(/\D/g, '');
+        const formattedPhone = cleanPhone.startsWith('91') ? cleanPhone : (cleanPhone ? `91${cleanPhone}` : '');
+        const name = r.prospect_owner_name || r.prospect_business_name || 'Doctor';
+        const draft = `Hello ${name}, thank you for your inquiry about our AI Inbound Lead Conversion System. Are you available for a 10-minute demonstration this week?`;
+        const replyOnWhatsAppUrl = formattedPhone ? `https://wa.me/${formattedPhone}?text=${encodeURIComponent(draft)}` : '';
+        const createdAtTime = new Date(r.created_at).getTime();
+        const ageHours = Math.round((Date.now() - createdAtTime) / (1000 * 60 * 60));
+        const needsReminder = ageHours >= 24 && r.status === 'QUALIFIED';
+
+        return {
+          id: r.id,
+          customerName: r.prospect_owner_name || '',
+          customerPhone: rawPhone,
+          clinicName: r.prospect_business_name || '',
+          notes: r.notes || '',
+          createdAt: r.created_at,
+          status: r.status,
+          ageHours,
+          needsReminder,
+          replyOnWhatsAppUrl,
+          isTest: Boolean(r.is_test)
+        };
+      });
+    } catch {
+      inquiries = [];
+    }
+
+    // 7. Top 5 Pain Points computed strictly from D1 data
+    const topPainPoints: PainPointItem[] = [];
+
+    // 1. First pipeline stage with count of 0
+    let verifiedRevenueCount = 0;
+    try {
+      const revRow = await this.d1Repo.queryOne<{ count: number }>(
+        'revenue_records',
+        `SELECT COUNT(*) as count FROM revenue_records WHERE verified = 1 AND is_test = 0`
+      );
+      verifiedRevenueCount = Number(revRow?.count || 0);
+    } catch {}
+
+    let proposalsCount = 0;
+    try {
+      const propRow = await this.d1Repo.queryOne<{ count: number }>(
+        'proposals',
+        `SELECT COUNT(*) as count FROM proposals WHERE is_test = 0`
+      );
+      proposalsCount = Number(propRow?.count || 0);
+    } catch {}
+
+    if (verifiedRevenueCount === 0) {
+      if (proposalsCount === 0) {
+        topPainPoints.push({
+          rank: 1,
+          title: 'Zero Proposals Sent (Pipeline Stalled)',
+          metric: 'proposals_sent = 0, verified_revenue = ₹0',
+          ownerAction: 'Edit owner/OWN_OFFER.draft.md into owner terms and attest via scripts/owner-apply.mjs.'
+        });
+      } else {
+        topPainPoints.push({
+          rank: 1,
+          title: 'Zero Payments Verified',
+          metric: `proposals = ${proposalsCount}, verified_revenue = ₹0`,
+          ownerAction: 'Confirm bank credit upon customer UPI payment.'
+        });
+      }
+    } else {
+      topPainPoints.push({
+        rank: 1,
+        title: 'Pipeline Revenue Flowing',
+        metric: `verified_payments = ${verifiedRevenueCount}`,
+        ownerAction: 'AUTOMATED: pending'
+      });
+    }
+
+    // 2. Idle cycle share from D1
+    let idleMetricText = '0% idle cycles';
+    try {
+      const totalCyclesRow = await this.d1Repo.queryOne<{ count: number }>(
+        'autonomous_cycle_log',
+        `SELECT COUNT(*) as count FROM autonomous_cycle_log`
+      );
+      const totalCycles = Number(totalCyclesRow?.count || 0);
+      const idleCyclesRow = await this.d1Repo.queryOne<{ count: number }>(
+        'autonomous_cycle_log',
+        `SELECT COUNT(*) as count FROM autonomous_cycle_log WHERE actions_taken = 0 OR summary_json LIKE '%"terminalClassification":"IDLE"%'`
+      );
+      const idleCycles = Number(idleCyclesRow?.count || 0);
+      if (totalCycles === 0) {
+        idleMetricText = '100% idle cycles (0 cycles executed)';
+      } else {
+        const idleCycleShare = Math.round((idleCycles / totalCycles) * 100);
+        idleMetricText = `${idleCycleShare}% idle cycles (${idleCycles}/${totalCycles} cycles)`;
+      }
+    } catch {
+      idleMetricText = 'UNKNOWN (D1 cycle log read failed)';
+    }
+    topPainPoints.push({
+      rank: 2,
+      title: 'Idle Autonomous Cycle Share',
+      metric: idleMetricText,
+      ownerAction: 'AUTOMATED: pending (cron wakes every 15 min, rotates discovery queries)'
+    });
+
+    // 3. Unanswered inquiries
+    const unansweredCount = inquiries.filter(i => i.status === 'QUALIFIED').length;
+    const reminderCount = inquiries.filter(i => i.needsReminder).length;
+    topPainPoints.push({
+      rank: 3,
+      title: 'Unanswered Inbound Inquiries',
+      metric: `${unansweredCount} inquiry(s) awaiting reply (${reminderCount} >24h reminder)`,
+      ownerAction: unansweredCount > 0 ? 'Click "Reply on WhatsApp" to message waiting clinic inquiries.' : 'AUTOMATED: pending'
+    });
+
+    // 4. Missing owner facts by lane
+    const missingAffiliate = ['ASSOCIATES_APPLICATION_DATE', 'ASSOCIATES_LISTED_SITE_URL', 'ASSOCIATES_AGREEMENT_READ'].filter(f => !process.env[f]);
+    const missingDirect = ['OWN_OFFER_CONFIRMED', 'DIRECT_OFFER_TERMS_SHA256'].filter(f => !process.env[f]);
+    const missingSite = ['PUBLIC_SITE_NAME', 'PUBLIC_AUTHOR_NAME', 'PUBLIC_CONTACT_EMAIL'].filter(f => !process.env[f]);
+    topPainPoints.push({
+      rank: 4,
+      title: 'Missing Owner Facts By Lane',
+      metric: `Site: ${missingSite.length} missing | Direct: ${missingDirect.length} missing | Affiliate: ${missingAffiliate.length} missing`,
+      ownerAction: missingSite.length > 0 ? 'Set PUBLIC_SITE_NAME, PUBLIC_AUTHOR_NAME, PUBLIC_CONTACT_EMAIL in Render.' : (missingDirect.length > 0 ? 'Attest direct terms.' : 'AUTOMATED: pending')
+    });
+
+    // 5. Credits left: query D1 strictly; on error, report UNKNOWN
+    let tavilySearchesText = 'Tavily searches today: UNKNOWN | Gemini: bounded 5 calls/day';
+    try {
+      const replyDeskQueriesToday = await this.replyDesk.getQueriesRunTodayAsync();
+      const tavilySearchesLeft = Math.max(0, 2 - replyDeskQueriesToday);
+      tavilySearchesText = `Tavily searches today: ${tavilySearchesLeft}/2 remaining | Gemini: bounded 5 calls/day`;
+    } catch {
+      tavilySearchesText = 'Tavily searches today: UNKNOWN | Gemini: bounded 5 calls/day';
+    }
+    topPainPoints.push({
+      rank: 5,
+      title: 'Provider Credits Remaining',
+      metric: tavilySearchesText,
+      ownerAction: 'AUTOMATED: pending (free-tier safety caps strictly active)'
+    });
+
+    // 8. One next action (deterministic priority order)
+    let nextAction = 'Review inbound traffic and organic referral click activity.';
+    if (missingOwnerFacts.length > 0) {
+      nextAction = `Set statutory owner variables in Render environment (${ownerValidation.missingFields.concat(ownerValidation.invalidFields.map(f => f.field)).join(', ')}).`;
+    } else if (!DirectCommercialOfferPage.isDirectOfferAttested()) {
+      nextAction = 'Attest Lane B commercial offer by setting DIRECT_OFFER_TERMS_SHA256 and OWN_OFFER_CONFIRMED=true.';
+    } else {
+      try {
+        const pendingClaims = await this.d1Repo.queryOne<{ c: number }>(
+          'manual_upi_claims',
+          `SELECT COUNT(*) as c FROM manual_upi_claims WHERE status = 'PAYMENT_CLAIMED' AND is_test = 0 AND status != 'TEST_QUARANTINED'`
+        );
         if (pendingClaims && pendingClaims.c > 0) {
           nextAction = `Verify bank statement credit for ${pendingClaims.c} pending manual payment claim(s).`;
         }
@@ -380,14 +698,18 @@ export class OwnerDigestService {
     lines.push(``);
 
     // Reply drafts (up to 3)
-    lines.push(`💬 *Reply Drafts (${digest.replyDrafts.length}/3):*`);
-    if (digest.replyDrafts.length === 0) {
-      lines.push(`• Zero pending reply drafts.`);
+    if (digest.replyDrafts === 'UNKNOWN') {
+      lines.push(`💬 *Reply Drafts:* UNKNOWN (D1 read failed)`);
     } else {
-      for (const [idx, d] of digest.replyDrafts.entries()) {
-        lines.push(`*Draft ${idx + 1}:* ${d.requestTitle}`);
-        lines.push(`URL: ${d.sourceUrl}`);
-        lines.push(`Draft: "${d.draftAnswer}"`);
+      lines.push(`💬 *Reply Drafts (${digest.replyDrafts.length}/3):*`);
+      if (digest.replyDrafts.length === 0) {
+        lines.push(`• Zero pending reply drafts.`);
+      } else {
+        for (const [idx, d] of digest.replyDrafts.entries()) {
+          lines.push(`*Draft ${idx + 1}:* ${d.requestTitle}`);
+          lines.push(`URL: ${d.sourceUrl}`);
+          lines.push(`Draft: "${d.draftAnswer}"`);
+        }
       }
     }
     lines.push(``);
@@ -468,7 +790,7 @@ export class OwnerDigestService {
       }
     }
 
-    const digest = this.generateDigest(asOfDate);
+    const digest = await this.generateDigestAsync(asOfDate);
     const message = this.formatTelegramMessage(digest);
 
     const targetFetch = options.customFetch || fetch;

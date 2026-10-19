@@ -3963,7 +3963,7 @@ apiRouter.post('/payments/mark-test', async (c) => {
 apiRouter.get('/owner/today', async (c) => {
   const { OwnerDigestService } = await import('../revenue/owner-digest.js');
   const service = OwnerDigestService.getInstance();
-  const digest = service.generateDigest();
+  const digest = await service.generateDigestAsync();
 
   if (c.req.header('accept')?.includes('text/html')) {
     return c.html(service.renderHtml(digest));

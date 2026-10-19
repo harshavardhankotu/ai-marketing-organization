@@ -18,6 +18,7 @@
  */
 
 import { getDb } from '../db/client.js';
+import { isProduction } from '../config/env.js';
 import { OpportunityEngine, Opportunity } from './opportunity-engine.js';
 import { ActionCooldownManager } from './action-cooldown-manager.js';
 import { validateOwnerEnvFacts } from '../config/owner-env-intake.js';
@@ -104,7 +105,11 @@ export class NextBestActionEngine {
    *   8. IDLE
    * Evaluates and ranks all candidate actions for a business according to Spec § 25.
    */
-  public rankAll(businessId: string, organizationId: string, options?: { ignoreCooldown?: boolean }): NextBestAction[] {
+  public rankAll(
+    businessId: string,
+    organizationId: string,
+    options?: { ignoreCooldown?: boolean; queriesRunToday?: number }
+  ): NextBestAction[] {
     const candidates: NextBestAction[] = [];
 
     // SQL lookup: Structured empirical learning rules from learning_records before scoring (Step 7d)
@@ -280,7 +285,14 @@ export class NextBestActionEngine {
     if (isPlatformBiz) {
       try {
         const replyDesk = ReplyDeskService.getInstance();
-        const queriesRun = replyDesk.getQueriesRunToday();
+        let queriesRun: number;
+        if (typeof options?.queriesRunToday === 'number') {
+          queriesRun = options.queriesRunToday;
+        } else if (isProduction()) {
+          queriesRun = 2; // Fail closed in synchronous rankAll in production: never read local SQLite
+        } else {
+          queriesRun = replyDesk.getQueriesRunToday();
+        }
         const pendingGuides = this.getPendingPublicationGuides(organizationId);
 
         if (queriesRun < 2 && pendingGuides.length === 0) {
@@ -766,6 +778,78 @@ export class NextBestActionEngine {
    */
   public choose(businessId: string, organizationId: string, options?: { ignoreCooldown?: boolean }): NextBestAction {
     const ranked = this.rankAll(businessId, organizationId, options);
+    const best = ranked[0];
+
+    if (best) {
+      console.log(
+        `[NextBestActionEngine] Selected action for ${businessId}: ${best.actionType} ` +
+        `(score=${best.score.toFixed(2)}, expected=₹${best.expectedRevenueINR.toFixed(0)})`
+      );
+      return best;
+    }
+
+    return {
+      actionType: 'IDLE',
+      targetId: businessId,
+      targetType: 'NONE',
+      ownerAgent: 'orchestrator',
+      rationale: 'All candidate actions were blocked by FAILED empirical learning rules or are on cooldown.',
+      estimatedRevenueINR: 0,
+      expectedRevenueINR: 0,
+      probabilityOfSuccess: 0,
+      timeToRevenueDays: 0,
+      externalCostINR: 0,
+      quotaCost: 0,
+      customerValueINR: 0,
+      urgency: 0,
+      cooldownActive: false,
+      authorizationAvailable: true,
+      riskLevel: 'LOW',
+      expectedValueINR: 0,
+      priorityScore: 0,
+      priorityTier: 'P4',
+      score: 0,
+      authorizationRequired: false,
+      estimatedCostINR: 0
+    };
+  }
+
+  /**
+   * Async ranking that checks remote D1 in production for quota/limits before ranking.
+   * If D1 read fails in production, fails closed (queriesRunToday = 2).
+   */
+  public async rankAllAsync(
+    businessId: string,
+    organizationId: string,
+    options?: { ignoreCooldown?: boolean; queriesRunToday?: number }
+  ): Promise<NextBestAction[]> {
+    let queriesRunToday = options?.queriesRunToday;
+    if (typeof queriesRunToday !== 'number') {
+      if (isProduction()) {
+        try {
+          const replyDesk = ReplyDeskService.getInstance();
+          queriesRunToday = await replyDesk.getQueriesRunTodayAsync();
+        } catch {
+          // Fail closed on D1 read error: cap at 2 so discovery is blocked
+          queriesRunToday = 2;
+        }
+      } else {
+        const replyDesk = ReplyDeskService.getInstance();
+        queriesRunToday = replyDesk.getQueriesRunToday();
+      }
+    }
+    return this.rankAll(businessId, organizationId, { ...options, queriesRunToday });
+  }
+
+  /**
+   * Async choose that uses rankAllAsync in production to ensure fail-closed D1 quota enforcement.
+   */
+  public async chooseAsync(
+    businessId: string,
+    organizationId: string,
+    options?: { ignoreCooldown?: boolean; queriesRunToday?: number }
+  ): Promise<NextBestAction> {
+    const ranked = await this.rankAllAsync(businessId, organizationId, options);
     const best = ranked[0];
 
     if (best) {
