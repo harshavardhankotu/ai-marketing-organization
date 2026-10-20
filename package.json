@@ -22,6 +22,7 @@
     "board:verify": "node scripts/board-verify.mjs",
     "lint:rupee-estimates": "node scripts/lint-no-unbacked-rupee-estimates.mjs",
     "lint:owner-prices": "node scripts/lint-no-unauthorized-owner-prices.mjs",
+    "lint:owner-claims": "node scripts/lint-owner-claims.mjs",
     "check:no-scratch-writes": "node scripts/check-no-scratch-writes.mjs",
     "status:generate": "node scripts/generate-status.mjs",
     "offer:hash": "node scripts/offer-hash.mjs",

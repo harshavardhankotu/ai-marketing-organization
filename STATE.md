@@ -15,13 +15,15 @@
 12. FEATURES_FROZEN = true. Feature freeze is strictly reinstated following completion of Steps 1-13. No new migrations after 0040. No new feature routes or agent types.
 
 ## 2. Last Verified Commit
-- Production Commit Hash: `60c569e208d34abd878ca59becfb8adaa2a312cc`
-- Feature Branch: `chore/migration-atomicity-and-inquiry-tests`
-- Render Production Deploy: `dep-dbaermoae00c739mft90` (Live with 60c569e)
-- Branch Local Verification: 106 unique test files (351 suites), 907 passed tests, 0 failed (100% PASS, out.json)
+- Production Commit Hash: `875cb4c40ab0ae60ddccd64a6df6a4708e33e56e` (PR #1 Merged into main)
+- Active Branch: `main`
+- Render Production Deploy: `dep-dbbob8hsrm7s738gj7gg` (Live with 875cb4c)
+- Gate Status: `RELEASE_VERIFIED`
+- Branch Local Verification: 108 unique test files, 355 suites, 932 passed tests, 0 failed (100% PASS)
 - Acquisition Page Gating: Lead leakage calculator gated via DirectCommercialOfferPage.isDirectOfferAttested(); unconfirmed pricing (₹15,000), 5-day delivery claim, and 2-minute SLA removed in unattested mode.
 - Inbound Inquiries Wired: INBOUND_LEAKAGE_CALCULATOR inquiries surfaced in /owner/today and OwnerDigestService.
-- Pilot Delivery Specification: Created owner/PILOT_DELIVERY_SPEC.md for first paid Indian SMB pilot (dental clinic) with 100% free owner tools.
+- Pilot Delivery Specification: owner/PILOT_DELIVERY_SPEC.md and owner/PILOT_SALES_KIT.md updated with owner audit-measured intake fields, D7 marked MANUAL_BY_OWNER, and Section 10 Clinic Inquiry-Data Safety legal review draft appended.
+- Claim Guardrails: scripts/lint-owner-claims.mjs and unit test packages/backend/tests/unit/owner-claims-lint.test.ts (19/19 PASS) enforcing source markers on commercial claims.
 
 ## 3. Open P1 Mistake Items
 - Total Open P1 Mistakes: 0
