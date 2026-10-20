@@ -9,14 +9,22 @@ export async function prepareDeployGuides(options = {}) {
 
   let publishedGuides = [];
 
-  // Query D1 for published guides
-  const cfToken = process.env.CLOUDFLARE_API_TOKEN;
-  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
-  const dbId = process.env.CLOUDFLARE_D1_DATABASE_ID || '0563bb85-f6d2-483f-8b0f-0784e3d604c7';
+  // If mockGuides is supplied (e.g. during unit tests / dry run), use it directly
+  if (options.mockGuides !== undefined) {
+    publishedGuides = options.mockGuides;
+  } else {
+    // Query remote D1 for published guides
+    const cfToken = process.env.CLOUDFLARE_API_TOKEN;
+    const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+    const dbId = process.env.CLOUDFLARE_D1_DATABASE_ID || '0563bb85-f6d2-483f-8b0f-0784e3d604c7';
 
-  if (cfToken && accountId) {
+    if (!cfToken || !accountId) {
+      throw new Error('D1_CREDENTIALS_MISSING: CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are required to query published guides.');
+    }
+
+    let res;
     try {
-      const res = await fetchFn(`https://api.cloudflare.com/client/v4/accounts/${accountId}/d1/database/${dbId}/query`, {
+      res = await fetchFn(`https://api.cloudflare.com/client/v4/accounts/${accountId}/d1/database/${dbId}/query`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${cfToken}`,
@@ -26,28 +34,43 @@ export async function prepareDeployGuides(options = {}) {
           sql: "SELECT id, title, slug, content_markdown as body, created_at FROM commission_content_assets WHERE status = 'PUBLISHED' ORDER BY created_at DESC;"
         })
       });
-      const data = await res.json();
-      if (data.success && data.result?.[0]?.results) {
-        publishedGuides = data.result[0].results;
-      }
-    } catch (err) {
-      console.warn('Could not query remote D1:', err.message);
+    } catch (networkErr) {
+      throw new Error(`D1_QUERY_FAILED: Network error connecting to Cloudflare D1: ${networkErr.message}`);
     }
+
+    if (!res.ok) {
+      throw new Error(`D1_QUERY_FAILED: Cloudflare D1 API returned HTTP ${res.status}: ${res.statusText}`);
+    }
+
+    const data = await res.json();
+    if (!data.success) {
+      const errMsgs = (data.errors || []).map(e => e.message).join('; ');
+      throw new Error(`D1_QUERY_FAILED: Cloudflare D1 query error: ${errMsgs || 'Unknown error'}`);
+    }
+
+    publishedGuides = data.result?.[0]?.results || [];
   }
 
-  // If in dryRun and no guides found, options may supply fixture
-  if (publishedGuides.length === 0 && options.mockGuides) {
-    publishedGuides = options.mockGuides;
-  }
-
-  // Rule: Must fail with NO_PUBLISHED_GUIDE when none exist
+  // Rule: Must fail with NO_PUBLISHED_GUIDE when none exist (unless allowEmpty is specified)
   if (publishedGuides.length === 0) {
+    if (options.allowEmpty) {
+      console.log('SKIPPED — no approved/published guides to deploy');
+      if (process.env.GITHUB_OUTPUT) {
+        fs.appendFileSync(process.env.GITHUB_OUTPUT, 'skipped=true\n', 'utf8');
+      }
+      return {
+        publishedCount: 0,
+        skipped: true,
+        indexNowPayload: null,
+        sitemapUrls: []
+      };
+    }
     throw new Error('NO_PUBLISHED_GUIDE: Zero published guides found in database. Deployment halted.');
   }
 
   console.log(`Found ${publishedGuides.length} PUBLISHED guide(s).`);
 
-  const publicDir = path.resolve('public');
+  const publicDir = options.outputDir ? path.resolve(options.outputDir) : path.resolve('public');
   if (!fs.existsSync(publicDir)) {
     fs.mkdirSync(publicDir, { recursive: true });
   }
@@ -128,15 +151,29 @@ export async function prepareDeployGuides(options = {}) {
     console.log('[DRY RUN] IndexNow payload:', JSON.stringify(indexNowPayload, null, 2));
   }
 
+  if (process.env.GITHUB_OUTPUT) {
+    fs.appendFileSync(process.env.GITHUB_OUTPUT, 'skipped=false\n', 'utf8');
+  }
+
   return {
     publishedCount: publishedGuides.length,
     indexNowPayload,
-    sitemapUrls: urls
+    sitemapUrls: urls,
+    outputDir: publicDir
   };
 }
 
 if (process.argv[1] && process.argv[1].endsWith('prepare-deploy-guides.mjs')) {
-  prepareDeployGuides({ dryRun: process.argv.includes('--dry-run') }).catch(err => {
+  prepareDeployGuides({
+    dryRun: process.argv.includes('--dry-run'),
+    allowEmpty: process.argv.includes('--allow-empty')
+  }).then(result => {
+    if (result.skipped) {
+      process.exit(0);
+    }
+    console.log(`Successfully prepared ${result.publishedCount} guide(s) for deployment.`);
+    process.exit(0);
+  }).catch(err => {
     console.error(`❌ PREPARE DEPLOY FAILED: ${err.message}`);
     process.exit(1);
   });

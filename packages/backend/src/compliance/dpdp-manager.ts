@@ -62,7 +62,8 @@ export class DPDPComplianceManager {
       WHERE created_at < ?
         AND status != 'CONVERTED'
         AND status != 'PURGED_RETENTION_EXPIRED'
-        AND (source = 'OFFER_PAGE_INQUIRY' OR discovery_source = 'DIRECT_INBOUND')
+        AND (source IN ('OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR')
+             OR discovery_source IN ('DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR'))
     `).run(thresholdDateStr);
 
     return {

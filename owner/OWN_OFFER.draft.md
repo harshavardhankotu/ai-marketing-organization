@@ -10,11 +10,11 @@
 ## 1. Offer Overview
 
 - **Offer ID:** `PLATFORM_SETUP`
-- **Full Title:** AI Inbound Lead Triage & Conversion System Setup
-- **Price:** TBD by owner
+- **Full Title:** AI Inbound Lead Conversion System — Day 0-5 Setup & Integration
+- **Price:** ₹15,000 INR
 - **Billing Model:** ONE_TIME
-- **Delivery Time:** TBD by owner
-- **Refund Terms:** TBD by owner
+- **Delivery Time:** 5 days
+- **Refund Terms:** 100% full refund if deliverables 1-5 are not handed over within 5 business days of onboarding.
 - **Target Audience:** High-ticket local service businesses (e.g. dental practices, specialized healthcare clinics, diagnostic centers, consulting firms) in India.
 
 ---
@@ -37,10 +37,10 @@ Only deliverables verified in code (`IMPLEMENTED_VERIFIED`) or executable with f
 ## 3. Retainer & SLA (Optional Phase 2)
 
 - **Offer ID:** `PLATFORM_MONTHLY`
-- **Title:** Lead Triage System Maintenance & Conversion SLA
-- **Price:** TBD by owner
-- **Delivery Time:** TBD by owner
-- **Refund Terms:** TBD by owner
+- **Title:** AI Inbound Lead Conversion System — Monthly Retainer & SLA
+- **Price:** ₹8,000 INR per month
+- **Delivery Time:** 30 days continuous
+- **Refund Terms:** Pro-rated monthly refund upon cancellation.
 - **Deliverables:**
   1. Ongoing prompt and quick-reply rubric tuning based on real inquiry logs (`MANUAL_BY_OWNER`).
   2. Weekly show-rate and conversion report generation (`IMPLEMENTED_VERIFIED`).

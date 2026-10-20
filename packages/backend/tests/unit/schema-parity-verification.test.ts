@@ -289,6 +289,70 @@ describe('Schema Parity Verification & Inquiry Lifecycle (Steps 2, 3, 4, 6)', ()
       expect(migrationRecorded).toBeUndefined();
       db.close();
     });
+
+    it('exact allowlist: ignores only duplicate column name and already exists, failing on non-allowlisted errors', () => {
+      const db = new Database(':memory:');
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS _sqlite_migrations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          migration_name TEXT NOT NULL UNIQUE,
+          applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE existing_table (id TEXT PRIMARY KEY, col1 TEXT);
+      `);
+
+      // Idempotent duplicate column and already exists pass safely
+      const idempotentStatements = [
+        'CREATE TABLE existing_table (id TEXT PRIMARY KEY);',
+        'ALTER TABLE existing_table ADD COLUMN col1 TEXT;'
+      ];
+
+      expect(() => {
+        const tx = db.transaction(() => {
+          for (const stmt of idempotentStatements) {
+            db.exec('SAVEPOINT sp_test');
+            try {
+              db.exec(stmt);
+              db.exec('RELEASE sp_test');
+            } catch (err: any) {
+              const msg = String(err.message || '').toLowerCase();
+              if (msg.includes('duplicate column name') || msg.includes('already exists')) {
+                db.exec('ROLLBACK TO sp_test');
+                db.exec('RELEASE sp_test');
+                continue;
+              }
+              db.exec('ROLLBACK TO sp_test');
+              db.exec('RELEASE sp_test');
+              throw err;
+            }
+          }
+        });
+        tx();
+      }).not.toThrow();
+
+      // Non-allowlisted error (e.g. no such table) throws and halts
+      expect(() => {
+        const tx = db.transaction(() => {
+          db.exec('SAVEPOINT sp_test');
+          try {
+            db.exec('INSERT INTO non_existent_table (id) VALUES (1);');
+            db.exec('RELEASE sp_test');
+          } catch (err: any) {
+            const msg = String(err.message || '').toLowerCase();
+            if (msg.includes('duplicate column name') || msg.includes('already exists')) {
+              db.exec('ROLLBACK TO sp_test');
+              db.exec('RELEASE sp_test');
+              return;
+            }
+            db.exec('ROLLBACK TO sp_test');
+            db.exec('RELEASE sp_test');
+            throw new Error(`SQLITE_MIGRATION_FAILED: ${err.message}`);
+          }
+        });
+        tx();
+      }).toThrow(/SQLITE_MIGRATION_FAILED/);
+      db.close();
+    });
   });
 });
 

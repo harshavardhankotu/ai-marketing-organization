@@ -1190,18 +1190,123 @@ apiRouter.get('/cron/status', async (c) => {
     ? 'HEALTHY'
     : (totalPings > 0 ? 'OBSERVED' : 'CONFIGURED');
 
+  // Compute accurate metrics across the revenue pipeline
+  let totalCycles = 0;
+  let successfulCycles = 0;
+  let idleCycles = 0;
+  try {
+    const totalRow = await d1Repo.queryOne<{ cnt: number }>('autonomous_cycle_log', 'SELECT COUNT(*) as cnt FROM autonomous_cycle_log');
+    totalCycles = totalRow?.cnt || 0;
+    const successRow = await d1Repo.queryOne<{ cnt: number }>('autonomous_cycle_log', "SELECT COUNT(*) as cnt FROM autonomous_cycle_log WHERE status = 'COMPLETED'");
+    successfulCycles = successRow?.cnt || 0;
+    const idleRow = await d1Repo.queryOne<{ cnt: number }>('autonomous_cycle_log', "SELECT COUNT(*) as cnt FROM autonomous_cycle_log WHERE actions_taken = 0 OR summary_json LIKE '%\"terminalClassification\":\"IDLE\"%'");
+    idleCycles = idleRow?.cnt || 0;
+  } catch {}
+
+  let discoveryAttempts = 0;
+  let successfulQueries = 0;
+  try {
+    const discRow = await d1Repo.queryOne<{ cnt: number }>('reply_desk_query_runs', 'SELECT COUNT(*) as cnt FROM reply_desk_query_runs');
+    discoveryAttempts = discRow?.cnt || 0;
+    const queryRow = await d1Repo.queryOne<{ cnt: number }>('reply_desk_query_runs', 'SELECT COUNT(*) as cnt FROM reply_desk_query_runs WHERE success = 1');
+    successfulQueries = queryRow?.cnt || 0;
+  } catch {}
+
+  let evidenceBackedSignals = 0;
+  try {
+    const draftsRow = await d1Repo.queryOne<{ cnt: number }>('reply_desk_drafts', "SELECT COUNT(*) as cnt FROM reply_desk_drafts WHERE qualification_status = 'QUALIFIED'");
+    evidenceBackedSignals = draftsRow?.cnt || 0;
+  } catch {}
+
+  let qualifiedProspects = 0;
+  try {
+    const pRow = await d1Repo.queryOne<{ cnt: number }>('platform_prospects', "SELECT COUNT(*) as cnt FROM platform_prospects WHERE is_test = 0 AND is_junk = 0 AND status = 'QUALIFIED'");
+    qualifiedProspects = pRow?.cnt || 0;
+  } catch {}
+
+  let contentTasksCount = 0;
+  let ownerApprovalsPending = 0;
+  let publishedAssets = 0;
+  try {
+    const contentRow = await d1Repo.queryOne<{ cnt: number }>('commission_content_assets', 'SELECT COUNT(*) as cnt FROM commission_content_assets');
+    contentTasksCount = contentRow?.cnt || 0;
+    const pubReadyRow = await d1Repo.queryOne<{ cnt: number }>('commission_content_assets', "SELECT COUNT(*) as cnt FROM commission_content_assets WHERE status = 'PUBLISH_READY'");
+    const draftPropRow = await d1Repo.queryOne<{ cnt: number }>('proposals', "SELECT COUNT(*) as cnt FROM proposals WHERE is_test = 0 AND status = 'DRAFT'");
+    ownerApprovalsPending = (pubReadyRow?.cnt || 0) + (draftPropRow?.cnt || 0);
+    const pubRow = await d1Repo.queryOne<{ cnt: number }>('commission_content_assets', "SELECT COUNT(*) as cnt FROM commission_content_assets WHERE status = 'PUBLISHED'");
+    publishedAssets = pubRow?.cnt || 0;
+  } catch {}
+
+  let customerInquiries = 0;
+  try {
+    const inqRow = await d1Repo.queryOne<{ cnt: number }>('platform_prospects', "SELECT COUNT(*) as cnt FROM platform_prospects WHERE source IN ('OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR') OR discovery_source IN ('DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR')");
+    customerInquiries = inqRow?.cnt || 0;
+  } catch {}
+
+  let proposalsCount = 0;
+  try {
+    const propRow = await d1Repo.queryOne<{ cnt: number }>('proposals', "SELECT COUNT(*) as cnt FROM proposals WHERE is_test = 0 AND status != 'TEST_QUARANTINED'");
+    proposalsCount = propRow?.cnt || 0;
+  } catch {}
+
+  let paymentAttempts = 0;
+  try {
+    const payRow = await d1Repo.queryOne<{ cnt: number }>('payment_requests', "SELECT COUNT(*) as cnt FROM payment_requests WHERE classification = 'REAL'");
+    paymentAttempts = payRow?.cnt || 0;
+  } catch {}
+
+  let verifiedRevenueINR = 0;
+  try {
+    const revRow = await d1Repo.queryOne<{ total: number }>('revenue_records', "SELECT COALESCE(SUM(amount_inr), 0) as total FROM revenue_records WHERE verified = 1 AND is_test = 0");
+    verifiedRevenueINR = revRow?.total || 0;
+  } catch {}
+
+  const idleCycleShare = totalCycles > 0 ? Math.round((idleCycles / totalCycles) * 100) : 100;
+
+  let recentPings24h: number | 'UNKNOWN' = 'UNKNOWN';
+  try {
+    const since24h = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    const recentRow = await d1Repo.queryOne<{ cnt: number }>('autonomous_cycle_log', `SELECT COUNT(*) as cnt FROM autonomous_cycle_log WHERE started_at >= ?`, [since24h]);
+    if (recentRow && typeof recentRow.cnt === 'number') {
+      recentPings24h = recentRow.cnt;
+    }
+  } catch {
+    recentPings24h = 'UNKNOWN';
+  }
+
   return c.json({
     success: true,
     data: {
       status,
       cronExpression: '0 * * * *',
+      cadenceMinutes: 60,
       totalPings,
+      totalLifetimePings: totalPings,
+      recentPings24h,
       lastObservedPing: row?.last_observed_ping || null,
       lastSuccessfulCycle: row?.last_successful_cycle || null,
       lastFailedCycle: row?.last_failed_cycle || null,
       cycleResult: row?.cycle_result || null,
       lastUserAgent: row?.last_user_agent || null,
-      workerSource: row?.worker_source || null
+      workerSource: row?.worker_source || null,
+      metrics: {
+        scheduledWakeUps: totalPings,
+        successfulOrchestrationCycles: successfulCycles,
+        discoveryAttempts,
+        successfulProviderQueries: successfulQueries,
+        evidenceBackedSignals,
+        qualifiedProspects,
+        contentTasks: contentTasksCount,
+        ownerApprovalsPending,
+        publishedAssets,
+        customerInquiries,
+        proposals: proposalsCount,
+        paymentAttempts,
+        verifiedRevenueINR,
+        idleCycles,
+        idleCycleSharePercent: idleCycleShare,
+        isIdle: totalCycles === 0 || idleCycleShare === 100
+      }
     }
   });
 });
@@ -1259,6 +1364,12 @@ apiRouter.post('/cron/ping', async (c) => {
   try {
     const { ActionCooldownManager } = await import('../revenue/action-cooldown-manager.js');
     await ActionCooldownManager.syncFromD1Async();
+  } catch {}
+
+  // Sync durable reply desk telemetry from D1 before cycle execution
+  try {
+    const { ReplyDeskService } = await import('../revenue/reply-desk.js');
+    await ReplyDeskService.getInstance().syncFromD1Async();
   } catch {}
 
   // Step 9d: Daily DPDP 30-day retention purge job
@@ -3133,7 +3244,7 @@ apiRouter.get('/offer', async (c) => {
   const { DirectCommercialOfferPage } = await import('../revenue/direct-offer-page.js');
   const siteName = (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
   const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').trim();
-  const contactEmail = (process.env.PUBLIC_CONTACT_EMAIL || 'contact@aimarketing.org').trim();
+  const contactEmail = process.env.PUBLIC_CONTACT_EMAIL ? process.env.PUBLIC_CONTACT_EMAIL.trim() : undefined;
   const html = DirectCommercialOfferPage.getInstance().renderOfferHtml({ siteName, siteUrl, contactEmail });
   return c.html(html);
 });
@@ -3865,7 +3976,7 @@ apiRouter.post('/payments/mark-test', async (c) => {
 apiRouter.get('/owner/today', async (c) => {
   const { OwnerDigestService } = await import('../revenue/owner-digest.js');
   const service = OwnerDigestService.getInstance();
-  const digest = service.generateDigest();
+  const digest = await service.generateDigestAsync();
 
   if (c.req.header('accept')?.includes('text/html')) {
     return c.html(service.renderHtml(digest));
@@ -7386,7 +7497,7 @@ apiRouter.get('/tools/lead-leakage-calculator', async (c) => {
   const { LeadLeakageCalculator } = await import('../revenue/lead-leakage-calculator.js');
   const siteName = (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
   const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').trim();
-  const contactEmail = (process.env.PUBLIC_CONTACT_EMAIL || 'contact@aimarketing.org').trim();
+  const contactEmail = process.env.PUBLIC_CONTACT_EMAIL ? process.env.PUBLIC_CONTACT_EMAIL.trim() : undefined;
   const html = LeadLeakageCalculator.getInstance().renderCalculatorHtml({ siteName, siteUrl, contactEmail });
   return c.html(html);
 });

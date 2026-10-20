@@ -16,3 +16,4 @@ build/
 .env.render.production
 .env.owner_facts
 scratch/
+out.json

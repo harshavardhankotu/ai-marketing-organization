@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { apiRouter } from '../../src/routes/api.js';
 import { getDb } from '../../src/db/client.js';
 import { DPDPComplianceManager } from '../../src/compliance/dpdp-manager.js';
+import { D1RevenueRepository } from '../../src/db/d1-revenue-repository.js';
 
 describe('Steps 3c, 9d, 9e: Inquiry Lifecycle, D1 Persistence, Purge Job & Deletion Code', () => {
   const db = getDb();
@@ -17,6 +18,42 @@ describe('Steps 3c, 9d, 9e: Inquiry Lifecycle, D1 Persistence, Purge Job & Delet
     try {
       db.prepare(`DELETE FROM platform_prospects WHERE phone LIKE '%9988776655%' OR prospect_phone LIKE '%9988776655%'`).run();
     } catch {}
+  });
+
+  it('Step 3c: In production, inquiry writes to D1 first; if D1 fails, it returns an error and does not claim success', async () => {
+    const prevEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    const d1Repo = D1RevenueRepository.getInstance();
+    const originalExecuteWrite = d1Repo.executeWrite.bind(d1Repo);
+    const spy = vi.spyOn(d1Repo, 'executeWrite').mockImplementation(async (table, sql, params) => {
+      if (table === 'platform_prospects') {
+        throw new Error('D1_WRITE_FAULT: Cloudflare D1 connection timeout');
+      }
+      return originalExecuteWrite(table, sql, params);
+    });
+
+    try {
+      const postReq = new Request('http://localhost/offer/inquiry', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          customerName: 'Dr. D1 Failure Test',
+          customerPhone: '919876543210',
+          customerEmail: 'd1fail@test.in',
+          serviceOfInterest: 'Test Clinic, Mumbai',
+          consentGiven: true
+        })
+      });
+
+      const res = await apiRouter.fetch(postReq);
+      expect(res.status).toBe(500);
+      const json = await res.json() as any;
+      expect(json.success).toBe(false);
+      expect(json.error).toContain('D1_WRITE_FAULT');
+    } finally {
+      spy.mockRestore();
+      process.env.NODE_ENV = prevEnv;
+    }
   });
 
   it('Step 9e: Inquiry returns a unique deletionCode and deletes only when code matches', async () => {

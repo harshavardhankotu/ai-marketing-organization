@@ -331,7 +331,7 @@ export class AutonomousRevenueOrchestrator {
           await PartnerRegistryEngine.getInstance().syncFromD1Async();
         } catch {}
       }
-      const nextBestAction = this.nbaEngine.choose(businessId, organizationId, {
+      const nextBestAction = await this.nbaEngine.chooseAsync(businessId, organizationId, {
         ignoreCooldown: triggerSource === 'MANUAL'
       });
       console.log(`[ARO] Best action: ${nextBestAction.actionType} (target: ${nextBestAction.targetId}, score: ${nextBestAction.score.toFixed(2)})`);

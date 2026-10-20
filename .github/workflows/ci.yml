@@ -33,6 +33,9 @@ jobs:
       - name: Guardrail - Lint No Unbacked Rupee Estimates
         run: npm run lint:rupee-estimates
 
+      - name: Guardrail - Lint No Unauthorized Owner Prices
+        run: npm run lint:owner-prices
+
       - name: Build All Workspaces
         run: npm run build
 
