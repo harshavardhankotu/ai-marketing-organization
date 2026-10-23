@@ -165,7 +165,6 @@ export const EXACT_ROUTE_POLICY = {
     '/privacy',
     '/payments/page-view',
     '/referrals/beacon',
-    '/owner/facts-status',
     '/owner/today',
     '/owner/proposal',
     '/capabilities',
@@ -323,7 +322,7 @@ apiRouter.use('*', async (c, next) => {
       path === '/build/static-site' ||
       path === '/payments/manual-upi/confirm' ||
       path === '/payments/reconcile-export' ||
-      (path.startsWith('/owner') && path !== '/owner/today' && path !== '/owner/proposal' && path !== '/owner/facts-status' && path !== '/owner/login')
+      (path.startsWith('/owner') && path !== '/owner/today' && path !== '/owner/proposal' && path !== '/owner/login')
     )) {
       return c.json({
         success: false,
@@ -1239,7 +1238,7 @@ apiRouter.get('/cron/status', async (c) => {
 
   let customerInquiries = 0;
   try {
-    const inqRow = await d1Repo.queryOne<{ cnt: number }>('platform_prospects', "SELECT COUNT(*) as cnt FROM platform_prospects WHERE source IN ('OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR') OR discovery_source IN ('DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR')");
+    const inqRow = await d1Repo.queryOne<{ cnt: number }>('platform_prospects', "SELECT COUNT(*) as cnt FROM platform_prospects WHERE is_test = 0 AND is_junk = 0 AND status NOT IN ('QUARANTINED', 'TEST_QUARANTINED', 'REJECTED') AND (source IN ('OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR') OR discovery_source IN ('DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR'))");
     customerInquiries = inqRow?.cnt || 0;
   } catch {}
 
@@ -1265,8 +1264,9 @@ apiRouter.get('/cron/status', async (c) => {
 
   let recentPings24h: number | 'UNKNOWN' = 'UNKNOWN';
   try {
-    const since24h = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-    const recentRow = await d1Repo.queryOne<{ cnt: number }>('autonomous_cycle_log', `SELECT COUNT(*) as cnt FROM autonomous_cycle_log WHERE started_at >= ?`, [since24h]);
+    const since24hIso = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    const since24hSql = since24hIso.replace('T', ' ').replace(/\.\d{3}Z$/, '');
+    const recentRow = await d1Repo.queryOne<{ cnt: number }>('autonomous_cycle_log', `SELECT COUNT(*) as cnt FROM autonomous_cycle_log WHERE cycle_start >= ? OR cycle_start >= ?`, [since24hSql, since24hIso]);
     if (recentRow && typeof recentRow.cnt === 'number') {
       recentPings24h = recentRow.cnt;
     }
@@ -1559,11 +1559,11 @@ apiRouter.get('/revenue/funnel', async (c) => {
   // 2. Exact 12-Stage Commercial Lifecycle (Spec Phase 6)
   // DISCOVERED → QUALIFIED → VERIFIED → DRAFTED → AWAITING_APPROVAL → APPROVED → PUBLISHED → VISITS → OUTBOUND_CLICKS → ATTRIBUTED_ORDERS → CONFIRMED_COMMISSION → VERIFIED_PAYOUT
   const demandSignalsCount = ((await runQueryOne('demand_signals', `SELECT COUNT(*) as count FROM demand_signals WHERE organization_id = ? AND status NOT IN ('QUARANTINED', 'SEEDED', 'SEEDED_MIGRATION_0026', 'UNSOURCED', 'DUPLICATE', 'UNSUPPORTED', 'UNSUPPORTED_BY_DEMAND', 'PAUSED_SEEDED_DEMAND') AND source_url LIKE 'http%' AND source_url NOT LIKE '%search.community%' AND source_url NOT LIKE '%localhost%' AND source_url NOT LIKE '%example.com%' AND source_url NOT LIKE '%test.local%'`, [orgId])) as any)?.count || 0;
-  const platformProspectsCount = ((await runQueryOne('platform_prospects', `SELECT COUNT(*) as count FROM platform_prospects WHERE is_test = 0 AND is_junk = 0`)) as any)?.count || 0;
+  const platformProspectsCount = ((await runQueryOne('platform_prospects', `SELECT COUNT(*) as count FROM platform_prospects WHERE is_test = 0 AND is_junk = 0 AND status NOT IN ('QUARANTINED', 'TEST_QUARANTINED', 'REJECTED')`)) as any)?.count || 0;
   const totalDiscovered = demandSignalsCount + platformProspectsCount;
 
   const buyerQuestionsCount = ((await runQueryOne('demand_signals', `SELECT COUNT(*) as count FROM demand_signals WHERE organization_id = ? AND ${GENUINE_BUYER_DEMAND_SQL_CONDITION}`, [orgId])) as any)?.count || 0;
-  const qualifiedProspectsCount = ((await runQueryOne('platform_prospects', `SELECT COUNT(*) as count FROM platform_prospects WHERE is_test = 0 AND is_junk = 0 AND (fit_score >= 0.70 OR status = 'QUALIFIED')`)) as any)?.count || 0;
+  const qualifiedProspectsCount = ((await runQueryOne('platform_prospects', `SELECT COUNT(*) as count FROM platform_prospects WHERE is_test = 0 AND is_junk = 0 AND status = 'QUALIFIED'`)) as any)?.count || 0;
   const totalQualified = buyerQuestionsCount + qualifiedProspectsCount;
 
   const activePartnerOffersCount = ((await runQueryOne('partner_offers', `SELECT COUNT(*) as count FROM partner_offers WHERE organization_id = ? AND status = 'ACTIVE' AND active = 1`, [orgId])) as any)?.count || 0;
