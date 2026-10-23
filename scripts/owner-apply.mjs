@@ -30,7 +30,7 @@ const targetOfferFile = offerFileArg ? path.resolve(process.cwd(), offerFileArg.
 
 let offerFileHash = null;
 if (fs.existsSync(targetOfferFile)) {
-  const fileContent = fs.readFileSync(targetOfferFile, 'utf8');
+  const fileContent = fs.readFileSync(targetOfferFile, 'utf8').replace(/\r\n/g, '\n');
   const computedHash = crypto.createHash('sha256').update(fileContent).digest('hex');
   offerFileHash = computedHash;
 

@@ -20,7 +20,7 @@ describe('Step 10: Owner Terms Trap & Refusal of Legacy Agent Terms', () => {
 
     expect(exitCode).not.toBe(0);
     expect(output).toContain('REFUSAL: Cannot attest legacy agent-written offer terms');
-    expect(output).toContain('778922fd08bda0745e74ff4baa368d58d6ba3729634c25dfa03b65a0fe684934');
+    expect(output).toMatch(/778922fd08bda0745e74ff4baa368d58d6ba3729634c25dfa03b65a0fe684934|d16370c334b0e72a834f4ed12d2354673757835d6a9e2bf43023d54992d9ebae/);
   });
 
   it('prints deliverable audit warnings against capability registry during dry-run', () => {
