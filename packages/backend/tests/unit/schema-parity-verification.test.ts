@@ -201,7 +201,10 @@ describe('Schema Parity Verification & Inquiry Lifecycle (Steps 2, 3, 4, 6)', ()
         delete process.env.OWN_OFFER_CONFIRMED;
         process.env.DIRECT_OFFER_TERMS_SHA256 = 'abc1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcd';
 
-        const req = new Request('http://localhost/owner/facts-status', { method: 'GET' });
+        const req = new Request('http://localhost/owner/facts-status', {
+          method: 'GET',
+          headers: { 'x-user-id': 'usr_owner_01' }
+        });
         const res = await apiRouter.fetch(req);
         expect(res.status).toBe(200);
         const json = await res.json() as any;
