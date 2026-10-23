@@ -34,14 +34,25 @@ describe('Step 2: Durable Owner Claims Lint Guardrail', () => {
       expect(validateSourceMarker('SOURCE: ftp://invalid-scheme.org').valid).toBe(false);
     });
 
-    it('validates substantive OWNER_MEASURED markers', () => {
-      expect(validateSourceMarker('OWNER_MEASURED: Day 1 reception call and WhatsApp intake audit').valid).toBe(true);
-      expect(validateSourceMarker('OWNER_MEASURED: 2026 intake audit of reception desk phone logs').valid).toBe(true);
+    it('validates substantive, completed OWNER_MEASURED markers with documented log records', () => {
+      expect(validateSourceMarker('OWNER_MEASURED: Documented March 2026 reception log timestamp audit across 40 inquiries').valid).toBe(true);
+      expect(validateSourceMarker('OWNER_MEASURED: Verified October 2026 reception desk physical ledger logs').valid).toBe(true);
+    });
+
+    it('rejects planned or future intake audit as completed evidence in OWNER_MEASURED markers', () => {
+      expect(validateSourceMarker('OWNER_MEASURED: intake audit').valid).toBe(false);
+      expect(validateSourceMarker('OWNER_MEASURED: Day 1 reception call and WhatsApp intake audit').valid).toBe(false);
+      expect(validateSourceMarker('OWNER_MEASURED: planned future reception audit').valid).toBe(false);
     });
 
     it('rejects empty or trivial OWNER_MEASURED markers (< 8 characters)', () => {
       expect(validateSourceMarker('OWNER_MEASURED:').valid).toBe(false);
       expect(validateSourceMarker('OWNER_MEASURED: abc').valid).toBe(false);
+    });
+
+    it('validates explicit synthetic demonstration fixtures', () => {
+      expect(validateSourceMarker('SYNTHETIC EXAMPLE — NOT REAL DATA OR RESULTS').valid).toBe(true);
+      expect(validateSourceMarker('Outcome: SYNTHETIC_ONLY').valid).toBe(true);
     });
   });
 
@@ -55,6 +66,16 @@ Inquiry response delay of 4–12 hours when reaching out after hours.
       expect(errors.length).toBeGreaterThan(0);
       expect(errors[0].claimType).toBe('RESPONSE_DELAY_HOURS');
       expect(errors[0].line).toBe(3);
+    });
+
+    it('flags planned intake audit masquerading as completed evidence', () => {
+      const content = `
+# Intake Note
+Average inquiry delay is 6 hours outside clinic hours (OWNER_MEASURED: Day 1 reception call and WhatsApp intake audit).
+      `;
+      const errors = checkOwnerClaimsContent(content, 'test.md');
+      expect(errors.length).toBeGreaterThan(0);
+      expect(errors[0].reason).toContain('cannot describe a planned intake audit');
     });
 
     it('flags unsourced commercial percentage statistics', () => {
@@ -119,10 +140,10 @@ According to industry research, over 40% of leads drop off when response is dela
       expect(errors).toEqual([]);
     });
 
-    it('passes claim with valid OWNER_MEASURED marker', () => {
+    it('passes claim with valid completed OWNER_MEASURED marker', () => {
       const content = `
 # Owner Measured Finding
-In our Day 1 intake audit, we measure your clinic's exact after-hours inquiry volume and response delay directly from your reception logs (OWNER_MEASURED: Day 1 reception call and WhatsApp intake audit). Every un-replied evening inquiry risks becoming a lost patient chair.
+During our audit of 40 historical messages, response delay was recorded (OWNER_MEASURED: Documented March 2026 reception log timestamp audit across 40 inquiries). Every un-replied evening inquiry risks becoming a lost patient chair.
       `;
       const errors = checkOwnerClaimsContent(content, 'test.md');
       expect(errors).toEqual([]);
@@ -136,6 +157,17 @@ In our Day 1 intake audit, we measure your clinic's exact after-hours inquiry vo
 \`\`\`markdown
 Time to first rupee: 1–2 weeks. Over 40% of inquiries drop off.
 \`\`\`
+      `;
+      const errors = checkOwnerClaimsContent(content, 'test.md');
+      expect(errors).toEqual([]);
+    });
+
+    it('exempts synthetic demonstration fixtures when explicitly marked synthetic', () => {
+      const content = `
+# Synthetic Table Demo
+> **SYNTHETIC EXAMPLE — NOT REAL DATA OR RESULTS**
+| Inquiry Date | Customer | Delay | Outcome |
+| YYYY-MM-DD | SYNTHETIC_NAME_A | 0 min delay | SYNTHETIC_ONLY |
       `;
       const errors = checkOwnerClaimsContent(content, 'test.md');
       expect(errors).toEqual([]);
@@ -188,11 +220,25 @@ Time to first rupee: 1–2 weeks. 100% attribution certainty.
       expect(errors).toEqual([]);
     });
 
+    it('verifies owner/DELIVERY_PLAYBOOK.md has 0 unsourced commercial claims', () => {
+      const playbookPath = getOwnerPath('DELIVERY_PLAYBOOK.md');
+      expect(fs.existsSync(playbookPath)).toBe(true);
+      const errors = checkOwnerClaimsFile(playbookPath);
+      expect(errors).toEqual([]);
+    });
+
+    it('verifies owner/MARKET_MEMO.md has 0 unsourced commercial claims', () => {
+      const memoPath = getOwnerPath('MARKET_MEMO.md');
+      expect(fs.existsSync(memoPath)).toBe(true);
+      const errors = checkOwnerClaimsFile(memoPath);
+      expect(errors).toEqual([]);
+    });
+
     it('verifies all files in owner/ directory pass the claims lint', () => {
       const result = lintOwnerClaimsDirectory(getOwnerPath());
       expect(result.passed).toBe(true);
       expect(result.errors).toEqual([]);
-      expect(result.checkedCount).toBeGreaterThanOrEqual(5);
+      expect(result.checkedCount).toBeGreaterThanOrEqual(8);
     });
   });
 });

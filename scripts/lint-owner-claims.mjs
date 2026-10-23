@@ -12,7 +12,7 @@ import path from 'path';
  *
  * MUST be accompanied by an explicit, valid source marker on the same line or in the same block:
  *  - `SOURCE: https://<valid-domain>/...`
- *  - `OWNER_MEASURED: <description of clinic audit/log measurement>`
+ *  - `OWNER_MEASURED: <description of completed clinic audit/log measurement>`
  *
  * Code blocks, synthetic demonstration fixtures, operational setup time estimates,
  * time-of-day clock ranges (e.g. 8:00 PM – 8:00 AM), negative prohibitions (e.g. "NEVER promise 100%"),
@@ -43,7 +43,7 @@ export const CLAIM_PATTERNS = [
   },
   {
     type: 'RESPONSE_DELAY_HOURS',
-    regex: /(?:response|inquiry|after-hours|staff)?\s*(?:delay|wait(?:ing)?|response\s*time)\s*(?:of\s*)?\d+(?:[–-]\d+)?\s*(?:hours?|hrs?|minutes?|mins?)/i,
+    regex: /(?:response|inquiry|after-hours|staff)?\s*(?:delay|wait(?:ing)?|response\s*time)\s*(?:of|is|of\s*about|approx(?:imately)?)?\s*\d+(?:[–-]\d+)?\s*(?:hours?|hrs?|minutes?|mins?)/i,
     description: 'Unverified response delay or wait time claim'
   },
   {
@@ -86,10 +86,21 @@ export function validateSourceMarker(text) {
   const measuredMatch = text.match(/OWNER_MEASURED:\s*([^)\n]+)/i);
   if (measuredMatch) {
     const details = measuredMatch[1].trim();
+    // A string like 'OWNER_MEASURED: intake audit' must not convert a planned measurement into completed evidence.
+    const invalidPlannedPatterns = /\b(?:intake\s*audit|planned|future|upcoming|pending|estimated|hypothetical|to\s*be\s*measured|tbd)\b/i;
+    if (invalidPlannedPatterns.test(details)) {
+      return { valid: false, reason: 'OWNER_MEASURED marker cannot describe a planned intake audit or future procedure; must represent completed, documented evidence.' };
+    }
     if (details.length >= 8) {
       return { valid: true, type: 'OWNER_MEASURED', value: details };
     }
     return { valid: false, reason: 'OWNER_MEASURED marker must specify what is measured (minimum 8 chars).' };
+  }
+
+  // Synthetic Demonstration / Example Exemption:
+  // Keep synthetic examples exempt only when clearly marked synthetic (e.g. SYNTHETIC EXAMPLE, SYNTHETIC_ONLY)
+  if (/\b(?:SYNTHETIC EXAMPLE|SYNTHETIC_ONLY|SYNTHETIC_NAME|DEMO DATA ONLY)\b/i.test(text)) {
+    return { valid: true, type: 'SYNTHETIC_EXEMPTION', value: 'Explicitly marked synthetic demonstration fixture' };
   }
 
   return { valid: false, reason: 'No source marker found' };
@@ -149,12 +160,13 @@ export function checkOwnerClaimsContent(content, filename = 'test.md') {
 
         const markerResult = validateSourceMarker(contextText);
         if (!markerResult.valid) {
+          const detail = markerResult.reason ? ` (${markerResult.reason})` : '';
           errors.push({
             file: filename,
             line: i + 1,
             text: trimmed,
             claimType: pattern.type,
-            reason: `${pattern.description}. Requires valid 'SOURCE: https://...' or 'OWNER_MEASURED: <details>' marker.`
+            reason: `${pattern.description}.${detail} Requires valid 'SOURCE: https://...' or 'OWNER_MEASURED: <details>' marker.`
           });
           break; // Avoid duplicate errors on same line
         }

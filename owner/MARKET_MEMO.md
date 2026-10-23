@@ -11,9 +11,9 @@
 
 Independent dental practices, poly-clinics, and diagnostic centers in Indian tier-1 and tier-2 urban hubs (Hyderabad, Guntur, Vijayawada, Bangalore) experience structural communication bottlenecks:
 
-1. **Mass Messaging Dominance:** WhatsApp is the primary digital communication tool in India, with over 500 million active users (SOURCE: Meta Public Investor Disclosures, 2024). Prospective patients routinely attempt to contact clinics via WhatsApp.
+1. **Mass Messaging Dominance:** WhatsApp is the primary digital communication tool in India for small businesses and healthcare providers (SOURCE: Meta for Business, accessed October 2026, https://business.whatsapp.com/). Prospective patients routinely attempt to contact clinics via WhatsApp messaging.
 2. **The Front-Desk Operating Gap:** Clinics typically operate reception staff between 9:00 AM and 8:00 PM. High-intent patient inquiries arriving late evening, overnight, or on Sundays go unanswered until the following business day.
-3. **Loss of High-Intent Patients:** In healthcare and dental emergencies (e.g. acute toothache, trauma, urgent consultations), patients seeking care contact alternative open practices if their inquiry is met with silence. Response delay outside clinic hours is measured directly from clinic reception logs during the Day 1 intake audit (OWNER_MEASURED: Intake audit of reception phone and WhatsApp messages).
+3. **Loss of High-Intent Patients:** In healthcare and dental emergencies (e.g. acute toothache, trauma, urgent consultations), patients seeking care contact alternative open practices if their inquiry is met with silence. Response delay outside clinic hours will be measured during a future, owner-conducted audit of clinic reception phone and messaging logs; it is not yet measured evidence, and no historical clinic audit has been conducted.
 
 ---
 
@@ -25,20 +25,20 @@ Independent dental practices, poly-clinics, and diagnostic centers in Indian tie
 
 ---
 
-## 3. Competitive Landscape (Competitor Pricing as Vendor Claims)
+## 3. Competitive Landscape (Competitor Pricing as Vendor Statements)
 
-| Solution Type | Examples | Self-Reported Pricing (Vendor Claims) | Operational Limitations |
+| Solution Type | Examples | Self-Reported Pricing (Vendor Statements) | Operational Limitations |
 |---|---|---|---|
-| **Third-Party WhatsApp API Tools** | Wati, AiSensy, Interakt | Starting plans quote recurring monthly subscription fees plus per-conversation Meta fees (Vendor self-reported pricing claims, 2024) | High recurring software fee for small clinics; complex onboarding; requires Meta Business Verification; additional per-message costs. |
-| **Healthcare Portals / Aggregators** | Practo, Lybrate | Listing fees and commissions per booked consultation (Vendor self-reported pricing claims, 2024) | High customer acquisition cost; clinic brand is disintermediated; patient belongs to platform. |
+| **Third-Party WhatsApp API Tools** | Wati, AiSensy, Interakt | Starting plans quote recurring monthly subscription fees plus per-conversation Meta platform fees (Vendor pricing statements retrieved October 2026: https://www.wati.io/pricing/ and https://aisensy.com/pricing/) | High recurring software fee for small clinics; complex onboarding; requires Meta Business Verification; additional per-message platform charges. |
+| **Healthcare Portals / Aggregators** | Practo, Lybrate | Listing fees and commissions per booked consultation (Vendor self-reported statements retrieved October 2026: https://www.practo.com/providers/) | High customer acquisition cost; clinic brand is disintermediated; patient relationship belongs to platform. |
 | **Our Approach (Free Owner Tools)** | Official WhatsApp Business App + Sheets | **Zero recurring software fees** (Tool cost: ₹0) | 100% free, official tools; client retains absolute account ownership; zero third-party software subscriptions. |
 
-*Note: Competitor pricing represents vendor self-reported marketing claims and is subject to vendor terms, platform fee changes, and volume tiers. It is cited for market context, not as independently verified commercial facts.*
+*Note: Competitor pricing descriptions represent vendor self-reported marketing statements from vendor pricing pages (retrieved October 2026) and do not constitute independently verified commercial facts.*
 
 ---
 
 ## 4. Value Proposition & Pricing Strategy
 
-- **Core Value Proposition:** Eliminate missed after-hours inquiries using 100% free, client-owned tools with zero monthly software bills.
+- **Core Value Proposition:** Structured inquiry workflow setup, automated after-hours response handling, and response-time measurement using 100% free, client-owned tools with zero software subscriptions.
 - **Pricing:** `Price: TBD. Owner decides.` The owner confirms pilot fee, payment terms, and scope directly with the client.
 - **Delivery Mode:** Deliverable-first manual implementation (`MANUAL_BY_OWNER`) in collaboration with reception staff.
