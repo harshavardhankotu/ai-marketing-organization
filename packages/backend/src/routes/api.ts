@@ -1266,7 +1266,7 @@ apiRouter.get('/cron/status', async (c) => {
   try {
     const since24hIso = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
     const since24hSql = since24hIso.replace('T', ' ').replace(/\.\d{3}Z$/, '');
-    const recentRow = await d1Repo.queryOne<{ cnt: number }>('autonomous_cycle_log', `SELECT COUNT(*) as cnt FROM autonomous_cycle_log WHERE cycle_start >= ? OR cycle_start >= ?`, [since24hSql, since24hIso]);
+    const recentRow = await d1Repo.queryOne<{ cnt: number }>('autonomous_cycle_log', `SELECT COUNT(*) as cnt FROM autonomous_cycle_log WHERE trigger_source = 'CLOUDFLARE_CRON' AND (cycle_start >= ? OR cycle_start >= ?)`, [since24hSql, since24hIso]);
     if (recentRow && typeof recentRow.cnt === 'number') {
       recentPings24h = recentRow.cnt;
     }

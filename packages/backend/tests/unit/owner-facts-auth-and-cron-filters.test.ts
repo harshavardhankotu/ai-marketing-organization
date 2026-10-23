@@ -6,14 +6,17 @@ import { getDb } from '../../src/db/client.js';
 describe('Source Code Fixes: Protected facts-status & Cron read filter parity', () => {
   let app: Hono;
   const originalEnv = process.env.NODE_ENV;
+  const originalKey = process.env.OWNER_API_KEY;
 
   beforeEach(() => {
     app = new Hono();
     app.route('/api/v1', apiRouter);
+    process.env.OWNER_API_KEY = 'test_owner_key_for_ci_pipeline_only';
   });
 
   afterEach(() => {
     process.env.NODE_ENV = originalEnv;
+    process.env.OWNER_API_KEY = originalKey;
   });
 
   describe('1. Authentication protection on /api/v1/owner/facts-status', () => {
@@ -28,6 +31,38 @@ describe('Source Code Fixes: Protected facts-status & Cron read filter parity', 
       const body = await res.json() as any;
       expect(body.success).toBe(false);
       expect(body.error).toContain('Unauthorized');
+    });
+
+    it('rejects client identity headers (x-user-id) alone in production mode (must return 401)', async () => {
+      process.env.NODE_ENV = 'production';
+
+      const res = await app.request('/api/v1/owner/facts-status', {
+        method: 'GET',
+        headers: {
+          'x-user-id': 'usr_owner_primary'
+        }
+      });
+
+      expect(res.status).toBe(401);
+      const body = await res.json() as any;
+      expect(body.success).toBe(false);
+      expect(body.error).toContain('Unauthorized: In production, an authenticated principal is required');
+    });
+
+    it('returns 200 OK when authenticated with Bearer token matching OWNER_API_KEY in production', async () => {
+      process.env.NODE_ENV = 'production';
+
+      const res = await app.request('/api/v1/owner/facts-status', {
+        method: 'GET',
+        headers: {
+          'Authorization': 'Bearer test_owner_key_for_ci_pipeline_only'
+        }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as any;
+      expect(body.success).toBe(true);
+      expect(body.siteIdentityLane).toBeDefined();
     });
 
     it('returns 200 OK when authenticated with owner x-user-id header in test mode', async () => {
@@ -45,7 +80,7 @@ describe('Source Code Fixes: Protected facts-status & Cron read filter parity', 
     });
   });
 
-  describe('2. /api/v1/cron/status read-filter parity', () => {
+  describe('2. /api/v1/cron/status read-filter parity and trigger_source restriction', () => {
     it('excludes quarantined, test, and rejected prospects from customerInquiries count', async () => {
       // 1. Get baseline customer inquiries before inserting quarantined/test/rejected rows
       const baseRes = await app.request('/api/v1/cron/status', {
@@ -92,29 +127,57 @@ describe('Source Code Fixes: Protected facts-status & Cron read filter parity', 
       db.prepare(`DELETE FROM platform_prospects WHERE id LIKE 'test_%'`).run();
     });
 
-    it('accurately queries recent autonomous_cycle_log pings with SQLite timestamp formatting', async () => {
+    it('proves inserting a recent non-cron cycle does NOT inflate recentPings24h cron count', async () => {
       const db = getDb();
-      // Insert a recent cycle row using actual column cycle_start
+
+      // 1. Baseline cron count
+      const baseRes = await app.request('/api/v1/cron/status', {
+        method: 'GET',
+        headers: { 'x-user-id': 'usr_owner_primary' }
+      });
+      const baseBody = await baseRes.json() as any;
+      const initialPings = typeof baseBody.data.recentPings24h === 'number' ? baseBody.data.recentPings24h : 0;
+
+      // 2. Insert recent non-cron cycles (MANUAL and SCHEDULER)
       db.prepare(`
         INSERT OR REPLACE INTO autonomous_cycle_log (
           id, organization_id, trigger_source, cycle_start, status, actions_taken
         ) VALUES (
-          'cyc_recent_test_01', 'org_owner_primary', 'CLOUDFLARE_CRON', datetime('now'), 'COMPLETED', 0
+          'cyc_non_cron_manual_01', 'org_owner_primary', 'MANUAL', datetime('now'), 'COMPLETED', 0
+        ), (
+          'cyc_non_cron_scheduler_02', 'org_owner_primary', 'SCHEDULER', datetime('now'), 'COMPLETED', 0
         )
       `).run();
 
-      const res = await app.request('/api/v1/cron/status', {
+      const resAfterNonCron = await app.request('/api/v1/cron/status', {
         method: 'GET',
         headers: { 'x-user-id': 'usr_owner_primary' }
       });
+      const bodyAfterNonCron = await resAfterNonCron.json() as any;
+      expect(bodyAfterNonCron.success).toBe(true);
+      // Non-cron cycles must NOT inflate recentPings24h
+      expect(bodyAfterNonCron.data.recentPings24h).toBe(initialPings);
 
-      expect(res.status).toBe(200);
-      const body = await res.json() as any;
-      expect(body.success).toBe(true);
-      expect(body.data.recentPings24h).toBeGreaterThanOrEqual(1);
+      // 3. Now insert a canonical CLOUDFLARE_CRON cycle
+      db.prepare(`
+        INSERT OR REPLACE INTO autonomous_cycle_log (
+          id, organization_id, trigger_source, cycle_start, status, actions_taken
+        ) VALUES (
+          'cyc_recent_test_cron_03', 'org_owner_primary', 'CLOUDFLARE_CRON', datetime('now'), 'COMPLETED', 0
+        )
+      `).run();
+
+      const resAfterCron = await app.request('/api/v1/cron/status', {
+        method: 'GET',
+        headers: { 'x-user-id': 'usr_owner_primary' }
+      });
+      const bodyAfterCron = await resAfterCron.json() as any;
+      expect(bodyAfterCron.success).toBe(true);
+      // Canonical CLOUDFLARE_CRON cycle increments count by exactly 1
+      expect(bodyAfterCron.data.recentPings24h).toBe(initialPings + 1);
 
       // Clean up
-      db.prepare(`DELETE FROM autonomous_cycle_log WHERE id = 'cyc_recent_test_01'`).run();
+      db.prepare(`DELETE FROM autonomous_cycle_log WHERE id LIKE 'cyc_%_0%'`).run();
     });
   });
 
