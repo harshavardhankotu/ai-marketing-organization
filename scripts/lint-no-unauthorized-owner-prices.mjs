@@ -22,7 +22,7 @@ export function checkOwnerFile(filePath) {
   // Files exempted from strict zero-rupee rule:
   // - OWN_OFFER.legacy_agent_written.md: historical artifact explicitly blocked by SHA in owner-apply.mjs
   // - OWN_OFFER.draft.md: draft template that owner edits
-  if (filename === 'OWN_OFFER.legacy_agent_written.md' || filename === 'OWN_OFFER.draft.md') {
+  if (filename === 'OWN_OFFER.legacy_agent_written.md') {
     return errors;
   }
 

@@ -41,7 +41,7 @@ Gather these during the 30-minute kickoff meeting with the business owner:
 | **Step 6** | **Create Shared Lead Tracker & Response-Time Sheet**<br>- Columns: `Date`, `Inquiry Name`, `Phone`, `Initial Channel`, `Time Received`, `First Response Time`, `Response Delay (Mins)`, `Status`, `Booked Slot`. | Google Sheets | https://support.google.com/docs/answer/6000292 | 30 mins |
 | **Step 7** | **Google Business Profile Audit & WhatsApp CTA Integration**<br>- Verify address and hours match WhatsApp.<br>- Add direct WhatsApp link (`https://wa.me/91XXXXXXXXXX?text=Hi%2C%20I%20would%20like%20to%20inquire%20about%20an%20appointment`) to website/contact fields. | Google Business Profile | https://support.google.com/business/answer/3039617 | 30 mins |
 | **Step 8** | **Staff Walkthrough & Handover Test**<br>- Simulate 3 test inquiries (standard inquiry, after-hours message, appointment booking). Train receptionist to use quick replies. | Live Simulation | N/A | 45 mins |
-| **Total** | **Complete System Setup & Live Handover** | — | — | **4.0 Hours** |
+| **Total** | **Complete System Setup & Live Handover** | — | — | **OWNER_INPUT_REQUIRED** |
 
 ---
 

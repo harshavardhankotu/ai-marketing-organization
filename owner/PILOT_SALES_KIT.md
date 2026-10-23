@@ -37,7 +37,7 @@ The owner can demonstrate the entire system to a doctor or clinic owner in 5 min
 
 ### Step 4: The Shared Tracking Sheet (Minute 5)
 - Open Google Sheet showing: inquiry date, patient name, inquiry topic, response time, and consultation outcome.
-- Conclude: *"We configure this entire setup on your reception's phone in 4 hours, train your staff, and give you a weekly show-rate summary. You retain 100% control of your phone and data."*
+- Conclude: *"We configure this entire setup on your reception's phone (Setup duration: OWNER_INPUT_REQUIRED), train your staff, and give you a weekly show-rate summary. You retain 100% control of your phone and data."*
 
 ---
 

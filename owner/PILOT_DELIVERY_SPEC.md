@@ -85,14 +85,15 @@ During the onboarding kickoff with the clinic owner/doctor, gather these 8 opera
 - Show reception desktop quick replies: type `/fee` → expands instantly into full treatment pricing and consultation details.
 
 ### Act 3: Handover & Next Steps (Minutes 7–10)
-- *"We set this entire system up on your existing phone in 4 hours. No new software to buy, no monthly cloud bills. We provide the setup, the staff training, and weekly inquiry reports."*
+- *"We set this entire system up on your existing phone (Setup duration: OWNER_INPUT_REQUIRED). No new software to buy, no monthly cloud bills. We provide the setup, the staff training, and weekly inquiry reports."*
 - Present commercial pilot terms for owner review.
 
 ---
 
 ## 6. Synthetic Demo Dashboard Schema (`SYNTHETIC_DEMO`)
 
-> **DATA PRIVACY NOTICE:** The following schema is strictly synthetic demonstration data for sales walkthroughs. Zero real patient PII.
+> **DATA PRIVACY NOTICE:** The following schema is strictly synthetic demonstration data for sales walkthroughs. Zero real patient PII.  
+> **DEMO DATA ONLY:** All figures below are synthetic walkthrough fixtures for demonstration purposes only. They are not real client data, verified results, or guaranteed metrics.
 
 ```json
 {
@@ -121,7 +122,7 @@ During the onboarding kickoff with the clinic owner/doctor, gather these 8 opera
 
 ---
 
-## 7. 5-Day Delivery & Milestones Checklist
+## 7. Delivery & Milestones Checklist (Timing: OWNER_INPUT_REQUIRED)
 
 - [ ] **Day 1: Kickoff & Profile Setup**
   - Conduct 30-min intake questionnaire.
@@ -138,7 +139,7 @@ During the onboarding kickoff with the clinic owner/doctor, gather these 8 opera
 - [ ] **Day 4: Google Business Profile Audit & Staff Training**
   - Audit GBP profile information and insert WhatsApp click-to-chat CTA link.
   - 45-minute live staff walkthrough with reception: simulate 3 patient scenarios.
-- [ ] **Day 5: Handover Acceptance & First Report**
+- [ ] **Handover Acceptance & First Report (Timing: OWNER_INPUT_REQUIRED)**
   - Perform live verification test from external phone.
   - Deliver Client Handover Document & sign handover acceptance.
   - Schedule first weekly conversion performance report.
@@ -162,7 +163,7 @@ The pilot is officially complete and accepted when the client signs off on each 
 
 - **Pricing Status:** Price: TBD. Owner decides.
 - **Payment Method Options:**
-  - **Option 1 (Direct UPI QR / VPA):** Client scans owner UPI QR (`venkatasaiharsh149768.rzp@rxairtel`) or transfers to VPA. Client submits UTR; owner verifies bank statement credit.
+  - **Option 1 (Direct UPI QR / VPA):** Client scans owner UPI QR (shared privately upon invoicing) or transfers to VPA. Client submits UTR; owner verifies bank statement credit.
   - **Option 2 (Razorpay Link):** Dynamic provider payment link generated for exact invoice amount.
 - **Verification Rule:** Zero revenue is recognized in internal ledgers until provider capture webhook or owner bank statement credit is confirmed.
 
