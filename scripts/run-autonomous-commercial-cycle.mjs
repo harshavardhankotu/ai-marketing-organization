@@ -75,6 +75,14 @@ async function runCommercialCycle() {
       const publicDealsJson = await publicDealsRes.json();
       console.log('Sample Public Deals Verified:', JSON.stringify(publicDealsJson.data?.deals || [], null, 2));
     }
+    const cuelinksStatusRes = await fetch(`${backendUrl}/api/v1/owner/cuelinks/status`, {
+      headers,
+      signal: AbortSignal.timeout(30000)
+    });
+    if (cuelinksStatusRes.ok) {
+      const cuelinksStatusJson = await cuelinksStatusRes.json();
+      console.log('Cuelinks Status:', JSON.stringify(cuelinksStatusJson, null, 2));
+    }
   } catch (err) {
     console.warn(`Deal status fetch notice: ${err.message}`);
   }

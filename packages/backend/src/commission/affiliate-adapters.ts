@@ -256,7 +256,7 @@ export class CuelinksAdapter implements AffiliateNetworkAdapter {
 
   handles(hostname: string): boolean {
     const h = hostname.toLowerCase();
-    return h === 'cuelinks.com' || h === 'www.cuelinks.com' || h === 'linksredirect.com' || h === 'www.linksredirect.com';
+    return h === 'cuelinks.com' || h === 'www.cuelinks.com' || h === 'linksredirect.com' || h === 'www.linksredirect.com' || h === 'clnk.in' || h === 'www.clnk.in';
   }
 
   buildTrackedDestination({ baseUrl, clickId, template: explicitTemplate, partner, variables }: TrackedDestinationInput): string {
