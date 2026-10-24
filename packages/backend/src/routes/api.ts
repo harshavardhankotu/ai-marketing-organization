@@ -5403,6 +5403,48 @@ apiRouter.get('/public/disclosure/:slug', async (c) => {
 });
 
 /**
+ * Public Deals Discovery Catalog (Autonomous Deal Engine V1.1, Spec § 9)
+ */
+apiRouter.get('/public/deals', async (c) => {
+  const q = c.req.query('q');
+  const category = c.req.query('category');
+  const merchant = c.req.query('merchant');
+  const minPrice = c.req.query('minPrice') ? Number(c.req.query('minPrice')) : undefined;
+  const maxPrice = c.req.query('maxPrice') ? Number(c.req.query('maxPrice')) : undefined;
+  const verifiedOnly = c.req.query('verifiedOnly') === 'true';
+  const hasCoupon = c.req.query('hasCoupon') === 'true';
+  const sortBy = c.req.query('sortBy') as any;
+  const page = c.req.query('page') ? Number(c.req.query('page')) : 1;
+  const limit = c.req.query('limit') ? Number(c.req.query('limit')) : 12;
+
+  const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
+  const result = AutonomousDealDiscoveryEngine.getInstance().queryPublicDeals({
+    q,
+    category,
+    merchant,
+    minPrice,
+    maxPrice,
+    verifiedOnly,
+    hasCoupon,
+    sortBy,
+    page,
+    limit
+  });
+
+  return c.json({ success: true, data: result });
+});
+
+apiRouter.get('/public/deals/:id', async (c) => {
+  const id = c.req.param('id');
+  const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
+  const deal = AutonomousDealDiscoveryEngine.getInstance().getDealById(id);
+  if (!deal) {
+    return c.json({ error: 'DEAL_NOT_FOUND', message: `Deal '${id}' not found` }, 404);
+  }
+  return c.json({ success: true, data: deal });
+});
+
+/**
  * Partner Conversion Webhook (Spec § 6 — Mode 2)
  * Ingests external conversion reports idempotently.
  */
@@ -6429,6 +6471,26 @@ apiRouter.post('/owner/autonomous-engine/tasks/:id/input', async (c) => {
   const { AutonomousCommercialEngine } = await import('../commission/autonomous-commercial-engine.js');
   const task = await AutonomousCommercialEngine.getInstance().registerOwnerInput(taskId, body, orgId);
   return c.json({ success: true, data: task });
+});
+
+/**
+ * Deal Engine Status & Observability (Spec § 12)
+ */
+apiRouter.get('/owner/deal-engine/status', async (c) => {
+  const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
+  const metrics = AutonomousDealDiscoveryEngine.getInstance().getDealEngineMetrics();
+  return c.json({ success: true, data: metrics });
+});
+
+/**
+ * Trigger Autonomous Deal Discovery Cycle (Spec § 1 & § 11)
+ */
+apiRouter.post('/owner/deal-engine/wake', async (c) => {
+  const orgId = c.req.header('x-organization-id') || c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const bizId = OwnerAuthService.PLATFORM_BUSINESS_ID;
+  const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
+  const result = await AutonomousDealDiscoveryEngine.getInstance().runDiscoveryCycle(orgId, bizId);
+  return c.json({ success: true, data: result });
 });
 
 /**

@@ -58,7 +58,30 @@ async function runCommercialCycle() {
 
   // 2. Fetch full operational observability status
   try {
-    console.log('\n[2/2] Fetching engine observability status...');
+    console.log('\n[2/3] Fetching deal engine observability & sample active deals...');
+    const dealStatusRes = await fetch(`${backendUrl}/api/v1/owner/deal-engine/status`, {
+      headers,
+      signal: AbortSignal.timeout(30000)
+    });
+    if (dealStatusRes.ok) {
+      const dealStatusJson = await dealStatusRes.json();
+      console.log('Deal Engine Metrics:', JSON.stringify(dealStatusJson, null, 2));
+    }
+
+    const publicDealsRes = await fetch(`${backendUrl}/api/v1/public/deals?limit=3`, {
+      signal: AbortSignal.timeout(30000)
+    });
+    if (publicDealsRes.ok) {
+      const publicDealsJson = await publicDealsRes.json();
+      console.log('Sample Public Deals Verified:', JSON.stringify(publicDealsJson.data?.deals || [], null, 2));
+    }
+  } catch (err) {
+    console.warn(`Deal status fetch notice: ${err.message}`);
+  }
+
+  // 3. Fetch full operational commercial status
+  try {
+    console.log('\n[3/3] Fetching commercial engine status...');
     const statusRes = await fetch(`${backendUrl}/api/v1/owner/autonomous-engine/status`, {
       headers,
       signal: AbortSignal.timeout(30000)
