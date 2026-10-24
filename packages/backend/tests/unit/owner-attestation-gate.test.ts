@@ -55,7 +55,10 @@ describe('Owner Attestation Gate & Offer Truth (mst_p1_agent_set_owner_attestati
   });
 
   it('4. GET /api/v1/owner/facts-status returns attestation notice and validates OWN_OFFER_CONFIRMED', async () => {
-    const req = new Request('http://localhost/owner/facts-status', { method: 'GET' });
+    const req = new Request('http://localhost/owner/facts-status', {
+      method: 'GET',
+      headers: { 'x-user-id': 'usr_owner_01' }
+    });
     const res = await apiRouter.fetch(req);
     expect(res.status).toBe(200);
     const body = await res.json() as any;

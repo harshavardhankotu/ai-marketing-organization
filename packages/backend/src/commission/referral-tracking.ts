@@ -5,7 +5,7 @@ import { resolveAffiliateAdapter } from './affiliate-adapters.js';
 import { Referral, PartnerOffer, Partner } from './types.js';
 
 /**
- * Strict Redirect Allowlist (§ Pre-Launch Gate).
+ * Strict Redirect Allowlist by Network (§ Pre-Launch Gate).
  * /r/:offerSlug/:referralId may ONLY redirect to allowlisted partner hosts.
  */
 export const ALLOWED_REDIRECT_HOSTS = new Set([
@@ -13,11 +13,37 @@ export const ALLOWED_REDIRECT_HOSTS = new Set([
   'www.amazon.in'
 ]);
 
-export function isAllowlistedRedirectHost(urlStr: string): boolean {
+export const ALLOWED_REDIRECT_HOSTS_BY_NETWORK: Record<string, Set<string>> = {
+  AMAZON_ASSOCIATES: ALLOWED_REDIRECT_HOSTS,
+  CUELINKS: new Set(['cuelinks.com', 'www.cuelinks.com', 'linksredirect.com', 'www.linksredirect.com']),
+  ADMITAD: new Set(['admitad.com', 'www.admitad.com', 'lenmit.com', 'www.lenmit.com']),
+  EARNKARO: new Set(['earnkaro.com', 'www.earnkaro.com']),
+  VCOMMISSION: new Set(['vcommission.com', 'www.vcommission.com']),
+  EBAY_PARTNER_NETWORK: new Set(['ebay.com', 'www.ebay.com'])
+};
+
+export const ALL_ALLOWED_REDIRECT_HOSTS = new Set([
+  ...ALLOWED_REDIRECT_HOSTS,
+  ...ALLOWED_REDIRECT_HOSTS_BY_NETWORK.CUELINKS,
+  ...ALLOWED_REDIRECT_HOSTS_BY_NETWORK.ADMITAD,
+  ...ALLOWED_REDIRECT_HOSTS_BY_NETWORK.EARNKARO,
+  ...ALLOWED_REDIRECT_HOSTS_BY_NETWORK.VCOMMISSION,
+  ...ALLOWED_REDIRECT_HOSTS_BY_NETWORK.EBAY_PARTNER_NETWORK
+]);
+
+export function isAllowlistedRedirectHost(urlStr: string, network?: string): boolean {
   try {
     const parsed = new URL(urlStr);
+    if (parsed.protocol !== 'https:') return false;
     const host = parsed.hostname.toLowerCase();
-    if (ALLOWED_REDIRECT_HOSTS.has(host)) return true;
+
+    if (network && ALLOWED_REDIRECT_HOSTS_BY_NETWORK[network]) {
+      if (ALLOWED_REDIRECT_HOSTS_BY_NETWORK[network].has(host)) return true;
+      if (process.env.NODE_ENV === 'test' && (host.endsWith('.example.com') || host === 'www.ebay.com' || host === 'ebay.com')) return true;
+      return false;
+    }
+
+    if (ALL_ALLOWED_REDIRECT_HOSTS.has(host)) return true;
     if (process.env.NODE_ENV === 'test' && (host.endsWith('.example.com') || host === 'www.ebay.com' || host === 'ebay.com')) return true;
     return false;
   } catch {
@@ -130,8 +156,8 @@ export class ReferralTrackingEngine {
       throw new Error(`INVALID_TRACKING_URL: Offer '${offer.title}' does not have a valid authorized tracking URL.`);
     }
 
-    if (!isAllowlistedRedirectHost(offer.authorizedTrackingUrl)) {
-      throw new Error(`UNAUTHORIZED_REDIRECT_HOST: Redirect destination host '${new URL(offer.authorizedTrackingUrl).hostname}' is not in the allowlist.`);
+    if (!isAllowlistedRedirectHost(offer.authorizedTrackingUrl, partner.network)) {
+      throw new Error(`UNAUTHORIZED_REDIRECT_HOST: Redirect destination host '${new URL(offer.authorizedTrackingUrl).hostname}' is not in the allowlist for network '${partner.network || 'DEFAULT'}'.`);
     }
 
     const referralId = `ref_${randomUUID().substring(0, 10)}`;
@@ -286,7 +312,8 @@ export class ReferralTrackingEngine {
     }
 
     // Safety gate (§ 1): Must redirect strictly to allowlisted destination hosts
-    if (!isAllowlistedRedirectHost(referral.destinationUrl)) {
+    const offerPartner = await this.registry.getPartner(offer.partnerId);
+    if (!isAllowlistedRedirectHost(referral.destinationUrl, offerPartner?.network)) {
       throw new Error(`UNAUTHORIZED_REDIRECT_HOST: Redirect destination host '${new URL(referral.destinationUrl).hostname}' is not in the allowlist.`);
     }
 

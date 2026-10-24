@@ -256,10 +256,26 @@ export class CuelinksAdapter implements AffiliateNetworkAdapter {
 
   handles(hostname: string): boolean {
     const h = hostname.toLowerCase();
-    return h.includes('cuelinks.') || h.includes('linksredirect.');
+    return h === 'cuelinks.com' || h === 'www.cuelinks.com' || h === 'linksredirect.com' || h === 'www.linksredirect.com';
   }
 
   buildTrackedDestination({ baseUrl, clickId, template: explicitTemplate, partner, variables }: TrackedDestinationInput): string {
+    let parsed: URL;
+    try {
+      parsed = new URL(baseUrl);
+    } catch {
+      throw new Error(`INVALID_BASE_URL: Cannot parse Cuelinks base URL: '${baseUrl}'`);
+    }
+
+    const host = parsed.hostname.toLowerCase();
+    // If baseUrl is already a provider-issued tracking URL on an allowlisted host (e.g. linksredirect.com or cuelinks.com)
+    if (this.handles(host)) {
+      if (!parsed.searchParams.has('subid') && clickId) {
+        parsed.searchParams.set('subid', clickId);
+      }
+      return parsed.toString();
+    }
+
     const template = partner?.trackingTemplate || explicitTemplate || variables?.template;
     if (!template) {
       throw new Error('MISSING_PARTNER_TRACKING_TEMPLATE: Cuelinks adapter refuses to build link because owner-entered tracking template is missing from partner record.');
@@ -274,7 +290,9 @@ export class CuelinksAdapter implements AffiliateNetworkAdapter {
   }
 
   hasAttribution(url: URL): boolean {
-    return url.searchParams.has('subid') || url.searchParams.has('cid') || getEnv('CUELINKS_CAMPAIGN_ID').length > 0;
+    const host = url.hostname.toLowerCase();
+    const isProviderIssued = this.handles(host);
+    return isProviderIssued || url.searchParams.has('subid') || url.searchParams.has('cid') || getEnv('CUELINKS_CAMPAIGN_ID').length > 0;
   }
 
   missingAttributionMessage(): string {

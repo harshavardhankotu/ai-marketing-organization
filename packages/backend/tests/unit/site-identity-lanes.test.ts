@@ -47,7 +47,10 @@ describe('Step 6: Site Identity Facts Lane Separation', () => {
     delete process.env.ASSOCIATES_LISTED_SITE_URL;
     delete process.env.ASSOCIATES_AGREEMENT_READ;
 
-    const req = new Request('http://localhost/owner/facts-status', { method: 'GET' });
+    const req = new Request('http://localhost/owner/facts-status', {
+      method: 'GET',
+      headers: { 'x-user-id': 'usr_owner_01' }
+    });
     const res = await apiRouter.fetch(req);
     expect(res.status).toBe(200);
 

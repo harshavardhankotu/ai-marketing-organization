@@ -209,8 +209,9 @@ export class OwnerDigestService {
       const inqRows = db.prepare(`
         SELECT id, prospect_owner_name, phone, prospect_phone, prospect_business_name, notes, status, is_test, created_at
         FROM platform_prospects
-        WHERE source IN ('OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR')
-           OR discovery_source IN ('DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR')
+        WHERE is_test = 0 AND is_junk = 0 AND status NOT IN ('QUARANTINED', 'TEST_QUARANTINED', 'REJECTED')
+          AND (source IN ('OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR')
+            OR discovery_source IN ('DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR'))
         ORDER BY created_at DESC
         LIMIT 10
       `).all() as any[];
@@ -500,8 +501,9 @@ export class OwnerDigestService {
         'platform_prospects',
         `SELECT id, prospect_owner_name, phone, prospect_phone, prospect_business_name, notes, status, is_test, created_at
          FROM platform_prospects
-         WHERE source IN ('OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR')
-            OR discovery_source IN ('DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR')
+         WHERE is_test = 0 AND is_junk = 0 AND status NOT IN ('QUARANTINED', 'TEST_QUARANTINED', 'REJECTED')
+           AND (source IN ('OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR')
+             OR discovery_source IN ('DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR'))
          ORDER BY created_at DESC
          LIMIT 10`
       );
@@ -936,7 +938,7 @@ export class OwnerDigestService {
 
     let inquiriesCount = 0;
     try {
-      const row = db.prepare(`SELECT COUNT(*) as c FROM platform_prospects WHERE is_test = 0 AND created_at >= ?`).get(sevenDaysAgo) as any;
+      const row = db.prepare(`SELECT COUNT(*) as c FROM platform_prospects WHERE is_test = 0 AND is_junk = 0 AND status NOT IN ('QUARANTINED', 'TEST_QUARANTINED', 'REJECTED') AND (source IN ('OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR') OR discovery_source IN ('DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR')) AND created_at >= ?`).get(sevenDaysAgo) as any;
       inquiriesCount = Number(row?.c || 0);
     } catch {}
 

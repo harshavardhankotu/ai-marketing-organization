@@ -24,7 +24,9 @@ describe('Part D: Owner Facts & Auto Publish Gate Test Suite', () => {
 
   describe('1. GET /api/v1/owner/facts-status Endpoint (Part D.2)', () => {
     it('returns SET/MISSING and VALID/INVALID status for each fact without exposing values', async () => {
-      const res = await app.request('/api/v1/owner/facts-status');
+      const res = await app.request('/api/v1/owner/facts-status', {
+        headers: { 'x-user-id': 'usr_owner_01' }
+      });
       expect(res.status).toBe(200);
 
       const json = await res.json() as any;
@@ -63,7 +65,9 @@ describe('Part D: Owner Facts & Auto Publish Gate Test Suite', () => {
       process.env.PUBLIC_CONTACT_EMAIL = 'operator@myspecsite.in';
       process.env.AUTO_PUBLISH_ENABLED = 'true';
 
-      const res = await app.request('/api/v1/owner/facts-status');
+      const res = await app.request('/api/v1/owner/facts-status', {
+        headers: { 'x-user-id': 'usr_owner_01' }
+      });
       expect(res.status).toBe(200);
 
       const json = await res.json() as any;
