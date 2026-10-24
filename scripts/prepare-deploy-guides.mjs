@@ -111,13 +111,25 @@ export async function prepareDeployGuides(options = {}) {
 </body>
 </html>`;
 
-  fs.writeFileSync(path.join(publicDir, 'index.html'), indexHtml, 'utf8');
-
   // Generate guide pages
   const guidesDir = path.join(publicDir, 'guides');
   if (!fs.existsSync(guidesDir)) {
     fs.mkdirSync(guidesDir, { recursive: true });
   }
+
+  // Preserve existing web app homepage (e.g. React root) if already present at publicDir/index.html
+  const rootIndexPath = path.join(publicDir, 'index.html');
+  const existingRootContent = fs.existsSync(rootIndexPath) ? fs.readFileSync(rootIndexPath, 'utf8') : '';
+  const isExistingAppHomepage = existingRootContent.includes('<div id="root">') || existingRootContent.includes('id="root"');
+
+  if (!isExistingAppHomepage) {
+    fs.writeFileSync(rootIndexPath, indexHtml, 'utf8');
+  } else {
+    console.log('Preserving existing public homepage (React application) at index.html');
+  }
+
+  // Always write catalog index to guides/index.html
+  fs.writeFileSync(path.join(guidesDir, 'index.html'), indexHtml, 'utf8');
 
   for (const g of publishedGuides) {
     const guideHtml = `<!DOCTYPE html>
