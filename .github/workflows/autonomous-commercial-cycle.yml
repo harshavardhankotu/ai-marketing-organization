@@ -1,0 +1,27 @@
+name: Autonomous Commercial Revenue Cycle
+
+on:
+  schedule:
+    - cron: '0 */6 * * *' # Every 6 hours
+  workflow_dispatch:
+
+jobs:
+  run-commercial-cycle:
+    name: Execute Autonomous Commercial Work Cycle
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run Commercial Cycle & Observability Verification
+        run: node scripts/run-autonomous-commercial-cycle.mjs
+        env:
+          BACKEND_URL: 'https://ai-marketing-organization.onrender.com'
+          OWNER_API_KEY: ${{ secrets.OWNER_API_KEY }}
+          CRON_PING_SECRET: ${{ secrets.CRON_PING_SECRET }}

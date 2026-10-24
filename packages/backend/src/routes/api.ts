@@ -1424,6 +1424,15 @@ apiRouter.post('/cron/ping', async (c) => {
     }
   }
 
+  // Autonomous Commercial Affiliate Execution Cycle (Mission § 2)
+  let commercialCycleResult: any = null;
+  try {
+    const { AutonomousCommercialEngine } = await import('../commission/autonomous-commercial-engine.js');
+    commercialCycleResult = await AutonomousCommercialEngine.getInstance().runCycle();
+  } catch (commErr: any) {
+    console.warn(`[Cron Ping] Commercial cycle execution notice: ${commErr.message}`);
+  }
+
   // Update cycle outcome in telemetry
   try {
     const outcomeStatus = allSucceeded ? 'HEALTHY' : 'OBSERVED';
@@ -1434,7 +1443,13 @@ apiRouter.post('/cron/ping', async (c) => {
     await d1Repo.executeWrite('cron_telemetry', sqlUpdate, updateParams);
   } catch {}
 
-  return c.json({ success: true, data: results, dpdpPurge: purgeResult, timestamp: new Date().toISOString() });
+  return c.json({
+    success: true,
+    data: results,
+    commercialCycle: commercialCycleResult,
+    dpdpPurge: purgeResult,
+    timestamp: new Date().toISOString()
+  });
 });
 
 // ==========================================
@@ -6382,6 +6397,38 @@ apiRouter.post('/owner/status/compute', async (c) => {
     success: true,
     data: snapshot
   });
+});
+
+/**
+ * Autonomous Commercial Engine Status & Observability (Mission § 10)
+ */
+apiRouter.get('/owner/autonomous-engine/status', async (c) => {
+  const orgId = c.req.header('x-organization-id') || c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const { AutonomousCommercialEngine } = await import('../commission/autonomous-commercial-engine.js');
+  const status = await AutonomousCommercialEngine.getInstance().getEngineStatus(orgId);
+  return c.json({ success: true, data: status });
+});
+
+/**
+ * Trigger Autonomous Commercial Execution Cycle (Mission § 2)
+ */
+apiRouter.post('/owner/autonomous-engine/wake', async (c) => {
+  const orgId = c.req.header('x-organization-id') || c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const { AutonomousCommercialEngine } = await import('../commission/autonomous-commercial-engine.js');
+  const result = await AutonomousCommercialEngine.getInstance().runCycle(orgId);
+  return c.json({ success: true, data: result });
+});
+
+/**
+ * Register owner input to unblock a commercial task (Mission § 5)
+ */
+apiRouter.post('/owner/autonomous-engine/tasks/:id/input', async (c) => {
+  const orgId = c.req.header('x-organization-id') || c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const taskId = c.req.param('id');
+  const body = await c.req.json().catch(() => ({}));
+  const { AutonomousCommercialEngine } = await import('../commission/autonomous-commercial-engine.js');
+  const task = await AutonomousCommercialEngine.getInstance().registerOwnerInput(taskId, body, orgId);
+  return c.json({ success: true, data: task });
 });
 
 /**
