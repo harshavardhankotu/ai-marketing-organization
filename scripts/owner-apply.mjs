@@ -20,7 +20,8 @@ console.log('======================================================\n');
 
 // Step 10b: Known agent-written legacy terms SHA-256 hashes
 export const LEGACY_AGENT_TERMS_SHA256 = [
-  '778922fd08bda0745e74ff4baa368d58d6ba3729634c25dfa03b65a0fe684934'
+  '778922fd08bda0745e74ff4baa368d58d6ba3729634c25dfa03b65a0fe684934',
+  'd16370c334b0e72a834f4ed12d2354673757835d6a9e2bf43023d54992d9ebae'
 ];
 
 // Determine target offer file
@@ -29,7 +30,7 @@ const targetOfferFile = offerFileArg ? path.resolve(process.cwd(), offerFileArg.
 
 let offerFileHash = null;
 if (fs.existsSync(targetOfferFile)) {
-  const fileContent = fs.readFileSync(targetOfferFile, 'utf8');
+  const fileContent = fs.readFileSync(targetOfferFile, 'utf8').replace(/\r\n/g, '\n');
   const computedHash = crypto.createHash('sha256').update(fileContent).digest('hex');
   offerFileHash = computedHash;
 

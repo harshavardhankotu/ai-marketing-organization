@@ -1,8 +1,10 @@
-# OWN COMMERCIAL OFFER SPECIFICATION (LANE B)
+# Agent-written. Not approved. Historical reference only.
 
-> Authoritative commercial offer conditions for the AI Marketing Organization platform.
-> Source of truth: `packages/backend/src/revenue/offer-catalog.ts` (`OfferCatalogService`)
-> Hosted Payment Page: `https://razorpay.me/@venkatasaiharshavardhankotu`
+> **HISTORICAL NOTICE:** This document is an unapproved, agent-written legacy reference artifact.
+> It contains unauthorized terms, unbacked pricing, and outdated platform claims.
+> It is preserved strictly as a historical archive blocked by SHA in `scripts/owner-apply.mjs`.
+> It does NOT represent approved commercial terms or authorized operational commitments.
+> Hosted Payment Page: `[REDACTED_FROM_PUBLIC_DOCS]`
 > Currency: INR (₹). Single-owner, India-first local business commercial engine.
 
 ---
@@ -77,7 +79,7 @@ Before onboarding, the client must have:
             │
             ▼
 [Buyer Approves: Sends Payment via Razorpay Hosted Page]
-(https://razorpay.me/@venkatasaiharshavardhankotu)
+([REDACTED_FROM_PUBLIC_DOCS])
             │
             ▼
 [Razorpay Captures Payment -> Webhook / UTR Verification]
