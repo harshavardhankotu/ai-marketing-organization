@@ -78,7 +78,7 @@ During the onboarding kickoff with the clinic owner/doctor, gather these 8 opera
 ### Act 2: The Solution Demonstration (Minutes 3–7)
 - Show live WhatsApp Business away message on phone: *"Watch what happens when I message your clinic number right now at 9:00 PM."*
 - Demonstrate instant auto-reply:
-  > *"Hello! Thank you for contacting Dr. Sharma's Dental Care. Our clinic is currently closed (Hours: Mon-Sat 9 AM - 8 PM).*  
+  > *"Hello! Thank you for contacting [Clinic Name]. Our clinic is currently closed (Hours: Mon-Sat 9 AM - 8 PM).*  
   > *To request an appointment for tomorrow morning, reply 1.*  
   > *For treatment fee information, reply 2.*  
   > *For acute dental emergencies, call our on-call doctor at +91-98490-XXXXX."*

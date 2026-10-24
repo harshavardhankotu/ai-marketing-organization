@@ -197,7 +197,7 @@ export class ClosedLoopMarketingCycle {
               input.organizationId,
               ctx.CAMPAIGN.campaignId,
               cData.title || 'Clear Aligners Consultation Offer',
-              cData.content || 'Hi! Looking for pain-free smile alignment in Banjara Hills? Book your 3D scan with SmileKraft today.',
+              cData.content || 'Hi! Looking for pain-free smile alignment in Banjara Hills? Book your 3D consultation today.',
               cData.callToAction || 'Reply "BOOK" on WhatsApp'
             );
 
@@ -213,7 +213,7 @@ export class ClosedLoopMarketingCycle {
           execute: async () => {
             const wa = new WhatsAppAdapter();
             const pubRes = await wa.publish({
-              title: 'SmileKraft WhatsApp Template',
+              title: 'Clinic Consultation WhatsApp Template',
               body: 'Transparent EMI Clear Aligners Broadcast',
               channel: 'WHATSAPP'
             });

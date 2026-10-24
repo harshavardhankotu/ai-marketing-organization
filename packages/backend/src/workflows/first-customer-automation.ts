@@ -162,7 +162,7 @@ export class FirstCustomerAutomationPipeline {
       step: 2,
       name: 'Clinical Consultation Completion',
       status: 'SUCCESS',
-      details: `Consultation confirmed attended by Dr. Aravind Reddy at ${appt.clinic_location}.`,
+      details: `Consultation confirmed attended by practitioner at ${appt.clinic_location}.`,
       data: { clinicConfirmation: appt.clinic_confirmation },
     });
 

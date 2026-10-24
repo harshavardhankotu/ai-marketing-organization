@@ -219,7 +219,7 @@ export class SalesConversationEngine {
         intent,
         confidence: 0.88,
         routedAction: 'SEND_CASE_STUDY',
-        responseTemplate: 'At SmileKraft Dental Clinic, our system reduced inquiry response time from 3.5 hours to 85 seconds, resulting in a 34% increase in attended patient consultations.',
+        responseTemplate: 'We are currently launching structured 5-day inbound lead triage pilots for local clinics to cut inquiry response time to under 2 minutes using simple, clinic-owned WhatsApp Business workflows.',
         suppressed: false,
         pipelineUpdated: true,
         details: 'Reference case study evidence dispatched.'

@@ -19,7 +19,7 @@ export interface SeedOptions {
 export function seedDatabase(options: SeedOptions = {}): void {
   const db = getDb();
   const orgId = process.env.DEFAULT_ORG_ID || 'org_default';
-  const userId = 'usr_admin_01';
+  const isProduction = process.env.NODE_ENV === 'production';
 
   // 1. Core Multi-Tenant Organization
   db.prepare(`
@@ -45,207 +45,7 @@ export function seedDatabase(options: SeedOptions = {}): void {
     )
   `).run();
 
-  // 1c. Baseline Reference Client Business (SmileKraft Dental Clinic Hyderabad)
-  db.prepare(`
-    INSERT OR REPLACE INTO organizations (id, name, slug)
-    VALUES ('org_smilekraft_01', 'SmileKraft Healthcare Solutions', 'smilekraft-healthcare')
-  `).run();
-
-  db.prepare(`
-    INSERT OR REPLACE INTO businesses (
-      id, organization_id, name, public_slug, vertical_id, vertical_name, risk_tier,
-      country, currency, timezone, city, neighborhood,
-      website_url, phone, primary_language, secondary_languages_json,
-      brand_voice, value_propositions_json, offerings_json, constraints_json,
-      autonomy_mode, kill_switch_active, kill_switch_reason, public_live
-    ) VALUES (
-      'biz_smilekraft_hyd', 'org_smilekraft_01', 'SmileKraft Dental Clinic Hyderabad', 'smilekraft-dental-clinic', 'HEALTHCARE_CLINIC', 'Healthcare Clinic (Dental/Orthodontics)', 'HIGH',
-      'IN', 'INR', 'Asia/Kolkata', 'Hyderabad', 'Banjara Hills',
-      'https://smilekraftdental.in', '+91-98491-23456', 'English', '["Telugu", "Hindi"]',
-      'Clinical, reassuring, transparent, technologically progressive',
-      '["AI 3D Smile Scanning", "Zero-Cost EMI Financing"]',
-      '[{"id":"off_aligners","title":"Invisible Clear Aligners & Orthodontics","description":"Custom-molded digital invisible aligners with 3D smile design preview. Painless teeth straightening in 6-9 months.","priceINR":45000,"targetSegment":"Young professionals and college students in Gachibowli & Hitec City"}]',
-      '{"monthlyBudgetINR": 50000, "maxCACINR": 2500}',
-      'CONTROLLED_AUTONOMY', 1, 'PAUSED_FIXTURE_CYCLE', 0
-    )
-  `).run();
-
-  // 1d. Live Verification Test Business (for public lead, booking, checkout, and funnel endpoints)
-  db.prepare(`
-    INSERT OR REPLACE INTO businesses (
-      id, organization_id, name, public_slug, vertical_id, vertical_name, risk_tier,
-      country, currency, timezone, city, neighborhood,
-      website_url, phone, primary_language, secondary_languages_json,
-      brand_voice, value_propositions_json, offerings_json, constraints_json,
-      autonomy_mode, kill_switch_active, public_live
-    ) VALUES (
-      'biz_test_live', 'org_owner_primary', 'Apex Health Centre', 'apex-dental-clinic', 'HEALTHCARE_CLINIC', 'Healthcare Clinic (Dental/Orthodontics)', 'LOW',
-      'IN', 'INR', 'Asia/Kolkata', 'Hyderabad', 'Jubilee Hills',
-      'https://apexhealthcentre.in', '+91-98491-99999', 'English', '["Telugu", "Hindi"]',
-      'Clinical, reassuring, transparent', '["Quality Care"]',
-      '[{"id":"off_consult","title":"General Consultation","description":"Doctor consultation","priceINR":500}]',
-      '{}', 'ASSISTED', 0, 1
-    )
-  `).run();
-
-  db.prepare(`
-    INSERT OR REPLACE INTO business_goals (
-      id, organization_id, business_id, title, target_metric,
-      target_value, current_value, metric_unit, timeframe_days,
-      start_date, target_date, budget_allocated_inr, status, kpis_json
-    ) VALUES (
-      'goal_100_leads_hyd', 'org_smilekraft_01', 'biz_smilekraft_hyd', 'Acquire 100 High-Intent Patient Consultations',
-      'qualified_leads', 100, 0, 'leads', 90, date('now'), date('now', '+90 days'), 50000, 'ACTIVE', '[]'
-    )
-  `).run();
-
-  db.prepare(`
-    INSERT OR REPLACE INTO strategies (
-      id, organization_id, business_id, goal_id, version,
-      title, rationale, positioning, target_audience_json,
-      channel_strategy_json, content_themes_json, expected_leads,
-      expected_cpql_inr, status, created_at, updated_at
-    ) VALUES (
-      'strat_core', 'org_smilekraft_01', 'biz_smilekraft_hyd', 'goal_100_leads_hyd', 1,
-      'SmileKraft Core Inbound Lead Generation Strategy',
-      'Target prospective patients in Banjara Hills and Hyderabad via localized WhatsApp triage and search funnels.',
-      'Premier Pain-Free Digital Smile Clinic in Hyderabad',
-      '["Professionals and families in Hyderabad"]',
-      '["WHATSAPP", "GOOGLE_BUSINESS_PROFILE"]',
-      '["Invisible Aligners", "General Consultation"]',
-      100, 500, 'ACTIVE', date('now'), date('now')
-    )
-  `).run();
-
-  db.prepare(`
-    INSERT OR REPLACE INTO campaigns (
-      id, organization_id, business_id, strategy_id, goal_id,
-      title, objective, channels_json, target_audience, geography_json,
-      budget_inr, primary_kpi, target_qualified_leads, start_date, end_date, status
-    ) VALUES (
-      'camp_smilekraft_core_01', 'org_smilekraft_01', 'biz_smilekraft_hyd', 'strat_core', 'goal_100_leads_hyd',
-      'SmileKraft Core Inbound Lead Generation', 'Acquire qualified patient consultations for Clear Aligners',
-      '["WHATSAPP", "GOOGLE_BUSINESS_PROFILE"]', 'Hyderabad professionals and families in Banjara Hills and Hitec City',
-      '{"city":"Hyderabad","neighborhoods":["Banjara Hills"]}', 50000, 'qualified_leads', 100, date('now'), date('now', '+30 days'), 'ACTIVE'
-    )
-  `).run();
-
-  db.prepare(`
-    INSERT OR REPLACE INTO business_goals (
-      id, organization_id, business_id, title, target_metric,
-      target_value, current_value, metric_unit, timeframe_days,
-      start_date, target_date, budget_allocated_inr, status, kpis_json
-    ) VALUES (
-      'goal_test_live_01', 'org_owner_primary', 'biz_test_live', 'Acquire 50 Consultations',
-      'qualified_leads', 50, 0, 'leads', 30, date('now'), date('now', '+30 days'), 10000, 'ACTIVE', '[]'
-    )
-  `).run();
-
-  db.prepare(`
-    INSERT OR REPLACE INTO strategies (
-      id, organization_id, business_id, goal_id, version,
-      title, rationale, positioning, target_audience_json,
-      channel_strategy_json, content_themes_json, expected_leads,
-      expected_cpql_inr, status, created_at, updated_at
-    ) VALUES (
-      'strat_test_live_01', 'org_owner_primary', 'biz_test_live', 'goal_test_live_01', 1,
-      'Apex Live Strategy', 'Rationale', 'Positioning', '[]',
-      '[]', '[]', 50, 200, 'ACTIVE', datetime('now'), datetime('now')
-    )
-  `).run();
-
-  db.prepare(`
-    INSERT OR REPLACE INTO campaigns (
-      id, organization_id, business_id, strategy_id, goal_id,
-      title, objective, channels_json, target_audience,
-      geography_json, budget_inr, primary_kpi, target_qualified_leads,
-      start_date, end_date, status
-    ) VALUES (
-      'camp_test_live_01', 'org_owner_primary', 'biz_test_live', 'strat_test_live_01', 'goal_test_live_01',
-      'Apex Live Campaign', 'General Consultations',
-      '["WHATSAPP"]', 'Hyderabad professionals',
-      '{"city":"Hyderabad"}', 10000, 'qualified_leads', 50, date('now'), date('now', '+30 days'), 'ACTIVE'
-    )
-  `).run();
-
-  db.prepare(`
-    INSERT OR IGNORE INTO funnels (
-      id, business_id, organization_id, public_slug, status, funnel_type,
-      objective, headline, subheadline, proof_points_json, offer_ids_json,
-      cta_strategy, payment_strategy, currency
-    ) VALUES (
-      'fnl_smilekraft_main', 'biz_smilekraft_hyd', 'org_smilekraft_01', 'main', 'ACTIVE', 'UNIVERSAL',
-      'LEAD_CAPTURE', 'SmileKraft Dental Clinic Hyderabad — Invisible Clear Aligners & Orthodontics',
-      'Serving Banjara Hills, Hyderabad with advanced 3D digital smile design.',
-      '["AI 3D Smile Scanning", "Zero-Cost EMI Financing"]',
-      '[]', 'BOOK_OR_BUY', 'OPTIONAL', 'INR'
-    )
-  `).run();
-
-  db.prepare(`
-    INSERT OR IGNORE INTO funnels (
-      id, business_id, organization_id, public_slug, status, funnel_type,
-      objective, headline, subheadline, proof_points_json, offer_ids_json,
-      cta_strategy, payment_strategy, currency
-    ) VALUES (
-      'fnl_smilekraft_makeover', 'biz_smilekraft_hyd', 'org_smilekraft_01', 'smile-makeover', 'ACTIVE', 'UNIVERSAL',
-      'LEAD_CAPTURE', 'SmileKraft Dental Clinic Hyderabad — Invisible Clear Aligners & Orthodontics',
-      'Serving Banjara Hills, Hyderabad with advanced 3D digital smile design.',
-      '["AI 3D Smile Scanning", "Zero-Cost EMI Financing"]',
-      '[]', 'BOOK_OR_BUY', 'OPTIONAL', 'INR'
-    )
-  `).run();
-
-  db.prepare(`
-    INSERT OR IGNORE INTO funnels (
-      id, business_id, organization_id, public_slug, status, funnel_type,
-      objective, headline, subheadline, proof_points_json, offer_ids_json,
-      cta_strategy, payment_strategy, currency
-    ) VALUES (
-      'fnl_platform_main', 'biz_platform_aro', 'org_owner_primary', 'main', 'ACTIVE', 'UNIVERSAL',
-      'LEAD_CAPTURE', 'Platform Autonomous Revenue System',
-      'Autonomous inbound lead triage and appointment booking.',
-      '["24/7 Response under 2 minutes", "Zero ad spend required"]',
-      '[]', 'BOOK_OR_BUY', 'OPTIONAL', 'INR'
-    )
-  `).run();
-
-  // 1d. Default customer offers so /public/checkout works on fresh local boot (mirrors 0009 D1 migration)
-  db.prepare(`
-    INSERT OR IGNORE INTO customer_offers (
-      id, business_id, organization_id, title, description, category,
-      price_minor, currency, billing_model, target_segment, fulfillment_type, active
-    ) VALUES
-      ('coff_smilekraft_consult_500', 'biz_smilekraft_hyd', 'org_smilekraft_01',
-       'Dental Consultation & Assessment', 'Chair-side consultation with treatment plan.',
-       'GENERAL', 50000, 'INR', 'ONE_TIME', 'General', 'SERVICE_DELIVERY', 1)
-  `).run();
-  db.prepare(`
-    INSERT OR IGNORE INTO customer_offers (
-      id, business_id, organization_id, title, description, category,
-      price_minor, currency, billing_model, target_segment, fulfillment_type, active
-    ) VALUES
-      ('coff_smilekraft_aligners_45000', 'biz_smilekraft_hyd', 'org_smilekraft_01',
-       'Invisible Clear Aligners - Phase 1', '3D smile scan + aligner phase 1.',
-       'GENERAL', 4500000, 'INR', 'ONE_TIME', 'General', 'SERVICE_DELIVERY', 1)
-  `).run();
-  db.prepare(`
-    INSERT OR IGNORE INTO customer_offers (
-      id, business_id, organization_id, title, description, category,
-      price_minor, currency, billing_model, target_segment, fulfillment_type, active
-    ) VALUES
-      ('coff_platform_setup_15000', 'biz_platform_aro', 'org_owner_primary',
-       'AI Inbound Lead Conversion System - Setup', 'Day 0-5 setup and integration.',
-       'GENERAL', 1500000, 'INR', 'ONE_TIME', 'General', 'SERVICE_DELIVERY', 1)
-  `).run();
-
-  // 2. Platform Administrator User
-  db.prepare(`
-    INSERT OR REPLACE INTO users (id, organization_id, email, name, role, api_token)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(userId, orgId, 'admin@marketing-org.local', 'Platform Administrator', 'OWNER', 'token_admin_prod_auth_2026');
-
-  // 3. Seed 80 Autonomous Agents (System Infrastructure)
+  // 2. Seed 80 Autonomous Agents (System Infrastructure)
   const insertAgentStmt = db.prepare(`
     INSERT OR REPLACE INTO agents (
       id, organization_id, name, category, role,
@@ -275,7 +75,7 @@ export function seedDatabase(options: SeedOptions = {}): void {
     );
   }
 
-  // 4. Seed Quota Records
+  // 3. Seed Quota Records
   const todayKey = new Date().toISOString().split('T')[0];
   db.prepare(`
     INSERT OR REPLACE INTO quota_records (
@@ -284,17 +84,19 @@ export function seedDatabase(options: SeedOptions = {}): void {
     ) VALUES (?, ?, ?, ?, ?, ?)
   `).run(todayKey, 0, 0, 0, 0, 0);
 
-  // 5. If Explicit Demo Mode Requested, seed clearly flagged DEMO business
+  // If in production, STOP HERE. Never insert synthetic clinics, fake businesses, test funnels, unapproved offers, or hardcoded admin tokens in production.
+  if (isProduction) {
+    console.log('[Seed Gate] Production mode: isolated core infrastructure seeded (org_owner_primary, biz_platform_aro [public_live: 0], 80 agents, quota records). Synthetic test fixtures suppressed.');
+    return;
+  }
+
+  // 4. If Explicit Demo Mode Requested, seed clearly flagged DEMO business
   if (options.withDemoData) {
     seedDemoBusiness(db, orgId);
   }
 
-  // 6. Seed foundational test fixtures ONLY in test/demo/local-dev environments, NEVER in production
-  const isProduction = process.env.NODE_ENV === 'production';
-  const existingBiz = db.prepare('SELECT count(*) as count FROM businesses').get() as any;
-  if (!isProduction && (options.withTestFixtures || process.env.NODE_ENV === 'test' || !existingBiz || existingBiz.count === 0)) {
-    seedTestFixtures(db);
-  }
+  // 5. Seed foundational test fixtures ONLY in test/demo/local-dev environments, NEVER in production
+  seedTestFixtures(db);
 }
 
 /**
@@ -340,13 +142,26 @@ export function seedTestFixtures(db: any): void {
     VALUES (?, ?, ?)
   `).run(orgId, 'SmileKraft Healthcare Solutions', 'smilekraft-healthcare');
 
+  // Test Platform Admin User (with safe test API token)
+  db.prepare(`
+    INSERT OR REPLACE INTO users (id, organization_id, email, name, role, api_token)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(
+    'usr_admin_01',
+    process.env.DEFAULT_ORG_ID || 'org_default',
+    'admin@marketing-org.local',
+    'Platform Administrator',
+    'OWNER',
+    process.env.OWNER_API_KEY || 'test_owner_key_for_ci_pipeline_only'
+  );
+
   // Test User
   db.prepare(`
     INSERT OR REPLACE INTO users (id, organization_id, email, name, role, api_token)
     VALUES (?, ?, ?, ?, ?, ?)
   `).run(userId, orgId, 'dr.aravind@smilekraftdental.in', 'Dr. Aravind Reddy', 'OWNER', 'secret_token_owner_smilekraft_2026');
 
-  // Test Business
+  // Test Business (Synthetic, isolated from production)
   const offerings = [
     {
       id: 'off_aligners',
@@ -370,9 +185,128 @@ export function seedTestFixtures(db: any): void {
       country, currency, timezone, city, neighborhood,
       website_url, phone, primary_language, secondary_languages_json,
       brand_voice, value_propositions_json, offerings_json, constraints_json,
-      autonomy_mode, kill_switch_active
-    ) VALUES (?, ?, ?, 'smilekraft-dental-clinic', 'HEALTHCARE_CLINIC', 'Healthcare Clinic (Dental/Orthodontics)', 'HIGH', 'IN', 'INR', 'Asia/Kolkata', 'Hyderabad', 'Banjara Hills', 'https://smilekraftdental.in', '+91-98491-23456', 'English', '["Telugu", "Hindi"]', 'Clinical, reassuring, transparent, technologically progressive', '["AI 3D Smile Scanning", "Zero-Cost EMI Financing"]', ?, '{"monthlyBudgetINR": 50000, "maxCACINR": 2500}', 'CONTROLLED_AUTONOMY', 0)
+      autonomy_mode, kill_switch_active, kill_switch_reason, public_live
+    ) VALUES (?, ?, ?, 'smilekraft-dental-clinic', 'HEALTHCARE_CLINIC', 'Healthcare Clinic (Dental/Orthodontics)', 'HIGH', 'IN', 'INR', 'Asia/Kolkata', 'Hyderabad', 'Banjara Hills', 'https://synthetic-test.invalid', '+91-000-000-0000', 'English', '["Telugu", "Hindi"]', 'Clinical, reassuring, transparent, technologically progressive', '["AI 3D Smile Scanning", "Zero-Cost EMI Financing"]', ?, '{"monthlyBudgetINR": 50000, "maxCACINR": 2500}', 'CONTROLLED_AUTONOMY', 0, null, 0)
   `).run(businessId, orgId, 'SmileKraft Dental Clinic Hyderabad', JSON.stringify(offerings));
+
+  // Live Verification Test Business (for unit/integration test harness)
+  db.prepare(`
+    INSERT OR REPLACE INTO businesses (
+      id, organization_id, name, public_slug, vertical_id, vertical_name, risk_tier,
+      country, currency, timezone, city, neighborhood,
+      website_url, phone, primary_language, secondary_languages_json,
+      brand_voice, value_propositions_json, offerings_json, constraints_json,
+      autonomy_mode, kill_switch_active, public_live
+    ) VALUES (
+      'biz_test_live', 'org_owner_primary', 'Apex Health Centre', 'apex-dental-clinic', 'HEALTHCARE_CLINIC', 'Healthcare Clinic (Dental/Orthodontics)', 'LOW',
+      'IN', 'INR', 'Asia/Kolkata', 'Hyderabad', 'Jubilee Hills',
+      'https://synthetic-test.invalid', '+91-000-000-0000', 'English', '["Telugu", "Hindi"]',
+      'Clinical, reassuring, transparent', '["Quality Care"]',
+      '[{"id":"off_consult","title":"General Consultation","description":"Doctor consultation","priceINR":500}]',
+      '{}', 'ASSISTED', 0, 1
+    )
+  `).run();
+
+  db.prepare(`
+    INSERT OR REPLACE INTO business_goals (
+      id, organization_id, business_id, title, target_metric,
+      target_value, current_value, metric_unit, timeframe_days,
+      start_date, target_date, budget_allocated_inr, status, kpis_json
+    ) VALUES (
+      'goal_test_live_01', 'org_owner_primary', 'biz_test_live', 'Acquire 50 Consultations',
+      'qualified_leads', 50, 0, 'leads', 30, date('now'), date('now', '+30 days'), 10000, 'ACTIVE', '[]'
+    )
+  `).run();
+
+  db.prepare(`
+    INSERT OR REPLACE INTO strategies (
+      id, organization_id, business_id, goal_id, version,
+      title, rationale, positioning, target_audience_json,
+      channel_strategy_json, content_themes_json, expected_leads,
+      expected_cpql_inr, status, created_at, updated_at
+    ) VALUES (
+      'strat_test_live_01', 'org_owner_primary', 'biz_test_live', 'goal_test_live_01', 1,
+      'Apex Live Strategy', 'Rationale', 'Positioning', '[]',
+      '[]', '[]', 50, 200, 'ACTIVE', datetime('now'), datetime('now')
+    )
+  `).run();
+
+  db.prepare(`
+    INSERT OR REPLACE INTO campaigns (
+      id, organization_id, business_id, strategy_id, goal_id,
+      title, objective, channels_json, target_audience,
+      geography_json, budget_inr, primary_kpi, target_qualified_leads,
+      start_date, end_date, status
+    ) VALUES (
+      'camp_test_live_01', 'org_owner_primary', 'biz_test_live', 'strat_test_live_01', 'goal_test_live_01',
+      'Apex Live Campaign', 'General Consultations',
+      '["WHATSAPP"]', 'Hyderabad professionals',
+      '{"city":"Hyderabad"}', 10000, 'qualified_leads', 50, date('now'), date('now', '+30 days'), 'ACTIVE'
+    )
+  `).run();
+
+  // Test Funnels
+  db.prepare(`
+    INSERT OR IGNORE INTO funnels (
+      id, business_id, organization_id, public_slug, status, funnel_type,
+      objective, headline, subheadline, proof_points_json, offer_ids_json,
+      cta_strategy, payment_strategy, currency
+    ) VALUES (
+      'fnl_smilekraft_main', 'biz_smilekraft_hyd', 'org_smilekraft_01', 'main', 'ACTIVE', 'UNIVERSAL',
+      'LEAD_CAPTURE', 'SmileKraft Dental Clinic Hyderabad — Invisible Clear Aligners & Orthodontics',
+      'Serving Banjara Hills, Hyderabad with advanced 3D digital smile design.',
+      '["AI 3D Smile Scanning", "Zero-Cost EMI Financing"]',
+      '[]', 'BOOK_OR_BUY', 'OPTIONAL', 'INR'
+    )
+  `).run();
+
+  db.prepare(`
+    INSERT OR IGNORE INTO funnels (
+      id, business_id, organization_id, public_slug, status, funnel_type,
+      objective, headline, subheadline, proof_points_json, offer_ids_json,
+      cta_strategy, payment_strategy, currency
+    ) VALUES (
+      'fnl_smilekraft_makeover', 'biz_smilekraft_hyd', 'org_smilekraft_01', 'smile-makeover', 'ACTIVE', 'UNIVERSAL',
+      'LEAD_CAPTURE', 'SmileKraft Dental Clinic Hyderabad — Invisible Clear Aligners & Orthodontics',
+      'Serving Banjara Hills, Hyderabad with advanced 3D digital smile design.',
+      '["AI 3D Smile Scanning", "Zero-Cost EMI Financing"]',
+      '[]', 'BOOK_OR_BUY', 'OPTIONAL', 'INR'
+    )
+  `).run();
+
+  db.prepare(`
+    INSERT OR IGNORE INTO funnels (
+      id, business_id, organization_id, public_slug, status, funnel_type,
+      objective, headline, subheadline, proof_points_json, offer_ids_json,
+      cta_strategy, payment_strategy, currency
+    ) VALUES (
+      'fnl_platform_main', 'biz_platform_aro', 'org_owner_primary', 'main', 'ACTIVE', 'UNIVERSAL',
+      'LEAD_CAPTURE', 'Platform Autonomous Revenue System',
+      'Autonomous inbound lead triage and appointment booking.',
+      '["24/7 Response under 2 minutes", "Zero ad spend required"]',
+      '[]', 'BOOK_OR_BUY', 'OPTIONAL', 'INR'
+    )
+  `).run();
+
+  // Approved Test Customer Offers (NOTE: coff_platform_setup_15000 is intentionally removed)
+  db.prepare(`
+    INSERT OR IGNORE INTO customer_offers (
+      id, business_id, organization_id, title, description, category,
+      price_minor, currency, billing_model, target_segment, fulfillment_type, active
+    ) VALUES
+      ('coff_smilekraft_consult_500', 'biz_smilekraft_hyd', 'org_smilekraft_01',
+       'Dental Consultation & Assessment', 'Chair-side consultation with treatment plan.',
+       'GENERAL', 50000, 'INR', 'ONE_TIME', 'General', 'SERVICE_DELIVERY', 1)
+  `).run();
+  db.prepare(`
+    INSERT OR IGNORE INTO customer_offers (
+      id, business_id, organization_id, title, description, category,
+      price_minor, currency, billing_model, target_segment, fulfillment_type, active
+    ) VALUES
+      ('coff_smilekraft_aligners_45000', 'biz_smilekraft_hyd', 'org_smilekraft_01',
+       'Invisible Clear Aligners - Phase 1', '3D smile scan + aligner phase 1.',
+       'GENERAL', 4500000, 'INR', 'ONE_TIME', 'General', 'SERVICE_DELIVERY', 1)
+  `).run();
 
   // Test Goal
   const kpis = [
@@ -784,4 +718,11 @@ export function seedTestFixtures(db: any): void {
       call_clicks, website_clicks, direction_requests, reviews_count, average_rating, last_sync_timestamp
     ) VALUES (?, 1420, 890, 18, 44, 29, 47, 4.9, datetime('now'))
   `).run(businessId);
+}
+
+// Auto-run if executed directly as a CLI script
+const isCli = process.argv[1] && (process.argv[1].endsWith('seed.ts') || process.argv[1].endsWith('seed.js'));
+if (isCli) {
+  seedDatabase();
+  console.log('Database seeding verified successfully.');
 }

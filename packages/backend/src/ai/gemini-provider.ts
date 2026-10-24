@@ -393,7 +393,7 @@ export class GeminiProvider implements ModelProvider {
         title: 'Smile Transformation in Hyderabad - Transparent Pricing',
         channel: ctx.channel || 'WHATSAPP',
         language: ctx.language || 'English',
-        content: `Hi ${ctx.patientName || 'there'}! SmileKraft Dental offers consultation appointments in Hyderabad with flexible zero-cost EMI plans. Tap to schedule consultation on WhatsApp.`,
+        content: `Hi ${ctx.patientName || 'there'}! Our clinic offers consultation appointments with transparent scheduling. Tap to schedule consultation on WhatsApp.`,
         callToAction: 'Tap to Schedule Consultation on WhatsApp',
         brandVoiceScore: 0.9,
         factualConfidence: 0.9,

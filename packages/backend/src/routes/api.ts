@@ -6961,9 +6961,13 @@ apiRouter.get('/commission/money-path', async (c) => {
     process.env.AMAZON_AFFILIATE_TAG ||
     process.env.EBAY_CAMPID ||
     process.env.PARTNER_AFFILIATE_ID ||
+    process.env.CUELINKS_CAMPAIGN_ID ||
+    process.env.ADMITAD_CAMPAIGN_ID ||
+    process.env.EARNKARO_AFFILIATE_ID ||
+    process.env.VCOMMISSION_AFFILIATE_ID ||
     authorizedPartners.some(p => {
       const ev = typeof p.evidence_json === 'string' ? p.evidence_json : JSON.stringify(p.evidence || {});
-      return ev.includes('affiliateTag') || ev.includes('affiliateId') || ev.includes('tag');
+      return ev.includes('affiliateTag') || ev.includes('affiliateId') || ev.includes('tag') || ev.includes('campaignId');
     })
   );
 
