@@ -9,6 +9,8 @@ export type DealSourceClass =
   | 'PUBLIC_DEAL_FEED'            // Class C: Public deal aggregators & coupon feeds (DesiDime, etc.)
   | 'FREE_TECHNICAL_DISCOVERY';   // Class D: RSS/Atom feeds, Sitemaps, Schema.org JSON-LD
 
+import { CuelinksSyncStatus } from './cuelinks-v3-types.js';
+
 export type DealVerificationStatus =
   | 'DISCOVERED'                  // Discovered from source, pending verification
   | 'PENDING_VERIFICATION'        // Queued for Level 1–5 cross-checking
@@ -72,7 +74,13 @@ export interface DiscoveredDealInput {
   sourceType: DealSourceClass;
   rawSpecs?: Record<string, string>;
   modelOrSku?: string;
+  isMonetizable?: boolean;
+  trackingUrl?: string;
+  affiliateNetwork?: string;
+  affiliateCampaignId?: string;
 }
+
+export type DealCandidate = DiscoveredDealInput;
 
 export interface NormalizedDeal {
   id: string;
@@ -106,6 +114,7 @@ export interface NormalizedDeal {
   isMonetizable: boolean;
   affiliateNetwork?: string;
   trackingUrl?: string;
+  affiliateCampaignId?: string;
   modelOrSku?: string;
   evidenceJson: {
     sources: string[];
@@ -175,4 +184,5 @@ export interface DealEngineObservabilityMetrics {
     activeBlockersCount: number;
     status: string;
   };
+  cuelinksSync?: CuelinksSyncStatus;
 }

@@ -8,6 +8,7 @@ import { getDb } from '../db/client.js';
 import { isProduction } from '../config/env.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { DealSsrfGuard } from './deal-ssrf-guard.js';
+import { CuelinksSyncManager } from './cuelinks-sync-manager.js';
 import {
   NormalizedDeal,
   DiscoveredDealInput,
@@ -312,7 +313,7 @@ export class AutonomousDealDiscoveryEngine {
     await this.syncFromD1Async(organizationId, businessId);
 
     // 2. Discover promotional deals across available sources
-    const rawOffers: DiscoveredDealInput[] = await this.discoverDealsFromAllSources();
+    const rawOffers: DiscoveredDealInput[] = await this.discoverDealsFromAllSources(organizationId, businessId);
 
     let offersVerified = 0;
     let offersRejected = 0;
@@ -367,7 +368,10 @@ export class AutonomousDealDiscoveryEngine {
   /**
    * Discovers deals across all 4 source classes without waiting for human intervention (Spec § 2).
    */
-  public async discoverDealsFromAllSources(): Promise<DiscoveredDealInput[]> {
+  public async discoverDealsFromAllSources(
+    organizationId: string = 'org_owner_primary',
+    businessId: string = 'biz_platform_aro'
+  ): Promise<DiscoveredDealInput[]> {
     const discovered: DiscoveredDealInput[] = [];
 
     // Class A: Authentic Indian Retailer & Brand Offers (Verified INR Prices)
@@ -502,6 +506,46 @@ export class AutonomousDealDiscoveryEngine {
       sourceType: 'PUBLIC_DEAL_FEED',
       modelOrSku: 'LOGI-M221-BLK'
     });
+
+    // Class B: Cuelinks Autonomous Monetization Feed (Spec § 1, 2, 3, 4, 5, 6)
+    try {
+      const syncResult = await CuelinksSyncManager.getInstance().syncCuelinks(organizationId, businessId);
+      if (syncResult.success && syncResult.dealCandidates && syncResult.dealCandidates.length > 0) {
+        for (const candidate of syncResult.dealCandidates) {
+          discovered.push({
+            title: candidate.title,
+            brand: candidate.brand,
+            merchant: candidate.merchant,
+            category: candidate.category,
+            productUrl: candidate.productUrl,
+            currentPriceINR: candidate.currentPriceINR,
+            referencePriceINR: candidate.referencePriceINR,
+            claimedDiscountPercent: candidate.claimedDiscountPercent,
+            couponCode: candidate.couponCode,
+            couponConditions: candidate.couponConditions,
+            availability: candidate.availability || 'IN_STOCK',
+            geographicRestrictions: candidate.geographicRestrictions || ['India'],
+            sourceUrl: candidate.sourceUrl,
+            sourceDomain: candidate.sourceDomain,
+            sourceType: candidate.sourceType,
+            trackingUrl: candidate.trackingUrl,
+            affiliateNetwork: candidate.affiliateNetwork,
+            affiliateCampaignId: candidate.affiliateCampaignId,
+            isMonetizable: candidate.isMonetizable,
+            modelOrSku: candidate.modelOrSku
+          });
+        }
+        const src = this.sourcesMap.get('src_cuelinks_network');
+        if (src) {
+          src.totalOffersFound += syncResult.dealCandidates.length;
+          src.lastScanAt = new Date().toISOString();
+          src.lastHttpStatus = 200;
+          src.permissionStatus = 'ALLOWED';
+        }
+      }
+    } catch (cuelinksErr: any) {
+      console.warn(`[DealEngine] Cuelinks autonomous sync notice: ${cuelinksErr.message}`);
+    }
 
     // Update source metrics
     for (const deal of discovered) {
@@ -639,6 +683,13 @@ export class AutonomousDealDiscoveryEngine {
         existing.confidenceScore = Math.min(100, existing.confidenceScore + 10);
       }
 
+      if (input.isMonetizable && input.trackingUrl && !existing.isMonetizable) {
+        existing.trackingUrl = input.trackingUrl;
+        existing.affiliateNetwork = input.affiliateNetwork;
+        existing.affiliateCampaignId = input.affiliateCampaignId;
+        existing.isMonetizable = true;
+      }
+
       existing.updatedAt = nowIso;
       await this.persistDealToD1(existing, organizationId, businessId);
 
@@ -678,7 +729,10 @@ export class AutonomousDealDiscoveryEngine {
       confidenceScore,
       buyerValueScore: 0, // Will be computed in ranking
       rejectionReasons,
-      isMonetizable: false, // Separated until program authorized (Spec § 8)
+      trackingUrl: input.trackingUrl,
+      affiliateNetwork: input.affiliateNetwork,
+      affiliateCampaignId: input.affiliateCampaignId,
+      isMonetizable: input.isMonetizable === true && Boolean(input.trackingUrl),
       modelOrSku: input.modelOrSku,
       evidenceJson: {
         sources: [input.sourceUrl],
@@ -923,6 +977,8 @@ export class AutonomousDealDiscoveryEngine {
       }
     }
 
+    const cuelinksSync = CuelinksSyncManager.getInstance().getStatus();
+
     return {
       sources: {
         totalDiscovered: sources.length,
@@ -956,9 +1012,9 @@ export class AutonomousDealDiscoveryEngine {
         withAuthorizedTracking: deals.filter(d => Boolean(d.trackingUrl)).length,
         directMerchantLinks: deals.filter(d => !d.isMonetizable).length,
         publishedDealPages: deals.filter(d => d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS').length,
-        clicksRecorded: 0,
-        providerAttributedConversions: 0,
-        confirmedCommissionsINR: 0,
+        clicksRecorded: cuelinksSync.reconciliation.localClicks,
+        providerAttributedConversions: cuelinksSync.reconciliation.reportedConversions,
+        confirmedCommissionsINR: cuelinksSync.reconciliation.validatedCommissionINR,
         cashReceivedINR: 0
       },
       execution: {
@@ -966,9 +1022,10 @@ export class AutonomousDealDiscoveryEngine {
         lastScanAt: this.lastScanTimestamp,
         nextScheduledRun: new Date(Date.now() + 6 * 3600 * 1000).toISOString(),
         durationMs: this.lastCycleDurationMs,
-        activeBlockersCount: 0,
+        activeBlockersCount: cuelinksSync.status === 'BLOCKED_AUTHORIZATION' ? 1 : 0,
         status: this.lastCycleStatus
-      }
+      },
+      cuelinksSync
     };
   }
 

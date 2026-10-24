@@ -6496,6 +6496,26 @@ apiRouter.post('/owner/deal-engine/wake', async (c) => {
 });
 
 /**
+ * Cuelinks Integration Status & Observability (MCP / V3 API)
+ */
+apiRouter.get('/owner/cuelinks/status', async (c) => {
+  const { CuelinksSyncManager } = await import('../commission/cuelinks-sync-manager.js');
+  const status = CuelinksSyncManager.getInstance().getStatus();
+  return c.json({ success: true, data: status });
+});
+
+/**
+ * Trigger Autonomous Cuelinks Synchronization Cycle
+ */
+apiRouter.post('/owner/cuelinks/sync', async (c) => {
+  const orgId = c.req.header('x-organization-id') || c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const bizId = OwnerAuthService.PLATFORM_BUSINESS_ID;
+  const { CuelinksSyncManager } = await import('../commission/cuelinks-sync-manager.js');
+  const result = await CuelinksSyncManager.getInstance().syncCuelinks(orgId, bizId);
+  return c.json({ success: result.success, data: result.status, reason: result.reason });
+});
+
+/**
  * Record provider usage reading from dashboard (Owner-only)
  */
 apiRouter.post('/owner/usage-reading', async (c) => {
