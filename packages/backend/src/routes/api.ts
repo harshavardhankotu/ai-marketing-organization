@@ -156,6 +156,8 @@ export const EXACT_ROUTE_POLICY = {
     '/r',
     '/public/content',
     '/public/disclosure',
+    '/public/deals',
+    '/deals',
     '/guides',
     '/compare',
     '/recommendations',
