@@ -7,6 +7,8 @@ import {
 import { CuelinksAdapter } from '../../src/commission/affiliate-adapters.js';
 import { PartnerRegistryEngine } from '../../src/commission/partner-registry.js';
 import { resetDbForTesting, getDb } from '../../src/db/client.js';
+import { app } from '../../src/index.js';
+import { OwnerAuthService } from '../../src/auth/owner-auth.js';
 
 describe('Cuelinks Referral Tracking, Host Allowlist & Money-Path Verification', () => {
   const originalEnv = { ...process.env };
@@ -179,6 +181,103 @@ describe('Cuelinks Referral Tracking, Host Allowlist & Money-Path Verification',
       const s5 = await registry.evaluateNetworkMoneyPath(ORG, 'CUELINKS');
       expect(s5.moneyPath).toBe('READY');
       expect(s5.singleBiggestBlocker).toBe('NONE_DRIVE_TRAFFIC');
+    });
+  });
+
+  describe('4. Unified Launch-Checklist and Money-Path Multi-Network Verification', () => {
+    it('evaluates Cuelinks launch checklist via GET /api/v1/commission/launch-checklist?network=CUELINKS', async () => {
+      const session = OwnerAuthService.getInstance().createSession('usr_owner_01', ORG);
+
+      // Stage 1: Empty state for Cuelinks
+      const resUnauth = await app.request('/api/v1/commission/launch-checklist?network=CUELINKS');
+      expect(resUnauth.status).toBe(401);
+
+      const res1 = await app.request('/api/v1/commission/launch-checklist?network=CUELINKS', {
+        headers: { 'Authorization': `Bearer ${session.token}`, 'x-organization-id': ORG }
+      });
+      expect(res1.status).toBe(200);
+      const data1 = (await res1.json() as any).data;
+      expect(data1.moneyPath).toBe('BLOCKED');
+      expect(data1.recommendedFirstPartner.name).toBe('Cuelinks India');
+      expect(data1.recommendedFirstPartner.network).toBe('CUELINKS');
+      expect(data1.recommendedFirstPartner.payoutThresholdINR).toBe(500);
+      expect(data1.singleBiggestBlocker).toBe('PARTNER_APPROVAL');
+      expect(data1.codeActionRequired).toContain('Awaiting partner authorization');
+      expect(data1.codeActionRequired).not.toContain('None. The code is ready');
+
+      // Stage 2: Register Cuelinks Partner
+      const registry = PartnerRegistryEngine.getInstance();
+      const partner = await registry.createPartner({
+        organizationId: ORG,
+        name: 'Cuelinks India Commercial',
+        industry: 'ecommerce',
+        website: 'https://cuelinks.com',
+        network: 'CUELINKS',
+        approvalStatus: 'APPROVED',
+        authorizationStatus: 'AUTHORIZED'
+      });
+
+      const res2 = await app.request('/api/v1/commission/launch-checklist?network=CUELINKS', {
+        headers: { 'Authorization': `Bearer ${session.token}`, 'x-organization-id': ORG }
+      });
+      const data2 = (await res2.json() as any).data;
+      expect(data2.singleBiggestBlocker).toBe('AFFILIATE_ID');
+      expect(data2.codeActionRequired).toContain('Tracking credential missing');
+
+      // Stage 3: Set tracking credential
+      process.env.CUELINKS_CAMPAIGN_ID = 'cue_campaign_777';
+      const res3 = await app.request('/api/v1/commission/launch-checklist?network=CUELINKS', {
+        headers: { 'Authorization': `Bearer ${session.token}`, 'x-organization-id': ORG }
+      });
+      const data3 = (await res3.json() as any).data;
+      expect(data3.singleBiggestBlocker).toBe('NO_ACTIVE_OFFER');
+      expect(data3.codeActionRequired).toContain('Offer catalog entry required');
+
+      // Stage 4: Register Offer
+      const offer = await registry.createOffer({
+        partnerId: partner.id,
+        organizationId: ORG,
+        title: 'Thermal Label Printer Cuelinks',
+        offerSlug: 'thermal-label-printer-cuelinks-chk',
+        category: 'electronics',
+        targetCustomer: 'E-commerce sellers',
+        priceINR: 3499,
+        commissionAmountINR: 175,
+        destinationUrl: 'https://linksredirect.com/?cid=777',
+        authorizedTrackingUrl: 'https://linksredirect.com/?cid=777',
+        status: 'ACTIVE'
+      });
+
+      const res4 = await app.request('/api/v1/commission/launch-checklist?network=CUELINKS', {
+        headers: { 'Authorization': `Bearer ${session.token}`, 'x-organization-id': ORG }
+      });
+      const data4 = (await res4.json() as any).data;
+      expect(data4.singleBiggestBlocker).toBe('NO_PUBLIC_CONTENT');
+      expect(data4.codeActionRequired).toContain('Content publishing required');
+
+      // Stage 5: Publish Guide
+      const db = getDb();
+      db.prepare(`
+        INSERT INTO commission_content_assets (
+          id, organization_id, title, slug, content_markdown, primary_offer_id, status, asset_type, category, intent_target, created_at, updated_at
+        ) VALUES (
+          'cnt_cuelinks_guide_chk', ?, 'Top Thermal Label Printers 2026', 'thermal-printers-guide-chk',
+          'Comprehensive buyer guide with statutory disclosure.', ?, 'PUBLISHED', 'BUYER_GUIDE', 'electronics', 'Best thermal printer', datetime('now'), datetime('now')
+        )
+      `).run(ORG, offer.id);
+
+      const res5 = await app.request('/api/v1/commission/launch-checklist?network=CUELINKS', {
+        headers: { 'Authorization': `Bearer ${session.token}`, 'x-organization-id': ORG }
+      });
+      const data5 = (await res5.json() as any).data;
+      expect(data5.moneyPath).toBe('READY');
+      expect(data5.singleBiggestBlocker).toBe('NONE_DRIVE_TRAFFIC');
+      expect(data5.codeActionRequired).toContain('None. The code and infrastructure are ready');
+      expect(data5.checklist.find((i: any) => i.item === 'PARTNER APPROVAL').status).toBe('PROVISIONAL');
+      expect(data5.checklist.find((i: any) => i.item === 'AFFILIATE ID').status).toBe('CONFIGURED_UNVERIFIED');
+      expect(data5.checklist.find((i: any) => i.item === 'OFFER').status).toBe('READY');
+      expect(data5.checklist.find((i: any) => i.item === 'TRACKING').status).toBe('READY');
+      expect(data5.checklist.find((i: any) => i.item === 'PUBLIC PAGE').status).toBe('READY');
     });
   });
 });

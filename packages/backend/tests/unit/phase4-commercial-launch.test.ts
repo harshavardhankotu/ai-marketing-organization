@@ -79,7 +79,8 @@ describe('Phase 4: Commercial Launch & Money-Path Verification (Spec §§ 1–30
     expect(json.data.recommendedFirstPartner).toBeDefined();
     expect(json.data.recommendedFirstPartner.name).toContain('Amazon Associates');
     expect(json.data.singleBiggestBlocker).toBe('PARTNER_APPROVAL');
-    expect(json.data.codeActionRequired).toContain('The code is ready');
+    expect(json.data.codeActionRequired).toContain('Awaiting partner authorization');
+    expect(json.data.codeActionRequired).not.toContain('None. The code is ready');
   });
 
   it('3. GET /robots.txt serves valid robots instructions and sitemap link', async () => {

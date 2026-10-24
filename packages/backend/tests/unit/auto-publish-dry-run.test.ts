@@ -10,6 +10,7 @@ describe('Step 4: Automatic Publish & Deploy Dry-Run Verification', () => {
   const lane = AutomaticOfferLane.getInstance();
 
   beforeEach(() => {
+    process.env.AMAZON_AFFILIATE_TAG = process.env.AMAZON_AFFILIATE_TAG || 'test-tag-21';
     const db = getDb();
     try {
       db.prepare('DELETE FROM commission_content_assets').run();
