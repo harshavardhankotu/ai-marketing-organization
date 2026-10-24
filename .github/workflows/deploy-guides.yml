@@ -55,5 +55,5 @@ jobs:
           repoToken: '${{ secrets.GITHUB_TOKEN }}'
           firebaseServiceAccount: '${{ secrets.FIREBASE_SERVICE_ACCOUNT }}'
           channelId: live
-          projectId: ai-marketing-organization
+          projectId: gen-lang-client-0916255372
         if: steps.build-guides.outputs.skipped != 'true' && steps.check-firebase.outputs.can_deploy == 'true'

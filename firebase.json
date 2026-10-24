@@ -1,6 +1,6 @@
 {
   "hosting": {
-    "site": "ai-marketing-platform-core",
+    "site": "gen-lang-client-0916255372",
     "public": "packages/frontend/dist",
     "ignore": [
       "firebase.json",

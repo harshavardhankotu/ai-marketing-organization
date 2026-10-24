@@ -136,7 +136,7 @@ export async function prepareDeployGuides(options = {}) {
   }
 
   // Generate sitemap.xml
-  const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-platform-core.web.app').replace(/\/$/, '');
+  const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://gen-lang-client-0916255372.web.app').replace(/\/$/, '');
   const urls = [
     `${siteUrl}/`,
     ...publishedGuides.map(g => `${siteUrl}/guides/${g.slug}.html`)
