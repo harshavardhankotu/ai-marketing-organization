@@ -62,6 +62,8 @@ app.use('*', cors({
 
     // 2b. Exact Firebase Hosting site origins for static site beacons
     if (
+      requestOrigin === 'https://gen-lang-client-0916255372.web.app' ||
+      requestOrigin === 'https://gen-lang-client-0916255372.firebaseapp.com' ||
       requestOrigin === 'https://ai-marketing-platform-core.web.app' ||
       requestOrigin === 'https://ai-marketing-platform-core.firebaseapp.com'
     ) {

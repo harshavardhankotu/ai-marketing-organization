@@ -253,6 +253,8 @@ apiRouter.use('*', async (c, next) => {
       try { originHost = new URL(origin).host; } catch {}
       const allowedOrigins = [
         'https://ai-marketing-organization.onrender.com',
+        'https://gen-lang-client-0916255372.web.app',
+        'https://gen-lang-client-0916255372.firebaseapp.com',
         'https://ai-marketing-platform-core.web.app',
         'https://ai-marketing-platform-core.firebaseapp.com'
       ];
