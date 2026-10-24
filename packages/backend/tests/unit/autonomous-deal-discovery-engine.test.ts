@@ -330,6 +330,19 @@ describe('Autonomous Deal Discovery Engine V1.1 (Spec §§ 1–15)', () => {
       const res = await app.request('/api/v1/public/deals/deal_nonexistent_xyz');
       expect(res.status).toBe(404);
     });
+
+    it('allows anonymous access to GET /api/v1/public/deals in production mode without requiring credentials', async () => {
+      const prevEnv = process.env.NODE_ENV;
+      try {
+        process.env.NODE_ENV = 'production';
+        const res = await app.request('/api/v1/public/deals');
+        expect(res.status).toBe(200);
+        const json = await res.json() as any;
+        expect(json.success).toBe(true);
+      } finally {
+        process.env.NODE_ENV = prevEnv;
+      }
+    });
   });
 
   describe('7. Owner Operational Observability API (Spec § 12)', () => {
