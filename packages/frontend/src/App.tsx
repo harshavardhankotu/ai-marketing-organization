@@ -23,6 +23,7 @@ import { BusinessOnboarding } from './components/onboarding/BusinessOnboarding.j
 import { OwnerLogin } from './components/auth/OwnerLogin.js';
 import { PublicCompliancePage } from './pages/PublicCompliancePage.js';
 import { PublicOfferPage } from './pages/PublicOfferPage.js';
+import { PublicDealsPage } from './pages/PublicDealsPage.js';
 import { api, onUnauthorized } from './services/api.js';
 import { AGENT_REGISTRY } from './services/seed-defaults.js';
 
@@ -127,6 +128,10 @@ export const App: React.FC = () => {
     currentPathname === '/offer' ||
     currentPathname.startsWith('/offer/');
 
+  const isDealsRoute =
+    currentPathname === '/deals' ||
+    currentPathname.startsWith('/deals/');
+
   const compliancePaths = ['/privacy', '/terms', '/about', '/contact', '/affiliate-disclosure'];
   const isComplianceRoute = compliancePaths.some(
     p => currentPathname === p || currentPathname.startsWith(p + '/')
@@ -152,7 +157,7 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     // Public demand funnels, offer page, and compliance routes must not fan out into authenticated owner APIs
-    if (isPublicFunnelRoute || isComplianceRoute || isOfferRoute) {
+    if (isPublicFunnelRoute || isComplianceRoute || isOfferRoute || isDealsRoute) {
       setLoading(false);
       return;
     }
@@ -162,7 +167,7 @@ export const App: React.FC = () => {
     });
 
     bootstrapOwnerSession();
-  }, [isPublicFunnelRoute, isComplianceRoute]);
+  }, [isPublicFunnelRoute, isComplianceRoute, isOfferRoute, isDealsRoute]);
 
   const handleLoginSuccess = async () => {
     setAuthState('AUTHENTICATED');
@@ -237,6 +242,10 @@ export const App: React.FC = () => {
 
   if (isOfferRoute) {
     return <PublicOfferPage />;
+  }
+
+  if (isDealsRoute) {
+    return <PublicDealsPage />;
   }
 
   if (authState === 'BOOTING') {

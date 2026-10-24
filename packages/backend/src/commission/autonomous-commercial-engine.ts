@@ -8,6 +8,7 @@ import { BusinessAutonomyLock } from '../revenue/business-autonomy-lock.js';
 import { isProduction } from '../config/env.js';
 import { getDb } from '../db/client.js';
 import { PartnerNetwork, PartnerOffer } from './types.js';
+import { DealEngineObservabilityMetrics } from './deal-types.js';
 
 export type CommercialTaskStatus =
   | 'DISCOVER'
@@ -117,6 +118,7 @@ export interface EngineObservabilityStatus {
     ownerActionRequired: string;
   }>;
   nextRecommendedAction: string;
+  dealMetrics?: DealEngineObservabilityMetrics;
 }
 
 export class AutonomousCommercialEngine {
@@ -179,6 +181,14 @@ export class AutonomousCommercialEngine {
 
     try {
       console.log(`[CommercialEngine] Starting autonomous cycle ${cycleId} at ${new Date().toISOString()}`);
+
+      // 0. Autonomous Deal Discovery & Verification Loop (Spec §§ 1–11)
+      try {
+        const { AutonomousDealDiscoveryEngine } = await import('./autonomous-deal-discovery-engine.js');
+        await AutonomousDealDiscoveryEngine.getInstance().runDiscoveryCycle(organizationId, businessId);
+      } catch (dealErr: any) {
+        console.warn(`[CommercialEngine] Deal discovery cycle notice: ${dealErr.message}`);
+      }
 
       // 1. Sync durable partner registry & quota state from D1 in production
       if (isProduction()) {
@@ -788,12 +798,18 @@ export class AutonomousCommercialEngine {
       }));
 
     // Next recommended action
-    let nextAction = 'System idle. Awaiting next scheduled commercial wake cycle.';
+    let nextAction = 'Autonomous deal discovery actively curating live deals. Standing by for next scheduled cycle.';
     if (activeBlockers.length > 0) {
-      nextAction = activeBlockers[0].ownerActionRequired;
+      nextAction = `Deals catalog live. Optional affiliate activation: ${activeBlockers[0].ownerActionRequired}`;
     } else if (activeOffers > 0 && publishedGuides === 0) {
       nextAction = 'Compile and publish buying guide for active catalog offer.';
     }
+
+    let dealMetrics: DealEngineObservabilityMetrics | undefined;
+    try {
+      const { AutonomousDealDiscoveryEngine } = await import('./autonomous-deal-discovery-engine.js');
+      dealMetrics = AutonomousDealDiscoveryEngine.getInstance().getDealEngineMetrics();
+    } catch {}
 
     return {
       lastExecution: {
@@ -830,7 +846,8 @@ export class AutonomousCommercialEngine {
         cashReceivedINR: 0
       },
       activeBlockers,
-      nextRecommendedAction: nextAction
+      nextRecommendedAction: nextAction,
+      dealMetrics
     };
   }
 }
