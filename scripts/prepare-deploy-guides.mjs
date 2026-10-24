@@ -70,7 +70,18 @@ export async function prepareDeployGuides(options = {}) {
 
   console.log(`Found ${publishedGuides.length} PUBLISHED guide(s).`);
 
-  const publicDir = options.outputDir ? path.resolve(options.outputDir) : path.resolve('public');
+  let defaultPublicDir = 'packages/frontend/dist';
+  try {
+    const firebaseConfigPath = path.resolve('firebase.json');
+    if (fs.existsSync(firebaseConfigPath)) {
+      const fbConfig = JSON.parse(fs.readFileSync(firebaseConfigPath, 'utf8'));
+      if (fbConfig.hosting?.public) {
+        defaultPublicDir = fbConfig.hosting.public;
+      }
+    }
+  } catch {}
+
+  const publicDir = options.outputDir ? path.resolve(options.outputDir) : path.resolve(defaultPublicDir);
   if (!fs.existsSync(publicDir)) {
     fs.mkdirSync(publicDir, { recursive: true });
   }
@@ -93,7 +104,7 @@ export async function prepareDeployGuides(options = {}) {
 </head>
 <body>
   <h1>Objective Product Buyer Guides</h1>
-  <p>Disclosure: As an Amazon Associate I earn from qualifying purchases. This catalog contains affiliate search links.</p>
+  <p>Disclosure: This catalog contains affiliate and referral links. We may earn a commission from qualifying purchases at no additional cost to you.</p>
   <ul>
     ${guideLinks}
   </ul>
@@ -125,7 +136,7 @@ export async function prepareDeployGuides(options = {}) {
   }
 
   // Generate sitemap.xml
-  const siteUrl = process.env.PUBLIC_SITE_URL || 'https://aimarketing.org';
+  const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-platform-core.web.app').replace(/\/$/, '');
   const urls = [
     `${siteUrl}/`,
     ...publishedGuides.map(g => `${siteUrl}/guides/${g.slug}.html`)

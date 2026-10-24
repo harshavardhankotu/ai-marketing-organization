@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { getDb } from '../db/client.js';
 import { isProduction } from '../config/env.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
+import { CommissionLedgerEngine } from './commission-ledger.js';
 import { resolveAffiliateAdapter } from './affiliate-adapters.js';
 import {
   Partner,
@@ -81,6 +82,96 @@ export function detectPartnerNetwork(website: string): PartnerNetwork {
   if (lower.includes('earnkaro.')) return 'EARNKARO';
   if (lower.includes('admitad.')) return 'ADMITAD';
   return 'OTHER_AUTHORIZED_PARTNER';
+}
+
+export interface NetworkMetadata {
+  name: string;
+  network: PartnerNetwork;
+  portalUrl: string;
+  commissionRates: string;
+  payoutMethod: string;
+  payoutThresholdINR: number;
+  cookieDurationHours: number;
+  rationale: string;
+}
+
+export function getNetworkMetadata(network: PartnerNetwork): NetworkMetadata {
+  switch (network) {
+    case 'CUELINKS':
+      return {
+        name: 'Cuelinks India',
+        network: 'CUELINKS',
+        portalUrl: 'https://www.cuelinks.com',
+        commissionRates: 'Varies by merchant/campaign (1% - 15%+)',
+        payoutMethod: 'Direct bank transfer (NEFT) in INR',
+        payoutThresholdINR: 500,
+        cookieDurationHours: 24,
+        rationale: 'Self-serve publisher dashboard with Campaign Explorer / Linkkit, ₹500 payout threshold in INR, human-approved channels without 180-day 3-sale disqualification pressure.'
+      };
+    case 'ADMITAD':
+      return {
+        name: 'Admitad India',
+        network: 'ADMITAD',
+        portalUrl: 'https://store.admitad.com',
+        commissionRates: 'Varies by campaign (2% - 20%)',
+        payoutMethod: 'Bank transfer (NEFT) in INR',
+        payoutThresholdINR: 1000,
+        cookieDurationHours: 24,
+        rationale: 'Extensive Indian merchant directory with deep linking and custom subid tracking.'
+      };
+    case 'EARNKARO':
+      return {
+        name: 'EarnKaro',
+        network: 'EARNKARO',
+        portalUrl: 'https://earnkaro.com',
+        commissionRates: 'Varies by partner store (2% - 10%)',
+        payoutMethod: 'Direct bank transfer in INR',
+        payoutThresholdINR: 10,
+        cookieDurationHours: 24,
+        rationale: 'Low payout threshold, broad Indian retailer catalog.'
+      };
+    case 'VCOMMISSION':
+      return {
+        name: 'vCommission India',
+        network: 'VCOMMISSION',
+        portalUrl: 'https://vcommission.com',
+        commissionRates: 'CPA/CPS rates per campaign',
+        payoutMethod: 'Direct bank transfer in INR',
+        payoutThresholdINR: 1000,
+        cookieDurationHours: 24,
+        rationale: 'Established Indian CPA network with performance campaigns.'
+      };
+    case 'EBAY_PARTNER_NETWORK':
+      return {
+        name: 'eBay Partner Network',
+        network: 'EBAY_PARTNER_NETWORK',
+        portalUrl: 'https://partnernetwork.ebay.com',
+        commissionRates: '1% - 4% category rates',
+        payoutMethod: 'Electronic funds transfer in INR/USD',
+        payoutThresholdINR: 800,
+        cookieDurationHours: 24,
+        rationale: 'Global marketplace inventory with established affiliate infrastructure.'
+      };
+    case 'AMAZON_ASSOCIATES':
+    default:
+      return {
+        name: 'Amazon Associates India (Amazon.in)',
+        network: 'AMAZON_ASSOCIATES',
+        portalUrl: 'https://affiliate-program.amazon.in',
+        commissionRates: '1% - 9% standard category rates',
+        payoutMethod: 'Direct bank transfer (NEFT) in INR',
+        payoutThresholdINR: 1000,
+        cookieDurationHours: 24,
+        rationale: 'Instant self-serve signup, lowest checkout friction in India (millions of users with saved UPI/cards), massive organic intent for buying guides under ₹X, direct NEFT bank payout in INR, requires 3 qualifying sales within 180 days.'
+      };
+  }
+}
+
+export interface LaunchChecklistItem {
+  item: string;
+  status: string;
+  note: string;
+  description?: string;
 }
 
 export class PartnerRegistryEngine {
@@ -306,11 +397,15 @@ export class PartnerRegistryEngine {
     reason: string;
     singleBiggestBlocker: string;
     humanActionRequired: string;
+    codeActionRequired: string;
+    recommendedPartner: NetworkMetadata;
+    checklist: LaunchChecklistItem[];
     partnerConfigured: boolean;
     trackingIdConfigured: boolean;
     activeOfferConfigured: boolean;
     publishedContentConfigured: boolean;
   }> {
+    const meta = getNetworkMetadata(network);
     const partners = await this.listPartners(orgId);
     const networkPartners = partners.filter(p =>
       p.network === network && this.isPartnerAuthorizedForProduction(p)
@@ -339,37 +434,127 @@ export class PartnerRegistryEngine {
       [orgId]
     );
 
+    const assetViewsRow = await this.d1Repo.queryOne<{ totalViews: number; totalClicks: number }>(
+      'commission_content_assets',
+      'SELECT COALESCE(SUM(view_count), 0) as totalViews, COALESCE(SUM(referral_click_count), 0) as totalClicks FROM commission_content_assets WHERE organization_id = ?',
+      [orgId]
+    );
+    const totalViews = assetViewsRow?.totalViews || 0;
+
+    const ledger = CommissionLedgerEngine.getInstance();
+    const summary = await ledger.getSummary(orgId);
+
     let moneyPath: 'READY' | 'BLOCKED' = 'BLOCKED';
     let reason = '';
     let singleBiggestBlocker = '';
     let humanActionRequired = '';
+    let codeActionRequired = '';
 
     if (networkPartners.length === 0) {
       moneyPath = 'BLOCKED';
-      reason = `No approved ${network} partner account is currently configured.`;
+      reason = `No approved affiliate/partner account is currently configured for ${meta.name}.`;
       singleBiggestBlocker = 'PARTNER_APPROVAL';
-      humanActionRequired = `Register and obtain approval for ${network} in the partner registry.`;
+      humanActionRequired = `Register and obtain approval for ${meta.name} at ${meta.portalUrl} and record operator-confirmed credentials in the partner registry.`;
+      codeActionRequired = `Awaiting partner authorization for ${meta.name}. Register and verify partner before commercial tracking routes activate.`;
     } else if (!isTrackingIdConfigured) {
       moneyPath = 'BLOCKED';
       reason = 'NO_AFFILIATE_ID';
       singleBiggestBlocker = 'AFFILIATE_ID';
-      humanActionRequired = `Configure tracking credentials for ${network} in environment variables.`;
+      humanActionRequired = `Configure authorized tracking credentials for ${meta.name} in environment variables.`;
+      codeActionRequired = `Tracking credential missing. Set ${network === 'CUELINKS' ? 'CUELINKS_CAMPAIGN_ID' : network === 'AMAZON_ASSOCIATES' ? 'AMAZON_AFFILIATE_TAG' : 'PARTNER_AFFILIATE_ID'} in environment.`;
     } else if (networkOffers.length === 0) {
       moneyPath = 'BLOCKED';
       reason = 'NO_ACTIVE_OFFER';
       singleBiggestBlocker = 'NO_ACTIVE_OFFER';
-      humanActionRequired = `Create and activate at least one verified offer for ${network}.`;
+      humanActionRequired = `Create and activate at least one verified offer with destination tracking URL for ${meta.name}.`;
+      codeActionRequired = `Offer catalog entry required. Register verified commercial offer destination URL and tracking template for ${meta.name}.`;
     } else if (publishedContent.length === 0) {
       moneyPath = 'BLOCKED';
       reason = 'NO_PUBLIC_CONTENT';
       singleBiggestBlocker = 'NO_PUBLIC_CONTENT';
-      humanActionRequired = `Publish at least one commercial guide with visible statutory affiliate disclosure for ${network}.`;
+      humanActionRequired = `Publish at least one commercial guide with visible statutory affiliate disclosure for ${meta.name}.`;
+      codeActionRequired = `Content publishing required. Generate and deploy at least one public commercial guide with statutory disclosure.`;
     } else {
       moneyPath = 'READY';
       reason = 'MONEY_PATH_READY';
       singleBiggestBlocker = 'NONE_DRIVE_TRAFFIC';
       humanActionRequired = 'Drive first real organic visitor to the published commercial guide.';
+      codeActionRequired = 'None. The code and infrastructure are ready. The remaining blocker is human commercial activation.';
     }
+
+    const termsConfirmed = networkPartners.some(p => {
+      const ev = typeof p.evidence === 'object' ? p.evidence : JSON.parse((p as any).evidence_json || '{}');
+      return Boolean(ev?.terms_read_confirmed);
+    });
+
+    const checklist: LaunchChecklistItem[] = [
+      {
+        item: 'PARTNER APPROVAL',
+        status: networkPartners.length > 0 ? 'PROVISIONAL' : 'REQUIRES HUMAN',
+        note: `Operator-confirmed registration for ${meta.name}`,
+        description: `Approved affiliate/partner program account from legitimate provider (${meta.name})`
+      },
+      {
+        item: 'AFFILIATE ID',
+        status: (networkPartners.length > 0 && isTrackingIdConfigured) ? 'CONFIGURED_UNVERIFIED' : 'REQUIRES HUMAN',
+        note: `Set tracking credentials or campaign ID for ${network}`,
+        description: `Authorized associate tag / affiliate tracking ID configured and injected for ${network}`
+      },
+      {
+        item: 'PARTNER TERMS',
+        status: termsConfirmed ? 'READY' : 'OPERATOR_TO_CONFIRM',
+        note: `Operator review of ${meta.name} Operating Agreement`,
+        description: `Operating agreement and commission schedules under operator review for ${meta.name}`
+      },
+      {
+        item: 'OFFER',
+        status: networkOffers.length > 0 ? 'READY' : (networkPartners.length > 0 ? 'REQUIRES HUMAN' : 'BLOCKED'),
+        note: `Register 1 active offer with destination and tracking params for ${network}`,
+        description: `At least one active commercial offer catalog item configured for ${network}`
+      },
+      {
+        item: 'TRACKING',
+        status: (networkOffers.length > 0 && isTrackingIdConfigured) ? 'READY' : 'BLOCKED',
+        note: 'Verify /r/:offerSlug/:referralId 302 redirects',
+        description: 'First-party tracked referral redirect (/r/:offerSlug/:referralId) tested and working'
+      },
+      {
+        item: 'PUBLIC PAGE',
+        status: publishedContent.length > 0 ? 'READY' : 'BLOCKED',
+        note: 'Publish 1 commercial guide/comparison page with disclosure',
+        description: 'Publicly reachable commercial guide/comparison page with statutory affiliate disclosure'
+      },
+      {
+        item: 'TRAFFIC',
+        status: totalViews > 0 ? 'READY' : 'BLOCKED',
+        note: 'Real organic visitors to public guide',
+        description: 'Real organic visitors viewing the commercial content'
+      },
+      {
+        item: 'REFERRAL',
+        status: summary.clicks > 0 ? 'READY' : 'BLOCKED',
+        note: 'Tracked outbound referral click (₹0 revenue)',
+        description: 'Real clicks on tracked affiliate links with ₹0 synthetic revenue attribution'
+      },
+      {
+        item: 'CONVERSION',
+        status: summary.externalConversions > 0 ? 'READY' : 'BLOCKED',
+        note: `Customer purchase/conversion confirmed on ${meta.name}`,
+        description: `Customer purchase/conversion confirmed on ${meta.name}`
+      },
+      {
+        item: 'COMMISSION',
+        status: summary.verifiedRevenueINR > 0 ? 'READY' : 'BLOCKED',
+        note: `Import or verify approved commission report from ${meta.name}`,
+        description: `Import or verify approved commission report from ${meta.name}`
+      },
+      {
+        item: 'PAYOUT',
+        status: summary.receivedCashINR > 0 ? 'READY' : 'BLOCKED',
+        note: 'NEFT credit to Indian bank account',
+        description: 'NEFT credit to Indian bank account'
+      }
+    ];
 
     return {
       network,
@@ -377,6 +562,9 @@ export class PartnerRegistryEngine {
       reason,
       singleBiggestBlocker,
       humanActionRequired,
+      codeActionRequired,
+      recommendedPartner: meta,
+      checklist,
       partnerConfigured: networkPartners.length > 0,
       trackingIdConfigured: isTrackingIdConfigured,
       activeOfferConfigured: networkOffers.length > 0,

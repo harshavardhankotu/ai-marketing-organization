@@ -84,6 +84,15 @@ export function seedDatabase(options: SeedOptions = {}): void {
     ) VALUES (?, ?, ?, ?, ?, ?)
   `).run(todayKey, 0, 0, 0, 0, 0);
 
+  // Forward bootstrap cleanup: Purge synthetic search.community placeholder questions (from migration 0026)
+  try {
+    db.prepare(`
+      DELETE FROM demand_signals
+      WHERE source_url LIKE '%search.community%'
+         OR id LIKE 'dem_bq_%'
+    `).run();
+  } catch {}
+
   // If in production, STOP HERE. Never insert synthetic clinics, fake businesses, test funnels, unapproved offers, or hardcoded admin tokens in production.
   if (isProduction) {
     console.log('[Seed Gate] Production mode: isolated core infrastructure seeded (org_owner_primary, biz_platform_aro [public_live: 0], 80 agents, quota records). Synthetic test fixtures suppressed.');

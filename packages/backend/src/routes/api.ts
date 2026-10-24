@@ -21,6 +21,7 @@ import {
   IngestAnalyticsEventSchema,
   EmergencyKillSwitchSchema
 } from '@ai-marketing/shared';
+import { PartnerNetwork } from '../commission/types.js';
 
 import { isProduction, isPlaceholderCredential } from '../config/env.js';
 import { SystemReadinessEngine } from '../control-plane/system-readiness.js';
@@ -6920,35 +6921,25 @@ apiRouter.post('/commission/demand-signals/discover', async (c) => {
  */
 apiRouter.get('/commission/money-path', async (c) => {
   const orgId = c.req.header('x-organization-id') || c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const { PartnerRegistryEngine } = await import('../commission/partner-registry.js');
+  const registry = PartnerRegistryEngine.getInstance();
+  const partners = await registry.listPartners(orgId);
+  const networkParam = c.req.query('network')?.toUpperCase() as PartnerNetwork | undefined;
+
+  const authorized = partners.filter(p => registry.isPartnerAuthorizedForProduction(p));
+  const targetNetwork: PartnerNetwork = networkParam || (authorized[0]?.network as PartnerNetwork) || 'AMAZON_ASSOCIATES';
+
+  const evaluation = await registry.evaluateNetworkMoneyPath(orgId, targetNetwork);
+
   const d1Repo = D1RevenueRepository.getInstance();
   const ledger = CommissionLedgerEngine.getInstance();
   const summary = await ledger.getSummary(orgId);
-
-  // 1. Check approved/authorized partners
-  const partners = await d1Repo.query<any>(
-    'partners',
-    'SELECT * FROM partners WHERE organization_id = ?',
-    [orgId]
-  );
-  const authorizedPartners = partners.filter(p =>
-    p.authorization_status === 'AUTHORIZED' &&
-    (p.approval_status === 'APPROVED' || p.approval_status === 'QUALIFYING_SALES_IN_PROGRESS' || p.approval_status === 'PROVISIONAL')
-  );
-
-  // 2. Check active offers
-  const activeOffers = await d1Repo.query<any>(
-    'partner_offers',
-    "SELECT * FROM partner_offers WHERE organization_id = ? AND status = 'ACTIVE' AND active = 1",
-    [orgId]
-  );
-
-  // 3. Check published content assets
+  const activeOffers = await registry.listOffers(orgId, { activeOnly: true });
   const publishedContent = await d1Repo.query<any>(
     'commission_content_assets',
-    "SELECT * FROM commission_content_assets WHERE organization_id = ? AND status = 'PUBLISHED'",
+    "SELECT id FROM commission_content_assets WHERE organization_id = ? AND status = 'PUBLISHED'",
     [orgId]
   );
-
   const assetViewsRow = await d1Repo.queryOne<{ totalViews: number; totalClicks: number }>(
     'commission_content_assets',
     'SELECT COALESCE(SUM(view_count), 0) as totalViews, COALESCE(SUM(referral_click_count), 0) as totalClicks FROM commission_content_assets WHERE organization_id = ?',
@@ -6956,127 +6947,18 @@ apiRouter.get('/commission/money-path', async (c) => {
   );
   const totalViews = assetViewsRow?.totalViews || 0;
 
-  // 4. Check affiliate tracking ID configuration
-  const hasAffiliateId = Boolean(
-    process.env.AMAZON_AFFILIATE_TAG ||
-    process.env.EBAY_CAMPID ||
-    process.env.PARTNER_AFFILIATE_ID ||
-    process.env.CUELINKS_CAMPAIGN_ID ||
-    process.env.ADMITAD_CAMPAIGN_ID ||
-    process.env.EARNKARO_AFFILIATE_ID ||
-    process.env.VCOMMISSION_AFFILIATE_ID ||
-    authorizedPartners.some(p => {
-      const ev = typeof p.evidence_json === 'string' ? p.evidence_json : JSON.stringify(p.evidence || {});
-      return ev.includes('affiliateTag') || ev.includes('affiliateId') || ev.includes('tag') || ev.includes('campaignId');
-    })
-  );
-
-  // Evaluate Money-Path State Hierarchy (§ 16)
-  let moneyPath: 'READY' | 'BLOCKED' = 'BLOCKED';
-  let reason = '';
-  let singleBiggestBlocker = '';
-  let humanActionRequired = '';
-
-  if (authorizedPartners.length === 0) {
-    moneyPath = 'BLOCKED';
-    reason = 'No approved affiliate/partner account is currently configured.';
-    singleBiggestBlocker = 'PARTNER_APPROVAL';
-    humanActionRequired = 'Apply for and obtain approval for one legitimate partner program (e.g. Amazon Associates India at affiliate-program.amazon.in) and register it in the partner registry.';
-  } else if (!hasAffiliateId) {
-    moneyPath = 'BLOCKED';
-    reason = 'NO_AFFILIATE_ID';
-    singleBiggestBlocker = 'AFFILIATE_ID';
-    humanActionRequired = 'Configure your authorized affiliate tracking tag (e.g. AMAZON_AFFILIATE_TAG) in environment secrets or offer configuration.';
-  } else if (activeOffers.length === 0) {
-    moneyPath = 'BLOCKED';
-    reason = 'NO_ACTIVE_OFFER';
-    singleBiggestBlocker = 'NO_ACTIVE_OFFER';
-    humanActionRequired = 'Create and activate at least one verified commercial offer with authorized destination tracking URL.';
-  } else if (publishedContent.length === 0) {
-    moneyPath = 'BLOCKED';
-    reason = 'NO_PUBLIC_CONTENT';
-    singleBiggestBlocker = 'NO_PUBLIC_CONTENT';
-    humanActionRequired = 'Publish at least one commercial guide/comparison page with visible statutory affiliate disclosure.';
-  } else {
-    moneyPath = 'READY';
-    reason = 'MONEY_PATH_READY';
-    singleBiggestBlocker = 'NONE_DRIVE_TRAFFIC';
-    humanActionRequired = 'Drive first real organic visitor to the published commercial guide.';
-  }
-
-  // 11-step human launch checklist (§ 3)
-  const checklist = [
-    {
-      item: 'PARTNER APPROVAL',
-      status: authorizedPartners.length > 0 ? 'PROVISIONAL' : 'REQUIRES HUMAN',
-      description: 'Approved affiliate/partner program account from legitimate provider (e.g. Amazon Associates India)'
-    },
-    {
-      item: 'AFFILIATE ID',
-      status: (authorizedPartners.length > 0 && hasAffiliateId) ? 'CONFIGURED_UNVERIFIED' : 'REQUIRES HUMAN',
-      description: 'Authorized associate tag / affiliate tracking ID configured and injected'
-    },
-    {
-      item: 'PARTNER TERMS',
-      status: authorizedPartners.some(p => {
-        const ev = typeof p.evidence_json === 'string' ? JSON.parse(p.evidence_json || '{}') : (p.evidence || {});
-        return Boolean(ev.terms_read_confirmed);
-      }) ? 'READY' : 'OPERATOR_TO_CONFIRM',
-      description: 'Operating agreement and commission schedules under operator review'
-    },
-    {
-      item: 'OFFER',
-      status: activeOffers.length > 0 ? 'READY' : (authorizedPartners.length > 0 ? 'REQUIRES HUMAN' : 'BLOCKED'),
-      description: 'At least one active commercial offer catalog item configured'
-    },
-    {
-      item: 'TRACKING',
-      status: (activeOffers.length > 0 && hasAffiliateId) ? 'READY' : 'BLOCKED',
-      description: 'First-party tracked referral redirect (/r/:offerSlug/:referralId) tested and working'
-    },
-    {
-      item: 'PUBLIC PAGE',
-      status: publishedContent.length > 0 ? 'READY' : 'BLOCKED',
-      description: 'Publicly reachable commercial guide/comparison page with statutory affiliate disclosure'
-    },
-    {
-      item: 'TRAFFIC',
-      status: totalViews > 0 ? 'READY' : 'BLOCKED',
-      description: 'Real organic visitors viewing the commercial content'
-    },
-    {
-      item: 'REFERRAL',
-      status: summary.clicks > 0 ? 'READY' : 'BLOCKED',
-      description: 'Real clicks on tracked affiliate links with ₹0 synthetic revenue attribution'
-    },
-    {
-      item: 'CONVERSION',
-      status: summary.externalConversions > 0 ? 'READY' : 'BLOCKED',
-      description: 'Real qualifying purchase or lead recorded at external provider'
-    },
-    {
-      item: 'COMMISSION',
-      status: summary.verifiedRevenueINR > 0 ? 'READY' : 'BLOCKED',
-      description: 'Provider-verified commission acknowledged in official report or dashboard'
-    },
-    {
-      item: 'PAYOUT',
-      status: summary.receivedCashINR > 0 ? 'READY' : 'BLOCKED',
-      description: 'Real bank payout (NEFT / direct deposit) received in INR'
-    }
-  ];
-
   return c.json({
     success: true,
     data: {
-      moneyPath,
-      reason,
-      singleBiggestBlocker,
-      humanActionRequired,
-      codeActionRequired: 'None. The code is ready. The remaining blocker is human commercial activation.',
-      checklist,
+      moneyPath: evaluation.moneyPath,
+      reason: evaluation.reason,
+      singleBiggestBlocker: evaluation.singleBiggestBlocker,
+      humanActionRequired: evaluation.humanActionRequired,
+      codeActionRequired: evaluation.codeActionRequired,
+      network: evaluation.network,
+      checklist: evaluation.checklist,
       metrics: {
-        partners: { authorized: authorizedPartners.length, total: partners.length },
+        partners: { authorized: authorized.length, total: partners.length },
         offers: { active: activeOffers.length },
         content: { published: publishedContent.length },
         traffic: { views: totalViews, clicks: summary.clicks },
@@ -7263,76 +7145,25 @@ apiRouter.get('/commission/funnel', async (c) => {
  */
 apiRouter.get('/commission/launch-checklist', async (c) => {
   const orgId = c.req.header('x-organization-id') || c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
-  const d1Repo = D1RevenueRepository.getInstance();
-  const ledger = CommissionLedgerEngine.getInstance();
-  const summary = await ledger.getSummary(orgId);
+  const { PartnerRegistryEngine } = await import('../commission/partner-registry.js');
+  const registry = PartnerRegistryEngine.getInstance();
+  const partners = await registry.listPartners(orgId);
+  const networkParam = c.req.query('network')?.toUpperCase() as PartnerNetwork | undefined;
 
-  const partners = await d1Repo.query<any>('partners', 'SELECT * FROM partners WHERE organization_id = ?', [orgId]);
-  const authorizedPartners = partners.filter(p =>
-    p.authorization_status === 'AUTHORIZED' &&
-    (p.approval_status === 'APPROVED' || p.approval_status === 'QUALIFYING_SALES_IN_PROGRESS' || p.approval_status === 'PROVISIONAL')
-  );
-  const activeOffers = await d1Repo.query<any>('partner_offers', "SELECT * FROM partner_offers WHERE organization_id = ? AND status = 'ACTIVE' AND active = 1", [orgId]);
-  const publishedContent = await d1Repo.query<any>('commission_content_assets', "SELECT * FROM commission_content_assets WHERE organization_id = ? AND status = 'PUBLISHED'", [orgId]);
+  const authorized = partners.filter(p => registry.isPartnerAuthorizedForProduction(p));
+  const targetNetwork: PartnerNetwork = networkParam || (authorized[0]?.network as PartnerNetwork) || 'AMAZON_ASSOCIATES';
 
-  const assetViewsRow = await d1Repo.queryOne<{ totalViews: number; totalClicks: number }>(
-    'commission_content_assets',
-    'SELECT COALESCE(SUM(view_count), 0) as totalViews, COALESCE(SUM(referral_click_count), 0) as totalClicks FROM commission_content_assets WHERE organization_id = ?',
-    [orgId]
-  );
-  const totalViews = assetViewsRow?.totalViews || 0;
-
-  const hasAffiliateId = Boolean(
-    process.env.AMAZON_AFFILIATE_TAG ||
-    process.env.EBAY_CAMPID ||
-    process.env.PARTNER_AFFILIATE_ID ||
-    authorizedPartners.some(p => {
-      const ev = typeof p.evidence_json === 'string' ? p.evidence_json : JSON.stringify(p.evidence || {});
-      return ev.includes('affiliateTag') || ev.includes('affiliateId') || ev.includes('tag');
-    })
-  );
-
-  const isReady = authorizedPartners.length > 0 && activeOffers.length > 0 && publishedContent.length > 0;
+  const evaluation = await registry.evaluateNetworkMoneyPath(orgId, targetNetwork);
 
   return c.json({
     success: true,
     data: {
-      moneyPath: isReady ? 'READY' : 'BLOCKED',
-      recommendedFirstPartner: {
-        name: 'Amazon Associates India (Amazon.in)',
-        network: 'AMAZON_ASSOCIATES',
-        portalUrl: 'https://affiliate-program.amazon.in',
-        commissionRates: '1% - 9% standard category rates',
-        payoutMethod: 'Direct bank transfer (NEFT) in INR',
-        payoutThresholdINR: 1000,
-        cookieDurationHours: 24,
-        rationale: 'Instant self-serve signup, lowest checkout friction in India (millions of users with saved UPI/cards), massive organic intent for buying guides under ₹X, direct NEFT bank payout in INR.'
-      },
-      singleBiggestBlocker: authorizedPartners.length === 0 ? 'PARTNER_APPROVAL' : activeOffers.length === 0 ? 'NO_ACTIVE_OFFER' : publishedContent.length === 0 ? 'NO_PUBLIC_CONTENT' : 'NONE',
-      humanActionRequired: authorizedPartners.length === 0
-        ? 'Sign up at https://affiliate-program.amazon.in, obtain your Associates Store ID (e.g. yourname-21), and configure AMAZON_AFFILIATE_TAG.'
-        : activeOffers.length === 0
-        ? 'Register 1 active offer in partner_offers with destination and tracking parameters.'
-        : publishedContent.length === 0
-        ? 'Publish 1 commercial guide/comparison page with disclosure.'
-        : 'Drive first real organic visitor to the public guide.',
-      codeActionRequired: 'None. The code is ready. The remaining blocker is human commercial activation.',
-      checklist: [
-        { item: 'PARTNER APPROVAL', status: authorizedPartners.length > 0 ? 'PROVISIONAL' : 'REQUIRES HUMAN', note: 'Operator-confirmed provisional registration' },
-        { item: 'AFFILIATE ID', status: (authorizedPartners.length > 0 && hasAffiliateId) ? 'CONFIGURED_UNVERIFIED' : 'REQUIRES HUMAN', note: 'Set AMAZON_AFFILIATE_TAG env secret or add via API' },
-        { item: 'PARTNER TERMS', status: authorizedPartners.some(p => {
-          const ev = typeof p.evidence_json === 'string' ? JSON.parse(p.evidence_json || '{}') : (p.evidence || {});
-          return Boolean(ev.terms_read_confirmed);
-        }) ? 'READY' : 'OPERATOR_TO_CONFIRM', note: 'Operator review of Amazon Associates India Operating Agreement' },
-        { item: 'OFFER', status: activeOffers.length > 0 ? 'READY' : (authorizedPartners.length > 0 ? 'REQUIRES HUMAN' : 'BLOCKED'), note: 'Register 1 active offer with destination and tracking params' },
-        { item: 'TRACKING', status: (activeOffers.length > 0 && hasAffiliateId) ? 'READY' : 'BLOCKED', note: 'Verify /r/:offerSlug/:referralId 302 redirects with tag=' },
-        { item: 'PUBLIC PAGE', status: publishedContent.length > 0 ? 'READY' : 'BLOCKED', note: 'Publish 1 commercial guide/comparison page with disclosure' },
-        { item: 'TRAFFIC', status: totalViews > 0 ? 'READY' : 'BLOCKED', note: 'Real organic visitors to public guide' },
-        { item: 'REFERRAL', status: summary.clicks > 0 ? 'READY' : 'BLOCKED', note: 'Tracked outbound referral click (₹0 revenue)' },
-        { item: 'CONVERSION', status: summary.externalConversions > 0 ? 'READY' : 'BLOCKED', note: 'Customer purchase on Amazon.in' },
-        { item: 'COMMISSION', status: summary.verifiedRevenueINR > 0 ? 'READY' : 'BLOCKED', note: 'Import or verify commission report from Associates Central' },
-        { item: 'PAYOUT', status: summary.receivedCashINR > 0 ? 'READY' : 'BLOCKED', note: 'NEFT credit to Indian bank account' }
-      ]
+      moneyPath: evaluation.moneyPath,
+      recommendedFirstPartner: evaluation.recommendedPartner,
+      singleBiggestBlocker: evaluation.singleBiggestBlocker,
+      humanActionRequired: evaluation.humanActionRequired,
+      codeActionRequired: evaluation.codeActionRequired,
+      checklist: evaluation.checklist
     }
   });
 });
