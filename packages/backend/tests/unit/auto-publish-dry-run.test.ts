@@ -189,6 +189,47 @@ describe('Step 4: Automatic Publish & Deploy Dry-Run Verification', () => {
       const sitemapFile = path.join(tempDir, 'sitemap.xml');
       expect(fs.existsSync(sitemapFile)).toBe(true);
       expect(fs.readFileSync(sitemapFile, 'utf8')).toContain(`/guides/${mockGuide.slug}.html`);
+
+      // Verify guides/index.html catalog is also generated
+      const guidesIndexFile = path.join(tempDir, 'guides', 'index.html');
+      expect(fs.existsSync(guidesIndexFile)).toBe(true);
+      expect(fs.readFileSync(guidesIndexFile, 'utf8')).toContain(mockGuide.title);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves existing React app homepage at index.html and writes guides catalog to guides/index.html', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'preserve-homepage-test-'));
+    try {
+      const existingAppHtml = '<!doctype html><html><head><title>App</title></head><body><div id="root"></div></body></html>';
+      fs.writeFileSync(path.join(tempDir, 'index.html'), existingAppHtml, 'utf8');
+
+      const mockGuide = {
+        id: 'cnt_guide_preserve',
+        title: 'Thermal Printer Buyer Guide',
+        slug: 'thermal-printer-buyer-guide',
+        body: '# Thermal Printer Guide\nAffiliate disclosure...',
+        created_at: new Date().toISOString()
+      };
+
+      const res = await prepareDeployGuides({
+        dryRun: true,
+        outputDir: tempDir,
+        mockGuides: [mockGuide]
+      });
+
+      expect(res.publishedCount).toBe(1);
+
+      // Root index.html must NOT be overwritten - React app preserved
+      const rootHtml = fs.readFileSync(path.join(tempDir, 'index.html'), 'utf8');
+      expect(rootHtml).toBe(existingAppHtml);
+      expect(rootHtml).toContain('<div id="root"></div>');
+
+      // Guides catalog is written to guides/index.html
+      const guidesIndex = fs.readFileSync(path.join(tempDir, 'guides', 'index.html'), 'utf8');
+      expect(guidesIndex).toContain('Thermal Printer Buyer Guide');
+      expect(guidesIndex).toContain('Objective Product Buyer Guides');
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
