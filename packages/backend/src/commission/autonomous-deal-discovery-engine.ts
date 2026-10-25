@@ -899,8 +899,14 @@ export class AutonomousDealDiscoveryEngine {
                 subid3: 'cuelinks_feed'
               });
 
-              if (convRes && convRes.affiliated === true && convRes.tracking_url && CuelinksV3Client.isAllowedTrackingUrl(convRes.tracking_url)) {
-                trackingUrl = convRes.short_url || convRes.tracking_url;
+              const candidateUrl = convRes?.short_url || convRes?.tracking_url;
+              if (
+                convRes &&
+                convRes.affiliated === true &&
+                candidateUrl &&
+                CuelinksV3Client.isAllowedTrackingUrl(candidateUrl)
+              ) {
+                trackingUrl = candidateUrl;
                 isMonetizable = true;
                 if (convRes.campaign?.id) {
                   affiliateCampaignId = String(convRes.campaign.id);
@@ -926,7 +932,7 @@ export class AutonomousDealDiscoveryEngine {
               claimedDiscountPercent: claimedDiscount,
               couponCode: cleanCouponCode,
               couponConditions: offer.terms?.trim() || offer.description?.trim() || undefined,
-              availability: 'IN_STOCK',
+              availability: (offer as any).availability || 'UNKNOWN',
               geographicRestrictions: ['India'],
               offerStart: offer.start_date || undefined,
               expiryDate: offer.end_date || undefined,
