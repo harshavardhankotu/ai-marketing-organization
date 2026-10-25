@@ -67,6 +67,20 @@ export interface CuelinksPingResult {
   apiKey?: CuelinksPingApiKey;
 }
 
+export interface CuelinksPaginationMeta {
+  page: number;
+  per_page: number;
+  total: number;
+  total_pages: number;
+  next_page: number | null;
+  prev_page: number | null;
+}
+
+export interface CuelinksOfferCategory {
+  id: number | string;
+  name: string;
+}
+
 export interface CuelinksCampaign {
   id: number | string;
   name: string;
@@ -74,12 +88,18 @@ export interface CuelinksCampaign {
   domain?: string;
   url: string;
   status: 'active' | 'paused' | 'inactive' | 'closed';
-  access_status: 'open' | 'applied' | 'approved' | 'rejected' | 'restricted';
+  access_status: 'open' | 'applied' | 'approved' | 'rejected' | 'restricted' | 'not_applied';
   payout?: string;
   payout_type?: string;
+  payout_currency?: string;
+  campaign_type?: string;
+  reporting_type?: string;
   epc_7d?: string | number;
-  categories?: string[];
-  countries?: string[];
+  epc_90d?: string | number;
+  categories?: Array<CuelinksOfferCategory | string>;
+  countries?: Array<{ id: number; iso: string; name: string } | string>;
+  deeplink_allowed?: boolean;
+  sub_ids_allowed?: boolean;
   terms?: string;
   tracking_url?: string;
   created_at?: string;
@@ -91,17 +111,30 @@ export interface CuelinksOffer {
   campaign_id: number | string;
   campaign_name?: string;
   title: string;
-  url: string;
-  coupon_code?: string;
-  discount?: string;
-  discount_type?: string;
-  start_date?: string;
-  end_date?: string;
-  terms?: string;
+  description?: string | null;
+  terms?: string | null;
+  coupon_code?: string | null;
+  offer_type?: string | null;
+  categories?: CuelinksOfferCategory[] | string[];
+  tracking_url?: string;
   status?: string;
+  start_date?: string | null;
+  end_date?: string | null;
+  original_price?: number | string | null;
+  discount_price?: number | string | null;
+  percent_off?: number | string | null;
+  shipping_charge?: number | string | null;
+  valid_on?: string | null;
+  created_at?: string;
+  updated_at?: string;
+
+  // Backward compatibility fields for mock tests
+  url?: string;
   category?: string;
   current_price_inr?: number;
   reference_price_inr?: number;
+  discount?: string;
+  discount_type?: string;
   image_url?: string;
 }
 

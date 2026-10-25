@@ -231,24 +231,55 @@ export class CuelinksSyncManager {
     const dealCandidates: DealCandidate[] = [];
 
     for (const offer of rawOffers) {
-      if (!offer.url || !offer.title) continue;
+      // Clean merchant destination: extract URL from tracking_url parameter if needed
+      let merchantUrl = offer.url || '';
+      if (!merchantUrl && offer.tracking_url) {
+        try {
+          const parsed = new URL(offer.tracking_url);
+          if (parsed.searchParams.has('url')) {
+            const dec = parsed.searchParams.get('url');
+            if (dec && /^https?:\/\//i.test(dec)) {
+              merchantUrl = decodeURIComponent(dec);
+            }
+          }
+        } catch {}
+        if (!merchantUrl) {
+          merchantUrl = offer.tracking_url;
+        }
+      }
+
+      if (!merchantUrl || !offer.title) continue;
 
       const campaign = eligibleCampaigns.find(c => String(c.id) === String(offer.campaign_id));
       const merchantName = offer.campaign_name || campaign?.merchant_name || campaign?.name || 'Authorized Merchant';
 
       // Rule: Accept currentPriceINR only when explicitly provided by provider data (> 0)
-      const currentPrice = (typeof offer.current_price_inr === 'number' && offer.current_price_inr > 0)
-        ? offer.current_price_inr
-        : undefined;
+      let currentPrice: number | undefined = undefined;
+      if (typeof offer.discount_price === 'number' && offer.discount_price > 0) {
+        currentPrice = offer.discount_price;
+      } else if (typeof offer.discount_price === 'string' && !isNaN(Number(offer.discount_price)) && Number(offer.discount_price) > 0) {
+        currentPrice = Number(offer.discount_price);
+      } else if (typeof offer.current_price_inr === 'number' && offer.current_price_inr > 0) {
+        currentPrice = offer.current_price_inr;
+      }
 
       // Rule: Missing reference price must remain undefined (never synthesized)
-      const refPrice = (typeof offer.reference_price_inr === 'number' && offer.reference_price_inr > 0)
-        ? offer.reference_price_inr
-        : undefined;
+      let refPrice: number | undefined = undefined;
+      if (typeof offer.original_price === 'number' && offer.original_price > 0) {
+        refPrice = offer.original_price;
+      } else if (typeof offer.original_price === 'string' && !isNaN(Number(offer.original_price)) && Number(offer.original_price) > 0) {
+        refPrice = Number(offer.original_price);
+      } else if (typeof offer.reference_price_inr === 'number' && offer.reference_price_inr > 0) {
+        refPrice = offer.reference_price_inr;
+      }
 
       // Provider claimed discount
       let claimedDiscount: number | undefined = undefined;
-      if (offer.discount) {
+      if (typeof offer.percent_off === 'number' && offer.percent_off > 0) {
+        claimedDiscount = Math.round(offer.percent_off);
+      } else if (typeof offer.percent_off === 'string' && !isNaN(Number(offer.percent_off)) && Number(offer.percent_off) > 0) {
+        claimedDiscount = Math.round(Number(offer.percent_off));
+      } else if (offer.discount) {
         const discMatch = offer.discount.match(/(\d+)%/);
         if (discMatch) {
           claimedDiscount = Number(discMatch[1]);
@@ -258,18 +289,28 @@ export class CuelinksSyncManager {
       // Rule: Support coupon-only opportunities: If an offer has a coupon_code or discount terms
       // but no current_price_inr, set dealKind: 'COUPON' and retain it as a valid coupon opportunity
       // with currentPriceINR: undefined without inventing a fake price!
-      const hasCouponOrDiscount = Boolean(offer.coupon_code || offer.discount || offer.terms);
+      const cleanCouponCode = offer.coupon_code ? offer.coupon_code.trim() : undefined;
+      const hasCouponOrDiscount = Boolean(cleanCouponCode || claimedDiscount || offer.terms || offer.description || offer.offer_type === 'coupon');
       let dealKind: 'PRODUCT' | 'COUPON' = 'PRODUCT';
 
       if (!currentPrice) {
         if (hasCouponOrDiscount) {
           dealKind = 'COUPON';
         } else {
-          // No price and no coupon terms -> cannot represent a valid offer
+          // No price and no coupon terms -> cannot represent a valid offer without guessing
           continue;
         }
       } else {
-        dealKind = offer.coupon_code ? 'COUPON' : 'PRODUCT';
+        dealKind = (offer.offer_type === 'coupon' || cleanCouponCode) ? 'COUPON' : 'PRODUCT';
+      }
+
+      // Category extraction
+      let categoryName = 'Retail Deals';
+      if (Array.isArray(offer.categories) && offer.categories.length > 0) {
+        const c0 = offer.categories[0];
+        categoryName = typeof c0 === 'string' ? c0 : (c0?.name || 'Retail Deals');
+      } else if (offer.category) {
+        categoryName = offer.category;
       }
 
       // Rule: Never invent an expiry date: if offer.end_date is omitted, expiryDate remains undefined.
@@ -291,53 +332,61 @@ export class CuelinksSyncManager {
 
       // Rule: Require explicit provider confirmation (affiliated: true AND allowlisted tracking domain)
       // before classifying a link as monetizable. Preserve direct merchant links when affiliated: false.
-      let trackingUrl = offer.url;
+      let trackingUrl = merchantUrl;
       let isMonetizable = false;
 
-      try {
-        const convertRes = await this.client.convertLink({
-          url: offer.url,
-          channel_id: this.syncStatus.channel.id,
-          shorten: true,
-          subid: `aro_cl_${offer.id}`,
-          subid2: String(offer.campaign_id),
-          subid3: 'cuelinks_feed',
-          subid4: 'catalog_v1'
-        });
+      if (offer.tracking_url && CuelinksV3Client.isAllowedTrackingUrl(offer.tracking_url)) {
+        trackingUrl = offer.tracking_url;
+        isMonetizable = true;
+      }
 
-        if (
-          convertRes.affiliated === true &&
-          convertRes.tracking_url &&
-          CuelinksV3Client.isAllowedTrackingUrl(convertRes.tracking_url)
-        ) {
-          trackingUrl = convertRes.tracking_url;
-          isMonetizable = true;
-          this.syncStatus.linksConverted++;
-        } else {
-          trackingUrl = offer.url;
-          isMonetizable = false;
+      if (this.client.isConfigured()) {
+        try {
+          const convertRes = await this.client.convertLink({
+            url: merchantUrl,
+            channel_id: this.syncStatus.channel.id,
+            shorten: true,
+            subid: `aro_cl_${offer.id}`,
+            subid2: String(offer.campaign_id),
+            subid3: 'cuelinks_feed',
+            subid4: 'catalog_v2'
+          });
+
+          if (
+            convertRes.affiliated === true &&
+            convertRes.tracking_url &&
+            CuelinksV3Client.isAllowedTrackingUrl(convertRes.tracking_url)
+          ) {
+            trackingUrl = convertRes.short_url || convertRes.tracking_url;
+            isMonetizable = true;
+            this.syncStatus.linksConverted++;
+          } else {
+            trackingUrl = merchantUrl;
+            isMonetizable = false;
+          }
+        } catch (convErr: any) {
+          if (!isMonetizable) {
+            trackingUrl = merchantUrl;
+          }
         }
-      } catch (convErr: any) {
-        trackingUrl = offer.url;
-        isMonetizable = false;
       }
 
       const candidate: DealCandidate = {
-        title: offer.title,
+        title: offer.title.trim(),
         brand: merchantName,
         merchant: merchantName,
-        category: offer.category || 'Retail Deals',
-        productUrl: offer.url,
+        category: categoryName,
+        productUrl: merchantUrl,
         currentPriceINR: currentPrice,
         referencePriceINR: refPrice,
         claimedDiscountPercent: claimedDiscount,
         discountVerificationType: 'MERCHANT_CLAIMED',
         dealKind,
-        couponCode: offer.coupon_code,
-        couponConditions: offer.terms,
+        couponCode: cleanCouponCode,
+        couponConditions: offer.terms?.trim() || offer.description?.trim() || undefined,
         offerStart,
         expiryDate,
-        sourceUrl: offer.url,
+        sourceUrl: merchantUrl,
         sourceDomain: 'cuelinks.com',
         sourceType: 'AFFILIATE_NETWORK',
         trackingUrl: isMonetizable ? trackingUrl : undefined,
@@ -716,9 +765,13 @@ export class CuelinksSyncManager {
         this.syncStatus.campaignsDiscovered = campRes.total;
         this.syncStatus.eligibleCampaignsCount = eligibleCampaigns.length;
 
-        cursor.hasMoreCampaigns = (campaignPage * batchSize) < campRes.total;
-        if (cursor.hasMoreCampaigns) {
+        const totalCampaigns = campRes.total || 0;
+        if (totalCampaigns > 0 && campaignPage * batchSize >= totalCampaigns) {
+          campaignPage = 1; // Wrap around to rotate from start
+          cursor.hasMoreCampaigns = true;
+        } else {
           campaignPage++;
+          cursor.hasMoreCampaigns = true;
         }
       }
     } catch (campErr: any) {
@@ -734,9 +787,13 @@ export class CuelinksSyncManager {
           per_page: batchSize
         });
 
-        cursor.hasMoreOffers = (offerPage * batchSize) < offRes.total;
-        if (cursor.hasMoreOffers) {
+        const totalOffers = offRes.total || 0;
+        if (totalOffers > 0 && offerPage * batchSize >= totalOffers) {
+          offerPage = 1; // Wrap around to rotate from start
+          cursor.hasMoreOffers = true;
+        } else {
           offerPage++;
+          cursor.hasMoreOffers = true;
         }
 
         const candidates = await this.processOffersToCandidates(offRes.offers || [], eligibleCampaigns);

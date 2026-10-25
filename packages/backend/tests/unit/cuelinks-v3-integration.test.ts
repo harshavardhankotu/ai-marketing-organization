@@ -1634,4 +1634,207 @@ describe('Cuelinks V3 Monetization API & MCP Integration (Spec §§ 1–10)', ()
       expect(status).toBeDefined();
     });
   });
+
+  describe('13. Revenue Engine V2.3: Official Cuelinks Response Fixtures, Field Mapping & Destination Extraction', () => {
+    it('correctly maps official Cuelinks V3 offers response envelope { data: [...], meta: ... }', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: [
+            {
+              id: 131475,
+              title: 'Get Extra 10% Off Your Wellbeing Nutrition Whey Proteins Order Now!',
+              description: 'Limited time promotion. Buy Wellbeing Nutrition Whey Proteins to receive an extra 10% discount.',
+              terms: 'Valid on whey protein collection.',
+              coupon_code: 'WHEY10',
+              offer_type: 'coupon',
+              campaign_id: 4469,
+              campaign_name: 'Wellbeing Nutrition',
+              categories: [{ id: 8, name: 'Health & Beauty' }],
+              tracking_url: 'https://linksredirect.com/?cid=331585&source=api&url=https%3A%2F%2Fwellbeingnutrition.com%2Fcollections%2Fwhey-protein',
+              status: 'live',
+              start_date: '2026-10-23',
+              end_date: '2026-10-31',
+              original_price: null,
+              discount_price: null,
+              percent_off: '10',
+              shipping_charge: null
+            }
+          ],
+          meta: {
+            page: 1,
+            per_page: 1,
+            total: 1355,
+            total_pages: 1355,
+            next_page: 2,
+            prev_page: null
+          }
+        })
+      });
+
+      const client = new CuelinksV3Client({ apiKey: 'test_token', fetchFn: mockFetch as any });
+      const res = await client.getOffers({ page: 1, per_page: 1 });
+
+      expect(res.offers.length).toBe(1);
+      expect(res.total).toBe(1355);
+      expect(res.total_pages).toBe(1355);
+      expect(res.page).toBe(1);
+      expect(res.next_page).toBe(2);
+
+      const offer = res.offers[0];
+      expect(offer.id).toBe(131475);
+      expect(offer.coupon_code).toBe('WHEY10');
+      expect(offer.campaign_name).toBe('Wellbeing Nutrition');
+      expect(offer.offer_type).toBe('coupon');
+    });
+
+    it('extracts merchant destination URL when provider tracking_url is passed to convertLink', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: {
+            tracking_url: 'https://linksredirect.com/?cid=331585&url=https%3A%2F%2Fwellbeingnutrition.com%2Fcollections%2Fwhey-protein',
+            short_url: 'https://clnk.in/DJQh',
+            affiliated: true,
+            campaign: { id: 4469, name: 'Wellbeing Nutrition' }
+          }
+        })
+      });
+
+      const client = new CuelinksV3Client({ apiKey: 'test_token', fetchFn: mockFetch as any });
+      // Pass the tracking URL from feed — client should extract clean merchant URL
+      const inputUrl = 'https://linksredirect.com/?cid=331585&source=api&url=https%3A%2F%2Fwellbeingnutrition.com%2Fcollections%2Fwhey-protein';
+      const conv = await client.convertLink({ url: inputUrl, channel_id: 331585, shorten: true });
+
+      // Verifies client passed clean destination to Cuelinks, NOT tracking_url looped back
+      const sentBody = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(sentBody.url).toBe('https://wellbeingnutrition.com/collections/whey-protein');
+      expect(conv.affiliated).toBe(true);
+      expect(conv.short_url).toBe('https://clnk.in/DJQh');
+      expect(conv.url).toBe('https://wellbeingnutrition.com/collections/whey-protein');
+    });
+
+    it('processes official Cuelinks offer to candidate without inventing fake prices or MRP', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: {
+            tracking_url: 'https://clnk.in/DJQh',
+            short_url: 'https://clnk.in/DJQh',
+            affiliated: true
+          }
+        })
+      });
+
+      const client = new CuelinksV3Client({ apiKey: 'test_token', fetchFn: mockFetch as any });
+      const manager = new CuelinksSyncManager(client);
+
+      const candidates = await manager.processOffersToCandidates([
+        {
+          id: 131475,
+          title: 'Wellbeing Nutrition Whey Protein',
+          coupon_code: 'WHEY10',
+          offer_type: 'coupon',
+          campaign_id: 4469,
+          campaign_name: 'Wellbeing Nutrition',
+          tracking_url: 'https://linksredirect.com/?cid=331585&url=https%3A%2F%2Fwellbeingnutrition.com%2Fcollections%2Fwhey-protein',
+          status: 'live',
+          original_price: null,
+          discount_price: null,
+          percent_off: '10'
+        }
+      ], [{ id: 4469, name: 'Wellbeing Nutrition', url: 'https://wellbeingnutrition.com', status: 'active', access_status: 'open' }]);
+
+      expect(candidates.length).toBe(1);
+      const cand = candidates[0];
+      expect(cand.dealKind).toBe('COUPON');
+      expect(cand.currentPriceINR).toBeUndefined(); // No fake price invented
+      expect(cand.referencePriceINR).toBeUndefined(); // No fake MRP invented
+      expect(cand.couponCode).toBe('WHEY10');
+      expect(cand.claimedDiscountPercent).toBe(10);
+      expect(cand.discountVerificationType).toBe('MERCHANT_CLAIMED');
+      expect(cand.isMonetizable).toBe(true);
+      expect(cand.trackingUrl).toBe('https://clnk.in/DJQh');
+    });
+
+    it('maps positive discount_price and original_price when provided by official API', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: {
+            tracking_url: 'https://clnk.in/DJQp',
+            short_url: 'https://clnk.in/DJQp',
+            affiliated: true
+          }
+        })
+      });
+
+      const client = new CuelinksV3Client({ apiKey: 'test_token', fetchFn: mockFetch as any });
+      const manager = new CuelinksSyncManager(client);
+
+      const candidates = await manager.processOffersToCandidates([
+        {
+          id: 131999,
+          title: 'The Man Company Charcoal Face Wash',
+          coupon_code: 'CART15',
+          offer_type: 'deal',
+          campaign_id: 2514,
+          campaign_name: 'The Man Company',
+          tracking_url: 'https://linksredirect.com/?cid=331585&url=https%3A%2F%2Fwww.themancompany.com%2Fproducts%2Fface-wash',
+          status: 'live',
+          original_price: 349,
+          discount_price: 299,
+          percent_off: '14'
+        }
+      ], [{ id: 2514, name: 'The Man Company', url: 'https://themancompany.com', status: 'active', access_status: 'open' }]);
+
+      expect(candidates.length).toBe(1);
+      const cand = candidates[0];
+      expect(cand.currentPriceINR).toBe(299);
+      expect(cand.referencePriceINR).toBe(349);
+      expect(cand.claimedDiscountPercent).toBe(14);
+      expect(cand.discountVerificationType).toBe('MERCHANT_CLAIMED');
+      expect(cand.couponCode).toBe('CART15');
+      expect(cand.isMonetizable).toBe(true);
+    });
+
+    it('falls back safely to direct merchant link when affiliated is false', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: {
+            tracking_url: 'https://www.unaffiliated-merchant.com/item',
+            affiliated: false
+          }
+        })
+      });
+
+      const client = new CuelinksV3Client({ apiKey: 'test_token', fetchFn: mockFetch as any });
+      const manager = new CuelinksSyncManager(client);
+
+      const candidates = await manager.processOffersToCandidates([
+        {
+          id: 99999,
+          title: 'Unaffiliated Brand Item',
+          coupon_code: 'TEST5',
+          offer_type: 'coupon',
+          campaign_id: 9999,
+          campaign_name: 'Unaffiliated Brand',
+          tracking_url: 'https://linksredirect.com/?cid=331585&url=https%3A%2F%2Fwww.unaffiliated-merchant.com%2Fitem',
+          status: 'live'
+        }
+      ], []);
+
+      expect(candidates.length).toBe(1);
+      const cand = candidates[0];
+      expect(cand.isMonetizable).toBe(false);
+      expect(cand.trackingUrl).toBeUndefined();
+      expect(cand.productUrl).toBe('https://www.unaffiliated-merchant.com/item');
+    });
+  });
 });
