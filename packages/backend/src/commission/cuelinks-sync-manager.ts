@@ -489,6 +489,8 @@ export class CuelinksSyncManager {
       if (pingRes.publisherId) this.syncStatus.publisherId = pingRes.publisherId;
       if (pingRes.email) this.syncStatus.email = pingRes.email;
       if (pingRes.scopes) this.syncStatus.scopes = pingRes.scopes;
+      if (pingRes.hasRequiredScopes !== undefined) this.syncStatus.hasRequiredScopes = pingRes.hasRequiredScopes;
+      if (pingRes.missingScopes) this.syncStatus.missingScopes = pingRes.missingScopes;
 
       // 2. Channel inspection & registration
       try {

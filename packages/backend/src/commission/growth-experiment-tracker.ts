@@ -465,7 +465,24 @@ export class GrowthExperimentTracker {
     for (const exp of this.experimentsMap.values()) {
       if (exp.status === 'ACTIVE') {
         count++;
+        exp.currentCycleCount = (exp.currentCycleCount || 0) + 1;
+
+        const cum = exp.cumulativeMetrics;
+        const totalSamples = (cum?.baselineTotalVisits || 0) + (cum?.treatmentTotalVisits || 0);
+
+        if (totalSamples === 0) {
+          exp.automatedDecision = {
+            decision: 'INCONCLUSIVE',
+            decidedAt: new Date().toISOString(),
+            rationale: 'Zero real external visits observed in cycle. Continuing observation over upcoming 6-hour commercial cycles.',
+            confidence: 0
+          };
+        } else {
+          this.evaluateExperiment(exp.id);
+        }
+
         decisions[exp.id] = exp.automatedDecision.decision;
+        this.persistExperiment(exp).catch(() => {});
       }
     }
 

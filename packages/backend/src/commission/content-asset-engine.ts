@@ -35,6 +35,7 @@ export interface LintContentOptions {
   hasVerifiedRecord?: boolean;
   disclosureMarkdown?: string;
   lane?: 'AFFILIATE' | 'B2B' | 'DIRECT';
+  network?: string;
   isB2B?: boolean;
   allowedPrices?: number[];
 }
@@ -117,7 +118,7 @@ export function lintContentAsset(
     violations.push('FABRICATED_TESTIMONIAL: fabricated customer testimonials are prohibited.');
   }
 
-  // 12. Required disclosures (Amazon vs B2B service)
+  // 12. Required disclosures (Amazon vs Cuelinks/Affiliate vs B2B service)
   if (isB2B) {
     if (!lower.includes('/privacy')) {
       violations.push('MISSING_PRIVACY_LINK: B2B content must link to the privacy policy (/privacy).');
@@ -126,10 +127,18 @@ export function lintContentAsset(
       violations.push('MISSING_SERVICE_DISCLOSURE: B2B content must disclose that the owner sells a commercial lead conversion service.');
     }
   } else {
-    const REQUIRED_AMAZON_DISCLOSURE = 'As an Amazon Associate I earn from qualifying purchases.';
+    const isGeneralAffiliate = options?.network === 'CUELINKS' || (Boolean(options?.network) && options?.network !== 'AMAZON_ASSOCIATES');
     const topSlice = text.substring(0, 600) + ' ' + (options?.disclosureMarkdown || '').substring(0, 600);
-    if (!topSlice.includes(REQUIRED_AMAZON_DISCLOSURE)) {
-      violations.push(`MISSING_AMAZON_DISCLOSURE: Mandatory disclosure required near top of content: "${REQUIRED_AMAZON_DISCLOSURE}"`);
+    if (!isGeneralAffiliate) {
+      const REQUIRED_AMAZON_DISCLOSURE = 'As an Amazon Associate I earn from qualifying purchases.';
+      if (!topSlice.includes(REQUIRED_AMAZON_DISCLOSURE)) {
+        violations.push(`MISSING_AMAZON_DISCLOSURE: Mandatory disclosure required near top of content: "${REQUIRED_AMAZON_DISCLOSURE}"`);
+      }
+    } else {
+      const hasGeneralDisclosure = /affiliate\s+disclosure|qualifying\s+purchases?|earn\s+from|commission/i.test(topSlice);
+      if (!hasGeneralDisclosure) {
+        violations.push('MISSING_AFFILIATE_DISCLOSURE: Mandatory affiliate disclosure required near top of content: "Affiliate Disclosure: We may earn an affiliate commission when you purchase through links on our site."');
+      }
     }
   }
 
@@ -402,6 +411,30 @@ export class ContentAssetEngine {
   }
 
   /**
+   * Retrieves an asset by ID without incrementing views.
+   */
+  public async getAsset(id: string): Promise<ContentAsset | null> {
+    let row: any = null;
+    try {
+      row = await this.d1Repo.queryOne<any>(
+        'commission_content_assets',
+        'SELECT * FROM commission_content_assets WHERE id = ?',
+        [id]
+      );
+    } catch {}
+
+    if (!row) {
+      try {
+        const db = getDb();
+        row = db.prepare('SELECT * FROM commission_content_assets WHERE id = ?').get(id);
+      } catch {}
+    }
+
+    if (!row) return null;
+    return this.mapAsset(row);
+  }
+
+  /**
    * Synchronizes baseline acquisition content (e.g. Student Travel Concessions)
    * from local SQLite seed to Cloudflare D1 if missing in production.
    */
@@ -518,8 +551,13 @@ export class ContentAssetEngine {
     const slug = `${category}-${primaryMatch.offer.offerSlug}-guide`.toLowerCase().replace(/[^a-z0-9-_]/g, '-');
 
     // Build genuine factual comparison content
+    const isAmazonPrimary = primaryMatch.partner.network === 'AMAZON_ASSOCIATES' || (primaryMatch.offer.authorizedTrackingUrl || '').includes('amazon.');
     let contentMarkdown = `# Complete Guide: ${intent}\n\n`;
-    contentMarkdown += `As an Amazon Associate I earn from qualifying purchases.\n\n`;
+    if (isAmazonPrimary) {
+      contentMarkdown += `As an Amazon Associate I earn from qualifying purchases.\n\n`;
+    } else {
+      contentMarkdown += `*Affiliate Disclosure: We may earn an affiliate commission when you purchase through links on our site, at no additional cost to you.*\n\n`;
+    }
     contentMarkdown += `Finding the right solution for **${intent}** in ${location} requires evaluating verified providers, genuine customer outcomes, and pricing.\n\n`;
     contentMarkdown += `## Recommended Provider: ${primaryMatch.partner.name}\n\n`;
     contentMarkdown += `**${primaryMatch.offer.title}**\n\n`;
@@ -529,7 +567,6 @@ export class ContentAssetEngine {
       contentMarkdown += `* **Price Range:** ${primaryMatch.offer.priceRange}\n`;
     }
     contentMarkdown += `* **Key Advantage:** Direct verified booking with dedicated support and transparent terms.\n\n`;
-    const isAmazonPrimary = primaryMatch.partner.network === 'AMAZON_ASSOCIATES' || (primaryMatch.offer.authorizedTrackingUrl || '').includes('amazon.');
     if (isAmazonPrimary) {
       const tag = (process.env.AMAZON_AFFILIATE_TAG || '').trim();
       let directUrl = primaryMatch.offer.authorizedTrackingUrl || primaryMatch.offer.destinationUrl;

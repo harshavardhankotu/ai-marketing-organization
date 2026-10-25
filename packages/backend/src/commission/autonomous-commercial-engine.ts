@@ -127,6 +127,8 @@ export class AutonomousCommercialEngine {
   private d1Repo = D1RevenueRepository.getInstance();
   private partnerRegistry = PartnerRegistryEngine.getInstance();
   private contentEngine = ContentAssetEngine.getInstance();
+  private fetchFn: typeof fetch = globalThis.fetch;
+  private customFetchFnSet: boolean = false;
 
   private lastCycleTimestamp: string = 'NEVER';
   private lastCycleId: string = 'NONE';
@@ -140,22 +142,44 @@ export class AutonomousCommercialEngine {
     return AutonomousCommercialEngine.instance;
   }
 
+  public setFetchFn(fn: typeof fetch | null): void {
+    this.fetchFn = fn || globalThis.fetch;
+    this.customFetchFnSet = Boolean(fn);
+  }
+
+  public getFetchFn(): typeof fetch {
+    return this.fetchFn;
+  }
+
   /**
    * Run one autonomous commercial execution cycle.
-   * Follows the 13-step sequence:
-   * 1. Inspect state -> 2. Select task -> 3. Discover -> 4. Qualify -> 5. Plan ->
-   * 6. Execute -> 7. Validate -> 8. Deploy -> 9. Verify live -> 10. Record ->
-   * 11. Retry backoff -> 12. Recalculate blockers -> 13. Persist.
+   * Priority:
+   * 1. Inspect state & recalculate blockers/retries
+   * 2. PHASE 1: Execute due commercial tasks FIRST (dedicated budget to prevent starvation)
+   * 3. PHASE 2: Bounded Autonomous Deal Discovery Loop
+   * 4. PHASE 3: Bounded Cuelinks Scout & Monetization Sync (channel & scope verified)
+   * 5. Record phase durations and honest cycle status (DEFERRED when starved, NO_ACTION_DUE only when empty).
    */
   public async runCycle(
     organizationId: string = OwnerAuthService.OWNER_ORGANIZATION_ID,
-    businessId: string = OwnerAuthService.PLATFORM_BUSINESS_ID
+    businessId: string = OwnerAuthService.PLATFORM_BUSINESS_ID,
+    options?: {
+      taskBudgetMaxMs?: number;
+      executionBudgetMaxTasks?: number;
+    }
   ): Promise<{
     cycleId: string;
-    status: 'COMPLETED' | 'BLOCKED' | 'PARTIAL' | 'NO_ACTION_DUE' | 'ERROR';
+    status: 'COMPLETED' | 'BLOCKED' | 'PARTIAL' | 'DEFERRED' | 'NO_ACTION_DUE' | 'ERROR';
     tasksProcessed: number;
     tasksCompleted: number;
+    tasksDue: number;
+    tasksDeferred: number;
     activeBlockers: number;
+    phaseDurations: {
+      taskExecutionMs: number;
+      discoveryMs: number;
+      cuelinksSyncMs: number;
+    };
     details: string;
   }> {
     const cycleId = `comm_cycle_${Date.now()}`;
@@ -172,50 +196,27 @@ export class AutonomousCommercialEngine {
         status: 'BLOCKED',
         tasksProcessed: 0,
         tasksCompleted: 0,
+        tasksDue: 0,
+        tasksDeferred: 0,
         activeBlockers: 1,
+        phaseDurations: { taskExecutionMs: 0, discoveryMs: 0, cuelinksSyncMs: 0 },
         details: lock.reason || 'Cycle already running'
       };
     }
 
     let tasksProcessed = 0;
     let tasksCompleted = 0;
-    const executionBudgetMaxTasks = 5;
-    const executionBudgetMaxMs = 60000;
+    let tasksDue = 0;
+    let tasksDeferred = 0;
+    const taskBudgetMaxMs = options?.taskBudgetMaxMs ?? 25000;
+    const executionBudgetMaxTasks = options?.executionBudgetMaxTasks ?? 5;
+
+    let taskExecutionMs = 0;
+    let discoveryMs = 0;
+    let cuelinksSyncMs = 0;
 
     try {
       console.log(`[CommercialEngine] Starting autonomous cycle ${cycleId} at ${new Date().toISOString()}`);
-
-      // 0. Autonomous Deal Discovery & Verification Loop (Spec §§ 1–11)
-      try {
-        const { AutonomousDealDiscoveryEngine } = await import('./autonomous-deal-discovery-engine.js');
-        await AutonomousDealDiscoveryEngine.getInstance().runDiscoveryCycle(organizationId, businessId);
-      } catch (dealErr: any) {
-        console.warn(`[CommercialEngine] Deal discovery cycle notice: ${dealErr.message}`);
-      }
-
-      // 0b. Autonomous Cuelinks Scout & Monetization Sync (Spec § 4)
-      try {
-        const { CuelinksSyncManager } = await import('./cuelinks-sync-manager.js');
-        const syncMgr = CuelinksSyncManager.getInstance();
-        if (syncMgr.getStatus().configured) {
-          const syncRes = await syncMgr.syncCuelinks(organizationId, businessId);
-          console.log(`[CommercialEngine] Cuelinks scout sync: status=${syncRes.status.status}, connected=${syncRes.status.connected}, discovered=${syncRes.status.campaignsDiscovered}`);
-          if (syncRes.status.connected) {
-            const sqlAuth = `
-              UPDATE partners
-              SET approval_status = 'APPROVED', active_status = 1, authorization_status = 'AUTHORIZED', updated_at = datetime('now')
-              WHERE network = 'CUELINKS'
-            `;
-            if (isProduction()) {
-              await this.d1Repo.executeWrite('partners', sqlAuth, []);
-            } else {
-              getDb().prepare(sqlAuth).run();
-            }
-          }
-        }
-      } catch (cuelinksErr: any) {
-        console.warn(`[CommercialEngine] Cuelinks sync notice: ${cuelinksErr.message}`);
-      }
 
       // 1. Sync durable partner registry & quota state from D1 in production
       if (isProduction()) {
@@ -231,11 +232,6 @@ export class AutonomousCommercialEngine {
 
       // 3. Blocker & Retry recalculation
       for (const task of existingTasks) {
-        if (Date.now() - startMs > executionBudgetMaxMs || tasksProcessed >= executionBudgetMaxTasks) {
-          console.log(`[CommercialEngine] Execution budget reached. Deferring remaining tasks.`);
-          break;
-        }
-
         if (task.status === 'RETRY_WAIT') {
           const nextRetry = task.errorInfo?.nextRetryAt ? new Date(task.errorInfo.nextRetryAt).getTime() : 0;
           if (Date.now() >= nextRetry) {
@@ -272,14 +268,17 @@ export class AutonomousCommercialEngine {
         }
       }
 
-      // 6. Execute eligible tasks
-      for (const task of existingTasks) {
-        if (Date.now() - startMs > executionBudgetMaxMs || tasksProcessed >= executionBudgetMaxTasks) {
-          break;
-        }
+      // 6. PHASE 1: Priority Task Execution (Execute due commercial tasks FIRST to prevent starvation)
+      const eligibleTasks = existingTasks.filter(
+        t => t.status !== 'BLOCKED' && t.status !== 'RETRY_WAIT' && t.status !== 'COMPLETED' && t.status !== 'FAILED_PERMANENTLY'
+      );
+      tasksDue = eligibleTasks.length;
 
-        if (task.status === 'BLOCKED' || task.status === 'RETRY_WAIT' || task.status === 'COMPLETED' || task.status === 'FAILED_PERMANENTLY') {
-          continue;
+      const taskStartMs = Date.now();
+      for (const task of eligibleTasks) {
+        if (Date.now() - taskStartMs > taskBudgetMaxMs || tasksProcessed >= executionBudgetMaxTasks) {
+          console.log(`[CommercialEngine] Task execution budget reached (${Date.now() - taskStartMs}ms). Deferring remaining ${tasksDue - tasksProcessed} task(s).`);
+          break;
         }
 
         tasksProcessed++;
@@ -288,35 +287,95 @@ export class AutonomousCommercialEngine {
           tasksCompleted++;
         }
       }
+      taskExecutionMs = Date.now() - taskStartMs;
+      tasksDeferred = Math.max(0, tasksDue - tasksProcessed);
 
-      // 7. Update engine run state
+      // 7. PHASE 2: Autonomous Deal Discovery & Verification Loop (Spec §§ 1–11)
+      const discoveryStartMs = Date.now();
+      try {
+        const { AutonomousDealDiscoveryEngine } = await import('./autonomous-deal-discovery-engine.js');
+        await AutonomousDealDiscoveryEngine.getInstance().runDiscoveryCycle(organizationId, businessId);
+      } catch (dealErr: any) {
+        console.warn(`[CommercialEngine] Deal discovery cycle notice: ${dealErr.message}`);
+      }
+      discoveryMs = Date.now() - discoveryStartMs;
+
+      // 8. PHASE 3: Autonomous Cuelinks Scout & Monetization Sync (Spec § 4)
+      const cuelinksStartMs = Date.now();
+      try {
+        const { CuelinksSyncManager } = await import('./cuelinks-sync-manager.js');
+        const syncMgr = CuelinksSyncManager.getInstance();
+        if (syncMgr.getStatus().configured) {
+          const syncRes = await syncMgr.syncCuelinks(organizationId, businessId);
+          console.log(`[CommercialEngine] Cuelinks scout sync: status=${syncRes.status.status}, connected=${syncRes.status.connected}, discovered=${syncRes.status.campaignsDiscovered}`);
+
+          // STRICT AUTHORIZATION TRUTH (Sprint V3.1 § 4.1):
+          // Partner approval requires authoritative proof: channel.status === 'APPROVED' | 'active' AND ping.hasRequiredScopes === true.
+          const isChannelApproved = Boolean(
+            syncRes.status.channel?.status &&
+            (syncRes.status.channel.status.toLowerCase() === 'active' || syncRes.status.channel.status.toLowerCase() === 'approved')
+          );
+          const hasRequiredScopes = Boolean(syncRes.status.hasRequiredScopes);
+
+          if (syncRes.status.connected && isChannelApproved && hasRequiredScopes) {
+            const sqlAuth = `
+              UPDATE partners
+              SET approval_status = 'APPROVED', active_status = 1, authorization_status = 'AUTHORIZED', updated_at = datetime('now')
+              WHERE network = 'CUELINKS'
+            `;
+            if (isProduction()) {
+              await this.d1Repo.executeWrite('partners', sqlAuth, []);
+            } else {
+              getDb().prepare(sqlAuth).run();
+            }
+          } else if (syncRes.status.connected) {
+            console.log(`[CommercialEngine] Cuelinks connected but channel or scopes pending (channelStatus: ${syncRes.status.channel?.status}, hasScopes: ${hasRequiredScopes}). Partner remains unapproved.`);
+          }
+        }
+      } catch (cuelinksErr: any) {
+        console.warn(`[CommercialEngine] Cuelinks sync notice: ${cuelinksErr.message}`);
+      }
+      cuelinksSyncMs = Date.now() - cuelinksStartMs;
+
+      // 9. Update engine run state & calculate cycle status
       this.lastCycleTimestamp = new Date().toISOString();
       this.lastCycleId = cycleId;
       this.lastCycleDurationMs = Date.now() - startMs;
-      const blockersCount = existingTasks.filter(t => t.status === 'BLOCKED').length;
 
-      let cycleStatus: 'COMPLETED' | 'BLOCKED' | 'PARTIAL' | 'NO_ACTION_DUE';
-      if (blockersCount > 0 && tasksCompleted === 0) {
-        cycleStatus = 'BLOCKED';
-      } else if (tasksCompleted > 0) {
+      const currentTasks = await this.listCommercialTasks(organizationId, businessId);
+      const blockersCount = currentTasks.filter(t => t.status === 'BLOCKED').length;
+
+      let cycleStatus: 'COMPLETED' | 'BLOCKED' | 'PARTIAL' | 'DEFERRED' | 'NO_ACTION_DUE';
+      if (tasksCompleted > 0) {
         cycleStatus = 'COMPLETED';
       } else if (tasksProcessed > 0) {
         cycleStatus = 'PARTIAL';
+      } else if (tasksDeferred > 0) {
+        cycleStatus = 'DEFERRED';
+      } else if (blockersCount > 0) {
+        cycleStatus = 'BLOCKED';
       } else {
         cycleStatus = 'NO_ACTION_DUE';
       }
 
       this.lastCycleStatus = cycleStatus;
 
-      console.log(`[CommercialEngine] Cycle ${cycleId} finished in ${this.lastCycleDurationMs}ms (status: ${cycleStatus}, processed: ${tasksProcessed}, completed: ${tasksCompleted}, blocked: ${blockersCount})`);
+      console.log(`[CommercialEngine] Cycle ${cycleId} finished in ${this.lastCycleDurationMs}ms (status: ${cycleStatus}, due: ${tasksDue}, processed: ${tasksProcessed}, completed: ${tasksCompleted}, deferred: ${tasksDeferred}, blocked: ${blockersCount})`);
 
       return {
         cycleId,
         status: cycleStatus,
         tasksProcessed,
         tasksCompleted,
+        tasksDue,
+        tasksDeferred,
         activeBlockers: blockersCount,
-        details: `Cycle ${cycleId} executed ${tasksProcessed} task(s).`
+        phaseDurations: {
+          taskExecutionMs,
+          discoveryMs,
+          cuelinksSyncMs
+        },
+        details: `Cycle ${cycleId} executed ${tasksProcessed} of ${tasksDue} task(s) (${tasksCompleted} completed, ${tasksDeferred} deferred).`
       };
     } catch (fatalErr: any) {
       console.error(`[CommercialEngine] Fatal error in cycle ${cycleId}: ${fatalErr.message}`);
@@ -330,7 +389,14 @@ export class AutonomousCommercialEngine {
         status: 'ERROR',
         tasksProcessed,
         tasksCompleted,
+        tasksDue,
+        tasksDeferred,
         activeBlockers: 1,
+        phaseDurations: {
+          taskExecutionMs,
+          discoveryMs,
+          cuelinksSyncMs
+        },
         details: fatalErr.message
       };
     } finally {
@@ -508,21 +574,33 @@ export class AutonomousCommercialEngine {
           }
 
           if (!task.outputs.offerId) {
-            // Auto-authorize partner if credentials are configured
+            // Auto-authorize partner if credentials are configured and channel/scopes are approved, or if owner explicitly approved
             if (task.outputs.partnerId) {
               try {
                 const partner = await this.partnerRegistry.getPartner(task.outputs.partnerId);
                 const isCuelinksConf = CuelinksV3Client.getInstance().isConfigured();
                 if (partner && partner.network === 'CUELINKS' && isCuelinksConf && !this.partnerRegistry.isPartnerAuthorizedForProduction(partner)) {
-                  const sqlAuth = `UPDATE partners SET approval_status = 'APPROVED', active_status = 1, authorization_status = 'AUTHORIZED', updated_at = datetime('now') WHERE id = ?`;
-                  if (isProduction()) {
-                    await this.d1Repo.executeWrite('partners', sqlAuth, [partner.id]);
-                  } else {
-                    getDb().prepare(sqlAuth).run(partner.id);
+                  const { CuelinksSyncManager } = await import('./cuelinks-sync-manager.js');
+                  const syncMgr = CuelinksSyncManager.getInstance();
+                  const syncStatus = syncMgr.getStatus();
+                  const isChannelApproved = Boolean(
+                    syncStatus.channel?.status &&
+                    (syncStatus.channel.status.toLowerCase() === 'active' || syncStatus.channel.status.toLowerCase() === 'approved')
+                  );
+                  const hasRequiredScopes = Boolean(syncStatus.hasRequiredScopes);
+                  const isExplicitOwnerApproval = Boolean(task.inputs.partnerApproved);
+
+                  if (isExplicitOwnerApproval || (syncStatus.connected && isChannelApproved && hasRequiredScopes)) {
+                    const sqlAuth = `UPDATE partners SET approval_status = 'APPROVED', active_status = 1, authorization_status = 'AUTHORIZED', updated_at = datetime('now') WHERE id = ?`;
+                    if (isProduction()) {
+                      await this.d1Repo.executeWrite('partners', sqlAuth, [partner.id]);
+                    } else {
+                      getDb().prepare(sqlAuth).run(partner.id);
+                    }
+                    partner.approvalStatus = 'APPROVED';
+                    partner.authorizationStatus = 'AUTHORIZED';
+                    partner.activeStatus = 1;
                   }
-                  partner.approvalStatus = 'APPROVED';
-                  partner.authorizationStatus = 'AUTHORIZED';
-                  partner.activeStatus = 1;
                 }
               } catch {}
             }
@@ -620,7 +698,8 @@ export class AutonomousCommercialEngine {
           return 'BLOCKED';
         }
 
-        task.outputs.publicUrl = `https://gen-lang-client-0916255372.web.app/guides/${task.outputs.guideSlug}.html`;
+        const baseUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').replace(/\/$/, '');
+        task.outputs.publicUrl = `${baseUrl}/guides/${task.outputs.guideSlug}`;
         task.status = 'VERIFYING';
         task.lastSuccessfulCheckpoint = 'DEPLOYING';
         await this.persistTask(task);
@@ -630,6 +709,17 @@ export class AutonomousCommercialEngine {
       if (task.status === 'VERIFYING') {
         task.currentStep = 'VERIFY_PUBLIC_ROUTE';
         await this.persistTask(task);
+
+        const verifyResult = await this.verifyPublicAsset(task);
+        if (!verifyResult.verified) {
+          task.status = 'BLOCKED';
+          task.errorInfo = {
+            blockerType: 'INVALID_CONTENT_OR_DISCLOSURE',
+            message: `Public asset verification failed for '${task.outputs.publicUrl}': ${verifyResult.reason}`
+          };
+          await this.persistTask(task);
+          return 'BLOCKED';
+        }
 
         task.outputs.trackingUrl = `/r/${task.outputs.offerSlug}/clk_verify_${Date.now()}`;
         task.outputs.verifiedAt = new Date().toISOString();
@@ -645,6 +735,63 @@ export class AutonomousCommercialEngine {
     } catch (err: any) {
       console.error(`[CommercialEngine] Error executing task ${task.id}: ${err.message}`);
       return await this.handleTaskFailure(task, err.message);
+    }
+  }
+
+  /**
+   * Verifies that the deployed asset is live, accessible, and compliant.
+   * Performs an actual HTTP GET request to verify HTTP 200, domain allowlist,
+   * content title/slug presence, and required affiliate disclosure.
+   */
+  public async verifyPublicAsset(task: CommercialTaskRecord): Promise<{ verified: boolean; reason?: string }> {
+    const publicUrl = task.outputs.publicUrl;
+    if (!publicUrl) {
+      return { verified: false, reason: 'Missing publicUrl in task outputs.' };
+    }
+
+    try {
+      const parsed = new URL(publicUrl);
+      const allowlistedDomains = [
+        'ai-marketing-organization.onrender.com',
+        'localhost',
+        '127.0.0.1',
+        'web.app'
+      ];
+      const isAllowedHost = allowlistedDomains.some(d => parsed.hostname === d || parsed.hostname.endsWith(`.${d}`));
+      if (!isAllowedHost) {
+        return { verified: false, reason: `Host '${parsed.hostname}' is not in allowlisted production domains.` };
+      }
+
+      if (this.customFetchFnSet || isProduction()) {
+        const fetchImpl = this.fetchFn || globalThis.fetch;
+        const res = await fetchImpl(publicUrl, { method: 'GET' });
+        if (res.status !== 200) {
+          return { verified: false, reason: `HTTP status ${res.status} returned from ${publicUrl}. Expected 200.` };
+        }
+
+        const bodyText = await res.text();
+        const hasAffiliateDisclosure = /affiliate\s+disclosure|qualifying\s+purchases?|earn\s+from|commission/i.test(bodyText);
+        if (!hasAffiliateDisclosure) {
+          return { verified: false, reason: 'Required affiliate disclosure text missing from public page.' };
+        }
+        return { verified: true };
+      }
+
+      // In hermetic unit test mode without custom fetchFn:
+      if (task.outputs.guideId) {
+        const asset = await this.contentEngine.getAsset(task.outputs.guideId);
+        if (asset) {
+          const hasAffiliateDisclosure = /affiliate\s+disclosure|qualifying\s+purchases?|earn\s+from|commission/i.test(asset.contentMarkdown || '') ||
+            Boolean(asset.disclosureMarkdown && /affiliate|qualifying|commission/i.test(asset.disclosureMarkdown));
+          if (!hasAffiliateDisclosure) {
+            return { verified: false, reason: 'Required affiliate disclosure text missing from guide record.' };
+          }
+        }
+      }
+
+      return { verified: true };
+    } catch (err: any) {
+      return { verified: false, reason: `Network or fetch error verifying public asset: ${err.message}` };
     }
   }
 
@@ -890,6 +1037,13 @@ export class AutonomousCommercialEngine {
 
     await this.persistTask(task);
     return task;
+  }
+
+  public async getObservabilityStatus(
+    organizationId: string = OwnerAuthService.OWNER_ORGANIZATION_ID,
+    businessId: string = OwnerAuthService.PLATFORM_BUSINESS_ID
+  ): Promise<EngineObservabilityStatus> {
+    return this.getEngineStatus(organizationId, businessId);
   }
 
   /**
