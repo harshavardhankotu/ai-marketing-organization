@@ -410,22 +410,42 @@ export class AutonomousCommercialEngine {
           const existingOffers = await this.partnerRegistry.listOffers(organizationId, { activeOnly: true });
           const matchingOffer = existingOffers.find(o => o.partnerId === task.outputs.partnerId);
 
-          if (!matchingOffer) {
-            task.status = 'BLOCKED';
-            task.currentStep = 'QUALIFY';
-            task.errorInfo = {
-              blockerType: 'MISSING_OWNER_AUTHORIZATION',
-              message: 'No active offer or tracked destination URL provided for this partner.',
-              officialUrl: 'https://www.cuelinks.com',
-              ownerActionRequired: 'Provide provider-generated campaign tracking URL in chat or via owner API.'
-            };
-            await this.persistTask(task);
-            return 'BLOCKED';
-          }
+          if (matchingOffer) {
+            task.outputs.offerId = matchingOffer.id;
+            task.outputs.offerSlug = matchingOffer.offerSlug;
+          } else {
+            // Check if Deal Discovery Engine has an active monetizable deal
+            let foundMonetizable = false;
+            try {
+              const { AutonomousDealDiscoveryEngine } = await import('./autonomous-deal-discovery-engine.js');
+              const deals = AutonomousDealDiscoveryEngine.getInstance().queryPublicDeals({ limit: 50 }).deals;
+              const deal = deals.find(d => d.isMonetizable && d.trackingUrl && isAllowlistedRedirectHost(d.trackingUrl, task.inputs.network));
+              if (deal) {
+                task.inputs.trackingUrl = deal.trackingUrl;
+                task.inputs.productTitle = deal.title;
+                task.inputs.merchantName = deal.merchant;
+                task.inputs.sourceUrl = deal.productUrl;
+                task.inputs.category = deal.category;
+                foundMonetizable = true;
+              }
+            } catch {}
 
-          task.outputs.offerId = matchingOffer.id;
-          task.outputs.offerSlug = matchingOffer.offerSlug;
-        } else {
+            if (!foundMonetizable) {
+              task.status = 'BLOCKED';
+              task.currentStep = 'QUALIFY';
+              task.errorInfo = {
+                blockerType: 'MISSING_OWNER_AUTHORIZATION',
+                message: 'No active offer or tracked destination URL provided for this partner.',
+                officialUrl: 'https://www.cuelinks.com',
+                ownerActionRequired: 'Provide provider-generated campaign tracking URL in chat or via owner API.'
+              };
+              await this.persistTask(task);
+              return 'BLOCKED';
+            }
+          }
+        }
+
+        if (task.inputs.trackingUrl) {
           // Validate provider URL & redirect allowlist
           if (!isAllowlistedRedirectHost(task.inputs.trackingUrl, task.inputs.network)) {
             task.status = 'FAILED_PERMANENTLY';
@@ -437,30 +457,32 @@ export class AutonomousCommercialEngine {
             return 'FAILED_PERMANENTLY';
           }
 
-          // Register offer in partner_offers
-          const slug = (task.inputs.productTitle || 'cuelinks-offer')
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, '-')
-            .replace(/^-|-$/g, '');
+          if (!task.outputs.offerId) {
+            // Register offer in partner_offers
+            const slug = (task.inputs.productTitle || 'cuelinks-offer')
+              .toLowerCase()
+              .replace(/[^a-z0-9]+/g, '-')
+              .replace(/^-|-$/g, '');
 
-          const offer = await this.partnerRegistry.createOffer({
-            partnerId: task.outputs.partnerId!,
-            organizationId,
-            title: task.inputs.productTitle || 'Commercial Product Offer',
-            offerSlug: slug,
-            category: task.inputs.category || 'electronics_and_software',
-            targetCustomer: task.inputs.targetCustomer || 'Indian commercial buyer',
-            commissionModel: 'PERCENTAGE',
-            commissionAmountINR: 0,
-            conversionAction: 'PURCHASE',
-            destinationUrl: task.inputs.sourceUrl || 'https://www.cuelinks.com',
-            authorizedTrackingUrl: task.inputs.trackingUrl,
-            geographicAvailability: 'India',
-            status: 'ACTIVE'
-          });
+            const offer = await this.partnerRegistry.createOffer({
+              partnerId: task.outputs.partnerId!,
+              organizationId,
+              title: task.inputs.productTitle || 'Commercial Product Offer',
+              offerSlug: slug,
+              category: task.inputs.category || 'electronics_and_software',
+              targetCustomer: task.inputs.targetCustomer || 'Indian commercial buyer',
+              commissionModel: 'PERCENTAGE',
+              commissionAmountINR: 0,
+              conversionAction: 'PURCHASE',
+              destinationUrl: task.inputs.sourceUrl || 'https://www.cuelinks.com',
+              authorizedTrackingUrl: task.inputs.trackingUrl,
+              geographicAvailability: 'India',
+              status: 'ACTIVE'
+            });
 
-          task.outputs.offerId = offer.id;
-          task.outputs.offerSlug = offer.offerSlug;
+            task.outputs.offerId = offer.id;
+            task.outputs.offerSlug = offer.offerSlug;
+          }
         }
 
         task.status = 'VALIDATING';
@@ -608,16 +630,38 @@ export class AutonomousCommercialEngine {
     organizationId: string
   ): Promise<boolean> {
     if (task.errorInfo?.blockerType === 'MISSING_OWNER_AUTHORIZATION') {
-      const partner = task.outputs.partnerId ? await this.partnerRegistry.getPartner(task.outputs.partnerId) : null;
-      if (partner && (partner.authorizationStatus === 'AUTHORIZED' || partner.approvalStatus === 'APPROVED')) {
+      // 1. Direct tracking URL already provided and allowlisted
+      if (task.inputs.trackingUrl && isAllowlistedRedirectHost(task.inputs.trackingUrl, task.inputs.network)) {
         return true;
       }
-      if (task.inputs.trackingUrl && task.inputs.trackingUrl.startsWith('https://')) {
+
+      // 2. Existing matching offer in partnerRegistry
+      const existingOffers = await this.partnerRegistry.listOffers(organizationId, { activeOnly: true });
+      const matchingOffer = existingOffers.find(o => o.partnerId === task.outputs.partnerId && Boolean(o.authorizedTrackingUrl));
+      if (matchingOffer) {
+        task.outputs.offerId = matchingOffer.id;
+        task.outputs.offerSlug = matchingOffer.offerSlug;
         return true;
       }
+
+      // 3. If Cuelinks is configured, check if deal discovery has an active monetizable deal
       if (CuelinksV3Client.getInstance().isConfigured()) {
-        return true;
+        try {
+          const { AutonomousDealDiscoveryEngine } = await import('./autonomous-deal-discovery-engine.js');
+          const deals = AutonomousDealDiscoveryEngine.getInstance().queryPublicDeals({ limit: 50 }).deals;
+          const monetizableDeal = deals.find(d => d.isMonetizable && d.trackingUrl && isAllowlistedRedirectHost(d.trackingUrl, 'CUELINKS'));
+          if (monetizableDeal) {
+            task.inputs.trackingUrl = monetizableDeal.trackingUrl;
+            task.inputs.productTitle = monetizableDeal.title;
+            task.inputs.merchantName = monetizableDeal.merchant;
+            task.inputs.sourceUrl = monetizableDeal.productUrl;
+            task.inputs.category = monetizableDeal.category;
+            return true;
+          }
+        } catch {}
       }
+
+      // Pre-requisites not met: preserve BLOCKED state without bouncing
       return false;
     }
 

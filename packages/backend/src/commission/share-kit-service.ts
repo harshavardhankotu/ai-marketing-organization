@@ -111,6 +111,7 @@ export class ShareKitService {
       SELECT id, slug, title, category
       FROM commission_content_assets
       WHERE organization_id = ? AND status = 'PUBLISHED'
+      ORDER BY updated_at DESC, created_at DESC
       LIMIT 1;
     `;
     if (isProduction()) {

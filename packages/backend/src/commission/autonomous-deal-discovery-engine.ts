@@ -482,6 +482,7 @@ export class AutonomousDealDiscoveryEngine {
     offersDeduplicated: number;
     activeDealsTotal: number;
     durationMs: number;
+    status: string;
   }> {
     const startMs = Date.now();
     const cycleId = `deal_cycle_${startMs}`;
@@ -524,7 +525,17 @@ export class AutonomousDealDiscoveryEngine {
     const durationMs = Date.now() - startMs;
     this.lastCycleDurationMs = durationMs;
     this.lastScanTimestamp = new Date().toISOString();
-    this.lastCycleStatus = 'SUCCESS';
+
+    const failedSources = Array.from(this.sourcesMap.values()).filter(
+      s => (s.failureCount || 0) > 0 || Boolean(s.lastError)
+    );
+    if (failedSources.length > 0 && rawOffers.length > 0) {
+      this.lastCycleStatus = 'DISCOVERY_COMPLETED_WITH_BLOCKERS';
+    } else if (failedSources.length > 0 && rawOffers.length === 0) {
+      this.lastCycleStatus = 'BLOCKED';
+    } else {
+      this.lastCycleStatus = 'SUCCESS';
+    }
 
     const activeDealsTotal = Array.from(this.dealsMap.values()).filter(
       d => d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS'
@@ -533,13 +544,14 @@ export class AutonomousDealDiscoveryEngine {
     const sourcesScannedCount = this.lastCycleScannedSourceIds ? this.lastCycleScannedSourceIds.size : 0;
 
     console.log(
-      `[DealEngine] Cycle ${cycleId} finished in ${durationMs}ms: ` +
+      `[DealEngine] Cycle ${cycleId} finished in ${durationMs}ms (status: ${this.lastCycleStatus}): ` +
       `scanned ${sourcesScannedCount} sources, discovered ${rawOffers.length} offers, ` +
       `verified ${offersVerified}, deduplicated ${offersDeduplicated}, active deals total: ${activeDealsTotal}`
     );
 
     return {
       cycleId,
+      status: this.lastCycleStatus,
       sourcesScanned: sourcesScannedCount,
       offersDiscovered: rawOffers.length,
       offersVerified,
@@ -872,15 +884,10 @@ export class AutonomousDealDiscoveryEngine {
             }
 
             // Link conversion & monetization gate
+            // Strict conversion truth: No raw shortcut! Only monetizable when convertLink returns affiliated === true and allowlisted URL.
             let trackingUrl: string | undefined = undefined;
             let isMonetizable = false;
             let affiliateCampaignId: string | undefined = undefined;
-
-            if (offer.tracking_url && CuelinksV3Client.isAllowedTrackingUrl(offer.tracking_url)) {
-              trackingUrl = offer.tracking_url;
-              isMonetizable = true;
-              affiliateCampaignId = String(offer.campaign_id);
-            }
 
             try {
               const convRes = await client.convertLink({
@@ -898,11 +905,13 @@ export class AutonomousDealDiscoveryEngine {
                 if (convRes.campaign?.id) {
                   affiliateCampaignId = String(convRes.campaign.id);
                 }
+              } else {
+                trackingUrl = undefined;
+                isMonetizable = false;
               }
             } catch {
-              if (!isMonetizable) {
-                trackingUrl = undefined;
-              }
+              trackingUrl = undefined;
+              isMonetizable = false;
             }
 
             discoveredDeals.push({
@@ -966,24 +975,50 @@ export class AutonomousDealDiscoveryEngine {
       // 8. Synchronize Cuelinks reconciliation telemetry if available
       try {
         const syncMgr = CuelinksSyncManager.getInstance(client);
-        const reportsRes = await client.getReports({ start_date: new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0] });
-        const providerClicks = (reportsRes.reports || []).reduce((acc: number, r: any) => acc + (r.clicks || 0), 0);
+        let providerClicks = 0;
+        let confirmedConversions = 0;
+        try {
+          const perfRes = await client.getPerformanceReport({
+            start_date: new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0],
+            end_date: new Date().toISOString().split('T')[0],
+            per_page: 50
+          });
+          providerClicks = perfRes.totals
+            ? Number(perfRes.totals.clicks || 0)
+            : perfRes.data.reduce((acc, r) => acc + (Number(r.clicks) || 0), 0);
+          confirmedConversions = perfRes.totals
+            ? Number(perfRes.totals.transactions ?? (perfRes.totals as any).conversions ?? 0)
+            : perfRes.data.reduce((acc, r) => acc + (Number(r.transactions ?? (r as any).conversions) || 0), 0);
+        } catch {
+          const reportsRes = await client.getReports({ start_date: new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0] });
+          providerClicks = (reportsRes.reports || []).reduce((acc: number, r: any) => acc + (r.clicks || 0), 0);
+        }
+
         const txRes = await client.getTransactions({ page: 1, per_page: 50 });
         const txList = txRes.transactions || [];
         let pendingINR = 0;
         let validatedINR = 0;
         let paidINR = 0;
         let reversedINR = 0;
+        let validatedCount = 0;
         for (const tx of txList) {
           const amt = Number(tx.user_commission ?? tx.commission_amount) || 0;
-          if (tx.status === 'approved' || tx.status === 'validated' || tx.status === 'payable') validatedINR += amt;
-          else if (tx.status === 'pending') pendingINR += amt;
-          else if (tx.status === 'paid' || tx.status === 'invoice_raised') paidINR += amt;
-          else if (tx.status === 'rejected') reversedINR += amt;
+          if (tx.status === 'approved' || tx.status === 'validated' || tx.status === 'payable') {
+            validatedINR += amt;
+            validatedCount++;
+          } else if (tx.status === 'pending') {
+            pendingINR += amt;
+          } else if (tx.status === 'paid' || tx.status === 'invoice_raised') {
+            paidINR += amt;
+            validatedCount++;
+          } else if (tx.status === 'rejected') {
+            reversedINR += amt;
+          }
         }
+        const effectiveConversions = confirmedConversions > 0 ? confirmedConversions : validatedCount;
         syncMgr.setReconciliationMetrics({
           providerAttributedClicks: providerClicks,
-          reportedConversions: txList.length,
+          reportedConversions: effectiveConversions,
           pendingCommissionINR: pendingINR,
           validatedCommissionINR: validatedINR,
           paidCommissionINR: paidINR,
