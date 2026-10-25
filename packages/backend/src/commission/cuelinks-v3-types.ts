@@ -72,6 +72,7 @@ export interface CuelinksPingResult {
   currency?: string;
   email?: string;
   scopes?: string[];
+  hasRequiredScopes?: boolean;
   missingScopes?: string[];
   lastUsedAt?: string;
   publisher?: CuelinksPingPublisher;
@@ -334,6 +335,8 @@ export interface CuelinksSyncStatus {
   publisherId?: string | number;
   email?: string;
   scopes?: string[];
+  hasRequiredScopes?: boolean;
+  missingScopes?: string[];
   channel: {
     id?: string | number;
     name?: string;
