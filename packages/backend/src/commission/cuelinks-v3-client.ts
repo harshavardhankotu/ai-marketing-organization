@@ -637,24 +637,36 @@ export class CuelinksV3Client {
    */
   public async getChannels(): Promise<CuelinksChannel[]> {
     const res = await this.request<{ data: CuelinksChannel[] }>('/channels');
-    return res.data || [];
+    const rawList = res.data || [];
+    return rawList.map(c => ({
+      ...c,
+      url: c.url || c.source_url
+    }));
   }
 
   /**
    * Create or register publisher channel
    * Scope: write:channels
+   * Enforces 25-character maximum channel name per Cuelinks API contract
    */
   public async createChannel(name: string, url: string, type: string = 'website'): Promise<CuelinksChannel> {
-    const existing = await this.getChannels();
+    const safeName = (name && name.length <= 25 ? name : (name ? name.substring(0, 25) : 'ARO Deals')).trim();
     const cleanUrl = url.toLowerCase().replace(/\/$/, '');
-    const found = existing.find(c => c.url?.toLowerCase().replace(/\/$/, '') === cleanUrl);
+    const urlDomain = cleanUrl.replace(/^https?:\/\//, '').split('/')[0];
+    const existing = await this.getChannels();
+    const found = existing.find(c => {
+      const chUrl = (c.source_url || c.url || '').toLowerCase().replace(/\/$/, '');
+      const chDomain = chUrl.replace(/^https?:\/\//, '').split('/')[0];
+      return chUrl === cleanUrl || (chDomain && chDomain === urlDomain);
+    });
+
     if (found) {
       return found;
     }
 
     const res = await this.request<{ data: CuelinksChannel }>('/channels', {
       method: 'POST',
-      body: { name, url, type }
+      body: { name: safeName, url: cleanUrl, source_url: cleanUrl, type }
     });
 
     return res.data;

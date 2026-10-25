@@ -176,9 +176,12 @@ export interface CuelinksLinkConvertResponse {
 export interface CuelinksChannel {
   id: number | string;
   name: string;
-  url: string;
+  url?: string;
+  source_url?: string;
   type?: string;
-  status: 'active' | 'pending' | 'rejected';
+  category?: string;
+  status: 'active' | 'pending' | 'rejected' | 'approved';
+  is_default?: boolean;
   created_at?: string;
 }
 

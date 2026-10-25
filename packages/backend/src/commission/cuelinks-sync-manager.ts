@@ -496,13 +496,16 @@ export class CuelinksSyncManager {
 
       // 2. Channel inspection & registration
       try {
-        const canonicalUrl = 'https://gen-lang-client-0916255372.web.app';
+        const canonicalUrl = 'https://ai-marketing-organization.onrender.com';
         const channels = await this.client.getChannels();
-        let targetChannel = channels.find(c => c.url?.toLowerCase().includes('gen-lang-client') || c.url?.toLowerCase().includes('onrender.com'));
+        let targetChannel = channels.find(c => {
+          const chUrl = (c.source_url || c.url || '').toLowerCase();
+          return chUrl.includes('onrender.com') || chUrl.includes('gen-lang-client');
+        }) || channels.find(c => c.is_default);
 
         if (!targetChannel) {
           targetChannel = await this.client.createChannel(
-            'AI Marketing Organization Deals & Buying Guides',
+            'ARO Deals',
             canonicalUrl,
             'website'
           );
@@ -511,7 +514,7 @@ export class CuelinksSyncManager {
         this.syncStatus.channel = {
           id: targetChannel?.id,
           name: targetChannel?.name,
-          url: targetChannel?.url,
+          url: targetChannel?.source_url || targetChannel?.url,
           status: targetChannel?.status || 'active'
         };
       } catch (channelErr: any) {
