@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { AutonomousDealDiscoveryEngine } from '../../src/commission/autonomous-deal-discovery-engine.js';
+import { AutonomousDealDiscoveryEngine, MAX_OFFER_FRESHNESS_HOURS } from '../../src/commission/autonomous-deal-discovery-engine.js';
+import { SAMPLE_DEAL_CANDIDATES_FIXTURE } from '../fixtures/sample-deal-candidates.js';
 import { DealSsrfGuard } from '../../src/commission/deal-ssrf-guard.js';
 import { CuelinksV3Client } from '../../src/commission/cuelinks-v3-client.js';
 import { app } from '../../src/index.js';
@@ -12,7 +13,9 @@ describe('Autonomous Deal Discovery Engine V1.1 (Spec §§ 1–15)', () => {
 
   beforeEach(() => {
     vi.restoreAllMocks();
-    AutonomousDealDiscoveryEngine.getInstance().setCuelinksClient(null);
+    const engine = AutonomousDealDiscoveryEngine.getInstance();
+    engine.setCuelinksClient(null);
+    engine.injectDiscoveredDealsForTesting(SAMPLE_DEAL_CANDIDATES_FIXTURE);
     const db = getDb();
     try {
       db.prepare(`DELETE FROM workflows WHERE workflow_type = 'PUBLIC_DEAL'`).run();
@@ -21,7 +24,9 @@ describe('Autonomous Deal Discovery Engine V1.1 (Spec §§ 1–15)', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
-    AutonomousDealDiscoveryEngine.getInstance().setCuelinksClient(null);
+    const engine = AutonomousDealDiscoveryEngine.getInstance();
+    engine.setCuelinksClient(null);
+    engine.clearInjectedDealsForTesting();
   });
 
   describe('1. SSRF & Network Security Gate (Spec § 3 & § 13)', () => {
@@ -116,7 +121,7 @@ describe('Autonomous Deal Discovery Engine V1.1 (Spec §§ 1–15)', () => {
       expect(result.deal?.verificationStatus).toBe('VERIFIED');
       expect(result.deal?.currentPriceINR).toBe(1499);
       expect(result.deal?.verifiedDiscountPercent).toBe(75);
-      expect(result.deal?.discountVerificationType).toBe('INDEPENDENT_CORROBORATED');
+      expect(result.deal?.discountVerificationType).toBe('MERCHANT_CLAIMED');
       expect(result.deal?.buyerValueScore).toBeGreaterThanOrEqual(70);
     });
 
@@ -205,6 +210,7 @@ describe('Autonomous Deal Discovery Engine V1.1 (Spec §§ 1–15)', () => {
       }, orgId, bizId);
 
       expect(res1.action).toBe('CREATED_VERIFIED');
+      expect(res1.deal?.discountVerificationType).toBe('MERCHANT_CLAIMED');
       const initialDealId = res1.deal?.id;
 
       // Second discovery from deal aggregator feed
@@ -229,7 +235,7 @@ describe('Autonomous Deal Discovery Engine V1.1 (Spec §§ 1–15)', () => {
     });
   });
 
-  describe('4. Expired Deals & Stock Cleanup (Spec § 5 Level 4)', () => {
+  describe('4. Expired Deals, Freshness Policy & Observation Integrity (Spec § 5 Level 4)', () => {
     it('deactivates deals whose validity period has elapsed and removes them from active ranking', async () => {
       const engine = AutonomousDealDiscoveryEngine.getInstance();
 
@@ -254,6 +260,103 @@ describe('Autonomous Deal Discovery Engine V1.1 (Spec §§ 1–15)', () => {
       const queryRes = engine.queryPublicDeals();
       const found = queryRes.deals.find(d => d.id === res.deal?.id);
       expect(found).toBeUndefined();
+    });
+
+    it('deactivates stale deals that exceed the 48-hour freshness policy even without explicit expiry date', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+      const pastObservedIso = new Date(Date.now() - 49 * 3600 * 1000).toISOString(); // 49 hours ago
+
+      const res = await engine.ingestAndVerifyDeal({
+        title: 'Stale Unrefreshed Candidate Deal',
+        brand: 'VintageBrand',
+        merchant: 'Croma India',
+        category: 'Electronics & Peripherals',
+        productUrl: 'https://www.croma.com/p/stale-deal',
+        currentPriceINR: 999,
+        referencePriceINR: 1999,
+        observedAt: pastObservedIso,
+        sourceUrl: 'https://www.croma.com/stale-promo',
+        sourceDomain: 'croma.com',
+        sourceType: 'RETAILER_BRAND'
+      }, orgId, bizId);
+
+      expect(res.deal?.verificationStatus).toBe('EXPIRED');
+      expect(res.deal?.rejectionReasons.some(r => r.includes('OFFER_STALE'))).toBe(true);
+
+      const publicDeals = engine.queryPublicDeals();
+      expect(publicDeals.deals.find(d => d.id === res.deal?.id)).toBeUndefined();
+    });
+
+    it('NEVER infers an active coupon or expiry date from execution timestamp if omitted by provider', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+
+      const res = await engine.ingestAndVerifyDeal({
+        title: 'Evergreen Deal Without Provider Expiry',
+        brand: 'boAt',
+        merchant: 'boAt Lifestyle',
+        category: 'Audio & Wearables',
+        productUrl: 'https://www.boat-lifestyle.com/products/evergreen-item',
+        currentPriceINR: 799,
+        referencePriceINR: 1999,
+        sourceUrl: 'https://www.boat-lifestyle.com/deals',
+        sourceDomain: 'boat-lifestyle.com',
+        sourceType: 'RETAILER_BRAND'
+      }, orgId, bizId);
+
+      expect(res.deal?.expiryDate).toBeUndefined();
+      expect(res.deal?.couponCode).toBeUndefined();
+      expect(res.deal?.verificationStatus).toBe('VERIFIED');
+    });
+
+    it('preserves the original source URL and observation timestamp for evidence audits', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+      const customObservedAt = '2026-10-25T01:00:00.000Z';
+      const exactSourceUrl = 'https://www.boat-lifestyle.com/collections/best-deals?ref=direct_audit';
+
+      const res = await engine.ingestAndVerifyDeal({
+        title: 'Auditable Data Truth Deal',
+        brand: 'boAt',
+        merchant: 'boAt Lifestyle',
+        category: 'Audio & Wearables',
+        productUrl: 'https://www.boat-lifestyle.com/products/auditable-item',
+        currentPriceINR: 1199,
+        referencePriceINR: 2499,
+        observedAt: customObservedAt,
+        sourceUrl: exactSourceUrl,
+        sourceDomain: 'boat-lifestyle.com',
+        sourceType: 'RETAILER_BRAND'
+      }, orgId, bizId);
+
+      expect(res.deal?.sourceUrl).toBe(exactSourceUrl);
+      expect(res.deal?.observedAt).toBe(customObservedAt);
+      expect(res.deal?.evidenceJson.sources).toContain(exactSourceUrl);
+      expect(res.deal?.evidenceJson.observedAt).toBe(customObservedAt);
+      expect(res.deal?.evidenceJson.priceHistory?.[0].observedAt).toBe(customObservedAt);
+    });
+
+    it('keeps deals out of verified public ranking when key claims cannot be verified (UNVERIFIED or REJECTED)', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+
+      // Fake/inverted discount claim (claims 50% discount but current >= reference)
+      const unverifiedRes = await engine.ingestAndVerifyDeal({
+        title: 'Unverified Inverted Claim Deal',
+        brand: 'Generic',
+        merchant: 'Unknown Merchant',
+        category: 'Electronics',
+        productUrl: 'https://www.croma.com/unverified-claim',
+        currentPriceINR: 4000,
+        referencePriceINR: 3000, // reference price lower than current price!
+        claimedDiscountPercent: 50,
+        sourceUrl: 'https://www.croma.com/claim',
+        sourceDomain: 'croma.com',
+        sourceType: 'RETAILER_BRAND'
+      }, orgId, bizId);
+
+      expect(unverifiedRes.deal?.verificationStatus).toBe('UNVERIFIED');
+      expect(engine.calculateBuyerValueScore(unverifiedRes.deal!)).toBe(0);
+
+      const queryRes = engine.queryPublicDeals();
+      expect(queryRes.deals.find(d => d.id === unverifiedRes.deal?.id)).toBeUndefined();
     });
   });
 
@@ -642,6 +745,57 @@ describe('Autonomous Deal Discovery Engine V1.1 (Spec §§ 1–15)', () => {
         expect(d.trackingUrl).toBeUndefined();
         expect(d.productUrl).toBeDefined();
         expect(d.productUrl.startsWith('https://')).toBe(true);
+      }
+    });
+  });
+
+  describe('9. Hermetic Verification & Ingestion of SAMPLE_DEAL_CANDIDATES_FIXTURE', () => {
+    it('ingests all 7 sample deal candidate fixtures hermetically into operational cache', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+
+      expect(SAMPLE_DEAL_CANDIDATES_FIXTURE.length).toBe(7);
+
+      for (const candidate of SAMPLE_DEAL_CANDIDATES_FIXTURE) {
+        const res = await engine.ingestAndVerifyDeal(candidate, orgId, bizId);
+        expect(['CREATED_VERIFIED', 'DEDUPLICATED']).toContain(res.action);
+        expect(res.deal).toBeDefined();
+        expect(res.deal?.currentPriceINR).toBeGreaterThan(0);
+        expect(res.deal?.currency).toBe('INR');
+        expect(res.deal?.productUrl.startsWith('https://')).toBe(true);
+        expect(['VERIFIED', 'VERIFIED_WITH_CONDITIONS']).toContain(res.deal?.verificationStatus);
+      }
+    });
+
+    it('deduplicates sample candidate items deterministically on re-ingestion', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+
+      const candidate = SAMPLE_DEAL_CANDIDATES_FIXTURE[0]; // boAt Airdopes 141
+      const firstIngest = await engine.ingestAndVerifyDeal(candidate, orgId, bizId);
+      expect(['CREATED_VERIFIED', 'DEDUPLICATED']).toContain(firstIngest.action);
+
+      const secondIngest = await engine.ingestAndVerifyDeal({
+        ...candidate,
+        sourceUrl: 'https://another-source.com/deal'
+      }, orgId, bizId);
+
+      expect(secondIngest.action).toBe('DEDUPLICATED');
+      expect(secondIngest.deal?.id).toBe(firstIngest.deal?.id);
+    });
+
+    it('ranks ingested sample candidate deals based on buyer value without affiliate bias', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+
+      for (const candidate of SAMPLE_DEAL_CANDIDATES_FIXTURE) {
+        await engine.ingestAndVerifyDeal(candidate, orgId, bizId);
+      }
+
+      engine.reRankActiveDeals();
+      const publicDeals = engine.queryPublicDeals({ limit: 10 });
+      expect(publicDeals.deals.length).toBeGreaterThanOrEqual(5);
+
+      // Verify deals are sorted by buyerValueScore descending
+      for (let i = 0; i < publicDeals.deals.length - 1; i++) {
+        expect(publicDeals.deals[i].buyerValueScore).toBeGreaterThanOrEqual(publicDeals.deals[i + 1].buyerValueScore);
       }
     });
   });

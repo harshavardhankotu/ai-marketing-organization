@@ -320,6 +320,54 @@ describe('Structured Growth Experiment Tracking Model (Spec §§ 1–15)', () =>
       expect(refined.automatedDecision.rationale).toContain('No distinct statistical differentiation');
       expect(refined.automatedDecision.actionTaken).toContain('Refine creative copy');
     });
+
+    it('never triggers SCALE, REFINE, or HALT when sample traffic is zero or below minimum statistical threshold (< 30 observations)', () => {
+      const tracker = GrowthExperimentTracker.getInstance();
+      const exp = tracker.createExperiment({
+        title: 'Tiny Sample Guardrail Test',
+        hypothesis: 'Low traffic test should never make premature decisions',
+        changeTested: {
+          changeType: 'BADGE',
+          description: 'Testing 30-observation threshold',
+          baselineConfig: {},
+          treatmentConfig: {}
+        },
+        targetCategories: ['Electronics'],
+        targetCampaignIds: ['src_croma_in'],
+        minimumEvidenceRequirement: 10 // Attempted tiny requirement
+      });
+
+      // 4 commercial cycles with tiny traffic (2 visits each cycle = 8 visits total < 30)
+      for (let i = 1; i <= 4; i++) {
+        tracker.recordCycleOutcome(exp.id, {
+          cycleId: `cycle_tiny_00${i}`,
+          cycleNumber: i,
+          durationHours: 6,
+          baseline: {
+            discoveryImpressions: 10,
+            pageVisits: 1,
+            dealClicks: 0,
+            providerClicks: 0,
+            conversions: 0,
+            validatedCommissionINR: 0
+          },
+          treatment: {
+            discoveryImpressions: 10,
+            pageVisits: 1,
+            dealClicks: 1, // Treatment has 100% CTR uplift, but only 4 visits!
+            providerClicks: 1,
+            conversions: 0,
+            validatedCommissionINR: 0
+          }
+        });
+      }
+
+      const evaluated = tracker.getExperiment(exp.id)!;
+      // Must strictly remain INCONCLUSIVE and ACTIVE, never prematurely SCALE or REFINE
+      expect(evaluated.automatedDecision.decision).toBe('INCONCLUSIVE');
+      expect(evaluated.status).toBe('ACTIVE');
+      expect(evaluated.automatedDecision.rationale).toContain('below minimum evidence requirement');
+    });
   });
 
   describe('4. Autonomous Commercial Cycle Integration & API Endpoints', () => {
@@ -434,6 +482,72 @@ describe('Structured Growth Experiment Tracking Model (Spec §§ 1–15)', () =>
 
       const resPost = await app.request('/api/v1/owner/growth-experiments', { method: 'POST' });
       expect(resPost.status).toBe(401);
+    });
+  });
+
+  describe('5. Funnel & Experiment Persistence Gate (Phase 5)', () => {
+    it('hydrates persisted growth experiments from workflows table across process restarts', async () => {
+      const tracker = GrowthExperimentTracker.getInstance();
+      const exp = tracker.createExperiment({
+        title: 'Restart Persistence Validation Experiment',
+        hypothesis: 'Experiment state survives restart via D1 hydration',
+        changeTested: {
+          changeType: 'PROMO_CODE_EXPOSURE',
+          description: 'Cyan pill testing',
+          baselineConfig: { pill: false },
+          treatmentConfig: { pill: true }
+        },
+        targetCategories: ['Audio & Wearables'],
+        targetCampaignIds: ['boat_lifestyle'],
+        minimumEvidenceRequirement: 50
+      });
+
+      // Record a cycle outcome and explicitly persist
+      tracker.recordCycleOutcome(exp.id, {
+        cycleId: 'cycle_persist_101',
+        durationHours: 6,
+        baseline: {
+          discoveryImpressions: 50,
+          pageVisits: 20,
+          dealClicks: 2,
+          providerClicks: 2,
+          conversions: 0,
+          validatedCommissionINR: 0
+        },
+        treatment: {
+          discoveryImpressions: 50,
+          pageVisits: 20,
+          dealClicks: 5,
+          providerClicks: 5,
+          conversions: 1,
+          validatedCommissionINR: 40
+        }
+      });
+
+      const beforeExp = tracker.getExperiment(exp.id)!;
+      await tracker.persistExperiment(beforeExp);
+      expect(beforeExp.currentCycleCount).toBe(1);
+      expect(beforeExp.cycleOutcomes.length).toBe(1);
+
+      // Simulate process restart
+      GrowthExperimentTracker.resetInstance();
+      const restartedTracker = GrowthExperimentTracker.getInstance();
+
+      // Prior to hydration, the restarted tracker only has default baseline seeds
+      expect(restartedTracker.getExperiment(exp.id)).toBeNull();
+
+      // Hydrate from workflows table
+      const hydratedCount = await restartedTracker.hydrateFromDb();
+      expect(hydratedCount).toBeGreaterThanOrEqual(1);
+
+      // Verify the experiment and its cycle outcomes were restored perfectly
+      const restored = restartedTracker.getExperiment(exp.id);
+      expect(restored).not.toBeNull();
+      expect(restored?.title).toBe('Restart Persistence Validation Experiment');
+      expect(restored?.currentCycleCount).toBe(1);
+      expect(restored?.cycleOutcomes.length).toBe(1);
+      expect(restored?.cumulativeMetrics.treatmentTotalClicks).toBe(5);
+      expect(restored?.cumulativeMetrics.treatmentTotalCommissionINR).toBe(40);
     });
   });
 });

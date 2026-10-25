@@ -26,12 +26,31 @@ export const CUELINKS_STANDARD_SCOPES: CuelinksScope[] = [
   'read:transactions'
 ];
 
+export interface CuelinksPingPublisher {
+  id?: number | string;
+  publisher_id?: number | string;
+  currency?: string;
+  name?: string;
+  email?: string;
+}
+
+export interface CuelinksPingApiKey {
+  scopes?: string[] | CuelinksScope[];
+  last_used_at?: string;
+}
+
 export interface CuelinksPingResponse {
   status?: string;
+  message?: string;
+  publisher?: CuelinksPingPublisher;
+  api_key?: CuelinksPingApiKey;
+  // Legacy flat fields for backward compatibility
   publisher_id?: string | number;
   email?: string;
   scopes?: CuelinksScope[] | string[];
-  message?: string;
+  name?: string;
+  currency?: string;
+  last_used_at?: string;
   [key: string]: any;
 }
 
@@ -39,8 +58,13 @@ export interface CuelinksPingResult {
   connected: boolean;
   message: string;
   publisherId?: string | number;
+  publisherName?: string;
+  currency?: string;
   email?: string;
   scopes?: string[];
+  lastUsedAt?: string;
+  publisher?: CuelinksPingPublisher;
+  apiKey?: CuelinksPingApiKey;
 }
 
 export interface CuelinksCampaign {

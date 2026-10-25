@@ -304,4 +304,60 @@ describe('7-Stage Evidence-Based Commercial Funnel (Spec §§ 1–15)', () => {
       expect(res.status).toBe(401);
     });
   });
+
+  describe('4. Durable Funnel Telemetry Persistence across Restarts (Phase 5)', () => {
+    it('persists and restores commercial funnel telemetry counters across engine restarts via wf_commercial_funnel_telemetry', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+
+      // Record page visits and deal clicks
+      engine.recordPageVisit({ path: '/deals' });
+      engine.recordPageVisit({ path: '/deals/audio' });
+      engine.recordPageVisit({ path: '/deals/laptops' });
+
+      // Ingest a deal to click
+      const res = await engine.ingestAndVerifyDeal({
+        title: 'Persistence Test boAt Headphones',
+        brand: 'boAt',
+        merchant: 'boAt Lifestyle',
+        category: 'Audio & Wearables',
+        productUrl: 'https://www.boat-lifestyle.com/products/persistence-headphones',
+        currentPriceINR: 999,
+        referencePriceINR: 2499,
+        claimedDiscountPercent: 60,
+        sourceUrl: 'https://www.boat-lifestyle.com',
+        sourceDomain: 'boat-lifestyle.com',
+        sourceType: 'RETAILER_BRAND'
+      }, orgId, bizId);
+
+      expect(res.deal).toBeDefined();
+      engine.recordDealClick(res.deal!.id);
+      engine.recordDealClick(res.deal!.id);
+
+      // Explicitly ensure persistence has completed
+      await engine.persistFunnelTelemetryAsync();
+
+      const beforeFunnel = engine.getSevenStageFunnel();
+      expect(beforeFunnel.publicPageVisits).toBe(3);
+      expect(beforeFunnel.dealCardClicks).toBe(2);
+
+      // Simulate process restart
+      AutonomousDealDiscoveryEngine.resetInstance();
+      const restartedEngine = AutonomousDealDiscoveryEngine.getInstance();
+
+      // Prior to hydration, newly initialized in-memory engine starts at 0
+      expect(restartedEngine.getSevenStageFunnel().publicPageVisits).toBe(0);
+      expect(restartedEngine.getSevenStageFunnel().dealCardClicks).toBe(0);
+
+      // Hydrate from workflows table
+      const hydrated = await restartedEngine.hydrateFunnelTelemetryFromDb();
+      expect(hydrated).not.toBeNull();
+      expect(hydrated?.localPageVisitsCount).toBe(3);
+      expect(hydrated?.localDealClicksCount).toBe(2);
+
+      // Verify the funnel reports the restored counters
+      const restoredFunnel = restartedEngine.getSevenStageFunnel();
+      expect(restoredFunnel.publicPageVisits).toBe(3);
+      expect(restoredFunnel.dealCardClicks).toBe(2);
+    });
+  });
 });

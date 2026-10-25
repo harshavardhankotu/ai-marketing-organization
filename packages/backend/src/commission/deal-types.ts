@@ -17,6 +17,7 @@ export type DealVerificationStatus =
   | 'VERIFIED'                    // Verified price, merchant, stock, and reference baseline
   | 'VERIFIED_WITH_CONDITIONS'    // Verified but requires coupon, card, or minimum order
   | 'UNCONFIRMED'                 // Observed, but reference discount is only merchant-claimed
+  | 'UNVERIFIED'                  // Unverified key claims; kept out of public ranking
   | 'EXPIRED'                     // Offer expiry date has passed; removed from active rankings
   | 'OUT_OF_STOCK'                // Product confirmed out of stock
   | 'REJECTED'                    // Failed security, currency, or pricing sanity gates
@@ -69,6 +70,7 @@ export interface DiscoveredDealInput {
   paymentRestrictions?: string;
   offerStart?: string;
   expiryDate?: string;
+  observedAt?: string;
   sourceUrl: string;
   sourceDomain: string;
   sourceType: DealSourceClass;
@@ -103,6 +105,7 @@ export interface NormalizedDeal {
   paymentRestrictions?: string;
   offerStart?: string;
   expiryDate?: string;
+  observedAt?: string;
   lastCheckedAt: string;
   sourceUrl: string;
   sourceDomain: string;
@@ -122,6 +125,7 @@ export interface NormalizedDeal {
     verificationLogs: string[];
     rawSpecs?: Record<string, string>;
     lastCorroboratedAt?: string;
+    observedAt?: string;
   };
   createdAt: string;
   updatedAt: string;

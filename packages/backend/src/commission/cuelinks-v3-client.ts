@@ -18,6 +18,8 @@ import {
   CuelinksCountry,
   CuelinksPingResponse,
   CuelinksPingResult,
+  CuelinksPingPublisher,
+  CuelinksPingApiKey,
   CUELINKS_STANDARD_SCOPES
 } from './cuelinks-v3-types.js';
 
@@ -211,8 +213,84 @@ export class CuelinksV3Client {
   }
 
   /**
+   * Domain safety guard: strictly validates allowed Cuelinks tracking domains.
+   * Permitted tracking domains must strictly match:
+   *  - clnk.in
+   *  - *.clnk.in (strictly valid subdomains of clnk.in)
+   *  - linksredirect.com
+   *  - *.linksredirect.com (e.g. www.linksredirect.com)
+   *
+   * Rejects domain spoofing, tricky suffix matches (e.g. fakeclnk.in, clnk.in.attacker.com),
+   * non-allowlisted domains, and invalid characters.
+   */
+  public static isAllowedTrackingDomain(hostname: string): boolean {
+    if (!hostname || typeof hostname !== 'string') return false;
+    const host = hostname.toLowerCase().trim().replace(/:\d+$/, '');
+
+    // 1. Exact match: clnk.in
+    if (host === 'clnk.in') return true;
+
+    // 2. Subdomain of clnk.in (*.clnk.in)
+    if (host.endsWith('.clnk.in')) {
+      const subdomain = host.slice(0, -'.clnk.in'.length);
+      if (
+        subdomain.length > 0 &&
+        !subdomain.startsWith('.') &&
+        !subdomain.endsWith('.') &&
+        /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/.test(subdomain)
+      ) {
+        return true;
+      }
+      return false;
+    }
+
+    // 3. Exact match: linksredirect.com
+    if (host === 'linksredirect.com') return true;
+
+    // 4. Subdomain of linksredirect.com (e.g. www.linksredirect.com)
+    if (host.endsWith('.linksredirect.com')) {
+      const subdomain = host.slice(0, -'.linksredirect.com'.length);
+      if (
+        subdomain.length > 0 &&
+        !subdomain.startsWith('.') &&
+        !subdomain.endsWith('.') &&
+        /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/.test(subdomain)
+      ) {
+        return true;
+      }
+      return false;
+    }
+
+    return false;
+  }
+
+  /**
+   * Validates whether a candidate tracking URL is a valid, safe, and allowlisted tracking URL.
+   */
+  public static isAllowedTrackingUrl(urlStr: string): boolean {
+    if (!urlStr || typeof urlStr !== 'string') return false;
+    try {
+      const parsed = new URL(urlStr.trim());
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return false;
+      }
+      const ssrf = DealSsrfGuard.isSafePublicUrl(urlStr);
+      if (!ssrf.safe) {
+        return false;
+      }
+      return CuelinksV3Client.isAllowedTrackingDomain(parsed.hostname);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Ping/Validation check using official GET /pub_api/v3/ping endpoint.
-   * Returns publisher identity metadata safely and available API scopes.
+   * Parses official publisher identity metadata:
+   *   publisher.id, publisher.publisher_id, publisher.currency, publisher.name, publisher.email
+   *   api_key.scopes, api_key.last_used_at
+   * Crucial rule: Do NOT return the default scope list when the server did not supply scopes.
+   * An unknown permission set must remain unknown (or empty / undefined) until validated.
    */
   public async ping(): Promise<CuelinksPingResult> {
     if (!this.isConfigured()) {
@@ -221,28 +299,63 @@ export class CuelinksV3Client {
     try {
       const res = await this.request<any>('/ping');
       const payload = res?.data || res || {};
+
+      const publisher: CuelinksPingPublisher = payload.publisher || {};
+      const apiKey: CuelinksPingApiKey = payload.api_key || {};
+
+      const publisherId = publisher.publisher_id ?? publisher.id ?? payload.publisher_id ?? payload.id;
+      const publisherName = publisher.name ?? payload.name;
+      const currency = publisher.currency ?? payload.currency;
+      const email = publisher.email ?? payload.email;
+      const lastUsedAt = apiKey.last_used_at ?? payload.last_used_at;
+
+      // Extract scopes: api_key.scopes prioritized over payload.scopes
+      const rawScopes = apiKey.scopes !== undefined ? apiKey.scopes : payload.scopes;
+      let scopes: string[] | undefined = undefined;
+
+      if (Array.isArray(rawScopes)) {
+        scopes = rawScopes.map((s: any) => String(s).trim()).filter(Boolean);
+      } else if (typeof rawScopes === 'string' && rawScopes.trim().length > 0) {
+        scopes = rawScopes.split(',').map((s: string) => s.trim()).filter(Boolean);
+      }
+      // CRUCIAL RULE: Do NOT return CUELINKS_STANDARD_SCOPES when scopes are missing/undefined!
+      // Unknown scopes must remain undefined or empty until validated by the server.
+
       const isConnected =
         payload.status === 'success' ||
         payload.status === 'ok' ||
-        Boolean(payload.publisher_id) ||
-        Boolean(payload.email);
+        Boolean(publisherId !== undefined && publisherId !== null && publisherId !== '') ||
+        Boolean(email) ||
+        Boolean(publisher.email || publisher.id || publisher.name) ||
+        Boolean(scopes && scopes.length > 0);
 
-      const publisherId = payload.publisher_id ?? payload.id;
-      const email = payload.email;
-      const scopes: string[] = Array.isArray(payload.scopes) && payload.scopes.length > 0
-        ? payload.scopes
-        : (typeof payload.scopes === 'string' && payload.scopes.trim().length > 0
-            ? payload.scopes.split(',').map((s: string) => s.trim())
-            : [...CUELINKS_STANDARD_SCOPES]);
+      const resolvedPublisher: CuelinksPingPublisher | undefined =
+        Object.keys(publisher).length > 0
+          ? publisher
+          : (publisherId !== undefined || email || publisherName || currency
+              ? { id: publisherId, publisher_id: publisherId, name: publisherName, email, currency }
+              : undefined);
+
+      const resolvedApiKey: CuelinksPingApiKey | undefined =
+        Object.keys(apiKey).length > 0
+          ? apiKey
+          : (scopes !== undefined || lastUsedAt
+              ? { scopes, last_used_at: lastUsedAt }
+              : undefined);
 
       return {
         connected: isConnected,
         message: isConnected
           ? 'Successfully authenticated with Cuelinks V3 API.'
-          : (payload.message || 'Ping returned unsuccessful status'),
+          : (payload.message || 'Ping returned unsuccessful status or invalid payload'),
         publisherId,
+        publisherName,
+        currency,
         email,
-        scopes
+        scopes,
+        lastUsedAt,
+        publisher: resolvedPublisher,
+        apiKey: resolvedApiKey
       };
     } catch (err: any) {
       return { connected: false, message: err.message };
@@ -350,26 +463,37 @@ export class CuelinksV3Client {
   /**
    * Convert merchant URL to authorized trackable affiliate link
    * Scope: write:links
-   * Uses `shorten: true` (official Cuelinks V3 contract) and enforces `affiliated: true`.
+   * Official Contract: https://developers.cuelinks.com/docs/reference/links/convert
+   * - Uses `shorten: true`
+   * - Requires explicit `affiliated: true` before labeling a link commission-eligible.
+   *   A `tracking_url` alone is NOT proof of commission eligibility.
+   * - Domain safety guard: strictly validates actual tracking domain (clnk.in, *.clnk.in, linksredirect.com)
+   *   and permitted destination before enabling redirect.
    */
   public async convertLink(request: CuelinksLinkConvertRequest): Promise<CuelinksLinkConvertResponse> {
-    if (!request.url) {
+    if (!request || !request.url || typeof request.url !== 'string') {
       throw new CuelinksApiError('CUELINKS_INVALID_URL', 'Missing target URL for conversion.', 400);
     }
 
-    // SSRF verification on destination URL
-    const ssrf = DealSsrfGuard.isSafePublicUrl(request.url);
+    const trimmedUrl = request.url.trim();
+
+    // 1. SSRF and destination protocol/domain verification
+    const ssrf = DealSsrfGuard.isSafePublicUrl(trimmedUrl);
     if (!ssrf.safe) {
-      throw new Error(`SSRF_REJECTED: URL '${request.url}' violates safe public domain policy: ${ssrf.reason}`);
+      throw new CuelinksApiError(
+        'CUELINKS_INVALID_URL',
+        `SSRF_REJECTED: URL '${trimmedUrl}' violates safe public domain policy: ${ssrf.reason}`,
+        400
+      );
     }
 
-    // Cuelinks V3 API specification expects `shorten: true` (not `short_url`)
+    // 2. Official Cuelinks V3 contract: default to `shorten: true`
     const shouldShorten = request.shorten !== undefined
       ? Boolean(request.shorten)
-      : (request.short_url !== false);
+      : (request.short_url !== undefined ? Boolean(request.short_url) : true);
 
     const payload: Record<string, any> = {
-      url: request.url,
+      url: trimmedUrl,
       shorten: shouldShorten
     };
 
@@ -392,17 +516,27 @@ export class CuelinksV3Client {
       body: payload
     });
 
-    // Handle envelope { data: { ... } } or flat { short_url: ... }
-    const result = res.data || (res as any) || {};
-    const trackingUrl = result.short_url || result.url || result.tracking_url;
+    // 3. Handle envelope { data: { ... } }, flat { short_url: ... }, or malformed null/undefined
+    const result = (res && typeof res === 'object') ? (res.data || res) : {};
+    const candidateTrackingUrl = result.short_url || result.url || result.tracking_url;
 
-    // Monetization truth: affiliated: true is mandatory
-    const isAffiliated = result.affiliated === true && Boolean(trackingUrl);
+    // 4. Domain safety guard: validate provider tracking URL domain strictly
+    const isCandidateSafe = candidateTrackingUrl && typeof candidateTrackingUrl === 'string'
+      ? CuelinksV3Client.isAllowedTrackingUrl(candidateTrackingUrl)
+      : false;
+
+    // 5. Monetization truth: explicit affiliated === true AND verified safe tracking domain are mandatory.
+    // A tracking_url alone is NOT proof of commission eligibility.
+    const isAffiliated = result.affiliated === true && Boolean(candidateTrackingUrl) && isCandidateSafe;
 
     return {
-      short_url: isAffiliated ? result.short_url : undefined,
-      url: isAffiliated ? result.url : request.url,
-      tracking_url: isAffiliated ? trackingUrl : request.url,
+      short_url: isAffiliated && result.short_url && CuelinksV3Client.isAllowedTrackingUrl(result.short_url)
+        ? result.short_url
+        : undefined,
+      url: isAffiliated
+        ? (result.url && CuelinksV3Client.isAllowedTrackingUrl(result.url) ? result.url : candidateTrackingUrl)
+        : trimmedUrl,
+      tracking_url: isAffiliated ? candidateTrackingUrl : trimmedUrl,
       affiliated: isAffiliated,
       campaign: result.campaign
     };

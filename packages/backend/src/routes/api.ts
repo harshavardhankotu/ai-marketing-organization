@@ -6567,7 +6567,9 @@ apiRouter.get('/owner/deal-engine/funnel', async (c) => {
  */
 apiRouter.get('/owner/growth-experiments', async (c) => {
   const { GrowthExperimentTracker } = await import('../commission/growth-experiment-tracker.js');
-  const experiments = GrowthExperimentTracker.getInstance().listAllExperiments();
+  const tracker = GrowthExperimentTracker.getInstance();
+  await tracker.hydrateFromDb();
+  const experiments = tracker.listAllExperiments();
   return c.json({ success: true, data: experiments });
 });
 

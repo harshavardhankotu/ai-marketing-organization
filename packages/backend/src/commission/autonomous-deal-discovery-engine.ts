@@ -25,6 +25,8 @@ import {
   CommercialFunnelStage
 } from './deal-types.js';
 
+export const MAX_OFFER_FRESHNESS_HOURS = 48;
+
 export class AutonomousDealDiscoveryEngine {
   private static instance: AutonomousDealDiscoveryEngine;
   private d1Repo = D1RevenueRepository.getInstance();
@@ -34,6 +36,10 @@ export class AutonomousDealDiscoveryEngine {
   private sourcesMap: Map<string, DealSourceRecord> = new Map();
   private dealsMap: Map<string, NormalizedDeal> = new Map();
   private dealFingerprintMap: Map<string, string> = new Map(); // fingerprint -> dealId
+
+  // Hermetic test injection & genuine candidate registration (Zero hardcoded products in production discovery)
+  private injectedDealsForTesting: DiscoveredDealInput[] = [];
+  private registeredCandidates: DiscoveredDealInput[] = [];
 
   // Strict 7-Stage Evidence-Based Commercial Funnel Counters
   // DISCOVERY → PAGE VISIT → DEAL CLICK → PROVIDER CLICK → REPORTED CONVERSION → VALIDATED COMMISSION → PAID COMMISSION
@@ -60,6 +66,26 @@ export class AutonomousDealDiscoveryEngine {
 
   public static resetInstance(): void {
     AutonomousDealDiscoveryEngine.instance = undefined as any;
+  }
+
+  public injectDiscoveredDealsForTesting(deals: DiscoveredDealInput[]): void {
+    this.injectedDealsForTesting = [...deals];
+  }
+
+  public clearInjectedDealsForTesting(): void {
+    this.injectedDealsForTesting = [];
+  }
+
+  public registerDealCandidate(candidate: DiscoveredDealInput): void {
+    this.registeredCandidates.push(candidate);
+  }
+
+  public registerDealCandidates(candidates: DiscoveredDealInput[]): void {
+    this.registeredCandidates.push(...candidates);
+  }
+
+  public clearRegisteredCandidates(): void {
+    this.registeredCandidates = [];
   }
 
   public getCuelinksClient(): CuelinksV3Client {
@@ -413,148 +439,37 @@ export class AutonomousDealDiscoveryEngine {
   }
 
   /**
-   * Discovers deals across all 4 source classes without waiting for human intervention (Spec § 2).
+   * Discovers deals strictly from genuine, permitted sources (Spec § 2).
+   * Hardcoded product records removed from production discovery path.
    */
   public async discoverDealsFromAllSources(
     organizationId: string = 'org_owner_primary',
     businessId: string = 'biz_platform_aro'
   ): Promise<DiscoveredDealInput[]> {
     const discovered: DiscoveredDealInput[] = [];
+    const observationTimestamp = new Date().toISOString();
 
-    // Class A: Authentic Indian Retailer & Brand Offers (Verified INR Prices)
-    discovered.push(
-      {
-        title: 'boAt Airdopes 141 Bluetooth Truly Wireless in Ear Earbuds',
-        brand: 'boAt',
-        merchant: 'boAt Lifestyle',
-        category: 'Audio & Wearables',
-        productUrl: 'https://www.boat-lifestyle.com/products/airdopes-141',
-        currentPriceINR: 1299,
-        referencePriceINR: 4490,
-        claimedDiscountPercent: 71,
-        couponCode: 'BOATEXTRA10',
-        couponConditions: 'Extra 10% off on prepaid orders above ₹999',
-        availability: 'IN_STOCK',
-        geographicRestrictions: ['India'],
-        offerStart: new Date(Date.now() - 86400000).toISOString(),
-        expiryDate: new Date(Date.now() + 7 * 86400000).toISOString(),
-        sourceUrl: 'https://www.boat-lifestyle.com/collections/best-deals',
-        sourceDomain: 'boat-lifestyle.com',
-        sourceType: 'RETAILER_BRAND',
-        modelOrSku: 'AIRDOPES-141-BLK'
-      },
-      {
-        title: 'Noise ColorFit Pulse 2 Max 1.85" Display Bluetooth Calling Smart Watch',
-        brand: 'Noise',
-        merchant: 'Noise India',
-        category: 'Audio & Wearables',
-        productUrl: 'https://www.gonoise.com/products/colorfit-pulse-2-max-smartwatch',
-        currentPriceINR: 1499,
-        referencePriceINR: 5999,
-        claimedDiscountPercent: 75,
-        couponCode: 'NOISEPULSE',
-        couponConditions: 'Flat ₹100 instant discount on UPI checkout',
-        availability: 'IN_STOCK',
-        geographicRestrictions: ['India'],
-        offerStart: new Date(Date.now() - 172800000).toISOString(),
-        expiryDate: new Date(Date.now() + 5 * 86400000).toISOString(),
-        sourceUrl: 'https://www.gonoise.com/collections/smart-watches',
-        sourceDomain: 'gonoise.com',
-        sourceType: 'RETAILER_BRAND',
-        modelOrSku: 'NOISE-PULSE2-MAX'
-      },
-      {
-        title: 'Lenovo IdeaPad Slim 3 12th Gen Intel Core i3 15.6" FHD Laptop (8GB/512GB SSD)',
-        brand: 'Lenovo',
-        merchant: 'Lenovo India',
-        category: 'Computers & Laptops',
-        productUrl: 'https://www.lenovo.com/in/en/laptops/ideapad/ideapad-3-series/ideapad-slim-3-gen-7-15-intel',
-        currentPriceINR: 35990,
-        referencePriceINR: 52990,
-        claimedDiscountPercent: 32,
-        couponCode: 'LENOVOOFFICE',
-        couponConditions: 'Free wireless mouse & bag included',
-        availability: 'IN_STOCK',
-        geographicRestrictions: ['India'],
-        offerStart: new Date(Date.now() - 86400000).toISOString(),
-        expiryDate: new Date(Date.now() + 10 * 86400000).toISOString(),
-        sourceUrl: 'https://www.lenovo.com/in/en/d/deals/laptops',
-        sourceDomain: 'lenovo.com',
-        sourceType: 'RETAILER_BRAND',
-        modelOrSku: '82RK0085IN'
-      },
-      {
-        title: 'Croma 10000 mAh 22.5W Fast Charging Power Bank (Type C & Micro USB)',
-        brand: 'Croma',
-        merchant: 'Croma India',
-        category: 'Electronics & Peripherals',
-        productUrl: 'https://www.croma.com/croma-10000mah-22-5w-fast-charging-power-bank/p/264582',
-        currentPriceINR: 899,
-        referencePriceINR: 1900,
-        claimedDiscountPercent: 53,
-        availability: 'IN_STOCK',
-        geographicRestrictions: ['India'],
-        sourceUrl: 'https://www.croma.com/deals-of-the-day',
-        sourceDomain: 'croma.com',
-        sourceType: 'RETAILER_BRAND',
-        modelOrSku: 'CRSP10K22W'
-      },
-      {
-        title: 'Philips Air Fryer HD9200/90 with Rapid Air Technology (4.1 Liter)',
-        brand: 'Philips',
-        merchant: 'Reliance Digital',
-        category: 'Electronics & Appliances',
-        productUrl: 'https://www.reliancedigital.in/philips-hd9200-90-air-fryer/p/492403612',
-        currentPriceINR: 6499,
-        referencePriceINR: 9995,
-        claimedDiscountPercent: 35,
-        couponCode: 'KITCHEN500',
-        couponConditions: 'Instant ₹500 off on major bank debit/credit cards',
-        availability: 'IN_STOCK',
-        geographicRestrictions: ['India'],
-        sourceUrl: 'https://www.reliancedigital.in/kitchen-appliances-fest',
-        sourceDomain: 'reliancedigital.in',
-        sourceType: 'RETAILER_BRAND',
-        modelOrSku: 'HD9200-90'
-      },
-      {
-        title: 'Zoho Workplace Standard Suite (Cloud Email, Docs, Sheets, Chat & Storage)',
-        brand: 'Zoho',
-        merchant: 'Zoho India',
-        category: 'SaaS & Business Software',
-        productUrl: 'https://www.zoho.com/workplace/pricing.html',
-        currentPriceINR: 99,
-        referencePriceINR: 149,
-        claimedDiscountPercent: 34,
-        couponConditions: 'Per user per month billed annually with free Indian domain support',
-        availability: 'IN_STOCK',
-        geographicRestrictions: ['India'],
-        sourceUrl: 'https://www.zoho.com/workplace/',
-        sourceDomain: 'zoho.com',
-        sourceType: 'RETAILER_BRAND',
-        modelOrSku: 'ZOHO-WP-STD-IN'
+    // 1. Injected test candidates (deterministic unit testing without hardcoding in production path)
+    if (this.injectedDealsForTesting.length > 0) {
+      for (const d of this.injectedDealsForTesting) {
+        discovered.push({
+          ...d,
+          observedAt: d.observedAt || observationTimestamp
+        });
       }
-    );
+    }
 
-    // Class C: Public Deal Feeds (DesiDime / Aggregator RSS)
-    discovered.push({
-      title: 'Logitech M221 Silent Wireless Optical Mouse with 2.4GHz USB Nano Receiver',
-      brand: 'Logitech',
-      merchant: 'Vijay Sales',
-      category: 'Electronics & Peripherals',
-      productUrl: 'https://www.vijaysales.com/logitech-m221-silent-wireless-mouse/p/16278',
-      currentPriceINR: 699,
-      referencePriceINR: 1295,
-      claimedDiscountPercent: 46,
-      availability: 'IN_STOCK',
-      geographicRestrictions: ['India'],
-      sourceUrl: 'https://www.desidime.com/deals/logitech-m221-wireless-silent-mouse',
-      sourceDomain: 'desidime.com',
-      sourceType: 'PUBLIC_DEAL_FEED',
-      modelOrSku: 'LOGI-M221-BLK'
-    });
+    // 2. Genuine registered deal candidates
+    if (this.registeredCandidates.length > 0) {
+      for (const d of this.registeredCandidates) {
+        discovered.push({
+          ...d,
+          observedAt: d.observedAt || observationTimestamp
+        });
+      }
+    }
 
-    // Class B: Cuelinks Autonomous Monetization Feed (Spec § 1, 2, 3, 4, 5, 6)
+    // 3. Class B: Cuelinks Autonomous Monetization Feed (genuine permitted source)
     try {
       const syncResult = await CuelinksSyncManager.getInstance(this.getCuelinksClient()).syncCuelinks(organizationId, businessId);
       if (syncResult.success && syncResult.dealCandidates && syncResult.dealCandidates.length > 0) {
@@ -572,6 +487,9 @@ export class AutonomousDealDiscoveryEngine {
             couponConditions: candidate.couponConditions,
             availability: candidate.availability || 'IN_STOCK',
             geographicRestrictions: candidate.geographicRestrictions || ['India'],
+            offerStart: candidate.offerStart,
+            expiryDate: candidate.expiryDate, // Genuine provider expiry only; undefined if omitted
+            observedAt: candidate.observedAt || observationTimestamp,
             sourceUrl: candidate.sourceUrl,
             sourceDomain: candidate.sourceDomain,
             sourceType: candidate.sourceType,
@@ -585,7 +503,7 @@ export class AutonomousDealDiscoveryEngine {
         const src = this.sourcesMap.get('src_cuelinks_network');
         if (src) {
           src.totalOffersFound += syncResult.dealCandidates.length;
-          src.lastScanAt = new Date().toISOString();
+          src.lastScanAt = observationTimestamp;
           src.lastHttpStatus = 200;
           src.permissionStatus = 'ALLOWED';
         }
@@ -602,7 +520,7 @@ export class AutonomousDealDiscoveryEngine {
       const src = Array.from(this.sourcesMap.values()).find(s => s.domain === deal.sourceDomain);
       if (src) {
         src.totalOffersFound++;
-        src.lastScanAt = new Date().toISOString();
+        src.lastScanAt = observationTimestamp;
         src.lastHttpStatus = 200;
       }
     }
@@ -753,15 +671,9 @@ export class AutonomousDealDiscoveryEngine {
         discountType = 'UNCONFIRMED';
       } else {
         const calculatedDiscount = Math.round(((refPrice - input.currentPriceINR) / refPrice) * 100);
-
-        if (input.claimedDiscountPercent && input.claimedDiscountPercent > 90) {
-          // Unrealistic claimed discount (>90%) flagged as merchant-claimed without secondary corroboration
-          verifiedDiscount = calculatedDiscount;
-          discountType = 'MERCHANT_CLAIMED';
-        } else {
-          verifiedDiscount = calculatedDiscount;
-          discountType = 'INDEPENDENT_CORROBORATED';
-        }
+        verifiedDiscount = calculatedDiscount;
+        // Invariant: Mark reference price as MERCHANT_CLAIMED unless multi-source independent evidence corroborates it
+        discountType = 'MERCHANT_CLAIMED';
       }
     } else {
       discountType = 'UNCONFIRMED';
@@ -772,12 +684,21 @@ export class AutonomousDealDiscoveryEngine {
     let verificationStatus: DealVerificationStatus = 'VERIFIED';
     const rejectionReasons: string[] = [];
 
-    // Check Expiry
+    // Check Expiry (genuine provider expiry data)
     if (input.expiryDate) {
       const expiryMs = new Date(input.expiryDate).getTime();
-      if (Date.now() > expiryMs) {
+      if (!isNaN(expiryMs) && Date.now() > expiryMs) {
         verificationStatus = 'EXPIRED';
         rejectionReasons.push('OFFER_EXPIRED: The promotional deal has expired.');
+      }
+    }
+
+    // Freshness policy check (MAX_OFFER_FRESHNESS_HOURS = 48h since last observation)
+    if (input.observedAt) {
+      const observedMs = new Date(input.observedAt).getTime();
+      if (!isNaN(observedMs) && (Date.now() - observedMs) > MAX_OFFER_FRESHNESS_HOURS * 3600 * 1000) {
+        verificationStatus = 'EXPIRED';
+        rejectionReasons.push(`OFFER_STALE: Observation exceeded freshness policy (${MAX_OFFER_FRESHNESS_HOURS} hours).`);
       }
     }
 
@@ -785,6 +706,12 @@ export class AutonomousDealDiscoveryEngine {
     if (input.availability === 'OUT_OF_STOCK') {
       verificationStatus = 'OUT_OF_STOCK';
       rejectionReasons.push('OUT_OF_STOCK: Merchant reports product is out of stock.');
+    }
+
+    // Check unverified key claims (e.g. asserted discount failed baseline reference price corroboration)
+    if (input.claimedDiscountPercent && input.claimedDiscountPercent > 0 && discountType === 'UNCONFIRMED') {
+      verificationStatus = 'UNVERIFIED';
+      rejectionReasons.push('UNVERIFIED_DISCOUNT: Claimed discount failed baseline reference price corroboration.');
     }
 
     // Check Coupon / Conditional status
@@ -826,7 +753,7 @@ export class AutonomousDealDiscoveryEngine {
       }
       existing.evidenceJson.priceHistory.push({
         price: input.currentPriceINR,
-        observedAt: nowIso
+        observedAt: input.observedAt || nowIso
       });
 
       // Maintain higher verification confidence upon multi-source corroboration
@@ -850,7 +777,8 @@ export class AutonomousDealDiscoveryEngine {
 
     // New Deal Formulation
     const dealId = `deal_${randomUUID().substring(0, 10)}`;
-    const confidenceScore = discountType === 'INDEPENDENT_CORROBORATED' ? 95 : 80;
+    const confidenceScore = (discountType as DiscountVerificationType) === 'INDEPENDENT_CORROBORATED' ? 95 : (discountType === 'MERCHANT_CLAIMED' ? 85 : 70);
+    const observedAt = input.observedAt || nowIso;
 
     const newDeal: NormalizedDeal = {
       id: dealId,
@@ -872,9 +800,10 @@ export class AutonomousDealDiscoveryEngine {
       membershipRestrictions: input.membershipRestrictions,
       paymentRestrictions: input.paymentRestrictions,
       offerStart: input.offerStart,
-      expiryDate: input.expiryDate,
+      expiryDate: input.expiryDate, // Genuine provider expiry only; never inferred from execution timestamp
+      observedAt,
       lastCheckedAt: nowIso,
-      sourceUrl: input.sourceUrl,
+      sourceUrl: input.sourceUrl, // Preserves original source URL
       sourceDomain: input.sourceDomain,
       sourceType: input.sourceType,
       verificationStatus,
@@ -888,9 +817,10 @@ export class AutonomousDealDiscoveryEngine {
       modelOrSku: input.modelOrSku,
       evidenceJson: {
         sources: [input.sourceUrl],
-        priceHistory: [{ price: input.currentPriceINR, observedAt: nowIso }],
+        observedAt,
+        priceHistory: [{ price: input.currentPriceINR, observedAt }],
         verificationLogs: [
-          `Discovered from ${input.sourceDomain} at ${nowIso}`,
+          `Discovered from ${input.sourceDomain} at ${observedAt}`,
           `SSRF & Host safety check: PASSED`,
           `Pricing sanity check: INR ${input.currentPriceINR} PASSED`,
           `Discount validation: ${discountType} (${verifiedDiscount}%)`
@@ -919,8 +849,12 @@ export class AutonomousDealDiscoveryEngine {
    * Ranks deals based on buyer value without letting affiliate commission override evidence quality.
    */
   public calculateBuyerValueScore(deal: NormalizedDeal): number {
-    // If deal is expired or rejected, score is 0
-    if (deal.verificationStatus === 'EXPIRED' || deal.verificationStatus === 'REJECTED') {
+    // If deal is expired, rejected, or unverified, score is 0
+    if (
+      deal.verificationStatus === 'EXPIRED' ||
+      deal.verificationStatus === 'REJECTED' ||
+      deal.verificationStatus === 'UNVERIFIED'
+    ) {
       return 0;
     }
 
@@ -938,7 +872,8 @@ export class AutonomousDealDiscoveryEngine {
     }
 
     // Factor 3: Freshness (20% weight)
-    const hoursOld = (Date.now() - new Date(deal.lastCheckedAt).getTime()) / (1000 * 60 * 60);
+    const observationTime = deal.observedAt || deal.lastCheckedAt;
+    const hoursOld = (Date.now() - new Date(observationTime).getTime()) / (1000 * 60 * 60);
     const freshnessPart = Math.max(0, 20 - hoursOld * 0.5); // Degrades by 0.5 pts per hour
 
     // Factor 4: Stock & Usability (10% weight)
@@ -967,6 +902,8 @@ export class AutonomousDealDiscoveryEngine {
 
   /**
    * Deactivates and flags expired deals (Spec § 5 Level 4).
+   * Enforces genuine provider expiry data (expiryDate < now) or freshness policy
+   * (MAX_OFFER_FRESHNESS_HOURS = 48 hours since last observation), never invented dates.
    */
   public async deactivateExpiredDeals(
     organizationId: string = 'org_owner_primary',
@@ -974,18 +911,42 @@ export class AutonomousDealDiscoveryEngine {
   ): Promise<number> {
     let expiredCount = 0;
     const now = Date.now();
+    const maxFreshnessMs = MAX_OFFER_FRESHNESS_HOURS * 60 * 60 * 1000;
 
     for (const deal of this.dealsMap.values()) {
+      if (deal.verificationStatus === 'EXPIRED') continue;
+
+      let isExpired = false;
+      let reason = '';
+
+      // Genuine provider expiry data check (never invented dates)
       if (deal.expiryDate) {
         const expiryMs = new Date(deal.expiryDate).getTime();
-        if (now > expiryMs && deal.verificationStatus !== 'EXPIRED') {
-          deal.verificationStatus = 'EXPIRED';
-          deal.buyerValueScore = 0;
-          deal.updatedAt = new Date().toISOString();
-          deal.rejectionReasons.push('OFFER_EXPIRED: Offer validity ended.');
-          await this.persistDealToD1(deal, organizationId, businessId);
-          expiredCount++;
+        if (!isNaN(expiryMs) && now > expiryMs) {
+          isExpired = true;
+          reason = 'OFFER_EXPIRED: Genuine provider expiry date has passed.';
         }
+      }
+
+      // Freshness policy check (MAX_OFFER_FRESHNESS_HOURS = 48h since last observation)
+      if (!isExpired) {
+        const observationTime = deal.observedAt || deal.lastCheckedAt;
+        if (observationTime) {
+          const observedMs = new Date(observationTime).getTime();
+          if (!isNaN(observedMs) && (now - observedMs) > maxFreshnessMs) {
+            isExpired = true;
+            reason = `OFFER_STALE: Observation exceeded freshness policy (${MAX_OFFER_FRESHNESS_HOURS} hours since last observation).`;
+          }
+        }
+      }
+
+      if (isExpired) {
+        deal.verificationStatus = 'EXPIRED';
+        deal.buyerValueScore = 0;
+        deal.updatedAt = new Date().toISOString();
+        deal.rejectionReasons.push(reason);
+        await this.persistDealToD1(deal, organizationId, businessId);
+        expiredCount++;
       }
     }
 
@@ -1011,8 +972,13 @@ export class AutonomousDealDiscoveryEngine {
 
     // Filter active deals
     let filtered = allDeals.filter(d => {
-      // Hide expired, out-of-stock, or rejected deals from public active results
-      if (d.verificationStatus === 'EXPIRED' || d.verificationStatus === 'REJECTED' || d.verificationStatus === 'OUT_OF_STOCK') {
+      // Hide expired, out-of-stock, rejected, or unverified deals from public active results
+      if (
+        d.verificationStatus === 'EXPIRED' ||
+        d.verificationStatus === 'REJECTED' ||
+        d.verificationStatus === 'OUT_OF_STOCK' ||
+        d.verificationStatus === 'UNVERIFIED'
+      ) {
         return false;
       }
 
@@ -1105,14 +1071,17 @@ export class AutonomousDealDiscoveryEngine {
   /**
    * Record a public page visit (Stage 2: PAGE VISIT).
    * Strictly increments observed page visits without assuming or multiplying any other counter.
+   * Persists funnel telemetry across restarts via wf_commercial_funnel_telemetry in workflows table.
    */
   public recordPageVisit(meta?: { path?: string; ip?: string; referer?: string }): void {
     this.localPageVisitsCount++;
+    this.persistFunnelTelemetryAsync().catch(() => {});
   }
 
   /**
    * Record a local deal card click (Stage 3: DEAL CLICK).
    * Increments local deal card clicks and synchronizes Cuelinks local click count.
+   * Persists funnel telemetry across restarts via wf_commercial_funnel_telemetry in workflows table.
    */
   public recordDealClick(dealId: string, meta?: { ip?: string; placement?: string; source?: string }): { success: boolean; deal?: NormalizedDeal } {
     const deal = this.dealsMap.get(dealId);
@@ -1121,6 +1090,7 @@ export class AutonomousDealDiscoveryEngine {
     }
     this.localDealClicksCount++;
     CuelinksSyncManager.getInstance().recordLocalClick();
+    this.persistFunnelTelemetryAsync().catch(() => {});
     return { success: true, deal };
   }
 
@@ -1144,6 +1114,7 @@ export class AutonomousDealDiscoveryEngine {
       return { success: false, error: 'INVALID_AMOUNT: Confirmed bank amount must be strictly greater than ₹0.00.' };
     }
     this.verifiedCashReceivedINR = params.amountINR;
+    this.persistFunnelTelemetryAsync().catch(() => {});
     return { success: true };
   }
 
@@ -1250,6 +1221,112 @@ export class AutonomousDealDiscoveryEngine {
   }
 
   /**
+   * Persists commercial funnel telemetry counters (Stage 2: Page Visits, Stage 3: Deal Clicks, Verified Cash)
+   * to Cloudflare D1 workflows table under record 'wf_commercial_funnel_telemetry'.
+   * Complies with FEATURES_FROZEN = true with zero schema migrations.
+   */
+  public async persistFunnelTelemetryAsync(
+    organizationId: string = 'org_owner_primary',
+    businessId: string = 'biz_platform_aro'
+  ): Promise<void> {
+    try {
+      const sql = `
+        INSERT INTO workflows (
+          id, organization_id, business_id, workflow_type, status, current_step,
+          last_successful_checkpoint, retry_count, max_retries, inputs_json, outputs_json, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        ON CONFLICT(id) DO UPDATE SET
+          status = excluded.status,
+          current_step = excluded.current_step,
+          inputs_json = excluded.inputs_json,
+          outputs_json = excluded.outputs_json,
+          updated_at = datetime('now')
+      `;
+
+      const inputsJson = JSON.stringify({
+        telemetryType: 'COMMERCIAL_FUNNEL_TELEMETRY',
+        description: 'Durable counters for Stage 2 (Page Visits) and Stage 3 (Deal Clicks)'
+      });
+
+      const outputsJson = JSON.stringify({
+        localPageVisitsCount: this.localPageVisitsCount,
+        localDealClicksCount: this.localDealClicksCount,
+        verifiedCashReceivedINR: this.verifiedCashReceivedINR,
+        persistedAt: new Date().toISOString()
+      });
+
+      await this.d1Repo.executeWrite('workflows', sql, [
+        'wf_commercial_funnel_telemetry',
+        organizationId,
+        businessId,
+        'COMMERCIAL_FUNNEL_TELEMETRY',
+        'COMPLETED',
+        'ACTIVE_TELEMETRY',
+        'FUNNEL_CHECKPOINT',
+        0,
+        3,
+        inputsJson,
+        outputsJson
+      ]);
+    } catch (err: any) {
+      if (!isProduction()) {
+        // Silently tolerate in test SQLite environments
+      }
+    }
+  }
+
+  /**
+   * Hydrates commercial funnel telemetry counters from Cloudflare D1 workflows table.
+   */
+  public async hydrateFunnelTelemetryFromDb(): Promise<{
+    localPageVisitsCount: number;
+    localDealClicksCount: number;
+    verifiedCashReceivedINR: number;
+  } | null> {
+    try {
+      const sql = `
+        SELECT id, outputs_json, updated_at
+        FROM workflows
+        WHERE id = 'wf_commercial_funnel_telemetry'
+      `;
+      const row = await this.d1Repo.queryOne('workflows', sql, []);
+      if (row && row.outputs_json) {
+        const data = JSON.parse(row.outputs_json);
+        if (typeof data.localPageVisitsCount === 'number') {
+          this.localPageVisitsCount = Math.max(0, data.localPageVisitsCount);
+        }
+        if (typeof data.localDealClicksCount === 'number') {
+          this.localDealClicksCount = Math.max(0, data.localDealClicksCount);
+        }
+        if (typeof data.verifiedCashReceivedINR === 'number') {
+          this.verifiedCashReceivedINR = Math.max(0, data.verifiedCashReceivedINR);
+        }
+        return {
+          localPageVisitsCount: this.localPageVisitsCount,
+          localDealClicksCount: this.localDealClicksCount,
+          verifiedCashReceivedINR: this.verifiedCashReceivedINR
+        };
+      }
+    } catch (err: any) {
+      if (!isProduction()) {
+        // Silently tolerate in test SQLite environments
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Alias for hydrateFunnelTelemetryFromDb
+   */
+  public async loadFunnelTelemetryFromDb(): Promise<{
+    localPageVisitsCount: number;
+    localDealClicksCount: number;
+    verifiedCashReceivedINR: number;
+  } | null> {
+    return this.hydrateFunnelTelemetryFromDb();
+  }
+
+  /**
    * Reset local funnel counters for hermetic testing.
    */
   public resetFunnelMetricsForTesting(): void {
@@ -1258,6 +1335,10 @@ export class AutonomousDealDiscoveryEngine {
     this.verifiedCashReceivedINR = 0;
     CuelinksSyncManager.getInstance().resetReconciliation();
     GrowthExperimentTracker.getInstance().resetForTesting();
+    try {
+      const db = getDb();
+      db.prepare(`DELETE FROM workflows WHERE id = 'wf_commercial_funnel_telemetry'`).run();
+    } catch {}
   }
 
   /**
@@ -1315,7 +1396,12 @@ export class AutonomousDealDiscoveryEngine {
         duplicateRatePercent: totalOffersFound > deals.length
           ? Math.round(((totalOffersFound - deals.length) / totalOffersFound) * 100)
           : 0,
-        staleRatePercent: 0,
+        staleRatePercent: deals.length > 0
+          ? Math.round((deals.filter(d => {
+              const obs = d.observedAt || d.lastCheckedAt;
+              return obs ? (Date.now() - new Date(obs).getTime()) > (MAX_OFFER_FRESHNESS_HOURS * 3600 * 1000) : false;
+            }).length / deals.length) * 100)
+          : 0,
         primaryMerchantSourcePercent: deals.length > 0 ? Math.round((primaryMerchantSources / deals.length) * 100) : 0,
         independentCorroborationPercent: deals.length > 0 ? Math.round((independentCorroborated / deals.length) * 100) : 0
       },
@@ -1387,7 +1473,8 @@ export class AutonomousDealDiscoveryEngine {
         sourceUrl: deal.sourceUrl,
         sourceDomain: deal.sourceDomain,
         sourceType: deal.sourceType,
-        modelOrSku: deal.modelOrSku
+        modelOrSku: deal.modelOrSku,
+        observedAt: deal.observedAt
       });
 
       const outputsJson = JSON.stringify({
@@ -1423,12 +1510,19 @@ export class AutonomousDealDiscoveryEngine {
   }
 
   /**
-   * Syncs existing persistent deal records from D1 workflows table.
+   * Syncs existing persistent deal records, funnel telemetry, and growth experiments from D1 workflows table.
    */
   public async syncFromD1Async(
     organizationId: string = 'org_owner_primary',
     businessId: string = 'biz_platform_aro'
   ): Promise<void> {
+    // 1. Sync funnel telemetry counters
+    await this.hydrateFunnelTelemetryFromDb();
+
+    // 2. Sync growth experiments
+    await GrowthExperimentTracker.getInstance().hydrateFromDb(organizationId);
+
+    // 3. Sync existing persistent deal records from D1 workflows table
     try {
       const sql = `
         SELECT id, status, current_step, inputs_json, outputs_json, error_info, created_at, updated_at
@@ -1462,6 +1556,7 @@ export class AutonomousDealDiscoveryEngine {
               availability: inputs.availability || 'IN_STOCK',
               geographicRestrictions: ['India'],
               lastCheckedAt: row.updated_at || row.created_at,
+              observedAt: inputs.observedAt || row.created_at,
               sourceUrl: inputs.sourceUrl || '',
               sourceDomain: inputs.sourceDomain || '',
               sourceType: inputs.sourceType || 'RETAILER_BRAND',
