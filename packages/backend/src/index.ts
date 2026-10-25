@@ -499,7 +499,19 @@ app.get('/guides/:slug', async (c) => {
     const { StaticSiteGenerator } = await import('./commission/static-site-generator.js');
     const asset = await ContentAssetEngine.getInstance().getAssetBySlug(slug, true);
     if (asset) {
-      const config = await StaticSiteGenerator.getInstance().resolveConfig();
+      let config: any;
+      try {
+        config = await StaticSiteGenerator.getInstance().resolveConfig();
+      } catch {
+        const host = c.req.header('host') || 'ai-marketing-organization.onrender.com';
+        const proto = c.req.header('x-forwarded-proto') || 'https';
+        config = {
+          siteName: 'India Deals & Buying Guides',
+          authorName: 'Editorial Desk',
+          contactEmail: `editorial@${host}`,
+          siteUrl: `${proto}://${host}`
+        };
+      }
       const html = StaticSiteGenerator.getInstance().renderGuideHtml(asset, config);
       return c.html(html);
     }

@@ -8,20 +8,21 @@ Produce real, evidence-backed revenue through the existing India-first site with
   - `packages/backend/src/commission/autonomous-deal-discovery-engine.ts`
   - `packages/backend/src/commission/cuelinks-v3-client.ts`
   - `packages/backend/src/commission/autonomous-commercial-engine.ts`
-  - `packages/backend/src/commission/cuelinks-sync-manager.ts`
+  - `packages/backend/src/commission/content-asset-engine.ts`
   - `packages/backend/src/commission/growth-experiment-tracker.ts`
-  - `packages/backend/src/routes/api.ts`
-- **Core Dependencies:** SQLite/Cloudflare D1, Cuelinks V3, Render, Cloudflare Worker, Firebase, GitHub Actions
+  - `packages/backend/src/index.ts`
+- **Core Dependencies:** Cloudflare D1/SQLite, Cuelinks V3, Render, Cloudflare Worker, Firebase, GitHub Actions
 
 ## 📊 Active State Scoreboard
 - [x] P1 conversion truth — raw shortcut removed; monetize only on convertLink affiliated=true
 - [x] P1 fail-closed scopes — ping() fails closed with missingScopes when scopes omitted/empty
 - [x] P1 commercial state machine — resolved BLOCKED bouncing; no false unblock without offer/URL
 - [x] P1 attribution reconciliation — ignore pending/rejected; log DISCOVERY_COMPLETED_WITH_BLOCKERS
-- [x] P2 organic acquisition — 3 experiments registered with 7-day review; student travel guide live
+- [x] P2 organic acquisition & SEO — student guide route, sitemap fallback, 3 experiments live
+- [x] P2 production deployment — PR #18 & PR #19 merged to main; Render & Worker deployed
 
 ## 📉 Compressed Context & Diagnostics
-- Base SHA: `74b5d22e73b0437b5f078c79d5b017e257646015` | Branch: `feat/revenue-engine-v2-6-real-revenue`
-- Tests: 128 tests passing (12 new V2.6 verification tests, 0 regressions); typecheck, 3 linters, build pass
+- Deployed Main SHA: `1e7efc0ae23bb91b82ea9d18aede5a412e6d653c` (PR #18 & PR #19 merged)
+- Full Backend Test Suite: 120 test files, 1126 tests passing (100% green); monorepo typecheck & linters pass
 - Funnel Truth: Organic clicks 0, conversions 0, commission ₹0.00, bank cash ₹0.00 (verified honest)
-- Next Action: Commit changes, push branch, open PR #18, watch CI and deploy to Render
+- Next Action: Confirm post-deploy live guide HTML rendering & Cloudflare Worker cron telemetry
