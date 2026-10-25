@@ -10,21 +10,29 @@ import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { CuelinksV3Client } from './cuelinks-v3-client.js';
 import {
   CuelinksSyncStatus,
+  CuelinksSyncStatusCode,
   CuelinksCampaign,
   CuelinksOffer,
-  CuelinksReconciliationMetrics
+  CuelinksReconciliationMetrics,
+  CuelinksErrorClass,
+  CuelinksPaginationCursor,
+  CuelinksPaginatedSyncOptions,
+  CuelinksPaginatedSyncResult,
+  CuelinksTelemetryRecord
 } from './cuelinks-v3-types.js';
-import { DealCandidate, NormalizedDeal } from './deal-types.js';
+import { DealCandidate } from './deal-types.js';
 
 export class CuelinksSyncManager {
   private static instance: CuelinksSyncManager | null = null;
   private client: CuelinksV3Client;
   private syncStatus: CuelinksSyncStatus;
+  private attemptCount: number = 0;
 
   constructor(client?: CuelinksV3Client) {
     this.client = client || CuelinksV3Client.getInstance();
+    const isConf = this.client.isConfigured();
     this.syncStatus = {
-      configured: this.client.isConfigured(),
+      configured: isConf,
       connected: false,
       channel: { status: 'UNKNOWN' },
       campaignsDiscovered: 0,
@@ -32,7 +40,7 @@ export class CuelinksSyncManager {
       offersRetrieved: 0,
       linksConverted: 0,
       lastSyncTimestamp: 'NEVER',
-      status: this.client.isConfigured() ? 'IDLE' : 'BLOCKED_AUTHORIZATION',
+      status: isConf ? 'IDLE' : 'BLOCKED_CONFIGURATION',
       reconciliation: {
         localClicks: 0,
         providerAttributedClicks: 0,
@@ -43,9 +51,16 @@ export class CuelinksSyncManager {
         paidCommissionINR: 0,
         cashReceivedINR: 0
       },
-      ownerActionRequired: this.client.isConfigured()
+      ownerActionRequired: isConf
         ? undefined
-        : 'Provide CUELINKS_API_KEY in environment variables or Render dashboard to enable automated Cuelinks campaign discovery and affiliate link conversion.'
+        : 'Provide CUELINKS_API_KEY in environment variables or Render dashboard to enable automated Cuelinks campaign discovery and affiliate link conversion.',
+      telemetry: {
+        attemptCount: 0,
+        errorClass: undefined,
+        lastError: undefined,
+        nextRetryAt: undefined,
+        status: isConf ? 'IDLE' : 'BLOCKED_CONFIGURATION'
+      }
     };
   }
 
@@ -63,6 +78,14 @@ export class CuelinksSyncManager {
   public getStatus(): CuelinksSyncStatus {
     this.syncStatus.configured = this.client.isConfigured();
     return { ...this.syncStatus };
+  }
+
+  public getAttemptCount(): number {
+    return this.attemptCount;
+  }
+
+  public resetAttemptCount(): void {
+    this.attemptCount = 0;
   }
 
   /**
@@ -102,22 +125,252 @@ export class CuelinksSyncManager {
   }
 
   /**
+   * Classify errors into canonical operational classes (WORKSTREAM D).
+   */
+  public classifyError(err: any): CuelinksErrorClass {
+    if (!err) return 'INVALID_RESPONSE';
+    const msg = (typeof err === 'string' ? err : (err.message || String(err))).toUpperCase();
+    const code = (err.code || '').toUpperCase();
+    const status = typeof err.statusCode === 'number' ? err.statusCode : (typeof err.status === 'number' ? err.status : 0);
+
+    if (
+      status === 401 ||
+      code === 'CUELINKS_UNAUTHORIZED' ||
+      msg.includes('UNAUTHORIZED') ||
+      msg.includes('401') ||
+      msg.includes('TOKEN') ||
+      msg.includes('AUTH_FAILURE')
+    ) {
+      return 'AUTH_FAILURE';
+    }
+    if (
+      status === 403 ||
+      code === 'CUELINKS_FORBIDDEN' ||
+      msg.includes('FORBIDDEN') ||
+      msg.includes('SCOPE') ||
+      msg.includes('403') ||
+      msg.includes('PERMISSION_MISSING')
+    ) {
+      return 'PERMISSION_MISSING';
+    }
+    if (
+      status === 429 ||
+      code === 'CUELINKS_RATE_LIMITED' ||
+      msg.includes('RATE_LIMIT') ||
+      msg.includes('TOO MANY REQUESTS') ||
+      msg.includes('429')
+    ) {
+      return 'RATE_LIMITED';
+    }
+    if (
+      (status >= 500 && status <= 599) ||
+      code === 'CUELINKS_SERVER_ERROR' ||
+      msg.includes('SERVER_ERROR') ||
+      msg.includes('500') ||
+      msg.includes('502') ||
+      msg.includes('503')
+    ) {
+      return 'PROVIDER_SERVER_ERROR';
+    }
+    if (code === 'CUELINKS_TIMEOUT' || msg.includes('TIMEOUT') || msg.includes('ABORT') || status === 408) {
+      return 'NETWORK_TIMEOUT';
+    }
+    if (code === 'CUELINKS_EMPTY_RESULTS' || msg.includes('EMPTY_RESULTS')) {
+      return 'EMPTY_RESULTS';
+    }
+    if (
+      code === 'CUELINKS_UNPROCESSABLE_ENTITY' ||
+      status === 422 ||
+      msg.includes('UNPROCESSABLE') ||
+      msg.includes('MALFORMED') ||
+      msg.includes('INVALID')
+    ) {
+      return 'INVALID_RESPONSE';
+    }
+    if (msg.includes('NETWORK') || msg.includes('FETCH')) {
+      return 'NETWORK_TIMEOUT';
+    }
+    return 'INVALID_RESPONSE';
+  }
+
+  /**
+   * Calculate exponential backoff with jitter (WORKSTREAM D).
+   * Backs off exponentially based on attemptCount: baseDelay * 2^(attempt-1), bounded by maxDelaySec.
+   * Full jitter is applied up to 25% of delay to avoid thundering herds.
+   */
+  public calculateBackoffWithJitter(attempt: number, baseDelaySec: number = 60, maxDelaySec: number = 3600): {
+    delaySec: number;
+    nextRetryAt: string;
+  } {
+    const exponent = Math.max(0, Math.min(attempt - 1, 8));
+    const rawDelay = Math.min(maxDelaySec, baseDelaySec * Math.pow(2, exponent));
+    const jitter = Math.floor(Math.random() * (rawDelay * 0.25));
+    const delaySec = rawDelay + jitter;
+    const nextRetryAt = new Date(Date.now() + delaySec * 1000).toISOString();
+    return { delaySec, nextRetryAt };
+  }
+
+  /**
+   * Process raw offers into validated, truthful DealCandidate objects (WORKSTREAM B).
+   * Rules:
+   * 1. Accept currentPriceINR only when explicitly provided by provider data (number > 0).
+   * 2. Missing reference price must remain undefined (never synthesized from discount).
+   * 3. Never synthesize current price from reference price and claimed discount.
+   * 4. Never infer price history from current execution timestamp.
+   * 5. Never invent an expiry date: if offer.end_date is omitted, expiryDate remains undefined.
+   * 6. Default discountVerificationType to 'MERCHANT_CLAIMED'.
+   * 7. Support coupon-only opportunities: retain with dealKind: 'COUPON' and currentPriceINR: undefined.
+   * 8. Require explicit provider confirmation (affiliated: true AND allowlisted tracking domain)
+   *    before classifying a link as monetizable.
+   * 9. Preserve direct merchant links when affiliated: false.
+   */
+  private async processOffersToCandidates(
+    rawOffers: CuelinksOffer[],
+    eligibleCampaigns: CuelinksCampaign[]
+  ): Promise<DealCandidate[]> {
+    const dealCandidates: DealCandidate[] = [];
+
+    for (const offer of rawOffers) {
+      if (!offer.url || !offer.title) continue;
+
+      const campaign = eligibleCampaigns.find(c => String(c.id) === String(offer.campaign_id));
+      const merchantName = offer.campaign_name || campaign?.merchant_name || campaign?.name || 'Authorized Merchant';
+
+      // Rule: Accept currentPriceINR only when explicitly provided by provider data (> 0)
+      const currentPrice = (typeof offer.current_price_inr === 'number' && offer.current_price_inr > 0)
+        ? offer.current_price_inr
+        : undefined;
+
+      // Rule: Missing reference price must remain undefined (never synthesized)
+      const refPrice = (typeof offer.reference_price_inr === 'number' && offer.reference_price_inr > 0)
+        ? offer.reference_price_inr
+        : undefined;
+
+      // Provider claimed discount
+      let claimedDiscount: number | undefined = undefined;
+      if (offer.discount) {
+        const discMatch = offer.discount.match(/(\d+)%/);
+        if (discMatch) {
+          claimedDiscount = Number(discMatch[1]);
+        }
+      }
+
+      // Rule: Support coupon-only opportunities: If an offer has a coupon_code or discount terms
+      // but no current_price_inr, set dealKind: 'COUPON' and retain it as a valid coupon opportunity
+      // with currentPriceINR: undefined without inventing a fake price!
+      const hasCouponOrDiscount = Boolean(offer.coupon_code || offer.discount || offer.terms);
+      let dealKind: 'PRODUCT' | 'COUPON' = 'PRODUCT';
+
+      if (!currentPrice) {
+        if (hasCouponOrDiscount) {
+          dealKind = 'COUPON';
+        } else {
+          // No price and no coupon terms -> cannot represent a valid offer
+          continue;
+        }
+      } else {
+        dealKind = offer.coupon_code ? 'COUPON' : 'PRODUCT';
+      }
+
+      // Rule: Never invent an expiry date: if offer.end_date is omitted, expiryDate remains undefined.
+      let expiryDate: string | undefined = undefined;
+      if (offer.end_date) {
+        const parsed = Date.parse(offer.end_date);
+        if (!isNaN(parsed)) {
+          expiryDate = new Date(parsed).toISOString();
+        }
+      }
+
+      let offerStart: string | undefined = undefined;
+      if (offer.start_date) {
+        const parsed = Date.parse(offer.start_date);
+        if (!isNaN(parsed)) {
+          offerStart = new Date(parsed).toISOString();
+        }
+      }
+
+      // Rule: Require explicit provider confirmation (affiliated: true AND allowlisted tracking domain)
+      // before classifying a link as monetizable. Preserve direct merchant links when affiliated: false.
+      let trackingUrl = offer.url;
+      let isMonetizable = false;
+
+      try {
+        const convertRes = await this.client.convertLink({
+          url: offer.url,
+          channel_id: this.syncStatus.channel.id,
+          shorten: true,
+          subid: `aro_cl_${offer.id}`,
+          subid2: String(offer.campaign_id),
+          subid3: 'cuelinks_feed',
+          subid4: 'catalog_v1'
+        });
+
+        if (
+          convertRes.affiliated === true &&
+          convertRes.tracking_url &&
+          CuelinksV3Client.isAllowedTrackingUrl(convertRes.tracking_url)
+        ) {
+          trackingUrl = convertRes.tracking_url;
+          isMonetizable = true;
+          this.syncStatus.linksConverted++;
+        } else {
+          trackingUrl = offer.url;
+          isMonetizable = false;
+        }
+      } catch (convErr: any) {
+        trackingUrl = offer.url;
+        isMonetizable = false;
+      }
+
+      const candidate: DealCandidate = {
+        title: offer.title,
+        brand: merchantName,
+        merchant: merchantName,
+        category: offer.category || 'Retail Deals',
+        productUrl: offer.url,
+        currentPriceINR: currentPrice,
+        referencePriceINR: refPrice,
+        claimedDiscountPercent: claimedDiscount,
+        discountVerificationType: 'MERCHANT_CLAIMED',
+        dealKind,
+        couponCode: offer.coupon_code,
+        couponConditions: offer.terms,
+        offerStart,
+        expiryDate,
+        sourceUrl: offer.url,
+        sourceDomain: 'cuelinks.com',
+        sourceType: 'AFFILIATE_NETWORK',
+        trackingUrl: isMonetizable ? trackingUrl : undefined,
+        affiliateNetwork: isMonetizable ? 'CUELINKS' : undefined,
+        affiliateCampaignId: String(offer.campaign_id),
+        isMonetizable
+      };
+
+      dealCandidates.push(candidate);
+    }
+
+    return dealCandidates;
+  }
+
+  /**
    * Run full Cuelinks autonomous cycle:
    * 1. Auth & Channel verification
    * 2. Campaign discovery
    * 3. Offer discovery & candidate conversion
    * 4. Performance reconciliation
+   * 5. Accurate failure tracking & D1 telemetry persistence (WORKSTREAM D)
    */
   public async syncCuelinks(organizationId: string = 'org_owner_primary', businessId: string = 'biz_platform_aro'): Promise<{
     success: boolean;
     reason?: string;
     status: CuelinksSyncStatus;
     dealCandidates: DealCandidate[];
+    errorClass?: CuelinksErrorClass;
   }> {
     if (!this.client.isConfigured()) {
       this.syncStatus.configured = false;
       this.syncStatus.connected = false;
-      this.syncStatus.status = 'BLOCKED_AUTHORIZATION';
+      this.syncStatus.status = 'BLOCKED_CONFIGURATION';
       this.syncStatus.ownerActionRequired =
         'Provide CUELINKS_API_KEY in environment variables or Render dashboard to enable automated Cuelinks campaign discovery and affiliate link conversion.';
       return {
@@ -129,20 +382,60 @@ export class CuelinksSyncManager {
     }
 
     this.syncStatus.status = 'SYNCING';
-    const dealCandidates: DealCandidate[] = [];
+    let dealCandidates: DealCandidate[] = [];
 
     try {
       // 1. Ping / Connection test
-      const pingRes = await this.client.ping();
-      if (!pingRes.connected) {
+      let pingRes;
+      try {
+        pingRes = await this.client.ping();
+      } catch (pingErr: any) {
+        this.attemptCount++;
+        const errorClass = this.classifyError(pingErr);
+        const { nextRetryAt } = this.calculateBackoffWithJitter(this.attemptCount);
+        const nextStatus: CuelinksSyncStatusCode = (this.attemptCount >= 5 && errorClass === 'AUTH_FAILURE') ? 'FAILED_PERMANENTLY' : 'RETRY_WAIT';
         this.syncStatus.connected = false;
-        this.syncStatus.status = 'BLOCKED_AUTHORIZATION';
+        this.syncStatus.status = nextStatus;
+        this.syncStatus.ownerActionRequired = `Cuelinks authentication failed: ${pingErr.message}. Check CUELINKS_API_KEY.`;
+        this.syncStatus.telemetry = {
+          attemptCount: this.attemptCount,
+          errorClass,
+          lastError: pingErr.message,
+          nextRetryAt,
+          status: nextStatus
+        };
+        await this.persistTelemetryD1(organizationId, businessId, this.syncStatus.telemetry);
+        return {
+          success: false,
+          reason: pingErr.message,
+          status: this.getStatus(),
+          dealCandidates: [],
+          errorClass
+        };
+      }
+
+      if (!pingRes.connected) {
+        this.attemptCount++;
+        const errorClass = this.classifyError(pingRes.message || 'AUTH_FAILURE');
+        const { nextRetryAt } = this.calculateBackoffWithJitter(this.attemptCount);
+        const nextStatus: CuelinksSyncStatusCode = (this.attemptCount >= 5 && errorClass === 'AUTH_FAILURE') ? 'FAILED_PERMANENTLY' : 'RETRY_WAIT';
+        this.syncStatus.connected = false;
+        this.syncStatus.status = nextStatus;
         this.syncStatus.ownerActionRequired = `Cuelinks authentication failed: ${pingRes.message}. Check CUELINKS_API_KEY.`;
+        this.syncStatus.telemetry = {
+          attemptCount: this.attemptCount,
+          errorClass,
+          lastError: pingRes.message,
+          nextRetryAt,
+          status: nextStatus
+        };
+        await this.persistTelemetryD1(organizationId, businessId, this.syncStatus.telemetry);
         return {
           success: false,
           reason: pingRes.message,
           status: this.getStatus(),
-          dealCandidates: []
+          dealCandidates: [],
+          errorClass
         };
       }
 
@@ -175,6 +468,11 @@ export class CuelinksSyncManager {
         console.warn(`[CuelinksSync] Channel inspection notice: ${channelErr.message}`);
       }
 
+      // Track individual phase errors for accurate failure reporting (WORKSTREAM D)
+      let campaignError: any = null;
+      let offerError: any = null;
+      const partialFailureReasons: string[] = [];
+
       // 3. Campaign discovery (Prioritizing India country_id: 252, open access, sorted by EPC)
       let eligibleCampaigns: CuelinksCampaign[] = [];
       try {
@@ -195,101 +493,22 @@ export class CuelinksSyncManager {
         // Persist discovered campaigns to D1
         await this.persistCampaignsD1(organizationId, businessId, eligibleCampaigns);
       } catch (campErr: any) {
-        console.warn(`[CuelinksSync] Campaign search notice: ${campErr.message}`);
+        campaignError = campErr;
+        partialFailureReasons.push(`Campaign search failed: ${campErr.message}`);
+        console.warn(`[CuelinksSync] Campaign search error: ${campErr.message}`);
       }
 
-      // 4. Offer & Deal Discovery across eligible campaigns
+      // 4. Offer discovery across eligible campaigns
       try {
         const offersRes = await this.client.getOffers({ per_page: 30 });
         const rawOffers = offersRes.offers || [];
         this.syncStatus.offersRetrieved = rawOffers.length;
 
-        // Convert candidate offers into normalized DealCandidate format
-        for (const offer of rawOffers) {
-          if (!offer.url || !offer.title) continue;
-
-          // Check if offer's campaign is in eligible campaigns or active
-          const campaign = eligibleCampaigns.find(c => String(c.id) === String(offer.campaign_id));
-          const merchantName = offer.campaign_name || campaign?.merchant_name || campaign?.name || 'Authorized Merchant';
-
-          // Extract pricing or discount
-          let currentPrice = offer.current_price_inr;
-          let refPrice = offer.reference_price_inr;
-          let claimedDiscount = 0;
-
-          if (offer.discount) {
-            const discMatch = offer.discount.match(/(\d+)%/);
-            if (discMatch) {
-              claimedDiscount = Number(discMatch[1]);
-            }
-          }
-
-          if (currentPrice && !refPrice && claimedDiscount > 0 && claimedDiscount < 90) {
-            refPrice = Math.round(currentPrice / (1 - claimedDiscount / 100));
-          } else if (!currentPrice && refPrice && claimedDiscount > 0) {
-            currentPrice = Math.round(refPrice * (1 - claimedDiscount / 100));
-          }
-
-          // Do NOT fabricate prices or discounts. Skip offers lacking a valid positive INR price.
-          if (!currentPrice || currentPrice <= 0) {
-            continue;
-          }
-
-          // Authorize tracked link via convertLink if campaign is eligible
-          let trackingUrl = offer.url;
-          let isMonetizable = false;
-
-          try {
-            const convertRes = await this.client.convertLink({
-              url: offer.url,
-              channel_id: this.syncStatus.channel.id,
-              shorten: true,
-              subid: `aro_cl_${offer.id}`,
-              subid2: String(offer.campaign_id),
-              subid3: 'cuelinks_feed',
-              subid4: 'catalog_v1'
-            });
-
-            // Monetization truth: strictly require affiliated: true before marking eligible to earn commission
-            if (convertRes.affiliated === true && convertRes.tracking_url) {
-              trackingUrl = convertRes.tracking_url;
-              isMonetizable = true;
-              this.syncStatus.linksConverted++;
-            } else {
-              // Record deal as non-monetizable and preserve original direct merchant URL
-              trackingUrl = offer.url;
-              isMonetizable = false;
-            }
-          } catch (convErr: any) {
-            // Keep clean merchant direct link if conversion fails
-            trackingUrl = offer.url;
-            isMonetizable = false;
-          }
-
-          const candidate: DealCandidate = {
-            title: offer.title,
-            brand: merchantName,
-            merchant: merchantName,
-            category: offer.category || 'Retail Deals',
-            productUrl: offer.url,
-            currentPriceINR: currentPrice,
-            referencePriceINR: refPrice,
-            claimedDiscountPercent: claimedDiscount || undefined,
-            couponCode: offer.coupon_code,
-            couponConditions: offer.terms,
-            sourceUrl: offer.url,
-            sourceDomain: 'cuelinks.com',
-            sourceType: 'AFFILIATE_NETWORK',
-            trackingUrl: isMonetizable ? trackingUrl : undefined,
-            affiliateNetwork: isMonetizable ? 'CUELINKS' : undefined,
-            affiliateCampaignId: String(offer.campaign_id),
-            isMonetizable
-          };
-
-          dealCandidates.push(candidate);
-        }
-      } catch (offerErr: any) {
-        console.warn(`[CuelinksSync] Offer retrieval notice: ${offerErr.message}`);
+        dealCandidates = await this.processOffersToCandidates(rawOffers, eligibleCampaigns);
+      } catch (offErr: any) {
+        offerError = offErr;
+        partialFailureReasons.push(`Offer retrieval failed: ${offErr.message}`);
+        console.warn(`[CuelinksSync] Offer retrieval error: ${offErr.message}`);
       }
 
       // 5. Performance reconciliation (Transactions & Reports)
@@ -312,16 +531,6 @@ export class CuelinksSyncManager {
 
         const reportsRes = await this.client.getReports({ per_page: 50 });
         const providerClicks = reportsRes.reports.reduce((acc, r) => acc + (r.clicks || 0), 0);
-        
-        // Strict separation of 8 accounting counters:
-        // 1. Local clicks: locally observed clicks from deal clicks
-        // 2. Provider-attributed clicks: derived from Cuelinks /reports
-        // 3. Reported conversions: derived from Cuelinks /reports (or valid non-rejected transactions if reports empty)
-        // 4. Pending commission: sum of pending transaction amounts in INR
-        // 5. Validated commission: sum of approved transaction amounts in INR
-        // 6. Reversed commission: sum of rejected transaction amounts in INR
-        // 7. Paid commission: sum of paid transaction amounts in INR
-        // 8. Cash received: strictly ₹0.00 until bank statement verified proof
         const reportsConversions = reportsRes.reports.reduce((acc, r) => acc + (r.conversions || 0), 0);
         const reportedConversions = reportsConversions > 0
           ? reportsConversions
@@ -341,12 +550,84 @@ export class CuelinksSyncManager {
         console.warn(`[CuelinksSync] Reconciliation notice: ${recErr.message}`);
       }
 
+      // Determine Sync Outcome (WORKSTREAM D)
+      // Fix failure masking: If campaign search fails OR offer retrieval fails, do NOT report total sync SUCCESS!
+      if (campaignError && offerError) {
+        this.attemptCount++;
+        const primaryError = campaignError || offerError;
+        const errorClass = this.classifyError(primaryError);
+        const { nextRetryAt } = this.calculateBackoffWithJitter(this.attemptCount);
+        const nextStatus: CuelinksSyncStatusCode = (errorClass === 'RATE_LIMITED' || errorClass === 'NETWORK_TIMEOUT' || errorClass === 'PROVIDER_SERVER_ERROR')
+          ? 'RETRY_WAIT'
+          : (this.attemptCount >= 5 ? 'FAILED_PERMANENTLY' : 'RETRY_WAIT');
+
+        this.syncStatus.status = nextStatus;
+        this.syncStatus.ownerActionRequired = `Cuelinks cycle failure: ${primaryError.message}`;
+        this.syncStatus.telemetry = {
+          attemptCount: this.attemptCount,
+          errorClass,
+          lastError: primaryError.message,
+          nextRetryAt,
+          status: nextStatus,
+          partialFailureReasons
+        };
+        await this.persistTelemetryD1(organizationId, businessId, this.syncStatus.telemetry);
+
+        return {
+          success: false,
+          reason: primaryError.message,
+          status: this.getStatus(),
+          dealCandidates: [],
+          errorClass
+        };
+      }
+
+      if (campaignError || offerError) {
+        // Partial success (one succeeded while the other failed)
+        this.attemptCount++;
+        const failingErr = campaignError || offerError;
+        const errorClass = this.classifyError(failingErr);
+        const { nextRetryAt } = this.calculateBackoffWithJitter(this.attemptCount);
+
+        this.syncStatus.status = 'PARTIAL_SUCCESS';
+        this.syncStatus.lastSyncTimestamp = new Date().toISOString();
+        this.syncStatus.ownerActionRequired = `Partial Cuelinks sync: ${partialFailureReasons.join('; ')}`;
+        this.syncStatus.telemetry = {
+          attemptCount: this.attemptCount,
+          errorClass,
+          lastError: failingErr.message,
+          nextRetryAt,
+          status: 'PARTIAL_SUCCESS',
+          partialFailureReasons
+        };
+
+        await this.persistSyncD1(organizationId, businessId);
+        await this.persistTelemetryD1(organizationId, businessId, this.syncStatus.telemetry);
+
+        return {
+          success: false,
+          reason: `PARTIAL_SUCCESS: ${failingErr.message}`,
+          status: this.getStatus(),
+          dealCandidates,
+          errorClass
+        };
+      }
+
+      // Total SUCCESS
+      this.attemptCount = 0;
       this.syncStatus.status = 'SUCCESS';
       this.syncStatus.lastSyncTimestamp = new Date().toISOString();
       this.syncStatus.ownerActionRequired = undefined;
+      this.syncStatus.telemetry = {
+        attemptCount: 0,
+        errorClass: undefined,
+        lastError: undefined,
+        nextRetryAt: undefined,
+        status: 'SUCCESS'
+      };
 
-      // Persist full sync result in D1
       await this.persistSyncD1(organizationId, businessId);
+      await this.persistTelemetryD1(organizationId, businessId, this.syncStatus.telemetry);
 
       return {
         success: true,
@@ -354,15 +635,138 @@ export class CuelinksSyncManager {
         dealCandidates
       };
     } catch (err: any) {
-      this.syncStatus.status = 'ERROR';
+      this.attemptCount++;
+      const errorClass = this.classifyError(err);
+      const { nextRetryAt } = this.calculateBackoffWithJitter(this.attemptCount);
+      const nextStatus: CuelinksSyncStatusCode = (errorClass === 'RATE_LIMITED' || errorClass === 'NETWORK_TIMEOUT' || errorClass === 'PROVIDER_SERVER_ERROR')
+        ? 'RETRY_WAIT'
+        : (this.attemptCount >= 5 ? 'FAILED_PERMANENTLY' : 'RETRY_WAIT');
+
+      this.syncStatus.status = nextStatus;
       this.syncStatus.ownerActionRequired = `Cuelinks cycle failure: ${err.message}`;
+      this.syncStatus.telemetry = {
+        attemptCount: this.attemptCount,
+        errorClass,
+        lastError: err.message,
+        nextRetryAt,
+        status: nextStatus
+      };
+      await this.persistTelemetryD1(organizationId, businessId, this.syncStatus.telemetry);
+
       return {
         success: false,
         reason: err.message,
         status: this.getStatus(),
-        dealCandidates: []
+        dealCandidates: [],
+        errorClass
       };
     }
+  }
+
+  /**
+   * Resumable, bounded paginated Cuelinks sync (WORKSTREAM D).
+   * Traverses campaign and offer pages safely with bounded cursor and maximum page limits.
+   */
+  public async syncCuelinksPaginated(options: CuelinksPaginatedSyncOptions = {}): Promise<CuelinksPaginatedSyncResult> {
+    const orgId = options.organizationId || 'org_owner_primary';
+    const bizId = options.businessId || 'biz_platform_aro';
+    const batchSize = Math.min(Math.max(1, options.batchSize || 30), 100);
+
+    const cursor: CuelinksPaginationCursor = options.cursor ? { ...options.cursor } : {
+      campaignPage: 1,
+      offerPage: 1,
+      hasMoreCampaigns: true,
+      hasMoreOffers: true
+    };
+
+    if (!this.client.isConfigured()) {
+      this.syncStatus.status = 'BLOCKED_CONFIGURATION';
+      return {
+        success: false,
+        status: this.getStatus(),
+        dealCandidates: [],
+        hasMore: false,
+        reason: 'CUELINKS_API_KEY_UNSET'
+      };
+    }
+
+    const allCandidates: DealCandidate[] = [];
+    let campaignPage = cursor.campaignPage;
+    let offerPage = cursor.offerPage;
+    let primaryErrorClass: CuelinksErrorClass | undefined;
+    let hadError = false;
+
+    // 1. Fetch campaigns for this page
+    let eligibleCampaigns: CuelinksCampaign[] = [];
+    try {
+      if (cursor.hasMoreCampaigns) {
+        const campRes = await this.client.searchCampaigns({
+          country_id: 252,
+          access_status: 'open',
+          sort: 'epc_7d',
+          order: 'desc',
+          page: campaignPage,
+          per_page: batchSize
+        });
+
+        eligibleCampaigns = (campRes.campaigns || []).filter(
+          c => c.status === 'active' && (c.access_status === 'open' || c.access_status === 'approved')
+        );
+
+        this.syncStatus.campaignsDiscovered = campRes.total;
+        this.syncStatus.eligibleCampaignsCount = eligibleCampaigns.length;
+
+        cursor.hasMoreCampaigns = (campaignPage * batchSize) < campRes.total;
+        if (cursor.hasMoreCampaigns) {
+          campaignPage++;
+        }
+      }
+    } catch (campErr: any) {
+      hadError = true;
+      primaryErrorClass = this.classifyError(campErr);
+    }
+
+    // 2. Fetch offers for this page
+    try {
+      if (cursor.hasMoreOffers) {
+        const offRes = await this.client.getOffers({
+          page: offerPage,
+          per_page: batchSize
+        });
+
+        cursor.hasMoreOffers = (offerPage * batchSize) < offRes.total;
+        if (cursor.hasMoreOffers) {
+          offerPage++;
+        }
+
+        const candidates = await this.processOffersToCandidates(offRes.offers || [], eligibleCampaigns);
+        allCandidates.push(...candidates);
+      }
+    } catch (offErr: any) {
+      hadError = true;
+      primaryErrorClass = primaryErrorClass || this.classifyError(offErr);
+    }
+
+    const nextCursor: CuelinksPaginationCursor = {
+      campaignPage,
+      offerPage,
+      hasMoreCampaigns: cursor.hasMoreCampaigns,
+      hasMoreOffers: cursor.hasMoreOffers,
+      lastUpdated: new Date().toISOString()
+    };
+
+    const hasMore = Boolean(nextCursor.hasMoreCampaigns || nextCursor.hasMoreOffers);
+    const syncStatus: CuelinksSyncStatusCode = hadError ? 'PARTIAL_SUCCESS' : 'SUCCESS';
+    this.syncStatus.status = syncStatus;
+
+    return {
+      success: !hadError,
+      status: this.getStatus(),
+      dealCandidates: allCandidates,
+      nextCursor: hasMore ? nextCursor : undefined,
+      hasMore,
+      errorClass: primaryErrorClass
+    };
   }
 
   /**
@@ -435,6 +839,54 @@ export class CuelinksSyncManager {
     } catch (err: any) {
       if (!isProduction()) {
         console.warn(`[CuelinksSync] D1 sync persistence notice: ${err.message}`);
+      }
+    }
+  }
+
+  /**
+   * Persist sync telemetry and failure records into D1 workflows table under wf_cuelinks_sync_telemetry (WORKSTREAM D).
+   */
+  public async persistTelemetryD1(
+    organizationId: string,
+    businessId: string,
+    telemetry: CuelinksTelemetryRecord
+  ): Promise<void> {
+    try {
+      const d1Repo = D1RevenueRepository.getInstance();
+      const id = 'wf_cuelinks_sync_telemetry';
+      const sql = `INSERT INTO workflows (
+          id, organization_id, business_id, campaign_id, workflow_type,
+          status, current_step, inputs_json, outputs_json, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        ON CONFLICT(id) DO UPDATE SET
+          status = excluded.status,
+          outputs_json = excluded.outputs_json,
+          updated_at = datetime('now')`;
+      await d1Repo.executeWrite('workflows', sql, [
+        id,
+        organizationId,
+        businessId,
+        'CUELINKS_TELEMETRY',
+        'CUELINKS_SYNC',
+        telemetry.status === 'SUCCESS' ? 'COMPLETED' : (telemetry.status === 'FAILED_PERMANENTLY' ? 'FAILED' : 'BLOCKED'),
+        'TELEMETRY',
+        JSON.stringify({
+          attemptCount: telemetry.attemptCount,
+          errorClass: telemetry.errorClass
+        }),
+        JSON.stringify({
+          errorClass: telemetry.errorClass,
+          attemptCount: telemetry.attemptCount,
+          lastError: telemetry.lastError,
+          nextRetryAt: telemetry.nextRetryAt,
+          status: telemetry.status,
+          partialFailureReasons: telemetry.partialFailureReasons,
+          recordedAt: new Date().toISOString()
+        })
+      ]);
+    } catch (err: any) {
+      if (!isProduction()) {
+        console.warn(`[CuelinksSync] D1 telemetry persistence notice: ${err.message}`);
       }
     }
   }

@@ -5415,6 +5415,7 @@ apiRouter.get('/public/deals', async (c) => {
   const maxPrice = c.req.query('maxPrice') ? Number(c.req.query('maxPrice')) : undefined;
   const verifiedOnly = c.req.query('verifiedOnly') === 'true';
   const hasCoupon = c.req.query('hasCoupon') === 'true';
+  const dealKind = c.req.query('dealKind') as any;
   const sortBy = c.req.query('sortBy') as any;
   const page = c.req.query('page') ? Number(c.req.query('page')) : 1;
   const limit = c.req.query('limit') ? Number(c.req.query('limit')) : 12;
@@ -5428,6 +5429,7 @@ apiRouter.get('/public/deals', async (c) => {
     maxPrice,
     verifiedOnly,
     hasCoupon,
+    dealKind,
     sortBy,
     page,
     limit

@@ -30,6 +30,8 @@ export type DiscountVerificationType =
 
 export type DealAvailability = 'IN_STOCK' | 'LIMITED_STOCK' | 'OUT_OF_STOCK' | 'UNKNOWN';
 
+export type DealKind = 'PRODUCT' | 'COUPON';
+
 export interface DealSourceRecord {
   id: string;
   domain: string;
@@ -44,13 +46,22 @@ export interface DealSourceRecord {
   trustScore: number;            // 0 to 100
   lastScanAt?: string;
   lastAttemptAt?: string;
+  lastSuccessAt?: string;
   scanFrequencyHours: number;
   lastHttpStatus?: number;
+  lastError?: string;
+  offersCollected?: number;
   totalOffersFound: number;
   totalOffersRejected: number;
   failureCount: number;
   nextRetryAt?: string;
   exclusionReason?: string;
+}
+
+export interface CuelinksPaginationCursor {
+  campaignPage: number;
+  offerPage: number;
+  lastUpdated: string;
 }
 
 export interface DiscoveredDealInput {
@@ -59,9 +70,12 @@ export interface DiscoveredDealInput {
   merchant: string;
   category: string;
   productUrl: string;
-  currentPriceINR: number;
+  currentPriceINR?: number;
+  dealKind?: DealKind;
+  discountBadge?: string;
   referencePriceINR?: number;
   claimedDiscountPercent?: number;
+  discountVerificationType?: DiscountVerificationType;
   couponCode?: string;
   couponConditions?: string;
   availability?: DealAvailability;
@@ -86,12 +100,14 @@ export type DealCandidate = DiscoveredDealInput;
 
 export interface NormalizedDeal {
   id: string;
+  dealKind?: DealKind;
+  discountBadge?: string;
   title: string;
   brand: string;
   merchant: string;
   category: string;
   productUrl: string;
-  currentPriceINR: number;
+  currentPriceINR?: number;
   currency: 'INR';
   referencePriceINR?: number;
   claimedDiscountPercent?: number;
@@ -139,6 +155,7 @@ export interface DealQueryParams {
   maxPrice?: number;
   verifiedOnly?: boolean;
   hasCoupon?: boolean;
+  dealKind?: 'ALL' | 'PRODUCT' | 'COUPON';
   sortBy?: 'buyer_value' | 'freshness' | 'price_asc' | 'discount';
   page?: number;
   limit?: number;

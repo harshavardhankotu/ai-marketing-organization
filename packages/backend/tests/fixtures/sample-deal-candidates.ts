@@ -135,6 +135,62 @@ export const SAMPLE_DEAL_CANDIDATES_FIXTURE: DiscoveredDealInput[] = [
   }
 ];
 
+export const SAMPLE_COUPON_CANDIDATES_FIXTURE: DiscoveredDealInput[] = [
+  {
+    title: 'Swiggy Gourmet Feast Coupon - Flat 50% Off',
+    brand: 'Swiggy',
+    merchant: 'Swiggy India',
+    category: 'Food & Dining',
+    productUrl: 'https://www.swiggy.com/restaurants',
+    dealKind: 'COUPON',
+    couponCode: 'FEAST50',
+    couponConditions: 'Flat 50% off up to ₹150 on min order ₹299',
+    availability: 'IN_STOCK',
+    geographicRestrictions: ['India'],
+    offerStart: new Date(Date.now() - 86400000).toISOString(),
+    expiryDate: new Date(Date.now() + 7 * 86400000).toISOString(),
+    sourceUrl: 'https://www.desidime.com/coupons/swiggy-feast-50',
+    sourceDomain: 'desidime.com',
+    sourceType: 'PUBLIC_DEAL_FEED'
+  },
+  {
+    title: 'Ajio All Stars Sale Coupon - Flat ₹500 Off',
+    brand: 'Ajio',
+    merchant: 'Ajio India',
+    category: 'Fashion & Lifestyle',
+    productUrl: 'https://www.ajio.com/c/all-stars-sale',
+    dealKind: 'COUPON',
+    couponCode: 'ALLSTAR500',
+    couponConditions: 'Flat ₹500 off on minimum order value ₹1990',
+    availability: 'IN_STOCK',
+    geographicRestrictions: ['India'],
+    offerStart: new Date(Date.now() - 86400000).toISOString(),
+    expiryDate: new Date(Date.now() + 14 * 86400000).toISOString(),
+    sourceUrl: 'https://www.desidime.com/coupons/ajio-all-star-sale',
+    sourceDomain: 'desidime.com',
+    sourceType: 'PUBLIC_DEAL_FEED'
+  },
+  {
+    title: 'Zoho Workplace Annual Subscription Promotion',
+    brand: 'Zoho',
+    merchant: 'Zoho India',
+    category: 'SaaS & Business Software',
+    productUrl: 'https://www.zoho.com/workplace/special-offer',
+    dealKind: 'COUPON',
+    couponConditions: '20% off on all annual business plans with free custom domain configuration',
+    availability: 'IN_STOCK',
+    geographicRestrictions: ['India'],
+    offerStart: new Date(Date.now() - 86400000).toISOString(),
+    sourceUrl: 'https://www.zoho.com/workplace/promotions',
+    sourceDomain: 'zoho.com',
+    sourceType: 'RETAILER_BRAND'
+  }
+];
+
 export const getSampleDealCandidatesFixture = (): DiscoveredDealInput[] => {
   return JSON.parse(JSON.stringify(SAMPLE_DEAL_CANDIDATES_FIXTURE));
+};
+
+export const getSampleCouponCandidatesFixture = (): DiscoveredDealInput[] => {
+  return JSON.parse(JSON.stringify(SAMPLE_COUPON_CANDIDATES_FIXTURE));
 };

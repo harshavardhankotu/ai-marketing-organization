@@ -111,6 +111,34 @@ describe('7-Stage Evidence-Based Commercial Funnel (Spec §§ 1–15)', () => {
       expect(funnel.cashReceivedINR).toBe(0);
     });
 
+    it('records Stage 3 (DEAL CLICK) beacon for deals with promo codes and conditions', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+      const res = await engine.ingestAndVerifyDeal({
+        title: 'Swiggy Gourmet Membership Promo',
+        brand: 'Swiggy',
+        merchant: 'Swiggy India',
+        category: 'Food & Dining',
+        productUrl: 'https://www.swiggy.com/gourmet-deals',
+        currentPriceINR: 149,
+        couponCode: 'GOURMET120',
+        couponConditions: 'Flat ₹120 off on orders above ₹499',
+        sourceUrl: 'https://www.swiggy.com',
+        sourceDomain: 'swiggy.com',
+        sourceType: 'RETAILER_BRAND'
+      }, orgId, bizId);
+
+      expect(res.deal).toBeDefined();
+      expect(res.deal?.couponCode).toBe('GOURMET120');
+
+      const initialClicks = engine.getSevenStageFunnel().dealCardClicks;
+      const clickRes = engine.recordDealClick(res.deal!.id, { ip: '203.0.113.55' });
+      expect(clickRes.success).toBe(true);
+
+      const funnel = engine.getSevenStageFunnel();
+      expect(funnel.dealCardClicks).toBe(initialClicks + 1);
+      expect(funnel.cashReceivedINR).toBe(0);
+    });
+
     it('records Stage 4 (PROVIDER CLICK) strictly from provider reports without altering local click counts', () => {
       const engine = AutonomousDealDiscoveryEngine.getInstance();
       const cuelinks = CuelinksSyncManager.getInstance();

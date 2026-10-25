@@ -58,6 +58,32 @@ describe('Structured Growth Experiment Tracking Model (Spec §§ 1–15)', () =>
       expect(retrieved).toBeDefined();
       expect(retrieved?.title).toBe('Lenovo Student ID Discount Verification Badge');
     });
+
+    it('creates a coupon-only promo code copy experiment targeting discount voucher cards', () => {
+      const tracker = GrowthExperimentTracker.getInstance();
+
+      const couponExp = tracker.createExperiment({
+        organizationId: orgId,
+        businessId: bizId,
+        title: 'Instant One-Click Copy Button vs Inline Code Text',
+        hypothesis: 'Providing an instant copy feedback button on coupon cards will increase promo redemption CTR by >= 25%.',
+        changeTested: {
+          changeType: 'PROMO_CODE_EXPOSURE',
+          description: 'Instant copy button on coupon voucher card vs standard static text display',
+          baselineConfig: { copyButton: false, cardType: 'COUPON' },
+          treatmentConfig: { copyButton: true, cardType: 'COUPON' }
+        },
+        targetCategories: ['Food & Dining', 'Fashion & Apparel'],
+        targetCampaignIds: ['swiggy_gourmet', 'myntra_fashion'],
+        targetMerchants: ['Swiggy India', 'Myntra'],
+        minimumEvidenceRequirement: 60
+      });
+
+      expect(couponExp.id).toBeDefined();
+      expect(couponExp.changeTested.changeType).toBe('PROMO_CODE_EXPOSURE');
+      expect(couponExp.changeTested.baselineConfig.cardType).toBe('COUPON');
+      expect(couponExp.status).toBe('ACTIVE');
+    });
   });
 
   describe('2. Multi-Cycle 6-Hour Commercial Observations', () => {
