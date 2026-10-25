@@ -418,10 +418,10 @@ export class ContentAssetEngine {
         );
       } catch {}
 
-      if (!existing) {
-        const db = getDb();
-        const localGuide = db.prepare('SELECT * FROM commission_content_assets WHERE slug = ?').get(slug) as any;
-        if (localGuide) {
+      const db = getDb();
+      const localGuide = db.prepare('SELECT * FROM commission_content_assets WHERE slug = ?').get(slug) as any;
+      if (localGuide) {
+        if (!existing) {
           const insertSql = `
             INSERT INTO commission_content_assets (
               id, organization_id, slug, asset_type, title, category, location, intent_target,
@@ -450,6 +450,21 @@ export class ContentAssetEngine {
           ];
           await this.d1Repo.executeWrite('commission_content_assets', insertSql, params);
           console.log(`[Content Gate] Baseline guide '${slug}' synchronized to Cloudflare D1.`);
+        } else {
+          // Keep Cloudflare D1 content in sync with enhanced/corrected guide content
+          const updateSql = `
+            UPDATE commission_content_assets SET
+              title = ?, content_markdown = ?, disclosure_markdown = ?,
+              updated_at = datetime('now')
+            WHERE slug = ?
+          `;
+          await this.d1Repo.executeWrite('commission_content_assets', updateSql, [
+            localGuide.title,
+            localGuide.content_markdown,
+            localGuide.disclosure_markdown,
+            slug
+          ]);
+          console.log(`[Content Gate] Baseline guide '${slug}' updated in Cloudflare D1.`);
         }
       }
     } catch (err: any) {

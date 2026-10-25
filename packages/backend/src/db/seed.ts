@@ -6,6 +6,65 @@ export interface SeedOptions {
   withTestFixtures?: boolean;
 }
 
+export const BASELINE_STUDENT_FLIGHT_GUIDE = {
+  id: 'guide_student_flights_2026',
+  organizationId: 'org_owner_primary',
+  slug: 'student-flight-discounts-india',
+  assetType: 'BUYING_GUIDE',
+  title: 'Student Air Travel Discounts & Baggage Allowances Guide (India 2026)',
+  category: 'Travel & Hospitality',
+  location: 'India',
+  intentTarget: 'Indian students, university scholars, and competitive exam test-takers seeking genuine airline concessions',
+  contentMarkdown: `# Student Air Travel Discounts & Baggage Allowances Guide (India 2026)
+
+Travelling between university campus, hometown, and competitive examination centres across India can become a major financial burden for students. Fortunately, major Indian domestic carriers offer structured student fare concessions and additional complimentary baggage allowances.
+
+## Official Airline Student Concession Rules (2026)
+
+### 1. Air India Express
+* **Base Fare Concession:** Up to 10% concession on standard domestic base fares for eligible student fare classes.
+* **Extra Baggage Allowance:** 10 kg complimentary check-in baggage on domestic sectors (Total: 25 kg vs 15 kg standard).
+* **Booking Channel:** Must select 'Student' fare category during flight search on the official booking portal.
+* **Eligibility:** Full-time students enrolled in a recognized school, college, or university in India, aged 12 years and above.
+* **Booking Link:** [Book Student Fares on Air India Express](https://clnk.in/DKRM)
+
+### 2. IndiGo (6E)
+* **Base Fare Concession:** Up to 6% off base fare on select domestic bookings.
+* **Complimentary Baggage:** Additional 10 kg check-in baggage allowance (Total: 25 kg check-in luggage vs standard 15 kg).
+* **Airport Counter Verification:** Mandatory original physical student photo ID with valid academic year/expiry date.
+* **Eligibility:** Valid for students enrolled in accredited Indian schools, colleges, or universities aged 12+.
+
+### 3. SpiceJet
+* **Base Fare Concession:** Up to 10% off base fares for domestic travel.
+* **Extra Baggage:** 10 kg additional check-in luggage at zero extra cost (Total: 25 kg).
+* **Advance Booking:** Concession applies strictly on bookings confirmed prior to airport counter arrival.
+
+### 4. Akasa Air
+* **Base Fare Concession:** Up to 7% off base fares on Saver and Flexi fare categories.
+* **Extra Baggage:** 10 kg complimentary extra check-in baggage (Total: 25 kg).
+* **Eligibility:** Full-time enrolled students aged 12 years and above with valid institutional credentials.
+
+### Flight Search & Price Comparison
+When comparing multi-airline student routes or booking connecting domestic flights across carriers:
+* **Comparison Portal:** [Compare Student Flights on Cleartrip](https://clnk.in/DKRN)
+
+## Critical Check-in & Verification Rules (Avoid Penalties)
+
+1. **Mandatory Physical Student ID:** You must carry your original, valid Student ID card issued by your school, college, or university with a clear photo, course name, and valid expiry date. Note on digital credentials: While DigiLocker is recognized by CISF at security checkpoints for identity (Aadhaar/DL), airline counter staff for student tariff audit strictly require physical institutional IDs or official ABC/APAAR accredited credentials. Phone photos or unverified app logins are routinely rejected.
+2. **Airport Penalty for Missing ID:** If you cannot produce valid student credentials at the check-in desk, airlines will forfeit the concession and charge the standard counter walk-up fare difference along with standard excess baggage rates (typically ₹500–₹550 per kg for the extra 10 kg = ₹5,000+ penalty).
+3. **Carry-on Baggage:** Concessions apply to check-in baggage only. The standard 7 kg cabin baggage limit applies to all passenger categories.
+4. **Base Fare vs Taxes:** Concessions apply exclusively to the base fare component, not to passenger service fees (PSF), user development fees (UDF), fuel charges, or GST.
+
+## Best Practices for Booking Student Flights
+
+* **Compare Flash Sales:** On high-density short-haul routes (e.g. Delhi-Mumbai, Bengaluru-Hyderabad), promotional flash sales may offer lower net total pricing than base-fare concessions. Always compare total checkout amounts.
+* **Name Match:** Ensure your name on the flight booking matches both your Student ID and your government photo ID (Aadhaar or Passport) exactly.
+* **Semester Rush:** Seat quotas allocated to student tariff classes are limited per flight; book early during semester-end breaks to secure allocations.`,
+  disclosureMarkdown: 'Affiliate Disclosure: This guide contains verified affiliate links to partner travel booking platforms (Air India Express and Cleartrip). When you make a booking through these links, we may earn an affiliate commission at zero additional cost to you. We maintain strict editorial independence and never charge users fees or alter airline fare rules.',
+  status: 'PUBLISHED',
+  disclosureVersion: '2026.1'
+};
+
 /**
  * Initializes the database with core multi-tenant infrastructure:
  * 1. Default Organization
@@ -103,56 +162,23 @@ export function seedDatabase(options: SeedOptions = {}): void {
           status, view_count, referral_click_count, quality_gate_json, disclosure_version
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
-        'guide_student_flights_2026',
-        'org_owner_primary',
-        'student-flight-discounts-india',
-        'BUYING_GUIDE',
-        'Student Air Travel Discounts & Baggage Allowances Guide (India 2026)',
-        'Travel & Hospitality',
-        'India',
-        'Indian students, university scholars, and competitive exam test-takers seeking genuine airline concessions',
-        `# Student Air Travel Discounts & Baggage Allowances Guide (India 2026)
-
-Travelling between university campus, hometown, and competitive examination centres across India can become a major financial hurdle for students. Fortunately, major Indian domestic carriers offer structured student fare concessions and additional baggage allowances.
-
-## Official Airline Student Concession Rules (2026)
-
-### 1. Air India Express
-* **Base Fare Concession:** Up to 10% concession on standard domestic base fares.
-* **Extra Baggage Allowance:** 10 kg complimentary check-in baggage on domestic sectors (Total: 25 kg vs 15 kg standard).
-* **Booking Channel:** Official web portal or authorized travel aggregators with Student concession category selected.
-* **Eligibility:** Full-time students enrolled in a recognized university or educational institution in India, aged 12 years and above.
-
-### 2. IndiGo (6E)
-* **Base Fare Concession:** Up to 6% off base fare on select domestic bookings.
-* **Complimentary Baggage:** Additional 10 kg check-in baggage allowance (Total: 25 kg check-in baggage).
-* **Airport Counter Verification:** Mandatory physical or DigiLocker-verified student photo identification card at check-in.
-* **Eligibility:** Valid for students enrolled in accredited Indian schools, colleges, or universities.
-
-### 3. SpiceJet
-* **Base Fare Concession:** Up to 10% off base fares for domestic travel.
-* **Extra Baggage:** 10 kg additional check-in luggage at zero extra cost.
-* **Advance Booking:** Concession applies strictly on bookings confirmed prior to airport counter arrival.
-
-## Critical Check-in & Verification Rules
-
-1. **Mandatory Student ID:** You must carry your original, valid Student ID card issued by your school, college, or university with a clear expiry date or academic year stamp. DigiLocker cards are accepted by domestic carriers in accordance with DGCA guidelines.
-2. **Airport Penalty for Missing ID:** If you cannot produce valid student credentials at the check-in desk, airlines will forfeit the concession and charge the standard counter walk-up fare difference along with normal excess baggage rates.
-3. **Carry-on Baggage:** Concession applies to check-in baggage only. Standard 7 kg cabin baggage limit applies to all passenger categories.
-
-## Best Practices for Booking Student Flights
-
-* Always compare the student discounted fare with promotional web sale fares; on short-haul routes, flash sales may offer lower net total pricing than base-fare concessions.
-* Verify whether your student ID includes your full name matching your government photo ID (Aadhaar or Passport).
-* Book round-trip tickets during semester breaks to secure seat quotas before concession allocations exhaust.`,
+        BASELINE_STUDENT_FLIGHT_GUIDE.id,
+        BASELINE_STUDENT_FLIGHT_GUIDE.organizationId,
+        BASELINE_STUDENT_FLIGHT_GUIDE.slug,
+        BASELINE_STUDENT_FLIGHT_GUIDE.assetType,
+        BASELINE_STUDENT_FLIGHT_GUIDE.title,
+        BASELINE_STUDENT_FLIGHT_GUIDE.category,
+        BASELINE_STUDENT_FLIGHT_GUIDE.location,
+        BASELINE_STUDENT_FLIGHT_GUIDE.intentTarget,
+        BASELINE_STUDENT_FLIGHT_GUIDE.contentMarkdown,
         null,
         '[]',
-        'Affiliate Disclosure: We believe in complete editorial independence and transparency. When you book flights or explore travel services through links on this platform, we may earn an affiliate commission at no extra cost to you. We never charge users fees or invent promotional discounts.',
-        'PUBLISHED',
+        BASELINE_STUDENT_FLIGHT_GUIDE.disclosureMarkdown,
+        BASELINE_STUDENT_FLIGHT_GUIDE.status,
         0,
         0,
         JSON.stringify({ verifiedSources: ['DGCA', 'Air India Express Official Policies', 'IndiGo Student Tariff Rules'], reviewHorizonDays: 7, lastAuditedAt: '2026-10-25' }),
-        '2026.1'
+        BASELINE_STUDENT_FLIGHT_GUIDE.disclosureVersion
       );
     } catch {}
   }

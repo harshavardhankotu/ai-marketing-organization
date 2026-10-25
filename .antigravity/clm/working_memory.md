@@ -1,26 +1,26 @@
 # CLM SYSTEM WORKING MEMORY
 
 ## 🎯 Global Objective
-Earn first genuine provider-attributed commission via high-intent organic distribution without paid ads, fake traffic, or inflated claims.
+Acquire first genuine external visitors and provider-attributed affiliate click through compliant, zero-paid-ad student travel funnel.
 
 ## 🗺️ Codebase Footprint
 - **Key Modules:**
-  - `packages/backend/src/commission/cuelinks-v3-client.ts` (strict HTTPS, no credentials, short_url sanitization)
-  - `packages/backend/src/commission/cuelinks-sync-manager.ts` (purged raw shortcut; fail-closed link conversion)
-  - `packages/backend/src/commission/autonomous-deal-discovery-engine.ts` (validated final URL, stock availability 'UNKNOWN')
-  - `packages/backend/src/commission/autonomous-commercial-engine.ts` (lock namespaced `comm_${businessId}`, NO_ACTION_DUE)
+  - `packages/backend/src/commission/static-site-generator.ts` (custom travel disclosure, sponsored nofollow affiliate styling, UTM beacon script)
+  - `packages/backend/src/db/seed.ts` (verified airline concession claims, physical ID rules, Air India Express & Cleartrip tracking links)
+  - `packages/backend/src/commission/content-asset-engine.ts` (D1 baseline guide content sync)
+  - `packages/backend/src/routes/api.ts` (separate measurement of sessions, local click beacons, and provider reconciliation)
 - **Core Dependencies:** Cloudflare D1/SQLite, Cuelinks V3 (Channel 331585, Publisher 281897), Render, Cloudflare Worker, Firebase
 
 ## 📊 Active State Scoreboard
-- [x] P1 Tracking URL Security — HTTPS strictly enforced, credentials & non-standard ports rejected, safe short_url fallback
-- [x] P1 Feed Monetization Gate — Raw offer.tracking_url shortcut eliminated from cuelinks-sync-manager; convertLink required
-- [x] P1 Feed Stock Honesty — Changed default availability from 'IN_STOCK' to 'UNKNOWN' for third-party affiliate feeds
-- [x] P1 Commercial Engine Isolation — Namespaced lock to comm_${businessId} and report NO_ACTION_DUE on empty runs
-- [x] P2 Category Scorecard & Gold/Silver Deferral — Live merchant access audited; gold/silver deferred due to regulatory & access constraints
-- [x] P2 Zero-Cost Distribution Sprint — Prepared compliant, share-ready distribution copy with privacy-safe UTM tags
+- [x] P1 Tracking Destination Verification — Validated Air India Express (`clnk.in/DKRM`) and Cleartrip (`clnk.in/DKRN`) end-to-end with subid attribution
+- [x] P1 Guide Claims Verification — Corrected airline concession terms, added physical ID penalty warning, and added verified outbound affiliate links
+- [x] P1 Guide Rendering Hardening — Replaced hardcoded Amazon disclosure with travel disclosure, added sponsored nofollow, and injected UTM session beacon
+- [x] P1 D1 Baseline Synchronization — Updated syncBaselineAssetsAsync to sync enhanced guide content to Cloudflare D1 on deployment
+- [x] P2 Experiment Selection — Selected Student Travel & Concession Funnel (₹168.75/sale Air India Express + ₹67.50/sale Cleartrip)
+- [x] P2 Analytics & GSC Status — Documented exact owner action for Search Console HTML tag verification; zero false claims
 
 ## 📉 Compressed Context & Diagnostics
-- Base Main SHA: `f5c4dbdd89c4f4ad3e773a9f9e539fb88fb2534d` | Feature Branch: `feat/revenue-engine-v2-7-conversion-sprint`
-- Live Cuelinks Truth (30d): Clicks 0, Conversions 0, Commission ₹0.00, Bank Cash ₹0.00 (API verified)
-- Security & Regression Tests: 100% pass across Cuelinks client, sync manager, discovery engine, and commercial engine
-- Next Action: Commit changes, open PR, verify CI, merge to main, and verify production deployment
+- Base Main SHA: `8c204f2` | Feature Branch: `feat/revenue-engine-v2-8-real-traffic-sprint`
+- Live Cuelinks Truth (30d): Clicks 0, Conversions 0, Commission ₹0.00, Bank Cash ₹0.00 (Zero self-clicks; verified honest)
+- Tests: 54/54 passing across traffic sprint, v2.7 verification, rules, and intake suites; typecheck & linters green
+- Next Action: Commit changes, open PR, verify CI, merge to main, verify production deployment, and write V2.8 delivery report

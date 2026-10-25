@@ -326,6 +326,19 @@ export class StaticSiteGenerator {
     const canonicalUrl = `${config.siteUrl}/guides/${guide.slug}`;
     const fullBody = guide.content_markdown || guide.contentMarkdown || guide.body_markdown || guide.body || '';
 
+    let disclosureText = 'As an Amazon Associate I earn from qualifying purchases. We do not test products or show prices; check current details on Amazon.in.';
+    if (
+      guide.disclosure_markdown &&
+      guide.disclosure_markdown !== 'Disclosure: We may earn a referral commission at no additional cost to you when you purchase through our links.' &&
+      !guide.disclosure_markdown.includes('Amazon Associate')
+    ) {
+      disclosureText = guide.disclosure_markdown;
+    } else if (guide.disclosureMarkdown && !guide.disclosureMarkdown.includes('Amazon Associate')) {
+      disclosureText = guide.disclosureMarkdown;
+    } else if (guide.slug === 'student-flight-discounts-india' || fullBody.includes('clnk.in') || fullBody.includes('linksredirect.com')) {
+      disclosureText = 'Affiliate Disclosure: This guide contains verified affiliate links to partner travel booking platforms (Air India Express and Cleartrip). When you make a booking through these links, we may earn an affiliate commission at zero additional cost to you. We maintain strict editorial independence and never charge users fees or alter airline fare rules.';
+    }
+
     // Convert basic markdown to clean HTML
     const formattedBody = this.markdownToHtml(fullBody);
 
@@ -391,7 +404,7 @@ export class StaticSiteGenerator {
   </header>
   <main>
     <aside class="disclosure-box" aria-label="Affiliate Disclosure">
-      <strong>Disclosure:</strong> As an Amazon Associate I earn from qualifying purchases. We do not test products or show prices; check current details on Amazon.in.
+      <strong>Disclosure:</strong> ${this.escapeHtml(disclosureText)}
     </aside>
     <article class="content">
       <h1>${this.escapeHtml(title)}</h1>
@@ -415,6 +428,40 @@ export class StaticSiteGenerator {
     </nav>
     <p>&copy; ${new Date().getFullYear()} ${this.escapeHtml(config.siteName)}. All rights reserved.</p>
   </footer>
+  <script>
+  (function() {
+    try {
+      var p = new URLSearchParams(window.location.search);
+      var src = p.get('utm_source');
+      var med = p.get('utm_medium');
+      var cmp = p.get('utm_campaign');
+      var cnt = p.get('utm_content');
+      if (src || cmp || document.referrer) {
+        var payload = {
+          businessId: 'biz_platform_aro',
+          landingPage: window.location.pathname,
+          referrer: document.referrer || '',
+          utmSource: src || undefined,
+          utmMedium: med || undefined,
+          utmCampaign: cmp || undefined,
+          utmContent: cnt || undefined,
+          visitorId: 'vis_' + Math.random().toString(36).substring(2, 10),
+          sessionId: 'ses_' + Math.random().toString(36).substring(2, 10)
+        };
+        if (navigator.sendBeacon) {
+          navigator.sendBeacon('/api/v1/organic/sessions', new Blob([JSON.stringify(payload)], { type: 'application/json' }));
+        } else {
+          fetch('/api/v1/organic/sessions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            keepalive: true
+          }).catch(function() {});
+        }
+      }
+    } catch (e) {}
+  })();
+  </script>
 </body>
 </html>`;
   }
@@ -793,11 +840,15 @@ export class StaticSiteGenerator {
     if (!md) return '';
 
     // Convert markdown links [Text](URL) -> <a href="URL" ...>Text</a>
-    // For Amazon links, ensure target="_blank" rel="sponsored nofollow noopener"
+    // For affiliate/sponsored links (Cuelinks, Amazon, redirects), ensure target="_blank" rel="sponsored nofollow noopener" and button class
     let html = md.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, text, url) => {
-      const isAmazon = url.includes('amazon.in');
-      const rel = isAmazon ? 'sponsored nofollow noopener' : 'noopener noreferrer';
-      const className = isAmazon ? ' class="affiliate-link"' : '';
+      const isAffiliate =
+        url.includes('amazon.in') ||
+        url.includes('clnk.in') ||
+        url.includes('linksredirect.com') ||
+        url.includes('/r/');
+      const rel = isAffiliate ? 'sponsored nofollow noopener' : 'noopener noreferrer';
+      const className = isAffiliate ? ' class="affiliate-link"' : '';
       return `<a href="${this.escapeHtml(url)}" target="_blank" rel="${rel}"${className}>${this.escapeHtml(text)}</a>`;
     });
 
