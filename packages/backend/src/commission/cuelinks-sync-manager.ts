@@ -333,19 +333,15 @@ export class CuelinksSyncManager {
 
       // Rule: Require explicit provider confirmation (affiliated: true AND allowlisted tracking domain)
       // before classifying a link as monetizable. Preserve direct merchant links when affiliated: false.
+      // Strict conversion gate: Never shortcut or trust raw unverified offer.tracking_url!
       let trackingUrl = merchantUrl;
       let isMonetizable = false;
-
-      if (offer.tracking_url && CuelinksV3Client.isAllowedTrackingUrl(offer.tracking_url)) {
-        trackingUrl = offer.tracking_url;
-        isMonetizable = true;
-      }
 
       if (this.client.isConfigured()) {
         try {
           const convertRes = await this.client.convertLink({
             url: merchantUrl,
-            channel_id: this.syncStatus.channel.id,
+            channel_id: this.syncStatus.channel?.id,
             shorten: true,
             subid: `aro_cl_${offer.id}`,
             subid2: String(offer.campaign_id),
@@ -353,22 +349,22 @@ export class CuelinksSyncManager {
             subid4: 'catalog_v2'
           });
 
+          const candidateUrl = convertRes.short_url || convertRes.tracking_url;
           if (
             convertRes.affiliated === true &&
-            convertRes.tracking_url &&
-            CuelinksV3Client.isAllowedTrackingUrl(convertRes.tracking_url)
+            candidateUrl &&
+            CuelinksV3Client.isAllowedTrackingUrl(candidateUrl)
           ) {
-            trackingUrl = convertRes.short_url || convertRes.tracking_url;
+            trackingUrl = candidateUrl;
             isMonetizable = true;
             this.syncStatus.linksConverted++;
           } else {
             trackingUrl = merchantUrl;
             isMonetizable = false;
           }
-        } catch (convErr: any) {
-          if (!isMonetizable) {
-            trackingUrl = merchantUrl;
-          }
+        } catch {
+          trackingUrl = merchantUrl;
+          isMonetizable = false;
         }
       }
 

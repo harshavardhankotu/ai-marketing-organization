@@ -152,7 +152,7 @@ export class AutonomousCommercialEngine {
     businessId: string = OwnerAuthService.PLATFORM_BUSINESS_ID
   ): Promise<{
     cycleId: string;
-    status: 'COMPLETED' | 'BLOCKED' | 'PARTIAL' | 'ERROR';
+    status: 'COMPLETED' | 'BLOCKED' | 'PARTIAL' | 'NO_ACTION_DUE' | 'ERROR';
     tasksProcessed: number;
     tasksCompleted: number;
     activeBlockers: number;
@@ -161,8 +161,10 @@ export class AutonomousCommercialEngine {
     const cycleId = `comm_cycle_${Date.now()}`;
     const startMs = Date.now();
 
-    // SPEC § 21 / Mission § 9: Concurrency lock — prevent simultaneous runs
-    const lock = await BusinessAutonomyLock.tryAcquireAsync(businessId, cycleId);
+    // SPEC § 21 / Mission § 9: Concurrency lock — prevent simultaneous commercial engine runs
+    // Namespaced to comm_${businessId} so CommercialEngine never collides with general ARO orchestration runs
+    const commercialLockKey = `comm_${businessId}`;
+    const lock = await BusinessAutonomyLock.tryAcquireAsync(commercialLockKey, cycleId);
     if (!lock.acquired) {
       console.warn(`[CommercialEngine] ${lock.reason}. Halting cycle.`);
       return {
@@ -267,15 +269,26 @@ export class AutonomousCommercialEngine {
       this.lastCycleTimestamp = new Date().toISOString();
       this.lastCycleId = cycleId;
       this.lastCycleDurationMs = Date.now() - startMs;
-      this.lastCycleStatus = tasksCompleted > 0 ? 'COMPLETED' : 'PARTIAL';
-
       const blockersCount = existingTasks.filter(t => t.status === 'BLOCKED').length;
 
-      console.log(`[CommercialEngine] Cycle ${cycleId} finished in ${this.lastCycleDurationMs}ms (processed: ${tasksProcessed}, completed: ${tasksCompleted}, blocked: ${blockersCount})`);
+      let cycleStatus: 'COMPLETED' | 'BLOCKED' | 'PARTIAL' | 'NO_ACTION_DUE';
+      if (blockersCount > 0 && tasksCompleted === 0) {
+        cycleStatus = 'BLOCKED';
+      } else if (tasksCompleted > 0) {
+        cycleStatus = 'COMPLETED';
+      } else if (tasksProcessed > 0) {
+        cycleStatus = 'PARTIAL';
+      } else {
+        cycleStatus = 'NO_ACTION_DUE';
+      }
+
+      this.lastCycleStatus = cycleStatus;
+
+      console.log(`[CommercialEngine] Cycle ${cycleId} finished in ${this.lastCycleDurationMs}ms (status: ${cycleStatus}, processed: ${tasksProcessed}, completed: ${tasksCompleted}, blocked: ${blockersCount})`);
 
       return {
         cycleId,
-        status: blockersCount > 0 && tasksCompleted === 0 ? 'BLOCKED' : 'COMPLETED',
+        status: cycleStatus,
         tasksProcessed,
         tasksCompleted,
         activeBlockers: blockersCount,
@@ -297,7 +310,7 @@ export class AutonomousCommercialEngine {
         details: fatalErr.message
       };
     } finally {
-      await BusinessAutonomyLock.releaseAsync(businessId, cycleId);
+      await BusinessAutonomyLock.releaseAsync(commercialLockKey, cycleId);
     }
   }
 

@@ -270,12 +270,27 @@ export class CuelinksV3Client {
 
   /**
    * Validates whether a candidate tracking URL is a valid, safe, and allowlisted tracking URL.
+   * Strictly enforces:
+   * 1. Protocol must be HTTPS (reject unencrypted plain HTTP)
+   * 2. No embedded user credentials (username/password)
+   * 3. No non-standard ports
+   * 4. Safe public destination under SSRF policy
+   * 5. Allowlisted tracking domain (clnk.in, *.clnk.in, linksredirect.com, *.linksredirect.com)
    */
   public static isAllowedTrackingUrl(urlStr: string): boolean {
     if (!urlStr || typeof urlStr !== 'string') return false;
     try {
       const parsed = new URL(urlStr.trim());
-      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      // Enforce HTTPS strictly for affiliate tracking URLs
+      if (parsed.protocol !== 'https:') {
+        return false;
+      }
+      // Reject URLs with embedded credentials to prevent credential leaking or user confusion
+      if (parsed.username || parsed.password) {
+        return false;
+      }
+      // Reject non-standard ports
+      if (parsed.port && parsed.port !== '443' && parsed.port !== '') {
         return false;
       }
       const ssrf = DealSsrfGuard.isSafePublicUrl(urlStr);
@@ -589,20 +604,31 @@ export class CuelinksV3Client {
 
     // 3. Handle envelope { data: { ... } }, flat { short_url: ... }, or malformed null/undefined
     const result = (res && typeof res === 'object') ? (res.data || res) : {};
-    const candidateTrackingUrl = result.short_url || result.url || result.tracking_url;
 
-    // 4. Domain safety guard: validate provider tracking URL domain strictly
-    const isCandidateSafe = candidateTrackingUrl && typeof candidateTrackingUrl === 'string'
-      ? CuelinksV3Client.isAllowedTrackingUrl(candidateTrackingUrl)
-      : false;
+    // 4. Domain safety guard: validate provider tracking URL candidates strictly
+    // Select the best allowlisted HTTPS candidate URL
+    const safeShortUrl = (result.short_url && typeof result.short_url === 'string' && CuelinksV3Client.isAllowedTrackingUrl(result.short_url))
+      ? result.short_url
+      : undefined;
+
+    const safeTrackingUrl = (result.tracking_url && typeof result.tracking_url === 'string' && CuelinksV3Client.isAllowedTrackingUrl(result.tracking_url))
+      ? result.tracking_url
+      : undefined;
+
+    const safeUrl = (result.url && typeof result.url === 'string' && CuelinksV3Client.isAllowedTrackingUrl(result.url))
+      ? result.url
+      : undefined;
+
+    const candidateTrackingUrl = safeShortUrl || safeTrackingUrl || safeUrl;
+    const isCandidateSafe = Boolean(candidateTrackingUrl);
 
     // 5. Strict monetization gate: require explicit affiliated: true AND allowlisted HTTPS tracking URL
-    const isAffiliated = result.affiliated === true && Boolean(isCandidateSafe);
+    const isAffiliated = result.affiliated === true && isCandidateSafe;
 
     return {
       url: destinationUrl,
-      tracking_url: isAffiliated ? candidateTrackingUrl : destinationUrl,
-      short_url: isAffiliated ? (result.short_url || candidateTrackingUrl) : undefined,
+      tracking_url: isAffiliated && candidateTrackingUrl ? candidateTrackingUrl : destinationUrl,
+      short_url: isAffiliated ? (safeShortUrl || candidateTrackingUrl) : undefined,
       affiliated: isAffiliated,
       campaign: result.campaign
     };
