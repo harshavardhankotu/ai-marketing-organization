@@ -135,7 +135,7 @@ export class AutonomousRevenueOrchestrator {
 
   /**
    * Run one autonomous revenue wake cycle.
-   * Safe to call every 15 minutes by Cloudflare Worker cron trigger.
+   * Safe to call hourly (0 * * * *) by Cloudflare Worker cron trigger.
    */
   public async runCycle(
     organizationId: string,
@@ -194,7 +194,7 @@ export class AutonomousRevenueOrchestrator {
           authorizationRequired: false,
           estimatedCostINR: 0
         },
-        nextCycleAt: lock.leaseExpiry || new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+        nextCycleAt: lock.leaseExpiry || new Date(Date.now() + 60 * 60 * 1000).toISOString(),
         status: 'CYCLE_ALREADY_RUNNING',
         actionExecutionStatus: 'COOLDOWN_ACTIVE',
         actionClassification: 'INTERNAL_AUTOMATION',
@@ -442,7 +442,7 @@ export class AutonomousRevenueOrchestrator {
       // ──────────────────────────────────────────────────────────────────
       // PERSIST & SCHEDULE NEXT WAKE
       // ──────────────────────────────────────────────────────────────────
-      const nextCycleAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+      const nextCycleAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
       const cycleEnd = new Date().toISOString();
 
       await db.prepare(`
@@ -553,7 +553,7 @@ export class AutonomousRevenueOrchestrator {
           authorizationRequired: false,
           estimatedCostINR: 0
         },
-        nextCycleAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+        nextCycleAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
         status: 'FAILED',
         actionExecutionStatus: 'NO_ACTION_DUE',
         actionClassification: 'INTERNAL_AUTOMATION',

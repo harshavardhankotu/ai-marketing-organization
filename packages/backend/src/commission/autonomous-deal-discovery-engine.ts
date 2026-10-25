@@ -353,9 +353,105 @@ export class AutonomousDealDiscoveryEngine {
         accessMethod: 'JSON_LD_STRUCTURED',
         documentationUrl: 'https://schema.org/Offer',
         permissionStatus: 'ALLOWED',
+        monetizationLedger: 'AFFILIATE_COMMISSION',
         rateLimitPerMinute: 60,
         trustScore: 95,
         scanFrequencyHours: 6,
+        totalOffersFound: 0,
+        totalOffersRejected: 0,
+        failureCount: 0
+      },
+
+      // Class E & F: Multi-Category Market Discovery & Price Intelligence (Objective B)
+      {
+        id: 'src_travel_transit_deals',
+        domain: 'cuelinks.com',
+        name: 'Indian Travel & Transit Deals (Flights, Hotels & Bus)',
+        sourceClass: 'AFFILIATE_NETWORK',
+        country: 'India',
+        categories: ['Travel: Flights, Hotels, Buses & Holiday Packages'],
+        accessMethod: 'OFFICIAL_FEED',
+        documentationUrl: 'https://developers.cuelinks.com/docs',
+        permissionStatus: 'LIVE_VERIFIED',
+        monetizationLedger: 'AFFILIATE_COMMISSION',
+        rateLimitPerMinute: 60,
+        trustScore: 88,
+        scanFrequencyHours: 6,
+        totalOffersFound: 0,
+        totalOffersRejected: 0,
+        failureCount: 0
+      },
+      {
+        id: 'src_telecom_broadband_deals',
+        domain: 'cuelinks.com',
+        name: 'Indian Telecom, Broadband & DTH Plan Savings',
+        sourceClass: 'AFFILIATE_NETWORK',
+        country: 'India',
+        categories: ['Telecom, Broadband & DTH Plans', 'Subscription Services'],
+        accessMethod: 'OFFICIAL_FEED',
+        documentationUrl: 'https://developers.cuelinks.com/docs',
+        permissionStatus: 'LIVE_VERIFIED',
+        monetizationLedger: 'AFFILIATE_COMMISSION',
+        rateLimitPerMinute: 60,
+        trustScore: 86,
+        scanFrequencyHours: 12,
+        totalOffersFound: 0,
+        totalOffersRejected: 0,
+        failureCount: 0
+      },
+      {
+        id: 'src_compliant_finance_referrals',
+        domain: 'cuelinks.com',
+        name: 'Compliant Financial Referrals (Banking & Credit Cards)',
+        sourceClass: 'AFFILIATE_NETWORK',
+        country: 'India',
+        categories: ['Compliant Financial Products: Credit Cards & Banking'],
+        accessMethod: 'OFFICIAL_FEED',
+        documentationUrl: 'https://developers.cuelinks.com/docs',
+        permissionStatus: 'LIVE_VERIFIED',
+        monetizationLedger: 'AFFILIATE_COMMISSION',
+        complianceRisk: 'Zero unlicensed financial advice or misleading claims. Strictly authorized partner referral programs.',
+        rateLimitPerMinute: 60,
+        trustScore: 90,
+        scanFrequencyHours: 12,
+        totalOffersFound: 0,
+        totalOffersRejected: 0,
+        failureCount: 0
+      },
+      {
+        id: 'src_ppac_fuel_intelligence',
+        domain: 'ppac.gov.in',
+        name: 'Petroleum Planning & Analysis Cell (PPAC) Daily Fuel Price Intelligence',
+        sourceClass: 'PRICE_INTELLIGENCE_UTILITY',
+        country: 'India',
+        categories: ['Price Intelligence: Petrol & Diesel (Daily Retail Prices)'],
+        accessMethod: 'OPEN_DATA_PORTAL',
+        documentationUrl: 'https://www.ppac.gov.in',
+        permissionStatus: 'LIVE_VERIFIED',
+        monetizationLedger: 'PRICE_INTELLIGENCE_UTILITY',
+        complianceRisk: 'Distinct consumer price intelligence utility; strictly isolated from affiliate commission ledgers.',
+        rateLimitPerMinute: 20,
+        trustScore: 99,
+        scanFrequencyHours: 24,
+        totalOffersFound: 0,
+        totalOffersRejected: 0,
+        failureCount: 0
+      },
+      {
+        id: 'src_ogd_essential_commodities',
+        domain: 'data.gov.in',
+        name: 'Open Government Data Platform India (Department of Consumer Affairs)',
+        sourceClass: 'OPEN_GOVERNMENT_DATA',
+        country: 'India',
+        categories: ['Essential Commodities: Daily Retail & Wholesale Prices'],
+        accessMethod: 'OPEN_DATA_PORTAL',
+        documentationUrl: 'https://data.gov.in',
+        permissionStatus: 'LIVE_VERIFIED',
+        monetizationLedger: 'CONSUMER_UTILITY',
+        complianceRisk: 'Official benchmark public utility data. Zero fake affiliate commission assertions.',
+        rateLimitPerMinute: 20,
+        trustScore: 99,
+        scanFrequencyHours: 24,
         totalOffersFound: 0,
         totalOffersRejected: 0,
         failureCount: 0
@@ -674,7 +770,7 @@ export class AutonomousDealDiscoveryEngine {
       });
 
       const eligibleCampaigns = (campSearch.campaigns || []).filter(
-        c => c.status === 'active' && (c.access_status === 'open' || c.access_status === 'approved')
+        c => (!c.status || c.status === 'active') && (c.access_status === 'open' || c.access_status === 'approved')
       );
 
       // 5. Fetch 2 pages of offers across cursor.offerPage and cursor.offerPage + 1
@@ -692,33 +788,33 @@ export class AutonomousDealDiscoveryEngine {
           }
 
           for (const offer of rawOffers) {
-            // Destination merchant URL: extract from tracking_url or use url
+            const campaign = eligibleCampaigns.find(c => String(c.id) === String(offer.campaign_id));
+            const merchantName = offer.campaign_name || campaign?.merchant_name || campaign?.name || 'Authorized Merchant';
+
+            // Destination merchant URL: extract from tracking_url or use url (Finding 1)
             let merchantUrl = offer.url || '';
             if (!merchantUrl && offer.tracking_url) {
               try {
                 const parsed = new URL(offer.tracking_url);
-                if (parsed.searchParams.has('url')) {
-                  const dec = parsed.searchParams.get('url');
-                  if (dec && /^https?:\/\//i.test(dec)) {
-                    merchantUrl = decodeURIComponent(dec);
-                  }
+                const dec = parsed.searchParams.get('url') || parsed.searchParams.get('dest') || parsed.searchParams.get('redirect');
+                if (dec && /^https?:\/\//i.test(dec)) {
+                  merchantUrl = decodeURIComponent(dec);
                 }
               } catch {}
-              if (!merchantUrl) {
-                merchantUrl = offer.tracking_url;
-              }
+            }
+            if (!merchantUrl && campaign?.url && /^https?:\/\//i.test(campaign.url)) {
+              merchantUrl = campaign.url;
             }
 
             if (!merchantUrl || !offer.title) continue;
+            // Refuse to treat a Cuelinks tracking URL as a merchant destination or SKU evidence
+            if (CuelinksV3Client.isAllowedTrackingUrl(merchantUrl)) continue;
             if (seenOfferUrls.has(merchantUrl)) continue;
             seenOfferUrls.add(merchantUrl);
 
             // SSRF validation on destination URL
             const ssrf = DealSsrfGuard.isSafePublicUrl(merchantUrl);
             if (!ssrf.safe) continue;
-
-            const campaign = eligibleCampaigns.find(c => String(c.id) === String(offer.campaign_id));
-            const merchantName = offer.campaign_name || campaign?.merchant_name || campaign?.name || 'Authorized Merchant';
 
             // Honest price representation: provider discount_price or current_price_inr
             let currentPrice: number | undefined = undefined;
@@ -873,11 +969,11 @@ export class AutonomousDealDiscoveryEngine {
         let paidINR = 0;
         let reversedINR = 0;
         for (const tx of txList) {
-          const amt = tx.commission_amount || 0;
-          if (tx.status === 'approved') validatedINR += amt;
+          const amt = Number(tx.user_commission ?? tx.commission_amount) || 0;
+          if (tx.status === 'approved' || tx.status === 'validated' || tx.status === 'payable') validatedINR += amt;
           else if (tx.status === 'pending') pendingINR += amt;
-          else if (tx.status === 'paid') paidINR += amt;
-          else if (tx.status === 'rejected' || tx.status === 'cancelled') reversedINR += amt;
+          else if (tx.status === 'paid' || tx.status === 'invoice_raised') paidINR += amt;
+          else if (tx.status === 'rejected') reversedINR += amt;
         }
         syncMgr.setReconciliationMetrics({
           providerAttributedClicks: providerClicks,

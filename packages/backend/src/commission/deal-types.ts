@@ -7,7 +7,9 @@ export type DealSourceClass =
   | 'RETAILER_BRAND'             // Class A: Direct merchant / brand site (Croma, boAt, Lenovo, etc.)
   | 'AFFILIATE_NETWORK'           // Class B: Authorized network catalog / feed (Cuelinks, Admitad, etc.)
   | 'PUBLIC_DEAL_FEED'            // Class C: Public deal aggregators & coupon feeds (DesiDime, etc.)
-  | 'FREE_TECHNICAL_DISCOVERY';   // Class D: RSS/Atom feeds, Sitemaps, Schema.org JSON-LD
+  | 'FREE_TECHNICAL_DISCOVERY'   // Class D: RSS/Atom feeds, Sitemaps, Schema.org JSON-LD
+  | 'OPEN_GOVERNMENT_DATA'       // Class E: Lawful open government data & commodity price benchmarks (OGD, PPAC)
+  | 'PRICE_INTELLIGENCE_UTILITY'; // Class F: Consumer price intelligence (Fuel, commodities; separate from affiliate deals)
 
 import { CuelinksSyncStatus } from './cuelinks-v3-types.js';
 
@@ -32,6 +34,13 @@ export type DealAvailability = 'IN_STOCK' | 'LIMITED_STOCK' | 'OUT_OF_STOCK' | '
 
 export type DealKind = 'PRODUCT' | 'COUPON';
 
+export type MonetizationLedger =
+  | 'AFFILIATE_COMMISSION'
+  | 'LEAD_GENERATION'
+  | 'SPONSORSHIP'
+  | 'PRICE_INTELLIGENCE_UTILITY'
+  | 'CONSUMER_UTILITY';
+
 export interface DealSourceRecord {
   id: string;
   domain: string;
@@ -39,9 +48,11 @@ export interface DealSourceRecord {
   sourceClass: DealSourceClass;
   country: string;               // e.g. 'India'
   categories: string[];
-  accessMethod: 'RSS_FEED' | 'JSON_LD_STRUCTURED' | 'OFFICIAL_FEED' | 'PUBLIC_PROMOTION' | 'API';
+  accessMethod: 'RSS_FEED' | 'JSON_LD_STRUCTURED' | 'OFFICIAL_FEED' | 'PUBLIC_PROMOTION' | 'API' | 'OPEN_DATA_PORTAL';
   documentationUrl?: string;
-  permissionStatus: 'ALLOWED' | 'CONDITIONAL' | 'BLOCKED' | 'UNSUPPORTED';
+  permissionStatus: 'ALLOWED' | 'CONDITIONAL' | 'BLOCKED' | 'UNSUPPORTED' | 'LIVE_VERIFIED' | 'TESTED_BUT_NOT_LIVE' | 'PROPOSED';
+  monetizationLedger?: MonetizationLedger;
+  complianceRisk?: string;
   rateLimitPerMinute: number;
   trustScore: number;            // 0 to 100
   lastScanAt?: string;

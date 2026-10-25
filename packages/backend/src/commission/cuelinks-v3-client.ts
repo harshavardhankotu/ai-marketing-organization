@@ -20,7 +20,11 @@ import {
   CuelinksPingResult,
   CuelinksPingPublisher,
   CuelinksPingApiKey,
-  CUELINKS_STANDARD_SCOPES
+  CUELINKS_STANDARD_SCOPES,
+  CUELINKS_REQUIRED_SCOPES,
+  CuelinksPerformanceReportItem,
+  CuelinksPerformanceTotals,
+  CuelinksPerformanceReportResponse
 } from './cuelinks-v3-types.js';
 
 export class CuelinksApiError extends Error {
@@ -321,6 +325,15 @@ export class CuelinksV3Client {
       // CRUCIAL RULE: Do NOT return CUELINKS_STANDARD_SCOPES when scopes are missing/undefined!
       // Unknown scopes must remain undefined or empty until validated by the server.
 
+      let missingScopes: string[] | undefined = undefined;
+      let hasRequiredScopes = true;
+      if (scopes && scopes.length > 0) {
+        missingScopes = CUELINKS_REQUIRED_SCOPES.filter(reqScope => !scopes!.includes(reqScope));
+        if (missingScopes.length > 0) {
+          hasRequiredScopes = false;
+        }
+      }
+
       const isConnected =
         payload.status === 'success' ||
         payload.status === 'ok' ||
@@ -343,16 +356,22 @@ export class CuelinksV3Client {
               ? { scopes, last_used_at: lastUsedAt }
               : undefined);
 
+      const message = !isConnected
+        ? (payload.message || 'Ping returned unsuccessful status or invalid payload')
+        : (!hasRequiredScopes && missingScopes && missingScopes.length > 0
+            ? `Cuelinks API key connected, but lacks required scopes: ${missingScopes.join(', ')}`
+            : 'Successfully authenticated with Cuelinks V3 API.');
+
       return {
         connected: isConnected,
-        message: isConnected
-          ? 'Successfully authenticated with Cuelinks V3 API.'
-          : (payload.message || 'Ping returned unsuccessful status or invalid payload'),
+        authorized: isConnected && hasRequiredScopes,
+        message,
         publisherId,
         publisherName,
         currency,
         email,
         scopes,
+        missingScopes,
         lastUsedAt,
         publisher: resolvedPublisher,
         apiKey: resolvedApiKey
@@ -499,19 +518,32 @@ export class CuelinksV3Client {
 
     // 0. Extract clean merchant destination if provider tracking URL was inadvertently passed
     let destinationUrl = trimmedUrl;
+    let isTrackingHost = false;
     try {
       const parsed = new URL(trimmedUrl);
-      if (
-        (parsed.hostname === 'linksredirect.com' || parsed.hostname.endsWith('.linksredirect.com') ||
-         parsed.hostname === 'cuelinks.com' || parsed.hostname.endsWith('.cuelinks.com')) &&
-        parsed.searchParams.has('url')
-      ) {
-        const extracted = parsed.searchParams.get('url');
+      isTrackingHost =
+        parsed.hostname === 'linksredirect.com' || parsed.hostname.endsWith('.linksredirect.com') ||
+        parsed.hostname === 'cuelinks.com' || parsed.hostname.endsWith('.cuelinks.com') ||
+        parsed.hostname === 'clnk.in' || parsed.hostname.endsWith('.clnk.in');
+
+      if (isTrackingHost) {
+        const extracted = parsed.searchParams.get('url') || parsed.searchParams.get('dest') || parsed.searchParams.get('redirect');
         if (extracted && /^https?:\/\//i.test(extracted)) {
           destinationUrl = decodeURIComponent(extracted).trim();
+          isTrackingHost = false; // clean merchant destination successfully extracted
         }
       }
     } catch {}
+
+    // If destination is still a tracking URL and could not be unwrapped, refuse to convert
+    // to prevent double-wrapping or looping tracking links (Finding 1)
+    if (isTrackingHost) {
+      return {
+        url: destinationUrl,
+        tracking_url: destinationUrl,
+        affiliated: false
+      };
+    }
 
     // 1. SSRF and destination protocol/domain verification
     const ssrf = DealSsrfGuard.isSafePublicUrl(destinationUrl);
@@ -631,18 +663,25 @@ export class CuelinksV3Client {
   /**
    * Retrieve real provider transactions for reconciliation
    * Scope: read:transactions
+   * Official Contract: https://developers.cuelinks.com/docs/reference/transactions
+   * Supports incremental synchronization via `updated_since`.
    */
   public async getTransactions(options?: {
     start_date?: string;
     end_date?: string;
+    updated_since?: string;
     status?: string;
     page?: number;
     per_page?: number;
-  }): Promise<{ transactions: CuelinksTransaction[]; total: number }> {
-    const res = await this.request<{ data: CuelinksTransaction[]; meta?: { total?: number } }>('/transactions', {
+  }): Promise<{ transactions: CuelinksTransaction[]; total: number; total_pages?: number; page?: number }> {
+    const res = await this.request<{
+      data: CuelinksTransaction[];
+      meta?: { total?: number; total_pages?: number; page?: number };
+    }>('/transactions', {
       query: {
         start_date: options?.start_date,
         end_date: options?.end_date,
+        updated_since: options?.updated_since,
         status: options?.status,
         page: options?.page || 1,
         per_page: options?.per_page || 50
@@ -651,12 +690,62 @@ export class CuelinksV3Client {
 
     return {
       transactions: res.data || [],
-      total: res.meta?.total ?? (res.data ? res.data.length : 0)
+      total: res.meta?.total ?? (res.data ? res.data.length : 0),
+      total_pages: res.meta?.total_pages,
+      page: res.meta?.page
     };
   }
 
   /**
    * Retrieve aggregated performance reports
+   * Scope: read:reports
+   * Official Contract: https://developers.cuelinks.com/docs/reference/reports/performance
+   */
+  public async getPerformanceReport(options?: {
+    start_date?: string;
+    end_date?: string;
+    slice_by?: string;
+    page?: number;
+    per_page?: number;
+  }): Promise<CuelinksPerformanceReportResponse> {
+    try {
+      const res = await this.request<CuelinksPerformanceReportResponse>('/reports/performance', {
+        query: {
+          start_date: options?.start_date,
+          end_date: options?.end_date,
+          slice_by: options?.slice_by,
+          page: options?.page || 1,
+          per_page: options?.per_page || 30
+        }
+      });
+
+      return {
+        data: res?.data || [],
+        totals: res?.totals,
+        meta: res?.meta
+      };
+    } catch (err: any) {
+      if (err.statusCode === 404) {
+        // Backward compatibility fallback for legacy mock fixtures
+        const legacyRes = await this.request<{ data: CuelinksPerformanceReportItem[]; meta?: any }>('/reports', {
+          query: {
+            start_date: options?.start_date,
+            end_date: options?.end_date,
+            page: options?.page || 1,
+            per_page: options?.per_page || 30
+          }
+        });
+        return {
+          data: legacyRes?.data || [],
+          meta: legacyRes?.meta
+        };
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Legacy getReports alias delegating to getPerformanceReport
    * Scope: read:reports
    */
   public async getReports(options?: {
@@ -665,20 +754,12 @@ export class CuelinksV3Client {
     slice_by?: string;
     page?: number;
     per_page?: number;
-  }): Promise<{ reports: CuelinksReport[]; total: number }> {
-    const res = await this.request<{ data: CuelinksReport[]; meta?: { total?: number } }>('/reports', {
-      query: {
-        start_date: options?.start_date,
-        end_date: options?.end_date,
-        slice_by: options?.slice_by || 'campaign',
-        page: options?.page || 1,
-        per_page: options?.per_page || 50
-      }
-    });
-
+  }): Promise<{ reports: CuelinksReport[]; total: number; totals?: CuelinksPerformanceTotals }> {
+    const perf = await this.getPerformanceReport(options);
     return {
-      reports: res.data || [],
-      total: res.meta?.total ?? (res.data ? res.data.length : 0)
+      reports: perf.data || [],
+      total: perf.meta?.total ?? (perf.data ? perf.data.length : 0),
+      totals: perf.totals
     };
   }
 }
