@@ -15,7 +15,7 @@ export const ALLOWED_REDIRECT_HOSTS = new Set([
 
 export const ALLOWED_REDIRECT_HOSTS_BY_NETWORK: Record<string, Set<string>> = {
   AMAZON_ASSOCIATES: ALLOWED_REDIRECT_HOSTS,
-  CUELINKS: new Set(['cuelinks.com', 'www.cuelinks.com', 'linksredirect.com', 'www.linksredirect.com']),
+  CUELINKS: new Set(['cuelinks.com', 'www.cuelinks.com', 'linksredirect.com', 'www.linksredirect.com', 'clnk.in', 'www.clnk.in']),
   ADMITAD: new Set(['admitad.com', 'www.admitad.com', 'lenmit.com', 'www.lenmit.com']),
   EARNKARO: new Set(['earnkaro.com', 'www.earnkaro.com']),
   VCOMMISSION: new Set(['vcommission.com', 'www.vcommission.com']),

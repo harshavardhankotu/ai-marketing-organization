@@ -43,9 +43,16 @@ Travelling between university campus, hometown, and competitive examination cent
 * **Base Fare Concession:** Up to 7% off base fares on Saver and Flexi fare categories.
 * **Extra Baggage:** 10 kg complimentary extra check-in baggage (Total: 25 kg).
 * **Eligibility:** Full-time enrolled students aged 12 years and above with valid institutional credentials.
+* **Booking Link:** [Book Student Fares on Akasa Air](https://clnk.in/DKX3)
+
+### 5. Air India (Full Service)
+* **Base Fare Concession:** Up to 25% off select domestic economy base fares for verified students.
+* **Baggage Allowance:** 25 kg check-in luggage included on student bookings.
+* **Eligibility:** Full-time students enrolled in accredited Indian higher education institutions.
+* **Booking Link:** [Book Student Fares on Air India](https://clnk.in/DKX4)
 
 ### Flight Search & Price Comparison
-When comparing multi-airline student routes or booking connecting domestic flights across carriers:
+When comparing multi-airline student routes, budget options (including IndiGo and SpiceJet), or booking connecting domestic flights across carriers:
 * **Comparison Portal:** [Compare Student Flights on Cleartrip](https://clnk.in/DKRN)
 
 ## Critical Check-in & Verification Rules (Avoid Penalties)
@@ -60,7 +67,7 @@ When comparing multi-airline student routes or booking connecting domestic fligh
 * **Compare Flash Sales:** On high-density short-haul routes (e.g. Delhi-Mumbai, Bengaluru-Hyderabad), promotional flash sales may offer lower net total pricing than base-fare concessions. Always compare total checkout amounts.
 * **Name Match:** Ensure your name on the flight booking matches both your Student ID and your government photo ID (Aadhaar or Passport) exactly.
 * **Semester Rush:** Seat quotas allocated to student tariff classes are limited per flight; book early during semester-end breaks to secure allocations.`,
-  disclosureMarkdown: 'Affiliate Disclosure: This guide contains verified affiliate links to partner travel booking platforms (Air India Express and Cleartrip). When you make a booking through these links, we may earn an affiliate commission at zero additional cost to you. We maintain strict editorial independence and never charge users fees or alter airline fare rules.',
+  disclosureMarkdown: 'Affiliate Disclosure: This guide contains verified affiliate links to partner travel booking platforms (Air India Express, Akasa Air, Air India, and Cleartrip). When you make a booking through these links, we may earn an affiliate commission at zero additional cost to you. We maintain strict editorial independence and never charge users fees or alter airline fare rules. Explore [Verified Deals](/deals), view our transparent [Public Revenue Funnel](/revenue), and read our full [Affiliate Disclosure](/public/disclosure).',
   status: 'PUBLISHED',
   disclosureVersion: '2026.1'
 };
@@ -156,11 +163,17 @@ export function seedDatabase(options: SeedOptions = {}): void {
   if (process.env.NODE_ENV !== 'test') {
     try {
       db.prepare(`
-        INSERT OR IGNORE INTO commission_content_assets (
+        INSERT INTO commission_content_assets (
           id, organization_id, slug, asset_type, title, category, location, intent_target,
           content_markdown, primary_offer_id, matched_offer_ids_json, disclosure_markdown,
           status, view_count, referral_click_count, quality_gate_json, disclosure_version
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(slug) DO UPDATE SET
+          title = excluded.title,
+          intent_target = excluded.intent_target,
+          content_markdown = excluded.content_markdown,
+          disclosure_markdown = excluded.disclosure_markdown,
+          updated_at = datetime('now')
       `).run(
         BASELINE_STUDENT_FLIGHT_GUIDE.id,
         BASELINE_STUDENT_FLIGHT_GUIDE.organizationId,

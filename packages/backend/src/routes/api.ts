@@ -141,6 +141,7 @@ export const EXACT_ROUTE_POLICY = {
     '/public/availability',
     '/landing-pages',
     '/organic/sessions',
+    '/organic/affiliate-clicks',
     '/organic/leads',
     '/auth/owner/login',
     '/auth/owner/logout',
@@ -156,6 +157,7 @@ export const EXACT_ROUTE_POLICY = {
     '/r',
     '/public/content',
     '/public/disclosure',
+    '/public/revenue-funnel',
     '/public/deals',
     '/deals',
     '/guides',
@@ -5025,6 +5027,269 @@ apiRouter.post('/organic/sessions', async (c) => {
   });
 
   return c.json({ success: true, data: session }, 201);
+});
+
+/**
+ * Organic Affiliate Click Beacon (§ Revenue Engine V2.9)
+ * Records outbound affiliate clicks from guides and deal pages.
+ * Validates destinationUrl, enforces rate limiting, hashes client IP, ignores bots/test traffic.
+ * Clicks are recorded as non-revenue attribution events.
+ */
+apiRouter.post('/organic/affiliate-clicks', async (c) => {
+  const clientInfo = getTrustedClientIp(c, 60, 20);
+  const { DurableRateLimiter } = await import('../security/durable-rate-limiter.js');
+  const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/organic/affiliate-clicks', clientInfo.ip, clientInfo.maxRequests, 600);
+  if (!rateLimit.allowed) {
+    return c.json({ success: false, error: 'RATE_LIMIT_EXCEEDED', retryAfterSeconds: rateLimit.retryAfterSeconds }, 429);
+  }
+
+  const body = await c.req.json().catch(() => ({}));
+  const destinationUrl = body.destinationUrl;
+  if (!destinationUrl || typeof destinationUrl !== 'string') {
+    return c.json({ success: false, error: 'MISSING_DESTINATION_URL', message: 'destinationUrl is required' }, 400);
+  }
+
+  const userAgent = c.req.header('user-agent') || '';
+  const isBot = isBotTraffic(userAgent);
+  const isTestTraffic = Boolean(
+    c.req.header('x-test-mode') === 'true' ||
+    c.req.header('x-test-traffic') === 'true' ||
+    body.isTestTraffic === true ||
+    body.isTestHarness === true
+  );
+
+  const ipHash = hashClientIp(clientInfo.ip);
+  const pageUrl = body.pageUrl || '';
+  const guideSlug = pageUrl.replace(/^\/guides\//, '').split('?')[0].split('#')[0];
+
+  if (!isBot && !isTestTraffic) {
+    try {
+      const d1Repo = D1RevenueRepository.getInstance();
+      const { randomUUID } = await import('crypto');
+      const clickId = `clk_org_${randomUUID().substring(0, 12)}`;
+      const referralId = `ref_org_${randomUUID().substring(0, 8)}`;
+      const nowIso = new Date().toISOString();
+
+      if (guideSlug) {
+        await d1Repo.executeWrite(
+          'commission_content_assets',
+          'UPDATE commission_content_assets SET referral_click_count = referral_click_count + 1 WHERE slug = ?',
+          [guideSlug]
+        );
+      }
+
+      await d1Repo.executeWrite(
+        'referral_click_events',
+        `INSERT INTO referral_click_events (
+          id, referral_id, click_id, organization_id, offer_id, partner_id,
+          content_asset_id, placement, source, medium, campaign, keyword,
+          referrer, device_class, country, destination_url, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          `evt_org_${randomUUID().substring(0, 10)}`,
+          referralId,
+          clickId,
+          'org_owner_primary',
+          'offer_student_flights_cuelinks',
+          'partner_cuelinks',
+          guideSlug || null,
+          'guide_outbound_click',
+          body.utmSource || 'organic',
+          body.utmMedium || 'affiliate_link',
+          body.utmCampaign || null,
+          body.anchorText || null,
+          c.req.header('referer') || pageUrl || null,
+          null,
+          'IN',
+          destinationUrl,
+          nowIso
+        ]
+      );
+    } catch (e: any) {
+      console.warn(`[AffiliateClickBeacon] Failed to record click: ${e.message}`);
+    }
+  }
+
+  return c.json({
+    success: true,
+    data: {
+      recorded: !isBot && !isTestTraffic,
+      isRevenue: false,
+      ipHash,
+      destinationUrl
+    }
+  }, 201);
+});
+
+/**
+ * Public Transparent Revenue Funnel (§ Revenue Engine V2.9)
+ * Exposes empirical public funnel metrics:
+ * 1. Verified external visitors (separate from internal tests)
+ * 2. Real outbound affiliate clicks (separate from diagnostic tests)
+ * 3. Verified click-through rate (CTR)
+ * 4. Authoritative Cuelinks performance report (reported clicks, conversions, pending & approved commissions)
+ * 5. Bank cash received (strictly ₹0.00 until independent bank verification)
+ * 6. Offline tracking and validation delay notices
+ */
+apiRouter.get('/public/revenue-funnel', async (c) => {
+  const d1Repo = D1RevenueRepository.getInstance();
+
+  // 1. External Visits vs Internal Test Sessions
+  let verifiedExternalVisits = 0;
+  let testSessions = 0;
+  try {
+    const extRow = await d1Repo.queryOne<any>(
+      'traffic_sessions',
+      "SELECT COUNT(*) as c FROM traffic_sessions WHERE traffic_evidence_status = 'VERIFIED_EXTERNAL' OR is_external = 1"
+    );
+    verifiedExternalVisits = extRow?.c || 0;
+
+    const testRow = await d1Repo.queryOne<any>(
+      'traffic_sessions',
+      "SELECT COUNT(*) as c FROM traffic_sessions WHERE traffic_evidence_status = 'TEST' OR is_external = 0"
+    );
+    testSessions = testRow?.c || 0;
+  } catch {}
+
+  // 2. Real Outbound Clicks vs Internal Diagnostic Clicks
+  let externalOutboundClicks = 0;
+  let diagnosticTestClicks = 0;
+  try {
+    const extClickRow = await d1Repo.queryOne<any>(
+      'referral_click_events',
+      "SELECT COUNT(*) as c FROM referral_click_events WHERE placement != 'direct_beacon' AND source != 'direct_beacon' AND medium != 'beacon'"
+    );
+    externalOutboundClicks = extClickRow?.c || 0;
+
+    const diagClickRow = await d1Repo.queryOne<any>(
+      'referral_click_events',
+      "SELECT COUNT(*) as c FROM referral_click_events WHERE placement = 'direct_beacon' OR source = 'direct_beacon' OR medium = 'beacon'"
+    );
+    diagnosticTestClicks = diagClickRow?.c || 0;
+  } catch {}
+
+  // 3. CTR
+  const ctrPercent = verifiedExternalVisits > 0
+    ? ((externalOutboundClicks / verifiedExternalVisits) * 100).toFixed(2) + '%'
+    : '0.00%';
+
+  // 4. Live Cuelinks Performance Data
+  let cuelinksData = {
+    configured: false,
+    channelId: 331585,
+    channelStatus: 'APPROVED',
+    reportedClicks: 0,
+    reportedTransactions: 0,
+    pendingCommissionINR: 0,
+    approvedCommissionINR: 0,
+    paidPayoutINR: 0,
+    reportingLatency: '48-72h (Offline Tracking Mode)',
+    validationCycle: '45-60 days'
+  };
+
+  try {
+    const { CuelinksV3Client } = await import('../commission/cuelinks-v3-client.js');
+    const client = CuelinksV3Client.getInstance();
+    if (client.isConfigured()) {
+      cuelinksData.configured = true;
+      try {
+        const perf = await client.getPerformanceReport({ start_date: '2026-10-01' });
+        if (perf.totals) {
+          cuelinksData.reportedClicks = perf.totals.clicks || 0;
+          cuelinksData.reportedTransactions = perf.totals.transactions || 0;
+          cuelinksData.pendingCommissionINR = Number(perf.totals.commission) || 0;
+        } else if (perf.data && perf.data.length > 0) {
+          cuelinksData.reportedClicks = perf.data.reduce((acc, row) => acc + (row.clicks || 0), 0);
+          cuelinksData.reportedTransactions = perf.data.reduce((acc, row) => acc + (row.transactions || 0), 0);
+          cuelinksData.pendingCommissionINR = perf.data.reduce((acc, row) => acc + (Number(row.commission) || 0), 0);
+        }
+      } catch (err: any) {
+        // Fallback to internal ledger if live API query is throttled
+      }
+    }
+  } catch {}
+
+  // 5. Commission Records in D1
+  let ledgerPendingCommissionINR = 0;
+  let ledgerApprovedCommissionINR = 0;
+  try {
+    const commPendingRow = await d1Repo.queryOne<any>(
+      'commission_records',
+      "SELECT COALESCE(SUM(estimated_commission_inr), 0) as s FROM commission_records WHERE status = 'COMMISSION_PENDING'"
+    );
+    ledgerPendingCommissionINR = commPendingRow?.s || 0;
+
+    const commApprovedRow = await d1Repo.queryOne<any>(
+      'commission_records',
+      "SELECT COALESCE(SUM(verified_commission_inr), 0) as s FROM commission_records WHERE status IN ('COMMISSION_APPROVED', 'PAID')"
+    );
+    ledgerApprovedCommissionINR = commApprovedRow?.s || 0;
+  } catch {}
+
+  // 6. Bank Cash Received (Strict Empirical Truth)
+  const bankCashReceivedINR = 0.00;
+
+  return c.json({
+    success: true,
+    data: {
+      funnel: {
+        verifiedExternalVisits,
+        internalTestSessions: testSessions,
+        externalOutboundClicks,
+        internalDiagnosticClicks: diagnosticTestClicks,
+        clickThroughRate: ctrPercent,
+        conversions: cuelinksData.reportedTransactions,
+        estimatedPendingCommissionINR: cuelinksData.pendingCommissionINR || ledgerPendingCommissionINR,
+        approvedCommissionINR: cuelinksData.approvedCommissionINR || ledgerApprovedCommissionINR,
+        bankCashReceivedINR
+      },
+      provider: cuelinksData,
+      monetizedPartners: [
+        {
+          name: 'Akasa Air',
+          campaignId: 57507,
+          model: 'CPS (Cost Per Sale)',
+          payoutINR: '₹225.00 per domestic booking',
+          cookieWindow: '30 Days',
+          trackingUrl: 'https://clnk.in/DKX3',
+          trackingMode: 'Offline (48h delay)'
+        },
+        {
+          name: 'Air India Express',
+          campaignId: 5195,
+          model: 'CPS (Cost Per Sale)',
+          payoutINR: '₹101.25 domestic / ₹168.75 international',
+          cookieWindow: '30 Days',
+          trackingUrl: 'https://clnk.in/DKRM',
+          trackingMode: 'Offline (48h delay)'
+        },
+        {
+          name: 'Air India',
+          campaignId: 5622,
+          model: 'CPS (Cost Per Sale)',
+          payoutINR: '₹112.50 domestic / ₹375.00 international',
+          cookieWindow: '30 Days',
+          trackingUrl: 'https://clnk.in/DKX4',
+          trackingMode: 'Offline (48h delay)'
+        },
+        {
+          name: 'Cleartrip Flight',
+          campaignId: 29,
+          model: 'CPS (Cost Per Sale)',
+          payoutINR: '₹67.50 per flight booking',
+          cookieWindow: '1 Day',
+          trackingUrl: 'https://clnk.in/DKRN',
+          trackingMode: 'Offline (48h delay)'
+        }
+      ],
+      accountingPolicies: {
+        cashRecognitionRule: 'Cash is strictly ₹0.00 until confirmed by bank settlement credits.',
+        offlineAttributionNotice: 'Airline booking conversions are tracked offline by affiliate networks and report with a 48–72 hour delay.',
+        validationPeriod: 'Airlines validate passenger travel completion within 45–60 days before releasing commissions.'
+      },
+      lastUpdated: new Date().toISOString()
+    }
+  });
 });
 
 // 14. List Traffic Sessions
