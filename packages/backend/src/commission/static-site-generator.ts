@@ -322,9 +322,9 @@ export class StaticSiteGenerator {
    */
   public renderGuideHtml(guide: any, config: StaticSiteConfig): string {
     const title = guide.title || 'Product Evaluation & Buying Guide';
-    const description = guide.intent_target || guide.meta_description || guide.description || 'Commercial product overview and specification details.';
+    const description = guide.intent_target || guide.intentTarget || guide.meta_description || guide.description || 'Commercial product overview and specification details.';
     const canonicalUrl = `${config.siteUrl}/guides/${guide.slug}`;
-    const fullBody = guide.content_markdown || guide.body_markdown || guide.body || '';
+    const fullBody = guide.content_markdown || guide.contentMarkdown || guide.body_markdown || guide.body || '';
 
     // Convert basic markdown to clean HTML
     const formattedBody = this.markdownToHtml(fullBody);
