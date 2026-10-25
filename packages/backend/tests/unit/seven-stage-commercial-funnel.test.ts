@@ -3,6 +3,7 @@ import { AutonomousDealDiscoveryEngine } from '../../src/commission/autonomous-d
 import { CuelinksSyncManager } from '../../src/commission/cuelinks-sync-manager.js';
 import { app } from '../../src/index.js';
 import { OwnerAuthService } from '../../src/auth/owner-auth.js';
+import { SAMPLE_DEAL_CANDIDATES_FIXTURE } from '../fixtures/sample-deal-candidates.js';
 
 describe('7-Stage Evidence-Based Commercial Funnel (Spec §§ 1–15)', () => {
   const orgId = 'org_owner_primary';
@@ -10,7 +11,9 @@ describe('7-Stage Evidence-Based Commercial Funnel (Spec §§ 1–15)', () => {
 
   beforeEach(() => {
     vi.restoreAllMocks();
-    AutonomousDealDiscoveryEngine.getInstance().resetFunnelMetricsForTesting();
+    const engine = AutonomousDealDiscoveryEngine.getInstance();
+    engine.resetFunnelMetricsForTesting();
+    engine.injectDiscoveredDealsForTesting(SAMPLE_DEAL_CANDIDATES_FIXTURE);
   });
 
   describe('1. Seven Formal Funnel Stages & Strict Metric Separation', () => {
