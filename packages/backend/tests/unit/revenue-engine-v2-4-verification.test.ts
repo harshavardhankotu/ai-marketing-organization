@@ -222,7 +222,7 @@ describe('Revenue Engine V2.4 — Verification & Defect Fixes Suite', () => {
   });
 
   describe('Autonomous Commercial Engine Blocker Clearance', () => {
-    it('unblocks MISSING_OWNER_AUTHORIZATION when Cuelinks API key is configured', async () => {
+    it('unblocks MISSING_OWNER_AUTHORIZATION when Cuelinks API key is configured and valid tracking link is present', async () => {
       const commercialEngine = AutonomousCommercialEngine.getInstance();
       const task: any = {
         id: 'wf_comm_test_cuelinks',
@@ -231,7 +231,10 @@ describe('Revenue Engine V2.4 — Verification & Defect Fixes Suite', () => {
         workflowType: 'COMMERCIAL_AFFILIATE_ACTIVATION',
         status: 'BLOCKED',
         currentStep: 'QUALIFY',
-        inputs: {},
+        inputs: {
+          network: 'CUELINKS',
+          trackingUrl: 'https://linksredirect.com/?cid=12345&url=https%3A%2F%2Fmerchant.in'
+        },
         outputs: {},
         errorInfo: {
           blockerType: 'MISSING_OWNER_AUTHORIZATION',

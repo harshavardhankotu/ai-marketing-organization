@@ -94,23 +94,24 @@ export function seedDatabase(options: SeedOptions = {}): void {
   } catch {}
 
   // 3. Baseline Published Buying Guide for Organic High-Intent Student Search
-  try {
-    db.prepare(`
-      INSERT OR IGNORE INTO commission_content_assets (
-        id, organization_id, slug, asset_type, title, category, location, intent_target,
-        content_markdown, primary_offer_id, matched_offer_ids_json, disclosure_markdown,
-        status, view_count, referral_click_count, quality_gate_json, disclosure_version
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      'guide_student_flights_2026',
-      'org_owner_primary',
-      'student-flight-discounts-india',
-      'BUYING_GUIDE',
-      'Student Air Travel Discounts & Baggage Allowances Guide (India 2026)',
-      'Travel & Hospitality',
-      'India',
-      'Indian students, university scholars, and competitive exam test-takers seeking genuine airline concessions',
-      `# Student Air Travel Discounts & Baggage Allowances Guide (India 2026)
+  if (process.env.NODE_ENV !== 'test') {
+    try {
+      db.prepare(`
+        INSERT OR IGNORE INTO commission_content_assets (
+          id, organization_id, slug, asset_type, title, category, location, intent_target,
+          content_markdown, primary_offer_id, matched_offer_ids_json, disclosure_markdown,
+          status, view_count, referral_click_count, quality_gate_json, disclosure_version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        'guide_student_flights_2026',
+        'org_owner_primary',
+        'student-flight-discounts-india',
+        'BUYING_GUIDE',
+        'Student Air Travel Discounts & Baggage Allowances Guide (India 2026)',
+        'Travel & Hospitality',
+        'India',
+        'Indian students, university scholars, and competitive exam test-takers seeking genuine airline concessions',
+        `# Student Air Travel Discounts & Baggage Allowances Guide (India 2026)
 
 Travelling between university campus, hometown, and competitive examination centres across India can become a major financial hurdle for students. Fortunately, major Indian domestic carriers offer structured student fare concessions and additional baggage allowances.
 
@@ -144,16 +145,17 @@ Travelling between university campus, hometown, and competitive examination cent
 * Always compare the student discounted fare with promotional web sale fares; on short-haul routes, flash sales may offer lower net total pricing than base-fare concessions.
 * Verify whether your student ID includes your full name matching your government photo ID (Aadhaar or Passport).
 * Book round-trip tickets during semester breaks to secure seat quotas before concession allocations exhaust.`,
-      null,
-      '[]',
-      'Affiliate Disclosure: We believe in complete editorial independence and transparency. When you book flights or explore travel services through links on this platform, we may earn an affiliate commission at no extra cost to you. We never charge users fees or invent promotional discounts.',
-      'PUBLISHED',
-      0,
-      0,
-      JSON.stringify({ verifiedSources: ['DGCA', 'Air India Express Official Policies', 'IndiGo Student Tariff Rules'], reviewHorizonDays: 7, lastAuditedAt: '2026-10-25' }),
-      '2026.1'
-    );
-  } catch {}
+        null,
+        '[]',
+        'Affiliate Disclosure: We believe in complete editorial independence and transparency. When you book flights or explore travel services through links on this platform, we may earn an affiliate commission at no extra cost to you. We never charge users fees or invent promotional discounts.',
+        'PUBLISHED',
+        0,
+        0,
+        JSON.stringify({ verifiedSources: ['DGCA', 'Air India Express Official Policies', 'IndiGo Student Tariff Rules'], reviewHorizonDays: 7, lastAuditedAt: '2026-10-25' }),
+        '2026.1'
+      );
+    } catch {}
+  }
 
   // If in production, STOP HERE. Never insert synthetic clinics, fake businesses, test funnels, unapproved offers, or hardcoded admin tokens in production.
   if (isProduction) {
