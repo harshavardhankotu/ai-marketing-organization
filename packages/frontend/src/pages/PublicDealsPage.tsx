@@ -1554,6 +1554,64 @@ export const PublicDealsPage: React.FC = () => {
           </div>
         )}
 
+        {/* Category Spotlight & Original Buyer Guide: Health, Nutrition & Personal Care */}
+        <section id="health-nutrition-guide" className="mt-12 max-w-5xl mx-auto">
+          <div className="p-6 sm:p-8 rounded-2xl bg-gradient-to-br from-slate-900/90 to-slate-950 border border-cyan-500/30 shadow-2xl">
+            <div className="flex flex-wrap items-center justify-between gap-4 mb-5 pb-4 border-b border-slate-800">
+              <div>
+                <span className="px-2.5 py-1 rounded-full bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 text-[11px] font-bold uppercase tracking-wider">
+                  Category Spotlight
+                </span>
+                <h3 className="text-lg sm:text-xl font-extrabold text-white mt-2">
+                  Health, Nutrition &amp; Grooming Savings Guide
+                </h3>
+              </div>
+              <button
+                onClick={() => {
+                  setSelectedCategory('Health & Beauty');
+                  setOfferTab('all');
+                }}
+                className="px-4 py-2 rounded-xl bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-500/40 text-cyan-300 text-xs font-bold transition flex items-center gap-1.5"
+              >
+                <span>Filter Category Offers</span>
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-5 text-xs text-slate-300 leading-relaxed">
+              <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800/80">
+                <h4 className="font-bold text-slate-100 text-sm mb-2 flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  Authenticity &amp; MRP Truth
+                </h4>
+                <p>
+                  Nutrition and personal care products are vulnerable to fake discounts. We cross-verify manufacturer list prices (MRP) on brand flagships such as Wellbeing Nutrition and The Man Company to ensure discounts reflect genuine savings rather than inflated baselines.
+                </p>
+              </div>
+
+              <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800/80">
+                <h4 className="font-bold text-slate-100 text-sm mb-2 flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+                  Health &amp; Dietary Advisory
+                </h4>
+                <p>
+                  We verify price, coupon validity, and expiry only. Zero unsupported medical claims: always inspect ingredient lists, batch manufacturing dates, and dietary suitability on the official manufacturer portal before ordering, and consult a qualified healthcare provider.
+                </p>
+              </div>
+
+              <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800/80">
+                <h4 className="font-bold text-slate-100 text-sm mb-2 flex items-center gap-2">
+                  <Tag className="w-4 h-4 text-purple-400 shrink-0" />
+                  Voucher &amp; Cart Conditions
+                </h4>
+                <p>
+                  Special promotional coupons (e.g. <code>WHEY10</code> for whey protein orders or <code>CART15</code> for grooming items) are tested for minimum order requirements, cart limitations, and expiry dates so you don't face surprises at the payment gateway.
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
+
         {/* Statutory Buyer Protection & Affiliate Disclosure Banner */}
         <section className="mt-14 pt-8 border-t border-slate-800/80 text-xs text-slate-400 max-w-4xl mx-auto leading-relaxed">
           <div className="p-5 rounded-2xl bg-slate-900/40 border border-slate-800">

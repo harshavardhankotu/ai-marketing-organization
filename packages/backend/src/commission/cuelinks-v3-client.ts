@@ -391,8 +391,8 @@ export class CuelinksV3Client {
     order?: 'asc' | 'desc';
     page?: number;
     per_page?: number;
-  }): Promise<{ campaigns: CuelinksCampaign[]; total: number }> {
-    const res = await this.request<{ data: CuelinksCampaign[]; meta?: { total?: number } }>('/campaigns', {
+  }): Promise<{ campaigns: CuelinksCampaign[]; total: number; total_pages?: number; page?: number; next_page?: number | null }> {
+    const res = await this.request<any>('/campaigns', {
       query: {
         q: options?.q,
         access_status: options?.access_status,
@@ -405,9 +405,19 @@ export class CuelinksV3Client {
       }
     });
 
+    const rawList = Array.isArray(res?.data)
+      ? res.data
+      : (Array.isArray(res?.campaigns) ? res.campaigns : (Array.isArray(res) ? res : []));
+    const meta = res?.meta || res?.pagination || {};
+    const total = meta.total ?? rawList.length;
+    const total_pages = meta.total_pages ?? Math.ceil(total / (options?.per_page || 30));
+
     return {
-      campaigns: res.data || [],
-      total: res.meta?.total ?? (res.data ? res.data.length : 0)
+      campaigns: rawList,
+      total,
+      total_pages,
+      page: meta.page ?? (options?.page || 1),
+      next_page: meta.next_page ?? null
     };
   }
 
@@ -443,8 +453,8 @@ export class CuelinksV3Client {
     q?: string;
     page?: number;
     per_page?: number;
-  }): Promise<{ offers: CuelinksOffer[]; total: number }> {
-    const res = await this.request<{ data: CuelinksOffer[]; meta?: { total?: number } }>('/offers', {
+  }): Promise<{ offers: CuelinksOffer[]; total: number; total_pages?: number; page?: number; next_page?: number | null }> {
+    const res = await this.request<any>('/offers', {
       query: {
         campaign_id: options?.campaign_id,
         category_id: options?.category_id,
@@ -454,9 +464,19 @@ export class CuelinksV3Client {
       }
     });
 
+    const rawOffers = Array.isArray(res?.data)
+      ? res.data
+      : (Array.isArray(res?.offers) ? res.offers : (Array.isArray(res) ? res : []));
+    const meta = res?.meta || res?.pagination || {};
+    const total = meta.total ?? rawOffers.length;
+    const total_pages = meta.total_pages ?? Math.ceil(total / (options?.per_page || 30));
+
     return {
-      offers: res.data || [],
-      total: res.meta?.total ?? (res.data ? res.data.length : 0)
+      offers: rawOffers,
+      total,
+      total_pages,
+      page: meta.page ?? (options?.page || 1),
+      next_page: meta.next_page ?? null
     };
   }
 
@@ -477,12 +497,28 @@ export class CuelinksV3Client {
 
     const trimmedUrl = request.url.trim();
 
+    // 0. Extract clean merchant destination if provider tracking URL was inadvertently passed
+    let destinationUrl = trimmedUrl;
+    try {
+      const parsed = new URL(trimmedUrl);
+      if (
+        (parsed.hostname === 'linksredirect.com' || parsed.hostname.endsWith('.linksredirect.com') ||
+         parsed.hostname === 'cuelinks.com' || parsed.hostname.endsWith('.cuelinks.com')) &&
+        parsed.searchParams.has('url')
+      ) {
+        const extracted = parsed.searchParams.get('url');
+        if (extracted && /^https?:\/\//i.test(extracted)) {
+          destinationUrl = decodeURIComponent(extracted).trim();
+        }
+      }
+    } catch {}
+
     // 1. SSRF and destination protocol/domain verification
-    const ssrf = DealSsrfGuard.isSafePublicUrl(trimmedUrl);
+    const ssrf = DealSsrfGuard.isSafePublicUrl(destinationUrl);
     if (!ssrf.safe) {
       throw new CuelinksApiError(
         'CUELINKS_INVALID_URL',
-        `SSRF_REJECTED: URL '${trimmedUrl}' violates safe public domain policy: ${ssrf.reason}`,
+        `SSRF_REJECTED: URL '${destinationUrl}' violates safe public domain policy: ${ssrf.reason}`,
         400
       );
     }
@@ -493,7 +529,7 @@ export class CuelinksV3Client {
       : (request.short_url !== undefined ? Boolean(request.short_url) : true);
 
     const payload: Record<string, any> = {
-      url: trimmedUrl,
+      url: destinationUrl,
       shorten: shouldShorten
     };
 
@@ -525,18 +561,13 @@ export class CuelinksV3Client {
       ? CuelinksV3Client.isAllowedTrackingUrl(candidateTrackingUrl)
       : false;
 
-    // 5. Monetization truth: explicit affiliated === true AND verified safe tracking domain are mandatory.
-    // A tracking_url alone is NOT proof of commission eligibility.
-    const isAffiliated = result.affiliated === true && Boolean(candidateTrackingUrl) && isCandidateSafe;
+    // 5. Strict monetization gate: require explicit affiliated: true AND allowlisted HTTPS tracking URL
+    const isAffiliated = result.affiliated === true && Boolean(isCandidateSafe);
 
     return {
-      short_url: isAffiliated && result.short_url && CuelinksV3Client.isAllowedTrackingUrl(result.short_url)
-        ? result.short_url
-        : undefined,
-      url: isAffiliated
-        ? (result.url && CuelinksV3Client.isAllowedTrackingUrl(result.url) ? result.url : candidateTrackingUrl)
-        : trimmedUrl,
-      tracking_url: isAffiliated ? candidateTrackingUrl : trimmedUrl,
+      url: destinationUrl,
+      tracking_url: isAffiliated ? candidateTrackingUrl : destinationUrl,
+      short_url: isAffiliated ? (result.short_url || candidateTrackingUrl) : undefined,
       affiliated: isAffiliated,
       campaign: result.campaign
     };

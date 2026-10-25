@@ -692,35 +692,97 @@ export class AutonomousDealDiscoveryEngine {
           }
 
           for (const offer of rawOffers) {
-            if (!offer.url || !offer.title) continue;
-            if (seenOfferUrls.has(offer.url)) continue;
-            seenOfferUrls.add(offer.url);
+            // Destination merchant URL: extract from tracking_url or use url
+            let merchantUrl = offer.url || '';
+            if (!merchantUrl && offer.tracking_url) {
+              try {
+                const parsed = new URL(offer.tracking_url);
+                if (parsed.searchParams.has('url')) {
+                  const dec = parsed.searchParams.get('url');
+                  if (dec && /^https?:\/\//i.test(dec)) {
+                    merchantUrl = decodeURIComponent(dec);
+                  }
+                }
+              } catch {}
+              if (!merchantUrl) {
+                merchantUrl = offer.tracking_url;
+              }
+            }
 
-            // SSRF validation
-            const ssrf = DealSsrfGuard.isSafePublicUrl(offer.url);
+            if (!merchantUrl || !offer.title) continue;
+            if (seenOfferUrls.has(merchantUrl)) continue;
+            seenOfferUrls.add(merchantUrl);
+
+            // SSRF validation on destination URL
+            const ssrf = DealSsrfGuard.isSafePublicUrl(merchantUrl);
             if (!ssrf.safe) continue;
 
             const campaign = eligibleCampaigns.find(c => String(c.id) === String(offer.campaign_id));
             const merchantName = offer.campaign_name || campaign?.merchant_name || campaign?.name || 'Authorized Merchant';
 
-            // Honest price representation: never invent or synthesize price
-            const hasExplicitPrice = typeof offer.current_price_inr === 'number' && offer.current_price_inr > 0;
-            const hasCouponOrTerms = Boolean(offer.coupon_code || offer.terms || offer.discount);
+            // Honest price representation: provider discount_price or current_price_inr
+            let currentPrice: number | undefined = undefined;
+            if (typeof offer.discount_price === 'number' && offer.discount_price > 0) {
+              currentPrice = offer.discount_price;
+            } else if (typeof offer.discount_price === 'string' && !isNaN(Number(offer.discount_price)) && Number(offer.discount_price) > 0) {
+              currentPrice = Number(offer.discount_price);
+            } else if (typeof offer.current_price_inr === 'number' && offer.current_price_inr > 0) {
+              currentPrice = offer.current_price_inr;
+            }
 
-            if (!hasExplicitPrice && !hasCouponOrTerms) {
+            // Reference baseline price: provider original_price or reference_price_inr
+            let refPrice: number | undefined = undefined;
+            if (typeof offer.original_price === 'number' && offer.original_price > 0) {
+              refPrice = offer.original_price;
+            } else if (typeof offer.original_price === 'string' && !isNaN(Number(offer.original_price)) && Number(offer.original_price) > 0) {
+              refPrice = Number(offer.original_price);
+            } else if (typeof offer.reference_price_inr === 'number' && offer.reference_price_inr > 0) {
+              refPrice = offer.reference_price_inr;
+            }
+
+            // Claimed discount
+            let claimedDiscount: number | undefined = undefined;
+            if (typeof offer.percent_off === 'number' && offer.percent_off > 0) {
+              claimedDiscount = Math.round(offer.percent_off);
+            } else if (typeof offer.percent_off === 'string' && !isNaN(Number(offer.percent_off)) && Number(offer.percent_off) > 0) {
+              claimedDiscount = Math.round(Number(offer.percent_off));
+            } else if (offer.discount) {
+              const match = offer.discount.match(/(\d+)%/);
+              if (match) claimedDiscount = Number(match[1]);
+            }
+
+            const cleanCouponCode = offer.coupon_code ? offer.coupon_code.trim() : undefined;
+            const hasCouponOrTerms = Boolean(cleanCouponCode || offer.terms || offer.description || claimedDiscount || offer.offer_type === 'coupon');
+
+            if (!currentPrice && !hasCouponOrTerms) {
               continue;
             }
 
-            const isCouponDeal = !hasExplicitPrice && hasCouponOrTerms;
+            const isCouponDeal = !currentPrice || offer.offer_type === 'coupon' || Boolean(cleanCouponCode);
 
-            // Link conversion
+            // Category resolution
+            let categoryName = 'eCommerce & Retail';
+            if (Array.isArray(offer.categories) && offer.categories.length > 0) {
+              const c0 = offer.categories[0];
+              categoryName = typeof c0 === 'string' ? c0 : (c0?.name || 'eCommerce & Retail');
+            } else if (offer.category) {
+              categoryName = offer.category;
+            }
+
+            // Link conversion & monetization gate
             let trackingUrl: string | undefined = undefined;
             let isMonetizable = false;
             let affiliateCampaignId: string | undefined = undefined;
 
+            if (offer.tracking_url && CuelinksV3Client.isAllowedTrackingUrl(offer.tracking_url)) {
+              trackingUrl = offer.tracking_url;
+              isMonetizable = true;
+              affiliateCampaignId = String(offer.campaign_id);
+            }
+
             try {
               const convRes = await client.convertLink({
-                url: offer.url,
+                url: merchantUrl,
                 channel_id: channelId,
                 shorten: true,
                 subid: `aro_cl_${offer.id}`,
@@ -728,44 +790,37 @@ export class AutonomousDealDiscoveryEngine {
                 subid3: 'cuelinks_feed'
               });
 
-              if (convRes && convRes.affiliated === true && convRes.tracking_url) {
-                trackingUrl = convRes.tracking_url;
+              if (convRes && convRes.affiliated === true && convRes.tracking_url && CuelinksV3Client.isAllowedTrackingUrl(convRes.tracking_url)) {
+                trackingUrl = convRes.short_url || convRes.tracking_url;
                 isMonetizable = true;
                 if (convRes.campaign?.id) {
                   affiliateCampaignId = String(convRes.campaign.id);
                 }
               }
             } catch {
-              isMonetizable = false;
-              trackingUrl = undefined;
-            }
-
-            let claimedDiscount = 0;
-            if (offer.discount) {
-              const match = offer.discount.match(/(\d+)%/);
-              if (match) claimedDiscount = Number(match[1]);
+              if (!isMonetizable) {
+                trackingUrl = undefined;
+              }
             }
 
             discoveredDeals.push({
               title: offer.title.trim(),
               brand: merchantName,
               merchant: merchantName,
-              category: offer.category || 'eCommerce & Retail',
-              productUrl: offer.url,
+              category: categoryName,
+              productUrl: merchantUrl,
               dealKind: isCouponDeal ? 'COUPON' : 'PRODUCT',
-              currentPriceINR: hasExplicitPrice ? offer.current_price_inr : undefined,
-              referencePriceINR: (hasExplicitPrice && typeof offer.reference_price_inr === 'number' && offer.reference_price_inr > 0)
-                ? offer.reference_price_inr
-                : undefined,
-              claimedDiscountPercent: claimedDiscount > 0 ? claimedDiscount : undefined,
-              couponCode: offer.coupon_code?.trim() || undefined,
-              couponConditions: offer.terms?.trim() || offer.discount?.trim() || undefined,
+              currentPriceINR: currentPrice,
+              referencePriceINR: refPrice,
+              claimedDiscountPercent: claimedDiscount,
+              couponCode: cleanCouponCode,
+              couponConditions: offer.terms?.trim() || offer.description?.trim() || undefined,
               availability: 'IN_STOCK',
               geographicRestrictions: ['India'],
-              offerStart: offer.start_date,
-              expiryDate: offer.end_date,
+              offerStart: offer.start_date || undefined,
+              expiryDate: offer.end_date || undefined,
               observedAt: nowIso,
-              sourceUrl: offer.url,
+              sourceUrl: merchantUrl,
               sourceDomain: 'cuelinks.com',
               sourceType: 'AFFILIATE_NETWORK',
               trackingUrl,
@@ -1768,12 +1823,14 @@ export class AutonomousDealDiscoveryEngine {
 
     // Filter active deals
     let filtered = allDeals.filter(d => {
-      // Hide expired, out-of-stock, rejected, or unverified deals from public active results
+      // Hide expired, out-of-stock, rejected, unverified, unconfirmed, or recheck-required deals from public active results
       if (
         d.verificationStatus === 'EXPIRED' ||
         d.verificationStatus === 'REJECTED' ||
         d.verificationStatus === 'OUT_OF_STOCK' ||
-        d.verificationStatus === 'UNVERIFIED'
+        d.verificationStatus === 'UNVERIFIED' ||
+        d.verificationStatus === 'UNCONFIRMED' ||
+        d.verificationStatus === 'RECHECK_REQUIRED'
       ) {
         return false;
       }
@@ -2337,6 +2394,22 @@ export class AutonomousDealDiscoveryEngine {
             const inputs = JSON.parse(row.inputs_json || '{}');
             const outputs = JSON.parse(row.outputs_json || '{}');
             const rejectionReasons = row.error_info ? JSON.parse(row.error_info) : [];
+            const outputsEvidence = outputs.evidence;
+
+            // Audit check: Verify durable evidence and observation provenance.
+            // Legacy records lacking explicit primary observation timestamps or price history are quarantined as UNCONFIRMED.
+            const hasVerifiableEvidence = Boolean(
+              inputs.observedAt &&
+              (outputsEvidence?.priceHistory?.length || (outputsEvidence?.verificationLogs && outputsEvidence.verificationLogs.length > 0))
+            );
+
+            let verificationStatus = row.status as DealVerificationStatus;
+            if (!hasVerifiableEvidence && (verificationStatus === 'VERIFIED' || verificationStatus === 'VERIFIED_WITH_CONDITIONS')) {
+              verificationStatus = 'UNCONFIRMED';
+              if (!rejectionReasons.includes('LEGACY_UNVERIFIED_PROVENANCE: Record lacks primary observation evidence or fresh SKU audit.')) {
+                rejectionReasons.push('LEGACY_UNVERIFIED_PROVENANCE: Record lacks primary observation evidence or fresh SKU audit.');
+              }
+            }
 
             const deal: NormalizedDeal = {
               id: row.id,
@@ -2362,7 +2435,7 @@ export class AutonomousDealDiscoveryEngine {
               sourceUrl: inputs.sourceUrl || '',
               sourceDomain: inputs.sourceDomain || '',
               sourceType: inputs.sourceType || 'RETAILER_BRAND',
-              verificationStatus: row.status as DealVerificationStatus,
+              verificationStatus,
               confidenceScore: outputs.confidenceScore || 80,
               buyerValueScore: outputs.buyerValueScore || 0,
               rejectionReasons,
