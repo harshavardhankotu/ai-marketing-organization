@@ -5234,7 +5234,77 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
     ledgerApprovedCommissionINR = commApprovedRow?.s || 0;
   } catch {}
 
-  // 6. Bank Cash Received (Strict Empirical Truth)
+  // 6. Direct B2B Lead Conversion Funnel
+  let prospectsResearched = 0;
+  let inquiriesReceived = 0;
+  let outreachDraftsPrepared = 0;
+  let proposalsSent = 0;
+  let proposalsAccepted = 0;
+  let verifiedClientPaymentsINR = 0.00;
+
+  try {
+    const prosRow = await d1Repo.queryOne<any>(
+      'platform_prospects',
+      "SELECT COUNT(*) as c FROM platform_prospects WHERE is_test = 0 AND is_junk = 0"
+    );
+    prospectsResearched = prosRow?.c || 0;
+
+    const inqRow = await d1Repo.queryOne<any>(
+      'platform_prospects',
+      "SELECT COUNT(*) as c FROM platform_prospects WHERE is_test = 0 AND (source IN ('OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', 'homepage_b2b_inquiry') OR discovery_source = 'DIRECT_INBOUND')"
+    );
+    inquiriesReceived = inqRow?.c || 0;
+
+    const outreachRow = await d1Repo.queryOne<any>(
+      'direct_outreach_log',
+      "SELECT COUNT(*) as c FROM direct_outreach_log"
+    );
+    outreachDraftsPrepared = outreachRow?.c || 0;
+
+    const propSentRow = await d1Repo.queryOne<any>(
+      'proposals',
+      "SELECT COUNT(*) as c FROM proposals WHERE is_test = 0 AND status IN ('SENT', 'VIEWED', 'ACCEPTED', 'PAYMENT_REQUESTED')"
+    );
+    proposalsSent = propSentRow?.c || 0;
+
+    const propAccRow = await d1Repo.queryOne<any>(
+      'proposals',
+      "SELECT COUNT(*) as c FROM proposals WHERE is_test = 0 AND status = 'ACCEPTED'"
+    );
+    proposalsAccepted = propAccRow?.c || 0;
+
+    const clientPayRow = await d1Repo.queryOne<any>(
+      'revenue_records',
+      "SELECT COALESCE(SUM(amount_inr), 0) as s FROM revenue_records WHERE verified = 1 AND is_test = 0 AND (classification = 'REAL' OR classification = 'OWNER_CONFIRMED' OR classification = 'MANUAL_VERIFIED')"
+    );
+    verifiedClientPaymentsINR = Number(clientPayRow?.s || 0);
+  } catch {}
+
+  // 7. Operating Costs (Strict ₹0 Cash Outflow Rule)
+  const operatingCosts = {
+    hostingCostINR: 0.00,
+    databaseCostINR: 0.00,
+    aiModelCostINR: 0.00,
+    paidToolCostINR: 0.00,
+    totalOperatingCostINR: 0.00,
+    costBreakdown: [
+      { category: 'Hosting', provider: 'Render (Free Web Service Tier)', costINR: 0.00 },
+      { category: 'Database', provider: 'Cloudflare D1 (Free Tier Allocation)', costINR: 0.00 },
+      { category: 'AI Inference', provider: 'Google Gemini (Free Tier Quota)', costINR: 0.00 },
+      { category: 'Software Licenses', provider: 'Client-Owned WhatsApp & Google Sheets', costINR: 0.00 }
+    ]
+  };
+
+  // 8. Profitability Accounting
+  const profitability = {
+    grossRevenueCollectedINR: verifiedClientPaymentsINR,
+    totalOperatingCostINR: operatingCosts.totalOperatingCostINR,
+    netOperatingContributionINR: verifiedClientPaymentsINR - operatingCosts.totalOperatingCostINR,
+    bankCashReceivedINR: 0.00,
+    laborExclusionNote: 'Owner engineering and commercial operations labor is excluded from cash operating costs.'
+  };
+
+  // 9. Bank Cash Received (Strict Empirical Truth)
   const bankCashReceivedINR = 0.00;
 
   return c.json({
@@ -5251,6 +5321,16 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
         approvedCommissionINR: cuelinksData.approvedCommissionINR || ledgerApprovedCommissionINR,
         bankCashReceivedINR
       },
+      b2bFunnel: {
+        prospectsResearched,
+        inquiriesReceived,
+        outreachDraftsPrepared,
+        proposalsSent,
+        proposalsAccepted,
+        verifiedClientPaymentsINR
+      },
+      operatingCosts,
+      profitability,
       provider: cuelinksData,
       monetizedPartners: [
         {

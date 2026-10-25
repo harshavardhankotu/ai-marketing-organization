@@ -155,6 +155,485 @@ export class DirectCommercialOfferPage {
   }
 
   /**
+   * Public server-rendered homepage (GET /) positioning the B2B AI Inbound Lead Triage solution
+   * for Indian healthcare and local practices, with cleanly segregated consumer affiliate links.
+   */
+  public renderHomepageHtml(config: Partial<OfferPageConfig> = {}): string {
+    const siteName = config.siteName || (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
+    const siteUrl = config.siteUrl || (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').trim();
+    const contactEmail = config.contactEmail || (process.env.PUBLIC_CONTACT_EMAIL ? process.env.PUBLIC_CONTACT_EMAIL.trim() : null);
+
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Inbound Lead Triage &amp; Missed-Inquiry Follow-Up | ${siteName}</title>
+  <meta name="description" content="Turn after-hours patient inquiries into booked appointments. 24/7 WhatsApp away triage, top 10 quick replies, and calendar integration for Indian healthcare and dental practices.">
+  <link rel="canonical" href="${siteUrl}/">
+  <meta name="robots" content="index, follow">
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #090d16;
+      --card-bg: #111827;
+      --card-border: #1e293b;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent: #06b6d4;
+      --accent-hover: #22d3ee;
+      --warning: #f59e0b;
+      --success: #10b981;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text-main);
+      line-height: 1.6;
+    }
+    nav.top-nav {
+      background: #0b1120;
+      border-bottom: 1px solid var(--card-border);
+      padding: 1rem 1.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 1rem;
+    }
+    .brand { font-weight: 800; font-size: 1.15rem; color: #fff; text-decoration: none; }
+    .nav-links { display: flex; gap: 1.25rem; align-items: center; flex-wrap: wrap; }
+    .nav-links a { color: var(--text-muted); text-decoration: none; font-size: 0.9rem; font-weight: 500; }
+    .nav-links a:hover, .nav-links a.active { color: var(--accent); }
+    .container { max-width: 980px; margin: 0 auto; padding: 2.5rem 1.25rem; }
+    .hero { text-align: center; margin-bottom: 3.5rem; }
+    .status-badge {
+      display: inline-block;
+      background: rgba(6, 182, 212, 0.12);
+      color: #38bdf8;
+      border: 1px solid rgba(6, 182, 212, 0.3);
+      padding: 0.35rem 0.9rem;
+      border-radius: 999px;
+      font-size: 0.82rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      margin-bottom: 1.25rem;
+      text-transform: uppercase;
+    }
+    h1 {
+      font-size: 2.5rem;
+      font-weight: 800;
+      color: #ffffff;
+      line-height: 1.2;
+      margin-bottom: 1rem;
+    }
+    p.subtitle {
+      font-size: 1.15rem;
+      color: var(--text-muted);
+      max-width: 760px;
+      margin: 0 auto 1.75rem auto;
+    }
+    .cta-group { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
+    .btn {
+      display: inline-block;
+      padding: 0.75rem 1.5rem;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 0.95rem;
+      text-decoration: none;
+      cursor: pointer;
+      border: none;
+    }
+    .btn-primary { background: var(--accent); color: #090d16; }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-secondary { background: #1e293b; color: #fff; border: 1px solid var(--card-border); }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 14px;
+      padding: 2rem;
+      margin-bottom: 2rem;
+    }
+    .card h2 { font-size: 1.4rem; color: #fff; margin-bottom: 1rem; }
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1.25rem;
+    }
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 1.5rem;
+    }
+    .feature-item {
+      background: #0b1120;
+      border: 1px solid var(--card-border);
+      border-radius: 10px;
+      padding: 1.25rem;
+    }
+    .feature-item h3 { font-size: 1.1rem; color: #fff; margin-bottom: 0.5rem; }
+    .feature-item p { font-size: 0.9rem; color: #cbd5e1; line-height: 1.5; }
+    .sample-badge {
+      background: rgba(245, 158, 11, 0.15);
+      color: #fbbf24;
+      border: 1px solid rgba(245, 158, 11, 0.3);
+      padding: 0.25rem 0.6rem;
+      border-radius: 6px;
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    footer {
+      background: #0b1120;
+      border-top: 1px solid var(--card-border);
+      padding: 2.5rem 1.5rem;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+    }
+    footer a { color: var(--accent); text-decoration: none; }
+  </style>
+</head>
+<body>
+  <nav class="top-nav">
+    <a href="/" class="brand">${siteName}</a>
+    <div class="nav-links">
+      <a href="/" class="active">B2B Lead Triage</a>
+      <a href="/offer">Commercial Overview</a>
+      <a href="#interactive-demo">Interactive Demo</a>
+      <a href="/revenue">Revenue Funnel</a>
+      <a href="/deals">Consumer Deals</a>
+      <a href="/guides/student-flight-discounts-india">Travel Guides</a>
+    </div>
+  </nav>
+
+  <div class="container">
+    <header class="hero">
+      <div class="status-badge">AI Inbound Lead Conversion System • India First</div>
+      <h1>Never Lose Another Evening Patient Inquiry</h1>
+      <p class="subtitle">
+        24/7 automated WhatsApp away triage, instant clinical qualification, and calendar booking integration for Indian healthcare practices, dental clinics, and professional services.
+      </p>
+      <div class="cta-group">
+        <a href="#interactive-demo" class="btn btn-primary">Try Interactive Demo</a>
+        <a href="#inquiry-card" class="btn btn-secondary">Request Clinic Walkthrough</a>
+      </div>
+    </header>
+
+    <!-- The Problem Section -->
+    <div class="card">
+      <h2>The Problem: The 8 PM to 8 AM Inquiry Gap</h2>
+      <p style="color: #cbd5e1; font-size: 1.05rem; margin-bottom: 1.5rem;">
+        Indian dental clinics and specialty practices lose high-value patients every evening because prospective clients research treatments outside reception working hours.
+      </p>
+      <div class="grid-3">
+        <div class="feature-item">
+          <div style="color: #f87171; font-size: 1.3rem; margin-bottom: 0.35rem;">⏰ 8 PM – 8 AM Dark Hours</div>
+          <h3>Evening Inquiries Go Unanswered</h3>
+          <p>Patients reach out via Google Business Profile and WhatsApp after work. With clinic desks closed, messages wait until 10 AM next morning.</p>
+        </div>
+        <div class="feature-item">
+          <div style="color: #fbbf24; font-size: 1.3rem; margin-bottom: 0.35rem;">⚡ 15-Minute Window</div>
+          <h3>Immediate Competitor Leakage</h3>
+          <p>68% of patients in competitive metro areas message another clinic if they do not receive an immediate confirmation within 15 minutes.</p>
+        </div>
+        <div class="feature-item">
+          <div style="color: #38bdf8; font-size: 1.3rem; margin-bottom: 0.35rem;">📉 Lost Lifetime Value</div>
+          <h3>High Revenue Opportunity Loss</h3>
+          <p>A single lost dental implant or orthodontics inquiry costs ₹25,000 to ₹60,000 in clinic procedural revenue.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Defined Deliverables Section -->
+    <div class="card">
+      <h2>What We Deploy: The 4-Part Triage Architecture</h2>
+      <p style="color: #cbd5e1; font-size: 1rem; margin-bottom: 1.5rem;">
+        A complete, turnkey technical deployment integrated into your practice's existing WhatsApp Business and Google Workspace in 5 days.
+      </p>
+      <div class="grid-2">
+        <div class="feature-item">
+          <h3 style="color: #38bdf8;">1. 24/7 WhatsApp Instant Away Triage</h3>
+          <p>Automated sub-60-second response to after-hours WhatsApp inquiries and missed calls with empathetic clinic greetings and emergency triage protocols.</p>
+        </div>
+        <div class="feature-item">
+          <h3 style="color: #34d399;">2. Top 10 Practice Quick Replies</h3>
+          <p>Trained responses for your clinic's top queries: implant pricing ranges, root canals, braces/aligners, consultation fees, clinic timings, and maps location.</p>
+        </div>
+        <div class="feature-item">
+          <h3 style="color: #fbbf24;">3. Direct Calendar Appointment Booking</h3>
+          <p>Integrated booking link allowing patients to pick an available doctor consultation slot immediately, eliminating receptionist back-and-forth.</p>
+        </div>
+        <div class="feature-item">
+          <h3 style="color: #a78bfa;">4. Shared Real-Time Inquiry Tracking Sheet</h3>
+          <p>Zero extra software license fees. Qualified inquiries automatically populate a shared Google Sheet with patient name, phone, procedure interest, and priority tag.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Interactive Demonstration with Sample Data Explicitly Labelled -->
+    <div class="card" id="interactive-demo">
+      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem;">
+        <h2 style="margin: 0;">Interactive Demonstration: Inbound Patient Triage</h2>
+        <span class="sample-badge">SAMPLE DATA ONLY — INBOUND PATIENT TRIAGE PREVIEW</span>
+      </div>
+      <p style="color: #94a3b8; font-size: 0.95rem; margin-bottom: 1.25rem;">
+        Experience how an after-hours patient inquiry is triaged in under 30 seconds. Click a sample scenario below to view the simulated conversation:
+      </p>
+
+      <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1.25rem;">
+        <button type="button" class="btn btn-secondary" onclick="switchDemoHome('pain')" id="btn-demo-h-pain" style="background: #0284c7; color: #fff; border-color: #38bdf8; font-size: 0.85rem;">1. Tooth Pain Emergency (Sunday 9:15 PM)</button>
+        <button type="button" class="btn btn-secondary" onclick="switchDemoHome('implants')" id="btn-demo-h-implants" style="font-size: 0.85rem;">2. Dental Implant Inquiry (Saturday 8:30 PM)</button>
+        <button type="button" class="btn btn-secondary" onclick="switchDemoHome('aligners')" id="btn-demo-h-aligners" style="font-size: 0.85rem;">3. Clear Aligners Consultation (Weekday 10:00 PM)</button>
+      </div>
+
+      <div style="background: #0b1120; border: 1px solid var(--card-border); border-radius: 12px; padding: 1.25rem; max-width: 620px; margin: 0 auto; box-shadow: 0 4px 20px rgba(0,0,0,0.5);">
+        <div style="border-bottom: 1px solid var(--card-border); padding-bottom: 0.75rem; margin-bottom: 1rem; display: flex; align-items: center; justify-content: space-between;">
+          <div style="display: flex; align-items: center; gap: 0.75rem;">
+            <div style="width: 36px; height: 36px; border-radius: 50%; background: #0284c7; display: flex; align-items: center; justify-content: center; font-weight: bold; color: #fff;">A</div>
+            <div>
+              <div style="font-weight: 700; color: #fff; font-size: 0.95rem;">Apex Dental Triage Assistant</div>
+              <div style="color: #34d399; font-size: 0.75rem;">● Active • Responds in &lt;60s</div>
+            </div>
+          </div>
+          <span style="font-size: 0.75rem; color: #64748b; background: #111827; padding: 0.2rem 0.5rem; border-radius: 4px;">DEMO PREVIEW</span>
+        </div>
+        <div id="demo-chat-box-home" style="display: flex; flex-direction: column; gap: 0.75rem;"></div>
+      </div>
+      <p style="text-align: center; color: #64748b; font-size: 0.8rem; margin-top: 1rem;">
+        * Notice: The conversation above demonstrates sample triage flows with simulated data. Actual client deployments are customized to the practice's verified schedule, treatment fees, and phone numbers.
+      </p>
+    </div>
+
+    <!-- Commercial Terms & Pricing Transparency -->
+    <div class="card">
+      <h2>Transparent Commercial Terms</h2>
+      <div class="grid-2">
+        <div>
+          <h3 style="color: #38bdf8; font-size: 1.2rem; margin-bottom: 0.5rem;">Introductory Pilot Implementation</h3>
+          <p style="color: #cbd5e1; font-size: 0.95rem; margin-bottom: 0.75rem;">
+            <strong>Setup Investment:</strong> Custom proposal reviewed and approved directly by the human owner (starting from ₹15,000 one-time setup).
+          </p>
+          <p style="color: #94a3b8; font-size: 0.9rem;">
+            Includes full workflow configuration, prompt tuning, Google Calendar synchronization, receptionist training, and 14-day handover monitoring.
+          </p>
+        </div>
+        <div>
+          <h3 style="color: #34d399; font-size: 1.2rem; margin-bottom: 0.5rem;">Zero Mandatory Third-Party SaaS Fees</h3>
+          <p style="color: #cbd5e1; font-size: 0.95rem; margin-bottom: 0.75rem;">
+            <strong>100% Free Client-Owned Tools:</strong> Built on your existing free WhatsApp Business application and Google Workspace accounts.
+          </p>
+          <p style="color: #94a3b8; font-size: 0.9rem;">
+            No recurring hidden software licenses. You own all patient records, spreadsheet logs, and calendar schedules directly.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Genuine Inbound Contact / Enquiry Form -->
+    <div class="card" id="inquiry-card">
+      <h2>Request System Demonstration For Your Practice</h2>
+      <p style="color: #94a3b8; font-size: 0.95rem; margin-bottom: 1.25rem;">
+        Submit your practice details for a confidential system demonstration. The owner will review your practice's after-hours setup and provide a tailored walkthrough.
+      </p>
+      <form id="lead-inquiry-form-home" onsubmit="handleInquirySubmitHome(event)">
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; margin-bottom: 1rem;">
+          <div>
+            <label style="display: block; font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.25rem;">Doctor / Contact Name *</label>
+            <input type="text" id="cust-name-h" required placeholder="Dr. Rajesh Sharma" style="width: 100%; padding: 0.6rem; border-radius: 8px; border: 1px solid #334155; background: #0b1120; color: #fff; font-size: 0.9rem;">
+          </div>
+          <div>
+            <label style="display: block; font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.25rem;">WhatsApp / Mobile Number *</label>
+            <input type="tel" id="cust-phone-h" required placeholder="9876543210" style="width: 100%; padding: 0.6rem; border-radius: 8px; border: 1px solid #334155; background: #0b1120; color: #fff; font-size: 0.9rem;">
+          </div>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; margin-bottom: 1rem;">
+          <div>
+            <label style="display: block; font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.25rem;">Clinic / Practice Name &amp; City *</label>
+            <input type="text" id="cust-service-h" required placeholder="Apex Dental Clinic, Hyderabad" style="width: 100%; padding: 0.6rem; border-radius: 8px; border: 1px solid #334155; background: #0b1120; color: #fff; font-size: 0.9rem;">
+          </div>
+          <div>
+            <label style="display: block; font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.25rem;">Email (Optional)</label>
+            <input type="email" id="cust-email-h" placeholder="contact@apexdental.com" style="width: 100%; padding: 0.6rem; border-radius: 8px; border: 1px solid #334155; background: #0b1120; color: #fff; font-size: 0.9rem;">
+          </div>
+        </div>
+        <div style="margin-bottom: 1.25rem;">
+          <label style="display: block; font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.25rem;">Primary Inquiry Challenge (e.g. evening patient calls, WhatsApp FAQ automation)</label>
+          <textarea id="cust-notes-h" rows="2" placeholder="Patients reaching out after 8 PM wait until next morning. Want instant 24/7 WhatsApp qualification." style="width: 100%; padding: 0.6rem; border-radius: 8px; border: 1px solid #334155; background: #0b1120; color: #fff; font-size: 0.9rem; font-family: inherit;"></textarea>
+        </div>
+        <div style="margin-bottom: 1.25rem;">
+          <label style="display: flex; align-items: flex-start; gap: 0.5rem; font-size: 0.85rem; color: #cbd5e1; cursor: pointer;">
+            <input type="checkbox" id="cust-consent-h" required style="margin-top: 0.2rem; cursor: pointer;">
+            <span>I agree that the name and contact number I submit will be used by the owner to respond to this inquiry. Data is kept for 30 days and deleted on request under DPDP Act 2023. See <a href="/privacy" target="_blank" style="color: var(--accent); text-decoration: underline;">/privacy</a>.</span>
+          </label>
+        </div>
+        <div style="position: absolute; left: -9999px; opacity: 0; pointer-events: none;" aria-hidden="true">
+          <input type="text" name="website_trap" id="cust-trap-h" tabindex="-1" autocomplete="off" value="">
+        </div>
+        <button type="submit" id="submit-btn-h" class="btn btn-primary" style="width: 100%; padding: 0.85rem 1.5rem;">
+          Request Lead Triage Demonstration
+        </button>
+        <div id="form-msg-h" style="display: none; margin-top: 1rem; padding: 0.75rem; border-radius: 8px; text-align: center; font-size: 0.9rem;"></div>
+      </form>
+    </div>
+
+    <!-- Segregated Consumer Affiliate Research & Guides -->
+    <div class="card" style="border-color: #334155; background: #0b1120;">
+      <h2 style="font-size: 1.2rem; color: #94a3b8; margin-bottom: 0.75rem;">Consumer Research &amp; Flight Guides Directory</h2>
+      <p style="color: #64748b; font-size: 0.88rem; margin-bottom: 1rem;">
+        In addition to our B2B lead triage consultancy, we publish independently verified consumer price intelligence and student travel guides:
+      </p>
+      <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
+        <a href="/deals" style="background: #111827; border: 1px solid #1e293b; padding: 0.6rem 1rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.85rem;">
+          🏷️ Verified Indian Deals Directory &rarr;
+        </a>
+        <a href="/guides/student-flight-discounts-india" style="background: #111827; border: 1px solid #1e293b; padding: 0.6rem 1rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.85rem;">
+          ✈️ Student Flight Baggage &amp; Fare Guide &rarr;
+        </a>
+        <a href="/revenue" style="background: #111827; border: 1px solid #1e293b; padding: 0.6rem 1rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.85rem;">
+          📊 Transparent Public Revenue Funnel &rarr;
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    <p>&copy; ${new Date().getFullYear()} ${siteName}. All rights reserved.</p>
+    <p style="margin-top: 0.5rem; max-width: 780px; margin-left: auto; margin-right: auto; line-height: 1.5; color: #64748b; font-size: 0.8rem;">
+      <strong>Statutory Affiliate Disclosure:</strong> Consumer buying guides and promotional deal directories on this platform contain verified affiliate links to partner platforms (Akasa Air, Air India Express, Cleartrip, boAt, Lenovo, Amazon). When visitors make qualifying bookings or purchases through those links, we may receive an affiliate commission at zero additional cost to the purchaser. Our B2B direct lead triage service is a separate professional consulting offering.
+    </p>
+    <p style="margin-top: 0.75rem;">
+      <a href="/privacy">Privacy Policy</a> • <a href="/revenue">Revenue Funnel</a> • <a href="/offer">Service Overview</a> • <a href="/deals">Deals</a> • ${contactEmail ? `Contact: <a href="mailto:${contactEmail}">${contactEmail}</a>` : 'Contact: Inquiries via Form'}
+    </p>
+  </footer>
+
+  <script>
+    var demoScenariosHome = {
+      pain: {
+        time: 'Sunday, 9:15 PM',
+        patient: 'Hi doctor, I am having sharp tooth pain on my lower right molar since this evening. It throbs when lying down. Do you have emergency appointments available?',
+        bot: 'Hello, thank you for reaching Apex Dental Care. We are sorry to hear you are in severe pain.\\n\\nWhile our physical clinic is currently closed (hours 9 AM – 8 PM), Dr. Suresh has reserved emergency slots for tomorrow morning starting at 9:30 AM.\\n\\nIn the meantime, rinse gently with warm salt water and avoid chewing on that side. Would you like me to hold the 9:30 AM or 10:15 AM priority slot for you?',
+        slot: 'Tomorrow 9:30 AM - Priority Slot'
+      },
+      implants: {
+        time: 'Saturday, 8:30 PM',
+        patient: 'Hello, I wanted to know about dental implants. I am missing two teeth in the back. What is the approximate cost and how many visits does it take?',
+        bot: 'Hello, thank you for contacting Apex Dental Care! Dental implants are our core specialty, and Dr. Suresh provides complete 3D digital implant planning.\\n\\nFor two missing back teeth, we provide premium Korean and Swiss implants starting from ₹22,000 per implant (including abutment and ceramic crown). The preliminary 3D CBCT scan consultation takes about 30 minutes.\\n\\nWould you like to schedule an implant assessment this Monday or Tuesday?',
+        slot: 'Monday 11:00 AM - Implant Assessment'
+      },
+      aligners: {
+        time: 'Weekday, 10:00 PM',
+        patient: 'Hi, do you offer invisible aligners? How long does mild crowding take to fix and do you have weekend consultation slots?',
+        bot: 'Hello, thanks for reaching out to Apex Dental Care! Yes, we are an authorized Invisalign and ClearCorrect provider.\\n\\nMild front teeth crowding is typically completed in 4 to 6 months with clear aligners. We do have Saturday and Sunday afternoon slots dedicated to digital smile scans.\\n\\nWe can schedule a 3D intraoral scan consultation this Saturday at 11:30 AM or 3:00 PM. Which time suits your schedule best?',
+        slot: 'Saturday 11:30 AM - Aligners Scan'
+      }
+    };
+
+    function switchDemoHome(key) {
+      var s = demoScenariosHome[key] || demoScenariosHome.pain;
+      var tabs = ['pain', 'implants', 'aligners'];
+      tabs.forEach(function(t) {
+        var el = document.getElementById('btn-demo-h-' + t);
+        if (!el) return;
+        if (t === key) {
+          el.style.background = '#0284c7';
+          el.style.color = '#fff';
+          el.style.borderColor = '#38bdf8';
+        } else {
+          el.style.background = '#1e293b';
+          el.style.color = '#94a3b8';
+          el.style.borderColor = '#334155';
+        }
+      });
+
+      var box = document.getElementById('demo-chat-box-home');
+      if (!box) return;
+      box.innerHTML = 
+        '<div style="align-self: flex-end; max-width: 85%; background: #065f46; color: #e6fffa; padding: 0.65rem 0.9rem; border-radius: 12px 12px 0 12px; font-size: 0.88rem; line-height: 1.4;">' +
+          '<div>' + s.patient + '</div>' +
+          '<div style="text-align: right; font-size: 0.72rem; color: #a7f3d0; margin-top: 0.35rem;">' + s.time + ' ✓✓</div>' +
+        '</div>' +
+        '<div style="align-self: flex-start; max-width: 85%; background: #1e293b; color: #f8fafc; padding: 0.65rem 0.9rem; border-radius: 12px 12px 12px 0; font-size: 0.88rem; line-height: 1.4; border: 1px solid #334155;">' +
+          '<div>' + s.bot.replace(/\\n/g, '<br>') + '</div>' +
+          '<div style="margin-top: 0.6rem; border-top: 1px solid #334155; padding-top: 0.5rem;">' +
+            '<a href="#inquiry-card" style="display: inline-block; background: #0284c7; color: #fff; text-decoration: none; padding: 0.35rem 0.7rem; border-radius: 6px; font-size: 0.8rem; font-weight: 600;">Reserve Slot: ' + s.slot + '</a>' +
+          '</div>' +
+          '<div style="text-align: right; font-size: 0.72rem; color: #94a3b8; margin-top: 0.35rem;">Triage Response in 28s ✓✓</div>' +
+        '</div>';
+    }
+    switchDemoHome('pain');
+
+    async function handleInquirySubmitHome(e) {
+      e.preventDefault();
+      var btn = document.getElementById('submit-btn-h');
+      var msg = document.getElementById('form-msg-h');
+      var consent = document.getElementById('cust-consent-h');
+      if (!consent || !consent.checked) {
+        msg.style.display = 'block';
+        msg.style.background = 'rgba(239, 68, 68, 0.15)';
+        msg.style.color = '#f87171';
+        msg.style.border = '1px solid rgba(239, 68, 68, 0.3)';
+        msg.innerText = 'Error: Explicit consent is required to submit an inquiry under DPDP Act.';
+        return;
+      }
+
+      btn.disabled = true;
+      btn.innerText = 'Submitting Request...';
+      msg.style.display = 'block';
+      msg.style.background = 'rgba(56, 189, 248, 0.15)';
+      msg.style.color = '#38bdf8';
+      msg.style.border = '1px solid rgba(56, 189, 248, 0.3)';
+      msg.innerText = 'Connecting to server...';
+
+      var payload = {
+        customerName: document.getElementById('cust-name-h').value.trim(),
+        customerPhone: document.getElementById('cust-phone-h').value.trim(),
+        customerEmail: (document.getElementById('cust-email-h') || {}).value ? document.getElementById('cust-email-h').value.trim() : undefined,
+        serviceOfInterest: document.getElementById('cust-service-h').value.trim(),
+        notes: document.getElementById('cust-notes-h').value.trim(),
+        website_trap: (document.getElementById('cust-trap-h') || {}).value || '',
+        consentGiven: true,
+        source: 'homepage_b2b_inquiry',
+        channel: 'WHATSAPP'
+      };
+
+      try {
+        var res = await fetch('/api/v1/offer/inquiry', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        var data = await res.json();
+        if (data.success) {
+          msg.style.display = 'block';
+          msg.style.background = 'rgba(16, 185, 129, 0.15)';
+          msg.style.color = '#34d399';
+          msg.style.border = '1px solid rgba(16, 185, 129, 0.3)';
+          var delCodeNotice = data.deletionCode ? '<br><small style="color:#94a3b8;font-size:0.85rem;display:block;margin-top:0.5rem;">Your DPDP deletion code: <strong style="color:#38bdf8;">' + data.deletionCode + '</strong> (keep this to request data deletion)</small>' : '';
+          msg.innerHTML = '✓ ' + (data.message || 'Thank you. The owner will review your practice and reach out shortly.') + delCodeNotice;
+          document.getElementById('lead-inquiry-form-home').reset();
+          btn.style.display = 'none';
+        } else {
+          throw new Error(data.error || 'Submission failed');
+        }
+      } catch (err) {
+        msg.style.display = 'block';
+        msg.style.background = 'rgba(239, 68, 68, 0.15)';
+        msg.style.color = '#f87171';
+        msg.style.border = '1px solid rgba(239, 68, 68, 0.3)';
+        msg.innerText = 'Error: ' + err.message;
+        btn.disabled = false;
+        btn.innerText = 'Request Lead Triage Demonstration';
+      }
+    }
+  </script>
+</body>
+</html>`;
+  }
+
+  /**
    * Safe, non-payment informational overview page shown when commercial terms are pending owner attestation.
    * Zero unconfirmed prices, zero guarantees, zero fake UPI VPAs, zero WhatsApp CTAs with unverified numbers.
    */
@@ -272,12 +751,68 @@ export class DirectCommercialOfferPage {
     </header>
 
     <div class="card">
-      <h2>The Problem</h2>
+      <h2>The Problem: The 8 PM to 8 AM Inquiry Gap</h2>
       <p style="color: #cbd5e1; font-size: 1.05rem; line-height: 1.6; margin-bottom: 0.75rem;">
-        Local service businesses lose prospective clients every day when inquiries arrive outside working hours. When high-intent prospective customers reach out via online profiles or WhatsApp in the evening, responses often wait until the next morning — by which time they have already contacted a competitor.
+        Local service businesses and Indian dental practices lose prospective clients every day when inquiries arrive outside working hours (8 PM to 8 AM) or when Google Business Profile chat features are shut down. When high-intent prospective customers reach out via online profiles or WhatsApp in the evening, responses often wait until the next morning — by which time they have already contacted a competitor.
       </p>
       <p style="color: #94a3b8; font-size: 0.95rem; line-height: 1.6;">
         Our automated inquiry triage architecture qualifies new inquiries within minutes and coordinates calendar appointments without manual messaging delay.
+      </p>
+    </div>
+
+    <div class="card">
+      <h2>Scope of Technical Deliverables</h2>
+      <div class="grid-2">
+        <div style="background: #0b1120; border: 1px solid var(--card-border); border-radius: 10px; padding: 1.25rem;">
+          <h3 style="color: #38bdf8; font-size: 1.05rem; margin-bottom: 0.4rem;">1. 24/7 WhatsApp Away Triage</h3>
+          <p style="font-size: 0.88rem; color: #cbd5e1; line-height: 1.5;">Sub-60-second response to after-hours patient queries and missed calls with empathetic greetings and triage classification.</p>
+        </div>
+        <div style="background: #0b1120; border: 1px solid var(--card-border); border-radius: 10px; padding: 1.25rem;">
+          <h3 style="color: #34d399; font-size: 1.05rem; margin-bottom: 0.4rem;">2. Top 10 Practice Quick Replies</h3>
+          <p style="font-size: 0.88rem; color: #cbd5e1; line-height: 1.5;">Automated instant answers for implant price guidance, root canals, braces/aligners, clinic timings, and location.</p>
+        </div>
+        <div style="background: #0b1120; border: 1px solid var(--card-border); border-radius: 10px; padding: 1.25rem;">
+          <h3 style="color: #fbbf24; font-size: 1.05rem; margin-bottom: 0.4rem;">3. Direct Calendar Appointment Booking</h3>
+          <p style="font-size: 0.88rem; color: #cbd5e1; line-height: 1.5;">Integrated booking link allowing patients to reserve consultation slots directly without receptionist ping-pong.</p>
+        </div>
+        <div style="background: #0b1120; border: 1px solid var(--card-border); border-radius: 10px; padding: 1.25rem;">
+          <h3 style="color: #a78bfa; font-size: 1.05rem; margin-bottom: 0.4rem;">4. Shared Inquiry Tracking Sheet</h3>
+          <p style="font-size: 0.88rem; color: #cbd5e1; line-height: 1.5;">Real-time Google Sheet synchronization. Zero monthly SaaS cost (100% free client-owned tools).</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Interactive Demonstration with Sample Data Explicitly Labelled -->
+    <div class="card" id="interactive-demo-overview">
+      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem;">
+        <h2 style="margin: 0;">Interactive Demonstration: Inbound Patient Triage</h2>
+        <span style="background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); padding: 0.25rem 0.6rem; border-radius: 6px; font-size: 0.78rem; font-weight: 700; text-transform: uppercase;">SAMPLE DATA ONLY — INBOUND PATIENT TRIAGE PREVIEW</span>
+      </div>
+      <p style="color: #94a3b8; font-size: 0.95rem; margin-bottom: 1.25rem;">
+        Simulate how an after-hours patient inquiry is triaged in under 30 seconds:
+      </p>
+
+      <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1.25rem;">
+        <button type="button" onclick="switchDemoOverview('pain')" id="btn-demo-o-pain" style="background: #0284c7; color: #fff; border: 1px solid #38bdf8; padding: 0.5rem 0.9rem; border-radius: 8px; font-size: 0.85rem; font-weight: 600; cursor: pointer;">1. Tooth Pain Emergency (Sunday 9:15 PM)</button>
+        <button type="button" onclick="switchDemoOverview('implants')" id="btn-demo-o-implants" style="background: #1e293b; color: #94a3b8; border: 1px solid #334155; padding: 0.5rem 0.9rem; border-radius: 8px; font-size: 0.85rem; font-weight: 600; cursor: pointer;">2. Dental Implant Inquiry (Saturday 8:30 PM)</button>
+        <button type="button" onclick="switchDemoOverview('aligners')" id="btn-demo-o-aligners" style="background: #1e293b; color: #94a3b8; border: 1px solid #334155; padding: 0.5rem 0.9rem; border-radius: 8px; font-size: 0.85rem; font-weight: 600; cursor: pointer;">3. Clear Aligners Consultation (Weekday 10:00 PM)</button>
+      </div>
+
+      <div style="background: #0b1120; border: 1px solid var(--card-border); border-radius: 12px; padding: 1.25rem; max-width: 620px; margin: 0 auto; box-shadow: 0 4px 20px rgba(0,0,0,0.5);">
+        <div style="border-bottom: 1px solid var(--card-border); padding-bottom: 0.75rem; margin-bottom: 1rem; display: flex; align-items: center; justify-content: space-between;">
+          <div style="display: flex; align-items: center; gap: 0.75rem;">
+            <div style="width: 36px; height: 36px; border-radius: 50%; background: #0284c7; display: flex; align-items: center; justify-content: center; font-weight: bold; color: #fff;">A</div>
+            <div>
+              <div style="font-weight: 700; color: #fff; font-size: 0.95rem;">Apex Dental Triage Assistant</div>
+              <div style="color: #34d399; font-size: 0.75rem;">● Active • Responds in &lt;60s</div>
+            </div>
+          </div>
+          <span style="font-size: 0.75rem; color: #64748b; background: #111827; padding: 0.2rem 0.5rem; border-radius: 4px;">DEMO PREVIEW</span>
+        </div>
+        <div id="demo-chat-box-overview" style="display: flex; flex-direction: column; gap: 0.75rem;"></div>
+      </div>
+      <p style="text-align: center; color: #64748b; font-size: 0.8rem; margin-top: 1rem;">
+        * Notice: The conversation above demonstrates sample triage flows with simulated data. Actual client deployments are customized to the practice's verified schedule, treatment fees, and phone numbers.
       </p>
     </div>
 
@@ -327,6 +862,19 @@ export class DirectCommercialOfferPage {
       </form>
     </div>
 
+    <!-- Segregated Consumer Affiliate Links -->
+    <div class="card" style="border-color: #334155; background: #0b1120;">
+      <h3 style="font-size: 1.1rem; color: #94a3b8; margin-bottom: 0.5rem;">Consumer Deals &amp; Travel Guides Directory</h3>
+      <p style="color: #64748b; font-size: 0.85rem; margin-bottom: 0.75rem;">
+        Explore our independent consumer price intelligence and student travel guides:
+      </p>
+      <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
+        <a href="/deals" style="color: #38bdf8; font-size: 0.88rem; text-decoration: none;">🏷️ Verified Consumer Deals &rarr;</a>
+        <a href="/guides/student-flight-discounts-india" style="color: #38bdf8; font-size: 0.88rem; text-decoration: none;">✈️ Student Flight Baggage Guide &rarr;</a>
+        <a href="/revenue" style="color: #38bdf8; font-size: 0.88rem; text-decoration: none;">📊 Public Revenue Funnel &rarr;</a>
+      </div>
+    </div>
+
     <div class="card">
       <h2>Contact & Commercial Verification</h2>
       <p style="color: #cbd5e1; font-size: 0.95rem;">
@@ -336,11 +884,66 @@ export class DirectCommercialOfferPage {
 
     <footer>
       <p>&copy; ${new Date().getFullYear()} ${siteName}. All rights reserved.</p>
-      <p style="margin-top: 0.35rem;">Technical overview page • Not an offer to contract until terms are owner-attested. • <a href="/privacy" style="color: var(--text-muted); text-decoration: underline;">Privacy Policy</a></p>
+      <p style="margin-top: 0.35rem;">Technical overview page • Not an offer to contract until terms are owner-attested. • <a href="/privacy" style="color: var(--text-muted); text-decoration: underline;">Privacy Policy</a> • <a href="/deals" style="color: var(--text-muted); text-decoration: underline;">Deals</a> • <a href="/revenue" style="color: var(--text-muted); text-decoration: underline;">Revenue Funnel</a></p>
     </footer>
   </div>
 
   <script>
+    var demoScenariosOverview = {
+      pain: {
+        time: 'Sunday, 9:15 PM',
+        patient: 'Hi doctor, I am having sharp tooth pain on my lower right molar since this evening. It throbs when lying down. Do you have emergency appointments available?',
+        bot: 'Hello, thank you for reaching Apex Dental Care. We are sorry to hear you are in severe pain.\\n\\nWhile our physical clinic is currently closed (hours 9 AM – 8 PM), Dr. Suresh has reserved emergency slots for tomorrow morning starting at 9:30 AM.\\n\\nIn the meantime, rinse gently with warm salt water and avoid chewing on that side. Would you like me to hold the 9:30 AM or 10:15 AM priority slot for you?',
+        slot: 'Tomorrow 9:30 AM - Priority Slot'
+      },
+      implants: {
+        time: 'Saturday, 8:30 PM',
+        patient: 'Hello, I wanted to know about dental implants. I am missing two teeth in the back. What is the approximate cost and how many visits does it take?',
+        bot: 'Hello, thank you for contacting Apex Dental Care! Dental implants are our core specialty, and Dr. Suresh provides complete 3D digital implant planning.\\n\\nFor two missing back teeth, we provide premium Korean and Swiss implants starting from ₹22,000 per implant (including abutment and ceramic crown). The preliminary 3D CBCT scan consultation takes about 30 minutes.\\n\\nWould you like to schedule an implant assessment this Monday or Tuesday?',
+        slot: 'Monday 11:00 AM - Implant Assessment'
+      },
+      aligners: {
+        time: 'Weekday, 10:00 PM',
+        patient: 'Hi, do you offer invisible aligners? How long does mild crowding take to fix and do you have weekend consultation slots?',
+        bot: 'Hello, thanks for reaching out to Apex Dental Care! Yes, we are an authorized Invisalign and ClearCorrect provider.\\n\\nMild front teeth crowding is typically completed in 4 to 6 months with clear aligners. We do have Saturday and Sunday afternoon slots dedicated to digital smile scans.\\n\\nWe can schedule a 3D intraoral scan consultation this Saturday at 11:30 AM or 3:00 PM. Which time suits your schedule best?',
+        slot: 'Saturday 11:30 AM - Aligners Scan'
+      }
+    };
+
+    function switchDemoOverview(key) {
+      var s = demoScenariosOverview[key] || demoScenariosOverview.pain;
+      var tabs = ['pain', 'implants', 'aligners'];
+      tabs.forEach(function(t) {
+        var el = document.getElementById('btn-demo-o-' + t);
+        if (!el) return;
+        if (t === key) {
+          el.style.background = '#0284c7';
+          el.style.color = '#fff';
+          el.style.borderColor = '#38bdf8';
+        } else {
+          el.style.background = '#1e293b';
+          el.style.color = '#94a3b8';
+          el.style.borderColor = '#334155';
+        }
+      });
+
+      var box = document.getElementById('demo-chat-box-overview');
+      if (!box) return;
+      box.innerHTML = 
+        '<div style="align-self: flex-end; max-width: 85%; background: #065f46; color: #e6fffa; padding: 0.65rem 0.9rem; border-radius: 12px 12px 0 12px; font-size: 0.88rem; line-height: 1.4;">' +
+          '<div>' + s.patient + '</div>' +
+          '<div style="text-align: right; font-size: 0.72rem; color: #a7f3d0; margin-top: 0.35rem;">' + s.time + ' ✓✓</div>' +
+        '</div>' +
+        '<div style="align-self: flex-start; max-width: 85%; background: #1e293b; color: #f8fafc; padding: 0.65rem 0.9rem; border-radius: 12px 12px 12px 0; font-size: 0.88rem; line-height: 1.4; border: 1px solid #334155;">' +
+          '<div>' + s.bot.replace(/\\n/g, '<br>') + '</div>' +
+          '<div style="margin-top: 0.6rem; border-top: 1px solid #334155; padding-top: 0.5rem;">' +
+            '<a href="#inquiry-card" style="display: inline-block; background: #0284c7; color: #fff; text-decoration: none; padding: 0.35rem 0.7rem; border-radius: 6px; font-size: 0.8rem; font-weight: 600;">Reserve Slot: ' + s.slot + '</a>' +
+          '</div>' +
+          '<div style="text-align: right; font-size: 0.72rem; color: #94a3b8; margin-top: 0.35rem;">Triage Response in 28s ✓✓</div>' +
+        '</div>';
+    }
+    switchDemoOverview('pain');
+
     async function handleInquirySubmit(e) {
       e.preventDefault();
       var btn = document.getElementById('submit-btn');

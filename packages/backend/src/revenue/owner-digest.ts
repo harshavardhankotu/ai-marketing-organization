@@ -46,6 +46,20 @@ export interface OutreachDigestItem {
   auditLink: string;
 }
 
+export interface PendingOutreachDraftItem {
+  id: string;
+  prospectName: string;
+  channel: string;
+  messageDraft: string;
+  humanApproved: boolean;
+  dispatched: boolean;
+  createdAt: string;
+  phone?: string;
+  email?: string;
+  oneClickWhatsAppUrl?: string;
+  oneClickEmailUrl?: string;
+}
+
 export interface InquiryDigestItem {
   id: string;
   customerName: string;
@@ -74,6 +88,7 @@ export interface OwnerTodayDigest {
   replyDrafts: ReplyDraft[] | 'UNKNOWN';
   proposalDrafts: ProposalDigestItem[];
   outreachRows: OutreachDigestItem[];
+  pendingOutreachDrafts: PendingOutreachDraftItem[];
   inquiries: InquiryDigestItem[];
   topPainPoints: PainPointItem[];
   yesterdayMetrics: OwnerDigestMetrics;
@@ -168,6 +183,42 @@ export class OwnerDigestService {
         auditLink: `/offer`
       }));
     } catch {}
+
+    // 4b. Pending outreach drafts from direct_outreach_log (Human approval gate)
+    let pendingOutreachDrafts: PendingOutreachDraftItem[] = [];
+    try {
+      const rows = db.prepare(`
+        SELECT id, prospect_name, channel, message_draft, compliance_checked, human_approved, dispatched, created_at
+        FROM direct_outreach_log
+        WHERE human_approved = 0
+        ORDER BY created_at DESC
+        LIMIT 10
+      `).all() as any[];
+
+      pendingOutreachDrafts = (rows || []).map(r => {
+        const msg = r.message_draft || '';
+        const phoneMatch = msg.match(/\+?91?[6-9]\d{9}/);
+        const cleanPhone = phoneMatch ? phoneMatch[0].replace(/\D/g, '') : '';
+        const formattedPhone = cleanPhone.startsWith('91') ? cleanPhone : (cleanPhone ? `91${cleanPhone}` : '');
+        const waUrl = formattedPhone ? `https://wa.me/${formattedPhone}?text=${encodeURIComponent(msg)}` : `https://wa.me/?text=${encodeURIComponent(msg)}`;
+        const emailUrl = `mailto:?subject=${encodeURIComponent('AI Inbound Lead Triage for ' + r.prospect_name)}&body=${encodeURIComponent(msg)}`;
+
+        return {
+          id: r.id,
+          prospectName: r.prospect_name,
+          channel: r.channel,
+          messageDraft: r.message_draft,
+          humanApproved: Boolean(r.human_approved),
+          dispatched: Boolean(r.dispatched),
+          createdAt: r.created_at,
+          phone: formattedPhone,
+          oneClickWhatsAppUrl: waUrl,
+          oneClickEmailUrl: emailUrl
+        };
+      });
+    } catch {
+      pendingOutreachDrafts = [];
+    }
 
     // 5. Yesterday's measured metrics (UNKNOWN allowed)
     let visits: number | 'UNKNOWN' = 'UNKNOWN';
@@ -366,6 +417,7 @@ export class OwnerDigestService {
       replyDrafts,
       proposalDrafts,
       outreachRows,
+      pendingOutreachDrafts,
       inquiries,
       topPainPoints,
       yesterdayMetrics: { visits, clicks, leads, payments },
@@ -444,6 +496,42 @@ export class OwnerDigestService {
       }));
     } catch {
       outreachRows = [];
+    }
+
+    // 4b. Pending outreach drafts from direct_outreach_log in D1 (Human approval gate)
+    let pendingOutreachDrafts: PendingOutreachDraftItem[] = [];
+    try {
+      const rows = await this.d1Repo.query<any>(
+        'direct_outreach_log',
+        `SELECT id, prospect_name, channel, message_draft, compliance_checked, human_approved, dispatched, created_at
+         FROM direct_outreach_log
+         WHERE human_approved = 0
+         ORDER BY created_at DESC
+         LIMIT 10`
+      );
+      pendingOutreachDrafts = (rows || []).map(r => {
+        const msg = r.message_draft || '';
+        const phoneMatch = msg.match(/\+?91?[6-9]\d{9}/);
+        const cleanPhone = phoneMatch ? phoneMatch[0].replace(/\D/g, '') : '';
+        const formattedPhone = cleanPhone.startsWith('91') ? cleanPhone : (cleanPhone ? `91${cleanPhone}` : '');
+        const waUrl = formattedPhone ? `https://wa.me/${formattedPhone}?text=${encodeURIComponent(msg)}` : `https://wa.me/?text=${encodeURIComponent(msg)}`;
+        const emailUrl = `mailto:?subject=${encodeURIComponent('AI Inbound Lead Triage for ' + r.prospect_name)}&body=${encodeURIComponent(msg)}`;
+
+        return {
+          id: r.id,
+          prospectName: r.prospect_name,
+          channel: r.channel,
+          messageDraft: r.message_draft,
+          humanApproved: Boolean(r.human_approved),
+          dispatched: Boolean(r.dispatched),
+          createdAt: r.created_at,
+          phone: formattedPhone,
+          oneClickWhatsAppUrl: waUrl,
+          oneClickEmailUrl: emailUrl
+        };
+      });
+    } catch {
+      pendingOutreachDrafts = [];
     }
 
     // 5. Yesterday's measured metrics from D1
@@ -675,6 +763,7 @@ export class OwnerDigestService {
       replyDrafts,
       proposalDrafts,
       outreachRows,
+      pendingOutreachDrafts,
       inquiries,
       topPainPoints,
       yesterdayMetrics: { visits, clicks, leads, payments },
@@ -736,6 +825,17 @@ export class OwnerDigestService {
     lines.push(`• Outbound Clicks: ${m.clicks}`);
     lines.push(`• Inbound Leads: ${m.leads}`);
     lines.push(`• Verified Revenue: ${m.payments === 'UNKNOWN' ? 'UNKNOWN' : `₹${Number(m.payments).toLocaleString('en-IN')}`}`);
+    lines.push(``);
+
+    // Pending outreach drafts awaiting owner approval
+    lines.push(`📋 *Pending Outreach Drafts (${(digest.pendingOutreachDrafts || []).length}):*`);
+    if (digest.pendingOutreachDrafts && digest.pendingOutreachDrafts.length > 0) {
+      for (const d of digest.pendingOutreachDrafts.slice(0, 3)) {
+        lines.push(`• ${d.prospectName} (${d.channel}): human_approved=0, dispatched=0`);
+      }
+    } else {
+      lines.push(`• Zero drafts awaiting approval.`);
+    }
     lines.push(``);
 
     // Next action
@@ -852,6 +952,41 @@ export class OwnerDigestService {
       </div>
     `).join('');
 
+    const pendingDraftsHtml = digest.pendingOutreachDrafts && digest.pendingOutreachDrafts.length > 0
+      ? digest.pendingOutreachDrafts.map(d => `
+        <div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:1rem;margin-bottom:0.75rem;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem;flex-wrap:wrap;gap:0.5rem;">
+            <div>
+              <strong style="color:#f8fafc;font-size:1.05rem;">${d.prospectName}</strong>
+              <span style="background:#0284c7;color:#fff;font-size:0.75rem;padding:0.15rem 0.4rem;border-radius:4px;font-weight:bold;margin-left:0.5rem;">${d.channel}</span>
+              <span style="background:#f59e0b;color:#000;font-size:0.75rem;padding:0.15rem 0.4rem;border-radius:4px;font-weight:bold;margin-left:0.35rem;">human_approved = 0</span>
+              <span style="background:#10b981;color:#fff;font-size:0.75rem;padding:0.15rem 0.4rem;border-radius:4px;font-weight:bold;margin-left:0.35rem;">dispatched = 0</span>
+            </div>
+            <span style="color:#94a3b8;font-size:0.8rem;">${d.createdAt ? d.createdAt.slice(0, 10) : 'Today'}</span>
+          </div>
+          <div style="background:#0b1120;border-left:3px solid #38bdf8;padding:0.75rem;border-radius:0 6px 6px 0;margin-bottom:0.75rem;">
+            <p style="margin:0;font-size:0.88rem;color:#cbd5e1;white-space:pre-wrap;line-height:1.4;">${d.messageDraft}</p>
+          </div>
+          <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+            ${d.oneClickWhatsAppUrl ? `<a href="${d.oneClickWhatsAppUrl}" target="_blank" style="display:inline-block;background:#10b981;color:#fff;text-decoration:none;font-weight:600;padding:0.4rem 0.8rem;border-radius:6px;font-size:0.85rem;">Review &amp; Send via WhatsApp</a>` : ''}
+            ${d.oneClickEmailUrl ? `<a href="${d.oneClickEmailUrl}" target="_blank" style="display:inline-block;background:#3b82f6;color:#fff;text-decoration:none;font-weight:600;padding:0.4rem 0.8rem;border-radius:6px;font-size:0.85rem;">Review &amp; Send via Email</a>` : ''}
+          </div>
+        </div>
+      `).join('')
+      : '<p style="color:#94a3b8;">No outreach drafts pending review. Autonomous deal discovery continuously monitors and generates drafts behind the owner gate.</p>';
+
+    const proposalsHtml = digest.proposalDrafts && digest.proposalDrafts.length > 0
+      ? digest.proposalDrafts.map(p => `
+        <div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:1rem;margin-bottom:0.75rem;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;">
+          <div>
+            <strong style="color:#f8fafc;font-size:1rem;">${p.title}</strong>
+            <div style="color:#94a3b8;font-size:0.85rem;">Status: <span style="color:#38bdf8;">${p.status}</span> • Amount: <strong style="color:#fff;">₹${p.priceINR.toLocaleString('en-IN')}</strong></div>
+          </div>
+          <a href="/proposals/${p.id}/checkout" target="_blank" style="display:inline-block;background:#0284c7;color:#fff;text-decoration:none;font-weight:600;padding:0.4rem 0.8rem;border-radius:6px;font-size:0.85rem;">View Proposal Checkout &rarr;</a>
+        </div>
+      `).join('')
+      : '<p style="color:#94a3b8;">No commercial proposals generated yet.</p>';
+
     const inquiriesHtml = digest.inquiries.length === 0
       ? '<p style="color:#94a3b8;">No inquiries received yet. Submit a test inquiry via <a href="/offer" style="color:#38bdf8;">/offer</a> or <a href="/owner/smoke-test" style="color:#38bdf8;">/owner/smoke-test</a>.</p>'
       : digest.inquiries.map(inq => `
@@ -899,6 +1034,22 @@ export class OwnerDigestService {
   </div>
 
   <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;flex-wrap:wrap;gap:0.5rem;">
+      <h2 style="margin:0;">Researched Prospects &amp; Outreach Drafts Awaiting Owner Approval (${(digest.pendingOutreachDrafts || []).length})</h2>
+      <span style="background:rgba(245, 158, 11, 0.15);color:#fbbf24;border:1px solid rgba(245, 158, 11, 0.3);padding:0.25rem 0.6rem;border-radius:6px;font-size:0.78rem;font-weight:700;">STRICT HUMAN GATE: ZERO AUTO DISPATCH</span>
+    </div>
+    <p style="color:#94a3b8;font-size:0.9rem;margin-bottom:1rem;">
+      The autonomous discovery engine researched these verified Indian clinics and prepared draft personalized outreach. Under our revenue-integrity rules, no messages are sent until you explicitly review and dispatch them.
+    </p>
+    ${pendingDraftsHtml}
+  </div>
+
+  <div class="card">
+    <h2>Active Commercial Proposals (${digest.proposalDrafts.length})</h2>
+    ${proposalsHtml}
+  </div>
+
+  <div class="card">
     <h2>Direct Inbound Inquiries (${digest.inquiries.length})</h2>
     ${inquiriesHtml}
   </div>
@@ -908,6 +1059,7 @@ export class OwnerDigestService {
     <ul style="padding-left:1.2rem;color:#cbd5e1;">
       <li><a href="/owner/smoke-test">Run Mobile Smoke Test (/owner/smoke-test)</a></li>
       <li><a href="/offer">View Live Commercial Offer Page (/offer)</a></li>
+      <li><a href="/revenue">View Public Revenue Funnel (/revenue)</a></li>
       <li><a href="/privacy">View Public DPDP Privacy Policy (/privacy)</a></li>
       <li><a href="/api/v1/owner/facts-status">Check Statutory Owner Facts Status</a></li>
     </ul>
