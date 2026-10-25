@@ -116,6 +116,101 @@ describe('Cuelinks V3 Monetization API & MCP Integration (Spec §§ 1–10)', ()
         })
       );
     });
+
+    it('correctly parses official Cuelinks ping response structure (publisher.* and api_key.*)', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          publisher: {
+            id: 84920,
+            publisher_id: 'PUB-84920',
+            currency: 'INR',
+            name: 'Apex Media Network',
+            email: 'billing@apexmedia.in'
+          },
+          api_key: {
+            scopes: ['read:campaigns', 'read:offers', 'write:links'],
+            last_used_at: '2026-10-25T01:13:31Z'
+          }
+        })
+      });
+
+      const client = new CuelinksV3Client({
+        apiKey: 'official_spec_key',
+        fetchFn: mockFetch as any
+      });
+
+      const ping = await client.ping();
+      expect(ping.connected).toBe(true);
+      expect(ping.publisherId).toBe('PUB-84920');
+      expect(ping.publisherName).toBe('Apex Media Network');
+      expect(ping.currency).toBe('INR');
+      expect(ping.email).toBe('billing@apexmedia.in');
+      expect(ping.scopes).toEqual(['read:campaigns', 'read:offers', 'write:links']);
+      expect(ping.lastUsedAt).toBe('2026-10-25T01:13:31Z');
+      expect(ping.publisher?.id).toBe(84920);
+      expect(ping.publisher?.publisher_id).toBe('PUB-84920');
+      expect(ping.publisher?.name).toBe('Apex Media Network');
+      expect(ping.publisher?.currency).toBe('INR');
+      expect(ping.publisher?.email).toBe('billing@apexmedia.in');
+      expect(ping.apiKey?.scopes).toEqual(['read:campaigns', 'read:offers', 'write:links']);
+      expect(ping.apiKey?.last_used_at).toBe('2026-10-25T01:13:31Z');
+    });
+
+    it('CRUCIAL RULE: does NOT return default scopes when server omits scopes (reports unknown/undefined)', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          publisher: {
+            id: 84920,
+            publisher_id: 'PUB-84920',
+            currency: 'INR',
+            name: 'Apex Media Network',
+            email: 'billing@apexmedia.in'
+          }
+          // Server omitted scopes completely
+        })
+      });
+
+      const client = new CuelinksV3Client({
+        apiKey: 'unscoped_test_key',
+        fetchFn: mockFetch as any
+      });
+
+      const ping = await client.ping();
+      expect(ping.connected).toBe(true);
+      // An unknown permission set must remain unknown (undefined) until validated
+      expect(ping.scopes).toBeUndefined();
+    });
+
+    it('CRUCIAL RULE: maintains empty scopes when server supplies empty array (never defaults)', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          publisher: {
+            id: 84920,
+            name: 'Apex Media Network',
+            email: 'billing@apexmedia.in'
+          },
+          api_key: {
+            scopes: [],
+            last_used_at: '2026-10-25T01:00:00Z'
+          }
+        })
+      });
+
+      const client = new CuelinksV3Client({
+        apiKey: 'empty_scopes_key',
+        fetchFn: mockFetch as any
+      });
+
+      const ping = await client.ping();
+      expect(ping.connected).toBe(true);
+      expect(ping.scopes).toEqual([]);
+    });
   });
 
   describe('2. Campaign Search & Offer Retrieval', () => {
@@ -192,6 +287,82 @@ describe('Cuelinks V3 Monetization API & MCP Integration (Spec §§ 1–10)', ()
       expect(result.total).toBe(1);
       expect(result.offers[0].coupon_code).toBe('FLIP50');
       expect(result.offers[0].current_price_inr).toBe(1499);
+    });
+
+    it('identifies restricted campaigns and handles access requests cleanly', async () => {
+      const mockFetch = vi.fn()
+        // Search restricted campaigns
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            data: [
+              {
+                id: 7777,
+                name: 'Restricted Premium Merchant',
+                url: 'https://www.premiummerchant.in',
+                status: 'active',
+                access_status: 'restricted'
+              }
+            ],
+            meta: { total: 1 }
+          })
+        })
+        // Request access
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            message: 'Access request submitted for review'
+          })
+        });
+
+      const client = new CuelinksV3Client({
+        apiKey: 'test_token',
+        fetchFn: mockFetch as any
+      });
+
+      const searchRes = await client.searchCampaigns({ access_status: 'restricted' });
+      expect(searchRes.total).toBe(1);
+      expect(searchRes.campaigns[0].access_status).toBe('restricted');
+
+      const requestRes = await client.requestCampaignAccess(7777);
+      expect(requestRes.success).toBe(true);
+      expect(requestRes.message).toContain('Access request submitted');
+      expect(mockFetch).toHaveBeenLastCalledWith(
+        expect.stringContaining('/campaigns/7777/request_access'),
+        expect.objectContaining({ method: 'POST' })
+      );
+    });
+
+    it('converts link for restricted campaign by falling back to non-affiliated direct link', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          url: 'https://www.luxurybrand.in/item/1',
+          affiliated: false,
+          campaign: {
+            id: 8888,
+            name: 'Luxury Brand Exclusive',
+            access_status: 'restricted'
+          }
+        })
+      });
+
+      const client = new CuelinksV3Client({
+        apiKey: 'test_token',
+        fetchFn: mockFetch as any
+      });
+
+      const result = await client.convertLink({
+        url: 'https://www.luxurybrand.in/item/1'
+      });
+
+      expect(result.affiliated).toBe(false);
+      expect(result.tracking_url).toBe('https://www.luxurybrand.in/item/1');
+      expect(result.short_url).toBeUndefined();
+      expect(result.campaign?.name).toBe('Luxury Brand Exclusive');
     });
   });
 
@@ -289,7 +460,8 @@ describe('Cuelinks V3 Monetization API & MCP Integration (Spec §§ 1–10)', ()
         ok: true,
         status: 200,
         json: async () => ({
-          tracking_url: 'https://linksredirect.com/?cid=123'
+          tracking_url: 'https://linksredirect.com/?cid=123',
+          short_url: 'https://clnk.in/wP99'
           // affiliated is omitted
         })
       });
@@ -306,6 +478,174 @@ describe('Cuelinks V3 Monetization API & MCP Integration (Spec §§ 1–10)', ()
 
       expect(result.affiliated).toBe(false);
       expect(result.tracking_url).toBe(directMerchantUrl);
+      expect(result.url).toBe(directMerchantUrl);
+      expect(result.short_url).toBeUndefined();
+    });
+
+    it('defaults shorten: true in payload following official Cuelinks V3 contract', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          short_url: 'https://clnk.in/abc1',
+          url: 'https://linksredirect.com/?cid=100',
+          affiliated: true
+        })
+      });
+
+      const client = new CuelinksV3Client({
+        apiKey: 'test_token',
+        fetchFn: mockFetch as any
+      });
+
+      await client.convertLink({
+        url: 'https://www.flipkart.com/item/laptop'
+      });
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('/links/convert'),
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({
+            url: 'https://www.flipkart.com/item/laptop',
+            shorten: true
+          })
+        })
+      );
+    });
+
+    it('domain safety guard: rejects spoofed or fake tracking domains (fakeclnk.in) and falls back to direct URL', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          short_url: 'https://fakeclnk.in/exploit',
+          url: 'https://fakeclnk.in/exploit',
+          tracking_url: 'https://fakeclnk.in/exploit',
+          affiliated: true
+        })
+      });
+
+      const client = new CuelinksV3Client({
+        apiKey: 'test_token',
+        fetchFn: mockFetch as any
+      });
+
+      const merchantUrl = 'https://www.flipkart.com/item/shoes';
+      const result = await client.convertLink({ url: merchantUrl });
+
+      // Must NOT enable redirect to fakeclnk.in
+      expect(result.affiliated).toBe(false);
+      expect(result.tracking_url).toBe(merchantUrl);
+      expect(result.url).toBe(merchantUrl);
+      expect(result.short_url).toBeUndefined();
+    });
+
+    it('domain safety guard: rejects tracking URL with familiar domain as a prefix of hostile domain (clnk.in.attacker.com)', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          short_url: 'https://clnk.in.attacker.com/steal-creds',
+          affiliated: true
+        })
+      });
+
+      const client = new CuelinksV3Client({
+        apiKey: 'test_token',
+        fetchFn: mockFetch as any
+      });
+
+      const merchantUrl = 'https://www.flipkart.com/item/mobile';
+      const result = await client.convertLink({ url: merchantUrl });
+
+      expect(result.affiliated).toBe(false);
+      expect(result.tracking_url).toBe(merchantUrl);
+      expect(result.short_url).toBeUndefined();
+    });
+
+    it('domain safety guard: rejects spoofed linksredirect domains (linksredirect.com.attacker.com, fake-linksredirect.com)', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          url: 'https://linksredirect.com.attacker.com/?cid=123',
+          tracking_url: 'https://linksredirect.com.attacker.com/?cid=123',
+          affiliated: true
+        })
+      });
+
+      const client = new CuelinksV3Client({
+        apiKey: 'test_token',
+        fetchFn: mockFetch as any
+      });
+
+      const merchantUrl = 'https://www.flipkart.com/item/tv';
+      const result = await client.convertLink({ url: merchantUrl });
+
+      expect(result.affiliated).toBe(false);
+      expect(result.tracking_url).toBe(merchantUrl);
+      expect(result.short_url).toBeUndefined();
+    });
+
+    it('domain safety guard: accepts strictly valid tracking domains (clnk.in, *.clnk.in, linksredirect.com, www.linksredirect.com)', async () => {
+      const validCases = [
+        { short_url: 'https://clnk.in/valid1', url: 'https://linksredirect.com/?cid=10' },
+        { short_url: 'https://crma.clnk.in/valid2', url: 'https://www.linksredirect.com/?cid=20' },
+        { short_url: 'https://deal.clnk.in/valid3', url: 'https://linksredirect.com/?cid=30' },
+        { short_url: 'https://www.clnk.in/valid4', url: 'https://linksredirect.com/?cid=40' }
+      ];
+
+      for (const item of validCases) {
+        const mockFetch = vi.fn().mockResolvedValue({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            short_url: item.short_url,
+            url: item.url,
+            affiliated: true
+          })
+        });
+
+        const client = new CuelinksV3Client({ apiKey: 'test_token', fetchFn: mockFetch as any });
+        const result = await client.convertLink({ url: 'https://www.flipkart.com/item/real' });
+
+        expect(result.affiliated).toBe(true);
+        expect(result.short_url).toBe(item.short_url);
+        expect(result.tracking_url).toBe(item.short_url);
+      }
+    });
+
+    it('domain safety guard: static validator functions correctly classify allowlisted and hostile hosts', () => {
+      // Allowed
+      expect(CuelinksV3Client.isAllowedTrackingDomain('clnk.in')).toBe(true);
+      expect(CuelinksV3Client.isAllowedTrackingDomain('crma.clnk.in')).toBe(true);
+      expect(CuelinksV3Client.isAllowedTrackingDomain('deal.clnk.in')).toBe(true);
+      expect(CuelinksV3Client.isAllowedTrackingDomain('sub.deal.clnk.in')).toBe(true);
+      expect(CuelinksV3Client.isAllowedTrackingDomain('www.clnk.in')).toBe(true);
+      expect(CuelinksV3Client.isAllowedTrackingDomain('linksredirect.com')).toBe(true);
+      expect(CuelinksV3Client.isAllowedTrackingDomain('www.linksredirect.com')).toBe(true);
+      expect(CuelinksV3Client.isAllowedTrackingDomain('clnk.in:443')).toBe(true);
+
+      // Rejected
+      expect(CuelinksV3Client.isAllowedTrackingDomain('fakeclnk.in')).toBe(false);
+      expect(CuelinksV3Client.isAllowedTrackingDomain('notclnk.in')).toBe(false);
+      expect(CuelinksV3Client.isAllowedTrackingDomain('evil-clnk.in')).toBe(false);
+      expect(CuelinksV3Client.isAllowedTrackingDomain('clnk.in.attacker.com')).toBe(false);
+      expect(CuelinksV3Client.isAllowedTrackingDomain('linksredirect.com.attacker.com')).toBe(false);
+      expect(CuelinksV3Client.isAllowedTrackingDomain('fake-linksredirect.com')).toBe(false);
+      expect(CuelinksV3Client.isAllowedTrackingDomain('.clnk.in')).toBe(false);
+      expect(CuelinksV3Client.isAllowedTrackingDomain('attacker.com')).toBe(false);
+      expect(CuelinksV3Client.isAllowedTrackingDomain('169.254.169.254')).toBe(false);
+
+      // URL validator
+      expect(CuelinksV3Client.isAllowedTrackingUrl('https://clnk.in/safe')).toBe(true);
+      expect(CuelinksV3Client.isAllowedTrackingUrl('https://crma.clnk.in/safe')).toBe(true);
+      expect(CuelinksV3Client.isAllowedTrackingUrl('https://linksredirect.com/?cid=123')).toBe(true);
+      expect(CuelinksV3Client.isAllowedTrackingUrl('https://fakeclnk.in/exploit')).toBe(false);
+      expect(CuelinksV3Client.isAllowedTrackingUrl('javascript:alert(1)')).toBe(false);
+      expect(CuelinksV3Client.isAllowedTrackingUrl('ftp://clnk.in/file')).toBe(false);
+      expect(CuelinksV3Client.isAllowedTrackingUrl('http://127.0.0.1:8080/clnk.in')).toBe(false);
     });
 
     it('CuelinksAdapter handles clnk.in and branded subdomains like *.clnk.in', () => {
@@ -617,6 +957,25 @@ describe('Cuelinks V3 Monetization API & MCP Integration (Spec §§ 1–10)', ()
       CuelinksSyncManager.resetInstance();
 
       const engine = AutonomousDealDiscoveryEngine.getInstance();
+      engine.injectDiscoveredDealsForTesting([
+        {
+          title: 'boAt Airdopes 141 Bluetooth Truly Wireless Earbuds',
+          brand: 'boAt',
+          merchant: 'boAt Lifestyle',
+          category: 'Audio & Wearables',
+          productUrl: 'https://www.boat-lifestyle.com/products/airdopes-141',
+          currentPriceINR: 1299,
+          referencePriceINR: 4490,
+          claimedDiscountPercent: 71,
+          availability: 'IN_STOCK',
+          geographicRestrictions: ['India'],
+          offerStart: new Date(Date.now() - 86400000).toISOString(),
+          expiryDate: new Date(Date.now() + 7 * 86400000).toISOString(),
+          sourceUrl: 'https://www.boat-lifestyle.com/collections/best-deals',
+          sourceDomain: 'boat-lifestyle.com',
+          sourceType: 'RETAILER_BRAND'
+        }
+      ]);
       const cycle = await engine.runDiscoveryCycle(orgId, bizId);
 
       expect(cycle.activeDealsTotal).toBeGreaterThanOrEqual(1);
@@ -759,6 +1118,154 @@ describe('Cuelinks V3 Monetization API & MCP Integration (Spec §§ 1–10)', ()
         expect(err.message).not.toContain(secretKey);
         expect(err.message).toContain('[REDACTED]');
       }
+    });
+
+    it('classifies HTTP 500 and 502 as CUELINKS_SERVER_ERROR and redacts credentials', async () => {
+      const secretKey = 'my_secret_key_502';
+      const mockFetch500 = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        text: async () => `Internal Server Error with key ${secretKey}`
+      });
+      const client500 = new CuelinksV3Client({ apiKey: secretKey, fetchFn: mockFetch500 as any });
+      await expect(client500.searchCampaigns()).rejects.toThrow('CUELINKS_SERVER_ERROR');
+
+      const mockFetch502 = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 502,
+        text: async () => `Bad Gateway with key ${secretKey}`
+      });
+      const client502 = new CuelinksV3Client({ apiKey: secretKey, fetchFn: mockFetch502 as any });
+      await expect(client502.getOffers()).rejects.toThrow('CUELINKS_SERVER_ERROR');
+    });
+
+    it('classifies AbortError network timeouts as CUELINKS_TIMEOUT', async () => {
+      const abortError = new Error('The operation was aborted');
+      abortError.name = 'AbortError';
+      const mockFetch = vi.fn().mockRejectedValue(abortError);
+
+      const client = new CuelinksV3Client({ apiKey: 'test_token', fetchFn: mockFetch as any });
+      await expect(client.searchCampaigns()).rejects.toThrow('CUELINKS_TIMEOUT');
+    });
+  });
+
+  describe('9. Malformed Responses Resilience', () => {
+    it('handles completely empty or non-standard ping response safely without crashing', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({})
+      });
+
+      const client = new CuelinksV3Client({ apiKey: 'test_token', fetchFn: mockFetch as any });
+      const ping = await client.ping();
+
+      expect(ping.connected).toBe(false);
+      expect(ping.scopes).toBeUndefined();
+      expect(ping.publisherId).toBeUndefined();
+    });
+
+    it('handles malformed or null data in link conversion without throwing, falls back to direct URL', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => null
+      });
+
+      const client = new CuelinksV3Client({ apiKey: 'test_token', fetchFn: mockFetch as any });
+      const directUrl = 'https://www.flipkart.com/item/malformed-test';
+      const res = await client.convertLink({ url: directUrl });
+
+      expect(res.affiliated).toBe(false);
+      expect(res.tracking_url).toBe(directUrl);
+      expect(res.url).toBe(directUrl);
+      expect(res.short_url).toBeUndefined();
+    });
+
+    it('handles empty campaigns, offers, and channels data arrays without throwing', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({})
+      });
+
+      const client = new CuelinksV3Client({ apiKey: 'test_token', fetchFn: mockFetch as any });
+
+      const campaigns = await client.searchCampaigns();
+      expect(campaigns.campaigns).toEqual([]);
+      expect(campaigns.total).toBe(0);
+
+      const offers = await client.getOffers();
+      expect(offers.offers).toEqual([]);
+      expect(offers.total).toBe(0);
+
+      const channels = await client.getChannels();
+      expect(channels).toEqual([]);
+
+      const categories = await client.getCategories();
+      expect(categories).toEqual([]);
+
+      const countries = await client.getCountries();
+      expect(countries).toEqual([]);
+
+      const txs = await client.getTransactions();
+      expect(txs.transactions).toEqual([]);
+      expect(txs.total).toBe(0);
+
+      const reports = await client.getReports();
+      expect(reports.reports).toEqual([]);
+      expect(reports.total).toBe(0);
+    });
+  });
+
+  describe('10. Invalid & Unsafe URLs Regression (SSRF, Protocols & Subdomains)', () => {
+    it('blocks loopback, cloud metadata, and private network addresses (SSRF)', async () => {
+      const client = new CuelinksV3Client({ apiKey: 'test_token' });
+
+      // IPv4 private & loopback
+      await expect(client.convertLink({ url: 'http://127.0.0.1:8080/admin' })).rejects.toThrow('SSRF_REJECTED');
+      await expect(client.convertLink({ url: 'http://localhost:3000/api' })).rejects.toThrow('SSRF_REJECTED');
+      await expect(client.convertLink({ url: 'http://10.0.0.1/item' })).rejects.toThrow('SSRF_REJECTED');
+      await expect(client.convertLink({ url: 'http://172.16.0.1/item' })).rejects.toThrow('SSRF_REJECTED');
+      await expect(client.convertLink({ url: 'http://192.168.1.1/item' })).rejects.toThrow('SSRF_REJECTED');
+
+      // AWS / GCP link-local metadata
+      await expect(client.convertLink({ url: 'http://169.254.169.254/latest/meta-data/' })).rejects.toThrow('SSRF_REJECTED');
+      await expect(client.convertLink({ url: 'http://metadata.google.internal/computeMetadata/v1/' })).rejects.toThrow('SSRF_REJECTED');
+
+      // IPv6 private & loopback
+      await expect(client.convertLink({ url: 'http://[::1]/item' })).rejects.toThrow('SSRF_REJECTED');
+
+      // Hex & Decimal encoded IPs
+      await expect(client.convertLink({ url: 'http://2130706433/item' })).rejects.toThrow('SSRF_REJECTED');
+      await expect(client.convertLink({ url: 'http://0x7f000001/item' })).rejects.toThrow('SSRF_REJECTED');
+    });
+
+    it('blocks dangerous non-HTTP protocols', async () => {
+      const client = new CuelinksV3Client({ apiKey: 'test_token' });
+
+      await expect(client.convertLink({ url: 'javascript:alert("pwned")' })).rejects.toThrow('SSRF_REJECTED');
+      await expect(client.convertLink({ url: 'ftp://ftp.merchant.com/deal' })).rejects.toThrow('SSRF_REJECTED');
+      await expect(client.convertLink({ url: 'data:text/html,<script>alert(1)</script>' })).rejects.toThrow('SSRF_REJECTED');
+      await expect(client.convertLink({ url: 'file:///etc/passwd' })).rejects.toThrow('SSRF_REJECTED');
+    });
+
+    it('blocks internal hostnames, internal TLDs, and single-word hosts', async () => {
+      const client = new CuelinksV3Client({ apiKey: 'test_token' });
+
+      await expect(client.convertLink({ url: 'http://admin.internal/item' })).rejects.toThrow('SSRF_REJECTED');
+      await expect(client.convertLink({ url: 'http://deal.local/item' })).rejects.toThrow('SSRF_REJECTED');
+      await expect(client.convertLink({ url: 'http://intranet.corp/item' })).rejects.toThrow('SSRF_REJECTED');
+      await expect(client.convertLink({ url: 'http://home.lan/item' })).rejects.toThrow('SSRF_REJECTED');
+      await expect(client.convertLink({ url: 'http://singlenamemachine/item' })).rejects.toThrow('SSRF_REJECTED');
+    });
+
+    it('rejects empty, missing, or whitespace-only target URLs', async () => {
+      const client = new CuelinksV3Client({ apiKey: 'test_token' });
+
+      await expect(client.convertLink({ url: '' })).rejects.toThrow('CUELINKS_INVALID_URL');
+      await expect(client.convertLink({ url: '   ' })).rejects.toThrow('CUELINKS_INVALID_URL');
+      await expect(client.convertLink({ url: null as any })).rejects.toThrow('CUELINKS_INVALID_URL');
     });
   });
 });

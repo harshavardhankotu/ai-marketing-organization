@@ -11,6 +11,7 @@ import { isProduction } from '../config/env.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import {
   GrowthExperimentRecord,
+  GrowthExperimentStatus,
   GrowthExperimentDecision,
   GrowthExperimentChange,
   CommercialCycleOutcome,
@@ -21,6 +22,7 @@ import {
 
 export class GrowthExperimentTracker {
   private static instance: GrowthExperimentTracker | null = null;
+  public static readonly MIN_STATISTICAL_OBSERVATIONS: number = 30;
   private d1Repo = D1RevenueRepository.getInstance();
   private experimentsMap: Map<string, GrowthExperimentRecord> = new Map();
 
@@ -45,6 +47,10 @@ export class GrowthExperimentTracker {
   public resetForTesting(): void {
     this.experimentsMap.clear();
     this.seedBaselineExperiments();
+    try {
+      const db = getDb();
+      db.prepare(`DELETE FROM workflows WHERE workflow_type = 'GROWTH_EXPERIMENT'`).run();
+    } catch {}
   }
 
   /**
@@ -297,6 +303,9 @@ export class GrowthExperimentTracker {
   /**
    * Automated decision engine: evaluates observed evidence across 6-hour commercial cycles.
    * Produces strictly evidence-backed decisions: SCALE, REFINE, or HALT.
+   * STRICT STATISTICAL INTEGRITY: Automated decisions are made ONLY when statistically sufficient
+   * real observations exist (minimum evidence threshold, e.g. at least 30 observations).
+   * Never decides SCALE, REFINE, or HALT on zero or tiny sample traffic.
    */
   public evaluateExperiment(experimentId: string): GrowthExperimentRecord {
     const exp = this.experimentsMap.get(experimentId);
@@ -306,11 +315,24 @@ export class GrowthExperimentTracker {
 
     const cum = exp.cumulativeMetrics;
     const totalSamples = cum.baselineTotalVisits + cum.treatmentTotalVisits;
-    const req = exp.minimumEvidenceRequirement;
+    const minStatReq = GrowthExperimentTracker.MIN_STATISTICAL_OBSERVATIONS; // 30
+    const req = Math.max(exp.minimumEvidenceRequirement, minStatReq);
+
+    // 0. Check Absolute Minimum Evidence Threshold (at least 30 observations required)
+    // Never make automated decisions (SCALE, REFINE, HALT) from zero or tiny sample traffic.
+    if (totalSamples < minStatReq) {
+      exp.automatedDecision = {
+        decision: 'INCONCLUSIVE',
+        rationale: `Sample size (${totalSamples}) below minimum evidence requirement (${req}). Minimum statistical threshold is ${minStatReq} observations. Continuing observation over upcoming 6-hour commercial cycles.`,
+        confidence: Math.round((totalSamples / minStatReq) * 50) / 100
+      };
+      this.persistExperiment(exp).catch(() => {});
+      return { ...exp };
+    }
 
     // 1. Check for Immediate Critical Failure / Guardrail Breach (HALT)
     // - Treatment had >= 40 visits but 0 clicks while baseline had clicks
-    // - Or severe degradation: CTR uplift < -15% with high confidence
+    // - Or severe degradation: CTR uplift < -12% with sufficient sample evidence (>= req)
     const zeroEngagementHalt = cum.treatmentTotalVisits >= 40 && cum.treatmentTotalClicks === 0 && cum.baselineTotalClicks > 0;
     const significantDegradationHalt = totalSamples >= req && cum.overallCtrUpliftPercent < -12;
 
@@ -326,16 +348,18 @@ export class GrowthExperimentTracker {
       };
       exp.status = 'CONCLUDED';
       exp.concludedAt = new Date().toISOString();
+      this.persistExperiment(exp).catch(() => {});
       return { ...exp };
     }
 
-    // 2. Check Sample Size Sufficiency
+    // 2. Check Sample Size Sufficiency against experiment requirement (if req > minStatReq)
     if (totalSamples < req) {
       exp.automatedDecision = {
         decision: 'INCONCLUSIVE',
         rationale: `Sample size (${totalSamples}) below minimum evidence requirement (${req}). Continuing observation over upcoming 6-hour commercial cycles.`,
         confidence: Math.round((totalSamples / req) * 50) / 100
       };
+      this.persistExperiment(exp).catch(() => {});
       return { ...exp };
     }
 
@@ -355,12 +379,14 @@ export class GrowthExperimentTracker {
       };
       exp.status = 'CONCLUDED';
       exp.concludedAt = new Date().toISOString();
+      this.persistExperiment(exp).catch(() => {});
       return { ...exp };
     }
 
     // 4. Inconclusive After Extended Run (REFINE)
     // Ran for >= 2x minimum evidence or >= 4 commercial cycles without distinct differentiation
-    if (totalSamples >= req * 2 || exp.currentCycleCount >= 4) {
+    // Guard: Only refine if totalSamples satisfies minimum evidence requirement (>= req >= 30)
+    if ((totalSamples >= req * 2 || exp.currentCycleCount >= 4) && totalSamples >= req) {
       exp.automatedDecision = {
         decision: 'REFINE',
         decidedAt: new Date().toISOString(),
@@ -369,6 +395,7 @@ export class GrowthExperimentTracker {
         confidence: 0.85
       };
       exp.status = 'PAUSED';
+      this.persistExperiment(exp).catch(() => {});
       return { ...exp };
     }
 
@@ -378,6 +405,7 @@ export class GrowthExperimentTracker {
       rationale: `Trending at ${cum.overallCtrUpliftPercent >= 0 ? '+' : ''}${cum.overallCtrUpliftPercent}% uplift across ${exp.currentCycleCount} cycles. Accumulating sample convergence.`,
       confidence: 0.65
     };
+    this.persistExperiment(exp).catch(() => {});
     return { ...exp };
   }
 
@@ -418,7 +446,7 @@ export class GrowthExperimentTracker {
    * Persists experiment state to D1 workflows table (workflow_type = 'GROWTH_EXPERIMENT').
    * Fully conforms to FEATURES_FROZEN = true with zero new migrations.
    */
-  private async persistExperimentAsync(experiment: GrowthExperimentRecord): Promise<void> {
+  public async persistExperiment(experiment: GrowthExperimentRecord): Promise<void> {
     try {
       const id = `wf_gexp_${experiment.id}`;
       const sql = `INSERT INTO workflows (
@@ -428,6 +456,7 @@ export class GrowthExperimentTracker {
         ON CONFLICT(id) DO UPDATE SET
           status = excluded.status,
           current_step = excluded.current_step,
+          inputs_json = excluded.inputs_json,
           outputs_json = excluded.outputs_json,
           updated_at = datetime('now')`;
 
@@ -437,18 +466,26 @@ export class GrowthExperimentTracker {
         experiment.businessId,
         experiment.id,
         'GROWTH_EXPERIMENT',
-        experiment.status === 'CONCLUDED' ? 'COMPLETED' : 'RUNNING',
+        experiment.status === 'CONCLUDED' ? 'COMPLETED' : (experiment.status === 'PAUSED' ? 'PAUSED' : 'RUNNING'),
         experiment.automatedDecision.decision,
         JSON.stringify({
           title: experiment.title,
           hypothesis: experiment.hypothesis,
           changeTested: experiment.changeTested,
-          targetCategories: experiment.targetCategories
+          targetCategories: experiment.targetCategories,
+          targetCampaignIds: experiment.targetCampaignIds,
+          targetMerchants: experiment.targetMerchants,
+          minimumEvidenceRequirement: experiment.minimumEvidenceRequirement,
+          createdAt: experiment.createdAt,
+          startedAt: experiment.startedAt
         }),
         JSON.stringify({
           currentCycleCount: experiment.currentCycleCount,
           cumulativeMetrics: experiment.cumulativeMetrics,
-          automatedDecision: experiment.automatedDecision
+          automatedDecision: experiment.automatedDecision,
+          cycleOutcomes: experiment.cycleOutcomes,
+          status: experiment.status,
+          concludedAt: experiment.concludedAt
         })
       ]);
     } catch (err: any) {
@@ -456,5 +493,100 @@ export class GrowthExperimentTracker {
         // Silently tolerate in test SQLite environments
       }
     }
+  }
+
+  private async persistExperimentAsync(experiment: GrowthExperimentRecord): Promise<void> {
+    return this.persistExperiment(experiment);
+  }
+
+  /**
+   * Hydrates growth experiments from durable workflows table (workflow_type = 'GROWTH_EXPERIMENT').
+   * Restores hypotheses, tested configurations, multi-cycle observations, cumulative metrics, and automated decisions.
+   */
+  public async hydrateFromDb(organizationId: string = 'org_owner_primary'): Promise<number> {
+    try {
+      const sql = `
+        SELECT id, organization_id, business_id, campaign_id, status, current_step, inputs_json, outputs_json, created_at, updated_at
+        FROM workflows
+        WHERE workflow_type = 'GROWTH_EXPERIMENT'
+      `;
+      const { results } = await this.d1Repo.executeRead('workflows', sql, []);
+      if (!Array.isArray(results) || results.length === 0) {
+        return 0;
+      }
+
+      let hydratedCount = 0;
+      for (const row of results) {
+        try {
+          const inputs = JSON.parse(row.inputs_json || '{}');
+          const outputs = JSON.parse(row.outputs_json || '{}');
+          const expId = row.campaign_id || (row.id.startsWith('wf_gexp_') ? row.id.substring(8) : row.id);
+
+          const status: GrowthExperimentStatus = outputs.status || (
+            row.status === 'COMPLETED' ? 'CONCLUDED' : (row.status === 'PAUSED' ? 'PAUSED' : 'ACTIVE')
+          );
+
+          const expRecord: GrowthExperimentRecord = {
+            id: expId,
+            organizationId: row.organization_id || organizationId,
+            businessId: row.business_id || 'biz_platform_aro',
+            title: inputs.title || 'Untitled Growth Experiment',
+            hypothesis: inputs.hypothesis || '',
+            changeTested: inputs.changeTested || {
+              changeType: 'COPY',
+              description: '',
+              baselineConfig: {},
+              treatmentConfig: {}
+            },
+            targetCategories: inputs.targetCategories || [],
+            targetCampaignIds: inputs.targetCampaignIds || [],
+            targetMerchants: inputs.targetMerchants || [],
+            status,
+            minimumEvidenceRequirement: inputs.minimumEvidenceRequirement ?? 50,
+            currentCycleCount: outputs.currentCycleCount ?? 0,
+            createdAt: inputs.createdAt || row.created_at || new Date().toISOString(),
+            startedAt: inputs.startedAt || row.created_at,
+            concludedAt: outputs.concludedAt,
+            cycleOutcomes: Array.isArray(outputs.cycleOutcomes) ? outputs.cycleOutcomes : [],
+            cumulativeMetrics: outputs.cumulativeMetrics || {
+              baselineTotalVisits: 0,
+              treatmentTotalVisits: 0,
+              baselineTotalClicks: 0,
+              treatmentTotalClicks: 0,
+              baselineTotalConversions: 0,
+              treatmentTotalConversions: 0,
+              baselineTotalCommissionINR: 0,
+              treatmentTotalCommissionINR: 0,
+              overallCtrUpliftPercent: 0,
+              overallConversionUpliftPercent: 0,
+              overallEpcUpliftPercent: 0
+            },
+            automatedDecision: outputs.automatedDecision || {
+              decision: (row.current_step as GrowthExperimentDecision) || 'INCONCLUSIVE',
+              rationale: 'Hydrated from durable workflows database.',
+              confidence: 0
+            }
+          };
+
+          this.experimentsMap.set(expRecord.id, expRecord);
+          hydratedCount++;
+        } catch {
+          // ignore corrupted row
+        }
+      }
+      return hydratedCount;
+    } catch (err: any) {
+      if (!isProduction()) {
+        // Silently tolerate in test SQLite environments
+      }
+      return 0;
+    }
+  }
+
+  /**
+   * Alias for hydrateFromDb
+   */
+  public async loadFromDb(organizationId?: string): Promise<number> {
+    return this.hydrateFromDb(organizationId);
   }
 }

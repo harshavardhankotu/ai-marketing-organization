@@ -614,6 +614,23 @@ export async function startServer(): Promise<any> {
     console.warn('[Cooldown Gate] Action cooldown synchronization failed:', err.message);
   }
 
+  // 3c. Commercial Funnel Telemetry & Growth Experiments Gate: Synchronize from Cloudflare D1
+  try {
+    const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
+    await AutonomousDealDiscoveryEngine.getInstance().hydrateFunnelTelemetryFromDb();
+    console.log('[Funnel Gate] Synchronized commercial funnel telemetry from Cloudflare D1.');
+  } catch (err: any) {
+    console.warn('[Funnel Gate] Funnel telemetry synchronization failed:', err.message);
+  }
+
+  try {
+    const { GrowthExperimentTracker } = await import('./commission/growth-experiment-tracker.js');
+    await GrowthExperimentTracker.getInstance().hydrateFromDb();
+    console.log('[Experiment Gate] Synchronized growth experiments from Cloudflare D1.');
+  } catch (err: any) {
+    console.warn('[Experiment Gate] Growth experiment synchronization failed:', err.message);
+  }
+
   // 4. Start autonomous background scheduler for continuous market intelligence & research
   try {
     DailyMarketResearchScheduler.getInstance().startScheduler();

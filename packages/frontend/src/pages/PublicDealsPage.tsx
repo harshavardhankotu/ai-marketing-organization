@@ -244,6 +244,22 @@ const FALLBACK_VERIFIED_DEALS: DealItem[] = [
   }
 ];
 
+export function formatTimeAgo(isoString?: string): string {
+  if (!isoString) return 'recently';
+  const time = new Date(isoString).getTime();
+  if (isNaN(time)) return 'recently';
+  const diffMs = Date.now() - time;
+  if (diffMs < 0 || diffMs < 60 * 1000) return 'just now';
+  const mins = Math.floor(diffMs / (60 * 1000));
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / (60 * 60 * 1000));
+  if (hours === 1) return '1 hour ago';
+  if (hours < 24) return `${hours} hours ago`;
+  const days = Math.floor(hours / 24);
+  if (days === 1) return '1 day ago';
+  return `${days} days ago`;
+}
+
 export const PublicDealsPage: React.FC = () => {
   const [deals, setDeals] = useState<DealItem[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
@@ -752,14 +768,19 @@ export const PublicDealsPage: React.FC = () => {
                       {deal.title}
                     </h3>
 
-                    {/* Merchant & Category */}
-                    <div className="mt-2 flex items-center gap-2 text-xs text-slate-400">
+                    {/* Merchant, Category & Dynamic Freshness Timestamp */}
+                    <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-400">
                       <span className="text-slate-300 font-medium">{deal.merchant}</span>
                       <span>•</span>
                       <span>{deal.category}</span>
+                      <span>•</span>
+                      <span className="inline-flex items-center gap-1 text-[11px] text-cyan-400/90 font-medium">
+                        <Clock className="w-3 h-3 text-cyan-500 shrink-0" />
+                        <span>Last verified: {formatTimeAgo(deal.lastCheckedAt)}</span>
+                      </span>
                     </div>
 
-                    {/* Price and Discount Presentation */}
+                    {/* Price, Verified MRP Reference & Honest Discount Presentation */}
                     <div className="mt-4 pt-3 border-t border-slate-800/80 flex items-baseline flex-wrap gap-2">
                       <span className="text-2xl font-extrabold text-white">
                         ₹{deal.currentPriceINR.toLocaleString('en-IN')}
@@ -770,70 +791,134 @@ export const PublicDealsPage: React.FC = () => {
                         </span>
                       )}
                       {hasDiscount && (
-                        <span className={`text-xs font-bold px-2 py-0.5 rounded-md ${
+                        <span className={`text-xs font-bold px-2 py-0.5 rounded-md inline-flex items-center gap-1 ${
                           deal.discountVerificationType === 'INDEPENDENT_CORROBORATED'
                             ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
-                            : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                            : (deal.discountVerificationType === 'MERCHANT_CLAIMED'
+                                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                                : 'bg-slate-800 text-slate-300 border border-slate-700')
                         }`}>
-                          {discountVal}% OFF
-                          {deal.discountVerificationType === 'INDEPENDENT_CORROBORATED' ? ' (Verified)' : ''}
+                          <span>{discountVal}% OFF</span>
+                          <span className="text-[10px] font-medium opacity-90">
+                            {deal.discountVerificationType === 'INDEPENDENT_CORROBORATED'
+                              ? '(✓ Verified MRP)'
+                              : (deal.discountVerificationType === 'MERCHANT_CLAIMED'
+                                  ? '(⚠️ Claimed)'
+                                  : '(Unconfirmed)')}
+                          </span>
+                        </span>
+                      )}
+                      {deal.referencePriceINR && deal.referencePriceINR > deal.currentPriceINR && (
+                        <span className="text-[11px] text-emerald-400 font-semibold">
+                          Save ₹{(deal.referencePriceINR - deal.currentPriceINR).toLocaleString('en-IN')}
                         </span>
                       )}
                     </div>
 
-                    {/* Coupon Box if present */}
+                    {/* Coupon Box with Prominent Code & Redemption Guide if present */}
                     {deal.couponCode && (
-                      <div className="mt-3.5 p-2.5 rounded-xl bg-slate-950/80 border border-slate-800 flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2 truncate">
-                          <Tag className="w-3.5 h-3.5 text-purple-400 shrink-0" />
-                          <span className="font-mono text-xs font-bold text-purple-300">{deal.couponCode}</span>
+                      <div className="mt-3.5 p-2.5 rounded-xl bg-purple-950/30 border border-purple-500/40">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 truncate">
+                            <Tag className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                            <span className="font-mono text-xs font-extrabold text-purple-200 tracking-wide">{deal.couponCode}</span>
+                          </div>
+                          <button
+                            onClick={() => handleCopyCode(deal.couponCode!)}
+                            aria-label={`Copy coupon code ${deal.couponCode}`}
+                            className="text-[11px] px-2.5 py-1 rounded-lg bg-purple-500/20 hover:bg-purple-500/30 text-purple-200 font-bold border border-purple-500/40 flex items-center gap-1 shrink-0 transition active:scale-95"
+                          >
+                            {copiedCode === deal.couponCode ? (
+                              <>
+                                <Check className="w-3 h-3 text-emerald-400" />
+                                <span>Copied!</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="w-3 h-3" />
+                                <span>Copy Code</span>
+                              </>
+                            )}
+                          </button>
                         </div>
-                        <button
-                          onClick={() => handleCopyCode(deal.couponCode!)}
-                          className="text-[11px] px-2.5 py-1 rounded bg-purple-500/10 hover:bg-purple-500/20 text-purple-300 font-medium border border-purple-500/30 flex items-center gap-1 shrink-0 transition"
-                        >
-                          {copiedCode === deal.couponCode ? (
-                            <>
-                              <Check className="w-3 h-3 text-emerald-400" />
-                              <span>Copied</span>
-                            </>
-                          ) : (
-                            <>
-                              <Copy className="w-3 h-3" />
-                              <span>Copy</span>
-                            </>
-                          )}
-                        </button>
+                        {deal.couponConditions && (
+                          <p className="mt-1.5 text-[11px] text-purple-200/90 leading-relaxed italic flex items-start gap-1">
+                            <Info className="w-3 h-3 mt-0.5 text-purple-400 shrink-0" />
+                            <span>{deal.couponConditions}</span>
+                          </p>
+                        )}
                       </div>
                     )}
 
-                    {/* Coupon or Payment Conditions note */}
-                    {deal.couponConditions && (
-                      <p className="mt-2 text-[11px] text-slate-400 leading-relaxed italic line-clamp-2">
-                        {deal.couponConditions}
-                      </p>
+                    {/* Standalone Offer Conditions note if no coupon code */}
+                    {!deal.couponCode && deal.couponConditions && (
+                      <div className="mt-2.5 p-2 rounded-lg bg-slate-950/70 border border-slate-800 text-[11px] text-slate-300 flex items-start gap-1.5 leading-snug">
+                        <Info className="w-3.5 h-3.5 mt-0.5 text-cyan-400 shrink-0" />
+                        <span>{deal.couponConditions}</span>
+                      </div>
+                    )}
+
+                    {/* Explicit Payment or Membership Restrictions note */}
+                    {deal.paymentRestrictions && (
+                      <div className="mt-2 flex items-center gap-1.5 text-[10px] text-amber-300/90 bg-amber-500/10 border border-amber-500/20 px-2 py-1 rounded-md">
+                        <AlertCircle className="w-3 h-3 text-amber-400 shrink-0" />
+                        <span>Restrictions: {deal.paymentRestrictions}</span>
+                      </div>
                     )}
                   </div>
 
-                  {/* Card Bottom: Inspect Evidence Drawer Button & Outbound CTA */}
+                  {/* Card Bottom: Inspect Evidence Drawer Button, Affiliate Link Badge & Outbound CTA */}
                   <div className="mt-5 pt-3 border-t border-slate-800/80 flex items-center justify-between gap-2">
-                    <button
-                      onClick={() => setInspectedDeal(deal)}
-                      className="inline-flex items-center gap-1 text-[11px] text-cyan-400 hover:text-cyan-300 font-medium py-1 px-2 rounded-lg hover:bg-cyan-500/10 transition"
-                    >
-                      <Info className="w-3.5 h-3.5" />
-                      <span>Inspect Evidence</span>
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setInspectedDeal(deal)}
+                        className="inline-flex items-center gap-1 text-[11px] text-cyan-400 hover:text-cyan-300 font-medium py-1 px-2 rounded-lg hover:bg-cyan-500/10 transition"
+                      >
+                        <Info className="w-3.5 h-3.5" />
+                        <span>Evidence</span>
+                      </button>
 
-                    <a
-                      href={targetUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs shadow-md shadow-cyan-500/10 transition active:scale-95"
-                    >
-                      <span>View Deal</span>
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
+                      {/* Clear Separation of Direct vs Affiliated Links */}
+                      {deal.trackingUrl ? (
+                        <span
+                          className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-blue-500/10 border border-blue-500/30 text-blue-300 font-medium"
+                          title="Authorized affiliate partner link. May earn a qualifying referral commission."
+                        >
+                          <Tag className="w-2.5 h-2.5 text-blue-400" />
+                          <span>Affiliate</span>
+                        </span>
+                      ) : (
+                        <span
+                          className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-slate-800 border border-slate-700 text-slate-300 font-medium"
+                          title="Direct merchant store link without affiliate monetization."
+                        >
+                          <ShoppingBag className="w-2.5 h-2.5 text-slate-400" />
+                          <span>Direct Store</span>
+                        </span>
+                      )}
+                    </div>
+
+                    {deal.trackingUrl ? (
+                      <a
+                        href={deal.trackingUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs shadow-md shadow-cyan-500/10 transition active:scale-95"
+                      >
+                        <span>View Deal</span>
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                    ) : (
+                      <a
+                        href={deal.productUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 font-bold text-xs transition active:scale-95"
+                      >
+                        <span>Direct Store</span>
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                    )}
                   </div>
                 </div>
               );
@@ -915,6 +1000,13 @@ export const PublicDealsPage: React.FC = () => {
                       <span className="text-lg font-bold text-cyan-400">
                         {inspectedDeal.verifiedDiscountPercent || inspectedDeal.claimedDiscountPercent || 0}% OFF
                       </span>
+                      <span className="block text-[10px] text-slate-400 mt-0.5">
+                        {inspectedDeal.discountVerificationType === 'INDEPENDENT_CORROBORATED'
+                          ? '✓ Verified MRP baseline'
+                          : (inspectedDeal.discountVerificationType === 'MERCHANT_CLAIMED'
+                              ? '⚠️ Merchant claimed baseline'
+                              : 'Unconfirmed baseline')}
+                      </span>
                     </div>
                   </div>
 
@@ -923,9 +1015,9 @@ export const PublicDealsPage: React.FC = () => {
                       <Check className="w-3.5 h-3.5" />
                       <span>Verification: <strong>{inspectedDeal.discountVerificationType.replace(/_/g, ' ')}</strong></span>
                     </div>
-                    <div className="flex items-center gap-1 text-slate-500">
-                      <Clock className="w-3.5 h-3.5" />
-                      <span>Last checked: {new Date(inspectedDeal.lastCheckedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
+                    <div className="flex items-center gap-1 text-cyan-400/90 font-medium">
+                      <Clock className="w-3.5 h-3.5 text-cyan-500" />
+                      <span>Last verified: <strong>{formatTimeAgo(inspectedDeal.lastCheckedAt)}</strong> ({new Date(inspectedDeal.lastCheckedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })})</span>
                     </div>
                   </div>
                 </div>
@@ -1023,15 +1115,32 @@ export const PublicDealsPage: React.FC = () => {
                   )}
                 </div>
 
-                {/* Section 4: Explicit Statutory Affiliate Disclosure */}
+                {/* Section 4: Explicit Statutory Affiliate Disclosure & Link Separation */}
                 <div className="mt-4 p-3.5 rounded-xl bg-slate-950/60 border border-slate-800 text-[11px] text-slate-400 leading-relaxed">
-                  <div className="flex items-center gap-1.5 text-slate-300 font-semibold mb-1">
-                    <Info className="w-3.5 h-3.5 text-cyan-400" />
-                    <span>Statutory Commercial &amp; Affiliate Disclosure</span>
+                  <div className="flex items-center justify-between gap-2 mb-1.5">
+                    <div className="flex items-center gap-1.5 text-slate-300 font-semibold">
+                      <Info className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>Commercial Transparency &amp; Link Separation</span>
+                    </div>
+                    {inspectedDeal.trackingUrl ? (
+                      <span className="px-2 py-0.5 rounded-full bg-blue-500/10 border border-blue-500/30 text-blue-300 text-[10px] font-semibold">
+                        Authorized Affiliate Link
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded-full bg-slate-800 border border-slate-700 text-slate-300 text-[10px] font-semibold">
+                        Direct Official Store Link
+                      </span>
+                    )}
                   </div>
-                  <p>
-                    When you click through to <strong>{inspectedDeal.merchant}</strong> ({inspectedDeal.sourceDomain}) and complete a purchase, our platform may earn a qualifying commission at absolutely zero additional cost to you. Offers are cross-checked against authoritative manufacturer MRP baselines. We never inflate reference prices.
-                  </p>
+                  {inspectedDeal.trackingUrl ? (
+                    <p>
+                      This outbound link is an authorized commercial affiliate partner link to <strong>{inspectedDeal.merchant}</strong> ({inspectedDeal.sourceDomain}). When you click through and complete a purchase, our platform may earn a qualifying referral commission at <strong>zero additional cost</strong> to you. Discount baselines are corroborated against official manufacturer pricing sheets; we never inflate reference prices.
+                    </p>
+                  ) : (
+                    <p>
+                      This outbound link directs directly to <strong>{inspectedDeal.merchant}</strong> ({inspectedDeal.sourceDomain}) without affiliate monetization or tracking tags. Our autonomous discovery engine lists verified deals regardless of commercial affiliation to ensure complete and unbiased buyer coverage.
+                    </p>
+                  )}
                 </div>
               </div>
 
