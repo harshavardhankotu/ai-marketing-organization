@@ -221,12 +221,20 @@ apiRouter.use('*', async (c, next) => {
     return await next();
   }
 
-  // 3. Cloudflare Worker Cron Trigger (Authenticated via X-Cron-Secret)
+  // 3. Cloudflare Worker Cron & Scheduled Commercial Engine Trigger (Authenticated via X-Cron-Secret)
   const isSystem = EXACT_ROUTE_POLICY.SYSTEM.some(
     p => path === p || path.startsWith(p + '/')
   );
+  const cronSecretHeader = c.req.header('x-cron-secret') || c.req.header('X-Cron-Secret');
+  const isAutonomousEngineSystemRoute = path.startsWith('/owner/autonomous-engine/') || path.startsWith('/owner/deal-engine/');
+  const isCronAuthorized = Boolean(
+    cronSecretHeader &&
+    process.env.CRON_PING_SECRET &&
+    cronSecretHeader === process.env.CRON_PING_SECRET &&
+    !isPlaceholderCredential(process.env.CRON_PING_SECRET)
+  );
 
-  if (isSystem) {
+  if (isSystem || (isAutonomousEngineSystemRoute && isCronAuthorized)) {
     c.set('organizationId', OwnerAuthService.OWNER_ORGANIZATION_ID);
     c.set('userId', 'usr_cron_trigger');
     return await next();
