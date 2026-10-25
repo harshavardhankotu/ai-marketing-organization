@@ -160,6 +160,33 @@ app.get('/capabilities', async (c) => {
   }));
 });
 
+// Top-level public homepage route (B2B AI Inbound Lead Triage Storefront)
+app.get('/', async (c) => {
+  const { DirectCommercialOfferPage } = await import('./revenue/direct-offer-page.js');
+  const siteName = (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
+  const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').trim();
+  const contactEmail = process.env.PUBLIC_CONTACT_EMAIL ? process.env.PUBLIC_CONTACT_EMAIL.trim() : undefined;
+  const html = DirectCommercialOfferPage.getInstance().renderHomepageHtml({ siteName, siteUrl, contactEmail });
+  return c.html(html);
+});
+
+// Top-level public verified deals directory route
+app.get('/deals', async (c) => {
+  const { StaticSiteGenerator } = await import('./commission/static-site-generator.js');
+  const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
+  const host = c.req.header('host') || 'ai-marketing-organization.onrender.com';
+  const proto = c.req.header('x-forwarded-proto') || 'https';
+  const config = {
+    siteName: 'Verified Deals & Price Evidence',
+    authorName: 'Editorial Desk',
+    contactEmail: `editorial@${host}`,
+    siteUrl: `${proto}://${host}`
+  };
+  const deals = AutonomousDealDiscoveryEngine.getInstance().queryPublicDeals({ limit: 50 }).deals;
+  const html = StaticSiteGenerator.getInstance().renderDealsHtml(deals, config);
+  return c.html(html);
+});
+
 // Top-level public direct commercial offer routes (Part E)
 app.get('/offer', async (c) => {
   const { DirectCommercialOfferPage } = await import('./revenue/direct-offer-page.js');
@@ -414,9 +441,8 @@ app.post('/offer/inquiry', async (c) => {
 app.get('/owner/today', async (c) => {
   const { OwnerDigestService } = await import('./revenue/owner-digest.js');
   const digest = await OwnerDigestService.getInstance().generateDigestAsync();
-  if (c.req.header('accept')?.includes('text/html')) {
-    const formatted = OwnerDigestService.getInstance().formatTelegramMessage(digest);
-    return c.html(`<!DOCTYPE html><html><body style="background:#090d16;color:#f8fafc;padding:2rem;"><pre style="font-family:monospace;white-space:pre-wrap;">${formatted}</pre></body></html>`);
+  if (c.req.header('accept')?.includes('text/html') || c.req.query('format') === 'html') {
+    return c.html(OwnerDigestService.getInstance().renderHtml(digest));
   }
   return c.json({ success: true, data: digest });
 });
@@ -546,6 +572,26 @@ app.get('/revenue', async (c) => {
     approvedCommissionINR: 0,
     bankCashReceivedINR: 0
   };
+  const b2b = data.data?.b2bFunnel || {
+    prospectsResearched: 0,
+    inquiriesReceived: 0,
+    outreachDraftsPrepared: 0,
+    proposalsSent: 0,
+    proposalsAccepted: 0,
+    verifiedClientPaymentsINR: 0.00
+  };
+  const opCosts = data.data?.operatingCosts || {
+    hostingCostINR: 0.00,
+    databaseCostINR: 0.00,
+    aiModelCostINR: 0.00,
+    paidToolCostINR: 0.00,
+    totalOperatingCostINR: 0.00
+  };
+  const profit = data.data?.profitability || {
+    grossRevenueCollectedINR: 0.00,
+    netOperatingContributionINR: 0.00,
+    laborExclusionNote: 'Owner engineering and commercial operations labor is excluded from cash operating costs.'
+  };
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -589,6 +635,8 @@ app.get('/revenue', async (c) => {
   <header>
     <a href="/" class="brand">${siteName}</a>
     <nav>
+      <a href="/">Home</a>
+      <a href="/offer">B2B Services</a>
       <a href="/deals">Verified Deals</a>
       <a href="/guides/student-flight-discounts-india">Student Travel Guide</a>
       <a href="/revenue" class="active">Revenue Funnel</a>
@@ -602,6 +650,81 @@ app.get('/revenue', async (c) => {
       <p>Real-time metrics separating external visitor demand from test runs. We never report test clicks as real visitors, nor pending commissions as cash.</p>
     </div>
 
+    <!-- Direct B2B Lead Conversion Funnel Section -->
+    <h2 class="section-title">Direct B2B Lead Conversion Funnel (Healthcare &amp; Local Services)</h2>
+    <div class="grid">
+      <div class="metric-card">
+        <div class="metric-label">Researched Prospects</div>
+        <div class="metric-value">${b2b.prospectsResearched}</div>
+        <div class="metric-sub">Verified Indian healthcare &amp; dental practices</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Inbound Inquiries</div>
+        <div class="metric-value">${b2b.inquiriesReceived}</div>
+        <div class="metric-sub">Direct clinic inquiries received</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Outreach Drafts Prepared</div>
+        <div class="metric-value">${b2b.outreachDraftsPrepared}</div>
+        <div class="metric-sub">Strict owner gate: human_approved = 0</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Proposals Generated</div>
+        <div class="metric-value">${b2b.proposalsSent}</div>
+        <div class="metric-sub">Formally issued commercial proposals</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Proposals Accepted</div>
+        <div class="metric-value">${b2b.proposalsAccepted}</div>
+        <div class="metric-sub">Approved client engagements</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Verified Client Payments</div>
+        <div class="metric-value" style="color: var(--green);">₹${Number(b2b.verifiedClientPaymentsINR).toFixed(2)}</div>
+        <div class="metric-sub">Bank-reconciled client payments</div>
+      </div>
+    </div>
+
+    <!-- Operating Costs & Cash Profitability Section -->
+    <h2 class="section-title">Operating Costs &amp; Cash Profitability (₹0 Outflow Invariant)</h2>
+    <div class="grid">
+      <div class="metric-card">
+        <div class="metric-label">Hosting (Render)</div>
+        <div class="metric-value">₹${Number(opCosts.hostingCostINR).toFixed(2)}</div>
+        <div class="metric-sub">Free web service tier</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Database (Cloudflare D1)</div>
+        <div class="metric-value">₹${Number(opCosts.databaseCostINR).toFixed(2)}</div>
+        <div class="metric-sub">Free tier allocation</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">AI Inference (Gemini)</div>
+        <div class="metric-value">₹${Number(opCosts.aiModelCostINR).toFixed(2)}</div>
+        <div class="metric-sub">Bounded free tier quota</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Software Licenses</div>
+        <div class="metric-value">₹${Number(opCosts.paidToolCostINR).toFixed(2)}</div>
+        <div class="metric-sub">100% client-owned tools</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Total Cash Operating Cost</div>
+        <div class="metric-value" style="color: #38bdf8;">₹${Number(opCosts.totalOperatingCostINR).toFixed(2)}</div>
+        <div class="metric-sub">Total measured cash expense</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Net Operating Contribution</div>
+        <div class="metric-value" style="color: var(--green);">₹${Number(profit.netOperatingContributionINR).toFixed(2)}</div>
+        <div class="metric-sub">Gross revenue minus cash costs</div>
+      </div>
+    </div>
+    <p style="color: #64748b; font-size: 0.82rem; margin-top: -1.5rem; margin-bottom: 2rem;">
+      * Accounting Policy: ${profit.laborExclusionNote}
+    </p>
+
+    <!-- Consumer Affiliate Funnel Section -->
+    <h2 class="section-title">Consumer Travel &amp; Retail Affiliate Funnel (Offline Mode)</h2>
     <div class="grid">
       <div class="metric-card">
         <div class="metric-label">Verified External Visits</div>
@@ -869,6 +992,15 @@ export async function startServer(): Promise<any> {
     await ContentAssetEngine.getInstance().syncBaselineAssetsAsync();
   } catch (err: any) {
     console.warn('[Content Gate] Baseline content sync failed:', err.message);
+  }
+
+  // 3e. Curated Healthcare SMB Prospects Gate: Ensure 10 researched Indian healthcare practices exist
+  try {
+    const { PlatformProspectDiscoveryEngine } = await import('./revenue/platform-prospect-discovery-engine.js');
+    await PlatformProspectDiscoveryEngine.getInstance().ensureCuratedQualifiedProspectBatch();
+    console.log('[Prospect Gate] Ensured curated Indian healthcare SMB prospects & drafts in Cloudflare D1.');
+  } catch (err: any) {
+    console.warn('[Prospect Gate] Curated prospect batch synchronization failed:', err.message);
   }
 
   // 4. Start autonomous background scheduler for continuous market intelligence & research

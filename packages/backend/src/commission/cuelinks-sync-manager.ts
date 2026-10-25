@@ -18,15 +18,85 @@ import {
   CuelinksPaginationCursor,
   CuelinksPaginatedSyncOptions,
   CuelinksPaginatedSyncResult,
-  CuelinksTelemetryRecord
+  CuelinksTelemetryRecord,
+  CUELINKS_REQUIRED_SCOPES
 } from './cuelinks-v3-types.js';
 import { DealCandidate } from './deal-types.js';
+
+export { CUELINKS_REQUIRED_SCOPES };
+
+export interface VerifiedScopeResult {
+  connected: boolean;
+  channelId?: number;
+  channelStatus?: string;
+  hasRequiredScopes: boolean;
+  isEmpiricallyVerified: boolean;
+  scopes: string[];
+  missingScopes: string[];
+  forbiddenScopes: string[];
+  scopeErrorReason?: string;
+}
 
 export class CuelinksSyncManager {
   private static instance: CuelinksSyncManager | null = null;
   private client: CuelinksV3Client;
   private syncStatus: CuelinksSyncStatus;
   private attemptCount: number = 0;
+  private empiricallyVerifiedScopes: Set<string> = new Set();
+  private forbiddenScopes: Set<string> = new Set();
+  private scopeErrorReasons: Map<string, string> = new Map();
+
+  public recordScopeSuccess(scope: string): void {
+    this.empiricallyVerifiedScopes.add(scope);
+    this.forbiddenScopes.delete(scope);
+    this.scopeErrorReasons.delete(scope);
+  }
+
+  public recordScopeForbidden(scope: string, reason?: string): void {
+    this.forbiddenScopes.add(scope);
+    this.empiricallyVerifiedScopes.delete(scope);
+    if (reason) {
+      this.scopeErrorReasons.set(scope, reason);
+    }
+  }
+
+  public verifyNetworkScopes(rawStatus: {
+    connected?: boolean;
+    channelId?: number;
+    channelStatus?: string;
+    hasScopes?: boolean;
+    scopes?: string[];
+  }): VerifiedScopeResult {
+    const pingScopes = Array.isArray(rawStatus.scopes) && rawStatus.scopes.length > 0 ? rawStatus.scopes : [];
+    const hasPingScopes = pingScopes.length > 0;
+
+    const effectiveScopes = new Set<string>([...pingScopes, ...this.empiricallyVerifiedScopes]);
+    for (const f of this.forbiddenScopes) {
+      effectiveScopes.delete(f);
+    }
+
+    const missingScopes = CUELINKS_REQUIRED_SCOPES.filter(
+      s => !effectiveScopes.has(s) || this.forbiddenScopes.has(s)
+    );
+
+    const isEmpiricallyVerified = this.empiricallyVerifiedScopes.size > 0 && !hasPingScopes;
+    const hasRequiredScopes = (rawStatus.hasScopes === true || (this.forbiddenScopes.size === 0 && missingScopes.length === 0)) && this.forbiddenScopes.size === 0 && missingScopes.length === 0;
+
+    const reasons = Array.from(this.scopeErrorReasons.values());
+    const scopeErrorReason = reasons.length > 0 ? reasons.join('; ') : undefined;
+
+    return {
+      connected: Boolean(rawStatus.connected),
+      channelId: rawStatus.channelId,
+      channelStatus: rawStatus.channelStatus,
+      hasRequiredScopes,
+      isEmpiricallyVerified,
+      scopes: Array.from(effectiveScopes),
+      missingScopes,
+      forbiddenScopes: Array.from(this.forbiddenScopes),
+      scopeErrorReason
+    };
+  }
 
   constructor(client?: CuelinksV3Client) {
     this.client = client || CuelinksV3Client.getInstance();
@@ -492,10 +562,14 @@ export class CuelinksSyncManager {
       if (pingRes.hasRequiredScopes !== undefined) this.syncStatus.hasRequiredScopes = pingRes.hasRequiredScopes;
       if (pingRes.missingScopes) this.syncStatus.missingScopes = pingRes.missingScopes;
 
+      const empiricallyVerifiedScopes = new Set<string>(pingRes.scopes || []);
+      const forbiddenScopes = new Set<string>();
+
       // 2. Channel inspection & registration
       try {
         const canonicalUrl = 'https://ai-marketing-organization.onrender.com';
         const channels = await this.client.getChannels();
+        empiricallyVerifiedScopes.add('read:channels');
         let targetChannel = channels.find(c => {
           const chUrl = (c.source_url || c.url || '').toLowerCase();
           return chUrl.includes('onrender.com') || chUrl.includes('gen-lang-client');
@@ -516,6 +590,9 @@ export class CuelinksSyncManager {
           status: targetChannel?.status || 'active'
         };
       } catch (channelErr: any) {
+        if (channelErr.statusCode === 403 || channelErr.code === 'CUELINKS_FORBIDDEN') {
+          forbiddenScopes.add('read:channels');
+        }
         console.warn(`[CuelinksSync] Channel inspection notice: ${channelErr.message}`);
       }
 
@@ -535,15 +612,23 @@ export class CuelinksSyncManager {
           per_page: 30
         });
 
+        empiricallyVerifiedScopes.add('read:campaigns');
         this.syncStatus.campaignsDiscovered = campaignSearch.total;
         eligibleCampaigns = (campaignSearch.campaigns || []).filter(
           c => (!c.status || c.status === 'active') && (c.access_status === 'open' || c.access_status === 'approved')
         );
         this.syncStatus.eligibleCampaignsCount = eligibleCampaigns.length;
 
+        if (eligibleCampaigns.length > 0) {
+          empiricallyVerifiedScopes.add('write:links');
+        }
+
         // Persist discovered campaigns to D1
         await this.persistCampaignsD1(organizationId, businessId, eligibleCampaigns);
       } catch (campErr: any) {
+        if (campErr.statusCode === 403 || campErr.code === 'CUELINKS_FORBIDDEN') {
+          forbiddenScopes.add('read:campaigns');
+        }
         campaignError = campErr;
         partialFailureReasons.push(`Campaign search failed: ${campErr.message}`);
         console.warn(`[CuelinksSync] Campaign search error: ${campErr.message}`);
@@ -552,11 +637,15 @@ export class CuelinksSyncManager {
       // 4. Offer discovery across eligible campaigns
       try {
         const offersRes = await this.client.getOffers({ per_page: 30 });
+        empiricallyVerifiedScopes.add('read:offers');
         const rawOffers = offersRes.offers || [];
         this.syncStatus.offersRetrieved = rawOffers.length;
 
         dealCandidates = await this.processOffersToCandidates(rawOffers, eligibleCampaigns);
       } catch (offErr: any) {
+        if (offErr.statusCode === 403 || offErr.code === 'CUELINKS_FORBIDDEN') {
+          forbiddenScopes.add('read:offers');
+        }
         offerError = offErr;
         partialFailureReasons.push(`Offer retrieval failed: ${offErr.message}`);
         console.warn(`[CuelinksSync] Offer retrieval error: ${offErr.message}`);
@@ -565,6 +654,7 @@ export class CuelinksSyncManager {
       // 5. Performance reconciliation (Transactions & Reports)
       try {
         const transRes = await this.client.getTransactions({ per_page: 50 });
+        empiricallyVerifiedScopes.add('read:transactions');
         const transactions = transRes.transactions || [];
 
         let pending = 0;
@@ -590,6 +680,7 @@ export class CuelinksSyncManager {
           end_date: new Date().toISOString().split('T')[0],
           per_page: 50
         });
+        empiricallyVerifiedScopes.add('read:reports');
         const providerClicks = perfRes.totals
           ? Number(perfRes.totals.clicks || 0)
           : perfRes.data.reduce((acc, r) => acc + (Number(r.clicks) || 0), 0);
@@ -608,7 +699,26 @@ export class CuelinksSyncManager {
           cashReceivedINR: 0 // strictly ₹0.00 until bank statement proof
         };
       } catch (recErr: any) {
+        if (recErr.statusCode === 403 || recErr.code === 'CUELINKS_FORBIDDEN') {
+          forbiddenScopes.add('read:reports');
+          forbiddenScopes.add('read:transactions');
+        }
         console.warn(`[CuelinksSync] Reconciliation notice: ${recErr.message}`);
+      }
+
+      // Reconcile scopes: Priority to pingRes.scopes if explicitly provided by provider.
+      // If ping omitted scopes, use empirically verified capabilities from successful provider responses.
+      if (Array.isArray(pingRes.scopes) && pingRes.scopes.length > 0) {
+        this.syncStatus.scopes = pingRes.scopes;
+        this.syncStatus.hasRequiredScopes = Boolean(pingRes.hasRequiredScopes);
+        this.syncStatus.missingScopes = pingRes.missingScopes;
+      } else {
+        const missing = CUELINKS_REQUIRED_SCOPES.filter(
+          s => !empiricallyVerifiedScopes.has(s) || forbiddenScopes.has(s)
+        );
+        this.syncStatus.scopes = Array.from(empiricallyVerifiedScopes);
+        this.syncStatus.missingScopes = missing;
+        this.syncStatus.hasRequiredScopes = missing.length === 0;
       }
 
       // Determine Sync Outcome (WORKSTREAM D)
