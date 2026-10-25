@@ -284,7 +284,53 @@ export class CoordinatedAgentOrchestrator {
 
       const startMs = Date.now();
       try {
-        const res = await params.executionFn();
+        const fallbackRes = await params.executionFn();
+        let res: { success: boolean; data?: any; error?: string } = fallbackRes;
+        let executedViaRuntime = false;
+        let runtimeModel = 'deterministic-coordinator';
+        let runtimeTokens = 100;
+
+        // Step 1: Attempt execution via AgentRuntime
+        try {
+          const { AgentRuntime } = await import('./agent-runtime.js');
+          const runtimeRes = await AgentRuntime.getInstance().execute({
+            agentId: agent.id,
+            businessId: brief.businessId,
+            organizationId: brief.organizationId,
+            taskId,
+            workflowId,
+            prompt: `${params.title}\n\nInputs:\n${JSON.stringify(params.inputs, null, 2)}`,
+            contextOverride: {
+              category: brief.category,
+              city: brief.city,
+              artifacts: producedArtifacts,
+              ...params.inputs
+            },
+            priority: params.priority
+          });
+
+          if (runtimeRes && runtimeRes.success && runtimeRes.data) {
+            res = {
+              success: true,
+              data: {
+                ...(fallbackRes.data || {}),
+                ...(typeof runtimeRes.data === 'object' ? runtimeRes.data : {}),
+                _runtime: {
+                  agentId: agent.id,
+                  model: runtimeRes.model || 'gemini-3.8-flash',
+                  decisionId: runtimeRes.decisionId
+                }
+              }
+            };
+            executedViaRuntime = true;
+            runtimeModel = runtimeRes.model || 'gemini-3.8-flash';
+            runtimeTokens = runtimeRes.telemetry?.totalTokens || 250;
+          }
+        } catch {
+          // Graceful fallback to domain deterministic synthesis
+          res = fallbackRes;
+        }
+
         const latencyMs = Date.now() - startMs;
 
         if (res.success) {
@@ -297,24 +343,28 @@ export class CoordinatedAgentOrchestrator {
             WHERE id = ?
           `).run(JSON.stringify(res.data || {}), taskId);
 
-          // Record telemetry
-          try {
-            db.prepare(`
-              INSERT INTO ai_cost_logs (
-                id, organization_id, business_id, agent_id, division, model,
-                thinking_level, input_tokens, output_tokens, total_tokens, latency_ms,
-                estimated_cost_inr, purpose, created_at
-              ) VALUES (?, ?, ?, ?, ?, 'deterministic-coordinator', 'low', 50, 50, 100, ?, 0, ?, datetime('now'))
-            `).run(
-              `cost_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-              brief.organizationId,
-              brief.businessId,
-              agent.id,
-              agent.category,
-              latencyMs,
-              params.title.slice(0, 100)
-            );
-          } catch {}
+          // Record telemetry if not already logged by AgentRuntime
+          if (!executedViaRuntime) {
+            try {
+              db.prepare(`
+                INSERT INTO ai_cost_logs (
+                  id, organization_id, business_id, agent_id, division, model,
+                  thinking_level, input_tokens, output_tokens, total_tokens, latency_ms,
+                  estimated_cost_inr, purpose, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'low', 50, 50, ?, ?, 0, ?, datetime('now'))
+              `).run(
+                `cost_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+                brief.organizationId,
+                brief.businessId,
+                agent.id,
+                agent.category,
+                runtimeModel,
+                runtimeTokens,
+                latencyMs,
+                params.title.slice(0, 100)
+              );
+            } catch {}
+          }
 
           // Record decision in decision journal
           try {
