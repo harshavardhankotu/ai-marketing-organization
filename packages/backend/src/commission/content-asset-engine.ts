@@ -363,11 +363,21 @@ export class ContentAssetEngine {
    */
   public async getAssetBySlug(slug: string, recordView: boolean = true): Promise<ContentAsset | null> {
     const cleanSlug = slug.trim().toLowerCase();
-    const row = await this.d1Repo.queryOne<any>(
-      'commission_content_assets',
-      'SELECT * FROM commission_content_assets WHERE slug = ? AND status = \'PUBLISHED\'',
-      [cleanSlug]
-    );
+    let row: any = null;
+    try {
+      row = await this.d1Repo.queryOne<any>(
+        'commission_content_assets',
+        'SELECT * FROM commission_content_assets WHERE slug = ? AND status = \'PUBLISHED\'',
+        [cleanSlug]
+      );
+    } catch {}
+
+    if (!row) {
+      try {
+        const db = getDb();
+        row = db.prepare('SELECT * FROM commission_content_assets WHERE slug = ? AND status = \'PUBLISHED\'').get(cleanSlug);
+      } catch {}
+    }
 
     if (!row) return null;
 
@@ -379,10 +389,72 @@ export class ContentAssetEngine {
           [row.id]
         );
         row.view_count = (row.view_count || 0) + 1;
-      } catch {}
+      } catch {
+        try {
+          const db = getDb();
+          db.prepare('UPDATE commission_content_assets SET view_count = view_count + 1 WHERE id = ?').run(row.id);
+          row.view_count = (row.view_count || 0) + 1;
+        } catch {}
+      }
     }
 
     return this.mapAsset(row);
+  }
+
+  /**
+   * Synchronizes baseline acquisition content (e.g. Student Travel Concessions)
+   * from local SQLite seed to Cloudflare D1 if missing in production.
+   */
+  public async syncBaselineAssetsAsync(): Promise<void> {
+    if (process.env.NODE_ENV === 'test') return;
+    try {
+      const slug = 'student-flight-discounts-india';
+      let existing: any = null;
+      try {
+        existing = await this.d1Repo.queryOne<any>(
+          'commission_content_assets',
+          'SELECT id FROM commission_content_assets WHERE slug = ?',
+          [slug]
+        );
+      } catch {}
+
+      if (!existing) {
+        const db = getDb();
+        const localGuide = db.prepare('SELECT * FROM commission_content_assets WHERE slug = ?').get(slug) as any;
+        if (localGuide) {
+          const insertSql = `
+            INSERT INTO commission_content_assets (
+              id, organization_id, slug, asset_type, title, category, location, intent_target,
+              content_markdown, primary_offer_id, matched_offer_ids_json, disclosure_markdown,
+              status, view_count, referral_click_count, quality_gate_json, disclosure_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `;
+          const params = [
+            localGuide.id,
+            localGuide.organization_id,
+            localGuide.slug,
+            localGuide.asset_type,
+            localGuide.title,
+            localGuide.category,
+            localGuide.location,
+            localGuide.intent_target,
+            localGuide.content_markdown,
+            localGuide.primary_offer_id,
+            localGuide.matched_offer_ids_json || '[]',
+            localGuide.disclosure_markdown,
+            localGuide.status,
+            localGuide.view_count || 0,
+            localGuide.referral_click_count || 0,
+            localGuide.quality_gate_json || '{}',
+            localGuide.disclosure_version || '2026.1'
+          ];
+          await this.d1Repo.executeWrite('commission_content_assets', insertSql, params);
+          console.log(`[Content Gate] Baseline guide '${slug}' synchronized to Cloudflare D1.`);
+        }
+      }
+    } catch (err: any) {
+      console.warn(`[Content Gate] Baseline asset sync notice: ${err.message}`);
+    }
   }
 
   /**

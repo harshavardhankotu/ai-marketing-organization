@@ -527,6 +527,14 @@ app.get('/sitemap.xml', async (c) => {
     publishedSlugs = [];
   }
 
+  if (publishedSlugs.length === 0) {
+    try {
+      const { getDb } = await import('./db/client.js');
+      const db = getDb();
+      publishedSlugs = db.prepare("SELECT slug, updated_at FROM commission_content_assets WHERE status = 'PUBLISHED' ORDER BY updated_at DESC").all() as any[];
+    } catch {}
+  }
+
   const staticUrls = [
     `${baseUrl}/`,
     `${baseUrl}/deals`,
@@ -650,6 +658,14 @@ export async function startServer(): Promise<any> {
     console.log('[Experiment Gate] Synchronized growth experiments from Cloudflare D1.');
   } catch (err: any) {
     console.warn('[Experiment Gate] Growth experiment synchronization failed:', err.message);
+  }
+
+  // 3d. Baseline Content Assets Gate: Ensure baseline acquisition guides exist in Cloudflare D1
+  try {
+    const { ContentAssetEngine } = await import('./commission/content-asset-engine.js');
+    await ContentAssetEngine.getInstance().syncBaselineAssetsAsync();
+  } catch (err: any) {
+    console.warn('[Content Gate] Baseline content sync failed:', err.message);
   }
 
   // 4. Start autonomous background scheduler for continuous market intelligence & research

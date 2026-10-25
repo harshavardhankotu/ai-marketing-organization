@@ -540,5 +540,47 @@ describe('Revenue Engine V2.6 — Verification Test Suite', () => {
       const cromaExp = experiments.find(e => e.id === 'gexp_croma_mrp_anchor_v1');
       expect(cromaExp).toBeDefined();
     });
+
+    it('falls back to local SQLite when D1 returns null for published content assets', async () => {
+      const { ContentAssetEngine } = await import('../../src/commission/content-asset-engine.js');
+      const { getDb } = await import('../../src/db/client.js');
+      const db = getDb();
+
+      // Insert a test published guide into SQLite directly
+      const testSlug = 'unit-test-student-guide-fallback';
+      db.prepare(`
+        INSERT OR REPLACE INTO commission_content_assets (
+          id, organization_id, slug, asset_type, title, category, location, intent_target,
+          content_markdown, primary_offer_id, matched_offer_ids_json, disclosure_markdown,
+          status, view_count, referral_click_count, quality_gate_json, disclosure_version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        'guide_unit_test_fallback',
+        'org_owner_primary',
+        testSlug,
+        'BUYING_GUIDE',
+        'Unit Test Student Airline Concession Guide',
+        'Travel & Hospitality',
+        'India',
+        'Student flight discounts',
+        '# Unit Test Student Airline Concessions\n\nOfficial DGCA baggage rules apply.',
+        null,
+        '[]',
+        'Affiliate disclosure test.',
+        'PUBLISHED',
+        5,
+        1,
+        '{}',
+        '2026.1'
+      );
+
+      const engine = ContentAssetEngine.getInstance();
+      const asset = await engine.getAssetBySlug(testSlug, false);
+
+      expect(asset).not.toBeNull();
+      expect(asset?.slug).toBe(testSlug);
+      expect(asset?.title).toBe('Unit Test Student Airline Concession Guide');
+      expect(asset?.contentMarkdown).toContain('Official DGCA baggage rules apply.');
+    });
   });
 });
