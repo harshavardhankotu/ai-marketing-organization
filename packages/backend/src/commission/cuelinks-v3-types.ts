@@ -187,6 +187,62 @@ export interface CuelinksReconciliationMetrics {
   cashReceivedINR: number;
 }
 
+export type CuelinksSyncStatusCode =
+  | 'IDLE'
+  | 'SYNCING'
+  | 'SUCCESS'
+  | 'PARTIAL_SUCCESS'
+  | 'RETRY_WAIT'
+  | 'BLOCKED_CONFIGURATION'
+  | 'FAILED_PERMANENTLY'
+  | 'BLOCKED_AUTHORIZATION'
+  | 'ERROR';
+
+export type CuelinksErrorClass =
+  | 'AUTH_FAILURE'
+  | 'PERMISSION_MISSING'
+  | 'RATE_LIMITED'
+  | 'PROVIDER_SERVER_ERROR'
+  | 'NETWORK_TIMEOUT'
+  | 'EMPTY_RESULTS'
+  | 'INVALID_RESPONSE';
+
+export interface CuelinksTelemetryRecord {
+  errorClass?: CuelinksErrorClass;
+  attemptCount: number;
+  lastError?: string;
+  nextRetryAt?: string;
+  status?: string;
+  recordedAt?: string;
+  partialFailureReasons?: string[];
+}
+
+export interface CuelinksPaginationCursor {
+  campaignPage: number;
+  offerPage: number;
+  hasMoreCampaigns?: boolean;
+  hasMoreOffers?: boolean;
+  lastUpdated?: string;
+}
+
+export interface CuelinksPaginatedSyncOptions {
+  cursor?: CuelinksPaginationCursor;
+  batchSize?: number;
+  maxPages?: number;
+  organizationId?: string;
+  businessId?: string;
+}
+
+export interface CuelinksPaginatedSyncResult {
+  success: boolean;
+  reason?: string;
+  status: CuelinksSyncStatus;
+  dealCandidates: any[];
+  nextCursor?: CuelinksPaginationCursor;
+  hasMore: boolean;
+  errorClass?: CuelinksErrorClass;
+}
+
 export interface CuelinksSyncStatus {
   configured: boolean;
   connected: boolean;
@@ -204,7 +260,8 @@ export interface CuelinksSyncStatus {
   offersRetrieved: number;
   linksConverted: number;
   lastSyncTimestamp: string;
-  status: 'IDLE' | 'SYNCING' | 'SUCCESS' | 'BLOCKED_AUTHORIZATION' | 'ERROR';
+  status: 'IDLE' | 'SYNCING' | 'SUCCESS' | 'PARTIAL_SUCCESS' | 'RETRY_WAIT' | 'BLOCKED_CONFIGURATION' | 'FAILED_PERMANENTLY' | 'BLOCKED_AUTHORIZATION' | 'ERROR';
   reconciliation: CuelinksReconciliationMetrics;
   ownerActionRequired?: string;
+  telemetry?: CuelinksTelemetryRecord;
 }

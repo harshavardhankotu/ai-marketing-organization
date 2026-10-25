@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { AutonomousDealDiscoveryEngine, MAX_OFFER_FRESHNESS_HOURS } from '../../src/commission/autonomous-deal-discovery-engine.js';
-import { SAMPLE_DEAL_CANDIDATES_FIXTURE } from '../fixtures/sample-deal-candidates.js';
+import { SAMPLE_DEAL_CANDIDATES_FIXTURE, SAMPLE_COUPON_CANDIDATES_FIXTURE } from '../fixtures/sample-deal-candidates.js';
 import { DealSsrfGuard } from '../../src/commission/deal-ssrf-guard.js';
 import { CuelinksV3Client } from '../../src/commission/cuelinks-v3-client.js';
+import type { CuelinksPaginationCursor } from '../../src/commission/deal-types.js';
 import { app } from '../../src/index.js';
 import { getDb } from '../../src/db/client.js';
 import { OwnerAuthService } from '../../src/auth/owner-auth.js';
@@ -15,10 +16,11 @@ describe('Autonomous Deal Discovery Engine V1.1 (Spec §§ 1–15)', () => {
     vi.restoreAllMocks();
     const engine = AutonomousDealDiscoveryEngine.getInstance();
     engine.setCuelinksClient(null);
+    engine.setFetchFn(null);
     engine.injectDiscoveredDealsForTesting(SAMPLE_DEAL_CANDIDATES_FIXTURE);
     const db = getDb();
     try {
-      db.prepare(`DELETE FROM workflows WHERE workflow_type = 'PUBLIC_DEAL'`).run();
+      db.prepare(`DELETE FROM workflows WHERE workflow_type IN ('PUBLIC_DEAL', 'CUELINKS_SYNC_CURSOR')`).run();
     } catch {}
   });
 
@@ -26,6 +28,7 @@ describe('Autonomous Deal Discovery Engine V1.1 (Spec §§ 1–15)', () => {
     vi.restoreAllMocks();
     const engine = AutonomousDealDiscoveryEngine.getInstance();
     engine.setCuelinksClient(null);
+    engine.setFetchFn(null);
     engine.clearInjectedDealsForTesting();
   });
 
@@ -797,6 +800,566 @@ describe('Autonomous Deal Discovery Engine V1.1 (Spec §§ 1–15)', () => {
       for (let i = 0; i < publicDeals.deals.length - 1; i++) {
         expect(publicDeals.deals[i].buyerValueScore).toBeGreaterThanOrEqual(publicDeals.deals[i + 1].buyerValueScore);
       }
+    });
+  });
+
+  describe('10. Coupon-Only Deals & Honest Representation (Workstreams B & E)', () => {
+    it('ingests valid coupon-only deals without inventing synthetic current prices or MRPs', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+      const swiggyCoupon = SAMPLE_COUPON_CANDIDATES_FIXTURE[0]; // Swiggy coupon
+
+      const res = await engine.ingestAndVerifyDeal(swiggyCoupon, orgId, bizId);
+      expect(['CREATED_VERIFIED', 'DEDUPLICATED']).toContain(res.action);
+      expect(res.deal).toBeDefined();
+
+      const deal = res.deal!;
+      expect(deal.dealKind).toBe('COUPON');
+      expect(deal.couponCode).toBe('FEAST50');
+      expect(deal.couponConditions).toBe('Flat 50% off up to ₹150 on min order ₹299');
+      // Strictly honest representation: no fake prices or invented MRPs
+      expect(deal.currentPriceINR).toBeUndefined();
+      expect(deal.referencePriceINR).toBeUndefined();
+      expect(deal.currency).toBe('INR');
+      expect(deal.verificationStatus).toBe('VERIFIED_WITH_CONDITIONS');
+      expect(deal.productUrl).toBe('https://www.swiggy.com/restaurants');
+
+      // Buyer value score calculation works cleanly for coupon-only deals
+      expect(deal.buyerValueScore).toBeGreaterThan(0);
+      expect(deal.buyerValueScore).toBeLessThanOrEqual(100);
+    });
+
+    it('strictly rejects candidate deals lacking BOTH pricing and coupon codes/conditions', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+
+      // Missing both price and coupon code/terms
+      const invalidDeal = {
+        title: 'Vague Mystery Promotion',
+        brand: 'Unknown',
+        merchant: 'Mystery Retailer',
+        category: 'General',
+        productUrl: 'https://example.com/deal/mystery',
+        dealKind: 'COUPON' as const,
+        sourceUrl: 'https://example.com/deals',
+        sourceDomain: 'example.com',
+        sourceType: 'COMMUNITY_SUBMISSION' as const
+      };
+
+      const res = await engine.ingestAndVerifyDeal(invalidDeal, orgId, bizId);
+      expect(res.action).toBe('REJECTED');
+      expect(res.deal).toBeUndefined();
+      expect(res.rejectionReason).toBeDefined();
+    });
+
+    it('rejects product deals with non-positive or missing prices', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+
+      const invalidProduct = {
+        title: 'Headphones with missing price',
+        brand: 'SoundBrand',
+        merchant: 'Retailer',
+        category: 'Audio',
+        productUrl: 'https://example.com/headphones',
+        dealKind: 'PRODUCT' as const,
+        sourceUrl: 'https://example.com/deals',
+        sourceDomain: 'example.com',
+        sourceType: 'RETAILER_BRAND' as const
+      };
+
+      const res = await engine.ingestAndVerifyDeal(invalidProduct, orgId, bizId);
+      expect(res.action).toBe('REJECTED');
+      expect(res.rejectionReason).toContain('INVALID_PRICE');
+    });
+
+    it('strictly preserves direct merchant URLs when affiliated: false for coupons', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+      const zohoCoupon = SAMPLE_COUPON_CANDIDATES_FIXTURE[2]; // Zoho Workplace coupon
+
+      const mockClient = new CuelinksV3Client({ apiKey: 'mock_cuelinks_key' });
+      vi.spyOn(mockClient, 'isConfigured').mockReturnValue(true);
+      vi.spyOn(mockClient, 'convertLink').mockResolvedValue({
+        affiliated: false,
+        tracking_url: `https://linksredirect.com/?cid=331585&url=${encodeURIComponent(zohoCoupon.productUrl)}`
+      });
+      engine.setCuelinksClient(mockClient);
+
+      const res = await engine.ingestAndVerifyDeal(zohoCoupon, orgId, bizId);
+      expect(['CREATED_VERIFIED', 'DEDUPLICATED']).toContain(res.action);
+      expect(res.deal).toBeDefined();
+
+      const deal = res.deal!;
+      expect(deal.isMonetizable).toBe(false);
+      expect(deal.trackingUrl).toBeUndefined();
+      expect(deal.affiliateNetwork).toBeUndefined();
+      expect(deal.productUrl).toBe('https://www.zoho.com/workplace/special-offer');
+    });
+
+    it('preserves unverified merchant-claimed discounts without fabricating reference prices', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+
+      const unverifiedDeal = {
+        title: 'Artisan Handcrafted Leather Wallet',
+        brand: 'CraftLeather',
+        merchant: 'Craft Store',
+        category: 'Fashion & Accessories',
+        productUrl: 'https://craftstore.in/wallet',
+        currentPriceINR: 1299,
+        claimedDiscountPercent: 40,
+        // No reference price provided by merchant
+        sourceUrl: 'https://craftstore.in/deals',
+        sourceDomain: 'craftstore.in',
+        sourceType: 'RETAILER_BRAND' as const
+      };
+
+      const res = await engine.ingestAndVerifyDeal(unverifiedDeal, orgId, bizId);
+      expect(['CREATED_VERIFIED', 'DEDUPLICATED']).toContain(res.action);
+      expect(res.deal).toBeDefined();
+
+      const deal = res.deal!;
+      expect(deal.currentPriceINR).toBe(1299);
+      expect(deal.referencePriceINR).toBeUndefined();
+      expect(deal.discountVerificationType).toBe('UNCONFIRMED');
+      expect(deal.claimedDiscountPercent).toBe(40);
+      expect(deal.verifiedDiscountPercent).toBe(0);
+      expect(deal.verificationStatus).toBe('UNVERIFIED');
+    });
+  });
+
+  describe('11. Real Source Discovery & Registry Metrics (Workstream C)', () => {
+    it('initializes all 14 default Indian sources with zero offers collected and unattempted state', () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+      engine.resetSources();
+      const sources = engine.getSources();
+
+      expect(sources.length).toBe(14);
+      for (const s of sources) {
+        expect(s.offersCollected).toBe(0);
+        expect(s.lastAttemptAt).toBeUndefined();
+      }
+    });
+
+    it('only tracks executed source adapters during discovery cycles and avoids false attribution', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+      engine.resetSources();
+      engine.clearInjectedDealsForTesting();
+
+      // Mock fetchFn for DesiDime RSS & Schema.org to succeed
+      const mockFetch = vi.fn().mockImplementation(async (url: string) => {
+        if (url.includes('desidime.com')) {
+          const sampleRss = `<?xml version="1.0" encoding="UTF-8"?>
+            <rss version="2.0">
+              <channel>
+                <title>DesiDime Deals</title>
+                <link>https://www.desidime.com</link>
+                <item>
+                  <title>Redmi Buds 5 Wireless Earbuds</title>
+                  <link>https://www.mi.com/in/redmi-buds-5</link>
+                  <description>Buy for Rs. 2499 (MRP Rs. 4999) 50% discount</description>
+                </item>
+              </channel>
+            </rss>`;
+          return new Response(sampleRss, { status: 200, headers: { 'Content-Type': 'application/xml' } });
+        }
+        if (url.includes('schema.org')) {
+          const sampleHtml = `
+            <html>
+              <head>
+                <script type="application/ld+json">
+                {
+                  "@context": "https://schema.org",
+                  "@type": "Product",
+                  "name": "Fire-Boltt Ninja Call Pro Smartwatch",
+                  "offers": {
+                    "@type": "Offer",
+                    "price": "1499",
+                    "priceCurrency": "INR",
+                    "availability": "https://schema.org/InStock",
+                    "url": "https://www.fireboltt.com/products/ninja-call-pro"
+                  }
+                }
+                </script>
+              </head>
+              <body></body>
+            </html>`;
+          return new Response(sampleHtml, { status: 200, headers: { 'Content-Type': 'text/html' } });
+        }
+        return new Response('Not Found', { status: 404 });
+      });
+
+      engine.setFetchFn(mockFetch as any);
+
+      const cycle = await engine.runDiscoveryCycle(orgId, bizId);
+      expect(cycle.sourcesScanned).toBeGreaterThanOrEqual(2);
+      expect(cycle.sourcesScanned).toBeLessThanOrEqual(3);
+
+      // Verify un-executed sources (like Flipkart, Amazon, Tata Cliq) are NOT falsely attributed
+      const flipkartSrc = engine.getSource('src_flipkart_in');
+      expect(flipkartSrc?.lastScanAt).toBeUndefined();
+      expect(flipkartSrc?.lastHttpStatus).toBeUndefined();
+
+      const amazonSrc = engine.getSource('src_amazon_in');
+      expect(amazonSrc?.lastScanAt).toBeUndefined();
+      expect(amazonSrc?.lastHttpStatus).toBeUndefined();
+
+      // Verify executed source registry records have updated metrics
+      const desidimeSrc = engine.getSource('src_desidime_public');
+      expect(desidimeSrc?.lastAttemptAt).toBeDefined();
+      expect(desidimeSrc?.lastSuccessAt).toBeDefined();
+      expect(desidimeSrc?.lastHttpStatus).toBe(200);
+      expect(desidimeSrc?.offersCollected).toBeGreaterThanOrEqual(1);
+
+      const schemaSrc = engine.getSource('src_schema_org_offers');
+      expect(schemaSrc?.lastAttemptAt).toBeDefined();
+      expect(schemaSrc?.lastSuccessAt).toBeDefined();
+      expect(schemaSrc?.lastHttpStatus).toBe(200);
+      expect(schemaSrc?.offersCollected).toBeGreaterThanOrEqual(1);
+    });
+
+    it('parses RSS/Atom XML feed with price extraction, MRP, and coupon codes', () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+      const rssXml = `<?xml version="1.0" encoding="UTF-8"?>
+        <rss version="2.0">
+          <channel>
+            <title>Community Deals Feed</title>
+            <link>https://www.desidime.com</link>
+            <item>
+              <title><![CDATA[OnePlus Nord CE 4 (8GB RAM, 128GB Storage)]]></title>
+              <link>https://www.oneplus.in/nord-ce-4</link>
+              <description><![CDATA[Special launch offer at &#8377; 19,999 (MRP: Rs. 24,999) with flat discount &amp; free shipping]]></description>
+            </item>
+            <item>
+              <title><![CDATA[Domino's Pizza Flat 50% Off]]></title>
+              <link>https://www.dominos.co.in/menu</link>
+              <description><![CDATA[Get 50% discount up to Rs 100 on all medium pizzas. Use coupon code PIZZA50 on checkout!]]></description>
+            </item>
+          </channel>
+        </rss>`;
+
+      const deals = engine.parseRssFeedXml(rssXml, 'https://www.desidime.com/feed.xml', 'desidime.com');
+      expect(deals.length).toBe(2);
+
+      // Deal 1: Product with price and MRP
+      const deal1 = deals[0];
+      expect(deal1.title).toBe('OnePlus Nord CE 4 (8GB RAM, 128GB Storage)');
+      expect(deal1.currentPriceINR).toBe(19999);
+      expect(deal1.referencePriceINR).toBe(24999);
+      expect(deal1.dealKind).toBe('PRODUCT');
+      expect(deal1.productUrl).toBe('https://www.oneplus.in/nord-ce-4');
+
+      // Deal 2: Coupon deal
+      const deal2 = deals[1];
+      expect(deal2.title).toBe("Domino's Pizza Flat 50% Off");
+      expect(deal2.dealKind).toBe('COUPON');
+      expect(deal2.couponCode).toBe('PIZZA50');
+      expect(deal2.currentPriceINR).toBeUndefined();
+      expect(deal2.productUrl).toBe('https://www.dominos.co.in/menu');
+    });
+
+    it('parses Schema.org JSON-LD structured data with Product and Offer markup', () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+      const html = `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <title>Sony WH-1000XM5 Wireless Headphones</title>
+            <script type="application/ld+json">
+            {
+              "@context": "https://schema.org",
+              "@type": "Product",
+              "name": "Sony WH-1000XM5 Wireless Noise Cancelling Headphones",
+              "brand": {
+                "@type": "Brand",
+                "name": "Sony"
+              },
+              "offers": {
+                "@type": "Offer",
+                "price": "26990",
+                "priceCurrency": "INR",
+                "availability": "https://schema.org/InStock",
+                "url": "https://www.sony.co.in/headphones/wh-1000xm5"
+              }
+            }
+            </script>
+          </head>
+          <body></body>
+        </html>`;
+
+      const deals = engine.parseSchemaOrgJsonLd(html, 'https://www.sony.co.in/headphones/wh-1000xm5', 'sony.co.in');
+      expect(deals.length).toBe(1);
+
+      const deal = deals[0];
+      expect(deal.title).toBe('Sony WH-1000XM5 Wireless Noise Cancelling Headphones');
+      expect(deal.brand).toBe('Sony');
+      expect(deal.currentPriceINR).toBe(26990);
+      expect(deal.availability).toBe('IN_STOCK');
+      expect(deal.productUrl).toBe('https://www.sony.co.in/headphones/wh-1000xm5');
+    });
+  });
+
+  describe('12. Resumable Pagination Continuation Cursor & Checkpointing (Workstream C & D)', () => {
+    it('persists and rehydrates Cuelinks pagination cursor in D1 workflows table under wf_cuelinks_sync_cursor', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+
+      const testCursor: CuelinksPaginationCursor = {
+        campaignPage: 4,
+        offerPage: 7,
+        lastUpdated: new Date().toISOString()
+      };
+
+      await engine.saveCuelinksPaginationCursor(testCursor, orgId, bizId);
+
+      // Rehydrate cursor from engine
+      const loadedCursor = await engine.getCuelinksPaginationCursor(orgId);
+      expect(loadedCursor.campaignPage).toBe(4);
+      expect(loadedCursor.offerPage).toBe(7);
+
+      // Verify row exists in SQLite / D1 workflows table
+      const db = getDb();
+      const row = db.prepare(`SELECT * FROM workflows WHERE id = 'wf_cuelinks_sync_cursor'`).get() as any;
+      expect(row).toBeDefined();
+      expect(row.workflow_type).toBe('CUELINKS_SYNC_CURSOR');
+      const outputs = JSON.parse(row.outputs_json);
+      expect(outputs.campaignPage).toBe(4);
+      expect(outputs.offerPage).toBe(7);
+    });
+
+    it('advances continuation cursor by 2 offer pages per cycle across multi-cycle executions', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+      await engine.resetCuelinksPaginationCursor(orgId, bizId);
+
+      const initialCursor = await engine.getCuelinksPaginationCursor(orgId);
+      expect(initialCursor.campaignPage).toBe(1);
+      expect(initialCursor.offerPage).toBe(1);
+
+      const mockClient = new CuelinksV3Client({ apiKey: 'mock_cuelinks_key' });
+      vi.spyOn(mockClient, 'isConfigured').mockReturnValue(true);
+      vi.spyOn(mockClient, 'ping').mockResolvedValue({ connected: true, message: 'Connected' });
+      vi.spyOn(mockClient, 'getChannels').mockResolvedValue([
+        { id: 331585, name: 'AI Marketing Channel', url: 'https://gen-lang-client-0916255372.web.app', status: 'active' }
+      ]);
+      // Return 30 campaigns with total 100 so campaignPage does not wrap around
+      vi.spyOn(mockClient, 'searchCampaigns').mockResolvedValue({
+        campaigns: Array.from({ length: 30 }, (_, i) => ({
+          id: 1000 + i,
+          name: `Campaign ${i}`,
+          url: `https://brand${i}.com`,
+          status: 'active',
+          access_status: 'open',
+          epc_7d: '5.0'
+        })),
+        total: 100
+      });
+      // Return 30 offers per page with total 300 so offerPage does not wrap around
+      vi.spyOn(mockClient, 'getOffers').mockImplementation(async (params) => {
+        const page = params?.page || 1;
+        return {
+          offers: Array.from({ length: 30 }, (_, i) => ({
+            id: page * 100 + i,
+            campaign_id: 1000,
+            title: `Offer ${page}-${i}`,
+            url: `https://brand0.com/offer-${page}-${i}`,
+            current_price_inr: 999,
+            discount: '20% off'
+          })),
+          total: 300
+        };
+      });
+      vi.spyOn(mockClient, 'convertLink').mockImplementation(async (req) => ({
+        affiliated: true,
+        tracking_url: `https://clnk.in/track_${encodeURIComponent(req.url)}`,
+        campaign: { id: 1000, name: 'Campaign 0' }
+      }));
+      vi.spyOn(mockClient, 'getReports').mockResolvedValue({ reports: [], total: 0 });
+
+      engine.setCuelinksClient(mockClient);
+
+      // Cycle 1: starts at campaignPage=1, offerPage=1
+      await engine.runDiscoveryCycle(orgId, bizId);
+      const cursorAfterCycle1 = await engine.getCuelinksPaginationCursor(orgId);
+      expect(cursorAfterCycle1.campaignPage).toBe(2);
+      expect(cursorAfterCycle1.offerPage).toBe(3); // Advanced 2 offer pages
+
+      // Cycle 2: resumes at campaignPage=2, offerPage=3
+      await engine.runDiscoveryCycle(orgId, bizId);
+      const cursorAfterCycle2 = await engine.getCuelinksPaginationCursor(orgId);
+      expect(cursorAfterCycle2.campaignPage).toBe(3);
+      expect(cursorAfterCycle2.offerPage).toBe(5); // Advanced another 2 offer pages
+    });
+
+    it('wraps around pagination cursor to page 1 when reaching catalog end', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+
+      // Set cursor near end of catalog
+      await engine.saveCuelinksPaginationCursor({
+        campaignPage: 10,
+        offerPage: 20,
+        lastUpdated: new Date().toISOString()
+      }, orgId, bizId);
+
+      const mockClient = new CuelinksV3Client({ apiKey: 'mock_cuelinks_key' });
+      vi.spyOn(mockClient, 'isConfigured').mockReturnValue(true);
+      vi.spyOn(mockClient, 'ping').mockResolvedValue({ connected: true, message: 'Connected' });
+      vi.spyOn(mockClient, 'getChannels').mockResolvedValue([
+        { id: 331585, name: 'AI Marketing Channel', url: 'https://gen-lang-client-0916255372.web.app', status: 'active' }
+      ]);
+      // End reached for campaigns: returns fewer than 30
+      vi.spyOn(mockClient, 'searchCampaigns').mockResolvedValue({
+        campaigns: [{ id: 999, name: 'Final Campaign', url: 'https://finalbrand.com', status: 'active', access_status: 'open', epc_7d: '1.0' }],
+        total: 50
+      });
+      // End reached for offers: empty list
+      vi.spyOn(mockClient, 'getOffers').mockResolvedValue({
+        offers: [],
+        total: 100
+      });
+      vi.spyOn(mockClient, 'convertLink').mockResolvedValue({ affiliated: false, tracking_url: '' });
+      vi.spyOn(mockClient, 'getReports').mockResolvedValue({ reports: [], total: 0 });
+
+      engine.setCuelinksClient(mockClient);
+
+      await engine.runDiscoveryCycle(orgId, bizId);
+      const cursorAfterWrap = await engine.getCuelinksPaginationCursor(orgId);
+      expect(cursorAfterWrap.campaignPage).toBe(1); // Wrapped around to 1
+      expect(cursorAfterWrap.offerPage).toBe(1); // Wrapped around to 1
+    });
+
+    it('deduplicates identical offers delivered across paginated batches', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+      await engine.resetCuelinksPaginationCursor(orgId, bizId);
+
+      const mockClient = new CuelinksV3Client({ apiKey: 'mock_cuelinks_key' });
+      vi.spyOn(mockClient, 'isConfigured').mockReturnValue(true);
+      vi.spyOn(mockClient, 'ping').mockResolvedValue({ connected: true, message: 'Connected' });
+      vi.spyOn(mockClient, 'getChannels').mockResolvedValue([
+        { id: 331585, name: 'AI Marketing Channel', url: 'https://gen-lang-client-0916255372.web.app', status: 'active' }
+      ]);
+      vi.spyOn(mockClient, 'searchCampaigns').mockResolvedValue({
+        campaigns: [{ id: 500, name: 'Repeat Merchant', url: 'https://repeat.com', status: 'active', access_status: 'open', epc_7d: '5.0' }],
+        total: 1
+      });
+
+      // Both pages return the same deal offer
+      const sharedOffer = {
+        id: 7777,
+        campaign_id: 500,
+        title: 'Evergreen Repeat Offer',
+        url: 'https://repeat.com/item-evergreen',
+        current_price_inr: 599,
+        discount: '30% off'
+      };
+
+      vi.spyOn(mockClient, 'getOffers').mockResolvedValue({
+        offers: [sharedOffer],
+        total: 1
+      });
+      vi.spyOn(mockClient, 'convertLink').mockResolvedValue({
+        affiliated: true,
+        tracking_url: 'https://clnk.in/repeat7777',
+        campaign: { id: 500, name: 'Repeat Merchant' }
+      });
+      vi.spyOn(mockClient, 'getReports').mockResolvedValue({ reports: [], total: 0 });
+
+      engine.setCuelinksClient(mockClient);
+
+      const cycle1 = await engine.runDiscoveryCycle(orgId, bizId);
+      const cycle2 = await engine.runDiscoveryCycle(orgId, bizId);
+
+      // On cycle 2, the offer should be deduplicated
+      expect(cycle2.offersDeduplicated).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  describe('13. Source Failure Isolation (Workstream C)', () => {
+    it('isolates source network and HTTP failures without crashing the entire discovery cycle', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+      engine.resetSources();
+      engine.clearInjectedDealsForTesting();
+
+      // Mock fetch: DesiDime RSS returns 500 Server Error; Schema.org returns 200 OK
+      const mockFetch = vi.fn().mockImplementation(async (url: string) => {
+        if (url.includes('desidime.com')) {
+          return new Response('Internal Server Error', { status: 500, statusText: 'Internal Server Error' });
+        }
+        if (url.includes('schema.org')) {
+          const validHtml = `
+            <html><head>
+              <script type="application/ld+json">
+              {
+                "@context": "https://schema.org",
+                "@type": "Product",
+                "name": "Noise ColorFit Pulse Grand Smartwatch",
+                "offers": {
+                  "@type": "Offer",
+                  "price": "1299",
+                  "priceCurrency": "INR",
+                  "availability": "https://schema.org/InStock",
+                  "url": "https://www.gonoise.com/products/colorfit-pulse-grand"
+                }
+              }
+              </script>
+            </head><body></body></html>`;
+          return new Response(validHtml, { status: 200, headers: { 'Content-Type': 'text/html' } });
+        }
+        return new Response('Not Found', { status: 404 });
+      });
+
+      engine.setFetchFn(mockFetch as any);
+
+      // Discovery cycle MUST NOT throw
+      const cycle = await engine.runDiscoveryCycle(orgId, bizId);
+      expect(cycle.cycleId).toBeDefined();
+
+      // Failing source metrics
+      const desidimeSrc = engine.getSource('src_desidime_public');
+      expect(desidimeSrc).toBeDefined();
+      expect(desidimeSrc?.lastHttpStatus).toBe(500);
+      expect(desidimeSrc?.failureCount).toBeGreaterThanOrEqual(1);
+      expect(desidimeSrc?.lastError).toContain('HTTP_500');
+      expect(desidimeSrc?.nextRetryAt).toBeDefined();
+
+      // Successful source metrics
+      const schemaSrc = engine.getSource('src_schema_org_offers');
+      expect(schemaSrc).toBeDefined();
+      expect(schemaSrc?.lastHttpStatus).toBe(200);
+      expect(schemaSrc?.failureCount).toBe(0);
+      expect(schemaSrc?.offersCollected).toBeGreaterThanOrEqual(1);
+
+      // Global engine metrics reflect 1 failing source and valid offers
+      const metrics = engine.getDealEngineMetrics();
+      expect(metrics.sources.failing).toBeGreaterThanOrEqual(1);
+      expect(metrics.sources.failureReasons['HTTP_500: Failed to fetch feed']).toBe(1);
+    });
+
+    it('recovers source health when subsequent discovery attempt succeeds', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+
+      // DesiDime was failing previously; now simulate recovery
+      const recoveredRss = `<?xml version="1.0" encoding="UTF-8"?>
+        <rss version="2.0">
+          <channel>
+            <title>DesiDime Deals</title>
+            <item>
+              <title>Portronics Toad 23 Wireless Optical Mouse</title>
+              <link>https://www.portronics.com/products/toad-23</link>
+              <description>Special price Rs. 299 (MRP Rs. 599)</description>
+            </item>
+          </channel>
+        </rss>`;
+
+      // Reset nextRetryAt to allow scan immediately
+      const desidimeSrc = engine.getSource('src_desidime_public');
+      if (desidimeSrc) {
+        desidimeSrc.nextRetryAt = undefined;
+      }
+
+      engine.setFetchFn(vi.fn().mockResolvedValue(new Response(recoveredRss, { status: 200 })) as any);
+
+      await engine.runDiscoveryCycle(orgId, bizId);
+
+      const recoveredSrc = engine.getSource('src_desidime_public');
+      expect(recoveredSrc?.lastHttpStatus).toBe(200);
+      expect(recoveredSrc?.failureCount).toBe(0);
+      expect(recoveredSrc?.lastError).toBeUndefined();
+      expect(recoveredSrc?.lastSuccessAt).toBeDefined();
     });
   });
 });
