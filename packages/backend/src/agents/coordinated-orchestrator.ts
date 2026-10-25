@@ -284,7 +284,8 @@ export class CoordinatedAgentOrchestrator {
 
       const startMs = Date.now();
       try {
-        let res: { success: boolean; data?: any; error?: string };
+        const fallbackRes = await params.executionFn();
+        let res: { success: boolean; data?: any; error?: string } = fallbackRes;
         let executedViaRuntime = false;
         let runtimeModel = 'deterministic-coordinator';
         let runtimeTokens = 100;
@@ -312,7 +313,8 @@ export class CoordinatedAgentOrchestrator {
             res = {
               success: true,
               data: {
-                ...(typeof runtimeRes.data === 'object' ? runtimeRes.data : { result: runtimeRes.data }),
+                ...(fallbackRes.data || {}),
+                ...(typeof runtimeRes.data === 'object' ? runtimeRes.data : {}),
                 _runtime: {
                   agentId: agent.id,
                   model: runtimeRes.model || 'gemini-3.8-flash',
@@ -323,12 +325,10 @@ export class CoordinatedAgentOrchestrator {
             executedViaRuntime = true;
             runtimeModel = runtimeRes.model || 'gemini-3.8-flash';
             runtimeTokens = runtimeRes.telemetry?.totalTokens || 250;
-          } else {
-            res = await params.executionFn();
           }
         } catch {
           // Graceful fallback to domain deterministic synthesis
-          res = await params.executionFn();
+          res = fallbackRes;
         }
 
         const latencyMs = Date.now() - startMs;
@@ -372,7 +372,7 @@ export class CoordinatedAgentOrchestrator {
               INSERT INTO decisions (
                 id, organization_id, business_id, agent_id, decision, reason,
                 evidence, source, confidence, alternatives_json, expected_outcome, created_at
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0.90, '[]', ?, datetime('now'))
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, 'COORDINATED_ORCHESTRATOR', 0.90, '[]', ?, datetime('now'))
             `).run(
               `dec_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
               brief.organizationId,
@@ -381,7 +381,6 @@ export class CoordinatedAgentOrchestrator {
               params.title,
               `Coordinated execution for brief: ${brief.title}`,
               JSON.stringify(res.data || {}),
-              executedViaRuntime ? runtimeModel : 'COORDINATED_ORCHESTRATOR',
               'Task execution completed successfully'
             );
           } catch {}
