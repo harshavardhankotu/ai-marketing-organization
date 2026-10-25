@@ -324,14 +324,15 @@ export class CuelinksV3Client {
       }
       // CRUCIAL RULE: Do NOT return CUELINKS_STANDARD_SCOPES when scopes are missing/undefined!
       // Unknown scopes must remain undefined or empty until validated by the server.
-
+      // Strict fail-closed rule: If scopes are missing, empty, or not an array, hasRequiredScopes = false.
       let missingScopes: string[] | undefined = undefined;
-      let hasRequiredScopes = true;
-      if (scopes && scopes.length > 0) {
+      let hasRequiredScopes = false;
+      if (Array.isArray(scopes) && scopes.length > 0) {
         missingScopes = CUELINKS_REQUIRED_SCOPES.filter(reqScope => !scopes!.includes(reqScope));
-        if (missingScopes.length > 0) {
-          hasRequiredScopes = false;
-        }
+        hasRequiredScopes = missingScopes.length === 0;
+      } else {
+        missingScopes = [...CUELINKS_REQUIRED_SCOPES];
+        hasRequiredScopes = false;
       }
 
       const isConnected =
@@ -359,7 +360,9 @@ export class CuelinksV3Client {
       const message = !isConnected
         ? (payload.message || 'Ping returned unsuccessful status or invalid payload')
         : (!hasRequiredScopes && missingScopes && missingScopes.length > 0
-            ? `Cuelinks API key connected, but lacks required scopes: ${missingScopes.join(', ')}`
+            ? (scopes === undefined || scopes.length === 0
+                ? 'Cuelinks API key connected, but no scopes reported or verified by provider.'
+                : `Cuelinks API key connected, but lacks required scopes: ${missingScopes.join(', ')}`)
             : 'Successfully authenticated with Cuelinks V3 API.');
 
       return {
@@ -701,8 +704,8 @@ export class CuelinksV3Client {
     });
 
     return {
-      transactions: res.data || [],
-      total: res.meta?.total ?? (res.data ? res.data.length : 0),
+      transactions: res.data || (res as any).transactions || [],
+      total: res.meta?.total ?? (res.data ? res.data.length : ((res as any).transactions ? (res as any).transactions.length : 0)),
       total_pages: res.meta?.total_pages,
       page: res.meta?.page
     };

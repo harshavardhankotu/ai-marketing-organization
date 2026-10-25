@@ -488,6 +488,27 @@ app.get('/robots.txt', async (c) => {
   return c.text(robotsTxt, 200, { 'Content-Type': 'text/plain; charset=utf-8' });
 });
 
+// Dedicated server-rendered HTML route for published buyer guides & acquisition content
+app.get('/guides/:slug', async (c) => {
+  let slug = c.req.param('slug');
+  if (slug.endsWith('.html')) {
+    slug = slug.substring(0, slug.length - 5);
+  }
+  try {
+    const { ContentAssetEngine } = await import('./commission/content-asset-engine.js');
+    const { StaticSiteGenerator } = await import('./commission/static-site-generator.js');
+    const asset = await ContentAssetEngine.getInstance().getAssetBySlug(slug, true);
+    if (asset) {
+      const config = await StaticSiteGenerator.getInstance().resolveConfig();
+      const html = StaticSiteGenerator.getInstance().renderGuideHtml(asset, config);
+      return c.html(html);
+    }
+  } catch (err: any) {
+    console.warn(`[GuideRoute] Error resolving guide '${slug}': ${err.message}`);
+  }
+  return c.text('Guide not found', 404);
+});
+
 app.get('/sitemap.xml', async (c) => {
   const host = c.req.header('host') || 'ai-marketing-organization.onrender.com';
   const proto = c.req.header('x-forwarded-proto') || 'https';

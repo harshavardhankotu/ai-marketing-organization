@@ -139,8 +139,50 @@ export class GrowthExperimentTracker {
       }
     };
 
+    const exp3: GrowthExperimentRecord = {
+      id: 'gexp_student_travel_guide_v1',
+      organizationId: 'org_owner_primary',
+      businessId: 'biz_platform_aro',
+      title: 'High-Intent Student Travel Discount & Baggage Concession Comparison Guide',
+      hypothesis: 'Publishing a dedicated, indexable Student Air Travel Discount & Baggage Concession Guide with verified airline concession rules (Air India, IndiGo, SpiceJet) will acquire high-intent organic visitors seeking student promos and generate higher outbound click conversion (>= 20%) than generic travel listings.',
+      changeTested: {
+        changeType: 'CATEGORY_FOCUS',
+        description: 'Comprehensive, verified guide with baggage limits, eligibility criteria, and direct airline booking verification vs generic discount aggregator page',
+        baselineConfig: { format: 'AGGREGATOR_LISTING', depth: 'MINIMAL', baggageComparison: false },
+        treatmentConfig: { format: 'IN_DEPTH_GUIDE', depth: 'COMPREHENSIVE', baggageComparison: true, verifiedSources: true }
+      },
+      targetCategories: ['Travel & Hospitality', 'Airlines & Flights'],
+      targetCampaignIds: ['src_airindia_in', 'src_makemytrip_in'],
+      targetMerchants: ['Air India Express', 'IndiGo', 'MakeMyTrip'],
+      status: 'ACTIVE',
+      minimumEvidenceRequirement: 50,
+      currentCycleCount: 0,
+      createdAt: '2026-10-25T00:00:00.000Z',
+      startedAt: '2026-10-25T06:00:00.000Z',
+      cycleOutcomes: [],
+      cumulativeMetrics: {
+        baselineTotalVisits: 0,
+        treatmentTotalVisits: 0,
+        baselineTotalClicks: 0,
+        treatmentTotalClicks: 0,
+        baselineTotalConversions: 0,
+        treatmentTotalConversions: 0,
+        baselineTotalCommissionINR: 0,
+        treatmentTotalCommissionINR: 0,
+        overallCtrUpliftPercent: 0,
+        overallConversionUpliftPercent: 0,
+        overallEpcUpliftPercent: 0
+      },
+      automatedDecision: {
+        decision: 'INCONCLUSIVE',
+        rationale: 'Experiment initialized with 7-day review horizon. Awaiting real 6-hour commercial cycle observations.',
+        confidence: 0
+      }
+    };
+
     this.experimentsMap.set(exp1.id, exp1);
     this.experimentsMap.set(exp2.id, exp2);
+    this.experimentsMap.set(exp3.id, exp3);
   }
 
   /**

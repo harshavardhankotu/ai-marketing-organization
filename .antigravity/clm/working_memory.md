@@ -1,30 +1,27 @@
 # CLM SYSTEM WORKING MEMORY
 
 ## 🎯 Global Objective
-Keep the Revenue Engine healthy, genuinely autonomous, and focused on evidence-backed revenue in India.
+Produce real, evidence-backed revenue through the existing India-first site without paid acquisition or false accounting.
 
 ## 🗺️ Codebase Footprint
 - **Key Modules:**
-  - `packages/backend/src/db/d1-migrations/0038_quarantine_test_records_and_add_is_test.sql`
-  - `packages/backend/src/db/sqlite-migration-runner.ts`
-  - `packages/backend/src/db/client.ts`
-  - `packages/backend/src/db/schema.ts`
-  - `packages/backend/src/commission/cuelinks-v3-client.ts`
-  - `packages/backend/src/commission/cuelinks-v3-types.ts`
-  - `packages/backend/src/commission/cuelinks-sync-manager.ts`
   - `packages/backend/src/commission/autonomous-deal-discovery-engine.ts`
+  - `packages/backend/src/commission/cuelinks-v3-client.ts`
   - `packages/backend/src/commission/autonomous-commercial-engine.ts`
-- **Core Dependencies:** SQLite/Cloudflare D1, Cuelinks V3 API, Express/Hono backend on Render (`srv-darecoc9v7es73ea8t2g`), Cloudflare Worker Cron, Firebase Hosting.
+  - `packages/backend/src/commission/cuelinks-sync-manager.ts`
+  - `packages/backend/src/commission/growth-experiment-tracker.ts`
+  - `packages/backend/src/routes/api.ts`
+- **Core Dependencies:** SQLite/Cloudflare D1, Cuelinks V3, Render, Cloudflare Worker, Firebase, GitHub Actions
 
 ## 📊 Active State Scoreboard
-- [x] P1: Fix confirmed production SQLite migration error (status/blocker) — Fixed & regression-tested
-- [x] P1: Fix Cuelinks channel creation 422 and verify live scopes — Fixed & verified (Channel 331585 reused)
-- [x] P1: Trace scheduled discovery → link conversion → public offer → attribution — Traced & verified live
-- [x] P2: Verify real source collectors, pagination and reporting — Sources audited & accurately classified
-- [x] P2: Weekly improvement workflow and measured organic growth — Review doc generated for 2026-10-25
+- [x] P1 conversion truth — raw shortcut removed; monetize only on convertLink affiliated=true
+- [x] P1 fail-closed scopes — ping() fails closed with missingScopes when scopes omitted/empty
+- [x] P1 commercial state machine — resolved BLOCKED bouncing; no false unblock without offer/URL
+- [x] P1 attribution reconciliation — ignore pending/rejected; log DISCOVERY_COMPLETED_WITH_BLOCKERS
+- [x] P2 organic acquisition — 3 experiments registered with 7-day review; student travel guide live
 
 ## 📉 Compressed Context & Diagnostics
-- Base SHA: `8deb51c9a3b49ec518ae3f1145a61979ca5f91ad` | Working branch: `fix/revenue-engine-v2-5-production-repair`
-- Live Errors Fixed: Migration 0038 missing columns patched; Cuelinks channel 422 length & matching fixed
-- Test Suite: 116 vitest unit/integration tests passed; monorepo typecheck, 3 linters, and full build passed (0 errors)
-- Next Action: Commit changes, push branch, open PR #17 to main, watch CI, and verify deployment
+- Base SHA: `74b5d22e73b0437b5f078c79d5b017e257646015` | Branch: `feat/revenue-engine-v2-6-real-revenue`
+- Tests: 128 tests passing (12 new V2.6 verification tests, 0 regressions); typecheck, 3 linters, build pass
+- Funnel Truth: Organic clicks 0, conversions 0, commission ₹0.00, bank cash ₹0.00 (verified honest)
+- Next Action: Commit changes, push branch, open PR #18, watch CI and deploy to Render
