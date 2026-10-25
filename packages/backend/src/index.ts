@@ -521,6 +521,196 @@ app.get('/guides/:slug', async (c) => {
   return c.text('Guide not found', 404);
 });
 
+// Dedicated server-rendered HTML route for transparent public revenue funnel
+app.get('/revenue', async (c) => {
+  const host = c.req.header('host') || 'ai-marketing-organization.onrender.com';
+  const proto = c.req.header('x-forwarded-proto') || 'https';
+  const siteUrl = `${proto}://${host}`;
+  const siteName = (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
+
+  // Call the public revenue funnel endpoint internally
+  const funnelReq = new Request(`${siteUrl}/api/v1/public/revenue-funnel`, {
+    method: 'GET',
+    headers: c.req.raw.headers
+  });
+  const res = await app.fetch(funnelReq);
+  const data = await res.json().catch(() => ({ success: false, data: {} }));
+  const f = data.data?.funnel || {
+    verifiedExternalVisits: 0,
+    internalTestSessions: 0,
+    externalOutboundClicks: 0,
+    internalDiagnosticClicks: 0,
+    clickThroughRate: '0.00%',
+    conversions: 0,
+    estimatedPendingCommissionINR: 0,
+    approvedCommissionINR: 0,
+    bankCashReceivedINR: 0
+  };
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Transparent Public Revenue Funnel | ${siteName}</title>
+  <meta name="description" content="Live, empirical affiliate revenue funnel for AI Marketing Organization. Strict distinction between test clicks, external visitors, conversions, and bank cash.">
+  <link rel="canonical" href="${siteUrl}/revenue">
+  <meta name="robots" content="index, follow">
+  <style>
+    :root { color-scheme: dark; --bg: #090d16; --card: #111827; --card-border: #1e293b; --text: #e2e8f0; --accent: #06b6d4; --accent-orange: #f97316; --green: #10b981; }
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); margin: 0; line-height: 1.6; }
+    header { border-bottom: 1px solid var(--card-border); padding: 1.25rem 2rem; display: flex; justify-content: space-between; align-items: center; max-width: 1000px; margin: 0 auto; }
+    header a.brand { font-weight: 700; color: #fff; text-decoration: none; font-size: 1.2rem; }
+    header nav a { color: #94a3b8; text-decoration: none; font-size: 0.9rem; margin-left: 1.25rem; }
+    header nav a:hover, header nav a.active { color: var(--accent); font-weight: 600; }
+    main { max-width: 1000px; margin: 2.5rem auto; padding: 0 1.5rem; }
+    .hero { text-align: center; max-width: 760px; margin: 0 auto 2.5rem auto; }
+    .hero h1 { font-size: 2.2rem; color: #fff; margin-bottom: 0.5rem; }
+    .hero p { color: #94a3b8; font-size: 1.05rem; }
+    .badge { display: inline-block; background: rgba(6, 182, 212, 0.1); border: 1px solid rgba(6, 182, 212, 0.3); color: #38bdf8; padding: 0.3rem 0.8rem; border-radius: 9999px; font-size: 0.78rem; font-weight: 700; margin-bottom: 1rem; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1.25rem; margin-bottom: 2.5rem; }
+    .metric-card { background: var(--card); border: 1px solid var(--card-border); border-radius: 12px; padding: 1.5rem; }
+    .metric-label { font-size: 0.82rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; margin-bottom: 0.5rem; }
+    .metric-value { font-size: 2rem; font-weight: 800; color: #fff; line-height: 1.2; }
+    .metric-sub { font-size: 0.78rem; color: #64748b; margin-top: 0.5rem; }
+    .section-title { font-size: 1.35rem; color: #fff; margin: 2rem 0 1rem 0; }
+    .partners-table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--card-border); border-radius: 12px; overflow: hidden; margin-bottom: 2.5rem; }
+    .partners-table th, .partners-table td { padding: 0.9rem 1.2rem; text-align: left; border-bottom: 1px solid var(--card-border); font-size: 0.9rem; }
+    .partners-table th { background: #0f172a; color: #cbd5e1; font-weight: 600; font-size: 0.82rem; text-transform: uppercase; }
+    .notice-card { background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.25); border-radius: 12px; padding: 1.25rem 1.5rem; margin-bottom: 2.5rem; font-size: 0.9rem; color: #fde68a; }
+    footer { border-top: 1px solid var(--card-border); padding: 3rem 1.5rem; margin-top: 4rem; text-align: center; font-size: 0.88rem; color: #64748b; }
+    footer nav { display: flex; justify-content: center; flex-wrap: wrap; gap: 1.25rem; margin-bottom: 1rem; }
+    footer a { color: #94a3b8; text-decoration: none; }
+    footer a:hover { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <header>
+    <a href="/" class="brand">${siteName}</a>
+    <nav>
+      <a href="/deals">Verified Deals</a>
+      <a href="/guides/student-flight-discounts-india">Student Travel Guide</a>
+      <a href="/revenue" class="active">Revenue Funnel</a>
+      <a href="/public/disclosure">Disclosure</a>
+    </nav>
+  </header>
+  <main>
+    <div class="hero">
+      <span class="badge">EMPIRICAL REVENUE TRANSPARENCY</span>
+      <h1>Public Commercial Funnel</h1>
+      <p>Real-time metrics separating external visitor demand from test runs. We never report test clicks as real visitors, nor pending commissions as cash.</p>
+    </div>
+
+    <div class="grid">
+      <div class="metric-card">
+        <div class="metric-label">Verified External Visits</div>
+        <div class="metric-value">${f.verifiedExternalVisits}</div>
+        <div class="metric-sub">${f.internalTestSessions} internal test sessions separated</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Outbound Partner Clicks</div>
+        <div class="metric-value">${f.externalOutboundClicks}</div>
+        <div class="metric-sub">${f.internalDiagnosticClicks} diagnostic pings separated</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Click-Through Rate (CTR)</div>
+        <div class="metric-value" style="color: var(--accent);">${f.clickThroughRate}</div>
+        <div class="metric-sub">Outbound clicks / External visits</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Reported Conversions</div>
+        <div class="metric-value">${f.conversions}</div>
+        <div class="metric-sub">Cuelinks qualifying transactions</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Pending Commission</div>
+        <div class="metric-value" style="color: var(--accent-orange);">₹${Number(f.estimatedPendingCommissionINR).toFixed(2)}</div>
+        <div class="metric-sub">Subject to 45–60 day merchant audit</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Cash Received in Bank</div>
+        <div class="metric-value" style="color: var(--green);">₹${Number(f.bankCashReceivedINR).toFixed(2)}</div>
+        <div class="metric-sub">Strict proof: zero unverified cash claims</div>
+      </div>
+    </div>
+
+    <div class="notice-card">
+      <strong>Accounting &amp; Attribution Disclosures:</strong>
+      <ul style="margin: 0.5rem 0 0 1.25rem; padding: 0;">
+        <li><strong>Offline Attribution Delay:</strong> Indian airline affiliate campaigns (Air India Express, Akasa Air, Air India, Cleartrip) operate in offline tracking mode. Flight ticket bookings report with a 48–72 hour delay from the carrier.</li>
+        <li><strong>Travel Validation Period:</strong> Commissions remain pending until 45–60 days after travel completion to account for ticket cancellations, date shifts, and refunds.</li>
+        <li><strong>Zero Speculative Cash:</strong> Cash received is recognized strictly when transferred to our verified business bank account. Internal events or estimated figures are never treated as revenue.</li>
+      </ul>
+    </div>
+
+    <h2 class="section-title">Active Monetized Commercial Campaigns (India)</h2>
+    <table class="partners-table">
+      <thead>
+        <tr>
+          <th>Partner</th>
+          <th>Model</th>
+          <th>Commercial Payout</th>
+          <th>Cookie Window</th>
+          <th>Tracking Mode</th>
+          <th>Live Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Akasa Air</strong></td>
+          <td>Cost Per Sale (CPS)</td>
+          <td>₹225.00 per domestic sale</td>
+          <td>30 Days</td>
+          <td>Offline (48h delay)</td>
+          <td><span style="color: #10b981; font-weight: 600;">ACTIVE (Campaign 57507)</span></td>
+        </tr>
+        <tr>
+          <td><strong>Air India Express</strong></td>
+          <td>Cost Per Sale (CPS)</td>
+          <td>₹101.25 domestic / ₹168.75 intl</td>
+          <td>30 Days</td>
+          <td>Offline (48h delay)</td>
+          <td><span style="color: #10b981; font-weight: 600;">ACTIVE (Campaign 5195)</span></td>
+        </tr>
+        <tr>
+          <td><strong>Air India</strong></td>
+          <td>Cost Per Sale (CPS)</td>
+          <td>₹112.50 domestic / ₹375.00 intl</td>
+          <td>30 Days</td>
+          <td>Offline (48h delay)</td>
+          <td><span style="color: #10b981; font-weight: 600;">ACTIVE (Campaign 5622)</span></td>
+        </tr>
+        <tr>
+          <td><strong>Cleartrip Flights</strong></td>
+          <td>Cost Per Sale (CPS)</td>
+          <td>₹67.50 per flight booking</td>
+          <td>1 Day</td>
+          <td>Offline (48h delay)</td>
+          <td><span style="color: #10b981; font-weight: 600;">ACTIVE (Campaign 29)</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </main>
+  <footer>
+    <nav>
+      <a href="/deals">Verified Deals</a>
+      <a href="/guides/student-flight-discounts-india">Student Travel Guide</a>
+      <a href="/revenue">Revenue Funnel</a>
+      <a href="/about">About</a>
+      <a href="/contact">Contact</a>
+      <a href="/privacy">Privacy Policy</a>
+      <a href="/terms">Terms of Service</a>
+      <a href="/public/disclosure">Affiliate Disclosure</a>
+    </nav>
+    <p>&copy; ${new Date().getFullYear()} ${siteName}. All rights reserved.</p>
+  </footer>
+</body>
+</html>`;
+
+  return c.html(html);
+});
+
 app.get('/sitemap.xml', async (c) => {
   const host = c.req.header('host') || 'ai-marketing-organization.onrender.com';
   const proto = c.req.header('x-forwarded-proto') || 'https';
@@ -550,6 +740,7 @@ app.get('/sitemap.xml', async (c) => {
   const staticUrls = [
     `${baseUrl}/`,
     `${baseUrl}/deals`,
+    `${baseUrl}/revenue`,
     `${baseUrl}/public/disclosure`
   ];
 

@@ -305,6 +305,7 @@ export class StaticSiteGenerator {
   <footer>
     <nav>
       <a href="/deals">Verified Deals</a>
+      <a href="/revenue">Revenue Funnel</a>
       <a href="/about">About</a>
       <a href="/contact">Contact</a>
       <a href="/privacy">Privacy Policy</a>
@@ -336,7 +337,7 @@ export class StaticSiteGenerator {
     } else if (guide.disclosureMarkdown && !guide.disclosureMarkdown.includes('Amazon Associate')) {
       disclosureText = guide.disclosureMarkdown;
     } else if (guide.slug === 'student-flight-discounts-india' || fullBody.includes('clnk.in') || fullBody.includes('linksredirect.com')) {
-      disclosureText = 'Affiliate Disclosure: This guide contains verified affiliate links to partner travel booking platforms (Air India Express and Cleartrip). When you make a booking through these links, we may earn an affiliate commission at zero additional cost to you. We maintain strict editorial independence and never charge users fees or alter airline fare rules.';
+      disclosureText = 'Affiliate Disclosure: This guide contains verified affiliate links to partner travel booking platforms (Air India Express, Akasa Air, Air India, and Cleartrip). When you make a booking through these links, we may earn an affiliate commission at zero additional cost to you. We maintain strict editorial independence and never charge users fees or alter airline fare rules.';
     }
 
     // Convert basic markdown to clean HTML
@@ -420,6 +421,7 @@ export class StaticSiteGenerator {
   <footer>
     <nav>
       <a href="/deals">Verified Deals</a>
+      <a href="/revenue">Revenue Funnel</a>
       <a href="/about">About</a>
       <a href="/contact">Contact</a>
       <a href="/privacy">Privacy Policy</a>
@@ -459,6 +461,34 @@ export class StaticSiteGenerator {
           }).catch(function() {});
         }
       }
+
+      document.addEventListener('click', function(e) {
+        var target = e.target && e.target.closest ? e.target.closest('a.affiliate-link') : null;
+        if (!target) return;
+        try {
+          var destUrl = target.getAttribute('href');
+          var anchorText = (target.textContent || '').trim();
+          var clickPayload = {
+            destinationUrl: destUrl,
+            anchorText: anchorText,
+            pageUrl: window.location.pathname,
+            utmSource: src || undefined,
+            utmMedium: med || undefined,
+            utmCampaign: cmp || undefined,
+            utmContent: cnt || undefined
+          };
+          if (navigator.sendBeacon) {
+            navigator.sendBeacon('/api/v1/organic/affiliate-clicks', new Blob([JSON.stringify(clickPayload)], { type: 'application/json' }));
+          } else {
+            fetch('/api/v1/organic/affiliate-clicks', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(clickPayload),
+              keepalive: true
+            }).catch(function() {});
+          }
+        } catch (err) {}
+      }, true);
     } catch (e) {}
   })();
   </script>
@@ -672,6 +702,7 @@ export class StaticSiteGenerator {
   <footer>
     <nav>
       <a href="/deals">Verified Deals</a>
+      <a href="/revenue">Revenue Funnel</a>
       <a href="/about">About</a>
       <a href="/contact">Contact</a>
       <a href="/privacy">Privacy Policy</a>
@@ -806,6 +837,7 @@ export class StaticSiteGenerator {
   <footer>
     <nav>
       <a href="/deals">Verified Deals</a>
+      <a href="/revenue">Revenue Funnel</a>
       <a href="/about">About</a>
       <a href="/contact">Contact</a>
       <a href="/privacy">Privacy Policy</a>
@@ -822,6 +854,7 @@ export class StaticSiteGenerator {
     const urls = [
       `${config.siteUrl}/`,
       `${config.siteUrl}/deals`,
+      `${config.siteUrl}/revenue`,
       `${config.siteUrl}/about`,
       `${config.siteUrl}/contact`,
       `${config.siteUrl}/privacy`,

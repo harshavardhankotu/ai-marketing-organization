@@ -44,6 +44,8 @@ export const D1_REVENUE_CRITICAL_TABLES = [
   'partners',
   'partner_offers',
   'referrals',
+  'referral_click_events',
+  'traffic_sessions',
   'commission_records',
   'commission_content_assets',
   'demand_signals',
