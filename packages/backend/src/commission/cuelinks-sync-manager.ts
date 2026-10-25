@@ -231,27 +231,28 @@ export class CuelinksSyncManager {
     const dealCandidates: DealCandidate[] = [];
 
     for (const offer of rawOffers) {
-      // Clean merchant destination: extract URL from tracking_url parameter if needed
+      const campaign = eligibleCampaigns.find(c => String(c.id) === String(offer.campaign_id));
+      const merchantName = offer.campaign_name || campaign?.merchant_name || campaign?.name || 'Authorized Merchant';
+
+      // Clean merchant destination: extract URL from tracking_url parameter or campaign (Finding 1)
       let merchantUrl = offer.url || '';
       if (!merchantUrl && offer.tracking_url) {
         try {
           const parsed = new URL(offer.tracking_url);
-          if (parsed.searchParams.has('url')) {
-            const dec = parsed.searchParams.get('url');
-            if (dec && /^https?:\/\//i.test(dec)) {
-              merchantUrl = decodeURIComponent(dec);
-            }
+          const dec = parsed.searchParams.get('url') || parsed.searchParams.get('dest') || parsed.searchParams.get('redirect');
+          if (dec && /^https?:\/\//i.test(dec)) {
+            merchantUrl = decodeURIComponent(dec);
           }
         } catch {}
-        if (!merchantUrl) {
-          merchantUrl = offer.tracking_url;
-        }
+      }
+      if (!merchantUrl && campaign?.url && /^https?:\/\//i.test(campaign.url)) {
+        merchantUrl = campaign.url;
       }
 
+      // If merchantUrl is still empty or is itself a Cuelinks tracking URL, skip
+      // A tracking URL alone without destination is not merchant SKU evidence (Finding 1)
       if (!merchantUrl || !offer.title) continue;
-
-      const campaign = eligibleCampaigns.find(c => String(c.id) === String(offer.campaign_id));
-      const merchantName = offer.campaign_name || campaign?.merchant_name || campaign?.name || 'Authorized Merchant';
+      if (CuelinksV3Client.isAllowedTrackingUrl(merchantUrl)) continue;
 
       // Rule: Accept currentPriceINR only when explicitly provided by provider data (> 0)
       let currentPrice: number | undefined = undefined;
@@ -535,7 +536,7 @@ export class CuelinksSyncManager {
 
         this.syncStatus.campaignsDiscovered = campaignSearch.total;
         eligibleCampaigns = (campaignSearch.campaigns || []).filter(
-          c => c.status === 'active' && (c.access_status === 'open' || c.access_status === 'approved')
+          c => (!c.status || c.status === 'active') && (c.access_status === 'open' || c.access_status === 'approved')
         );
         this.syncStatus.eligibleCampaignsCount = eligibleCampaigns.length;
 
@@ -571,19 +572,29 @@ export class CuelinksSyncManager {
         let paid = 0;
 
         for (const tx of transactions) {
-          const amt = Number(tx.commission_amount) || 0;
-          if (tx.status === 'pending') pending += amt;
-          else if (tx.status === 'approved') validated += amt;
-          else if (tx.status === 'rejected') reversed += amt;
-          else if (tx.status === 'paid') paid += amt;
+          const amt = Number(tx.user_commission ?? tx.commission_amount) || 0;
+          if (tx.status === 'pending') {
+            pending += amt;
+          } else if (tx.status === 'validated' || tx.status === 'payable' || tx.status === 'approved') {
+            validated += amt;
+          } else if (tx.status === 'rejected') {
+            reversed += amt;
+          } else if (tx.status === 'paid' || tx.status === 'invoice_raised') {
+            paid += amt;
+          }
         }
 
-        const reportsRes = await this.client.getReports({ per_page: 50 });
-        const providerClicks = reportsRes.reports.reduce((acc, r) => acc + (r.clicks || 0), 0);
-        const reportsConversions = reportsRes.reports.reduce((acc, r) => acc + (r.conversions || 0), 0);
-        const reportedConversions = reportsConversions > 0
-          ? reportsConversions
-          : (transactions.length > 0 ? transactions.filter(t => t.status !== 'rejected').length : 0);
+        const perfRes = await this.client.getPerformanceReport({
+          start_date: new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0],
+          end_date: new Date().toISOString().split('T')[0],
+          per_page: 50
+        });
+        const providerClicks = perfRes.totals
+          ? Number(perfRes.totals.clicks || 0)
+          : perfRes.data.reduce((acc, r) => acc + (Number(r.clicks) || 0), 0);
+        const reportedConversions = perfRes.totals
+          ? Number(perfRes.totals.transactions ?? (perfRes.totals as any).conversions ?? 0)
+          : perfRes.data.reduce((acc, r) => acc + (Number(r.transactions ?? (r as any).conversions) || 0), 0);
 
         this.syncStatus.reconciliation = {
           localClicks: this.syncStatus.reconciliation.localClicks,
@@ -759,7 +770,7 @@ export class CuelinksSyncManager {
         });
 
         eligibleCampaigns = (campRes.campaigns || []).filter(
-          c => c.status === 'active' && (c.access_status === 'open' || c.access_status === 'approved')
+          c => (!c.status || c.status === 'active') && (c.access_status === 'open' || c.access_status === 'approved')
         );
 
         this.syncStatus.campaignsDiscovered = campRes.total;

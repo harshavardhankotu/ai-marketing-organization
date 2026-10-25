@@ -16,6 +16,15 @@ export type CuelinksScope =
   | 'read:missing_transactions'
   | 'write:missing_transactions';
 
+export const CUELINKS_REQUIRED_SCOPES: CuelinksScope[] = [
+  'read:campaigns',
+  'read:offers',
+  'write:links',
+  'read:transactions',
+  'read:reports',
+  'read:channels'
+];
+
 export const CUELINKS_STANDARD_SCOPES: CuelinksScope[] = [
   'read:campaigns',
   'read:offers',
@@ -56,12 +65,14 @@ export interface CuelinksPingResponse {
 
 export interface CuelinksPingResult {
   connected: boolean;
+  authorized?: boolean;
   message: string;
   publisherId?: string | number;
   publisherName?: string;
   currency?: string;
   email?: string;
   scopes?: string[];
+  missingScopes?: string[];
   lastUsedAt?: string;
   publisher?: CuelinksPingPublisher;
   apiKey?: CuelinksPingApiKey;
@@ -171,31 +182,69 @@ export interface CuelinksChannel {
   created_at?: string;
 }
 
+export type CuelinksTransactionStatus =
+  | 'pending'
+  | 'validated'
+  | 'payable'
+  | 'invoice_raised'
+  | 'paid'
+  | 'rejected'
+  | 'approved';
+
 export interface CuelinksTransaction {
-  id: string;
+  id: string | number;
+  transaction_id?: string | number;
   campaign_id: number | string;
-  campaign_name: string;
+  campaign_name?: string;
+  channel_id?: number | string;
   subid?: string;
   subid2?: string;
   subid3?: string;
-  order_amount?: number;
-  commission_amount: number;
-  currency: string;
-  status: 'pending' | 'approved' | 'rejected' | 'paid';
-  transaction_date: string;
+  subid4?: string;
+  subid5?: string;
+  order_amount?: number | string;
+  sale_amount?: number | string;
+  user_commission?: number | string;
+  commission_amount?: number | string;
+  currency?: string;
+  status: CuelinksTransactionStatus;
+  transaction_date?: string;
+  created_at?: string;
+  updated_at?: string;
   validation_date?: string;
   payout_date?: string;
 }
 
-export interface CuelinksReport {
+export interface CuelinksPerformanceReportItem {
   date?: string;
   campaign_id?: number | string;
   campaign_name?: string;
   clicks: number;
-  conversions: number;
-  commission: number;
-  epc: number;
+  transactions: number;
+  commission: number | string;
+  sale_amount: number | string;
+  cr?: number | string;
+  epc?: number | string;
+  currency?: string;
 }
+
+export interface CuelinksPerformanceTotals {
+  clicks: number;
+  transactions: number;
+  commission: string | number;
+  sale_amount: string | number;
+  cr: string | number;
+  epc: string | number;
+  currency: string;
+}
+
+export interface CuelinksPerformanceReportResponse {
+  data: CuelinksPerformanceReportItem[];
+  totals?: CuelinksPerformanceTotals;
+  meta?: CuelinksPaginationMeta & { currency?: string };
+}
+
+export interface CuelinksReport extends CuelinksPerformanceReportItem {}
 
 export interface CuelinksCategory {
   id: number | string;

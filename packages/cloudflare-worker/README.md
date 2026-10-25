@@ -1,6 +1,6 @@
 # ai-marketing-cron-worker
 
-A **Cloudflare Worker** that wakes the Render backend every 15 minutes and triggers an autonomous revenue cycle (ARO cycle).
+A **Cloudflare Worker** that wakes the Render backend hourly (`0 * * * *`) and triggers an autonomous revenue cycle (ARO cycle).
 
 ## Overview
 
@@ -19,7 +19,7 @@ A **Cloudflare Worker** that wakes the Render backend every 15 minutes and trigg
 4. Logs the response to Cloudflare's Workers logs.
 
 > [!NOTE]
-> Render's free tier spins down after ~15 minutes of inactivity. The first ping after a cold-start may time out (25 s limit). The Worker logs a warning and the **next** ping 15 minutes later will succeed once Render is warm.
+> Render's free tier spins down after ~15 minutes of inactivity. The first ping after a cold-start may time out (25 s limit). The Worker logs a warning and the **next** hourly ping will succeed once Render is warm.
 
 ---
 

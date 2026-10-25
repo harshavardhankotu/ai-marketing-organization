@@ -9,6 +9,7 @@ import { isProduction } from '../config/env.js';
 import { getDb } from '../db/client.js';
 import { PartnerNetwork, PartnerOffer } from './types.js';
 import { DealEngineObservabilityMetrics } from './deal-types.js';
+import { CuelinksV3Client } from './cuelinks-v3-client.js';
 
 export type CommercialTaskStatus =
   | 'DISCOVER'
@@ -612,6 +613,9 @@ export class AutonomousCommercialEngine {
         return true;
       }
       if (task.inputs.trackingUrl && task.inputs.trackingUrl.startsWith('https://')) {
+        return true;
+      }
+      if (CuelinksV3Client.getInstance().isConfigured()) {
         return true;
       }
       return false;

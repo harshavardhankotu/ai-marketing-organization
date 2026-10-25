@@ -925,12 +925,12 @@ describe('Autonomous Deal Discovery Engine V1.1 (Spec §§ 1–15)', () => {
   });
 
   describe('11. Real Source Discovery & Registry Metrics (Workstream C)', () => {
-    it('initializes all 14 default Indian sources with zero offers collected and unattempted state', () => {
+    it('initializes all default Indian sources with zero offers collected and unattempted state', () => {
       const engine = AutonomousDealDiscoveryEngine.getInstance();
       engine.resetSources();
       const sources = engine.getSources();
 
-      expect(sources.length).toBe(14);
+      expect(sources.length).toBe(19);
       for (const s of sources) {
         expect(s.offersCollected).toBe(0);
         expect(s.lastAttemptAt).toBeUndefined();
