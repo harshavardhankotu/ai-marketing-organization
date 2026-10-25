@@ -35,7 +35,7 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { app } from '../../src/index.js';
-import { getDb } from '../../src/db/client.js';
+import { getDb, resetDbForTesting } from '../../src/db/client.js';
 import { seedDatabase } from '../../src/db/seed.js';
 import { AutonomousCommercialEngine } from '../../src/commission/autonomous-commercial-engine.js';
 import { CuelinksSyncManager, CUELINKS_REQUIRED_SCOPES } from '../../src/commission/cuelinks-sync-manager.js';
@@ -48,6 +48,7 @@ import { ContentAssetEngine } from '../../src/commission/content-asset-engine.js
 
 describe('Revenue Engine V3.2 — First Customer & Commercial Conversion', () => {
   beforeEach(async () => {
+    resetDbForTesting();
     seedDatabase();
     process.env.PUBLIC_SITE_NAME = 'AI Marketing Organization';
     process.env.PUBLIC_SITE_URL = 'https://ai-marketing-organization.onrender.com';
