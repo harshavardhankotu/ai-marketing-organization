@@ -508,6 +508,7 @@ app.get('/sitemap.xml', async (c) => {
 
   const staticUrls = [
     `${baseUrl}/`,
+    `${baseUrl}/deals`,
     `${baseUrl}/public/disclosure`
   ];
 

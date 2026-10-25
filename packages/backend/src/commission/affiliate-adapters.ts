@@ -255,8 +255,11 @@ export class CuelinksAdapter implements AffiliateNetworkAdapter {
   readonly network = 'CUELINKS';
 
   handles(hostname: string): boolean {
-    const h = hostname.toLowerCase();
-    return h === 'cuelinks.com' || h === 'www.cuelinks.com' || h === 'linksredirect.com' || h === 'www.linksredirect.com' || h === 'clnk.in' || h === 'www.clnk.in';
+    const h = hostname.toLowerCase().trim();
+    if (h === 'clnk.in' || h.endsWith('.clnk.in')) return true;
+    if (h === 'cuelinks.com' || h.endsWith('.cuelinks.com')) return true;
+    if (h === 'linksredirect.com' || h.endsWith('.linksredirect.com')) return true;
+    return false;
   }
 
   buildTrackedDestination({ baseUrl, clickId, template: explicitTemplate, partner, variables }: TrackedDestinationInput): string {

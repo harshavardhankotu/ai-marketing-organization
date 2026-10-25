@@ -18,6 +18,7 @@ describe('Mission Automation: Discovery Persistence, Scheduling Parity & Identit
       db.prepare(`DELETE FROM reply_desk_drafts WHERE id LIKE 'rdraft_%' AND (source_url LIKE '%test_mission%' OR source_url LIKE '%dental%')`).run();
       db.prepare(`DELETE FROM partner_offers WHERE organization_id LIKE 'org_test_%' OR id LIKE 'test_%'`).run();
       db.prepare(`DELETE FROM partners WHERE organization_id LIKE 'org_test_%' OR id LIKE 'test_%'`).run();
+      db.prepare(`DELETE FROM commission_content_assets WHERE status = 'PUBLISH_READY' OR id LIKE 'cnt_%'`).run();
     } catch {}
   });
 
@@ -28,6 +29,7 @@ describe('Mission Automation: Discovery Persistence, Scheduling Parity & Identit
       db.prepare(`DELETE FROM reply_desk_drafts WHERE id LIKE 'rdraft_%' AND (source_url LIKE '%test_mission%' OR source_url LIKE '%dental%')`).run();
       db.prepare(`DELETE FROM partner_offers WHERE organization_id LIKE 'org_test_%' OR id LIKE 'test_%'`).run();
       db.prepare(`DELETE FROM partners WHERE organization_id LIKE 'org_test_%' OR id LIKE 'test_%'`).run();
+      db.prepare(`DELETE FROM commission_content_assets WHERE status = 'PUBLISH_READY' OR id LIKE 'cnt_%'`).run();
     } catch {}
     vi.restoreAllMocks();
   });

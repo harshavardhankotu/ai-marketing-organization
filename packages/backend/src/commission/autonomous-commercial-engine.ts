@@ -839,11 +839,11 @@ export class AutonomousCommercialEngine {
         activeOffers,
         publishedGuides,
         publicUrlsVerified: completed,
-        clicksRecorded: 0,
-        providerAttributedClicks: 0,
-        pendingCommissionsINR: 0,
-        verifiedCommissionsINR: 0,
-        cashReceivedINR: 0
+        clicksRecorded: dealMetrics?.funnel.dealCardClicks ?? 0,
+        providerAttributedClicks: dealMetrics?.funnel.providerAttributedClicks ?? 0,
+        pendingCommissionsINR: dealMetrics?.funnel.pendingCommissionsINR ?? 0,
+        verifiedCommissionsINR: dealMetrics?.funnel.validatedCommissionsINR ?? 0,
+        cashReceivedINR: 0 // strictly ₹0.00 until bank statement proof
       },
       activeBlockers,
       nextRecommendedAction: nextAction,
