@@ -3,7 +3,7 @@
 > Generated from direct codebase inspection and live production state.
 > Single-owner, India-first commercial engine.
 > Currency: INR (₹). Free tier API limits enforced. No unbacked estimates.
-> Version: 3.0 (Autonomous Revenue Operating System)
+> Version: 3.1 (Revenue-First Execution Sprint)
 
 ---
 
