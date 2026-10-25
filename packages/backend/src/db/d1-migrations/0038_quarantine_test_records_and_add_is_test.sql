@@ -4,6 +4,8 @@
 -- 1. Add is_test column to core revenue and pipeline tables
 ALTER TABLE platform_prospects ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE opportunities ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE opportunities ADD COLUMN title TEXT;
+ALTER TABLE opportunities ADD COLUMN prospect_id TEXT;
 ALTER TABLE sales_pipeline ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE proposals ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE payment_requests ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0;

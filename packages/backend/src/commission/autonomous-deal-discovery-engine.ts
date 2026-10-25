@@ -372,7 +372,7 @@ export class AutonomousDealDiscoveryEngine {
         categories: ['Travel: Flights, Hotels, Buses & Holiday Packages'],
         accessMethod: 'OFFICIAL_FEED',
         documentationUrl: 'https://developers.cuelinks.com/docs',
-        permissionStatus: 'LIVE_VERIFIED',
+        permissionStatus: 'PROPOSED',
         monetizationLedger: 'AFFILIATE_COMMISSION',
         rateLimitPerMinute: 60,
         trustScore: 88,
@@ -390,7 +390,7 @@ export class AutonomousDealDiscoveryEngine {
         categories: ['Telecom, Broadband & DTH Plans', 'Subscription Services'],
         accessMethod: 'OFFICIAL_FEED',
         documentationUrl: 'https://developers.cuelinks.com/docs',
-        permissionStatus: 'LIVE_VERIFIED',
+        permissionStatus: 'PROPOSED',
         monetizationLedger: 'AFFILIATE_COMMISSION',
         rateLimitPerMinute: 60,
         trustScore: 86,
@@ -408,7 +408,7 @@ export class AutonomousDealDiscoveryEngine {
         categories: ['Compliant Financial Products: Credit Cards & Banking'],
         accessMethod: 'OFFICIAL_FEED',
         documentationUrl: 'https://developers.cuelinks.com/docs',
-        permissionStatus: 'LIVE_VERIFIED',
+        permissionStatus: 'PROPOSED',
         monetizationLedger: 'AFFILIATE_COMMISSION',
         complianceRisk: 'Zero unlicensed financial advice or misleading claims. Strictly authorized partner referral programs.',
         rateLimitPerMinute: 60,
@@ -427,7 +427,8 @@ export class AutonomousDealDiscoveryEngine {
         categories: ['Price Intelligence: Petrol & Diesel (Daily Retail Prices)'],
         accessMethod: 'OPEN_DATA_PORTAL',
         documentationUrl: 'https://www.ppac.gov.in',
-        permissionStatus: 'LIVE_VERIFIED',
+        permissionStatus: 'BLOCKED',
+        exclusionReason: 'PPAC portal requires manual spreadsheet download; automated machine-readable API endpoint without scraping is unavailable.',
         monetizationLedger: 'PRICE_INTELLIGENCE_UTILITY',
         complianceRisk: 'Distinct consumer price intelligence utility; strictly isolated from affiliate commission ledgers.',
         rateLimitPerMinute: 20,
@@ -446,7 +447,8 @@ export class AutonomousDealDiscoveryEngine {
         categories: ['Essential Commodities: Daily Retail & Wholesale Prices'],
         accessMethod: 'OPEN_DATA_PORTAL',
         documentationUrl: 'https://data.gov.in',
-        permissionStatus: 'LIVE_VERIFIED',
+        permissionStatus: 'PROPOSED',
+        exclusionReason: 'Requires registered data.gov.in API key; designated as proposed consumer utility.',
         monetizationLedger: 'CONSUMER_UTILITY',
         complianceRisk: 'Official benchmark public utility data. Zero fake affiliate commission assertions.',
         rateLimitPerMinute: 20,
@@ -745,11 +747,15 @@ export class AutonomousDealDiscoveryEngine {
       // 2. Channel inspection
       let channelId: number | string | undefined;
       try {
-        const canonicalUrl = 'https://gen-lang-client-0916255372.web.app';
+        const canonicalUrl = 'https://ai-marketing-organization.onrender.com';
         const channels = await client.getChannels();
-        let targetChannel = channels.find(c => c.url?.toLowerCase().includes('gen-lang-client') || c.url?.toLowerCase().includes('onrender.com'));
+        let targetChannel = channels.find(c => {
+          const chUrl = (c.source_url || c.url || '').toLowerCase();
+          return chUrl.includes('onrender.com') || chUrl.includes('gen-lang-client');
+        }) || channels.find(c => c.is_default);
+
         if (!targetChannel) {
-          targetChannel = await client.createChannel('AI Marketing Organization Deals & Buying Guides', canonicalUrl, 'website');
+          targetChannel = await client.createChannel('ARO Deals', canonicalUrl, 'website');
         }
         channelId = targetChannel?.id;
       } catch (chErr: any) {

@@ -154,14 +154,17 @@ export function getDb(dbPath?: string): Database.Database {
   try { db.exec(`ALTER TABLE outreach_log ADD COLUMN notes TEXT`); } catch {}
   try { db.exec(`ALTER TABLE outreach_log ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0`); } catch {}
   try { db.exec(`ALTER TABLE opportunities ADD COLUMN title TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE opportunities ADD COLUMN prospect_id TEXT`); } catch {}
   try { db.exec(`ALTER TABLE opportunities ADD COLUMN confidence_score REAL DEFAULT 0.5`); } catch {}
   try { db.exec(`ALTER TABLE learning_records ADD COLUMN source TEXT DEFAULT 'UNKNOWN'`); } catch {}
+  try { db.exec(`ALTER TABLE learning_records ADD COLUMN provenance TEXT DEFAULT 'APP_LOGGED_CALL'`); } catch {}
 
   // Autonomous Revenue Organization — new table migration guards
   // These are safe no-ops if the tables already exist (SCHEMA_SQL handles full creation)
   try {
     db.exec(`CREATE TABLE IF NOT EXISTS opportunities (
       id TEXT PRIMARY KEY, business_id TEXT NOT NULL, organization_id TEXT NOT NULL,
+      title TEXT, prospect_id TEXT,
       source TEXT NOT NULL, evidence_json TEXT NOT NULL DEFAULT '[]',
       estimated_value_inr REAL NOT NULL DEFAULT 0, probability REAL NOT NULL DEFAULT 0,
       acquisition_cost_inr REAL NOT NULL DEFAULT 0, time_to_revenue_days INTEGER NOT NULL DEFAULT 30,
