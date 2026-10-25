@@ -66,6 +66,42 @@ export class CuelinksSyncManager {
   }
 
   /**
+   * Record a local deal card click beacon event (Stage 3).
+   * Strictly tracks locally observed clicks independently from provider reporting.
+   */
+  public recordLocalClick(): void {
+    this.syncStatus.reconciliation.localClicks++;
+  }
+
+  /**
+   * Reset reconciliation metrics to clean state (for hermetic test isolation).
+   */
+  public resetReconciliation(): void {
+    this.syncStatus.reconciliation = {
+      localClicks: 0,
+      providerAttributedClicks: 0,
+      reportedConversions: 0,
+      pendingCommissionINR: 0,
+      validatedCommissionINR: 0,
+      reversedCommissionINR: 0,
+      paidCommissionINR: 0,
+      cashReceivedINR: 0
+    };
+  }
+
+  /**
+   * Update or inject reconciliation metrics (for synchronized cycle updates).
+   * Invariant: cashReceivedINR is strictly ₹0.00 until bank statement proof.
+   */
+  public setReconciliationMetrics(metrics: Partial<CuelinksReconciliationMetrics>): void {
+    this.syncStatus.reconciliation = {
+      ...this.syncStatus.reconciliation,
+      ...metrics,
+      cashReceivedINR: 0 // strictly ₹0.00 until bank confirmed
+    };
+  }
+
+  /**
    * Run full Cuelinks autonomous cycle:
    * 1. Auth & Channel verification
    * 2. Campaign discovery
@@ -111,6 +147,9 @@ export class CuelinksSyncManager {
       }
 
       this.syncStatus.connected = true;
+      if (pingRes.publisherId) this.syncStatus.publisherId = pingRes.publisherId;
+      if (pingRes.email) this.syncStatus.email = pingRes.email;
+      if (pingRes.scopes) this.syncStatus.scopes = pingRes.scopes;
 
       // 2. Channel inspection & registration
       try {
@@ -136,10 +175,11 @@ export class CuelinksSyncManager {
         console.warn(`[CuelinksSync] Channel inspection notice: ${channelErr.message}`);
       }
 
-      // 3. Campaign discovery (Prioritizing India, open access, sorted by EPC)
+      // 3. Campaign discovery (Prioritizing India country_id: 252, open access, sorted by EPC)
       let eligibleCampaigns: CuelinksCampaign[] = [];
       try {
         const campaignSearch = await this.client.searchCampaigns({
+          country_id: 252,
           access_status: 'open',
           sort: 'epc_7d',
           order: 'desc',
@@ -190,6 +230,11 @@ export class CuelinksSyncManager {
             currentPrice = Math.round(refPrice * (1 - claimedDiscount / 100));
           }
 
+          // Do NOT fabricate prices or discounts. Skip offers lacking a valid positive INR price.
+          if (!currentPrice || currentPrice <= 0) {
+            continue;
+          }
+
           // Authorize tracked link via convertLink if campaign is eligible
           let trackingUrl = offer.url;
           let isMonetizable = false;
@@ -198,16 +243,22 @@ export class CuelinksSyncManager {
             const convertRes = await this.client.convertLink({
               url: offer.url,
               channel_id: this.syncStatus.channel.id,
+              shorten: true,
               subid: `aro_cl_${offer.id}`,
               subid2: String(offer.campaign_id),
               subid3: 'cuelinks_feed',
               subid4: 'catalog_v1'
             });
 
-            if (convertRes.affiliated && convertRes.tracking_url) {
+            // Monetization truth: strictly require affiliated: true before marking eligible to earn commission
+            if (convertRes.affiliated === true && convertRes.tracking_url) {
               trackingUrl = convertRes.tracking_url;
               isMonetizable = true;
               this.syncStatus.linksConverted++;
+            } else {
+              // Record deal as non-monetizable and preserve original direct merchant URL
+              trackingUrl = offer.url;
+              isMonetizable = false;
             }
           } catch (convErr: any) {
             // Keep clean merchant direct link if conversion fails
@@ -221,7 +272,7 @@ export class CuelinksSyncManager {
             merchant: merchantName,
             category: offer.category || 'Retail Deals',
             productUrl: offer.url,
-            currentPriceINR: currentPrice || 999,
+            currentPriceINR: currentPrice,
             referencePriceINR: refPrice,
             claimedDiscountPercent: claimedDiscount || undefined,
             couponCode: offer.coupon_code,
@@ -259,19 +310,32 @@ export class CuelinksSyncManager {
           else if (tx.status === 'paid') paid += amt;
         }
 
-        const reportsRes = await this.client.getReports({ per_page: 1 });
+        const reportsRes = await this.client.getReports({ per_page: 50 });
         const providerClicks = reportsRes.reports.reduce((acc, r) => acc + (r.clicks || 0), 0);
-        const conversions = reportsRes.reports.reduce((acc, r) => acc + (r.conversions || 0), 0);
+        
+        // Strict separation of 8 accounting counters:
+        // 1. Local clicks: locally observed clicks from deal clicks
+        // 2. Provider-attributed clicks: derived from Cuelinks /reports
+        // 3. Reported conversions: derived from Cuelinks /reports (or valid non-rejected transactions if reports empty)
+        // 4. Pending commission: sum of pending transaction amounts in INR
+        // 5. Validated commission: sum of approved transaction amounts in INR
+        // 6. Reversed commission: sum of rejected transaction amounts in INR
+        // 7. Paid commission: sum of paid transaction amounts in INR
+        // 8. Cash received: strictly ₹0.00 until bank statement verified proof
+        const reportsConversions = reportsRes.reports.reduce((acc, r) => acc + (r.conversions || 0), 0);
+        const reportedConversions = reportsConversions > 0
+          ? reportsConversions
+          : (transactions.length > 0 ? transactions.filter(t => t.status !== 'rejected').length : 0);
 
         this.syncStatus.reconciliation = {
           localClicks: this.syncStatus.reconciliation.localClicks,
           providerAttributedClicks: providerClicks,
-          reportedConversions: conversions,
-          pendingCommissionINR: pending,
-          validatedCommissionINR: validated,
-          reversedCommissionINR: reversed,
-          paidCommissionINR: paid,
-          cashReceivedINR: 0 // strictly ₹0.00 until bank confirmed
+          reportedConversions: reportedConversions,
+          pendingCommissionINR: Math.round(pending * 100) / 100,
+          validatedCommissionINR: Math.round(validated * 100) / 100,
+          reversedCommissionINR: Math.round(reversed * 100) / 100,
+          paidCommissionINR: Math.round(paid * 100) / 100,
+          cashReceivedINR: 0 // strictly ₹0.00 until bank statement proof
         };
       } catch (recErr: any) {
         console.warn(`[CuelinksSync] Reconciliation notice: ${recErr.message}`);

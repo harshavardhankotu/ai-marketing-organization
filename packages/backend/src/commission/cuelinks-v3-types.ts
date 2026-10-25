@@ -16,6 +16,33 @@ export type CuelinksScope =
   | 'read:missing_transactions'
   | 'write:missing_transactions';
 
+export const CUELINKS_STANDARD_SCOPES: CuelinksScope[] = [
+  'read:campaigns',
+  'read:offers',
+  'write:links',
+  'read:channels',
+  'write:channels',
+  'read:reports',
+  'read:transactions'
+];
+
+export interface CuelinksPingResponse {
+  status?: string;
+  publisher_id?: string | number;
+  email?: string;
+  scopes?: CuelinksScope[] | string[];
+  message?: string;
+  [key: string]: any;
+}
+
+export interface CuelinksPingResult {
+  connected: boolean;
+  message: string;
+  publisherId?: string | number;
+  email?: string;
+  scopes?: string[];
+}
+
 export interface CuelinksCampaign {
   id: number | string;
   name: string;
@@ -62,6 +89,8 @@ export interface CuelinksLinkConvertRequest {
   subid3?: string;
   subid4?: string;
   subid5?: string;
+  shorten?: boolean;
+  /** @deprecated Official Cuelinks V3 uses `shorten`. Kept for backward compatibility. */
   short_url?: boolean;
 }
 
@@ -137,6 +166,9 @@ export interface CuelinksReconciliationMetrics {
 export interface CuelinksSyncStatus {
   configured: boolean;
   connected: boolean;
+  publisherId?: string | number;
+  email?: string;
+  scopes?: string[];
   channel: {
     id?: string | number;
     name?: string;

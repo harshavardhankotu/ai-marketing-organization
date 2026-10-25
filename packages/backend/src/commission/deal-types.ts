@@ -140,6 +140,172 @@ export interface DealQueryParams {
   limit?: number;
 }
 
+// ==========================================
+// 7-STAGE EVIDENCE-BASED COMMERCIAL FUNNEL (Spec §§ 1–15)
+// DISCOVERY → PAGE VISIT → DEAL CLICK → PROVIDER CLICK → REPORTED CONVERSION → VALIDATED COMMISSION → PAID COMMISSION
+// Strict separation of each counter; NO metric inferred or assumed from any other.
+// ==========================================
+
+export type CommercialFunnelStage =
+  | 'DISCOVERY'
+  | 'PAGE_VISIT'
+  | 'DEAL_CLICK'
+  | 'PROVIDER_CLICK'
+  | 'REPORTED_CONVERSION'
+  | 'VALIDATED_COMMISSION'
+  | 'PAID_COMMISSION';
+
+export interface FunnelStageDetail {
+  stage: CommercialFunnelStage;
+  name: string;
+  countOrAmount: number;
+  unit: 'COUNT' | 'INR';
+  evidenceSource: string;
+  description: string;
+  status: 'ACTIVE' | 'ZERO' | 'BLOCKED';
+}
+
+export interface SevenStageCommercialFunnel {
+  // Stage 1: Discovery impressions / collected offers
+  discoveryImpressions: number;
+  // Stage 2: Public page visits (via referral beacon / pageviews)
+  publicPageVisits: number;
+  // Stage 3: Deal card clicks (local click beacon)
+  dealCardClicks: number;
+  // Stage 4: Provider-attributed clicks (from Cuelinks /reports)
+  providerAttributedClicks: number;
+  // Stage 5: Reported conversions (from Cuelinks /transactions)
+  reportedConversions: number;
+  // Stage 6: Validated commissions in INR
+  validatedCommissionsINR: number;
+  // Stage 7: Paid commissions in INR
+  paidCommissionsINR: number;
+
+  // Supplementary strictly separated accounting counters
+  pendingCommissionsINR: number;
+  reversedCommissionsINR: number; // Reversed / rejected commissions in INR
+  cashReceivedINR: number; // Strictly ₹0.00 until bank statement proof
+
+  lastUpdated: string;
+  stageBreakdown: Record<CommercialFunnelStage, FunnelStageDetail>;
+}
+
+// ==========================================
+// STRUCTURED GROWTH EXPERIMENT TRACKING MODEL
+// Tracks hypotheses, changes tested, categories/campaigns targeted,
+// observed outcomes over 6-hour commercial cycles, and automated decisions (scale, refine, halt).
+// ==========================================
+
+export type GrowthExperimentDecision = 'SCALE' | 'REFINE' | 'HALT' | 'INCONCLUSIVE';
+
+export type GrowthExperimentStatus = 'DRAFT' | 'ACTIVE' | 'CONCLUDED' | 'PAUSED';
+
+export type GrowthExperimentChangeType =
+  | 'COPY'                   // Offer title, hook, or call to action copy
+  | 'BADGE'                  // Verification badge, discount pill, coupon tag
+  | 'RANKING_WEIGHT'         // Weight of discount vs merchant trust in buyer-value algorithm
+  | 'CATEGORY_FOCUS'         // Highlighting specific categories (e.g. Electronics vs Audio)
+  | 'PRICING_ANCHOR'         // Reference MRP vs recent observed average price
+  | 'PROMO_CODE_EXPOSURE';   // Prominent one-click copy vs condition disclaimer
+
+export interface GrowthExperimentChange {
+  changeType: GrowthExperimentChangeType;
+  description: string;
+  baselineConfig: Record<string, any>;
+  treatmentConfig: Record<string, any>;
+}
+
+export interface CommercialCycleMetricBucket {
+  discoveryImpressions: number;
+  pageVisits: number;
+  dealClicks: number;
+  providerClicks: number;
+  conversions: number;
+  validatedCommissionINR: number;
+}
+
+export interface CommercialCycleOutcome {
+  cycleId: string;
+  cycleNumber: number;
+  startTime: string;
+  endTime: string;
+  durationHours: number; // 6 hours
+  baseline: CommercialCycleMetricBucket;
+  treatment: CommercialCycleMetricBucket;
+  observedMetrics: {
+    baselineCtrPercent: number;      // dealClicks / pageVisits
+    treatmentCtrPercent: number;     // dealClicks / pageVisits
+    ctrUpliftPercent: number;
+    baselineEpcINR: number;          // validatedCommissionINR / providerClicks
+    treatmentEpcINR: number;         // validatedCommissionINR / providerClicks
+    epcUpliftPercent: number;
+    statisticalConfidence: number;   // 0.0 to 1.0
+  };
+  notes?: string;
+}
+
+export interface GrowthExperimentRecord {
+  id: string;
+  organizationId: string;
+  businessId: string;
+  title: string;
+  hypothesis: string;
+  changeTested: GrowthExperimentChange;
+  targetCategories: string[];
+  targetCampaignIds: string[];
+  targetMerchants?: string[];
+  status: GrowthExperimentStatus;
+  minimumEvidenceRequirement: number;
+  currentCycleCount: number;
+  createdAt: string;
+  startedAt?: string;
+  concludedAt?: string;
+  cycleOutcomes: CommercialCycleOutcome[];
+  cumulativeMetrics: {
+    baselineTotalVisits: number;
+    treatmentTotalVisits: number;
+    baselineTotalClicks: number;
+    treatmentTotalClicks: number;
+    baselineTotalConversions: number;
+    treatmentTotalConversions: number;
+    baselineTotalCommissionINR: number;
+    treatmentTotalCommissionINR: number;
+    overallCtrUpliftPercent: number;
+    overallConversionUpliftPercent: number;
+    overallEpcUpliftPercent: number;
+  };
+  automatedDecision: {
+    decision: GrowthExperimentDecision;
+    decidedAt?: string;
+    rationale: string;
+    actionTaken?: string;
+    confidence: number;
+  };
+}
+
+export interface CreateGrowthExperimentInput {
+  organizationId?: string;
+  businessId?: string;
+  title: string;
+  hypothesis: string;
+  changeTested: GrowthExperimentChange;
+  targetCategories: string[];
+  targetCampaignIds: string[];
+  targetMerchants?: string[];
+  minimumEvidenceRequirement?: number;
+}
+
+export interface CycleObservationInput {
+  cycleId: string;
+  cycleNumber?: number;
+  startTime?: string;
+  endTime?: string;
+  durationHours?: number; // Defaults to 6
+  baseline: CommercialCycleMetricBucket;
+  treatment: CommercialCycleMetricBucket;
+  notes?: string;
+}
+
 export interface DealEngineObservabilityMetrics {
   sources: {
     totalDiscovered: number;
@@ -172,10 +338,15 @@ export interface DealEngineObservabilityMetrics {
     directMerchantLinks: number;
     publishedDealPages: number;
     clicksRecorded: number;
+    providerAttributedClicks?: number;
     providerAttributedConversions: number;
     confirmedCommissionsINR: number;
-    cashReceivedINR: number;
+    reversedCommissionsINR?: number;
+    paidCommissionsINR?: number;
+    cashReceivedINR: number; // Strictly ₹0.00 until bank statement proof
   };
+  funnel: SevenStageCommercialFunnel;
+  growthExperiments?: GrowthExperimentRecord[];
   execution: {
     lastCycleId: string;
     lastScanAt: string;

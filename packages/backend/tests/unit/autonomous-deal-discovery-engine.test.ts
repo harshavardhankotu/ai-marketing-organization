@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { AutonomousDealDiscoveryEngine } from '../../src/commission/autonomous-deal-discovery-engine.js';
 import { DealSsrfGuard } from '../../src/commission/deal-ssrf-guard.js';
+import { CuelinksV3Client } from '../../src/commission/cuelinks-v3-client.js';
 import { app } from '../../src/index.js';
 import { getDb } from '../../src/db/client.js';
 import { OwnerAuthService } from '../../src/auth/owner-auth.js';
@@ -10,10 +11,17 @@ describe('Autonomous Deal Discovery Engine V1.1 (Spec §§ 1–15)', () => {
   const bizId = 'biz_platform_aro';
 
   beforeEach(() => {
+    vi.restoreAllMocks();
+    AutonomousDealDiscoveryEngine.getInstance().setCuelinksClient(null);
     const db = getDb();
     try {
       db.prepare(`DELETE FROM workflows WHERE workflow_type = 'PUBLIC_DEAL'`).run();
     } catch {}
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    AutonomousDealDiscoveryEngine.getInstance().setCuelinksClient(null);
   });
 
   describe('1. SSRF & Network Security Gate (Spec § 3 & § 13)', () => {
@@ -386,6 +394,255 @@ describe('Autonomous Deal Discovery Engine V1.1 (Spec §§ 1–15)', () => {
       expect(json.data.cycleId).toBeDefined();
       expect(json.data.offersVerified + json.data.offersDeduplicated).toBeGreaterThanOrEqual(1);
       expect(json.data.activeDealsTotal).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  describe('8. Cuelinks Monetization Conversion & Merchant Link Preservation (Spec §§ 5 & 8)', () => {
+    it('seamlessly converts candidate deals with affiliated: true into monetizable tracking URLs (boAt, Noise, Lenovo, Croma, Vijay Sales)', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+
+      const mockClient = new CuelinksV3Client({ apiKey: 'mock_cuelinks_key' });
+      vi.spyOn(mockClient, 'isConfigured').mockReturnValue(true);
+      vi.spyOn(mockClient, 'convertLink').mockImplementation(async (req) => {
+        const u = req.url;
+        if (u.includes('boat-lifestyle.com')) {
+          return { affiliated: true, tracking_url: 'https://clnk.in/boat4232', campaign: { id: 4232, name: 'Boat' } };
+        }
+        if (u.includes('gonoise.com')) {
+          return { affiliated: true, tracking_url: 'https://clnk.in/noise3278', campaign: { id: 3278, name: 'Gonoise' } };
+        }
+        if (u.includes('lenovo.com')) {
+          return { affiliated: true, tracking_url: 'https://clnk.in/lenovo823', campaign: { id: 823, name: 'Lenovo India' } };
+        }
+        if (u.includes('croma.com')) {
+          return { affiliated: true, tracking_url: 'https://clnk.in/croma201', campaign: { id: 201, name: 'Croma Retail' } };
+        }
+        if (u.includes('vijaysales.com')) {
+          return { affiliated: true, tracking_url: 'https://clnk.in/vijay4164', campaign: { id: 4164, name: 'Vijay Sales' } };
+        }
+        return { affiliated: false, tracking_url: req.url };
+      });
+
+      engine.setCuelinksClient(mockClient);
+
+      // Ingest boAt candidate deal
+      const boatRes = await engine.ingestAndVerifyDeal({
+        title: 'boAt Airdopes 141 Bluetooth Truly Wireless in Ear Earbuds',
+        brand: 'boAt',
+        merchant: 'boAt Lifestyle',
+        category: 'Audio & Wearables',
+        productUrl: 'https://www.boat-lifestyle.com/products/airdopes-141',
+        currentPriceINR: 1299,
+        referencePriceINR: 4490,
+        claimedDiscountPercent: 71,
+        availability: 'IN_STOCK',
+        geographicRestrictions: ['India'],
+        sourceUrl: 'https://www.boat-lifestyle.com/deals',
+        sourceDomain: 'boat-lifestyle.com',
+        sourceType: 'RETAILER_BRAND',
+        modelOrSku: 'AIRDOPES-141-BLK'
+      }, orgId, bizId);
+
+      expect(['CREATED_VERIFIED', 'DEDUPLICATED']).toContain(boatRes.action);
+      expect(boatRes.deal?.isMonetizable).toBe(true);
+      expect(boatRes.deal?.trackingUrl).toBe('https://clnk.in/boat4232');
+      expect(boatRes.deal?.affiliateNetwork).toBe('CUELINKS');
+      expect(boatRes.deal?.affiliateCampaignId).toBe('4232');
+      // Canonical productUrl is retained
+      expect(boatRes.deal?.productUrl).toBe('https://www.boat-lifestyle.com/products/airdopes-141');
+
+      // Ingest Croma candidate deal
+      const cromaRes = await engine.ingestAndVerifyDeal({
+        title: 'Croma 10000 mAh 22.5W Fast Charging Power Bank',
+        brand: 'Croma',
+        merchant: 'Croma India',
+        category: 'Electronics & Peripherals',
+        productUrl: 'https://www.croma.com/croma-10000mah-22-5w-fast-charging-power-bank/p/264582',
+        currentPriceINR: 899,
+        referencePriceINR: 1900,
+        claimedDiscountPercent: 53,
+        availability: 'IN_STOCK',
+        geographicRestrictions: ['India'],
+        sourceUrl: 'https://www.croma.com/deals',
+        sourceDomain: 'croma.com',
+        sourceType: 'RETAILER_BRAND',
+        modelOrSku: 'CRSP10K22W'
+      }, orgId, bizId);
+
+      expect(cromaRes.deal?.isMonetizable).toBe(true);
+      expect(cromaRes.deal?.trackingUrl).toBe('https://clnk.in/croma201');
+      expect(cromaRes.deal?.affiliateNetwork).toBe('CUELINKS');
+      expect(cromaRes.deal?.affiliateCampaignId).toBe('201');
+    });
+
+    it('strictly preserves pure direct merchant URLs for non-affiliated merchants with affiliated: false (Reliance Digital, Zoho)', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+
+      const mockClient = new CuelinksV3Client({ apiKey: 'mock_cuelinks_key' });
+      vi.spyOn(mockClient, 'isConfigured').mockReturnValue(true);
+      vi.spyOn(mockClient, 'convertLink').mockImplementation(async (req) => {
+        // Cuelinks returns affiliated: false for non-affiliated / unapproved campaigns
+        return {
+          affiliated: false,
+          tracking_url: `https://linksredirect.com/?cid=331585&url=${encodeURIComponent(req.url)}`,
+          campaign: req.url.includes('reliancedigital.in') ? { id: 3955, name: 'Reliance Digital' } : { id: 73159, name: 'Zoho' }
+        };
+      });
+
+      engine.setCuelinksClient(mockClient);
+
+      // Ingest Reliance Digital deal
+      const rdRes = await engine.ingestAndVerifyDeal({
+        title: 'Philips Air Fryer HD9200/90 with Rapid Air Technology (4.1 Liter)',
+        brand: 'Philips',
+        merchant: 'Reliance Digital',
+        category: 'Electronics & Appliances',
+        productUrl: 'https://www.reliancedigital.in/philips-hd9200-90-air-fryer/p/492403612',
+        currentPriceINR: 6499,
+        referencePriceINR: 9995,
+        claimedDiscountPercent: 35,
+        availability: 'IN_STOCK',
+        geographicRestrictions: ['India'],
+        sourceUrl: 'https://www.reliancedigital.in/kitchen-fest',
+        sourceDomain: 'reliancedigital.in',
+        sourceType: 'RETAILER_BRAND',
+        modelOrSku: 'HD9200-90'
+      }, orgId, bizId);
+
+      expect(['CREATED_VERIFIED', 'DEDUPLICATED']).toContain(rdRes.action);
+      expect(rdRes.deal?.isMonetizable).toBe(false);
+      expect(rdRes.deal?.trackingUrl).toBeUndefined();
+      expect(rdRes.deal?.productUrl).toBe('https://www.reliancedigital.in/philips-hd9200-90-air-fryer/p/492403612');
+      expect(rdRes.deal?.affiliateNetwork).toBeUndefined();
+      expect(rdRes.deal?.affiliateCampaignId).toBeUndefined();
+
+      // Ingest Zoho deal
+      const zohoRes = await engine.ingestAndVerifyDeal({
+        title: 'Zoho Workplace Standard Suite (Cloud Email, Docs, Sheets, Chat & Storage)',
+        brand: 'Zoho',
+        merchant: 'Zoho India',
+        category: 'SaaS & Business Software',
+        productUrl: 'https://www.zoho.com/workplace/pricing.html',
+        currentPriceINR: 99,
+        referencePriceINR: 149,
+        claimedDiscountPercent: 34,
+        availability: 'IN_STOCK',
+        geographicRestrictions: ['India'],
+        sourceUrl: 'https://www.zoho.com/workplace/',
+        sourceDomain: 'zoho.com',
+        sourceType: 'RETAILER_BRAND',
+        modelOrSku: 'ZOHO-WP-STD-IN'
+      }, orgId, bizId);
+
+      expect(['CREATED_VERIFIED', 'DEDUPLICATED']).toContain(zohoRes.action);
+      expect(zohoRes.deal?.isMonetizable).toBe(false);
+      expect(zohoRes.deal?.trackingUrl).toBeUndefined();
+      expect(zohoRes.deal?.productUrl).toBe('https://www.zoho.com/workplace/pricing.html');
+      expect(zohoRes.deal?.affiliateNetwork).toBeUndefined();
+    });
+
+    it('evaluates open India campaigns and converts candidate deals in discovery cycle', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+
+      const mockClient = new CuelinksV3Client({ apiKey: 'mock_cuelinks_key' });
+      vi.spyOn(mockClient, 'isConfigured').mockReturnValue(true);
+      vi.spyOn(mockClient, 'ping').mockResolvedValue({ connected: true, message: 'Connected' });
+      vi.spyOn(mockClient, 'getChannels').mockResolvedValue([
+        { id: 331585, name: 'AI Marketing Channel', url: 'https://gen-lang-client-0916255372.web.app', status: 'active' }
+      ]);
+      vi.spyOn(mockClient, 'searchCampaigns').mockResolvedValue({
+        campaigns: [
+          { id: 4386, name: 'Oppo India', url: 'https://www.oppo.com/in/store', status: 'active', access_status: 'open', epc_7d: '91.87', payout: '2.85%' },
+          { id: 6271, name: 'AppSumo', url: 'https://appsumo.com', status: 'active', access_status: 'open', epc_7d: '22.97', payout: '52.5%' },
+          { id: 29, name: 'Cleartrip Flight', url: 'https://www.cleartrip.com', status: 'active', access_status: 'open', epc_7d: '12.39', payout: '67.5' },
+          { id: 4232, name: 'Boat', url: 'https://www.boat-lifestyle.com', status: 'active', access_status: 'open', epc_7d: '0.66', payout: '6.0%' }
+        ],
+        total: 4
+      });
+      vi.spyOn(mockClient, 'getOffers').mockResolvedValue({
+        offers: [
+          {
+            id: 8801,
+            campaign_id: 4386,
+            campaign_name: 'Oppo India',
+            title: 'Oppo Reno 11 5G Super Deal',
+            url: 'https://www.oppo.com/in/smartphones/reno-series/reno11-5g/',
+            current_price_inr: 29999,
+            reference_price_inr: 39999,
+            discount: '25% off'
+          }
+        ],
+        total: 1
+      });
+      vi.spyOn(mockClient, 'convertLink').mockImplementation(async (req) => {
+        const u = req.url;
+        if (u.includes('boat-lifestyle.com')) {
+          return { affiliated: true, tracking_url: 'https://clnk.in/boat4232', campaign: { id: 4232, name: 'Boat' } };
+        }
+        if (u.includes('gonoise.com')) {
+          return { affiliated: true, tracking_url: 'https://clnk.in/noise3278', campaign: { id: 3278, name: 'Gonoise' } };
+        }
+        if (u.includes('lenovo.com')) {
+          return { affiliated: true, tracking_url: 'https://clnk.in/lenovo823', campaign: { id: 823, name: 'Lenovo India' } };
+        }
+        if (u.includes('croma.com')) {
+          return { affiliated: true, tracking_url: 'https://clnk.in/croma201', campaign: { id: 201, name: 'Croma Retail' } };
+        }
+        if (u.includes('vijaysales.com')) {
+          return { affiliated: true, tracking_url: 'https://clnk.in/vijay4164', campaign: { id: 4164, name: 'Vijay Sales' } };
+        }
+        if (u.includes('oppo.com')) {
+          return { affiliated: true, tracking_url: 'https://clnk.in/oppo4386', campaign: { id: 4386, name: 'Oppo India' } };
+        }
+        // Reliance Digital & Zoho: non-affiliated
+        return { affiliated: false, tracking_url: req.url };
+      });
+      vi.spyOn(mockClient, 'getTransactions').mockResolvedValue({ transactions: [], total: 0 });
+      vi.spyOn(mockClient, 'getReports').mockResolvedValue({ reports: [], total: 0 });
+
+      engine.setCuelinksClient(mockClient);
+
+      const cycle = await engine.runDiscoveryCycle(orgId, bizId);
+      expect(cycle.offersDiscovered).toBeGreaterThanOrEqual(8); // 7 retailer deals + 1 live Cuelinks offer
+      expect(cycle.activeDealsTotal).toBeGreaterThanOrEqual(7);
+
+      const metrics = engine.getDealEngineMetrics();
+      // boAt, Noise, Lenovo, Croma, Vijay Sales, and Oppo live offer are affiliated = 6
+      expect(metrics.monetization.affiliateEligible).toBeGreaterThanOrEqual(5);
+      expect(metrics.monetization.withAuthorizedTracking).toBeGreaterThanOrEqual(5);
+      // Reliance Digital and Zoho maintain pure direct merchant links = 2
+      expect(metrics.monetization.directMerchantLinks).toBeGreaterThanOrEqual(2);
+
+      // Verify boAt deal has tracking URL
+      const publicDeals = engine.queryPublicDeals();
+      const boatDeal = publicDeals.deals.find(d => d.brand === 'boAt');
+      expect(boatDeal?.isMonetizable).toBe(true);
+      expect(boatDeal?.trackingUrl).toBe('https://clnk.in/boat4232');
+      expect(boatDeal?.affiliateCampaignId).toBe('4232');
+
+      // Verify Reliance Digital deal maintains pure merchant URL and is NOT monetizable
+      const rdDeal = publicDeals.deals.find(d => d.merchant === 'Reliance Digital');
+      expect(rdDeal?.isMonetizable).toBe(false);
+      expect(rdDeal?.trackingUrl).toBeUndefined();
+      expect(rdDeal?.productUrl).toContain('reliancedigital.in');
+    });
+
+    it('falls back cleanly to direct merchant links when Cuelinks is unconfigured without errors', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+
+      const mockClient = new CuelinksV3Client({ apiKey: '' });
+      vi.spyOn(mockClient, 'isConfigured').mockReturnValue(false);
+      engine.setCuelinksClient(mockClient);
+
+      const deals = await engine.discoverDealsFromAllSources(orgId, bizId);
+      expect(deals.length).toBeGreaterThanOrEqual(7);
+
+      for (const d of deals) {
+        expect(d.isMonetizable).toBe(false);
+        expect(d.trackingUrl).toBeUndefined();
+        expect(d.productUrl).toBeDefined();
+        expect(d.productUrl.startsWith('https://')).toBe(true);
+      }
     });
   });
 });

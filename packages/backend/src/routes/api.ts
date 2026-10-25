@@ -5447,6 +5447,62 @@ apiRouter.get('/public/deals/:id', async (c) => {
 });
 
 /**
+ * Public Deal Card Click Beacon (Stage 3: DEAL CLICK)
+ * Records local click beacon event before user navigates to merchant or affiliate link.
+ */
+apiRouter.post('/public/deals/:id/click', async (c) => {
+  const id = c.req.param('id');
+  const clientInfo = getTrustedClientIp(c);
+  const userAgent = c.req.header('user-agent') || '';
+  if (isBotTraffic(userAgent)) {
+    return c.json({ success: true, recorded: false, isBot: true });
+  }
+
+  const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
+  const engine = AutonomousDealDiscoveryEngine.getInstance();
+  const res = engine.recordDealClick(id, {
+    ip: clientInfo.ip,
+    placement: 'deal_card',
+    source: 'public_deals_catalog'
+  });
+
+  if (!res.success || !res.deal) {
+    return c.json({ error: 'DEAL_NOT_FOUND', message: `Deal '${id}' not found` }, 404);
+  }
+
+  return c.json({
+    success: true,
+    data: {
+      dealId: res.deal.id,
+      destinationUrl: res.deal.trackingUrl || res.deal.productUrl,
+      isMonetizable: res.deal.isMonetizable
+    }
+  });
+});
+
+/**
+ * Public Deals Page View Beacon (Stage 2: PAGE VISIT)
+ * Records real visitor pageview anonymously.
+ */
+apiRouter.post('/public/deals/page-view', async (c) => {
+  const clientInfo = getTrustedClientIp(c);
+  const userAgent = c.req.header('user-agent') || '';
+  if (isBotTraffic(userAgent)) {
+    return c.json({ success: true, recorded: false, isBot: true });
+  }
+
+  const body = await c.req.json().catch(() => ({}));
+  const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
+  AutonomousDealDiscoveryEngine.getInstance().recordPageVisit({
+    path: body.path || '/deals',
+    ip: clientInfo.ip,
+    referer: c.req.header('referer') || body.referer
+  });
+
+  return c.json({ success: true, status: 'RECORDED' });
+});
+
+/**
  * Partner Conversion Webhook (Spec § 6 — Mode 2)
  * Ingests external conversion reports idempotently.
  */
@@ -6493,6 +6549,82 @@ apiRouter.post('/owner/deal-engine/wake', async (c) => {
   const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
   const result = await AutonomousDealDiscoveryEngine.getInstance().runDiscoveryCycle(orgId, bizId);
   return c.json({ success: true, data: result });
+});
+
+/**
+ * 7-Stage Evidence-Based Commercial Funnel Observability (Spec §§ 1–15)
+ * Strict separation of each counter:
+ * DISCOVERY → PAGE VISIT → DEAL CLICK → PROVIDER CLICK → REPORTED CONVERSION → VALIDATED COMMISSION → PAID COMMISSION
+ */
+apiRouter.get('/owner/deal-engine/funnel', async (c) => {
+  const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
+  const funnel = AutonomousDealDiscoveryEngine.getInstance().getSevenStageFunnel();
+  return c.json({ success: true, data: funnel });
+});
+
+/**
+ * Growth Experiments List
+ */
+apiRouter.get('/owner/growth-experiments', async (c) => {
+  const { GrowthExperimentTracker } = await import('../commission/growth-experiment-tracker.js');
+  const experiments = GrowthExperimentTracker.getInstance().listAllExperiments();
+  return c.json({ success: true, data: experiments });
+});
+
+/**
+ * Create Structured Growth Experiment
+ */
+apiRouter.post('/owner/growth-experiments', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  if (!body.title || !body.hypothesis || !body.changeTested) {
+    return c.json({ error: 'INVALID_INPUT', message: 'title, hypothesis, and changeTested are required' }, 400);
+  }
+  const orgId = c.req.header('x-organization-id') || c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const { GrowthExperimentTracker } = await import('../commission/growth-experiment-tracker.js');
+  const experiment = GrowthExperimentTracker.getInstance().createExperiment({
+    organizationId: orgId,
+    businessId: OwnerAuthService.PLATFORM_BUSINESS_ID,
+    title: body.title,
+    hypothesis: body.hypothesis,
+    changeTested: body.changeTested,
+    targetCategories: body.targetCategories,
+    targetCampaignIds: body.targetCampaignIds,
+    targetMerchants: body.targetMerchants,
+    minimumEvidenceRequirement: body.minimumEvidenceRequirement
+  });
+  return c.json({ success: true, data: experiment });
+});
+
+/**
+ * Ingest 6-Hour Commercial Cycle Outcome for a Growth Experiment
+ */
+apiRouter.post('/owner/growth-experiments/:id/cycle', async (c) => {
+  const id = c.req.param('id');
+  const body = await c.req.json().catch(() => ({}));
+  if (!body.cycleId || !body.baseline || !body.treatment) {
+    return c.json({ error: 'INVALID_INPUT', message: 'cycleId, baseline, and treatment buckets are required' }, 400);
+  }
+  const { GrowthExperimentTracker } = await import('../commission/growth-experiment-tracker.js');
+  try {
+    const experiment = GrowthExperimentTracker.getInstance().recordCycleOutcome(id, body);
+    return c.json({ success: true, data: experiment });
+  } catch (err: any) {
+    return c.json({ error: 'EXPERIMENT_ERROR', message: err.message }, 404);
+  }
+});
+
+/**
+ * Evaluate Growth Experiment Automated Decision
+ */
+apiRouter.post('/owner/growth-experiments/:id/evaluate', async (c) => {
+  const id = c.req.param('id');
+  const { GrowthExperimentTracker } = await import('../commission/growth-experiment-tracker.js');
+  try {
+    const experiment = GrowthExperimentTracker.getInstance().evaluateExperiment(id);
+    return c.json({ success: true, data: experiment });
+  } catch (err: any) {
+    return c.json({ error: 'EXPERIMENT_ERROR', message: err.message }, 404);
+  }
 });
 
 /**

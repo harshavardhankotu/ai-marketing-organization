@@ -9,6 +9,8 @@ import { isProduction } from '../config/env.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { DealSsrfGuard } from './deal-ssrf-guard.js';
 import { CuelinksSyncManager } from './cuelinks-sync-manager.js';
+import { CuelinksV3Client } from './cuelinks-v3-client.js';
+import { GrowthExperimentTracker } from './growth-experiment-tracker.js';
 import {
   NormalizedDeal,
   DiscoveredDealInput,
@@ -18,17 +20,27 @@ import {
   DiscountVerificationType,
   DealAvailability,
   DealQueryParams,
-  DealEngineObservabilityMetrics
+  DealEngineObservabilityMetrics,
+  SevenStageCommercialFunnel,
+  CommercialFunnelStage
 } from './deal-types.js';
 
 export class AutonomousDealDiscoveryEngine {
   private static instance: AutonomousDealDiscoveryEngine;
   private d1Repo = D1RevenueRepository.getInstance();
+  private cuelinksClient: CuelinksV3Client | null = null;
 
   // In-memory operational cache synced to durable D1 storage
   private sourcesMap: Map<string, DealSourceRecord> = new Map();
   private dealsMap: Map<string, NormalizedDeal> = new Map();
   private dealFingerprintMap: Map<string, string> = new Map(); // fingerprint -> dealId
+
+  // Strict 7-Stage Evidence-Based Commercial Funnel Counters
+  // DISCOVERY → PAGE VISIT → DEAL CLICK → PROVIDER CLICK → REPORTED CONVERSION → VALIDATED COMMISSION → PAID COMMISSION
+  // Strictly separated; zero assumed or inferred conversions; ₹0.00 cash until bank proof.
+  private localPageVisitsCount: number = 0;
+  private localDealClicksCount: number = 0;
+  private verifiedCashReceivedINR: number = 0; // Strictly ₹0.00 until bank statement proof
 
   private lastCycleId: string = 'NONE';
   private lastScanTimestamp: string = 'NEVER';
@@ -44,6 +56,21 @@ export class AutonomousDealDiscoveryEngine {
       AutonomousDealDiscoveryEngine.instance = new AutonomousDealDiscoveryEngine();
     }
     return AutonomousDealDiscoveryEngine.instance;
+  }
+
+  public static resetInstance(): void {
+    AutonomousDealDiscoveryEngine.instance = undefined as any;
+  }
+
+  public getCuelinksClient(): CuelinksV3Client {
+    if (!this.cuelinksClient) {
+      this.cuelinksClient = CuelinksV3Client.getInstance();
+    }
+    return this.cuelinksClient;
+  }
+
+  public setCuelinksClient(client: CuelinksV3Client | null): void {
+    this.cuelinksClient = client;
   }
 
   /**
@@ -184,6 +211,23 @@ export class AutonomousDealDiscoveryEngine {
         rateLimitPerMinute: 20,
         trustScore: 95,
         scanFrequencyHours: 24,
+        totalOffersFound: 0,
+        totalOffersRejected: 0,
+        failureCount: 0
+      },
+      {
+        id: 'src_oppo_in',
+        domain: 'oppo.com',
+        name: 'Oppo India',
+        sourceClass: 'RETAILER_BRAND',
+        country: 'India',
+        categories: ['Smartphones & Mobile Accessories', 'Audio & Wearables'],
+        accessMethod: 'PUBLIC_PROMOTION',
+        documentationUrl: 'https://www.oppo.com/in/',
+        permissionStatus: 'ALLOWED',
+        rateLimitPerMinute: 30,
+        trustScore: 90,
+        scanFrequencyHours: 12,
         totalOffersFound: 0,
         totalOffersRejected: 0,
         failureCount: 0
@@ -337,7 +381,10 @@ export class AutonomousDealDiscoveryEngine {
     // 5. Re-rank active deals using Buyer-Value Ranking Engine (Spec § 7)
     this.reRankActiveDeals();
 
-    // 6. Record cycle completion
+    // 6. Advance 6-hour commercial cycle state in GrowthExperimentTracker
+    GrowthExperimentTracker.getInstance().advanceCommercialCycle(cycleId);
+
+    // 7. Record cycle completion
     const durationMs = Date.now() - startMs;
     this.lastCycleDurationMs = durationMs;
     this.lastScanTimestamp = new Date().toISOString();
@@ -509,7 +556,7 @@ export class AutonomousDealDiscoveryEngine {
 
     // Class B: Cuelinks Autonomous Monetization Feed (Spec § 1, 2, 3, 4, 5, 6)
     try {
-      const syncResult = await CuelinksSyncManager.getInstance().syncCuelinks(organizationId, businessId);
+      const syncResult = await CuelinksSyncManager.getInstance(this.getCuelinksClient()).syncCuelinks(organizationId, businessId);
       if (syncResult.success && syncResult.dealCandidates && syncResult.dealCandidates.length > 0) {
         for (const candidate of syncResult.dealCandidates) {
           discovered.push({
@@ -547,8 +594,11 @@ export class AutonomousDealDiscoveryEngine {
       console.warn(`[DealEngine] Cuelinks autonomous sync notice: ${cuelinksErr.message}`);
     }
 
+    // Seamlessly convert eligible candidate deals through Cuelinks when authenticated (Spec § 5 & § 8)
+    const enrichedDeals = await this.enrichCandidateDealsWithCuelinks(discovered);
+
     // Update source metrics
-    for (const deal of discovered) {
+    for (const deal of enrichedDeals) {
       const src = Array.from(this.sourcesMap.values()).find(s => s.domain === deal.sourceDomain);
       if (src) {
         src.totalOffersFound++;
@@ -557,7 +607,71 @@ export class AutonomousDealDiscoveryEngine {
       }
     }
 
-    return discovered;
+    return enrichedDeals;
+  }
+
+  /**
+   * Enriches candidate deals with Cuelinks affiliate tracking when authenticated (Spec § 5 & § 8).
+   * Seamlessly converts eligible candidate deals through Cuelinks V3 API.
+   * - If affiliated === true: attaches verified trackingUrl, affiliateNetwork='CUELINKS', affiliateCampaignId, and isMonetizable=true.
+   * - If affiliated === false (e.g. Reliance Digital, Zoho): preserves direct merchant link, isMonetizable=false, trackingUrl=undefined.
+   * - If Cuelinks is unconfigured or fails: preserves direct merchant links safely without downtime.
+   */
+  public async enrichCandidateDealsWithCuelinks(deals: DiscoveredDealInput[]): Promise<DiscoveredDealInput[]> {
+    const client = this.getCuelinksClient();
+    if (!client || !client.isConfigured()) {
+      for (const deal of deals) {
+        if (deal.isMonetizable === undefined) {
+          deal.isMonetizable = false;
+        }
+      }
+      return deals;
+    }
+
+    const channelId = CuelinksSyncManager.getInstance(client).getStatus().channel.id;
+
+    for (const deal of deals) {
+      // Only convert if not already monetized/tracked and has a public product URL
+      if (!deal.trackingUrl && deal.productUrl) {
+        try {
+          const subid = `aro_${deal.modelOrSku || 'deal'}`.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
+          const subid2 = (deal.category || 'general').replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
+
+          const convRes = await client.convertLink({
+            url: deal.productUrl,
+            channel_id: channelId,
+            subid,
+            subid2,
+            subid3: 'discovery_engine',
+            shorten: true
+          });
+
+          if (convRes && convRes.affiliated === true && convRes.tracking_url) {
+            deal.trackingUrl = convRes.tracking_url;
+            deal.isMonetizable = true;
+            deal.affiliateNetwork = 'CUELINKS';
+            if (convRes.campaign?.id) {
+              deal.affiliateCampaignId = String(convRes.campaign.id);
+            }
+          } else {
+            // Non-affiliated merchant (Reliance Digital, Zoho, unapproved partners):
+            // Strictly preserve clean direct merchant link, no affiliate tracking
+            deal.isMonetizable = false;
+            deal.trackingUrl = undefined;
+            deal.affiliateNetwork = undefined;
+            deal.affiliateCampaignId = undefined;
+          }
+        } catch (convErr: any) {
+          // Graceful fallback to pure direct merchant link on error
+          deal.isMonetizable = false;
+          deal.trackingUrl = undefined;
+          deal.affiliateNetwork = undefined;
+          deal.affiliateCampaignId = undefined;
+        }
+      }
+    }
+
+    return deals;
   }
 
   /**
@@ -588,6 +702,44 @@ export class AutonomousDealDiscoveryEngine {
     }
 
     const canonicalUrl = DealSsrfGuard.normalizeProductUrl(input.productUrl);
+
+    // Seamlessly convert eligible candidate deal through Cuelinks when authenticated if not yet processed
+    if (input.trackingUrl === undefined && input.isMonetizable === undefined && this.getCuelinksClient().isConfigured()) {
+      try {
+        const client = this.getCuelinksClient();
+        const channelId = CuelinksSyncManager.getInstance(client).getStatus().channel.id;
+        const subid = `aro_${input.modelOrSku || 'deal'}`.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
+        const subid2 = (input.category || 'general').replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
+
+        const convRes = await client.convertLink({
+          url: input.productUrl,
+          channel_id: channelId,
+          subid,
+          subid2,
+          subid3: 'ingest_verify',
+          shorten: true
+        });
+
+        if (convRes && convRes.affiliated === true && convRes.tracking_url) {
+          input.trackingUrl = convRes.tracking_url;
+          input.isMonetizable = true;
+          input.affiliateNetwork = 'CUELINKS';
+          if (convRes.campaign?.id) {
+            input.affiliateCampaignId = String(convRes.campaign.id);
+          }
+        } else {
+          input.isMonetizable = false;
+          input.trackingUrl = undefined;
+          input.affiliateNetwork = undefined;
+          input.affiliateCampaignId = undefined;
+        }
+      } catch {
+        input.isMonetizable = false;
+        input.trackingUrl = undefined;
+        input.affiliateNetwork = undefined;
+        input.affiliateCampaignId = undefined;
+      }
+    }
 
     // Level 3: Corroboration & Discount Checking (Spec § 5 Level 3)
     let discountType: DiscountVerificationType = 'UNCONFIRMED';
@@ -729,9 +881,9 @@ export class AutonomousDealDiscoveryEngine {
       confidenceScore,
       buyerValueScore: 0, // Will be computed in ranking
       rejectionReasons,
-      trackingUrl: input.trackingUrl,
-      affiliateNetwork: input.affiliateNetwork,
-      affiliateCampaignId: input.affiliateCampaignId,
+      trackingUrl: (input.isMonetizable === true && Boolean(input.trackingUrl)) ? input.trackingUrl : undefined,
+      affiliateNetwork: (input.isMonetizable === true && Boolean(input.trackingUrl)) ? input.affiliateNetwork : undefined,
+      affiliateCampaignId: (input.isMonetizable === true && Boolean(input.trackingUrl)) ? input.affiliateCampaignId : undefined,
       isMonetizable: input.isMonetizable === true && Boolean(input.trackingUrl),
       modelOrSku: input.modelOrSku,
       evidenceJson: {
@@ -951,6 +1103,164 @@ export class AutonomousDealDiscoveryEngine {
   }
 
   /**
+   * Record a public page visit (Stage 2: PAGE VISIT).
+   * Strictly increments observed page visits without assuming or multiplying any other counter.
+   */
+  public recordPageVisit(meta?: { path?: string; ip?: string; referer?: string }): void {
+    this.localPageVisitsCount++;
+  }
+
+  /**
+   * Record a local deal card click (Stage 3: DEAL CLICK).
+   * Increments local deal card clicks and synchronizes Cuelinks local click count.
+   */
+  public recordDealClick(dealId: string, meta?: { ip?: string; placement?: string; source?: string }): { success: boolean; deal?: NormalizedDeal } {
+    const deal = this.dealsMap.get(dealId);
+    if (!deal) {
+      return { success: false };
+    }
+    this.localDealClicksCount++;
+    CuelinksSyncManager.getInstance().recordLocalClick();
+    return { success: true, deal };
+  }
+
+  /**
+   * Strict Bank Statement Confirmation Gate.
+   * Enforces that cashReceivedINR is strictly ₹0.00 until explicit bank statement proof is provided.
+   */
+  public confirmBankProof(params: {
+    amountINR: number;
+    bankTransactionReference: string;
+    statementDate: string;
+    confirmedByOwner: boolean;
+  }): { success: boolean; error?: string } {
+    if (!params.confirmedByOwner) {
+      return { success: false, error: 'OWNER_CONFIRMATION_REQUIRED: Bank statement credit must be explicitly confirmed by human owner.' };
+    }
+    if (!params.bankTransactionReference || params.bankTransactionReference.trim().length < 6) {
+      return { success: false, error: 'INVALID_BANK_REFERENCE: A valid bank transaction reference/UTR is required.' };
+    }
+    if (params.amountINR <= 0) {
+      return { success: false, error: 'INVALID_AMOUNT: Confirmed bank amount must be strictly greater than ₹0.00.' };
+    }
+    this.verifiedCashReceivedINR = params.amountINR;
+    return { success: true };
+  }
+
+  /**
+   * Complete 7-Stage Evidence-Based Commercial Funnel (Spec §§ 1–15)
+   * DISCOVERY → PAGE VISIT → DEAL CLICK → PROVIDER CLICK → REPORTED CONVERSION → VALIDATED COMMISSION → PAID COMMISSION
+   * Strictly separates all counters; NO metric is inferred or assumed from any other.
+   * Cash received is strictly ₹0.00 until bank statement proof.
+   */
+  public getSevenStageFunnel(): SevenStageCommercialFunnel {
+    const cuelinksSync = CuelinksSyncManager.getInstance().getStatus();
+    const sources = Array.from(this.sourcesMap.values());
+    const deals = Array.from(this.dealsMap.values());
+
+    const discoveryImpressions = sources.reduce((acc, s) => acc + s.totalOffersFound, 0) || deals.length;
+    const publicPageVisits = this.localPageVisitsCount;
+    const dealCardClicks = this.localDealClicksCount;
+    const providerAttributedClicks = cuelinksSync.reconciliation.providerAttributedClicks;
+    const reportedConversions = cuelinksSync.reconciliation.reportedConversions;
+    const validatedCommissionsINR = cuelinksSync.reconciliation.validatedCommissionINR;
+    const paidCommissionsINR = cuelinksSync.reconciliation.paidCommissionINR;
+    const pendingCommissionsINR = cuelinksSync.reconciliation.pendingCommissionINR;
+    const reversedCommissionsINR = cuelinksSync.reconciliation.reversedCommissionINR;
+    const cashReceivedINR = this.verifiedCashReceivedINR; // strictly ₹0.00 until bank statement proof
+
+    return {
+      discoveryImpressions,
+      publicPageVisits,
+      dealCardClicks,
+      providerAttributedClicks,
+      reportedConversions,
+      validatedCommissionsINR,
+      paidCommissionsINR,
+      pendingCommissionsINR,
+      reversedCommissionsINR,
+      cashReceivedINR,
+      lastUpdated: new Date().toISOString(),
+      stageBreakdown: {
+        DISCOVERY: {
+          stage: 'DISCOVERY',
+          name: 'Offer & Deal Discovery',
+          countOrAmount: discoveryImpressions,
+          unit: 'COUNT',
+          evidenceSource: 'Deal Discovery Engine Offer Ingestion & Scanners',
+          description: 'Autonomous discovery impressions and collected offers across retailer and brand catalogs',
+          status: discoveryImpressions > 0 ? 'ACTIVE' : 'ZERO'
+        },
+        PAGE_VISIT: {
+          stage: 'PAGE_VISIT',
+          name: 'Public Page Visits',
+          countOrAmount: publicPageVisits,
+          unit: 'COUNT',
+          evidenceSource: 'Public Deals & Buyer Guides Referral Beacon',
+          description: 'Real visitor pageviews recorded by client-side referral beacon (excluding bots/test traffic)',
+          status: publicPageVisits > 0 ? 'ACTIVE' : 'ZERO'
+        },
+        DEAL_CLICK: {
+          stage: 'DEAL_CLICK',
+          name: 'Local Deal Card Clicks',
+          countOrAmount: dealCardClicks,
+          unit: 'COUNT',
+          evidenceSource: 'Local Deal Card Click Beacon',
+          description: 'Verified outbound deal clicks recorded locally before provider redirect',
+          status: dealCardClicks > 0 ? 'ACTIVE' : 'ZERO'
+        },
+        PROVIDER_CLICK: {
+          stage: 'PROVIDER_CLICK',
+          name: 'Provider Attributed Clicks',
+          countOrAmount: providerAttributedClicks,
+          unit: 'COUNT',
+          evidenceSource: 'Cuelinks V3 API (/reports)',
+          description: 'Outbound clicks acknowledged and recorded in provider reporting catalog',
+          status: providerAttributedClicks > 0 ? 'ACTIVE' : 'ZERO'
+        },
+        REPORTED_CONVERSION: {
+          stage: 'REPORTED_CONVERSION',
+          name: 'Reported Conversions',
+          countOrAmount: reportedConversions,
+          unit: 'COUNT',
+          evidenceSource: 'Cuelinks V3 API (/transactions)',
+          description: 'Merchant-reported conversion orders attributable to our referral subids',
+          status: reportedConversions > 0 ? 'ACTIVE' : 'ZERO'
+        },
+        VALIDATED_COMMISSION: {
+          stage: 'VALIDATED_COMMISSION',
+          name: 'Validated Commissions',
+          countOrAmount: validatedCommissionsINR,
+          unit: 'INR',
+          evidenceSource: 'Cuelinks V3 API (/transactions status=approved)',
+          description: 'Validated commission amount in INR after merchant return/cooling period expiration',
+          status: validatedCommissionsINR > 0 ? 'ACTIVE' : 'ZERO'
+        },
+        PAID_COMMISSION: {
+          stage: 'PAID_COMMISSION',
+          name: 'Paid Commissions',
+          countOrAmount: paidCommissionsINR,
+          unit: 'INR',
+          evidenceSource: 'Cuelinks V3 API (/transactions status=paid)',
+          description: 'Affiliate network disbursed commission amount in INR awaiting bank settlement',
+          status: paidCommissionsINR > 0 ? 'ACTIVE' : 'ZERO'
+        }
+      }
+    };
+  }
+
+  /**
+   * Reset local funnel counters for hermetic testing.
+   */
+  public resetFunnelMetricsForTesting(): void {
+    this.localPageVisitsCount = 0;
+    this.localDealClicksCount = 0;
+    this.verifiedCashReceivedINR = 0;
+    CuelinksSyncManager.getInstance().resetReconciliation();
+    GrowthExperimentTracker.getInstance().resetForTesting();
+  }
+
+  /**
    * Comprehensive operational observability metrics (Spec § 12).
    */
   public getDealEngineMetrics(): DealEngineObservabilityMetrics {
@@ -978,6 +1288,8 @@ export class AutonomousDealDiscoveryEngine {
     }
 
     const cuelinksSync = CuelinksSyncManager.getInstance().getStatus();
+    const funnel = this.getSevenStageFunnel();
+    const growthExperiments = GrowthExperimentTracker.getInstance().listAllExperiments();
 
     return {
       sources: {
@@ -1012,11 +1324,16 @@ export class AutonomousDealDiscoveryEngine {
         withAuthorizedTracking: deals.filter(d => Boolean(d.trackingUrl)).length,
         directMerchantLinks: deals.filter(d => !d.isMonetizable).length,
         publishedDealPages: deals.filter(d => d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS').length,
-        clicksRecorded: cuelinksSync.reconciliation.localClicks,
-        providerAttributedConversions: cuelinksSync.reconciliation.reportedConversions,
-        confirmedCommissionsINR: cuelinksSync.reconciliation.validatedCommissionINR,
-        cashReceivedINR: 0
+        clicksRecorded: funnel.dealCardClicks,
+        providerAttributedClicks: funnel.providerAttributedClicks,
+        providerAttributedConversions: funnel.reportedConversions,
+        confirmedCommissionsINR: funnel.validatedCommissionsINR,
+        reversedCommissionsINR: funnel.reversedCommissionsINR,
+        paidCommissionsINR: funnel.paidCommissionsINR,
+        cashReceivedINR: funnel.cashReceivedINR // Strictly ₹0.00 until bank statement proof
       },
+      funnel,
+      growthExperiments,
       execution: {
         lastCycleId: this.lastCycleId,
         lastScanAt: this.lastScanTimestamp,
@@ -1079,6 +1396,8 @@ export class AutonomousDealDiscoveryEngine {
         discountVerificationType: deal.discountVerificationType,
         isMonetizable: deal.isMonetizable,
         trackingUrl: deal.trackingUrl,
+        affiliateNetwork: deal.affiliateNetwork,
+        affiliateCampaignId: deal.affiliateCampaignId,
         evidence: deal.evidenceJson
       });
 
@@ -1152,6 +1471,8 @@ export class AutonomousDealDiscoveryEngine {
               rejectionReasons,
               isMonetizable: Boolean(outputs.isMonetizable),
               trackingUrl: outputs.trackingUrl,
+              affiliateNetwork: outputs.affiliateNetwork,
+              affiliateCampaignId: outputs.affiliateCampaignId,
               modelOrSku: inputs.modelOrSku,
               evidenceJson: outputs.evidence || { sources: [inputs.sourceUrl] },
               createdAt: row.created_at,
