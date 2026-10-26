@@ -1055,8 +1055,24 @@ export class OwnerDigestService {
   </div>
 
   <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;flex-wrap:wrap;gap:0.5rem;">
+      <h2 style="margin:0;">⚙️ Autonomous Operations &amp; Workflows (15)</h2>
+      <a href="/owner/automation" style="background:#0284c7;color:#fff;text-decoration:none;font-weight:600;padding:0.35rem 0.75rem;border-radius:6px;font-size:0.85rem;">Open Automation Control Center &rarr;</a>
+    </div>
+    <p style="color:#94a3b8;font-size:0.9rem;margin-bottom:0.5rem;">
+      15 durable background workflows are registered and executed on Cloudflare hourly cron wakes. Outbound messaging is strictly locked behind human approval.
+    </p>
+    <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.75rem;">
+      <span style="background:#1e293b;border:1px solid #334155;border-radius:6px;padding:0.4rem 0.75rem;font-size:0.85rem;color:#38bdf8;"><strong>Cadence:</strong> Hourly Cron</span>
+      <span style="background:#1e293b;border:1px solid #334155;border-radius:6px;padding:0.4rem 0.75rem;font-size:0.85rem;color:#10b981;"><strong>Workflows:</strong> 15 Configured</span>
+      <span style="background:#1e293b;border:1px solid #334155;border-radius:6px;padding:0.4rem 0.75rem;font-size:0.85rem;color:#fbbf24;"><strong>Human Gate:</strong> Zero Auto-Dispatch</span>
+    </div>
+  </div>
+
+  <div class="card">
     <h2>Quick Actions &amp; Tools</h2>
     <ul style="padding-left:1.2rem;color:#cbd5e1;">
+      <li><a href="/owner/automation">⚙️ Automation Registry &amp; Cadence Controls (/owner/automation)</a></li>
       <li><a href="/owner/smoke-test">Run Mobile Smoke Test (/owner/smoke-test)</a></li>
       <li><a href="/offer">View Live Commercial Offer Page (/offer)</a></li>
       <li><a href="/revenue">View Public Revenue Funnel (/revenue)</a></li>

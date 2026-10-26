@@ -240,8 +240,8 @@ describe('Schema Parity Verification & Inquiry Lifecycle (Steps 2, 3, 4, 6)', ()
       const { applied } = applySqliteMigrations(db);
 
       const rows = db.prepare('SELECT migration_name FROM _sqlite_migrations').all() as { migration_name: string }[];
-      expect(rows.length).toBe(41);
-      expect(applied.length).toBe(41);
+      expect(rows.length).toBe(42);
+      expect(applied.length).toBe(42);
 
       // Re-running is idempotent and applies 0 new files
       const secondRun = applySqliteMigrations(db);
