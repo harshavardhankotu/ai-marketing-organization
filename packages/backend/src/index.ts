@@ -447,6 +447,20 @@ app.get('/owner/today', async (c) => {
   return c.json({ success: true, data: digest });
 });
 
+// Top-level Owner Automation Dashboard (V3.3 SPRINT § 10)
+app.get('/owner/automation', async (c) => {
+  const { AutomationRegistryEngine } = await import('./automation/automation-registry-engine.js');
+  const engine = AutomationRegistryEngine.getInstance();
+  await engine.ensureInitialized();
+  const workflows = await engine.listWorkflows();
+  const recentLogs = await engine.getRecentLogs(20);
+  const isGlobalPaused = await engine.isGloballyPaused();
+  if (c.req.header('accept')?.includes('text/html') || c.req.query('format') === 'html') {
+    return c.html(engine.renderDashboardHtml(workflows, recentLogs, isGlobalPaused));
+  }
+  return c.json({ success: true, data: { isGlobalPaused, workflows, recentLogs } });
+});
+
 // Top-level Owner Proposal Generator (Part D.4)
 app.all('/owner/proposal', async (c) => {
   const fs = await import('fs');
@@ -1001,6 +1015,15 @@ export async function startServer(): Promise<any> {
     console.log('[Prospect Gate] Ensured curated Indian healthcare SMB prospects & drafts in Cloudflare D1.');
   } catch (err: any) {
     console.warn('[Prospect Gate] Curated prospect batch synchronization failed:', err.message);
+  }
+
+  // 3f. Automation Registry Gate: Ensure 15 core workflows initialized in Cloudflare D1
+  try {
+    const { AutomationRegistryEngine } = await import('./automation/automation-registry-engine.js');
+    await AutomationRegistryEngine.getInstance().ensureInitialized();
+    console.log('[Automation Gate] Ensured 15 background automation workflows initialized.');
+  } catch (err: any) {
+    console.warn('[Automation Gate] Automation registry initialization failed:', err.message);
   }
 
   // 4. Start autonomous background scheduler for continuous market intelligence & research
