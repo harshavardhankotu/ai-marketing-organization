@@ -39,6 +39,10 @@ export class OfferCatalogService {
 
   public static readonly PLATFORM_SETUP_OFFER_ID = 'PLATFORM_SETUP';
   public static readonly PLATFORM_MONTHLY_OFFER_ID = 'PLATFORM_MONTHLY';
+  public static readonly HEALTHCARE_SETUP_OFFER_ID = 'HEALTHCARE_SETUP';
+  public static readonly HEALTHCARE_RETAINER_OFFER_ID = 'HEALTHCARE_RETAINER';
+  public static readonly EDUCATION_SETUP_OFFER_ID = 'EDUCATION_SETUP';
+  public static readonly EDUCATION_RETAINER_OFFER_ID = 'EDUCATION_RETAINER';
 
   private constructor() {
     this.ensurePlatformOffers();
@@ -105,6 +109,65 @@ export class OfferCatalogService {
         billingModel: 'MONTHLY' as const,
         deliveryTimeDays: 30,
         qualificationRequirements: ['Active platform setup completed']
+      },
+      {
+        id: OfferCatalogService.HEALTHCARE_SETUP_OFFER_ID,
+        name: 'Healthcare Practice Triage Automation — Setup & Handover',
+        description: 'Complete setup of WhatsApp Business reception triage, Google Business Profile WhatsApp link, Google Sheets appointment tracker, and non-clinical boundary guardrails.',
+        deliverables: [
+          'WhatsApp Business greeting & after-hours away message with emergency protocol',
+          'Top 10 clinic FAQ quick replies (/fee, /hours, /location, /book, /emergency)',
+          'Google Business Profile audit and WhatsApp click-to-chat integration',
+          'Private Google Sheets patient appointment & SLA tracker',
+          '5 synthetic scenario safety handover tests'
+        ],
+        priceINR: 15000,
+        billingModel: 'ONE_TIME' as const,
+        deliveryTimeDays: 5,
+        qualificationRequirements: ['Active WhatsApp Business number', 'Claimed Google Business Profile', 'Signed Non-Clinical Boundary Agreement']
+      },
+      {
+        id: OfferCatalogService.HEALTHCARE_RETAINER_OFFER_ID,
+        name: 'Healthcare Practice Triage Automation — Monthly Retainer & SLA',
+        description: 'Continuous appointment triage tuning, weekly inquiry show-rate reports, automated follow-up workflows, and DPDP compliance maintenance.',
+        deliverables: [
+          'Weekly appointment show-rate and inquiry delay reporting',
+          'Ongoing triage prompt tuning and staff quick-reply adjustments',
+          'Continuous DPDP compliance monitoring and 30-day retention purge'
+        ],
+        priceINR: 8000,
+        billingModel: 'MONTHLY' as const,
+        deliveryTimeDays: 30,
+        qualificationRequirements: ['Active healthcare setup completed']
+      },
+      {
+        id: OfferCatalogService.EDUCATION_SETUP_OFFER_ID,
+        name: 'Education Institute Lead Capture & Brochure System — Setup',
+        description: 'Instant WhatsApp brochure auto-sender, course fee quick replies, Google Sheets lead pipeline, and website WhatsApp CTA.',
+        deliverables: [
+          'Instant WhatsApp brochure delivery and batch timing replies',
+          'Top 10 course FAQ shortcuts (/fee, /batches, /faculty, /admission)',
+          'Google Sheets admission lead tracker with counselor alerts',
+          'Website and Google directory WhatsApp click-to-chat integration'
+        ],
+        priceINR: 12000,
+        billingModel: 'ONE_TIME' as const,
+        deliveryTimeDays: 5,
+        qualificationRequirements: ['Active WhatsApp Business number', 'Digital Course Brochure PDF']
+      },
+      {
+        id: OfferCatalogService.EDUCATION_RETAINER_OFFER_ID,
+        name: 'Education Institute Lead Capture — Monthly Retainer',
+        description: 'Ongoing brochure update management, monthly admission conversion reports, and multi-channel lead tracking.',
+        deliverables: [
+          'Monthly admission lead conversion reporting',
+          'Batch schedule and fee update configuration',
+          'Speed-to-lead response time monitoring'
+        ],
+        priceINR: 6000,
+        billingModel: 'MONTHLY' as const,
+        deliveryTimeDays: 30,
+        qualificationRequirements: ['Active education setup completed']
       }
     ];
 
@@ -228,6 +291,101 @@ export class OfferCatalogService {
         active: true,
         deliveryTimeDays: 30,
         qualificationRequirements: ['Active platform setup completed'],
+        paymentProvider: 'RAZORPAY',
+        paymentConfiguration: {}
+      };
+    }
+
+    if (trimmedOfferId === OfferCatalogService.HEALTHCARE_SETUP_OFFER_ID || trimmedOfferId === 'HEALTHCARE_SETUP') {
+      return {
+        offerId: OfferCatalogService.HEALTHCARE_SETUP_OFFER_ID,
+        offerName: 'Healthcare Practice Triage Automation — Setup & Handover',
+        description: 'Complete setup of WhatsApp Business reception triage, Google Business Profile WhatsApp link, Google Sheets appointment tracker, and non-clinical boundary guardrails.',
+        deliverables: [
+          'WhatsApp Business greeting & after-hours away message with emergency protocol',
+          'Top 10 clinic FAQ quick replies (/fee, /hours, /location, /book, /emergency)',
+          'Google Business Profile audit and WhatsApp click-to-chat integration',
+          'Private Google Sheets patient appointment & SLA tracker',
+          '5 synthetic scenario safety handover tests'
+        ],
+        priceINR: 15000,
+        billingModel: 'ONE_TIME',
+        currency: 'INR',
+        businessId: businessId || OwnerAuthService.PLATFORM_BUSINESS_ID,
+        organizationId: organizationId || OwnerAuthService.OWNER_ORGANIZATION_ID,
+        active: true,
+        deliveryTimeDays: 5,
+        qualificationRequirements: ['Active WhatsApp Business number', 'Claimed Google Business Profile', 'Signed Non-Clinical Boundary Agreement'],
+        paymentProvider: 'RAZORPAY',
+        paymentConfiguration: {}
+      };
+    }
+
+    if (trimmedOfferId === OfferCatalogService.HEALTHCARE_RETAINER_OFFER_ID || trimmedOfferId === 'HEALTHCARE_RETAINER') {
+      return {
+        offerId: OfferCatalogService.HEALTHCARE_RETAINER_OFFER_ID,
+        offerName: 'Healthcare Practice Triage Automation — Monthly Retainer & SLA',
+        description: 'Continuous appointment triage tuning, weekly inquiry show-rate reports, automated follow-up workflows, and DPDP compliance maintenance.',
+        deliverables: [
+          'Weekly appointment show-rate and inquiry delay reporting',
+          'Ongoing triage prompt tuning and staff quick-reply adjustments',
+          'Continuous DPDP compliance monitoring and 30-day retention purge'
+        ],
+        priceINR: 8000,
+        billingModel: 'MONTHLY',
+        currency: 'INR',
+        businessId: businessId || OwnerAuthService.PLATFORM_BUSINESS_ID,
+        organizationId: organizationId || OwnerAuthService.OWNER_ORGANIZATION_ID,
+        active: true,
+        deliveryTimeDays: 30,
+        qualificationRequirements: ['Active healthcare setup completed'],
+        paymentProvider: 'RAZORPAY',
+        paymentConfiguration: {}
+      };
+    }
+
+    if (trimmedOfferId === OfferCatalogService.EDUCATION_SETUP_OFFER_ID || trimmedOfferId === 'EDUCATION_SETUP') {
+      return {
+        offerId: OfferCatalogService.EDUCATION_SETUP_OFFER_ID,
+        offerName: 'Education Institute Lead Capture & Brochure System — Setup',
+        description: 'Instant WhatsApp brochure auto-sender, course fee quick replies, Google Sheets lead pipeline, and website WhatsApp CTA.',
+        deliverables: [
+          'Instant WhatsApp brochure delivery and batch timing replies',
+          'Top 10 course FAQ shortcuts (/fee, /batches, /faculty, /admission)',
+          'Google Sheets admission lead tracker with counselor alerts',
+          'Website and Google directory WhatsApp click-to-chat integration'
+        ],
+        priceINR: 12000,
+        billingModel: 'ONE_TIME',
+        currency: 'INR',
+        businessId: businessId || OwnerAuthService.PLATFORM_BUSINESS_ID,
+        organizationId: organizationId || OwnerAuthService.OWNER_ORGANIZATION_ID,
+        active: true,
+        deliveryTimeDays: 5,
+        qualificationRequirements: ['Active WhatsApp Business number', 'Digital Course Brochure PDF'],
+        paymentProvider: 'RAZORPAY',
+        paymentConfiguration: {}
+      };
+    }
+
+    if (trimmedOfferId === OfferCatalogService.EDUCATION_RETAINER_OFFER_ID || trimmedOfferId === 'EDUCATION_RETAINER') {
+      return {
+        offerId: OfferCatalogService.EDUCATION_RETAINER_OFFER_ID,
+        offerName: 'Education Institute Lead Capture — Monthly Retainer',
+        description: 'Ongoing brochure update management, monthly admission conversion reports, and multi-channel lead tracking.',
+        deliverables: [
+          'Monthly admission lead conversion reporting',
+          'Batch schedule and fee update configuration',
+          'Speed-to-lead response time monitoring'
+        ],
+        priceINR: 6000,
+        billingModel: 'MONTHLY',
+        currency: 'INR',
+        businessId: businessId || OwnerAuthService.PLATFORM_BUSINESS_ID,
+        organizationId: organizationId || OwnerAuthService.OWNER_ORGANIZATION_ID,
+        active: true,
+        deliveryTimeDays: 30,
+        qualificationRequirements: ['Active education setup completed'],
         paymentProvider: 'RAZORPAY',
         paymentConfiguration: {}
       };
