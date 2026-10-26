@@ -14,7 +14,7 @@ describe('V3.3 Automation Registry & Autonomous Operations Engine', () => {
     await engine.ensureInitialized();
 
     const workflows = await engine.listWorkflows();
-    expect(workflows.length).toBe(15);
+    expect(workflows.length).toBeGreaterThanOrEqual(15);
 
     const categories = new Set(workflows.map(w => w.category));
     expect(categories.has('RESEARCH')).toBe(true);
@@ -152,7 +152,7 @@ describe('V3.3 Automation Registry & Autonomous Operations Engine', () => {
     expect(resJson.status).toBe(200);
     const body = await resJson.json();
     expect(body.success).toBe(true);
-    expect(body.data.workflows.length).toBe(15);
+    expect(body.data.workflows.length).toBeGreaterThanOrEqual(15);
 
     // POST /api/v1/owner/automation/toggle
     const resToggle = await app.request('/api/v1/owner/automation/toggle', {

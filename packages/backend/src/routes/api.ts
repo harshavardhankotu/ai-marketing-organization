@@ -158,6 +158,7 @@ export const EXACT_ROUTE_POLICY = {
     '/public/content',
     '/public/disclosure',
     '/public/revenue-funnel',
+    '/public/financial-truth',
     '/public/deals',
     '/deals',
     '/guides',
@@ -8176,6 +8177,87 @@ const handleLeakageSubmission = async (c: any) => {
 };
 apiRouter.post('/tools/lead-leakage-audit/submit', handleLeakageSubmission);
 apiRouter.post('/api/v1/tools/lead-leakage-audit/submit', handleLeakageSubmission);
+
+/**
+ * =========================================================================
+ * V4.0 MULTI-MARKET, HEALTHCARE ACCURACY & FINANCIAL TRUTH ENDPOINTS
+ * =========================================================================
+ */
+
+/**
+ * Public & Owner Financial Truth Ledger (Spec Phase 8)
+ * Reports INR base currency, verified cash ₹0, paid ads ₹0, and contribution margin.
+ */
+apiRouter.get('/public/financial-truth', async (c) => {
+  const { FinancialTruthLedger } = await import('../revenue/financial-truth-ledger.js');
+  const snapshot = FinancialTruthLedger.getInstance().getFinancialTruthSnapshot();
+  return c.json({ success: true, data: snapshot });
+});
+
+apiRouter.get('/owner/financial-truth', async (c) => {
+  const { FinancialTruthLedger } = await import('../revenue/financial-truth-ledger.js');
+  const snapshot = FinancialTruthLedger.getInstance().getFinancialTruthSnapshot();
+  return c.json({ success: true, data: snapshot });
+});
+
+/**
+ * Multi-Market Opportunity Scorecard (Spec Phase 2)
+ */
+apiRouter.get('/owner/market-opportunity-scorecard', async (c) => {
+  const { MultiMarketOpportunityEngine } = await import('../revenue/multi-market-opportunity-engine.js');
+  const scorecard = MultiMarketOpportunityEngine.getInstance().getScorecard();
+  return c.json({ success: true, data: scorecard });
+});
+
+/**
+ * Multi-Market Controlled Experiments (Spec Phase 9)
+ */
+apiRouter.get('/owner/market-experiments', async (c) => {
+  const { MarketExperimentManager } = await import('../revenue/market-experiment-manager.js');
+  const experiments = MarketExperimentManager.getInstance().listExperiments();
+  return c.json({ success: true, data: experiments });
+});
+
+/**
+ * Healthcare Accuracy & Claims Gate (Spec Phase 4)
+ */
+apiRouter.get('/owner/healthcare-accuracy/audit', async (c) => {
+  const { HealthcareAccuracyEngine } = await import('../compliance/healthcare-accuracy-engine.js');
+  const audit = HealthcareAccuracyEngine.getInstance().auditEvidenceFreshness();
+  return c.json({ success: true, data: audit });
+});
+
+apiRouter.post('/owner/healthcare-accuracy/inspect', async (c) => {
+  const { HealthcareAccuracyEngine } = await import('../compliance/healthcare-accuracy-engine.js');
+  const body = await c.req.json().catch(() => ({}));
+  const inspection = HealthcareAccuracyEngine.getInstance().inspectMessage(body.text || '');
+  return c.json({ success: true, data: inspection });
+});
+
+apiRouter.post('/owner/healthcare-accuracy/validate-claim', async (c) => {
+  const { HealthcareAccuracyEngine } = await import('../compliance/healthcare-accuracy-engine.js');
+  const body = await c.req.json().catch(() => ({}));
+  const validation = HealthcareAccuracyEngine.getInstance().validateClaim(body.claimText || '', body.claimId);
+  return c.json({ success: true, data: validation });
+});
+
+/**
+ * Customer Onboarding & Acceptance Records (Spec Phase 10)
+ */
+apiRouter.post('/owner/onboarding/acceptance-record', async (c) => {
+  const { CustomerOnboardingService } = await import('../revenue/customer-onboarding-service.js');
+  const body = await c.req.json().catch(() => ({}));
+  if (!body.businessId || !body.clientName) {
+    return c.json({ success: false, message: 'MISSING_FIELDS: businessId and clientName are required.' }, 400);
+  }
+  const record = CustomerOnboardingService.getInstance().createAcceptanceRecord(
+    body.businessId,
+    body.clientName,
+    body.vertical || 'HEALTHCARE'
+  );
+  return c.json({ success: true, data: record });
+});
+
 
 
 

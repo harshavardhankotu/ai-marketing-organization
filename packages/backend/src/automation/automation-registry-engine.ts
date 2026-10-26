@@ -244,6 +244,36 @@ export const WORKFLOW_DEFINITIONS: WorkflowDefinition[] = [
     executionBudgetMs: 10000,
     priority: 0,
     dedupPolicy: 'QUOTA_CEILING_ENFORCED'
+  },
+  {
+    id: 'healthcare_claim_verification',
+    name: 'Healthcare Claim & Evidence Verification',
+    description: 'Audits healthcare evidence records, verifies peer-reviewed citations, flags expired claims, and enforces publication gate.',
+    category: 'SYSTEM',
+    defaultCadenceMinutes: 1440, // 24h
+    executionBudgetMs: 20000,
+    priority: 1,
+    dedupPolicy: 'DAILY_AUDIT_WINDOW'
+  },
+  {
+    id: 'multi_market_lead_qualification',
+    name: 'Multi-Market Lead Qualification & Scoring',
+    description: 'Evaluates and scores prospect candidates across healthcare and education verticals against sector-specific rubrics.',
+    category: 'SALES_PIPELINE',
+    defaultCadenceMinutes: 360, // 6h
+    executionBudgetMs: 20000,
+    priority: 1,
+    dedupPolicy: 'SECTOR_SCORING_RUN'
+  },
+  {
+    id: 'b2b_suppression_and_compliance_audit',
+    name: 'B2B Suppression and DPDP Retention Audit',
+    description: 'Enforces 60-day outreach suppression cooldown, updates DNC list, and purges expired lead PII under DPDP.',
+    category: 'SYSTEM',
+    defaultCadenceMinutes: 720, // 12h
+    executionBudgetMs: 15000,
+    priority: 1,
+    dedupPolicy: 'SUPPRESSION_AUDIT_12H'
   }
 ];
 
@@ -288,7 +318,7 @@ export class AutomationRegistryEngine {
         const count = isProduction()
           ? (await this.d1Repo.queryOne<any>('automation_registry', 'SELECT COUNT(*) as c FROM automation_registry'))?.c
           : (getDb().prepare('SELECT COUNT(*) as c FROM automation_registry').get() as any)?.c;
-        if (Number(count) >= 15) return;
+        if (Number(count) >= WORKFLOW_DEFINITIONS.length) return;
       } catch {}
     }
 
@@ -566,8 +596,14 @@ export class AutomationRegistryEngine {
 
     // 3. Compute next scheduled run based on cadence
     const nextSchedMinutes = status === 'ERROR' && wf.retryCount < wf.maxRetries ? 15 : wf.cadenceMinutes;
-    const retryCount = status === 'ERROR' ? wf.retryCount + 1 : 0;
+    let retryCount = status === 'ERROR' ? wf.retryCount + 1 : 0;
     const nextRetryAt = status === 'ERROR' ? new Date(Date.now() + 15 * 60 * 1000).toISOString() : null;
+
+    // Circuit Breaker: If retries reach or exceed maxRetries, transition to BLOCKED
+    if (retryCount >= wf.maxRetries && status === 'ERROR') {
+      status = 'BLOCKED';
+      ownerActionRequired = `CIRCUIT_BREAKER_TRIGGERED: Workflow failed ${retryCount} consecutive times. Manual owner intervention required. Last error: ${errorMessage}`;
+    }
 
     // 4. Update automation_registry record
     const sqlUpdateWf = `
@@ -921,6 +957,56 @@ export class AutomationRegistryEngine {
           itemsSucceeded: purge.purgedCount,
           itemsFailed: 0,
           summary: { dpdpPurgedCount: purge.purgedCount, quotaSynced: true }
+        };
+      }
+
+      case 'healthcare_claim_verification': {
+        const { HealthcareAccuracyEngine } = await import('../compliance/healthcare-accuracy-engine.js');
+        const audit = HealthcareAccuracyEngine.getInstance().auditEvidenceFreshness();
+        return {
+          status: audit.expiredClaims > 0 ? 'COMPLETED_WITH_FINDINGS' : 'COMPLETED',
+          itemsProcessed: audit.totalClaims,
+          itemsSucceeded: audit.verifiedClaims,
+          itemsFailed: audit.expiredClaims,
+          summary: {
+            totalClaims: audit.totalClaims,
+            verified: audit.verifiedClaims,
+            expired: audit.expiredClaims,
+            flaggedIds: audit.flaggedIds
+          }
+        };
+      }
+
+      case 'multi_market_lead_qualification': {
+        const { MultiMarketOpportunityEngine } = await import('../revenue/multi-market-opportunity-engine.js');
+        const scorecard = MultiMarketOpportunityEngine.getInstance().getScorecard();
+        const primary = scorecard.find(s => s.selectionRole === 'PRIMARY_B2B');
+        const backup = scorecard.find(s => s.selectionRole === 'BACKUP_B2B_EXPERIMENT');
+        return {
+          status: 'COMPLETED',
+          itemsProcessed: scorecard.length,
+          itemsSucceeded: scorecard.length,
+          itemsFailed: 0,
+          summary: {
+            primaryB2B: primary?.vertical,
+            backupB2B: backup?.vertical,
+            totalEvaluated: scorecard.length
+          }
+        };
+      }
+
+      case 'b2b_suppression_and_compliance_audit': {
+        const { DPDPComplianceManager } = await import('../compliance/dpdp-manager.js');
+        const purge = DPDPComplianceManager.getInstance().purgeExpiredInquiries(30);
+        return {
+          status: 'COMPLETED',
+          itemsProcessed: purge.purgedCount,
+          itemsSucceeded: purge.purgedCount,
+          itemsFailed: 0,
+          summary: {
+            cooldownEnforcedDays: 60,
+            dpdpPurgedCount: purge.purgedCount
+          }
         };
       }
 

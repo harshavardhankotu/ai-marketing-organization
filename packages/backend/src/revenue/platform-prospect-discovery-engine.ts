@@ -26,6 +26,7 @@
  */
 
 import { randomUUID } from 'crypto';
+import { getDb } from '../db/client.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { UnifiedQuotaService } from '../quota/unified-quota-service.js';
 import { OwnerAuthService } from '../auth/owner-auth.js';
@@ -139,6 +140,46 @@ export class PlatformProspectDiscoveryEngine {
     'platform@aimarketing.local',
     'owner@aimarketing.local'
   ]);
+
+  /**
+   * Checks whether a phone, email, or domain is currently in outreach_suppression_list.
+   */
+  public isContactSuppressed(phone?: string, email?: string, domain?: string): boolean {
+    const db = getDb();
+    const identifiers: string[] = [];
+    if (phone) identifiers.push(phone.replace(/[\s\-\+]/g, ''));
+    if (email) identifiers.push(email.trim().toLowerCase());
+    if (domain) identifiers.push(domain.trim().toLowerCase());
+
+    if (identifiers.length === 0) return false;
+
+    try {
+      const placeholders = identifiers.map(() => '?').join(',');
+      const rows = db.prepare(`SELECT identifier FROM outreach_suppression_list WHERE identifier IN (${placeholders})`).all(...identifiers) as any[];
+      return rows && rows.length > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Adds an identifier to outreach_suppression_list with default 60-day cooldown.
+   */
+  public suppressContact(identifier: string, type: 'PHONE' | 'EMAIL' | 'DOMAIN', reason: string, days: number = 60): void {
+    const db = getDb();
+    const id = randomUUID();
+    const cleanIdent = type === 'PHONE' ? identifier.replace(/[\s\-\+]/g, '') : identifier.trim().toLowerCase();
+    const expiresAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+    try {
+      db.prepare(`
+        INSERT INTO outreach_suppression_list (id, identifier, identifier_type, reason, expires_at, created_at)
+        VALUES (?, ?, ?, ?, ?, datetime('now'))
+        ON CONFLICT(identifier) DO UPDATE SET
+          reason = excluded.reason,
+          expires_at = excluded.expires_at;
+      `).run(id, cleanIdent, type, reason, expiresAt);
+    } catch {}
+  }
 
   /**
    * Discovers new real Indian SMB prospects using cache, free Gemini, or Tavily search.
@@ -258,6 +299,7 @@ export class PlatformProspectDiscoveryEngine {
         const srcUrl = normalizeUrl(c.evidenceSourceUrl);
         if (dom && existingDomains.has(dom)) return false;
         if (srcUrl && existingSourceUrls.has(srcUrl)) return false;
+        if (this.isContactSuppressed(c.contactPhone, c.contactEmail, dom)) return false;
         return true;
       });
     };

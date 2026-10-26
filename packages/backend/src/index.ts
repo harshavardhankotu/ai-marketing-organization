@@ -848,6 +848,12 @@ app.get('/revenue', async (c) => {
   return c.html(html);
 });
 
+app.get('/public/financial-truth', async (c) => {
+  const { FinancialTruthLedger } = await import('./revenue/financial-truth-ledger.js');
+  const snapshot = FinancialTruthLedger.getInstance().getFinancialTruthSnapshot();
+  return c.json({ success: true, data: snapshot });
+});
+
 app.get('/sitemap.xml', async (c) => {
   const host = c.req.header('host') || 'ai-marketing-organization.onrender.com';
   const proto = c.req.header('x-forwarded-proto') || 'https';
