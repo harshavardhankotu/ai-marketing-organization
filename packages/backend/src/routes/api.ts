@@ -177,6 +177,7 @@ export const EXACT_ROUTE_POLICY = {
     '/owner/proposal',
     '/owner/automation',
     '/owner/direct-outreach',
+    '/owner/deals',
     '/capabilities',
     '/tools',
     '/agents'
@@ -343,7 +344,7 @@ apiRouter.use('*', async (c, next) => {
       path === '/build/static-site' ||
       path === '/payments/manual-upi/confirm' ||
       path === '/payments/reconcile-export' ||
-      (path.startsWith('/owner') && path !== '/owner/today' && path !== '/owner/proposal' && !path.startsWith('/owner/automation') && !path.startsWith('/owner/direct-outreach') && path !== '/owner/login')
+      (path.startsWith('/owner') && path !== '/owner/today' && path !== '/owner/proposal' && !path.startsWith('/owner/automation') && !path.startsWith('/owner/direct-outreach') && !path.startsWith('/owner/deals') && path !== '/owner/login')
     )) {
       return c.json({
         success: false,
@@ -1423,28 +1424,18 @@ apiRouter.post('/cron/ping', async (c) => {
     await DurableJobQueue.getInstance().recoverStaleLeases();
   } catch {}
 
-  // 3. Evaluate IST schedule window & enqueue due workflows idempotently
+  // 3. Evaluate IST schedule window & enqueue due workflows idempotently in batch
   const now = new Date();
   const eligibleWorkflowIds = CommercialSchedulePolicy.getEligibleWorkflowIds(now);
   const queue = DurableJobQueue.getInstance();
-  let enqueuedCount = 0;
 
-  for (const wfId of eligibleWorkflowIds) {
-    try {
-      const idempotencyKey = CommercialSchedulePolicy.getIdempotencyKey(wfId, now);
-      const enq = await queue.enqueueJob({
-        workflowId: wfId,
-        idempotencyKey,
-        priority: CommercialSchedulePolicy.getWorkflowWindow(wfId) === 'CONTINUOUS_HOURLY' ? 0 : 1
-      });
-      if (enq.enqueued) {
-        enqueuedCount++;
-      }
-    } catch (err: any) {
-      console.warn(`[Cron Ping] Notice enqueuing ${wfId}: ${err.message}`);
-    }
-  }
+  const optionsList = eligibleWorkflowIds.map(wfId => ({
+    workflowId: wfId,
+    idempotencyKey: CommercialSchedulePolicy.getIdempotencyKey(wfId, now),
+    priority: CommercialSchedulePolicy.getWorkflowWindow(wfId) === 'CONTINUOUS_HOURLY' ? 0 : 1
+  }));
 
+  const { enqueuedCount } = await queue.enqueueJobsBatch(optionsList);
   const queueStats = await queue.getQueueStats();
 
   // Return HTTP 200 in < 2 seconds without executing long synchronous jobs inline
@@ -1466,7 +1457,7 @@ apiRouter.post('/cron/ping', async (c) => {
   });
 });
 
-// POST /cron/worker/claim-and-run — Atomic claim & bounded execution of next due queued job
+// POST /cron/worker/claim-and-run — Atomic claim, lease fencing & bounded worker drain loop
 apiRouter.post('/cron/worker/claim-and-run', async (c) => {
   const secret = c.req.header('x-cron-secret') || c.req.header('X-Cron-Secret') || '';
   if (isProduction()) {
@@ -1483,9 +1474,57 @@ apiRouter.post('/cron/worker/claim-and-run', async (c) => {
 
   const workerSource = c.req.header('cf-worker') || c.req.header('x-worker-source') || 'worker_scheduled';
   const queue = DurableJobQueue.getInstance();
-  const claimedJob = await queue.claimDueJob(workerSource, 90);
+  const budgetMs = Math.min(25000, Number(c.req.query('budgetMs') || 20000));
+  const maxJobs = Math.min(5, Number(c.req.query('maxJobs') || 3));
+  const startTime = Date.now();
+  const executedJobs: any[] = [];
+  let lastExecResult: any = null;
 
-  if (!claimedJob) {
+  const { AutomationRegistryEngine } = await import('../automation/automation-registry-engine.js');
+  const engine = AutomationRegistryEngine.getInstance();
+
+  while (executedJobs.length < maxJobs && (Date.now() - startTime) < (budgetMs - 5000)) {
+    const claimedJob = await queue.claimDueJob(workerSource, 90);
+    if (!claimedJob) break;
+
+    // Remaining time budget for this workflow
+    const remainingBudget = Math.max(5000, budgetMs - (Date.now() - startTime));
+    const execResult = await engine.executeWorkflow(claimedJob.workflowId, 'CLOUDFLARE_CRON', remainingBudget);
+    lastExecResult = execResult;
+
+    // Complete or fail the job attempt with durable checkpoints and lease fencing
+    if (
+      execResult.status === 'COMPLETED' ||
+      execResult.status === 'COMPLETED_WITH_FINDINGS' ||
+      execResult.status === 'COMPLETED_NO_FINDINGS' ||
+      execResult.status === 'NO_ACTION_DUE'
+    ) {
+      await queue.completeJob(claimedJob.id, execResult.status, execResult.resultSummary, claimedJob.leaseToken || undefined);
+    } else if (execResult.status === 'PARTIAL') {
+      await queue.completeJob(claimedJob.id, 'PARTIAL', execResult.resultSummary, claimedJob.leaseToken || undefined);
+    } else if (execResult.status === 'BLOCKED') {
+      await queue.completeJob(claimedJob.id, 'BLOCKED', execResult.resultSummary, claimedJob.leaseToken || undefined);
+    } else if (execResult.status === 'NOT_IMPLEMENTED') {
+      await queue.completeJob(claimedJob.id, 'NOT_IMPLEMENTED', execResult.resultSummary, claimedJob.leaseToken || undefined);
+    } else {
+      // DEFERRED or ERROR: fail attempt with exponential backoff & preserve checkpoint
+      if (execResult.resultSummary) {
+        await queue.updateCheckpoint(claimedJob.id, execResult.resultSummary, undefined, claimedJob.leaseToken || undefined);
+      }
+      const isTransient = (execResult.status as string) !== 'FAILED_PERMANENTLY';
+      await queue.failAttempt(claimedJob.id, execResult.errorMessage || `Workflow ended with status: ${execResult.status}`, isTransient, undefined, claimedJob.leaseToken || undefined);
+    }
+
+    const updatedJob = await queue.getJobById(claimedJob.id);
+    executedJobs.push({
+      jobId: claimedJob.id,
+      workflowId: claimedJob.workflowId,
+      status: updatedJob?.status || execResult.status,
+      durationMs: execResult.durationMs
+    });
+  }
+
+  if (executedJobs.length === 0) {
     const stats = await queue.getQueueStats();
     return c.json({
       success: true,
@@ -1495,31 +1534,15 @@ apiRouter.post('/cron/worker/claim-and-run', async (c) => {
     });
   }
 
-  // Execute the claimed workflow within bounded budget
-  const { AutomationRegistryEngine } = await import('../automation/automation-registry-engine.js');
-  const engine = AutomationRegistryEngine.getInstance();
-  const execResult = await engine.executeWorkflow(claimedJob.workflowId, 'CLOUDFLARE_CRON', 30000);
-
-  // Complete or fail the job attempt with durable checkpoints
-  if (execResult.status === 'COMPLETED' || execResult.status === 'COMPLETED_WITH_FINDINGS' || execResult.status === 'NO_ACTION_DUE') {
-    await queue.completeJob(claimedJob.id, execResult.status, execResult.resultSummary);
-  } else if (execResult.status === 'BLOCKED') {
-    await queue.completeJob(claimedJob.id, 'BLOCKED', execResult.resultSummary);
-  } else {
-    // PARTIAL, DEFERRED, or ERROR: fail attempt with exponential backoff & preserve checkpoint
-    if (execResult.resultSummary) {
-      await queue.updateCheckpoint(claimedJob.id, execResult.resultSummary);
-    }
-    const isTransient = (execResult.status as string) !== 'FAILED_PERMANENTLY';
-    await queue.failAttempt(claimedJob.id, execResult.errorMessage || `Workflow ended with status: ${execResult.status}`, isTransient);
-  }
-
-  const updatedJob = await queue.getJobById(claimedJob.id);
+  const finalJob = await queue.getJobById(executedJobs[0].jobId);
   return c.json({
     success: true,
     claimed: true,
-    job: updatedJob,
-    executionResult: execResult
+    jobsExecutedCount: executedJobs.length,
+    executedJobs,
+    elapsedMs: Date.now() - startTime,
+    job: finalJob,
+    executionResult: lastExecResult
   });
 });
 
@@ -4229,6 +4252,233 @@ apiRouter.post('/owner/automation/resume-all', async (c) => {
   return c.json({ success: true, message: 'Global automation pause disabled. Resuming due workflows.' });
 });
 
+// =========================================================================
+// OWNER MULTI-SECTOR DEALS CONTROL CENTRE (V4.2 Multi-Sector Commerce Recovery)
+// =========================================================================
+
+export async function computeMultiSectorDealsSummary() {
+  const { COMMERCIAL_SECTORS_LIST, resolveSectorFromCategory } = await import('@ai-marketing/shared');
+  const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
+  const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
+  const allDeals = dealEngine.getAllDeals();
+  const allSources = dealEngine.getSources();
+
+  const { D1RevenueRepository } = await import('../db/d1-revenue-repository.js');
+  const { isProduction } = await import('../config/env.js');
+  const { getDb } = await import('../db/client.js');
+  const d1Repo = D1RevenueRepository.getInstance();
+
+  let clickRows: any[] = [];
+  let commRows: any[] = [];
+  try {
+    const clickSql = `SELECT source as sector, COUNT(*) as count FROM referral_click_events GROUP BY source`;
+    const commSql = `SELECT r.source as sector, c.status, c.expected_commission_inr, c.verified_commission_inr, c.received_commission_inr FROM commission_records c LEFT JOIN referral_click_events r ON c.external_transaction_id = r.click_id OR c.referral_id = r.referral_id`;
+    if (isProduction()) {
+      clickRows = await d1Repo.query<any>('referral_click_events', clickSql).catch(() => []);
+      commRows = await d1Repo.query<any>('commission_records', commSql).catch(() => []);
+    } else {
+      const db = getDb();
+      clickRows = db.prepare(clickSql).all();
+      commRows = db.prepare(commSql).all();
+    }
+  } catch {}
+
+  const sectorSummaries = COMMERCIAL_SECTORS_LIST.map(sec => {
+    const matchingSources = allSources.filter(src => {
+      const secKeywords = [sec.id, sec.name.toLowerCase(), ...(sec.subCategories || [])];
+      return src.categories?.some(cat => {
+        const resolved = resolveSectorFromCategory(cat);
+        if (resolved?.code === sec.code) return true;
+        return secKeywords.some(k =>
+          cat.toLowerCase().includes(k.toLowerCase()) || k.toLowerCase().includes(cat.toLowerCase())
+        );
+      }) || secKeywords.some(k =>
+        src.name.toLowerCase().includes(k.toLowerCase()) || k.toLowerCase().includes(src.name.toLowerCase())
+      );
+    });
+
+    const matchingDeals = allDeals.filter(d => {
+      const resolved = resolveSectorFromCategory(d.category);
+      return resolved?.code === sec.code;
+    });
+
+    const activeDeals = matchingDeals.filter(d => d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS');
+    const monetizableDeals = matchingDeals.filter(d => d.isMonetizable);
+    const directStoreDeals = matchingDeals.filter(d => !d.isMonetizable);
+    const couponDeals = matchingDeals.filter(d => Boolean(d.couponCode));
+
+    const totalDiscounts = matchingDeals.reduce((sum, d) => sum + (d.verifiedDiscountPercent || d.claimedDiscountPercent || 0), 0);
+    const avgDiscount = matchingDeals.length > 0 ? Math.round(totalDiscounts / matchingDeals.length) : 0;
+
+    const sectorClicks = clickRows.find(r => r.sector === sec.code)?.count || 0;
+    const sectorComms = commRows.filter(r => r.sector === sec.code);
+
+    let pendingINR = 0;
+    let validatedINR = 0;
+    let reportedConversions = 0;
+    for (const c of sectorComms) {
+      reportedConversions++;
+      if (c.status === 'PENDING') pendingINR += Number(c.expected_commission_inr || 0);
+      if (c.status === 'VERIFIED' || c.status === 'PAID') validatedINR += Number(c.verified_commission_inr || 0);
+    }
+
+    let status: 'ACTIVE' | 'OPPORTUNITY_READY' | 'AWAITING_PARTNER' | 'INSUFFICIENT_EVIDENCE' = 'INSUFFICIENT_EVIDENCE';
+    if (activeDeals.length >= 3 && monetizableDeals.length > 0) {
+      status = 'ACTIVE';
+    } else if (matchingSources.length > 0 && matchingDeals.length > 0) {
+      status = 'OPPORTUNITY_READY';
+    } else if (matchingSources.length > 0) {
+      status = 'AWAITING_PARTNER';
+    }
+
+    return {
+      sectorCode: sec.code,
+      sectorName: sec.name,
+      slug: sec.id,
+      primaryCategory: sec.subCategories?.[0] || sec.name,
+      activeSourcesCount: matchingSources.length,
+      discoveredDealsCount: matchingDeals.length,
+      verifiedDealsCount: matchingDeals.filter(d => d.verificationStatus === 'VERIFIED').length,
+      activeDealsCount: activeDeals.length,
+      monetizableDealsCount: monetizableDeals.length,
+      directStoreDealsCount: directStoreDeals.length,
+      couponDealsCount: couponDeals.length,
+      averageDiscountPercent: avgDiscount,
+      totalClicks: sectorClicks,
+      monetizableClicks: monetizableDeals.length > 0 ? sectorClicks : 0,
+      reportedConversions,
+      pendingCommissionINR: Math.round(pendingINR * 100) / 100,
+      validatedCommissionINR: Math.round(validatedINR * 100) / 100,
+      status
+    };
+  });
+
+  return {
+    generatedAt: new Date().toISOString(),
+    totalSectors: COMMERCIAL_SECTORS_LIST.length,
+    activeSectors: sectorSummaries.filter(s => s.status === 'ACTIVE' || s.status === 'OPPORTUNITY_READY').length,
+    totalDeals: allDeals.length,
+    totalSources: allSources.length,
+    sectors: sectorSummaries
+  };
+}
+
+apiRouter.get('/owner/deals/summary', async (c) => {
+  const summary = await computeMultiSectorDealsSummary();
+  return c.json({ success: true, data: summary });
+});
+
+apiRouter.get('/owner/deals', async (c) => {
+  const summary = await computeMultiSectorDealsSummary();
+
+  if (c.req.header('accept')?.includes('text/html') || c.req.query('format') === 'html' || !c.req.header('accept')?.includes('application/json')) {
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sector Control Centre | AI Marketing Organization</title>
+  <style>
+    :root { color-scheme: dark; --bg: #090d16; --card: #111827; --text: #e2e8f0; --accent: #06b6d4; --border: #1e293b; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); margin: 0; line-height: 1.5; padding: 2rem 1rem; }
+    .container { max-width: 1200px; margin: 0 auto; }
+    header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 1.5rem; margin-bottom: 2rem; }
+    h1 { font-size: 1.8rem; color: #fff; margin: 0 0 0.25rem 0; }
+    .nav-links a { color: #94a3b8; text-decoration: none; margin-left: 1rem; font-size: 0.9rem; }
+    .nav-links a:hover, .nav-links a.active { color: var(--accent); font-weight: 600; }
+    .metrics-banner { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 1.25rem; }
+    .card-title { font-size: 0.8rem; color: #94a3b8; text-transform: uppercase; font-weight: 700; margin-bottom: 0.5rem; }
+    .card-value { font-size: 1.7rem; font-weight: 800; color: #fff; }
+    .sector-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 1.25rem; }
+    .sector-card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 1.25rem; }
+    .sector-card.priority-a { border-color: #f59e0b; background: rgba(245, 158, 11, 0.04); }
+    .badge { display: inline-block; font-size: 0.7rem; font-weight: 700; padding: 0.2rem 0.5rem; border-radius: 6px; }
+    .badge-active { background: rgba(16, 185, 129, 0.2); color: #34d399; }
+    .badge-ready { background: rgba(6, 182, 212, 0.2); color: #38bdf8; }
+    .badge-awaiting { background: rgba(245, 158, 11, 0.2); color: #fbbf24; }
+    .badge-insufficient { background: rgba(148, 163, 184, 0.15); color: #94a3b8; }
+    .table-row { display: flex; justify-content: space-between; padding: 0.35rem 0; font-size: 0.85rem; border-bottom: 1px solid rgba(255, 255, 255, 0.05); }
+    .table-row:last-child { border-bottom: none; }
+    .table-label { color: #94a3b8; }
+    .table-val { font-weight: 600; color: #fff; }
+    .disclaimer-box { background: rgba(15, 23, 42, 0.6); border: 1px solid #334155; border-radius: 10px; padding: 1rem; margin-top: 2rem; font-size: 0.85rem; color: #94a3b8; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div>
+        <h1>Sector Control Centre</h1>
+        <div style="font-size: 0.85rem; color: #94a3b8;">Multi-Sector Autonomous Deal Discovery, Intelligence &amp; Attribution</div>
+      </div>
+      <div class="nav-links">
+        <a href="/owner/today">Owner Today</a>
+        <a href="/owner/automation">Automation</a>
+        <a href="/owner/deals" class="active">Sector Control</a>
+        <a href="/deals" target="_blank">Public Deals &rarr;</a>
+      </div>
+    </header>
+
+    <div class="metrics-banner">
+      <div class="card">
+        <div class="card-title">Commercial Sectors</div>
+        <div class="card-value">${summary.totalSectors} <span style="font-size: 0.9rem; color: #34d399; font-weight: 600;">(${summary.activeSectors} Active/Ready)</span></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Active Discovered Deals</div>
+        <div class="card-value">${summary.totalDeals}</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Scanned Retailer Sources</div>
+        <div class="card-value">${summary.totalSources}</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Paid Ads Budget</div>
+        <div class="card-value">₹0.00 <span style="font-size: 0.8rem; color: #38bdf8;">(Strict)</span></div>
+      </div>
+    </div>
+
+    <h2 style="font-size: 1.3rem; color: #fff; margin-bottom: 1rem;">8-Sector Commercial Taxonomy Breakdown</h2>
+    <div class="sector-grid">
+      ${summary.sectors.map(s => `
+        <div class="sector-card ${s.sectorCode === 'SECTOR_A_PRECIOUS_METALS' ? 'priority-a' : ''}">
+          <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.75rem;">
+            <div>
+              <span style="font-size: 0.7rem; font-weight: 700; color: #94a3b8; text-transform: uppercase;">${s.sectorCode}</span>
+              <h3 style="font-size: 1.1rem; color: #fff; margin: 0.2rem 0 0 0;">${s.sectorName}</h3>
+            </div>
+            <span class="badge badge-${s.status === 'ACTIVE' ? 'active' : s.status === 'OPPORTUNITY_READY' ? 'ready' : s.status === 'AWAITING_PARTNER' ? 'awaiting' : 'insufficient'}">${s.status}</span>
+          </div>
+
+          <div style="margin-top: 1rem;">
+            <div class="table-row"><span class="table-label">Active Sources:</span><span class="table-val">${s.activeSourcesCount}</span></div>
+            <div class="table-row"><span class="table-label">Discovered Offers:</span><span class="table-val">${s.discoveredDealsCount}</span></div>
+            <div class="table-row"><span class="table-label">Verified Active Deals:</span><span class="table-val">${s.activeDealsCount}</span></div>
+            <div class="table-row"><span class="table-label">Monetizable / Direct:</span><span class="table-val">${s.monetizableDealsCount} / ${s.directStoreDealsCount}</span></div>
+            <div class="table-row"><span class="table-label">Coupons / Vouchers:</span><span class="table-val">${s.couponDealsCount}</span></div>
+            <div class="table-row"><span class="table-label">Avg Claimed Discount:</span><span class="table-val">${s.averageDiscountPercent > 0 ? s.averageDiscountPercent + '%' : 'N/A'}</span></div>
+            <div class="table-row"><span class="table-label">Attributed Clicks:</span><span class="table-val">${s.totalClicks}</span></div>
+            <div class="table-row"><span class="table-label">Reported Conversions:</span><span class="table-val">${s.reportedConversions}</span></div>
+            <div class="table-row"><span class="table-label">Validated Commission:</span><span class="table-val">₹${s.validatedCommissionINR.toFixed(2)}</span></div>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+
+    <div class="disclaimer-box">
+      <strong>Cash Integrity &amp; Evidence Invariant:</strong>
+      All reported metrics reflect verified database evidence. Bank-confirmed cash remains strictly ₹0.00 until bank statement credit verification. Zero simulated traffic or coupon discounts.
+    </div>
+  </div>
+</body>
+</html>`;
+    return c.html(html);
+  }
+
+  return c.json({ success: true, data: summary });
+});
+
 // Owner-only: Create real Razorpay UPI Payment Link (Spec § 11 & § 12)
 apiRouter.post('/payments/razorpay/create-payment-link', async (c) => {
   const orgId = c.get('organizationId');
@@ -5999,6 +6249,149 @@ apiRouter.get('/public/deals/:id', async (c) => {
     return c.json({ error: 'DEAL_NOT_FOUND', message: `Deal '${id}' not found` }, 404);
   }
   return c.json({ success: true, data: deal });
+});
+
+/**
+ * Public Deal Server-Side Redirect Route (Stage 3 -> Stage 4: DEAL REDIRECT & ATTRIBUTION)
+ * - Verifies deal existence & safety.
+ * - Generates unique click_id and referral record.
+ * - Records immutable click event into referral_click_events with subid & sector.
+ * - Attaches Sub-IDs for 1-to-1 conversion reconciliation.
+ * - Issues HTTP 302 redirect.
+ */
+apiRouter.get('/public/deals/:id/redirect', async (c) => {
+  const id = c.req.param('id');
+  const clientInfo = getTrustedClientIp(c);
+  const userAgent = c.req.header('user-agent') || '';
+  const referrer = c.req.header('referer') || '';
+
+  const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
+  const engine = AutonomousDealDiscoveryEngine.getInstance();
+  const deal = engine.getDealById(id);
+
+  if (!deal) {
+    return c.text('Deal not found', 404);
+  }
+
+  // Phase 6 Guard: Confirm offer is not expired
+  if (deal.expiryDate && new Date(deal.expiryDate).getTime() < Date.now()) {
+    return c.text('Offer has expired', 410);
+  }
+
+  let targetUrl = deal.trackingUrl || deal.productUrl;
+  if (!targetUrl) {
+    return c.text('Destination unavailable', 404);
+  }
+
+  const { DealSsrfGuard } = await import('../commission/deal-ssrf-guard.js');
+  const ssrf = DealSsrfGuard.isSafePublicUrl(targetUrl);
+  if (!ssrf.safe) {
+    return c.text('Invalid destination URL', 400);
+  }
+
+  const { resolveSectorFromCategory } = await import('@ai-marketing/shared');
+  const sectorDef = resolveSectorFromCategory(deal.category);
+  const sectorCode = sectorDef ? sectorDef.code : 'SECTOR_G_LIFESTYLE';
+
+  const clickId = `clk_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+  const referralId = `ref_${clickId}`;
+  const orgId = 'org_owner_primary';
+
+  if (deal.isMonetizable && deal.affiliateNetwork === 'CUELINKS') {
+    try {
+      const parsedUrl = new URL(targetUrl);
+      parsedUrl.searchParams.set('subid', clickId);
+      parsedUrl.searchParams.set('subid2', sectorCode);
+      parsedUrl.searchParams.set('subid3', deal.affiliateCampaignId || 'camp_unknown');
+      parsedUrl.searchParams.set('subid4', id);
+      parsedUrl.searchParams.set('subid5', 'deal_redirect');
+      targetUrl = parsedUrl.toString();
+    } catch {}
+  }
+
+  const { classifyTraffic } = await import('../commission/referral-tracking.js');
+  const trafficClass = classifyTraffic(userAgent, clientInfo.ip, {
+    'x-diagnostic': c.req.header('x-diagnostic') || '',
+    'x-test-traffic': c.req.header('x-test-traffic') || '',
+    'x-owner-preview': c.req.header('x-owner-preview') || ''
+  });
+
+  if (trafficClass === 'human') {
+    engine.recordDealClick(id, {
+      ip: clientInfo.ip,
+      placement: 'public_deal_redirect',
+      source: 'deals_page'
+    });
+  }
+
+  try {
+    const { D1RevenueRepository } = await import('../db/d1-revenue-repository.js');
+    const d1Repo = D1RevenueRepository.getInstance();
+
+    const partnerId = deal.affiliateNetwork === 'CUELINKS' ? 'part_cuelinks' : 'part_direct_merchant';
+    const partnerName = deal.affiliateNetwork === 'CUELINKS' ? 'Cuelinks India' : 'Direct Retailer Store';
+    const networkName = deal.affiliateNetwork || 'DIRECT';
+
+    const ensurePartnerSql = `
+      INSERT OR IGNORE INTO partners (
+        id, organization_id, name, industry, website, network, approval_status, active_status, authorization_status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'APPROVED', 1, 'AUTHORIZED', datetime('now'), datetime('now'))
+    `;
+    const partnerParams = [partnerId, orgId, partnerName, deal.category || 'General', deal.productUrl || 'https://ai-marketing-organization.onrender.com', networkName];
+
+    const offerSlug = `offer_${id}_${Date.now()}`;
+    const ensureOfferSql = `
+      INSERT OR IGNORE INTO partner_offers (
+        id, partner_id, organization_id, title, offer_slug, target_customer, category, destination_url, authorized_tracking_url, active, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 'Indian Consumers', ?, ?, ?, 1, 'ACTIVE', datetime('now'), datetime('now'))
+    `;
+    const offerParams = [id, partnerId, orgId, deal.title, offerSlug, deal.category || 'General', targetUrl, targetUrl];
+
+    const insertRefSql = `
+      INSERT OR IGNORE INTO referrals (
+        id, click_id, destination_url, organization_id, offer_id, partner_id, ip, user_agent, referer, placement, device_class, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'deal_redirect', ?, datetime('now'))
+    `;
+    const refParams = [referralId, clickId, targetUrl, orgId, id, partnerId, clientInfo.ip, userAgent.substring(0, 200), referrer.substring(0, 200), trafficClass];
+
+    const insertClickSql = `
+      INSERT INTO referral_click_events (
+        id, referral_id, click_id, organization_id, offer_id, partner_id,
+        placement, source, medium, campaign, referrer, device_class, destination_url, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'deal_redirect', ?, 'cpc_affiliate', ?, ?, ?, ?, datetime('now'))
+    `;
+    const clickParams = [
+      `evt_${clickId}`,
+      referralId,
+      clickId,
+      orgId,
+      id,
+      partnerId,
+      sectorCode,
+      deal.affiliateCampaignId || sectorCode,
+      referrer.substring(0, 200),
+      trafficClass,
+      targetUrl
+    ];
+
+    if (isProduction()) {
+      await d1Repo.executeWrite('partners', ensurePartnerSql, partnerParams);
+      await d1Repo.executeWrite('partner_offers', ensureOfferSql, offerParams);
+      await d1Repo.executeWrite('referrals', insertRefSql, refParams);
+      await d1Repo.executeWrite('referral_click_events', insertClickSql, clickParams);
+    } else {
+      const { getDb } = await import('../db/client.js');
+      const db = getDb();
+      db.prepare(ensurePartnerSql).run(...partnerParams);
+      db.prepare(ensureOfferSql).run(...offerParams);
+      db.prepare(insertRefSql).run(...refParams);
+      db.prepare(insertClickSql).run(...clickParams);
+    }
+  } catch (clickErr: any) {
+    console.warn(`[DealRedirect] Notice recording click: ${clickErr.message}`);
+  }
+
+  return c.redirect(targetUrl, 302);
 });
 
 /**

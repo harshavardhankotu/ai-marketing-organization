@@ -39,6 +39,7 @@ export class AutonomousDealDiscoveryEngine {
   private sourcesMap: Map<string, DealSourceRecord> = new Map();
   private dealsMap: Map<string, NormalizedDeal> = new Map();
   private dealFingerprintMap: Map<string, string> = new Map(); // fingerprint -> dealId
+  private linkRegistry: Map<string, { trackingUrl: string; isMonetizable: boolean; affiliateCampaignId?: string }> = new Map();
 
   // Hermetic test injection & genuine candidate registration (Zero hardcoded products in production discovery)
   private injectedDealsForTesting: DiscoveredDealInput[] = [];
@@ -89,6 +90,14 @@ export class AutonomousDealDiscoveryEngine {
 
   public clearRegisteredCandidates(): void {
     this.registeredCandidates = [];
+  }
+
+  public clearLinkRegistry(): void {
+    this.linkRegistry.clear();
+  }
+
+  public getLinkRegistrySize(): number {
+    return this.linkRegistry.size;
   }
 
   public getCuelinksClient(): CuelinksV3Client {
@@ -264,6 +273,75 @@ export class AutonomousDealDiscoveryEngine {
         permissionStatus: 'ALLOWED',
         rateLimitPerMinute: 30,
         trustScore: 90,
+        scanFrequencyHours: 12,
+        totalOffersFound: 0,
+        totalOffersRejected: 0,
+        failureCount: 0
+      },
+      // Sector A: Precious Metals, Bullion & Jewellery Sources
+      {
+        id: 'src_ibja_rates',
+        domain: 'ibjarates.com',
+        name: 'India Bullion and Jewellers Association (IBJA)',
+        sourceClass: 'PRICE_INTELLIGENCE_UTILITY',
+        country: 'India',
+        categories: ['Gold & Silver Benchmark Spot Intelligence', 'Hallmarked Bullion'],
+        accessMethod: 'PUBLIC_PROMOTION',
+        documentationUrl: 'https://ibjarates.com',
+        permissionStatus: 'ALLOWED',
+        rateLimitPerMinute: 10,
+        trustScore: 98,
+        scanFrequencyHours: 12,
+        totalOffersFound: 0,
+        totalOffersRejected: 0,
+        failureCount: 0
+      },
+      {
+        id: 'src_tanishq_in',
+        domain: 'tanishq.co.in',
+        name: 'Tanishq Jewellery (Titan Company)',
+        sourceClass: 'RETAILER_BRAND',
+        country: 'India',
+        categories: ['Gold Jewellery', 'Diamond Jewellery', 'Gold Coins', 'Making Charge Offers'],
+        accessMethod: 'JSON_LD_STRUCTURED',
+        documentationUrl: 'https://www.tanishq.co.in',
+        permissionStatus: 'ALLOWED',
+        rateLimitPerMinute: 20,
+        trustScore: 96,
+        scanFrequencyHours: 12,
+        totalOffersFound: 0,
+        totalOffersRejected: 0,
+        failureCount: 0
+      },
+      {
+        id: 'src_caratlane_in',
+        domain: 'caratlane.com',
+        name: 'CaratLane Jewellery',
+        sourceClass: 'RETAILER_BRAND',
+        country: 'India',
+        categories: ['Everyday Gold Jewellery', 'Solitaires', 'Silver & Diamond Jewellery'],
+        accessMethod: 'JSON_LD_STRUCTURED',
+        documentationUrl: 'https://www.caratlane.com',
+        permissionStatus: 'ALLOWED',
+        rateLimitPerMinute: 25,
+        trustScore: 93,
+        scanFrequencyHours: 12,
+        totalOffersFound: 0,
+        totalOffersRejected: 0,
+        failureCount: 0
+      },
+      {
+        id: 'src_bluestone_in',
+        domain: 'bluestone.com',
+        name: 'BlueStone Jewellery',
+        sourceClass: 'RETAILER_BRAND',
+        country: 'India',
+        categories: ['Fine Jewellery', 'Gold Coins & Bullion', 'Certified Diamonds'],
+        accessMethod: 'JSON_LD_STRUCTURED',
+        documentationUrl: 'https://www.bluestone.com',
+        permissionStatus: 'ALLOWED',
+        rateLimitPerMinute: 25,
+        trustScore: 92,
         scanFrequencyHours: 12,
         totalOffersFound: 0,
         totalOffersRejected: 0,
@@ -640,7 +718,9 @@ export class AutonomousDealDiscoveryEngine {
           return {
             campaignPage: Math.max(1, data.campaignPage),
             offerPage: Math.max(1, data.offerPage),
-            lastUpdated: data.lastUpdated || new Date().toISOString()
+            lastUpdated: data.lastUpdated || new Date().toISOString(),
+            failedPage: typeof data.failedPage === 'number' ? data.failedPage : undefined,
+            pageFailureCount: typeof data.pageFailureCount === 'number' ? data.pageFailureCount : undefined
           };
         }
       }
@@ -795,6 +875,8 @@ export class AutonomousDealDiscoveryEngine {
       const pagesToFetch = [cursor.offerPage, cursor.offerPage + 1];
       const seenOfferUrls = new Set<string>();
       let reachedOfferEnd = false;
+      let successfulPagesCount = 0;
+      let failedPage: number | undefined = undefined;
 
       for (const pageNum of pagesToFetch) {
         try {
@@ -804,6 +886,8 @@ export class AutonomousDealDiscoveryEngine {
           if (rawOffers.length === 0 || rawOffers.length < 30 || (offersRes.total !== undefined && pageNum * 30 >= offersRes.total)) {
             reachedOfferEnd = true;
           }
+
+          successfulPagesCount++;
 
           for (const offer of rawOffers) {
             const campaign = eligibleCampaigns.find(c => String(c.id) === String(offer.campaign_id));
@@ -885,39 +969,51 @@ export class AutonomousDealDiscoveryEngine {
 
             // Link conversion & monetization gate
             // Strict conversion truth: No raw shortcut! Only monetizable when convertLink returns affiliated === true and allowlisted URL.
+            // Idempotent Link Registry (Phase 4.4): Reuse current, valid affiliate link when it remains authorised.
             let trackingUrl: string | undefined = undefined;
             let isMonetizable = false;
             let affiliateCampaignId: string | undefined = undefined;
 
-            try {
-              const convRes = await client.convertLink({
-                url: merchantUrl,
-                channel_id: channelId,
-                shorten: true,
-                subid: `aro_cl_${offer.id}`,
-                subid2: String(offer.campaign_id),
-                subid3: 'cuelinks_feed'
-              });
+            const linkRegistryKey = `cuelinks:${channelId || 'default'}:${offer.campaign_id}:${offer.id}:${merchantUrl}`;
+            const cachedLink = this.linkRegistry.get(linkRegistryKey);
 
-              const candidateUrl = convRes?.short_url || convRes?.tracking_url;
-              if (
-                convRes &&
-                convRes.affiliated === true &&
-                candidateUrl &&
-                CuelinksV3Client.isAllowedTrackingUrl(candidateUrl)
-              ) {
-                trackingUrl = candidateUrl;
-                isMonetizable = true;
-                if (convRes.campaign?.id) {
-                  affiliateCampaignId = String(convRes.campaign.id);
+            if (cachedLink && cachedLink.isMonetizable && cachedLink.trackingUrl) {
+              trackingUrl = cachedLink.trackingUrl;
+              isMonetizable = cachedLink.isMonetizable;
+              affiliateCampaignId = cachedLink.affiliateCampaignId;
+            } else {
+              try {
+                const convRes = await client.convertLink({
+                  url: merchantUrl,
+                  channel_id: channelId,
+                  shorten: true,
+                  subid: `aro_cl_${offer.id}`,
+                  subid2: String(offer.campaign_id),
+                  subid3: 'cuelinks_feed'
+                });
+
+                const candidateUrl = convRes?.short_url || convRes?.tracking_url;
+                if (
+                  convRes &&
+                  convRes.affiliated === true &&
+                  candidateUrl &&
+                  CuelinksV3Client.isAllowedTrackingUrl(candidateUrl)
+                ) {
+                  trackingUrl = candidateUrl;
+                  isMonetizable = true;
+                  if (convRes.campaign?.id) {
+                    affiliateCampaignId = String(convRes.campaign.id);
+                  }
+                  this.linkRegistry.set(linkRegistryKey, { trackingUrl, isMonetizable, affiliateCampaignId });
+                } else {
+                  trackingUrl = undefined;
+                  isMonetizable = false;
+                  this.linkRegistry.set(linkRegistryKey, { trackingUrl: '', isMonetizable: false });
                 }
-              } else {
+              } catch {
                 trackingUrl = undefined;
                 isMonetizable = false;
               }
-            } catch {
-              trackingUrl = undefined;
-              isMonetizable = false;
             }
 
             discoveredDeals.push({
@@ -951,18 +1047,52 @@ export class AutonomousDealDiscoveryEngine {
           if (reachedOfferEnd) break;
         } catch (offerErr: any) {
           console.warn(`[DealEngine] Notice on Cuelinks offer page ${pageNum}: ${offerErr.message}`);
+          failedPage = pageNum;
           break;
         }
       }
 
-      // 6. Advance continuation cursor across cycles (wrap around when end reached)
+      // 6. Advance continuation cursor across cycles (wrap around when end reached or bounded retries exceeded)
       const isCampEnd = (campSearch.campaigns?.length || 0) < 30 || ((campSearch.total !== undefined) && cursor.campaignPage * 30 >= campSearch.total);
       const nextCampPage = isCampEnd ? 1 : cursor.campaignPage + 1;
-      const nextOfferPage = reachedOfferEnd ? 1 : cursor.offerPage + pagesToFetch.length;
+
+      let nextOfferPage: number;
+      let nextFailedPage = cursor.failedPage;
+      let nextFailureCount = cursor.pageFailureCount || 0;
+
+      if (reachedOfferEnd) {
+        // True catalog end reached
+        nextOfferPage = 1;
+        nextFailedPage = undefined;
+        nextFailureCount = 0;
+      } else if (failedPage !== undefined) {
+        if (cursor.failedPage === failedPage) {
+          nextFailureCount = (cursor.pageFailureCount || 0) + 1;
+        } else {
+          nextFailedPage = failedPage;
+          nextFailureCount = 1;
+        }
+
+        if (nextFailureCount >= 3) {
+          console.warn(`[DealEngine] Offer page ${failedPage} failed ${nextFailureCount} consecutive times (e.g. upstream offset limit); wrapping cursor to page 1`);
+          nextOfferPage = 1;
+          nextFailedPage = undefined;
+          nextFailureCount = 0;
+        } else {
+          console.warn(`[DealEngine] Offer page ${failedPage} transient error (attempt ${nextFailureCount}/3); retaining cursor for retry`);
+          nextOfferPage = failedPage;
+        }
+      } else {
+        nextOfferPage = cursor.offerPage + (successfulPagesCount > 0 ? successfulPagesCount : pagesToFetch.length);
+        nextFailedPage = undefined;
+        nextFailureCount = 0;
+      }
 
       await this.saveCuelinksPaginationCursor({
         campaignPage: nextCampPage,
         offerPage: nextOfferPage,
+        failedPage: nextFailedPage,
+        pageFailureCount: nextFailureCount,
         lastUpdated: new Date().toISOString()
       }, organizationId, businessId);
 
@@ -1500,6 +1630,64 @@ export class AutonomousDealDiscoveryEngine {
   }
 
   /**
+   * Converts a product URL to an affiliate link with idempotent in-memory caching.
+   * If URL was already converted, returns cached result without API invocation.
+   */
+  public async convertProductUrlToAffiliate(productUrl: string, merchant?: string): Promise<{
+    trackingUrl?: string;
+    isMonetizable: boolean;
+    affiliateCampaignId?: string;
+    affiliateNetwork?: string;
+  }> {
+    const cached = this.linkRegistry.get(productUrl);
+    if (cached) {
+      return {
+        trackingUrl: cached.trackingUrl || undefined,
+        isMonetizable: cached.isMonetizable,
+        affiliateCampaignId: cached.affiliateCampaignId,
+        affiliateNetwork: cached.isMonetizable ? 'CUELINKS' : undefined
+      };
+    }
+
+    const client = this.getCuelinksClient();
+    if (!client || !client.isConfigured()) {
+      return { isMonetizable: false };
+    }
+
+    try {
+      const channelId = CuelinksSyncManager.getInstance(client).getStatus().channel?.id;
+      const convRes = await client.convertLink({
+        url: productUrl,
+        channel_id: channelId,
+        shorten: true
+      });
+
+      if (convRes && convRes.affiliated === true && convRes.tracking_url) {
+        const campId = convRes.campaign?.id ? String(convRes.campaign.id) : undefined;
+        this.linkRegistry.set(productUrl, {
+          trackingUrl: convRes.tracking_url,
+          isMonetizable: true,
+          affiliateCampaignId: campId
+        });
+        return {
+          trackingUrl: convRes.tracking_url,
+          isMonetizable: true,
+          affiliateCampaignId: campId,
+          affiliateNetwork: 'CUELINKS'
+        };
+      } else {
+        this.linkRegistry.set(productUrl, {
+          trackingUrl: '',
+          isMonetizable: false
+        });
+        return { isMonetizable: false };
+      }
+    } catch {
+      return { isMonetizable: false };
+    }
+  }
+
+  /**
    * Enriches candidate deals with Cuelinks affiliate tracking when authenticated (Spec § 5 & § 8).
    * Seamlessly converts eligible candidate deals through Cuelinks V3 API.
    * - If affiliated === true: attaches verified trackingUrl, affiliateNetwork='CUELINKS', affiliateCampaignId, and isMonetizable=true.
@@ -1517,41 +1705,23 @@ export class AutonomousDealDiscoveryEngine {
       return deals;
     }
 
-    const channelId = CuelinksSyncManager.getInstance(client).getStatus().channel.id;
-
     for (const deal of deals) {
       // Only convert if not already monetized/tracked and has a public product URL
       if (!deal.trackingUrl && deal.productUrl) {
         try {
-          const subid = `aro_${deal.modelOrSku || 'deal'}`.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
-          const subid2 = (deal.category || 'general').replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
-
-          const convRes = await client.convertLink({
-            url: deal.productUrl,
-            channel_id: channelId,
-            subid,
-            subid2,
-            subid3: 'discovery_engine',
-            shorten: true
-          });
-
-          if (convRes && convRes.affiliated === true && convRes.tracking_url) {
-            deal.trackingUrl = convRes.tracking_url;
+          const conv = await this.convertProductUrlToAffiliate(deal.productUrl, deal.merchant);
+          if (conv.isMonetizable && conv.trackingUrl) {
+            deal.trackingUrl = conv.trackingUrl;
             deal.isMonetizable = true;
             deal.affiliateNetwork = 'CUELINKS';
-            if (convRes.campaign?.id) {
-              deal.affiliateCampaignId = String(convRes.campaign.id);
-            }
+            deal.affiliateCampaignId = conv.affiliateCampaignId;
           } else {
-            // Non-affiliated merchant (Reliance Digital, Zoho, unapproved partners):
-            // Strictly preserve clean direct merchant link, no affiliate tracking
             deal.isMonetizable = false;
             deal.trackingUrl = undefined;
             deal.affiliateNetwork = undefined;
             deal.affiliateCampaignId = undefined;
           }
-        } catch (convErr: any) {
-          // Graceful fallback to pure direct merchant link on error
+        } catch {
           deal.isMonetizable = false;
           deal.trackingUrl = undefined;
           deal.affiliateNetwork = undefined;
@@ -1559,7 +1729,6 @@ export class AutonomousDealDiscoveryEngine {
         }
       }
     }
-
     return deals;
   }
 
@@ -2620,6 +2789,18 @@ export class AutonomousDealDiscoveryEngine {
 
   public getSources(): DealSourceRecord[] {
     return Array.from(this.sourcesMap.values());
+  }
+
+  public getAllDeals(): NormalizedDeal[] {
+    return Array.from(this.dealsMap.values());
+  }
+
+  public injectDealForTesting(deal: NormalizedDeal): void {
+    this.dealsMap.set(deal.id, deal);
+  }
+
+  public injectCandidateDealForTesting(deal: any): void {
+    this.dealsMap.set(deal.id, deal as NormalizedDeal);
   }
 
   public getSource(id: string): DealSourceRecord | undefined {

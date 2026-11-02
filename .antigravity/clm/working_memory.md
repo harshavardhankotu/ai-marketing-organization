@@ -1,26 +1,30 @@
 # CLM SYSTEM WORKING MEMORY
 
 ## 🎯 Global Objective
-Generate the first genuine, verified customer revenue in India (₹15,000 setup / Lane C) using free or already-authorized resources and ₹0 paid advertising.
+Transform the organization into an autonomous multi-sector deal-discovery, price-intelligence, and commercial affiliate revenue platform across 8 authoritative sectors. Generate the first genuine, bank-verified revenue in India using free or authorized channels and ₹0 paid advertising.
 
 ## 🗺️ Codebase Footprint & Active Baseline
-- **Active Branch:** `feat/v4-1-durable-daily-revenue-operations`
-- **PR:** [#33 — V4.1 Durable Daily Revenue Operations](https://github.com/harshavardhankotu/ai-marketing-organization/pull/33)
-- **Production Commit:** `f3e0c92` (PR #32 on `main`) | **PR #33 Commit:** `82ae018`
+- **Active Branch:** `feat/v4-2-multi-sector-commerce-recovery` (branched from `feat/v4-1-durable-daily-revenue-operations` at `bc214b3`)
+- **PR #33 Status:** Green on CI (`Typecheck, Guardrails, Build & Test` passed)
+- **Production Commit:** `f3e0c92` (PR #32 on `main`)
 - **Production URL:** https://ai-marketing-organization.onrender.com
 - **Owner Control Dashboard:** https://ai-marketing-organization.onrender.com/owner/today
+- **Sector Control Dashboard:** https://ai-marketing-organization.onrender.com/owner/deals
 - **Automation Control Dashboard:** https://ai-marketing-organization.onrender.com/owner/automation
+- **Public Deals Portal:** https://ai-marketing-organization.onrender.com/deals
 
 ## 📊 Active State Scoreboard
-- [x] P0 Board Preflight Clean — Zero open mistakes (`npm run board:preflight`).
-- [x] P0 PR #33 CI Green — `Typecheck, Guardrails, Build & Test` passed on GitHub Actions (3m 8s).
-- [x] P0 Test Suite 100% Green — 130 test files passed, 1,246 unit tests passed, 0 failed.
-- [x] P0 B2B Lead Triage Ready — 5 qualified dental clinics in Hyderabad, drafts prepared on `/owner/today`.
-- [x] P0 Proposal Generation Unblocked — `owner/BIO.md` created with verified founder credentials (unblocks `/owner/proposal` from HTTP 422).
-- [x] P0 Cost Leak Plugged — 12 deterministic tasks in `coordinated-orchestrator.ts` bypass LLM (~75% reduction); bounded memory in `constructBoundedContext()` (limit 5); thinking level defaulted to `low`.
-- [x] P0 Token Budget Optimized — Root `AGENTS.md` reduced from 7.0 KB to 1.8 KB; full 80-agent roster moved to `.agents/references/canonical-agents.md`.
-- [x] P0 Strict Financial Truth — Bank cash strictly ₹0.00 | Ad spend strictly ₹0.00 | Free-tier savings ₹3,500.
+- [x] P0 Multi-Sector Taxonomy Defined — Exactly 8 sectors defined in `packages/shared/src/constants/sectors.ts` with Sector A (Gold, Silver, Jewellery) as highest value priority.
+- [x] P0 Precious Metals Sources Registered — IBJA benchmark spot intelligence, Tanishq, CaratLane, BlueStone registered in `AutonomousDealDiscoveryEngine`.
+- [x] P0 Seasonal Demand Mapped — Akshaya Tritiya, Dhanteras, Diwali mapped to `GOLD_SILVER_BULLION_JEWELLERY`.
+- [x] P0 Cuelinks V3 Scopes & Cursor Traps Repaired — Core scopes (`read:campaigns`, `read:offers`, `write:links`, `read:channels`) verified; cursor resets to page 1 on HTTP 500 error instead of incrementing to infinity.
+- [x] P0 Sub-ID Transaction Reconciliation Active — Automated 1-to-1 matching of Cuelinks transaction `subid` to `referral_click_events.click_id` updating `commission_records`.
+- [x] P0 Zero-Fabrication Invariant Enforced — `defaultDeals` and `FALLBACK_VERIFIED_DEALS` eradicated; honest empty state `"No currently verified offers are available in this category. Check back later."` rendered.
+- [x] P0 Server-Side Deal Redirect & Attribution Live — `GET /api/v1/public/deals/:id/redirect` issues HTTP 302 redirect, appends `subid/subid2/subid3`, and records immutable click event.
+- [x] P0 Owner Sector Control Centre Active — `GET /owner/deals` and `GET /api/v1/owner/deals/summary` render 16 metrics per sector.
+- [x] P0 Real Economics Guarded — Reports `INSUFFICIENT_EVIDENCE` when organic visitor sample size < 30.
+- [x] P0 Financial Integrity Maintained — Bank cash strictly ₹0.00 | Ad spend strictly ₹0.00.
 
 ## 🛑 Earliest Active Blocker & Next Action
-- **Earliest Blocker:** Stage 4: Owner Approval (`human_approved = 0` in `direct_outreach_log`).
-- **Next Single Action:** Owner opens [https://ai-marketing-organization.onrender.com/owner/today](https://ai-marketing-organization.onrender.com/owner/today) and clicks "Review & Send via WhatsApp" to send the pre-formatted lead triage offer to Dr. P. V. Partha Rama Rao (+918500779000).
+- **Earliest Blocker:** Upstream affiliate partner approval & credentials (e.g. Amazon PA-API credentials, Cuelinks live sales).
+- **Next Single Action:** Run full preflight verification and merge `feat/v4-2-multi-sector-commerce-recovery` into PR pipeline.

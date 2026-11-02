@@ -153,8 +153,12 @@ export class RealEconomicsEngine {
       organicLeads > 0 ? Math.round((organicVerifiedRevenueINR / organicLeads) * 100) / 100 : 'UNKNOWN';
     const revenuePerOrganicCustomerINR: number | 'UNKNOWN' =
       organicCustomers > 0 ? Math.round((organicVerifiedRevenueINR / organicCustomers) * 100) / 100 : 'UNKNOWN';
-    const organicConversionRatePercent: number | 'UNKNOWN' =
-      organicVisitors > 0 ? Math.round((organicCustomers / organicVisitors) * 10000) / 100 : 'UNKNOWN';
+    const organicConversionRatePercent: number | 'UNKNOWN' | 'INSUFFICIENT_EVIDENCE' =
+      organicVisitors >= 30
+        ? Math.round((organicCustomers / organicVisitors) * 10000) / 100
+        : organicVisitors > 0
+        ? 'INSUFFICIENT_EVIDENCE'
+        : 'UNKNOWN';
 
     // AI Cost Free-Tier Allowance Check
     let isFreeTier = false;

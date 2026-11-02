@@ -25,6 +25,13 @@ export const CUELINKS_REQUIRED_SCOPES: CuelinksScope[] = [
   'read:channels'
 ];
 
+export const CUELINKS_CORE_COMMERCIAL_SCOPES: CuelinksScope[] = [
+  'read:campaigns',
+  'read:offers',
+  'write:links',
+  'read:channels'
+];
+
 export const CUELINKS_STANDARD_SCOPES: CuelinksScope[] = [
   'read:campaigns',
   'read:offers',
@@ -196,12 +203,27 @@ export type CuelinksTransactionStatus =
   | 'rejected'
   | 'approved';
 
+export type CampaignCommercialReadinessState =
+  | 'DISCOVERED'
+  | 'ACCESS_PENDING'
+  | 'AUTHORIZED'
+  | 'OFFER_VERIFIED'
+  | 'LINK_CREATED'
+  | 'PUBLISHED'
+  | 'BLOCKED'
+  | 'EXPIRED';
+
 export interface CuelinksTransaction {
   id: string | number;
   transaction_id?: string | number;
   campaign_id: number | string;
   campaign_name?: string;
   channel_id?: number | string;
+  sub_id?: string;
+  sub_id_2?: string;
+  sub_id_3?: string;
+  sub_id_4?: string;
+  sub_id_5?: string;
   subid?: string;
   subid2?: string;
   subid3?: string;
@@ -211,6 +233,7 @@ export interface CuelinksTransaction {
   sale_amount?: number | string;
   user_commission?: number | string;
   commission_amount?: number | string;
+  invoice_number?: string | number;
   currency?: string;
   status: CuelinksTransactionStatus;
   transaction_date?: string;
@@ -310,6 +333,8 @@ export interface CuelinksPaginationCursor {
   hasMoreCampaigns?: boolean;
   hasMoreOffers?: boolean;
   lastUpdated?: string;
+  failedPage?: number;
+  pageFailureCount?: number;
 }
 
 export interface CuelinksPaginatedSyncOptions {

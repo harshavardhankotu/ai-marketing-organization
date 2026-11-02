@@ -91,7 +91,7 @@ export const SEEDED_INDIAN_FESTIVALS: FestivalEvent[] = [
     name: 'Akshaya Tritiya Auspicious Buying',
     slug: 'akshaya-tritiya-offers',
     eventDate: '2027-05-09',
-    category: 'GENERAL_SHOPPING',
+    category: 'GOLD_SILVER_BULLION_JEWELLERY',
     shoppingLeadDays: 14,
     region: 'All India',
     sourceUrl: 'https://india.gov.in/calendar',
@@ -127,7 +127,7 @@ export const SEEDED_INDIAN_FESTIVALS: FestivalEvent[] = [
     name: 'Dhanteras & Diwali Festival of Lights',
     slug: 'diwali-dhanteras-shopping',
     eventDate: '2026-11-08',
-    category: 'HOME_APPLIANCES',
+    category: 'GOLD_SILVER_BULLION_JEWELLERY',
     shoppingLeadDays: 14,
     region: 'All India',
     sourceUrl: 'https://india.gov.in/calendar',
@@ -331,6 +331,7 @@ export class DealOpportunityMatcher {
         const festCat = fest.category.toUpperCase();
 
         if (festCat === 'GENERAL_SHOPPING') return true;
+        if (festCat === 'GOLD_SILVER_BULLION_JEWELLERY' && (dealCat.includes('GOLD') || dealCat.includes('SILVER') || dealCat.includes('JEWEL') || dealCat.includes('BULLION') || dealCat.includes('COIN'))) return true;
         if (dealCat.includes(festCat) || festCat.includes(dealCat)) return true;
         if (festCat === 'TRAVEL' && (dealCat.includes('FLIGHT') || dealCat.includes('HOTEL') || dealCat.includes('TRAVEL'))) return true;
         if (festCat === 'CONSUMER_ELECTRONICS' && (dealCat.includes('ELECTRONIC') || dealCat.includes('GADGET') || dealCat.includes('TECH'))) return true;

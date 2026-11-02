@@ -320,7 +320,8 @@ export class AutonomousCommercialEngine {
         const { CuelinksSyncManager } = await import('./cuelinks-sync-manager.js');
         const syncMgr = CuelinksSyncManager.getInstance();
         if (syncMgr.getStatus().configured) {
-          const syncRes = await syncMgr.syncCuelinks(organizationId, businessId);
+          // Consolidated pipeline: Skip duplicate offer fetch because Phase 2 deal discovery already ingested offers
+          const syncRes = await syncMgr.syncCuelinks(organizationId, businessId, { skipOfferFetch: true });
           console.log(`[CommercialEngine] Cuelinks scout sync: status=${syncRes.status.status}, connected=${syncRes.status.connected}, discovered=${syncRes.status.campaignsDiscovered}`);
 
           // STRICT AUTHORIZATION TRUTH (Sprint V3.1 § 4.1):
@@ -330,8 +331,9 @@ export class AutonomousCommercialEngine {
             (syncRes.status.channel.status.toLowerCase() === 'active' || syncRes.status.channel.status.toLowerCase() === 'approved')
           );
           const hasRequiredScopes = Boolean(syncRes.status.hasRequiredScopes);
+          const hasCommercialCapability = hasRequiredScopes || (syncRes.status.eligibleCampaignsCount > 0 && isChannelApproved);
 
-          if (syncRes.status.connected && isChannelApproved && hasRequiredScopes) {
+          if (syncRes.status.connected && isChannelApproved && hasCommercialCapability) {
             const sqlAuth = `
               UPDATE partners
               SET approval_status = 'APPROVED', active_status = 1, authorization_status = 'AUTHORIZED', updated_at = datetime('now')

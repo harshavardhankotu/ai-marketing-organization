@@ -1,6 +1,12 @@
 import fs from 'fs';
 
-const envContent = fs.readFileSync('.env.local', 'utf8');
+let envContent = '';
+for (const envFile of ['.env.deploy_secrets', '.env.local', '.env']) {
+  if (fs.existsSync(envFile)) {
+    envContent = fs.readFileSync(envFile, 'utf8');
+    break;
+  }
+}
 const secrets = {};
 for (const line of envContent.split('\n')) {
   const t = line.trim();
@@ -20,13 +26,20 @@ async function queryD1(sql) {
     body: JSON.stringify({ sql })
   });
   const data = await res.json();
+  if (!data.success) {
+    console.error('Cloudflare D1 query error:', JSON.stringify(data.errors));
+  }
   return data.result?.[0]?.results || [];
 }
 
 async function main() {
-  const migrations = await queryD1('SELECT name, applied_at FROM d1_migrations ORDER BY applied_at ASC;');
-  console.log('Applied migrations in D1:');
-  console.log(JSON.stringify(migrations, null, 2));
+  const migrations = await queryD1('SELECT id, migration_name, applied_at FROM _d1_migrations ORDER BY id ASC;');
+  console.log(`Total applied migrations in D1: ${migrations.length}`);
+  migrations.forEach(m => console.log(`  ID ${m.id}: ${m.migration_name} (${m.applied_at})`));
+
+  // Check if automation_jobs table exists in D1
+  const jobTable = await queryD1("SELECT sql FROM sqlite_master WHERE type='table' AND name='automation_jobs';");
+  console.log('automation_jobs table in D1:', jobTable);
 }
 
 main().catch(console.error);

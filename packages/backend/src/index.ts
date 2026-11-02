@@ -461,6 +461,22 @@ app.get('/owner/automation', async (c) => {
   return c.json({ success: true, data: { isGlobalPaused, workflows, recentLogs } });
 });
 
+// Top-level Owner Sector Control Centre (V4.2 SPRINT)
+app.get('/owner/deals', async (c) => {
+  const reqUrl = new URL(c.req.url);
+  return app.request(`/api/v1/owner/deals${reqUrl.search}`, {
+    method: 'GET',
+    headers: c.req.raw.headers
+  });
+});
+
+app.get('/owner/deals/summary', async (c) => {
+  return app.request('/api/v1/owner/deals/summary', {
+    method: 'GET',
+    headers: c.req.raw.headers
+  });
+});
+
 // Top-level Owner Proposal Generator (Part D.4)
 app.all('/owner/proposal', async (c) => {
   const fs = await import('fs');
