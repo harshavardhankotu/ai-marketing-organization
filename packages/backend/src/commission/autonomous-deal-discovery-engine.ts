@@ -1054,7 +1054,7 @@ export class AutonomousDealDiscoveryEngine {
 
       // 6. Advance continuation cursor across cycles (wrap around when end reached or bounded retries exceeded)
       const isCampEnd = (campSearch.campaigns?.length || 0) < 30 || ((campSearch.total !== undefined) && cursor.campaignPage * 30 >= campSearch.total);
-      const nextCampPage = isCampEnd ? 1 : cursor.campaignPage + 1;
+      let nextCampPage = isCampEnd ? 1 : cursor.campaignPage + 1;
 
       let nextOfferPage: number;
       let nextFailedPage = cursor.failedPage;
@@ -1074,7 +1074,8 @@ export class AutonomousDealDiscoveryEngine {
         }
 
         if (nextFailureCount >= 3) {
-          console.warn(`[DealEngine] Offer page ${failedPage} failed ${nextFailureCount} consecutive times (e.g. upstream offset limit); wrapping cursor to page 1`);
+          console.warn(`[DealEngine] Offer page ${failedPage} failed ${nextFailureCount} consecutive times (e.g. upstream offset limit); advancing campaign cursor to avoid infinite offset loop`);
+          nextCampPage = isCampEnd ? 1 : cursor.campaignPage + 1;
           nextOfferPage = 1;
           nextFailedPage = undefined;
           nextFailureCount = 0;
@@ -1134,20 +1135,29 @@ export class AutonomousDealDiscoveryEngine {
         const txList = txRes.transactions || [];
         let pendingINR = 0;
         let validatedINR = 0;
-        let paidINR = 0;
+        let payableINR = 0;
+        let invoicedINR = 0;
+        let providerPaidINR = 0;
         let reversedINR = 0;
         let validatedCount = 0;
         for (const tx of txList) {
           const amt = Number(tx.user_commission ?? tx.commission_amount) || 0;
-          if (tx.status === 'approved' || tx.status === 'validated' || tx.status === 'payable') {
+          const status = (tx.status || '').toLowerCase();
+          if (status === 'validated' || status === 'approved') {
             validatedINR += amt;
             validatedCount++;
-          } else if (tx.status === 'pending') {
-            pendingINR += amt;
-          } else if (tx.status === 'paid' || tx.status === 'invoice_raised') {
-            paidINR += amt;
+          } else if (status === 'payable') {
+            payableINR += amt;
             validatedCount++;
-          } else if (tx.status === 'rejected') {
+          } else if (status === 'pending') {
+            pendingINR += amt;
+          } else if (status === 'invoice_raised' || status === 'invoiced') {
+            invoicedINR += amt;
+            validatedCount++;
+          } else if (status === 'paid' || status === 'provider_paid') {
+            providerPaidINR += amt;
+            validatedCount++;
+          } else if (status === 'rejected' || status === 'cancelled') {
             reversedINR += amt;
           }
         }
@@ -1157,7 +1167,10 @@ export class AutonomousDealDiscoveryEngine {
           reportedConversions: effectiveConversions,
           pendingCommissionINR: pendingINR,
           validatedCommissionINR: validatedINR,
-          paidCommissionINR: paidINR,
+          payableCommissionINR: payableINR,
+          invoicedCommissionINR: invoicedINR,
+          providerPaidCommissionINR: providerPaidINR,
+          paidCommissionINR: providerPaidINR, // Strictly provider-paid cash, never invoice_raised!
           reversedCommissionINR: reversedINR
         });
       } catch {}

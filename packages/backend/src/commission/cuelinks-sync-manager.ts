@@ -176,6 +176,9 @@ export class CuelinksSyncManager {
       reportedConversions: 0,
       pendingCommissionINR: 0,
       validatedCommissionINR: 0,
+      payableCommissionINR: 0,
+      invoicedCommissionINR: 0,
+      providerPaidCommissionINR: 0,
       reversedCommissionINR: 0,
       paidCommissionINR: 0,
       cashReceivedINR: 0
@@ -667,19 +670,26 @@ export class CuelinksSyncManager {
 
         let pending = 0;
         let validated = 0;
+        let payable = 0;
+        let invoiced = 0;
+        let providerPaid = 0;
         let reversed = 0;
-        let paid = 0;
 
         for (const tx of transactions) {
           const amt = Number(tx.user_commission ?? tx.commission_amount) || 0;
-          if (tx.status === 'pending') {
+          const status = (tx.status || '').toLowerCase();
+          if (status === 'pending') {
             pending += amt;
-          } else if (tx.status === 'validated' || tx.status === 'payable' || tx.status === 'approved') {
+          } else if (status === 'validated' || status === 'approved') {
             validated += amt;
-          } else if (tx.status === 'rejected') {
+          } else if (status === 'payable') {
+            payable += amt;
+          } else if (status === 'invoice_raised' || status === 'invoiced') {
+            invoiced += amt;
+          } else if (status === 'paid' || status === 'provider_paid') {
+            providerPaid += amt;
+          } else if (status === 'rejected' || status === 'cancelled') {
             reversed += amt;
-          } else if (tx.status === 'paid' || tx.status === 'invoice_raised') {
-            paid += amt;
           }
         }
 
@@ -702,8 +712,11 @@ export class CuelinksSyncManager {
           reportedConversions: reportedConversions,
           pendingCommissionINR: Math.round(pending * 100) / 100,
           validatedCommissionINR: Math.round(validated * 100) / 100,
+          payableCommissionINR: Math.round(payable * 100) / 100,
+          invoicedCommissionINR: Math.round(invoiced * 100) / 100,
+          providerPaidCommissionINR: Math.round(providerPaid * 100) / 100,
+          paidCommissionINR: Math.round(providerPaid * 100) / 100, // Strictly provider-disbursed, never invoice_raised!
           reversedCommissionINR: Math.round(reversed * 100) / 100,
-          paidCommissionINR: Math.round(paid * 100) / 100,
           cashReceivedINR: 0 // strictly ₹0.00 until bank statement proof
         };
       } catch (recErr: any) {

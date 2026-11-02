@@ -292,6 +292,9 @@ export interface CuelinksReconciliationMetrics {
   reportedConversions: number;
   pendingCommissionINR: number;
   validatedCommissionINR: number;
+  payableCommissionINR?: number;
+  invoicedCommissionINR?: number;
+  providerPaidCommissionINR?: number;
   reversedCommissionINR: number;
   paidCommissionINR: number;
   cashReceivedINR: number;

@@ -1,8 +1,8 @@
 name: Autonomous Operations & SLA Verification
 
 on:
-  schedule:
-    - cron: '30 3,15 * * *' # Twice daily at 09:00 IST (03:30 UTC) & 21:00 IST (15:30 UTC) matching commercial windows
+  # Scheduled cron retired in V4.8 to enforce single authoritative scheduler policy (Cloudflare Cron Worker).
+  # Preserved as workflow_dispatch for manual operator diagnostics and SLA verification.
   workflow_dispatch:
 
 jobs:

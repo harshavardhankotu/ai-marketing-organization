@@ -1259,7 +1259,8 @@ export class AutomationRegistryEngine {
         }
 
         const syncMgr = CuelinksSyncManager.getInstance(client);
-        const syncRes = await syncMgr.syncCuelinks('org_owner_primary', 'biz_platform_aro');
+        // Consolidate provider operations: run reconciliation & channel sync, delegating offer ingestion to deal discovery engine
+        const syncRes = await syncMgr.syncCuelinks('org_owner_primary', 'biz_platform_aro', { skipOfferFetch: true, reconciliationOnly: true });
 
         let verifiedDeals = 0;
         try {
