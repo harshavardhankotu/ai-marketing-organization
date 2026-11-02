@@ -1435,8 +1435,18 @@ apiRouter.post('/cron/ping', async (c) => {
     priority: CommercialSchedulePolicy.getWorkflowWindow(wfId) === 'CONTINUOUS_HOURLY' ? 0 : 1
   }));
 
-  const { enqueuedCount } = await queue.enqueueJobsBatch(optionsList);
+  const batchRes = await queue.enqueueJobsBatch(optionsList);
   const queueStats = await queue.getQueueStats();
+
+  const allFailed = optionsList.length > 0 && batchRes.failedCount > 0 && batchRes.enqueuedCount === 0 && batchRes.existingCount === 0;
+  if (allFailed) {
+    return c.json({
+      success: false,
+      accepted: false,
+      error: 'CRON_DATABASE_FAILURE: Queue batch insert failed',
+      details: batchRes.errors
+    }, 500);
+  }
 
   // Return HTTP 200 in < 2 seconds without executing long synchronous jobs inline
   return c.json({
@@ -1444,13 +1454,15 @@ apiRouter.post('/cron/ping', async (c) => {
     accepted: true,
     triggerSource: /ai-marketing-cron-worker|cloudflare-cron-worker/i.test(userAgent) ? 'CLOUDFLARE_CRON' : 'MANUAL_PING',
     correlationId,
-    enqueuedCount,
+    enqueuedCount: batchRes.enqueuedCount,
+    existingCount: batchRes.existingCount,
+    failedCount: batchRes.failedCount,
     eligibleWorkflowCount: eligibleWorkflowIds.length,
     commercialCycle: {
       cycleId: correlationId,
       status: 'ENQUEUED',
       mode: 'DURABLE_QUEUE',
-      enqueuedCount
+      enqueuedCount: batchRes.enqueuedCount
     },
     queueStats,
     timestamp: new Date().toISOString()
@@ -6276,6 +6288,20 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
   // Phase 6 Guard: Confirm offer is not expired
   if (deal.expiryDate && new Date(deal.expiryDate).getTime() < Date.now()) {
     return c.text('Offer has expired', 410);
+  }
+
+  // Phase 6 & Phase 5 Guard: Never silently send users to an unmonetized destination when deal claims monetization
+  if (deal.isMonetizable && !deal.trackingUrl) {
+    try {
+      const conv = await engine.convertProductUrlToAffiliate(deal.productUrl, deal.merchant);
+      if (conv && conv.isMonetizable && conv.trackingUrl) {
+        deal.trackingUrl = conv.trackingUrl;
+      }
+    } catch {}
+  }
+
+  if (deal.isMonetizable && !deal.trackingUrl) {
+    return c.text('Affiliate monetization path temporarily unavailable for this deal; unmonetized fallback suppressed', 503);
   }
 
   let targetUrl = deal.trackingUrl || deal.productUrl;

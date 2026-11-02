@@ -150,15 +150,16 @@ export class DurableJobQueue {
 
   /**
    * Enqueues a batch of jobs idempotently in bulk to eliminate N+1 round trips during cron pings.
+   * Reports exact counts for attempted, enqueued, alreadyExisting, and failed without suppressing DB errors.
    */
   public async enqueueJobsBatch(
     optionsList: EnqueueOptions[]
-  ): Promise<{ enqueuedCount: number; existingCount: number }> {
+  ): Promise<{ attempted: number; enqueuedCount: number; existingCount: number; failedCount: number; errors?: string[] }> {
     if (!optionsList || optionsList.length === 0) {
-      return { enqueuedCount: 0, existingCount: 0 };
+      return { attempted: 0, enqueuedCount: 0, existingCount: 0, failedCount: 0 };
     }
 
-    // 1. Identify which idempotency keys already exist in one query
+    const errors: string[] = [];
     const keys = optionsList.map(o => o.idempotencyKey);
     const placeholders = keys.map(() => '?').join(', ');
     const checkSql = `SELECT idempotency_key FROM automation_jobs WHERE idempotency_key IN (${placeholders})`;
@@ -172,15 +173,21 @@ export class DurableJobQueue {
         const rows = getDb().prepare(checkSql).all(...keys) as any[];
         existingKeysSet = new Set(rows.map(r => r.idempotency_key));
       }
-    } catch {}
+    } catch (checkErr: any) {
+      const errMsg = `Database check failed during enqueueJobsBatch: ${checkErr.message}`;
+      console.error(`[JobQueue] ${errMsg}`);
+      errors.push(errMsg);
+    }
 
     const toInsert = optionsList.filter(o => !existingKeysSet.has(o.idempotencyKey));
     if (toInsert.length === 0) {
-      return { enqueuedCount: 0, existingCount: optionsList.length };
+      return { attempted: optionsList.length, enqueuedCount: 0, existingCount: existingKeysSet.size, failedCount: 0 };
     }
 
     // 2. Perform insert for new jobs
     let enqueuedCount = 0;
+    let failedCount = 0;
+
     for (const opt of toInsert) {
       const jobId = `job_${Date.now()}_${randomUUID().substring(0, 8)}`;
       const businessId = opt.businessId || 'biz_platform_aro';
@@ -214,19 +221,34 @@ export class DurableJobQueue {
           const res = await this.d1Repo.executeWrite('automation_jobs', insertSql, params);
           if (((res as any)?.rowsAffected ?? (res as any)?.changes) > 0) {
             enqueuedCount++;
+          } else {
+            // Already existed via concurrent insert
+            existingKeysSet.add(opt.idempotencyKey);
           }
         } else {
           const res = getDb().prepare(insertSql).run(...params);
           if (res.changes > 0) {
             enqueuedCount++;
+          } else {
+            // Already existed via concurrent insert
+            existingKeysSet.add(opt.idempotencyKey);
           }
         }
       } catch (err: any) {
-        console.warn(`[JobQueue] Notice enqueuing job in batch: ${err.message}`);
+        failedCount++;
+        const msg = `Failed to insert job ${opt.idempotencyKey}: ${err.message}`;
+        console.error(`[JobQueue] ${msg}`);
+        errors.push(msg);
       }
     }
 
-    return { enqueuedCount, existingCount: optionsList.length - enqueuedCount };
+    return {
+      attempted: optionsList.length,
+      enqueuedCount,
+      existingCount: existingKeysSet.size,
+      failedCount,
+      errors: errors.length > 0 ? errors : undefined
+    };
   }
 
   /**
@@ -336,7 +358,7 @@ export class DurableJobQueue {
     const params = resJson ? [cpJson, resJson, jobId] : [cpJson, jobId];
 
     if (leaseToken) {
-      sql += ` AND (lease_token = ? OR lease_token IS NULL)`;
+      sql += ` AND lease_token = ? AND (lease_expires_at IS NULL OR datetime(lease_expires_at) >= datetime('now'))`;
       params.push(leaseToken);
     }
 
@@ -381,7 +403,7 @@ export class DurableJobQueue {
     const params = [status, resJson, jobId];
 
     if (leaseToken) {
-      sql += ` AND (lease_token = ? OR lease_token IS NULL)`;
+      sql += ` AND lease_token = ? AND (lease_expires_at IS NULL OR datetime(lease_expires_at) >= datetime('now'))`;
       params.push(leaseToken);
     }
 
@@ -460,14 +482,22 @@ export class DurableJobQueue {
       const params = [errorMsg, baseDelay, jobId];
 
       if (leaseToken) {
-        sql += ` AND (lease_token = ? OR lease_token IS NULL)`;
+        sql += ` AND lease_token = ? AND (lease_expires_at IS NULL OR datetime(lease_expires_at) >= datetime('now'))`;
         params.push(leaseToken);
       }
 
+      let rowsAffected = 0;
       if (isProduction()) {
-        await this.d1Repo.executeWrite('automation_jobs', sql, params);
+        const res = await this.d1Repo.executeWrite('automation_jobs', sql, params);
+        rowsAffected = (res as any)?.rowsAffected ?? (res as any)?.changes ?? 0;
       } else {
-        getDb().prepare(sql).run(...params);
+        const res = getDb().prepare(sql).run(...params);
+        rowsAffected = res.changes;
+      }
+
+      if (rowsAffected === 0) {
+        console.warn(`[JobQueue] Lease lost or expired during failAttempt for job '${jobId}'. Worker retry write was fenced out.`);
+        return job.status;
       }
 
       await this.recordAttemptFailure(jobId, 'RETRY_WAIT', errorMsg);
@@ -488,14 +518,22 @@ export class DurableJobQueue {
       const params = [errorMsg, jobId];
 
       if (leaseToken) {
-        sql += ` AND (lease_token = ? OR lease_token IS NULL)`;
+        sql += ` AND lease_token = ? AND (lease_expires_at IS NULL OR datetime(lease_expires_at) >= datetime('now'))`;
         params.push(leaseToken);
       }
 
+      let rowsAffected = 0;
       if (isProduction()) {
-        await this.d1Repo.executeWrite('automation_jobs', sql, params);
+        const res = await this.d1Repo.executeWrite('automation_jobs', sql, params);
+        rowsAffected = (res as any)?.rowsAffected ?? (res as any)?.changes ?? 0;
       } else {
-        getDb().prepare(sql).run(...params);
+        const res = getDb().prepare(sql).run(...params);
+        rowsAffected = res.changes;
+      }
+
+      if (rowsAffected === 0) {
+        console.warn(`[JobQueue] Lease lost or expired during failAttempt for job '${jobId}'. Permanent failure write was fenced out.`);
+        return job.status;
       }
 
       await this.recordAttemptFailure(jobId, 'FAILED_PERMANENTLY', errorMsg);
@@ -592,7 +630,7 @@ export class DurableJobQueue {
   }
 
   /**
-   * Retrieves queue telemetry and summary metrics.
+   * Retrieves queue telemetry and comprehensive observability metrics (V4.8 Spec Phase 2D).
    */
   public async getQueueStats(): Promise<{
     queued: number;
@@ -605,15 +643,22 @@ export class DurableJobQueue {
     blocked: number;
     retryWait: number;
     failedPermanently: number;
+    failedTotal: number;
+    expiredLeases: number;
     overdueCount: number;
     oldestOverdueAgeMinutes: number;
+    oldestQueuedAgeMinutes: number;
+    lastSuccessfulExecutionAt: string | null;
   }> {
     const sql = `
       SELECT
         status,
         COUNT(*) as cnt,
         SUM(CASE WHEN status IN ('QUEUED', 'RETRY_WAIT') AND datetime(available_at) < datetime('now') THEN 1 ELSE 0 END) as overdue,
-        MIN(CASE WHEN status IN ('QUEUED', 'RETRY_WAIT') AND datetime(available_at) < datetime('now') THEN available_at ELSE NULL END) as oldest_overdue
+        MIN(CASE WHEN status IN ('QUEUED', 'RETRY_WAIT') AND datetime(available_at) < datetime('now') THEN available_at ELSE NULL END) as oldest_overdue,
+        MIN(CASE WHEN status = 'QUEUED' THEN created_at ELSE NULL END) as oldest_queued,
+        SUM(CASE WHEN status = 'RUNNING' AND lease_expires_at IS NOT NULL AND datetime(lease_expires_at) < datetime('now') THEN 1 ELSE 0 END) as expired_leases,
+        MAX(CASE WHEN status IN ('COMPLETED', 'COMPLETED_WITH_FINDINGS', 'COMPLETED_NO_FINDINGS', 'NO_ACTION_DUE') THEN completed_at ELSE NULL END) as last_success
       FROM automation_jobs
       GROUP BY status
     `;
@@ -627,14 +672,29 @@ export class DurableJobQueue {
 
     const counts: Record<string, number> = {};
     let totalOverdue = 0;
+    let totalExpiredLeases = 0;
     let oldestOverdueTs: string | null = null;
+    let oldestQueuedTs: string | null = null;
+    let lastSuccessTs: string | null = null;
 
     for (const r of rows) {
       counts[r.status] = Number(r.cnt || 0);
       totalOverdue += Number(r.overdue || 0);
+      totalExpiredLeases += Number(r.expired_leases || 0);
+
       if (r.oldest_overdue) {
         if (!oldestOverdueTs || new Date(r.oldest_overdue).getTime() < new Date(oldestOverdueTs).getTime()) {
           oldestOverdueTs = r.oldest_overdue;
+        }
+      }
+      if (r.oldest_queued) {
+        if (!oldestQueuedTs || new Date(r.oldest_queued).getTime() < new Date(oldestQueuedTs).getTime()) {
+          oldestQueuedTs = r.oldest_queued;
+        }
+      }
+      if (r.last_success) {
+        if (!lastSuccessTs || new Date(r.last_success).getTime() > new Date(lastSuccessTs).getTime()) {
+          lastSuccessTs = r.last_success;
         }
       }
     }
@@ -643,6 +703,12 @@ export class DurableJobQueue {
     if (oldestOverdueTs) {
       const diffMs = Date.now() - new Date(oldestOverdueTs).getTime();
       oldestOverdueAgeMinutes = Math.max(0, Math.floor(diffMs / 60000));
+    }
+
+    let oldestQueuedAgeMinutes = 0;
+    if (oldestQueuedTs) {
+      const diffMs = Date.now() - new Date(oldestQueuedTs).getTime();
+      oldestQueuedAgeMinutes = Math.max(0, Math.floor(diffMs / 60000));
     }
 
     return {
@@ -656,8 +722,12 @@ export class DurableJobQueue {
       blocked: counts['BLOCKED'] || 0,
       retryWait: counts['RETRY_WAIT'] || 0,
       failedPermanently: counts['FAILED_PERMANENTLY'] || 0,
+      failedTotal: (counts['FAILED_PERMANENTLY'] || 0) + (counts['RETRY_WAIT'] || 0),
+      expiredLeases: totalExpiredLeases,
       overdueCount: totalOverdue,
-      oldestOverdueAgeMinutes
+      oldestOverdueAgeMinutes,
+      oldestQueuedAgeMinutes,
+      lastSuccessfulExecutionAt: lastSuccessTs
     };
   }
 
