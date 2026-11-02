@@ -88,7 +88,9 @@ export class AgentRuntime {
         systemInstruction: agent.systemInstruction,
         prompt: options.prompt,
         context: combinedContext,
-        thinkingLevel: options.thinkingLevel || (agent.category === 'MARKETING_GROWTH' ? 'high' : 'medium'),
+        thinkingLevel: options.thinkingLevel || (
+          ['mkt-01', 'cnt-01', 'cnt-11', 'res-20'].includes(agent.id) ? 'medium' : 'low'
+        ),
         priority: options.priority || 'NORMAL',
         skipCache: options.skipCache
       });

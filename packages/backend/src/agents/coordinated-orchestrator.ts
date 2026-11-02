@@ -241,6 +241,7 @@ export class CoordinatedAgentOrchestrator {
       priority: TaskPriority;
       inputs: Record<string, any>;
       requiresApproval?: boolean;
+      executionType?: 'DETERMINISTIC' | 'LLM';
       executionFn: () => Promise<{ success: boolean; data?: any; error?: string }>;
     }): Promise<{ success: boolean; data?: any; error?: string }> => {
       const agent = AGENT_REGISTRY.find(a => a.id === params.agentId);
@@ -286,49 +287,51 @@ export class CoordinatedAgentOrchestrator {
       try {
         const fallbackRes = await params.executionFn();
         let res: { success: boolean; data?: any; error?: string } = fallbackRes;
-        let executedViaRuntime = false;
+        let executedViaRuntime = params.executionType === 'DETERMINISTIC';
         let runtimeModel = 'deterministic-coordinator';
-        let runtimeTokens = 100;
+        let runtimeTokens = 0;
 
-        // Step 1: Attempt execution via AgentRuntime
-        try {
-          const { AgentRuntime } = await import('./agent-runtime.js');
-          const runtimeRes = await AgentRuntime.getInstance().execute({
-            agentId: agent.id,
-            businessId: brief.businessId,
-            organizationId: brief.organizationId,
-            taskId,
-            workflowId,
-            prompt: `${params.title}\n\nInputs:\n${JSON.stringify(params.inputs, null, 2)}`,
-            contextOverride: {
-              category: brief.category,
-              city: brief.city,
-              artifacts: producedArtifacts,
-              ...params.inputs
-            },
-            priority: params.priority
-          });
+        // Step 1: Attempt execution via AgentRuntime (only for LLM tasks)
+        if (params.executionType !== 'DETERMINISTIC') {
+          try {
+            const { AgentRuntime } = await import('./agent-runtime.js');
+            const runtimeRes = await AgentRuntime.getInstance().execute({
+              agentId: agent.id,
+              businessId: brief.businessId,
+              organizationId: brief.organizationId,
+              taskId,
+              workflowId,
+              prompt: `${params.title}\n\nInputs:\n${JSON.stringify(params.inputs, null, 2)}`,
+              contextOverride: {
+                category: brief.category,
+                city: brief.city,
+                artifacts: producedArtifacts,
+                ...params.inputs
+              },
+              priority: params.priority
+            });
 
-          if (runtimeRes && runtimeRes.success && runtimeRes.data) {
-            res = {
-              success: true,
-              data: {
-                ...(fallbackRes.data || {}),
-                ...(typeof runtimeRes.data === 'object' ? runtimeRes.data : {}),
-                _runtime: {
-                  agentId: agent.id,
-                  model: runtimeRes.model || 'gemini-3.8-flash',
-                  decisionId: runtimeRes.decisionId
+            if (runtimeRes && runtimeRes.success && runtimeRes.data) {
+              res = {
+                success: true,
+                data: {
+                  ...(fallbackRes.data || {}),
+                  ...(typeof runtimeRes.data === 'object' ? runtimeRes.data : {}),
+                  _runtime: {
+                    agentId: agent.id,
+                    model: runtimeRes.model || 'gemini-3.8-flash',
+                    decisionId: runtimeRes.decisionId
+                  }
                 }
-              }
-            };
-            executedViaRuntime = true;
-            runtimeModel = runtimeRes.model || 'gemini-3.8-flash';
-            runtimeTokens = runtimeRes.telemetry?.totalTokens || 250;
+              };
+              executedViaRuntime = true;
+              runtimeModel = runtimeRes.model || 'gemini-3.8-flash';
+              runtimeTokens = runtimeRes.telemetry?.totalTokens || 250;
+            }
+          } catch {
+            // Graceful fallback to domain deterministic synthesis
+            res = fallbackRes;
           }
-        } catch {
-          // Graceful fallback to domain deterministic synthesis
-          res = fallbackRes;
         }
 
         const latencyMs = Date.now() - startMs;
@@ -461,6 +464,7 @@ export class CoordinatedAgentOrchestrator {
       title: `Validate product specifications for ${brief.category} from official manufacturer sources`,
       taskKey: 'product_specs',
       priority: 'CRITICAL',
+      executionType: 'DETERMINISTIC',
       inputs: { category: brief.category, specsProvided: brief.verifiedSpecs || [] },
       executionFn: async () => {
         const specs = brief.verifiedSpecs || [];
@@ -483,6 +487,7 @@ export class CoordinatedAgentOrchestrator {
       title: `Evaluate buyer questions and purchase intent queries for ${brief.category}`,
       taskKey: 'search_intent',
       priority: 'HIGH',
+      executionType: 'DETERMINISTIC',
       inputs: { category: brief.category, buyerQuestions: brief.buyerQuestions || [] },
       executionFn: async () => {
         const questions = brief.buyerQuestions || [];
@@ -505,6 +510,7 @@ export class CoordinatedAgentOrchestrator {
       title: `DPDP and commercial advertising compliance audit for ${brief.category}`,
       taskKey: 'compliance_audit',
       priority: 'CRITICAL',
+      executionType: 'DETERMINISTIC',
       inputs: { category: brief.category },
       executionFn: async () => ({
         success: true,
@@ -524,6 +530,7 @@ export class CoordinatedAgentOrchestrator {
       title: `Synthesize research dossier across market, specs, intent, and compliance`,
       taskKey: 'research_synthesis',
       priority: 'HIGH',
+      executionType: 'DETERMINISTIC',
       inputs: { mktRes: mktRes.data, prodRes: prodRes.data, intentRes: intentRes.data, compRes: compRes.data },
       executionFn: async () => ({
         success: true,
@@ -563,6 +570,7 @@ export class CoordinatedAgentOrchestrator {
       title: `Build factual comparison matrix based on official specifications`,
       taskKey: 'comparison_matrix',
       priority: 'NORMAL',
+      executionType: 'DETERMINISTIC',
       inputs: { category: brief.category, specs: prodRes.data },
       executionFn: async () => ({
         success: true,
@@ -600,6 +608,7 @@ export class CoordinatedAgentOrchestrator {
       title: `Audit guide draft against official specs and verify statutory affiliate disclosure`,
       taskKey: 'fact_check_attribution',
       priority: 'CRITICAL',
+      executionType: 'DETERMINISTIC',
       inputs: { content: cntStrat.data, matrix: comparisonRes.data, faqs: faqRes.data },
       executionFn: async () => ({
         success: true,
@@ -622,6 +631,7 @@ export class CoordinatedAgentOrchestrator {
       title: `Plan zero-rupee organic distribution channels for ${brief.category}`,
       taskKey: 'gtm_plan',
       priority: 'HIGH',
+      executionType: 'DETERMINISTIC',
       inputs: { category: brief.category, audience: brief.targetAudience },
       executionFn: async () => ({
         success: true,
@@ -640,6 +650,7 @@ export class CoordinatedAgentOrchestrator {
       title: `Generate canonical URLs, JSON-LD Schema, and IndexNow payload`,
       taskKey: 'seo_metadata',
       priority: 'NORMAL',
+      executionType: 'DETERMINISTIC',
       inputs: { title: brief.title, category: brief.category },
       executionFn: async () => ({
         success: true,
@@ -658,6 +669,7 @@ export class CoordinatedAgentOrchestrator {
       title: `Audit distribution readiness: zero spam, zero cold outreach, privacy compliance`,
       taskKey: 'distribution_guard',
       priority: 'CRITICAL',
+      executionType: 'DETERMINISTIC',
       inputs: { gtm: gtmRes.data, seo: seoRes.data },
       executionFn: async () => ({
         success: true,
@@ -691,6 +703,7 @@ export class CoordinatedAgentOrchestrator {
       title: `Initialize telemetry metrics for campaign: visits, clicks, orders, commissions`,
       taskKey: 'telemetry_init',
       priority: 'NORMAL',
+      executionType: 'DETERMINISTIC',
       inputs: { briefId: brief.briefId },
       executionFn: async () => ({
         success: true,
@@ -708,6 +721,7 @@ export class CoordinatedAgentOrchestrator {
       title: `Score evidence quality and audit research provenance integrity`,
       taskKey: 'evidence_quality_audit',
       priority: 'HIGH',
+      executionType: 'DETERMINISTIC',
       inputs: { synthesis: synRes.data, factCheck: factCheckRes.data },
       executionFn: async () => ({
         success: true,
@@ -726,6 +740,7 @@ export class CoordinatedAgentOrchestrator {
       title: `Audit cycle quota consumption and verify ₹0 marginal financial cost`,
       taskKey: 'quota_efficiency_audit',
       priority: 'NORMAL',
+      executionType: 'DETERMINISTIC',
       inputs: { briefId: brief.briefId },
       executionFn: async () => ({
         success: true,
@@ -744,6 +759,7 @@ export class CoordinatedAgentOrchestrator {
       title: `Compile holistic campaign learning record and next best action recommendation`,
       taskKey: 'cao_learning_record',
       priority: 'NORMAL',
+      executionType: 'DETERMINISTIC',
       inputs: { telemetry: telRes.data, quality: qualRes.data, quota: quotaRes.data },
       executionFn: async () => {
         const nextAction = tasksBlocked > 0

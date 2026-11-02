@@ -1,4 +1,4 @@
-﻿import { getDb } from '../db/client.js';
+import { getDb } from '../db/client.js';
 import { TaskPriority, QuotaStatus } from '@ai-marketing/shared';
 
 export interface QueuedTask<T> {
@@ -79,7 +79,11 @@ export class QuotaManager {
     this.activeConcurrent++;
     try {
       const result = await this.executeWithRetry(task.execute);
-      this.recordSuccess();
+      const reportedTokens =
+        (result as any)?.telemetry?.totalTokens ||
+        (result as any)?.usageMetadata?.totalTokenCount ||
+        150;
+      this.recordSuccess(reportedTokens);
       task.resolve(result);
     } catch (error) {
       this.recordFailure(error);
@@ -113,9 +117,9 @@ export class QuotaManager {
     throw new Error('Max retries exceeded in QuotaManager');
   }
 
-  private recordSuccess(): void {
+  private recordSuccess(tokens = 150): void {
     this.consecutiveFailures = 0;
-    this.incrementQuotaRecord(1, 150);
+    this.incrementQuotaRecord(1, tokens);
   }
 
   private recordFailure(error: any): void {

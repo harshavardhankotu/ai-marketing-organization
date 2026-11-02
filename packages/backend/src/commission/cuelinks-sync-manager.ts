@@ -710,8 +710,9 @@ export class CuelinksSyncManager {
       // If ping omitted scopes, use empirically verified capabilities from successful provider responses.
       if (Array.isArray(pingRes.scopes) && pingRes.scopes.length > 0) {
         this.syncStatus.scopes = pingRes.scopes;
-        this.syncStatus.hasRequiredScopes = Boolean(pingRes.hasRequiredScopes);
-        this.syncStatus.missingScopes = pingRes.missingScopes;
+        const missing = CUELINKS_REQUIRED_SCOPES.filter(req => !pingRes.scopes!.includes(req));
+        this.syncStatus.missingScopes = missing;
+        this.syncStatus.hasRequiredScopes = missing.length === 0;
       } else {
         const missing = CUELINKS_REQUIRED_SCOPES.filter(
           s => !empiricallyVerifiedScopes.has(s) || forbiddenScopes.has(s)

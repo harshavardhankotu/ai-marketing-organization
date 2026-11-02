@@ -193,6 +193,8 @@ describe('Autonomous Commercial Revenue Engine (Spec §§ 1–14)', () => {
       expect(json.success).toBe(true);
       expect(json.commercialCycle).toBeDefined();
       expect(json.commercialCycle.cycleId).toBeDefined();
+      expect(json.commercialCycle.status).toBe('ENQUEUED');
+      expect(json.commercialCycle.mode).toBe('DURABLE_QUEUE');
     });
   });
 });

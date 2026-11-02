@@ -18,7 +18,7 @@ export class GeminiProvider implements ModelProvider {
   private quotaManager = QuotaManager.getInstance();
 
   public async generateStructured<T>(options: ModelRequestOptions): Promise<ModelResponse<T>> {
-    const thinkingLevel = options.thinkingLevel || 'medium';
+    const thinkingLevel = options.thinkingLevel || 'low';
     const priority = options.priority || 'NORMAL';
     const modelVersion = GeminiProvider.getModelName();
 

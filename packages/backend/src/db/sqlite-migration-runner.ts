@@ -7,6 +7,30 @@ import { parseSqlStatements } from './d1-migrations/index.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+export function getMigrationsDir(): string {
+  const possibleDirs = [
+    path.resolve(__dirname, 'd1-migrations'),
+    path.resolve(__dirname, '../../../src/db/d1-migrations'),
+    path.resolve(process.cwd(), 'packages/backend/src/db/d1-migrations'),
+    path.resolve(process.cwd(), 'src/db/d1-migrations'),
+    path.resolve(process.cwd(), 'packages/backend/dist/db/d1-migrations'),
+    path.resolve(process.cwd(), 'dist/db/d1-migrations')
+  ];
+
+  for (const d of possibleDirs) {
+    if (fs.existsSync(d) && fs.readdirSync(d).some(f => f.endsWith('.sql'))) {
+      return d;
+    }
+  }
+  return path.resolve(__dirname, 'd1-migrations');
+}
+
+export function listMigrationFiles(): string[] {
+  const dir = getMigrationsDir();
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir).filter(f => f.endsWith('.sql')).sort();
+}
+
 /**
  * Applies all pending SQL migrations to local SQLite database (for boot and in tests).
  * Guarantees 100% schema parity between local SQLite (Render/test runner) and Cloudflare D1.
@@ -24,31 +48,12 @@ export function applySqliteMigrations(db: Database.Database): { applied: string[
   const existingRows = db.prepare(`SELECT migration_name FROM _sqlite_migrations`).all() as { migration_name: string }[];
   const appliedSet = new Set(existingRows.map(r => r.migration_name));
 
-  const possibleDirs = [
-    path.resolve(__dirname, 'd1-migrations'),
-    path.resolve(__dirname, '../../../src/db/d1-migrations'),
-    path.resolve(process.cwd(), 'packages/backend/src/db/d1-migrations'),
-    path.resolve(process.cwd(), 'src/db/d1-migrations'),
-    path.resolve(process.cwd(), 'packages/backend/dist/db/d1-migrations'),
-    path.resolve(process.cwd(), 'dist/db/d1-migrations')
-  ];
-
-  let migrationsDir = path.resolve(__dirname, 'd1-migrations');
-  for (const d of possibleDirs) {
-    if (fs.existsSync(d) && fs.readdirSync(d).some(f => f.endsWith('.sql'))) {
-      migrationsDir = d;
-      break;
-    }
-  }
-
+  const migrationsDir = getMigrationsDir();
   if (!fs.existsSync(migrationsDir)) {
     return { applied: [] };
   }
 
-  const files = fs.readdirSync(migrationsDir)
-    .filter(f => f.endsWith('.sql'))
-    .sort();
-
+  const files = listMigrationFiles();
   const applied: string[] = [];
 
   for (const file of files) {
