@@ -67,6 +67,7 @@ export interface CuelinksClientOptions {
   baseUrl?: string;
   fetchFn?: typeof fetch;
   timeoutMs?: number;
+  maxRetries?: number;
 }
 
 export class CuelinksV3Client {
@@ -75,12 +76,14 @@ export class CuelinksV3Client {
   private baseUrl: string;
   private fetchFn: typeof fetch;
   private timeoutMs: number;
+  private maxRetries: number;
 
   constructor(options?: CuelinksClientOptions) {
     this.apiKey = options?.apiKey ?? (process.env.CUELINKS_API_KEY || process.env.CUELINKS_TOKEN || '').trim();
     this.baseUrl = (options?.baseUrl ?? 'https://developers.cuelinks.com/pub_api/v3').replace(/\/$/, '');
     this.fetchFn = options?.fetchFn ?? fetch;
     this.timeoutMs = options?.timeoutMs ?? 15000;
+    this.maxRetries = options?.maxRetries ?? 1;
   }
 
   public static getInstance(options?: CuelinksClientOptions): CuelinksV3Client {
@@ -124,7 +127,7 @@ export class CuelinksV3Client {
     return sanitized;
   }
 
-  private async request<T>(endpoint: string, options: { method?: string; body?: any; query?: Record<string, any> } = {}): Promise<T> {
+  private async request<T>(endpoint: string, options: { method?: string; body?: any; query?: Record<string, any>; maxRetries?: number } = {}): Promise<T> {
     if (!this.isConfigured()) {
       throw new CuelinksApiError('CUELINKS_UNCONFIGURED', 'CUELINKS_API_KEY is not set.', 0);
     }
@@ -143,77 +146,112 @@ export class CuelinksV3Client {
       }
     }
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    const maxAttempts = options.maxRetries ?? this.maxRetries;
+    let lastError: any = null;
 
-    try {
-      const res = await this.fetchFn(urlStr, {
-        method: options.method || 'GET',
-        headers: this.getHeaders(),
-        body: options.body ? JSON.stringify(options.body) : undefined,
-        signal: controller.signal
-      });
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
 
-      if (!res.ok) {
-        let errBody = '';
-        try { errBody = await res.text(); } catch {}
-        const safeBody = this.redactSecrets(errBody);
+      try {
+        const res = await this.fetchFn(urlStr, {
+          method: options.method || 'GET',
+          headers: this.getHeaders(),
+          body: options.body ? JSON.stringify(options.body) : undefined,
+          signal: controller.signal
+        });
 
-        if (res.status === 401) {
-          throw new CuelinksApiError(
-            'CUELINKS_UNAUTHORIZED',
-            `Invalid API key or unauthorized token. Status 401: ${safeBody}`,
-            401
-          );
+        if (!res) {
+          throw new CuelinksApiError('CUELINKS_SERVER_ERROR', 'Network returned empty response', 500);
         }
-        if (res.status === 403) {
+
+        if (!res.ok) {
+          let errBody = '';
+          try { errBody = await res.text(); } catch {}
+          const safeBody = this.redactSecrets(errBody);
+
+          if (res.status === 401) {
+            throw new CuelinksApiError(
+              'CUELINKS_UNAUTHORIZED',
+              `Invalid API key or unauthorized token. Status 401: ${safeBody}`,
+              401
+            );
+          }
+          if (res.status === 403) {
+            throw new CuelinksApiError(
+              'CUELINKS_FORBIDDEN',
+              `Missing required API scope or forbidden access. Status 403: ${safeBody}`,
+              403
+            );
+          }
+          if (res.status === 422) {
+            throw new CuelinksApiError(
+              'CUELINKS_UNPROCESSABLE_ENTITY',
+              `Unprocessable entity or invalid parameters. Status 422: ${safeBody}`,
+              422
+            );
+          }
+
+          // Retryable status codes: 429 & 5xx
+          if (res.status === 429 || (res.status >= 500 && res.status <= 599)) {
+            if (attempt < maxAttempts - 1) {
+              const retryAfterHeader = res.headers?.get ? res.headers.get('retry-after') : null;
+              let delayMs = 100 * Math.pow(2, attempt) + Math.random() * 50;
+              if (retryAfterHeader) {
+                const parsed = parseInt(retryAfterHeader, 10);
+                if (!isNaN(parsed) && parsed > 0) {
+                  delayMs = Math.min(2000, parsed * 1000);
+                }
+              }
+              await new Promise(r => setTimeout(r, delayMs));
+              continue;
+            }
+
+            if (res.status === 429) {
+              throw new CuelinksApiError(
+                'CUELINKS_RATE_LIMITED',
+                `Rate limit exceeded. Status 429: ${safeBody}`,
+                429
+              );
+            }
+            throw new CuelinksApiError(
+              'CUELINKS_SERVER_ERROR',
+              `Transient server error. Status ${res.status}: ${safeBody}`,
+              res.status
+            );
+          }
+
           throw new CuelinksApiError(
-            'CUELINKS_FORBIDDEN',
-            `Missing required API scope or forbidden access. Status 403: ${safeBody}`,
-            403
-          );
-        }
-        if (res.status === 422) {
-          throw new CuelinksApiError(
-            'CUELINKS_UNPROCESSABLE_ENTITY',
-            `Unprocessable entity or invalid parameters. Status 422: ${safeBody}`,
-            422
-          );
-        }
-        if (res.status === 429) {
-          throw new CuelinksApiError(
-            'CUELINKS_RATE_LIMITED',
-            `Rate limit exceeded. Status 429: ${safeBody}`,
-            429
-          );
-        }
-        if (res.status >= 500 && res.status <= 599) {
-          throw new CuelinksApiError(
-            'CUELINKS_SERVER_ERROR',
-            `Transient server error. Status ${res.status}: ${safeBody}`,
+            'CUELINKS_API_ERROR',
+            `HTTP ${res.status}: ${safeBody}`,
             res.status
           );
         }
-        throw new CuelinksApiError(
-          'CUELINKS_API_ERROR',
-          `HTTP ${res.status}: ${safeBody}`,
-          res.status
-        );
-      }
 
-      return (await res.json()) as T;
-    } catch (err: any) {
-      if (err.name === 'AbortError') {
-        throw new CuelinksApiError('CUELINKS_TIMEOUT', `Request to ${endpoint} timed out after ${this.timeoutMs}ms`, 408);
+        return (await res.json()) as T;
+      } catch (err: any) {
+        if (err.name === 'AbortError') {
+          if (attempt < maxAttempts - 1) {
+            await new Promise(r => setTimeout(r, 100));
+            continue;
+          }
+          throw new CuelinksApiError('CUELINKS_TIMEOUT', `Request to ${endpoint} timed out after ${this.timeoutMs}ms`, 408);
+        }
+        if (err instanceof CuelinksApiError) {
+          throw err;
+        }
+        if (attempt < maxAttempts - 1) {
+          await new Promise(r => setTimeout(r, 100));
+          continue;
+        }
+        const safeMessage = this.redactSecrets(err.message || 'Unknown network error');
+        throw new Error(`CUELINKS_NETWORK_ERROR: ${safeMessage}`);
+      } finally {
+        clearTimeout(timeout);
       }
-      if (err instanceof CuelinksApiError) {
-        throw err;
-      }
-      const safeMessage = this.redactSecrets(err.message || 'Unknown network error');
-      throw new Error(`CUELINKS_NETWORK_ERROR: ${safeMessage}`);
-    } finally {
-      clearTimeout(timeout);
     }
+
+    throw lastError || new Error(`CUELINKS_NETWORK_ERROR: Request failed after ${maxAttempts} attempts`);
   }
 
   /**
@@ -383,8 +421,10 @@ export class CuelinksV3Client {
       return {
         connected: isConnected,
         authorized: isConnected && hasRequiredScopes,
+        hasRequiredScopes,
         message,
         publisherId,
+        publisher_id: publisherId,
         publisherName,
         currency,
         email,
@@ -395,7 +435,7 @@ export class CuelinksV3Client {
         apiKey: resolvedApiKey
       };
     } catch (err: any) {
-      return { connected: false, message: err.message };
+      return { connected: false, authorized: false, hasRequiredScopes: false, message: err.message };
     }
   }
 
