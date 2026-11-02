@@ -504,72 +504,9 @@ export class StaticSiteGenerator {
     const description = `Independently verified Indian e-commerce deals across boAt, Lenovo, Noise, and Amazon with reference MRP verification, transparent promo codes, and zero price inflation.`;
     const canonicalUrl = `${config.siteUrl}/deals`;
 
-    const defaultDeals = [
-      {
-        id: 'deal_boat_airdopes_141',
-        title: 'boAt Airdopes 141 Bluetooth Truly Wireless in Ear Earbuds',
-        brand: 'boAt',
-        merchant: 'boAt Lifestyle',
-        category: 'Audio & Wearables',
-        productUrl: 'https://www.boat-lifestyle.com/products/airdopes-141',
-        currentPriceINR: 1299,
-        currency: 'INR',
-        referencePriceINR: 4490,
-        verifiedDiscountPercent: 71,
-        discountVerificationType: 'INDEPENDENT_CORROBORATED',
-        couponCode: 'BOATEXTRA10',
-        couponConditions: 'Extra 10% off on prepaid orders above ₹999',
-        availability: 'IN_STOCK',
-        verificationStatus: 'VERIFIED',
-        buyerValueScore: 88,
-        lastCheckedAt: new Date().toISOString(),
-        sourceDomain: 'boat-lifestyle.com'
-      },
-      {
-        id: 'deal_lenovo_ideapad_slim3',
-        title: 'Lenovo IdeaPad Slim 3 12th Gen Intel Core i3-1215U 15.6" FHD Laptop',
-        brand: 'Lenovo',
-        merchant: 'Lenovo India',
-        category: 'Laptops & Computers',
-        productUrl: 'https://www.lenovo.com/in/en/laptops/ideapad/ideapad-s-series/IdeaPad-Slim-3-Gen-7-15-Intel/p/LEN101I0048',
-        currentPriceINR: 34990,
-        currency: 'INR',
-        referencePriceINR: 52990,
-        verifiedDiscountPercent: 34,
-        discountVerificationType: 'INDEPENDENT_CORROBORATED',
-        couponCode: 'LENOVOSAVE',
-        couponConditions: 'Instant ₹1,500 coupon at checkout on HDFC/ICICI cards',
-        availability: 'IN_STOCK',
-        verificationStatus: 'VERIFIED',
-        buyerValueScore: 82,
-        lastCheckedAt: new Date().toISOString(),
-        sourceDomain: 'lenovo.com'
-      },
-      {
-        id: 'deal_noise_colorfit_pro4',
-        title: 'Noise ColorFit Pro 4 Alpha 1.78" AMOLED Display Smart Watch',
-        brand: 'Noise',
-        merchant: 'Noise Official',
-        category: 'Audio & Wearables',
-        productUrl: 'https://www.gonoise.com/products/noise-colorfit-pro-4-alpha-smartwatch',
-        currentPriceINR: 2799,
-        currency: 'INR',
-        referencePriceINR: 7999,
-        verifiedDiscountPercent: 65,
-        discountVerificationType: 'INDEPENDENT_CORROBORATED',
-        couponCode: 'NOISE200',
-        couponConditions: '₹200 instant discount on checkout with UPI payment',
-        availability: 'IN_STOCK',
-        verificationStatus: 'VERIFIED',
-        buyerValueScore: 85,
-        lastCheckedAt: new Date().toISOString(),
-        sourceDomain: 'gonoise.com'
-      }
-    ];
+    const activeDeals = Array.isArray(deals) ? deals : [];
 
-    const activeDeals = (deals && deals.length > 0) ? deals : defaultDeals;
-
-    const itemListSchema = {
+    const itemListSchema = activeDeals.length > 0 ? {
       '@context': 'https://schema.org',
       '@type': 'ItemList',
       name: 'Verified Deals & Price Evidence India',
@@ -600,7 +537,7 @@ export class StaticSiteGenerator {
           }
         }
       }))
-    };
+    } : null;
 
     const dealCards = activeDeals.map((deal: any) => `
       <div class="price-card deal-card" style="background: #111827; border: 1px solid #1e293b; border-radius: 12px; padding: 1.5rem; display: flex; flex-direction: column; justify-content: space-between;">
@@ -653,9 +590,9 @@ export class StaticSiteGenerator {
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="${this.escapeHtml(title)}">
   <meta name="twitter:description" content="${this.escapeHtml(description)}">
-  <script type="application/ld+json">
+  ${itemListSchema ? `<script type="application/ld+json">
   ${JSON.stringify(itemListSchema, null, 2)}
-  </script>
+  </script>` : ''}
   <style>
     :root { color-scheme: dark; --bg: #090d16; --card: #111827; --text: #e2e8f0; --accent: #06b6d4; --border: #1e293b; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); margin: 0; line-height: 1.6; }
@@ -692,7 +629,7 @@ export class StaticSiteGenerator {
       <p>Zero inflated discounts. Every promotional price, MRP baseline, and coupon condition is independently corroborated across official Indian merchant stores.</p>
     </div>
     <div class="deals-grid">
-      ${dealCards}
+      ${dealCards || '<p class="no-deals-message" style="color: #94a3b8; font-size: 1.1rem; text-align: center; grid-column: 1 / -1; padding: 3rem 1rem;">No currently verified offers are available in this category. Check back later.</p>'}
     </div>
     <div class="disclosure-box">
       <strong style="color: #e2e8f0;">Independent Verification &amp; Commercial Disclosure:</strong>

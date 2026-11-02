@@ -78,9 +78,98 @@ const BOT_PATTERNS = [
   /petalbot/i
 ];
 
+export type TrafficClassification =
+  | 'human'
+  | 'suspected_bot'
+  | 'known_bot'
+  | 'test'
+  | 'diagnostic'
+  | 'internal'
+  | 'unknown';
+
 export function isBotTraffic(userAgent?: string): boolean {
   if (!userAgent) return false;
   return BOT_PATTERNS.some(p => p.test(userAgent));
+}
+
+/**
+ * Classifies traffic accurately to prevent false human traffic reporting.
+ * Strictly distinguishes human visitors from suspected/known bots, test, diagnostic, and internal traffic.
+ */
+export function classifyTraffic(
+  userAgent?: string,
+  ip?: string,
+  headers?: Record<string, string>
+): TrafficClassification {
+  const ua = (userAgent || '').toLowerCase();
+
+  // 1. Diagnostic / Test checks
+  if (
+    headers?.['x-diagnostic'] ||
+    headers?.['x-test-traffic'] ||
+    /vitest|jest|supertest|postman|playwright|cypress/i.test(ua)
+  ) {
+    return 'test';
+  }
+  if (/ai-marketing-cron-worker|health-check|uptime|render-ping|cron-ping/i.test(ua)) {
+    return 'diagnostic';
+  }
+  if (headers?.['x-owner-preview'] || headers?.['x-internal-admin'] || /owner-preview/i.test(ua)) {
+    return 'internal';
+  }
+
+  // 2. Known bots
+  const KNOWN_BOT_PATTERNS = [
+    /googlebot/i,
+    /bingbot/i,
+    /yandexbot/i,
+    /ahrefs/i,
+    /semrush/i,
+    /petalbot/i,
+    /duckduckbot/i,
+    /baiduspider/i,
+    /facebookexternalhit/i,
+    /twitterbot/i,
+    /linkedinbot/i,
+    /slackbot/i,
+    /telegrambot/i,
+    /whatsapp/i,
+    /discordbot/i
+  ];
+  if (KNOWN_BOT_PATTERNS.some(p => p.test(ua))) {
+    return 'known_bot';
+  }
+
+  // 3. Suspected bots / automated HTTP clients
+  const SUSPECTED_BOT_PATTERNS = [
+    /bot/i,
+    /crawl/i,
+    /spider/i,
+    /curl/i,
+    /wget/i,
+    /python-requests/i,
+    /axios/i,
+    /node-fetch/i,
+    /undici/i,
+    /httpclient/i,
+    /headless/i,
+    /scraper/i
+  ];
+  if (SUSPECTED_BOT_PATTERNS.some(p => p.test(ua))) {
+    return 'suspected_bot';
+  }
+
+  // 4. Missing or empty User-Agent: unknown, NEVER human
+  if (!userAgent || userAgent.trim().length < 10) {
+    return 'unknown';
+  }
+
+  // 5. Typical browser patterns (Mozilla + WebKit/Chrome/Safari/Firefox/Edge)
+  if (/mozilla/i.test(ua) && (/chrome|safari|firefox|edge|mobile|opera/i.test(ua))) {
+    return 'human';
+  }
+
+  return 'unknown';
 }
 
 export interface CreateReferralLinkOptions {
@@ -396,23 +485,13 @@ export class ReferralTrackingEngine {
   }
 
   /**
-   * Network-aware tracked destination (Phase 2 Task 6): delegates to the
-   * registered AffiliateNetworkAdapter, then preserves our internal
-   * `subid=clickId` for first-party attribution. Never invents params
-   * the network does not support.
+   * Network-aware tracked destination (Phase 2 Task 6 & Phase 6 V4.6):
+   * Delegates to registered AffiliateNetworkAdapter and sets dynamic `subid=clickId`
+   * for individual visitor-level attribution.
+   * Replaces static offer-level sub-IDs with unique dynamic click ID.
    */
-  private buildProviderDestinationUrl(baseUrl: string, clickId: string, params: Record<string, string>): string {
-    try {
-      const adapter = resolveAffiliateAdapter(baseUrl);
-      const url = new URL(adapter.buildTrackedDestination({ baseUrl, clickId }));
-      // Standard affiliate subid parameters if not already present
-      if (!url.searchParams.has('subid') && !url.searchParams.has('click_id') && !url.searchParams.has('ref')) {
-        url.searchParams.set('subid', clickId);
-      }
-      return url.toString();
-    } catch {
-      return baseUrl;
-    }
+  public buildProviderDestinationUrl(baseUrl: string, clickId: string, params: Record<string, string>): string {
+    return buildProviderDestinationUrl(baseUrl, clickId, params);
   }
 
   private mapReferral(row: any): Referral {
@@ -445,5 +524,35 @@ export class ReferralTrackingEngine {
       keyword: row.keyword,
       createdAt: row.created_at
     };
+  }
+}
+
+/**
+ * Standalone export of provider destination URL builder with dynamic subid=clickId.
+ */
+export function buildProviderDestinationUrl(baseUrl: string, clickId: string, params: Record<string, string>): string {
+  try {
+    const adapter = resolveAffiliateAdapter(baseUrl);
+    const url = new URL(adapter.buildTrackedDestination({ baseUrl, clickId }));
+    
+    // Dynamic individual click attribution: always assign unique clickId to subid
+    url.searchParams.set('subid', clickId);
+
+    if (params.sectorId) {
+      url.searchParams.set('subid2', params.sectorId);
+    }
+    if (params.campaignId) {
+      url.searchParams.set('subid3', params.campaignId);
+    }
+    if (params.offerId) {
+      url.searchParams.set('subid4', params.offerId);
+    }
+    if (params.placement) {
+      url.searchParams.set('subid5', params.placement);
+    }
+
+    return url.toString();
+  } catch {
+    return baseUrl;
   }
 }

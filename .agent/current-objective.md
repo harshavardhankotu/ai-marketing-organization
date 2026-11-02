@@ -1,7 +1,15 @@
-# Current Objective: First Customer Revenue (₹15,000 Setup / Lane C) & V4.1 Operational Hardening
+# Current Objective: Multi-Sector Commerce Engine Recovery & First Verified Revenue (V4.2)
 
-1. **Primary Goal:** Generate the first genuine, bank-verified customer revenue in India using free/authorized tools and ₹0 paid advertising.
-2. **Current Highest-Probability Route:** Lane C — AI Inbound Lead Triage for Indian Appointment-Based Practices (Hyderabad dental clinics).
-3. **Immediate Unblocking Gate:** Human Owner Approval on `/owner/today`. Owner launches 1-click WhatsApp (`wa.me`) outreach to Dr. P. V. Partha Rama Rao (Partha Dental) or Dr. P. P. Reddy (FMS Dental).
-4. **V4.1 Engineering Stability:** PR #33 merged to `main` deploying durable D1 job queue, 09:00/21:00 IST commercial windows, and fast `< 2s` `/cron/ping`.
-5. **Cost Optimization Invariant:** Strict deterministic-first architecture. 12 structural tasks bypassed from LLM; bounded memory in `constructBoundedContext()` (limit 5); thinking level defaulted to `low`.
+1. **Primary Goal:** Transform the AI Marketing Organization into an autonomous, multi-sector commercial deal-discovery, price-intelligence, affiliate-commerce, and revenue-generation platform across all eligible sectors. Generate the first genuine, bank-verified revenue in India using free/authorized tools and ₹0 paid advertising.
+2. **Canonical Business Reality:** The business is NOT a dental clinic lead generation agency. Clinics are merely one isolated commercial vertical in Sector H (`SECTOR_H_LOCAL_SERVICES_B2B`). The primary engine operates across all 8 authoritative commercial sectors:
+   - Sector A: Gold, Silver, Bullion & Jewellery (Mandatory Priority)
+   - Sector B: Electronics & Technology
+   - Sector C: Home & Appliances
+   - Sector D: Travel & Experiences
+   - Sector E: Software & Digital Services
+   - Sector F: Office, Business & Industrial Equipment
+   - Sector G: Lifestyle & Consumer Goods
+   - Sector H: Local Services & B2B Solutions (Strictly Segregated)
+3. **Core Monetization Engine:** Cuelinks V3 REST API (active token, 4 core scopes verified, resumable cursor pagination), direct retailer brand feeds, and open benchmark intelligence (IBJA spot rates).
+4. **Attribution & Reconciliation:** Server-side deal redirect (`GET /api/v1/public/deals/:id/redirect`) with 1-to-1 Sub-ID tracking (`subid=clickId, subid2=sector, subid3=dealId`) and automated Cuelinks transaction sync into `commission_records`.
+5. **Zero-Fabrication & Cash Invariant:** Bank-confirmed cash remains strictly ₹0.00 until bank statement credit verification. Paid acquisition spend strictly ₹0.00. Absolute zero mock deals or phantom discounts; honest empty states rendered when verified offers are 0.

@@ -476,7 +476,11 @@ export class CuelinksSyncManager {
    * 4. Performance reconciliation
    * 5. Accurate failure tracking & D1 telemetry persistence (WORKSTREAM D)
    */
-  public async syncCuelinks(organizationId: string = 'org_owner_primary', businessId: string = 'biz_platform_aro'): Promise<{
+  public async syncCuelinks(
+    organizationId: string = 'org_owner_primary',
+    businessId: string = 'biz_platform_aro',
+    options?: { skipOfferFetch?: boolean; reconciliationOnly?: boolean }
+  ): Promise<{
     success: boolean;
     reason?: string;
     status: CuelinksSyncStatus;
@@ -603,52 +607,56 @@ export class CuelinksSyncManager {
 
       // 3. Campaign discovery (Prioritizing India country_id: 252, open access, sorted by EPC)
       let eligibleCampaigns: CuelinksCampaign[] = [];
-      try {
-        const campaignSearch = await this.client.searchCampaigns({
-          country_id: 252,
-          access_status: 'open',
-          sort: 'epc_7d',
-          order: 'desc',
-          per_page: 30
-        });
+      if (!options?.reconciliationOnly) {
+        try {
+          const campaignSearch = await this.client.searchCampaigns({
+            country_id: 252,
+            access_status: 'open',
+            sort: 'epc_7d',
+            order: 'desc',
+            per_page: 30
+          });
 
-        empiricallyVerifiedScopes.add('read:campaigns');
-        this.syncStatus.campaignsDiscovered = campaignSearch.total;
-        eligibleCampaigns = (campaignSearch.campaigns || []).filter(
-          c => (!c.status || c.status === 'active') && (c.access_status === 'open' || c.access_status === 'approved')
-        );
-        this.syncStatus.eligibleCampaignsCount = eligibleCampaigns.length;
+          empiricallyVerifiedScopes.add('read:campaigns');
+          this.syncStatus.campaignsDiscovered = campaignSearch.total;
+          eligibleCampaigns = (campaignSearch.campaigns || []).filter(
+            c => (!c.status || c.status === 'active') && (c.access_status === 'open' || c.access_status === 'approved')
+          );
+          this.syncStatus.eligibleCampaignsCount = eligibleCampaigns.length;
 
-        if (eligibleCampaigns.length > 0) {
-          empiricallyVerifiedScopes.add('write:links');
+          if (eligibleCampaigns.length > 0) {
+            empiricallyVerifiedScopes.add('write:links');
+          }
+
+          // Persist discovered campaigns to D1
+          await this.persistCampaignsD1(organizationId, businessId, eligibleCampaigns);
+        } catch (campErr: any) {
+          if (campErr.statusCode === 403 || campErr.code === 'CUELINKS_FORBIDDEN') {
+            forbiddenScopes.add('read:campaigns');
+          }
+          campaignError = campErr;
+          partialFailureReasons.push(`Campaign search failed: ${campErr.message}`);
+          console.warn(`[CuelinksSync] Campaign search error: ${campErr.message}`);
         }
-
-        // Persist discovered campaigns to D1
-        await this.persistCampaignsD1(organizationId, businessId, eligibleCampaigns);
-      } catch (campErr: any) {
-        if (campErr.statusCode === 403 || campErr.code === 'CUELINKS_FORBIDDEN') {
-          forbiddenScopes.add('read:campaigns');
-        }
-        campaignError = campErr;
-        partialFailureReasons.push(`Campaign search failed: ${campErr.message}`);
-        console.warn(`[CuelinksSync] Campaign search error: ${campErr.message}`);
       }
 
-      // 4. Offer discovery across eligible campaigns
-      try {
-        const offersRes = await this.client.getOffers({ per_page: 30 });
-        empiricallyVerifiedScopes.add('read:offers');
-        const rawOffers = offersRes.offers || [];
-        this.syncStatus.offersRetrieved = rawOffers.length;
+      // 4. Offer discovery across eligible campaigns (skipped if skipOfferFetch or reconciliationOnly)
+      if (!options?.skipOfferFetch && !options?.reconciliationOnly) {
+        try {
+          const offersRes = await this.client.getOffers({ per_page: 30 });
+          empiricallyVerifiedScopes.add('read:offers');
+          const rawOffers = offersRes.offers || [];
+          this.syncStatus.offersRetrieved = rawOffers.length;
 
-        dealCandidates = await this.processOffersToCandidates(rawOffers, eligibleCampaigns);
-      } catch (offErr: any) {
-        if (offErr.statusCode === 403 || offErr.code === 'CUELINKS_FORBIDDEN') {
-          forbiddenScopes.add('read:offers');
+          dealCandidates = await this.processOffersToCandidates(rawOffers, eligibleCampaigns);
+        } catch (offErr: any) {
+          if (offErr.statusCode === 403 || offErr.code === 'CUELINKS_FORBIDDEN') {
+            forbiddenScopes.add('read:offers');
+          }
+          offerError = offErr;
+          partialFailureReasons.push(`Offer retrieval failed: ${offErr.message}`);
+          console.warn(`[CuelinksSync] Offer retrieval error: ${offErr.message}`);
         }
-        offerError = offErr;
-        partialFailureReasons.push(`Offer retrieval failed: ${offErr.message}`);
-        console.warn(`[CuelinksSync] Offer retrieval error: ${offErr.message}`);
       }
 
       // 5. Performance reconciliation (Transactions & Reports)
@@ -833,6 +841,14 @@ export class CuelinksSyncManager {
         errorClass
       };
     }
+  }
+
+  /**
+   * Reconciles transaction commissions and performance metrics without re-crawling offers.
+   * Useful when deal discovery has already ingested offers in the current commercial cycle.
+   */
+  public async syncReconciliationOnly(organizationId: string = 'org_owner_primary', businessId: string = 'biz_platform_aro') {
+    return this.syncCuelinks(organizationId, businessId, { skipOfferFetch: true, reconciliationOnly: true });
   }
 
   /**

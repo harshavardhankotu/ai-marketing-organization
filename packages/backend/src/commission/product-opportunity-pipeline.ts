@@ -74,6 +74,20 @@ export class ProductOpportunityPipeline {
 
   public static readonly SUPPORTED_CATEGORIES: SupportedCategoryDef[] = [
     {
+      category: 'Gold, Silver, Bullion & Jewellery',
+      description: 'Hallmarked gold jewellery, silver coins, bullion bars, and verified jewellery retailer offers (Tanishq, CaratLane, BlueStone).',
+      physicalProduct: true,
+      eligibleNetworks: ['CUELINKS', 'AMAZON_ASSOCIATES'],
+      prohibitedKeywords: ['unregistered investment scheme', 'unlicensed chit fund', 'digital gold speculative leverage']
+    },
+    {
+      category: 'Lifestyle, Apparel & Consumer Goods',
+      description: 'Fashion, lifestyle, footwear, watches, and verified consumer products from approved Indian retail campaigns.',
+      physicalProduct: true,
+      eligibleNetworks: ['CUELINKS', 'AMAZON_ASSOCIATES', 'EARNKARO', 'ADMITAD'],
+      prohibitedKeywords: ['counterfeit', 'replica', 'unauthorized brand copy']
+    },
+    {
       category: 'Home & Kitchen',
       description: 'Kitchen appliances, water purifiers, coffee makers, and smart home hardware with verifiable specifications.',
       physicalProduct: true,
@@ -133,8 +147,9 @@ export class ProductOpportunityPipeline {
 
   public static readonly PROHIBITED_CATEGORY_TERMS = [
     'health', 'medical', 'medicine', 'supplement', 'supplements',
-    'skincare', 'pharmaceutical', 'pharma', 'apparel', 'footwear',
-    'clothing', 'shoes'
+    'skincare', 'pharmaceutical', 'pharma', 'prescription_drugs',
+    'unlicensed_health_claims', 'tobacco', 'unregistered_financial_derivatives',
+    'binary_options'
   ];
 
   private constructor() {}
@@ -524,28 +539,32 @@ export class ProductOpportunityPipeline {
       const commissionModel = 'PERCENTAGE (Fixed advertising rates)';
       const contentStatus = matchingAsset ? matchingAsset.status : 'NONE';
 
+      const defaultCategoryProduct = lower.includes('printer')
+        ? 'Phomemo PM-241BT Direct Thermal Shipping Label Printer'
+        : `${cat} Verified Selection`;
+
       if (matchingAsset?.status === 'UNSUPPORTED_BY_DEMAND' || matchingOffer?.status === 'PAUSED_SEEDED_DEMAND' || (lower.includes('printer') && buyerQuestions === 0 && (!matchingOffer || matchingOffer.status !== 'ACTIVE'))) {
-        productOrProblem = matchingOffer?.title || 'Phomemo PM-241BT Direct Thermal Shipping Label Printer';
+        productOrProblem = matchingOffer?.title || defaultCategoryProduct;
         funnelState = 'UNSUPPORTED_BY_DEMAND';
         nextStep = 'Paused: Hardware demand was seeded by fixture migration 0026 without real buyer questions';
         nextStepReason = 'Offer and guide paused. Thermal printer proposal had zero real buyer questions and claims lacked stored manufacturer spec lines.';
       } else if (matchingAsset?.status === 'NEEDS_REWRITE') {
-        productOrProblem = matchingOffer?.title || 'Phomemo PM-241BT Direct Thermal Shipping Label Printer';
+        productOrProblem = matchingOffer?.title || defaultCategoryProduct;
         funnelState = 'NEEDS_REWRITE';
         nextStep = 'Rewrite guide to match approved offer specifications and verify stored brand spec lines';
         nextStepReason = `Guide ${matchingAsset.id} has product/model mismatch (PM-241BT vs M110) or unverified claims lacking stored brand_spec_lines.`;
       } else if (matchingAsset?.status === 'PUBLISHED') {
-        productOrProblem = matchingOffer?.title || 'Phomemo PM-241BT Direct Thermal Shipping Label Printer';
+        productOrProblem = matchingOffer?.title || defaultCategoryProduct;
         funnelState = 'PUBLISHED';
         nextStep = 'Monitor organic visitors and referral click beacon';
         nextStepReason = 'Guide is published; active acquisition distribution required.';
       } else if (matchingAsset?.status === 'PUBLISH_READY') {
-        productOrProblem = matchingOffer?.title || 'Phomemo PM-241BT Direct Thermal Shipping Label Printer';
+        productOrProblem = matchingOffer?.title || defaultCategoryProduct;
         funnelState = 'NEEDS_OWNER_ACTION';
         nextStep = 'Complete statutory owner intake attestation to publish guide';
         nextStepReason = `Guide ${matchingAsset.id} is PUBLISH_READY, but statutory owner intake is missing required fields.`;
       } else if (matchingAsset?.status === 'DRAFT') {
-        productOrProblem = matchingOffer?.title || 'Phomemo PM-241BT Direct Thermal Shipping Label Printer';
+        productOrProblem = matchingOffer?.title || defaultCategoryProduct;
         funnelState = 'DRAFTED';
         nextStep = 'Complete review and advance guide to PUBLISH_READY';
         nextStepReason = 'Draft guide created; review required before marking publish-ready.';

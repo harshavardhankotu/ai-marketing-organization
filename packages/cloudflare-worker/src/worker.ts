@@ -64,9 +64,10 @@ async function runCycle(env: Env): Promise<void> {
         JSON.stringify(body).substring(0, 500)
       );
 
-      // Claim & execute due job from durable queue
+      // Claim & execute due jobs from durable queue via bounded drain loop
       try {
-        const claimRes = await fetch(claimUrl, {
+        const drainUrl = `${claimUrl}?budgetMs=20000&maxJobs=3`;
+        const claimRes = await fetch(drainUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -77,10 +78,10 @@ async function runCycle(env: Env): Promise<void> {
         });
         if (claimRes.ok) {
           const claimBody = await claimRes.json() as Record<string, unknown>;
-          console.log(`[CRON WORKER] Claim step: claimed=${claimBody.claimed}, message=${claimBody.message || 'SUCCESS'}`);
+          console.log(`[CRON WORKER] Worker drain completed: claimed=${claimBody.claimed}, jobsExecuted=${claimBody.jobsExecutedCount ?? (claimBody.claimed ? 1 : 0)}, elapsed=${claimBody.elapsedMs ?? 'N/A'}ms`);
         }
       } catch (claimErr: any) {
-        console.warn(`[CRON WORKER] Claim step notice: ${claimErr?.message}`);
+        console.warn(`[CRON WORKER] Drain loop notice: ${claimErr?.message}`);
       }
     } else {
       const text = await response.text();

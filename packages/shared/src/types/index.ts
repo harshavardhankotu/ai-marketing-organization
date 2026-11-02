@@ -647,7 +647,7 @@ export interface RealEconomicsSummary {
   organicAttributedRevenueINR?: number;
   revenuePerOrganicLeadINR?: number | 'UNKNOWN';
   revenuePerOrganicCustomerINR?: number | 'UNKNOWN';
-  organicConversionRatePercent?: number | 'UNKNOWN';
+  organicConversionRatePercent?: number | 'UNKNOWN' | 'INSUFFICIENT_EVIDENCE';
   aiCostStatus?: AICostStatus;
   freeTierStatus?: 'FREE_TIER_VERIFIED' | 'ESTIMATED' | 'FREE_TIER_STATUS_UNKNOWN';
 }

@@ -73,6 +73,8 @@ export interface CuelinksPaginationCursor {
   campaignPage: number;
   offerPage: number;
   lastUpdated: string;
+  failedPage?: number;
+  pageFailureCount?: number;
 }
 
 export interface DiscoveredDealInput {

@@ -83,7 +83,7 @@ export class CuelinksV3Client {
     this.baseUrl = (options?.baseUrl ?? 'https://developers.cuelinks.com/pub_api/v3').replace(/\/$/, '');
     this.fetchFn = options?.fetchFn ?? fetch;
     this.timeoutMs = options?.timeoutMs ?? 15000;
-    this.maxRetries = options?.maxRetries ?? 1;
+    this.maxRetries = options?.maxRetries ?? (process.env.NODE_ENV === 'test' ? 1 : 3);
   }
 
   public static getInstance(options?: CuelinksClientOptions): CuelinksV3Client {
@@ -665,6 +665,13 @@ export class CuelinksV3Client {
     // 5. Strict monetization gate: require explicit affiliated: true AND allowlisted HTTPS tracking URL
     const isAffiliated = result.affiliated === true && isCandidateSafe;
 
+    if (isAffiliated) {
+      try {
+        const { CuelinksSyncManager } = await import('./cuelinks-sync-manager.js');
+        CuelinksSyncManager.getInstance(this).recordScopeSuccess('write:links');
+      } catch {}
+    }
+
     return {
       url: destinationUrl,
       tracking_url: isAffiliated && candidateTrackingUrl ? candidateTrackingUrl : destinationUrl,
@@ -751,6 +758,8 @@ export class CuelinksV3Client {
     start_date?: string;
     end_date?: string;
     updated_since?: string;
+    channel_id?: number | string;
+    campaign_id?: number | string;
     status?: string;
     page?: number;
     per_page?: number;
@@ -763,6 +772,8 @@ export class CuelinksV3Client {
         start_date: options?.start_date,
         end_date: options?.end_date,
         updated_since: options?.updated_since,
+        channel_id: options?.channel_id,
+        campaign_id: options?.campaign_id,
         status: options?.status,
         page: options?.page || 1,
         per_page: options?.per_page || 50
@@ -785,6 +796,8 @@ export class CuelinksV3Client {
   public async getPerformanceReport(options?: {
     start_date?: string;
     end_date?: string;
+    channel_id?: number | string;
+    campaign_id?: number | string;
     slice_by?: string;
     page?: number;
     per_page?: number;
@@ -794,6 +807,8 @@ export class CuelinksV3Client {
         query: {
           start_date: options?.start_date,
           end_date: options?.end_date,
+          channel_id: options?.channel_id,
+          campaign_id: options?.campaign_id,
           slice_by: options?.slice_by,
           page: options?.page || 1,
           per_page: options?.per_page || 30

@@ -930,7 +930,9 @@ describe('Autonomous Deal Discovery Engine V1.1 (Spec §§ 1–15)', () => {
       engine.resetSources();
       const sources = engine.getSources();
 
-      expect(sources.length).toBe(19);
+      expect(sources.length).toBe(23);
+      expect(sources.some(s => s.id === 'src_ibja_rates')).toBe(true);
+      expect(sources.some(s => s.id === 'src_tanishq_in')).toBe(true);
       for (const s of sources) {
         expect(s.offersCollected).toBe(0);
         expect(s.lastAttemptAt).toBeUndefined();
@@ -1220,6 +1222,53 @@ describe('Autonomous Deal Discovery Engine V1.1 (Spec §§ 1–15)', () => {
       const cursorAfterWrap = await engine.getCuelinksPaginationCursor(orgId);
       expect(cursorAfterWrap.campaignPage).toBe(1); // Wrapped around to 1
       expect(cursorAfterWrap.offerPage).toBe(1); // Wrapped around to 1
+    });
+
+    it('retries failed page without dropping cursor to page 1 on transient error, and wraps after bounded failures', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+      await engine.saveCuelinksPaginationCursor({
+        campaignPage: 2,
+        offerPage: 10,
+        lastUpdated: new Date().toISOString()
+      }, orgId, bizId);
+
+      const mockClient = new CuelinksV3Client({ apiKey: 'mock_cuelinks_key' });
+      vi.spyOn(mockClient, 'isConfigured').mockReturnValue(true);
+      vi.spyOn(mockClient, 'ping').mockResolvedValue({ connected: true, message: 'Connected' });
+      vi.spyOn(mockClient, 'getChannels').mockResolvedValue([
+        { id: 331585, name: 'AI Marketing Channel', url: 'https://gen-lang-client-0916255372.web.app', status: 'active' }
+      ]);
+      vi.spyOn(mockClient, 'searchCampaigns').mockResolvedValue({
+        campaigns: [{ id: 101, name: 'Active Camp', url: 'https://active.com', status: 'active', access_status: 'open', epc_7d: '2.0' }],
+        total: 100
+      });
+      // Simulate transient 500 error on getOffers
+      vi.spyOn(mockClient, 'getOffers').mockRejectedValue(new Error('HTTP 500: Upstream offset error'));
+      vi.spyOn(mockClient, 'convertLink').mockResolvedValue({ affiliated: false, tracking_url: '' });
+      vi.spyOn(mockClient, 'getReports').mockResolvedValue({ reports: [], total: 0 });
+
+      engine.setCuelinksClient(mockClient);
+
+      // Cycle 1: First failure retains offerPage = 10, failure count = 1
+      await engine.runDiscoveryCycle(orgId, bizId);
+      const cursorAfterErr1 = await engine.getCuelinksPaginationCursor(orgId);
+      expect(cursorAfterErr1.offerPage).toBe(10);
+      expect(cursorAfterErr1.failedPage).toBe(10);
+      expect(cursorAfterErr1.pageFailureCount).toBe(1);
+
+      // Cycle 2: Second failure retains offerPage = 10, failure count = 2
+      await engine.runDiscoveryCycle(orgId, bizId);
+      const cursorAfterErr2 = await engine.getCuelinksPaginationCursor(orgId);
+      expect(cursorAfterErr2.offerPage).toBe(10);
+      expect(cursorAfterErr2.pageFailureCount).toBe(2);
+
+      // Cycle 3: Third failure exceeds bounded limit (3) and wraps to page 1
+      await engine.runDiscoveryCycle(orgId, bizId);
+      const cursorAfterErr3 = await engine.getCuelinksPaginationCursor(orgId);
+      expect(cursorAfterErr3.offerPage).toBe(1);
+      expect(cursorAfterErr3.pageFailureCount).toBe(0);
+
+      await engine.resetCuelinksPaginationCursor(orgId, bizId);
     });
 
     it('deduplicates identical offers delivered across paginated batches', async () => {

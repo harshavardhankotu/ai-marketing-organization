@@ -65,307 +65,8 @@ export function isCouponDeal(deal: DealItem): boolean {
   return deal.dealKind === 'COUPON' || !deal.currentPriceINR || deal.currentPriceINR <= 0;
 }
 
-// Curated verified baseline deals for initial load or offline fallback (Products + Coupons)
-const FALLBACK_VERIFIED_DEALS: DealItem[] = [
-  {
-    id: 'deal_boat_airdopes_141',
-    dealKind: 'PRODUCT',
-    title: 'boAt Airdopes 141 Bluetooth Truly Wireless in Ear Earbuds with 42H Playtime',
-    brand: 'boAt',
-    merchant: 'boAt Lifestyle',
-    category: 'Audio & Wearables',
-    productUrl: 'https://www.boat-lifestyle.com/products/airdopes-141',
-    currentPriceINR: 1299,
-    currency: 'INR',
-    referencePriceINR: 4490,
-    claimedDiscountPercent: 71,
-    verifiedDiscountPercent: 71,
-    discountVerificationType: 'INDEPENDENT_CORROBORATED',
-    discountBadge: 'FLAT 71% OFF',
-    couponCode: 'BOATEXTRA10',
-    couponConditions: 'Extra 10% instant discount on prepaid orders above ₹999',
-    availability: 'IN_STOCK',
-    verificationStatus: 'VERIFIED',
-    buyerValueScore: 88,
-    lastCheckedAt: new Date().toISOString(),
-    sourceDomain: 'boat-lifestyle.com',
-    paymentRestrictions: 'Prepaid orders (UPI, Cards, NetBanking)',
-    evidenceJson: {
-      sources: ['https://www.boat-lifestyle.com/collections/best-deals'],
-      verificationLogs: [
-        'MRP ₹4,490 corroborated against official boAt manufacturer catalog',
-        'Current selling price ₹1,299 active and validated',
-        'Coupon BOATEXTRA10 verified working on checkout stage'
-      ],
-      priceHistory: [
-        { price: 1499, observedAt: new Date(Date.now() - 14 * 86400000).toISOString() },
-        { price: 1299, observedAt: new Date().toISOString() }
-      ]
-    }
-  },
-  {
-    id: 'coupon_swiggy_gourmet_120',
-    dealKind: 'COUPON',
-    title: 'Flat ₹120 Off on Gourmet Delights & Top Indian Restaurants via Swiggy',
-    brand: 'Swiggy',
-    merchant: 'Swiggy India',
-    category: 'Food & Dining',
-    productUrl: 'https://www.swiggy.com',
-    discountBadge: 'FLAT ₹120 OFF',
-    couponCode: 'GOURMET120',
-    couponConditions: 'Valid on orders of ₹499 and above at select Gourmet partner restaurants across major Indian metros.',
-    availability: 'IN_STOCK',
-    verificationStatus: 'VERIFIED',
-    discountVerificationType: 'INDEPENDENT_CORROBORATED',
-    buyerValueScore: 92,
-    lastCheckedAt: new Date().toISOString(),
-    sourceDomain: 'swiggy.com',
-    paymentRestrictions: 'Prepaid orders via UPI, Credit/Debit cards & NetBanking',
-    evidenceJson: {
-      sources: ['https://www.swiggy.com/offers'],
-      verificationLogs: [
-        'Coupon GOURMET120 validated active across Swiggy Gourmet restaurant catalog',
-        'Direct partnership promotional terms verified with no hidden charges',
-        'Redemption active on Swiggy Web and Android/iOS apps'
-      ]
-    }
-  },
-  {
-    id: 'deal_lenovo_ideapad_slim3',
-    dealKind: 'PRODUCT',
-    title: 'Lenovo IdeaPad Slim 3 12th Gen Intel Core i3-1215U 15.6" FHD Laptop (8GB/512GB SSD)',
-    brand: 'Lenovo',
-    merchant: 'Lenovo India',
-    category: 'Laptops & Computers',
-    productUrl: 'https://www.lenovo.com/in/en/laptops/ideapad/ideapad-s-series/IdeaPad-Slim-3-Gen-7-15-Intel/p/LEN101I0048',
-    currentPriceINR: 34990,
-    currency: 'INR',
-    referencePriceINR: 52990,
-    claimedDiscountPercent: 34,
-    verifiedDiscountPercent: 34,
-    discountVerificationType: 'INDEPENDENT_CORROBORATED',
-    discountBadge: '34% OFF',
-    couponCode: 'LENOVOSAVE',
-    couponConditions: 'Instant ₹1,500 off at cart on HDFC/ICICI debit & credit cards',
-    availability: 'IN_STOCK',
-    verificationStatus: 'VERIFIED',
-    buyerValueScore: 82,
-    lastCheckedAt: new Date().toISOString(),
-    sourceDomain: 'lenovo.com',
-    paymentRestrictions: 'Eligible bank cards and UPI transactions',
-    evidenceJson: {
-      sources: ['https://www.lenovo.com/in/en/deals'],
-      verificationLogs: [
-        'Original list price ₹52,990 verified against official Lenovo India specification sheet',
-        'Direct promo price ₹34,990 verified in stock with standard 1-year warranty',
-        'No price markup detected prior to promotional run'
-      ],
-      priceHistory: [
-        { price: 36990, observedAt: new Date(Date.now() - 30 * 86400000).toISOString() },
-        { price: 34990, observedAt: new Date().toISOString() }
-      ]
-    }
-  },
-  {
-    id: 'coupon_myntra_insider_15',
-    dealKind: 'COUPON',
-    title: 'Flat 15% Instant Discount on Premium Branded Fashion & Apparel at Myntra',
-    brand: 'Myntra',
-    merchant: 'Myntra',
-    category: 'Fashion & Apparel',
-    productUrl: 'https://www.myntra.com',
-    discountBadge: 'FLAT 15% OFF',
-    couponCode: 'MYNTRA15',
-    couponConditions: 'Flat 15% off up to ₹600 on minimum purchase of ₹1,999 on select seasonal catalog.',
-    availability: 'IN_STOCK',
-    verificationStatus: 'VERIFIED',
-    discountVerificationType: 'INDEPENDENT_CORROBORATED',
-    buyerValueScore: 89,
-    lastCheckedAt: new Date().toISOString(),
-    sourceDomain: 'myntra.com',
-    evidenceJson: {
-      sources: ['https://www.myntra.com/myntra-fashion-coupons'],
-      verificationLogs: [
-        'Promo code MYNTRA15 verified live on checkout with valid cart criteria',
-        'Discount applied instantly to eligible fashion brands without wallet loading requirement'
-      ]
-    }
-  },
-  {
-    id: 'deal_noise_colorfit_pro4',
-    dealKind: 'PRODUCT',
-    title: 'Noise ColorFit Pro 4 Alpha 1.78" AMOLED Display Smart Watch with Bluetooth Calling',
-    brand: 'Noise',
-    merchant: 'Noise Official',
-    category: 'Audio & Wearables',
-    productUrl: 'https://www.gonoise.com/products/noise-colorfit-pro-4-alpha-smartwatch',
-    currentPriceINR: 2799,
-    currency: 'INR',
-    referencePriceINR: 7999,
-    claimedDiscountPercent: 65,
-    verifiedDiscountPercent: 65,
-    discountVerificationType: 'INDEPENDENT_CORROBORATED',
-    discountBadge: '65% OFF',
-    couponCode: 'NOISE200',
-    couponConditions: 'Flat ₹200 instant discount on checkout with any UPI payment',
-    availability: 'IN_STOCK',
-    verificationStatus: 'VERIFIED',
-    buyerValueScore: 85,
-    lastCheckedAt: new Date().toISOString(),
-    sourceDomain: 'gonoise.com',
-    paymentRestrictions: 'UPI payments (Google Pay, PhonePe, Paytm)',
-    evidenceJson: {
-      sources: ['https://www.gonoise.com/collections/smart-watches'],
-      verificationLogs: [
-        'Reference MRP ₹7,999 cross-checked with retail packaging specifications',
-        'Direct brand price ₹2,799 verified live and in stock',
-        'UPI redemption tested successfully on checkout'
-      ]
-    }
-  },
-  {
-    id: 'coupon_hostinger_cloud_save',
-    dealKind: 'COUPON',
-    title: 'Extra 10% Off All Web Hosting, WordPress & Cloud Annual Plans in India',
-    brand: 'Hostinger',
-    merchant: 'Hostinger India',
-    category: 'Hosting & Domains',
-    productUrl: 'https://www.hostinger.in',
-    discountBadge: 'EXTRA 10% OFF',
-    couponCode: 'HOSTING10',
-    couponConditions: 'Applicable on 12-month, 24-month, and 48-month web hosting, cloud hosting, and VPS plans.',
-    availability: 'IN_STOCK',
-    verificationStatus: 'VERIFIED',
-    discountVerificationType: 'INDEPENDENT_CORROBORATED',
-    buyerValueScore: 91,
-    lastCheckedAt: new Date().toISOString(),
-    sourceDomain: 'hostinger.in',
-    trackingUrl: 'https://www.hostinger.in?ref=affiliate_partner',
-    evidenceJson: {
-      sources: ['https://www.hostinger.in/coupons'],
-      verificationLogs: [
-        'Official partner promo code HOSTING10 validated active on checkout stage',
-        'Stackable on top of existing up to 75% annual subscription introductory discounts'
-      ]
-    }
-  },
-  {
-    id: 'deal_phomemo_m110_printer',
-    dealKind: 'PRODUCT',
-    title: 'Phomemo M110 Portable Thermal Shipping & Barcode Label Printer for Business',
-    brand: 'Phomemo',
-    merchant: 'Amazon India',
-    category: 'Commercial & Office',
-    productUrl: 'https://www.amazon.in/dp/B085XMTQ95',
-    currentPriceINR: 4499,
-    currency: 'INR',
-    referencePriceINR: 6999,
-    claimedDiscountPercent: 36,
-    verifiedDiscountPercent: 36,
-    discountVerificationType: 'INDEPENDENT_CORROBORATED',
-    discountBadge: '36% OFF',
-    availability: 'IN_STOCK',
-    verificationStatus: 'VERIFIED',
-    buyerValueScore: 90,
-    lastCheckedAt: new Date().toISOString(),
-    sourceDomain: 'amazon.in',
-    evidenceJson: {
-      sources: ['https://www.amazon.in/dp/B085XMTQ95'],
-      verificationLogs: [
-        'Amazon.in marketplace listing verified with Prime shipping available',
-        'Base price ₹4,499 compared against 90-day median pricing ₹4,999',
-        'Direct link to merchant with transparent commercial disclosure'
-      ]
-    }
-  },
-  {
-    id: 'coupon_ajio_festive_500',
-    dealKind: 'COUPON',
-    title: 'Flat ₹500 Off on Minimum Cart of ₹2,490 on Ajio Luxe & Trends',
-    brand: 'Ajio',
-    merchant: 'Ajio Reliance',
-    category: 'Fashion & Apparel',
-    productUrl: 'https://www.ajio.com',
-    discountBadge: 'SAVE ₹500',
-    couponCode: 'AJIOMAX500',
-    couponConditions: 'Applicable on cart total ₹2,490+ on eligible branded apparel, footwear, and accessories.',
-    availability: 'IN_STOCK',
-    verificationStatus: 'VERIFIED',
-    discountVerificationType: 'INDEPENDENT_CORROBORATED',
-    buyerValueScore: 87,
-    lastCheckedAt: new Date().toISOString(),
-    sourceDomain: 'ajio.com',
-    evidenceJson: {
-      sources: ['https://www.ajio.com'],
-      verificationLogs: [
-        'Promo code AJIOMAX500 corroborated on cart stage validation',
-        'Direct store discount verified without hidden convenience surcharges'
-      ]
-    }
-  },
-  {
-    id: 'deal_zebronics_soundbar_9500',
-    dealKind: 'PRODUCT',
-    title: 'Zebronics Zeb-Juke Bar 9500 Pro Dolby 5.1 Soundbar with Wireless Subwoofer (525W)',
-    brand: 'Zebronics',
-    merchant: 'Amazon India',
-    category: 'Electronics & Audio',
-    productUrl: 'https://www.amazon.in/dp/B09YV71Y7F',
-    currentPriceINR: 9999,
-    currency: 'INR',
-    referencePriceINR: 23999,
-    claimedDiscountPercent: 58,
-    verifiedDiscountPercent: 58,
-    discountVerificationType: 'INDEPENDENT_CORROBORATED',
-    discountBadge: '58% OFF',
-    couponCode: 'AUDIO500',
-    couponConditions: 'Collect ₹500 coupon on product page before adding to cart',
-    availability: 'IN_STOCK',
-    verificationStatus: 'VERIFIED',
-    buyerValueScore: 86,
-    lastCheckedAt: new Date().toISOString(),
-    sourceDomain: 'amazon.in',
-    evidenceJson: {
-      sources: ['https://www.amazon.in/dp/B09YV71Y7F'],
-      verificationLogs: [
-        'MRP ₹23,999 verified with manufacturer retail packaging data',
-        'Promotional selling price ₹9,999 verified in stock',
-        'Collect-coupon applies automatically at final checkout stage'
-      ]
-    }
-  },
-  {
-    id: 'deal_fireboltt_invincible_plus',
-    dealKind: 'PRODUCT',
-    title: 'Fire-Boltt Invincible Plus 1.43" AMOLED Display Bluetooth Calling Smartwatch with TWS Connection',
-    brand: 'Fire-Boltt',
-    merchant: 'Fire-Boltt Official',
-    category: 'Audio & Wearables',
-    productUrl: 'https://www.fireboltt.com/products/invincible-plus',
-    currentPriceINR: 3499,
-    currency: 'INR',
-    referencePriceINR: 21000,
-    claimedDiscountPercent: 83,
-    verifiedDiscountPercent: 83,
-    discountVerificationType: 'INDEPENDENT_CORROBORATED',
-    discountBadge: '83% OFF',
-    couponCode: 'BOLTT100',
-    couponConditions: 'Instant ₹100 discount on online payments above ₹2,500',
-    availability: 'IN_STOCK',
-    verificationStatus: 'VERIFIED',
-    buyerValueScore: 84,
-    lastCheckedAt: new Date().toISOString(),
-    sourceDomain: 'fireboltt.com',
-    evidenceJson: {
-      sources: ['https://www.fireboltt.com/collections/bestsellers'],
-      verificationLogs: [
-        'Official manufacturer promotional campaign validated',
-        'Selling price ₹3,499 confirmed with 1-year domestic warranty',
-        'Payment discount code verified working'
-      ]
-    }
-  }
-];
+// Honest zero-fabrication baseline: No simulated or fallback deals.
+const FALLBACK_VERIFIED_DEALS: DealItem[] = [];
 
 export function formatTimeAgo(isoString?: string): string {
   if (!isoString) return 'recently';
@@ -483,24 +184,15 @@ export const PublicDealsPage: React.FC = () => {
       const res = await fetch('/api/v1/public/deals?limit=50');
       if (res.ok) {
         const json = await res.json();
-        if (json.data && Array.isArray(json.data.deals) && json.data.deals.length > 0) {
-          // Merge API deals with fallback coupons if API currently only has product deals
-          const apiDeals: DealItem[] = json.data.deals;
-          const hasCouponsInApi = apiDeals.some(d => isCouponDeal(d));
-          if (!hasCouponsInApi) {
-            const fallbackCoupons = FALLBACK_VERIFIED_DEALS.filter(d => isCouponDeal(d));
-            setDeals([...apiDeals, ...fallbackCoupons]);
-          } else {
-            setDeals(apiDeals);
-          }
+        if (json.data && Array.isArray(json.data.deals)) {
+          setDeals(json.data.deals);
           return;
         }
       }
-      // Use verified fallback deals if public endpoint returns zero deals
-      setDeals(FALLBACK_VERIFIED_DEALS);
+      setDeals([]);
     } catch (e) {
-      console.warn('Could not fetch deals from public endpoint, using verified seed deals', e);
-      setDeals(FALLBACK_VERIFIED_DEALS);
+      console.warn('Could not fetch deals from public endpoint', e);
+      setDeals([]);
     } finally {
       setLoading(false);
     }
@@ -973,9 +665,15 @@ export const PublicDealsPage: React.FC = () => {
         {!loading && filteredDeals.length === 0 && (
           <div className="py-16 text-center bg-slate-900/40 border border-slate-800/80 rounded-2xl p-8 max-w-lg mx-auto">
             <AlertCircle className="w-10 h-10 text-slate-500 mx-auto mb-3" />
-            <h3 className="text-base font-semibold text-slate-200">No offers match your filter criteria</h3>
+            <h3 className="text-base font-semibold text-slate-200">
+              {deals.length === 0
+                ? "No currently verified offers are available in this category. Check back later."
+                : "No offers match your filter criteria"}
+            </h3>
             <p className="text-xs text-slate-400 mt-1">
-              Try switching tabs, clearing your search query, or selecting "All Categories".
+              {deals.length === 0
+                ? "Our autonomous engine verifies authentic retailer offers continuously with zero price inflation."
+                : 'Try switching tabs, clearing your search query, or selecting "All Categories".'}
             </p>
             <button
               onClick={() => {
@@ -999,7 +697,9 @@ export const PublicDealsPage: React.FC = () => {
             {filteredDeals.map((deal) => {
               const isCoupon = isCouponDeal(deal);
               const isVerified = deal.verificationStatus === 'VERIFIED';
-              const targetUrl = deal.trackingUrl || deal.productUrl;
+              const targetUrl = deal.id
+                ? `/api/v1/public/deals/${deal.id}/redirect`
+                : (deal.trackingUrl || deal.productUrl);
 
               // Product Deal with verified pricing calculations
               const hasDiscount = (deal.verifiedDiscountPercent && deal.verifiedDiscountPercent > 0) || (deal.claimedDiscountPercent && deal.claimedDiscountPercent > 0);

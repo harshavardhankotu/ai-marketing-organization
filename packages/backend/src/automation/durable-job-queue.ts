@@ -19,12 +19,14 @@ export type JobStatus =
   | 'RUNNING'
   | 'COMPLETED'
   | 'COMPLETED_WITH_FINDINGS'
+  | 'COMPLETED_NO_FINDINGS'
   | 'NO_ACTION_DUE'
   | 'PARTIAL'
   | 'DEFERRED'
   | 'BLOCKED'
   | 'RETRY_WAIT'
-  | 'FAILED_PERMANENTLY';
+  | 'FAILED_PERMANENTLY'
+  | 'NOT_IMPLEMENTED';
 
 export interface AutomationJobRecord {
   id: string;
@@ -42,6 +44,7 @@ export interface AutomationJobRecord {
   lockedAt: string | null;
   leaseExpiresAt: string | null;
   workerSource: string | null;
+  leaseToken: string | null;
   lastError: string | null;
   result: Record<string, any>;
   createdAt: string;
@@ -146,6 +149,87 @@ export class DurableJobQueue {
   }
 
   /**
+   * Enqueues a batch of jobs idempotently in bulk to eliminate N+1 round trips during cron pings.
+   */
+  public async enqueueJobsBatch(
+    optionsList: EnqueueOptions[]
+  ): Promise<{ enqueuedCount: number; existingCount: number }> {
+    if (!optionsList || optionsList.length === 0) {
+      return { enqueuedCount: 0, existingCount: 0 };
+    }
+
+    // 1. Identify which idempotency keys already exist in one query
+    const keys = optionsList.map(o => o.idempotencyKey);
+    const placeholders = keys.map(() => '?').join(', ');
+    const checkSql = `SELECT idempotency_key FROM automation_jobs WHERE idempotency_key IN (${placeholders})`;
+
+    let existingKeysSet = new Set<string>();
+    try {
+      if (isProduction()) {
+        const rows = await this.d1Repo.query<any>('automation_jobs', checkSql, keys);
+        existingKeysSet = new Set(rows.map(r => r.idempotency_key));
+      } else {
+        const rows = getDb().prepare(checkSql).all(...keys) as any[];
+        existingKeysSet = new Set(rows.map(r => r.idempotency_key));
+      }
+    } catch {}
+
+    const toInsert = optionsList.filter(o => !existingKeysSet.has(o.idempotencyKey));
+    if (toInsert.length === 0) {
+      return { enqueuedCount: 0, existingCount: optionsList.length };
+    }
+
+    // 2. Perform insert for new jobs
+    let enqueuedCount = 0;
+    for (const opt of toInsert) {
+      const jobId = `job_${Date.now()}_${randomUUID().substring(0, 8)}`;
+      const businessId = opt.businessId || 'biz_platform_aro';
+      const organizationId = opt.organizationId || 'org_owner_primary';
+      const priority = opt.priority !== undefined ? opt.priority : 1;
+      const maxAttempts = opt.maxAttempts || 3;
+      const availableAt = opt.availableAt || new Date().toISOString();
+      const payloadJson = JSON.stringify(opt.payload || {});
+
+      const insertSql = `
+        INSERT OR IGNORE INTO automation_jobs (
+          id, workflow_id, business_id, organization_id, idempotency_key,
+          status, priority, payload_json, checkpoint_json, attempts, max_attempts,
+          available_at, result_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 'QUEUED', ?, ?, '{}', 0, ?, ?, '{}', datetime('now'), datetime('now'))
+      `;
+      const params = [
+        jobId,
+        opt.workflowId,
+        businessId,
+        organizationId,
+        opt.idempotencyKey,
+        priority,
+        payloadJson,
+        maxAttempts,
+        availableAt
+      ];
+
+      try {
+        if (isProduction()) {
+          const res = await this.d1Repo.executeWrite('automation_jobs', insertSql, params);
+          if (((res as any)?.rowsAffected ?? (res as any)?.changes) > 0) {
+            enqueuedCount++;
+          }
+        } else {
+          const res = getDb().prepare(insertSql).run(...params);
+          if (res.changes > 0) {
+            enqueuedCount++;
+          }
+        }
+      } catch (err: any) {
+        console.warn(`[JobQueue] Notice enqueuing job in batch: ${err.message}`);
+      }
+    }
+
+    return { enqueuedCount, existingCount: optionsList.length - enqueuedCount };
+  }
+
+  /**
    * Atomically claims the next eligible due job.
    * Eligible criteria:
    * 1. Status is QUEUED or RETRY_WAIT and available_at <= current time, OR
@@ -178,7 +262,8 @@ export class DurableJobQueue {
       return null;
     }
 
-    // 3. Atomically acquire lease
+    // 3. Atomically acquire lease with unique fencing token
+    const leaseToken = `lease_${Date.now()}_${randomUUID().substring(0, 8)}`;
     const claimSql = `
       UPDATE automation_jobs
       SET status = 'RUNNING',
@@ -186,10 +271,11 @@ export class DurableJobQueue {
         lease_expires_at = datetime('now', '+' || ? || ' seconds'),
         attempts = attempts + 1,
         worker_source = ?,
+        lease_token = ?,
         updated_at = datetime('now')
       WHERE id = ? AND status IN ('QUEUED', 'RETRY_WAIT')
     `;
-    const claimParams = [leaseDurationSeconds, workerSource, candidateRow.id];
+    const claimParams = [leaseDurationSeconds, workerSource, leaseToken, candidateRow.id];
 
     let changes = 0;
     if (isProduction()) {
@@ -233,52 +319,84 @@ export class DurableJobQueue {
   /**
    * Persists an incremental progress checkpoint without completing the job.
    * Enables crash recovery without repeating completed external actions.
+   * Enforces lease fencing: rejects writes if worker lease was stolen/expired.
    */
   public async updateCheckpoint(
     jobId: string,
     checkpoint: Record<string, any>,
-    partialResult?: Record<string, any>
-  ): Promise<void> {
+    partialResult?: Record<string, any>,
+    leaseToken?: string
+  ): Promise<{ success: boolean; rowsAffected: number }> {
     const cpJson = JSON.stringify(checkpoint || {});
     const resJson = partialResult ? JSON.stringify(partialResult) : null;
 
-    const sql = resJson
-      ? `UPDATE automation_jobs SET checkpoint_json = ?, result_json = ?, updated_at = datetime('now') WHERE id = ?`
-      : `UPDATE automation_jobs SET checkpoint_json = ?, updated_at = datetime('now') WHERE id = ?`;
+    let sql = resJson
+      ? `UPDATE automation_jobs SET checkpoint_json = ?, result_json = ?, updated_at = datetime('now') WHERE id = ? AND status = 'RUNNING'`
+      : `UPDATE automation_jobs SET checkpoint_json = ?, updated_at = datetime('now') WHERE id = ? AND status = 'RUNNING'`;
     const params = resJson ? [cpJson, resJson, jobId] : [cpJson, jobId];
 
-    if (isProduction()) {
-      await this.d1Repo.executeWrite('automation_jobs', sql, params);
-    } else {
-      getDb().prepare(sql).run(...params);
+    if (leaseToken) {
+      sql += ` AND (lease_token = ? OR lease_token IS NULL)`;
+      params.push(leaseToken);
     }
+
+    let rowsAffected = 0;
+    if (isProduction()) {
+      const res = await this.d1Repo.executeWrite('automation_jobs', sql, params);
+      rowsAffected = (res as any)?.rowsAffected ?? (res as any)?.changes ?? 0;
+    } else {
+      const res = getDb().prepare(sql).run(...params);
+      rowsAffected = res.changes;
+    }
+
+    if (leaseToken && rowsAffected === 0) {
+      console.warn(`[JobQueue] Lease lost during updateCheckpoint for job '${jobId}'. Worker write was fenced out.`);
+    }
+
+    return { success: rowsAffected > 0, rowsAffected };
   }
 
   /**
    * Marks a job as completed with terminal status.
+   * Enforces lease fencing: rejects completion if worker lease was stolen/expired.
    */
   public async completeJob(
     jobId: string,
     status: JobStatus,
-    result: Record<string, any> = {}
-  ): Promise<void> {
+    result: Record<string, any> = {},
+    leaseToken?: string
+  ): Promise<{ success: boolean; rowsAffected: number }> {
     const resJson = JSON.stringify(result || {});
-    const sql = `
+    let sql = `
       UPDATE automation_jobs
       SET status = ?,
         result_json = ?,
         completed_at = datetime('now'),
         locked_at = NULL,
         lease_expires_at = NULL,
+        lease_token = NULL,
         updated_at = datetime('now')
-      WHERE id = ?
+      WHERE id = ? AND status = 'RUNNING'
     `;
     const params = [status, resJson, jobId];
 
+    if (leaseToken) {
+      sql += ` AND (lease_token = ? OR lease_token IS NULL)`;
+      params.push(leaseToken);
+    }
+
+    let rowsAffected = 0;
     if (isProduction()) {
-      await this.d1Repo.executeWrite('automation_jobs', sql, params);
+      const res = await this.d1Repo.executeWrite('automation_jobs', sql, params);
+      rowsAffected = (res as any)?.rowsAffected ?? (res as any)?.changes ?? 0;
     } else {
-      getDb().prepare(sql).run(...params);
+      const res = getDb().prepare(sql).run(...params);
+      rowsAffected = res.changes;
+    }
+
+    if (leaseToken && rowsAffected === 0) {
+      console.warn(`[JobQueue] Lease lost during completeJob for job '${jobId}'. Terminal write was fenced out.`);
+      return { success: false, rowsAffected: 0 };
     }
 
     // Close the latest open attempt
@@ -297,19 +415,28 @@ export class DurableJobQueue {
         getDb().prepare(closeAttemptSql).run(status, resJson, jobId);
       }
     } catch {}
+
+    return { success: true, rowsAffected };
   }
 
   /**
    * Handles a job failure with exponential backoff plus jitter for transient errors.
+   * Enforces lease fencing: rejects state update if worker lease was stolen/expired.
    */
   public async failAttempt(
     jobId: string,
     errorMsg: string,
     isTransient: boolean = true,
-    explicitRetryAfterSeconds?: number
+    explicitRetryAfterSeconds?: number,
+    leaseToken?: string
   ): Promise<JobStatus> {
     const job = await this.getJobById(jobId);
     if (!job) return 'FAILED_PERMANENTLY';
+
+    if (leaseToken && job.leaseToken && job.leaseToken !== leaseToken) {
+      console.warn(`[JobQueue] Lease lost during failAttempt for job '${jobId}'. Worker failure was fenced out.`);
+      return job.status;
+    }
 
     const canRetry = isTransient && job.attempts < job.maxAttempts;
 
@@ -319,17 +446,23 @@ export class DurableJobQueue {
         ? explicitRetryAfterSeconds
         : Math.min(3600, Math.pow(2, job.attempts - 1) * 30 + Math.floor(Math.random() * 15));
 
-      const sql = `
+      let sql = `
         UPDATE automation_jobs
         SET status = 'RETRY_WAIT',
           last_error = ?,
           available_at = datetime('now', '+' || ? || ' seconds'),
           locked_at = NULL,
           lease_expires_at = NULL,
+          lease_token = NULL,
           updated_at = datetime('now')
-        WHERE id = ?
+        WHERE id = ? AND status = 'RUNNING'
       `;
       const params = [errorMsg, baseDelay, jobId];
+
+      if (leaseToken) {
+        sql += ` AND (lease_token = ? OR lease_token IS NULL)`;
+        params.push(leaseToken);
+      }
 
       if (isProduction()) {
         await this.d1Repo.executeWrite('automation_jobs', sql, params);
@@ -341,17 +474,23 @@ export class DurableJobQueue {
       return 'RETRY_WAIT';
     } else {
       // Non-transient or exhausted retries
-      const sql = `
+      let sql = `
         UPDATE automation_jobs
         SET status = 'FAILED_PERMANENTLY',
           last_error = ?,
           completed_at = datetime('now'),
           locked_at = NULL,
           lease_expires_at = NULL,
+          lease_token = NULL,
           updated_at = datetime('now')
-        WHERE id = ?
+        WHERE id = ? AND status = 'RUNNING'
       `;
       const params = [errorMsg, jobId];
+
+      if (leaseToken) {
+        sql += ` AND (lease_token = ? OR lease_token IS NULL)`;
+        params.push(leaseToken);
+      }
 
       if (isProduction()) {
         await this.d1Repo.executeWrite('automation_jobs', sql, params);
@@ -365,6 +504,39 @@ export class DurableJobQueue {
   }
 
   /**
+   * Renews an active job lease for long-running workflows.
+   */
+  public async renewLease(
+    jobId: string,
+    leaseToken: string,
+    extensionSeconds: number = 60
+  ): Promise<{ renewed: boolean; leaseExpiresAt: string | null }> {
+    const sql = `
+      UPDATE automation_jobs
+      SET lease_expires_at = datetime('now', '+' || ? || ' seconds'),
+        updated_at = datetime('now')
+      WHERE id = ? AND lease_token = ? AND status = 'RUNNING'
+    `;
+    const params = [extensionSeconds, jobId, leaseToken];
+
+    let rowsAffected = 0;
+    if (isProduction()) {
+      const res = await this.d1Repo.executeWrite('automation_jobs', sql, params);
+      rowsAffected = (res as any)?.rowsAffected ?? (res as any)?.changes ?? 0;
+    } else {
+      const res = getDb().prepare(sql).run(...params);
+      rowsAffected = res.changes;
+    }
+
+    if (rowsAffected === 0) {
+      return { renewed: false, leaseExpiresAt: null };
+    }
+
+    const updated = await this.getJobById(jobId);
+    return { renewed: true, leaseExpiresAt: updated?.leaseExpiresAt || null };
+  }
+
+  /**
    * Recovers jobs where lease expired while running (worker died / timed out).
    */
   public async recoverStaleLeases(): Promise<number> {
@@ -374,6 +546,7 @@ export class DurableJobQueue {
         available_at = datetime('now'),
         locked_at = NULL,
         lease_expires_at = NULL,
+        lease_token = NULL,
         last_error = 'LEASE_EXPIRED_RECOVERED: Previous worker lease timed out or crashed.',
         updated_at = datetime('now')
       WHERE status = 'RUNNING'
@@ -537,6 +710,7 @@ export class DurableJobQueue {
       lockedAt: r.locked_at || null,
       leaseExpiresAt: r.lease_expires_at || null,
       workerSource: r.worker_source || null,
+      leaseToken: r.lease_token || null,
       lastError: r.last_error || null,
       result: typeof r.result_json === 'string' ? JSON.parse(r.result_json || '{}') : (r.result_json || {}),
       createdAt: r.created_at,
