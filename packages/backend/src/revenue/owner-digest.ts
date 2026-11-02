@@ -220,9 +220,7 @@ export class OwnerDigestService {
         }
         const waUrl = formattedPhone ? `https://wa.me/${formattedPhone}?text=${encodeURIComponent(msg)}` : `https://wa.me/?text=${encodeURIComponent(msg)}`;
         const emailAddr = r.prospect_email || '';
-        const emailUrl = emailAddr
-          ? `mailto:${emailAddr}?subject=${encodeURIComponent('Inbound Lead Conversion Workflow for ' + r.prospect_name)}&body=${encodeURIComponent(msg)}`
-          : `mailto:?subject=${encodeURIComponent('Inbound Lead Conversion Workflow for ' + r.prospect_name)}&body=${encodeURIComponent(msg)}`;
+        const emailUrl = `mailto:?subject=${encodeURIComponent('AI Inbound Lead Triage for ' + r.prospect_name)}&body=${encodeURIComponent(msg)}`;
 
         return {
           id: r.id,
@@ -556,9 +554,7 @@ export class OwnerDigestService {
         }
         const waUrl = formattedPhone ? `https://wa.me/${formattedPhone}?text=${encodeURIComponent(msg)}` : `https://wa.me/?text=${encodeURIComponent(msg)}`;
         const emailAddr = r.prospect_email || '';
-        const emailUrl = emailAddr
-          ? `mailto:${emailAddr}?subject=${encodeURIComponent('Inbound Lead Conversion Workflow for ' + r.prospect_name)}&body=${encodeURIComponent(msg)}`
-          : `mailto:?subject=${encodeURIComponent('Inbound Lead Conversion Workflow for ' + r.prospect_name)}&body=${encodeURIComponent(msg)}`;
+        const emailUrl = `mailto:?subject=${encodeURIComponent('AI Inbound Lead Triage for ' + r.prospect_name)}&body=${encodeURIComponent(msg)}`;
 
         return {
           id: r.id,
@@ -1019,11 +1015,11 @@ export class OwnerDigestService {
             <p id="draft-text-${d.id}" style="margin:0;font-size:0.88rem;color:#cbd5e1;white-space:pre-wrap;line-height:1.4;">${d.messageDraft}</p>
           </div>
           <div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;">
-            ${d.oneClickWhatsAppUrl ? `<a href="${d.oneClickWhatsAppUrl}" target="_blank" rel="noopener" style="display:inline-block;background:#10b981;color:#fff;text-decoration:none;font-weight:600;padding:0.45rem 0.85rem;border-radius:6px;font-size:0.85rem;">💬 Open in WhatsApp ↗</a>` : ''}
+            ${d.oneClickWhatsAppUrl ? `<a href="${d.oneClickWhatsAppUrl}" target="_blank" rel="noopener" style="display:inline-block;background:#10b981;color:#fff;text-decoration:none;font-weight:600;padding:0.45rem 0.85rem;border-radius:6px;font-size:0.85rem;">Review &amp; Send via WhatsApp</a>` : ''}
             <button onclick="recordDispatch('${d.id}')" style="background:#0284c7;color:#fff;border:none;font-weight:600;padding:0.45rem 0.85rem;border-radius:6px;font-size:0.85rem;cursor:pointer;">✅ Mark Sent</button>
             <button onclick="copyDraft('${d.id}')" style="background:#334155;color:#fff;border:none;font-weight:600;padding:0.45rem 0.85rem;border-radius:6px;font-size:0.85rem;cursor:pointer;">📋 Copy Draft</button>
             <button onclick="recordOptOut('${d.id}')" style="background:#475569;color:#cbd5e1;border:none;font-weight:600;padding:0.45rem 0.85rem;border-radius:6px;font-size:0.85rem;cursor:pointer;">🚫 Opt-Out (60d)</button>
-            ${d.oneClickEmailUrl ? `<a href="${d.oneClickEmailUrl}" target="_blank" rel="noopener" style="display:inline-block;background:#1e293b;border:1px solid #334155;color:#94a3b8;text-decoration:none;font-weight:600;padding:0.45rem 0.85rem;border-radius:6px;font-size:0.85rem;">✉️ Email</a>` : ''}
+            ${d.oneClickEmailUrl ? `<a href="${d.oneClickEmailUrl}" target="_blank" rel="noopener" style="display:inline-block;background:#1e293b;border:1px solid #334155;color:#94a3b8;text-decoration:none;font-weight:600;padding:0.45rem 0.85rem;border-radius:6px;font-size:0.85rem;">Review &amp; Send via Email</a>` : ''}
           </div>
         </div>
       `).join('')
