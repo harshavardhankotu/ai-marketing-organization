@@ -339,7 +339,7 @@ apiRouter.use('*', async (c, next) => {
       path === '/build/static-site' ||
       path === '/payments/manual-upi/confirm' ||
       path === '/payments/reconcile-export' ||
-      (path.startsWith('/owner') && path !== '/owner/today' && path !== '/owner/proposal' && !path.startsWith('/owner/automation') && path !== '/owner/login')
+      (path.startsWith('/owner') && path !== '/owner/today' && path !== '/owner/proposal' && !path.startsWith('/owner/automation') && !path.startsWith('/owner/direct-outreach') && path !== '/owner/login')
     )) {
       return c.json({
         success: false,
@@ -6907,6 +6907,288 @@ apiRouter.patch('/owner/outreach/:id', async (c) => {
 
   db.prepare('UPDATE outreach_log SET status = ?, notes = ? WHERE id = ?').run(newStatus, newNotes, id);
   return c.json({ success: true, data: { id, status: newStatus, notes: newNotes } });
+});
+
+/**
+ * Direct Outreach Management Routes (Strict Human Gate)
+ */
+// 1. List direct outreach drafts with prospect details and status filtering
+apiRouter.get('/owner/direct-outreach', async (c) => {
+  const statusFilter = (c.req.query('status') || 'pending').toLowerCase();
+  const d1Repo = D1RevenueRepository.getInstance();
+
+  let whereClause = 'WHERE d.human_approved = 0 AND d.dispatched = 0';
+  if (statusFilter === 'approved') {
+    whereClause = 'WHERE d.human_approved = 1 AND d.dispatched = 0';
+  } else if (statusFilter === 'dispatched') {
+    whereClause = 'WHERE d.dispatched = 1';
+  } else if (statusFilter === 'all') {
+    whereClause = '';
+  }
+
+  const sql = `
+    SELECT 
+      d.id, d.business_id, d.segment, d.prospect_name, d.channel, d.message_draft,
+      d.compliance_checked, d.human_approved, d.dispatched, d.dispatch_timestamp,
+      d.response_status, d.created_at,
+      COALESCE(p.phone, p.prospect_phone) as phone,
+      COALESCE(p.email, p.prospect_email) as email,
+      COALESCE(p.city, p.prospect_city) as city,
+      COALESCE(p.website_url, p.prospect_website) as website_url
+    FROM direct_outreach_log d
+    LEFT JOIN platform_prospects p
+      ON d.prospect_name = p.prospect_business_name OR d.prospect_name = p.business_name
+    ${whereClause}
+    GROUP BY d.id
+    ORDER BY d.created_at DESC
+    LIMIT 50
+  `;
+
+  let rows: any[] = [];
+  try {
+    rows = await d1Repo.query<any>('direct_outreach_log', sql);
+  } catch (err: any) {
+    try {
+      const db = getDb();
+      rows = db.prepare(sql).all() as any[];
+    } catch {}
+  }
+
+  const items = rows.map(r => {
+    const rawPhone = (r.phone || '').trim();
+    const cleanDigits = rawPhone.replace(/\D/g, '');
+    let formattedPhone = '';
+    if (cleanDigits.length === 10) {
+      formattedPhone = `91${cleanDigits}`;
+    } else if (cleanDigits.length >= 12 && cleanDigits.startsWith('91')) {
+      formattedPhone = cleanDigits;
+    }
+    const waUrl = formattedPhone ? `https://wa.me/${formattedPhone}?text=${encodeURIComponent(r.message_draft)}` : `https://wa.me/?text=${encodeURIComponent(r.message_draft)}`;
+
+    return {
+      id: r.id,
+      businessId: r.business_id,
+      segment: r.segment,
+      prospectName: r.prospect_name,
+      channel: r.channel,
+      messageDraft: r.message_draft,
+      complianceChecked: Boolean(r.compliance_checked),
+      humanApproved: Boolean(r.human_approved),
+      dispatched: Boolean(r.dispatched),
+      dispatchTimestamp: r.dispatch_timestamp,
+      responseStatus: r.response_status,
+      createdAt: r.created_at,
+      phone: formattedPhone,
+      email: r.email,
+      city: r.city,
+      websiteUrl: r.website_url,
+      oneClickWhatsAppUrl: waUrl
+    };
+  });
+
+  return c.json({
+    success: true,
+    filter: statusFilter,
+    count: items.length,
+    data: items
+  });
+});
+
+// 2. Approve draft (human_approved = 1)
+apiRouter.post('/owner/direct-outreach/:id/approve', async (c) => {
+  const id = c.req.param('id');
+  const d1Repo = D1RevenueRepository.getInstance();
+
+  const updateSql = `UPDATE direct_outreach_log SET human_approved = 1, response_status = 'APPROVED' WHERE id = ?`;
+  try {
+    await d1Repo.executeWrite('direct_outreach_log', updateSql, [id]);
+    return c.json({ success: true, id, status: 'APPROVED' });
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 500);
+  }
+});
+
+// 3. Record manual dispatch via WhatsApp / external channel
+apiRouter.post('/owner/direct-outreach/:id/record-dispatch', async (c) => {
+  const id = c.req.param('id');
+  const d1Repo = D1RevenueRepository.getInstance();
+  const db = getDb();
+
+  // Find draft details
+  let draft: any;
+  try {
+    draft = await d1Repo.queryOne<any>('direct_outreach_log', 'SELECT * FROM direct_outreach_log WHERE id = ?', [id]);
+  } catch {}
+  if (!draft) {
+    try {
+      draft = db.prepare('SELECT * FROM direct_outreach_log WHERE id = ?').get(id);
+    } catch {}
+  }
+
+  if (!draft) {
+    return c.json({ success: false, error: 'Draft not found' }, 404);
+  }
+
+  const now = new Date().toISOString();
+  const updateOutreachSql = `
+    UPDATE direct_outreach_log 
+    SET human_approved = 1, dispatched = 1, dispatch_timestamp = ?, response_status = 'DISPATCHED'
+    WHERE id = ?
+  `;
+
+  try {
+    await d1Repo.executeWrite('direct_outreach_log', updateOutreachSql, [now, id]);
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 500);
+  }
+
+  // Update prospect in platform_prospects
+  try {
+    const updateProspectSql = `
+      UPDATE platform_prospects 
+      SET stage = 'CONTACTED', status = 'CONTACTED', contact_count = contact_count + 1, last_contacted_at = ?
+      WHERE prospect_business_name = ? OR business_name = ?
+    `;
+    await d1Repo.executeWrite('platform_prospects', updateProspectSql, [now, draft.prospect_name, draft.prospect_name]);
+  } catch {}
+
+  // Update corresponding market experiment leads count
+  try {
+    const expId = draft.segment && draft.segment.includes('EDUCATION') 
+      ? 'EXP_EDUCATION_LEAD_CAPTURE_V4' 
+      : 'EXP_HEALTHCARE_APPT_TRIAGE_V4';
+    const updateExpSql = `UPDATE market_experiments SET actual_leads = actual_leads + 1, updated_at = ? WHERE experiment_id = ?`;
+    await d1Repo.executeWrite('market_experiments', updateExpSql, [now, expId]);
+  } catch {}
+
+  return c.json({
+    success: true,
+    id,
+    prospectName: draft.prospect_name,
+    status: 'DISPATCHED',
+    timestamp: now
+  });
+});
+
+// 4. Opt-Out & Suppress (60-day cooldown)
+apiRouter.post('/owner/direct-outreach/:id/opt-out', async (c) => {
+  const id = c.req.param('id');
+  const d1Repo = D1RevenueRepository.getInstance();
+  const db = getDb();
+
+  let draft: any;
+  try {
+    draft = await d1Repo.queryOne<any>('direct_outreach_log', 'SELECT * FROM direct_outreach_log WHERE id = ?', [id]);
+  } catch {}
+  if (!draft) {
+    try {
+      draft = db.prepare('SELECT * FROM direct_outreach_log WHERE id = ?').get(id);
+    } catch {}
+  }
+
+  if (!draft) {
+    return c.json({ success: false, error: 'Draft not found' }, 404);
+  }
+
+  const now = new Date().toISOString();
+  const updateSql = `UPDATE direct_outreach_log SET response_status = 'OPT_OUT' WHERE id = ?`;
+  await d1Repo.executeWrite('direct_outreach_log', updateSql, [id]);
+
+  // Lookup prospect to get phone, email, website
+  let prospect: any;
+  try {
+    prospect = await d1Repo.queryOne<any>(
+      'platform_prospects',
+      'SELECT * FROM platform_prospects WHERE prospect_business_name = ? OR business_name = ? LIMIT 1',
+      [draft.prospect_name, draft.prospect_name]
+    );
+  } catch {}
+  if (!prospect) {
+    try {
+      prospect = db.prepare('SELECT * FROM platform_prospects WHERE prospect_business_name = ? OR business_name = ? LIMIT 1').get(draft.prospect_name, draft.prospect_name);
+    } catch {}
+  }
+
+  const { PlatformProspectDiscoveryEngine } = await import('../revenue/platform-prospect-discovery-engine.js');
+  const discEngine = PlatformProspectDiscoveryEngine.getInstance();
+  const suppressedIdentifiers: string[] = [];
+
+  if (prospect) {
+    const phone = prospect.phone || prospect.prospect_phone;
+    if (phone) {
+      discEngine.suppressContact(phone, 'PHONE', 'OPTOUT', 60);
+      suppressedIdentifiers.push(phone);
+    }
+    const email = prospect.email || prospect.prospect_email;
+    if (email) {
+      discEngine.suppressContact(email, 'EMAIL', 'OPTOUT', 60);
+      suppressedIdentifiers.push(email);
+    }
+    const website = prospect.website_url || prospect.prospect_website;
+    if (website) {
+      discEngine.suppressContact(website, 'DOMAIN', 'OPTOUT', 60);
+      suppressedIdentifiers.push(website);
+    }
+
+    try {
+      await d1Repo.executeWrite('platform_prospects', `UPDATE platform_prospects SET is_opted_out = 1, stage = 'LOST', status = 'OPTED_OUT' WHERE id = ?`, [prospect.id]);
+    } catch {}
+  }
+
+  return c.json({
+    success: true,
+    id,
+    prospectName: draft.prospect_name,
+    status: 'OPT_OUT',
+    suppressedIdentifiers,
+    cooldownDays: 60
+  });
+});
+
+// 5. Record customer reply
+apiRouter.post('/owner/direct-outreach/:id/record-reply', async (c) => {
+  const id = c.req.param('id');
+  const body = await c.req.json().catch(() => ({}));
+  const replyType = (body.replyType || body.status || 'INTERESTED').toUpperCase();
+  const notes = (body.notes || '').trim();
+  const d1Repo = D1RevenueRepository.getInstance();
+  const db = getDb();
+
+  let draft: any;
+  try {
+    draft = await d1Repo.queryOne<any>('direct_outreach_log', 'SELECT * FROM direct_outreach_log WHERE id = ?', [id]);
+  } catch {}
+  if (!draft) {
+    try {
+      draft = db.prepare('SELECT * FROM direct_outreach_log WHERE id = ?').get(id);
+    } catch {}
+  }
+
+  if (!draft) {
+    return c.json({ success: false, error: 'Draft not found' }, 404);
+  }
+
+  const now = new Date().toISOString();
+  await d1Repo.executeWrite('direct_outreach_log', `UPDATE direct_outreach_log SET response_status = ? WHERE id = ?`, [replyType, id]);
+
+  if (replyType === 'INTERESTED' || replyType === 'CALL_SCHEDULED' || replyType === 'DEMO_BOOKED') {
+    try {
+      await d1Repo.executeWrite(
+        'platform_prospects',
+        `UPDATE platform_prospects SET stage = 'REPLIED', status = 'QUALIFIED', notes = COALESCE(notes || '
+', '') || ? WHERE prospect_business_name = ? OR business_name = ?`,
+        [`[${now}] Reply: ${replyType} - ${notes}`, draft.prospect_name, draft.prospect_name]
+      );
+    } catch {}
+  }
+
+  return c.json({
+    success: true,
+    id,
+    prospectName: draft.prospect_name,
+    responseStatus: replyType,
+    notes
+  });
 });
 
 /**
