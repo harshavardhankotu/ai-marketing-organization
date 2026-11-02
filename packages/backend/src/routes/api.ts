@@ -174,6 +174,7 @@ export const EXACT_ROUTE_POLICY = {
     '/owner/today',
     '/owner/proposal',
     '/owner/automation',
+    '/owner/direct-outreach',
     '/capabilities',
     '/tools',
     '/agents'
