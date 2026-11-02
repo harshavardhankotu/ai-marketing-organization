@@ -15,14 +15,15 @@
 | **Open PR #33 Remote** | `origin/feat/v4-1-durable-daily-revenue-operations` | `bc214b3` | PR #33 open, mergeable, all CI checks passing. |
 | **PR #33 Commit 1** | `82ae018` | `82ae018` | `feat(ops): V4.1 durable daily revenue operations, deals, festivals & SEO repair` |
 | **PR #33 Commit 2** | `bc214b3` | `bc214b3` | `feat(ops): V4.1 cost optimization, deterministic task bypass, and proposal unblock` |
-| **Local Working Branch** | `feat/v4-2-multi-sector-commerce-recovery` | Based on `bc214b3` | Cumulative working tree containing V4.2, V4.4, V4.5, and V4.6 implementations. |
+| **Local & Remote V4.6 Branch** | `feat/v4-2-multi-sector-commerce-recovery` | `d676380` | Cumulative branch containing V4.2, V4.4, V4.5, and V4.6 implementations. Pushed to remote `origin`. |
 
 ---
 
 ## 2. Git Ancestry & Relationship Graph
 
 ```text
-* bc214b3 (HEAD -> feat/v4-2-multi-sector-commerce-recovery, origin/feat/v4-1-durable-daily-revenue-operations) feat(ops): V4.1 cost optimization, deterministic task bypass, and proposal unblock
+* d676380 (HEAD -> feat/v4-2-multi-sector-commerce-recovery, origin/feat/v4-2-multi-sector-commerce-recovery) feat(v4.6): multi-sector commerce recovery, durable queue lease fencing, business logic repairs, and attribution engine
+* bc214b3 (origin/feat/v4-1-durable-daily-revenue-operations) feat(ops): V4.1 cost optimization, deterministic task bypass, and proposal unblock
 * 82ae018 feat(ops): V4.1 durable daily revenue operations, deals, festivals & SEO repair
 * f3e0c92 (origin/main, main) fix(ops): allow owner direct-outreach actions from browser review queue in public route policy (#32)
 * 3b60f94 feat(ops): owner 1-click whatsapp direct launcher, education experiment pipeline, and gbp review protocol (#31) (#31)
@@ -33,7 +34,7 @@
 
 ### Key Finding:
 1. Local branch `feat/v4-2-multi-sector-commerce-recovery` was branched directly from `bc214b3` (the tip of PR #33).
-2. It was never pushed to remote `origin`.
+2. It has been pushed cleanly to remote `origin/feat/v4-2-multi-sector-commerce-recovery` at commit `d676380`.
 3. It contains zero divergent or conflicting commits with PR #33.
 4. It builds directly upon V4.1, adding V4.2 (8-sector taxonomy), V4.4 (festivals & Black Friday), V4.5 (autonomy controls), and V4.6 (durable queue lease fencing, batch fast ping, business logic repairs, dynamic click attribution, and link conversion idempotency).
 
