@@ -49,6 +49,8 @@ export interface OutreachDigestItem {
 export interface PendingOutreachDraftItem {
   id: string;
   prospectName: string;
+  segment?: string;
+  city?: string;
   channel: string;
   messageDraft: string;
   humanApproved: boolean;
@@ -188,30 +190,50 @@ export class OwnerDigestService {
     let pendingOutreachDrafts: PendingOutreachDraftItem[] = [];
     try {
       const rows = db.prepare(`
-        SELECT id, prospect_name, channel, message_draft, compliance_checked, human_approved, dispatched, created_at
-        FROM direct_outreach_log
-        WHERE human_approved = 0
-        ORDER BY created_at DESC
-        LIMIT 10
+        SELECT 
+          d.id, d.segment, d.prospect_name, d.channel, d.message_draft, 
+          d.compliance_checked, d.human_approved, d.dispatched, d.response_status, d.created_at,
+          COALESCE(p.phone, p.prospect_phone) as prospect_phone,
+          COALESCE(p.email, p.prospect_email) as prospect_email,
+          COALESCE(p.city, p.prospect_city) as prospect_city
+        FROM direct_outreach_log d
+        LEFT JOIN platform_prospects p
+          ON d.prospect_name = p.prospect_business_name OR d.prospect_name = p.business_name
+        WHERE d.human_approved = 0 AND d.dispatched = 0
+        GROUP BY d.id
+        ORDER BY d.created_at DESC
+        LIMIT 20
       `).all() as any[];
 
       pendingOutreachDrafts = (rows || []).map(r => {
         const msg = r.message_draft || '';
         const phoneMatch = msg.match(/\+?91?[6-9]\d{9}/);
-        const cleanPhone = phoneMatch ? phoneMatch[0].replace(/\D/g, '') : '';
-        const formattedPhone = cleanPhone.startsWith('91') ? cleanPhone : (cleanPhone ? `91${cleanPhone}` : '');
+        const rawPhone = r.prospect_phone || (phoneMatch ? phoneMatch[0] : '');
+        const cleanDigits = rawPhone ? rawPhone.replace(/\D/g, '') : '';
+        let formattedPhone = '';
+        if (cleanDigits.length === 10) {
+          formattedPhone = `91${cleanDigits}`;
+        } else if (cleanDigits.length >= 12 && cleanDigits.startsWith('91')) {
+          formattedPhone = cleanDigits;
+        } else if (cleanDigits.length > 10 && cleanDigits.startsWith('91')) {
+          formattedPhone = cleanDigits;
+        }
         const waUrl = formattedPhone ? `https://wa.me/${formattedPhone}?text=${encodeURIComponent(msg)}` : `https://wa.me/?text=${encodeURIComponent(msg)}`;
+        const emailAddr = r.prospect_email || '';
         const emailUrl = `mailto:?subject=${encodeURIComponent('AI Inbound Lead Triage for ' + r.prospect_name)}&body=${encodeURIComponent(msg)}`;
 
         return {
           id: r.id,
           prospectName: r.prospect_name,
+          segment: r.segment,
+          city: r.prospect_city,
           channel: r.channel,
           messageDraft: r.message_draft,
           humanApproved: Boolean(r.human_approved),
           dispatched: Boolean(r.dispatched),
           createdAt: r.created_at,
           phone: formattedPhone,
+          email: emailAddr,
           oneClickWhatsAppUrl: waUrl,
           oneClickEmailUrl: emailUrl
         };
@@ -503,29 +525,49 @@ export class OwnerDigestService {
     try {
       const rows = await this.d1Repo.query<any>(
         'direct_outreach_log',
-        `SELECT id, prospect_name, channel, message_draft, compliance_checked, human_approved, dispatched, created_at
-         FROM direct_outreach_log
-         WHERE human_approved = 0
-         ORDER BY created_at DESC
-         LIMIT 10`
+        `SELECT 
+           d.id, d.segment, d.prospect_name, d.channel, d.message_draft, 
+           d.compliance_checked, d.human_approved, d.dispatched, d.response_status, d.created_at,
+           COALESCE(p.phone, p.prospect_phone) as prospect_phone,
+           COALESCE(p.email, p.prospect_email) as prospect_email,
+           COALESCE(p.city, p.prospect_city) as prospect_city
+         FROM direct_outreach_log d
+         LEFT JOIN platform_prospects p
+           ON d.prospect_name = p.prospect_business_name OR d.prospect_name = p.business_name
+         WHERE d.human_approved = 0 AND d.dispatched = 0
+         GROUP BY d.id
+         ORDER BY d.created_at DESC
+         LIMIT 20`
       );
       pendingOutreachDrafts = (rows || []).map(r => {
         const msg = r.message_draft || '';
         const phoneMatch = msg.match(/\+?91?[6-9]\d{9}/);
-        const cleanPhone = phoneMatch ? phoneMatch[0].replace(/\D/g, '') : '';
-        const formattedPhone = cleanPhone.startsWith('91') ? cleanPhone : (cleanPhone ? `91${cleanPhone}` : '');
+        const rawPhone = r.prospect_phone || (phoneMatch ? phoneMatch[0] : '');
+        const cleanDigits = rawPhone ? rawPhone.replace(/\D/g, '') : '';
+        let formattedPhone = '';
+        if (cleanDigits.length === 10) {
+          formattedPhone = `91${cleanDigits}`;
+        } else if (cleanDigits.length >= 12 && cleanDigits.startsWith('91')) {
+          formattedPhone = cleanDigits;
+        } else if (cleanDigits.length > 10 && cleanDigits.startsWith('91')) {
+          formattedPhone = cleanDigits;
+        }
         const waUrl = formattedPhone ? `https://wa.me/${formattedPhone}?text=${encodeURIComponent(msg)}` : `https://wa.me/?text=${encodeURIComponent(msg)}`;
+        const emailAddr = r.prospect_email || '';
         const emailUrl = `mailto:?subject=${encodeURIComponent('AI Inbound Lead Triage for ' + r.prospect_name)}&body=${encodeURIComponent(msg)}`;
 
         return {
           id: r.id,
           prospectName: r.prospect_name,
+          segment: r.segment,
+          city: r.prospect_city,
           channel: r.channel,
           messageDraft: r.message_draft,
           humanApproved: Boolean(r.human_approved),
           dispatched: Boolean(r.dispatched),
           createdAt: r.created_at,
           phone: formattedPhone,
+          email: emailAddr,
           oneClickWhatsAppUrl: waUrl,
           oneClickEmailUrl: emailUrl
         };
@@ -954,22 +996,30 @@ export class OwnerDigestService {
 
     const pendingDraftsHtml = digest.pendingOutreachDrafts && digest.pendingOutreachDrafts.length > 0
       ? digest.pendingOutreachDrafts.map(d => `
-        <div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:1rem;margin-bottom:0.75rem;">
+        <div id="draft-card-${d.id}" style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:1rem;margin-bottom:0.75rem;transition:all 0.2s ease;">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem;flex-wrap:wrap;gap:0.5rem;">
             <div>
               <strong style="color:#f8fafc;font-size:1.05rem;">${d.prospectName}</strong>
               <span style="background:#0284c7;color:#fff;font-size:0.75rem;padding:0.15rem 0.4rem;border-radius:4px;font-weight:bold;margin-left:0.5rem;">${d.channel}</span>
-              <span style="background:#f59e0b;color:#000;font-size:0.75rem;padding:0.15rem 0.4rem;border-radius:4px;font-weight:bold;margin-left:0.35rem;">human_approved = 0</span>
+              ${d.segment ? `<span style="background:#6366f1;color:#fff;font-size:0.75rem;padding:0.15rem 0.4rem;border-radius:4px;font-weight:bold;margin-left:0.35rem;">${d.segment.includes('EDUCATION') ? '🎓 EDUCATION' : '🏥 HEALTHCARE'}</span>` : ''}
+              <span class="status-badge" style="background:#f59e0b;color:#000;font-size:0.75rem;padding:0.15rem 0.4rem;border-radius:4px;font-weight:bold;margin-left:0.35rem;">human_approved = 0</span>
               <span style="background:#10b981;color:#fff;font-size:0.75rem;padding:0.15rem 0.4rem;border-radius:4px;font-weight:bold;margin-left:0.35rem;">dispatched = 0</span>
             </div>
-            <span style="color:#94a3b8;font-size:0.8rem;">${d.createdAt ? d.createdAt.slice(0, 10) : 'Today'}</span>
+            <div style="color:#94a3b8;font-size:0.8rem;">
+              ${d.city ? `<span>📍 ${d.city}</span> • ` : ''}
+              ${d.phone ? `<span>📞 +${d.phone}</span> • ` : ''}
+              <span>${d.createdAt ? d.createdAt.slice(0, 10) : 'Today'}</span>
+            </div>
           </div>
           <div style="background:#0b1120;border-left:3px solid #38bdf8;padding:0.75rem;border-radius:0 6px 6px 0;margin-bottom:0.75rem;">
-            <p style="margin:0;font-size:0.88rem;color:#cbd5e1;white-space:pre-wrap;line-height:1.4;">${d.messageDraft}</p>
+            <p id="draft-text-${d.id}" style="margin:0;font-size:0.88rem;color:#cbd5e1;white-space:pre-wrap;line-height:1.4;">${d.messageDraft}</p>
           </div>
-          <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
-            ${d.oneClickWhatsAppUrl ? `<a href="${d.oneClickWhatsAppUrl}" target="_blank" style="display:inline-block;background:#10b981;color:#fff;text-decoration:none;font-weight:600;padding:0.4rem 0.8rem;border-radius:6px;font-size:0.85rem;">Review &amp; Send via WhatsApp</a>` : ''}
-            ${d.oneClickEmailUrl ? `<a href="${d.oneClickEmailUrl}" target="_blank" style="display:inline-block;background:#3b82f6;color:#fff;text-decoration:none;font-weight:600;padding:0.4rem 0.8rem;border-radius:6px;font-size:0.85rem;">Review &amp; Send via Email</a>` : ''}
+          <div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;">
+            ${d.oneClickWhatsAppUrl ? `<a href="${d.oneClickWhatsAppUrl}" target="_blank" rel="noopener" style="display:inline-block;background:#10b981;color:#fff;text-decoration:none;font-weight:600;padding:0.45rem 0.85rem;border-radius:6px;font-size:0.85rem;">Review &amp; Send via WhatsApp</a>` : ''}
+            <button onclick="recordDispatch('${d.id}')" style="background:#0284c7;color:#fff;border:none;font-weight:600;padding:0.45rem 0.85rem;border-radius:6px;font-size:0.85rem;cursor:pointer;">✅ Mark Sent</button>
+            <button onclick="copyDraft('${d.id}')" style="background:#334155;color:#fff;border:none;font-weight:600;padding:0.45rem 0.85rem;border-radius:6px;font-size:0.85rem;cursor:pointer;">📋 Copy Draft</button>
+            <button onclick="recordOptOut('${d.id}')" style="background:#475569;color:#cbd5e1;border:none;font-weight:600;padding:0.45rem 0.85rem;border-radius:6px;font-size:0.85rem;cursor:pointer;">🚫 Opt-Out (60d)</button>
+            ${d.oneClickEmailUrl ? `<a href="${d.oneClickEmailUrl}" target="_blank" rel="noopener" style="display:inline-block;background:#1e293b;border:1px solid #334155;color:#94a3b8;text-decoration:none;font-weight:600;padding:0.45rem 0.85rem;border-radius:6px;font-size:0.85rem;">Review &amp; Send via Email</a>` : ''}
           </div>
         </div>
       `).join('')
@@ -1056,15 +1106,15 @@ export class OwnerDigestService {
 
   <div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;flex-wrap:wrap;gap:0.5rem;">
-      <h2 style="margin:0;">⚙️ Autonomous Operations &amp; Workflows (15)</h2>
+      <h2 style="margin:0;">⚙️ Autonomous Operations &amp; Workflows (18 Active)</h2>
       <a href="/owner/automation" style="background:#0284c7;color:#fff;text-decoration:none;font-weight:600;padding:0.35rem 0.75rem;border-radius:6px;font-size:0.85rem;">Open Automation Control Center &rarr;</a>
     </div>
     <p style="color:#94a3b8;font-size:0.9rem;margin-bottom:0.5rem;">
-      15 durable background workflows are registered and executed on Cloudflare hourly cron wakes. Outbound messaging is strictly locked behind human approval.
+      18 durable background workflows are registered and executed on Cloudflare hourly cron wakes. Outbound messaging is strictly locked behind human approval.
     </p>
     <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.75rem;">
       <span style="background:#1e293b;border:1px solid #334155;border-radius:6px;padding:0.4rem 0.75rem;font-size:0.85rem;color:#38bdf8;"><strong>Cadence:</strong> Hourly Cron</span>
-      <span style="background:#1e293b;border:1px solid #334155;border-radius:6px;padding:0.4rem 0.75rem;font-size:0.85rem;color:#10b981;"><strong>Workflows:</strong> 15 Configured</span>
+      <span style="background:#1e293b;border:1px solid #334155;border-radius:6px;padding:0.4rem 0.75rem;font-size:0.85rem;color:#10b981;"><strong>Workflows:</strong> 18 Active</span>
       <span style="background:#1e293b;border:1px solid #334155;border-radius:6px;padding:0.4rem 0.75rem;font-size:0.85rem;color:#fbbf24;"><strong>Human Gate:</strong> Zero Auto-Dispatch</span>
     </div>
   </div>
@@ -1080,6 +1130,91 @@ export class OwnerDigestService {
       <li><a href="/api/v1/owner/facts-status">Check Statutory Owner Facts Status</a></li>
     </ul>
   </div>
+  <script>
+    async function recordDispatch(id) {
+      const btn = event.currentTarget || event.target;
+      const origText = btn.innerText;
+      btn.innerText = 'Marking...';
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/v1/owner/direct-outreach/' + encodeURIComponent(id) + '/record-dispatch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        });
+        const data = await res.json();
+        if (data.success) {
+          btn.innerText = '✅ Dispatched';
+          btn.style.background = '#059669';
+          const card = document.getElementById('draft-card-' + id);
+          if (card) {
+            const badge = card.querySelector('.status-badge');
+            if (badge) {
+              badge.innerText = 'DISPATCHED';
+              badge.style.background = '#10b981';
+              badge.style.color = '#fff';
+            }
+          }
+        } else {
+          alert('Error recording dispatch: ' + (data.error || 'Server rejected request'));
+          btn.innerText = origText;
+          btn.disabled = false;
+        }
+      } catch (err) {
+        alert('Network error: ' + err.message);
+        btn.innerText = origText;
+        btn.disabled = false;
+      }
+    }
+
+    async function recordOptOut(id) {
+      if (!confirm('Are you sure you want to opt-out this prospect? They will be suppressed from all outreach for 60 days.')) return;
+      const btn = event.currentTarget || event.target;
+      const origText = btn.innerText;
+      btn.innerText = 'Suppressing...';
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/v1/owner/direct-outreach/' + encodeURIComponent(id) + '/opt-out', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        });
+        const data = await res.json();
+        if (data.success) {
+          btn.innerText = '🚫 Suppressed (60d)';
+          btn.style.background = '#64748b';
+          const card = document.getElementById('draft-card-' + id);
+          if (card) {
+            card.style.opacity = '0.4';
+          }
+        } else {
+          alert('Error suppressing prospect: ' + (data.error || 'Server rejected request'));
+          btn.innerText = origText;
+          btn.disabled = false;
+        }
+      } catch (err) {
+        alert('Network error: ' + err.message);
+        btn.innerText = origText;
+        btn.disabled = false;
+      }
+    }
+
+    function copyDraft(id) {
+      const p = document.getElementById('draft-text-' + id);
+      if (!p) return;
+      const text = p.innerText || p.textContent;
+      const btn = event.currentTarget || event.target;
+      const origText = btn.innerText;
+      navigator.clipboard.writeText(text).then(() => {
+        btn.innerText = '✓ Copied!';
+        btn.style.background = '#16a34a';
+        setTimeout(() => {
+          btn.innerText = origText;
+          btn.style.background = '#334155';
+        }, 2000);
+      }).catch(() => {
+        prompt('Copy message manually:', text);
+      });
+    }
+  </script>
 </body>
 </html>`;
   }
