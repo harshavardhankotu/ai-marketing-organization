@@ -168,14 +168,19 @@ async function run() {
     console.warn(`  ! /deals HTML notice: ${e.message}`);
   }
 
-  // C. Sitemap.xml
+  // C. Sitemap.xml & RSS.xml
   try {
     const sitemapRes = await fetch(`${backendUrl}/sitemap.xml`);
     const sitemapXml = await sitemapRes.text();
     const hasDealInSitemap = sitemapXml.includes('/deals');
     console.log(`  ✓ GET /sitemap.xml: HTTP ${sitemapRes.status}, Has /deals entry: ${hasDealInSitemap}`);
+
+    const rssRes = await fetch(`${backendUrl}/rss.xml`);
+    const rssXml = await rssRes.text();
+    const hasRssItems = rssXml.includes('<item>') && rssXml.includes('boAt');
+    console.log(`  ✓ GET /rss.xml: HTTP ${rssRes.status}, Has syndicated deal item: ${hasRssItems}`);
   } catch (e) {
-    console.warn(`  ! /sitemap.xml notice: ${e.message}`);
+    console.warn(`  ! /sitemap.xml or /rss.xml notice: ${e.message}`);
   }
 
   // D. Deal Redirect Endpoint
@@ -192,6 +197,8 @@ async function run() {
 
   // E. Partner Offer Redirect Endpoint
   try {
+    const offerSlug = 'boat-airdopes-141-gen2';
+    const referralId = 'ref_boat_pilot_01';
     const partnerRedirectRes = await fetch(`${backendUrl}/r/${offerSlug}/${referralId}`, {
       redirect: 'manual'
     });
