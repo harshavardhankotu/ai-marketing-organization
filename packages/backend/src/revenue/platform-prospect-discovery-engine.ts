@@ -910,6 +910,9 @@ export class PlatformProspectDiscoveryEngine {
         observedGap: c.observedGap
       });
 
+      const prospectStatus = source === 'CACHE_REUSE' ? 'SEEDED_UNVERIFIED' : 'DISCOVERED';
+      const prospectStage = source === 'CACHE_REUSE' ? 'SEEDED_UNVERIFIED' : 'DISCOVERED';
+
       try {
         // 1. platform_prospects
         await this.d1Repo.executeWrite(
@@ -919,7 +922,7 @@ export class PlatformProspectDiscoveryEngine {
             city, prospect_city, website_url, prospect_website, phone, prospect_phone,
             email, prospect_email, source, discovery_source, status, stage, fit_score,
             audit_score, observed_evidence_json, discovery_evidence_json, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DISCOVERED', 'DISCOVERED', 0.85, 0.85, ?, ?, ?, ?)`,
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0.85, 0.85, ?, ?, ?, ?)`,
           [
             prospectId,
             c.businessName,
@@ -936,6 +939,8 @@ export class PlatformProspectDiscoveryEngine {
             c.contactEmail || null,
             source,
             source,
+            prospectStatus,
+            prospectStage,
             evidenceJson,
             evidenceJson,
             now,

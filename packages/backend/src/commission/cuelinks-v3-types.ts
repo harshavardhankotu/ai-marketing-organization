@@ -42,6 +42,17 @@ export const CUELINKS_STANDARD_SCOPES: CuelinksScope[] = [
   'read:transactions'
 ];
 
+export type CuelinksCapabilityState = 'AVAILABLE' | 'PERMISSION_MISSING' | 'AUTH_FAILURE' | 'PROVIDER_ERROR' | 'NOT_TESTED';
+
+export interface CuelinksCapabilitiesMap {
+  campaignDiscovery: CuelinksCapabilityState;
+  linkConversion: CuelinksCapabilityState;
+  offerPagination: CuelinksCapabilityState;
+  channelVerification: CuelinksCapabilityState;
+  transactionReconciliation: CuelinksCapabilityState;
+  reporting: CuelinksCapabilityState;
+}
+
 export interface CuelinksPingPublisher {
   id?: number | string;
   publisher_id?: number | string;
@@ -112,6 +123,7 @@ export interface CuelinksCampaign {
   payout?: string;
   payout_type?: string;
   payout_currency?: string;
+  commission_rate?: string | number;
   campaign_type?: string;
   reporting_type?: string;
   epc_7d?: string | number;
@@ -382,6 +394,7 @@ export interface CuelinksSyncStatus {
   lastSyncTimestamp: string;
   status: 'IDLE' | 'SYNCING' | 'SUCCESS' | 'PARTIAL_SUCCESS' | 'RETRY_WAIT' | 'BLOCKED_CONFIGURATION' | 'FAILED_PERMANENTLY' | 'BLOCKED_AUTHORIZATION' | 'ERROR';
   reconciliation: CuelinksReconciliationMetrics;
+  capabilities?: CuelinksCapabilitiesMap;
   ownerActionRequired?: string;
   telemetry?: CuelinksTelemetryRecord;
 }

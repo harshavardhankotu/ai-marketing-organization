@@ -660,6 +660,8 @@ export class AutonomousDealDiscoveryEngine {
       this.lastCycleStatus = 'DISCOVERY_COMPLETED_WITH_BLOCKERS';
     } else if (failedSources.length > 0 && rawOffers.length === 0) {
       this.lastCycleStatus = 'BLOCKED';
+    } else if (rawOffers.length === 0 || offersVerified === 0) {
+      this.lastCycleStatus = 'EMPTY';
     } else {
       this.lastCycleStatus = 'SUCCESS';
     }
@@ -1124,14 +1126,14 @@ export class AutonomousDealDiscoveryEngine {
           nextFailureCount = 1;
         }
 
-        if (nextFailureCount >= 3) {
-          console.warn(`[DealEngine] Offer page ${failedPage} failed ${nextFailureCount} consecutive times (e.g. upstream offset limit); advancing campaign cursor to avoid infinite offset loop`);
+        if (nextFailureCount >= 2) {
+          console.warn(`[DealEngine] Offer page ${failedPage} failed ${nextFailureCount} consecutive times (e.g. upstream offset limit); wrapping offer cursor to page 1 to prevent infinite offset loops`);
           nextCampPage = isCampEnd ? 1 : cursor.campaignPage + 1;
           nextOfferPage = 1;
           nextFailedPage = undefined;
           nextFailureCount = 0;
         } else {
-          console.warn(`[DealEngine] Offer page ${failedPage} transient error (attempt ${nextFailureCount}/3); retaining cursor for retry`);
+          console.warn(`[DealEngine] Offer page ${failedPage} transient error (attempt ${nextFailureCount}/2); retaining cursor for retry`);
           nextOfferPage = failedPage;
         }
       } else {

@@ -20,6 +20,7 @@
     "board:sync": "node scripts/board-sync.mjs",
     "board:preflight": "node scripts/board-preflight.mjs",
     "board:verify": "node scripts/board-verify.mjs",
+    "lessons:generate": "node scripts/generate-lessons.mjs",
     "lint:rupee-estimates": "node scripts/lint-no-unbacked-rupee-estimates.mjs",
     "lint:owner-prices": "node scripts/lint-no-unauthorized-owner-prices.mjs",
     "lint:owner-claims": "node scripts/lint-owner-claims.mjs",
