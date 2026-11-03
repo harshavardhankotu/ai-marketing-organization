@@ -758,10 +758,10 @@ describe('Cuelinks V3 Monetization API & MCP Integration (Spec §§ 1–10)', ()
           status: 200,
           json: async () => ({
             data: [
-              { id: 'tx_1', campaign_id: 1, campaign_name: 'Flipkart', commission_amount: 150, status: 'pending', transaction_date: '2026-10-24' },
-              { id: 'tx_2', campaign_id: 1, campaign_name: 'Flipkart', commission_amount: 350, status: 'approved', transaction_date: '2026-10-23' },
-              { id: 'tx_3', campaign_id: 2, campaign_name: 'Myntra', commission_amount: 100, status: 'rejected', transaction_date: '2026-10-22' },
-              { id: 'tx_4', campaign_id: 1, campaign_name: 'Flipkart', commission_amount: 500, status: 'paid', transaction_date: '2026-10-20' }
+              { id: 'tx_1', campaign_id: 1, campaign_name: 'Flipkart', commission_amount: 150, currency: 'INR', status: 'pending', transaction_date: '2026-10-24' },
+              { id: 'tx_2', campaign_id: 1, campaign_name: 'Flipkart', commission_amount: 350, currency: 'INR', status: 'approved', transaction_date: '2026-10-23' },
+              { id: 'tx_3', campaign_id: 2, campaign_name: 'Myntra', commission_amount: 100, currency: 'INR', status: 'rejected', transaction_date: '2026-10-22' },
+              { id: 'tx_4', campaign_id: 1, campaign_name: 'Flipkart', commission_amount: 500, currency: 'INR', status: 'paid', transaction_date: '2026-10-20' }
             ],
             meta: { total: 4 }
           })
@@ -910,7 +910,7 @@ describe('Cuelinks V3 Monetization API & MCP Integration (Spec §§ 1–10)', ()
           status: 200,
           json: async () => ({
             data: [
-              { id: 't1', campaign_id: 1, commission_amount: 1000, status: 'paid' }
+              { id: 't1', campaign_id: 1, commission_amount: 1000, currency: 'INR', status: 'paid' }
             ],
             meta: { total: 1 }
           })

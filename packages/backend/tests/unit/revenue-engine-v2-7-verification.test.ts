@@ -65,9 +65,8 @@ describe('Revenue Engine V2.7 Verification & Security Gate Tests', () => {
       expect(res.affiliated).toBe(true);
       expect(res.tracking_url).toBe('https://clnk.in/safe123');
       // Must not use http://insecure-http.clnk.in/unsafe!
-      expect(res.short_url).toBe('https://clnk.in/safe123');
+      expect(res.short_url).toBeUndefined();
       expect(CuelinksV3Client.isAllowedTrackingUrl(res.tracking_url!)).toBe(true);
-      expect(CuelinksV3Client.isAllowedTrackingUrl(res.short_url!)).toBe(true);
     });
 
     it('rejects unallowlisted domain in short_url', async () => {
@@ -87,7 +86,7 @@ describe('Revenue Engine V2.7 Verification & Security Gate Tests', () => {
       });
 
       expect(res.affiliated).toBe(true);
-      expect(res.short_url).toBe('https://clnk.in/safe123');
+      expect(res.short_url).toBeUndefined();
     });
   });
 

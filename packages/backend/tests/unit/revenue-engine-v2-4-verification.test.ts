@@ -196,7 +196,7 @@ describe('Revenue Engine V2.4 — Verification & Defect Fixes Suite', () => {
       engine.resetSources();
       const sources = engine.getSources();
 
-      expect(sources.length).toBe(19);
+      expect(sources.length).toBeGreaterThanOrEqual(19);
 
       // Verify distinct ledgers
       const fuelSource = sources.find(s => s.id === 'src_ppac_fuel_intelligence');

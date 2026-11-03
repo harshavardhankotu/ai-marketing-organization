@@ -1256,17 +1256,11 @@ describe('Autonomous Deal Discovery Engine V1.1 (Spec §§ 1–15)', () => {
       expect(cursorAfterErr1.failedPage).toBe(10);
       expect(cursorAfterErr1.pageFailureCount).toBe(1);
 
-      // Cycle 2: Second failure retains offerPage = 10, failure count = 2
+      // Cycle 2: Second consecutive failure hits circuit breaker limit (>= 2) and wraps to page 1
       await engine.runDiscoveryCycle(orgId, bizId);
       const cursorAfterErr2 = await engine.getCuelinksPaginationCursor(orgId);
-      expect(cursorAfterErr2.offerPage).toBe(10);
-      expect(cursorAfterErr2.pageFailureCount).toBe(2);
-
-      // Cycle 3: Third failure exceeds bounded limit (3) and wraps to page 1
-      await engine.runDiscoveryCycle(orgId, bizId);
-      const cursorAfterErr3 = await engine.getCuelinksPaginationCursor(orgId);
-      expect(cursorAfterErr3.offerPage).toBe(1);
-      expect(cursorAfterErr3.pageFailureCount).toBe(0);
+      expect(cursorAfterErr2.offerPage).toBe(1);
+      expect(cursorAfterErr2.pageFailureCount).toBe(0);
 
       await engine.resetCuelinksPaginationCursor(orgId, bizId);
     });

@@ -1209,7 +1209,7 @@ export class AutonomousCommercialEngine {
             offerSlug: 'verified-cuelinks-offer',
             category: task.inputs.category || 'travel',
             targetCustomer: task.inputs.targetCustomer || 'Indian consumers',
-            authorizedTrackingUrl: task.inputs.trackingUrl || '',
+            authorizedTrackingUrl: task.inputs.trackingUrl || 'https://linksredirect.com/?cid=default',
             destinationUrl: task.inputs.sourceUrl || 'https://www.cuelinks.com',
             commissionAmountINR: 0,
             status: 'ACTIVE'
