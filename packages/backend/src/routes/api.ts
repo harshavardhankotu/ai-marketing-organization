@@ -6315,29 +6315,40 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
 
   let targetUrl: string | undefined = undefined;
 
-  // Phase 2: Visitor-level link conversion with Cuelinks Sub-IDs
+  // Phase 2: Dynamic link conversion with Cuelinks Sub-IDs
   if (deal.affiliateNetwork === 'CUELINKS' || !deal.affiliateNetwork) {
     try {
       const { CuelinksV3Client } = await import('../commission/cuelinks-v3-client.js');
+      const { CuelinksSyncManager } = await import('../commission/cuelinks-sync-manager.js');
       const cuelinksClient = CuelinksV3Client.getInstance();
-      const channelId = 331585;
+      const cuelinksSync = CuelinksSyncManager.getInstance(cuelinksClient);
 
-      const convRes = await cuelinksClient.convertLink({
-        url: deal.productUrl,
-        channel_id: channelId,
-        subid: clickId,
-        subid2: sectorCode,
-        subid3: deal.affiliateCampaignId || '4232',
-        subid4: deal.canonicalSlug || deal.slug || deal.id,
-        subid5: placement,
-        shorten: false
-      });
+      let channelId: number | undefined = undefined;
+      const channelRes = await cuelinksSync.getApprovedChannel();
+      if (channelRes?.channel?.id) {
+        channelId = Number(channelRes.channel.id);
+      } else {
+        channelId = 331585; // Approved default publisher channel
+      }
 
-      if (convRes.affiliated && convRes.tracking_url) {
-        targetUrl = convRes.tracking_url;
+      if (channelId) {
+        const convRes = await cuelinksClient.convertLink({
+          url: deal.productUrl,
+          channel_id: channelId,
+          subid: clickId,
+          subid2: sectorCode,
+          subid3: deal.affiliateCampaignId || '4232',
+          subid4: deal.canonicalSlug || deal.slug || deal.id,
+          subid5: placement,
+          shorten: false
+        });
+
+        if (convRes.affiliated && convRes.tracking_url) {
+          targetUrl = convRes.tracking_url;
+        }
       }
     } catch (convErr: any) {
-      console.warn(`[DealRedirect] Cuelinks link conversion error: ${convErr.message}`);
+      console.warn(`[DealRedirect] Cuelinks dynamic link conversion error: ${convErr.message}`);
     }
   }
 
@@ -6345,20 +6356,23 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
   if (!targetUrl && deal.trackingUrl) {
     try {
       const urlObj = new URL(deal.trackingUrl);
-      urlObj.searchParams.set('subid', clickId);
-      urlObj.searchParams.set('subid2', sectorCode);
-      if (deal.affiliateCampaignId) {
-        urlObj.searchParams.set('subid3', deal.affiliateCampaignId);
+      const host = urlObj.hostname.toLowerCase();
+      if (host.includes('linksredirect.com') || host.includes('cuelinks.com') || host.includes('clnk.in')) {
+        urlObj.searchParams.set('subid', clickId);
+        urlObj.searchParams.set('subid2', sectorCode);
+        if (deal.affiliateCampaignId) {
+          urlObj.searchParams.set('subid3', deal.affiliateCampaignId);
+        }
+        urlObj.searchParams.set('subid4', deal.canonicalSlug || deal.slug || deal.id);
+        urlObj.searchParams.set('subid5', placement);
+        targetUrl = urlObj.toString();
       }
-      urlObj.searchParams.set('subid4', deal.canonicalSlug || deal.slug || deal.id);
-      urlObj.searchParams.set('subid5', placement);
-      targetUrl = urlObj.toString();
     } catch {
       targetUrl = deal.trackingUrl;
     }
   }
 
-  // Fail closed if monetization path unavailable
+  // Fail closed if monetization path unavailable (never append Sub-IDs to static tracking URLs or allow unmonetized traffic)
   if (!targetUrl) {
     return c.text('Affiliate monetization path temporarily unavailable for this deal; unmonetized fallback suppressed', 503);
   }
@@ -6414,18 +6428,10 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
       targetUrl
     ];
 
-    if (isProduction()) {
-      await d1Repo.executeWrite('referrals', insertRefSql, refParams);
-      await d1Repo.executeWrite('referral_click_events', insertClickSql, clickParams);
-    } else {
-      const { getDb } = await import('../db/client.js');
-      const db = getDb();
-      const insertTx = db.transaction(() => {
-        db.prepare(insertRefSql).run(...refParams);
-        db.prepare(insertClickSql).run(...clickParams);
-      });
-      insertTx();
-    }
+    await d1Repo.executeBatch([
+      { table: 'referrals', sql: insertRefSql, params: refParams },
+      { table: 'referral_click_events', sql: insertClickSql, params: clickParams }
+    ]);
   } catch (dbErr: any) {
     console.error(`[DealRedirect] Critical database error persisting click attribution: ${dbErr.message}`);
     return c.text('Attribution persistence failed; redirect suppressed to protect monetization', 503);

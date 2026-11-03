@@ -882,11 +882,34 @@ export class CuelinksSyncManager {
     maxPages?: number;
     updated_since?: string;
   }): Promise<CuelinksReconciliationMetrics> {
+    const d1Repo = D1RevenueRepository.getInstance();
+    let updatedSince = options?.updated_since;
+
+    if (!updatedSince) {
+      try {
+        const cursorRecord = await d1Repo.queryOne<{ outputs_json: string }>(
+          'workflows',
+          "SELECT outputs_json FROM workflows WHERE id = 'wf_cuelinks_reconciliation_cursor' LIMIT 1"
+        );
+        if (cursorRecord?.outputs_json) {
+          const parsed = JSON.parse(cursorRecord.outputs_json);
+          if (parsed.lastReconciledSince) {
+            updatedSince = parsed.lastReconciledSince;
+          }
+        }
+      } catch (err: any) {
+        console.warn(`[CuelinksSync] Could not load durable reconciliation cursor: ${err.message}`);
+      }
+    }
+
+    if (!updatedSince) {
+      updatedSince = this.lastReconciledSince;
+    }
+
     const maxPages = options?.maxPages || 5;
     let page = 1;
     let hasNext = true;
     const allTransactions: any[] = [];
-    const updatedSince = options?.updated_since || this.lastReconciledSince;
 
     while (page <= maxPages && hasNext) {
       const transRes = await this.client.getTransactions({
@@ -914,28 +937,33 @@ export class CuelinksSyncManager {
     let providerPaid = 0;
     let reversed = 0;
     let unmatchedCount = 0;
+    let currencyUnclassifiedCount = 0;
+    let hasFailedWrites = false;
 
     for (const tx of allTransactions) {
       const curr = (tx.currency || 'INR').toUpperCase();
       if (curr !== 'INR') {
-        console.warn(`[CuelinksSync] Notice: Non-INR currency '${curr}' on transaction '${tx.id}'`);
+        console.warn(`[CuelinksSync] Notice: Non-INR currency '${curr}' on transaction '${tx.id}'. Isolating from INR metrics.`);
+        currencyUnclassifiedCount++;
       }
 
       const amt = Number(tx.user_commission ?? tx.commission_amount) || 0;
       const status = (tx.status || '').toLowerCase().trim();
 
-      if (status === 'pending') {
-        pending += amt;
-      } else if (status === 'validated' || status === 'approved') {
-        validated += amt;
-      } else if (status === 'payable') {
-        payable += amt;
-      } else if (status === 'invoice_raised' || status === 'invoiced') {
-        invoiced += amt;
-      } else if (status === 'paid' || status === 'provider_paid') {
-        providerPaid += amt;
-      } else if (status === 'rejected' || status === 'cancelled') {
-        reversed += amt;
+      if (curr === 'INR') {
+        if (status === 'pending') {
+          pending += amt;
+        } else if (status === 'validated' || status === 'approved') {
+          validated += amt;
+        } else if (status === 'payable') {
+          payable += amt;
+        } else if (status === 'invoice_raised' || status === 'invoiced') {
+          invoiced += amt;
+        } else if (status === 'paid' || status === 'provider_paid') {
+          providerPaid += amt;
+        } else if (status === 'rejected' || status === 'cancelled') {
+          reversed += amt;
+        }
       }
 
       const subId = tx.sub_id || tx.subid || tx.sub_id_1 || tx.subid1;
@@ -943,19 +971,9 @@ export class CuelinksSyncManager {
 
       if (subId) {
         try {
-          if (isProduction()) {
-            const d1Repo = D1RevenueRepository.getInstance();
-            const refRows = await d1Repo.query<any>('referrals', 'SELECT id, offer_id, partner_id FROM referrals WHERE click_id = ? LIMIT 1', [subId]);
-            if (refRows && refRows.length > 0) {
-              matchedReferralId = refRows[0].id;
-            }
-          } else {
-            const { getDb } = await import('../db/client.js');
-            const db = getDb();
-            const refRow = db.prepare('SELECT id, offer_id, partner_id FROM referrals WHERE click_id = ? LIMIT 1').get(subId) as any;
-            if (refRow) {
-              matchedReferralId = refRow.id;
-            }
+          const refRows = await d1Repo.query<any>('referrals', 'SELECT id, offer_id, partner_id FROM referrals WHERE click_id = ? LIMIT 1', [subId]);
+          if (refRows && refRows.length > 0) {
+            matchedReferralId = refRows[0].id;
           }
         } catch {}
       }
@@ -967,8 +985,8 @@ export class CuelinksSyncManager {
       try {
         const commId = `comm_${tx.id}`;
         const externalTxId = String(tx.id || tx.transaction_id);
-        const verifiedCommission = ['validated', 'approved', 'payable', 'invoice_raised', 'paid'].includes(status) ? amt : 0;
-        const receivedCommission = status === 'paid' ? amt : 0;
+        const verifiedCommission = (curr === 'INR' && ['validated', 'approved', 'payable', 'invoice_raised', 'paid'].includes(status)) ? amt : 0;
+        const receivedCommission = (curr === 'INR' && status === 'paid') ? amt : 0;
         const evidenceJson = JSON.stringify({
           subids: [tx.sub_id, tx.sub_id_2, tx.sub_id_3, tx.sub_id_4, tx.sub_id_5],
           campaign_id: tx.campaign_id,
@@ -1000,26 +1018,52 @@ export class CuelinksSyncManager {
           matchedReferralId || null,
           externalTxId,
           status,
-          amt,
+          curr === 'INR' ? amt : 0,
           verifiedCommission,
           receivedCommission,
           evidenceJson,
           mappedStatus
         ];
 
-        if (isProduction()) {
-          const d1Repo = D1RevenueRepository.getInstance();
-          await d1Repo.executeWrite('commission_records', upsertSql, params);
-        } else {
-          const { getDb } = await import('../db/client.js');
-          getDb().prepare(upsertSql).run(...params);
-        }
+        await d1Repo.executeWrite('commission_records', upsertSql, params);
       } catch (saveErr: any) {
         console.warn(`[CuelinksSync] Error persisting transaction '${tx.id}': ${saveErr.message}`);
+        hasFailedWrites = true;
       }
     }
 
-    this.lastReconciledSince = new Date().toISOString();
+    const newCursor = new Date().toISOString();
+    if (!hasFailedWrites) {
+      this.lastReconciledSince = newCursor;
+      try {
+        const cursorSql = `
+          INSERT INTO workflows (
+            id, organization_id, business_id, workflow_type, status, current_step,
+            last_successful_checkpoint, retry_count, max_retries, inputs_json, outputs_json, updated_at
+          ) VALUES (?, 'org_owner_primary', 'biz_platform_aro', 'CUELINKS_RECONCILIATION_CURSOR', 'COMPLETED', 'RECONCILED', ?, 0, 3, '{}', ?, datetime('now'))
+          ON CONFLICT(id) DO UPDATE SET
+            status = excluded.status,
+            current_step = excluded.current_step,
+            last_successful_checkpoint = excluded.last_successful_checkpoint,
+            outputs_json = excluded.outputs_json,
+            updated_at = datetime('now')
+        `;
+        const cursorPayload = JSON.stringify({
+          lastReconciledSince: newCursor,
+          lastRunAt: newCursor,
+          transactionsCount: allTransactions.length
+        });
+        await d1Repo.executeWrite('workflows', cursorSql, [
+          'wf_cuelinks_reconciliation_cursor',
+          newCursor,
+          cursorPayload
+        ]);
+      } catch (cursorErr: any) {
+        console.warn(`[CuelinksSync] Error saving durable reconciliation cursor: ${cursorErr.message}`);
+      }
+    } else {
+      console.warn(`[CuelinksSync] Failed writes detected during reconciliation; cursor NOT advanced to protect reconciliation integrity.`);
+    }
 
     return {
       localClicks: this.syncStatus.reconciliation.localClicks,
@@ -1033,6 +1077,7 @@ export class CuelinksSyncManager {
       paidCommissionINR: Math.round(providerPaid * 100) / 100,
       reversedCommissionINR: Math.round(reversed * 100) / 100,
       unmatchedTransactionsCount: unmatchedCount,
+      currencyUnclassifiedCount,
       cashReceivedINR: 0
     };
   }

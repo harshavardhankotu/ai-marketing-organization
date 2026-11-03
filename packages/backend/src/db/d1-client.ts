@@ -228,4 +228,101 @@ export class D1Client {
       return { results, rowsAffected: 0, source: 'PERSISTENT_SQLITE' };
     }
   }
+
+  /**
+   * Helper to safely format / interpolate SQL values when assembling multi-statement SQL for Cloudflare D1.
+   */
+  public static interpolateSql(sql: string, params: any[] = []): string {
+    let paramIdx = 0;
+    return sql.replace(/\?/g, () => {
+      if (paramIdx >= params.length) {
+        throw new Error(`Insufficient parameters provided for SQL query.`);
+      }
+      const val = params[paramIdx++];
+      if (val === null || val === undefined) return 'NULL';
+      if (typeof val === 'number') return Number.isFinite(val) ? String(val) : 'NULL';
+      if (typeof val === 'boolean') return val ? '1' : '0';
+      if (val instanceof Date) return `'${val.toISOString()}'`;
+      return `'${String(val).replace(/'/g, "''")}'`;
+    });
+  }
+
+  /**
+   * Executes a batch of statements atomically.
+   * In Cloudflare D1 HTTP API, multiple statements without explicit BEGIN/COMMIT are submitted in a single query payload.
+   * In local/dev SQLite, executes wrapped in a db.transaction().
+   */
+  public async executeBatch(
+    statements: Array<{ sql: string; params?: any[] }>,
+    priority: 'P0' | 'P1' | 'P2' | 'P3' | 'P4' = 'P0'
+  ): Promise<{ rowsAffected: number; source: 'CLOUDFLARE_D1' | 'PERSISTENT_SQLITE' }> {
+    if (statements.length === 0) {
+      return { rowsAffected: 0, source: this.isRemoteD1Configured() ? 'CLOUDFLARE_D1' : 'PERSISTENT_SQLITE' };
+    }
+
+    const usage = this.getUsage();
+    if (usage.isWriteThrottled && (priority === 'P3' || priority === 'P4')) {
+      throw new Error(`[D1 SAFETY GUARD] Daily budget limit reached for non-critical batch (Priority ${priority}).`);
+    }
+
+    const isProduction = process.env.NODE_ENV === 'production';
+
+    if (this.isRemoteD1Configured()) {
+      const combinedSql = statements.map(s => {
+        const interpolated = D1Client.interpolateSql(s.sql, s.params || []);
+        return interpolated.trim().endsWith(';') ? interpolated.trim() : `${interpolated.trim()};`;
+      }).join('\n');
+
+      const url = `https://api.cloudflare.com/client/v4/accounts/${this.accountId}/d1/database/${this.databaseId}/query`;
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${this.apiToken}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ sql: combinedSql })
+        });
+
+        if (response.ok) {
+          const json = await response.json() as any;
+          const results = json?.result || [];
+          let totalWritten = 0;
+          for (const res of results) {
+            totalWritten += res?.meta?.rows_written || 1;
+          }
+          this.recordUsage(0, totalWritten);
+          return { rowsAffected: totalWritten, source: 'CLOUDFLARE_D1' };
+        } else {
+          const errText = await response.text();
+          if (isProduction) {
+            throw new Error(`[D1 PERSISTENCE ERROR] D1 batch returned HTTP ${response.status}: ${errText}`);
+          }
+          console.warn(`[D1Client] Cloudflare D1 batch HTTP ${response.status} (${errText}) — falling back to dev store`);
+        }
+      } catch (err: any) {
+        if (isProduction) {
+          throw new Error(`[D1 PERSISTENCE FAULT] Production Cloudflare D1 batch unavailable (${err.message}). Halting to prevent non-durable state divergence.`);
+        }
+        console.warn(`[D1Client] Cloudflare D1 batch failed (${err.message}) — falling back to local store in dev/test`);
+      }
+    } else if (isProduction) {
+      throw new Error('[D1 CONFIGURATION FAULT] Production requires remote Cloudflare D1 credentials (CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_D1_DATABASE_ID, CLOUDFLARE_D1_API_TOKEN). Ephemeral SQLite fallback is strictly prohibited in production.');
+    }
+
+    // Local / SQLite execution (Dev / Test / Offline) wrapped in transaction
+    const db = getDb();
+    let totalChanges = 0;
+    const runBatch = db.transaction((stmts: Array<{ sql: string; params?: any[] }>) => {
+      for (const s of stmts) {
+        const stmt = db.prepare(s.sql);
+        const info = stmt.run(...(s.params || []));
+        totalChanges += info.changes || 1;
+      }
+    });
+
+    runBatch(statements);
+    this.recordUsage(0, totalChanges);
+    return { rowsAffected: totalChanges, source: 'PERSISTENT_SQLITE' };
+  }
 }
