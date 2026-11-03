@@ -115,6 +115,7 @@ describe('Revenue Engine V3.2 — First Customer & Commercial Conversion', () =>
       const task = engine.createCommercialTask({
         network: 'CUELINKS',
         domain: 'travel',
+        trackingUrl: 'https://linksredirect.com/?cid=331585&url=https%3A%2F%2Fwww.cuelinks.com',
         targetKeyword: 'Akasa Air domestic student fares',
         targetAudience: 'Domestic student travelers'
       });

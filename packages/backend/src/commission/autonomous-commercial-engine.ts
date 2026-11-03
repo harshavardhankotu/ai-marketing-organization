@@ -32,6 +32,7 @@ export type CommercialBlockerType =
   | 'TEMPORARY_NETWORK_FAILURE'
   | 'INVALID_CONTENT_OR_DISCLOSURE'
   | 'INVALID_TRACKING_REDIRECT'
+  | 'INVALID_TRACKING_URL'
   | 'QUALITY_GATE_REJECTED';
 
 export interface CommercialTaskRecord {
@@ -469,17 +470,7 @@ export class AutonomousCommercialEngine {
         console.warn(`[CommercialEngine] Partner creation notice: ${err.message}`);
       }
     } else if (isCuelinksConfigured && cuelinksPartner.approvalStatus !== 'APPROVED') {
-      try {
-        const sqlAuth = `UPDATE partners SET approval_status = 'APPROVED', active_status = 1, authorization_status = 'AUTHORIZED', updated_at = datetime('now') WHERE id = ?`;
-        if (isProduction()) {
-          await this.d1Repo.executeWrite('partners', sqlAuth, [cuelinksPartner.id]);
-        } else {
-          getDb().prepare(sqlAuth).run(cuelinksPartner.id);
-        }
-        cuelinksPartner.approvalStatus = 'APPROVED';
-        cuelinksPartner.authorizationStatus = 'AUTHORIZED';
-        cuelinksPartner.activeStatus = 1;
-      } catch {}
+      console.log(`[CommercialEngine] Partner ${cuelinksPartner.name} exists but remains unapproved; awaiting owner approval.`);
     }
 
     // Check whether owner has authorized Cuelinks and provided Campaign Explorer link
@@ -625,35 +616,14 @@ export class AutonomousCommercialEngine {
               const partners = await this.partnerRegistry.listPartners(organizationId);
               let partner = partners.find(p => p.network === task.inputs.network && this.partnerRegistry.isPartnerAuthorizedForProduction(p));
               if (!partner) {
-                const anyPartner = partners.find(p => p.network === task.inputs.network);
-                if (anyPartner) {
-                  const sqlAuth = `UPDATE partners SET approval_status = 'APPROVED', active_status = 1, authorization_status = 'AUTHORIZED', updated_at = datetime('now') WHERE id = ?`;
-                  if (isProduction()) {
-                    await this.d1Repo.executeWrite('partners', sqlAuth, [anyPartner.id]);
-                  } else {
-                    getDb().prepare(sqlAuth).run(anyPartner.id);
-                  }
-                  partner = (await this.partnerRegistry.getPartner(anyPartner.id))!;
-                } else {
-                  partner = await this.partnerRegistry.createPartner({
-                    organizationId,
-                    name: 'Cuelinks India',
-                    industry: 'technology',
-                    country: 'India',
-                    website: 'https://www.cuelinks.com',
-                    partnerType: 'AFFILIATE',
-                    programName: 'Cuelinks Content Publisher Network',
-                    commissionType: 'PERCENTAGE',
-                    cookieWindowDays: 1,
-                    qualifyingEvent: 'PURCHASE',
-                    approvalStatus: 'APPROVED',
-                    authorizationStatus: 'AUTHORIZED',
-                    network: 'CUELINKS',
-                    trackingType: 'AFFILIATE_LINK',
-                    programUrl: 'https://www.cuelinks.com',
-                    coverage: 'India'
-                  });
-                }
+                task.status = 'BLOCKED';
+                task.errorInfo = {
+                  message: `Partner for network ${task.inputs.network} is not authorized for production. Autonomous auto-approval is strictly forbidden.`,
+                  blockerType: 'MISSING_OWNER_AUTHORIZATION',
+                  failedAt: new Date().toISOString()
+                };
+                await this.persistTask(task);
+                return 'BLOCKED';
               }
               task.outputs.partnerId = partner.id;
             }
@@ -983,20 +953,9 @@ export class AutonomousCommercialEngine {
     }
 
     if (task.errorInfo?.message?.includes('UNAUTHORIZED_PARTNER') || task.status === 'RETRY_WAIT') {
-      const isCuelinksConf = CuelinksV3Client.getInstance().isConfigured();
-      if (isCuelinksConf && task.inputs.network === 'CUELINKS') {
-        if (task.outputs.partnerId) {
-          try {
-            const sqlAuth = `UPDATE partners SET approval_status = 'APPROVED', active_status = 1, authorization_status = 'AUTHORIZED', updated_at = datetime('now') WHERE id = ?`;
-            if (isProduction()) {
-              await this.d1Repo.executeWrite('partners', sqlAuth, [task.outputs.partnerId]);
-            } else {
-              getDb().prepare(sqlAuth).run(task.outputs.partnerId);
-            }
-          } catch {}
-        }
-        return true;
-      }
+      const partners = await this.partnerRegistry.listPartners(organizationId);
+      const partner = partners.find(p => p.network === task.inputs.network && this.partnerRegistry.isPartnerAuthorizedForProduction(p));
+      return Boolean(partner);
     }
 
     if (task.errorInfo?.blockerType === 'MISSING_DEPLOYMENT_CREDENTIALS') {
@@ -1170,38 +1129,51 @@ export class AutonomousCommercialEngine {
         const partners = await this.partnerRegistry.listPartners(task.organizationId);
         let cuelinksPartner = partners.find(p => p.network === 'CUELINKS' && this.partnerRegistry.isPartnerAuthorizedForProduction(p));
         if (!cuelinksPartner) {
-          const anyCuelinks = partners.find(p => p.network === 'CUELINKS');
-          if (anyCuelinks) {
-            const sqlAuth = `UPDATE partners SET approval_status = 'APPROVED', active_status = 1, authorization_status = 'AUTHORIZED', updated_at = datetime('now') WHERE id = ?`;
-            if (isProduction()) {
-              await this.d1Repo.executeWrite('partners', sqlAuth, [anyCuelinks.id]);
-            } else {
-              getDb().prepare(sqlAuth).run(anyCuelinks.id);
-            }
-            cuelinksPartner = (await this.partnerRegistry.getPartner(anyCuelinks.id))!;
-          } else {
-            cuelinksPartner = await this.partnerRegistry.createPartner({
-              organizationId: task.organizationId,
-              name: 'Cuelinks India',
-              industry: 'technology',
-              country: 'India',
-              website: 'https://www.cuelinks.com',
-              partnerType: 'AFFILIATE',
-              programName: 'Cuelinks Content Publisher Network',
-              commissionType: 'PERCENTAGE',
-              cookieWindowDays: 1,
-              qualifyingEvent: 'PURCHASE',
-              approvalStatus: 'APPROVED',
-              authorizationStatus: 'AUTHORIZED',
-              network: 'CUELINKS',
-              trackingType: 'AFFILIATE_LINK',
-              programUrl: 'https://www.cuelinks.com',
-              coverage: 'India'
-            });
-          }
+          task.status = 'BLOCKED';
+          task.errorInfo = {
+            message: 'Partner Cuelinks is not authorized for production. Autonomous auto-approval is strictly forbidden.',
+            blockerType: 'MISSING_OWNER_AUTHORIZATION',
+            failedAt: new Date().toISOString()
+          };
+          await this.persistTask(task);
+          return;
         }
         let offer = await this.partnerRegistry.getOfferBySlug('verified-cuelinks-offer');
         if (!offer) {
+          let trackingUrl = task.inputs.trackingUrl;
+          if (!trackingUrl || !this.partnerRegistry.isValidUrl(trackingUrl)) {
+            // Attempt dynamic link conversion if sourceUrl and approved Cuelinks channel exist
+            if (cuelinksPartner && task.inputs.sourceUrl) {
+              try {
+                const { CuelinksV3Client } = await import('./cuelinks-v3-client.js');
+                const { CuelinksSyncManager } = await import('./cuelinks-sync-manager.js');
+                const client = CuelinksV3Client.getInstance();
+                const sync = CuelinksSyncManager.getInstance(client);
+                const ch = await sync.getApprovedChannel();
+                if (ch.approved && ch.channel?.id) {
+                  const conv = await client.convertLink({
+                    url: task.inputs.sourceUrl,
+                    channel_id: Number(ch.channel.id),
+                    subid: `clk_offer_${Date.now()}`
+                  });
+                  if (conv?.affiliated && conv.tracking_url && CuelinksV3Client.isAllowedTrackingUrl(conv.tracking_url)) {
+                    trackingUrl = conv.tracking_url;
+                  }
+                }
+              } catch {}
+            }
+          }
+
+          if (!trackingUrl || !this.partnerRegistry.isValidUrl(trackingUrl)) {
+            task.status = 'BLOCKED';
+            task.stage = 'BLOCKED';
+            task.errorInfo = {
+              blockerType: 'INVALID_TRACKING_URL',
+              message: 'No authorized tracking URL provided; generic cid=default fallback suppressed.'
+            };
+            await this.persistTask(task);
+            return;
+          }
           offer = await this.partnerRegistry.createOffer({
             partnerId: cuelinksPartner.id,
             organizationId: task.organizationId,
@@ -1209,7 +1181,7 @@ export class AutonomousCommercialEngine {
             offerSlug: 'verified-cuelinks-offer',
             category: task.inputs.category || 'travel',
             targetCustomer: task.inputs.targetCustomer || 'Indian consumers',
-            authorizedTrackingUrl: task.inputs.trackingUrl || 'https://linksredirect.com/?cid=default',
+            authorizedTrackingUrl: trackingUrl,
             destinationUrl: task.inputs.sourceUrl || 'https://www.cuelinks.com',
             commissionAmountINR: 0,
             status: 'ACTIVE'

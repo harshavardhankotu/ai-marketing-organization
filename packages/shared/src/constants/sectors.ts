@@ -253,8 +253,9 @@ export function getConsumerDealSectors(): SectorDefinition[] {
 /**
  * Normalizes an arbitrary category string to one of the 8 authoritative sectors.
  */
-export function resolveSectorFromCategory(category: string): SectorDefinition {
+export function resolveSectorFromCategory(category: string): SectorDefinition | undefined {
   const norm = (category || '').toLowerCase().trim();
+  if (!norm) return undefined;
 
   if (norm.includes('gold') || norm.includes('silver') || norm.includes('jewel') || norm.includes('bullion') || norm.includes('coin')) {
     return COMMERCIAL_SECTOR_TAXONOMY.SECTOR_A_PRECIOUS_METALS;
@@ -281,8 +282,8 @@ export function resolveSectorFromCategory(category: string): SectorDefinition {
     return COMMERCIAL_SECTOR_TAXONOMY.SECTOR_H_LOCAL_SERVICES_B2B;
   }
 
-  // Default to Electronics & Tech for general merchandise
-  return COMMERCIAL_SECTOR_TAXONOMY.SECTOR_B_ELECTRONICS;
+  // Fails closed for unrecognized categories: do not default to Electronics
+  return undefined;
 }
 
 export const COMMERCIAL_SECTORS_LIST: SectorDefinition[] = Object.values(COMMERCIAL_SECTOR_TAXONOMY);

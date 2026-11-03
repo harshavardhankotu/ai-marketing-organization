@@ -19,6 +19,9 @@ describe('Cuelinks Referral Tracking, Host Allowlist & Money-Path Verification',
     delete process.env.AMAZON_AFFILIATE_TAG;
     delete process.env.CUELINKS_CAMPAIGN_ID;
     resetDbForTesting();
+    try {
+      getDb().prepare("DELETE FROM partners WHERE network = 'CUELINKS'").run();
+    } catch {}
   });
 
   afterEach(() => {

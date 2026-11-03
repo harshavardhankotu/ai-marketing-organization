@@ -265,11 +265,8 @@ export class CommercialOpportunitySelector {
       } else if (typeof rawRate === 'string') {
         commissionRate = parseFloat(rawRate) || 0;
       }
-    } else if (deal.affiliateCampaignId && (deal.affiliateNetwork === 'CUELINKS' || deal.isMonetizable)) {
-      campaignId = deal.affiliateCampaignId;
-      commissionRate = 4.0;
     } else {
-      return this.buildRejectedOpportunity(deal, 'No active, verified affiliate campaign matched to merchant domain', timestamp);
+      return this.buildRejectedOpportunity(deal, 'No active, verified affiliate campaign with verified commission rate matched to merchant domain', timestamp);
     }
 
     if (commissionRate <= 0) {

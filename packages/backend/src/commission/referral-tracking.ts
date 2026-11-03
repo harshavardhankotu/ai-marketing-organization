@@ -108,7 +108,7 @@ export function classifyTraffic(
   if (
     headers?.['x-diagnostic'] ||
     headers?.['x-test-traffic'] ||
-    /vitest|jest|supertest|postman|playwright|cypress/i.test(ua)
+    /vitest|jest|supertest|postman|playwright|cypress|test-agent/i.test(ua)
   ) {
     return 'test';
   }
@@ -152,6 +152,8 @@ export function classifyTraffic(
     /axios/i,
     /node-fetch/i,
     /undici/i,
+    /^node\b/i,
+    /^node$/i,
     /httpclient/i,
     /headless/i,
     /scraper/i
@@ -428,7 +430,7 @@ export class ReferralTrackingEngine {
     }
 
     // Phase 2 Task 7: immutable click event (append-only — never updated).
-    // Clicks create attribution, never revenue.
+    // Clicks create attribution, never revenue. Fail closed if persistence fails.
     try {
       const { randomUUID: uuid } = await import('crypto');
       await this.d1Repo.executeWrite(
@@ -458,7 +460,10 @@ export class ReferralTrackingEngine {
           new Date().toISOString()
         ]
       );
-    } catch {}
+    } catch (writeErr: any) {
+      console.error(`[ReferralTracking] Critical click event persistence failure: ${writeErr.message}`);
+      throw new Error(`CLICK_ATTRIBUTION_PERSISTENCE_FAILED: Failed to atomically persist referral click event: ${writeErr.message}`);
+    }
 
     return {
       destinationUrl: referral.destinationUrl,

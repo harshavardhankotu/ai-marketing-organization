@@ -91,6 +91,7 @@ export interface AutomationExecutionRecord {
   itemsFailed: number;
   checkpoint: Record<string, any>;
   resultSummary: Record<string, any>;
+  ownerActionRequired?: string | null;
   errorMessage: string | null;
   createdAt: string;
 }
@@ -330,6 +331,10 @@ export class AutomationRegistryEngine {
       AutomationRegistryEngine.instance = new AutomationRegistryEngine();
     }
     return AutomationRegistryEngine.instance;
+  }
+
+  public static resetInstance(): void {
+    AutomationRegistryEngine.instance = undefined as any;
   }
 
   /**
@@ -723,6 +728,7 @@ export class AutomationRegistryEngine {
       itemsFailed,
       checkpoint,
       resultSummary,
+      ownerActionRequired,
       errorMessage,
       createdAt: completedAt
     };
@@ -778,6 +784,24 @@ export class AutomationRegistryEngine {
   }> {
     switch (workflowId) {
       case 'daily_market_demand_research': {
+        const { checkB2BResearchBacklogGuard } = await import('../revenue/b2b-research-backlog-guard.js');
+        const guard = await checkB2BResearchBacklogGuard(this.d1Repo);
+        if (!guard.allowed) {
+          return {
+            status: 'NO_ACTION_DUE',
+            itemsProcessed: 0,
+            itemsSucceeded: 0,
+            itemsFailed: 0,
+            summary: {
+              reason: guard.reason,
+              unapprovedCount: guard.unapprovedCount,
+              maxLimit: guard.maxLimit,
+              message: guard.message
+            },
+            ownerActionRequired: `Review ${guard.unapprovedCount} pending outreach drafts at /owner/today to resume market research.`
+          };
+        }
+
         const { DailyMarketResearchScheduler } = await import('../scheduler/daily-research-scheduler.js');
         const report = await DailyMarketResearchScheduler.getInstance().executeDailyResearch();
         const hasFindings = report.results.some(r => r.findingsCount > 0);
@@ -791,6 +815,24 @@ export class AutomationRegistryEngine {
       }
 
       case 'competitor_pricing_research': {
+        const { checkB2BResearchBacklogGuard } = await import('../revenue/b2b-research-backlog-guard.js');
+        const guard = await checkB2BResearchBacklogGuard(this.d1Repo);
+        if (!guard.allowed) {
+          return {
+            status: 'NO_ACTION_DUE',
+            itemsProcessed: 0,
+            itemsSucceeded: 0,
+            itemsFailed: 0,
+            summary: {
+              reason: guard.reason,
+              unapprovedCount: guard.unapprovedCount,
+              maxLimit: guard.maxLimit,
+              message: guard.message
+            },
+            ownerActionRequired: `Review ${guard.unapprovedCount} pending outreach drafts at /owner/today to resume pricing research.`
+          };
+        }
+
         // Collect dated competitor evidence from configured permitted sources or observed clinic fees
         let freshFindingsCount = 0;
         try {
@@ -803,50 +845,18 @@ export class AutomationRegistryEngine {
         } catch {}
 
         if (freshFindingsCount === 0) {
-          // Perform fresh dated pricing benchmark snapshot across target Indian metros
-          const benchmarkId = `rf_pricing_${Date.now()}_${randomUUID().substring(0, 6)}`;
-          const benchmarkData = JSON.stringify({
-            metro: 'Tier-1/Tier-2 Indian Metros',
-            generalConsultationINR: { min: 300, median: 500, max: 800 },
-            dentalConsultationINR: { min: 400, median: 600, max: 1200 },
-            specialistConsultationINR: { min: 800, median: 1000, max: 2000 },
-            darkHoursSupportAvailability: '18% across verified listings',
-            retrievedAt: new Date().toISOString()
-          });
-
-          const orgId = 'org_owner_primary';
-          let bizId = 'biz_platform_aro';
-          try {
-            const bizRow = isProduction()
-              ? await this.d1Repo.queryOne<any>('businesses', 'SELECT id FROM businesses LIMIT 1')
-              : getDb().prepare('SELECT id FROM businesses LIMIT 1').get() as any;
-            if (bizRow?.id) bizId = bizRow.id;
-          } catch {}
-
-          const insertSql = `
-            INSERT INTO research_findings (
-              id, organization_id, business_id, agent_id, topic, market, finding, extracted_evidence, source, source_type, source_reference, retrieved_at, created_at
-            ) VALUES (?, ?, ?, 'agent_market_intelligence', 'COMPETITOR_PRICING_BENCHMARK', 'India', 'Competitor pricing benchmark snapshot', ?, 'PUBLIC_BENCHMARK', 'PUBLIC_PRICING_BENCHMARK', 'INDIAN_HEALTHCARE_SMB_FEE_SURVEY', datetime('now'), datetime('now'))
-          `;
-          try {
-            if (isProduction()) {
-              await this.d1Repo.executeWrite('research_findings', insertSql, [benchmarkId, orgId, bizId, benchmarkData]);
-            } else {
-              getDb().prepare(insertSql).run(benchmarkId, orgId, bizId, benchmarkData);
+          // Zero synthetic data policy: strictly refuse to insert fabricated benchmark rows.
+          return {
+            status: 'NO_ACTION_DUE',
+            itemsProcessed: 0,
+            itemsSucceeded: 0,
+            itemsFailed: 0,
+            summary: {
+              status: 'NO_VERIFIED_EVIDENCE',
+              pricingEvidenceCount: 0,
+              message: 'Zero live verified pricing benchmarks discovered from permitted sources; synthetic fixture generation strictly prohibited.'
             }
-            return {
-              status: 'COMPLETED',
-              itemsProcessed: 1,
-              itemsSucceeded: 1,
-              itemsFailed: 0,
-              summary: {
-                action: 'FRESH_BENCHMARK_RECORDED',
-                benchmarkId,
-                pricingEvidence: 'Fresh dated consultation fee survey recorded from permitted public sources',
-                zeroPaidApiPolicy: 'Zero paid API calls; evidence sourced strictly from verified public listings.'
-              }
-            };
-          } catch {}
+          };
         }
 
         return {
@@ -863,6 +873,24 @@ export class AutomationRegistryEngine {
       }
 
       case 'prospect_discovery_validation': {
+        const { checkB2BResearchBacklogGuard } = await import('../revenue/b2b-research-backlog-guard.js');
+        const guard = await checkB2BResearchBacklogGuard(this.d1Repo);
+        if (!guard.allowed) {
+          return {
+            status: 'NO_ACTION_DUE',
+            itemsProcessed: 0,
+            itemsSucceeded: 0,
+            itemsFailed: 0,
+            summary: {
+              reason: guard.reason,
+              unapprovedCount: guard.unapprovedCount,
+              maxLimit: guard.maxLimit,
+              message: guard.message
+            },
+            ownerActionRequired: `Review ${guard.unapprovedCount} pending outreach drafts at /owner/today to resume prospect discovery.`
+          };
+        }
+
         const { PlatformProspectDiscoveryEngine } = await import('../revenue/platform-prospect-discovery-engine.js');
         const prospects = await PlatformProspectDiscoveryEngine.getInstance().ensureCuratedQualifiedProspectBatch();
         return {
@@ -875,6 +903,24 @@ export class AutomationRegistryEngine {
       }
 
       case 'prospect_dedup_qualification': {
+        const { checkB2BResearchBacklogGuard } = await import('../revenue/b2b-research-backlog-guard.js');
+        const guard = await checkB2BResearchBacklogGuard(this.d1Repo);
+        if (!guard.allowed) {
+          return {
+            status: 'NO_ACTION_DUE',
+            itemsProcessed: 0,
+            itemsSucceeded: 0,
+            itemsFailed: 0,
+            summary: {
+              reason: guard.reason,
+              unapprovedCount: guard.unapprovedCount,
+              maxLimit: guard.maxLimit,
+              message: guard.message
+            },
+            ownerActionRequired: `Review ${guard.unapprovedCount} pending outreach drafts at /owner/today to resume prospect deduplication.`
+          };
+        }
+
         // Query platform_prospects and perform canonical identity deduplication
         let candidateRows: any[] = [];
         try {
@@ -987,6 +1033,24 @@ export class AutomationRegistryEngine {
       }
 
       case 'outreach_draft_preparation': {
+        const { checkB2BResearchBacklogGuard } = await import('../revenue/b2b-research-backlog-guard.js');
+        const guard = await checkB2BResearchBacklogGuard(this.d1Repo);
+        if (!guard.allowed) {
+          return {
+            status: 'NO_ACTION_DUE',
+            itemsProcessed: 0,
+            itemsSucceeded: 0,
+            itemsFailed: 0,
+            summary: {
+              reason: guard.reason,
+              unapprovedCount: guard.unapprovedCount,
+              maxLimit: guard.maxLimit,
+              message: guard.message
+            },
+            ownerActionRequired: `Review ${guard.unapprovedCount} pending outreach drafts at /owner/today to resume draft preparation.`
+          };
+        }
+
         // Discover qualified prospects without drafts, create drafts in direct_outreach_log
         let eligibleProspects: any[] = [];
         try {

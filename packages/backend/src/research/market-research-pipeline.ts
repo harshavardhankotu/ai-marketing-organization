@@ -1,5 +1,7 @@
 import { randomUUID } from 'crypto';
 import { getDb } from '../db/client.js';
+import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
+import { isProduction } from '../config/env.js';
 import { GoogleSearchClient, SearchResultItem } from './google-search-client.js';
 import { GeminiProvider } from '../ai/gemini-provider.js';
 import { UniversalLockManager, UniversalQuotaLockError } from '../quota/universal-lock-manager.js';
@@ -26,10 +28,12 @@ export class MarketResearchPipeline {
   private searchClient = GoogleSearchClient.getInstance();
   private gemini = new GeminiProvider();
   private lockManager = UniversalLockManager.getInstance();
+  private d1Repo = D1RevenueRepository.getInstance();
 
   public async runPipeline(businessId: string, organizationId: string): Promise<MarketResearchRunResult> {
-    const db = getDb();
-    const business = db.prepare('SELECT * FROM businesses WHERE id = ?').get(businessId) as any;
+    const business = isProduction()
+      ? await this.d1Repo.queryOne<any>('businesses', 'SELECT * FROM businesses WHERE id = ?', [businessId])
+      : (getDb().prepare('SELECT * FROM businesses WHERE id = ?').get(businessId) as any);
 
     if (!business) {
       throw new Error(`Business not found with ID: ${businessId}`);
@@ -124,14 +128,15 @@ export class MarketResearchPipeline {
 
         if (searchRes.items.length === 0) {
           const zeroFindingId = `fnd_${Date.now()}_${randomUUID().substring(0, 6)}`;
-          db.prepare(`
+          const zeroFindingSql = `
             INSERT INTO research_findings (
               id, organization_id, business_id, agent_id, topic, market,
               finding, extracted_evidence, source, source_url, certainty,
               confidence_score, relevance_score, tags_json, source_type,
               source_reference, retrieved_at, evidence_status, data_classification
             ) VALUES (?, ?, ?, 'res-01', ?, ?, ?, ?, 'Google Custom Search API', NULL, 'OBSERVED', 1.0, 1.0, ?, 'GOOGLE_SEARCH_API', ?, datetime('now'), 'VERIFIED_EXTERNAL_EVIDENCE', 'REAL_DATA')
-          `).run(
+          `;
+          const zeroParams = [
             zeroFindingId,
             organizationId,
             businessId,
@@ -141,7 +146,12 @@ export class MarketResearchPipeline {
             `Query: "${q.query}" returned 0 items in Google Custom Search engine.`,
             JSON.stringify([q.type.toLowerCase(), 'zero_results', city.toLowerCase()]),
             searchRes.logId
-          );
+          ];
+          if (isProduction()) {
+            await this.d1Repo.executeWrite('research_findings', zeroFindingSql, zeroParams);
+          } else {
+            getDb().prepare(zeroFindingSql).run(...zeroParams);
+          }
           continue;
         }
 
@@ -276,14 +286,14 @@ Return JSON format: { "insights": [ { "category": "DEMAND", "topic": "...", "fin
     }
 
     const saved: any[] = [];
-    const insertStmt = db.prepare(`
+    const insertFindingSql = `
       INSERT INTO research_findings (
         id, organization_id, business_id, agent_id, topic, market,
         finding, extracted_evidence, source, source_url, certainty,
         confidence_score, relevance_score, tags_json, source_type,
         source_reference, retrieved_at, evidence_status, data_classification
       ) VALUES (?, ?, ?, 'res-20', ?, ?, ?, ?, ?, ?, ?, ?, 0.95, ?, 'GOOGLE_SEARCH_API', ?, datetime('now'), 'VERIFIED_EXTERNAL_EVIDENCE', 'REAL_DATA')
-    `);
+    `;
 
     for (const item of insights) {
       const findingId = `fnd_${Date.now()}_${randomUUID().substring(0, 6)}`;
@@ -296,7 +306,7 @@ Return JSON format: { "insights": [ { "category": "DEMAND", "topic": "...", "fin
       const matchingBatch = itemsBatch.find(b => b.type === item.category) || itemsBatch[0];
       const logId = matchingBatch?.logId || 'log_batch';
 
-      insertStmt.run(
+      const findingParams = [
         findingId,
         organizationId,
         business.id,
@@ -310,7 +320,13 @@ Return JSON format: { "insights": [ { "category": "DEMAND", "topic": "...", "fin
         item.confidence || 0.85,
         JSON.stringify([(item.category || 'general').toLowerCase(), domain, (business.city || 'india').toLowerCase()]),
         logId
-      );
+      ];
+
+      if (isProduction()) {
+        await this.d1Repo.executeWrite('research_findings', insertFindingSql, findingParams);
+      } else {
+        getDb().prepare(insertFindingSql).run(...findingParams);
+      }
 
       saved.push({
         id: findingId,
@@ -414,14 +430,14 @@ Return JSON format: { "insights": [ { "topic": "...", "finding": "...", "extract
     }
 
     const saved: any[] = [];
-    const insertStmt = db.prepare(`
+    const insertFindingSql = `
       INSERT INTO research_findings (
         id, organization_id, business_id, agent_id, topic, market,
         finding, extracted_evidence, source, source_url, certainty,
         confidence_score, relevance_score, tags_json, source_type,
         source_reference, retrieved_at, evidence_status, data_classification
       ) VALUES (?, ?, ?, 'res-20', ?, ?, ?, ?, ?, ?, ?, ?, 0.95, ?, 'GOOGLE_SEARCH_API', ?, datetime('now'), 'VERIFIED_EXTERNAL_EVIDENCE', 'REAL_DATA')
-    `);
+    `;
 
     for (const item of insights) {
       const findingId = `fnd_${Date.now()}_${randomUUID().substring(0, 6)}`;
@@ -431,7 +447,7 @@ Return JSON format: { "insights": [ { "topic": "...", "finding": "...", "extract
         domain = new URL(sourceUrl).hostname;
       } catch {}
 
-      insertStmt.run(
+      const findingParams = [
         findingId,
         organizationId,
         business.id,
@@ -445,7 +461,13 @@ Return JSON format: { "insights": [ { "topic": "...", "finding": "...", "extract
         item.confidence || 0.85,
         JSON.stringify([type.toLowerCase(), domain, business.city.toLowerCase()]),
         logId
-      );
+      ];
+
+      if (isProduction()) {
+        await this.d1Repo.executeWrite('research_findings', insertFindingSql, findingParams);
+      } else {
+        getDb().prepare(insertFindingSql).run(...findingParams);
+      }
 
       saved.push({
         id: findingId,

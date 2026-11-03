@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'fs';
 import { getDb } from '../../src/db/client.js';
 import { PaymentTruthService } from '../../src/revenue/payment-truth-service.js';
 import { ReplyDeskService } from '../../src/revenue/reply-desk.js';
@@ -152,6 +153,7 @@ describe('Part D: Service Lane, 4-State Truth & Reply Desk', () => {
 
   describe('3. /owner/proposal Refusal & Bio Gate (D.4)', () => {
     it('refuses /owner/proposal with OWNER_BIO_MISSING when owner/BIO.md is missing', async () => {
+      vi.spyOn(fs, 'existsSync').mockReturnValue(false);
       const res = await app.request('/owner/proposal');
       expect(res.status).toBe(422);
 
@@ -163,6 +165,7 @@ describe('Part D: Service Lane, 4-State Truth & Reply Desk', () => {
     });
 
     it('also refuses on GET /api/v1/owner/proposal when owner/BIO.md is missing', async () => {
+      vi.spyOn(fs, 'existsSync').mockReturnValue(false);
       const res = await app.request('/api/v1/owner/proposal');
       expect(res.status).toBe(422);
 

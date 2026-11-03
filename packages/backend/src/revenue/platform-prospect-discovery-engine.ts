@@ -368,6 +368,18 @@ export class PlatformProspectDiscoveryEngine {
       };
     }
 
+    // B2B BACKLOG GUARD: Halt external search / research if unapproved drafts backlog is reached
+    const { checkB2BResearchBacklogGuard } = await import('./b2b-research-backlog-guard.js');
+    const backlogGuard = await checkB2BResearchBacklogGuard(this.d1Repo);
+    if (!backlogGuard.allowed) {
+      return {
+        status: 'NO_NEW_PROSPECTS',
+        count: 0,
+        prospects: [],
+        reason: backlogGuard.message || `UNAPPROVED_DRAFTS_BACKLOG_EXCEEDED: ${backlogGuard.unapprovedCount} unapproved drafts pending owner review.`
+      };
+    }
+
     const gate = this.quotaService.reserve('TAVILY', 'P3', 1, `Tavily prospect discovery ${vertical} in ${city}`);
     if (!gate.allowed) {
       return {

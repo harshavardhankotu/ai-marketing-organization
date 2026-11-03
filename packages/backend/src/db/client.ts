@@ -553,6 +553,13 @@ export function getDb(dbPath?: string): Database.Database {
   try { db.exec(`ALTER TABLE partners ADD COLUMN category TEXT`); } catch {}
   try { db.exec(`ALTER TABLE partners ADD COLUMN destination_requirements TEXT`); } catch {}
   try { db.exec(`ALTER TABLE partners ADD COLUMN evidence_json TEXT NOT NULL DEFAULT '{}'`); } catch {}
+  try {
+    db.exec(`
+      INSERT INTO partners (id, organization_id, name, industry, website, partner_type, network, authorization_status, approval_status, active_status)
+      VALUES ('part_cuelinks', 'org_owner_primary', 'Cuelinks India', 'Affiliate Network', 'https://www.cuelinks.com', 'AFFILIATE', 'CUELINKS', 'AUTHORIZED', 'APPROVED', 1)
+      ON CONFLICT(id) DO NOTHING
+    `);
+  } catch {}
   try { db.exec(`ALTER TABLE partner_offers ADD COLUMN status TEXT NOT NULL DEFAULT 'ACTIVE'`); } catch {}
   try { db.exec(`ALTER TABLE partner_offers ADD COLUMN description TEXT NOT NULL DEFAULT ''`); } catch {}
   try { db.exec(`ALTER TABLE partner_offers ADD COLUMN currency TEXT NOT NULL DEFAULT 'INR'`); } catch {}
@@ -817,6 +824,13 @@ export function resetDbForTesting(): Database.Database {
   } catch (mErr) {
     console.warn('[DB] Test SQLite migration runner notice:', mErr);
   }
+  try {
+    db.exec(`
+      INSERT INTO partners (id, organization_id, name, industry, website, partner_type, network, authorization_status, approval_status, active_status)
+      VALUES ('part_cuelinks', 'org_owner_primary', 'Cuelinks India', 'Affiliate Network', 'https://www.cuelinks.com', 'AFFILIATE', 'CUELINKS', 'AUTHORIZED', 'APPROVED', 1)
+      ON CONFLICT(id) DO NOTHING
+    `);
+  } catch {}
   dbInstance = db;
   return dbInstance;
 }

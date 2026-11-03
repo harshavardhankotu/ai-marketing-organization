@@ -190,15 +190,15 @@ describe('V4.9 First Sale Conversion Integrity & Attribution Suite', () => {
     it('issues HTTP 302 to provider tracking URL and persists referral and click events atomically', async () => {
       const dealSlug = `boat-redirect-test-${Date.now()}`;
       await engine.registerDeal({
-        title: 'boAt Airdopes 141 ANC',
+        title: 'boAt Airdopes 161',
         brand: 'boAt',
         merchant: 'boAt Store',
         category: 'Personal Audio',
-        productUrl: 'https://boat-lifestyle.com/products/airdopes-141-anc',
-        currentPriceINR: 1399,
+        productUrl: 'https://boat-lifestyle.com/products/airdopes-161',
+        currentPriceINR: 899,
         slug: dealSlug,
         canonicalSlug: dealSlug,
-        sourceUrl: 'https://boat-lifestyle.com/products/airdopes-141-anc',
+        sourceUrl: 'https://boat-lifestyle.com/products/airdopes-161',
         sourceDomain: 'boat-lifestyle.com',
         sourceType: 'RETAILER_BRAND',
         isMonetizable: true,
@@ -431,16 +431,16 @@ describe('V4.9 First Sale Conversion Integrity & Attribution Suite', () => {
 
       // 1. Registered deal
       const { deal } = await engine.registerDeal({
-        title: 'boAt Airdopes 141 ANC',
+        title: 'boAt Airdopes 161',
         brand: 'boAt',
         merchant: 'boAt Lifestyle',
         category: 'Personal Audio',
-        productUrl: 'https://boat-lifestyle.com/products/airdopes-141-anc',
-        currentPriceINR: 1399,
-        referencePriceINR: 5990,
+        productUrl: 'https://boat-lifestyle.com/products/airdopes-161',
+        currentPriceINR: 899,
+        referencePriceINR: 2490,
         slug: pilotSlug,
         canonicalSlug: pilotSlug,
-        sourceUrl: 'https://boat-lifestyle.com/products/airdopes-141-anc',
+        sourceUrl: 'https://boat-lifestyle.com/products/airdopes-161',
         sourceDomain: 'boat-lifestyle.com',
         sourceType: 'RETAILER_BRAND',
         isMonetizable: true,

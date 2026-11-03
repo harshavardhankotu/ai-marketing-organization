@@ -5,6 +5,8 @@ import path from 'path';
 const candidatePaths = [
   path.resolve(process.cwd(), '.env'),
   path.resolve(process.cwd(), '.env.local'),
+  path.resolve(process.cwd(), '.env.deploy_secrets'),
+  path.resolve(process.cwd(), '.env.render.production'),
   path.resolve(process.cwd(), 'packages/backend/.env'),
   path.resolve(process.cwd(), 'packages/backend/.env.local')
 ];
