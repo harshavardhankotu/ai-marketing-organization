@@ -13,6 +13,7 @@ import {
   CuelinksSyncStatusCode,
   CuelinksCampaign,
   CuelinksOffer,
+  CuelinksChannel,
   CuelinksReconciliationMetrics,
   CuelinksErrorClass,
   CuelinksPaginationCursor,
@@ -45,6 +46,7 @@ export class CuelinksSyncManager {
   private empiricallyVerifiedScopes: Set<string> = new Set();
   private forbiddenScopes: Set<string> = new Set();
   private scopeErrorReasons: Map<string, string> = new Map();
+  private lastReconciledSince?: string;
 
   public recordScopeSuccess(scope: string): void {
     this.empiricallyVerifiedScopes.add(scope);
@@ -664,59 +666,40 @@ export class CuelinksSyncManager {
 
       // 5. Performance reconciliation (Transactions & Reports)
       try {
-        const transRes = await this.client.getTransactions({ per_page: 50 });
+        const reconciliationResult = await this.reconcileTransactionsIncremental({
+          channel_id: this.syncStatus.channel?.id || 331585,
+          maxPages: 5
+        });
         empiricallyVerifiedScopes.add('read:transactions');
-        const transactions = transRes.transactions || [];
 
-        let pending = 0;
-        let validated = 0;
-        let payable = 0;
-        let invoiced = 0;
-        let providerPaid = 0;
-        let reversed = 0;
+        let providerClicks = reconciliationResult.providerAttributedClicks;
+        let reportedConversions = reconciliationResult.reportedConversions;
 
-        for (const tx of transactions) {
-          const amt = Number(tx.user_commission ?? tx.commission_amount) || 0;
-          const status = (tx.status || '').toLowerCase();
-          if (status === 'pending') {
-            pending += amt;
-          } else if (status === 'validated' || status === 'approved') {
-            validated += amt;
-          } else if (status === 'payable') {
-            payable += amt;
-          } else if (status === 'invoice_raised' || status === 'invoiced') {
-            invoiced += amt;
-          } else if (status === 'paid' || status === 'provider_paid') {
-            providerPaid += amt;
-          } else if (status === 'rejected' || status === 'cancelled') {
-            reversed += amt;
-          }
+        try {
+          const perfRes = await this.client.getPerformanceReport({
+            start_date: new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0],
+            end_date: new Date().toISOString().split('T')[0],
+            channel_id: this.syncStatus.channel?.id || 331585,
+            per_page: 50
+          });
+          empiricallyVerifiedScopes.add('read:reports');
+          const pClicks = perfRes.totals
+            ? Number(perfRes.totals.clicks || 0)
+            : perfRes.data.reduce((acc, r) => acc + (Number(r.clicks) || 0), 0);
+          const pConvs = perfRes.totals
+            ? Number(perfRes.totals.transactions ?? (perfRes.totals as any).conversions ?? 0)
+            : perfRes.data.reduce((acc, r) => acc + (Number(r.transactions ?? (r as any).conversions) || 0), 0);
+          if (pClicks > 0) providerClicks = pClicks;
+          if (pConvs > 0) reportedConversions = pConvs;
+        } catch {
+          // Gracefully fall back to transactional totals if report API not granted
         }
 
-        const perfRes = await this.client.getPerformanceReport({
-          start_date: new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0],
-          end_date: new Date().toISOString().split('T')[0],
-          per_page: 50
-        });
-        empiricallyVerifiedScopes.add('read:reports');
-        const providerClicks = perfRes.totals
-          ? Number(perfRes.totals.clicks || 0)
-          : perfRes.data.reduce((acc, r) => acc + (Number(r.clicks) || 0), 0);
-        const reportedConversions = perfRes.totals
-          ? Number(perfRes.totals.transactions ?? (perfRes.totals as any).conversions ?? 0)
-          : perfRes.data.reduce((acc, r) => acc + (Number(r.transactions ?? (r as any).conversions) || 0), 0);
-
         this.syncStatus.reconciliation = {
+          ...reconciliationResult,
           localClicks: this.syncStatus.reconciliation.localClicks,
           providerAttributedClicks: providerClicks,
           reportedConversions: reportedConversions,
-          pendingCommissionINR: Math.round(pending * 100) / 100,
-          validatedCommissionINR: Math.round(validated * 100) / 100,
-          payableCommissionINR: Math.round(payable * 100) / 100,
-          invoicedCommissionINR: Math.round(invoiced * 100) / 100,
-          providerPaidCommissionINR: Math.round(providerPaid * 100) / 100,
-          paidCommissionINR: Math.round(providerPaid * 100) / 100, // Strictly provider-disbursed, never invoice_raised!
-          reversedCommissionINR: Math.round(reversed * 100) / 100,
           cashReceivedINR: 0 // strictly ₹0.00 until bank statement proof
         };
       } catch (recErr: any) {
@@ -862,6 +845,196 @@ export class CuelinksSyncManager {
    */
   public async syncReconciliationOnly(organizationId: string = 'org_owner_primary', businessId: string = 'biz_platform_aro') {
     return this.syncCuelinks(organizationId, businessId, { skipOfferFetch: true, reconciliationOnly: true });
+  }
+
+  /**
+   * Retrieves verified approved publisher channel.
+   * Default expected channel is 331585.
+   */
+  public async getApprovedChannel(expectedId: string | number = 331585): Promise<{ channel: CuelinksChannel | null; approved: boolean }> {
+    try {
+      const channels = await this.client.getChannels();
+      const ch = channels.find(c => String(c.id) === String(expectedId)) ||
+        channels.find(c => {
+          const u = (c.source_url || c.url || '').toLowerCase();
+          return u.includes('onrender.com') || u.includes('gen-lang-client');
+        });
+      if (ch && (ch.status === 'approved' || ch.status === 'active')) {
+        return { channel: ch, approved: true };
+      }
+      return { channel: ch || null, approved: false };
+    } catch {
+      return { channel: null, approved: false };
+    }
+  }
+
+  /**
+   * Incremental multi-page transaction reconciliation & Sub-ID matching (Phase 4).
+   * - Bounded pagination up to maxPages (or total_pages).
+   * - Incremental sync via updated_since.
+   * - Sub-ID click matching into commission_records.
+   * - Strict financial status disaggregation (Rule 8).
+   * - Currency safety: checks currency === 'INR'.
+   */
+  public async reconcileTransactionsIncremental(options?: {
+    channel_id?: number | string;
+    campaign_id?: number | string;
+    maxPages?: number;
+    updated_since?: string;
+  }): Promise<CuelinksReconciliationMetrics> {
+    const maxPages = options?.maxPages || 5;
+    let page = 1;
+    let hasNext = true;
+    const allTransactions: any[] = [];
+    const updatedSince = options?.updated_since || this.lastReconciledSince;
+
+    while (page <= maxPages && hasNext) {
+      const transRes = await this.client.getTransactions({
+        channel_id: options?.channel_id,
+        campaign_id: options?.campaign_id,
+        updated_since: updatedSince,
+        page,
+        per_page: 100
+      });
+
+      const txList = Array.isArray(transRes?.transactions) ? transRes.transactions : [];
+      allTransactions.push(...txList);
+
+      if (!transRes.total_pages || page >= transRes.total_pages || txList.length < 100) {
+        hasNext = false;
+      } else {
+        page++;
+      }
+    }
+
+    let pending = 0;
+    let validated = 0;
+    let payable = 0;
+    let invoiced = 0;
+    let providerPaid = 0;
+    let reversed = 0;
+    let unmatchedCount = 0;
+
+    for (const tx of allTransactions) {
+      const curr = (tx.currency || 'INR').toUpperCase();
+      if (curr !== 'INR') {
+        console.warn(`[CuelinksSync] Notice: Non-INR currency '${curr}' on transaction '${tx.id}'`);
+      }
+
+      const amt = Number(tx.user_commission ?? tx.commission_amount) || 0;
+      const status = (tx.status || '').toLowerCase().trim();
+
+      if (status === 'pending') {
+        pending += amt;
+      } else if (status === 'validated' || status === 'approved') {
+        validated += amt;
+      } else if (status === 'payable') {
+        payable += amt;
+      } else if (status === 'invoice_raised' || status === 'invoiced') {
+        invoiced += amt;
+      } else if (status === 'paid' || status === 'provider_paid') {
+        providerPaid += amt;
+      } else if (status === 'rejected' || status === 'cancelled') {
+        reversed += amt;
+      }
+
+      const subId = tx.sub_id || tx.subid || tx.sub_id_1 || tx.subid1;
+      let matchedReferralId: string | undefined = undefined;
+
+      if (subId) {
+        try {
+          if (isProduction()) {
+            const d1Repo = D1RevenueRepository.getInstance();
+            const refRows = await d1Repo.query<any>('referrals', 'SELECT id, offer_id, partner_id FROM referrals WHERE click_id = ? LIMIT 1', [subId]);
+            if (refRows && refRows.length > 0) {
+              matchedReferralId = refRows[0].id;
+            }
+          } else {
+            const { getDb } = await import('../db/client.js');
+            const db = getDb();
+            const refRow = db.prepare('SELECT id, offer_id, partner_id FROM referrals WHERE click_id = ? LIMIT 1').get(subId) as any;
+            if (refRow) {
+              matchedReferralId = refRow.id;
+            }
+          }
+        } catch {}
+      }
+
+      if (!matchedReferralId) {
+        unmatchedCount++;
+      }
+
+      try {
+        const commId = `comm_${tx.id}`;
+        const externalTxId = String(tx.id || tx.transaction_id);
+        const verifiedCommission = ['validated', 'approved', 'payable', 'invoice_raised', 'paid'].includes(status) ? amt : 0;
+        const receivedCommission = status === 'paid' ? amt : 0;
+        const evidenceJson = JSON.stringify({
+          subids: [tx.sub_id, tx.sub_id_2, tx.sub_id_3, tx.sub_id_4, tx.sub_id_5],
+          campaign_id: tx.campaign_id,
+          channel_id: tx.channel_id,
+          order_amount: tx.order_amount,
+          currency: tx.currency
+        });
+
+        const upsertSql = `
+          INSERT INTO commission_records (
+            id, referral_id, partner_id, organization_id, external_transaction_id,
+            event_type, external_status, expected_commission_inr, verified_commission_inr,
+            received_commission_inr, verification_source, evidence_json, status, created_at, updated_at
+          ) VALUES (?, ?, 'part_cuelinks', 'org_owner_primary', ?, 'PURCHASE', ?, ?, ?, ?, 'CUELINKS_API', ?, ?, datetime('now'), datetime('now'))
+          ON CONFLICT(partner_id, external_transaction_id) DO UPDATE SET
+            referral_id = COALESCE(excluded.referral_id, commission_records.referral_id),
+            external_status = excluded.external_status,
+            expected_commission_inr = excluded.expected_commission_inr,
+            verified_commission_inr = excluded.verified_commission_inr,
+            received_commission_inr = excluded.received_commission_inr,
+            evidence_json = excluded.evidence_json,
+            status = excluded.status,
+            updated_at = datetime('now')
+        `;
+        const mappedStatus = matchedReferralId ? (status === 'paid' ? 'COMMISSION_PAID' : (['validated', 'approved', 'payable', 'invoice_raised'].includes(status) ? 'COMMISSION_APPROVED' : (status === 'rejected' ? 'COMMISSION_REJECTED' : 'COMMISSION_PENDING'))) : 'UNMATCHED';
+
+        const params = [
+          commId,
+          matchedReferralId || null,
+          externalTxId,
+          status,
+          amt,
+          verifiedCommission,
+          receivedCommission,
+          evidenceJson,
+          mappedStatus
+        ];
+
+        if (isProduction()) {
+          const d1Repo = D1RevenueRepository.getInstance();
+          await d1Repo.executeWrite('commission_records', upsertSql, params);
+        } else {
+          const { getDb } = await import('../db/client.js');
+          getDb().prepare(upsertSql).run(...params);
+        }
+      } catch (saveErr: any) {
+        console.warn(`[CuelinksSync] Error persisting transaction '${tx.id}': ${saveErr.message}`);
+      }
+    }
+
+    this.lastReconciledSince = new Date().toISOString();
+
+    return {
+      localClicks: this.syncStatus.reconciliation.localClicks,
+      providerAttributedClicks: allTransactions.length,
+      reportedConversions: allTransactions.filter(t => !['rejected', 'cancelled'].includes((t.status || '').toLowerCase())).length,
+      pendingCommissionINR: Math.round(pending * 100) / 100,
+      validatedCommissionINR: Math.round(validated * 100) / 100,
+      payableCommissionINR: Math.round(payable * 100) / 100,
+      invoicedCommissionINR: Math.round(invoiced * 100) / 100,
+      providerPaidCommissionINR: Math.round(providerPaid * 100) / 100,
+      paidCommissionINR: Math.round(providerPaid * 100) / 100,
+      reversedCommissionINR: Math.round(reversed * 100) / 100,
+      unmatchedTransactionsCount: unmatchedCount,
+      cashReceivedINR: 0
+    };
   }
 
   /**
