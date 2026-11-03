@@ -78,6 +78,8 @@ export interface CuelinksPaginationCursor {
 }
 
 export interface DiscoveredDealInput {
+  slug?: string;
+  canonicalSlug?: string;
   title: string;
   brand: string;
   merchant: string;
@@ -113,6 +115,8 @@ export type DealCandidate = DiscoveredDealInput;
 
 export interface NormalizedDeal {
   id: string;
+  slug?: string;
+  canonicalSlug?: string;
   dealKind?: DealKind;
   discountBadge?: string;
   title: string;

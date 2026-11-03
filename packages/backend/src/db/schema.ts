@@ -2030,9 +2030,7 @@ CREATE TABLE IF NOT EXISTS referrals (
   device_class TEXT,
   country TEXT,
   keyword TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  FOREIGN KEY (partner_id) REFERENCES partners(id) ON DELETE CASCADE,
-  FOREIGN KEY (offer_id) REFERENCES partner_offers(id) ON DELETE CASCADE
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_referrals_offer ON referrals(offer_id);
 CREATE INDEX IF NOT EXISTS idx_referrals_click ON referrals(click_id);

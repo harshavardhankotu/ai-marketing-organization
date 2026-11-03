@@ -1439,6 +1439,7 @@ apiRouter.post('/cron/ping', async (c) => {
   const queueStats = await queue.getQueueStats();
 
   const allFailed = optionsList.length > 0 && batchRes.failedCount > 0 && batchRes.enqueuedCount === 0 && batchRes.existingCount === 0;
+  const hasPartialFailures = batchRes.failedCount > 0;
   if (allFailed) {
     return c.json({
       success: false,
@@ -1450,8 +1451,9 @@ apiRouter.post('/cron/ping', async (c) => {
 
   // Return HTTP 200 in < 2 seconds without executing long synchronous jobs inline
   return c.json({
-    success: true,
+    success: !hasPartialFailures,
     accepted: true,
+    partialFailures: hasPartialFailures ? batchRes.errors : undefined,
     triggerSource: /ai-marketing-cron-worker|cloudflare-cron-worker/i.test(userAgent) ? 'CLOUDFLARE_CRON' : 'MANUAL_PING',
     correlationId,
     enqueuedCount: batchRes.enqueuedCount,
@@ -6256,19 +6258,24 @@ apiRouter.get('/public/deals', async (c) => {
 apiRouter.get('/public/deals/:id', async (c) => {
   const id = c.req.param('id');
   const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
-  const deal = AutonomousDealDiscoveryEngine.getInstance().getDealById(id);
+  const deal = await AutonomousDealDiscoveryEngine.getInstance().resolveDeal(id);
   if (!deal) {
     return c.json({ error: 'DEAL_NOT_FOUND', message: `Deal '${id}' not found` }, 404);
+  }
+  if (deal.expiryDate && new Date(deal.expiryDate).getTime() < Date.now()) {
+    return c.json({ error: 'DEAL_EXPIRED', message: `Offer '${id}' has expired` }, 410);
   }
   return c.json({ success: true, data: deal });
 });
 
 /**
  * Public Deal Server-Side Redirect Route (Stage 3 -> Stage 4: DEAL REDIRECT & ATTRIBUTION)
- * - Verifies deal existence & safety.
- * - Generates unique click_id and referral record.
- * - Records immutable click event into referral_click_events with subid & sector.
- * - Attaches Sub-IDs for 1-to-1 conversion reconciliation.
+ * - Verifies deal existence & safety via resolveDeal.
+ * - Confirms offer is not expired (HTTP 410).
+ * - Executes dynamic visitor-specific Cuelinks link conversion with Sub-IDs 1-5.
+ * - Suppresses unmonetized raw fallback; requires affiliated: true & valid HTTPS tracking URL.
+ * - Persists local referral and click event records atomically BEFORE redirect.
+ * - Fails closed with HTTP 503 if attribution persistence fails.
  * - Issues HTTP 302 redirect.
  */
 apiRouter.get('/public/deals/:id/redirect', async (c) => {
@@ -6279,60 +6286,87 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
 
   const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
   const engine = AutonomousDealDiscoveryEngine.getInstance();
-  const deal = engine.getDealById(id);
+  const deal = await engine.resolveDeal(id);
 
   if (!deal) {
     return c.text('Deal not found', 404);
   }
 
-  // Phase 6 Guard: Confirm offer is not expired
+  // Phase 1 Guard: Confirm offer is not expired
   if (deal.expiryDate && new Date(deal.expiryDate).getTime() < Date.now()) {
     return c.text('Offer has expired', 410);
   }
 
-  // Phase 6 & Phase 5 Guard: Never silently send users to an unmonetized destination when deal claims monetization
-  if (deal.isMonetizable && !deal.trackingUrl) {
+  // Phase 1 Guard: Never send users to an unmonetized destination when deal claims monetization
+  if (deal.isMonetizable === false) {
+    return c.text('Affiliate monetization unavailable for this deal', 503);
+  }
+
+  const { resolveSectorFromCategory } = await import('@ai-marketing/shared');
+  const sectorDef = resolveSectorFromCategory(deal.category);
+  const sectorCode = sectorDef ? sectorDef.code : (deal.merchant.toLowerCase().includes('boat') ? 'SECTOR_B_ELECTRONICS' : 'SECTOR_G_LIFESTYLE');
+
+  // Cryptographically strong unique click ID
+  const { randomUUID } = await import('crypto');
+  const clickId = `clk_${Date.now()}_${randomUUID().replace(/-/g, '').substring(0, 16)}`;
+  const referralId = `ref_${clickId}`;
+  const orgId = 'org_owner_primary';
+  const placement = c.req.query('placement') || c.req.query('utm_placement') || 'deal_redirect';
+
+  let targetUrl: string | undefined = undefined;
+
+  // Phase 2: Visitor-level link conversion with Cuelinks Sub-IDs
+  if (deal.affiliateNetwork === 'CUELINKS' || !deal.affiliateNetwork) {
     try {
-      const conv = await engine.convertProductUrlToAffiliate(deal.productUrl, deal.merchant);
-      if (conv && conv.isMonetizable && conv.trackingUrl) {
-        deal.trackingUrl = conv.trackingUrl;
+      const { CuelinksV3Client } = await import('../commission/cuelinks-v3-client.js');
+      const cuelinksClient = CuelinksV3Client.getInstance();
+      const channelId = 331585;
+
+      const convRes = await cuelinksClient.convertLink({
+        url: deal.productUrl,
+        channel_id: channelId,
+        subid: clickId,
+        subid2: sectorCode,
+        subid3: deal.affiliateCampaignId || '4232',
+        subid4: deal.canonicalSlug || deal.slug || deal.id,
+        subid5: placement,
+        shorten: false
+      });
+
+      if (convRes.affiliated && convRes.tracking_url) {
+        targetUrl = convRes.tracking_url;
       }
-    } catch {}
+    } catch (convErr: any) {
+      console.warn(`[DealRedirect] Cuelinks link conversion error: ${convErr.message}`);
+    }
   }
 
-  if (deal.isMonetizable && !deal.trackingUrl) {
-    return c.text('Affiliate monetization path temporarily unavailable for this deal; unmonetized fallback suppressed', 503);
+  // Fallback to pre-existing authorized tracking URL with attached subids if dynamic conversion was unavailable
+  if (!targetUrl && deal.trackingUrl) {
+    try {
+      const urlObj = new URL(deal.trackingUrl);
+      urlObj.searchParams.set('subid', clickId);
+      urlObj.searchParams.set('subid2', sectorCode);
+      if (deal.affiliateCampaignId) {
+        urlObj.searchParams.set('subid3', deal.affiliateCampaignId);
+      }
+      urlObj.searchParams.set('subid4', deal.canonicalSlug || deal.slug || deal.id);
+      urlObj.searchParams.set('subid5', placement);
+      targetUrl = urlObj.toString();
+    } catch {
+      targetUrl = deal.trackingUrl;
+    }
   }
 
-  let targetUrl = deal.trackingUrl || deal.productUrl;
+  // Fail closed if monetization path unavailable
   if (!targetUrl) {
-    return c.text('Destination unavailable', 404);
+    return c.text('Affiliate monetization path temporarily unavailable for this deal; unmonetized fallback suppressed', 503);
   }
 
   const { DealSsrfGuard } = await import('../commission/deal-ssrf-guard.js');
   const ssrf = DealSsrfGuard.isSafePublicUrl(targetUrl);
   if (!ssrf.safe) {
     return c.text('Invalid destination URL', 400);
-  }
-
-  const { resolveSectorFromCategory } = await import('@ai-marketing/shared');
-  const sectorDef = resolveSectorFromCategory(deal.category);
-  const sectorCode = sectorDef ? sectorDef.code : 'SECTOR_G_LIFESTYLE';
-
-  const clickId = `clk_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-  const referralId = `ref_${clickId}`;
-  const orgId = 'org_owner_primary';
-
-  if (deal.isMonetizable && deal.affiliateNetwork === 'CUELINKS') {
-    try {
-      const parsedUrl = new URL(targetUrl);
-      parsedUrl.searchParams.set('subid', clickId);
-      parsedUrl.searchParams.set('subid2', sectorCode);
-      parsedUrl.searchParams.set('subid3', deal.affiliateCampaignId || 'camp_unknown');
-      parsedUrl.searchParams.set('subid4', id);
-      parsedUrl.searchParams.set('subid5', 'deal_redirect');
-      targetUrl = parsedUrl.toString();
-    } catch {}
   }
 
   const { classifyTraffic } = await import('../commission/referral-tracking.js');
@@ -6342,79 +6376,68 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
     'x-owner-preview': c.req.header('x-owner-preview') || ''
   });
 
-  if (trafficClass === 'human') {
-    engine.recordDealClick(id, {
-      ip: clientInfo.ip,
-      placement: 'public_deal_redirect',
-      source: 'deals_page'
-    });
-  }
+  const partnerId = deal.affiliateNetwork === 'CUELINKS' ? 'part_cuelinks' : 'part_direct_merchant';
 
+  // Phase 3 Mandate:
+  // 1. Never create or approve partners in public GET requests.
+  // 2. Persist referral and click records atomically BEFORE issuing redirect.
+  // 3. Fail closed with 503 if persistence fails; never swallow database errors.
   try {
     const { D1RevenueRepository } = await import('../db/d1-revenue-repository.js');
     const d1Repo = D1RevenueRepository.getInstance();
 
-    const partnerId = deal.affiliateNetwork === 'CUELINKS' ? 'part_cuelinks' : 'part_direct_merchant';
-    const partnerName = deal.affiliateNetwork === 'CUELINKS' ? 'Cuelinks India' : 'Direct Retailer Store';
-    const networkName = deal.affiliateNetwork || 'DIRECT';
-
-    const ensurePartnerSql = `
-      INSERT OR IGNORE INTO partners (
-        id, organization_id, name, industry, website, network, approval_status, active_status, authorization_status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 'APPROVED', 1, 'AUTHORIZED', datetime('now'), datetime('now'))
-    `;
-    const partnerParams = [partnerId, orgId, partnerName, deal.category || 'General', deal.productUrl || 'https://ai-marketing-organization.onrender.com', networkName];
-
-    const offerSlug = `offer_${id}_${Date.now()}`;
-    const ensureOfferSql = `
-      INSERT OR IGNORE INTO partner_offers (
-        id, partner_id, organization_id, title, offer_slug, target_customer, category, destination_url, authorized_tracking_url, active, status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, 'Indian Consumers', ?, ?, ?, 1, 'ACTIVE', datetime('now'), datetime('now'))
-    `;
-    const offerParams = [id, partnerId, orgId, deal.title, offerSlug, deal.category || 'General', targetUrl, targetUrl];
-
     const insertRefSql = `
-      INSERT OR IGNORE INTO referrals (
+      INSERT INTO referrals (
         id, click_id, destination_url, organization_id, offer_id, partner_id, ip, user_agent, referer, placement, device_class, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'deal_redirect', ?, datetime('now'))
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     `;
-    const refParams = [referralId, clickId, targetUrl, orgId, id, partnerId, clientInfo.ip, userAgent.substring(0, 200), referrer.substring(0, 200), trafficClass];
+    const refParams = [referralId, clickId, targetUrl, orgId, deal.id, partnerId, clientInfo.ip, userAgent.substring(0, 200), referrer.substring(0, 200), placement, trafficClass];
 
     const insertClickSql = `
       INSERT INTO referral_click_events (
         id, referral_id, click_id, organization_id, offer_id, partner_id,
         placement, source, medium, campaign, referrer, device_class, destination_url, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 'deal_redirect', ?, 'cpc_affiliate', ?, ?, ?, ?, datetime('now'))
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'cpc_affiliate', ?, ?, ?, ?, datetime('now'))
     `;
     const clickParams = [
       `evt_${clickId}`,
       referralId,
       clickId,
       orgId,
-      id,
+      deal.id,
       partnerId,
+      placement,
       sectorCode,
-      deal.affiliateCampaignId || sectorCode,
+      deal.affiliateCampaignId || '4232',
       referrer.substring(0, 200),
       trafficClass,
       targetUrl
     ];
 
     if (isProduction()) {
-      await d1Repo.executeWrite('partners', ensurePartnerSql, partnerParams);
-      await d1Repo.executeWrite('partner_offers', ensureOfferSql, offerParams);
       await d1Repo.executeWrite('referrals', insertRefSql, refParams);
       await d1Repo.executeWrite('referral_click_events', insertClickSql, clickParams);
     } else {
       const { getDb } = await import('../db/client.js');
       const db = getDb();
-      db.prepare(ensurePartnerSql).run(...partnerParams);
-      db.prepare(ensureOfferSql).run(...offerParams);
-      db.prepare(insertRefSql).run(...refParams);
-      db.prepare(insertClickSql).run(...clickParams);
+      const insertTx = db.transaction(() => {
+        db.prepare(insertRefSql).run(...refParams);
+        db.prepare(insertClickSql).run(...clickParams);
+      });
+      insertTx();
     }
-  } catch (clickErr: any) {
-    console.warn(`[DealRedirect] Notice recording click: ${clickErr.message}`);
+  } catch (dbErr: any) {
+    console.error(`[DealRedirect] Critical database error persisting click attribution: ${dbErr.message}`);
+    return c.text('Attribution persistence failed; redirect suppressed to protect monetization', 503);
+  }
+
+  // Update in-memory telemetry if browser candidate or verified human
+  if (trafficClass === 'human' || trafficClass === 'browser_candidate') {
+    engine.recordDealClick(deal.id, {
+      ip: clientInfo.ip,
+      placement,
+      source: 'deals_page'
+    });
   }
 
   return c.redirect(targetUrl, 302);

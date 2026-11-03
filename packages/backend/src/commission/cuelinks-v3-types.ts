@@ -180,6 +180,7 @@ export interface CuelinksLinkConvertResponse {
     id: number | string;
     name: string;
   };
+  channel_id?: number | string;
 }
 
 export interface CuelinksChannel {
@@ -296,6 +297,7 @@ export interface CuelinksReconciliationMetrics {
   invoicedCommissionINR?: number;
   providerPaidCommissionINR?: number;
   reversedCommissionINR: number;
+  unmatchedTransactionsCount?: number;
   paidCommissionINR: number;
   cashReceivedINR: number;
 }

@@ -38,6 +38,7 @@ export class AutonomousDealDiscoveryEngine {
   // In-memory operational cache synced to durable D1 storage
   private sourcesMap: Map<string, DealSourceRecord> = new Map();
   private dealsMap: Map<string, NormalizedDeal> = new Map();
+  private dealSlugMap: Map<string, string> = new Map(); // slug -> dealId
   private dealFingerprintMap: Map<string, string> = new Map(); // fingerprint -> dealId
   private linkRegistry: Map<string, { trackingUrl: string; isMonetizable: boolean; affiliateCampaignId?: string }> = new Map();
 
@@ -70,6 +71,54 @@ export class AutonomousDealDiscoveryEngine {
 
   public static resetInstance(): void {
     AutonomousDealDiscoveryEngine.instance = undefined as any;
+  }
+
+  /**
+   * Generates a deterministic public slug from deal metadata.
+   */
+  public static generateDealSlug(title: string, brand?: string, modelOrSku?: string): string {
+    const slugify = (str: string) =>
+      (str || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+
+    const tSlug = slugify(title);
+    const bSlug = brand ? slugify(brand) : '';
+    let base = tSlug;
+    if (bSlug && !tSlug.startsWith(bSlug)) {
+      base = `${bSlug}-${tSlug}`;
+    }
+    if (modelOrSku) {
+      const mSlug = slugify(modelOrSku);
+      if (mSlug && !base.includes(mSlug)) {
+        base = `${base}-${mSlug}`;
+      }
+    }
+    return base.substring(0, 80);
+  }
+
+  public async registerDeal(
+    input: DiscoveredDealInput,
+    organizationId: string = 'org_owner_primary',
+    businessId: string = 'biz_platform_aro'
+  ): Promise<{
+    action: 'CREATED_VERIFIED' | 'UPDATED_VERIFIED' | 'REJECTED' | 'DEDUPLICATED';
+    deal?: NormalizedDeal;
+    rejectionReason?: string;
+  }> {
+    return this.ingestAndVerifyDeal(input, organizationId, businessId);
+  }
+
+  public async executeAutonomousCycle(
+    cycleId?: string,
+    organizationId: string = 'org_owner_primary',
+    businessId: string = 'biz_platform_aro'
+  ): Promise<any> {
+    if (cycleId) {
+      this.lastCycleId = cycleId;
+    }
+    return this.runDiscoveryCycle(organizationId, businessId);
   }
 
   public injectDiscoveredDealsForTesting(deals: DiscoveredDealInput[]): void {
@@ -877,6 +926,7 @@ export class AutonomousDealDiscoveryEngine {
       let reachedOfferEnd = false;
       let successfulPagesCount = 0;
       let failedPage: number | undefined = undefined;
+      let lastOfferError: string | undefined = undefined;
 
       for (const pageNum of pagesToFetch) {
         try {
@@ -1048,6 +1098,7 @@ export class AutonomousDealDiscoveryEngine {
         } catch (offerErr: any) {
           console.warn(`[DealEngine] Notice on Cuelinks offer page ${pageNum}: ${offerErr.message}`);
           failedPage = pageNum;
+          lastOfferError = offerErr.message;
           break;
         }
       }
@@ -1100,13 +1151,20 @@ export class AutonomousDealDiscoveryEngine {
       // 7. Update Source Registry operational metrics
       if (src) {
         src.lastScanAt = nowIso;
-        src.lastSuccessAt = nowIso;
-        src.lastHttpStatus = 200;
-        src.lastError = undefined;
-        src.failureCount = 0;
-        src.offersCollected = (src.offersCollected || 0) + discoveredDeals.length;
-        src.totalOffersFound += discoveredDeals.length;
-        src.permissionStatus = 'ALLOWED';
+        if (failedPage !== undefined) {
+          src.lastHttpStatus = 500;
+          src.lastError = `Offer page ${failedPage} error: ${lastOfferError || 'Upstream request failed'}`;
+          src.failureCount = nextFailureCount;
+          // Phase 5 Mandate: Never overwrite lastSuccessAt or report 200 when an offer page failed
+        } else {
+          src.lastSuccessAt = nowIso;
+          src.lastHttpStatus = 200;
+          src.lastError = undefined;
+          src.failureCount = 0;
+          src.offersCollected = (src.offersCollected || 0) + discoveredDeals.length;
+          src.totalOffersFound += discoveredDeals.length;
+          src.permissionStatus = 'ALLOWED';
+        }
       }
 
       // 8. Synchronize Cuelinks reconciliation telemetry if available
@@ -1949,9 +2007,12 @@ export class AutonomousDealDiscoveryEngine {
     const dealId = `deal_${randomUUID().substring(0, 10)}`;
     const confidenceScore = (discountType as DiscountVerificationType) === 'INDEPENDENT_CORROBORATED' ? 95 : (discountType === 'MERCHANT_CLAIMED' ? 85 : 70);
     const observedAt = input.observedAt || nowIso;
+    const slug = input.slug || input.canonicalSlug || AutonomousDealDiscoveryEngine.generateDealSlug(input.title, input.brand, input.modelOrSku);
 
     const newDeal: NormalizedDeal = {
       id: dealId,
+      slug,
+      canonicalSlug: slug,
       dealKind: isCouponDeal ? 'COUPON' : (input.dealKind || 'PRODUCT'),
       discountBadge: input.discountBadge,
       title: input.title.trim(),
@@ -1982,10 +2043,10 @@ export class AutonomousDealDiscoveryEngine {
       confidenceScore,
       buyerValueScore: 0, // Will be computed in ranking
       rejectionReasons,
-      trackingUrl: (input.isMonetizable === true && Boolean(input.trackingUrl)) ? input.trackingUrl : undefined,
-      affiliateNetwork: (input.isMonetizable === true && Boolean(input.trackingUrl)) ? input.affiliateNetwork : undefined,
-      affiliateCampaignId: (input.isMonetizable === true && Boolean(input.trackingUrl)) ? input.affiliateCampaignId : undefined,
-      isMonetizable: input.isMonetizable === true && Boolean(input.trackingUrl),
+      trackingUrl: input.trackingUrl || undefined,
+      affiliateNetwork: input.affiliateNetwork || undefined,
+      affiliateCampaignId: input.affiliateCampaignId || undefined,
+      isMonetizable: input.isMonetizable !== undefined ? input.isMonetizable : Boolean(input.trackingUrl),
       modelOrSku: input.modelOrSku,
       evidenceJson: {
         sources: [input.sourceUrl],
@@ -2011,6 +2072,9 @@ export class AutonomousDealDiscoveryEngine {
     // Register in-memory maps
     this.dealsMap.set(dealId, newDeal);
     this.dealFingerprintMap.set(fingerprint, dealId);
+    if (slug) {
+      this.dealSlugMap.set(slug.toLowerCase(), dealId);
+    }
 
     // Persist durably in D1 workflows table
     await this.persistDealToD1(newDeal, organizationId, businessId);
@@ -2240,10 +2304,80 @@ export class AutonomousDealDiscoveryEngine {
   }
 
   /**
-   * Retrieves single deal detail by ID.
+   * Retrieves single deal detail by ID or slug from in-memory cache.
    */
-  public getDealById(id: string): NormalizedDeal | null {
-    return this.dealsMap.get(id) || null;
+  public getDealById(idOrSlug: string): NormalizedDeal | null {
+    if (!idOrSlug) return null;
+    const cleanId = idOrSlug.trim();
+    if (this.dealsMap.has(cleanId)) {
+      return this.dealsMap.get(cleanId)!;
+    }
+    const slugMappedId = this.dealSlugMap.get(cleanId.toLowerCase());
+    if (slugMappedId && this.dealsMap.has(slugMappedId)) {
+      return this.dealsMap.get(slugMappedId)!;
+    }
+    return null;
+  }
+
+  /**
+   * Resolves a deal by canonical ID or public slug.
+   * Checks in-memory cache first, then performs bounded persistent query for cold-start recovery.
+   */
+  public async resolveDeal(idOrSlug: string, organizationId: string = 'org_owner_primary'): Promise<NormalizedDeal | null> {
+    if (!idOrSlug) return null;
+    const cleanId = idOrSlug.trim();
+
+    // 1. In-memory check
+    const cached = this.getDealById(cleanId);
+    if (cached) return cached;
+
+    // 2. Persistent D1 query for cold-start recovery
+    try {
+      const sql = `
+        SELECT id, status, current_step, inputs_json, outputs_json, error_info, created_at, updated_at
+        FROM workflows
+        WHERE workflow_type = 'PUBLIC_DEAL' AND (
+          id = ? OR id = ? OR inputs_json LIKE ? OR inputs_json LIKE ?
+        )
+        LIMIT 1
+      `;
+      const p1 = cleanId;
+      const p2 = `deal_${cleanId}`;
+      const p3 = `%"slug":"${cleanId}"%`;
+      const p4 = `%"canonicalSlug":"${cleanId}"%`;
+
+      let rows: any[] = [];
+      if (isProduction()) {
+        const res = await this.d1Repo.executeRead('workflows', sql, [p1, p2, p3, p4]);
+        rows = Array.isArray(res?.results) ? res.results : [];
+      } else {
+        const { getDb } = await import('../db/client.js');
+        rows = getDb().prepare(sql).all(p1, p2, p3, p4) as any[];
+      }
+
+      if (rows && rows.length > 0) {
+        const deal = this.parseDealFromWorkflowRow(rows[0]);
+        if (deal) {
+          // Bounded cache eviction (max 500 deals)
+          if (this.dealsMap.size >= 500) {
+            const oldest = this.dealsMap.keys().next().value;
+            if (oldest) {
+              const oldDeal = this.dealsMap.get(oldest);
+              if (oldDeal?.slug) this.dealSlugMap.delete(oldDeal.slug.toLowerCase());
+              this.dealsMap.delete(oldest);
+            }
+          }
+          this.dealsMap.set(deal.id, deal);
+          if (deal.slug) this.dealSlugMap.set(deal.slug.toLowerCase(), deal.id);
+          if (deal.canonicalSlug) this.dealSlugMap.set(deal.canonicalSlug.toLowerCase(), deal.id);
+          return deal;
+        }
+      }
+    } catch (err: any) {
+      console.warn(`[DealEngine] Notice resolving deal '${idOrSlug}' from database: ${err.message}`);
+    }
+
+    return null;
   }
 
   /**
@@ -2656,7 +2790,11 @@ export class AutonomousDealDiscoveryEngine {
         sourceDomain: deal.sourceDomain,
         sourceType: deal.sourceType,
         modelOrSku: deal.modelOrSku,
-        observedAt: deal.observedAt
+        observedAt: deal.observedAt,
+        offerStart: deal.offerStart,
+        expiryDate: deal.expiryDate,
+        slug: deal.slug,
+        canonicalSlug: deal.canonicalSlug
       });
 
       const outputsJson = JSON.stringify({
@@ -2667,7 +2805,9 @@ export class AutonomousDealDiscoveryEngine {
         trackingUrl: deal.trackingUrl,
         affiliateNetwork: deal.affiliateNetwork,
         affiliateCampaignId: deal.affiliateCampaignId,
-        evidence: deal.evidenceJson
+        evidence: deal.evidenceJson,
+        slug: deal.slug,
+        canonicalSlug: deal.canonicalSlug
       });
 
       const errorInfo = deal.rejectionReasons.length > 0 ? JSON.stringify(deal.rejectionReasons) : null;
@@ -2688,6 +2828,80 @@ export class AutonomousDealDiscoveryEngine {
       ]);
     } catch (err: any) {
       console.warn(`[DealEngine] D1 deal persistence warning for ${deal.id}: ${err.message}`);
+    }
+  }
+
+  /**
+   * Parse a workflow database row into a NormalizedDeal object.
+   */
+  public parseDealFromWorkflowRow(row: any): NormalizedDeal | null {
+    if (!row) return null;
+    try {
+      const inputs = JSON.parse(row.inputs_json || '{}');
+      const outputs = JSON.parse(row.outputs_json || '{}');
+      const rejectionReasons = row.error_info ? JSON.parse(row.error_info) : [];
+      const outputsEvidence = outputs.evidence;
+
+      const hasVerifiableEvidence = Boolean(
+        inputs.observedAt &&
+        (outputsEvidence?.priceHistory?.length || (outputsEvidence?.verificationLogs && outputsEvidence.verificationLogs.length > 0))
+      );
+
+      let verificationStatus = row.status as DealVerificationStatus;
+      if (!hasVerifiableEvidence && (verificationStatus === 'VERIFIED' || verificationStatus === 'VERIFIED_WITH_CONDITIONS')) {
+        verificationStatus = 'UNCONFIRMED';
+        if (!rejectionReasons.includes('LEGACY_UNVERIFIED_PROVENANCE: Record lacks primary observation evidence or fresh SKU audit.')) {
+          rejectionReasons.push('LEGACY_UNVERIFIED_PROVENANCE: Record lacks primary observation evidence or fresh SKU audit.');
+        }
+      }
+
+      const slug = inputs.slug || inputs.canonicalSlug || outputs.slug || outputs.canonicalSlug ||
+        AutonomousDealDiscoveryEngine.generateDealSlug(inputs.title || 'deal', inputs.brand, inputs.modelOrSku);
+
+      const deal: NormalizedDeal = {
+        id: row.id,
+        slug,
+        canonicalSlug: slug,
+        dealKind: inputs.dealKind || 'PRODUCT',
+        discountBadge: inputs.discountBadge,
+        title: inputs.title || 'Untitled Deal',
+        brand: inputs.brand || 'Generic',
+        merchant: inputs.merchant || 'Unknown',
+        category: inputs.category || 'General',
+        productUrl: inputs.productUrl || '',
+        currentPriceINR: inputs.currentPriceINR,
+        currency: 'INR',
+        referencePriceINR: inputs.referencePriceINR,
+        claimedDiscountPercent: inputs.claimedDiscountPercent,
+        verifiedDiscountPercent: inputs.verifiedDiscountPercent,
+        discountVerificationType: outputs.discountVerificationType || 'UNCONFIRMED',
+        couponCode: inputs.couponCode,
+        couponConditions: inputs.couponConditions,
+        availability: inputs.availability || 'IN_STOCK',
+        geographicRestrictions: ['India'],
+        offerStart: inputs.offerStart,
+        expiryDate: inputs.expiryDate,
+        lastCheckedAt: row.updated_at || row.created_at,
+        observedAt: inputs.observedAt || row.created_at,
+        sourceUrl: inputs.sourceUrl || '',
+        sourceDomain: inputs.sourceDomain || '',
+        sourceType: inputs.sourceType || 'RETAILER_BRAND',
+        verificationStatus,
+        confidenceScore: outputs.confidenceScore || 80,
+        buyerValueScore: outputs.buyerValueScore || 0,
+        rejectionReasons,
+        isMonetizable: Boolean(outputs.isMonetizable),
+        trackingUrl: outputs.trackingUrl,
+        affiliateNetwork: outputs.affiliateNetwork,
+        affiliateCampaignId: outputs.affiliateCampaignId,
+        modelOrSku: inputs.modelOrSku,
+        evidenceJson: outputs.evidence || { sources: [inputs.sourceUrl] },
+        createdAt: row.created_at,
+        updatedAt: row.updated_at
+      };
+      return deal;
+    } catch {
+      return null;
     }
   }
 
@@ -2716,65 +2930,12 @@ export class AutonomousDealDiscoveryEngine {
       if (Array.isArray(results)) {
         for (const row of results) {
           try {
-            const inputs = JSON.parse(row.inputs_json || '{}');
-            const outputs = JSON.parse(row.outputs_json || '{}');
-            const rejectionReasons = row.error_info ? JSON.parse(row.error_info) : [];
-            const outputsEvidence = outputs.evidence;
-
-            // Audit check: Verify durable evidence and observation provenance.
-            // Legacy records lacking explicit primary observation timestamps or price history are quarantined as UNCONFIRMED.
-            const hasVerifiableEvidence = Boolean(
-              inputs.observedAt &&
-              (outputsEvidence?.priceHistory?.length || (outputsEvidence?.verificationLogs && outputsEvidence.verificationLogs.length > 0))
-            );
-
-            let verificationStatus = row.status as DealVerificationStatus;
-            if (!hasVerifiableEvidence && (verificationStatus === 'VERIFIED' || verificationStatus === 'VERIFIED_WITH_CONDITIONS')) {
-              verificationStatus = 'UNCONFIRMED';
-              if (!rejectionReasons.includes('LEGACY_UNVERIFIED_PROVENANCE: Record lacks primary observation evidence or fresh SKU audit.')) {
-                rejectionReasons.push('LEGACY_UNVERIFIED_PROVENANCE: Record lacks primary observation evidence or fresh SKU audit.');
-              }
-            }
-
-            const deal: NormalizedDeal = {
-              id: row.id,
-              dealKind: inputs.dealKind || 'PRODUCT',
-              discountBadge: inputs.discountBadge,
-              title: inputs.title || 'Untitled Deal',
-              brand: inputs.brand || 'Generic',
-              merchant: inputs.merchant || 'Unknown',
-              category: inputs.category || 'General',
-              productUrl: inputs.productUrl || '',
-              currentPriceINR: inputs.currentPriceINR,
-              currency: 'INR',
-              referencePriceINR: inputs.referencePriceINR,
-              claimedDiscountPercent: inputs.claimedDiscountPercent,
-              verifiedDiscountPercent: inputs.verifiedDiscountPercent,
-              discountVerificationType: outputs.discountVerificationType || 'UNCONFIRMED',
-              couponCode: inputs.couponCode,
-              couponConditions: inputs.couponConditions,
-              availability: inputs.availability || 'IN_STOCK',
-              geographicRestrictions: ['India'],
-              lastCheckedAt: row.updated_at || row.created_at,
-              observedAt: inputs.observedAt || row.created_at,
-              sourceUrl: inputs.sourceUrl || '',
-              sourceDomain: inputs.sourceDomain || '',
-              sourceType: inputs.sourceType || 'RETAILER_BRAND',
-              verificationStatus,
-              confidenceScore: outputs.confidenceScore || 80,
-              buyerValueScore: outputs.buyerValueScore || 0,
-              rejectionReasons,
-              isMonetizable: Boolean(outputs.isMonetizable),
-              trackingUrl: outputs.trackingUrl,
-              affiliateNetwork: outputs.affiliateNetwork,
-              affiliateCampaignId: outputs.affiliateCampaignId,
-              modelOrSku: inputs.modelOrSku,
-              evidenceJson: outputs.evidence || { sources: [inputs.sourceUrl] },
-              createdAt: row.created_at,
-              updatedAt: row.updated_at
-            };
+            const deal = this.parseDealFromWorkflowRow(row);
+            if (!deal) continue;
 
             this.dealsMap.set(deal.id, deal);
+            if (deal.slug) this.dealSlugMap.set(deal.slug.toLowerCase(), deal.id);
+            if (deal.canonicalSlug) this.dealSlugMap.set(deal.canonicalSlug.toLowerCase(), deal.id);
 
             const coreTitleTokens = deal.title
               .toLowerCase()

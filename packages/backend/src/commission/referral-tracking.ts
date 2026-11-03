@@ -80,6 +80,7 @@ const BOT_PATTERNS = [
 
 export type TrafficClassification =
   | 'human'
+  | 'browser_candidate'
   | 'suspected_bot'
   | 'known_bot'
   | 'test'
@@ -165,8 +166,9 @@ export function classifyTraffic(
   }
 
   // 5. Typical browser patterns (Mozilla + WebKit/Chrome/Safari/Firefox/Edge)
+  // Phase 3 Truth: Public browser User-Agent is classified as browser_candidate, NEVER confirmed human
   if (/mozilla/i.test(ua) && (/chrome|safari|firefox|edge|mobile|opera/i.test(ua))) {
-    return 'human';
+    return 'browser_candidate';
   }
 
   return 'unknown';

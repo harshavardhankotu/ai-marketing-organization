@@ -613,7 +613,7 @@ export class CuelinksV3Client {
       );
     }
 
-    // 2. Official Cuelinks V3 contract: default to `shorten: true`
+    // 2. Official Cuelinks V3 contract: default to `shorten: true` unless caller specifies otherwise
     const shouldShorten = request.shorten !== undefined
       ? Boolean(request.shorten)
       : (request.short_url !== undefined ? Boolean(request.short_url) : true);
@@ -646,7 +646,7 @@ export class CuelinksV3Client {
     const result = (res && typeof res === 'object') ? (res.data || res) : {};
 
     // 4. Domain safety guard: validate provider tracking URL candidates strictly
-    // Select the best allowlisted HTTPS candidate URL
+    // Keep full provider tracking_url and provider short_url separate; never overwrite tracking_url with short_url if tracking_url provided
     const safeShortUrl = (result.short_url && typeof result.short_url === 'string' && CuelinksV3Client.isAllowedTrackingUrl(result.short_url))
       ? result.short_url
       : undefined;
@@ -659,8 +659,8 @@ export class CuelinksV3Client {
       ? result.url
       : undefined;
 
-    const candidateTrackingUrl = safeShortUrl || safeTrackingUrl || safeUrl;
-    const isCandidateSafe = Boolean(candidateTrackingUrl);
+    const effectiveTrackingUrl = safeTrackingUrl || safeShortUrl || safeUrl;
+    const isCandidateSafe = Boolean(effectiveTrackingUrl);
 
     // 5. Strict monetization gate: require explicit affiliated: true AND allowlisted HTTPS tracking URL
     const isAffiliated = result.affiliated === true && isCandidateSafe;
@@ -674,10 +674,11 @@ export class CuelinksV3Client {
 
     return {
       url: destinationUrl,
-      tracking_url: isAffiliated && candidateTrackingUrl ? candidateTrackingUrl : destinationUrl,
-      short_url: isAffiliated ? (safeShortUrl || candidateTrackingUrl) : undefined,
+      tracking_url: isAffiliated && effectiveTrackingUrl ? (safeTrackingUrl || safeShortUrl || safeUrl) : destinationUrl,
+      short_url: isAffiliated ? safeShortUrl : undefined,
       affiliated: isAffiliated,
-      campaign: result.campaign
+      campaign: result.campaign,
+      channel_id: request.channel_id
     };
   }
 
