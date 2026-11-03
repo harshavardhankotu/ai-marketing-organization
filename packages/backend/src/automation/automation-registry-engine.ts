@@ -91,6 +91,7 @@ export interface AutomationExecutionRecord {
   itemsFailed: number;
   checkpoint: Record<string, any>;
   resultSummary: Record<string, any>;
+  ownerActionRequired?: string | null;
   errorMessage: string | null;
   createdAt: string;
 }
@@ -330,6 +331,10 @@ export class AutomationRegistryEngine {
       AutomationRegistryEngine.instance = new AutomationRegistryEngine();
     }
     return AutomationRegistryEngine.instance;
+  }
+
+  public static resetInstance(): void {
+    AutomationRegistryEngine.instance = undefined as any;
   }
 
   /**
@@ -723,6 +728,7 @@ export class AutomationRegistryEngine {
       itemsFailed,
       checkpoint,
       resultSummary,
+      ownerActionRequired,
       errorMessage,
       createdAt: completedAt
     };
@@ -863,6 +869,24 @@ export class AutomationRegistryEngine {
       }
 
       case 'prospect_discovery_validation': {
+        const { checkB2BResearchBacklogGuard } = await import('../revenue/b2b-research-backlog-guard.js');
+        const guard = await checkB2BResearchBacklogGuard(this.d1Repo);
+        if (!guard.allowed) {
+          return {
+            status: 'NO_ACTION_DUE',
+            itemsProcessed: 0,
+            itemsSucceeded: 0,
+            itemsFailed: 0,
+            summary: {
+              reason: guard.reason,
+              unapprovedCount: guard.unapprovedCount,
+              maxLimit: guard.maxLimit,
+              message: guard.message
+            },
+            ownerActionRequired: `Review ${guard.unapprovedCount} pending outreach drafts at /owner/today to resume prospect discovery.`
+          };
+        }
+
         const { PlatformProspectDiscoveryEngine } = await import('../revenue/platform-prospect-discovery-engine.js');
         const prospects = await PlatformProspectDiscoveryEngine.getInstance().ensureCuratedQualifiedProspectBatch();
         return {
@@ -987,6 +1011,24 @@ export class AutomationRegistryEngine {
       }
 
       case 'outreach_draft_preparation': {
+        const { checkB2BResearchBacklogGuard } = await import('../revenue/b2b-research-backlog-guard.js');
+        const guard = await checkB2BResearchBacklogGuard(this.d1Repo);
+        if (!guard.allowed) {
+          return {
+            status: 'NO_ACTION_DUE',
+            itemsProcessed: 0,
+            itemsSucceeded: 0,
+            itemsFailed: 0,
+            summary: {
+              reason: guard.reason,
+              unapprovedCount: guard.unapprovedCount,
+              maxLimit: guard.maxLimit,
+              message: guard.message
+            },
+            ownerActionRequired: `Review ${guard.unapprovedCount} pending outreach drafts at /owner/today to resume draft preparation.`
+          };
+        }
+
         // Discover qualified prospects without drafts, create drafts in direct_outreach_log
         let eligibleProspects: any[] = [];
         try {

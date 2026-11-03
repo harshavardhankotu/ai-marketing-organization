@@ -32,6 +32,7 @@ export type CommercialBlockerType =
   | 'TEMPORARY_NETWORK_FAILURE'
   | 'INVALID_CONTENT_OR_DISCLOSURE'
   | 'INVALID_TRACKING_REDIRECT'
+  | 'INVALID_TRACKING_URL'
   | 'QUALITY_GATE_REJECTED';
 
 export interface CommercialTaskRecord {
@@ -1202,6 +1203,32 @@ export class AutonomousCommercialEngine {
         }
         let offer = await this.partnerRegistry.getOfferBySlug('verified-cuelinks-offer');
         if (!offer) {
+          let trackingUrl = task.inputs.trackingUrl;
+          if (!trackingUrl || !this.partnerRegistry.isValidUrl(trackingUrl)) {
+            // Attempt dynamic link conversion if sourceUrl and approved Cuelinks channel exist
+            if (cuelinksPartner && task.inputs.sourceUrl) {
+              try {
+                const { CuelinksSyncManager } = await import('./cuelinks-sync-manager.js');
+                const { CuelinksV3Client } = await import('./cuelinks-v3-client.js');
+                const sync = CuelinksSyncManager.getInstance(CuelinksV3Client.getInstance());
+                const ch = await sync.getApprovedChannel();
+                if (ch.approved && ch.channel?.id) {
+                  trackingUrl = `https://linksredirect.com/?cid=${ch.channel.id}&url=${encodeURIComponent(task.inputs.sourceUrl)}`;
+                }
+              } catch {}
+            }
+          }
+
+          if (!trackingUrl || !this.partnerRegistry.isValidUrl(trackingUrl)) {
+            task.status = 'BLOCKED';
+            task.stage = 'BLOCKED';
+            task.errorInfo = {
+              blockerType: 'INVALID_TRACKING_URL',
+              message: 'No authorized tracking URL provided; generic cid=default fallback suppressed.'
+            };
+            await this.persistTask(task);
+            return;
+          }
           offer = await this.partnerRegistry.createOffer({
             partnerId: cuelinksPartner.id,
             organizationId: task.organizationId,
@@ -1209,7 +1236,7 @@ export class AutonomousCommercialEngine {
             offerSlug: 'verified-cuelinks-offer',
             category: task.inputs.category || 'travel',
             targetCustomer: task.inputs.targetCustomer || 'Indian consumers',
-            authorizedTrackingUrl: task.inputs.trackingUrl || 'https://linksredirect.com/?cid=default',
+            authorizedTrackingUrl: trackingUrl,
             destinationUrl: task.inputs.sourceUrl || 'https://www.cuelinks.com',
             commissionAmountINR: 0,
             status: 'ACTIVE'

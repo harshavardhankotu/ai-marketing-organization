@@ -1326,6 +1326,20 @@ apiRouter.get('/cron/status', async (c) => {
     recentPings24h = 'UNKNOWN';
   }
 
+  // Reconcile lastSuccessfulCycle: take the latest between cron_telemetry and queue execution
+  let resolvedSuccessfulCycle: string | null = row?.last_successful_cycle || null;
+  if (queueStats.lastSuccessfulExecutionAt) {
+    if (!resolvedSuccessfulCycle) {
+      resolvedSuccessfulCycle = queueStats.lastSuccessfulExecutionAt;
+    } else {
+      const dbTs = parseSqliteTimestampMs(resolvedSuccessfulCycle);
+      const queueTs = parseSqliteTimestampMs(queueStats.lastSuccessfulExecutionAt);
+      if (queueTs > dbTs) {
+        resolvedSuccessfulCycle = queueStats.lastSuccessfulExecutionAt;
+      }
+    }
+  }
+
   return c.json({
     success: true,
     data: {
@@ -1338,7 +1352,7 @@ apiRouter.get('/cron/status', async (c) => {
       totalLifetimePings: totalPings,
       recentPings24h,
       lastObservedPing: row?.last_observed_ping || null,
-      lastSuccessfulCycle: row?.last_successful_cycle || null,
+      lastSuccessfulCycle: resolvedSuccessfulCycle,
       lastFailedCycle: row?.last_failed_cycle || null,
       cycleResult: row?.cycle_result || null,
       lastUserAgent: row?.last_user_agent || null,
@@ -1546,6 +1560,26 @@ apiRouter.post('/cron/worker/claim-and-run', async (c) => {
       message: 'NO_JOBS_DUE',
       queueStats: stats
     });
+  }
+
+  // Atomically record successful cycle in cron_telemetry if any job completed with findings or success
+  const hasSuccessfulBusinessCycle = executedJobs.some(j =>
+    j.status === 'COMPLETED' || j.status === 'COMPLETED_WITH_FINDINGS' || j.status === 'COMPLETED_NO_FINDINGS'
+  );
+  if (hasSuccessfulBusinessCycle) {
+    try {
+      const d1Repo = D1RevenueRepository.getInstance();
+      const updateCycleSql = `
+        UPDATE cron_telemetry SET
+          last_successful_cycle = datetime('now'),
+          cycle_result = 'SUCCESS',
+          updated_at = datetime('now')
+        WHERE id = 'cloudflare_worker_cron'
+      `;
+      await d1Repo.executeWrite('cron_telemetry', updateCycleSql, []);
+    } catch (err: any) {
+      console.warn(`[ClaimAndRun] Notice updating cron_telemetry cycle: ${err.message}`);
+    }
   }
 
   const finalJob = await queue.getJobById(executedJobs[0].jobId);
@@ -5598,17 +5632,20 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   let externalOutboundClicks = 0;
   let diagnosticTestClicks = 0;
   try {
-    const extClickRow = await d1Repo.queryOne<any>(
-      'referral_click_events',
-      "SELECT COUNT(*) as c FROM referral_click_events WHERE placement != 'direct_beacon' AND source != 'direct_beacon' AND medium != 'beacon'"
-    );
+    const extClickSql = `
+      SELECT COUNT(*) as c FROM referral_click_events
+      WHERE device_class IN ('human', 'browser_candidate')
+        AND click_id NOT LIKE 'clk_test_%'
+        AND placement NOT IN ('diagnostic', 'direct_beacon', 'test')
+        AND (source IS NULL OR source NOT IN ('direct_beacon', 'diagnostic', 'test'))
+        AND (medium IS NULL OR medium NOT IN ('beacon', 'diagnostic', 'test'))
+    `;
+    const extClickRow = await d1Repo.queryOne<any>('referral_click_events', extClickSql);
     externalOutboundClicks = extClickRow?.c || 0;
 
-    const diagClickRow = await d1Repo.queryOne<any>(
-      'referral_click_events',
-      "SELECT COUNT(*) as c FROM referral_click_events WHERE placement = 'direct_beacon' OR source = 'direct_beacon' OR medium = 'beacon'"
-    );
-    diagnosticTestClicks = diagClickRow?.c || 0;
+    const totalClickRow = await d1Repo.queryOne<any>('referral_click_events', 'SELECT COUNT(*) as c FROM referral_click_events');
+    const totalClicks = totalClickRow?.c || 0;
+    diagnosticTestClicks = Math.max(0, totalClicks - externalOutboundClicks);
   } catch {}
 
   // 3. CTR
@@ -6315,9 +6352,20 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
     return c.text('Affiliate monetization unavailable for this deal', 503);
   }
 
+  // Phase 3 Mandate: Require validated campaign and merchant mapping (no guessing or fallback)
+  if (!deal.merchant || !deal.productUrl) {
+    return c.text('Affiliate monetization path temporarily unavailable: unverified merchant destination; redirect suppressed', 503);
+  }
+  if (!deal.affiliateCampaignId || !/^[0-9a-zA-Z_\-]{1,32}$/.test(deal.affiliateCampaignId)) {
+    return c.text('Affiliate monetization path temporarily unavailable: missing verified campaign mapping; redirect suppressed', 503);
+  }
+
   const { resolveSectorFromCategory } = await import('@ai-marketing/shared');
   const sectorDef = resolveSectorFromCategory(deal.category);
-  const sectorCode = sectorDef ? sectorDef.code : (((deal.merchant || '').toLowerCase().includes('boat') || (deal.category || '').toLowerCase().includes('audio')) ? 'SECTOR_B_ELECTRONICS' : 'SECTOR_G_LIFESTYLE');
+  if (!sectorDef) {
+    return c.text('Affiliate monetization path temporarily unavailable: unverified sector mapping; redirect suppressed', 503);
+  }
+  const sectorCode = sectorDef.code;
 
   // Cryptographically strong unique click ID
   const { randomUUID } = await import('crypto');
@@ -6337,7 +6385,7 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
       const cuelinksClient = CuelinksV3Client.getInstance();
       const cuelinksSync = CuelinksSyncManager.getInstance(cuelinksClient);
 
-      // Verify approved publisher channel (strictly fail closed if not approved or null)
+      // Verify approved publisher channel (strictly fail closed if not approved or null; no hardcoded defaults)
       const channelRes = await cuelinksSync.getApprovedChannel();
       if (!channelRes.approved || !channelRes.channel?.id) {
         return c.text('Affiliate monetization path temporarily unavailable for this deal; unmonetized fallback suppressed', 503);
@@ -6349,7 +6397,7 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
         channel_id: channelId,
         subid: clickId,
         subid2: sectorCode,
-        subid3: deal.affiliateCampaignId || '4232',
+        subid3: deal.affiliateCampaignId,
         subid4: deal.canonicalSlug || deal.slug || deal.id,
         subid5: sanitizedPlacement,
         shorten: false
@@ -6395,25 +6443,17 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
     const { D1RevenueRepository } = await import('../db/d1-revenue-repository.js');
     const d1Repo = D1RevenueRepository.getInstance();
 
-    // Ensure referential integrity for partner and offer
-    await d1Repo.executeWrite(
-      'partners',
-      `INSERT INTO partners (
-        id, organization_id, name, industry, website, partner_type, network, authorization_status
-      ) VALUES ('part_cuelinks', ?, 'Cuelinks India', 'Affiliate Network', 'https://www.cuelinks.com', 'AFFILIATE', 'CUELINKS', 'AUTHORIZED')
-      ON CONFLICT(id) DO NOTHING`,
-      [orgId]
-    ).catch(() => {});
+    // Ensure referential integrity for partner and offer atomically
+    const insertPartnerSql = `INSERT INTO partners (
+      id, organization_id, name, industry, website, partner_type, network, authorization_status
+    ) VALUES ('part_cuelinks', ?, 'Cuelinks India', 'Affiliate Network', 'https://www.cuelinks.com', 'AFFILIATE', 'CUELINKS', 'AUTHORIZED')
+    ON CONFLICT(id) DO NOTHING`;
 
-    await d1Repo.executeWrite(
-      'partner_offers',
-      `INSERT INTO partner_offers (
-        id, partner_id, organization_id, title, offer_slug, category, target_customer,
-        price_inr, destination_url, authorized_tracking_url, active, status, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 'Indian online shoppers', ?, ?, ?, 1, 'ACTIVE', datetime('now'))
-      ON CONFLICT(id) DO UPDATE SET authorized_tracking_url = excluded.authorized_tracking_url, updated_at = datetime('now')`,
-      [deal.id, partnerId, orgId, deal.title, deal.canonicalSlug || deal.slug || deal.id, deal.category || 'General', deal.currentPriceINR || 0, deal.productUrl, targetUrl]
-    ).catch(() => {});
+    const insertOfferSql = `INSERT INTO partner_offers (
+      id, partner_id, organization_id, title, offer_slug, category, target_customer,
+      price_inr, destination_url, authorized_tracking_url, active, status, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, 'Indian online shoppers', ?, ?, ?, 1, 'ACTIVE', datetime('now'))
+    ON CONFLICT(id) DO UPDATE SET authorized_tracking_url = excluded.authorized_tracking_url, updated_at = datetime('now')`;
 
     const insertRefSql = `
       INSERT INTO referrals (
@@ -6437,13 +6477,15 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
       partnerId,
       sanitizedPlacement,
       sectorCode,
-      deal.affiliateCampaignId || '4232',
+      deal.affiliateCampaignId,
       referrer.substring(0, 200),
       trafficClass,
       targetUrl
     ];
 
     await d1Repo.executeBatch([
+      { table: 'partners', sql: insertPartnerSql, params: [orgId] },
+      { table: 'partner_offers', sql: insertOfferSql, params: [deal.id, partnerId, orgId, deal.title, deal.canonicalSlug || deal.slug || deal.id, deal.category || 'General', deal.currentPriceINR || 0, deal.productUrl, targetUrl] },
       { table: 'referrals', sql: insertRefSql, params: refParams },
       { table: 'referral_click_events', sql: insertClickSql, params: clickParams }
     ]);

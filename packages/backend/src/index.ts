@@ -531,6 +531,9 @@ app.get('/r/:offerSlug/:referralId', async (c) => {
     return c.redirect(result.destinationUrl, 302);
   } catch (err: any) {
     const sanitizedMsg = (err.message || '').replace(/([?&]tag=)[^&]+/gi, '$1[REDACTED]');
+    if (err.message?.includes('CLICK_ATTRIBUTION_PERSISTENCE_FAILED') || err.message?.includes('database error') || err.message?.includes('database write')) {
+      return c.text('Attribution persistence failed; redirect suppressed to protect monetization', 503);
+    }
     return c.json({ error: 'REFERRAL_NOT_FOUND', message: sanitizedMsg }, 404);
   }
 });
