@@ -6553,12 +6553,32 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
       return c.text('Affiliate monetization path temporarily unavailable: partner not authorized; redirect suppressed', 503);
     }
 
+    // Resolve valid partner_offers FK for referrals table (Spec § 4)
+    let referralOfferId = deal.id;
+    const existingOffer = await d1Repo.queryOne<any>(
+      'partner_offers',
+      "SELECT id FROM partner_offers WHERE id = ? OR offer_slug = ?",
+      [deal.id, deal.slug || '']
+    );
+    if (existingOffer?.id) {
+      referralOfferId = existingOffer.id;
+    } else {
+      const activePartnerOffer = await d1Repo.queryOne<any>(
+        'partner_offers',
+        "SELECT id FROM partner_offers WHERE partner_id = ? AND (active = 1 OR status = 'ACTIVE') LIMIT 1",
+        [partnerId]
+      );
+      if (activePartnerOffer?.id) {
+        referralOfferId = activePartnerOffer.id;
+      }
+    }
+
     const insertRefSql = `
       INSERT INTO referrals (
         id, click_id, destination_url, organization_id, offer_id, partner_id, ip, user_agent, referer, placement, device_class, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     `;
-    const refParams = [referralId, clickId, targetUrl, orgId, deal.id, partnerId, clientInfo.ip, userAgent.substring(0, 200), referrer.substring(0, 200), sanitizedPlacement, trafficClass];
+    const refParams = [referralId, clickId, targetUrl, orgId, referralOfferId, partnerId, clientInfo.ip, userAgent.substring(0, 200), referrer.substring(0, 200), sanitizedPlacement, trafficClass];
 
     const insertClickSql = `
       INSERT INTO referral_click_events (
