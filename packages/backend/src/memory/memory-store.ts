@@ -71,13 +71,18 @@ export class MemoryStore {
     }
   }
 
-  public getAllInScope(businessId: string, scope: MemoryScope): Record<string, any> {
+  /**
+   * Retrieves memories in scope, bounded by limit and recency to prevent prompt bloat.
+   */
+  public getAllInScope(businessId: string, scope: MemoryScope, limit: number = 5): Record<string, any> {
     const db = getDb();
     const rows = db.prepare(`
       SELECT key, value_json FROM memory_items
       WHERE business_id = ? AND scope = ?
         AND (expires_at IS NULL OR expires_at > datetime('now'))
-    `).all(businessId, scope) as { key: string; value_json: string }[];
+      ORDER BY updated_at DESC
+      LIMIT ?
+    `).all(businessId, scope, limit) as { key: string; value_json: string }[];
 
     const result: Record<string, any> = {};
     for (const r of rows) {
@@ -92,7 +97,8 @@ export class MemoryStore {
 
   /**
    * Bounded Context Package constructor:
-   * Assembles only relevant, fresh context for an agent execution to avoid prompt bloat.
+   * Assembles only relevant, fresh, bounded context for an agent execution to avoid prompt bloat.
+   * Enforces strict limit of 5 most recent signals per scope and slices arrays.
    */
   public constructBoundedContext(businessId: string, campaignId?: string): Record<string, any> {
     const db = getDb();
@@ -101,13 +107,16 @@ export class MemoryStore {
       SELECT * FROM strategies WHERE business_id = ? ORDER BY version DESC LIMIT 1
     `).get(businessId) as any;
 
-    const marketMemory = this.getAllInScope(businessId, 'MARKET');
-    const systemMemory = this.getAllInScope(businessId, 'SYSTEM');
+    const marketMemory = this.getAllInScope(businessId, 'MARKET', 5);
+    const systemMemory = this.getAllInScope(businessId, 'SYSTEM', 5);
 
     let campaignData = null;
     if (campaignId) {
       campaignData = db.prepare('SELECT * FROM campaigns WHERE id = ?').get(campaignId);
     }
+
+    const rawLearnings = systemMemory.latest_learnings;
+    const boundedLearnings = Array.isArray(rawLearnings) ? rawLearnings.slice(0, 5) : [];
 
     return {
       business: {
@@ -126,7 +135,7 @@ export class MemoryStore {
       } : null,
       campaign: campaignData,
       marketSignals: marketMemory,
-      activeLearnings: systemMemory.latest_learnings || []
+      activeLearnings: boundedLearnings
     };
   }
 }

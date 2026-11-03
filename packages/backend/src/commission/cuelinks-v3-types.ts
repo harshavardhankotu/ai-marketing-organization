@@ -68,6 +68,7 @@ export interface CuelinksPingResult {
   authorized?: boolean;
   message: string;
   publisherId?: string | number;
+  publisher_id?: string | number;
   publisherName?: string;
   currency?: string;
   email?: string;

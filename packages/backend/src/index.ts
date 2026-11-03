@@ -1023,21 +1023,17 @@ export async function startServer(): Promise<any> {
     console.warn('[Prospect Gate] Curated prospect batch synchronization failed:', err.message);
   }
 
-  // 3f. Automation Registry Gate: Ensure 15 core workflows initialized in Cloudflare D1
+  // 3f. Automation Registry Gate: Ensure core workflows initialized in Cloudflare D1
   try {
-    const { AutomationRegistryEngine } = await import('./automation/automation-registry-engine.js');
+    const { AutomationRegistryEngine, WORKFLOW_DEFINITIONS } = await import('./automation/automation-registry-engine.js');
     await AutomationRegistryEngine.getInstance().ensureInitialized();
-    console.log('[Automation Gate] Ensured 15 background automation workflows initialized.');
+    console.log(`[Automation Gate] Ensured ${WORKFLOW_DEFINITIONS.length} background automation workflows initialized in Cloudflare D1.`);
   } catch (err: any) {
     console.warn('[Automation Gate] Automation registry initialization failed:', err.message);
   }
 
-  // 4. Start autonomous background scheduler for continuous market intelligence & research
-  try {
-    DailyMarketResearchScheduler.getInstance().startScheduler();
-  } catch (err: any) {
-    console.warn('[SCHEDULER] Could not start daily research scheduler:', err.message);
-  }
+  // 4. Autonomous scheduling powered by durable Cloudflare D1 queue & Worker heartbeat (Spec V4.1 Phase 1 & 2)
+  console.log('[Durable Queue] Background operations scheduled via Cloudflare D1 queue (Two daily IST commercial runs: 09:00 & 21:00 IST).');
 
   console.log(`\n======================================================`);
   console.log(`🚀 AI Marketing Organization Backend Service Running`);
@@ -1045,7 +1041,7 @@ export async function startServer(): Promise<any> {
   console.log(`📊 API Health: http://localhost:${PORT}/api/v1/health`);
   console.log(`🏢 Commercial Engine: Universal Multi-Tenant Ready`);
   console.log(`🤖 Agents Active: 80 Specialized Autonomous Agents`);
-  console.log(`⏱️ Daily Autonomous Research Scheduler: RUNNING`);
+  console.log(`⏱️ Durable Queue: ACTIVE (09:00 & 21:00 IST CAMPAIGN WINDOWS)`);
   console.log(`======================================================\n`);
 
   return serve({

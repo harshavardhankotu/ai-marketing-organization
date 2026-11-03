@@ -1,11 +1,7 @@
-﻿# Current Objective: Build Foundation & Shared Domain Contracts
+# Current Objective: First Customer Revenue (₹15,000 Setup / Lane C) & V4.1 Operational Hardening
 
-1. Complete `packages/shared`:
-   - India-first constants (`packages/shared/src/constants/india.ts`) [DONE]
-   - Core domain types (`packages/shared/src/types/index.ts`) [DONE]
-   - Validation schemas (`packages/shared/src/schemas/index.ts`) [DONE]
-   - All 80 Agent contracts (`packages/shared/src/contracts/agent-contracts.ts`) [IN PROGRESS]
-   - Control plane contracts (`packages/shared/src/contracts/control-plane.ts`) [PENDING]
-   - Index re-export (`packages/shared/src/index.ts`) [PENDING]
-2. Implement backend database schema with 40+ tables, migrations, and seed data.
-3. Build AI engine, quota manager, deduplication, durable workflow engine, and 80-agent runtime.
+1. **Primary Goal:** Generate the first genuine, bank-verified customer revenue in India using free/authorized tools and ₹0 paid advertising.
+2. **Current Highest-Probability Route:** Lane C — AI Inbound Lead Triage for Indian Appointment-Based Practices (Hyderabad dental clinics).
+3. **Immediate Unblocking Gate:** Human Owner Approval on `/owner/today`. Owner launches 1-click WhatsApp (`wa.me`) outreach to Dr. P. V. Partha Rama Rao (Partha Dental) or Dr. P. P. Reddy (FMS Dental).
+4. **V4.1 Engineering Stability:** PR #33 merged to `main` deploying durable D1 job queue, 09:00/21:00 IST commercial windows, and fast `< 2s` `/cron/ping`.
+5. **Cost Optimization Invariant:** Strict deterministic-first architecture. 12 structural tasks bypassed from LLM; bounded memory in `constructBoundedContext()` (limit 5); thinking level defaulted to `low`.

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import Database from 'better-sqlite3';
 import { SCHEMA_SQL } from '../../src/db/schema.js';
-import { applySqliteMigrations } from '../../src/db/sqlite-migration-runner.js';
+import { applySqliteMigrations, listMigrationFiles } from '../../src/db/sqlite-migration-runner.js';
 import { apiRouter } from '../../src/routes/api.js';
 import { getDb, resetDbForTesting } from '../../src/db/client.js';
 
@@ -239,9 +239,11 @@ describe('Schema Parity Verification & Inquiry Lifecycle (Steps 2, 3, 4, 6)', ()
       db.exec(SCHEMA_SQL);
       const { applied } = applySqliteMigrations(db);
 
+      const expectedFiles = listMigrationFiles();
       const rows = db.prepare('SELECT migration_name FROM _sqlite_migrations').all() as { migration_name: string }[];
-      expect(rows.length).toBe(43);
-      expect(applied.length).toBe(43);
+      expect(expectedFiles.length).toBeGreaterThanOrEqual(44);
+      expect(rows.length).toBe(expectedFiles.length);
+      expect(applied.length).toBe(expectedFiles.length);
 
       // Re-running is idempotent and applies 0 new files
       const secondRun = applySqliteMigrations(db);

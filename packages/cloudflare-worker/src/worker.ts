@@ -36,10 +36,11 @@ async function runCycle(env: Env): Promise<void> {
     return;
   }
 
-  const targetUrl = `${env.BACKEND_URL.replace(/\/$/, '')}/api/v1/cron/ping`;
+  const pingUrl = `${env.BACKEND_URL.replace(/\/$/, '')}/api/v1/cron/ping`;
+  const claimUrl = `${env.BACKEND_URL.replace(/\/$/, '')}/api/v1/cron/worker/claim-and-run`;
 
   try {
-    const response = await fetch(targetUrl, {
+    const response = await fetch(pingUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -51,7 +52,7 @@ async function runCycle(env: Env): Promise<void> {
         scheduledAt: new Date().toISOString(),
         cronExpression: '0 * * * *'
       }),
-      signal: AbortSignal.timeout(100000) // 100 seconds — tolerates Render free-tier cold-start latency (~50-90s)
+      signal: AbortSignal.timeout(100000) // 100-second ceiling to tolerate Render cold starts
     });
 
     const elapsed = Date.now() - startMs;
@@ -59,9 +60,28 @@ async function runCycle(env: Env): Promise<void> {
     if (response.ok) {
       const body = await response.json() as Record<string, unknown>;
       console.log(
-        `[CRON WORKER] Backend responded OK in ${elapsed}ms:`,
+        `[CRON WORKER] Fast ping accepted in ${elapsed}ms:`,
         JSON.stringify(body).substring(0, 500)
       );
+
+      // Claim & execute due job from durable queue
+      try {
+        const claimRes = await fetch(claimUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Cron-Secret': env.CRON_PING_SECRET,
+            'User-Agent': 'ai-marketing-cron-worker/1.0'
+          },
+          signal: AbortSignal.timeout(25000)
+        });
+        if (claimRes.ok) {
+          const claimBody = await claimRes.json() as Record<string, unknown>;
+          console.log(`[CRON WORKER] Claim step: claimed=${claimBody.claimed}, message=${claimBody.message || 'SUCCESS'}`);
+        }
+      } catch (claimErr: any) {
+        console.warn(`[CRON WORKER] Claim step notice: ${claimErr?.message}`);
+      }
     } else {
       const text = await response.text();
       console.error(
@@ -73,11 +93,9 @@ async function runCycle(env: Env): Promise<void> {
     const elapsed = Date.now() - startMs;
     const error = err as { name?: string; message?: string };
 
-    // Render free tier may be sleeping — timeout on cold start is expected.
-    // The next cron invocation (15 min later) will retry automatically.
     if (error?.name === 'TimeoutError' || error?.message?.includes('timeout')) {
       console.warn(
-        `[CRON WORKER] Backend timeout after ${elapsed}ms — Render may be cold-starting. Next wake in 15 min.`
+        `[CRON WORKER] Backend timeout after ${elapsed}ms — next scheduled wake will retry.`
       );
     } else {
       console.error(`[CRON WORKER] Unexpected error after ${elapsed}ms:`, error?.message);

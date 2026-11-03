@@ -1,4 +1,4 @@
-﻿import crypto from 'crypto';
+import crypto from 'crypto';
 import { getDb } from '../db/client.js';
 
 export interface DeduplicationOptions {
@@ -11,11 +11,36 @@ export interface DeduplicationOptions {
 }
 
 export class DeduplicationEngine {
+  /**
+   * Recursively canonicalizes an object by sorting keys and stripping volatile runtime timestamps.
+   */
+  public static canonicalizeObject(obj: any): any {
+    if (obj === null || typeof obj !== 'object') {
+      return obj;
+    }
+    if (Array.isArray(obj)) {
+      return obj.map(item => DeduplicationEngine.canonicalizeObject(item));
+    }
+    const volatileKeys = new Set([
+      'timestamp', 'retrievedAt', 'updatedAt', 'createdAt',
+      'taskId', 'decisionId', 'auditTimestamp', 'executionTimeMs'
+    ]);
+    const sortedKeys = Object.keys(obj)
+      .filter(k => !volatileKeys.has(k))
+      .sort();
+    const sortedObj: Record<string, any> = {};
+    for (const key of sortedKeys) {
+      sortedObj[key] = DeduplicationEngine.canonicalizeObject(obj[key]);
+    }
+    return sortedObj;
+  }
+
   public static generateFingerprint(options: DeduplicationOptions): string {
+    const canonicalContext = DeduplicationEngine.canonicalizeObject(options.context || {});
     const raw = JSON.stringify({
       agentId: options.agentId,
       prompt: options.prompt.trim().toLowerCase(),
-      context: options.context,
+      context: canonicalContext,
       modelVersion: options.modelVersion,
       strategyVersion: options.strategyVersion || 1
     });

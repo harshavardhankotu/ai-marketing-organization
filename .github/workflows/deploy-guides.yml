@@ -38,13 +38,16 @@ jobs:
       - name: Check Firebase Deployment Credentials
         id: check-firebase
         run: |
-          if [ "$HAS_KEY" = "true" ]; then
+          if [ "${{ steps.build-guides.outputs.skipped }}" = "true" ]; then
+            echo "can_deploy=false" >> "$GITHUB_OUTPUT"
+            echo "No published guides to deploy; skipping Firebase deployment."
+          elif [ "$HAS_KEY" = "true" ]; then
             echo "can_deploy=true" >> "$GITHUB_OUTPUT"
           else
             echo "can_deploy=false" >> "$GITHUB_OUTPUT"
-            if [ "${{ steps.build-guides.outputs.skipped }}" != "true" ]; then
-              echo "::notice::deploy skipped: key missing"
-            fi
+            echo "::notice::deploy skipped: key missing"
+            echo "::error::BLOCKED: FIREBASE_SERVICE_ACCOUNT is missing but published guides exist to deploy."
+            exit 1
           fi
         env:
           HAS_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT != '' }}
@@ -56,4 +59,11 @@ jobs:
           firebaseServiceAccount: '${{ secrets.FIREBASE_SERVICE_ACCOUNT }}'
           channelId: live
           projectId: gen-lang-client-0916255372
+        if: steps.build-guides.outputs.skipped != 'true' && steps.check-firebase.outputs.can_deploy == 'true'
+
+      - name: Post-Deploy Smoke Test
+        run: |
+          node scripts/post-deploy-smoke-test.mjs
+        env:
+          PUBLIC_SITE_URL: 'https://gen-lang-client-0916255372.web.app'
         if: steps.build-guides.outputs.skipped != 'true' && steps.check-firebase.outputs.can_deploy == 'true'

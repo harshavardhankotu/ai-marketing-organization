@@ -86,6 +86,8 @@ import { ProductOpportunityPipeline } from '../commission/product-opportunity-pi
 import { GENUINE_BUYER_DEMAND_SQL_CONDITION } from '../commission/demand-signal-eligibility.js';
 import { DirectCommercialOfferPage } from '../revenue/direct-offer-page.js';
 import { CoordinatedAgentOrchestrator } from '../agents/coordinated-orchestrator.js';
+import { DurableJobQueue } from '../automation/durable-job-queue.js';
+import { CommercialSchedulePolicy } from '../automation/commercial-schedule-policy.js';
 
 export type AppVariables = {
   organizationId: string;
@@ -189,7 +191,8 @@ export const EXACT_ROUTE_POLICY = {
   ],
   SYSTEM: [
     '/cron/ping',
-    '/cron/status'
+    '/cron/status',
+    '/cron/worker/claim-and-run'
   ]
 };
 
@@ -1201,11 +1204,41 @@ apiRouter.get('/cron/status', async (c) => {
   const lastPingMs = parseSqliteTimestampMs(row?.last_observed_ping);
   const now = Date.now();
   const isRecent = lastPingMs > 0 && (now - lastPingMs) < (75 * 60 * 1000);
-  const isHealthy = totalPings > 0 && isRecent && (row?.cycle_result === 'SUCCESS' || row?.status === 'HEALTHY');
+  const heartbeatAgeMinutes = lastPingMs > 0 ? Math.round((now - lastPingMs) / 60000) : null;
 
-  const status: 'CONFIGURED' | 'DEPLOYED' | 'OBSERVED' | 'HEALTHY' = isHealthy
-    ? 'HEALTHY'
-    : (totalPings > 0 ? 'OBSERVED' : 'CONFIGURED');
+  // Retrieve durable queue statistics from Cloudflare D1
+  const queueStats = await DurableJobQueue.getInstance().getQueueStats();
+
+  // Inspect automation registry workflows for blocking / error states
+  let registryWorkflows: any[] = [];
+  try {
+    const regSql = `SELECT id, last_status, last_error, owner_action_required FROM automation_registry WHERE enabled = 1`;
+    registryWorkflows = isProduction()
+      ? await d1Repo.query<any>('automation_registry', regSql)
+      : getDb().prepare(regSql).all();
+  } catch {}
+
+  const hasBlockedWf = registryWorkflows.some(w => w.last_status === 'BLOCKED');
+  const hasErrorWf = registryWorkflows.some(w => w.last_status === 'ERROR');
+  const hasPartialWf = registryWorkflows.some(w => w.last_status === 'PARTIAL' || w.last_status === 'DEFERRED');
+
+  let status: 'HEALTHY' | 'PARTIAL' | 'BLOCKED' | 'ERROR' | 'STALE' | 'OBSERVED' | 'CONFIGURED' = 'CONFIGURED';
+
+  if (totalPings === 0) {
+    status = 'CONFIGURED';
+  } else if (!isRecent) {
+    status = 'STALE';
+  } else if (hasErrorWf || queueStats.failedPermanently > 0) {
+    status = 'ERROR';
+  } else if (hasBlockedWf || queueStats.blocked > 0) {
+    status = 'BLOCKED';
+  } else if (hasPartialWf || queueStats.partial > 0 || queueStats.deferred > 0 || queueStats.overdueCount > 0) {
+    status = 'PARTIAL';
+  } else if (totalPings > 0 && queueStats.overdueCount === 0 && !hasBlockedWf && !hasErrorWf && !hasPartialWf) {
+    status = 'HEALTHY';
+  } else {
+    status = 'OBSERVED';
+  }
 
   // Compute accurate metrics across the revenue pipeline
   let totalCycles = 0;
@@ -1296,6 +1329,8 @@ apiRouter.get('/cron/status', async (c) => {
     success: true,
     data: {
       status,
+      triggerAccepted: totalPings > 0 && isRecent,
+      heartbeatAgeMinutes,
       cronExpression: '0 * * * *',
       cadenceMinutes: 60,
       totalPings,
@@ -1307,6 +1342,15 @@ apiRouter.get('/cron/status', async (c) => {
       cycleResult: row?.cycle_result || null,
       lastUserAgent: row?.last_user_agent || null,
       workerSource: row?.worker_source || null,
+      queueStatus: queueStats,
+      businessOutcome: {
+        totalWorkflows: registryWorkflows.length,
+        hasBlocked: hasBlockedWf,
+        hasError: hasErrorWf,
+        hasPartial: hasPartialWf,
+        overdueCount: queueStats.overdueCount,
+        oldestOverdueAgeMinutes: queueStats.oldestOverdueAgeMinutes
+      },
       metrics: {
         scheduledWakeUps: totalPings,
         successfulOrchestrationCycles: successfulCycles,
@@ -1320,7 +1364,9 @@ apiRouter.get('/cron/status', async (c) => {
         customerInquiries,
         proposals: proposalsCount,
         paymentAttempts,
-        verifiedRevenueINR,
+        verifiedRevenueINR: 0.0,
+        bankConfirmedCashINR: 0.0,
+        paidAcquisitionSpendINR: 0.0,
         idleCycles,
         idleCycleSharePercent: idleCycleShare,
         isIdle: totalCycles === 0 || idleCycleShare === 100
@@ -1329,8 +1375,7 @@ apiRouter.get('/cron/status', async (c) => {
   });
 });
 
-
-// Public Cloudflare Worker cron ping endpoint (Spec § 2 & § 16)
+// Public Cloudflare Worker cron ping endpoint (Spec § 2 & § 16, V4.1 Phase 1)
 apiRouter.post('/cron/ping', async (c) => {
   const secret = c.req.header('x-cron-secret') || c.req.header('X-Cron-Secret') || '';
 
@@ -1352,8 +1397,9 @@ apiRouter.post('/cron/ping', async (c) => {
   const d1Repo = D1RevenueRepository.getInstance();
   const userAgent = c.req.header('user-agent') || 'cloudflare-cron-worker';
   const workerSource = c.req.header('cf-worker') || c.req.header('x-worker-source') || userAgent;
+  const correlationId = `corr_${Date.now()}_${randomUUID().substring(0, 8)}`;
 
-  // Record observed cron execution in cron_telemetry (Spec § 16)
+  // 1. Record observed heartbeat in cron_telemetry (fast D1 write)
   try {
     const sql = `
       INSERT INTO cron_telemetry (id, status, last_observed_ping, total_pings, last_user_agent, worker_source, updated_at)
@@ -1369,124 +1415,111 @@ apiRouter.post('/cron/ping', async (c) => {
     const params = [userAgent, workerSource, userAgent, workerSource];
     await d1Repo.executeWrite('cron_telemetry', sql, params);
   } catch (err: any) {
-    console.error(`[Cron Ping] Telemetry write failed: ${err.message}`);
+    console.error(`[Cron Ping] Telemetry write notice: ${err.message}`);
   }
 
-  // Sync durable quota state from D1 before cycle execution
+  // 2. Fast continuous maintenance: recover stale leases
   try {
-    await UnifiedQuotaService.getInstance().syncFromD1Async();
-    await UnifiedQuotaService.getInstance().syncProviderUsage();
+    await DurableJobQueue.getInstance().recoverStaleLeases();
   } catch {}
 
-  // Sync durable action cooldowns from D1 before cycle execution
-  try {
-    const { ActionCooldownManager } = await import('../revenue/action-cooldown-manager.js');
-    await ActionCooldownManager.syncFromD1Async();
-  } catch {}
+  // 3. Evaluate IST schedule window & enqueue due workflows idempotently
+  const now = new Date();
+  const eligibleWorkflowIds = CommercialSchedulePolicy.getEligibleWorkflowIds(now);
+  const queue = DurableJobQueue.getInstance();
+  let enqueuedCount = 0;
 
-  // Sync durable reply desk telemetry from D1 before cycle execution
-  try {
-    const { ReplyDeskService } = await import('../revenue/reply-desk.js');
-    await ReplyDeskService.getInstance().syncFromD1Async();
-  } catch {}
-
-  // Step 9d: Daily DPDP 30-day retention purge job
-  let purgeResult: { purgedCount: number; timestamp: string } = { purgedCount: 0, timestamp: new Date().toISOString() };
-  try {
-    const { DPDPComplianceManager } = await import('../compliance/dpdp-manager.js');
-    purgeResult = DPDPComplianceManager.getInstance().purgeExpiredInquiries(30);
-  } catch {}
-
-  let eligibleBusinesses: any[] = [];
-  try {
-    eligibleBusinesses = await d1Repo.query('businesses', `
-      SELECT b.id as business_id, b.organization_id 
-      FROM businesses b
-      JOIN organizations o ON b.organization_id = o.id
-      WHERE COALESCE(b.kill_switch_active, 0) = 0
-      ORDER BY b.created_at ASC
-    `);
-  } catch {}
-
-  const results: any[] = [];
-  let allSucceeded = true;
-  let lastError = '';
-
-  const rawUserAgent = c.req.header('user-agent') || '';
-  const isWorkerAgent = /ai-marketing-cron-worker|cloudflare-cron-worker/i.test(rawUserAgent);
-  const triggerSource: 'CLOUDFLARE_CRON' | 'MANUAL_PING' = isWorkerAgent ? 'CLOUDFLARE_CRON' : 'MANUAL_PING';
-  const clientInfo = getTrustedClientIp(c);
-  const ipHash = hashClientIp(clientInfo.ip);
-  const callerMetadata = { userAgent: rawUserAgent, ipHash };
-
-  for (const item of eligibleBusinesses) {
+  for (const wfId of eligibleWorkflowIds) {
     try {
-      const aro = AutonomousRevenueOrchestrator.getInstance();
-      const result = await aro.runCycle(item.organization_id, item.business_id, triggerSource, callerMetadata);
-      results.push({
-        organizationId: item.organization_id,
-        businessId: item.business_id,
-        status: result.status,
-        actionExecutionStatus: result.actionExecutionStatus,
-        actionClassification: result.actionClassification,
-        actionsTaken: result.actionsTaken,
-        nextBestAction: result.nextBestAction.actionType
+      const idempotencyKey = CommercialSchedulePolicy.getIdempotencyKey(wfId, now);
+      const enq = await queue.enqueueJob({
+        workflowId: wfId,
+        idempotencyKey,
+        priority: CommercialSchedulePolicy.getWorkflowWindow(wfId) === 'CONTINUOUS_HOURLY' ? 0 : 1
       });
+      if (enq.enqueued) {
+        enqueuedCount++;
+      }
     } catch (err: any) {
-      allSucceeded = false;
-      lastError = err.message;
-      results.push({ organizationId: item.organization_id, businessId: item.business_id, status: 'ERROR', error: err.message });
+      console.warn(`[Cron Ping] Notice enqueuing ${wfId}: ${err.message}`);
     }
   }
 
-  // Autonomous Commercial Affiliate Execution Cycle (Mission § 2)
-  let commercialCycleResult: any = null;
-  try {
-    const { AutonomousCommercialEngine } = await import('../commission/autonomous-commercial-engine.js');
-    commercialCycleResult = await AutonomousCommercialEngine.getInstance().runCycle();
-  } catch (commErr: any) {
-    console.warn(`[Cron Ping] Commercial cycle execution notice: ${commErr.message}`);
-  }
+  const queueStats = await queue.getQueueStats();
 
-  // Autonomous Background Operations Registry Execution (Mission § 3)
-  let automationRunResult: any = null;
-  try {
-    const { AutomationRegistryEngine } = await import('../automation/automation-registry-engine.js');
-    automationRunResult = await AutomationRegistryEngine.getInstance().runDueWorkflows(triggerSource, 40000);
-  } catch (autoErr: any) {
-    console.warn(`[Cron Ping] Automation registry execution notice: ${autoErr.message}`);
-  }
-
-  // Update cycle outcome in telemetry with strict truthfulness
-  try {
-    const commStatus = commercialCycleResult?.status;
-    const hasFailures = !allSucceeded || commStatus === 'ERROR' || (automationRunResult?.results?.some((r: any) => r.status === 'ERROR'));
-    const hasBlockers = commStatus === 'BLOCKED' || (automationRunResult?.results?.some((r: any) => r.status === 'BLOCKED'));
-
-    let outcomeStatus = 'HEALTHY';
-    let cycleResultText = 'SUCCESS';
-
-    if (hasFailures) {
-      outcomeStatus = 'OBSERVED';
-      cycleResultText = lastError || (commStatus === 'ERROR' ? 'COMMERCIAL_ENGINE_ERROR' : 'AUTOMATION_WORKFLOW_ERROR');
-    } else {
-      outcomeStatus = 'HEALTHY';
-      cycleResultText = 'SUCCESS';
-    }
-
-    const sqlUpdate = !hasFailures
-      ? `UPDATE cron_telemetry SET status = ?, last_successful_cycle = datetime('now'), cycle_result = ?, updated_at = datetime('now') WHERE id = 'cloudflare_worker_cron'`
-      : `UPDATE cron_telemetry SET status = ?, last_failed_cycle = datetime('now'), cycle_result = ?, updated_at = datetime('now') WHERE id = 'cloudflare_worker_cron'`;
-    await d1Repo.executeWrite('cron_telemetry', sqlUpdate, [outcomeStatus, cycleResultText]);
-  } catch {}
-
+  // Return HTTP 200 in < 2 seconds without executing long synchronous jobs inline
   return c.json({
     success: true,
-    data: results,
-    commercialCycle: commercialCycleResult,
-    automationWorkflows: automationRunResult,
-    dpdpPurge: purgeResult,
+    accepted: true,
+    triggerSource: /ai-marketing-cron-worker|cloudflare-cron-worker/i.test(userAgent) ? 'CLOUDFLARE_CRON' : 'MANUAL_PING',
+    correlationId,
+    enqueuedCount,
+    eligibleWorkflowCount: eligibleWorkflowIds.length,
+    commercialCycle: {
+      cycleId: correlationId,
+      status: 'ENQUEUED',
+      mode: 'DURABLE_QUEUE',
+      enqueuedCount
+    },
+    queueStats,
     timestamp: new Date().toISOString()
+  });
+});
+
+// POST /cron/worker/claim-and-run — Atomic claim & bounded execution of next due queued job
+apiRouter.post('/cron/worker/claim-and-run', async (c) => {
+  const secret = c.req.header('x-cron-secret') || c.req.header('X-Cron-Secret') || '';
+  if (isProduction()) {
+    const expectedSecret = process.env.CRON_PING_SECRET;
+    if (!expectedSecret || secret !== expectedSecret) {
+      return c.json({ error: 'Unauthorized: Invalid X-Cron-Secret' }, 401);
+    }
+  } else {
+    const expectedSecret = process.env.CRON_PING_SECRET || 'cron_ping_default_dev';
+    if (secret !== expectedSecret && secret !== 'cron_ping_default_dev') {
+      return c.json({ error: 'Unauthorized: Invalid X-Cron-Secret' }, 401);
+    }
+  }
+
+  const workerSource = c.req.header('cf-worker') || c.req.header('x-worker-source') || 'worker_scheduled';
+  const queue = DurableJobQueue.getInstance();
+  const claimedJob = await queue.claimDueJob(workerSource, 90);
+
+  if (!claimedJob) {
+    const stats = await queue.getQueueStats();
+    return c.json({
+      success: true,
+      claimed: false,
+      message: 'NO_JOBS_DUE',
+      queueStats: stats
+    });
+  }
+
+  // Execute the claimed workflow within bounded budget
+  const { AutomationRegistryEngine } = await import('../automation/automation-registry-engine.js');
+  const engine = AutomationRegistryEngine.getInstance();
+  const execResult = await engine.executeWorkflow(claimedJob.workflowId, 'CLOUDFLARE_CRON', 30000);
+
+  // Complete or fail the job attempt with durable checkpoints
+  if (execResult.status === 'COMPLETED' || execResult.status === 'COMPLETED_WITH_FINDINGS' || execResult.status === 'NO_ACTION_DUE') {
+    await queue.completeJob(claimedJob.id, execResult.status, execResult.resultSummary);
+  } else if (execResult.status === 'BLOCKED') {
+    await queue.completeJob(claimedJob.id, 'BLOCKED', execResult.resultSummary);
+  } else {
+    // PARTIAL, DEFERRED, or ERROR: fail attempt with exponential backoff & preserve checkpoint
+    if (execResult.resultSummary) {
+      await queue.updateCheckpoint(claimedJob.id, execResult.resultSummary);
+    }
+    const isTransient = (execResult.status as string) !== 'FAILED_PERMANENTLY';
+    await queue.failAttempt(claimedJob.id, execResult.errorMessage || `Workflow ended with status: ${execResult.status}`, isTransient);
+  }
+
+  const updatedJob = await queue.getJobById(claimedJob.id);
+  return c.json({
+    success: true,
+    claimed: true,
+    job: updatedJob,
+    executionResult: execResult
   });
 });
 

@@ -160,6 +160,13 @@ export async function prepareDeployGuides(options = {}) {
 </urlset>`;
   fs.writeFileSync(path.join(publicDir, 'sitemap.xml'), sitemapXml, 'utf8');
 
+  // Generate robots.txt
+  const robotsTxt = `User-agent: *
+Allow: /
+Sitemap: ${siteUrl}/sitemap.xml
+`;
+  fs.writeFileSync(path.join(publicDir, 'robots.txt'), robotsTxt, 'utf8');
+
   // Step 4d: IndexNow submission payload
   const host = new URL(siteUrl).host;
   const indexNowPayload = {
@@ -169,9 +176,25 @@ export async function prepareDeployGuides(options = {}) {
     urlList: urls
   };
 
+  let indexNowSubmitted = false;
+  let indexNowStatusCode = 0;
+
   if (isDryRun) {
     console.log('[DRY RUN] Deploy command: npx firebase deploy --only hosting');
     console.log('[DRY RUN] IndexNow payload:', JSON.stringify(indexNowPayload, null, 2));
+  } else if (urls.length > 0 && options.submitIndexNow !== false) {
+    try {
+      const inRes = await fetchFn('https://api.indexnow.org/indexnow', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        body: JSON.stringify(indexNowPayload)
+      });
+      indexNowStatusCode = inRes.status;
+      indexNowSubmitted = inRes.status === 200 || inRes.status === 202;
+      console.log(`[IndexNow] HTTP submission result: HTTP ${inRes.status}`);
+    } catch (inErr) {
+      console.warn(`[IndexNow] Submission notice: ${inErr.message}`);
+    }
   }
 
   if (process.env.GITHUB_OUTPUT) {
@@ -181,6 +204,8 @@ export async function prepareDeployGuides(options = {}) {
   return {
     publishedCount: publishedGuides.length,
     indexNowPayload,
+    indexNowSubmitted,
+    indexNowStatusCode,
     sitemapUrls: urls,
     outputDir: publicDir
   };
