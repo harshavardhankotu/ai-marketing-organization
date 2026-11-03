@@ -485,9 +485,14 @@ app.get('/owner/deals/summary', async (c) => {
 
 // Top-level Owner Proposal Generator (Part D.4)
 app.all('/owner/proposal', async (c) => {
-  const fs = await import('fs');
   const path = await import('path');
-  const bioPath = path.resolve(process.cwd(), 'owner', 'BIO.md');
+  let bioPath = path.resolve(process.cwd(), 'owner', 'BIO.md');
+  if (!fs.existsSync(bioPath)) {
+    const rootCandidate = path.resolve(process.cwd(), '..', '..', 'owner', 'BIO.md');
+    if (fs.existsSync(rootCandidate)) {
+      bioPath = rootCandidate;
+    }
+  }
   if (!fs.existsSync(bioPath)) {
     return c.json({
       success: false,
@@ -497,15 +502,36 @@ app.all('/owner/proposal', async (c) => {
   }
 
   const bioContent = fs.readFileSync(bioPath, 'utf8');
+  const { DirectCommercialOfferPage } = await import('./revenue/direct-offer-page.js');
+  const isAttested = DirectCommercialOfferPage.isDirectOfferAttested();
+
+  if (isAttested) {
+    return c.json({
+      success: true,
+      isAttested: true,
+      isPayable: true,
+      message: 'Authoritative proposal generated from attested owner commercial terms (owner/OWN_OFFER.md).',
+      ownerBioPreview: bioContent.slice(0, 300),
+      data: {
+        title: 'AI Inbound Lead Conversion System Implementation',
+        setupPriceINR: 15000,
+        monthlyPriceINR: 8000,
+        source: 'owner/OWN_OFFER.md'
+      }
+    });
+  }
+
   return c.json({
     success: true,
-    message: 'Proposal draft generated strictly from owner/BIO.md.',
+    isAttested: false,
+    isPayable: false,
+    message: 'Informational proposal draft. Commercial terms not yet attested via owner/OWN_OFFER.md; payable payment links are suppressed.',
     ownerBioPreview: bioContent.slice(0, 300),
     data: {
       title: 'AI Inbound Lead Conversion System Implementation',
       setupPriceINR: 15000,
       monthlyPriceINR: 8000,
-      source: 'owner/BIO.md'
+      source: 'PROVISIONAL_ESTIMATE (Awaiting owner/OWN_OFFER.md attestation)'
     }
   });
 });

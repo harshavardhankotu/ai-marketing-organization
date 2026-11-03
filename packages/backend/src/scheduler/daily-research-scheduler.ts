@@ -1,5 +1,7 @@
 import { randomUUID } from 'crypto';
 import { getDb } from '../db/client.js';
+import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
+import { isProduction } from '../config/env.js';
 import { MarketResearchPipeline } from '../research/market-research-pipeline.js';
 import { UniversalLockManager } from '../quota/universal-lock-manager.js';
 
@@ -21,6 +23,7 @@ export class DailyMarketResearchScheduler {
   private static instance: DailyMarketResearchScheduler;
   private pipeline = new MarketResearchPipeline();
   private lockManager = UniversalLockManager.getInstance();
+  private d1Repo = D1RevenueRepository.getInstance();
   private timer: NodeJS.Timeout | null = null;
   private isRunning = false;
   private lastReport: DailyResearchReport | null = null;
@@ -42,10 +45,22 @@ export class DailyMarketResearchScheduler {
       throw new Error('Daily market research job is already in progress.');
     }
 
+    const { checkB2BResearchBacklogGuard } = await import('../revenue/b2b-research-backlog-guard.js');
+    const guard = await checkB2BResearchBacklogGuard(this.d1Repo);
+    if (!guard.allowed) {
+      return {
+        timestamp: new Date().toISOString(),
+        totalBusinessesProcessed: 0,
+        results: [],
+        universalLockStatus: this.lockManager.getStatus()
+      };
+    }
+
     this.isRunning = true;
-    const db = getDb();
     const now = new Date().toISOString();
-    const businesses = db.prepare('SELECT id, organization_id, name, vertical_name, city FROM businesses').all() as any[];
+    const businesses = isProduction()
+      ? await this.d1Repo.query<any>('businesses', 'SELECT id, organization_id, name, vertical_name, city FROM businesses')
+      : (getDb().prepare('SELECT id, organization_id, name, vertical_name, city FROM businesses').all() as any[]);
 
     const results: DailyResearchReport['results'] = [];
 
@@ -86,10 +101,12 @@ export class DailyMarketResearchScheduler {
               externalOutboundProhibited: true
             });
 
-            const campRow = db.prepare("SELECT id FROM campaigns WHERE business_id = ? LIMIT 1").get(biz.id) as any;
+            const campRow = isProduction()
+              ? await this.d1Repo.queryOne<any>('campaigns', 'SELECT id FROM campaigns WHERE business_id = ? LIMIT 1', [biz.id])
+              : (getDb().prepare("SELECT id FROM campaigns WHERE business_id = ? LIMIT 1").get(biz.id) as any);
             const campaignId = campRow?.id || 'camp_organic_seo';
 
-            db.prepare(`
+            const insertContentSql = `
               INSERT INTO content_assets (
                 id, organization_id, campaign_id, agent_id, title, channel,
                 content_type, language, content, call_to_action, target_funnel_stage,
@@ -98,23 +115,30 @@ export class DailyMarketResearchScheduler {
               ) VALUES (?, ?, ?, 'research_strategist', ?, 'GOOGLE_BUSINESS_PROFILE',
                 'SOCIAL_POST', 'en', ?, 'Review findings in dashboard', 'TOP_OF_FUNNEL',
                 1, 'DRAFT', 0.95, 0.95, '[]', datetime('now'), datetime('now'))
-            `).run(
+            `;
+            const contentParams = [
               draftId,
               biz.organization_id,
               campaignId,
               draftTitle,
               `Local market insight: ${topDemand}. Draft prepared for business owner review.`
-            );
+            ];
+            if (isProduction()) {
+              await this.d1Repo.executeWrite('content_assets', insertContentSql, contentParams);
+            } else {
+              getDb().prepare(insertContentSql).run(...contentParams);
+            }
             draftsCreated = 1;
           }
 
           // 3. Log Informational Execution to Immutable Audit Log
-          db.prepare(`
+          const auditSql = `
             INSERT INTO audit_logs (
               id, organization_id, entity_type, entity_id,
               actor_id, actor_type, action, details_json, created_at
             ) VALUES (?, ?, 'BUSINESS', ?, 'daily_research_scheduler', 'SYSTEM', 'SCHEDULED_DAILY_RESEARCH_REFRESH', ?, ?)
-          `).run(
+          `;
+          const auditParams = [
             `audit_${randomUUID()}`,
             biz.organization_id,
             biz.id,
@@ -127,7 +151,12 @@ export class DailyMarketResearchScheduler {
               outboundCommunication: 'NONE'
             }),
             now
-          );
+          ];
+          if (isProduction()) {
+            await this.d1Repo.executeWrite('audit_logs', auditSql, auditParams);
+          } else {
+            getDb().prepare(auditSql).run(...auditParams);
+          }
 
           results.push({
             businessId: biz.id,
@@ -138,12 +167,13 @@ export class DailyMarketResearchScheduler {
             error: runRes.error
           });
         } catch (err: any) {
-          db.prepare(`
+          const failAuditSql = `
             INSERT INTO audit_logs (
               id, organization_id, entity_type, entity_id,
               actor_id, actor_type, action, details_json, created_at
             ) VALUES (?, ?, 'BUSINESS', ?, 'daily_research_scheduler', 'SYSTEM', 'SCHEDULED_DAILY_RESEARCH_REFRESH', ?, ?)
-          `).run(
+          `;
+          const failAuditParams = [
             `audit_${randomUUID()}`,
             biz.organization_id,
             biz.id,
@@ -157,7 +187,12 @@ export class DailyMarketResearchScheduler {
               outboundCommunication: 'NONE'
             }),
             now
-          );
+          ];
+          if (isProduction()) {
+            await this.d1Repo.executeWrite('audit_logs', failAuditSql, failAuditParams);
+          } else {
+            getDb().prepare(failAuditSql).run(...failAuditParams);
+          }
 
           results.push({
             businessId: biz.id,

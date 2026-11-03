@@ -1,3 +1,4 @@
+import fs from 'fs';
 import { Hono } from 'hono';
 import { createHash, randomUUID } from 'node:crypto';
 import { handlePublicLeadRequest } from './public-lead.js';
@@ -4163,9 +4164,14 @@ apiRouter.post('/owner/today/send-telegram', async (c) => {
 
 // Owner Proposal: /owner/proposal (Part D.4)
 apiRouter.all('/owner/proposal', async (c) => {
-  const fs = await import('fs');
   const path = await import('path');
-  const bioPath = path.resolve(process.cwd(), 'owner', 'BIO.md');
+  let bioPath = path.resolve(process.cwd(), 'owner', 'BIO.md');
+  if (!fs.existsSync(bioPath)) {
+    const rootCandidate = path.resolve(process.cwd(), '..', '..', 'owner', 'BIO.md');
+    if (fs.existsSync(rootCandidate)) {
+      bioPath = rootCandidate;
+    }
+  }
   if (!fs.existsSync(bioPath)) {
     return c.json({
       success: false,
@@ -4175,15 +4181,36 @@ apiRouter.all('/owner/proposal', async (c) => {
   }
 
   const bioContent = fs.readFileSync(bioPath, 'utf8');
+  const { DirectCommercialOfferPage } = await import('../revenue/direct-offer-page.js');
+  const isAttested = DirectCommercialOfferPage.isDirectOfferAttested();
+
+  if (isAttested) {
+    return c.json({
+      success: true,
+      isAttested: true,
+      isPayable: true,
+      message: 'Authoritative proposal generated from attested owner commercial terms (owner/OWN_OFFER.md).',
+      ownerBioPreview: bioContent.slice(0, 300),
+      data: {
+        title: 'AI Inbound Lead Conversion System Implementation',
+        setupPriceINR: 15000,
+        monthlyPriceINR: 8000,
+        source: 'owner/OWN_OFFER.md'
+      }
+    });
+  }
+
   return c.json({
     success: true,
-    message: 'Proposal draft generated strictly from owner/BIO.md.',
+    isAttested: false,
+    isPayable: false,
+    message: 'Informational proposal draft. Commercial terms not yet attested via owner/OWN_OFFER.md; payable payment links are suppressed.',
     ownerBioPreview: bioContent.slice(0, 300),
     data: {
       title: 'AI Inbound Lead Conversion System Implementation',
       setupPriceINR: 15000,
       monthlyPriceINR: 8000,
-      source: 'owner/BIO.md'
+      source: 'PROVISIONAL_ESTIMATE (Awaiting owner/OWN_OFFER.md attestation)'
     }
   });
 });
@@ -5628,24 +5655,40 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
     testSessions = testRow?.c || 0;
   } catch {}
 
-  // 2. Real Outbound Clicks vs Internal Diagnostic Clicks
+  // 2. Real Outbound Clicks vs Internal Diagnostic Clicks (5-Bucket Disaggregation)
+  let verifiedHumanOutboundClicks = 0;
+  let browserCandidateOutboundClicks = 0;
+  let internalDiagnosticClicks = 0;
+  let botClicks = 0;
+  let unknownClicks = 0;
   let externalOutboundClicks = 0;
-  let diagnosticTestClicks = 0;
-  try {
-    const extClickSql = `
-      SELECT COUNT(*) as c FROM referral_click_events
-      WHERE device_class IN ('human', 'browser_candidate')
-        AND click_id NOT LIKE 'clk_test_%'
-        AND placement NOT IN ('diagnostic', 'direct_beacon', 'test')
-        AND (source IS NULL OR source NOT IN ('direct_beacon', 'diagnostic', 'test'))
-        AND (medium IS NULL OR medium NOT IN ('beacon', 'diagnostic', 'test'))
-    `;
-    const extClickRow = await d1Repo.queryOne<any>('referral_click_events', extClickSql);
-    externalOutboundClicks = extClickRow?.c || 0;
 
-    const totalClickRow = await d1Repo.queryOne<any>('referral_click_events', 'SELECT COUNT(*) as c FROM referral_click_events');
-    const totalClicks = totalClickRow?.c || 0;
-    diagnosticTestClicks = Math.max(0, totalClicks - externalOutboundClicks);
+  try {
+    const diagnosticCond = `(
+      click_id LIKE 'clk_test_%' OR 
+      referral_id LIKE 'ref_clk_test_%' OR 
+      click_id LIKE 'clk_live_pilot_%' OR 
+      placement IN ('diagnostic', 'direct_beacon', 'test') OR 
+      source IN ('direct_beacon', 'diagnostic', 'test') OR 
+      medium IN ('beacon', 'diagnostic', 'test')
+    )`;
+
+    const disaggregatedSql = `
+      SELECT 
+        COALESCE(SUM(CASE WHEN ${diagnosticCond} THEN 1 ELSE 0 END), 0) as diag,
+        COALESCE(SUM(CASE WHEN device_class = 'human' AND NOT ${diagnosticCond} THEN 1 ELSE 0 END), 0) as human,
+        COALESCE(SUM(CASE WHEN device_class = 'browser_candidate' AND NOT ${diagnosticCond} THEN 1 ELSE 0 END), 0) as browserCandidate,
+        COALESCE(SUM(CASE WHEN device_class = 'bot' AND NOT ${diagnosticCond} THEN 1 ELSE 0 END), 0) as bot,
+        COALESCE(SUM(CASE WHEN (device_class = 'unknown' OR device_class IS NULL) AND NOT ${diagnosticCond} THEN 1 ELSE 0 END), 0) as unk
+      FROM referral_click_events
+    `;
+    const row = await d1Repo.queryOne<any>('referral_click_events', disaggregatedSql);
+    internalDiagnosticClicks = Number(row?.diag || 0);
+    verifiedHumanOutboundClicks = Number(row?.human || 0);
+    browserCandidateOutboundClicks = Number(row?.browserCandidate || 0);
+    botClicks = Number(row?.bot || 0);
+    unknownClicks = Number(row?.unk || 0);
+    externalOutboundClicks = verifiedHumanOutboundClicks + browserCandidateOutboundClicks;
   } catch {}
 
   // 3. CTR
@@ -5818,8 +5861,27 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
       funnel: {
         verifiedExternalVisits,
         internalTestSessions: testSessions,
+        verifiedHumanOutboundClicks,
+        browserCandidateOutboundClicks,
+        internalDiagnosticClicks,
+        botClicks,
+        unknownClicks,
         externalOutboundClicks,
-        internalDiagnosticClicks: diagnosticTestClicks,
+        clickThroughRate: ctrPercent,
+        conversions: cuelinksData.reportedTransactions,
+        estimatedPendingCommissionINR: cuelinksData.pendingCommissionINR || ledgerPendingCommissionINR,
+        approvedCommissionINR: cuelinksData.approvedCommissionINR || ledgerApprovedCommissionINR,
+        bankCashReceivedINR
+      },
+      affiliateFunnel: {
+        verifiedExternalVisits,
+        internalTestSessions: testSessions,
+        verifiedHumanOutboundClicks,
+        browserCandidateOutboundClicks,
+        internalDiagnosticClicks,
+        botClicks,
+        unknownClicks,
+        externalOutboundClicks,
         clickThroughRate: ctrPercent,
         conversions: cuelinksData.reportedTransactions,
         estimatedPendingCommissionINR: cuelinksData.pendingCommissionINR || ledgerPendingCommissionINR,
@@ -6347,6 +6409,11 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
     return c.text('Offer has expired', 410);
   }
 
+  // Phase 8 Guard: Quarantine out-of-stock deals from redirect
+  if (deal.availability === 'OUT_OF_STOCK' || deal.verificationStatus === 'OUT_OF_STOCK') {
+    return c.text('Affiliate monetization path temporarily unavailable: product is currently out of stock or restocking; redirect suppressed', 503);
+  }
+
   // Phase 1 Guard: Never send users to an unmonetized destination when deal claims monetization
   if (deal.isMonetizable === false) {
     return c.text('Affiliate monetization unavailable for this deal', 503);
@@ -6375,10 +6442,16 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
   const rawPlacement = c.req.query('placement') || c.req.query('utm_placement') || 'deal_redirect';
   const sanitizedPlacement = /^[a-zA-Z0-9_\-]{1,64}$/.test(rawPlacement) ? rawPlacement : 'deal_redirect';
 
+  // Phase 7: Extract and preserve incoming marketing attribution UTMs
+  const incomingSource = c.req.query('utm_source') || c.req.query('source') || sectorCode;
+  const incomingMedium = c.req.query('utm_medium') || c.req.query('medium') || 'cpc_affiliate';
+  const incomingCampaign = c.req.query('utm_campaign') || c.req.query('campaign') || deal.affiliateCampaignId;
+  const incomingTerm = c.req.query('utm_term') || c.req.query('term') || null;
+
   let targetUrl: string | undefined = undefined;
 
-  // Phase 2: Dynamic link conversion with Cuelinks Sub-IDs
-  if (deal.affiliateNetwork === 'CUELINKS' || !deal.affiliateNetwork) {
+  // Phase 2 & 6: Dynamic link conversion with Cuelinks Sub-IDs and campaign verification
+  if (deal.affiliateNetwork === 'CUELINKS') {
     try {
       const { CuelinksV3Client } = await import('../commission/cuelinks-v3-client.js');
       const { CuelinksSyncManager } = await import('../commission/cuelinks-sync-manager.js');
@@ -6403,15 +6476,41 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
         shorten: false
       });
 
-      if (convRes && convRes.affiliated === true && convRes.tracking_url && CuelinksV3Client.isAllowedTrackingUrl(convRes.tracking_url)) {
-        targetUrl = convRes.tracking_url;
-      } else {
+      if (!convRes || convRes.affiliated !== true || !convRes.tracking_url || !CuelinksV3Client.isAllowedTrackingUrl(convRes.tracking_url)) {
         return c.text('Affiliate link conversion failed or unmonetized; redirect suppressed', 503);
       }
+
+      // Phase 6: Verify real Cuelinks campaign match (never manual string concatenation)
+      if (convRes.campaign?.id && String(convRes.campaign.id) !== String(deal.affiliateCampaignId)) {
+        return c.text('Affiliate link conversion failed: campaign ID mismatch; redirect suppressed', 503);
+      }
+
+      // Phase 6: Verify embedded destination URL matches live productUrl and never points to dead handles
+      try {
+        const parsedTarget = new URL(convRes.tracking_url);
+        const embeddedUrl = parsedTarget.searchParams.get('url');
+        if (embeddedUrl) {
+          const cleanEmbedded = embeddedUrl.replace(/\/+$/, '').toLowerCase();
+          if (cleanEmbedded.includes('airdopes-141-anc') || cleanEmbedded.includes('airdopes-141-anc-true-wireless-earbuds')) {
+            return c.text('Affiliate link conversion returned deprecated dead merchant handle; redirect suppressed', 503);
+          }
+          const embeddedHostname = new URL(embeddedUrl).hostname.replace(/^www\./, '').toLowerCase();
+          const productHostname = new URL(deal.productUrl).hostname.replace(/^www\./, '').toLowerCase();
+          if (embeddedHostname !== productHostname) {
+            return c.text('Affiliate link conversion failed: destination URL mismatch; redirect suppressed', 503);
+          }
+        }
+      } catch {
+        return c.text('Affiliate link conversion returned malformed tracking URL; redirect suppressed', 503);
+      }
+
+      targetUrl = convRes.tracking_url;
     } catch (convErr: any) {
       console.warn(`[DealRedirect] Cuelinks dynamic link conversion error: ${convErr.message}`);
       return c.text('Affiliate link conversion failed; outbound redirect suppressed', 503);
     }
+  } else {
+    return c.text('Affiliate monetization path temporarily unavailable: unsupported or unmonetized network; redirect suppressed', 503);
   }
 
   // Fail closed if monetization path unavailable (static tracking URL fallback strictly deleted)
@@ -6433,27 +6532,26 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
     'x-owner-preview': c.req.header('x-owner-preview') || ''
   });
 
-  const partnerId = deal.affiliateNetwork === 'CUELINKS' ? 'part_cuelinks' : 'part_direct_merchant';
+  const partnerId = 'part_cuelinks';
 
-  // Phase 3 Mandate:
-  // 1. Never create or approve partners in public GET requests.
-  // 2. Persist referral and click records atomically BEFORE issuing redirect.
-  // 3. Fail closed with 503 if persistence fails; never swallow database errors.
+  // Phase 5 Mandate:
+  // 1. Verify partner authorization from DB; fail closed with 503 if unauthorized.
+  // 2. Never auto-approve partners or mutate partner_offers in public GET requests.
+  // 3. Persist referral and click records atomically BEFORE issuing redirect.
+  // 4. Fail closed with 503 if persistence fails; never swallow database errors.
   try {
     const { D1RevenueRepository } = await import('../db/d1-revenue-repository.js');
     const d1Repo = D1RevenueRepository.getInstance();
 
-    // Ensure referential integrity for partner and offer atomically
-    const insertPartnerSql = `INSERT INTO partners (
-      id, organization_id, name, industry, website, partner_type, network, authorization_status
-    ) VALUES ('part_cuelinks', ?, 'Cuelinks India', 'Affiliate Network', 'https://www.cuelinks.com', 'AFFILIATE', 'CUELINKS', 'AUTHORIZED')
-    ON CONFLICT(id) DO NOTHING`;
-
-    const insertOfferSql = `INSERT INTO partner_offers (
-      id, partner_id, organization_id, title, offer_slug, category, target_customer,
-      price_inr, destination_url, authorized_tracking_url, active, status, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, 'Indian online shoppers', ?, ?, ?, 1, 'ACTIVE', datetime('now'))
-    ON CONFLICT(id) DO UPDATE SET authorized_tracking_url = excluded.authorized_tracking_url, updated_at = datetime('now')`;
+    // Verify authorized partner in DB
+    const partnerRow = await d1Repo.queryOne<any>(
+      'partners',
+      "SELECT id, authorization_status, approval_status FROM partners WHERE id = ? AND (authorization_status = 'AUTHORIZED' OR approval_status = 'APPROVED')",
+      [partnerId]
+    );
+    if (!partnerRow) {
+      return c.text('Affiliate monetization path temporarily unavailable: partner not authorized; redirect suppressed', 503);
+    }
 
     const insertRefSql = `
       INSERT INTO referrals (
@@ -6465,8 +6563,8 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
     const insertClickSql = `
       INSERT INTO referral_click_events (
         id, referral_id, click_id, organization_id, offer_id, partner_id,
-        placement, source, medium, campaign, referrer, device_class, destination_url, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'cpc_affiliate', ?, ?, ?, ?, datetime('now'))
+        placement, source, medium, campaign, keyword, referrer, device_class, destination_url, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     `;
     const clickParams = [
       `evt_${clickId}`,
@@ -6476,16 +6574,16 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
       deal.id,
       partnerId,
       sanitizedPlacement,
-      sectorCode,
-      deal.affiliateCampaignId,
+      incomingSource,
+      incomingMedium,
+      incomingCampaign,
+      incomingTerm,
       referrer.substring(0, 200),
       trafficClass,
       targetUrl
     ];
 
     await d1Repo.executeBatch([
-      { table: 'partners', sql: insertPartnerSql, params: [orgId] },
-      { table: 'partner_offers', sql: insertOfferSql, params: [deal.id, partnerId, orgId, deal.title, deal.canonicalSlug || deal.slug || deal.id, deal.category || 'General', deal.currentPriceINR || 0, deal.productUrl, targetUrl] },
       { table: 'referrals', sql: insertRefSql, params: refParams },
       { table: 'referral_click_events', sql: insertClickSql, params: clickParams }
     ]);

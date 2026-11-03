@@ -12,6 +12,7 @@ import { checkB2BResearchBacklogGuard } from '../../src/revenue/b2b-research-bac
 import { AutomationRegistryEngine } from '../../src/automation/automation-registry-engine.js';
 import { DurableJobQueue } from '../../src/automation/durable-job-queue.js';
 import { DiscoveredDealInput } from '../../src/commission/deal-types.js';
+import { getDb } from '../../src/db/client.js';
 
 describe('V5.1 — Revenue Integrity, Telemetry Reconciliation & First Buyer Readiness Tests', () => {
   let app: Hono;
@@ -268,12 +269,13 @@ describe('V5.1 — Revenue Integrity, Telemetry Reconciliation & First Buyer Rea
       // Mock D1 query responses simulating:
       // 0 human clicks, 3 diagnostic clicks
       vi.spyOn(d1Repo, 'queryOne').mockImplementation(async (table: string, sql: string) => {
-        if (sql.includes("device_class IN ('human', 'browser_candidate')")) {
-          // Genuine human click count query
-          return { c: 0 };
-        }
-        if (sql.includes('SELECT COUNT(*) as c FROM referral_click_events')) {
-          // Total clicks query
+        if (table === 'referral_click_events') {
+          if (sql.includes('diag') || sql.includes('browserCandidate')) {
+            return { diag: 3, human: 0, browserCandidate: 0, bot: 0, unk: 0 };
+          }
+          if (sql.includes("device_class IN ('human', 'browser_candidate')")) {
+            return { c: 0 };
+          }
           return { c: 3 };
         }
         if (table === 'visitor_sessions') {
@@ -288,6 +290,10 @@ describe('V5.1 — Revenue Integrity, Telemetry Reconciliation & First Buyer Rea
       expect(body.success).toBe(true);
       expect(body.data.funnel.externalOutboundClicks).toBe(0);
       expect(body.data.funnel.internalDiagnosticClicks).toBe(3);
+      expect(body.data.funnel.verifiedHumanOutboundClicks).toBe(0);
+      expect(body.data.funnel.browserCandidateOutboundClicks).toBe(0);
+      expect(body.data.funnel.botClicks).toBe(0);
+      expect(body.data.funnel.unknownClicks).toBe(0);
       expect(body.data.funnel.bankCashReceivedINR).toBe(0);
     });
   });
@@ -342,8 +348,15 @@ describe('V5.1 — Revenue Integrity, Telemetry Reconciliation & First Buyer Rea
   describe('7. Cron Telemetry Reconciliation & Cycle Semantics', () => {
     it('cron/status reconciles lastSuccessfulCycle with queue lastSuccessfulExecutionAt when older', async () => {
       try {
-        getDb().prepare("UPDATE automation_registry SET last_status = 'COMPLETED'").run();
+        getDb().prepare("UPDATE automation_registry SET last_status = 'COMPLETED' WHERE enabled = 1").run();
       } catch {}
+
+      vi.spyOn(d1Repo, 'query').mockImplementation(async (table: string) => {
+        if (table === 'automation_registry') {
+          return [];
+        }
+        return [];
+      });
 
       vi.spyOn(d1Repo, 'queryOne').mockImplementation(async (table: string, sql: string) => {
         if (table === 'cron_telemetry') {
