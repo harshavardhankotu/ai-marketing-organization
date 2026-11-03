@@ -1118,7 +1118,7 @@ export class AutonomousCommercialEngine {
         merchantName: inputs.merchantName || 'Cuelinks India',
         productTitle: inputs.productTitle || inputs.targetKeyword || 'Discount Travel Deals',
         sourceUrl: inputs.sourceUrl || 'https://www.cuelinks.com',
-        trackingUrl: inputs.trackingUrl || 'https://linksredirect.com/?cid=331585&subid=comm_engine',
+        trackingUrl: inputs.trackingUrl || '',
         category: inputs.category || inputs.domain || 'travel',
         targetCustomer: inputs.targetCustomer || inputs.targetAudience || 'Indian consumers',
         ...inputs,
@@ -1209,7 +1209,7 @@ export class AutonomousCommercialEngine {
             offerSlug: 'verified-cuelinks-offer',
             category: task.inputs.category || 'travel',
             targetCustomer: task.inputs.targetCustomer || 'Indian consumers',
-            authorizedTrackingUrl: task.inputs.trackingUrl || 'https://linksredirect.com/?cid=331585&subid=comm_engine',
+            authorizedTrackingUrl: task.inputs.trackingUrl || '',
             destinationUrl: task.inputs.sourceUrl || 'https://www.cuelinks.com',
             commissionAmountINR: 0,
             status: 'ACTIVE'

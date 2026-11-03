@@ -268,10 +268,9 @@ export class D1Client {
     const isProduction = process.env.NODE_ENV === 'production';
 
     if (this.isRemoteD1Configured()) {
-      const combinedSql = statements.map(s => {
-        const interpolated = D1Client.interpolateSql(s.sql, s.params || []);
-        return interpolated.trim().endsWith(';') ? interpolated.trim() : `${interpolated.trim()};`;
-      }).join('\n');
+      const payload = statements.length === 1
+        ? { sql: statements[0].sql, params: statements[0].params || [] }
+        : statements.map(s => ({ sql: s.sql, params: s.params || [] }));
 
       const url = `https://api.cloudflare.com/client/v4/accounts/${this.accountId}/d1/database/${this.databaseId}/query`;
       try {
@@ -281,7 +280,7 @@ export class D1Client {
             'Authorization': `Bearer ${this.apiToken}`,
             'Content-Type': 'application/json'
           },
-          body: JSON.stringify({ sql: combinedSql })
+          body: JSON.stringify(payload)
         });
 
         if (response.ok) {

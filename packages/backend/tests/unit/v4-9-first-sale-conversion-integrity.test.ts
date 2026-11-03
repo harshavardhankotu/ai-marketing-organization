@@ -208,7 +208,18 @@ describe('V4.9 First Sale Conversion Integrity & Attribution Suite', () => {
 
       // Inject mock client with successful conversion
       const client = CuelinksV3Client.getInstance();
-      (client as any).fetchFn = async (url: string, opts: any) => {
+      (client as any).fetchFn = async (urlStr: string, opts: any) => {
+        if (urlStr.includes('/channels')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              data: [
+                { id: 331585, name: 'ARO Deals', status: 'approved', is_default: true, url: 'https://ai-marketing-organization.onrender.com' }
+              ]
+            })
+          };
+        }
         const body = JSON.parse(opts?.body || '{}');
         return {
           ok: true,
@@ -389,6 +400,17 @@ describe('V4.9 First Sale Conversion Integrity & Attribution Suite', () => {
             text: async () => 'Internal Server Error'
           };
         }
+        if (urlStr.includes('/channels')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              data: [
+                { id: 331585, name: 'ARO Deals', status: 'approved', is_default: true, url: 'https://ai-marketing-organization.onrender.com' }
+              ]
+            })
+          };
+        }
         return { ok: true, status: 200, json: async () => ({ data: [] }) };
       };
 
@@ -469,6 +491,17 @@ describe('V4.9 First Sale Conversion Integrity & Attribution Suite', () => {
                 }
               ],
               meta: { total: 1, total_pages: 1, page: 1 }
+            })
+          };
+        }
+        if (urlStr.includes('/channels')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              data: [
+                { id: 331585, name: 'ARO Deals', status: 'approved', is_default: true, url: 'https://ai-marketing-organization.onrender.com' }
+              ]
             })
           };
         }

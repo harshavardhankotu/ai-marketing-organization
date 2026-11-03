@@ -20,6 +20,8 @@ import {
   CuelinksPaginatedSyncOptions,
   CuelinksPaginatedSyncResult,
   CuelinksTelemetryRecord,
+  CuelinksCapabilityState,
+  CuelinksCapabilitiesMap,
   CUELINKS_REQUIRED_SCOPES
 } from './cuelinks-v3-types.js';
 import { DealCandidate } from './deal-types.js';
@@ -47,11 +49,66 @@ export class CuelinksSyncManager {
   private forbiddenScopes: Set<string> = new Set();
   private scopeErrorReasons: Map<string, string> = new Map();
   private lastReconciledSince?: string;
+  private capabilities: CuelinksCapabilitiesMap = {
+    campaignDiscovery: 'NOT_TESTED',
+    linkConversion: 'NOT_TESTED',
+    offerPagination: 'NOT_TESTED',
+    channelVerification: 'NOT_TESTED',
+    transactionReconciliation: 'NOT_TESTED',
+    reporting: 'NOT_TESTED'
+  };
+
+  public getCapabilities(): CuelinksCapabilitiesMap {
+    return { ...this.capabilities };
+  }
+
+  public updateCapability(cap: keyof CuelinksCapabilitiesMap, state: CuelinksCapabilityState): void {
+    this.capabilities[cap] = state;
+  }
+
+  public async verifyLinkConversionCapability(testUrl: string = 'https://www.boat-lifestyle.com/products/airdopes-141'): Promise<boolean> {
+    try {
+      const channelRes = await this.getApprovedChannel();
+      if (!channelRes.approved || !channelRes.channel?.id) {
+        this.updateCapability('linkConversion', 'PERMISSION_MISSING');
+        return false;
+      }
+      const convRes = await this.client.convertLink({
+        url: testUrl,
+        channel_id: Number(channelRes.channel.id),
+        subid: 'cap_verify_test',
+        shorten: false
+      });
+      if (convRes && convRes.affiliated && convRes.tracking_url && CuelinksV3Client.isAllowedTrackingUrl(convRes.tracking_url)) {
+        this.recordScopeSuccess('write:links');
+        this.updateCapability('linkConversion', 'AVAILABLE');
+        return true;
+      }
+      this.updateCapability('linkConversion', 'PROVIDER_ERROR');
+      return false;
+    } catch (err: any) {
+      if (err.statusCode === 403 || err.code === 'CUELINKS_FORBIDDEN') {
+        this.recordScopeForbidden('write:links', err.message);
+        this.updateCapability('linkConversion', 'PERMISSION_MISSING');
+      } else if (err.statusCode === 401 || err.code === 'CUELINKS_UNAUTHORIZED') {
+        this.updateCapability('linkConversion', 'AUTH_FAILURE');
+      } else {
+        this.updateCapability('linkConversion', 'PROVIDER_ERROR');
+      }
+      return false;
+    }
+  }
 
   public recordScopeSuccess(scope: string): void {
     this.empiricallyVerifiedScopes.add(scope);
     this.forbiddenScopes.delete(scope);
     this.scopeErrorReasons.delete(scope);
+    if (!this.syncStatus.scopes) {
+      this.syncStatus.scopes = [];
+    }
+    if (!this.syncStatus.scopes.includes(scope)) {
+      this.syncStatus.scopes.push(scope);
+    }
   }
 
   public recordScopeForbidden(scope: string, reason?: string): void {
@@ -59,6 +116,9 @@ export class CuelinksSyncManager {
     this.empiricallyVerifiedScopes.delete(scope);
     if (reason) {
       this.scopeErrorReasons.set(scope, reason);
+    }
+    if (this.syncStatus && this.syncStatus.scopes) {
+      this.syncStatus.scopes = this.syncStatus.scopes.filter(s => s !== scope);
     }
   }
 
@@ -137,7 +197,7 @@ export class CuelinksSyncManager {
   }
 
   public static getInstance(client?: CuelinksV3Client): CuelinksSyncManager {
-    if (!CuelinksSyncManager.instance || client) {
+    if (!CuelinksSyncManager.instance) {
       CuelinksSyncManager.instance = new CuelinksSyncManager(client);
     }
     return CuelinksSyncManager.instance;
@@ -149,7 +209,12 @@ export class CuelinksSyncManager {
 
   public getStatus(): CuelinksSyncStatus {
     this.syncStatus.configured = this.client.isConfigured();
-    return { ...this.syncStatus };
+    const effectiveScopes = this.syncStatus.scopes || Array.from(this.empiricallyVerifiedScopes);
+    return {
+      ...this.syncStatus,
+      scopes: effectiveScopes,
+      capabilities: this.getCapabilities()
+    };
   }
 
   public getAttemptCount(): number {
@@ -579,6 +644,7 @@ export class CuelinksSyncManager {
         const canonicalUrl = 'https://ai-marketing-organization.onrender.com';
         const channels = await this.client.getChannels();
         empiricallyVerifiedScopes.add('read:channels');
+        this.updateCapability('channelVerification', 'AVAILABLE');
         let targetChannel = channels.find(c => {
           const chUrl = (c.source_url || c.url || '').toLowerCase();
           return chUrl.includes('onrender.com') || chUrl.includes('gen-lang-client');
@@ -601,6 +667,11 @@ export class CuelinksSyncManager {
       } catch (channelErr: any) {
         if (channelErr.statusCode === 403 || channelErr.code === 'CUELINKS_FORBIDDEN') {
           forbiddenScopes.add('read:channels');
+          this.updateCapability('channelVerification', 'PERMISSION_MISSING');
+        } else if (channelErr.statusCode === 401 || channelErr.code === 'CUELINKS_UNAUTHORIZED') {
+          this.updateCapability('channelVerification', 'AUTH_FAILURE');
+        } else {
+          this.updateCapability('channelVerification', 'PROVIDER_ERROR');
         }
         console.warn(`[CuelinksSync] Channel inspection notice: ${channelErr.message}`);
       }
@@ -623,21 +694,25 @@ export class CuelinksSyncManager {
           });
 
           empiricallyVerifiedScopes.add('read:campaigns');
+          this.updateCapability('campaignDiscovery', 'AVAILABLE');
           this.syncStatus.campaignsDiscovered = campaignSearch.total;
           eligibleCampaigns = (campaignSearch.campaigns || []).filter(
             c => (!c.status || c.status === 'active') && (c.access_status === 'open' || c.access_status === 'approved')
           );
           this.syncStatus.eligibleCampaignsCount = eligibleCampaigns.length;
 
-          if (eligibleCampaigns.length > 0) {
-            empiricallyVerifiedScopes.add('write:links');
-          }
+          // Note: write:links is strictly NOT inferred from campaign discovery!
 
           // Persist discovered campaigns to D1
           await this.persistCampaignsD1(organizationId, businessId, eligibleCampaigns);
         } catch (campErr: any) {
           if (campErr.statusCode === 403 || campErr.code === 'CUELINKS_FORBIDDEN') {
             forbiddenScopes.add('read:campaigns');
+            this.updateCapability('campaignDiscovery', 'PERMISSION_MISSING');
+          } else if (campErr.statusCode === 401 || campErr.code === 'CUELINKS_UNAUTHORIZED') {
+            this.updateCapability('campaignDiscovery', 'AUTH_FAILURE');
+          } else {
+            this.updateCapability('campaignDiscovery', 'PROVIDER_ERROR');
           }
           campaignError = campErr;
           partialFailureReasons.push(`Campaign search failed: ${campErr.message}`);
@@ -650,6 +725,7 @@ export class CuelinksSyncManager {
         try {
           const offersRes = await this.client.getOffers({ per_page: 30 });
           empiricallyVerifiedScopes.add('read:offers');
+          this.updateCapability('offerPagination', 'AVAILABLE');
           const rawOffers = offersRes.offers || [];
           this.syncStatus.offersRetrieved = rawOffers.length;
 
@@ -657,6 +733,11 @@ export class CuelinksSyncManager {
         } catch (offErr: any) {
           if (offErr.statusCode === 403 || offErr.code === 'CUELINKS_FORBIDDEN') {
             forbiddenScopes.add('read:offers');
+            this.updateCapability('offerPagination', 'PERMISSION_MISSING');
+          } else if (offErr.statusCode === 401 || offErr.code === 'CUELINKS_UNAUTHORIZED') {
+            this.updateCapability('offerPagination', 'AUTH_FAILURE');
+          } else {
+            this.updateCapability('offerPagination', 'PROVIDER_ERROR');
           }
           offerError = offErr;
           partialFailureReasons.push(`Offer retrieval failed: ${offErr.message}`);
@@ -666,11 +747,13 @@ export class CuelinksSyncManager {
 
       // 5. Performance reconciliation (Transactions & Reports)
       try {
+        const targetChannelId = this.syncStatus.channel?.id;
         const reconciliationResult = await this.reconcileTransactionsIncremental({
-          channel_id: this.syncStatus.channel?.id || 331585,
+          channel_id: targetChannelId,
           maxPages: 5
         });
         empiricallyVerifiedScopes.add('read:transactions');
+        this.updateCapability('transactionReconciliation', 'AVAILABLE');
 
         let providerClicks = reconciliationResult.providerAttributedClicks;
         let reportedConversions = reconciliationResult.reportedConversions;
@@ -679,10 +762,11 @@ export class CuelinksSyncManager {
           const perfRes = await this.client.getPerformanceReport({
             start_date: new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0],
             end_date: new Date().toISOString().split('T')[0],
-            channel_id: this.syncStatus.channel?.id || 331585,
+            channel_id: targetChannelId,
             per_page: 50
           });
           empiricallyVerifiedScopes.add('read:reports');
+          this.updateCapability('reporting', 'AVAILABLE');
           const pClicks = perfRes.totals
             ? Number(perfRes.totals.clicks || 0)
             : perfRes.data.reduce((acc, r) => acc + (Number(r.clicks) || 0), 0);
@@ -706,20 +790,44 @@ export class CuelinksSyncManager {
         if (recErr.statusCode === 403 || recErr.code === 'CUELINKS_FORBIDDEN') {
           forbiddenScopes.add('read:reports');
           forbiddenScopes.add('read:transactions');
+          this.updateCapability('transactionReconciliation', 'PERMISSION_MISSING');
+          this.updateCapability('reporting', 'PERMISSION_MISSING');
+        } else if (recErr.statusCode === 401 || recErr.code === 'CUELINKS_UNAUTHORIZED') {
+          this.updateCapability('transactionReconciliation', 'AUTH_FAILURE');
+          this.updateCapability('reporting', 'AUTH_FAILURE');
+        } else {
+          this.updateCapability('transactionReconciliation', 'PROVIDER_ERROR');
+          this.updateCapability('reporting', 'PROVIDER_ERROR');
         }
         console.warn(`[CuelinksSync] Reconciliation notice: ${recErr.message}`);
+      }
+
+      // Merge with instance empirically verified scopes
+      for (const s of this.empiricallyVerifiedScopes) {
+        empiricallyVerifiedScopes.add(s);
+      }
+      for (const f of forbiddenScopes) {
+        this.forbiddenScopes.add(f);
+      }
+      for (const s of empiricallyVerifiedScopes) {
+        this.empiricallyVerifiedScopes.add(s);
+      }
+      for (const f of this.forbiddenScopes) {
+        empiricallyVerifiedScopes.delete(f);
       }
 
       // Reconcile scopes: Priority to pingRes.scopes if explicitly provided by provider.
       // If ping omitted scopes, use empirically verified capabilities from successful provider responses.
       if (Array.isArray(pingRes.scopes) && pingRes.scopes.length > 0) {
-        this.syncStatus.scopes = pingRes.scopes;
-        const missing = CUELINKS_REQUIRED_SCOPES.filter(req => !pingRes.scopes!.includes(req));
+        const combined = new Set<string>([...pingRes.scopes, ...empiricallyVerifiedScopes]);
+        for (const f of this.forbiddenScopes) combined.delete(f);
+        this.syncStatus.scopes = Array.from(combined);
+        const missing = CUELINKS_REQUIRED_SCOPES.filter(req => !this.syncStatus.scopes!.includes(req));
         this.syncStatus.missingScopes = missing;
         this.syncStatus.hasRequiredScopes = missing.length === 0;
       } else {
         const missing = CUELINKS_REQUIRED_SCOPES.filter(
-          s => !empiricallyVerifiedScopes.has(s) || forbiddenScopes.has(s)
+          s => !empiricallyVerifiedScopes.has(s) || this.forbiddenScopes.has(s)
         );
         this.syncStatus.scopes = Array.from(empiricallyVerifiedScopes);
         this.syncStatus.missingScopes = missing;
@@ -849,20 +957,23 @@ export class CuelinksSyncManager {
 
   /**
    * Retrieves verified approved publisher channel.
-   * Default expected channel is 331585.
+   * If expectedId is provided, matches that ID first; otherwise matches canonical URL or default channel.
+   * Returns approved: true ONLY when the matched channel is 'approved' or 'active'.
+   * Never falls back to a hardcoded ID when not found or unapproved.
    */
-  public async getApprovedChannel(expectedId: string | number = 331585): Promise<{ channel: CuelinksChannel | null; approved: boolean }> {
+  public async getApprovedChannel(expectedId?: string | number): Promise<{ channel: CuelinksChannel | null; approved: boolean }> {
     try {
       const channels = await this.client.getChannels();
-      const ch = channels.find(c => String(c.id) === String(expectedId)) ||
+      const ch = (expectedId ? channels.find(c => String(c.id) === String(expectedId)) : undefined) ||
         channels.find(c => {
           const u = (c.source_url || c.url || '').toLowerCase();
           return u.includes('onrender.com') || u.includes('gen-lang-client');
-        });
+        }) ||
+        channels.find(c => c.is_default);
       if (ch && (ch.status === 'approved' || ch.status === 'active')) {
         return { channel: ch, approved: true };
       }
-      return { channel: ch || null, approved: false };
+      return { channel: null, approved: false };
     } catch {
       return { channel: null, approved: false };
     }
@@ -941,16 +1052,17 @@ export class CuelinksSyncManager {
     let hasFailedWrites = false;
 
     for (const tx of allTransactions) {
-      const curr = (tx.currency || 'INR').toUpperCase();
-      if (curr !== 'INR') {
-        console.warn(`[CuelinksSync] Notice: Non-INR currency '${curr}' on transaction '${tx.id}'. Isolating from INR metrics.`);
+      const curr = tx.currency ? String(tx.currency).toUpperCase().trim() : undefined;
+      const isExplicitInr = curr === 'INR';
+      if (!isExplicitInr) {
+        console.warn(`[CuelinksSync] Notice: Non-INR or unspecified currency '${curr || 'UNSPECIFIED'}' on transaction '${tx.id}'. Isolating from INR metrics.`);
         currencyUnclassifiedCount++;
       }
 
       const amt = Number(tx.user_commission ?? tx.commission_amount) || 0;
       const status = (tx.status || '').toLowerCase().trim();
 
-      if (curr === 'INR') {
+      if (isExplicitInr) {
         if (status === 'pending') {
           pending += amt;
         } else if (status === 'validated' || status === 'approved') {
@@ -985,8 +1097,8 @@ export class CuelinksSyncManager {
       try {
         const commId = `comm_${tx.id}`;
         const externalTxId = String(tx.id || tx.transaction_id);
-        const verifiedCommission = (curr === 'INR' && ['validated', 'approved', 'payable', 'invoice_raised', 'paid'].includes(status)) ? amt : 0;
-        const receivedCommission = (curr === 'INR' && status === 'paid') ? amt : 0;
+        const verifiedCommission = (isExplicitInr && ['validated', 'approved', 'payable', 'invoice_raised', 'paid'].includes(status)) ? amt : 0;
+        const receivedCommission = (isExplicitInr && status === 'paid') ? amt : 0;
         const evidenceJson = JSON.stringify({
           subids: [tx.sub_id, tx.sub_id_2, tx.sub_id_3, tx.sub_id_4, tx.sub_id_5],
           campaign_id: tx.campaign_id,
@@ -1018,7 +1130,7 @@ export class CuelinksSyncManager {
           matchedReferralId || null,
           externalTxId,
           status,
-          curr === 'INR' ? amt : 0,
+          isExplicitInr ? amt : 0,
           verifiedCommission,
           receivedCommission,
           evidenceJson,

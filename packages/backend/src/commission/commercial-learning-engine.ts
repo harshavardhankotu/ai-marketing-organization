@@ -22,6 +22,7 @@ export type CommercialCycleState =
   | 'DISCOVER'
   | 'QUALIFY'
   | 'PUBLISH'
+  | 'ASSET_GENERATION'
   | 'DISTRIBUTE'
   | 'MEASURE'
   | 'RECONCILE'
@@ -39,13 +40,14 @@ export interface CommercialCycleReport {
   qualifiedOpportunity: QualifiedCommercialOpportunity | null;
   distributionPackage: OrganicDistributionPackage | null;
   clicksMeasured: number;
+  providerAttributedClicks: number;
   transactionsReconciled: number;
   pendingCommissionINR: number;
   validatedCommissionINR: number;
   paidCommissionINR: number;
   cashReceivedINR: number;
   cycleHypothesis: string;
-  cycleVerdict: 'REVENUE_GENERATED' | 'TRAFFIC_CONVERTING' | 'OPPORTUNITY_DISTRIBUTED' | 'NO_OPPORTUNITY_QUALIFIED' | 'CYCLE_BLOCKED';
+  cycleVerdict: 'REVENUE_GENERATED' | 'TRAFFIC_CONVERTING' | 'ASSET_GENERATED_AWAITING_PUBLICATION' | 'OPPORTUNITY_DISTRIBUTED' | 'NO_OPPORTUNITY_QUALIFIED' | 'CYCLE_BLOCKED';
   nextCycleRecommendations: string[];
 }
 
@@ -120,20 +122,26 @@ export class CommercialLearningEngine {
     if (qualifiedOpp) {
       // Stage 3: PUBLISH
       stagesCompleted.push('PUBLISH');
+      let hostDomain = 'authorized-merchant.com';
+      try {
+        hostDomain = new URL(qualifiedOpp.productUrl).hostname;
+      } catch {}
+
+      const existingDeal = dealEngine.getDealById(qualifiedOpp.dealId);
       await dealEngine.registerDeal({
         title: qualifiedOpp.title,
-        brand: 'boAt',
+        brand: existingDeal?.brand || qualifiedOpp.merchant,
         merchant: qualifiedOpp.merchant,
-        category: 'Personal Audio',
+        category: existingDeal?.category || 'General Merchandise',
         productUrl: qualifiedOpp.productUrl,
         currentPriceINR: qualifiedOpp.currentPriceINR,
         referencePriceINR: qualifiedOpp.referencePriceINR,
         availability: 'IN_STOCK',
         geographicRestrictions: ['India'],
         offerStart: new Date().toISOString(),
-        expiryDate: new Date(Date.now() + 14 * 86400000).toISOString(),
+        expiryDate: existingDeal?.expiryDate,
         sourceUrl: qualifiedOpp.productUrl,
-        sourceDomain: 'boat-lifestyle.com',
+        sourceDomain: hostDomain,
         sourceType: 'RETAILER_BRAND',
         modelOrSku: qualifiedOpp.sku,
         affiliateNetwork: qualifiedOpp.affiliateNetwork,
@@ -141,10 +149,15 @@ export class CommercialLearningEngine {
         isMonetizable: true
       });
 
-      // Stage 4: DISTRIBUTE
-      stagesCompleted.push('DISTRIBUTE');
+      // Stage 4: ASSET GENERATION / DISTRIBUTE
+      stagesCompleted.push('ASSET_GENERATION');
       distPackage = this.distributor.generateDistributionPackage(qualifiedOpp);
       await this.distributor.logDistributionEvent(distPackage);
+
+      // In-memory generation is AWAITING_PUBLICATION until an external publication proof is confirmed
+      if ((distPackage as any)?.published === true) {
+        stagesCompleted.push('DISTRIBUTE');
+      }
     }
 
     // Stage 5: MEASURE
@@ -196,7 +209,7 @@ export class CommercialLearningEngine {
     } else if (reconciliationMetrics.reportedConversions > 0) {
       verdict = 'TRAFFIC_CONVERTING';
     } else if (distPackage !== null) {
-      verdict = 'OPPORTUNITY_DISTRIBUTED';
+      verdict = (distPackage as any)?.published === true ? 'OPPORTUNITY_DISTRIBUTED' : 'ASSET_GENERATED_AWAITING_PUBLICATION';
     }
 
     // Stage 8: IMPROVE
@@ -225,14 +238,15 @@ export class CommercialLearningEngine {
       qualifiedOpportunity: qualifiedOpp,
       distributionPackage: distPackage,
       clicksMeasured: localClicks,
-      transactionsReconciled: reconciliationMetrics.providerAttributedClicks,
+      providerAttributedClicks: reconciliationMetrics.providerAttributedClicks,
+      transactionsReconciled: reconciliationMetrics.reportedConversions,
       pendingCommissionINR: reconciliationMetrics.pendingCommissionINR,
       validatedCommissionINR: reconciliationMetrics.validatedCommissionINR,
       paidCommissionINR: reconciliationMetrics.paidCommissionINR,
       cashReceivedINR: 0,
       cycleHypothesis: qualifiedOpp
-        ? `Testing conversion on ${qualifiedOpp.title} at ₹${qualifiedOpp.currentPriceINR} through boAt Campaign 4232 (6% CPS) with organic buying guides and zero paid ads.`
-        : 'Evaluating broad consumer electronics catalog for high-demand, high-margin qualified products.',
+        ? `Testing conversion on ${qualifiedOpp.title} at ₹${qualifiedOpp.currentPriceINR} through Campaign ${qualifiedOpp.affiliateCampaignId} (${qualifiedOpp.commissionRatePercent}% CPS) with organic buying guides and zero paid ads.`
+        : 'Evaluating broad consumer catalog for high-demand, high-margin qualified products.',
       cycleVerdict: verdict,
       nextCycleRecommendations: recommendations
     };

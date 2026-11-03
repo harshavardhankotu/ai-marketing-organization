@@ -5619,8 +5619,8 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   // 4. Live Cuelinks Performance Data
   let cuelinksData = {
     configured: false,
-    channelId: 331585,
-    channelStatus: 'APPROVED',
+    channelId: undefined as number | undefined,
+    channelStatus: 'UNKNOWN',
     reportedClicks: 0,
     reportedTransactions: 0,
     pendingCommissionINR: 0,
@@ -5632,11 +5632,18 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
 
   try {
     const { CuelinksV3Client } = await import('../commission/cuelinks-v3-client.js');
+    const { CuelinksSyncManager } = await import('../commission/cuelinks-sync-manager.js');
     const client = CuelinksV3Client.getInstance();
+    const syncMgr = CuelinksSyncManager.getInstance(client);
     if (client.isConfigured()) {
       cuelinksData.configured = true;
+      const channelRes = await syncMgr.getApprovedChannel();
+      if (channelRes.channel?.id) {
+        cuelinksData.channelId = Number(channelRes.channel.id);
+        cuelinksData.channelStatus = channelRes.approved ? 'APPROVED' : (channelRes.channel.status?.toUpperCase() || 'PENDING');
+      }
       try {
-        const perf = await client.getPerformanceReport({ start_date: '2026-10-01' });
+        const perf = await client.getPerformanceReport({ start_date: '2026-10-01', channel_id: cuelinksData.channelId });
         if (perf.totals) {
           cuelinksData.reportedClicks = perf.totals.clicks || 0;
           cuelinksData.reportedTransactions = perf.totals.transactions || 0;
@@ -6304,14 +6311,15 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
 
   const { resolveSectorFromCategory } = await import('@ai-marketing/shared');
   const sectorDef = resolveSectorFromCategory(deal.category);
-  const sectorCode = sectorDef ? sectorDef.code : (deal.merchant.toLowerCase().includes('boat') ? 'SECTOR_B_ELECTRONICS' : 'SECTOR_G_LIFESTYLE');
+  const sectorCode = sectorDef ? sectorDef.code : (((deal.merchant || '').toLowerCase().includes('boat') || (deal.category || '').toLowerCase().includes('audio')) ? 'SECTOR_B_ELECTRONICS' : 'SECTOR_G_LIFESTYLE');
 
   // Cryptographically strong unique click ID
   const { randomUUID } = await import('crypto');
   const clickId = `clk_${Date.now()}_${randomUUID().replace(/-/g, '').substring(0, 16)}`;
   const referralId = `ref_${clickId}`;
   const orgId = 'org_owner_primary';
-  const placement = c.req.query('placement') || c.req.query('utm_placement') || 'deal_redirect';
+  const rawPlacement = c.req.query('placement') || c.req.query('utm_placement') || 'deal_redirect';
+  const sanitizedPlacement = /^[a-zA-Z0-9_\-]{1,64}$/.test(rawPlacement) ? rawPlacement : 'deal_redirect';
 
   let targetUrl: string | undefined = undefined;
 
@@ -6323,64 +6331,45 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
       const cuelinksClient = CuelinksV3Client.getInstance();
       const cuelinksSync = CuelinksSyncManager.getInstance(cuelinksClient);
 
-      let channelId: number | undefined = undefined;
+      // Verify approved publisher channel (strictly fail closed if not approved or null)
       const channelRes = await cuelinksSync.getApprovedChannel();
-      if (channelRes?.channel?.id) {
-        channelId = Number(channelRes.channel.id);
-      } else {
-        channelId = 331585; // Approved default publisher channel
+      if (!channelRes.approved || !channelRes.channel?.id) {
+        return c.text('Affiliate monetization path temporarily unavailable for this deal; unmonetized fallback suppressed', 503);
       }
+      const channelId = Number(channelRes.channel.id);
 
-      if (channelId) {
-        const convRes = await cuelinksClient.convertLink({
-          url: deal.productUrl,
-          channel_id: channelId,
-          subid: clickId,
-          subid2: sectorCode,
-          subid3: deal.affiliateCampaignId || '4232',
-          subid4: deal.canonicalSlug || deal.slug || deal.id,
-          subid5: placement,
-          shorten: false
-        });
+      const convRes = await cuelinksClient.convertLink({
+        url: deal.productUrl,
+        channel_id: channelId,
+        subid: clickId,
+        subid2: sectorCode,
+        subid3: deal.affiliateCampaignId || '4232',
+        subid4: deal.canonicalSlug || deal.slug || deal.id,
+        subid5: sanitizedPlacement,
+        shorten: false
+      });
 
-        if (convRes.affiliated && convRes.tracking_url) {
-          targetUrl = convRes.tracking_url;
-        }
+      if (convRes && convRes.affiliated === true && convRes.tracking_url && CuelinksV3Client.isAllowedTrackingUrl(convRes.tracking_url)) {
+        targetUrl = convRes.tracking_url;
+      } else {
+        return c.text('Affiliate link conversion failed or unmonetized; redirect suppressed', 503);
       }
     } catch (convErr: any) {
       console.warn(`[DealRedirect] Cuelinks dynamic link conversion error: ${convErr.message}`);
+      return c.text('Affiliate link conversion failed; outbound redirect suppressed', 503);
     }
   }
 
-  // Fallback to pre-existing authorized tracking URL with attached subids if dynamic conversion was unavailable
-  if (!targetUrl && deal.trackingUrl) {
-    try {
-      const urlObj = new URL(deal.trackingUrl);
-      const host = urlObj.hostname.toLowerCase();
-      if (host.includes('linksredirect.com') || host.includes('cuelinks.com') || host.includes('clnk.in')) {
-        urlObj.searchParams.set('subid', clickId);
-        urlObj.searchParams.set('subid2', sectorCode);
-        if (deal.affiliateCampaignId) {
-          urlObj.searchParams.set('subid3', deal.affiliateCampaignId);
-        }
-        urlObj.searchParams.set('subid4', deal.canonicalSlug || deal.slug || deal.id);
-        urlObj.searchParams.set('subid5', placement);
-        targetUrl = urlObj.toString();
-      }
-    } catch {
-      targetUrl = deal.trackingUrl;
-    }
-  }
-
-  // Fail closed if monetization path unavailable (never append Sub-IDs to static tracking URLs or allow unmonetized traffic)
+  // Fail closed if monetization path unavailable (static tracking URL fallback strictly deleted)
   if (!targetUrl) {
     return c.text('Affiliate monetization path temporarily unavailable for this deal; unmonetized fallback suppressed', 503);
   }
 
+  const { CuelinksV3Client: AllowlistClient } = await import('../commission/cuelinks-v3-client.js');
   const { DealSsrfGuard } = await import('../commission/deal-ssrf-guard.js');
   const ssrf = DealSsrfGuard.isSafePublicUrl(targetUrl);
-  if (!ssrf.safe) {
-    return c.text('Invalid destination URL', 400);
+  if (!ssrf.safe || !AllowlistClient.isAllowedTrackingUrl(targetUrl)) {
+    return c.text('Invalid destination URL', 503);
   }
 
   const { classifyTraffic } = await import('../commission/referral-tracking.js');
@@ -6405,7 +6394,7 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
         id, click_id, destination_url, organization_id, offer_id, partner_id, ip, user_agent, referer, placement, device_class, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     `;
-    const refParams = [referralId, clickId, targetUrl, orgId, deal.id, partnerId, clientInfo.ip, userAgent.substring(0, 200), referrer.substring(0, 200), placement, trafficClass];
+    const refParams = [referralId, clickId, targetUrl, orgId, deal.id, partnerId, clientInfo.ip, userAgent.substring(0, 200), referrer.substring(0, 200), sanitizedPlacement, trafficClass];
 
     const insertClickSql = `
       INSERT INTO referral_click_events (
@@ -6420,7 +6409,7 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
       orgId,
       deal.id,
       partnerId,
-      placement,
+      sanitizedPlacement,
       sectorCode,
       deal.affiliateCampaignId || '4232',
       referrer.substring(0, 200),
@@ -6441,7 +6430,7 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
   if (trafficClass === 'human' || trafficClass === 'browser_candidate') {
     engine.recordDealClick(deal.id, {
       ip: clientInfo.ip,
-      placement,
+      placement: sanitizedPlacement,
       source: 'deals_page'
     });
   }

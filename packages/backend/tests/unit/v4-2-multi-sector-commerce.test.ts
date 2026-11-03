@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { resetDbForTesting, getDb } from '../../src/db/client.js';
 import { seedDatabase } from '../../src/db/seed.js';
 import { AutonomousDealDiscoveryEngine } from '../../src/commission/autonomous-deal-discovery-engine.js';
@@ -89,6 +89,21 @@ describe('V4.2 Multi-Sector Commerce Engine Recovery Suite', () => {
         scannedAt: new Date().toISOString()
       });
 
+      // Mock approved channel & dynamic conversion for Stage 4 compliance
+      const { CuelinksSyncManager } = await import('../../src/commission/cuelinks-sync-manager.js');
+      const { CuelinksV3Client } = await import('../../src/commission/cuelinks-v3-client.js');
+      const syncMgr = CuelinksSyncManager.getInstance();
+      vi.spyOn(syncMgr, 'getApprovedChannel').mockResolvedValue({
+        channel: { id: 123, status: 'approved', name: 'ARO Deals' },
+        approved: true
+      });
+      const cuelinksClient = CuelinksV3Client.getInstance();
+      vi.spyOn(cuelinksClient, 'convertLink').mockImplementation(async (opts: any) => ({
+        url: opts.url,
+        tracking_url: `https://linksredirect.com/?id=123&subid=${opts.subid}&subid2=${opts.subid2}&subid4=${opts.subid4}&url=${encodeURIComponent(opts.url)}`,
+        affiliated: true
+      }));
+
       // Call redirect route
       const res = await app.request(`/api/v1/public/deals/${testDealId}/redirect`, {
         method: 'GET',
@@ -102,7 +117,7 @@ describe('V4.2 Multi-Sector Commerce Engine Recovery Suite', () => {
       expect(res.status).toBe(302);
       const location = res.headers.get('location');
       expect(location).toBeDefined();
-      expect(location).toContain('c.cuelinks.com');
+      expect(location).toContain('linksredirect.com');
       expect(location).toContain('subid=clk_');
       expect(location).toContain('subid2=SECTOR_A_PRECIOUS_METALS');
       expect(location).toContain(`subid4=${testDealId}`);
@@ -113,7 +128,7 @@ describe('V4.2 Multi-Sector Commerce Engine Recovery Suite', () => {
       expect(clickEvent).toBeDefined();
       expect(clickEvent.placement).toBe('deal_redirect');
       expect(clickEvent.source).toBe('SECTOR_A_PRECIOUS_METALS');
-      expect(clickEvent.destination_url).toContain('c.cuelinks.com');
+      expect(clickEvent.destination_url).toContain('linksredirect.com');
     });
 
     it('returns 404 for nonexistent deal redirect', async () => {

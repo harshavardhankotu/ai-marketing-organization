@@ -44,6 +44,15 @@ export interface ReplyDeskComparison {
   complianceNotice: string;
 }
 
+export type DistributionLifecycleStatus =
+  | 'CONTENT_GENERATED'
+  | 'CONTENT_VERIFIED'
+  | 'OWNER_APPROVED'
+  | 'PUBLISHED'
+  | 'IMPRESSION_RECORDED'
+  | 'VISIT_RECORDED'
+  | 'CLICK_RECORDED';
+
 export interface OrganicDistributionPackage {
   opportunityId: string;
   sku: string;
@@ -58,6 +67,11 @@ export interface OrganicDistributionPackage {
     guid: string;
     pubDate: string;
   };
+  status: DistributionLifecycleStatus;
+  published?: boolean;
+  publishedAt?: string;
+  publishedUrl?: string;
+  ownerApproved: boolean;
 }
 
 export class OrganicDistributionEngine {
@@ -121,43 +135,43 @@ export class OrganicDistributionEngine {
     const shareKit: ShareKitPost[] = [
       {
         platform: 'TWITTER',
-        headline: `Best True Wireless Earbuds Under ₹1,000 in India`,
-        body: `Looking for reliable ANC & punchy bass under ₹1,000? ${opp.title} is now active at ₹${opp.currentPriceINR}${discountText}. Full specs, battery benchmarks & genuine buying guide:`,
+        headline: `Featured Deal: ${opp.title} on ${opp.merchant}`,
+        body: `Looking for verified deals? ${opp.title} is now active at ₹${opp.currentPriceINR}${discountText} on ${opp.merchant}. Complete pricing, merchant verification & buying details:`,
         disclosureTag: '#Ad #AffiliateLink',
         canonicalUrl: redirectUrl,
-        hashtags: ['#TechDeals', '#boAt', '#AudioIndia', '#SmartBuying']
+        hashtags: ['#TechDeals', '#ShoppingIndia', '#SmartBuying']
       },
       {
         platform: 'TELEGRAM',
         headline: `Deal Alert: ${opp.title} at ₹${opp.currentPriceINR}`,
-        body: `Verified genuine price alert on boAt Official Store:\n\nProduct: ${opp.title}\nCurrent Deal Price: ₹${opp.currentPriceINR}\nMRP: ₹${opp.referencePriceINR}\nSavings: ${opp.discountPercent}%\nMerchant: ${opp.merchant}\n\nGet it here: ${redirectUrl}\n\n(Disclosure: We earn an affiliate commission on qualifying purchases at no extra cost to you).`,
-        disclosureTag: 'Disclosure: Commission-eligible link',
+        body: `Verified genuine price alert on ${opp.merchant}:\n\nProduct: ${opp.title}\nCurrent Deal Price: ₹${opp.currentPriceINR}\nMRP: ₹${opp.referencePriceINR}\nSavings: ${opp.discountPercent}%\nMerchant: ${opp.merchant}\n\nGet it here: ${redirectUrl}\n\n(Disclosure: #Ad We earn an affiliate commission on qualifying purchases at no extra cost to you).`,
+        disclosureTag: '#Ad #AffiliateLink',
         canonicalUrl: redirectUrl,
-        hashtags: ['#Electronics', '#TWSDeals']
+        hashtags: ['#Deals', '#Shopping']
       },
       {
         platform: 'COMMUNITY_FORUM',
-        headline: `Hands-on Review: Is the ${opp.title} worth ₹${opp.currentPriceINR}?`,
-        body: `For anyone evaluating earbuds under ₹1,000, here is what stands out on the ${opp.title}:\n- Battery Life: 42 hours total playback\n- Connectivity: Bluetooth 5.2 / BEAST Mode low latency\n- Official warranty through boAt India\n\nDirect deal on boAt store: ${redirectUrl}`,
-        disclosureTag: 'Affiliate Disclosure: Author participates in partner affiliate programs.',
+        headline: `Product Overview: ${opp.title} at ₹${opp.currentPriceINR} on ${opp.merchant}`,
+        body: `For anyone evaluating ${opp.title}, here are the verified merchant parameters:\n- Merchant: ${opp.merchant}\n- Deal Price: ₹${opp.currentPriceINR} (MRP ₹${opp.referencePriceINR})\n- Verified discount: ${opp.discountPercent}%\n- Direct dispatch through authorized merchant link: ${redirectUrl}`,
+        disclosureTag: '#Ad Affiliate Disclosure: Author participates in partner affiliate programs.',
         canonicalUrl: redirectUrl,
-        hashtags: ['#AudioGear', '#BudgetEarbuds']
+        hashtags: ['#BuyerAdvice', '#ProductReview']
       }
     ];
 
     const replyDeskCopy: ReplyDeskComparison = {
-      queryTopic: `What are the best earbuds under ₹1000 in India?`,
+      queryTopic: `Is ${opp.title} worth ₹${opp.currentPriceINR}?`,
       productName: opp.title,
-      competitorComparison: `Compared to generic unbranded earbuds, boAt offers genuine 1-year domestic warranty, fast charging (ASAP charge 5 mins = 75 mins playtime), and IPX4 splash resistance.`,
+      competitorComparison: `At ₹${opp.currentPriceINR}, ${opp.title} is offered with direct fulfillment from ${opp.merchant}. Verified price baseline: ₹${opp.referencePriceINR}.`,
       keyFeatures: [
         `Verified price: ₹${opp.currentPriceINR} (MRP ₹${opp.referencePriceINR})`,
-        `Low latency gaming mode (BEAST mode)`,
-        `Type-C charging case with instant wake and pair`,
-        `Direct dispatch from official merchant`
+        `Savings: ${opp.discountPercent}% off`,
+        `Authorized seller: ${opp.merchant}`,
+        `Affiliate network verified tracking`
       ],
-      verdict: `At ₹${opp.currentPriceINR}, the ${opp.title} provides the highest audio reliability and warranty support in the sub-₹1,000 segment.`,
-      affiliateCallToAction: `Check live deal price on boAt Official Store: ${redirectUrl}`,
-      complianceNotice: `Note: When you buy through our links, we may receive an affiliate commission without charging you anything extra.`
+      verdict: `At ₹${opp.currentPriceINR}, ${opp.title} represents a verified commercial deal from ${opp.merchant}.`,
+      affiliateCallToAction: `Check live deal price on ${opp.merchant}: ${redirectUrl}`,
+      complianceNotice: `Note: #Ad - When you buy through our links, we may receive an affiliate commission without charging you anything extra.`
     };
 
     const rssFeedItem = {
@@ -175,7 +189,23 @@ export class OrganicDistributionEngine {
       buyingGuideUrl,
       shareKit,
       replyDeskCopy,
-      rssFeedItem
+      rssFeedItem,
+      status: 'CONTENT_GENERATED',
+      published: false,
+      ownerApproved: false
+    };
+  }
+
+  /**
+   * Transitions distribution package state to PUBLISHED with verified public destination URL and timestamp.
+   */
+  public publishDistributionPackage(pkg: OrganicDistributionPackage, liveUrl: string): OrganicDistributionPackage {
+    return {
+      ...pkg,
+      status: 'PUBLISHED',
+      published: true,
+      publishedAt: new Date().toISOString(),
+      publishedUrl: liveUrl
     };
   }
 

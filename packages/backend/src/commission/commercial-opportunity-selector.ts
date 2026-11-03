@@ -83,18 +83,24 @@ export class CommercialOpportunitySelector {
     const title = deal.title || '';
     const url = deal.productUrl || '';
     const price = deal.currentPriceINR || 0;
-    const refPrice = deal.referencePriceINR || price;
-    const discount = refPrice > price ? Math.round(((refPrice - price) / refPrice) * 100) : 0;
     const merchant = deal.merchant || '';
-    const sku = deal.modelOrSku || deal.slug || 'UNKNOWN_SKU';
+    const sku = deal.modelOrSku || deal.slug;
 
-    // 1. Mandatory Filter Checks
+    // 1. Mandatory Filter Gates (Pass/Fail)
     if (!url || !url.startsWith('http')) {
       return this.buildRejectedOpportunity(deal, 'Invalid or missing productUrl', timestamp);
     }
 
     if (CommercialOpportunitySelector.KNOWN_DEAD_PATTERNS.some(dead => url.includes(dead))) {
       return this.buildRejectedOpportunity(deal, `Product URL matches known dead handle: ${url}`, timestamp);
+    }
+
+    if (!sku || sku === 'UNKNOWN_SKU' || sku.trim() === '') {
+      return this.buildRejectedOpportunity(deal, 'Missing or unverified model SKU identifier', timestamp);
+    }
+
+    if (!title || title.trim() === '') {
+      return this.buildRejectedOpportunity(deal, 'Missing product title', timestamp);
     }
 
     if (price <= 0) {
@@ -104,6 +110,52 @@ export class CommercialOpportunitySelector {
     if (price > 100000) {
       return this.buildRejectedOpportunity(deal, `Price ₹${price} exceeds affiliate conversion threshold`, timestamp);
     }
+
+    // Availability Gate: Must be explicitly confirmed IN_STOCK
+    if (deal.availability !== 'IN_STOCK') {
+      return this.buildRejectedOpportunity(deal, `Product is not confirmed IN_STOCK (status: ${deal.availability || 'UNKNOWN'})`, timestamp);
+    }
+
+    // Affiliate Campaign & Monetization Gate:
+    // Must match a valid Cuelinks campaign (via domain or explicit campaign ID) with active status.
+    // Never infer 4232 or 6% from URL substring 'boat'.
+    let matchedCampaign = campaign;
+    let campaignId = deal.affiliateCampaignId || (matchedCampaign ? String(matchedCampaign.id) : undefined);
+    let commissionRate = 0;
+
+    if (matchedCampaign) {
+      if (matchedCampaign.status !== 'active') {
+        return this.buildRejectedOpportunity(deal, `Matched affiliate campaign ${matchedCampaign.id} is not active`, timestamp);
+      }
+      if (matchedCampaign.access_status !== 'open' && matchedCampaign.access_status !== 'approved') {
+        return this.buildRejectedOpportunity(deal, `Affiliate campaign ${matchedCampaign.id} access status is ${matchedCampaign.access_status}`, timestamp);
+      }
+      if (matchedCampaign.deeplink_allowed === false) {
+        return this.buildRejectedOpportunity(deal, `Affiliate campaign ${matchedCampaign.id} does not allow deeplinks`, timestamp);
+      }
+      campaignId = String(matchedCampaign.id);
+      const rawRate = matchedCampaign.commission_rate ?? matchedCampaign.payout;
+      if (typeof rawRate === 'number') {
+        commissionRate = rawRate;
+      } else if (typeof rawRate === 'string') {
+        commissionRate = parseFloat(rawRate) || 0;
+      }
+    } else if (deal.affiliateCampaignId && (deal.affiliateNetwork === 'CUELINKS' || deal.isMonetizable)) {
+      campaignId = deal.affiliateCampaignId;
+      commissionRate = 4.0;
+    } else {
+      return this.buildRejectedOpportunity(deal, 'No active, verified affiliate campaign matched to merchant domain', timestamp);
+    }
+
+    if (commissionRate <= 0) {
+      return this.buildRejectedOpportunity(deal, 'Affiliate campaign offers 0% commission rate', timestamp);
+    }
+
+    // Reference price & genuine discount calculation
+    // If referencePriceINR is missing, unverified, or <= currentPriceINR, refPrice is currentPrice and discount is 0%
+    const refPrice = (deal.referencePriceINR && deal.referencePriceINR > price) ? deal.referencePriceINR : price;
+    const hasVerifiedDiscount = refPrice > price;
+    const discount = hasVerifiedDiscount ? Math.round(((refPrice - price) / refPrice) * 100) : 0;
 
     // 2. Score Demand (0 - 25)
     // Audio, earbuds, smartwatches, and festive gift electronics in India enjoy the highest organic search volume
@@ -135,8 +187,8 @@ export class CommercialOpportunitySelector {
       priceScore = 8;
     }
 
-    // Bonus for authentic discounts
-    if (discount >= 30 && discount <= 80) {
+    // Bonus for authentic discounts (only when verified)
+    if (hasVerifiedDiscount && discount >= 30 && discount <= 80) {
       priceScore = Math.min(25, priceScore + 2);
     }
 
@@ -155,25 +207,19 @@ export class CommercialOpportunitySelector {
     }
 
     // 5. Score Campaign & Monetization (0 - 20)
-    // boAt Campaign 4232 on Cuelinks offers 6.0% CPS, open status, and active subid tracking
-    let campaignScore = 0;
-    let commissionRate = 0;
-    const campaignId = deal.affiliateCampaignId || (campaign ? String(campaign.id) : (urlLower.includes('boat') ? '4232' : ''));
-
-    if (campaignId === '4232' || (campaign && campaign.status === 'active')) {
+    let campaignScore = 10;
+    if (commissionRate >= 5.0) {
       campaignScore = 20;
-      commissionRate = 6.0;
-    } else if (deal.affiliateNetwork === 'CUELINKS' || deal.isMonetizable) {
+    } else if (commissionRate >= 3.0) {
       campaignScore = 15;
-      commissionRate = 4.0;
     } else {
-      campaignScore = 0;
+      campaignScore = 10;
     }
 
     // 6. Score Organic Viability (0 - 10)
     // High-intent search terms, clear model identifiers, review traffic viability
     let organicScore = 4;
-    if (deal.modelOrSku && deal.brand) {
+    if (sku && deal.brand) {
       organicScore = 10;
     } else if (deal.brand) {
       organicScore = 7;
@@ -194,7 +240,7 @@ export class CommercialOpportunitySelector {
       referencePriceINR: refPrice,
       discountPercent: discount,
       affiliateNetwork: 'CUELINKS',
-      affiliateCampaignId: campaignId,
+      affiliateCampaignId: campaignId || '',
       payoutModel: 'CPS',
       commissionRatePercent: commissionRate,
       projectedCommissionINR: projectedCommission,
@@ -241,7 +287,16 @@ export class CommercialOpportunitySelector {
     }
 
     for (const cand of candidates) {
-      const camp = cand.affiliateCampaignId ? campaignMap.get(cand.affiliateCampaignId) : undefined;
+      let camp = cand.affiliateCampaignId ? campaignMap.get(cand.affiliateCampaignId) : undefined;
+      if (!camp && campaigns && cand.productUrl) {
+        try {
+          const candHost = new URL(cand.productUrl).hostname.toLowerCase().replace(/^www\./, '');
+          camp = campaigns.find(c => {
+            const cDomain = (c.domain || c.url || '').toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
+            return cDomain && (candHost === cDomain || candHost.endsWith('.' + cDomain) || cDomain.endsWith('.' + candHost));
+          });
+        } catch {}
+      }
       const scored = this.scoreCandidate(cand, camp);
       if (scored.status === 'QUALIFIED') {
         evaluated.push(scored);
