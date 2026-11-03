@@ -14,6 +14,7 @@ import { getDb } from '../db/client.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { isProduction } from '../config/env.js';
 import { CommercialSchedulePolicy } from './commercial-schedule-policy.js';
+import { BusinessAutonomyLock } from '../revenue/business-autonomy-lock.js';
 
 export type WorkflowStatus =
   | 'IDLE'
@@ -482,11 +483,14 @@ export class AutomationRegistryEngine {
 
   /**
    * Runs all due workflows within the allowed overall execution budget.
+   * Capped to a hard 25-second execution budget and at most 2 due workflows per tick.
+   * Uses single-flight mutex ('cron_execution_lock' with 5-minute TTL) to prevent overlapping ticks.
    * Safe to call on every hourly Cloudflare cron ping.
    */
   public async runDueWorkflows(
     triggerSource: 'CLOUDFLARE_CRON' | 'MANUAL' | 'MANUAL_PING' = 'CLOUDFLARE_CRON',
-    overallBudgetMs: number = 40000
+    overallBudgetMs: number = 25000,
+    maxWorkflows: number = 2
   ): Promise<{
     workflowsChecked: number;
     workflowsExecuted: number;
@@ -501,60 +505,89 @@ export class AutomationRegistryEngine {
     budgetExhausted: boolean;
   }> {
     await this.ensureInitialized();
+    const budgetMs = Math.min(25000, overallBudgetMs);
     const startTime = Date.now();
     const results: any[] = [];
 
-    // Find due workflows: enabled=1, next_scheduled_at <= now, last_status != 'RUNNING' (or running > 10m timeout)
-    const sqlDue = `
-      SELECT * FROM automation_registry
-      WHERE enabled = 1
-        AND (last_status != 'RUNNING' OR last_started_at < datetime('now', '-10 minutes'))
-        AND next_scheduled_at <= datetime('now')
-      ORDER BY 
-        CASE 
-          WHEN id IN ('b2b_suppression_and_compliance_audit', 'healthcare_claim_verification', 'owner_approval_queue_generation', 'new_inquiry_processing', 'payment_status_reconciliation', 'quota_health_checks', 'affiliate_offer_reconciliation') THEN 0
-          WHEN id IN ('prospect_discovery_validation', 'prospect_dedup_qualification', 'outreach_draft_preparation', 'seasonal_demand_research', 'daily_commercial_summary') THEN 1
-          ELSE 2
-        END ASC,
-        next_scheduled_at ASC
-    `;
+    // 1. Single-Flight Mutex: Acquire cron_execution_lock with 5-minute lease TTL
+    const lockCycleId = `cron_${Date.now()}_${randomUUID().substring(0, 6)}`;
+    let lockAcquired = false;
+    try {
+      const lockRes = await BusinessAutonomyLock.tryAcquireAsync('cron_execution_lock', lockCycleId);
+      if (!lockRes.acquired) {
+        console.warn(`[AutomationRegistry] Single-flight lock contended: ${lockRes.reason}`);
+        return {
+          workflowsChecked: 0,
+          workflowsExecuted: 0,
+          results: [],
+          budgetExhausted: false
+        };
+      }
+      lockAcquired = true;
 
-    let dueRows: any[] = [];
-    if (isProduction()) {
-      dueRows = await this.d1Repo.query<any>('automation_registry', sqlDue);
-    } else {
-      dueRows = getDb().prepare(sqlDue).all();
-    }
+      // Find due workflows: enabled=1, next_scheduled_at <= now, last_status != 'RUNNING' (or running > 10m timeout)
+      const sqlDue = `
+        SELECT * FROM automation_registry
+        WHERE enabled = 1
+          AND (last_status != 'RUNNING' OR last_started_at < datetime('now', '-10 minutes'))
+          AND next_scheduled_at <= datetime('now')
+        ORDER BY 
+          CASE 
+            WHEN id IN ('b2b_suppression_and_compliance_audit', 'healthcare_claim_verification', 'owner_approval_queue_generation', 'new_inquiry_processing', 'payment_status_reconciliation', 'quota_health_checks', 'affiliate_offer_reconciliation') THEN 0
+            WHEN id IN ('prospect_discovery_validation', 'prospect_dedup_qualification', 'outreach_draft_preparation', 'seasonal_demand_research', 'daily_commercial_summary') THEN 1
+            ELSE 2
+          END ASC,
+          next_scheduled_at ASC
+      `;
 
-    let budgetExhausted = false;
-
-    for (const row of dueRows) {
-      const elapsed = Date.now() - startTime;
-      const remainingBudget = overallBudgetMs - elapsed;
-
-      if (remainingBudget <= 3000) {
-        budgetExhausted = true;
-        break;
+      let dueRows: any[] = [];
+      if (isProduction()) {
+        dueRows = await this.d1Repo.query<any>('automation_registry', sqlDue);
+      } else {
+        dueRows = getDb().prepare(sqlDue).all();
       }
 
-      const wf = this.mapWorkflowRecord(row);
-      const execResult = await this.executeWorkflow(wf.id, triggerSource, Math.min(wf.executionBudgetMs, remainingBudget));
-      results.push({
-        id: wf.id,
-        name: wf.name,
-        status: execResult.status,
-        durationMs: execResult.durationMs || 0,
-        itemsProcessed: execResult.itemsProcessed,
-        error: execResult.errorMessage || undefined
-      });
-    }
+      let budgetExhausted = false;
 
-    return {
-      workflowsChecked: dueRows.length,
-      workflowsExecuted: results.length,
-      results,
-      budgetExhausted
-    };
+      for (const row of dueRows) {
+        // Hard cap: at most 2 workflows per tick
+        if (results.length >= maxWorkflows) {
+          break;
+        }
+
+        const elapsed = Date.now() - startTime;
+        const remainingBudget = budgetMs - elapsed;
+
+        if (remainingBudget <= 3000) {
+          budgetExhausted = true;
+          break;
+        }
+
+        const wf = this.mapWorkflowRecord(row);
+        const execResult = await this.executeWorkflow(wf.id, triggerSource, Math.min(wf.executionBudgetMs, remainingBudget));
+        results.push({
+          id: wf.id,
+          name: wf.name,
+          status: execResult.status,
+          durationMs: execResult.durationMs || 0,
+          itemsProcessed: execResult.itemsProcessed,
+          error: execResult.errorMessage || undefined
+        });
+      }
+
+      return {
+        workflowsChecked: dueRows.length,
+        workflowsExecuted: results.length,
+        results,
+        budgetExhausted
+      };
+    } finally {
+      if (lockAcquired) {
+        try {
+          await BusinessAutonomyLock.releaseAsync('cron_execution_lock', lockCycleId);
+        } catch {}
+      }
+    }
   }
 
   /**

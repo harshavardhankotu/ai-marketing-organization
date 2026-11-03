@@ -197,9 +197,42 @@ export class OrganicDistributionEngine {
   }
 
   /**
+   * Dispatches automated non-blocking IndexNow ping (Spec Phase 2).
+   */
+  public async pingIndexNow(
+    urls: string[],
+    host: string = 'ai-marketing-organization.onrender.com',
+    fetchFn: typeof fetch = fetch
+  ): Promise<boolean> {
+    if (!urls || urls.length === 0) return false;
+    try {
+      const key = process.env.INDEXNOW_KEY || 'ai-marketing-indexnow-key';
+      const payload = {
+        host,
+        key,
+        keyLocation: `https://${host}/${key}.txt`,
+        urlList: urls
+      };
+
+      // Non-blocking ping with catch handler
+      fetchFn('https://api.indexnow.org/indexnow', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        body: JSON.stringify(payload)
+      }).catch(err => {
+        console.warn(`[IndexNow] Non-blocking ping notice: ${err.message}`);
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Transitions distribution package state to PUBLISHED with verified public destination URL and timestamp.
    */
   public publishDistributionPackage(pkg: OrganicDistributionPackage, liveUrl: string): OrganicDistributionPackage {
+    this.pingIndexNow([liveUrl, pkg.buyingGuideUrl]).catch(() => {});
     return {
       ...pkg,
       status: 'PUBLISHED',

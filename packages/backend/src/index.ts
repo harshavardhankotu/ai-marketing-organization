@@ -182,7 +182,13 @@ app.get('/deals', async (c) => {
     contactEmail: `editorial@${host}`,
     siteUrl: `${proto}://${host}`
   };
-  const deals = AutonomousDealDiscoveryEngine.getInstance().queryPublicDeals({ limit: 50 }).deals;
+  const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
+  if (dealEngine.getAllDeals().length === 0) {
+    try {
+      await dealEngine.syncFromD1Async();
+    } catch {}
+  }
+  const deals = dealEngine.queryPublicDeals({ limit: 50 }).deals;
   const html = StaticSiteGenerator.getInstance().renderDealsHtml(deals, config);
   return c.html(html);
 });
@@ -896,6 +902,18 @@ app.get('/sitemap.xml', async (c) => {
     } catch {}
   }
 
+  // Include active verified public deals in sitemap
+  let dealUrls: string[] = [];
+  try {
+    const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
+    const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
+    if (dealEngine.getAllDeals().length === 0) {
+      await dealEngine.syncFromD1Async();
+    }
+    const publicDeals = dealEngine.queryPublicDeals({ limit: 100 }).deals;
+    dealUrls = publicDeals.map(d => `${baseUrl}/deals/${d.canonicalSlug || d.slug || d.id}`);
+  } catch {}
+
   const staticUrls = [
     `${baseUrl}/`,
     `${baseUrl}/deals`,
@@ -904,7 +922,7 @@ app.get('/sitemap.xml', async (c) => {
   ];
 
   const contentUrls = publishedSlugs.map(a => `${baseUrl}/guides/${a.slug}`);
-  const allUrls = [...staticUrls, ...contentUrls];
+  const allUrls = [...staticUrls, ...dealUrls, ...contentUrls];
 
   const xmlEntries = allUrls
     .map(url => `  <url>\n    <loc>${url}</loc>\n    <changefreq>daily</changefreq>\n    <priority>0.8</priority>\n  </url>`)
@@ -913,6 +931,44 @@ app.get('/sitemap.xml', async (c) => {
   const sitemapXml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${xmlEntries}\n</urlset>`;
 
   return c.text(sitemapXml, 200, { 'Content-Type': 'application/xml; charset=utf-8' });
+});
+
+app.get('/rss.xml', async (c) => {
+  const host = c.req.header('host') || 'ai-marketing-organization.onrender.com';
+  const proto = c.req.header('x-forwarded-proto') || 'https';
+  const baseUrl = `${proto}://${host}`;
+
+  let publicDeals: any[] = [];
+  try {
+    const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
+    const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
+    if (dealEngine.getAllDeals().length === 0) {
+      await dealEngine.syncFromD1Async();
+    }
+    publicDeals = dealEngine.queryPublicDeals({ limit: 50 }).deals;
+  } catch {}
+
+  const rssItems = publicDeals.map(d => `    <item>
+      <title><![CDATA[${d.title} - ₹${d.currentPriceINR} on ${d.merchant}]]></title>
+      <link>${baseUrl}/deals/${d.canonicalSlug || d.slug || d.id}</link>
+      <guid>${baseUrl}/deals/${d.canonicalSlug || d.slug || d.id}</guid>
+      <description><![CDATA[Verified deal: ${d.title} at ₹${d.currentPriceINR}${d.referencePriceINR && d.referencePriceINR > d.currentPriceINR ? ` (MRP ₹${d.referencePriceINR}, ${d.verifiedDiscountPercent || d.claimedDiscountPercent}% off)` : ''} on ${d.merchant}. Direct merchant fulfillment. #Ad - Commission earned on qualifying purchases.]]></description>
+      <pubDate>${new Date(d.lastCheckedAt || d.observedAt || Date.now()).toUTCString()}</pubDate>
+    </item>`).join('\n');
+
+  const rssXml = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>AI Marketing Organization - Verified Commercial Deals &amp; Buying Guides</title>
+    <link>${baseUrl}/deals</link>
+    <description>Genuine, provider-attributed commercial deals and buying guides for Indian consumers.</description>
+    <language>en-in</language>
+    <atom:link href="${baseUrl}/rss.xml" rel="self" type="application/rss+xml"/>
+${rssItems}
+  </channel>
+</rss>`;
+
+  return c.text(rssXml, 200, { 'Content-Type': 'application/rss+xml; charset=utf-8' });
 });
 
 // Static frontend assets and public landing page routing
@@ -1005,13 +1061,14 @@ export async function startServer(): Promise<any> {
     console.warn('[Cooldown Gate] Action cooldown synchronization failed:', err.message);
   }
 
-  // 3c. Commercial Funnel Telemetry & Growth Experiments Gate: Synchronize from Cloudflare D1
+  // 3c. Commercial Funnel Telemetry & Deal Catalog Gate: Synchronize from Cloudflare D1
   try {
     const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
     await AutonomousDealDiscoveryEngine.getInstance().hydrateFunnelTelemetryFromDb();
-    console.log('[Funnel Gate] Synchronized commercial funnel telemetry from Cloudflare D1.');
+    await AutonomousDealDiscoveryEngine.getInstance().syncFromD1Async();
+    console.log('[Funnel Gate] Synchronized commercial funnel telemetry and deal catalog from Cloudflare D1.');
   } catch (err: any) {
-    console.warn('[Funnel Gate] Funnel telemetry synchronization failed:', err.message);
+    console.warn('[Funnel Gate] Funnel telemetry/deal synchronization failed:', err.message);
   }
 
   try {

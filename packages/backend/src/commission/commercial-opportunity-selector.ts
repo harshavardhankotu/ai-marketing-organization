@@ -52,6 +52,19 @@ export interface OpportunitySelectionResult {
   selectionNotes: string;
 }
 
+export interface MerchantProductProbeResult {
+  probed: boolean;
+  status: 'IN_STOCK' | 'DEAD_OR_OUT_OF_STOCK' | 'UNPROBED';
+  httpStatus?: number;
+  title?: string;
+  sku?: string;
+  priceINR?: number;
+  referencePriceINR?: number;
+  available?: boolean;
+  rawJson?: any;
+  error?: string;
+}
+
 export class CommercialOpportunitySelector {
   private static instance: CommercialOpportunitySelector | null = null;
   public static readonly MIN_QUALIFICATION_SCORE = 70;
@@ -70,6 +83,118 @@ export class CommercialOpportunitySelector {
 
   public static resetInstance(): void {
     CommercialOpportunitySelector.instance = null;
+  }
+
+  /**
+   * Performs live merchant probe for Shopify / D2C brand stores (boAt lifestyle etc).
+   * Probes <product_url>.js endpoint first, then falls back to HTML structured data application/ld+json.
+   * Disqualifies candidate if HTTP 404 or available === false.
+   */
+  public async probeMerchantProduct(
+    productUrl: string,
+    fetchFn: typeof fetch = fetch
+  ): Promise<MerchantProductProbeResult> {
+    if (!productUrl || typeof productUrl !== 'string' || !productUrl.startsWith('http')) {
+      return { probed: false, status: 'UNPROBED', error: 'Invalid product URL' };
+    }
+
+    try {
+      const cleanUrl = productUrl.replace(/\?.*$/, '').replace(/\/$/, '');
+      const jsUrl = `${cleanUrl}.js`;
+
+      const jsRes = await fetchFn(jsUrl, {
+        headers: {
+          'Accept': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+      });
+
+      if (jsRes.status === 404) {
+        return {
+          probed: true,
+          status: 'DEAD_OR_OUT_OF_STOCK',
+          httpStatus: 404,
+          available: false,
+          error: `Product returned HTTP 404 (dead handle): ${productUrl}`
+        };
+      }
+
+      if (jsRes.ok) {
+        const text = await jsRes.text();
+        try {
+          const data = JSON.parse(text);
+          const isAvailable = Boolean(data.available);
+          const price = data.price ? Number(data.price) / 100 : 0;
+          const refPrice = data.compare_at_price ? Number(data.compare_at_price) / 100 : price;
+          const sku = data.variants?.[0]?.sku || data.handle || cleanUrl.split('/').pop() || 'UNKNOWN_SKU';
+
+          return {
+            probed: true,
+            status: isAvailable ? 'IN_STOCK' : 'DEAD_OR_OUT_OF_STOCK',
+            httpStatus: jsRes.status,
+            title: data.title,
+            sku,
+            priceINR: price,
+            referencePriceINR: refPrice,
+            available: isAvailable,
+            rawJson: data
+          };
+        } catch {}
+      }
+
+      // Fallback: Fetch product HTML and inspect application/ld+json structured data
+      const htmlRes = await fetchFn(productUrl, {
+        headers: {
+          'Accept': 'text/html,application/xhtml+xml',
+          'User-Agent': 'ai-marketing-product-probe/1.0'
+        }
+      });
+
+      if (htmlRes.status === 404) {
+        return {
+          probed: true,
+          status: 'DEAD_OR_OUT_OF_STOCK',
+          httpStatus: 404,
+          available: false,
+          error: `Product page returned HTTP 404: ${productUrl}`
+        };
+      }
+
+      if (htmlRes.ok) {
+        const html = await htmlRes.text();
+        const jsonLdMatch = html.match(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/i);
+        if (jsonLdMatch && jsonLdMatch[1]) {
+          try {
+            const parsed = JSON.parse(jsonLdMatch[1]);
+            const product = Array.isArray(parsed) ? parsed.find(p => p['@type'] === 'Product') : (parsed['@type'] === 'Product' ? parsed : null);
+            if (product) {
+              const offers = Array.isArray(product.offers) ? product.offers[0] : (product.offers || {});
+              const isAvailable = offers.availability
+                ? !String(offers.availability).toLowerCase().includes('outofstock')
+                : true;
+              const price = offers.price ? Number(offers.price) : 0;
+              const sku = product.sku || product.model || cleanUrl.split('/').pop() || 'UNKNOWN_SKU';
+
+              return {
+                probed: true,
+                status: isAvailable ? 'IN_STOCK' : 'DEAD_OR_OUT_OF_STOCK',
+                httpStatus: htmlRes.status,
+                title: product.name,
+                sku,
+                priceINR: price,
+                referencePriceINR: price,
+                available: isAvailable,
+                rawJson: product
+              };
+            }
+          } catch {}
+        }
+      }
+
+      return { probed: false, status: 'UNPROBED', httpStatus: htmlRes.status };
+    } catch (err: any) {
+      return { probed: false, status: 'UNPROBED', error: err.message };
+    }
   }
 
   /**
@@ -112,8 +237,8 @@ export class CommercialOpportunitySelector {
     }
 
     // Availability Gate: Must be explicitly confirmed IN_STOCK
-    if (deal.availability !== 'IN_STOCK') {
-      return this.buildRejectedOpportunity(deal, `Product is not confirmed IN_STOCK (status: ${deal.availability || 'UNKNOWN'})`, timestamp);
+    if (deal.availability !== 'IN_STOCK' || (deal as any).probeStatus === 'DEAD_OR_OUT_OF_STOCK') {
+      return this.buildRejectedOpportunity(deal, `Product is not confirmed IN_STOCK (status: ${(deal as any).probeStatus || deal.availability || 'UNKNOWN'})`, timestamp);
     }
 
     // Affiliate Campaign & Monetization Gate:

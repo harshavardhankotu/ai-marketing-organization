@@ -6245,7 +6245,13 @@ apiRouter.get('/public/deals', async (c) => {
   const limit = c.req.query('limit') ? Number(c.req.query('limit')) : 12;
 
   const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
-  const result = AutonomousDealDiscoveryEngine.getInstance().queryPublicDeals({
+  const engine = AutonomousDealDiscoveryEngine.getInstance();
+  if (engine.getAllDeals().length === 0) {
+    try {
+      await engine.syncFromD1Async();
+    } catch {}
+  }
+  const result = engine.queryPublicDeals({
     q,
     category,
     merchant,
@@ -6388,6 +6394,26 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
   try {
     const { D1RevenueRepository } = await import('../db/d1-revenue-repository.js');
     const d1Repo = D1RevenueRepository.getInstance();
+
+    // Ensure referential integrity for partner and offer
+    await d1Repo.executeWrite(
+      'partners',
+      `INSERT INTO partners (
+        id, organization_id, name, industry, website, partner_type, network, authorization_status
+      ) VALUES ('part_cuelinks', ?, 'Cuelinks India', 'Affiliate Network', 'https://www.cuelinks.com', 'AFFILIATE', 'CUELINKS', 'AUTHORIZED')
+      ON CONFLICT(id) DO NOTHING`,
+      [orgId]
+    ).catch(() => {});
+
+    await d1Repo.executeWrite(
+      'partner_offers',
+      `INSERT INTO partner_offers (
+        id, partner_id, organization_id, title, offer_slug, category, target_customer,
+        price_inr, destination_url, authorized_tracking_url, active, status, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'Indian online shoppers', ?, ?, ?, 1, 'ACTIVE', datetime('now'))
+      ON CONFLICT(id) DO UPDATE SET authorized_tracking_url = excluded.authorized_tracking_url, updated_at = datetime('now')`,
+      [deal.id, partnerId, orgId, deal.title, deal.canonicalSlug || deal.slug || deal.id, deal.category || 'General', deal.currentPriceINR || 0, deal.productUrl, targetUrl]
+    ).catch(() => {});
 
     const insertRefSql = `
       INSERT INTO referrals (

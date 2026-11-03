@@ -268,37 +268,35 @@ export class D1Client {
     const isProduction = process.env.NODE_ENV === 'production';
 
     if (this.isRemoteD1Configured()) {
-      const payload = statements.length === 1
-        ? { sql: statements[0].sql, params: statements[0].params || [] }
-        : statements.map(s => ({ sql: s.sql, params: s.params || [] }));
-
       const url = `https://api.cloudflare.com/client/v4/accounts/${this.accountId}/d1/database/${this.databaseId}/query`;
       try {
-        const response = await fetch(url, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${this.apiToken}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify(payload)
-        });
+        let totalWritten = 0;
+        for (const s of statements) {
+          const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${this.apiToken}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ sql: s.sql, params: s.params || [] })
+          });
 
-        if (response.ok) {
-          const json = await response.json() as any;
-          const results = json?.result || [];
-          let totalWritten = 0;
-          for (const res of results) {
-            totalWritten += res?.meta?.rows_written || 1;
+          if (!response.ok) {
+            const errText = await response.text();
+            if (isProduction) {
+              throw new Error(`[D1 PERSISTENCE ERROR] D1 batch statement returned HTTP ${response.status}: ${errText}`);
+            }
+            console.warn(`[D1Client] Cloudflare D1 statement HTTP ${response.status} (${errText}) — falling back to dev store`);
+          } else {
+            const json = await response.json() as any;
+            const results = json?.result || [];
+            for (const res of results) {
+              totalWritten += res?.meta?.rows_written || 1;
+            }
           }
-          this.recordUsage(0, totalWritten);
-          return { rowsAffected: totalWritten, source: 'CLOUDFLARE_D1' };
-        } else {
-          const errText = await response.text();
-          if (isProduction) {
-            throw new Error(`[D1 PERSISTENCE ERROR] D1 batch returned HTTP ${response.status}: ${errText}`);
-          }
-          console.warn(`[D1Client] Cloudflare D1 batch HTTP ${response.status} (${errText}) — falling back to dev store`);
         }
+        this.recordUsage(0, totalWritten);
+        return { rowsAffected: totalWritten, source: 'CLOUDFLARE_D1' };
       } catch (err: any) {
         if (isProduction) {
           throw new Error(`[D1 PERSISTENCE FAULT] Production Cloudflare D1 batch unavailable (${err.message}). Halting to prevent non-durable state divergence.`);
