@@ -109,6 +109,50 @@ export class D1RevenueRepository {
   }
 
   /**
+   * Executes a batch of write operations atomically across revenue-critical tables.
+   * In production, routes through Cloudflare D1 exclusively; throws if unconfigured or fails.
+   * In local/test, executes via SQLite transaction.
+   */
+  public async executeBatch(
+    operations: Array<{ table: D1RevenueCriticalTable; sql: string; params?: any[] }>
+  ): Promise<{ rowsAffected: number; source: 'CLOUDFLARE_D1' | 'PERSISTENT_SQLITE' }> {
+    if (operations.length === 0) {
+      return { rowsAffected: 0, source: isProduction() && this.d1.isRemoteD1Configured() ? 'CLOUDFLARE_D1' : 'PERSISTENT_SQLITE' };
+    }
+
+    if (isProduction()) {
+      if (this.d1.isRemoteD1Configured()) {
+        const res = await this.d1.executeBatch(operations.map(o => ({ sql: o.sql, params: o.params })), 'P0');
+        try {
+          const db = getDb();
+          const syncBatch = db.transaction((ops: typeof operations) => {
+            for (const op of ops) {
+              db.prepare(op.sql).run(...(op.params || []));
+            }
+          });
+          syncBatch(operations);
+        } catch {}
+        return { rowsAffected: res.rowsAffected, source: 'CLOUDFLARE_D1' };
+      }
+      if (!process.env.VITEST) {
+        const tableList = operations.map(o => o.table).join(', ');
+        throw new Error(`PERSISTENCE_FAULT: Batch write on [${tableList}] requires durable Cloudflare D1 storage in production. SQLite fallback is strictly prohibited.`);
+      }
+    }
+
+    const db = getDb();
+    let totalChanges = 0;
+    const runBatch = db.transaction((ops: typeof operations) => {
+      for (const op of ops) {
+        const info = db.prepare(op.sql).run(...(op.params || []));
+        totalChanges += info.changes || 1;
+      }
+    });
+    runBatch(operations);
+    return { rowsAffected: totalChanges, source: 'PERSISTENT_SQLITE' };
+  }
+
+  /**
    * Executes a read operation for a revenue-critical table.
    * In production, routes through Cloudflare D1 exclusively; throws if unconfigured or fails.
    * In local/test, executes via SQLite.

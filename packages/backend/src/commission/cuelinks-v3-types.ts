@@ -298,6 +298,7 @@ export interface CuelinksReconciliationMetrics {
   providerPaidCommissionINR?: number;
   reversedCommissionINR: number;
   unmatchedTransactionsCount?: number;
+  currencyUnclassifiedCount?: number;
   paidCommissionINR: number;
   cashReceivedINR: number;
 }
