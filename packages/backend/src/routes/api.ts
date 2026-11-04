@@ -9586,6 +9586,127 @@ apiRouter.post('/tools/site-audit/:auditId/verify-payment', handleSiteAuditVerif
 apiRouter.post('/api/v1/tools/site-audit/:auditId/verify-payment', handleSiteAuditVerifyPayment);
 
 /**
+ * Generic Razorpay Web Checkout: Create Order
+ * Accessible via POST /api/v1/create-order, POST /create-order, POST /api/create-order
+ */
+const handleGenericCreateOrder = async (c: any) => {
+  const body = await c.req.json().catch(() => ({}));
+  const rawAmount = body.amount ?? 100;
+  const amount = Number(rawAmount);
+
+  if (isNaN(amount) || amount < 100) {
+    return c.json({
+      success: false,
+      error: 'Amount must be at least 100 paise (₹1.00)'
+    }, 400);
+  }
+
+  const currency = String(body.currency || 'INR').toUpperCase();
+  const receipt = String(body.receipt || `rcpt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`);
+  const notes = body.notes || {};
+  notes.mode = 'test';
+  notes.sandbox = 'true';
+
+  const keyId = (process.env.RAZORPAY_KEY_ID || process.env.RAZORPAY_TEST_KEY_ID || '').trim();
+  const keySecret = (process.env.RAZORPAY_KEY_SECRET || process.env.RAZORPAY_TEST_KEY_SECRET || '').trim();
+
+  if (!keyId || !keySecret || isPlaceholderCredential(keyId) || isPlaceholderCredential(keySecret)) {
+    return c.json({
+      success: false,
+      error: 'Razorpay credentials not configured or placeholder'
+    }, 500);
+  }
+
+  const authHeader = 'Basic ' + Buffer.from(`${keyId}:${keySecret}`).toString('base64');
+  try {
+    const res = await fetch('https://api.razorpay.com/v1/orders', {
+      method: 'POST',
+      headers: {
+        'Authorization': authHeader,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        amount,
+        currency,
+        receipt,
+        notes
+      })
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      return c.json({
+        success: false,
+        error: `Razorpay API error (${res.status}): ${errText}`
+      }, 502);
+    }
+
+    const orderData = await res.json() as any;
+    return c.json({
+      success: true,
+      order_id: orderData.id,
+      amount: orderData.amount,
+      currency: orderData.currency,
+      key_id: keyId,
+      mode: 'test',
+      sandbox: true
+    }, 200);
+  } catch (err: any) {
+    return c.json({
+      success: false,
+      error: `Network error communicating with Razorpay: ${err.message}`
+    }, 502);
+  }
+};
+apiRouter.post('/create-order', handleGenericCreateOrder);
+apiRouter.post('/api/v1/create-order', handleGenericCreateOrder);
+
+/**
+ * Generic Razorpay Web Checkout: Verify Signature
+ * Accessible via POST /api/v1/verify-payment, POST /verify-payment, POST /api/verify-payment
+ */
+const handleGenericVerifyPayment = async (c: any) => {
+  const body = await c.req.json().catch(() => ({}));
+  const orderId = body.razorpay_order_id || body.orderId;
+  const paymentId = body.razorpay_payment_id || body.paymentId;
+  const signature = body.razorpay_signature || body.signature;
+
+  if (!orderId || !paymentId || !signature) {
+    return c.json({
+      success: false,
+      error: 'Missing required fields: razorpay_order_id, razorpay_payment_id, razorpay_signature'
+    }, 400);
+  }
+
+  const keySecret = (process.env.RAZORPAY_KEY_SECRET || process.env.RAZORPAY_TEST_KEY_SECRET || '').trim();
+  const { createHmac, timingSafeEqual } = await import('node:crypto');
+  const expectedHmac = createHmac('sha256', keySecret || 'test_secret')
+    .update(`${orderId}|${paymentId}`)
+    .digest('hex');
+
+  let isValid = false;
+  if (expectedHmac.length === signature.length) {
+    isValid = timingSafeEqual(Buffer.from(expectedHmac, 'utf8'), Buffer.from(signature, 'utf8'));
+  }
+
+  if (!isValid) {
+    return c.json({
+      success: false,
+      error: 'Invalid payment signature'
+    }, 400);
+  }
+
+  return c.json({
+    success: true,
+    verified: true,
+    orderId,
+    paymentId
+  }, 200);
+};
+apiRouter.post('/verify-payment', handleGenericVerifyPayment);
+apiRouter.post('/api/v1/verify-payment', handleGenericVerifyPayment);
+
+/**
  * Payment Status Polling Endpoint
  */
 const handleSiteAuditPaymentStatus = async (c: any) => {

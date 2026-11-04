@@ -173,6 +173,8 @@ export class DirectCommercialOfferPage {
   <meta name="description" content="Turn after-hours patient inquiries into booked appointments. Administrative Website &amp; WhatsApp Inquiry Capture, Instant Triage Summary, and Appointment Request Logging for Indian healthcare and dental practices.">
   <link rel="canonical" href="${siteUrl}/">
   <meta name="robots" content="index, follow">
+  <!-- Razorpay Standard Web Checkout -->
+  <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
   <style>
     :root {
       color-scheme: dark;
@@ -312,6 +314,41 @@ export class DirectCommercialOfferPage {
   </nav>
 
   <div class="container">
+    <!-- 🧪 LIVE RAZORPAY SANDBOX VERIFICATION CARD -->
+    <div id="razorpay-sandbox-test-panel" style="background: linear-gradient(135deg, rgba(30, 58, 138, 0.45), rgba(16, 185, 129, 0.2)); border: 2px solid #3b82f6; border-radius: 12px; padding: 22px 24px; margin-bottom: 2rem; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+      <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 16px;">
+        <div style="max-width: 680px;">
+          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+            <span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #10b981; box-shadow: 0 0 10px #10b981;"></span>
+            <strong style="color: #fff; font-size: 1.15rem; letter-spacing: -0.01em;">🧪 Razorpay Payment Gateway Sandbox Verification</strong>
+            <span style="font-size: 0.72rem; padding: 3px 10px; background: rgba(16,185,129,0.2); border: 1px solid #10b981; border-radius: 9999px; color: #34d399; font-weight: 700; text-transform: uppercase;">Test Mode Active</span>
+          </div>
+          <p style="font-size: 0.92rem; color: #cbd5e1; margin: 0 0 12px 0; line-height: 1.5;">
+            Click the button to launch the <strong>Razorpay Sandbox Checkout Modal</strong>. Use Razorpay's official test credentials to complete the simulated verification transaction (zero real money charged):
+          </p>
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; font-family: monospace; font-size: 0.85rem;">
+            <div style="background: rgba(0,0,0,0.45); padding: 10px 14px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.12);">
+              <span style="color: #94a3b8; display: block; font-family: sans-serif; font-size: 0.75rem; margin-bottom: 2px;">Mock Test Card</span>
+              <strong style="color: #60a5fa; font-size: 0.95rem;">4100 2800 0000 10007</strong>
+              <div style="color: #94a3b8; font-size: 0.75rem; margin-top: 3px;">CVV: <span style="color:#fff;">123</span> • Expiry: <span style="color:#fff;">12/26</span> • OTP: <span style="color:#fff;">Any 6 digits</span></div>
+            </div>
+            <div style="background: rgba(0,0,0,0.45); padding: 10px 14px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.12);">
+              <span style="color: #94a3b8; display: block; font-family: sans-serif; font-size: 0.75rem; margin-bottom: 2px;">Mock Test UPI</span>
+              <strong style="color: #34d399; font-size: 0.95rem;">test@razorpay</strong>
+              <div style="color: #94a3b8; font-size: 0.75rem; margin-top: 3px;">Simulated instant approval</div>
+            </div>
+          </div>
+        </div>
+        <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 8px;">
+          <button id="liveHomeTestPayBtn" onclick="runRazorpayLiveTestCheckout()" style="background: #2563eb; color: #fff; font-weight: 800; font-size: 1.05rem; padding: 14px 26px; border: none; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 8px; box-shadow: 0 4px 16px rgba(37,99,235,0.4); transition: transform 0.1s ease;">
+            <span>⚡ Launch Test Payment Modal (₹1.00)</span>
+          </button>
+          <span style="font-size: 0.75rem; color: #94a3b8;">Zero real money charged • Sandbox simulated</span>
+        </div>
+      </div>
+      <div id="liveHomeRzpStatus" style="display: none; margin-top: 14px; padding: 12px 16px; border-radius: 8px; font-size: 0.9rem;"></div>
+    </div>
+
     <header class="hero">
       <div class="status-badge">AI Inbound Lead Conversion System • India First</div>
       <h1>Never Lose Another Evening Patient Inquiry</h1>
@@ -668,6 +705,114 @@ export class DirectCommercialOfferPage {
       if (box && window.__lastCsv) {
         box.style.display = box.style.display === 'none' ? 'block' : 'none';
         box.innerText = window.__lastCsv;
+      }
+    }
+
+    async function runRazorpayLiveTestCheckout() {
+      const btn = document.getElementById('liveHomeTestPayBtn');
+      const statusBox = document.getElementById('liveHomeRzpStatus');
+      statusBox.style.display = 'block';
+      statusBox.style.background = 'rgba(59, 130, 246, 0.15)';
+      statusBox.style.border = '1px solid #3b82f6';
+      statusBox.style.color = '#93c5fd';
+      statusBox.innerText = '⏳ Creating ₹1.00 test order with Razorpay...';
+      btn.disabled = true;
+
+      try {
+        const res = await fetch('/api/v1/create-order', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            amount: 100,
+            currency: 'INR',
+            receipt: 'rcpt_live_home_' + Date.now(),
+            notes: { test_type: 'live_homepage_test' }
+          })
+        });
+        const orderData = await res.json();
+        if (!res.ok || !orderData.order_id) {
+          throw new Error(orderData.error || orderData.message || 'Failed to create Razorpay order');
+        }
+
+        const options = {
+          key: orderData.key_id,
+          amount: orderData.amount,
+          currency: orderData.currency || 'INR',
+          name: 'AI Marketing Organization (Test Sandbox)',
+          description: 'Sandbox Mode — Simulated Test Payment (No Real Currency Moved)',
+          order_id: orderData.order_id,
+          notes: {
+            mode: 'test',
+            sandbox: 'true',
+            mock_card: '4100 2800 0000 10007',
+            mock_upi: 'test@razorpay'
+          },
+          handler: async function (response) {
+            statusBox.innerText = '🔐 Payment authorized! Verifying HMAC signature...';
+            try {
+              const verifyRes = await fetch('/api/v1/verify-payment', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  razorpay_order_id: response.razorpay_order_id,
+                  razorpay_payment_id: response.razorpay_payment_id,
+                  razorpay_signature: response.razorpay_signature
+                })
+              });
+              const verifyData = await verifyRes.json();
+              if (verifyRes.ok && verifyData.success) {
+                statusBox.style.background = 'rgba(16, 185, 129, 0.2)';
+                statusBox.style.border = '1px solid #10b981';
+                statusBox.style.color = '#34d399';
+                statusBox.innerHTML = '🎉 <strong>Test Transaction Succeeded!</strong><br>Payment ID: <code>' + response.razorpay_payment_id + '</code> | Order ID: <code>' + response.razorpay_order_id + '</code><br><span style="font-size:0.85rem; color:#d1d5db;">You can now return to the Razorpay setup wizard and click <strong>\"I have done the transaction\"</strong>!</span>';
+                btn.innerHTML = '<span>✅ Test Transaction Completed</span>';
+              } else {
+                statusBox.style.background = 'rgba(239, 68, 68, 0.15)';
+                statusBox.style.border = '1px solid #ef4444';
+                statusBox.style.color = '#fca5a5';
+                statusBox.innerText = '❌ Verification error: ' + (verifyData.error || 'Signature check failed');
+                btn.disabled = false;
+              }
+            } catch (vErr) {
+              statusBox.style.background = 'rgba(239, 68, 68, 0.15)';
+              statusBox.style.border = '1px solid #ef4444';
+              statusBox.style.color = '#fca5a5';
+              statusBox.innerText = '❌ Verification network error: ' + vErr.message;
+              btn.disabled = false;
+            }
+          },
+          modal: {
+            ondismiss: function () {
+              statusBox.style.background = 'rgba(245, 158, 11, 0.15)';
+              statusBox.style.border = '1px solid #f59e0b';
+              statusBox.style.color = '#fcd34d';
+              statusBox.innerText = '⚠️ Payment modal closed by user.';
+              btn.disabled = false;
+            }
+          },
+          prefill: {
+            name: 'Test Customer',
+            email: 'test@example.com',
+            contact: '9999999999'
+          },
+          theme: { color: '#2563eb' }
+        };
+
+        const rzp = new Razorpay(options);
+        rzp.on('payment.failed', function (resp) {
+          statusBox.style.background = 'rgba(239, 68, 68, 0.15)';
+          statusBox.style.border = '1px solid #ef4444';
+          statusBox.style.color = '#fca5a5';
+          statusBox.innerText = '❌ Payment failed: ' + (resp.error?.description || 'Declined');
+          btn.disabled = false;
+        });
+        rzp.open();
+      } catch (err) {
+        statusBox.style.background = 'rgba(239, 68, 68, 0.15)';
+        statusBox.style.border = '1px solid #ef4444';
+        statusBox.style.color = '#fca5a5';
+        statusBox.innerText = '❌ ' + err.message;
+        btn.disabled = false;
       }
     }
   </script>
@@ -1138,6 +1283,114 @@ export class DirectCommercialOfferPage {
         box.innerText = window.__lastCsv;
       }
     }
+
+    async function runRazorpayLiveTestCheckout() {
+      const btn = document.getElementById('liveHomeTestPayBtn');
+      const statusBox = document.getElementById('liveHomeRzpStatus');
+      statusBox.style.display = 'block';
+      statusBox.style.background = 'rgba(59, 130, 246, 0.15)';
+      statusBox.style.border = '1px solid #3b82f6';
+      statusBox.style.color = '#93c5fd';
+      statusBox.innerText = '⏳ Creating ₹1.00 test order with Razorpay...';
+      btn.disabled = true;
+
+      try {
+        const res = await fetch('/api/v1/create-order', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            amount: 100,
+            currency: 'INR',
+            receipt: 'rcpt_live_home_' + Date.now(),
+            notes: { test_type: 'live_homepage_test' }
+          })
+        });
+        const orderData = await res.json();
+        if (!res.ok || !orderData.order_id) {
+          throw new Error(orderData.error || orderData.message || 'Failed to create Razorpay order');
+        }
+
+        const options = {
+          key: orderData.key_id,
+          amount: orderData.amount,
+          currency: orderData.currency || 'INR',
+          name: 'AI Marketing Organization (Test Sandbox)',
+          description: 'Sandbox Mode — Simulated Test Payment (No Real Currency Moved)',
+          order_id: orderData.order_id,
+          notes: {
+            mode: 'test',
+            sandbox: 'true',
+            mock_card: '4100 2800 0000 10007',
+            mock_upi: 'test@razorpay'
+          },
+          handler: async function (response) {
+            statusBox.innerText = '🔐 Payment authorized! Verifying HMAC signature...';
+            try {
+              const verifyRes = await fetch('/api/v1/verify-payment', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  razorpay_order_id: response.razorpay_order_id,
+                  razorpay_payment_id: response.razorpay_payment_id,
+                  razorpay_signature: response.razorpay_signature
+                })
+              });
+              const verifyData = await verifyRes.json();
+              if (verifyRes.ok && verifyData.success) {
+                statusBox.style.background = 'rgba(16, 185, 129, 0.2)';
+                statusBox.style.border = '1px solid #10b981';
+                statusBox.style.color = '#34d399';
+                statusBox.innerHTML = '🎉 <strong>Test Transaction Succeeded!</strong><br>Payment ID: <code>' + response.razorpay_payment_id + '</code> | Order ID: <code>' + response.razorpay_order_id + '</code><br><span style="font-size:0.85rem; color:#d1d5db;">You can now return to the Razorpay setup wizard and click <strong>\"I have done the transaction\"</strong>!</span>';
+                btn.innerHTML = '<span>✅ Test Transaction Completed</span>';
+              } else {
+                statusBox.style.background = 'rgba(239, 68, 68, 0.15)';
+                statusBox.style.border = '1px solid #ef4444';
+                statusBox.style.color = '#fca5a5';
+                statusBox.innerText = '❌ Verification error: ' + (verifyData.error || 'Signature check failed');
+                btn.disabled = false;
+              }
+            } catch (vErr) {
+              statusBox.style.background = 'rgba(239, 68, 68, 0.15)';
+              statusBox.style.border = '1px solid #ef4444';
+              statusBox.style.color = '#fca5a5';
+              statusBox.innerText = '❌ Verification network error: ' + vErr.message;
+              btn.disabled = false;
+            }
+          },
+          modal: {
+            ondismiss: function () {
+              statusBox.style.background = 'rgba(245, 158, 11, 0.15)';
+              statusBox.style.border = '1px solid #f59e0b';
+              statusBox.style.color = '#fcd34d';
+              statusBox.innerText = '⚠️ Payment modal closed by user.';
+              btn.disabled = false;
+            }
+          },
+          prefill: {
+            name: 'Test Customer',
+            email: 'test@example.com',
+            contact: '9999999999'
+          },
+          theme: { color: '#2563eb' }
+        };
+
+        const rzp = new Razorpay(options);
+        rzp.on('payment.failed', function (resp) {
+          statusBox.style.background = 'rgba(239, 68, 68, 0.15)';
+          statusBox.style.border = '1px solid #ef4444';
+          statusBox.style.color = '#fca5a5';
+          statusBox.innerText = '❌ Payment failed: ' + (resp.error?.description || 'Declined');
+          btn.disabled = false;
+        });
+        rzp.open();
+      } catch (err) {
+        statusBox.style.background = 'rgba(239, 68, 68, 0.15)';
+        statusBox.style.border = '1px solid #ef4444';
+        statusBox.style.color = '#fca5a5';
+        statusBox.innerText = '❌ ' + err.message;
+        btn.disabled = false;
+      }
+    }
   </script>
 </body>
 </html>`;
@@ -1173,6 +1426,8 @@ export class DirectCommercialOfferPage {
   <meta name="description" content="Turn after-hours inquiries into booked appointments. Complete setup, CRM & WhatsApp integration, and 24/7 lead conversion activation for local businesses in India.">
   <link rel="canonical" href="${siteUrl}/offer">
   <meta name="robots" content="index, follow">
+  <!-- Razorpay Standard Web Checkout -->
+  <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
   <style>
     :root {
       color-scheme: dark;

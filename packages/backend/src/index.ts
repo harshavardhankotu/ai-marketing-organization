@@ -131,6 +131,24 @@ app.get('/api/health', (c) => {
 // Mount domain routes under /api/v1
 app.route('/api/v1', apiRouter);
 
+// Forward top-level /api/create-order and /api/verify-payment to /api/v1
+app.all('/api/create-order', (c) => {
+  const targetUrl = new URL('/api/v1/create-order', c.req.url);
+  return app.fetch(new Request(targetUrl.toString(), {
+    method: c.req.method,
+    headers: c.req.raw.headers,
+    body: ['GET', 'HEAD'].includes(c.req.method) ? undefined : c.req.raw.body
+  }));
+});
+app.all('/api/verify-payment', (c) => {
+  const targetUrl = new URL('/api/v1/verify-payment', c.req.url);
+  return app.fetch(new Request(targetUrl.toString(), {
+    method: c.req.method,
+    headers: c.req.raw.headers,
+    body: ['GET', 'HEAD'].includes(c.req.method) ? undefined : c.req.raw.body
+  }));
+});
+
 // Top-level /owner/* routing: forwarded to /api/v1/owner/* so owner authentication is strictly enforced
 app.all('/owner/*', async (c) => {
   const targetPath = '/api/v1' + c.req.path;
