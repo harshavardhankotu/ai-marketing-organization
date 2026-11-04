@@ -9476,9 +9476,12 @@ const handleSiteAuditCheckout = async (c: any) => {
     }, 500);
   }
 
+  const createdViaRazorpayApi = Boolean(orderId && !orderId.startsWith('order_test_') && !orderId.startsWith('order_sitefix_'));
+
   return c.json({
     success: true,
     orderId,
+    createdViaRazorpayApi,
     amount: amountPaise,
     amountINR,
     currency: 'INR',
@@ -9489,6 +9492,7 @@ const handleSiteAuditCheckout = async (c: any) => {
     sandbox: true,
     order: {
       orderId,
+      createdViaRazorpayApi,
       auditId,
       sku,
       amountINR,
@@ -9647,6 +9651,7 @@ const handleGenericCreateOrder = async (c: any) => {
     return c.json({
       success: true,
       order_id: orderData.id,
+      createdViaRazorpayApi: true,
       amount: orderData.amount,
       currency: orderData.currency,
       key_id: keyId,

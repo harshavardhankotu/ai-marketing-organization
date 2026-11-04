@@ -101,15 +101,25 @@ app.use('*', cors({
   exposeHeaders: ['Set-Cookie']
 }));
 
-// Pre-launch security headers middleware (HSTS, nosniff, Referrer-Policy, CSP)
+// Pre-launch security headers middleware (HSTS, nosniff, Referrer-Policy, CSP, COEP)
 app.use('*', async (c, next) => {
   await next();
   c.header('X-Content-Type-Options', 'nosniff');
   c.header('Referrer-Policy', 'strict-origin-when-cross-origin');
   c.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
-  if (!c.res.headers.has('Content-Security-Policy')) {
-    c.header('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' https:; style-src 'self' 'unsafe-inline' https:; img-src 'self' data: https:; font-src 'self' data: https:; connect-src 'self' https:; frame-ancestors 'none';");
-  }
+  c.header('Cross-Origin-Embedder-Policy', 'unsafe-none');
+  const csp = [
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://checkout.razorpay.com https://*.razorpay.com",
+    "frame-src 'self' https://api.razorpay.com https://checkout.razorpay.com https://*.razorpay.com",
+    "child-src 'self' https://api.razorpay.com https://checkout.razorpay.com https://*.razorpay.com",
+    "connect-src 'self' https://api.razorpay.com https://checkout.razorpay.com https://lumberjack.razorpay.com https://*.razorpay.com",
+    "img-src 'self' data: https: https://*.razorpay.com",
+    "style-src 'self' 'unsafe-inline' https:",
+    "font-src 'self' data: https:",
+    "frame-ancestors 'self'"
+  ].join('; ');
+  c.header('Content-Security-Policy', csp);
 });
 
 // Request Logger

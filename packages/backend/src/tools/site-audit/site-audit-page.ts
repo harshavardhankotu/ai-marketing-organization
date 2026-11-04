@@ -508,7 +508,6 @@ export function renderSiteAuditPage(): string {
           description: isTest
             ? 'Sandbox Mode — Simulated Test Payment (No Real Currency Moved)'
             : 'Website Optimization Fix-Pack (Test Sandbox)',
-          order_id: data.orderId,
           notes: {
             mode: 'test',
             sandbox: 'true',
@@ -542,6 +541,10 @@ export function renderSiteAuditPage(): string {
             color: isTest ? '#10b981' : '#3b82f6'
           }
         };
+
+        if (data.createdViaRazorpayApi === true || (data.order && data.order.createdViaRazorpayApi === true)) {
+          options.order_id = data.orderId;
+        }
 
         const rzp = new Razorpay(options);
         rzp.on('payment.failed', function (resp) {

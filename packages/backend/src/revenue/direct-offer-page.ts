@@ -740,7 +740,6 @@ export class DirectCommercialOfferPage {
           currency: orderData.currency || 'INR',
           name: 'AI Marketing Organization (Test Sandbox)',
           description: 'Sandbox Mode — Simulated Test Payment (No Real Currency Moved)',
-          order_id: orderData.order_id,
           notes: {
             mode: 'test',
             sandbox: 'true',
@@ -797,6 +796,10 @@ export class DirectCommercialOfferPage {
           },
           theme: { color: '#2563eb' }
         };
+
+        if (orderData.createdViaRazorpayApi === true) {
+          options.order_id = orderData.order_id;
+        }
 
         const rzp = new Razorpay(options);
         rzp.on('payment.failed', function (resp) {
@@ -1316,7 +1319,6 @@ export class DirectCommercialOfferPage {
           currency: orderData.currency || 'INR',
           name: 'AI Marketing Organization (Test Sandbox)',
           description: 'Sandbox Mode — Simulated Test Payment (No Real Currency Moved)',
-          order_id: orderData.order_id,
           notes: {
             mode: 'test',
             sandbox: 'true',
@@ -1373,6 +1375,10 @@ export class DirectCommercialOfferPage {
           },
           theme: { color: '#2563eb' }
         };
+
+        if (orderData.createdViaRazorpayApi === true) {
+          options.order_id = orderData.order_id;
+        }
 
         const rzp = new Razorpay(options);
         rzp.on('payment.failed', function (resp) {
