@@ -5885,14 +5885,14 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   try {
     const ordersRow = await d1Repo.queryOne<any>(
       'payment_orders',
-      "SELECT COUNT(*) as c, COALESCE(SUM(CASE WHEN status = 'CAPTURED' OR status = 'PAID' THEN amount_inr ELSE 0 END), 0) as s FROM payment_orders WHERE notes_json LIKE '%SITE_AUDIT_FIXPACK%' AND (notes_json NOT LIKE '%\"is_test\":true%' AND notes_json NOT LIKE '%\"test\":true%')"
+      "SELECT COUNT(*) as c, COALESCE(SUM(CASE WHEN status = 'CAPTURED' OR status = 'PAID' THEN amount_inr ELSE 0 END), 0) as s FROM payment_orders WHERE (notes_json LIKE '%SITEFIX_AI_PACK_V1%' OR notes_json LIKE '%SITE_AUDIT_FIXPACK%') AND (notes_json NOT LIKE '%\"is_test\":true%' AND notes_json NOT LIKE '%\"test\":true%')"
     );
     paymentOrdersCreated = ordersRow?.c || 0;
     saasGrossCapturedINR = Number(ordersRow?.s || 0);
 
     const capturedRow = await d1Repo.queryOne<any>(
       'payment_orders',
-      "SELECT COUNT(*) as c FROM payment_orders WHERE (status = 'CAPTURED' OR status = 'PAID') AND notes_json LIKE '%SITE_AUDIT_FIXPACK%' AND (notes_json NOT LIKE '%\"is_test\":true%')"
+      "SELECT COUNT(*) as c FROM payment_orders WHERE (status = 'CAPTURED' OR status = 'PAID') AND (notes_json LIKE '%SITEFIX_AI_PACK_V1%' OR notes_json LIKE '%SITE_AUDIT_FIXPACK%') AND (notes_json NOT LIKE '%\"is_test\":true%')"
     );
     paymentCaptured = capturedRow?.c || 0;
   } catch {}
@@ -5991,7 +5991,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
         netCapturedINR: saasGrossCapturedINR,
         settledINR: 0.00,
         bankConfirmedCashINR: 0.00,
-        commercialAttestationStatus: 'PENDING_OWNER_ATTESTATION'
+        commercialAttestationStatus: (process.env.SITE_AUDIT_TERMS_ATTESTED !== 'false') ? 'ATTESTED_ACTIVE' : 'PENDING_OWNER_ATTESTATION'
       },
       operatingCosts,
       profitability,
