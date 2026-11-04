@@ -151,6 +151,8 @@ export const EXACT_ROUTE_POLICY = {
     '/owner/login',
     '/payments/razorpay/create-order',
     '/payments/razorpay/verify',
+    '/create-order',
+    '/verify-payment',
     '/payments/manual-upi/claim',
     '/payments/public/create-link',
     '/proposals',
