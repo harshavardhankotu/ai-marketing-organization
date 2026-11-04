@@ -151,8 +151,9 @@ export const EXACT_ROUTE_POLICY = {
     '/owner/login',
     '/payments/razorpay/create-order',
     '/payments/razorpay/verify',
-    '/create-order',
-    '/verify-payment',
+    '/integrations/razorpay/test-readiness',
+    '/integrations/razorpay/test-order',
+    '/integrations/razorpay/test-verify',
     '/payments/manual-upi/claim',
     '/payments/public/create-link',
     '/proposals',
@@ -9592,146 +9593,40 @@ apiRouter.post('/tools/site-audit/:auditId/verify-payment', handleSiteAuditVerif
 apiRouter.post('/api/v1/tools/site-audit/:auditId/verify-payment', handleSiteAuditVerifyPayment);
 
 /**
- * Generic Razorpay Web Checkout: Create Order
- * Accessible via POST /api/v1/create-order, POST /create-order, POST /api/create-order
+ * Phase 3: Dedicated Razorpay Test Integration Endpoints
+ * - GET /api/v1/integrations/razorpay/test-readiness
+ * - POST /api/v1/integrations/razorpay/test-order
+ * - POST /api/v1/integrations/razorpay/test-verify
  */
-const handleGenericCreateOrder = async (c: any) => {
-  const body = await c.req.json().catch(() => ({}));
-  const rawAmount = body.amount ?? 100;
-  const amount = Number(rawAmount);
-
-  if (isNaN(amount) || amount < 100) {
-    return c.json({
-      success: false,
-      error: 'Amount must be at least 100 paise (₹1.00)'
-    }, 400);
-  }
-
-  const currency = String(body.currency || 'INR').toUpperCase();
-  const receipt = String(body.receipt || `rcpt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`);
-  const notes = body.notes || {};
-  notes.mode = 'test';
-  notes.sandbox = 'true';
-
-  const keyId = (process.env.RAZORPAY_KEY_ID || process.env.RAZORPAY_TEST_KEY_ID || '').trim();
-  const keySecret = (process.env.RAZORPAY_KEY_SECRET || process.env.RAZORPAY_TEST_KEY_SECRET || '').trim();
-
-  if (!keyId || !keySecret || isPlaceholderCredential(keyId) || isPlaceholderCredential(keySecret)) {
-    return c.json({
-      success: false,
-      error: 'Razorpay credentials not configured or placeholder'
-    }, 500);
-  }
-
-  const authHeader = 'Basic ' + Buffer.from(`${keyId}:${keySecret}`).toString('base64');
-  try {
-    const res = await fetch('https://api.razorpay.com/v1/orders', {
-      method: 'POST',
-      headers: {
-        'Authorization': authHeader,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        amount,
-        currency,
-        receipt,
-        notes
-      })
-    });
-
-    if (!res.ok) {
-      const errText = await res.text();
-      console.warn(`[handleGenericCreateOrder] Razorpay Orders API returned ${res.status}: ${errText}. Falling back to standard direct test checkout with key.`);
-      return c.json({
-        success: true,
-        order_id: null,
-        createdViaRazorpayApi: false,
-        amount,
-        currency,
-        key_id: keyId,
-        mode: 'test',
-        sandbox: true,
-        notice: 'Direct checkout without pre-created server order'
-      }, 200);
-    }
-
-    const orderData = await res.json() as any;
-    return c.json({
-      success: true,
-      order_id: orderData.id,
-      createdViaRazorpayApi: true,
-      amount: orderData.amount,
-      currency: orderData.currency,
-      key_id: keyId,
-      mode: 'test',
-      sandbox: true
-    }, 200);
-  } catch (err: any) {
-    console.warn(`[handleGenericCreateOrder] Razorpay network fault: ${err.message}. Falling back to standard direct test checkout.`);
-    return c.json({
-      success: true,
-      order_id: null,
-      createdViaRazorpayApi: false,
-      amount,
-      currency,
-      key_id: keyId,
-      mode: 'test',
-      sandbox: true
-    }, 200);
-  }
+const handleRazorpayTestReadiness = async (c: any) => {
+  const { RazorpayTestService } = await import('../integrations/razorpay-test-service.js');
+  const readiness = RazorpayTestService.getInstance().getTestReadiness();
+  return c.json(readiness, 200);
 };
-apiRouter.post('/create-order', handleGenericCreateOrder);
-apiRouter.post('/api/v1/create-order', handleGenericCreateOrder);
 
-/**
- * Generic Razorpay Web Checkout: Verify Signature
- * Accessible via POST /api/v1/verify-payment, POST /verify-payment, POST /api/verify-payment
- */
-const handleGenericVerifyPayment = async (c: any) => {
-  const body = await c.req.json().catch(() => ({}));
-  const orderId = body.razorpay_order_id || body.orderId || null;
-  const paymentId = body.razorpay_payment_id || body.paymentId;
-  const signature = body.razorpay_signature || body.signature || null;
-
-  if (!paymentId) {
-    return c.json({
-      success: false,
-      error: 'Missing required field: razorpay_payment_id'
-    }, 400);
-  }
-
-  // If orderId and signature are provided, verify HMAC
-  if (orderId && signature) {
-    const keySecret = (process.env.RAZORPAY_KEY_SECRET || process.env.RAZORPAY_TEST_KEY_SECRET || '').trim();
-    const { createHmac, timingSafeEqual } = await import('node:crypto');
-    const expectedHmac = createHmac('sha256', keySecret || 'test_secret')
-      .update(`${orderId}|${paymentId}`)
-      .digest('hex');
-
-    let isValid = false;
-    if (expectedHmac.length === signature.length) {
-      isValid = timingSafeEqual(Buffer.from(expectedHmac, 'utf8'), Buffer.from(signature, 'utf8'));
-    }
-
-    const isTestMode = (process.env.RAZORPAY_KEY_ID || '').startsWith('rzp_test_') || String(paymentId).startsWith('pay_');
-    if (!isValid && !isTestMode) {
-      return c.json({
-        success: false,
-        error: 'Invalid payment signature'
-      }, 400);
-    }
-  }
-
-  return c.json({
-    success: true,
-    verified: true,
-    orderId,
-    paymentId,
-    mode: 'test'
-  }, 200);
+const handleRazorpayTestOrder = async (c: any) => {
+  const { RazorpayTestService } = await import('../integrations/razorpay-test-service.js');
+  const { getTrustedClientIp } = await import('../security/client-ip.js');
+  const clientIpInfo = getTrustedClientIp(c);
+  const result = await RazorpayTestService.getInstance().createTestOrder(clientIpInfo.ip);
+  return c.json(result.data, result.status);
 };
-apiRouter.post('/verify-payment', handleGenericVerifyPayment);
-apiRouter.post('/api/v1/verify-payment', handleGenericVerifyPayment);
+
+const handleRazorpayTestVerify = async (c: any) => {
+  const body = await c.req.json().catch(() => ({}));
+  const { RazorpayTestService } = await import('../integrations/razorpay-test-service.js');
+  const result = await RazorpayTestService.getInstance().verifyTestPayment(body);
+  return c.json(result.data, result.status);
+};
+
+apiRouter.get('/integrations/razorpay/test-readiness', handleRazorpayTestReadiness);
+apiRouter.get('/api/v1/integrations/razorpay/test-readiness', handleRazorpayTestReadiness);
+
+apiRouter.post('/integrations/razorpay/test-order', handleRazorpayTestOrder);
+apiRouter.post('/api/v1/integrations/razorpay/test-order', handleRazorpayTestOrder);
+
+apiRouter.post('/integrations/razorpay/test-verify', handleRazorpayTestVerify);
+apiRouter.post('/api/v1/integrations/razorpay/test-verify', handleRazorpayTestVerify);
 
 /**
  * Payment Status Polling Endpoint

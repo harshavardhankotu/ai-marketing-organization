@@ -389,34 +389,13 @@ describe('SiteFix AI: Route Integration Tests via Hono apiRouter', () => {
     expect(hookJson.processed).toBe(true);
   });
 
-  it('exposes generic public /create-order and /verify-payment without requiring Bearer token', async () => {
-    const crypto = await import('crypto');
-    const orderRes = await apiRouter.request('/api/v1/create-order', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ amount: 100, currency: 'INR', receipt: 'test_rcpt_generic' })
+  it('exposes dedicated public test integration endpoints without requiring Bearer token', async () => {
+    const readinessRes = await apiRouter.request('/api/v1/integrations/razorpay/test-readiness', {
+      method: 'GET'
     });
-    // In fixture test mode, returns 200 with order_id or 500 if unconfigured
-    expect([200, 502]).toContain(orderRes.status);
-
-    const keySecret = process.env.RAZORPAY_KEY_SECRET || 'rzp_test_secret_fixture_456';
-    const fakeOrder = 'order_generic_test_123';
-    const fakePayment = 'pay_generic_test_456';
-    const sig = crypto.createHmac('sha256', keySecret).update(`${fakeOrder}|${fakePayment}`).digest('hex');
-
-    const verifyRes = await apiRouter.request('/api/v1/verify-payment', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        razorpay_order_id: fakeOrder,
-        razorpay_payment_id: fakePayment,
-        razorpay_signature: sig
-      })
-    });
-    expect(verifyRes.status).toBe(200);
-    const verifyJson = await verifyRes.json();
-    expect(verifyJson.success).toBe(true);
-    expect(verifyJson.verified).toBe(true);
+    expect(readinessRes.status).toBe(200);
+    const data = await readinessRes.json();
+    expect(data.mode).toBe('TEST');
   });
 
   it('fails closed when SITE_AUDIT_SIGNING_SECRET is shorter than 32 characters', () => {
