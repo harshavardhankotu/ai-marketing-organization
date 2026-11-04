@@ -101,8 +101,21 @@ describe('V4.2 Multi-Sector Commerce Engine Recovery Suite', () => {
       vi.spyOn(cuelinksClient, 'convertLink').mockImplementation(async (opts: any) => ({
         url: opts.url,
         tracking_url: `https://linksredirect.com/?id=123&subid=${opts.subid}&subid2=${opts.subid2}&subid4=${opts.subid4}&url=${encodeURIComponent(opts.url)}`,
-        affiliated: true
+        affiliated: true,
+        campaign: { id: 123, name: 'Tanishq' }
       }));
+
+      const { getDb } = await import('../../src/db/client.js');
+      const db = getDb();
+      db.prepare(`
+        INSERT OR REPLACE INTO partner_offers (
+          id, partner_id, organization_id, title, offer_slug, category, target_customer,
+          destination_url, authorized_tracking_url, active, status
+        ) VALUES (
+          ?, 'part_cuelinks', 'org_owner_primary', 'Tanishq Pendant', ?, 'Jewellery', 'Shoppers',
+          ?, ?, 1, 'ACTIVE'
+        )
+      `).run(testDealId, testDealId, 'https://www.tanishq.co.in/product/pendant-22k', 'https://linksredirect.com/?id=123');
 
       // Call redirect route
       const res = await app.request(`/api/v1/public/deals/${testDealId}/redirect`, {
@@ -123,7 +136,6 @@ describe('V4.2 Multi-Sector Commerce Engine Recovery Suite', () => {
       expect(location).toContain(`subid4=${testDealId}`);
 
       // Verify immutable click record written to referral_click_events in database
-      const db = getDb();
       const clickEvent = db.prepare('SELECT * FROM referral_click_events WHERE offer_id = ?').get(testDealId) as any;
       expect(clickEvent).toBeDefined();
       expect(clickEvent.placement).toBe('deal_redirect');

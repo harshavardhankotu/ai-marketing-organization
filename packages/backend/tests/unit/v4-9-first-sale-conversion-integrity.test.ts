@@ -236,6 +236,17 @@ describe('V4.9 First Sale Conversion Integrity & Attribution Suite', () => {
         };
       };
 
+      const testDb = getDb();
+      testDb.prepare(`
+        INSERT OR REPLACE INTO partner_offers (
+          id, partner_id, organization_id, title, offer_slug, category, target_customer,
+          destination_url, authorized_tracking_url, active, status
+        ) VALUES (
+          ?, 'part_cuelinks', 'org_owner_primary', 'boAt Airdopes 161', ?, 'Personal Audio', 'Shoppers',
+          'https://boat-lifestyle.com/products/airdopes-161', 'https://linksredirect.com/?cid=4232', 1, 'ACTIVE'
+        )
+      `).run(`deal_${dealSlug}`, dealSlug);
+
       const res = await app.request(`/public/deals/${dealSlug}/redirect?utm_source=telegram`, {
         headers: {
           'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0 Safari/537.36'
@@ -507,6 +518,16 @@ describe('V4.9 First Sale Conversion Integrity & Attribution Suite', () => {
         }
         return { ok: true, status: 200, json: async () => ({ data: [] }) };
       };
+
+      db.prepare(`
+        INSERT OR REPLACE INTO partner_offers (
+          id, partner_id, organization_id, title, offer_slug, category, target_customer,
+          destination_url, authorized_tracking_url, active, status
+        ) VALUES (
+          ?, 'part_cuelinks', 'org_owner_primary', 'boAt Airdopes 161', ?, 'Personal Audio', 'Shoppers',
+          'https://boat-lifestyle.com/products/airdopes-161', 'https://linksredirect.com/?cid=4232', 1, 'ACTIVE'
+        )
+      `).run(`deal_${pilotSlug}`, pilotSlug);
 
       // 3. Visitor hits public redirect
       const redirectRes = await app.request(`/public/deals/${pilotSlug}/redirect?utm_source=telegram`, {

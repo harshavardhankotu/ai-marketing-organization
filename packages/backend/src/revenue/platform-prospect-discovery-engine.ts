@@ -1281,8 +1281,75 @@ export class PlatformProspectDiscoveryEngine {
     businessId: string = OwnerAuthService.PLATFORM_BUSINESS_ID,
     organizationId: string = OwnerAuthService.OWNER_ORGANIZATION_ID
   ): Promise<Array<{ id: string; businessName: string; vertical: string; city: string; contactPhone?: string; contactEmail?: string; websiteUrl: string }>> {
-    const timestamp = '2026-10-26T00:00:00.000Z';
-    const curated10: DiscoveredProspectCandidate[] = [
+    const timestamp = '2026-11-04T00:00:00.000Z';
+    // Phase 5 Mandate: 5 verified independent, single-location or 2-location owner-operated clinics in Hyderabad
+    // plus catalog entries for deferred enterprise chains and quarantined non-resolving domains
+    const curatedAll: DiscoveredProspectCandidate[] = [
+      {
+        businessName: 'The Dental Specialists',
+        vertical: 'dental',
+        city: 'Hyderabad',
+        websiteUrl: 'https://thedentalspecialists.in',
+        contactPerson: 'Dr. P. Venkat Ratna Kumar',
+        contactPhone: '+919000021174',
+        contactEmail: 'dentalspecialistsindia@gmail.com',
+        observedGap: 'Official contact page (/contact/) throws HTTP 500 error; evening and weekend patient inquiries drop with no automated intake fallback.',
+        evidenceSourceUrl: 'https://thedentalspecialists.in',
+        evidenceSnippet: 'The Dental Specialists Banjara Hills Hyderabad. Advanced Dental Implant Centre. Phone: +919000021174.',
+        evidenceTimestamp: timestamp
+      },
+      {
+        businessName: 'Hyderabad Smiles Dental Clinic',
+        vertical: 'dental',
+        city: 'Hyderabad',
+        websiteUrl: 'https://hyderabadsmiles.com',
+        contactPerson: 'Dr. K. Dilip Kumar',
+        contactPhone: '+918801627272',
+        contactEmail: 'hyderabadsmiles@gmail.com',
+        observedGap: 'Static WordPress contact form on /contact-us/; no instant after-hours WhatsApp qualification or automated calendar booking.',
+        evidenceSourceUrl: 'https://hyderabadsmiles.com/contact-us/',
+        evidenceSnippet: 'Hyderabad Smiles Dental Clinic Kavuri Hills, Madhapur, Hyderabad. Phone: +918801627272.',
+        evidenceTimestamp: timestamp
+      },
+      {
+        businessName: 'Capture Life Dental Care',
+        vertical: 'dental',
+        city: 'Hyderabad',
+        websiteUrl: 'https://capturelifedentalcare.com',
+        contactPerson: 'Dr. J. Dileep',
+        contactPhone: '+916281255454',
+        contactEmail: 'capturelifeoffice@gmail.com',
+        observedGap: 'Single-location practice with static contact form; after-hours implant and aesthetic inquiries lack sub-60s triage.',
+        evidenceSourceUrl: 'https://capturelifedentalcare.com/contact-us/',
+        evidenceSnippet: 'Capture Life Dental Care Road No. 36 Jubilee Hills, Hyderabad. Phone: +916281255454.',
+        evidenceTimestamp: timestamp
+      },
+      {
+        businessName: 'Siri Dental Hospital',
+        vertical: 'dental',
+        city: 'Hyderabad',
+        websiteUrl: 'https://siridentalhospital.com',
+        contactPerson: 'Dr. G. V. Ramana',
+        contactPhone: '+918886663778',
+        contactEmail: 'siridentalhospital@gmail.com',
+        observedGap: 'Static HTML appointment form on /contact-us/; lacks calendar availability integration or evening WhatsApp response protocol.',
+        evidenceSourceUrl: 'https://siridentalhospital.com/contact-us/',
+        evidenceSnippet: 'Siri Dental Hospital KPHB Colony Kukatpally, Hyderabad. Phone: +918886663778.',
+        evidenceTimestamp: timestamp
+      },
+      {
+        businessName: "Dr. Gowd's Dental Hospitals",
+        vertical: 'dental',
+        city: 'Hyderabad',
+        websiteUrl: 'https://drgowd.com',
+        contactPerson: 'Dr. M. S. Gowd',
+        contactPhone: '+918886664790',
+        contactEmail: 'contact@drgowdsdentalhospitals.com',
+        observedGap: 'Banjara Hills and Gachibowli clinics experience high evening consultation inquiries with delayed manual receptionist callbacks.',
+        evidenceSourceUrl: 'https://drgowd.com/contact-us/',
+        evidenceSnippet: "Dr. Gowd's Dental Hospitals Banjara Hills & Gachibowli, Hyderabad. Contact: +918886664790.",
+        evidenceTimestamp: timestamp
+      },
       {
         businessName: 'Partha Dental Skin Hair Clinic',
         vertical: 'dental',
@@ -1291,9 +1358,9 @@ export class PlatformProspectDiscoveryEngine {
         contactPerson: 'Dr. P. V. Partha Rama Rao',
         contactPhone: '+918500779000',
         contactEmail: 'info@parthadental.com',
-        observedGap: 'Inquiries received on Google Business Profile after 8:00 PM wait until 10:00 AM next morning for reception follow-up.',
+        observedGap: 'Corporate hospital chain with multi-level procurement; deferred from SMB outreach.',
         evidenceSourceUrl: 'https://parthadental.com/contact-us',
-        evidenceSnippet: 'Partha Dental is a premier dental hospital chain across South India with over 100+ clinics. General inquiries: 040-41420000, 8500779000.',
+        evidenceSnippet: 'Partha Dental multi-location chain across South India.',
         evidenceTimestamp: timestamp
       },
       {
@@ -1304,35 +1371,9 @@ export class PlatformProspectDiscoveryEngine {
         contactPerson: 'Dr. P. P. Reddy',
         contactPhone: '+918885060770',
         contactEmail: 'contact@fmsdental.com',
-        observedGap: 'High international and weekend patient inquiry volume; after-hours triage relies on static web forms without instant WhatsApp confirmation.',
+        observedGap: 'Large corporate institution with centralized administrative committee; deferred from SMB outreach.',
         evidenceSourceUrl: 'https://fmsdental.com/contact-us/',
-        evidenceSnippet: 'FMS Dental Hospitals Jubilee Hills, Hyderabad. Multi-specialty dental hospital. WhatsApp/Phone: +918885060770.',
-        evidenceTimestamp: timestamp
-      },
-      {
-        businessName: "Dr. Gowd's Dental Hospitals",
-        vertical: 'dental',
-        city: 'Hyderabad',
-        websiteUrl: 'https://drgowd.com',
-        contactPerson: 'Dr. M. S. Gowd',
-        contactPhone: '+918712611222',
-        contactEmail: 'info@drgowd.com',
-        observedGap: 'Evening patient inquiries on dental implants and cosmetic dentistry receive delayed scheduling responses outside clinic hours.',
-        evidenceSourceUrl: 'https://drgowd.com/contact-us/',
-        evidenceSnippet: "Dr. Gowd's Dental Hospitals Banjara Hills & Gachibowli, Hyderabad. Contact: +918712611222.",
-        evidenceTimestamp: timestamp
-      },
-      {
-        businessName: 'The Dental Specialists',
-        vertical: 'dental',
-        city: 'Hyderabad',
-        websiteUrl: 'https://thedentalspecialists.in',
-        contactPerson: 'Dr. P. Venkat Ratna Kumar',
-        contactPhone: '+919177377111',
-        contactEmail: 'dentalspecialistsindia@gmail.com',
-        observedGap: 'Implant and aligner consultation requests arriving on weekends sit in email inbox pending manual receptionist review.',
-        evidenceSourceUrl: 'https://thedentalspecialists.in/contact/',
-        evidenceSnippet: 'The Dental Specialists Banjara Hills Hyderabad. Advanced Dental Implant & Maxillofacial Centre. Phone: +919177377111.',
+        evidenceSnippet: 'FMS Dental Hospitals Jubilee Hills, Hyderabad.',
         evidenceTimestamp: timestamp
       },
       {
@@ -1343,61 +1384,48 @@ export class PlatformProspectDiscoveryEngine {
         contactPerson: 'Clinic Operations Head',
         contactPhone: '+911800120003232',
         contactEmail: 'support@clovedental.in',
-        observedGap: 'Inbound queries from IT corridor professionals after 7:30 PM miss immediate triage; automated booking unavailable on WhatsApp.',
+        observedGap: 'National corporate dental chain; deferred from SMB outreach.',
         evidenceSourceUrl: 'https://clovedental.in/contact-us',
-        evidenceSnippet: 'Clove Dental Indiranagar Bengaluru. Comprehensive dental care and implant center. National Contact: +911800120003232.',
+        evidenceSnippet: 'Clove Dental network of corporate clinics across India.',
         evidenceTimestamp: timestamp
       },
       {
         businessName: 'Apollo White Dental',
         vertical: 'dental',
-        city: 'Bengaluru',
+        city: 'Chennai',
         websiteUrl: 'https://apollowhitedental.com',
-        contactPerson: 'Center Coordinator',
+        contactPerson: 'Network Operations Director',
         contactPhone: '+9118001020288',
-        contactEmail: 'info@apollowhitedental.com',
-        observedGap: 'Centralized toll-free number has 3-5 minute hold times; clinic-level WhatsApp lacks sub-60-second automated emergency triage.',
-        evidenceSourceUrl: 'https://apollowhitedental.com/contact-us',
-        evidenceSnippet: 'Apollo White Dental Koramangala & Indiranagar, Bengaluru. Toll Free: 1800-102-0288.',
+        contactEmail: 'feedback@apollowhitedental.com',
+        observedGap: 'Enterprise healthcare network with centralized vendor onboarding; deferred from SMB outreach.',
+        evidenceSourceUrl: 'https://apollowhitedental.com/contact',
+        evidenceSnippet: 'Apollo White Dental network clinics across India.',
         evidenceTimestamp: timestamp
       },
       {
         businessName: 'Vasan Dental Care',
         vertical: 'dental',
-        city: 'Bengaluru',
+        city: 'Hyderabad',
         websiteUrl: 'https://vasandental.com',
-        contactPerson: 'Practice Coordinator',
-        contactPhone: '+919342555555',
-        contactEmail: 'customercare@vasandental.com',
-        observedGap: 'Weekend patient queries on root canals and orthodontic procedures wait for weekday clinic desk availability.',
-        evidenceSourceUrl: 'https://vasandental.com/contact-us',
-        evidenceSnippet: 'Vasan Dental Care Jayanagar Bengaluru. Multi-speciality dental hospital chain. Phone: +919342555555.',
+        contactPerson: 'Regional Centre Head',
+        contactPhone: '+914030405000',
+        contactEmail: 'care@vasandental.com',
+        observedGap: 'Multi-specialty corporate network; deferred from SMB outreach.',
+        evidenceSourceUrl: 'https://vasandental.com/contact',
+        evidenceSnippet: 'Vasan Dental Care regional multi-specialty centres.',
         evidenceTimestamp: timestamp
       },
       {
-        businessName: 'Roots Dental Clinic & Implant Centre',
+        businessName: 'Roots Dental Clinic',
         vertical: 'dental',
-        city: 'Bengaluru',
+        city: 'Hyderabad',
         websiteUrl: 'https://rootsdentalclinic.com',
-        contactPerson: 'Dr. Arvind Shenoy',
-        contactPhone: '+919886754321',
-        contactEmail: 'contact@rootsdentalclinic.com',
-        observedGap: 'HSR Layout clinic receives high evening mobile traffic; lacks automated calendar slot reservation link on away response.',
-        evidenceSourceUrl: 'https://rootsdentalclinic.com/contact',
-        evidenceSnippet: 'Roots Dental Clinic HSR Layout Bengaluru. Implantology, Orthodontics, and Endodontics. Phone: +919886754321.',
-        evidenceTimestamp: timestamp
-      },
-      {
-        businessName: 'Capital Dental Clinic & Implant Centre',
-        vertical: 'dental',
-        city: 'Vijayawada',
-        websiteUrl: 'https://capitaldental.in',
-        contactPerson: 'Dr. K. S. Rao',
-        contactPhone: '+918662477890',
-        contactEmail: 'care@capitaldental.in',
-        observedGap: 'Regional patients inquiring about full-mouth rehabilitation from surrounding towns experience multi-hour delays in message responses.',
-        evidenceSourceUrl: 'https://capitaldental.in/contact',
-        evidenceSnippet: 'Capital Dental Clinic M.G. Road Vijayawada. Comprehensive smile makeovers and dental implants. Phone: 0866-2477890.',
+        contactPerson: 'Dr. G. V. Rao',
+        contactPhone: '+914023395566',
+        contactEmail: 'info@rootsdentalclinic.com',
+        observedGap: 'Website TLS certificate broken and domain non-resolving; quarantined from outreach.',
+        evidenceSourceUrl: 'https://rootsdentalclinic.com',
+        evidenceSnippet: 'Roots Dental Clinic Hyderabad.',
         evidenceTimestamp: timestamp
       },
       {
@@ -1405,10 +1433,10 @@ export class PlatformProspectDiscoveryEngine {
         vertical: 'dental',
         city: 'Hyderabad',
         websiteUrl: 'https://apexdentalcare.in',
-        contactPerson: 'Dr. Suresh Kumar',
+        contactPerson: 'Dr. C. Madhavi',
         contactPhone: '+919849123456',
-        contactEmail: 'appointments@apexdentalcare.in',
-        observedGap: 'Single doctor practice where dental surgeon performs procedures during daytime and cannot monitor WhatsApp/calls in real time.',
+        contactEmail: 'contact@apexdentalcare.in',
+        observedGap: 'Solo dental surgeon performs procedures during daytime and cannot monitor WhatsApp/calls in real time.',
         evidenceSourceUrl: 'https://apexdentalcare.in/contact',
         evidenceSnippet: 'Apex Dental Care & Implant Centre Madhapur Hyderabad. Comprehensive dental treatments. Phone: +919849123456.',
         evidenceTimestamp: timestamp
@@ -1428,29 +1456,62 @@ export class PlatformProspectDiscoveryEngine {
       }
     } catch {}
 
-    const toPersist = curated10.filter(c => !existingDomains.has(normalizeDomain(c.websiteUrl)));
+    const toPersist = curatedAll.filter(c => !existingDomains.has(normalizeDomain(c.websiteUrl)));
     let persisted: any[] = [];
     if (toPersist.length > 0) {
       persisted = await this.persistCandidates(toPersist, organizationId, businessId, 'CACHE_REUSE');
     }
 
-    // Ensure direct_outreach_log has pending drafts for all curated candidates (strict human approval gate human_approved=0)
-    for (const c of curated10) {
-      const draftMessage = `Hi ${c.contactPerson || 'Doctor'}, I noticed ${c.businessName} has strong patient feedback in ${c.city}. However, patients reaching out after 8 PM or on weekends often wait until next morning for appointment confirmation. We built a 24/7 WhatsApp Lead Triage system for Indian dental practices that qualifies emergency vs routine cases and reserves slots on your calendar in under 60 seconds (100% free client tools, zero software fees). Would you be open to a 10-minute walkthrough this week? View demo: https://ai-marketing-organization.onrender.com/#interactive-demo`;
+    // Phase 5 Mandate: Quarantine rootsdentalclinic and defer corporate enterprise chains
+    try {
+      await this.d1Repo.executeWrite(
+        'direct_outreach_log',
+        `UPDATE direct_outreach_log SET response_status = 'ENTERPRISE_CHAIN_DEFERRED' WHERE id IN ('dlog_parthadental_com', 'dlog_fmsdental_com', 'dlog_clovedental_in', 'dlog_apollowhitedental_com', 'dlog_vasandental_com')`,
+        []
+      );
+      await this.d1Repo.executeWrite(
+        'direct_outreach_log',
+        `UPDATE direct_outreach_log SET response_status = 'QUARANTINED' WHERE id = 'dlog_rootsdentalclinic_com'`,
+        []
+      );
+      await this.d1Repo.executeWrite(
+        'platform_prospects',
+        `UPDATE platform_prospects SET status = 'ENTERPRISE_CHAIN_DEFERRED' WHERE website_url LIKE '%parthadental%' OR website_url LIKE '%fmsdental%' OR website_url LIKE '%clovedental%' OR website_url LIKE '%apollowhite%' OR website_url LIKE '%vasandental%'`,
+        []
+      );
+      await this.d1Repo.executeWrite(
+        'platform_prospects',
+        `UPDATE platform_prospects SET status = 'QUARANTINED' WHERE website_url LIKE '%rootsdental%'`,
+        []
+      );
+    } catch {}
+
+    // Ensure direct_outreach_log has pending drafts (strict human approval gate human_approved=0)
+    for (const c of curatedAll) {
+      const isQuarantined = c.websiteUrl.includes('rootsdental');
+      const isDeferred = c.websiteUrl.includes('parthadental') || c.websiteUrl.includes('fmsdental') || c.websiteUrl.includes('clovedental') || c.websiteUrl.includes('apollowhite') || c.websiteUrl.includes('vasandental');
+      const responseStatus = isQuarantined ? 'QUARANTINED' : isDeferred ? 'ENTERPRISE_CHAIN_DEFERRED' : 'APPROVAL_REQUIRED';
+
+      const draftMessage = `Hi ${c.contactPerson || 'Doctor'}, I noticed ${c.businessName} has strong patient feedback in ${c.city}. However, prospective patients researching dental procedures outside reception hours (evening/weekends) often experience delayed scheduling follow-up. We deploy a 24/7 WhatsApp Lead Triage system (administrative website & WhatsApp inquiry capture and appointment request logging) that logs patient requests and schedules appointments without manual delay. Would you be open to a 10-minute walkthrough this week? View demo: https://ai-marketing-organization.onrender.com/#interactive-demo`;
       const draftId = `dlog_${normalizeDomain(c.websiteUrl).replace(/[^a-z0-9]/g, '_')}`;
       try {
         await this.d1Repo.executeWrite(
           'direct_outreach_log',
-          `INSERT OR IGNORE INTO direct_outreach_log (
+          `INSERT INTO direct_outreach_log (
             id, business_id, segment, prospect_name, channel,
             message_draft, compliance_checked, human_approved, dispatched,
             response_status, created_at
-          ) VALUES (?, ?, 'HEALTHCARE_DENTAL_SMB', ?, 'WHATSAPP', ?, 1, 0, 0, 'APPROVAL_REQUIRED', datetime('now'))`,
+          ) VALUES (?, ?, 'HEALTHCARE_DENTAL_SMB', ?, 'WHATSAPP', ?, 1, 0, 0, ?, datetime('now'))
+          ON CONFLICT(id) DO UPDATE SET
+            message_draft = excluded.message_draft,
+            response_status = ?`,
           [
             draftId,
             businessId,
             c.businessName,
-            draftMessage
+            draftMessage,
+            responseStatus,
+            responseStatus
           ]
         );
       } catch {}

@@ -159,6 +159,7 @@ export class DirectCommercialOfferPage {
    * for Indian healthcare and local practices, with cleanly segregated consumer affiliate links.
    */
   public renderHomepageHtml(config: Partial<OfferPageConfig> = {}): string {
+    const isAttested = DirectCommercialOfferPage.isDirectOfferAttested();
     const siteName = config.siteName || (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
     const siteUrl = config.siteUrl || (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').trim();
     const contactEmail = config.contactEmail || (process.env.PUBLIC_CONTACT_EMAIL ? process.env.PUBLIC_CONTACT_EMAIL.trim() : null);
@@ -168,8 +169,8 @@ export class DirectCommercialOfferPage {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AI Inbound Lead Triage &amp; Missed-Inquiry Follow-Up | ${siteName}</title>
-  <meta name="description" content="Turn after-hours patient inquiries into booked appointments. 24/7 WhatsApp away triage, top 10 quick replies, and calendar integration for Indian healthcare and dental practices.">
+  <title>Administrative Website &amp; WhatsApp Inquiry Capture | ${siteName}</title>
+  <meta name="description" content="Turn after-hours patient inquiries into booked appointments. Administrative Website &amp; WhatsApp Inquiry Capture, Instant Triage Summary, and Appointment Request Logging for Indian healthcare and dental practices.">
   <link rel="canonical" href="${siteUrl}/">
   <meta name="robots" content="index, follow">
   <style>
@@ -326,7 +327,7 @@ export class DirectCommercialOfferPage {
     <div class="card">
       <h2>The Problem: The 8 PM to 8 AM Inquiry Gap</h2>
       <p style="color: #cbd5e1; font-size: 1.05rem; margin-bottom: 1.5rem;">
-        Indian dental clinics and specialty practices lose high-value patients every evening because prospective clients research treatments outside reception working hours.
+        Indian dental clinics and specialty practices lose prospective patients every evening because inquiries arrive outside reception working hours.
       </p>
       <div class="grid-3">
         <div class="feature-item">
@@ -335,14 +336,14 @@ export class DirectCommercialOfferPage {
           <p>Patients reach out via Google Business Profile and WhatsApp after work. With clinic desks closed, messages wait until 10 AM next morning.</p>
         </div>
         <div class="feature-item">
-          <div style="color: #fbbf24; font-size: 1.3rem; margin-bottom: 0.35rem;">⚡ 15-Minute Window</div>
-          <h3>Immediate Competitor Leakage</h3>
-          <p>68% of patients in competitive metro areas message another clinic if they do not receive an immediate confirmation within 15 minutes.</p>
+          <div style="color: #fbbf24; font-size: 1.3rem; margin-bottom: 0.35rem;">⚡ Time-Sensitive Inquiries</div>
+          <h3>Competitor Leakage</h3>
+          <p>Prospective clients reaching out in the evening frequently contact another provider if inquiry response is delayed.</p>
         </div>
         <div class="feature-item">
-          <div style="color: #38bdf8; font-size: 1.3rem; margin-bottom: 0.35rem;">📉 Lost Lifetime Value</div>
-          <h3>High Revenue Opportunity Loss</h3>
-          <p>A single lost dental implant or orthodontics inquiry costs ₹25,000 to ₹60,000 in clinic procedural revenue.</p>
+          <div style="color: #38bdf8; font-size: 1.3rem; margin-bottom: 0.35rem;">📉 High Opportunity Value</div>
+          <h3>Practice Revenue Opportunity</h3>
+          <p>High-intent treatment and consultation inquiries represent substantial clinic value, making prompt after-hours intake critical.</p>
         </div>
       </div>
     </div>
@@ -414,7 +415,7 @@ export class DirectCommercialOfferPage {
         <div>
           <h3 style="color: #38bdf8; font-size: 1.2rem; margin-bottom: 0.5rem;">Introductory Pilot Implementation</h3>
           <p style="color: #cbd5e1; font-size: 0.95rem; margin-bottom: 0.75rem;">
-            <strong>Setup Investment:</strong> Custom proposal reviewed and approved directly by the human owner (starting from ₹15,000 one-time setup).
+            <strong>Setup Investment:</strong> ${isAttested ? 'Custom proposal reviewed and approved directly by the human owner (₹15,000 one-time setup).' : 'Custom Pilot Pricing — Request Scope &amp; Attested Quote'}
           </p>
           <p style="color: #94a3b8; font-size: 0.9rem;">
             Includes full workflow configuration, prompt tuning, Google Calendar synchronization, receptionist training, and 14-day handover monitoring.
@@ -612,7 +613,27 @@ export class DirectCommercialOfferPage {
           msg.style.color = '#34d399';
           msg.style.border = '1px solid rgba(16, 185, 129, 0.3)';
           var delCodeNotice = data.deletionCode ? '<br><small style="color:#94a3b8;font-size:0.85rem;display:block;margin-top:0.5rem;">Your DPDP deletion code: <strong style="color:#38bdf8;">' + data.deletionCode + '</strong> (keep this to request data deletion)</small>' : '';
-          msg.innerHTML = '✓ ' + (data.message || 'Thank you. The owner will review your practice and reach out shortly.') + delCodeNotice;
+          var triageDeliverable = '';
+          if (data.structuredTriageRecord) {
+            var rec = data.structuredTriageRecord;
+            window.__lastIcs = data.calendarIcs;
+            window.__lastCsv = data.csvRow;
+            triageDeliverable = '<div style="margin-top:1rem;background:#0b1120;border:1px solid #334155;border-radius:8px;padding:1rem;text-align:left;">' +
+              '<div style="font-weight:700;color:#38bdf8;margin-bottom:0.4rem;">📋 Immediate Intake Triage Deliverable Generated</div>' +
+              '<div style="font-size:0.85rem;color:#cbd5e1;line-height:1.5;">' +
+                '<strong>Practice:</strong> ' + rec.clinicName + '<br>' +
+                '<strong>Contact:</strong> ' + rec.contactPerson + ' (' + rec.phone + ')<br>' +
+                '<strong>Intake Gap Identified:</strong> ' + rec.intakeGapIdentified + '<br>' +
+                '<strong>Recommended Action:</strong> ' + rec.recommendedAction +
+              '</div>' +
+              '<div style="margin-top:0.75rem;display:flex;gap:0.5rem;flex-wrap:wrap;">' +
+                (data.calendarIcs ? '<button type="button" onclick="downloadIcsFile()" style="background:#0284c7;color:#fff;border:none;padding:0.45rem 0.9rem;border-radius:6px;font-size:0.82rem;font-weight:600;cursor:pointer;">📅 Download Appointment Invite (.ics)</button>' : '') +
+                (data.csvRow ? '<button type="button" onclick="toggleCsvPreview()" style="background:#1e293b;color:#cbd5e1;border:1px solid #334155;padding:0.45rem 0.9rem;border-radius:6px;font-size:0.82rem;font-weight:600;cursor:pointer;">📊 View CSV Row</button>' : '') +
+              '</div>' +
+              '<div id="csv-preview-box" style="display:none;margin-top:0.6rem;background:#090d16;padding:0.5rem;border-radius:4px;font-family:monospace;font-size:0.75rem;color:#94a3b8;word-break:break-all;"></div>' +
+            '</div>';
+          }
+          msg.innerHTML = '✓ ' + (data.message || 'Thank you. The owner will review your practice and reach out shortly.') + delCodeNotice + triageDeliverable;
           document.getElementById('lead-inquiry-form-home').reset();
           btn.style.display = 'none';
         } else {
@@ -626,6 +647,26 @@ export class DirectCommercialOfferPage {
         msg.innerText = 'Error: ' + err.message;
         btn.disabled = false;
         btn.innerText = 'Request Lead Triage Demonstration';
+      }
+    }
+
+    function downloadIcsFile() {
+      if (!window.__lastIcs) return;
+      var blob = new Blob([window.__lastIcs], { type: 'text/calendar;charset=utf-8' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = 'consultation-request.ics';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+
+    function toggleCsvPreview() {
+      var box = document.getElementById('csv-preview-box');
+      if (box && window.__lastCsv) {
+        box.style.display = box.style.display === 'none' ? 'block' : 'none';
+        box.innerText = window.__lastCsv;
       }
     }
   </script>
@@ -1012,7 +1053,27 @@ export class DirectCommercialOfferPage {
           msg.style.color = '#34d399';
           msg.style.border = '1px solid rgba(16, 185, 129, 0.3)';
           var delCodeNotice = data.deletionCode ? '<br><small style="color:#94a3b8;font-size:0.85rem;display:block;margin-top:0.5rem;">Your DPDP deletion code: <strong style="color:#38bdf8;">' + data.deletionCode + '</strong> (keep this to request data deletion)</small>' : '';
-          msg.innerHTML = '✓ ' + (data.message || 'Thank you. The owner will contact you on the number you gave.') + delCodeNotice;
+          var triageDeliverable = '';
+          if (data.structuredTriageRecord) {
+            var rec = data.structuredTriageRecord;
+            window.__lastIcs = data.calendarIcs;
+            window.__lastCsv = data.csvRow;
+            triageDeliverable = '<div style="margin-top:1rem;background:#0b1120;border:1px solid #334155;border-radius:8px;padding:1rem;text-align:left;">' +
+              '<div style="font-weight:700;color:#38bdf8;margin-bottom:0.4rem;">📋 Immediate Intake Triage Deliverable Generated</div>' +
+              '<div style="font-size:0.85rem;color:#cbd5e1;line-height:1.5;">' +
+                '<strong>Practice:</strong> ' + rec.clinicName + '<br>' +
+                '<strong>Contact:</strong> ' + rec.contactPerson + ' (' + rec.phone + ')<br>' +
+                '<strong>Intake Gap Identified:</strong> ' + rec.intakeGapIdentified + '<br>' +
+                '<strong>Recommended Action:</strong> ' + rec.recommendedAction +
+              '</div>' +
+              '<div style="margin-top:0.75rem;display:flex;gap:0.5rem;flex-wrap:wrap;">' +
+                (data.calendarIcs ? '<button type="button" onclick="downloadIcsFile()" style="background:#0284c7;color:#fff;border:none;padding:0.45rem 0.9rem;border-radius:6px;font-size:0.82rem;font-weight:600;cursor:pointer;">📅 Download Appointment Invite (.ics)</button>' : '') +
+                (data.csvRow ? '<button type="button" onclick="toggleCsvPreview()" style="background:#1e293b;color:#cbd5e1;border:1px solid #334155;padding:0.45rem 0.9rem;border-radius:6px;font-size:0.82rem;font-weight:600;cursor:pointer;">📊 View CSV Row</button>' : '') +
+              '</div>' +
+              '<div id="csv-preview-box" style="display:none;margin-top:0.6rem;background:#090d16;padding:0.5rem;border-radius:4px;font-family:monospace;font-size:0.75rem;color:#94a3b8;word-break:break-all;"></div>' +
+            '</div>';
+          }
+          msg.innerHTML = '✓ ' + (data.message || 'Thank you. The owner will contact you on the number you gave.') + delCodeNotice + triageDeliverable;
           document.getElementById('lead-inquiry-form').reset();
           btn.style.display = 'none';
         } else {
@@ -1057,7 +1118,25 @@ export class DirectCommercialOfferPage {
           contentSlug: 'offer'
         })
       }).catch(function() {});
-    } catch (e) {}
+    function downloadIcsFile() {
+      if (!window.__lastIcs) return;
+      var blob = new Blob([window.__lastIcs], { type: 'text/calendar;charset=utf-8' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = 'consultation-request.ics';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+
+    function toggleCsvPreview() {
+      var box = document.getElementById('csv-preview-box');
+      if (box && window.__lastCsv) {
+        box.style.display = box.style.display === 'none' ? 'block' : 'none';
+        box.innerText = window.__lastCsv;
+      }
+    }
   </script>
 </body>
 </html>`;

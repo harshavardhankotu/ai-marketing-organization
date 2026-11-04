@@ -150,7 +150,7 @@ describe('V5.1.1 — 10 Regression Defect Repairs Verification', () => {
       expect(f.browserCandidateOutboundClicks).toBe(1);
       expect(f.botClicks).toBe(5);
       expect(f.unknownClicks).toBe(3);
-      expect(f.externalOutboundClicks).toBe(3); // 2 human + 1 browser_candidate
+      expect(f.externalOutboundClicks).toBe(2); // V5.1.2 Mandate: externalOutboundClicks equals verifiedHumanOutboundClicks ONLY
       expect(f.bankCashReceivedINR).toBe(0.00);
     });
   });

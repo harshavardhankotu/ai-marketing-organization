@@ -107,6 +107,7 @@ export function classifyTraffic(
   // 1. Diagnostic / Test checks
   if (
     headers?.['x-diagnostic'] ||
+    headers?.['x-diagnostic-probe'] ||
     headers?.['x-test-traffic'] ||
     /vitest|jest|supertest|postman|playwright|cypress|test-agent/i.test(ua)
   ) {

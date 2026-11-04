@@ -11,8 +11,8 @@
 
 | Lane | Name | Status | Measured Revenue | Operational Reality | Owner Action |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Lane C** | Own Direct B2B Lead Conversion System | **ACTIVE_CONVERSION_READY** | ₹0.00 cash (0 completed payments) | Public Homepage (`/`) and Service Offer (`/offer`) live with 24/7 WhatsApp triage deliverables, sample preview demo, DPDP form, 10 researched Indian healthcare practices, owner review queue (`/owner/today`), and proposal checkout (`/proposals/:id/checkout`) with Method A Razorpay dynamic links & Method B UPI QR. | Review 10 pending outreach drafts in `/owner/today` and click to dispatch |
-| **Lane F** | Cuelinks India Affiliate Network | **ACTIVE_MONETIZED** | ₹0.00 cash (0 completed sales) | Publisher 281897 & Channel 331585 approved. 4 active flight campaigns live. Student flight discount guide live (`/guides/student-flight-discounts-india`). Public deals catalog live (`/deals`). Public revenue dashboard live (`/revenue`). | Distribute guide link to authorized student/alumni groups |
+| **Lane C** | Own Direct B2B Lead Conversion System | **INFRASTRUCTURE_VERIFIED_AWAITING_FIRST_CONVERSION** | ₹0.00 bank-confirmed cash (0 completed payments) | Public Homepage (`/`) and Service Offer (`/offer`) live with 24/7 WhatsApp triage deliverables, sample preview demo, DPDP form, 5 researched independent Hyderabad clinics, owner review queue (`/owner/today`), and proposal checkout (`/proposals/:id/checkout`) with Method A Razorpay dynamic links & Method B UPI QR. | Review 5 pending outreach drafts in `/owner/today` and click to dispatch |
+| **Lane F** | Cuelinks India Affiliate Network | **INFRASTRUCTURE_VERIFIED_AWAITING_FIRST_CONVERSION** | ₹0.00 bank-confirmed cash (0 completed sales) | Publisher 281897 & Channel 331585 approved. Cuelinks V3 dynamic conversion and strict campaign verification active. Student flight discount guide live (`/guides/student-flight-discounts-india`). Public deals catalog live (`/deals`). Public revenue dashboard live (`/revenue`). | Distribute guide link to authorized student/alumni groups |
 | **Lane B** | Razorpay Hosted Payment Page | **ACTIVE_READY** | ₹0.00 cash (0 client transactions) | Canonical hosted page `https://razorpay.me/@venkatasaiharshavardhankotu` live and verified. | Share hosted link with prospective consulting clients |
 | **Lane H** | Multi-Agent Coordinated Operations | **ACTIVE_COORDINATED** | Indirect | Coordinated orchestrator wires 15 specialized agents directly to `AgentRuntime.getInstance().execute()` with real runtime token accounting and decision journal persistence. | Review pending publication approvals in dashboard |
 | **Lane D** | Manual UPI Claim & Owner Confirm | **ACTIVE_CHECKOUT_READY** | ₹0.00 cash | Direct UPI QR and UTR claim endpoint `/api/v1/payments/manual-upi/claim` integrated in `/proposals/:id/checkout`; strict ₹0.00 cash invariant enforced until bank statement proof. | Verify submitted UTR against bank account |
@@ -36,7 +36,7 @@
     - Cleartrip: `https://clnk.in/DKRN`
 - **Payment / Click Flow:** External visitor lands on guide or deals catalog -> clicks through tracked affiliate link -> completes booking/purchase on merchant site -> Cuelinks tracks referral via sub-ID -> merchant validates sale -> Cuelinks credits publisher account -> payment settled via NEFT in INR.
 - **Revenue Proof Mechanism:** Cuelinks V3 API sync (`/pub_api/v3/reports`, `/pub_api/v3/transactions`) ingested into D1 database; cash confirmed only upon matching bank statement credit.
-- **Status:** **ACTIVE_MONETIZED**
+- **Status:** **INFRASTRUCTURE_VERIFIED_AWAITING_FIRST_CONVERSION** (₹0.00 bank-confirmed cash)
 - **Blockers Cleared:**
   1. Publisher Account `281897` approved.
   2. Channel `331585` (`ai-marketing-organization.onrender.com`) verified and approved.
@@ -68,6 +68,7 @@
 ---
 
 ### Lane C: Own Offer with Razorpay API Payment Link
+- **Status:** **INFRASTRUCTURE_VERIFIED_AWAITING_FIRST_CONVERSION** (₹0.00 bank-confirmed cash)
 - **Entry Point:** `RazorpayAdapter.createPaymentLink()` via `/api/v1/commercial/proposals/accept` and `/api/v1/payments/create-order` in `packages/backend/src/integrations/razorpay.ts`.
 - **Payment / Click Flow:** Client accepts proposal -> system generates specific Razorpay payment link (e.g., `https://rzp.io/i/...`) with exact server-side authorized price -> client opens link and pays -> Razorpay webhooks fire to `/api/v1/webhooks/razorpay`.
 - **Revenue Proof Mechanism:** Webhook verifies `X-Razorpay-Signature` against secret, verifies exact amount in paise against database record, marks payment request `PAID`, and logs immutable record in `revenue_records`.

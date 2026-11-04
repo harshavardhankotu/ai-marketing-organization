@@ -2971,7 +2971,7 @@ export class AutonomousDealDiscoveryEngine {
         }
       }
 
-      // Register verified in-stock boAt candidate (Phase 8 Discovery)
+      // Phase 2 Mandate: Quarantine deal_boat_airdopes_161 due to restocking soon badge on merchant site
       const inStockCandidate: NormalizedDeal = {
         id: 'deal_boat_airdopes_161',
         slug: 'boat-airdopes-161-wireless-earbuds',
@@ -2982,33 +2982,33 @@ export class AutonomousDealDiscoveryEngine {
         brand: 'boAt',
         merchant: 'boAt Lifestyle',
         category: 'Electronics',
-        productUrl: 'https://www.boat-lifestyle.com/products/airdopes-161',
+        productUrl: 'https://www.boat-lifestyle.com/products/airdopes-161?variant=39539517227106',
         currentPriceINR: 899,
         currency: 'INR',
         referencePriceINR: 2490,
         claimedDiscountPercent: 64,
         verifiedDiscountPercent: 64,
         discountVerificationType: 'INDEPENDENT_CORROBORATED',
-        availability: 'IN_STOCK',
+        availability: 'OUT_OF_STOCK',
         geographicRestrictions: ['India'],
         offerStart: '2026-11-01T00:00:00.000Z',
         expiryDate: '2026-11-30T23:59:59.000Z',
         lastCheckedAt: new Date().toISOString(),
         observedAt: new Date().toISOString(),
-        sourceUrl: 'https://www.boat-lifestyle.com/products/airdopes-161',
+        sourceUrl: 'https://www.boat-lifestyle.com/products/airdopes-161?variant=39539517227106',
         sourceDomain: 'boat-lifestyle.com',
         sourceType: 'RETAILER_BRAND',
-        verificationStatus: 'VERIFIED',
-        confidenceScore: 95,
-        buyerValueScore: 88,
-        rejectionReasons: [],
-        isMonetizable: true,
+        verificationStatus: 'OUT_OF_STOCK',
+        confidenceScore: 0,
+        buyerValueScore: 0,
+        rejectionReasons: ['MERCHANT_RESTOCKING_BADGE_DETECTED'],
+        isMonetizable: false,
         affiliateNetwork: 'CUELINKS',
         affiliateCampaignId: '4232',
         modelOrSku: 'airdopes-161',
         evidenceJson: {
           sources: ['https://www.boat-lifestyle.com/products/airdopes-161'],
-          verificationLogs: ['In-stock verified on merchant official product catalog'],
+          verificationLogs: ['Quarantined: Restocking soon badge detected on official merchant page'],
           lastCorroboratedAt: new Date().toISOString()
         },
         createdAt: new Date().toISOString(),

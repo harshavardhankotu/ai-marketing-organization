@@ -120,9 +120,22 @@ describe('Stage 4 — Affiliate Redirect & Atomic Parameterized Attribution Test
       url: sampleDeal.productUrl,
       affiliated: true,
       channel_id: 12345,
-      tracking_url: 'https://linksredirect.com/?cid=12345&subid=clk_test_valid'
+      tracking_url: 'https://linksredirect.com/?cid=12345&subid=clk_test_valid',
+      campaign: { id: 4232, name: 'boAt Lifestyle' }
     });
     vi.spyOn(d1Repo, 'executeBatch').mockResolvedValue({ rowsAffected: 2, source: 'PERSISTENT_SQLITE' });
+
+    const { getDb } = await import('../../src/db/client.js');
+    const db = getDb();
+    db.prepare(`
+      INSERT OR REPLACE INTO partner_offers (
+        id, partner_id, organization_id, title, offer_slug, category, target_customer,
+        destination_url, authorized_tracking_url, active, status
+      ) VALUES (
+        'deal_test_airdopes_141', 'part_cuelinks', 'org_owner_primary', 'boAt Airdopes 141', 'boat-airdopes-141-anc', 'Audio', 'Shoppers',
+        'https://www.boat-lifestyle.com/products/airdopes-141', 'https://linksredirect.com/?cid=12345', 1, 'ACTIVE'
+      )
+    `).run();
 
     const res = await app.request('/api/v1/public/deals/deal_test_airdopes_141/redirect?placement=homepage_hero');
     expect(res.status).toBe(302);

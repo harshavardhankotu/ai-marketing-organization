@@ -3585,6 +3585,45 @@ apiRouter.post('/offer/inquiry', async (c) => {
       });
     } catch {}
 
+    // Phase 4 Mandate: Generate real deliverable triage record, .ics appointment, and CSV row
+    const structuredTriageRecord = {
+      inquiryId: prospectId,
+      timestamp: new Date().toISOString(),
+      clinicName,
+      contactPerson: customerName,
+      phone: customerPhone,
+      email: customerEmail || 'N/A',
+      serviceCategory: 'Administrative Website & WhatsApp Inquiry Capture',
+      urgency: isTestProspect ? 'TEST_DIAGNOSTIC' : 'HIGH',
+      intakeGapIdentified: notes || 'After-hours patient inquiry lag; requires 24/7 automated qualification & booking',
+      recommendedAction: 'Schedule 15-minute administrative intake review'
+    };
+
+    const startDate = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    startDate.setHours(11, 0, 0, 0);
+    const endDate = new Date(startDate.getTime() + 15 * 60 * 1000);
+    const formatIcsDate = (d: Date) => d.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
+
+    const calendarIcs = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-//AI Marketing Organization//Lead Triage Deliverable//EN',
+      'CALSCALE:GREGORIAN',
+      'METHOD:REQUEST',
+      'BEGIN:VEVENT',
+      `UID:${prospectId}@aimarketing.local`,
+      `DTSTAMP:${formatIcsDate(new Date())}`,
+      `DTSTART:${formatIcsDate(startDate)}`,
+      `DTEND:${formatIcsDate(endDate)}`,
+      `SUMMARY:Administrative Lead Triage Walkthrough - ${clinicName}`,
+      `DESCRIPTION:Administrative Website & WhatsApp Inquiry Capture walkthrough.\\nPractice: ${clinicName}\\nContact: ${customerName} (${customerPhone})`,
+      'STATUS:CONFIRMED',
+      'END:VEVENT',
+      'END:VCALENDAR'
+    ].join('\r\n');
+
+    const csvRow = `"${new Date().toISOString()}","${prospectId}","${clinicName.replace(/"/g, '""')}","${customerName.replace(/"/g, '""')}","${customerPhone}","${(customerEmail || '').replace(/"/g, '""')}","${notes.replace(/"/g, '""')}","QUALIFIED"`;
+
     return c.json({
       success: true,
       message: isTestProspect
@@ -3595,7 +3634,10 @@ apiRouter.post('/offer/inquiry', async (c) => {
       prospectId,
       opportunityId: oppId,
       status: initialStatus,
-      isTest: isTestProspect
+      isTest: isTestProspect,
+      structuredTriageRecord,
+      calendarIcs,
+      csvRow
     }, 200);
   } catch (err: any) {
     return c.json({ success: false, error: err.message }, 500);
@@ -5668,6 +5710,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
       click_id LIKE 'clk_test_%' OR 
       referral_id LIKE 'ref_clk_test_%' OR 
       click_id LIKE 'clk_live_pilot_%' OR 
+      device_class IN ('test', 'diagnostic', 'internal') OR
       placement IN ('diagnostic', 'direct_beacon', 'test') OR 
       source IN ('direct_beacon', 'diagnostic', 'test') OR 
       medium IN ('beacon', 'diagnostic', 'test')
@@ -5688,7 +5731,8 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
     browserCandidateOutboundClicks = Number(row?.browserCandidate || 0);
     botClicks = Number(row?.bot || 0);
     unknownClicks = Number(row?.unk || 0);
-    externalOutboundClicks = verifiedHumanOutboundClicks + browserCandidateOutboundClicks;
+    // Phase 3 Mandate: externalOutboundClicks MUST strictly equal verifiedHumanOutboundClicks ONLY
+    externalOutboundClicks = verifiedHumanOutboundClicks;
   } catch {}
 
   // 3. CTR
@@ -6480,9 +6524,9 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
         return c.text('Affiliate link conversion failed or unmonetized; redirect suppressed', 503);
       }
 
-      // Phase 6: Verify real Cuelinks campaign match (never manual string concatenation)
-      if (convRes.campaign?.id && String(convRes.campaign.id) !== String(deal.affiliateCampaignId)) {
-        return c.text('Affiliate link conversion failed: campaign ID mismatch; redirect suppressed', 503);
+      // Phase 1 Mandate: Strictly require valid campaign object AND exact campaign ID match
+      if (!convRes.campaign || !convRes.campaign.id || String(convRes.campaign.id) !== String(deal.affiliateCampaignId)) {
+        return c.text('Affiliate link conversion failed: campaign ID mismatch or missing campaign object; redirect suppressed', 503);
       }
 
       // Phase 6: Verify embedded destination URL matches live productUrl and never points to dead handles
@@ -6528,6 +6572,7 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
   const { classifyTraffic } = await import('../commission/referral-tracking.js');
   const trafficClass = classifyTraffic(userAgent, clientInfo.ip, {
     'x-diagnostic': c.req.header('x-diagnostic') || '',
+    'x-diagnostic-probe': c.req.header('x-diagnostic-probe') || '',
     'x-test-traffic': c.req.header('x-test-traffic') || '',
     'x-owner-preview': c.req.header('x-owner-preview') || ''
   });
@@ -6553,25 +6598,16 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
       return c.text('Affiliate monetization path temporarily unavailable: partner not authorized; redirect suppressed', 503);
     }
 
-    // Resolve valid partner_offers FK for referrals table (Spec § 4)
-    let referralOfferId = deal.id;
+    // Phase 1 Mandate: Require exact 1:1 match between deal and active partner_offers record; zero cross-offer fallback
     const existingOffer = await d1Repo.queryOne<any>(
       'partner_offers',
-      "SELECT id FROM partner_offers WHERE id = ? OR offer_slug = ?",
-      [deal.id, deal.slug || '']
+      "SELECT id, active, status FROM partner_offers WHERE (id = ? OR offer_slug = ? OR offer_slug = ?) AND partner_id = ? AND (active = 1 OR status = 'ACTIVE')",
+      [deal.id, deal.slug || '', deal.canonicalSlug || '', partnerId]
     );
-    if (existingOffer?.id) {
-      referralOfferId = existingOffer.id;
-    } else {
-      const activePartnerOffer = await d1Repo.queryOne<any>(
-        'partner_offers',
-        "SELECT id FROM partner_offers WHERE partner_id = ? AND (active = 1 OR status = 'ACTIVE') LIMIT 1",
-        [partnerId]
-      );
-      if (activePartnerOffer?.id) {
-        referralOfferId = activePartnerOffer.id;
-      }
+    if (!existingOffer) {
+      return c.text('Affiliate monetization path temporarily unavailable: partner offer not active or missing; redirect suppressed', 503);
     }
+    const referralOfferId = existingOffer.id;
 
     const insertRefSql = `
       INSERT INTO referrals (

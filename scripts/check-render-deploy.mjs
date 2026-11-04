@@ -1,6 +1,6 @@
 import fs from 'fs';
 
-for (const envFile of ['.env.local', '.env.deploy_secrets']) {
+for (const envFile of ['.env.local', '.env.deploy_secrets', '.env.admin_secret']) {
   if (fs.existsSync(envFile)) {
     const lines = fs.readFileSync(envFile, 'utf8').split('\n');
     for (const line of lines) {
