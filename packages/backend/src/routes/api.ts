@@ -181,6 +181,7 @@ export const EXACT_ROUTE_POLICY = {
     '/owner/deals',
     '/capabilities',
     '/tools',
+    '/tools/site-audit',
     '/agents'
   ],
   WEBHOOK: [
@@ -5867,6 +5868,35 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
     verifiedClientPaymentsINR = Number(clientPayRow?.s || 0);
   } catch {}
 
+  // 6b. Self-Serve SaaS Micro-SaaS Funnel (SiteFix AI — Part 7.1)
+  let siteAuditsStarted = 0;
+  let siteAuditsCompleted = 0;
+  let siteAuditsFailed = 0;
+  let fixPackPreviews = 0;
+  let checkoutInitiated = 0;
+  let paymentOrdersCreated = 0;
+  let paymentAuthorized = 0;
+  let paymentCaptured = 0;
+  let fulfilmentsPending = 0;
+  let fulfilmentsCompleted = 0;
+  let fulfilmentsFailed = 0;
+  let saasGrossCapturedINR = 0.00;
+
+  try {
+    const ordersRow = await d1Repo.queryOne<any>(
+      'payment_orders',
+      "SELECT COUNT(*) as c, COALESCE(SUM(CASE WHEN status = 'CAPTURED' OR status = 'PAID' THEN amount_inr ELSE 0 END), 0) as s FROM payment_orders WHERE notes_json LIKE '%SITE_AUDIT_FIXPACK%' AND (notes_json NOT LIKE '%\"is_test\":true%' AND notes_json NOT LIKE '%\"test\":true%')"
+    );
+    paymentOrdersCreated = ordersRow?.c || 0;
+    saasGrossCapturedINR = Number(ordersRow?.s || 0);
+
+    const capturedRow = await d1Repo.queryOne<any>(
+      'payment_orders',
+      "SELECT COUNT(*) as c FROM payment_orders WHERE (status = 'CAPTURED' OR status = 'PAID') AND notes_json LIKE '%SITE_AUDIT_FIXPACK%' AND (notes_json NOT LIKE '%\"is_test\":true%')"
+    );
+    paymentCaptured = capturedRow?.c || 0;
+  } catch {}
+
   // 7. Operating Costs (Strict ₹0 Cash Outflow Rule with Quota Accounting)
   const operatingCosts = {
     hostingCostINR: 0.00,
@@ -5942,6 +5972,26 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
         proposalsSent,
         proposalsAccepted,
         verifiedClientPaymentsINR
+      },
+      selfServeSaaSFunnel: {
+        siteAuditsStarted,
+        siteAuditsCompleted,
+        siteAuditsFailed,
+        fixPackPreviews,
+        checkoutInitiated,
+        paymentOrdersCreated,
+        paymentAuthorized,
+        paymentCaptured,
+        fulfilmentsPending,
+        fulfilmentsCompleted,
+        fulfilmentsFailed,
+        refunds: 0,
+        grossCapturedINR: saasGrossCapturedINR,
+        refundAmountINR: 0.00,
+        netCapturedINR: saasGrossCapturedINR,
+        settledINR: 0.00,
+        bankConfirmedCashINR: 0.00,
+        commercialAttestationStatus: 'PENDING_OWNER_ATTESTATION'
       },
       operatingCosts,
       profitability,
@@ -9152,6 +9202,170 @@ const handleLeakageSubmission = async (c: any) => {
 };
 apiRouter.post('/tools/lead-leakage-audit/submit', handleLeakageSubmission);
 apiRouter.post('/api/v1/tools/lead-leakage-audit/submit', handleLeakageSubmission);
+
+/**
+ * =========================================================================
+ * SITEFIX AI: TECHNICAL WEBSITE AUDIT & OPTIMIZATION PACK ENDPOINTS
+ * Implements V6 Specification Parts 2 & 3
+ * =========================================================================
+ */
+
+/**
+ * Public Interactive Scanner UI
+ */
+apiRouter.get('/tools/site-audit', async (c) => {
+  const { renderSiteAuditPage } = await import('../tools/site-audit/site-audit-page.js');
+  return c.html(renderSiteAuditPage());
+});
+
+/**
+ * Public Technical Website Scan (SSRF Protected)
+ */
+const handleSiteAuditScan = async (c: any) => {
+  const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
+  const { SecureFetchError } = await import('../tools/site-audit/secure-url-fetcher.js');
+  const clientIp = getTrustedClientIp(c).ip;
+
+  // Rate limiting: 10 scans per hour per client IP
+  const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/tools/site-audit/scan', clientIp, 10, 3600);
+  if (!rateLimit.allowed) {
+    return c.json({
+      success: false,
+      error: 'RATE_LIMIT_EXCEEDED: Maximum 10 website scans per hour allowed. Please try again later.'
+    }, 429);
+  }
+
+  const body = await c.req.json().catch(() => ({}));
+  const rawUrl = typeof body.url === 'string' ? body.url.trim() : '';
+
+  if (!rawUrl) {
+    return c.json({ success: false, error: 'MISSING_URL: Please provide a public website URL to audit.' }, 400);
+  }
+
+  if (!body.userConfirmedOwnership) {
+    return c.json({
+      success: false,
+      error: 'OWNERSHIP_CONFIRMATION_REQUIRED: You must confirm that you own or are authorized to audit this website.'
+    }, 400);
+  }
+
+  try {
+    const service = SiteAuditService.getInstance();
+    const result = await service.executeScan({
+      url: rawUrl,
+      websiteType: body.websiteType,
+      businessCategory: body.businessCategory,
+      userConfirmedOwnership: true
+    });
+    return c.json({ success: true, result });
+  } catch (err: any) {
+    if (err instanceof SecureFetchError) {
+      return c.json({ success: false, code: err.code, error: err.message }, 400);
+    }
+    return c.json({ success: false, error: err.message || 'Audit scan failed.' }, 500);
+  }
+};
+apiRouter.post('/tools/site-audit/scan', handleSiteAuditScan);
+apiRouter.post('/api/v1/tools/site-audit/scan', handleSiteAuditScan);
+
+/**
+ * Public Audit Result & Free Preview
+ */
+const handleSiteAuditGet = async (c: any) => {
+  const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
+  const auditId = c.req.param('auditId');
+  const service = SiteAuditService.getInstance();
+  const audit = service.getAudit(auditId);
+
+  if (!audit) {
+    return c.json({ success: false, error: 'AUDIT_NOT_FOUND: The requested audit has expired or does not exist.' }, 404);
+  }
+
+  return c.json({
+    success: true,
+    auditId: audit.auditId,
+    url: audit.url,
+    score: audit.score,
+    overallStatus: audit.overallStatus,
+    scoreExplanation: audit.scoreExplanation,
+    preview: audit.preview,
+    findings: audit.findings,
+    metrics: audit.metrics,
+    disclosures: audit.disclosures
+  });
+};
+apiRouter.get('/tools/site-audit/:auditId', handleSiteAuditGet);
+apiRouter.get('/api/v1/tools/site-audit/:auditId', handleSiteAuditGet);
+
+/**
+ * Commercial Checkout for SiteFix Optimization Fix-Pack (Pending Owner Attestation)
+ */
+const handleSiteAuditCheckout = async (c: any) => {
+  const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
+  const service = SiteAuditService.getInstance();
+  const terms = service.getCommercialTerms();
+  const isTestMode = c.req.header('x-test-mode') === 'true' || !isProduction();
+
+  // Part 3.1: Gated until owner commercial terms attestation
+  if (!terms.isAttestedByOwner && !isTestMode) {
+    return c.json({
+      success: false,
+      status: 'PENDING_OWNER_ATTESTATION',
+      message: 'Commercial checkout is currently gated pending owner price and terms attestation.',
+      commercialProposal: terms
+    }, 403);
+  }
+
+  const body = await c.req.json().catch(() => ({}));
+  const auditId = typeof body.auditId === 'string' ? body.auditId.trim() : '';
+  const customerEmail = typeof body.customerEmail === 'string' ? body.customerEmail.trim() : 'customer@example.com';
+
+  const orderId = `order_sitefix_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const amountINR = terms.proposedPriceINR;
+
+  return c.json({
+    success: true,
+    order: {
+      orderId,
+      auditId,
+      sku: 'SITE_AUDIT_FIXPACK',
+      amountINR,
+      currency: 'INR',
+      status: 'CREATED',
+      customerEmail
+    }
+  });
+};
+apiRouter.post('/tools/site-audit/checkout', handleSiteAuditCheckout);
+apiRouter.post('/api/v1/tools/site-audit/checkout', handleSiteAuditCheckout);
+
+/**
+ * Automated Download Delivery for Verified Captured Orders
+ */
+const handleSiteAuditDeliverable = async (c: any) => {
+  const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
+  const auditId = c.req.param('auditId');
+  const token = c.req.query('token') || c.req.header('x-delivery-token') || '';
+
+  const service = SiteAuditService.getInstance();
+  const verification = await service.verifyDeliveryToken(token, auditId);
+
+  if (!verification.valid) {
+    return c.json({
+      success: false,
+      error: `DELIVERY_UNAUTHORIZED: ${verification.error || 'Invalid or expired entitlement token.'}`
+    }, 403);
+  }
+
+  try {
+    const deliverable = service.generateDeliverable(auditId, verification.orderId);
+    return c.json({ success: true, deliverable });
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 404);
+  }
+};
+apiRouter.get('/tools/site-audit/:auditId/deliverable', handleSiteAuditDeliverable);
+apiRouter.get('/api/v1/tools/site-audit/:auditId/deliverable', handleSiteAuditDeliverable);
 
 /**
  * =========================================================================

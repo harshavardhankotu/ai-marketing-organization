@@ -1051,57 +1051,17 @@ export class AutomationRegistryEngine {
           };
         }
 
-        // Discover qualified prospects without drafts, create drafts in direct_outreach_log
-        let eligibleProspects: any[] = [];
-        try {
-          const sql = `
-            SELECT p.id, p.business_name, p.vertical, p.phone, p.observed_evidence_json
-            FROM platform_prospects p
-            LEFT JOIN direct_outreach_log d ON p.id = d.business_id
-            WHERE p.is_test = 0 AND p.is_junk = 0 AND p.status = 'QUALIFIED' AND d.id IS NULL
-            LIMIT 5
-          `;
-          eligibleProspects = isProduction()
-            ? await this.d1Repo.query<any>('platform_prospects', sql)
-            : getDb().prepare(sql).all();
-        } catch {}
-
-        if (eligibleProspects.length === 0) {
-          return {
-            status: 'NO_ACTION_DUE',
-            itemsProcessed: 0,
-            itemsSucceeded: 0,
-            itemsFailed: 0,
-            summary: { message: 'Zero qualified prospects awaiting draft preparation.' }
-          };
-        }
-
-        let createdCount = 0;
-        for (const p of eligibleProspects) {
-          const draftId = `draft_${Date.now()}_${randomUUID().substring(0, 8)}`;
-          const msg = `Hello ${p.business_name}, we noticed patients inquiring during dark hours (8 PM - 8 AM) often experience appointment booking delays. Our automated clinic assistant responds instantly to inquiries and books patient visits on WhatsApp with zero staff workload. Would you like a 2-minute walkthrough?`;
-          const insertSql = `
-            INSERT INTO direct_outreach_log (
-              id, business_id, segment, prospect_name, channel, message_draft,
-              compliance_checked, human_approved, dispatched, created_at
-            ) VALUES (?, ?, ?, ?, 'WHATSAPP', ?, 1, 0, 0, datetime('now'))
-          `;
-          const params = [draftId, p.id, p.vertical || 'HEALTHCARE', p.business_name, msg];
-          if (isProduction()) {
-            await this.d1Repo.executeWrite('direct_outreach_log', insertSql, params);
-          } else {
-            getDb().prepare(insertSql).run(...params);
-          }
-          createdCount++;
-        }
-
+        // V6 Specification § 6.1: Retired generic cold messaging acquisition in favor of pull-based self-serve SaaS
         return {
-          status: 'COMPLETED',
-          itemsProcessed: eligibleProspects.length,
-          itemsSucceeded: createdCount,
+          status: 'COMPLETED_NO_FINDINGS',
+          itemsProcessed: 0,
+          itemsSucceeded: 0,
           itemsFailed: 0,
-          summary: { draftsCreated: createdCount, humanGatePreserved: true },
-          ownerActionRequired: `Review ${createdCount} newly drafted outreach message(s) at /owner/today.`
+          summary: {
+            acquisitionStatus: 'RETIRED_PER_V6_SPEC',
+            reason: 'Generic cold messaging generation retired in favor of self-serve SaaS (SiteFix AI) inbound demand.',
+            historicalRecordsPreserved: true
+          }
         };
       }
 

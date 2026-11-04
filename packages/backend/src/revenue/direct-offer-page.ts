@@ -302,6 +302,7 @@ export class DirectCommercialOfferPage {
     <a href="/" class="brand">${siteName}</a>
     <div class="nav-links">
       <a href="/" class="active">B2B Lead Triage</a>
+      <a href="/tools/site-audit">SiteFix AI Audit</a>
       <a href="/offer">Commercial Overview</a>
       <a href="#interactive-demo">Interactive Demo</a>
       <a href="/revenue">Revenue Funnel</a>

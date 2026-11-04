@@ -143,7 +143,19 @@ app.all('/owner/*', async (c) => {
 });
 app.all('/owner', (c) => c.redirect('/owner/status', 302));
 
-// Top-level public calculator and capabilities routing
+// Top-level public calculator, site audit tool and capabilities routing
+app.get('/tools/site-audit', async (c) => {
+  const { renderSiteAuditPage } = await import('./tools/site-audit/site-audit-page.js');
+  return c.html(renderSiteAuditPage());
+});
+app.all('/tools/*', async (c) => {
+  const targetUrl = new URL('/api/v1' + c.req.path, c.req.url);
+  return app.fetch(new Request(targetUrl.toString(), {
+    method: c.req.method,
+    headers: c.req.raw.headers,
+    body: ['GET', 'HEAD'].includes(c.req.method) ? undefined : await c.req.raw.clone().blob()
+  }));
+});
 app.get('/tools/lead-leakage-calculator', async (c) => {
   const { LeadLeakageCalculator } = await import('./revenue/lead-leakage-calculator.js');
   const siteName = (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
@@ -945,6 +957,9 @@ app.get('/sitemap.xml', async (c) => {
 
   const staticUrls = [
     `${baseUrl}/`,
+    `${baseUrl}/offer`,
+    `${baseUrl}/tools/site-audit`,
+    `${baseUrl}/tools/lead-leakage-calculator`,
     `${baseUrl}/deals`,
     `${baseUrl}/revenue`,
     `${baseUrl}/public/disclosure`

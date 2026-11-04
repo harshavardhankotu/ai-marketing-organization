@@ -221,6 +221,15 @@ describe('V5.1 — Revenue Integrity, Telemetry Reconciliation & First Buyer Rea
       });
 
       // Simulate D1 database write failure
+      vi.spyOn(d1Repo, 'queryOne').mockImplementation(async (table: string, sql: string) => {
+        if (table === 'partners') {
+          return { id: 'part_cuelinks', authorization_status: 'AUTHORIZED', approval_status: 'APPROVED' };
+        }
+        if (table === 'partner_offers') {
+          return { id: 'offer_deal_db_fail_test', active: 1, status: 'ACTIVE' };
+        }
+        return null;
+      });
       vi.spyOn(d1Repo, 'executeBatch').mockRejectedValue(new Error('D1 Storage Engine Unreachable'));
 
       const res = await app.request('/api/v1/public/deals/deal_db_fail_test/redirect');
