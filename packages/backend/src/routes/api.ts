@@ -9390,7 +9390,9 @@ const handleSiteAuditCheckout = async (c: any) => {
       notes: {
         auditId,
         sku,
-        customerEmail
+        customerEmail,
+        mode: 'test',
+        sandbox: 'true'
       }
     };
     try {
@@ -9439,7 +9441,9 @@ const handleSiteAuditCheckout = async (c: any) => {
     auditId,
     sku,
     customerEmail,
-    amountPaise
+    amountPaise,
+    mode: 'test',
+    sandbox: 'true'
   });
 
   const { D1RevenueRepository } = await import('../db/d1-revenue-repository.js');
@@ -9479,6 +9483,8 @@ const handleSiteAuditCheckout = async (c: any) => {
     keyId: keyId || 'rzp_test_placeholder',
     auditId,
     sku,
+    mode: 'test',
+    sandbox: true,
     order: {
       orderId,
       auditId,
@@ -9488,7 +9494,9 @@ const handleSiteAuditCheckout = async (c: any) => {
       currency: 'INR',
       status: 'CREATED',
       keyId: keyId || 'rzp_test_placeholder',
-      customerEmail
+      customerEmail,
+      mode: 'test',
+      sandbox: true
     }
   }, 200);
 };

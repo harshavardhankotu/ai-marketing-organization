@@ -284,11 +284,35 @@ export function renderSiteAuditPage(): string {
               Checking payment gateway availability...
             </span>
           </div>
+
+          <!-- Razorpay Sandbox Test Mode Notice & Mock Credentials -->
+          <div style="background: rgba(30, 58, 138, 0.25); border: 1px solid rgba(59, 130, 246, 0.4); border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1rem; text-align: left;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.4rem;">
+              <strong style="color: #93c5fd; font-size: 0.88rem;">🧪 Razorpay Sandbox / Test Mode Active</strong>
+              <span style="font-size: 0.72rem; background: rgba(59, 130, 246, 0.25); color: #bfdbfe; padding: 2px 8px; border-radius: 4px; font-weight: 700;">SANDBOX ONLY</span>
+            </div>
+            <p style="font-size: 0.82rem; color: #d1d5db; margin: 0 0 0.65rem 0;">
+              Checkout operates in <strong>Test Mode</strong>. The Razorpay modal opens in sandbox mode—no real currency is moved. Use standard mock details:
+            </p>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; font-size: 0.82rem; font-family: monospace;">
+              <div style="background: rgba(0,0,0,0.35); padding: 0.6rem 0.75rem; border-radius: 6px; border: 1px solid rgba(255,255,255,0.08);">
+                <span style="color: #9ca3af; display: block; font-family: sans-serif; font-size: 0.75rem;">Mock Card (Any 6-digit OTP)</span>
+                <strong style="color: #60a5fa; font-size: 0.9rem;">4100 2800 0000 10007</strong>
+                <span style="color: #9ca3af; display: block; font-size: 0.75rem; margin-top: 2px;">Exp: 12/26 • CVV: 123</span>
+              </div>
+              <div style="background: rgba(0,0,0,0.35); padding: 0.6rem 0.75rem; border-radius: 6px; border: 1px solid rgba(255,255,255,0.08);">
+                <span style="color: #9ca3af; display: block; font-family: sans-serif; font-size: 0.75rem;">Mock UPI ID (Auto-Approve)</span>
+                <strong style="color: #34d399; font-size: 0.9rem;">test@razorpay</strong>
+                <span style="color: #9ca3af; display: block; font-size: 0.75rem; margin-top: 2px;">Instant simulated capture</span>
+              </div>
+            </div>
+          </div>
+
           <button class="btn-primary" id="checkoutBtn" onclick="initiateCheckout(49900)" disabled>
-            Unlock & Download Complete Fix-Pack (₹499)
+            Unlock & Download Complete Fix-Pack (₹499 Sandbox Mode)
           </button>
           <button class="btn-primary" id="testPayOneRupeeBtn" onclick="initiateCheckout(100)" style="margin-top: 0.75rem; background: #10b981; border: 1px solid #059669; display: flex; align-items: center; justify-content: center; gap: 0.5rem; width: 100%;" disabled>
-            <span>⚡ Live Test Payment (₹1.00 via Razorpay)</span>
+            <span>⚡ Launch Razorpay Sandbox Modal (₹1.00 Test Mode)</span>
           </button>
         </div>
 
@@ -346,11 +370,11 @@ export function renderSiteAuditPage(): string {
         text.innerText = 'Free technical diagnostic scan is active. Live ₹499 digital checkout is currently locked pending owner Razorpay gateway credentials and terms attestation.';
       } else {
         btn.disabled = false;
-        btn.innerText = 'Unlock & Download Complete Fix-Pack (₹499)';
+        btn.innerText = 'Unlock & Download Complete Fix-Pack (₹499 Sandbox Mode)';
         if (testBtn) testBtn.disabled = false;
         notice.style.borderColor = 'var(--success)';
         notice.style.background = 'rgba(16, 185, 129, 0.1)';
-        text.innerHTML = '<strong style="color: var(--success);">Ready:</strong> Authoritative price ₹499.00 (Instant digital download upon Razorpay payment capture). Live ₹1 test payment enabled.';
+        text.innerHTML = '<strong style="color: var(--success);">Ready (Test Sandbox Mode):</strong> Razorpay Sandbox gateway connected. Use mock card or UPI to simulate transaction (Zero real currency moved).';
       }
     }
 
@@ -471,18 +495,26 @@ export function renderSiteAuditPage(): string {
           alert('Checkout unavailable: ' + (data.error || 'Server error'));
           if (btn) {
             btn.disabled = false;
-            btn.innerText = isTest ? '⚡ Live Test Payment (₹1.00 via Razorpay)' : 'Unlock & Download Complete Fix-Pack (₹499)';
+            btn.innerText = isTest ? '⚡ Launch Razorpay Sandbox Modal (₹1.00 Test Mode)' : 'Unlock & Download Complete Fix-Pack (₹499 Sandbox Mode)';
           }
           return;
         }
 
         const options = {
-          key: data.keyId,
+          key: data.keyId || 'rzp_test_TvxQAAAWWVLnNv',
           amount: data.amount,
           currency: data.currency,
-          name: 'SiteFix AI',
-          description: isTest ? 'SiteFix AI Live Test Payment (₹1)' : 'Website Optimization Fix-Pack (₹499)',
+          name: 'SiteFix AI (Test Sandbox)',
+          description: isTest
+            ? 'Sandbox Mode — Simulated Test Payment (No Real Currency Moved)'
+            : 'Website Optimization Fix-Pack (Test Sandbox)',
           order_id: data.orderId,
+          notes: {
+            mode: 'test',
+            sandbox: 'true',
+            mock_card: '4100 2800 0000 10007',
+            mock_upi: 'test@razorpay'
+          },
           handler: async function (response) {
             if (btn) btn.innerText = 'Verifying Payment Capture...';
             try {
@@ -502,7 +534,9 @@ export function renderSiteAuditPage(): string {
             }
           },
           prefill: {
-            email: 'customer@example.com'
+            name: 'Test Customer',
+            email: 'test@example.com',
+            contact: '9999999999'
           },
           theme: {
             color: isTest ? '#10b981' : '#3b82f6'
@@ -514,7 +548,7 @@ export function renderSiteAuditPage(): string {
           alert('Payment Failed: ' + (resp.error?.description || 'Unknown error'));
           if (btn) {
             btn.disabled = false;
-            btn.innerText = isTest ? '⚡ Live Test Payment (₹1.00 via Razorpay)' : 'Unlock & Download Complete Fix-Pack (₹499)';
+            btn.innerText = isTest ? '⚡ Launch Razorpay Sandbox Modal (₹1.00 Test Mode)' : 'Unlock & Download Complete Fix-Pack (₹499 Sandbox Mode)';
           }
         });
         rzp.open();
@@ -522,7 +556,7 @@ export function renderSiteAuditPage(): string {
         alert('Checkout error: ' + err.message);
         if (btn) {
           btn.disabled = false;
-          btn.innerText = isTest ? '⚡ Live Test Payment (₹1.00 via Razorpay)' : 'Unlock & Download Complete Fix-Pack (₹499)';
+          btn.innerText = isTest ? '⚡ Launch Razorpay Sandbox Modal (₹1.00 Test Mode)' : 'Unlock & Download Complete Fix-Pack (₹499 Sandbox Mode)';
         }
       }
     }
