@@ -39,6 +39,7 @@ export class OfferCatalogService {
 
   public static readonly PLATFORM_SETUP_OFFER_ID = 'PLATFORM_SETUP';
   public static readonly PLATFORM_MONTHLY_OFFER_ID = 'PLATFORM_MONTHLY';
+  public static readonly SITEFIX_AI_PACK_OFFER_ID = 'SITEFIX_AI_PACK_V1';
   public static readonly HEALTHCARE_SETUP_OFFER_ID = 'HEALTHCARE_SETUP';
   public static readonly HEALTHCARE_RETAINER_OFFER_ID = 'HEALTHCARE_RETAINER';
   public static readonly EDUCATION_SETUP_OFFER_ID = 'EDUCATION_SETUP';
@@ -225,6 +226,35 @@ export class OfferCatalogService {
     const db = getDb();
 
     // Check platform offers first
+    if (
+      trimmedOfferId === OfferCatalogService.SITEFIX_AI_PACK_OFFER_ID ||
+      trimmedOfferId === 'SITEFIX_AI_PACK_V1' ||
+      trimmedOfferId === 'SITE_AUDIT_FIXPACK' ||
+      trimmedOfferId === 'offer_sitefix_pack'
+    ) {
+      return {
+        offerId: OfferCatalogService.SITEFIX_AI_PACK_OFFER_ID,
+        offerName: 'SiteFix AI — Website Audit & Optimization Pack',
+        description: 'Instant technical diagnostic audit and optimization deliverable fix-pack.',
+        deliverables: [
+          'Diagnostic Technical Site Audit Report',
+          'Search Engine & Social Media <head> Snippets',
+          'Verified Schema.org Structured Data',
+          'Implementation Checklist & Guidance'
+        ],
+        priceINR: 499,
+        billingModel: 'ONE_TIME',
+        currency: 'INR',
+        businessId: OwnerAuthService.PLATFORM_BUSINESS_ID,
+        organizationId: OwnerAuthService.OWNER_ORGANIZATION_ID,
+        active: true,
+        deliveryTimeDays: 0,
+        qualificationRequirements: ['Public website URL'],
+        paymentProvider: 'RAZORPAY',
+        paymentConfiguration: {}
+      };
+    }
+
     if (trimmedOfferId === OfferCatalogService.PLATFORM_SETUP_OFFER_ID || trimmedOfferId === 'PLATFORM_SETUP' || trimmedOfferId === 'offer_platform_setup') {
       // Scope enforcement: platform offers are ONLY valid for the platform business/org
       if (businessId && businessId !== OwnerAuthService.PLATFORM_BUSINESS_ID) {

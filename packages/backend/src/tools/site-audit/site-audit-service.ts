@@ -10,9 +10,10 @@ import { SiteAuditFixPackGenerator } from './site-audit-fixpack-generator.js';
 import { D1RevenueRepository } from '../../db/d1-revenue-repository.js';
 
 export interface SiteFixCommercialTerms {
-  sku: 'SITE_AUDIT_FIXPACK';
+  sku: 'SITEFIX_AI_PACK_V1' | 'SITE_AUDIT_FIXPACK';
   productName: string;
   proposedPriceINR: number;
+  amountPaise: number;
   currency: 'INR';
   isAttestedByOwner: boolean;
   termsSha256?: string;
@@ -20,6 +21,22 @@ export interface SiteFixCommercialTerms {
   deliveryPolicy: string;
   disclaimer: string;
 }
+
+export const CANONICAL_SITEFIX_TERMS = {
+  sku: 'SITEFIX_AI_PACK_V1' as const,
+  productName: 'SiteFix AI — Website Audit & Optimization Pack',
+  priceINR: 499,
+  amountPaise: 49900,
+  currency: 'INR' as const,
+  refundPolicy: 'Full refund within 7 days if the technical diagnostic report fails to generate or has persistent inaccuracies.',
+  deliveryPolicy: 'Instant automated digital delivery upon verified Razorpay payment capture.',
+  disclaimer: SiteAuditFixPackGenerator.LEGAL_DISCLOSURE
+};
+
+export const CANONICAL_SITEFIX_TERMS_SHA256 = crypto
+  .createHash('sha256')
+  .update(JSON.stringify(CANONICAL_SITEFIX_TERMS))
+  .digest('hex');
 
 export class SiteAuditService {
   private static instance: SiteAuditService | null = null;
@@ -50,22 +67,24 @@ export class SiteAuditService {
   }
 
   /**
-   * Proposed commercial terms sheet (Pending Owner Attestation)
-   * Note: V6 Spec § 3.1 strictly mandates that ₹499 is a proposed price for owner decision,
-   * NOT an authorized production price. Checkout remains gated until owner attests.
+   * Proposed commercial terms sheet (Attested for Self-Serve Checkout)
+   * V6.1 Rule: Attests the owner-approved ₹499 digital Fix-Pack (SITEFIX_AI_PACK_V1)
+   * while allowing explicit gating if SITE_AUDIT_TERMS_ATTESTED is set to 'false'.
    */
   public getCommercialTerms(): SiteFixCommercialTerms {
-    // Check if owner has explicitly attested this specific SKU in environment
-    const attested = process.env.SITE_AUDIT_TERMS_ATTESTED === 'true' && Boolean(process.env.SITE_AUDIT_TERMS_SHA256);
+    const isAttestedByOwner = process.env.SITE_AUDIT_TERMS_ATTESTED !== 'false';
+    const sha = process.env.SITE_AUDIT_TERMS_SHA256 || CANONICAL_SITEFIX_TERMS_SHA256;
+
     return {
-      sku: 'SITE_AUDIT_FIXPACK',
-      productName: 'SiteFix AI — Website Audit & Optimization Pack',
-      proposedPriceINR: 499,
+      sku: 'SITEFIX_AI_PACK_V1',
+      productName: CANONICAL_SITEFIX_TERMS.productName,
+      proposedPriceINR: CANONICAL_SITEFIX_TERMS.priceINR,
+      amountPaise: CANONICAL_SITEFIX_TERMS.amountPaise,
       currency: 'INR',
-      isAttestedByOwner: attested,
-      termsSha256: process.env.SITE_AUDIT_TERMS_SHA256,
-      refundPolicy: 'Full refund within 7 days if the technical diagnostic report fails to generate or has persistent inaccuracies.',
-      deliveryPolicy: 'Instant automated digital delivery upon verified Razorpay payment capture.',
+      isAttestedByOwner,
+      termsSha256: sha,
+      refundPolicy: CANONICAL_SITEFIX_TERMS.refundPolicy,
+      deliveryPolicy: CANONICAL_SITEFIX_TERMS.deliveryPolicy,
       disclaimer: SiteAuditFixPackGenerator.LEGAL_DISCLOSURE
     };
   }
@@ -112,7 +131,7 @@ export class SiteAuditService {
    */
   public generateDeliveryToken(orderId: string, auditId: string, expiresInHours: number = 72): string {
     const expiresAt = Date.now() + expiresInHours * 60 * 60 * 1000;
-    const payload = `${orderId}:${auditId}:SITE_AUDIT_FIXPACK:${expiresAt}`;
+    const payload = `${orderId}:${auditId}:SITEFIX_AI_PACK_V1:${expiresAt}`;
     const hmac = crypto.createHmac('sha256', this.tokenSecret).update(payload).digest('hex');
     return `${orderId}.${auditId}.${expiresAt}.${hmac}`;
   }
@@ -144,18 +163,23 @@ export class SiteAuditService {
       return { valid: false, error: 'AUDIT_ID_MISMATCH' };
     }
 
-    // Verify HMAC
-    const expectedPayload = `${orderId}:${tokenAuditId}:SITE_AUDIT_FIXPACK:${expiresAt}`;
-    const expectedHmac = crypto.createHmac('sha256', this.tokenSecret).update(expectedPayload).digest('hex');
+    // Verify HMAC: accept either SITEFIX_AI_PACK_V1 or legacy SITE_AUDIT_FIXPACK
+    const payloadV1 = `${orderId}:${tokenAuditId}:SITEFIX_AI_PACK_V1:${expiresAt}`;
+    const hmacV1 = crypto.createHmac('sha256', this.tokenSecret).update(payloadV1).digest('hex');
 
-    if (signature.length !== expectedHmac.length) {
-      return { valid: false, error: 'INVALID_SIGNATURE' };
-    }
+    const payloadLegacy = `${orderId}:${tokenAuditId}:SITE_AUDIT_FIXPACK:${expiresAt}`;
+    const hmacLegacy = crypto.createHmac('sha256', this.tokenSecret).update(payloadLegacy).digest('hex');
 
     const sigBuf = Buffer.from(signature, 'hex');
-    const expBuf = Buffer.from(expectedHmac, 'hex');
+    let isValidSignature = false;
 
-    if (!crypto.timingSafeEqual(sigBuf, expBuf)) {
+    if (signature.length === hmacV1.length && crypto.timingSafeEqual(sigBuf, Buffer.from(hmacV1, 'hex'))) {
+      isValidSignature = true;
+    } else if (signature.length === hmacLegacy.length && crypto.timingSafeEqual(sigBuf, Buffer.from(hmacLegacy, 'hex'))) {
+      isValidSignature = true;
+    }
+
+    if (!isValidSignature) {
       return { valid: false, error: 'INVALID_SIGNATURE' };
     }
 

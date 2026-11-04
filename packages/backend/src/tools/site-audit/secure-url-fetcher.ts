@@ -1,9 +1,8 @@
 /**
  * Secure URL Fetcher with Strict OWASP SSRF Prevention & DNS Rebinding Defense
- * Implements V6 Specification Part 2.2 and Part 8.1.
+ * Implements V6.1 Specification Phase 2.
  */
 
-import http from 'http';
 import https from 'https';
 import dns from 'dns';
 import net from 'net';
@@ -68,16 +67,17 @@ export interface SecureFetchOptions {
   maxSizeBytes?: number;
   acceptContentTypes?: string[];
   userAgent?: string;
+  allowHttpForTesting?: boolean;
 }
 
 export class SecureUrlFetcher {
-  private static readonly DEFAULT_TIMEOUT_MS = 8000;
-  private static readonly DEFAULT_MAX_REDIRECTS = 3;
-  private static readonly DEFAULT_MAX_SIZE_BYTES = 1024 * 1024; // 1 MB
-  private static readonly DEFAULT_USER_AGENT = 'SiteFixAI-SecurityBot/1.0 (+https://ai-marketing-organization.onrender.com/tools/site-audit)';
+  public static readonly DEFAULT_TIMEOUT_MS = 5000; // Strict 5-second timeout (V6.1)
+  public static readonly DEFAULT_MAX_REDIRECTS = 3;
+  public static readonly DEFAULT_MAX_SIZE_BYTES = 512 * 1024; // Strict 512 KB limit (V6.1)
+  public static readonly DEFAULT_USER_AGENT = 'SiteFixAI-SecurityBot/1.0 (+https://ai-marketing-organization.onrender.com/tools/site-audit)';
 
-  // Blocked IPv4 Subnets (CIDR)
-  private static readonly IPV4_BLOCKED_CIDRS = [
+  // Blocked IPv4 Subnets (CIDR) per V6.1 Spec
+  public static readonly IPV4_BLOCKED_CIDRS = [
     '0.0.0.0/8',       // Current network
     '10.0.0.0/8',      // Private network (RFC 1918)
     '100.64.0.0/10',   // Carrier-grade NAT (RFC 6598)
@@ -91,13 +91,13 @@ export class SecureUrlFetcher {
     '198.18.0.0/15',   // Network benchmark tests (RFC 2544)
     '198.51.100.0/24', // TEST-NET-2 (RFC 5737)
     '203.0.113.0/24',  // TEST-NET-3 (RFC 5737)
-    '224.0.0.0/4',     // Multicast (RFC 5771)
+    '224.0.0.0/4',     // Multicast / Reserved (RFC 5771)
     '240.0.0.0/4',     // Reserved (RFC 1112)
     '255.255.255.255/32' // Broadcast
   ];
 
-  // Blocked IPv6 Subnets (CIDR)
-  private static readonly IPV6_BLOCKED_CIDRS = [
+  // Blocked IPv6 Subnets (CIDR) per V6.1 Spec
+  public static readonly IPV6_BLOCKED_CIDRS = [
     '::/128',          // Unspecified
     '::1/128',         // Loopback
     '64:ff9b::/96',    // IPv4/IPv6 translation
@@ -133,7 +133,7 @@ export class SecureUrlFetcher {
   }
 
   /**
-   * Helper: converts IPv6 string to BigInt (128-bit)
+   * Helper: converts IPv6 string to bigint (128-bit)
    */
   public static ipv6ToBigInt(ip: string): bigint {
     // Handle IPv4-mapped IPv6 address (::ffff:192.0.2.1)
@@ -199,10 +199,24 @@ export class SecureUrlFetcher {
     }
 
     if (family === 6) {
-      // Check IPv4-mapped IPv6
-      if (ip.toLowerCase().startsWith('::ffff:') && ip.includes('.')) {
-        const embeddedV4 = ip.slice(7);
-        return SecureUrlFetcher.isIpBlocked(embeddedV4);
+      // Check IPv4-mapped IPv6 address (::ffff:0:0/96)
+      if (ip.toLowerCase().startsWith('::ffff:')) {
+        const suffix = ip.slice(7);
+        if (suffix.includes('.')) {
+          return SecureUrlFetcher.isIpBlocked(suffix);
+        }
+        // Check hex IPv4-mapped IPv6 like ::ffff:7f00:0001
+        const parts = suffix.split(':');
+        if (parts.length <= 2) {
+          const hex = parts.map(p => p.padStart(4, '0')).join('');
+          if (hex.length === 8) {
+            const b1 = parseInt(hex.slice(0, 2), 16);
+            const b2 = parseInt(hex.slice(2, 4), 16);
+            const b3 = parseInt(hex.slice(4, 6), 16);
+            const b4 = parseInt(hex.slice(6, 8), 16);
+            return SecureUrlFetcher.isIpBlocked(`${b1}.${b2}.${b3}.${b4}`);
+          }
+        }
       }
       for (const cidr of SecureUrlFetcher.IPV6_BLOCKED_CIDRS) {
         if (SecureUrlFetcher.isIpv6InCidr(ip, cidr)) {
@@ -217,8 +231,9 @@ export class SecureUrlFetcher {
 
   /**
    * Validates target URL format, protocol, port, credentials, and hostname before DNS lookup.
+   * V6.1 Rule: Enforces https: on standard port 443 only. Rejects credentials and raw IP literals.
    */
-  public static validateUrlStructure(rawUrl: string): URL {
+  public static validateUrlStructure(rawUrl: string, allowHttpForTesting: boolean = false): URL {
     if (!rawUrl || typeof rawUrl !== 'string') {
       throw new SecureFetchError('INVALID_URL', 'Target URL is missing or not a string.');
     }
@@ -230,12 +245,14 @@ export class SecureUrlFetcher {
       throw new SecureFetchError('INVALID_URL', `Failed to parse URL: '${rawUrl}'`);
     }
 
-    // 1. Strict Protocol check: HTTP / HTTPS only
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      throw new SecureFetchError(
-        'UNSUPPORTED_PROTOCOL',
-        `Protocol '${parsed.protocol}' is forbidden. Only http: and https: are permitted.`
-      );
+    // 1. Strict Protocol check: HTTPS only (standard port 443)
+    if (parsed.protocol !== 'https:') {
+      if (!allowHttpForTesting || parsed.protocol !== 'http:') {
+        throw new SecureFetchError(
+          'UNSUPPORTED_PROTOCOL',
+          `Protocol '${parsed.protocol}' is forbidden. Only https: is permitted.`
+        );
+      }
     }
 
     // 2. Reject credentials in URL
@@ -246,12 +263,15 @@ export class SecureUrlFetcher {
       );
     }
 
-    // 3. Port check: Standard ports 80 and 443 only
-    if (parsed.port && parsed.port !== '80' && parsed.port !== '443') {
-      throw new SecureFetchError(
-        'NON_STANDARD_PORT_REJECTED',
-        `Port '${parsed.port}' is non-standard. Only port 80 and 443 are permitted.`
-      );
+    // 3. Port check: Standard HTTPS port 443 only (or port 80 if allowHttpForTesting)
+    if (parsed.port) {
+      const allowedPort = parsed.protocol === 'https:' ? '443' : '80';
+      if (parsed.port !== allowedPort) {
+        throw new SecureFetchError(
+          'NON_STANDARD_PORT_REJECTED',
+          `Port '${parsed.port}' is non-standard. Only standard port ${allowedPort} is permitted.`
+        );
+      }
     }
 
     // Check for obfuscated or raw numeric IP notation in the raw URL
@@ -274,15 +294,12 @@ export class SecureUrlFetcher {
       throw new SecureFetchError('BLOCKED_HOSTNAME', 'Hostname cannot be empty.');
     }
 
-    // Direct IP address check in parsed URL
+    // Direct IP literal in URL hostname is rejected when a domain name is expected
     if (net.isIP(hostname)) {
-      const ipCheck = SecureUrlFetcher.isIpBlocked(hostname);
-      if (ipCheck.blocked) {
-        throw new SecureFetchError(
-          'SSRF_BLOCKED_IP',
-          `Direct IP '${hostname}' in URL is rejected: ${ipCheck.reason}`
-        );
-      }
+      throw new SecureFetchError(
+        'BLOCKED_HOSTNAME',
+        `Raw IP literal '${hostname}' is rejected. A valid public domain name is required.`
+      );
     }
 
     // Reject obvious internal/local destinations
@@ -363,15 +380,14 @@ export class SecureUrlFetcher {
     let redirectCount = 0;
 
     while (redirectCount <= maxRedirects) {
-      const parsedUrl = SecureUrlFetcher.validateUrlStructure(currentUrl);
+      const parsedUrl = SecureUrlFetcher.validateUrlStructure(currentUrl, options.allowHttpForTesting);
       redirectChain.push(parsedUrl.href);
 
       // Pre-resolve DNS and validate against SSRF blocklist
       const resolvedIp = await SecureUrlFetcher.resolveAndValidateHost(parsedUrl.hostname);
 
       const startTime = Date.now();
-      const isHttps = parsedUrl.protocol === 'https:';
-      const port = parsedUrl.port ? parseInt(parsedUrl.port, 10) : (isHttps ? 443 : 80);
+      const port = parsedUrl.port ? parseInt(parsedUrl.port, 10) : 443;
 
       const fetchPromise = new Promise<SecureFetchResult>((resolve, reject) => {
         let isTimedOut = false;
@@ -382,8 +398,8 @@ export class SecureUrlFetcher {
 
         // Security: DNS rebinding defense. Pin connection to pre-validated resolvedIp
         // while preserving TLS SNI servername and HTTP Host header.
-        const reqOptions: http.RequestOptions = {
-          protocol: parsedUrl.protocol,
+        const reqOptions: https.RequestOptions = {
+          protocol: 'https:',
           hostname: resolvedIp, // Connect to verified safe IP
           port,
           path: parsedUrl.pathname + parsedUrl.search,
@@ -394,16 +410,11 @@ export class SecureUrlFetcher {
             'Accept': 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.1',
             'Accept-Encoding': 'identity', // Plain text for exact byte count and streaming limit
             'Connection': 'close'
-          }
+          },
+          servername: parsedUrl.hostname // TLS SNI
         };
 
-        if (isHttps) {
-          (reqOptions as https.RequestOptions).servername = parsedUrl.hostname; // TLS SNI
-        }
-
-        const transport = isHttps ? https : http;
-
-        const req = transport.request(reqOptions, (res) => {
+        const req = https.request(reqOptions, (res) => {
           const timingMs = Date.now() - startTime;
           const statusCode = res.statusCode || 0;
           const headers: Record<string, string> = {};
@@ -413,7 +424,7 @@ export class SecureUrlFetcher {
             }
           }
 
-          // Check for redirects (301, 302, 303, 307, 308)
+          // Check for redirects (301, 302, 303, 307, 308) - manual redirection only
           if ([301, 302, 303, 307, 308].includes(statusCode) && headers['location']) {
             clearTimeout(timeoutTimer);
             res.resume(); // Discard redirect body
@@ -503,7 +514,7 @@ export class SecureUrlFetcher {
 
       const result = await fetchPromise;
 
-      // If it was a redirect, follow it if within limit
+      // If it was a redirect, re-validate the hop through full validator
       if ([301, 302, 303, 307, 308].includes(result.statusCode) && result.headers['location']) {
         redirectCount++;
         if (redirectCount > maxRedirects) {

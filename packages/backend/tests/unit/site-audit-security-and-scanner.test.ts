@@ -22,8 +22,8 @@ describe('SiteFix AI: Secure URL Fetcher & OWASP SSRF Defense (Part 2.2 & 8.1)',
     expect(() => SecureUrlFetcher.validateUrlStructure('http://example.com:6379')).toThrow(SecureFetchError);
   });
 
-  it('allows standard ports (80 and 443)', () => {
-    expect(() => SecureUrlFetcher.validateUrlStructure('http://example.com:80')).not.toThrow();
+  it('allows standard ports (443 for https, 80 for test http)', () => {
+    expect(() => SecureUrlFetcher.validateUrlStructure('http://example.com:80', true)).not.toThrow();
     expect(() => SecureUrlFetcher.validateUrlStructure('https://example.com:443')).not.toThrow();
     expect(() => SecureUrlFetcher.validateUrlStructure('https://example.com')).not.toThrow();
   });
@@ -307,11 +307,15 @@ describe('SiteFix AI: Optimization Fix-Pack Deliverable Generator (Part 2.4)', (
     expect(deliverable.openGraphSnippet).toContain('<meta property="og:title"');
     expect(deliverable.twitterCardSnippet).toContain('summary_large_image');
 
-    // Verify Schema JSON-LD has honest placeholders, NOT invented fake phone numbers or reviews
-    expect(deliverable.schemaJsonLdSnippet).toContain('[INSERT_YOUR_BUSINESS_PHONE_NUMBER');
-    expect(deliverable.schemaJsonLdSnippet).toContain('[INSERT_STREET_ADDRESS]');
+    // Verify Schema JSON-LD strictly contains verified facts, NOT placeholder strings or fake ratings
+    expect(deliverable.schemaJsonLdSnippet).toContain('"@type": "WebSite"');
+    expect(deliverable.schemaJsonLdSnippet).not.toContain('[INSERT_YOUR_BUSINESS_PHONE_NUMBER');
+    expect(deliverable.schemaJsonLdSnippet).not.toContain('[INSERT_STREET_ADDRESS]');
     expect(deliverable.schemaJsonLdSnippet).not.toContain('fake-phone');
     expect(deliverable.schemaJsonLdSnippet).not.toContain('aggregateRating');
+    expect(deliverable.recommendedOwnerAdditions).toBeDefined();
+    expect(deliverable.recommendedOwnerAdditions?.length).toBeGreaterThan(0);
+    expect(deliverable.checklistMarkdown).toContain('Recommended Owner Schema Additions');
 
     // Checklist has CMS instructions
     expect(deliverable.checklistMarkdown).toContain('WordPress');

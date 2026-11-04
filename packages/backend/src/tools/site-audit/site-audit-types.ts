@@ -93,6 +93,7 @@ export interface FixPackDeliverable {
   schemaJsonLdSnippet: string;
   canonicalUrlRecommendation: string;
   checklistMarkdown: string;
+  recommendedOwnerAdditions?: string[];
   fullReportJson: any;
   disclosure: string;
 }

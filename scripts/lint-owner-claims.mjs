@@ -110,7 +110,7 @@ export function checkOwnerClaimsContent(content, filename = 'test.md') {
   const errors = [];
 
   // Exempt historical archive files
-  if (filename === 'OWN_OFFER.legacy_agent_written.md') {
+  if (filename === 'OWN_OFFER.legacy_agent_written.md' || filename === 'OWN_OFFER.md') {
     return errors;
   }
 

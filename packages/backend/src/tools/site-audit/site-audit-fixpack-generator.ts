@@ -72,43 +72,38 @@ export class SiteAuditFixPackGenerator {
       `<meta name="twitter:image" content="${cleanCanonical.replace(/\/$/, '')}/og-image.jpg">`
     ].join('\n');
 
-    // 4. Valid Schema.org JSON-LD Template with User Placeholders (Zero Hallucination)
+    // 4. Valid Schema.org JSON-LD (Strictly Verified Facts Only - Zero Hallucination)
+    // Omit unverified placeholders (telephone, address, rating) from active JSON-LD.
+    const schemaObject: Record<string, any> = {
+      '@context': 'https://schema.org',
+      '@type': 'WebSite',
+      name: cleanTitle.split('—')[0].split('-')[0].trim() || urlHostname,
+      url: cleanCanonical,
+      description: cleanDesc
+    };
+
+    if (audit.preview.ogImage && audit.preview.ogImage !== '(No og:image found)' && !audit.preview.ogImage.includes('og-image.jpg')) {
+      schemaObject.image = audit.preview.ogImage;
+    }
+
     const schemaJsonLdSnippet = [
+      '<!-- Schema.org Structured Data (Strictly Verified Live Metadata) -->',
       '<script type="application/ld+json">',
-      JSON.stringify(
-        {
-          '@context': 'https://schema.org',
-          '@type': 'LocalBusiness',
-          name: cleanTitle.split('—')[0].split('-')[0].trim() || urlHostname,
-          url: cleanCanonical,
-          description: cleanDesc,
-          telephone: '[INSERT_YOUR_BUSINESS_PHONE_NUMBER_e.g._+91XXXXXXXXXX]',
-          email: '[INSERT_CONTACT_EMAIL_e.g._contact@' + urlHostname + ']',
-          address: {
-            '@type': 'PostalAddress',
-            streetAddress: '[INSERT_STREET_ADDRESS]',
-            addressLocality: '[INSERT_CITY]',
-            addressRegion: '[INSERT_STATE]',
-            postalCode: '[INSERT_PINCODE]',
-            addressCountry: 'IN'
-          },
-          openingHoursSpecification: [
-            {
-              '@type': 'OpeningHoursSpecification',
-              dayOfWeek: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'],
-              opens: '09:00',
-              closes: '19:00'
-            }
-          ]
-        },
-        null,
-        2
-      ),
+      JSON.stringify(schemaObject, null, 2),
       '</script>'
     ].join('\n');
 
-    // 5. Checklist Markdown
-    const checklistMarkdown = this.generateChecklistMarkdown(audit, cleanTitle, cleanCanonical);
+    // 5. Recommended Owner Additions (Checklist for Optional Manual Fields)
+    const recommendedOwnerAdditions: string[] = [
+      `Telephone: Add "telephone": "+91XXXXXXXXXX" if you offer a direct phone line.`,
+      `Physical Address: Add "address": { "@type": "PostalAddress", "streetAddress": "...", "addressLocality": "...", "postalCode": "..." } if you operate a physical location.`,
+      `Contact Email: Add "email": "contact@${urlHostname}" for business inquiries.`,
+      `Store Hours: Add "openingHoursSpecification" if you maintain physical retail/office hours.`,
+      `Customer Reviews: Add "aggregateRating" only if backed by genuine, verified third-party customer reviews.`
+    ];
+
+    // 6. Checklist Markdown
+    const checklistMarkdown = this.generateChecklistMarkdown(audit, cleanTitle, cleanCanonical, recommendedOwnerAdditions);
 
     return {
       auditId: audit.auditId,
@@ -121,6 +116,7 @@ export class SiteAuditFixPackGenerator {
       schemaJsonLdSnippet,
       canonicalUrlRecommendation: cleanCanonical,
       checklistMarkdown,
+      recommendedOwnerAdditions,
       fullReportJson: audit,
       disclosure: SiteAuditFixPackGenerator.LEGAL_DISCLOSURE
     };
@@ -132,7 +128,8 @@ export class SiteAuditFixPackGenerator {
   private generateChecklistMarkdown(
     audit: SiteAuditResult,
     title: string,
-    canonical: string
+    canonical: string,
+    recommendedOwnerAdditions: string[] = []
   ): string {
     const issues = audit.findings.filter((f) => f.status === 'ISSUE');
     const warnings = audit.findings.filter((f) => f.status === 'WARNING');
@@ -167,6 +164,15 @@ export class SiteAuditFixPackGenerator {
             )
             .join('\n\n')
         : '✓ No warnings detected!',
+      ``,
+      `---`,
+      ``,
+      `## 📋 Recommended Owner Schema Additions (Optional)`,
+      `The generated Schema.org JSON-LD contains strictly verified facts extracted from your live site. ` +
+      `To avoid search engine penalties, placeholder contact details are never injected automatically into your active script. ` +
+      `You may manually append the following attributes if applicable:`,
+      ``,
+      ...recommendedOwnerAdditions.map((item, idx) => `${idx + 1}. **${item.split(':')[0]}:** ${item.split(':').slice(1).join(':').trim()}`),
       ``,
       `---`,
       ``,

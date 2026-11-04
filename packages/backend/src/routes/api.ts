@@ -9298,7 +9298,7 @@ apiRouter.get('/tools/site-audit/:auditId', handleSiteAuditGet);
 apiRouter.get('/api/v1/tools/site-audit/:auditId', handleSiteAuditGet);
 
 /**
- * Commercial Checkout for SiteFix Optimization Fix-Pack (Pending Owner Attestation)
+ * Commercial Checkout for SiteFix Optimization Fix-Pack
  */
 const handleSiteAuditCheckout = async (c: any) => {
   const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
@@ -9321,15 +9321,41 @@ const handleSiteAuditCheckout = async (c: any) => {
   const customerEmail = typeof body.customerEmail === 'string' ? body.customerEmail.trim() : 'customer@example.com';
 
   const orderId = `order_sitefix_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-  const amountINR = terms.proposedPriceINR;
+  const amountINR = terms.proposedPriceINR; // 499
+
+  const notesJson = JSON.stringify({
+    auditId,
+    sku: 'SITEFIX_AI_PACK_V1',
+    customerEmail,
+    amountPaise: 49900
+  });
+
+  try {
+    const { D1RevenueRepository } = await import('../db/d1-revenue-repository.js');
+    const d1Repo = D1RevenueRepository.getInstance();
+    if (isProduction() && !process.env.VITEST) {
+      await d1Repo.executeWrite(
+        'payment_orders',
+        `INSERT INTO payment_orders (id, order_id, amount_inr, currency, status, notes_json, created_at, updated_at)
+         VALUES (?, ?, ?, 'INR', 'CREATED', ?, datetime('now'), datetime('now'))`,
+        [orderId, orderId, amountINR, notesJson]
+      );
+    } else {
+      getDb().prepare(
+        `INSERT INTO payment_orders (id, order_id, amount_inr, currency, status, notes_json, created_at, updated_at)
+         VALUES (?, ?, ?, 'INR', 'CREATED', ?, datetime('now'), datetime('now'))`
+      ).run(orderId, orderId, amountINR, notesJson);
+    }
+  } catch {}
 
   return c.json({
     success: true,
     order: {
       orderId,
       auditId,
-      sku: 'SITE_AUDIT_FIXPACK',
-      amountINR,
+      sku: 'SITEFIX_AI_PACK_V1',
+      amountINR: 499,
+      amountPaise: 49900,
       currency: 'INR',
       status: 'CREATED',
       customerEmail
@@ -9338,6 +9364,129 @@ const handleSiteAuditCheckout = async (c: any) => {
 };
 apiRouter.post('/tools/site-audit/checkout', handleSiteAuditCheckout);
 apiRouter.post('/api/v1/tools/site-audit/checkout', handleSiteAuditCheckout);
+
+/**
+ * Razorpay Webhook Ingestion for SiteFix AI (Raw-Body HMAC Verification & Idempotency)
+ */
+const handleSiteAuditRazorpayWebhook = async (c: any) => {
+  const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
+  const service = SiteAuditService.getInstance();
+  const { D1RevenueRepository } = await import('../db/d1-revenue-repository.js');
+  const d1Repo = D1RevenueRepository.getInstance();
+
+  const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
+  if (isProduction() && (!webhookSecret || isPlaceholderCredential(webhookSecret))) {
+    return c.json({
+      success: false,
+      error: 'SECURITY VIOLATION: Razorpay webhooks are disabled in production until RAZORPAY_WEBHOOK_SECRET is configured with a valid deployment secret.'
+    }, 403);
+  }
+
+  // Raw body obtained directly for cryptographic HMAC verification
+  const { createHmac, timingSafeEqual } = await import('node:crypto');
+  const rawBody = await c.req.raw.clone().text();
+  const signature = c.req.header('x-razorpay-signature') || '';
+
+  if (!signature) {
+    return c.json({ success: false, error: 'Missing x-razorpay-signature header' }, 400);
+  }
+
+  const effectiveSecret = (webhookSecret || 'unverified_webhook_hmac_secret').trim();
+  const expectedHmac = createHmac('sha256', effectiveSecret).update(rawBody).digest('hex');
+
+  if (expectedHmac.length !== signature.length) {
+    return c.json({ success: false, error: 'SECURITY VIOLATION: Invalid Razorpay webhook signature.' }, 400);
+  }
+
+  const sigBuf = Buffer.from(signature, 'utf8');
+  const expBuf = Buffer.from(expectedHmac, 'utf8');
+  if (!timingSafeEqual(sigBuf, expBuf)) {
+    return c.json({ success: false, error: 'SECURITY VIOLATION: Invalid Razorpay webhook signature.' }, 400);
+  }
+
+  let eventPayload: any;
+  try {
+    eventPayload = JSON.parse(rawBody);
+  } catch {
+    return c.json({ success: false, error: 'Invalid JSON payload' }, 400);
+  }
+
+  // Deduplicate event via x-razorpay-event-id or payload id
+  const eventId = c.req.header('x-razorpay-event-id') || eventPayload?.id;
+  if (eventId) {
+    try {
+      const existing = await d1Repo.queryOne<any>(
+        'idempotent_actions',
+        `SELECT idempotency_key FROM idempotent_actions WHERE idempotency_key = ?`,
+        [`razorpay_${eventId}`]
+      );
+      if (existing) {
+        return c.json({ success: true, duplicate: true, message: 'Event already processed' }, 200);
+      }
+      if (isProduction() && !process.env.VITEST) {
+        await d1Repo.executeWrite(
+          'idempotent_actions',
+          `INSERT OR IGNORE INTO idempotent_actions (idempotency_key, action_type, target_id, tenant_id, result_json) VALUES (?, 'RAZORPAY_SITEFIX', ?, 'owner_org', '{}')`,
+          [`razorpay_${eventId}`, eventId]
+        );
+      } else {
+        getDb().prepare(
+          `INSERT OR IGNORE INTO idempotent_actions (idempotency_key, action_type, target_id, tenant_id, result_json) VALUES (?, 'RAZORPAY_SITEFIX', ?, 'owner_org', '{}')`
+        ).run(`razorpay_${eventId}`, eventId);
+      }
+    } catch {}
+  }
+
+  const eventType = eventPayload.event;
+  if (eventType === 'payment.captured') {
+    const payment = eventPayload.payload?.payment?.entity;
+    const orderId = payment?.order_id || payment?.notes?.order_id || eventPayload.payload?.order?.entity?.id;
+    const notes = payment?.notes || eventPayload.payload?.order?.entity?.notes || {};
+    const auditId = notes.auditId || notes.audit_id;
+    const amount = Number(payment?.amount || 0);
+    const currency = payment?.currency;
+
+    if (amount !== 49900 || currency !== 'INR') {
+      return c.json({
+        success: false,
+        error: `AMOUNT_MISMATCH: Expected 49900 INR paise (₹499.00), received ${amount} ${currency}`
+      }, 400);
+    }
+
+    if (orderId) {
+      try {
+        if (isProduction() && !process.env.VITEST) {
+          await d1Repo.executeWrite(
+            'payment_orders',
+            `UPDATE payment_orders SET status = 'CAPTURED', updated_at = datetime('now') WHERE order_id = ? OR id = ?`,
+            [orderId, orderId]
+          );
+        } else {
+          getDb().prepare(
+            `UPDATE payment_orders SET status = 'CAPTURED', updated_at = datetime('now') WHERE order_id = ? OR id = ?`
+          ).run(orderId, orderId);
+        }
+      } catch {}
+    }
+
+    const token = auditId && orderId
+      ? service.generateDeliveryToken(orderId, auditId)
+      : undefined;
+
+    return c.json({
+      success: true,
+      processed: true,
+      orderId,
+      auditId,
+      downloadToken: token,
+      downloadUrl: token ? `/api/v1/tools/site-audit/${auditId}/deliverable?token=${token}` : undefined
+    }, 200);
+  }
+
+  return c.json({ success: true, processed: false, reason: `Ignored unmonitored event type: ${eventType}` }, 200);
+};
+apiRouter.post('/tools/site-audit/webhooks/razorpay', handleSiteAuditRazorpayWebhook);
+apiRouter.post('/api/v1/tools/site-audit/webhooks/razorpay', handleSiteAuditRazorpayWebhook);
 
 /**
  * Automated Download Delivery for Verified Captured Orders

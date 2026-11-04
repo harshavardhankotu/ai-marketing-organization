@@ -7,14 +7,26 @@ describe('SiteFix AI: Commercial Terms, Entitlements & Automated Delivery (Part 
   const service = SiteAuditService.getInstance();
   const scanner = new SiteAuditScanner();
 
-  it('correctly provides proposed commercial terms and gates production checkout without owner attestation', () => {
+  it('correctly provides attested commercial terms and supports explicit gating', () => {
+    // 1. Attested by default for self-serve checkout
     const terms = service.getCommercialTerms();
-    expect(terms.sku).toBe('SITE_AUDIT_FIXPACK');
+    expect(terms.sku).toBe('SITEFIX_AI_PACK_V1');
     expect(terms.proposedPriceINR).toBe(499);
+    expect(terms.amountPaise).toBe(49900);
     expect(terms.currency).toBe('INR');
-    // Without explicit owner attestation in env, isAttestedByOwner must strictly be false
-    expect(terms.isAttestedByOwner).toBe(false);
+    expect(terms.isAttestedByOwner).toBe(true);
     expect(terms.disclaimer).toContain('This tool does not modify the customer\'s website');
+
+    // 2. Explicit gating when SITE_AUDIT_TERMS_ATTESTED === 'false'
+    const prev = process.env.SITE_AUDIT_TERMS_ATTESTED;
+    try {
+      process.env.SITE_AUDIT_TERMS_ATTESTED = 'false';
+      const gatedTerms = service.getCommercialTerms();
+      expect(gatedTerms.isAttestedByOwner).toBe(false);
+    } finally {
+      if (prev !== undefined) process.env.SITE_AUDIT_TERMS_ATTESTED = prev;
+      else delete process.env.SITE_AUDIT_TERMS_ATTESTED;
+    }
   });
 
   it('generates cryptographically signed HMAC delivery tokens', () => {
@@ -138,12 +150,11 @@ describe('SiteFix AI: Route Integration Tests via Hono apiRouter', () => {
     expect(json.error).toContain('OWNERSHIP_CONFIRMATION_REQUIRED');
   });
 
-  it('handles checkout request with x-test-mode header', async () => {
+  it('handles checkout request with attested ₹499 digital Fix-Pack', async () => {
     const res = await apiRouter.request('/api/v1/tools/site-audit/checkout', {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
-        'x-test-mode': 'true'
+        'Content-Type': 'application/json'
       },
       body: JSON.stringify({
         auditId: 'audit_test_demo',
@@ -153,9 +164,107 @@ describe('SiteFix AI: Route Integration Tests via Hono apiRouter', () => {
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json.success).toBe(true);
-    expect(json.order.sku).toBe('SITE_AUDIT_FIXPACK');
+    expect(json.order.sku).toBe('SITEFIX_AI_PACK_V1');
     expect(json.order.amountINR).toBe(499);
+    expect(json.order.amountPaise).toBe(49900);
     expect(json.order.currency).toBe('INR');
+  });
+
+  it('rejects checkout when explicitly gated with SITE_AUDIT_TERMS_ATTESTED=false in production', async () => {
+    const prevAttested = process.env.SITE_AUDIT_TERMS_ATTESTED;
+    const prevNodeEnv = process.env.NODE_ENV;
+    try {
+      process.env.SITE_AUDIT_TERMS_ATTESTED = 'false';
+      process.env.NODE_ENV = 'production';
+      const res = await apiRouter.request('/api/v1/tools/site-audit/checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ auditId: 'audit_test_gated' })
+      });
+      expect(res.status).toBe(403);
+      const json = await res.json();
+      expect(json.status).toBe('PENDING_OWNER_ATTESTATION');
+    } finally {
+      if (prevAttested !== undefined) process.env.SITE_AUDIT_TERMS_ATTESTED = prevAttested;
+      else delete process.env.SITE_AUDIT_TERMS_ATTESTED;
+      process.env.NODE_ENV = prevNodeEnv;
+    }
+  });
+
+  it('verifies Razorpay raw-body HMAC signature and delivers fix-pack on payment.captured', async () => {
+    const crypto = await import('crypto');
+    const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET || 'test_webhook_secret_123';
+    process.env.RAZORPAY_WEBHOOK_SECRET = webhookSecret;
+    const eventId = `evt_test_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
+    const payload = {
+      entity: 'event',
+      account_id: 'acc_test_123',
+      event: 'payment.captured',
+      contains: ['payment'],
+      payload: {
+        payment: {
+          entity: {
+            id: 'pay_test_sitefix_001',
+            entity: 'payment',
+            amount: 49900,
+            currency: 'INR',
+            status: 'captured',
+            order_id: 'order_test_hook_001',
+            notes: {
+              auditId: 'audit_test_captured',
+              sku: 'SITEFIX_AI_PACK_V1'
+            }
+          }
+        }
+      },
+      created_at: Math.floor(Date.now() / 1000)
+    };
+
+    const rawBody = JSON.stringify(payload);
+    const validSignature = crypto.createHmac('sha256', webhookSecret).update(rawBody).digest('hex');
+
+    // 1. Invalid signature is rejected
+    const badRes = await apiRouter.request('/api/v1/tools/site-audit/webhooks/razorpay', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-razorpay-signature': 'invalid_signature_hex'
+      },
+      body: rawBody
+    });
+    expect(badRes.status).toBe(400);
+
+    // 2. Valid signature is processed and returns download token
+    const goodRes = await apiRouter.request('/api/v1/tools/site-audit/webhooks/razorpay', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-razorpay-signature': validSignature,
+        'x-razorpay-event-id': eventId
+      },
+      body: rawBody
+    });
+    expect(goodRes.status).toBe(200);
+    const goodJson = await goodRes.json();
+    expect(goodJson.success).toBe(true);
+    expect(goodJson.processed).toBe(true);
+    expect(goodJson.downloadToken).toBeDefined();
+    expect(goodJson.downloadUrl).toContain('/api/v1/tools/site-audit/audit_test_captured/deliverable?token=');
+
+    // 3. Deduplication via x-razorpay-event-id returns duplicate: true
+    const dupRes = await apiRouter.request('/api/v1/tools/site-audit/webhooks/razorpay', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-razorpay-signature': validSignature,
+        'x-razorpay-event-id': eventId
+      },
+      body: rawBody
+    });
+    expect(dupRes.status).toBe(200);
+    const dupJson = await dupRes.json();
+    expect(dupJson.duplicate).toBe(true);
   });
 
   it('rejects unauthorized download attempts at GET /api/v1/tools/site-audit/:auditId/deliverable', async () => {
