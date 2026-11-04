@@ -500,8 +500,12 @@ export function renderSiteAuditPage(): string {
           return;
         }
 
+        if (!data.keyId) {
+          throw new Error('Payment gateway keyId is missing from server checkout response.');
+        }
+
         const options = {
-          key: data.keyId || 'rzp_test_TvxQAAAWWVLnNv',
+          key: data.keyId,
           amount: data.amount,
           currency: data.currency,
           name: 'SiteFix AI (Test Sandbox)',
@@ -544,6 +548,10 @@ export function renderSiteAuditPage(): string {
 
         if (data.createdViaRazorpayApi === true || (data.order && data.order.createdViaRazorpayApi === true)) {
           options.order_id = data.orderId;
+        }
+
+        if (!options.order_id) {
+          throw new Error('A genuine server-generated Razorpay order_id is required to launch Checkout.');
         }
 
         const rzp = new Razorpay(options);

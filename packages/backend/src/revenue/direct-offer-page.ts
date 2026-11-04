@@ -715,69 +715,97 @@ export class DirectCommercialOfferPage {
       statusBox.style.background = 'rgba(59, 130, 246, 0.15)';
       statusBox.style.border = '1px solid #3b82f6';
       statusBox.style.color = '#93c5fd';
-      statusBox.innerText = '⏳ Creating ₹1.00 test order with Razorpay...';
+      statusBox.innerText = '⏳ Requesting genuine Razorpay Test Order (100 paise INR)...';
       btn.disabled = true;
 
-      let orderData = {};
       try {
-        const res = await fetch('/api/v1/create-order', {
+        const res = await fetch('/api/v1/integrations/razorpay/test-order', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            amount: 100,
-            currency: 'INR',
-            receipt: 'rcpt_live_home_' + Date.now(),
-            notes: { test_type: 'live_homepage_test' }
-          })
+          headers: { 'Content-Type': 'application/json' }
         });
-        orderData = await res.json().catch(() => ({}));
-      } catch (fErr) {
-        console.warn('Backend order call failed, proceeding with direct client checkout:', fErr);
-      }
+        const data = await res.json();
 
-      const keyId = (orderData && orderData.key_id) || 'rzp_test_TvxQAAAWWVLnNv';
-      const amount = (orderData && orderData.amount) || 100;
-      const currency = (orderData && orderData.currency) || 'INR';
+        if (
+          !res.ok ||
+          !data.success ||
+          data.createdViaRazorpayApi !== true ||
+          !data.order_id ||
+          !String(data.order_id).startsWith('order_') ||
+          data.amount !== 100 ||
+          data.currency !== 'INR' ||
+          !data.key_id ||
+          !String(data.key_id).startsWith('rzp_test_')
+        ) {
+          const errMsg = data.message || data.error || 'A genuine Razorpay Test Order could not be created.';
+          throw new Error(errMsg);
+        }
 
-      try {
+        statusBox.style.background = 'rgba(59, 130, 246, 0.15)';
+        statusBox.style.border = '1px solid #3b82f6';
+        statusBox.style.color = '#93c5fd';
+        statusBox.innerText = '💳 Opening Razorpay Checkout Modal (Order: ' + data.order_id + ')...';
+
         const options = {
-          key: keyId,
-          amount: amount,
-          currency: currency,
-          name: 'AI Marketing Organization (Test Sandbox)',
-          description: 'Sandbox Mode — Simulated Test Payment (No Real Currency Moved)',
+          key: data.key_id,
+          amount: data.amount,
+          currency: data.currency,
+          order_id: data.order_id,
+          name: 'AI Marketing Organization',
+          description: 'Razorpay Test Mode Integration Verification',
           notes: {
-            mode: 'test',
-            sandbox: 'true',
+            mode: 'TEST',
+            purpose: 'onboarding_test_verification',
             mock_card: '4100 2800 0000 10007',
             mock_upi: 'test@razorpay'
           },
           handler: async function (response) {
-            statusBox.innerText = '🔐 Payment authorized! Verifying payment...';
+            statusBox.style.background = 'rgba(59, 130, 246, 0.15)';
+            statusBox.style.border = '1px solid #3b82f6';
+            statusBox.style.color = '#93c5fd';
+            statusBox.innerText = '🔐 Payment authorized. Verifying server-side signature and capture...';
+
+            if (!response.razorpay_order_id || !response.razorpay_payment_id || !response.razorpay_signature) {
+              statusBox.style.background = 'rgba(239, 68, 68, 0.15)';
+              statusBox.style.border = '1px solid #ef4444';
+              statusBox.style.color = '#fca5a5';
+              statusBox.innerText = '❌ Verification failed: Razorpay did not return complete order/payment/signature tokens.';
+              btn.disabled = false;
+              return;
+            }
+
             try {
-              const verifyRes = await fetch('/api/v1/verify-payment', {
+              const verifyRes = await fetch('/api/v1/integrations/razorpay/test-verify', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                  razorpay_order_id: response.razorpay_order_id || '',
+                  razorpay_order_id: response.razorpay_order_id,
                   razorpay_payment_id: response.razorpay_payment_id,
-                  razorpay_signature: response.razorpay_signature || ''
+                  razorpay_signature: response.razorpay_signature
                 })
               });
               const verifyData = await verifyRes.json();
-              if (verifyRes.ok && verifyData.success) {
+
+              if (verifyRes.ok && verifyData.success && verifyData.status === 'TEST_PAYMENT_CAPTURED') {
                 statusBox.style.background = 'rgba(16, 185, 129, 0.2)';
                 statusBox.style.border = '1px solid #10b981';
                 statusBox.style.color = '#34d399';
                 const pid = response.razorpay_payment_id;
-                const oid = response.razorpay_order_id || 'direct_test';
-                statusBox.innerHTML = '🎉 <strong>Test Transaction Succeeded!</strong><br>Payment ID: <code>' + pid + '</code> | Order ID: <code>' + oid + '</code><br><span style="font-size:0.85rem; color:#d1d5db;">You can now return to the Razorpay setup wizard and click <strong>\"I have done the transaction\"</strong>!</span>';
-                btn.innerHTML = '<span>✅ Test Transaction Completed</span>';
+                const oid = response.razorpay_order_id;
+                statusBox.innerHTML = '🎉 <strong>Razorpay Test Mode transaction successfully captured and verified.</strong><br>' +
+                  '<span style="font-size:0.85rem; color:#cbd5e1;">Payment ID: <code>' + pid + '</code> | Order ID: <code>' + oid + '</code></span><br>' +
+                  '<span style="font-size:0.85rem; color:#d1d5db; display:inline-block; margin-top:6px;">You can now return to the Razorpay setup wizard and click <strong>\"I have done the transaction\"</strong>!</span>';
+                btn.innerHTML = '<span>✅ Test Payment Captured</span>';
+              } else if (verifyData.status === 'PAYMENT_AUTHORIZED_PENDING_CAPTURE') {
+                statusBox.style.background = 'rgba(245, 158, 11, 0.15)';
+                statusBox.style.border = '1px solid #f59e0b';
+                statusBox.style.color = '#fcd34d';
+                statusBox.innerText = '⏳ Payment authorized but pending capture: ' + (verifyData.message || 'Waiting for gateway capture');
+                btn.disabled = false;
               } else {
                 statusBox.style.background = 'rgba(239, 68, 68, 0.15)';
                 statusBox.style.border = '1px solid #ef4444';
                 statusBox.style.color = '#fca5a5';
-                statusBox.innerText = '❌ Verification notice: ' + (verifyData.error || 'Pending capture');
+                statusBox.innerText = '❌ Verification error: ' + (verifyData.message || verifyData.error || 'Signature check failed');
                 btn.disabled = false;
               }
             } catch (vErr) {
@@ -805,10 +833,6 @@ export class DirectCommercialOfferPage {
           theme: { color: '#2563eb' }
         };
 
-        if (orderData && orderData.createdViaRazorpayApi === true && orderData.order_id) {
-          options.order_id = orderData.order_id;
-        }
-
         const rzp = new Razorpay(options);
         rzp.on('payment.failed', function (resp) {
           statusBox.style.background = 'rgba(239, 68, 68, 0.15)';
@@ -822,7 +846,7 @@ export class DirectCommercialOfferPage {
         statusBox.style.background = 'rgba(239, 68, 68, 0.15)';
         statusBox.style.border = '1px solid #ef4444';
         statusBox.style.color = '#fca5a5';
-        statusBox.innerText = '❌ ' + err.message;
+        statusBox.innerHTML = '❌ <strong>Order Creation Error:</strong> ' + err.message + '<br><span style="font-size:0.8rem; color:#cbd5e1;">Please verify that matching RAZORPAY_TEST_KEY_ID and RAZORPAY_TEST_KEY_SECRET are configured.</span>';
         btn.disabled = false;
       }
     }
@@ -1302,69 +1326,97 @@ export class DirectCommercialOfferPage {
       statusBox.style.background = 'rgba(59, 130, 246, 0.15)';
       statusBox.style.border = '1px solid #3b82f6';
       statusBox.style.color = '#93c5fd';
-      statusBox.innerText = '⏳ Creating ₹1.00 test order with Razorpay...';
+      statusBox.innerText = '⏳ Requesting genuine Razorpay Test Order (100 paise INR)...';
       btn.disabled = true;
 
-      let orderData = {};
       try {
-        const res = await fetch('/api/v1/create-order', {
+        const res = await fetch('/api/v1/integrations/razorpay/test-order', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            amount: 100,
-            currency: 'INR',
-            receipt: 'rcpt_live_home_' + Date.now(),
-            notes: { test_type: 'live_homepage_test' }
-          })
+          headers: { 'Content-Type': 'application/json' }
         });
-        orderData = await res.json().catch(() => ({}));
-      } catch (fErr) {
-        console.warn('Backend order call failed, proceeding with direct client checkout:', fErr);
-      }
+        const data = await res.json();
 
-      const keyId = (orderData && orderData.key_id) || 'rzp_test_TvxQAAAWWVLnNv';
-      const amount = (orderData && orderData.amount) || 100;
-      const currency = (orderData && orderData.currency) || 'INR';
+        if (
+          !res.ok ||
+          !data.success ||
+          data.createdViaRazorpayApi !== true ||
+          !data.order_id ||
+          !String(data.order_id).startsWith('order_') ||
+          data.amount !== 100 ||
+          data.currency !== 'INR' ||
+          !data.key_id ||
+          !String(data.key_id).startsWith('rzp_test_')
+        ) {
+          const errMsg = data.message || data.error || 'A genuine Razorpay Test Order could not be created.';
+          throw new Error(errMsg);
+        }
 
-      try {
+        statusBox.style.background = 'rgba(59, 130, 246, 0.15)';
+        statusBox.style.border = '1px solid #3b82f6';
+        statusBox.style.color = '#93c5fd';
+        statusBox.innerText = '💳 Opening Razorpay Checkout Modal (Order: ' + data.order_id + ')...';
+
         const options = {
-          key: keyId,
-          amount: amount,
-          currency: currency,
-          name: 'AI Marketing Organization (Test Sandbox)',
-          description: 'Sandbox Mode — Simulated Test Payment (No Real Currency Moved)',
+          key: data.key_id,
+          amount: data.amount,
+          currency: data.currency,
+          order_id: data.order_id,
+          name: 'AI Marketing Organization',
+          description: 'Razorpay Test Mode Integration Verification',
           notes: {
-            mode: 'test',
-            sandbox: 'true',
+            mode: 'TEST',
+            purpose: 'onboarding_test_verification',
             mock_card: '4100 2800 0000 10007',
             mock_upi: 'test@razorpay'
           },
           handler: async function (response) {
-            statusBox.innerText = '🔐 Payment authorized! Verifying payment...';
+            statusBox.style.background = 'rgba(59, 130, 246, 0.15)';
+            statusBox.style.border = '1px solid #3b82f6';
+            statusBox.style.color = '#93c5fd';
+            statusBox.innerText = '🔐 Payment authorized. Verifying server-side signature and capture...';
+
+            if (!response.razorpay_order_id || !response.razorpay_payment_id || !response.razorpay_signature) {
+              statusBox.style.background = 'rgba(239, 68, 68, 0.15)';
+              statusBox.style.border = '1px solid #ef4444';
+              statusBox.style.color = '#fca5a5';
+              statusBox.innerText = '❌ Verification failed: Razorpay did not return complete order/payment/signature tokens.';
+              btn.disabled = false;
+              return;
+            }
+
             try {
-              const verifyRes = await fetch('/api/v1/verify-payment', {
+              const verifyRes = await fetch('/api/v1/integrations/razorpay/test-verify', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                  razorpay_order_id: response.razorpay_order_id || '',
+                  razorpay_order_id: response.razorpay_order_id,
                   razorpay_payment_id: response.razorpay_payment_id,
-                  razorpay_signature: response.razorpay_signature || ''
+                  razorpay_signature: response.razorpay_signature
                 })
               });
               const verifyData = await verifyRes.json();
-              if (verifyRes.ok && verifyData.success) {
+
+              if (verifyRes.ok && verifyData.success && verifyData.status === 'TEST_PAYMENT_CAPTURED') {
                 statusBox.style.background = 'rgba(16, 185, 129, 0.2)';
                 statusBox.style.border = '1px solid #10b981';
                 statusBox.style.color = '#34d399';
                 const pid = response.razorpay_payment_id;
-                const oid = response.razorpay_order_id || 'direct_test';
-                statusBox.innerHTML = '🎉 <strong>Test Transaction Succeeded!</strong><br>Payment ID: <code>' + pid + '</code> | Order ID: <code>' + oid + '</code><br><span style="font-size:0.85rem; color:#d1d5db;">You can now return to the Razorpay setup wizard and click <strong>\"I have done the transaction\"</strong>!</span>';
-                btn.innerHTML = '<span>✅ Test Transaction Completed</span>';
+                const oid = response.razorpay_order_id;
+                statusBox.innerHTML = '🎉 <strong>Razorpay Test Mode transaction successfully captured and verified.</strong><br>' +
+                  '<span style="font-size:0.85rem; color:#cbd5e1;">Payment ID: <code>' + pid + '</code> | Order ID: <code>' + oid + '</code></span><br>' +
+                  '<span style="font-size:0.85rem; color:#d1d5db; display:inline-block; margin-top:6px;">You can now return to the Razorpay setup wizard and click <strong>\"I have done the transaction\"</strong>!</span>';
+                btn.innerHTML = '<span>✅ Test Payment Captured</span>';
+              } else if (verifyData.status === 'PAYMENT_AUTHORIZED_PENDING_CAPTURE') {
+                statusBox.style.background = 'rgba(245, 158, 11, 0.15)';
+                statusBox.style.border = '1px solid #f59e0b';
+                statusBox.style.color = '#fcd34d';
+                statusBox.innerText = '⏳ Payment authorized but pending capture: ' + (verifyData.message || 'Waiting for gateway capture');
+                btn.disabled = false;
               } else {
                 statusBox.style.background = 'rgba(239, 68, 68, 0.15)';
                 statusBox.style.border = '1px solid #ef4444';
                 statusBox.style.color = '#fca5a5';
-                statusBox.innerText = '❌ Verification notice: ' + (verifyData.error || 'Pending capture');
+                statusBox.innerText = '❌ Verification error: ' + (verifyData.message || verifyData.error || 'Signature check failed');
                 btn.disabled = false;
               }
             } catch (vErr) {
@@ -1392,10 +1444,6 @@ export class DirectCommercialOfferPage {
           theme: { color: '#2563eb' }
         };
 
-        if (orderData && orderData.createdViaRazorpayApi === true && orderData.order_id) {
-          options.order_id = orderData.order_id;
-        }
-
         const rzp = new Razorpay(options);
         rzp.on('payment.failed', function (resp) {
           statusBox.style.background = 'rgba(239, 68, 68, 0.15)';
@@ -1409,7 +1457,7 @@ export class DirectCommercialOfferPage {
         statusBox.style.background = 'rgba(239, 68, 68, 0.15)';
         statusBox.style.border = '1px solid #ef4444';
         statusBox.style.color = '#fca5a5';
-        statusBox.innerText = '❌ ' + err.message;
+        statusBox.innerHTML = '❌ <strong>Order Creation Error:</strong> ' + err.message + '<br><span style="font-size:0.8rem; color:#cbd5e1;">Please verify that matching RAZORPAY_TEST_KEY_ID and RAZORPAY_TEST_KEY_SECRET are configured.</span>';
         btn.disabled = false;
       }
     }
