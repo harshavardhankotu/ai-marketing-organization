@@ -83,8 +83,11 @@ export class DirectCommercialOfferPage {
     if (!computedHash) {
       return false;
     }
-    const expectedHash = process.env.DIRECT_OFFER_TERMS_SHA256?.trim() || computedHash;
-    return computedHash.toLowerCase() === expectedHash.toLowerCase();
+    const expectedHash = process.env.DIRECT_OFFER_TERMS_SHA256?.trim();
+    if (!expectedHash || expectedHash.length !== computedHash.length) {
+      return false;
+    }
+    return crypto.timingSafeEqual(Buffer.from(computedHash.toLowerCase(), 'utf8'), Buffer.from(expectedHash.toLowerCase(), 'utf8'));
   }
 
   /**

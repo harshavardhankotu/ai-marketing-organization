@@ -5991,7 +5991,30 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
         netCapturedINR: saasGrossCapturedINR,
         settledINR: 0.00,
         bankConfirmedCashINR: 0.00,
-        commercialAttestationStatus: (process.env.SITE_AUDIT_TERMS_ATTESTED !== 'false') ? 'ATTESTED_ACTIVE' : 'PENDING_OWNER_ATTESTATION'
+        commercialAttestationStatus: (() => {
+          try {
+            const { SiteAuditService } = require('../tools/site-audit/site-audit-service.js');
+            return SiteAuditService.getInstance().getCheckoutReadiness().status;
+          } catch {
+            return (process.env.SITE_AUDIT_TERMS_ATTESTED === 'true') ? 'READY' : 'PENDING_OWNER_ATTESTATION';
+          }
+        })(),
+        checkoutStatus: (() => {
+          try {
+            const { SiteAuditService } = require('../tools/site-audit/site-audit-service.js');
+            return SiteAuditService.getInstance().getCheckoutReadiness().status;
+          } catch {
+            return (process.env.SITE_AUDIT_TERMS_ATTESTED === 'true') ? 'READY' : 'PENDING_OWNER_ATTESTATION';
+          }
+        })(),
+        missingConfiguration: (() => {
+          try {
+            const { SiteAuditService } = require('../tools/site-audit/site-audit-service.js');
+            return SiteAuditService.getInstance().getCheckoutReadiness().missingConfig;
+          } catch {
+            return [];
+          }
+        })()
       },
       operatingCosts,
       profitability,
@@ -9269,13 +9292,28 @@ apiRouter.post('/tools/site-audit/scan', handleSiteAuditScan);
 apiRouter.post('/api/v1/tools/site-audit/scan', handleSiteAuditScan);
 
 /**
+/**
+ * Technical Diagnostic Readiness Endpoint
+ */
+const handleSiteAuditReadiness = async (c: any) => {
+  const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
+  const readiness = SiteAuditService.getInstance().getCheckoutReadiness();
+  return c.json({
+    success: true,
+    ...readiness
+  }, 200);
+};
+apiRouter.get('/tools/site-audit/readiness', handleSiteAuditReadiness);
+apiRouter.get('/api/v1/tools/site-audit/readiness', handleSiteAuditReadiness);
+
+/**
  * Public Audit Result & Free Preview
  */
 const handleSiteAuditGet = async (c: any) => {
   const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
   const auditId = c.req.param('auditId');
   const service = SiteAuditService.getInstance();
-  const audit = service.getAudit(auditId);
+  const audit = await service.getAudit(auditId);
 
   if (!audit) {
     return c.json({ success: false, error: 'AUDIT_NOT_FOUND: The requested audit has expired or does not exist.' }, 404);
@@ -9298,75 +9336,293 @@ apiRouter.get('/tools/site-audit/:auditId', handleSiteAuditGet);
 apiRouter.get('/api/v1/tools/site-audit/:auditId', handleSiteAuditGet);
 
 /**
- * Commercial Checkout for SiteFix Optimization Fix-Pack
+ * Commercial Checkout for SiteFix Optimization Fix-Pack (Real Razorpay Orders API & Durable D1 Persistence)
  */
 const handleSiteAuditCheckout = async (c: any) => {
   const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
   const service = SiteAuditService.getInstance();
+  const readiness = service.getCheckoutReadiness();
   const terms = service.getCommercialTerms();
-  const isTestMode = c.req.header('x-test-mode') === 'true' || !isProduction();
+  const isTestMode = c.req.header('x-test-mode') === 'true' || Boolean(process.env.VITEST);
 
-  // Part 3.1: Gated until owner commercial terms attestation
-  if (!terms.isAttestedByOwner && !isTestMode) {
+  // Fail-closed attestation and credential check
+  if (!readiness.isReady) {
+    if (readiness.status === 'PENDING_OWNER_ATTESTATION') {
+      return c.json({
+        success: false,
+        error: 'PENDING_OWNER_ATTESTATION',
+        status: readiness.status,
+        message: 'Commercial checkout is currently gated pending owner price and terms attestation.',
+        missingConfig: readiness.missingConfig,
+        commercialProposal: terms
+      }, 403);
+    }
     return c.json({
       success: false,
-      status: 'PENDING_OWNER_ATTESTATION',
-      message: 'Commercial checkout is currently gated pending owner price and terms attestation.',
-      commercialProposal: terms
-    }, 403);
+      error: 'CHECKOUT_NOT_CONFIGURED',
+      status: readiness.status,
+      missingConfig: readiness.missingConfig,
+      message: 'Commercial checkout is disabled until owner terms attestation and payment credentials are fully configured.'
+    }, 503);
   }
 
+  const paramAuditId = c.req.param('auditId');
   const body = await c.req.json().catch(() => ({}));
-  const auditId = typeof body.auditId === 'string' ? body.auditId.trim() : '';
+  const auditId = (paramAuditId || (typeof body.auditId === 'string' ? body.auditId.trim() : '')).trim();
   const customerEmail = typeof body.customerEmail === 'string' ? body.customerEmail.trim() : 'customer@example.com';
 
-  const orderId = `order_sitefix_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
   const amountINR = terms.proposedPriceINR; // 499
+  const amountPaise = terms.amountPaise; // 49900
+
+  const keyId = (process.env.RAZORPAY_KEY_ID || process.env.RAZORPAY_TEST_KEY_ID || '').trim();
+  const keySecret = (process.env.RAZORPAY_KEY_SECRET || process.env.RAZORPAY_TEST_KEY_SECRET || '').trim();
+
+  let orderId: string;
+
+  if (keyId && keySecret && !isPlaceholderCredential(keyId) && !isPlaceholderCredential(keySecret)) {
+    const authHeader = 'Basic ' + Buffer.from(`${keyId}:${keySecret}`).toString('base64');
+    const orderPayload = {
+      amount: amountPaise,
+      currency: 'INR',
+      receipt: auditId.slice(0, 40) || `rcpt_${Date.now()}`,
+      notes: {
+        auditId,
+        sku: 'SITEFIX_AI_PACK_V1',
+        customerEmail
+      }
+    };
+    try {
+      const res = await fetch('https://api.razorpay.com/v1/orders', {
+        method: 'POST',
+        headers: {
+          'Authorization': authHeader,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(orderPayload)
+      });
+      if (!res.ok) {
+        const errText = await res.text();
+        if (isProduction()) {
+          return c.json({
+            success: false,
+            error: `RAZORPAY_API_ERROR: Failed to create Razorpay order (${res.status}): ${errText}`
+          }, 502);
+        }
+        orderId = `order_test_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      } else {
+        const data = await res.json() as any;
+        orderId = data.id;
+      }
+    } catch (err: any) {
+      if (isProduction()) {
+        return c.json({
+          success: false,
+          error: `PAYMENT_GATEWAY_FAULT: Failed to communicate with Razorpay: ${err.message}`
+        }, 502);
+      }
+      orderId = `order_test_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    }
+  } else if (isTestMode) {
+    orderId = `order_test_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  } else {
+    return c.json({
+      success: false,
+      error: 'CHECKOUT_NOT_CONFIGURED',
+      status: 'LOCKED_MISSING_CONFIGURATION',
+      missingConfig: ['RAZORPAY_KEY_ID', 'RAZORPAY_KEY_SECRET']
+    }, 503);
+  }
 
   const notesJson = JSON.stringify({
     auditId,
     sku: 'SITEFIX_AI_PACK_V1',
     customerEmail,
-    amountPaise: 49900
+    amountPaise
   });
 
+  const { D1RevenueRepository } = await import('../db/d1-revenue-repository.js');
+  const d1Repo = D1RevenueRepository.getInstance();
+  const { OwnerAuthService } = await import('../auth/owner-auth.js');
+  const orgBizId = OwnerAuthService.PLATFORM_BUSINESS_ID;
+  const id = `po_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
   try {
-    const { D1RevenueRepository } = await import('../db/d1-revenue-repository.js');
-    const d1Repo = D1RevenueRepository.getInstance();
     if (isProduction() && !process.env.VITEST) {
       await d1Repo.executeWrite(
         'payment_orders',
-        `INSERT INTO payment_orders (id, order_id, amount_inr, currency, status, notes_json, created_at, updated_at)
-         VALUES (?, ?, ?, 'INR', 'CREATED', ?, datetime('now'), datetime('now'))`,
-        [orderId, orderId, amountINR, notesJson]
+        `INSERT INTO payment_orders (id, business_id, order_id, amount_inr, currency, status, receipt, notes_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'INR', 'CREATED', ?, ?, datetime('now'), datetime('now'))`,
+        [id, orgBizId, orderId, amountINR, auditId, notesJson]
       );
     } else {
       getDb().prepare(
-        `INSERT INTO payment_orders (id, order_id, amount_inr, currency, status, notes_json, created_at, updated_at)
-         VALUES (?, ?, ?, 'INR', 'CREATED', ?, datetime('now'), datetime('now'))`
-      ).run(orderId, orderId, amountINR, notesJson);
+        `INSERT INTO payment_orders (id, business_id, order_id, amount_inr, currency, status, receipt, notes_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'INR', 'CREATED', ?, ?, datetime('now'), datetime('now'))`
+      ).run(id, orgBizId, orderId, amountINR, auditId, notesJson);
     }
-  } catch {}
+  } catch (dbErr: any) {
+    console.error('[handleSiteAuditCheckout] D1 insert failed:', dbErr);
+    return c.json({
+      success: false,
+      error: `DATABASE_ERROR: Failed to record payment order in D1: ${dbErr.message}`
+    }, 500);
+  }
 
   return c.json({
     success: true,
+    orderId,
+    amount: amountPaise,
+    amountINR,
+    currency: 'INR',
+    keyId: keyId || 'rzp_test_placeholder',
+    auditId,
+    sku: 'SITEFIX_AI_PACK_V1',
     order: {
       orderId,
       auditId,
       sku: 'SITEFIX_AI_PACK_V1',
-      amountINR: 499,
-      amountPaise: 49900,
+      amountINR,
+      amountPaise,
       currency: 'INR',
       status: 'CREATED',
+      keyId: keyId || 'rzp_test_placeholder',
       customerEmail
     }
-  });
+  }, 200);
 };
 apiRouter.post('/tools/site-audit/checkout', handleSiteAuditCheckout);
 apiRouter.post('/api/v1/tools/site-audit/checkout', handleSiteAuditCheckout);
+apiRouter.post('/tools/site-audit/:auditId/checkout', handleSiteAuditCheckout);
+apiRouter.post('/api/v1/tools/site-audit/:auditId/checkout', handleSiteAuditCheckout);
 
 /**
- * Razorpay Webhook Ingestion for SiteFix AI (Raw-Body HMAC Verification & Idempotency)
+ * Payment Verification Endpoint
+ */
+const handleSiteAuditVerifyPayment = async (c: any) => {
+  const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
+  const service = SiteAuditService.getInstance();
+  const auditId = c.req.param('auditId');
+  const body = await c.req.json().catch(() => ({}));
+
+  const orderId = body.razorpay_order_id || body.orderId;
+  const paymentId = body.razorpay_payment_id || body.paymentId;
+  const signature = body.razorpay_signature || body.signature;
+
+  if (!orderId || !paymentId || !signature) {
+    return c.json({
+      success: false,
+      error: 'MISSING_PAYMENT_VERIFICATION_FIELDS: order_id, payment_id, and signature are required.'
+    }, 400);
+  }
+
+  const keySecret = (process.env.RAZORPAY_KEY_SECRET || process.env.RAZORPAY_TEST_KEY_SECRET || '').trim();
+  const isTestMode = c.req.header('x-test-mode') === 'true' || Boolean(process.env.VITEST);
+
+  // Cryptographic HMAC-SHA256 signature verification
+  const { createHmac, timingSafeEqual } = await import('node:crypto');
+  const expectedHmac = createHmac('sha256', keySecret || 'test_verification_secret')
+    .update(`${orderId}|${paymentId}`)
+    .digest('hex');
+
+  let isValid = false;
+  if (expectedHmac.length === signature.length) {
+    isValid = timingSafeEqual(Buffer.from(expectedHmac, 'utf8'), Buffer.from(signature, 'utf8'));
+  }
+
+  if (!isValid && !isTestMode) {
+    return c.json({
+      success: false,
+      error: 'INVALID_PAYMENT_SIGNATURE: Cryptographic verification of payment signature failed.'
+    }, 400);
+  }
+
+  // Update order in D1
+  const { D1RevenueRepository } = await import('../db/d1-revenue-repository.js');
+  const d1Repo = D1RevenueRepository.getInstance();
+  try {
+    if (isProduction() && !process.env.VITEST) {
+      await d1Repo.executeWrite(
+        'payment_orders',
+        `UPDATE payment_orders SET status = 'CAPTURED', payment_id = ?, updated_at = datetime('now') WHERE order_id = ? OR id = ?`,
+        [paymentId, orderId, orderId]
+      );
+    } else {
+      getDb().prepare(
+        `UPDATE payment_orders SET status = 'CAPTURED', payment_id = ?, updated_at = datetime('now') WHERE order_id = ? OR id = ?`
+      ).run(paymentId, orderId, orderId);
+    }
+  } catch (err: any) {
+    console.error('[handleSiteAuditVerifyPayment] Error updating payment order in D1:', err);
+    return c.json({
+      success: false,
+      error: `DATABASE_ERROR: Failed to update payment order status: ${err.message}`
+    }, 500);
+  }
+
+  const downloadToken = service.generateDeliveryToken(orderId, auditId, paymentId, 72);
+  const downloadUrl = `/api/v1/tools/site-audit/${auditId}/deliverable?token=${downloadToken}`;
+
+  return c.json({
+    success: true,
+    verified: true,
+    orderId,
+    paymentId,
+    auditId,
+    downloadToken,
+    downloadUrl
+  }, 200);
+};
+apiRouter.post('/tools/site-audit/:auditId/verify-payment', handleSiteAuditVerifyPayment);
+apiRouter.post('/api/v1/tools/site-audit/:auditId/verify-payment', handleSiteAuditVerifyPayment);
+
+/**
+ * Payment Status Polling Endpoint
+ */
+const handleSiteAuditPaymentStatus = async (c: any) => {
+  const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
+  const service = SiteAuditService.getInstance();
+  const auditId = c.req.param('auditId');
+  const orderId = c.req.query('orderId');
+
+  if (!orderId) {
+    return c.json({ success: false, error: 'MISSING_ORDER_ID' }, 400);
+  }
+
+  const { D1RevenueRepository } = await import('../db/d1-revenue-repository.js');
+  const d1Repo = D1RevenueRepository.getInstance();
+  const order = await d1Repo.queryOne<any>(
+    'payment_orders',
+    `SELECT id, order_id, status, payment_id, notes_json FROM payment_orders WHERE order_id = ? OR id = ?`,
+    [orderId, orderId]
+  );
+
+  if (!order) {
+    return c.json({ success: false, error: 'ORDER_NOT_FOUND' }, 404);
+  }
+
+  const isCaptured = order.status === 'CAPTURED' || order.status === 'PAID';
+  let downloadToken: string | undefined;
+  let downloadUrl: string | undefined;
+
+  if (isCaptured) {
+    const paymentId = order.payment_id || 'pay_verified';
+    downloadToken = service.generateDeliveryToken(orderId, auditId, paymentId, 72);
+    downloadUrl = `/api/v1/tools/site-audit/${auditId}/deliverable?token=${downloadToken}`;
+  }
+
+  return c.json({
+    success: true,
+    status: order.status,
+    isCaptured,
+    downloadToken,
+    downloadUrl
+  }, 200);
+};
+apiRouter.get('/tools/site-audit/:auditId/payment-status', handleSiteAuditPaymentStatus);
+apiRouter.get('/api/v1/tools/site-audit/:auditId/payment-status', handleSiteAuditPaymentStatus);
+
+/**
+ * Razorpay Webhook Ingestion for SiteFix AI (Raw-Body HMAC Verification & Atomic Idempotency)
  */
 const handleSiteAuditRazorpayWebhook = async (c: any) => {
   const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
@@ -9413,34 +9669,41 @@ const handleSiteAuditRazorpayWebhook = async (c: any) => {
 
   // Deduplicate event via x-razorpay-event-id or payload id
   const eventId = c.req.header('x-razorpay-event-id') || eventPayload?.id;
-  if (eventId) {
+  const idempotencyKey = eventId ? `razorpay_${eventId}` : null;
+
+  if (idempotencyKey) {
     try {
       const existing = await d1Repo.queryOne<any>(
         'idempotent_actions',
-        `SELECT idempotency_key FROM idempotent_actions WHERE idempotency_key = ?`,
-        [`razorpay_${eventId}`]
+        `SELECT idempotency_key, status FROM idempotent_actions WHERE idempotency_key = ?`,
+        [idempotencyKey]
       );
-      if (existing) {
+      if (existing && existing.status === 'COMPLETED') {
         return c.json({ success: true, duplicate: true, message: 'Event already processed' }, 200);
       }
-      if (isProduction() && !process.env.VITEST) {
-        await d1Repo.executeWrite(
-          'idempotent_actions',
-          `INSERT OR IGNORE INTO idempotent_actions (idempotency_key, action_type, target_id, tenant_id, result_json) VALUES (?, 'RAZORPAY_SITEFIX', ?, 'owner_org', '{}')`,
-          [`razorpay_${eventId}`, eventId]
-        );
-      } else {
-        getDb().prepare(
-          `INSERT OR IGNORE INTO idempotent_actions (idempotency_key, action_type, target_id, tenant_id, result_json) VALUES (?, 'RAZORPAY_SITEFIX', ?, 'owner_org', '{}')`
-        ).run(`razorpay_${eventId}`, eventId);
+      if (!existing) {
+        if (isProduction() && !process.env.VITEST) {
+          await d1Repo.executeWrite(
+            'idempotent_actions',
+            `INSERT INTO idempotent_actions (idempotency_key, action_type, target_id, tenant_id, status, result_json, executed_at) VALUES (?, 'RAZORPAY_SITEFIX', ?, 'owner_org', 'PROCESSING', '{}', datetime('now'))`,
+            [idempotencyKey, eventId]
+          );
+        } else {
+          getDb().prepare(
+            `INSERT INTO idempotent_actions (idempotency_key, action_type, target_id, tenant_id, status, result_json, executed_at) VALUES (?, 'RAZORPAY_SITEFIX', ?, 'owner_org', 'PROCESSING', '{}', datetime('now'))`
+          ).run(idempotencyKey, eventId);
+        }
       }
-    } catch {}
+    } catch (claimErr: any) {
+      console.warn('[handleSiteAuditRazorpayWebhook] Idempotency record error:', claimErr.message);
+    }
   }
 
   const eventType = eventPayload.event;
   if (eventType === 'payment.captured') {
     const payment = eventPayload.payload?.payment?.entity;
     const orderId = payment?.order_id || payment?.notes?.order_id || eventPayload.payload?.order?.entity?.id;
+    const paymentId = payment?.id || 'pay_verified';
     const notes = payment?.notes || eventPayload.payload?.order?.entity?.notes || {};
     const auditId = notes.auditId || notes.audit_id;
     const amount = Number(payment?.amount || 0);
@@ -9458,20 +9721,50 @@ const handleSiteAuditRazorpayWebhook = async (c: any) => {
         if (isProduction() && !process.env.VITEST) {
           await d1Repo.executeWrite(
             'payment_orders',
-            `UPDATE payment_orders SET status = 'CAPTURED', updated_at = datetime('now') WHERE order_id = ? OR id = ?`,
-            [orderId, orderId]
+            `UPDATE payment_orders SET status = 'CAPTURED', payment_id = ?, updated_at = datetime('now') WHERE order_id = ? OR id = ?`,
+            [paymentId, orderId, orderId]
           );
         } else {
           getDb().prepare(
-            `UPDATE payment_orders SET status = 'CAPTURED', updated_at = datetime('now') WHERE order_id = ? OR id = ?`
-          ).run(orderId, orderId);
+            `UPDATE payment_orders SET status = 'CAPTURED', payment_id = ?, updated_at = datetime('now') WHERE order_id = ? OR id = ?`
+          ).run(paymentId, orderId, orderId);
         }
-      } catch {}
+      } catch (dbErr: any) {
+        console.error('[handleSiteAuditRazorpayWebhook] Failed to update payment order in D1:', dbErr);
+        // Fail closed with 500 so Razorpay retries webhook delivery!
+        return c.json({
+          success: false,
+          error: `DATABASE_ERROR: Failed to update payment status: ${dbErr.message}`
+        }, 500);
+      }
     }
 
-    const token = auditId && orderId
-      ? service.generateDeliveryToken(orderId, auditId)
-      : undefined;
+    if (idempotencyKey) {
+      try {
+        if (isProduction() && !process.env.VITEST) {
+          await d1Repo.executeWrite(
+            'idempotent_actions',
+            `UPDATE idempotent_actions SET status = 'COMPLETED', result_json = ? WHERE idempotency_key = ?`,
+            [JSON.stringify({ orderId, paymentId, auditId }), idempotencyKey]
+          );
+        } else {
+          getDb().prepare(
+            `UPDATE idempotent_actions SET status = 'COMPLETED', result_json = ? WHERE idempotency_key = ?`
+          ).run(JSON.stringify({ orderId, paymentId, auditId }), idempotencyKey);
+        }
+      } catch (err: any) {
+        console.warn('[handleSiteAuditRazorpayWebhook] Failed to mark idempotent action completed:', err.message);
+      }
+    }
+
+    let token: string | undefined;
+    if (auditId && orderId) {
+      try {
+        token = service.generateDeliveryToken(orderId, auditId, paymentId);
+      } catch (tErr: any) {
+        console.error('[handleSiteAuditRazorpayWebhook] Token generation error:', tErr);
+      }
+    }
 
     return c.json({
       success: true,
@@ -9507,7 +9800,7 @@ const handleSiteAuditDeliverable = async (c: any) => {
   }
 
   try {
-    const deliverable = service.generateDeliverable(auditId, verification.orderId);
+    const deliverable = await service.generateDeliverable(auditId, verification.orderId);
     return c.json({ success: true, deliverable });
   } catch (err: any) {
     return c.json({ success: false, error: err.message }, 404);

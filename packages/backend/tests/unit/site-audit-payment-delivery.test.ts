@@ -4,6 +4,16 @@ import { SiteAuditScanner } from '../../src/tools/site-audit/site-audit-scanner.
 import { apiRouter } from '../../src/routes/api.js';
 
 describe('SiteFix AI: Commercial Terms, Entitlements & Automated Delivery (Part 2.5 & 3.1-3.4)', () => {
+  const TEST_SIGNING_SECRET = 'test_secret_must_be_at_least_32_characters_long_for_security';
+  process.env.SITE_AUDIT_SIGNING_SECRET = TEST_SIGNING_SECRET;
+  process.env.SITE_AUDIT_TERMS_ATTESTED = 'true';
+  const termsHash = SiteAuditService.computeTermsFileHash();
+  if (termsHash) {
+    process.env.SITE_AUDIT_TERMS_SHA256 = termsHash;
+  }
+  process.env.RAZORPAY_KEY_ID = 'rzp_test_fixture_123';
+  process.env.RAZORPAY_KEY_SECRET = 'rzp_test_secret_fixture_456';
+
   const service = SiteAuditService.getInstance();
   const scanner = new SiteAuditScanner();
 
@@ -36,11 +46,12 @@ describe('SiteFix AI: Commercial Terms, Entitlements & Automated Delivery (Part 
 
     expect(typeof token).toBe('string');
     const parts = token.split('.');
-    expect(parts.length).toBe(4);
+    expect(parts.length).toBe(5);
     expect(parts[0]).toBe(orderId);
     expect(parts[1]).toBe(auditId);
-    expect(Number(parts[2])).toBeGreaterThan(Date.now());
-    expect(parts[3].length).toBe(64); // 256-bit HMAC hex
+    expect(parts[2]).toBe('pay_verified');
+    expect(Number(parts[3])).toBeGreaterThan(Date.now());
+    expect(parts[4].length).toBe(64); // 256-bit HMAC hex
   });
 
   it('validates authentic delivery tokens and rejects expired, mismatched, or tampered tokens', async () => {
@@ -66,7 +77,7 @@ describe('SiteFix AI: Commercial Terms, Entitlements & Automated Delivery (Part 
 
     // 4. Tampered signature
     const parts = validToken.split('.');
-    parts[3] = 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff';
+    parts[parts.length - 1] = 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff';
     const tamperedToken = parts.join('.');
     const resTampered = await service.verifyDeliveryToken(tamperedToken, auditId);
     expect(resTampered.valid).toBe(false);
@@ -105,13 +116,13 @@ describe('SiteFix AI: Commercial Terms, Entitlements & Automated Delivery (Part 
     service.setAuditInCache(audit);
 
     // First generation
-    const deliverable1 = service.generateDeliverable(audit.auditId, 'order_test_999');
+    const deliverable1 = await service.generateDeliverable(audit.auditId, 'order_test_999');
     expect(deliverable1.auditId).toBe(audit.auditId);
     expect(deliverable1.targetUrl).toBe('https://punelogistics.example.com');
     expect(deliverable1.headMetadataSnippet).toContain('<title>Pune Logistics Hub</title>');
 
     // Second (regenerated) download request returns identical deliverable
-    const deliverable2 = service.generateDeliverable(audit.auditId, 'order_test_999');
+    const deliverable2 = await service.generateDeliverable(audit.auditId, 'order_test_999');
     expect(deliverable2.headMetadataSnippet).toBe(deliverable1.headMetadataSnippet);
   });
 });
@@ -275,5 +286,49 @@ describe('SiteFix AI: Route Integration Tests via Hono apiRouter', () => {
     const json = await res.json();
     expect(json.success).toBe(false);
     expect(json.error).toContain('DELIVERY_UNAUTHORIZED');
+  });
+
+  it('serves readiness status at GET /api/v1/tools/site-audit/readiness', async () => {
+    const res = await apiRouter.request('/api/v1/tools/site-audit/readiness', { method: 'GET' });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.success).toBe(true);
+    expect(json.status).toBeDefined();
+    expect(Array.isArray(json.missingConfig)).toBe(true);
+  });
+
+  it('verifies valid payment signature via POST /api/v1/tools/site-audit/:auditId/verify-payment', async () => {
+    const crypto = await import('crypto');
+    const orderId = 'order_test_ver_123';
+    const paymentId = 'pay_test_ver_456';
+    const auditId = 'audit_test_ver_789';
+    const keySecret = process.env.RAZORPAY_KEY_SECRET || 'rzp_test_secret_fixture_456';
+    const validSignature = crypto.createHmac('sha256', keySecret).update(`${orderId}|${paymentId}`).digest('hex');
+
+    const res = await apiRouter.request(`/api/v1/tools/site-audit/${auditId}/verify-payment`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        razorpay_order_id: orderId,
+        razorpay_payment_id: paymentId,
+        razorpay_signature: validSignature
+      })
+    });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.success).toBe(true);
+    expect(json.verified).toBe(true);
+    expect(json.downloadToken).toBeDefined();
+    expect(json.downloadUrl).toContain(`/api/v1/tools/site-audit/${auditId}/deliverable?token=`);
+  });
+
+  it('fails closed when SITE_AUDIT_SIGNING_SECRET is shorter than 32 characters', () => {
+    const prev = process.env.SITE_AUDIT_SIGNING_SECRET;
+    try {
+      process.env.SITE_AUDIT_SIGNING_SECRET = 'too_short';
+      expect(() => SiteAuditService.getInstance().getSigningSecret()).toThrow('CONFIGURATION_FAULT');
+    } finally {
+      if (prev !== undefined) process.env.SITE_AUDIT_SIGNING_SECRET = prev;
+    }
   });
 });

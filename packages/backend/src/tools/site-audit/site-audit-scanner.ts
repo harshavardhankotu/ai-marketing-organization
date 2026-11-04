@@ -36,9 +36,7 @@ export class SiteAuditScanner {
       fetchResult = customFetchResult;
     } else {
       fetchResult = await this.fetcher.fetch(rawUrl, {
-        timeoutMs: 8000,
         maxRedirects: 3,
-        maxSizeBytes: 1024 * 1024,
         acceptContentTypes: ['text/html', 'application/xhtml+xml']
       });
     }

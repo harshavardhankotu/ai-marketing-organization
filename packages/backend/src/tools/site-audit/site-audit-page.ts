@@ -1,6 +1,9 @@
 /**
  * SiteFix AI: Public Interactive Tool UI (/tools/site-audit)
- * Implements V6 Specification Part 2.3, 2.4, and 5.3.
+ * Implements V6.2 Specification Phase 4:
+ * - Eliminates DOM XSS via strict HTML escaping.
+ * - Integrates real Razorpay checkout and /verify-payment loop when attested & configured.
+ * - Displays truthful fail-closed status when checkout is locked.
  */
 
 export function renderSiteAuditPage(): string {
@@ -16,6 +19,7 @@ export function renderSiteAuditPage(): string {
   <meta property="og:description" content="Free factual technical website audit. Detect HTML metadata gaps, Schema.org syntax errors, search accessibility blockers, and get copy-paste fixes.">
   <meta property="og:type" content="website">
   <meta name="twitter:card" content="summary_large_image">
+  <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
   <style>
     :root {
       --bg: #090d16;
@@ -90,7 +94,7 @@ export function renderSiteAuditPage(): string {
       font-weight: 600;
       font-size: 0.95rem;
     }
-    input[type="url"], select {
+    input[type="url"], input[type="email"], select {
       width: 100%;
       padding: 0.75rem 1rem;
       background: #0d131f;
@@ -101,7 +105,7 @@ export function renderSiteAuditPage(): string {
       outline: none;
       transition: border-color 0.2s;
     }
-    input[type="url"]:focus, select:focus {
+    input[type="url"]:focus, input[type="email"]:focus, select:focus {
       border-color: var(--primary);
     }
     .checkbox-group {
@@ -149,29 +153,31 @@ export function renderSiteAuditPage(): string {
     }
     .score-banner {
       display: flex;
-      align-items: center;
       justify-content: space-between;
-      padding: 1.5rem;
-      background: #1e293b;
-      border-radius: 8px;
+      align-items: center;
+      padding-bottom: 1.5rem;
+      border-bottom: 1px solid var(--card-border);
       margin-bottom: 1.5rem;
+      gap: 1rem;
     }
     .score-circle {
-      width: 80px;
-      height: 80px;
+      width: 72px;
+      height: 72px;
       border-radius: 50%;
+      background: #1f2937;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 1.75rem;
+      font-size: 1.6rem;
       font-weight: 800;
-      border: 4px solid var(--primary);
+      border: 3px solid var(--primary);
+      flex-shrink: 0;
     }
     .finding-item {
       padding: 1rem;
       border-radius: 8px;
-      margin-bottom: 0.75rem;
       background: #0d131f;
+      margin-bottom: 0.75rem;
       border-left: 4px solid #4b5563;
     }
     .finding-item.ISSUE { border-left-color: var(--danger); }
@@ -180,51 +186,34 @@ export function renderSiteAuditPage(): string {
     .finding-header {
       display: flex;
       justify-content: space-between;
-      font-weight: 700;
+      font-weight: 600;
       margin-bottom: 0.25rem;
     }
-    .code-preview {
-      background: #06090f;
-      padding: 1rem;
-      border-radius: 6px;
-      font-family: monospace;
-      font-size: 0.85rem;
-      color: #93c5fd;
-      overflow-x: auto;
-      margin-top: 0.5rem;
+    .checkout-box {
+      margin-top: 2rem;
+      padding: 1.5rem;
+      background: #0d131f;
+      border-radius: 8px;
+      border: 1px solid var(--card-border);
     }
-    nav {
-      max-width: 900px;
-      margin: 1rem auto;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-    nav a {
-      color: var(--text-muted);
-      text-decoration: none;
-      font-size: 0.9rem;
-    }
-    nav a:hover {
-      color: #fff;
+    .download-success-box {
+      display: none;
+      margin-top: 1.5rem;
+      padding: 1.5rem;
+      background: rgba(16, 185, 129, 0.1);
+      border: 1px solid var(--success);
+      border-radius: 8px;
+      text-align: center;
     }
   </style>
 </head>
 <body>
-  <nav>
-    <a href="/">← Back to Home</a>
-    <div>
-      <a href="/offer" style="margin-right: 1.5rem;">Offer Details</a>
-      <a href="/deals">Live Deals</a>
-    </div>
-  </nav>
-
   <header>
-    <div class="badge">SiteFix AI • Technical Scanner</div>
+    <div class="badge">SiteFix AI • Factual Technical Website Audit & Fixes</div>
     <h1>Instant Website Audit & Optimization Pack</h1>
     <p class="subtitle">
-      Factual on-page technical diagnostics for Indian SMBs, local services, and Shopify stores.
-      Inspect HTML metadata, validate Schema.org JSON-LD, and generate copy-paste fixes without hiring an agency.
+      Zero fake scores. Inspect your live website for technical metadata gaps, Schema.org syntax errors,
+      and search engine accessibility blockers with strict OWASP SSRF protection.
     </p>
   </header>
 
@@ -259,7 +248,7 @@ export function renderSiteAuditPage(): string {
         </button>
 
         <div class="disclaimer-box">
-          <strong>Non-intrusive Scan:</strong> We inspect public HTML headers, meta tags, and structured data.
+          <strong>Non-intrusive Diagnostic:</strong> We inspect public HTML headers, meta tags, and structured data with a strict 5s timeout.
           We never crawl internal subpages, submit forms, or run invasive security exploits.
           No Core Web Vitals or search ranking guarantees are claimed.
         </div>
@@ -271,7 +260,7 @@ export function renderSiteAuditPage(): string {
       <div class="score-banner">
         <div>
           <h2 id="resultStatus">Audit Completed</h2>
-          <p id="resultExplanation" style="color: var(--text-muted); font-size: 0.9rem; max-width: 600px;"></p>
+          <p id="resultExplanation" style="color: var(--text-muted); font-size: 0.9rem; max-width: 600px; margin-top: 0.25rem;"></p>
         </div>
         <div class="score-circle" id="scoreDisplay">--</div>
       </div>
@@ -279,29 +268,89 @@ export function renderSiteAuditPage(): string {
       <h3 style="margin-bottom: 1rem;">Diagnostic Findings</h3>
       <div id="findingsContainer"></div>
 
-      <div style="margin-top: 2rem; padding: 1.5rem; background: #0d131f; border-radius: 8px; border: 1px solid var(--card-border);">
+      <!-- Commercial Fix-Pack Area -->
+      <div class="checkout-box">
         <h3>Downloadable Optimization Pack (Fix-Pack)</h3>
         <p style="color: var(--text-muted); font-size: 0.95rem; margin: 0.5rem 0 1rem 0;">
-          Get ready-to-use HTML &lt;head&gt; tags, valid Schema.org JSON-LD structured data with custom placeholders,
+          Get ready-to-use HTML &lt;head&gt; tags, valid Schema.org JSON-LD structured data,
           and a step-by-step implementation checklist for WordPress, Shopify, or custom HTML.
         </p>
 
-        <div id="checkoutGateNotice" style="background: rgba(245, 158, 11, 0.1); border: 1px solid var(--warning); padding: 1rem; border-radius: 6px; margin-bottom: 1rem;">
-          <strong style="color: var(--warning);">Commercial Launch Status:</strong>
-          <span style="font-size: 0.9rem; color: #d1d5db;">
-            Proposed price: ₹499 one-time. Production checkout is currently gated pending final owner commercial attestation.
-            Download preview is available below for inspection.
-          </span>
+        <!-- Dynamic Checkout Container -->
+        <div id="checkoutActionContainer">
+          <div id="checkoutGateNotice" style="background: rgba(245, 158, 11, 0.1); border: 1px solid var(--warning); padding: 1rem; border-radius: 6px; margin-bottom: 1rem;">
+            <strong style="color: var(--warning);">Self-Serve Checkout Status:</strong>
+            <span id="checkoutStatusText" style="font-size: 0.9rem; color: #d1d5db; display: block; margin-top: 0.25rem;">
+              Checking payment gateway availability...
+            </span>
+          </div>
+          <button class="btn-primary" id="checkoutBtn" onclick="initiateCheckout()" disabled>
+            Unlock & Download Complete Fix-Pack (₹499)
+          </button>
         </div>
 
-        <button class="btn-primary" onclick="alert('Digital download deliverable generation verified. Direct automated delivery activates upon owner attestation.')">
-          Preview Fix-Pack Contents
-        </button>
+        <!-- Download Success Box -->
+        <div class="download-success-box" id="downloadSuccessBox">
+          <h4 style="color: var(--success); margin-bottom: 0.5rem;">Payment Verified Successfully!</h4>
+          <p style="font-size: 0.9rem; color: #d1d5db; margin-bottom: 1rem;">
+            Your 72-hour entitlement token has been issued. Click below to download your complete Optimization Fix-Pack.
+          </p>
+          <a id="downloadLink" href="#" class="btn-primary" style="display: inline-block; text-decoration: none; max-width: 300px; padding: 0.75rem 1.5rem;" target="_blank">
+            Download Fix-Pack (JSON / Markdown)
+          </a>
+        </div>
       </div>
     </div>
   </div>
 
   <script>
+    let currentAuditId = null;
+    let currentReadiness = null;
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    async function checkReadiness() {
+      try {
+        const res = await fetch('/api/v1/tools/site-audit/readiness');
+        const data = await res.json();
+        currentReadiness = data;
+        updateCheckoutUI();
+      } catch (e) {
+        currentReadiness = { status: 'LOCKED_MISSING_CONFIGURATION', isReady: false };
+        updateCheckoutUI();
+      }
+    }
+
+    function updateCheckoutUI() {
+      const notice = document.getElementById('checkoutGateNotice');
+      const text = document.getElementById('checkoutStatusText');
+      const btn = document.getElementById('checkoutBtn');
+
+      if (!currentReadiness || !currentReadiness.isReady) {
+        btn.disabled = true;
+        btn.innerText = 'Checkout Locked (Pending Gateway Setup)';
+        notice.style.borderColor = 'var(--warning)';
+        text.innerText = 'Free technical diagnostic scan is active. Live ₹499 digital checkout is currently locked pending owner Razorpay gateway credentials and terms attestation.';
+      } else {
+        btn.disabled = false;
+        btn.innerText = 'Unlock & Download Complete Fix-Pack (₹499)';
+        notice.style.borderColor = 'var(--success)';
+        notice.style.background = 'rgba(16, 185, 129, 0.1)';
+        text.innerHTML = '<strong style="color: var(--success);">Ready:</strong> Authoritative price ₹499.00 (Instant digital download upon Razorpay payment capture).';
+      }
+    }
+
+    // Check readiness on page load
+    checkReadiness();
+
     async function handleAudit(e) {
       e.preventDefault();
       const url = document.getElementById('targetUrl').value;
@@ -325,11 +374,10 @@ export function renderSiteAuditPage(): string {
         const data = await res.json();
         if (!res.ok || !data.success) {
           alert('Scan failed: ' + (data.error || 'Server error'));
-          btn.disabled = false;
-          btn.innerText = 'Start Technical Website Scan';
           return;
         }
 
+        currentAuditId = data.result.auditId;
         renderResults(data.result);
       } catch (err) {
         alert('Scan error: ' + err.message);
@@ -341,28 +389,132 @@ export function renderSiteAuditPage(): string {
 
     function renderResults(result) {
       document.getElementById('resultsCard').style.display = 'block';
-      document.getElementById('scoreDisplay').innerText = result.score;
-      document.getElementById('resultStatus').innerText = 'Audit Status: ' + result.overallStatus;
-      document.getElementById('resultExplanation').innerText = result.scoreExplanation;
+      document.getElementById('scoreDisplay').textContent = String(result.score);
+      document.getElementById('resultStatus').textContent = 'Audit Status: ' + result.overallStatus;
+      document.getElementById('resultExplanation').textContent = result.scoreExplanation;
 
       const container = document.getElementById('findingsContainer');
       container.innerHTML = '';
 
       result.findings.forEach(f => {
         const div = document.createElement('div');
-        div.className = 'finding-item ' + f.status;
-        div.innerHTML = \`
-          <div class="finding-header">
-            <span>[\${f.category}] \${f.title}</span>
-            <span style="font-size: 0.8rem;">\${f.status} (\${f.severity})</span>
-          </div>
-          <div style="font-size: 0.85rem; color: #9ca3af; margin-bottom: 0.25rem;">\${f.evidence}</div>
-          <div style="font-size: 0.9rem; margin-top: 0.25rem;"><strong>Action:</strong> \${f.recommendation}</div>
-        \`;
+        div.className = 'finding-item ' + (f.status === 'PASS' || f.status === 'WARNING' || f.status === 'ISSUE' ? f.status : 'INFO');
+
+        const header = document.createElement('div');
+        header.className = 'finding-header';
+
+        const titleSpan = document.createElement('span');
+        titleSpan.textContent = '[' + f.category + '] ' + f.title;
+
+        const badgeSpan = document.createElement('span');
+        badgeSpan.style.fontSize = '0.8rem';
+        badgeSpan.textContent = f.status + ' (' + f.severity + ')';
+
+        header.appendChild(titleSpan);
+        header.appendChild(badgeSpan);
+        div.appendChild(header);
+
+        if (f.evidence) {
+          const evidenceDiv = document.createElement('div');
+          evidenceDiv.style.fontSize = '0.85rem';
+          evidenceDiv.style.color = '#9ca3af';
+          evidenceDiv.style.marginBottom = '0.25rem';
+          evidenceDiv.textContent = f.evidence;
+          div.appendChild(evidenceDiv);
+        }
+
+        const recDiv = document.createElement('div');
+        recDiv.style.fontSize = '0.9rem';
+        recDiv.style.marginTop = '0.25rem';
+        recDiv.innerHTML = '<strong>Action:</strong> ' + escapeHtml(f.recommendation);
+        div.appendChild(recDiv);
+
         container.appendChild(div);
       });
 
       document.getElementById('resultsCard').scrollIntoView({ behavior: 'smooth' });
+    }
+
+    async function initiateCheckout() {
+      if (!currentAuditId) {
+        alert('Please run a website audit scan first.');
+        return;
+      }
+
+      const btn = document.getElementById('checkoutBtn');
+      btn.disabled = true;
+      btn.innerText = 'Creating Payment Order...';
+
+      try {
+        const res = await fetch('/api/v1/tools/site-audit/' + currentAuditId + '/checkout', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            customerEmail: 'customer@example.com'
+          })
+        });
+
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          alert('Checkout unavailable: ' + (data.error || 'Server error'));
+          btn.disabled = false;
+          btn.innerText = 'Unlock & Download Complete Fix-Pack (₹499)';
+          return;
+        }
+
+        const options = {
+          key: data.keyId,
+          amount: data.amount,
+          currency: data.currency,
+          name: 'SiteFix AI',
+          description: 'Website Optimization Fix-Pack (₹499)',
+          order_id: data.orderId,
+          handler: async function (response) {
+            btn.innerText = 'Verifying Payment Capture...';
+            try {
+              const verifyRes = await fetch('/api/v1/tools/site-audit/' + currentAuditId + '/verify-payment', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(response)
+              });
+              const verifyData = await verifyRes.json();
+              if (verifyData.success && verifyData.downloadUrl) {
+                showDownloadSuccess(verifyData.downloadUrl);
+              } else {
+                alert('Payment received but verification pending. Please poll: ' + (verifyData.error || 'Unknown error'));
+              }
+            } catch (vErr) {
+              alert('Payment verification request failed: ' + vErr.message);
+            }
+          },
+          prefill: {
+            email: 'customer@example.com'
+          },
+          theme: {
+            color: '#3b82f6'
+          }
+        };
+
+        const rzp = new Razorpay(options);
+        rzp.on('payment.failed', function (resp) {
+          alert('Payment Failed: ' + (resp.error?.description || 'Unknown error'));
+          btn.disabled = false;
+          btn.innerText = 'Unlock & Download Complete Fix-Pack (₹499)';
+        });
+        rzp.open();
+      } catch (err) {
+        alert('Checkout error: ' + err.message);
+        btn.disabled = false;
+        btn.innerText = 'Unlock & Download Complete Fix-Pack (₹499)';
+      }
+    }
+
+    function showDownloadSuccess(downloadUrl) {
+      document.getElementById('checkoutActionContainer').style.display = 'none';
+      const box = document.getElementById('downloadSuccessBox');
+      box.style.display = 'block';
+      const link = document.getElementById('downloadLink');
+      link.href = downloadUrl;
     }
   </script>
 </body>

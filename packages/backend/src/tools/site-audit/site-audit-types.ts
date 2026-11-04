@@ -94,8 +94,25 @@ export interface FixPackDeliverable {
   canonicalUrlRecommendation: string;
   checklistMarkdown: string;
   recommendedOwnerAdditions?: string[];
+  missingFieldsRequiringOwnerInput?: string[];
   fullReportJson: any;
   disclosure: string;
+}
+
+export interface CheckoutReadiness {
+  status: 'READY' | 'LOCKED_MISSING_CONFIGURATION' | 'PENDING_OWNER_ATTESTATION';
+  isReady: boolean;
+  missingConfig: string[];
+  termsSha256?: string;
+  expectedSha256?: string;
+}
+
+export interface FixPackDeliveryTokenPayload {
+  auditId: string;
+  orderId: string;
+  paymentId: string;
+  sku: 'SITEFIX_AI_PACK_V1';
+  exp: number;
 }
 
 export interface FixPackDeliveryToken {
