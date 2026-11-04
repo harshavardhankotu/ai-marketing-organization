@@ -322,6 +322,73 @@ describe('SiteFix AI: Route Integration Tests via Hono apiRouter', () => {
     expect(json.downloadUrl).toContain(`/api/v1/tools/site-audit/${auditId}/deliverable?token=`);
   });
 
+  it('supports 1-rupee live test charge (100 paise) via checkout and webhook capture', async () => {
+    const crypto = await import('crypto');
+    const auditId = 'audit_test_one_rupee';
+
+    // 1. Checkout with isTestPayment: true creates 100 paise order
+    const checkoutRes = await apiRouter.request(`/api/v1/tools/site-audit/${auditId}/checkout`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-test-mode': 'true' },
+      body: JSON.stringify({
+        customerEmail: 'test_payer@example.com',
+        isTestPayment: true,
+        amountPaise: 100
+      })
+    });
+    expect(checkoutRes.status).toBe(200);
+    const checkoutJson = await checkoutRes.json();
+    expect(checkoutJson.success).toBe(true);
+    expect(checkoutJson.amount).toBe(100);
+    expect(checkoutJson.amountINR).toBe(1);
+    expect(checkoutJson.sku).toBe('SITEFIX_AI_TEST_V1');
+    expect(checkoutJson.orderId).toBeDefined();
+
+    // 2. Webhook accepting 100 paise for test payment
+    const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET || 'test_webhook_secret_123';
+    process.env.RAZORPAY_WEBHOOK_SECRET = webhookSecret;
+    const eventId = `evt_test_1inr_${Date.now()}`;
+    const payload = {
+      entity: 'event',
+      account_id: 'acc_test_123',
+      event: 'payment.captured',
+      contains: ['payment'],
+      payload: {
+        payment: {
+          entity: {
+            id: 'pay_test_1inr_captured',
+            entity: 'payment',
+            amount: 100,
+            currency: 'INR',
+            status: 'captured',
+            order_id: checkoutJson.orderId,
+            notes: {
+              auditId,
+              sku: 'SITEFIX_AI_TEST_V1'
+            }
+          }
+        }
+      },
+      created_at: Math.floor(Date.now() / 1000)
+    };
+    const rawBody = JSON.stringify(payload);
+    const validSignature = crypto.createHmac('sha256', webhookSecret).update(rawBody).digest('hex');
+
+    const hookRes = await apiRouter.request('/api/v1/tools/site-audit/webhooks/razorpay', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-razorpay-signature': validSignature,
+        'x-razorpay-event-id': eventId
+      },
+      body: rawBody
+    });
+    expect(hookRes.status).toBe(200);
+    const hookJson = await hookRes.json();
+    expect(hookJson.success).toBe(true);
+    expect(hookJson.processed).toBe(true);
+  });
+
   it('fails closed when SITE_AUDIT_SIGNING_SECRET is shorter than 32 characters', () => {
     const prev = process.env.SITE_AUDIT_SIGNING_SECRET;
     try {

@@ -284,8 +284,11 @@ export function renderSiteAuditPage(): string {
               Checking payment gateway availability...
             </span>
           </div>
-          <button class="btn-primary" id="checkoutBtn" onclick="initiateCheckout()" disabled>
+          <button class="btn-primary" id="checkoutBtn" onclick="initiateCheckout(49900)" disabled>
             Unlock & Download Complete Fix-Pack (₹499)
+          </button>
+          <button class="btn-primary" id="testPayOneRupeeBtn" onclick="initiateCheckout(100)" style="margin-top: 0.75rem; background: #10b981; border: 1px solid #059669; display: flex; align-items: center; justify-content: center; gap: 0.5rem; width: 100%;" disabled>
+            <span>⚡ Live Test Payment (₹1.00 via Razorpay)</span>
           </button>
         </div>
 
@@ -333,18 +336,21 @@ export function renderSiteAuditPage(): string {
       const notice = document.getElementById('checkoutGateNotice');
       const text = document.getElementById('checkoutStatusText');
       const btn = document.getElementById('checkoutBtn');
+      const testBtn = document.getElementById('testPayOneRupeeBtn');
 
       if (!currentReadiness || !currentReadiness.isReady) {
         btn.disabled = true;
         btn.innerText = 'Checkout Locked (Pending Gateway Setup)';
+        if (testBtn) testBtn.disabled = true;
         notice.style.borderColor = 'var(--warning)';
         text.innerText = 'Free technical diagnostic scan is active. Live ₹499 digital checkout is currently locked pending owner Razorpay gateway credentials and terms attestation.';
       } else {
         btn.disabled = false;
         btn.innerText = 'Unlock & Download Complete Fix-Pack (₹499)';
+        if (testBtn) testBtn.disabled = false;
         notice.style.borderColor = 'var(--success)';
         notice.style.background = 'rgba(16, 185, 129, 0.1)';
-        text.innerHTML = '<strong style="color: var(--success);">Ready:</strong> Authoritative price ₹499.00 (Instant digital download upon Razorpay payment capture).';
+        text.innerHTML = '<strong style="color: var(--success);">Ready:</strong> Authoritative price ₹499.00 (Instant digital download upon Razorpay payment capture). Live ₹1 test payment enabled.';
       }
     }
 
@@ -435,30 +441,38 @@ export function renderSiteAuditPage(): string {
       document.getElementById('resultsCard').scrollIntoView({ behavior: 'smooth' });
     }
 
-    async function initiateCheckout() {
+    async function initiateCheckout(targetPaise) {
       if (!currentAuditId) {
         alert('Please run a website audit scan first.');
         return;
       }
 
-      const btn = document.getElementById('checkoutBtn');
-      btn.disabled = true;
-      btn.innerText = 'Creating Payment Order...';
+      const isTest = targetPaise === 100;
+      const btn = isTest ? document.getElementById('testPayOneRupeeBtn') : document.getElementById('checkoutBtn');
+      if (btn) {
+        btn.disabled = true;
+        btn.innerText = 'Creating Payment Order...';
+      }
 
       try {
         const res = await fetch('/api/v1/tools/site-audit/' + currentAuditId + '/checkout', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            customerEmail: 'customer@example.com'
+            customerEmail: 'customer@example.com',
+            amountPaise: isTest ? 100 : 49900,
+            amountINR: isTest ? 1 : 499,
+            isTestPayment: isTest
           })
         });
 
         const data = await res.json();
         if (!res.ok || !data.success) {
           alert('Checkout unavailable: ' + (data.error || 'Server error'));
-          btn.disabled = false;
-          btn.innerText = 'Unlock & Download Complete Fix-Pack (₹499)';
+          if (btn) {
+            btn.disabled = false;
+            btn.innerText = isTest ? '⚡ Live Test Payment (₹1.00 via Razorpay)' : 'Unlock & Download Complete Fix-Pack (₹499)';
+          }
           return;
         }
 
@@ -467,10 +481,10 @@ export function renderSiteAuditPage(): string {
           amount: data.amount,
           currency: data.currency,
           name: 'SiteFix AI',
-          description: 'Website Optimization Fix-Pack (₹499)',
+          description: isTest ? 'SiteFix AI Live Test Payment (₹1)' : 'Website Optimization Fix-Pack (₹499)',
           order_id: data.orderId,
           handler: async function (response) {
-            btn.innerText = 'Verifying Payment Capture...';
+            if (btn) btn.innerText = 'Verifying Payment Capture...';
             try {
               const verifyRes = await fetch('/api/v1/tools/site-audit/' + currentAuditId + '/verify-payment', {
                 method: 'POST',
@@ -491,21 +505,25 @@ export function renderSiteAuditPage(): string {
             email: 'customer@example.com'
           },
           theme: {
-            color: '#3b82f6'
+            color: isTest ? '#10b981' : '#3b82f6'
           }
         };
 
         const rzp = new Razorpay(options);
         rzp.on('payment.failed', function (resp) {
           alert('Payment Failed: ' + (resp.error?.description || 'Unknown error'));
-          btn.disabled = false;
-          btn.innerText = 'Unlock & Download Complete Fix-Pack (₹499)';
+          if (btn) {
+            btn.disabled = false;
+            btn.innerText = isTest ? '⚡ Live Test Payment (₹1.00 via Razorpay)' : 'Unlock & Download Complete Fix-Pack (₹499)';
+          }
         });
         rzp.open();
       } catch (err) {
         alert('Checkout error: ' + err.message);
-        btn.disabled = false;
-        btn.innerText = 'Unlock & Download Complete Fix-Pack (₹499)';
+        if (btn) {
+          btn.disabled = false;
+          btn.innerText = isTest ? '⚡ Live Test Payment (₹1.00 via Razorpay)' : 'Unlock & Download Complete Fix-Pack (₹499)';
+        }
       }
     }
 
