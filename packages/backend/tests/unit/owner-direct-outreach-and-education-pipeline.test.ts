@@ -8,6 +8,11 @@ import * as path from 'path';
 
 describe('Owner Direct Outreach, Education Pipeline & GBP Review Protocols', () => {
   beforeEach(async () => {
+    // Clean up any lingering suppressions on test clinics from previous test runs
+    try {
+      const db = getDb();
+      db.prepare("DELETE FROM outreach_suppression_list WHERE identifier LIKE '%dentalspecialists%' OR identifier LIKE '%secdental%'").run();
+    } catch {}
     // Ensure experiments and curated batches are seeded
     MarketExperimentManager.getInstance().ensureInitialized();
     await PlatformProspectDiscoveryEngine.getInstance().ensureCuratedQualifiedProspectBatch();
@@ -61,7 +66,7 @@ describe('Owner Direct Outreach, Education Pipeline & GBP Review Protocols', () 
 
     it('2b. POST /api/v1/owner/direct-outreach/:id/approve marks human_approved = 1', async () => {
       const db = getDb();
-      const draft = db.prepare('SELECT id FROM direct_outreach_log WHERE human_approved = 0 LIMIT 1').get() as any;
+      const draft = db.prepare("SELECT id FROM direct_outreach_log WHERE human_approved = 0 AND response_status = 'APPROVAL_REQUIRED' LIMIT 1").get() as any;
       expect(draft).toBeDefined();
 
       const res = await app.request(`/api/v1/owner/direct-outreach/${encodeURIComponent(draft.id)}/approve`, {
@@ -80,7 +85,7 @@ describe('Owner Direct Outreach, Education Pipeline & GBP Review Protocols', () 
 
     it('2c. POST /api/v1/owner/direct-outreach/:id/record-dispatch records dispatch and updates experiment lead counts', async () => {
       const db = getDb();
-      const draft = db.prepare('SELECT id, segment, prospect_name FROM direct_outreach_log WHERE dispatched = 0 LIMIT 1').get() as any;
+      const draft = db.prepare("SELECT id, segment, prospect_name FROM direct_outreach_log WHERE dispatched = 0 AND response_status NOT IN ('QUARANTINED', 'ENTERPRISE_CHAIN_DEFERRED', 'OPT_OUT') LIMIT 1").get() as any;
       expect(draft).toBeDefined();
 
       const res = await app.request(`/api/v1/owner/direct-outreach/${encodeURIComponent(draft.id)}/record-dispatch`, {

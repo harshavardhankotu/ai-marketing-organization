@@ -1,38 +1,23 @@
 {
-  "updated_at": "2026-11-02T10:45:00+05:30",
-  "active_branch": "feat/v4-1-durable-daily-revenue-operations",
-  "base_commit": "f3e0c92",
-  "head_commit": "82ae018",
-  "pr_number": 33,
-  "pr_url": "https://github.com/harshavardhankotu/ai-marketing-organization/pull/33",
+  "updated_at": "2026-11-05T18:55:00+05:30",
+  "active_branch": "feat/v5-2-first-customer-revenue-activation",
+  "base_commit": "5531e361ae6cb725175d14d09a818ae1d07fd5b0",
+  "head_commit": "7e9010db7a727ee0b3f071cc84cb4ec11135859a",
+  "pr_number": 38,
+  "pr_url": "https://github.com/harshavardhankotu/ai-marketing-organization/pull/38",
   "github_actions_ci": {
-    "status": "PASS",
-    "workflow": "Typecheck, Guardrails, Build & Test",
-    "duration": "3m 8s"
-  },
-  "test_results": {
-    "test_files_passed": 130,
-    "test_files_failed": 0,
-    "total_tests_passed": 1246,
-    "total_tests_failed": 0,
-    "dedicated_v4_1_tests": "20/20 passed"
-  },
-  "linters": {
-    "rupee_estimates": "PASS",
-    "owner_prices": "PASS",
-    "owner_claims": "PASS",
-    "check_no_scratch_writes": "PASS",
-    "board_preflight": "PASS (0 open mistakes)"
+    "status": "RESOLVING_CI_250_FK_CONSTRAINT",
+    "workflow": "CI & Deployment Pipeline",
+    "failing_run": 41982067816
   },
   "financial_invariants": {
     "bank_cash_received_inr": 0.00,
     "paid_advertising_spend_inr": 0.00,
-    "operating_cash_outflow_inr": 0.00,
-    "free_tier_savings_inr": 3500.00
+    "operating_cash_outflow_inr": 0.00
   },
-  "earliest_revenue_blocker": {
-    "funnel": "Direct B2B (Lane C - Dental Inbound Triage)",
-    "stage": "Stage 4: Owner Approval (human_approved = 0)",
-    "unblocking_action": "Owner reviews draft on /owner/today and launches WhatsApp Click-to-Chat"
+  "commercial_architecture": {
+    "sectors": 8,
+    "shared_engines": 4,
+    "master_doc": "GLOBAL_AUTONOMY_BRAIN.md"
   }
 }

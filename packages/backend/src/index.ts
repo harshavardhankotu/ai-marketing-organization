@@ -103,11 +103,6 @@ app.use('*', cors({
 
 // Pre-launch security headers middleware (HSTS, nosniff, Referrer-Policy, CSP, COEP)
 app.use('*', async (c, next) => {
-  await next();
-  c.header('X-Content-Type-Options', 'nosniff');
-  c.header('Referrer-Policy', 'strict-origin-when-cross-origin');
-  c.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
-  c.header('Cross-Origin-Embedder-Policy', 'unsafe-none');
   const csp = [
     "default-src 'self'",
     "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://checkout.razorpay.com https://*.razorpay.com",
@@ -119,6 +114,19 @@ app.use('*', async (c, next) => {
     "font-src 'self' data: https:",
     "frame-ancestors 'self'"
   ].join('; ');
+
+  c.header('X-Content-Type-Options', 'nosniff');
+  c.header('Referrer-Policy', 'strict-origin-when-cross-origin');
+  c.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  c.header('Cross-Origin-Embedder-Policy', 'unsafe-none');
+  c.header('Content-Security-Policy', csp);
+
+  await next();
+
+  c.header('X-Content-Type-Options', 'nosniff');
+  c.header('Referrer-Policy', 'strict-origin-when-cross-origin');
+  c.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  c.header('Cross-Origin-Embedder-Policy', 'unsafe-none');
   c.header('Content-Security-Policy', csp);
 });
 
@@ -251,6 +259,9 @@ app.get('/images/razorpay-upi-qr.jpg', async (c) => {
   return c.text('Image not found', 404);
 });
 app.get('/assets/razorpay-upi-qr.jpg', (c) => c.redirect('/images/razorpay-upi-qr.jpg', 301));
+
+// Checkout Redirect (Directs to official offer and payment checkout page)
+app.get('/checkout', (c) => c.redirect('/offer', 302));
 
 // Proposal Checkout Page (Method A Razorpay Link + Method B UPI QR)
 app.get('/proposals/:id/checkout', async (c) => {
@@ -1024,6 +1035,9 @@ ${rssItems}
 
   return c.text(rssXml, 200, { 'Content-Type': 'application/rss+xml; charset=utf-8' });
 });
+
+// Syndicated JSON deals feed (Engine 4)
+app.get('/feeds/deals.json', (c) => c.redirect('/api/v1/public/feeds/deals.json', 301));
 
 // Static frontend assets and public landing page routing
 const __filename = fileURLToPath(import.meta.url);

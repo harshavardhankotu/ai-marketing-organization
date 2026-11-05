@@ -55,6 +55,19 @@ describe('V5.2 — First Genuine Customer, Revenue Activation & Autonomous Opera
       const db = getDb();
       const testDraftId = 'dlog_test_suppressed_clinic_com';
       try {
+        db.prepare(`
+          INSERT OR IGNORE INTO organizations (id, name, slug, created_at, updated_at)
+          VALUES ('org_test', 'Test Organization', 'org-test', datetime('now'), datetime('now'))
+        `).run();
+        db.prepare(`
+          INSERT OR IGNORE INTO businesses (
+            id, organization_id, name, public_slug, vertical_id, vertical_name,
+            city, neighborhood, brand_voice, created_at, updated_at
+          ) VALUES (
+            'biz_test', 'org_test', 'Test Business', 'biz-test', 'v_test', 'Testing',
+            'Hyderabad', 'Madhapur', 'Helpful', datetime('now'), datetime('now')
+          )
+        `).run();
         db.prepare('DELETE FROM direct_outreach_log WHERE id = ?').run(testDraftId);
         db.prepare('DELETE FROM outreach_suppression_list WHERE identifier = ?').run('suppressedclinic.com');
       } catch {}

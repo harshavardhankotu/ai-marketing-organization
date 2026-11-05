@@ -1636,7 +1636,7 @@ export class PlatformProspectDiscoveryEngine {
         try {
           const db = getDb();
           db.prepare(`DELETE FROM direct_outreach_log WHERE prospect_name = ? AND id != ?`).run(c.businessName, draftId);
-          db.prepare(`UPDATE direct_outreach_log SET message_draft = ? WHERE id = ?`).run(draftMessage, draftId);
+          db.prepare(`UPDATE direct_outreach_log SET message_draft = ?, human_approved = 0, dispatched = 0, response_status = ? WHERE id = ?`).run(draftMessage, responseStatus, draftId);
         } catch {}
         await this.d1Repo.executeWrite(
           'direct_outreach_log',
@@ -1647,7 +1647,9 @@ export class PlatformProspectDiscoveryEngine {
           ) VALUES (?, ?, 'HEALTHCARE_DENTAL_SMB', ?, 'WHATSAPP', ?, 1, 0, 0, ?, datetime('now'))
           ON CONFLICT(id) DO UPDATE SET
             message_draft = excluded.message_draft,
-            response_status = ?`,
+            response_status = ?,
+            human_approved = 0,
+            dispatched = 0`,
           [
             draftId,
             businessId,
