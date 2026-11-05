@@ -23,6 +23,13 @@ describe('V5.3 — Global Autonomy Brain, Integrations & 4-Engine Multi-Sector P
           'Hyderabad', 'Madhapur', 'Helpful', datetime('now'), datetime('now')
         )
       `).run();
+      db.prepare(`
+        INSERT OR REPLACE INTO integration_phone_mappings (
+          id, provider, external_phone_number_id, organization_id, business_id, created_at
+        ) VALUES (
+          'ipm_pn_test_123', 'WHATSAPP', 'pn_test_123', 'org_test', 'biz_test', datetime('now')
+        )
+      `).run();
     } catch {}
   });
 

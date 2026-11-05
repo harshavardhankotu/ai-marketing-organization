@@ -3136,10 +3136,6 @@ apiRouter.post('/webhooks/whatsapp', async (c) => {
               `).get(phoneNumberId) as any;
             }
 
-            if (!bizResult && !isProduction()) {
-              bizResult = { id: 'biz_test', organization_id: 'org_test' };
-            }
-
             if (!bizResult) {
               console.error(`[WhatsApp Webhook] BLOCKED_UNMAPPED_PROVIDER: Could not determine tenant for phone_number_id=${phoneNumberId}`);
               results.push({ blocked: true, reason: 'BLOCKED_UNMAPPED_PROVIDER', phone_number_id: phoneNumberId });
