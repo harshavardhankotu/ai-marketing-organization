@@ -17,6 +17,48 @@ import { OrganicDistributionEngine, OrganicDistributionPackage } from './organic
 import { CuelinksSyncManager } from './cuelinks-sync-manager.js';
 import { AutonomousDealDiscoveryEngine } from './autonomous-deal-discovery-engine.js';
 import { DiscoveredDealInput } from './deal-types.js';
+import { SectorCode, COMMERCIAL_SECTOR_TAXONOMY } from '@ai-marketing/shared';
+
+export type CommercialRewardEventType =
+  | 'BOT_OR_INTERNAL_CLICK'
+  | 'VERIFIED_HUMAN_VISIT'
+  | 'SITEFIX_COMPLETED_SCAN'
+  | 'VERIFIED_HUMAN_AFFILIATE_CLICK'
+  | 'CONSENTED_QUALIFIED_ENQUIRY'
+  | 'PROVIDER_ATTRIBUTED_CONVERSION'
+  | 'VALIDATED_COMMISSION'
+  | 'BANK_CONFIRMED_CASH'
+  | 'REFUND_OR_COMMISSION_REVERSAL'
+  | 'UNPRODUCTIVE_API_QUOTA_UNIT';
+
+export interface CommercialRewardEvent {
+  eventType: CommercialRewardEventType;
+  commissionINR?: number;
+  cashINR?: number;
+  unproductiveQuotaUnits?: number;
+  sourceClickId?: string;
+  notes?: string;
+}
+
+export interface SectorBanditState {
+  sectorCode: SectorCode;
+  displayName: string;
+  alpha: number;
+  beta: number;
+  cumulativeReward: number;
+  verifiedHumanInteractions: number;
+  conversionsCount: number;
+  inColdStart: boolean;
+  allocationWeight: number;
+  lastUpdated: string;
+}
+
+export interface SectorSelectionResult {
+  selectedSector: SectorCode;
+  selectionMode: 'COLD_START_EXPLORATION' | 'THOMPSON_SAMPLING_EXPLOITATION' | 'EXPLORATION_FLOOR';
+  sampleScore: number;
+  allSectors: Record<SectorCode, SectorBanditState>;
+}
 
 export type CommercialCycleState =
   | 'DISCOVER'
@@ -56,6 +98,240 @@ export class CommercialLearningEngine {
   private d1Repo = D1RevenueRepository.getInstance();
   private selector = CommercialOpportunitySelector.getInstance();
   private distributor = OrganicDistributionEngine.getInstance();
+
+  public static readonly CANONICAL_SECTORS: SectorCode[] = [
+    'SECTOR_A_PRECIOUS_METALS',
+    'SECTOR_B_ELECTRONICS',
+    'SECTOR_C_HOME_APPLIANCES',
+    'SECTOR_D_TRAVEL',
+    'SECTOR_E_SOFTWARE',
+    'SECTOR_F_OFFICE_INDUSTRIAL',
+    'SECTOR_G_LIFESTYLE',
+    'SECTOR_H_LOCAL_SERVICES_B2B'
+  ];
+
+  public static readonly EXPLORATION_FLOOR = 0.20; // 20% minimum exploration floor
+  public static readonly COLD_START_INTERACTION_THRESHOLD = 10; // Thompson Sampling only after >= 10 interactions
+
+  private sectorBanditStates: Map<SectorCode, SectorBanditState> = new Map();
+
+  /**
+   * Initializes or gets the bandit state for all 8 canonical sectors.
+   */
+  public ensureBanditInitialized(): void {
+    if (this.sectorBanditStates.size === 8) return;
+    for (const code of CommercialLearningEngine.CANONICAL_SECTORS) {
+      if (!this.sectorBanditStates.has(code)) {
+        const def = COMMERCIAL_SECTOR_TAXONOMY[code];
+        this.sectorBanditStates.set(code, {
+          sectorCode: code,
+          displayName: def?.displayName || code,
+          alpha: 1.0,
+          beta: 1.0,
+          cumulativeReward: 0.0,
+          verifiedHumanInteractions: 0,
+          conversionsCount: 0,
+          inColdStart: true,
+          allocationWeight: 1.0 / 8.0,
+          lastUpdated: new Date().toISOString()
+        });
+      }
+    }
+  }
+
+  /**
+   * Staged Evidence-Weighted Reward Function:
+   * bot / internalDiagnostic / unknown clicks = 0
+   * verifiedHumanVisit = +1
+   * siteFixCompletedScan = +3
+   * verifiedHumanAffiliateClick = +10
+   * consentedQualifiedEnquiry = +25
+   * providerAttributedConversion = +60
+   * validatedCommissionINR = +100 + (0.5 * commissionINR)
+   * bankConfirmedCashINR = +250 + (1.0 * cashINR)
+   * refundOrCommissionReversal = -120
+   * unproductiveApiQuotaUnitConsumed = -0.5
+   */
+  public static computeReward(event: CommercialRewardEvent): number {
+    switch (event.eventType) {
+      case 'BOT_OR_INTERNAL_CLICK':
+        return 0;
+      case 'VERIFIED_HUMAN_VISIT':
+        return 1;
+      case 'SITEFIX_COMPLETED_SCAN':
+        return 3;
+      case 'VERIFIED_HUMAN_AFFILIATE_CLICK':
+        return 10;
+      case 'CONSENTED_QUALIFIED_ENQUIRY':
+        return 25;
+      case 'PROVIDER_ATTRIBUTED_CONVERSION':
+        return 60;
+      case 'VALIDATED_COMMISSION':
+        return 100 + (0.5 * Math.max(0, event.commissionINR || 0));
+      case 'BANK_CONFIRMED_CASH':
+        return 250 + (1.0 * Math.max(0, event.cashINR || 0));
+      case 'REFUND_OR_COMMISSION_REVERSAL':
+        return -120;
+      case 'UNPRODUCTIVE_API_QUOTA_UNIT':
+        return -0.5 * Math.max(1, event.unproductiveQuotaUnits || 1);
+      default:
+        return 0;
+    }
+  }
+
+  /**
+   * Records a commercial evidence event and updates the sector's Bayesian posterior.
+   */
+  public recordCommercialEvent(sectorCode: SectorCode, event: CommercialRewardEvent): number {
+    this.ensureBanditInitialized();
+    const state = this.sectorBanditStates.get(sectorCode);
+    if (!state) return 0;
+
+    const reward = CommercialLearningEngine.computeReward(event);
+    state.cumulativeReward += reward;
+    state.lastUpdated = new Date().toISOString();
+
+    const isHumanInteraction = [
+      'VERIFIED_HUMAN_VISIT',
+      'SITEFIX_COMPLETED_SCAN',
+      'VERIFIED_HUMAN_AFFILIATE_CLICK',
+      'CONSENTED_QUALIFIED_ENQUIRY',
+      'PROVIDER_ATTRIBUTED_CONVERSION',
+      'VALIDATED_COMMISSION',
+      'BANK_CONFIRMED_CASH'
+    ].includes(event.eventType);
+
+    if (isHumanInteraction) {
+      state.verifiedHumanInteractions++;
+    }
+
+    if (state.verifiedHumanInteractions >= CommercialLearningEngine.COLD_START_INTERACTION_THRESHOLD) {
+      state.inColdStart = false;
+    }
+
+    if (['PROVIDER_ATTRIBUTED_CONVERSION', 'VALIDATED_COMMISSION', 'BANK_CONFIRMED_CASH'].includes(event.eventType)) {
+      state.conversionsCount++;
+    }
+
+    // Bayesian updating: positive rewards update alpha, negative updates beta
+    if (reward > 0) {
+      state.alpha += Math.min(reward / 10, 5);
+    } else if (reward < 0) {
+      state.beta += Math.min(Math.abs(reward) / 10, 5);
+    }
+
+    this.recomputeAllocationWeights();
+    return reward;
+  }
+
+  private sampleBeta(alpha: number, beta: number): number {
+    const gA = this.sampleGamma(Math.max(0.1, alpha));
+    const gB = this.sampleGamma(Math.max(0.1, beta));
+    if (gA + gB <= 0) return 0.5;
+    return gA / (gA + gB);
+  }
+
+  private sampleGamma(k: number): number {
+    if (k < 1) {
+      return this.sampleGamma(k + 1) * Math.pow(Math.max(1e-6, Math.random()), 1 / k);
+    }
+    const d = k - 1 / 3;
+    const c = 1 / Math.sqrt(9 * d);
+    while (true) {
+      let z = 0;
+      do {
+        const u1 = Math.max(1e-6, Math.random());
+        const u2 = Math.random();
+        z = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
+      } while (1 + c * z <= 0);
+      const v = Math.pow(1 + c * z, 3);
+      const u = Math.random();
+      if (u < 1 - 0.0331 * Math.pow(z, 4)) return d * v;
+      if (Math.log(u) < 0.5 * Math.pow(z, 2) + d * (1 - v + Math.log(v))) return d * v;
+    }
+  }
+
+  private recomputeAllocationWeights(): void {
+    let totalWeight = 0;
+    const weights: Map<SectorCode, number> = new Map();
+    for (const [code, state] of this.sectorBanditStates.entries()) {
+      const mean = state.alpha / (state.alpha + state.beta);
+      weights.set(code, mean);
+      totalWeight += mean;
+    }
+    for (const [code, state] of this.sectorBanditStates.entries()) {
+      const w = weights.get(code) || 1;
+      state.allocationWeight = totalWeight > 0 ? Number((w / totalWeight).toFixed(4)) : 0.125;
+    }
+  }
+
+  /**
+   * Selects the next commercial sector to explore or exploit.
+   * Enforces 20% minimum exploration floor across all 8 sectors.
+   * Thompson Sampling engages only after >= 10 verified human interactions.
+   */
+  public selectNextSectorToExplore(): SectorSelectionResult {
+    this.ensureBanditInitialized();
+    const sectors = CommercialLearningEngine.CANONICAL_SECTORS;
+    const allStates: Record<SectorCode, SectorBanditState> = {} as any;
+    for (const code of sectors) {
+      allStates[code] = { ...this.sectorBanditStates.get(code)! };
+    }
+
+    // 1. Cold-start check: Find sectors with < 10 verified human interactions
+    const coldStartSectors = sectors.filter(code => (allStates[code]?.verifiedHumanInteractions || 0) < CommercialLearningEngine.COLD_START_INTERACTION_THRESHOLD);
+    if (coldStartSectors.length > 0) {
+      const picked = coldStartSectors[Math.floor(Math.random() * coldStartSectors.length)];
+      return {
+        selectedSector: picked,
+        selectionMode: 'COLD_START_EXPLORATION',
+        sampleScore: 0.5,
+        allSectors: allStates
+      };
+    }
+
+    // 2. Exploration Floor check: 20% probability exploration across all 8 sectors
+    if (Math.random() < CommercialLearningEngine.EXPLORATION_FLOOR) {
+      const picked = sectors[Math.floor(Math.random() * sectors.length)];
+      return {
+        selectedSector: picked,
+        selectionMode: 'EXPLORATION_FLOOR',
+        sampleScore: 0.2,
+        allSectors: allStates
+      };
+    }
+
+    // 3. Thompson Sampling exploitation across posterior distributions
+    let bestSector = sectors[0];
+    let maxSample = -Infinity;
+    for (const code of sectors) {
+      const state = allStates[code];
+      const sample = this.sampleBeta(state.alpha, state.beta);
+      if (sample > maxSample) {
+        maxSample = sample;
+        bestSector = code;
+      }
+    }
+
+    return {
+      selectedSector: bestSector,
+      selectionMode: 'THOMPSON_SAMPLING_EXPLOITATION',
+      sampleScore: Number(maxSample.toFixed(4)),
+      allSectors: allStates
+    };
+  }
+
+  /**
+   * Returns live snapshot of all 8 sector states.
+   */
+  public getSectorBanditIntelligence(): Record<SectorCode, SectorBanditState> {
+    this.ensureBanditInitialized();
+    const result: Record<SectorCode, SectorBanditState> = {} as any;
+    for (const code of CommercialLearningEngine.CANONICAL_SECTORS) {
+      result[code] = { ...this.sectorBanditStates.get(code)! };
+    }
+    return result;
+  }
 
   public static getInstance(): CommercialLearningEngine {
     if (!CommercialLearningEngine.instance) {

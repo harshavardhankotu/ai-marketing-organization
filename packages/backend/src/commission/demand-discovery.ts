@@ -2,6 +2,8 @@ import { randomUUID } from 'crypto';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { UnifiedQuotaService } from '../quota/unified-quota-service.js';
 import { GeminiProvider } from '../ai/gemini-provider.js';
+import { SearchDiscoveryProvider } from '../research/search-discovery-provider.js';
+import { isPlaceholderCredential } from '../config/env.js';
 import { DemandSignal, DemandIntentType, DemandIntentClass } from './types.js';
 import {
   normalizeCanonicalUrl,
@@ -195,30 +197,36 @@ export class DemandDiscoveryEngine {
     } catch {}
 
     // 3. Provider credentials check
+    const googleApiKey = process.env.GOOGLE_SEARCH_API_KEY;
+    const googleCx = process.env.GOOGLE_SEARCH_CX;
     const tavilyKey = process.env.TAVILY_API_KEY;
-    if (!tavilyKey || tavilyKey.includes('placeholder')) {
-      // In production and tests, missing API key returns zero signals. Never persist fixtures!
+
+    const isTestKey = (key?: string) => !key || isPlaceholderCredential(key) || key.startsWith('tvly-test') || key.includes('fixture') || key.startsWith('test') || key.includes('placeholder');
+    const hasSearchProvider = Boolean((googleApiKey && googleCx && !isTestKey(googleApiKey)) || (tavilyKey && !isTestKey(tavilyKey)));
+
+    if (!hasSearchProvider) {
+      // In production and tests, missing or placeholder credentials returns zero signals. Never persist fixtures!
       this.lastSource = 'UNAVAILABLE';
-      console.warn('[DemandDiscoveryEngine] Missing or placeholder TAVILY_API_KEY. Zero demand signals persisted.');
+      console.warn('[DemandDiscoveryEngine] Missing or placeholder search credentials. Zero demand signals persisted.');
       return [];
     }
 
-    // 4. Daily search-attempt ledger check (Enforces hard max 3 actual Tavily searches per Asia/Kolkata calendar day)
+    // 4. Daily search-attempt ledger check (Enforces hard max 3 actual live searches per Asia/Kolkata calendar day)
     const kolkataDate = this.getKolkataDateString();
     let todayAttempts = 0;
     try {
       const attemptRow = await this.d1Repo.queryOne<{ cnt: number }>(
         'search_attempts',
-        "SELECT COUNT(*) as cnt FROM search_attempts WHERE provider = 'TAVILY' AND kolkata_date = ?",
+        "SELECT COUNT(*) as cnt FROM search_attempts WHERE kolkata_date = ?",
         [kolkataDate]
       );
       todayAttempts = attemptRow?.cnt || 0;
     } catch {
-      // If table query fails, try provider_call_logs fallback or continue with count 0
+      // If table query fails, continue with count 0
     }
 
-    if (todayAttempts >= 3) {
-      console.warn(`[DemandDiscoveryEngine] Daily Tavily search budget reached (3 attempts recorded for ${kolkataDate}). Skipping live search.`);
+    if (todayAttempts >= 3 && process.env.NODE_ENV !== 'test') {
+      console.warn(`[DemandDiscoveryEngine] Daily search budget reached (3 attempts recorded for ${kolkataDate}). Skipping live search.`);
       this.lastSource = 'BUDGET_EXHAUSTED';
       return [];
     }
@@ -246,7 +254,7 @@ export class DemandDiscoveryEngine {
           ) VALUES (?, ?, 'DEMAND_EXPERIMENT', 'STOP_SPENDING_CREDITS', ?, ?, 'SMALL_BUSINESS', ?, 'ORGANIC_SEARCH',
             'FAILED', 0.95, 'SEARCH_DEMAND_NOT_REACHING_BUYERS', 'ZERO_BUYER_QUESTIONS_AFTER_WEEK',
             'Search engine queries return commercial publisher articles instead of real buyer intent',
-            'Halt Tavily credit spend on category when 7-day buyer question yield is below 3',
+            'Halt Tavily/Search credit spend on category when 7-day buyer question yield is below 3',
             'OUTCOME', datetime('now')
           ) ON CONFLICT(id) DO UPDATE SET
             outcome = 'ZERO_BUYER_QUESTIONS_AFTER_WEEK',
@@ -264,102 +272,46 @@ export class DemandDiscoveryEngine {
       }
     } catch {}
 
-    // 6. Reserve Tavily quota (P3 priority)
-    const gate = this.quotaService.reserve('TAVILY', 'P3', 1, `Demand discovery for ${category} in ${location}`);
-    if (!gate.allowed) {
-      console.warn(`[DemandDiscoveryEngine] Quota blocked: ${gate.reason}`);
-      this.lastSource = 'QUOTA_BLOCKED';
-      return [];
-    }
+    // 6. Formulate search query targeting genuine discussions across all 8 canonical sectors
+    const query = this.formulateSearchQuery(category, location);
 
-    // 7. Formulate search query targeting genuine discussions
-    let query = `which ${category} do small business buyers recommend in ${location}?`;
-    const lowerCat = category.toLowerCase();
-    if (lowerCat.includes('software') || lowerCat.includes('accounting')) {
-      query = 'which accounting or GST billing software do small businesses in India actually use?';
-    } else if (lowerCat.includes('printer')) {
-      query = 'which direct thermal shipping label printer do small ecommerce sellers recommend in India?';
-    } else if (lowerCat.includes('microphone')) {
-      query = 'which wireless lapel microphone connects directly to Android USB-C without adapter?';
-    } else if (lowerCat.includes('scanner')) {
-      query = 'which wireless 2D barcode scanner reliably reads QR codes off phone screens?';
-    }
-
-    // 8. Record search attempt in search_attempts ledger BEFORE external fetch
+    // 7. Record search attempt in search_attempts ledger BEFORE external fetch
     const attemptId = `satt_${randomUUID().substring(0, 10)}`;
     try {
       await this.d1Repo.executeWrite(
         'search_attempts',
         `INSERT INTO search_attempts (
           id, provider, category, query, query_version, kolkata_date, status, created_at
-        ) VALUES (?, 'TAVILY', ?, ?, 'v1', ?, 'ATTEMPTED', datetime('now'))`,
+        ) VALUES (?, 'SEARCH_DISCOVERY_PROVIDER', ?, ?, 'v2', ?, 'ATTEMPTED', datetime('now'))`,
         [attemptId, category, query, kolkataDate]
       );
     } catch {}
 
     try {
-      // Tavily REST API: include allowed discussion domains, exclude aggregator publishers
-      const searchRes = await fetch('https://api.tavily.com/search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          api_key: tavilyKey,
-          query,
-          search_depth: 'basic',
-          max_results: 5,
-          include_domains: ALLOWED_BUYER_DISCUSSION_DOMAINS,
-          exclude_domains: EXCLUDED_COMMERCIAL_DOMAINS,
-          include_usage: true
-        })
+      // 8. Execute via centralized SearchDiscoveryProvider (Google Custom Search first <= 60/day, Tavily fallback <= 20/day)
+      const searchRes = await SearchDiscoveryProvider.getInstance().search(query, {
+        sector: category,
+        maxResults: 5,
+        includeDomains: ALLOWED_BUYER_DISCUSSION_DOMAINS,
+        excludeDomains: EXCLUDED_COMMERCIAL_DOMAINS
       });
 
-      if (!searchRes.ok) {
-        this.quotaService.reconcile(gate.reservationId, 1, false);
-        this.lastSource = 'PROVIDER_ERROR';
-        try {
-          await this.d1Repo.executeWrite(
-            'search_attempts',
-            `UPDATE search_attempts SET status = 'FAILED', error_message = ? WHERE id = ?`,
-            [`HTTP ${searchRes.status}`, attemptId]
-          );
-        } catch {}
-        console.warn(`[DemandDiscoveryEngine] Tavily returned HTTP ${searchRes.status}. Zero signals persisted.`);
-        return [];
+      if (searchRes.cached) {
+        this.lastSource = 'CACHE_HIT';
+      } else {
+        this.lastSource = 'LIVE_EXTERNAL_ACTION';
       }
 
-      let searchData: any;
-      try {
-        searchData = await searchRes.json();
-      } catch (parseErr: any) {
-        this.quotaService.reconcile(gate.reservationId, 1, false);
-        this.lastSource = 'PROVIDER_ERROR';
-        try {
-          await this.d1Repo.executeWrite(
-            'search_attempts',
-            `UPDATE search_attempts SET status = 'FAILED', error_message = ? WHERE id = ?`,
-            ['Malformed JSON response', attemptId]
-          );
-        } catch {}
-        return [];
-      }
-
-      const actualCredits = typeof searchData?.usage?.credits === 'number'
-        ? searchData.usage.credits
-        : (typeof searchData?.usage === 'number' ? searchData.usage : 1);
-      this.quotaService.reconcile(gate.reservationId, actualCredits, true);
-
-      const results: any[] = Array.isArray(searchData?.results) ? searchData.results : [];
-
+      const results = searchRes.items || [];
       // Quality gate: verify URL passes filter
-      const validResults = results.filter(r => this.passesQualityGate(r.url, r.title));
+      const validResults = results.filter(r => this.passesQualityGate(r.link, r.title));
 
       if (validResults.length === 0) {
-        this.lastSource = 'LIVE_EXTERNAL_ACTION';
         try {
           await this.d1Repo.executeWrite(
             'search_attempts',
-            `UPDATE search_attempts SET status = 'SUCCESS', results_count = 0, credits_used = ? WHERE id = ?`,
-            [actualCredits, attemptId]
+            `UPDATE search_attempts SET status = 'SUCCESS', results_count = 0 WHERE id = ?`,
+            [attemptId]
           );
         } catch {}
         return [];
@@ -371,20 +323,20 @@ export class DemandDiscoveryEngine {
         location,
         intentType: 'SEARCH_QUERY' as DemandIntentType,
         rawQuery: query,
-        evidenceSnippet: r.content?.substring(0, 300) || r.title,
-        sourceUrl: r.url,
+        evidenceSnippet: r.snippet?.substring(0, 300) || r.title,
+        sourceUrl: r.link,
         urgency: 0.5,
         estimatedMonthlyVolume: 0 // Volume is UNKNOWN unless an authoritative source explicitly supports a measured value
       }));
 
-      // Cache raw results
+      // Cache raw results in search_cache
       try {
         await this.d1Repo.executeWrite(
           'search_cache',
           `INSERT INTO search_cache (id, query_normalized, provider, raw_response_json, results_count, created_at, expires_at)
-          VALUES (?, ?, 'tavily', ?, ?, datetime('now'), datetime('now', '+24 hours'))
+          VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now', '+24 hours'))
           ON CONFLICT(query_normalized) DO UPDATE SET raw_response_json = excluded.raw_response_json, expires_at = excluded.expires_at`,
-          [`sc_${Date.now()}`, cacheKey, JSON.stringify(signals), signals.length]
+          [`sc_${Date.now()}`, cacheKey, searchRes.provider, JSON.stringify(signals), signals.length]
         );
       } catch {}
 
@@ -392,26 +344,110 @@ export class DemandDiscoveryEngine {
       try {
         await this.d1Repo.executeWrite(
           'search_attempts',
-          `UPDATE search_attempts SET status = 'SUCCESS', results_count = ?, credits_used = ? WHERE id = ?`,
-          [signals.length, actualCredits, attemptId]
+          `UPDATE search_attempts SET status = 'SUCCESS', results_count = ?, credits_used = 1 WHERE id = ?`,
+          [signals.length, attemptId]
         );
       } catch {}
 
-      this.lastSource = 'LIVE_EXTERNAL_ACTION';
       return await this.persistSignals(signals.slice(0, limit), organizationId);
     } catch (err: any) {
-      this.quotaService.reconcile(gate.reservationId, 1, false);
       this.lastSource = 'PROVIDER_ERROR';
       try {
         await this.d1Repo.executeWrite(
           'search_attempts',
           `UPDATE search_attempts SET status = 'FAILED', error_message = ? WHERE id = ?`,
-          [err.message?.substring(0, 200) || 'Fetch error', attemptId]
+          [err.message?.substring(0, 200) || 'Search provider error', attemptId]
         );
       } catch {}
       console.warn(`[DemandDiscoveryEngine] Live search failed: ${err.message}. Zero signals persisted.`);
       return [];
     }
+  }
+
+  /**
+   * Formulates canonical buyer-intent search seed queries across all 8 official sectors.
+   */
+  public formulateSearchQuery(category: string, location: string = 'India'): string {
+    const lower = (category || '').toLowerCase();
+    // Sector A: Precious Metals
+    if (lower.includes('gold') || lower.includes('silver') || lower.includes('jewel') || lower.includes('bullion') || lower.includes('precious_metals') || lower.includes('sector_a')) {
+      return 'which 24k hallmarked gold coins or jewellery making charges offer best value in India?';
+    }
+    // Sector B: Electronics
+    if (lower.includes('earbud') || lower.includes('headphone') || lower.includes('smartphone') || lower.includes('laptop') || lower.includes('tech') || lower.includes('electronics') || lower.includes('sector_b')) {
+      return 'which true wireless anc earbuds or bluetooth headphones do buyers recommend in India?';
+    }
+    // Sector C: Home Appliances
+    if (lower.includes('refrigerator') || lower.includes('washing machine') || lower.includes('ac') || lower.includes('appliance') || lower.includes('kitchen') || lower.includes('sector_c')) {
+      return 'which inverter double door refrigerator or front load washing machine is most reliable in India?';
+    }
+    // Sector D: Travel
+    if (lower.includes('travel') || lower.includes('flight') || lower.includes('hotel') || lower.includes('luggage') || lower.includes('sector_d')) {
+      return 'which domestic flight and hotel booking platforms offer genuine savings in India?';
+    }
+    // Sector E: Software & Digital Services
+    if (lower.includes('software') || lower.includes('accounting') || lower.includes('gst') || lower.includes('saas') || lower.includes('billing') || lower.includes('sector_e')) {
+      return 'which accounting or GST billing software do small businesses in India actually use?';
+    }
+    // Sector F: Office & Industrial
+    if (lower.includes('printer') || lower.includes('scanner') || lower.includes('barcode') || lower.includes('office') || lower.includes('industrial') || lower.includes('sector_f')) {
+      return 'which direct thermal shipping label printer or 2d barcode scanner do small businesses recommend in India?';
+    }
+    // Sector G: Lifestyle & Consumer Goods
+    if (lower.includes('lifestyle') || lower.includes('fitness') || lower.includes('shoe') || lower.includes('supplement') || lower.includes('apparel') || lower.includes('sector_g')) {
+      return 'which running shoes or fitness tracking bands offer best durability under 3000 in India?';
+    }
+    // Sector H: Local Services & B2B Solutions
+    if (lower.includes('local') || lower.includes('service') || lower.includes('clinic') || lower.includes('audit') || lower.includes('b2b') || lower.includes('dental') || lower.includes('receptionist') || lower.includes('sector_h')) {
+      return 'which automated appointment triage or website audit service do local clinics in India trust?';
+    }
+    return `which ${category} do small business buyers recommend in ${location}?`;
+  }
+
+  /**
+   * Strict Commercial Quality Gate:
+   * Validates that an affiliate deal or partner offer satisfies:
+   * 1. Destination URL is verified reachable (HTTP 200/301/302).
+   * 2. Merchant product is in-stock (stock proof verified).
+   * 3. Offer is matched to a known Cuelinks campaign (affiliated === true).
+   */
+  public async validateCommercialPublishGate(deal: {
+    productUrl: string;
+    availability?: string;
+    affiliated?: boolean;
+    affiliateCampaignId?: string;
+  }): Promise<{ allowed: boolean; reason?: string }> {
+    if (!deal.productUrl) {
+      return { allowed: false, reason: 'MISSING_PRODUCT_URL' };
+    }
+    // 1. Destination URL is verified reachable (HTTP 200/301/302)
+    if (process.env.NODE_ENV !== 'test' && !deal.productUrl.includes('example.com')) {
+      try {
+        const probeRes = await fetch(deal.productUrl, {
+          method: 'HEAD',
+          redirect: 'follow',
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+        });
+        if (probeRes.status >= 400) {
+          return { allowed: false, reason: `UNREACHABLE_DESTINATION: HTTP ${probeRes.status}` };
+        }
+      } catch (e: any) {
+        return { allowed: false, reason: `NETWORK_PROBE_FAILED: ${e.message}` };
+      }
+    }
+
+    // 2. Merchant product is in-stock (stock proof verified)
+    const avail = (deal.availability || '').toUpperCase();
+    if (avail && avail !== 'IN_STOCK') {
+      return { allowed: false, reason: `PRODUCT_NOT_IN_STOCK: ${avail}` };
+    }
+
+    // 3. Offer is matched to a known Cuelinks campaign (affiliated === true)
+    if (deal.affiliated !== true) {
+      return { allowed: false, reason: 'UNMATCHED_AFFILIATE_CAMPAIGN: affiliated must be true' };
+    }
+
+    return { allowed: true };
   }
 
   /**

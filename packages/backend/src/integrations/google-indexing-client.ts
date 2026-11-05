@@ -7,19 +7,23 @@
  * - Ineligible Pages: Automatically routed to Sitemap + IndexNow + Search Console syndication
  */
 
+import { createSign } from 'crypto';
 import { getDb } from '../db/client.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { isProduction, isPlaceholderCredential } from '../config/env.js';
+import { UnifiedQuotaService } from '../quota/unified-quota-service.js';
 
 export type IndexingNotificationType = 'URL_UPDATED' | 'URL_DELETED';
 
 export interface IndexingResult {
   success: boolean;
-  status: 'PUBLISHED' | 'PUBLISHED_SANDBOX' | 'SKIPPED_INELIGIBLE_SCHEMA_TYPE' | 'QUOTA_EXHAUSTED' | 'ERROR';
+  status: 'PUBLISHED' | 'PUBLISHED_SANDBOX' | 'SKIPPED_INELIGIBLE_SCHEMA_TYPE' | 'QUOTA_EXHAUSTED' | 'ERROR' | 'BLOCKED_INVALID_CREDENTIALS';
   url: string;
   reason?: string;
   fallback?: string;
   remainingToday?: number;
+  quotaConsumed?: boolean;
+  allowedByPolicy?: boolean;
 }
 
 export interface PageSchemaMetadata {
@@ -34,6 +38,9 @@ export class GoogleIndexingClient {
 
   private serviceAccountKey?: string;
   private d1Repo = D1RevenueRepository.getInstance();
+  private quotaService = UnifiedQuotaService.getInstance();
+  private cachedToken?: string;
+  private cachedTokenExpiryMs: number = 0;
 
   private constructor() {
     this.serviceAccountKey = process.env.GOOGLE_INDEXING_SERVICE_ACCOUNT_KEY || process.env.GOOGLE_INDEXING_API;
@@ -83,7 +90,8 @@ export class GoogleIndexingClient {
       const row = db.prepare('SELECT requests_count FROM google_indexing_daily_quota WHERE date_utc = ?').get(today) as any;
       return row?.requests_count || 0;
     } catch {
-      return 0;
+      // Defect 1: Fail closed when ledger is unavailable
+      return GoogleIndexingClient.MAX_DAILY_REQUESTS;
     }
   }
 
@@ -104,6 +112,75 @@ export class GoogleIndexingClient {
       db.prepare(sql).run(today);
     } catch {}
     return this.getDailyRequestCount();
+  }
+
+  private getServiceAccountKey(): string | undefined {
+    return process.env.GOOGLE_SERVICE_ACCOUNT_KEY || process.env.GOOGLE_INDEXING_SERVICE_ACCOUNT_KEY || this.serviceAccountKey || process.env.GOOGLE_INDEXING_API;
+  }
+
+  /**
+   * Exchanges Service Account JSON credentials for an OAuth2 Bearer token via signed RS256 JWT.
+   * Caches token in memory until 60 seconds before expiration.
+   */
+  public async getOAuth2AccessToken(): Promise<{ token?: string; error?: string }> {
+    const rawKey = this.getServiceAccountKey();
+    if (!rawKey || isPlaceholderCredential(rawKey)) {
+      return { error: 'BLOCKED_INVALID_CREDENTIALS' };
+    }
+
+    let creds: { client_email?: string; private_key?: string } | null = null;
+    try {
+      const str = rawKey.trim();
+      creds = str.startsWith('{') ? JSON.parse(str) : JSON.parse(Buffer.from(str, 'base64').toString('utf8'));
+    } catch {
+      return { error: 'BLOCKED_INVALID_CREDENTIALS' };
+    }
+
+    if (!creds?.client_email || !creds?.private_key) {
+      return { error: 'BLOCKED_INVALID_CREDENTIALS' };
+    }
+
+    if (this.cachedToken && Date.now() < this.cachedTokenExpiryMs - 60000) {
+      return { token: this.cachedToken };
+    }
+
+    try {
+      const now = Math.floor(Date.now() / 1000);
+      const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');
+      const claimSet = Buffer.from(JSON.stringify({
+        iss: creds.client_email,
+        scope: 'https://www.googleapis.com/auth/indexing',
+        aud: 'https://oauth2.googleapis.com/token',
+        exp: now + 3600,
+        iat: now
+      })).toString('base64url');
+
+      const signer = createSign('RSA-SHA256');
+      signer.update(`${header}.${claimSet}`);
+      const signature = signer.sign(creds.private_key, 'base64url');
+      const assertion = `${header}.${claimSet}.${signature}`;
+
+      const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: `grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${assertion}`
+      });
+
+      if (!tokenRes.ok) {
+        const errBody = await tokenRes.text();
+        return { error: `OAUTH2_EXCHANGE_FAILED: HTTP ${tokenRes.status}: ${errBody}` };
+      }
+
+      const tokenData = (await tokenRes.json()) as any;
+      const accessToken = tokenData.access_token;
+      const expiresIn = tokenData.expires_in || 3600;
+
+      this.cachedToken = accessToken;
+      this.cachedTokenExpiryMs = Date.now() + (expiresIn * 1000);
+      return { token: accessToken };
+    } catch (jwtErr: any) {
+      return { error: `BLOCKED_INVALID_CREDENTIALS: ${jwtErr.message}` };
+    }
   }
 
   /**
@@ -147,13 +224,15 @@ export class GoogleIndexingClient {
         status: 'SKIPPED_INELIGIBLE_SCHEMA_TYPE',
         url,
         reason: 'Page does not contain JobPosting or BroadcastEvent schema. Direct Google Indexing API submission is prohibited.',
-        fallback: 'ROUTED_TO_SITEMAP_INDEXNOW'
+        fallback: 'ROUTED_TO_SITEMAP_INDEXNOW',
+        quotaConsumed: false
       };
     }
 
-    // 2. Hard daily quota check (180 requests/day)
-    const currentRequests = await this.getDailyRequestCount();
-    if (currentRequests >= GoogleIndexingClient.MAX_DAILY_REQUESTS) {
+    // 2. Centralized Atomic D1/SQLite Quota Reservation (180 requests/day)
+    // Check both legacy daily table (for backwards test compatibility) and unified quota ledger
+    const legacyCount = await this.getDailyRequestCount();
+    if (legacyCount >= GoogleIndexingClient.MAX_DAILY_REQUESTS) {
       return {
         success: false,
         status: 'QUOTA_EXHAUSTED',
@@ -164,16 +243,49 @@ export class GoogleIndexingClient {
       };
     }
 
+    const quotaRes = await this.quotaService.reserveProviderQuota('google_indexing', 1);
+    if (!quotaRes.allowed) {
+      if (quotaRes.reason === 'QUOTA_LEDGER_UNAVAILABLE') {
+        return {
+          success: false,
+          status: 'ERROR',
+          url,
+          reason: 'QUOTA_LEDGER_UNAVAILABLE',
+          fallback: 'ROUTED_TO_SITEMAP_INDEXNOW'
+        };
+      }
+      return {
+        success: false,
+        status: 'QUOTA_EXHAUSTED',
+        url,
+        reason: quotaRes.reason || `Daily Google Indexing API limit reached.`,
+        fallback: 'ROUTED_TO_SITEMAP_INDEXNOW',
+        remainingToday: 0
+      };
+    }
+
     // 3. Execution (Live or Sandbox simulated)
-    const isLive = Boolean(this.serviceAccountKey && !isPlaceholderCredential(this.serviceAccountKey));
+    const serviceKey = this.getServiceAccountKey();
+    const isLive = Boolean(serviceKey && !isPlaceholderCredential(serviceKey));
     if (isLive) {
+      const auth = await this.getOAuth2AccessToken();
+      if (auth.error) {
+        if (quotaRes.reservationId) {
+          await this.quotaService.reconcileProviderQuota('google_indexing', quotaRes.reservationId, 'RELEASE');
+        }
+        return {
+          success: false,
+          status: 'BLOCKED_INVALID_CREDENTIALS',
+          url,
+          reason: `GOOGLE_INDEXING_API credentials error: ${auth.error}`
+        };
+      }
+
       try {
-        // Live Google Indexing API HTTP POST
-        // Requires OAuth2 bearer token derived from service account JWT
         const res = await fetch('https://indexing.googleapis.com/v3/urlNotifications:publish', {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${this.serviceAccountKey}`,
+            'Authorization': `Bearer ${auth.token}`,
             'Content-Type': 'application/json'
           },
           body: JSON.stringify({
@@ -184,6 +296,9 @@ export class GoogleIndexingClient {
 
         if (!res.ok) {
           const errText = await res.text();
+          if (quotaRes.reservationId) {
+            await this.quotaService.reconcileProviderQuota('google_indexing', quotaRes.reservationId, 'CONSUME');
+          }
           return {
             success: false,
             status: 'ERROR',
@@ -192,6 +307,9 @@ export class GoogleIndexingClient {
           };
         }
       } catch (err: any) {
+        if (quotaRes.reservationId) {
+          await this.quotaService.reconcileProviderQuota('google_indexing', quotaRes.reservationId, 'RELEASE');
+        }
         return {
           success: false,
           status: 'ERROR',
@@ -201,6 +319,9 @@ export class GoogleIndexingClient {
       }
     }
 
+    if (quotaRes.reservationId) {
+      await this.quotaService.reconcileProviderQuota('google_indexing', quotaRes.reservationId, 'CONSUME');
+    }
     const newCount = await this.incrementDailyRequestCount();
     return {
       success: true,

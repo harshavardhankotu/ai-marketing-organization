@@ -6596,6 +6596,68 @@ apiRouter.get('/public/disclosure/:slug', async (c) => {
 });
 
 /**
+ * GET /api/v1/public/autonomy-status (V5.4 Multi-Sector Revenue Intelligence)
+ */
+apiRouter.get('/public/autonomy-status', async (c) => {
+  const { UnifiedQuotaService } = await import('../quota/unified-quota-service.js');
+  const { CommercialLearningEngine } = await import('../commission/commercial-learning-engine.js');
+  const { AutonomousPolicyGate } = await import('../automation/autonomous-policy-gate.js');
+
+  const quotaService = UnifiedQuotaService.getInstance();
+  const learningEngine = CommercialLearningEngine.getInstance();
+
+  const quotaLedger = await quotaService.getAllProviderQuotaStatus();
+  const sectorIntelligence = learningEngine.getSectorBanditIntelligence();
+
+  return c.json({
+    version: '5.4.0',
+    platform: 'Autonomous Multi-Sector Revenue Organization',
+    timestamp: new Date().toISOString(),
+    policyGate: {
+      version: AutonomousPolicyGate.POLICY_VERSION,
+      humanReviewGate: 'STRICT_ENFORCED',
+      autonomousApprovalsAllowed: ['PUBLISH_VERIFIED_DEAL', 'TRIGGER_PAGESPEED_AUDIT', 'SUBMIT_SEARCH_INDEXING', 'REFRESH_SITEMAP_CONTENT', 'UPDATE_EXPLORATION_BANDIT'],
+      humanGatedActions: ['OUTBOUND_COLD_MESSAGING', 'FINANCIAL_SPEND_DEBIT', 'MODIFY_STATUTORY_DISCLOSURE', 'EXECUTE_BINDING_CONTRACT'],
+      paidSpendBlocked: true,
+      paidSpendApprovedINR: 0
+    },
+    quotaLedger,
+    sectorIntelligence,
+    capabilityMatrix: {
+      searchDiscovery: {
+        provider: 'SearchDiscoveryProvider',
+        hierarchy: ['CACHE_24H', 'GOOGLE_CUSTOM_SEARCH_60_DAY', 'TAVILY_SEARCH_20_DAY'],
+        status: 'ACTIVE'
+      },
+      googleIndexing: {
+        client: 'GoogleIndexingClient',
+        auth: 'RS256_JWT_OAUTH2_ASSERTION',
+        dailyCap: 180,
+        status: 'ACTIVE'
+      },
+      brevoEmail: {
+        client: 'BrevoMcpClient',
+        atomicReservation: 'PRE_SEND_D1_LEDGER',
+        dailyCap: 300,
+        status: 'ACTIVE'
+      },
+      pageSpeedInsights: {
+        client: 'GooglePageSpeedClient',
+        dailyCap: 40,
+        cacheTtl: '24H',
+        status: 'ACTIVE'
+      },
+      monetizationEngines: {
+        engineA_selfServeTools: 'ACTIVE',
+        engineB_multiSectorAffiliate: 'ACTIVE',
+        engineC_tenantAutomation: 'ACTIVE',
+        engineD_partnerDistribution: 'ACTIVE'
+      }
+    }
+  });
+});
+
+/**
  * Public Deals Discovery Catalog (Autonomous Deal Engine V1.1, Spec § 9)
  */
 apiRouter.get('/public/deals', async (c) => {
