@@ -169,6 +169,7 @@ export const EXACT_ROUTE_POLICY = {
     '/public/revenue-funnel',
     '/public/financial-truth',
     '/public/deals',
+    '/public/autonomy-status',
     '/deals',
     '/guides',
     '/compare',
