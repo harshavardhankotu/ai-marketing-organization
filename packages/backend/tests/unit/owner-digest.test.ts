@@ -29,7 +29,9 @@ describe('Part C: Owner Digest (Deterministic, No Strangers, No LLM)', () => {
   afterEach(resetEnv);
 
   it('1. generates complete deterministic digest on GET /owner/today and GET /api/v1/owner/today', async () => {
-    const resTop = await app.request('/owner/today');
+    const resTop = await app.request('/owner/today', {
+      headers: { 'x-user-id': 'usr_owner_primary' }
+    });
     expect(resTop.status).toBe(200);
     const jsonTop = await resTop.json() as any;
     expect(jsonTop.success).toBe(true);
@@ -50,7 +52,9 @@ describe('Part C: Owner Digest (Deterministic, No Strangers, No LLM)', () => {
     expect(typeof data.nextAction).toBe('string');
 
     // Also check GET /api/v1/owner/today
-    const resApi = await app.request('/api/v1/owner/today');
+    const resApi = await app.request('/api/v1/owner/today', {
+      headers: { 'x-user-id': 'usr_owner_primary' }
+    });
     expect(resApi.status).toBe(200);
     const jsonApi = await resApi.json() as any;
     expect(jsonApi.success).toBe(true);

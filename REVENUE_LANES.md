@@ -3,7 +3,8 @@
 > Generated from direct codebase inspection and live production state.
 > Single-owner, India-first commercial engine.
 > Currency: INR (₹). Free tier API limits enforced. No unbacked estimates.
-> Version: 3.1 (Revenue-First Execution Sprint)
+> Version: 5.1.3 (5 Nov 2026 IST — Commercial Truth, Owner Route Lockdown & Stock Verification)
+> Financial Truth: ₹0.00 bank-confirmed cash (0 bank statement credits), ₹0.00 paid advertising spend.
 
 ---
 
@@ -11,9 +12,9 @@
 
 | Lane | Name | Status | Measured Revenue | Operational Reality | Owner Action |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Lane C** | Own Direct B2B Lead Conversion System | **INFRASTRUCTURE_VERIFIED_AWAITING_FIRST_CONVERSION** | ₹0.00 bank-confirmed cash (0 completed payments) | Public Homepage (`/`) and Service Offer (`/offer`) live with 24/7 WhatsApp triage deliverables, sample preview demo, DPDP form, 5 researched independent Hyderabad clinics, owner review queue (`/owner/today`), and proposal checkout (`/proposals/:id/checkout`) with Method A Razorpay dynamic links & Method B UPI QR. | Review 5 pending outreach drafts in `/owner/today` and click to dispatch |
-| **Lane F** | Cuelinks India Affiliate Network | **INFRASTRUCTURE_VERIFIED_AWAITING_FIRST_CONVERSION** | ₹0.00 bank-confirmed cash (0 completed sales) | Publisher 281897 & Channel 331585 approved. Cuelinks V3 dynamic conversion and strict campaign verification active. Student flight discount guide live (`/guides/student-flight-discounts-india`). Public deals catalog live (`/deals`). Public revenue dashboard live (`/revenue`). | Distribute guide link to authorized student/alumni groups |
-| **Lane B** | Razorpay Hosted Payment Page | **ACTIVE_READY** | ₹0.00 cash (0 client transactions) | Canonical hosted page `https://razorpay.me/@venkatasaiharshavardhankotu` live and verified. | Share hosted link with prospective consulting clients |
+| **Lane C** | Own Direct B2B Lead Conversion System | **INFRASTRUCTURE_VERIFIED_AWAITING_FIRST_CONVERSION** | ₹0.00 bank-confirmed cash (0 completed payments) | Public Homepage (`/`) and Service Offer (`/offer`) live with 24/7 WhatsApp triage deliverables, sample preview demo, DPDP form, 5 researched independent Hyderabad clinics, owner review queue (`/owner/today`), and proposal checkout (`/proposals/:id/checkout`) with Method A Razorpay dynamic links & Method B UPI QR. DOM XSS protected, CSV formula injection hardened, 10-15 digit phone validation enforced, all leads default to `PENDING_OWNER_REVIEW` (never auto-QUALIFIED). | Review 5 pending outreach drafts in `/owner/today` and click to dispatch |
+| **Lane F** | Cuelinks India Affiliate Network | **INFRASTRUCTURE_VERIFIED_AWAITING_FIRST_CONVERSION** | ₹0.00 bank-confirmed cash (0 completed sales) | Publisher 281897 & Channel 331585 approved. Cuelinks V3 dynamic conversion and strict campaign verification active. Student flight discount guide live (`/guides/student-flight-discounts-india`). Public deals catalog live (`/deals`). Public revenue dashboard live (`/revenue`). Variant-level merchant stock proof enforced across all deals with fail-closed stock guards. | Distribute guide link to authorized student/alumni groups |
+| **Lane B** | Razorpay Hosted Payment Page | **ACTIVE_READY** | ₹0.00 cash (0 client transactions) | Canonical hosted page `https://razorpay.me/@venkatasaiharshavardhankotu` live and verified. Dedicated test-order and test-verify paths operational with strict key separation. | Share hosted link with prospective consulting clients |
 | **Lane H** | Multi-Agent Coordinated Operations | **ACTIVE_COORDINATED** | Indirect | Coordinated orchestrator wires 15 specialized agents directly to `AgentRuntime.getInstance().execute()` with real runtime token accounting and decision journal persistence. | Review pending publication approvals in dashboard |
 | **Lane D** | Manual UPI Claim & Owner Confirm | **ACTIVE_CHECKOUT_READY** | ₹0.00 cash | Direct UPI QR and UTR claim endpoint `/api/v1/payments/manual-upi/claim` integrated in `/proposals/:id/checkout`; strict ₹0.00 cash invariant enforced until bank statement proof. | Verify submitted UTR against bank account |
 | **Lane A** | Amazon Search-Link Guides | **CONFIG_PENDING** | ₹0.00 cash | Static generator built; awaiting 6 owner statutory variables and 3 qualifying sales. | Configure 6 owner transparency variables in Render |

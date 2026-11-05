@@ -54,7 +54,7 @@ export interface OpportunitySelectionResult {
 
 export interface MerchantProductProbeResult {
   probed: boolean;
-  status: 'IN_STOCK' | 'DEAD_OR_OUT_OF_STOCK' | 'UNPROBED';
+  status: 'IN_STOCK' | 'DEAD_OR_OUT_OF_STOCK' | 'UNPROBED' | 'UNVERIFIED';
   httpStatus?: number;
   title?: string;
   sku?: string;
@@ -124,92 +124,159 @@ export class CommercialOpportunitySelector {
 
       if (jsRes.ok) {
         const text = await jsRes.text();
+        let data: any;
         try {
-          const data = JSON.parse(text);
-          const variants: any[] = Array.isArray(data.variants) ? data.variants : [];
-          
-          // Phase 2 Mandate: Inspect individual variants[]
-          // A candidate deal is eligible ONLY if a specific variant object has available === true
-          let selectedVariant: any = null;
-          try {
-            const urlObj = new URL(productUrl);
-            const reqVariantId = urlObj.searchParams.get('variant');
-            if (reqVariantId) {
-              selectedVariant = variants.find(v => String(v.id) === String(reqVariantId));
-              if (selectedVariant && !selectedVariant.available) {
-                return {
-                  probed: true,
-                  status: 'DEAD_OR_OUT_OF_STOCK',
-                  httpStatus: jsRes.status,
-                  available: false,
-                  error: `Requested variant ${reqVariantId} is sold out or unavailable`
-                };
-              }
-            }
-          } catch {}
+          data = JSON.parse(text);
+        } catch (jsonErr: any) {
+          return {
+            probed: true,
+            status: 'UNVERIFIED',
+            httpStatus: jsRes.status,
+            available: false,
+            error: `Malformed JSON received from merchant: ${jsonErr.message}`
+          };
+        }
 
+        const variants: any[] = Array.isArray(data.variants) ? data.variants : [];
+        let selectedVariant: any = null;
+        let reqVariantId: string | null = null;
+
+        try {
+          const urlObj = new URL(productUrl);
+          reqVariantId = urlObj.searchParams.get('variant');
+        } catch {}
+
+        if (reqVariantId) {
+          // Exact Variant Requested: locate that exact variant ID
+          selectedVariant = variants.find(v => String(v.id) === String(reqVariantId));
           if (!selectedVariant) {
-            selectedVariant = variants.find(v => v.available === true);
-          }
-
-          if (!selectedVariant || !selectedVariant.available) {
+            // NEVER fall back to another variant when a specific variant ID was requested
             return {
               probed: true,
               status: 'DEAD_OR_OUT_OF_STOCK',
               httpStatus: jsRes.status,
               available: false,
-              error: 'All variants sold out or unavailable'
+              error: `Requested variant ID ${reqVariantId} not found in merchant catalog; fallback rejected`
             };
           }
+          if (!selectedVariant.available) {
+            return {
+              probed: true,
+              status: 'DEAD_OR_OUT_OF_STOCK',
+              httpStatus: jsRes.status,
+              available: false,
+              variantId: selectedVariant.id,
+              variantTitle: selectedVariant.title,
+              error: `Requested variant ${reqVariantId} is sold out or unavailable`
+            };
+          }
+        } else {
+          // No Variant Requested: select only a variant where variant.available === true
+          selectedVariant = variants.find(v => v.available === true);
+          if (!selectedVariant) {
+            return {
+              probed: true,
+              status: 'DEAD_OR_OUT_OF_STOCK',
+              httpStatus: jsRes.status,
+              available: false,
+              error: 'All variants sold out or unavailable; product-level availability discarded'
+            };
+          }
+        }
 
-          const price = selectedVariant.price ? Number(selectedVariant.price) / 100 : 0;
-          const refPrice = selectedVariant.compare_at_price ? Number(selectedVariant.compare_at_price) / 100 : price;
-          const sku = selectedVariant.sku || data.handle || cleanUrl.split('/').pop() || 'UNKNOWN_SKU';
-          const variantUrl = `${cleanUrl}?variant=${selectedVariant.id}`;
+        const rawPrice = selectedVariant.price !== undefined ? Number(selectedVariant.price) / 100 : NaN;
+        const rawRefPrice = selectedVariant.compare_at_price !== undefined && selectedVariant.compare_at_price !== null
+          ? Number(selectedVariant.compare_at_price) / 100
+          : rawPrice;
 
-          // Also check live HTML for restocking badge on this variant
-          try {
-            const variantHtmlRes = await fetchFn(variantUrl, {
-              headers: {
-                'Accept': 'text/html,application/xhtml+xml',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-              }
-            });
-            if (variantHtmlRes.ok) {
-              const htmlText = await variantHtmlRes.text();
-              if (
-                /<button[^>]*class="[^"]*restocking-cta[^"]*"[^>]*>\s*Restocking\s*soon!?\s*<\/button>/i.test(htmlText) ||
-                /class="[^"]*restocking[^"]*"[^>]*>[\s\S]*?restocking/i.test(htmlText)
-              ) {
-                return {
-                  probed: true,
-                  status: 'DEAD_OR_OUT_OF_STOCK',
-                  httpStatus: variantHtmlRes.status,
-                  available: false,
-                  variantId: selectedVariant.id,
-                  variantTitle: selectedVariant.title,
-                  variantUrl,
-                  error: `Variant ${selectedVariant.id} has Restocking soon badge on merchant site`
-                };
-              }
-            }
-          } catch {}
-
+        // Price validation: require finite positive numeric price and refPrice >= price
+        if (!Number.isFinite(rawPrice) || rawPrice <= 0) {
           return {
             probed: true,
-            status: 'IN_STOCK',
+            status: 'DEAD_OR_OUT_OF_STOCK',
             httpStatus: jsRes.status,
-            title: data.title,
-            sku,
-            priceINR: price,
-            referencePriceINR: refPrice,
-            available: true,
+            available: false,
+            variantId: selectedVariant.id,
+            error: `Invalid or non-positive price (${rawPrice}) for variant ${selectedVariant.id}`
+          };
+        }
+        if (!Number.isFinite(rawRefPrice) || rawRefPrice < rawPrice) {
+          return {
+            probed: true,
+            status: 'DEAD_OR_OUT_OF_STOCK',
+            httpStatus: jsRes.status,
+            available: false,
+            variantId: selectedVariant.id,
+            error: `Reference price (${rawRefPrice}) is less than current price (${rawPrice}) for variant ${selectedVariant.id}`
+          };
+        }
+
+        const sku = selectedVariant.sku || data.handle || cleanUrl.split('/').pop() || 'UNKNOWN_SKU';
+        const variantUrl = `${cleanUrl}?variant=${selectedVariant.id}`;
+
+        // Secondary HTML restocking/availability check
+        try {
+          const variantHtmlRes = await fetchFn(variantUrl, {
+            headers: {
+              'Accept': 'text/html,application/xhtml+xml',
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+          });
+          if (!variantHtmlRes.ok) {
+            return {
+              probed: true,
+              status: 'UNVERIFIED',
+              httpStatus: variantHtmlRes.status,
+              available: false,
+              variantId: selectedVariant.id,
+              variantTitle: selectedVariant.title,
+              variantUrl,
+              error: `Secondary HTML availability check returned HTTP ${variantHtmlRes.status}; recheck required`
+            };
+          }
+          const htmlText = await variantHtmlRes.text();
+          if (
+            /<button[^>]*class="[^"]*restocking-cta[^"]*"[^>]*>\s*Restocking\s*soon!?\s*<\/button>/i.test(htmlText) ||
+            /class="[^"]*restocking[^"]*"[^>]*>[\s\S]*?restocking/i.test(htmlText)
+          ) {
+            return {
+              probed: true,
+              status: 'DEAD_OR_OUT_OF_STOCK',
+              httpStatus: variantHtmlRes.status,
+              available: false,
+              variantId: selectedVariant.id,
+              variantTitle: selectedVariant.title,
+              variantUrl,
+              error: `Variant ${selectedVariant.id} has Restocking soon badge on merchant site`
+            };
+          }
+        } catch (htmlErr: any) {
+          // If secondary HTML check fails, errors, or times out, return UNVERIFIED / RECHECK_REQUIRED
+          return {
+            probed: true,
+            status: 'UNVERIFIED',
+            available: false,
             variantId: selectedVariant.id,
             variantTitle: selectedVariant.title,
             variantUrl,
-            rawJson: data
+            error: `Secondary HTML availability check failed: ${htmlErr?.message || 'network timeout'}; recheck required`
           };
-        } catch {}
+        }
+
+        return {
+          probed: true,
+          status: 'IN_STOCK',
+          httpStatus: jsRes.status,
+          title: data.title,
+          sku,
+          priceINR: rawPrice,
+          referencePriceINR: rawRefPrice,
+          available: true,
+          variantId: selectedVariant.id,
+          variantTitle: selectedVariant.title,
+          variantUrl,
+          rawJson: data
+        };
       }
 
       // Fallback: Fetch product HTML and inspect application/ld+json structured data

@@ -549,6 +549,15 @@ export class DirectCommercialOfferPage {
   </footer>
 
   <script>
+    function escapeHtml(str) {
+      if (str === null || str === undefined) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
     var demoScenariosHome = {
       pain: {
         time: 'Sunday, 9:15 PM',
@@ -650,7 +659,7 @@ export class DirectCommercialOfferPage {
           msg.style.background = 'rgba(16, 185, 129, 0.15)';
           msg.style.color = '#34d399';
           msg.style.border = '1px solid rgba(16, 185, 129, 0.3)';
-          var delCodeNotice = data.deletionCode ? '<br><small style="color:#94a3b8;font-size:0.85rem;display:block;margin-top:0.5rem;">Your DPDP deletion code: <strong style="color:#38bdf8;">' + data.deletionCode + '</strong> (keep this to request data deletion)</small>' : '';
+          var delCodeNotice = data.deletionCode ? '<br><small style="color:#94a3b8;font-size:0.85rem;display:block;margin-top:0.5rem;">Your DPDP deletion code: <strong style="color:#38bdf8;">' + escapeHtml(data.deletionCode) + '</strong> (keep this to request data deletion)</small>' : '';
           var triageDeliverable = '';
           if (data.structuredTriageRecord) {
             var rec = data.structuredTriageRecord;
@@ -659,10 +668,10 @@ export class DirectCommercialOfferPage {
             triageDeliverable = '<div style="margin-top:1rem;background:#0b1120;border:1px solid #334155;border-radius:8px;padding:1rem;text-align:left;">' +
               '<div style="font-weight:700;color:#38bdf8;margin-bottom:0.4rem;">📋 Immediate Intake Triage Deliverable Generated</div>' +
               '<div style="font-size:0.85rem;color:#cbd5e1;line-height:1.5;">' +
-                '<strong>Practice:</strong> ' + rec.clinicName + '<br>' +
-                '<strong>Contact:</strong> ' + rec.contactPerson + ' (' + rec.phone + ')<br>' +
-                '<strong>Intake Gap Identified:</strong> ' + rec.intakeGapIdentified + '<br>' +
-                '<strong>Recommended Action:</strong> ' + rec.recommendedAction +
+                '<strong>Practice:</strong> ' + escapeHtml(rec.clinicName) + '<br>' +
+                '<strong>Contact:</strong> ' + escapeHtml(rec.contactPerson) + ' (' + escapeHtml(rec.phone) + ')<br>' +
+                '<strong>Intake Gap Identified:</strong> ' + escapeHtml(rec.intakeGapIdentified) + '<br>' +
+                '<strong>Recommended Action:</strong> ' + escapeHtml(rec.recommendedAction) +
               '</div>' +
               '<div style="margin-top:0.75rem;display:flex;gap:0.5rem;flex-wrap:wrap;">' +
                 (data.calendarIcs ? '<button type="button" onclick="downloadIcsFile()" style="background:#0284c7;color:#fff;border:none;padding:0.45rem 0.9rem;border-radius:6px;font-size:0.82rem;font-weight:600;cursor:pointer;">📅 Download Appointment Invite (.ics)</button>' : '') +
@@ -671,7 +680,7 @@ export class DirectCommercialOfferPage {
               '<div id="csv-preview-box" style="display:none;margin-top:0.6rem;background:#090d16;padding:0.5rem;border-radius:4px;font-family:monospace;font-size:0.75rem;color:#94a3b8;word-break:break-all;"></div>' +
             '</div>';
           }
-          msg.innerHTML = '✓ ' + (data.message || 'Thank you. The owner will review your practice and reach out shortly.') + delCodeNotice + triageDeliverable;
+          msg.innerHTML = '✓ ' + escapeHtml(data.message || 'Thank you. The owner will review your practice and reach out shortly.') + delCodeNotice + triageDeliverable;
           document.getElementById('lead-inquiry-form-home').reset();
           btn.style.display = 'none';
         } else {
@@ -1111,6 +1120,15 @@ export class DirectCommercialOfferPage {
   </div>
 
   <script>
+    function escapeHtml(str) {
+      if (str === null || str === undefined) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
     var demoScenariosOverview = {
       pain: {
         time: 'Sunday, 9:15 PM',
@@ -1233,7 +1251,7 @@ export class DirectCommercialOfferPage {
           msg.style.background = 'rgba(16, 185, 129, 0.15)';
           msg.style.color = '#34d399';
           msg.style.border = '1px solid rgba(16, 185, 129, 0.3)';
-          var delCodeNotice = data.deletionCode ? '<br><small style="color:#94a3b8;font-size:0.85rem;display:block;margin-top:0.5rem;">Your DPDP deletion code: <strong style="color:#38bdf8;">' + data.deletionCode + '</strong> (keep this to request data deletion)</small>' : '';
+          var delCodeNotice = data.deletionCode ? '<br><small style="color:#94a3b8;font-size:0.85rem;display:block;margin-top:0.5rem;">Your DPDP deletion code: <strong style="color:#38bdf8;">' + escapeHtml(data.deletionCode) + '</strong> (keep this to request data deletion)</small>' : '';
           var triageDeliverable = '';
           if (data.structuredTriageRecord) {
             var rec = data.structuredTriageRecord;
@@ -1242,10 +1260,10 @@ export class DirectCommercialOfferPage {
             triageDeliverable = '<div style="margin-top:1rem;background:#0b1120;border:1px solid #334155;border-radius:8px;padding:1rem;text-align:left;">' +
               '<div style="font-weight:700;color:#38bdf8;margin-bottom:0.4rem;">📋 Immediate Intake Triage Deliverable Generated</div>' +
               '<div style="font-size:0.85rem;color:#cbd5e1;line-height:1.5;">' +
-                '<strong>Practice:</strong> ' + rec.clinicName + '<br>' +
-                '<strong>Contact:</strong> ' + rec.contactPerson + ' (' + rec.phone + ')<br>' +
-                '<strong>Intake Gap Identified:</strong> ' + rec.intakeGapIdentified + '<br>' +
-                '<strong>Recommended Action:</strong> ' + rec.recommendedAction +
+                '<strong>Practice:</strong> ' + escapeHtml(rec.clinicName) + '<br>' +
+                '<strong>Contact:</strong> ' + escapeHtml(rec.contactPerson) + ' (' + escapeHtml(rec.phone) + ')<br>' +
+                '<strong>Intake Gap Identified:</strong> ' + escapeHtml(rec.intakeGapIdentified) + '<br>' +
+                '<strong>Recommended Action:</strong> ' + escapeHtml(rec.recommendedAction) +
               '</div>' +
               '<div style="margin-top:0.75rem;display:flex;gap:0.5rem;flex-wrap:wrap;">' +
                 (data.calendarIcs ? '<button type="button" onclick="downloadIcsFile()" style="background:#0284c7;color:#fff;border:none;padding:0.45rem 0.9rem;border-radius:6px;font-size:0.82rem;font-weight:600;cursor:pointer;">📅 Download Appointment Invite (.ics)</button>' : '') +
@@ -1254,7 +1272,7 @@ export class DirectCommercialOfferPage {
               '<div id="csv-preview-box" style="display:none;margin-top:0.6rem;background:#090d16;padding:0.5rem;border-radius:4px;font-family:monospace;font-size:0.75rem;color:#94a3b8;word-break:break-all;"></div>' +
             '</div>';
           }
-          msg.innerHTML = '✓ ' + (data.message || 'Thank you. The owner will contact you on the number you gave.') + delCodeNotice + triageDeliverable;
+          msg.innerHTML = '✓ ' + escapeHtml(data.message || 'Thank you. The owner will contact you on the number you gave.') + delCodeNotice + triageDeliverable;
           document.getElementById('lead-inquiry-form').reset();
           btn.style.display = 'none';
         } else {

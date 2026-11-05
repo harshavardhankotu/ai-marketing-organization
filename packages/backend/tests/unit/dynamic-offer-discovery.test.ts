@@ -224,6 +224,7 @@ describe('Step 2: Dynamic Offer Discovery Suite', () => {
 
   // 5. The code never calls fetch on an amazon.* host
   it('the code never calls fetch on an amazon.* host', async () => {
+    process.env.AMAZON_AFFILIATE_TAG = 'testtag-21';
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
 
     const lane = AutomaticOfferLane.getInstance();

@@ -71,13 +71,13 @@ describe('Production Test Record Quarantine & Guard (mst_p1_agent_wrote_test_dat
 
     expect(body.success).toBe(true);
     expect(body.isTest).toBe(false);
-    expect(body.status).toBe('QUALIFIED');
+    expect(body.status).toBe('PENDING_OWNER_REVIEW');
 
     const db = getDb();
     const prospect = db.prepare('SELECT * FROM platform_prospects WHERE id = ?').get(body.prospectId) as any;
     expect(prospect.is_test).toBe(0);
-    expect(prospect.status).toBe('QUALIFIED');
-    expect(prospect.fit_score).toBe(0.95);
+    expect(prospect.status).toBe('PENDING_OWNER_REVIEW');
+    expect(prospect.fit_score).toBe(0.85);
   });
 
   it('3. Funnel queries strictly exclude is_test = 1 and status = TEST_QUARANTINED', () => {

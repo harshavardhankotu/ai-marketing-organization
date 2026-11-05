@@ -5,7 +5,8 @@ import fs from 'fs';
 
 describe('Step 2: No Agent-Invented Price Lint in owner/ directory', () => {
   it('1. owner/PILOT_DELIVERY_SPEC.md states "Price: TBD. Owner decides." and has 0 invented prices', () => {
-    const specPath = path.resolve('../../owner/PILOT_DELIVERY_SPEC.md');
+    const repoRoot = fs.existsSync(path.resolve(process.cwd(), 'owner')) ? process.cwd() : path.resolve(process.cwd(), '../../');
+    const specPath = path.resolve(repoRoot, 'owner/PILOT_DELIVERY_SPEC.md');
     expect(fs.existsSync(specPath)).toBe(true);
 
     const content = fs.readFileSync(specPath, 'utf8');
@@ -22,7 +23,8 @@ describe('Step 2: No Agent-Invented Price Lint in owner/ directory', () => {
 # Sample Owner Spec
 - **Price:** Suggested pilot range: ₹5,000 to ₹15,000 depending on clinic size.
     `;
-    const tempFile = path.resolve('../../owner/temp_test_spec.md');
+    const repoRoot = fs.existsSync(path.resolve(process.cwd(), 'owner')) ? process.cwd() : path.resolve(process.cwd(), '../../');
+    const tempFile = path.resolve(repoRoot, 'owner/temp_test_spec.md');
     try {
       fs.writeFileSync(tempFile, mockContentWithBracket, 'utf8');
       const errors = checkOwnerFile(tempFile);
@@ -36,7 +38,8 @@ describe('Step 2: No Agent-Invented Price Lint in owner/ directory', () => {
   });
 
   it('3. whole owner/ directory passes the unauthorized price lint', () => {
-    const result = lintOwnerDirectory(path.resolve('../../owner'));
+    const repoRoot = fs.existsSync(path.resolve(process.cwd(), 'owner')) ? process.cwd() : path.resolve(process.cwd(), '../../');
+    const result = lintOwnerDirectory(path.resolve(repoRoot, 'owner'));
     expect(result.passed).toBe(true);
     expect(result.errors).toEqual([]);
   });
