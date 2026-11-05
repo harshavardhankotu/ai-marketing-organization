@@ -1,6 +1,8 @@
-# Current Objective: Multi-Sector Commerce Engine Recovery & First Verified Revenue (V4.2)
+# Current Objective: Multi-Sector Commercial Platform & Autonomous Revenue Engine (V5.3)
 
-1. **Primary Goal:** Transform the AI Marketing Organization into an autonomous, multi-sector commercial deal-discovery, price-intelligence, affiliate-commerce, and revenue-generation platform across all eligible sectors. Generate the first genuine, bank-verified revenue in India using free/authorized tools and ₹0 paid advertising.
+> **GLOBAL AUTONOMY BRAIN:** Master operational guide and single source of truth is [GLOBAL_AUTONOMY_BRAIN.md](file:///GLOBAL_AUTONOMY_BRAIN.md).
+
+1. **Primary Goal:** Transform the AI Marketing Organization into an autonomous, multi-sector commercial deal-discovery, price-intelligence, affiliate-commerce, and revenue-generation platform across all 8 commercial sectors and 4 shared revenue engines. Generate genuine, bank-verified revenue in India using free/authorized tools and ₹0 paid advertising.
 2. **Canonical Business Reality:** The business is NOT a dental clinic lead generation agency. Clinics are merely one isolated commercial vertical in Sector H (`SECTOR_H_LOCAL_SERVICES_B2B`). The primary engine operates across all 8 authoritative commercial sectors:
    - Sector A: Gold, Silver, Bullion & Jewellery (Mandatory Priority)
    - Sector B: Electronics & Technology

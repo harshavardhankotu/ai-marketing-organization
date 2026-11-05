@@ -338,6 +338,21 @@ export class AutonomyPolicyController {
         SET stage = 'DO_NOT_CONTACT', updated_at = datetime('now')
         WHERE id = ? OR customer_email = ? OR customer_phone = ?
       `).run(contactIdentifier, contactIdentifier, contactIdentifier);
+
+      try {
+        const isEmail = contactIdentifier.includes('@');
+        const isPhone = !isEmail && /\d{7,}/.test(contactIdentifier);
+        const type = isEmail ? 'EMAIL' : (isPhone ? 'PHONE' : 'DOMAIN');
+        const expiresAt = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString();
+        const suppId = `supp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        db.prepare(`
+          INSERT INTO outreach_suppression_list (id, identifier, identifier_type, reason, expires_at, created_at)
+          VALUES (?, ?, ?, ?, ?, datetime('now'))
+          ON CONFLICT(identifier) DO UPDATE SET
+            reason = excluded.reason,
+            expires_at = excluded.expires_at
+        `).run(suppId, isPhone ? contactIdentifier.replace(/[\s\-\+]/g, '') : contactIdentifier.trim().toLowerCase(), type, reason, expiresAt);
+      } catch {}
     } catch {}
   }
 

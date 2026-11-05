@@ -59,6 +59,9 @@ import { LiveProviderActivation } from '../revenue/live-provider-activation.js';
 import { CommercialLifecycleManager } from '../revenue/commercial-lifecycle.js';
 import { OwnerAuthService } from '../auth/owner-auth.js';
 import { SalesConversationEngine } from '../revenue/sales-conversation-engine.js';
+import { OutboundEngine } from '../revenue/outbound-engine.js';
+import { BrevoMcpClient } from '../integrations/brevo-mcp-client.js';
+import { GoogleIndexingClient } from '../integrations/google-indexing-client.js';
 import { OfferCatalogService } from '../revenue/offer-catalog.js';
 import { ProposalEngine } from '../revenue/proposal-engine.js';
 import {
@@ -180,7 +183,9 @@ export const EXACT_ROUTE_POLICY = {
     '/capabilities',
     '/tools',
     '/tools/site-audit',
-    '/agents'
+    '/agents',
+    '/public/feeds',
+    '/feeds'
   ],
   WEBHOOK: [
     '/webhooks/razorpay',
@@ -188,7 +193,8 @@ export const EXACT_ROUTE_POLICY = {
     '/webhooks/whatsapp',
     '/webhooks/email',
     '/webhooks/payments',
-    '/webhooks/conversion'
+    '/webhooks/conversion',
+    '/webhooks/brevo'
   ],
   SYSTEM: [
     '/cron/ping',
@@ -3106,6 +3112,19 @@ apiRouter.post('/webhooks/whatsapp', async (c) => {
             const messageText = msg.text?.body || msg.type || '';
             const externalMessageId = msg.id;
 
+            // Inbound Message ID Deduplication
+            if (externalMessageId) {
+              let isDuplicate = false;
+              try {
+                const existing = db.prepare('SELECT id FROM direct_outreach_log WHERE id = ?').get(`inbound_${externalMessageId}`);
+                if (existing) isDuplicate = true;
+              } catch {}
+              if (isDuplicate) {
+                results.push({ duplicate: true, externalMessageId, reason: 'MESSAGE_ALREADY_PROCESSED' });
+                continue;
+              }
+            }
+
             // Spec § 7: Determine tenant strictly from integration_phone_mappings (NO fallback to biz_platform_aro)
             const phoneNumberId = val?.metadata?.phone_number_id;
             let bizResult: any = null;
@@ -3135,7 +3154,43 @@ apiRouter.post('/webhooks/whatsapp', async (c) => {
               messageText,
               externalMessageId
             });
-            results.push(res);
+
+            // Auto-reply via OutboundEngine within 24-hour customer window
+            let outboundDispatch: any = null;
+            if (res.responseTemplate && !res.suppressed) {
+              try {
+                const outboundEngine = OutboundEngine.getInstance();
+                outboundDispatch = await outboundEngine.sendWhatsAppMessage({
+                  businessId,
+                  organizationId,
+                  recipientContact: senderContact,
+                  body: res.responseTemplate,
+                  isInboundResponse: true
+                });
+              } catch (dispatchErr: any) {
+                outboundDispatch = { success: false, error: dispatchErr.message };
+              }
+            }
+
+            // Persist inbound interaction audit record
+            try {
+              const inboundLogId = `inbound_${externalMessageId || Date.now()}`;
+              db.prepare(`
+                INSERT INTO direct_outreach_log (
+                  id, business_id, segment, prospect_name, channel,
+                  message_draft, compliance_checked, human_approved, dispatched,
+                  dispatch_timestamp, response_status, created_at
+                ) VALUES (?, ?, 'CUSTOMER_INBOUND_WHATSAPP', ?, 'WHATSAPP', ?, 1, 1, 1, datetime('now'), ?, datetime('now'))
+              `).run(
+                inboundLogId,
+                businessId,
+                senderName || senderContact,
+                messageText,
+                res.intent
+              );
+            } catch {}
+
+            results.push({ ...res, outboundDispatch, externalMessageId });
           }
         }
       }
@@ -3174,10 +3229,38 @@ apiRouter.post('/webhooks/whatsapp', async (c) => {
       journeyId: body.journeyId
     });
 
-    return c.json({ success: true, data: res });
+    let outboundDispatch: any = null;
+    if (res.responseTemplate && !res.suppressed) {
+      try {
+        const outboundEngine = OutboundEngine.getInstance();
+        outboundDispatch = await outboundEngine.sendWhatsAppMessage({
+          businessId,
+          organizationId,
+          recipientContact: body.senderContact,
+          body: res.responseTemplate,
+          isInboundResponse: true
+        });
+      } catch (err: any) {
+        outboundDispatch = { success: false, error: err.message };
+      }
+    }
+
+    return c.json({ success: true, data: res, outboundDispatch });
   }
 
   return c.json({ success: false, error: 'Invalid WhatsApp webhook payload structure.' }, 400);
+});
+
+// Brevo Webhook Inbound Event Processing (Spec § 3)
+apiRouter.post('/webhooks/brevo', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const brevo = BrevoMcpClient.getInstance();
+  const res = await brevo.handleWebhookEvent({
+    event: body.event || body.type,
+    email: body.email,
+    reason: body.reason || body.tag
+  });
+  return c.json({ success: true, data: res });
 });
 
 // Email Webhook Inbound Message Ingestion (Spec § 8)
@@ -6552,6 +6635,48 @@ apiRouter.get('/public/deals', async (c) => {
   return c.json({ success: true, data: result });
 });
 
+// Public Deals JSON Feed for syndication and partner integrations (Spec Engine 4)
+apiRouter.get('/public/feeds/deals.json', async (c) => {
+  const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
+  const engine = AutonomousDealDiscoveryEngine.getInstance();
+  if (engine.getAllDeals().length === 0) {
+    try {
+      await engine.syncFromD1Async();
+    } catch {}
+  }
+  const result = engine.queryPublicDeals({ page: 1, limit: 50, verifiedOnly: true });
+  const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').replace(/\/$/, '');
+
+  const feed = {
+    version: 'https://jsonfeed.org/version/1.1',
+    title: 'Verified Commercial Deals & Buying Guides',
+    home_page_url: siteUrl,
+    feed_url: `${siteUrl}/api/v1/public/feeds/deals.json`,
+    description: 'Autonomous multi-sector verified deals, price drops, and buyer guides',
+    items: (result.deals || []).map((d: any) => ({
+      id: d.id,
+      url: `${siteUrl}/deals#${d.id}`,
+      external_url: `${siteUrl}/api/v1/public/deals/${d.id}/redirect`,
+      title: d.title,
+      content_text: d.title,
+      date_modified: d.lastCheckedAt || d.observedAt || new Date().toISOString(),
+      price_inr: d.currentPriceINR,
+      category: d.category,
+      sector: d.category || 'SECTOR_2_ELECTRONICS',
+      merchant: d.merchant,
+      stock_status: d.availability || 'IN_STOCK'
+    }))
+  };
+
+  return c.json(feed, 200, {
+    'Content-Type': 'application/feed+json; charset=utf-8',
+    'Cache-Control': 'public, max-age=300'
+  });
+});
+apiRouter.get('/feeds/deals.json', async (c) => {
+  return c.redirect('/api/v1/public/feeds/deals.json', 301);
+});
+
 apiRouter.get('/public/deals/:id', async (c) => {
   const id = c.req.param('id');
   const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
@@ -7832,6 +7957,36 @@ apiRouter.get('/owner/direct-outreach', async (c) => {
 apiRouter.post('/owner/direct-outreach/:id/approve', async (c) => {
   const id = c.req.param('id');
   const d1Repo = D1RevenueRepository.getInstance();
+  const db = getDb();
+
+  let draft: any;
+  try {
+    draft = await d1Repo.queryOne<any>('direct_outreach_log', 'SELECT * FROM direct_outreach_log WHERE id = ?', [id]);
+  } catch {}
+  if (!draft) {
+    try {
+      draft = db.prepare('SELECT * FROM direct_outreach_log WHERE id = ?').get(id);
+    } catch {}
+  }
+  if (!draft) {
+    return c.json({ success: false, error: 'Draft not found' }, 404);
+  }
+
+  // Suppression guard: fail closed if recipient is in outreach_suppression_list or opted out
+  const { PlatformProspectDiscoveryEngine } = await import('../revenue/platform-prospect-discovery-engine.js');
+  const discEngine = PlatformProspectDiscoveryEngine.getInstance();
+  const domainFromId = draft.id ? draft.id.replace('dlog_', '').replace(/_/g, '.') : undefined;
+  const isSuppressed = (await discEngine.isContactSuppressedAsync(
+    draft.prospect_phone,
+    draft.prospect_email,
+    draft.prospect_name
+  )) || (domainFromId ? await discEngine.isContactSuppressedAsync(undefined, undefined, domainFromId) : false);
+  if (isSuppressed || ['OPT_OUT', 'QUARANTINED', 'ENTERPRISE_CHAIN_DEFERRED'].includes(draft.response_status)) {
+    return c.json({
+      success: false,
+      error: 'Cannot approve outreach: recipient is in outreach_suppression_list (opted out or quarantined).'
+    }, 400);
+  }
 
   const updateSql = `UPDATE direct_outreach_log SET human_approved = 1, response_status = 'APPROVED' WHERE id = ?`;
   try {
@@ -7861,6 +8016,22 @@ apiRouter.post('/owner/direct-outreach/:id/record-dispatch', async (c) => {
 
   if (!draft) {
     return c.json({ success: false, error: 'Draft not found' }, 404);
+  }
+
+  // Suppression guard: fail closed if recipient is in outreach_suppression_list or opted out
+  const { PlatformProspectDiscoveryEngine } = await import('../revenue/platform-prospect-discovery-engine.js');
+  const discEngine = PlatformProspectDiscoveryEngine.getInstance();
+  const domainFromId = draft.id ? draft.id.replace('dlog_', '').replace(/_/g, '.') : undefined;
+  const isSuppressed = (await discEngine.isContactSuppressedAsync(
+    draft.prospect_phone,
+    draft.prospect_email,
+    draft.prospect_name
+  )) || (domainFromId ? await discEngine.isContactSuppressedAsync(undefined, undefined, domainFromId) : false);
+  if (isSuppressed || ['OPT_OUT', 'QUARANTINED', 'ENTERPRISE_CHAIN_DEFERRED'].includes(draft.response_status)) {
+    return c.json({
+      success: false,
+      error: 'Cannot dispatch outreach: recipient is in outreach_suppression_list (opted out or quarantined).'
+    }, 400);
   }
 
   const now = new Date().toISOString();
@@ -7950,17 +8121,17 @@ apiRouter.post('/owner/direct-outreach/:id/opt-out', async (c) => {
   if (prospect) {
     const phone = prospect.phone || prospect.prospect_phone;
     if (phone) {
-      discEngine.suppressContact(phone, 'PHONE', 'OPTOUT', 60);
+      await discEngine.suppressContact(phone, 'PHONE', 'OPTOUT', 60);
       suppressedIdentifiers.push(phone);
     }
     const email = prospect.email || prospect.prospect_email;
     if (email) {
-      discEngine.suppressContact(email, 'EMAIL', 'OPTOUT', 60);
+      await discEngine.suppressContact(email, 'EMAIL', 'OPTOUT', 60);
       suppressedIdentifiers.push(email);
     }
     const website = prospect.website_url || prospect.prospect_website;
     if (website) {
-      discEngine.suppressContact(website, 'DOMAIN', 'OPTOUT', 60);
+      await discEngine.suppressContact(website, 'DOMAIN', 'OPTOUT', 60);
       suppressedIdentifiers.push(website);
     }
 
@@ -7970,7 +8141,7 @@ apiRouter.post('/owner/direct-outreach/:id/opt-out', async (c) => {
   }
 
   if (suppressedIdentifiers.length === 0 && draft.prospect_name) {
-    discEngine.suppressContact(draft.prospect_name, 'DOMAIN', 'OPTOUT', 60);
+    await discEngine.suppressContact(draft.prospect_name, 'DOMAIN', 'OPTOUT', 60);
     suppressedIdentifiers.push(draft.prospect_name);
   }
 

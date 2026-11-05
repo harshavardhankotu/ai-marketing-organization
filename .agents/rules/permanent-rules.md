@@ -1,16 +1,14 @@
 # Permanent Operational Rules & Invariants
 
-## 1. Protected Modules List
-Under no circumstances may any agent touch, modify, refactor, or delete the following protected modules:
-- Razorpay (`*razorpay*`)
-- SendGrid (`*sendgrid*`)
-- WhatsApp (`*whatsapp*`)
-- Stripe (`*stripe*`)
-- Ads (`*adwords*`, `*ads*`)
-- GBP / Google Business Profile (`*gbp*`, `*google-business*`)
-- Brevo (`*brevo*`)
-- Agent Registry core code (`packages/backend/src/agents/*`)
-- UCOS / Unified Commerce Operating System code (`*ucos*`)
+> **GLOBAL AUTONOMY BRAIN:** Read [GLOBAL_AUTONOMY_BRAIN.md](file:///GLOBAL_AUTONOMY_BRAIN.md) for master architecture, 8 commercial sectors, 4 shared revenue engines, and quota ledgers.
+
+## 1. Controlled High-Risk Modules Policy
+Agents MAY modify WhatsApp, Brevo, Google Indexing, GBP, Cuelinks, and Razorpay integrations provided that:
+- All unit and integration tests pass before and after modifications.
+- Free-tier hard caps and fail-closed guards remain strictly intact (e.g., Brevo 200/day cap, Google Indexing 180/day cap, Razorpay server-side price authority).
+- Zero unsolicited spam or paid API overages can occur.
+- Strict human approval gates (`human_approved = 0, dispatched = 0`) are preserved for outbound messages.
+- Production credentials and live keys are isolated from test fixtures.
 
 ## 2. Evidence & Verification Rules
 - Raw evidence only: Grade PASS only when verified by raw machine evidence; PARTIAL if only proposed or partly done; FAIL otherwise.

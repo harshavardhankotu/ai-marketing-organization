@@ -8,6 +8,11 @@ import * as path from 'path';
 
 describe('Owner Direct Outreach, Education Pipeline & GBP Review Protocols', () => {
   beforeEach(async () => {
+    // Clean up any lingering suppressions on test clinics from previous test runs
+    try {
+      const db = getDb();
+      db.prepare("DELETE FROM outreach_suppression_list WHERE identifier LIKE '%dentalspecialists%' OR identifier LIKE '%secdental%'").run();
+    } catch {}
     // Ensure experiments and curated batches are seeded
     MarketExperimentManager.getInstance().ensureInitialized();
     await PlatformProspectDiscoveryEngine.getInstance().ensureCuratedQualifiedProspectBatch();
@@ -61,10 +66,20 @@ describe('Owner Direct Outreach, Education Pipeline & GBP Review Protocols', () 
 
     it('2b. POST /api/v1/owner/direct-outreach/:id/approve marks human_approved = 1', async () => {
       const db = getDb();
-      const draft = db.prepare('SELECT id FROM direct_outreach_log WHERE human_approved = 0 LIMIT 1').get() as any;
-      expect(draft).toBeDefined();
+      const testDraftId = 'dlog_test_approve_unit_flow';
+      db.prepare("DELETE FROM outreach_suppression_list WHERE identifier LIKE '%coachingacademy%'").run();
+      db.prepare(`
+        INSERT OR REPLACE INTO direct_outreach_log (
+          id, business_id, segment, prospect_name,
+          channel, message_draft, compliance_checked, human_approved, dispatched,
+          response_status, created_at
+        ) VALUES (
+          ?, 'biz_platform_aro', 'EDUCATION_COACHING_SMB', 'Test Coaching Academy Approve',
+          'WHATSAPP', 'Test draft message', 1, 0, 0, 'APPROVAL_REQUIRED', datetime('now')
+        )
+      `).run(testDraftId);
 
-      const res = await app.request(`/api/v1/owner/direct-outreach/${encodeURIComponent(draft.id)}/approve`, {
+      const res = await app.request(`/api/v1/owner/direct-outreach/${encodeURIComponent(testDraftId)}/approve`, {
         method: 'POST',
         headers: { 'x-user-id': 'usr_owner_primary' }
       });
@@ -73,17 +88,34 @@ describe('Owner Direct Outreach, Education Pipeline & GBP Review Protocols', () 
       expect(json.success).toBe(true);
       expect(json.status).toBe('APPROVED');
 
-      const updated = db.prepare('SELECT human_approved, response_status FROM direct_outreach_log WHERE id = ?').get(draft.id) as any;
+      const updated = db.prepare('SELECT human_approved, response_status FROM direct_outreach_log WHERE id = ?').get(testDraftId) as any;
       expect(updated.human_approved).toBe(1);
       expect(updated.response_status).toBe('APPROVED');
     });
 
     it('2c. POST /api/v1/owner/direct-outreach/:id/record-dispatch records dispatch and updates experiment lead counts', async () => {
       const db = getDb();
-      const draft = db.prepare('SELECT id, segment, prospect_name FROM direct_outreach_log WHERE dispatched = 0 LIMIT 1').get() as any;
-      expect(draft).toBeDefined();
+      const testDispatchDraftId = 'dlog_test_dispatch_unit_flow';
+      db.prepare("DELETE FROM outreach_suppression_list WHERE identifier LIKE '%coachingacademy%'").run();
+      db.prepare(`
+        INSERT OR REPLACE INTO platform_prospects (
+          id, prospect_business_name, prospect_city, prospect_vertical, prospect_phone, prospect_email, stage, status, contact_count, created_at, updated_at
+        ) VALUES (
+          'prosp_test_dispatch_01', 'Test Coaching Academy Dispatch', 'Hyderabad', 'coaching', '+919959145692', 'testdispatch@coachingacademy.in', 'QUALIFIED', 'ACTIVE', 0, datetime('now'), datetime('now')
+        )
+      `).run();
+      db.prepare(`
+        INSERT OR REPLACE INTO direct_outreach_log (
+          id, business_id, segment, prospect_name,
+          channel, message_draft, compliance_checked, human_approved, dispatched,
+          response_status, created_at
+        ) VALUES (
+          ?, 'biz_platform_aro', 'EDUCATION_COACHING_SMB', 'Test Coaching Academy Dispatch',
+          'WHATSAPP', 'Test dispatch draft message', 1, 1, 0, 'APPROVED', datetime('now')
+        )
+      `).run(testDispatchDraftId);
 
-      const res = await app.request(`/api/v1/owner/direct-outreach/${encodeURIComponent(draft.id)}/record-dispatch`, {
+      const res = await app.request(`/api/v1/owner/direct-outreach/${encodeURIComponent(testDispatchDraftId)}/record-dispatch`, {
         method: 'POST',
         headers: { 'x-user-id': 'usr_owner_primary' }
       });
@@ -93,13 +125,13 @@ describe('Owner Direct Outreach, Education Pipeline & GBP Review Protocols', () 
       expect(json.status).toBe('DISPATCHED');
 
       // Verify direct_outreach_log is marked dispatched
-      const updated = db.prepare('SELECT dispatched, dispatch_timestamp, response_status FROM direct_outreach_log WHERE id = ?').get(draft.id) as any;
+      const updated = db.prepare('SELECT dispatched, dispatch_timestamp, response_status FROM direct_outreach_log WHERE id = ?').get(testDispatchDraftId) as any;
       expect(updated.dispatched).toBe(1);
       expect(updated.dispatch_timestamp).toBeTruthy();
       expect(updated.response_status).toBe('DISPATCHED');
 
       // Verify prospect in platform_prospects moved to CONTACTED stage
-      const prospect = db.prepare('SELECT stage, status, contact_count FROM platform_prospects WHERE prospect_business_name = ? OR business_name = ?').get(draft.prospect_name, draft.prospect_name) as any;
+      const prospect = db.prepare('SELECT stage, status, contact_count FROM platform_prospects WHERE prospect_business_name = ? OR business_name = ?').get('Test Coaching Academy Dispatch', 'Test Coaching Academy Dispatch') as any;
       if (prospect) {
         expect(prospect.stage).toBe('CONTACTED');
         expect(prospect.contact_count).toBeGreaterThanOrEqual(1);
@@ -108,10 +140,26 @@ describe('Owner Direct Outreach, Education Pipeline & GBP Review Protocols', () 
 
     it('2d. POST /api/v1/owner/direct-outreach/:id/opt-out enforces 60-day suppression cooldown', async () => {
       const db = getDb();
-      const draft = db.prepare("SELECT id, prospect_name FROM direct_outreach_log WHERE response_status != 'OPT_OUT' LIMIT 1").get() as any;
-      expect(draft).toBeDefined();
+      const testOptOutDraftId = 'dlog_test_optout_unit_flow';
+      db.prepare(`
+        INSERT OR REPLACE INTO platform_prospects (
+          id, prospect_business_name, prospect_city, prospect_vertical, prospect_phone, prospect_email, stage, status, contact_count, created_at, updated_at
+        ) VALUES (
+          'prosp_test_optout_01', 'Test Coaching Academy OptOut', 'Hyderabad', 'coaching', '+919959145693', 'testoptout@coachingacademy.in', 'QUALIFIED', 'ACTIVE', 0, datetime('now'), datetime('now')
+        )
+      `).run();
+      db.prepare(`
+        INSERT OR REPLACE INTO direct_outreach_log (
+          id, business_id, segment, prospect_name,
+          channel, message_draft, compliance_checked, human_approved, dispatched,
+          response_status, created_at
+        ) VALUES (
+          ?, 'biz_platform_aro', 'EDUCATION_COACHING_SMB', 'Test Coaching Academy OptOut',
+          'WHATSAPP', 'Test optout draft message', 1, 1, 1, 'APPROVAL_REQUIRED', datetime('now')
+        )
+      `).run(testOptOutDraftId);
 
-      const res = await app.request(`/api/v1/owner/direct-outreach/${encodeURIComponent(draft.id)}/opt-out`, {
+      const res = await app.request(`/api/v1/owner/direct-outreach/${encodeURIComponent(testOptOutDraftId)}/opt-out`, {
         method: 'POST',
         headers: { 'x-user-id': 'usr_owner_primary' }
       });
@@ -122,7 +170,7 @@ describe('Owner Direct Outreach, Education Pipeline & GBP Review Protocols', () 
       expect(json.cooldownDays).toBe(60);
 
       // Verify prospect marked opted-out
-      const prospect = db.prepare('SELECT is_opted_out, stage FROM platform_prospects WHERE prospect_business_name = ? OR business_name = ?').get(draft.prospect_name, draft.prospect_name) as any;
+      const prospect = db.prepare('SELECT is_opted_out, stage FROM platform_prospects WHERE prospect_business_name = ? OR business_name = ?').get('Test Coaching Academy OptOut', 'Test Coaching Academy OptOut') as any;
       if (prospect) {
         expect(prospect.is_opted_out).toBe(1);
         expect(prospect.stage).toBe('LOST');
