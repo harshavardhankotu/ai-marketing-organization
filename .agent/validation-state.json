@@ -1,14 +1,17 @@
 {
-  "updated_at": "2026-11-05T18:55:00+05:30",
-  "active_branch": "feat/v5-2-first-customer-revenue-activation",
-  "base_commit": "5531e361ae6cb725175d14d09a818ae1d07fd5b0",
-  "head_commit": "7e9010db7a727ee0b3f071cc84cb4ec11135859a",
+  "updated_at": "2026-11-05T19:40:00+05:30",
+  "active_branch": "main",
+  "live_production_commit": "9fd5f7e",
   "pr_number": 38,
   "pr_url": "https://github.com/harshavardhankotu/ai-marketing-organization/pull/38",
+  "pr_status": "MERGED",
+  "render_service_id": "srv-darecoc9v7es73ea8t2g",
+  "render_deploy_id": "dep-dbm8qrivcj2c73896r50",
+  "render_deploy_status": "live",
   "github_actions_ci": {
-    "status": "RESOLVING_CI_250_FK_CONSTRAINT",
+    "status": "GREEN",
     "workflow": "CI & Deployment Pipeline",
-    "failing_run": 41982067816
+    "passing_run": 42041831243
   },
   "financial_invariants": {
     "bank_cash_received_inr": 0.00,
