@@ -29,6 +29,54 @@ import { isProduction, isPlaceholderCredential } from '../config/env.js';
 export type QuotaPriority = 'P0' | 'P1' | 'P2' | 'P3' | 'P4';
 export type ProviderName = 'GEMINI' | 'TAVILY';
 
+export type AutonomousProvider =
+  | 'google_custom_search'
+  | 'google_suggest'
+  | 'google_pagespeed'
+  | 'google_indexing'
+  | 'gemini_flash'
+  | 'brevo_mcp'
+  | 'tavily_search'
+  | 'cuelinks_v3';
+
+export type QuotaWindowType = 'PT_DAY' | 'UTC_DAY' | 'UTC_MONTH' | 'UTC_HOUR';
+
+export interface ProviderQuotaLedgerRecord {
+  provider: AutonomousProvider | string;
+  window_key: string;
+  configured_status: string;
+  cap_limit: number;
+  safety_reserve: number;
+  used_count: number;
+  reserved_count: number;
+  failed_count: number;
+  last_reset_at: string;
+  next_reset_at?: string;
+  circuit_breaker_state: 'CLOSED' | 'OPEN' | 'HALF_OPEN';
+  last_error?: string;
+}
+
+export interface ProviderQuotaReservationResult {
+  allowed: boolean;
+  reservationId?: string;
+  provider: AutonomousProvider;
+  windowKey: string;
+  reservedUnits: number;
+  remaining: number;
+  reason?: string;
+}
+
+export const AUTONOMOUS_PROVIDER_SPECS: Record<AutonomousProvider, { windowType: QuotaWindowType; capLimit: number; safetyReserve: number }> = {
+  google_custom_search: { windowType: 'PT_DAY', capLimit: 60, safetyReserve: 10 },
+  google_suggest: { windowType: 'UTC_DAY', capLimit: 80, safetyReserve: 8 },
+  google_pagespeed: { windowType: 'PT_DAY', capLimit: 40, safetyReserve: 5 },
+  google_indexing: { windowType: 'PT_DAY', capLimit: 180, safetyReserve: 20 },
+  gemini_flash: { windowType: 'PT_DAY', capLimit: 48, safetyReserve: 5 },
+  brevo_mcp: { windowType: 'UTC_DAY', capLimit: 200, safetyReserve: 20 },
+  tavily_search: { windowType: 'UTC_MONTH', capLimit: 750, safetyReserve: 50 },
+  cuelinks_v3: { windowType: 'UTC_HOUR', capLimit: 1, safetyReserve: 0 }
+};
+
 export interface QuotaReservation {
   reservationId: string;
   allowed: boolean;
@@ -78,6 +126,7 @@ export interface AutomationHealthSummary {
 export class UnifiedQuotaService {
   private static instance: UnifiedQuotaService;
   private activeReservations: Map<string, QuotaReservation> = new Map();
+  private activeProviderReservations: Map<string, { provider: AutonomousProvider; windowKey: string; units: number }> = new Map();
   private d1Repo = D1RevenueRepository.getInstance();
 
   private constructor() {
@@ -116,12 +165,62 @@ export class UnifiedQuotaService {
     return nextMonth.toISOString();
   }
 
+  public static getPacificDateKey(d = new Date()): string {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' }).format(d);
+  }
+
+  public static getUtcDateKey(d = new Date()): string {
+    return d.toISOString().slice(0, 10);
+  }
+
+  public static getUtcMonthKey(d = new Date()): string {
+    return d.toISOString().slice(0, 7);
+  }
+
+  public static getUtcHourKey(d = new Date()): string {
+    return d.toISOString().slice(0, 13);
+  }
+
+  public static computeWindowKey(windowType: QuotaWindowType, d = new Date()): string {
+    switch (windowType) {
+      case 'PT_DAY':
+        return UnifiedQuotaService.getPacificDateKey(d);
+      case 'UTC_DAY':
+        return UnifiedQuotaService.getUtcDateKey(d);
+      case 'UTC_MONTH':
+        return UnifiedQuotaService.getUtcMonthKey(d);
+      case 'UTC_HOUR':
+        return UnifiedQuotaService.getUtcHourKey(d);
+    }
+  }
+
   public ensureInitialized(): void {
     try {
       const db = getDb();
       const now = new Date().toISOString();
       const monthKey = UnifiedQuotaService.getCurrentCalendarMonth();
       const nextMonthReset = UnifiedQuotaService.getNextCalendarMonthReset();
+
+      // Ensure multi-provider atomic quota ledger table exists
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS provider_quota_ledger (
+          provider TEXT NOT NULL,
+          window_key TEXT NOT NULL,
+          configured_status TEXT NOT NULL DEFAULT 'CONFIGURED',
+          cap_limit INTEGER NOT NULL,
+          safety_reserve INTEGER NOT NULL DEFAULT 0,
+          used_count INTEGER NOT NULL DEFAULT 0,
+          reserved_count INTEGER NOT NULL DEFAULT 0,
+          failed_count INTEGER NOT NULL DEFAULT 0,
+          last_reset_at TEXT NOT NULL DEFAULT (datetime('now')),
+          next_reset_at TEXT,
+          circuit_breaker_state TEXT NOT NULL DEFAULT 'CLOSED',
+          last_error TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          PRIMARY KEY (provider, window_key)
+        );
+      `);
 
       const geminiAppLimit = parseInt(process.env.GEMINI_APPLICATION_LIMIT || '1200', 10);
       const tavilyAppLimit = parseInt(process.env.TAVILY_APPLICATION_LIMIT || '800', 10);
@@ -960,6 +1059,272 @@ export class UnifiedQuotaService {
       }
     }
 
+    return result;
+  }
+
+  /**
+   * V5.4 Centralized Atomic D1/SQLite Quota Ledger Reservation
+   * Follows EVALUATE -> RESERVE -> EXECUTE -> RECONCILE.
+   * On any D1 or SQLite ledger error, fails closed (allowed: false).
+   */
+  public async reserveProviderQuota(
+    provider: AutonomousProvider,
+    units: number = 1
+  ): Promise<ProviderQuotaReservationResult> {
+    const spec = AUTONOMOUS_PROVIDER_SPECS[provider];
+    if (!spec) {
+      return {
+        allowed: false,
+        provider,
+        windowKey: 'UNKNOWN',
+        reservedUnits: 0,
+        remaining: 0,
+        reason: `UNKNOWN_PROVIDER: '${provider}' has no defined quota specification`
+      };
+    }
+
+    const windowKey = UnifiedQuotaService.computeWindowKey(spec.windowType);
+    const db = getDb();
+
+    try {
+      this.ensureInitialized();
+
+      // 1. Ensure row exists in SQLite and D1
+      const insertSql = `
+        INSERT INTO provider_quota_ledger (
+          provider, window_key, configured_status, cap_limit, safety_reserve,
+          used_count, reserved_count, failed_count, last_reset_at, next_reset_at, circuit_breaker_state
+        ) VALUES (?, ?, 'CONFIGURED', ?, ?, 0, 0, 0, datetime('now'), datetime('now', '+1 day'), 'CLOSED')
+        ON CONFLICT(provider, window_key) DO NOTHING;
+      `;
+
+      if (isProduction() || this.d1Repo.isRemoteD1Configured()) {
+        await this.d1Repo.executeWrite('provider_quota_ledger', insertSql, [
+          provider,
+          windowKey,
+          spec.capLimit,
+          spec.safetyReserve
+        ]);
+      }
+      db.prepare(insertSql).run(provider, windowKey, spec.capLimit, spec.safetyReserve);
+
+      // Special check: Tavily has a second daily cap (max 20 credits/day)
+      if (provider === 'tavily_search') {
+        const dailyKey = UnifiedQuotaService.getUtcDateKey();
+        const dailyInsertSql = `
+          INSERT INTO provider_quota_ledger (
+            provider, window_key, configured_status, cap_limit, safety_reserve,
+            used_count, reserved_count, failed_count, last_reset_at, next_reset_at, circuit_breaker_state
+          ) VALUES ('tavily_search_daily', ?, 'CONFIGURED', 20, 2, 0, 0, 0, datetime('now'), datetime('now', '+1 day'), 'CLOSED')
+          ON CONFLICT(provider, window_key) DO NOTHING;
+        `;
+        if (isProduction() || this.d1Repo.isRemoteD1Configured()) {
+          await this.d1Repo.executeWrite('provider_quota_ledger', dailyInsertSql, [dailyKey]);
+        }
+        db.prepare(dailyInsertSql).run(dailyKey);
+
+        const dailyReserveSql = `
+          UPDATE provider_quota_ledger
+          SET reserved_count = reserved_count + ?, updated_at = datetime('now')
+          WHERE provider = 'tavily_search_daily' AND window_key = ?
+            AND circuit_breaker_state = 'CLOSED'
+            AND (used_count + reserved_count + ?) <= cap_limit;
+        `;
+        let dailyUpdated = false;
+        if (isProduction() || this.d1Repo.isRemoteD1Configured()) {
+          const res = await this.d1Repo.executeWrite('provider_quota_ledger', dailyReserveSql, [units, dailyKey, units]);
+          dailyUpdated = ((res as any)?.meta?.changes ?? 0) > 0;
+        } else {
+          const res = db.prepare(dailyReserveSql).run(units, dailyKey, units);
+          dailyUpdated = res.changes > 0;
+        }
+        if (!dailyUpdated) {
+          return {
+            allowed: false,
+            provider,
+            windowKey: dailyKey,
+            reservedUnits: 0,
+            remaining: 0,
+            reason: 'TAVILY_DAILY_LIMIT_EXHAUSTED: Daily 20 credit limit reached'
+          };
+        }
+      }
+
+      // 2. Atomic reservation update
+      const updateSql = `
+        UPDATE provider_quota_ledger
+        SET reserved_count = reserved_count + ?, updated_at = datetime('now')
+        WHERE provider = ? AND window_key = ?
+          AND circuit_breaker_state = 'CLOSED'
+          AND (used_count + reserved_count + ?) <= cap_limit;
+      `;
+
+      let updated = false;
+      if (isProduction() || this.d1Repo.isRemoteD1Configured()) {
+        const res = await this.d1Repo.executeWrite('provider_quota_ledger', updateSql, [units, provider, windowKey, units]);
+        updated = ((res as any)?.meta?.changes ?? 0) > 0;
+      } else {
+        const res = db.prepare(updateSql).run(units, provider, windowKey, units);
+        updated = res.changes > 0;
+      }
+
+      if (!updated) {
+        if (provider === 'tavily_search') {
+          const dailyKey = UnifiedQuotaService.getUtcDateKey();
+          const rollbackDaily = `UPDATE provider_quota_ledger SET reserved_count = MAX(0, reserved_count - ?) WHERE provider = 'tavily_search_daily' AND window_key = ?`;
+          db.prepare(rollbackDaily).run(units, dailyKey);
+        }
+        return {
+          allowed: false,
+          provider,
+          windowKey,
+          reservedUnits: 0,
+          remaining: 0,
+          reason: `QUOTA_EXHAUSTED: Cap ${spec.capLimit} reached for window ${windowKey}`
+        };
+      }
+
+      // 3. Compute remaining
+      const row = db.prepare(`SELECT used_count, reserved_count, cap_limit FROM provider_quota_ledger WHERE provider = ? AND window_key = ?`).get(provider, windowKey) as any;
+      const remaining = row ? Math.max(0, row.cap_limit - (row.used_count + row.reserved_count)) : 0;
+
+      const reservationId = `res_${provider}_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      this.activeProviderReservations.set(reservationId, { provider, windowKey, units });
+
+      return {
+        allowed: true,
+        reservationId,
+        provider,
+        windowKey,
+        reservedUnits: units,
+        remaining
+      };
+    } catch (err: any) {
+      console.error(`[UnifiedQuotaService] Quota reservation error for ${provider} (${err.message}). Failing closed.`);
+      return {
+        allowed: false,
+        provider,
+        windowKey,
+        reservedUnits: 0,
+        remaining: 0,
+        reason: 'QUOTA_LEDGER_UNAVAILABLE'
+      };
+    }
+  }
+
+  /**
+   * Reconciles atomic quota reservation after execution.
+   */
+  public async reconcileProviderQuota(
+    provider: AutonomousProvider,
+    reservationId?: string,
+    outcome: 'SUCCESS' | 'RELEASE' | 'CONSUME' = 'SUCCESS'
+  ): Promise<void> {
+    if (!reservationId) return;
+    const active = this.activeProviderReservations.get(reservationId);
+    const spec = AUTONOMOUS_PROVIDER_SPECS[provider];
+    const windowKey = active?.windowKey || (spec ? UnifiedQuotaService.computeWindowKey(spec.windowType) : 'UNKNOWN');
+    const units = active?.units || 1;
+    this.activeProviderReservations.delete(reservationId);
+
+    const db = getDb();
+    try {
+      if (outcome === 'RELEASE') {
+        const releaseSql = `
+          UPDATE provider_quota_ledger
+          SET reserved_count = MAX(0, reserved_count - ?), updated_at = datetime('now')
+          WHERE provider = ? AND window_key = ?;
+        `;
+        if (isProduction() || this.d1Repo.isRemoteD1Configured()) {
+          await this.d1Repo.executeWrite('provider_quota_ledger', releaseSql, [units, provider, windowKey]);
+        }
+        db.prepare(releaseSql).run(units, provider, windowKey);
+
+        if (provider === 'tavily_search') {
+          const dailyKey = UnifiedQuotaService.getUtcDateKey();
+          const releaseDailySql = `UPDATE provider_quota_ledger SET reserved_count = MAX(0, reserved_count - ?) WHERE provider = 'tavily_search_daily' AND window_key = ?`;
+          db.prepare(releaseDailySql).run(units, dailyKey);
+        }
+      } else {
+        const consumeSql = `
+          UPDATE provider_quota_ledger
+          SET reserved_count = MAX(0, reserved_count - ?),
+              used_count = used_count + ?,
+              updated_at = datetime('now')
+          WHERE provider = ? AND window_key = ?;
+        `;
+        if (isProduction() || this.d1Repo.isRemoteD1Configured()) {
+          await this.d1Repo.executeWrite('provider_quota_ledger', consumeSql, [units, units, provider, windowKey]);
+        }
+        db.prepare(consumeSql).run(units, units, provider, windowKey);
+
+        if (provider === 'tavily_search') {
+          const dailyKey = UnifiedQuotaService.getUtcDateKey();
+          const consumeDailySql = `UPDATE provider_quota_ledger SET reserved_count = MAX(0, reserved_count - ?), used_count = used_count + ? WHERE provider = 'tavily_search_daily' AND window_key = ?`;
+          db.prepare(consumeDailySql).run(units, units, dailyKey);
+        }
+      }
+    } catch (err: any) {
+      console.error(`[UnifiedQuotaService] Quota reconciliation error for ${provider}: ${err.message}`);
+    }
+  }
+
+  /**
+   * Retrieves aggregated live status for all autonomous providers.
+   */
+  public async getAllProviderQuotaStatus(): Promise<Record<string, any>> {
+    const db = getDb();
+    const result: Record<string, any> = {};
+
+    for (const [providerName, spec] of Object.entries(AUTONOMOUS_PROVIDER_SPECS)) {
+      const windowKey = UnifiedQuotaService.computeWindowKey(spec.windowType);
+      try {
+        const row = db.prepare(`
+          SELECT provider, window_key, configured_status, cap_limit, safety_reserve,
+                 used_count, reserved_count, failed_count, circuit_breaker_state, last_error
+          FROM provider_quota_ledger
+          WHERE provider = ? AND window_key = ?
+        `).get(providerName, windowKey) as any;
+
+        if (row) {
+          result[providerName] = {
+            windowKey: row.window_key,
+            windowType: spec.windowType,
+            cap: row.cap_limit,
+            safetyReserve: row.safety_reserve,
+            used: row.used_count,
+            reserved: row.reserved_count,
+            remaining: Math.max(0, row.cap_limit - (row.used_count + row.reserved_count)),
+            circuitBreaker: row.circuit_breaker_state,
+            configuredStatus: row.configured_status
+          };
+        } else {
+          result[providerName] = {
+            windowKey,
+            windowType: spec.windowType,
+            cap: spec.capLimit,
+            safetyReserve: spec.safetyReserve,
+            used: 0,
+            reserved: 0,
+            remaining: spec.capLimit,
+            circuitBreaker: 'CLOSED',
+            configuredStatus: 'CONFIGURED'
+          };
+        }
+      } catch {
+        result[providerName] = {
+          windowKey,
+          windowType: spec.windowType,
+          cap: spec.capLimit,
+          safetyReserve: spec.safetyReserve,
+          used: 0,
+          reserved: 0,
+          remaining: 0,
+          circuitBreaker: 'UNKNOWN',
+          configuredStatus: 'UNAVAILABLE'
+        };
+      }
+    }
     return result;
   }
 }

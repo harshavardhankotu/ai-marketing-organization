@@ -16,6 +16,7 @@ import { getDb } from '../db/client.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { isProduction, isPlaceholderCredential } from '../config/env.js';
 import { PlatformProspectDiscoveryEngine } from '../revenue/platform-prospect-discovery-engine.js';
+import { UnifiedQuotaService } from '../quota/unified-quota-service.js';
 
 export interface BrevoEmailPayload {
   to: Array<{ email: string; name?: string }>;
@@ -44,6 +45,7 @@ export class BrevoMcpClient {
   private apiKey?: string;
   private serverUrl: string;
   private d1Repo = D1RevenueRepository.getInstance();
+  private quotaService = UnifiedQuotaService.getInstance();
 
   private constructor() {
     this.apiKey = process.env.BREVO_API_KEY || process.env.BREVO_MCP_SERVER_API;
@@ -153,9 +155,21 @@ export class BrevoMcpClient {
       };
     }
 
-    // 2. Hard daily quota check (200 sends/day)
-    const currentSends = await this.getDailySendCount();
-    if (currentSends >= BrevoMcpClient.MAX_DAILY_SENDS) {
+    // 2. Pre-execution Quota Reservation via Centralized D1/SQLite Ledger (EVALUATE -> RESERVE -> EXECUTE -> RECONCILE)
+    // Check both legacy daily quota table (for test backwards-compatibility) and unified atomic ledger
+    const legacySends = await this.getDailySendCount();
+    let quotaRes = { allowed: legacySends < BrevoMcpClient.MAX_DAILY_SENDS, reservationId: undefined as string | undefined, reason: undefined as string | undefined };
+
+    if (quotaRes.allowed) {
+      const unifiedRes = await this.quotaService.reserveProviderQuota('brevo_mcp', 1);
+      quotaRes = {
+        allowed: unifiedRes.allowed,
+        reservationId: unifiedRes.reservationId,
+        reason: unifiedRes.reason
+      };
+    }
+
+    if (!quotaRes.allowed) {
       const queueId = `bmq_${randomUUID().slice(0, 8)}`;
       const sql = `
         INSERT INTO brevo_message_queue (id, recipient_email, subject, payload_json, status, created_at)
@@ -172,7 +186,7 @@ export class BrevoMcpClient {
       return {
         success: false,
         status: 'QUEUED_NEXT_UTC_WINDOW',
-        reason: `Daily send limit (${BrevoMcpClient.MAX_DAILY_SENDS}/day) reached. Message queued for next UTC window.`,
+        reason: quotaRes.reason || `Daily send limit (${BrevoMcpClient.MAX_DAILY_SENDS}/day) reached. Message queued for next UTC window.`,
         dailySendsRemaining: 0
       };
     }
@@ -204,6 +218,9 @@ export class BrevoMcpClient {
 
         if (!res.ok) {
           const errBody = await res.text();
+          if (quotaRes.reservationId) {
+            await this.quotaService.reconcileProviderQuota('brevo_mcp', quotaRes.reservationId, 'CONSUME');
+          }
           return {
             success: false,
             status: 'ERROR',
@@ -214,6 +231,10 @@ export class BrevoMcpClient {
         const data: any = await res.json();
         messageId = data.messageId || messageId;
       } catch (err: any) {
+        // Pre-send connection error: release reservation
+        if (quotaRes.reservationId) {
+          await this.quotaService.reconcileProviderQuota('brevo_mcp', quotaRes.reservationId, 'RELEASE');
+        }
         return {
           success: false,
           status: 'ERROR',
@@ -222,7 +243,10 @@ export class BrevoMcpClient {
       }
     }
 
-    // 4. Increment daily ledger
+    // 4. Reconcile atomic reservation and increment daily ledger
+    if (quotaRes.reservationId) {
+      await this.quotaService.reconcileProviderQuota('brevo_mcp', quotaRes.reservationId, 'CONSUME');
+    }
     const newCount = await this.incrementDailySendCount();
     return {
       success: true,

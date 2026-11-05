@@ -23,6 +23,7 @@ export const D1_REVENUE_CRITICAL_TABLES = [
   'cron_telemetry',
   'learning_records',
   'search_cache',
+  'search_queries_log',
   'direct_outreach_log',
   'outreach_suppression_list',
   'businesses',
@@ -60,7 +61,8 @@ export const D1_REVENUE_CRITICAL_TABLES = [
   'provider_drift_records',
   'stored_reports',
   'reply_desk_drafts',
-  'reply_desk_query_runs'
+  'reply_desk_query_runs',
+  'provider_quota_ledger'
 ] as const;
 
 export type D1RevenueCriticalTable = typeof D1_REVENUE_CRITICAL_TABLES[number] | string;

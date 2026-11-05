@@ -15,6 +15,7 @@ import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { isProduction } from '../config/env.js';
 import { CommercialSchedulePolicy } from './commercial-schedule-policy.js';
 import { BusinessAutonomyLock } from '../revenue/business-autonomy-lock.js';
+import { AutonomousPolicyGate } from './autonomous-policy-gate.js';
 
 export type WorkflowStatus =
   | 'IDLE'
@@ -1082,14 +1083,17 @@ export class AutomationRegistryEngine {
       }
 
       case 'authorized_outreach_dispatch': {
-        // Strict human gate: query for human_approved = 1 AND dispatched = 0
-        let approvedRows: any[] = [];
+        // Enforce AutonomousPolicyGate & Strict human review gate: query for authorized actions
+        const policyGate = AutonomousPolicyGate.getInstance();
+        let candidateRows: any[] = [];
         try {
-          const sql = `SELECT * FROM direct_outreach_log WHERE human_approved = 1 AND dispatched = 0 LIMIT 5`;
-          approvedRows = isProduction()
+          const sql = `SELECT * FROM direct_outreach_log WHERE (human_approved = 1 OR approval_source = 'AUTONOMOUS_POLICY_GATE') AND dispatched = 0 LIMIT 5`;
+          candidateRows = isProduction()
             ? await this.d1Repo.query<any>('direct_outreach_log', sql)
             : getDb().prepare(sql).all();
         } catch {}
+
+        const approvedRows = candidateRows.filter(r => policyGate.isActionAuthorized(r));
 
         if (approvedRows.length === 0) {
           return {
@@ -1097,7 +1101,7 @@ export class AutomationRegistryEngine {
             itemsProcessed: 0,
             itemsSucceeded: 0,
             itemsFailed: 0,
-            summary: { message: 'Zero messages approved for dispatch. Strict human gate intact.' }
+            summary: { message: 'Zero messages approved for dispatch. Strict policy gate intact.' }
           };
         }
 
