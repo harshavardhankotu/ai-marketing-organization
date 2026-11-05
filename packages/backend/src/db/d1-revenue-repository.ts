@@ -23,6 +23,8 @@ export const D1_REVENUE_CRITICAL_TABLES = [
   'cron_telemetry',
   'learning_records',
   'search_cache',
+  'direct_outreach_log',
+  'outreach_suppression_list',
   'businesses',
   'organizations',
   'customer_journeys',
@@ -78,6 +80,10 @@ export class D1RevenueRepository {
     if (isProduction()) {
       this.d1.assertDurableStorageForEntity(String(table));
     }
+  }
+
+  public isRemoteD1Configured(): boolean {
+    return this.d1.isRemoteD1Configured();
   }
 
   /**

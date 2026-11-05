@@ -461,7 +461,7 @@ app.post('/offer/inquiry', async (c) => {
   return app.fetch(new Request(targetUrl.toString(), {
     method: 'POST',
     headers: c.req.raw.headers,
-    body: c.req.raw.body
+    body: await c.req.raw.clone().blob()
   }));
 });
 

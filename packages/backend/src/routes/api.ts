@@ -7832,6 +7832,36 @@ apiRouter.get('/owner/direct-outreach', async (c) => {
 apiRouter.post('/owner/direct-outreach/:id/approve', async (c) => {
   const id = c.req.param('id');
   const d1Repo = D1RevenueRepository.getInstance();
+  const db = getDb();
+
+  let draft: any;
+  try {
+    draft = await d1Repo.queryOne<any>('direct_outreach_log', 'SELECT * FROM direct_outreach_log WHERE id = ?', [id]);
+  } catch {}
+  if (!draft) {
+    try {
+      draft = db.prepare('SELECT * FROM direct_outreach_log WHERE id = ?').get(id);
+    } catch {}
+  }
+  if (!draft) {
+    return c.json({ success: false, error: 'Draft not found' }, 404);
+  }
+
+  // Suppression guard: fail closed if recipient is in outreach_suppression_list or opted out
+  const { PlatformProspectDiscoveryEngine } = await import('../revenue/platform-prospect-discovery-engine.js');
+  const discEngine = PlatformProspectDiscoveryEngine.getInstance();
+  const domainFromId = draft.id ? draft.id.replace('dlog_', '').replace(/_/g, '.') : undefined;
+  const isSuppressed = (await discEngine.isContactSuppressedAsync(
+    draft.prospect_phone,
+    draft.prospect_email,
+    draft.prospect_name
+  )) || (domainFromId ? await discEngine.isContactSuppressedAsync(undefined, undefined, domainFromId) : false);
+  if (isSuppressed || ['OPT_OUT', 'QUARANTINED', 'ENTERPRISE_CHAIN_DEFERRED'].includes(draft.response_status)) {
+    return c.json({
+      success: false,
+      error: 'Cannot approve outreach: recipient is in outreach_suppression_list (opted out or quarantined).'
+    }, 400);
+  }
 
   const updateSql = `UPDATE direct_outreach_log SET human_approved = 1, response_status = 'APPROVED' WHERE id = ?`;
   try {
@@ -7861,6 +7891,22 @@ apiRouter.post('/owner/direct-outreach/:id/record-dispatch', async (c) => {
 
   if (!draft) {
     return c.json({ success: false, error: 'Draft not found' }, 404);
+  }
+
+  // Suppression guard: fail closed if recipient is in outreach_suppression_list or opted out
+  const { PlatformProspectDiscoveryEngine } = await import('../revenue/platform-prospect-discovery-engine.js');
+  const discEngine = PlatformProspectDiscoveryEngine.getInstance();
+  const domainFromId = draft.id ? draft.id.replace('dlog_', '').replace(/_/g, '.') : undefined;
+  const isSuppressed = (await discEngine.isContactSuppressedAsync(
+    draft.prospect_phone,
+    draft.prospect_email,
+    draft.prospect_name
+  )) || (domainFromId ? await discEngine.isContactSuppressedAsync(undefined, undefined, domainFromId) : false);
+  if (isSuppressed || ['OPT_OUT', 'QUARANTINED', 'ENTERPRISE_CHAIN_DEFERRED'].includes(draft.response_status)) {
+    return c.json({
+      success: false,
+      error: 'Cannot dispatch outreach: recipient is in outreach_suppression_list (opted out or quarantined).'
+    }, 400);
   }
 
   const now = new Date().toISOString();
@@ -7950,17 +7996,17 @@ apiRouter.post('/owner/direct-outreach/:id/opt-out', async (c) => {
   if (prospect) {
     const phone = prospect.phone || prospect.prospect_phone;
     if (phone) {
-      discEngine.suppressContact(phone, 'PHONE', 'OPTOUT', 60);
+      await discEngine.suppressContact(phone, 'PHONE', 'OPTOUT', 60);
       suppressedIdentifiers.push(phone);
     }
     const email = prospect.email || prospect.prospect_email;
     if (email) {
-      discEngine.suppressContact(email, 'EMAIL', 'OPTOUT', 60);
+      await discEngine.suppressContact(email, 'EMAIL', 'OPTOUT', 60);
       suppressedIdentifiers.push(email);
     }
     const website = prospect.website_url || prospect.prospect_website;
     if (website) {
-      discEngine.suppressContact(website, 'DOMAIN', 'OPTOUT', 60);
+      await discEngine.suppressContact(website, 'DOMAIN', 'OPTOUT', 60);
       suppressedIdentifiers.push(website);
     }
 
@@ -7970,7 +8016,7 @@ apiRouter.post('/owner/direct-outreach/:id/opt-out', async (c) => {
   }
 
   if (suppressedIdentifiers.length === 0 && draft.prospect_name) {
-    discEngine.suppressContact(draft.prospect_name, 'DOMAIN', 'OPTOUT', 60);
+    await discEngine.suppressContact(draft.prospect_name, 'DOMAIN', 'OPTOUT', 60);
     suppressedIdentifiers.push(draft.prospect_name);
   }
 

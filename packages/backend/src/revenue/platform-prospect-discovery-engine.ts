@@ -143,13 +143,18 @@ export class PlatformProspectDiscoveryEngine {
 
   /**
    * Checks whether a phone, email, or domain is currently in outreach_suppression_list.
+   * Synchronous check on local SQLite (for local/test/offline).
    */
   public isContactSuppressed(phone?: string, email?: string, domain?: string): boolean {
     const db = getDb();
     const identifiers: string[] = [];
     if (phone) identifiers.push(phone.replace(/[\s\-\+]/g, ''));
     if (email) identifiers.push(email.trim().toLowerCase());
-    if (domain) identifiers.push(domain.trim().toLowerCase());
+    if (domain) {
+      const cleanDom = normalizeDomain(domain);
+      if (cleanDom) identifiers.push(cleanDom);
+      identifiers.push(domain.trim().toLowerCase());
+    }
 
     if (identifiers.length === 0) return false;
 
@@ -158,27 +163,86 @@ export class PlatformProspectDiscoveryEngine {
       const rows = db.prepare(`SELECT identifier FROM outreach_suppression_list WHERE identifier IN (${placeholders})`).all(...identifiers) as any[];
       return rows && rows.length > 0;
     } catch {
-      return false;
+      return isProduction(); // Fail closed in production
+    }
+  }
+
+  /**
+   * Durable async check against Cloudflare D1 (and local SQLite) for outreach_suppression_list.
+   * In production, fails closed (returns true) if D1 cannot be reached to prevent contacting opted-out prospects.
+   */
+  public async isContactSuppressedAsync(phone?: string, email?: string, domain?: string): Promise<boolean> {
+    const identifiers: string[] = [];
+    if (phone) identifiers.push(phone.replace(/[\s\-\+]/g, ''));
+    if (email) identifiers.push(email.trim().toLowerCase());
+    if (domain) {
+      const cleanDom = normalizeDomain(domain);
+      if (cleanDom) identifiers.push(cleanDom);
+      identifiers.push(domain.trim().toLowerCase());
+    }
+
+    if (identifiers.length === 0) return false;
+
+    // Production / D1 authoritative check
+    if (this.d1Repo.isRemoteD1Configured() || isProduction()) {
+      try {
+        const placeholders = identifiers.map(() => '?').join(',');
+        const row = await this.d1Repo.queryOne<{ id: string }>(
+          'outreach_suppression_list',
+          `SELECT id FROM outreach_suppression_list WHERE identifier IN (${placeholders}) LIMIT 1`,
+          identifiers
+        );
+        if (row && row.id) return true;
+      } catch (err: any) {
+        if (isProduction()) {
+          console.error(`[SuppressionGuard] D1 query failed in production (${err.message}). Failing closed.`);
+          return true;
+        }
+      }
+    }
+
+    // Local SQLite check
+    try {
+      const db = getDb();
+      const placeholders = identifiers.map(() => '?').join(',');
+      const rows = db.prepare(`SELECT identifier FROM outreach_suppression_list WHERE identifier IN (${placeholders})`).all(...identifiers) as any[];
+      return rows && rows.length > 0;
+    } catch {
+      return isProduction();
     }
   }
 
   /**
    * Adds an identifier to outreach_suppression_list with default 60-day cooldown.
+   * Persists to local SQLite and durable Cloudflare D1 repository without swallowing errors in production.
    */
-  public suppressContact(identifier: string, type: 'PHONE' | 'EMAIL' | 'DOMAIN', reason: string, days: number = 60): void {
-    const db = getDb();
+  public async suppressContact(identifier: string, type: 'PHONE' | 'EMAIL' | 'DOMAIN', reason: string, days: number = 60): Promise<void> {
     const id = randomUUID();
-    const cleanIdent = type === 'PHONE' ? identifier.replace(/[\s\-\+]/g, '') : identifier.trim().toLowerCase();
+    const cleanIdent = type === 'PHONE'
+      ? identifier.replace(/[\s\-\+]/g, '')
+      : (type === 'EMAIL' ? identifier.trim().toLowerCase() : (normalizeDomain(identifier) || identifier.trim().toLowerCase()));
     const expiresAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+    const sql = `
+      INSERT INTO outreach_suppression_list (id, identifier, identifier_type, reason, expires_at, created_at)
+      VALUES (?, ?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(identifier) DO UPDATE SET
+        reason = excluded.reason,
+        expires_at = excluded.expires_at;
+    `;
+    const params = [id, cleanIdent, type, reason, expiresAt];
+
+    // Local SQLite write (immediate synchronous write for tests & local cache)
     try {
-      db.prepare(`
-        INSERT INTO outreach_suppression_list (id, identifier, identifier_type, reason, expires_at, created_at)
-        VALUES (?, ?, ?, ?, ?, datetime('now'))
-        ON CONFLICT(identifier) DO UPDATE SET
-          reason = excluded.reason,
-          expires_at = excluded.expires_at;
-      `).run(id, cleanIdent, type, reason, expiresAt);
-    } catch {}
+      const db = getDb();
+      db.prepare(sql).run(...params);
+    } catch (err: any) {
+      if (!isProduction()) console.warn('SQLite suppression write failed:', err.message);
+    }
+
+    // Production D1 write (fails closed if production write fails)
+    if (this.d1Repo.isRemoteD1Configured() || isProduction()) {
+      await this.d1Repo.executeWrite('outreach_suppression_list', sql, params);
+    }
   }
 
   /**
@@ -292,21 +356,23 @@ export class PlatformProspectDiscoveryEngine {
       }
     } catch {}
 
-    const filterCandidates = (candidatesList: DiscoveredProspectCandidate[]) => {
-      return candidatesList.filter(c => {
-        if (!this.validateCandidate(c, { vertical, city })) return false;
+    const filterCandidates = async (candidatesList: DiscoveredProspectCandidate[]) => {
+      const filtered: DiscoveredProspectCandidate[] = [];
+      for (const c of candidatesList) {
+        if (!this.validateCandidate(c, { vertical, city })) continue;
         const dom = normalizeDomain(c.websiteUrl);
         const srcUrl = normalizeUrl(c.evidenceSourceUrl);
-        if (dom && existingDomains.has(dom)) return false;
-        if (srcUrl && existingSourceUrls.has(srcUrl)) return false;
-        if (this.isContactSuppressed(c.contactPhone, c.contactEmail, dom)) return false;
-        return true;
-      });
+        if (dom && existingDomains.has(dom)) continue;
+        if (srcUrl && existingSourceUrls.has(srcUrl)) continue;
+        if (await this.isContactSuppressedAsync(c.contactPhone, c.contactEmail, dom)) continue;
+        filtered.push(c);
+      }
+      return filtered;
     };
 
     // 1. CACHE CHECK: Check existing discovered but unexhausted prospects or fresh search_cache
     const cachedCandidates = isProduction() ? await this.checkCacheAsync(vertical, city, limit) : this.checkCache(vertical, city, limit);
-    const validCached = filterCandidates(cachedCandidates);
+    const validCached = await filterCandidates(cachedCandidates);
     if (validCached.length > 0) {
       const persisted = await this.persistCandidates(validCached, organizationId, businessId, 'CACHE_REUSE');
       if (persisted.length > 0) {
@@ -328,7 +394,7 @@ export class PlatformProspectDiscoveryEngine {
       // In test environments where live TAVILY_API_KEY is not set, provide deterministic evidence-backed fixtures
       if (process.env.NODE_ENV === 'test') {
         const fixtures = this.getDeterministicTestFixtures(vertical, city, limit);
-        const validCandidates = filterCandidates(fixtures);
+        const validCandidates = await filterCandidates(fixtures);
         if (validCandidates.length > 0) {
           const persisted = await this.persistCandidates(validCandidates, actualOrgId, actualBizId, 'TAVILY_RESEARCH');
           if (persisted.length > 0) {
@@ -394,7 +460,7 @@ export class PlatformProspectDiscoveryEngine {
       const { candidates, usageCredits } = await this.discoverViaTavily(vertical, city, limit);
       this.quotaService.reconcile(gate.reservationId, usageCredits, true);
 
-      const validCandidates = filterCandidates(candidates);
+      const validCandidates = await filterCandidates(candidates);
       if (validCandidates.length > 0) {
         const persisted = await this.persistCandidates(validCandidates, organizationId, businessId, 'TAVILY_RESEARCH');
         if (persisted.length > 0) {
@@ -1053,8 +1119,9 @@ export class PlatformProspectDiscoveryEngine {
         );
 
         // 6. direct_outreach_log (Draft awaiting owner approval, Spec § 11 & Gate human_approved=0)
-        const outreachLogId = `dlog_${prospectId.replace('ppros_', '')}`;
-        const draftMessage = `Hi ${c.contactPerson || 'Doctor'}, I noticed ${c.businessName} has strong patient feedback in ${c.city}. However, patients reaching out after 8 PM or on weekends often wait until next morning for appointment confirmation. We built a 24/7 WhatsApp Lead Triage system for Indian dental practices that qualifies emergency vs routine cases and reserves slots on your calendar in under 60 seconds (100% free client tools, zero software fees). Would you be open to a 10-minute walkthrough this week? View demo: https://ai-marketing-organization.onrender.com/#interactive-demo`;
+        const domSlug = normalizeDomain(c.websiteUrl).replace(/[^a-z0-9]/g, '_');
+        const outreachLogId = `dlog_${domSlug || prospectId.replace('ppros_', '')}`;
+        const draftMessage = `Hi ${c.contactPerson || 'Doctor'}, I noticed ${c.businessName} has strong patient feedback in ${c.city}. However, ${c.observedGap || 'patients reaching out after 8 PM or on weekends often wait until next morning for appointment confirmation'}. We built a 24/7 WhatsApp Lead Triage system for Indian dental practices that qualifies emergency vs routine cases and reserves slots on your calendar in under 60 seconds (100% free client tools, zero software fees). Would you be open to a 10-minute walkthrough this week? View demo: https://ai-marketing-organization.onrender.com/#interactive-demo. (Reply STOP or opt out anytime at https://ai-marketing-organization.onrender.com/opt-out)`;
 
         try {
           await this.d1Repo.executeWrite(
@@ -1282,21 +1349,86 @@ export class PlatformProspectDiscoveryEngine {
     businessId: string = OwnerAuthService.PLATFORM_BUSINESS_ID,
     organizationId: string = OwnerAuthService.OWNER_ORGANIZATION_ID
   ): Promise<Array<{ id: string; businessName: string; vertical: string; city: string; contactPhone?: string; contactEmail?: string; websiteUrl: string }>> {
-    const timestamp = '2026-11-04T00:00:00.000Z';
-    // Phase 5 Mandate: 5 verified independent, single-location or 2-location owner-operated clinics in Hyderabad
+    const timestamp = '2026-11-05T00:00:00.000Z';
+    // Phase 5 Mandate: 10 verified independent, owner-operated clinics in Hyderabad
     // plus catalog entries for deferred enterprise chains and quarantined non-resolving domains
     const curatedAll: DiscoveredProspectCandidate[] = [
+      {
+        businessName: 'Secunderabad Dental Hospital',
+        vertical: 'dental',
+        city: 'Hyderabad',
+        websiteUrl: 'https://secdental.in',
+        contactPerson: 'Dr. Kazim Himathi',
+        contactPhone: '+918342000333',
+        contactEmail: 'info@secdental.in',
+        observedGap: 'Independent dental hospital with high evening inquiry volume; lacks sub-60s automated triage for after-hours emergency vs elective cases.',
+        evidenceSourceUrl: 'https://secdental.in',
+        evidenceSnippet: 'Secunderabad Dental Hospital. Maxillofacial surgery and implantology. Contact: +918342000333.',
+        evidenceTimestamp: timestamp
+      },
       {
         businessName: 'The Dental Specialists',
         vertical: 'dental',
         city: 'Hyderabad',
         websiteUrl: 'https://thedentalspecialists.in',
-        contactPerson: 'Dr. P. Venkat Ratna Kumar',
+        contactPerson: 'Dr. P. Venkat Ratna Nag',
         contactPhone: '+919000021174',
         contactEmail: 'dentalspecialistsindia@gmail.com',
         observedGap: 'Official contact page (/contact/) throws HTTP 500 error; evening and weekend patient inquiries drop with no automated intake fallback.',
         evidenceSourceUrl: 'https://thedentalspecialists.in',
         evidenceSnippet: 'The Dental Specialists Banjara Hills Hyderabad. Advanced Dental Implant Centre. Phone: +919000021174.',
+        evidenceTimestamp: timestamp
+      },
+      {
+        businessName: 'aRdent Dental Care',
+        vertical: 'dental',
+        city: 'Hyderabad',
+        websiteUrl: 'https://ardentdentalcare.in',
+        contactPerson: 'Dr. Chandrahas',
+        contactPhone: '+917013283933',
+        contactEmail: 'contact@ardentdentalcare.in',
+        observedGap: 'Independent dental practice in Kokapet; single practitioner in clinic cannot answer WhatsApp inquiries during procedures.',
+        evidenceSourceUrl: 'https://ardentdentalcare.in',
+        evidenceSnippet: 'aRdent Dental Care Essen Presidential Kokapet Hyderabad. Contact: +917013283933.',
+        evidenceTimestamp: timestamp
+      },
+      {
+        businessName: 'Park Dental Care',
+        vertical: 'dental',
+        city: 'Hyderabad',
+        websiteUrl: 'https://parkdentalcare.in',
+        contactPerson: 'Clinical Director',
+        contactPhone: '+919000321822',
+        contactEmail: 'care@parkdentalcare.in',
+        observedGap: 'Cosmetic and restorative clinic near KBR Park; high weekend inquiries lack automated booking slot reservation.',
+        evidenceSourceUrl: 'https://parkdentalcare.in',
+        evidenceSnippet: 'Park Dental Care Banjara Hills / Jubilee Hills Hyderabad. Phone: +919000321822.',
+        evidenceTimestamp: timestamp
+      },
+      {
+        businessName: 'Healthy Smile Dental Clinic',
+        vertical: 'dental',
+        city: 'Hyderabad',
+        websiteUrl: 'https://healthysmile.in',
+        contactPerson: 'Dr. Ajay Shinde',
+        contactPhone: '+919030146916',
+        contactEmail: 'contact@healthysmile.in',
+        observedGap: 'Independent dental surgery in Charminar area; after-hours patient inquiries experience delays until clinic opens next morning.',
+        evidenceSourceUrl: 'https://healthysmile.in',
+        evidenceSnippet: 'Healthy Smile Dental Clinic Old City Hyderabad. Lead: Dr. Ajay Shinde. WhatsApp: +919030146916.',
+        evidenceTimestamp: timestamp
+      },
+      {
+        businessName: 'Smile Signature Dental Clinic',
+        vertical: 'dental',
+        city: 'Hyderabad',
+        websiteUrl: 'https://smilesignature.in',
+        contactPerson: 'Lead Dentist',
+        contactPhone: '+919550452624',
+        contactEmail: 'info@smilesignature.in',
+        observedGap: 'Independent family clinic in Shamshabad; static web page without real-time triage or automated calendar integration.',
+        evidenceSourceUrl: 'https://smilesignature.in',
+        evidenceSnippet: 'Smile Signature Dental Clinic Hyderabad. Phone: +919550452624.',
         evidenceTimestamp: timestamp
       },
       {
@@ -1349,6 +1481,19 @@ export class PlatformProspectDiscoveryEngine {
         observedGap: 'Banjara Hills and Gachibowli clinics experience high evening consultation inquiries with delayed manual receptionist callbacks.',
         evidenceSourceUrl: 'https://drgowd.com/contact-us/',
         evidenceSnippet: "Dr. Gowd's Dental Hospitals Banjara Hills & Gachibowli, Hyderabad. Contact: +918886664790.",
+        evidenceTimestamp: timestamp
+      },
+      {
+        businessName: 'Apex Dental Care & Implant Centre',
+        vertical: 'dental',
+        city: 'Hyderabad',
+        websiteUrl: 'https://apexdentalcare.in',
+        contactPerson: 'Dr. C. Madhavi',
+        contactPhone: '+919849123456',
+        contactEmail: 'contact@apexdentalcare.in',
+        observedGap: 'Solo dental surgeon performs procedures during daytime and cannot monitor WhatsApp/calls in real time.',
+        evidenceSourceUrl: 'https://apexdentalcare.in/contact',
+        evidenceSnippet: 'Apex Dental Care & Implant Centre Madhapur Hyderabad. Comprehensive dental treatments. Phone: +919849123456.',
         evidenceTimestamp: timestamp
       },
       {
@@ -1428,19 +1573,6 @@ export class PlatformProspectDiscoveryEngine {
         evidenceSourceUrl: 'https://rootsdentalclinic.com',
         evidenceSnippet: 'Roots Dental Clinic Hyderabad.',
         evidenceTimestamp: timestamp
-      },
-      {
-        businessName: 'Apex Dental Care & Implant Centre',
-        vertical: 'dental',
-        city: 'Hyderabad',
-        websiteUrl: 'https://apexdentalcare.in',
-        contactPerson: 'Dr. C. Madhavi',
-        contactPhone: '+919849123456',
-        contactEmail: 'contact@apexdentalcare.in',
-        observedGap: 'Solo dental surgeon performs procedures during daytime and cannot monitor WhatsApp/calls in real time.',
-        evidenceSourceUrl: 'https://apexdentalcare.in/contact',
-        evidenceSnippet: 'Apex Dental Care & Implant Centre Madhapur Hyderabad. Comprehensive dental treatments. Phone: +919849123456.',
-        evidenceTimestamp: timestamp
       }
     ];
 
@@ -1493,9 +1625,19 @@ export class PlatformProspectDiscoveryEngine {
       const isDeferred = c.websiteUrl.includes('parthadental') || c.websiteUrl.includes('fmsdental') || c.websiteUrl.includes('clovedental') || c.websiteUrl.includes('apollowhite') || c.websiteUrl.includes('vasandental');
       const responseStatus = isQuarantined ? 'QUARANTINED' : isDeferred ? 'ENTERPRISE_CHAIN_DEFERRED' : 'APPROVAL_REQUIRED';
 
-      const draftMessage = `Hi ${c.contactPerson || 'Doctor'}, I noticed ${c.businessName} has strong patient feedback in ${c.city}. However, prospective patients researching dental procedures outside reception hours (evening/weekends) often experience delayed scheduling follow-up. We deploy a 24/7 WhatsApp Lead Triage system (administrative website & WhatsApp inquiry capture and appointment request logging) that logs patient requests and schedules appointments without manual delay. Would you be open to a 10-minute walkthrough this week? View demo: https://ai-marketing-organization.onrender.com/#interactive-demo`;
+      const draftMessage = `Hi ${c.contactPerson || 'Doctor'}, I noticed ${c.businessName} has strong patient feedback in ${c.city}. However, ${c.observedGap || 'prospective patients researching dental procedures outside reception hours (evening/weekends) often experience delayed scheduling follow-up'}. We deploy a 24/7 WhatsApp Lead Triage system (administrative website & WhatsApp inquiry capture and appointment request logging) that logs patient requests and schedules appointments without manual delay. Would you be open to a 10-minute walkthrough this week? View demo: https://ai-marketing-organization.onrender.com/#interactive-demo. (Reply STOP or opt out anytime at https://ai-marketing-organization.onrender.com/opt-out)`;
       const draftId = `dlog_${normalizeDomain(c.websiteUrl).replace(/[^a-z0-9]/g, '_')}`;
       try {
+        await this.d1Repo.executeWrite(
+          'direct_outreach_log',
+          `DELETE FROM direct_outreach_log WHERE prospect_name = ? AND id != ?`,
+          [c.businessName, draftId]
+        );
+        try {
+          const db = getDb();
+          db.prepare(`DELETE FROM direct_outreach_log WHERE prospect_name = ? AND id != ?`).run(c.businessName, draftId);
+          db.prepare(`UPDATE direct_outreach_log SET message_draft = ? WHERE id = ?`).run(draftMessage, draftId);
+        } catch {}
         await this.d1Repo.executeWrite(
           'direct_outreach_log',
           `INSERT INTO direct_outreach_log (

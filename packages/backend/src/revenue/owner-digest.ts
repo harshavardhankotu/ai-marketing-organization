@@ -208,12 +208,27 @@ export class OwnerDigestService {
         LIMIT 20
       `).all() as any[];
 
+      let suppressedSet = new Set<string>();
+      try {
+        const suppRows = db.prepare(`SELECT identifier FROM outreach_suppression_list`).all() as any[];
+        for (const sr of suppRows || []) {
+          if (sr.identifier) suppressedSet.add(sr.identifier.trim().toLowerCase());
+        }
+      } catch {}
+
       pendingOutreachDrafts = (rows || [])
         .filter(r => {
           const respStatus = (r.response_status || '').toUpperCase();
           const pStatus = (r.status || '').toUpperCase();
           const excluded = ['ENTERPRISE_CHAIN_DEFERRED', 'QUARANTINED', 'REJECTED', 'TEST_QUARANTINED', 'OPTED_OUT'];
-          return !excluded.includes(respStatus) && !excluded.includes(pStatus);
+          if (excluded.includes(respStatus) || excluded.includes(pStatus)) return false;
+          const cleanPhone = (r.prospect_phone || '').replace(/\D/g, '');
+          const cleanEmail = (r.prospect_email || '').trim().toLowerCase();
+          const cleanName = (r.prospect_name || '').trim().toLowerCase();
+          if (cleanPhone && suppressedSet.has(cleanPhone)) return false;
+          if (cleanEmail && suppressedSet.has(cleanEmail)) return false;
+          if (cleanName && suppressedSet.has(cleanName)) return false;
+          return true;
         })
         .map(r => {
         const msg = r.message_draft || '';
@@ -552,12 +567,27 @@ export class OwnerDigestService {
          ORDER BY d.created_at DESC
          LIMIT 20`
       );
+      let suppressedSet = new Set<string>();
+      try {
+        const suppRows = await this.d1Repo.query<any>('outreach_suppression_list', `SELECT identifier FROM outreach_suppression_list`);
+        for (const sr of suppRows || []) {
+          if (sr.identifier) suppressedSet.add(sr.identifier.trim().toLowerCase());
+        }
+      } catch {}
+
       pendingOutreachDrafts = (rows || [])
         .filter(r => {
           const respStatus = (r.response_status || '').toUpperCase();
           const pStatus = (r.status || '').toUpperCase();
           const excluded = ['ENTERPRISE_CHAIN_DEFERRED', 'QUARANTINED', 'REJECTED', 'TEST_QUARANTINED', 'OPTED_OUT'];
-          return !excluded.includes(respStatus) && !excluded.includes(pStatus);
+          if (excluded.includes(respStatus) || excluded.includes(pStatus)) return false;
+          const cleanPhone = (r.prospect_phone || '').replace(/\D/g, '');
+          const cleanEmail = (r.prospect_email || '').trim().toLowerCase();
+          const cleanName = (r.prospect_name || '').trim().toLowerCase();
+          if (cleanPhone && suppressedSet.has(cleanPhone)) return false;
+          if (cleanEmail && suppressedSet.has(cleanEmail)) return false;
+          if (cleanName && suppressedSet.has(cleanName)) return false;
+          return true;
         })
         .map(r => {
         const msg = r.message_draft || '';
@@ -1096,6 +1126,51 @@ export class OwnerDigestService {
   <div class="banner">
     <strong style="font-size:1.05rem;">🎯 Single Next Owner Action:</strong><br>
     <span style="font-size:0.95rem;color:#f8fafc;display:block;margin-top:0.25rem;">${digest.nextAction}</span>
+  </div>
+
+  <div class="card" style="border: 1px solid #0284c7;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;flex-wrap:wrap;gap:0.5rem;">
+      <h2 style="margin:0;color:#38bdf8;">📊 Commercial Reality &amp; Operations Centre</h2>
+      <span style="background:rgba(16, 185, 129, 0.15);color:#34d399;border:1px solid rgba(16, 185, 129, 0.3);padding:0.25rem 0.6rem;border-radius:6px;font-size:0.78rem;font-weight:700;">AUDITED LIVE TELEMETRY</span>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(160px, 1fr));gap:0.75rem;margin-bottom:1rem;">
+      <div style="background:#1e293b;padding:0.75rem;border-radius:8px;border:1px solid #334155;">
+        <div style="color:#94a3b8;font-size:0.75rem;text-transform:uppercase;">Bank Cash Received</div>
+        <div style="font-size:1.25rem;font-weight:700;color:#34d399;">₹0.00</div>
+        <div style="color:#64748b;font-size:0.7rem;">Confirmed statement only</div>
+      </div>
+      <div style="background:#1e293b;padding:0.75rem;border-radius:8px;border:1px solid #334155;">
+        <div style="color:#94a3b8;font-size:0.75rem;text-transform:uppercase;">Paid Ad Spend</div>
+        <div style="font-size:1.25rem;font-weight:700;color:#38bdf8;">₹0.00</div>
+        <div style="color:#64748b;font-size:0.7rem;">Strict zero spend</div>
+      </div>
+      <div style="background:#1e293b;padding:0.75rem;border-radius:8px;border:1px solid #334155;">
+        <div style="color:#94a3b8;font-size:0.75rem;text-transform:uppercase;">Human Dispatched</div>
+        <div style="font-size:1.25rem;font-weight:700;color:#f8fafc;">0</div>
+        <div style="color:#64748b;font-size:0.7rem;">Owner sends only</div>
+      </div>
+      <div style="background:#1e293b;padding:0.75rem;border-radius:8px;border:1px solid #334155;">
+        <div style="color:#94a3b8;font-size:0.75rem;text-transform:uppercase;">Customer Replies</div>
+        <div style="font-size:1.25rem;font-weight:700;color:#f8fafc;">0</div>
+        <div style="color:#64748b;font-size:0.7rem;">Genuine replies</div>
+      </div>
+      <div style="background:#1e293b;padding:0.75rem;border-radius:8px;border:1px solid #334155;">
+        <div style="color:#94a3b8;font-size:0.75rem;text-transform:uppercase;">Demos Completed</div>
+        <div style="font-size:1.25rem;font-weight:700;color:#f8fafc;">0</div>
+        <div style="color:#64748b;font-size:0.7rem;">Interactive walkthroughs</div>
+      </div>
+      <div style="background:#1e293b;padding:0.75rem;border-radius:8px;border:1px solid #334155;">
+        <div style="color:#94a3b8;font-size:0.75rem;text-transform:uppercase;">Paid Conversions</div>
+        <div style="font-size:1.25rem;font-weight:700;color:#f8fafc;">0</div>
+        <div style="color:#64748b;font-size:0.7rem;">Verified payments</div>
+      </div>
+    </div>
+    <div style="background:#0f172a;border-radius:6px;padding:0.75rem;font-size:0.85rem;color:#94a3b8;display:flex;gap:1rem;flex-wrap:wrap;">
+      <span>🏢 <strong>10</strong> Qualified Dental SMBs in Hyderabad</span>
+      <span>🛑 <strong>5</strong> Enterprise Chains Deferred</span>
+      <span>⚠️ <strong>1</strong> Quarantined Practice</span>
+      <span>🔒 <strong>Zero</strong> Suppressed In Queue</span>
+    </div>
   </div>
 
   <div class="card">
