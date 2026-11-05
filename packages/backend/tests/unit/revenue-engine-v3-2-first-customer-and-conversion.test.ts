@@ -375,7 +375,10 @@ describe('Revenue Engine V3.2 — First Customer & Commercial Conversion', () =>
 
     it('serves rich HTML dashboard on GET /owner/today for browser inspection', async () => {
       const res = await app.request('/owner/today', {
-        headers: { 'Accept': 'text/html' }
+        headers: {
+          'Accept': 'text/html',
+          'x-user-id': 'usr_owner_primary'
+        }
       });
       expect(res.status).toBe(200);
       const html = await res.text();

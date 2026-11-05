@@ -420,7 +420,9 @@ describe('V5.1.1 — 10 Regression Defect Repairs Verification', () => {
       vi.spyOn(fs, 'readFileSync').mockReturnValue('# Harsha Vardhan Kotu\nBio content');
       vi.spyOn(DirectCommercialOfferPage, 'isDirectOfferAttested').mockReturnValue(false);
 
-      const res = await app.request('/api/v1/owner/proposal');
+      const res = await app.request('/api/v1/owner/proposal', {
+        headers: { 'x-user-id': 'usr_owner_primary' }
+      });
       expect(res.status).toBe(200);
       const json = await res.json();
       expect(json.success).toBe(true);
@@ -436,7 +438,9 @@ describe('V5.1.1 — 10 Regression Defect Repairs Verification', () => {
       vi.spyOn(fs, 'readFileSync').mockReturnValue('# Harsha Vardhan Kotu\nBio content');
       vi.spyOn(DirectCommercialOfferPage, 'isDirectOfferAttested').mockReturnValue(true);
 
-      const res = await app.request('/api/v1/owner/proposal');
+      const res = await app.request('/api/v1/owner/proposal', {
+        headers: { 'x-user-id': 'usr_owner_primary' }
+      });
       expect(res.status).toBe(200);
       const json = await res.json();
       expect(json.success).toBe(true);

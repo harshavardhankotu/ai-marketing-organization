@@ -337,6 +337,7 @@ describe('Discovery, Publication & Revenue Governance Regression Suite', () => {
           retrievedAt: '2026-10-15T00:00:00Z'
         }
       ];
+      process.env.AMAZON_AFFILIATE_TAG = 'marketing98-21';
       const guide = lane.generateGuide(candidate, validSpecs);
 
       // Mutate spec to have empty sourceUrl
@@ -390,6 +391,7 @@ describe('Discovery, Publication & Revenue Governance Regression Suite', () => {
           retrievedAt: '2026-10-15T00:00:00Z'
         }
       ];
+      process.env.AMAZON_AFFILIATE_TAG = 'marketing98-21';
       const guide = lane.generateGuide(candidate, specs);
       const lintRes = lane.lintGuide(guide, specs);
       expect(lintRes.valid).toBe(true);

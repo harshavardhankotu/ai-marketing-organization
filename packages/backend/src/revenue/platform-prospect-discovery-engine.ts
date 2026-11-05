@@ -882,7 +882,7 @@ export class PlatformProspectDiscoveryEngine {
     candidates: DiscoveredProspectCandidate[],
     organizationId: string,
     businessId: string,
-    source: 'CACHE_REUSE' | 'GEMINI_RESEARCH' | 'TAVILY_RESEARCH' = 'TAVILY_RESEARCH'
+    source: 'CACHE_REUSE' | 'GEMINI_RESEARCH' | 'TAVILY_RESEARCH' | 'NEEDS_RESEARCH' | 'UNVERIFIED' = 'TAVILY_RESEARCH'
   ): Promise<Array<{ id: string; businessName: string; vertical: string; city: string; contactPhone?: string; contactEmail?: string; websiteUrl: string }>> {
     const persisted: Array<{ id: string; businessName: string; vertical: string; city: string; contactPhone?: string; contactEmail?: string; websiteUrl: string }> = [];
 
@@ -922,8 +922,9 @@ export class PlatformProspectDiscoveryEngine {
         observedGap: c.observedGap
       });
 
-      const prospectStatus = source === 'CACHE_REUSE' ? 'SEEDED_UNVERIFIED' : 'DISCOVERED';
-      const prospectStage = source === 'CACHE_REUSE' ? 'SEEDED_UNVERIFIED' : 'DISCOVERED';
+      const isUnverifiedSource = source === 'NEEDS_RESEARCH' || source === 'UNVERIFIED';
+      const prospectStatus = source === 'CACHE_REUSE' ? 'SEEDED_UNVERIFIED' : (isUnverifiedSource ? 'UNVERIFIED' : 'DISCOVERED');
+      const prospectStage = source === 'CACHE_REUSE' ? 'SEEDED_UNVERIFIED' : (isUnverifiedSource ? 'NEEDS_RESEARCH' : 'DISCOVERED');
 
       try {
         // 1. platform_prospects

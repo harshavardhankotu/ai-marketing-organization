@@ -177,11 +177,6 @@ export const EXACT_ROUTE_POLICY = {
     '/privacy',
     '/payments/page-view',
     '/referrals/beacon',
-    '/owner/today',
-    '/owner/proposal',
-    '/owner/automation',
-    '/owner/direct-outreach',
-    '/owner/deals',
     '/capabilities',
     '/tools',
     '/tools/site-audit',
@@ -298,10 +293,42 @@ apiRouter.use('*', async (c, next) => {
     }
   }
 
+  const isOwnerRoute = path.startsWith('/owner') && path !== '/owner/login';
+
+  const renderSafeOwnerLoginHtml = () => `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Owner Authentication Required</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #f8fafc; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+    .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 2rem; max-width: 400px; width: 100%; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
+    h1 { font-size: 1.25rem; font-weight: 600; margin-bottom: 0.5rem; color: #f8fafc; }
+    p { font-size: 0.875rem; color: #94a3b8; margin-bottom: 1.5rem; }
+    input { width: 100%; padding: 0.75rem; background: #0f172a; border: 1px solid #334155; border-radius: 6px; color: #fff; margin-bottom: 1rem; box-sizing: border-box; }
+    button { width: 100%; padding: 0.75rem; background: #2563eb; color: #fff; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; }
+    button:hover { background: #1d4ed8; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Owner Authentication Required</h1>
+    <p>Please enter your owner API key or log in to access this page.</p>
+    <form action="/auth/owner/login" method="POST">
+      <input type="password" name="apiKey" placeholder="Owner API Key" required />
+      <button type="submit">Sign In</button>
+    </form>
+  </div>
+</body>
+</html>`;
+
   if (isProduction()) {
     // PRODUCTION: Authenticated principal strictly required!
     // Arbitrary client-provided identity headers (x-user-id / x-organization-id) are rejected.
     if (!token) {
+      if (isOwnerRoute && c.req.header('accept')?.includes('text/html')) {
+        return c.html(renderSafeOwnerLoginHtml(), 401);
+      }
       return c.json({
         success: false,
         error: 'Unauthorized: In production, an authenticated principal is required via Bearer token or x-api-key. Client identity headers alone are rejected.'
@@ -314,6 +341,9 @@ apiRouter.use('*', async (c, next) => {
     } else {
       // In production, fallback to SQLite users table is strictly forbidden.
       // Principals must be authenticated via OWNER_API_KEY or Cloudflare D1 owner_sessions.
+      if (isOwnerRoute && c.req.header('accept')?.includes('text/html')) {
+        return c.html(renderSafeOwnerLoginHtml(), 401);
+      }
       return c.json({
         success: false,
         error: 'Unauthorized: Invalid authentication credentials.'
@@ -349,8 +379,11 @@ apiRouter.use('*', async (c, next) => {
       path === '/build/static-site' ||
       path === '/payments/manual-upi/confirm' ||
       path === '/payments/reconcile-export' ||
-      (path.startsWith('/owner') && path !== '/owner/today' && path !== '/owner/proposal' && !path.startsWith('/owner/automation') && !path.startsWith('/owner/direct-outreach') && !path.startsWith('/owner/deals') && path !== '/owner/login')
+      isOwnerRoute
     )) {
+      if (isOwnerRoute && c.req.header('accept')?.includes('text/html')) {
+        return c.html(renderSafeOwnerLoginHtml(), 401);
+      }
       return c.json({
         success: false,
         error: 'Unauthorized: Owner authentication is required via Bearer token, x-api-key, or owner_session cookie.'
@@ -3453,19 +3486,28 @@ apiRouter.post('/offer/inquiry', async (c) => {
     return c.json({ success: false, error: 'Explicit consent is required to submit an inquiry. See /privacy.' }, 400);
   }
 
-  const customerName = (body.customerName || body.name || body.contactName || body.contact_name || '').trim();
-  const customerPhone = (body.customerPhone || body.phone || body.phoneNumber || body.phone_number || '').trim();
-  const customerEmail = (body.customerEmail || body.email || '').trim();
-  const practiceNameAndCity = (body.serviceOfInterest || body.practiceName || body.businessName || body.business_name || '').trim();
-  const notes = (body.notes || body.challengeNotes || body.challenge_notes || '').trim();
+  const getStringField = (val: unknown, maxLength = 255): string => {
+    if (typeof val !== 'string') return '';
+    return val.trim().slice(0, maxLength);
+  };
+
+  const customerName = getStringField(body.customerName || body.name || body.contactName || body.contact_name, 100);
+  const customerPhone = getStringField(body.customerPhone || body.phone || body.phoneNumber || body.phone_number, 30);
+  const customerEmail = getStringField(body.customerEmail || body.email, 120);
+  const practiceNameAndCity = getStringField(body.serviceOfInterest || body.practiceName || body.businessName || body.business_name, 150);
+  const notes = getStringField(body.notes || body.challengeNotes || body.challenge_notes, 1000);
 
   if (!customerName || !customerPhone) {
     return c.json({ success: false, error: 'Full name and mobile phone number are required' }, 400);
   }
 
-  const cleanPhone = String(customerPhone).replace(/\D/g, '');
-  if (cleanPhone.length < 8 || cleanPhone.length > 15) {
-    return c.json({ success: false, error: 'Invalid phone number. Please provide a valid phone number.' }, 400);
+  const cleanPhone = customerPhone.replace(/\D/g, '');
+  if (cleanPhone.length < 10 || cleanPhone.length > 15) {
+    return c.json({ success: false, error: 'Invalid phone number. Please provide a valid 10 to 15 digit mobile phone number.' }, 400);
+  }
+
+  if (customerEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail)) {
+    return c.json({ success: false, error: 'Invalid email address.' }, 400);
   }
 
   const db = getDb();
@@ -3480,12 +3522,12 @@ apiRouter.post('/offer/inquiry', async (c) => {
   const city = parts[1] || 'Hyderabad';
 
   // Step 1e Guard: a new prospect with "test" in the name or email is flagged NEEDS_OWNER_REVIEW
-  // and counts nowhere until the owner clears it.
+  // and counts nowhere until the owner clears it. Genuine inquiries start as PENDING_OWNER_REVIEW (never auto-QUALIFIED).
   const isTestProspect = /test|fixture|mock|example\.com/i.test(`${customerName} ${customerEmail} ${clinicName}`);
-  const initialStatus = isTestProspect ? 'NEEDS_OWNER_REVIEW' : 'QUALIFIED';
-  const initialStage = isTestProspect ? 'NEEDS_OWNER_REVIEW' : 'QUALIFIED';
+  const initialStatus = isTestProspect ? 'NEEDS_OWNER_REVIEW' : 'PENDING_OWNER_REVIEW';
+  const initialStage = isTestProspect ? 'NEEDS_OWNER_REVIEW' : 'PENDING_OWNER_REVIEW';
   const initialPipelineStage = isTestProspect ? 'NEEDS_OWNER_REVIEW' : 'LEAD';
-  const fitScore = isTestProspect ? 0.0 : 0.95;
+  const fitScore = isTestProspect ? 0.0 : 0.85;
   const isTestFlag = isTestProspect ? 1 : 0;
 
   const deletionCode = 'del_' + randomUUID().replace(/-/g, '').slice(0, 16);
@@ -3608,6 +3650,29 @@ apiRouter.post('/offer/inquiry', async (c) => {
     const endDate = new Date(startDate.getTime() + 15 * 60 * 1000);
     const formatIcsDate = (d: Date) => d.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
 
+    const escapeIcsText = (str: string): string => {
+      if (!str) return '';
+      return String(str)
+        .replace(/\\/g, '\\\\')
+        .replace(/;/g, '\\;')
+        .replace(/,/g, '\\,')
+        .replace(/\r\n|\r|\n/g, '\\n');
+    };
+
+    const sanitizeCsvCell = (val: string): string => {
+      if (!val) return '';
+      let str = String(val);
+      if (/^[=+\-@\t\r]/.test(str)) {
+        str = "'" + str;
+      }
+      return str.replace(/"/g, '""');
+    };
+
+    const safeClinicName = escapeIcsText(clinicName);
+    const safeCustomerName = escapeIcsText(customerName);
+    const safePhone = escapeIcsText(customerPhone);
+    const safeNotes = escapeIcsText(notes || 'Administrative Website & WhatsApp Inquiry Capture walkthrough');
+
     const calendarIcs = [
       'BEGIN:VCALENDAR',
       'VERSION:2.0',
@@ -3619,14 +3684,14 @@ apiRouter.post('/offer/inquiry', async (c) => {
       `DTSTAMP:${formatIcsDate(new Date())}`,
       `DTSTART:${formatIcsDate(startDate)}`,
       `DTEND:${formatIcsDate(endDate)}`,
-      `SUMMARY:Administrative Lead Triage Walkthrough - ${clinicName}`,
-      `DESCRIPTION:Administrative Website & WhatsApp Inquiry Capture walkthrough.\\nPractice: ${clinicName}\\nContact: ${customerName} (${customerPhone})`,
-      'STATUS:CONFIRMED',
+      `SUMMARY:Administrative Lead Triage Walkthrough - ${safeClinicName}`,
+      `DESCRIPTION:Administrative Website & WhatsApp Inquiry Capture walkthrough.\\nPractice: ${safeClinicName}\\nContact: ${safeCustomerName} (${safePhone})\\nNotes: ${safeNotes}`,
+      'STATUS:TENTATIVE',
       'END:VEVENT',
       'END:VCALENDAR'
     ].join('\r\n');
 
-    const csvRow = `"${new Date().toISOString()}","${prospectId}","${clinicName.replace(/"/g, '""')}","${customerName.replace(/"/g, '""')}","${customerPhone}","${(customerEmail || '').replace(/"/g, '""')}","${notes.replace(/"/g, '""')}","QUALIFIED"`;
+    const csvRow = `"${new Date().toISOString()}","${sanitizeCsvCell(prospectId)}","${sanitizeCsvCell(clinicName)}","${sanitizeCsvCell(customerName)}","${sanitizeCsvCell(customerPhone)}","${sanitizeCsvCell(customerEmail || '')}","${sanitizeCsvCell(notes)}","${sanitizeCsvCell(initialStatus)}"`;
 
     return c.json({
       success: true,
@@ -7902,6 +7967,11 @@ apiRouter.post('/owner/direct-outreach/:id/opt-out', async (c) => {
     try {
       await d1Repo.executeWrite('platform_prospects', `UPDATE platform_prospects SET is_opted_out = 1, stage = 'LOST', status = 'OPTED_OUT' WHERE id = ?`, [prospect.id]);
     } catch {}
+  }
+
+  if (suppressedIdentifiers.length === 0 && draft.prospect_name) {
+    discEngine.suppressContact(draft.prospect_name, 'DOMAIN', 'OPTOUT', 60);
+    suppressedIdentifiers.push(draft.prospect_name);
   }
 
   return c.json({

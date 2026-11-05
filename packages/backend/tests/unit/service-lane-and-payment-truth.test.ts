@@ -154,7 +154,9 @@ describe('Part D: Service Lane, 4-State Truth & Reply Desk', () => {
   describe('3. /owner/proposal Refusal & Bio Gate (D.4)', () => {
     it('refuses /owner/proposal with OWNER_BIO_MISSING when owner/BIO.md is missing', async () => {
       vi.spyOn(fs, 'existsSync').mockReturnValue(false);
-      const res = await app.request('/owner/proposal');
+      const res = await app.request('/owner/proposal', {
+        headers: { 'x-user-id': 'usr_owner_primary' }
+      });
       expect(res.status).toBe(422);
 
       const json = await res.json() as any;
@@ -166,7 +168,9 @@ describe('Part D: Service Lane, 4-State Truth & Reply Desk', () => {
 
     it('also refuses on GET /api/v1/owner/proposal when owner/BIO.md is missing', async () => {
       vi.spyOn(fs, 'existsSync').mockReturnValue(false);
-      const res = await app.request('/api/v1/owner/proposal');
+      const res = await app.request('/api/v1/owner/proposal', {
+        headers: { 'x-user-id': 'usr_owner_primary' }
+      });
       expect(res.status).toBe(422);
 
       const json = await res.json() as any;

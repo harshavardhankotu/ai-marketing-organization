@@ -2222,7 +2222,9 @@ export class AutonomousDealDiscoveryEngine {
         d.verificationStatus === 'UNVERIFIED' ||
         d.verificationStatus === 'UNCONFIRMED' ||
         d.verificationStatus === 'RECHECK_REQUIRED' ||
-        d.availability === 'OUT_OF_STOCK'
+        d.availability === 'OUT_OF_STOCK' ||
+        (d.availability as string) === 'UNVERIFIED' ||
+        (d.availability as string) === 'RECHECK_REQUIRED'
       ) {
         return false;
       }

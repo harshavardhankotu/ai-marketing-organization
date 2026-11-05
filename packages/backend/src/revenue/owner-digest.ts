@@ -199,13 +199,23 @@ export class OwnerDigestService {
         FROM direct_outreach_log d
         LEFT JOIN platform_prospects p
           ON d.prospect_name = p.prospect_business_name OR d.prospect_name = p.business_name
-        WHERE d.human_approved = 0 AND d.dispatched = 0
+        WHERE d.human_approved = 0 
+          AND d.dispatched = 0
+          AND (d.response_status IS NULL OR d.response_status NOT IN ('ENTERPRISE_CHAIN_DEFERRED', 'QUARANTINED', 'REJECTED', 'TEST_QUARANTINED', 'OPTED_OUT'))
+          AND (p.status IS NULL OR p.status NOT IN ('ENTERPRISE_CHAIN_DEFERRED', 'QUARANTINED', 'REJECTED', 'TEST_QUARANTINED'))
         GROUP BY d.id
         ORDER BY d.created_at DESC
         LIMIT 20
       `).all() as any[];
 
-      pendingOutreachDrafts = (rows || []).map(r => {
+      pendingOutreachDrafts = (rows || [])
+        .filter(r => {
+          const respStatus = (r.response_status || '').toUpperCase();
+          const pStatus = (r.status || '').toUpperCase();
+          const excluded = ['ENTERPRISE_CHAIN_DEFERRED', 'QUARANTINED', 'REJECTED', 'TEST_QUARANTINED', 'OPTED_OUT'];
+          return !excluded.includes(respStatus) && !excluded.includes(pStatus);
+        })
+        .map(r => {
         const msg = r.message_draft || '';
         const phoneMatch = msg.match(/\+?91?[6-9]\d{9}/);
         const rawPhone = r.prospect_phone || (phoneMatch ? phoneMatch[0] : '');
@@ -534,12 +544,22 @@ export class OwnerDigestService {
          FROM direct_outreach_log d
          LEFT JOIN platform_prospects p
            ON d.prospect_name = p.prospect_business_name OR d.prospect_name = p.business_name
-         WHERE d.human_approved = 0 AND d.dispatched = 0
+         WHERE d.human_approved = 0 
+           AND d.dispatched = 0
+           AND (d.response_status IS NULL OR d.response_status NOT IN ('ENTERPRISE_CHAIN_DEFERRED', 'QUARANTINED', 'REJECTED', 'TEST_QUARANTINED', 'OPTED_OUT'))
+           AND (p.status IS NULL OR p.status NOT IN ('ENTERPRISE_CHAIN_DEFERRED', 'QUARANTINED', 'REJECTED', 'TEST_QUARANTINED'))
          GROUP BY d.id
          ORDER BY d.created_at DESC
          LIMIT 20`
       );
-      pendingOutreachDrafts = (rows || []).map(r => {
+      pendingOutreachDrafts = (rows || [])
+        .filter(r => {
+          const respStatus = (r.response_status || '').toUpperCase();
+          const pStatus = (r.status || '').toUpperCase();
+          const excluded = ['ENTERPRISE_CHAIN_DEFERRED', 'QUARANTINED', 'REJECTED', 'TEST_QUARANTINED', 'OPTED_OUT'];
+          return !excluded.includes(respStatus) && !excluded.includes(pStatus);
+        })
+        .map(r => {
         const msg = r.message_draft || '';
         const phoneMatch = msg.match(/\+?91?[6-9]\d{9}/);
         const rawPhone = r.prospect_phone || (phoneMatch ? phoneMatch[0] : '');

@@ -354,7 +354,7 @@ describe('V5.1.2 — Commercial Integrity, Campaign Null-Guard & Variant Stock V
       expect(json.csvRow).toContain('Kavuri Dental Care');
       expect(json.csvRow).toContain('Dr. Ramesh Babu');
       expect(json.csvRow).toContain('9849012345');
-      expect(json.csvRow).toContain('QUALIFIED');
+      expect(json.csvRow).toContain('PENDING_OWNER_REVIEW');
     });
   });
 

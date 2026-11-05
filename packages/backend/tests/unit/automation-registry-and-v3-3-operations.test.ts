@@ -136,7 +136,7 @@ describe('V3.3 Automation Registry & Autonomous Operations Engine', () => {
     // GET /owner/automation HTML
     const resHtml = await app.request('/owner/automation', {
       method: 'GET',
-      headers: { 'Accept': 'text/html' }
+      headers: { 'Accept': 'text/html', 'x-user-id': 'usr_owner_primary' }
     });
     expect(resHtml.status).toBe(200);
     const htmlText = await resHtml.text();
@@ -147,7 +147,7 @@ describe('V3.3 Automation Registry & Autonomous Operations Engine', () => {
     // GET /api/v1/owner/automation JSON
     const resJson = await app.request('/api/v1/owner/automation', {
       method: 'GET',
-      headers: { 'Accept': 'application/json' }
+      headers: { 'Accept': 'application/json', 'x-user-id': 'usr_owner_primary' }
     });
     expect(resJson.status).toBe(200);
     const body = await resJson.json();
@@ -157,7 +157,7 @@ describe('V3.3 Automation Registry & Autonomous Operations Engine', () => {
     // POST /api/v1/owner/automation/toggle
     const resToggle = await app.request('/api/v1/owner/automation/toggle', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-user-id': 'usr_owner_primary' },
       body: JSON.stringify({ workflowId: 'quota_health_checks', enabled: false })
     });
     expect(resToggle.status).toBe(200);
@@ -167,7 +167,7 @@ describe('V3.3 Automation Registry & Autonomous Operations Engine', () => {
     // POST /api/v1/owner/automation/run
     const resRun = await app.request('/api/v1/owner/automation/run', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-user-id': 'usr_owner_primary' },
       body: JSON.stringify({ workflowId: 'daily_commercial_summary' })
     });
     expect(resRun.status).toBe(200);

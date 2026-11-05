@@ -154,7 +154,10 @@ describe('V4.2 Multi-Sector Commerce Engine Recovery Suite', () => {
   describe('3. Owner Deals Control Centre & 16-Metric Sector Breakdown', () => {
     it('returns 16 metrics per sector via GET /api/v1/owner/deals/summary', async () => {
       const res = await app.request('/api/v1/owner/deals/summary', {
-        method: 'GET'
+        method: 'GET',
+        headers: {
+          'x-user-id': 'usr_owner_primary'
+        }
       });
 
       expect(res.status).toBe(200);
@@ -186,7 +189,8 @@ describe('V4.2 Multi-Sector Commerce Engine Recovery Suite', () => {
       const res = await app.request('/owner/deals', {
         method: 'GET',
         headers: {
-          'accept': 'text/html'
+          'accept': 'text/html',
+          'x-user-id': 'usr_owner_primary'
         }
       });
 

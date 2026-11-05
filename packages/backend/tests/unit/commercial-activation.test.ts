@@ -18,6 +18,8 @@ describe('Commercial Activation & Live Sales Reality Suite (Spec §§ 2–34)', 
   beforeEach(() => {
     resetDbForTesting();
     seedDatabase();
+    process.env.TAVILY_API_KEY = 'tvly-test-active-key-12345';
+    process.env.GEMINI_API_KEY = 'AIzaSyTestValidActiveKey12345';
   });
 
   // 1. Live Provider Activation: Unconfigured providers accurately reported

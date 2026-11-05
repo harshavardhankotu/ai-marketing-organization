@@ -68,6 +68,7 @@ describe('Step 3: No Default Identity Suite (mst_default_identity guard)', () =>
   });
 
   it('a default never appears in any generated page or owner configuration', () => {
+    process.env.AMAZON_AFFILIATE_TAG = 'test-affiliate-tag-21';
     // Check owner auth configuration
     const ownerAuth = OwnerAuthService.getInstance();
     const config = ownerAuth.getOwnerConfiguration();

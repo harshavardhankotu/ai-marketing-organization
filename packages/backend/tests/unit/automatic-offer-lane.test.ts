@@ -6,6 +6,7 @@ describe('Step 3: Automatic Offer Lane Verification Suite', () => {
   const lane = AutomaticOfferLane.getInstance();
 
   beforeEach(() => {
+    process.env.AMAZON_AFFILIATE_TAG = 'marketing98-21';
     const db = getDb();
     // Ensure domain_policy table exists
     db.exec(`
