@@ -609,6 +609,13 @@ export function getDb(dbPath?: string): Database.Database {
   try { db.exec(`ALTER TABLE outbound_contacts ADD COLUMN authorization_evidence_json TEXT NOT NULL DEFAULT '{}'`); } catch {}
   try { db.exec(`ALTER TABLE search_cache ADD COLUMN data_classification TEXT NOT NULL DEFAULT 'UNKNOWN'`); } catch {}
   try { db.exec(`ALTER TABLE search_cache ADD COLUMN source_verified INTEGER NOT NULL DEFAULT 0`); } catch {}
+  try { db.exec(`ALTER TABLE direct_outreach_log ADD COLUMN approval_source TEXT DEFAULT 'UNKNOWN'`); } catch {}
+  try { db.exec(`ALTER TABLE direct_outreach_log ADD COLUMN policy_id TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE direct_outreach_log ADD COLUMN policy_version TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE direct_outreach_log ADD COLUMN policy_evaluation_id TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE direct_outreach_log ADD COLUMN decision_timestamp TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE direct_outreach_log ADD COLUMN evidence_references TEXT DEFAULT '[]'`); } catch {}
+  try { db.exec(`ALTER TABLE direct_outreach_log ADD COLUMN quota_reservation_id TEXT`); } catch {}
   try {
     db.exec(`CREATE TABLE IF NOT EXISTS platform_customer_deliveries (
       id TEXT PRIMARY KEY, customer_id TEXT NOT NULL, organization_id TEXT NOT NULL,

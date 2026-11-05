@@ -1087,7 +1087,7 @@ export class AutomationRegistryEngine {
         const policyGate = AutonomousPolicyGate.getInstance();
         let candidateRows: any[] = [];
         try {
-          const sql = `SELECT * FROM direct_outreach_log WHERE (human_approved = 1 OR approval_source = 'AUTONOMOUS_POLICY_GATE') AND dispatched = 0 LIMIT 5`;
+          const sql = `SELECT * FROM direct_outreach_log WHERE human_approved = 1 AND dispatched = 0 LIMIT 5`;
           candidateRows = isProduction()
             ? await this.d1Repo.query<any>('direct_outreach_log', sql)
             : getDb().prepare(sql).all();

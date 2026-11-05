@@ -201,11 +201,11 @@ export class DemandDiscoveryEngine {
     const googleCx = process.env.GOOGLE_SEARCH_CX;
     const tavilyKey = process.env.TAVILY_API_KEY;
 
-    const isTestKey = (key?: string) => !key || isPlaceholderCredential(key) || key.startsWith('tvly-test') || key.includes('fixture') || key.startsWith('test');
+    const isTestKey = (key?: string) => !key || isPlaceholderCredential(key) || key.startsWith('tvly-test') || key.includes('fixture') || key.startsWith('test') || key.includes('placeholder');
     const hasSearchProvider = Boolean((googleApiKey && googleCx && !isTestKey(googleApiKey)) || (tavilyKey && !isTestKey(tavilyKey)));
 
-    if (!hasSearchProvider && process.env.NODE_ENV !== 'test') {
-      // In production, missing credentials returns zero signals. Never persist fixtures!
+    if (!hasSearchProvider) {
+      // In production and tests, missing or placeholder credentials returns zero signals. Never persist fixtures!
       this.lastSource = 'UNAVAILABLE';
       console.warn('[DemandDiscoveryEngine] Missing or placeholder search credentials. Zero demand signals persisted.');
       return [];
