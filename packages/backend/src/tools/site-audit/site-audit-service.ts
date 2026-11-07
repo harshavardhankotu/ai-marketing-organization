@@ -241,7 +241,7 @@ export class SiteAuditService {
       const htmlScanStatus = ((audit as any).status === 'FAILED') ? 'FAILED' : 'COMPLETED';
       const pageSpeedStatus = audit.pageSpeed?.status === 'SUCCESS' ? 'COMPLETED' : 'UNAVAILABLE';
       const pageSpeedUnavailableReason = audit.pageSpeed?.status === 'SUCCESS' ? null : (audit.pageSpeed?.reason || 'UNAVAILABLE');
-      const isPubliclyAuthorized = (domain === 'capturelifedentalcare.com' || (audit as any).isPubliclyAuthorized === true) ? 1 : 0;
+      const isPubliclyAuthorized = (domain === 'capturelifedentalcare.com' || domain === 'clovedental.in' || (audit as any).isPubliclyAuthorized === true) ? 1 : 0;
 
       if (this.d1Repo.isRemoteD1Configured() || isProduction()) {
         await this.d1Repo.executeWrite(

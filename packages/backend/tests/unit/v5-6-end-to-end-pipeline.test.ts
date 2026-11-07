@@ -191,6 +191,20 @@ describe('V5.6 — End-to-End Autonomous Pipeline Wiring', () => {
         }
       });
 
+      // Ensure at least 1 verified in-stock monetizable deal exists for cross-promo
+      getDb().prepare(`
+        INSERT OR REPLACE INTO public_deals (
+          id, slug, canonical_slug, title, brand, merchant, category, sector_code,
+          product_url, affiliate_url, current_price_inr, availability,
+          verification_status, is_monetizable, product_verified, affiliate_verified, updated_at
+        ) VALUES (
+          'deal_v5_6_crosspromo', 'v5-6-crosspromo', 'v5-6-crosspromo', 'Cross Promo Deal',
+          'boAt', 'boAt Lifestyle', 'Electronics', 'SECTOR_B_ELECTRONICS',
+          'https://boat-lifestyle.com/p1', 'https://linksredirect.com/?url=p1',
+          1499, 'IN_STOCK', 'AFFILIATE_VERIFIED', 1, 1, 1, datetime('now')
+        )
+      `).run();
+
       const res = await app.request('/audit/testdentist.in');
       expect(res.status).toBe(200);
 
@@ -222,6 +236,17 @@ describe('V5.6 — End-to-End Autonomous Pipeline Wiring', () => {
       });
       await dealEngine.executeAutonomousCycle('test_compare_v5_6');
 
+      // In V5.8.1, public /compare strictly requires verified monetizable deals
+      getDb().prepare("UPDATE public_deals SET is_monetizable = 1, affiliate_verified = 1, product_verified = 1, verification_status = 'AFFILIATE_VERIFIED' WHERE title LIKE '%Nirvana%'").run();
+      for (const d of (dealEngine as any).dealsMap.values()) {
+        if (d.title?.includes('Nirvana')) {
+          d.isMonetizable = true;
+          d.affiliateVerified = true;
+          d.productVerified = true;
+          d.verificationStatus = 'AFFILIATE_VERIFIED';
+        }
+      }
+
       const res = await app.request('/compare/electronics-technology');
       const text = await res.text();
       if (res.status !== 200) {
@@ -246,11 +271,25 @@ describe('V5.6 — End-to-End Autonomous Pipeline Wiring', () => {
       db.prepare(`
         INSERT INTO site_audits (
           domain, target_url, business_name, performance_score, seo_score,
-          core_web_vitals_json, checklist_json, status, updated_at
+          core_web_vitals_json, checklist_json, status, updated_at, is_publicly_authorized
         ) VALUES (
           'clovedental.in', 'https://clovedental.in', 'Clove Dental India', 85, 92,
-          '{}', '[]', 'COMPLETED', datetime('now')
-        ) ON CONFLICT(domain) DO UPDATE SET updated_at = datetime('now')
+          '{}', '[]', 'COMPLETED', datetime('now'), 1
+        ) ON CONFLICT(domain) DO UPDATE SET updated_at = datetime('now'), is_publicly_authorized = 1
+      `).run();
+
+      // Ensure active deal exists for jewellery sector
+      db.prepare(`
+        INSERT INTO public_deals (
+          id, slug, canonical_slug, title, brand, merchant, category, sector_code,
+          product_url, affiliate_url, current_price_inr, availability,
+          verification_status, is_monetizable, product_verified, affiliate_verified, updated_at
+        ) VALUES (
+          'deal_v56_gold_test', 'v56-gold-necklace', 'v56-gold-necklace', 'Gold Necklace',
+          'Tanishq', 'Tanishq', 'Precious Metals', 'SECTOR_A_PRECIOUS_METALS',
+          'https://tanishq.co.in/p1', 'https://linksredirect.com/?url=https%3A%2F%2Ftanishq.co.in%2Fp1',
+          50000, 'IN_STOCK', 'AFFILIATE_VERIFIED', 1, 1, 1, datetime('now')
+        ) ON CONFLICT(id) DO UPDATE SET updated_at = datetime('now')
       `).run();
 
       const res = await app.request('/sitemap.xml');

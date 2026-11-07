@@ -987,11 +987,18 @@ app.get('/sitemap.xml', async (c) => {
     console.warn(`[Sitemap] Error fetching eligible deals: ${err.message}`);
   }
 
-  // Include compare guides for all canonical sectors (Spec V5.6)
+  // Include compare guides ONLY for sectors with verified active deals (P1 Blocker 4 - never put a noindex page in /sitemap.xml)
   let compareUrls: string[] = [];
   try {
     const { COMMERCIAL_SECTORS_LIST } = await import('@ai-marketing/shared');
-    compareUrls = COMMERCIAL_SECTORS_LIST.map(sec => `${baseUrl}/compare/${sec.id}`);
+    const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
+    const engine = AutonomousDealDiscoveryEngine.getInstance();
+    for (const sec of COMMERCIAL_SECTORS_LIST) {
+      const secRes = await engine.getEligiblePublicDeals({ sectorCode: sec.code });
+      if (secRes.deals.length > 0) {
+        compareUrls.push(`${baseUrl}/compare/${sec.id}`);
+      }
+    }
   } catch {}
 
   // Include only publicly authorized audited domain pages (V5.8 Defect 5)

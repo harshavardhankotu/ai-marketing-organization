@@ -21,6 +21,7 @@ export type DealVerificationStatus =
   | 'VERIFIED'                    // Verified price, merchant, stock, and reference baseline
   | 'AFFILIATE_VERIFIED'          // Verified merchant stock + verified Cuelinks active campaign & monetizable redirect
   | 'PRODUCT_VERIFIED'            // Verified live merchant feed confirms price & stock, but affiliate monetization unconfirmed
+  | 'PRODUCT_ONLY_UNMONETIZED'    // Product in stock but no verified affiliate campaign/channel match
   | 'VERIFIED_WITH_CONDITIONS'    // Verified but requires coupon, card, or minimum order
   | 'UNCONFIRMED'                 // Observed, but reference discount is only merchant-claimed
   | 'UNVERIFIED'                  // Unverified key claims; kept out of public ranking

@@ -2135,15 +2135,16 @@ export class AutonomousDealDiscoveryEngine {
 
     // Seamlessly convert eligible candidate deal through Cuelinks when authenticated if not yet processed
     let activeCampaignVerified = false;
-    let resolvedChannelId = 331585;
+    let resolvedChannelId: number | null = null;
     try {
-      const syncStatus = CuelinksSyncManager.getInstance(this.getCuelinksClient()).getStatus();
-      if (syncStatus.channel?.id) {
-        resolvedChannelId = Number(syncStatus.channel.id);
+      const cuelinksSync = CuelinksSyncManager.getInstance(this.getCuelinksClient());
+      const channelRes = await cuelinksSync.getApprovedChannel();
+      if (channelRes.approved && channelRes.channel?.id) {
+        resolvedChannelId = Number(channelRes.channel.id);
       }
     } catch {}
 
-    // V5.8 Defect 1: Verify actual active campaign in D1 cuelinks_campaigns or partner_offers
+    // V5.8.1 P0 Blocker 3: Verify actual active campaign in D1 cuelinks_campaigns or partner_offers
     try {
       const campId = input.affiliateCampaignId || '';
       const domain = input.sourceDomain || '';
@@ -2175,7 +2176,7 @@ export class AutonomousDealDiscoveryEngine {
       let convertedTrackingUrl: string | undefined = undefined;
       const client = this.getCuelinksClient();
 
-      if (client.isConfigured()) {
+      if (client.isConfigured() && resolvedChannelId) {
         try {
           const subid = `aro_${input.modelOrSku || 'deal'}`.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
           const subid2 = (input.category || 'general').replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
@@ -2197,8 +2198,6 @@ export class AutonomousDealDiscoveryEngine {
             }
           }
         } catch {}
-      } else if (activeCampaignVerified && resolvedChannelId) {
-        convertedTrackingUrl = `https://linksredirect.com/?cid=${resolvedChannelId}&subid1=aro_organic&url=${encodeURIComponent(input.productUrl)}`;
       }
 
       if (activeCampaignVerified && convertedTrackingUrl) {
@@ -2219,7 +2218,8 @@ export class AutonomousDealDiscoveryEngine {
       input.availability === 'IN_STOCK'
     );
     const affiliateVerified = Boolean(
-      (input.isMonetizable || activeCampaignVerified) &&
+      input.isMonetizable === true &&
+      activeCampaignVerified &&
       input.trackingUrl &&
       CuelinksV3Client.isAllowedTrackingUrl(input.trackingUrl)
     );
@@ -2288,6 +2288,16 @@ export class AutonomousDealDiscoveryEngine {
       }
     }
 
+    // P0 Blocker 3: Only set affiliate_verified = 1 and is_monetizable = 1 when verified.
+    // Otherwise set affiliate_verified = 0, is_monetizable = 0, and verification_status = 'PRODUCT_ONLY_UNMONETIZED'
+    if (!affiliateVerified || !input.isMonetizable) {
+      input.isMonetizable = false;
+      input.affiliateNetwork = undefined;
+      if (verificationStatus === 'VERIFIED') {
+        verificationStatus = 'PRODUCT_ONLY_UNMONETIZED';
+      }
+    }
+
     // Level 5: Deterministic Deduplication Pipeline (Spec § 6)
     const normalizedBrand = (input.brand || 'Generic').trim().toLowerCase();
     const normalizedMerchant = (input.merchant || 'Unknown').trim().toLowerCase();
@@ -2340,12 +2350,18 @@ export class AutonomousDealDiscoveryEngine {
         existing.confidenceScore = Math.min(100, existing.confidenceScore + 10);
       }
 
-      if (input.isMonetizable && input.trackingUrl) {
+      if (input.isMonetizable && input.trackingUrl && affiliateVerified) {
         existing.trackingUrl = input.trackingUrl;
         existing.affiliateNetwork = input.affiliateNetwork || existing.affiliateNetwork;
         existing.affiliateCampaignId = input.affiliateCampaignId || existing.affiliateCampaignId;
         existing.isMonetizable = true;
         existing.verificationStatus = existing.verificationStatus === 'VERIFIED_WITH_CONDITIONS' ? 'VERIFIED_WITH_CONDITIONS' : 'VERIFIED';
+      } else {
+        existing.isMonetizable = false;
+        existing.affiliateVerified = false;
+        if (existing.verificationStatus === 'VERIFIED') {
+          existing.verificationStatus = 'PRODUCT_ONLY_UNMONETIZED';
+        }
       }
 
       existing.updatedAt = nowIso;
@@ -2564,11 +2580,13 @@ export class AutonomousDealDiscoveryEngine {
       AND current_price_inr > 0
       AND verification_status IN ('VERIFIED', 'AFFILIATE_VERIFIED')
       AND is_monetizable = 1
+      AND product_verified = 1
+      AND affiliate_verified = 1
       AND (expiry_date IS NULL OR expiry_date > datetime('now'))
   `;
 
   /**
-   * Universal deal eligibility resolver (V5.8 Defect 2).
+   * Universal deal eligibility resolver (V5.8 Defect 2 & V5.8.1 P1 Blocker 4).
    * Ensures exact 1:1 parity between public catalog, feeds, sector guides, and sitemap.
    */
   public async getEligiblePublicDeals(filter?: {
@@ -2582,15 +2600,15 @@ export class AutonomousDealDiscoveryEngine {
     offset?: number;
   }): Promise<{ deals: NormalizedDeal[]; total: number }> {
     let rows: any[] = [];
-    try {
-      if (this.d1Repo.isRemoteD1Configured() || isProduction()) {
-        const res = await this.d1Repo.executeRead('public_deals', AutonomousDealDiscoveryEngine.ELIGIBLE_PUBLIC_DEALS_SQL, []);
-        rows = res.results || [];
-      } else {
+    if (this.d1Repo.isRemoteD1Configured() || isProduction()) {
+      const res = await this.d1Repo.executeRead('public_deals', AutonomousDealDiscoveryEngine.ELIGIBLE_PUBLIC_DEALS_SQL, []);
+      rows = res.results || [];
+    } else {
+      try {
         rows = getDb().prepare(AutonomousDealDiscoveryEngine.ELIGIBLE_PUBLIC_DEALS_SQL).all();
+      } catch (err: any) {
+        console.warn(`[DealEngine] getEligiblePublicDeals SQLite notice: ${err.message}`);
       }
-    } catch (err: any) {
-      console.warn(`[DealEngine] getEligiblePublicDeals DB read notice: ${err.message}`);
     }
 
     if (Array.isArray(rows) && rows.length > 0) {
@@ -2608,6 +2626,9 @@ export class AutonomousDealDiscoveryEngine {
       d.availability === 'IN_STOCK' &&
       typeof d.currentPriceINR === 'number' && d.currentPriceINR > 0 &&
       (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'AFFILIATE_VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS') &&
+      Boolean(d.isMonetizable) &&
+      d.productVerified === true &&
+      d.affiliateVerified === true &&
       (!d.expiryDate || new Date(d.expiryDate).getTime() > Date.now())
     );
 
