@@ -34,6 +34,7 @@ export interface BrevoSendResult {
   status: 'SENT' | 'QUEUED_NEXT_UTC_WINDOW' | 'SUPPRESSED' | 'BLOCKED_CREDENTIALS' | 'ERROR';
   reason?: string;
   dailySendsRemaining?: number;
+  protocolUsed?: 'BREVO_REST_V3' | 'BREVO_MCP';
 }
 
 export class BrevoMcpClient {
@@ -46,6 +47,7 @@ export class BrevoMcpClient {
   private serverUrl: string;
   private d1Repo = D1RevenueRepository.getInstance();
   private quotaService = UnifiedQuotaService.getInstance();
+  private fetchFn: typeof fetch = globalThis.fetch;
 
   private constructor() {
     this.apiKey = process.env.BREVO_API_KEY || process.env.BREVO_MCP_SERVER_API;
@@ -53,11 +55,18 @@ export class BrevoMcpClient {
     this.ensureTables();
   }
 
-  public static getInstance(): BrevoMcpClient {
+  public static getInstance(fetchFn?: typeof fetch): BrevoMcpClient {
     if (!BrevoMcpClient.instance) {
       BrevoMcpClient.instance = new BrevoMcpClient();
     }
+    if (fetchFn) {
+      BrevoMcpClient.instance.fetchFn = fetchFn;
+    }
     return BrevoMcpClient.instance;
+  }
+
+  public static resetInstance(): void {
+    BrevoMcpClient.instance = undefined as any;
   }
 
   public static resetInstanceForTesting(): void {
@@ -208,67 +217,82 @@ export class BrevoMcpClient {
       };
     }
 
-    // 4. Dispatch via standard MCP Server Protocol (Bearer) or REST fallback
+    // 4. Dispatch via standard MCP Server Protocol with automatic REST fallback
     const recipients = typeof payload.to === 'string' ? [{ email: payload.to }] : payload.to;
-    const isMcpEndpoint = this.serverUrl.includes('/mcp') || Boolean(process.env.BREVO_MCP_SERVER_URL);
+    const isStandardRestKey = effectiveKey.startsWith('xkeysib-');
+    const isMcpEndpoint = (this.serverUrl.includes('/mcp') || Boolean(process.env.BREVO_MCP_SERVER_URL)) && !isStandardRestKey;
     let messageId: string | undefined;
+
+    const sendViaRest = async (): Promise<Response> => {
+      return await this.fetchFn('https://api.brevo.com/v3/smtp/email', {
+        method: 'POST',
+        headers: {
+          'api-key': effectiveKey,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        body: JSON.stringify({
+          sender: {
+            email: process.env.PUBLIC_CONTACT_EMAIL || 'support@ai-marketing-organization.com',
+            name: process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization'
+          },
+          to: recipients,
+          subject: payload.subject,
+          htmlContent: payload.htmlContent || `<p>${payload.textContent || ''}</p>`,
+          textContent: payload.textContent,
+          templateId: payload.templateId,
+          params: payload.params,
+          attachment: payload.attachment
+        })
+      });
+    };
 
     try {
       let res: Response;
       if (isMcpEndpoint) {
-        // Standard MCP HTTP Bearer authentication + JSON-RPC 2.0 tool call
-        res = await fetch(this.serverUrl, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${effectiveKey}`,
-            'Content-Type': 'application/json',
-            'Accept': 'application/json'
-          },
-          body: JSON.stringify({
-            jsonrpc: '2.0',
-            id: randomUUID(),
-            method: 'tools/call',
-            params: {
-              name: 'send_email',
-              arguments: {
-                sender: {
-                  email: process.env.PUBLIC_CONTACT_EMAIL || 'support@ai-marketing-organization.com',
-                  name: process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization'
-                },
-                to: recipients,
-                subject: payload.subject,
-                htmlContent: payload.htmlContent || `<p>${payload.textContent || ''}</p>`,
-                textContent: payload.textContent,
-                templateId: payload.templateId,
-                params: payload.params,
-                attachment: payload.attachment
-              }
-            }
-          })
-        });
-      } else {
-        // Direct REST endpoint fallback (api-key header)
-        res = await fetch('https://api.brevo.com/v3/smtp/email', {
-          method: 'POST',
-          headers: {
-            'api-key': effectiveKey,
-            'Content-Type': 'application/json',
-            'Accept': 'application/json'
-          },
-          body: JSON.stringify({
-            sender: {
-              email: process.env.PUBLIC_CONTACT_EMAIL || 'support@ai-marketing-organization.com',
-              name: process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization'
+        try {
+          // Standard MCP HTTP Bearer authentication + JSON-RPC 2.0 tool call
+          res = await this.fetchFn(this.serverUrl, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${effectiveKey}`,
+              'Content-Type': 'application/json',
+              'Accept': 'application/json'
             },
-            to: recipients,
-            subject: payload.subject,
-            htmlContent: payload.htmlContent || `<p>${payload.textContent || ''}</p>`,
-            textContent: payload.textContent,
-            templateId: payload.templateId,
-            params: payload.params,
-            attachment: payload.attachment
-          })
-        });
+            body: JSON.stringify({
+              jsonrpc: '2.0',
+              id: randomUUID(),
+              method: 'tools/call',
+              params: {
+                name: 'send_email',
+                arguments: {
+                  sender: {
+                    email: process.env.PUBLIC_CONTACT_EMAIL || 'support@ai-marketing-organization.com',
+                    name: process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization'
+                  },
+                  to: recipients,
+                  subject: payload.subject,
+                  htmlContent: payload.htmlContent || `<p>${payload.textContent || ''}</p>`,
+                  textContent: payload.textContent,
+                  templateId: payload.templateId,
+                  params: payload.params,
+                  attachment: payload.attachment
+                }
+              }
+            })
+          });
+
+          // If MCP endpoint returns 401, 404, or unhandled status, automatically fallback to v3 REST
+          if (!res.ok && (res.status === 401 || res.status === 404 || res.status === 405 || res.status === 502)) {
+            console.warn(`[BrevoMcpClient] MCP endpoint returned HTTP ${res.status}. Falling back to standard v3 REST endpoint.`);
+            res = await sendViaRest();
+          }
+        } catch (mcpErr: any) {
+          console.warn(`[BrevoMcpClient] MCP network error (${mcpErr.message}). Falling back to standard v3 REST endpoint.`);
+          res = await sendViaRest();
+        }
+      } else {
+        res = await sendViaRest();
       }
 
       if (!res.ok) {
@@ -305,6 +329,7 @@ export class BrevoMcpClient {
       success: true,
       messageId,
       status: 'SENT',
+      protocolUsed: isMcpEndpoint ? 'BREVO_MCP' : 'BREVO_REST_V3',
       dailySendsRemaining: Math.max(0, BrevoMcpClient.MAX_DAILY_SENDS - newCount)
     };
   }

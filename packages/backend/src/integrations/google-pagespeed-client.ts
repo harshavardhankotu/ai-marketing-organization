@@ -76,12 +76,20 @@ export class PageSpeedQuotaExceededError extends Error {
 export class GooglePageSpeedClient {
   private static instance: GooglePageSpeedClient;
   private quotaService = UnifiedQuotaService.getInstance();
+  private fetchFn: typeof fetch = globalThis.fetch;
 
-  public static getInstance(): GooglePageSpeedClient {
+  public static getInstance(fetchFn?: typeof fetch): GooglePageSpeedClient {
     if (!GooglePageSpeedClient.instance) {
       GooglePageSpeedClient.instance = new GooglePageSpeedClient();
     }
+    if (fetchFn) {
+      GooglePageSpeedClient.instance.fetchFn = fetchFn;
+    }
     return GooglePageSpeedClient.instance;
+  }
+
+  public static resetInstance(): void {
+    GooglePageSpeedClient.instance = undefined as any;
   }
 
   public normalizeUrl(url: string): string {
@@ -111,24 +119,10 @@ export class GooglePageSpeedClient {
       console.warn(`[GooglePageSpeedClient] Cache check error: ${e.message}`);
     }
 
-    // 2. Check API Key: Never fabricate Lighthouse scores or Core Web Vitals under any flag
-    const apiKey = process.env.GOOGLE_PAGESPEED_API_KEY || process.env.GOOGLE_SEARCH_API_KEY;
-    const isTestKey = !apiKey || isPlaceholderCredential(apiKey) || apiKey.startsWith('test') || apiKey.includes('placeholder');
-
-    if (isTestKey) {
-      return {
-        status: 'UNAVAILABLE',
-        reason: 'MISSING_API_KEY',
-        targetUrl,
-        strategy,
-        metrics: null,
-        coreWebVitals: null,
-        opportunities: [],
-        cached: false,
-        quotaBlocked: false,
-        timestamp: new Date().toISOString()
-      };
-    }
+    // 2. Resolve API Key: Check PageSpeed, Search, or Gemini API keys
+    const rawApiKey = (process.env.GOOGLE_PAGESPEED_API_KEY || process.env.GOOGLE_SEARCH_API_KEY || process.env.GEMINI_API_KEY || '').trim();
+    const hasValidKey = Boolean(rawApiKey && !isPlaceholderCredential(rawApiKey) && !rawApiKey.startsWith('test') && !rawApiKey.includes('placeholder'));
+    const apiKey = hasValidKey ? rawApiKey : null;
 
     // 3. Reserve Quota (40/day cap via UnifiedQuotaService)
     const reservation = await this.quotaService.reserveProviderQuota('google_pagespeed', 1);
@@ -147,12 +141,21 @@ export class GooglePageSpeedClient {
       };
     }
 
-    const endpoint = `https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${encodeURIComponent(targetUrl)}&strategy=${strategy}&category=performance&category=seo&key=${encodeURIComponent(apiKey!)}`;
+    // Google's runPagespeed endpoint works with OR without an API key for low-volume requests
+    const baseUrl = `https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${encodeURIComponent(targetUrl)}&strategy=${strategy}&category=performance&category=seo`;
+    const endpoint = apiKey ? `${baseUrl}&key=${encodeURIComponent(apiKey)}` : baseUrl;
 
     try {
-      const res = await fetch(endpoint, {
+      let res = await this.fetchFn(endpoint, {
         headers: { 'Accept': 'application/json' }
       });
+
+      // If key had restrictions (e.g. search-only key) and returned 400 or 403, fallback to keyless live query
+      if (!res.ok && apiKey && (res.status === 400 || res.status === 403)) {
+        res = await this.fetchFn(baseUrl, {
+          headers: { 'Accept': 'application/json' }
+        });
+      }
 
       if (!res.ok) {
         await this.quotaService.reconcileProviderQuota('google_pagespeed', reservation.reservationId, 'RELEASE');

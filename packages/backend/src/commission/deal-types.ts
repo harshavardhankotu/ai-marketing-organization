@@ -12,6 +12,8 @@ export type DealSourceClass =
   | 'PRICE_INTELLIGENCE_UTILITY'; // Class F: Consumer price intelligence (Fuel, commodities; separate from affiliate deals)
 
 import { CuelinksSyncStatus } from './cuelinks-v3-types.js';
+import { SectorCode } from '@ai-marketing/shared';
+export type { SectorCode };
 
 export type DealVerificationStatus =
   | 'DISCOVERED'                  // Discovered from source, pending verification
@@ -109,6 +111,7 @@ export interface DiscoveredDealInput {
   trackingUrl?: string;
   affiliateNetwork?: string;
   affiliateCampaignId?: string;
+  sectorCode?: SectorCode;
 }
 
 export type DealCandidate = DiscoveredDealInput;
@@ -160,6 +163,7 @@ export interface NormalizedDeal {
     lastCorroboratedAt?: string;
     observedAt?: string;
   };
+  sectorCode?: SectorCode;
   createdAt: string;
   updatedAt: string;
 }

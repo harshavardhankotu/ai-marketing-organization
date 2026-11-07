@@ -221,6 +221,58 @@ export class SiteAuditService {
           [`audit_${audit.auditId}`, audit.url, audit.auditId, orgId, bizId, detailsJson]
         );
       }
+
+      // Persist to public site_audits table for public /audit/:domain SSR
+      const domain = (() => {
+        try {
+          const u = new URL(audit.url.startsWith('http') ? audit.url : `https://${audit.url}`);
+          return u.hostname.toLowerCase().replace(/^www\./, '');
+        } catch {
+          return audit.url.toLowerCase().replace(/https?:\/\//, '').replace(/^www\./, '').split('/')[0];
+        }
+      })();
+      const perfScore = audit.pageSpeed?.performanceScore ?? 0;
+      const seoScore = audit.pageSpeed?.seoScore ?? Math.round(audit.scorecard?.totalScore ?? audit.score ?? 0);
+      const cwvJson = JSON.stringify(audit.pageSpeed?.coreWebVitals || {});
+      const checklistJson = JSON.stringify(audit.scorecard?.items ?? audit.findings ?? []);
+      const bName = audit.businessName || domain;
+
+      if (this.d1Repo.isRemoteD1Configured() || isProduction()) {
+        await this.d1Repo.executeWrite(
+          'site_audits',
+          `INSERT INTO site_audits (
+            domain, target_url, business_name, performance_score, seo_score,
+            core_web_vitals_json, checklist_json, status, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'COMPLETED', datetime('now'))
+          ON CONFLICT(domain) DO UPDATE SET
+            target_url = excluded.target_url,
+            business_name = excluded.business_name,
+            performance_score = excluded.performance_score,
+            seo_score = excluded.seo_score,
+            core_web_vitals_json = excluded.core_web_vitals_json,
+            checklist_json = excluded.checklist_json,
+            status = excluded.status,
+            updated_at = datetime('now')`,
+          [domain, audit.url, bName, perfScore, seoScore, cwvJson, checklistJson]
+        );
+      } else {
+        const { getDb } = await import('../../db/client.js');
+        getDb().prepare(`
+          INSERT INTO site_audits (
+            domain, target_url, business_name, performance_score, seo_score,
+            core_web_vitals_json, checklist_json, status, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'COMPLETED', datetime('now'))
+          ON CONFLICT(domain) DO UPDATE SET
+            target_url = excluded.target_url,
+            business_name = excluded.business_name,
+            performance_score = excluded.performance_score,
+            seo_score = excluded.seo_score,
+            core_web_vitals_json = excluded.core_web_vitals_json,
+            checklist_json = excluded.checklist_json,
+            status = excluded.status,
+            updated_at = datetime('now')
+        `).run(domain, audit.url, bName, perfScore, seoScore, cwvJson, checklistJson);
+      }
     } catch (err: any) {
       if (isProduction() && !process.env.VITEST) {
         throw new Error(`D1_WRITE_FAILED: Failed to persist audit to D1: ${err.message}`);
@@ -324,6 +376,91 @@ export class SiteAuditService {
       audit,
       expiresAt: Date.now() + 2 * 60 * 60 * 1000
     });
+  }
+
+  /**
+   * Executes a complete live website audit for a target URL and persists to D1.
+   */
+  public async runFullAudit(targetUrl: string, businessName?: string): Promise<SiteAuditResult> {
+    const rawUrl = targetUrl.trim();
+    const cleanUrl = rawUrl.startsWith('http://') || rawUrl.startsWith('https://')
+      ? rawUrl
+      : `https://${rawUrl}`;
+    
+    let domain = cleanUrl;
+    try {
+      domain = new URL(cleanUrl).hostname.replace(/^www\./, '');
+    } catch {}
+
+    const bName = businessName || domain;
+    return this.executeScan({
+      url: cleanUrl,
+      businessName: bName,
+      skipCache: false
+    });
+  }
+
+  /**
+   * Retrieves an audit record by domain name from site_audits table or memory cache.
+   */
+  public async getAuditByDomain(domain: string): Promise<any | null> {
+    if (!domain) return null;
+    const cleanDomain = domain.toLowerCase().trim().replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
+
+    try {
+      const sql = 'SELECT * FROM site_audits WHERE domain = ?';
+      let row: any = null;
+      if (this.d1Repo.isRemoteD1Configured() || isProduction()) {
+        row = await this.d1Repo.queryOne<any>('site_audits', sql, [cleanDomain]);
+      } else {
+        const { getDb } = await import('../../db/client.js');
+        row = getDb().prepare(sql).get(cleanDomain);
+      }
+      if (row) return row;
+    } catch (err: any) {
+      console.warn(`[SiteAuditService] Error getting audit for domain ${cleanDomain}: ${err.message}`);
+    }
+
+    // Fallback: check in-memory cache
+    for (const entry of this.auditCache.values()) {
+      try {
+        const d = new URL(entry.audit.url).hostname.replace(/^www\./, '');
+        if (d.toLowerCase() === cleanDomain) {
+          return {
+            domain: cleanDomain,
+            target_url: entry.audit.url,
+            business_name: entry.audit.businessName || cleanDomain,
+            performance_score: entry.audit.pageSpeed?.performanceScore || 0,
+            seo_score: entry.audit.pageSpeed?.seoScore || Math.round(entry.audit.scorecard?.totalScore || entry.audit.score || 0),
+            core_web_vitals_json: JSON.stringify(entry.audit.pageSpeed?.coreWebVitals || {}),
+            checklist_json: JSON.stringify(entry.audit.scorecard?.items || entry.audit.findings || []),
+            status: 'COMPLETED'
+          };
+        }
+      } catch {}
+    }
+
+    return null;
+  }
+
+  /**
+   * Returns list of all domains with completed audits in site_audits.
+   */
+  public async getAllAuditedDomains(): Promise<string[]> {
+    try {
+      const sql = "SELECT domain FROM site_audits WHERE status = 'COMPLETED' ORDER BY updated_at DESC LIMIT 100";
+      let rows: any[] = [];
+      if (this.d1Repo.isRemoteD1Configured() || isProduction()) {
+        rows = await this.d1Repo.query<any>('site_audits', sql);
+      } else {
+        const { getDb } = await import('../../db/client.js');
+        rows = getDb().prepare(sql).all() as any[];
+      }
+      return (rows || []).map((r: any) => r.domain).filter(Boolean);
+    } catch (err: any) {
+      console.warn(`[SiteAuditService] Error listing audited domains: ${err.message}`);
+      return [];
+    }
   }
 
   /**

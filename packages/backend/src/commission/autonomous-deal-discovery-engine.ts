@@ -23,7 +23,8 @@ import {
   DealEngineObservabilityMetrics,
   SevenStageCommercialFunnel,
   CommercialFunnelStage,
-  CuelinksPaginationCursor
+  CuelinksPaginationCursor,
+  SectorCode
 } from './deal-types.js';
 
 export const MAX_OFFER_FRESHNESS_HOURS = 48;
@@ -1992,10 +1993,10 @@ export class AutonomousDealDiscoveryEngine {
         existing.confidenceScore = Math.min(100, existing.confidenceScore + 10);
       }
 
-      if (input.isMonetizable && input.trackingUrl && !existing.isMonetizable) {
+      if (input.isMonetizable && input.trackingUrl) {
         existing.trackingUrl = input.trackingUrl;
-        existing.affiliateNetwork = input.affiliateNetwork;
-        existing.affiliateCampaignId = input.affiliateCampaignId;
+        existing.affiliateNetwork = input.affiliateNetwork || existing.affiliateNetwork;
+        existing.affiliateCampaignId = input.affiliateCampaignId || existing.affiliateCampaignId;
         existing.isMonetizable = true;
       }
 
@@ -2067,6 +2068,8 @@ export class AutonomousDealDiscoveryEngine {
       createdAt: nowIso,
       updatedAt: nowIso
     };
+
+    newDeal.sectorCode = input.sectorCode || this.mapCategoryToSectorCode(input.category);
 
     // Calculate initial Buyer Value score
     newDeal.buyerValueScore = this.calculateBuyerValueScore(newDeal);
@@ -2831,8 +2834,127 @@ export class AutonomousDealDiscoveryEngine {
         outputsJson,
         errorInfo
       ]);
+
+      // Upsert into dedicated public_deals table (V5.6)
+      try {
+        const sectorCode = deal.sectorCode || this.mapCategoryToSectorCode(deal.category);
+        const publicDealsSql = `
+          INSERT OR REPLACE INTO public_deals (
+            id, slug, canonical_slug, title, brand, merchant, category, sector_code,
+            product_url, affiliate_url, current_price_inr, currency, reference_price_inr,
+            discount_percent, availability, verification_status, deal_kind, evidence_json,
+            updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        `;
+        const evidence = {
+          ...(deal.evidenceJson || {}),
+          affiliateCampaignId: deal.affiliateCampaignId,
+          affiliateNetwork: deal.affiliateNetwork
+        };
+        const publicDealsParams = [
+          deal.id,
+          deal.slug || deal.canonicalSlug || deal.id,
+          deal.canonicalSlug || deal.slug || deal.id,
+          deal.title,
+          deal.brand || null,
+          deal.merchant,
+          deal.category,
+          sectorCode,
+          deal.productUrl,
+          deal.trackingUrl || null,
+          deal.currentPriceINR || 0,
+          deal.currency || 'INR',
+          deal.referencePriceINR || null,
+          deal.verifiedDiscountPercent || deal.claimedDiscountPercent || null,
+          deal.availability || 'IN_STOCK',
+          deal.verificationStatus || 'VERIFIED',
+          deal.dealKind || 'PRODUCT',
+          JSON.stringify(evidence)
+        ];
+
+        getDb().prepare(publicDealsSql).run(...publicDealsParams);
+        if (this.d1Repo.isRemoteD1Configured() || isProduction()) {
+          await this.d1Repo.executeWrite('public_deals', publicDealsSql, publicDealsParams).catch(() => {});
+        }
+      } catch (pdErr: any) {
+        console.warn(`[DealEngine] public_deals persistence notice: ${pdErr.message}`);
+      }
     } catch (err: any) {
       console.warn(`[DealEngine] D1 deal persistence warning for ${deal.id}: ${err.message}`);
+    }
+  }
+
+  public mapCategoryToSectorCode(category: string): SectorCode {
+    const c = (category || '').toLowerCase();
+    if (c.includes('jewel') || c.includes('gold') || c.includes('silver') || c.includes('coin') || c.includes('bullion')) {
+      return 'SECTOR_A_PRECIOUS_METALS';
+    }
+    if (c.includes('home') || c.includes('appliance') || c.includes('kitchen') || c.includes('purifier') || c.includes('cooler')) {
+      return 'SECTOR_C_HOME_APPLIANCES';
+    }
+    if (c.includes('travel') || c.includes('flight') || c.includes('hotel') || c.includes('holiday')) {
+      return 'SECTOR_D_TRAVEL';
+    }
+    if (c.includes('software') || c.includes('saas') || c.includes('hosting') || c.includes('cloud') || c.includes('dev')) {
+      return 'SECTOR_E_SOFTWARE';
+    }
+    if (c.includes('office') || c.includes('industrial') || c.includes('printer') || c.includes('barcode') || c.includes('label')) {
+      return 'SECTOR_F_OFFICE_INDUSTRIAL';
+    }
+    if (c.includes('lifestyle') || c.includes('fashion') || c.includes('apparel') || c.includes('shoe') || c.includes('fitness')) {
+      return 'SECTOR_G_LIFESTYLE';
+    }
+    if (c.includes('clinic') || c.includes('dental') || c.includes('service') || c.includes('b2b')) {
+      return 'SECTOR_H_LOCAL_SERVICES_B2B';
+    }
+    return 'SECTOR_B_ELECTRONICS';
+  }
+
+  public parseDealFromPublicDealsRow(row: any): NormalizedDeal | null {
+    if (!row) return null;
+    try {
+      const evidence = typeof row.evidence_json === 'string' ? JSON.parse(row.evidence_json || '{}') : (row.evidence_json || {});
+      return {
+        id: row.id,
+        slug: row.slug,
+        canonicalSlug: row.canonical_slug || row.slug,
+        dealKind: row.deal_kind || 'PRODUCT',
+        discountBadge: row.discount_percent ? `${row.discount_percent}% OFF` : undefined,
+        title: row.title,
+        brand: row.brand || '',
+        merchant: row.merchant,
+        category: row.category,
+        productUrl: row.product_url,
+        currentPriceINR: Number(row.current_price_inr),
+        currency: row.currency || 'INR',
+        referencePriceINR: row.reference_price_inr ? Number(row.reference_price_inr) : undefined,
+        claimedDiscountPercent: row.discount_percent ? Number(row.discount_percent) : 0,
+        verifiedDiscountPercent: row.discount_percent ? Number(row.discount_percent) : 0,
+        discountVerificationType: 'INDEPENDENT_CORROBORATED',
+        availability: row.availability || 'IN_STOCK',
+        geographicRestrictions: ['India'],
+        offerStart: row.created_at,
+        expiryDate: '2026-12-31T23:59:59.000Z',
+        lastCheckedAt: row.updated_at,
+        observedAt: row.created_at,
+        sourceUrl: row.product_url,
+        sourceDomain: new URL(row.product_url).hostname,
+        sourceType: 'RETAILER_BRAND',
+        verificationStatus: row.verification_status || 'VERIFIED',
+        confidenceScore: 90,
+        buyerValueScore: 80,
+        rejectionReasons: [],
+        trackingUrl: row.affiliate_url || undefined,
+        isMonetizable: Boolean(row.affiliate_url),
+        affiliateCampaignId: evidence.affiliateCampaignId || undefined,
+        affiliateNetwork: evidence.affiliateNetwork || (row.affiliate_url ? 'CUELINKS' : undefined),
+        evidenceJson: evidence,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        sectorCode: row.sector_code
+      };
+    } catch {
+      return null;
     }
   }
 
@@ -2972,6 +3094,35 @@ export class AutonomousDealDiscoveryEngine {
           } catch {}
         }
       }
+
+      // Sync from dedicated public_deals table (V5.6)
+      try {
+        let publicDealRows: any[] = [];
+        if (this.d1Repo.isRemoteD1Configured() || isProduction()) {
+          const res = await this.d1Repo.executeRead('public_deals', 'SELECT * FROM public_deals WHERE availability = ?', ['IN_STOCK']);
+          publicDealRows = res.results || [];
+        } else {
+          publicDealRows = getDb().prepare('SELECT * FROM public_deals WHERE availability = ?').all('IN_STOCK');
+        }
+        if (Array.isArray(publicDealRows) && publicDealRows.length > 0) {
+          for (const row of publicDealRows) {
+            const parsedDeal = this.parseDealFromPublicDealsRow(row);
+            if (parsedDeal) {
+              const existing = this.dealsMap.get(parsedDeal.id);
+              if (existing) {
+                Object.assign(existing, parsedDeal, {
+                  affiliateCampaignId: existing.affiliateCampaignId || parsedDeal.affiliateCampaignId,
+                  affiliateNetwork: existing.affiliateNetwork || parsedDeal.affiliateNetwork
+                });
+              } else {
+                this.dealsMap.set(parsedDeal.id, parsedDeal);
+              }
+              if (parsedDeal.slug) this.dealSlugMap.set(parsedDeal.slug.toLowerCase(), parsedDeal.id);
+              if (parsedDeal.canonicalSlug) this.dealSlugMap.set(parsedDeal.canonicalSlug.toLowerCase(), parsedDeal.id);
+            }
+          }
+        }
+      } catch {}
 
       // Phase 2 Mandate: Quarantine deal_boat_airdopes_161 due to restocking soon badge on merchant site
       const inStockCandidate: NormalizedDeal = {

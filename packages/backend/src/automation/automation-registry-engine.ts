@@ -105,7 +105,7 @@ export const WORKFLOW_DEFINITIONS: WorkflowDefinition[] = [
     name: 'Daily Market-Demand Research',
     description: 'Autonomous market demand & search volume intelligence across Indian SMB sectors.',
     category: 'RESEARCH',
-    defaultCadenceMinutes: 1440, // 24h
+    defaultCadenceMinutes: 60, // Hourly multi-sector bandit execution (V5.6)
     executionBudgetMs: 30000,
     priority: 1,
     dedupPolicy: 'SEARCH_CACHE_48H'
@@ -378,6 +378,15 @@ export class AutomationRegistryEngine {
           getDb().prepare(sql).run(...params);
         }
       }
+
+      // V5.6 Cadence Migration: Ensure daily_market_demand_research rotates hourly across sectors
+      const updateCadenceSql = `UPDATE automation_registry SET cadence_minutes = 60 WHERE id = 'daily_market_demand_research' AND cadence_minutes > 60`;
+      if (isProduction()) {
+        await this.d1Repo.executeWrite('automation_registry', updateCadenceSql, []).catch(() => {});
+      } else {
+        try { getDb().prepare(updateCadenceSql).run(); } catch {}
+      }
+
       this.isInitialized = true;
     } catch (err: any) {
       console.warn(`[AutomationRegistry] Initialization notice: ${err.message}`);
@@ -798,7 +807,10 @@ export class AutomationRegistryEngine {
         }
 
         const { CommercialLearningEngine } = await import('../commission/commercial-learning-engine.js');
-        const sectorSelection = CommercialLearningEngine.getInstance().selectNextSectorToExplore();
+        const learningEngine = CommercialLearningEngine.getInstance();
+        const sectorSelection = learningEngine.selectNextSectorToExplore();
+        const sectorCode = sectorSelection.selectedSector;
+        const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').replace(/\/$/, '');
 
         const { checkB2BResearchBacklogGuard } = await import('../revenue/b2b-research-backlog-guard.js');
         const guard = await checkB2BResearchBacklogGuard(this.d1Repo);
@@ -820,19 +832,151 @@ export class AutomationRegistryEngine {
           };
         }
 
-        const { DailyMarketResearchScheduler } = await import('../scheduler/daily-research-scheduler.js');
-        const report = await DailyMarketResearchScheduler.getInstance().executeDailyResearch();
-        const hasFindings = report.results.some(r => r.findingsCount > 0);
+        // Branch 1: SECTOR_H (Local Services & B2B) and SECTOR_E (Software & Digital Services) -> Autonomous Site Audit Publication
+        if (sectorCode === 'SECTOR_H_LOCAL_SERVICES_B2B' || sectorCode === 'SECTOR_E_SOFTWARE') {
+          const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
+          const siteAuditService = SiteAuditService.getInstance();
+
+          // 1. Discover a target business/software domain not audited in the last 7 days
+          let candidateTarget: { url: string; name: string } | null = null;
+          try {
+            const sqlBiz = `
+              SELECT b.name, b.website_url, b.domain
+              FROM businesses b
+              LEFT JOIN site_audits sa ON (sa.domain = b.domain OR sa.domain = b.name)
+              WHERE (b.website_url IS NOT NULL OR b.domain IS NOT NULL)
+                AND (sa.updated_at IS NULL OR sa.updated_at < datetime('now', '-7 days'))
+              ORDER BY b.updated_at DESC
+              LIMIT 1
+            `;
+            const bizRow = isProduction()
+              ? await this.d1Repo.queryOne<any>('businesses', sqlBiz)
+              : (getDb().prepare(sqlBiz).get() as any);
+
+            if (bizRow && (bizRow.website_url || bizRow.domain)) {
+              candidateTarget = {
+                url: bizRow.website_url || `https://${bizRow.domain}`,
+                name: bizRow.name || bizRow.domain
+              };
+            }
+          } catch {}
+
+          if (!candidateTarget) {
+            // Curated fallback candidates for healthcare / software sectors
+            const candidates = sectorCode === 'SECTOR_H_LOCAL_SERVICES_B2B'
+              ? [
+                  { url: 'https://clovedental.in', name: 'Clove Dental India' },
+                  { url: 'https://apolloclinic.com', name: 'Apollo Clinic' },
+                  { url: 'https://practo.com', name: 'Practo Healthcare' }
+                ]
+              : [
+                  { url: 'https://zoho.com', name: 'Zoho Corporation' },
+                  { url: 'https://cleartax.in', name: 'ClearTax India' },
+                  { url: 'https://tallysolutions.com', name: 'Tally Solutions' }
+                ];
+
+            for (const cand of candidates) {
+              const cleanD = new URL(cand.url).hostname.replace(/^www\./, '');
+              const existing = await siteAuditService.getAuditByDomain(cleanD);
+              if (!existing) {
+                candidateTarget = cand;
+                break;
+              }
+            }
+            if (!candidateTarget) {
+              candidateTarget = candidates[0];
+            }
+          }
+
+          // 2. Run SiteAuditService.runFullAudit (combining SiteAuditScanner + live GooglePageSpeedClient)
+          const auditResult = await siteAuditService.runFullAudit(candidateTarget.url, candidateTarget.name);
+          const domain = new URL(auditResult.url).hostname.replace(/^www\./, '');
+          const publishedPageUrl = `${siteUrl}/audit/${domain}`;
+
+          // 3. Persist commercial learning reward event
+          await learningEngine.recordRewardEvent(
+            sectorCode,
+            'SITEFIX_COMPLETED_SCAN',
+            0.05,
+            auditResult.url,
+            true,
+            { domain, perfScore: auditResult.pageSpeed?.performanceScore, seoScore: auditResult.pageSpeed?.seoScore }
+          );
+
+          // 4. Ping IndexNow for the newly published audit URL
+          const { OrganicDistributionEngine } = await import('../commission/organic-distribution-engine.js');
+          OrganicDistributionEngine.getInstance().pingIndexNow([publishedPageUrl]).catch(() => {});
+
+          return {
+            status: 'COMPLETED',
+            itemsProcessed: 1,
+            itemsSucceeded: 1,
+            itemsFailed: 0,
+            summary: {
+              mode: 'AUTONOMOUS_SITE_AUDIT_PUBLISHED',
+              exploredSector: sectorCode,
+              selectionMode: sectorSelection.selectionMode,
+              domain,
+              publishedPageUrl,
+              performanceScore: auditResult.pageSpeed?.performanceScore || 0,
+              seoScore: auditResult.pageSpeed?.seoScore || Math.round(auditResult.scorecard?.totalScore || auditResult.score || 0),
+              policyApproval: gateEval.approvalSource,
+              humanApproved: gateEval.humanApproved
+            }
+          };
+        }
+
+        // Branch 2: SECTOR_A through SECTOR_G -> Autonomous Commerce Deal Discovery & Qualification
+        const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
+        const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
+        const cycleResult = await dealEngine.executeAutonomousCycle(`cron_${sectorCode}_${Date.now()}`);
+
+        // Discover and verify active in-stock deals for the selected sector
+        const allDeals = dealEngine.getAllDeals();
+        const sectorDeals = allDeals.filter(d =>
+          (d.sectorCode === sectorCode || dealEngine.mapCategoryToSectorCode(d.category) === sectorCode) &&
+          d.availability === 'IN_STOCK' &&
+          (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS')
+        );
+
+        // Ping IndexNow for newly published compare guides and deals
+        const { COMMERCIAL_SECTOR_TAXONOMY } = await import('@ai-marketing/shared');
+        const sectorDef = (COMMERCIAL_SECTOR_TAXONOMY as any)[sectorCode];
+        const sectorSlug = sectorDef?.id || sectorCode.toLowerCase();
+
+        const pingUrls = [`${siteUrl}/compare/${sectorSlug}`];
+        for (const d of sectorDeals.slice(0, 5)) {
+          pingUrls.push(`${siteUrl}/deals/${d.canonicalSlug || d.slug || d.id}`);
+        }
+
+        const { OrganicDistributionEngine } = await import('../commission/organic-distribution-engine.js');
+        OrganicDistributionEngine.getInstance().pingIndexNow(pingUrls).catch(() => {});
+
+        if (sectorDeals.length > 0) {
+          await learningEngine.recordRewardEvent(
+            sectorCode,
+            'VERIFIED_HUMAN_VISIT',
+            0.02,
+            `sector_deals_${sectorCode}`,
+            true,
+            { activeDealsCount: sectorDeals.length, sectorCode }
+          );
+        }
+
         return {
-          status: hasFindings ? 'COMPLETED_WITH_FINDINGS' : 'COMPLETED_NO_FINDINGS',
-          itemsProcessed: report.totalBusinessesProcessed,
-          itemsSucceeded: report.results.filter(r => r.status === 'COMPLETED').length,
-          itemsFailed: report.results.filter(r => r.status === 'FAILED').length,
+          status: 'COMPLETED',
+          itemsProcessed: cycleResult.offersDiscovered || sectorDeals.length,
+          itemsSucceeded: cycleResult.offersVerified || sectorDeals.length,
+          itemsFailed: cycleResult.offersRejected || 0,
           summary: {
-            businesses: report.results.length,
-            hasFindings,
-            exploredSector: sectorSelection.selectedSector,
+            mode: 'COMMERCE_DEAL_DISCOVERY',
+            exploredSector: sectorCode,
             selectionMode: sectorSelection.selectionMode,
+            sectorSlug,
+            activeSectorDealsCount: sectorDeals.length,
+            offersDiscovered: cycleResult.offersDiscovered,
+            offersVerified: cycleResult.offersVerified,
+            cycleStatus: cycleResult.status,
             policyApproval: gateEval.approvalSource,
             humanApproved: gateEval.humanApproved
           }

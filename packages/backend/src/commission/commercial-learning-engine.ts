@@ -444,6 +444,26 @@ export class CommercialLearningEngine {
     return reward;
   }
 
+  /**
+   * Helper method for recording a typed commercial reward event.
+   */
+  public async recordRewardEvent(
+    sectorCode: SectorCode,
+    eventType: CommercialRewardEventType,
+    rewardDelta: number,
+    evidenceRef?: string,
+    isVerifiedHuman: boolean = true,
+    metadata: Record<string, any> = {}
+  ): Promise<number> {
+    return this.recordCommercialEvent(sectorCode, {
+      eventId: `evt_${Date.now()}_${randomUUID().substring(0, 8)}`,
+      eventType,
+      evidenceRef,
+      isDiagnostic: !isVerifiedHuman,
+      metadata
+    });
+  }
+
   private sampleBeta(alpha: number, beta: number): number {
     const gA = this.sampleGamma(Math.max(0.1, alpha));
     const gB = this.sampleGamma(Math.max(0.1, beta));
