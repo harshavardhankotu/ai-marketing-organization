@@ -94,13 +94,23 @@ export interface SiteAuditResult {
   preview: SiteAuditPreview;
   disclosures: SiteAuditDisclosures;
   pageSpeed?: SiteAuditPageSpeedData;
+  businessName?: string;
+  domain?: string;
+  probedAt?: string;
+  scorecard?: {
+    totalScore: number;
+    grade?: string;
+    items?: any[];
+  };
 }
 
 export interface SiteAuditScanRequest {
   url: string;
   websiteType?: 'LOCAL_BUSINESS' | 'SHOPIFY_ECOMMERCE' | 'FREELANCER_PORTFOLIO' | 'SAAS' | 'GENERAL_CONTENT';
   businessCategory?: string;
-  userConfirmedOwnership: boolean;
+  businessName?: string;
+  skipCache?: boolean;
+  userConfirmedOwnership?: boolean;
 }
 
 export interface FixPackDeliverable {

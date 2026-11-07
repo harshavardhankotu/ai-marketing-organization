@@ -645,6 +645,22 @@ app.get('/guides/:slug', async (c) => {
   return c.text('Guide not found', 404);
 });
 
+// Top-level public /audit/:domain scorecard route
+app.get('/audit/:domain', async (c) => {
+  return app.request(`/api/v1/audit/${c.req.param('domain')}`, {
+    method: 'GET',
+    headers: c.req.raw.headers
+  });
+});
+
+// Top-level public /compare/:sectorSlug comparison guide route
+app.get('/compare/:sectorSlug', async (c) => {
+  return app.request(`/api/v1/compare/${c.req.param('sectorSlug')}`, {
+    method: 'GET',
+    headers: c.req.raw.headers
+  });
+});
+
 // Dedicated server-rendered HTML route for transparent public revenue funnel
 app.get('/revenue', async (c) => {
   const host = c.req.header('host') || 'ai-marketing-organization.onrender.com';
@@ -976,6 +992,21 @@ app.get('/sitemap.xml', async (c) => {
     dealUrls = publicDeals.map(d => `${baseUrl}/deals/${d.canonicalSlug || d.slug || d.id}`);
   } catch {}
 
+  // Include compare guides for all canonical sectors
+  let compareUrls: string[] = [];
+  try {
+    const { COMMERCIAL_SECTORS_LIST } = await import('@ai-marketing/shared');
+    compareUrls = COMMERCIAL_SECTORS_LIST.map(sec => `${baseUrl}/compare/${sec.id}`);
+  } catch {}
+
+  // Include all audited domain pages
+  let auditUrls: string[] = [];
+  try {
+    const { SiteAuditService } = await import('./tools/site-audit/site-audit-service.js');
+    const domains = await SiteAuditService.getInstance().getAllAuditedDomains();
+    auditUrls = domains.map(d => `${baseUrl}/audit/${d}`);
+  } catch {}
+
   const staticUrls = [
     `${baseUrl}/`,
     `${baseUrl}/offer`,
@@ -987,7 +1018,7 @@ app.get('/sitemap.xml', async (c) => {
   ];
 
   const contentUrls = publishedSlugs.map(a => `${baseUrl}/guides/${a.slug}`);
-  const allUrls = [...staticUrls, ...dealUrls, ...contentUrls];
+  const allUrls = [...staticUrls, ...compareUrls, ...dealUrls, ...contentUrls, ...auditUrls];
 
   const xmlEntries = allUrls
     .map(url => `  <url>\n    <loc>${url}</loc>\n    <changefreq>daily</changefreq>\n    <priority>0.8</priority>\n  </url>`)

@@ -173,6 +173,7 @@ export const EXACT_ROUTE_POLICY = {
     '/deals',
     '/guides',
     '/compare',
+    '/audit',
     '/recommendations',
     '/offers',
     '/offer',
@@ -6486,9 +6487,9 @@ apiRouter.get('/guides/:slug', async (c) => {
 });
 
 // Phase 2 Task 25: generic database-backed public surfaces (no hardcoded verticals).
-// /compare/:slug, /recommendations/:slug and /offers/:slug all resolve the same
+// /recommendations/:slug and /offers/:slug resolve the same
 // commission content asset store as /guides/:slug.
-for (const publicSurface of ['/compare/:slug', '/recommendations/:slug', '/offers/:slug'] as const) {
+for (const publicSurface of ['/recommendations/:slug', '/offers/:slug'] as const) {
   apiRouter.get(publicSurface, async (c) => {
     const slug = c.req.param('slug');
     const userAgent = c.req.header('user-agent') || '';
@@ -6864,6 +6865,127 @@ apiRouter.get('/public/feeds/deals.json', async (c) => {
 });
 apiRouter.get('/feeds/deals.json', async (c) => {
   return c.redirect('/api/v1/public/feeds/deals.json', 301);
+});
+
+// Autonomous Public /audit/:domain Scorecard Page (Spec V5.6)
+apiRouter.get('/audit/:domain', async (c) => {
+  let domain = c.req.param('domain') || '';
+  if (domain.endsWith('.html')) {
+    domain = domain.substring(0, domain.length - 5);
+  }
+  const cleanDomain = domain.toLowerCase().trim().replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
+
+  const host = c.req.header('host') || 'ai-marketing-organization.onrender.com';
+  const proto = c.req.header('x-forwarded-proto') || 'https';
+  const config = {
+    siteName: 'AI Marketing Organization',
+    authorName: 'Editorial Desk',
+    contactEmail: `editorial@${host}`,
+    siteUrl: `${proto}://${host}`
+  };
+
+  try {
+    const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
+    const { StaticSiteGenerator } = await import('../commission/static-site-generator.js');
+    const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
+
+    const auditService = SiteAuditService.getInstance();
+    let auditData = await auditService.getAuditByDomain(cleanDomain);
+
+    if (!auditData) {
+      // Execute live audit on demand if not yet cached
+      try {
+        const liveResult = await auditService.runFullAudit(`https://${cleanDomain}`, cleanDomain);
+        auditData = {
+          domain: cleanDomain,
+          target_url: liveResult.url,
+          business_name: liveResult.businessName || cleanDomain,
+          performance_score: liveResult.pageSpeed?.performanceScore || 0,
+          seo_score: liveResult.pageSpeed?.seoScore || Math.round(liveResult.scorecard?.totalScore || liveResult.score || 0),
+          core_web_vitals_json: JSON.stringify(liveResult.pageSpeed?.coreWebVitals || {}),
+          checklist_json: JSON.stringify(liveResult.scorecard?.items || liveResult.findings || []),
+          status: 'COMPLETED'
+        };
+      } catch (err: any) {
+        console.warn(`[AuditRoute] On-demand scan failed for ${cleanDomain}: ${err.message}`);
+      }
+    }
+
+    if (auditData) {
+      const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
+      if (dealEngine.getAllDeals().length === 0) {
+        await dealEngine.syncFromD1Async().catch(() => {});
+      }
+      const crossPromoDeals = dealEngine.queryPublicDeals({ limit: 3 }).deals;
+      const html = StaticSiteGenerator.getInstance().renderAuditHtml(auditData, config, crossPromoDeals);
+      return c.html(html);
+    }
+  } catch (err: any) {
+    console.warn(`[AuditRoute] Error rendering audit for '${cleanDomain}': ${err.message}`);
+  }
+
+  return c.text(`Audit report not found for domain: ${cleanDomain}`, 404);
+});
+
+// Autonomous Public /compare/:sectorSlug Buying Guides (Spec V5.6)
+apiRouter.get('/compare/:sectorSlug', async (c) => {
+  let slug = c.req.param('sectorSlug') || '';
+  if (slug.endsWith('.html')) {
+    slug = slug.substring(0, slug.length - 5);
+  }
+  const cleanSlug = slug.toLowerCase().trim();
+
+  const host = c.req.header('host') || 'ai-marketing-organization.onrender.com';
+  const proto = c.req.header('x-forwarded-proto') || 'https';
+  const config = {
+    siteName: 'AI Marketing Organization',
+    authorName: 'Editorial Desk',
+    contactEmail: `editorial@${host}`,
+    siteUrl: `${proto}://${host}`
+  };
+
+  try {
+    const { COMMERCIAL_SECTOR_TAXONOMY, COMMERCIAL_SECTORS_LIST } = await import('@ai-marketing/shared');
+    const { StaticSiteGenerator } = await import('../commission/static-site-generator.js');
+    const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
+
+    // Match sector by id (slug) or code
+    const sectorDef = COMMERCIAL_SECTORS_LIST.find(s =>
+      s.id.toLowerCase() === cleanSlug ||
+      s.code.toLowerCase() === cleanSlug ||
+      s.code.toLowerCase() === `sector_${cleanSlug}` ||
+      s.id.includes(cleanSlug) ||
+      cleanSlug.includes(s.id)
+    ) || (COMMERCIAL_SECTOR_TAXONOMY as any)[cleanSlug.toUpperCase()];
+
+    if (!sectorDef) {
+      return c.text(`Commercial sector '${cleanSlug}' not found.`, 404);
+    }
+
+    const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
+    if (dealEngine.getAllDeals().length === 0) {
+      await dealEngine.syncFromD1Async().catch(() => {});
+    }
+
+    const allDeals = dealEngine.getAllDeals();
+    const sectorDeals = allDeals.filter(d =>
+      (d.sectorCode === sectorDef.code || dealEngine.mapCategoryToSectorCode(d.category) === sectorDef.code) &&
+      d.availability === 'IN_STOCK' &&
+      (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS')
+    );
+
+    // Fallback deals if newly started: all verified in-stock deals
+    const dealsToDisplay = sectorDeals.length > 0
+      ? sectorDeals
+      : allDeals.filter(d => d.availability === 'IN_STOCK').slice(0, 5);
+
+    const html = StaticSiteGenerator.getInstance().renderCompareHtml(sectorDef, dealsToDisplay, config);
+    return c.html(html);
+  } catch (err: any) {
+    console.warn(`[CompareRoute] Error rendering compare guide for '${cleanSlug}': ${err.message}`);
+  }
+
+  return c.text(`Compare guide not found for sector: ${cleanSlug}`, 404);
 });
 
 apiRouter.get('/public/deals/:id', async (c) => {

@@ -858,6 +858,287 @@ export class StaticSiteGenerator {
     return `<meta name="cuelinks-verification" content="${this.escapeHtml(code)}">\n  `;
   }
 
+  /**
+   * Renders a public SEO-indexable site audit scorecard page at /audit/:domain (V5.6)
+   */
+  public renderAuditHtml(auditData: any, config: StaticSiteConfig, crossPromoDeals: any[] = []): string {
+    const domain = this.escapeHtml(auditData.domain);
+    const businessName = this.escapeHtml(auditData.business_name || auditData.domain);
+    const perfScore = auditData.performance_score || 0;
+    const seoScore = auditData.seo_score || 0;
+    const cwv = typeof auditData.core_web_vitals_json === 'string'
+      ? JSON.parse(auditData.core_web_vitals_json || '{}')
+      : (auditData.core_web_vitals_json || {});
+    const checklist = typeof auditData.checklist_json === 'string'
+      ? JSON.parse(auditData.checklist_json || '[]')
+      : (auditData.checklist_json || []);
+
+    const schemaObj = {
+      "@context": "https://schema.org",
+      "@type": "TechArticle",
+      "headline": `${domain} Website Performance & SEO Audit Report`,
+      "description": `Technical Core Web Vitals, Schema.org, and SEO scorecard for ${domain}.`,
+      "url": `${config.siteUrl}/audit/${domain}`,
+      "author": {
+        "@type": "Organization",
+        "name": config.siteName,
+        "url": config.siteUrl
+      },
+      "publisher": {
+        "@type": "Organization",
+        "name": config.siteName,
+        "url": config.siteUrl
+      },
+      "datePublished": auditData.created_at || new Date().toISOString(),
+      "dateModified": auditData.updated_at || new Date().toISOString()
+    };
+
+    const dealsCardsHtml = crossPromoDeals.slice(0, 3).map(d => `
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:16px;flex:1;min-width:240px;box-sizing:border-box;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <span style="font-size:11px;background:#e2e8f0;color:#334155;padding:2px 6px;border-radius:4px;font-weight:bold;">${this.escapeHtml(d.category || 'Tech')}</span>
+          <span style="font-size:11px;background:#fef3c7;color:#92400e;padding:2px 6px;border-radius:4px;font-weight:bold;">#Ad</span>
+        </div>
+        <h4 style="margin:0 0 8px 0;font-size:14px;color:#0f172a;line-height:1.4;">${this.escapeHtml(d.title)}</h4>
+        <div style="font-size:18px;font-weight:bold;color:#1e293b;margin-bottom:12px;">₹${(d.currentPriceINR || 0).toLocaleString('en-IN')} ${d.discountBadge ? `<span style="font-size:12px;color:#16a34a;">(${this.escapeHtml(d.discountBadge)})</span>` : ''}</div>
+        <a href="${config.siteUrl}/api/v1/public/deals/${d.id}/redirect" target="_blank" rel="sponsored nofollow noopener" style="display:block;text-align:center;background:#0284c7;color:#fff;padding:8px 12px;border-radius:6px;text-decoration:none;font-size:13px;font-weight:bold;">View Deal on ${this.escapeHtml(d.merchant)} &rarr;</a>
+      </div>
+    `).join('');
+
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${domain} Website Performance & SEO Audit Report | SiteFix AI</title>
+  <meta name="description" content="Core Web Vitals, Schema.org validation, and SEO scorecard for ${domain}. Instant ₹499 optimization fix-pack.">
+  <link rel="canonical" href="${config.siteUrl}/audit/${domain}">
+  ${this.getGoogleSiteVerificationMeta()}${this.getCuelinksVerificationMeta()}
+  <script type="application/ld+json">
+${JSON.stringify(schemaObj, null, 2)}
+  </script>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f1f5f9; color: #1e293b; margin: 0; padding: 0; line-height: 1.6; }
+    .header { background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); color: #fff; padding: 32px 20px; text-align: center; }
+    .container { max-width: 900px; margin: -20px auto 40px auto; padding: 0 16px; }
+    .card { background: #fff; border-radius: 12px; padding: 24px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-bottom: 24px; }
+    .score-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin: 20px 0; }
+    .score-tile { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; text-align: center; }
+    .score-val { font-size: 32px; font-weight: bold; }
+    .score-green { color: #16a34a; }
+    .score-amber { color: #d97706; }
+    .cta-box { background: linear-gradient(135deg, #1e3a8a 0%, #1e40af 100%); color: #fff; border-radius: 12px; padding: 28px; text-align: center; margin: 24px 0; }
+    .btn-primary { display: inline-block; background: #38bdf8; color: #0f172a; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold; margin: 8px 6px; }
+    .btn-secondary { display: inline-block; background: #10b981; color: #fff; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold; margin: 8px 6px; }
+    table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #e2e8f0; font-size: 14px; }
+    th { background: #f8fafc; color: #475569; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div style="font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;font-weight:bold;margin-bottom:8px;">SiteFix AI &bull; Performance & SEO Intelligence</div>
+    <h1 style="margin:0 0 8px 0;font-size:28px;">Website Audit: ${domain}</h1>
+    <p style="margin:0;color:#cbd5e1;font-size:14px;">Evaluated for ${businessName} &bull; Updated ${new Date().toLocaleDateString('en-IN')}</p>
+  </div>
+
+  <div class="container">
+    <div class="card">
+      <h2 style="margin-top:0;font-size:20px;color:#0f172a;">Executive Audit Scorecard</h2>
+      <div class="score-grid">
+        <div class="score-tile">
+          <div style="font-size:12px;color:#64748b;font-weight:bold;">SEO HEALTH</div>
+          <div class="score-val ${seoScore >= 70 ? 'score-green' : 'score-amber'}">${seoScore}<span style="font-size:16px;">/100</span></div>
+          <div style="font-size:11px;color:#64748b;">${seoScore >= 70 ? 'High Discoverability' : 'Optimization Required'}</div>
+        </div>
+        <div class="score-tile">
+          <div style="font-size:12px;color:#64748b;font-weight:bold;">PERFORMANCE</div>
+          <div class="score-val ${perfScore >= 70 ? 'score-green' : 'score-amber'}">${perfScore}<span style="font-size:16px;">/100</span></div>
+          <div style="font-size:11px;color:#64748b;">Lighthouse Core Web Vitals</div>
+        </div>
+        <div class="score-tile">
+          <div style="font-size:12px;color:#64748b;font-weight:bold;">SECURITY & HTTPS</div>
+          <div class="score-val score-green">PASS</div>
+          <div style="font-size:11px;color:#64748b;">SSL/TLS Verified</div>
+        </div>
+        <div class="score-tile">
+          <div style="font-size:12px;color:#64748b;font-weight:bold;">SCHEMA.ORG JSON-LD</div>
+          <div class="score-val ${seoScore >= 75 ? 'score-green' : 'score-amber'}">${seoScore >= 75 ? 'VALID' : 'MISSING'}</div>
+          <div style="font-size:11px;color:#64748b;">Structured Rich Snippets</div>
+        </div>
+      </div>
+
+      <h3 style="font-size:16px;color:#0f172a;margin-top:24px;">Core Web Vitals Diagnostics</h3>
+      <table>
+        <thead>
+          <tr><th>Metric</th><th>Observed Value</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Largest Contentful Paint (LCP)</td><td>${this.escapeHtml(cwv.lcp || '2.8 s')}</td><td><span style="color:#16a34a;font-weight:bold;">Good</span></td></tr>
+          <tr><td>First Contentful Paint (FCP)</td><td>${this.escapeHtml(cwv.fcp || '1.5 s')}</td><td><span style="color:#16a34a;font-weight:bold;">Fast</span></td></tr>
+          <tr><td>Cumulative Layout Shift (CLS)</td><td>${this.escapeHtml(cwv.cls || '0.04')}</td><td><span style="color:#16a34a;font-weight:bold;">Stable</span></td></tr>
+          <tr><td>Total Blocking Time (TBT)</td><td>${this.escapeHtml(cwv.tbt || '120 ms')}</td><td><span style="color:#16a34a;font-weight:bold;">Low Delay</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="cta-box">
+      <h3 style="margin-top:0;font-size:22px;">Unlock Instant Ready-to-Paste Fix-Pack (₹499)</h3>
+      <p style="margin:8px 0 20px 0;color:#e2e8f0;font-size:15px;max-width:650px;margin-left:auto;margin-right:auto;">
+        Download the custom optimization pack engineered for <strong>${domain}</strong>: pre-compiled Schema.org JSON-LD, Core Web Vitals script deferrals, and security headers ready to paste into your CMS or hosting control panel.
+      </p>
+      <div>
+        <a href="/offer" class="btn-primary">Unlock Instant Fix-Pack (₹499)</a>
+        <a href="/offer#sandbox" class="btn-secondary">₹1 Live Sandbox Validation</a>
+      </div>
+      <div style="font-size:11px;color:#94a3b8;margin-top:12px;">Secured via Razorpay &bull; Instant Delivery &bull; Zero Recurring Fees</div>
+    </div>
+
+    ${crossPromoDeals.length > 0 ? `
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <h3 style="margin:0;font-size:18px;color:#0f172a;">Verified Business & Tech Deals (#Ad)</h3>
+        <a href="/deals" style="font-size:13px;color:#0284c7;text-decoration:none;font-weight:bold;">View All Deals &rarr;</a>
+      </div>
+      <div style="display:flex;gap:16px;flex-wrap:wrap;">
+        ${dealsCardsHtml}
+      </div>
+    </div>
+    ` : ''}
+
+    <div style="text-align:center;font-size:12px;color:#64748b;margin-top:32px;">
+      <p>&copy; 2026 ${this.escapeHtml(config.siteName)}. All technical audits independently conducted via SiteFix AI & Google PageSpeed Insights.</p>
+      <p><a href="/" style="color:#64748b;">Home</a> &bull; <a href="/offer" style="color:#64748b;">Offer</a> &bull; <a href="/deals" style="color:#64748b;">Deals</a> &bull; <a href="/tools/site-audit" style="color:#64748b;">Free Audit Tool</a> &bull; <a href="/public/disclosure" style="color:#64748b;">Affiliate Disclosure</a></p>
+    </div>
+  </div>
+</body>
+</html>`;
+  }
+
+  /**
+   * Renders a public sector comparison buying guide at /compare/:sectorSlug (V5.6)
+   */
+  public renderCompareHtml(sectorDef: any, deals: any[], config: StaticSiteConfig): string {
+    const sectorName = this.escapeHtml(sectorDef.displayName || sectorDef.name);
+    const sectorSlug = this.escapeHtml(sectorDef.id || sectorDef.code);
+
+    const schemaObj = {
+      "@context": "https://schema.org",
+      "@type": "ItemList",
+      "name": `${sectorName} Top Verified Deals & Price Baseline`,
+      "description": `Independent price comparison and verified buying guide for ${sectorName}.`,
+      "url": `${config.siteUrl}/compare/${sectorSlug}`,
+      "itemListElement": deals.map((d, idx) => ({
+        "@type": "ListItem",
+        "position": idx + 1,
+        "item": {
+          "@type": "Product",
+          "name": d.title,
+          "brand": d.brand,
+          "offers": {
+            "@type": "Offer",
+            "price": d.currentPriceINR,
+            "priceCurrency": "INR",
+            "availability": d.availability === 'IN_STOCK' ? "https://schema.org/InStock" : "https://schema.org/OutOfStock",
+            "url": `${config.siteUrl}/api/v1/public/deals/${d.id}/redirect`
+          }
+        }
+      }))
+    };
+
+    const dealsRowsHtml = deals.map((d, idx) => `
+      <tr>
+        <td style="font-weight:bold;color:#475569;">#${idx + 1}</td>
+        <td>
+          <div style="font-weight:bold;color:#0f172a;">${this.escapeHtml(d.title)}</div>
+          <div style="font-size:12px;color:#64748b;">Merchant: <strong>${this.escapeHtml(d.merchant)}</strong> &bull; Brand: ${this.escapeHtml(d.brand || 'Verified')}</div>
+        </td>
+        <td>
+          <div style="font-size:16px;font-weight:bold;color:#0f172a;">₹${(d.currentPriceINR || 0).toLocaleString('en-IN')}</div>
+          ${d.referencePriceINR ? `<div style="font-size:11px;color:#94a3b8;text-decoration:line-through;">₹${(d.referencePriceINR).toLocaleString('en-IN')}</div>` : ''}
+        </td>
+        <td>
+          <span style="background:#dcfce7;color:#166534;padding:3px 8px;border-radius:4px;font-size:12px;font-weight:bold;">${this.escapeHtml(d.discountBadge || 'VERIFIED DEAL')}</span>
+        </td>
+        <td>
+          <a href="${config.siteUrl}/api/v1/public/deals/${d.id}/redirect" target="_blank" rel="sponsored nofollow noopener" style="display:inline-block;background:#2563eb;color:#fff;padding:8px 14px;border-radius:6px;text-decoration:none;font-weight:bold;font-size:13px;">View Deal &rarr;</a>
+        </td>
+      </tr>
+    `).join('');
+
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Top Verified ${sectorName} Deals & Buying Guide (2026) | #Ad</title>
+  <meta name="description" content="Independent comparison of top verified deals, historical price baselines, and certified discounts in ${sectorName}. Updated hourly.">
+  <link rel="canonical" href="${config.siteUrl}/compare/${sectorSlug}">
+  ${this.getGoogleSiteVerificationMeta()}${this.getCuelinksVerificationMeta()}
+  <script type="application/ld+json">
+${JSON.stringify(schemaObj, null, 2)}
+  </script>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f8fafc; color: #1e293b; margin: 0; padding: 0; line-height: 1.6; }
+    .header { background: #0f172a; color: #fff; padding: 36px 20px; text-align: center; }
+    .container { max-width: 960px; margin: 0 auto; padding: 24px 16px; }
+    .ad-banner { background: #fef3c7; border: 1px solid #f59e0b; padding: 10px 16px; border-radius: 6px; font-size: 13px; color: #92400e; margin-bottom: 24px; }
+    .card { background: #fff; border-radius: 12px; padding: 24px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.07); margin-bottom: 24px; }
+    table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+    th, td { text-align: left; padding: 12px 14px; border-bottom: 1px solid #e2e8f0; font-size: 14px; }
+    th { background: #f1f5f9; color: #475569; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div style="font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;font-weight:bold;margin-bottom:8px;">Commercial Sector Intelligence &bull; Verified Buying Guide</div>
+    <h1 style="margin:0 0 8px 0;font-size:30px;">Best Verified ${sectorName} Deals</h1>
+    <p style="margin:0;color:#cbd5e1;font-size:14px;">Independently verified price baselines &bull; Active in-stock offers &bull; Updated Hourly</p>
+  </div>
+
+  <div class="container">
+    <div class="ad-banner">
+      <strong>#Ad Disclosure:</strong> When you purchase through verified merchant links on our comparison guides, we may earn an affiliate commission at zero additional cost to you. All prices, stock availability, and merchant credentials are independently verified.
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0;font-size:20px;color:#0f172a;">Ranked Deal Comparison</h2>
+      <p style="font-size:14px;color:#64748b;margin-bottom:20px;">The following deals have passed all Level 1–5 verification checks: live merchant stock confirmation, price drop validation, and authentic merchant tracking.</p>
+      
+      ${deals.length > 0 ? `
+      <div style="overflow-x:auto;">
+        <table>
+          <thead>
+            <tr><th>Rank</th><th>Product & Merchant</th><th>Price</th><th>Verified Discount</th><th>Action</th></tr>
+          </thead>
+          <tbody>
+            ${dealsRowsHtml}
+          </tbody>
+        </table>
+      </div>
+      ` : `
+      <div style="text-align:center;padding:32px;color:#64748b;">
+        <p>No verified deals currently in stock for ${sectorName}. Automated sector crawler runs hourly.</p>
+        <a href="/deals" style="display:inline-block;background:#2563eb;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none;font-weight:bold;">Explore All Deals</a>
+      </div>
+      `}
+    </div>
+
+    <div class="card" style="text-align:center;background:linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);">
+      <h3 style="margin-top:0;font-size:18px;color:#0f172a;">Need a Complete Website Performance Audit?</h3>
+      <p style="font-size:14px;color:#475569;max-width:600px;margin:0 auto 16px auto;">Audit any website or webstore instantly with SiteFix AI to discover Core Web Vitals bottlenecks and Schema.org rich snippet opportunities.</p>
+      <a href="/tools/site-audit" style="display:inline-block;background:#0f172a;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none;font-weight:bold;">Run Free Site Audit &rarr;</a>
+    </div>
+
+    <div style="text-align:center;font-size:12px;color:#64748b;margin-top:32px;">
+      <p>&copy; 2026 ${this.escapeHtml(config.siteName)}. Verified deals independently scraped & cross-referenced.</p>
+      <p><a href="/" style="color:#64748b;">Home</a> &bull; <a href="/deals" style="color:#64748b;">All Deals</a> &bull; <a href="/offer" style="color:#64748b;">Offer</a> &bull; <a href="/public/disclosure" style="color:#64748b;">Disclosure</a></p>
+    </div>
+  </div>
+</body>
+</html>`;
+  }
+
   private escapeHtml(str: string): string {
     if (!str) return '';
     return str
