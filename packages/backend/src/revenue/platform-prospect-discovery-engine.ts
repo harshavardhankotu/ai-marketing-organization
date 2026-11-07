@@ -1349,13 +1349,6 @@ export class PlatformProspectDiscoveryEngine {
     businessId: string = OwnerAuthService.PLATFORM_BUSINESS_ID,
     organizationId: string = OwnerAuthService.OWNER_ORGANIZATION_ID
   ): Promise<Array<{ id: string; businessName: string; vertical: string; city: string; contactPhone?: string; contactEmail?: string; websiteUrl: string }>> {
-    const { checkB2BResearchBacklogGuard } = await import('./b2b-research-backlog-guard.js');
-    const backlogGuard = await checkB2BResearchBacklogGuard(this.d1Repo);
-    if (!backlogGuard.allowed) {
-      console.log(`[ProspectDiscoveryEngine] ensureCuratedQualifiedProspectBatch halted by Backlog Guard: ${backlogGuard.unapprovedCount} drafts unapproved (limit: ${backlogGuard.maxLimit}).`);
-      return [];
-    }
-
     const timestamp = '2026-11-05T00:00:00.000Z';
     // Phase 5 Mandate: 10 verified independent, owner-operated clinics in Hyderabad
     // plus catalog entries for deferred enterprise chains and quarantined non-resolving domains
@@ -1687,13 +1680,6 @@ export class PlatformProspectDiscoveryEngine {
     businessId: string = OwnerAuthService.PLATFORM_BUSINESS_ID,
     organizationId: string = OwnerAuthService.OWNER_ORGANIZATION_ID
   ): Promise<Array<{ id: string; businessName: string; vertical: string; city: string; contactPhone?: string; contactEmail?: string; websiteUrl: string }>> {
-    const { checkB2BResearchBacklogGuard } = await import('./b2b-research-backlog-guard.js');
-    const backlogGuard = await checkB2BResearchBacklogGuard(this.d1Repo);
-    if (!backlogGuard.allowed) {
-      console.log(`[ProspectDiscoveryEngine] ensureCuratedEducationProspectBatch halted by Backlog Guard: ${backlogGuard.unapprovedCount} drafts unapproved (limit: ${backlogGuard.maxLimit}).`);
-      return [];
-    }
-
     const timestamp = '2026-11-02T00:00:00.000Z';
     const curatedEdu10: DiscoveredProspectCandidate[] = [
       {

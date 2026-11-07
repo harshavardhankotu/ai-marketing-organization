@@ -315,7 +315,11 @@ export class AutonomousDealDiscoveryEngine {
           }
 
           const variantUrl = `https://${cleanDomain}/products/${product.handle}?variant=${variant.id}`;
-          const trackingUrl = `https://linksredirect.com/?cid=331585&subid1=v57_organic&url=${encodeURIComponent(variantUrl)}`;
+          const cuelinksConfigured = this.cuelinksClient?.isConfigured() ?? false;
+          const trackingUrl = cuelinksConfigured
+            ? `https://linksredirect.com/?cid=331585&subid1=v57_organic&url=${encodeURIComponent(variantUrl)}`
+            : undefined;
+          const isMonetizable = Boolean(trackingUrl);
           const slug = AutonomousDealDiscoveryEngine.generateDealSlug(product.title, merchant.brand, String(variant.id));
           const dealId = `deal_${cleanDomain.replace(/[^a-z0-9]/g, '_')}_${product.id}_${variant.id}`;
 
@@ -342,9 +346,9 @@ export class AutonomousDealDiscoveryEngine {
             sourceDomain: cleanDomain,
             sourceType: 'RETAILER_BRAND',
             trackingUrl,
-            affiliateNetwork: 'CUELINKS',
+            affiliateNetwork: isMonetizable ? 'CUELINKS' : undefined,
             affiliateCampaignId: merchant.cuelinksCampaignId,
-            isMonetizable: true,
+            isMonetizable,
             modelOrSku: String(variant.id),
             sectorCode: merchant.sectorCode,
             evidenceJson: {
@@ -1033,36 +1037,6 @@ export class AutonomousDealDiscoveryEngine {
       discovered.push(...schemaDeals);
     } catch (schemaErr: any) {
       console.warn(`[DealEngine] Schema.org adapter notice: ${schemaErr.message}`);
-    }
-
-    // 6. Adapter 4: Live Multi-Merchant Shopify Feeds (V5.7 Phase 1)
-    try {
-      this.lastCycleScannedSourceIds.add('src_shopify_merchants');
-      const shopifyDeals = await this.harvestAllApprovedMerchantFeeds(organizationId, businessId);
-      for (const sd of shopifyDeals) {
-        discovered.push({
-          title: sd.title,
-          brand: sd.brand,
-          merchant: sd.merchant,
-          category: sd.category,
-          productUrl: sd.productUrl,
-          currentPriceINR: sd.currentPriceINR,
-          referencePriceINR: sd.referencePriceINR || undefined,
-          claimedDiscountPercent: sd.claimedDiscountPercent,
-          discountBadge: sd.discountBadge,
-          couponCode: sd.couponCode,
-          sourceUrl: sd.sourceUrl,
-          sourceDomain: sd.sourceDomain,
-          sourceType: sd.sourceType,
-          modelOrSku: sd.modelOrSku,
-          observedAt: sd.observedAt,
-          sectorCode: sd.sectorCode,
-          affiliateCampaignId: sd.affiliateCampaignId,
-          trackingUrl: sd.trackingUrl
-        });
-      }
-    } catch (shopifyErr: any) {
-      console.warn(`[DealEngine] Shopify feeds harvest notice: ${shopifyErr.message}`);
     }
 
     // Seamlessly convert eligible candidate deals through Cuelinks when authenticated (Spec § 5 & § 8)

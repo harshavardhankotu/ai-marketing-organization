@@ -837,6 +837,20 @@ export class AutomationRegistryEngine {
         const guard = await checkB2BResearchBacklogGuard(this.d1Repo);
         if (!guard.allowed) {
           console.warn(`[MarketDemandResearch] B2B Research Backlog Guard active: ${guard.unapprovedCount} drafts unapproved. Skipping cold B2B research and redirecting budget directly to Affiliate Commerce Deal Discovery & Public SiteFix Audits.`);
+          try {
+            const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
+            await SiteAuditService.getInstance().runFullAudit('https://dentalsolutions.com', 'Dental Solutions');
+          } catch {}
+          try {
+            const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
+            await AutonomousDealDiscoveryEngine.getInstance().harvestAllApprovedMerchantFeeds();
+          } catch {}
+
+          return {
+            status: 'NO_ACTION_DUE',
+            summary: { reason: 'UNAPPROVED_DRAFTS_BACKLOG_EXCEEDED', unapprovedCount: guard.unapprovedCount },
+            ownerActionRequired: `Review ${guard.unapprovedCount} pending outreach drafts before generating more research findings.`
+          };
         }
 
         // Branch 1: SECTOR_H (Local Services & B2B) and SECTOR_E (Software & Digital Services) -> Autonomous Site Audit Publication

@@ -289,7 +289,7 @@ describe('V5.4 — Revenue Intelligence, Quota Ledger, Policy Gate & Multi-Secto
       expect(res.status).toBe(200);
 
       const json = await res.json();
-      expect(json.version).toMatch(/^5\.[45]\.0$/);
+      expect(json.version).toMatch(/^5\.[457]\.0$/);
       expect(json.policyGate.humanReviewGate).toBe('STRICT_ENFORCED');
       expect(json.policyGate.paidSpendBlocked).toBe(true);
       expect(json.policyGate.paidSpendApprovedINR).toBe(0);
