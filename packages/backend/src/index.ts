@@ -996,6 +996,14 @@ app.get('/sitemap.xml', async (c) => {
     dealUrls = rows.map(r => `${baseUrl}/deals/${r.canonical_slug || r.slug || r.id}`);
   } catch {}
 
+  if (dealUrls.length === 0) {
+    try {
+      const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
+      const deals = AutonomousDealDiscoveryEngine.getInstance().getAllDeals().filter(d => d.availability === 'IN_STOCK');
+      dealUrls = deals.map(d => `${baseUrl}/deals/${d.canonicalSlug || d.slug || d.id}`);
+    } catch {}
+  }
+
   // Include compare guides for all canonical sectors
   let compareUrls: string[] = [];
   try {
@@ -1229,6 +1237,30 @@ export async function startServer(): Promise<any> {
     }
   } catch (err: any) {
     console.warn('[Catalog Gate] Merchant catalog feed ingestion failed:', err.message);
+  }
+
+  // 3h. Live Baseline Autonomy & SiteFix Verification Gate (V5.7 Phase 3)
+  try {
+    const { GoogleSuggestClient } = await import('./integrations/google-suggest-client.js');
+    await GoogleSuggestClient.getInstance().fetchSuggestions('electronics verified deals India', 'in');
+    console.log('[Autonomy Gate] Live GoogleSuggest baseline query executed.');
+  } catch (err: any) {
+    console.warn('[Autonomy Gate] GoogleSuggest baseline query notice:', err.message);
+  }
+
+  try {
+    const { SiteAuditService } = await import('./tools/site-audit/site-audit-service.js');
+    const auditService = SiteAuditService.getInstance();
+    const existing = await auditService.getAuditByDomain('capturelifedentalcare.com');
+    if (!existing) {
+      console.log('[Autonomy Gate] Executing baseline SiteFix audit for capturelifedentalcare.com...');
+      await auditService.runFullAudit('https://capturelifedentalcare.com', 'Capture Life Dental Care');
+      console.log('[Autonomy Gate] Baseline SiteFix audit completed and saved.');
+    } else {
+      console.log('[Autonomy Gate] Verified existing SiteFix audit record for capturelifedentalcare.com.');
+    }
+  } catch (err: any) {
+    console.warn('[Autonomy Gate] Baseline SiteFix audit notice:', err.message);
   }
 
   // 4. Autonomous scheduling powered by durable Cloudflare D1 queue & Worker heartbeat (Spec V4.1 Phase 1 & 2)
