@@ -812,6 +812,26 @@ export class AutomationRegistryEngine {
         const sectorCode = sectorSelection.selectedSector;
         const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').replace(/\/$/, '');
 
+        const { checkB2BResearchBacklogGuard } = await import('../revenue/b2b-research-backlog-guard.js');
+        const guard = await checkB2BResearchBacklogGuard(this.d1Repo);
+        if (!guard.allowed) {
+          return {
+            status: 'NO_ACTION_DUE',
+            itemsProcessed: 0,
+            itemsSucceeded: 0,
+            itemsFailed: 0,
+            summary: {
+              reason: guard.reason,
+              unapprovedCount: guard.unapprovedCount,
+              maxLimit: guard.maxLimit,
+              message: guard.message,
+              exploredSector: sectorSelection.selectedSector,
+              selectionMode: sectorSelection.selectionMode
+            },
+            ownerActionRequired: `Review ${guard.unapprovedCount} pending outreach drafts at /owner/today to resume market research.`
+          };
+        }
+
         // Branch 1: SECTOR_H (Local Services & B2B) and SECTOR_E (Software & Digital Services) -> Autonomous Site Audit Publication
         if (sectorCode === 'SECTOR_H_LOCAL_SERVICES_B2B' || sectorCode === 'SECTOR_E_SOFTWARE') {
           const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');

@@ -21,6 +21,7 @@ describe('Autonomous Deal Discovery Engine V1.1 (Spec §§ 1–15)', () => {
     const db = getDb();
     try {
       db.prepare(`DELETE FROM workflows WHERE workflow_type IN ('PUBLIC_DEAL', 'CUELINKS_SYNC_CURSOR')`).run();
+      db.prepare(`DELETE FROM public_deals`).run();
     } catch {}
   });
 

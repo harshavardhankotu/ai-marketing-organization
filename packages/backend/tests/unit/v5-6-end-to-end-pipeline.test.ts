@@ -129,6 +129,9 @@ describe('V5.6 — End-to-End Autonomous Pipeline Wiring', () => {
   describe('3. Connected daily_market_demand_research Execution', () => {
     it('executes full sector cycle and publishes audit scorecard or verified deal', async () => {
       const db = getDb();
+      try {
+        db.prepare('DELETE FROM direct_outreach_log WHERE human_approved = 0').run();
+      } catch {}
       const registry = AutomationRegistryEngine.getInstance();
       await registry.ensureInitialized();
 

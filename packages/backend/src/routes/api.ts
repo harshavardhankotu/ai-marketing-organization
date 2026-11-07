@@ -6927,13 +6927,24 @@ apiRouter.get('/audit/:domain', async (c) => {
   return c.text(`Audit report not found for domain: ${cleanDomain}`, 404);
 });
 
-// Autonomous Public /compare/:sectorSlug Buying Guides (Spec V5.6)
+// Autonomous Public /compare/:sectorSlug Buying Guides (Spec V5.6) & Phase 2 Content Assets
 apiRouter.get('/compare/:sectorSlug', async (c) => {
   let slug = c.req.param('sectorSlug') || '';
   if (slug.endsWith('.html')) {
     slug = slug.substring(0, slug.length - 5);
   }
   const cleanSlug = slug.toLowerCase().trim();
+
+  // 1. Backward-compatible Phase 2 check: ContentAssetEngine
+  try {
+    const userAgent = c.req.header('user-agent') || '';
+    const isBot = isBotTraffic(userAgent);
+    const contentEngine = ContentAssetEngine.getInstance();
+    const asset = await contentEngine.getAssetBySlug(cleanSlug, !isBot);
+    if (asset) {
+      return c.json({ success: true, data: asset });
+    }
+  } catch {}
 
   const host = c.req.header('host') || 'ai-marketing-organization.onrender.com';
   const proto = c.req.header('x-forwarded-proto') || 'https';

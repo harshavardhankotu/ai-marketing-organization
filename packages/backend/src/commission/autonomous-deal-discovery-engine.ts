@@ -1993,10 +1993,10 @@ export class AutonomousDealDiscoveryEngine {
         existing.confidenceScore = Math.min(100, existing.confidenceScore + 10);
       }
 
-      if (input.isMonetizable && input.trackingUrl && !existing.isMonetizable) {
+      if (input.isMonetizable && input.trackingUrl) {
         existing.trackingUrl = input.trackingUrl;
-        existing.affiliateNetwork = input.affiliateNetwork;
-        existing.affiliateCampaignId = input.affiliateCampaignId;
+        existing.affiliateNetwork = input.affiliateNetwork || existing.affiliateNetwork;
+        existing.affiliateCampaignId = input.affiliateCampaignId || existing.affiliateCampaignId;
         existing.isMonetizable = true;
       }
 
@@ -2839,31 +2839,18 @@ export class AutonomousDealDiscoveryEngine {
       try {
         const sectorCode = deal.sectorCode || this.mapCategoryToSectorCode(deal.category);
         const publicDealsSql = `
-          INSERT INTO public_deals (
+          INSERT OR REPLACE INTO public_deals (
             id, slug, canonical_slug, title, brand, merchant, category, sector_code,
             product_url, affiliate_url, current_price_inr, currency, reference_price_inr,
             discount_percent, availability, verification_status, deal_kind, evidence_json,
             updated_at
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-          ON CONFLICT(id) DO UPDATE SET
-            slug = excluded.slug,
-            canonical_slug = excluded.canonical_slug,
-            title = excluded.title,
-            brand = excluded.brand,
-            merchant = excluded.merchant,
-            category = excluded.category,
-            sector_code = excluded.sector_code,
-            product_url = excluded.product_url,
-            affiliate_url = excluded.affiliate_url,
-            current_price_inr = excluded.current_price_inr,
-            reference_price_inr = excluded.reference_price_inr,
-            discount_percent = excluded.discount_percent,
-            availability = excluded.availability,
-            verification_status = excluded.verification_status,
-            deal_kind = excluded.deal_kind,
-            evidence_json = excluded.evidence_json,
-            updated_at = datetime('now')
         `;
+        const evidence = {
+          ...(deal.evidenceJson || {}),
+          affiliateCampaignId: deal.affiliateCampaignId,
+          affiliateNetwork: deal.affiliateNetwork
+        };
         const publicDealsParams = [
           deal.id,
           deal.slug || deal.canonicalSlug || deal.id,
@@ -2882,7 +2869,7 @@ export class AutonomousDealDiscoveryEngine {
           deal.availability || 'IN_STOCK',
           deal.verificationStatus || 'VERIFIED',
           deal.dealKind || 'PRODUCT',
-          JSON.stringify(deal.evidenceJson || {})
+          JSON.stringify(evidence)
         ];
 
         getDb().prepare(publicDealsSql).run(...publicDealsParams);
@@ -2959,6 +2946,8 @@ export class AutonomousDealDiscoveryEngine {
         rejectionReasons: [],
         trackingUrl: row.affiliate_url || undefined,
         isMonetizable: Boolean(row.affiliate_url),
+        affiliateCampaignId: evidence.affiliateCampaignId || undefined,
+        affiliateNetwork: evidence.affiliateNetwork || (row.affiliate_url ? 'CUELINKS' : undefined),
         evidenceJson: evidence,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
@@ -3119,7 +3108,15 @@ export class AutonomousDealDiscoveryEngine {
           for (const row of publicDealRows) {
             const parsedDeal = this.parseDealFromPublicDealsRow(row);
             if (parsedDeal) {
-              this.dealsMap.set(parsedDeal.id, parsedDeal);
+              const existing = this.dealsMap.get(parsedDeal.id);
+              if (existing) {
+                Object.assign(existing, parsedDeal, {
+                  affiliateCampaignId: existing.affiliateCampaignId || parsedDeal.affiliateCampaignId,
+                  affiliateNetwork: existing.affiliateNetwork || parsedDeal.affiliateNetwork
+                });
+              } else {
+                this.dealsMap.set(parsedDeal.id, parsedDeal);
+              }
               if (parsedDeal.slug) this.dealSlugMap.set(parsedDeal.slug.toLowerCase(), parsedDeal.id);
               if (parsedDeal.canonicalSlug) this.dealSlugMap.set(parsedDeal.canonicalSlug.toLowerCase(), parsedDeal.id);
             }
