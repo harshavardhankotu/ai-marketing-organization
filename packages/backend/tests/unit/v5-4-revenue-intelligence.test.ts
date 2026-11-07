@@ -250,7 +250,7 @@ describe('V5.4 — Revenue Intelligence, Quota Ledger, Policy Gate & Multi-Secto
       expect(CommercialLearningEngine.CANONICAL_SECTORS).toContain(selection.selectedSector);
 
       // Reset Sector B state for deterministic cold start test
-      getDb().exec("DELETE FROM sector_bandit_states WHERE sector_code = 'SECTOR_B_ELECTRONICS'; DELETE FROM commercial_reward_events WHERE sector_code = 'SECTOR_B_ELECTRONICS';");
+      getDb().exec("UPDATE sector_bandit_states SET alpha = 1.0, beta = 1.0, verified_interactions = 0, total_reward = 0.0, conversions_count = 0, cold_start_complete = 0 WHERE sector_code = 'SECTOR_B_ELECTRONICS'; DELETE FROM commercial_reward_events WHERE sector_code = 'SECTOR_B_ELECTRONICS';");
       CommercialLearningEngine.resetInstance();
       const engineFresh = CommercialLearningEngine.getInstance();
       engineFresh.ensureBanditInitialized();

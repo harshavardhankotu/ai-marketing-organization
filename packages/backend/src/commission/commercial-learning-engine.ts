@@ -157,6 +157,7 @@ export class CommercialLearningEngine {
       try { db.exec(`ALTER TABLE commercial_reward_events ADD COLUMN metadata_json TEXT DEFAULT '{}'`); } catch {}
       try { db.exec(`ALTER TABLE commercial_reward_events ADD COLUMN evidence_ref TEXT`); } catch {}
       try { db.exec(`ALTER TABLE commercial_reward_events ADD COLUMN is_verified_human INTEGER NOT NULL DEFAULT 1`); } catch {}
+      try { db.exec(`ALTER TABLE sector_bandit_states ADD COLUMN allocation_weight REAL NOT NULL DEFAULT 0.125`); } catch {}
       try { db.exec(`ALTER TABLE sector_bandit_states ADD COLUMN last_selected_at TEXT`); } catch {}
     } catch {}
 

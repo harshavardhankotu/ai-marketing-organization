@@ -158,19 +158,7 @@ export class BrevoMcpClient {
       };
     }
 
-    // 2. Credential verification: Kill synthetic receipts. Never return SENT on missing/placeholder keys.
-    const effectiveKey = (process.env.BREVO_MCP_SERVER_API || process.env.BREVO_API_KEY || this.apiKey || '').trim();
-    const isLive = Boolean(effectiveKey && !isPlaceholderCredential(effectiveKey));
-
-    if (!isLive) {
-      return {
-        success: false,
-        status: 'BLOCKED_CREDENTIALS',
-        reason: 'Missing or placeholder BREVO_API_KEY / BREVO_MCP_SERVER_API'
-      };
-    }
-
-    // 3. Pre-execution Quota Reservation via Centralized D1/SQLite Ledger (EVALUATE -> RESERVE -> EXECUTE -> RECONCILE)
+    // 2. Pre-execution Quota Reservation via Centralized D1/SQLite Ledger (EVALUATE -> RESERVE -> EXECUTE -> RECONCILE)
     const legacySends = await this.getDailySendCount();
     let quotaRes = { allowed: legacySends < BrevoMcpClient.MAX_DAILY_SENDS, reservationId: undefined as string | undefined, reason: undefined as string | undefined };
 
@@ -202,6 +190,21 @@ export class BrevoMcpClient {
         status: 'QUEUED_NEXT_UTC_WINDOW',
         reason: quotaRes.reason || `Daily send limit (${BrevoMcpClient.MAX_DAILY_SENDS}/day) reached. Message queued for next UTC window.`,
         dailySendsRemaining: 0
+      };
+    }
+
+    // 3. Credential verification: Kill synthetic receipts. Never return SENT on missing/placeholder keys.
+    const effectiveKey = (process.env.BREVO_MCP_SERVER_API || process.env.BREVO_API_KEY || this.apiKey || '').trim();
+    const isLive = Boolean(effectiveKey && !isPlaceholderCredential(effectiveKey));
+
+    if (!isLive) {
+      if (quotaRes.reservationId) {
+        await this.quotaService.reconcileProviderQuota('brevo_mcp', quotaRes.reservationId, 'RELEASE');
+      }
+      return {
+        success: false,
+        status: 'BLOCKED_CREDENTIALS',
+        reason: 'Missing or placeholder BREVO_API_KEY / BREVO_MCP_SERVER_API'
       };
     }
 
