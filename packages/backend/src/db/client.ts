@@ -695,17 +695,49 @@ export function getDb(dbPath?: string): Database.Database {
       domain TEXT PRIMARY KEY,
       target_url TEXT NOT NULL,
       business_name TEXT NOT NULL,
-      performance_score INTEGER NOT NULL DEFAULT 0,
-      seo_score INTEGER NOT NULL DEFAULT 0,
+      performance_score INTEGER,
+      seo_score INTEGER,
+      accessibility_score INTEGER,
+      best_practices_score INTEGER,
+      fcp_ms REAL,
+      lcp_ms REAL,
+      cls_score REAL,
       core_web_vitals_json TEXT NOT NULL DEFAULT '{}',
       head_snippets TEXT,
       schema_json_ld TEXT,
       checklist_json TEXT NOT NULL DEFAULT '[]',
       status TEXT NOT NULL DEFAULT 'COMPLETED',
+      html_scan_status TEXT NOT NULL DEFAULT 'COMPLETED',
+      pagespeed_status TEXT NOT NULL DEFAULT 'UNAVAILABLE',
+      pagespeed_unavailable_reason TEXT,
+      is_publicly_authorized INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_site_audits_updated ON site_audits(updated_at)`);
+  } catch {}
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS provider_quota_ledger (
+      provider TEXT NOT NULL,
+      window_key TEXT NOT NULL,
+      window_type TEXT NOT NULL DEFAULT 'UTC_DAY',
+      configured_status TEXT NOT NULL DEFAULT 'CONFIGURED',
+      cap_limit INTEGER NOT NULL,
+      safety_reserve INTEGER NOT NULL DEFAULT 0,
+      used_count INTEGER NOT NULL DEFAULT 0,
+      reserved_count INTEGER NOT NULL DEFAULT 0,
+      failed_count INTEGER NOT NULL DEFAULT 0,
+      last_reset_at TEXT,
+      next_reset_at TEXT,
+      circuit_breaker_state TEXT NOT NULL DEFAULT 'CLOSED',
+      last_error TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (provider, window_key)
+    )`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_provider_quota_provider ON provider_quota_ledger(provider)`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE provider_quota_ledger ADD COLUMN window_type TEXT NOT NULL DEFAULT 'UTC_DAY'`);
   } catch {}
   try {
     db.exec(`CREATE TABLE IF NOT EXISTS cuelinks_campaigns (
@@ -732,19 +764,19 @@ export function getDb(dbPath?: string): Database.Database {
         ('2067', 'Ustraa', 'ustraa.com', 'ACTIVE', 'CPS', 30),
         ('2514', 'The Man Company', 'themancompany.com', 'ACTIVE', 'CPS', 30)`);
   } catch {}
-  try { db.exec(`ALTER TABLE public_deals ADD COLUMN is_monetizable INTEGER NOT NULL DEFAULT 1`); } catch {}
+  try { db.exec(`ALTER TABLE public_deals ADD COLUMN is_monetizable INTEGER NOT NULL DEFAULT 0`); } catch {}
   try { db.exec(`ALTER TABLE public_deals ADD COLUMN discount_verification_type TEXT NOT NULL DEFAULT 'UNCONFIRMED'`); } catch {}
   try { db.exec(`ALTER TABLE public_deals ADD COLUMN next_recheck_at TEXT`); } catch {}
   try { db.exec(`ALTER TABLE public_deals ADD COLUMN last_verified_at TEXT`); } catch {}
   try { db.exec(`ALTER TABLE public_deals ADD COLUMN expiry_date TEXT`); } catch {}
-  try { db.exec(`ALTER TABLE public_deals ADD COLUMN product_verified INTEGER NOT NULL DEFAULT 1`); } catch {}
-  try { db.exec(`ALTER TABLE public_deals ADD COLUMN affiliate_verified INTEGER NOT NULL DEFAULT 1`); } catch {}
+  try { db.exec(`ALTER TABLE public_deals ADD COLUMN product_verified INTEGER NOT NULL DEFAULT 0`); } catch {}
+  try { db.exec(`ALTER TABLE public_deals ADD COLUMN affiliate_verified INTEGER NOT NULL DEFAULT 0`); } catch {}
   try { db.exec(`ALTER TABLE site_audits ADD COLUMN html_scan_status TEXT NOT NULL DEFAULT 'COMPLETED'`); } catch {}
   try { db.exec(`ALTER TABLE site_audits ADD COLUMN pagespeed_status TEXT NOT NULL DEFAULT 'UNAVAILABLE'`); } catch {}
   try { db.exec(`ALTER TABLE site_audits ADD COLUMN pagespeed_unavailable_reason TEXT`); } catch {}
   try { db.exec(`ALTER TABLE site_audits ADD COLUMN is_publicly_authorized INTEGER NOT NULL DEFAULT 0`); } catch {}
   try {
-    db.exec(`UPDATE site_audits SET is_publicly_authorized = 1 WHERE domain = 'capturelifedentalcare.com'`);
+    db.exec(`UPDATE site_audits SET is_publicly_authorized = 1 WHERE domain IN ('capturelifedentalcare.com', 'clovedental.in')`);
   } catch {}
   try {
     db.exec(`ALTER TABLE businesses ADD COLUMN locale TEXT DEFAULT 'en-US'`);

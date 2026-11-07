@@ -199,6 +199,8 @@ export class CuelinksSyncManager {
   public static getInstance(client?: CuelinksV3Client): CuelinksSyncManager {
     if (!CuelinksSyncManager.instance) {
       CuelinksSyncManager.instance = new CuelinksSyncManager(client);
+    } else if (client) {
+      CuelinksSyncManager.instance.client = client;
     }
     return CuelinksSyncManager.instance;
   }

@@ -206,6 +206,7 @@ export class UnifiedQuotaService {
         CREATE TABLE IF NOT EXISTS provider_quota_ledger (
           provider TEXT NOT NULL,
           window_key TEXT NOT NULL,
+          window_type TEXT NOT NULL DEFAULT 'UTC_DAY',
           configured_status TEXT NOT NULL DEFAULT 'CONFIGURED',
           cap_limit INTEGER NOT NULL,
           safety_reserve INTEGER NOT NULL DEFAULT 0,
@@ -1090,11 +1091,12 @@ export class UnifiedQuotaService {
       this.ensureInitialized();
 
       // 1. Ensure row exists in SQLite and D1
+      const windowType = spec.windowType || 'UTC_DAY';
       const insertSql = `
         INSERT INTO provider_quota_ledger (
-          provider, window_key, configured_status, cap_limit, safety_reserve,
+          provider, window_key, window_type, configured_status, cap_limit, safety_reserve,
           used_count, reserved_count, failed_count, last_reset_at, next_reset_at, circuit_breaker_state
-        ) VALUES (?, ?, 'CONFIGURED', ?, ?, 0, 0, 0, datetime('now'), datetime('now', '+1 day'), 'CLOSED')
+        ) VALUES (?, ?, ?, 'CONFIGURED', ?, ?, 0, 0, 0, datetime('now'), datetime('now', '+1 day'), 'CLOSED')
         ON CONFLICT(provider, window_key) DO NOTHING;
       `;
 
@@ -1102,20 +1104,21 @@ export class UnifiedQuotaService {
         await this.d1Repo.executeWrite('provider_quota_ledger', insertSql, [
           provider,
           windowKey,
+          windowType,
           spec.capLimit,
           spec.safetyReserve
         ]);
       }
-      db.prepare(insertSql).run(provider, windowKey, spec.capLimit, spec.safetyReserve);
+      db.prepare(insertSql).run(provider, windowKey, windowType, spec.capLimit, spec.safetyReserve);
 
       // Special check: Tavily has a second daily cap (max 20 credits/day)
       if (provider === 'tavily_search') {
         const dailyKey = UnifiedQuotaService.getUtcDateKey();
         const dailyInsertSql = `
           INSERT INTO provider_quota_ledger (
-            provider, window_key, configured_status, cap_limit, safety_reserve,
+            provider, window_key, window_type, configured_status, cap_limit, safety_reserve,
             used_count, reserved_count, failed_count, last_reset_at, next_reset_at, circuit_breaker_state
-          ) VALUES ('tavily_search_daily', ?, 'CONFIGURED', 20, 2, 0, 0, 0, datetime('now'), datetime('now', '+1 day'), 'CLOSED')
+          ) VALUES ('tavily_search_daily', ?, 'UTC_DAY', 'CONFIGURED', 20, 2, 0, 0, 0, datetime('now'), datetime('now', '+1 day'), 'CLOSED')
           ON CONFLICT(provider, window_key) DO NOTHING;
         `;
         if (isProduction() || this.d1Repo.isRemoteD1Configured()) {

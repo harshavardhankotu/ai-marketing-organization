@@ -53,6 +53,21 @@ describe('V5.8 — Revenue Integrity, Deterministic D1 Upserts & Honest Telemetr
         ]
       };
 
+      // Mock Cuelinks client and approved channel for true provider conversion
+      const cuelinksClient = engine.getCuelinksClient();
+      vi.spyOn(cuelinksClient, 'isConfigured').mockReturnValue(true);
+      vi.spyOn(cuelinksClient, 'convertLink').mockResolvedValue({
+        affiliated: true,
+        tracking_url: 'https://linksredirect.com/?cid=331585&subid=test&url=https%3A%2F%2Fboat-lifestyle.com',
+        campaign: { id: 4232, name: 'boAt Lifestyle' }
+      } as any);
+
+      const { CuelinksSyncManager } = await import('../../src/commission/cuelinks-sync-manager.js');
+      vi.spyOn(CuelinksSyncManager.getInstance(cuelinksClient), 'getApprovedChannel').mockResolvedValue({
+        channel: { id: 331585, name: 'AI Marketing', status: 'approved' } as any,
+        approved: true
+      });
+
       // Mock fetch to return Shopify feed
       const originalFetch = global.fetch;
       const mockFetch = vi.fn().mockImplementation(async (url: string) => {
