@@ -1133,7 +1133,7 @@ export class UnifiedQuotaService {
         let dailyUpdated = false;
         if (isProduction() || this.d1Repo.isRemoteD1Configured()) {
           const res = await this.d1Repo.executeWrite('provider_quota_ledger', dailyReserveSql, [units, dailyKey, units]);
-          dailyUpdated = ((res as any)?.meta?.changes ?? 0) > 0;
+          dailyUpdated = ((res as any)?.rowsAffected ?? (res as any)?.meta?.changes ?? 0) > 0;
         } else {
           const res = db.prepare(dailyReserveSql).run(units, dailyKey, units);
           dailyUpdated = res.changes > 0;
@@ -1162,7 +1162,7 @@ export class UnifiedQuotaService {
       let updated = false;
       if (isProduction() || this.d1Repo.isRemoteD1Configured()) {
         const res = await this.d1Repo.executeWrite('provider_quota_ledger', updateSql, [units, provider, windowKey, units]);
-        updated = ((res as any)?.meta?.changes ?? 0) > 0;
+        updated = ((res as any)?.rowsAffected ?? (res as any)?.meta?.changes ?? 0) > 0;
       } else {
         const res = db.prepare(updateSql).run(units, provider, windowKey, units);
         updated = res.changes > 0;
