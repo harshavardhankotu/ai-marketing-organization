@@ -1279,12 +1279,27 @@ export class UnifiedQuotaService {
     for (const [providerName, spec] of Object.entries(AUTONOMOUS_PROVIDER_SPECS)) {
       const windowKey = UnifiedQuotaService.computeWindowKey(spec.windowType);
       try {
-        const row = db.prepare(`
-          SELECT provider, window_key, configured_status, cap_limit, safety_reserve,
-                 used_count, reserved_count, failed_count, circuit_breaker_state, last_error
-          FROM provider_quota_ledger
-          WHERE provider = ? AND window_key = ?
-        `).get(providerName, windowKey) as any;
+        let row: any = null;
+        if (isProduction() || this.d1Repo.isRemoteD1Configured()) {
+          try {
+            row = await this.d1Repo.queryOne<any>(
+              'provider_quota_ledger',
+              `SELECT provider, window_key, configured_status, cap_limit, safety_reserve,
+                      used_count, reserved_count, failed_count, circuit_breaker_state, last_error
+               FROM provider_quota_ledger
+               WHERE provider = ? AND window_key = ?`,
+              [providerName, windowKey]
+            );
+          } catch {}
+        }
+        if (!row) {
+          row = db.prepare(`
+            SELECT provider, window_key, configured_status, cap_limit, safety_reserve,
+                   used_count, reserved_count, failed_count, circuit_breaker_state, last_error
+            FROM provider_quota_ledger
+            WHERE provider = ? AND window_key = ?
+          `).get(providerName, windowKey) as any;
+        }
 
         if (row) {
           result[providerName] = {
