@@ -1251,14 +1251,9 @@ export async function startServer(): Promise<any> {
   try {
     const { SiteAuditService } = await import('./tools/site-audit/site-audit-service.js');
     const auditService = SiteAuditService.getInstance();
-    const existing = await auditService.getAuditByDomain('capturelifedentalcare.com');
-    if (!existing) {
-      console.log('[Autonomy Gate] Executing baseline SiteFix audit for capturelifedentalcare.com...');
-      await auditService.runFullAudit('https://capturelifedentalcare.com', 'Capture Life Dental Care');
-      console.log('[Autonomy Gate] Baseline SiteFix audit completed and saved.');
-    } else {
-      console.log('[Autonomy Gate] Verified existing SiteFix audit record for capturelifedentalcare.com.');
-    }
+    console.log('[Autonomy Gate] Executing baseline SiteFix audit for capturelifedentalcare.com...');
+    await auditService.runFullAudit('https://capturelifedentalcare.com', 'Capture Life Dental Care');
+    console.log('[Autonomy Gate] Baseline SiteFix audit completed and saved.');
   } catch (err: any) {
     console.warn('[Autonomy Gate] Baseline SiteFix audit notice:', err.message);
   }
