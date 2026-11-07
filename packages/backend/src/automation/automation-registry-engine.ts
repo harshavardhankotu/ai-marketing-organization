@@ -785,6 +785,21 @@ export class AutomationRegistryEngine {
   }> {
     switch (workflowId) {
       case 'daily_market_demand_research': {
+        const { AutonomousPolicyGate } = await import('./autonomous-policy-gate.js');
+        const gateEval = AutonomousPolicyGate.getInstance().evaluateAction({ actionType: 'UPDATE_EXPLORATION_BANDIT' });
+        if (!gateEval.allowed) {
+          return {
+            status: 'NO_ACTION_DUE',
+            itemsProcessed: 0,
+            itemsSucceeded: 0,
+            itemsFailed: 0,
+            summary: { policyGate: 'REJECTED', reason: gateEval.reason }
+          };
+        }
+
+        const { CommercialLearningEngine } = await import('../commission/commercial-learning-engine.js');
+        const sectorSelection = CommercialLearningEngine.getInstance().selectNextSectorToExplore();
+
         const { checkB2BResearchBacklogGuard } = await import('../revenue/b2b-research-backlog-guard.js');
         const guard = await checkB2BResearchBacklogGuard(this.d1Repo);
         if (!guard.allowed) {
@@ -797,7 +812,9 @@ export class AutomationRegistryEngine {
               reason: guard.reason,
               unapprovedCount: guard.unapprovedCount,
               maxLimit: guard.maxLimit,
-              message: guard.message
+              message: guard.message,
+              exploredSector: sectorSelection.selectedSector,
+              selectionMode: sectorSelection.selectionMode
             },
             ownerActionRequired: `Review ${guard.unapprovedCount} pending outreach drafts at /owner/today to resume market research.`
           };
@@ -811,7 +828,14 @@ export class AutomationRegistryEngine {
           itemsProcessed: report.totalBusinessesProcessed,
           itemsSucceeded: report.results.filter(r => r.status === 'COMPLETED').length,
           itemsFailed: report.results.filter(r => r.status === 'FAILED').length,
-          summary: { businesses: report.results.length, hasFindings }
+          summary: {
+            businesses: report.results.length,
+            hasFindings,
+            exploredSector: sectorSelection.selectedSector,
+            selectionMode: sectorSelection.selectionMode,
+            policyApproval: gateEval.approvalSource,
+            humanApproved: gateEval.humanApproved
+          }
         };
       }
 
@@ -1486,12 +1510,28 @@ export class AutomationRegistryEngine {
         await UnifiedQuotaService.getInstance().syncFromD1Async();
         const { DPDPComplianceManager } = await import('../compliance/dpdp-manager.js');
         const purge = DPDPComplianceManager.getInstance().purgeExpiredInquiries(30);
+
+        // Drain Brevo overflow queue within daily quota limit
+        let drainedCount = 0;
+        let remainingQueued = 0;
+        try {
+          const { BrevoMcpClient } = await import('../integrations/brevo-mcp-client.js');
+          const drainRes = await BrevoMcpClient.getInstance().drainOverflowQueue(20);
+          drainedCount = drainRes.drainedCount;
+          remainingQueued = drainRes.remainingQueued;
+        } catch {}
+
         return {
           status: 'COMPLETED',
-          itemsProcessed: purge.purgedCount,
-          itemsSucceeded: purge.purgedCount,
+          itemsProcessed: purge.purgedCount + drainedCount,
+          itemsSucceeded: purge.purgedCount + drainedCount,
           itemsFailed: 0,
-          summary: { dpdpPurgedCount: purge.purgedCount, quotaSynced: true }
+          summary: {
+            dpdpPurgedCount: purge.purgedCount,
+            quotaSynced: true,
+            brevoDrainedCount: drainedCount,
+            brevoRemainingQueued: remainingQueued
+          }
         };
       }
 

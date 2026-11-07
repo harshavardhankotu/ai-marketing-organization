@@ -3,8 +3,8 @@
 **Single Source of Truth for Autonomous Operations, Commercial Architecture & Quota Ledgers**  
 **Repository:** `harshavardhankotu/ai-marketing-organization`  
 **Production URL:** `https://ai-marketing-organization.onrender.com`  
-**Current State & Last Verified Commit:** `feat/v5-4-revenue-intelligence` (V5.4 Revenue Intelligence & Execution Engine)  
-**Target Release:** V5.4 (Centralized Quota Ledger, Autonomous Policy Gate, Bayesian Sector Bandit, PageSpeed Insights)  
+**Current State & Last Verified Commit:** `feat/v5-5-durable-execution-wiring` (V5.5 Real Revenue Execution, Durable D1 Learning & Live Provider Wiring)  
+**Target Release:** V5.5 (Durable D1 Bandit State, Brevo MCP Bearer Alignment, Truthful PageSpeed Diagnostics & Live Execution Wiring)  
 
 ---
 
@@ -117,13 +117,13 @@ To guarantee ₹0 paid operational expenses and prevent provider bans, all auton
 | `google_indexing` | `PT_DAY` | 200/day | **180 / day** | Skipped; queued to sitemap/IndexNow |
 | `brevo_mcp` | `UTC_DAY` | 300/day | **200 / day** | Queued with `QUEUED_NEXT_UTC_WINDOW` |
 | `google_pagespeed` | `UTC_DAY` | 50/day | **40 / day** | Cached 24h fallback |
-| `gemini_ai` | `UTC_DAY` | 1,500/day | **1,000 / day** | Rule-based deterministic fallback |
+| `gemini_flash` | `PT_DAY` | 60/day | **48 / day** | Deterministic rule-based fallback |
 | `cuelinks_api` | `UTC_DAY` | 1,000/day | **500 / day** | Cached deal feed fallback |
 | `razorpay_api` | `UTC_DAY` | 5,000/day | **1,000 / day** | Throttled backoff |
 
 ---
 
-## 5. Autonomous Policy Gate (V5.4)
+## 5. Autonomous Policy Gate (V5.4 & V5.5)
 
 Implements strict segregation of autonomous execution vs human review:
 - **Zero Fabricated Approvals:** The engine NEVER sets `human_approved = 1`.
@@ -148,3 +148,27 @@ Implements strict segregation of autonomous execution vs human review:
 2. **Paid Ad Budget:** Strictly ₹0.00.
 3. **No Unbacked Claims:** All metrics displayed on owner digests must trace to verified database records or live external HTTP status checks.
 4. **Foreign Key Integrity:** All SQLite and Cloudflare D1 tables require valid foreign key parent records (`PRAGMA foreign_keys = ON;`). Tests must seed parent organizations and businesses before inserting dependent records.
+
+---
+
+## 7. V5.5 Architecture & Durable Learning Engine
+
+1. **Durable Multi-Armed Bandit Persistence:**
+   - Canonical tables `sector_bandit_states` and `commercial_reward_events` in Cloudflare D1 and SQLite.
+   - Deterministic deduplication on unique `eventId`: duplicate events return 0 reward and do not alter posterior weights.
+   - Strict bot and internal diagnostic traffic filtering: bot user agents and diagnostic flags yield 0 reward and never increment `verified_interactions` or bypass the 10-interaction cold-start floor.
+   - `CommercialLearningEngine.getInstance().selectNextSectorToExplore()` drives hourly discovery and research workflows.
+
+2. **Truthful Web Diagnostics & Core Web Vitals:**
+   - Synthetic fixtures completely eliminated from `GooglePageSpeedClient`.
+   - When API keys are unconfigured or 40/PT_DAY quota is reached, returns structured `{ status: 'UNAVAILABLE', reason, metrics: null }`.
+   - `SiteAuditService` seamlessly merges live Core Web Vitals (LCP, FCP, CLS, TBT) when available, and includes a truthful notice when unconfigured.
+
+3. **Brevo MCP Server Protocol Alignment & Queue Drainer:**
+   - Uses standard MCP HTTP Bearer authentication (`Authorization: Bearer ${BREVO_MCP_SERVER_API}`) and JSON-RPC 2.0 tool calls (`tools/call` with `send_email`).
+   - Synthetic `SENT` receipts deleted: unconfigured credentials return `BLOCKED_CREDENTIALS` and release quota reservations.
+   - Automated overflow queue drainer (`drainOverflowQueue()`) wired into recurring health checks and dispatch crons.
+
+4. **Dynamic Autonomy Telemetry:**
+   - `/api/v1/public/autonomy-status` dynamically derives provider capability statuses (`NOT_CONFIGURED`, `CONFIGURED`, `LIVE_VERIFIED`) from live configuration and execution records in D1.
+   - Live bandit weights and interaction intelligence returned under `banditLearning` and `sectorIntelligence`.

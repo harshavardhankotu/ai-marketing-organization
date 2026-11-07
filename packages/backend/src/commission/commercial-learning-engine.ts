@@ -11,6 +11,8 @@
  * 4. Learns from empirical conversion rates to adjust opportunity scoring weights.
  */
 
+import { randomUUID } from 'crypto';
+import { getDb } from '../db/client.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { CommercialOpportunitySelector, QualifiedCommercialOpportunity } from './commercial-opportunity-selector.js';
 import { OrganicDistributionEngine, OrganicDistributionPackage } from './organic-distribution-engine.js';
@@ -18,6 +20,7 @@ import { CuelinksSyncManager } from './cuelinks-sync-manager.js';
 import { AutonomousDealDiscoveryEngine } from './autonomous-deal-discovery-engine.js';
 import { DiscoveredDealInput } from './deal-types.js';
 import { SectorCode, COMMERCIAL_SECTOR_TAXONOMY } from '@ai-marketing/shared';
+import { isBotTraffic } from './referral-tracking.js';
 
 export type CommercialRewardEventType =
   | 'BOT_OR_INTERNAL_CLICK'
@@ -32,12 +35,17 @@ export type CommercialRewardEventType =
   | 'UNPRODUCTIVE_API_QUOTA_UNIT';
 
 export interface CommercialRewardEvent {
+  eventId?: string;
   eventType: CommercialRewardEventType;
   commissionINR?: number;
   cashINR?: number;
   unproductiveQuotaUnits?: number;
   sourceClickId?: string;
   notes?: string;
+  isDiagnostic?: boolean;
+  userAgent?: string;
+  evidenceRef?: string;
+  metadata?: Record<string, any>;
 }
 
 export interface SectorBanditState {
@@ -120,10 +128,72 @@ export class CommercialLearningEngine {
    */
   public ensureBanditInitialized(): void {
     if (this.sectorBanditStates.size === 8) return;
+
+    // 0. Ensure tables exist
+    try {
+      const db = getDb();
+      db.exec(`CREATE TABLE IF NOT EXISTS sector_bandit_states (
+        sector_code TEXT PRIMARY KEY,
+        alpha REAL NOT NULL DEFAULT 1.0,
+        beta REAL NOT NULL DEFAULT 1.0,
+        verified_interactions INTEGER NOT NULL DEFAULT 0,
+        total_reward REAL NOT NULL DEFAULT 0.0,
+        conversions_count INTEGER NOT NULL DEFAULT 0,
+        cold_start_complete INTEGER NOT NULL DEFAULT 0,
+        allocation_weight REAL NOT NULL DEFAULT 0.125,
+        last_selected_at TEXT,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )`);
+      db.exec(`CREATE TABLE IF NOT EXISTS commercial_reward_events (
+        event_id TEXT PRIMARY KEY,
+        sector_code TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        reward_delta REAL NOT NULL,
+        evidence_ref TEXT,
+        is_verified_human INTEGER NOT NULL DEFAULT 1,
+        metadata_json TEXT DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )`);
+      try { db.exec(`ALTER TABLE commercial_reward_events ADD COLUMN metadata_json TEXT DEFAULT '{}'`); } catch {}
+      try { db.exec(`ALTER TABLE commercial_reward_events ADD COLUMN evidence_ref TEXT`); } catch {}
+      try { db.exec(`ALTER TABLE commercial_reward_events ADD COLUMN is_verified_human INTEGER NOT NULL DEFAULT 1`); } catch {}
+      try { db.exec(`ALTER TABLE sector_bandit_states ADD COLUMN last_selected_at TEXT`); } catch {}
+    } catch {}
+
+    // 1. Try reading existing durable state from sector_bandit_states
+    try {
+      const db = getDb();
+      const rows = db.prepare('SELECT * FROM sector_bandit_states').all() as any[];
+      if (rows && rows.length > 0) {
+        for (const row of rows) {
+          const code = row.sector_code as SectorCode;
+          if (CommercialLearningEngine.CANONICAL_SECTORS.includes(code)) {
+            const def = COMMERCIAL_SECTOR_TAXONOMY[code];
+            const verifiedInt = Number(row.verified_interactions || 0);
+            this.sectorBanditStates.set(code, {
+              sectorCode: code,
+              displayName: def?.displayName || code,
+              alpha: Number(row.alpha || 1.0),
+              beta: Number(row.beta || 1.0),
+              cumulativeReward: Number(row.total_reward || 0.0),
+              verifiedHumanInteractions: verifiedInt,
+              conversionsCount: Number(row.conversions_count || 0),
+              inColdStart: Number(row.cold_start_complete) !== 1 && verifiedInt < CommercialLearningEngine.COLD_START_INTERACTION_THRESHOLD,
+              allocationWeight: Number(row.allocation_weight || 0.125),
+              lastUpdated: row.updated_at || new Date().toISOString()
+            });
+          }
+        }
+      }
+    } catch {
+      // Table may not yet be initialized in some contexts
+    }
+
+    // 2. Ensure all 8 canonical sectors exist, seed any missing into SQLite and D1
     for (const code of CommercialLearningEngine.CANONICAL_SECTORS) {
       if (!this.sectorBanditStates.has(code)) {
         const def = COMMERCIAL_SECTOR_TAXONOMY[code];
-        this.sectorBanditStates.set(code, {
+        const state: SectorBanditState = {
           sectorCode: code,
           displayName: def?.displayName || code,
           alpha: 1.0,
@@ -134,7 +204,29 @@ export class CommercialLearningEngine {
           inColdStart: true,
           allocationWeight: 1.0 / 8.0,
           lastUpdated: new Date().toISOString()
-        });
+        };
+        this.sectorBanditStates.set(code, state);
+
+        try {
+          const db = getDb();
+          db.prepare(`
+            INSERT OR IGNORE INTO sector_bandit_states (
+              sector_code, alpha, beta, verified_interactions, total_reward,
+              conversions_count, cold_start_complete, allocation_weight, updated_at
+            ) VALUES (?, 1.0, 1.0, 0, 0.0, 0, 0, 0.125, datetime('now'))
+          `).run(code);
+        } catch {}
+
+        if (this.d1Repo.isRemoteD1Configured()) {
+          this.d1Repo.executeWrite(
+            'sector_bandit_states',
+            `INSERT OR IGNORE INTO sector_bandit_states (
+              sector_code, alpha, beta, verified_interactions, total_reward,
+              conversions_count, cold_start_complete, allocation_weight, updated_at
+            ) VALUES (?, 1.0, 1.0, 0, 0.0, 0, 0, 0.125, datetime('now'))`,
+            [code]
+          ).catch(() => {});
+        }
       }
     }
   }
@@ -180,17 +272,21 @@ export class CommercialLearningEngine {
   }
 
   /**
-   * Records a commercial evidence event and updates the sector's Bayesian posterior.
+   * Records a commercial evidence event, enforces deterministic deduplication, and updates Bayesian posterior.
+   * Guarantees:
+   * - Deduplication via unique eventId in commercial_reward_events.
+   * - Duplicate events return 0 and never update bandit weights.
+   * - Bot and diagnostic clicks never increment verified interactions or bypass cold-start.
+   * - Canonical persistence to SQLite and Cloudflare D1.
    */
   public recordCommercialEvent(sectorCode: SectorCode, event: CommercialRewardEvent): number {
     this.ensureBanditInitialized();
     const state = this.sectorBanditStates.get(sectorCode);
     if (!state) return 0;
 
-    const reward = CommercialLearningEngine.computeReward(event);
-    state.cumulativeReward += reward;
-    state.lastUpdated = new Date().toISOString();
-
+    const eventId = event.eventId || event.sourceClickId || `evt_${Date.now()}_${randomUUID().substring(0, 10)}`;
+    const isBot = event.userAgent ? isBotTraffic(event.userAgent) : false;
+    const isDiagnostic = Boolean(event.isDiagnostic || event.eventType === 'BOT_OR_INTERNAL_CLICK' || isBot);
     const isHumanInteraction = [
       'VERIFIED_HUMAN_VISIT',
       'SITEFIX_COMPLETED_SCAN',
@@ -199,7 +295,70 @@ export class CommercialLearningEngine {
       'PROVIDER_ATTRIBUTED_CONVERSION',
       'VALIDATED_COMMISSION',
       'BANK_CONFIRMED_CASH'
-    ].includes(event.eventType);
+    ].includes(event.eventType) && !isDiagnostic;
+
+    const isVerifiedHumanInt = isHumanInteraction ? 1 : 0;
+    const reward = isDiagnostic ? 0 : CommercialLearningEngine.computeReward(event);
+
+    // 1. Deduplication check via commercial_reward_events
+    let inserted = false;
+    try {
+      const db = getDb();
+      const existing = db.prepare('SELECT event_id FROM commercial_reward_events WHERE event_id = ?').get(eventId);
+      if (existing) {
+        // Event already exists: zero double-counting
+        return 0;
+      }
+
+      const info = db.prepare(`
+        INSERT OR IGNORE INTO commercial_reward_events (
+          event_id, sector_code, event_type, reward_delta, evidence_ref,
+          is_verified_human, metadata_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      `).run(
+        eventId,
+        sectorCode,
+        event.eventType,
+        reward,
+        event.evidenceRef || event.sourceClickId || null,
+        isVerifiedHumanInt,
+        JSON.stringify(event.metadata || { notes: event.notes, userAgent: event.userAgent })
+      );
+
+      inserted = (info.changes || 0) > 0;
+    } catch (err: any) {
+      console.warn(`[CommercialLearningEngine] Event insert error: ${err.message}`);
+      inserted = false;
+    }
+
+    if (!inserted) {
+      // Duplicate eventId already recorded: zero double-counting
+      return 0;
+    }
+
+    // Persist to remote D1 asynchronously if configured
+    if (this.d1Repo.isRemoteD1Configured()) {
+      this.d1Repo.executeWrite(
+        'commercial_reward_events',
+        `INSERT OR IGNORE INTO commercial_reward_events (
+          event_id, sector_code, event_type, reward_delta, evidence_ref,
+          is_verified_human, metadata_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+        [
+          eventId,
+          sectorCode,
+          event.eventType,
+          reward,
+          event.evidenceRef || event.sourceClickId || null,
+          isVerifiedHumanInt,
+          JSON.stringify(event.metadata || { notes: event.notes, userAgent: event.userAgent })
+        ]
+      ).catch(() => {});
+    }
+
+    // 2. State & posterior updates (ONLY if verified human interaction and not diagnostic)
+    state.cumulativeReward += reward;
+    state.lastUpdated = new Date().toISOString();
 
     if (isHumanInteraction) {
       state.verifiedHumanInteractions++;
@@ -209,18 +368,76 @@ export class CommercialLearningEngine {
       state.inColdStart = false;
     }
 
-    if (['PROVIDER_ATTRIBUTED_CONVERSION', 'VALIDATED_COMMISSION', 'BANK_CONFIRMED_CASH'].includes(event.eventType)) {
+    if (isHumanInteraction && ['PROVIDER_ATTRIBUTED_CONVERSION', 'VALIDATED_COMMISSION', 'BANK_CONFIRMED_CASH'].includes(event.eventType)) {
       state.conversionsCount++;
     }
 
     // Bayesian updating: positive rewards update alpha, negative updates beta
-    if (reward > 0) {
-      state.alpha += Math.min(reward / 10, 5);
+    if (isHumanInteraction) {
+      if (reward > 0) {
+        state.alpha += Math.min(reward / 10, 5);
+      } else if (reward < 0) {
+        state.beta += Math.min(Math.abs(reward) / 10, 5);
+      }
     } else if (reward < 0) {
       state.beta += Math.min(Math.abs(reward) / 10, 5);
     }
 
     this.recomputeAllocationWeights();
+
+    // 3. Persist updated bandit state to SQLite and D1
+    const coldStartCompleteInt = state.inColdStart ? 0 : 1;
+    try {
+      const db = getDb();
+      db.prepare(`
+        UPDATE sector_bandit_states SET
+          alpha = ?,
+          beta = ?,
+          verified_interactions = ?,
+          total_reward = ?,
+          conversions_count = ?,
+          cold_start_complete = ?,
+          allocation_weight = ?,
+          updated_at = datetime('now')
+        WHERE sector_code = ?
+      `).run(
+        state.alpha,
+        state.beta,
+        state.verifiedHumanInteractions,
+        state.cumulativeReward,
+        state.conversionsCount,
+        coldStartCompleteInt,
+        state.allocationWeight,
+        sectorCode
+      );
+    } catch {}
+
+    if (this.d1Repo.isRemoteD1Configured()) {
+      this.d1Repo.executeWrite(
+        'sector_bandit_states',
+        `UPDATE sector_bandit_states SET
+          alpha = ?,
+          beta = ?,
+          verified_interactions = ?,
+          total_reward = ?,
+          conversions_count = ?,
+          cold_start_complete = ?,
+          allocation_weight = ?,
+          updated_at = datetime('now')
+        WHERE sector_code = ?`,
+        [
+          state.alpha,
+          state.beta,
+          state.verifiedHumanInteractions,
+          state.cumulativeReward,
+          state.conversionsCount,
+          coldStartCompleteInt,
+          state.allocationWeight,
+          sectorCode
+        ]
+      ).catch(() => {});
+    }
+
     return reward;
   }
 
@@ -278,45 +495,55 @@ export class CommercialLearningEngine {
       allStates[code] = { ...this.sectorBanditStates.get(code)! };
     }
 
+    let selectedSector: SectorCode;
+    let selectionMode: 'COLD_START_EXPLORATION' | 'THOMPSON_SAMPLING_EXPLOITATION' | 'EXPLORATION_FLOOR';
+    let sampleScore: number;
+
     // 1. Cold-start check: Find sectors with < 10 verified human interactions
     const coldStartSectors = sectors.filter(code => (allStates[code]?.verifiedHumanInteractions || 0) < CommercialLearningEngine.COLD_START_INTERACTION_THRESHOLD);
     if (coldStartSectors.length > 0) {
-      const picked = coldStartSectors[Math.floor(Math.random() * coldStartSectors.length)];
-      return {
-        selectedSector: picked,
-        selectionMode: 'COLD_START_EXPLORATION',
-        sampleScore: 0.5,
-        allSectors: allStates
-      };
-    }
-
-    // 2. Exploration Floor check: 20% probability exploration across all 8 sectors
-    if (Math.random() < CommercialLearningEngine.EXPLORATION_FLOOR) {
-      const picked = sectors[Math.floor(Math.random() * sectors.length)];
-      return {
-        selectedSector: picked,
-        selectionMode: 'EXPLORATION_FLOOR',
-        sampleScore: 0.2,
-        allSectors: allStates
-      };
-    }
-
-    // 3. Thompson Sampling exploitation across posterior distributions
-    let bestSector = sectors[0];
-    let maxSample = -Infinity;
-    for (const code of sectors) {
-      const state = allStates[code];
-      const sample = this.sampleBeta(state.alpha, state.beta);
-      if (sample > maxSample) {
-        maxSample = sample;
-        bestSector = code;
+      selectedSector = coldStartSectors[Math.floor(Math.random() * coldStartSectors.length)];
+      selectionMode = 'COLD_START_EXPLORATION';
+      sampleScore = 0.5;
+    } else if (Math.random() < CommercialLearningEngine.EXPLORATION_FLOOR) {
+      // 2. Exploration Floor check: 20% probability exploration across all 8 sectors
+      selectedSector = sectors[Math.floor(Math.random() * sectors.length)];
+      selectionMode = 'EXPLORATION_FLOOR';
+      sampleScore = 0.2;
+    } else {
+      // 3. Thompson Sampling exploitation across posterior distributions
+      let bestSector = sectors[0];
+      let maxSample = -Infinity;
+      for (const code of sectors) {
+        const state = allStates[code];
+        const sample = this.sampleBeta(state.alpha, state.beta);
+        if (sample > maxSample) {
+          maxSample = sample;
+          bestSector = code;
+        }
       }
+      selectedSector = bestSector;
+      selectionMode = 'THOMPSON_SAMPLING_EXPLOITATION';
+      sampleScore = Number(maxSample.toFixed(4));
+    }
+
+    try {
+      const db = getDb();
+      db.prepare(`UPDATE sector_bandit_states SET last_selected_at = datetime('now') WHERE sector_code = ?`).run(selectedSector);
+    } catch {}
+
+    if (this.d1Repo.isRemoteD1Configured()) {
+      this.d1Repo.executeWrite(
+        'sector_bandit_states',
+        `UPDATE sector_bandit_states SET last_selected_at = datetime('now') WHERE sector_code = ?`,
+        [selectedSector]
+      ).catch(() => {});
     }
 
     return {
-      selectedSector: bestSector,
-      selectionMode: 'THOMPSON_SAMPLING_EXPLOITATION',
-      sampleScore: Number(maxSample.toFixed(4)),
+      selectedSector,
+      selectionMode,
+      sampleScore,
       allSectors: allStates
     };
   }

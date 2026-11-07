@@ -211,25 +211,8 @@ export class DemandDiscoveryEngine {
       return [];
     }
 
-    // 4. Daily search-attempt ledger check (Enforces hard max 3 actual live searches per Asia/Kolkata calendar day)
+    // 4. Daily date in Asia/Kolkata timezone (UnifiedQuotaService now acts as the sole rate limiter)
     const kolkataDate = this.getKolkataDateString();
-    let todayAttempts = 0;
-    try {
-      const attemptRow = await this.d1Repo.queryOne<{ cnt: number }>(
-        'search_attempts',
-        "SELECT COUNT(*) as cnt FROM search_attempts WHERE kolkata_date = ?",
-        [kolkataDate]
-      );
-      todayAttempts = attemptRow?.cnt || 0;
-    } catch {
-      // If table query fails, continue with count 0
-    }
-
-    if (todayAttempts >= 3 && process.env.NODE_ENV !== 'test') {
-      console.warn(`[DemandDiscoveryEngine] Daily search budget reached (3 attempts recorded for ${kolkataDate}). Skipping live search.`);
-      this.lastSource = 'BUDGET_EXHAUSTED';
-      return [];
-    }
 
     // 5. Seven-day stop rule: Count distinct valid buyer questions for this exact category
     const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();

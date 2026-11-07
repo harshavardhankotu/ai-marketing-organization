@@ -3777,6 +3777,17 @@ apiRouter.post('/offer/inquiry', async (c) => {
 
     const csvRow = `"${new Date().toISOString()}","${sanitizeCsvCell(prospectId)}","${sanitizeCsvCell(clinicName)}","${sanitizeCsvCell(customerName)}","${sanitizeCsvCell(customerPhone)}","${sanitizeCsvCell(customerEmail || '')}","${sanitizeCsvCell(notes)}","${sanitizeCsvCell(initialStatus)}"`;
 
+    if (!isTestProspect) {
+      try {
+        const { CommercialLearningEngine } = await import('../commission/commercial-learning-engine.js');
+        CommercialLearningEngine.getInstance().recordCommercialEvent('SECTOR_H_LOCAL_SERVICES_B2B', {
+          eventId: `inq_${prospectId}`,
+          eventType: 'CONSENTED_QUALIFIED_ENQUIRY',
+          isDiagnostic: false
+        });
+      } catch {}
+    }
+
     return c.json({
       success: true,
       message: isTestProspect
@@ -6603,15 +6614,114 @@ apiRouter.get('/public/autonomy-status', async (c) => {
   const { UnifiedQuotaService } = await import('../quota/unified-quota-service.js');
   const { CommercialLearningEngine } = await import('../commission/commercial-learning-engine.js');
   const { AutonomousPolicyGate } = await import('../automation/autonomous-policy-gate.js');
+  const { D1RevenueRepository } = await import('../db/d1-revenue-repository.js');
 
   const quotaService = UnifiedQuotaService.getInstance();
   const learningEngine = CommercialLearningEngine.getInstance();
+  const d1Repo = D1RevenueRepository.getInstance();
 
   const quotaLedger = await quotaService.getAllProviderQuotaStatus();
   const sectorIntelligence = learningEngine.getSectorBanditIntelligence();
 
+  // Helper to dynamically derive provider capability status from configuration + D1/SQLite execution history
+  const isKeyConfigured = (key?: string) => Boolean(key && !isPlaceholderCredential(key) && !key.startsWith('test') && !key.includes('placeholder'));
+
+  const deriveStatus = async (
+    provider: 'gemini' | 'tavily' | 'google_search' | 'google_pagespeed' | 'google_indexing' | 'brevo' | 'razorpay' | 'cuelinks'
+  ): Promise<'NOT_CONFIGURED' | 'CONFIGURED' | 'LIVE_VERIFIED' | 'BLOCKED' | 'FAILED'> => {
+    switch (provider) {
+      case 'gemini': {
+        const key = process.env.GEMINI_API_KEY;
+        if (!isKeyConfigured(key)) return 'NOT_CONFIGURED';
+        try {
+          const row = await d1Repo.queryOne<{ consumed_units: number }>('provider_quota_ledger', "SELECT consumed_units FROM provider_quota_ledger WHERE provider = 'gemini_flash'");
+          if (row && row.consumed_units > 0) return 'LIVE_VERIFIED';
+        } catch {}
+        return 'CONFIGURED';
+      }
+      case 'tavily': {
+        const key = process.env.TAVILY_API_KEY;
+        if (!isKeyConfigured(key)) return 'NOT_CONFIGURED';
+        try {
+          const row = await d1Repo.queryOne<{ cnt: number }>('search_attempts', "SELECT COUNT(*) as cnt FROM search_attempts WHERE provider = 'TAVILY' AND status = 'SUCCESS'");
+          if (row && row.cnt > 0) return 'LIVE_VERIFIED';
+        } catch {}
+        return 'CONFIGURED';
+      }
+      case 'google_search': {
+        const key = process.env.GOOGLE_SEARCH_API_KEY;
+        const cx = process.env.GOOGLE_SEARCH_CX;
+        if (!isKeyConfigured(key) || !cx || cx.includes('placeholder')) return 'NOT_CONFIGURED';
+        try {
+          const row = await d1Repo.queryOne<{ cnt: number }>('search_attempts', "SELECT COUNT(*) as cnt FROM search_attempts WHERE provider = 'GOOGLE_CUSTOM_SEARCH' AND status = 'SUCCESS'");
+          if (row && row.cnt > 0) return 'LIVE_VERIFIED';
+        } catch {}
+        return 'CONFIGURED';
+      }
+      case 'google_pagespeed': {
+        const key = process.env.GOOGLE_PAGESPEED_API_KEY || process.env.GOOGLE_SEARCH_API_KEY;
+        if (!isKeyConfigured(key)) return 'NOT_CONFIGURED';
+        try {
+          const row = await d1Repo.queryOne<{ cnt: number }>('search_cache', "SELECT COUNT(*) as cnt FROM search_cache WHERE provider = 'google_pagespeed'");
+          if (row && row.cnt > 0) return 'LIVE_VERIFIED';
+        } catch {}
+        return 'CONFIGURED';
+      }
+      case 'google_indexing': {
+        const key = process.env.GOOGLE_INDEXING_SERVICE_ACCOUNT_KEY || process.env.GOOGLE_INDEXING_API;
+        if (!isKeyConfigured(key)) return 'NOT_CONFIGURED';
+        try {
+          const row = await d1Repo.queryOne<{ requests_count: number }>('google_indexing_daily_quota', "SELECT requests_count FROM google_indexing_daily_quota WHERE requests_count > 0 LIMIT 1");
+          if (row && row.requests_count > 0) return 'LIVE_VERIFIED';
+        } catch {}
+        return 'CONFIGURED';
+      }
+      case 'brevo': {
+        const key = process.env.BREVO_MCP_SERVER_API || process.env.BREVO_API_KEY;
+        if (!isKeyConfigured(key)) return 'NOT_CONFIGURED';
+        try {
+          const row = await d1Repo.queryOne<{ sends_count: number }>('brevo_daily_quota', "SELECT sends_count FROM brevo_daily_quota WHERE sends_count > 0 LIMIT 1");
+          if (row && row.sends_count > 0) return 'LIVE_VERIFIED';
+        } catch {}
+        return 'CONFIGURED';
+      }
+      case 'razorpay': {
+        const keyId = process.env.RAZORPAY_KEY_ID;
+        const keySecret = process.env.RAZORPAY_KEY_SECRET;
+        if (!isKeyConfigured(keyId) || !isKeyConfigured(keySecret)) return 'NOT_CONFIGURED';
+        try {
+          const row = await d1Repo.queryOne<{ cnt: number }>('payment_orders', "SELECT COUNT(*) as cnt FROM payment_orders WHERE status = 'CAPTURED'");
+          if (row && row.cnt > 0) return 'LIVE_VERIFIED';
+        } catch {}
+        return 'CONFIGURED';
+      }
+      case 'cuelinks': {
+        const key = process.env.CUELINKS_API_KEY;
+        if (!isKeyConfigured(key)) return 'NOT_CONFIGURED';
+        try {
+          const row = await d1Repo.queryOne<{ cnt: number }>('verified_deals', "SELECT COUNT(*) as cnt FROM verified_deals WHERE status = 'ACTIVE'");
+          if (row && row.cnt > 0) return 'LIVE_VERIFIED';
+        } catch {}
+        return 'CONFIGURED';
+      }
+      default:
+        return 'NOT_CONFIGURED';
+    }
+  };
+
+  const [geminiStatus, tavilyStatus, googleSearchStatus, pagespeedStatus, indexingStatus, brevoStatus, razorpayStatus, cuelinksStatus] = await Promise.all([
+    deriveStatus('gemini'),
+    deriveStatus('tavily'),
+    deriveStatus('google_search'),
+    deriveStatus('google_pagespeed'),
+    deriveStatus('google_indexing'),
+    deriveStatus('brevo'),
+    deriveStatus('razorpay'),
+    deriveStatus('cuelinks')
+  ]);
+
   return c.json({
-    version: '5.4.0',
+    version: '5.5.0',
     platform: 'Autonomous Multi-Sector Revenue Organization',
     timestamp: new Date().toISOString(),
     policyGate: {
@@ -6624,34 +6734,50 @@ apiRouter.get('/public/autonomy-status', async (c) => {
     },
     quotaLedger,
     sectorIntelligence,
+    banditLearning: sectorIntelligence,
     capabilityMatrix: {
       searchDiscovery: {
         provider: 'SearchDiscoveryProvider',
         hierarchy: ['CACHE_24H', 'GOOGLE_CUSTOM_SEARCH_60_DAY', 'TAVILY_SEARCH_20_DAY'],
-        status: 'ACTIVE'
+        googleSearchStatus,
+        tavilyStatus,
+        status: googleSearchStatus === 'LIVE_VERIFIED' || tavilyStatus === 'LIVE_VERIFIED' ? 'LIVE_VERIFIED' : (googleSearchStatus === 'CONFIGURED' || tavilyStatus === 'CONFIGURED' ? 'CONFIGURED' : 'NOT_CONFIGURED')
+      },
+      geminiAi: {
+        provider: 'GeminiProvider',
+        dailyCap: 48,
+        status: geminiStatus
       },
       googleIndexing: {
         client: 'GoogleIndexingClient',
         auth: 'RS256_JWT_OAUTH2_ASSERTION',
         dailyCap: 180,
-        status: 'ACTIVE'
+        status: indexingStatus
       },
       brevoEmail: {
         client: 'BrevoMcpClient',
         atomicReservation: 'PRE_SEND_D1_LEDGER',
-        dailyCap: 300,
-        status: 'ACTIVE'
+        dailyCap: 200,
+        status: brevoStatus
       },
       pageSpeedInsights: {
         client: 'GooglePageSpeedClient',
         dailyCap: 40,
         cacheTtl: '24H',
-        status: 'ACTIVE'
+        status: pagespeedStatus
+      },
+      razorpayPayments: {
+        client: 'RazorpayAdapter',
+        status: razorpayStatus
+      },
+      cuelinksAffiliate: {
+        client: 'CuelinksV3Client',
+        status: cuelinksStatus
       },
       monetizationEngines: {
-        engineA_selfServeTools: 'ACTIVE',
-        engineB_multiSectorAffiliate: 'ACTIVE',
-        engineC_tenantAutomation: 'ACTIVE',
+        engineA_selfServeTools: pagespeedStatus === 'NOT_CONFIGURED' ? 'CONFIGURED' : 'ACTIVE',
+        engineB_multiSectorAffiliate: cuelinksStatus === 'NOT_CONFIGURED' ? 'CONFIGURED' : 'ACTIVE',
+        engineC_tenantAutomation: brevoStatus === 'NOT_CONFIGURED' ? 'CONFIGURED' : 'ACTIVE',
         engineD_partnerDistribution: 'ACTIVE'
       }
     }
@@ -6750,6 +6876,26 @@ apiRouter.get('/public/deals/:id', async (c) => {
   if (deal.expiryDate && new Date(deal.expiryDate).getTime() < Date.now()) {
     return c.json({ error: 'DEAL_EXPIRED', message: `Offer '${id}' has expired` }, 410);
   }
+
+  // Record commercial event (+1 for verified human page visit)
+  const userAgent = c.req.header('user-agent') || '';
+  const { isBotTraffic } = await import('../commission/referral-tracking.js');
+  const isBot = isBotTraffic(userAgent);
+  if (!isBot) {
+    try {
+      const { CommercialLearningEngine } = await import('../commission/commercial-learning-engine.js');
+      const { resolveSectorFromCategory } = await import('@ai-marketing/shared');
+      const sectorDef = resolveSectorFromCategory(deal.category);
+      const sectorCode = sectorDef ? sectorDef.code : 'SECTOR_B_ELECTRONICS';
+      CommercialLearningEngine.getInstance().recordCommercialEvent(sectorCode as any, {
+        eventId: `view_${deal.id}_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        eventType: 'VERIFIED_HUMAN_VISIT',
+        isDiagnostic: false,
+        userAgent
+      });
+    } catch {}
+  }
+
   return c.json({ success: true, data: deal });
 });
 
@@ -6977,13 +7123,34 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
     return c.text('Attribution persistence failed; redirect suppressed to protect monetization', 503);
   }
 
-  // Update in-memory telemetry if browser candidate or verified human
+  // Update in-memory telemetry & commercial learning bandit
   if (trafficClass === 'human' || trafficClass === 'browser_candidate') {
     engine.recordDealClick(deal.id, {
       ip: clientInfo.ip,
       placement: sanitizedPlacement,
       source: 'deals_page'
     });
+    try {
+      const { CommercialLearningEngine } = await import('../commission/commercial-learning-engine.js');
+      CommercialLearningEngine.getInstance().recordCommercialEvent(sectorCode as any, {
+        eventId: clickId,
+        eventType: 'VERIFIED_HUMAN_AFFILIATE_CLICK',
+        sourceClickId: clickId,
+        isDiagnostic: false,
+        userAgent
+      });
+    } catch {}
+  } else {
+    try {
+      const { CommercialLearningEngine } = await import('../commission/commercial-learning-engine.js');
+      CommercialLearningEngine.getInstance().recordCommercialEvent(sectorCode as any, {
+        eventId: clickId,
+        eventType: 'BOT_OR_INTERNAL_CLICK',
+        sourceClickId: clickId,
+        isDiagnostic: true,
+        userAgent
+      });
+    } catch {}
   }
 
   return c.redirect(targetUrl, 302);
@@ -7170,6 +7337,40 @@ apiRouter.post('/webhooks/conversion/:partnerId', async (c) => {
     },
     status
   });
+
+  // Record commercial learning evidence in Bayesian multi-armed bandit
+  try {
+    const { CommercialLearningEngine } = await import('../commission/commercial-learning-engine.js');
+    const engine = CommercialLearningEngine.getInstance();
+    const sectorCode = (body.sector || body.sectorCode || 'SECTOR_B_ELECTRONICS') as any;
+
+    if (record.status === 'COMMISSION_APPROVED') {
+      engine.recordCommercialEvent(sectorCode, {
+        eventId: `conv_${record.id}`,
+        eventType: 'PROVIDER_ATTRIBUTED_CONVERSION',
+        isDiagnostic: false
+      });
+      engine.recordCommercialEvent(sectorCode, {
+        eventId: `comm_${record.id}`,
+        eventType: 'VALIDATED_COMMISSION',
+        commissionINR: record.verifiedCommissionINR || expectedAmount,
+        isDiagnostic: false
+      });
+    } else if (record.status === 'COMMISSION_PAID') {
+      engine.recordCommercialEvent(sectorCode, {
+        eventId: `cash_${record.id}`,
+        eventType: 'BANK_CONFIRMED_CASH',
+        cashINR: record.verifiedCommissionINR || expectedAmount,
+        isDiagnostic: false
+      });
+    } else if (['REFUNDED', 'CHARGEBACK', 'CANCELLED'].includes(record.status)) {
+      engine.recordCommercialEvent(sectorCode, {
+        eventId: `rev_${record.id}`,
+        eventType: 'REFUND_OR_COMMISSION_REVERSAL',
+        isDiagnostic: false
+      });
+    }
+  } catch {}
 
   return c.json({
     success: true,
@@ -9587,6 +9788,16 @@ const handleSiteAuditScan = async (c: any) => {
       businessCategory: body.businessCategory,
       userConfirmedOwnership: true
     });
+
+    try {
+      const { CommercialLearningEngine } = await import('../commission/commercial-learning-engine.js');
+      CommercialLearningEngine.getInstance().recordCommercialEvent('SECTOR_H_LOCAL_SERVICES_B2B', {
+        eventId: `scan_${result.auditId}`,
+        eventType: 'SITEFIX_COMPLETED_SCAN',
+        isDiagnostic: false
+      });
+    } catch {}
+
     return c.json({ success: true, result });
   } catch (err: any) {
     if (err instanceof SecureFetchError) {
@@ -10122,6 +10333,18 @@ const handleSiteAuditRazorpayWebhook = async (c: any) => {
         console.error('[handleSiteAuditRazorpayWebhook] Token generation error:', tErr);
       }
     }
+
+    // Record commercial evidence event for verified digital cash receipt
+    try {
+      const { CommercialLearningEngine } = await import('../commission/commercial-learning-engine.js');
+      const amountINR = Math.round(amount / 100);
+      CommercialLearningEngine.getInstance().recordCommercialEvent('SECTOR_H_LOCAL_SERVICES_B2B', {
+        eventId: `pay_${paymentId}`,
+        eventType: 'BANK_CONFIRMED_CASH',
+        cashINR: amountINR,
+        isDiagnostic: false
+      });
+    } catch {}
 
     return c.json({
       success: true,

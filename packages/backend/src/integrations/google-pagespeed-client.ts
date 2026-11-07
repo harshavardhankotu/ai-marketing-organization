@@ -3,9 +3,7 @@ import { getDb } from '../db/client.js';
 import { UnifiedQuotaService } from '../quota/unified-quota-service.js';
 import { isPlaceholderCredential, isProduction } from '../config/env.js';
 
-export interface PageSpeedAuditResult {
-  targetUrl: string;
-  strategy: 'mobile' | 'desktop';
+export interface PageSpeedMetrics {
   performanceScore: number; // 0 - 100
   seoScore: number;         // 0 - 100
   coreWebVitals: {
@@ -20,6 +18,28 @@ export interface PageSpeedAuditResult {
     description: string;
     savingsEst?: string;
   }>;
+}
+
+export interface PageSpeedAuditResult {
+  status: 'SUCCESS' | 'UNAVAILABLE';
+  reason?: 'MISSING_API_KEY' | 'QUOTA_EXHAUSTED' | string;
+  targetUrl: string;
+  strategy: 'mobile' | 'desktop';
+  performanceScore?: number; // 0 - 100
+  seoScore?: number;         // 0 - 100
+  coreWebVitals?: {
+    lcp: string;
+    fcp: string;
+    cls: string;
+    tbt: string;
+  } | null;
+  opportunities?: Array<{
+    id: string;
+    title: string;
+    description: string;
+    savingsEst?: string;
+  }>;
+  metrics: PageSpeedMetrics | null;
   cached: boolean;
   quotaBlocked: boolean;
   timestamp: string;
@@ -91,30 +111,43 @@ export class GooglePageSpeedClient {
       console.warn(`[GooglePageSpeedClient] Cache check error: ${e.message}`);
     }
 
-    // 2. Reserve Quota (40/day cap via UnifiedQuotaService)
+    // 2. Check API Key: Never fabricate Lighthouse scores or Core Web Vitals under any flag
+    const apiKey = process.env.GOOGLE_PAGESPEED_API_KEY || process.env.GOOGLE_SEARCH_API_KEY;
+    const isTestKey = !apiKey || isPlaceholderCredential(apiKey) || apiKey.startsWith('test') || apiKey.includes('placeholder');
+
+    if (isTestKey) {
+      return {
+        status: 'UNAVAILABLE',
+        reason: 'MISSING_API_KEY',
+        targetUrl,
+        strategy,
+        metrics: null,
+        coreWebVitals: null,
+        opportunities: [],
+        cached: false,
+        quotaBlocked: false,
+        timestamp: new Date().toISOString()
+      };
+    }
+
+    // 3. Reserve Quota (40/day cap via UnifiedQuotaService)
     const reservation = await this.quotaService.reserveProviderQuota('google_pagespeed', 1);
     if (!reservation.allowed) {
-      if (process.env.NODE_ENV === 'test' || !isProduction()) {
-        return this.getFixtureResult(targetUrl, strategy, true);
-      }
-      throw new PageSpeedQuotaExceededError(`PageSpeed audit paused: ${reservation.reason}`);
+      return {
+        status: 'UNAVAILABLE',
+        reason: 'QUOTA_EXHAUSTED',
+        targetUrl,
+        strategy,
+        metrics: null,
+        coreWebVitals: null,
+        opportunities: [],
+        cached: false,
+        quotaBlocked: true,
+        timestamp: new Date().toISOString()
+      };
     }
 
-    // 3. Outbound Request to Google PageSpeed Insights V5 API
-    const apiKey = process.env.GOOGLE_PAGESPEED_API_KEY || process.env.GOOGLE_SEARCH_API_KEY;
-    const isTestKey = !apiKey || isPlaceholderCredential(apiKey) || apiKey.startsWith('test');
-
-    if (process.env.NODE_ENV === 'test' || isTestKey) {
-      await this.quotaService.reconcileProviderQuota('google_pagespeed', reservation.reservationId, 'CONSUME');
-      const fixture = this.getFixtureResult(targetUrl, strategy, false);
-      this.cacheResult(cacheKey, fixture);
-      return fixture;
-    }
-
-    let endpoint = `https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${encodeURIComponent(targetUrl)}&strategy=${strategy}&category=performance&category=seo`;
-    if (apiKey) {
-      endpoint += `&key=${encodeURIComponent(apiKey)}`;
-    }
+    const endpoint = `https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${encodeURIComponent(targetUrl)}&strategy=${strategy}&category=performance&category=seo&key=${encodeURIComponent(apiKey!)}`;
 
     try {
       const res = await fetch(endpoint, {
@@ -124,7 +157,18 @@ export class GooglePageSpeedClient {
       if (!res.ok) {
         await this.quotaService.reconcileProviderQuota('google_pagespeed', reservation.reservationId, 'RELEASE');
         console.warn(`[GooglePageSpeedClient] API returned HTTP ${res.status}`);
-        return this.getFixtureResult(targetUrl, strategy, false);
+        return {
+          status: 'UNAVAILABLE',
+          reason: `API_HTTP_${res.status}`,
+          targetUrl,
+          strategy,
+          metrics: null,
+          coreWebVitals: null,
+          opportunities: [],
+          cached: false,
+          quotaBlocked: false,
+          timestamp: new Date().toISOString()
+        };
       }
 
       const data: any = await res.json();
@@ -154,13 +198,22 @@ export class GooglePageSpeedClient {
         }
       }
 
+      const metrics: PageSpeedMetrics = {
+        performanceScore: perfScore,
+        seoScore,
+        coreWebVitals: { lcp, fcp, cls, tbt },
+        opportunities: opportunities.slice(0, 5)
+      };
+
       const result: PageSpeedAuditResult = {
+        status: 'SUCCESS',
         targetUrl,
         strategy,
         performanceScore: perfScore,
         seoScore,
         coreWebVitals: { lcp, fcp, cls, tbt },
         opportunities: opportunities.slice(0, 5),
+        metrics,
         cached: false,
         quotaBlocked: false,
         timestamp: new Date().toISOString()
@@ -171,7 +224,18 @@ export class GooglePageSpeedClient {
     } catch (err: any) {
       await this.quotaService.reconcileProviderQuota('google_pagespeed', reservation.reservationId, 'RELEASE');
       console.warn(`[GooglePageSpeedClient] Fetch exception: ${err.message}`);
-      return this.getFixtureResult(targetUrl, strategy, false);
+      return {
+        status: 'UNAVAILABLE',
+        reason: err.message || 'NETWORK_ERROR',
+        targetUrl,
+        strategy,
+        metrics: null,
+        coreWebVitals: null,
+        opportunities: [],
+        cached: false,
+        quotaBlocked: false,
+        timestamp: new Date().toISOString()
+      };
     }
   }
 
@@ -184,38 +248,6 @@ export class GooglePageSpeedClient {
         ) VALUES (?, ?, 'google_pagespeed', ?, 1, datetime('now'), datetime('now', '+24 hours'))
       `).run(`ps_${randomUUID().substring(0, 10)}`, cacheKey, JSON.stringify(result));
     } catch {}
-  }
-
-  private getFixtureResult(targetUrl: string, strategy: 'mobile' | 'desktop', quotaBlocked: boolean): PageSpeedAuditResult {
-    return {
-      targetUrl,
-      strategy,
-      performanceScore: 78,
-      seoScore: 84,
-      coreWebVitals: {
-        lcp: '2.4 s',
-        fcp: '1.2 s',
-        cls: '0.02',
-        tbt: '80 ms'
-      },
-      opportunities: [
-        {
-          id: 'render-blocking-resources',
-          title: 'Eliminate render-blocking resources',
-          description: 'Potential savings of up to 450ms by deferring non-critical scripts.',
-          savingsEst: '450 ms'
-        },
-        {
-          id: 'modern-image-formats',
-          title: 'Serve images in modern WebP/AVIF formats',
-          description: 'Image optimization could yield ~180KB transfer savings.',
-          savingsEst: '180 KB'
-        }
-      ],
-      cached: false,
-      quotaBlocked,
-      timestamp: new Date().toISOString()
-    };
   }
 
   /**
@@ -265,11 +297,17 @@ ${JSON.stringify(schemaObj, null, 2)}
 </script>
 `.trim();
 
+    const isAvailable = audit.status === 'SUCCESS' && Boolean(audit.metrics);
+    const perfScore = audit.performanceScore ?? 0;
+    const auditSummary = isAvailable
+      ? `Performance score: ${perfScore}/100, SEO score: ${audit.seoScore ?? 0}/100. Core Web Vitals LCP: ${audit.coreWebVitals?.lcp || 'N/A'}, CLS: ${audit.coreWebVitals?.cls || 'N/A'}. ${audit.opportunities?.length || 0} priority performance opportunities detected.`
+      : 'Live Core Web Vitals data currently unavailable: Google PageSpeed free tier quota reached or unconfigured. Raw HTML audit completed.';
+
     return {
       targetUrl,
       businessName,
-      performanceScore: audit.performanceScore,
-      auditSummary: `Performance score: ${audit.performanceScore}/100, SEO score: ${audit.seoScore}/100. Core Web Vitals LCP: ${audit.coreWebVitals.lcp}, CLS: ${audit.coreWebVitals.cls}. ${audit.opportunities.length} priority performance opportunities detected.`,
+      performanceScore: perfScore,
+      auditSummary,
       recommendedHeadSnippets,
       schemaJsonLd: JSON.stringify(schemaObj, null, 2),
       implementationChecklist: [
