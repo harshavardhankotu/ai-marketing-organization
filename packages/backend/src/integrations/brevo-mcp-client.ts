@@ -19,7 +19,7 @@ import { PlatformProspectDiscoveryEngine } from '../revenue/platform-prospect-di
 import { UnifiedQuotaService } from '../quota/unified-quota-service.js';
 
 export interface BrevoEmailPayload {
-  to: Array<{ email: string; name?: string }>;
+  to: Array<{ email: string; name?: string }> | string;
   subject: string;
   htmlContent?: string;
   textContent?: string;
@@ -140,7 +140,10 @@ export class BrevoMcpClient {
    * Queues to brevo_message_queue if limit reached.
    */
   public async sendTransactionalEmail(payload: BrevoEmailPayload): Promise<BrevoSendResult> {
-    const primaryRecipient = payload.to[0]?.email;
+    const primaryRecipient = typeof payload.to === 'string'
+      ? payload.to
+      : (Array.isArray(payload.to) ? payload.to[0]?.email : undefined);
+
     if (!primaryRecipient) {
       return { success: false, status: 'ERROR', reason: 'Missing recipient email' };
     }
@@ -156,7 +159,6 @@ export class BrevoMcpClient {
     }
 
     // 2. Pre-execution Quota Reservation via Centralized D1/SQLite Ledger (EVALUATE -> RESERVE -> EXECUTE -> RECONCILE)
-    // Check both legacy daily quota table (for test backwards-compatibility) and unified atomic ledger
     const legacySends = await this.getDailySendCount();
     let quotaRes = { allowed: legacySends < BrevoMcpClient.MAX_DAILY_SENDS, reservationId: undefined as string | undefined, reason: undefined as string | undefined };
 
@@ -191,22 +193,74 @@ export class BrevoMcpClient {
       };
     }
 
-    // 3. Dispatch to Brevo API / Mock
-    const isLive = Boolean(this.apiKey && !isPlaceholderCredential(this.apiKey));
-    let messageId = `msg_${randomUUID().slice(0, 12)}`;
+    // 3. Credential verification: Kill synthetic receipts. Never return SENT on missing/placeholder keys.
+    const effectiveKey = (process.env.BREVO_MCP_SERVER_API || process.env.BREVO_API_KEY || this.apiKey || '').trim();
+    const isLive = Boolean(effectiveKey && !isPlaceholderCredential(effectiveKey));
 
-    if (isLive) {
-      try {
-        const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+    if (!isLive) {
+      if (quotaRes.reservationId) {
+        await this.quotaService.reconcileProviderQuota('brevo_mcp', quotaRes.reservationId, 'RELEASE');
+      }
+      return {
+        success: false,
+        status: 'BLOCKED_CREDENTIALS',
+        reason: 'Missing or placeholder BREVO_API_KEY / BREVO_MCP_SERVER_API'
+      };
+    }
+
+    // 4. Dispatch via standard MCP Server Protocol (Bearer) or REST fallback
+    const recipients = typeof payload.to === 'string' ? [{ email: payload.to }] : payload.to;
+    const isMcpEndpoint = this.serverUrl.includes('/mcp') || Boolean(process.env.BREVO_MCP_SERVER_URL);
+    let messageId: string | undefined;
+
+    try {
+      let res: Response;
+      if (isMcpEndpoint) {
+        // Standard MCP HTTP Bearer authentication + JSON-RPC 2.0 tool call
+        res = await fetch(this.serverUrl, {
           method: 'POST',
           headers: {
-            'api-key': this.apiKey!,
+            'Authorization': `Bearer ${effectiveKey}`,
             'Content-Type': 'application/json',
             'Accept': 'application/json'
           },
           body: JSON.stringify({
-            sender: { email: process.env.PUBLIC_CONTACT_EMAIL || 'support@ai-marketing-organization.com', name: process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization' },
-            to: payload.to,
+            jsonrpc: '2.0',
+            id: randomUUID(),
+            method: 'tools/call',
+            params: {
+              name: 'send_email',
+              arguments: {
+                sender: {
+                  email: process.env.PUBLIC_CONTACT_EMAIL || 'support@ai-marketing-organization.com',
+                  name: process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization'
+                },
+                to: recipients,
+                subject: payload.subject,
+                htmlContent: payload.htmlContent || `<p>${payload.textContent || ''}</p>`,
+                textContent: payload.textContent,
+                templateId: payload.templateId,
+                params: payload.params,
+                attachment: payload.attachment
+              }
+            }
+          })
+        });
+      } else {
+        // Direct REST endpoint fallback (api-key header)
+        res = await fetch('https://api.brevo.com/v3/smtp/email', {
+          method: 'POST',
+          headers: {
+            'api-key': effectiveKey,
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
+          body: JSON.stringify({
+            sender: {
+              email: process.env.PUBLIC_CONTACT_EMAIL || 'support@ai-marketing-organization.com',
+              name: process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization'
+            },
+            to: recipients,
             subject: payload.subject,
             htmlContent: payload.htmlContent || `<p>${payload.textContent || ''}</p>`,
             textContent: payload.textContent,
@@ -215,35 +269,34 @@ export class BrevoMcpClient {
             attachment: payload.attachment
           })
         });
+      }
 
-        if (!res.ok) {
-          const errBody = await res.text();
-          if (quotaRes.reservationId) {
-            await this.quotaService.reconcileProviderQuota('brevo_mcp', quotaRes.reservationId, 'CONSUME');
-          }
-          return {
-            success: false,
-            status: 'ERROR',
-            reason: `Brevo API HTTP ${res.status}: ${errBody}`
-          };
-        }
-
-        const data: any = await res.json();
-        messageId = data.messageId || messageId;
-      } catch (err: any) {
-        // Pre-send connection error: release reservation
+      if (!res.ok) {
+        const errBody = await res.text();
         if (quotaRes.reservationId) {
           await this.quotaService.reconcileProviderQuota('brevo_mcp', quotaRes.reservationId, 'RELEASE');
         }
         return {
           success: false,
           status: 'ERROR',
-          reason: `Brevo dispatch error: ${err.message}`
+          reason: `Brevo API HTTP ${res.status}: ${errBody}`
         };
       }
+
+      const data: any = await res.json();
+      messageId = data?.result?.messageId || data?.messageId || `msg_${randomUUID().slice(0, 12)}`;
+    } catch (err: any) {
+      if (quotaRes.reservationId) {
+        await this.quotaService.reconcileProviderQuota('brevo_mcp', quotaRes.reservationId, 'RELEASE');
+      }
+      return {
+        success: false,
+        status: 'ERROR',
+        reason: `Brevo dispatch error: ${err.message}`
+      };
     }
 
-    // 4. Reconcile atomic reservation and increment daily ledger
+    // 5. Reconcile atomic reservation and increment daily ledger
     if (quotaRes.reservationId) {
       await this.quotaService.reconcileProviderQuota('brevo_mcp', quotaRes.reservationId, 'CONSUME');
     }
@@ -254,6 +307,86 @@ export class BrevoMcpClient {
       status: 'SENT',
       dailySendsRemaining: Math.max(0, BrevoMcpClient.MAX_DAILY_SENDS - newCount)
     };
+  }
+
+  /**
+   * Drains overflow queue when a new UTC day opens and daily quota is available.
+   */
+  public async drainOverflowQueue(batchLimit: number = 20): Promise<{
+    drainedCount: number;
+    failedCount: number;
+    remainingQueued: number;
+  }> {
+    const dailySends = await this.getDailySendCount();
+    const availableQuota = Math.max(0, BrevoMcpClient.MAX_DAILY_SENDS - dailySends);
+    if (availableQuota <= 0) {
+      let count = 0;
+      try {
+        const remainingRow = await this.d1Repo.queryOne<{ cnt: number }>(
+          'brevo_message_queue',
+          "SELECT COUNT(*) as cnt FROM brevo_message_queue WHERE status = 'QUEUED_NEXT_UTC_WINDOW'"
+        );
+        count = remainingRow?.cnt || 0;
+      } catch {}
+      return { drainedCount: 0, failedCount: 0, remainingQueued: count };
+    }
+
+    const limit = Math.min(batchLimit, availableQuota);
+    let queuedRows: any[] = [];
+    try {
+      if (isProduction() || this.d1Repo.isRemoteD1Configured()) {
+        queuedRows = await this.d1Repo.query<any>(
+          'brevo_message_queue',
+          "SELECT id, recipient_email, subject, payload_json FROM brevo_message_queue WHERE status = 'QUEUED_NEXT_UTC_WINDOW' ORDER BY created_at ASC LIMIT ?",
+          [limit]
+        );
+      } else {
+        const db = getDb();
+        queuedRows = db.prepare(
+          "SELECT id, recipient_email, subject, payload_json FROM brevo_message_queue WHERE status = 'QUEUED_NEXT_UTC_WINDOW' ORDER BY created_at ASC LIMIT ?"
+        ).all(limit);
+      }
+    } catch {
+      return { drainedCount: 0, failedCount: 0, remainingQueued: 0 };
+    }
+
+    let drainedCount = 0;
+    let failedCount = 0;
+
+    for (const row of queuedRows) {
+      try {
+        const payload: BrevoEmailPayload = JSON.parse(row.payload_json);
+        const sendRes = await this.sendTransactionalEmail(payload);
+        if (sendRes.success && sendRes.status === 'SENT') {
+          const updateSql = "UPDATE brevo_message_queue SET status = 'SENT', updated_at = datetime('now') WHERE id = ?";
+          if (isProduction() || this.d1Repo.isRemoteD1Configured()) {
+            await this.d1Repo.executeWrite('brevo_message_queue', updateSql, [row.id]);
+          }
+          try {
+            getDb().prepare(updateSql).run(row.id);
+          } catch {}
+          drainedCount++;
+        } else {
+          failedCount++;
+          if (sendRes.status === 'QUEUED_NEXT_UTC_WINDOW' || sendRes.status === 'BLOCKED_CREDENTIALS') {
+            break;
+          }
+        }
+      } catch {
+        failedCount++;
+      }
+    }
+
+    let remainingQueued = 0;
+    try {
+      const rem = await this.d1Repo.queryOne<{ cnt: number }>(
+        'brevo_message_queue',
+        "SELECT COUNT(*) as cnt FROM brevo_message_queue WHERE status = 'QUEUED_NEXT_UTC_WINDOW'"
+      );
+      remainingQueued = rem?.cnt || 0;
+    } catch {}
+
+    return { drainedCount, failedCount, remainingQueued };
   }
 
   /**

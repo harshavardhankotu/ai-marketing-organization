@@ -62,6 +62,26 @@ export interface SiteAuditDisclosures {
   noWebVitalsClaim: boolean;
 }
 
+export interface SiteAuditPageSpeedData {
+  status: 'SUCCESS' | 'UNAVAILABLE';
+  reason?: string;
+  notice?: string;
+  performanceScore?: number;
+  seoScore?: number;
+  coreWebVitals?: {
+    lcp: string;
+    fcp: string;
+    cls: string;
+    tbt: string;
+  } | null;
+  opportunities?: Array<{
+    id: string;
+    title: string;
+    description: string;
+    savingsEst?: string;
+  }>;
+}
+
 export interface SiteAuditResult {
   auditId: string;
   url: string;
@@ -73,6 +93,7 @@ export interface SiteAuditResult {
   metrics: SiteAuditMetrics;
   preview: SiteAuditPreview;
   disclosures: SiteAuditDisclosures;
+  pageSpeed?: SiteAuditPageSpeedData;
 }
 
 export interface SiteAuditScanRequest {

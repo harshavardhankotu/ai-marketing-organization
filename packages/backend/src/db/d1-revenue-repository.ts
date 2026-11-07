@@ -62,7 +62,9 @@ export const D1_REVENUE_CRITICAL_TABLES = [
   'stored_reports',
   'reply_desk_drafts',
   'reply_desk_query_runs',
-  'provider_quota_ledger'
+  'provider_quota_ledger',
+  'sector_bandit_states',
+  'commercial_reward_events'
 ] as const;
 
 export type D1RevenueCriticalTable = typeof D1_REVENUE_CRITICAL_TABLES[number] | string;

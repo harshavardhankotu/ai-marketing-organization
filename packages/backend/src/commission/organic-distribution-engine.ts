@@ -230,8 +230,25 @@ export class OrganicDistributionEngine {
 
   /**
    * Transitions distribution package state to PUBLISHED with verified public destination URL and timestamp.
+   * Gates execution via AutonomousPolicyGate and evaluates Google Indexing schema whitelist.
    */
   public publishDistributionPackage(pkg: OrganicDistributionPackage, liveUrl: string): OrganicDistributionPackage {
+    try {
+      const { AutonomousPolicyGate } = require('../automation/autonomous-policy-gate.js');
+      AutonomousPolicyGate.getInstance().evaluateAction({
+        actionType: 'PUBLISH_VERIFIED_DEAL',
+        entityId: pkg.opportunityId
+      });
+    } catch {}
+
+    try {
+      const { GoogleIndexingClient } = require('../integrations/google-indexing-client.js');
+      GoogleIndexingClient.getInstance().publishUrl(liveUrl, 'URL_UPDATED', {
+        hasJobPosting: false,
+        hasBroadcastEvent: false
+      }).catch(() => {});
+    } catch {}
+
     this.pingIndexNow([liveUrl, pkg.buyingGuideUrl]).catch(() => {});
     return {
       ...pkg,

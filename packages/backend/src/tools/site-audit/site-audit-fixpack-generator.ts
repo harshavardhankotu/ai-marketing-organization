@@ -257,6 +257,17 @@ export class SiteAuditFixPackGenerator {
       ``,
       `---`,
       ``,
+      `## ⚡ Google PageSpeed & Core Web Vitals Status`,
+      audit.pageSpeed?.status === 'SUCCESS' && audit.pageSpeed.coreWebVitals
+        ? `**Performance:** ${audit.pageSpeed.performanceScore}/100 | **SEO:** ${audit.pageSpeed.seoScore}/100\n` +
+          `- **Largest Contentful Paint (LCP):** ${audit.pageSpeed.coreWebVitals.lcp}\n` +
+          `- **First Contentful Paint (FCP):** ${audit.pageSpeed.coreWebVitals.fcp}\n` +
+          `- **Cumulative Layout Shift (CLS):** ${audit.pageSpeed.coreWebVitals.cls}\n` +
+          `- **Total Blocking Time (TBT):** ${audit.pageSpeed.coreWebVitals.tbt}`
+        : `> ℹ️ ${audit.pageSpeed?.notice || 'Live Core Web Vitals data currently unavailable: Google PageSpeed free tier quota reached or unconfigured. Raw HTML audit completed.'}`,
+      ``,
+      `---`,
+      ``,
       `## 📋 Recommended Owner Schema Additions & Inputs (Zero-Hallucination Guard)`,
       `The generated Schema.org JSON-LD and meta tags contain only facts verified from your scanned site. ` +
       `To avoid search engine penalties, we do not invent contact numbers or addresses. You may manually enrich your tags with:`,

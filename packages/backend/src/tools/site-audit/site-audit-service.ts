@@ -234,6 +234,38 @@ export class SiteAuditService {
    */
   public async executeScan(request: SiteAuditScanRequest): Promise<SiteAuditResult> {
     const result = await this.scanner.scanUrl(request);
+
+    // Wire real Google Lighthouse & Web Vitals data (never synthetic fixtures)
+    try {
+      const { GooglePageSpeedClient } = await import('../../integrations/google-pagespeed-client.js');
+      const psRes = await GooglePageSpeedClient.getInstance().runAudit(request.url, 'mobile');
+      if (psRes.status === 'SUCCESS' && psRes.metrics) {
+        result.pageSpeed = {
+          status: 'SUCCESS',
+          performanceScore: psRes.performanceScore,
+          seoScore: psRes.seoScore,
+          coreWebVitals: psRes.coreWebVitals,
+          opportunities: psRes.opportunities
+        };
+      } else {
+        result.pageSpeed = {
+          status: 'UNAVAILABLE',
+          reason: psRes.reason || 'UNAVAILABLE',
+          notice: 'Live Core Web Vitals data currently unavailable: Google PageSpeed free tier quota reached or unconfigured. Raw HTML audit completed.',
+          coreWebVitals: null,
+          opportunities: []
+        };
+      }
+    } catch (psErr: any) {
+      result.pageSpeed = {
+        status: 'UNAVAILABLE',
+        reason: psErr.message || 'UNAVAILABLE',
+        notice: 'Live Core Web Vitals data currently unavailable: Google PageSpeed free tier quota reached or unconfigured. Raw HTML audit completed.',
+        coreWebVitals: null,
+        opportunities: []
+      };
+    }
+
     this.auditCache.set(result.auditId, {
       audit: result,
       expiresAt: Date.now() + 2 * 60 * 60 * 1000

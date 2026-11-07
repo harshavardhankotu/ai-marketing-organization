@@ -633,6 +633,38 @@ export function getDb(dbPath?: string): Database.Database {
     )`);
   } catch {}
   try {
+    db.exec(`CREATE TABLE IF NOT EXISTS sector_bandit_states (
+      sector_code TEXT PRIMARY KEY,
+      alpha REAL NOT NULL DEFAULT 1.0,
+      beta REAL NOT NULL DEFAULT 1.0,
+      verified_interactions INTEGER NOT NULL DEFAULT 0,
+      total_reward REAL NOT NULL DEFAULT 0.0,
+      conversions_count INTEGER NOT NULL DEFAULT 0,
+      cold_start_complete INTEGER NOT NULL DEFAULT 0,
+      allocation_weight REAL NOT NULL DEFAULT 0.125,
+      last_selected_at TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+  } catch {}
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS commercial_reward_events (
+      event_id TEXT PRIMARY KEY,
+      sector_code TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      reward_delta REAL NOT NULL,
+      evidence_ref TEXT,
+      is_verified_human INTEGER NOT NULL DEFAULT 1,
+      metadata_json TEXT DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_reward_events_sector ON commercial_reward_events(sector_code)`);
+  } catch {}
+  try { db.exec(`ALTER TABLE commercial_reward_events ADD COLUMN metadata_json TEXT DEFAULT '{}'`); } catch {}
+  try { db.exec(`ALTER TABLE commercial_reward_events ADD COLUMN evidence_ref TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE commercial_reward_events ADD COLUMN is_verified_human INTEGER NOT NULL DEFAULT 1`); } catch {}
+  try { db.exec(`ALTER TABLE sector_bandit_states ADD COLUMN allocation_weight REAL NOT NULL DEFAULT 0.125`); } catch {}
+  try { db.exec(`ALTER TABLE sector_bandit_states ADD COLUMN last_selected_at TEXT`); } catch {}
+  try {
     db.exec(`ALTER TABLE businesses ADD COLUMN locale TEXT DEFAULT 'en-US'`);
   } catch {}
   try {
