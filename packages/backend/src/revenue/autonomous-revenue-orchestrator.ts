@@ -336,6 +336,29 @@ export class AutonomousRevenueOrchestrator {
       });
       console.log(`[ARO] Best action: ${nextBestAction.actionType} (target: ${nextBestAction.targetId}, score: ${nextBestAction.score.toFixed(2)})`);
 
+      // Check B2B Backlog Guard (V5.7 Phase 2)
+      const { checkB2BResearchBacklogGuard } = await import('./b2b-research-backlog-guard.js');
+      const b2bGuard = await checkB2BResearchBacklogGuard();
+      const isB2BResearchAction = ['DISCOVER_PROSPECTS', 'DRAFT_OUTREACH', 'GENERATE_DRAFTS', 'REPLY_DESK_DISCOVER'].includes(nextBestAction.actionType);
+
+      if (!b2bGuard.allowed && isB2BResearchAction) {
+        console.warn(`[ARO] B2B action ${nextBestAction.actionType} short-circuited: ${b2bGuard.unapprovedCount} unapproved drafts pending owner review (limit: ${b2bGuard.maxLimit}). Redirecting budget to Affiliate Deal Discovery & Public SiteFix Audits.`);
+        try {
+          const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
+          await AutonomousDealDiscoveryEngine.getInstance().harvestAllApprovedMerchantFeeds(organizationId, businessId);
+        } catch (dealErr: any) {
+          console.warn(`[ARO] Redirect deal harvest error: ${dealErr.message}`);
+        }
+        try {
+          const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
+          await SiteAuditService.getInstance().runFullAudit('dentalsolutions.com');
+        } catch (auditErr: any) {
+          console.warn(`[ARO] Redirect site audit error: ${auditErr.message}`);
+        }
+        nextBestAction.actionType = 'IDLE';
+        nextBestAction.rationale = `B2B research halted: ${b2bGuard.unapprovedCount} unapproved drafts. Budget redirected to Affiliate Deal Discovery & SiteFix Audits.`;
+      }
+
       // ──────────────────────────────────────────────────────────────────
       // SPEC § 19 & 20: EXECUTE AT MOST ONE HIGH-VALUE ACTION
       // Check cooldown first
@@ -1896,6 +1919,18 @@ export class AutonomousRevenueOrchestrator {
       // SPEC § 13: DISCOVER_PROSPECTS (Free Gemini-First Discovery Engine)
       // ────────────────────────────────────────────────────────────────
       case 'DISCOVER_PROSPECTS': {
+        const { checkB2BResearchBacklogGuard } = await import('./b2b-research-backlog-guard.js');
+        const guard = await checkB2BResearchBacklogGuard();
+        if (!guard.allowed) {
+          return {
+            status: 'INTERNAL_AUTOMATION',
+            actionClassification: 'INTERNAL_AUTOMATION',
+            isRevenueAction: false,
+            opportunitiesDiscovered: 0,
+            discoveredProspects: [],
+            error: guard.message || `UNAPPROVED_DRAFTS_BACKLOG_EXCEEDED: ${guard.unapprovedCount} drafts unapproved.`
+          };
+        }
         const { PlatformProspectDiscoveryEngine } = await import('./platform-prospect-discovery-engine.js');
         const discEngine = PlatformProspectDiscoveryEngine.getInstance();
         const discResult = await discEngine.discoverProspects(businessId, organizationId);

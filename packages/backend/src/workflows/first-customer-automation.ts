@@ -84,6 +84,8 @@ export class FirstCustomerAutomationPipeline {
 
     // 0. Idempotency Check (Invariant 6)
     const dedupKey = params.idempotencyKey || `first-cust-${params.journeyId}-${params.invoiceNumber}`;
+    const { checkB2BResearchBacklogGuard } = await import('../revenue/b2b-research-backlog-guard.js');
+    await checkB2BResearchBacklogGuard();
     if (!isDryRun) {
       const cached = this.db
         .prepare('SELECT fingerprint FROM deduplication_cache WHERE fingerprint = ?')

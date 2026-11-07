@@ -112,6 +112,7 @@ export interface DiscoveredDealInput {
   affiliateNetwork?: string;
   affiliateCampaignId?: string;
   sectorCode?: SectorCode;
+  evidenceJson?: Record<string, any>;
 }
 
 export type DealCandidate = DiscoveredDealInput;
