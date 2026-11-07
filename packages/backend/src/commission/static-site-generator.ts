@@ -847,7 +847,7 @@ export class StaticSiteGenerator {
   }
 
   private getGoogleSiteVerificationMeta(): string {
-    const code = (process.env.GOOGLE_SITE_VERIFICATION || 'WVPs1hLZgUqJL5yO9jwF2pWwsekPcMtTOLLeWILGU9I').trim();
+    const code = (process.env.GOOGLE_SITE_VERIFICATION || '').trim();
     if (!code) return '';
     return `<meta name="google-site-verification" content="${this.escapeHtml(code)}">\n  `;
   }

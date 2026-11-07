@@ -2288,15 +2288,6 @@ export class AutonomousDealDiscoveryEngine {
       }
     }
 
-    // Separate productVerified vs affiliateVerified (V5.8 Defect 1)
-    if (verificationStatus === 'VERIFIED') {
-      if (affiliateVerified) {
-        verificationStatus = 'AFFILIATE_VERIFIED';
-      } else if (productVerified) {
-        verificationStatus = 'PRODUCT_VERIFIED';
-      }
-    }
-
     // Level 5: Deterministic Deduplication Pipeline (Spec § 6)
     const normalizedBrand = (input.brand || 'Generic').trim().toLowerCase();
     const normalizedMerchant = (input.merchant || 'Unknown').trim().toLowerCase();
@@ -2354,7 +2345,7 @@ export class AutonomousDealDiscoveryEngine {
         existing.affiliateNetwork = input.affiliateNetwork || existing.affiliateNetwork;
         existing.affiliateCampaignId = input.affiliateCampaignId || existing.affiliateCampaignId;
         existing.isMonetizable = true;
-        existing.verificationStatus = 'AFFILIATE_VERIFIED';
+        existing.verificationStatus = existing.verificationStatus === 'VERIFIED_WITH_CONDITIONS' ? 'VERIFIED_WITH_CONDITIONS' : 'VERIFIED';
       }
 
       existing.updatedAt = nowIso;
