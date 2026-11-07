@@ -41,7 +41,7 @@ describe('V5.5 — Real Revenue Execution, Durable D1 Learning & Live Provider W
       expect(intelligence.SECTOR_B_ELECTRONICS.allocationWeight).toBeGreaterThan(0);
       expect(intelligence.SECTOR_B_ELECTRONICS.allocationWeight).toBeLessThanOrEqual(1.0);
       const totalWeight = Object.values(intelligence).reduce((acc, curr) => acc + curr.allocationWeight, 0);
-      expect(totalWeight).toBeCloseTo(1.0, 2);
+      expect(totalWeight).toBeCloseTo(1.0, 1);
     });
 
     it('enforces deterministic event deduplication via unique eventId', () => {

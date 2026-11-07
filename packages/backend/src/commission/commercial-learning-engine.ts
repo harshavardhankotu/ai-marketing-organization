@@ -230,6 +230,8 @@ export class CommercialLearningEngine {
         }
       }
     }
+
+    this.recomputeAllocationWeights();
   }
 
   /**
