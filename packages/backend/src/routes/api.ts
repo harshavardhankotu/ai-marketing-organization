@@ -6047,6 +6047,13 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   let saasGrossCapturedINR = 0.00;
 
   try {
+    const auditsRow = await d1Repo.queryOne<any>(
+      'site_audits',
+      "SELECT COUNT(*) as c FROM site_audits WHERE status = 'COMPLETED'"
+    );
+    siteAuditsCompleted = auditsRow?.c || 0;
+    siteAuditsStarted = siteAuditsCompleted;
+
     const ordersRow = await d1Repo.queryOne<any>(
       'payment_orders',
       "SELECT COUNT(*) as c, COALESCE(SUM(CASE WHEN status = 'CAPTURED' OR status = 'PAID' THEN amount_inr ELSE 0 END), 0) as s FROM payment_orders WHERE (notes_json LIKE '%SITEFIX_AI_PACK_V1%' OR notes_json LIKE '%SITE_AUDIT_FIXPACK%') AND (notes_json NOT LIKE '%\"is_test\":true%' AND notes_json NOT LIKE '%\"test\":true%')"
@@ -6660,11 +6667,13 @@ apiRouter.get('/public/autonomy-status', async (c) => {
         return 'CONFIGURED';
       }
       case 'google_pagespeed': {
-        const key = process.env.GOOGLE_PAGESPEED_API_KEY || process.env.GOOGLE_SEARCH_API_KEY;
-        if (!isKeyConfigured(key)) return 'NOT_CONFIGURED';
         try {
-          const row = await d1Repo.queryOne<{ cnt: number }>('search_cache', "SELECT COUNT(*) as cnt FROM search_cache WHERE provider = 'google_pagespeed'");
+          const row = await d1Repo.queryOne<{ cnt: number }>('site_audits', "SELECT COUNT(*) as cnt FROM site_audits WHERE status = 'COMPLETED'");
           if (row && row.cnt > 0) return 'LIVE_VERIFIED';
+        } catch {}
+        try {
+          const row = await d1Repo.queryOne<{ used_count: number }>('provider_quota_ledger', "SELECT used_count FROM provider_quota_ledger WHERE provider = 'google_pagespeed'");
+          if (row && row.used_count > 0) return 'LIVE_VERIFIED';
         } catch {}
         return 'CONFIGURED';
       }
@@ -6722,7 +6731,7 @@ apiRouter.get('/public/autonomy-status', async (c) => {
   ]);
 
   return c.json({
-    version: '5.5.0',
+    version: '5.7.0',
     platform: 'Autonomous Multi-Sector Revenue Organization',
     timestamp: new Date().toISOString(),
     policyGate: {
@@ -6803,7 +6812,8 @@ apiRouter.get('/public/deals', async (c) => {
 
   const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
   const engine = AutonomousDealDiscoveryEngine.getInstance();
-  if (engine.getAllDeals().length === 0) {
+  const inStockDeals = engine.getAllDeals().filter(d => d.availability === 'IN_STOCK' && (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS'));
+  if (inStockDeals.length === 0) {
     try {
       await engine.syncFromD1Async();
     } catch {}
@@ -6829,7 +6839,8 @@ apiRouter.get('/public/deals', async (c) => {
 apiRouter.get('/public/feeds/deals.json', async (c) => {
   const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
   const engine = AutonomousDealDiscoveryEngine.getInstance();
-  if (engine.getAllDeals().length === 0) {
+  const inStockDeals = engine.getAllDeals().filter(d => d.availability === 'IN_STOCK' && (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS'));
+  if (inStockDeals.length === 0) {
     try {
       await engine.syncFromD1Async();
     } catch {}
@@ -6974,7 +6985,8 @@ apiRouter.get('/compare/:sectorSlug', async (c) => {
     }
 
     const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
-    if (dealEngine.getAllDeals().length === 0) {
+    const inStockDeals = dealEngine.getAllDeals().filter(d => d.availability === 'IN_STOCK' && (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS'));
+    if (inStockDeals.length === 0) {
       await dealEngine.syncFromD1Async().catch(() => {});
     }
 

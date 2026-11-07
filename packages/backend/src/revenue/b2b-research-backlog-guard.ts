@@ -33,6 +33,14 @@ export function getValidatedBacklogLimit(): number {
  * returns allowed: false with reason 'BACKLOG_COUNT_UNAVAILABLE'.
  * When unapprovedDrafts >= maxLimit, halts further research and draft creation.
  */
+export class B2bResearchBacklogGuard {
+  public static async checkCanRunResearch(
+    d1Repo?: D1RevenueRepository
+  ): Promise<B2BBacklogGuardResult> {
+    return checkB2BResearchBacklogGuard(d1Repo);
+  }
+}
+
 export async function checkB2BResearchBacklogGuard(
   d1Repo?: D1RevenueRepository
 ): Promise<B2BBacklogGuardResult> {

@@ -7,7 +7,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { apiRouter } from './routes/api.js';
 import { seedDatabase } from './db/seed.js';
-import { validateProductionSecrets, loadLocalEnvFile } from './config/env.js';
+import { validateProductionSecrets, loadLocalEnvFile, isProduction } from './config/env.js';
 import { initOwnerEnvIntake } from './config/owner-env-intake.js';
 import { DailyMarketResearchScheduler } from './scheduler/daily-research-scheduler.js';
 import { UnifiedQuotaService } from './quota/unified-quota-service.js';
@@ -980,16 +980,20 @@ app.get('/sitemap.xml', async (c) => {
     } catch {}
   }
 
-  // Include active verified public deals in sitemap
+  // Include active verified public deals in sitemap (V5.7 Phase 3)
   let dealUrls: string[] = [];
   try {
-    const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
-    const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
-    if (dealEngine.getAllDeals().length === 0) {
-      await dealEngine.syncFromD1Async();
+    const { D1RevenueRepository } = await import('./db/d1-revenue-repository.js');
+    const d1Repo = D1RevenueRepository.getInstance();
+    let rows: any[] = [];
+    if (d1Repo.isRemoteD1Configured() || isProduction()) {
+      const res = await d1Repo.executeRead('public_deals', "SELECT slug, canonical_slug, id FROM public_deals WHERE availability = 'IN_STOCK'", []);
+      rows = res.results || [];
+    } else {
+      const { getDb } = await import('./db/client.js');
+      rows = getDb().prepare("SELECT slug, canonical_slug, id FROM public_deals WHERE availability = 'IN_STOCK'").all() as any[];
     }
-    const publicDeals = dealEngine.queryPublicDeals({ limit: 100 }).deals;
-    dealUrls = publicDeals.map(d => `${baseUrl}/deals/${d.canonicalSlug || d.slug || d.id}`);
+    dealUrls = rows.map(r => `${baseUrl}/deals/${r.canonical_slug || r.slug || r.id}`);
   } catch {}
 
   // Include compare guides for all canonical sectors
@@ -1188,9 +1192,15 @@ export async function startServer(): Promise<any> {
 
   // 3e. Curated Healthcare SMB Prospects Gate: Ensure 10 researched Indian healthcare practices exist
   try {
-    const { PlatformProspectDiscoveryEngine } = await import('./revenue/platform-prospect-discovery-engine.js');
-    await PlatformProspectDiscoveryEngine.getInstance().ensureCuratedQualifiedProspectBatch();
-    console.log('[Prospect Gate] Ensured curated Indian healthcare SMB prospects & drafts in Cloudflare D1.');
+    const { checkB2BResearchBacklogGuard } = await import('./revenue/b2b-research-backlog-guard.js');
+    const guard = await checkB2BResearchBacklogGuard();
+    if (guard.allowed) {
+      const { PlatformProspectDiscoveryEngine } = await import('./revenue/platform-prospect-discovery-engine.js');
+      await PlatformProspectDiscoveryEngine.getInstance().ensureCuratedQualifiedProspectBatch();
+      console.log('[Prospect Gate] Ensured curated Indian healthcare SMB prospects & drafts in Cloudflare D1.');
+    } else {
+      console.log(`[Prospect Gate] Skipped curated prospect batch seeding: ${guard.unapprovedCount} unapproved drafts pending review.`);
+    }
   } catch (err: any) {
     console.warn('[Prospect Gate] Curated prospect batch synchronization failed:', err.message);
   }
@@ -1202,6 +1212,23 @@ export async function startServer(): Promise<any> {
     console.log(`[Automation Gate] Ensured ${WORKFLOW_DEFINITIONS.length} background automation workflows initialized in Cloudflare D1.`);
   } catch (err: any) {
     console.warn('[Automation Gate] Automation registry initialization failed:', err.message);
+  }
+
+  // 3g. Multi-Merchant Deals Catalog Gate: Ensure approved Cuelinks merchants feeds are hydrated (V5.7 Phase 1)
+  try {
+    const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
+    const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
+    await dealEngine.syncFromD1Async();
+    const inStock = dealEngine.getAllDeals().filter(d => d.availability === 'IN_STOCK' && (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS'));
+    if (inStock.length < 5) {
+      console.log('[Catalog Gate] Ingesting live feeds from approved Cuelinks merchants into public_deals...');
+      await dealEngine.harvestAllApprovedMerchantFeeds();
+      console.log(`[Catalog Gate] Ingested live deals. Total active in-stock: ${dealEngine.getAllDeals().filter(d => d.availability === 'IN_STOCK').length}`);
+    } else {
+      console.log(`[Catalog Gate] Verified ${inStock.length} active in-stock deals loaded.`);
+    }
+  } catch (err: any) {
+    console.warn('[Catalog Gate] Merchant catalog feed ingestion failed:', err.message);
   }
 
   // 4. Autonomous scheduling powered by durable Cloudflare D1 queue & Worker heartbeat (Spec V4.1 Phase 1 & 2)

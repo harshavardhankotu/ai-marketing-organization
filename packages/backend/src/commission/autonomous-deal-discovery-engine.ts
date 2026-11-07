@@ -29,6 +29,135 @@ import {
 
 export const MAX_OFFER_FRESHNESS_HOURS = 48;
 
+export interface ApprovedShopifyMerchant {
+  domain: string;
+  name: string;
+  brand: string;
+  sectorCode: SectorCode;
+  category: string;
+  cuelinksCampaignId: string;
+}
+
+export const APPROVED_SHOPIFY_MERCHANTS: ApprovedShopifyMerchant[] = [
+  // SECTOR_B_ELECTRONICS
+  {
+    domain: 'boat-lifestyle.com',
+    name: 'boAt Lifestyle',
+    brand: 'boAt',
+    sectorCode: 'SECTOR_B_ELECTRONICS',
+    category: 'Electronics',
+    cuelinksCampaignId: '4232'
+  },
+  {
+    domain: 'gonoise.com',
+    name: 'Noise India',
+    brand: 'Noise',
+    sectorCode: 'SECTOR_B_ELECTRONICS',
+    category: 'Electronics',
+    cuelinksCampaignId: '3278'
+  },
+  {
+    domain: 'skullcandy.in',
+    name: 'Skullcandy India',
+    brand: 'Skullcandy',
+    sectorCode: 'SECTOR_B_ELECTRONICS',
+    category: 'Electronics',
+    cuelinksCampaignId: '57469'
+  },
+  // SECTOR_A_PRECIOUS_METALS
+  {
+    domain: 'palmonas.com',
+    name: 'Palmonas',
+    brand: 'Palmonas',
+    sectorCode: 'SECTOR_A_PRECIOUS_METALS',
+    category: 'Jewellery',
+    cuelinksCampaignId: '11155'
+  },
+  // SECTOR_G_LIFESTYLE
+  {
+    domain: 'swissbeauty.in',
+    name: 'Swiss Beauty',
+    brand: 'Swiss Beauty',
+    sectorCode: 'SECTOR_G_LIFESTYLE',
+    category: 'Health & Beauty',
+    cuelinksCampaignId: '4957'
+  },
+  {
+    domain: 'ustraa.com',
+    name: 'Ustraa',
+    brand: 'Ustraa',
+    sectorCode: 'SECTOR_G_LIFESTYLE',
+    category: 'Health & Beauty',
+    cuelinksCampaignId: '2067'
+  },
+  {
+    domain: 'themancompany.com',
+    name: 'The Man Company',
+    brand: 'The Man Company',
+    sectorCode: 'SECTOR_G_LIFESTYLE',
+    category: 'Health & Beauty',
+    cuelinksCampaignId: '2514'
+  },
+  {
+    domain: 'wellbeingnutrition.com',
+    name: 'Wellbeing Nutrition',
+    brand: 'Wellbeing Nutrition',
+    sectorCode: 'SECTOR_G_LIFESTYLE',
+    category: 'Health & Beauty',
+    cuelinksCampaignId: '4469'
+  },
+  {
+    domain: 'lavieworld.com',
+    name: 'Lavieworld',
+    brand: 'Lavie',
+    sectorCode: 'SECTOR_G_LIFESTYLE',
+    category: 'Fashion',
+    cuelinksCampaignId: '58001'
+  },
+  {
+    domain: 'zanducare.com',
+    name: 'Zandu Care',
+    brand: 'Zandu',
+    sectorCode: 'SECTOR_G_LIFESTYLE',
+    category: 'Health & Beauty',
+    cuelinksCampaignId: '4199'
+  },
+  {
+    domain: 'worldofasaya.com',
+    name: 'World of Asaya',
+    brand: 'Asaya',
+    sectorCode: 'SECTOR_G_LIFESTYLE',
+    category: 'Health & Beauty',
+    cuelinksCampaignId: '6458'
+  },
+  // SECTOR_C_HOME_APPLIANCES
+  {
+    domain: 'jaipurrugs.com',
+    name: 'Jaipur Rugs',
+    brand: 'Jaipur Rugs',
+    sectorCode: 'SECTOR_C_HOME_APPLIANCES',
+    category: 'Home & Kitchen',
+    cuelinksCampaignId: '5555'
+  },
+  {
+    domain: 'kurlon.com',
+    name: 'Kurlon',
+    brand: 'Kurlon',
+    sectorCode: 'SECTOR_C_HOME_APPLIANCES',
+    category: 'Home & Kitchen',
+    cuelinksCampaignId: '7692'
+  }
+];
+
+export function normalizeMerchantDomain(rawUrlOrDomain: string): string {
+  try {
+    const raw = rawUrlOrDomain.startsWith('http') ? rawUrlOrDomain : `https://${rawUrlOrDomain}`;
+    return new URL(raw).hostname.replace(/^www\./i, '').toLowerCase();
+  } catch {
+    return rawUrlOrDomain.replace(/^https?:\/\//i, '').replace(/^www\./i, '').split('/')[0].toLowerCase();
+  }
+}
+
 export class AutonomousDealDiscoveryEngine {
   private static instance: AutonomousDealDiscoveryEngine;
   private d1Repo = D1RevenueRepository.getInstance();
@@ -120,6 +249,162 @@ export class AutonomousDealDiscoveryEngine {
       this.lastCycleId = cycleId;
     }
     return this.runDiscoveryCycle(organizationId, businessId);
+  }
+
+  /**
+   * Multi-Merchant Live Shopify Feed Harvester (V5.7 Phase 1)
+   * Fetches public Shopify JSON feed (https://<domain>/products.json?limit=25) with a 5s timeout.
+   * Filters for products where variant.available === true && Number(variant.price) > 0.
+   * If variant.compare_at_price > variant.price with >= 15% discount, computes discount badge.
+   * Valid in-stock items without compare_at_price are included with referencePriceINR: null (no discount badge).
+   * Generates exact variant URL: https://<domain>/products/<product.handle>?variant=<variant.id>.
+   */
+  public async harvestMerchantShopifyFeed(
+    merchant: ApprovedShopifyMerchant,
+    organizationId: string = 'org_owner_primary',
+    businessId: string = 'biz_platform_aro',
+    options?: { limit?: number; timeoutMs?: number }
+  ): Promise<NormalizedDeal[]> {
+    const cleanDomain = normalizeMerchantDomain(merchant.domain);
+    const limit = options?.limit || 25;
+    const timeoutMs = options?.timeoutMs || 5000;
+    const feedUrl = `https://${cleanDomain}/products.json?limit=${limit}`;
+    const discoveredDeals: NormalizedDeal[] = [];
+
+    try {
+      const fetchFn = this.getFetchFn() || globalThis.fetch;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+      const res = await fetchFn(feedUrl, {
+        headers: {
+          'Accept': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        },
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+
+      if (!res.ok) {
+        return [];
+      }
+
+      const json = await res.json() as any;
+      const products = Array.isArray(json?.products) ? json.products : [];
+
+      for (const product of products) {
+        if (!product || !product.handle || !Array.isArray(product.variants)) continue;
+
+        for (const variant of product.variants) {
+          if (!variant || variant.available !== true) continue;
+          const currentPrice = Number(variant.price);
+          if (!Number.isFinite(currentPrice) || currentPrice <= 0) continue;
+
+          const compareAtPrice = variant.compare_at_price ? Number(variant.compare_at_price) : null;
+          let verifiedDiscountPercent: number | null = null;
+          let discountBadge: string | undefined = undefined;
+          let referencePriceINR: number | null = null;
+
+          if (compareAtPrice && Number.isFinite(compareAtPrice) && compareAtPrice > currentPrice) {
+            const calcDiscount = Math.round(((compareAtPrice - currentPrice) / compareAtPrice) * 100);
+            if (calcDiscount >= 15) {
+              verifiedDiscountPercent = calcDiscount;
+              discountBadge = `${calcDiscount}% OFF`;
+              referencePriceINR = compareAtPrice;
+            }
+          }
+
+          const variantUrl = `https://${cleanDomain}/products/${product.handle}?variant=${variant.id}`;
+          const trackingUrl = `https://linksredirect.com/?cid=331585&subid1=v57_organic&url=${encodeURIComponent(variantUrl)}`;
+          const slug = AutonomousDealDiscoveryEngine.generateDealSlug(product.title, merchant.brand, String(variant.id));
+          const dealId = `deal_${cleanDomain.replace(/[^a-z0-9]/g, '_')}_${product.id}_${variant.id}`;
+
+          const dealInput: DiscoveredDealInput = {
+            slug,
+            canonicalSlug: slug,
+            dealKind: 'PRODUCT',
+            discountBadge,
+            title: product.title,
+            brand: merchant.brand,
+            merchant: merchant.name,
+            category: merchant.category,
+            productUrl: variantUrl,
+            currentPriceINR: currentPrice,
+            referencePriceINR: referencePriceINR || undefined,
+            claimedDiscountPercent: verifiedDiscountPercent || undefined,
+            discountVerificationType: verifiedDiscountPercent ? 'INDEPENDENT_CORROBORATED' : 'UNCONFIRMED',
+            availability: 'IN_STOCK',
+            geographicRestrictions: ['India'],
+            offerStart: new Date().toISOString(),
+            expiryDate: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
+            observedAt: new Date().toISOString(),
+            sourceUrl: variantUrl,
+            sourceDomain: cleanDomain,
+            sourceType: 'RETAILER_BRAND',
+            trackingUrl,
+            affiliateNetwork: 'CUELINKS',
+            affiliateCampaignId: merchant.cuelinksCampaignId,
+            isMonetizable: true,
+            modelOrSku: String(variant.id),
+            sectorCode: merchant.sectorCode,
+            evidenceJson: {
+              source: 'LIVE_SHOPIFY_FEED',
+              merchantDomain: cleanDomain,
+              productId: product.id,
+              variantId: variant.id,
+              variantTitle: variant.title,
+              handle: product.handle,
+              affiliateCampaignId: merchant.cuelinksCampaignId,
+              affiliateNetwork: 'CUELINKS'
+            }
+          };
+
+          const ingestRes = await this.ingestAndVerifyDeal(dealInput, organizationId, businessId);
+          if (ingestRes.deal && (ingestRes.action === 'CREATED_VERIFIED' || ingestRes.action === 'UPDATED_VERIFIED' || ingestRes.action === 'DEDUPLICATED')) {
+            discoveredDeals.push(ingestRes.deal);
+          }
+          break; // First valid variant per product
+        }
+      }
+    } catch (err: any) {
+      console.warn(`[DealEngine] Failed harvesting feed for ${cleanDomain}: ${err.message}`);
+    }
+
+    return discoveredDeals;
+  }
+
+  /**
+   * Discovers and qualifies in-stock deals for a specific sector (V5.7 Phase 1)
+   */
+  public async discoverDealsForSector(
+    sectorCode: string,
+    organizationId: string = 'org_owner_primary',
+    businessId: string = 'biz_platform_aro'
+  ): Promise<NormalizedDeal[]> {
+    const matchingMerchants = APPROVED_SHOPIFY_MERCHANTS.filter(
+      m => m.sectorCode === sectorCode || sectorCode === 'ALL'
+    );
+    const discovered: NormalizedDeal[] = [];
+    for (const merchant of matchingMerchants) {
+      const deals = await this.harvestMerchantShopifyFeed(merchant, organizationId, businessId);
+      discovered.push(...deals);
+    }
+    return discovered;
+  }
+
+  /**
+   * Harvests feeds across all approved Cuelinks merchants (V5.7 Phase 1)
+   */
+  public async harvestAllApprovedMerchantFeeds(
+    organizationId: string = 'org_owner_primary',
+    businessId: string = 'biz_platform_aro'
+  ): Promise<NormalizedDeal[]> {
+    const discovered: NormalizedDeal[] = [];
+    for (const merchant of APPROVED_SHOPIFY_MERCHANTS) {
+      const deals = await this.harvestMerchantShopifyFeed(merchant, organizationId, businessId);
+      discovered.push(...deals);
+    }
+    return discovered;
   }
 
   public injectDiscoveredDealsForTesting(deals: DiscoveredDealInput[]): void {
@@ -748,6 +1033,36 @@ export class AutonomousDealDiscoveryEngine {
       discovered.push(...schemaDeals);
     } catch (schemaErr: any) {
       console.warn(`[DealEngine] Schema.org adapter notice: ${schemaErr.message}`);
+    }
+
+    // 6. Adapter 4: Live Multi-Merchant Shopify Feeds (V5.7 Phase 1)
+    try {
+      this.lastCycleScannedSourceIds.add('src_shopify_merchants');
+      const shopifyDeals = await this.harvestAllApprovedMerchantFeeds(organizationId, businessId);
+      for (const sd of shopifyDeals) {
+        discovered.push({
+          title: sd.title,
+          brand: sd.brand,
+          merchant: sd.merchant,
+          category: sd.category,
+          productUrl: sd.productUrl,
+          currentPriceINR: sd.currentPriceINR,
+          referencePriceINR: sd.referencePriceINR || undefined,
+          claimedDiscountPercent: sd.claimedDiscountPercent,
+          discountBadge: sd.discountBadge,
+          couponCode: sd.couponCode,
+          sourceUrl: sd.sourceUrl,
+          sourceDomain: sd.sourceDomain,
+          sourceType: sd.sourceType,
+          modelOrSku: sd.modelOrSku,
+          observedAt: sd.observedAt,
+          sectorCode: sd.sectorCode,
+          affiliateCampaignId: sd.affiliateCampaignId,
+          trackingUrl: sd.trackingUrl
+        });
+      }
+    } catch (shopifyErr: any) {
+      console.warn(`[DealEngine] Shopify feeds harvest notice: ${shopifyErr.message}`);
     }
 
     // Seamlessly convert eligible candidate deals through Cuelinks when authenticated (Spec § 5 & § 8)
@@ -2213,6 +2528,25 @@ export class AutonomousDealDiscoveryEngine {
     page: number;
     limit: number;
   } {
+    // Hydrate active deals from SQLite public_deals if dealsMap has 0 in-stock deals
+    const inStockCount = Array.from(this.dealsMap.values()).filter(d => d.availability === 'IN_STOCK' && (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS')).length;
+    if (inStockCount === 0) {
+      try {
+        const { getDb } = require('../db/client.js');
+        const rows = getDb().prepare("SELECT * FROM public_deals WHERE availability = 'IN_STOCK' AND verification_status IN ('VERIFIED', 'VERIFIED_WITH_CONDITIONS')").all();
+        if (Array.isArray(rows) && rows.length > 0) {
+          for (const row of rows) {
+            const parsed = this.parseDealFromPublicDealsRow(row);
+            if (parsed) {
+              this.dealsMap.set(parsed.id, parsed);
+              if (parsed.slug) this.dealSlugMap.set(parsed.slug.toLowerCase(), parsed.id);
+              if (parsed.canonicalSlug) this.dealSlugMap.set(parsed.canonicalSlug.toLowerCase(), parsed.id);
+            }
+          }
+        }
+      } catch {}
+    }
+
     const allDeals = Array.from(this.dealsMap.values());
 
     // Filter active deals
@@ -2339,7 +2673,33 @@ export class AutonomousDealDiscoveryEngine {
     const cached = this.getDealById(cleanId);
     if (cached) return cached;
 
-    // 2. Persistent D1 query for cold-start recovery
+    // 2. Persistent public_deals table query (V5.7 Primary Deal Storage)
+    try {
+      const pdSql = `
+        SELECT * FROM public_deals
+        WHERE id = ? OR slug = ? OR canonical_slug = ?
+        LIMIT 1
+      `;
+      let pdRows: any[] = [];
+      if (this.d1Repo.isRemoteD1Configured() || isProduction()) {
+        const res = await this.d1Repo.executeRead('public_deals', pdSql, [cleanId, cleanId, cleanId]);
+        pdRows = Array.isArray(res?.results) ? res.results : [];
+      } else {
+        const { getDb } = await import('../db/client.js');
+        pdRows = getDb().prepare(pdSql).all(cleanId, cleanId, cleanId) as any[];
+      }
+      if (pdRows && pdRows.length > 0) {
+        const deal = this.parseDealFromPublicDealsRow(pdRows[0]);
+        if (deal) {
+          this.dealsMap.set(deal.id, deal);
+          if (deal.slug) this.dealSlugMap.set(deal.slug.toLowerCase(), deal.id);
+          if (deal.canonicalSlug) this.dealSlugMap.set(deal.canonicalSlug.toLowerCase(), deal.id);
+          return deal;
+        }
+      }
+    } catch {}
+
+    // 3. Persistent D1 query for cold-start recovery (workflows table)
     try {
       const sql = `
         SELECT id, status, current_step, inputs_json, outputs_json, error_info, created_at, updated_at
