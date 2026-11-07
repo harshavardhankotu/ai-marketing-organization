@@ -213,12 +213,8 @@ app.get('/deals', async (c) => {
     siteUrl: `${proto}://${host}`
   };
   const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
-  if (dealEngine.getAllDeals().length === 0) {
-    try {
-      await dealEngine.syncFromD1Async();
-    } catch {}
-  }
-  const deals = dealEngine.queryPublicDeals({ limit: 50 }).deals;
+  const eligible = await dealEngine.getEligiblePublicDeals({ limit: 50 });
+  const deals = eligible.deals;
   const html = StaticSiteGenerator.getInstance().renderDealsHtml(deals, config);
   return c.html(html);
 });
@@ -980,38 +976,32 @@ app.get('/sitemap.xml', async (c) => {
     } catch {}
   }
 
-  // Include active verified public deals in sitemap (V5.7 Phase 3)
+  // Include active verified public deals in sitemap with exact 1:1 parity (V5.8 Defect 2 & 6)
   let dealUrls: string[] = [];
   try {
-    const { D1RevenueRepository } = await import('./db/d1-revenue-repository.js');
-    const d1Repo = D1RevenueRepository.getInstance();
-    let rows: any[] = [];
-    if (d1Repo.isRemoteD1Configured() || isProduction()) {
-      const res = await d1Repo.executeRead('public_deals', "SELECT slug, canonical_slug, id FROM public_deals WHERE availability = 'IN_STOCK'", []);
-      rows = res.results || [];
-    } else {
-      const { getDb } = await import('./db/client.js');
-      rows = getDb().prepare("SELECT slug, canonical_slug, id FROM public_deals WHERE availability = 'IN_STOCK'").all() as any[];
-    }
-    dealUrls = rows.map(r => `${baseUrl}/deals/${r.canonical_slug || r.slug || r.id}`);
-  } catch {}
-
-  if (dealUrls.length === 0) {
-    try {
-      const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
-      const deals = AutonomousDealDiscoveryEngine.getInstance().getAllDeals().filter(d => d.availability === 'IN_STOCK');
-      dealUrls = deals.map(d => `${baseUrl}/deals/${d.canonicalSlug || d.slug || d.id}`);
-    } catch {}
+    const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
+    const engine = AutonomousDealDiscoveryEngine.getInstance();
+    const eligibleRes = await engine.getEligiblePublicDeals({ limit: 10000 });
+    dealUrls = eligibleRes.deals.map(d => `${baseUrl}/deals/${d.canonicalSlug || d.slug || d.id}`);
+  } catch (err: any) {
+    console.warn(`[Sitemap] Error fetching eligible deals: ${err.message}`);
   }
 
-  // Include compare guides for all canonical sectors
+  // Include compare guides only for sectors with verified active deals (V5.8 Defect 2)
   let compareUrls: string[] = [];
   try {
     const { COMMERCIAL_SECTORS_LIST } = await import('@ai-marketing/shared');
-    compareUrls = COMMERCIAL_SECTORS_LIST.map(sec => `${baseUrl}/compare/${sec.id}`);
+    const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
+    const engine = AutonomousDealDiscoveryEngine.getInstance();
+    for (const sec of COMMERCIAL_SECTORS_LIST) {
+      const secRes = await engine.getEligiblePublicDeals({ sectorCode: sec.code });
+      if (secRes.deals.length > 0) {
+        compareUrls.push(`${baseUrl}/compare/${sec.id}`);
+      }
+    }
   } catch {}
 
-  // Include all audited domain pages
+  // Include only publicly authorized audited domain pages (V5.8 Defect 5)
   let auditUrls: string[] = [];
   try {
     const { SiteAuditService } = await import('./tools/site-audit/site-audit-service.js');
@@ -1050,10 +1040,8 @@ app.get('/rss.xml', async (c) => {
   try {
     const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
     const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
-    if (dealEngine.getAllDeals().length === 0) {
-      await dealEngine.syncFromD1Async();
-    }
-    publicDeals = dealEngine.queryPublicDeals({ limit: 50 }).deals;
+    const eligible = await dealEngine.getEligiblePublicDeals({ limit: 50 });
+    publicDeals = eligible.deals;
   } catch {}
 
   const rssItems = publicDeals.map(d => `    <item>

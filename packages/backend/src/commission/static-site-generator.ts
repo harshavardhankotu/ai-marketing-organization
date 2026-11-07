@@ -847,7 +847,7 @@ export class StaticSiteGenerator {
   }
 
   private getGoogleSiteVerificationMeta(): string {
-    const code = process.env.GOOGLE_SITE_VERIFICATION?.trim();
+    const code = (process.env.GOOGLE_SITE_VERIFICATION || 'WVPs1hLZgUqJL5yO9jwF2pWwsekPcMtTOLLeWILGU9I').trim();
     if (!code) return '';
     return `<meta name="google-site-verification" content="${this.escapeHtml(code)}">\n  `;
   }
@@ -864,7 +864,9 @@ export class StaticSiteGenerator {
   public renderAuditHtml(auditData: any, config: StaticSiteConfig, crossPromoDeals: any[] = []): string {
     const domain = this.escapeHtml(auditData.domain);
     const businessName = this.escapeHtml(auditData.business_name || auditData.domain);
-    const perfScore = auditData.performance_score || 0;
+    const perfScore = (auditData.performance_score !== null && auditData.performance_score !== undefined)
+      ? Number(auditData.performance_score)
+      : null;
     const seoScore = auditData.seo_score || 0;
     const cwv = typeof auditData.core_web_vitals_json === 'string'
       ? JSON.parse(auditData.core_web_vitals_json || '{}')
@@ -905,6 +907,8 @@ export class StaticSiteGenerator {
       </div>
     `).join('');
 
+    const isAuthorized = auditData.is_publicly_authorized === 1;
+
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -913,7 +917,7 @@ export class StaticSiteGenerator {
   <title>${domain} Website Performance & SEO Audit Report | SiteFix AI</title>
   <meta name="description" content="Core Web Vitals, Schema.org validation, and SEO scorecard for ${domain}. Instant ₹499 optimization fix-pack.">
   <link rel="canonical" href="${config.siteUrl}/audit/${domain}">
-  ${this.getGoogleSiteVerificationMeta()}${this.getCuelinksVerificationMeta()}
+  ${!isAuthorized ? '<meta name="robots" content="noindex, nofollow">\n  ' : ''}${this.getGoogleSiteVerificationMeta()}${this.getCuelinksVerificationMeta()}
   <script type="application/ld+json">
 ${JSON.stringify(schemaObj, null, 2)}
   </script>
@@ -953,8 +957,13 @@ ${JSON.stringify(schemaObj, null, 2)}
         </div>
         <div class="score-tile">
           <div style="font-size:12px;color:#64748b;font-weight:bold;">PERFORMANCE</div>
+          ${perfScore !== null ? `
           <div class="score-val ${perfScore >= 70 ? 'score-green' : 'score-amber'}">${perfScore}<span style="font-size:16px;">/100</span></div>
           <div style="font-size:11px;color:#64748b;">Lighthouse Core Web Vitals</div>
+          ` : `
+          <div class="score-val" style="font-size:20px;color:#64748b;">UNAVAILABLE</div>
+          <div style="font-size:11px;color:#64748b;">Quota Unreached / Raw HTML Audit</div>
+          `}
         </div>
         <div class="score-tile">
           <div style="font-size:12px;color:#64748b;font-weight:bold;">SECURITY & HTTPS</div>
@@ -1074,7 +1083,7 @@ ${JSON.stringify(schemaObj, null, 2)}
   <title>Top Verified ${sectorName} Deals & Buying Guide (2026) | #Ad</title>
   <meta name="description" content="Independent comparison of top verified deals, historical price baselines, and certified discounts in ${sectorName}. Updated hourly.">
   <link rel="canonical" href="${config.siteUrl}/compare/${sectorSlug}">
-  ${this.getGoogleSiteVerificationMeta()}${this.getCuelinksVerificationMeta()}
+  ${deals.length === 0 ? '<meta name="robots" content="noindex, nofollow">\n  ' : ''}${this.getGoogleSiteVerificationMeta()}${this.getCuelinksVerificationMeta()}
   <script type="application/ld+json">
 ${JSON.stringify(schemaObj, null, 2)}
   </script>

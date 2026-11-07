@@ -5968,6 +5968,8 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   // 6. Direct B2B Lead Conversion Funnel (Empirical Evidence)
   let prospectsResearched = 0;
   let inquiriesReceived = 0;
+  let lifetimeDraftsPrepared = 0;
+  let pendingUnapprovedDrafts = 0;
   let outreachDraftsPrepared = 0;
   let ownerApprovedDrafts = 0;
   let messagesDispatched = 0;
@@ -5989,11 +5991,18 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
     );
     inquiriesReceived = inqRow?.c || 0;
 
-    const draftsPreparedRow = await d1Repo.queryOne<any>(
+    const lifetimeDraftsRow = await d1Repo.queryOne<any>(
+      'direct_outreach_log',
+      "SELECT COUNT(*) as c FROM direct_outreach_log"
+    );
+    lifetimeDraftsPrepared = lifetimeDraftsRow?.c || 0;
+
+    const pendingDraftsRow = await d1Repo.queryOne<any>(
       'direct_outreach_log',
       "SELECT COUNT(*) as c FROM direct_outreach_log WHERE human_approved = 0 AND dispatched = 0"
     );
-    outreachDraftsPrepared = draftsPreparedRow?.c || 0;
+    pendingUnapprovedDrafts = pendingDraftsRow?.c || 0;
+    outreachDraftsPrepared = pendingUnapprovedDrafts;
 
     const approvedDraftsRow = await d1Repo.queryOne<any>(
       'direct_outreach_log',
@@ -6035,6 +6044,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   // 6b. Self-Serve SaaS Micro-SaaS Funnel (SiteFix AI — Part 7.1)
   let siteAuditsStarted = 0;
   let siteAuditsCompleted = 0;
+  let pageSpeedCompleted = 0;
   let siteAuditsFailed = 0;
   let fixPackPreviews = 0;
   let checkoutInitiated = 0;
@@ -6053,6 +6063,12 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
     );
     siteAuditsCompleted = auditsRow?.c || 0;
     siteAuditsStarted = siteAuditsCompleted;
+
+    const pageSpeedRow = await d1Repo.queryOne<any>(
+      'site_audits',
+      "SELECT COUNT(*) as c FROM site_audits WHERE pagespeed_status = 'COMPLETED' OR (performance_score IS NOT NULL AND performance_score > 0)"
+    );
+    pageSpeedCompleted = pageSpeedRow?.c || 0;
 
     const ordersRow = await d1Repo.queryOne<any>(
       'payment_orders',
@@ -6136,7 +6152,9 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
       b2bFunnel: {
         prospectsResearched,
         inquiriesReceived,
-        outreachDraftsPrepared,
+        lifetimeDraftsPrepared,
+        pendingUnapprovedDrafts,
+        outreachDraftsPrepared: pendingUnapprovedDrafts,
         ownerApprovedDrafts,
         messagesDispatched,
         providerConfirmedDeliveries,
@@ -6147,6 +6165,8 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
       selfServeSaaSFunnel: {
         siteAuditsStarted,
         siteAuditsCompleted,
+        htmlScanCompleted: siteAuditsCompleted,
+        pageSpeedCompleted,
         siteAuditsFailed,
         fixPackPreviews,
         checkoutInitiated,
@@ -6809,43 +6829,43 @@ apiRouter.get('/public/deals', async (c) => {
   const sortBy = c.req.query('sortBy') as any;
   const page = c.req.query('page') ? Number(c.req.query('page')) : 1;
   const limit = c.req.query('limit') ? Number(c.req.query('limit')) : 12;
+  const sectorCode = c.req.query('sectorCode') || c.req.query('sector');
 
   const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
   const engine = AutonomousDealDiscoveryEngine.getInstance();
-  const inStockDeals = engine.getAllDeals().filter(d => d.availability === 'IN_STOCK' && (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS'));
-  if (inStockDeals.length === 0) {
-    try {
-      await engine.syncFromD1Async();
-    } catch {}
-  }
-  const result = engine.queryPublicDeals({
-    q,
+  const eligible = await engine.getEligiblePublicDeals({
+    sectorCode,
     category,
     merchant,
     minPrice,
     maxPrice,
-    verifiedOnly,
-    hasCoupon,
-    dealKind,
-    sortBy,
-    page,
-    limit
+    q,
+    limit,
+    offset: (page - 1) * limit
   });
 
-  return c.json({ success: true, data: result });
+  const allEligible = await engine.getEligiblePublicDeals();
+  const categories = Array.from(new Set(allEligible.deals.map(d => d.category))).filter(Boolean);
+  const merchants = Array.from(new Set(allEligible.deals.map(d => d.merchant))).filter(Boolean);
+
+  return c.json({
+    success: true,
+    data: {
+      deals: eligible.deals,
+      total: eligible.total,
+      categories,
+      merchants,
+      page,
+      limit
+    }
+  });
 });
 
 // Public Deals JSON Feed for syndication and partner integrations (Spec Engine 4)
 apiRouter.get('/public/feeds/deals.json', async (c) => {
   const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
   const engine = AutonomousDealDiscoveryEngine.getInstance();
-  const inStockDeals = engine.getAllDeals().filter(d => d.availability === 'IN_STOCK' && (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS'));
-  if (inStockDeals.length === 0) {
-    try {
-      await engine.syncFromD1Async();
-    } catch {}
-  }
-  const result = engine.queryPublicDeals({ page: 1, limit: 50, verifiedOnly: true });
+  const eligible = await engine.getEligiblePublicDeals({ limit: 50 });
   const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').replace(/\/$/, '');
 
   const feed = {
@@ -6854,7 +6874,7 @@ apiRouter.get('/public/feeds/deals.json', async (c) => {
     home_page_url: siteUrl,
     feed_url: `${siteUrl}/api/v1/public/feeds/deals.json`,
     description: 'Autonomous multi-sector verified deals, price drops, and buyer guides',
-    items: (result.deals || []).map((d: any) => ({
+    items: (eligible.deals || []).map((d: any) => ({
       id: d.id,
       url: `${siteUrl}/deals#${d.id}`,
       external_url: `${siteUrl}/api/v1/public/deals/${d.id}/redirect`,
@@ -6901,34 +6921,12 @@ apiRouter.get('/audit/:domain', async (c) => {
     const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
 
     const auditService = SiteAuditService.getInstance();
-    let auditData = await auditService.getAuditByDomain(cleanDomain);
-
-    if (!auditData) {
-      // Execute live audit on demand if not yet cached
-      try {
-        const liveResult = await auditService.runFullAudit(`https://${cleanDomain}`, cleanDomain);
-        auditData = {
-          domain: cleanDomain,
-          target_url: liveResult.url,
-          business_name: liveResult.businessName || cleanDomain,
-          performance_score: liveResult.pageSpeed?.performanceScore || 0,
-          seo_score: liveResult.pageSpeed?.seoScore || Math.round(liveResult.scorecard?.totalScore || liveResult.score || 0),
-          core_web_vitals_json: JSON.stringify(liveResult.pageSpeed?.coreWebVitals || {}),
-          checklist_json: JSON.stringify(liveResult.scorecard?.items || liveResult.findings || []),
-          status: 'COMPLETED'
-        };
-      } catch (err: any) {
-        console.warn(`[AuditRoute] On-demand scan failed for ${cleanDomain}: ${err.message}`);
-      }
-    }
+    const auditData = await auditService.getAuditByDomain(cleanDomain);
 
     if (auditData) {
       const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
-      if (dealEngine.getAllDeals().length === 0) {
-        await dealEngine.syncFromD1Async().catch(() => {});
-      }
-      const crossPromoDeals = dealEngine.queryPublicDeals({ limit: 3 }).deals;
-      const html = StaticSiteGenerator.getInstance().renderAuditHtml(auditData, config, crossPromoDeals);
+      const crossPromo = await dealEngine.getEligiblePublicDeals({ limit: 3 });
+      const html = StaticSiteGenerator.getInstance().renderAuditHtml(auditData, config, crossPromo.deals);
       return c.html(html);
     }
   } catch (err: any) {
@@ -6985,24 +6983,11 @@ apiRouter.get('/compare/:sectorSlug', async (c) => {
     }
 
     const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
-    const inStockDeals = dealEngine.getAllDeals().filter(d => d.availability === 'IN_STOCK' && (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS'));
-    if (inStockDeals.length === 0) {
-      await dealEngine.syncFromD1Async().catch(() => {});
-    }
+    const eligibleRes = await dealEngine.getEligiblePublicDeals({ sectorCode: sectorDef.code });
+    const sectorDeals = eligibleRes.deals;
 
-    const allDeals = dealEngine.getAllDeals();
-    const sectorDeals = allDeals.filter(d =>
-      (d.sectorCode === sectorDef.code || dealEngine.mapCategoryToSectorCode(d.category) === sectorDef.code) &&
-      d.availability === 'IN_STOCK' &&
-      (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS')
-    );
-
-    // Fallback deals if newly started: all verified in-stock deals
-    const dealsToDisplay = sectorDeals.length > 0
-      ? sectorDeals
-      : allDeals.filter(d => d.availability === 'IN_STOCK').slice(0, 5);
-
-    const html = StaticSiteGenerator.getInstance().renderCompareHtml(sectorDef, dealsToDisplay, config);
+    // V5.8 Defect 2: Honest rendering without cross-sector leakage (if empty, empty list rendered with noindex)
+    const html = StaticSiteGenerator.getInstance().renderCompareHtml(sectorDef, sectorDeals, config);
     return c.html(html);
   } catch (err: any) {
     console.warn(`[CompareRoute] Error rendering compare guide for '${cleanSlug}': ${err.message}`);

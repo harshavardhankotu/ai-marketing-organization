@@ -19,6 +19,8 @@ export type DealVerificationStatus =
   | 'DISCOVERED'                  // Discovered from source, pending verification
   | 'PENDING_VERIFICATION'        // Queued for Level 1–5 cross-checking
   | 'VERIFIED'                    // Verified price, merchant, stock, and reference baseline
+  | 'AFFILIATE_VERIFIED'          // Verified merchant stock + verified Cuelinks active campaign & monetizable redirect
+  | 'PRODUCT_VERIFIED'            // Verified live merchant feed confirms price & stock, but affiliate monetization unconfirmed
   | 'VERIFIED_WITH_CONDITIONS'    // Verified but requires coupon, card, or minimum order
   | 'UNCONFIRMED'                 // Observed, but reference discount is only merchant-claimed
   | 'UNVERIFIED'                  // Unverified key claims; kept out of public ranking
@@ -29,6 +31,8 @@ export type DealVerificationStatus =
 
 export type DiscountVerificationType =
   | 'INDEPENDENT_CORROBORATED'    // Backed by multi-source reference price or verifiable historical MRP
+  | 'HISTORICAL_BASELINE_VERIFIED'// Prior D1 price observations prove a drop below previously recorded selling prices
+  | 'MERCHANT_LISTED_MRP'         // Shopify/merchant-listed compare_at_price MRP (not independently proved price drop)
   | 'MERCHANT_CLAIMED'            // Discount claimed by merchant against unsupported reference price
   | 'UNCONFIRMED';                // No reliable reference price found; ordinary current price
 
@@ -80,6 +84,7 @@ export interface CuelinksPaginationCursor {
 }
 
 export interface DiscoveredDealInput {
+  id?: string;
   slug?: string;
   canonicalSlug?: string;
   title: string;
@@ -112,6 +117,7 @@ export interface DiscoveredDealInput {
   affiliateNetwork?: string;
   affiliateCampaignId?: string;
   sectorCode?: SectorCode;
+  nextRecheckAt?: string;
   evidenceJson?: Record<string, any>;
 }
 
@@ -152,6 +158,9 @@ export interface NormalizedDeal {
   buyerValueScore: number;        // 0 to 100
   rejectionReasons: string[];
   isMonetizable: boolean;
+  productVerified?: boolean;
+  affiliateVerified?: boolean;
+  nextRecheckAt?: string;
   affiliateNetwork?: string;
   trackingUrl?: string;
   affiliateCampaignId?: string;
