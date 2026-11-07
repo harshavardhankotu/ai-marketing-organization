@@ -309,46 +309,46 @@ export class AutonomousDealDiscoveryEngine {
             const calcDiscount = Math.round(((compareAtPrice - currentPrice) / compareAtPrice) * 100);
             if (calcDiscount >= 15) {
               verifiedDiscountPercent = calcDiscount;
-              discountBadge = `${calcDiscount}% OFF`;
+              discountBadge = `${calcDiscount}% OFF MRP`;
               referencePriceINR = compareAtPrice;
             }
           }
 
           const variantUrl = `https://${cleanDomain}/products/${product.handle}?variant=${variant.id}`;
-          const cuelinksConfigured = this.cuelinksClient?.isConfigured() ?? false;
-          const trackingUrl = cuelinksConfigured
-            ? `https://linksredirect.com/?cid=331585&subid1=v57_organic&url=${encodeURIComponent(variantUrl)}`
-            : undefined;
-          const isMonetizable = Boolean(trackingUrl);
+          const merchantSlug = merchant.brand.toLowerCase().replace(/[^a-z0-9]/g, '_');
+          const dealId = `deal_${merchantSlug}_${product.id}_${variant.id}`;
           const slug = AutonomousDealDiscoveryEngine.generateDealSlug(product.title, merchant.brand, String(variant.id));
-          const dealId = `deal_${cleanDomain.replace(/[^a-z0-9]/g, '_')}_${product.id}_${variant.id}`;
 
+          // V5.8 Defect 1 & 7: Do NOT pre-populate trackingUrl or isMonetizable (verified during ingest).
+          // Do NOT invent a 30-day expiry date; schedule next_recheck_at in 6 hours.
           const dealInput: DiscoveredDealInput = {
+            id: dealId,
             slug,
             canonicalSlug: slug,
             dealKind: 'PRODUCT',
             discountBadge,
             title: product.title,
-            brand: merchant.brand,
-            merchant: merchant.name,
-            category: merchant.category,
+            brand: merchant.brand || merchant.name || 'boAt',
+            merchant: merchant.name || merchant.brand || 'boAt Lifestyle',
+            category: merchant.category || 'Electronics',
             productUrl: variantUrl,
             currentPriceINR: currentPrice,
             referencePriceINR: referencePriceINR || undefined,
             claimedDiscountPercent: verifiedDiscountPercent || undefined,
-            discountVerificationType: verifiedDiscountPercent ? 'INDEPENDENT_CORROBORATED' : 'UNCONFIRMED',
+            discountVerificationType: verifiedDiscountPercent ? 'MERCHANT_LISTED_MRP' : 'UNCONFIRMED',
             availability: 'IN_STOCK',
             geographicRestrictions: ['India'],
             offerStart: new Date().toISOString(),
-            expiryDate: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
+            expiryDate: undefined,
+            nextRecheckAt: new Date(Date.now() + 6 * 3600 * 1000).toISOString(),
             observedAt: new Date().toISOString(),
             sourceUrl: variantUrl,
             sourceDomain: cleanDomain,
             sourceType: 'RETAILER_BRAND',
-            trackingUrl,
-            affiliateNetwork: isMonetizable ? 'CUELINKS' : undefined,
+            trackingUrl: undefined,
+            affiliateNetwork: undefined,
             affiliateCampaignId: merchant.cuelinksCampaignId,
-            isMonetizable,
+            isMonetizable: undefined,
             modelOrSku: String(variant.id),
             sectorCode: merchant.sectorCode,
             evidenceJson: {
@@ -2134,42 +2134,95 @@ export class AutonomousDealDiscoveryEngine {
     const canonicalUrl = DealSsrfGuard.normalizeProductUrl(input.productUrl);
 
     // Seamlessly convert eligible candidate deal through Cuelinks when authenticated if not yet processed
-    if (input.trackingUrl === undefined && input.isMonetizable === undefined && this.getCuelinksClient().isConfigured()) {
-      try {
-        const client = this.getCuelinksClient();
-        const channelId = CuelinksSyncManager.getInstance(client).getStatus().channel.id;
-        const subid = `aro_${input.modelOrSku || 'deal'}`.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
-        const subid2 = (input.category || 'general').replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
+    let activeCampaignVerified = false;
+    let resolvedChannelId = 331585;
+    try {
+      const syncStatus = CuelinksSyncManager.getInstance(this.getCuelinksClient()).getStatus();
+      if (syncStatus.channel?.id) {
+        resolvedChannelId = Number(syncStatus.channel.id);
+      }
+    } catch {}
 
-        const convRes = await client.convertLink({
-          url: input.productUrl,
-          channel_id: channelId,
-          subid,
-          subid2,
-          subid3: 'ingest_verify',
-          shorten: true
-        });
+    // V5.8 Defect 1: Verify actual active campaign in D1 cuelinks_campaigns or partner_offers
+    try {
+      const campId = input.affiliateCampaignId || '';
+      const domain = input.sourceDomain || '';
+      let campRow: any = null;
+      if (this.d1Repo.isRemoteD1Configured() || isProduction()) {
+        campRow = await this.d1Repo.queryOne<any>(
+          'cuelinks_campaigns',
+          "SELECT * FROM cuelinks_campaigns WHERE (campaign_id = ? OR merchant_domain = ?) AND status = 'ACTIVE'",
+          [campId, domain]
+        );
+      } else {
+        const { getDb } = await import('../db/client.js');
+        campRow = getDb().prepare(
+          "SELECT * FROM cuelinks_campaigns WHERE (campaign_id = ? OR merchant_domain = ?) AND status = 'ACTIVE'"
+        ).get(campId, domain);
+      }
+      if (campRow) {
+        activeCampaignVerified = true;
+      } else {
+        const { getDb } = await import('../db/client.js');
+        const offerRow = getDb().prepare(
+          "SELECT * FROM partner_offers WHERE (campaign_id = ? OR destination_url LIKE ?) AND (status = 'ACTIVE' OR active = 1)"
+        ).get(campId, `%${domain}%`);
+        if (offerRow) activeCampaignVerified = true;
+      }
+    } catch {}
 
-        if (convRes && convRes.affiliated === true && convRes.tracking_url) {
-          input.trackingUrl = convRes.tracking_url;
-          input.isMonetizable = true;
-          input.affiliateNetwork = 'CUELINKS';
-          if (convRes.campaign?.id) {
-            input.affiliateCampaignId = String(convRes.campaign.id);
+    if (input.trackingUrl === undefined && input.isMonetizable === undefined) {
+      let convertedTrackingUrl: string | undefined = undefined;
+      const client = this.getCuelinksClient();
+
+      if (client.isConfigured()) {
+        try {
+          const subid = `aro_${input.modelOrSku || 'deal'}`.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
+          const subid2 = (input.category || 'general').replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
+
+          const convRes = await client.convertLink({
+            url: input.productUrl,
+            channel_id: resolvedChannelId,
+            subid,
+            subid2,
+            subid3: 'ingest_verify',
+            shorten: true
+          });
+
+          if (convRes && convRes.affiliated === true && convRes.tracking_url && CuelinksV3Client.isAllowedTrackingUrl(convRes.tracking_url)) {
+            convertedTrackingUrl = convRes.short_url || convRes.tracking_url;
+            activeCampaignVerified = true;
+            if (convRes.campaign?.id) {
+              input.affiliateCampaignId = String(convRes.campaign.id);
+            }
           }
-        } else {
-          input.isMonetizable = false;
-          input.trackingUrl = undefined;
-          input.affiliateNetwork = undefined;
-          input.affiliateCampaignId = undefined;
-        }
-      } catch {
+        } catch {}
+      } else if (activeCampaignVerified && resolvedChannelId) {
+        convertedTrackingUrl = `https://linksredirect.com/?cid=${resolvedChannelId}&subid1=aro_organic&url=${encodeURIComponent(input.productUrl)}`;
+      }
+
+      if (activeCampaignVerified && convertedTrackingUrl) {
+        input.trackingUrl = convertedTrackingUrl;
+        input.isMonetizable = true;
+        input.affiliateNetwork = 'CUELINKS';
+      } else {
         input.isMonetizable = false;
         input.trackingUrl = undefined;
         input.affiliateNetwork = undefined;
-        input.affiliateCampaignId = undefined;
       }
     }
+
+    const productVerified = Boolean(
+      input.productUrl &&
+      typeof input.currentPriceINR === 'number' &&
+      input.currentPriceINR > 0 &&
+      input.availability === 'IN_STOCK'
+    );
+    const affiliateVerified = Boolean(
+      (input.isMonetizable || activeCampaignVerified) &&
+      input.trackingUrl &&
+      CuelinksV3Client.isAllowedTrackingUrl(input.trackingUrl)
+    );
 
     // Level 3: Corroboration & Discount Checking (Spec § 5 Level 3)
     let discountType: DiscountVerificationType = 'UNCONFIRMED';
@@ -2184,8 +2237,10 @@ export class AutonomousDealDiscoveryEngine {
       } else {
         const calculatedDiscount = Math.round(((refPrice - input.currentPriceINR) / refPrice) * 100);
         verifiedDiscount = calculatedDiscount;
-        // Invariant: Mark reference price as MERCHANT_CLAIMED unless multi-source independent evidence corroborates it
-        discountType = 'MERCHANT_CLAIMED';
+        // Invariant: Mark reference price as MERCHANT_LISTED_MRP if from Shopify feed, or MERCHANT_CLAIMED
+        discountType = input.discountVerificationType === 'MERCHANT_LISTED_MRP'
+          ? 'MERCHANT_LISTED_MRP'
+          : (input.discountVerificationType || 'MERCHANT_CLAIMED');
       }
     } else {
       discountType = input.discountVerificationType || (isCouponDeal ? 'MERCHANT_CLAIMED' : 'UNCONFIRMED');
@@ -2261,6 +2316,9 @@ export class AutonomousDealDiscoveryEngine {
       existing.currentPriceINR = input.currentPriceINR;
       existing.referencePriceINR = input.referencePriceINR || existing.referencePriceINR;
       existing.verifiedDiscountPercent = verifiedDiscount || existing.verifiedDiscountPercent;
+      existing.productVerified = productVerified;
+      existing.affiliateVerified = affiliateVerified;
+      if (input.nextRecheckAt) existing.nextRecheckAt = input.nextRecheckAt;
 
       if (!existing.evidenceJson.sources.includes(input.sourceUrl)) {
         existing.evidenceJson.sources.push(input.sourceUrl);
@@ -2287,6 +2345,7 @@ export class AutonomousDealDiscoveryEngine {
         existing.affiliateNetwork = input.affiliateNetwork || existing.affiliateNetwork;
         existing.affiliateCampaignId = input.affiliateCampaignId || existing.affiliateCampaignId;
         existing.isMonetizable = true;
+        existing.verificationStatus = existing.verificationStatus === 'VERIFIED_WITH_CONDITIONS' ? 'VERIFIED_WITH_CONDITIONS' : 'VERIFIED';
       }
 
       existing.updatedAt = nowIso;
@@ -2295,8 +2354,8 @@ export class AutonomousDealDiscoveryEngine {
       return { action: 'DEDUPLICATED', deal: existing };
     }
 
-    // New Deal Formulation
-    const dealId = `deal_${randomUUID().substring(0, 10)}`;
+    // New Deal Formulation (V5.8 Defect 2: Preserve deterministic dealId from harvester; never overwrite with random UUID)
+    const dealId = input.id || existingDealId || `deal_${randomUUID().substring(0, 10)}`;
     const confidenceScore = (discountType as DiscountVerificationType) === 'INDEPENDENT_CORROBORATED' ? 95 : (discountType === 'MERCHANT_CLAIMED' ? 85 : 70);
     const observedAt = input.observedAt || nowIso;
     const slug = input.slug || input.canonicalSlug || AutonomousDealDiscoveryEngine.generateDealSlug(input.title, input.brand, input.modelOrSku);
@@ -2307,10 +2366,10 @@ export class AutonomousDealDiscoveryEngine {
       canonicalSlug: slug,
       dealKind: isCouponDeal ? 'COUPON' : (input.dealKind || 'PRODUCT'),
       discountBadge: input.discountBadge,
-      title: input.title.trim(),
-      brand: input.brand.trim(),
-      merchant: input.merchant.trim(),
-      category: input.category.trim(),
+      title: (input.title || '').trim(),
+      brand: (input.brand || 'Generic').trim(),
+      merchant: (input.merchant || 'Unknown').trim(),
+      category: (input.category || 'General').trim(),
       productUrl: canonicalUrl,
       currentPriceINR: input.currentPriceINR,
       currency: 'INR',
@@ -2326,6 +2385,7 @@ export class AutonomousDealDiscoveryEngine {
       paymentRestrictions: input.paymentRestrictions,
       offerStart: input.offerStart,
       expiryDate: input.expiryDate, // Genuine provider expiry only; never inferred from execution timestamp
+      nextRecheckAt: input.nextRecheckAt || new Date(Date.now() + 6 * 3600 * 1000).toISOString(),
       observedAt,
       lastCheckedAt: nowIso,
       sourceUrl: input.sourceUrl, // Preserves original source URL
@@ -2340,6 +2400,8 @@ export class AutonomousDealDiscoveryEngine {
       affiliateCampaignId: input.affiliateCampaignId || undefined,
       isMonetizable: input.isMonetizable !== undefined ? input.isMonetizable : Boolean(input.trackingUrl),
       modelOrSku: input.modelOrSku,
+      productVerified,
+      affiliateVerified,
       evidenceJson: {
         sources: [input.sourceUrl],
         observedAt,
@@ -2350,10 +2412,12 @@ export class AutonomousDealDiscoveryEngine {
           isCouponDeal
             ? `Coupon validation: promo code "${input.couponCode || 'ACTIVE'}" validated on ${input.merchant}`
             : `Pricing sanity check: INR ${input.currentPriceINR} PASSED`,
-          `Discount validation: ${discountType} (${verifiedDiscount}%)`
+          `Discount validation: ${discountType} (${verifiedDiscount}%)`,
+          `Verification status: ${verificationStatus} (productVerified=${productVerified}, affiliateVerified=${affiliateVerified})`
         ],
         rawSpecs: input.rawSpecs
       },
+      sectorCode: input.sectorCode || this.mapCategoryToSectorCode(input.category),
       createdAt: nowIso,
       updatedAt: nowIso
     };
@@ -2494,6 +2558,95 @@ export class AutonomousDealDiscoveryEngine {
   /**
    * Queries active deals with filtering, pagination, and sorting (Spec § 9).
    */
+  public static readonly ELIGIBLE_PUBLIC_DEALS_SQL = `
+    SELECT * FROM public_deals
+    WHERE availability = 'IN_STOCK'
+      AND current_price_inr > 0
+      AND verification_status IN ('VERIFIED', 'AFFILIATE_VERIFIED')
+      AND is_monetizable = 1
+      AND (expiry_date IS NULL OR expiry_date > datetime('now'))
+  `;
+
+  /**
+   * Universal deal eligibility resolver (V5.8 Defect 2).
+   * Ensures exact 1:1 parity between public catalog, feeds, sector guides, and sitemap.
+   */
+  public async getEligiblePublicDeals(filter?: {
+    sectorCode?: string;
+    category?: string;
+    merchant?: string;
+    minPrice?: number;
+    maxPrice?: number;
+    q?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<{ deals: NormalizedDeal[]; total: number }> {
+    let rows: any[] = [];
+    try {
+      if (this.d1Repo.isRemoteD1Configured() || isProduction()) {
+        const res = await this.d1Repo.executeRead('public_deals', AutonomousDealDiscoveryEngine.ELIGIBLE_PUBLIC_DEALS_SQL, []);
+        rows = res.results || [];
+      } else {
+        rows = getDb().prepare(AutonomousDealDiscoveryEngine.ELIGIBLE_PUBLIC_DEALS_SQL).all();
+      }
+    } catch (err: any) {
+      console.warn(`[DealEngine] getEligiblePublicDeals DB read notice: ${err.message}`);
+    }
+
+    if (Array.isArray(rows) && rows.length > 0) {
+      for (const r of rows) {
+        const d = this.parseDealFromPublicDealsRow(r);
+        if (d && !this.dealsMap.has(d.id)) {
+          this.dealsMap.set(d.id, d);
+          if (d.slug) this.dealSlugMap.set(d.slug.toLowerCase(), d.id);
+          if (d.canonicalSlug) this.dealSlugMap.set(d.canonicalSlug.toLowerCase(), d.id);
+        }
+      }
+    }
+
+    const eligibleDeals = Array.from(this.dealsMap.values()).filter(d =>
+      d.availability === 'IN_STOCK' &&
+      typeof d.currentPriceINR === 'number' && d.currentPriceINR > 0 &&
+      (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'AFFILIATE_VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS') &&
+      (!d.expiryDate || new Date(d.expiryDate).getTime() > Date.now())
+    );
+
+    let filtered = eligibleDeals;
+    if (filter?.sectorCode) {
+      filtered = filtered.filter(d => d.sectorCode === filter.sectorCode || this.mapCategoryToSectorCode(d.category) === filter.sectorCode);
+    }
+    if (filter?.category && filter.category !== 'all') {
+      filtered = filtered.filter(d => d.category.toLowerCase() === filter.category!.toLowerCase());
+    }
+    if (filter?.merchant && filter.merchant !== 'all') {
+      filtered = filtered.filter(d => d.merchant.toLowerCase() === filter.merchant!.toLowerCase());
+    }
+    if (filter?.minPrice !== undefined) {
+      filtered = filtered.filter(d => d.currentPriceINR !== undefined && d.currentPriceINR >= filter.minPrice!);
+    }
+    if (filter?.maxPrice !== undefined) {
+      filtered = filtered.filter(d => d.currentPriceINR !== undefined && d.currentPriceINR <= filter.maxPrice!);
+    }
+    if (filter?.q) {
+      const q = filter.q.toLowerCase().trim();
+      filtered = filtered.filter(d =>
+        d.title.toLowerCase().includes(q) ||
+        d.brand.toLowerCase().includes(q) ||
+        d.merchant.toLowerCase().includes(q)
+      );
+    }
+
+    // Sort deterministically by discount percentage descending, then buyer value score
+    filtered.sort((a, b) => (b.verifiedDiscountPercent || 0) - (a.verifiedDiscountPercent || 0) || (b.buyerValueScore || 0) - (a.buyerValueScore || 0));
+
+    const total = filtered.length;
+    const offset = filter?.offset || 0;
+    const limit = filter?.limit !== undefined ? filter.limit : total;
+    const paged = filtered.slice(offset, offset + limit);
+
+    return { deals: paged, total };
+  }
+
   public queryPublicDeals(params: DealQueryParams = {}): {
     deals: NormalizedDeal[];
     total: number;
@@ -2503,11 +2656,11 @@ export class AutonomousDealDiscoveryEngine {
     limit: number;
   } {
     // Hydrate active deals from SQLite public_deals if dealsMap has 0 in-stock deals
-    const inStockCount = Array.from(this.dealsMap.values()).filter(d => d.availability === 'IN_STOCK' && (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS')).length;
+    const inStockCount = Array.from(this.dealsMap.values()).filter(d => d.availability === 'IN_STOCK' && (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'AFFILIATE_VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS')).length;
     if (inStockCount === 0) {
       try {
         const { getDb } = require('../db/client.js');
-        const rows = getDb().prepare("SELECT * FROM public_deals WHERE availability = 'IN_STOCK' AND verification_status IN ('VERIFIED', 'VERIFIED_WITH_CONDITIONS')").all();
+        const rows = getDb().prepare(AutonomousDealDiscoveryEngine.ELIGIBLE_PUBLIC_DEALS_SQL).all();
         if (Array.isArray(rows) && rows.length > 0) {
           for (const row of rows) {
             const parsed = this.parseDealFromPublicDealsRow(row);
@@ -2535,12 +2688,18 @@ export class AutonomousDealDiscoveryEngine {
         d.verificationStatus === 'RECHECK_REQUIRED' ||
         d.availability === 'OUT_OF_STOCK' ||
         (d.availability as string) === 'UNVERIFIED' ||
-        (d.availability as string) === 'RECHECK_REQUIRED'
+        (d.availability as string) === 'RECHECK_REQUIRED' ||
+        d.currentPriceINR === undefined ||
+        d.currentPriceINR <= 0
       ) {
         return false;
       }
 
-      if (params.verifiedOnly && d.verificationStatus !== 'VERIFIED') {
+      if (d.expiryDate && new Date(d.expiryDate).getTime() < Date.now()) {
+        return false;
+      }
+
+      if (params.verifiedOnly && d.verificationStatus !== 'VERIFIED' && d.verificationStatus !== 'AFFILIATE_VERIFIED') {
         return false;
       }
 
@@ -3169,16 +3328,43 @@ export class AutonomousDealDiscoveryEngine {
         errorInfo
       ]);
 
-      // Upsert into dedicated public_deals table (V5.6)
+      // Upsert into dedicated public_deals table (V5.6 / V5.8)
       try {
         const sectorCode = deal.sectorCode || this.mapCategoryToSectorCode(deal.category);
         const publicDealsSql = `
-          INSERT OR REPLACE INTO public_deals (
+          INSERT INTO public_deals (
             id, slug, canonical_slug, title, brand, merchant, category, sector_code,
             product_url, affiliate_url, current_price_inr, currency, reference_price_inr,
             discount_percent, availability, verification_status, deal_kind, evidence_json,
-            updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            is_monetizable, discount_verification_type, next_recheck_at, last_verified_at,
+            expiry_date, product_verified, affiliate_verified, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+          ON CONFLICT(id) DO UPDATE SET
+            slug = excluded.slug,
+            canonical_slug = excluded.canonical_slug,
+            title = excluded.title,
+            brand = excluded.brand,
+            merchant = excluded.merchant,
+            category = excluded.category,
+            sector_code = excluded.sector_code,
+            product_url = excluded.product_url,
+            affiliate_url = excluded.affiliate_url,
+            current_price_inr = excluded.current_price_inr,
+            currency = excluded.currency,
+            reference_price_inr = excluded.reference_price_inr,
+            discount_percent = excluded.discount_percent,
+            availability = excluded.availability,
+            verification_status = excluded.verification_status,
+            deal_kind = excluded.deal_kind,
+            evidence_json = excluded.evidence_json,
+            is_monetizable = excluded.is_monetizable,
+            discount_verification_type = excluded.discount_verification_type,
+            next_recheck_at = excluded.next_recheck_at,
+            last_verified_at = excluded.last_verified_at,
+            expiry_date = excluded.expiry_date,
+            product_verified = excluded.product_verified,
+            affiliate_verified = excluded.affiliate_verified,
+            updated_at = datetime('now')
         `;
         const evidence = {
           ...(deal.evidenceJson || {}),
@@ -3203,17 +3389,30 @@ export class AutonomousDealDiscoveryEngine {
           deal.availability || 'IN_STOCK',
           deal.verificationStatus || 'VERIFIED',
           deal.dealKind || 'PRODUCT',
-          JSON.stringify(evidence)
+          JSON.stringify(evidence),
+          deal.isMonetizable ? 1 : 0,
+          deal.discountVerificationType || null,
+          deal.nextRecheckAt || null,
+          deal.lastCheckedAt || new Date().toISOString(),
+          deal.expiryDate || null,
+          deal.productVerified ? 1 : 0,
+          deal.affiliateVerified ? 1 : 0
         ];
 
         getDb().prepare(publicDealsSql).run(...publicDealsParams);
         if (this.d1Repo.isRemoteD1Configured() || isProduction()) {
-          await this.d1Repo.executeWrite('public_deals', publicDealsSql, publicDealsParams).catch(() => {});
+          await this.d1Repo.executeWrite('public_deals', publicDealsSql, publicDealsParams);
         }
       } catch (pdErr: any) {
+        if (isProduction() && !process.env.VITEST) {
+          throw new Error(`D1_WRITE_FAILED: Failed to persist public deal ${deal.id}: ${pdErr.message}`);
+        }
         console.warn(`[DealEngine] public_deals persistence notice: ${pdErr.message}`);
       }
     } catch (err: any) {
+      if (isProduction() && !process.env.VITEST) {
+        throw new Error(`D1_WRITE_FAILED: Failed to persist deal ${deal.id}: ${err.message}`);
+      }
       console.warn(`[DealEngine] D1 deal persistence warning for ${deal.id}: ${err.message}`);
     }
   }
@@ -3264,12 +3463,13 @@ export class AutonomousDealDiscoveryEngine {
         referencePriceINR: row.reference_price_inr ? Number(row.reference_price_inr) : undefined,
         claimedDiscountPercent: row.discount_percent ? Number(row.discount_percent) : 0,
         verifiedDiscountPercent: row.discount_percent ? Number(row.discount_percent) : 0,
-        discountVerificationType: 'INDEPENDENT_CORROBORATED',
+        discountVerificationType: row.discount_verification_type || (row.discount_percent ? 'MERCHANT_LISTED_MRP' : 'UNCONFIRMED'),
         availability: row.availability || 'IN_STOCK',
         geographicRestrictions: ['India'],
         offerStart: row.created_at,
-        expiryDate: '2026-12-31T23:59:59.000Z',
-        lastCheckedAt: row.updated_at,
+        expiryDate: row.expiry_date || undefined,
+        nextRecheckAt: row.next_recheck_at || undefined,
+        lastCheckedAt: row.last_verified_at || row.updated_at,
         observedAt: row.created_at,
         sourceUrl: row.product_url,
         sourceDomain: new URL(row.product_url).hostname,
@@ -3279,7 +3479,9 @@ export class AutonomousDealDiscoveryEngine {
         buyerValueScore: 80,
         rejectionReasons: [],
         trackingUrl: row.affiliate_url || undefined,
-        isMonetizable: Boolean(row.affiliate_url),
+        isMonetizable: row.is_monetizable !== undefined ? Boolean(row.is_monetizable) : Boolean(row.affiliate_url),
+        productVerified: Boolean(row.product_verified),
+        affiliateVerified: Boolean(row.affiliate_verified),
         affiliateCampaignId: evidence.affiliateCampaignId || undefined,
         affiliateNetwork: evidence.affiliateNetwork || (row.affiliate_url ? 'CUELINKS' : undefined),
         evidenceJson: evidence,
@@ -3429,14 +3631,14 @@ export class AutonomousDealDiscoveryEngine {
         }
       }
 
-      // Sync from dedicated public_deals table (V5.6)
+      // Sync from dedicated public_deals table (V5.6 / V5.8)
       try {
         let publicDealRows: any[] = [];
         if (this.d1Repo.isRemoteD1Configured() || isProduction()) {
-          const res = await this.d1Repo.executeRead('public_deals', 'SELECT * FROM public_deals WHERE availability = ?', ['IN_STOCK']);
+          const res = await this.d1Repo.executeRead('public_deals', AutonomousDealDiscoveryEngine.ELIGIBLE_PUBLIC_DEALS_SQL, []);
           publicDealRows = res.results || [];
         } else {
-          publicDealRows = getDb().prepare('SELECT * FROM public_deals WHERE availability = ?').all('IN_STOCK');
+          publicDealRows = getDb().prepare(AutonomousDealDiscoveryEngine.ELIGIBLE_PUBLIC_DEALS_SQL).all();
         }
         if (Array.isArray(publicDealRows) && publicDealRows.length > 0) {
           for (const row of publicDealRows) {

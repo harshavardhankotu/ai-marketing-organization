@@ -109,7 +109,7 @@ describe('V5.7 — Live Catalog Activation, B2B Leak Prevention & Multi-Merchant
       expect(ingested[0].title).toBe('boAt Rockerz 450 Pro Bluetooth Headphone');
       expect(ingested[0].currentPriceINR).toBe(1499);
       expect(ingested[0].referencePriceINR).toBe(3990);
-      expect(ingested[0].discountBadge).toBe('62% OFF');
+      expect(ingested[0].discountBadge).toMatch(/62% OFF/);
       expect(ingested[0].availability).toBe('IN_STOCK');
       expect(ingested[0].productUrl).toContain('variant=201');
 

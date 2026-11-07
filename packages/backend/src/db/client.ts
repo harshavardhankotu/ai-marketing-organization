@@ -708,6 +708,45 @@ export function getDb(dbPath?: string): Database.Database {
     db.exec(`CREATE INDEX IF NOT EXISTS idx_site_audits_updated ON site_audits(updated_at)`);
   } catch {}
   try {
+    db.exec(`CREATE TABLE IF NOT EXISTS cuelinks_campaigns (
+      campaign_id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      merchant_domain TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'ACTIVE',
+      payout_model TEXT DEFAULT 'CPS',
+      payout_rate TEXT,
+      cookie_days INTEGER DEFAULT 30,
+      category TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_cuelinks_campaigns_domain ON cuelinks_campaigns(merchant_domain)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_cuelinks_campaigns_status ON cuelinks_campaigns(status)`);
+    db.exec(`INSERT OR IGNORE INTO cuelinks_campaigns (campaign_id, name, merchant_domain, status, payout_model, cookie_days)
+      VALUES
+        ('4232', 'boAt Lifestyle', 'boat-lifestyle.com', 'ACTIVE', 'CPS', 30),
+        ('3278', 'Noise India', 'gonoise.com', 'ACTIVE', 'CPS', 30),
+        ('57469', 'Skullcandy India', 'skullcandy.in', 'ACTIVE', 'CPS', 30),
+        ('11155', 'Palmonas', 'palmonas.com', 'ACTIVE', 'CPS', 30),
+        ('4957', 'Swiss Beauty', 'swissbeauty.in', 'ACTIVE', 'CPS', 30),
+        ('2067', 'Ustraa', 'ustraa.com', 'ACTIVE', 'CPS', 30),
+        ('2514', 'The Man Company', 'themancompany.com', 'ACTIVE', 'CPS', 30)`);
+  } catch {}
+  try { db.exec(`ALTER TABLE public_deals ADD COLUMN is_monetizable INTEGER NOT NULL DEFAULT 1`); } catch {}
+  try { db.exec(`ALTER TABLE public_deals ADD COLUMN discount_verification_type TEXT NOT NULL DEFAULT 'UNCONFIRMED'`); } catch {}
+  try { db.exec(`ALTER TABLE public_deals ADD COLUMN next_recheck_at TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE public_deals ADD COLUMN last_verified_at TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE public_deals ADD COLUMN expiry_date TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE public_deals ADD COLUMN product_verified INTEGER NOT NULL DEFAULT 1`); } catch {}
+  try { db.exec(`ALTER TABLE public_deals ADD COLUMN affiliate_verified INTEGER NOT NULL DEFAULT 1`); } catch {}
+  try { db.exec(`ALTER TABLE site_audits ADD COLUMN html_scan_status TEXT NOT NULL DEFAULT 'COMPLETED'`); } catch {}
+  try { db.exec(`ALTER TABLE site_audits ADD COLUMN pagespeed_status TEXT NOT NULL DEFAULT 'UNAVAILABLE'`); } catch {}
+  try { db.exec(`ALTER TABLE site_audits ADD COLUMN pagespeed_unavailable_reason TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE site_audits ADD COLUMN is_publicly_authorized INTEGER NOT NULL DEFAULT 0`); } catch {}
+  try {
+    db.exec(`UPDATE site_audits SET is_publicly_authorized = 1 WHERE domain = 'capturelifedentalcare.com'`);
+  } catch {}
+  try {
     db.exec(`ALTER TABLE businesses ADD COLUMN locale TEXT DEFAULT 'en-US'`);
   } catch {}
   try {

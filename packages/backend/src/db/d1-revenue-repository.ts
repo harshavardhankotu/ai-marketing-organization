@@ -66,7 +66,8 @@ export const D1_REVENUE_CRITICAL_TABLES = [
   'sector_bandit_states',
   'commercial_reward_events',
   'public_deals',
-  'site_audits'
+  'site_audits',
+  'cuelinks_campaigns'
 ] as const;
 
 export type D1RevenueCriticalTable = typeof D1_REVENUE_CRITICAL_TABLES[number] | string;

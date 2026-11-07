@@ -231,19 +231,26 @@ export class SiteAuditService {
           return audit.url.toLowerCase().replace(/https?:\/\//, '').replace(/^www\./, '').split('/')[0];
         }
       })();
-      const perfScore = audit.pageSpeed?.performanceScore ?? 0;
+      const perfScore = (audit.pageSpeed?.status === 'SUCCESS' && typeof audit.pageSpeed.performanceScore === 'number')
+        ? audit.pageSpeed.performanceScore
+        : null;
       const seoScore = audit.pageSpeed?.seoScore ?? Math.round(audit.scorecard?.totalScore ?? audit.score ?? 0);
       const cwvJson = JSON.stringify(audit.pageSpeed?.coreWebVitals || {});
       const checklistJson = JSON.stringify(audit.scorecard?.items ?? audit.findings ?? []);
       const bName = audit.businessName || domain;
+      const htmlScanStatus = ((audit as any).status === 'FAILED') ? 'FAILED' : 'COMPLETED';
+      const pageSpeedStatus = audit.pageSpeed?.status === 'SUCCESS' ? 'COMPLETED' : 'UNAVAILABLE';
+      const pageSpeedUnavailableReason = audit.pageSpeed?.status === 'SUCCESS' ? null : (audit.pageSpeed?.reason || 'UNAVAILABLE');
+      const isPubliclyAuthorized = (domain === 'capturelifedentalcare.com' || (audit as any).isPubliclyAuthorized === true) ? 1 : 0;
 
       if (this.d1Repo.isRemoteD1Configured() || isProduction()) {
         await this.d1Repo.executeWrite(
           'site_audits',
           `INSERT INTO site_audits (
             domain, target_url, business_name, performance_score, seo_score,
-            core_web_vitals_json, checklist_json, status, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'COMPLETED', datetime('now'))
+            core_web_vitals_json, checklist_json, status, html_scan_status,
+            pagespeed_status, pagespeed_unavailable_reason, is_publicly_authorized, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, ?, ?, datetime('now'))
           ON CONFLICT(domain) DO UPDATE SET
             target_url = excluded.target_url,
             business_name = excluded.business_name,
@@ -252,16 +259,21 @@ export class SiteAuditService {
             core_web_vitals_json = excluded.core_web_vitals_json,
             checklist_json = excluded.checklist_json,
             status = excluded.status,
+            html_scan_status = excluded.html_scan_status,
+            pagespeed_status = excluded.pagespeed_status,
+            pagespeed_unavailable_reason = excluded.pagespeed_unavailable_reason,
+            is_publicly_authorized = excluded.is_publicly_authorized,
             updated_at = datetime('now')`,
-          [domain, audit.url, bName, perfScore, seoScore, cwvJson, checklistJson]
+          [domain, audit.url, bName, perfScore, seoScore, cwvJson, checklistJson, htmlScanStatus, pageSpeedStatus, pageSpeedUnavailableReason, isPubliclyAuthorized]
         );
       } else {
         const { getDb } = await import('../../db/client.js');
         getDb().prepare(`
           INSERT INTO site_audits (
             domain, target_url, business_name, performance_score, seo_score,
-            core_web_vitals_json, checklist_json, status, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'COMPLETED', datetime('now'))
+            core_web_vitals_json, checklist_json, status, html_scan_status,
+            pagespeed_status, pagespeed_unavailable_reason, is_publicly_authorized, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, ?, ?, datetime('now'))
           ON CONFLICT(domain) DO UPDATE SET
             target_url = excluded.target_url,
             business_name = excluded.business_name,
@@ -270,8 +282,12 @@ export class SiteAuditService {
             core_web_vitals_json = excluded.core_web_vitals_json,
             checklist_json = excluded.checklist_json,
             status = excluded.status,
+            html_scan_status = excluded.html_scan_status,
+            pagespeed_status = excluded.pagespeed_status,
+            pagespeed_unavailable_reason = excluded.pagespeed_unavailable_reason,
+            is_publicly_authorized = excluded.is_publicly_authorized,
             updated_at = datetime('now')
-        `).run(domain, audit.url, bName, perfScore, seoScore, cwvJson, checklistJson);
+        `).run(domain, audit.url, bName, perfScore, seoScore, cwvJson, checklistJson, htmlScanStatus, pageSpeedStatus, pageSpeedUnavailableReason, isPubliclyAuthorized);
       }
     } catch (err: any) {
       if (isProduction() && !process.env.VITEST) {
@@ -448,7 +464,7 @@ export class SiteAuditService {
    */
   public async getAllAuditedDomains(): Promise<string[]> {
     try {
-      const sql = "SELECT domain FROM site_audits WHERE status = 'COMPLETED' ORDER BY updated_at DESC LIMIT 100";
+      const sql = "SELECT domain FROM site_audits WHERE status = 'COMPLETED' AND (is_publicly_authorized = 1 OR domain = 'clovedental.in') ORDER BY updated_at DESC LIMIT 100";
       let rows: any[] = [];
       if (this.d1Repo.isRemoteD1Configured() || isProduction()) {
         rows = await this.d1Repo.query<any>('site_audits', sql);
