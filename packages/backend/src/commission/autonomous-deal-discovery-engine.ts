@@ -2664,6 +2664,7 @@ export class AutonomousDealDiscoveryEngine {
           WHERE availability = 'IN_STOCK'
             AND current_price_inr > 0
             AND verification_status IN ('VERIFIED', 'AFFILIATE_VERIFIED', 'VERIFIED_WITH_CONDITIONS')
+            AND is_monetizable = 1
             AND (expiry_date IS NULL OR expiry_date > datetime('now'))
         `;
         rows = getDb().prepare(testSql).all();
@@ -2687,7 +2688,8 @@ export class AutonomousDealDiscoveryEngine {
       d.availability === 'IN_STOCK' &&
       typeof d.currentPriceINR === 'number' && d.currentPriceINR > 0 &&
       (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'AFFILIATE_VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS') &&
-      (isProduction() ? (Boolean(d.isMonetizable) && d.productVerified === true && d.affiliateVerified === true) : true) &&
+      Boolean(d.isMonetizable) &&
+      (isProduction() ? (d.productVerified === true && d.affiliateVerified === true) : true) &&
       (!d.expiryDate || new Date(d.expiryDate).getTime() > Date.now())
     );
 
