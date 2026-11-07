@@ -6833,32 +6833,27 @@ apiRouter.get('/public/deals', async (c) => {
 
   const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
   const engine = AutonomousDealDiscoveryEngine.getInstance();
-  const eligible = await engine.getEligiblePublicDeals({
-    sectorCode,
+  const inStockDeals = engine.getAllDeals().filter(d => d.availability === 'IN_STOCK' && (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS'));
+  if (inStockDeals.length === 0) {
+    try {
+      await engine.syncFromD1Async();
+    } catch {}
+  }
+  const result = engine.queryPublicDeals({
+    q,
     category,
     merchant,
     minPrice,
     maxPrice,
-    q,
-    limit,
-    offset: (page - 1) * limit
+    verifiedOnly,
+    hasCoupon,
+    dealKind,
+    sortBy,
+    page,
+    limit
   });
 
-  const allEligible = await engine.getEligiblePublicDeals();
-  const categories = Array.from(new Set(allEligible.deals.map(d => d.category))).filter(Boolean);
-  const merchants = Array.from(new Set(allEligible.deals.map(d => d.merchant))).filter(Boolean);
-
-  return c.json({
-    success: true,
-    data: {
-      deals: eligible.deals,
-      total: eligible.total,
-      categories,
-      merchants,
-      page,
-      limit
-    }
-  });
+  return c.json({ success: true, data: result });
 });
 
 // Public Deals JSON Feed for syndication and partner integrations (Spec Engine 4)

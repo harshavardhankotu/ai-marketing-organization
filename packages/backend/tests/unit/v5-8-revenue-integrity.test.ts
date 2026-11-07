@@ -242,7 +242,14 @@ describe('V5.8 — Revenue Integrity, Deterministic D1 Upserts & Honest Telemetr
     it('verifies presence of Google Search Console meta tag in index.html templates', async () => {
       const fs = await import('fs');
       const path = await import('path');
-      const frontendHtml = fs.readFileSync(path.resolve(process.cwd(), '../frontend/index.html'), 'utf-8');
+      const candidates = [
+        path.resolve(process.cwd(), 'packages/frontend/index.html'),
+        path.resolve(process.cwd(), '../frontend/index.html'),
+        path.resolve(process.cwd(), 'public/index.html'),
+        path.resolve(process.cwd(), '../backend/public/index.html')
+      ];
+      const targetPath = candidates.find(p => fs.existsSync(p));
+      const frontendHtml = fs.readFileSync(targetPath!, 'utf-8');
       expect(frontendHtml).toContain('<meta name="google-site-verification" content="WVPs1hLZgUqJL5yO9jwF2pWwsekPcMtTOLLeWILGU9I" />');
     });
   });

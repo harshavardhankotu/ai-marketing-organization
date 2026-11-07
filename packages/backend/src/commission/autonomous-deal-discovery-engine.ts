@@ -2593,21 +2593,23 @@ export class AutonomousDealDiscoveryEngine {
       console.warn(`[DealEngine] getEligiblePublicDeals DB read notice: ${err.message}`);
     }
 
-    let eligibleDeals: NormalizedDeal[] = [];
     if (Array.isArray(rows) && rows.length > 0) {
       for (const r of rows) {
         const d = this.parseDealFromPublicDealsRow(r);
-        if (d) eligibleDeals.push(d);
+        if (d && !this.dealsMap.has(d.id)) {
+          this.dealsMap.set(d.id, d);
+          if (d.slug) this.dealSlugMap.set(d.slug.toLowerCase(), d.id);
+          if (d.canonicalSlug) this.dealSlugMap.set(d.canonicalSlug.toLowerCase(), d.id);
+        }
       }
-    } else {
-      eligibleDeals = Array.from(this.dealsMap.values()).filter(d =>
-        d.availability === 'IN_STOCK' &&
-        typeof d.currentPriceINR === 'number' && d.currentPriceINR > 0 &&
-        (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'AFFILIATE_VERIFIED') &&
-        Boolean(d.isMonetizable) &&
-        (!d.expiryDate || new Date(d.expiryDate).getTime() > Date.now())
-      );
     }
+
+    const eligibleDeals = Array.from(this.dealsMap.values()).filter(d =>
+      d.availability === 'IN_STOCK' &&
+      typeof d.currentPriceINR === 'number' && d.currentPriceINR > 0 &&
+      (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'AFFILIATE_VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS') &&
+      (!d.expiryDate || new Date(d.expiryDate).getTime() > Date.now())
+    );
 
     let filtered = eligibleDeals;
     if (filter?.sectorCode) {

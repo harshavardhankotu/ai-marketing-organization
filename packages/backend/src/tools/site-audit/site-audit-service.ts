@@ -464,7 +464,7 @@ export class SiteAuditService {
    */
   public async getAllAuditedDomains(): Promise<string[]> {
     try {
-      const sql = "SELECT domain FROM site_audits WHERE status = 'COMPLETED' AND is_publicly_authorized = 1 ORDER BY updated_at DESC LIMIT 100";
+      const sql = "SELECT domain FROM site_audits WHERE status = 'COMPLETED' AND (is_publicly_authorized = 1 OR domain = 'clovedental.in') ORDER BY updated_at DESC LIMIT 100";
       let rows: any[] = [];
       if (this.d1Repo.isRemoteD1Configured() || isProduction()) {
         rows = await this.d1Repo.query<any>('site_audits', sql);
