@@ -124,11 +124,18 @@ export class RazorpayAdapter {
     const isLiveKeySet = Boolean(liveKeyId && !isPlaceholderCredential(liveKeyId));
     const isLiveSecretSet = Boolean(liveKeySecret && !isPlaceholderCredential(liveKeySecret));
 
-    // If both live credentials provided
+    // Imposter test key placed in live slot
+    if (liveKeyId.startsWith('rzp_test_') || liveKeySecret.startsWith('rzp_test_')) {
+      return { keyId: '', keySecret: '', webhookSecret: '', mode: 'MISCONFIGURED_CREDENTIAL_PAIR' };
+    }
+
+    // Live Key ID without Live Secret: NEVER fall back to test secret!
+    if (isLiveKeySet && !isLiveSecretSet) {
+      return { keyId: '', keySecret: '', webhookSecret: '', mode: 'MISCONFIGURED_CREDENTIAL_PAIR' };
+    }
+
+    // Both live credentials provided
     if (isLiveKeySet && isLiveSecretSet) {
-      if (liveKeyId.startsWith('rzp_test_') || liveKeySecret.startsWith('rzp_test_')) {
-        return { keyId: '', keySecret: '', webhookSecret: '', mode: 'MISCONFIGURED_CREDENTIAL_PAIR' };
-      }
       return {
         keyId: liveKeyId,
         keySecret: liveKeySecret,
@@ -137,9 +144,14 @@ export class RazorpayAdapter {
       };
     }
 
-    // If partial live credentials provided (one set, other missing or placeholder)
-    if (liveKeyId || liveKeySecret) {
-      return { keyId: '', keySecret: '', webhookSecret: '', mode: 'MISCONFIGURED_CREDENTIAL_PAIR' };
+    // Only secret provided (e.g. for signature verification in test/sandbox)
+    if (isLiveSecretSet && !liveKeyId) {
+      return {
+        keyId: '',
+        keySecret: liveKeySecret,
+        webhookSecret: liveWebhookSecret || liveKeySecret,
+        mode: 'SANDBOX_TEST'
+      };
     }
 
     // Check test credentials
@@ -151,6 +163,15 @@ export class RazorpayAdapter {
         keyId: testKeyId,
         keySecret: testKeySecret,
         webhookSecret: testWebhookSecret,
+        mode: 'SANDBOX_TEST'
+      };
+    }
+
+    if (isTestSecretSet && !testKeyId) {
+      return {
+        keyId: '',
+        keySecret: testKeySecret,
+        webhookSecret: testWebhookSecret || testKeySecret,
         mode: 'SANDBOX_TEST'
       };
     }
@@ -180,7 +201,7 @@ export class RazorpayAdapter {
 
   public hasAnyValidCredentials(): boolean {
     const pair = this.getCredentialPair();
-    return pair.mode === 'LIVE' || pair.mode === 'SANDBOX_TEST';
+    return Boolean(pair.keyId && pair.keySecret);
   }
 
   /**
