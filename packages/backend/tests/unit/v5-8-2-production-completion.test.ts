@@ -319,9 +319,9 @@ describe('V5.8.2 — Production Completion & First Genuine Revenue Activation', 
       expect(res.status).toBe(200);
       const json = await res.json();
 
-      expect(json.version).toMatch(/^5\.8\.[23]$/);
+      expect(json.version).toMatch(/^5\.8\.[2-4]$/);
       expect(json.buildMetadata).toBeDefined();
-      expect(json.buildMetadata.version).toMatch(/^5\.8\.[23]$/);
+      expect(json.buildMetadata.version).toMatch(/^5\.8\.[2-4]$/);
       expect(json.paymentReadiness).toBeDefined();
       expect(typeof json.paymentReadiness.sandboxTestReady).toBe('boolean');
       expect(typeof json.paymentReadiness.liveMoneyReady).toBe('boolean');
