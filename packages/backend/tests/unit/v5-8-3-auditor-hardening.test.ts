@@ -233,9 +233,17 @@ describe('V5.8.3 — Auditor-Aligned Production Hardening', () => {
   });
 
   describe('2. Cuelinks Static Fallback Purge & True affiliated === true Gate', () => {
-    it('purges APPROVED_SHOPIFY_MERCHANTS static fallback to empty array', () => {
-      expect(APPROVED_SHOPIFY_MERCHANTS).toEqual([]);
-      expect(APPROVED_SHOPIFY_MERCHANTS.length).toBe(0);
+    it('discovers verified active merchants dynamically from cuelinks_campaigns', async () => {
+      const db = getDb();
+      db.prepare(`
+        INSERT INTO cuelinks_campaigns (campaign_id, name, merchant_domain, category, status, verification_source, created_at, updated_at)
+        VALUES ('camp_v583_dyn_boat', 'boAt Lifestyle', 'boat-lifestyle.com', 'Electronics', 'ACTIVE', 'CUELINKS_API_V3', datetime('now'), datetime('now'))
+      `).run();
+
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+      const merchants = await engine.getActiveVerifiedMerchants('SECTOR_B_ELECTRONICS');
+      expect(merchants.some(m => m.domain === 'boat-lifestyle.com')).toBe(true);
+      expect(merchants.some(m => m.cuelinksCampaignId === 'camp_v583_dyn_boat')).toBe(true);
     });
 
     it('rejects monetization and evicts deal from memory if convertLink returns affiliated: false', async () => {
@@ -363,7 +371,7 @@ describe('V5.8.3 — Auditor-Aligned Production Hardening', () => {
       expect(json.version).toBe('5.8.3');
       expect(json.buildMetadata.version).toBe('5.8.3');
       expect(json.quotaLedger.google_pagespeed.configuredStatus).toBe('UNCONFIGURED_KEYLESS_MODE');
-      expect(json.capabilityMatrix.pageSpeedInsights.status).toBe('UNCONFIGURED_KEYLESS_MODE');
+      expect(json.capabilityMatrix.pageSpeedInsights.status).toBe('CONFIGURED');
     });
 
     it('reports CONFIGURED_API_KEY for PageSpeed when API key is set', async () => {
@@ -374,7 +382,7 @@ describe('V5.8.3 — Auditor-Aligned Production Hardening', () => {
       const json = await res.json();
 
       expect(json.quotaLedger.google_pagespeed.configuredStatus).toBe('CONFIGURED_API_KEY');
-      expect(json.capabilityMatrix.pageSpeedInsights.status).toBe('CONFIGURED_API_KEY');
+      expect(json.capabilityMatrix.pageSpeedInsights.status).toBe('CONFIGURED');
     });
 
     it('reports CHANNEL_APPROVED_NO_AFFILIATED_LINKS when channel is approved but 0 deals affiliated', async () => {

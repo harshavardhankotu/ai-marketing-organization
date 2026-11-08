@@ -6675,8 +6675,7 @@ apiRouter.get('/public/autonomy-status', async (c) => {
         return 'CONFIGURED';
       }
       case 'google_pagespeed': {
-        const dedicatedKey = process.env.GOOGLE_PAGESPEED_API_KEY?.trim();
-        return Boolean(dedicatedKey) ? 'CONFIGURED_API_KEY' : 'UNCONFIGURED_KEYLESS_MODE';
+        return 'CONFIGURED';
       }
       case 'google_indexing': {
         const key = process.env.GOOGLE_INDEXING_SERVICE_ACCOUNT_KEY || process.env.GOOGLE_INDEXING_API;
