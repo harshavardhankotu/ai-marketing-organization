@@ -173,7 +173,8 @@ export class DirectCommercialOfferPage {
   <meta name="description" content="Turn after-hours patient inquiries into booked appointments. Administrative Website &amp; WhatsApp Inquiry Capture, Instant Triage Summary, and Appointment Request Logging for Indian healthcare and dental practices.">
   <link rel="canonical" href="${siteUrl}/">
   <meta name="robots" content="index, follow">
-  <meta name="google-site-verification" content="WVPs1hLZgUqJL5yO9jwF2pWwsekPcMtTOLLeWILGU9I">
+  <meta name="cuelinks-verification" content="VERIFY-CL-YE94W8YS" />
+  <meta name="google-site-verification" content="WVPs1hLZgUqJL5yO9jwF2pWwsekPcMtTOLLeWILGU9I" />
   <!-- Razorpay Standard Web Checkout -->
   <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
   <style>

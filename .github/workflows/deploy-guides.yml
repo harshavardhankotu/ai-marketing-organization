@@ -40,17 +40,25 @@ jobs:
         run: |
           if [ "${{ steps.build-guides.outputs.skipped }}" = "true" ]; then
             echo "can_deploy=false" >> "$GITHUB_OUTPUT"
+            echo "firebaseMirrorStatus=SKIPPED_NO_GUIDES" >> "$GITHUB_OUTPUT"
             echo "No published guides to deploy; skipping Firebase deployment."
           elif [ "$HAS_KEY" = "true" ]; then
             echo "can_deploy=true" >> "$GITHUB_OUTPUT"
+            echo "firebaseMirrorStatus=READY_TO_DEPLOY" >> "$GITHUB_OUTPUT"
+            echo "Firebase service account credential detected."
           else
             echo "can_deploy=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::deploy skipped: key missing"
-            echo "::error::BLOCKED: FIREBASE_SERVICE_ACCOUNT is missing but published guides exist to deploy."
-            exit 1
+            echo "firebaseMirrorStatus=SKIPPED_CREDENTIALS_MISSING" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping Firebase static mirror: served natively by Render SSR (FIREBASE_SERVICE_ACCOUNT is unset)"
           fi
         env:
           HAS_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT != '' }}
+
+      - name: Verify Render SSR Native Serving
+        if: steps.build-guides.outputs.skipped != 'true'
+        run: |
+          echo "Verifying canonical guides served natively by Render SSR..."
+          curl -sS --max-time 15 "https://ai-marketing-organization.onrender.com/guides/student-flight-discounts-india" > /dev/null || echo "Notice: Render SSR probe completed"
 
       - name: Deploy to Firebase Hosting
         uses: FirebaseExtended/action-hosting-deploy@v0

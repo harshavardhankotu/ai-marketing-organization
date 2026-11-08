@@ -67,6 +67,7 @@ async function runCycle(env: Env): Promise<void> {
       // Claim & execute due jobs from durable queue via bounded drain loop
       try {
         const drainUrl = `${claimUrl}?budgetMs=20000&maxJobs=3`;
+        const claimStart = Date.now();
         const claimRes = await fetch(drainUrl, {
           method: 'POST',
           headers: {
@@ -76,12 +77,19 @@ async function runCycle(env: Env): Promise<void> {
           },
           signal: AbortSignal.timeout(25000)
         });
+        const elapsedClaim = Date.now() - claimStart;
         if (claimRes.ok) {
           const claimBody = await claimRes.json() as Record<string, unknown>;
-          console.log(`[CRON WORKER] Worker drain completed: claimed=${claimBody.claimed}, jobsExecuted=${claimBody.jobsExecutedCount ?? (claimBody.claimed ? 1 : 0)}, elapsed=${claimBody.elapsedMs ?? 'N/A'}ms`);
+          const jobsExecuted = typeof claimBody.jobsExecutedCount === 'number'
+            ? claimBody.jobsExecutedCount
+            : (Array.isArray(claimBody.executedJobs) ? claimBody.executedJobs.length : 0);
+          console.log(`[CRON WORKER] Drain completed: status=${claimRes.status}, claimed=${claimBody.claimed}, jobsExecuted=${jobsExecuted}, elapsed=${claimBody.elapsedMs ?? elapsedClaim}ms`);
+        } else {
+          const errTxt = await claimRes.text();
+          console.error(`[CRON WORKER] Drain failed: status=${claimRes.status}, in ${elapsedClaim}ms: ${errTxt.substring(0, 300)}`);
         }
       } catch (claimErr: any) {
-        console.warn(`[CRON WORKER] Drain loop notice: ${claimErr?.message}`);
+        console.warn(`[CRON WORKER] Drain loop exception: ${claimErr?.message}`);
       }
     } else {
       const text = await response.text();

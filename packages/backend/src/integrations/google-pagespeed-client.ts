@@ -4,14 +4,16 @@ import { UnifiedQuotaService } from '../quota/unified-quota-service.js';
 import { isPlaceholderCredential, isProduction } from '../config/env.js';
 
 export interface PageSpeedMetrics {
-  performanceScore: number; // 0 - 100
-  seoScore: number;         // 0 - 100
+  performanceScore: number | null; // 0 - 100 or null
+  seoScore: number | null;         // 0 - 100 or null
+  accessibilityScore?: number | null; // 0 - 100 or null
+  bestPracticesScore?: number | null; // 0 - 100 or null
   coreWebVitals: {
-    lcp: string; // Largest Contentful Paint
-    fcp: string; // First Contentful Paint
-    cls: string; // Cumulative Layout Shift
-    tbt: string; // Total Blocking Time
-  };
+    lcp?: string; // Largest Contentful Paint
+    fcp?: string; // First Contentful Paint
+    cls?: string; // Cumulative Layout Shift
+    tbt?: string; // Total Blocking Time
+  } | null;
   opportunities: Array<{
     id: string;
     title: string;
@@ -23,15 +25,18 @@ export interface PageSpeedMetrics {
 export interface PageSpeedAuditResult {
   status: 'SUCCESS' | 'UNAVAILABLE';
   reason?: 'MISSING_API_KEY' | 'QUOTA_EXHAUSTED' | string;
+  executionPath?: 'KEYED_SUCCESS' | 'KEYLESS_SUCCESS' | 'FALLBACK_KEYLESS_SUCCESS' | 'UNAVAILABLE';
   targetUrl: string;
   strategy: 'mobile' | 'desktop';
-  performanceScore?: number; // 0 - 100
-  seoScore?: number;         // 0 - 100
+  performanceScore?: number | null; // 0 - 100 or null
+  seoScore?: number | null;         // 0 - 100 or null
+  accessibilityScore?: number | null; // 0 - 100 or null
+  bestPracticesScore?: number | null; // 0 - 100 or null
   coreWebVitals?: {
-    lcp: string;
-    fcp: string;
-    cls: string;
-    tbt: string;
+    lcp?: string;
+    fcp?: string;
+    cls?: string;
+    tbt?: string;
   } | null;
   opportunities?: Array<{
     id: string;
@@ -48,7 +53,7 @@ export interface PageSpeedAuditResult {
 export interface SiteFixOptimizationBundle {
   targetUrl: string;
   businessName: string;
-  performanceScore: number;
+  performanceScore: number | null;
   auditSummary: string;
   recommendedHeadSnippets: string;
   schemaJsonLd: string;
@@ -70,8 +75,10 @@ export class PageSpeedQuotaExceededError extends Error {
  * Implements:
  * 1. Strict 40 requests/day cap via UnifiedQuotaService ('google_pagespeed').
  * 2. 24-hour cache keyed by canonical URL + strategy in SQLite/D1 search_cache.
- * 3. Generation of SiteFix AI deliverable package (diagnostic audit, <head> tags, Schema.org JSON-LD).
- * 4. Safe test-mode fallback for hermetic offline testing.
+ * 3. Dedicated key resolution: ONLY GOOGLE_PAGESPEED_API_KEY (never Gemini, Search, or HTML tokens).
+ * 4. Keyless fallback: Bounded retry for keyed HTTP 400, 401, or 403 errors.
+ * 5. Absolutely no synthetic metrics: Genuine Lighthouse data or UNAVAILABLE.
+ * 6. Supported categories: performance, seo, accessibility, best-practices.
  */
 export class GooglePageSpeedClient {
   private static instance: GooglePageSpeedClient;
@@ -119,10 +126,18 @@ export class GooglePageSpeedClient {
       console.warn(`[GooglePageSpeedClient] Cache check error: ${e.message}`);
     }
 
-    // 2. Resolve API Key: Check PageSpeed, Search, or Gemini API keys
-    const rawApiKey = (process.env.GOOGLE_PAGESPEED_API_KEY || process.env.GOOGLE_SEARCH_API_KEY || process.env.GEMINI_API_KEY || '').trim();
-    const hasValidKey = Boolean(rawApiKey && !isPlaceholderCredential(rawApiKey) && !rawApiKey.startsWith('test') && !rawApiKey.includes('placeholder'));
-    const apiKey = hasValidKey ? rawApiKey : null;
+    // 2. Resolve API Key: Strictly GOOGLE_PAGESPEED_API_KEY only
+    // Never pass GEMINI_API_KEY, GOOGLE_SEARCH_API_KEY, or HTML verification tokens
+    const dedicatedKey = (process.env.GOOGLE_PAGESPEED_API_KEY || '').trim();
+    const hasValidKey = Boolean(
+      dedicatedKey &&
+      !isPlaceholderCredential(dedicatedKey) &&
+      !dedicatedKey.startsWith('test') &&
+      !dedicatedKey.includes('placeholder') &&
+      !dedicatedKey.includes('VERIFY-') &&
+      !dedicatedKey.includes('WVPs1hLZg')
+    );
+    const apiKey = hasValidKey ? dedicatedKey : null;
 
     // 3. Reserve Quota (40/day cap via UnifiedQuotaService)
     const reservation = await this.quotaService.reserveProviderQuota('google_pagespeed', 1);
@@ -130,6 +145,7 @@ export class GooglePageSpeedClient {
       return {
         status: 'UNAVAILABLE',
         reason: 'QUOTA_EXHAUSTED',
+        executionPath: 'UNAVAILABLE',
         targetUrl,
         strategy,
         metrics: null,
@@ -141,20 +157,55 @@ export class GooglePageSpeedClient {
       };
     }
 
-    // Google's runPagespeed endpoint works with OR without an API key for low-volume requests
-    const baseUrl = `https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${encodeURIComponent(targetUrl)}&strategy=${strategy}&category=performance&category=seo`;
+    // Google runPagespeed endpoint works with OR without an API key
+    const categories = ['performance', 'seo', 'accessibility', 'best-practices'];
+    const categoryQuery = categories.map(c => `category=${c}`).join('&');
+    const baseUrl = `https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=${encodeURIComponent(targetUrl)}&strategy=${strategy}&${categoryQuery}`;
     const endpoint = apiKey ? `${baseUrl}&key=${encodeURIComponent(apiKey)}` : baseUrl;
 
-    try {
-      let res = await this.fetchFn(endpoint, {
-        headers: { 'Accept': 'application/json' }
-      });
+    let executionPath: 'KEYED_SUCCESS' | 'KEYLESS_SUCCESS' | 'FALLBACK_KEYLESS_SUCCESS' | 'UNAVAILABLE' = 'UNAVAILABLE';
 
-      // If key had restrictions (e.g. search-only key) and returned 400 or 403, fallback to keyless live query
-      if (!res.ok && apiKey && (res.status === 400 || res.status === 403)) {
-        res = await this.fetchFn(baseUrl, {
-          headers: { 'Accept': 'application/json' }
+    try {
+      let res: Response;
+      try {
+        res = await this.fetchFn(endpoint, {
+          headers: { 'Accept': 'application/json' },
+          signal: AbortSignal.timeout(20000)
         });
+      } catch (keyedErr: any) {
+        // If keyed request timed out or threw network error and key was used, try keyless once if appropriate
+        if (apiKey) {
+          console.warn(`[GooglePageSpeedClient] Keyed request exception (${keyedErr.message}), falling back to keyless request`);
+          res = await this.fetchFn(baseUrl, {
+            headers: { 'Accept': 'application/json' },
+            signal: AbortSignal.timeout(20000)
+          });
+          executionPath = 'FALLBACK_KEYLESS_SUCCESS';
+        } else {
+          throw keyedErr;
+        }
+      }
+
+      if (apiKey && res.ok) {
+        executionPath = 'KEYED_SUCCESS';
+      } else if (!apiKey && res.ok) {
+        executionPath = 'KEYLESS_SUCCESS';
+      }
+
+      // If keyed request returned 400, 401 (e.g. invalid/restricted key) or 403, fallback to keyless live query
+      if (!res.ok && apiKey && (res.status === 400 || res.status === 401 || res.status === 403)) {
+        console.warn(`[GooglePageSpeedClient] Keyed request returned HTTP ${res.status}. Executing keyless fallback attempt.`);
+        try {
+          res = await this.fetchFn(baseUrl, {
+            headers: { 'Accept': 'application/json' },
+            signal: AbortSignal.timeout(20000)
+          });
+          if (res.ok) {
+            executionPath = 'FALLBACK_KEYLESS_SUCCESS';
+          }
+        } catch (fallbackErr: any) {
+          console.warn(`[GooglePageSpeedClient] Keyless fallback exception: ${fallbackErr.message}`);
+        }
       }
 
       if (!res.ok) {
@@ -163,6 +214,7 @@ export class GooglePageSpeedClient {
         return {
           status: 'UNAVAILABLE',
           reason: `API_HTTP_${res.status}`,
+          executionPath: 'UNAVAILABLE',
           targetUrl,
           strategy,
           metrics: null,
@@ -175,17 +227,60 @@ export class GooglePageSpeedClient {
       }
 
       const data: any = await res.json();
+      const lighthouse = data?.lighthouseResult;
+      if (!lighthouse || !lighthouse.categories) {
+        await this.quotaService.reconcileProviderQuota('google_pagespeed', reservation.reservationId, 'RELEASE');
+        return {
+          status: 'UNAVAILABLE',
+          reason: 'MISSING_LIGHTHOUSE_DATA',
+          executionPath: 'UNAVAILABLE',
+          targetUrl,
+          strategy,
+          performanceScore: null,
+          seoScore: null,
+          accessibilityScore: null,
+          bestPracticesScore: null,
+          coreWebVitals: null,
+          opportunities: [],
+          metrics: null,
+          cached: false,
+          quotaBlocked: false,
+          timestamp: new Date().toISOString()
+        };
+      }
+
       await this.quotaService.reconcileProviderQuota('google_pagespeed', reservation.reservationId, 'CONSUME');
 
-      const lighthouse = data?.lighthouseResult || {};
-      const perfScore = Math.round((lighthouse.categories?.performance?.score ?? 0.75) * 100);
-      const seoScore = Math.round((lighthouse.categories?.seo?.score ?? 0.85) * 100);
+      // Genuine Lighthouse scores (never synthetic defaults)
+      const perfCatScore = lighthouse.categories?.performance?.score;
+      const perfScore = typeof perfCatScore === 'number' && Number.isFinite(perfCatScore)
+        ? Math.round(perfCatScore * 100)
+        : null;
+
+      const seoCatScore = lighthouse.categories?.seo?.score;
+      const seoScore = typeof seoCatScore === 'number' && Number.isFinite(seoCatScore)
+        ? Math.round(seoCatScore * 100)
+        : null;
+
+      const a11yCatScore = lighthouse.categories?.accessibility?.score;
+      const accessibilityScore = typeof a11yCatScore === 'number' && Number.isFinite(a11yCatScore)
+        ? Math.round(a11yCatScore * 100)
+        : null;
+
+      const bpCatScore = lighthouse.categories?.['best-practices']?.score;
+      const bestPracticesScore = typeof bpCatScore === 'number' && Number.isFinite(bpCatScore)
+        ? Math.round(bpCatScore * 100)
+        : null;
 
       const audits = lighthouse.audits || {};
-      const lcp = audits['largest-contentful-paint']?.displayValue || '2.8 s';
-      const fcp = audits['first-contentful-paint']?.displayValue || '1.5 s';
-      const cls = audits['cumulative-layout-shift']?.displayValue || '0.04';
-      const tbt = audits['total-blocking-time']?.displayValue || '120 ms';
+      const lcp = audits['largest-contentful-paint']?.displayValue || undefined;
+      const fcp = audits['first-contentful-paint']?.displayValue || undefined;
+      const cls = audits['cumulative-layout-shift']?.displayValue || undefined;
+      const tbt = audits['total-blocking-time']?.displayValue || undefined;
+
+      const coreWebVitals = (lcp || fcp || cls || tbt)
+        ? { lcp, fcp, cls, tbt }
+        : null;
 
       const opportunities: Array<{ id: string; title: string; description: string; savingsEst?: string }> = [];
       const oppKeys = ['render-blocking-resources', 'unminified-css', 'unminified-javascript', 'unused-javascript', 'modern-image-formats'];
@@ -204,17 +299,22 @@ export class GooglePageSpeedClient {
       const metrics: PageSpeedMetrics = {
         performanceScore: perfScore,
         seoScore,
-        coreWebVitals: { lcp, fcp, cls, tbt },
+        accessibilityScore,
+        bestPracticesScore,
+        coreWebVitals,
         opportunities: opportunities.slice(0, 5)
       };
 
       const result: PageSpeedAuditResult = {
         status: 'SUCCESS',
+        executionPath,
         targetUrl,
         strategy,
         performanceScore: perfScore,
         seoScore,
-        coreWebVitals: { lcp, fcp, cls, tbt },
+        accessibilityScore,
+        bestPracticesScore,
+        coreWebVitals,
         opportunities: opportunities.slice(0, 5),
         metrics,
         cached: false,
@@ -230,6 +330,7 @@ export class GooglePageSpeedClient {
       return {
         status: 'UNAVAILABLE',
         reason: err.message || 'NETWORK_ERROR',
+        executionPath: 'UNAVAILABLE',
         targetUrl,
         strategy,
         metrics: null,
@@ -301,9 +402,9 @@ ${JSON.stringify(schemaObj, null, 2)}
 `.trim();
 
     const isAvailable = audit.status === 'SUCCESS' && Boolean(audit.metrics);
-    const perfScore = audit.performanceScore ?? 0;
+    const perfScore = audit.performanceScore ?? null;
     const auditSummary = isAvailable
-      ? `Performance score: ${perfScore}/100, SEO score: ${audit.seoScore ?? 0}/100. Core Web Vitals LCP: ${audit.coreWebVitals?.lcp || 'N/A'}, CLS: ${audit.coreWebVitals?.cls || 'N/A'}. ${audit.opportunities?.length || 0} priority performance opportunities detected.`
+      ? `Performance score: ${perfScore !== null ? perfScore + '/100' : 'N/A'}, SEO score: ${audit.seoScore !== null ? audit.seoScore + '/100' : 'N/A'}. Core Web Vitals LCP: ${audit.coreWebVitals?.lcp || 'N/A'}, CLS: ${audit.coreWebVitals?.cls || 'N/A'}. ${audit.opportunities?.length || 0} priority performance opportunities detected.`
       : 'Live Core Web Vitals data currently unavailable: Google PageSpeed free tier quota reached or unconfigured. Raw HTML audit completed.';
 
     return {
