@@ -58,8 +58,24 @@ jobs:
       - name: Verify Render SSR Native Serving
         if: steps.build-guides.outputs.skipped != 'true'
         run: |
-          echo "Verifying canonical guides served natively by Render SSR..."
-          curl -sS --max-time 15 "https://ai-marketing-organization.onrender.com/guides/student-flight-discounts-india" > /dev/null || echo "Notice: Render SSR probe completed"
+          echo "Verifying canonical guides and homepage served natively by Render SSR..."
+          HOMEPAGE_HTML=$(curl --fail --silent --show-error --location --max-time 30 "https://ai-marketing-organization.onrender.com/")
+          if ! echo "$HOMEPAGE_HTML" | grep -q "WVPs1hLZgUqJL5yO9jwF2pWwsekPcMtTOLLeWILGU9I"; then
+            echo "ERROR: google-site-verification meta tag missing from homepage!"
+            exit 1
+          fi
+          if ! echo "$HOMEPAGE_HTML" | grep -q "VERIFY-CL-YE94W8YS"; then
+            echo "ERROR: cuelinks-verification meta tag missing from homepage!"
+            exit 1
+          fi
+          echo "Homepage verification meta tags confirmed."
+
+          GUIDE_HTML=$(curl --fail --silent --show-error --location --max-time 30 "https://ai-marketing-organization.onrender.com/guides/student-flight-discounts-india")
+          if ! echo "$GUIDE_HTML" | grep -iq "student"; then
+            echo "ERROR: Guide content missing from SSR response!"
+            exit 1
+          fi
+          echo "Render SSR native serving confirmed valid."
 
       - name: Deploy to Firebase Hosting
         uses: FirebaseExtended/action-hosting-deploy@v0

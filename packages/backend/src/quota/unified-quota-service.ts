@@ -1314,7 +1314,9 @@ export class UnifiedQuotaService {
             reserved: row.reserved_count,
             remaining: Math.max(0, row.cap_limit - (row.used_count + row.reserved_count)),
             circuitBreaker: row.circuit_breaker_state,
-            configuredStatus: row.configured_status
+            configuredStatus: providerName === 'google_pagespeed'
+              ? (Boolean(process.env.GOOGLE_PAGESPEED_API_KEY?.trim()) ? 'CONFIGURED_API_KEY' : 'UNCONFIGURED_KEYLESS_MODE')
+              : (row.configured_status || 'CONFIGURED')
           };
         } else {
           result[providerName] = {
@@ -1326,7 +1328,9 @@ export class UnifiedQuotaService {
             reserved: 0,
             remaining: spec.capLimit,
             circuitBreaker: 'CLOSED',
-            configuredStatus: 'CONFIGURED'
+            configuredStatus: providerName === 'google_pagespeed'
+              ? (Boolean(process.env.GOOGLE_PAGESPEED_API_KEY?.trim()) ? 'CONFIGURED_API_KEY' : 'UNCONFIGURED_KEYLESS_MODE')
+              : 'CONFIGURED'
           };
         }
       } catch {

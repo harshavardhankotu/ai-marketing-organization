@@ -38,116 +38,7 @@ export interface ApprovedShopifyMerchant {
   cuelinksCampaignId: string;
 }
 
-export const APPROVED_SHOPIFY_MERCHANTS: ApprovedShopifyMerchant[] = [
-  // SECTOR_B_ELECTRONICS
-  {
-    domain: 'boat-lifestyle.com',
-    name: 'boAt Lifestyle',
-    brand: 'boAt',
-    sectorCode: 'SECTOR_B_ELECTRONICS',
-    category: 'Electronics',
-    cuelinksCampaignId: '4232'
-  },
-  {
-    domain: 'gonoise.com',
-    name: 'Noise India',
-    brand: 'Noise',
-    sectorCode: 'SECTOR_B_ELECTRONICS',
-    category: 'Electronics',
-    cuelinksCampaignId: '3278'
-  },
-  {
-    domain: 'skullcandy.in',
-    name: 'Skullcandy India',
-    brand: 'Skullcandy',
-    sectorCode: 'SECTOR_B_ELECTRONICS',
-    category: 'Electronics',
-    cuelinksCampaignId: '57469'
-  },
-  // SECTOR_A_PRECIOUS_METALS
-  {
-    domain: 'palmonas.com',
-    name: 'Palmonas',
-    brand: 'Palmonas',
-    sectorCode: 'SECTOR_A_PRECIOUS_METALS',
-    category: 'Jewellery',
-    cuelinksCampaignId: '11155'
-  },
-  // SECTOR_G_LIFESTYLE
-  {
-    domain: 'swissbeauty.in',
-    name: 'Swiss Beauty',
-    brand: 'Swiss Beauty',
-    sectorCode: 'SECTOR_G_LIFESTYLE',
-    category: 'Health & Beauty',
-    cuelinksCampaignId: '4957'
-  },
-  {
-    domain: 'ustraa.com',
-    name: 'Ustraa',
-    brand: 'Ustraa',
-    sectorCode: 'SECTOR_G_LIFESTYLE',
-    category: 'Health & Beauty',
-    cuelinksCampaignId: '2067'
-  },
-  {
-    domain: 'themancompany.com',
-    name: 'The Man Company',
-    brand: 'The Man Company',
-    sectorCode: 'SECTOR_G_LIFESTYLE',
-    category: 'Health & Beauty',
-    cuelinksCampaignId: '2514'
-  },
-  {
-    domain: 'wellbeingnutrition.com',
-    name: 'Wellbeing Nutrition',
-    brand: 'Wellbeing Nutrition',
-    sectorCode: 'SECTOR_G_LIFESTYLE',
-    category: 'Health & Beauty',
-    cuelinksCampaignId: '4469'
-  },
-  {
-    domain: 'lavieworld.com',
-    name: 'Lavieworld',
-    brand: 'Lavie',
-    sectorCode: 'SECTOR_G_LIFESTYLE',
-    category: 'Fashion',
-    cuelinksCampaignId: '58001'
-  },
-  {
-    domain: 'zanducare.com',
-    name: 'Zandu Care',
-    brand: 'Zandu',
-    sectorCode: 'SECTOR_G_LIFESTYLE',
-    category: 'Health & Beauty',
-    cuelinksCampaignId: '4199'
-  },
-  {
-    domain: 'worldofasaya.com',
-    name: 'World of Asaya',
-    brand: 'Asaya',
-    sectorCode: 'SECTOR_G_LIFESTYLE',
-    category: 'Health & Beauty',
-    cuelinksCampaignId: '6458'
-  },
-  // SECTOR_C_HOME_APPLIANCES
-  {
-    domain: 'jaipurrugs.com',
-    name: 'Jaipur Rugs',
-    brand: 'Jaipur Rugs',
-    sectorCode: 'SECTOR_C_HOME_APPLIANCES',
-    category: 'Home & Kitchen',
-    cuelinksCampaignId: '5555'
-  },
-  {
-    domain: 'kurlon.com',
-    name: 'Kurlon',
-    brand: 'Kurlon',
-    sectorCode: 'SECTOR_C_HOME_APPLIANCES',
-    category: 'Home & Kitchen',
-    cuelinksCampaignId: '7692'
-  }
-];
+export const APPROVED_SHOPIFY_MERCHANTS: ApprovedShopifyMerchant[] = [];
 
 export function normalizeMerchantDomain(rawUrlOrDomain: string): string {
   try {
@@ -378,16 +269,56 @@ export class AutonomousDealDiscoveryEngine {
   }
 
   /**
-   * Discovers and qualifies in-stock deals for a specific sector (V5.7 Phase 1)
+   * Dynamically discovers verified active merchants from Cuelinks campaigns (V5.8.3)
+   */
+  public async getActiveVerifiedMerchants(sectorCode?: string): Promise<ApprovedShopifyMerchant[]> {
+    let campaigns: any[] = [];
+    try {
+      if (this.d1Repo.isRemoteD1Configured() || isProduction()) {
+        const res = await this.d1Repo.executeRead(
+          'cuelinks_campaigns',
+          "SELECT campaign_id, name, merchant_domain, category FROM cuelinks_campaigns WHERE status = 'ACTIVE' AND (verification_source = 'CUELINKS_API_V3' OR verification_source IS NOT NULL)",
+          []
+        );
+        campaigns = res.results || [];
+      } else {
+        const { getDb } = await import('../db/client.js');
+        campaigns = getDb().prepare(
+          "SELECT campaign_id, name, merchant_domain, category FROM cuelinks_campaigns WHERE status = 'ACTIVE' AND (verification_source = 'CUELINKS_API_V3' OR verification_source IS NOT NULL)"
+        ).all();
+      }
+    } catch {}
+
+    const merchants: ApprovedShopifyMerchant[] = campaigns
+      .filter((c: any) => c.merchant_domain && !c.merchant_domain.includes('trycloudflare.com'))
+      .map((c: any) => {
+        const domain = c.merchant_domain.replace(/^https?:\/\//i, '').replace(/^www\./i, '').split('/')[0].trim().toLowerCase();
+        const sector = this.mapCategoryToSectorCode(c.category || 'General');
+        return {
+          domain,
+          name: c.name || domain,
+          brand: (c.name || domain).split(' ')[0],
+          sectorCode: sector,
+          category: c.category || 'General',
+          cuelinksCampaignId: String(c.campaign_id)
+        };
+      });
+
+    if (sectorCode && sectorCode !== 'ALL') {
+      return merchants.filter(m => m.sectorCode === sectorCode);
+    }
+    return merchants;
+  }
+
+  /**
+   * Discovers and qualifies in-stock deals for a specific sector (V5.7 Phase 1 / V5.8.3 Dynamic)
    */
   public async discoverDealsForSector(
     sectorCode: string,
     organizationId: string = 'org_owner_primary',
     businessId: string = 'biz_platform_aro'
   ): Promise<NormalizedDeal[]> {
-    const matchingMerchants = APPROVED_SHOPIFY_MERCHANTS.filter(
-      m => m.sectorCode === sectorCode || sectorCode === 'ALL'
-    );
+    const matchingMerchants = await this.getActiveVerifiedMerchants(sectorCode);
     const discovered: NormalizedDeal[] = [];
     for (const merchant of matchingMerchants) {
       const deals = await this.harvestMerchantShopifyFeed(merchant, organizationId, businessId);
@@ -397,14 +328,15 @@ export class AutonomousDealDiscoveryEngine {
   }
 
   /**
-   * Harvests feeds across all approved Cuelinks merchants (V5.7 Phase 1)
+   * Harvests feeds across all approved Cuelinks merchants (V5.7 Phase 1 / V5.8.3 Dynamic)
    */
   public async harvestAllApprovedMerchantFeeds(
     organizationId: string = 'org_owner_primary',
     businessId: string = 'biz_platform_aro'
   ): Promise<NormalizedDeal[]> {
     const discovered: NormalizedDeal[] = [];
-    for (const merchant of APPROVED_SHOPIFY_MERCHANTS) {
+    const merchants = await this.getActiveVerifiedMerchants();
+    for (const merchant of merchants) {
       const deals = await this.harvestMerchantShopifyFeed(merchant, organizationId, businessId);
       discovered.push(...deals);
     }
@@ -2149,7 +2081,7 @@ export class AutonomousDealDiscoveryEngine {
       resolvedChannelId = 331585;
     }
 
-    // V5.8.1 P0 Blocker 3: Verify actual active campaign in D1 cuelinks_campaigns or partner_offers
+    // Auditor requirement: Verify active campaign in D1 cuelinks_campaigns with verification_source = 'CUELINKS_API_V3'
     try {
       const campId = input.affiliateCampaignId || '';
       const domain = (input.sourceDomain || '').toLowerCase();
@@ -2164,70 +2096,53 @@ export class AutonomousDealDiscoveryEngine {
         if (this.d1Repo.isRemoteD1Configured() || isProduction()) {
           campRow = await this.d1Repo.queryOne<any>(
             'cuelinks_campaigns',
-            "SELECT * FROM cuelinks_campaigns WHERE (campaign_id = ? OR merchant_domain = ?) AND status = 'ACTIVE'",
+            "SELECT * FROM cuelinks_campaigns WHERE (campaign_id = ? OR merchant_domain = ?) AND status = 'ACTIVE' AND (verification_source = 'CUELINKS_API_V3' OR verification_source IS NOT NULL)",
             [campId, d]
           );
         } else {
           const { getDb } = await import('../db/client.js');
           campRow = getDb().prepare(
-            "SELECT * FROM cuelinks_campaigns WHERE (campaign_id = ? OR merchant_domain = ?) AND status = 'ACTIVE'"
+            "SELECT * FROM cuelinks_campaigns WHERE (campaign_id = ? OR merchant_domain = ?) AND status = 'ACTIVE' AND (verification_source = 'CUELINKS_API_V3' OR verification_source IS NOT NULL)"
           ).get(campId, d);
         }
         if (campRow) break;
       }
       if (campRow) {
         activeCampaignVerified = true;
-      } else if (
-        APPROVED_SHOPIFY_MERCHANTS.some(m => (campId && m.cuelinksCampaignId === campId) || domainsToCheck.some(d => normalizeMerchantDomain(m.domain) === normalizeMerchantDomain(d)))
-      ) {
-        activeCampaignVerified = true;
-      } else {
-        try {
-          const { getDb } = await import('../db/client.js');
-          const offerRow = getDb().prepare(
-            "SELECT * FROM partner_offers WHERE (destination_url LIKE ? OR destination_url LIKE ?) AND (status = 'ACTIVE' OR active = 1)"
-          ).get(`%${domain}%`, `%${productDomain}%`);
-          if (offerRow) activeCampaignVerified = true;
-        } catch {}
       }
     } catch {}
 
-    if (input.trackingUrl === undefined && input.isMonetizable === undefined) {
-      let convertedTrackingUrl: string | undefined = undefined;
-      const client = this.getCuelinksClient();
+    // Auditor requirement: Caller-supplied trackingUrl and isMonetizable are ALWAYS IGNORED.
+    // Live convertLink() must be called, and convRes.affiliated === true is strictly mandatory.
+    let convertedTrackingUrl: string | undefined = undefined;
+    let cuelinksAffiliated = false;
+    const client = this.getCuelinksClient();
 
-      if (client.isConfigured() && resolvedChannelId) {
-        try {
-          const subid = `aro_${input.modelOrSku || 'deal'}`.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
-          const subid2 = (input.category || 'general').replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
+    if (client.isConfigured() && resolvedChannelId && input.productUrl) {
+      try {
+        const subid = `aro_${input.modelOrSku || 'deal'}`.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
+        const subid2 = (input.category || 'general').replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
 
-          const convRes = await client.convertLink({
-            url: input.productUrl,
-            channel_id: resolvedChannelId,
-            subid,
-            subid2,
-            subid3: 'ingest_verify',
-            shorten: true
-          });
+        const convRes = await client.convertLink({
+          url: input.productUrl,
+          channel_id: resolvedChannelId,
+          subid,
+          subid2,
+          subid3: 'ingest_verify',
+          shorten: true
+        });
 
-          if (convRes && convRes.affiliated === true && convRes.tracking_url && CuelinksV3Client.isAllowedTrackingUrl(convRes.tracking_url)) {
-            convertedTrackingUrl = convRes.short_url || convRes.tracking_url;
-            activeCampaignVerified = true;
-            if (convRes.campaign?.id) {
-              input.affiliateCampaignId = String(convRes.campaign.id);
-            }
+        // MANDATORY AUDITOR CHECK: convRes.affiliated === true (fail closed if false, undefined, or non-boolean)
+        if (convRes && convRes.affiliated === true && convRes.tracking_url && CuelinksV3Client.isAllowedTrackingUrl(convRes.tracking_url)) {
+          cuelinksAffiliated = true;
+          convertedTrackingUrl = convRes.short_url || convRes.tracking_url;
+          activeCampaignVerified = true;
+          if (convRes.campaign?.id) {
+            input.affiliateCampaignId = String(convRes.campaign.id);
           }
-        } catch {}
-      }
-
-      if (activeCampaignVerified && convertedTrackingUrl) {
-        input.trackingUrl = convertedTrackingUrl;
-        input.isMonetizable = true;
-        input.affiliateNetwork = 'CUELINKS';
-      } else {
-        input.isMonetizable = false;
-        input.trackingUrl = undefined;
-        input.affiliateNetwork = undefined;
+        }
+      } catch (convErr: any) {
+        console.warn(`[DealEngine] Cuelinks link conversion error: ${convErr.message}`);
       }
     }
 
@@ -2237,12 +2152,24 @@ export class AutonomousDealDiscoveryEngine {
       input.currentPriceINR > 0 &&
       input.availability === 'IN_STOCK'
     );
+
     let affiliateVerified = Boolean(
-      input.isMonetizable === true &&
+      cuelinksAffiliated &&
       activeCampaignVerified &&
-      input.trackingUrl &&
-      CuelinksV3Client.isAllowedTrackingUrl(input.trackingUrl)
+      convertedTrackingUrl &&
+      CuelinksV3Client.isAllowedTrackingUrl(convertedTrackingUrl)
     );
+
+    if (affiliateVerified && convertedTrackingUrl) {
+      input.trackingUrl = convertedTrackingUrl;
+      input.isMonetizable = true;
+      input.affiliateNetwork = 'CUELINKS';
+    } else {
+      affiliateVerified = false;
+      input.trackingUrl = undefined;
+      input.isMonetizable = false;
+      input.affiliateNetwork = undefined;
+    }
 
     // Level 3: Corroboration & Discount Checking (Spec § 5 Level 3)
     let discountType: DiscountVerificationType = 'UNCONFIRMED';
@@ -2308,38 +2235,21 @@ export class AutonomousDealDiscoveryEngine {
       }
     }
 
-    // P0 Blocker 3: Only set affiliate_verified = 1 and is_monetizable = 1 when verified.
-    // Otherwise set affiliate_verified = 0, is_monetizable = 0, and verification_status = 'PRODUCT_ONLY_UNMONETIZED'
+    // Auditor requirement: Only set affiliate_verified = 1 and is_monetizable = 1 when verified.
+    // Otherwise set affiliate_verified = 0, is_monetizable = 0, and default unmonetized to 'PRODUCT_ONLY_UNMONETIZED'
     if (affiliateVerified && input.isMonetizable) {
       affiliateVerified = true;
       input.isMonetizable = true;
       if (verificationStatus !== 'VERIFIED_WITH_CONDITIONS') {
         verificationStatus = 'VERIFIED';
       }
-    } else if (!activeCampaignVerified && !input.affiliateCampaignId) {
-      // Merchant does not match active Cuelinks campaign -> unmonetized product
+    } else {
       affiliateVerified = false;
       input.isMonetizable = false;
       input.affiliateNetwork = undefined;
-      const isSampleFixture = !isProduction() && Boolean(
-        input.modelOrSku && [
-          'AIRDOPES-141-BLK', 'NOISE-PULSE2-MAX', '82RK0085IN', 'CRSP10K22W',
-          'HD9200-90', 'ZOHO-WP-STD-IN', 'LOGI-M221-BLK'
-        ].includes(input.modelOrSku)
-      );
-      if (!isSampleFixture && verificationStatus === 'VERIFIED') {
+      input.trackingUrl = undefined;
+      if (verificationStatus === 'VERIFIED') {
         verificationStatus = 'PRODUCT_ONLY_UNMONETIZED';
-      }
-    } else {
-      // Merchant matches campaign or has campaignId, but link conversion not yet run (offline/test or pending click)
-      affiliateVerified = false;
-      if (input.isMonetizable !== true) {
-        input.isMonetizable = false;
-      }
-      // If harvesting approved shopify merchants in test environment without active cuelinks client, mark monetizable
-      if (!isProduction() && activeCampaignVerified) {
-        input.isMonetizable = true;
-        affiliateVerified = true;
       }
     }
 
@@ -2395,31 +2305,32 @@ export class AutonomousDealDiscoveryEngine {
         existing.confidenceScore = Math.min(100, existing.confidenceScore + 10);
       }
 
-      if ((input.isMonetizable || existing.isMonetizable) && (input.trackingUrl || existing.trackingUrl || activeCampaignVerified)) {
-        if (input.trackingUrl) existing.trackingUrl = input.trackingUrl;
+      if (affiliateVerified && input.trackingUrl) {
+        existing.trackingUrl = input.trackingUrl;
         existing.affiliateNetwork = input.affiliateNetwork || existing.affiliateNetwork;
         existing.affiliateCampaignId = input.affiliateCampaignId || existing.affiliateCampaignId;
         existing.isMonetizable = true;
-        existing.affiliateVerified = affiliateVerified || existing.affiliateVerified;
+        existing.affiliateVerified = true;
         if (existing.verificationStatus !== 'VERIFIED_WITH_CONDITIONS') {
           existing.verificationStatus = 'VERIFIED';
         }
-      } else if (!activeCampaignVerified && !input.affiliateCampaignId && !existing.affiliateCampaignId) {
+      } else {
         existing.isMonetizable = false;
         existing.affiliateVerified = false;
-        const isSampleFixture = !isProduction() && Boolean(
-          (input.modelOrSku || existing.modelOrSku) && [
-            'AIRDOPES-141-BLK', 'NOISE-PULSE2-MAX', '82RK0085IN', 'CRSP10K22W',
-            'HD9200-90', 'ZOHO-WP-STD-IN', 'LOGI-M221-BLK'
-          ].includes(input.modelOrSku || existing.modelOrSku || '')
-        );
-        if (!isSampleFixture && existing.verificationStatus === 'VERIFIED') {
+        existing.trackingUrl = undefined;
+        if (existing.verificationStatus === 'VERIFIED') {
           existing.verificationStatus = 'PRODUCT_ONLY_UNMONETIZED';
         }
       }
 
       existing.updatedAt = nowIso;
       await this.persistDealToD1(existing, organizationId, businessId);
+
+      // Auditor requirement: Immediately evict unmonetized/rejected/expired/out-of-stock deals from in-memory cache
+      if (!existing.affiliateVerified || !existing.isMonetizable || existing.verificationStatus === 'PRODUCT_ONLY_UNMONETIZED' || existing.verificationStatus === 'OUT_OF_STOCK' || existing.verificationStatus === 'EXPIRED') {
+        this.dealsMap.delete(existingDealId);
+        if (existing.slug) this.dealSlugMap.delete(existing.slug.toLowerCase());
+      }
 
       return { action: 'DEDUPLICATED', deal: existing };
     }
@@ -2497,11 +2408,16 @@ export class AutonomousDealDiscoveryEngine {
     // Calculate initial Buyer Value score
     newDeal.buyerValueScore = this.calculateBuyerValueScore(newDeal);
 
-    // Register in-memory maps
-    this.dealsMap.set(dealId, newDeal);
-    this.dealFingerprintMap.set(fingerprint, dealId);
-    if (slug) {
-      this.dealSlugMap.set(slug.toLowerCase(), dealId);
+    // Register in-memory maps ONLY if deal is verified, in-stock, and monetizable
+    if (affiliateVerified && productVerified && input.isMonetizable && (verificationStatus === 'VERIFIED' || verificationStatus === 'VERIFIED_WITH_CONDITIONS') && input.availability === 'IN_STOCK') {
+      this.dealsMap.set(dealId, newDeal);
+      this.dealFingerprintMap.set(fingerprint, dealId);
+      if (slug) {
+        this.dealSlugMap.set(slug.toLowerCase(), dealId);
+      }
+    } else {
+      this.dealsMap.delete(dealId);
+      if (slug) this.dealSlugMap.delete(slug.toLowerCase());
     }
 
     // Persist durably in D1 workflows table
@@ -2663,8 +2579,10 @@ export class AutonomousDealDiscoveryEngine {
           SELECT * FROM public_deals
           WHERE availability = 'IN_STOCK'
             AND current_price_inr > 0
-            AND verification_status IN ('VERIFIED', 'AFFILIATE_VERIFIED', 'VERIFIED_WITH_CONDITIONS')
+            AND verification_status IN ('VERIFIED', 'AFFILIATE_VERIFIED')
             AND is_monetizable = 1
+            AND product_verified = 1
+            AND affiliate_verified = 1
             AND (expiry_date IS NULL OR expiry_date > datetime('now'))
         `;
         rows = getDb().prepare(testSql).all();
@@ -2673,10 +2591,15 @@ export class AutonomousDealDiscoveryEngine {
       }
     }
 
+    // Auditor requirement: Clear in-memory cache to prevent stale unmonetized cache leakage
+    this.dealsMap.clear();
+    this.dealFingerprintMap.clear();
+    this.dealSlugMap.clear();
+
     if (Array.isArray(rows) && rows.length > 0) {
       for (const r of rows) {
         const d = this.parseDealFromPublicDealsRow(r);
-        if (d && !this.dealsMap.has(d.id)) {
+        if (d) {
           this.dealsMap.set(d.id, d);
           if (d.slug) this.dealSlugMap.set(d.slug.toLowerCase(), d.id);
           if (d.canonicalSlug) this.dealSlugMap.set(d.canonicalSlug.toLowerCase(), d.id);
@@ -2687,9 +2610,10 @@ export class AutonomousDealDiscoveryEngine {
     const eligibleDeals = Array.from(this.dealsMap.values()).filter(d =>
       d.availability === 'IN_STOCK' &&
       typeof d.currentPriceINR === 'number' && d.currentPriceINR > 0 &&
-      (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'AFFILIATE_VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS') &&
-      Boolean(d.isMonetizable) &&
-      (isProduction() ? (d.productVerified === true && d.affiliateVerified === true) : true) &&
+      (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'AFFILIATE_VERIFIED') &&
+      Boolean(d.isMonetizable) === true &&
+      d.productVerified === true &&
+      d.affiliateVerified === true &&
       (!d.expiryDate || new Date(d.expiryDate).getTime() > Date.now())
     );
 
