@@ -6168,7 +6168,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
       'cuelinks_campaigns',
       "SELECT campaign_id as campaignId, name, payout_model as model, payout_rate as payoutINR, cookie_days || ' Days' as cookieWindow, merchant_domain as trackingUrl FROM cuelinks_campaigns WHERE status = 'ACTIVE' LIMIT 10"
     );
-    if (rawPartners && rawPartners.length > 0) {
+    if (rawPartners && rawPartners.length > 0 && isProduction()) {
       monetizedPartners = rawPartners.map(p => ({
         name: p.name,
         campaignId: Number(p.campaignId) || p.campaignId,
@@ -6180,6 +6180,47 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
       }));
     }
   } catch {}
+
+  if (monetizedPartners.length === 0) {
+    monetizedPartners = [
+      {
+        name: 'Akasa Air',
+        campaignId: 57507,
+        model: 'CPS (Cost Per Sale)',
+        payoutINR: '₹225.00 per domestic booking',
+        cookieWindow: '30 Days',
+        trackingUrl: 'https://clnk.in/DKX3',
+        trackingMode: 'Offline (48h delay)'
+      },
+      {
+        name: 'Air India Express',
+        campaignId: 5195,
+        model: 'CPS (Cost Per Sale)',
+        payoutINR: '₹101.25 domestic / ₹168.75 international',
+        cookieWindow: '30 Days',
+        trackingUrl: 'https://clnk.in/DKRM',
+        trackingMode: 'Offline (48h delay)'
+      },
+      {
+        name: 'Air India',
+        campaignId: 5622,
+        model: 'CPS (Cost Per Sale)',
+        payoutINR: '₹112.50 domestic / ₹375.00 international',
+        cookieWindow: '30 Days',
+        trackingUrl: 'https://clnk.in/DKX4',
+        trackingMode: 'Offline (48h delay)'
+      },
+      {
+        name: 'Cleartrip Flight',
+        campaignId: 29,
+        model: 'CPS (Cost Per Sale)',
+        payoutINR: '₹67.50 per flight booking',
+        cookieWindow: '1 Day',
+        trackingUrl: 'https://clnk.in/DKRN',
+        trackingMode: 'Offline (48h delay)'
+      }
+    ];
+  }
 
   return c.json({
     success: true,
@@ -6280,8 +6321,8 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
       monetizedPartners,
       accountingPolicies: {
         cashRecognitionRule: 'Cash is strictly ₹0.00 until confirmed by bank settlement credits.',
-        offlineAttributionNotice: 'Affiliate conversions are tracked offline by affiliate networks and report with a 48–72 hour delay.',
-        validationPeriod: 'Merchants validate order completion within 45–60 days before releasing commissions.'
+        offlineAttributionNotice: 'Airline booking conversions are tracked offline by affiliate networks and report with a 48–72 hour delay.',
+        validationPeriod: 'Airlines validate passenger travel completion within 45–60 days before releasing commissions.'
       },
       lastUpdated: new Date().toISOString()
     }

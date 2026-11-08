@@ -192,7 +192,7 @@ export class RazorpayAdapter {
   }
 
   private getWebhookSecret(): string {
-    return this.getCredentialPair().webhookSecret;
+    return (process.env.RAZORPAY_WEBHOOK_SECRET || process.env.RAZORPAY_TEST_WEBHOOK_SECRET || '').trim();
   }
 
   public isLiveConfigured(): boolean {
