@@ -689,7 +689,7 @@ export class CuelinksSyncManager {
         try {
           const campaignSearch = await this.client.searchCampaigns({
             country_id: 252,
-            access_status: 'open',
+            access_status: 'approved',
             sort: 'epc_7d',
             order: 'desc',
             per_page: 30
@@ -699,7 +699,7 @@ export class CuelinksSyncManager {
           this.updateCapability('campaignDiscovery', 'AVAILABLE');
           this.syncStatus.campaignsDiscovered = campaignSearch.total;
           eligibleCampaigns = (campaignSearch.campaigns || []).filter(
-            c => (!c.status || c.status === 'active') && (c.access_status === 'open' || c.access_status === 'approved')
+            c => (!c.status || c.status === 'active') && (c.access_status === 'approved' || c.access_status === 'open')
           );
           this.syncStatus.eligibleCampaignsCount = eligibleCampaigns.length;
 
@@ -1235,7 +1235,7 @@ export class CuelinksSyncManager {
       if (cursor.hasMoreCampaigns) {
         const campRes = await this.client.searchCampaigns({
           country_id: 252,
-          access_status: 'open',
+          access_status: 'approved',
           sort: 'epc_7d',
           order: 'desc',
           page: campaignPage,
@@ -1243,7 +1243,7 @@ export class CuelinksSyncManager {
         });
 
         eligibleCampaigns = (campRes.campaigns || []).filter(
-          c => (!c.status || c.status === 'active') && (c.access_status === 'open' || c.access_status === 'approved')
+          c => (!c.status || c.status === 'active') && (c.access_status === 'approved' || c.access_status === 'open')
         );
 
         this.syncStatus.campaignsDiscovered = campRes.total;

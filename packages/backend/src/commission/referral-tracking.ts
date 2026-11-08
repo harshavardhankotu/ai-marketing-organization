@@ -430,10 +430,29 @@ export class ReferralTrackingEngine {
       } catch {}
     }
 
+    // Generate fresh unique clickId and per-visitor dynamic subid destination URL
+    const { randomBytes, randomUUID: uuid } = await import('crypto');
+    const freshClickId = isTestTraffic
+      ? `clk_test_${Date.now()}_${randomBytes(4).toString('hex')}`
+      : `clk_${Date.now()}_${randomBytes(6).toString('hex')}`;
+
+    let freshDestinationUrl = referral.destinationUrl;
+    try {
+      const urlObj = new URL(freshDestinationUrl);
+      const isAffiliateRedirect =
+        urlObj.searchParams.has('subid') ||
+        offerPartner?.network === 'CUELINKS' ||
+        ['linksredirect.com', 'cuelinks.com', 'clnk.in'].some(h => urlObj.hostname.includes(h));
+
+      if (isAffiliateRedirect) {
+        urlObj.searchParams.set('subid', freshClickId);
+        freshDestinationUrl = urlObj.toString();
+      }
+    } catch {}
+
     // Phase 2 Task 7: immutable click event (append-only — never updated).
     // Clicks create attribution, never revenue. Fail closed if persistence fails.
     try {
-      const { randomUUID: uuid } = await import('crypto');
       await this.d1Repo.executeWrite(
         'referral_click_events',
         `INSERT INTO referral_click_events (
@@ -444,7 +463,7 @@ export class ReferralTrackingEngine {
         [
           `evt_${uuid().substring(0, 10)}`,
           referral.id,
-          referral.clickId,
+          freshClickId,
           referral.organizationId,
           offer.id,
           offer.partnerId,
@@ -457,7 +476,7 @@ export class ReferralTrackingEngine {
           metadata.referer || (referral as any).referer || null,
           metadata.deviceClass || (referral as any).deviceClass || null,
           metadata.country || (referral as any).country || null,
-          referral.destinationUrl,
+          freshDestinationUrl,
           new Date().toISOString()
         ]
       );
@@ -467,8 +486,12 @@ export class ReferralTrackingEngine {
     }
 
     return {
-      destinationUrl: referral.destinationUrl,
-      referral,
+      destinationUrl: freshDestinationUrl,
+      referral: {
+        ...referral,
+        clickId: freshClickId,
+        destinationUrl: freshDestinationUrl
+      },
       offer
     };
   }
