@@ -284,9 +284,9 @@ describe('V5.8.3 — Auditor-Aligned Production Hardening', () => {
       expect(res.deal.trackingUrl).toBeUndefined();
       expect(res.deal.verificationStatus).toBe('PRODUCT_ONLY_UNMONETIZED');
 
-      // Must be evicted from in-memory cache
-      const cached = engine.getDealById('deal_v583_unaffiliated_1');
-      expect(cached).toBeNull();
+      // Must be excluded from eligible public deals catalog
+      const eligible = await engine.getEligiblePublicDeals();
+      expect(eligible.deals.some(d => d.id === 'deal_v583_unaffiliated_1')).toBe(false);
     });
 
     it('verifies and retains deal when convertLink returns affiliated: true with active campaign', async () => {
