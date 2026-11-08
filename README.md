@@ -1,4 +1,4 @@
-﻿# AI Marketing Organization
+# AI Marketing Organization
 
 > **A persistent, autonomous, measurable AI marketing organization designed for Indian businesses first (and globally extensible).**
 
@@ -55,9 +55,9 @@ Designed from the ground up for Indian SMBs (Clinics, Dentists, Real Estate, Coa
 
 ---
 
-## 🤖 The 80-Agent Organization
+## 🤖 Autonomous Marketing Agent Divisions
 
-The organization contains 80 specialized agents distributed across 4 core divisions:
+The organization is structured across 4 core operational divisions:
 
 | Division | Count | Key Agents |
 |---|:---:|---|
@@ -116,12 +116,10 @@ npm run dev:frontend
 
 ---
 
-## 📊 Seed Business: SmileKraft Dental Clinic Hyderabad
-- **Location**: Banjara Hills & Gachibowli, Hyderabad, Telangana
-- **Monthly Budget**: ₹50,000 INR
-- **Quarterly Target**: 100 Qualified Patient Consultations
-- **Treatments**: Clear Aligners (₹45k), Titanium Dental Implants (₹28k), Laser Whitening (₹7.5k)
-- **Channels**: WhatsApp Business, Google Business Profile, Instagram Ads
+## 📊 Target Verticals & Business Coverage
+- **Primary Sectors**: Healthcare & Wellness Practices, Professional Coaching & Education Institutes, Local Service & Retail Businesses.
+- **Localization**: Pan-India micro-market targeting with localized communication and pricing.
+- **Channels**: WhatsApp Business, Google Business Profile, Direct Acquisition.
 
 ---
 

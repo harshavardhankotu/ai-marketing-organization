@@ -836,8 +836,8 @@ export class SiteAuditScanner {
     else overallStatus = 'ACTION_REQUIRED';
 
     const explanation =
-      `Deterministic technical audit score of ${score}/100 calculated from ${findings.length} inspected criteria ` +
-      `across HTML metadata, structured data syntax, search accessibility, server timing, and conversion paths. ` +
+      `12-Point Deterministic HTML, SEO & Schema Technical Audit Score of ${score}/100 calculated from ${findings.length} inspected criteria ` +
+      `across HTML metadata, Open Graph, Twitter Cards, Schema.org JSON-LD, robots.txt, sitemap.xml, server headers, and conversion paths. ` +
       `DISCLOSURE: This score measures technical standards conformance; it does NOT predict search engine rankings.`;
 
     return { score, overallStatus, explanation };

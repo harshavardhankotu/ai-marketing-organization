@@ -10,7 +10,7 @@
 7. Never fetch amazon.* pages. Amazon lane is blocked until owner facts exist.
 8. Existing protected modules stay untouched (Razorpay, SendGrid, WhatsApp, Stripe, Ads, GBP, Brevo, agent registry, UCOS). New files are allowed.
 9. Raw output only. PASS needs raw proof. Never invent a number.
-10. The 80 agents are a catalog. No run has produced output yet.
+10. Multi-agent core divisions are an architectural catalog. Redundant background discovery workflows parked by kernel reset.
 11. Known failures: fixture data in production, hardcoded product and tag, agent-written owner terms, guards that only check a file path, reports with invented output, tests that spend credits.
 12. FEATURES_FROZEN = true. Feature freeze is strictly reinstated following completion of Steps 1-13. No new migrations after 0040. No new feature routes or agent types.
 

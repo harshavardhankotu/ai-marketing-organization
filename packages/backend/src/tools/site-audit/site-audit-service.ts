@@ -349,10 +349,13 @@ export class SiteAuditService {
           opportunities: psRes.opportunities
         };
       } else {
+        const reason = psRes.reason || 'UNAVAILABLE';
         result.pageSpeed = {
           status: 'UNAVAILABLE',
-          reason: psRes.reason || 'UNAVAILABLE',
-          notice: 'Live Core Web Vitals data currently unavailable: Google PageSpeed free tier quota reached or unconfigured. Raw HTML audit completed.',
+          reason,
+          notice: reason === 'BLOCKED_NO_DEDICATED_KEY'
+            ? 'Live Core Web Vitals data currently unavailable: GOOGLE_PAGESPEED_API_KEY is unconfigured in production. 12-point deterministic HTML & technical audit completed.'
+            : 'Live Core Web Vitals data currently unavailable: Google PageSpeed free tier quota reached or unconfigured. Raw HTML audit completed.',
           coreWebVitals: null,
           opportunities: []
         };

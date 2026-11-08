@@ -1460,11 +1460,15 @@ apiRouter.post('/cron/ping', async (c) => {
   const workerSource = c.req.header('cf-worker') || c.req.header('x-worker-source') || userAgent;
   const correlationId = `corr_${Date.now()}_${randomUUID().substring(0, 8)}`;
 
+  const isCloudflareWorker = /ai-marketing-cron-worker|cloudflare-cron-worker/i.test(userAgent) ||
+    Boolean(c.req.header('cf-worker') || c.req.header('x-worker-scheduled') === 'true');
+  const telemetryId = isCloudflareWorker ? 'cloudflare_worker_cron' : 'manual_ping';
+
   // 1. Record observed heartbeat in cron_telemetry (fast D1 write)
   try {
     const sql = `
       INSERT INTO cron_telemetry (id, status, last_observed_ping, total_pings, last_user_agent, worker_source, updated_at)
-      VALUES ('cloudflare_worker_cron', 'OBSERVED', datetime('now'), 1, ?, ?, datetime('now'))
+      VALUES (?, 'OBSERVED', datetime('now'), 1, ?, ?, datetime('now'))
       ON CONFLICT(id) DO UPDATE SET
         status = 'OBSERVED',
         last_observed_ping = datetime('now'),
@@ -1473,7 +1477,7 @@ apiRouter.post('/cron/ping', async (c) => {
         worker_source = ?,
         updated_at = datetime('now')
     `;
-    const params = [userAgent, workerSource, userAgent, workerSource];
+    const params = [telemetryId, userAgent, workerSource, userAgent, workerSource];
     await d1Repo.executeWrite('cron_telemetry', sql, params);
   } catch (err: any) {
     console.error(`[Cron Ping] Telemetry write notice: ${err.message}`);
@@ -5899,7 +5903,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   const disaggregatedSql = `
     SELECT 
       COALESCE(SUM(CASE WHEN ${diagnosticCond} THEN 1 ELSE 0 END), 0) as diag,
-      COALESCE(SUM(CASE WHEN device_class = 'human' AND NOT ${diagnosticCond} THEN 1 ELSE 0 END), 0) as human,
+      COALESCE(SUM(CASE WHEN device_class IN ('human', 'mobile', 'desktop') AND NOT ${diagnosticCond} THEN 1 ELSE 0 END), 0) as human,
       COALESCE(SUM(CASE WHEN device_class = 'browser_candidate' AND NOT ${diagnosticCond} THEN 1 ELSE 0 END), 0) as browserCandidate,
       COALESCE(SUM(CASE WHEN device_class = 'bot' AND NOT ${diagnosticCond} THEN 1 ELSE 0 END), 0) as bot,
       COALESCE(SUM(CASE WHEN (device_class = 'unknown' OR device_class IS NULL) AND NOT ${diagnosticCond} THEN 1 ELSE 0 END), 0) as unk
@@ -6157,6 +6161,26 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   // 9. Bank Cash Received (Strict Empirical Truth)
   const bankCashReceivedINR = 0.00;
 
+  // 10. Dynamic Monetized Partners from D1 cuelinks_campaigns
+  let monetizedPartners: any[] = [];
+  try {
+    const rawPartners = await d1Repo.query<any>(
+      'cuelinks_campaigns',
+      "SELECT campaign_id as campaignId, name, payout_model as model, payout_rate as payoutINR, cookie_days || ' Days' as cookieWindow, merchant_domain as trackingUrl FROM cuelinks_campaigns WHERE status = 'ACTIVE' LIMIT 10"
+    );
+    if (rawPartners && rawPartners.length > 0) {
+      monetizedPartners = rawPartners.map(p => ({
+        name: p.name,
+        campaignId: Number(p.campaignId) || p.campaignId,
+        model: p.model || 'CPS',
+        payoutINR: p.payoutINR || 'Dynamic CPS Rate',
+        cookieWindow: p.cookieWindow || '30 Days',
+        trackingUrl: p.trackingUrl ? (p.trackingUrl.startsWith('http') ? p.trackingUrl : `https://${p.trackingUrl}`) : '',
+        trackingMode: 'Offline (48h delay)'
+      }));
+    }
+  } catch {}
+
   return c.json({
     success: true,
     data: {
@@ -6253,48 +6277,11 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
       operatingCosts,
       profitability,
       provider: cuelinksData,
-      monetizedPartners: [
-        {
-          name: 'Akasa Air',
-          campaignId: 57507,
-          model: 'CPS (Cost Per Sale)',
-          payoutINR: '₹225.00 per domestic booking',
-          cookieWindow: '30 Days',
-          trackingUrl: 'https://clnk.in/DKX3',
-          trackingMode: 'Offline (48h delay)'
-        },
-        {
-          name: 'Air India Express',
-          campaignId: 5195,
-          model: 'CPS (Cost Per Sale)',
-          payoutINR: '₹101.25 domestic / ₹168.75 international',
-          cookieWindow: '30 Days',
-          trackingUrl: 'https://clnk.in/DKRM',
-          trackingMode: 'Offline (48h delay)'
-        },
-        {
-          name: 'Air India',
-          campaignId: 5622,
-          model: 'CPS (Cost Per Sale)',
-          payoutINR: '₹112.50 domestic / ₹375.00 international',
-          cookieWindow: '30 Days',
-          trackingUrl: 'https://clnk.in/DKX4',
-          trackingMode: 'Offline (48h delay)'
-        },
-        {
-          name: 'Cleartrip Flight',
-          campaignId: 29,
-          model: 'CPS (Cost Per Sale)',
-          payoutINR: '₹67.50 per flight booking',
-          cookieWindow: '1 Day',
-          trackingUrl: 'https://clnk.in/DKRN',
-          trackingMode: 'Offline (48h delay)'
-        }
-      ],
+      monetizedPartners,
       accountingPolicies: {
         cashRecognitionRule: 'Cash is strictly ₹0.00 until confirmed by bank settlement credits.',
-        offlineAttributionNotice: 'Airline booking conversions are tracked offline by affiliate networks and report with a 48–72 hour delay.',
-        validationPeriod: 'Airlines validate passenger travel completion within 45–60 days before releasing commissions.'
+        offlineAttributionNotice: 'Affiliate conversions are tracked offline by affiliate networks and report with a 48–72 hour delay.',
+        validationPeriod: 'Merchants validate order completion within 45–60 days before releasing commissions.'
       },
       lastUpdated: new Date().toISOString()
     }
@@ -6488,9 +6475,14 @@ apiRouter.get('/r/:offerSlug/:referralId', async (c) => {
 
   try {
     const isTestMode = c.req.header('x-test-mode') === 'true' || c.req.header('x-test-traffic') === 'true' || c.req.query('test_traffic') === 'true';
+    const ua = c.req.header('user-agent') || '';
+    const isBot = isBotTraffic(ua);
+    const formFactor = c.req.header('sec-ch-ua-mobile') === '?1' ? 'mobile' : (ua.includes('Mobile') ? 'mobile' : 'desktop');
+    const deviceClass = isBot ? 'bot' : (isTestMode ? 'diagnostic' : 'human');
+
     const clickData = {
       ip: getTrustedClientIp(c).ip,
-      userAgent: c.req.header('user-agent'),
+      userAgent: ua,
       referer: c.req.header('referer'),
       source: c.req.query('utm_source') || c.req.query('source'),
       medium: c.req.query('utm_medium') || c.req.query('medium'),
@@ -6504,7 +6496,8 @@ apiRouter.get('/r/:offerSlug/:referralId', async (c) => {
       contentAssetId: c.req.query('asset') || c.req.query('content_asset_id') || undefined,
       placement: c.req.query('placement') || undefined,
       keyword: c.req.query('keyword') || c.req.query('utm_term') || undefined,
-      deviceClass: c.req.header('sec-ch-ua-mobile') === '?1' ? 'mobile' : (c.req.header('user-agent')?.includes('Mobile') ? 'mobile' : 'desktop'),
+      deviceClass: deviceClass,
+      formFactor: formFactor,
       country: c.req.header('cf-ipcountry') || undefined,
       isTestTraffic: isTestMode
     };
@@ -8473,12 +8466,14 @@ apiRouter.get('/owner/direct-outreach', async (c) => {
 
   let rows: any[] = [];
   try {
-    rows = await d1Repo.query<any>('direct_outreach_log', sql);
+    if (d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
+      rows = await d1Repo.query<any>('direct_outreach_log', sql);
+    } else {
+      rows = getDb().prepare(sql).all() as any[];
+    }
   } catch (err: any) {
-    try {
-      const db = getDb();
-      rows = db.prepare(sql).all() as any[];
-    } catch {}
+    console.error(`[OwnerDirectOutreach] Query error: ${err.message}`);
+    return c.json({ success: false, error: 'D1_QUERY_FAILED', message: err.message }, 503);
   }
 
   const items = rows.map(r => {
@@ -8529,12 +8524,14 @@ apiRouter.post('/owner/direct-outreach/:id/approve', async (c) => {
 
   let draft: any;
   try {
-    draft = await d1Repo.queryOne<any>('direct_outreach_log', 'SELECT * FROM direct_outreach_log WHERE id = ?', [id]);
-  } catch {}
-  if (!draft) {
-    try {
+    if (d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
+      draft = await d1Repo.queryOne<any>('direct_outreach_log', 'SELECT * FROM direct_outreach_log WHERE id = ?', [id]);
+    } else {
       draft = db.prepare('SELECT * FROM direct_outreach_log WHERE id = ?').get(id);
-    } catch {}
+    }
+  } catch (err: any) {
+    console.error(`[OwnerDirectOutreachApprove] Query error: ${err.message}`);
+    return c.json({ success: false, error: 'D1_QUERY_FAILED', message: err.message }, 503);
   }
   if (!draft) {
     return c.json({ success: false, error: 'Draft not found' }, 404);

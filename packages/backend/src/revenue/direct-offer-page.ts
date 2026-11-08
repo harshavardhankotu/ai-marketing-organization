@@ -1141,6 +1141,8 @@ export class DirectCommercialOfferPage {
           contentSlug: 'offer'
         })
       }).catch(function() {});
+    } catch (e) {}
+
     function downloadIcsFile() {
       if (!window.__lastIcs) return;
       var blob = new Blob([window.__lastIcs], { type: 'text/calendar;charset=utf-8' });
