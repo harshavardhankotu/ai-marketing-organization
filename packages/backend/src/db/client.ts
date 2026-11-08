@@ -764,6 +764,7 @@ export function getDb(dbPath?: string): Database.Database {
         ('2067', 'Ustraa', 'ustraa.com', 'ACTIVE', 'CPS', 30),
         ('2514', 'The Man Company', 'themancompany.com', 'ACTIVE', 'CPS', 30)`);
   } catch {}
+  try { db.exec(`ALTER TABLE cuelinks_campaigns ADD COLUMN verification_source TEXT DEFAULT 'CUELINKS_API_V3'`); } catch {}
   try { db.exec(`ALTER TABLE public_deals ADD COLUMN is_monetizable INTEGER NOT NULL DEFAULT 0`); } catch {}
   try { db.exec(`ALTER TABLE public_deals ADD COLUMN discount_verification_type TEXT NOT NULL DEFAULT 'UNCONFIRMED'`); } catch {}
   try { db.exec(`ALTER TABLE public_deals ADD COLUMN next_recheck_at TEXT`); } catch {}

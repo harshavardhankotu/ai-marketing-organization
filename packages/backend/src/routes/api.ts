@@ -6656,7 +6656,7 @@ apiRouter.get('/public/autonomy-status', async (c) => {
 
   const deriveStatus = async (
     provider: 'gemini' | 'tavily' | 'google_search' | 'google_pagespeed' | 'google_indexing' | 'brevo' | 'razorpay' | 'cuelinks'
-  ): Promise<'NOT_CONFIGURED' | 'CONFIGURED' | 'LIVE_VERIFIED' | 'BLOCKED' | 'FAILED'> => {
+  ): Promise<'NOT_CONFIGURED' | 'CONFIGURED' | 'LIVE_VERIFIED' | 'BLOCKED' | 'FAILED' | 'CONFIGURED_API_KEY' | 'UNCONFIGURED_KEYLESS_MODE' | 'CHANNEL_APPROVED_NO_AFFILIATED_LINKS' | 'AUTH_FAILED'> => {
     switch (provider) {
       case 'gemini': {
         const key = process.env.GEMINI_API_KEY;
@@ -6675,8 +6675,7 @@ apiRouter.get('/public/autonomy-status', async (c) => {
         return 'CONFIGURED';
       }
       case 'google_pagespeed': {
-        const dedicatedKey = process.env.GOOGLE_PAGESPEED_API_KEY;
-        return isKeyConfigured(dedicatedKey) ? 'CONFIGURED' : 'CONFIGURED';
+        return 'CONFIGURED';
       }
       case 'google_indexing': {
         const key = process.env.GOOGLE_INDEXING_SERVICE_ACCOUNT_KEY || process.env.GOOGLE_INDEXING_API;
@@ -6700,10 +6699,33 @@ apiRouter.get('/public/autonomy-status', async (c) => {
         if (!isKeyConfigured(key)) return 'NOT_CONFIGURED';
         try {
           const { CuelinksSyncManager } = await import('../commission/cuelinks-sync-manager.js');
-          const channelRes = await CuelinksSyncManager.getInstance().getApprovedChannel(331585);
-          if (channelRes.approved) return 'LIVE_VERIFIED';
-        } catch {}
-        return 'CONFIGURED';
+          const channelRes = await CuelinksSyncManager.getInstance().getApprovedChannel();
+          if (!channelRes.approved) return 'AUTH_FAILED';
+
+          let verifiedDealsCount = 0;
+          try {
+            if (isProduction() && !process.env.VITEST) {
+              const row = await d1Repo.queryOne<{ cnt: number }>(
+                'public_deals',
+                "SELECT COUNT(*) as cnt FROM public_deals WHERE affiliate_verified = 1 AND is_monetizable = 1 AND verification_status IN ('VERIFIED', 'AFFILIATE_VERIFIED')"
+              );
+              verifiedDealsCount = row?.cnt || 0;
+            } else {
+              const { getDb } = await import('../db/client.js');
+              const row = getDb().prepare(
+                "SELECT COUNT(*) as cnt FROM public_deals WHERE affiliate_verified = 1 AND is_monetizable = 1 AND verification_status IN ('VERIFIED', 'AFFILIATE_VERIFIED')"
+              ).get() as any;
+              verifiedDealsCount = row?.cnt || 0;
+            }
+          } catch {}
+
+          if (verifiedDealsCount > 0) {
+            return 'LIVE_VERIFIED';
+          }
+          return 'CHANNEL_APPROVED_NO_AFFILIATED_LINKS';
+        } catch {
+          return 'AUTH_FAILED';
+        }
       }
       default:
         return 'NOT_CONFIGURED';
@@ -6760,18 +6782,94 @@ apiRouter.get('/public/autonomy-status', async (c) => {
 
   const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
   const siteAuditReadiness = SiteAuditService.getInstance().getCheckoutReadiness();
-  const currentCommit = process.env.RENDER_GIT_COMMIT || process.env.COMMIT_SHA || 'a82bd01';
+  const currentCommit = process.env.RENDER_GIT_COMMIT || process.env.COMMIT_SHA || 'f7395f8';
+
+  // Dynamic D1 migration version query
+  let d1MigrationVersion = 'UNKNOWN_QUERY_FAILED';
+  try {
+    let migRow: any = null;
+    if (isProduction() && !process.env.VITEST) {
+      migRow = await d1Repo.queryOne<any>(
+        'd1_migrations',
+        "SELECT name FROM _d1_migrations ORDER BY id DESC LIMIT 1"
+      );
+    } else {
+      try {
+        const { getDb } = await import('../db/client.js');
+        migRow = getDb().prepare(
+          "SELECT name FROM _d1_migrations ORDER BY id DESC LIMIT 1"
+        ).get();
+      } catch {
+        const { getDb } = await import('../db/client.js');
+        migRow = getDb().prepare(
+          "SELECT name FROM d1_migrations ORDER BY id DESC LIMIT 1"
+        ).get();
+      }
+    }
+    if (migRow && migRow.name) {
+      const match = String(migRow.name).match(/^(\d+)/);
+      d1MigrationVersion = match ? match[1] : String(migRow.name);
+    }
+  } catch (err: any) {
+    try {
+      const migRow = await d1Repo.queryOne<any>(
+        'd1_migrations',
+        "SELECT name FROM d1_migrations ORDER BY id DESC LIMIT 1"
+      );
+      if (migRow && migRow.name) {
+        const match = String(migRow.name).match(/^(\d+)/);
+        d1MigrationVersion = match ? match[1] : String(migRow.name);
+      }
+    } catch {}
+  }
+
+  // Dynamic Cloudflare Worker cron telemetry status
+  let cloudflareWorkerStatus: any = {
+    status: 'UNKNOWN',
+    lastObservedPing: null,
+    lastUserAgent: null
+  };
+  try {
+    let cronRow: any = null;
+    if (isProduction() && !process.env.VITEST) {
+      cronRow = await d1Repo.queryOne<any>(
+        'cron_telemetry',
+        "SELECT user_agent, pinged_at, status FROM cron_telemetry ORDER BY id DESC LIMIT 1"
+      );
+    } else {
+      try {
+        const { getDb } = await import('../db/client.js');
+        cronRow = getDb().prepare(
+          "SELECT user_agent, pinged_at, status FROM cron_telemetry ORDER BY id DESC LIMIT 1"
+        ).get();
+      } catch {}
+    }
+    if (cronRow) {
+      cloudflareWorkerStatus = {
+        status: cronRow.status || 'ACTIVE',
+        lastObservedPing: cronRow.pinged_at || null,
+        lastUserAgent: cronRow.user_agent || null
+      };
+    }
+  } catch {}
+
+  if (quotaLedger.google_pagespeed) {
+    quotaLedger.google_pagespeed.configuredStatus = Boolean(process.env.GOOGLE_PAGESPEED_API_KEY?.trim())
+      ? 'CONFIGURED_API_KEY'
+      : 'UNCONFIGURED_KEYLESS_MODE';
+  }
 
   return c.json({
-    version: '5.8.2',
+    version: '5.8.3',
     platform: 'Autonomous Multi-Sector Revenue Organization',
     timestamp: new Date().toISOString(),
     buildMetadata: {
-      version: '5.8.2',
+      version: '5.8.3',
       gitCommit: currentCommit,
       deployedCommitSha: process.env.RENDER_GIT_COMMIT || currentCommit,
-      cloudflareWorkerVersion: '1.0.0',
-      d1MigrationVersion: '0048',
+      cloudflareWorkerStatus,
+      cloudflareWorkerVersion: cloudflareWorkerStatus.lastUserAgent || 'UNKNOWN',
+      d1MigrationVersion,
       runtimeVerifiedAt: new Date().toISOString()
     },
     policyGate: {
@@ -10292,7 +10390,7 @@ const handleSiteAuditVerifyPayment = async (c: any) => {
   const testSecret = (process.env.RAZORPAY_TEST_KEY_SECRET || (process.env.RAZORPAY_KEY_SECRET?.startsWith('test_') ? process.env.RAZORPAY_KEY_SECRET : '')).trim();
   const secretToUse = isLiveOrder ? liveSecret : (testSecret || liveSecret || 'test_verification_secret');
 
-  // 4. Cryptographic HMAC-SHA256 signature verification (Strict: NO x-test-mode bypass in production!)
+  // 4. Cryptographic HMAC-SHA256 signature verification (Strict: constant-time comparison)
   const { createHmac, timingSafeEqual } = await import('node:crypto');
   const expectedHmac = createHmac('sha256', secretToUse)
     .update(`${orderId}|${paymentId}`)
@@ -10310,15 +10408,17 @@ const handleSiteAuditVerifyPayment = async (c: any) => {
     }, 400);
   }
 
-  // 5. In live production: Query Razorpay API to confirm genuine captured status
-  if (isLiveOrder && isProduction() && !process.env.VITEST) {
-    const liveKeyId = (process.env.RAZORPAY_KEY_ID || '').trim();
-    if (liveKeyId && liveSecret) {
+  // 5. In live production or test suite: Query Razorpay API to confirm genuine captured status
+  const shouldVerifyGateway = (isLiveOrder && isProduction() && !process.env.VITEST) || process.env.TEST_VERIFY_RAZORPAY_API === 'true';
+  if (shouldVerifyGateway) {
+    const keyIdToUse = (process.env.RAZORPAY_KEY_ID || process.env.RAZORPAY_TEST_KEY_ID || '').trim();
+    const secretForApi = (process.env.RAZORPAY_KEY_SECRET || process.env.RAZORPAY_TEST_KEY_SECRET || '').trim();
+    if (keyIdToUse && secretForApi) {
       try {
-        const authHeader = 'Basic ' + Buffer.from(`${liveKeyId}:${liveSecret}`).toString('base64');
+        const authHeader = 'Basic ' + Buffer.from(`${keyIdToUse}:${secretForApi}`).toString('base64');
         const payRes = await fetch(`https://api.razorpay.com/v1/payments/${paymentId}`, {
           headers: { 'Authorization': authHeader },
-          signal: AbortSignal.timeout(15000)
+          signal: AbortSignal.timeout(12000)
         });
         if (!payRes.ok) {
           return c.json({
@@ -10327,16 +10427,38 @@ const handleSiteAuditVerifyPayment = async (c: any) => {
           }, 402);
         }
         const payData = await payRes.json() as any;
+        if (payData.id && payData.id !== paymentId) {
+          return c.json({
+            success: false,
+            error: `PAYMENT_ID_MISMATCH: Gateway payment id ${payData.id} does not match request payment id ${paymentId}.`
+          }, 400);
+        }
         if (payData.status !== 'captured') {
           return c.json({
             success: false,
             error: `PAYMENT_NOT_CAPTURED: Razorpay payment status is '${payData.status}'. Payment must be captured before entitlement delivery.`
           }, 402);
         }
-        if (payData.order_id && payData.order_id !== orderId) {
+        const expectedOrderId = storedOrder?.order_id || orderId;
+        if (payData.order_id && payData.order_id !== expectedOrderId) {
           return c.json({
             success: false,
-            error: `PAYMENT_ORDER_MISMATCH: Payment belongs to order ${payData.order_id}, not ${orderId}.`
+            error: `PAYMENT_ORDER_MISMATCH: Payment belongs to order ${payData.order_id}, not ${expectedOrderId}.`
+          }, 400);
+        }
+        const expectedAmountPaise = storedOrder?.amount_inr
+          ? Math.round(Number(storedOrder.amount_inr) * 100)
+          : (orderNotes.amountPaise || 49900);
+        if (payData.amount !== undefined && Number(payData.amount) !== expectedAmountPaise) {
+          return c.json({
+            success: false,
+            error: `PAYMENT_AMOUNT_MISMATCH: Gateway charged ${payData.amount} paise, expected ${expectedAmountPaise} paise.`
+          }, 400);
+        }
+        if (payData.currency && payData.currency.toUpperCase() !== 'INR') {
+          return c.json({
+            success: false,
+            error: `INVALID_PAYMENT_CURRENCY: Expected INR, received ${payData.currency}.`
           }, 400);
         }
       } catch (gateErr: any) {
@@ -10348,18 +10470,21 @@ const handleSiteAuditVerifyPayment = async (c: any) => {
     }
   }
 
-  // 6. Idempotently update order in D1
+  // 6. Atomic single-use state transition in payment_orders
+  let rowsUpdated = 0;
   try {
     if (isProduction() && !process.env.VITEST) {
-      await d1Repo.executeWrite(
+      const res = await d1Repo.executeWrite(
         'payment_orders',
-        `UPDATE payment_orders SET status = 'CAPTURED', payment_id = ?, updated_at = datetime('now') WHERE order_id = ? OR id = ?`,
+        `UPDATE payment_orders SET status = 'CAPTURED', payment_id = ?, updated_at = datetime('now') WHERE (order_id = ? OR id = ?) AND status = 'CREATED'`,
         [paymentId, orderId, orderId]
       );
+      rowsUpdated = res?.rowsAffected ?? 0;
     } else {
-      getDb().prepare(
-        `UPDATE payment_orders SET status = 'CAPTURED', payment_id = ?, updated_at = datetime('now') WHERE order_id = ? OR id = ?`
+      const info = getDb().prepare(
+        `UPDATE payment_orders SET status = 'CAPTURED', payment_id = ?, updated_at = datetime('now') WHERE (order_id = ? OR id = ?) AND status = 'CREATED'`
       ).run(paymentId, orderId, orderId);
+      rowsUpdated = info?.changes ?? 0;
     }
   } catch (err: any) {
     console.error('[handleSiteAuditVerifyPayment] Error updating payment order in D1:', err);
@@ -10367,6 +10492,13 @@ const handleSiteAuditVerifyPayment = async (c: any) => {
       success: false,
       error: `DATABASE_ERROR: Failed to update payment order status: ${err.message}`
     }, 500);
+  }
+
+  if (storedOrder && rowsUpdated === 0) {
+    return c.json({
+      success: false,
+      error: 'ORDER_ALREADY_CAPTURED: Payment order has already been processed or is not in CREATED state.'
+    }, 409);
   }
 
   // 7. Generate delivery entitlement only after capture is proven
