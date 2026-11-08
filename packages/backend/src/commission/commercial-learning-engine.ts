@@ -30,6 +30,7 @@ export type CommercialRewardEventType =
   | 'CONSENTED_QUALIFIED_ENQUIRY'
   | 'PROVIDER_ATTRIBUTED_CONVERSION'
   | 'VALIDATED_COMMISSION'
+  | 'PAYMENT_CAPTURED_PENDING_SETTLEMENT'
   | 'BANK_CONFIRMED_CASH'
   | 'REFUND_OR_COMMISSION_REVERSAL'
   | 'UNPRODUCTIVE_API_QUOTA_UNIT';
@@ -263,6 +264,8 @@ export class CommercialLearningEngine {
         return 60;
       case 'VALIDATED_COMMISSION':
         return 100 + (0.5 * Math.max(0, event.commissionINR || 0));
+      case 'PAYMENT_CAPTURED_PENDING_SETTLEMENT':
+        return 150 + (0.5 * Math.max(0, event.cashINR || 0));
       case 'BANK_CONFIRMED_CASH':
         return 250 + (1.0 * Math.max(0, event.cashINR || 0));
       case 'REFUND_OR_COMMISSION_REVERSAL':
@@ -297,6 +300,7 @@ export class CommercialLearningEngine {
       'CONSENTED_QUALIFIED_ENQUIRY',
       'PROVIDER_ATTRIBUTED_CONVERSION',
       'VALIDATED_COMMISSION',
+      'PAYMENT_CAPTURED_PENDING_SETTLEMENT',
       'BANK_CONFIRMED_CASH'
     ].includes(event.eventType) && !isDiagnostic;
 

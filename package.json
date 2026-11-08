@@ -1,6 +1,6 @@
 {
   "name": "ai-marketing-organization-root",
-  "version": "1.0.0",
+  "version": "5.8.4",
   "private": true,
   "type": "module",
   "workspaces": [

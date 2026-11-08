@@ -1316,7 +1316,64 @@ export class CuelinksSyncManager {
   private async persistCampaignsD1(organizationId: string, businessId: string, campaigns: CuelinksCampaign[]): Promise<void> {
     try {
       const d1Repo = D1RevenueRepository.getInstance();
-      for (const camp of campaigns.slice(0, 20)) {
+      for (const camp of campaigns.slice(0, 30)) {
+        // Extract clean canonical merchant domain
+        let merchantDomain = '';
+        if (camp.url) {
+          try {
+            merchantDomain = new URL(camp.url).hostname.replace(/^www\./i, '').toLowerCase();
+          } catch {
+            merchantDomain = String(camp.url || '').toLowerCase();
+          }
+        }
+        if (!merchantDomain) {
+          merchantDomain = (camp.name || '').toLowerCase().replace(/[^a-z0-9.-]/g, '');
+        }
+
+        const campSql = `
+          INSERT INTO cuelinks_campaigns (
+            campaign_id, name, merchant_domain, status, payout_model, payout_rate, cookie_days, category, verification_source, last_provider_sync_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'CUELINKS_API_V3', datetime('now'), datetime('now'))
+          ON CONFLICT(campaign_id) DO UPDATE SET
+            name = excluded.name,
+            merchant_domain = excluded.merchant_domain,
+            status = excluded.status,
+            payout_model = excluded.payout_model,
+            payout_rate = excluded.payout_rate,
+            cookie_days = excluded.cookie_days,
+            category = excluded.category,
+            verification_source = 'CUELINKS_API_V3',
+            last_provider_sync_at = datetime('now'),
+            updated_at = datetime('now')
+        `;
+
+        if (isProduction() && !process.env.VITEST) {
+          await d1Repo.executeWrite('cuelinks_campaigns', campSql, [
+            String(camp.id),
+            camp.name || 'Cuelinks Merchant',
+            merchantDomain,
+            camp.status === 'active' ? 'ACTIVE' : 'INACTIVE',
+            (camp as any).payout_model || (camp as any).payout_type || 'CPS',
+            camp.payout || '',
+            (camp as any).cookie_days || 30,
+            (camp as any).category || (camp.categories?.[0] ? String(camp.categories[0]) : 'General')
+          ]);
+        } else {
+          try {
+            const { getDb } = await import('../db/client.js');
+            getDb().prepare(campSql).run(
+              String(camp.id),
+              camp.name || 'Cuelinks Merchant',
+              merchantDomain,
+              camp.status === 'active' ? 'ACTIVE' : 'INACTIVE',
+              (camp as any).payout_model || (camp as any).payout_type || 'CPS',
+              camp.payout || '',
+              (camp as any).cookie_days || 30,
+              (camp as any).category || (camp.categories?.[0] ? String(camp.categories[0]) : 'General')
+            );
+          } catch {}
+        }
+
         const id = `wf_camp_${camp.id}`;
         const sql = `INSERT INTO workflows (
             id, organization_id, business_id, campaign_id, workflow_type,

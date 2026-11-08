@@ -305,7 +305,7 @@ export class DirectCommercialOfferPage {
   <nav class="top-nav">
     <a href="/" class="brand">${siteName}</a>
     <div class="nav-links">
-      <a href="/" class="active">B2B Lead Triage</a>
+      <a href="/" class="active">After-Hours Lead Capture</a>
       <a href="/tools/site-audit">SiteFix AI Audit</a>
       <a href="/offer">Commercial Overview</a>
       <a href="#interactive-demo">Interactive Demo</a>
@@ -317,14 +317,14 @@ export class DirectCommercialOfferPage {
 
   <div class="container">
     <header class="hero">
-      <div class="status-badge">AI Inbound Lead Conversion System • India First</div>
-      <h1>Never Lose Another Evening Patient Inquiry</h1>
+      <div class="status-badge">Administrative After-Hours Lead Capture • India First</div>
+      <h1>Never Lose Another Evening Customer Inquiry</h1>
       <p class="subtitle">
-        24/7 automated WhatsApp away triage, instant clinical qualification, and calendar booking integration for Indian healthcare practices, dental clinics, and professional services.
+        Administrative Website &amp; WhatsApp Inquiry Capture, Message Logging, and Callback Request System for local Indian practices, clinics, and professional services.
       </p>
       <div class="cta-group">
         <a href="#interactive-demo" class="btn btn-primary">Try Interactive Demo</a>
-        <a href="#inquiry-card" class="btn btn-secondary">Request Clinic Walkthrough</a>
+        <a href="#inquiry-card" class="btn btn-secondary">Request Practice Walkthrough</a>
       </div>
     </header>
 
@@ -332,13 +332,13 @@ export class DirectCommercialOfferPage {
     <div class="card">
       <h2>The Problem: The 8 PM to 8 AM Inquiry Gap</h2>
       <p style="color: #cbd5e1; font-size: 1.05rem; margin-bottom: 1.5rem;">
-        Indian dental clinics and specialty practices lose prospective patients every evening because inquiries arrive outside reception working hours.
+        Indian dental clinics and local practices lose prospective clients every evening because inquiries arrive outside reception working hours.
       </p>
       <div class="grid-3">
         <div class="feature-item">
           <div style="color: #f87171; font-size: 1.3rem; margin-bottom: 0.35rem;">⏰ 8 PM – 8 AM Dark Hours</div>
           <h3>Evening Inquiries Go Unanswered</h3>
-          <p>Patients reach out via Google Business Profile and WhatsApp after work. With clinic desks closed, messages wait until 10 AM next morning.</p>
+          <p>Clients reach out via Google Business Profile and WhatsApp after work. With reception desks closed, messages wait until 10 AM next morning.</p>
         </div>
         <div class="feature-item">
           <div style="color: #fbbf24; font-size: 1.3rem; margin-bottom: 0.35rem;">⚡ Time-Sensitive Inquiries</div>
@@ -348,33 +348,33 @@ export class DirectCommercialOfferPage {
         <div class="feature-item">
           <div style="color: #38bdf8; font-size: 1.3rem; margin-bottom: 0.35rem;">📉 High Opportunity Value</div>
           <h3>Practice Revenue Opportunity</h3>
-          <p>High-intent treatment and consultation inquiries represent substantial clinic value, making prompt after-hours intake critical.</p>
+          <p>High-intent consultation inquiries represent substantial clinic value, making prompt after-hours intake and callback logging critical.</p>
         </div>
       </div>
     </div>
 
     <!-- Defined Deliverables Section -->
     <div class="card">
-      <h2>What We Deploy: The 4-Part Triage Architecture</h2>
+      <h2>What We Deploy: The 4-Part Administrative Capture Architecture</h2>
       <p style="color: #cbd5e1; font-size: 1rem; margin-bottom: 1.5rem;">
         A complete, turnkey technical deployment integrated into your practice's existing WhatsApp Business and Google Workspace in 5 days.
       </p>
       <div class="grid-2">
         <div class="feature-item">
-          <h3 style="color: #38bdf8;">1. 24/7 WhatsApp Instant Away Triage</h3>
-          <p>Automated sub-60-second response to after-hours WhatsApp inquiries and missed calls with empathetic clinic greetings and emergency triage protocols.</p>
+          <h3 style="color: #38bdf8;">1. 24/7 WhatsApp Instant Away Inquiry Logging</h3>
+          <p>Automated sub-60-second response to after-hours WhatsApp inquiries and missed calls with polite office greetings and structured intake logging.</p>
         </div>
         <div class="feature-item">
-          <h3 style="color: #34d399;">2. Top 10 Practice Quick Replies</h3>
-          <p>Trained responses for your clinic's top queries: implant pricing ranges, root canals, braces/aligners, consultation fees, clinic timings, and maps location.</p>
+          <h3 style="color: #34d399;">2. Top 10 Practice Administrative Quick Replies</h3>
+          <p>Standardized responses for your practice's top administrative queries: service categories, general fee guidance, consultation timings, and clinic map location.</p>
         </div>
         <div class="feature-item">
-          <h3 style="color: #fbbf24;">3. Direct Calendar Appointment Booking</h3>
-          <p>Integrated booking link allowing patients to pick an available doctor consultation slot immediately, eliminating receptionist back-and-forth.</p>
+          <h3 style="color: #fbbf24;">3. Direct Calendar Callback Request Logging</h3>
+          <p>Integrated booking link allowing clients to request a preferred consultation or callback window directly, eliminating receptionist phone ping-pong.</p>
         </div>
         <div class="feature-item">
           <h3 style="color: #a78bfa;">4. Shared Real-Time Inquiry Tracking Sheet</h3>
-          <p>Zero extra software license fees. Qualified inquiries automatically populate a shared Google Sheet with patient name, phone, procedure interest, and priority tag.</p>
+          <p>Zero extra software license fees. Logged inquiries automatically populate a shared Google Sheet with client name, phone, requested service, and priority tag.</p>
         </div>
       </div>
     </div>
@@ -382,17 +382,17 @@ export class DirectCommercialOfferPage {
     <!-- Interactive Demonstration with Sample Data Explicitly Labelled -->
     <div class="card" id="interactive-demo">
       <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem;">
-        <h2 style="margin: 0;">Interactive Demonstration: Inbound Patient Triage</h2>
-        <span class="sample-badge">SAMPLE DATA ONLY — INBOUND PATIENT TRIAGE PREVIEW</span>
+        <h2 style="margin: 0;">Interactive Demonstration: Administrative After-Hours Inquiry Capture</h2>
+        <span class="sample-badge">[Illustrative Administrative Example — No Clinical or Medical Triage]</span>
       </div>
       <p style="color: #94a3b8; font-size: 0.95rem; margin-bottom: 1.25rem;">
-        Experience how an after-hours patient inquiry is triaged in under 30 seconds. Click a sample scenario below to view the simulated conversation:
+        Experience how an after-hours appointment inquiry is logged in under 30 seconds. Click a sample scenario below to view the simulated conversation:
       </p>
 
       <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1.25rem;">
-        <button type="button" class="btn btn-secondary" onclick="switchDemoHome('pain')" id="btn-demo-h-pain" style="background: #0284c7; color: #fff; border-color: #38bdf8; font-size: 0.85rem;">1. Tooth Pain Emergency (Sunday 9:15 PM)</button>
-        <button type="button" class="btn btn-secondary" onclick="switchDemoHome('implants')" id="btn-demo-h-implants" style="font-size: 0.85rem;">2. Dental Implant Inquiry (Saturday 8:30 PM)</button>
-        <button type="button" class="btn btn-secondary" onclick="switchDemoHome('aligners')" id="btn-demo-h-aligners" style="font-size: 0.85rem;">3. Clear Aligners Consultation (Weekday 10:00 PM)</button>
+        <button type="button" class="btn btn-secondary" onclick="switchDemoHome('pain')" id="btn-demo-h-pain" style="background: #0284c7; color: #fff; border-color: #38bdf8; font-size: 0.85rem;">1. Appointment Scheduling Inquiry (Sunday 9:15 PM)</button>
+        <button type="button" class="btn btn-secondary" onclick="switchDemoHome('implants')" id="btn-demo-h-implants" style="font-size: 0.85rem;">2. Clinic Location &amp; Hours (Saturday 8:30 PM)</button>
+        <button type="button" class="btn btn-secondary" onclick="switchDemoHome('aligners')" id="btn-demo-h-aligners" style="font-size: 0.85rem;">3. Urgent Callback Request (Weekday 10:00 PM)</button>
       </div>
 
       <div style="background: #0b1120; border: 1px solid var(--card-border); border-radius: 12px; padding: 1.25rem; max-width: 620px; margin: 0 auto; box-shadow: 0 4px 20px rgba(0,0,0,0.5);">
@@ -400,7 +400,7 @@ export class DirectCommercialOfferPage {
           <div style="display: flex; align-items: center; gap: 0.75rem;">
             <div style="width: 36px; height: 36px; border-radius: 50%; background: #0284c7; display: flex; align-items: center; justify-content: center; font-weight: bold; color: #fff;">A</div>
             <div>
-              <div style="font-weight: 700; color: #fff; font-size: 0.95rem;">Apex Dental Triage Assistant</div>
+              <div style="font-weight: 700; color: #fff; font-size: 0.95rem;">Apex Reception Inquiry Assistant</div>
               <div style="color: #34d399; font-size: 0.75rem;">● Active • Responds in &lt;60s</div>
             </div>
           </div>
@@ -409,7 +409,7 @@ export class DirectCommercialOfferPage {
         <div id="demo-chat-box-home" style="display: flex; flex-direction: column; gap: 0.75rem;"></div>
       </div>
       <p style="text-align: center; color: #64748b; font-size: 0.8rem; margin-top: 1rem;">
-        * Notice: The conversation above demonstrates sample triage flows with simulated data. Actual client deployments are customized to the practice's verified schedule, treatment fees, and phone numbers.
+        * Notice: [Illustrative Administrative Example — No Clinical or Medical Triage]. The demonstration above simulates administrative message intake, operating hours guidance, and callback request logging. Real client deployments log customer inquiries directly into client-owned spreadsheets with zero medical or diagnostic claims.
       </p>
     </div>
 
@@ -528,21 +528,21 @@ export class DirectCommercialOfferPage {
     var demoScenariosHome = {
       pain: {
         time: 'Sunday, 9:15 PM',
-        patient: 'Hi doctor, I am having sharp tooth pain on my lower right molar since this evening. It throbs when lying down. Do you have emergency appointments available?',
-        bot: 'Hello, thank you for reaching Apex Dental Care. We are sorry to hear you are in severe pain.\\n\\nWhile our physical clinic is currently closed (hours 9 AM – 8 PM), Dr. Suresh has reserved emergency slots for tomorrow morning starting at 9:30 AM.\\n\\nIn the meantime, rinse gently with warm salt water and avoid chewing on that side. Would you like me to hold the 9:30 AM or 10:15 AM priority slot for you?',
-        slot: 'Tomorrow 9:30 AM - Priority Slot'
+        patient: 'Hello, I would like to schedule a routine dental checkup and teeth cleaning consultation for next week after 5:00 PM. Do you have evening slots open?',
+        bot: 'Hello, thank you for contacting Apex Dental Reception. Our clinic is currently closed for the evening (office hours: 9:00 AM – 8:00 PM).\\n\\nI have logged your request for a routine checkup and cleaning consultation next week. Our front desk coordinator will review available evening slots and call you tomorrow morning at 9:30 AM to confirm an appointment time that suits you.\\n\\nWould you prefer a morning or afternoon callback?',
+        slot: 'Tomorrow 9:30 AM - Callback Logged'
       },
       implants: {
         time: 'Saturday, 8:30 PM',
-        patient: 'Hello, I wanted to know about dental implants. I am missing two teeth in the back. What is the approximate cost and how many visits does it take?',
-        bot: 'Hello, thank you for contacting Apex Dental Care! Dental implants are our core specialty, and Dr. Suresh provides complete 3D digital implant planning.\\n\\nFor two missing back teeth, we provide premium Korean and Swiss implants starting from ₹22,000 per implant (including abutment and ceramic crown). The preliminary 3D CBCT scan consultation takes about 30 minutes.\\n\\nWould you like to schedule an implant assessment this Monday or Tuesday?',
-        slot: 'Monday 11:00 AM - Implant Assessment'
+        patient: 'Hello, what are your clinic working hours on weekends and where is your practice located in Hyderabad?',
+        bot: 'Hello, thank you for reaching out to Apex Dental Reception!\\n\\nOur clinic is open Monday through Saturday from 9:00 AM to 8:00 PM, and Sundays by prior appointment from 10:00 AM to 2:00 PM. We are located at Road No. 36, Jubilee Hills, Hyderabad (landmark: opposite Metro Pillar 1420).\\n\\nWould you like our front-desk team to call you tomorrow morning to assist with booking a consultation?',
+        slot: 'Monday 10:00 AM - Inquiry Follow-up'
       },
       aligners: {
         time: 'Weekday, 10:00 PM',
-        patient: 'Hi, do you offer invisible aligners? How long does mild crowding take to fix and do you have weekend consultation slots?',
-        bot: 'Hello, thanks for reaching out to Apex Dental Care! Yes, we are an authorized Invisalign and ClearCorrect provider.\\n\\nMild front teeth crowding is typically completed in 4 to 6 months with clear aligners. We do have Saturday and Sunday afternoon slots dedicated to digital smile scans.\\n\\nWe can schedule a 3D intraoral scan consultation this Saturday at 11:30 AM or 3:00 PM. Which time suits your schedule best?',
-        slot: 'Saturday 11:30 AM - Aligners Scan'
+        patient: 'Hi, I have a chipped tooth from sports this evening and need an appointment as early as possible tomorrow morning.',
+        bot: 'Hello, thank you for reaching Apex Dental Reception.\\n\\n[Notice: This automated system records administrative intake requests only and does not provide clinical or medical triage advice.]\\n\\nI have tagged your callback request as high-priority for our reception team when our desk opens tomorrow at 9:00 AM so they can offer our earliest cancellation or opening. If you are experiencing bleeding or a severe medical emergency, please visit the nearest 24/7 hospital emergency center immediately.',
+        slot: 'Tomorrow 9:15 AM - Priority Desk Callback'
       }
     };
 
@@ -811,7 +811,7 @@ export class DirectCommercialOfferPage {
         Local service businesses and Indian dental practices lose prospective clients every day when inquiries arrive outside working hours (8 PM to 8 AM) or when Google Business Profile chat features are shut down. When high-intent prospective customers reach out via online profiles or WhatsApp in the evening, responses often wait until the next morning — by which time they have already contacted a competitor.
       </p>
       <p style="color: #94a3b8; font-size: 0.95rem; line-height: 1.6;">
-        Our automated inquiry triage architecture qualifies new inquiries within minutes and coordinates calendar appointments without manual messaging delay.
+        Our automated inquiry capture architecture logs new inquiries within minutes and coordinates calendar callbacks without manual messaging delay.
       </p>
     </div>
 
@@ -819,16 +819,16 @@ export class DirectCommercialOfferPage {
       <h2>Scope of Technical Deliverables</h2>
       <div class="grid-2">
         <div style="background: #0b1120; border: 1px solid var(--card-border); border-radius: 10px; padding: 1.25rem;">
-          <h3 style="color: #38bdf8; font-size: 1.05rem; margin-bottom: 0.4rem;">1. 24/7 WhatsApp Away Triage</h3>
-          <p style="font-size: 0.88rem; color: #cbd5e1; line-height: 1.5;">Sub-60-second response to after-hours patient queries and missed calls with empathetic greetings and triage classification.</p>
+          <h3 style="color: #38bdf8; font-size: 1.05rem; margin-bottom: 0.4rem;">1. 24/7 WhatsApp Instant Away Inquiry Logging</h3>
+          <p style="font-size: 0.88rem; color: #cbd5e1; line-height: 1.5;">Sub-60-second response to after-hours customer queries and missed calls with polite office greetings and structured intake logging.</p>
         </div>
         <div style="background: #0b1120; border: 1px solid var(--card-border); border-radius: 10px; padding: 1.25rem;">
-          <h3 style="color: #34d399; font-size: 1.05rem; margin-bottom: 0.4rem;">2. Top 10 Practice Quick Replies</h3>
-          <p style="font-size: 0.88rem; color: #cbd5e1; line-height: 1.5;">Automated instant answers for implant price guidance, root canals, braces/aligners, clinic timings, and location.</p>
+          <h3 style="color: #34d399; font-size: 1.05rem; margin-bottom: 0.4rem;">2. Top 10 Practice Administrative Quick Replies</h3>
+          <p style="font-size: 0.88rem; color: #cbd5e1; line-height: 1.5;">Standardized responses for your practice's top administrative queries: service categories, general fee guidance, consultation timings, and clinic map location.</p>
         </div>
         <div style="background: #0b1120; border: 1px solid var(--card-border); border-radius: 10px; padding: 1.25rem;">
-          <h3 style="color: #fbbf24; font-size: 1.05rem; margin-bottom: 0.4rem;">3. Direct Calendar Appointment Booking</h3>
-          <p style="font-size: 0.88rem; color: #cbd5e1; line-height: 1.5;">Integrated booking link allowing patients to reserve consultation slots directly without receptionist ping-pong.</p>
+          <h3 style="color: #fbbf24; font-size: 1.05rem; margin-bottom: 0.4rem;">3. Direct Calendar Callback Request Logging</h3>
+          <p style="font-size: 0.88rem; color: #cbd5e1; line-height: 1.5;">Integrated booking link allowing clients to request a preferred consultation or callback window directly, eliminating receptionist phone ping-pong.</p>
         </div>
         <div style="background: #0b1120; border: 1px solid var(--card-border); border-radius: 10px; padding: 1.25rem;">
           <h3 style="color: #a78bfa; font-size: 1.05rem; margin-bottom: 0.4rem;">4. Shared Inquiry Tracking Sheet</h3>
@@ -840,17 +840,17 @@ export class DirectCommercialOfferPage {
     <!-- Interactive Demonstration with Sample Data Explicitly Labelled -->
     <div class="card" id="interactive-demo-overview">
       <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem;">
-        <h2 style="margin: 0;">Interactive Demonstration: Inbound Patient Triage</h2>
-        <span style="background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); padding: 0.25rem 0.6rem; border-radius: 6px; font-size: 0.78rem; font-weight: 700; text-transform: uppercase;">SAMPLE DATA ONLY — INBOUND PATIENT TRIAGE PREVIEW</span>
+        <h2 style="margin: 0;">Interactive Demonstration: Administrative After-Hours Inquiry Capture</h2>
+        <span style="background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); padding: 0.25rem 0.6rem; border-radius: 6px; font-size: 0.78rem; font-weight: 700; text-transform: uppercase;">[Illustrative Administrative Example — No Clinical or Medical Triage]</span>
       </div>
       <p style="color: #94a3b8; font-size: 0.95rem; margin-bottom: 1.25rem;">
-        Simulate how an after-hours patient inquiry is triaged in under 30 seconds:
+        Simulate how an after-hours appointment inquiry is logged in under 30 seconds:
       </p>
 
       <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1.25rem;">
-        <button type="button" onclick="switchDemoOverview('pain')" id="btn-demo-o-pain" style="background: #0284c7; color: #fff; border: 1px solid #38bdf8; padding: 0.5rem 0.9rem; border-radius: 8px; font-size: 0.85rem; font-weight: 600; cursor: pointer;">1. Tooth Pain Emergency (Sunday 9:15 PM)</button>
-        <button type="button" onclick="switchDemoOverview('implants')" id="btn-demo-o-implants" style="background: #1e293b; color: #94a3b8; border: 1px solid #334155; padding: 0.5rem 0.9rem; border-radius: 8px; font-size: 0.85rem; font-weight: 600; cursor: pointer;">2. Dental Implant Inquiry (Saturday 8:30 PM)</button>
-        <button type="button" onclick="switchDemoOverview('aligners')" id="btn-demo-o-aligners" style="background: #1e293b; color: #94a3b8; border: 1px solid #334155; padding: 0.5rem 0.9rem; border-radius: 8px; font-size: 0.85rem; font-weight: 600; cursor: pointer;">3. Clear Aligners Consultation (Weekday 10:00 PM)</button>
+        <button type="button" onclick="switchDemoOverview('pain')" id="btn-demo-o-pain" style="background: #0284c7; color: #fff; border: 1px solid #38bdf8; padding: 0.5rem 0.9rem; border-radius: 8px; font-size: 0.85rem; font-weight: 600; cursor: pointer;">1. Appointment Scheduling Inquiry (Sunday 9:15 PM)</button>
+        <button type="button" onclick="switchDemoOverview('implants')" id="btn-demo-o-implants" style="background: #1e293b; color: #94a3b8; border: 1px solid #334155; padding: 0.5rem 0.9rem; border-radius: 8px; font-size: 0.85rem; font-weight: 600; cursor: pointer;">2. Clinic Location &amp; Hours (Saturday 8:30 PM)</button>
+        <button type="button" onclick="switchDemoOverview('aligners')" id="btn-demo-o-aligners" style="background: #1e293b; color: #94a3b8; border: 1px solid #334155; padding: 0.5rem 0.9rem; border-radius: 8px; font-size: 0.85rem; font-weight: 600; cursor: pointer;">3. Urgent Callback Request (Weekday 10:00 PM)</button>
       </div>
 
       <div style="background: #0b1120; border: 1px solid var(--card-border); border-radius: 12px; padding: 1.25rem; max-width: 620px; margin: 0 auto; box-shadow: 0 4px 20px rgba(0,0,0,0.5);">
@@ -858,7 +858,7 @@ export class DirectCommercialOfferPage {
           <div style="display: flex; align-items: center; gap: 0.75rem;">
             <div style="width: 36px; height: 36px; border-radius: 50%; background: #0284c7; display: flex; align-items: center; justify-content: center; font-weight: bold; color: #fff;">A</div>
             <div>
-              <div style="font-weight: 700; color: #fff; font-size: 0.95rem;">Apex Dental Triage Assistant</div>
+              <div style="font-weight: 700; color: #fff; font-size: 0.95rem;">Apex Reception Inquiry Assistant</div>
               <div style="color: #34d399; font-size: 0.75rem;">● Active • Responds in &lt;60s</div>
             </div>
           </div>
@@ -867,7 +867,7 @@ export class DirectCommercialOfferPage {
         <div id="demo-chat-box-overview" style="display: flex; flex-direction: column; gap: 0.75rem;"></div>
       </div>
       <p style="text-align: center; color: #64748b; font-size: 0.8rem; margin-top: 1rem;">
-        * Notice: The conversation above demonstrates sample triage flows with simulated data. Actual client deployments are customized to the practice's verified schedule, treatment fees, and phone numbers.
+        * Notice: [Illustrative Administrative Example — No Clinical or Medical Triage]. The demonstration above simulates administrative message intake, operating hours guidance, and callback request logging. Real client deployments log customer inquiries directly into client-owned spreadsheets with zero medical or diagnostic claims.
       </p>
     </div>
 
@@ -956,21 +956,21 @@ export class DirectCommercialOfferPage {
     var demoScenariosOverview = {
       pain: {
         time: 'Sunday, 9:15 PM',
-        patient: 'Hi doctor, I am having sharp tooth pain on my lower right molar since this evening. It throbs when lying down. Do you have emergency appointments available?',
-        bot: 'Hello, thank you for reaching Apex Dental Care. We are sorry to hear you are in severe pain.\\n\\nWhile our physical clinic is currently closed (hours 9 AM – 8 PM), Dr. Suresh has reserved emergency slots for tomorrow morning starting at 9:30 AM.\\n\\nIn the meantime, rinse gently with warm salt water and avoid chewing on that side. Would you like me to hold the 9:30 AM or 10:15 AM priority slot for you?',
-        slot: 'Tomorrow 9:30 AM - Priority Slot'
+        patient: 'Hello, I would like to schedule a routine dental checkup and teeth cleaning consultation for next week after 5:00 PM. Do you have evening slots open?',
+        bot: 'Hello, thank you for contacting Apex Dental Reception. Our clinic is currently closed for the evening (office hours: 9:00 AM – 8:00 PM).\\n\\nI have logged your request for a routine checkup and cleaning consultation next week. Our front desk coordinator will review available evening slots and call you tomorrow morning at 9:30 AM to confirm an appointment time that suits you.\\n\\nWould you prefer a morning or afternoon callback?',
+        slot: 'Tomorrow 9:30 AM - Callback Logged'
       },
       implants: {
         time: 'Saturday, 8:30 PM',
-        patient: 'Hello, I wanted to know about dental implants. I am missing two teeth in the back. What is the approximate cost and how many visits does it take?',
-        bot: 'Hello, thank you for contacting Apex Dental Care! Dental implants are our core specialty, and Dr. Suresh provides complete 3D digital implant planning.\\n\\nFor two missing back teeth, we provide premium Korean and Swiss implants starting from ₹22,000 per implant (including abutment and ceramic crown). The preliminary 3D CBCT scan consultation takes about 30 minutes.\\n\\nWould you like to schedule an implant assessment this Monday or Tuesday?',
-        slot: 'Monday 11:00 AM - Implant Assessment'
+        patient: 'Hello, what are your clinic working hours on weekends and where is your practice located in Hyderabad?',
+        bot: 'Hello, thank you for reaching out to Apex Dental Reception!\\n\\nOur clinic is open Monday through Saturday from 9:00 AM to 8:00 PM, and Sundays by prior appointment from 10:00 AM to 2:00 PM. We are located at Road No. 36, Jubilee Hills, Hyderabad (landmark: opposite Metro Pillar 1420).\\n\\nWould you like our front-desk team to call you tomorrow morning to assist with booking a consultation?',
+        slot: 'Monday 10:00 AM - Inquiry Follow-up'
       },
       aligners: {
         time: 'Weekday, 10:00 PM',
-        patient: 'Hi, do you offer invisible aligners? How long does mild crowding take to fix and do you have weekend consultation slots?',
-        bot: 'Hello, thanks for reaching out to Apex Dental Care! Yes, we are an authorized Invisalign and ClearCorrect provider.\\n\\nMild front teeth crowding is typically completed in 4 to 6 months with clear aligners. We do have Saturday and Sunday afternoon slots dedicated to digital smile scans.\\n\\nWe can schedule a 3D intraoral scan consultation this Saturday at 11:30 AM or 3:00 PM. Which time suits your schedule best?',
-        slot: 'Saturday 11:30 AM - Aligners Scan'
+        patient: 'Hi, I have a chipped tooth from sports this evening and need an appointment as early as possible tomorrow morning.',
+        bot: 'Hello, thank you for reaching Apex Dental Reception.\\n\\n[Notice: This automated system records administrative intake requests only and does not provide clinical or medical triage advice.]\\n\\nI have tagged your callback request as high-priority for our reception team when our desk opens tomorrow at 9:00 AM so they can offer our earliest cancellation or opening. If you are experiencing bleeding or a severe medical emergency, please visit the nearest 24/7 hospital emergency center immediately.',
+        slot: 'Tomorrow 9:15 AM - Priority Desk Callback'
       }
     };
 

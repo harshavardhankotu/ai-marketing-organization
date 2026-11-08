@@ -547,6 +547,17 @@ CREATE TABLE IF NOT EXISTS payment_orders (
 CREATE INDEX IF NOT EXISTS idx_payment_orders_order ON payment_orders(order_id);
 CREATE INDEX IF NOT EXISTS idx_payment_orders_biz ON payment_orders(business_id);
 
+-- 24c. Processed Webhook Events (Razorpay Webhook Idempotency)
+CREATE TABLE IF NOT EXISTS processed_webhook_events (
+  event_id TEXT PRIMARY KEY,
+  event_type TEXT NOT NULL,
+  payload_hash TEXT,
+  order_id TEXT,
+  payment_id TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_processed_webhook_events_order ON processed_webhook_events(order_id);
+
 -- 25. AI Cost Logs (Token Accounting, Thinking Budgets & Unit Economics)
 CREATE TABLE IF NOT EXISTS ai_cost_logs (
   id TEXT PRIMARY KEY,

@@ -185,7 +185,8 @@ export class D1Client {
             'Authorization': `Bearer ${this.apiToken}`,
             'Content-Type': 'application/json'
           },
-          body: JSON.stringify({ sql, params })
+          body: JSON.stringify({ sql, params }),
+          signal: AbortSignal.timeout(10000)
         });
 
         if (response.ok) {
@@ -278,7 +279,8 @@ export class D1Client {
               'Authorization': `Bearer ${this.apiToken}`,
               'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ sql: s.sql, params: s.params || [] })
+            body: JSON.stringify({ sql: s.sql, params: s.params || [] }),
+            signal: AbortSignal.timeout(10000)
           });
 
           if (!response.ok) {

@@ -500,6 +500,17 @@ export function getDb(dbPath?: string): Database.Database {
     )`);
   } catch {}
   try {
+    db.exec(`CREATE TABLE IF NOT EXISTS processed_webhook_events (
+      event_id TEXT PRIMARY KEY,
+      event_type TEXT NOT NULL,
+      payload_hash TEXT,
+      order_id TEXT,
+      payment_id TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_processed_webhook_events_order ON processed_webhook_events(order_id)`);
+  } catch {}
+  try {
     db.exec(`CREATE TABLE IF NOT EXISTS payment_provider_links (
       id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, business_id TEXT NOT NULL,
       prospect_id TEXT, journey_id TEXT, proposal_id TEXT, provider TEXT NOT NULL DEFAULT 'RAZORPAY',
@@ -765,6 +776,7 @@ export function getDb(dbPath?: string): Database.Database {
         ('2514', 'The Man Company', 'themancompany.com', 'ACTIVE', 'CPS', 30)`);
   } catch {}
   try { db.exec(`ALTER TABLE cuelinks_campaigns ADD COLUMN verification_source TEXT DEFAULT 'CUELINKS_API_V3'`); } catch {}
+  try { db.exec(`ALTER TABLE cuelinks_campaigns ADD COLUMN last_provider_sync_at TEXT`); } catch {}
   try { db.exec(`ALTER TABLE public_deals ADD COLUMN is_monetizable INTEGER NOT NULL DEFAULT 0`); } catch {}
   try { db.exec(`ALTER TABLE public_deals ADD COLUMN discount_verification_type TEXT NOT NULL DEFAULT 'UNCONFIRMED'`); } catch {}
   try { db.exec(`ALTER TABLE public_deals ADD COLUMN next_recheck_at TEXT`); } catch {}

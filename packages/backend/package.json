@@ -1,6 +1,6 @@
 {
   "name": "@ai-marketing/backend",
-  "version": "1.0.0",
+  "version": "5.8.4",
   "type": "module",
   "scripts": {
     "build": "tsc && node -e \"const fs = require('fs'), path = require('path'); const src = path.resolve('src/db/d1-migrations'), dst = path.resolve('dist/db/d1-migrations'); if (fs.existsSync(src)) { fs.mkdirSync(dst, { recursive: true }); fs.readdirSync(src).filter(f => f.endsWith('.sql')).forEach(f => fs.copyFileSync(path.join(src, f), path.join(dst, f))); }\"",

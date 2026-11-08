@@ -5035,7 +5035,7 @@ apiRouter.get('/commercial/proof', (c) => {
 // ==========================================
 // SYSTEM OPERATIONAL READINESS REPORT
 // ==========================================
-apiRouter.get('/system/readiness', (c) => {
+apiRouter.get('/system/readiness', async (c) => {
   const orgId = c.get('organizationId');
   const db = getDb();
   let businessId = c.req.query('businessId');
@@ -5049,7 +5049,7 @@ apiRouter.get('/system/readiness', (c) => {
   if (!businessId) {
     return c.json({ success: false, error: 'BUSINESS_REQUIRED: No business found for readiness check' }, 400);
   }
-  const report = SystemReadinessEngine.evaluateReadiness(businessId);
+  const report = await SystemReadinessEngine.evaluateReadinessAsync(businessId);
   return c.json({ success: true, data: report });
 });
 
@@ -5844,23 +5844,39 @@ apiRouter.post('/organic/affiliate-clicks', async (c) => {
  */
 apiRouter.get('/public/revenue-funnel', async (c) => {
   const d1Repo = D1RevenueRepository.getInstance();
+  const failedQueries: string[] = [];
+  let measurementStatus: 'VERIFIED_LIVE_DB' | 'DEGRADED_DB_ERROR' = 'VERIFIED_LIVE_DB';
+
+  const safeQuery = async <T = any>(table: string, sql: string, params: any[] = [], queryName: string): Promise<T | null> => {
+    try {
+      const res = await d1Repo.queryOne<T>(table, sql, params);
+      return res;
+    } catch (err: any) {
+      console.warn(`[RevenueFunnel] Query '${queryName}' failed:`, err.message);
+      failedQueries.push(queryName);
+      measurementStatus = 'DEGRADED_DB_ERROR';
+      return null;
+    }
+  };
 
   // 1. External Visits vs Internal Test Sessions
   let verifiedExternalVisits = 0;
   let testSessions = 0;
-  try {
-    const extRow = await d1Repo.queryOne<any>(
-      'traffic_sessions',
-      "SELECT COUNT(*) as c FROM traffic_sessions WHERE traffic_evidence_status = 'VERIFIED_EXTERNAL' OR is_external = 1"
-    );
-    verifiedExternalVisits = extRow?.c || 0;
+  const extRow = await safeQuery<any>(
+    'traffic_sessions',
+    "SELECT COUNT(*) as c FROM traffic_sessions WHERE traffic_evidence_status = 'VERIFIED_EXTERNAL' OR is_external = 1",
+    [],
+    'traffic_sessions.verified_external'
+  );
+  verifiedExternalVisits = extRow?.c ?? 0;
 
-    const testRow = await d1Repo.queryOne<any>(
-      'traffic_sessions',
-      "SELECT COUNT(*) as c FROM traffic_sessions WHERE traffic_evidence_status = 'TEST' OR is_external = 0"
-    );
-    testSessions = testRow?.c || 0;
-  } catch {}
+  const testRow = await safeQuery<any>(
+    'traffic_sessions',
+    "SELECT COUNT(*) as c FROM traffic_sessions WHERE traffic_evidence_status = 'TEST' OR is_external = 0",
+    [],
+    'traffic_sessions.test'
+  );
+  testSessions = testRow?.c ?? 0;
 
   // 2. Real Outbound Clicks vs Internal Diagnostic Clicks (5-Bucket Disaggregation)
   let verifiedHumanOutboundClicks = 0;
@@ -5870,35 +5886,34 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   let unknownClicks = 0;
   let externalOutboundClicks = 0;
 
-  try {
-    const diagnosticCond = `(
-      click_id LIKE 'clk_test_%' OR 
-      referral_id LIKE 'ref_clk_test_%' OR 
-      click_id LIKE 'clk_live_pilot_%' OR 
-      device_class IN ('test', 'diagnostic', 'internal') OR
-      placement IN ('diagnostic', 'direct_beacon', 'test') OR 
-      source IN ('direct_beacon', 'diagnostic', 'test') OR 
-      medium IN ('beacon', 'diagnostic', 'test')
-    )`;
+  const diagnosticCond = `(
+    click_id LIKE 'clk_test_%' OR 
+    referral_id LIKE 'ref_clk_test_%' OR 
+    click_id LIKE 'clk_live_pilot_%' OR 
+    device_class IN ('test', 'diagnostic', 'internal') OR
+    placement IN ('diagnostic', 'direct_beacon', 'test') OR 
+    source IN ('direct_beacon', 'diagnostic', 'test') OR 
+    medium IN ('beacon', 'diagnostic', 'test')
+  )`;
 
-    const disaggregatedSql = `
-      SELECT 
-        COALESCE(SUM(CASE WHEN ${diagnosticCond} THEN 1 ELSE 0 END), 0) as diag,
-        COALESCE(SUM(CASE WHEN device_class = 'human' AND NOT ${diagnosticCond} THEN 1 ELSE 0 END), 0) as human,
-        COALESCE(SUM(CASE WHEN device_class = 'browser_candidate' AND NOT ${diagnosticCond} THEN 1 ELSE 0 END), 0) as browserCandidate,
-        COALESCE(SUM(CASE WHEN device_class = 'bot' AND NOT ${diagnosticCond} THEN 1 ELSE 0 END), 0) as bot,
-        COALESCE(SUM(CASE WHEN (device_class = 'unknown' OR device_class IS NULL) AND NOT ${diagnosticCond} THEN 1 ELSE 0 END), 0) as unk
-      FROM referral_click_events
-    `;
-    const row = await d1Repo.queryOne<any>('referral_click_events', disaggregatedSql);
-    internalDiagnosticClicks = Number(row?.diag || 0);
-    verifiedHumanOutboundClicks = Number(row?.human || 0);
-    browserCandidateOutboundClicks = Number(row?.browserCandidate || 0);
-    botClicks = Number(row?.bot || 0);
-    unknownClicks = Number(row?.unk || 0);
-    // Phase 3 Mandate: externalOutboundClicks MUST strictly equal verifiedHumanOutboundClicks ONLY
+  const disaggregatedSql = `
+    SELECT 
+      COALESCE(SUM(CASE WHEN ${diagnosticCond} THEN 1 ELSE 0 END), 0) as diag,
+      COALESCE(SUM(CASE WHEN device_class = 'human' AND NOT ${diagnosticCond} THEN 1 ELSE 0 END), 0) as human,
+      COALESCE(SUM(CASE WHEN device_class = 'browser_candidate' AND NOT ${diagnosticCond} THEN 1 ELSE 0 END), 0) as browserCandidate,
+      COALESCE(SUM(CASE WHEN device_class = 'bot' AND NOT ${diagnosticCond} THEN 1 ELSE 0 END), 0) as bot,
+      COALESCE(SUM(CASE WHEN (device_class = 'unknown' OR device_class IS NULL) AND NOT ${diagnosticCond} THEN 1 ELSE 0 END), 0) as unk
+    FROM referral_click_events
+  `;
+  const clickRow = await safeQuery<any>('referral_click_events', disaggregatedSql, [], 'referral_click_events.disaggregated');
+  if (clickRow) {
+    internalDiagnosticClicks = Number(clickRow.diag || 0);
+    verifiedHumanOutboundClicks = Number(clickRow.human || 0);
+    browserCandidateOutboundClicks = Number(clickRow.browserCandidate || 0);
+    botClicks = Number(clickRow.bot || 0);
+    unknownClicks = Number(clickRow.unk || 0);
     externalOutboundClicks = verifiedHumanOutboundClicks;
-  } catch {}
+  }
 
   // 3. CTR
   const ctrPercent = verifiedExternalVisits > 0
@@ -5951,19 +5966,21 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   // 5. Commission Records in D1
   let ledgerPendingCommissionINR = 0;
   let ledgerApprovedCommissionINR = 0;
-  try {
-    const commPendingRow = await d1Repo.queryOne<any>(
-      'commission_records',
-      "SELECT COALESCE(SUM(estimated_commission_inr), 0) as s FROM commission_records WHERE status = 'COMMISSION_PENDING'"
-    );
-    ledgerPendingCommissionINR = commPendingRow?.s || 0;
+  const commPendingRow = await safeQuery<any>(
+    'commission_records',
+    "SELECT COALESCE(SUM(expected_commission_inr), 0) as s FROM commission_records WHERE status = 'COMMISSION_PENDING'",
+    [],
+    'commission_records.pending'
+  );
+  ledgerPendingCommissionINR = commPendingRow?.s ?? 0;
 
-    const commApprovedRow = await d1Repo.queryOne<any>(
-      'commission_records',
-      "SELECT COALESCE(SUM(verified_commission_inr), 0) as s FROM commission_records WHERE status IN ('COMMISSION_APPROVED', 'PAID')"
-    );
-    ledgerApprovedCommissionINR = commApprovedRow?.s || 0;
-  } catch {}
+  const commApprovedRow = await safeQuery<any>(
+    'commission_records',
+    "SELECT COALESCE(SUM(verified_commission_inr), 0) as s FROM commission_records WHERE status IN ('COMMISSION_APPROVED', 'PAID')",
+    [],
+    'commission_records.approved'
+  );
+  ledgerApprovedCommissionINR = commApprovedRow?.s ?? 0;
 
   // 6. Direct B2B Lead Conversion Funnel (Empirical Evidence)
   let prospectsResearched = 0;
@@ -5978,68 +5995,86 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   let proposalsAccepted = 0;
   let verifiedClientPaymentsINR = 0.00;
 
-  try {
-    const prosRow = await d1Repo.queryOne<any>(
-      'platform_prospects',
-      "SELECT COUNT(*) as c FROM platform_prospects WHERE is_test = 0 AND is_junk = 0"
-    );
-    prospectsResearched = prosRow?.c || 0;
+  const prosRow = await safeQuery<any>(
+    'platform_prospects',
+    "SELECT COUNT(*) as c FROM platform_prospects WHERE is_test = 0 AND is_junk = 0",
+    [],
+    'platform_prospects.count'
+  );
+  prospectsResearched = prosRow?.c ?? 0;
 
-    const inqRow = await d1Repo.queryOne<any>(
-      'platform_prospects',
-      "SELECT COUNT(*) as c FROM platform_prospects WHERE is_test = 0 AND (source IN ('OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', 'homepage_b2b_inquiry') OR discovery_source = 'DIRECT_INBOUND')"
-    );
-    inquiriesReceived = inqRow?.c || 0;
+  const inqRow = await safeQuery<any>(
+    'platform_prospects',
+    "SELECT COUNT(*) as c FROM platform_prospects WHERE is_test = 0 AND (source IN ('OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', 'homepage_b2b_inquiry') OR discovery_source = 'DIRECT_INBOUND')",
+    [],
+    'platform_prospects.inquiries'
+  );
+  inquiriesReceived = inqRow?.c ?? 0;
 
-    const lifetimeDraftsRow = await d1Repo.queryOne<any>(
-      'direct_outreach_log',
-      "SELECT COUNT(*) as c FROM direct_outreach_log"
-    );
-    lifetimeDraftsPrepared = lifetimeDraftsRow?.c || 0;
+  const lifetimeDraftsRow = await safeQuery<any>(
+    'direct_outreach_log',
+    "SELECT COUNT(*) as c FROM direct_outreach_log",
+    [],
+    'direct_outreach_log.lifetime'
+  );
+  lifetimeDraftsPrepared = lifetimeDraftsRow?.c ?? 0;
 
-    const pendingDraftsRow = await d1Repo.queryOne<any>(
-      'direct_outreach_log',
-      "SELECT COUNT(*) as c FROM direct_outreach_log WHERE human_approved = 0 AND dispatched = 0"
-    );
-    pendingUnapprovedDrafts = pendingDraftsRow?.c || 0;
-    outreachDraftsPrepared = pendingUnapprovedDrafts;
+  const pendingDraftsRow = await safeQuery<any>(
+    'direct_outreach_log',
+    "SELECT COUNT(*) as c FROM direct_outreach_log WHERE human_approved = 0 AND dispatched = 0",
+    [],
+    'direct_outreach_log.pending'
+  );
+  pendingUnapprovedDrafts = pendingDraftsRow?.c ?? 0;
+  outreachDraftsPrepared = pendingUnapprovedDrafts;
 
-    const approvedDraftsRow = await d1Repo.queryOne<any>(
-      'direct_outreach_log',
-      "SELECT COUNT(*) as c FROM direct_outreach_log WHERE human_approved = 1 AND dispatched = 0"
-    );
-    ownerApprovedDrafts = approvedDraftsRow?.c || 0;
+  const approvedDraftsRow = await safeQuery<any>(
+    'direct_outreach_log',
+    "SELECT COUNT(*) as c FROM direct_outreach_log WHERE human_approved = 1 AND dispatched = 0",
+    [],
+    'direct_outreach_log.approved'
+  );
+  ownerApprovedDrafts = approvedDraftsRow?.c ?? 0;
 
-    const dispatchedRow = await d1Repo.queryOne<any>(
-      'direct_outreach_log',
-      "SELECT COUNT(*) as c FROM direct_outreach_log WHERE dispatched = 1"
-    );
-    messagesDispatched = dispatchedRow?.c || 0;
+  const dispatchedRow = await safeQuery<any>(
+    'direct_outreach_log',
+    "SELECT COUNT(*) as c FROM direct_outreach_log WHERE dispatched = 1",
+    [],
+    'direct_outreach_log.dispatched'
+  );
+  messagesDispatched = dispatchedRow?.c ?? 0;
 
-    const deliveredRow = await d1Repo.queryOne<any>(
-      'direct_outreach_log',
-      "SELECT COUNT(*) as c FROM direct_outreach_log WHERE dispatched = 1 AND delivery_status = 'DELIVERED'"
-    );
-    providerConfirmedDeliveries = deliveredRow?.c || 0;
+  const deliveredRow = await safeQuery<any>(
+    'direct_outreach_log',
+    "SELECT COUNT(*) as c FROM direct_outreach_log WHERE dispatched = 1 AND response_status = 'DELIVERED'",
+    [],
+    'direct_outreach_log.delivered'
+  );
+  providerConfirmedDeliveries = deliveredRow?.c ?? 0;
 
-    const propSentRow = await d1Repo.queryOne<any>(
-      'proposals',
-      "SELECT COUNT(*) as c FROM proposals WHERE is_test = 0 AND status IN ('SENT', 'VIEWED', 'ACCEPTED', 'PAYMENT_REQUESTED')"
-    );
-    proposalsSent = propSentRow?.c || 0;
+  const propSentRow = await safeQuery<any>(
+    'proposals',
+    "SELECT COUNT(*) as c FROM proposals WHERE is_test = 0 AND status IN ('SENT', 'VIEWED', 'ACCEPTED', 'PAYMENT_REQUESTED')",
+    [],
+    'proposals.sent'
+  );
+  proposalsSent = propSentRow?.c ?? 0;
 
-    const propAccRow = await d1Repo.queryOne<any>(
-      'proposals',
-      "SELECT COUNT(*) as c FROM proposals WHERE is_test = 0 AND status = 'ACCEPTED'"
-    );
-    proposalsAccepted = propAccRow?.c || 0;
+  const propAccRow = await safeQuery<any>(
+    'proposals',
+    "SELECT COUNT(*) as c FROM proposals WHERE is_test = 0 AND status = 'ACCEPTED'",
+    [],
+    'proposals.accepted'
+  );
+  proposalsAccepted = propAccRow?.c ?? 0;
 
-    const clientPayRow = await d1Repo.queryOne<any>(
-      'revenue_records',
-      "SELECT COALESCE(SUM(amount_inr), 0) as s FROM revenue_records WHERE verified = 1 AND is_test = 0 AND (classification = 'REAL' OR classification = 'OWNER_CONFIRMED' OR classification = 'MANUAL_VERIFIED')"
-    );
-    verifiedClientPaymentsINR = Number(clientPayRow?.s || 0);
-  } catch {}
+  const clientPayRow = await safeQuery<any>(
+    'revenue_records',
+    "SELECT COALESCE(SUM(amount_inr), 0) as s FROM revenue_records WHERE verified = 1 AND is_test = 0 AND (classification = 'REAL' OR classification = 'OWNER_CONFIRMED' OR classification = 'MANUAL_VERIFIED')",
+    [],
+    'revenue_records.client_payments'
+  );
+  verifiedClientPaymentsINR = Number(clientPayRow?.s ?? 0);
 
   // 6b. Self-Serve SaaS Micro-SaaS Funnel (SiteFix AI — Part 7.1)
   let siteAuditsStarted = 0;
@@ -6056,33 +6091,39 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   let fulfilmentsFailed = 0;
   let saasGrossCapturedINR = 0.00;
 
-  try {
-    const auditsRow = await d1Repo.queryOne<any>(
-      'site_audits',
-      "SELECT COUNT(*) as c FROM site_audits WHERE status = 'COMPLETED'"
-    );
-    siteAuditsCompleted = auditsRow?.c || 0;
-    siteAuditsStarted = siteAuditsCompleted;
+  const auditsRow = await safeQuery<any>(
+    'site_audits',
+    "SELECT COUNT(*) as c FROM site_audits WHERE status = 'COMPLETED'",
+    [],
+    'site_audits.completed'
+  );
+  siteAuditsCompleted = auditsRow?.c ?? 0;
+  siteAuditsStarted = siteAuditsCompleted;
 
-    const pageSpeedRow = await d1Repo.queryOne<any>(
-      'site_audits',
-      "SELECT COUNT(*) as c FROM site_audits WHERE pagespeed_status = 'COMPLETED' OR (performance_score IS NOT NULL AND performance_score > 0)"
-    );
-    pageSpeedCompleted = pageSpeedRow?.c || 0;
+  const pageSpeedRow = await safeQuery<any>(
+    'site_audits',
+    "SELECT COUNT(*) as c FROM site_audits WHERE pagespeed_status = 'COMPLETED' OR (performance_score IS NOT NULL AND performance_score > 0)",
+    [],
+    'site_audits.pagespeed'
+  );
+  pageSpeedCompleted = pageSpeedRow?.c ?? 0;
 
-    const ordersRow = await d1Repo.queryOne<any>(
-      'payment_orders',
-      "SELECT COUNT(*) as c, COALESCE(SUM(CASE WHEN status = 'CAPTURED' OR status = 'PAID' THEN amount_inr ELSE 0 END), 0) as s FROM payment_orders WHERE (notes_json LIKE '%SITEFIX_AI_PACK_V1%' OR notes_json LIKE '%SITE_AUDIT_FIXPACK%') AND (notes_json NOT LIKE '%\"is_test\":true%' AND notes_json NOT LIKE '%\"test\":true%')"
-    );
-    paymentOrdersCreated = ordersRow?.c || 0;
-    saasGrossCapturedINR = Number(ordersRow?.s || 0);
+  const ordersRow = await safeQuery<any>(
+    'payment_orders',
+    "SELECT COUNT(*) as c, COALESCE(SUM(CASE WHEN status = 'CAPTURED' OR status = 'PAID' THEN amount_inr ELSE 0 END), 0) as s FROM payment_orders WHERE (notes_json LIKE '%SITEFIX_AI_PACK_V1%' OR notes_json LIKE '%SITE_AUDIT_FIXPACK%') AND (notes_json NOT LIKE '%\"is_test\":true%' AND notes_json NOT LIKE '%\"test\":true%')",
+    [],
+    'payment_orders.sitefix'
+  );
+  paymentOrdersCreated = ordersRow?.c ?? 0;
+  saasGrossCapturedINR = Number(ordersRow?.s ?? 0);
 
-    const capturedRow = await d1Repo.queryOne<any>(
-      'payment_orders',
-      "SELECT COUNT(*) as c FROM payment_orders WHERE (status = 'CAPTURED' OR status = 'PAID') AND (notes_json LIKE '%SITEFIX_AI_PACK_V1%' OR notes_json LIKE '%SITE_AUDIT_FIXPACK%') AND (notes_json NOT LIKE '%\"is_test\":true%')"
-    );
-    paymentCaptured = capturedRow?.c || 0;
-  } catch {}
+  const capturedRow = await safeQuery<any>(
+    'payment_orders',
+    "SELECT COUNT(*) as c FROM payment_orders WHERE (status = 'CAPTURED' OR status = 'PAID') AND (notes_json LIKE '%SITEFIX_AI_PACK_V1%' OR notes_json LIKE '%SITE_AUDIT_FIXPACK%') AND (notes_json NOT LIKE '%\"is_test\":true%')",
+    [],
+    'payment_orders.captured'
+  );
+  paymentCaptured = capturedRow?.c ?? 0;
 
   // 7. Operating Costs (Strict ₹0 Cash Outflow Rule with Quota Accounting)
   const operatingCosts = {
@@ -6091,7 +6132,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
     aiModelCostINR: 0.00,
     paidToolCostINR: 0.00,
     totalOperatingCostINR: 0.00,
-    freeTierSavingsINR: 3500.00,
+    unmeasuredExternalCosts: 'FREE_TIER_QUOTA_BOUNDED',
     costClassification: 'STRICT_ZERO_CASH_OUTFLOW',
     costBreakdown: [
       { category: 'Hosting', provider: 'Render', tier: 'FREE_TIER', monthlyQuota: '750 hours/month', costINR: 0.00, classification: 'FREE_TIER' },
@@ -6119,6 +6160,8 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   return c.json({
     success: true,
     data: {
+      measurementStatus,
+      failedQueries,
       funnel: {
         verifiedExternalVisits,
         internalTestSessions: testSessions,
@@ -6675,7 +6718,8 @@ apiRouter.get('/public/autonomy-status', async (c) => {
         return 'CONFIGURED';
       }
       case 'google_pagespeed': {
-        return 'CONFIGURED';
+        const psKey = process.env.GOOGLE_PAGESPEED_API_KEY;
+        return isKeyConfigured(psKey) ? 'CONFIGURED_API_KEY' : 'UNCONFIGURED_KEYLESS_MODE';
       }
       case 'google_indexing': {
         const key = process.env.GOOGLE_INDEXING_SERVICE_ACCOUNT_KEY || process.env.GOOGLE_INDEXING_API;
@@ -6791,34 +6835,36 @@ apiRouter.get('/public/autonomy-status', async (c) => {
     if (isProduction() && !process.env.VITEST) {
       migRow = await d1Repo.queryOne<any>(
         'd1_migrations',
-        "SELECT name FROM _d1_migrations ORDER BY id DESC LIMIT 1"
+        "SELECT migration_name FROM _d1_migrations ORDER BY id DESC LIMIT 1"
       );
     } else {
       try {
         const { getDb } = await import('../db/client.js');
         migRow = getDb().prepare(
-          "SELECT name FROM _d1_migrations ORDER BY id DESC LIMIT 1"
+          "SELECT migration_name FROM _sqlite_migrations ORDER BY id DESC LIMIT 1"
         ).get();
       } catch {
         const { getDb } = await import('../db/client.js');
         migRow = getDb().prepare(
-          "SELECT name FROM d1_migrations ORDER BY id DESC LIMIT 1"
+          "SELECT migration_name FROM _d1_migrations ORDER BY id DESC LIMIT 1"
         ).get();
       }
     }
-    if (migRow && migRow.name) {
-      const match = String(migRow.name).match(/^(\d+)/);
-      d1MigrationVersion = match ? match[1] : String(migRow.name);
+    const rawMigName = migRow?.migration_name || migRow?.name;
+    if (rawMigName) {
+      const match = String(rawMigName).match(/^(\d+)/);
+      d1MigrationVersion = match ? match[1] : String(rawMigName);
     }
   } catch (err: any) {
     try {
       const migRow = await d1Repo.queryOne<any>(
         'd1_migrations',
-        "SELECT name FROM d1_migrations ORDER BY id DESC LIMIT 1"
+        "SELECT migration_name FROM _d1_migrations ORDER BY id DESC LIMIT 1"
       );
-      if (migRow && migRow.name) {
-        const match = String(migRow.name).match(/^(\d+)/);
-        d1MigrationVersion = match ? match[1] : String(migRow.name);
+      const rawMigName = migRow?.migration_name || migRow?.name;
+      if (rawMigName) {
+        const match = String(rawMigName).match(/^(\d+)/);
+        d1MigrationVersion = match ? match[1] : String(rawMigName);
       }
     } catch {}
   }
@@ -6834,21 +6880,21 @@ apiRouter.get('/public/autonomy-status', async (c) => {
     if (isProduction() && !process.env.VITEST) {
       cronRow = await d1Repo.queryOne<any>(
         'cron_telemetry',
-        "SELECT user_agent, pinged_at, status FROM cron_telemetry ORDER BY id DESC LIMIT 1"
+        "SELECT last_user_agent, last_observed_ping, status FROM cron_telemetry ORDER BY last_observed_ping DESC LIMIT 1"
       );
     } else {
       try {
         const { getDb } = await import('../db/client.js');
         cronRow = getDb().prepare(
-          "SELECT user_agent, pinged_at, status FROM cron_telemetry ORDER BY id DESC LIMIT 1"
+          "SELECT last_user_agent, last_observed_ping, status FROM cron_telemetry ORDER BY last_observed_ping DESC LIMIT 1"
         ).get();
       } catch {}
     }
     if (cronRow) {
       cloudflareWorkerStatus = {
         status: cronRow.status || 'ACTIVE',
-        lastObservedPing: cronRow.pinged_at || null,
-        lastUserAgent: cronRow.user_agent || null
+        lastObservedPing: cronRow.last_observed_ping || null,
+        lastUserAgent: cronRow.last_user_agent || null
       };
     }
   } catch {}
@@ -6860,11 +6906,11 @@ apiRouter.get('/public/autonomy-status', async (c) => {
   }
 
   return c.json({
-    version: '5.8.3',
+    version: '5.8.4',
     platform: 'Autonomous Multi-Sector Revenue Organization',
     timestamp: new Date().toISOString(),
     buildMetadata: {
-      version: '5.8.3',
+      version: '5.8.4',
       gitCommit: currentCommit,
       deployedCommitSha: process.env.RENDER_GIT_COMMIT || currentCommit,
       cloudflareWorkerStatus,
@@ -10569,22 +10615,45 @@ const handleSiteAuditPaymentStatus = async (c: any) => {
 
   const { D1RevenueRepository } = await import('../db/d1-revenue-repository.js');
   const d1Repo = D1RevenueRepository.getInstance();
-  const order = await d1Repo.queryOne<any>(
-    'payment_orders',
-    `SELECT id, order_id, status, payment_id, notes_json FROM payment_orders WHERE order_id = ? OR id = ?`,
-    [orderId, orderId]
-  );
+  let order: any = null;
+  if (isProduction() && !process.env.VITEST) {
+    order = await d1Repo.queryOne<any>(
+      'payment_orders',
+      `SELECT id, order_id, amount_inr, status, receipt, payment_id, notes_json FROM payment_orders WHERE order_id = ? OR id = ?`,
+      [orderId, orderId]
+    );
+  } else {
+    order = getDb().prepare(
+      `SELECT id, order_id, amount_inr, status, receipt, payment_id, notes_json FROM payment_orders WHERE order_id = ? OR id = ?`
+    ).get(orderId, orderId);
+  }
 
   if (!order) {
     return c.json({ success: false, error: 'ORDER_NOT_FOUND' }, 404);
   }
 
-  const isCaptured = order.status === 'CAPTURED' || order.status === 'PAID';
+  let orderNotes: any = {};
+  try {
+    orderNotes = order.notes_json ? JSON.parse(order.notes_json) : {};
+  } catch {}
+
+  const orderAuditId = order.receipt || orderNotes.auditId;
+  if (orderAuditId && auditId && orderAuditId !== auditId) {
+    return c.json({
+      success: false,
+      error: `FORBIDDEN: Order ${orderId} does not match audit ${auditId}.`
+    }, 403);
+  }
+
+  const isCaptured = (order.status === 'CAPTURED' || order.status === 'PAID') &&
+    Number(order.amount_inr) > 0 &&
+    Boolean(order.payment_id && order.payment_id !== 'pay_verified');
+
   let downloadToken: string | undefined;
   let downloadUrl: string | undefined;
 
   if (isCaptured) {
-    const paymentId = order.payment_id || 'pay_verified';
+    const paymentId = order.payment_id;
     downloadToken = service.generateDeliveryToken(orderId, auditId, paymentId, 72);
     downloadUrl = `/api/v1/tools/site-audit/${auditId}/deliverable?token=${downloadToken}`;
   }
@@ -10618,7 +10687,7 @@ const handleSiteAuditRazorpayWebhook = async (c: any) => {
   }
 
   // Raw body obtained directly for cryptographic HMAC verification
-  const { createHmac, timingSafeEqual } = await import('node:crypto');
+  const { createHmac, createHash, timingSafeEqual } = await import('node:crypto');
   const rawBody = await c.req.raw.clone().text();
   const signature = c.req.header('x-razorpay-signature') || '';
 
@@ -10646,94 +10715,135 @@ const handleSiteAuditRazorpayWebhook = async (c: any) => {
     return c.json({ success: false, error: 'Invalid JSON payload' }, 400);
   }
 
-  // Deduplicate event via x-razorpay-event-id or payload id
-  const eventId = c.req.header('x-razorpay-event-id') || eventPayload?.id;
-  const idempotencyKey = eventId ? `razorpay_${eventId}` : null;
+  // Webhook event deduplication via processed_webhook_events
+  const payloadHash = createHash('sha256').update(rawBody).digest('hex');
+  const eventId = c.req.header('x-razorpay-event-id') || eventPayload?.id || `evt_${payloadHash.substring(0, 24)}`;
 
-  if (idempotencyKey) {
-    try {
-      const existing = await d1Repo.queryOne<any>(
-        'idempotent_actions',
-        `SELECT idempotency_key, status FROM idempotent_actions WHERE idempotency_key = ?`,
-        [idempotencyKey]
+  try {
+    let existingEvent: any = null;
+    if (isProduction() && !process.env.VITEST) {
+      existingEvent = await d1Repo.queryOne<any>(
+        'processed_webhook_events',
+        `SELECT event_id FROM processed_webhook_events WHERE event_id = ?`,
+        [eventId]
       );
-      if (existing && existing.status === 'COMPLETED') {
-        return c.json({ success: true, duplicate: true, message: 'Event already processed' }, 200);
-      }
-      if (!existing) {
-        if (isProduction() && !process.env.VITEST) {
-          await d1Repo.executeWrite(
-            'idempotent_actions',
-            `INSERT INTO idempotent_actions (idempotency_key, action_type, target_id, tenant_id, status, result_json, executed_at) VALUES (?, 'RAZORPAY_SITEFIX', ?, 'owner_org', 'PROCESSING', '{}', datetime('now'))`,
-            [idempotencyKey, eventId]
-          );
-        } else {
-          getDb().prepare(
-            `INSERT INTO idempotent_actions (idempotency_key, action_type, target_id, tenant_id, status, result_json, executed_at) VALUES (?, 'RAZORPAY_SITEFIX', ?, 'owner_org', 'PROCESSING', '{}', datetime('now'))`
-          ).run(idempotencyKey, eventId);
-        }
-      }
-    } catch (claimErr: any) {
-      console.warn('[handleSiteAuditRazorpayWebhook] Idempotency record error:', claimErr.message);
+    } else {
+      existingEvent = getDb().prepare(
+        `SELECT event_id FROM processed_webhook_events WHERE event_id = ?`
+      ).get(eventId);
     }
+    if (existingEvent) {
+      return c.json({ status: "duplicate_ignored" }, 200);
+    }
+  } catch (dedupErr: any) {
+    console.warn('[handleSiteAuditRazorpayWebhook] Webhook event deduplication query error:', dedupErr.message);
   }
 
   const eventType = eventPayload.event;
   if (eventType === 'payment.captured') {
     const payment = eventPayload.payload?.payment?.entity;
     const orderId = payment?.order_id || payment?.notes?.order_id || eventPayload.payload?.order?.entity?.id;
-    const paymentId = payment?.id || 'pay_verified';
-    const notes = payment?.notes || eventPayload.payload?.order?.entity?.notes || {};
-    const auditId = notes.auditId || notes.audit_id;
-    const amount = Number(payment?.amount || 0);
-    const currency = payment?.currency;
+    const paymentId = payment?.id;
 
-    if ((amount !== 49900 && amount !== 100) || currency !== 'INR') {
+    // Zero-shortcuts: require non-empty genuine payment.id and order_id
+    if (!paymentId || !orderId || paymentId === 'pay_verified' || typeof paymentId !== 'string') {
       return c.json({
         success: false,
-        error: `AMOUNT_MISMATCH: Expected 49900 or 100 INR paise, received ${amount} ${currency}`
+        error: 'INVALID_PAYMENT_PAYLOAD: Non-empty payment id and order id are strictly required.'
       }, 400);
     }
 
-    if (orderId) {
-      try {
-        if (isProduction() && !process.env.VITEST) {
-          await d1Repo.executeWrite(
-            'payment_orders',
-            `UPDATE payment_orders SET status = 'CAPTURED', payment_id = ?, updated_at = datetime('now') WHERE order_id = ? OR id = ?`,
-            [paymentId, orderId, orderId]
-          );
-        } else {
-          getDb().prepare(
-            `UPDATE payment_orders SET status = 'CAPTURED', payment_id = ?, updated_at = datetime('now') WHERE order_id = ? OR id = ?`
-          ).run(paymentId, orderId, orderId);
-        }
-      } catch (dbErr: any) {
-        console.error('[handleSiteAuditRazorpayWebhook] Failed to update payment order in D1:', dbErr);
-        // Fail closed with 500 so Razorpay retries webhook delivery!
-        return c.json({
-          success: false,
-          error: `DATABASE_ERROR: Failed to update payment status: ${dbErr.message}`
-        }, 500);
+    // Fail closed: Query stored order from payment_orders
+    let storedOrder: any = null;
+    try {
+      if (isProduction() && !process.env.VITEST) {
+        storedOrder = await d1Repo.queryOne<any>(
+          'payment_orders',
+          `SELECT * FROM payment_orders WHERE order_id = ? OR id = ?`,
+          [orderId, orderId]
+        );
+      } else {
+        storedOrder = getDb().prepare(
+          `SELECT * FROM payment_orders WHERE order_id = ? OR id = ?`
+        ).get(orderId, orderId);
       }
+    } catch (dbErr: any) {
+      return c.json({ success: false, error: `DATABASE_ERROR: ${dbErr.message}` }, 500);
     }
 
-    if (idempotencyKey) {
-      try {
-        if (isProduction() && !process.env.VITEST) {
-          await d1Repo.executeWrite(
-            'idempotent_actions',
-            `UPDATE idempotent_actions SET status = 'COMPLETED', result_json = ? WHERE idempotency_key = ?`,
-            [JSON.stringify({ orderId, paymentId, auditId }), idempotencyKey]
-          );
-        } else {
-          getDb().prepare(
-            `UPDATE idempotent_actions SET status = 'COMPLETED', result_json = ? WHERE idempotency_key = ?`
-          ).run(JSON.stringify({ orderId, paymentId, auditId }), idempotencyKey);
-        }
-      } catch (err: any) {
-        console.warn('[handleSiteAuditRazorpayWebhook] Failed to mark idempotent action completed:', err.message);
+    if (!storedOrder) {
+      return c.json({
+        success: false,
+        error: `ORDER_NOT_FOUND: Payment order ${orderId} does not exist in the payment ledger.`
+      }, 404);
+    }
+
+    let notes: any = {};
+    try {
+      notes = storedOrder.notes_json ? JSON.parse(storedOrder.notes_json) : (payment?.notes || {});
+    } catch {}
+    const auditId = storedOrder.receipt || notes.auditId || notes.audit_id;
+
+    const chargedPaise = Number(payment?.amount || 0);
+    const expectedPaise = Math.round(Number(storedOrder.amount_inr) * 100);
+
+    if (payment.status !== 'captured') {
+      return c.json({
+        success: false,
+        error: `PAYMENT_NOT_CAPTURED: Payment status is ${payment.status}, expected 'captured'.`
+      }, 400);
+    }
+
+    if (chargedPaise !== expectedPaise) {
+      return c.json({
+        success: false,
+        error: `AMOUNT_MISMATCH: Gateway charged ${chargedPaise} paise, order expected ${expectedPaise} paise.`
+      }, 400);
+    }
+
+    if (payment.currency !== 'INR' || storedOrder.currency !== 'INR') {
+      return c.json({
+        success: false,
+        error: `CURRENCY_MISMATCH: Expected INR, received payment: ${payment.currency}, stored: ${storedOrder.currency}.`
+      }, 400);
+    }
+
+    // Atomic update in payment_orders
+    let rowsUpdated = 0;
+    try {
+      const updateSql = `UPDATE payment_orders SET status = 'CAPTURED', payment_id = ?, updated_at = datetime('now') WHERE (order_id = ? OR id = ?) AND status = 'CREATED'`;
+      if (isProduction() && !process.env.VITEST) {
+        const res = await d1Repo.executeWrite('payment_orders', updateSql, [paymentId, orderId, orderId]);
+        rowsUpdated = (res as any)?.rowsAffected ?? (res as any)?.changes ?? 0;
+      } else {
+        const res = getDb().prepare(updateSql).run(paymentId, orderId, orderId);
+        rowsUpdated = res.changes ?? 0;
       }
+    } catch (dbErr: any) {
+      console.error('[handleSiteAuditRazorpayWebhook] Failed to update payment order in D1:', dbErr);
+      return c.json({
+        success: false,
+        error: `DATABASE_ERROR: Failed to update payment status: ${dbErr.message}`
+      }, 500);
+    }
+
+    if (rowsUpdated === 0 && storedOrder.status !== 'CAPTURED' && storedOrder.status !== 'PAID') {
+      return c.json({
+        success: false,
+        error: 'ORDER_NOT_IN_CREATED_STATE: Order could not be atomically updated to CAPTURED.'
+      }, 409);
+    }
+
+    // Insert into processed_webhook_events
+    try {
+      const eventInsertSql = `INSERT OR IGNORE INTO processed_webhook_events (event_id, event_type, payload_hash, order_id, payment_id, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))`;
+      if (isProduction() && !process.env.VITEST) {
+        await d1Repo.executeWrite('processed_webhook_events', eventInsertSql, [eventId, eventType, payloadHash, orderId, paymentId]);
+      } else {
+        getDb().prepare(eventInsertSql).run(eventId, eventType, payloadHash, orderId, paymentId);
+      }
+    } catch (insertErr: any) {
+      console.warn('[handleSiteAuditRazorpayWebhook] processed_webhook_events insert notice:', insertErr.message);
     }
 
     let token: string | undefined;
@@ -10745,13 +10855,14 @@ const handleSiteAuditRazorpayWebhook = async (c: any) => {
       }
     }
 
-    // Record commercial evidence event for verified digital cash receipt
+    // Record commercial evidence event for verified digital capture pending settlement
+    // INVARIANT: Keeps bankConfirmedCashINR strictly at 0.00!
     try {
       const { CommercialLearningEngine } = await import('../commission/commercial-learning-engine.js');
-      const amountINR = Math.round(amount / 100);
+      const amountINR = Math.round(chargedPaise / 100);
       CommercialLearningEngine.getInstance().recordCommercialEvent('SECTOR_H_LOCAL_SERVICES_B2B', {
         eventId: `pay_${paymentId}`,
-        eventType: 'BANK_CONFIRMED_CASH',
+        eventType: 'PAYMENT_CAPTURED_PENDING_SETTLEMENT',
         cashINR: amountINR,
         isDiagnostic: false
       });
@@ -10766,6 +10877,16 @@ const handleSiteAuditRazorpayWebhook = async (c: any) => {
       downloadUrl: token ? `/api/v1/tools/site-audit/${auditId}/deliverable?token=${token}` : undefined
     }, 200);
   }
+
+  // Record unmonitored event as processed
+  try {
+    const eventInsertSql = `INSERT OR IGNORE INTO processed_webhook_events (event_id, event_type, payload_hash, created_at) VALUES (?, ?, ?, datetime('now'))`;
+    if (isProduction() && !process.env.VITEST) {
+      await d1Repo.executeWrite('processed_webhook_events', eventInsertSql, [eventId, eventType, payloadHash]);
+    } else {
+      getDb().prepare(eventInsertSql).run(eventId, eventType, payloadHash);
+    }
+  } catch {}
 
   return c.json({ success: true, processed: false, reason: `Ignored unmonitored event type: ${eventType}` }, 200);
 };
