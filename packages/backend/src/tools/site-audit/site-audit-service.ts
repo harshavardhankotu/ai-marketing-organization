@@ -16,7 +16,7 @@ import { SiteAuditScanner } from './site-audit-scanner.js';
 import { SiteAuditFixPackGenerator } from './site-audit-fixpack-generator.js';
 import { D1RevenueRepository } from '../../db/d1-revenue-repository.js';
 import { OwnerAuthService } from '../../auth/owner-auth.js';
-import { isProduction } from '../../config/env.js';
+import { isProduction, isPlaceholderCredential } from '../../config/env.js';
 
 export interface SiteFixCommercialTerms {
   sku: 'SITEFIX_AI_PACK_V1' | 'SITE_AUDIT_FIXPACK';
@@ -147,6 +147,31 @@ export class SiteAuditService {
 
     const isReady = missing.length === 0;
 
+    const liveKeyId = (process.env.RAZORPAY_KEY_ID || '').trim();
+    const liveKeySecret = (process.env.RAZORPAY_KEY_SECRET || '').trim();
+    const isLiveKey = Boolean(
+      liveKeyId.startsWith('rzp_live_') &&
+      !isPlaceholderCredential(liveKeyId) &&
+      liveKeySecret &&
+      !isPlaceholderCredential(liveKeySecret)
+    );
+
+    const testKeyId = (process.env.RAZORPAY_TEST_KEY_ID || (liveKeyId.startsWith('rzp_test_') ? liveKeyId : '')).trim();
+    const testKeySecret = (process.env.RAZORPAY_TEST_KEY_SECRET || (liveKeyId.startsWith('rzp_test_') ? liveKeySecret : '')).trim();
+    const isTestKey = Boolean(
+      testKeyId.startsWith('rzp_test_') &&
+      !isPlaceholderCredential(testKeyId) &&
+      testKeySecret &&
+      !isPlaceholderCredential(testKeySecret)
+    );
+
+    const ownerOfferAttested = isAttested && !missing.includes('SITE_AUDIT_TERMS_SHA256') && !missing.includes('SITE_AUDIT_SIGNING_SECRET');
+    const liveMoneyReady = Boolean(ownerOfferAttested && isLiveKey);
+    const sandboxTestReady = Boolean(isTestKey);
+
+    const paymentMode: 'LIVE' | 'SANDBOX' | 'UNCONFIGURED' = isLiveKey ? 'LIVE' : (isTestKey ? 'SANDBOX' : 'UNCONFIGURED');
+    const gatewayCredentialStatus: 'VERIFIED_LIVE' | 'VERIFIED_TEST' | 'NOT_VERIFIED' = isLiveKey ? 'VERIFIED_LIVE' : (isTestKey ? 'VERIFIED_TEST' : 'NOT_VERIFIED');
+
     let status: 'READY' | 'LOCKED_MISSING_CONFIGURATION' | 'PENDING_OWNER_ATTESTATION';
     if (isReady) {
       status = 'READY';
@@ -161,7 +186,15 @@ export class SiteAuditService {
       isReady,
       missingConfig: missing,
       termsSha256: termsSha || undefined,
-      expectedSha256: actualSha || undefined
+      expectedSha256: actualSha || undefined,
+      paymentReadiness: {
+        sandboxTestReady,
+        liveMoneyReady,
+        paymentMode,
+        ownerOfferAttested,
+        gatewayCredentialStatus,
+        missingConfiguration: missing
+      }
     };
   }
 

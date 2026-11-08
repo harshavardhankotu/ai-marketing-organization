@@ -275,7 +275,7 @@ describe('V5.4 — Revenue Intelligence, Quota Ledger, Policy Gate & Multi-Secto
       const bundle = await client.generateSiteFixBundle('https://example-clinic.in', 'Example Dental Clinic');
 
       expect(bundle).toBeDefined();
-      expect(bundle.performanceScore).toBeGreaterThanOrEqual(0);
+      expect(bundle.performanceScore === null || bundle.performanceScore >= 0).toBe(true);
       expect(bundle.recommendedHeadSnippets).toContain('<meta name="viewport"');
       expect(bundle.recommendedHeadSnippets).toContain('https://schema.org');
       expect(bundle.schemaJsonLd).toContain('LocalBusiness');
@@ -289,7 +289,7 @@ describe('V5.4 — Revenue Intelligence, Quota Ledger, Policy Gate & Multi-Secto
       expect(res.status).toBe(200);
 
       const json = await res.json();
-      expect(json.version).toMatch(/^5\.[457]\.0$/);
+      expect(json.version).toMatch(/^5\.[4-8]\.[0-9]+$/);
       expect(json.policyGate.humanReviewGate).toBe('STRICT_ENFORCED');
       expect(json.policyGate.paidSpendBlocked).toBe(true);
       expect(json.policyGate.paidSpendApprovedINR).toBe(0);

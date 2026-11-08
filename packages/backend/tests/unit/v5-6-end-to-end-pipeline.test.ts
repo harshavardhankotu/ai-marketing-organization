@@ -34,8 +34,8 @@ describe('V5.6 — End-to-End Autonomous Pipeline Wiring', () => {
   });
 
   describe('1. GooglePageSpeedClient Key Resolution & Keyless Fallback', () => {
-    it('falls back to GOOGLE_SEARCH_API_KEY when GOOGLE_PAGESPEED_API_KEY is unset', async () => {
-      delete process.env.GOOGLE_PAGESPEED_API_KEY;
+    it('uses dedicated GOOGLE_PAGESPEED_API_KEY when set and never leaks search keys', async () => {
+      process.env.GOOGLE_PAGESPEED_API_KEY = 'AIzaSyPageSpeedDedicated12345';
       process.env.GOOGLE_SEARCH_API_KEY = 'AIzaSySearchKeyFallback12345';
 
       let calledUrl = '';
@@ -55,12 +55,13 @@ describe('V5.6 — End-to-End Autonomous Pipeline Wiring', () => {
         }), { status: 200 }));
       });
 
-      const uniqueUrl = `https://ps-test-key-fallback-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.org`;
+      const uniqueUrl = `https://ps-test-key-dedicated-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.org`;
       const client = GooglePageSpeedClient.getInstance(mockFetch);
       const res = await client.runAudit(uniqueUrl);
 
       expect(res.status).toBe('SUCCESS');
-      expect(calledUrl).toContain('key=AIzaSySearchKeyFallback12345');
+      expect(calledUrl).toContain('key=AIzaSyPageSpeedDedicated12345');
+      expect(calledUrl).not.toContain('AIzaSySearchKeyFallback12345');
       expect(res.performanceScore).toBe(85);
       expect(res.seoScore).toBe(92);
     });

@@ -66,13 +66,13 @@ export interface SiteAuditPageSpeedData {
   status: 'SUCCESS' | 'UNAVAILABLE';
   reason?: string;
   notice?: string;
-  performanceScore?: number;
-  seoScore?: number;
+  performanceScore?: number | null;
+  seoScore?: number | null;
   coreWebVitals?: {
-    lcp: string;
-    fcp: string;
-    cls: string;
-    tbt: string;
+    lcp?: string;
+    fcp?: string;
+    cls?: string;
+    tbt?: string;
   } | null;
   opportunities?: Array<{
     id: string;
@@ -130,12 +130,22 @@ export interface FixPackDeliverable {
   disclosure: string;
 }
 
+export interface PaymentReadinessState {
+  sandboxTestReady: boolean;
+  liveMoneyReady: boolean;
+  paymentMode: 'LIVE' | 'SANDBOX' | 'UNCONFIGURED';
+  ownerOfferAttested: boolean;
+  gatewayCredentialStatus: 'VERIFIED_LIVE' | 'VERIFIED_TEST' | 'NOT_VERIFIED';
+  missingConfiguration: string[];
+}
+
 export interface CheckoutReadiness {
   status: 'READY' | 'LOCKED_MISSING_CONFIGURATION' | 'PENDING_OWNER_ATTESTATION';
   isReady: boolean;
   missingConfig: string[];
   termsSha256?: string;
   expectedSha256?: string;
+  paymentReadiness: PaymentReadinessState;
 }
 
 export interface FixPackDeliveryTokenPayload {
