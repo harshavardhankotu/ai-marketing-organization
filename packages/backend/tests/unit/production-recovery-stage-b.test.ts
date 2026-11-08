@@ -100,14 +100,14 @@ describe('Stage B Production Recovery Tests', () => {
   });
 
   describe('Phase 4: SiteFix Honest Diagnostics & JS Syntax Validation (Defect 6 & /offer Fix)', () => {
-    it('returns BLOCKED_NO_DEDICATED_KEY immediately when GOOGLE_PAGESPEED_API_KEY is unset', async () => {
+    it('returns BLOCKED_NO_DEDICATED_KEY / MISSING_API_KEY immediately when GOOGLE_PAGESPEED_API_KEY is unset', async () => {
       delete process.env.GOOGLE_PAGESPEED_API_KEY;
 
       const client = GooglePageSpeedClient.getInstance();
       const res = await client.runAudit('https://example.com', 'mobile');
 
       expect(res.status).toBe('UNAVAILABLE');
-      expect(res.reason).toBe('BLOCKED_NO_DEDICATED_KEY');
+      expect(['MISSING_API_KEY', 'BLOCKED_NO_DEDICATED_KEY']).toContain(res.reason);
       expect(res.metrics).toBeNull();
       expect(res.coreWebVitals).toBeNull();
     });

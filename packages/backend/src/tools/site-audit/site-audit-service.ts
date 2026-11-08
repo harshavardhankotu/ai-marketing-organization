@@ -353,7 +353,7 @@ export class SiteAuditService {
         result.pageSpeed = {
           status: 'UNAVAILABLE',
           reason,
-          notice: reason === 'BLOCKED_NO_DEDICATED_KEY'
+          notice: (reason === 'BLOCKED_NO_DEDICATED_KEY' || reason === 'MISSING_API_KEY')
             ? 'Live Core Web Vitals data currently unavailable: GOOGLE_PAGESPEED_API_KEY is unconfigured in production. 12-point deterministic HTML & technical audit completed.'
             : 'Live Core Web Vitals data currently unavailable: Google PageSpeed free tier quota reached or unconfigured. Raw HTML audit completed.',
           coreWebVitals: null,

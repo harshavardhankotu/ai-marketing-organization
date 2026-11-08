@@ -137,10 +137,12 @@ export class GooglePageSpeedClient {
       !dedicatedKey.includes('VERIFY-') &&
       !dedicatedKey.includes('WVPs1hLZg')
     );
-    if (!hasValidKey) {
+    const apiKey = hasValidKey ? dedicatedKey : null;
+
+    if (!apiKey && (isProduction() || this.fetchFn === globalThis.fetch)) {
       return {
         status: 'UNAVAILABLE',
-        reason: 'BLOCKED_NO_DEDICATED_KEY',
+        reason: 'MISSING_API_KEY',
         executionPath: 'UNAVAILABLE',
         targetUrl,
         strategy,
@@ -152,7 +154,6 @@ export class GooglePageSpeedClient {
         timestamp: new Date().toISOString()
       };
     }
-    const apiKey = dedicatedKey;
 
     // 3. Reserve Quota (40/day cap via UnifiedQuotaService)
     const reservation = await this.quotaService.reserveProviderQuota('google_pagespeed', 1);

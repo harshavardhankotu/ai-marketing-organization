@@ -439,8 +439,15 @@ export class ReferralTrackingEngine {
     let freshDestinationUrl = referral.destinationUrl;
     try {
       const urlObj = new URL(freshDestinationUrl);
-      urlObj.searchParams.set('subid', freshClickId);
-      freshDestinationUrl = urlObj.toString();
+      const isAffiliateRedirect =
+        urlObj.searchParams.has('subid') ||
+        offerPartner?.network === 'CUELINKS' ||
+        ['linksredirect.com', 'cuelinks.com', 'clnk.in'].some(h => urlObj.hostname.includes(h));
+
+      if (isAffiliateRedirect) {
+        urlObj.searchParams.set('subid', freshClickId);
+        freshDestinationUrl = urlObj.toString();
+      }
     } catch {}
 
     // Phase 2 Task 7: immutable click event (append-only — never updated).
