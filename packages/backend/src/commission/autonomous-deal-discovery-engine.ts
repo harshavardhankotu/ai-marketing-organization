@@ -383,17 +383,17 @@ export class AutonomousDealDiscoveryEngine {
   public async getActiveVerifiedMerchants(sectorCode?: string): Promise<ApprovedShopifyMerchant[]> {
     let campaigns: any[] = [];
     try {
-      if (this.d1Repo.isRemoteD1Configured() || isProduction()) {
+      if (this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
         const res = await this.d1Repo.executeRead(
           'cuelinks_campaigns',
-          "SELECT campaign_id, name, merchant_domain, category FROM cuelinks_campaigns WHERE status = 'ACTIVE' AND (verification_source = 'CUELINKS_API_V3' OR verification_source IS NOT NULL)",
+          "SELECT campaign_id, name, merchant_domain, category FROM cuelinks_campaigns WHERE status = 'ACTIVE' AND verification_source = 'CUELINKS_API_V3'",
           []
         );
         campaigns = res.results || [];
       } else {
         const { getDb } = await import('../db/client.js');
         campaigns = getDb().prepare(
-          "SELECT campaign_id, name, merchant_domain, category FROM cuelinks_campaigns WHERE status = 'ACTIVE' AND (verification_source = 'CUELINKS_API_V3' OR verification_source IS NOT NULL)"
+          "SELECT campaign_id, name, merchant_domain, category FROM cuelinks_campaigns WHERE status = 'ACTIVE' AND verification_source = 'CUELINKS_API_V3'"
         ).all();
       }
     } catch {}
@@ -2209,16 +2209,16 @@ export class AutonomousDealDiscoveryEngine {
 
       let campRow: any = null;
       for (const d of domainsToCheck) {
-        if (this.d1Repo.isRemoteD1Configured() || isProduction()) {
+        if (this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
           campRow = await this.d1Repo.queryOne<any>(
             'cuelinks_campaigns',
-            "SELECT * FROM cuelinks_campaigns WHERE (campaign_id = ? OR merchant_domain = ?) AND status = 'ACTIVE' AND (verification_source = 'CUELINKS_API_V3' OR verification_source IS NOT NULL)",
+            "SELECT * FROM cuelinks_campaigns WHERE (campaign_id = ? OR merchant_domain = ?) AND status = 'ACTIVE' AND verification_source = 'CUELINKS_API_V3'",
             [campId, d]
           );
         } else {
           const { getDb } = await import('../db/client.js');
           campRow = getDb().prepare(
-            "SELECT * FROM cuelinks_campaigns WHERE (campaign_id = ? OR merchant_domain = ?) AND status = 'ACTIVE' AND (verification_source = 'CUELINKS_API_V3' OR verification_source IS NOT NULL)"
+            "SELECT * FROM cuelinks_campaigns WHERE (campaign_id = ? OR merchant_domain = ?) AND status = 'ACTIVE' AND verification_source = 'CUELINKS_API_V3'"
           ).get(campId, d);
         }
         if (campRow) break;
@@ -2723,9 +2723,18 @@ export class AutonomousDealDiscoveryEngine {
     offset?: number;
   }): Promise<{ deals: NormalizedDeal[]; total: number }> {
     let rows: any[] = [];
-    if (this.d1Repo.isRemoteD1Configured() || isProduction()) {
-      const res = await this.d1Repo.executeRead('public_deals', AutonomousDealDiscoveryEngine.ELIGIBLE_PUBLIC_DEALS_SQL, []);
-      rows = res.results || [];
+    if (this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
+      // In production, clear internal in-memory caches before loading authoritative state from D1
+      this.dealsMap.clear();
+      this.dealSlugMap.clear();
+      try {
+        const res = await this.d1Repo.executeRead('public_deals', AutonomousDealDiscoveryEngine.ELIGIBLE_PUBLIC_DEALS_SQL, []);
+        rows = res.results || [];
+      } catch (err: any) {
+        console.error(`[DealEngine] getEligiblePublicDeals D1 read error: ${err.message}`);
+        // Fail closed: Never return stale or corrupt unverified deals
+        return { deals: [], total: 0 };
+      }
     } else {
       try {
         const testSql = `
@@ -2967,7 +2976,7 @@ export class AutonomousDealDiscoveryEngine {
         LIMIT 1
       `;
       let pdRows: any[] = [];
-      if (this.d1Repo.isRemoteD1Configured() || isProduction()) {
+      if (this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
         const res = await this.d1Repo.executeRead('public_deals', pdSql, [cleanId, cleanId, cleanId]);
         pdRows = Array.isArray(res?.results) ? res.results : [];
       } else {
@@ -3553,7 +3562,7 @@ export class AutonomousDealDiscoveryEngine {
         ];
 
         getDb().prepare(publicDealsSql).run(...publicDealsParams);
-        if (this.d1Repo.isRemoteD1Configured() || isProduction()) {
+        if (this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
           await this.d1Repo.executeWrite('public_deals', publicDealsSql, publicDealsParams);
         }
       } catch (pdErr: any) {
@@ -3787,7 +3796,7 @@ export class AutonomousDealDiscoveryEngine {
       // Sync from dedicated public_deals table (V5.6 / V5.8)
       try {
         let publicDealRows: any[] = [];
-        if (this.d1Repo.isRemoteD1Configured() || isProduction()) {
+        if (this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
           const res = await this.d1Repo.executeRead('public_deals', AutonomousDealDiscoveryEngine.ELIGIBLE_PUBLIC_DEALS_SQL, []);
           publicDealRows = res.results || [];
         } else {

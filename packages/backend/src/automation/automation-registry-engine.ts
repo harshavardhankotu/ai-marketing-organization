@@ -387,6 +387,12 @@ export class AutomationRegistryEngine {
         try { getDb().prepare(updateCadenceSql).run(); } catch {}
       }
 
+      // V5.8.4 Queue Compaction: Keep queue bounded to at most 1 queued job per workflow
+      try {
+        const { DurableJobQueue } = await import('./durable-job-queue.js');
+        await DurableJobQueue.getInstance().compactStaleDuplicateQueueJobs();
+      } catch {}
+
       this.isInitialized = true;
     } catch (err: any) {
       console.warn(`[AutomationRegistry] Initialization notice: ${err.message}`);

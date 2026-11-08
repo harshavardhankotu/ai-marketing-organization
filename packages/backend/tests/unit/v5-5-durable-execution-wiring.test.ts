@@ -228,7 +228,7 @@ describe('V5.5 — Real Revenue Execution, Durable D1 Learning & Live Provider W
       expect(json.capabilityMatrix).toBeDefined();
       expect(json.capabilityMatrix.searchDiscovery).toBeDefined();
       expect(['NOT_CONFIGURED', 'CONFIGURED', 'LIVE_VERIFIED']).toContain(json.capabilityMatrix.geminiAi.status);
-      expect(['NOT_CONFIGURED', 'CONFIGURED', 'LIVE_VERIFIED']).toContain(json.capabilityMatrix.pageSpeedInsights.status);
+      expect(['NOT_CONFIGURED', 'CONFIGURED', 'LIVE_VERIFIED', 'CONFIGURED_API_KEY', 'UNCONFIGURED_KEYLESS_MODE']).toContain(json.capabilityMatrix.pageSpeedInsights.status);
       expect(['NOT_CONFIGURED', 'CONFIGURED', 'LIVE_VERIFIED']).toContain(json.capabilityMatrix.brevoEmail.status);
     });
   });

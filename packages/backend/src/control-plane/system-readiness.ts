@@ -21,7 +21,7 @@ export class SystemReadinessEngine {
   /**
    * Truthful Capability Evaluation Engine across 17 universal dimensions
    */
-  public static evaluateReadiness(businessId: string): SystemReadinessReport & { capabilities?: Record<string, CapabilityDimension> } {
+  public static evaluateReadiness(businessId: string): SystemReadinessReport & { capabilities?: Record<string, CapabilityDimension>; sandboxModeActive?: boolean } {
     if (!businessId) {
       throw new Error('BUSINESS_REQUIRED: Explicit businessId required for system readiness evaluation');
     }
@@ -309,9 +309,19 @@ export class SystemReadinessEngine {
       SELECT COUNT(*) as c FROM experiments WHERE business_id = ? AND status IN ('RUNNING', 'ACTIVE')
     `).get(businessId) as any)?.c ?? 0;
 
-    const activeCampaignsCount = (db.prepare(`
+    let activeCampaignsCount = (db.prepare(`
       SELECT COUNT(*) as c FROM campaigns WHERE business_id = ? AND status = 'ACTIVE'
     `).get(businessId) as any)?.c ?? 0;
+
+    if (activeCampaignsCount === 0) {
+      try {
+        const cuelinksCampRow = db.prepare("SELECT COUNT(*) as c FROM cuelinks_campaigns WHERE status = 'ACTIVE' AND verification_source = 'CUELINKS_API_V3'").get() as any;
+        activeCampaignsCount = cuelinksCampRow?.c ?? 0;
+      } catch {}
+    }
+
+    const rzpKey = (process.env.RAZORPAY_KEY_ID || process.env.RAZORPAY_TEST_KEY_ID || '').trim();
+    const sandboxModeActive = rzpKey.startsWith('rzp_test_') || Boolean(process.env.RAZORPAY_SANDBOX_ENABLED === 'true') || !isProduction();
 
     let operatingState: SystemOperatingState = 'READY_FOR_REAL_EXPERIMENT';
 
@@ -340,6 +350,7 @@ export class SystemReadinessEngine {
     return {
       status: operatingState,
       operatingState,
+      sandboxModeActive,
       timestamp: new Date().toISOString(),
       passedChecks,
       totalChecks,
@@ -362,7 +373,7 @@ export class SystemReadinessEngine {
     };
   }
 
-  public static async evaluateReadinessAsync(businessId: string): Promise<SystemReadinessReport & { capabilities?: Record<string, CapabilityDimension> }> {
+  public static async evaluateReadinessAsync(businessId: string): Promise<SystemReadinessReport & { capabilities?: Record<string, CapabilityDimension>; sandboxModeActive?: boolean }> {
     // In production, check D1 connectivity first
     if (isProduction() && !process.env.VITEST) {
       const repo = D1RevenueRepository.getInstance();
@@ -371,6 +382,16 @@ export class SystemReadinessEngine {
         throw new Error(`BUSINESS_NOT_FOUND: Business '${businessId}' not found in Cloudflare D1.`);
       }
     }
-    return SystemReadinessEngine.evaluateReadiness(businessId);
+    const report = SystemReadinessEngine.evaluateReadiness(businessId);
+    if (isProduction() && !process.env.VITEST) {
+      try {
+        const repo = D1RevenueRepository.getInstance();
+        const row = await repo.queryOne<any>('cuelinks_campaigns', "SELECT COUNT(*) as c FROM cuelinks_campaigns WHERE status = 'ACTIVE' AND verification_source = 'CUELINKS_API_V3'");
+        if (row && Number(row.c) > 0 && report.metrics) {
+          report.metrics.activeCampaignsCount = Number(row.c);
+        }
+      } catch {}
+    }
+    return report;
   }
 }

@@ -110,6 +110,24 @@ export class DurableJobQueue {
       return { enqueued: false, job: existing };
     }
 
+    // Check if an active job (QUEUED or RUNNING) already exists for this workflow
+    const activeJobSql = `SELECT id FROM automation_jobs WHERE workflow_id = ? AND status IN ('QUEUED', 'RUNNING') LIMIT 1`;
+    let activeJobRow: any = null;
+    try {
+      if (isProduction()) {
+        activeJobRow = await this.d1Repo.queryOne<any>('automation_jobs', activeJobSql, [options.workflowId]);
+      } else {
+        activeJobRow = getDb().prepare(activeJobSql).get(options.workflowId);
+      }
+    } catch {}
+
+    if (activeJobRow && activeJobRow.id) {
+      const activeJob = await this.getJobById(activeJobRow.id);
+      if (activeJob) {
+        return { enqueued: false, job: activeJob };
+      }
+    }
+
     const jobId = `job_${Date.now()}_${randomUUID().substring(0, 8)}`;
     const sql = `
       INSERT OR IGNORE INTO automation_jobs (
@@ -179,9 +197,21 @@ export class DurableJobQueue {
       errors.push(errMsg);
     }
 
-    const toInsert = optionsList.filter(o => !existingKeysSet.has(o.idempotencyKey));
+    // Deduplicate against already active (QUEUED or RUNNING) jobs per workflow in production
+    let activeWfSet = new Set<string>();
+    if (isProduction() && !process.env.VITEST) {
+      const workflowIds = Array.from(new Set(optionsList.map(o => o.workflowId)));
+      const wfPlaceholders = workflowIds.map(() => '?').join(', ');
+      const activeWfSql = `SELECT DISTINCT workflow_id FROM automation_jobs WHERE workflow_id IN (${wfPlaceholders}) AND status IN ('QUEUED', 'RUNNING')`;
+      try {
+        const rows = await this.d1Repo.query<any>('automation_jobs', activeWfSql, workflowIds);
+        activeWfSet = new Set(rows.map(r => r.workflow_id));
+      } catch {}
+    }
+
+    const toInsert = optionsList.filter(o => !existingKeysSet.has(o.idempotencyKey) && !activeWfSet.has(o.workflowId));
     if (toInsert.length === 0) {
-      return { attempted: optionsList.length, enqueuedCount: 0, existingCount: existingKeysSet.size, failedCount: 0 };
+      return { attempted: optionsList.length, enqueuedCount: 0, existingCount: optionsList.length, failedCount: 0 };
     }
 
     // 2. Perform insert for new jobs
@@ -245,7 +275,7 @@ export class DurableJobQueue {
     return {
       attempted: optionsList.length,
       enqueuedCount,
-      existingCount: existingKeysSet.size,
+      existingCount: optionsList.length - enqueuedCount - failedCount,
       failedCount,
       errors: errors.length > 0 ? errors : undefined
     };
@@ -729,6 +759,35 @@ export class DurableJobQueue {
       oldestQueuedAgeMinutes,
       lastSuccessfulExecutionAt: lastSuccessTs
     };
+  }
+
+  /**
+   * Compacts any stale duplicate QUEUED jobs across workflows,
+   * retaining strictly at most ONE QUEUED job per workflow_id.
+   * Duplicate jobs are transitioned to 'NO_ACTION_DUE' with last_error = 'SUPERSEDED_DEDUP'.
+   */
+  public async compactStaleDuplicateQueueJobs(): Promise<number> {
+    const compactionSql = `
+      UPDATE automation_jobs
+      SET status = 'NO_ACTION_DUE', last_error = 'SUPERSEDED_DEDUP', updated_at = datetime('now')
+      WHERE status = 'QUEUED'
+        AND id NOT IN (
+          SELECT max(id) FROM automation_jobs WHERE status = 'QUEUED' GROUP BY workflow_id
+        )
+    `;
+
+    try {
+      if (isProduction() && !process.env.VITEST) {
+        const res = await this.d1Repo.executeWrite('automation_jobs', compactionSql, []);
+        return (res as any)?.rowsAffected ?? (res as any)?.changes ?? 0;
+      } else {
+        const res = getDb().prepare(compactionSql).run();
+        return res.changes ?? 0;
+      }
+    } catch (err: any) {
+      console.warn(`[JobQueue] compactStaleDuplicateQueueJobs notice: ${err.message}`);
+      return 0;
+    }
   }
 
   /**
