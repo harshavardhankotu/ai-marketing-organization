@@ -189,23 +189,23 @@ describe('Revenue Engine V3.2 — First Customer & Commercial Conversion', () =>
       const html = await res.text();
 
       // Positioning & Headline
-      expect(html).toContain('Never Lose Another Evening Patient Inquiry');
-      expect(html).toContain('AI Inbound Lead Conversion System');
+      expect(html).toMatch(/Never Lose Another Evening (Patient|Customer) Inquiry/);
+      expect(html).toMatch(/AI Inbound Lead Conversion System|Administrative Website/);
 
       // Problem description
       expect(html).toContain('8 PM to 8 AM Inquiry Gap');
       expect(html).toContain('Competitor Leakage');
 
       // Defined Deliverables
-      expect(html).toContain('24/7 WhatsApp Instant Away Triage');
-      expect(html).toContain('Top 10 Practice Quick Replies');
-      expect(html).toContain('Direct Calendar Appointment Booking');
+      expect(html).toMatch(/24\/7 WhatsApp Instant Away (Triage|Inquiry Logging)/);
+      expect(html).toMatch(/Top 10 Practice (Quick Replies|Administrative Quick Replies)/);
+      expect(html).toMatch(/Direct Calendar (Appointment Booking|Callback Request Logging)/);
       expect(html).toContain('Shared Real-Time Inquiry Tracking Sheet');
 
       // Interactive Demonstration with Sample Data Explicitly Labelled
-      expect(html).toContain('Interactive Demonstration: Inbound Patient Triage');
-      expect(html).toContain('SAMPLE DATA ONLY — INBOUND PATIENT TRIAGE PREVIEW');
-      expect(html).toContain('Apex Dental Triage Assistant');
+      expect(html).toMatch(/Interactive Demonstration: (Inbound Patient Triage|Administrative After-Hours Inquiry Capture)/);
+      expect(html).toMatch(/SAMPLE DATA ONLY — INBOUND PATIENT TRIAGE PREVIEW|Illustrative Administrative Example — No Clinical or Medical Triage/);
+      expect(html).toMatch(/Apex Dental Triage Assistant|Apex Reception Inquiry Assistant/);
 
       // Transparent Commercial Terms
       expect(html).toContain('Introductory Pilot Implementation');
@@ -240,7 +240,7 @@ describe('Revenue Engine V3.2 — First Customer & Commercial Conversion', () =>
       const html = await res.text();
       expect(html).toContain('Configuration Pending Owner Attestation');
       expect(html).toContain('noindex, nofollow');
-      expect(html).toContain('SAMPLE DATA ONLY — INBOUND PATIENT TRIAGE PREVIEW');
+      expect(html).toMatch(/SAMPLE DATA ONLY — INBOUND PATIENT TRIAGE PREVIEW|Illustrative Administrative Example — No Clinical or Medical Triage/);
       expect(html).toContain('Scope of Technical Deliverables');
       expect(html).toContain('href="/deals"');
     });

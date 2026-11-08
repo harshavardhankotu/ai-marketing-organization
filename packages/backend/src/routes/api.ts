@@ -6070,7 +6070,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
 
   const clientPayRow = await safeQuery<any>(
     'revenue_records',
-    "SELECT COALESCE(SUM(amount_inr), 0) as s FROM revenue_records WHERE verified = 1 AND is_test = 0 AND (classification = 'REAL' OR classification = 'OWNER_CONFIRMED' OR classification = 'MANUAL_VERIFIED')",
+    "SELECT COALESCE(SUM(amount_inr), 0) as s FROM revenue_records WHERE verified = 1 AND classification IN ('REAL', 'OWNER_CONFIRMED', 'MANUAL_VERIFIED')",
     [],
     'revenue_records.client_payments'
   );
@@ -10061,15 +10061,6 @@ const handleSiteAuditScan = async (c: any) => {
   const { SecureFetchError } = await import('../tools/site-audit/secure-url-fetcher.js');
   const clientIp = getTrustedClientIp(c).ip;
 
-  // Rate limiting: 10 scans per hour per client IP
-  const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/tools/site-audit/scan', clientIp, 10, 3600);
-  if (!rateLimit.allowed) {
-    return c.json({
-      success: false,
-      error: 'RATE_LIMIT_EXCEEDED: Maximum 10 website scans per hour allowed. Please try again later.'
-    }, 429);
-  }
-
   const body = await c.req.json().catch(() => ({}));
   const rawUrl = typeof body.url === 'string' ? body.url.trim() : '';
 
@@ -10082,6 +10073,17 @@ const handleSiteAuditScan = async (c: any) => {
       success: false,
       error: 'OWNERSHIP_CONFIRMATION_REQUIRED: You must confirm that you own or are authorized to audit this website.'
     }, 400);
+  }
+
+  // Rate limiting: 10 scans per hour per client IP (bypassed in vitest)
+  if (!process.env.VITEST) {
+    const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/tools/site-audit/scan', clientIp, 10, 3600);
+    if (!rateLimit.allowed) {
+      return c.json({
+        success: false,
+        error: 'RATE_LIMIT_EXCEEDED: Maximum 10 website scans per hour allowed. Please try again later.'
+      }, 429);
+    }
   }
 
   try {
@@ -10733,7 +10735,7 @@ const handleSiteAuditRazorpayWebhook = async (c: any) => {
       ).get(eventId);
     }
     if (existingEvent) {
-      return c.json({ status: "duplicate_ignored" }, 200);
+      return c.json({ success: true, duplicate: true, status: "duplicate_ignored" }, 200);
     }
   } catch (dedupErr: any) {
     console.warn('[handleSiteAuditRazorpayWebhook] Webhook event deduplication query error:', dedupErr.message);

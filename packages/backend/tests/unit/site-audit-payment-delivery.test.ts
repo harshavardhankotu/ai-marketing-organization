@@ -208,6 +208,21 @@ describe('SiteFix AI: Route Integration Tests via Hono apiRouter', () => {
     process.env.RAZORPAY_WEBHOOK_SECRET = webhookSecret;
     const eventId = `evt_test_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 
+    const { getDb } = await import('../../src/db/client.js');
+    getDb().prepare(`
+      INSERT OR REPLACE INTO payment_orders (
+        id, business_id, order_id, receipt, amount_inr, currency, status, notes_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'CREATED', ?, datetime('now'), datetime('now'))
+    `).run(
+      'order_test_hook_001',
+      'biz_platform_aro',
+      'order_test_hook_001',
+      'audit_test_captured',
+      499,
+      'INR',
+      JSON.stringify({ auditId: 'audit_test_captured', sku: 'SITEFIX_AI_PACK_V1' })
+    );
+
     const payload = {
       entity: 'event',
       account_id: 'acc_test_123',

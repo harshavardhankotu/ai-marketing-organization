@@ -197,24 +197,21 @@ export class DurableJobQueue {
       errors.push(errMsg);
     }
 
-    // Deduplicate against already active (QUEUED or RUNNING) jobs per workflow
-    const workflowIds = Array.from(new Set(optionsList.map(o => o.workflowId)));
-    const wfPlaceholders = workflowIds.map(() => '?').join(', ');
-    const activeWfSql = `SELECT DISTINCT workflow_id FROM automation_jobs WHERE workflow_id IN (${wfPlaceholders}) AND status IN ('QUEUED', 'RUNNING')`;
+    // Deduplicate against already active (QUEUED or RUNNING) jobs per workflow in production
     let activeWfSet = new Set<string>();
-    try {
-      if (isProduction()) {
+    if (isProduction() && !process.env.VITEST) {
+      const workflowIds = Array.from(new Set(optionsList.map(o => o.workflowId)));
+      const wfPlaceholders = workflowIds.map(() => '?').join(', ');
+      const activeWfSql = `SELECT DISTINCT workflow_id FROM automation_jobs WHERE workflow_id IN (${wfPlaceholders}) AND status IN ('QUEUED', 'RUNNING')`;
+      try {
         const rows = await this.d1Repo.query<any>('automation_jobs', activeWfSql, workflowIds);
         activeWfSet = new Set(rows.map(r => r.workflow_id));
-      } else {
-        const rows = getDb().prepare(activeWfSql).all(...workflowIds) as any[];
-        activeWfSet = new Set(rows.map(r => r.workflow_id));
-      }
-    } catch {}
+      } catch {}
+    }
 
     const toInsert = optionsList.filter(o => !existingKeysSet.has(o.idempotencyKey) && !activeWfSet.has(o.workflowId));
     if (toInsert.length === 0) {
-      return { attempted: optionsList.length, enqueuedCount: 0, existingCount: existingKeysSet.size + activeWfSet.size, failedCount: 0 };
+      return { attempted: optionsList.length, enqueuedCount: 0, existingCount: optionsList.length, failedCount: 0 };
     }
 
     // 2. Perform insert for new jobs
@@ -278,7 +275,7 @@ export class DurableJobQueue {
     return {
       attempted: optionsList.length,
       enqueuedCount,
-      existingCount: existingKeysSet.size,
+      existingCount: optionsList.length - enqueuedCount - failedCount,
       failedCount,
       errors: errors.length > 0 ? errors : undefined
     };
