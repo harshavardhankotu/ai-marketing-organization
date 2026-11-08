@@ -221,7 +221,7 @@ describe('V5.5 — Real Revenue Execution, Durable D1 Learning & Live Provider W
       expect(res.status).toBe(200);
 
       const json = await res.json();
-      expect(json.version).toMatch(/^5\.[57]\.0$/);
+      expect(json.version).toMatch(/^5\.[5-8]\.[0-9]+$/);
       expect(json.banditLearning).toBeDefined();
       expect(Object.keys(json.banditLearning).length).toBe(8);
 

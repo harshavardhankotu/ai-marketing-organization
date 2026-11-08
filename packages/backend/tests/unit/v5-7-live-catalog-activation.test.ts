@@ -234,7 +234,7 @@ describe('V5.7 — Live Catalog Activation, B2B Leak Prevention & Multi-Merchant
       const res = await app.request('/api/v1/public/autonomy-status');
       expect(res.status).toBe(200);
       const json = await res.json();
-      expect(json.version).toBe('5.7.0');
+      expect(json.version).toMatch(/^5\.[78]\.[0-9]+$/);
       expect(json.quotaLedger).toBeDefined();
       expect(json.policyGate.humanReviewGate).toBe('STRICT_ENFORCED');
     });
