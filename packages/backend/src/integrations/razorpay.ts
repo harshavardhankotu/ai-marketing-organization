@@ -1327,6 +1327,7 @@ export class RazorpayAdapter {
         }
       }
     } else {
+      // Local dev / test SQLite environment
       try {
         getDb().prepare(`
           INSERT INTO processed_webhook_events (
@@ -1342,8 +1343,24 @@ export class RazorpayAdapter {
 
         if (isConflict) {
           isDuplicate = true;
-        } else {
-          throw insertErr;
+        }
+      }
+
+      try {
+        getDb().prepare(`
+          INSERT INTO idempotent_actions (
+            idempotency_key, action_type, target_id, tenant_id, executed_at, status, result_json
+          ) VALUES (?, 'RAZORPAY_WEBHOOK', ?, ?, datetime('now'), 'PROCESSING', '{}')
+        `).run(eventId, paymentId || eventId, businessId);
+      } catch (insertErr: any) {
+        const isConflict =
+          insertErr?.message?.includes('UNIQUE constraint failed') ||
+          insertErr?.message?.includes('PRIMARY KEY must be unique') ||
+          insertErr?.message?.includes('already exists') ||
+          insertErr?.code === 'SQLITE_CONSTRAINT';
+
+        if (isConflict) {
+          isDuplicate = true;
         }
       }
     }
@@ -1554,6 +1571,15 @@ export class RazorpayAdapter {
       classification,
       serviceRendered
     });
+
+    // Mark idempotent action as EXECUTED in local dev/test if table exists
+    if (eventId && (!isProduction() || process.env.VITEST)) {
+      try {
+        getDb().prepare(`
+          UPDATE idempotent_actions SET status = 'EXECUTED', result_json = ? WHERE idempotency_key = ?
+        `).run(JSON.stringify({ transactionId: tx.id, amountINR, journeyId }), eventId);
+      } catch {}
+    }
 
     // If platform customer paid, initialize 5-Day Delivery Blueprint fulfillment (Spec § 38 & § 39)
     if (isPlatformRevenue) {
