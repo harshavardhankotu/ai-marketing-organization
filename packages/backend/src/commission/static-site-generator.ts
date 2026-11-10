@@ -4,7 +4,6 @@ import { fileURLToPath } from 'url';
 import { getDb } from '../db/client.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { isProduction } from '../config/env.js';
-import { DirectCommercialOfferPage } from '../revenue/direct-offer-page.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -240,11 +239,83 @@ export class StaticSiteGenerator {
    * Generates standalone static HTML for the root landing page (/index.html).
    */
   public renderLandingPageHtml(publishedGuides: any[], config: StaticSiteConfig): string {
-    return DirectCommercialOfferPage.getInstance().renderHomepageHtml({
-      siteName: config.siteName,
-      siteUrl: config.siteUrl,
-      contactEmail: config.contactEmail
-    });
+    const title = `${config.siteName} | Commercial Equipment & Supplies Overview`;
+    const canonicalUrl = `${config.siteUrl}/`;
+
+    const guideItems = publishedGuides.length === 0
+      ? `<p style="color: #94a3b8; font-size: 0.95rem;">No published commercial guides available at this time. Guides will be displayed here once verified and published.</p>`
+      : publishedGuides.map(g => `
+          <div style="background: #111827; border: 1px solid #1e293b; border-radius: 8px; padding: 1.25rem 1.5rem; margin-bottom: 1.25rem;">
+            <h2 style="margin: 0 0 0.5rem 0; font-size: 1.25rem;"><a href="/guides/${this.escapeHtml(g.slug)}" style="color: #38bdf8; text-decoration: none;">${this.escapeHtml(g.title)}</a></h2>
+            <p style="color: #94a3b8; font-size: 0.88rem; margin: 0 0 0.75rem 0;">${this.escapeHtml(g.intent_target || g.description || 'Commercial product specifications and comparison overview.')}</p>
+            <a href="/guides/${this.escapeHtml(g.slug)}" style="color: #06b6d4; font-weight: 600; text-decoration: none; font-size: 0.88rem;">Read Full Guide &rarr;</a>
+          </div>
+        `).join('');
+
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  ${this.getGoogleSiteVerificationMeta()}${this.getCuelinksVerificationMeta()}<title>${this.escapeHtml(title)}</title>
+  <meta name="description" content="Independent commercial equipment, supplies, and specification overviews.">
+  <link rel="canonical" href="${canonicalUrl}">
+  <meta name="robots" content="index, follow">
+  <script type="application/ld+json">
+  ${JSON.stringify({
+    '@context': 'https://schema.org',
+    '@type': 'WebSite',
+    name: config.siteName,
+    url: config.siteUrl,
+    description: 'Independent commercial equipment, supplies, and specification overviews.'
+  })}
+  </script>
+  <style>
+    :root { color-scheme: dark; --bg: #090d16; --card: #111827; --text: #e2e8f0; --accent: #06b6d4; --border: #1e293b; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); margin: 0; line-height: 1.6; }
+    header { border-bottom: 1px solid var(--border); padding: 1.25rem 2rem; display: flex; justify-content: space-between; align-items: center; max-width: 900px; margin: 0 auto; }
+    header a.brand { font-weight: 700; color: #fff; text-decoration: none; font-size: 1.2rem; }
+    main { max-width: 820px; margin: 2rem auto; padding: 0 1.5rem; }
+    .disclosure-box { background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 8px; padding: 0.9rem 1.2rem; margin-bottom: 2rem; font-size: 0.88rem; color: #fde68a; font-weight: 500; }
+    footer { border-top: 1px solid var(--border); padding: 3rem 1.5rem; margin-top: 4rem; text-align: center; font-size: 0.88rem; color: #64748b; }
+    footer nav { display: flex; justify-content: center; flex-wrap: wrap; gap: 1.25rem; margin-bottom: 1rem; }
+    footer a { color: #94a3b8; text-decoration: none; }
+    footer a:hover { color: var(--accent); }
+    .legal-notice { font-size: 0.75rem; color: #64748b; margin-top: 1rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <a href="/" class="brand">${this.escapeHtml(config.siteName)}</a>
+    <div style="display: flex; gap: 1rem; align-items: center;">
+      <a href="/deals" style="color: #38bdf8; text-decoration: none; font-size: 0.88rem; font-weight: 600;">Verified Deals</a>
+      <span style="font-size: 0.85rem; color: #94a3b8;">Commercial Guides &amp; Overviews</span>
+    </div>
+  </header>
+  <main>
+    <aside class="disclosure-box" aria-label="Affiliate Disclosure">
+      <strong>Disclosure:</strong> As an Amazon Associate I earn from qualifying purchases. We do not test products or show prices; check current details on Amazon.in.
+    </aside>
+    <section>
+      <h1 style="color: #fff; font-size: 1.85rem; margin-bottom: 0.5rem;">Commercial Supplies &amp; Equipment Guides</h1>
+      <p style="color: #94a3b8; margin-bottom: 2rem; font-size: 0.95rem;">Factual product evaluations and technical specifications for commercial equipment and business supplies.</p>
+      ${guideItems}
+    </section>
+  </main>
+  <footer>
+    <nav>
+      <a href="/deals">Verified Deals</a>
+      <a href="/revenue">Revenue Funnel</a>
+      <a href="/about">About</a>
+      <a href="/contact">Contact</a>
+      <a href="/privacy">Privacy Policy</a>
+      <a href="/terms">Terms of Service</a>
+      <a href="/disclosure">Affiliate Disclosure</a>
+    </nav>
+    <p>&copy; ${new Date().getFullYear()} ${this.escapeHtml(config.siteName)}. All rights reserved.</p>
+  </footer>
+</body>
+</html>`;
   }
 
   /**
