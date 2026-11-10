@@ -166,6 +166,7 @@ export interface NormalizedDeal {
   trackingUrl?: string;
   affiliateCampaignId?: string;
   modelOrSku?: string;
+  lastVerifiedAt?: string;
   evidenceJson: {
     sources: string[];
     priceHistory?: Array<{ price: number; observedAt: string }>;
@@ -173,6 +174,7 @@ export interface NormalizedDeal {
     rawSpecs?: Record<string, string>;
     lastCorroboratedAt?: string;
     observedAt?: string;
+    [key: string]: any;
   };
   sectorCode?: SectorCode;
   createdAt: string;

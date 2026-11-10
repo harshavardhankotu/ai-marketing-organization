@@ -2695,6 +2695,217 @@ export class AutonomousDealDiscoveryEngine {
   }
 
   /**
+   * Reconciles existing in-stock deal candidates by verifying live Cuelinks affiliate status (Stage D).
+   * Processes eligible deal candidates in batches up to limit (default 25).
+   * Strictly enforces affiliated === true and allowlisted tracking URLs.
+   */
+  public async reconcileExistingDealCandidates(
+    limit: number = 25,
+    organizationId: string = 'org_owner_primary',
+    businessId: string = 'biz_platform_aro'
+  ): Promise<{
+    processed: number;
+    reconciled: number;
+    failed: number;
+    deals: NormalizedDeal[];
+  }> {
+    const isProd = isProduction() && !process.env.VITEST;
+    let candidates: NormalizedDeal[] = [];
+
+    // 1. Query candidates from public_deals
+    try {
+      const selectSql = `
+        SELECT * FROM public_deals
+        WHERE availability = 'IN_STOCK'
+          AND current_price_inr > 0
+          AND (affiliate_verified = 0 OR affiliate_verified IS NULL OR is_monetizable = 0)
+        ORDER BY updated_at ASC
+        LIMIT ?
+      `;
+      let rows: any[] = [];
+      if (this.d1Repo.isRemoteD1Configured() || isProd) {
+        const res = await this.d1Repo.executeRead('public_deals', selectSql, [limit]);
+        rows = res.results || [];
+      } else {
+        const { getDb } = await import('../db/client.js');
+        rows = getDb().prepare(selectSql).all(limit);
+      }
+
+      for (const row of rows) {
+        const d = this.parseDealFromPublicDealsRow(row);
+        if (d) candidates.push(d);
+      }
+    } catch (err: any) {
+      console.warn(`[DealEngine] Failed querying public_deals for candidates: ${err.message}`);
+    }
+
+    // 2. If fewer than limit candidates found in public_deals, check workflows table for VERIFIED PUBLIC_DEAL
+    if (candidates.length < limit) {
+      const remainingLimit = limit - candidates.length;
+      try {
+        const candidateIds = candidates.map(c => c.id);
+        const placeholders = candidateIds.length > 0 ? candidateIds.map(() => '?').join(',') : "''";
+        const wfSql = `
+          SELECT * FROM workflows
+          WHERE workflow_type = 'PUBLIC_DEAL'
+            AND status = 'VERIFIED'
+            AND json_extract(inputs_json, '$.availability') = 'IN_STOCK'
+            AND CAST(json_extract(inputs_json, '$.currentPriceINR') AS REAL) > 0
+            ${candidateIds.length > 0 ? `AND id NOT IN (${placeholders})` : ''}
+          ORDER BY updated_at ASC
+          LIMIT ?
+        `;
+        const wfParams = candidateIds.length > 0 ? [...candidateIds, remainingLimit] : [remainingLimit];
+        let wfRows: any[] = [];
+        if (this.d1Repo.isRemoteD1Configured() || isProd) {
+          const res = await this.d1Repo.executeRead('workflows', wfSql, wfParams);
+          wfRows = res.results || [];
+        } else {
+          const { getDb } = await import('../db/client.js');
+          wfRows = getDb().prepare(wfSql).all(...wfParams);
+        }
+
+        for (const row of wfRows) {
+          const d = this.parseDealFromWorkflowRow(row);
+          if (d && d.availability === 'IN_STOCK' && (d.currentPriceINR || 0) > 0) {
+            candidates.push(d);
+          }
+        }
+      } catch (wfErr: any) {
+        console.warn(`[DealEngine] Failed querying workflows for candidates: ${wfErr.message}`);
+      }
+    }
+
+    if (candidates.length === 0) {
+      return { processed: 0, reconciled: 0, failed: 0, deals: [] };
+    }
+
+    // 3. Resolve approved Cuelinks channel ID
+    let resolvedChannelId: number = 331585;
+    try {
+      const { CuelinksSyncManager } = await import('./cuelinks-sync-manager.js');
+      const cuelinksSync = CuelinksSyncManager.getInstance(this.getCuelinksClient());
+      const channelRes = await cuelinksSync.getApprovedChannel();
+      if (channelRes.approved && channelRes.channel?.id) {
+        resolvedChannelId = Number(channelRes.channel.id);
+      }
+    } catch {}
+
+    if (process.env.CUELINKS_CHANNEL_ID && !isNaN(Number(process.env.CUELINKS_CHANNEL_ID))) {
+      resolvedChannelId = Number(process.env.CUELINKS_CHANNEL_ID);
+    }
+
+    const client = this.getCuelinksClient();
+    const reconciledDeals: NormalizedDeal[] = [];
+    let processedCount = 0;
+    let reconciledCount = 0;
+    let failedCount = 0;
+
+    for (const deal of candidates) {
+      processedCount++;
+
+      // Level 1: SSRF / Domain Security Check
+      const ssrfCheck = DealSsrfGuard.isSafePublicUrl(deal.productUrl);
+      if (!ssrfCheck.safe) {
+        failedCount++;
+        deal.isMonetizable = false;
+        deal.affiliateVerified = false;
+        deal.verificationStatus = 'REJECTED';
+        deal.rejectionReasons.push(`SSRF_REJECTED: ${ssrfCheck.reason}`);
+        await this.persistDealToD1(deal, organizationId, businessId);
+        continue;
+      }
+
+      // Convert via Cuelinks V3
+      let convertedTrackingUrl: string | undefined = undefined;
+      let cuelinksAffiliated = false;
+      let campaignId: string | undefined = undefined;
+
+      if (client.isConfigured() && deal.productUrl) {
+        try {
+          const subid = `aro_${deal.modelOrSku || 'deal'}`.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
+          const subid2 = (deal.category || 'general').replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
+
+          const convRes = await client.convertLink({
+            url: deal.productUrl,
+            channel_id: resolvedChannelId,
+            subid,
+            subid2,
+            subid3: 'stage_d_reconcile',
+            shorten: true
+          });
+
+          // STRICT AUDITOR CHECK: convRes.affiliated === true AND allowlisted tracking URL
+          if (convRes && convRes.affiliated === true && convRes.tracking_url && CuelinksV3Client.isAllowedTrackingUrl(convRes.tracking_url)) {
+            cuelinksAffiliated = true;
+            convertedTrackingUrl = convRes.short_url || convRes.tracking_url;
+            if (convRes.campaign?.id) {
+              campaignId = String(convRes.campaign.id);
+            }
+          }
+        } catch (convErr: any) {
+          console.warn(`[DealEngine] Cuelinks link conversion error for ${deal.id}: ${convErr.message}`);
+        }
+      }
+
+      if (cuelinksAffiliated && convertedTrackingUrl) {
+        reconciledCount++;
+        deal.trackingUrl = convertedTrackingUrl;
+        deal.affiliateVerified = true;
+        deal.isMonetizable = true;
+        deal.productVerified = true;
+        deal.affiliateNetwork = 'CUELINKS';
+        deal.verificationStatus = 'AFFILIATE_VERIFIED';
+        deal.lastCheckedAt = new Date().toISOString();
+        deal.lastVerifiedAt = new Date().toISOString();
+        if (campaignId) deal.affiliateCampaignId = campaignId;
+
+        deal.evidenceJson = {
+          ...(deal.evidenceJson || {}),
+          sources: deal.evidenceJson?.sources || [deal.productUrl],
+          verificationLogs: deal.evidenceJson?.verificationLogs || [],
+          cuelinksAffiliated: true,
+          convertedAt: new Date().toISOString(),
+          channelId: resolvedChannelId,
+          campaignId: campaignId || deal.affiliateCampaignId,
+          trackingUrl: convertedTrackingUrl
+        };
+
+        // Persist to D1 workflows and public_deals
+        await this.persistDealToD1(deal, organizationId, businessId);
+        this.dealsMap.set(deal.id, deal);
+        if (deal.slug) this.dealSlugMap.set(deal.slug.toLowerCase(), deal.id);
+        if (deal.canonicalSlug) this.dealSlugMap.set(deal.canonicalSlug.toLowerCase(), deal.id);
+        reconciledDeals.push(deal);
+      } else {
+        failedCount++;
+        deal.trackingUrl = undefined;
+        deal.affiliateVerified = false;
+        deal.isMonetizable = false;
+        deal.verificationStatus = 'PRODUCT_ONLY_UNMONETIZED';
+        deal.nextRecheckAt = new Date(Date.now() + 6 * 3600 * 1000).toISOString();
+        deal.evidenceJson = {
+          ...(deal.evidenceJson || {}),
+          sources: deal.evidenceJson?.sources || [deal.productUrl],
+          verificationLogs: deal.evidenceJson?.verificationLogs || [],
+          cuelinksAffiliated: false,
+          lastReconcileAttemptAt: new Date().toISOString(),
+          channelId: resolvedChannelId,
+          failureReason: 'CUELINKS_NOT_AFFILIATED'
+        };
+        await this.persistDealToD1(deal, organizationId, businessId);
+      }
+    }
+
+    return {
+      processed: processedCount,
+      reconciled: reconciledCount,
+      failed: failedCount,
+      deals: reconciledDeals
+    };
+  }
+
+  /**
    * Queries active deals with filtering, pagination, and sorting (Spec § 9).
    */
   public static readonly ELIGIBLE_PUBLIC_DEALS_SQL = `
