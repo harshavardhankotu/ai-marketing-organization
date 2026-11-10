@@ -494,7 +494,8 @@ export class DemandEngine {
     }
 
     const draftId = `drft_${crypto.randomUUID().substring(0, 12)}`;
-    const landingUrl = `https://ai-marketing-platform-core.web.app/guides/${offer.offer_slug}?ref=${draftId}`;
+    const baseSiteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').replace(/\/$/, '');
+    const landingUrl = `${baseSiteUrl}/guides/${offer.offer_slug}?ref=${draftId}`;
 
     const draftText = [
       `For ${signal.category.replace('_', ' ')}, the ${offer.title} is a solid, reliable choice in India.`,

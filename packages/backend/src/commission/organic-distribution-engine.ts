@@ -203,14 +203,19 @@ export class OrganicDistributionEngine {
     urls: string[],
     host: string = 'ai-marketing-organization.onrender.com',
     fetchFn: typeof fetch = fetch
-  ): Promise<boolean> {
-    if (!urls || urls.length === 0) return false;
+  ): Promise<{ status: string; submitted: boolean }> {
+    if (!urls || urls.length === 0) return { status: 'NO_URLS', submitted: false };
+    const rawKey = (process.env.INDEXNOW_KEY || '').trim();
+    if (!rawKey || !/^[a-zA-Z0-9-]{8,128}$/.test(rawKey)) {
+      // Stage C Task H.3: When INDEXNOW_KEY is unset or invalid, skip and do not dispatch
+      return { status: 'SKIPPED_NO_INDEXNOW_KEY', submitted: false };
+    }
+
     try {
-      const key = process.env.INDEXNOW_KEY || 'ai-marketing-indexnow-key';
       const payload = {
         host,
-        key,
-        keyLocation: `https://${host}/${key}.txt`,
+        key: rawKey,
+        keyLocation: `https://${host}/${rawKey}.txt`,
         urlList: urls
       };
 
@@ -222,9 +227,9 @@ export class OrganicDistributionEngine {
       }).catch(err => {
         console.warn(`[IndexNow] Non-blocking ping notice: ${err.message}`);
       });
-      return true;
+      return { status: 'SUBMITTED', submitted: true };
     } catch {
-      return false;
+      return { status: 'FAILED', submitted: false };
     }
   }
 

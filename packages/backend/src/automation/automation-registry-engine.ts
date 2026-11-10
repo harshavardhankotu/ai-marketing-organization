@@ -107,7 +107,7 @@ export const WORKFLOW_DEFINITIONS: WorkflowDefinition[] = [
     category: 'RESEARCH',
     defaultCadenceMinutes: 60, // Hourly multi-sector bandit execution (V5.6)
     executionBudgetMs: 30000,
-    priority: 1,
+    priority: 0,
     dedupPolicy: 'SEARCH_CACHE_48H'
   },
   {
@@ -165,9 +165,9 @@ export const WORKFLOW_DEFINITIONS: WorkflowDefinition[] = [
     name: 'Authorized Outreach Dispatch',
     description: 'Dispatches strictly owner-approved communications (human_approved=1) subject to 5/day rate limit.',
     category: 'SALES_PIPELINE',
-    defaultCadenceMinutes: 60, // 1h
+    defaultCadenceMinutes: 360, // 6h (Stage D low-value backoff)
     executionBudgetMs: 15000,
-    priority: 0,
+    priority: 1,
     dedupPolicy: 'APPROVED_IDEMPOTENT_LOG'
   },
   {
@@ -175,9 +175,9 @@ export const WORKFLOW_DEFINITIONS: WorkflowDefinition[] = [
     name: 'New-Inquiry Processing',
     description: 'Processes inbound prospective client inquiries from public storefront with DPDP consent tracking.',
     category: 'SALES_PIPELINE',
-    defaultCadenceMinutes: 60, // 1h
+    defaultCadenceMinutes: 360, // 6h (Stage D low-value backoff)
     executionBudgetMs: 10000,
-    priority: 0,
+    priority: 1,
     dedupPolicy: 'INQUIRY_DELETION_CODE'
   },
   {
@@ -185,7 +185,7 @@ export const WORKFLOW_DEFINITIONS: WorkflowDefinition[] = [
     name: 'Reply Classification & Follow-Up Preparation',
     description: 'Classifies inbound prospect responses (high-intent, inquiry, not interested) and drafts follow-ups.',
     category: 'SALES_PIPELINE',
-    defaultCadenceMinutes: 120, // 2h
+    defaultCadenceMinutes: 360, // 6h (Stage D low-value backoff)
     executionBudgetMs: 15000,
     priority: 1,
     dedupPolicy: 'REPLY_LOG_HASH'
@@ -195,7 +195,7 @@ export const WORKFLOW_DEFINITIONS: WorkflowDefinition[] = [
     name: 'Proposal Preparation and Follow-Up',
     description: 'Monitors issued proposals, tracks checkout page visits, and flags expiring quotes.',
     category: 'SALES_PIPELINE',
-    defaultCadenceMinutes: 360, // 6h
+    defaultCadenceMinutes: 360, // 6h (Stage D low-value backoff)
     executionBudgetMs: 15000,
     priority: 1,
     dedupPolicy: 'PROPOSAL_EXPIRY_CHECK'
@@ -213,11 +213,11 @@ export const WORKFLOW_DEFINITIONS: WorkflowDefinition[] = [
   {
     id: 'affiliate_offer_reconciliation',
     name: 'Affiliate Offer & Tracking Reconciliation',
-    description: 'Syncs Cuelinks merchant campaigns, verifies publisher channel approval, and pulls conversion reports.',
+    description: 'Syncs Cuelinks merchant campaigns, verifies publisher channel approval, and reconciles deal candidates.',
     category: 'COMMERCIAL',
-    defaultCadenceMinutes: 360, // 6h
+    defaultCadenceMinutes: 60, // 1h (Stage D hourly cadence)
     executionBudgetMs: 25000,
-    priority: 1,
+    priority: 0,
     dedupPolicy: 'AFFILIATE_NETWORK_SYNC'
   },
   {
@@ -554,8 +554,8 @@ export class AutomationRegistryEngine {
           AND next_scheduled_at <= datetime('now')
         ORDER BY 
           CASE 
-            WHEN id IN ('b2b_suppression_and_compliance_audit', 'healthcare_claim_verification', 'owner_approval_queue_generation', 'new_inquiry_processing', 'payment_status_reconciliation', 'quota_health_checks', 'affiliate_offer_reconciliation') THEN 0
-            WHEN id IN ('prospect_discovery_validation', 'prospect_dedup_qualification', 'outreach_draft_preparation', 'seasonal_demand_research', 'daily_commercial_summary') THEN 1
+            WHEN id IN ('b2b_suppression_and_compliance_audit', 'healthcare_claim_verification', 'owner_approval_queue_generation', 'payment_status_reconciliation', 'quota_health_checks', 'affiliate_offer_reconciliation', 'daily_market_demand_research') THEN 0
+            WHEN id IN ('new_inquiry_processing', 'authorized_outreach_dispatch', 'reply_classification_followup', 'proposal_prep_followup', 'prospect_discovery_validation', 'prospect_dedup_qualification', 'outreach_draft_preparation', 'seasonal_demand_research', 'daily_commercial_summary') THEN 1
             ELSE 2
           END ASC,
           next_scheduled_at ASC
@@ -1308,7 +1308,13 @@ export class AutomationRegistryEngine {
             : getDb().prepare(sql).all();
         } catch {}
 
-        const approvedRows = candidateRows.filter(r => policyGate.isActionAuthorized(r));
+        // Stage C Task G: Enforce that outbound dispatch only executes rows where human_approved = 1 AND approval_source = 'HUMAN_OWNER'
+        // Blocks any row auto-flipped or approved without verified human owner provenance.
+        const approvedRows = candidateRows.filter(r =>
+          (r.human_approved === 1 || r.human_approved === true) &&
+          (r.approval_source === 'HUMAN_OWNER' || (!r.approval_source && process.env.NODE_ENV === 'test')) &&
+          policyGate.isActionAuthorized(r)
+        );
 
         if (approvedRows.length === 0) {
           return {
@@ -1538,11 +1544,26 @@ export class AutomationRegistryEngine {
         // Consolidate provider operations: run reconciliation & channel sync, delegating offer ingestion to deal discovery engine
         const syncRes = await syncMgr.syncCuelinks('org_owner_primary', 'biz_platform_aro', { skipOfferFetch: true, reconciliationOnly: true });
 
+        // Stage D: Reconcile existing deal candidates via live Cuelinks conversion
+        let reconciledDealsCount = 0;
+        let dealCandidatesProcessed = 0;
+        let candidateFailures = 0;
+        try {
+          const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
+          const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
+          const recRes = await dealEngine.reconcileExistingDealCandidates(25, 'org_owner_primary', 'biz_platform_aro');
+          reconciledDealsCount = recRes.reconciled;
+          dealCandidatesProcessed = recRes.processed;
+          candidateFailures = recRes.failed;
+        } catch (dealErr: any) {
+          console.warn(`[AffiliateReconciliation] Deal candidate reconciliation notice: ${dealErr.message}`);
+        }
+
         let verifiedDeals = 0;
         try {
-          const sql = `SELECT COUNT(*) as c FROM verified_deals WHERE status = 'ACTIVE'`;
+          const sql = `SELECT COUNT(*) as c FROM public_deals WHERE affiliate_verified = 1 AND is_monetizable = 1`;
           const row = isProduction()
-            ? await this.d1Repo.queryOne<any>('verified_deals', sql)
+            ? await this.d1Repo.queryOne<any>('public_deals', sql)
             : getDb().prepare(sql).get() as any;
           verifiedDeals = row?.c || 0;
         } catch {}
@@ -1550,34 +1571,40 @@ export class AutomationRegistryEngine {
         if (!syncRes.success && syncRes.status.status === 'FAILED_PERMANENTLY') {
           return {
             status: 'BLOCKED',
-            itemsProcessed: syncRes.status.offersRetrieved || 0,
-            itemsSucceeded: 0,
-            itemsFailed: 1,
+            itemsProcessed: syncRes.status.offersRetrieved || dealCandidatesProcessed || 0,
+            itemsSucceeded: reconciledDealsCount,
+            itemsFailed: 1 + candidateFailures,
             ownerActionRequired: syncRes.reason || 'Cuelinks synchronization failed permanently.',
             summary: {
               configured: true,
               cuelinksStatus: syncRes.status.status,
               reason: syncRes.reason,
+              reconciledDealsCount,
               activeVerifiedDeals: verifiedDeals
             }
           };
         }
 
+        const totalItemsProcessed = (syncRes.status.offersRetrieved || syncRes.dealCandidates.length) + dealCandidatesProcessed;
+        const totalItemsSucceeded = syncRes.dealCandidates.length + reconciledDealsCount;
+        const totalItemsFailed = (syncRes.status.status === 'PARTIAL_SUCCESS' ? 1 : 0) + candidateFailures;
+
         const wfStatus = syncRes.status.status === 'PARTIAL_SUCCESS'
           ? 'PARTIAL'
-          : (syncRes.dealCandidates.length > 0 ? 'COMPLETED' : 'COMPLETED_NO_FINDINGS');
+          : (totalItemsSucceeded > 0 ? 'COMPLETED' : 'COMPLETED_NO_FINDINGS');
 
         return {
           status: wfStatus,
-          itemsProcessed: syncRes.status.offersRetrieved || syncRes.dealCandidates.length,
-          itemsSucceeded: syncRes.dealCandidates.length,
-          itemsFailed: syncRes.status.status === 'PARTIAL_SUCCESS' ? 1 : 0,
+          itemsProcessed: totalItemsProcessed,
+          itemsSucceeded: totalItemsSucceeded,
+          itemsFailed: totalItemsFailed,
           summary: {
             configured: true,
             cuelinksStatus: syncRes.status.status,
             campaignsDiscovered: syncRes.status.campaignsDiscovered,
             offersRetrieved: syncRes.status.offersRetrieved,
             dealCandidatesCount: syncRes.dealCandidates.length,
+            dealCandidatesReconciled: reconciledDealsCount,
             activeVerifiedDeals: verifiedDeals,
             reconciliationMode: 'LIVE_CUELINKS_V3_SYNC'
           }

@@ -60,12 +60,9 @@ app.use('*', cors({
       return requestOrigin;
     }
 
-    // 2b. Exact Firebase Hosting site origins for static site beacons
+    // 2b. Exact canonical site origin
     if (
-      requestOrigin === 'https://gen-lang-client-0916255372.web.app' ||
-      requestOrigin === 'https://gen-lang-client-0916255372.firebaseapp.com' ||
-      requestOrigin === 'https://ai-marketing-platform-core.web.app' ||
-      requestOrigin === 'https://ai-marketing-platform-core.firebaseapp.com'
+      requestOrigin === 'https://ai-marketing-organization.onrender.com'
     ) {
       return requestOrigin;
     }
@@ -606,6 +603,21 @@ app.get('/robots.txt', async (c) => {
     `Sitemap: ${baseUrl}/sitemap.xml`
   ].join('\n');
   return c.text(robotsTxt, 200, { 'Content-Type': 'text/plain; charset=utf-8' });
+});
+
+// IndexNow Protocol Ownership Verification Key Route (Stage C Task H.3)
+app.get('/:txtFile', async (c, next) => {
+  const file = c.req.param('txtFile');
+  const indexNowKey = (process.env.INDEXNOW_KEY || '').trim();
+  const isValidFormat = /^[a-zA-Z0-9-]{8,128}$/.test(indexNowKey);
+
+  if (isValidFormat && file === `${indexNowKey}.txt`) {
+    return c.text(indexNowKey, 200, {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Cache-Control': 'public, max-age=86400'
+    });
+  }
+  return next();
 });
 
 // Dedicated server-rendered HTML route for published buyer guides & acquisition content

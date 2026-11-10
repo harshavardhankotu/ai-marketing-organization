@@ -482,9 +482,11 @@ export class SiteAuditService {
             domain: cleanDomain,
             target_url: entry.audit.url,
             business_name: entry.audit.businessName || cleanDomain,
-            performance_score: entry.audit.pageSpeed?.performanceScore || 0,
-            seo_score: entry.audit.pageSpeed?.seoScore || Math.round(entry.audit.scorecard?.totalScore || entry.audit.score || 0),
-            core_web_vitals_json: JSON.stringify(entry.audit.pageSpeed?.coreWebVitals || {}),
+            performance_score: (entry.audit.pageSpeed?.status === 'SUCCESS' && typeof entry.audit.pageSpeed.performanceScore === 'number')
+              ? entry.audit.pageSpeed.performanceScore
+              : null,
+            seo_score: entry.audit.pageSpeed?.seoScore ?? Math.round(entry.audit.scorecard?.totalScore ?? entry.audit.score ?? 0),
+            core_web_vitals_json: JSON.stringify(entry.audit.pageSpeed?.coreWebVitals || null),
             checklist_json: JSON.stringify(entry.audit.scorecard?.items || entry.audit.findings || []),
             status: 'COMPLETED'
           };

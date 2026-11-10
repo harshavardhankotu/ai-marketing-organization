@@ -19,32 +19,32 @@ export interface ISTTimeComponents {
 export type ScheduleWindow = 'MORNING_0900_IST' | 'EVENING_2100_IST' | 'CONTINUOUS_HOURLY';
 
 export const MORNING_0900_WORKFLOWS = [
-  'daily_market_demand_research',
   'seasonal_demand_research',
   'competitor_pricing_research',
   'prospect_discovery_validation',
   'prospect_dedup_qualification',
   'outreach_draft_preparation',
   'owner_approval_queue_generation',
-  'content_freshness_verification'
+  'content_freshness_verification',
+  'new_inquiry_processing',
+  'authorized_outreach_dispatch'
 ];
 
 export const EVENING_2100_WORKFLOWS = [
-  'affiliate_offer_reconciliation',
   'seo_keyword_research',
   'multi_market_lead_qualification',
   'proposal_prep_followup',
+  'reply_classification_followup',
   'daily_commercial_summary'
 ];
 
 export const CONTINUOUS_HOURLY_WORKFLOWS = [
+  'affiliate_offer_reconciliation',
+  'daily_market_demand_research',
   'quota_health_checks',
   'payment_status_reconciliation',
-  'new_inquiry_processing',
-  'reply_classification_followup',
   'healthcare_claim_verification',
-  'b2b_suppression_and_compliance_audit',
-  'authorized_outreach_dispatch'
+  'b2b_suppression_and_compliance_audit'
 ];
 
 export class CommercialSchedulePolicy {

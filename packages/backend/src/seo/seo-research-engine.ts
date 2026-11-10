@@ -144,6 +144,11 @@ export class IndexNowSubmitter {
       return { success: true, statusCode: 200, submittedCount: 0, message: 'Zero URLs to submit.' };
     }
 
+    const cleanKey = (key || '').trim();
+    if (!cleanKey || !/^[a-zA-Z0-9-]{8,128}$/.test(cleanKey)) {
+      return { success: true, statusCode: 200, submittedCount: 0, message: 'SKIPPED_NO_INDEXNOW_KEY' };
+    }
+
     const payload = {
       host,
       key,

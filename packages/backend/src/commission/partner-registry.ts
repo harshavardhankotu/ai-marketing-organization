@@ -290,10 +290,11 @@ export class PartnerRegistryEngine {
   }
 
   /**
-   * Explicit authorization gate (Phase 2 Task 5): only AUTHORIZED partners
-   * may serve production referrals. AI-discovered rows stay PENDING_REVIEW.
+   * Explicit authorization gate: only strictly AUTHORIZED & APPROVED partners
+   * may serve production referrals. AI-discovered or provisional rows stay PENDING_REVIEW.
    */
-  public isPartnerAuthorizedForProduction(partner: Partner): boolean {
+  public isPartnerAuthorizedForProduction(partner?: Partner | null): boolean {
+    if (!partner) return false;
     const isPermittedStatus =
       partner.approvalStatus === 'APPROVED' ||
       partner.approvalStatus === 'QUALIFYING_SALES_IN_PROGRESS' ||
@@ -319,7 +320,7 @@ export class PartnerRegistryEngine {
   }> {
     const partners = await this.listPartners(orgId);
     const authorizedPartners = partners.filter(p =>
-      (p.authorizationStatus === 'AUTHORIZED' || p.approvalStatus === 'APPROVED' || (p.approvalStatus as string) === 'PROVISIONAL') && p.activeStatus === 1
+      p.authorizationStatus === 'AUTHORIZED' && p.approvalStatus === 'APPROVED' && p.activeStatus === 1
     );
 
     const offers = await this.listOffers(orgId);

@@ -41,7 +41,7 @@ export class StaticSiteGenerator {
     let siteName = process.env.PUBLIC_SITE_NAME?.trim();
     let authorName = (process.env.PUBLIC_AUTHOR_NAME || process.env.PUBLIC_SITE_AUTHOR || process.env.PUBLIC_AUTHOR)?.trim();
     let contactEmail = (process.env.PUBLIC_CONTACT_EMAIL || process.env.PUBLIC_SITE_EMAIL || process.env.PUBLIC_EMAIL)?.trim();
-    const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-platform-core.web.app').replace(/\/$/, '');
+    const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').replace(/\/$/, '');
 
     if (!siteName || !authorName || !contactEmail) {
       let intakeRow: any = null;
@@ -103,7 +103,7 @@ export class StaticSiteGenerator {
       throw new Error(`CONFIG_ERROR: Missing required public site configuration: ${missing.join(', ')}`);
     }
 
-    const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-platform-core.web.app').replace(/\/$/, '');
+    const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').replace(/\/$/, '');
 
     return {
       siteName: siteName!,

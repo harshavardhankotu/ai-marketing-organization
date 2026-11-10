@@ -100,7 +100,8 @@ export function isBotTraffic(userAgent?: string): boolean {
 export function classifyTraffic(
   userAgent?: string,
   ip?: string,
-  headers?: Record<string, string>
+  headers?: Record<string, string>,
+  verifiedHumanProof?: boolean
 ): TrafficClassification {
   const ua = (userAgent || '').toLowerCase();
 
@@ -109,6 +110,7 @@ export function classifyTraffic(
     headers?.['x-diagnostic'] ||
     headers?.['x-diagnostic-probe'] ||
     headers?.['x-test-traffic'] ||
+    headers?.['x-test-mode'] ||
     /vitest|jest|supertest|postman|playwright|cypress|test-agent/i.test(ua)
   ) {
     return 'test';
@@ -144,7 +146,7 @@ export function classifyTraffic(
 
   // 3. Suspected bots / automated HTTP clients
   const SUSPECTED_BOT_PATTERNS = [
-    /bot/i,
+    /bot\b/i,
     /crawl/i,
     /spider/i,
     /curl/i,
@@ -157,7 +159,8 @@ export function classifyTraffic(
     /^node$/i,
     /httpclient/i,
     /headless/i,
-    /scraper/i
+    /scraper/i,
+    /slurp/i
   ];
   if (SUSPECTED_BOT_PATTERNS.some(p => p.test(ua))) {
     return 'suspected_bot';
@@ -169,8 +172,11 @@ export function classifyTraffic(
   }
 
   // 5. Typical browser patterns (Mozilla + WebKit/Chrome/Safari/Firefox/Edge)
-  // Phase 3 Truth: Public browser User-Agent is classified as browser_candidate, NEVER confirmed human
+  // Public browser User-Agent is classified as browser_candidate, NEVER confirmed human without proof
   if (/mozilla/i.test(ua) && (/chrome|safari|firefox|edge|mobile|opera/i.test(ua))) {
+    if (verifiedHumanProof) {
+      return 'human';
+    }
     return 'browser_candidate';
   }
 
