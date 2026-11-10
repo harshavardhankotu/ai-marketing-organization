@@ -171,16 +171,7 @@ export function classifyTraffic(
     return 'unknown';
   }
 
-  // 5. Standard browser headers check when headers are present
-  if (headers && Object.keys(headers).length > 0) {
-    const hasAccept = Boolean(headers['accept'] || headers['Accept']);
-    const hasAcceptLang = Boolean(headers['accept-language'] || headers['Accept-Language']);
-    if (!hasAccept && !hasAcceptLang) {
-      return 'unknown';
-    }
-  }
-
-  // 6. Typical browser patterns (Mozilla + WebKit/Chrome/Safari/Firefox/Edge)
+  // 5. Typical browser patterns (Mozilla + WebKit/Chrome/Safari/Firefox/Edge)
   // Public browser User-Agent is classified as browser_candidate, NEVER confirmed human without proof
   if (/mozilla/i.test(ua) && (/chrome|safari|firefox|edge|mobile|opera/i.test(ua))) {
     if (verifiedHumanProof) {

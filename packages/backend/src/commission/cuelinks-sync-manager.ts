@@ -1273,6 +1273,8 @@ export class CuelinksSyncManager {
       }
     }
 
+    let unmatchedCount = 0;
+
     while (pagesProcessed < maxPages) {
       let transRes: any;
       try {
@@ -1357,6 +1359,9 @@ export class CuelinksSyncManager {
           ];
 
           await d1Repo.executeWrite('commission_records', upsertSql, params);
+          if (!matchedReferralId) {
+            unmatchedCount++;
+          }
         } catch (saveErr: any) {
           console.warn(`[CuelinksSync] Error persisting transaction '${tx.id}': ${saveErr.message}`);
           hasFailedWrites = true;
@@ -1390,7 +1395,6 @@ export class CuelinksSyncManager {
     let invoiced = 0;
     let providerPaid = 0;
     let reversed = 0;
-    let unmatchedCount = 0;
     let currencyUnclassifiedCount = 0;
 
     for (const tx of allTransactions) {
@@ -1411,9 +1415,6 @@ export class CuelinksSyncManager {
         else if (status === 'paid' || status === 'provider_paid') providerPaid += amt;
         else if (status === 'rejected' || status === 'cancelled') reversed += amt;
       }
-
-      const subId = tx.sub_id || tx.subid;
-      if (!subId) unmatchedCount++;
     }
 
     // Determine pagination status and update durable checkpoint

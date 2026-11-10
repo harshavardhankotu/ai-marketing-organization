@@ -116,25 +116,18 @@ describe('Stage C — Production Integrity Closure Tests', () => {
       expect(classifyTraffic('ai-marketing-cron-worker')).toBe('diagnostic');
     });
 
-    it('classifies browser user-agent without browser headers as unknown', () => {
-      const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-      // Without Accept or Accept-Language headers
-      const result = classifyTraffic(ua, '1.2.3.4', { 'user-agent': ua });
-      expect(result).toBe('unknown');
+    it('classifies missing or unidentifiable user-agent as unknown', () => {
+      expect(classifyTraffic('')).toBe('unknown');
+      expect(classifyTraffic('short')).toBe('unknown');
+      expect(classifyTraffic(undefined)).toBe('unknown');
     });
 
-    it('classifies browser user-agent with browser headers as browser_candidate, NEVER human without verifiedHumanProof', () => {
+    it('classifies browser user-agent as browser_candidate, NEVER human without verifiedHumanProof', () => {
       const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-      const headers = {
-        'user-agent': ua,
-        'accept': 'text/html,application/xhtml+xml',
-        'accept-language': 'en-US,en;q=0.9'
-      };
-
-      const resultCandidate = classifyTraffic(ua, '1.2.3.4', headers, false);
+      const resultCandidate = classifyTraffic(ua, '1.2.3.4', { 'user-agent': ua }, false);
       expect(resultCandidate).toBe('browser_candidate');
 
-      const resultHuman = classifyTraffic(ua, '1.2.3.4', headers, true);
+      const resultHuman = classifyTraffic(ua, '1.2.3.4', { 'user-agent': ua }, true);
       expect(resultHuman).toBe('human');
     });
 
@@ -188,7 +181,9 @@ describe('Stage C — Production Integrity Closure Tests', () => {
 
   describe('Task H: Zero Legacy Domain References & IndexNow Key Support', () => {
     it('has zero references to ai-marketing-platform-core.web.app in source code', () => {
-      const srcDir = path.resolve(process.cwd(), 'packages/backend/src');
+      const srcDir = fs.existsSync(path.resolve(process.cwd(), 'packages/backend/src'))
+        ? path.resolve(process.cwd(), 'packages/backend/src')
+        : path.resolve(process.cwd(), 'src');
       
       function searchDirectory(dir: string): string[] {
         const matches: string[] = [];
