@@ -80,6 +80,7 @@ describe('Stage D & Stage E — Autonomous Daily Deals and Production Conversion
       const db = getDb();
       db.prepare("DELETE FROM public_deals WHERE id LIKE 'deal_staged_%'").run();
       db.prepare("DELETE FROM workflows WHERE id LIKE 'deal_staged_%'").run();
+      db.prepare("DELETE FROM partner_offers WHERE id LIKE 'deal_staged_%'").run();
     });
 
     it('reconciles unmonetized candidate deals with strict affiliated === true verification', async () => {
