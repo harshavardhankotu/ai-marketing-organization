@@ -37,7 +37,8 @@ export class CuelinksApiError extends Error {
     | 'CUELINKS_API_ERROR'
     | 'CUELINKS_UNCONFIGURED'
     | 'CUELINKS_TIMEOUT'
-    | 'CUELINKS_INVALID_URL';
+    | 'CUELINKS_INVALID_URL'
+    | 'CUELINKS_UNSCOPED_REPORT_BLOCKED';
   public readonly statusCode: number;
 
   constructor(
@@ -50,7 +51,8 @@ export class CuelinksApiError extends Error {
       | 'CUELINKS_API_ERROR'
       | 'CUELINKS_UNCONFIGURED'
       | 'CUELINKS_TIMEOUT'
-      | 'CUELINKS_INVALID_URL',
+      | 'CUELINKS_INVALID_URL'
+      | 'CUELINKS_UNSCOPED_REPORT_BLOCKED',
     message: string,
     statusCode: number = 0
   ) {
@@ -823,9 +825,21 @@ export class CuelinksV3Client {
       };
     } catch (err: any) {
       if (err.statusCode === 404) {
-        // Backward compatibility fallback for legacy mock fixtures
+        // Backward compatibility fallback for legacy mock fixtures:
+        // Must preserve channel_id, campaign_id, date range and pagination.
+        // If channel_id is not provided, block fallback to prevent unscoped publisher-account leaks.
+        if (!options?.channel_id) {
+          throw new CuelinksApiError(
+            'CUELINKS_UNSCOPED_REPORT_BLOCKED',
+            'Cannot query fallback reports without a verified channel_id; unscoped account-wide reports are blocked.',
+            400
+          );
+        }
+
         const legacyRes = await this.request<{ data: CuelinksPerformanceReportItem[]; meta?: any }>('/reports', {
           query: {
+            channel_id: options?.channel_id,
+            campaign_id: options?.campaign_id,
             start_date: options?.start_date,
             end_date: options?.end_date,
             page: options?.page || 1,
@@ -848,6 +862,8 @@ export class CuelinksV3Client {
   public async getReports(options?: {
     start_date?: string;
     end_date?: string;
+    channel_id?: number | string;
+    campaign_id?: number | string;
     slice_by?: string;
     page?: number;
     per_page?: number;

@@ -55,7 +55,7 @@ export class ShareKitService {
       };
     }
 
-    const publicSiteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-platform-core.web.app').replace(/\/$/, '');
+    const publicSiteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').replace(/\/$/, '');
     const cleanGuideUrl = `${publicSiteUrl}/guides/${publishedGuide.slug}`;
 
     const guideCategory = publishedGuide.category || 'General';

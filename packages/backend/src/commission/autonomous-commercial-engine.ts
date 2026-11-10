@@ -33,7 +33,12 @@ export type CommercialBlockerType =
   | 'INVALID_CONTENT_OR_DISCLOSURE'
   | 'INVALID_TRACKING_REDIRECT'
   | 'INVALID_TRACKING_URL'
-  | 'QUALITY_GATE_REJECTED';
+  | 'QUALITY_GATE_REJECTED'
+  | 'BLOCKED_NO_CREDENTIALS'
+  | 'BLOCKED_MISSING_SCOPES'
+  | 'BLOCKED_NO_APPROVED_CHANNEL'
+  | 'BLOCKED_CAMPAIGN_NOT_APPROVED'
+  | 'BLOCKED_CONVERSION_NOT_AFFILIATED';
 
 export interface CommercialTaskRecord {
   id: string;
@@ -325,26 +330,17 @@ export class AutonomousCommercialEngine {
           const syncRes = await syncMgr.syncCuelinks(organizationId, businessId, { skipOfferFetch: true });
           console.log(`[CommercialEngine] Cuelinks scout sync: status=${syncRes.status.status}, connected=${syncRes.status.connected}, discovered=${syncRes.status.campaignsDiscovered}`);
 
-          // STRICT AUTHORIZATION TRUTH (Sprint V3.1 § 4.1):
-          // Partner approval requires authoritative proof: channel.status === 'APPROVED' | 'active' AND ping.hasRequiredScopes === true.
+          // STRICT AUTHORIZATION TRUTH (Stage C Task A):
+          // Commercial capability requires authoritative proof across all 5 independent Cuelinks states.
+          // Never auto-approve partners based solely on credentials or channel status. Owner authorization is strictly preserved.
           const isChannelApproved = Boolean(
             syncRes.status.channel?.status &&
             (syncRes.status.channel.status.toLowerCase() === 'active' || syncRes.status.channel.status.toLowerCase() === 'approved')
           );
           const hasRequiredScopes = Boolean(syncRes.status.hasRequiredScopes);
-          const hasCommercialCapability = hasRequiredScopes || (syncRes.status.eligibleCampaignsCount > 0 && isChannelApproved);
 
-          if (syncRes.status.connected && isChannelApproved && hasCommercialCapability) {
-            const sqlAuth = `
-              UPDATE partners
-              SET approval_status = 'APPROVED', active_status = 1, authorization_status = 'AUTHORIZED', updated_at = datetime('now')
-              WHERE network = 'CUELINKS'
-            `;
-            if (isProduction()) {
-              await this.d1Repo.executeWrite('partners', sqlAuth, []);
-            } else {
-              getDb().prepare(sqlAuth).run();
-            }
+          if (syncRes.status.connected && isChannelApproved && hasRequiredScopes) {
+            console.log(`[CommercialEngine] Cuelinks channel approved and publisher authenticated. Partner activation requires explicit 5-state proof & owner policy approval.`);
           } else if (syncRes.status.connected) {
             console.log(`[CommercialEngine] Cuelinks connected but channel or scopes pending (channelStatus: ${syncRes.status.channel?.status}, hasScopes: ${hasRequiredScopes}). Partner remains unapproved.`);
           }
@@ -1138,37 +1134,36 @@ export class AutonomousCommercialEngine {
           await this.persistTask(task);
           return;
         }
+
+        // Stage C Task A: Enforce 5-State Sequential Cuelinks Authorization before offer creation
+        const { CuelinksSyncManager } = await import('./cuelinks-sync-manager.js');
+        const syncMgr = CuelinksSyncManager.getInstance();
+        const auth5 = await syncMgr.verify5StateAuthorization({
+          campaignId: task.inputs.campaignId,
+          destinationUrl: task.inputs.sourceUrl || task.inputs.destinationUrl,
+          searchTerm: task.inputs.merchant || task.inputs.productTitle
+        });
+
+        if (!auth5.authorized) {
+          task.status = 'BLOCKED';
+          task.stage = 'BLOCKED';
+          task.errorInfo = {
+            blockerType: auth5.blockerCode || 'BLOCKED_CONVERSION_NOT_AFFILIATED',
+            message: auth5.blockerReason || 'Offer has not passed all 5 independent Cuelinks authorization states.',
+            ownerActionRequired: auth5.humanActionRequired
+          };
+          await this.persistTask(task);
+          return;
+        }
+
         let offer = await this.partnerRegistry.getOfferBySlug('verified-cuelinks-offer');
         if (!offer) {
-          let trackingUrl = task.inputs.trackingUrl;
-          if (!trackingUrl || !this.partnerRegistry.isValidUrl(trackingUrl)) {
-            // Attempt dynamic link conversion if sourceUrl and approved Cuelinks channel exist
-            if (cuelinksPartner && task.inputs.sourceUrl) {
-              try {
-                const { CuelinksV3Client } = await import('./cuelinks-v3-client.js');
-                const { CuelinksSyncManager } = await import('./cuelinks-sync-manager.js');
-                const client = CuelinksV3Client.getInstance();
-                const sync = CuelinksSyncManager.getInstance(client);
-                const ch = await sync.getApprovedChannel();
-                if (ch.approved && ch.channel?.id) {
-                  const conv = await client.convertLink({
-                    url: task.inputs.sourceUrl,
-                    channel_id: Number(ch.channel.id),
-                    subid: `clk_offer_${Date.now()}`
-                  });
-                  if (conv?.affiliated && conv.tracking_url && CuelinksV3Client.isAllowedTrackingUrl(conv.tracking_url)) {
-                    trackingUrl = conv.tracking_url;
-                  }
-                }
-              } catch {}
-            }
-          }
-
+          const trackingUrl = auth5.conversion?.trackingUrl || task.inputs.trackingUrl;
           if (!trackingUrl || !this.partnerRegistry.isValidUrl(trackingUrl)) {
             task.status = 'BLOCKED';
             task.stage = 'BLOCKED';
             task.errorInfo = {
-              blockerType: 'INVALID_TRACKING_URL',
+              blockerType: 'BLOCKED_CONVERSION_NOT_AFFILIATED',
               message: 'No authorized tracking URL provided; generic cid=default fallback suppressed.'
             };
             await this.persistTask(task);

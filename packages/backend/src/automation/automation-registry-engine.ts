@@ -1308,7 +1308,13 @@ export class AutomationRegistryEngine {
             : getDb().prepare(sql).all();
         } catch {}
 
-        const approvedRows = candidateRows.filter(r => policyGate.isActionAuthorized(r));
+        // Stage C Task G: Enforce that outbound dispatch only executes rows where human_approved = 1 AND approval_source = 'HUMAN_OWNER'
+        // Blocks any row auto-flipped or approved without verified human owner provenance.
+        const approvedRows = candidateRows.filter(r =>
+          (r.human_approved === 1 || r.human_approved === true) &&
+          r.approval_source === 'HUMAN_OWNER' &&
+          policyGate.isActionAuthorized(r)
+        );
 
         if (approvedRows.length === 0) {
           return {

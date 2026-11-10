@@ -1750,7 +1750,8 @@ export class OwnerControlCenterEngine {
     let readyShareGuide: { status: 'READY' | 'NOT_READY'; title?: string; shareText?: string; pageUrl?: string };
     if (publishedGuides && publishedGuides.length > 0 && publishedGuides[0]?.slug) {
       const guide = publishedGuides[0];
-      const pageUrl = `https://ai-marketing-platform-core.web.app/guides/${guide.slug}`;
+      const baseSiteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').replace(/\/$/, '');
+      const pageUrl = `${baseSiteUrl}/guides/${guide.slug}`;
       const title = guide.title || 'Product Buyer Guide';
       readyShareGuide = {
         status: 'READY',

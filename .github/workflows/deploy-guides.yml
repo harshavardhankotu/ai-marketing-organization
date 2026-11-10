@@ -58,8 +58,8 @@ jobs:
       - name: Verify Render SSR Native Serving
         if: steps.build-guides.outputs.skipped != 'true'
         run: |
-          echo "Verifying canonical guides and homepage served natively by Render SSR..."
-          HOMEPAGE_HTML=$(curl --fail --silent --show-error --location --max-time 30 "https://ai-marketing-organization.onrender.com/")
+          echo "Verifying canonical guides and homepage served natively by Render SSR with bounded retries..."
+          HOMEPAGE_HTML=$(curl --fail --silent --show-error --location --retry 3 --retry-delay 15 --retry-all-errors --max-time 60 "https://ai-marketing-organization.onrender.com/")
           if ! echo "$HOMEPAGE_HTML" | grep -q "WVPs1hLZgUqJL5yO9jwF2pWwsekPcMtTOLLeWILGU9I"; then
             echo "ERROR: google-site-verification meta tag missing from homepage!"
             exit 1
@@ -70,7 +70,12 @@ jobs:
           fi
           echo "Homepage verification meta tags confirmed."
 
-          GUIDE_HTML=$(curl --fail --silent --show-error --location --max-time 30 "https://ai-marketing-organization.onrender.com/guides/student-flight-discounts-india")
+          # Target actually published guide slug verified from D1: student-flight-discounts-india
+          GUIDE_HTML=$(curl --fail --silent --show-error --location --retry 3 --retry-delay 15 --retry-all-errors --max-time 60 "https://ai-marketing-organization.onrender.com/guides/student-flight-discounts-india")
+          if ! echo "$GUIDE_HTML" | grep -iq "<title>"; then
+            echo "ERROR: Guide <title> marker missing from SSR response!"
+            exit 1
+          fi
           if ! echo "$GUIDE_HTML" | grep -iq "student"; then
             echo "ERROR: Guide content missing from SSR response!"
             exit 1

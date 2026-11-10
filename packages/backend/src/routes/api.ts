@@ -279,11 +279,7 @@ apiRouter.use('*', async (c, next) => {
       let originHost = '';
       try { originHost = new URL(origin).host; } catch {}
       const allowedOrigins = [
-        'https://ai-marketing-organization.onrender.com',
-        'https://gen-lang-client-0916255372.web.app',
-        'https://gen-lang-client-0916255372.firebaseapp.com',
-        'https://ai-marketing-platform-core.web.app',
-        'https://ai-marketing-platform-core.firebaseapp.com'
+        'https://ai-marketing-organization.onrender.com'
       ];
       if (process.env.FRONTEND_ORIGIN) {
         allowedOrigins.push(...process.env.FRONTEND_ORIGIN.split(',').map(s => s.trim()).filter(Boolean));
@@ -5882,10 +5878,11 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   );
   testSessions = testRow?.c ?? 0;
 
-  // 2. Real Outbound Clicks vs Internal Diagnostic Clicks (5-Bucket Disaggregation)
+  // 2. Real Outbound Clicks vs Internal Diagnostic Clicks (Stage C Task F Disaggregation)
   let verifiedHumanOutboundClicks = 0;
   let browserCandidateOutboundClicks = 0;
   let internalDiagnosticClicks = 0;
+  let testClicks = 0;
   let botClicks = 0;
   let unknownClicks = 0;
   let externalOutboundClicks = 0;
@@ -5894,25 +5891,35 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
     click_id LIKE 'clk_test_%' OR 
     referral_id LIKE 'ref_clk_test_%' OR 
     click_id LIKE 'clk_live_pilot_%' OR 
-    device_class IN ('test', 'diagnostic', 'internal') OR
-    placement IN ('diagnostic', 'direct_beacon', 'test') OR 
-    source IN ('direct_beacon', 'diagnostic', 'test') OR 
-    medium IN ('beacon', 'diagnostic', 'test')
+    device_class IN ('diagnostic', 'internal') OR
+    placement IN ('diagnostic', 'direct_beacon') OR 
+    source IN ('direct_beacon', 'diagnostic') OR 
+    medium IN ('beacon', 'diagnostic')
+  )`;
+
+  const testCond = `(
+    click_id LIKE 'clk_test_%' OR
+    device_class = 'test' OR
+    placement = 'test' OR
+    source = 'test' OR
+    medium = 'test'
   )`;
 
   const disaggregatedSql = `
     SELECT 
       COALESCE(SUM(CASE WHEN ${diagnosticCond} THEN 1 ELSE 0 END), 0) as diag,
-      COALESCE(SUM(CASE WHEN device_class IN ('human', 'mobile', 'desktop') AND NOT ${diagnosticCond} THEN 1 ELSE 0 END), 0) as human,
-      COALESCE(SUM(CASE WHEN device_class = 'browser_candidate' AND NOT ${diagnosticCond} THEN 1 ELSE 0 END), 0) as browserCandidate,
-      COALESCE(SUM(CASE WHEN device_class = 'bot' AND NOT ${diagnosticCond} THEN 1 ELSE 0 END), 0) as bot,
-      COALESCE(SUM(CASE WHEN (device_class = 'unknown' OR device_class IS NULL) AND NOT ${diagnosticCond} THEN 1 ELSE 0 END), 0) as unk
+      COALESCE(SUM(CASE WHEN ${testCond} AND NOT ${diagnosticCond} THEN 1 ELSE 0 END), 0) as testClicks,
+      COALESCE(SUM(CASE WHEN device_class = 'verified_human' AND NOT (${diagnosticCond} OR ${testCond}) THEN 1 ELSE 0 END), 0) as verifiedHuman,
+      COALESCE(SUM(CASE WHEN device_class IN ('browser_candidate', 'human', 'mobile', 'desktop') AND NOT (${diagnosticCond} OR ${testCond}) THEN 1 ELSE 0 END), 0) as browserCandidate,
+      COALESCE(SUM(CASE WHEN device_class IN ('bot', 'known_bot', 'suspected_bot') AND NOT (${diagnosticCond} OR ${testCond}) THEN 1 ELSE 0 END), 0) as bot,
+      COALESCE(SUM(CASE WHEN (device_class = 'unknown' OR device_class IS NULL) AND NOT (${diagnosticCond} OR ${testCond}) THEN 1 ELSE 0 END), 0) as unk
     FROM referral_click_events
   `;
   const clickRow = await safeQuery<any>('referral_click_events', disaggregatedSql, [], 'referral_click_events.disaggregated');
   if (clickRow) {
     internalDiagnosticClicks = Number(clickRow.diag || 0);
-    verifiedHumanOutboundClicks = Number(clickRow.human || 0);
+    testClicks = Number(clickRow.testClicks || 0);
+    verifiedHumanOutboundClicks = Number(clickRow.verifiedHuman || 0);
     browserCandidateOutboundClicks = Number(clickRow.browserCandidate || 0);
     botClicks = Number(clickRow.bot || 0);
     unknownClicks = Number(clickRow.unk || 0);
@@ -5924,16 +5931,16 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
     ? ((externalOutboundClicks / verifiedExternalVisits) * 100).toFixed(2) + '%'
     : '0.00%';
 
-  // 4. Live Cuelinks Performance Data
+  // 4. Live Cuelinks Performance Data (Stage C Task C Scoped Attribution)
   let cuelinksData = {
     configured: false,
     channelId: undefined as number | undefined,
     channelStatus: 'UNKNOWN',
+    providerAttributionStatus: 'UNCONFIGURED',
+    reportScope: null as { channelId?: number; channelUrl?: string; retrievedAt?: string } | null,
     reportedClicks: 0,
     reportedTransactions: 0,
-    pendingCommissionINR: 0,
-    approvedCommissionINR: 0,
-    paidPayoutINR: 0,
+    providerReportSummary: null as { clicks: number; transactions: number; commissionINR: number; retrievedAt: string } | null,
     reportingLatency: '48-72h (Offline Tracking Mode)',
     validationCycle: '45-60 days'
   };
@@ -5946,45 +5953,103 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
     if (client.isConfigured()) {
       cuelinksData.configured = true;
       const channelRes = await syncMgr.getApprovedChannel();
-      if (channelRes.channel?.id) {
-        cuelinksData.channelId = Number(channelRes.channel.id);
-        cuelinksData.channelStatus = channelRes.approved ? 'APPROVED' : (channelRes.channel.status?.toUpperCase() || 'PENDING');
-      }
-      try {
-        const perf = await client.getPerformanceReport({ start_date: '2026-10-01', channel_id: cuelinksData.channelId });
-        if (perf.totals) {
-          cuelinksData.reportedClicks = perf.totals.clicks || 0;
-          cuelinksData.reportedTransactions = perf.totals.transactions || 0;
-          cuelinksData.pendingCommissionINR = Number(perf.totals.commission) || 0;
-        } else if (perf.data && perf.data.length > 0) {
-          cuelinksData.reportedClicks = perf.data.reduce((acc, row) => acc + (row.clicks || 0), 0);
-          cuelinksData.reportedTransactions = perf.data.reduce((acc, row) => acc + (row.transactions || 0), 0);
-          cuelinksData.pendingCommissionINR = perf.data.reduce((acc, row) => acc + (Number(row.commission) || 0), 0);
+      if (!channelRes.approved || !channelRes.channel?.id) {
+        cuelinksData.channelStatus = channelRes.channel?.status?.toUpperCase() || 'UNAPPROVED';
+        cuelinksData.providerAttributionStatus = 'BLOCKED_NO_APPROVED_CHANNEL';
+        // Safeguard: Never call unfiltered report endpoint without verified approved channel!
+      } else {
+        const chId = Number(channelRes.channel.id);
+        const chUrl = channelRes.channel.source_url || channelRes.channel.url || '';
+        cuelinksData.channelId = chId;
+        cuelinksData.channelStatus = 'APPROVED';
+        cuelinksData.providerAttributionStatus = 'CHANNEL_SCOPED';
+        cuelinksData.reportScope = { channelId: chId, channelUrl: chUrl, retrievedAt: new Date().toISOString() };
+
+        try {
+          const perf = await client.getPerformanceReport({ start_date: '2026-10-01', channel_id: chId });
+          const repClicks = perf.totals?.clicks ?? perf.data?.reduce((acc, row) => acc + (row.clicks || 0), 0) ?? 0;
+          const repTx = perf.totals?.transactions ?? perf.data?.reduce((acc, row) => acc + (row.transactions || 0), 0) ?? 0;
+          const repComm = Number(perf.totals?.commission ?? perf.data?.reduce((acc, row) => acc + (Number(row.commission) || 0), 0)) || 0;
+
+          cuelinksData.reportedClicks = repClicks;
+          cuelinksData.reportedTransactions = repTx;
+          cuelinksData.providerReportSummary = {
+            clicks: repClicks,
+            transactions: repTx,
+            commissionINR: repComm,
+            retrievedAt: new Date().toISOString()
+          };
+        } catch (err: any) {
+          console.warn(`[RevenueFunnel] Provider report notice: ${err.message}`);
         }
-      } catch (err: any) {
-        // Fallback to internal ledger if live API query is throttled
       }
     }
   } catch {}
 
-  // 5. Commission Records in D1
-  let ledgerPendingCommissionINR = 0;
-  let ledgerApprovedCommissionINR = 0;
-  const commPendingRow = await safeQuery<any>(
-    'commission_records',
-    "SELECT COALESCE(SUM(expected_commission_inr), 0) as s FROM commission_records WHERE status = 'COMMISSION_PENDING'",
-    [],
-    'commission_records.pending'
-  );
-  ledgerPendingCommissionINR = commPendingRow?.s ?? 0;
+  // 5. Transaction-Led Commission Status Buckets (Stage C Task E Truth)
+  let pendingCommissionINR = 0;
+  let validatedCommissionINR = 0;
+  let payableCommissionINR = 0;
+  let invoicedCommissionINR = 0;
+  let paidCommissionINR = 0;
+  let reversedCommissionINR = 0;
+  let nonInrTransactionsCount = 0;
+  let unverifiedCurrencyAmounts = 0;
+  let commissionLedgerStatus = 'VERIFIED_ZERO';
 
-  const commApprovedRow = await safeQuery<any>(
+  const commRows = await safeQuery<any[]>(
     'commission_records',
-    "SELECT COALESCE(SUM(verified_commission_inr), 0) as s FROM commission_records WHERE status IN ('COMMISSION_APPROVED', 'PAID')",
+    `SELECT
+      external_status,
+      expected_commission_inr,
+      verified_commission_inr,
+      received_commission_inr,
+      evidence_json
+    FROM commission_records`,
     [],
-    'commission_records.approved'
+    'commission_records.buckets'
   );
-  ledgerApprovedCommissionINR = commApprovedRow?.s ?? 0;
+
+  if (commRows === null) {
+    commissionLedgerStatus = 'UNAVAILABLE_QUERY_ERROR';
+  } else if (Array.isArray(commRows)) {
+    for (const r of commRows) {
+      let isExplicitInr = true;
+      try {
+        if (r.evidence_json) {
+          const ev = JSON.parse(r.evidence_json);
+          if (ev.currency && String(ev.currency).toUpperCase().trim() !== 'INR') {
+            isExplicitInr = false;
+          }
+        }
+      } catch {}
+
+      if (!isExplicitInr) {
+        nonInrTransactionsCount++;
+        unverifiedCurrencyAmounts += Number(r.expected_commission_inr || 0);
+        continue;
+      }
+
+      const st = (r.external_status || '').toLowerCase().trim();
+      const expAmt = Number(r.expected_commission_inr || 0);
+      const verAmt = Number(r.verified_commission_inr || 0);
+      const recAmt = Number(r.received_commission_inr || 0);
+
+      if (st === 'pending') {
+        pendingCommissionINR += expAmt;
+      } else if (st === 'validated' || st === 'approved') {
+        validatedCommissionINR += verAmt;
+      } else if (st === 'payable') {
+        payableCommissionINR += verAmt;
+      } else if (st === 'invoice_raised' || st === 'invoiced') {
+        invoicedCommissionINR += verAmt;
+      } else if (st === 'paid' || st === 'provider_paid') {
+        paidCommissionINR += recAmt;
+      } else if (st === 'rejected' || st === 'cancelled' || st === 'reversed') {
+        reversedCommissionINR += expAmt;
+      }
+    }
+  }
 
   // 6. Direct B2B Lead Conversion Funnel (Empirical Evidence)
   let prospectsResearched = 0;
@@ -6160,66 +6225,71 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
 
   // 9. Bank Cash Received (Strict Empirical Truth)
   const bankCashReceivedINR = 0.00;
+  const bankConfirmedCashINR = 0.00;
 
-  // 10. Dynamic Monetized Partners from D1 cuelinks_campaigns
+  // 10. Dynamic Monetized Partners (Stage C Task B: Zero False Partners, Strict Proof)
   let monetizedPartners: any[] = [];
+  let monetizedPartnersStatus = 'NO_VERIFIED_AFFILIATED_OFFERS';
+
   try {
-    const rawPartners = await d1Repo.query<any>(
-      'cuelinks_campaigns',
-      "SELECT campaign_id as campaignId, name, payout_model as model, payout_rate as payoutINR, cookie_days || ' Days' as cookieWindow, merchant_domain as trackingUrl FROM cuelinks_campaigns WHERE status = 'ACTIVE' LIMIT 10"
-    );
-    if (rawPartners && rawPartners.length > 0 && isProduction()) {
-      monetizedPartners = rawPartners.map(p => ({
+    // Only return records with active campaign, verified monetizable deal, and verified allowlisted affiliate tracking URL
+    const querySql = `
+      SELECT
+        d.id as dealId,
+        COALESCE(d.title, d.brand, d.merchant) as name,
+        c.campaign_id as campaignId,
+        c.payout_model as model,
+        c.payout_rate as payoutINR,
+        c.cookie_days || ' Days' as cookieWindow,
+        d.affiliate_url as trackingUrl,
+        'Offline (48h delay)' as trackingMode
+      FROM public_deals d
+      JOIN cuelinks_campaigns c ON (
+        d.affiliate_url LIKE '%subid3=' || c.campaign_id || '%' OR
+        d.affiliate_url LIKE '%cmp_' || c.campaign_id || '%' OR
+        LOWER(d.merchant) = LOWER(c.name)
+      )
+      WHERE d.is_monetizable = 1
+        AND d.affiliate_verified = 1
+        AND c.status = 'ACTIVE'
+        AND c.verification_source = 'CUELINKS_API_V3'
+        AND d.affiliate_url IS NOT NULL
+        AND d.affiliate_url != ''
+        AND (d.affiliate_url LIKE 'https://linksredirect.com%' OR d.affiliate_url LIKE 'https://clnk.in%')
+      LIMIT 10
+    `;
+
+    let qualifiedDeals: any[] = [];
+    if (d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
+      qualifiedDeals = await d1Repo.query<any>('public_deals', querySql);
+    } else {
+      const { getDb } = await import('../db/client.js');
+      try {
+        qualifiedDeals = getDb().prepare(querySql).all() as any[];
+      } catch {
+        qualifiedDeals = [];
+      }
+    }
+
+    if (qualifiedDeals && qualifiedDeals.length > 0) {
+      monetizedPartners = qualifiedDeals.map(p => ({
         name: p.name,
         campaignId: Number(p.campaignId) || p.campaignId,
         model: p.model || 'CPS',
         payoutINR: p.payoutINR || 'Dynamic CPS Rate',
         cookieWindow: p.cookieWindow || '30 Days',
-        trackingUrl: p.trackingUrl ? (p.trackingUrl.startsWith('http') ? p.trackingUrl : `https://${p.trackingUrl}`) : '',
-        trackingMode: 'Offline (48h delay)'
+        trackingUrl: p.trackingUrl,
+        trackingMode: p.trackingMode || 'Offline (48h delay)'
       }));
+      monetizedPartnersStatus = 'VERIFIED_LIVE_OFFERS';
+    } else {
+      monetizedPartners = [];
+      monetizedPartnersStatus = 'NO_VERIFIED_AFFILIATED_OFFERS';
     }
-  } catch {}
-
-  if (monetizedPartners.length === 0) {
-    monetizedPartners = [
-      {
-        name: 'Akasa Air',
-        campaignId: 57507,
-        model: 'CPS (Cost Per Sale)',
-        payoutINR: '₹225.00 per domestic booking',
-        cookieWindow: '30 Days',
-        trackingUrl: 'https://clnk.in/DKX3',
-        trackingMode: 'Offline (48h delay)'
-      },
-      {
-        name: 'Air India Express',
-        campaignId: 5195,
-        model: 'CPS (Cost Per Sale)',
-        payoutINR: '₹101.25 domestic / ₹168.75 international',
-        cookieWindow: '30 Days',
-        trackingUrl: 'https://clnk.in/DKRM',
-        trackingMode: 'Offline (48h delay)'
-      },
-      {
-        name: 'Air India',
-        campaignId: 5622,
-        model: 'CPS (Cost Per Sale)',
-        payoutINR: '₹112.50 domestic / ₹375.00 international',
-        cookieWindow: '30 Days',
-        trackingUrl: 'https://clnk.in/DKX4',
-        trackingMode: 'Offline (48h delay)'
-      },
-      {
-        name: 'Cleartrip Flight',
-        campaignId: 29,
-        model: 'CPS (Cost Per Sale)',
-        payoutINR: '₹67.50 per flight booking',
-        cookieWindow: '1 Day',
-        trackingUrl: 'https://clnk.in/DKRN',
-        trackingMode: 'Offline (48h delay)'
-      }
-    ];
+  } catch (partnersErr: any) {
+    failedQueries.push('monetizedPartners.query');
+    measurementStatus = 'DEGRADED_DB_ERROR';
+    monetizedPartnersStatus = 'UNAVAILABLE_QUERY_ERROR';
   }
 
   return c.json({
@@ -6227,19 +6297,34 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
     data: {
       measurementStatus,
       failedQueries,
+      monetizedPartnersStatus,
+      commissionBuckets: {
+        pendingCommissionINR,
+        validatedCommissionINR,
+        payableCommissionINR,
+        invoicedCommissionINR,
+        paidCommissionINR,
+        reversedCommissionINR,
+        bankConfirmedCashINR,
+        nonInrTransactionsCount,
+        unverifiedCurrencyAmounts,
+        commissionLedgerStatus,
+        asOf: new Date().toISOString()
+      },
       funnel: {
         verifiedExternalVisits,
         internalTestSessions: testSessions,
         verifiedHumanOutboundClicks,
         browserCandidateOutboundClicks,
         internalDiagnosticClicks,
+        testClicks,
         botClicks,
         unknownClicks,
         externalOutboundClicks,
         clickThroughRate: ctrPercent,
         conversions: cuelinksData.reportedTransactions,
-        estimatedPendingCommissionINR: cuelinksData.pendingCommissionINR || ledgerPendingCommissionINR,
-        approvedCommissionINR: cuelinksData.approvedCommissionINR || ledgerApprovedCommissionINR,
+        estimatedPendingCommissionINR: pendingCommissionINR,
+        approvedCommissionINR: validatedCommissionINR,
         bankCashReceivedINR
       },
       affiliateFunnel: {
@@ -6248,13 +6333,18 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
         verifiedHumanOutboundClicks,
         browserCandidateOutboundClicks,
         internalDiagnosticClicks,
+        testClicks,
         botClicks,
         unknownClicks,
         externalOutboundClicks,
         clickThroughRate: ctrPercent,
         conversions: cuelinksData.reportedTransactions,
-        estimatedPendingCommissionINR: cuelinksData.pendingCommissionINR || ledgerPendingCommissionINR,
-        approvedCommissionINR: cuelinksData.approvedCommissionINR || ledgerApprovedCommissionINR,
+        pendingCommissionINR,
+        validatedCommissionINR,
+        payableCommissionINR,
+        invoicedCommissionINR,
+        paidCommissionINR,
+        reversedCommissionINR,
         bankCashReceivedINR
       },
       b2bFunnel: {
@@ -6515,14 +6605,28 @@ apiRouter.get('/r/:offerSlug/:referralId', async (c) => {
   const trackingEngine = ReferralTrackingEngine.getInstance();
 
   try {
-    const isTestMode = c.req.header('x-test-mode') === 'true' || c.req.header('x-test-traffic') === 'true' || c.req.query('test_traffic') === 'true';
     const ua = c.req.header('user-agent') || '';
-    const isBot = isBotTraffic(ua);
+    const clientIp = getTrustedClientIp(c).ip;
+    const headersMap: Record<string, string> = {
+      'accept': c.req.header('accept') || '',
+      'accept-language': c.req.header('accept-language') || '',
+      'x-diagnostic': c.req.header('x-diagnostic') || '',
+      'x-diagnostic-probe': c.req.header('x-diagnostic-probe') || '',
+      'x-test-traffic': c.req.header('x-test-traffic') || '',
+      'x-test-mode': c.req.header('x-test-mode') || '',
+      'x-owner-preview': c.req.header('x-owner-preview') || ''
+    };
+    if (c.req.query('test_traffic') === 'true') {
+      headersMap['x-test-traffic'] = 'true';
+    }
+
+    const { classifyTraffic } = await import('../commission/referral-tracking.js');
+    const deviceClass = classifyTraffic(ua, clientIp, headersMap);
     const formFactor = c.req.header('sec-ch-ua-mobile') === '?1' ? 'mobile' : (ua.includes('Mobile') ? 'mobile' : 'desktop');
-    const deviceClass = isBot ? 'bot' : (isTestMode ? 'diagnostic' : 'human');
+    const isTestMode = deviceClass === 'test' || deviceClass === 'diagnostic';
 
     const clickData = {
-      ip: getTrustedClientIp(c).ip,
+      ip: clientIp,
       userAgent: ua,
       referer: c.req.header('referer'),
       source: c.req.query('utm_source') || c.req.query('source'),
