@@ -13,7 +13,7 @@
 10. FEATURES_FROZEN = true. Feature freeze is strictly reinstated. No new migrations. No new feature routes or agent types.
 
 ## 2. Last Verified Commit
-- **Verified Main Baseline:** `abd5d902719ff8cd28d3c447052c1747317726f7` (Stage D, PR #52 merged)
+- **Verified Main Baseline:** `6ba3656e4cea6b16651d0db2b374a6fbbf2edd85` (Stage E, PR #53 merged)
 - **Active Branch:** `main`
 - **Canonical Production URL:** `https://ai-marketing-organization.onrender.com`
 - **Render Service ID:** `srv-darecoc9v7es73ea8t2g`
@@ -24,24 +24,24 @@
 ## 3. Operational Counts (Empirical Evidence)
 - **Verified Bank Cash Received:** ₹0.00
 - **Internal Deal Candidates in D1:** 134 total deals in `public_deals` (133 in-stock)
-- **Verified Public Monetizable Offers:** 25 (actively published at `/api/v1/public/deals` with live `clnk.in` tracking URLs)
-- **Published Buyer Guides in D1:** 1 (`student-flight-discounts-india`)
+- **Verified Public Monetizable Offers:** 50 (actively published at `/api/v1/public/deals` with live `clnk.in` tracking URLs and matching `partner_offers` rows)
+- **Published Buyer Guides in D1:** 2 (`student-flight-discounts-india`, `best-wireless-audio-smartwatches-india`)
 - **Direct Outreach Drafts:**
   * Total Prepared: 38
   * Owner-Approved: 0 (All 5 Stage-B auto-flagged rows neutralized via migration 0050)
   * Provider Dispatched: 0
 - **Completed Site Audits:** 3 (12-point deterministic HTML & SEO audits; synthetic scores on `example.com` reset)
 - **Cloudflare Worker Cron:**
-  * Status: OBSERVED / ACTIVE (`ai-marketing-cron-worker/1.0`)
-  * Last Observed Ping: `2026-11-10 06:49:29`
-  * Last Successful Cycle: `2026-11-10 06:51:24`
+  * Status: OBSERVED / ACTIVE (`curl/8.18.0` / Cloudflare Cron)
+  * Execution Budget: 12000ms, maxJobs: 2
+  * Last Observed Ping: `2026-11-10 10:42:32`
 
 ## 4. 3 Commercial Monetization Lanes
 | Lane | Description | Implemented | Accessible | Provider-Connected | Owner-Approved | Commercially Ready | Generating Verified Revenue |
 |---|---|---|---|---|---|---|---|
 | **Lane 1** | Administrative Inquiry Capture Storefront (`/offer`) | YES | YES (`/offer`) | NO (Sandbox Mode) | YES (Attested) | YES (Inquiry Mode) | NO (₹0.00 cash) |
 | **Lane 2** | SiteFix AI 12-Point Deterministic Scanner (`/tools/site-audit`) | YES | YES (`/tools/site-audit`) | NO (PageSpeed Unkeyed) | YES | YES (HTML Audit Live) | NO (₹0.00 cash) |
-| **Lane 3** | Cuelinks 5-State Multi-Sector Affiliate Engine | YES | YES (`/deals`) | YES (Channel 331585 Approved) | YES (25 Deals Live Verified) | YES (25 live verified offers) | NO (₹0.00 cash until conversions report) |
+| **Lane 3** | Cuelinks 5-State Multi-Sector Affiliate Engine | YES | YES (`/deals`) | YES (Channel 331585 Approved) | YES (50 Deals Live Verified) | YES (50 live verified offers) | NO (₹0.00 cash until conversions report) |
 
 ## 5. Single Next Action
-- Autonomous execution: The Cloudflare Worker cron will continuously execute hourly cycles, automatically draining remaining deal candidate batches and syncing conversion reports via approved Channel ID 331585.
+- Autonomous execution: The Cloudflare Worker cron continues hourly execution cycles within bounded 12s budget, auto-syncing conversion reports via approved Channel ID 331585 and maintaining deal availability.
