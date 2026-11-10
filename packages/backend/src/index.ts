@@ -203,10 +203,11 @@ app.get('/deals', async (c) => {
   const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
   const host = c.req.header('host') || 'ai-marketing-organization.onrender.com';
   const proto = c.req.header('x-forwarded-proto') || 'https';
+  const siteName = (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
   const config = {
-    siteName: 'Verified Deals & Price Evidence',
-    authorName: 'Editorial Desk',
-    contactEmail: `editorial@${host}`,
+    siteName,
+    authorName: (process.env.PUBLIC_AUTHOR_NAME || 'Editorial Desk').trim(),
+    contactEmail: (process.env.PUBLIC_CONTACT_EMAIL || `editorial@${host}`).trim(),
     siteUrl: `${proto}://${host}`
   };
   const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
@@ -644,7 +645,13 @@ app.get('/guides/:slug', async (c) => {
           siteUrl: `${proto}://${host}`
         };
       }
-      const html = StaticSiteGenerator.getInstance().renderGuideHtml(asset, config);
+      const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
+      let eligibleDeals: any[] = [];
+      try {
+        const eligibleRes = await AutonomousDealDiscoveryEngine.getInstance().getEligiblePublicDeals({ limit: 1000 });
+        eligibleDeals = eligibleRes.deals || [];
+      } catch {}
+      const html = StaticSiteGenerator.getInstance().renderGuideHtml(asset, config, eligibleDeals);
       return c.html(html);
     }
   } catch (err: any) {
@@ -988,17 +995,6 @@ app.get('/sitemap.xml', async (c) => {
     } catch {}
   }
 
-  // Include active verified public deals in sitemap with exact 1:1 parity (V5.8 Defect 2 & 6)
-  let dealUrls: string[] = [];
-  try {
-    const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
-    const engine = AutonomousDealDiscoveryEngine.getInstance();
-    const eligibleRes = await engine.getEligiblePublicDeals({ limit: 10000 });
-    dealUrls = eligibleRes.deals.map(d => `${baseUrl}/deals/${d.canonicalSlug || d.slug || d.id}`);
-  } catch (err: any) {
-    console.warn(`[Sitemap] Error fetching eligible deals: ${err.message}`);
-  }
-
   // Include compare guides ONLY for sectors with verified active deals (P1 Blocker 4 - never put a noindex page in /sitemap.xml)
   let compareUrls: string[] = [];
   try {
@@ -1023,16 +1019,17 @@ app.get('/sitemap.xml', async (c) => {
 
   const staticUrls = [
     `${baseUrl}/`,
+    `${baseUrl}/deals`,
     `${baseUrl}/offer`,
     `${baseUrl}/tools/site-audit`,
     `${baseUrl}/tools/lead-leakage-calculator`,
-    `${baseUrl}/deals`,
     `${baseUrl}/revenue`,
     `${baseUrl}/public/disclosure`
   ];
 
   const contentUrls = publishedSlugs.map(a => `${baseUrl}/guides/${a.slug}`);
-  const allUrls = [...staticUrls, ...compareUrls, ...dealUrls, ...contentUrls, ...auditUrls];
+  // Workstream C: Exclude generic SPA shells (/deals/{slug}) whose canonical tag points to /deals
+  const allUrls = [...staticUrls, ...compareUrls, ...contentUrls, ...auditUrls];
 
   const xmlEntries = allUrls
     .map(url => `  <url>\n    <loc>${url}</loc>\n    <changefreq>daily</changefreq>\n    <priority>0.8</priority>\n  </url>`)
@@ -1058,8 +1055,8 @@ app.get('/rss.xml', async (c) => {
 
   const rssItems = publicDeals.map(d => `    <item>
       <title><![CDATA[${d.title} - ₹${d.currentPriceINR} on ${d.merchant}]]></title>
-      <link>${baseUrl}/deals/${d.canonicalSlug || d.slug || d.id}</link>
-      <guid>${baseUrl}/deals/${d.canonicalSlug || d.slug || d.id}</guid>
+      <link>${baseUrl}/deals</link>
+      <guid isPermaLink="false">${d.id}</guid>
       <description><![CDATA[Verified deal: ${d.title} at ₹${d.currentPriceINR}${d.referencePriceINR && d.referencePriceINR > d.currentPriceINR ? ` (MRP ₹${d.referencePriceINR}, ${d.verifiedDiscountPercent || d.claimedDiscountPercent}% off)` : ''} on ${d.merchant}. Direct merchant fulfillment. #Ad - Commission earned on qualifying purchases.]]></description>
       <pubDate>${new Date(d.lastCheckedAt || d.observedAt || Date.now()).toUTCString()}</pubDate>
     </item>`).join('\n');

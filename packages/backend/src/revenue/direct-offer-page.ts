@@ -485,33 +485,64 @@ export class DirectCommercialOfferPage {
       </form>
     </div>
 
-    <!-- Segregated Consumer Affiliate Research & Guides -->
-    <div class="card" style="border-color: #334155; background: #0b1120;">
-      <h2 style="font-size: 1.2rem; color: #94a3b8; margin-bottom: 0.75rem;">Consumer Research &amp; Flight Guides Directory</h2>
-      <p style="color: #64748b; font-size: 0.88rem; margin-bottom: 1rem;">
-        In addition to our B2B lead triage consultancy, we publish independently verified consumer price intelligence and student travel guides:
+    <!-- Section 2: SiteFix AI — Self-Serve Technical Audit & Performance Scorecard -->
+    <div class="card" id="sitefix-audit" style="border-color: #06b6d4; background: linear-gradient(180deg, #111827 0%, #0b1120 100%);">
+      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem;">
+        <h2 style="margin: 0; font-size: 1.35rem; color: #fff;">SiteFix AI — Autonomous Technical Website &amp; Conversion Audit</h2>
+        <span class="sample-badge" style="background: rgba(6, 182, 212, 0.15); color: #38bdf8; border-color: rgba(6, 182, 212, 0.3);">Self-Serve SaaS • Instant Analysis</span>
+      </div>
+      <p style="color: #cbd5e1; font-size: 0.95rem; margin-bottom: 1.25rem;">
+        Scan your business website for Core Web Vitals performance, mobile speed, Schema.org structured data, and conversion leakage. Free self-serve scorecard with prioritized remediation steps.
       </p>
       <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
-        <a href="/deals" style="background: #111827; border: 1px solid #1e293b; padding: 0.6rem 1rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.85rem;">
-          🏷️ Verified Indian Deals Directory &rarr;
+        <a href="/tools/site-audit" class="btn btn-primary" style="font-size: 0.9rem; text-decoration: none;">
+          Run Free Website Audit &rarr;
         </a>
-        <a href="/guides/student-flight-discounts-india" style="background: #111827; border: 1px solid #1e293b; padding: 0.6rem 1rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.85rem;">
-          ✈️ Student Flight Baggage &amp; Fare Guide &rarr;
-        </a>
-        <a href="/revenue" style="background: #111827; border: 1px solid #1e293b; padding: 0.6rem 1rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.85rem;">
-          📊 Transparent Public Revenue Funnel &rarr;
+        <a href="/tools/lead-leakage-calculator" class="btn btn-secondary" style="font-size: 0.9rem; text-decoration: none;">
+          Calculate Lead Leakage Cost &rarr;
         </a>
       </div>
+    </div>
+
+    <!-- Section 3: Verified Deals & Buyer Guides (Consumer Shopper Journey) -->
+    <div class="card" id="consumer-deals" style="border-color: #334155; background: #0b1120;">
+      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem;">
+        <h2 style="font-size: 1.3rem; color: #fff; margin: 0;">Verified Consumer Deals &amp; Buying Guides</h2>
+        <span class="sample-badge" style="background: rgba(14, 165, 233, 0.15); color: #38bdf8; border-color: rgba(14, 165, 233, 0.3);">#Ad — Independently Verified Deals</span>
+      </div>
+      <p style="color: #94a3b8; font-size: 0.9rem; margin-bottom: 1.25rem;">
+        Autonomous price verification, reference MRP cross-checks, and transparent buying guides for Indian consumers. Direct merchant checkout with verified savings:
+      </p>
+      <div style="display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.25rem;">
+        <a href="/deals" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.1rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.88rem; font-weight: 600;">
+          🏷️ Verified Indian Deals Directory &rarr;
+        </a>
+        <a href="/compare/electronics-technology" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.1rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.88rem; font-weight: 600;">
+          🎧 Electronics &amp; Tech Buying Guide &rarr;
+        </a>
+        <a href="/guides/best-wireless-audio-smartwatches-india" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.1rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.88rem; font-weight: 600;">
+          📱 Audio &amp; Wearables Guide &rarr;
+        </a>
+        <a href="/guides/student-flight-discounts-india" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.1rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.88rem; font-weight: 600;">
+          ✈️ Student Flight Baggage &amp; Fare Guide &rarr;
+        </a>
+        <a href="/revenue" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.1rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.88rem; font-weight: 600;">
+          📊 Public Revenue Funnel &rarr;
+        </a>
+      </div>
+      <p style="font-size: 0.78rem; color: #64748b; line-height: 1.4;">
+        #Ad — Qualifying purchases through verified partner links may earn an affiliate commission at zero extra cost to you. Product prices and availability are corroborated across official retailer stores.
+      </p>
     </div>
   </div>
 
   <footer>
     <p>&copy; ${new Date().getFullYear()} ${siteName}. All rights reserved.</p>
     <p style="margin-top: 0.5rem; max-width: 780px; margin-left: auto; margin-right: auto; line-height: 1.5; color: #64748b; font-size: 0.8rem;">
-      <strong>Statutory Affiliate Disclosure:</strong> Consumer buying guides and promotional deal directories on this platform contain verified affiliate links to partner platforms (Akasa Air, Air India Express, Cleartrip, boAt, Lenovo, Amazon). When visitors make qualifying bookings or purchases through those links, we may receive an affiliate commission at zero additional cost to the purchaser. Our B2B direct lead triage service is a separate professional consulting offering.
+      <strong>Commercial &amp; Affiliate Disclosure:</strong> Consumer buying guides and promotional deal directories on this platform contain verified affiliate links to partner platforms (boAt, Noise, and authorized affiliate networks). When visitors make qualifying purchases through those links, we may receive an affiliate commission at zero additional cost to the purchaser. Our B2B direct administrative lead capture service and SiteFix AI technical audits are separate professional offerings.
     </p>
     <p style="margin-top: 0.75rem;">
-      <a href="/privacy">Privacy Policy</a> • <a href="/revenue">Revenue Funnel</a> • <a href="/offer">Service Overview</a> • <a href="/deals">Deals</a> • ${contactEmail ? `Contact: <a href="mailto:${contactEmail}">${contactEmail}</a>` : 'Contact: Inquiries via Form'}
+      <a href="/privacy">Privacy Policy</a> • <a href="/revenue">Revenue Funnel</a> • <a href="/offer">Service Overview</a> • <a href="/deals">Deals</a> • <a href="/public/disclosure">Affiliate Disclosure</a> • ${contactEmail ? `Contact: <a href="mailto:${contactEmail}">${contactEmail}</a>` : 'Contact: Inquiries via Form'}
     </p>
   </footer>
 

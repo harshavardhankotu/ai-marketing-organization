@@ -1235,8 +1235,14 @@ apiRouter.get('/cron/status', async (c) => {
   const d1Repo = D1RevenueRepository.getInstance();
   let row: any = null;
   try {
-    row = await d1Repo.queryOne('cron_telemetry', `SELECT * FROM cron_telemetry WHERE id = 'cloudflare_worker_cron'`);
-  } catch {}
+    row = isProduction()
+      ? await d1Repo.queryOne('cron_telemetry', `SELECT * FROM cron_telemetry WHERE id = 'cloudflare_worker_cron'`)
+      : getDb().prepare(`SELECT * FROM cron_telemetry WHERE id = 'cloudflare_worker_cron'`).get();
+  } catch (err: any) {
+    if (isProduction()) {
+      return c.json({ success: false, error: 'TELEMETRY_QUERY_FAILED', message: err.message }, 503);
+    }
+  }
 
   const parseSqliteTimestampMs = (ts: string | null | undefined): number => {
     if (!ts) return 0;
@@ -1356,16 +1362,50 @@ apiRouter.get('/cron/status', async (c) => {
 
   const idleCycleShare = totalCycles > 0 ? Math.round((idleCycles / totalCycles) * 100) : 100;
 
-  let recentPings24h: number | 'UNKNOWN' = 'UNKNOWN';
+  let recentPings24h: number = 0;
+  let scheduledWorkflowExecutions24h: number = 0;
+  let manualExecutions24h: number = 0;
   try {
     const since24hIso = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
     const since24hSql = since24hIso.replace('T', ' ').replace(/\.\d{3}Z$/, '');
-    const recentRow = await d1Repo.queryOne<{ cnt: number }>('autonomous_cycle_log', `SELECT COUNT(*) as cnt FROM autonomous_cycle_log WHERE trigger_source = 'CLOUDFLARE_CRON' AND (cycle_start >= ? OR cycle_start >= ?)`, [since24hSql, since24hIso]);
-    if (recentRow && typeof recentRow.cnt === 'number') {
-      recentPings24h = recentRow.cnt;
+
+    const distinctPingSql = `
+      SELECT COUNT(DISTINCT strftime('%Y-%m-%d %H', started_at)) as cnt
+      FROM automation_execution_log
+      WHERE trigger_source = 'CLOUDFLARE_CRON'
+        AND (started_at >= ? OR started_at >= ?)
+    `;
+    const pingRow = isProduction()
+      ? await d1Repo.queryOne<{ cnt: number }>('automation_execution_log', distinctPingSql, [since24hSql, since24hIso])
+      : (getDb().prepare(distinctPingSql).get(since24hSql, since24hIso) as { cnt: number });
+    recentPings24h = pingRow?.cnt || 0;
+
+    const schedSql = `
+      SELECT COUNT(*) as cnt
+      FROM automation_execution_log
+      WHERE trigger_source = 'CLOUDFLARE_CRON'
+        AND (started_at >= ? OR started_at >= ?)
+    `;
+    const schedRow = isProduction()
+      ? await d1Repo.queryOne<{ cnt: number }>('automation_execution_log', schedSql, [since24hSql, since24hIso])
+      : (getDb().prepare(schedSql).get(since24hSql, since24hIso) as { cnt: number });
+    scheduledWorkflowExecutions24h = schedRow?.cnt || 0;
+
+    const manualSql = `
+      SELECT COUNT(*) as cnt
+      FROM automation_execution_log
+      WHERE trigger_source != 'CLOUDFLARE_CRON'
+        AND (started_at >= ? OR started_at >= ?)
+    `;
+    const manualRow = isProduction()
+      ? await d1Repo.queryOne<{ cnt: number }>('automation_execution_log', manualSql, [since24hSql, since24hIso])
+      : (getDb().prepare(manualSql).get(since24hSql, since24hIso) as { cnt: number });
+    manualExecutions24h = manualRow?.cnt || 0;
+  } catch (err: any) {
+    if (isProduction()) {
+      return c.json({ success: false, error: 'TELEMETRY_QUERY_FAILED', message: err.message }, 503);
     }
-  } catch {
-    recentPings24h = 'UNKNOWN';
+    recentPings24h = 0;
   }
 
   // Reconcile lastSuccessfulCycle: take the latest between cron_telemetry and queue execution
@@ -1393,6 +1433,8 @@ apiRouter.get('/cron/status', async (c) => {
       totalPings,
       totalLifetimePings: totalPings,
       recentPings24h,
+      scheduledWorkflowExecutions24h,
+      manualExecutions24h,
       lastObservedPing: row?.last_observed_ping || null,
       lastSuccessfulCycle: resolvedSuccessfulCycle,
       lastFailedCycle: row?.last_failed_cycle || null,

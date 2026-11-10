@@ -321,14 +321,20 @@ export class StaticSiteGenerator {
   /**
    * Generates standalone static HTML for a guide, satisfying all 10 crawler and legal constraints.
    */
-  public renderGuideHtml(guide: any, config: StaticSiteConfig): string {
+  public renderGuideHtml(guide: any, config: StaticSiteConfig, eligibleDeals?: any[]): string {
     const title = guide.title || 'Product Evaluation & Buying Guide';
     const description = guide.intent_target || guide.intentTarget || guide.meta_description || guide.description || 'Commercial product overview and specification details.';
     const canonicalUrl = `${config.siteUrl}/guides/${guide.slug}`;
-    const fullBody = guide.content_markdown || guide.contentMarkdown || guide.body_markdown || guide.body || '';
+    let fullBody = guide.content_markdown || guide.contentMarkdown || guide.body_markdown || guide.body || '';
+
+    // Suppress unbacked penalty and tariff claims per Stage F-Lite Spec
+    fullBody = fullBody.replace(/₹500[–-]₹550\s*per\s*kg[^\n\)]*/gi, 'standard excess baggage rates per airline policy');
+    fullBody = fullBody.replace(/₹5,000\+\s*penalty/gi, 'excess baggage charges');
 
     let disclosureText = 'As an Amazon Associate I earn from qualifying purchases. We do not test products or show prices; check current details on Amazon.in.';
-    if (
+    if (guide.slug === 'student-flight-discounts-india') {
+      disclosureText = 'Editorial Notice: This educational guide provides factual comparison of official airline student concession rules and baggage allowances in India. Concession booking is handled directly through official carrier portals. Explore Verified Deals (/deals) for active commercial offers.';
+    } else if (
       guide.disclosure_markdown &&
       guide.disclosure_markdown !== 'Disclosure: We may earn a referral commission at no additional cost to you when you purchase through our links.' &&
       !guide.disclosure_markdown.includes('Amazon Associate')
@@ -336,12 +342,12 @@ export class StaticSiteGenerator {
       disclosureText = guide.disclosure_markdown;
     } else if (guide.disclosureMarkdown && !guide.disclosureMarkdown.includes('Amazon Associate')) {
       disclosureText = guide.disclosureMarkdown;
-    } else if (guide.slug === 'student-flight-discounts-india' || fullBody.includes('clnk.in') || fullBody.includes('linksredirect.com')) {
-      disclosureText = 'Affiliate Disclosure: This guide contains verified affiliate links to partner travel booking platforms (Air India Express, Akasa Air, Air India, and Cleartrip). When you make a booking through these links, we may earn an affiliate commission at zero additional cost to you. We maintain strict editorial independence and never charge users fees or alter airline fare rules.';
+    } else if (fullBody.includes('clnk.in') || fullBody.includes('linksredirect.com')) {
+      disclosureText = 'Affiliate & Commercial Disclosure: We independently verify product pricing, stock availability, and manufacturer MRP baselines. When you click through our verified links to partner stores, our platform may earn a qualifying referral commission at zero additional cost to you. Explore Verified Deals (/deals) and read our full Affiliate Disclosure (/public/disclosure).';
     }
 
     // Convert basic markdown to clean HTML
-    const formattedBody = this.markdownToHtml(fullBody);
+    const formattedBody = this.markdownToHtml(fullBody, eligibleDeals);
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -500,11 +506,16 @@ export class StaticSiteGenerator {
    * Generates standalone static HTML for verified deals (/deals/index.html).
    */
   public renderDealsHtml(deals: any[] = [], config: StaticSiteConfig): string {
-    const title = `Verified Deals & Price Evidence | ${config.siteName}`;
-    const description = `Independently verified Indian e-commerce deals across boAt, Lenovo, Noise, and Amazon with reference MRP verification, transparent promo codes, and zero price inflation.`;
-    const canonicalUrl = `${config.siteUrl}/deals`;
+    const siteName = (config.siteName || '').trim();
+    const title = siteName && !siteName.toLowerCase().includes('verified deals')
+      ? `Verified Deals & Price Evidence | ${siteName}`
+      : 'Verified Deals & Price Evidence';
 
     const activeDeals = Array.isArray(deals) ? deals : [];
+    const merchants = Array.from(new Set(activeDeals.map((d: any) => d.merchant).filter(Boolean)));
+    const merchantText = merchants.length > 0 ? merchants.join(', ') : 'authorized Indian partner stores';
+    const description = `Independently verified Indian e-commerce deals across ${merchantText} with reference MRP verification, transparent promo codes, and zero price inflation.`;
+    const canonicalUrl = `${config.siteUrl}/deals`;
 
     const itemListSchema = activeDeals.length > 0 ? {
       '@context': 'https://schema.org',
@@ -806,17 +817,53 @@ export class StaticSiteGenerator {
     return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${xmlItems}\n</urlset>\n`;
   }
 
-  private markdownToHtml(md: string): string {
+  private markdownToHtml(md: string, eligibleDeals?: any[]): string {
     if (!md) return '';
 
     // Convert markdown links [Text](URL) -> <a href="URL" ...>Text</a>
-    // For affiliate/sponsored links (Cuelinks, Amazon, redirects), ensure target="_blank" rel="sponsored nofollow noopener" and button class
+    // For affiliate/sponsored links (Cuelinks, Amazon, redirects), ensure target="_blank" rel="sponsored nofollow" and button class
     let html = md.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, text, url) => {
       const isAffiliate =
         url.includes('amazon.in') ||
         url.includes('clnk.in') ||
         url.includes('linksredirect.com') ||
-        url.includes('/r/');
+        url.includes('/r/') ||
+        url.includes('/api/v1/public/deals/');
+
+      // If eligibleDeals is provided, perform strict fail-closed dynamic validation & rewriting
+      if (eligibleDeals !== undefined) {
+        if (isAffiliate) {
+          const cleanUrl = url.trim();
+          const cleanText = text.trim().toLowerCase();
+          const matchedDeal = eligibleDeals.find((d: any) => {
+            if (!d) return false;
+            // Direct ID match
+            if (d.id && cleanUrl.includes(d.id)) return true;
+            // Affiliate URL match
+            const affUrl = (d.affiliateRedirectUrl || d.affiliate_redirect_url || d.affiliateUrl || d.affiliate_url || d.trackingUrl || '').trim();
+            if (affUrl && (cleanUrl === affUrl || cleanUrl.includes(affUrl) || affUrl.includes(cleanUrl))) return true;
+            // Extract shortcode if clnk.in
+            const shortMatch = cleanUrl.match(/clnk\.in\/([A-Za-z0-9_-]+)/);
+            if (shortMatch && affUrl && affUrl.includes(shortMatch[1])) return true;
+            // Destination / product URL match
+            const prodUrl = (d.productUrl || d.product_url || '').trim();
+            if (prodUrl && (cleanUrl === prodUrl || cleanUrl.includes(prodUrl))) return true;
+            // Fallback: title match
+            const titleLower = (d.title || '').trim().toLowerCase();
+            if (titleLower && (cleanText.includes(titleLower) || titleLower.includes(cleanText))) return true;
+            return false;
+          });
+
+          if (matchedDeal && matchedDeal.isMonetizable !== false && matchedDeal.availability !== 'OUT_OF_STOCK') {
+            const redirectUrl = `/api/v1/public/deals/${encodeURIComponent(matchedDeal.id)}/redirect`;
+            return `<a href="${redirectUrl}" target="_blank" rel="sponsored nofollow" class="affiliate-link">${this.escapeHtml(text)}</a>`;
+          }
+
+          // Unmapped affiliate link: fail-closed by stripping anchor tag entirely
+          return this.escapeHtml(text);
+        }
+      }
+
       const rel = isAffiliate ? 'sponsored nofollow noopener' : 'noopener noreferrer';
       const className = isAffiliate ? ' class="affiliate-link"' : '';
       return `<a href="${this.escapeHtml(url)}" target="_blank" rel="${rel}"${className}>${this.escapeHtml(text)}</a>`;

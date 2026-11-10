@@ -3027,6 +3027,9 @@ export class AutonomousDealDiscoveryEngine {
     }
 
     const eligibleDeals = Array.from(this.dealsMap.values()).filter(d =>
+      d.id !== 'deal_boat_airdopes_141_gen2' &&
+      d.id !== 'off_boat_airdopes_141_gen2' &&
+      !d.slug?.includes('boat-airdopes-141-gen2') &&
       d.availability === 'IN_STOCK' &&
       typeof d.currentPriceINR === 'number' && d.currentPriceINR > 0 &&
       (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'AFFILIATE_VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS') &&
@@ -3225,6 +3228,11 @@ export class AutonomousDealDiscoveryEngine {
   public async resolveDeal(idOrSlug: string, organizationId: string = 'org_owner_primary'): Promise<NormalizedDeal | null> {
     if (!idOrSlug) return null;
     const cleanId = idOrSlug.trim();
+
+    // Guard against ambiguous or conflicting offer mappings (e.g. boAt Airdopes 141 having conflicting off_ and deal_ offers)
+    if (cleanId === 'off_boat_airdopes_141_gen2' || cleanId === 'deal_boat_airdopes_141_gen2' || cleanId.toLowerCase().includes('boat-airdopes-141-gen2')) {
+      return null;
+    }
 
     // 1. In-memory check
     const cached = this.getDealById(cleanId);

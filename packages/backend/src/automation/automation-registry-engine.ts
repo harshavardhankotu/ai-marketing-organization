@@ -1010,10 +1010,12 @@ export class AutomationRegistryEngine {
           );
         }
 
+        const itemsSucceeded = cycleResult.offersVerified || sectorDeals.length;
+        const status = itemsSucceeded > 0 ? 'COMPLETED' : 'COMPLETED_NO_FINDINGS';
         return {
-          status: 'COMPLETED',
+          status,
           itemsProcessed: cycleResult.offersDiscovered || sectorDeals.length,
-          itemsSucceeded: cycleResult.offersVerified || sectorDeals.length,
+          itemsSucceeded,
           itemsFailed: cycleResult.offersRejected || 0,
           summary: {
             mode: 'COMMERCE_DEAL_DISCOVERY',
@@ -1239,8 +1241,11 @@ export class AutomationRegistryEngine {
           else qualifiedCount++;
         }
 
+        const status = candidateRows.length === 0
+          ? 'NO_ACTION_DUE'
+          : (qualifiedCount > 0 || suppressedCount > 0 ? 'COMPLETED' : 'COMPLETED_NO_FINDINGS');
         return {
-          status: 'COMPLETED',
+          status,
           itemsProcessed: candidateRows.length,
           itemsSucceeded: qualifiedCount,
           itemsFailed: suppressedCount + duplicateCount,
@@ -1284,14 +1289,15 @@ export class AutomationRegistryEngine {
       case 'owner_approval_queue_generation': {
         const { OwnerDigestService } = await import('../revenue/owner-digest.js');
         const digest = await OwnerDigestService.getInstance().generateDigestAsync();
+        const pendingCount = digest.pendingOutreachDrafts?.length || 0;
         return {
-          status: 'COMPLETED',
-          itemsProcessed: digest.pendingOutreachDrafts?.length || 0,
-          itemsSucceeded: digest.pendingOutreachDrafts?.length || 0,
+          status: pendingCount > 0 ? 'COMPLETED' : 'NO_ACTION_DUE',
+          itemsProcessed: pendingCount,
+          itemsSucceeded: pendingCount,
           itemsFailed: 0,
           summary: {
             date: digest.date,
-            draftsReady: digest.pendingOutreachDrafts?.length || 0,
+            draftsReady: pendingCount,
             painPoints: digest.topPainPoints?.length || 0
           }
         };
@@ -1629,8 +1635,12 @@ export class AutomationRegistryEngine {
           activeDealsCount = actRow?.c || 0;
         } catch {}
 
+        const status = activeDealsCount === 0
+          ? 'NO_ACTION_DUE'
+          : (expiredDealsCount > 0 ? 'PARTIAL' : 'COMPLETED');
+
         return {
-          status: expiredDealsCount > 0 ? 'PARTIAL' : 'COMPLETED',
+          status,
           itemsProcessed: activeDealsCount,
           itemsSucceeded: activeDealsCount - expiredDealsCount,
           itemsFailed: expiredDealsCount,
@@ -1666,10 +1676,11 @@ export class AutomationRegistryEngine {
           qualifiedProspects = prosRow?.c || 0;
         } catch {}
 
+        const hasCommercialData = verifiedBankCash > 0 || activeDeals > 0 || qualifiedProspects > 0;
         return {
-          status: 'COMPLETED',
+          status: hasCommercialData ? 'COMPLETED' : 'COMPLETED_NO_FINDINGS',
           itemsProcessed: 4,
-          itemsSucceeded: 4,
+          itemsSucceeded: hasCommercialData ? 4 : 0,
           itemsFailed: 0,
           summary: {
             verifiedBankCashINR: verifiedBankCash,
@@ -1739,10 +1750,11 @@ export class AutomationRegistryEngine {
           remainingQueued = drainRes.remainingQueued;
         } catch {}
 
+        const totalHandled = purge.purgedCount + drainedCount;
         return {
-          status: 'COMPLETED',
-          itemsProcessed: purge.purgedCount + drainedCount,
-          itemsSucceeded: purge.purgedCount + drainedCount,
+          status: totalHandled > 0 ? 'COMPLETED' : 'NO_ACTION_DUE',
+          itemsProcessed: totalHandled,
+          itemsSucceeded: totalHandled,
           itemsFailed: 0,
           summary: {
             dpdpPurgedCount: purge.purgedCount,
@@ -1757,7 +1769,7 @@ export class AutomationRegistryEngine {
         const { HealthcareAccuracyEngine } = await import('../compliance/healthcare-accuracy-engine.js');
         const audit = HealthcareAccuracyEngine.getInstance().auditEvidenceFreshness();
         return {
-          status: audit.expiredClaims > 0 ? 'COMPLETED_WITH_FINDINGS' : 'COMPLETED',
+          status: audit.expiredClaims > 0 ? 'COMPLETED_WITH_FINDINGS' : (audit.verifiedClaims > 0 ? 'COMPLETED' : 'COMPLETED_NO_FINDINGS'),
           itemsProcessed: audit.totalClaims,
           itemsSucceeded: audit.verifiedClaims,
           itemsFailed: audit.expiredClaims,
@@ -1776,7 +1788,7 @@ export class AutomationRegistryEngine {
         const primary = scorecard.find(s => s.selectionRole === 'PRIMARY_B2B');
         const backup = scorecard.find(s => s.selectionRole === 'BACKUP_B2B_EXPERIMENT');
         return {
-          status: 'COMPLETED',
+          status: scorecard.length > 0 ? 'COMPLETED' : 'NO_ACTION_DUE',
           itemsProcessed: scorecard.length,
           itemsSucceeded: scorecard.length,
           itemsFailed: 0,
@@ -1792,7 +1804,7 @@ export class AutomationRegistryEngine {
         const { DPDPComplianceManager } = await import('../compliance/dpdp-manager.js');
         const purge = DPDPComplianceManager.getInstance().purgeExpiredInquiries(30);
         return {
-          status: 'COMPLETED',
+          status: purge.purgedCount > 0 ? 'COMPLETED' : 'NO_ACTION_DUE',
           itemsProcessed: purge.purgedCount,
           itemsSucceeded: purge.purgedCount,
           itemsFailed: 0,

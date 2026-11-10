@@ -26,7 +26,7 @@ Travelling between university campus, hometown, and competitive examination cent
 * **Extra Baggage Allowance:** 10 kg complimentary check-in baggage on domestic sectors (Total: 25 kg vs 15 kg standard).
 * **Booking Channel:** Must select 'Student' fare category during flight search on the official booking portal.
 * **Eligibility:** Full-time students enrolled in a recognized school, college, or university in India, aged 12 years and above.
-* **Booking Link:** [Book Student Fares on Air India Express](https://clnk.in/DKRM)
+* **Booking Channel:** Book Student Fares directly on the official Air India Express portal
 
 ### 2. IndiGo (6E)
 * **Base Fare Concession:** Up to 6% off base fare on select domestic bookings.
@@ -43,22 +43,22 @@ Travelling between university campus, hometown, and competitive examination cent
 * **Base Fare Concession:** Up to 7% off base fares on Saver and Flexi fare categories.
 * **Extra Baggage:** 10 kg complimentary extra check-in baggage (Total: 25 kg).
 * **Eligibility:** Full-time enrolled students aged 12 years and above with valid institutional credentials.
-* **Booking Link:** [Book Student Fares on Akasa Air](https://clnk.in/DKX3)
+* **Booking Channel:** Book Student Fares directly on the official Akasa Air portal
 
 ### 5. Air India (Full Service)
 * **Base Fare Concession:** Up to 25% off select domestic economy base fares for verified students.
 * **Baggage Allowance:** 25 kg check-in luggage included on student bookings.
 * **Eligibility:** Full-time students enrolled in accredited Indian higher education institutions.
-* **Booking Link:** [Book Student Fares on Air India](https://clnk.in/DKX4)
+* **Booking Channel:** Book Student Fares directly on the official Air India portal
 
 ### Flight Search & Price Comparison
 When comparing multi-airline student routes, budget options (including IndiGo and SpiceJet), or booking connecting domestic flights across carriers:
-* **Comparison Portal:** [Compare Student Flights on Cleartrip](https://clnk.in/DKRN)
+* **Comparison Guidance:** Compare Student Flights on Official Travel Portals & Direct Airline Apps
 
 ## Critical Check-in & Verification Rules (Avoid Penalties)
 
 1. **Mandatory Physical Student ID:** You must carry your original, valid Student ID card issued by your school, college, or university with a clear photo, course name, and valid expiry date. Note on digital credentials: While DigiLocker is recognized by CISF at security checkpoints for identity (Aadhaar/DL), airline counter staff for student tariff audit strictly require physical institutional IDs or official ABC/APAAR accredited credentials. Phone photos or unverified app logins are routinely rejected.
-2. **Airport Penalty for Missing ID:** If you cannot produce valid student credentials at the check-in desk, airlines will forfeit the concession and charge the standard counter walk-up fare difference along with standard excess baggage rates (typically ₹500–₹550 per kg for the extra 10 kg = ₹5,000+ penalty).
+2. **Airport Penalty for Missing ID:** If you cannot produce valid student credentials at the check-in desk, airlines will forfeit the concession and charge the standard counter walk-up fare difference along with standard excess baggage rates (standard counter excess baggage rates apply per airline policy).
 3. **Carry-on Baggage:** Concessions apply to check-in baggage only. The standard 7 kg cabin baggage limit applies to all passenger categories.
 4. **Base Fare vs Taxes:** Concessions apply exclusively to the base fare component, not to passenger service fees (PSF), user development fees (UDF), fuel charges, or GST.
 
@@ -67,7 +67,7 @@ When comparing multi-airline student routes, budget options (including IndiGo an
 * **Compare Flash Sales:** On high-density short-haul routes (e.g. Delhi-Mumbai, Bengaluru-Hyderabad), promotional flash sales may offer lower net total pricing than base-fare concessions. Always compare total checkout amounts.
 * **Name Match:** Ensure your name on the flight booking matches both your Student ID and your government photo ID (Aadhaar or Passport) exactly.
 * **Semester Rush:** Seat quotas allocated to student tariff classes are limited per flight; book early during semester-end breaks to secure allocations.`,
-  disclosureMarkdown: 'Affiliate Disclosure: This guide contains verified affiliate links to partner travel booking platforms (Air India Express, Akasa Air, Air India, and Cleartrip). When you make a booking through these links, we may earn an affiliate commission at zero additional cost to you. We maintain strict editorial independence and never charge users fees or alter airline fare rules. Explore [Verified Deals](/deals), view our transparent [Public Revenue Funnel](/revenue), and read our full [Affiliate Disclosure](/public/disclosure).',
+  disclosureMarkdown: 'Editorial Notice: This educational guide provides factual comparison of official airline student concession rules and baggage allowances in India. Concession booking is handled directly through official carrier portals. Explore [Verified Deals](/deals), view our transparent [Public Revenue Funnel](/revenue), and read our full [Affiliate Disclosure](/public/disclosure).',
   status: 'PUBLISHED',
   disclosureVersion: '2026.1'
 };
@@ -95,7 +95,7 @@ When selecting wireless earphones or over-ear headphones under ₹2,000, conside
 2. **Low Latency Gaming Modes:** Low latency algorithms (50ms–65ms BEAST™ mode) synchronize audio with mobile gaming and video streams to avoid audio drift.
 3. **Battery Longevity & Fast Charging:** Look for products offering Type-C fast charging (e.g. 10 minutes of charge delivering 10 hours of playback) and at least 40+ hours of combined charging case playback.
 
-* **Featured Verified Audio:** [boAt Rockerz 430 Gen 2 Wireless Headphones](https://clnk.in/D8C9) & [boAt Airdopes Plus 221 Earbuds](https://clnk.in/D8Da)
+* **Featured Verified Audio:** [boAt Rockerz 430 Gen 2 Wireless Headphones](/api/v1/public/deals/deal_4ea10ff4-5/redirect) & [boAt Airdopes Plus 221 Earbuds](/api/v1/public/deals/deal_1f758bfb-7/redirect)
 
 ## Smartwatch Selection: Display, Sensor Accuracy & Water Resistance
 
@@ -105,7 +105,7 @@ Budget fitness trackers and Bluetooth calling smartwatches require scrutiny befo
 2. **Sensor Authenticity:** Continuous SpO2, dynamic optical heart rate sensors, and sleep stage tracking provide valuable lifestyle insights. Note that smartwatches are consumer fitness monitors, not medical-grade diagnostic instruments.
 3. **Ingress Protection (IP Rating):** IP67 or IP68 certification is essential to withstand sweat during workouts and sudden monsoon rain exposure.
 
-* **Featured Verified Wearables:** [Noise Kore Smartwatch](https://clnk.in/D8Dt) & [Noise ColorFit Icon Rise Max](https://clnk.in/D8Du)
+* **Featured Verified Wearables:** [Noise Kore Smartwatch](/api/v1/public/deals/deal_660e8e2f-1/redirect) & [Noise ColorFit Icon Rise Max](/api/v1/public/deals/deal_3d917061-8/redirect)
 
 ## Pricing Integrity & Verification Protocol
 
