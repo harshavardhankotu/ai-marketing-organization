@@ -298,7 +298,8 @@ export class PartnerRegistryEngine {
     const isPermittedStatus =
       partner.approvalStatus === 'APPROVED' ||
       partner.approvalStatus === 'QUALIFYING_SALES_IN_PROGRESS' ||
-      partner.approvalStatus === 'TRACKING_ID_ISSUED';
+      partner.approvalStatus === 'TRACKING_ID_ISSUED' ||
+      (partner.approvalStatus as string) === 'PROVISIONAL';
 
     return isPermittedStatus &&
       partner.activeStatus === 1 &&

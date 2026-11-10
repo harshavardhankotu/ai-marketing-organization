@@ -309,6 +309,7 @@ describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)
       expect(htmlNotReady).not.toContain('high-speed');
 
       // 2. Insert published guide fixture
+      db.prepare('DELETE FROM commission_content_assets WHERE slug = ? OR id = ?').run('direct-thermal-printer-guide', 'cca_test_guide_01');
       db.prepare(`
         INSERT INTO commission_content_assets (
           id, organization_id, slug, title, asset_type, category, intent_target, content_markdown, status, primary_offer_id, created_at, updated_at
@@ -319,8 +320,9 @@ describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)
 
       const snapshotReady = await engine.computeStatus(orgId);
       expect(snapshotReady.todayItems?.readyShareGuide?.status).toBe('READY');
-      expect(snapshotReady.todayItems?.readyShareGuide?.pageUrl).toBe('https://ai-marketing-platform-core.web.app/guides/direct-thermal-printer-guide');
-      expect(snapshotReady.todayItems?.readyShareGuide?.shareText).toContain('https://ai-marketing-platform-core.web.app/guides/direct-thermal-printer-guide');
+      const expectedBase = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').replace(/\/$/, '');
+      expect(snapshotReady.todayItems?.readyShareGuide?.pageUrl).toBe(`${expectedBase}/guides/direct-thermal-printer-guide`);
+      expect(snapshotReady.todayItems?.readyShareGuide?.shareText).toContain(`${expectedBase}/guides/direct-thermal-printer-guide`);
       expect(snapshotReady.todayItems?.readyShareGuide?.shareText).not.toContain('high-speed');
 
       const htmlReady = engine.renderHtmlDashboard(snapshotReady);
@@ -1022,6 +1024,7 @@ describe('OwnerControlCenterEngine (Single-owner system, zero LLM tokens in A-D)
     });
 
     it('ShareKitService does nothing when no guide has status PUBLISHED', async () => {
+      db.prepare('DELETE FROM commission_content_assets WHERE status = ?').run('PUBLISHED');
       const kit = ShareKitService.getInstance();
       const result = await kit.generateWeeklyShareKit(orgId);
       expect(result.active).toBe(false);

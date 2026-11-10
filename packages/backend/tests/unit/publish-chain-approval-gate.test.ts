@@ -133,8 +133,8 @@ describe('Item 6: Publish Chain Behind The Approval Gate (Fixtures and Dry-Run O
     expect(chainResult.gateStatus).toBe('APPROVED_AND_ACTIVE');
     expect(chainResult.lintPassed).toBe(true);
     expect(chainResult.guideSlug).toBeDefined();
-    expect(chainResult.guideUrl).toContain('https://ai-marketing-platform-core.web.app/guides/');
-    expect(chainResult.sitemapUrl).toBe('https://ai-marketing-platform-core.web.app/sitemap.xml');
+    expect(chainResult.guideUrl).toContain('https://ai-marketing-organization.onrender.com/guides/');
+    expect(chainResult.sitemapUrl).toBe('https://ai-marketing-organization.onrender.com/sitemap.xml');
     expect(chainResult.statusPageUrl).toBe('https://ai-marketing-organization.onrender.com/owner/status');
 
     // 4. Verify guide combines BOTH owner-approved listing facts AND manufacturer facts
