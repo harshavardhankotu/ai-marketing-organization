@@ -55,6 +55,23 @@ describe('Stage C — Production Integrity Closure Tests', () => {
       expect(approved.channel?.url).toBe('https://ai-marketing-organization.onrender.com');
     });
 
+    it('selects channel matching process.env.CUELINKS_CHANNEL_ID when multiple approved channels match canonical host', async () => {
+      process.env.CUELINKS_CHANNEL_ID = '200';
+      const client = new CuelinksV3Client({ apiKey: 'valid_dummy_key', publisherId: '123' });
+      const manager = new CuelinksSyncManager(client);
+
+      const channels = [
+        { id: 100, name: 'Render Primary', url: 'https://ai-marketing-organization.onrender.com', status: 'approved' },
+        { id: 200, name: 'Render Secondary', url: 'https://ai-marketing-organization.onrender.com', status: 'approved' },
+      ];
+
+      vi.spyOn(client, 'getChannels').mockResolvedValue(channels as any);
+
+      const approved = await manager.getApprovedChannel();
+      expect(approved.approved).toBe(true);
+      expect(approved.channel?.id).toBe(200);
+    });
+
     it('rejects channels that do not match canonical website host', async () => {
       const client = new CuelinksV3Client({ apiKey: 'valid_dummy_key', publisherId: '123' });
       const manager = new CuelinksSyncManager(client);

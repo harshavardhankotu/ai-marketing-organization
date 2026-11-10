@@ -984,9 +984,10 @@ export class CuelinksSyncManager {
         }
       });
 
-      let ch = expectedId ? matchingChannels.find(c => String(c.id) === String(expectedId)) : matchingChannels[0];
-      if (!ch && expectedId && process.env.NODE_ENV === 'test') {
-        ch = channels.find(c => String(c.id) === String(expectedId));
+      const targetId = (expectedId ?? process.env.CUELINKS_CHANNEL_ID ?? '').toString().trim() || undefined;
+      let ch = targetId ? matchingChannels.find(c => String(c.id) === String(targetId)) : matchingChannels[0];
+      if (!ch && targetId && process.env.NODE_ENV === 'test') {
+        ch = channels.find(c => String(c.id) === String(targetId));
       }
 
       if (ch && (ch.status?.toLowerCase() === 'approved' || ch.status?.toLowerCase() === 'active')) {
