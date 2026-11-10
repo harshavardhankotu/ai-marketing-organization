@@ -539,7 +539,7 @@ export class DirectCommercialOfferPage {
   <footer>
     <p>&copy; ${new Date().getFullYear()} ${siteName}. All rights reserved.</p>
     <p style="margin-top: 0.5rem; max-width: 780px; margin-left: auto; margin-right: auto; line-height: 1.5; color: #64748b; font-size: 0.8rem;">
-      <strong>Commercial &amp; Affiliate Disclosure:</strong> Consumer buying guides and promotional deal directories on this platform contain verified affiliate links to partner platforms (boAt, Noise, and authorized affiliate networks). When visitors make qualifying purchases through those links, we may receive an affiliate commission at zero additional cost to the purchaser. Our B2B direct administrative lead capture service and SiteFix AI technical audits are separate professional offerings.
+      <strong>Statutory Affiliate Disclosure &amp; Commercial Terms:</strong> Consumer buying guides and promotional deal directories on this platform contain verified affiliate links to partner platforms (boAt, Noise, and authorized affiliate networks). When visitors make qualifying purchases through those links, we may receive an affiliate commission at zero additional cost to the purchaser. Our B2B direct administrative lead capture service and SiteFix AI technical audits are separate professional offerings.
     </p>
     <p style="margin-top: 0.75rem;">
       <a href="/privacy">Privacy Policy</a> • <a href="/revenue">Revenue Funnel</a> • <a href="/offer">Service Overview</a> • <a href="/deals">Deals</a> • <a href="/public/disclosure">Affiliate Disclosure</a> • ${contactEmail ? `Contact: <a href="mailto:${contactEmail}">${contactEmail}</a>` : 'Contact: Inquiries via Form'}

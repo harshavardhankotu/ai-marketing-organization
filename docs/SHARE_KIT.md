@@ -91,11 +91,11 @@ Educational guide. Concessions booked directly on official airline portals.
 ```text
 ⚡ Is your website losing mobile visitors before they even read your headline?
 
-Run a free, instant PageSpeed, Core Web Vitals, and conversion leakage audit for your business site. Zero login required:
+Run a free, instant technical website health and conversion leakage audit for your business site. Zero login required:
 
 https://ai-marketing-organization.onrender.com/tools/site-audit?utm_source=linkedin&utm_medium=social&utm_campaign=sitefix_growth_2026
 
-Get instant performance scorecards and remediation instructions.
+Deterministic technical checks inspect HTML metadata, Open Graph tags, Schema.org JSON-LD structured data, robots.txt directives, and conversion capture paths. Core Web Vitals and PageSpeed metrics utilize Google PageSpeed Insights API availability with keyless fallback.
 ```
 
 ---
@@ -105,7 +105,7 @@ Get instant performance scorecards and remediation instructions.
 Before distributing any affiliate deal or product link, verify that the merchant campaign satisfies all 5 commercial constraints:
 
 1. **`channel_id` Verification:** The approved Cuelinks Channel ID (`331585`) must be active and approved in the publisher console.
-2. **`social_media_publishers_allowed`:** Confirm that the merchant campaign terms permit social media and messaging distribution (WhatsApp, Telegram, Twitter). If social publishers are restricted, traffic must land on the website first rather than outbound direct links.
+2. **`social_media_publishers_allowed`:** Confirm that the merchant campaign terms permit social media and messaging distribution (WhatsApp, Telegram, Twitter). Social media sharing of affiliate tracking links is strictly restricted to campaigns where `social_media_publishers_allowed === true`. If `social_media_publishers_allowed` is false or unverified, outbound promotional traffic must link exclusively to our canonical educational guides or website landing pages (`/deals`, `/guides/...`), never raw direct affiliate links.
 3. **`deeplink_allowed`:** Verify that product-level deep links are supported. Never construct synthetic deep links for merchants that only allow root domain referrals.
 4. **`sub_ids_allowed`:** Confirm sub-ID tracking (`subid` through `subid5`) is enabled to preserve click attribution and hourly window reconciliation.
-5. **Zero Fake Urgency:** Never fabricate false countdown timers, invented discount percentages, or unbacked claim penalties (e.g. "₹5,000 fine"). State only verified MRP baselines and active merchant voucher terms.
+5. **Zero Fake Urgency & Pricing Truth:** Never fabricate false countdown timers, invented discount percentages, or unbacked claim penalties. State only verified MRP baselines and active merchant voucher terms. Never promise guaranteed discounts or guaranteed stock.

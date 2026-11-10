@@ -467,6 +467,15 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
         )
       `).run(nowIso, nowIso);
 
+      // Seed autonomous cycle log for CLOUDFLARE_CRON ping tracking
+      db.prepare(`
+        INSERT OR REPLACE INTO autonomous_cycle_log (
+          id, organization_id, trigger_source, cycle_start, status, actions_taken
+        ) VALUES (
+          'cyc_recent_test_cron_stage_f', 'org_owner_primary', 'CLOUDFLARE_CRON', datetime('now'), 'COMPLETED', 0
+        )
+      `).run();
+
       // Seed execution logs with a registered workflow_id: 2 hourly CLOUDFLARE_CRON runs, 1 manual run
       const ts = Date.now();
       db.prepare(`
@@ -516,7 +525,9 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
   // --------------------------------------------------------------------------
   describe('Workstream H — docs/SHARE_KIT.md Verification', () => {
     it('verifies docs/SHARE_KIT.md exists and contains canonical URLs, UTM guidelines, and Cuelinks checklist', () => {
-      const kitPath = path.resolve(process.cwd(), 'docs/SHARE_KIT.md');
+      const kitPath = fs.existsSync(path.resolve(process.cwd(), 'docs/SHARE_KIT.md'))
+        ? path.resolve(process.cwd(), 'docs/SHARE_KIT.md')
+        : path.resolve(__dirname, '../../../../docs/SHARE_KIT.md');
       expect(fs.existsSync(kitPath)).toBe(true);
 
       const content = fs.readFileSync(kitPath, 'utf-8');

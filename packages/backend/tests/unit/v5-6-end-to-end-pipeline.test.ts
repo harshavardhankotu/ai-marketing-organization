@@ -279,7 +279,6 @@ describe('V5.6 — End-to-End Autonomous Pipeline Wiring', () => {
         ) ON CONFLICT(domain) DO UPDATE SET updated_at = datetime('now'), is_publicly_authorized = 1
       `).run();
 
-      // Ensure active deal exists for jewellery sector
       db.prepare(`
         INSERT INTO public_deals (
           id, slug, canonical_slug, title, brand, merchant, category, sector_code,
@@ -290,7 +289,13 @@ describe('V5.6 — End-to-End Autonomous Pipeline Wiring', () => {
           'Tanishq', 'Tanishq', 'Precious Metals', 'SECTOR_A_PRECIOUS_METALS',
           'https://tanishq.co.in/p1', 'https://linksredirect.com/?url=https%3A%2F%2Ftanishq.co.in%2Fp1',
           50000, 'IN_STOCK', 'AFFILIATE_VERIFIED', 1, 1, 1, datetime('now')
-        ) ON CONFLICT(id) DO UPDATE SET updated_at = datetime('now')
+        ) ON CONFLICT(id) DO UPDATE SET 
+          verification_status = 'AFFILIATE_VERIFIED',
+          availability = 'IN_STOCK',
+          is_monetizable = 1,
+          product_verified = 1,
+          affiliate_verified = 1,
+          updated_at = datetime('now')
       `).run();
 
       const res = await app.request('/sitemap.xml');

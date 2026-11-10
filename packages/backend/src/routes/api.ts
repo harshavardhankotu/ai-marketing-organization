@@ -1235,9 +1235,7 @@ apiRouter.get('/cron/status', async (c) => {
   const d1Repo = D1RevenueRepository.getInstance();
   let row: any = null;
   try {
-    row = isProduction()
-      ? await d1Repo.queryOne('cron_telemetry', `SELECT * FROM cron_telemetry WHERE id = 'cloudflare_worker_cron'`)
-      : getDb().prepare(`SELECT * FROM cron_telemetry WHERE id = 'cloudflare_worker_cron'`).get();
+    row = await d1Repo.queryOne('cron_telemetry', `SELECT * FROM cron_telemetry WHERE id = 'cloudflare_worker_cron'`);
   } catch (err: any) {
     if (isProduction()) {
       return c.json({ success: false, error: 'TELEMETRY_QUERY_FAILED', message: err.message }, 503);
@@ -1262,9 +1260,7 @@ apiRouter.get('/cron/status', async (c) => {
   let registryWorkflows: any[] = [];
   try {
     const regSql = `SELECT id, last_status, last_error, owner_action_required FROM automation_registry WHERE enabled = 1`;
-    registryWorkflows = isProduction()
-      ? await d1Repo.query<any>('automation_registry', regSql)
-      : getDb().prepare(regSql).all();
+    registryWorkflows = await d1Repo.query<any>('automation_registry', regSql);
   } catch {}
 
   const hasBlockedWf = registryWorkflows.some(w => w.last_status === 'BLOCKED');
@@ -1363,11 +1359,19 @@ apiRouter.get('/cron/status', async (c) => {
   const idleCycleShare = totalCycles > 0 ? Math.round((idleCycles / totalCycles) * 100) : 100;
 
   let recentPings24h: number = 0;
+  let scheduledActiveHours24h: number = 0;
   let scheduledWorkflowExecutions24h: number = 0;
   let manualExecutions24h: number = 0;
   try {
     const since24hIso = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
     const since24hSql = since24hIso.replace('T', ' ').replace(/\.\d{3}Z$/, '');
+
+    // Canonical contract: recentPings24h tracks CLOUDFLARE_CRON pings from autonomous_cycle_log
+    const cronPingRow = await d1Repo.queryOne<{ cnt: number }>(
+      'autonomous_cycle_log',
+      `SELECT COUNT(*) as cnt FROM autonomous_cycle_log WHERE trigger_source = 'CLOUDFLARE_CRON' AND (cycle_start >= datetime('now', '-24 hours') OR cycle_start >= ? OR cycle_start >= ?)`,
+      [since24hSql, since24hIso]
+    );
 
     const distinctPingSql = `
       SELECT COUNT(DISTINCT strftime('%Y-%m-%d %H', started_at)) as cnt
@@ -1375,10 +1379,10 @@ apiRouter.get('/cron/status', async (c) => {
       WHERE trigger_source = 'CLOUDFLARE_CRON'
         AND (started_at >= ? OR started_at >= ?)
     `;
-    const pingRow = isProduction()
-      ? await d1Repo.queryOne<{ cnt: number }>('automation_execution_log', distinctPingSql, [since24hSql, since24hIso])
-      : (getDb().prepare(distinctPingSql).get(since24hSql, since24hIso) as { cnt: number });
-    recentPings24h = pingRow?.cnt || 0;
+    const pingRow = await d1Repo.queryOne<{ cnt: number }>('automation_execution_log', distinctPingSql, [since24hSql, since24hIso]);
+    scheduledActiveHours24h = pingRow?.cnt || 0;
+
+    recentPings24h = cronPingRow?.cnt || 0;
 
     const schedSql = `
       SELECT COUNT(*) as cnt
@@ -1386,9 +1390,7 @@ apiRouter.get('/cron/status', async (c) => {
       WHERE trigger_source = 'CLOUDFLARE_CRON'
         AND (started_at >= ? OR started_at >= ?)
     `;
-    const schedRow = isProduction()
-      ? await d1Repo.queryOne<{ cnt: number }>('automation_execution_log', schedSql, [since24hSql, since24hIso])
-      : (getDb().prepare(schedSql).get(since24hSql, since24hIso) as { cnt: number });
+    const schedRow = await d1Repo.queryOne<{ cnt: number }>('automation_execution_log', schedSql, [since24hSql, since24hIso]);
     scheduledWorkflowExecutions24h = schedRow?.cnt || 0;
 
     const manualSql = `
@@ -1397,9 +1399,7 @@ apiRouter.get('/cron/status', async (c) => {
       WHERE trigger_source != 'CLOUDFLARE_CRON'
         AND (started_at >= ? OR started_at >= ?)
     `;
-    const manualRow = isProduction()
-      ? await d1Repo.queryOne<{ cnt: number }>('automation_execution_log', manualSql, [since24hSql, since24hIso])
-      : (getDb().prepare(manualSql).get(since24hSql, since24hIso) as { cnt: number });
+    const manualRow = await d1Repo.queryOne<{ cnt: number }>('automation_execution_log', manualSql, [since24hSql, since24hIso]);
     manualExecutions24h = manualRow?.cnt || 0;
   } catch (err: any) {
     if (isProduction()) {
@@ -1433,6 +1433,7 @@ apiRouter.get('/cron/status', async (c) => {
       totalPings,
       totalLifetimePings: totalPings,
       recentPings24h,
+      scheduledActiveHours24h,
       scheduledWorkflowExecutions24h,
       manualExecutions24h,
       lastObservedPing: row?.last_observed_ping || null,
