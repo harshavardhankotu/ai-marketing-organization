@@ -1548,21 +1548,36 @@ apiRouter.post('/cron/worker/claim-and-run', async (c) => {
 
   const workerSource = c.req.header('cf-worker') || c.req.header('x-worker-source') || 'worker_scheduled';
   const queue = DurableJobQueue.getInstance();
-  const budgetMs = Math.min(25000, Number(c.req.query('budgetMs') || 20000));
-  const maxJobs = Math.min(5, Number(c.req.query('maxJobs') || 3));
+  const budgetMs = Math.min(25000, Number(c.req.query('budgetMs') || 12000));
+  const maxJobs = Math.min(5, Number(c.req.query('maxJobs') || 2));
   const startTime = Date.now();
   const executedJobs: any[] = [];
   let lastExecResult: any = null;
+  let claimedCount = 0;
+  let startedCount = 0;
+  let completedCount = 0;
+  let timedOutCount = 0;
+  let failedCount = 0;
 
   const { AutomationRegistryEngine } = await import('../automation/automation-registry-engine.js');
   const engine = AutomationRegistryEngine.getInstance();
 
-  while (executedJobs.length < maxJobs && (Date.now() - startTime) < (budgetMs - 5000)) {
+  while (executedJobs.length < maxJobs && (Date.now() - startTime) < (budgetMs - 3000)) {
     const claimedJob = await queue.claimDueJob(workerSource, 90);
     if (!claimedJob) break;
+    claimedCount++;
 
-    // Remaining time budget for this workflow
-    const remainingBudget = Math.max(5000, budgetMs - (Date.now() - startTime));
+    // Check remaining budget before starting execution
+    const elapsedSoFar = Date.now() - startTime;
+    const remainingBudget = Math.max(3000, budgetMs - elapsedSoFar);
+    if (remainingBudget <= 3000) {
+      timedOutCount++;
+      // Release lease back to queue
+      await queue.failAttempt(claimedJob.id, 'BUDGET_EXHAUSTED_BEFORE_START', true, undefined, claimedJob.leaseToken || undefined);
+      break;
+    }
+
+    startedCount++;
     const execResult = await engine.executeWorkflow(claimedJob.workflowId, 'CLOUDFLARE_CRON', remainingBudget);
     lastExecResult = execResult;
 
@@ -1573,14 +1588,24 @@ apiRouter.post('/cron/worker/claim-and-run', async (c) => {
       execResult.status === 'COMPLETED_NO_FINDINGS' ||
       execResult.status === 'NO_ACTION_DUE'
     ) {
+      completedCount++;
       await queue.completeJob(claimedJob.id, execResult.status, execResult.resultSummary, claimedJob.leaseToken || undefined);
     } else if (execResult.status === 'PARTIAL') {
+      completedCount++;
       await queue.completeJob(claimedJob.id, 'PARTIAL', execResult.resultSummary, claimedJob.leaseToken || undefined);
     } else if (execResult.status === 'BLOCKED') {
+      failedCount++;
       await queue.completeJob(claimedJob.id, 'BLOCKED', execResult.resultSummary, claimedJob.leaseToken || undefined);
     } else if (execResult.status === 'NOT_IMPLEMENTED') {
+      failedCount++;
       await queue.completeJob(claimedJob.id, 'NOT_IMPLEMENTED', execResult.resultSummary, claimedJob.leaseToken || undefined);
     } else {
+      // Check if timeout or error
+      if ((execResult.durationMs && execResult.durationMs >= remainingBudget) || (execResult.errorMessage && execResult.errorMessage.includes('timeout'))) {
+        timedOutCount++;
+      } else {
+        failedCount++;
+      }
       // DEFERRED or ERROR: fail attempt with exponential backoff & preserve checkpoint
       if (execResult.resultSummary) {
         await queue.updateCheckpoint(claimedJob.id, execResult.resultSummary, undefined, claimedJob.leaseToken || undefined);
@@ -1603,6 +1628,11 @@ apiRouter.post('/cron/worker/claim-and-run', async (c) => {
     return c.json({
       success: true,
       claimed: false,
+      claimedCount: 0,
+      startedCount: 0,
+      completedCount: 0,
+      timedOutCount: 0,
+      failedCount: 0,
       message: 'NO_JOBS_DUE',
       queueStats: stats
     });
@@ -1632,6 +1662,11 @@ apiRouter.post('/cron/worker/claim-and-run', async (c) => {
   return c.json({
     success: true,
     claimed: true,
+    claimedCount,
+    startedCount,
+    completedCount,
+    timedOutCount,
+    failedCount,
     jobsExecutedCount: executedJobs.length,
     executedJobs,
     elapsedMs: Date.now() - startTime,
@@ -7508,7 +7543,7 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
     // Verify authorized partner in DB
     const partnerRow = await d1Repo.queryOne<any>(
       'partners',
-      "SELECT id, authorization_status, approval_status FROM partners WHERE id = ? AND (authorization_status = 'AUTHORIZED' OR approval_status = 'APPROVED')",
+      "SELECT id, authorization_status, approval_status FROM partners WHERE id = ? AND authorization_status = 'AUTHORIZED' AND approval_status = 'APPROVED'",
       [partnerId]
     );
     if (!partnerRow) {
@@ -7518,7 +7553,7 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
     // Phase 1 Mandate: Require exact 1:1 match between deal and active partner_offers record; zero cross-offer fallback
     const existingOffer = await d1Repo.queryOne<any>(
       'partner_offers',
-      "SELECT id, active, status FROM partner_offers WHERE (id = ? OR offer_slug = ? OR offer_slug = ?) AND partner_id = ? AND (active = 1 OR status = 'ACTIVE')",
+      "SELECT id, active, status FROM partner_offers WHERE (id = ? OR offer_slug = ? OR offer_slug = ?) AND partner_id = ? AND active = 1 AND status = 'ACTIVE'",
       [deal.id, deal.slug || '', deal.canonicalSlug || '', partnerId]
     );
     if (!existingOffer) {
@@ -7544,7 +7579,7 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
       referralId,
       clickId,
       orgId,
-      deal.id,
+      referralOfferId,
       partnerId,
       sanitizedPlacement,
       incomingSource,

@@ -441,63 +441,69 @@ export class ContentAssetEngine {
   public async syncBaselineAssetsAsync(): Promise<void> {
     if (process.env.NODE_ENV === 'test') return;
     try {
-      const slug = 'student-flight-discounts-india';
-      let existing: any = null;
-      try {
-        existing = await this.d1Repo.queryOne<any>(
-          'commission_content_assets',
-          'SELECT id FROM commission_content_assets WHERE slug = ?',
-          [slug]
-        );
-      } catch {}
-
+      const baselineSlugs = ['student-flight-discounts-india', 'best-wireless-audio-smartwatches-india'];
       const db = getDb();
-      const localGuide = db.prepare('SELECT * FROM commission_content_assets WHERE slug = ?').get(slug) as any;
-      if (localGuide) {
-        if (!existing) {
-          const insertSql = `
-            INSERT INTO commission_content_assets (
-              id, organization_id, slug, asset_type, title, category, location, intent_target,
-              content_markdown, primary_offer_id, matched_offer_ids_json, disclosure_markdown,
-              status, view_count, referral_click_count, quality_gate_json, disclosure_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `;
-          const params = [
-            localGuide.id,
-            localGuide.organization_id,
-            localGuide.slug,
-            localGuide.asset_type,
-            localGuide.title,
-            localGuide.category,
-            localGuide.location,
-            localGuide.intent_target,
-            localGuide.content_markdown,
-            localGuide.primary_offer_id,
-            localGuide.matched_offer_ids_json || '[]',
-            localGuide.disclosure_markdown,
-            localGuide.status,
-            localGuide.view_count || 0,
-            localGuide.referral_click_count || 0,
-            localGuide.quality_gate_json || '{}',
-            localGuide.disclosure_version || '2026.1'
-          ];
-          await this.d1Repo.executeWrite('commission_content_assets', insertSql, params);
-          console.log(`[Content Gate] Baseline guide '${slug}' synchronized to Cloudflare D1.`);
-        } else {
-          // Keep Cloudflare D1 content in sync with enhanced/corrected guide content
-          const updateSql = `
-            UPDATE commission_content_assets SET
-              title = ?, content_markdown = ?, disclosure_markdown = ?,
-              updated_at = datetime('now')
-            WHERE slug = ?
-          `;
-          await this.d1Repo.executeWrite('commission_content_assets', updateSql, [
-            localGuide.title,
-            localGuide.content_markdown,
-            localGuide.disclosure_markdown,
-            slug
-          ]);
-          console.log(`[Content Gate] Baseline guide '${slug}' updated in Cloudflare D1.`);
+
+      for (const slug of baselineSlugs) {
+        let existing: any = null;
+        try {
+          existing = await this.d1Repo.queryOne<any>(
+            'commission_content_assets',
+            'SELECT id FROM commission_content_assets WHERE slug = ?',
+            [slug]
+          );
+        } catch {}
+
+        const localGuide = db.prepare('SELECT * FROM commission_content_assets WHERE slug = ?').get(slug) as any;
+        if (localGuide) {
+          if (!existing) {
+            const insertSql = `
+              INSERT INTO commission_content_assets (
+                id, organization_id, slug, asset_type, title, category, location, intent_target,
+                content_markdown, primary_offer_id, matched_offer_ids_json, disclosure_markdown,
+                status, view_count, referral_click_count, quality_gate_json, disclosure_version
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `;
+            const params = [
+              localGuide.id,
+              localGuide.organization_id,
+              localGuide.slug,
+              localGuide.asset_type,
+              localGuide.title,
+              localGuide.category,
+              localGuide.location,
+              localGuide.intent_target,
+              localGuide.content_markdown,
+              localGuide.primary_offer_id,
+              localGuide.matched_offer_ids_json || '[]',
+              localGuide.disclosure_markdown,
+              localGuide.status,
+              localGuide.view_count || 0,
+              localGuide.referral_click_count || 0,
+              localGuide.quality_gate_json || '{}',
+              localGuide.disclosure_version || '2026.1'
+            ];
+            await this.d1Repo.executeWrite('commission_content_assets', insertSql, params);
+            console.log(`[Content Gate] Baseline guide '${slug}' synchronized to Cloudflare D1.`);
+          } else {
+            // Keep Cloudflare D1 content in sync with enhanced/corrected guide content
+            const updateSql = `
+              UPDATE commission_content_assets SET
+                title = ?, content_markdown = ?, disclosure_markdown = ?,
+                primary_offer_id = ?, matched_offer_ids_json = ?,
+                updated_at = datetime('now')
+              WHERE slug = ?
+            `;
+            await this.d1Repo.executeWrite('commission_content_assets', updateSql, [
+              localGuide.title,
+              localGuide.content_markdown,
+              localGuide.disclosure_markdown,
+              localGuide.primary_offer_id,
+              localGuide.matched_offer_ids_json || '[]',
+              slug
+            ]);
+            console.log(`[Content Gate] Baseline guide '${slug}' updated in Cloudflare D1.`);
+          }
         }
       }
     } catch (err: any) {

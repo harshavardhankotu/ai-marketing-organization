@@ -19,6 +19,7 @@ describe('Discovery, Publication & Revenue Governance Regression Suite', () => {
       db.prepare(`DELETE FROM action_cooldowns`).run();
       db.prepare(`DELETE FROM platform_prospects`).run();
       db.prepare(`DELETE FROM proposals`).run();
+      db.prepare(`DELETE FROM partner_offers WHERE organization_id = 'org_owner_primary'`).run();
     } catch {}
   };
 
