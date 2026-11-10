@@ -1135,6 +1135,18 @@ export class AutonomousCommercialEngine {
           return;
         }
 
+        const trackingUrl = task.inputs.trackingUrl;
+        if (!trackingUrl || !this.partnerRegistry.isValidUrl(trackingUrl)) {
+          task.status = 'BLOCKED';
+          task.stage = 'BLOCKED';
+          task.errorInfo = {
+            blockerType: 'INVALID_TRACKING_URL',
+            message: 'No authorized affiliate tracking URL provided; generic cid=default fallback suppressed.'
+          };
+          await this.persistTask(task);
+          return;
+        }
+
         // Stage C Task A: Enforce 5-State Sequential Cuelinks Authorization before offer creation
         const { CuelinksSyncManager } = await import('./cuelinks-sync-manager.js');
         const syncMgr = CuelinksSyncManager.getInstance();
@@ -1158,17 +1170,6 @@ export class AutonomousCommercialEngine {
 
         let offer = await this.partnerRegistry.getOfferBySlug('verified-cuelinks-offer');
         if (!offer) {
-          const trackingUrl = auth5.conversion?.trackingUrl || task.inputs.trackingUrl;
-          if (!trackingUrl || !this.partnerRegistry.isValidUrl(trackingUrl)) {
-            task.status = 'BLOCKED';
-            task.stage = 'BLOCKED';
-            task.errorInfo = {
-              blockerType: 'BLOCKED_CONVERSION_NOT_AFFILIATED',
-              message: 'No authorized tracking URL provided; generic cid=default fallback suppressed.'
-            };
-            await this.persistTask(task);
-            return;
-          }
           offer = await this.partnerRegistry.createOffer({
             partnerId: cuelinksPartner.id,
             organizationId: task.organizationId,

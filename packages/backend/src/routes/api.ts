@@ -5909,20 +5909,20 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
     SELECT 
       COALESCE(SUM(CASE WHEN ${diagnosticCond} THEN 1 ELSE 0 END), 0) as diag,
       COALESCE(SUM(CASE WHEN ${testCond} AND NOT ${diagnosticCond} THEN 1 ELSE 0 END), 0) as testClicks,
-      COALESCE(SUM(CASE WHEN device_class = 'verified_human' AND NOT (${diagnosticCond} OR ${testCond}) THEN 1 ELSE 0 END), 0) as verifiedHuman,
-      COALESCE(SUM(CASE WHEN device_class IN ('browser_candidate', 'human', 'mobile', 'desktop') AND NOT (${diagnosticCond} OR ${testCond}) THEN 1 ELSE 0 END), 0) as browserCandidate,
+      COALESCE(SUM(CASE WHEN (device_class = 'verified_human' OR device_class = 'human') AND NOT (${diagnosticCond} OR ${testCond}) THEN 1 ELSE 0 END), 0) as human,
+      COALESCE(SUM(CASE WHEN device_class IN ('browser_candidate', 'mobile', 'desktop') AND NOT (${diagnosticCond} OR ${testCond}) THEN 1 ELSE 0 END), 0) as browserCandidate,
       COALESCE(SUM(CASE WHEN device_class IN ('bot', 'known_bot', 'suspected_bot') AND NOT (${diagnosticCond} OR ${testCond}) THEN 1 ELSE 0 END), 0) as bot,
       COALESCE(SUM(CASE WHEN (device_class = 'unknown' OR device_class IS NULL) AND NOT (${diagnosticCond} OR ${testCond}) THEN 1 ELSE 0 END), 0) as unk
     FROM referral_click_events
   `;
   const clickRow = await safeQuery<any>('referral_click_events', disaggregatedSql, [], 'referral_click_events.disaggregated');
   if (clickRow) {
-    internalDiagnosticClicks = Number(clickRow.diag || 0);
-    testClicks = Number(clickRow.testClicks || 0);
-    verifiedHumanOutboundClicks = Number(clickRow.verifiedHuman || 0);
-    browserCandidateOutboundClicks = Number(clickRow.browserCandidate || 0);
-    botClicks = Number(clickRow.bot || 0);
-    unknownClicks = Number(clickRow.unk || 0);
+    internalDiagnosticClicks = Number(clickRow.diag ?? 0);
+    testClicks = Number(clickRow.testClicks ?? 0);
+    verifiedHumanOutboundClicks = Number(clickRow.human ?? clickRow.verifiedHuman ?? 0);
+    browserCandidateOutboundClicks = Number(clickRow.browserCandidate ?? 0);
+    botClicks = Number(clickRow.bot ?? 0);
+    unknownClicks = Number(clickRow.unk ?? 0);
     externalOutboundClicks = verifiedHumanOutboundClicks;
   }
 
