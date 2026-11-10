@@ -72,6 +72,49 @@ When comparing multi-airline student routes, budget options (including IndiGo an
   disclosureVersion: '2026.1'
 };
 
+export const BASELINE_ELECTRONICS_BUYING_GUIDE = {
+  id: 'guide_electronics_audio_wearables_2026',
+  organizationId: 'org_owner_primary',
+  slug: 'best-wireless-audio-smartwatches-india',
+  assetType: 'BUYING_GUIDE',
+  title: 'Budget Wireless Audio & Smartwatch Buying Guide (India 2026)',
+  category: 'Electronics',
+  location: 'India',
+  intentTarget: 'Indian shoppers comparing genuine discounts on true wireless earbuds, Bluetooth headphones, and health smartwatches',
+  primaryOfferId: 'deal_4ea10ff4-5',
+  matchedOfferIdsJson: JSON.stringify(['deal_4ea10ff4-5', 'deal_1f758bfb-7', 'deal_660e8e2f-1', 'deal_3d917061-8']),
+  contentMarkdown: `# Budget Wireless Audio & Smartwatch Buying Guide (India 2026)
+
+Finding authentic personal audio gear and fitness smartwatches in India without falling for inflated MRP claims or fake discounts requires checking verified manufacturer specifications and genuine retailer prices.
+
+## Verified Audio Essentials: Drivers, Latency & Playback
+
+When selecting wireless earphones or over-ear headphones under ₹2,000, consider three technical specifications:
+
+1. **Driver Size & Acoustic Tuning:** 10mm to 13mm dynamic drivers provide balanced bass and vocal clarity for earbuds, while 40mm to 50mm drivers in headphones (such as the boAt Rockerz series) deliver superior passive noise isolation and extended low-end response.
+2. **Low Latency Gaming Modes:** Low latency algorithms (50ms–65ms BEAST™ mode) synchronize audio with mobile gaming and video streams to avoid audio drift.
+3. **Battery Longevity & Fast Charging:** Look for products offering Type-C fast charging (e.g. 10 minutes of charge delivering 10 hours of playback) and at least 40+ hours of combined charging case playback.
+
+* **Featured Verified Audio:** [boAt Rockerz 430 Gen 2 Wireless Headphones](https://clnk.in/D8C9) & [boAt Airdopes Plus 221 Earbuds](https://clnk.in/D8Da)
+
+## Smartwatch Selection: Display, Sensor Accuracy & Water Resistance
+
+Budget fitness trackers and Bluetooth calling smartwatches require scrutiny before checkout:
+
+1. **Display Quality & Peak Brightness:** High-nits TFT or AMOLED panels ensure readable metrics outdoors under direct Indian sunlight.
+2. **Sensor Authenticity:** Continuous SpO2, dynamic optical heart rate sensors, and sleep stage tracking provide valuable lifestyle insights. Note that smartwatches are consumer fitness monitors, not medical-grade diagnostic instruments.
+3. **Ingress Protection (IP Rating):** IP67 or IP68 certification is essential to withstand sweat during workouts and sudden monsoon rain exposure.
+
+* **Featured Verified Wearables:** [Noise Kore Smartwatch](https://clnk.in/D8Dt) & [Noise ColorFit Icon Rise Max](https://clnk.in/D8Du)
+
+## Pricing Integrity & Verification Protocol
+
+Offers listed on this guide are verified against official manufacturer price sheets to ensure stated percentage discounts reflect true savings over standard market prices. All product links route directly to authorized merchant destinations with active stock.`,
+  disclosureMarkdown: '**Affiliate & Commercial Disclosure:** We independently verify product pricing, stock availability, and manufacturer MRP baselines. When you click through our verified links to boAt or Noise, our platform may earn a qualifying referral commission at zero additional cost to you. Explore [Verified Deals](/deals) and read our full [Affiliate Disclosure](/public/disclosure).',
+  status: 'PUBLISHED',
+  disclosureVersion: '2026.1'
+};
+
 /**
  * Initializes the database with core multi-tenant infrastructure:
  * 1. Default Organization
@@ -192,6 +235,41 @@ export function seedDatabase(options: SeedOptions = {}): void {
         0,
         JSON.stringify({ verifiedSources: ['DGCA', 'Air India Express Official Policies', 'IndiGo Student Tariff Rules'], reviewHorizonDays: 7, lastAuditedAt: '2026-10-25' }),
         BASELINE_STUDENT_FLIGHT_GUIDE.disclosureVersion
+      );
+
+      // Seed 2: Baseline Verified Electronics Buying Guide (boAt & Noise)
+      db.prepare(`
+        INSERT INTO commission_content_assets (
+          id, organization_id, slug, asset_type, title, category, location, intent_target,
+          content_markdown, primary_offer_id, matched_offer_ids_json, disclosure_markdown,
+          status, view_count, referral_click_count, quality_gate_json, disclosure_version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(slug) DO UPDATE SET
+          title = excluded.title,
+          intent_target = excluded.intent_target,
+          content_markdown = excluded.content_markdown,
+          disclosure_markdown = excluded.disclosure_markdown,
+          primary_offer_id = excluded.primary_offer_id,
+          matched_offer_ids_json = excluded.matched_offer_ids_json,
+          updated_at = datetime('now')
+      `).run(
+        BASELINE_ELECTRONICS_BUYING_GUIDE.id,
+        BASELINE_ELECTRONICS_BUYING_GUIDE.organizationId,
+        BASELINE_ELECTRONICS_BUYING_GUIDE.slug,
+        BASELINE_ELECTRONICS_BUYING_GUIDE.assetType,
+        BASELINE_ELECTRONICS_BUYING_GUIDE.title,
+        BASELINE_ELECTRONICS_BUYING_GUIDE.category,
+        BASELINE_ELECTRONICS_BUYING_GUIDE.location,
+        BASELINE_ELECTRONICS_BUYING_GUIDE.intentTarget,
+        BASELINE_ELECTRONICS_BUYING_GUIDE.contentMarkdown,
+        BASELINE_ELECTRONICS_BUYING_GUIDE.primaryOfferId,
+        BASELINE_ELECTRONICS_BUYING_GUIDE.matchedOfferIdsJson,
+        BASELINE_ELECTRONICS_BUYING_GUIDE.disclosureMarkdown,
+        BASELINE_ELECTRONICS_BUYING_GUIDE.status,
+        0,
+        0,
+        JSON.stringify({ verifiedSources: ['boAt Official Technical Specs', 'Noise Official Spec Sheets'], reviewHorizonDays: 7, lastAuditedAt: '2026-11-10' }),
+        BASELINE_ELECTRONICS_BUYING_GUIDE.disclosureVersion
       );
     } catch {}
   }

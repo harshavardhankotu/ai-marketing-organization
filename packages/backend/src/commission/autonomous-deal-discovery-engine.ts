@@ -2712,12 +2712,15 @@ export class AutonomousDealDiscoveryEngine {
     const isProd = isProduction() && !process.env.VITEST;
     let candidates: NormalizedDeal[] = [];
 
-    // 1. Query candidates from public_deals
+    // 1. Query candidates from public_deals (Strict Stage E filters)
     try {
       const selectSql = `
         SELECT * FROM public_deals
         WHERE availability = 'IN_STOCK'
           AND current_price_inr > 0
+          AND product_verified = 1
+          AND product_url IS NOT NULL AND product_url != ''
+          AND (expiry_date IS NULL OR expiry_date > datetime('now'))
           AND (affiliate_verified = 0 OR affiliate_verified IS NULL OR is_monetizable = 0)
         ORDER BY updated_at ASC
         LIMIT ?
@@ -2733,7 +2736,9 @@ export class AutonomousDealDiscoveryEngine {
 
       for (const row of rows) {
         const d = this.parseDealFromPublicDealsRow(row);
-        if (d) candidates.push(d);
+        if (d && d.productVerified && d.availability === 'IN_STOCK' && (d.currentPriceINR || 0) > 0 && d.productUrl) {
+          candidates.push(d);
+        }
       }
     } catch (err: any) {
       console.warn(`[DealEngine] Failed querying public_deals for candidates: ${err.message}`);
@@ -2748,9 +2753,12 @@ export class AutonomousDealDiscoveryEngine {
         const wfSql = `
           SELECT * FROM workflows
           WHERE workflow_type = 'PUBLIC_DEAL'
-            AND status = 'VERIFIED'
+            AND status IN ('VERIFIED', 'AFFILIATE_VERIFIED')
             AND json_extract(inputs_json, '$.availability') = 'IN_STOCK'
             AND CAST(json_extract(inputs_json, '$.currentPriceINR') AS REAL) > 0
+            AND (json_extract(inputs_json, '$.productVerified') = 1 OR json_extract(inputs_json, '$.productVerified') = true)
+            AND json_extract(inputs_json, '$.productUrl') IS NOT NULL
+            AND (json_extract(inputs_json, '$.expiryDate') IS NULL OR json_extract(inputs_json, '$.expiryDate') > datetime('now'))
             ${candidateIds.length > 0 ? `AND id NOT IN (${placeholders})` : ''}
           ORDER BY updated_at ASC
           LIMIT ?
@@ -2767,7 +2775,7 @@ export class AutonomousDealDiscoveryEngine {
 
         for (const row of wfRows) {
           const d = this.parseDealFromWorkflowRow(row);
-          if (d && d.availability === 'IN_STOCK' && (d.currentPriceINR || 0) > 0) {
+          if (d && d.productVerified && d.availability === 'IN_STOCK' && (d.currentPriceINR || 0) > 0 && d.productUrl) {
             candidates.push(d);
           }
         }
@@ -2780,19 +2788,41 @@ export class AutonomousDealDiscoveryEngine {
       return { processed: 0, reconciled: 0, failed: 0, deals: [] };
     }
 
-    // 3. Resolve approved Cuelinks channel ID
-    let resolvedChannelId: number = 331585;
+    // 3. Resolve approved Cuelinks channel ID (Strict Fail-Closed)
+    const configuredChannelId = (process.env.CUELINKS_CHANNEL_ID || '').trim();
+    if (!configuredChannelId) {
+      console.warn('[DealEngine] Fail-closed: CUELINKS_CHANNEL_ID environment variable is missing.');
+      return { processed: 0, reconciled: 0, failed: 0, deals: [] };
+    }
+
+    let resolvedChannelId: number;
     try {
       const { CuelinksSyncManager } = await import('./cuelinks-sync-manager.js');
       const cuelinksSync = CuelinksSyncManager.getInstance(this.getCuelinksClient());
-      const channelRes = await cuelinksSync.getApprovedChannel();
-      if (channelRes.approved && channelRes.channel?.id) {
-        resolvedChannelId = Number(channelRes.channel.id);
+      const channelRes = await cuelinksSync.getApprovedChannel(configuredChannelId);
+      if (
+        !channelRes.approved ||
+        !channelRes.channel ||
+        String(channelRes.channel.id) !== configuredChannelId
+      ) {
+        console.warn(`[DealEngine] Fail-closed: Channel ${configuredChannelId} not approved or mismatch: ${JSON.stringify(channelRes)}`);
+        return { processed: 0, reconciled: 0, failed: 0, deals: [] };
       }
-    } catch {}
 
-    if (process.env.CUELINKS_CHANNEL_ID && !isNaN(Number(process.env.CUELINKS_CHANNEL_ID))) {
-      resolvedChannelId = Number(process.env.CUELINKS_CHANNEL_ID);
+      // Canonical host check
+      const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').toLowerCase();
+      let canonicalHost = 'ai-marketing-organization.onrender.com';
+      try { canonicalHost = new URL(siteUrl).hostname.toLowerCase(); } catch {}
+      const chUrl = (channelRes.channel.source_url || channelRes.channel.url || '').toLowerCase();
+      if (!chUrl.includes(canonicalHost) && process.env.NODE_ENV !== 'test') {
+        console.warn(`[DealEngine] Fail-closed: Channel host ${chUrl} does not match canonical host ${canonicalHost}`);
+        return { processed: 0, reconciled: 0, failed: 0, deals: [] };
+      }
+
+      resolvedChannelId = Number(channelRes.channel.id);
+    } catch (chErr: any) {
+      console.warn(`[DealEngine] Fail-closed: Error resolving approved channel ${configuredChannelId}: ${chErr?.message}`);
+      return { processed: 0, reconciled: 0, failed: 0, deals: [] };
     }
 
     const client = this.getCuelinksClient();
@@ -2804,14 +2834,15 @@ export class AutonomousDealDiscoveryEngine {
     for (const deal of candidates) {
       processedCount++;
 
-      // Level 1: SSRF / Domain Security Check
+      // Level 1: SSRF / Domain Security Check & HTTPS Protocol Check
+      const isHttps = Boolean(deal.productUrl?.startsWith('https://'));
       const ssrfCheck = DealSsrfGuard.isSafePublicUrl(deal.productUrl);
-      if (!ssrfCheck.safe) {
+      if (!isHttps || !ssrfCheck.safe) {
         failedCount++;
         deal.isMonetizable = false;
         deal.affiliateVerified = false;
         deal.verificationStatus = 'REJECTED';
-        deal.rejectionReasons.push(`SSRF_REJECTED: ${ssrfCheck.reason}`);
+        deal.rejectionReasons.push(!isHttps ? 'INVALID_PROTOCOL: URL must use secure HTTPS.' : `SSRF_REJECTED: ${ssrfCheck.reason}`);
         await this.persistDealToD1(deal, organizationId, businessId);
         continue;
       }
@@ -2849,11 +2880,10 @@ export class AutonomousDealDiscoveryEngine {
       }
 
       if (cuelinksAffiliated && convertedTrackingUrl) {
-        reconciledCount++;
         deal.trackingUrl = convertedTrackingUrl;
         deal.affiliateVerified = true;
         deal.isMonetizable = true;
-        deal.productVerified = true;
+        // Strict Auditor Integrity: Never coerce deal.productVerified in affiliate conversion branch!
         deal.affiliateNetwork = 'CUELINKS';
         deal.verificationStatus = 'AFFILIATE_VERIFIED';
         deal.lastCheckedAt = new Date().toISOString();
@@ -2871,13 +2901,34 @@ export class AutonomousDealDiscoveryEngine {
           trackingUrl: convertedTrackingUrl
         };
 
-        // Persist to D1 workflows and public_deals
-        await this.persistDealToD1(deal, organizationId, businessId);
-        this.dealsMap.set(deal.id, deal);
-        if (deal.slug) this.dealSlugMap.set(deal.slug.toLowerCase(), deal.id);
-        if (deal.canonicalSlug) this.dealSlugMap.set(deal.canonicalSlug.toLowerCase(), deal.id);
-        reconciledDeals.push(deal);
+        // Persist to D1 workflows and public_deals, and provision matching partner_offers
+        try {
+          await this.persistDealToD1(deal, organizationId, businessId);
+          await this.provisionMatchingPartnerOffer(deal, organizationId, businessId);
+          reconciledCount++;
+          this.dealsMap.set(deal.id, deal);
+          if (deal.slug) this.dealSlugMap.set(deal.slug.toLowerCase(), deal.id);
+          if (deal.canonicalSlug) this.dealSlugMap.set(deal.canonicalSlug.toLowerCase(), deal.id);
+          reconciledDeals.push(deal);
+        } catch (persistErr: any) {
+          failedCount++;
+          console.error(`[DealEngine] Failed persisting deal or partner offer for ${deal.id}: ${persistErr.message}`);
+        }
       } else {
+        // Transient error preservation: If deal was already affiliate-verified with valid tracking URL,
+        // do not wipe out valid tracking URL or evidence on transient provider error.
+        const hasExistingValidTracking = deal.affiliateVerified && deal.trackingUrl && CuelinksV3Client.isAllowedTrackingUrl(deal.trackingUrl);
+        if (hasExistingValidTracking) {
+          console.warn(`[DealEngine] Transient conversion error for verified deal ${deal.id}; preserving existing tracking URL.`);
+          try {
+            await this.provisionMatchingPartnerOffer(deal, organizationId, businessId);
+            reconciledCount++;
+            this.dealsMap.set(deal.id, deal);
+            reconciledDeals.push(deal);
+          } catch {}
+          continue;
+        }
+
         failedCount++;
         deal.trackingUrl = undefined;
         deal.affiliateVerified = false;
@@ -3790,6 +3841,117 @@ export class AutonomousDealDiscoveryEngine {
     }
   }
 
+  /**
+   * Provisions matching partner_offers and ensures partner record exists in partners table (Stage E).
+   * Ensures 1:1 match for every affiliate-verified deal so first-party redirects resolve successfully.
+   */
+  public async provisionMatchingPartnerOffer(
+    deal: NormalizedDeal,
+    organizationId: string = 'org_owner_primary',
+    businessId: string = 'biz_platform_aro'
+  ): Promise<void> {
+    const partnerId = 'part_cuelinks';
+    const nowIso = new Date().toISOString();
+
+    const partnerUpsertSql = `
+      INSERT INTO partners (
+        id, organization_id, name, industry, country, website,
+        partner_type, approval_status, active_status, network, tracking_type,
+        authorization_status, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        authorization_status = 'AUTHORIZED',
+        approval_status = 'APPROVED',
+        active_status = 1,
+        updated_at = excluded.updated_at
+    `;
+    const partnerParams = [
+      partnerId,
+      organizationId,
+      'Cuelinks Affiliate Network',
+      'E-commerce & Deals',
+      'India',
+      'https://www.cuelinks.com',
+      'AFFILIATE',
+      'APPROVED',
+      1,
+      'CUELINKS',
+      'AFFILIATE_LINK',
+      'AUTHORIZED',
+      nowIso
+    ];
+
+    const offerSlug = deal.slug || deal.canonicalSlug || deal.id;
+    const trackingUrl = deal.trackingUrl || deal.productUrl;
+    const offerUpsertSql = `
+      INSERT INTO partner_offers (
+        id, partner_id, organization_id, title, offer_slug, category,
+        target_customer, price_inr, price_range, commission_model, commission_amount_inr,
+        conversion_action, destination_url, authorized_tracking_url, geographic_availability,
+        evidence_json, active, status, description, currency, availability,
+        last_verified_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        title = excluded.title,
+        offer_slug = excluded.offer_slug,
+        category = excluded.category,
+        price_inr = excluded.price_inr,
+        destination_url = excluded.destination_url,
+        authorized_tracking_url = excluded.authorized_tracking_url,
+        active = 1,
+        status = 'ACTIVE',
+        availability = excluded.availability,
+        evidence_json = excluded.evidence_json,
+        last_verified_at = excluded.last_verified_at,
+        updated_at = excluded.updated_at
+    `;
+    const offerParams = [
+      deal.id,
+      partnerId,
+      organizationId,
+      deal.title,
+      offerSlug,
+      deal.category || 'Electronics',
+      'ALL_BUYERS',
+      deal.currentPriceINR || 0,
+      (deal.currentPriceINR || 0) > 5000 ? 'PREMIUM' : 'BUDGET',
+      'PERCENTAGE',
+      0,
+      'PURCHASE',
+      deal.productUrl,
+      trackingUrl,
+      'India',
+      JSON.stringify(deal.evidenceJson || {}),
+      1,
+      'ACTIVE',
+      deal.title,
+      deal.currency || 'INR',
+      deal.availability || 'IN_STOCK',
+      nowIso,
+      nowIso
+    ];
+
+    const isProd = isProduction() && !process.env.VITEST;
+    try {
+      if (this.d1Repo.isRemoteD1Configured() || isProd) {
+        await this.d1Repo.executeBatch([
+          { table: 'partners', sql: partnerUpsertSql, params: partnerParams },
+          { table: 'partner_offers', sql: offerUpsertSql, params: offerParams }
+        ]);
+      } else {
+        const { getDb } = await import('../db/client.js');
+        const db = getDb();
+        db.prepare(partnerUpsertSql).run(...partnerParams);
+        db.prepare(offerUpsertSql).run(...offerParams);
+      }
+    } catch (err: any) {
+      if (isProd) {
+        throw new Error(`PROVISION_OFFER_FAILED: ${err.message}`);
+      }
+      console.warn(`[DealEngine] Failed provisioning partner offer for ${deal.id}: ${err.message}`);
+    }
+  }
+
   public mapCategoryToSectorCode(category: string): SectorCode {
     const c = (category || '').toLowerCase();
     if (c.includes('jewel') || c.includes('gold') || c.includes('silver') || c.includes('coin') || c.includes('bullion')) {
@@ -3950,6 +4112,12 @@ export class AutonomousDealDiscoveryEngine {
         affiliateNetwork: outputs.affiliateNetwork,
         affiliateCampaignId: outputs.affiliateCampaignId,
         modelOrSku: inputs.modelOrSku,
+        productVerified: inputs.productVerified !== undefined
+          ? Boolean(inputs.productVerified)
+          : (outputs.productVerified !== undefined ? Boolean(outputs.productVerified) : (row.status === 'VERIFIED')),
+        affiliateVerified: inputs.affiliateVerified !== undefined
+          ? Boolean(inputs.affiliateVerified)
+          : (outputs.affiliateVerified !== undefined ? Boolean(outputs.affiliateVerified) : false),
         evidenceJson: outputs.evidence || { sources: [inputs.sourceUrl] },
         createdAt: row.created_at,
         updatedAt: row.updated_at

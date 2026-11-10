@@ -38,11 +38,13 @@ export interface DealItem {
   referencePriceINR?: number;
   claimedDiscountPercent?: number;
   verifiedDiscountPercent?: number;
-  discountVerificationType: 'INDEPENDENT_CORROBORATED' | 'MERCHANT_CLAIMED' | 'UNCONFIRMED';
+  discountVerificationType: 'INDEPENDENT_CORROBORATED' | 'MERCHANT_CLAIMED' | 'UNCONFIRMED' | 'MERCHANT_LISTED_MRP';
   couponCode?: string;
   couponConditions?: string;
   availability: 'IN_STOCK' | 'LIMITED_STOCK' | 'OUT_OF_STOCK';
-  verificationStatus: 'VERIFIED' | 'VERIFIED_WITH_CONDITIONS' | 'UNCONFIRMED' | 'EXPIRED' | 'OUT_OF_STOCK';
+  verificationStatus: 'VERIFIED' | 'AFFILIATE_VERIFIED' | 'PRODUCT_ONLY_UNMONETIZED' | 'VERIFIED_WITH_CONDITIONS' | 'UNCONFIRMED' | 'EXPIRED' | 'OUT_OF_STOCK' | 'REJECTED';
+  productVerified?: boolean;
+  affiliateVerified?: boolean;
   buyerValueScore: number;
   lastCheckedAt: string;
   sourceDomain: string;
@@ -723,13 +725,19 @@ export const PublicDealsPage: React.FC = () => {
                         {deal.brand}
                       </span>
                       <div className="flex items-center gap-1.5">
-                        {isVerified ? (
-                          <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 font-medium">
-                            <CheckCircle2 className="w-3 h-3" /> {isCoupon ? 'Verified Code' : 'Verified Deal'}
+                        {deal.productVerified ? (
+                          <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 font-medium" title="Product and pricing independently verified">
+                            <CheckCircle2 className="w-3 h-3" /> {isCoupon ? 'Verified Code' : 'Product Verified'}
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-300 font-medium">
-                            Conditions Apply
+                          <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-300 font-medium" title="Unconfirmed product claim">
+                            Unconfirmed
+                          </span>
+                        )}
+
+                        {(deal.verificationStatus === 'AFFILIATE_VERIFIED' || deal.affiliateVerified) && (
+                          <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-blue-500/10 border border-blue-500/30 text-blue-300 font-medium" title="Live Cuelinks affiliate link verified">
+                            <Tag className="w-2.5 h-2.5 text-blue-400" /> Affiliate Verified
                           </span>
                         )}
 
@@ -839,7 +847,6 @@ export const PublicDealsPage: React.FC = () => {
                           <button
                             onClick={() => {
                               handleCopyCode(deal.couponCode!);
-                              recordDealClickBeacon(deal.id);
                             }}
                             aria-label={`Copy coupon code ${deal.couponCode}`}
                             className="px-3 py-1.5 rounded-lg bg-purple-500/25 hover:bg-purple-500/40 text-purple-200 font-bold text-xs border border-purple-500/50 flex items-center gap-1.5 shrink-0 transition active:scale-95 shadow-sm"
@@ -889,7 +896,6 @@ export const PublicDealsPage: React.FC = () => {
                       <button
                         onClick={() => {
                           setInspectedDeal(deal);
-                          recordDealClickBeacon(deal.id);
                         }}
                         className={`inline-flex items-center gap-1 text-[11px] font-medium py-1 px-2 rounded-lg transition ${
                           isCoupon
@@ -902,13 +908,13 @@ export const PublicDealsPage: React.FC = () => {
                       </button>
 
                       {/* Clear Distinction: Direct vs Authorized Affiliate Link */}
-                      {deal.trackingUrl ? (
+                      {(deal.verificationStatus === 'AFFILIATE_VERIFIED' || deal.affiliateVerified) ? (
                         <span
                           className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-blue-500/10 border border-blue-500/30 text-blue-300 font-medium"
                           title="Authorized affiliate partner link. May earn a qualifying referral commission."
                         >
                           <Tag className="w-2.5 h-2.5 text-blue-400" />
-                          <span>Affiliate</span>
+                          <span>Affiliate Verified</span>
                         </span>
                       ) : (
                         <span
@@ -925,12 +931,11 @@ export const PublicDealsPage: React.FC = () => {
                     <a
                       href={targetUrl}
                       target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={() => recordDealClickBeacon(deal.id)}
+                      rel="sponsored nofollow"
                       className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl font-bold text-xs shadow-md transition active:scale-95 ${
                         isCoupon
                           ? 'bg-purple-500 hover:bg-purple-400 text-white shadow-purple-500/20'
-                          : (deal.trackingUrl
+                          : (deal.trackingUrl || deal.affiliateVerified
                               ? 'bg-cyan-500 hover:bg-cyan-400 text-slate-950 shadow-cyan-500/10'
                               : 'bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700')
                       }`}
@@ -1138,7 +1143,6 @@ export const PublicDealsPage: React.FC = () => {
                         <button
                           onClick={() => {
                             handleCopyCode(inspectedDeal.couponCode!);
-                            recordDealClickBeacon(inspectedDeal.id);
                           }}
                           className="px-3 py-1.5 rounded-lg bg-purple-500/20 hover:bg-purple-500/30 text-purple-200 font-bold text-xs border border-purple-500/40 flex items-center gap-1.5 transition active:scale-95"
                         >
@@ -1236,10 +1240,9 @@ export const PublicDealsPage: React.FC = () => {
                 </div>
 
                 <a
-                  href={inspectedDeal.trackingUrl || inspectedDeal.productUrl}
+                  href={`/api/v1/public/deals/${encodeURIComponent(inspectedDeal.id)}/redirect`}
                   target="_blank"
-                  rel="noopener noreferrer"
-                  onClick={() => recordDealClickBeacon(inspectedDeal.id)}
+                  rel="sponsored nofollow"
                   className={`inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-bold text-xs shadow-lg transition active:scale-95 ${
                     isCouponDeal(inspectedDeal)
                       ? 'bg-purple-500 hover:bg-purple-400 text-white shadow-purple-500/20'
@@ -1255,6 +1258,7 @@ export const PublicDealsPage: React.FC = () => {
         )}
 
         {/* Category Spotlight & Original Buyer Guide: Health, Nutrition & Personal Care */}
+        {deals.some(d => (d.category?.toLowerCase().includes('health') || d.category?.toLowerCase().includes('beauty') || d.category?.toLowerCase().includes('grooming')) && d.availability === 'IN_STOCK') && (
         <section id="health-nutrition-guide" className="mt-12 max-w-5xl mx-auto">
           <div className="p-6 sm:p-8 rounded-2xl bg-gradient-to-br from-slate-900/90 to-slate-950 border border-cyan-500/30 shadow-2xl">
             <div className="flex flex-wrap items-center justify-between gap-4 mb-5 pb-4 border-b border-slate-800">
@@ -1311,6 +1315,7 @@ export const PublicDealsPage: React.FC = () => {
             </div>
           </div>
         </section>
+        )}
 
         {/* Statutory Buyer Protection & Affiliate Disclosure Banner */}
         <section className="mt-14 pt-8 border-t border-slate-800/80 text-xs text-slate-400 max-w-4xl mx-auto leading-relaxed">

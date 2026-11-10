@@ -128,7 +128,7 @@ export class OrganicDistributionEngine {
     baseUrl = 'https://ai-marketing-organization.onrender.com'
   ): OrganicDistributionPackage {
     const slug = opp.sku.toLowerCase().replace(/[^a-z0-9]/g, '-');
-    const buyingGuideUrl = `${baseUrl}/deals/${slug}`;
+    const buyingGuideUrl = `${baseUrl}/deals?dealId=${encodeURIComponent(opp.dealId)}`;
     const redirectUrl = `${baseUrl}/api/v1/public/deals/${opp.dealId}/redirect?placement=organic_guide`;
     const discountText = opp.discountPercent > 0 ? ` (${opp.discountPercent}% OFF, MRP ₹${opp.referencePriceINR})` : '';
 

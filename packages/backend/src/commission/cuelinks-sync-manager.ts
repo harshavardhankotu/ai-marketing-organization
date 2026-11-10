@@ -641,18 +641,19 @@ export class CuelinksSyncManager {
       const empiricallyVerifiedScopes = new Set<string>(pingRes.scopes || []);
       const forbiddenScopes = new Set<string>();
 
-      // 2. Channel inspection & registration
+      // 2. Channel inspection & registration (Stage E: Fail-closed approved channel resolution)
       try {
-        const canonicalUrl = 'https://ai-marketing-organization.onrender.com';
-        const channels = await this.client.getChannels();
         empiricallyVerifiedScopes.add('read:channels');
         this.updateCapability('channelVerification', 'AVAILABLE');
-        let targetChannel = channels.find(c => {
-          const chUrl = (c.source_url || c.url || '').toLowerCase();
-          return chUrl.includes('onrender.com') || chUrl.includes('gen-lang-client');
-        }) || channels.find(c => c.is_default);
 
-        if (!targetChannel) {
+        const configuredId = process.env.CUELINKS_CHANNEL_ID?.trim();
+        const approvedRes = await this.getApprovedChannel(configuredId);
+
+        let targetChannel: CuelinksChannel | null = approvedRes.channel;
+
+        if (!targetChannel && !configuredId) {
+          // Only create replacement channel if CUELINKS_CHANNEL_ID is NOT configured
+          const canonicalUrl = 'https://ai-marketing-organization.onrender.com';
           targetChannel = await this.client.createChannel(
             'ARO Deals',
             canonicalUrl,
@@ -660,12 +661,17 @@ export class CuelinksSyncManager {
           );
         }
 
-        this.syncStatus.channel = {
-          id: targetChannel?.id,
-          name: targetChannel?.name,
-          url: targetChannel?.source_url || targetChannel?.url,
-          status: targetChannel?.status || 'active'
-        };
+        if (targetChannel && (approvedRes.approved || !configuredId)) {
+          this.syncStatus.channel = {
+            id: targetChannel.id,
+            name: targetChannel.name,
+            url: targetChannel.source_url || targetChannel.url,
+            status: targetChannel.status || 'active'
+          };
+        } else {
+          this.updateCapability('channelVerification', 'PERMISSION_MISSING');
+          console.warn(`[CuelinksSync] No approved channel matching configured channel ID ${configuredId}`);
+        }
       } catch (channelErr: any) {
         if (channelErr.statusCode === 403 || channelErr.code === 'CUELINKS_FORBIDDEN') {
           forbiddenScopes.add('read:channels');

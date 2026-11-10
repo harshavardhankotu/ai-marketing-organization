@@ -66,7 +66,7 @@ async function runCycle(env: Env): Promise<void> {
 
       // Claim & execute due jobs from durable queue via bounded drain loop
       try {
-        const drainUrl = `${claimUrl}?budgetMs=20000&maxJobs=3`;
+        const drainUrl = `${claimUrl}?budgetMs=12000&maxJobs=2`;
         const claimStart = Date.now();
         const claimRes = await fetch(drainUrl, {
           method: 'POST',
