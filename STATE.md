@@ -13,30 +13,35 @@
 10. FEATURES_FROZEN = true. Feature freeze is strictly reinstated. No new migrations. No new feature routes or agent types.
 
 ## 2. Last Verified Commit
-- **Verified Main Baseline:** `6ee24a3da10ea3605e4f5b16fa927cd76caa047d` (Stage B, PR #51 merged)
-- **Active Branch:** `fix/stage-c-commercial-truth-closure`
+- **Verified Main Baseline:** `abd5d902719ff8cd28d3c447052c1747317726f7` (Stage D, PR #52 merged)
+- **Active Branch:** `main`
 - **Canonical Production URL:** `https://ai-marketing-organization.onrender.com`
 - **Render Service ID:** `srv-darecoc9v7es73ea8t2g`
 - **Remote Cloudflare D1 Database:** `prod-db` (`0563bb85-f6d2-483f-8b0f-0784e3d604c7`)
 - **Remote D1 Table Count:** 88 verified tables
+- **Last Applied D1 Migration:** `0050_stage_d_deal_reconciliation_and_schedule.sql`
 
 ## 3. Operational Counts (Empirical Evidence)
 - **Verified Bank Cash Received:** ₹0.00
-- **Internal Deal Candidates in D1:** 136
-- **Verified Public Monetizable Offers:** 0 (requires 5-state proof + `affiliate_verified = 1`)
+- **Internal Deal Candidates in D1:** 134 total deals in `public_deals` (133 in-stock)
+- **Verified Public Monetizable Offers:** 25 (actively published at `/api/v1/public/deals` with live `clnk.in` tracking URLs)
 - **Published Buyer Guides in D1:** 1 (`student-flight-discounts-india`)
 - **Direct Outreach Drafts:**
   * Total Prepared: 38
-  * Owner-Approved: 5 (Stage-B auto-flagged; outbound dispatch strictly blocked until owner provenance)
+  * Owner-Approved: 0 (All 5 Stage-B auto-flagged rows neutralized via migration 0050)
   * Provider Dispatched: 0
-- **Completed Site Audits:** 3 (12-point deterministic HTML & SEO audits)
+- **Completed Site Audits:** 3 (12-point deterministic HTML & SEO audits; synthetic scores on `example.com` reset)
+- **Cloudflare Worker Cron:**
+  * Status: OBSERVED / ACTIVE (`ai-marketing-cron-worker/1.0`)
+  * Last Observed Ping: `2026-11-10 06:49:29`
+  * Last Successful Cycle: `2026-11-10 06:51:24`
 
 ## 4. 3 Commercial Monetization Lanes
 | Lane | Description | Implemented | Accessible | Provider-Connected | Owner-Approved | Commercially Ready | Generating Verified Revenue |
 |---|---|---|---|---|---|---|---|
 | **Lane 1** | Administrative Inquiry Capture Storefront (`/offer`) | YES | YES (`/offer`) | NO (Sandbox Mode) | YES (Attested) | YES (Inquiry Mode) | NO (₹0.00 cash) |
 | **Lane 2** | SiteFix AI 12-Point Deterministic Scanner (`/tools/site-audit`) | YES | YES (`/tools/site-audit`) | NO (PageSpeed Unkeyed) | YES | YES (HTML Audit Live) | NO (₹0.00 cash) |
-| **Lane 3** | Cuelinks 5-State Multi-Sector Affiliate Engine | YES | YES (`/deals`) | YES (Channel Approved) | NO (Pending 5-State Proofs) | NO (0 verified live offers) | NO (₹0.00 cash) |
+| **Lane 3** | Cuelinks 5-State Multi-Sector Affiliate Engine | YES | YES (`/deals`) | YES (Channel 331585 Approved) | YES (25 Deals Live Verified) | YES (25 live verified offers) | NO (₹0.00 cash until conversions report) |
 
 ## 5. Single Next Action
-- Owner action required: Review and sign off on PR for `fix/stage-c-commercial-truth-closure`. Review proposed reversible SQL scripts for the 5 auto-flagged outreach rows. Features remain frozen (FEATURES_FROZEN = true).
+- Autonomous execution: The Cloudflare Worker cron will continuously execute hourly cycles, automatically draining remaining deal candidate batches and syncing conversion reports via approved Channel ID 331585.
