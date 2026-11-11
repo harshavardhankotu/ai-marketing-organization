@@ -7299,8 +7299,14 @@ apiRouter.get('/public/feeds/deals.json', async (c) => {
       content_text: d.title,
       date_modified: d.lastCheckedAt || d.observedAt || new Date().toISOString(),
       price_inr: d.currentPriceINR,
+      reference_price_inr: d.referencePriceINR ?? null,
+      discount_badge: d.discountBadge || null,
+      arbitrage_score: d.arbitrageScore ?? null,
+      price_advantage_ratio: d.priceAdvantageRatio ?? null,
+      target_buyer_segment: d.targetBuyerSegment || null,
+      buyer_intent_keywords: d.buyerIntentKeywords || [],
       category: d.category,
-      sector: d.category || 'SECTOR_2_ELECTRONICS',
+      sector: d.sectorCode || d.category || 'SECTOR_B_ELECTRONICS',
       merchant: d.merchant,
       stock_status: d.availability || 'IN_STOCK'
     }))

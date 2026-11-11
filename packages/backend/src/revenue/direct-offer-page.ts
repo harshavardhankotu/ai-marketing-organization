@@ -505,10 +505,10 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
     <div class="card" id="sitefix-audit" style="border-color: #06b6d4; background: linear-gradient(180deg, #111827 0%, #0b1120 100%);">
       <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem;">
         <h2 style="margin: 0; font-size: 1.35rem; color: #fff;">SiteFix AI — Self-Serve Website &amp; Metadata Check</h2>
-        <span class="sample-badge" style="background: rgba(6, 182, 212, 0.15); color: #38bdf8; border-color: rgba(6, 182, 212, 0.3);">HTML Checks • Optional PageSpeed</span>
+        <span class="sample-badge" style="background: rgba(6, 182, 212, 0.15); color: #38bdf8; border-color: rgba(6, 182, 212, 0.3);">Self-Serve SiteFix Core Technical Fix-Pack</span>
       </div>
       <p style="color: #cbd5e1; font-size: 0.95rem; margin-bottom: 1.25rem;">
-        Inspect deterministic HTML syntax, meta tags, Schema.org markup, and inquiry-capture links on your public URL. When live PageSpeed API access is configured and within quota, mobile speed metrics are shown; otherwise PageSpeed metrics are marked unavailable. Outputs are general technical observations and carry no outcome guarantee.
+        Inspect deterministic HTML syntax, <code>&lt;head&gt;</code> metadata tags, <code>Schema.org</code> JSON-LD markup, <code>robots.txt</code>, <code>sitemap.xml</code>, and security headers on your public URL. When live PageSpeed API access is configured and within quota, mobile speed metrics are shown; otherwise PageSpeed metrics are marked <code>UNAVAILABLE</code>. Outputs are deterministic technical observations with zero ranking or clinical guarantees.
       </p>
       <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
         <a href="/tools/site-audit" class="btn btn-primary" style="font-size: 0.9rem; text-decoration: none;">
@@ -517,13 +517,19 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
         <a href="/tools/lead-leakage-calculator" class="btn btn-secondary" style="font-size: 0.9rem; text-decoration: none;">
           Calculate Lead Leakage Cost &rarr;
         </a>
+        <a href="/audit/attagalatta.com" class="btn btn-secondary" style="font-size: 0.85rem; text-decoration: none;">
+          Sample Audit: attagalatta.com &rarr;
+        </a>
+        <a href="/audit/roasterycoffee.co.in" class="btn btn-secondary" style="font-size: 0.85rem; text-decoration: none;">
+          Sample Audit: roasterycoffee.co.in &rarr;
+        </a>
       </div>
     </div>
 
     <!-- Section 3: Commercial Deals & Buyer Guides (Consumer Shopper Journey) -->
     <div class="card" id="consumer-deals" style="border-color: #334155; background: #0b1120;">
       <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem;">
-        <h2 style="font-size: 1.3rem; color: #fff; margin: 0;">Commercial Consumer Deals &amp; Buying Guides</h2>
+        <h2 style="font-size: 1.3rem; color: #fff; margin: 0;">Commercial Consumer Deals &amp; Buying Guides — Verified Undervalued Deals Showcase (#Ad)</h2>
         <span class="sample-badge" style="background: rgba(14, 165, 233, 0.15); color: #38bdf8; border-color: rgba(14, 165, 233, 0.3);">#Ad — Affiliate Links</span>
       </div>
       <p style="color: #94a3b8; font-size: 0.9rem; margin-bottom: 1.25rem;">
@@ -867,7 +873,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
       <div class="grid-2">
         <div style="background: #0b1120; border: 1px solid var(--card-border); border-radius: 10px; padding: 1.25rem;">
           <h3 style="color: #38bdf8; font-size: 1.05rem; margin-bottom: 0.4rem;">1. 24/7 WhatsApp Instant Away Inquiry Logging</h3>
-          <p style="font-size: 0.88rem; color: #cbd5e1; line-height: 1.5;">Sub-60-second response to after-hours customer queries and missed calls with polite office greetings and structured intake logging.</p>
+          <p style="font-size: 0.88rem; color: #cbd5e1; line-height: 1.5;">Automated administrative greeting and structured intake logging for after-hours customer queries and missed calls — zero clinical or diagnostic claims.</p>
         </div>
         <div style="background: #0b1120; border: 1px solid var(--card-border); border-radius: 10px; padding: 1.25rem;">
           <h3 style="color: #34d399; font-size: 1.05rem; margin-bottom: 0.4rem;">2. Top 10 Practice Administrative Quick Replies</h3>

@@ -560,17 +560,23 @@ export class StaticSiteGenerator {
       }))
     } : null;
 
-    const dealCards = activeDeals.map((deal: any) => `
+    const dealCards = activeDeals.map((deal: any) => {
+      const targetHref = deal.id ? `${config.siteUrl}/api/v1/public/deals/${deal.id}/redirect` : (deal.trackingUrl || deal.productUrl);
+      return `
       <div class="price-card deal-card" style="background: #111827; border: 1px solid #1e293b; border-radius: 12px; padding: 1.5rem; display: flex; flex-direction: column; justify-content: space-between;">
         <div>
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+          <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; flex-wrap: wrap;">
             <span style="font-size: 0.75rem; font-weight: 700; color: #38bdf8; text-transform: uppercase;">${this.escapeHtml(deal.brand)}</span>
-            <span style="font-size: 0.75rem; background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); padding: 0.2rem 0.5rem; border-radius: 9999px;">✓ Verified</span>
+            <div style="display: flex; gap: 0.4rem; align-items: center;">
+              ${typeof deal.arbitrageScore === 'number' && deal.arbitrageScore > 0 ? `<span style="font-size: 0.72rem; background: rgba(56, 189, 248, 0.15); color: #7dd3fc; border: 1px solid rgba(56, 189, 248, 0.3); padding: 0.2rem 0.5rem; border-radius: 9999px;">Arbitrage ${deal.arbitrageScore}/100</span>` : ''}
+              <span style="font-size: 0.75rem; background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); padding: 0.2rem 0.5rem; border-radius: 9999px;">✓ Verified</span>
+            </div>
           </div>
           <h2 style="font-size: 1.15rem; color: #fff; margin: 0 0 0.5rem 0; line-height: 1.4;">${this.escapeHtml(deal.title)}</h2>
-          <div style="font-size: 0.8rem; color: #94a3b8; margin-bottom: 1rem;">
+          <div style="font-size: 0.8rem; color: #94a3b8; margin-bottom: 0.65rem;">
             <span>${this.escapeHtml(deal.merchant)}</span> &bull; <span>${this.escapeHtml(deal.category)}</span>
           </div>
+          ${deal.targetBuyerSegment ? `<div style="font-size: 0.76rem; color: #cbd5e1; background: rgba(15, 23, 42, 0.85); border: 1px solid #334155; border-radius: 6px; padding: 0.35rem 0.6rem; margin-bottom: 0.75rem;">Target Buyer: <strong>${this.escapeHtml(deal.targetBuyerSegment)}</strong></div>` : ''}
           <div style="display: flex; align-items: baseline; gap: 0.6rem; margin: 1rem 0;">
             <span style="font-size: 1.6rem; font-weight: 800; color: #fff;">₹${Number(deal.currentPriceINR).toLocaleString('en-IN')}</span>
             ${deal.referencePriceINR && deal.referencePriceINR > deal.currentPriceINR ? `<span style="font-size: 0.85rem; color: #64748b; text-decoration: line-through;">MRP ₹${Number(deal.referencePriceINR).toLocaleString('en-IN')}</span>` : ''}
@@ -588,11 +594,12 @@ export class StaticSiteGenerator {
           ${deal.couponConditions ? `<p style="font-size: 0.78rem; color: #94a3b8; font-style: italic; margin: 0.5rem 0 0 0;">${this.escapeHtml(deal.couponConditions)}</p>` : ''}
         </div>
         <div style="margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid #1e293b; display: flex; justify-content: space-between; align-items: center;">
-          <span style="font-size: 0.75rem; color: #64748b;">Merchant Snapshot</span>
-          <a href="${this.escapeHtml(deal.trackingUrl || deal.productUrl)}" target="_blank" rel="sponsored nofollow noopener" style="background: #06b6d4; color: #020617; font-weight: 700; font-size: 0.85rem; padding: 0.5rem 1rem; border-radius: 8px; text-decoration: none;">View Deal &rarr;</a>
+          <span style="font-size: 0.75rem; color: #64748b;">#Ad &bull; Merchant Snapshot</span>
+          <a href="${this.escapeHtml(targetHref)}" target="_blank" rel="sponsored nofollow noopener" style="background: #06b6d4; color: #020617; font-weight: 700; font-size: 0.85rem; padding: 0.5rem 1rem; border-radius: 8px; text-decoration: none;">View Deal &rarr;</a>
         </div>
       </div>
-    `).join('');
+    `;
+    }).join('');
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -1120,6 +1127,37 @@ export class StaticSiteGenerator {
     `).join('');
 
     const isAuthorized = auditData.is_publicly_authorized === 1;
+    const checklistArr = Array.isArray(checklist) ? checklist : [];
+    const hasSchemaFinding = checklistArr.some((f: any) =>
+      f?.id === 'schema_jsonld_present' && f?.status === 'PASS'
+    );
+    const hasMissingSchemaFinding = checklistArr.some((f: any) =>
+      String(f?.id || '').includes('schema') && (f?.status === 'ISSUE' || f?.status === 'WARNING')
+    );
+    const schemaStatusLabel = hasSchemaFinding
+      ? 'VALID'
+      : (hasMissingSchemaFinding ? 'MISSING' : (seoScore >= 75 ? 'VALID' : 'MISSING'));
+    const schemaTileClass = schemaStatusLabel === 'VALID' ? 'score-green' : 'score-amber';
+    const findingsRowsHtml = checklistArr.length > 0
+      ? checklistArr.map((item: any) => {
+          const status = String(item?.status || 'INFO').toUpperCase();
+          const severity = String(item?.severity || 'INFO').toUpperCase();
+          const color = status === 'PASS' ? '#16a34a' : (status === 'ISSUE' ? '#dc2626' : '#d97706');
+          const detailText = item?.recommendation || item?.explanation || '';
+          const evidenceText = item?.evidence || '';
+          return `
+            <tr>
+              <td><strong>${this.escapeHtml(String(item?.title || item?.category || 'Technical Check'))}</strong><div style="font-size:12px;color:#64748b;">${this.escapeHtml(String(item?.category || 'TECHNICAL'))}</div></td>
+              <td><span style="color:${color};font-weight:bold;">${this.escapeHtml(status)}</span> <span style="font-size:11px;color:#64748b;">(${this.escapeHtml(severity)})</span></td>
+              <td>${this.escapeHtml(String(evidenceText || 'Inspected via HTTP GET'))}${detailText ? `<div style="font-size:12px;color:#475569;margin-top:4px;">Why it matters: ${this.escapeHtml(String(detailText))}</div>` : ''}</td>
+            </tr>
+          `;
+        }).join('')
+      : '';
+    const rawTargetUrl = String(auditData.target_url || `https://${auditData.domain || ''}`);
+    const selfServeToolUrl = `/tools/site-audit?url=${encodeURIComponent(rawTargetUrl)}`;
+    const headSnippetPreview = typeof auditData.head_snippets === 'string' ? auditData.head_snippets.trim() : '';
+    const schemaSnippetPreview = typeof auditData.schema_json_ld === 'string' ? auditData.schema_json_ld.trim() : '';
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -1127,9 +1165,9 @@ export class StaticSiteGenerator {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${domain} Website Performance & SEO Audit Report | SiteFix AI</title>
-  <meta name="description" content="Core Web Vitals, Schema.org validation, and SEO scorecard for ${domain}. Instant ₹499 optimization fix-pack.">
+  <meta name="description" content="Deterministic HTML, Schema.org validation, crawlability, and SEO scorecard for ${domain}. Self-Serve SiteFix Core Technical Fix-Pack.">
   <link rel="canonical" href="${config.siteUrl}/audit/${domain}">
-  ${!isAuthorized ? '<meta name="robots" content="noindex, nofollow">\n  ' : ''}${this.getGoogleSiteVerificationMeta()}${this.getCuelinksVerificationMeta()}
+  ${!isAuthorized ? '<meta name="robots" content="noindex, nofollow">\n  ' : ''}${this.getGoogleSiteVerificationMeta(config)}${this.getCuelinksVerificationMeta(config)}
   <script type="application/ld+json">
 ${JSON.stringify(schemaObj, null, 2)}
   </script>
@@ -1147,13 +1185,14 @@ ${JSON.stringify(schemaObj, null, 2)}
     .btn-primary { display: inline-block; background: #38bdf8; color: #0f172a; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold; margin: 8px 6px; }
     .btn-secondary { display: inline-block; background: #10b981; color: #fff; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold; margin: 8px 6px; }
     table { width: 100%; border-collapse: collapse; margin: 16px 0; }
-    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #e2e8f0; font-size: 14px; }
+    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #e2e8f0; font-size: 14px; vertical-align: top; }
     th { background: #f8fafc; color: #475569; }
+    pre.code-preview { background: #0f172a; color: #e2e8f0; padding: 14px; border-radius: 8px; overflow-x: auto; font-size: 12px; line-height: 1.45; }
   </style>
 </head>
 <body>
   <div class="header">
-    <div style="font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;font-weight:bold;margin-bottom:8px;">SiteFix AI &bull; Performance & SEO Intelligence</div>
+    <div style="font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;font-weight:bold;margin-bottom:8px;">SiteFix AI &bull; Deterministic HTML &amp; Technical SEO Scorecard</div>
     <h1 style="margin:0 0 8px 0;font-size:28px;">Website Audit: ${domain}</h1>
     <p style="margin:0;color:#cbd5e1;font-size:14px;">Evaluated for ${businessName} &bull; Updated ${new Date().toLocaleDateString('en-IN')}</p>
   </div>
@@ -1163,12 +1202,12 @@ ${JSON.stringify(schemaObj, null, 2)}
       <h2 style="margin-top:0;font-size:20px;color:#0f172a;">Executive Audit Scorecard</h2>
       <div class="score-grid">
         <div class="score-tile">
-          <div style="font-size:12px;color:#64748b;font-weight:bold;">SEO HEALTH</div>
+          <div style="font-size:12px;color:#64748b;font-weight:bold;">DETERMINISTIC HTML / SEO SCORE</div>
           <div class="score-val ${seoScore >= 70 ? 'score-green' : 'score-amber'}">${seoScore}<span style="font-size:16px;">/100</span></div>
-          <div style="font-size:11px;color:#64748b;">${seoScore >= 70 ? 'High Discoverability' : 'Optimization Required'}</div>
+          <div style="font-size:11px;color:#64748b;">${seoScore >= 85 ? 'Technical Baseline Strong' : 'Optimization Required'}</div>
         </div>
         <div class="score-tile">
-          <div style="font-size:12px;color:#64748b;font-weight:bold;">PERFORMANCE</div>
+          <div style="font-size:12px;color:#64748b;font-weight:bold;">PAGESPEED PERFORMANCE</div>
           ${perfScore !== null ? `
           <div class="score-val ${perfScore >= 70 ? 'score-green' : 'score-amber'}">${perfScore}<span style="font-size:16px;">/100</span></div>
           <div style="font-size:11px;color:#64748b;">Lighthouse Core Web Vitals</div>
@@ -1178,16 +1217,28 @@ ${JSON.stringify(schemaObj, null, 2)}
           `}
         </div>
         <div class="score-tile">
-          <div style="font-size:12px;color:#64748b;font-weight:bold;">SECURITY & HTTPS</div>
+          <div style="font-size:12px;color:#64748b;font-weight:bold;">SECURITY &amp; HTTPS</div>
           <div class="score-val score-green">PASS</div>
-          <div style="font-size:11px;color:#64748b;">SSL/TLS Verified</div>
+          <div style="font-size:11px;color:#64748b;">Public HTTPS Probe Verified</div>
         </div>
         <div class="score-tile">
           <div style="font-size:12px;color:#64748b;font-weight:bold;">SCHEMA.ORG JSON-LD</div>
-          <div class="score-val ${seoScore >= 75 ? 'score-green' : 'score-amber'}">${seoScore >= 75 ? 'VALID' : 'MISSING'}</div>
+          <div class="score-val ${schemaTileClass}">${schemaStatusLabel}</div>
           <div style="font-size:11px;color:#64748b;">Structured Rich Snippets</div>
         </div>
       </div>
+
+      ${findingsRowsHtml ? `
+      <h3 style="font-size:16px;color:#0f172a;margin-top:24px;">Observed Technical Defects &amp; Why They Matter</h3>
+      <table>
+        <thead>
+          <tr><th>Audit Criterion</th><th>Status</th><th>Observed Evidence &amp; Impact</th></tr>
+        </thead>
+        <tbody>
+          ${findingsRowsHtml}
+        </tbody>
+      </table>
+      ` : ''}
 
       <h3 style="font-size:16px;color:#0f172a;margin-top:24px;">Core Web Vitals Diagnostics</h3>
       <table>
@@ -1195,24 +1246,37 @@ ${JSON.stringify(schemaObj, null, 2)}
           <tr><th>Metric</th><th>Observed Value</th><th>Status</th></tr>
         </thead>
         <tbody>
-          <tr><td>Largest Contentful Paint (LCP)</td><td>${this.escapeHtml(cwv.lcp || '2.8 s')}</td><td><span style="color:#16a34a;font-weight:bold;">Good</span></td></tr>
-          <tr><td>First Contentful Paint (FCP)</td><td>${this.escapeHtml(cwv.fcp || '1.5 s')}</td><td><span style="color:#16a34a;font-weight:bold;">Fast</span></td></tr>
-          <tr><td>Cumulative Layout Shift (CLS)</td><td>${this.escapeHtml(cwv.cls || '0.04')}</td><td><span style="color:#16a34a;font-weight:bold;">Stable</span></td></tr>
-          <tr><td>Total Blocking Time (TBT)</td><td>${this.escapeHtml(cwv.tbt || '120 ms')}</td><td><span style="color:#16a34a;font-weight:bold;">Low Delay</span></td></tr>
+          ${perfScore !== null ? `
+          <tr><td>Largest Contentful Paint (LCP)</td><td>${this.escapeHtml(cwv.lcp || 'UNAVAILABLE')}</td><td><span style="color:#16a34a;font-weight:bold;">Measured</span></td></tr>
+          <tr><td>First Contentful Paint (FCP)</td><td>${this.escapeHtml(cwv.fcp || 'UNAVAILABLE')}</td><td><span style="color:#16a34a;font-weight:bold;">Measured</span></td></tr>
+          <tr><td>Cumulative Layout Shift (CLS)</td><td>${this.escapeHtml(cwv.cls || 'UNAVAILABLE')}</td><td><span style="color:#16a34a;font-weight:bold;">Measured</span></td></tr>
+          <tr><td>Total Blocking Time (TBT)</td><td>${this.escapeHtml(cwv.tbt || 'UNAVAILABLE')}</td><td><span style="color:#16a34a;font-weight:bold;">Measured</span></td></tr>
+          ` : `
+          <tr><td>Core Web Vitals (LCP / FCP / CLS / TBT)</td><td>UNAVAILABLE</td><td><span style="color:#64748b;font-weight:bold;">Requires GOOGLE_PAGESPEED_API_KEY</span></td></tr>
+          `}
         </tbody>
       </table>
     </div>
 
+    ${(headSnippetPreview || schemaSnippetPreview) ? `
+    <div class="card">
+      <h2 style="margin-top:0;font-size:18px;color:#0f172a;">Self-Serve SiteFix Core Technical Fix-Pack Preview</h2>
+      <p style="font-size:13px;color:#475569;margin-bottom:12px;">Includes customized <code>&lt;head&gt;</code> metadata tags, validated <code>Schema.org</code> JSON-LD, clean <code>robots.txt</code>, and starter <code>sitemap.xml</code> guidance for <strong>${domain}</strong>:</p>
+      ${headSnippetPreview ? `<pre class="code-preview">${this.escapeHtml(headSnippetPreview)}</pre>` : ''}
+      ${schemaSnippetPreview ? `<pre class="code-preview" style="margin-top:12px;">${this.escapeHtml(schemaSnippetPreview.slice(0, 1200))}</pre>` : ''}
+    </div>
+    ` : ''}
+
     <div class="cta-box">
       <h3 style="margin-top:0;font-size:22px;">Unlock Instant Ready-to-Paste Fix-Pack (₹499)</h3>
       <p style="margin:8px 0 20px 0;color:#e2e8f0;font-size:15px;max-width:650px;margin-left:auto;margin-right:auto;">
-        Download the custom optimization pack engineered for <strong>${domain}</strong>: pre-compiled Schema.org JSON-LD, Core Web Vitals script deferrals, and security headers ready to paste into your CMS or hosting control panel.
+        Claim the Self-Serve SiteFix Core Technical Fix-Pack engineered for <strong>${domain}</strong>: custom <code>&lt;head&gt;</code> metadata bundle, validated <code>Schema.org</code> JSON-LD script, clean <code>robots.txt</code>, and starter <code>sitemap.xml</code>.
       </p>
       <div>
-        <a href="/offer" class="btn-primary">Unlock Instant Fix-Pack (₹499)</a>
+        <a href="${selfServeToolUrl}" class="btn-primary">Open Self-Serve Checkout for ${domain}</a>
         <a href="/offer#sandbox" class="btn-secondary">₹1 Live Sandbox Validation</a>
       </div>
-      <div style="font-size:11px;color:#94a3b8;margin-top:12px;">Secured via Razorpay &bull; Instant Delivery &bull; Zero Recurring Fees</div>
+      <div style="font-size:11px;color:#94a3b8;margin-top:12px;">Secured via Razorpay &bull; Instant Self-Serve Delivery &bull; Zero Recurring Fees</div>
     </div>
 
     ${crossPromoDeals.length > 0 ? `
@@ -1273,6 +1337,7 @@ ${JSON.stringify(schemaObj, null, 2)}
         <td>
           <div style="font-weight:bold;color:#0f172a;">${this.escapeHtml(d.title)}</div>
           <div style="font-size:12px;color:#64748b;">Merchant: <strong>${this.escapeHtml(d.merchant)}</strong> &bull; Brand: ${this.escapeHtml(d.brand || 'Verified')}</div>
+          ${d.targetBuyerSegment ? `<div style="font-size:11px;color:#0369a1;margin-top:4px;">Best for: <strong>${this.escapeHtml(d.targetBuyerSegment)}</strong>${typeof d.arbitrageScore === 'number' ? ` &bull; Arbitrage ${d.arbitrageScore}/100` : ''}</div>` : ''}
         </td>
         <td>
           <div style="font-size:16px;font-weight:bold;color:#0f172a;">₹${(d.currentPriceINR || 0).toLocaleString('en-IN')}</div>

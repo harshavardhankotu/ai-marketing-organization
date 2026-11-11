@@ -162,7 +162,7 @@ export function resolveVerificationTokens(
 ): { googleSiteVerification?: string; cuelinksVerificationCode?: string } {
   const isTestRuntime = Boolean(env.VITEST) || env.NODE_ENV === 'test';
   const rawGoogle = config?.googleSiteVerification ?? env.GOOGLE_SITE_VERIFICATION;
-  const rawCuelinks = config?.cuelinksVerificationCode ?? env.CUELINKS_VERIFICATION_CODE;
+  const rawCuelinks = config?.cuelinksVerificationCode ?? env.CUELINKS_VERIFICATION_CODE ?? env.CUELINKS_VERIFICATION;
 
   const googleSiteVerification = (rawGoogle !== undefined ? rawGoogle.trim() : '') ||
     (!isTestRuntime && rawGoogle === undefined ? OWNER_VERIFIED_GOOGLE_SITE_TOKEN : undefined);

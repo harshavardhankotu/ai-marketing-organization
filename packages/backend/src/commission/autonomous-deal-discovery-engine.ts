@@ -32,6 +32,125 @@ export { GuideDataUnavailableError };
 
 export const MAX_OFFER_FRESHNESS_HOURS = 48;
 
+export interface MarketArbitrageScoreResult {
+  arbitrageScore: number;
+  priceAdvantageRatio: number;
+}
+
+export interface TargetBuyerClassification {
+  targetBuyerSegment: string;
+  buyerIntentKeywords: string[];
+  buyerIntentHook: string;
+}
+
+/**
+ * Computes a deterministic 0-100 market arbitrage score measuring undervaluation
+ * vs reference/category baseline combined with IN_STOCK + active Cuelinks monetization.
+ */
+export function calculateMarketArbitrageScore(deal: Partial<NormalizedDeal>): MarketArbitrageScoreResult {
+  const current = Number(deal.currentPriceINR || 0);
+  const reference = Number(deal.referencePriceINR || 0);
+  const rawRatio = reference > current && current > 0 && reference > 0
+    ? (reference - current) / reference
+    : (deal.verifiedDiscountPercent && deal.verifiedDiscountPercent > 0 ? Math.min(0.9, deal.verifiedDiscountPercent / 100) : 0);
+  const priceAdvantageRatio = Number(Math.max(0, Math.min(0.95, rawRatio)).toFixed(4));
+
+  if (
+    deal.availability === 'OUT_OF_STOCK' ||
+    deal.verificationStatus === 'EXPIRED' ||
+    deal.verificationStatus === 'REJECTED' ||
+    current <= 0
+  ) {
+    return { arbitrageScore: 0, priceAdvantageRatio };
+  }
+
+  // Factor 1: Undervaluation advantage relative to reference price (0-55 pts)
+  const priceAdvantagePts = Math.min(55, Math.round(priceAdvantageRatio * 80));
+
+  // Factor 2: Verified live IN_STOCK inventory & product proof (0-20 pts)
+  const stockPts = (deal.availability === 'IN_STOCK' ? 15 : 5) + (deal.productVerified === true ? 5 : 0);
+
+  // Factor 3: Active Cuelinks / monetizable tracking chain (cid=331585 aware, 0-15 pts)
+  const channelId = deal.evidenceJson?.channelId;
+  const hasApprovedCuelinks = Boolean(
+    deal.affiliateVerified &&
+    deal.isMonetizable &&
+    (deal.affiliateNetwork === 'CUELINKS' || String(channelId || '') === '331585' || Boolean(deal.trackingUrl))
+  );
+  const affiliationPts = hasApprovedCuelinks
+    ? (String(channelId || process.env.CUELINKS_CHANNEL_ID || '') === '331585' ? 15 : 12)
+    : (deal.affiliateVerified ? 8 : 0);
+
+  // Factor 4: Buyer price-band impulse velocity bonus (0-10 pts)
+  const velocityPts = current <= 1500 ? 10 : current <= 2500 ? 8 : current <= 5000 ? 5 : 2;
+
+  const arbitrageScore = Math.max(0, Math.min(100, priceAdvantagePts + stockPts + affiliationPts + velocityPts));
+  return { arbitrageScore, priceAdvantageRatio };
+}
+
+/**
+ * Classifies each undervalued deal into a high-intent buyer persona and search-intent keywords
+ * deterministically from category, price band, and title/specs (zero LLM tokens).
+ */
+export function classifyTargetBuyerSegment(deal: Partial<NormalizedDeal>): TargetBuyerClassification {
+  const title = String(deal.title || '').toLowerCase();
+  const category = String(deal.category || '').toLowerCase();
+  const brand = String(deal.brand || '').trim() || 'Top Brand';
+  const combined = `${title} ${category}`;
+  const price = Number(deal.currentPriceINR || 0);
+  const reference = Number(deal.referencePriceINR || 0);
+  const savingsPct = reference > price && price > 0
+    ? Math.round(((reference - price) / reference) * 100)
+    : Number(deal.verifiedDiscountPercent || 0);
+
+  let targetBuyerSegment = `Value-First Indian Online Shoppers (${deal.category || 'Verified Finds'})`;
+  let buyerIntentKeywords: string[] = [
+    `${brand.toLowerCase()} deal india`,
+    `best ${(deal.category || 'product').toLowerCase()} under ${Math.max(500, Math.ceil(price / 500) * 500)}`,
+    'verified merchant price snapshot'
+  ];
+
+  if (/(earbud|airdope|tws|headphone|rockerz|earphone|neckband|audio|anc)/.test(combined) && !/(soundbar|home theater|home theatre|party speaker)/.test(combined)) {
+    if (price > 0 && price <= 1500) {
+      targetBuyerSegment = 'Budget Daily Commuters & Students (Best TWS/Audio Under ₹1,500)';
+      buyerIntentKeywords = ['best wireless earbuds under 1500', 'budget tws india', 'student commute audio deal'];
+    } else {
+      targetBuyerSegment = 'Hybrid Work & Commute Audio Buyers (ANC Wireless Audio)';
+      buyerIntentKeywords = ['anc earbuds deal india', 'wireless headphones under 3000', 'work call tws offer'];
+    }
+  } else if (/(watch|smartwatch|band|wearable|fitness tracker|ring)/.test(combined)) {
+    if (price > 0 && price <= 2500) {
+      targetBuyerSegment = 'Value Fitness & Smartwatch Buyers Under ₹2,500';
+      buyerIntentKeywords = ['best smartwatch under 2500 india', 'amoled fitness watch deal', 'calling smartwatch offer'];
+    } else {
+      targetBuyerSegment = 'Health & Fitness Wearable Upgraders';
+      buyerIntentKeywords = ['smartwatch deal india', 'gps fitness wearable discount'];
+    }
+  } else if (/(soundbar|aavante|home theater|home theatre|projector|television|\btv\b|subwoofer|speaker)/.test(combined)) {
+    targetBuyerSegment = 'Home Entertainment & TV Upgrade Buyers';
+    buyerIntentKeywords = ['soundbar deal india', 'home theatre speaker discount', 'living room audio upgrade'];
+  } else if (/(laptop|monitor|keyboard|mouse|charger|powerbank|ssd|desk|chair|webcam|usb|dock|router)/.test(combined)) {
+    targetBuyerSegment = 'Remote Work & Creator Setup Buyers';
+    buyerIntentKeywords = ['wfh desk setup india', 'creator tech accessories deal', 'fast charger discount'];
+  } else if (/(flight|travel|luggage|suitcase|backpack|hotel|trip)/.test(combined)) {
+    targetBuyerSegment = 'Frequent Travelers & Weekend Commuters';
+    buyerIntentKeywords = ['domestic flight offer india', 'travel backpack deal', 'student travel discount'];
+  } else if (/(trimmer|grooming|serum|skin|hair|salon|beauty|shampoo)/.test(combined)) {
+    targetBuyerSegment = 'Daily Grooming & Personal Care Value Buyers';
+    buyerIntentKeywords = ['grooming trimmer deal india', 'personal care value offer'];
+  }
+
+  const priceTag = price > 0 ? ` at ₹${price.toLocaleString('en-IN')}` : '';
+  const savingsTag = savingsPct > 0 ? ` (${savingsPct}% below ₹${reference > price ? reference.toLocaleString('en-IN') : 'baseline'})` : '';
+  const buyerIntentHook = `${targetBuyerSegment}${priceTag}${savingsTag}`;
+
+  return {
+    targetBuyerSegment,
+    buyerIntentKeywords,
+    buyerIntentHook
+  };
+}
+
 export interface ApprovedShopifyMerchant {
   domain: string;
   name: string;
@@ -2563,8 +2682,9 @@ export class AutonomousDealDiscoveryEngine {
 
     newDeal.sectorCode = input.sectorCode || this.mapCategoryToSectorCode(input.category);
 
-    // Calculate initial Buyer Value score
+    // Calculate initial Buyer Value score, Arbitrage score, and Target Buyer classification
     newDeal.buyerValueScore = this.calculateBuyerValueScore(newDeal);
+    this.enrichDealWithArbitrageAndBuyerTargeting(newDeal);
 
     // Register in-memory maps
     this.dealsMap.set(dealId, newDeal);
@@ -2903,6 +3023,7 @@ export class AutonomousDealDiscoveryEngine {
           campaignId: campaignId || deal.affiliateCampaignId,
           trackingUrl: convertedTrackingUrl
         };
+        this.enrichDealWithArbitrageAndBuyerTargeting(deal);
 
         // Persist to D1 workflows and public_deals, and provision matching partner_offers
         try {
@@ -3250,8 +3371,12 @@ export class AutonomousDealDiscoveryEngine {
       );
     }
 
-    // Sort deterministically by discount percentage descending, then buyer value score
-    filtered.sort((a, b) => (b.verifiedDiscountPercent || 0) - (a.verifiedDiscountPercent || 0) || (b.buyerValueScore || 0) - (a.buyerValueScore || 0));
+    // Sort deterministically by market arbitrage score descending, then discount %, then buyer value score
+    filtered.sort((a, b) =>
+      (b.arbitrageScore || 0) - (a.arbitrageScore || 0) ||
+      (b.verifiedDiscountPercent || 0) - (a.verifiedDiscountPercent || 0) ||
+      (b.buyerValueScore || 0) - (a.buyerValueScore || 0)
+    );
 
     const total = filtered.length;
     const offset = filter?.offset || 0;
@@ -4035,7 +4160,12 @@ export class AutonomousDealDiscoveryEngine {
         const evidence = {
           ...(deal.evidenceJson || {}),
           affiliateCampaignId: deal.affiliateCampaignId,
-          affiliateNetwork: deal.affiliateNetwork
+          affiliateNetwork: deal.affiliateNetwork,
+          arbitrageScore: deal.arbitrageScore,
+          priceAdvantageRatio: deal.priceAdvantageRatio,
+          targetBuyerSegment: deal.targetBuyerSegment,
+          buyerIntentKeywords: deal.buyerIntentKeywords,
+          buyerIntentHook: deal.buyerIntentHook
         };
         const publicDealsParams = [
           deal.id,
@@ -4220,11 +4350,38 @@ export class AutonomousDealDiscoveryEngine {
     return 'SECTOR_B_ELECTRONICS';
   }
 
+  public calculateMarketArbitrageScore(deal: Partial<NormalizedDeal>): MarketArbitrageScoreResult {
+    return calculateMarketArbitrageScore(deal);
+  }
+
+  public classifyTargetBuyerSegment(deal: Partial<NormalizedDeal>): TargetBuyerClassification {
+    return classifyTargetBuyerSegment(deal);
+  }
+
+  public enrichDealWithArbitrageAndBuyerTargeting(deal: NormalizedDeal): NormalizedDeal {
+    const arb = calculateMarketArbitrageScore(deal);
+    const targeting = classifyTargetBuyerSegment(deal);
+    deal.arbitrageScore = arb.arbitrageScore;
+    deal.priceAdvantageRatio = arb.priceAdvantageRatio;
+    deal.targetBuyerSegment = targeting.targetBuyerSegment;
+    deal.buyerIntentKeywords = targeting.buyerIntentKeywords;
+    deal.buyerIntentHook = targeting.buyerIntentHook;
+    deal.evidenceJson = {
+      ...(deal.evidenceJson || { sources: [deal.productUrl], verificationLogs: [] }),
+      arbitrageScore: arb.arbitrageScore,
+      priceAdvantageRatio: arb.priceAdvantageRatio,
+      targetBuyerSegment: targeting.targetBuyerSegment,
+      buyerIntentKeywords: targeting.buyerIntentKeywords,
+      buyerIntentHook: targeting.buyerIntentHook
+    };
+    return deal;
+  }
+
   public parseDealFromPublicDealsRow(row: any): NormalizedDeal | null {
     if (!row) return null;
     try {
       const evidence = typeof row.evidence_json === 'string' ? JSON.parse(row.evidence_json || '{}') : (row.evidence_json || {});
-      return {
+      const parsed: NormalizedDeal = {
         id: row.id,
         slug: row.slug,
         canonicalSlug: row.canonical_slug || row.slug,
@@ -4266,6 +4423,7 @@ export class AutonomousDealDiscoveryEngine {
         updatedAt: row.updated_at,
         sectorCode: row.sector_code
       };
+      return this.enrichDealWithArbitrageAndBuyerTargeting(parsed);
     } catch {
       return null;
     }
@@ -4353,7 +4511,7 @@ export class AutonomousDealDiscoveryEngine {
         createdAt: row.created_at,
         updatedAt: row.updated_at
       };
-      return deal;
+      return this.enrichDealWithArbitrageAndBuyerTargeting(deal);
     } catch {
       return null;
     }

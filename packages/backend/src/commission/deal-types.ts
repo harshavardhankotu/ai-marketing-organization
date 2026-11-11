@@ -157,6 +157,11 @@ export interface NormalizedDeal {
   verificationStatus: DealVerificationStatus;
   confidenceScore: number;       // 0 to 100
   buyerValueScore: number;        // 0 to 100
+  arbitrageScore?: number;       // 0 to 100 deterministic undervaluation + Cuelinks score
+  priceAdvantageRatio?: number;  // (referencePriceINR - currentPriceINR) / referencePriceINR
+  targetBuyerSegment?: string;   // High-intent buyer persona matched without LLM tokens
+  buyerIntentKeywords?: string[];
+  buyerIntentHook?: string;
   rejectionReasons: string[];
   isMonetizable: boolean;
   productVerified?: boolean;

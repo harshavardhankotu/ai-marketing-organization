@@ -683,4 +683,210 @@ describe('Stage D & Stage E — Autonomous Daily Deals and Production Conversion
       expect(BASELINE_ELECTRONICS_BUYING_GUIDE.disclosureMarkdown).toContain('Affiliate & Commercial Disclosure');
     });
   });
+
+  describe('5. AROS Autonomous Market Arbitrage, Targeted Buyer Engine & Audit Scorecard Integrity', () => {
+    it('computes deterministic arbitrage scores and classifies buyer segments without LLM calls', async () => {
+      const {
+        calculateMarketArbitrageScore,
+        classifyTargetBuyerSegment
+      } = await import('../../src/commission/autonomous-deal-discovery-engine.js');
+
+      const strongArbitrage = calculateMarketArbitrageScore({
+        currentPriceINR: 1199,
+        referencePriceINR: 3990,
+        verifiedDiscountPercent: 70,
+        availability: 'IN_STOCK',
+        productVerified: true,
+        affiliateVerified: true,
+        isMonetizable: true,
+        affiliateNetwork: 'CUELINKS',
+        trackingUrl: 'https://linksredirect.com/?cid=331585&source=linkkit'
+      });
+      const weakArbitrage = calculateMarketArbitrageScore({
+        currentPriceINR: 3800,
+        referencePriceINR: 3990,
+        verifiedDiscountPercent: 5,
+        availability: 'OUT_OF_STOCK',
+        isMonetizable: false
+      });
+
+      expect(strongArbitrage.priceAdvantageRatio).toBeCloseTo(0.6995, 2);
+      expect(strongArbitrage.arbitrageScore).toBeGreaterThanOrEqual(85);
+      expect(weakArbitrage.arbitrageScore).toBeLessThan(20);
+      expect(strongArbitrage.arbitrageScore).toBeGreaterThan(weakArbitrage.arbitrageScore);
+
+      const audioBuyer = classifyTargetBuyerSegment({
+        title: 'boAt Rockerz 430 Gen 2 Wireless Headphones',
+        category: 'Electronics',
+        sectorCode: 'SECTOR_B_ELECTRONICS',
+        currentPriceINR: 1199
+      });
+      expect(audioBuyer.targetBuyerSegment).toContain('Commuters');
+      expect(audioBuyer.buyerIntentKeywords.length).toBeGreaterThan(0);
+
+      const beautyBuyer = classifyTargetBuyerSegment({
+        title: 'Plum Niacinamide Serum',
+        category: 'Beauty',
+        sectorCode: 'SECTOR_B_HEALTH_BEAUTY',
+        currentPriceINR: 499
+      });
+      expect(beautyBuyer.targetBuyerSegment).toContain('Grooming');
+    });
+
+    it('ranks getEligiblePublicDeals() by arbitrageScore descending and exposes enrichment', async () => {
+      const db = getDb();
+      db.prepare('DELETE FROM public_deals').run();
+
+      const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
+      (dealEngine as any).dealsMap?.clear?.();
+      (dealEngine as any).dealSlugMap?.clear?.();
+      const now = new Date().toISOString();
+
+      await (dealEngine as any).persistDealToD1({
+        id: 'deal_arb_low',
+        title: 'Modest Discount Earbuds',
+        brand: 'TestBrand',
+        merchant: 'TestMerchant',
+        category: 'Electronics',
+        sectorCode: 'SECTOR_B_ELECTRONICS',
+        productUrl: 'https://store.example.com/earbuds-low',
+        currentPriceINR: 1900,
+        referencePriceINR: 2000,
+        verifiedDiscountPercent: 5,
+        currency: 'INR',
+        discountVerificationType: 'MERCHANT_LISTED_MRP',
+        availability: 'IN_STOCK',
+        geographicRestrictions: ['India'],
+        lastCheckedAt: now,
+        sourceUrl: 'https://store.example.com/feed',
+        sourceDomain: 'store.example.com',
+        sourceType: 'RETAILER_BRAND',
+        verificationStatus: 'AFFILIATE_VERIFIED',
+        confidenceScore: 95,
+        buyerValueScore: 95,
+        rejectionReasons: [],
+        productVerified: true,
+        affiliateVerified: true,
+        isMonetizable: true,
+        affiliateNetwork: 'CUELINKS',
+        trackingUrl: 'https://linksredirect.com/?cid=331585&source=linkkit&url=https%3A%2F%2Fstore.example.com%2Fearbuds-low',
+        evidenceJson: { sources: [], verificationLogs: [], channelId: '331585' },
+        createdAt: now,
+        updatedAt: now
+      }, 'org_owner_primary', 'biz_platform_aro');
+
+      await (dealEngine as any).persistDealToD1({
+        id: 'deal_arb_high',
+        title: 'Deep Arbitrage Smartwatch',
+        brand: 'TestBrand',
+        merchant: 'TestMerchant',
+        category: 'Electronics',
+        sectorCode: 'SECTOR_B_ELECTRONICS',
+        productUrl: 'https://store.example.com/watch-high',
+        currentPriceINR: 1199,
+        referencePriceINR: 3999,
+        verifiedDiscountPercent: 70,
+        currency: 'INR',
+        discountVerificationType: 'MERCHANT_LISTED_MRP',
+        availability: 'IN_STOCK',
+        geographicRestrictions: ['India'],
+        lastCheckedAt: now,
+        sourceUrl: 'https://store.example.com/feed',
+        sourceDomain: 'store.example.com',
+        sourceType: 'RETAILER_BRAND',
+        verificationStatus: 'AFFILIATE_VERIFIED',
+        confidenceScore: 80,
+        buyerValueScore: 80,
+        rejectionReasons: [],
+        productVerified: true,
+        affiliateVerified: true,
+        isMonetizable: true,
+        affiliateNetwork: 'CUELINKS',
+        trackingUrl: 'https://linksredirect.com/?cid=331585&source=linkkit&url=https%3A%2F%2Fstore.example.com%2Fwatch-high',
+        evidenceJson: { sources: [], verificationLogs: [], channelId: '331585' },
+        createdAt: now,
+        updatedAt: now
+      }, 'org_owner_primary', 'biz_platform_aro');
+
+      const { deals } = await dealEngine.getEligiblePublicDeals({ limit: 10, requireStrictChain: false });
+      expect(deals.length).toBeGreaterThanOrEqual(2);
+      expect(deals[0].id).toBe('deal_arb_high');
+      expect(deals[0].arbitrageScore).toBeGreaterThan(deals[1].arbitrageScore!);
+      expect(deals[0].targetBuyerSegment).toBeDefined();
+    });
+
+    it('renderAuditHtml renders explicit technical defects, Fix-Pack preview, UNAVAILABLE PageSpeed when null, and prefilled SiteFix link', async () => {
+      const { StaticSiteGenerator } = await import('../../src/commission/static-site-generator.js');
+      const ssg = StaticSiteGenerator.getInstance();
+      const html = ssg.renderAuditHtml({
+        domain: 'roasterycoffee.co.in',
+        business_name: 'Roastery Coffee House',
+        seo_score: 72,
+        performance_score: null,
+        pagespeed_status: 'UNAVAILABLE',
+        pagespeed_unavailable_reason: 'UNAVAILABLE (Requires GOOGLE_PAGESPEED_API_KEY)',
+        is_publicly_authorized: 1,
+        checklist_json: JSON.stringify([
+          {
+            id: 'robots_txt_missing',
+            title: 'robots.txt Directive Presence',
+            category: 'Crawlability',
+            status: 'ISSUE',
+            severity: 'MEDIUM',
+            evidence: 'HTTP 404 on /robots.txt',
+            recommendation: 'Deploy valid /robots.txt'
+          },
+          {
+            id: 'schema_jsonld_missing',
+            title: 'JSON-LD Structured Data',
+            category: 'Schema.org',
+            status: 'ISSUE',
+            severity: 'HIGH',
+            evidence: 'Missing Organization/LocalBusiness JSON-LD block',
+            recommendation: 'Add Organization JSON-LD'
+          }
+        ]),
+        head_snippets: '<meta name="description" content="Roastery Coffee" />',
+        schema_json_ld: '{"@context":"https://schema.org"}',
+        scanned_at: new Date().toISOString()
+      }, {
+        siteName: 'AI Marketing Organization',
+        siteUrl: 'https://ai-marketing-organization.onrender.com',
+        authorName: 'Platform Desk',
+        contactEmail: 'ops@example.com',
+        googleSiteVerification: 'GSC-TEST',
+        cuelinksVerificationCode: 'CL-TEST'
+      }, [{
+        id: 'deal_promo_1',
+        title: 'boAt Rockerz 430 Gen 2',
+        category: 'Electronics',
+        currentPriceINR: 1199,
+        referencePriceINR: 3990,
+        verifiedDiscountPercent: 70
+      }]);
+
+      expect(html).not.toContain('noindex');
+      expect(html).toContain('UNAVAILABLE');
+      expect(html).toContain('Requires GOOGLE_PAGESPEED_API_KEY');
+      expect(html).not.toContain('2.8 s');
+      expect(html).toContain('Observed Technical Defects &amp; Why They Matter');
+      expect(html).toContain('HTTP 404 on /robots.txt');
+      expect(html).toContain('Self-Serve SiteFix Core Technical Fix-Pack Preview');
+      expect(html).toContain('Unlock Instant Ready-to-Paste Fix-Pack (₹499)');
+      expect(html).toContain('/tools/site-audit?url=https%3A%2F%2Froasterycoffee.co.in');
+      expect(html).toContain('#Ad');
+    });
+
+    it('declares GSC, Cuelinks verification and CUELINKS_CHANNEL_ID in render.yaml', async () => {
+      const fs = await import('node:fs');
+      const path = await import('node:path');
+      const rootYaml = path.resolve(process.cwd(), 'render.yaml');
+      const renderYamlPath = fs.existsSync(rootYaml) ? rootYaml : path.resolve(process.cwd(), '../../render.yaml');
+      const renderYaml = fs.readFileSync(renderYamlPath, 'utf8');
+      expect(renderYaml).toContain('GOOGLE_SITE_VERIFICATION');
+      expect(renderYaml).toContain('CUELINKS_VERIFICATION_CODE');
+      expect(renderYaml).toContain('CUELINKS_CHANNEL_ID');
+      expect(renderYaml).toContain('331585');
+    });
+  });
 });
