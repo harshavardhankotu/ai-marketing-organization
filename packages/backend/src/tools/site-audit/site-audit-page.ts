@@ -341,7 +341,7 @@ export function renderSiteAuditPage(): string {
               <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 0.65rem; margin-bottom: 0.75rem;">
                 <input type="text" id="upiPayerName" required placeholder="Your Business / Name *" style="padding: 0.55rem; border-radius: 6px; border: 1px solid #374151; background: #1f2937; color: #fff; font-size: 0.85rem;">
                 <input type="tel" id="upiPayerPhone" required placeholder="WhatsApp / Mobile *" style="padding: 0.55rem; border-radius: 6px; border: 1px solid #374151; background: #1f2937; color: #fff; font-size: 0.85rem;">
-                <input type="text" id="upiUtrInput" required minlength="12" maxlength="12" pattern="\d{12}" inputmode="numeric" placeholder="12-Digit Numeric UPI UTR *" style="padding: 0.55rem; border-radius: 6px; border: 1px solid #374151; background: #1f2937; color: #fff; font-size: 0.85rem;">
+                <input type="text" id="upiUtrInput" required minlength="12" maxlength="12" pattern="[0-9]{12}" inputmode="numeric" placeholder="12-Digit Numeric UPI UTR *" style="padding: 0.55rem; border-radius: 6px; border: 1px solid #374151; background: #1f2937; color: #fff; font-size: 0.85rem;">
               </div>
               <button type="submit" id="upiClaimBtn" class="btn-primary" style="background: #059669; font-size: 0.9rem; padding: 0.65rem 1rem;">
                 Submit 12-Digit UPI UTR Claim (₹499)

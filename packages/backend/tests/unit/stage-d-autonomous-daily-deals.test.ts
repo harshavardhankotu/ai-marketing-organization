@@ -1198,6 +1198,10 @@ describe('Stage D & Stage E — Autonomous Daily Deals and Production Conversion
         VALUES (?, ?, ?, ?, ?, 'COMPLETED', 0)
       `).run(testAuditId, `https://example-${testAuditId}.in`, 'Test Clinic', 65, '[]');
 
+      const toolHtmlRes = await app.request('/tools/site-audit');
+      const toolHtml = await toolHtmlRes.text();
+      expect(toolHtml).toContain('pattern="[0-9]{12}"');
+
       // 1. Rejects non-12-digit UTR
       const badUtrRes = await app.request('/api/v1/offer/upi-claim', {
         method: 'POST',
