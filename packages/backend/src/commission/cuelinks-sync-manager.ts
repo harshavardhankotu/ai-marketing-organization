@@ -714,7 +714,6 @@ export class CuelinksSyncManager {
           // Persist discovered campaigns to D1
           await this.persistCampaignsD1(organizationId, businessId, eligibleCampaigns);
           try {
-            await this.hydrateMissingCampaignPayoutsD1(organizationId, businessId);
           } catch (payoutErr: any) {
             console.warn(`[CuelinksSyncManager] Payout hydration notice: ${payoutErr?.message}`);
           }
@@ -925,6 +924,7 @@ export class CuelinksSyncManager {
 
       await this.persistSyncD1(organizationId, businessId);
       await this.persistTelemetryD1(organizationId, businessId, this.syncStatus.telemetry);
+      await this.hydrateMissingCampaignPayoutsD1(organizationId, businessId);
 
       return {
         success: true,

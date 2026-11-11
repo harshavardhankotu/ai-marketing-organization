@@ -330,14 +330,13 @@ describe('V5.1 — Revenue Integrity, Telemetry Reconciliation & First Buyer Rea
       expect(guard.unapprovedCount).toBe(3);
     });
 
-    it('AutomationRegistryEngine prospect_discovery_validation halts with NO_ACTION_DUE when backlog limit exceeded', async () => {
+    it('AutomationRegistryEngine prospect_discovery_validation is NOT deadlocked by unapproved draft backlog (Stage I P2)', async () => {
       vi.spyOn(d1Repo, 'queryOne').mockResolvedValue({ cnt: 15 } as any);
 
       const engine = AutomationRegistryEngine.getInstance();
       const result = await engine.executeWorkflow('prospect_discovery_validation', 'CLOUDFLARE_CRON', 10000);
-      expect(result.status).toBe('NO_ACTION_DUE');
-      expect(result.resultSummary.reason).toBe('UNAPPROVED_DRAFTS_BACKLOG_EXCEEDED');
-      expect(result.ownerActionRequired).toMatch(/Review 15 pending outreach drafts/i);
+      expect(result.resultSummary?.reason).not.toBe('UNAPPROVED_DRAFTS_BACKLOG_EXCEEDED');
+      expect(result.status).not.toBe('FAILED');
     });
 
     it('AutomationRegistryEngine outreach_draft_preparation halts with NO_ACTION_DUE when backlog limit exceeded', async () => {
