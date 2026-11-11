@@ -141,7 +141,7 @@ describe('Source Code Fixes: Protected facts-status & Cron read filter parity', 
       const baseBody = await baseRes.json() as any;
       const initialPings = typeof baseBody.data.recentPings24h === 'number' ? baseBody.data.recentPings24h : 0;
 
-      // 2. Insert recent non-cron cycles (MANUAL and SCHEDULER)
+      // 2. Insert recent non-cron cycles (MANUAL and SCHEDULER) AND a manual curl ping in cron_telemetry
       db.prepare(`
         INSERT OR REPLACE INTO autonomous_cycle_log (
           id, organization_id, trigger_source, cycle_start, status, actions_taken
@@ -152,23 +152,31 @@ describe('Source Code Fixes: Protected facts-status & Cron read filter parity', 
         )
       `).run();
 
+      await app.request('/api/v1/cron/ping', {
+        method: 'POST',
+        headers: {
+          'X-Cron-Secret': 'cron_ping_default_dev',
+          'User-Agent': 'curl/8.4.0'
+        }
+      });
+
       const resAfterNonCron = await app.request('/api/v1/cron/status', {
         method: 'GET',
         headers: { 'x-user-id': 'usr_owner_primary' }
       });
       const bodyAfterNonCron = await resAfterNonCron.json() as any;
       expect(bodyAfterNonCron.success).toBe(true);
-      // Non-cron cycles must NOT inflate recentPings24h
+      // Non-cron cycles and manual curl pings must NOT inflate recentPings24h
       expect(bodyAfterNonCron.data.recentPings24h).toBe(initialPings);
 
-      // 3. Now insert a canonical CLOUDFLARE_CRON cycle
-      db.prepare(`
-        INSERT OR REPLACE INTO autonomous_cycle_log (
-          id, organization_id, trigger_source, cycle_start, status, actions_taken
-        ) VALUES (
-          'cyc_recent_test_cron_03', 'org_owner_primary', 'CLOUDFLARE_CRON', datetime('now'), 'COMPLETED', 0
-        )
-      `).run();
+      // 3. Now send a canonical Cloudflare Worker heartbeat ping
+      await app.request('/api/v1/cron/ping', {
+        method: 'POST',
+        headers: {
+          'X-Cron-Secret': 'cron_ping_default_dev',
+          'User-Agent': 'ai-marketing-cron-worker/1.0'
+        }
+      });
 
       const resAfterCron = await app.request('/api/v1/cron/status', {
         method: 'GET',
@@ -176,7 +184,7 @@ describe('Source Code Fixes: Protected facts-status & Cron read filter parity', 
       });
       const bodyAfterCron = await resAfterCron.json() as any;
       expect(bodyAfterCron.success).toBe(true);
-      // Canonical CLOUDFLARE_CRON cycle increments count by exactly 1
+      // Canonical Cloudflare Worker heartbeat increments count by exactly 1
       expect(bodyAfterCron.data.recentPings24h).toBe(initialPings + 1);
 
       // Clean up
