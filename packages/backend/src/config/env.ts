@@ -174,3 +174,41 @@ export function resolveVerificationTokens(
     cuelinksVerificationCode: cuelinksVerificationCode || undefined
   };
 }
+
+export const DEFAULT_TRUSTED_PUBLIC_SITE_URL = 'https://ai-marketing-organization.onrender.com';
+
+/**
+ * Returns the canonical trusted public origin derived strictly from environment config
+ * (`PUBLIC_SITE_URL`), never from untrusted HTTP `Host` / `X-Forwarded-Host` headers.
+ */
+export function getTrustedPublicSiteUrl(env: NodeJS.ProcessEnv = process.env): string {
+  const raw = (env.PUBLIC_SITE_URL || '').trim();
+  if (raw) {
+    try {
+      const parsed = new URL(raw.startsWith('http') ? raw : `https://${raw}`);
+      if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+        return `${parsed.protocol}//${parsed.host}`;
+      }
+    } catch {}
+  }
+  return DEFAULT_TRUSTED_PUBLIC_SITE_URL;
+}
+
+/**
+ * Checks whether a domain is explicitly allowlisted via `AUTHORIZED_PUBLIC_AUDIT_DOMAINS`
+ * for public indexing on `/audit/:domain` and `/sitemap.xml`.
+ */
+export function isDomainAuthorizedForPublicAudit(
+  domain: string,
+  env: NodeJS.ProcessEnv = process.env
+): boolean {
+  const normalized = String(domain || '').toLowerCase().trim().replace(/^www\./, '');
+  if (!normalized) return false;
+  const allowlistRaw = (env.AUTHORIZED_PUBLIC_AUDIT_DOMAINS || '').trim();
+  if (!allowlistRaw) return false;
+  const allowed = allowlistRaw
+    .split(',')
+    .map(d => d.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0])
+    .filter(Boolean);
+  return allowed.includes(normalized);
+}

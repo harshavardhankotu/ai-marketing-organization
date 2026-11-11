@@ -695,11 +695,14 @@ describe('Stage D & Stage E — Autonomous Daily Deals and Production Conversion
         currentPriceINR: 1199,
         referencePriceINR: 3990,
         verifiedDiscountPercent: 70,
+        discountVerificationType: 'INDEPENDENT_CORROBORATED',
         availability: 'IN_STOCK',
         productVerified: true,
         affiliateVerified: true,
         isMonetizable: true,
         affiliateNetwork: 'CUELINKS',
+        verifiedCommissionRatePercent: 6,
+        lastCheckedAt: new Date().toISOString(),
         trackingUrl: 'https://linksredirect.com/?cid=331585&source=linkkit'
       });
       const weakArbitrage = calculateMarketArbitrageScore({
@@ -905,6 +908,7 @@ describe('Stage D & Stage E — Autonomous Daily Deals and Production Conversion
         affiliateVerified: true,
         isMonetizable: true,
         affiliateNetwork: 'CUELINKS',
+        verifiedCommissionRatePercent: 6,
         evidenceJson: { sources: [], verificationLogs: [], channelId: '331585' }
       });
 
@@ -918,6 +922,20 @@ describe('Stage D & Stage E — Autonomous Daily Deals and Production Conversion
         affiliateVerified: true,
         isMonetizable: true,
         affiliateNetwork: 'CUELINKS',
+        verifiedCommissionRatePercent: 6,
+        evidenceJson: { sources: [], verificationLogs: [], channelId: '331585' }
+      });
+
+      const unverifiedRateScore = calculateMarketArbitrageScore({
+        title: 'Unrated Merchant Electronics Offer',
+        currentPriceINR: 1499,
+        referencePriceINR: 2999,
+        verifiedDiscountPercent: 50,
+        availability: 'IN_STOCK',
+        productVerified: true,
+        affiliateVerified: true,
+        isMonetizable: true,
+        affiliateNetwork: 'CUELINKS',
         evidenceJson: { sources: [], verificationLogs: [], channelId: '331585' }
       });
 
@@ -926,6 +944,12 @@ describe('Stage D & Stage E — Autonomous Daily Deals and Production Conversion
       expect(smartwatchScore.arbitrageScore).toBeLessThan(100);
       expect(chargerScore.arbitrageScore).toBeLessThan(100);
       expect(smartwatchScore.arbitrageScore).toBeGreaterThan(chargerScore.arbitrageScore);
+      expect(unverifiedRateScore.verifiedCommissionRatePercent).toBeNull();
+      expect(unverifiedRateScore.economicsConfidence).toBe('UNKNOWN_COMMISSION_RATE');
+      expect(unverifiedRateScore.expectedCommissionYieldINR).toBe(0);
+      expect(unverifiedRateScore.expectedCommissionPerClickINR).toBeNull();
+      expect(unverifiedRateScore.buyerPersonaConfidence).toBe('HYPOTHESIS');
+      expect(unverifiedRateScore.rankingBreakdown.commercialContributionScore).toBe(0);
     });
 
     it('renders SSR GET /deals/:slug with Schema.org/Product JSON-LD, related deals, and 404 noindex for missing slugs', async () => {
@@ -1037,13 +1061,32 @@ describe('Stage D & Stage E — Autonomous Daily Deals and Production Conversion
       try {
         // Spy getAllDeals/getEligiblePublicDeals chain requirement off for isolated SQLite sitemap check
         vi.spyOn(dealEngine, 'getEligiblePublicDeals').mockResolvedValue({
-          deals: Array.from({ length: 50 }, (_, idx) => ({
-            id: `deal_sg_${idx + 1}`,
-            slug: `stage-g-deal-${idx + 1}`,
-            canonicalSlug: `stage-g-deal-${idx + 1}`,
-            sectorCode: 'SECTOR_B_ELECTRONICS'
-          })) as any,
-          total: 50
+          deals: [
+            ...Array.from({ length: 50 }, (_, idx) => ({
+              id: `deal_sg_${idx + 1}`,
+              slug: `stage-g-deal-${idx + 1}`,
+              canonicalSlug: `stage-g-deal-${idx + 1}`,
+              title: `Verified Consumer Electronics Product #${idx + 1}`,
+              productVerified: true,
+              affiliateVerified: true,
+              availability: 'IN_STOCK',
+              currentPriceINR: 999,
+              lastVerifiedAt: now,
+              sectorCode: 'SECTOR_B_ELECTRONICS'
+            })),
+            {
+              id: 'deal_sg_low_quality',
+              slug: 'stage-g-low-quality',
+              canonicalSlug: 'stage-g-low-quality',
+              title: 'Short',
+              productVerified: false,
+              affiliateVerified: true,
+              availability: 'IN_STOCK',
+              currentPriceINR: 0,
+              sectorCode: 'SECTOR_B_ELECTRONICS'
+            }
+          ] as any,
+          total: 51
         });
 
         const res = await app.request('/sitemap.xml');
@@ -1053,6 +1096,7 @@ describe('Stage D & Stage E — Autonomous Daily Deals and Production Conversion
         expect(urlMatches.length).toBeGreaterThanOrEqual(70);
         expect(xml).toContain('/deals/stage-g-deal-1</loc>');
         expect(xml).toContain('/deals/stage-g-deal-50</loc>');
+        expect(xml).not.toContain('/deals/stage-g-low-quality</loc>');
       } finally {
         process.env.NODE_ENV = origEnv;
       }
@@ -1060,6 +1104,12 @@ describe('Stage D & Stage E — Autonomous Daily Deals and Production Conversion
 
     it('renders live UPI fallback rail on /tools/site-audit and records ₹499 claim as PAYMENT_CLAIMED', async () => {
       const { app } = await import('../../src/index.js');
+      const db = getDb();
+      db.prepare(`
+        INSERT OR REPLACE INTO site_audits (domain, target_url, business_name, seo_score, checklist_json, status, is_publicly_authorized)
+        VALUES ('audit_roastery_test_1', 'https://roasterycoffee.co.in', 'Roastery Coffee House', 78, '[]', 'COMPLETED', 0)
+      `).run();
+
       const pageRes = await app.request('/tools/site-audit?url=https%3A%2F%2Froasterycoffee.co.in');
       expect(pageRes.status).toBe(200);
       const html = await pageRes.text();
@@ -1086,6 +1136,250 @@ describe('Stage D & Stage E — Autonomous Daily Deals and Production Conversion
       expect(claimData.status).toBe('PAYMENT_CLAIMED');
       expect(claimData.data.utr).toBe(utrRef);
       expect(claimData.data.amountINR).toBe(499);
+    });
+  });
+
+  describe('Stage H — AROS V2 Real Economics, Hardened UPI Claim Lifecycle, Editorial Gate & Multi-Lane Engine', () => {
+    it('Priority 1: requires >=20 observed clicks for empirical rate and never fabricates a 6% default commission rate', async () => {
+      const { calculateMarketArbitrageScore } = await import('../../src/commission/autonomous-deal-discovery-engine.js');
+      const underSampled = calculateMarketArbitrageScore({
+        title: 'boAt Airdopes 141 ANC TWS',
+        currentPriceINR: 1399,
+        referencePriceINR: 4490,
+        verifiedDiscountPercent: 69,
+        discountVerificationType: 'MERCHANT_LISTED_MRP',
+        availability: 'IN_STOCK',
+        productVerified: true,
+        affiliateVerified: true,
+        isMonetizable: true,
+        verifiedCommissionRatePercent: 5,
+        observedClicks: 12,
+        observedOrders: 2,
+        observedApprovedOrders: 2,
+        observedReversedOrders: 0
+      });
+      expect(underSampled.verifiedCommissionRatePercent).toBe(5);
+      expect(underSampled.observedClickToOrderRate).toBeNull();
+      expect(underSampled.buyerPersonaConfidence).toBe('HYPOTHESIS');
+      expect(underSampled.opportunityLabel).toBe('VERIFIED_MERCHANT_PROMOTION');
+
+      const empirical = calculateMarketArbitrageScore({
+        title: 'boAt Airdopes 141 ANC TWS',
+        currentPriceINR: 1399,
+        referencePriceINR: 4490,
+        verifiedDiscountPercent: 69,
+        discountVerificationType: 'INDEPENDENT_CORROBORATED',
+        availability: 'IN_STOCK',
+        productVerified: true,
+        affiliateVerified: true,
+        isMonetizable: true,
+        verifiedCommissionRatePercent: 5,
+        observedClicks: 40,
+        observedOrders: 4,
+        observedApprovedOrders: 3,
+        observedReversedOrders: 1
+      });
+      expect(empirical.opportunityLabel).toBe('GENUINE_MARKET_ARBITRAGE');
+      expect(empirical.observedClickToOrderRate).toBeCloseTo(0.1, 3);
+      expect(empirical.observedApprovalRate).toBeCloseTo(0.75, 3);
+      expect(empirical.observedReversalRate).toBeCloseTo(0.25, 3);
+      expect(empirical.buyerPersonaConfidence).toBe('EMPIRICAL');
+      expect(empirical.expectedCommissionPerClickINR).toBeCloseTo(5.246, 2);
+    });
+
+    it('Priority 2: hardens POST /api/v1/offer/upi-claim with server-derived ₹499 price, strict 12-digit UTR, 409 duplicate rejection, and explicit human lifecycle', async () => {
+      const { app } = await import('../../src/index.js');
+      const db = getDb();
+      db.prepare('DELETE FROM manual_upi_claims').run();
+      db.prepare('DELETE FROM site_audits').run();
+      const testAuditId = 'audit_stage_h_test_001';
+      db.prepare(`
+        INSERT INTO site_audits (domain, target_url, business_name, seo_score, checklist_json, status, is_publicly_authorized)
+        VALUES (?, ?, ?, ?, ?, 'COMPLETED', 0)
+      `).run(testAuditId, `https://example-${testAuditId}.in`, 'Test Clinic', 65, '[]');
+
+      // 1. Rejects non-12-digit UTR
+      const badUtrRes = await app.request('/api/v1/offer/upi-claim', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-forwarded-for': '198.51.100.11' },
+        body: JSON.stringify({ auditId: testAuditId, utr: 'ABC123', amountINR: 499 })
+      });
+      expect(badUtrRes.status).toBe(400);
+
+      // 2. Rejects tampered amountINR (client trying to pay ₹1)
+      const tamperedRes = await app.request('/api/v1/offer/upi-claim', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-forwarded-for': '198.51.100.12' },
+        body: JSON.stringify({ auditId: testAuditId, utr: '912345678901', amountINR: 1 })
+      });
+      expect(tamperedRes.status).toBe(400);
+      const tamperedJson = await tamperedRes.json() as any;
+      expect(tamperedJson.error).toBe('AMOUNT_MISMATCH');
+
+      // 3. Rejects nonexistent audit/request reference
+      const unknownRefRes = await app.request('/api/v1/offer/upi-claim', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-forwarded-for': '198.51.100.13' },
+        body: JSON.stringify({ auditId: 'does_not_exist_audit', utr: '912345678901' })
+      });
+      expect(unknownRefRes.status).toBe(400);
+
+      // 4. Accepts valid authoritative claim as PAYMENT_CLAIMED with ₹499 derived server-side
+      const okRes = await app.request('/api/v1/offer/upi-claim', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-forwarded-for': '198.51.100.14' },
+        body: JSON.stringify({ auditId: testAuditId, utr: '912345678901' })
+      });
+      expect(okRes.status).toBe(201);
+      const okJson = await okRes.json() as any;
+      expect(okJson.data.status).toBe('PAYMENT_CLAIMED');
+      expect(okJson.data.amountINR).toBe(499);
+      expect(okJson.autoFulfilled).toBe(false);
+      expect(okJson.bankConfirmedCashINR).toBe(0);
+      const claimId = okJson.data.claimId || okJson.data.id;
+      expect(claimId).toBeTruthy();
+
+      // 5. Rejects duplicate UTR atomically with 409 Conflict
+      const dupRes = await app.request('/api/v1/offer/upi-claim', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-forwarded-for': '198.51.100.15' },
+        body: JSON.stringify({ auditId: testAuditId, utr: '912345678901' })
+      });
+      expect(dupRes.status).toBe(409);
+      const dupJson = await dupRes.json() as any;
+      expect(dupJson.error).toContain('DUPLICATE_UTR_CLAIM');
+
+      // 6. Enforces strict lifecycle progression (blocks skipping states, allows valid sequence)
+      const { RazorpayAdapter } = await import('../../src/integrations/razorpay.js');
+      const rzp = new RazorpayAdapter();
+      await expect(
+        rzp.advanceManualUpiClaimLifecycle({ claimId, targetStatus: 'FULFILLED' })
+      ).rejects.toThrow(/INVALID_CLAIM_TRANSITION/);
+
+      const verified = await rzp.advanceManualUpiClaimLifecycle({
+        claimId,
+        targetStatus: 'HUMAN_VERIFIED_PAYMENT',
+        verifiedBy: 'owner_test'
+      });
+      expect(verified.status).toBe('HUMAN_VERIFIED_PAYMENT');
+
+      const fulfilling = await rzp.advanceManualUpiClaimLifecycle({
+        claimId,
+        targetStatus: 'FULFILLMENT_IN_PROGRESS'
+      });
+      expect(fulfilling.status).toBe('FULFILLMENT_IN_PROGRESS');
+
+      const fulfilled = await rzp.advanceManualUpiClaimLifecycle({
+        claimId,
+        targetStatus: 'FULFILLED'
+      });
+      expect(fulfilled.status).toBe('FULFILLED');
+    });
+
+    it('Priority 3: escapes JSON-LD script breakouts, omits fabricated timestamps, enforces InStock/Editorial gates, uses trusted PUBLIC_SITE_URL, and removes hardcoded audit domain bypasses', async () => {
+      const { StaticSiteGenerator, passesEditorialQualityGate } = await import('../../src/commission/static-site-generator.js');
+      const { SiteAuditService } = await import('../../src/tools/site-audit/site-audit-service.js');
+      const { app } = await import('../../src/index.js');
+      const ssg = StaticSiteGenerator.getInstance();
+
+      const htmlUnsafeTitle = ssg.renderDealDetailHtml(
+        {
+          id: 'deal_xss',
+          slug: 'deal-xss-test',
+          title: 'Sony WH-1000XM5 </script><script>alert(1)</script> Headphones',
+          merchant: 'Amazon India & <Partners>',
+          brand: 'Sony',
+          category: 'Audio',
+          currentPriceINR: 24999,
+          referencePriceINR: 34990,
+          availability: 'IN_STOCK',
+          productVerified: false,
+          affiliateVerified: true
+        },
+        [],
+        {
+          siteName: 'Test Site',
+          authorName: 'Desk',
+          contactEmail: 'desk@example.com',
+          siteUrl: 'https://ai-marketing-organization.onrender.com'
+        }
+      );
+
+      expect(htmlUnsafeTitle).not.toContain('</script><script>alert(1)</script>');
+      expect(htmlUnsafeTitle).toContain('\\u003c/script\\u003e');
+      expect(htmlUnsafeTitle).toContain('Verification timestamp unavailable');
+      expect(htmlUnsafeTitle).toContain('https://schema.org/LimitedAvailability');
+      expect(htmlUnsafeTitle).not.toContain('https://schema.org/InStock');
+      expect(htmlUnsafeTitle).toContain('<meta name="robots" content="noindex, nofollow">');
+      expect(htmlUnsafeTitle).toContain('Extracted Technical Specifications');
+      expect(htmlUnsafeTitle).toContain('Who Should Buy');
+      expect(htmlUnsafeTitle).toContain('Who Should Skip');
+      expect(passesEditorialQualityGate({ title: 'Short', productVerified: true, affiliateVerified: true, availability: 'IN_STOCK', currentPriceINR: 999, lastVerifiedAt: '2026-11-10T00:00:00Z' })).toBe(false);
+
+      // Trusted host invariant: poisoned Host header must NOT leak into /sitemap.xml canonical URLs
+      const poisonedSitemap = await app.request('/sitemap.xml', {
+        headers: { host: 'evil-phishing.example', 'x-forwarded-host': 'evil-phishing.example' }
+      });
+      const sitemapBody = await poisonedSitemap.text();
+      expect(sitemapBody).not.toContain('evil-phishing.example');
+      expect(sitemapBody).toContain('https://ai-marketing-organization.onrender.com/');
+
+      // Audit privacy invariant: clovedental.in is NOT hardcoded as publicly authorized unless explicit DB flag/env allowlist exists
+      const db = getDb();
+      db.prepare('DELETE FROM site_audits').run();
+      db.prepare(`
+        INSERT INTO site_audits (domain, target_url, business_name, seo_score, checklist_json, status, is_publicly_authorized)
+        VALUES ('clovedental.in', 'https://clovedental.in', 'Clove Dental', 75, '[]', 'COMPLETED', 0)
+      `).run();
+      const authorizedDomains = await SiteAuditService.getInstance().getAllAuditedDomains();
+      expect(authorizedDomains).not.toContain('clovedental.in');
+
+      const auditHtml = ssg.renderAuditHtml(
+        {
+          domain: 'thirdparty.example',
+          business_name: 'Third Party Clinic',
+          seo_score: 70,
+          checklist_json: '[]',
+          is_publicly_authorized: 0
+        },
+        { siteName: 'Test Site', authorName: 'Desk', contactEmail: 'desk@example.com', siteUrl: 'https://ai-marketing-organization.onrender.com' }
+      );
+      expect(auditHtml).toContain('noindex, nofollow');
+      expect(auditHtml).toContain('Internal Technical Prospect Observation (noindex)');
+      expect(auditHtml).not.toContain('Evaluated for Third Party Clinic');
+    });
+
+    it('Priorities 4-6: supports 4-lane OpportunityEngine lifecycle, per-lane isolation, and Owner Control Center execution truth', async () => {
+      const { OpportunityEngine } = await import('../../src/revenue/opportunity-engine.js');
+      const { OwnerDigestService } = await import('../../src/revenue/owner-digest.js');
+      const oppEngine = OpportunityEngine.getInstance();
+
+      const opp = oppEngine.discoverUnified({
+        lane: 'LANE_A_AFFILIATE_COMMERCE',
+        title: 'Sony WH-1000XM5 Cuelinks Campaign',
+        buyerSegment: 'Remote engineers & audiophiles in Indian metros',
+        buyerPersonaConfidence: 'HYPOTHESIS',
+        demandEvidence: [{ type: 'TAVILY_RESULT', url: 'https://example.com/demand', retrievedAt: new Date().toISOString() }],
+        supplyEvidence: [{ type: 'TAVILY_RESULT', url: 'https://cuelinks.com/campaign', retrievedAt: new Date().toISOString() }],
+        authorizationStatus: 'VERIFIED',
+        monetizationModel: 'AFFILIATE_CPS',
+        verifiedCommissionOrMarginINR: 1250,
+        confidence: 0.72,
+        sampleSize: 25
+      });
+
+      expect(opp.lifecycleState).toBe('DISCOVERED');
+      expect(() => oppEngine.transitionLifecycle(opp.id, 'RECONCILED')).toThrow(/INVALID_LIFECYCLE_TRANSITION/);
+      const researched = oppEngine.transitionLifecycle(opp.id, 'RESEARCHED');
+      const verified = oppEngine.transitionLifecycle(researched.id, 'VERIFIED');
+      const qualified = oppEngine.transitionLifecycle(verified.id, 'QUALIFIED');
+      expect(qualified.lifecycleState).toBe('QUALIFIED');
+
+      const summary = await OwnerDigestService.getInstance().getArosControlCenterSummary();
+      expect(summary.opportunitiesByLaneAndState.unifiedOpportunities.byLane.LANE_A_AFFILIATE_COMMERCE.total).toBeGreaterThanOrEqual(1);
+      expect(summary.commercialPerformance.bankConfirmedCashINR.sourceTag).toBe('MEASURED');
+      expect(typeof summary.scheduledExecutionTruth.genuineCronWorkerRuns24h).toBe('number');
+      expect(typeof summary.scheduledExecutionTruth.manualOrCurlPings24h).toBe('number');
     });
   });
 });

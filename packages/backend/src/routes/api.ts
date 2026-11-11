@@ -24,7 +24,7 @@ import {
 } from '@ai-marketing/shared';
 import { PartnerNetwork } from '../commission/types.js';
 
-import { isProduction, isPlaceholderCredential } from '../config/env.js';
+import { isProduction, isPlaceholderCredential, getTrustedPublicSiteUrl } from '../config/env.js';
 import { SystemReadinessEngine } from '../control-plane/system-readiness.js';
 import { googleAdsClient } from '../integrations/google-ads.js';
 import { AttributionEvidenceEngine } from '../revenue/attribution-evidence.js';
@@ -4113,7 +4113,7 @@ apiRouter.post('/payments/page-view', async (c) => {
 // MANUAL UPI PAYMENT CLAIM & OWNER CONFIRMATION (Spec § 15 & § 18)
 // ==========================================
 
-// Public customer submission endpoint: Claim payment via UTR
+// Public customer submission endpoint: Claim payment via UTR (legacy / proposal & consult endpoint)
 const handleManualUpiClaim = async (c: any) => {
   const clientInfo = getTrustedClientIp(c);
   const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/payments/manual-upi/claim', clientInfo.ip, 10, 600);
@@ -4121,7 +4121,23 @@ const handleManualUpiClaim = async (c: any) => {
     return c.json({ success: false, error: 'RATE_LIMIT_EXCEEDED', retryAfterSeconds: rateLimit.retryAfterSeconds }, 429);
   }
 
-  const body = await c.req.json();
+  const contentLen = Number(c.req.header('content-length') || 0);
+  if (contentLen > 8192) {
+    return c.json({ success: false, error: 'PAYLOAD_TOO_LARGE', message: 'UPI claim payload exceeds 8KB limit.' }, 413);
+  }
+
+  const rawText = await c.req.text().catch(() => '');
+  if (rawText.length > 8192) {
+    return c.json({ success: false, error: 'PAYLOAD_TOO_LARGE', message: 'UPI claim payload exceeds 8KB limit.' }, 413);
+  }
+
+  let body: any = {};
+  try {
+    body = rawText ? JSON.parse(rawText) : {};
+  } catch {
+    return c.json({ success: false, error: 'INVALID_JSON', message: 'Malformed JSON body.' }, 400);
+  }
+
   const { businessId, journeyId, proposalId, invoiceRef, auditId, payerName, payerPhone, payerVpa, utr, amountINR, serviceRendered, notes } = body;
   const resolvedBusinessId = businessId || 'biz_platform_aro';
   const resolvedInvoiceRef = invoiceRef || (auditId ? String(auditId) : undefined);
@@ -4145,7 +4161,7 @@ const handleManualUpiClaim = async (c: any) => {
       notes: notes || (auditId ? JSON.stringify({ auditId, source: 'site_audit_upi_fallback' }) : undefined)
     });
 
-    // Step 5: Trigger owner Telegram alert on new payment claim (non-blocking, hermetic safe)
+    // Trigger owner Telegram alert on new payment claim (non-blocking, hermetic safe)
     try {
       const { TelegramBotAdapter } = await import('../notifications/telegram-adapter.js');
       const isTestClaim = /test|mock/i.test(`${payerName || ''} ${utr || ''}`);
@@ -4165,11 +4181,136 @@ const handleManualUpiClaim = async (c: any) => {
       status: 'PAYMENT_CLAIMED'
     }, 201);
   } catch (err: any) {
-    return c.json({ success: false, error: err.message }, 400);
+    const isDuplicate = String(err?.message || '').includes('DUPLICATE_UTR_CLAIM');
+    return c.json({ success: false, error: err.message }, isDuplicate ? 409 : 400);
   }
 };
+
+// Hardened Offer / SiteFix UPI claim endpoint (Stage H Priority 2):
+// - Enforces strict 12-digit numeric UTR (/^\d{12}$/), payload size cap, per-IP rate limiting
+// - Verifies auditId exists in site_audits/commercial_evidence OR paymentRequestId/orderId exists in D1
+// - Derives amountINR, sku & businessId strictly server-side; rejects client amount mismatches (400 AMOUNT_MISMATCH)
+// - Enforces atomic UTR uniqueness (409 DUPLICATE_UTR_CLAIM) and never auto-fulfills
+const handleOfferUpiClaim = async (c: any) => {
+  const clientInfo = getTrustedClientIp(c);
+  const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/offer/upi-claim', clientInfo.ip, 10, 600);
+  if (!rateLimit.allowed) {
+    return c.json({ success: false, error: 'RATE_LIMIT_EXCEEDED', retryAfterSeconds: rateLimit.retryAfterSeconds }, 429);
+  }
+
+  const contentLen = Number(c.req.header('content-length') || 0);
+  if (contentLen > 8192) {
+    return c.json({ success: false, error: 'PAYLOAD_TOO_LARGE', message: 'Offer UPI claim payload exceeds 8KB limit.' }, 413);
+  }
+
+  const rawText = await c.req.text().catch(() => '');
+  if (rawText.length > 8192) {
+    return c.json({ success: false, error: 'PAYLOAD_TOO_LARGE', message: 'Offer UPI claim payload exceeds 8KB limit.' }, 413);
+  }
+
+  let body: any = {};
+  try {
+    body = rawText ? JSON.parse(rawText) : {};
+  } catch {
+    return c.json({ success: false, error: 'INVALID_JSON', message: 'Malformed JSON body.' }, 400);
+  }
+
+  const trimmedUtr = String(body.utr || '').trim();
+  if (!/^\d{12}$/.test(trimmedUtr)) {
+    return c.json({
+      success: false,
+      error: 'INVALID_UTR',
+      message: 'Strict 12-digit numeric UTR reference (/^\\d{12}$/) is required for Direct UPI offer claims.'
+    }, 400);
+  }
+
+  const auditId = body.auditId ? String(body.auditId).trim() : undefined;
+  const paymentRequestId = body.paymentRequestId ? String(body.paymentRequestId).trim() : undefined;
+  const orderId = body.orderId ? String(body.orderId).trim() : undefined;
+  const proposalId = body.proposalId ? String(body.proposalId).trim() : undefined;
+
+  const authCtx = await razorpayAdapter.resolveAuthoritativeOfferClaimContext({
+    auditId,
+    paymentRequestId,
+    orderId,
+    proposalId
+  });
+
+  if (!authCtx || !authCtx.verified) {
+    return c.json({
+      success: false,
+      error: 'AUDIT_OR_ORDER_NOT_FOUND',
+      message: 'Claim must reference a verified auditId in site_audits or an existing server-created payment_requests / payment_orders record.'
+    }, 400);
+  }
+
+  // Strictly enforce server-derived amountINR: reject any client-supplied amount mismatch
+  const clientSubmittedAmount = body.amountINR !== undefined ? Number(body.amountINR) : (body.amount !== undefined ? Number(body.amount) : undefined);
+  if (clientSubmittedAmount !== undefined) {
+    if (!Number.isFinite(clientSubmittedAmount) || Math.round(clientSubmittedAmount) !== Math.round(authCtx.amountINR)) {
+      return c.json({
+        success: false,
+        error: 'AMOUNT_MISMATCH',
+        message: `Client-submitted amount (₹${body.amountINR ?? body.amount}) does not match server-authoritative amount (₹${authCtx.amountINR}) for SKU ${authCtx.sku}.`
+      }, 400);
+    }
+  }
+
+  try {
+    const claim = await razorpayAdapter.recordManualUpiClaim({
+      businessId: authCtx.businessId,
+      journeyId: body.journeyId,
+      proposalId: authCtx.proposalId,
+      invoiceRef: authCtx.invoiceRef,
+      payerName: body.payerName ? String(body.payerName).slice(0, 120) : undefined,
+      payerPhone: body.payerPhone ? String(body.payerPhone).slice(0, 25) : undefined,
+      payerVpa: body.payerVpa ? String(body.payerVpa).slice(0, 120) : undefined,
+      utr: trimmedUtr,
+      amountINR: authCtx.amountINR,
+      serviceRendered: authCtx.serviceRendered,
+      notes: JSON.stringify({
+        sku: authCtx.sku,
+        referenceType: authCtx.referenceType,
+        auditId: auditId || null,
+        paymentRequestId: paymentRequestId || null,
+        orderId: orderId || null,
+        source: 'offer_upi_claim_strict'
+      })
+    });
+
+    try {
+      const { TelegramBotAdapter } = await import('../notifications/telegram-adapter.js');
+      const isTestClaim = /test|mock/i.test(`${body.payerName || ''}`);
+      await TelegramBotAdapter.getInstance().notifyPaymentClaim({
+        utr: trimmedUtr,
+        payerName: body.payerName,
+        amountINR: authCtx.amountINR,
+        proposalId: authCtx.invoiceRef,
+        isTest: isTestClaim
+      });
+    } catch {}
+
+    return c.json({
+      success: true,
+      message: 'Payment claim registered successfully under strict server validation. Awaiting owner bank statement verification before fulfillment.',
+      status: 'PAYMENT_CLAIMED',
+      autoFulfilled: false,
+      bankConfirmedCashINR: 0,
+      data: {
+        ...claim,
+        sku: authCtx.sku,
+        businessId: authCtx.businessId,
+        referenceType: authCtx.referenceType
+      }
+    }, 201);
+  } catch (err: any) {
+    const isDuplicate = String(err?.message || '').includes('DUPLICATE_UTR_CLAIM');
+    return c.json({ success: false, error: err.message }, isDuplicate ? 409 : 400);
+  }
+};
+
 apiRouter.post('/payments/manual-upi/claim', handleManualUpiClaim);
-apiRouter.post('/offer/upi-claim', handleManualUpiClaim);
+apiRouter.post('/offer/upi-claim', handleOfferUpiClaim);
 
 // Public customer endpoint: Generate exact-amount Razorpay payment link (Method A)
 apiRouter.post('/payments/public/create-link', async (c) => {
@@ -4390,11 +4531,38 @@ apiRouter.post('/payments/manual-upi/confirm', async (c) => {
   }
 });
 
-// Owner-only: List pending manual UPI claims
-apiRouter.get('/payments/manual-upi/claims', (c) => {
-  const db = getDb();
-  const claims = db.prepare(`SELECT * FROM manual_upi_claims WHERE status = 'PAYMENT_CLAIMED' ORDER BY claimed_at DESC LIMIT 50`).all();
+// Owner-only: List pending & active manual UPI claims across lifecycle states
+apiRouter.get('/payments/manual-upi/claims', async (c) => {
+  const includeAll = c.req.query('all') === 'true';
+  const sql = includeAll
+    ? `SELECT * FROM manual_upi_claims ORDER BY claimed_at DESC LIMIT 100`
+    : `SELECT * FROM manual_upi_claims WHERE status IN ('PAYMENT_CLAIMED', 'HUMAN_VERIFIED_PAYMENT', 'FULFILLMENT_IN_PROGRESS') ORDER BY claimed_at DESC LIMIT 50`;
+  const claims = isProduction() && !process.env.VITEST
+    ? await D1RevenueRepository.getInstance().query('manual_upi_claims', sql, [])
+    : getDb().prepare(sql).all();
   return c.json({ success: true, data: claims });
+});
+
+// Owner-only: Advance verified UPI claim lifecycle (FULFILLMENT_IN_PROGRESS -> FULFILLED, REJECTED, REFUNDED)
+apiRouter.post('/payments/manual-upi/:claimId/lifecycle', async (c) => {
+  const userId = c.get('userId') || 'owner';
+  const claimId = c.req.param('claimId');
+  const body = await c.req.json().catch(() => ({}));
+  const targetStatus = String(body.targetStatus || body.status || '').toUpperCase();
+  if (!['FULFILLMENT_IN_PROGRESS', 'FULFILLED', 'REJECTED', 'REFUNDED'].includes(targetStatus)) {
+    return c.json({ success: false, error: 'INVALID_LIFECYCLE_STATUS', message: 'targetStatus must be FULFILLMENT_IN_PROGRESS, FULFILLED, REJECTED, or REFUNDED.' }, 400);
+  }
+  try {
+    const result = await razorpayAdapter.advanceManualUpiClaimLifecycle({
+      claimId,
+      targetStatus: targetStatus as any,
+      ownerUserId: userId,
+      reason: body.reason
+    });
+    return c.json({ success: true, data: result });
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 400);
+  }
 });
 
 // Owner-only: Reconcile official Razorpay export rows (Part D.2)
@@ -4440,6 +4608,16 @@ apiRouter.get('/owner/today', async (c) => {
       freezeMessage: 'Feature development is frozen. System is in stabilization and owner-action phase.'
     },
     freezeNotice: 'Feature development is frozen. System is in stabilization and owner-action phase.'
+  });
+});
+
+// AROS V2 Owner Control Center Endpoint
+apiRouter.get('/owner/control-center', async (c) => {
+  const { OwnerDigestService } = await import('../revenue/owner-digest.js');
+  const summary = await OwnerDigestService.getInstance().getArosControlCenterSummary();
+  return c.json({
+    success: true,
+    data: summary
   });
 });
 
@@ -7138,10 +7316,17 @@ apiRouter.get('/public/autonomy-status', async (c) => {
       : 'UNCONFIGURED_KEYLESS_MODE';
   }
 
+  let arosControlCenter: any = null;
+  try {
+    const { OwnerDigestService } = await import('../revenue/owner-digest.js');
+    arosControlCenter = await OwnerDigestService.getInstance().getArosControlCenterSummary();
+  } catch {}
+
   return c.json({
     version: '5.8.4',
     platform: 'Autonomous Multi-Sector Revenue Organization',
     timestamp: new Date().toISOString(),
+    arosControlCenter,
     buildMetadata: {
       version: '5.8.4',
       gitCommit: currentCommit,
@@ -7298,18 +7483,30 @@ apiRouter.get('/public/feeds/deals.json', async (c) => {
     description: 'Autonomous multi-sector verified deals, price drops, and buyer guides',
     items: (eligible.deals || []).map((d: any) => ({
       id: d.id,
-      url: `${siteUrl}/deals#${d.id}`,
+      url: `${siteUrl}/deals/${encodeURIComponent(d.slug || d.canonicalSlug || d.id)}`,
       external_url: `${siteUrl}/api/v1/public/deals/${d.id}/redirect`,
       title: d.title,
       content_text: d.title,
-      date_modified: d.lastCheckedAt || d.observedAt || new Date().toISOString(),
+      date_modified: d.lastVerifiedAt || d.lastCheckedAt || d.observedAt || d.updatedAt || null,
       price_inr: d.currentPriceINR,
       reference_price_inr: d.referencePriceINR ?? null,
       discount_badge: d.discountBadge || null,
+      merchant_discount_percent: d.merchantDiscountPercent ?? null,
       arbitrage_score: d.arbitrageScore ?? null,
+      ranking_breakdown: d.rankingBreakdown ?? null,
+      opportunity_label: d.opportunityLabel || 'VERIFIED_MERCHANT_PROMOTION',
       price_advantage_ratio: d.priceAdvantageRatio ?? null,
       expected_commission_yield_inr: d.expectedCommissionYieldINR ?? null,
+      verified_commission_rate_percent: d.verifiedCommissionRatePercent ?? null,
+      gross_commission_per_approved_order_inr: d.grossCommissionPerApprovedOrderINR ?? null,
+      observed_click_to_order_rate: d.observedClickToOrderRate ?? null,
+      observed_approval_rate: d.observedApprovalRate ?? null,
+      observed_reversal_rate: d.observedReversalRate ?? null,
+      expected_commission_per_click_inr: d.expectedCommissionPerClickINR ?? null,
+      economics_sample_size: d.economicsSampleSize ?? 0,
+      economics_confidence: d.economicsConfidence || 'UNKNOWN_COMMISSION_RATE',
       target_buyer_segment: d.targetBuyerSegment || null,
+      buyer_persona_confidence: d.buyerPersonaConfidence || 'HYPOTHESIS',
       buyer_intent_keywords: d.buyerIntentKeywords || [],
       category: d.category,
       sector: d.sectorCode || d.category || 'SECTOR_B_ELECTRONICS',
@@ -7335,13 +7532,13 @@ apiRouter.get('/audit/:domain', async (c) => {
   }
   const cleanDomain = domain.toLowerCase().trim().replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
 
-  const host = c.req.header('host') || 'ai-marketing-organization.onrender.com';
-  const proto = c.req.header('x-forwarded-proto') || 'https';
+  const siteUrl = getTrustedPublicSiteUrl();
+  const trustedHost = new URL(siteUrl).host;
   const config = {
     siteName: 'AI Marketing Organization',
     authorName: 'Editorial Desk',
-    contactEmail: `editorial@${host}`,
-    siteUrl: `${proto}://${host}`
+    contactEmail: `editorial@${trustedHost}`,
+    siteUrl
   };
 
   try {
@@ -7384,13 +7581,13 @@ apiRouter.get('/compare/:sectorSlug', async (c) => {
     }
   } catch {}
 
-  const host = c.req.header('host') || 'ai-marketing-organization.onrender.com';
-  const proto = c.req.header('x-forwarded-proto') || 'https';
+  const siteUrl = getTrustedPublicSiteUrl();
+  const trustedHost = new URL(siteUrl).host;
   const config = {
     siteName: 'AI Marketing Organization',
     authorName: 'Editorial Desk',
-    contactEmail: `editorial@${host}`,
-    siteUrl: `${proto}://${host}`
+    contactEmail: `editorial@${trustedHost}`,
+    siteUrl
   };
 
   try {

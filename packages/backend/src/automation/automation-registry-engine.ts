@@ -585,15 +585,26 @@ export class AutomationRegistryEngine {
         }
 
         const wf = this.mapWorkflowRecord(row);
-        const execResult = await this.executeWorkflow(wf.id, triggerSource, Math.min(wf.executionBudgetMs, remainingBudget));
-        results.push({
-          id: wf.id,
-          name: wf.name,
-          status: execResult.status,
-          durationMs: execResult.durationMs || 0,
-          itemsProcessed: execResult.itemsProcessed,
-          error: execResult.errorMessage || undefined
-        });
+        try {
+          const execResult = await this.executeWorkflow(wf.id, triggerSource, Math.min(wf.executionBudgetMs, remainingBudget));
+          results.push({
+            id: wf.id,
+            name: wf.name,
+            status: execResult.status,
+            durationMs: execResult.durationMs || 0,
+            itemsProcessed: execResult.itemsProcessed,
+            error: execResult.errorMessage || undefined
+          });
+        } catch (wfErr: any) {
+          results.push({
+            id: wf.id,
+            name: wf.name,
+            status: 'ERROR' as WorkflowStatus,
+            durationMs: 0,
+            itemsProcessed: 0,
+            error: wfErr?.message || String(wfErr)
+          });
+        }
       }
 
       return {
@@ -785,6 +796,20 @@ export class AutomationRegistryEngine {
   /**
    * Internal dispatcher that executes the concrete logic for each of the 15 workflows.
    */
+  private async runLaneIsolated<T>(
+    laneName: string,
+    fn: () => Promise<T>
+  ): Promise<{ lane: string; ok: boolean; result?: T; error?: string }> {
+    try {
+      const result = await fn();
+      return { lane: laneName, ok: true, result };
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      console.warn(`[AutomationRegistry] Isolated lane '${laneName}' failed without aborting sibling lanes: ${msg}`);
+      return { lane: laneName, ok: false, error: msg };
+    }
+  }
+
   private async dispatchWorkflowRunner(
     workflowId: string,
     _budgetMs: number
@@ -915,39 +940,72 @@ export class AutomationRegistryEngine {
             }
           }
 
-          // 2. Run SiteAuditService.runFullAudit (combining SiteAuditScanner + live GooglePageSpeedClient)
-          const auditResult = await siteAuditService.runFullAudit(candidateTarget.url, candidateTarget.name, { isPubliclyAuthorized: true });
-          const domain = new URL(auditResult.url).hostname.replace(/^www\./, '');
-          const publishedPageUrl = `${siteUrl}/audit/${domain}`;
+          // 2. Execute SiteFix audit & Affiliate commerce harvest inside independent lane fault barriers
+          const siteFixLane = await this.runLaneIsolated('LANE_B_SITEFIX_AUDIT', async () => {
+            const auditResult = await siteAuditService.runFullAudit(candidateTarget!.url, candidateTarget!.name);
+            const domain = new URL(auditResult.url).hostname.replace(/^www\./, '');
+            const publishedPageUrl = `${siteUrl}/audit/${domain}`;
 
-          // 3. Persist commercial learning reward event
-          await learningEngine.recordRewardEvent(
-            sectorCode,
-            'SITEFIX_COMPLETED_SCAN',
-            0.05,
-            auditResult.url,
-            true,
-            { domain, perfScore: auditResult.pageSpeed?.performanceScore, seoScore: auditResult.pageSpeed?.seoScore }
-          );
+            await learningEngine.recordRewardEvent(
+              sectorCode,
+              'SITEFIX_COMPLETED_SCAN',
+              0.05,
+              auditResult.url,
+              true,
+              { domain, perfScore: auditResult.pageSpeed?.performanceScore, seoScore: auditResult.pageSpeed?.seoScore }
+            );
 
-          // 4. Ping IndexNow for the newly published audit URL
-          const { OrganicDistributionEngine } = await import('../commission/organic-distribution-engine.js');
-          OrganicDistributionEngine.getInstance().pingIndexNow([publishedPageUrl]).catch(() => {});
+            const { OrganicDistributionEngine } = await import('../commission/organic-distribution-engine.js');
+            OrganicDistributionEngine.getInstance().pingIndexNow([publishedPageUrl]).catch(() => {});
+            return { auditResult, domain, publishedPageUrl };
+          });
 
-          // 5. Ensure commerce deals are also discovered into public_deals (V5.7 Phase 1)
-          try {
+          const affiliateLane = await this.runLaneIsolated('LANE_A_AFFILIATE_COMMERCE', async () => {
             const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
             const de = AutonomousDealDiscoveryEngine.getInstance();
             if (de.getAllDeals().filter(d => d.availability === 'IN_STOCK').length < 5) {
               await de.harvestAllApprovedMerchantFeeds();
             }
-          } catch {}
+            return { harvested: true };
+          });
 
+          if (!siteFixLane.ok && !affiliateLane.ok) {
+            return {
+              status: 'ERROR',
+              itemsProcessed: 0,
+              itemsSucceeded: 0,
+              itemsFailed: 2,
+              error: `All isolated lanes failed: siteFix=${siteFixLane.error}; affiliate=${affiliateLane.error}`,
+              summary: {
+                exploredSector: sectorCode,
+                isolatedLaneErrors: { siteFix: siteFixLane.error, affiliate: affiliateLane.error }
+              }
+            };
+          }
+
+          if (!siteFixLane.ok) {
+            return {
+              status: 'PARTIAL',
+              itemsProcessed: 1,
+              itemsSucceeded: affiliateLane.ok ? 1 : 0,
+              itemsFailed: 1,
+              error: `SITEFIX_LANE_ISOLATED_FAILURE: ${siteFixLane.error}`,
+              summary: {
+                mode: 'ISOLATED_LANE_PARTIAL',
+                exploredSector: sectorCode,
+                selectionMode: sectorSelection.selectionMode,
+                isolatedLaneErrors: { siteFix: siteFixLane.error },
+                affiliateHarvesterOk: affiliateLane.ok
+              }
+            };
+          }
+
+          const { auditResult, domain, publishedPageUrl } = siteFixLane.result!;
           return {
-            status: 'COMPLETED',
+            status: affiliateLane.ok ? 'COMPLETED' : 'PARTIAL',
             itemsProcessed: 1,
             itemsSucceeded: 1,
-            itemsFailed: 0,
+            itemsFailed: affiliateLane.ok ? 0 : 1,
             summary: {
               mode: 'AUTONOMOUS_SITE_AUDIT_PUBLISHED',
               exploredSector: sectorCode,
@@ -957,36 +1015,43 @@ export class AutomationRegistryEngine {
               performanceScore: auditResult.pageSpeed?.performanceScore || 0,
               seoScore: auditResult.pageSpeed?.seoScore || Math.round(auditResult.scorecard?.totalScore || auditResult.score || 0),
               policyApproval: gateEval.approvalSource,
-              humanApproved: gateEval.humanApproved
+              humanApproved: gateEval.humanApproved,
+              isolatedLaneErrors: affiliateLane.ok ? undefined : { affiliate: affiliateLane.error }
             }
           };
         }
 
-        // Branch 2: SECTOR_A through SECTOR_G -> Autonomous Commerce Deal Discovery & Qualification
+        // Branch 2: SECTOR_A through SECTOR_G -> Multi-Lane Fault-Isolated Deal Discovery + Cross SiteFix Audit
         const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
         const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
-        await dealEngine.discoverDealsForSector(sectorCode);
-        const inStockCount = dealEngine.getAllDeals().filter(d => d.availability === 'IN_STOCK' && (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS')).length;
-        if (inStockCount < 10) {
-          await dealEngine.harvestAllApprovedMerchantFeeds();
-        }
-        const cycleResult = await dealEngine.executeAutonomousCycle(`cron_${sectorCode}_${Date.now()}`);
 
-        // Execute 1 SiteAuditService.runFullAudit for an unaudited or stale business domain
-        const autoAudited = await this.autoAuditNextUnauditedDomain(sectorCode).catch(() => null);
+        const affiliateDealLane = await this.runLaneIsolated('LANE_A_AFFILIATE_COMMERCE', async () => {
+          await dealEngine.discoverDealsForSector(sectorCode);
+          const inStockCount = dealEngine
+            .getAllDeals()
+            .filter(d => d.availability === 'IN_STOCK' && (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS'))
+            .length;
+          if (inStockCount < 10) {
+            await dealEngine.harvestAllApprovedMerchantFeeds();
+          }
+          return await dealEngine.executeAutonomousCycle(`cron_${sectorCode}_${Date.now()}`);
+        });
 
-        // Refresh live targeted buyer guides & /compare & /sitemap.xml pings for highest-arbitrage deals
-        let guidesPublished = 0;
-        try {
+        const siteFixCrossLane = await this.runLaneIsolated('LANE_B_SITEFIX_AUDIT', async () =>
+          this.autoAuditNextUnauditedDomain(sectorCode)
+        );
+        const autoAudited = siteFixCrossLane.ok ? siteFixCrossLane.result : null;
+
+        const guidesLane = await this.runLaneIsolated('LANE_A_BUYER_GUIDES', async () => {
           const eligibleRes = await dealEngine.getEligiblePublicDeals({ limit: 50 });
           const { OrganicDistributionEngine } = await import('../commission/organic-distribution-engine.js');
-          const syncRes = await OrganicDistributionEngine.getInstance().syncAndPublishTargetedBuyerGuides(
+          return await OrganicDistributionEngine.getInstance().syncAndPublishTargetedBuyerGuides(
             eligibleRes.deals,
             siteUrl,
             autoAudited?.publishedPageUrl ? [autoAudited.publishedPageUrl] : []
           );
-          guidesPublished = syncRes.guidesPublished;
-        } catch {}
+        });
+        const guidesPublished = guidesLane.ok ? (guidesLane.result?.guidesPublished || 0) : 0;
 
         // Discover and verify active in-stock deals strictly attributable to the selected sector
         const allDeals = dealEngine.getAllDeals();
@@ -1020,26 +1085,38 @@ export class AutomationRegistryEngine {
           );
         }
 
+        const cycleResult = affiliateDealLane.ok && affiliateDealLane.result
+          ? affiliateDealLane.result
+          : { status: 'FAILED', offersDiscovered: 0, offersVerified: 0, offersRejected: 0 };
+        const laneFailures: Record<string, string> = {};
+        if (!affiliateDealLane.ok && affiliateDealLane.error) laneFailures.affiliateDeal = affiliateDealLane.error;
+        if (!siteFixCrossLane.ok && siteFixCrossLane.error) laneFailures.siteFixAudit = siteFixCrossLane.error;
+        if (!guidesLane.ok && guidesLane.error) laneFailures.buyerGuides = guidesLane.error;
+
         const itemsSucceeded = sectorDeals.length;
-        const status: WorkflowStatus = cycleResult.status === 'FAILED'
-          ? 'ERROR'
-          : (itemsSucceeded > 0 ? 'COMPLETED' : 'COMPLETED_NO_FINDINGS');
+        const anyOtherSuccess = Boolean(autoAudited) || guidesPublished > 0;
+        const status: WorkflowStatus =
+          !affiliateDealLane.ok || cycleResult.status === 'FAILED'
+            ? (anyOtherSuccess || itemsSucceeded > 0 ? 'PARTIAL' : 'ERROR')
+            : (Object.keys(laneFailures).length > 0 ? 'PARTIAL' : (itemsSucceeded > 0 ? 'COMPLETED' : 'COMPLETED_NO_FINDINGS'));
         return {
           status,
           itemsProcessed: sectorDeals.length,
           itemsSucceeded,
-          itemsFailed: cycleResult.offersRejected || 0,
+          itemsFailed: (cycleResult.offersRejected || 0) + Object.keys(laneFailures).length,
           summary: {
             mode: 'COMMERCE_DEAL_DISCOVERY',
             exploredSector: sectorCode,
             selectionMode: sectorSelection.selectionMode,
             sectorSlug,
             activeSectorDealsCount: sectorDeals.length,
+            guidesPublished,
             offersDiscovered: cycleResult.offersDiscovered,
             offersVerified: cycleResult.offersVerified,
             cycleStatus: cycleResult.status,
             policyApproval: gateEval.approvalSource,
-            humanApproved: gateEval.humanApproved
+            humanApproved: gateEval.humanApproved,
+            isolatedLaneErrors: Object.keys(laneFailures).length > 0 ? laneFailures : undefined
           }
         };
       }
@@ -2283,9 +2360,7 @@ export class AutomationRegistryEngine {
       }
     }
 
-    const audit = await siteAuditService.runFullAudit(candidateUrl, candidateName || undefined, {
-      isPubliclyAuthorized: true
-    });
+    const audit = await siteAuditService.runFullAudit(candidateUrl, candidateName || undefined);
     const domain = new URL(audit.url).hostname.toLowerCase().replace(/^www\./, '');
     const publishedPageUrl = `${siteUrl}/audit/${domain}`;
     const score = audit.pageSpeed?.seoScore ?? Math.round(audit.scorecard?.totalScore ?? audit.score ?? 0);

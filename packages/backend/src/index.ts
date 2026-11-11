@@ -7,7 +7,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { apiRouter } from './routes/api.js';
 import { seedDatabase } from './db/seed.js';
-import { validateProductionSecrets, loadLocalEnvFile, isProduction } from './config/env.js';
+import { validateProductionSecrets, loadLocalEnvFile, isProduction, getTrustedPublicSiteUrl } from './config/env.js';
 import { initOwnerEnvIntake } from './config/owner-env-intake.js';
 import { DailyMarketResearchScheduler } from './scheduler/daily-research-scheduler.js';
 import { UnifiedQuotaService } from './quota/unified-quota-service.js';
@@ -201,14 +201,14 @@ app.get('/', async (c) => {
 app.get('/deals', async (c) => {
   const { StaticSiteGenerator } = await import('./commission/static-site-generator.js');
   const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
-  const host = c.req.header('host') || 'ai-marketing-organization.onrender.com';
-  const proto = c.req.header('x-forwarded-proto') || 'https';
+  const siteUrl = getTrustedPublicSiteUrl();
+  const trustedHost = new URL(siteUrl).host;
   const siteName = (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
   const config = {
     siteName,
     authorName: (process.env.PUBLIC_AUTHOR_NAME || 'Editorial Desk').trim(),
-    contactEmail: (process.env.PUBLIC_CONTACT_EMAIL || `editorial@${host}`).trim(),
-    siteUrl: `${proto}://${host}`
+    contactEmail: (process.env.PUBLIC_CONTACT_EMAIL || `editorial@${trustedHost}`).trim(),
+    siteUrl
   };
   try {
     const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
@@ -233,14 +233,14 @@ app.get('/deals/:slug', async (c) => {
   const cleanSlug = decodeURIComponent(slug).trim().toLowerCase();
   const { StaticSiteGenerator } = await import('./commission/static-site-generator.js');
   const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
-  const host = c.req.header('host') || 'ai-marketing-organization.onrender.com';
-  const proto = c.req.header('x-forwarded-proto') || 'https';
+  const siteUrl = getTrustedPublicSiteUrl();
+  const trustedHost = new URL(siteUrl).host;
   const siteName = (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
   const config = {
     siteName,
     authorName: (process.env.PUBLIC_AUTHOR_NAME || 'Editorial Desk').trim(),
-    contactEmail: (process.env.PUBLIC_CONTACT_EMAIL || `editorial@${host}`).trim(),
-    siteUrl: `${proto}://${host}`
+    contactEmail: (process.env.PUBLIC_CONTACT_EMAIL || `editorial@${trustedHost}`).trim(),
+    siteUrl
   };
 
   try {
@@ -664,9 +664,7 @@ app.get('/r/:offerSlug/:referralId', async (c) => {
 
 // Search Engine Discoverability (Spec § 12)
 app.get('/robots.txt', async (c) => {
-  const host = c.req.header('host') || 'ai-marketing-organization.onrender.com';
-  const proto = c.req.header('x-forwarded-proto') || 'https';
-  const baseUrl = `${proto}://${host}`;
+  const baseUrl = getTrustedPublicSiteUrl();
   const robotsTxt = [
     'User-agent: *',
     'Allow: /',
@@ -712,13 +710,13 @@ app.get('/guides/:slug', async (c) => {
     try {
       config = await StaticSiteGenerator.getInstance().resolveConfig();
     } catch {
-      const host = c.req.header('host') || 'ai-marketing-organization.onrender.com';
-      const proto = c.req.header('x-forwarded-proto') || 'https';
+      const trustedSiteUrl = getTrustedPublicSiteUrl();
+      const trustedHost = new URL(trustedSiteUrl).host;
       config = {
         siteName: 'India Deals & Buying Guides',
         authorName: 'Editorial Desk',
-        contactEmail: `editorial@${host}`,
-        siteUrl: `${proto}://${host}`
+        contactEmail: `editorial@${trustedHost}`,
+        siteUrl: trustedSiteUrl
       };
     }
 
@@ -757,9 +755,7 @@ app.get('/compare/:sectorSlug', async (c) => {
 
 // Dedicated server-rendered HTML route for transparent public revenue funnel
 app.get('/revenue', async (c) => {
-  const host = c.req.header('host') || 'ai-marketing-organization.onrender.com';
-  const proto = c.req.header('x-forwarded-proto') || 'https';
-  const siteUrl = `${proto}://${host}`;
+  const siteUrl = getTrustedPublicSiteUrl();
   const siteName = (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
 
   // Call the public revenue funnel endpoint internally
@@ -1049,9 +1045,7 @@ app.get('/public/financial-truth', async (c) => {
 });
 
 app.get('/sitemap.xml', async (c) => {
-  const host = c.req.header('host') || 'ai-marketing-organization.onrender.com';
-  const proto = c.req.header('x-forwarded-proto') || 'https';
-  const baseUrl = `${proto}://${host}`;
+  const baseUrl = getTrustedPublicSiteUrl();
 
   let publishedSlugs: { slug: string; updated_at?: string }[] = [];
   try {
@@ -1074,12 +1068,13 @@ app.get('/sitemap.xml', async (c) => {
     } catch {}
   }
 
-  // Include compare guides ONLY for sectors with verified active deals + all SSR /deals/:slug URLs
+  // Include compare guides ONLY for sectors with verified active deals + editorial-gated SSR /deals/:slug URLs
   let compareUrls: string[] = [];
   let dealUrls: string[] = [];
   try {
     const { COMMERCIAL_SECTORS_LIST } = await import('@ai-marketing/shared');
     const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
+    const { passesEditorialQualityGate } = await import('./commission/static-site-generator.js');
     const engine = AutonomousDealDiscoveryEngine.getInstance();
     const eligibleRes = await engine.getEligiblePublicDeals({ limit: 1000 });
     const activeDeals = eligibleRes.deals || [];
@@ -1088,7 +1083,7 @@ app.get('/sitemap.xml', async (c) => {
       .filter(sec => activeSectorCodes.has(sec.code))
       .map(sec => `${baseUrl}/compare/${sec.id}`);
     dealUrls = activeDeals
-      .filter((d: any) => d && (d.slug || d.canonicalSlug || d.id))
+      .filter((d: any) => d && (d.slug || d.canonicalSlug || d.id) && passesEditorialQualityGate(d))
       .map((d: any) => `${baseUrl}/deals/${encodeURIComponent(d.slug || d.canonicalSlug || d.id)}`);
   } catch {}
 
@@ -1123,9 +1118,7 @@ app.get('/sitemap.xml', async (c) => {
 });
 
 app.get('/rss.xml', async (c) => {
-  const host = c.req.header('host') || 'ai-marketing-organization.onrender.com';
-  const proto = c.req.header('x-forwarded-proto') || 'https';
-  const baseUrl = `${proto}://${host}`;
+  const baseUrl = getTrustedPublicSiteUrl();
 
   let publicDeals: any[] = [];
   try {

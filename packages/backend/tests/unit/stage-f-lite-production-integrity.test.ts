@@ -1095,5 +1095,35 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
       expect(res.itemsSucceeded).toBe(0);
       expect(res.resultSummary.activeSectorDealsCount).toBe(0);
     });
+
+    it('isolates lane failures inside daily_market_demand_research so a SiteFix error yields PARTIAL without halting Affiliate deal verification', async () => {
+      const db = getDb();
+      const { AutonomousDealDiscoveryEngine } = await import('../../src/commission/autonomous-deal-discovery-engine.js');
+      const { CommercialLearningEngine } = await import('../../src/commission/commercial-learning-engine.js');
+      const { AutomationRegistryEngine } = await import('../../src/automation/automation-registry-engine.js');
+      const registry = AutomationRegistryEngine.getInstance();
+      const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
+
+      db.prepare('DELETE FROM public_deals').run();
+      vi.spyOn(CommercialLearningEngine.getInstance(), 'selectNextSectorToExplore').mockReturnValue({
+        selectedSector: 'SECTOR_B_ELECTRONICS',
+        selectionMode: 'THOMPSON_SAMPLING_EXPLOITATION',
+        sampleScore: 0.9,
+        allSectors: {} as any
+      });
+      vi.spyOn(dealEngine, 'discoverDealsForSector').mockResolvedValue({ discovered: 1, sectorCode: 'SECTOR_B_ELECTRONICS' } as any);
+      vi.spyOn(dealEngine, 'harvestAllApprovedMerchantFeeds').mockResolvedValue({} as any);
+      vi.spyOn(dealEngine, 'executeAutonomousCycle').mockResolvedValue({
+        offersDiscovered: 1,
+        offersVerified: 1,
+        offersRejected: 0,
+        status: 'COMPLETED'
+      } as any);
+      vi.spyOn(registry as any, 'autoAuditNextUnauditedDomain').mockRejectedValue(new Error('PAGESPEED_UPSTREAM_TIMEOUT'));
+
+      const res = await registry.executeWorkflow('daily_market_demand_research', 'TEST_HARNESS');
+      expect(res.status).toBe('PARTIAL');
+      expect(res.resultSummary.isolatedLaneErrors?.siteFixAudit).toContain('PAGESPEED_UPSTREAM_TIMEOUT');
+    });
   });
 });

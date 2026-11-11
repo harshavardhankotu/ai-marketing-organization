@@ -341,7 +341,7 @@ export function renderSiteAuditPage(): string {
               <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 0.65rem; margin-bottom: 0.75rem;">
                 <input type="text" id="upiPayerName" required placeholder="Your Business / Name *" style="padding: 0.55rem; border-radius: 6px; border: 1px solid #374151; background: #1f2937; color: #fff; font-size: 0.85rem;">
                 <input type="tel" id="upiPayerPhone" required placeholder="WhatsApp / Mobile *" style="padding: 0.55rem; border-radius: 6px; border: 1px solid #374151; background: #1f2937; color: #fff; font-size: 0.85rem;">
-                <input type="text" id="upiUtrInput" required minlength="12" maxlength="18" placeholder="12-Digit UPI UTR Ref *" style="padding: 0.55rem; border-radius: 6px; border: 1px solid #374151; background: #1f2937; color: #fff; font-size: 0.85rem;">
+                <input type="text" id="upiUtrInput" required minlength="12" maxlength="12" pattern="\d{12}" inputmode="numeric" placeholder="12-Digit Numeric UPI UTR *" style="padding: 0.55rem; border-radius: 6px; border: 1px solid #374151; background: #1f2937; color: #fff; font-size: 0.85rem;">
               </div>
               <button type="submit" id="upiClaimBtn" class="btn-primary" style="background: #059669; font-size: 0.9rem; padding: 0.65rem 1rem;">
                 Submit 12-Digit UPI UTR Claim (₹499)
@@ -633,13 +633,20 @@ export function renderSiteAuditPage(): string {
 
     async function submitSiteAuditUpiClaim(e) {
       e.preventDefault();
+      if (!currentAuditId) {
+        alert('Please run a website audit scan first so your UPI claim binds to a verified auditId.');
+        return;
+      }
       const claimBtn = document.getElementById('upiClaimBtn');
       const msgEl = document.getElementById('upiClaimResultMsg');
       const targetUrlVal = (document.getElementById('targetUrl')?.value || '').trim();
       const utrVal = (document.getElementById('upiUtrInput')?.value || '').trim();
+      if (!/^\d{12}$/.test(utrVal)) {
+        alert('Please enter a valid 12-digit numeric UPI UTR reference.');
+        return;
+      }
       const payerName = (document.getElementById('upiPayerName')?.value || '').trim();
       const payerPhone = (document.getElementById('upiPayerPhone')?.value || '').trim();
-      const auditRef = currentAuditId || (targetUrlVal ? 'sitefix_' + targetUrlVal.replace(/^https?:\/\//, '').split('/')[0] : 'sitefix_direct');
 
       claimBtn.disabled = true;
       claimBtn.innerText = 'Submitting UTR Claim...';
@@ -649,15 +656,11 @@ export function renderSiteAuditPage(): string {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            businessId: 'biz_platform_aro',
-            auditId: currentAuditId || undefined,
-            invoiceRef: auditRef,
+            auditId: currentAuditId,
             payerName,
             payerPhone,
             utr: utrVal,
-            amountINR: 499,
-            serviceRendered: 'SiteFix AI Core Technical Fix-Pack',
-            notes: JSON.stringify({ auditId: currentAuditId || null, targetUrl: targetUrlVal || null, source: 'site_audit_upi_fallback' })
+            amountINR: 499
           })
         });
         const data = await res.json();
@@ -665,7 +668,7 @@ export function renderSiteAuditPage(): string {
           msgEl.style.display = 'block';
           msgEl.style.background = 'rgba(16, 185, 129, 0.15)';
           msgEl.style.color = '#34d399';
-          msgEl.innerHTML = '<strong>✓ UPI Claim Submitted (PAYMENT_CLAIMED)!</strong> Ref: <code>' + escapeHtml(data.data?.claimId || auditRef) + '</code> &bull; Awaiting owner bank statement verification on /owner/today before fulfillment.';
+          msgEl.innerHTML = '<strong>✓ UPI Claim Submitted (PAYMENT_CLAIMED)!</strong> Ref: <code>' + escapeHtml(data.data?.claimId || currentAuditId) + '</code> &bull; Awaiting owner bank statement verification on /owner/today before fulfillment.';
           claimBtn.style.display = 'none';
         } else {
           throw new Error(data.error || 'UPI claim submission failed');

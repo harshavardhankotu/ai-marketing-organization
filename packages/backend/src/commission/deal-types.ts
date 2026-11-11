@@ -157,10 +157,31 @@ export interface NormalizedDeal {
   verificationStatus: DealVerificationStatus;
   confidenceScore: number;       // 0 to 100
   buyerValueScore: number;        // 0 to 100
-  arbitrageScore?: number;       // 0.0 to 99.9 deterministic undervaluation + commission yield + Cuelinks score
+  arbitrageScore?: number;       // 0.0 to 99.9 explainable ranking score without artificial 100 ceiling
   priceAdvantageRatio?: number;  // (referencePriceINR - currentPriceINR) / referencePriceINR
-  expectedCommissionYieldINR?: number; // currentPriceINR * (commissionRate / 100) * max(0.15, priceAdvantageRatio)
-  commissionRatePercent?: number;
+  expectedCommissionYieldINR?: number; // Computed ONLY from verified campaign rate (0 when rate unknown)
+  commissionRatePercent?: number | null;
+  verifiedCommissionRatePercent?: number | null;
+  grossCommissionPerApprovedOrderINR?: number | null;
+  observedClicks?: number;
+  observedOrders?: number;
+  observedApprovedOrders?: number;
+  observedReversedOrders?: number;
+  observedClickToOrderRate?: number | null;
+  observedApprovalRate?: number | null;
+  observedReversalRate?: number | null;
+  expectedCommissionPerClickINR?: number | null;
+  merchantDiscountPercent?: number | null;
+  buyerPersonaConfidence?: 'HYPOTHESIS' | 'EMPIRICAL';
+  economicsSampleSize?: number;
+  economicsConfidence?: 'VERIFIED_EMPIRICAL' | 'PROVIDER_RATE_ONLY_LOW_SAMPLE' | 'UNKNOWN_COMMISSION_RATE';
+  opportunityLabel?: 'GENUINE_MARKET_ARBITRAGE' | 'VERIFIED_MERCHANT_PROMOTION';
+  rankingBreakdown?: {
+    commercialContributionScore: number;
+    evidenceConfidenceScore: number;
+    priceAdvantageScore: number;
+    freshnessScore: number;
+  };
   targetBuyerSegment?: string;   // High-intent buyer persona matched without LLM tokens
   buyerIntentKeywords?: string[];
   buyerIntentHook?: string;

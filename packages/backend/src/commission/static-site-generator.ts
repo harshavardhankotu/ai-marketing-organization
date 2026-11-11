@@ -25,6 +25,28 @@ export interface StaticSiteBuildResult {
   config: StaticSiteConfig;
 }
 
+/**
+ * Priority 3 Editorial Quality Gate:
+ * Only deals passing strict product/affiliate verification, IN_STOCK availability,
+ * positive INR price, recorded verification timestamp, and >=15 char descriptive title
+ * are eligible for public indexing (`index, follow`) and `/sitemap.xml` inclusion.
+ */
+export function passesEditorialQualityGate(deal: any): boolean {
+  if (!deal) return false;
+  const priceNum = Number(deal.currentPriceINR || 0);
+  const titleStr = String(deal.title || '').trim();
+  const hasTimestamp = Boolean(deal.lastVerifiedAt || deal.lastCheckedAt);
+  return (
+    deal.productVerified === true &&
+    deal.affiliateVerified === true &&
+    deal.availability === 'IN_STOCK' &&
+    Number.isFinite(priceNum) &&
+    priceNum > 0 &&
+    hasTimestamp &&
+    titleStr.length >= 15
+  );
+}
+
 export class StaticSiteGenerator {
   private static instance: StaticSiteGenerator;
 
@@ -33,6 +55,18 @@ export class StaticSiteGenerator {
       StaticSiteGenerator.instance = new StaticSiteGenerator();
     }
     return StaticSiteGenerator.instance;
+  }
+
+  /**
+   * Serializes JSON-LD safely for embedding inside HTML <script type="application/ld+json">
+   * by escaping `<`, `>`, and `&` to prevent script-breakout / HTML injection.
+   */
+  private serializeSafeJsonLd(payload: unknown, pretty = false): string {
+    const raw = JSON.stringify(payload, null, pretty ? 2 : undefined) || 'null';
+    return raw
+      .replace(/</g, '\\u003c')
+      .replace(/>/g, '\\u003e')
+      .replace(/&/g, '\\u0026');
   }
 
   /**
@@ -271,7 +305,7 @@ export class StaticSiteGenerator {
   <link rel="canonical" href="${canonicalUrl}">
   <meta name="robots" content="index, follow">
   <script type="application/ld+json">
-  ${JSON.stringify({
+  ${this.serializeSafeJsonLd({
     '@context': 'https://schema.org',
     '@type': 'WebSite',
     name: config.siteName,
@@ -375,7 +409,7 @@ export class StaticSiteGenerator {
   <meta name="author" content="${this.escapeHtml(config.authorName)}">
   <meta name="robots" content="index, follow">
   <script type="application/ld+json">
-  ${JSON.stringify({
+  ${this.serializeSafeJsonLd({
     '@context': 'https://schema.org',
     '@type': 'Article',
     headline: title,
@@ -621,7 +655,7 @@ export class StaticSiteGenerator {
   <meta name="twitter:title" content="${this.escapeHtml(title)}">
   <meta name="twitter:description" content="${this.escapeHtml(description)}">
   ${itemListSchema ? `<script type="application/ld+json">
-  ${JSON.stringify(itemListSchema, null, 2)}
+  ${this.serializeSafeJsonLd(itemListSchema, true)}
   </script>` : ''}
   <style>
     :root { color-scheme: dark; --bg: #090d16; --card: #111827; --text: #e2e8f0; --accent: #06b6d4; --border: #1e293b; }
@@ -687,13 +721,24 @@ export class StaticSiteGenerator {
    */
   public renderDealDetailHtml(deal: any, relatedDeals: any[] = [], config: StaticSiteConfig): string {
     const slug = deal.slug || deal.canonicalSlug || deal.id;
-    const canonicalUrl = `${config.siteUrl}/deals/${encodeURIComponent(slug)}`;
+    const baseSiteUrl = String(config.siteUrl || '').replace(/\/$/, '');
+    const canonicalUrl = `${baseSiteUrl}/deals/${encodeURIComponent(slug)}`;
     const priceNum = Number(deal.currentPriceINR || 0);
     const refNum = Number(deal.referencePriceINR || 0);
+    const savingsINR = refNum > priceNum ? Math.round((refNum - priceNum) * 100) / 100 : 0;
+    const savingsPct = refNum > priceNum && refNum > 0 ? Math.round(((refNum - priceNum) / refNum) * 1000) / 10 : 0;
     const badgeText = deal.discountBadge || (deal.verifiedDiscountPercent ? `${deal.verifiedDiscountPercent}% OFF` : 'Verified Price');
     const title = `${deal.title} — ₹${priceNum.toLocaleString('en-IN')} (${badgeText} Verified Deal) | #Ad`;
     const description = `Verified Indian deal for ${deal.title} on ${deal.merchant} at ₹${priceNum.toLocaleString('en-IN')}${refNum > priceNum ? ` (Reference MRP ₹${refNum.toLocaleString('en-IN')})` : ''}. #Ad Commission earned on qualifying purchases.`;
-    const verifiedTs = deal.lastCheckedAt || deal.lastVerifiedAt || deal.updatedAt || new Date().toISOString();
+    const verifiedTs: string | null = deal.lastVerifiedAt || deal.lastCheckedAt || deal.updatedAt || null;
+    const editorialPass = passesEditorialQualityGate(deal);
+    const robotsDirective = editorialPass ? 'index, follow' : 'noindex, nofollow';
+    const schemaAvailability =
+      deal.availability === 'OUT_OF_STOCK'
+        ? 'https://schema.org/OutOfStock'
+        : (deal.availability === 'IN_STOCK' && deal.productVerified === true
+            ? 'https://schema.org/InStock'
+            : 'https://schema.org/LimitedAvailability');
     const redirectHref = `/api/v1/public/deals/${encodeURIComponent(deal.id)}/redirect?utm_source=deal_ssr&utm_medium=organic`;
 
     const productSchema: Record<string, any> = {
@@ -712,15 +757,57 @@ export class StaticSiteGenerator {
         priceCurrency: deal.currency || 'INR',
         price: priceNum,
         itemCondition: 'https://schema.org/NewCondition',
-        availability: deal.availability === 'OUT_OF_STOCK'
-          ? 'https://schema.org/OutOfStock'
-          : 'https://schema.org/InStock',
+        availability: schemaAvailability,
         seller: {
           '@type': 'Organization',
           name: deal.merchant || deal.brand || 'Merchant'
         }
       }
     };
+
+    const rawSpecs: Array<[string, string]> = [];
+    if (deal.brand) rawSpecs.push(['Brand', String(deal.brand)]);
+    if (deal.category) rawSpecs.push(['Category', String(deal.category)]);
+    rawSpecs.push(['Merchant', String(deal.merchant || 'Verified Merchant')]);
+    rawSpecs.push(['Observed Price', `₹${priceNum.toLocaleString('en-IN')} ${deal.currency || 'INR'}`]);
+    if (refNum > priceNum) rawSpecs.push(['Reference MRP', `₹${refNum.toLocaleString('en-IN')} (-${savingsPct}%)`]);
+    rawSpecs.push(['Stock State', String(deal.availability || 'UNKNOWN')]);
+    rawSpecs.push(['Verification Gate', `${deal.productVerified === true ? 'Product Verified' : 'Unverified Product'} / ${deal.affiliateVerified === true ? 'Affiliate Verified' : 'Unverified Affiliate'}`]);
+    rawSpecs.push(['Last Verified Snapshot', verifiedTs || 'Verification timestamp unavailable']);
+    if (deal.specs && typeof deal.specs === 'object') {
+      for (const [k, v] of Object.entries(deal.specs)) {
+        if (v !== null && v !== undefined && String(v).trim().length > 0) {
+          rawSpecs.push([String(k), String(v)]);
+        }
+      }
+    }
+    const specsRowsHtml = rawSpecs.map(([k, v]) =>
+      `<tr><th style="text-align:left;padding:0.55rem 0.75rem;border-bottom:1px solid #1e293b;color:#94a3b8;width:36%;font-weight:600;">${this.escapeHtml(k)}</th><td style="padding:0.55rem 0.75rem;border-bottom:1px solid #1e293b;color:#e2e8f0;">${this.escapeHtml(v)}</td></tr>`
+    ).join('');
+
+    const comparisonCandidates = [deal, ...relatedDeals.slice(0, 3)];
+    const comparisonRowsHtml = comparisonCandidates.map((item: any, idx: number) => {
+      const iSlug = item.slug || item.canonicalSlug || item.id;
+      const iPrice = Number(item.currentPriceINR || 0);
+      const iRef = Number(item.referencePriceINR || 0);
+      const iDisc = iRef > iPrice && iRef > 0 ? `${Math.round(((iRef - iPrice) / iRef) * 100)}% off` : 'Baseline MRP';
+      return `<tr style="${idx === 0 ? 'background:rgba(56,189,248,0.08);' : ''}">
+        <td style="padding:0.6rem 0.75rem;border-bottom:1px solid #1e293b;">${idx === 0 ? `<strong>${this.escapeHtml(item.title)}</strong> <span style="font-size:0.75rem;color:#38bdf8;">(Selected)</span>` : `<a href="/deals/${this.escapeHtml(encodeURIComponent(iSlug))}" style="color:#e2e8f0;text-decoration:none;">${this.escapeHtml(item.title)}</a>`}</td>
+        <td style="padding:0.6rem 0.75rem;border-bottom:1px solid #1e293b;color:#cbd5e1;">${this.escapeHtml(item.merchant || '-')}</td>
+        <td style="padding:0.6rem 0.75rem;border-bottom:1px solid #1e293b;font-weight:700;color:#fff;">₹${iPrice.toLocaleString('en-IN')}</td>
+        <td style="padding:0.6rem 0.75rem;border-bottom:1px solid #1e293b;color:#6ee7b7;">${this.escapeHtml(iDisc)}</td>
+        <td style="padding:0.6rem 0.75rem;border-bottom:1px solid #1e293b;color:#94a3b8;font-size:0.85rem;">${this.escapeHtml(item.targetBuyerSegment || item.category || 'General Buyers')}</td>
+      </tr>`;
+    }).join('');
+
+    const buyerFitText = deal.targetBuyerSegment
+      ? `Ideal for ${deal.targetBuyerSegment} seeking ${deal.category || 'this category'} hardware at ₹${priceNum.toLocaleString('en-IN')}${savingsINR > 0 ? ` with verified ₹${savingsINR.toLocaleString('en-IN')} (${savingsPct}%) price advantage over ₹${refNum.toLocaleString('en-IN')} MRP` : ''}.`
+      : `Best suited for value-focused buyers in ${deal.category || 'consumer tech'} confirming live merchant checkout pricing of ₹${priceNum.toLocaleString('en-IN')}.`;
+    const skipFitText = `Skip if you require an alternate merchant warranty policy, immediate local retail pickup today, or if live merchant cart pricing exceeds the verified ₹${priceNum.toLocaleString('en-IN')} snapshot.`;
+    const verifiedRateDisclosure =
+      typeof deal.verifiedCommissionRatePercent === 'number' && Number.isFinite(deal.verifiedCommissionRatePercent)
+        ? `Recorded merchant campaign rate: ${deal.verifiedCommissionRatePercent}% via Cuelinks Channel 331585.`
+        : 'Exact merchant commission percentage is currently undisclosed (not estimated).';
 
     const relatedHtml = relatedDeals.slice(0, 4).map((rel: any) => {
       const relSlug = rel.slug || rel.canonicalSlug || rel.id;
@@ -752,13 +839,13 @@ export class StaticSiteGenerator {
   ${this.getGoogleSiteVerificationMeta(config)}${this.getCuelinksVerificationMeta(config)}<title>${this.escapeHtml(title)}</title>
   <meta name="description" content="${this.escapeHtml(description)}">
   <link rel="canonical" href="${this.escapeHtml(canonicalUrl)}">
-  <meta name="robots" content="index, follow">
+  <meta name="robots" content="${robotsDirective}">
   <meta property="og:title" content="${this.escapeHtml(title)}">
   <meta property="og:description" content="${this.escapeHtml(description)}">
   <meta property="og:url" content="${this.escapeHtml(canonicalUrl)}">
   <meta property="og:type" content="product">
   <script type="application/ld+json">
-${JSON.stringify(productSchema, null, 2)}
+${this.serializeSafeJsonLd(productSchema, true)}
   </script>
   <style>
     :root { color-scheme: dark; --bg: #090d16; --card: #111827; --text: #e2e8f0; --accent: #06b6d4; --border: #1e293b; }
@@ -800,11 +887,47 @@ ${JSON.stringify(productSchema, null, 2)}
         <span style="font-size:0.9rem;font-weight:700;background:rgba(16,185,129,0.2);color:#6ee7b7;padding:0.3rem 0.75rem;border-radius:8px;">${this.escapeHtml(badgeText)}</span>
       </div>
       <p style="font-size:0.88rem;color:#94a3b8;margin:0.5rem 0 1rem 0;">
-        Last Verified Snapshot: <code>${this.escapeHtml(verifiedTs)}</code> &bull; Verification Status: <strong>${this.escapeHtml(deal.verificationStatus || 'VERIFIED')}</strong>
+        Last Verified Snapshot: <code>${this.escapeHtml(verifiedTs || 'Verification timestamp unavailable')}</code> &bull; Verification Status: <strong>${this.escapeHtml(deal.verificationStatus || 'VERIFIED')}</strong>
       </p>
       <a href="${this.escapeHtml(redirectHref)}" target="_blank" rel="sponsored nofollow noopener" class="cta-btn">Claim Verified Deal on ${this.escapeHtml(deal.merchant)} &rarr;</a>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1rem;margin-top:1.75rem;">
+        <div style="background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.28);border-radius:10px;padding:1rem;">
+          <h2 style="font-size:1rem;color:#6ee7b7;margin:0 0 0.45rem 0;">Who Should Buy</h2>
+          <p style="font-size:0.88rem;color:#cbd5e1;margin:0;">${this.escapeHtml(buyerFitText)}</p>
+        </div>
+        <div style="background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.28);border-radius:10px;padding:1rem;">
+          <h2 style="font-size:1rem;color:#fcd34d;margin:0 0 0.45rem 0;">Who Should Skip</h2>
+          <p style="font-size:0.88rem;color:#cbd5e1;margin:0;">${this.escapeHtml(skipFitText)}</p>
+        </div>
+      </div>
+
+      <section style="margin-top:1.75rem;">
+        <h2 style="font-size:1.15rem;color:#fff;margin-bottom:0.65rem;">Extracted Technical Specifications &amp; Price Breakdown</h2>
+        <table style="width:100%;border-collapse:collapse;font-size:0.9rem;background:#0f172a;border:1px solid #1e293b;border-radius:8px;overflow:hidden;">
+          <tbody>${specsRowsHtml}</tbody>
+        </table>
+      </section>
+
+      ${comparisonCandidates.length > 1 ? `
+      <section style="margin-top:1.75rem;overflow-x:auto;">
+        <h2 style="font-size:1.15rem;color:#fff;margin-bottom:0.65rem;">Side-by-Side Comparison with Live Verified Alternatives</h2>
+        <table style="width:100%;border-collapse:collapse;font-size:0.88rem;background:#0f172a;border:1px solid #1e293b;border-radius:8px;overflow:hidden;">
+          <thead>
+            <tr style="background:#1e293b;color:#94a3b8;text-align:left;">
+              <th style="padding:0.6rem 0.75rem;">Product</th>
+              <th style="padding:0.6rem 0.75rem;">Merchant</th>
+              <th style="padding:0.6rem 0.75rem;">Price</th>
+              <th style="padding:0.6rem 0.75rem;">Price Advantage</th>
+              <th style="padding:0.6rem 0.75rem;">Target Buyer</th>
+            </tr>
+          </thead>
+          <tbody>${comparisonRowsHtml}</tbody>
+        </table>
+      </section>` : ''}
+
       <p style="font-size:0.8rem;color:#94a3b8;margin-top:1.25rem;padding-top:1rem;border-top:1px solid #1e293b;">
-        <strong>#Ad Statutory Disclosure:</strong> This page is a deterministic merchant price snapshot linking via authorized Cuelinks tracking (Channel 331585). We may earn an affiliate commission on qualifying purchases at no additional cost to you. Always confirm final live checkout price and warranty terms on the merchant store.
+        <strong>#Ad Statutory Disclosure:</strong> This page is a deterministic merchant price snapshot linking via authorized Cuelinks tracking (Channel 331585). We may earn an affiliate commission on qualifying purchases at no additional cost to you. ${this.escapeHtml(verifiedRateDisclosure)} Always confirm final live checkout price and warranty terms on the merchant store.
       </p>
     </article>
     ${relatedDeals.length > 0 ? `
@@ -1266,7 +1389,11 @@ ${JSON.stringify(productSchema, null, 2)}
       </div>
     `).join('');
 
-    const isAuthorized = auditData.is_publicly_authorized === 1;
+    const isAuthorized =
+      auditData.is_publicly_authorized === 1 &&
+      (auditData.user_confirmed_ownership === undefined ||
+        auditData.user_confirmed_ownership === null ||
+        auditData.user_confirmed_ownership === 1);
     const checklistArr = Array.isArray(checklist) ? checklist : [];
     const hasSchemaFinding = checklistArr.some((f: any) =>
       f?.id === 'schema_jsonld_present' && f?.status === 'PASS'
@@ -1309,7 +1436,7 @@ ${JSON.stringify(productSchema, null, 2)}
   <link rel="canonical" href="${config.siteUrl}/audit/${domain}">
   ${!isAuthorized ? '<meta name="robots" content="noindex, nofollow">\n  ' : ''}${this.getGoogleSiteVerificationMeta(config)}${this.getCuelinksVerificationMeta(config)}
   <script type="application/ld+json">
-${JSON.stringify(schemaObj, null, 2)}
+${this.serializeSafeJsonLd(schemaObj, true)}
   </script>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f1f5f9; color: #1e293b; margin: 0; padding: 0; line-height: 1.6; }
@@ -1334,7 +1461,7 @@ ${JSON.stringify(schemaObj, null, 2)}
   <div class="header">
     <div style="font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;font-weight:bold;margin-bottom:8px;">SiteFix AI &bull; Deterministic HTML &amp; Technical SEO Scorecard</div>
     <h1 style="margin:0 0 8px 0;font-size:28px;">Website Audit: ${domain}</h1>
-    <p style="margin:0;color:#cbd5e1;font-size:14px;">Evaluated for ${businessName} &bull; Updated ${new Date().toLocaleDateString('en-IN')}</p>
+    <p style="margin:0;color:#cbd5e1;font-size:14px;">${isAuthorized ? `Evaluated for ${businessName} &bull; Publicly Authorized Report` : 'Internal Technical Prospect Observation (noindex) &mdash; Third-party domain not publicly authorized'}</p>
   </div>
 
   <div class="container">
@@ -1502,7 +1629,7 @@ ${JSON.stringify(schemaObj, null, 2)}
   <link rel="canonical" href="${config.siteUrl}/compare/${sectorSlug}">
   ${deals.length === 0 ? '<meta name="robots" content="noindex, nofollow">\n  ' : ''}${this.getGoogleSiteVerificationMeta(config)}${this.getCuelinksVerificationMeta(config)}
   <script type="application/ld+json">
-${JSON.stringify(schemaObj, null, 2)}
+${this.serializeSafeJsonLd(schemaObj, true)}
   </script>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f8fafc; color: #1e293b; margin: 0; padding: 0; line-height: 1.6; }

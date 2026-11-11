@@ -32,21 +32,101 @@ export { GuideDataUnavailableError };
 
 export const MAX_OFFER_FRESHNESS_HOURS = 48;
 
+export type EconomicsConfidence =
+  | 'VERIFIED_EMPIRICAL'
+  | 'PROVIDER_RATE_ONLY_LOW_SAMPLE'
+  | 'UNKNOWN_COMMISSION_RATE';
+
+export type OpportunityClassificationLabel =
+  | 'GENUINE_MARKET_ARBITRAGE'
+  | 'VERIFIED_MERCHANT_PROMOTION';
+
+export interface RankingBreakdown {
+  commercialContributionScore: number;
+  evidenceConfidenceScore: number;
+  priceAdvantageScore: number;
+  freshnessScore: number;
+}
+
 export interface MarketArbitrageScoreResult {
   arbitrageScore: number;
   priceAdvantageRatio: number;
   expectedCommissionYieldINR: number;
+  verifiedCommissionRatePercent: number | null;
+  grossCommissionPerApprovedOrderINR: number | null;
+  observedClickToOrderRate: number | null;
+  observedApprovalRate: number | null;
+  observedReversalRate: number | null;
+  expectedCommissionPerClickINR: number | null;
+  merchantDiscountPercent: number | null;
+  buyerPersonaConfidence: 'HYPOTHESIS' | 'EMPIRICAL';
+  economicsSampleSize: number;
+  economicsConfidence: EconomicsConfidence;
+  opportunityLabel: OpportunityClassificationLabel;
+  rankingBreakdown: RankingBreakdown;
 }
 
 export interface TargetBuyerClassification {
   targetBuyerSegment: string;
   buyerIntentKeywords: string[];
   buyerIntentHook: string;
+  buyerPersonaConfidence: 'HYPOTHESIS' | 'EMPIRICAL';
 }
 
 /**
- * Computes a deterministic 0.0-99.9 market arbitrage score combining discount depth,
- * expected commission yield in INR (sweet-spot ticket scaling), and IN_STOCK + active Cuelinks monetization.
+ * Extracts a verified commission rate (%) or flat INR payout strictly from provider campaign
+ * records (`cuelinks_campaigns` `payout`/`payout_rate` & `payout_type`/`payout_model`).
+ * Never invents or defaults to an assumed 6% fallback.
+ */
+export function parseVerifiedCampaignPayout(
+  campaign: any,
+  currentPriceINR: number
+): { ratePercent: number | null; flatINR: number | null } {
+  if (!campaign || typeof campaign !== 'object') {
+    return { ratePercent: null, flatINR: null };
+  }
+  const rawPayout = String(
+    campaign.payout_rate ?? campaign.payout ?? campaign.commission_rate ?? ''
+  ).trim();
+  if (!rawPayout || /^(?:unknown|tbd|variable|n\/a|none|0+|0\.0+%?)$/i.test(rawPayout)) {
+    return { ratePercent: null, flatINR: null };
+  }
+
+  const payoutType = String(campaign.payout_type ?? campaign.payout_model ?? '').trim().toUpperCase();
+  const payoutCurrency = String(campaign.payout_currency ?? 'INR').trim().toUpperCase();
+  const numericMatch = rawPayout.match(/(\d+(?:\.\d+)?)/);
+  if (!numericMatch) {
+    return { ratePercent: null, flatINR: null };
+  }
+  const val = Number(numericMatch[1]);
+  if (!Number.isFinite(val) || val <= 0) {
+    return { ratePercent: null, flatINR: null };
+  }
+
+  const looksLikePercent =
+    rawPayout.includes('%') ||
+    payoutType === 'CPS' ||
+    payoutType === 'PERCENTAGE' ||
+    payoutType === 'PERCENT';
+  const looksLikeFlatInr =
+    !rawPayout.includes('%') &&
+    (payoutCurrency === 'INR' || /₹|inr|rs/i.test(rawPayout) || /^(?:FIXED|FLAT|CPA|CPL)$/.test(payoutType));
+
+  if (looksLikeFlatInr && !looksLikePercent) {
+    const derivedPct = currentPriceINR > 0 ? Number(((val / currentPriceINR) * 100).toFixed(2)) : null;
+    return { ratePercent: derivedPct, flatINR: Number(val.toFixed(2)) };
+  }
+
+  if (looksLikePercent && val <= 60) {
+    return { ratePercent: Number(val.toFixed(2)), flatINR: null };
+  }
+
+  return { ratePercent: null, flatINR: null };
+}
+
+/**
+ * Computes an explainable, non-misleading multi-factor ranking score (`0.0`–`99.9` without ceiling ties at 100).
+ * Never silently defaults missing campaign commission rates to 6%: unverified rates report `null` and `UNKNOWN_COMMISSION_RATE`.
  */
 export function calculateMarketArbitrageScore(deal: Partial<NormalizedDeal>): MarketArbitrageScoreResult {
   const current = Number(deal.currentPriceINR || 0);
@@ -55,10 +135,84 @@ export function calculateMarketArbitrageScore(deal: Partial<NormalizedDeal>): Ma
     ? (reference - current) / reference
     : (deal.verifiedDiscountPercent && deal.verifiedDiscountPercent > 0 ? Math.min(0.95, deal.verifiedDiscountPercent / 100) : 0);
   const priceAdvantageRatio = Number(Math.max(0, Math.min(0.99, rawRatio)).toFixed(4));
-  const commissionRatePercent = Number(deal.commissionRatePercent || deal.evidenceJson?.commissionRatePercent || 6);
-  const expectedCommissionYieldINR = current > 0
-    ? Number((current * (commissionRatePercent / 100) * Math.max(0.15, priceAdvantageRatio)).toFixed(2))
-    : 0;
+
+  const merchantDiscountPercent = reference > current && current > 0 && reference > 0
+    ? Math.round(((reference - current) / reference) * 100)
+    : (deal.verifiedDiscountPercent && deal.verifiedDiscountPercent > 0
+        ? Number(deal.verifiedDiscountPercent)
+        : (deal.claimedDiscountPercent && deal.claimedDiscountPercent > 0 ? Number(deal.claimedDiscountPercent) : null));
+
+  // Resolve verified commission rate ONLY from explicit provider evidence or verified campaign payout
+  const explicitRate =
+    typeof deal.verifiedCommissionRatePercent === 'number' && deal.verifiedCommissionRatePercent > 0
+      ? deal.verifiedCommissionRatePercent
+      : typeof deal.commissionRatePercent === 'number' && deal.commissionRatePercent > 0
+      ? deal.commissionRatePercent
+      : typeof deal.evidenceJson?.verifiedCommissionRatePercent === 'number' && deal.evidenceJson.verifiedCommissionRatePercent > 0
+      ? deal.evidenceJson.verifiedCommissionRatePercent
+      : null;
+
+  const parsedCampaign = parseVerifiedCampaignPayout(deal.campaign, current);
+  const verifiedCommissionRatePercent = explicitRate !== null
+    ? Number(explicitRate.toFixed(2))
+    : parsedCampaign.ratePercent;
+
+  const grossCommissionPerApprovedOrderINR =
+    current > 0 && verifiedCommissionRatePercent !== null
+      ? Number((current * (verifiedCommissionRatePercent / 100)).toFixed(2))
+      : parsedCampaign.flatINR;
+
+  // Compute empirical conversion ratios ONLY when observed sample size >= 20 clicks
+  const observedClicks = Math.max(0, Math.floor(Number(deal.observedClicks ?? deal.evidenceJson?.observedClicks ?? deal.economicsSampleSize ?? 0)));
+  const observedOrders = Math.max(0, Math.floor(Number(deal.observedOrders ?? deal.evidenceJson?.observedOrders ?? 0)));
+  const observedApprovedOrders = Math.max(0, Math.floor(Number(deal.observedApprovedOrders ?? deal.evidenceJson?.observedApprovedOrders ?? 0)));
+  const observedReversedOrders = Math.max(0, Math.floor(Number(deal.observedReversedOrders ?? deal.evidenceJson?.observedReversedOrders ?? 0)));
+
+  const observedClickToOrderRate = observedClicks >= 20
+    ? Number((observedOrders / observedClicks).toFixed(4))
+    : null;
+  const observedApprovalRate = observedOrders > 0
+    ? Number((observedApprovedOrders / observedOrders).toFixed(4))
+    : null;
+  const observedReversalRate = observedOrders > 0
+    ? Number((observedReversedOrders / observedOrders).toFixed(4))
+    : null;
+
+  const expectedCommissionPerClickINR =
+    observedClickToOrderRate !== null &&
+    observedApprovalRate !== null &&
+    grossCommissionPerApprovedOrderINR !== null
+      ? Number((observedClickToOrderRate * observedApprovalRate * grossCommissionPerApprovedOrderINR).toFixed(4))
+      : null;
+
+  const economicsConfidence: EconomicsConfidence =
+    verifiedCommissionRatePercent === null && grossCommissionPerApprovedOrderINR === null
+      ? 'UNKNOWN_COMMISSION_RATE'
+      : observedClickToOrderRate !== null && expectedCommissionPerClickINR !== null
+      ? 'VERIFIED_EMPIRICAL'
+      : 'PROVIDER_RATE_ONLY_LOW_SAMPLE';
+
+  const hasIndependentPriceEvidence =
+    deal.discountVerificationType === 'INDEPENDENT_CORROBORATED' ||
+    deal.discountVerificationType === 'HISTORICAL_BASELINE_VERIFIED';
+
+  const opportunityLabel: OpportunityClassificationLabel =
+    hasIndependentPriceEvidence && (verifiedCommissionRatePercent !== null || grossCommissionPerApprovedOrderINR !== null)
+      ? 'GENUINE_MARKET_ARBITRAGE'
+      : 'VERIFIED_MERCHANT_PROMOTION';
+
+  const buyerPersonaConfidence: 'HYPOTHESIS' | 'EMPIRICAL' =
+    deal.evidenceJson?.empiricalBuyerPersonaVerified === true || (observedClicks >= 20 && observedOrders > 0)
+      ? 'EMPIRICAL'
+      : 'HYPOTHESIS';
+
+  // Verified yield indicator used for yield-ordered tie-breaking (0 when campaign rate unknown)
+  const expectedCommissionYieldINR =
+    current > 0 && verifiedCommissionRatePercent !== null
+      ? Number((current * (verifiedCommissionRatePercent / 100) * Math.max(0.15, priceAdvantageRatio)).toFixed(2))
+      : parsedCampaign.flatINR !== null
+      ? Number((parsedCampaign.flatINR * Math.max(0.15, priceAdvantageRatio)).toFixed(2))
+      : 0;
 
   if (
     deal.availability === 'OUT_OF_STOCK' ||
@@ -66,39 +220,105 @@ export function calculateMarketArbitrageScore(deal: Partial<NormalizedDeal>): Ma
     deal.verificationStatus === 'REJECTED' ||
     current <= 0
   ) {
-    return { arbitrageScore: 0, priceAdvantageRatio, expectedCommissionYieldINR: 0 };
+    return {
+      arbitrageScore: 0,
+      priceAdvantageRatio,
+      expectedCommissionYieldINR: 0,
+      verifiedCommissionRatePercent,
+      grossCommissionPerApprovedOrderINR,
+      observedClickToOrderRate,
+      observedApprovalRate,
+      observedReversalRate,
+      expectedCommissionPerClickINR,
+      merchantDiscountPercent,
+      buyerPersonaConfidence,
+      economicsSampleSize: observedClicks,
+      economicsConfidence,
+      opportunityLabel,
+      rankingBreakdown: {
+        commercialContributionScore: 0,
+        evidenceConfidenceScore: 0,
+        priceAdvantageScore: 0,
+        freshnessScore: 0,
+      }
+    };
   }
 
-  // Factor 1: Discount depth relative to reference price (0-55 pts)
-  const discountPts = Math.min(55, priceAdvantageRatio * 65);
+  // Factor 1: Price advantage score (0-42 pts; higher trust if independently corroborated vs merchant-listed MRP)
+  const corroborationMultiplier = hasIndependentPriceEvidence ? 1 : 0.88;
+  const priceAdvantageScore = Number(Math.min(42, priceAdvantageRatio * 48 * corroborationMultiplier).toFixed(2));
 
-  // Factor 2: Expected commission yield & ₹500-₹3,500 sweet-spot conversion scaling (0-35 pts)
-  const yieldScaledPts = Math.min(28, (expectedCommissionYieldINR / 120) * 28);
-  const ticketSweetSpotPts = (current >= 500 && current <= 3500) ? 7 : (current > 3500 ? 5 : 1);
-  const yieldPts = Math.min(35, yieldScaledPts + ticketSweetSpotPts);
+  // Factor 2: Commercial contribution score (0-32 pts; driven strictly by verified rate / observed EPC)
+  let commercialContributionScore = 0;
+  const ticketSweetSpotPts = (current >= 500 && current <= 3500) ? 6 : (current > 3500 ? 4 : 1);
+  if (expectedCommissionPerClickINR !== null) {
+    commercialContributionScore = Number(Math.min(32, expectedCommissionPerClickINR * 8 + ticketSweetSpotPts).toFixed(2));
+  } else if (expectedCommissionYieldINR > 0) {
+    const yieldScaledPts = Math.min(26, (expectedCommissionYieldINR / 120) * 26);
+    commercialContributionScore = Number(Math.min(32, yieldScaledPts + ticketSweetSpotPts).toFixed(2));
+  } else {
+    // Unknown commission rate: award zero commercial contribution points without invented yield
+    commercialContributionScore = 0;
+  }
 
-  // Factor 3: Verified live IN_STOCK inventory + Cuelinks cid=331585 affiliation (0-10 pts)
+  // Factor 3: Evidence & channel confidence score (0-16 pts)
   const channelId = deal.evidenceJson?.channelId;
   const hasApprovedCuelinks = Boolean(
     deal.affiliateVerified &&
     deal.isMonetizable &&
     (deal.affiliateNetwork === 'CUELINKS' || String(channelId || '') === '331585' || Boolean(deal.trackingUrl))
   );
-  const stockAndProofPts = (deal.availability === 'IN_STOCK' ? 3 : 1) + (deal.productVerified === true ? 2 : 0);
+  const stockAndProofPts = (deal.availability === 'IN_STOCK' ? 3 : 1) + (deal.productVerified === true ? 3 : 0);
   const affiliationPts = hasApprovedCuelinks
     ? (String(channelId || process.env.CUELINKS_CHANNEL_ID || '') === '331585' ? 5 : 4)
     : (deal.affiliateVerified ? 2 : 0);
-  const verifiedPts = Math.min(10, stockAndProofPts + affiliationPts);
+  const economicsConfidencePts = economicsConfidence === 'VERIFIED_EMPIRICAL'
+    ? 5
+    : economicsConfidence === 'PROVIDER_RATE_ONLY_LOW_SAMPLE'
+    ? 3
+    : 0;
+  const evidenceConfidenceScore = Number(Math.min(16, stockAndProofPts + affiliationPts + economicsConfidencePts).toFixed(2));
 
-  // Differentiated 0.0-99.9 scale prevents ceiling clamping ties at 100
-  const rawScore = discountPts + yieldPts + verifiedPts;
+  // Factor 4: Freshness score (0-9.9 pts)
+  const refTs = deal.lastCheckedAt || deal.lastVerifiedAt || deal.observedAt || deal.updatedAt;
+  const ageHours = refTs ? Math.max(0, (Date.now() - Date.parse(refTs)) / 3600000) : 24;
+  const freshnessScore = Number(
+    (!Number.isFinite(ageHours) || ageHours > 48)
+      ? 1.5
+      : Math.max(1.5, Math.min(9.9, 9.9 - (ageHours / 48) * 7.5)).toFixed(2)
+  );
+
+  // Differentiated 0.0-99.9 scale prevents artificial ceiling ties at 100
+  const rawScore = priceAdvantageScore + commercialContributionScore + evidenceConfidenceScore + freshnessScore;
   const arbitrageScore = Number(Math.max(0, Math.min(99.9, rawScore)).toFixed(1));
-  return { arbitrageScore, priceAdvantageRatio, expectedCommissionYieldINR };
+
+  return {
+    arbitrageScore,
+    priceAdvantageRatio,
+    expectedCommissionYieldINR,
+    verifiedCommissionRatePercent,
+    grossCommissionPerApprovedOrderINR,
+    observedClickToOrderRate,
+    observedApprovalRate,
+    observedReversalRate,
+    expectedCommissionPerClickINR,
+    merchantDiscountPercent,
+    buyerPersonaConfidence,
+    economicsSampleSize: observedClicks,
+    economicsConfidence,
+    opportunityLabel,
+    rankingBreakdown: {
+      commercialContributionScore,
+      evidenceConfidenceScore,
+      priceAdvantageScore,
+      freshnessScore,
+    }
+  };
 }
 
 /**
- * Classifies each undervalued deal into a high-intent buyer persona and search-intent keywords
- * deterministically from category, price band, and title/specs (zero LLM tokens).
+ * Classifies each deal into a buyer persona hypothesis deterministically from category,
+ * price band, and title/specs (zero LLM tokens). Labeled 'HYPOTHESIS' until backed by empirical buyer data.
  */
 export function classifyTargetBuyerSegment(deal: Partial<NormalizedDeal>): TargetBuyerClassification {
   const title = String(deal.title || '').toLowerCase();
@@ -151,11 +371,14 @@ export function classifyTargetBuyerSegment(deal: Partial<NormalizedDeal>): Targe
   const priceTag = price > 0 ? ` at ₹${price.toLocaleString('en-IN')}` : '';
   const savingsTag = savingsPct > 0 ? ` (${savingsPct}% below ₹${reference > price ? reference.toLocaleString('en-IN') : 'baseline'})` : '';
   const buyerIntentHook = `${targetBuyerSegment}${priceTag}${savingsTag}`;
+  const buyerPersonaConfidence: 'HYPOTHESIS' | 'EMPIRICAL' =
+    deal.evidenceJson?.empiricalBuyerPersonaVerified === true ? 'EMPIRICAL' : 'HYPOTHESIS';
 
   return {
     targetBuyerSegment,
     buyerIntentKeywords,
-    buyerIntentHook
+    buyerIntentHook,
+    buyerPersonaConfidence
   };
 }
 
@@ -3135,18 +3358,25 @@ export class AutonomousDealDiscoveryEngine {
     partnerOffers: any[];
     partners: any[];
     campaigns: any[];
+    clickStatsByOffer: Map<string, number>;
+    commissionStatsByOffer: Map<string, { orders: number; approved: number; reversed: number }>;
   }> {
     let partnerOffers: any[] = [];
     let partners: any[] = [];
     let campaigns: any[] = [];
+    const clickStatsByOffer = new Map<string, number>();
+    const commissionStatsByOffer = new Map<string, { orders: number; approved: number; reversed: number }>();
+
+    const clickSql = `SELECT offer_id, COUNT(*) as cnt FROM referral_click_events WHERE COALESCE(device_class, '') != 'BOT' GROUP BY offer_id`;
+    const commSql = `SELECT offer_id, COUNT(*) as orders, SUM(CASE WHEN UPPER(external_status) IN ('APPROVED', 'PAID') THEN 1 ELSE 0 END) as approved, SUM(CASE WHEN UPPER(external_status) IN ('REJECTED', 'CANCELLED', 'REFUNDED') THEN 1 ELSE 0 END) as reversed FROM commission_records GROUP BY offer_id`;
 
     if (useRemoteD1) {
-      const safeD1Read = async (table: string, sql: string): Promise<any[]> => {
+      const safeD1Read = async (table: string, sql: string, allowMissing = false): Promise<any[]> => {
         try {
           const res = await this.d1Repo.executeRead(table, sql, []);
           return Array.isArray(res?.results) ? res.results : [];
         } catch (err: any) {
-          if (isProduction() && !process.env.VITEST) {
+          if (!allowMissing && isProduction() && !process.env.VITEST) {
             throw new GuideDataUnavailableError(`Failed to read ${table} from D1: ${err?.message || 'D1 read error'}`);
           }
           return [];
@@ -3155,16 +3385,48 @@ export class AutonomousDealDiscoveryEngine {
       partnerOffers = await safeD1Read('partner_offers', 'SELECT * FROM partner_offers');
       partners = await safeD1Read('partners', 'SELECT * FROM partners');
       campaigns = await safeD1Read('cuelinks_campaigns', 'SELECT * FROM cuelinks_campaigns');
+      const clickRows = await safeD1Read('referral_click_events', clickSql, true);
+      for (const cr of clickRows) {
+        if (cr?.offer_id) clickStatsByOffer.set(String(cr.offer_id), Number(cr.cnt || 0));
+      }
+      const commRows = await safeD1Read('commission_records', commSql, true);
+      for (const mr of commRows) {
+        if (mr?.offer_id) {
+          commissionStatsByOffer.set(String(mr.offer_id), {
+            orders: Number(mr.orders || 0),
+            approved: Number(mr.approved || 0),
+            reversed: Number(mr.reversed || 0),
+          });
+        }
+      }
     } else {
       try {
         const db = getDb();
         try { partnerOffers = db.prepare('SELECT * FROM partner_offers').all() as any[]; } catch {}
         try { partners = db.prepare('SELECT * FROM partners').all() as any[]; } catch {}
         try { campaigns = db.prepare('SELECT * FROM cuelinks_campaigns').all() as any[]; } catch {}
+        try {
+          const clickRows = db.prepare(clickSql).all() as any[];
+          for (const cr of clickRows) {
+            if (cr?.offer_id) clickStatsByOffer.set(String(cr.offer_id), Number(cr.cnt || 0));
+          }
+        } catch {}
+        try {
+          const commRows = db.prepare(commSql).all() as any[];
+          for (const mr of commRows) {
+            if (mr?.offer_id) {
+              commissionStatsByOffer.set(String(mr.offer_id), {
+                orders: Number(mr.orders || 0),
+                approved: Number(mr.approved || 0),
+                reversed: Number(mr.reversed || 0),
+              });
+            }
+          }
+        } catch {}
       } catch {}
     }
 
-    return { partnerOffers, partners, campaigns };
+    return { partnerOffers, partners, campaigns, clickStatsByOffer, commissionStatsByOffer };
   }
 
   private isPartnerOfferValidForDeal(
@@ -3269,7 +3531,7 @@ export class AutonomousDealDiscoveryEngine {
       }
     }
 
-    const { partnerOffers, partners, campaigns } = await this.loadRelationshipTables(useRemoteD1);
+    const { partnerOffers, partners, campaigns, clickStatsByOffer, commissionStatsByOffer } = await this.loadRelationshipTables(useRemoteD1);
     const partnersById = new Map<string, any>();
     for (const p of partners) {
       if (p?.id) partnersById.set(p.id, p);
@@ -3333,24 +3595,44 @@ export class AutonomousDealDiscoveryEngine {
         continue;
       }
 
+      const matchCampaignForDeal = (dealObj: NormalizedDeal) => campaigns.find((c: any) =>
+        (dealObj.affiliateCampaignId && String(c.campaign_id) === String(dealObj.affiliateCampaignId)) ||
+        (c.merchant_domain && this.extractHostname(dealObj.productUrl) === String(c.merchant_domain).toLowerCase().replace(/^www\./, ''))
+      );
+
+      const attachStatsAndEnrich = (dealObj: NormalizedDeal, extra: Partial<NormalizedDeal> = {}): NormalizedDeal => {
+        const matchedCampaign = matchCampaignForDeal(dealObj);
+        const clicks = clickStatsByOffer.get(dealObj.id) ?? Number(dealObj.evidenceJson?.observedClicks ?? 0);
+        const comm = commissionStatsByOffer.get(dealObj.id);
+        const merged: NormalizedDeal = {
+          ...dealObj,
+          ...extra,
+          campaign: extra.campaign ?? matchedCampaign ?? dealObj.campaign,
+          evidenceJson: {
+            ...(dealObj.evidenceJson || { sources: [dealObj.productUrl], verificationLogs: [] }),
+            observedClicks: clicks,
+            observedOrders: comm ? comm.orders : Number(dealObj.evidenceJson?.observedOrders ?? 0),
+            observedApprovedOrders: comm ? comm.approved : Number(dealObj.evidenceJson?.observedApprovedOrders ?? 0),
+            observedReversedOrders: comm ? comm.reversed : Number(dealObj.evidenceJson?.observedReversedOrders ?? 0),
+          }
+        };
+        return this.enrichDealWithArbitrageAndBuyerTargeting(merged);
+      };
+
       if (matchingOffers.length === 1) {
         const offer = matchingOffers[0];
         const validation = this.isPartnerOfferValidForDeal(d, offer, partnersById);
         if (!validation.valid) {
           continue;
         }
-        const matchedCampaign = campaigns.find((c: any) =>
-          (d.affiliateCampaignId && c.campaign_id === d.affiliateCampaignId) ||
-          (c.merchant_domain && this.extractHostname(d.productUrl) === String(c.merchant_domain).toLowerCase().replace(/^www\./, ''))
-        );
-        eligibleDeals.push({
-          ...d,
+        const matchedCampaign = matchCampaignForDeal(d);
+        eligibleDeals.push(attachStatsAndEnrich(d, {
           partnerOffer: offer,
           partner: validation.partner,
-          campaign: matchedCampaign || (d.affiliateCampaignId ? { campaignId: d.affiliateCampaignId, status: 'ACTIVE' } : undefined)
-        });
+          campaign: matchedCampaign || d.campaign || (d.affiliateCampaignId ? { campaignId: d.affiliateCampaignId, status: 'ACTIVE' } : undefined)
+        }));
       } else if (!strictPartnerOfferRequired) {
-        eligibleDeals.push(d);
+        eligibleDeals.push(attachStatsAndEnrich(d));
       }
     }
 
@@ -4373,6 +4655,19 @@ export class AutonomousDealDiscoveryEngine {
     deal.arbitrageScore = arb.arbitrageScore;
     deal.priceAdvantageRatio = arb.priceAdvantageRatio;
     deal.expectedCommissionYieldINR = arb.expectedCommissionYieldINR;
+    deal.verifiedCommissionRatePercent = arb.verifiedCommissionRatePercent;
+    deal.commissionRatePercent = arb.verifiedCommissionRatePercent;
+    deal.grossCommissionPerApprovedOrderINR = arb.grossCommissionPerApprovedOrderINR;
+    deal.observedClickToOrderRate = arb.observedClickToOrderRate;
+    deal.observedApprovalRate = arb.observedApprovalRate;
+    deal.observedReversalRate = arb.observedReversalRate;
+    deal.expectedCommissionPerClickINR = arb.expectedCommissionPerClickINR;
+    deal.merchantDiscountPercent = arb.merchantDiscountPercent;
+    deal.buyerPersonaConfidence = arb.buyerPersonaConfidence;
+    deal.economicsSampleSize = arb.economicsSampleSize;
+    deal.economicsConfidence = arb.economicsConfidence;
+    deal.opportunityLabel = arb.opportunityLabel;
+    deal.rankingBreakdown = arb.rankingBreakdown;
     deal.targetBuyerSegment = targeting.targetBuyerSegment;
     deal.buyerIntentKeywords = targeting.buyerIntentKeywords;
     deal.buyerIntentHook = targeting.buyerIntentHook;
@@ -4381,6 +4676,18 @@ export class AutonomousDealDiscoveryEngine {
       arbitrageScore: arb.arbitrageScore,
       priceAdvantageRatio: arb.priceAdvantageRatio,
       expectedCommissionYieldINR: arb.expectedCommissionYieldINR,
+      verifiedCommissionRatePercent: arb.verifiedCommissionRatePercent,
+      grossCommissionPerApprovedOrderINR: arb.grossCommissionPerApprovedOrderINR,
+      observedClickToOrderRate: arb.observedClickToOrderRate,
+      observedApprovalRate: arb.observedApprovalRate,
+      observedReversalRate: arb.observedReversalRate,
+      expectedCommissionPerClickINR: arb.expectedCommissionPerClickINR,
+      merchantDiscountPercent: arb.merchantDiscountPercent,
+      buyerPersonaConfidence: arb.buyerPersonaConfidence,
+      economicsSampleSize: arb.economicsSampleSize,
+      economicsConfidence: arb.economicsConfidence,
+      opportunityLabel: arb.opportunityLabel,
+      rankingBreakdown: arb.rankingBreakdown,
       targetBuyerSegment: targeting.targetBuyerSegment,
       buyerIntentKeywords: targeting.buyerIntentKeywords,
       buyerIntentHook: targeting.buyerIntentHook
@@ -4415,6 +4722,7 @@ export class AutonomousDealDiscoveryEngine {
         expiryDate: row.expiry_date || undefined,
         nextRecheckAt: row.next_recheck_at || undefined,
         lastCheckedAt: row.last_verified_at || row.updated_at,
+        lastVerifiedAt: row.last_verified_at || undefined,
         observedAt: row.created_at,
         sourceUrl: row.product_url,
         sourceDomain: new URL(row.product_url).hostname,
