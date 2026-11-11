@@ -11,7 +11,7 @@ export interface LaneUnitEconomicsInput {
     | 'LANE_D_DIGITAL_PRODUCTS'
     | 'LANE_E_FINANCIAL_INTELLIGENCE';
   grossRevenueINR: number;
-  directCostINR?: number;
+  directCostINR?: number | null;
   adSpendINR?: number;
   gatewayFeePercent?: number;
   partnerSharePercent?: number;
@@ -20,22 +20,38 @@ export interface LaneUnitEconomicsInput {
 export interface LaneUnitEconomicsResult {
   lane: LaneUnitEconomicsInput['lane'];
   grossRevenueINR: number;
-  directCostINR: number;
-  netContributionINR: number;
+  directCostINR: number | null;
+  netContributionINR: number | null;
   grossMarginPercent: number | null;
-  contributionStatus: 'MEASURED' | 'NO_REVENUE_MEASURED';
+  contributionStatus: 'MEASURED' | 'NO_REVENUE_MEASURED' | 'UNKNOWN_MISSING_COST_DATA';
   costModelBasis: string;
 }
 
 /**
  * Computes lane-specific unit economics without arbitrary flat 65% clinical margin assumptions.
- * Returns null grossMarginPercent when zero verified revenue is present so unmeasured lanes are never fabricated.
+ * Returns null directCostINR / netContributionINR / UNKNOWN_MISSING_COST_DATA when directCostINR is unknown (null/undefined).
  */
 export function calculateLaneUnitEconomics(input: LaneUnitEconomicsInput): LaneUnitEconomicsResult {
   const gross = Math.max(0, Number(input.grossRevenueINR || 0));
   const adSpend = Math.max(0, Number(input.adSpendINR || 0));
-  const explicitCost = Math.max(0, Number(input.directCostINR || 0));
+  const hasExplicitDirectCost =
+    input.directCostINR !== undefined &&
+    input.directCostINR !== null &&
+    Number.isFinite(Number(input.directCostINR));
 
+  if (!hasExplicitDirectCost) {
+    return {
+      lane: input.lane,
+      grossRevenueINR: Number(gross.toFixed(2)),
+      directCostINR: null,
+      netContributionINR: null,
+      grossMarginPercent: null,
+      contributionStatus: 'UNKNOWN_MISSING_COST_DATA',
+      costModelBasis: 'UNKNOWN_MISSING_COST_DATA'
+    };
+  }
+
+  const explicitCost = Math.max(0, Number(input.directCostINR));
   let variableCost = explicitCost + adSpend;
   let costModelBasis = 'MEASURED_REVENUE_MINUS_DIRECT_COST';
 

@@ -301,10 +301,10 @@ describe('Autonomous Free-Tier Customer Acquisition Loop & Truth Integrity', () 
     });
 
     const demoRow = db.prepare('SELECT stage, next_action FROM sales_pipeline WHERE id = ?').get(pipeDemo) as any;
-    expect(demoRow.stage).toBe('MEETING_BOOKED');
+    expect(demoRow.stage).toBe('DEMO_REQUESTED_PENDING_CONFIRMATION');
     expect(demoRow.next_action).toBe('BOOK_MEETING');
 
-    // PRICE_QUESTION
+    // PRICE_QUESTION (product-aware, zero hardcoded ₹15,000/₹8,000 clinic fallback)
     const priceRes = await sce.handleInboundMessage({
       businessId: OwnerAuthService.PLATFORM_BUSINESS_ID,
       organizationId: OwnerAuthService.OWNER_ORGANIZATION_ID,
@@ -313,8 +313,9 @@ describe('Autonomous Free-Tier Customer Acquisition Loop & Truth Integrity', () 
       messageText: 'What is your pricing and setup cost?'
     });
     expect(priceRes.intent).toBe('PRICE_QUESTION');
-    expect(priceRes.responseTemplate).toContain('₹15,000');
-    expect(priceRes.responseTemplate).toContain('₹8,000/month');
+    expect(priceRes.responseTemplate).not.toContain('₹15,000');
+    expect(priceRes.responseTemplate).not.toContain('₹8,000/month');
+    expect(priceRes.responseTemplate).toContain('₹499');
   });
 
   it('11. Proposal acceptance automatically triggers real Razorpay payment link creation and binding', async () => {

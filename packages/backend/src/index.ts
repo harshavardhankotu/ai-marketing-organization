@@ -163,6 +163,12 @@ app.get('/tools/site-audit', async (c) => {
   const { renderSiteAuditPage } = await import('./tools/site-audit/site-audit-page.js');
   return c.html(renderSiteAuditPage());
 });
+app.get('/tools/financial-radar', async (c) => {
+  const { MultiAssetOpportunityRadar } = await import('./intelligence/multi-asset-opportunity-radar.js');
+  const radar = MultiAssetOpportunityRadar.getInstance();
+  const summary = await radar.getRadarSummary({ skipLiveNetwork: Boolean(process.env.VITEST) });
+  return c.html(radar.renderFinancialRadarHtml(summary));
+});
 app.all('/tools/*', async (c) => {
   const targetUrl = new URL('/api/v1' + c.req.path, c.req.url);
   return app.fetch(new Request(targetUrl.toString(), {
@@ -1100,6 +1106,7 @@ app.get('/sitemap.xml', async (c) => {
     `${baseUrl}/deals`,
     `${baseUrl}/offer`,
     `${baseUrl}/tools/site-audit`,
+    `${baseUrl}/tools/financial-radar`,
     `${baseUrl}/tools/lead-leakage-calculator`,
     `${baseUrl}/revenue`,
     `${baseUrl}/public/disclosure`

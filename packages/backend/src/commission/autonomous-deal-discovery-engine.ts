@@ -74,54 +74,180 @@ export interface TargetBuyerClassification {
 }
 
 /**
+ * Normalizes a URL or domain string to its registrable root domain (e.g. shop.boat-lifestyle.com -> boat-lifestyle.com)
+ * so campaign-to-product joins never rely on loose substring matching.
+ */
+export function normalizeRootMerchantDomain(urlOrDomain: string): string {
+  const raw = String(urlOrDomain || '').trim().toLowerCase();
+  if (!raw) return '';
+  let host = raw;
+  if (raw.includes('://') || raw.includes('/')) {
+    try {
+      host = new URL(raw.includes('://') ? raw : `https://${raw}`).hostname.toLowerCase();
+    } catch {
+      host = raw.split('/')[0].toLowerCase();
+    }
+  }
+  host = host.replace(/^www\./, '').replace(/:\d+$/, '').trim();
+  if (!host || !host.includes('.')) return host;
+  const parts = host.split('.').filter(Boolean);
+  if (parts.length <= 2) return host;
+  const lastTwo = parts.slice(-2).join('.');
+  const twoPartTlds = new Set(['co.in', 'com.in', 'org.in', 'net.in', 'gov.in', 'ac.in', 'co.uk', 'com.au', 'co.jp']);
+  if (twoPartTlds.has(lastTwo) && parts.length >= 3) {
+    return parts.slice(-3).join('.');
+  }
+  return parts.slice(-2).join('.');
+}
+
+/**
  * Extracts a verified commission rate (%) or flat INR payout strictly from provider campaign
- * records (`cuelinks_campaigns` `payout`/`payout_rate` & `payout_type`/`payout_model`).
+ * records (`cuelinks_campaigns` `payout`/`payout_rate`, `payout_categories`, & `payout_type`/`payout_model`).
  * Never invents or defaults to an assumed 6% fallback.
  */
 export function parseVerifiedCampaignPayout(
   campaign: any,
-  currentPriceINR: number
-): { ratePercent: number | null; flatINR: number | null } {
+  currentPriceINR: number,
+  productCategory?: string
+): {
+  ratePercent: number | null;
+  flatINR: number | null;
+  grossCommissionPerApprovedOrderINR: number | null;
+  missingPayoutReason?: 'CAMPAIGN_NOT_IN_CUELINKS_PAGE' | 'ZERO_PAYOUT_REPORTED' | 'CPC_OFFLINE_ONLY' | null;
+} {
   if (!campaign || typeof campaign !== 'object') {
-    return { ratePercent: null, flatINR: null };
+    return {
+      ratePercent: null,
+      flatINR: null,
+      grossCommissionPerApprovedOrderINR: null,
+      missingPayoutReason: 'CAMPAIGN_NOT_IN_CUELINKS_PAGE'
+    };
   }
+
+  // Match category-specific payout tier first when campaign exposes multiple tiers
+  let tierCandidate: any = null;
+  const rawCategories = Array.isArray(campaign.payout_categories)
+    ? campaign.payout_categories
+    : (() => {
+        try {
+          return typeof campaign.payout_categories_json === 'string'
+            ? JSON.parse(campaign.payout_categories_json)
+            : [];
+        } catch {
+          return [];
+        }
+      })();
+
+  if (Array.isArray(rawCategories) && rawCategories.length > 0 && productCategory) {
+    const catLower = productCategory.toLowerCase();
+    tierCandidate = rawCategories.find((pc: any) => {
+      const tierName = String(pc?.category || pc?.name || '').toLowerCase();
+      return tierName && (catLower.includes(tierName) || tierName.includes(catLower));
+    }) || null;
+  }
+
   const rawPayout = String(
-    campaign.payout_rate ?? campaign.payout ?? campaign.commission_rate ?? ''
+    tierCandidate?.payout ??
+    tierCandidate?.payout_rate ??
+    tierCandidate?.commission ??
+    campaign.payout_rate ??
+    campaign.payout ??
+    campaign.commission_rate ??
+    ''
   ).trim();
-  if (!rawPayout || /^(?:unknown|tbd|variable|n\/a|none|0+|0\.0+%?)$/i.test(rawPayout)) {
-    return { ratePercent: null, flatINR: null };
+  const payoutType = String(
+    tierCandidate?.payout_type ??
+    tierCandidate?.payout_model ??
+    campaign.payout_type ??
+    campaign.payout_model ??
+    ''
+  ).trim();
+  const payoutTypeUpper = payoutType.toUpperCase();
+  const payoutCurrency = String(
+    tierCandidate?.payout_currency ?? campaign.payout_currency ?? 'INR'
+  ).trim().toUpperCase();
+
+  if (!rawPayout || /^(?:unknown|tbd|variable|n\/a|none)$/i.test(rawPayout)) {
+    return {
+      ratePercent: null,
+      flatINR: null,
+      grossCommissionPerApprovedOrderINR: null,
+      missingPayoutReason: 'ZERO_PAYOUT_REPORTED'
+    };
   }
 
-  const payoutType = String(campaign.payout_type ?? campaign.payout_model ?? '').trim().toUpperCase();
-  const payoutCurrency = String(campaign.payout_currency ?? 'INR').trim().toUpperCase();
-  const numericMatch = rawPayout.match(/(\d+(?:\.\d+)?)/);
-  if (!numericMatch) {
-    return { ratePercent: null, flatINR: null };
-  }
-  const val = Number(numericMatch[1]);
+  const cleaned = rawPayout.replace(/[^0-9.]/g, '');
+  const val = cleaned ? parseFloat(cleaned) : NaN;
   if (!Number.isFinite(val) || val <= 0) {
-    return { ratePercent: null, flatINR: null };
+    return {
+      ratePercent: null,
+      flatINR: null,
+      grossCommissionPerApprovedOrderINR: null,
+      missingPayoutReason: 'ZERO_PAYOUT_REPORTED'
+    };
   }
 
-  const looksLikePercent =
-    rawPayout.includes('%') ||
-    payoutType === 'CPS' ||
-    payoutType === 'PERCENTAGE' ||
-    payoutType === 'PERCENT';
-  const looksLikeFlatInr =
+  const isExplicitCpcOnly =
+    /\bCPC\b|PER[_ ]?CLICK/i.test(payoutTypeUpper) &&
     !rawPayout.includes('%') &&
-    (payoutCurrency === 'INR' || /₹|inr|rs/i.test(rawPayout) || /^(?:FIXED|FLAT|CPA|CPL)$/.test(payoutType));
-
-  if (looksLikeFlatInr && !looksLikePercent) {
-    const derivedPct = currentPriceINR > 0 ? Number(((val / currentPriceINR) * 100).toFixed(2)) : null;
-    return { ratePercent: derivedPct, flatINR: Number(val.toFixed(2)) };
+    payoutCurrency !== 'INR';
+  if (isExplicitCpcOnly) {
+    return {
+      ratePercent: null,
+      flatINR: null,
+      grossCommissionPerApprovedOrderINR: null,
+      missingPayoutReason: 'CPC_OFFLINE_ONLY'
+    };
   }
 
-  if (looksLikePercent && val <= 60) {
-    return { ratePercent: Number(val.toFixed(2)), flatINR: null };
+  const isFlatInrIndicator =
+    !rawPayout.includes('%') &&
+    (
+      /₹|\bINR\b|\bRS\b/i.test(rawPayout) ||
+      /FIXED|FLAT|CPA|CPL|PER[_ ]?ORDER|CPC|PER[_ ]?CLICK/i.test(payoutTypeUpper) ||
+      (/\bPER[_ ]?SALE\b/i.test(payoutTypeUpper) && /FIXED|FLAT|INR/i.test(payoutTypeUpper) && payoutCurrency === 'INR')
+    );
+
+  const isPercentageType =
+    rawPayout.includes('%') ||
+    (!isFlatInrIndicator && (/PERCENTAGE|PERCENT|CPS|PER[_ ]?SALE/i.test(payoutTypeUpper) || payoutTypeUpper === ''));
+
+  if (isPercentageType && val > 0 && val <= 80) {
+    const ratePercent = Number(val.toFixed(2));
+    const gross = currentPriceINR > 0 ? Number((currentPriceINR * (ratePercent / 100)).toFixed(2)) : null;
+    return {
+      ratePercent,
+      flatINR: null,
+      grossCommissionPerApprovedOrderINR: gross,
+      missingPayoutReason: null
+    };
   }
 
-  return { ratePercent: null, flatINR: null };
+  if (payoutCurrency === 'INR' || isFlatInrIndicator) {
+    if (/\bCPC\b|PER[_ ]?CLICK/i.test(payoutTypeUpper) && !/\bCPS\b|PER[_ ]?SALE/i.test(payoutTypeUpper)) {
+      return {
+        ratePercent: null,
+        flatINR: Number(val.toFixed(2)),
+        grossCommissionPerApprovedOrderINR: Number(val.toFixed(2)),
+        missingPayoutReason: 'CPC_OFFLINE_ONLY'
+      };
+    }
+    const flatINR = Number(val.toFixed(2));
+    const derivedPct = currentPriceINR > 0 ? Number(((flatINR / currentPriceINR) * 100).toFixed(2)) : null;
+    return {
+      ratePercent: derivedPct,
+      flatINR,
+      grossCommissionPerApprovedOrderINR: flatINR,
+      missingPayoutReason: null
+    };
+  }
+
+  return {
+    ratePercent: null,
+    flatINR: null,
+    grossCommissionPerApprovedOrderINR: null,
+    missingPayoutReason: 'ZERO_PAYOUT_REPORTED'
+  };
 }
 
 /**
@@ -152,15 +278,17 @@ export function calculateMarketArbitrageScore(deal: Partial<NormalizedDeal>): Ma
       ? deal.evidenceJson.verifiedCommissionRatePercent
       : null;
 
-  const parsedCampaign = parseVerifiedCampaignPayout(deal.campaign, current);
+  const parsedCampaign = parseVerifiedCampaignPayout(deal.campaign, current, deal.category);
   const verifiedCommissionRatePercent = explicitRate !== null
     ? Number(explicitRate.toFixed(2))
     : parsedCampaign.ratePercent;
 
   const grossCommissionPerApprovedOrderINR =
-    current > 0 && verifiedCommissionRatePercent !== null
+    parsedCampaign.flatINR !== null
+      ? parsedCampaign.flatINR
+      : current > 0 && verifiedCommissionRatePercent !== null
       ? Number((current * (verifiedCommissionRatePercent / 100)).toFixed(2))
-      : parsedCampaign.flatINR;
+      : null;
 
   // Compute empirical conversion ratios ONLY when observed sample size >= 20 clicks
   const observedClicks = Math.max(0, Math.floor(Number(deal.observedClicks ?? deal.evidenceJson?.observedClicks ?? deal.economicsSampleSize ?? 0)));
@@ -3595,10 +3723,18 @@ export class AutonomousDealDiscoveryEngine {
         continue;
       }
 
-      const matchCampaignForDeal = (dealObj: NormalizedDeal) => campaigns.find((c: any) =>
-        (dealObj.affiliateCampaignId && String(c.campaign_id) === String(dealObj.affiliateCampaignId)) ||
-        (c.merchant_domain && this.extractHostname(dealObj.productUrl) === String(c.merchant_domain).toLowerCase().replace(/^www\./, ''))
-      );
+      const matchCampaignForDeal = (dealObj: NormalizedDeal) => {
+        const byId = dealObj.affiliateCampaignId
+          ? campaigns.find((c: any) => String(c.campaign_id) === String(dealObj.affiliateCampaignId))
+          : undefined;
+        if (byId) return byId;
+        const dealRootDomain = normalizeRootMerchantDomain(dealObj.productUrl);
+        if (!dealRootDomain) return undefined;
+        return campaigns.find((c: any) => {
+          const campRoot = normalizeRootMerchantDomain(String(c.merchant_domain || ''));
+          return Boolean(campRoot && campRoot === dealRootDomain);
+        });
+      };
 
       const attachStatsAndEnrich = (dealObj: NormalizedDeal, extra: Partial<NormalizedDeal> = {}): NormalizedDeal => {
         const matchedCampaign = matchCampaignForDeal(dealObj);
