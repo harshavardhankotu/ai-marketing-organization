@@ -3,7 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { getDb } from '../db/client.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
-import { isProduction } from '../config/env.js';
+import { isProduction, resolveVerificationTokens } from '../config/env.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -80,8 +80,7 @@ export class StaticSiteGenerator {
       throw new Error(`CONFIG_ERROR: Missing required public site configuration: ${missing.join(', ')}. Must come from owner intake or environment variables. Zero invented fallbacks allowed.`);
     }
 
-    const googleSiteVerification = (process.env.GOOGLE_SITE_VERIFICATION || '').trim() || undefined;
-    const cuelinksVerificationCode = (process.env.CUELINKS_VERIFICATION_CODE || '').trim() || undefined;
+    const { googleSiteVerification, cuelinksVerificationCode } = resolveVerificationTokens();
 
     return {
       siteName: siteName!,
@@ -111,8 +110,7 @@ export class StaticSiteGenerator {
     }
 
     const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').replace(/\/$/, '');
-    const googleSiteVerification = (process.env.GOOGLE_SITE_VERIFICATION || '').trim() || undefined;
-    const cuelinksVerificationCode = (process.env.CUELINKS_VERIFICATION_CODE || '').trim() || undefined;
+    const { googleSiteVerification, cuelinksVerificationCode } = resolveVerificationTokens();
 
     return {
       siteName: siteName!,
@@ -1061,13 +1059,13 @@ export class StaticSiteGenerator {
   }
 
   private getGoogleSiteVerificationMeta(config?: StaticSiteConfig): string {
-    const code = (config?.googleSiteVerification || process.env.GOOGLE_SITE_VERIFICATION || '').trim();
+    const code = resolveVerificationTokens(config).googleSiteVerification || '';
     if (!code) return '';
     return `<meta name="google-site-verification" content="${this.escapeHtml(code)}">\n  `;
   }
 
   private getCuelinksVerificationMeta(config?: StaticSiteConfig): string {
-    const code = (config?.cuelinksVerificationCode || process.env.CUELINKS_VERIFICATION_CODE || '').trim();
+    const code = resolveVerificationTokens(config).cuelinksVerificationCode || '';
     if (!code) return '';
     return `<meta name="cuelinks-verification" content="${this.escapeHtml(code)}">\n  `;
   }

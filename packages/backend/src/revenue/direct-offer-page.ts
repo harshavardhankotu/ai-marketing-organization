@@ -14,7 +14,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { isProduction } from '../config/env.js';
+import { isProduction, resolveVerificationTokens } from '../config/env.js';
 import { getDb } from '../db/client.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { OwnerAuthService } from '../auth/owner-auth.js';
@@ -173,8 +173,10 @@ export class DirectCommercialOfferPage {
     const siteName = config.siteName || (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
     const siteUrl = config.siteUrl || (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').trim();
     const contactEmail = config.contactEmail || (process.env.PUBLIC_CONTACT_EMAIL ? process.env.PUBLIC_CONTACT_EMAIL.trim() : null);
-    const cuelinksCode = (config.cuelinksVerificationCode || process.env.CUELINKS_VERIFICATION_CODE || '').trim();
-    const googleCode = (config.googleSiteVerification || process.env.GOOGLE_SITE_VERIFICATION || '').trim();
+    const {
+      cuelinksVerificationCode: cuelinksCode = '',
+      googleSiteVerification: googleCode = ''
+    } = resolveVerificationTokens(config);
     const verificationMetaHtml = [
       cuelinksCode ? `  <meta name="cuelinks-verification" content="${escapeMetaAttr(cuelinksCode)}" />` : '',
       googleCode ? `  <meta name="google-site-verification" content="${escapeMetaAttr(googleCode)}" />` : ''

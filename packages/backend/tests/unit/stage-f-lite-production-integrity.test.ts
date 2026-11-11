@@ -9,6 +9,7 @@ import { AutonomousDealDiscoveryEngine } from '../../src/commission/autonomous-d
 import { DirectCommercialOfferPage } from '../../src/revenue/direct-offer-page.js';
 import { AutomationRegistryEngine } from '../../src/automation/automation-registry-engine.js';
 import { OwnerAuthService } from '../../src/auth/owner-auth.js';
+import { resolveVerificationTokens } from '../../src/config/env.js';
 import { getDb } from '../../src/db/client.js';
 import { D1RevenueRepository } from '../../src/db/d1-revenue-repository.js';
 import { seedDatabase } from '../../src/db/seed.js';
@@ -948,6 +949,20 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
       expect(homeConfigured).toContain('content="CFG-GSC-888"');
       expect(staticConfigured).toContain('content="CFG-CL-999"');
       expect(staticConfigured).toContain('content="CFG-GSC-888"');
+    });
+
+    it('restores owner verified production GSC and Cuelinks tokens in non-test production runtime when env vars are omitted', () => {
+      const resolved = resolveVerificationTokens(undefined, { NODE_ENV: 'production' } as NodeJS.ProcessEnv);
+      expect(resolved.googleSiteVerification).toBe('WVPs1hLZgUqJL5yO9jwF2pWwsekPcMtTOLLeWILGU9I');
+      expect(resolved.cuelinksVerificationCode).toBe('VERIFY-CL-YE94W8YS');
+
+      const overridden = resolveVerificationTokens(undefined, {
+        NODE_ENV: 'production',
+        GOOGLE_SITE_VERIFICATION: 'OVERRIDE-GSC',
+        CUELINKS_VERIFICATION_CODE: 'OVERRIDE-CL'
+      } as NodeJS.ProcessEnv);
+      expect(overridden.googleSiteVerification).toBe('OVERRIDE-GSC');
+      expect(overridden.cuelinksVerificationCode).toBe('OVERRIDE-CL');
     });
   });
 
