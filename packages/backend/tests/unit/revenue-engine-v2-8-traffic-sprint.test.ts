@@ -69,7 +69,7 @@ Check out airline deals:
   });
 
   describe('2. Material Claims Verification & Official ID Rules in Baseline Guide', () => {
-    it('verifies that the baseline guide contains valid airline concession terms, physical ID warnings, and verified booking links', () => {
+    it('verifies that the baseline guide contains valid airline concession terms, physical ID warnings, and verified booking guidance without unverified affiliate links', () => {
       const guide = BASELINE_STUDENT_FLIGHT_GUIDE;
 
       expect(guide).toBeDefined();
@@ -77,17 +77,30 @@ Check out airline deals:
       expect(guide.contentMarkdown).toContain('IndiGo (6E)');
       expect(guide.contentMarkdown).toContain('SpiceJet');
       expect(guide.contentMarkdown).toContain('Akasa Air');
-      expect(guide.contentMarkdown).toContain('https://clnk.in/DKRM'); // Air India Express booking link
-      expect(guide.contentMarkdown).toContain('https://clnk.in/DKRN'); // Cleartrip comparison link
+      expect(guide.contentMarkdown).toContain('Air India (Full Service)');
+
+      // Official direct booking guidance
+      expect(guide.contentMarkdown).toContain('Book Student Fares directly on the official Air India Express portal');
+      expect(guide.contentMarkdown).toContain('Book Student Fares directly on the official Akasa Air portal');
+      expect(guide.contentMarkdown).toContain('Book Student Fares directly on the official Air India portal');
+      expect(guide.contentMarkdown).toContain('Compare Student Flights on Official Travel Portals & Direct Airline Apps');
+
+      // Safety checks: No unmonetized/unverified Cuelinks affiliate links for airlines
+      expect(guide.contentMarkdown).not.toContain('https://clnk.in/DKRM');
+      expect(guide.contentMarkdown).not.toContain('https://clnk.in/DKRN');
+      expect(guide.contentMarkdown).not.toContain('https://clnk.in/DKX3');
+      expect(guide.contentMarkdown).not.toContain('https://clnk.in/DKX4');
 
       // Critical ID check warning
       expect(guide.contentMarkdown).toContain('Mandatory Physical Student ID');
-      expect(guide.contentMarkdown).toContain('penalty');
+      expect(guide.contentMarkdown.toLowerCase()).toContain('penalty');
 
-      // Transparent affiliate disclosure
-      expect(guide.disclosureMarkdown).toContain('Air India Express');
-      expect(guide.disclosureMarkdown).toContain('Cleartrip');
-      expect(guide.disclosureMarkdown).toContain('affiliate commission');
+      // Transparent educational disclosure
+      expect(guide.disclosureMarkdown).toContain('Editorial Notice');
+      expect(guide.disclosureMarkdown).toContain('official airline student concession rules');
+      expect(guide.disclosureMarkdown).toContain('/deals');
+      expect(guide.disclosureMarkdown).toContain('/revenue');
+      expect(guide.disclosureMarkdown).toContain('/public/disclosure');
     });
   });
 

@@ -12,6 +12,9 @@ describe('Source Code Fixes: Protected facts-status & Cron read filter parity', 
     app = new Hono();
     app.route('/api/v1', apiRouter);
     process.env.OWNER_API_KEY = 'test_owner_key_for_ci_pipeline_only';
+    try {
+      getDb().prepare("DELETE FROM autonomous_cycle_log WHERE id LIKE 'cyc_%'").run();
+    } catch {}
   });
 
   afterEach(() => {

@@ -378,8 +378,18 @@ export function renderSiteAuditPage(): string {
       }
     }
 
-    // Check readiness on page load
+    // Check readiness on page load & pre-fill ?url= if linked from /audit/:domain
     checkReadiness();
+    (function prefillUrlParam() {
+      try {
+        const params = new URLSearchParams(window.location.search);
+        const qUrl = params.get('url');
+        if (qUrl && (qUrl.startsWith('http://') || qUrl.startsWith('https://'))) {
+          const input = document.getElementById('targetUrl');
+          if (input) input.value = qUrl;
+        }
+      } catch {}
+    })();
 
     async function handleAudit(e) {
       e.preventDefault();

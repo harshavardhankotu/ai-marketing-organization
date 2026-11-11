@@ -189,16 +189,17 @@ describe('V4.9 First Sale Conversion Integrity & Attribution Suite', () => {
 
     it('issues HTTP 302 to provider tracking URL and persists referral and click events atomically', async () => {
       const dealSlug = `boat-redirect-test-${Date.now()}`;
+      const productUrl = `https://boat-lifestyle.com/products/airdopes-161-${dealSlug}`;
       await engine.registerDeal({
         title: 'boAt Airdopes 161',
         brand: 'boAt',
         merchant: 'boAt Store',
         category: 'Personal Audio',
-        productUrl: 'https://boat-lifestyle.com/products/airdopes-161',
+        productUrl,
         currentPriceINR: 899,
         slug: dealSlug,
         canonicalSlug: dealSlug,
-        sourceUrl: 'https://boat-lifestyle.com/products/airdopes-161',
+        sourceUrl: productUrl,
         sourceDomain: 'boat-lifestyle.com',
         sourceType: 'RETAILER_BRAND',
         isMonetizable: true,
@@ -238,14 +239,19 @@ describe('V4.9 First Sale Conversion Integrity & Attribution Suite', () => {
 
       const testDb = getDb();
       testDb.prepare(`
+        INSERT OR REPLACE INTO partners (
+          id, organization_id, name, industry, website, network, approval_status, authorization_status, active_status
+        ) VALUES ('part_cuelinks', 'org_owner_primary', 'boAt Lifestyle', 'Personal Audio', 'https://boat-lifestyle.com', 'CUELINKS', 'APPROVED', 'AUTHORIZED', 1)
+      `).run();
+      testDb.prepare(`
         INSERT OR REPLACE INTO partner_offers (
           id, partner_id, organization_id, title, offer_slug, category, target_customer,
           destination_url, authorized_tracking_url, active, status
         ) VALUES (
           ?, 'part_cuelinks', 'org_owner_primary', 'boAt Airdopes 161', ?, 'Personal Audio', 'Shoppers',
-          'https://boat-lifestyle.com/products/airdopes-161', 'https://linksredirect.com/?cid=4232', 1, 'ACTIVE'
+          ?, 'https://linksredirect.com/?cid=4232', 1, 'ACTIVE'
         )
-      `).run(`deal_${dealSlug}`, dealSlug);
+      `).run(`deal_${dealSlug}`, dealSlug, productUrl);
 
       const res = await app.request(`/public/deals/${dealSlug}/redirect?utm_source=telegram`, {
         headers: {
@@ -439,6 +445,7 @@ describe('V4.9 First Sale Conversion Integrity & Attribution Suite', () => {
     it('executes positive commercial journey from deal -> redirect -> click -> transaction match', async () => {
       const db = getDb();
       const pilotSlug = `boat-e2e-pilot-${Date.now()}`;
+      const productUrl = `https://boat-lifestyle.com/products/airdopes-161-${pilotSlug}`;
 
       // 1. Registered deal
       const { deal } = await engine.registerDeal({
@@ -446,12 +453,12 @@ describe('V4.9 First Sale Conversion Integrity & Attribution Suite', () => {
         brand: 'boAt',
         merchant: 'boAt Lifestyle',
         category: 'Personal Audio',
-        productUrl: 'https://boat-lifestyle.com/products/airdopes-161',
+        productUrl,
         currentPriceINR: 899,
         referencePriceINR: 2490,
         slug: pilotSlug,
         canonicalSlug: pilotSlug,
-        sourceUrl: 'https://boat-lifestyle.com/products/airdopes-161',
+        sourceUrl: productUrl,
         sourceDomain: 'boat-lifestyle.com',
         sourceType: 'RETAILER_BRAND',
         isMonetizable: true,
@@ -520,14 +527,19 @@ describe('V4.9 First Sale Conversion Integrity & Attribution Suite', () => {
       };
 
       db.prepare(`
+        INSERT OR REPLACE INTO partners (
+          id, organization_id, name, industry, website, network, approval_status, authorization_status, active_status
+        ) VALUES ('part_cuelinks', 'org_owner_primary', 'boAt Lifestyle', 'Personal Audio', 'https://boat-lifestyle.com', 'CUELINKS', 'APPROVED', 'AUTHORIZED', 1)
+      `).run();
+      db.prepare(`
         INSERT OR REPLACE INTO partner_offers (
           id, partner_id, organization_id, title, offer_slug, category, target_customer,
           destination_url, authorized_tracking_url, active, status
         ) VALUES (
           ?, 'part_cuelinks', 'org_owner_primary', 'boAt Airdopes 161', ?, 'Personal Audio', 'Shoppers',
-          'https://boat-lifestyle.com/products/airdopes-161', 'https://linksredirect.com/?cid=4232', 1, 'ACTIVE'
+          ?, 'https://linksredirect.com/?cid=4232', 1, 'ACTIVE'
         )
-      `).run(`deal_${pilotSlug}`, pilotSlug);
+      `).run(`deal_${pilotSlug}`, pilotSlug, productUrl);
 
       // 3. Visitor hits public redirect
       const redirectRes = await app.request(`/public/deals/${pilotSlug}/redirect?utm_source=telegram`, {

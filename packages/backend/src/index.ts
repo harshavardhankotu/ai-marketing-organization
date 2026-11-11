@@ -203,17 +203,25 @@ app.get('/deals', async (c) => {
   const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
   const host = c.req.header('host') || 'ai-marketing-organization.onrender.com';
   const proto = c.req.header('x-forwarded-proto') || 'https';
+  const siteName = (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
   const config = {
-    siteName: 'Verified Deals & Price Evidence',
-    authorName: 'Editorial Desk',
-    contactEmail: `editorial@${host}`,
+    siteName,
+    authorName: (process.env.PUBLIC_AUTHOR_NAME || 'Editorial Desk').trim(),
+    contactEmail: (process.env.PUBLIC_CONTACT_EMAIL || `editorial@${host}`).trim(),
     siteUrl: `${proto}://${host}`
   };
-  const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
-  const eligible = await dealEngine.getEligiblePublicDeals({ limit: 50 });
-  const deals = eligible.deals;
-  const html = StaticSiteGenerator.getInstance().renderDealsHtml(deals, config);
-  return c.html(html);
+  try {
+    const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
+    const eligible = await dealEngine.getEligiblePublicDeals({ limit: 50 });
+    const deals = eligible.deals;
+    const html = StaticSiteGenerator.getInstance().renderDealsHtml(deals, config);
+    return c.html(html);
+  } catch (err: any) {
+    if (err?.code === 'GUIDE_DATA_UNAVAILABLE' || err?.statusCode === 503) {
+      return c.json({ error: 'GUIDE_DATA_UNAVAILABLE', message: err.message }, 503);
+    }
+    throw err;
+  }
 });
 
 // Top-level public direct commercial offer routes (Part E)
@@ -629,28 +637,42 @@ app.get('/guides/:slug', async (c) => {
   try {
     const { ContentAssetEngine } = await import('./commission/content-asset-engine.js');
     const { StaticSiteGenerator } = await import('./commission/static-site-generator.js');
+    const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
+
     const asset = await ContentAssetEngine.getInstance().getAssetBySlug(slug, true);
-    if (asset) {
-      let config: any;
-      try {
-        config = await StaticSiteGenerator.getInstance().resolveConfig();
-      } catch {
-        const host = c.req.header('host') || 'ai-marketing-organization.onrender.com';
-        const proto = c.req.header('x-forwarded-proto') || 'https';
-        config = {
-          siteName: 'India Deals & Buying Guides',
-          authorName: 'Editorial Desk',
-          contactEmail: `editorial@${host}`,
-          siteUrl: `${proto}://${host}`
-        };
-      }
-      const html = StaticSiteGenerator.getInstance().renderGuideHtml(asset, config);
-      return c.html(html);
+    if (!asset) {
+      return c.text('Guide not found', 404);
     }
+
+    let config: any;
+    try {
+      config = await StaticSiteGenerator.getInstance().resolveConfig();
+    } catch {
+      const host = c.req.header('host') || 'ai-marketing-organization.onrender.com';
+      const proto = c.req.header('x-forwarded-proto') || 'https';
+      config = {
+        siteName: 'India Deals & Buying Guides',
+        authorName: 'Editorial Desk',
+        contactEmail: `editorial@${host}`,
+        siteUrl: `${proto}://${host}`
+      };
+    }
+
+    // Fail closed: Never swallow D1/DB failures into empty deals (200) or 404
+    const eligibleRes = await AutonomousDealDiscoveryEngine.getInstance().getEligiblePublicDeals({ limit: 1000 });
+    const eligibleDeals = eligibleRes.deals || [];
+    const html = StaticSiteGenerator.getInstance().renderGuideHtml(asset, config, eligibleDeals);
+    return c.html(html);
   } catch (err: any) {
-    console.warn(`[GuideRoute] Error resolving guide '${slug}': ${err.message}`);
+    console.error(`[GuideRoute] Failed rendering guide '${slug}': ${err.message}`);
+    return c.json(
+      {
+        error: err?.code === 'GUIDE_DATA_UNAVAILABLE' ? 'GUIDE_DATA_UNAVAILABLE' : 'GUIDE_DATA_UNAVAILABLE',
+        message: err?.message || 'Guide or offer data is temporarily unavailable.'
+      },
+      503
+    );
   }
-  return c.text('Guide not found', 404);
 });
 
 // Top-level public /audit/:domain scorecard route
@@ -988,17 +1010,6 @@ app.get('/sitemap.xml', async (c) => {
     } catch {}
   }
 
-  // Include active verified public deals in sitemap with exact 1:1 parity (V5.8 Defect 2 & 6)
-  let dealUrls: string[] = [];
-  try {
-    const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
-    const engine = AutonomousDealDiscoveryEngine.getInstance();
-    const eligibleRes = await engine.getEligiblePublicDeals({ limit: 10000 });
-    dealUrls = eligibleRes.deals.map(d => `${baseUrl}/deals/${d.canonicalSlug || d.slug || d.id}`);
-  } catch (err: any) {
-    console.warn(`[Sitemap] Error fetching eligible deals: ${err.message}`);
-  }
-
   // Include compare guides ONLY for sectors with verified active deals (P1 Blocker 4 - never put a noindex page in /sitemap.xml)
   let compareUrls: string[] = [];
   try {
@@ -1023,16 +1034,17 @@ app.get('/sitemap.xml', async (c) => {
 
   const staticUrls = [
     `${baseUrl}/`,
+    `${baseUrl}/deals`,
     `${baseUrl}/offer`,
     `${baseUrl}/tools/site-audit`,
     `${baseUrl}/tools/lead-leakage-calculator`,
-    `${baseUrl}/deals`,
     `${baseUrl}/revenue`,
     `${baseUrl}/public/disclosure`
   ];
 
   const contentUrls = publishedSlugs.map(a => `${baseUrl}/guides/${a.slug}`);
-  const allUrls = [...staticUrls, ...compareUrls, ...dealUrls, ...contentUrls, ...auditUrls];
+  // Workstream C: Exclude generic SPA shells (/deals/{slug}) whose canonical tag points to /deals
+  const allUrls = [...staticUrls, ...compareUrls, ...contentUrls, ...auditUrls];
 
   const xmlEntries = allUrls
     .map(url => `  <url>\n    <loc>${url}</loc>\n    <changefreq>daily</changefreq>\n    <priority>0.8</priority>\n  </url>`)
@@ -1058,8 +1070,8 @@ app.get('/rss.xml', async (c) => {
 
   const rssItems = publicDeals.map(d => `    <item>
       <title><![CDATA[${d.title} - ₹${d.currentPriceINR} on ${d.merchant}]]></title>
-      <link>${baseUrl}/deals/${d.canonicalSlug || d.slug || d.id}</link>
-      <guid>${baseUrl}/deals/${d.canonicalSlug || d.slug || d.id}</guid>
+      <link>${baseUrl}/deals</link>
+      <guid isPermaLink="false">${d.id}</guid>
       <description><![CDATA[Verified deal: ${d.title} at ₹${d.currentPriceINR}${d.referencePriceINR && d.referencePriceINR > d.currentPriceINR ? ` (MRP ₹${d.referencePriceINR}, ${d.verifiedDiscountPercent || d.claimedDiscountPercent}% off)` : ''} on ${d.merchant}. Direct merchant fulfillment. #Ad - Commission earned on qualifying purchases.]]></description>
       <pubDate>${new Date(d.lastCheckedAt || d.observedAt || Date.now()).toUTCString()}</pubDate>
     </item>`).join('\n');

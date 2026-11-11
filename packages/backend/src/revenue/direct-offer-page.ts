@@ -14,7 +14,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { isProduction } from '../config/env.js';
+import { isProduction, resolveVerificationTokens } from '../config/env.js';
 import { getDb } from '../db/client.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { OwnerAuthService } from '../auth/owner-auth.js';
@@ -50,6 +50,16 @@ export interface OfferPageConfig {
   contactPhone?: string;
   upiVpa?: string;
   razorpayMeUrl?: string;
+  googleSiteVerification?: string;
+  cuelinksVerificationCode?: string;
+}
+
+function escapeMetaAttr(val: string): string {
+  return String(val)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 export class DirectCommercialOfferPage {
@@ -163,6 +173,14 @@ export class DirectCommercialOfferPage {
     const siteName = config.siteName || (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
     const siteUrl = config.siteUrl || (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').trim();
     const contactEmail = config.contactEmail || (process.env.PUBLIC_CONTACT_EMAIL ? process.env.PUBLIC_CONTACT_EMAIL.trim() : null);
+    const {
+      cuelinksVerificationCode: cuelinksCode = '',
+      googleSiteVerification: googleCode = ''
+    } = resolveVerificationTokens(config);
+    const verificationMetaHtml = [
+      cuelinksCode ? `  <meta name="cuelinks-verification" content="${escapeMetaAttr(cuelinksCode)}" />` : '',
+      googleCode ? `  <meta name="google-site-verification" content="${escapeMetaAttr(googleCode)}" />` : ''
+    ].filter(Boolean).join('\n');
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -173,9 +191,7 @@ export class DirectCommercialOfferPage {
   <meta name="description" content="Turn after-hours patient inquiries into booked appointments. Administrative Website &amp; WhatsApp Inquiry Capture, Instant Triage Summary, and Appointment Request Logging for Indian healthcare and dental practices.">
   <link rel="canonical" href="${siteUrl}/">
   <meta name="robots" content="index, follow">
-  <meta name="cuelinks-verification" content="VERIFY-CL-YE94W8YS" />
-  <meta name="google-site-verification" content="WVPs1hLZgUqJL5yO9jwF2pWwsekPcMtTOLLeWILGU9I" />
-  <!-- Razorpay Standard Web Checkout -->
+${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standard Web Checkout -->
   <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
   <style>
     :root {
@@ -485,33 +501,70 @@ export class DirectCommercialOfferPage {
       </form>
     </div>
 
-    <!-- Segregated Consumer Affiliate Research & Guides -->
-    <div class="card" style="border-color: #334155; background: #0b1120;">
-      <h2 style="font-size: 1.2rem; color: #94a3b8; margin-bottom: 0.75rem;">Consumer Research &amp; Flight Guides Directory</h2>
-      <p style="color: #64748b; font-size: 0.88rem; margin-bottom: 1rem;">
-        In addition to our B2B lead triage consultancy, we publish independently verified consumer price intelligence and student travel guides:
+    <!-- Section 2: SiteFix AI — Self-Serve Technical Website Audit -->
+    <div class="card" id="sitefix-audit" style="border-color: #06b6d4; background: linear-gradient(180deg, #111827 0%, #0b1120 100%);">
+      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem;">
+        <h2 style="margin: 0; font-size: 1.35rem; color: #fff;">SiteFix AI — Self-Serve Website &amp; Metadata Check</h2>
+        <span class="sample-badge" style="background: rgba(6, 182, 212, 0.15); color: #38bdf8; border-color: rgba(6, 182, 212, 0.3);">Self-Serve SiteFix Core Technical Fix-Pack</span>
+      </div>
+      <p style="color: #cbd5e1; font-size: 0.95rem; margin-bottom: 1.25rem;">
+        Inspect deterministic HTML syntax, <code>&lt;head&gt;</code> metadata tags, <code>Schema.org</code> JSON-LD markup, <code>robots.txt</code>, <code>sitemap.xml</code>, and security headers on your public URL. When live PageSpeed API access is configured and within quota, mobile speed metrics are shown; otherwise PageSpeed metrics are marked <code>UNAVAILABLE</code>. Outputs are deterministic technical observations with zero ranking or clinical guarantees.
       </p>
       <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
-        <a href="/deals" style="background: #111827; border: 1px solid #1e293b; padding: 0.6rem 1rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.85rem;">
-          🏷️ Verified Indian Deals Directory &rarr;
+        <a href="/tools/site-audit" class="btn btn-primary" style="font-size: 0.9rem; text-decoration: none;">
+          Run Free Website Audit &rarr;
         </a>
-        <a href="/guides/student-flight-discounts-india" style="background: #111827; border: 1px solid #1e293b; padding: 0.6rem 1rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.85rem;">
-          ✈️ Student Flight Baggage &amp; Fare Guide &rarr;
+        <a href="/tools/lead-leakage-calculator" class="btn btn-secondary" style="font-size: 0.9rem; text-decoration: none;">
+          Calculate Lead Leakage Cost &rarr;
         </a>
-        <a href="/revenue" style="background: #111827; border: 1px solid #1e293b; padding: 0.6rem 1rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.85rem;">
-          📊 Transparent Public Revenue Funnel &rarr;
+        <a href="/audit/attagalatta.com" class="btn btn-secondary" style="font-size: 0.85rem; text-decoration: none;">
+          Sample Audit: attagalatta.com &rarr;
+        </a>
+        <a href="/audit/roasterycoffee.co.in" class="btn btn-secondary" style="font-size: 0.85rem; text-decoration: none;">
+          Sample Audit: roasterycoffee.co.in &rarr;
         </a>
       </div>
+    </div>
+
+    <!-- Section 3: Commercial Deals & Buyer Guides (Consumer Shopper Journey) -->
+    <div class="card" id="consumer-deals" style="border-color: #334155; background: #0b1120;">
+      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem;">
+        <h2 style="font-size: 1.3rem; color: #fff; margin: 0;">Commercial Consumer Deals &amp; Buying Guides — Verified Undervalued Deals Showcase (#Ad)</h2>
+        <span class="sample-badge" style="background: rgba(14, 165, 233, 0.15); color: #38bdf8; border-color: rgba(14, 165, 233, 0.3);">#Ad — Affiliate Links</span>
+      </div>
+      <p style="color: #94a3b8; font-size: 0.9rem; margin-bottom: 1.25rem;">
+        Listed prices and reference MRPs are merchant-reported snapshots observed at a specific timestamp, may change at any time, and must be confirmed directly on the official merchant checkout page:
+      </p>
+      <div style="display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.25rem;">
+        <a href="/deals" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.1rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.88rem; font-weight: 600;">
+          🏷️ Indian Commercial Deals Directory &rarr;
+        </a>
+        <a href="/compare/electronics-technology" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.1rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.88rem; font-weight: 600;">
+          🎧 Electronics &amp; Tech Buying Guide &rarr;
+        </a>
+        <a href="/guides/best-wireless-audio-smartwatches-india" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.1rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.88rem; font-weight: 600;">
+          📱 Audio &amp; Wearables Guide &rarr;
+        </a>
+        <a href="/guides/student-flight-discounts-india" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.1rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.88rem; font-weight: 600;">
+          ✈️ Student Flight Baggage &amp; Fare Guide &rarr;
+        </a>
+        <a href="/revenue" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.1rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.88rem; font-weight: 600;">
+          📊 Public Revenue Funnel &rarr;
+        </a>
+      </div>
+      <p style="font-size: 0.78rem; color: #64748b; line-height: 1.4;">
+        #Ad — Qualifying purchases made through outgoing affiliate links may earn a referral commission at zero additional cost to you. Offer prices, stock availability, and terms reflect merchant-reported snapshots and are subject to change without notice.
+      </p>
     </div>
   </div>
 
   <footer>
     <p>&copy; ${new Date().getFullYear()} ${siteName}. All rights reserved.</p>
     <p style="margin-top: 0.5rem; max-width: 780px; margin-left: auto; margin-right: auto; line-height: 1.5; color: #64748b; font-size: 0.8rem;">
-      <strong>Statutory Affiliate Disclosure:</strong> Consumer buying guides and promotional deal directories on this platform contain verified affiliate links to partner platforms (Akasa Air, Air India Express, Cleartrip, boAt, Lenovo, Amazon). When visitors make qualifying bookings or purchases through those links, we may receive an affiliate commission at zero additional cost to the purchaser. Our B2B direct lead triage service is a separate professional consulting offering.
+      <strong>#Ad Statutory Affiliate Disclosure &amp; Commercial Terms:</strong> Consumer buying guides and commercial deal directories on this platform may contain tracked affiliate links to authorized partner programs. When visitors make qualifying purchases through those links, we may receive an affiliate commission at zero additional cost to the purchaser. Always verify live pricing and terms on the merchant's checkout page. Our B2B direct administrative lead capture service and SiteFix AI technical checks are separate professional offerings.
     </p>
     <p style="margin-top: 0.75rem;">
-      <a href="/privacy">Privacy Policy</a> • <a href="/revenue">Revenue Funnel</a> • <a href="/offer">Service Overview</a> • <a href="/deals">Deals</a> • ${contactEmail ? `Contact: <a href="mailto:${contactEmail}">${contactEmail}</a>` : 'Contact: Inquiries via Form'}
+      <a href="/privacy">Privacy Policy</a> • <a href="/revenue">Revenue Funnel</a> • <a href="/offer">Service Overview</a> • <a href="/deals">Deals</a> • <a href="/public/disclosure">Affiliate Disclosure</a> • ${contactEmail ? `Contact: <a href="mailto:${contactEmail}">${contactEmail}</a>` : 'Contact: Inquiries via Form'}
     </p>
   </footer>
 
@@ -820,7 +873,7 @@ export class DirectCommercialOfferPage {
       <div class="grid-2">
         <div style="background: #0b1120; border: 1px solid var(--card-border); border-radius: 10px; padding: 1.25rem;">
           <h3 style="color: #38bdf8; font-size: 1.05rem; margin-bottom: 0.4rem;">1. 24/7 WhatsApp Instant Away Inquiry Logging</h3>
-          <p style="font-size: 0.88rem; color: #cbd5e1; line-height: 1.5;">Sub-60-second response to after-hours customer queries and missed calls with polite office greetings and structured intake logging.</p>
+          <p style="font-size: 0.88rem; color: #cbd5e1; line-height: 1.5;">Automated administrative greeting and structured intake logging for after-hours customer queries and missed calls — zero clinical or diagnostic claims.</p>
         </div>
         <div style="background: #0b1120; border: 1px solid var(--card-border); border-radius: 10px; padding: 1.25rem;">
           <h3 style="color: #34d399; font-size: 1.05rem; margin-bottom: 0.4rem;">2. Top 10 Practice Administrative Quick Replies</h3>

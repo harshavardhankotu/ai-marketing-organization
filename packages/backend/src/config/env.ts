@@ -146,3 +146,31 @@ export function validateProductionSecrets(env: NodeJS.ProcessEnv = process.env):
     );
   }
 }
+
+export const OWNER_VERIFIED_GOOGLE_SITE_TOKEN = 'WVPs1hLZgUqJL5yO9jwF2pWwsekPcMtTOLLeWILGU9I';
+export const OWNER_VERIFIED_CUELINKS_TOKEN = 'VERIFY-CL-YE94W8YS';
+
+/**
+ * Resolves verification meta tokens from explicit config or environment variables.
+ * Because Render (.env.render.production / render.yaml) does not set GOOGLE_SITE_VERIFICATION
+ * or CUELINKS_VERIFICATION_CODE explicitly, non-test runtimes fall back to the owner's verified
+ * production tokens so GSC and Cuelinks ownership checks remain intact across deploys.
+ */
+export function resolveVerificationTokens(
+  config?: { googleSiteVerification?: string; cuelinksVerificationCode?: string },
+  env: NodeJS.ProcessEnv = process.env
+): { googleSiteVerification?: string; cuelinksVerificationCode?: string } {
+  const isTestRuntime = Boolean(env.VITEST) || env.NODE_ENV === 'test';
+  const rawGoogle = config?.googleSiteVerification ?? env.GOOGLE_SITE_VERIFICATION;
+  const rawCuelinks = config?.cuelinksVerificationCode ?? env.CUELINKS_VERIFICATION_CODE ?? env.CUELINKS_VERIFICATION;
+
+  const googleSiteVerification = (rawGoogle !== undefined ? rawGoogle.trim() : '') ||
+    (!isTestRuntime && rawGoogle === undefined ? OWNER_VERIFIED_GOOGLE_SITE_TOKEN : undefined);
+  const cuelinksVerificationCode = (rawCuelinks !== undefined ? rawCuelinks.trim() : '') ||
+    (!isTestRuntime && rawCuelinks === undefined ? OWNER_VERIFIED_CUELINKS_TOKEN : undefined);
+
+  return {
+    googleSiteVerification: googleSiteVerification || undefined,
+    cuelinksVerificationCode: cuelinksVerificationCode || undefined
+  };
+}

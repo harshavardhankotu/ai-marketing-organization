@@ -24,10 +24,132 @@ import {
   SevenStageCommercialFunnel,
   CommercialFunnelStage,
   CuelinksPaginationCursor,
-  SectorCode
+  SectorCode,
+  GuideDataUnavailableError
 } from './deal-types.js';
 
+export { GuideDataUnavailableError };
+
 export const MAX_OFFER_FRESHNESS_HOURS = 48;
+
+export interface MarketArbitrageScoreResult {
+  arbitrageScore: number;
+  priceAdvantageRatio: number;
+}
+
+export interface TargetBuyerClassification {
+  targetBuyerSegment: string;
+  buyerIntentKeywords: string[];
+  buyerIntentHook: string;
+}
+
+/**
+ * Computes a deterministic 0-100 market arbitrage score measuring undervaluation
+ * vs reference/category baseline combined with IN_STOCK + active Cuelinks monetization.
+ */
+export function calculateMarketArbitrageScore(deal: Partial<NormalizedDeal>): MarketArbitrageScoreResult {
+  const current = Number(deal.currentPriceINR || 0);
+  const reference = Number(deal.referencePriceINR || 0);
+  const rawRatio = reference > current && current > 0 && reference > 0
+    ? (reference - current) / reference
+    : (deal.verifiedDiscountPercent && deal.verifiedDiscountPercent > 0 ? Math.min(0.9, deal.verifiedDiscountPercent / 100) : 0);
+  const priceAdvantageRatio = Number(Math.max(0, Math.min(0.95, rawRatio)).toFixed(4));
+
+  if (
+    deal.availability === 'OUT_OF_STOCK' ||
+    deal.verificationStatus === 'EXPIRED' ||
+    deal.verificationStatus === 'REJECTED' ||
+    current <= 0
+  ) {
+    return { arbitrageScore: 0, priceAdvantageRatio };
+  }
+
+  // Factor 1: Undervaluation advantage relative to reference price (0-55 pts)
+  const priceAdvantagePts = Math.min(55, Math.round(priceAdvantageRatio * 80));
+
+  // Factor 2: Verified live IN_STOCK inventory & product proof (0-20 pts)
+  const stockPts = (deal.availability === 'IN_STOCK' ? 15 : 5) + (deal.productVerified === true ? 5 : 0);
+
+  // Factor 3: Active Cuelinks / monetizable tracking chain (cid=331585 aware, 0-15 pts)
+  const channelId = deal.evidenceJson?.channelId;
+  const hasApprovedCuelinks = Boolean(
+    deal.affiliateVerified &&
+    deal.isMonetizable &&
+    (deal.affiliateNetwork === 'CUELINKS' || String(channelId || '') === '331585' || Boolean(deal.trackingUrl))
+  );
+  const affiliationPts = hasApprovedCuelinks
+    ? (String(channelId || process.env.CUELINKS_CHANNEL_ID || '') === '331585' ? 15 : 12)
+    : (deal.affiliateVerified ? 8 : 0);
+
+  // Factor 4: Buyer price-band impulse velocity bonus (0-10 pts)
+  const velocityPts = current <= 1500 ? 10 : current <= 2500 ? 8 : current <= 5000 ? 5 : 2;
+
+  const arbitrageScore = Math.max(0, Math.min(100, priceAdvantagePts + stockPts + affiliationPts + velocityPts));
+  return { arbitrageScore, priceAdvantageRatio };
+}
+
+/**
+ * Classifies each undervalued deal into a high-intent buyer persona and search-intent keywords
+ * deterministically from category, price band, and title/specs (zero LLM tokens).
+ */
+export function classifyTargetBuyerSegment(deal: Partial<NormalizedDeal>): TargetBuyerClassification {
+  const title = String(deal.title || '').toLowerCase();
+  const category = String(deal.category || '').toLowerCase();
+  const brand = String(deal.brand || '').trim() || 'Top Brand';
+  const combined = `${title} ${category}`;
+  const price = Number(deal.currentPriceINR || 0);
+  const reference = Number(deal.referencePriceINR || 0);
+  const savingsPct = reference > price && price > 0
+    ? Math.round(((reference - price) / reference) * 100)
+    : Number(deal.verifiedDiscountPercent || 0);
+
+  let targetBuyerSegment = `Value-First Indian Online Shoppers (${deal.category || 'Verified Finds'})`;
+  let buyerIntentKeywords: string[] = [
+    `${brand.toLowerCase()} deal india`,
+    `best ${(deal.category || 'product').toLowerCase()} under ${Math.max(500, Math.ceil(price / 500) * 500)}`,
+    'verified merchant price snapshot'
+  ];
+
+  if (/(earbud|airdope|tws|headphone|rockerz|earphone|neckband|audio|anc)/.test(combined) && !/(soundbar|home theater|home theatre|party speaker)/.test(combined)) {
+    if (price > 0 && price <= 1500) {
+      targetBuyerSegment = 'Budget Daily Commuters & Students (Best TWS/Audio Under ₹1,500)';
+      buyerIntentKeywords = ['best wireless earbuds under 1500', 'budget tws india', 'student commute audio deal'];
+    } else {
+      targetBuyerSegment = 'Hybrid Work & Commute Audio Buyers (ANC Wireless Audio)';
+      buyerIntentKeywords = ['anc earbuds deal india', 'wireless headphones under 3000', 'work call tws offer'];
+    }
+  } else if (/(watch|smartwatch|band|wearable|fitness tracker|ring)/.test(combined)) {
+    if (price > 0 && price <= 2500) {
+      targetBuyerSegment = 'Value Fitness & Smartwatch Buyers Under ₹2,500';
+      buyerIntentKeywords = ['best smartwatch under 2500 india', 'amoled fitness watch deal', 'calling smartwatch offer'];
+    } else {
+      targetBuyerSegment = 'Health & Fitness Wearable Upgraders';
+      buyerIntentKeywords = ['smartwatch deal india', 'gps fitness wearable discount'];
+    }
+  } else if (/(soundbar|aavante|home theater|home theatre|projector|television|\btv\b|subwoofer|speaker)/.test(combined)) {
+    targetBuyerSegment = 'Home Entertainment & TV Upgrade Buyers';
+    buyerIntentKeywords = ['soundbar deal india', 'home theatre speaker discount', 'living room audio upgrade'];
+  } else if (/(laptop|monitor|keyboard|mouse|charger|powerbank|ssd|desk|chair|webcam|usb|dock|router)/.test(combined)) {
+    targetBuyerSegment = 'Remote Work & Creator Setup Buyers';
+    buyerIntentKeywords = ['wfh desk setup india', 'creator tech accessories deal', 'fast charger discount'];
+  } else if (/(flight|travel|luggage|suitcase|backpack|hotel|trip)/.test(combined)) {
+    targetBuyerSegment = 'Frequent Travelers & Weekend Commuters';
+    buyerIntentKeywords = ['domestic flight offer india', 'travel backpack deal', 'student travel discount'];
+  } else if (/(trimmer|grooming|serum|skin|hair|salon|beauty|shampoo)/.test(combined)) {
+    targetBuyerSegment = 'Daily Grooming & Personal Care Value Buyers';
+    buyerIntentKeywords = ['grooming trimmer deal india', 'personal care value offer'];
+  }
+
+  const priceTag = price > 0 ? ` at ₹${price.toLocaleString('en-IN')}` : '';
+  const savingsTag = savingsPct > 0 ? ` (${savingsPct}% below ₹${reference > price ? reference.toLocaleString('en-IN') : 'baseline'})` : '';
+  const buyerIntentHook = `${targetBuyerSegment}${priceTag}${savingsTag}`;
+
+  return {
+    targetBuyerSegment,
+    buyerIntentKeywords,
+    buyerIntentHook
+  };
+}
 
 export interface ApprovedShopifyMerchant {
   domain: string;
@@ -2560,8 +2682,9 @@ export class AutonomousDealDiscoveryEngine {
 
     newDeal.sectorCode = input.sectorCode || this.mapCategoryToSectorCode(input.category);
 
-    // Calculate initial Buyer Value score
+    // Calculate initial Buyer Value score, Arbitrage score, and Target Buyer classification
     newDeal.buyerValueScore = this.calculateBuyerValueScore(newDeal);
+    this.enrichDealWithArbitrageAndBuyerTargeting(newDeal);
 
     // Register in-memory maps
     this.dealsMap.set(dealId, newDeal);
@@ -2900,6 +3023,7 @@ export class AutonomousDealDiscoveryEngine {
           campaignId: campaignId || deal.affiliateCampaignId,
           trackingUrl: convertedTrackingUrl
         };
+        this.enrichDealWithArbitrageAndBuyerTargeting(deal);
 
         // Persist to D1 workflows and public_deals, and provision matching partner_offers
         try {
@@ -2974,6 +3098,115 @@ export class AutonomousDealDiscoveryEngine {
    * Universal deal eligibility resolver (V5.8 Defect 2 & V5.8.1 P1 Blocker 4).
    * Ensures exact 1:1 parity between public catalog, feeds, sector guides, and sitemap.
    */
+  private canonicalDestinationKey(rawUrl: string): string | null {
+    if (!rawUrl || typeof rawUrl !== 'string') return null;
+    try {
+      const u = new URL(rawUrl.trim());
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+      const stripParams = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'ref', 'tag', 'aff_id', 'subid', 'fbclid', 'gclid', 'click_id'];
+      for (const k of stripParams) u.searchParams.delete(k);
+      u.searchParams.sort();
+      const pathname = u.pathname.replace(/\/+$/, '') || '/';
+      const search = u.searchParams.toString();
+      return `${u.hostname.toLowerCase()}${pathname}${search ? '?' + search : ''}`;
+    } catch {
+      return null;
+    }
+  }
+
+  private extractHostname(rawUrl: string): string | null {
+    if (!rawUrl || typeof rawUrl !== 'string') return null;
+    try {
+      return new URL(rawUrl.trim()).hostname.toLowerCase().replace(/^www\./, '');
+    } catch {
+      return null;
+    }
+  }
+
+  private async loadRelationshipTables(useRemoteD1: boolean): Promise<{
+    partnerOffers: any[];
+    partners: any[];
+    campaigns: any[];
+  }> {
+    let partnerOffers: any[] = [];
+    let partners: any[] = [];
+    let campaigns: any[] = [];
+
+    if (useRemoteD1) {
+      const safeD1Read = async (table: string, sql: string): Promise<any[]> => {
+        try {
+          const res = await this.d1Repo.executeRead(table, sql, []);
+          return Array.isArray(res?.results) ? res.results : [];
+        } catch (err: any) {
+          if (isProduction() && !process.env.VITEST) {
+            throw new GuideDataUnavailableError(`Failed to read ${table} from D1: ${err?.message || 'D1 read error'}`);
+          }
+          return [];
+        }
+      };
+      partnerOffers = await safeD1Read('partner_offers', 'SELECT * FROM partner_offers');
+      partners = await safeD1Read('partners', 'SELECT * FROM partners');
+      campaigns = await safeD1Read('cuelinks_campaigns', 'SELECT * FROM cuelinks_campaigns');
+    } else {
+      try {
+        const db = getDb();
+        try { partnerOffers = db.prepare('SELECT * FROM partner_offers').all() as any[]; } catch {}
+        try { partners = db.prepare('SELECT * FROM partners').all() as any[]; } catch {}
+        try { campaigns = db.prepare('SELECT * FROM cuelinks_campaigns').all() as any[]; } catch {}
+      } catch {}
+    }
+
+    return { partnerOffers, partners, campaigns };
+  }
+
+  private isPartnerOfferValidForDeal(
+    deal: NormalizedDeal,
+    offer: any,
+    partnersById: Map<string, any>
+  ): { valid: boolean; reason?: string; partner?: any } {
+    if (!offer || !offer.id) {
+      return { valid: false, reason: 'PARTNER_OFFER_MISSING' };
+    }
+    const status = String(offer.status || '').toUpperCase();
+    const isActiveFlag = offer.active === 1 || offer.active === true || offer.active === '1';
+    if (status !== 'ACTIVE' || !isActiveFlag) {
+      return { valid: false, reason: `PARTNER_OFFER_INACTIVE (${offer.status})` };
+    }
+    if (offer.expiry_date) {
+      const expMs = Date.parse(String(offer.expiry_date));
+      if (!Number.isFinite(expMs) || expMs <= Date.now()) {
+        return { valid: false, reason: 'PARTNER_OFFER_EXPIRED' };
+      }
+    }
+    const offerDest = String(offer.destination_url || '').trim();
+    const dealHost = this.extractHostname(deal.productUrl);
+    const offerHost = this.extractHostname(offerDest);
+    if (!offerHost || !dealHost || offerHost !== dealHost) {
+      return { valid: false, reason: `PARTNER_OFFER_HOST_MISMATCH (${offerHost} vs ${dealHost})` };
+    }
+    const dealDestKey = this.canonicalDestinationKey(deal.productUrl);
+    const offerDestKey = this.canonicalDestinationKey(offerDest);
+    if (offerDestKey && dealDestKey && offerDestKey !== dealDestKey) {
+      return { valid: false, reason: 'PARTNER_OFFER_DESTINATION_MISMATCH' };
+    }
+
+    const partnerId = offer.partner_id;
+    const partner = partnerId ? partnersById.get(partnerId) : undefined;
+    if (partnersById.size > 0) {
+      if (!partner) {
+        return { valid: false, reason: `PARTNER_MISSING (${partnerId})` };
+      }
+      const approval = String(partner.approval_status || '').toUpperCase();
+      const auth = String(partner.authorization_status || '').toUpperCase();
+      const active = partner.active_status !== 0 && partner.active_status !== false;
+      if (approval !== 'APPROVED' || auth !== 'AUTHORIZED' || !active) {
+        return { valid: false, reason: `PARTNER_UNAUTHORIZED (${partner.approval_status}/${partner.authorization_status})` };
+      }
+    }
+
+    return { valid: true, partner };
+  }
+
   public async getEligiblePublicDeals(filter?: {
     sectorCode?: string;
     category?: string;
@@ -2983,19 +3216,20 @@ export class AutonomousDealDiscoveryEngine {
     q?: string;
     limit?: number;
     offset?: number;
+    requireStrictChain?: boolean;
   }): Promise<{ deals: NormalizedDeal[]; total: number }> {
+    const useRemoteD1 = this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST);
     let rows: any[] = [];
-    if (this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
+    if (useRemoteD1) {
       // In production, clear internal in-memory caches before loading authoritative state from D1
       this.dealsMap.clear();
       this.dealSlugMap.clear();
       try {
         const res = await this.d1Repo.executeRead('public_deals', AutonomousDealDiscoveryEngine.ELIGIBLE_PUBLIC_DEALS_SQL, []);
-        rows = res.results || [];
+        rows = res?.results || [];
       } catch (err: any) {
         console.error(`[DealEngine] getEligiblePublicDeals D1 read error: ${err.message}`);
-        // Fail closed: Never return stale or corrupt unverified deals
-        return { deals: [], total: 0 };
+        throw new GuideDataUnavailableError(`Failed to read eligible public deals from D1: ${err?.message || 'D1 read failure'}`);
       }
     } else {
       try {
@@ -3011,7 +3245,8 @@ export class AutonomousDealDiscoveryEngine {
         `;
         rows = getDb().prepare(testSql).all();
       } catch (err: any) {
-        console.warn(`[DealEngine] getEligiblePublicDeals SQLite notice: ${err.message}`);
+        console.error(`[DealEngine] getEligiblePublicDeals SQLite read error: ${err.message}`);
+        throw new GuideDataUnavailableError(`Failed to read eligible public deals from SQLite: ${err?.message || 'SQLite read failure'}`);
       }
     }
 
@@ -3026,7 +3261,23 @@ export class AutonomousDealDiscoveryEngine {
       }
     }
 
-    const eligibleDeals = Array.from(this.dealsMap.values()).filter(d =>
+    const { partnerOffers, partners, campaigns } = await this.loadRelationshipTables(useRemoteD1);
+    const partnersById = new Map<string, any>();
+    for (const p of partners) {
+      if (p?.id) partnersById.set(p.id, p);
+    }
+
+    const activeOfferDestCounts = new Map<string, number>();
+    for (const o of partnerOffers) {
+      const oStatus = String(o?.status || '').toUpperCase();
+      const oActive = o?.active === 1 || o?.active === true || o?.active === '1';
+      if (oStatus === 'ACTIVE' && oActive && o?.destination_url) {
+        const k = this.canonicalDestinationKey(o.destination_url);
+        if (k) activeOfferDestCounts.set(k, (activeOfferDestCounts.get(k) || 0) + 1);
+      }
+    }
+
+    const baseCandidates = Array.from(this.dealsMap.values()).filter(d =>
       d.availability === 'IN_STOCK' &&
       typeof d.currentPriceINR === 'number' && d.currentPriceINR > 0 &&
       (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'AFFILIATE_VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS') &&
@@ -3034,6 +3285,66 @@ export class AutonomousDealDiscoveryEngine {
       (isProduction() ? (d.productVerified === true && d.affiliateVerified === true) : true) &&
       (!d.expiryDate || new Date(d.expiryDate).getTime() > Date.now())
     );
+
+    // Count canonical destinations across all active deals to detect unkeyed duplicate / conflicting claims
+    const candidateDestCounts = new Map<string, number>();
+    for (const d of baseCandidates) {
+      const k = this.canonicalDestinationKey(d.productUrl);
+      if (k) candidateDestCounts.set(k, (candidateDestCounts.get(k) || 0) + 1);
+    }
+
+    const strictPartnerOfferRequired = Boolean(
+      filter?.requireStrictChain ||
+      useRemoteD1
+    );
+
+    const eligibleDeals: NormalizedDeal[] = [];
+    for (const d of baseCandidates) {
+      const destKey = this.canonicalDestinationKey(d.productUrl);
+      if (!destKey) continue;
+
+      // Quarantine ALL conflicting deals sharing the same canonical destination
+      if ((candidateDestCounts.get(destKey) || 0) > 1 || (activeOfferDestCounts.get(destKey) || 0) > 1) {
+        continue;
+      }
+
+      // Match partner_offers belonging to this deal (by ID, slug, or exact canonical destination)
+      const matchingOffers = partnerOffers.filter((o: any) => {
+        if (!o) return false;
+        const oDestKey = this.canonicalDestinationKey(String(o.destination_url || ''));
+        return (
+          o.id === d.id ||
+          (d.slug && o.offer_slug === d.slug) ||
+          (d.canonicalSlug && o.offer_slug === d.canonicalSlug) ||
+          (oDestKey !== null && oDestKey === destKey)
+        );
+      });
+
+      if (matchingOffers.length > 1) {
+        // Ambiguous multiple partner_offers mappings for one deal: quarantine
+        continue;
+      }
+
+      if (matchingOffers.length === 1) {
+        const offer = matchingOffers[0];
+        const validation = this.isPartnerOfferValidForDeal(d, offer, partnersById);
+        if (!validation.valid) {
+          continue;
+        }
+        const matchedCampaign = campaigns.find((c: any) =>
+          (d.affiliateCampaignId && c.campaign_id === d.affiliateCampaignId) ||
+          (c.merchant_domain && this.extractHostname(d.productUrl) === String(c.merchant_domain).toLowerCase().replace(/^www\./, ''))
+        );
+        eligibleDeals.push({
+          ...d,
+          partnerOffer: offer,
+          partner: validation.partner,
+          campaign: matchedCampaign || (d.affiliateCampaignId ? { campaignId: d.affiliateCampaignId, status: 'ACTIVE' } : undefined)
+        });
+      } else if (!strictPartnerOfferRequired) {
+        eligibleDeals.push(d);
+      }
+    }
 
     let filtered = eligibleDeals;
     if (filter?.sectorCode) {
@@ -3060,8 +3371,12 @@ export class AutonomousDealDiscoveryEngine {
       );
     }
 
-    // Sort deterministically by discount percentage descending, then buyer value score
-    filtered.sort((a, b) => (b.verifiedDiscountPercent || 0) - (a.verifiedDiscountPercent || 0) || (b.buyerValueScore || 0) - (a.buyerValueScore || 0));
+    // Sort deterministically by market arbitrage score descending, then discount %, then buyer value score
+    filtered.sort((a, b) =>
+      (b.arbitrageScore || 0) - (a.arbitrageScore || 0) ||
+      (b.verifiedDiscountPercent || 0) - (a.verifiedDiscountPercent || 0) ||
+      (b.buyerValueScore || 0) - (a.buyerValueScore || 0)
+    );
 
     const total = filtered.length;
     const offset = filter?.offset || 0;
@@ -3225,84 +3540,136 @@ export class AutonomousDealDiscoveryEngine {
   public async resolveDeal(idOrSlug: string, organizationId: string = 'org_owner_primary'): Promise<NormalizedDeal | null> {
     if (!idOrSlug) return null;
     const cleanId = idOrSlug.trim();
+    const useRemoteD1 = this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST);
 
-    // 1. In-memory check
-    const cached = this.getDealById(cleanId);
-    if (cached) return cached;
+    let resolvedCandidate: NormalizedDeal | null = null;
+
+    // 1. In-memory check (only when not bypassing to remote D1)
+    if (!useRemoteD1) {
+      const cached = this.getDealById(cleanId);
+      if (cached) resolvedCandidate = cached;
+    }
 
     // 2. Persistent public_deals table query (V5.7 Primary Deal Storage)
-    try {
+    if (!resolvedCandidate) {
       const pdSql = `
         SELECT * FROM public_deals
         WHERE id = ? OR slug = ? OR canonical_slug = ?
-        LIMIT 1
+        LIMIT 2
       `;
       let pdRows: any[] = [];
-      if (this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
-        const res = await this.d1Repo.executeRead('public_deals', pdSql, [cleanId, cleanId, cleanId]);
-        pdRows = Array.isArray(res?.results) ? res.results : [];
+      if (useRemoteD1) {
+        try {
+          const res = await this.d1Repo.executeRead('public_deals', pdSql, [cleanId, cleanId, cleanId]);
+          pdRows = Array.isArray(res?.results) ? res.results : [];
+        } catch (err: any) {
+          throw new GuideDataUnavailableError(`Failed resolving deal '${cleanId}' from D1: ${err?.message || 'D1 read failure'}`);
+        }
       } else {
-        const { getDb } = await import('../db/client.js');
-        pdRows = getDb().prepare(pdSql).all(cleanId, cleanId, cleanId) as any[];
+        try {
+          const { getDb } = await import('../db/client.js');
+          pdRows = getDb().prepare(pdSql).all(cleanId, cleanId, cleanId) as any[];
+        } catch {}
       }
-      if (pdRows && pdRows.length > 0) {
+      if (pdRows.length > 1) {
+        // Ambiguous public_deals matches for identifier
+        return null;
+      }
+      if (pdRows.length === 1) {
         const deal = this.parseDealFromPublicDealsRow(pdRows[0]);
         if (deal) {
-          this.dealsMap.set(deal.id, deal);
-          if (deal.slug) this.dealSlugMap.set(deal.slug.toLowerCase(), deal.id);
-          if (deal.canonicalSlug) this.dealSlugMap.set(deal.canonicalSlug.toLowerCase(), deal.id);
-          return deal;
+          resolvedCandidate = deal;
         }
       }
-    } catch {}
-
-    // 3. Persistent D1 query for cold-start recovery (workflows table)
-    try {
-      const sql = `
-        SELECT id, status, current_step, inputs_json, outputs_json, error_info, created_at, updated_at
-        FROM workflows
-        WHERE workflow_type = 'PUBLIC_DEAL' AND (
-          id = ? OR id = ? OR inputs_json LIKE ? OR inputs_json LIKE ?
-        )
-        LIMIT 1
-      `;
-      const p1 = cleanId;
-      const p2 = `deal_${cleanId}`;
-      const p3 = `%"slug":"${cleanId}"%`;
-      const p4 = `%"canonicalSlug":"${cleanId}"%`;
-
-      let rows: any[] = [];
-      if (isProduction()) {
-        const res = await this.d1Repo.executeRead('workflows', sql, [p1, p2, p3, p4]);
-        rows = Array.isArray(res?.results) ? res.results : [];
-      } else {
-        const { getDb } = await import('../db/client.js');
-        rows = getDb().prepare(sql).all(p1, p2, p3, p4) as any[];
-      }
-
-      if (rows && rows.length > 0) {
-        const deal = this.parseDealFromWorkflowRow(rows[0]);
-        if (deal) {
-          // Bounded cache eviction (max 500 deals)
-          if (this.dealsMap.size >= 500) {
-            const oldest = this.dealsMap.keys().next().value;
-            if (oldest) {
-              const oldDeal = this.dealsMap.get(oldest);
-              if (oldDeal?.slug) this.dealSlugMap.delete(oldDeal.slug.toLowerCase());
-              this.dealsMap.delete(oldest);
-            }
-          }
-          this.dealsMap.set(deal.id, deal);
-          if (deal.slug) this.dealSlugMap.set(deal.slug.toLowerCase(), deal.id);
-          if (deal.canonicalSlug) this.dealSlugMap.set(deal.canonicalSlug.toLowerCase(), deal.id);
-          return deal;
-        }
-      }
-    } catch (err: any) {
-      console.warn(`[DealEngine] Notice resolving deal '${idOrSlug}' from database: ${err.message}`);
     }
 
-    return null;
+    // 3. Persistent D1 query for cold-start recovery (workflows table)
+    if (!resolvedCandidate) {
+      try {
+        const sql = `
+          SELECT id, status, current_step, inputs_json, outputs_json, error_info, created_at, updated_at
+          FROM workflows
+          WHERE workflow_type = 'PUBLIC_DEAL' AND (
+            id = ? OR id = ? OR inputs_json LIKE ? OR inputs_json LIKE ?
+          )
+          LIMIT 2
+        `;
+        const p1 = cleanId;
+        const p2 = `deal_${cleanId}`;
+        const p3 = `%"slug":"${cleanId}"%`;
+        const p4 = `%"canonicalSlug":"${cleanId}"%`;
+
+        let rows: any[] = [];
+        if (useRemoteD1) {
+          const res = await this.d1Repo.executeRead('workflows', sql, [p1, p2, p3, p4]);
+          rows = Array.isArray(res?.results) ? res.results : [];
+        } else {
+          const { getDb } = await import('../db/client.js');
+          rows = getDb().prepare(sql).all(p1, p2, p3, p4) as any[];
+        }
+
+        if (rows.length > 1) return null;
+        if (rows.length === 1) {
+          resolvedCandidate = this.parseDealFromWorkflowRow(rows[0]);
+        }
+      } catch (err: any) {
+        if (useRemoteD1) {
+          throw new GuideDataUnavailableError(`Failed resolving workflow deal '${cleanId}' from D1: ${err?.message || 'D1 read failure'}`);
+        }
+        console.warn(`[DealEngine] Notice resolving deal '${idOrSlug}' from database: ${err.message}`);
+      }
+    }
+
+    if (!resolvedCandidate) return null;
+
+    // General relationship-integrity and canonical-destination ambiguity check (Stage F-Lite)
+    const destKey = this.canonicalDestinationKey(resolvedCandidate.productUrl);
+    if (!destKey) return null;
+
+    const { partnerOffers, partners } = await this.loadRelationshipTables(useRemoteD1);
+    const partnersById = new Map<string, any>();
+    for (const p of partners) {
+      if (p?.id) partnersById.set(p.id, p);
+    }
+
+    const matchingOffers = partnerOffers.filter((o: any) => {
+      if (!o) return false;
+      const oDestKey = this.canonicalDestinationKey(String(o.destination_url || ''));
+      return (
+        o.id === resolvedCandidate!.id ||
+        (resolvedCandidate!.slug && o.offer_slug === resolvedCandidate!.slug) ||
+        (resolvedCandidate!.canonicalSlug && o.offer_slug === resolvedCandidate!.canonicalSlug) ||
+        (oDestKey !== null && oDestKey === destKey)
+      );
+    });
+
+    if (matchingOffers.length > 1) {
+      return null;
+    }
+    if (matchingOffers.length === 1) {
+      const check = this.isPartnerOfferValidForDeal(resolvedCandidate, matchingOffers[0], partnersById);
+      if (!check.valid) return null;
+      resolvedCandidate = {
+        ...resolvedCandidate,
+        partnerOffer: matchingOffers[0],
+        partner: check.partner
+      };
+    }
+
+    // Bounded cache eviction (max 500 deals)
+    if (this.dealsMap.size >= 500) {
+      const oldest = this.dealsMap.keys().next().value;
+      if (oldest) {
+        const oldDeal = this.dealsMap.get(oldest);
+        if (oldDeal?.slug) this.dealSlugMap.delete(oldDeal.slug.toLowerCase());
+        this.dealsMap.delete(oldest);
+      }
+    }
+    this.dealsMap.set(resolvedCandidate.id, resolvedCandidate);
+    if (resolvedCandidate.slug) this.dealSlugMap.set(resolvedCandidate.slug.toLowerCase(), resolvedCandidate.id);
+    if (resolvedCandidate.canonicalSlug) this.dealSlugMap.set(resolvedCandidate.canonicalSlug.toLowerCase(), resolvedCandidate.id);
+
+    return resolvedCandidate;
   }
 
   /**
@@ -3793,7 +4160,12 @@ export class AutonomousDealDiscoveryEngine {
         const evidence = {
           ...(deal.evidenceJson || {}),
           affiliateCampaignId: deal.affiliateCampaignId,
-          affiliateNetwork: deal.affiliateNetwork
+          affiliateNetwork: deal.affiliateNetwork,
+          arbitrageScore: deal.arbitrageScore,
+          priceAdvantageRatio: deal.priceAdvantageRatio,
+          targetBuyerSegment: deal.targetBuyerSegment,
+          buyerIntentKeywords: deal.buyerIntentKeywords,
+          buyerIntentHook: deal.buyerIntentHook
         };
         const publicDealsParams = [
           deal.id,
@@ -3978,11 +4350,38 @@ export class AutonomousDealDiscoveryEngine {
     return 'SECTOR_B_ELECTRONICS';
   }
 
+  public calculateMarketArbitrageScore(deal: Partial<NormalizedDeal>): MarketArbitrageScoreResult {
+    return calculateMarketArbitrageScore(deal);
+  }
+
+  public classifyTargetBuyerSegment(deal: Partial<NormalizedDeal>): TargetBuyerClassification {
+    return classifyTargetBuyerSegment(deal);
+  }
+
+  public enrichDealWithArbitrageAndBuyerTargeting(deal: NormalizedDeal): NormalizedDeal {
+    const arb = calculateMarketArbitrageScore(deal);
+    const targeting = classifyTargetBuyerSegment(deal);
+    deal.arbitrageScore = arb.arbitrageScore;
+    deal.priceAdvantageRatio = arb.priceAdvantageRatio;
+    deal.targetBuyerSegment = targeting.targetBuyerSegment;
+    deal.buyerIntentKeywords = targeting.buyerIntentKeywords;
+    deal.buyerIntentHook = targeting.buyerIntentHook;
+    deal.evidenceJson = {
+      ...(deal.evidenceJson || { sources: [deal.productUrl], verificationLogs: [] }),
+      arbitrageScore: arb.arbitrageScore,
+      priceAdvantageRatio: arb.priceAdvantageRatio,
+      targetBuyerSegment: targeting.targetBuyerSegment,
+      buyerIntentKeywords: targeting.buyerIntentKeywords,
+      buyerIntentHook: targeting.buyerIntentHook
+    };
+    return deal;
+  }
+
   public parseDealFromPublicDealsRow(row: any): NormalizedDeal | null {
     if (!row) return null;
     try {
       const evidence = typeof row.evidence_json === 'string' ? JSON.parse(row.evidence_json || '{}') : (row.evidence_json || {});
-      return {
+      const parsed: NormalizedDeal = {
         id: row.id,
         slug: row.slug,
         canonicalSlug: row.canonical_slug || row.slug,
@@ -4024,6 +4423,7 @@ export class AutonomousDealDiscoveryEngine {
         updatedAt: row.updated_at,
         sectorCode: row.sector_code
       };
+      return this.enrichDealWithArbitrageAndBuyerTargeting(parsed);
     } catch {
       return null;
     }
@@ -4056,23 +4456,12 @@ export class AutonomousDealDiscoveryEngine {
       const slug = inputs.slug || inputs.canonicalSlug || outputs.slug || outputs.canonicalSlug ||
         AutonomousDealDiscoveryEngine.generateDealSlug(inputs.title || 'deal', inputs.brand, inputs.modelOrSku);
 
-      // Phase 8:boAt Airdopes 141 Gen 2 specific fixes
       let referencePriceINR = inputs.referencePriceINR;
       let claimedDiscountPercent = inputs.claimedDiscountPercent;
       let verifiedDiscountPercent = inputs.verifiedDiscountPercent;
       let availability = inputs.availability || 'IN_STOCK';
-
-      if (row.id === 'deal_boat_airdopes_141_gen2' || inputs.modelOrSku === 'airdopes-141-gen2' || slug.includes('boat-airdopes-141-gen2')) {
-        // Correct conflicting MRP from legacy ₹4,490 to verified live ₹3,990
-        referencePriceINR = 3990;
-        claimedDiscountPercent = 80;
-        verifiedDiscountPercent = 80;
-        // Quarantine out-of-stock / restocking deal
-        availability = 'OUT_OF_STOCK';
+      if (availability === 'OUT_OF_STOCK') {
         verificationStatus = 'OUT_OF_STOCK';
-        if (!rejectionReasons.includes('OUT_OF_STOCK: Merchant reports product has restocking constraints; quarantined from public listing.')) {
-          rejectionReasons.push('OUT_OF_STOCK: Merchant reports product has restocking constraints; quarantined from public listing.');
-        }
       }
 
       const deal: NormalizedDeal = {
@@ -4122,7 +4511,7 @@ export class AutonomousDealDiscoveryEngine {
         createdAt: row.created_at,
         updatedAt: row.updated_at
       };
-      return deal;
+      return this.enrichDealWithArbitrageAndBuyerTargeting(deal);
     } catch {
       return null;
     }
@@ -4201,56 +4590,6 @@ export class AutonomousDealDiscoveryEngine {
         }
       } catch {}
 
-      // Phase 2 Mandate: Quarantine deal_boat_airdopes_161 due to restocking soon badge on merchant site
-      const inStockCandidate: NormalizedDeal = {
-        id: 'deal_boat_airdopes_161',
-        slug: 'boat-airdopes-161-wireless-earbuds',
-        canonicalSlug: 'boat-airdopes-161-wireless-earbuds',
-        dealKind: 'PRODUCT',
-        discountBadge: '64% OFF',
-        title: 'boAt Airdopes 161 Wireless Earbuds',
-        brand: 'boAt',
-        merchant: 'boAt Lifestyle',
-        category: 'Electronics',
-        productUrl: 'https://www.boat-lifestyle.com/products/airdopes-161?variant=39539517227106',
-        currentPriceINR: 899,
-        currency: 'INR',
-        referencePriceINR: 2490,
-        claimedDiscountPercent: 64,
-        verifiedDiscountPercent: 64,
-        discountVerificationType: 'INDEPENDENT_CORROBORATED',
-        availability: 'OUT_OF_STOCK',
-        geographicRestrictions: ['India'],
-        offerStart: '2026-11-01T00:00:00.000Z',
-        expiryDate: '2026-11-30T23:59:59.000Z',
-        lastCheckedAt: new Date().toISOString(),
-        observedAt: new Date().toISOString(),
-        sourceUrl: 'https://www.boat-lifestyle.com/products/airdopes-161?variant=39539517227106',
-        sourceDomain: 'boat-lifestyle.com',
-        sourceType: 'RETAILER_BRAND',
-        verificationStatus: 'OUT_OF_STOCK',
-        confidenceScore: 0,
-        buyerValueScore: 0,
-        rejectionReasons: ['MERCHANT_RESTOCKING_BADGE_DETECTED'],
-        isMonetizable: false,
-        affiliateNetwork: 'CUELINKS',
-        affiliateCampaignId: '4232',
-        modelOrSku: 'airdopes-161',
-        evidenceJson: {
-          sources: ['https://www.boat-lifestyle.com/products/airdopes-161'],
-          verificationLogs: ['Quarantined: Restocking soon badge detected on official merchant page'],
-          lastCorroboratedAt: new Date().toISOString()
-        },
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      };
-      this.dealsMap.set(inStockCandidate.id, inStockCandidate);
-      if (inStockCandidate.slug) {
-        this.dealSlugMap.set(inStockCandidate.slug.toLowerCase(), inStockCandidate.id);
-      }
-      if (inStockCandidate.canonicalSlug) {
-        this.dealSlugMap.set(inStockCandidate.canonicalSlug.toLowerCase(), inStockCandidate.id);
-      }
     } catch (err: any) {
       console.warn(`[DealEngine] Notice syncing deals from D1: ${err.message}`);
     }

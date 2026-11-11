@@ -1236,7 +1236,11 @@ apiRouter.get('/cron/status', async (c) => {
   let row: any = null;
   try {
     row = await d1Repo.queryOne('cron_telemetry', `SELECT * FROM cron_telemetry WHERE id = 'cloudflare_worker_cron'`);
-  } catch {}
+  } catch (err: any) {
+    if (isProduction()) {
+      return c.json({ success: false, error: 'TELEMETRY_QUERY_FAILED', message: err.message }, 503);
+    }
+  }
 
   const parseSqliteTimestampMs = (ts: string | null | undefined): number => {
     if (!ts) return 0;
@@ -1256,9 +1260,7 @@ apiRouter.get('/cron/status', async (c) => {
   let registryWorkflows: any[] = [];
   try {
     const regSql = `SELECT id, last_status, last_error, owner_action_required FROM automation_registry WHERE enabled = 1`;
-    registryWorkflows = isProduction()
-      ? await d1Repo.query<any>('automation_registry', regSql)
-      : getDb().prepare(regSql).all();
+    registryWorkflows = await d1Repo.query<any>('automation_registry', regSql);
   } catch {}
 
   const hasBlockedWf = registryWorkflows.some(w => w.last_status === 'BLOCKED');
@@ -1356,16 +1358,54 @@ apiRouter.get('/cron/status', async (c) => {
 
   const idleCycleShare = totalCycles > 0 ? Math.round((idleCycles / totalCycles) * 100) : 100;
 
-  let recentPings24h: number | 'UNKNOWN' = 'UNKNOWN';
+  let recentPings24h: number = 0;
+  let scheduledActiveHours24h: number = 0;
+  let scheduledWorkflowExecutions24h: number = 0;
+  let manualExecutions24h: number = 0;
   try {
     const since24hIso = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
     const since24hSql = since24hIso.replace('T', ' ').replace(/\.\d{3}Z$/, '');
-    const recentRow = await d1Repo.queryOne<{ cnt: number }>('autonomous_cycle_log', `SELECT COUNT(*) as cnt FROM autonomous_cycle_log WHERE trigger_source = 'CLOUDFLARE_CRON' AND (cycle_start >= ? OR cycle_start >= ?)`, [since24hSql, since24hIso]);
-    if (recentRow && typeof recentRow.cnt === 'number') {
-      recentPings24h = recentRow.cnt;
+
+    // Canonical contract: recentPings24h tracks CLOUDFLARE_CRON pings from autonomous_cycle_log
+    const cronPingRow = await d1Repo.queryOne<{ cnt: number }>(
+      'autonomous_cycle_log',
+      `SELECT COUNT(*) as cnt FROM autonomous_cycle_log WHERE trigger_source = 'CLOUDFLARE_CRON' AND (cycle_start >= datetime('now', '-24 hours') OR cycle_start >= ? OR cycle_start >= ?)`,
+      [since24hSql, since24hIso]
+    );
+
+    const distinctPingSql = `
+      SELECT COUNT(DISTINCT strftime('%Y-%m-%d %H', started_at)) as cnt
+      FROM automation_execution_log
+      WHERE trigger_source = 'CLOUDFLARE_CRON'
+        AND (started_at >= ? OR started_at >= ?)
+    `;
+    const pingRow = await d1Repo.queryOne<{ cnt: number }>('automation_execution_log', distinctPingSql, [since24hSql, since24hIso]);
+    scheduledActiveHours24h = pingRow?.cnt || 0;
+
+    recentPings24h = cronPingRow?.cnt || 0;
+
+    const schedSql = `
+      SELECT COUNT(*) as cnt
+      FROM automation_execution_log
+      WHERE trigger_source = 'CLOUDFLARE_CRON'
+        AND (started_at >= ? OR started_at >= ?)
+    `;
+    const schedRow = await d1Repo.queryOne<{ cnt: number }>('automation_execution_log', schedSql, [since24hSql, since24hIso]);
+    scheduledWorkflowExecutions24h = schedRow?.cnt || 0;
+
+    const manualSql = `
+      SELECT COUNT(*) as cnt
+      FROM automation_execution_log
+      WHERE trigger_source != 'CLOUDFLARE_CRON'
+        AND (started_at >= ? OR started_at >= ?)
+    `;
+    const manualRow = await d1Repo.queryOne<{ cnt: number }>('automation_execution_log', manualSql, [since24hSql, since24hIso]);
+    manualExecutions24h = manualRow?.cnt || 0;
+  } catch (err: any) {
+    if (isProduction()) {
+      return c.json({ success: false, error: 'TELEMETRY_QUERY_FAILED', message: err.message }, 503);
     }
-  } catch {
-    recentPings24h = 'UNKNOWN';
+    recentPings24h = 0;
   }
 
   // Reconcile lastSuccessfulCycle: take the latest between cron_telemetry and queue execution
@@ -1393,6 +1433,9 @@ apiRouter.get('/cron/status', async (c) => {
       totalPings,
       totalLifetimePings: totalPings,
       recentPings24h,
+      scheduledActiveHours24h,
+      scheduledWorkflowExecutions24h,
+      manualExecutions24h,
       lastObservedPing: row?.last_observed_ping || null,
       lastSuccessfulCycle: resolvedSuccessfulCycle,
       lastFailedCycle: row?.last_failed_cycle || null,
@@ -6717,16 +6760,21 @@ apiRouter.get('/guides/:slug', async (c) => {
   const userAgent = c.req.header('user-agent') || '';
   const isBot = isBotTraffic(userAgent);
   const contentEngine = ContentAssetEngine.getInstance();
-  const asset = await contentEngine.getAssetBySlug(slug, !isBot);
-
-  if (!asset) {
-    return c.json({ error: 'CONTENT_NOT_FOUND', message: `Guide '${slug}' not found` }, 404);
+  try {
+    const asset = await contentEngine.getAssetBySlug(slug, !isBot);
+    if (!asset) {
+      return c.json({ error: 'CONTENT_NOT_FOUND', message: `Guide '${slug}' not found` }, 404);
+    }
+    return c.json({
+      success: true,
+      data: asset
+    });
+  } catch (err: any) {
+    if (err?.code === 'GUIDE_DATA_UNAVAILABLE' || err?.statusCode === 503) {
+      return c.json({ error: 'GUIDE_DATA_UNAVAILABLE', message: err.message }, 503);
+    }
+    throw err;
   }
-
-  return c.json({
-    success: true,
-    data: asset
-  });
 });
 
 // Phase 2 Task 25: generic database-backed public surfaces (no hardcoded verticals).
@@ -6738,11 +6786,18 @@ for (const publicSurface of ['/recommendations/:slug', '/offers/:slug'] as const
     const userAgent = c.req.header('user-agent') || '';
     const isBot = isBotTraffic(userAgent);
     const contentEngine = ContentAssetEngine.getInstance();
-    const asset = await contentEngine.getAssetBySlug(slug, !isBot);
-    if (!asset) {
-      return c.json({ error: 'CONTENT_NOT_FOUND', message: `Content '${slug}' not found` }, 404);
+    try {
+      const asset = await contentEngine.getAssetBySlug(slug, !isBot);
+      if (!asset) {
+        return c.json({ error: 'CONTENT_NOT_FOUND', message: `Content '${slug}' not found` }, 404);
+      }
+      return c.json({ success: true, data: asset });
+    } catch (err: any) {
+      if (err?.code === 'GUIDE_DATA_UNAVAILABLE' || err?.statusCode === 503) {
+        return c.json({ error: 'GUIDE_DATA_UNAVAILABLE', message: err.message }, 503);
+      }
+      throw err;
     }
-    return c.json({ success: true, data: asset });
   });
 }
 
@@ -7180,39 +7235,54 @@ apiRouter.get('/public/deals', async (c) => {
     return c.json({ success: true, data: result });
   }
 
-  const eligible = await engine.getEligiblePublicDeals({
-    sectorCode,
-    category,
-    merchant,
-    minPrice,
-    maxPrice,
-    q,
-    limit,
-    offset: (page - 1) * limit
-  });
+  try {
+    const eligible = await engine.getEligiblePublicDeals({
+      sectorCode,
+      category,
+      merchant,
+      minPrice,
+      maxPrice,
+      q,
+      limit,
+      offset: (page - 1) * limit
+    });
 
-  const allEligible = await engine.getEligiblePublicDeals();
-  const categories = Array.from(new Set(allEligible.deals.map(d => d.category))).filter(Boolean);
-  const merchants = Array.from(new Set(allEligible.deals.map(d => d.merchant))).filter(Boolean);
+    const allEligible = await engine.getEligiblePublicDeals();
+    const categories = Array.from(new Set(allEligible.deals.map(d => d.category))).filter(Boolean);
+    const merchants = Array.from(new Set(allEligible.deals.map(d => d.merchant))).filter(Boolean);
 
-  return c.json({
-    success: true,
-    data: {
-      deals: eligible.deals,
-      total: eligible.total,
-      categories,
-      merchants,
-      page,
-      limit
+    return c.json({
+      success: true,
+      data: {
+        deals: eligible.deals,
+        total: eligible.total,
+        categories,
+        merchants,
+        page,
+        limit
+      }
+    });
+  } catch (err: any) {
+    if (err?.code === 'GUIDE_DATA_UNAVAILABLE' || err?.statusCode === 503) {
+      return c.json({ error: 'GUIDE_DATA_UNAVAILABLE', message: err.message }, 503);
     }
-  });
+    throw err;
+  }
 });
 
 // Public Deals JSON Feed for syndication and partner integrations (Spec Engine 4)
 apiRouter.get('/public/feeds/deals.json', async (c) => {
   const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
   const engine = AutonomousDealDiscoveryEngine.getInstance();
-  const eligible = await engine.getEligiblePublicDeals({ limit: 50 });
+  let eligible: any;
+  try {
+    eligible = await engine.getEligiblePublicDeals({ limit: 50 });
+  } catch (err: any) {
+    if (err?.code === 'GUIDE_DATA_UNAVAILABLE' || err?.statusCode === 503) {
+      return c.json({ error: 'GUIDE_DATA_UNAVAILABLE', message: err.message }, 503);
+    }
+    throw err;
+  }
   const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').replace(/\/$/, '');
 
   const feed = {
@@ -7229,8 +7299,14 @@ apiRouter.get('/public/feeds/deals.json', async (c) => {
       content_text: d.title,
       date_modified: d.lastCheckedAt || d.observedAt || new Date().toISOString(),
       price_inr: d.currentPriceINR,
+      reference_price_inr: d.referencePriceINR ?? null,
+      discount_badge: d.discountBadge || null,
+      arbitrage_score: d.arbitrageScore ?? null,
+      price_advantage_ratio: d.priceAdvantageRatio ?? null,
+      target_buyer_segment: d.targetBuyerSegment || null,
+      buyer_intent_keywords: d.buyerIntentKeywords || [],
       category: d.category,
-      sector: d.category || 'SECTOR_2_ELECTRONICS',
+      sector: d.sectorCode || d.category || 'SECTOR_B_ELECTRONICS',
       merchant: d.merchant,
       stock_status: d.availability || 'IN_STOCK'
     }))
@@ -7337,16 +7413,26 @@ apiRouter.get('/compare/:sectorSlug', async (c) => {
     const html = StaticSiteGenerator.getInstance().renderCompareHtml(sectorDef, sectorDeals, config);
     return c.html(html);
   } catch (err: any) {
-    console.warn(`[CompareRoute] Error rendering compare guide for '${cleanSlug}': ${err.message}`);
+    if (err?.code === 'GUIDE_DATA_UNAVAILABLE' || err?.statusCode === 503) {
+      return c.json({ error: 'GUIDE_DATA_UNAVAILABLE', message: err.message }, 503);
+    }
+    console.error(`[CompareRoute] Error rendering compare guide for '${cleanSlug}': ${err.message}`);
+    return c.json({ error: 'GUIDE_DATA_UNAVAILABLE', message: 'Compare guide data temporarily unavailable.' }, 503);
   }
-
-  return c.text(`Compare guide not found for sector: ${cleanSlug}`, 404);
 });
 
 apiRouter.get('/public/deals/:id', async (c) => {
   const id = c.req.param('id');
   const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
-  const deal = await AutonomousDealDiscoveryEngine.getInstance().resolveDeal(id);
+  let deal: any;
+  try {
+    deal = await AutonomousDealDiscoveryEngine.getInstance().resolveDeal(id);
+  } catch (err: any) {
+    if (err?.code === 'GUIDE_DATA_UNAVAILABLE' || err?.statusCode === 503) {
+      return c.json({ error: 'GUIDE_DATA_UNAVAILABLE', message: err.message }, 503);
+    }
+    throw err;
+  }
   if (!deal) {
     return c.json({ error: 'DEAL_NOT_FOUND', message: `Deal '${id}' not found` }, 404);
   }
@@ -7394,7 +7480,15 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
 
   const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
   const engine = AutonomousDealDiscoveryEngine.getInstance();
-  const deal = await engine.resolveDeal(id);
+  let deal: any;
+  try {
+    deal = await engine.resolveDeal(id);
+  } catch (err: any) {
+    if (err?.code === 'GUIDE_DATA_UNAVAILABLE' || err?.statusCode === 503) {
+      return c.json({ error: 'GUIDE_DATA_UNAVAILABLE', message: err.message }, 503);
+    }
+    throw err;
+  }
 
   if (!deal) {
     return c.text('Deal not found', 404);

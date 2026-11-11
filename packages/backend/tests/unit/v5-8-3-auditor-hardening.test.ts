@@ -344,13 +344,17 @@ describe('V5.8.3 — Auditor-Aligned Production Hardening', () => {
 
   describe('3. Clean Homepage Without Public Sandbox Test Artifacts', () => {
     it('serves SSR root homepage (GET /) without sandbox card or test checkout script', async () => {
+      process.env.CUELINKS_VERIFICATION_CODE = 'VERIFY-CL-YE94W8YS';
+      process.env.GOOGLE_SITE_VERIFICATION = 'WVPs1hLZgUqJL5yO9jwF2pWwsekPcMtTOLLeWILGU9I';
       const res = await app.request('/');
       expect(res.status).toBe(200);
       const html = await res.text();
 
-      // Verification meta tags must be present
+      // Verification meta tags must be present when configured
       expect(html).toContain('<meta name="cuelinks-verification" content="VERIFY-CL-YE94W8YS" />');
       expect(html).toContain('<meta name="google-site-verification" content="WVPs1hLZgUqJL5yO9jwF2pWwsekPcMtTOLLeWILGU9I" />');
+      delete process.env.CUELINKS_VERIFICATION_CODE;
+      delete process.env.GOOGLE_SITE_VERIFICATION;
 
       // Sandbox test artifacts MUST BE ABSENT from public homepage
       expect(html).not.toContain('id="razorpay-sandbox-test-panel"');

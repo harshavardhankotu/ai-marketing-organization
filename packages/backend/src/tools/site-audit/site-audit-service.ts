@@ -264,6 +264,13 @@ export class SiteAuditService {
           return audit.url.toLowerCase().replace(/https?:\/\//, '').replace(/^www\./, '').split('/')[0];
         }
       })();
+      const effectiveDeliverable = deliverable || this.generator.generateFixPack(audit);
+      const headSnippets = [
+        effectiveDeliverable.headMetadataSnippet,
+        effectiveDeliverable.openGraphSnippet,
+        effectiveDeliverable.twitterCardSnippet
+      ].filter(Boolean).join('\n\n') || null;
+      const schemaJsonLd = effectiveDeliverable.schemaJsonLdSnippet || null;
       const perfScore = (audit.pageSpeed?.status === 'SUCCESS' && typeof audit.pageSpeed.performanceScore === 'number')
         ? audit.pageSpeed.performanceScore
         : null;
@@ -273,7 +280,7 @@ export class SiteAuditService {
       const bName = audit.businessName || domain;
       const htmlScanStatus = ((audit as any).status === 'FAILED') ? 'FAILED' : 'COMPLETED';
       const pageSpeedStatus = audit.pageSpeed?.status === 'SUCCESS' ? 'COMPLETED' : 'UNAVAILABLE';
-      const pageSpeedUnavailableReason = audit.pageSpeed?.status === 'SUCCESS' ? null : (audit.pageSpeed?.reason || 'UNAVAILABLE');
+      const pageSpeedUnavailableReason = audit.pageSpeed?.status === 'SUCCESS' ? null : (audit.pageSpeed?.reason || 'UNAVAILABLE (Requires GOOGLE_PAGESPEED_API_KEY)');
       const isPubliclyAuthorized = (domain === 'capturelifedentalcare.com' || domain === 'clovedental.in' || (audit as any).isPubliclyAuthorized === true) ? 1 : 0;
 
       if (this.d1Repo.isRemoteD1Configured() || isProduction()) {
@@ -281,46 +288,50 @@ export class SiteAuditService {
           'site_audits',
           `INSERT INTO site_audits (
             domain, target_url, business_name, performance_score, seo_score,
-            core_web_vitals_json, checklist_json, status, html_scan_status,
+            core_web_vitals_json, head_snippets, schema_json_ld, checklist_json, status, html_scan_status,
             pagespeed_status, pagespeed_unavailable_reason, is_publicly_authorized, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, ?, ?, datetime('now'))
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, ?, ?, datetime('now'))
           ON CONFLICT(domain) DO UPDATE SET
             target_url = excluded.target_url,
             business_name = excluded.business_name,
             performance_score = excluded.performance_score,
             seo_score = excluded.seo_score,
             core_web_vitals_json = excluded.core_web_vitals_json,
+            head_snippets = COALESCE(excluded.head_snippets, site_audits.head_snippets),
+            schema_json_ld = COALESCE(excluded.schema_json_ld, site_audits.schema_json_ld),
             checklist_json = excluded.checklist_json,
             status = excluded.status,
             html_scan_status = excluded.html_scan_status,
             pagespeed_status = excluded.pagespeed_status,
             pagespeed_unavailable_reason = excluded.pagespeed_unavailable_reason,
-            is_publicly_authorized = excluded.is_publicly_authorized,
+            is_publicly_authorized = MAX(site_audits.is_publicly_authorized, excluded.is_publicly_authorized),
             updated_at = datetime('now')`,
-          [domain, audit.url, bName, perfScore, seoScore, cwvJson, checklistJson, htmlScanStatus, pageSpeedStatus, pageSpeedUnavailableReason, isPubliclyAuthorized]
+          [domain, audit.url, bName, perfScore, seoScore, cwvJson, headSnippets, schemaJsonLd, checklistJson, htmlScanStatus, pageSpeedStatus, pageSpeedUnavailableReason, isPubliclyAuthorized]
         );
       } else {
         const { getDb } = await import('../../db/client.js');
         getDb().prepare(`
           INSERT INTO site_audits (
             domain, target_url, business_name, performance_score, seo_score,
-            core_web_vitals_json, checklist_json, status, html_scan_status,
+            core_web_vitals_json, head_snippets, schema_json_ld, checklist_json, status, html_scan_status,
             pagespeed_status, pagespeed_unavailable_reason, is_publicly_authorized, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, ?, ?, datetime('now'))
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, ?, ?, datetime('now'))
           ON CONFLICT(domain) DO UPDATE SET
             target_url = excluded.target_url,
             business_name = excluded.business_name,
             performance_score = excluded.performance_score,
             seo_score = excluded.seo_score,
             core_web_vitals_json = excluded.core_web_vitals_json,
+            head_snippets = COALESCE(excluded.head_snippets, site_audits.head_snippets),
+            schema_json_ld = COALESCE(excluded.schema_json_ld, site_audits.schema_json_ld),
             checklist_json = excluded.checklist_json,
             status = excluded.status,
             html_scan_status = excluded.html_scan_status,
             pagespeed_status = excluded.pagespeed_status,
             pagespeed_unavailable_reason = excluded.pagespeed_unavailable_reason,
-            is_publicly_authorized = excluded.is_publicly_authorized,
+            is_publicly_authorized = MAX(site_audits.is_publicly_authorized, excluded.is_publicly_authorized),
             updated_at = datetime('now')
-        `).run(domain, audit.url, bName, perfScore, seoScore, cwvJson, checklistJson, htmlScanStatus, pageSpeedStatus, pageSpeedUnavailableReason, isPubliclyAuthorized);
+        `).run(domain, audit.url, bName, perfScore, seoScore, cwvJson, headSnippets, schemaJsonLd, checklistJson, htmlScanStatus, pageSpeedStatus, pageSpeedUnavailableReason, isPubliclyAuthorized);
       }
     } catch (err: any) {
       if (isProduction() && !process.env.VITEST) {
@@ -333,8 +344,13 @@ export class SiteAuditService {
   /**
    * Executes a website audit scan, caches in memory, and persists durably to Cloudflare D1.
    */
-  public async executeScan(request: SiteAuditScanRequest): Promise<SiteAuditResult> {
+  public async executeScan(
+    request: SiteAuditScanRequest & { isPubliclyAuthorized?: boolean }
+  ): Promise<SiteAuditResult> {
     const result = await this.scanner.scanUrl(request);
+    if (request.isPubliclyAuthorized) {
+      (result as any).isPubliclyAuthorized = true;
+    }
 
     // Wire real Google Lighthouse & Web Vitals data (never synthetic fixtures)
     try {
@@ -433,7 +449,11 @@ export class SiteAuditService {
   /**
    * Executes a complete live website audit for a target URL and persists to D1.
    */
-  public async runFullAudit(targetUrl: string, businessName?: string): Promise<SiteAuditResult> {
+  public async runFullAudit(
+    targetUrl: string,
+    businessName?: string,
+    options?: { isPubliclyAuthorized?: boolean }
+  ): Promise<SiteAuditResult> {
     const rawUrl = targetUrl.trim();
     const cleanUrl = rawUrl.startsWith('http://') || rawUrl.startsWith('https://')
       ? rawUrl
@@ -448,7 +468,8 @@ export class SiteAuditService {
     return this.executeScan({
       url: cleanUrl,
       businessName: bName,
-      skipCache: false
+      skipCache: false,
+      isPubliclyAuthorized: options?.isPubliclyAuthorized
     });
   }
 

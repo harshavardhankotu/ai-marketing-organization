@@ -15,7 +15,11 @@
  */
 
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
+import { getDb } from '../db/client.js';
+import { isProduction } from '../config/env.js';
 import { QualifiedCommercialOpportunity } from './commercial-opportunity-selector.js';
+import { NormalizedDeal } from './deal-types.js';
+import { COMMERCIAL_SECTORS_LIST } from '@ai-marketing/shared';
 
 export interface OrganicDistributionChannel {
   channelId: 'OWNED_BUYING_GUIDE' | 'DAILY_REPLY_DESK' | 'SHARE_KIT' | 'RSS_DEAL_FEED';
@@ -287,5 +291,140 @@ export class OrganicDistributionEngine {
     } catch (err: any) {
       console.warn(`[OrganicDistribution] Failed to log distribution event: ${err.message}`);
     }
+  }
+
+  /**
+   * Synchronizes and publishes live targeted buyer guides into commission_content_assets
+   * and pings IndexNow with refreshed /compare, /guides, /audit, /deals, and /sitemap.xml URLs.
+   */
+  public async syncAndPublishTargetedBuyerGuides(
+    eligibleDeals: NormalizedDeal[],
+    baseUrl: string = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').replace(/\/$/, ''),
+    extraIndexUrls: string[] = []
+  ): Promise<{ guidesPublished: number; slugs: string[]; pingedUrls: string[] }> {
+    const cleanBase = baseUrl.replace(/\/$/, '');
+    const slugs: string[] = [];
+    const pingUrls: string[] = [
+      `${cleanBase}/deals`,
+      `${cleanBase}/sitemap.xml`,
+      `${cleanBase}/api/v1/public/feeds/deals.json`,
+      ...extraIndexUrls
+    ];
+
+    if (!Array.isArray(eligibleDeals) || eligibleDeals.length === 0) {
+      this.pingIndexNow(Array.from(new Set(pingUrls))).catch(() => {});
+      return { guidesPublished: 0, slugs, pingedUrls: Array.from(new Set(pingUrls)) };
+    }
+
+    const useRemoteD1 = this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST);
+
+    // Group active deals by commercial sector (defaulting to electronics-technology if unspecified)
+    const dealsBySector = new Map<string, NormalizedDeal[]>();
+    for (const deal of eligibleDeals) {
+      const code = deal.sectorCode || 'SECTOR_B_ELECTRONICS';
+      const arr = dealsBySector.get(code) || [];
+      arr.push(deal);
+      dealsBySector.set(code, arr);
+    }
+
+    let guidesPublished = 0;
+    const nowIso = new Date().toISOString();
+
+    for (const sectorDef of COMMERCIAL_SECTORS_LIST) {
+      const sectorDeals = dealsBySector.get(sectorDef.code) || [];
+      if (sectorDeals.length === 0) continue;
+
+      const sorted = [...sectorDeals].sort(
+        (a, b) => (b.arbitrageScore || 0) - (a.arbitrageScore || 0) || (b.verifiedDiscountPercent || 0) - (a.verifiedDiscountPercent || 0)
+      );
+      const topDeals = sorted.slice(0, 6);
+      const guideSlug = `top-undervalued-${sectorDef.id}`;
+      const assetId = `cnt_${guideSlug.replace(/[^a-z0-9]/g, '_').slice(0, 40)}`;
+      const matchedIds = topDeals.map(d => d.id).filter(Boolean);
+      const primaryOfferId = matchedIds[0] || null;
+      const topSegments = Array.from(new Set(topDeals.map(d => d.targetBuyerSegment).filter(Boolean))).slice(0, 4);
+
+      const dealBullets = topDeals.map((d, idx) => {
+        const redirectUrl = `${cleanBase}/api/v1/public/deals/${d.id}/redirect`;
+        const priceStr = typeof d.currentPriceINR === 'number' ? `Rs. ${d.currentPriceINR.toLocaleString('en-IN')}` : 'See checkout';
+        const refStr = typeof d.referencePriceINR === 'number' && d.referencePriceINR > (d.currentPriceINR || 0)
+          ? ` (merchant-reported MRP Rs. ${d.referencePriceINR.toLocaleString('en-IN')})`
+          : '';
+        const arbStr = typeof d.arbitrageScore === 'number' ? ` — Arbitrage Score ${d.arbitrageScore}/100` : '';
+        const segmentStr = d.targetBuyerSegment ? ` | Target Buyer: ${d.targetBuyerSegment}` : '';
+        return `${idx + 1}. **${d.title}** on ${d.merchant} — ${priceStr}${refStr}${arbStr}${segmentStr} — [View Verified Offer on ${d.merchant}](${redirectUrl})`;
+      }).join('\n');
+
+      const markdownBody = [
+        `## Verified Undervalued Picks in ${sectorDef.displayName || sectorDef.name}`,
+        '',
+        `Updated automatically from live verified merchant snapshots (${nowIso.slice(0, 10)}). All outbound deal links route through verified partner campaigns and carry **#Ad** affiliate disclosure.`,
+        '',
+        topSegments.length > 0 ? `### Matched Buyer Segments\n- ${topSegments.join('\n- ')}\n` : '',
+        '### Top Arbitrage Opportunities',
+        dealBullets,
+        '',
+        `See full sector comparison at [Compare ${sectorDef.displayName || sectorDef.name} Deals](${cleanBase}/compare/${sectorDef.id}) or browse [All Verified Deals](${cleanBase}/deals).`,
+        '',
+        '*Verify live price, stock, and terms on the official merchant checkout page before ordering.*'
+      ].filter(Boolean).join('\n');
+
+      const disclosure = '#Ad Affiliate Disclosure: Qualifying purchases made through tracked merchant links may earn a referral commission at zero extra cost to you. Always confirm live price and stock on the official merchant checkout page.';
+      const title = `Top Undervalued ${sectorDef.displayName || sectorDef.name} Deals & Buyer Guide`;
+      const intentTarget = topSegments[0] || `Verified ${sectorDef.displayName || sectorDef.name} deals India`;
+
+      const upsertSql = `
+        INSERT INTO commission_content_assets (
+          id, organization_id, slug, asset_type, title, category,
+          location, intent_target, content_markdown, primary_offer_id,
+          matched_offer_ids_json, disclosure_markdown, status,
+          view_count, referral_click_count, created_at, updated_at
+        ) VALUES (?, 'org_owner_primary', ?, 'COMPARISON', ?, ?, 'India', ?, ?, ?, ?, ?, 'PUBLISHED', 0, 0, ?, ?)
+        ON CONFLICT(slug) DO UPDATE SET
+          title = excluded.title,
+          category = excluded.category,
+          intent_target = excluded.intent_target,
+          content_markdown = excluded.content_markdown,
+          primary_offer_id = excluded.primary_offer_id,
+          matched_offer_ids_json = excluded.matched_offer_ids_json,
+          disclosure_markdown = excluded.disclosure_markdown,
+          status = 'PUBLISHED',
+          updated_at = excluded.updated_at
+      `;
+      const params = [
+        assetId,
+        guideSlug,
+        title,
+        sectorDef.id,
+        intentTarget,
+        markdownBody,
+        primaryOfferId,
+        JSON.stringify(matchedIds),
+        disclosure,
+        nowIso,
+        nowIso
+      ];
+
+      try {
+        getDb().prepare(upsertSql).run(...params);
+      } catch {}
+
+      if (useRemoteD1) {
+        try {
+          await this.d1Repo.executeWrite('commission_content_assets', upsertSql, params);
+        } catch (err: any) {
+          console.warn(`[OrganicDistribution] Guide upsert warning for '${guideSlug}': ${err.message}`);
+        }
+      }
+
+      guidesPublished++;
+      slugs.push(guideSlug);
+      pingUrls.push(`${cleanBase}/compare/${sectorDef.id}`);
+      pingUrls.push(`${cleanBase}/guides/${guideSlug}`);
+    }
+
+    const dedupedPingUrls = Array.from(new Set(pingUrls));
+    this.pingIndexNow(dedupedPingUrls).catch(() => {});
+    return { guidesPublished, slugs, pingedUrls: dedupedPingUrls };
   }
 }

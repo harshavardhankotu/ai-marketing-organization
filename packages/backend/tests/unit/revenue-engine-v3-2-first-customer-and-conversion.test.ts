@@ -221,8 +221,9 @@ describe('Revenue Engine V3.2 — First Customer & Commercial Conversion', () =>
       expect(html).toContain('href="/guides/student-flight-discounts-india"');
       expect(html).toContain('href="/revenue"');
 
-      // Statutory Affiliate Disclosure
-      expect(html).toContain('Statutory Affiliate Disclosure:');
+      // Statutory Affiliate Disclosure & Transparency Policy
+      expect(html).toContain('Statutory Affiliate Disclosure');
+      expect(html).toContain('href="/public/disclosure"');
     });
 
     it('serves standalone verified deals page on GET /deals without SPA login redirect', async () => {

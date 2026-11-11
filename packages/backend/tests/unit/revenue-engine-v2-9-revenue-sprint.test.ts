@@ -13,19 +13,27 @@ describe('Revenue Engine V2.9 — Real Revenue Sprint Unit Tests', () => {
   });
 
   describe('1. Baseline Student Flight Guide Monetization & Quality Gates', () => {
-    it('verifies all 4 active commercial partners have verified links in the guide', () => {
+    it('verifies all domestic carriers have verified guidance and no unapproved affiliate links in the guide', () => {
       const guide = BASELINE_STUDENT_FLIGHT_GUIDE;
 
       expect(guide).toBeDefined();
-      expect(guide.contentMarkdown).toContain('https://clnk.in/DKRM'); // Air India Express
-      expect(guide.contentMarkdown).toContain('https://clnk.in/DKX3'); // Akasa Air
-      expect(guide.contentMarkdown).toContain('https://clnk.in/DKX4'); // Air India
-      expect(guide.contentMarkdown).toContain('https://clnk.in/DKRN'); // Cleartrip
 
-      // IndiGo & SpiceJet context
+      // Safety checks: Airline affiliate links retired; no unapproved raw affiliate tracking links
+      expect(guide.contentMarkdown).not.toContain('https://clnk.in/DKRM');
+      expect(guide.contentMarkdown).not.toContain('https://clnk.in/DKX3');
+      expect(guide.contentMarkdown).not.toContain('https://clnk.in/DKX4');
+      expect(guide.contentMarkdown).not.toContain('https://clnk.in/DKRN');
+
+      // Carrier presence & official direct booking portal guidance
+      expect(guide.contentMarkdown).toContain('Air India Express');
+      expect(guide.contentMarkdown).toContain('Akasa Air');
+      expect(guide.contentMarkdown).toContain('Air India (Full Service)');
       expect(guide.contentMarkdown).toContain('IndiGo (6E)');
       expect(guide.contentMarkdown).toContain('SpiceJet');
-      expect(guide.contentMarkdown).toContain('Cleartrip');
+      expect(guide.contentMarkdown).toContain('Book Student Fares directly on the official Air India Express portal');
+      expect(guide.contentMarkdown).toContain('Book Student Fares directly on the official Akasa Air portal');
+      expect(guide.contentMarkdown).toContain('Book Student Fares directly on the official Air India portal');
+      expect(guide.contentMarkdown).toContain('Compare Student Flights on Official Travel Portals & Direct Airline Apps');
 
       // Crucial verification rules
       expect(guide.contentMarkdown).toContain('Mandatory Physical Student ID');
@@ -33,10 +41,8 @@ describe('Revenue Engine V2.9 — Real Revenue Sprint Unit Tests', () => {
       expect(guide.contentMarkdown).toContain('Base Fare vs Taxes');
 
       // Disclosure and navigation links
-      expect(guide.disclosureMarkdown).toContain('Akasa Air');
-      expect(guide.disclosureMarkdown).toContain('Air India');
-      expect(guide.disclosureMarkdown).toContain('Air India Express');
-      expect(guide.disclosureMarkdown).toContain('Cleartrip');
+      expect(guide.disclosureMarkdown).toContain('Editorial Notice');
+      expect(guide.disclosureMarkdown).toContain('official airline student concession rules');
       expect(guide.disclosureMarkdown).toContain('/deals');
       expect(guide.disclosureMarkdown).toContain('/revenue');
       expect(guide.disclosureMarkdown).toContain('/public/disclosure');

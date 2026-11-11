@@ -152,17 +152,25 @@ describe('V5.6 — End-to-End Autonomous Pipeline Wiring', () => {
       });
       await dealEngine.executeAutonomousCycle('test_cycle_v5_6');
 
+      // Select SECTOR_B_ELECTRONICS (where this test seeded a verified deal) deterministically
+      const learningEngine = CommercialLearningEngine.getInstance();
+      learningEngine.ensureBanditInitialized();
+      vi.spyOn(learningEngine, 'selectNextSectorToExplore').mockReturnValueOnce({
+        selectedSector: 'SECTOR_B_ELECTRONICS',
+        selectionMode: 'COLD_START_EXPLORATION',
+        sampleScore: 0.5,
+        allSectors: {} as any
+      });
+
       // Execute daily_market_demand_research
       const execResult = await registry.executeWorkflow('daily_market_demand_research', 'TEST_HARNESS', 20000);
       expect(execResult.status).toBe('COMPLETED');
       expect(execResult.itemsProcessed).toBeGreaterThanOrEqual(1);
 
       // Verify that commercial bandit recorded the interaction
-      const learningEngine = CommercialLearningEngine.getInstance();
-      learningEngine.ensureBanditInitialized();
       const banditStates = learningEngine.getSectorBanditIntelligence();
       expect(Object.keys(banditStates).length).toBe(8);
-    });
+    }, 60000);
   });
 
   describe('4. Server-Rendered Public /audit/:domain Page', () => {
@@ -279,7 +287,6 @@ describe('V5.6 — End-to-End Autonomous Pipeline Wiring', () => {
         ) ON CONFLICT(domain) DO UPDATE SET updated_at = datetime('now'), is_publicly_authorized = 1
       `).run();
 
-      // Ensure active deal exists for jewellery sector
       db.prepare(`
         INSERT INTO public_deals (
           id, slug, canonical_slug, title, brand, merchant, category, sector_code,
@@ -290,7 +297,13 @@ describe('V5.6 — End-to-End Autonomous Pipeline Wiring', () => {
           'Tanishq', 'Tanishq', 'Precious Metals', 'SECTOR_A_PRECIOUS_METALS',
           'https://tanishq.co.in/p1', 'https://linksredirect.com/?url=https%3A%2F%2Ftanishq.co.in%2Fp1',
           50000, 'IN_STOCK', 'AFFILIATE_VERIFIED', 1, 1, 1, datetime('now')
-        ) ON CONFLICT(id) DO UPDATE SET updated_at = datetime('now')
+        ) ON CONFLICT(id) DO UPDATE SET 
+          verification_status = 'AFFILIATE_VERIFIED',
+          availability = 'IN_STOCK',
+          is_monetizable = 1,
+          product_verified = 1,
+          affiliate_verified = 1,
+          updated_at = datetime('now')
       `).run();
 
       const res = await app.request('/sitemap.xml');

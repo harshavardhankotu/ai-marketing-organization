@@ -17,3 +17,11 @@ services:
         sync: false
       - key: TAVILY_API_KEY
         sync: false
+      - key: GOOGLE_SITE_VERIFICATION
+        value: WVPs1hLZgUqJL5yO9jwF2pWwsekPcMtTOLLeWILGU9I
+      - key: CUELINKS_VERIFICATION
+        value: VERIFY-CL-YE94W8YS
+      - key: CUELINKS_VERIFICATION_CODE
+        value: VERIFY-CL-YE94W8YS
+      - key: CUELINKS_CHANNEL_ID
+        value: "331585"

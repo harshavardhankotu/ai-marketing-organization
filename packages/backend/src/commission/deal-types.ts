@@ -157,6 +157,11 @@ export interface NormalizedDeal {
   verificationStatus: DealVerificationStatus;
   confidenceScore: number;       // 0 to 100
   buyerValueScore: number;        // 0 to 100
+  arbitrageScore?: number;       // 0 to 100 deterministic undervaluation + Cuelinks score
+  priceAdvantageRatio?: number;  // (referencePriceINR - currentPriceINR) / referencePriceINR
+  targetBuyerSegment?: string;   // High-intent buyer persona matched without LLM tokens
+  buyerIntentKeywords?: string[];
+  buyerIntentHook?: string;
   rejectionReasons: string[];
   isMonetizable: boolean;
   productVerified?: boolean;
@@ -167,6 +172,9 @@ export interface NormalizedDeal {
   affiliateCampaignId?: string;
   modelOrSku?: string;
   lastVerifiedAt?: string;
+  partnerOffer?: Record<string, any>;
+  partner?: Record<string, any>;
+  campaign?: Record<string, any>;
   evidenceJson: {
     sources: string[];
     priceHistory?: Array<{ price: number; observedAt: string }>;
@@ -193,6 +201,16 @@ export interface DealQueryParams {
   sortBy?: 'buyer_value' | 'freshness' | 'price_asc' | 'discount';
   page?: number;
   limit?: number;
+}
+
+export class GuideDataUnavailableError extends Error {
+  public readonly code = 'GUIDE_DATA_UNAVAILABLE';
+  public readonly statusCode = 503;
+
+  constructor(message: string = 'Guide or offer data storage is temporarily unavailable.') {
+    super(message);
+    this.name = 'GuideDataUnavailableError';
+  }
 }
 
 // ==========================================
