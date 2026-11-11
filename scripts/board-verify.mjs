@@ -197,12 +197,29 @@ async function main() {
   }
 
   if (pendingTestFiles.size > 0 && failures === 0) {
+    const sharedEntry = path.resolve('packages/shared/dist/index.js');
+    if (!fs.existsSync(sharedEntry)) {
+      execSync('npm run build --workspace=packages/shared', { stdio: 'pipe', encoding: 'utf8' });
+    }
     const fileArgs = Array.from(pendingTestFiles).map((f) => `"${f}"`).join(' ');
     try {
-      execSync(`npx vitest run --root packages/backend ${fileArgs} --test-timeout=30000`, { stdio: 'pipe', encoding: 'utf8' });
+      execSync(`npx vitest run --root packages/backend ${fileArgs} --test-timeout=30000`, {
+        stdio: 'pipe',
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          NODE_ENV: process.env.NODE_ENV || 'test',
+          PORT: process.env.PORT || '3001',
+          OWNER_API_KEY: process.env.OWNER_API_KEY || 'test_owner_key_for_ci_pipeline_only',
+          AUTH_SECRET: process.env.AUTH_SECRET || 'test_owner_key_for_ci_pipeline_only',
+          CRON_PING_SECRET: process.env.CRON_PING_SECRET || 'test_cron_secret_for_ci_pipeline_only'
+        }
+      });
       console.log(`✓ [PASS] Executed ${pendingTestFiles.size} unique TEST guard suite(s) via Vitest.`);
     } catch (err) {
       console.error(`❌ [FAIL] Batched TEST guard suite execution failed: ${err.message}`);
+      if (err.stdout) console.error(err.stdout);
+      if (err.stderr) console.error(err.stderr);
       failures++;
     }
   }
