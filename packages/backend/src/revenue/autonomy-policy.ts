@@ -193,31 +193,36 @@ export class AutonomyPolicyController {
       }
     }
 
-    // 7. Rolling 24-hour daily outbound cap
-    const rollingCount = this.getRolling24hOutboundCount(organizationId);
-    if (rollingCount >= 5) {
-      return {
-        allowed: false,
-        reason: `Rolling 24-hour outbound action limit (5) reached (${rollingCount} sent in last 24h). Execution deferred.`,
-        violatedRule: 'DAILY_OUTBOUND_CAP_REACHED',
-        policy
-      };
+    // 7. Rolling 24-hour daily outbound cap (exempts customer-initiated inbound 24h replies)
+    if (!params.isInboundResponse) {
+      const rollingCount = this.getRolling24hOutboundCount(organizationId);
+      if (rollingCount >= 5) {
+        return {
+          allowed: false,
+          reason: `Rolling 24-hour outbound action limit (5) reached (${rollingCount} sent in last 24h). Execution deferred.`,
+          violatedRule: 'DAILY_OUTBOUND_CAP_REACHED',
+          policy
+        };
+      }
     }
 
-    // 8. Daily external action volume check
-    const todayExternalActions = this.getTodayExternalActionsCount(organizationId);
-    if (todayExternalActions >= policy.maxExternalActionsPerDay) {
-      return {
-        allowed: false,
-        reason: `Daily external action limit (${policy.maxExternalActionsPerDay}) reached for today. Execution deferred.`,
-        violatedRule: 'DAILY_EXTERNAL_LIMIT_EXCEEDED',
-        policy
-      };
+    // 8. Daily external action volume check (exempts customer-initiated inbound 24h replies)
+    if (!params.isInboundResponse) {
+      const todayExternalActions = this.getTodayExternalActionsCount(organizationId);
+      if (todayExternalActions >= policy.maxExternalActionsPerDay) {
+        return {
+          allowed: false,
+          reason: `Daily external action limit (${policy.maxExternalActionsPerDay}) reached for today. Execution deferred.`,
+          violatedRule: 'DAILY_EXTERNAL_LIMIT_EXCEEDED',
+          policy
+        };
+      }
     }
 
-    // 9. Durable Outbound Hold Gate (OUTBOUND_ENABLED, default false)
+    // 9. Durable Outbound Hold Gate (OUTBOUND_ENABLED, default false; exempts customer-initiated WhatsApp 24h inbound replies)
     const outboundEnabled = process.env.OUTBOUND_ENABLED === 'true';
-    if (!outboundEnabled && (actionType === 'OUTBOUND_SEND' || actionType === 'OUTBOUND_DISPATCH')) {
+    const isWhatsAppInboundReply = Boolean(params.isInboundResponse && params.channel && params.channel.toUpperCase() === 'WHATSAPP');
+    if (!outboundEnabled && !isWhatsAppInboundReply && (actionType === 'OUTBOUND_SEND' || actionType === 'OUTBOUND_DISPATCH')) {
       return {
         allowed: false,
         reason: 'Outbound dispatch is globally disabled (OUTBOUND_ENABLED is false).',

@@ -1385,5 +1385,127 @@ describe('Stage D & Stage E — Autonomous Daily Deals and Production Conversion
       expect(typeof summary.scheduledExecutionTruth.genuineCronWorkerRuns24h).toBe('number');
       expect(typeof summary.scheduledExecutionTruth.manualOrCurlPings24h).toBe('number');
     });
+
+    it('Stage I (P3-P7): hydrates Cuelinks payout rates into public_deals arbitrage scores, isolates quarantined rows, populates 5 lanes + Lane E SEBI radar, and evaluates 5-state capabilities', async () => {
+      const db = getDb();
+      const { CuelinksSyncManager } = await import('../../src/commission/cuelinks-sync-manager.js');
+      const { AutonomousDealDiscoveryEngine } = await import('../../src/commission/autonomous-deal-discovery-engine.js');
+      const { MultiAssetOpportunityRadar, SEBI_COMPLIANCE_MODE } = await import('../../src/intelligence/multi-asset-opportunity-radar.js');
+      const { IntegrationCapabilityRegistry } = await import('../../src/control-plane/integration-capability-registry.js');
+      const { OwnerDigestService } = await import('../../src/revenue/owner-digest.js');
+
+      // Seed active campaign missing payout_rate + matching public_deal + quarantined test row
+      db.prepare('DELETE FROM cuelinks_campaigns').run();
+      db.prepare('DELETE FROM public_deals').run();
+      db.prepare(`
+        INSERT INTO cuelinks_campaigns (
+          campaign_id, name, merchant_domain, status, payout_model, payout_rate, cookie_days, category, verification_source
+        ) VALUES ('4232', 'boAt Lifestyle', 'boat-lifestyle.com', 'ACTIVE', 'CPS', '', 30, 'Electronics', 'CUELINKS_API_V3')
+      `).run();
+
+      db.prepare(`
+        INSERT INTO public_deals (
+          id, slug, canonical_slug, sector_code, title, brand, category, merchant,
+          product_url, affiliate_url, current_price_inr,
+          reference_price_inr, availability, deal_kind, product_verified, affiliate_verified, is_monetizable,
+          verification_status, evidence_json, last_verified_at
+        ) VALUES (
+          'deal_boat_i1', 'boat-airdopes-141-stage-i', 'boat-airdopes-141-stage-i',
+          'SECTOR_B_ELECTRONICS', 'boAt Airdopes 141 ANC Wireless Earbuds', 'boAt', 'Audio', 'boAt Lifestyle',
+          'https://www.boat-lifestyle.com/products/airdopes-141', 'https://linksredirect.com/?pub_id=1234&url=https%3A%2F%2Fwww.boat-lifestyle.com%2Fproducts%2Fairdropes-141',
+          1299, 4490, 'IN_STOCK', 'PRODUCT_DEAL', 1, 1, 1, 'VERIFIED', '{"affiliateCampaignId":"4232"}', datetime('now')
+        )
+      `).run();
+
+      // Quarantine test record must be isolated from unifiedOpportunities
+      try {
+        db.prepare(`
+          INSERT INTO opportunities (id, organization_id, business_id, title, status, source, evidence_json)
+          VALUES ('opp_test_q1', 'org_owner_primary', 'biz_platform_aro', 'Quarantined Synthetic Opp', 'TEST_QUARANTINED', 'TEST_QUARANTINED', '{}')
+        `).run();
+      } catch {}
+
+      const mockClient = {
+        isConfigured: () => true,
+        getCampaignDetails: vi.fn().mockResolvedValue({
+          id: 4232,
+          name: 'boAt Lifestyle',
+          domain: 'boat-lifestyle.com',
+          status: 'active',
+          payout_categories: [{ payout: '8.5%', payout_type: 'CPS' }]
+        }),
+        searchCampaigns: vi.fn().mockResolvedValue({ campaigns: [], total: 0 }),
+        getOffers: vi.fn().mockResolvedValue({ offers: [], total: 0 })
+      } as any;
+
+      const syncMgr = CuelinksSyncManager.getInstance(mockClient);
+      const hydrateRes = await syncMgr.hydrateMissingCampaignPayoutsD1('org_owner_primary', 'biz_platform_aro', 10);
+      expect(hydrateRes.updatedCampaigns).toBe(1);
+      expect(hydrateRes.syncedPublicDeals).toBe(1);
+
+      const updatedCamp = db.prepare(`SELECT payout_rate FROM cuelinks_campaigns WHERE campaign_id = '4232'`).get() as any;
+      expect(updatedCamp?.payout_rate).toBe('8.5%');
+
+      const eligibleRes = await AutonomousDealDiscoveryEngine.getInstance().getEligiblePublicDeals({ limit: 10 });
+      const boatDeal = eligibleRes.deals.find(d => d.id === 'deal_boat_i1');
+      expect(boatDeal).toBeDefined();
+      expect(boatDeal?.verifiedCommissionRatePercent).toBe(8.5);
+      expect(boatDeal?.arbitrageScore).toBeGreaterThan(0);
+
+      // P5 & P6: SEBI-safe Multi-Asset Financial & Arbitrage Radar
+      const radar = MultiAssetOpportunityRadar.getInstance();
+      expect(SEBI_COMPLIANCE_MODE).toBe('EDUCATIONAL_RESEARCH_AND_PAPER_PORTFOLIO_ONLY');
+
+      const sgb = radar.calculateSgbVsBullionParity({
+        trancheLabel: 'SGB 2028-I',
+        sgbMarketPricePerGramINR: 7500,
+        spotGoldPricePerGramINR: 7800,
+        yearsToMaturity: 5
+      });
+      expect(sgb.discountToSpotPercent).toBeGreaterThan(0);
+
+      const bond = radar.calculateBondYtmAndDuration({
+        instrumentName: 'India 2034 G-Sec',
+        faceValueINR: 100,
+        marketPriceINR: 98,
+        couponRatePercent: 7.18,
+        yearsToMaturity: 8
+      });
+      expect(bond.approxYtmPercent).toBeGreaterThan(7.18);
+      expect(bond.modifiedDurationYears).toBeGreaterThan(0);
+
+      const mfStats = radar.analyzeMutualFundSeries(
+        '120503',
+        'Nifty 50 Index Direct Growth',
+        [
+          { date: '10-11-2026', nav: 220 },
+          { date: '09-11-2026', nav: 215 },
+          { date: '08-11-2026', nav: 225 },
+          { date: '07-11-2026', nav: 210 }
+        ]
+      );
+      expect(mfStats.maxDrawdownPercent).toBeGreaterThan(0);
+      expect(mfStats.sebiComplianceMode).toBe(SEBI_COMPLIANCE_MODE);
+
+      const summary = await OwnerDigestService.getInstance().getArosControlCenterSummary();
+      expect(summary.quarantinedTestRecordsCount).toBeGreaterThanOrEqual(1);
+      expect(summary.opportunitiesByLaneAndState.unifiedOpportunities.byLane.LANE_A_AFFILIATE_COMMERCE.total).toBeGreaterThanOrEqual(1);
+      expect(summary.opportunitiesByLaneAndState.unifiedOpportunities.byLane.LANE_C_AUTHORIZED_PARTNERSHIPS.total).toBeGreaterThanOrEqual(1);
+      expect(summary.opportunitiesByLaneAndState.unifiedOpportunities.byLane.LANE_D_DIGITAL_PRODUCTS.total).toBeGreaterThanOrEqual(1);
+      expect(summary.opportunitiesByLaneAndState.unifiedOpportunities.byLane.LANE_E_FINANCIAL_INTELLIGENCE.total).toBeGreaterThanOrEqual(1);
+      expect(summary.financialAndArbitrageRadar?.sebiComplianceMode).toBe(SEBI_COMPLIANCE_MODE);
+
+      // P7: 5-state IntegrationCapabilityRegistry (no false STRIPE global blocker)
+      const capMatrix = IntegrationCapabilityRegistry.evaluateAll({ genuineCronObservedRecently: false });
+      expect(capMatrix.activeGlobalBlockers.some(b => b.id === 'STRIPE')).toBe(false);
+      expect(capMatrix.activePaymentRails).toContain('DIRECT_UPI');
+      expect(Object.keys(capMatrix.countsByState)).toEqual([
+        'DISCOVERED',
+        'CONFIGURED',
+        'AUTHENTICATED',
+        'AUTHORIZED',
+        'OPERATIONALLY_VERIFIED'
+      ]);
+    });
   });
 });

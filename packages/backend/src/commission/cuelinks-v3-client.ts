@@ -504,8 +504,8 @@ export class CuelinksV3Client {
    * Get single campaign details
    */
   public async getCampaignDetails(campaignId: number | string): Promise<CuelinksCampaign> {
-    const res = await this.request<{ data: CuelinksCampaign }>(`/campaigns/${campaignId}`);
-    return res.data;
+    const res = await this.request<any>(`/campaigns/${campaignId}`);
+    return res?.data || res?.campaign || res;
   }
 
   /**

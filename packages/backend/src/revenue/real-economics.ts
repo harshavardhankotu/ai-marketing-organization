@@ -3,6 +3,90 @@ import { RealEconomicsSummary } from '@ai-marketing/shared';
 import { RevenueReconciliationEngine } from './revenue-reconciliation.js';
 import { QuotaManager } from '../ai/quota-manager.js';
 
+export interface LaneUnitEconomicsInput {
+  lane:
+    | 'LANE_A_AFFILIATE_COMMERCE'
+    | 'LANE_B_B2B_SERVICES'
+    | 'LANE_C_AUTHORIZED_PARTNERSHIPS'
+    | 'LANE_D_DIGITAL_PRODUCTS'
+    | 'LANE_E_FINANCIAL_INTELLIGENCE';
+  grossRevenueINR: number;
+  directCostINR?: number;
+  adSpendINR?: number;
+  gatewayFeePercent?: number;
+  partnerSharePercent?: number;
+}
+
+export interface LaneUnitEconomicsResult {
+  lane: LaneUnitEconomicsInput['lane'];
+  grossRevenueINR: number;
+  directCostINR: number;
+  netContributionINR: number;
+  grossMarginPercent: number | null;
+  contributionStatus: 'MEASURED' | 'NO_REVENUE_MEASURED';
+  costModelBasis: string;
+}
+
+/**
+ * Computes lane-specific unit economics without arbitrary flat 65% clinical margin assumptions.
+ * Returns null grossMarginPercent when zero verified revenue is present so unmeasured lanes are never fabricated.
+ */
+export function calculateLaneUnitEconomics(input: LaneUnitEconomicsInput): LaneUnitEconomicsResult {
+  const gross = Math.max(0, Number(input.grossRevenueINR || 0));
+  const adSpend = Math.max(0, Number(input.adSpendINR || 0));
+  const explicitCost = Math.max(0, Number(input.directCostINR || 0));
+
+  let variableCost = explicitCost + adSpend;
+  let costModelBasis = 'MEASURED_REVENUE_MINUS_DIRECT_COST';
+
+  if (input.lane === 'LANE_A_AFFILIATE_COMMERCE') {
+    costModelBasis = 'AFFILIATE_COMMISSION_NET_OF_ACQUISITION_SPEND';
+  } else if (input.lane === 'LANE_B_B2B_SERVICES') {
+    const gwPct = Number.isFinite(input.gatewayFeePercent) ? Number(input.gatewayFeePercent) : 2.0;
+    if (gross > 0 && explicitCost === 0) {
+      variableCost += Number((gross * (gwPct / 100)).toFixed(2));
+    }
+    costModelBasis = `B2B_SERVICE_NET_OF_DIRECT_DELIVERY_AND_${gwPct}%_GATEWAY_FEE`;
+  } else if (input.lane === 'LANE_C_AUTHORIZED_PARTNERSHIPS') {
+    const sharePct = Number.isFinite(input.partnerSharePercent) ? Number(input.partnerSharePercent) : 0;
+    if (gross > 0 && explicitCost === 0 && sharePct > 0) {
+      variableCost += Number((gross * (sharePct / 100)).toFixed(2));
+    }
+    costModelBasis = 'AUTHORIZED_PARTNER_REVSHARE_LEDGER';
+  } else if (input.lane === 'LANE_D_DIGITAL_PRODUCTS') {
+    const gwPct = Number.isFinite(input.gatewayFeePercent) ? Number(input.gatewayFeePercent) : 2.0;
+    if (gross > 0 && explicitCost === 0) {
+      variableCost += Number((gross * (gwPct / 100)).toFixed(2));
+    }
+    costModelBasis = `SELF_SERVE_DIGITAL_NET_OF_${gwPct}%_PAYMENT_RAIL_FEE`;
+  } else if (input.lane === 'LANE_E_FINANCIAL_INTELLIGENCE') {
+    costModelBasis = 'SEBI_EDUCATIONAL_PAPER_RESEARCH_ZERO_EXECUTION_FEES';
+  }
+
+  const netContributionINR = Number((gross - variableCost).toFixed(2));
+  if (gross <= 0) {
+    return {
+      lane: input.lane,
+      grossRevenueINR: 0,
+      directCostINR: Number(variableCost.toFixed(2)),
+      netContributionINR,
+      grossMarginPercent: null,
+      contributionStatus: 'NO_REVENUE_MEASURED',
+      costModelBasis
+    };
+  }
+
+  return {
+    lane: input.lane,
+    grossRevenueINR: Number(gross.toFixed(2)),
+    directCostINR: Number(variableCost.toFixed(2)),
+    netContributionINR,
+    grossMarginPercent: Number(((netContributionINR / gross) * 100).toFixed(2)),
+    contributionStatus: 'MEASURED',
+    costModelBasis
+  };
+}
+
 export class RealEconomicsEngine {
   private get db() {
     return getDb();
@@ -83,7 +167,10 @@ export class RealEconomicsEngine {
     }
 
     const netContributionINR = attributedRealRevenueINR - verifiedAdSpendINR;
-    const grossMarginPercent = 65.0; // Standard clinical contribution margin baseline
+    // Measured gross margin only from real attributed revenue vs verified direct spend (no fabricated 65% clinical baseline)
+    const grossMarginPercent = attributedRealRevenueINR > 0
+      ? Number(((netContributionINR / attributedRealRevenueINR) * 100).toFixed(2))
+      : 0;
 
     // =========================================================================
     // ORGANIC ECONOMICS (Zero-Budget Growth Mode)

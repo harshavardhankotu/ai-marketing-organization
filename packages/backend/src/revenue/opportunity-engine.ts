@@ -37,7 +37,8 @@ export type OpportunityLane =
   | 'LANE_A_AFFILIATE_COMMERCE'
   | 'LANE_B_B2B_SERVICES'
   | 'LANE_C_AUTHORIZED_PARTNERSHIPS'
-  | 'LANE_D_DIGITAL_PRODUCTS';
+  | 'LANE_D_DIGITAL_PRODUCTS'
+  | 'LANE_E_FINANCIAL_INTELLIGENCE';
 
 export type ArosLifecycleState =
   | 'DISCOVERED'
@@ -479,7 +480,8 @@ export class OpportunityEngine {
       LANE_A_AFFILIATE_COMMERCE: { total: 0, verified: 0, qualified: 0, published: 0, rejected: 0 },
       LANE_B_B2B_SERVICES: { total: 0, verified: 0, qualified: 0, published: 0, rejected: 0 },
       LANE_C_AUTHORIZED_PARTNERSHIPS: { total: 0, verified: 0, qualified: 0, published: 0, rejected: 0 },
-      LANE_D_DIGITAL_PRODUCTS: { total: 0, verified: 0, qualified: 0, published: 0, rejected: 0 }
+      LANE_D_DIGITAL_PRODUCTS: { total: 0, verified: 0, qualified: 0, published: 0, rejected: 0 },
+      LANE_E_FINANCIAL_INTELLIGENCE: { total: 0, verified: 0, qualified: 0, published: 0, rejected: 0 }
     };
     const byState: Record<string, number> = {};
     let totalTracked = 0;

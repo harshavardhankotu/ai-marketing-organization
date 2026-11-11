@@ -337,12 +337,14 @@ export class AutonomousRevenueOrchestrator {
       console.log(`[ARO] Best action: ${nextBestAction.actionType} (target: ${nextBestAction.targetId}, score: ${nextBestAction.score.toFixed(2)})`);
 
       // Check B2B Backlog Guard (V5.7 Phase 2)
+      // Stage I P2: Only halt cold B2B draft generation when unapproved drafts >= 10.
+      // Inbound triage, qualification, proposals, affiliate deals, SiteFix audits, and Financial Radar are NEVER blocked.
       const { checkB2BResearchBacklogGuard } = await import('./b2b-research-backlog-guard.js');
       const b2bGuard = await checkB2BResearchBacklogGuard();
-      const isB2BResearchAction = ['DISCOVER_PROSPECTS', 'DRAFT_OUTREACH', 'GENERATE_DRAFTS', 'REPLY_DESK_DISCOVER'].includes(nextBestAction.actionType);
+      const isB2BDraftAction = ['DRAFT_OUTREACH', 'GENERATE_DRAFTS'].includes(nextBestAction.actionType);
 
-      if (!b2bGuard.allowed && isB2BResearchAction) {
-        console.warn(`[ARO] B2B action ${nextBestAction.actionType} short-circuited: ${b2bGuard.unapprovedCount} unapproved drafts pending owner review (limit: ${b2bGuard.maxLimit}). Redirecting budget to Affiliate Deal Discovery & Public SiteFix Audits.`);
+      if (!b2bGuard.allowed && isB2BDraftAction) {
+        console.warn(`[ARO] B2B draft action ${nextBestAction.actionType} short-circuited: ${b2bGuard.unapprovedCount} unapproved drafts pending owner review (limit: ${b2bGuard.maxLimit}). Redirecting budget to Affiliate Deal Discovery & dynamic SiteFix Audits.`);
         try {
           const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
           await AutonomousDealDiscoveryEngine.getInstance().harvestAllApprovedMerchantFeeds(organizationId, businessId);
@@ -350,13 +352,24 @@ export class AutonomousRevenueOrchestrator {
           console.warn(`[ARO] Redirect deal harvest error: ${dealErr.message}`);
         }
         try {
-          const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
-          await SiteAuditService.getInstance().runFullAudit('dentalsolutions.com');
+          const db = (await import('../db/client.js')).getDb();
+          const candidateRow = db.prepare(`
+            SELECT website FROM opportunities
+            WHERE website IS NOT NULL AND TRIM(website) != ''
+              AND LOWER(website) NOT LIKE '%dentalsolutions%'
+              AND LOWER(COALESCE(source, '')) != 'test_quarantined'
+              AND LOWER(website) NOT IN (SELECT LOWER(target_domain) FROM site_audits WHERE target_domain IS NOT NULL)
+            ORDER BY created_at DESC LIMIT 1
+          `).get() as { website?: string } | undefined;
+          if (candidateRow?.website) {
+            const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
+            await SiteAuditService.getInstance().runFullAudit(candidateRow.website);
+          }
         } catch (auditErr: any) {
           console.warn(`[ARO] Redirect site audit error: ${auditErr.message}`);
         }
         nextBestAction.actionType = 'IDLE';
-        nextBestAction.rationale = `B2B research halted: ${b2bGuard.unapprovedCount} unapproved drafts. Budget redirected to Affiliate Deal Discovery & SiteFix Audits.`;
+        nextBestAction.rationale = `B2B cold draft generation halted (${b2bGuard.unapprovedCount} unapproved drafts); inbound/affiliate/SiteFix lanes active.`;
       }
 
       // ──────────────────────────────────────────────────────────────────

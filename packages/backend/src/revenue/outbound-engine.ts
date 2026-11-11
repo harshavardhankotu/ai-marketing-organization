@@ -138,17 +138,19 @@ export class OutboundEngine {
       };
     }
 
-    // 2. Rolling 24-hour daily outbound cap (5 sends max across platform)
-    const rollingCount = this.policyController.getRolling24hOutboundCount(request.organizationId);
-    if (rollingCount >= 5) {
-      return {
-        success: false,
-        actionClassification: 'BLOCKED_AUTHORIZATION',
-        provider: request.channel === 'EMAIL' ? 'EMAIL' : 'WHATSAPP',
-        error: `DAILY_OUTBOUND_CAP_REACHED: Rolling 24-hour limit of 5 outbound actions reached (${rollingCount} sent in last 24h).`,
-        status: 'DAILY_OUTBOUND_CAP_REACHED',
-        dispatchedAt
-      };
+    // 2. Rolling 24-hour daily outbound cap (5 cold sends max; exempts customer-initiated inbound 24h replies)
+    if (!request.isInboundResponse) {
+      const rollingCount = this.policyController.getRolling24hOutboundCount(request.organizationId);
+      if (rollingCount >= 5) {
+        return {
+          success: false,
+          actionClassification: 'BLOCKED_AUTHORIZATION',
+          provider: request.channel === 'EMAIL' ? 'EMAIL' : 'WHATSAPP',
+          error: `DAILY_OUTBOUND_CAP_REACHED: Rolling 24-hour limit of 5 outbound actions reached (${rollingCount} sent in last 24h).`,
+          status: 'DAILY_OUTBOUND_CAP_REACHED',
+          dispatchedAt
+        };
+      }
     }
 
     // 3. WhatsApp Cold Outreach Pause (paused for platform safety; only inbound responses allowed)
