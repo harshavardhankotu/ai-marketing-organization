@@ -509,7 +509,8 @@ describe('Sales Reality, False-Live Regression Invariants & Real State Machine (
       expect(json.success).toBe(true);
       expect(json.data.intent).toBe('PRICE_QUESTION');
       expect(json.data.routedAction).toBe('SEND_PRICING_DETAILS');
-      expect(json.data.responseTemplate).toContain('₹15,000');
+      expect(json.data.responseTemplate).not.toContain('₹15,000');
+      expect(json.data.responseTemplate).toContain('₹499');
     });
 
     it('Invariant 18: GET /payments/razorpay/health reports gateway readiness without exposing secrets', async () => {

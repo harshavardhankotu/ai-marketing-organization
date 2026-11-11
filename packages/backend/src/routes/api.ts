@@ -186,6 +186,7 @@ export const EXACT_ROUTE_POLICY = {
     '/capabilities',
     '/tools',
     '/tools/site-audit',
+    '/customer-desk',
     '/agents',
     '/public/feeds',
     '/feeds'
@@ -1361,19 +1362,51 @@ apiRouter.get('/cron/status', async (c) => {
   const idleCycleShare = totalCycles > 0 ? Math.round((idleCycles / totalCycles) * 100) : 100;
 
   let recentPings24h: number = 0;
+  let manualOrCurlPings24h: number = 0;
   let scheduledActiveHours24h: number = 0;
   let scheduledWorkflowExecutions24h: number = 0;
   let manualExecutions24h: number = 0;
   try {
-    const since24hIso = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    const cutoff24hMs = Date.now() - 24 * 3600 * 1000;
+    const since24hIso = new Date(cutoff24hMs).toISOString();
     const since24hSql = since24hIso.replace('T', ' ').replace(/\.\d{3}Z$/, '');
 
-    // Canonical contract: recentPings24h tracks CLOUDFLARE_CRON pings from autonomous_cycle_log
-    const cronPingRow = await d1Repo.queryOne<{ cnt: number }>(
-      'autonomous_cycle_log',
-      `SELECT COUNT(*) as cnt FROM autonomous_cycle_log WHERE trigger_source = 'CLOUDFLARE_CRON' AND (cycle_start >= datetime('now', '-24 hours') OR cycle_start >= ? OR cycle_start >= ?)`,
-      [since24hSql, since24hIso]
-    );
+    // Canonical Stage I.1 contract: derive genuine worker runs & manual/curl pings directly from cron_telemetry heartbeats
+    const telemetryRows = await d1Repo.query<any>(
+      'cron_telemetry',
+      `SELECT id, total_pings, last_observed_ping, last_user_agent, worker_source, metadata_json FROM cron_telemetry`
+    ).catch(() => []);
+
+    const workerHourBuckets = new Set<string>();
+    for (const tRow of telemetryRows) {
+      let pingsList: string[] = [];
+      try {
+        const parsed = typeof tRow.metadata_json === 'string' ? JSON.parse(tRow.metadata_json) : tRow.metadata_json;
+        if (Array.isArray(parsed?.pings24h)) {
+          pingsList = parsed.pings24h.filter((ts: any) => typeof ts === 'string' && new Date(ts).getTime() >= cutoff24hMs);
+        }
+      } catch {}
+
+      let countForRow = pingsList.length;
+      if (countForRow === 0 && parseSqliteTimestampMs(tRow.last_observed_ping) >= cutoff24hMs && Number(tRow.total_pings || 0) > 0) {
+        countForRow = 1;
+        pingsList = [new Date(parseSqliteTimestampMs(tRow.last_observed_ping)).toISOString()];
+      }
+
+      const uaSource = `${tRow.last_user_agent || ''} ${tRow.worker_source || ''}`;
+      const isWorkerRow =
+        tRow.id === 'cloudflare_worker_cron' ||
+        (tRow.id !== 'manual_ping' && /ai-marketing-cron-worker|cloudflare-cron-worker/i.test(uaSource));
+
+      if (isWorkerRow) {
+        recentPings24h += countForRow;
+        for (const ts of pingsList) {
+          workerHourBuckets.add(ts.slice(0, 13));
+        }
+      } else {
+        manualOrCurlPings24h += countForRow;
+      }
+    }
 
     const distinctPingSql = `
       SELECT COUNT(DISTINCT strftime('%Y-%m-%d %H', started_at)) as cnt
@@ -1382,9 +1415,7 @@ apiRouter.get('/cron/status', async (c) => {
         AND (started_at >= ? OR started_at >= ?)
     `;
     const pingRow = await d1Repo.queryOne<{ cnt: number }>('automation_execution_log', distinctPingSql, [since24hSql, since24hIso]);
-    scheduledActiveHours24h = pingRow?.cnt || 0;
-
-    recentPings24h = cronPingRow?.cnt || 0;
+    scheduledActiveHours24h = Math.max(workerHourBuckets.size, pingRow?.cnt || 0);
 
     const schedSql = `
       SELECT COUNT(*) as cnt
@@ -1435,6 +1466,8 @@ apiRouter.get('/cron/status', async (c) => {
       totalPings,
       totalLifetimePings: totalPings,
       recentPings24h,
+      genuineCronWorkerRuns24h: recentPings24h,
+      manualOrCurlPings24h,
       scheduledActiveHours24h,
       scheduledWorkflowExecutions24h,
       manualExecutions24h,
@@ -1510,20 +1543,40 @@ apiRouter.post('/cron/ping', async (c) => {
     staleRecoverySummary = await DurableJobQueue.getInstance().recoverStaleAndBlockedJobs();
   } catch {}
 
-  // 1. Record observed heartbeat in cron_telemetry (fast D1 write)
+  // 1. Record observed heartbeat & rolling 24h timestamps in cron_telemetry (fast D1 write)
   try {
+    const nowIso = new Date().toISOString();
+    const cutoff24hMs = Date.now() - 24 * 3600 * 1000;
+    let existingPings24h: string[] = [];
+    try {
+      const existingRow = await d1Repo.queryOne<{ metadata_json?: string }>(
+        'cron_telemetry',
+        `SELECT metadata_json FROM cron_telemetry WHERE id = ?`,
+        [telemetryId]
+      );
+      const parsedMeta = typeof existingRow?.metadata_json === 'string'
+        ? JSON.parse(existingRow.metadata_json)
+        : existingRow?.metadata_json;
+      if (Array.isArray(parsedMeta?.pings24h)) {
+        existingPings24h = parsedMeta.pings24h.filter((ts: any) => typeof ts === 'string' && new Date(ts).getTime() >= cutoff24hMs);
+      }
+    } catch {}
+    const nextPings24h = [...existingPings24h, nowIso].slice(-200);
+    const metadataJson = JSON.stringify({ pings24h: nextPings24h });
+
     const sql = `
-      INSERT INTO cron_telemetry (id, status, last_observed_ping, total_pings, last_user_agent, worker_source, updated_at)
-      VALUES (?, 'OBSERVED', datetime('now'), 1, ?, ?, datetime('now'))
+      INSERT INTO cron_telemetry (id, status, last_observed_ping, total_pings, last_user_agent, worker_source, metadata_json, updated_at)
+      VALUES (?, 'OBSERVED', datetime('now'), 1, ?, ?, ?, datetime('now'))
       ON CONFLICT(id) DO UPDATE SET
         status = 'OBSERVED',
         last_observed_ping = datetime('now'),
         total_pings = total_pings + 1,
         last_user_agent = ?,
         worker_source = ?,
+        metadata_json = ?,
         updated_at = datetime('now')
     `;
-    const params = [telemetryId, userAgent, workerSource, userAgent, workerSource];
+    const params = [telemetryId, userAgent, workerSource, metadataJson, userAgent, workerSource, metadataJson];
     await d1Repo.executeWrite('cron_telemetry', sql, params);
   } catch (err: any) {
     console.error(`[Cron Ping] Telemetry write notice: ${err.message}`);
@@ -1601,7 +1654,8 @@ apiRouter.post('/cron/recover', async (c) => {
   }
 
   const body = await c.req.json().catch(() => ({} as any));
-  const staleHoursThreshold = Number(body?.staleHoursThreshold) || 24;
+  const rawThreshold = Number(body?.staleHoursThreshold);
+  const staleHoursThreshold = Number.isFinite(rawThreshold) && rawThreshold > 0 ? rawThreshold : undefined;
   const { DurableJobQueue } = await import('../automation/durable-job-queue.js');
   const queueRecovery = await DurableJobQueue.getInstance().recoverStaleAndBlockedJobs({ staleHoursThreshold });
 
@@ -1609,7 +1663,8 @@ apiRouter.post('/cron/recover', async (c) => {
   if (body?.hydrateCuelinksPayouts === true) {
     try {
       const { CuelinksSyncManager } = await import('../commission/cuelinks-sync-manager.js');
-      cuelinksHydration = await CuelinksSyncManager.getInstance().hydrateMissingCampaignPayoutsD1('org_default', 'biz_platform_aro', 20);
+      const hydrationLimit = Number.isFinite(Number(body?.limit)) && Number(body?.limit) > 0 ? Math.min(200, Number(body?.limit)) : 100;
+      cuelinksHydration = await CuelinksSyncManager.getInstance().hydrateMissingCampaignPayoutsD1('org_default', 'biz_platform_aro', hydrationLimit);
     } catch (err: any) {
       cuelinksHydration = { error: err?.message || 'Cuelinks hydration failed' };
     }
@@ -3946,6 +4001,64 @@ apiRouter.post('/offer/inquiry', async (c) => {
     }, 200);
   } catch (err: any) {
     return c.json({ success: false, error: err.message }, 500);
+  }
+});
+
+// Stage I.1 (P1 & P2): 24/7 Product-Aware Event-Driven Customer Desk
+apiRouter.post('/customer-desk/message', async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({} as any));
+    const messageText = String(body.message ?? body.messageText ?? '').trim();
+    if (!messageText) {
+      return c.json({ success: false, error: 'Message text is required' }, 400);
+    }
+
+    const rawChannel = String(body.contactChannel || body.channel || 'WEB_DESK').toUpperCase();
+    const channel: 'WHATSAPP' | 'EMAIL' | 'SMS' | 'WEB_DESK' =
+      rawChannel === 'WHATSAPP' || rawChannel === 'EMAIL' || rawChannel === 'SMS'
+        ? rawChannel
+        : 'WEB_DESK';
+
+    const senderContact = String(
+      body.senderContact || body.email || body.phone || `web_desk_visitor_${Date.now()}`
+    ).trim();
+    const senderName = typeof (body.customerName || body.senderName) === 'string'
+      ? String(body.customerName || body.senderName).trim()
+      : undefined;
+    const productSlugOrContext = typeof (body.productSlugOrContext || body.productSlug) === 'string'
+      ? String(body.productSlugOrContext || body.productSlug).trim()
+      : undefined;
+
+    const { SalesConversationEngine } = await import('../revenue/sales-conversation-engine.js');
+    const result = await SalesConversationEngine.getInstance().handleInboundMessage({
+      organizationId: OwnerAuthService.OWNER_ORGANIZATION_ID,
+      businessId: 'biz_platform_aro',
+      senderContact,
+      senderName,
+      channel,
+      messageText,
+      productSlugOrContext,
+      consentGiven: Boolean(body.consentGiven),
+      receivedAt: new Date().toISOString()
+    });
+
+    return c.json({
+      success: true,
+      deskMode: '24_7_EVENT_DRIVEN',
+      intent: result.intent,
+      confidence: result.confidence,
+      routedAction: result.routedAction,
+      reply: result.responseTemplate || '',
+      responseTemplate: result.responseTemplate || '',
+      resolvedOffer: result.resolvedOffer ?? null,
+      pipelineUpdated: result.pipelineUpdated,
+      suppressed: result.suppressed,
+      escalationCreated: Boolean(result.escalationCreated),
+      escalationId: result.escalationId ?? null,
+      details: result.details
+    }, 200);
+  } catch (err: any) {
+    return c.json({ success: false, error: err?.message || 'Customer desk processing failed' }, 500);
   }
 });
 

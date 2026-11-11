@@ -30,6 +30,8 @@ export interface MutualFundResearchSnapshot {
   annualizedVolatilityPercent: number;
   maxDrawdownPercent: number;
   riskAdjustedRatio: number;
+  dataFreshness?: 'LIVE_DATED_PROVIDER_SERIES' | 'DETERMINISTIC_SCENARIO_MODEL';
+  latestObservationDate?: string;
   sebiComplianceMode: typeof SEBI_COMPLIANCE_MODE;
   disclaimer: string;
 }
@@ -83,6 +85,8 @@ export interface MultiAssetRadarSummary {
     title: string;
     summaryMetric: string;
     evidenceSource: string;
+    dataFreshness?: 'LIVE_DATED_PROVIDER_SERIES' | 'DETERMINISTIC_SCENARIO_MODEL';
+    latestObservationDate?: string;
     sebiComplianceMode: typeof SEBI_COMPLIANCE_MODE;
   }>;
   arbitrageClusters: ArbitrageCluster[];
@@ -180,21 +184,24 @@ export class MultiAssetOpportunityRadar {
       annualizedVolatilityPercent,
       maxDrawdownPercent,
       riskAdjustedRatio,
+      dataFreshness: 'LIVE_DATED_PROVIDER_SERIES',
+      latestObservationDate: latest.date,
       sebiComplianceMode: SEBI_COMPLIANCE_MODE,
       disclaimer: 'Educational historical NAV analytics only. Not personalized investment advice or SEBI IA recommendation.'
     };
   }
 
   /**
-   * Live free public fetch from https://api.mfapi.in/mf/{schemeCode} with 1-hour cache & bounded timeout.
+   * Live free public fetch from https://api.mfapi.in/mf/{schemeCode} with 6-hour cache & bounded timeout.
    */
   public async fetchAndAnalyzeMutualFund(
     schemeCode: string,
     fetchFn: typeof fetch = fetch,
-    lookbackObservations: number = 90
+    lookbackObservations: number = 90,
+    category: MutualFundResearchSnapshot['category'] = 'INDEX_ETF'
   ): Promise<MutualFundResearchSnapshot> {
     const cached = this.navCache.get(schemeCode);
-    if (cached && Date.now() - cached.fetchedAt < 3600 * 1000) {
+    if (cached && Date.now() - cached.fetchedAt < 6 * 3600 * 1000) {
       return cached.payload;
     }
 
@@ -207,7 +214,7 @@ export class MultiAssetOpportunityRadar {
     const json = (await res.json()) as any;
     const metaName = json?.meta?.scheme_name || `Scheme ${schemeCode}`;
     const rawData: MfNavPoint[] = Array.isArray(json?.data) ? json.data.slice(0, lookbackObservations) : [];
-    const snapshot = this.analyzeMutualFundSeries(schemeCode, metaName, rawData);
+    const snapshot = this.analyzeMutualFundSeries(schemeCode, metaName, rawData, category);
     this.navCache.set(schemeCode, { fetchedAt: Date.now(), payload: snapshot });
     return snapshot;
   }
@@ -348,14 +355,29 @@ export class MultiAssetOpportunityRadar {
         missingSchemaCount++;
       }
     }
+    // Separate observed buyer demand signals from matched supply inventory
+    const inboundDemandRows = await safeAll(
+      'platform_prospects',
+      `SELECT COUNT(*) as c FROM platform_prospects WHERE is_test = 0 AND is_junk = 0 AND (source IN ('OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR') OR discovery_source IN ('DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR'))`
+    );
+    const observedB2bDemandSignals = Number(inboundDemandRows[0]?.c || 0);
+
+    const clickRows = await safeAll(
+      'referral_click_events',
+      `SELECT offer_id, campaign, keyword, destination_url
+       FROM referral_click_events
+       WHERE (device_class IS NULL OR device_class NOT IN ('bot', 'known_bot', 'suspected_bot'))
+       ORDER BY created_at DESC LIMIT 500`
+    );
+
     if (auditRows.length > 0) {
       clusters.push({
         clusterId: 'cluster_b2b_sitefix_technical_defects',
         clusterType: 'B2B_TECHNICAL_DEFECT_CLUSTER',
         lane: 'LANE_B_B2B_SERVICES',
         title: 'SMB Websites with Technical SEO / Schema.org / Crawlability Gaps',
-        demandSignalsCount: Math.max(auditRows.length, missingSchemaCount),
-        matchedSupplyItemsCount: 1,
+        demandSignalsCount: observedB2bDemandSignals,
+        matchedSupplyItemsCount: auditRows.length,
         topMatchedSupplySlugOrDomain: lowestAuditDomain,
         topCommissionRatePercent: null,
         priceAdvantageSummary: '₹499 SiteFix Core Technical Fix-Pack vs ₹0 deterministic scan delivery cost',
@@ -366,12 +388,22 @@ export class MultiAssetOpportunityRadar {
     // 2. B2C Product Intent Clusters matching `public_deals` + `cuelinks_campaigns`
     const dealRows = await safeAll(
       'public_deals',
-      `SELECT d.slug, d.title, d.category, d.current_price_inr, d.reference_price_inr, d.evidence_json, c.payout_rate
-       FROM public_deals d
-       LEFT JOIN cuelinks_campaigns c ON CAST(c.campaign_id AS TEXT) = CAST(d.affiliate_campaign_id AS TEXT)
-       WHERE d.product_verified = 1 AND d.affiliate_verified = 1 AND d.availability = 'IN_STOCK' AND d.current_price_inr > 0
+      `SELECT slug, title, category, current_price_inr, reference_price_inr, evidence_json
+       FROM public_deals
+       WHERE product_verified = 1 AND affiliate_verified = 1 AND availability = 'IN_STOCK' AND current_price_inr > 0
        LIMIT 100`
     );
+    const campRows = await safeAll(
+      'cuelinks_campaigns',
+      `SELECT campaign_id, payout_rate FROM cuelinks_campaigns WHERE status = 'ACTIVE'`
+    );
+    const campRateById = new Map<string, string>();
+    for (const c of campRows) {
+      if (c.campaign_id && c.payout_rate) {
+        campRateById.set(String(c.campaign_id), String(c.payout_rate));
+      }
+    }
+
     const byCategory = new Map<string, any[]>();
     for (const d of dealRows) {
       const cat = String(d.category || 'Consumer Deals');
@@ -383,19 +415,42 @@ export class MultiAssetOpportunityRadar {
       let bestItem: any = items[0];
       let bestDiscount = 0;
       let topRate: number | null = null;
+      const slugSet = new Set(items.map(i => String(i.slug || '').toLowerCase()).filter(Boolean));
+      const catLower = category.toLowerCase();
+      let categoryDemandClicks = 0;
+      for (const cl of clickRows) {
+        const oid = String(cl.offer_id || '').toLowerCase();
+        const cmp = String(cl.campaign || '').toLowerCase();
+        const kw = String(cl.keyword || '').toLowerCase();
+        const dest = String(cl.destination_url || '').toLowerCase();
+        if (
+          (oid && slugSet.has(oid)) ||
+          cmp.includes(catLower) ||
+          kw.includes(catLower) ||
+          Array.from(slugSet).some(s => dest.includes(s))
+        ) {
+          categoryDemandClicks++;
+        }
+      }
+
       for (const it of items) {
         const cur = Number(it.current_price_inr || 0);
         const ref = Number(it.reference_price_inr || 0);
         const disc = ref > cur && ref > 0 ? Math.round(((ref - cur) / ref) * 100) : 0;
         let rate: number | null = null;
+        let campId = '';
         try {
           const ev = JSON.parse(it.evidence_json || '{}');
           if (typeof ev.verifiedCommissionRatePercent === 'number' && ev.verifiedCommissionRatePercent > 0) {
             rate = ev.verifiedCommissionRatePercent;
           }
+          if (ev.affiliateCampaignId) {
+            campId = String(ev.affiliateCampaignId);
+          }
         } catch {}
-        if (rate === null && it.payout_rate) {
-          const m = String(it.payout_rate).match(/(\d+(?:\.\d+)?)/);
+        const rawCampRate = campId ? campRateById.get(campId) : undefined;
+        if (rate === null && rawCampRate) {
+          const m = rawCampRate.match(/(\d+(?:\.\d+)?)/);
           if (m && Number(m[1]) > 0) rate = Number(m[1]);
         }
         if (disc >= bestDiscount) {
@@ -411,7 +466,7 @@ export class MultiAssetOpportunityRadar {
         clusterType: 'B2C_PRODUCT_ARBITRAGE_CLUSTER',
         lane: 'LANE_A_AFFILIATE_COMMERCE',
         title: `${category} Verified Buyer Intent & Discount Cluster`,
-        demandSignalsCount: items.length,
+        demandSignalsCount: categoryDemandClicks,
         matchedSupplyItemsCount: items.length,
         topMatchedSupplySlugOrDomain: bestItem?.slug ? String(bestItem.slug) : null,
         topCommissionRatePercent: topRate,
@@ -427,7 +482,10 @@ export class MultiAssetOpportunityRadar {
    * Produces the consolidated SEBI-safe multi-asset financial & arbitrage radar summary
    * for Lane E hydration in `arosControlCenter` and `/owner/today`.
    */
-  public async getRadarSummary(_options?: { skipLiveNetwork?: boolean }): Promise<MultiAssetRadarSummary> {
+  public async getRadarSummary(options?: {
+    skipLiveNetwork?: boolean;
+    fetchFn?: typeof fetch;
+  }): Promise<MultiAssetRadarSummary> {
     const arbitrageClusters = await this.matchBuyerDemandToSupply();
 
     const gsecBench = this.calculateBondYtmAndDuration({
@@ -453,6 +511,7 @@ export class MultiAssetOpportunityRadar {
         title: gsecBench.instrumentName,
         summaryMetric: `Approx YTM ${gsecBench.approxYtmPercent}% | Mod Duration ${gsecBench.modifiedDurationYears}y`,
         evidenceSource: 'Deterministic RBI G-Sec Bond Formula (Educational Paper Model)',
+        dataFreshness: 'DETERMINISTIC_SCENARIO_MODEL',
         sebiComplianceMode: SEBI_COMPLIANCE_MODE
       },
       {
@@ -461,29 +520,62 @@ export class MultiAssetOpportunityRadar {
         title: sgbBench.trancheLabel,
         summaryMetric: `Discount vs Spot ${sgbBench.discountToSpotPercent}% | Effective Advantage ${sgbBench.impliedEffectiveYieldAdvantagePercent}% p.a.`,
         evidenceSource: 'Deterministic Bullion Parity Formula (+2.5% statutory coupon)',
-        sebiComplianceMode: SEBI_COMPLIANCE_MODE
-      },
-      {
-        id: 'lane_e_mfapi_nav_scanner',
-        assetClass: 'MUTUAL_FUND_ETF',
-        title: 'AMFI / MFAPI.in Index ETF Volatility & Drawdown Analyzer',
-        summaryMetric: 'Ready for scheme NAV drawdown, Sharpe ratio & rolling volatility research',
-        evidenceSource: 'https://api.mfapi.in/mf (Free Public AMFI Feed)',
+        dataFreshness: 'DETERMINISTIC_SCENARIO_MODEL',
         sebiComplianceMode: SEBI_COMPLIANCE_MODE
       }
     ];
+
+    const schemesToFetch: Array<{ schemeCode: string; category: MutualFundResearchSnapshot['category'] }> = [
+      { schemeCode: '120716', category: 'INDEX_ETF' },
+      { schemeCode: '119063', category: 'GOLD_ETF' }
+    ];
+
+    let mfapiLiveSuccessCount = 0;
+    if (!options?.skipLiveNetwork) {
+      const settled = await Promise.allSettled(
+        schemesToFetch.map(s => this.fetchAndAnalyzeMutualFund(s.schemeCode, options?.fetchFn ?? fetch, 90, s.category))
+      );
+      for (const r of settled) {
+        if (r.status === 'fulfilled') {
+          mfapiLiveSuccessCount++;
+          const mf = r.value;
+          researchSnapshots.push({
+            id: `lane_e_mfapi_${mf.schemeCode}`,
+            assetClass: 'MUTUAL_FUND_ETF',
+            title: mf.schemeName,
+            summaryMetric: `Latest NAV ₹${mf.latestNav} (${mf.latestDate}) | Period Return ${mf.periodReturnPercent}% | Ann Vol ${mf.annualizedVolatilityPercent}% | MaxDD ${mf.maxDrawdownPercent}%`,
+            evidenceSource: `https://api.mfapi.in/mf/${mf.schemeCode} (Live AMFI NAV Feed)`,
+            dataFreshness: 'LIVE_DATED_PROVIDER_SERIES',
+            latestObservationDate: mf.latestObservationDate || mf.latestDate,
+            sebiComplianceMode: SEBI_COMPLIANCE_MODE
+          });
+        }
+      }
+    }
+
+    if (mfapiLiveSuccessCount === 0) {
+      researchSnapshots.push({
+        id: 'lane_e_mfapi_nav_scanner',
+        assetClass: 'MUTUAL_FUND_ETF',
+        title: 'AMFI / MFAPI.in Index & Gold ETF Volatility & Drawdown Model (120716 / 119063)',
+        summaryMetric: 'Deterministic NAV drawdown, Sharpe ratio & rolling volatility calculator ready',
+        evidenceSource: 'https://api.mfapi.in/mf (Live AMFI Feed — Offline/Test Model Mode)',
+        dataFreshness: 'DETERMINISTIC_SCENARIO_MODEL',
+        sebiComplianceMode: SEBI_COMPLIANCE_MODE
+      });
+    }
 
     arbitrageClusters.push({
       clusterId: 'cluster_lane_e_financial_benchmarks',
       clusterType: 'FINANCIAL_RESEARCH_CLUSTER',
       lane: 'LANE_E_FINANCIAL_INTELLIGENCE',
       title: 'Fixed Income, SGB Bullion Parity & Index ETF Paper Research Models',
-      demandSignalsCount: researchSnapshots.length,
+      demandSignalsCount: 0,
       matchedSupplyItemsCount: researchSnapshots.length,
       topMatchedSupplySlugOrDomain: 'api.mfapi.in',
       topCommissionRatePercent: null,
       priceAdvantageSummary: 'Zero-fee deterministic calculators & SEBI-safe educational paper models',
-      actionableOfferPath: '/api/v1/public/autonomy-status'
+      actionableOfferPath: '/tools/financial-radar'
     });
 
     return {
@@ -495,5 +587,60 @@ export class MultiAssetOpportunityRadar {
       researchSnapshots,
       arbitrageClusters
     };
+  }
+
+  /**
+   * Renders the public SSR HTML page for `GET /tools/financial-radar`.
+   */
+  public renderFinancialRadarHtml(summary: MultiAssetRadarSummary): string {
+    const cardsHtml = summary.researchSnapshots
+      .map(
+        snap => `
+        <article style="background:#111827;border:1px solid #1f2937;border-radius:10px;padding:1.15rem;margin-bottom:0.85rem;">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.45rem;">
+            <span style="font-size:0.75rem;font-weight:700;color:#38bdf8;text-transform:uppercase;">${snap.assetClass.replace(/_/g, ' ')}</span>
+            <span style="font-size:0.75rem;padding:0.15rem 0.5rem;border-radius:999px;background:${snap.dataFreshness === 'LIVE_DATED_PROVIDER_SERIES' ? '#064e3b;color:#6ee7b7' : '#1e293b;color:#cbd5e1'};">${snap.dataFreshness || 'DETERMINISTIC_SCENARIO_MODEL'}${snap.latestObservationDate ? ` • ${snap.latestObservationDate}` : ''}</span>
+          </div>
+          <h2 style="margin:0 0 0.45rem 0;font-size:1.1rem;color:#f8fafc;">${snap.title}</h2>
+          <p style="margin:0 0 0.4rem 0;font-size:0.95rem;color:#e2e8f0;font-weight:600;">${snap.summaryMetric}</p>
+          <div style="font-size:0.8rem;color:#94a3b8;">Source: ${snap.evidenceSource}</div>
+        </article>`
+      )
+      .join('');
+
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>India Financial &amp; Yield Radar (SEBI Educational Research)</title>
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: #030712; color: #f8fafc; line-height: 1.55; }
+    main { max-width: 880px; margin: 0 auto; padding: 2rem 1.25rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <header style="margin-bottom:1.5rem;border-bottom:1px solid #1f2937;padding-bottom:1rem;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;flex-wrap:wrap;">
+        <h1 style="margin:0;font-size:1.65rem;color:#f8fafc;">India Multi-Asset Yield &amp; Volatility Radar</h1>
+        <span style="font-size:0.75rem;background:#1e3a8a;color:#bfdbfe;padding:0.25rem 0.6rem;border-radius:6px;font-weight:700;">${SEBI_COMPLIANCE_MODE}</span>
+      </div>
+      <p style="color:#94a3b8;margin:0.65rem 0 0 0;font-size:0.95rem;">
+        Public AMFI Mutual Fund / Gold ETF NAV analytics (<code>api.mfapi.in</code>), India 10Y G-Sec YTM &amp; Modified Duration modeling, and Sovereign Gold Bond secondary-market parity math.
+      </p>
+    </header>
+    <section style="background:#172554;border:1px solid #1d4ed8;border-radius:8px;padding:0.9rem 1rem;margin-bottom:1.5rem;font-size:0.88rem;color:#dbeafe;">
+      <strong>SEBI Regulatory Guardrail:</strong> Educational historical analytics &amp; paper-model calculators only. Personalized investment advice and automated trade execution are strictly disabled (<code>personalizedAdviceBlocked = true</code>).
+    </section>
+    <section>${cardsHtml}</section>
+    <footer style="margin-top:1.75rem;padding-top:1rem;border-top:1px solid #1f2937;font-size:0.85rem;color:#94a3b8;display:flex;gap:1rem;flex-wrap:wrap;">
+      <a href="/deals" style="color:#38bdf8;text-decoration:none;">Verified Deals Directory</a>
+      <a href="/tools/site-audit" style="color:#38bdf8;text-decoration:none;">SiteFix Website Audit</a>
+      <a href="/offer" style="color:#38bdf8;text-decoration:none;">Lead Triage Offer</a>
+    </footer>
+  </main>
+</body>
+</html>`;
   }
 }

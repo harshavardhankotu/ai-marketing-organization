@@ -2058,7 +2058,8 @@ export class AutonomousRevenueOrchestrator {
           (payload.intent === 'PRICE_QUESTION') ? 'SEND_PRICING_DETAILS' : 'BOOK_MEETING'
         );
         const targetStage = payload.intent === 'READY_TO_BUY' ? 'PAYMENT_PENDING' :
-                            (payload.intent === 'DEMO_REQUEST' || payload.intent === 'ASKING_FOR_DEMO') ? 'MEETING_BOOKED' :
+                            (payload.intent === 'DEMO_REQUEST' || payload.intent === 'ASKING_FOR_DEMO')
+                              ? (payload.slotConfirmed === true ? 'MEETING_BOOKED' : 'DEMO_REQUESTED_PENDING_CONFIRMATION') :
                             (payload.intent === 'PRICE_QUESTION') ? 'QUALIFIED' : 'REPLIED';
 
         if (payload.pipelineId) {

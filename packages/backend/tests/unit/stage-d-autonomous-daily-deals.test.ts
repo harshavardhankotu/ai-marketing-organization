@@ -24,10 +24,11 @@ describe('Stage D & Stage E — Autonomous Daily Deals and Production Conversion
       expect(CONTINUOUS_HOURLY_WORKFLOWS).toContain('affiliate_offer_reconciliation');
       expect(CONTINUOUS_HOURLY_WORKFLOWS).toContain('daily_market_demand_research');
 
-      // Low-value workflows must NOT be in continuous hourly to prevent cron starvation
+      // Event-driven inquiry/reply workflows + revenue lanes run continuously hourly
+      expect(CONTINUOUS_HOURLY_WORKFLOWS).toContain('new_inquiry_processing');
+      expect(CONTINUOUS_HOURLY_WORKFLOWS).toContain('reply_classification_followup');
+      // Outbound cold dispatch must NOT be in continuous hourly
       expect(CONTINUOUS_HOURLY_WORKFLOWS).not.toContain('authorized_outreach_dispatch');
-      expect(CONTINUOUS_HOURLY_WORKFLOWS).not.toContain('new_inquiry_processing');
-      expect(CONTINUOUS_HOURLY_WORKFLOWS).not.toContain('reply_classification_followup');
     });
 
     it('aligns workflow definitions with 60-minute commercial cadence and 360-minute low-value backoff', () => {
@@ -1380,8 +1381,12 @@ describe('Stage D & Stage E — Autonomous Daily Deals and Production Conversion
       expect(qualified.lifecycleState).toBe('QUALIFIED');
 
       const summary = await OwnerDigestService.getInstance().getArosControlCenterSummary();
+      const oppByStateSum = Object.values(summary.opportunitiesByLaneAndState.unifiedOpportunities.byState).reduce((a, b) => a + b, 0);
+      expect(summary.opportunitiesByLaneAndState.opportunityRecords?.total).toBe(oppByStateSum);
       expect(summary.opportunitiesByLaneAndState.unifiedOpportunities.byLane.LANE_A_AFFILIATE_COMMERCE.total).toBeGreaterThanOrEqual(1);
       expect(summary.commercialPerformance.bankConfirmedCashINR.sourceTag).toBe('MEASURED');
+      expect(summary.commercialPerformance.netContributionINR.value).toBeNull();
+      expect(summary.commercialPerformance.netContributionINR.sourceTag).toBe('UNKNOWN_MISSING_COST_DATA');
       expect(typeof summary.scheduledExecutionTruth.genuineCronWorkerRuns24h).toBe('number');
       expect(typeof summary.scheduledExecutionTruth.manualOrCurlPings24h).toBe('number');
     });
@@ -1487,12 +1492,24 @@ describe('Stage D & Stage E — Autonomous Daily Deals and Production Conversion
       expect(mfStats.maxDrawdownPercent).toBeGreaterThan(0);
       expect(mfStats.sebiComplianceMode).toBe(SEBI_COMPLIANCE_MODE);
 
+      // Seed org/biz/customer_offer dynamically so publishedDigitalProducts reflects real active DB rows (not hardcoded 3)
+      db.prepare(`INSERT OR IGNORE INTO organizations (id, name, slug) VALUES ('org_owner_primary', 'Primary Org', 'primary-org')`).run();
+      db.prepare(`INSERT OR IGNORE INTO businesses (id, organization_id, name, vertical_id, vertical_name, city, neighborhood) VALUES ('biz_platform_aro', 'org_owner_primary', 'AI Marketing Org', 'b2b_services', 'B2B Services', 'Hyderabad', 'Madhapur')`).run();
+      db.prepare(`
+        INSERT OR IGNORE INTO customer_offers (id, business_id, organization_id, title, category, price_minor, active)
+        VALUES ('offer_sitefix_i1', 'biz_platform_aro', 'org_owner_primary', 'SiteFix AI Audit', 'B2B_TOOL', 49900, 1)
+      `).run();
+
       const summary = await OwnerDigestService.getInstance().getArosControlCenterSummary();
       expect(summary.quarantinedTestRecordsCount).toBeGreaterThanOrEqual(1);
-      expect(summary.opportunitiesByLaneAndState.unifiedOpportunities.byLane.LANE_A_AFFILIATE_COMMERCE.total).toBeGreaterThanOrEqual(1);
-      expect(summary.opportunitiesByLaneAndState.unifiedOpportunities.byLane.LANE_C_AUTHORIZED_PARTNERSHIPS.total).toBeGreaterThanOrEqual(1);
-      expect(summary.opportunitiesByLaneAndState.unifiedOpportunities.byLane.LANE_D_DIGITAL_PRODUCTS.total).toBeGreaterThanOrEqual(1);
-      expect(summary.opportunitiesByLaneAndState.unifiedOpportunities.byLane.LANE_E_FINANCIAL_INTELLIGENCE.total).toBeGreaterThanOrEqual(1);
+      const stateSum = Object.values(summary.opportunitiesByLaneAndState.opportunityRecords?.byState || {}).reduce((a, b) => a + b, 0);
+      expect(summary.opportunitiesByLaneAndState.opportunityRecords?.total).toBe(stateSum);
+      expect(summary.opportunitiesByLaneAndState.productDealInventory?.total).toBeGreaterThanOrEqual(1);
+      expect(summary.opportunitiesByLaneAndState.productDealInventory?.withVerifiedCommissionRateCount).toBeGreaterThanOrEqual(1);
+      expect(summary.opportunitiesByLaneAndState.activeAffiliateCampaigns).toBeGreaterThanOrEqual(1);
+      const dbOfferCount = (db.prepare(`SELECT COUNT(*) as c FROM customer_offers WHERE active = 1`).get() as any)?.c || 0;
+      expect(summary.opportunitiesByLaneAndState.publishedDigitalProducts).toBe(dbOfferCount);
+      expect(summary.opportunitiesByLaneAndState.financialResearchModels).toBeGreaterThanOrEqual(1);
       expect(summary.financialAndArbitrageRadar?.sebiComplianceMode).toBe(SEBI_COMPLIANCE_MODE);
 
       // P7: 5-state IntegrationCapabilityRegistry (no false STRIPE global blocker)
@@ -1506,6 +1523,117 @@ describe('Stage D & Stage E — Autonomous Daily Deals and Production Conversion
         'AUTHORIZED',
         'OPERATIONALLY_VERIFIED'
       ]);
+    });
+
+    it('Stage I.1 (P3, P5, P6): parses numeric/tier/flat/CPC Cuelinks payouts, joins by root domain, and hydrates live dated MFAPI NAV series onto /tools/financial-radar', async () => {
+      const db = getDb();
+      const {
+        parseVerifiedCampaignPayout,
+        normalizeRootMerchantDomain
+      } = await import('../../src/commission/autonomous-deal-discovery-engine.js');
+      const { CuelinksSyncManager } = await import('../../src/commission/cuelinks-sync-manager.js');
+      const { MultiAssetOpportunityRadar } = await import('../../src/intelligence/multi-asset-opportunity-radar.js');
+
+      // 1. Root domain normalization
+      expect(normalizeRootMerchantDomain('https://www.boat-lifestyle.com/products/x')).toBe('boat-lifestyle.com');
+      expect(normalizeRootMerchantDomain('https://shop.puma.in')).toBe('puma.in');
+
+      // 2. Numeric payout parser without '%' + tier matching + flat INR + CPC rejection reason
+      const numPct = parseVerifiedCampaignPayout({ payout_model: 'CPS', payout_rate: '6.5' }, 1000);
+      expect(numPct.ratePercent).toBe(6.5);
+      expect(numPct.grossCommissionPerApprovedOrderINR).toBe(65);
+
+      const tierMatch = parseVerifiedCampaignPayout(
+        {
+          payout_model: 'CPS',
+          payout_rate: '',
+          payout_categories: [
+            { category: 'Fashion', payout: '4.0', payout_type: 'CPS' },
+            { category: 'Electronics', payout: '7.2', payout_type: 'CPS' }
+          ]
+        },
+        1000,
+        'Electronics'
+      );
+      expect(tierMatch.ratePercent).toBe(7.2);
+
+      const flatRupee = parseVerifiedCampaignPayout({ payout_model: 'CPS', payout_rate: '₹450', payout_type: 'CPS' }, 3000);
+      expect(flatRupee.flatINR).toBe(450);
+      expect(flatRupee.grossCommissionPerApprovedOrderINR).toBe(450);
+
+      const cpcOnly = parseVerifiedCampaignPayout({ payout_model: 'CPC', payout_rate: '3.0', payout_type: 'CPC' }, 1000);
+      expect(cpcOnly.ratePercent).toBeNull();
+      expect(cpcOnly.missingPayoutReason).toBe('CPC_OFFLINE_ONLY');
+
+      // 3. Domain join when deal has no affiliate_campaign_id set
+      db.prepare('DELETE FROM cuelinks_campaigns').run();
+      db.prepare('DELETE FROM public_deals').run();
+      db.prepare(`
+        INSERT INTO cuelinks_campaigns (campaign_id, name, merchant_domain, status, payout_model, payout_rate, cookie_days, category, verification_source)
+        VALUES ('5100', 'Puma India', 'in.puma.com', 'ACTIVE', 'CPS', '6.5', 30, 'Footwear', 'CUELINKS_API_V3')
+      `).run();
+      db.prepare(`
+        INSERT INTO public_deals (
+          id, slug, canonical_slug, sector_code, title, brand, category, merchant,
+          product_url, affiliate_url, current_price_inr,
+          reference_price_inr, availability, deal_kind, product_verified, affiliate_verified, is_monetizable,
+          verification_status, evidence_json, last_verified_at
+        ) VALUES (
+          'deal_puma_dom', 'puma-running-shoes-i1', 'puma-running-shoes-i1',
+          'SECTOR_A_FASHION', 'Puma Running Shoes', 'Puma', 'Footwear', 'Puma India',
+          'https://in.puma.com/in/en/pd/shoes/123', 'https://linksredirect.com/?pub_id=1&url=https%3A%2F%2Fin.puma.com',
+          2000, 4000, 'IN_STOCK', 'PRODUCT_DEAL', 1, 1, 1, 'VERIFIED', '{}', datetime('now')
+        )
+      `).run();
+
+      const mockClient = {
+        isConfigured: () => true,
+        getCampaignDetails: vi.fn().mockResolvedValue(null),
+        searchCampaigns: vi.fn().mockResolvedValue({ campaigns: [], total: 0 }),
+        getOffers: vi.fn().mockResolvedValue({ offers: [], total: 0 })
+      } as any;
+      const syncMgr = CuelinksSyncManager.getInstance(mockClient);
+      const hyd = await syncMgr.hydrateMissingCampaignPayoutsD1('org_owner_primary', 'biz_platform_aro', 100);
+      expect(hyd.syncedPublicDeals).toBe(1);
+      const pumaRow = db.prepare(`SELECT evidence_json FROM public_deals WHERE id = 'deal_puma_dom'`).get() as any;
+      const pumaEv = JSON.parse(pumaRow.evidence_json);
+      expect(pumaEv.verifiedCommissionRatePercent).toBe(6.5);
+      expect(pumaEv.grossCommissionPerApprovedOrderINR).toBe(130);
+
+      // 4. MultiAssetOpportunityRadar live dated MFAPI ingestion + /tools/financial-radar route & path
+      MultiAssetOpportunityRadar.resetInstance();
+      const radar = MultiAssetOpportunityRadar.getInstance();
+      const mockFetch = vi.fn().mockImplementation(async (url: string) => {
+        const scheme = url.includes('119063')
+          ? { code: '119063', name: 'HDFC Gold ETF Fund of Fund - Direct Plan - Growth' }
+          : { code: '120716', name: 'UTI Nifty 50 Index Fund - Direct Plan - Growth' };
+        return new Response(
+          JSON.stringify({
+            meta: { scheme_name: scheme.name },
+            data: [
+              { date: '11-11-2026', nav: '165.4200' },
+              { date: '10-11-2026', nav: '163.1000' },
+              { date: '09-11-2026', nav: '164.0000' }
+            ]
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }) as unknown as typeof fetch;
+
+      const summaryRadar = await radar.getRadarSummary({ skipLiveNetwork: false, fetchFn: mockFetch });
+      const liveMfSnaps = summaryRadar.researchSnapshots.filter(s => s.dataFreshness === 'LIVE_DATED_PROVIDER_SERIES');
+      expect(liveMfSnaps.length).toBe(2);
+      expect(liveMfSnaps[0].latestObservationDate).toBe('11-11-2026');
+      const laneECluster = summaryRadar.arbitrageClusters.find(c => c.clusterId === 'cluster_lane_e_financial_benchmarks');
+      expect(laneECluster?.actionableOfferPath).toBe('/tools/financial-radar');
+      const b2cCluster = summaryRadar.arbitrageClusters.find(c => c.clusterType === 'B2C_PRODUCT_ARBITRAGE_CLUSTER');
+      expect(b2cCluster?.demandSignalsCount).toBe(0);
+      expect(b2cCluster?.matchedSupplyItemsCount).toBe(1);
+
+      const html = radar.renderFinancialRadarHtml(summaryRadar);
+      expect(html).toContain('UTI Nifty 50 Index Fund');
+      expect(html).toContain('LIVE_DATED_PROVIDER_SERIES');
+      expect(html).toContain('EDUCATIONAL_RESEARCH_AND_PAPER_PORTFOLIO_ONLY');
     });
   });
 });

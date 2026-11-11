@@ -793,8 +793,8 @@ export class DurableJobQueue {
 
     let oldestOverdueAgeMinutes = 0;
     if (oldestOverdueTs) {
-      const diffMs = Date.now() - new Date(oldestOverdueTs).getTime();
-      oldestOverdueAgeMinutes = Math.max(0, Math.floor(diffMs / 60000));
+      const diffMs = Date.now() - toUtcMs(oldestOverdueTs);
+      oldestOverdueAgeMinutes = Number.isFinite(diffMs) ? Math.max(0, Math.floor(diffMs / 60000)) : 0;
     }
 
     const toUtcAgeMs = (ts: string): number => {
@@ -835,65 +835,117 @@ export class DurableJobQueue {
    * Duplicate jobs are transitioned to 'NO_ACTION_DUE' with last_error = 'SUPERSEDED_DEDUP'.
    */
   /**
-   * Self-heals stale (>threshold hours) queued jobs and BLOCKED jobs owned by parked/disabled workflows
-   * while obeying SQLite/D1 0044 CHECK constraints (`status = 'NO_ACTION_DUE'` with explicit `last_error` codes).
-   * Enqueues fresh jobs for active enabled workflows that no longer have a pending/running entry.
+   * Self-heals overdue (> max(cadence_minutes, 60)m) QUEUED/RETRY_WAIT jobs and BLOCKED jobs
+   * while obeying SQLite/D1 0044 CHECK constraints (`status = 'DEFERRED'` with explicit `last_error` / `result_json` disposition,
+   * never `'NO_ACTION_DUE'` for stale expiry so it is never confused with completed checks).
+   * Enabled workflow BLOCKED jobs are inspected: missing-credential blocks move to DEFERRED + `DEFERRED_MISSING_CREDENTIAL:<CRED>`,
+   * while transient/resolved blocks reset to QUEUED (`available_at = datetime('now')`, `attempts = 0`).
    */
   public async recoverStaleAndBlockedJobs(options?: {
     staleHoursThreshold?: number;
+    staleMinutesThreshold?: number;
     activeWorkflowIds?: string[];
     parkedWorkflowIds?: string[];
   }): Promise<{
     expiredLeasesRecovered: number;
     supersededStaleCount: number;
     cancelledParkedBlockedCount: number;
+    requeuedActiveBlockedCount: number;
+    deferredMissingCredentialCount: number;
     compactedDuplicateCount: number;
     freshJobsScheduledCount: number;
     queueStatsAfter: Awaited<ReturnType<DurableJobQueue['getQueueStats']>>;
   }> {
     const expiredLeasesRecovered = await this.recoverStaleLeases();
-    const staleHours = Math.max(1, Math.min(168, Math.floor(options?.staleHoursThreshold ?? 24)));
 
-    // Resolve active & parked workflow IDs from automation_registry when not explicitly supplied
+    // Resolve active & parked workflow IDs + cadence_minutes from automation_registry
     const activeSet = new Set<string>(options?.activeWorkflowIds ?? []);
     const parkedSet = new Set<string>(options?.parkedWorkflowIds ?? []);
-    if (!options?.activeWorkflowIds || !options?.parkedWorkflowIds) {
-      try {
-        const regSql = `SELECT id, enabled FROM automation_registry`;
-        const regRows = isProduction()
-          ? await this.d1Repo.query<any>('automation_registry', regSql)
-          : getDb().prepare(regSql).all() as any[];
-        for (const r of regRows) {
-          if (!r?.id) continue;
-          if (Number(r.enabled) === 1 && !options?.activeWorkflowIds) {
-            activeSet.add(String(r.id));
-          } else if (Number(r.enabled) === 0 && !options?.parkedWorkflowIds) {
-            parkedSet.add(String(r.id));
-          }
+    const cadenceMap = new Map<string, number>();
+    try {
+      const regSql = `SELECT id, enabled, cadence_minutes FROM automation_registry`;
+      const regRows = isProduction()
+        ? await this.d1Repo.query<any>('automation_registry', regSql)
+        : getDb().prepare(regSql).all() as any[];
+      for (const r of regRows) {
+        if (!r?.id) continue;
+        const wfId = String(r.id);
+        const cadence = Math.max(60, Number(r.cadence_minutes || 60));
+        cadenceMap.set(wfId, cadence);
+        if (Number(r.enabled) === 1 && !options?.activeWorkflowIds) {
+          activeSet.add(wfId);
+        } else if (Number(r.enabled) === 0 && !options?.parkedWorkflowIds) {
+          parkedSet.add(wfId);
         }
-      } catch {
-        // automation_registry may be absent in minimal unit test DBs
       }
+    } catch {
+      // automation_registry may be absent in minimal unit test DBs
     }
 
-    // 1. Supersede stale >24h QUEUED jobs using schema-valid NO_ACTION_DUE + last_error = 'SUPERSEDED_STALE_WINDOW'
+    // 1. Supersede overdue QUEUED / RETRY_WAIT jobs (> max(cadence_minutes, 60) minutes) using DEFERRED + SUPERSEDED_STALE_WINDOW
+    const explicitMinThreshold = options?.staleMinutesThreshold !== undefined
+      ? Math.max(1, Math.floor(options.staleMinutesThreshold))
+      : options?.staleHoursThreshold !== undefined
+      ? Math.max(60, Math.floor(options.staleHoursThreshold * 60))
+      : null;
+
     let supersededStaleCount = 0;
-    const staleSql = `
-      UPDATE automation_jobs
-      SET status = 'NO_ACTION_DUE',
-          last_error = 'SUPERSEDED_STALE_WINDOW',
-          completed_at = COALESCE(completed_at, datetime('now')),
-          updated_at = datetime('now')
-      WHERE status = 'QUEUED'
-        AND datetime(created_at) < datetime('now', '-' || ? || ' hours')
-    `;
-    try {
+    const staleDispositionJson = JSON.stringify({ disposition: 'SUPERSEDED_STALE_WINDOW' });
+    const execWrite = async (sql: string, params: any[]): Promise<number> => {
       if (isProduction()) {
-        const res = await this.d1Repo.executeWrite('automation_jobs', staleSql, [staleHours]);
-        supersededStaleCount = (res as any)?.rowsAffected ?? (res as any)?.changes ?? 0;
-      } else {
-        const res = getDb().prepare(staleSql).run(staleHours);
-        supersededStaleCount = res.changes || 0;
+        const res = await this.d1Repo.executeWrite('automation_jobs', sql, params);
+        return (res as any)?.rowsAffected ?? (res as any)?.changes ?? 0;
+      }
+      const res = getDb().prepare(sql).run(...params);
+      return res.changes || 0;
+    };
+
+    try {
+      const candidateSql = `
+        SELECT id, workflow_id, available_at, created_at
+        FROM automation_jobs
+        WHERE status IN ('QUEUED', 'RETRY_WAIT')
+      `;
+      const queuedRows = isProduction()
+        ? await this.d1Repo.query<any>('automation_jobs', candidateSql)
+        : getDb().prepare(candidateSql).all() as any[];
+
+      const parseUtc = (ts: string | null | undefined): number => {
+        const s = String(ts || '').trim();
+        if (!s) return NaN;
+        if (/[zZ]$|[+\-]\d{2}:?\d{2}$/.test(s)) return new Date(s).getTime();
+        return new Date(s.includes('T') ? `${s}Z` : `${s.replace(' ', 'T')}Z`).getTime();
+      };
+
+      const staleIds: string[] = [];
+      const nowMs = Date.now();
+      for (const row of queuedRows) {
+        const wfId = String(row.workflow_id || '');
+        const thresholdMins = explicitMinThreshold ?? Math.max(60, cadenceMap.get(wfId) ?? 60);
+        const createdMs = parseUtc(row.created_at);
+        const availMs = parseUtc(row.available_at);
+        const refMs = Number.isFinite(availMs) && availMs > nowMs
+          ? availMs
+          : (Number.isFinite(createdMs) ? createdMs : availMs);
+        const ageMins = Number.isFinite(refMs) ? (nowMs - refMs) / 60000 : 0;
+        if (ageMins > thresholdMins) {
+          staleIds.push(String(row.id));
+        }
+      }
+
+      if (staleIds.length > 0) {
+        const placeholders = staleIds.map(() => '?').join(', ');
+        const staleSql = `
+          UPDATE automation_jobs
+          SET status = 'DEFERRED',
+              last_error = 'SUPERSEDED_STALE_WINDOW',
+              result_json = ?,
+              completed_at = COALESCE(completed_at, datetime('now')),
+              updated_at = datetime('now')
+          WHERE id IN (${placeholders})
+            AND status IN ('QUEUED', 'RETRY_WAIT')
+        `;
+        supersededStaleCount = await execWrite(staleSql, [staleDispositionJson, ...staleIds]);
       }
     } catch (err: any) {
       console.warn(`[JobQueue] recoverStaleAndBlockedJobs stale notice: ${err.message}`);
@@ -914,16 +966,93 @@ export class DurableJobQueue {
           AND workflow_id IN (${placeholders})
       `;
       try {
-        if (isProduction()) {
-          const res = await this.d1Repo.executeWrite('automation_jobs', parkedSql, parkedIds);
-          cancelledParkedBlockedCount = (res as any)?.rowsAffected ?? (res as any)?.changes ?? 0;
-        } else {
-          const res = getDb().prepare(parkedSql).run(...parkedIds);
-          cancelledParkedBlockedCount = res.changes || 0;
-        }
+        cancelledParkedBlockedCount = await execWrite(parkedSql, parkedIds);
       } catch (err: any) {
         console.warn(`[JobQueue] recoverStaleAndBlockedJobs parked notice: ${err.message}`);
       }
+    }
+
+    // 2b. Inspect remaining BLOCKED jobs belonging to active enabled workflows (or unknown workflows not parked):
+    // missing-credential blocks -> DEFERRED (DEFERRED_MISSING_CREDENTIAL:<CRED>); transient/resolved -> QUEUED
+    let requeuedActiveBlockedCount = 0;
+    let deferredMissingCredentialCount = 0;
+    try {
+      const blockedSql = `SELECT id, workflow_id, last_error, payload_json FROM automation_jobs WHERE status = 'BLOCKED'`;
+      const blockedRows = isProduction()
+        ? await this.d1Repo.query<any>('automation_jobs', blockedSql)
+        : getDb().prepare(blockedSql).all() as any[];
+
+      const detectMissingCredential = (errText: string, wfId: string): string | null => {
+        const hay = `${errText} ${wfId}`.toUpperCase();
+        if (hay.includes('META_WHATSAPP') || (hay.includes('WHATSAPP') && /CREDENTIAL|TOKEN|UNCONFIGURED|MISSING|AUTH/.test(hay))) {
+          return 'META_WHATSAPP';
+        }
+        if (hay.includes('BREVO_API_KEY') || (hay.includes('BREVO') && /CREDENTIAL|KEY|UNCONFIGURED|MISSING|AUTH/.test(hay))) {
+          return 'BREVO_EMAIL';
+        }
+        if (/MISSING_CREDENTIAL|CREDENTIAL_MISSING|API_KEY_MISSING|TOKEN_MISSING/.test(hay)) {
+          const m = hay.match(/(?:META_WHATSAPP|BREVO_EMAIL|BREVO_API_KEY|WHATSAPP_ACCESS_TOKEN|GOOGLE_SEARCH_CONSOLE|RAZORPAY_KEY_SECRET)/);
+          return m ? m[0] : 'EXTERNAL_CREDENTIAL';
+        }
+        return null;
+      };
+
+      for (const b of blockedRows) {
+        const wfId = String(b.workflow_id || '');
+        if (parkedSet.has(wfId)) continue;
+        const missingCred = detectMissingCredential(String(b.last_error || ''), wfId);
+        if (missingCred) {
+          const errTag = `DEFERRED_MISSING_CREDENTIAL:${missingCred}`;
+          const resJson = JSON.stringify({ disposition: 'DEFERRED_MISSING_CREDENTIAL', missingCredential: missingCred });
+          const upd = await execWrite(
+            `UPDATE automation_jobs
+             SET status = 'DEFERRED',
+                 last_error = ?,
+                 result_json = ?,
+                 completed_at = COALESCE(completed_at, datetime('now')),
+                 updated_at = datetime('now')
+             WHERE id = ? AND status = 'BLOCKED'`,
+            [errTag, resJson, b.id]
+          );
+          deferredMissingCredentialCount += upd;
+        } else {
+          const upd = await execWrite(
+            `UPDATE automation_jobs
+             SET status = 'QUEUED',
+                 attempts = 0,
+                 available_at = datetime('now'),
+                 locked_at = NULL,
+                 lease_expires_at = NULL,
+                 last_error = NULL,
+                 updated_at = datetime('now')
+             WHERE id = ? AND status = 'BLOCKED'`,
+            [b.id]
+          );
+          requeuedActiveBlockedCount += upd;
+        }
+      }
+    } catch (err: any) {
+      console.warn(`[JobQueue] recoverStaleAndBlockedJobs active blocked notice: ${err.message}`);
+    }
+
+    // Clear stale BLOCKED status flags on enabled workflows in automation_registry so /cron/status resets cleanly
+    try {
+      const clearRegistrySql = `
+        UPDATE automation_registry
+        SET last_status = 'IDLE',
+            retry_count = 0,
+            last_error = NULL,
+            updated_at = datetime('now')
+        WHERE enabled = 1
+          AND last_status = 'BLOCKED'
+      `;
+      if (isProduction()) {
+        await this.d1Repo.executeWrite('automation_registry', clearRegistrySql, []);
+      } else {
+        getDb().prepare(clearRegistrySql).run();
+      }
+    } catch (err: any) {
+      console.warn(`[JobQueue] recoverStaleAndBlockedJobs registry reset notice: ${err.message}`);
     }
 
     const compactedDuplicateCount = await this.compactStaleDuplicateQueueJobs();
@@ -931,7 +1060,7 @@ export class DurableJobQueue {
     // 3. Schedule 1 fresh job for each active enabled workflow that has no remaining active job
     let freshJobsScheduledCount = 0;
     const activeIds = Array.from(activeSet);
-    if (activeIds.length > 0 && (supersededStaleCount > 0 || options?.activeWorkflowIds)) {
+    if (activeIds.length > 0 && (supersededStaleCount > 0 || requeuedActiveBlockedCount > 0 || options?.activeWorkflowIds)) {
       try {
         const activeSql = `SELECT DISTINCT workflow_id FROM automation_jobs WHERE status IN ('QUEUED', 'RUNNING', 'RETRY_WAIT')`;
         const activeRows = isProduction()
@@ -962,6 +1091,8 @@ export class DurableJobQueue {
       expiredLeasesRecovered,
       supersededStaleCount,
       cancelledParkedBlockedCount,
+      requeuedActiveBlockedCount,
+      deferredMissingCredentialCount,
       compactedDuplicateCount,
       freshJobsScheduledCount,
       queueStatsAfter

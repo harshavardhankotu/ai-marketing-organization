@@ -26,7 +26,6 @@ export const MORNING_0900_WORKFLOWS = [
   'outreach_draft_preparation',
   'owner_approval_queue_generation',
   'content_freshness_verification',
-  'new_inquiry_processing',
   'authorized_outreach_dispatch'
 ];
 
@@ -34,13 +33,14 @@ export const EVENING_2100_WORKFLOWS = [
   'seo_keyword_research',
   'multi_market_lead_qualification',
   'proposal_prep_followup',
-  'reply_classification_followup',
   'daily_commercial_summary'
 ];
 
 export const CONTINUOUS_HOURLY_WORKFLOWS = [
   'affiliate_offer_reconciliation',
   'daily_market_demand_research',
+  'new_inquiry_processing',
+  'reply_classification_followup',
   'quota_health_checks',
   'payment_status_reconciliation',
   'healthcare_claim_verification',

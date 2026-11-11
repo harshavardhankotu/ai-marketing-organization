@@ -1150,6 +1150,13 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
         VALUES ('job_parked_blk', 'org_owner_primary', 'biz_platform_aro', 'parked_legacy_wf', 'idem_parked_blk', 'BLOCKED', 3, '{}', datetime('now', '-48 hours'), datetime('now', '-48 hours'))
       `).run();
 
+      db.prepare(`
+        INSERT INTO automation_jobs (id, organization_id, business_id, workflow_id, idempotency_key, status, attempts, payload_json, created_at, available_at)
+        VALUES ('job_cred_blk', 'org_owner_primary', 'biz_platform_aro', 'authorized_outreach_dispatch', 'idem_cred_blk', 'BLOCKED', 1, '{}', datetime('now', '-2 hours'), datetime('now', '-2 hours'))
+      `).run();
+      const updErr = db.prepare(`UPDATE automation_jobs SET last_error = 'META_WHATSAPP_TOKEN_MISSING' WHERE id = 'job_cred_blk'`).run();
+      expect(updErr.changes).toBe(1);
+
       const recovery = await DurableJobQueue.getInstance().recoverStaleAndBlockedJobs({
         staleHoursThreshold: 24,
         parkedWorkflowIds: ['parked_legacy_wf'],
@@ -1158,13 +1165,18 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
 
       expect(recovery.supersededStaleCount).toBe(1);
       expect(recovery.cancelledParkedBlockedCount).toBe(1);
+      expect(recovery.deferredMissingCredentialCount).toBe(1);
       expect(recovery.freshJobsScheduledCount).toBe(1);
       expect(recovery.queueStatsAfter.blocked).toBe(0);
       expect(recovery.queueStatsAfter.oldestQueuedAgeMinutes).toBeLessThan(60);
 
       const staleRow = db.prepare(`SELECT status, last_error FROM automation_jobs WHERE id = 'job_stale_72h'`).get() as any;
-      expect(staleRow.status).toBe('NO_ACTION_DUE');
+      expect(staleRow.status).toBe('DEFERRED');
       expect(staleRow.last_error).toBe('SUPERSEDED_STALE_WINDOW');
+
+      const credRow = db.prepare(`SELECT status, last_error FROM automation_jobs WHERE id = 'job_cred_blk'`).get() as any;
+      expect(credRow.status).toBe('DEFERRED');
+      expect(credRow.last_error).toBe('DEFERRED_MISSING_CREDENTIAL:META_WHATSAPP');
 
       const parkedRow = db.prepare(`SELECT status, last_error FROM automation_jobs WHERE id = 'job_parked_blk'`).get() as any;
       expect(parkedRow.status).toBe('NO_ACTION_DUE');
@@ -1231,14 +1243,127 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
       expect(econSummary.grossMarginPercent).not.toBe(65);
       expect(econSummary.grossMarginPercent).toBe(0);
 
-      const zeroLane = calculateLaneUnitEconomics({ lane: 'LANE_D_DIGITAL_PRODUCTS', grossRevenueINR: 0 });
+      const unknownCostLane = calculateLaneUnitEconomics({ lane: 'LANE_D_DIGITAL_PRODUCTS', grossRevenueINR: 1000 });
+      expect(unknownCostLane.netContributionINR).toBeNull();
+      expect(unknownCostLane.contributionStatus).toBe('UNKNOWN_MISSING_COST_DATA');
+
+      const zeroLane = calculateLaneUnitEconomics({ lane: 'LANE_D_DIGITAL_PRODUCTS', grossRevenueINR: 0, directCostINR: 0 });
       expect(zeroLane.grossMarginPercent).toBeNull();
-      const liveLane = calculateLaneUnitEconomics({ lane: 'LANE_D_DIGITAL_PRODUCTS', grossRevenueINR: 1000, gatewayFeePercent: 2 });
+      const liveLane = calculateLaneUnitEconomics({ lane: 'LANE_D_DIGITAL_PRODUCTS', grossRevenueINR: 1000, directCostINR: 0, gatewayFeePercent: 2 });
       expect(liveLane.grossMarginPercent).toBe(98);
 
       const readiness = SystemReadinessEngine.evaluateReadiness('biz_platform_aro');
       expect((readiness.capabilities || {})['STRIPE']).toBeUndefined();
       expect((readiness.capabilities || {})['DIRECT_UPI']?.verified).toBe(true);
+    });
+
+    it('Stage I.1 (P0, P1, P2, P6): 24/7 customer-desk resolves catalog offers & escalations, cron status reads cron_telemetry heartbeats, and GET /tools/financial-radar returns HTTP 200', async () => {
+      const db = getDb();
+      const { OwnerDigestService } = await import('../../src/revenue/owner-digest.js');
+
+      db.prepare('DELETE FROM public_deals').run();
+      db.prepare('DELETE FROM reply_desk_drafts').run();
+      db.prepare(`
+        INSERT INTO public_deals (
+          id, slug, canonical_slug, sector_code, title, brand, category, merchant,
+          product_url, affiliate_url, current_price_inr,
+          reference_price_inr, discount_percent, availability, deal_kind, product_verified, affiliate_verified, is_monetizable,
+          verification_status, evidence_json, last_verified_at
+        ) VALUES (
+          'deal_sony_desk', 'sony-wh1000xm5-desk', 'sony-wh1000xm5-desk',
+          'SECTOR_B_ELECTRONICS', 'Sony WH-1000XM5 Headphones', 'Sony', 'Audio', 'Amazon India',
+          'https://www.amazon.in/dp/B09XS7JWHH', 'https://linksredirect.com/?pub_id=1&url=https%3A%2F%2Fwww.amazon.in%2Fdp%2FB09XS7JWHH',
+          24990, 34990, 29, 'IN_STOCK', 'PRODUCT_DEAL', 1, 1, 1, 'VERIFIED', '{}', datetime('now')
+        )
+      `).run();
+
+      // 1. SiteFix inquiry returns ₹499 (never ₹15,000 clinic fallback)
+      const sitefixRes = await app.request('/api/v1/customer-desk/message', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: 'How much does a sitefix website audit cost?',
+          productSlugOrContext: 'sitefix',
+          customerName: 'Arjun',
+          contactChannel: 'WEB_DESK'
+        })
+      });
+      expect(sitefixRes.status).toBe(200);
+      const sitefixJson = await sitefixRes.json() as any;
+      expect(sitefixJson.success).toBe(true);
+      expect(sitefixJson.reply).toContain('499');
+      expect(sitefixJson.reply).not.toContain('15,000');
+      expect(sitefixJson.resolvedOffer?.idOrSlug).toBe('sitefix_core_499');
+
+      // 2. Product deal slug inquiry resolves exact Sony headphones price
+      const dealRes = await app.request('/api/v1/customer-desk/message', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: 'How much is this deal and what is the discount?',
+          productSlugOrContext: 'sony-wh1000xm5-desk',
+          contactChannel: 'WEB_DESK'
+        })
+      });
+      expect(dealRes.status).toBe(200);
+      const dealJson = await dealRes.json() as any;
+      expect(dealJson.resolvedOffer?.priceINR).toBe(24990);
+      expect(dealJson.reply).toContain('24,990');
+
+      // 3. Escalation inquiry creates OWNER_ESCALATION_REQUIRED row surfaced on /owner/today
+      const escRes = await app.request('/api/v1/customer-desk/message', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: 'This is too expensive and I need director approval for custom enterprise deployment',
+          senderContact: 'cto@example.in',
+          customerName: 'Vikram',
+          contactChannel: 'WEB_DESK'
+        })
+      });
+      expect(escRes.status).toBe(200);
+      const escJson = await escRes.json() as any;
+      expect(escJson.escalationCreated).toBe(true);
+      expect(escJson.escalationId).toBeTruthy();
+
+      const digest = await OwnerDigestService.getInstance().generateDigestAsync();
+      expect((digest.escalations || []).length).toBeGreaterThanOrEqual(1);
+      const ownerHtml = OwnerDigestService.getInstance().renderHtml(digest);
+      expect(ownerHtml).toContain('Owner Escalations Required');
+
+      // 4. Cron ping + status reads genuineCronWorkerRuns24h & manualOrCurlPings24h directly from cron_telemetry
+      db.prepare('DELETE FROM cron_telemetry').run();
+      await app.request('/api/v1/cron/ping', {
+        method: 'POST',
+        headers: {
+          'X-Cron-Secret': 'cron_ping_default_dev',
+          'User-Agent': 'ai-marketing-cron-worker/1.0'
+        }
+      });
+      await app.request('/api/v1/cron/ping', {
+        method: 'POST',
+        headers: {
+          'X-Cron-Secret': 'cron_ping_default_dev',
+          'User-Agent': 'curl/8.4.0'
+        }
+      });
+      const statusRes = await app.request('/api/v1/cron/status');
+      expect(statusRes.status).toBe(200);
+      const statusJson = await statusRes.json() as any;
+      expect(statusJson.data.recentPings24h).toBeGreaterThanOrEqual(1);
+      expect(statusJson.data.genuineCronWorkerRuns24h).toBeGreaterThanOrEqual(1);
+      expect(statusJson.data.manualOrCurlPings24h).toBeGreaterThanOrEqual(1);
+
+      // 5. Public SSR /tools/financial-radar and /sitemap.xml
+      const radarPageRes = await app.request('/tools/financial-radar');
+      expect(radarPageRes.status).toBe(200);
+      const radarHtml = await radarPageRes.text();
+      expect(radarHtml).toContain('EDUCATIONAL_RESEARCH_AND_PAPER_PORTFOLIO_ONLY');
+
+      const sitemapRes = await app.request('/sitemap.xml');
+      expect(sitemapRes.status).toBe(200);
+      const sitemapXml = await sitemapRes.text();
+      expect(sitemapXml).toContain('/tools/financial-radar');
     });
   });
 });

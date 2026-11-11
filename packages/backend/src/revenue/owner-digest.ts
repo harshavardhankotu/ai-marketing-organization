@@ -100,6 +100,24 @@ export interface ArosControlCenterSummary {
       publiclyAuthorized: number;
       internalProspectOnly: number;
     };
+    opportunityRecords?: {
+      total: number;
+      byState: Record<string, number>;
+      byLane: Record<string, { total: number; verified: number; qualified: number; published: number; rejected: number }>;
+      sourceTable: 'opportunities';
+    };
+    productDealInventory?: {
+      total: number;
+      verified: number;
+      indexedEligible: number;
+      withVerifiedCommissionRateCount: number;
+      missingPayoutBreakdown: Record<string, number>;
+    };
+    activeAffiliateCampaigns?: number;
+    approvedPartnerOffers?: number;
+    publishedDigitalProducts?: number;
+    financialResearchModels?: number;
+    buyerDemandSignals?: number;
     unifiedOpportunities: {
       totalTracked: number;
       byLane: Record<string, { total: number; verified: number; qualified: number; published: number; rejected: number }>;
@@ -117,7 +135,7 @@ export interface ArosControlCenterSummary {
     approvedCommissionINR: { value: number | null; sourceTag: 'PROVIDER_REPORTED' | 'UNAVAILABLE' };
     bankConfirmedCashINR: { value: number; sourceTag: 'MEASURED' };
     operatingExpensesINR: { value: number | null; sourceTag: 'MEASURED' | 'UNAVAILABLE' };
-    netContributionINR: { value: number; sourceTag: 'MEASURED' | 'ESTIMATED' };
+    netContributionINR: { value: number | null; sourceTag: 'MEASURED' | 'ESTIMATED' | 'UNKNOWN_MISSING_COST_DATA' };
   };
   paymentAndFulfillmentQueue: {
     countsByState: Record<string, number>;
@@ -155,6 +173,15 @@ export interface OwnerTodayDigest {
   topPainPoints: PainPointItem[];
   yesterdayMetrics: OwnerDigestMetrics;
   nextAction: string;
+  escalations?: Array<{
+    id: string;
+    title: string;
+    snippet: string;
+    draftAnswer: string;
+    intent: string;
+    reason: string;
+    createdAt: string;
+  }>;
   arosControlCenter?: ArosControlCenterSummary;
 }
 
@@ -668,16 +695,23 @@ export class OwnerDigestService {
       const { CostAccountingEngine } = await import('./cost-accounting.js');
       const costRow = await this.queryCcOne<any>(
         'cost_ledger',
-        `SELECT COALESCE(SUM(amount_inr), 0) as s FROM cost_ledger WHERE is_estimated = 0`
+        `SELECT COUNT(*) as cnt, COALESCE(SUM(amount_inr), 0) as s FROM cost_ledger WHERE is_estimated = 0`
       );
-      if (costRow) {
+      if (costRow && Number(costRow.cnt || 0) > 0) {
         operatingExpensesINR = Math.round(Number(costRow.s || 0) * 100) / 100;
       } else {
         void CostAccountingEngine;
       }
     } catch {}
-    const netContributionINR =
-      Math.round((bankConfirmedCashINR - (operatingExpensesINR || 0)) * 100) / 100;
+    const netContributionINR: {
+      value: number | null;
+      sourceTag: 'MEASURED' | 'ESTIMATED' | 'UNKNOWN_MISSING_COST_DATA';
+    } = operatingExpensesINR === null
+      ? { value: null, sourceTag: 'UNKNOWN_MISSING_COST_DATA' }
+      : {
+          value: Math.round((bankConfirmedCashINR - operatingExpensesINR) * 100) / 100,
+          sourceTag: 'MEASURED'
+        };
 
     const claimRows = await this.queryCcAll<any>(
       'manual_upi_claims',
@@ -712,23 +746,40 @@ export class OwnerDigestService {
       }
     }
 
-    const cronRow = await this.queryCcOne<any>(
+    const telemetryRows = await this.queryCcAll<any>(
       'cron_telemetry',
-      `SELECT last_user_agent, last_observed_ping, status FROM cron_telemetry ORDER BY last_observed_ping DESC LIMIT 1`
+      `SELECT id, total_pings, last_observed_ping, last_user_agent, worker_source, status, metadata_json
+       FROM cron_telemetry
+       ORDER BY last_observed_ping DESC`
     );
-    const execRows = await this.queryCcAll<any>(
-      'automation_execution_log',
-      `SELECT trigger_source, COUNT(*) as c
-       FROM automation_execution_log
-       WHERE datetime(started_at) >= datetime('now', '-24 hours')
-       GROUP BY trigger_source`
-    );
+    const cronRow = telemetryRows.find((r: any) => r.id === 'cloudflare_worker_cron') || telemetryRows[0] || null;
+    const cutoff24hMs = Date.now() - 24 * 3600 * 1000;
+    const parseTsMs = (ts: string | null | undefined): number => {
+      if (!ts) return 0;
+      const iso = ts.includes('T') ? (ts.endsWith('Z') ? ts : `${ts}Z`) : `${ts.replace(' ', 'T')}Z`;
+      const ms = new Date(iso).getTime();
+      return Number.isFinite(ms) ? ms : 0;
+    };
     let genuineCronWorkerRuns24h = 0;
     let manualOrCurlPings24h = 0;
-    for (const er of execRows) {
-      const src = String(er.trigger_source || '').toUpperCase();
-      if (src === 'CLOUDFLARE_CRON') genuineCronWorkerRuns24h += Number(er.c || 0);
-      else manualOrCurlPings24h += Number(er.c || 0);
+    for (const tr of telemetryRows) {
+      let pingsList: string[] = [];
+      try {
+        const parsed = typeof tr.metadata_json === 'string' ? JSON.parse(tr.metadata_json) : tr.metadata_json;
+        if (Array.isArray(parsed?.pings24h)) {
+          pingsList = parsed.pings24h.filter((ts: any) => typeof ts === 'string' && new Date(ts).getTime() >= cutoff24hMs);
+        }
+      } catch {}
+      let countForRow = pingsList.length;
+      if (countForRow === 0 && parseTsMs(tr.last_observed_ping) >= cutoff24hMs && Number(tr.total_pings || 0) > 0) {
+        countForRow = 1;
+      }
+      const uaSource = `${tr.last_user_agent || ''} ${tr.worker_source || ''}`;
+      const isWorkerRow =
+        tr.id === 'cloudflare_worker_cron' ||
+        (tr.id !== 'manual_ping' && /ai-marketing-cron-worker|cloudflare-cron-worker/i.test(uaSource));
+      if (isWorkerRow) genuineCronWorkerRuns24h += countForRow;
+      else manualOrCurlPings24h += countForRow;
     }
 
     const latestUserAgent: string | null = cronRow?.last_user_agent || null;
@@ -751,53 +802,54 @@ export class OwnerDigestService {
       }
     }
 
-    // Stage I P4: Hydrate all 5 business lanes dynamically from authoritative tables (excluding quarantined test records)
+    // Stage I.1 P4: Keep opportunities table counts strictly reconciled (total === sum(byState))
+    const oppTotal = oppRows.length;
     let rejectionReasons: Record<string, number> = {};
+    let withVerifiedCommissionRateCount = 0;
+    const missingPayoutBreakdown: Record<string, number> = {};
     try {
-      const rejRows = await this.queryCcAll<any>(
+      const dealEvRows = await this.queryCcAll<any>(
         'public_deals',
-        `SELECT COALESCE(verification_status, 'UNKNOWN') as vs, COALESCE(monetization_status, 'UNKNOWN') as ms, COUNT(*) as c
-         FROM public_deals
-         WHERE affiliate_verified = 0 OR is_monetizable = 0
-         GROUP BY vs, ms`
+        `SELECT evidence_json, verification_status, affiliate_verified, is_monetizable FROM public_deals`
       );
-      for (const rr of rejRows) {
-        const key = `${rr.vs}:${rr.ms}`;
-        rejectionReasons[key] = (rejectionReasons[key] || 0) + (Number(rr.c) || 0);
+      for (const dr of dealEvRows) {
+        if (Number(dr.affiliate_verified || 0) === 0 || Number(dr.is_monetizable || 0) === 0) {
+          const key = `${dr.verification_status || 'UNKNOWN'}:${Number(dr.is_monetizable || 0) === 1 ? 'MONETIZABLE' : 'UNMONETIZED'}`;
+          rejectionReasons[key] = (rejectionReasons[key] || 0) + 1;
+        }
+        try {
+          const ev = JSON.parse(dr.evidence_json || '{}');
+          if (
+            Number(ev?.verifiedCommissionRatePercent) > 0 ||
+            Number(ev?.commissionRatePercent) > 0 ||
+            Number(ev?.verifiedFlatPayoutINR) > 0
+          ) {
+            withVerifiedCommissionRateCount++;
+          } else if (ev?.missingPayoutReason) {
+            const reasonKey = String(ev.missingPayoutReason);
+            missingPayoutBreakdown[reasonKey] = (missingPayoutBreakdown[reasonKey] || 0) + 1;
+          } else {
+            missingPayoutBreakdown['UNHYDRATED_NO_PAYOUT_METADATA'] =
+              (missingPayoutBreakdown['UNHYDRATED_NO_PAYOUT_METADATA'] || 0) + 1;
+          }
+        } catch {
+          missingPayoutBreakdown['UNPARSEABLE_EVIDENCE_JSON'] =
+            (missingPayoutBreakdown['UNPARSEABLE_EVIDENCE_JSON'] || 0) + 1;
+        }
       }
     } catch {}
 
-    byLane.LANE_A_AFFILIATE_COMMERCE.total = Math.max(byLane.LANE_A_AFFILIATE_COMMERCE.total, dealsTotal);
-    byLane.LANE_A_AFFILIATE_COMMERCE.verified = Math.max(byLane.LANE_A_AFFILIATE_COMMERCE.verified, dealsVerified);
-    byLane.LANE_A_AFFILIATE_COMMERCE.qualified = Math.max(byLane.LANE_A_AFFILIATE_COMMERCE.qualified, dealsVerified);
-    byLane.LANE_A_AFFILIATE_COMMERCE.published = Math.max(byLane.LANE_A_AFFILIATE_COMMERCE.published, dealsIndexed);
-    byLane.LANE_A_AFFILIATE_COMMERCE.rejected = Math.max(byLane.LANE_A_AFFILIATE_COMMERCE.rejected, Math.max(0, dealsTotal - dealsVerified));
-
-    byLane.LANE_B_B2B_SERVICES.total = Math.max(byLane.LANE_B_B2B_SERVICES.total, auditsTotal);
-    byLane.LANE_B_B2B_SERVICES.verified = Math.max(byLane.LANE_B_B2B_SERVICES.verified, auditsCompleted);
-    byLane.LANE_B_B2B_SERVICES.qualified = Math.max(byLane.LANE_B_B2B_SERVICES.qualified, auditsCompleted);
-    byLane.LANE_B_B2B_SERVICES.published = Math.max(byLane.LANE_B_B2B_SERVICES.published, auditsPublic);
-
     let activeCampaignsCnt = 0;
     let approvedPartnerOffersCnt = 0;
+    let publishedDigitalProductsCnt = 0;
     try {
       const ccRow = await this.queryCcOne<any>('cuelinks_campaigns', `SELECT COUNT(*) as c FROM cuelinks_campaigns WHERE status = 'ACTIVE'`);
       activeCampaignsCnt = Number(ccRow?.c) || 0;
       const poRow = await this.queryCcOne<any>('partner_offers', `SELECT COUNT(*) as c FROM partner_offers WHERE status IN ('ACTIVE', 'APPROVED', 'VERIFIED')`);
       approvedPartnerOffersCnt = Number(poRow?.c) || 0;
+      const coRow = await this.queryCcOne<any>('customer_offers', `SELECT COUNT(*) as c FROM customer_offers WHERE active = 1`);
+      publishedDigitalProductsCnt = Number(coRow?.c) || 0;
     } catch {}
-    const laneCTotal = activeCampaignsCnt + approvedPartnerOffersCnt;
-    byLane.LANE_C_AUTHORIZED_PARTNERSHIPS.total = Math.max(byLane.LANE_C_AUTHORIZED_PARTNERSHIPS.total, laneCTotal);
-    byLane.LANE_C_AUTHORIZED_PARTNERSHIPS.verified = Math.max(byLane.LANE_C_AUTHORIZED_PARTNERSHIPS.verified, laneCTotal);
-    byLane.LANE_C_AUTHORIZED_PARTNERSHIPS.qualified = Math.max(byLane.LANE_C_AUTHORIZED_PARTNERSHIPS.qualified, activeCampaignsCnt);
-    byLane.LANE_C_AUTHORIZED_PARTNERSHIPS.published = Math.max(byLane.LANE_C_AUTHORIZED_PARTNERSHIPS.published, approvedPartnerOffersCnt);
-
-    // Lane D: Self-serve digital product / micro-tool SKUs live on /tools/site-audit & /offer
-    const liveDigitalProductSkus = 3; // SiteFix AI Audit (₹499), Full Remediation Roadmap (₹1,999), Lead Conversion Blueprint (₹2,999)
-    byLane.LANE_D_DIGITAL_PRODUCTS.total = Math.max(byLane.LANE_D_DIGITAL_PRODUCTS.total, liveDigitalProductSkus);
-    byLane.LANE_D_DIGITAL_PRODUCTS.verified = Math.max(byLane.LANE_D_DIGITAL_PRODUCTS.verified, liveDigitalProductSkus);
-    byLane.LANE_D_DIGITAL_PRODUCTS.qualified = Math.max(byLane.LANE_D_DIGITAL_PRODUCTS.qualified, liveDigitalProductSkus);
-    byLane.LANE_D_DIGITAL_PRODUCTS.published = Math.max(byLane.LANE_D_DIGITAL_PRODUCTS.published, liveDigitalProductSkus);
 
     // Lane E: SEBI-Compliant Multi-Asset Educational Research & Demand-Supply Radar
     let financialAndArbitrageRadar: any = null;
@@ -806,22 +858,15 @@ export class OwnerDigestService {
       financialAndArbitrageRadar = await MultiAssetOpportunityRadar.getInstance().getRadarSummary({
         skipLiveNetwork: Boolean(process.env.VITEST)
       });
-      const laneECount =
-        (financialAndArbitrageRadar?.researchSnapshots?.length || 0) +
-        (financialAndArbitrageRadar?.arbitrageClusters?.length || 0);
-      byLane.LANE_E_FINANCIAL_INTELLIGENCE.total = Math.max(byLane.LANE_E_FINANCIAL_INTELLIGENCE.total, laneECount);
-      byLane.LANE_E_FINANCIAL_INTELLIGENCE.verified = Math.max(byLane.LANE_E_FINANCIAL_INTELLIGENCE.verified, laneECount);
-      byLane.LANE_E_FINANCIAL_INTELLIGENCE.qualified = Math.max(
-        byLane.LANE_E_FINANCIAL_INTELLIGENCE.qualified,
-        financialAndArbitrageRadar?.arbitrageClusters?.length || laneECount
-      );
-      byLane.LANE_E_FINANCIAL_INTELLIGENCE.published = Math.max(
-        byLane.LANE_E_FINANCIAL_INTELLIGENCE.published,
-        financialAndArbitrageRadar?.researchSnapshots?.length || 0
-      );
     } catch {}
 
-    const unifiedTotalTracked = Object.values(byLane).reduce((acc, l) => acc + (l?.total || 0), 0);
+    const financialResearchModelsCnt = financialAndArbitrageRadar?.researchSnapshots?.length || 0;
+    const buyerDemandSignalsCnt = Array.isArray(financialAndArbitrageRadar?.arbitrageClusters)
+      ? financialAndArbitrageRadar.arbitrageClusters.reduce(
+          (acc: number, cl: any) => acc + (Number(cl?.demandSignalsCount) || 0),
+          0
+        )
+      : 0;
 
     // Stage I P7: 5-State Capability Verification Matrix (eliminates false STRIPE global blocker)
     let integrationCapabilities: any = null;
@@ -860,8 +905,26 @@ export class OwnerDigestService {
           publiclyAuthorized: auditsPublic,
           internalProspectOnly: Math.max(0, auditsTotal - auditsPublic)
         },
+        opportunityRecords: {
+          total: oppTotal,
+          byState,
+          byLane,
+          sourceTable: 'opportunities'
+        },
+        productDealInventory: {
+          total: dealsTotal,
+          verified: dealsVerified,
+          indexedEligible: dealsIndexed,
+          withVerifiedCommissionRateCount,
+          missingPayoutBreakdown
+        },
+        activeAffiliateCampaigns: activeCampaignsCnt,
+        approvedPartnerOffers: approvedPartnerOffersCnt,
+        publishedDigitalProducts: publishedDigitalProductsCnt,
+        financialResearchModels: financialResearchModelsCnt,
+        buyerDemandSignals: buyerDemandSignalsCnt,
         unifiedOpportunities: {
-          totalTracked: unifiedTotalTracked,
+          totalTracked: oppTotal,
           byLane,
           byState
         }
@@ -886,7 +949,7 @@ export class OwnerDigestService {
           value: operatingExpensesINR,
           sourceTag: operatingExpensesINR !== null ? 'MEASURED' : 'UNAVAILABLE'
         },
-        netContributionINR: { value: netContributionINR, sourceTag: 'MEASURED' }
+        netContributionINR
       },
       paymentAndFulfillmentQueue: {
         countsByState,
@@ -905,12 +968,37 @@ export class OwnerDigestService {
     };
   }
 
+  private async getEscalationsAsync(): Promise<NonNullable<OwnerTodayDigest['escalations']>> {
+    try {
+      const escRows = await this.queryCcAll<any>(
+        'reply_desk_drafts',
+        `SELECT id, title, snippet, draft_answer, intent_class, qualification_reason, created_at
+         FROM reply_desk_drafts
+         WHERE status = 'OWNER_ESCALATION_REQUIRED' AND (is_test = 0 OR is_test IS NULL)
+         ORDER BY created_at DESC
+         LIMIT 20`
+      );
+      return (escRows || []).map((r: any) => ({
+        id: String(r.id),
+        title: String(r.title || 'OWNER_ESCALATION_REQUIRED'),
+        snippet: String(r.snippet || ''),
+        draftAnswer: String(r.draft_answer || ''),
+        intent: String(r.intent_class || 'ESCALATED'),
+        reason: String(r.qualification_reason || ''),
+        createdAt: String(r.created_at || '')
+      }));
+    } catch {
+      return [];
+    }
+  }
+
   public async generateDigestAsync(asOfDate: Date = new Date()): Promise<OwnerTodayDigest> {
     if (!isProduction()) {
       const localDigest = this.generateDigest(asOfDate);
       try {
         localDigest.arosControlCenter = await this.getArosControlCenterSummary();
       } catch {}
+      localDigest.escalations = await this.getEscalationsAsync();
       return localDigest;
     }
 
@@ -1285,6 +1373,8 @@ export class OwnerDigestService {
       arosControlCenter = await this.getArosControlCenterSummary();
     } catch {}
 
+    const escalations = await this.getEscalationsAsync();
+
     return {
       date: todayStr,
       yesterdayDate: yesterdayStr,
@@ -1297,6 +1387,7 @@ export class OwnerDigestService {
       topPainPoints,
       yesterdayMetrics: { visits, clicks, leads, payments },
       nextAction,
+      escalations,
       arosControlCenter
     };
   }
@@ -1636,6 +1727,21 @@ export class OwnerDigestService {
     <h2>Direct Inbound Inquiries (${digest.inquiries.length})</h2>
     ${inquiriesHtml}
   </div>
+
+  ${digest.escalations && digest.escalations.length > 0 ? `
+  <div class="card" style="border-color:#f59e0b;">
+    <h2 style="color:#fbbf24;">⚠️ Owner Escalations Required (${digest.escalations.length})</h2>
+    ${digest.escalations.map(esc => `
+      <div style="background:#1e293b;border:1px solid #475569;border-radius:8px;padding:0.85rem;margin-bottom:0.6rem;">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;flex-wrap:wrap;">
+          <strong style="color:#f8fafc;">${esc.title}</strong>
+          <span style="background:#92400e;color:#fde68a;font-size:0.75rem;padding:0.15rem 0.45rem;border-radius:4px;">${esc.intent}</span>
+        </div>
+        <p style="margin:0.4rem 0;color:#cbd5e1;font-size:0.88rem;">${esc.snippet}</p>
+        <div style="color:#94a3b8;font-size:0.8rem;">Action: ${esc.draftAnswer} (${esc.reason})</div>
+      </div>
+    `).join('')}
+  </div>` : ''}
 
   ${digest.arosControlCenter ? `
   <div class="card">
