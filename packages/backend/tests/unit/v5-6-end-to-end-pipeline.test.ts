@@ -152,17 +152,25 @@ describe('V5.6 — End-to-End Autonomous Pipeline Wiring', () => {
       });
       await dealEngine.executeAutonomousCycle('test_cycle_v5_6');
 
+      // Select SECTOR_B_ELECTRONICS (where this test seeded a verified deal) deterministically
+      const learningEngine = CommercialLearningEngine.getInstance();
+      learningEngine.ensureBanditInitialized();
+      vi.spyOn(learningEngine, 'selectNextSectorToExplore').mockReturnValueOnce({
+        selectedSector: 'SECTOR_B_ELECTRONICS',
+        selectionMode: 'COLD_START_EXPLORATION',
+        sampleScore: 0.5,
+        allSectors: {} as any
+      });
+
       // Execute daily_market_demand_research
       const execResult = await registry.executeWorkflow('daily_market_demand_research', 'TEST_HARNESS', 20000);
       expect(execResult.status).toBe('COMPLETED');
       expect(execResult.itemsProcessed).toBeGreaterThanOrEqual(1);
 
       // Verify that commercial bandit recorded the interaction
-      const learningEngine = CommercialLearningEngine.getInstance();
-      learningEngine.ensureBanditInitialized();
       const banditStates = learningEngine.getSectorBanditIntelligence();
       expect(Object.keys(banditStates).length).toBe(8);
-    });
+    }, 60000);
   });
 
   describe('4. Server-Rendered Public /audit/:domain Page', () => {

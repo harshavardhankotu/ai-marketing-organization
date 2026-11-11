@@ -978,12 +978,12 @@ export class AutomationRegistryEngine {
           await SiteAuditService.getInstance().runFullAudit('https://dentalsolutions.com', 'Dental Solutions');
         } catch {}
 
-        // Discover and verify active in-stock deals for the selected sector
+        // Discover and verify active in-stock deals strictly attributable to the selected sector
         const allDeals = dealEngine.getAllDeals();
         const sectorDeals = allDeals.filter(d =>
           (d.sectorCode === sectorCode || dealEngine.mapCategoryToSectorCode(d.category) === sectorCode) &&
           d.availability === 'IN_STOCK' &&
-          (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS')
+          (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'AFFILIATE_VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS')
         );
 
         // Ping IndexNow for newly published compare guides and deals
@@ -1010,15 +1010,13 @@ export class AutomationRegistryEngine {
           );
         }
 
-        const verifiedActiveDeals = allDeals.filter(d =>
-          d.availability === 'IN_STOCK' &&
-          (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'AFFILIATE_VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS')
-        );
-        const itemsSucceeded = cycleResult.offersVerified || sectorDeals.length || verifiedActiveDeals.length;
-        const status = itemsSucceeded > 0 ? 'COMPLETED' : 'COMPLETED_NO_FINDINGS';
+        const itemsSucceeded = sectorDeals.length;
+        const status: WorkflowStatus = cycleResult.status === 'FAILED'
+          ? 'ERROR'
+          : (itemsSucceeded > 0 ? 'COMPLETED' : 'COMPLETED_NO_FINDINGS');
         return {
           status,
-          itemsProcessed: cycleResult.offersDiscovered || sectorDeals.length || verifiedActiveDeals.length,
+          itemsProcessed: sectorDeals.length,
           itemsSucceeded,
           itemsFailed: cycleResult.offersRejected || 0,
           summary: {
@@ -1150,7 +1148,18 @@ export class AutomationRegistryEngine {
           candidateRows = isProduction()
             ? await this.d1Repo.query<any>('platform_prospects', sql)
             : getDb().prepare(sql).all();
-        } catch {}
+        } catch (err: any) {
+          return {
+            status: 'ERROR',
+            itemsProcessed: 0,
+            itemsSucceeded: 0,
+            itemsFailed: 1,
+            summary: {
+              error: err?.message || 'PROSPECT_CANDIDATE_QUERY_FAILED',
+              queryStage: 'candidate_fetch'
+            }
+          };
+        }
 
         if (candidateRows.length === 0) {
           return {
@@ -1165,6 +1174,8 @@ export class AutomationRegistryEngine {
         let qualifiedCount = 0;
         let suppressedCount = 0;
         let duplicateCount = 0;
+        let queryErrorCount = 0;
+        const queryErrors: string[] = [];
 
         const seenDomains = new Set<string>();
         const seenPhones = new Set<string>();
@@ -1205,17 +1216,26 @@ export class AutomationRegistryEngine {
                 ? await this.d1Repo.queryOne<any>('platform_prospects', checkExistingSql, [p.id, cleanEmail, phoneDigits, domain])
                 : getDb().prepare(checkExistingSql).get(p.id, cleanEmail, phoneDigits, domain);
               if (existingMatch) isDuplicate = true;
-            } catch {}
+            } catch (err: any) {
+              queryErrorCount++;
+              queryErrors.push(`duplicate_check(${p.id}): ${err?.message || 'Query error'}`);
+              continue;
+            }
           }
 
           if (isDuplicate) {
-            const updateDupSql = `UPDATE platform_prospects SET status = 'DUPLICATE', is_junk = 1, updated_at = datetime('now') WHERE id = ?`;
-            if (isProduction()) {
-              await this.d1Repo.executeWrite('platform_prospects', updateDupSql, [p.id]);
-            } else {
-              getDb().prepare(updateDupSql).run(p.id);
+            try {
+              const updateDupSql = `UPDATE platform_prospects SET status = 'DUPLICATE', is_junk = 1, updated_at = datetime('now') WHERE id = ?`;
+              if (isProduction()) {
+                await this.d1Repo.executeWrite('platform_prospects', updateDupSql, [p.id]);
+              } else {
+                getDb().prepare(updateDupSql).run(p.id);
+              }
+              duplicateCount++;
+            } catch (err: any) {
+              queryErrorCount++;
+              queryErrors.push(`mark_duplicate(${p.id}): ${err?.message || 'Write error'}`);
             }
-            duplicateCount++;
             continue;
           }
 
@@ -1231,29 +1251,47 @@ export class AutomationRegistryEngine {
               ? await this.d1Repo.queryOne<any>('outreach_suppression_list', suppSql, [domain, p.phone || '', p.email || ''])
               : getDb().prepare(suppSql).get(domain, p.phone || '', p.email || '');
             if (suppRow) isSuppressed = true;
-          } catch {}
+          } catch (err: any) {
+            queryErrorCount++;
+            queryErrors.push(`suppression_check(${p.id}): ${err?.message || 'Query error'}`);
+            continue;
+          }
 
           const newStatus = isSuppressed ? 'SUPPRESSED' : 'QUALIFIED';
-          const updateSql = `UPDATE platform_prospects SET status = ?, updated_at = datetime('now') WHERE id = ?`;
-          if (isProduction()) {
-            await this.d1Repo.executeWrite('platform_prospects', updateSql, [newStatus, p.id]);
-          } else {
-            getDb().prepare(updateSql).run(newStatus, p.id);
+          try {
+            const updateSql = `UPDATE platform_prospects SET status = ?, updated_at = datetime('now') WHERE id = ?`;
+            if (isProduction()) {
+              await this.d1Repo.executeWrite('platform_prospects', updateSql, [newStatus, p.id]);
+            } else {
+              getDb().prepare(updateSql).run(newStatus, p.id);
+            }
+          } catch (err: any) {
+            queryErrorCount++;
+            queryErrors.push(`update_status(${p.id}): ${err?.message || 'Write error'}`);
+            continue;
           }
 
           if (isSuppressed) suppressedCount++;
           else qualifiedCount++;
         }
 
-        const status = candidateRows.length === 0
-          ? 'NO_ACTION_DUE'
-          : (qualifiedCount > 0 || suppressedCount > 0 || duplicateCount > 0 ? 'COMPLETED' : 'COMPLETED_NO_FINDINGS');
+        const handledCount = qualifiedCount + suppressedCount + duplicateCount;
+        const status: WorkflowStatus = queryErrorCount > 0
+          ? (handledCount > 0 ? 'PARTIAL' : 'ERROR')
+          : (handledCount > 0 ? 'COMPLETED' : 'COMPLETED_NO_FINDINGS');
         return {
           status,
           itemsProcessed: candidateRows.length,
           itemsSucceeded: qualifiedCount,
-          itemsFailed: suppressedCount + duplicateCount,
-          summary: { qualifiedCount, suppressedCount, duplicateCount, dedupChecked: true }
+          itemsFailed: suppressedCount + duplicateCount + queryErrorCount,
+          summary: {
+            qualifiedCount,
+            suppressedCount,
+            duplicateCount,
+            queryErrorCount,
+            queryErrors,
+            dedupChecked: queryErrorCount === 0
+          }
         };
       }
 
@@ -1626,15 +1664,15 @@ export class AutomationRegistryEngine {
         let expiredDealsCount = 0;
         let activeDealsCount = 0;
         try {
-          const sqlExp = `SELECT COUNT(*) as c FROM verified_deals WHERE status = 'ACTIVE' AND datetime(expires_at) < datetime('now')`;
+          const sqlExp = `SELECT COUNT(*) as c FROM public_deals WHERE availability = 'IN_STOCK' AND verification_status IN ('VERIFIED', 'AFFILIATE_VERIFIED', 'VERIFIED_WITH_CONDITIONS') AND expiry_date IS NOT NULL AND datetime(expiry_date) < datetime('now')`;
           const expRow = isProduction()
-            ? await this.d1Repo.queryOne<any>('verified_deals', sqlExp)
+            ? await this.d1Repo.queryOne<any>('public_deals', sqlExp)
             : getDb().prepare(sqlExp).get() as any;
           expiredDealsCount = expRow?.c || 0;
 
-          const sqlAct = `SELECT COUNT(*) as c FROM verified_deals WHERE status = 'ACTIVE'`;
+          const sqlAct = `SELECT COUNT(*) as c FROM public_deals WHERE availability = 'IN_STOCK' AND verification_status IN ('VERIFIED', 'AFFILIATE_VERIFIED', 'VERIFIED_WITH_CONDITIONS')`;
           const actRow = isProduction()
-            ? await this.d1Repo.queryOne<any>('verified_deals', sqlAct)
+            ? await this.d1Repo.queryOne<any>('public_deals', sqlAct)
             : getDb().prepare(sqlAct).get() as any;
           activeDealsCount = actRow?.c || 0;
         } catch {}
@@ -1657,40 +1695,65 @@ export class AutomationRegistryEngine {
       }
 
       case 'daily_commercial_summary': {
-        // Aggregate actual ledger records from D1 without hardcoding
-        let verifiedBankCash = 0.0;
-        let adSpend = 0.0;
-        let activeDeals = 0;
-        let qualifiedProspects = 0;
+        let verifiedBankCash: number | null = null;
+        let activeDeals: number | null = null;
+        let qualifiedProspects: number | null = null;
+        const queryErrors: string[] = [];
+        let succeededQueries = 0;
+        const totalQueries = 3;
 
         try {
           const txRow = isProduction()
             ? await this.d1Repo.queryOne<any>('transactions', `SELECT COALESCE(SUM(amount_inr), 0) as total FROM transactions WHERE classification = 'REAL' AND status = 'SUCCESS'`)
             : getDb().prepare(`SELECT COALESCE(SUM(amount_inr), 0) as total FROM transactions WHERE classification = 'REAL' AND status = 'SUCCESS'`).get() as any;
-          verifiedBankCash = txRow?.total || 0.0;
+          verifiedBankCash = Number(txRow?.total ?? 0);
+          succeededQueries++;
+        } catch (err: any) {
+          queryErrors.push(`transactions: ${err?.message || 'QUERY_FAILED'}`);
+        }
 
+        try {
+          const dealsSql = `SELECT COUNT(*) as c FROM public_deals WHERE availability = 'IN_STOCK' AND verification_status IN ('VERIFIED', 'AFFILIATE_VERIFIED', 'VERIFIED_WITH_CONDITIONS')`;
           const dealsRow = isProduction()
-            ? await this.d1Repo.queryOne<any>('verified_deals', `SELECT COUNT(*) as c FROM verified_deals WHERE status = 'ACTIVE'`)
-            : getDb().prepare(`SELECT COUNT(*) as c FROM verified_deals WHERE status = 'ACTIVE'`).get() as any;
-          activeDeals = dealsRow?.c || 0;
+            ? await this.d1Repo.queryOne<any>('public_deals', dealsSql)
+            : getDb().prepare(dealsSql).get() as any;
+          activeDeals = Number(dealsRow?.c ?? 0);
+          succeededQueries++;
+        } catch (err: any) {
+          queryErrors.push(`public_deals: ${err?.message || 'QUERY_FAILED'}`);
+        }
 
+        try {
           const prosRow = isProduction()
             ? await this.d1Repo.queryOne<any>('platform_prospects', `SELECT COUNT(*) as c FROM platform_prospects WHERE is_test = 0 AND is_junk = 0 AND status = 'QUALIFIED'`)
             : getDb().prepare(`SELECT COUNT(*) as c FROM platform_prospects WHERE is_test = 0 AND is_junk = 0 AND status = 'QUALIFIED'`).get() as any;
-          qualifiedProspects = prosRow?.c || 0;
-        } catch {}
+          qualifiedProspects = Number(prosRow?.c ?? 0);
+          succeededQueries++;
+        } catch (err: any) {
+          queryErrors.push(`platform_prospects: ${err?.message || 'QUERY_FAILED'}`);
+        }
+
+        const failedQueries = totalQueries - succeededQueries;
+        const status: WorkflowStatus = failedQueries === 0
+          ? 'COMPLETED'
+          : (succeededQueries > 0 ? 'PARTIAL' : 'ERROR');
 
         return {
-          status: 'COMPLETED',
-          itemsProcessed: 4,
-          itemsSucceeded: 4,
-          itemsFailed: 0,
+          status,
+          itemsProcessed: totalQueries,
+          itemsSucceeded: succeededQueries,
+          itemsFailed: failedQueries,
           summary: {
             verifiedBankCashINR: verifiedBankCash,
-            operatingCostsINR: adSpend,
-            netContributionINR: verifiedBankCash - adSpend,
+            operatingCostsINR: null,
+            adSpendINR: null,
+            adSpendStatus: 'UNMEASURED',
+            netContributionINR: null,
+            netContributionStatus: 'INCOMPLETE_INPUTS',
             activeDeals,
             qualifiedProspects,
+            failedQueries,
+            queryErrors,
             cashInvariantStrict: 'Bank cash strictly ₹0.00 until bank statement proof'
           }
         };

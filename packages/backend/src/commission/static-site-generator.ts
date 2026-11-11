@@ -13,6 +13,8 @@ export interface StaticSiteConfig {
   authorName: string;
   contactEmail: string;
   siteUrl: string;
+  googleSiteVerification?: string;
+  cuelinksVerificationCode?: string;
 }
 
 export interface StaticSiteBuildResult {
@@ -78,11 +80,16 @@ export class StaticSiteGenerator {
       throw new Error(`CONFIG_ERROR: Missing required public site configuration: ${missing.join(', ')}. Must come from owner intake or environment variables. Zero invented fallbacks allowed.`);
     }
 
+    const googleSiteVerification = (process.env.GOOGLE_SITE_VERIFICATION || '').trim() || undefined;
+    const cuelinksVerificationCode = (process.env.CUELINKS_VERIFICATION_CODE || '').trim() || undefined;
+
     return {
       siteName: siteName!,
       authorName: authorName!,
       contactEmail: contactEmail!,
-      siteUrl
+      siteUrl,
+      googleSiteVerification,
+      cuelinksVerificationCode
     };
   }
 
@@ -104,12 +111,16 @@ export class StaticSiteGenerator {
     }
 
     const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').replace(/\/$/, '');
+    const googleSiteVerification = (process.env.GOOGLE_SITE_VERIFICATION || '').trim() || undefined;
+    const cuelinksVerificationCode = (process.env.CUELINKS_VERIFICATION_CODE || '').trim() || undefined;
 
     return {
       siteName: siteName!,
       authorName: authorName!,
       contactEmail: contactEmail!,
-      siteUrl
+      siteUrl,
+      googleSiteVerification,
+      cuelinksVerificationCode
     };
   }
 
@@ -257,7 +268,7 @@ export class StaticSiteGenerator {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  ${this.getGoogleSiteVerificationMeta()}${this.getCuelinksVerificationMeta()}<title>${this.escapeHtml(title)}</title>
+  ${this.getGoogleSiteVerificationMeta(config)}${this.getCuelinksVerificationMeta(config)}<title>${this.escapeHtml(title)}</title>
   <meta name="description" content="Independent commercial equipment, supplies, and specification overviews.">
   <link rel="canonical" href="${canonicalUrl}">
   <meta name="robots" content="index, follow">
@@ -294,7 +305,7 @@ export class StaticSiteGenerator {
   </header>
   <main>
     <aside class="disclosure-box" aria-label="Affiliate Disclosure">
-      <strong>Disclosure:</strong> As an Amazon Associate I earn from qualifying purchases. We do not test products or show prices; check current details on Amazon.in.
+      <strong>#Ad Commercial &amp; Affiliate Disclosure:</strong> This site contains tracked affiliate links and partner buying guides. When visitors make qualifying purchases through those links, we may earn a commission at zero additional cost (including as an Amazon Associate I earn from qualifying purchases). Prices and availability reflect merchant-reported snapshots and must be confirmed on the merchant's checkout page.
     </aside>
     <section>
       <h1 style="color: #fff; font-size: 1.85rem; margin-bottom: 0.5rem;">Commercial Supplies &amp; Equipment Guides</h1>
@@ -327,9 +338,10 @@ export class StaticSiteGenerator {
     const canonicalUrl = `${config.siteUrl}/guides/${guide.slug}`;
     let fullBody = guide.content_markdown || guide.contentMarkdown || guide.body_markdown || guide.body || '';
 
-    // Suppress unbacked penalty and tariff claims per Stage F-Lite Spec
+    // Suppress unbacked penalty, tariff, and unverified airline concession/baggage guarantees per Stage F-Lite Spec
     fullBody = fullBody.replace(/₹500[–-]₹550\s*per\s*kg[^\n\)]*/gi, 'standard excess baggage rates per airline policy');
     fullBody = fullBody.replace(/₹5,000\+\s*penalty/gi, 'excess baggage charges');
+    fullBody = fullBody.replace(/\bup to 10\s*kg\b[^\n.]*/gi, 'carrier-dependent extra baggage allowances (subject to current official airline terms)');
 
     let disclosureText = 'As an Amazon Associate I earn from qualifying purchases. We do not test products or show prices; check current details on Amazon.in.';
     if (
@@ -341,20 +353,20 @@ export class StaticSiteGenerator {
     } else if (guide.disclosureMarkdown && !guide.disclosureMarkdown.includes('Amazon Associate')) {
       disclosureText = guide.disclosureMarkdown;
     } else if (guide.slug === 'student-flight-discounts-india') {
-      disclosureText = 'Editorial Notice: This educational guide provides factual comparison of official airline student concession rules and baggage allowances in India. Concession booking is handled directly through official carrier portals. Explore Verified Deals (/deals) for active commercial offers.';
-    } else if (fullBody.includes('clnk.in') || fullBody.includes('linksredirect.com')) {
-      disclosureText = 'Affiliate & Commercial Disclosure: We independently verify product pricing, stock availability, and manufacturer MRP baselines. When you click through our verified links to partner stores, our platform may earn a qualifying referral commission at zero additional cost to you. Explore Verified Deals (/deals) and read our full Affiliate Disclosure (/public/disclosure).';
+      disclosureText = 'Editorial Notice: Carrier student concession rules and baggage allowances vary by airline and change over time. Always verify current eligibility and baggage terms directly on the official airline portal before booking. Explore Deals (/deals) for commercial partner offers.';
+    } else if (fullBody.includes('clnk.in') || fullBody.includes('linksredirect.com') || fullBody.includes('/api/v1/public/deals/')) {
+      disclosureText = '#Ad Affiliate & Commercial Disclosure: Listed prices, stock availability, and reference MRP values reflect merchant-reported snapshots and may change without notice. Always confirm live terms and pricing on the official merchant checkout page before purchasing. Qualifying purchases through affiliate links may earn us a referral commission at zero additional cost to you.';
     }
 
     // Convert basic markdown to clean HTML
-    const formattedBody = this.markdownToHtml(fullBody, eligibleDeals);
+    const formattedBody = this.markdownToHtml(fullBody, eligibleDeals, guide);
 
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  ${this.getGoogleSiteVerificationMeta()}${this.getCuelinksVerificationMeta()}<title>${this.escapeHtml(title)} | ${this.escapeHtml(config.siteName)}</title>
+  ${this.getGoogleSiteVerificationMeta(config)}${this.getCuelinksVerificationMeta(config)}<title>${this.escapeHtml(title)} | ${this.escapeHtml(config.siteName)}</title>
   <meta name="description" content="${this.escapeHtml(description)}">
   <link rel="canonical" href="${canonicalUrl}">
   <meta property="og:title" content="${this.escapeHtml(title)}">
@@ -514,7 +526,7 @@ export class StaticSiteGenerator {
     const activeDeals = Array.isArray(deals) ? deals : [];
     const merchants = Array.from(new Set(activeDeals.map((d: any) => d.merchant).filter(Boolean)));
     const merchantText = merchants.length > 0 ? merchants.join(', ') : 'authorized Indian partner stores';
-    const description = `Independently verified Indian e-commerce deals across ${merchantText} with reference MRP verification, transparent promo codes, and zero price inflation.`;
+    const description = `Merchant-reported Indian e-commerce deal snapshots across ${merchantText}. Always verify live pricing, stock, and terms on the official merchant checkout page.`;
     const canonicalUrl = `${config.siteUrl}/deals`;
 
     const itemListSchema = activeDeals.length > 0 ? {
@@ -578,8 +590,8 @@ export class StaticSiteGenerator {
           ${deal.couponConditions ? `<p style="font-size: 0.78rem; color: #94a3b8; font-style: italic; margin: 0.5rem 0 0 0;">${this.escapeHtml(deal.couponConditions)}</p>` : ''}
         </div>
         <div style="margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid #1e293b; display: flex; justify-content: space-between; align-items: center;">
-          <span style="font-size: 0.75rem; color: #64748b;">Zero Price Inflation</span>
-          <a href="${this.escapeHtml(deal.trackingUrl || deal.productUrl)}" target="_blank" rel="noopener noreferrer" style="background: #06b6d4; color: #020617; font-weight: 700; font-size: 0.85rem; padding: 0.5rem 1rem; border-radius: 8px; text-decoration: none;">View Deal &rarr;</a>
+          <span style="font-size: 0.75rem; color: #64748b;">Merchant Snapshot</span>
+          <a href="${this.escapeHtml(deal.trackingUrl || deal.productUrl)}" target="_blank" rel="sponsored nofollow noopener" style="background: #06b6d4; color: #020617; font-weight: 700; font-size: 0.85rem; padding: 0.5rem 1rem; border-radius: 8px; text-decoration: none;">View Deal &rarr;</a>
         </div>
       </div>
     `).join('');
@@ -589,7 +601,7 @@ export class StaticSiteGenerator {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  ${this.getGoogleSiteVerificationMeta()}${this.getCuelinksVerificationMeta()}<title>${this.escapeHtml(title)}</title>
+  ${this.getGoogleSiteVerificationMeta(config)}${this.getCuelinksVerificationMeta(config)}<title>${this.escapeHtml(title)}</title>
   <meta name="description" content="${this.escapeHtml(description)}">
   <link rel="canonical" href="${canonicalUrl}">
   <meta name="robots" content="index, follow">
@@ -635,16 +647,16 @@ export class StaticSiteGenerator {
   </header>
   <main>
     <div class="hero">
-      <span style="display: inline-block; font-size: 0.75rem; font-weight: 700; color: #38bdf8; background: rgba(56, 189, 248, 0.1); border: 1px solid rgba(56, 189, 248, 0.3); padding: 0.25rem 0.75rem; border-radius: 9999px; margin-bottom: 0.75rem;">AUTONOMOUS VERIFICATION ENGINE</span>
-      <h1>Curated, Cross-Checked Deals for Indian Buyers</h1>
-      <p>Zero inflated discounts. Every promotional price, MRP baseline, and coupon condition is independently corroborated across official Indian merchant stores.</p>
+      <span style="display: inline-block; font-size: 0.75rem; font-weight: 700; color: #38bdf8; background: rgba(56, 189, 248, 0.1); border: 1px solid rgba(56, 189, 248, 0.3); padding: 0.25rem 0.75rem; border-radius: 9999px; margin-bottom: 0.75rem;">#AD &bull; MERCHANT DEAL SNAPSHOTS</span>
+      <h1>Curated Commercial Offers for Indian Buyers</h1>
+      <p>Promotional prices and reference MRPs shown below reflect merchant-reported snapshots observed at sync time. Prices and availability can change at any time; confirm final terms on the official merchant checkout page.</p>
     </div>
     <div class="deals-grid">
       ${dealCards || '<p class="no-deals-message" style="color: #94a3b8; font-size: 1.1rem; text-align: center; grid-column: 1 / -1; padding: 3rem 1rem;">No currently verified offers are available in this category. Check back later.</p>'}
     </div>
     <div class="disclosure-box">
-      <strong style="color: #e2e8f0;">Independent Verification &amp; Commercial Disclosure:</strong>
-      Deals on this page are autonomously cross-checked across authorized Indian retailer stores. Where authorized affiliate agreements exist, qualifying purchases may earn a referral commission at zero additional cost to you. Reference MRP baselines are independently verified.
+      <strong style="color: #e2e8f0;">#Ad Commercial Disclosure &amp; Snapshot Notice:</strong>
+      Offer pricing, stock status, and reference MRPs are merchant-reported snapshots and are not guaranteed. Where authorized affiliate agreements exist, qualifying purchases made through outgoing partner links may earn a referral commission at zero additional cost to you.
     </div>
   </main>
   <footer>
@@ -755,7 +767,7 @@ export class StaticSiteGenerator {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  ${this.getGoogleSiteVerificationMeta()}${this.getCuelinksVerificationMeta()}<title>${this.escapeHtml(title)} | ${this.escapeHtml(config.siteName)}</title>
+  ${this.getGoogleSiteVerificationMeta(config)}${this.getCuelinksVerificationMeta(config)}<title>${this.escapeHtml(title)} | ${this.escapeHtml(config.siteName)}</title>
   <link rel="canonical" href="${canonicalUrl}">
   <meta name="robots" content="index, follow">
   <style>
@@ -817,8 +829,114 @@ export class StaticSiteGenerator {
     return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${xmlItems}\n</urlset>\n`;
   }
 
-  private markdownToHtml(md: string, eligibleDeals?: any[]): string {
+  private normalizeExactUrl(rawUrl: string): string | null {
+    if (!rawUrl || typeof rawUrl !== 'string') return null;
+    try {
+      const u = new URL(rawUrl.trim());
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+      const pathname = u.pathname.replace(/\/+$/, '') || '/';
+      return `${u.protocol.toLowerCase()}//${u.hostname.toLowerCase()}${u.port ? ':' + u.port : ''}${pathname}${u.search}`;
+    } catch {
+      return null;
+    }
+  }
+
+  private canonicalDestinationKey(rawUrl: string): string | null {
+    if (!rawUrl || typeof rawUrl !== 'string') return null;
+    try {
+      const u = new URL(rawUrl.trim());
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+      const stripParams = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'ref', 'tag', 'aff_id', 'subid', 'fbclid', 'gclid', 'click_id'];
+      for (const k of stripParams) u.searchParams.delete(k);
+      u.searchParams.sort();
+      const pathname = u.pathname.replace(/\/+$/, '') || '/';
+      const search = u.searchParams.toString();
+      return `${u.hostname.toLowerCase()}${pathname}${search ? '?' + search : ''}`;
+    } catch {
+      return null;
+    }
+  }
+
+  private isValidHttpsDestination(rawUrl: string): boolean {
+    if (!rawUrl || typeof rawUrl !== 'string') return false;
+    try {
+      const u = new URL(rawUrl.trim());
+      return u.protocol === 'https:' && Boolean(u.hostname);
+    } catch {
+      return false;
+    }
+  }
+
+  private validateDealMonetizationChain(deal: any): boolean {
+    if (!deal || typeof deal !== 'object' || !deal.id) return false;
+    if (deal.productVerified !== true) return false;
+    if (deal.affiliateVerified !== true) return false;
+    if (deal.isMonetizable !== true) return false;
+    if (deal.availability !== 'IN_STOCK') return false;
+
+    const dealExpiry = deal.expiryDate || deal.expiry_date;
+    if (dealExpiry) {
+      const expMs = Date.parse(String(dealExpiry));
+      if (!Number.isFinite(expMs) || expMs <= Date.now()) return false;
+    }
+
+    const destUrl = String(deal.productUrl || deal.product_url || '').trim();
+    if (!this.isValidHttpsDestination(destUrl)) return false;
+
+    const partnerOffer = deal.partnerOffer;
+    if (!partnerOffer || !partnerOffer.id) return false;
+    const offerStatus = String(partnerOffer.status || '').toUpperCase();
+    const offerActive = partnerOffer.active === true || partnerOffer.active === 1 || partnerOffer.active === '1';
+    if (offerStatus !== 'ACTIVE' || !offerActive) return false;
+    const offerExpiry = partnerOffer.expiryDate || partnerOffer.expiry_date;
+    if (offerExpiry) {
+      const offerExpMs = Date.parse(String(offerExpiry));
+      if (!Number.isFinite(offerExpMs) || offerExpMs <= Date.now()) return false;
+    }
+
+    const partner = deal.partner;
+    if (!partner || !partner.id) return false;
+    const approvalStatus = String(partner.approvalStatus || partner.approval_status || '').toUpperCase();
+    const authStatus = String(partner.authorizationStatus || partner.authorization_status || '').toUpperCase();
+    const partnerActive = partner.activeStatus !== 0 && partner.activeStatus !== false && partner.active_status !== 0 && partner.active_status !== false;
+    if (approvalStatus !== 'APPROVED' || authStatus !== 'AUTHORIZED' || !partnerActive) return false;
+
+    const campaign = deal.campaign;
+    const campaignId = campaign && (campaign.campaignId || campaign.campaign_id || campaign.id);
+    if (!campaign || !campaignId) return false;
+    if (campaign.status && String(campaign.status).toUpperCase() !== 'ACTIVE') return false;
+
+    return true;
+  }
+
+  private markdownToHtml(md: string, eligibleDeals?: any[], guide?: any): string {
     if (!md) return '';
+
+    const destCounts = new Map<string, number>();
+    let allowedGuideIds: Set<string> | null = null;
+    if (eligibleDeals !== undefined) {
+      for (const d of eligibleDeals) {
+        const key = this.canonicalDestinationKey(String(d?.productUrl || d?.product_url || ''));
+        if (key) destCounts.set(key, (destCounts.get(key) || 0) + 1);
+      }
+      const explicitIds: string[] = [];
+      const primaryId = guide?.primary_offer_id || guide?.primaryOfferId;
+      if (typeof primaryId === 'string' && primaryId.trim()) explicitIds.push(primaryId.trim());
+      const rawMatchedJson = guide?.matched_offer_ids_json || guide?.matchedOfferIdsJson;
+      if (typeof rawMatchedJson === 'string' && rawMatchedJson.trim()) {
+        try {
+          const parsed = JSON.parse(rawMatchedJson);
+          if (Array.isArray(parsed)) {
+            for (const item of parsed) {
+              if (typeof item === 'string' && item.trim()) explicitIds.push(item.trim());
+            }
+          }
+        } catch {}
+      }
+      if (explicitIds.length > 0) {
+        allowedGuideIds = new Set(explicitIds);
+      }
+    }
 
     // Convert markdown links [Text](URL) -> <a href="URL" ...>Text</a>
     // For affiliate/sponsored links (Cuelinks, Amazon, redirects), ensure target="_blank" rel="sponsored nofollow" and button class
@@ -830,36 +948,85 @@ export class StaticSiteGenerator {
         url.includes('/r/') ||
         url.includes('/api/v1/public/deals/');
 
-      // If eligibleDeals is provided, perform strict fail-closed dynamic validation & rewriting
+      // If eligibleDeals is provided, perform strict fail-closed exact validation & rewriting
       if (eligibleDeals !== undefined) {
         if (isAffiliate) {
           const cleanUrl = url.trim();
-          const cleanText = text.trim().toLowerCase();
-          const matchedDeal = eligibleDeals.find((d: any) => {
-            if (!d) return false;
-            // Direct ID match
-            if (d.id && cleanUrl.includes(d.id)) return true;
-            // Affiliate URL match
-            const affUrl = (d.affiliateRedirectUrl || d.affiliate_redirect_url || d.affiliateUrl || d.affiliate_url || d.trackingUrl || '').trim();
-            if (affUrl && (cleanUrl === affUrl || cleanUrl.includes(affUrl) || affUrl.includes(cleanUrl))) return true;
-            // Extract shortcode if clnk.in
-            const shortMatch = cleanUrl.match(/clnk\.in\/([A-Za-z0-9_-]+)/);
-            if (shortMatch && affUrl && affUrl.includes(shortMatch[1])) return true;
-            // Destination / product URL match
-            const prodUrl = (d.productUrl || d.product_url || '').trim();
-            if (prodUrl && (cleanUrl === prodUrl || cleanUrl.includes(prodUrl))) return true;
-            // Fallback: title match
-            const titleLower = (d.title || '').trim().toLowerCase();
-            if (titleLower && (cleanText.includes(titleLower) || titleLower.includes(cleanText))) return true;
+          const normalizedLink = this.normalizeExactUrl(cleanUrl);
+
+          let redirectRouteId: string | null = null;
+          const redirectRouteMatch = cleanUrl.match(/^\/api\/v1\/public\/deals\/([^/?#]+)\/redirect$/i) ||
+            (() => {
+              try {
+                const u = new URL(cleanUrl);
+                return u.pathname.match(/^\/api\/v1\/public\/deals\/([^/]+)\/redirect$/i);
+              } catch {
+                return null;
+              }
+            })();
+          if (redirectRouteMatch) {
+            redirectRouteId = decodeURIComponent(redirectRouteMatch[1]).trim();
+          }
+
+          let shortSlug: string | null = null;
+          const rMatch = cleanUrl.match(/^\/r\/([^/?#]+)$/i);
+          if (rMatch) {
+            shortSlug = decodeURIComponent(rMatch[1]).trim();
+          }
+
+          const matchedDeals = eligibleDeals.filter((d: any) => {
+            if (!d || typeof d.id !== 'string' || !d.id.trim()) return false;
+            const dealId = d.id.trim();
+            const dealSlug = typeof d.slug === 'string' ? d.slug.trim() : '';
+            const canonicalSlug = typeof d.canonicalSlug === 'string' ? d.canonicalSlug.trim() : (typeof d.canonical_slug === 'string' ? d.canonical_slug.trim() : '');
+            const offerId = typeof d.partnerOffer?.id === 'string' ? d.partnerOffer.id.trim() : '';
+
+            if (allowedGuideIds && !allowedGuideIds.has(dealId) && (!offerId || !allowedGuideIds.has(offerId))) {
+              return false;
+            }
+
+            if (redirectRouteId) {
+              return dealId === redirectRouteId || (dealSlug !== '' && dealSlug === redirectRouteId) || (canonicalSlug !== '' && canonicalSlug === redirectRouteId);
+            }
+            if (shortSlug) {
+              return dealId === shortSlug || (dealSlug !== '' && dealSlug === shortSlug) || (canonicalSlug !== '' && canonicalSlug === shortSlug);
+            }
+
+            if (!normalizedLink) return false;
+
+            const trackingCandidates = [
+              d.affiliateRedirectUrl,
+              d.affiliate_redirect_url,
+              d.affiliateUrl,
+              d.affiliate_url,
+              d.trackingUrl,
+              d.tracking_url
+            ];
+            for (const cand of trackingCandidates) {
+              if (typeof cand === 'string' && cand.trim()) {
+                const normCand = this.normalizeExactUrl(cand);
+                if (normCand && normCand === normalizedLink) return true;
+              }
+            }
+
+            const prodUrl = typeof (d.productUrl || d.product_url) === 'string' ? (d.productUrl || d.product_url).trim() : '';
+            const normProd = this.normalizeExactUrl(prodUrl);
+            if (normProd && normProd === normalizedLink) return true;
+
             return false;
           });
 
-          if (matchedDeal && matchedDeal.isMonetizable !== false && matchedDeal.availability !== 'OUT_OF_STOCK') {
-            const redirectUrl = `/api/v1/public/deals/${encodeURIComponent(matchedDeal.id)}/redirect`;
-            return `<a href="${redirectUrl}" target="_blank" rel="sponsored nofollow" class="affiliate-link">${this.escapeHtml(text)}</a>`;
+          if (matchedDeals.length === 1) {
+            const matchedDeal = matchedDeals[0];
+            const destKey = this.canonicalDestinationKey(String(matchedDeal.productUrl || matchedDeal.product_url || ''));
+            const destUnique = destKey !== null && (destCounts.get(destKey) || 0) === 1;
+            if (destUnique && this.validateDealMonetizationChain(matchedDeal)) {
+              const redirectUrl = `/api/v1/public/deals/${encodeURIComponent(matchedDeal.id)}/redirect`;
+              return `<a href="${redirectUrl}" target="_blank" rel="sponsored nofollow" class="affiliate-link">${this.escapeHtml(text)}</a>`;
+            }
           }
 
-          // Unmapped affiliate link: fail-closed by stripping anchor tag entirely
+          // Unmapped, ambiguous, or incomplete-chain affiliate link: fail closed by stripping anchor tag entirely
           return this.escapeHtml(text);
         }
       }
@@ -893,14 +1060,14 @@ export class StaticSiteGenerator {
       .join('\n');
   }
 
-  private getGoogleSiteVerificationMeta(): string {
-    const code = (process.env.GOOGLE_SITE_VERIFICATION || '').trim();
+  private getGoogleSiteVerificationMeta(config?: StaticSiteConfig): string {
+    const code = (config?.googleSiteVerification || process.env.GOOGLE_SITE_VERIFICATION || '').trim();
     if (!code) return '';
     return `<meta name="google-site-verification" content="${this.escapeHtml(code)}">\n  `;
   }
 
-  private getCuelinksVerificationMeta(): string {
-    const code = (process.env.CUELINKS_VERIFICATION_CODE || 'VERIFY-CL-YE94W8YS').trim();
+  private getCuelinksVerificationMeta(config?: StaticSiteConfig): string {
+    const code = (config?.cuelinksVerificationCode || process.env.CUELINKS_VERIFICATION_CODE || '').trim();
     if (!code) return '';
     return `<meta name="cuelinks-verification" content="${this.escapeHtml(code)}">\n  `;
   }
@@ -1128,9 +1295,9 @@ ${JSON.stringify(schemaObj, null, 2)}
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Top Verified ${sectorName} Deals & Buying Guide (2026) | #Ad</title>
-  <meta name="description" content="Independent comparison of top verified deals, historical price baselines, and certified discounts in ${sectorName}. Updated hourly.">
+  <meta name="description" content="Commercial offer comparison and merchant-reported price snapshots in ${sectorName}.">
   <link rel="canonical" href="${config.siteUrl}/compare/${sectorSlug}">
-  ${deals.length === 0 ? '<meta name="robots" content="noindex, nofollow">\n  ' : ''}${this.getGoogleSiteVerificationMeta()}${this.getCuelinksVerificationMeta()}
+  ${deals.length === 0 ? '<meta name="robots" content="noindex, nofollow">\n  ' : ''}${this.getGoogleSiteVerificationMeta(config)}${this.getCuelinksVerificationMeta(config)}
   <script type="application/ld+json">
 ${JSON.stringify(schemaObj, null, 2)}
   </script>
@@ -1149,17 +1316,17 @@ ${JSON.stringify(schemaObj, null, 2)}
   <div class="header">
     <div style="font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;font-weight:bold;margin-bottom:8px;">Commercial Sector Intelligence &bull; Verified Buying Guide</div>
     <h1 style="margin:0 0 8px 0;font-size:30px;">Best Verified ${sectorName} Deals</h1>
-    <p style="margin:0;color:#cbd5e1;font-size:14px;">Independently verified price baselines &bull; Active in-stock offers &bull; Updated Hourly</p>
+    <p style="margin:0;color:#cbd5e1;font-size:14px;">Merchant-reported pricing and offer snapshots &bull; Confirm live availability on checkout</p>
   </div>
 
   <div class="container">
     <div class="ad-banner">
-      <strong>#Ad Disclosure:</strong> When you purchase through verified merchant links on our comparison guides, we may earn an affiliate commission at zero additional cost to you. All prices, stock availability, and merchant credentials are independently verified.
+      <strong>#Ad Disclosure:</strong> When you purchase through tracked merchant links on our comparison guides, we may earn an affiliate commission at zero additional cost to you. Prices, stock availability, and offer terms reflect merchant-reported snapshots and must be verified on the official merchant checkout page.
     </div>
 
     <div class="card">
       <h2 style="margin-top:0;font-size:20px;color:#0f172a;">Ranked Deal Comparison</h2>
-      <p style="font-size:14px;color:#64748b;margin-bottom:20px;">The following deals have passed all Level 1–5 verification checks: live merchant stock confirmation, price drop validation, and authentic merchant tracking.</p>
+      <p style="font-size:14px;color:#64748b;margin-bottom:20px;">Listed offers require active partner, offer, and campaign configuration before link activation. Confirm live price and stock directly with the merchant.</p>
       
       ${deals.length > 0 ? `
       <div style="overflow-x:auto;">

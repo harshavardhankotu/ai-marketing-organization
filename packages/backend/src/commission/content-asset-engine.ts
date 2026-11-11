@@ -5,7 +5,11 @@ import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { PartnerRegistryEngine } from './partner-registry.js';
 import { DemandOfferMatchingEngine } from './demand-offer-matching.js';
 import { ContentAsset, ContentAssetType } from './types.js';
+import { GuideDataUnavailableError } from './deal-types.js';
+import { isProduction } from '../config/env.js';
 import { validateSiteIdentityFacts } from '../config/owner-env-intake.js';
+
+export { GuideDataUnavailableError };
 
 export interface CreateContentAssetInput {
   organizationId: string;
@@ -373,19 +377,35 @@ export class ContentAssetEngine {
   public async getAssetBySlug(slug: string, recordView: boolean = true): Promise<ContentAsset | null> {
     const cleanSlug = slug.trim().toLowerCase();
     let row: any = null;
-    try {
-      row = await this.d1Repo.queryOne<any>(
-        'commission_content_assets',
-        'SELECT * FROM commission_content_assets WHERE slug = ? AND status = \'PUBLISHED\'',
-        [cleanSlug]
-      );
-    } catch {}
+    const useRemoteD1 = this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST);
 
-    if (!row) {
+    if (useRemoteD1) {
       try {
-        const db = getDb();
-        row = db.prepare('SELECT * FROM commission_content_assets WHERE slug = ? AND status = \'PUBLISHED\'').get(cleanSlug);
+        row = await this.d1Repo.queryOne<any>(
+          'commission_content_assets',
+          'SELECT * FROM commission_content_assets WHERE slug = ? AND status = \'PUBLISHED\'',
+          [cleanSlug]
+        );
+      } catch (err: any) {
+        throw new GuideDataUnavailableError(`Failed to read guide '${cleanSlug}' from D1: ${err?.message || 'D1 read failure'}`);
+      }
+    } else {
+      try {
+        row = await this.d1Repo.queryOne<any>(
+          'commission_content_assets',
+          'SELECT * FROM commission_content_assets WHERE slug = ? AND status = \'PUBLISHED\'',
+          [cleanSlug]
+        );
       } catch {}
+
+      if (!row) {
+        const db = getDb();
+        try {
+          row = db.prepare('SELECT * FROM commission_content_assets WHERE slug = ? AND status = \'PUBLISHED\'').get(cleanSlug);
+        } catch (sqliteErr: any) {
+          throw new GuideDataUnavailableError(`Failed to read guide '${cleanSlug}' from SQLite: ${sqliteErr?.message || 'DB read failure'}`);
+        }
+      }
     }
 
     if (!row) return null;

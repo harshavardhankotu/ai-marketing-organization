@@ -210,11 +210,18 @@ app.get('/deals', async (c) => {
     contactEmail: (process.env.PUBLIC_CONTACT_EMAIL || `editorial@${host}`).trim(),
     siteUrl: `${proto}://${host}`
   };
-  const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
-  const eligible = await dealEngine.getEligiblePublicDeals({ limit: 50 });
-  const deals = eligible.deals;
-  const html = StaticSiteGenerator.getInstance().renderDealsHtml(deals, config);
-  return c.html(html);
+  try {
+    const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
+    const eligible = await dealEngine.getEligiblePublicDeals({ limit: 50 });
+    const deals = eligible.deals;
+    const html = StaticSiteGenerator.getInstance().renderDealsHtml(deals, config);
+    return c.html(html);
+  } catch (err: any) {
+    if (err?.code === 'GUIDE_DATA_UNAVAILABLE' || err?.statusCode === 503) {
+      return c.json({ error: 'GUIDE_DATA_UNAVAILABLE', message: err.message }, 503);
+    }
+    throw err;
+  }
 });
 
 // Top-level public direct commercial offer routes (Part E)
@@ -630,34 +637,42 @@ app.get('/guides/:slug', async (c) => {
   try {
     const { ContentAssetEngine } = await import('./commission/content-asset-engine.js');
     const { StaticSiteGenerator } = await import('./commission/static-site-generator.js');
+    const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
+
     const asset = await ContentAssetEngine.getInstance().getAssetBySlug(slug, true);
-    if (asset) {
-      let config: any;
-      try {
-        config = await StaticSiteGenerator.getInstance().resolveConfig();
-      } catch {
-        const host = c.req.header('host') || 'ai-marketing-organization.onrender.com';
-        const proto = c.req.header('x-forwarded-proto') || 'https';
-        config = {
-          siteName: 'India Deals & Buying Guides',
-          authorName: 'Editorial Desk',
-          contactEmail: `editorial@${host}`,
-          siteUrl: `${proto}://${host}`
-        };
-      }
-      const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
-      let eligibleDeals: any[] = [];
-      try {
-        const eligibleRes = await AutonomousDealDiscoveryEngine.getInstance().getEligiblePublicDeals({ limit: 1000 });
-        eligibleDeals = eligibleRes.deals || [];
-      } catch {}
-      const html = StaticSiteGenerator.getInstance().renderGuideHtml(asset, config, eligibleDeals);
-      return c.html(html);
+    if (!asset) {
+      return c.text('Guide not found', 404);
     }
+
+    let config: any;
+    try {
+      config = await StaticSiteGenerator.getInstance().resolveConfig();
+    } catch {
+      const host = c.req.header('host') || 'ai-marketing-organization.onrender.com';
+      const proto = c.req.header('x-forwarded-proto') || 'https';
+      config = {
+        siteName: 'India Deals & Buying Guides',
+        authorName: 'Editorial Desk',
+        contactEmail: `editorial@${host}`,
+        siteUrl: `${proto}://${host}`
+      };
+    }
+
+    // Fail closed: Never swallow D1/DB failures into empty deals (200) or 404
+    const eligibleRes = await AutonomousDealDiscoveryEngine.getInstance().getEligiblePublicDeals({ limit: 1000 });
+    const eligibleDeals = eligibleRes.deals || [];
+    const html = StaticSiteGenerator.getInstance().renderGuideHtml(asset, config, eligibleDeals);
+    return c.html(html);
   } catch (err: any) {
-    console.warn(`[GuideRoute] Error resolving guide '${slug}': ${err.message}`);
+    console.error(`[GuideRoute] Failed rendering guide '${slug}': ${err.message}`);
+    return c.json(
+      {
+        error: err?.code === 'GUIDE_DATA_UNAVAILABLE' ? 'GUIDE_DATA_UNAVAILABLE' : 'GUIDE_DATA_UNAVAILABLE',
+        message: err?.message || 'Guide or offer data is temporarily unavailable.'
+      },
+      503
+    );
   }
-  return c.text('Guide not found', 404);
 });
 
 // Top-level public /audit/:domain scorecard route

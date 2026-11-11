@@ -34,6 +34,8 @@ describe('V5.8.2 — Production Completion & First Genuine Revenue Activation', 
 
   describe('1. P0: HTML Verification Tags on SSR Root Homepage (GET /)', () => {
     it('renders both Cuelinks and Google Search Console tags in <head> of actual SSR homepage', async () => {
+      process.env.CUELINKS_VERIFICATION_CODE = 'VERIFY-CL-YE94W8YS';
+      process.env.GOOGLE_SITE_VERIFICATION = 'WVPs1hLZgUqJL5yO9jwF2pWwsekPcMtTOLLeWILGU9I';
       const res = await app.request('/');
       expect(res.status).toBe(200);
       expect(res.headers.get('content-type')).toContain('text/html');
@@ -45,15 +47,18 @@ describe('V5.8.2 — Production Completion & First Genuine Revenue Activation', 
       expect(headMatch).not.toBeNull();
       const headHtml = headMatch![1];
 
-      // Exact Cuelinks verification tag
+      // Exact Cuelinks verification tag when configured
       expect(headHtml).toContain('<meta name="cuelinks-verification" content="VERIFY-CL-YE94W8YS" />');
       const clMatches = headHtml.match(/name="cuelinks-verification"/g);
       expect(clMatches?.length).toBe(1);
 
-      // Exact Google Search Console verification tag
+      // Exact Google Search Console verification tag when configured
       expect(headHtml).toContain('<meta name="google-site-verification" content="WVPs1hLZgUqJL5yO9jwF2pWwsekPcMtTOLLeWILGU9I" />');
       const gscMatches = headHtml.match(/name="google-site-verification"/g);
       expect(gscMatches?.length).toBe(1);
+
+      delete process.env.CUELINKS_VERIFICATION_CODE;
+      delete process.env.GOOGLE_SITE_VERIFICATION;
 
       // Canonical URL
       expect(headHtml).toContain('<link rel="canonical" href="https://ai-marketing-organization.onrender.com/">');

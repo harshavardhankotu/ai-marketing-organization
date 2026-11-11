@@ -291,7 +291,10 @@ describe('V5.8.4 — Revenue Path Closure, Razorpay Webhook Hardening & Truthful
   describe('5. Priority 5: Administrative Homepage Compliance', () => {
     it('renders administrative inquiry capture framing with explicit non-clinical disclaimer and verification tags', async () => {
       const offerPage = DirectCommercialOfferPage.getInstance();
-      const html = offerPage.renderHomepageHtml();
+      const html = offerPage.renderHomepageHtml({
+        cuelinksVerificationCode: 'VERIFY-CL-YE94W8YS',
+        googleSiteVerification: 'WVPs1hLZgUqJL5yO9jwF2pWwsekPcMtTOLLeWILGU9I'
+      });
 
       expect(html).toContain('Administrative After-Hours Lead Capture');
       expect(html).toContain('[Illustrative Administrative Example — No Clinical or Medical Triage]');

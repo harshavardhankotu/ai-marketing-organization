@@ -6760,16 +6760,21 @@ apiRouter.get('/guides/:slug', async (c) => {
   const userAgent = c.req.header('user-agent') || '';
   const isBot = isBotTraffic(userAgent);
   const contentEngine = ContentAssetEngine.getInstance();
-  const asset = await contentEngine.getAssetBySlug(slug, !isBot);
-
-  if (!asset) {
-    return c.json({ error: 'CONTENT_NOT_FOUND', message: `Guide '${slug}' not found` }, 404);
+  try {
+    const asset = await contentEngine.getAssetBySlug(slug, !isBot);
+    if (!asset) {
+      return c.json({ error: 'CONTENT_NOT_FOUND', message: `Guide '${slug}' not found` }, 404);
+    }
+    return c.json({
+      success: true,
+      data: asset
+    });
+  } catch (err: any) {
+    if (err?.code === 'GUIDE_DATA_UNAVAILABLE' || err?.statusCode === 503) {
+      return c.json({ error: 'GUIDE_DATA_UNAVAILABLE', message: err.message }, 503);
+    }
+    throw err;
   }
-
-  return c.json({
-    success: true,
-    data: asset
-  });
 });
 
 // Phase 2 Task 25: generic database-backed public surfaces (no hardcoded verticals).
@@ -6781,11 +6786,18 @@ for (const publicSurface of ['/recommendations/:slug', '/offers/:slug'] as const
     const userAgent = c.req.header('user-agent') || '';
     const isBot = isBotTraffic(userAgent);
     const contentEngine = ContentAssetEngine.getInstance();
-    const asset = await contentEngine.getAssetBySlug(slug, !isBot);
-    if (!asset) {
-      return c.json({ error: 'CONTENT_NOT_FOUND', message: `Content '${slug}' not found` }, 404);
+    try {
+      const asset = await contentEngine.getAssetBySlug(slug, !isBot);
+      if (!asset) {
+        return c.json({ error: 'CONTENT_NOT_FOUND', message: `Content '${slug}' not found` }, 404);
+      }
+      return c.json({ success: true, data: asset });
+    } catch (err: any) {
+      if (err?.code === 'GUIDE_DATA_UNAVAILABLE' || err?.statusCode === 503) {
+        return c.json({ error: 'GUIDE_DATA_UNAVAILABLE', message: err.message }, 503);
+      }
+      throw err;
     }
-    return c.json({ success: true, data: asset });
   });
 }
 
@@ -7223,39 +7235,54 @@ apiRouter.get('/public/deals', async (c) => {
     return c.json({ success: true, data: result });
   }
 
-  const eligible = await engine.getEligiblePublicDeals({
-    sectorCode,
-    category,
-    merchant,
-    minPrice,
-    maxPrice,
-    q,
-    limit,
-    offset: (page - 1) * limit
-  });
+  try {
+    const eligible = await engine.getEligiblePublicDeals({
+      sectorCode,
+      category,
+      merchant,
+      minPrice,
+      maxPrice,
+      q,
+      limit,
+      offset: (page - 1) * limit
+    });
 
-  const allEligible = await engine.getEligiblePublicDeals();
-  const categories = Array.from(new Set(allEligible.deals.map(d => d.category))).filter(Boolean);
-  const merchants = Array.from(new Set(allEligible.deals.map(d => d.merchant))).filter(Boolean);
+    const allEligible = await engine.getEligiblePublicDeals();
+    const categories = Array.from(new Set(allEligible.deals.map(d => d.category))).filter(Boolean);
+    const merchants = Array.from(new Set(allEligible.deals.map(d => d.merchant))).filter(Boolean);
 
-  return c.json({
-    success: true,
-    data: {
-      deals: eligible.deals,
-      total: eligible.total,
-      categories,
-      merchants,
-      page,
-      limit
+    return c.json({
+      success: true,
+      data: {
+        deals: eligible.deals,
+        total: eligible.total,
+        categories,
+        merchants,
+        page,
+        limit
+      }
+    });
+  } catch (err: any) {
+    if (err?.code === 'GUIDE_DATA_UNAVAILABLE' || err?.statusCode === 503) {
+      return c.json({ error: 'GUIDE_DATA_UNAVAILABLE', message: err.message }, 503);
     }
-  });
+    throw err;
+  }
 });
 
 // Public Deals JSON Feed for syndication and partner integrations (Spec Engine 4)
 apiRouter.get('/public/feeds/deals.json', async (c) => {
   const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
   const engine = AutonomousDealDiscoveryEngine.getInstance();
-  const eligible = await engine.getEligiblePublicDeals({ limit: 50 });
+  let eligible: any;
+  try {
+    eligible = await engine.getEligiblePublicDeals({ limit: 50 });
+  } catch (err: any) {
+    if (err?.code === 'GUIDE_DATA_UNAVAILABLE' || err?.statusCode === 503) {
+      return c.json({ error: 'GUIDE_DATA_UNAVAILABLE', message: err.message }, 503);
+    }
+    throw err;
+  }
   const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').replace(/\/$/, '');
 
   const feed = {
@@ -7380,16 +7407,26 @@ apiRouter.get('/compare/:sectorSlug', async (c) => {
     const html = StaticSiteGenerator.getInstance().renderCompareHtml(sectorDef, sectorDeals, config);
     return c.html(html);
   } catch (err: any) {
-    console.warn(`[CompareRoute] Error rendering compare guide for '${cleanSlug}': ${err.message}`);
+    if (err?.code === 'GUIDE_DATA_UNAVAILABLE' || err?.statusCode === 503) {
+      return c.json({ error: 'GUIDE_DATA_UNAVAILABLE', message: err.message }, 503);
+    }
+    console.error(`[CompareRoute] Error rendering compare guide for '${cleanSlug}': ${err.message}`);
+    return c.json({ error: 'GUIDE_DATA_UNAVAILABLE', message: 'Compare guide data temporarily unavailable.' }, 503);
   }
-
-  return c.text(`Compare guide not found for sector: ${cleanSlug}`, 404);
 });
 
 apiRouter.get('/public/deals/:id', async (c) => {
   const id = c.req.param('id');
   const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
-  const deal = await AutonomousDealDiscoveryEngine.getInstance().resolveDeal(id);
+  let deal: any;
+  try {
+    deal = await AutonomousDealDiscoveryEngine.getInstance().resolveDeal(id);
+  } catch (err: any) {
+    if (err?.code === 'GUIDE_DATA_UNAVAILABLE' || err?.statusCode === 503) {
+      return c.json({ error: 'GUIDE_DATA_UNAVAILABLE', message: err.message }, 503);
+    }
+    throw err;
+  }
   if (!deal) {
     return c.json({ error: 'DEAL_NOT_FOUND', message: `Deal '${id}' not found` }, 404);
   }
@@ -7437,7 +7474,15 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
 
   const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
   const engine = AutonomousDealDiscoveryEngine.getInstance();
-  const deal = await engine.resolveDeal(id);
+  let deal: any;
+  try {
+    deal = await engine.resolveDeal(id);
+  } catch (err: any) {
+    if (err?.code === 'GUIDE_DATA_UNAVAILABLE' || err?.statusCode === 503) {
+      return c.json({ error: 'GUIDE_DATA_UNAVAILABLE', message: err.message }, 503);
+    }
+    throw err;
+  }
 
   if (!deal) {
     return c.text('Deal not found', 404);

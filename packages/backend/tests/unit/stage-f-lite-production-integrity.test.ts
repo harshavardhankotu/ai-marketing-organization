@@ -10,6 +10,7 @@ import { DirectCommercialOfferPage } from '../../src/revenue/direct-offer-page.j
 import { AutomationRegistryEngine } from '../../src/automation/automation-registry-engine.js';
 import { OwnerAuthService } from '../../src/auth/owner-auth.js';
 import { getDb } from '../../src/db/client.js';
+import { D1RevenueRepository } from '../../src/db/d1-revenue-repository.js';
 import { seedDatabase } from '../../src/db/seed.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -41,6 +42,31 @@ describe('Stage F-Lite — Production Integrity & Conversion Readiness', () => {
   // WORKSTREAM A: Published Guide Affiliate Link Integrity & Claim Sanitization
   // --------------------------------------------------------------------------
   describe('Workstream A — Published Guide Affiliate Link Integrity', () => {
+    const validChain = (id: string, partnerId: string, campaignId: string) => ({
+      productVerified: true,
+      affiliateVerified: true,
+      isMonetizable: true,
+      availability: 'IN_STOCK',
+      expiryDate: '2029-12-31T23:59:59.000Z',
+      partnerOffer: {
+        id: `off_${id}`,
+        partner_id: partnerId,
+        status: 'ACTIVE',
+        active: 1,
+        expiry_date: '2029-12-31T23:59:59.000Z'
+      },
+      partner: {
+        id: partnerId,
+        approval_status: 'APPROVED',
+        authorization_status: 'AUTHORIZED',
+        active_status: 1
+      },
+      campaign: {
+        campaign_id: campaignId,
+        status: 'ACTIVE'
+      }
+    });
+
     const mockEligibleDeals = [
       {
         id: 'deal_4ea10ff4-5',
@@ -49,9 +75,8 @@ describe('Stage F-Lite — Production Integrity & Conversion Readiness', () => {
         merchant: 'boAt',
         productUrl: 'https://www.boat-lifestyle.com/products/rockerz-430',
         affiliateRedirectUrl: 'https://clnk.in/D8C9',
-        isMonetizable: true,
-        availability: 'IN_STOCK',
-        currentPriceINR: 1299
+        currentPriceINR: 1299,
+        ...validChain('deal_4ea10ff4-5', 'part_boat', 'camp_boat')
       },
       {
         id: 'deal_1f758bfb-7',
@@ -60,9 +85,8 @@ describe('Stage F-Lite — Production Integrity & Conversion Readiness', () => {
         merchant: 'boAt',
         productUrl: 'https://www.boat-lifestyle.com/products/airdopes-221',
         affiliateRedirectUrl: 'https://clnk.in/D8Da',
-        isMonetizable: true,
-        availability: 'IN_STOCK',
-        currentPriceINR: 899
+        currentPriceINR: 899,
+        ...validChain('deal_1f758bfb-7', 'part_boat', 'camp_boat')
       },
       {
         id: 'deal_660e8e2f-1',
@@ -71,9 +95,8 @@ describe('Stage F-Lite — Production Integrity & Conversion Readiness', () => {
         merchant: 'Noise',
         productUrl: 'https://www.gonoise.com/products/noise-kore',
         affiliateRedirectUrl: 'https://clnk.in/D8Dt',
-        isMonetizable: true,
-        availability: 'IN_STOCK',
-        currentPriceINR: 1199
+        currentPriceINR: 1199,
+        ...validChain('deal_660e8e2f-1', 'part_noise', 'camp_noise')
       },
       {
         id: 'deal_3d917061-8',
@@ -82,9 +105,8 @@ describe('Stage F-Lite — Production Integrity & Conversion Readiness', () => {
         merchant: 'Noise',
         productUrl: 'https://www.gonoise.com/products/colorfit-icon-rise-max',
         affiliateRedirectUrl: 'https://clnk.in/D8Du',
-        isMonetizable: true,
-        availability: 'IN_STOCK',
-        currentPriceINR: 1499
+        currentPriceINR: 1499,
+        ...validChain('deal_3d917061-8', 'part_noise', 'camp_noise')
       }
     ];
 
@@ -167,7 +189,7 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
 
       const html = ssg.renderGuideHtml(flightGuide, testConfig, mockEligibleDeals);
 
-      expect(html).toContain('Editorial Notice: This educational guide provides factual comparison of official airline student concession rules');
+      expect(html).toContain('Editorial Notice: Carrier student concession rules and baggage allowances vary by airline and change over time.');
       expect(html).not.toContain('As an Amazon Associate I earn from qualifying purchases');
     });
   });
@@ -340,27 +362,114 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
 
       const html = ssg.renderDealsHtml(deals, testConfig);
 
-      // Must list active merchants
-      expect(html).toContain('across boAt, Noise with reference MRP verification');
+      // Must list active merchants without unverified MRP claims
+      expect(html).toContain('Merchant-reported Indian e-commerce deal snapshots across boAt, Noise');
+      expect(html).not.toContain('Zero inflated discounts');
       // Must not contain unbacked merchants like Lenovo or Amazon
       expect(html).not.toContain('Lenovo');
       expect(html).not.toContain('Amazon');
     });
 
-    it('quarantines and excludes ambiguous/duplicate offer mappings (boAt Airdopes 141 Gen 2)', async () => {
+    it('quarantines and excludes conflicting synthetic canonical-destination deals while keeping valid unrelated deal', async () => {
       const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
+      const db = getDb();
+      db.prepare('DELETE FROM public_deals').run();
+      db.prepare('DELETE FROM partner_offers').run();
+      db.prepare('DELETE FROM partners').run();
+      (dealEngine as any).dealsMap?.clear();
+      (dealEngine as any).dealSlugMap?.clear();
 
-      // Attempting to resolve deal_boat_airdopes_141_gen2 or off_boat_airdopes_141_gen2 must fail closed
-      const resolvedDeal = await dealEngine.resolveDeal('deal_boat_airdopes_141_gen2');
-      expect(resolvedDeal).toBeNull();
+      db.prepare(`
+        INSERT OR REPLACE INTO partners (id, organization_id, name, industry, website, network, approval_status, authorization_status, active_status)
+        VALUES ('part_synth_ok', 'org_owner_primary', 'Synth Audio', 'electronics', 'https://synthaudiostore.example.com', 'CUELINKS', 'APPROVED', 'AUTHORIZED', 1)
+      `).run();
 
-      const resolvedOff = await dealEngine.resolveDeal('off_boat_airdopes_141_gen2');
-      expect(resolvedOff).toBeNull();
+      // Two conflicting deals claiming identical canonical destination URL -> BOTH quarantined
+      for (const id of ['deal_conflict_1', 'deal_conflict_2']) {
+        db.prepare(`
+          INSERT INTO public_deals (
+            id, slug, canonical_slug, title, brand, merchant, category, sector_code,
+            product_url, affiliate_url, current_price_inr, reference_price_inr,
+            discount_percent, availability, verification_status, is_monetizable,
+            product_verified, affiliate_verified, updated_at
+          ) VALUES (
+            ?, ?, ?, 'Conflicting Earbuds', 'Synth', 'Synth Audio', 'Electronics', 'SECTOR_B_ELECTRONICS',
+            'https://synthaudiostore.example.com/products/conflict-pod?utm_source=test',
+            'https://linksredirect.com/?cid=1&url=https%3A%2F%2Fsynthaudiostore.example.com%2Fproducts%2Fconflict-pod',
+            999, 1999, 50, 'IN_STOCK', 'AFFILIATE_VERIFIED', 1, 1, 1, datetime('now')
+          )
+        `).run(id, `slug-${id}`, `slug-${id}`);
+        db.prepare(`
+          INSERT INTO partner_offers (
+            id, partner_id, organization_id, title, offer_slug, category, target_customer,
+            destination_url, authorized_tracking_url, active, status
+          ) VALUES (
+            ?, 'part_synth_ok', 'org_owner_primary', 'Conflicting Earbuds', ?, 'Electronics', 'Consumers',
+            'https://synthaudiostore.example.com/products/conflict-pod',
+            'https://linksredirect.com/?cid=1&url=conflict', 1, 'ACTIVE'
+          )
+        `).run(`off_${id}`, `slug-${id}`);
+      }
 
-      // Eligible public deals must not contain either ID
-      const eligible = await dealEngine.getEligiblePublicDeals();
-      expect(eligible.deals.find(d => d.id === 'deal_boat_airdopes_141_gen2')).toBeUndefined();
-      expect(eligible.deals.find(d => d.id === 'off_boat_airdopes_141_gen2')).toBeUndefined();
+      // One clean, uniquely mapped product
+      db.prepare(`
+        INSERT INTO public_deals (
+          id, slug, canonical_slug, title, brand, merchant, category, sector_code,
+          product_url, affiliate_url, current_price_inr, reference_price_inr,
+          discount_percent, availability, verification_status, is_monetizable,
+          product_verified, affiliate_verified, updated_at
+        ) VALUES (
+          'deal_clean_unique', 'clean-unique-headset', 'clean-unique-headset', 'Clean Unique Headset',
+          'Synth', 'Synth Audio', 'Electronics', 'SECTOR_B_ELECTRONICS',
+          'https://synthaudiostore.example.com/products/clean-headset',
+          'https://linksredirect.com/?cid=1&url=https%3A%2F%2Fsynthaudiostore.example.com%2Fproducts%2Fclean-headset',
+          1499, 2499, 40, 'IN_STOCK', 'AFFILIATE_VERIFIED', 1, 1, 1, datetime('now')
+        )
+      `).run();
+      db.prepare(`
+        INSERT INTO partner_offers (
+          id, partner_id, organization_id, title, offer_slug, category, target_customer,
+          destination_url, authorized_tracking_url, active, status
+        ) VALUES (
+          'off_clean_unique', 'part_synth_ok', 'org_owner_primary', 'Clean Unique Headset', 'clean-unique-headset',
+          'Electronics', 'Consumers',
+          'https://synthaudiostore.example.com/products/clean-headset',
+          'https://linksredirect.com/?cid=1&url=clean', 1, 'ACTIVE'
+        )
+      `).run();
+
+      expect(await dealEngine.resolveDeal('deal_conflict_1')).toBeNull();
+      expect(await dealEngine.resolveDeal('deal_conflict_2')).toBeNull();
+
+      // Insert a deal with missing partner_offers mapping and prove requireStrictChain/production rejects it
+      db.prepare(`
+        INSERT INTO public_deals (
+          id, slug, canonical_slug, title, brand, merchant, category, sector_code,
+          product_url, affiliate_url, current_price_inr, reference_price_inr,
+          discount_percent, availability, verification_status, is_monetizable,
+          product_verified, affiliate_verified, updated_at
+        ) VALUES (
+          'deal_unmapped_strict', 'unmapped-strict', 'unmapped-strict', 'Unmapped Strict Deal',
+          'Synth', 'Synth Audio', 'Electronics', 'SECTOR_B_ELECTRONICS',
+          'https://synthaudiostore.example.com/products/unmapped-only',
+          'https://linksredirect.com/?cid=1&url=https%3A%2F%2Fsynthaudiostore.example.com%2Fproducts%2Funmapped-only',
+          1299, 1999, 35, 'IN_STOCK', 'AFFILIATE_VERIFIED', 1, 1, 1, datetime('now')
+        )
+      `).run();
+
+      const eligible = await dealEngine.getEligiblePublicDeals({ requireStrictChain: true });
+      expect(eligible.deals.find(d => d.id === 'deal_conflict_1')).toBeUndefined();
+      expect(eligible.deals.find(d => d.id === 'deal_conflict_2')).toBeUndefined();
+      expect(eligible.deals.find(d => d.id === 'deal_unmapped_strict')).toBeUndefined();
+      const validFound = eligible.deals.find(d => d.id === 'deal_clean_unique');
+      expect(validFound).toBeDefined();
+      expect(validFound?.partnerOffer?.id).toBe('off_clean_unique');
+
+      db.prepare('DELETE FROM public_deals').run();
+      db.prepare('DELETE FROM partner_offers').run();
+      db.prepare('DELETE FROM partners').run();
+      (dealEngine as any).dealsMap?.clear();
+      (dealEngine as any).dealSlugMap?.clear();
     });
   });
 
@@ -379,22 +488,22 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
       expect(html).toContain('id="lead-inquiry-form-home"');
       expect(html).toContain('DPDP Act 2023');
 
-      // Section 2: SiteFix AI Self-Serve Technical Audit
-      expect(html).toContain('SiteFix AI — Autonomous Technical Website &amp; Conversion Audit');
+      // Section 2: SiteFix AI Self-Serve Website Check
+      expect(html).toContain('SiteFix AI — Self-Serve Website &amp; Metadata Check');
       expect(html).toContain('href="/tools/site-audit"');
       expect(html).toContain('href="/tools/lead-leakage-calculator"');
 
-      // Section 3: Verified Deals & Consumer Buying Guides with #Ad disclosure
-      expect(html).toContain('Verified Consumer Deals &amp; Buying Guides');
-      expect(html).toContain('#Ad — Independently Verified Deals');
+      // Section 3: Commercial Consumer Deals & Buying Guides with #Ad disclosure
+      expect(html).toContain('Commercial Consumer Deals &amp; Buying Guides');
+      expect(html).toContain('#Ad — Affiliate Links');
       expect(html).toContain('href="/deals"');
       expect(html).toContain('href="/compare/electronics-technology"');
       expect(html).toContain('href="/guides/best-wireless-audio-smartwatches-india"');
       expect(html).toContain('href="/guides/student-flight-discounts-india"');
 
-      // Clean footer disclosure without unbacked airline names
+      // Clean footer disclosure without unbacked airline names or unverified claims
       expect(html).not.toContain('Akasa Air, Air India Express, Cleartrip');
-      expect(html).toContain('boAt, Noise, and authorized affiliate networks');
+      expect(html).toContain('tracked affiliate links to authorized partner programs');
     });
   });
 
@@ -457,6 +566,10 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
     it('reports recent pings and executions from automation_execution_log', async () => {
       const db = getDb();
       const nowIso = new Date().toISOString();
+
+      // Clear any leftover failed workflow state from prior tests in shared worker
+      db.prepare("UPDATE automation_registry SET last_status = 'IDLE', last_error = NULL, retry_count = 0").run();
+      try { db.prepare('DELETE FROM durable_job_queue').run(); } catch {}
 
       // Seed cron telemetry
       db.prepare(`
@@ -568,6 +681,406 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
       // Test 4: B2B compliance audit with 0 purged items
       const resB2BCompliance = await registryEngine.executeWorkflow('b2b_suppression_and_compliance_audit');
       expect(['NO_ACTION_DUE', 'COMPLETED']).toContain(resB2BCompliance.status);
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // WORKSTREAM J: Exact Affiliate Mapping & Full Chain Validation (Section 1)
+  // --------------------------------------------------------------------------
+  describe('Workstream J — Exact 1:1 Affiliate Mapping & Chain Validation', () => {
+    const ssg = StaticSiteGenerator.getInstance();
+    const baseChain = (dealId: string, partnerId = 'part_exact_1', campaignId = 'camp_exact_1') => ({
+      productVerified: true,
+      affiliateVerified: true,
+      isMonetizable: true,
+      availability: 'IN_STOCK',
+      expiryDate: '2029-12-31T23:59:59.000Z',
+      partnerOffer: {
+        id: `off_${dealId}`,
+        partner_id: partnerId,
+        status: 'ACTIVE',
+        active: 1,
+        expiry_date: '2029-12-31T23:59:59.000Z'
+      },
+      partner: {
+        id: partnerId,
+        approval_status: 'APPROVED',
+        authorization_status: 'AUTHORIZED',
+        active_status: 1
+      },
+      campaign: {
+        campaign_id: campaignId,
+        status: 'ACTIVE'
+      }
+    });
+
+    it('rejects title similarity, partial IDs, partial tracking URLs/shortcodes, ambiguous destinations, and incomplete chains', () => {
+      const deals = [
+        {
+          id: 'deal_10',
+          title: 'Noise ColorFit Ultra Buzz Smartwatch',
+          brand: 'Noise',
+          merchant: 'Noise',
+          productUrl: 'https://www.gonoise.com/products/ultra-buzz',
+          affiliateRedirectUrl: 'https://clnk.in/D8ABC',
+          ...baseChain('deal_10')
+        }
+      ];
+
+      // 1. Exact tracking URL match -> rewrites to redirect endpoint
+      const htmlExact = ssg.renderGuideHtml(
+        { slug: 'exact-test', title: 'Exact', content_markdown: '[Buy Ultra Buzz](https://clnk.in/D8ABC)' },
+        testConfig,
+        deals
+      );
+      expect(htmlExact).toContain('href="/api/v1/public/deals/deal_10/redirect"');
+
+      const contentOnly = (html: string) => html.split('<article class="content">')[1].split('</article>')[0];
+
+      // 2. Different product with similar title + unmapped link -> fail closed (stripped)
+      const htmlSimilarTitle = ssg.renderGuideHtml(
+        { slug: 'sim-test', title: 'Similar', content_markdown: '[Noise ColorFit Ultra Buzz Smartwatch](https://clnk.in/UNMAPPED1)' },
+        testConfig,
+        deals
+      );
+      expect(contentOnly(htmlSimilarTitle)).not.toContain('href=');
+      expect(contentOnly(htmlSimilarTitle)).toContain('Noise ColorFit Ultra Buzz Smartwatch');
+
+      // 3. Partial ID match ('deal_1' vs 'deal_10') -> fail closed
+      const htmlPartialId = ssg.renderGuideHtml(
+        { slug: 'pid-test', title: 'Partial ID', content_markdown: '[Check deal_1](/api/v1/public/deals/deal_1/redirect)' },
+        testConfig,
+        deals
+      );
+      expect(contentOnly(htmlPartialId)).not.toContain('href=');
+
+      // 4. Partial shortcode/tracking prefix ('https://clnk.in/D8A' vs 'https://clnk.in/D8ABC') -> fail closed
+      const htmlPartialCode = ssg.renderGuideHtml(
+        { slug: 'pcode-test', title: 'Partial Code', content_markdown: '[Short](https://clnk.in/D8A)' },
+        testConfig,
+        deals
+      );
+      expect(contentOnly(htmlPartialCode)).not.toContain('href=');
+
+      // 5. Ambiguous destination (multiple deals claiming the same canonical product URL) -> fail closed
+      const ambiguousDeals = [
+        { ...deals[0] },
+        {
+          id: 'deal_20',
+          title: 'Noise ColorFit Ultra Buzz Smartwatch Duplicate',
+          brand: 'Noise',
+          merchant: 'Noise',
+          productUrl: 'https://www.gonoise.com/products/ultra-buzz?utm_source=dup',
+          affiliateRedirectUrl: 'https://clnk.in/D8DUP',
+          ...baseChain('deal_20')
+        }
+      ];
+      const htmlAmbiguous = ssg.renderGuideHtml(
+        { slug: 'ambig-test', title: 'Ambig', content_markdown: '[Buy Ultra Buzz](https://clnk.in/D8ABC)' },
+        testConfig,
+        ambiguousDeals
+      );
+      expect(contentOnly(htmlAmbiguous)).not.toContain('href=');
+
+      // 6. Expired/inactive partner offer -> fail closed
+      const expiredOfferDeals = [
+        {
+          ...deals[0],
+          partnerOffer: { ...deals[0].partnerOffer, status: 'INACTIVE', active: 0 }
+        }
+      ];
+      expect(
+        contentOnly(ssg.renderGuideHtml({ slug: 'exp-off', title: 'Exp', content_markdown: '[Buy](https://clnk.in/D8ABC)' }, testConfig, expiredOfferDeals))
+      ).not.toContain('href=');
+
+      // 7. Unapproved partner -> fail closed
+      const unapprovedPartnerDeals = [
+        {
+          ...deals[0],
+          partner: { ...deals[0].partner, approval_status: 'PENDING', authorization_status: 'UNVERIFIED' }
+        }
+      ];
+      expect(
+        contentOnly(ssg.renderGuideHtml({ slug: 'unapp-part', title: 'Unapp', content_markdown: '[Buy](https://clnk.in/D8ABC)' }, testConfig, unapprovedPartnerDeals))
+      ).not.toContain('href=');
+
+      // 8. Missing partnerOffer mapping -> fail closed
+      const missingMappingDeals = [{ ...deals[0], partnerOffer: undefined }];
+      expect(
+        contentOnly(ssg.renderGuideHtml({ slug: 'no-map', title: 'NoMap', content_markdown: '[Buy](https://clnk.in/D8ABC)' }, testConfig, missingMappingDeals))
+      ).not.toContain('href=');
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // WORKSTREAM K: HTTP 503 vs HTTP 200 (0 Deals) vs HTTP 404 Distinction (Section 2)
+  // --------------------------------------------------------------------------
+  describe('Workstream K — D1 Failure vs Zero Deals Distinction', () => {
+    it('returns HTTP 503 GUIDE_DATA_UNAVAILABLE when D1 read fails on /guides/:slug', async () => {
+      const db = getDb();
+      db.prepare(`
+        INSERT OR REPLACE INTO commission_content_assets (
+          id, organization_id, slug, asset_type, title, category, intent_target,
+          content_markdown, disclosure_markdown, status
+        ) VALUES (
+          'asset_d1_503_test', 'org_owner_primary', 'd1-outage-guide', 'BUYING_GUIDE',
+          'D1 Outage Test Guide', 'Electronics', 'Compare options',
+          'See [Sample Offer](https://clnk.in/D8Z9).', '#Ad Affiliate Disclosure', 'PUBLISHED'
+        )
+      `).run();
+
+      const d1Repo = D1RevenueRepository.getInstance();
+      vi.spyOn(d1Repo, 'isRemoteD1Configured').mockReturnValue(true);
+      vi.spyOn(d1Repo, 'queryOne').mockRejectedValueOnce(new Error('D1 HTTP 500 timeout'));
+
+      const res = await app.request('/guides/d1-outage-guide');
+      expect(res.status).toBe(503);
+      const json = await res.json();
+      expect(json.error).toBe('GUIDE_DATA_UNAVAILABLE');
+    });
+
+    it('returns HTTP 503 GUIDE_DATA_UNAVAILABLE when getEligiblePublicDeals fails during guide render', async () => {
+      const db = getDb();
+      db.prepare(`
+        INSERT OR REPLACE INTO commission_content_assets (
+          id, organization_id, slug, asset_type, title, category, intent_target,
+          content_markdown, disclosure_markdown, status
+        ) VALUES (
+          'asset_deals_503_test', 'org_owner_primary', 'deals-outage-guide', 'BUYING_GUIDE',
+          'Deals Outage Test Guide', 'Electronics', 'Compare options',
+          'See [Sample Offer](https://clnk.in/D8Z9).', '#Ad Affiliate Disclosure', 'PUBLISHED'
+        )
+      `).run();
+
+      process.env.PUBLIC_AUTHOR_NAME = 'Editorial Desk';
+      process.env.PUBLIC_CONTACT_EMAIL = 'editorial@ai-marketing-organization.onrender.com';
+
+      const d1Repo = D1RevenueRepository.getInstance();
+      vi.spyOn(d1Repo, 'isRemoteD1Configured').mockReturnValue(true);
+      vi.spyOn(d1Repo, 'queryOne').mockResolvedValueOnce({
+        id: 'asset_deals_503_test',
+        slug: 'deals-outage-guide',
+        title: 'Deals Outage Test Guide',
+        content_markdown: 'See [Sample Offer](https://clnk.in/D8Z9).',
+        disclosure_markdown: '#Ad Affiliate Disclosure',
+        status: 'PUBLISHED'
+      });
+      vi.spyOn(d1Repo, 'executeRead').mockImplementation(async (table: string) => {
+        if (table === 'public_deals') {
+          throw new Error('D1 deals read connection refused');
+        }
+        return { results: [], source: 'CLOUDFLARE_D1' } as any;
+      });
+
+      const res = await app.request('/guides/deals-outage-guide');
+      expect(res.status).toBe(503);
+      const json = await res.json();
+      expect(json.error).toBe('GUIDE_DATA_UNAVAILABLE');
+    });
+
+    it('returns HTTP 200 without affiliate CTAs when D1 succeeds with 0 eligible deals, and HTTP 404 when guide is missing', async () => {
+      const d1Repo = D1RevenueRepository.getInstance();
+      vi.spyOn(d1Repo, 'isRemoteD1Configured').mockReturnValue(true);
+      vi.spyOn(d1Repo, 'queryOne').mockResolvedValueOnce(null);
+
+      const res404 = await app.request('/guides/non-existent-guide-slug-xyz');
+      expect(res404.status).toBe(404);
+
+      vi.spyOn(d1Repo, 'queryOne').mockResolvedValueOnce({
+        id: 'asset_zero_deals_ok',
+        slug: 'zero-deals-clean-guide',
+        title: 'Clean Guide Zero Deals',
+        content_markdown: 'Check [Stripped Link](https://clnk.in/UNMAPPED_OFFER).',
+        disclosure_markdown: '#Ad Affiliate Disclosure',
+        status: 'PUBLISHED'
+      });
+      vi.spyOn(d1Repo, 'executeRead').mockResolvedValue({ results: [], meta: {} } as any);
+
+      const res200 = await app.request('/guides/zero-deals-clean-guide');
+      expect(res200.status).toBe(200);
+      const html = await res200.text();
+      expect(html).not.toContain('https://clnk.in/UNMAPPED_OFFER');
+      expect(html).toContain('Stripped Link');
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // WORKSTREAM L: Removal of Unverified Commercial Claims (Section 3) & Verification Meta Parity (Section 6)
+  // --------------------------------------------------------------------------
+  describe('Workstream L — Truthful Copy & Verification Metadata Parity', () => {
+    it('omits unverified baggage, discount guarantee, and fabricated verification tokens when unconfigured', async () => {
+      delete process.env.GOOGLE_SITE_VERIFICATION;
+      delete process.env.CUELINKS_VERIFICATION_CODE;
+
+      const kitPath = fs.existsSync(path.resolve(process.cwd(), 'docs/SHARE_KIT.md'))
+        ? path.resolve(process.cwd(), 'docs/SHARE_KIT.md')
+        : path.resolve(__dirname, '../../../../docs/SHARE_KIT.md');
+      const kit = fs.readFileSync(kitPath, 'utf-8');
+      expect(kit).not.toContain('10 kg complimentary extra check-in baggage');
+      expect(kit).not.toContain('currently in stock with confirmed discounts');
+      expect(kit).not.toContain('genuine MRP checks');
+
+      const homeRes = await app.request('/');
+      const homeHtml = await homeRes.text();
+      expect(homeHtml).not.toContain('VERIFY-CL-YE94W8YS');
+      expect(homeHtml).not.toContain('WVPs1hLZgUqJL5yO9jwF2pWwsekPcMtTOLLeWILGU9I');
+      expect(homeHtml).not.toContain('name="cuelinks-verification"');
+      expect(homeHtml).not.toContain('name="google-site-verification"');
+      expect(homeHtml).not.toContain('corroborated across official retailer stores');
+
+      const ssg = StaticSiteGenerator.getInstance();
+      const staticHomeHtml = ssg.renderLandingPageHtml([], testConfig);
+      expect(staticHomeHtml).not.toContain('name="cuelinks-verification"');
+      expect(staticHomeHtml).not.toContain('name="google-site-verification"');
+      expect(staticHomeHtml).toContain('#Ad');
+      expect(homeHtml).toContain('#Ad');
+
+      // When explicitly configured, both static index.html and dynamic GET / emit matching verification tags
+      process.env.CUELINKS_VERIFICATION_CODE = 'CFG-CL-999';
+      process.env.GOOGLE_SITE_VERIFICATION = 'CFG-GSC-888';
+      const homeConfigured = await (await app.request('/')).text();
+      const staticConfigured = ssg.renderLandingPageHtml([], {
+        ...testConfig,
+        cuelinksVerificationCode: 'CFG-CL-999',
+        googleSiteVerification: 'CFG-GSC-888'
+      });
+      expect(homeConfigured).toContain('content="CFG-CL-999"');
+      expect(homeConfigured).toContain('content="CFG-GSC-888"');
+      expect(staticConfigured).toContain('content="CFG-CL-999"');
+      expect(staticConfigured).toContain('content="CFG-GSC-888"');
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // WORKSTREAM M: Workflow Status Truth & Sector Attribution (Section 4)
+  // --------------------------------------------------------------------------
+  describe('Workstream M — Workflow Status & Ledger Query Truthfulness', () => {
+    it('daily_commercial_summary reports COMPLETED on clean reads (0 or non-zero), UNMEASURED adSpend, and ERROR/PARTIAL on DB failures', async () => {
+      const registry = AutomationRegistryEngine.getInstance();
+      const db = getDb();
+      db.prepare('DELETE FROM transactions').run();
+      db.prepare('DELETE FROM public_deals').run();
+      db.prepare('DELETE FROM platform_prospects').run();
+
+      // 1. Genuine clean zero rows
+      const zeroRes = await registry.executeWorkflow('daily_commercial_summary', 'TEST_HARNESS');
+      expect(zeroRes.status).toBe('COMPLETED');
+      expect(zeroRes.itemsProcessed).toBe(3);
+      expect(zeroRes.itemsSucceeded).toBe(3);
+      expect(zeroRes.itemsFailed).toBe(0);
+      expect(zeroRes.resultSummary.verifiedBankCashINR).toBe(0);
+      expect(zeroRes.resultSummary.activeDeals).toBe(0);
+      expect(zeroRes.resultSummary.qualifiedProspects).toBe(0);
+      expect(zeroRes.resultSummary.adSpendStatus).toBe('UNMEASURED');
+      expect(zeroRes.resultSummary.operatingCostsINR).toBeNull();
+      expect(zeroRes.resultSummary.netContributionINR).toBeNull();
+
+      // 2. Partial query failure via D1 simulation (transactions fails, public_deals & prospects succeed)
+      const origEnv = process.env.NODE_ENV;
+      process.env.NODE_ENV = 'production';
+      const d1Repo = D1RevenueRepository.getInstance();
+      const origQueryOne = d1Repo.queryOne.bind(d1Repo);
+      const querySpy = vi.spyOn(d1Repo, 'queryOne').mockImplementation(async (table: string, sql?: string, params?: any[]) => {
+        if (table === 'transactions') throw new Error('transactions table read failed');
+        if (table === 'public_deals' || table === 'platform_prospects') return { total: 0, c: 2 };
+        return origQueryOne(table, sql || '', params);
+      });
+      try {
+        const partialRes = await registry.executeWorkflow('daily_commercial_summary', 'TEST_HARNESS');
+        expect(partialRes.status).toBe('PARTIAL');
+        expect(partialRes.itemsFailed).toBe(1);
+        expect(partialRes.itemsSucceeded).toBe(2);
+        expect(partialRes.resultSummary.verifiedBankCashINR).toBeNull();
+
+        // 3. Total query failure -> ERROR
+        querySpy.mockImplementation(async (table: string, sql?: string, params?: any[]) => {
+          if (table === 'transactions' || table === 'public_deals' || table === 'platform_prospects') {
+            throw new Error('D1 unreachable');
+          }
+          return origQueryOne(table, sql || '', params);
+        });
+        const errRes = await registry.executeWorkflow('daily_commercial_summary', 'TEST_HARNESS');
+        expect(errRes.status).toBe('ERROR');
+        expect(errRes.itemsSucceeded).toBe(0);
+        expect(errRes.itemsFailed).toBe(3);
+      } finally {
+        querySpy.mockRestore();
+        process.env.NODE_ENV = origEnv;
+      }
+    });
+
+    it('prospect_dedup_qualification reports ERROR instead of NO_ACTION_DUE on query failures', async () => {
+      const registry = AutomationRegistryEngine.getInstance();
+      const origEnv = process.env.NODE_ENV;
+      process.env.NODE_ENV = 'production';
+      const d1Repo = D1RevenueRepository.getInstance();
+      const spy = vi.spyOn(d1Repo, 'query').mockRejectedValueOnce(new Error('D1 candidate read failure'));
+      try {
+        const errRes = await registry.executeWorkflow('prospect_dedup_qualification', 'TEST_HARNESS');
+        expect(errRes.status).toBe('ERROR');
+        expect(errRes.itemsFailed).toBeGreaterThanOrEqual(1);
+      } finally {
+        spy.mockRestore();
+        process.env.NODE_ENV = origEnv;
+      }
+    });
+
+    it('daily_market_demand_research never counts unrelated-sector deals as selected-sector findings', async () => {
+      const registry = AutomationRegistryEngine.getInstance();
+      const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
+      (dealEngine as any).dealsMap?.clear();
+
+      // Seed ONLY an electronics deal, while forcing selected sector to SECTOR_A_PRECIOUS_METALS
+      dealEngine.injectDealForTesting({
+        id: 'deal_unrelated_elec_1',
+        title: 'Electronics Earbuds Unrelated',
+        brand: 'Synth',
+        merchant: 'Synth',
+        category: 'Electronics',
+        sectorCode: 'SECTOR_B_ELECTRONICS',
+        productUrl: 'https://synth.example.com/earbuds',
+        currentPriceINR: 999,
+        currency: 'INR',
+        discountVerificationType: 'MERCHANT_LISTED_MRP',
+        availability: 'IN_STOCK',
+        geographicRestrictions: ['India'],
+        lastCheckedAt: new Date().toISOString(),
+        sourceUrl: 'https://synth.example.com/feed',
+        sourceDomain: 'synth.example.com',
+        sourceType: 'RETAILER_BRAND',
+        verificationStatus: 'VERIFIED',
+        confidenceScore: 80,
+        buyerValueScore: 80,
+        rejectionReasons: [],
+        isMonetizable: true,
+        evidenceJson: { sources: [], verificationLogs: [] },
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      });
+
+      const { CommercialLearningEngine } = await import('../../src/commission/commercial-learning-engine.js');
+      vi.spyOn(CommercialLearningEngine.getInstance(), 'selectNextSectorToExplore').mockReturnValue({
+        selectedSector: 'SECTOR_A_PRECIOUS_METALS',
+        selectionMode: 'THOMPSON_SAMPLING_EXPLOITATION',
+        sampleScore: 0.9,
+        allSectors: {} as any
+      });
+      vi.spyOn(dealEngine, 'discoverDealsForSector').mockResolvedValue({
+        discovered: 0,
+        sectorCode: 'SECTOR_A_PRECIOUS_METALS'
+      } as any);
+      vi.spyOn(dealEngine, 'harvestAllApprovedMerchantFeeds').mockResolvedValue({} as any);
+      vi.spyOn(dealEngine, 'executeAutonomousCycle').mockResolvedValue({
+        offersDiscovered: 1,
+        offersVerified: 1,
+        offersRejected: 0,
+        status: 'COMPLETED'
+      } as any);
+
+      const res = await registry.executeWorkflow('daily_market_demand_research', 'TEST_HARNESS');
+      expect(res.status).toBe('COMPLETED_NO_FINDINGS');
+      expect(res.itemsSucceeded).toBe(0);
+      expect(res.resultSummary.activeSectorDealsCount).toBe(0);
     });
   });
 });

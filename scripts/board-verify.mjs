@@ -20,6 +20,35 @@ const cfToken = getCfToken();
 const accountId = process.env.CLOUDFLARE_ACCOUNT_ID || '9b7511ff69e507dd3a00a7266fec11a3';
 const dbId = process.env.CLOUDFLARE_D1_DATABASE_ID || '0563bb85-f6d2-483f-8b0f-0784e3d604c7';
 
+async function fetchFixedMistakesFromMigrations() {
+  const migrationsDir = path.resolve('packages/backend/src/db/d1-migrations');
+  if (!fs.existsSync(migrationsDir)) return [];
+  try {
+    const Database = (await import('better-sqlite3')).default;
+    const db = new Database(':memory:');
+    const files = fs.readdirSync(migrationsDir).filter((f) => f.endsWith('.sql')).sort();
+    for (const file of files) {
+      const content = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
+      // Strip single-line SQL comments before splitting statements so statements remain valid
+      const cleaned = content.replace(/^--.*$/gm, '');
+      const stmts = cleaned.split(';').map((s) => s.trim()).filter(Boolean);
+      for (const stmt of stmts) {
+        if (/mistakes_board/i.test(stmt)) {
+          try {
+            db.exec(stmt + ';');
+          } catch {
+            // Ignore unrelated migration statement ordering nuances if column alteration isn't needed
+          }
+        }
+      }
+    }
+    return db.prepare(`SELECT * FROM mistakes_board WHERE status = 'FIXED';`).all();
+  } catch (err) {
+    console.warn('[BOARD:VERIFY] Migration manifest reconstruction notice:', err.message);
+    return [];
+  }
+}
+
 async function fetchFixedMistakes() {
   const sql = `SELECT * FROM mistakes_board WHERE status = 'FIXED';`;
 
@@ -35,7 +64,7 @@ async function fetchFixedMistakes() {
       });
       const data = await res.json();
       if (data.success && data.result?.[0]?.results) {
-        return data.result[0].results;
+        return { rows: data.result[0].results, source: 'REMOTE_D1' };
       }
     } catch (err) {
       console.warn('[BOARD:VERIFY] D1 query failed, falling back to local DB/migrations:', err.message);
@@ -50,26 +79,39 @@ async function fetchFixedMistakes() {
       try {
         const Database = (await import('better-sqlite3')).default;
         const db = new Database(full);
-        return db.prepare(sql).all();
+        const rows = db.prepare(sql).all();
+        if (Array.isArray(rows) && rows.length > 0) {
+          return { rows, source: 'LOCAL_SQLITE' };
+        }
       } catch {}
     }
   }
 
-  return [];
+  const manifestRows = await fetchFixedMistakesFromMigrations();
+  if (manifestRows.length > 0) {
+    return { rows: manifestRows, source: 'MIGRATION_MANIFEST' };
+  }
+
+  return { rows: [], source: 'EMPTY_DB' };
 }
 
 async function main() {
   console.log('=== [BOARD:VERIFY] Verifying Guard References for FIXED Mistakes ===\n');
-  const rows = await fetchFixedMistakes();
+  const { rows, source } = await fetchFixedMistakes();
 
   if (rows.length === 0) {
-    console.warn('WARNING: No FIXED rows found in mistakes_board.');
+    console.warn('STATUS: SKIPPED_EMPTY_DB (0/0 rows verified) — No FIXED rows found in D1, local SQLite, or migration manifest.');
     process.exit(0);
   }
 
-  console.log(`Found ${rows.length} FIXED row(s) to verify:\n`);
+  const headerNote = source === 'MIGRATION_MANIFEST'
+    ? `Found ${rows.length} FIXED row(s) from deterministic migration manifest (DB table had 0 rows):\n`
+    : `Found ${rows.length} FIXED row(s) from ${source}:\n`;
+  console.log(headerNote);
 
   let failures = 0;
+  let verifiedCount = 0;
+  const pendingTestFiles = new Set();
 
   for (const row of rows) {
     const id = row.id;
@@ -108,17 +150,10 @@ async function main() {
         }
       }
 
-      // Execute the test using vitest to prove guard is actively passing
-      try {
-        const testRel = filePath.replace(/^packages\/backend\//, '');
-        const testArgs = testName ? `-t "${testName.replace(/"/g, '\\"')}"` : '';
-        const cmd = `npx vitest run --root packages/backend "${testRel}" ${testArgs} --test-timeout=30000`;
-        execSync(cmd, { stdio: 'pipe', encoding: 'utf8' });
-        console.log(`✓ [PASS] ${id}: Executed and verified TEST guard in ${filePath}`);
-      } catch (err) {
-        console.error(`❌ [FAIL] ${id}: Test execution failed for ${filePath}: ${err.message}`);
-        failures++;
-      }
+      // Collect unique test files to execute in one batched vitest run below
+      pendingTestFiles.add(filePath.replace(/^packages\/backend\//, ''));
+      verifiedCount++;
+      console.log(`✓ [CHECKED] ${id}: Test file and guard reference validated (${filePath})`);
     } else if (guardType === 'HOOK') {
       const resolvedPath = path.resolve(guardRef);
       if (!fs.existsSync(resolvedPath)) {
@@ -129,6 +164,7 @@ async function main() {
 
       try {
         execSync(`node --check "${resolvedPath}"`, { stdio: 'pipe', encoding: 'utf8' });
+        verifiedCount++;
         console.log(`✓ [PASS] ${id}: Verified and checked HOOK guard in ${guardRef}`);
       } catch (err) {
         console.error(`❌ [FAIL] ${id}: Hook syntax check failed for ${guardRef}: ${err.message}`);
@@ -148,6 +184,7 @@ async function main() {
         } else {
           execSync(`node --check "${resolvedPath}"`, { stdio: 'pipe', encoding: 'utf8' });
         }
+        verifiedCount++;
         console.log(`✓ [PASS] ${id}: Executed and verified LINT guard in ${guardRef}`);
       } catch (err) {
         console.error(`❌ [FAIL] ${id}: Lint execution failed for ${guardRef}: ${err.message}`);
@@ -159,13 +196,28 @@ async function main() {
     }
   }
 
+  if (pendingTestFiles.size > 0 && failures === 0) {
+    const fileArgs = Array.from(pendingTestFiles).map((f) => `"${f}"`).join(' ');
+    try {
+      execSync(`npx vitest run --root packages/backend ${fileArgs} --test-timeout=30000`, { stdio: 'pipe', encoding: 'utf8' });
+      console.log(`✓ [PASS] Executed ${pendingTestFiles.size} unique TEST guard suite(s) via Vitest.`);
+    } catch (err) {
+      console.error(`❌ [FAIL] Batched TEST guard suite execution failed: ${err.message}`);
+      failures++;
+    }
+  }
+
   console.log('\n------------------------------------------------------------');
   if (failures > 0) {
     console.error(`FAILED: ${failures} guard_ref verification(s) failed.`);
     process.exit(1);
   }
 
-  console.log(`ALL GUARDS RESOLVED: ${rows.length}/${rows.length} FIXED mistakes_board rows have verified resolving guards.`);
+  if (source === 'MIGRATION_MANIFEST') {
+    console.log(`Verified ${verifiedCount}/${rows.length} guards from manifest (DB table had 0 rows)`);
+  } else {
+    console.log(`ALL GUARDS RESOLVED: ${verifiedCount}/${rows.length} FIXED mistakes_board rows have verified resolving guards.`);
+  }
   process.exit(0);
 }
 

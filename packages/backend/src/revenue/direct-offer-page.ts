@@ -50,6 +50,16 @@ export interface OfferPageConfig {
   contactPhone?: string;
   upiVpa?: string;
   razorpayMeUrl?: string;
+  googleSiteVerification?: string;
+  cuelinksVerificationCode?: string;
+}
+
+function escapeMetaAttr(val: string): string {
+  return String(val)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 export class DirectCommercialOfferPage {
@@ -163,6 +173,12 @@ export class DirectCommercialOfferPage {
     const siteName = config.siteName || (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
     const siteUrl = config.siteUrl || (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').trim();
     const contactEmail = config.contactEmail || (process.env.PUBLIC_CONTACT_EMAIL ? process.env.PUBLIC_CONTACT_EMAIL.trim() : null);
+    const cuelinksCode = (config.cuelinksVerificationCode || process.env.CUELINKS_VERIFICATION_CODE || '').trim();
+    const googleCode = (config.googleSiteVerification || process.env.GOOGLE_SITE_VERIFICATION || '').trim();
+    const verificationMetaHtml = [
+      cuelinksCode ? `  <meta name="cuelinks-verification" content="${escapeMetaAttr(cuelinksCode)}" />` : '',
+      googleCode ? `  <meta name="google-site-verification" content="${escapeMetaAttr(googleCode)}" />` : ''
+    ].filter(Boolean).join('\n');
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -173,9 +189,7 @@ export class DirectCommercialOfferPage {
   <meta name="description" content="Turn after-hours patient inquiries into booked appointments. Administrative Website &amp; WhatsApp Inquiry Capture, Instant Triage Summary, and Appointment Request Logging for Indian healthcare and dental practices.">
   <link rel="canonical" href="${siteUrl}/">
   <meta name="robots" content="index, follow">
-  <meta name="cuelinks-verification" content="VERIFY-CL-YE94W8YS" />
-  <meta name="google-site-verification" content="WVPs1hLZgUqJL5yO9jwF2pWwsekPcMtTOLLeWILGU9I" />
-  <!-- Razorpay Standard Web Checkout -->
+${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standard Web Checkout -->
   <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
   <style>
     :root {
@@ -485,14 +499,14 @@ export class DirectCommercialOfferPage {
       </form>
     </div>
 
-    <!-- Section 2: SiteFix AI — Self-Serve Technical Audit & Performance Scorecard -->
+    <!-- Section 2: SiteFix AI — Self-Serve Technical Website Audit -->
     <div class="card" id="sitefix-audit" style="border-color: #06b6d4; background: linear-gradient(180deg, #111827 0%, #0b1120 100%);">
       <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem;">
-        <h2 style="margin: 0; font-size: 1.35rem; color: #fff;">SiteFix AI — Autonomous Technical Website &amp; Conversion Audit</h2>
-        <span class="sample-badge" style="background: rgba(6, 182, 212, 0.15); color: #38bdf8; border-color: rgba(6, 182, 212, 0.3);">Self-Serve SaaS • Instant Analysis</span>
+        <h2 style="margin: 0; font-size: 1.35rem; color: #fff;">SiteFix AI — Self-Serve Website &amp; Metadata Check</h2>
+        <span class="sample-badge" style="background: rgba(6, 182, 212, 0.15); color: #38bdf8; border-color: rgba(6, 182, 212, 0.3);">HTML Checks • Optional PageSpeed</span>
       </div>
       <p style="color: #cbd5e1; font-size: 0.95rem; margin-bottom: 1.25rem;">
-        Scan your business website for Core Web Vitals performance, mobile speed, Schema.org structured data, and conversion leakage. Free self-serve scorecard with prioritized remediation steps.
+        Inspect deterministic HTML syntax, meta tags, Schema.org markup, and inquiry-capture links on your public URL. When live PageSpeed API access is configured and within quota, mobile speed metrics are shown; otherwise PageSpeed metrics are marked unavailable. Outputs are general technical observations and carry no outcome guarantee.
       </p>
       <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
         <a href="/tools/site-audit" class="btn btn-primary" style="font-size: 0.9rem; text-decoration: none;">
@@ -504,18 +518,18 @@ export class DirectCommercialOfferPage {
       </div>
     </div>
 
-    <!-- Section 3: Verified Deals & Buyer Guides (Consumer Shopper Journey) -->
+    <!-- Section 3: Commercial Deals & Buyer Guides (Consumer Shopper Journey) -->
     <div class="card" id="consumer-deals" style="border-color: #334155; background: #0b1120;">
       <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem;">
-        <h2 style="font-size: 1.3rem; color: #fff; margin: 0;">Verified Consumer Deals &amp; Buying Guides</h2>
-        <span class="sample-badge" style="background: rgba(14, 165, 233, 0.15); color: #38bdf8; border-color: rgba(14, 165, 233, 0.3);">#Ad — Independently Verified Deals</span>
+        <h2 style="font-size: 1.3rem; color: #fff; margin: 0;">Commercial Consumer Deals &amp; Buying Guides</h2>
+        <span class="sample-badge" style="background: rgba(14, 165, 233, 0.15); color: #38bdf8; border-color: rgba(14, 165, 233, 0.3);">#Ad — Affiliate Links</span>
       </div>
       <p style="color: #94a3b8; font-size: 0.9rem; margin-bottom: 1.25rem;">
-        Autonomous price verification, reference MRP cross-checks, and transparent buying guides for Indian consumers. Direct merchant checkout with verified savings:
+        Listed prices and reference MRPs are merchant-reported snapshots observed at a specific timestamp, may change at any time, and must be confirmed directly on the official merchant checkout page:
       </p>
       <div style="display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.25rem;">
         <a href="/deals" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.1rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.88rem; font-weight: 600;">
-          🏷️ Verified Indian Deals Directory &rarr;
+          🏷️ Indian Commercial Deals Directory &rarr;
         </a>
         <a href="/compare/electronics-technology" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.1rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.88rem; font-weight: 600;">
           🎧 Electronics &amp; Tech Buying Guide &rarr;
@@ -531,7 +545,7 @@ export class DirectCommercialOfferPage {
         </a>
       </div>
       <p style="font-size: 0.78rem; color: #64748b; line-height: 1.4;">
-        #Ad — Qualifying purchases through verified partner links may earn an affiliate commission at zero extra cost to you. Product prices and availability are corroborated across official retailer stores.
+        #Ad — Qualifying purchases made through outgoing affiliate links may earn a referral commission at zero additional cost to you. Offer prices, stock availability, and terms reflect merchant-reported snapshots and are subject to change without notice.
       </p>
     </div>
   </div>
@@ -539,7 +553,7 @@ export class DirectCommercialOfferPage {
   <footer>
     <p>&copy; ${new Date().getFullYear()} ${siteName}. All rights reserved.</p>
     <p style="margin-top: 0.5rem; max-width: 780px; margin-left: auto; margin-right: auto; line-height: 1.5; color: #64748b; font-size: 0.8rem;">
-      <strong>Statutory Affiliate Disclosure &amp; Commercial Terms:</strong> Consumer buying guides and promotional deal directories on this platform contain verified affiliate links to partner platforms (boAt, Noise, and authorized affiliate networks). When visitors make qualifying purchases through those links, we may receive an affiliate commission at zero additional cost to the purchaser. Our B2B direct administrative lead capture service and SiteFix AI technical audits are separate professional offerings.
+      <strong>#Ad Statutory Affiliate Disclosure &amp; Commercial Terms:</strong> Consumer buying guides and commercial deal directories on this platform may contain tracked affiliate links to authorized partner programs. When visitors make qualifying purchases through those links, we may receive an affiliate commission at zero additional cost to the purchaser. Always verify live pricing and terms on the merchant's checkout page. Our B2B direct administrative lead capture service and SiteFix AI technical checks are separate professional offerings.
     </p>
     <p style="margin-top: 0.75rem;">
       <a href="/privacy">Privacy Policy</a> • <a href="/revenue">Revenue Funnel</a> • <a href="/offer">Service Overview</a> • <a href="/deals">Deals</a> • <a href="/public/disclosure">Affiliate Disclosure</a> • ${contactEmail ? `Contact: <a href="mailto:${contactEmail}">${contactEmail}</a>` : 'Contact: Inquiries via Form'}
