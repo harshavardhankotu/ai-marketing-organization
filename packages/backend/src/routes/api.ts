@@ -202,6 +202,7 @@ export const EXACT_ROUTE_POLICY = {
   SYSTEM: [
     '/cron/ping',
     '/cron/status',
+    '/cron/recover',
     '/cron/worker/claim-and-run'
   ]
 };
@@ -1503,6 +1504,11 @@ apiRouter.post('/cron/ping', async (c) => {
   const isCloudflareWorker = /ai-marketing-cron-worker|cloudflare-cron-worker/i.test(userAgent) ||
     Boolean(c.req.header('cf-worker') || c.req.header('x-worker-scheduled') === 'true');
   const telemetryId = isCloudflareWorker ? 'cloudflare_worker_cron' : 'manual_ping';
+  let staleRecoverySummary: any = null;
+  try {
+    const { DurableJobQueue } = await import('../automation/durable-job-queue.js');
+    staleRecoverySummary = await DurableJobQueue.getInstance().recoverStaleAndBlockedJobs();
+  } catch {}
 
   // 1. Record observed heartbeat in cron_telemetry (fast D1 write)
   try {
@@ -1564,6 +1570,7 @@ apiRouter.post('/cron/ping', async (c) => {
     existingCount: batchRes.existingCount,
     failedCount: batchRes.failedCount,
     eligibleWorkflowCount: eligibleWorkflowIds.length,
+    queueRecovery: staleRecoverySummary,
     commercialCycle: {
       cycleId: correlationId,
       status: 'ENQUEUED',
@@ -1571,6 +1578,47 @@ apiRouter.post('/cron/ping', async (c) => {
       enqueuedCount: batchRes.enqueuedCount
     },
     queueStats,
+    timestamp: new Date().toISOString()
+  });
+});
+
+// POST /cron/recover — Clears >24h stale QUEUED jobs & parked-workflow BLOCKED jobs cleanly, and optionally hydrates Cuelinks payouts
+apiRouter.post('/cron/recover', async (c) => {
+  const secret = c.req.header('X-Cron-Secret');
+  if (isProduction()) {
+    const expectedSecret = process.env.CRON_PING_SECRET;
+    if (!expectedSecret || isPlaceholderCredential(expectedSecret) || expectedSecret === 'cron_ping_default_dev') {
+      return c.json({ error: 'SECURITY VIOLATION: CRON_PING_SECRET is mandatory in production and must not be empty or placeholder.' }, 403);
+    }
+    if (secret !== expectedSecret) {
+      return c.json({ error: 'Unauthorized: Invalid X-Cron-Secret' }, 401);
+    }
+  } else {
+    const expectedSecret = process.env.CRON_PING_SECRET || 'cron_ping_default_dev';
+    if (secret !== expectedSecret && secret !== 'cron_ping_default_dev' && secret !== 'cron_ping_fixture_dev') {
+      return c.json({ error: 'Unauthorized: Invalid X-Cron-Secret' }, 401);
+    }
+  }
+
+  const body = await c.req.json().catch(() => ({} as any));
+  const staleHoursThreshold = Number(body?.staleHoursThreshold) || 24;
+  const { DurableJobQueue } = await import('../automation/durable-job-queue.js');
+  const queueRecovery = await DurableJobQueue.getInstance().recoverStaleAndBlockedJobs({ staleHoursThreshold });
+
+  let cuelinksHydration: any = null;
+  if (body?.hydrateCuelinksPayouts === true) {
+    try {
+      const { CuelinksSyncManager } = await import('../commission/cuelinks-sync-manager.js');
+      cuelinksHydration = await CuelinksSyncManager.getInstance().hydrateMissingCampaignPayoutsD1('org_default', 'biz_platform_aro', 20);
+    } catch (err: any) {
+      cuelinksHydration = { error: err?.message || 'Cuelinks hydration failed' };
+    }
+  }
+
+  return c.json({
+    success: true,
+    queueRecovery,
+    cuelinksHydration,
     timestamp: new Date().toISOString()
   });
 });
@@ -2934,7 +2982,11 @@ apiRouter.post('/webhooks/razorpay', async (c) => {
       event: eventPayload
     });
 
-    return c.json({ success: true, data: result }, 200);
+    return c.json({
+      success: true,
+      eventDriven: { mode: 'INSTANT_SYNC', processedImmediately: true },
+      data: result
+    }, 200);
   } catch (err: any) {
     const status = err.message?.includes('SECURITY VIOLATION')
       ? 403
@@ -3281,7 +3333,12 @@ apiRouter.post('/webhooks/whatsapp', async (c) => {
       return c.json({ error: 'BLOCKED_UNMAPPED_PROVIDER: Unknown or unmapped phone_number_id in incoming webhook', data: results }, 400);
     }
 
-    return c.json({ success: true, processed: results.length, data: results });
+    return c.json({
+      success: true,
+      processed: results.length,
+      eventDriven: { mode: 'INSTANT_SYNC', processedImmediately: true },
+      data: results
+    });
   }
 
   // 2. Direct / Normalized payload format — strictly test/dev only
@@ -3870,6 +3927,10 @@ apiRouter.post('/offer/inquiry', async (c) => {
 
     return c.json({
       success: true,
+      eventDriven: {
+        mode: 'INSTANT_SYNC',
+        processedImmediately: true
+      },
       message: isTestProspect
         ? 'Test inquiry received and flagged for owner review. Quarantined from revenue funnels.'
         : 'Thank you. The owner will contact you on the number you gave.',
@@ -4296,6 +4357,10 @@ const handleOfferUpiClaim = async (c: any) => {
       status: 'PAYMENT_CLAIMED',
       autoFulfilled: false,
       bankConfirmedCashINR: 0,
+      eventDriven: {
+        mode: 'INSTANT_SYNC',
+        processedImmediately: true
+      },
       data: {
         ...claim,
         sku: authCtx.sku,
@@ -7322,11 +7387,34 @@ apiRouter.get('/public/autonomy-status', async (c) => {
     arosControlCenter = await OwnerDigestService.getInstance().getArosControlCenterSummary();
   } catch {}
 
+  let integrationCapabilities: any = null;
+  try {
+    const { IntegrationCapabilityRegistry } = await import('../control-plane/integration-capability-registry.js');
+    const lastPingMs = cloudflareWorkerStatus?.lastObservedPing ? new Date(cloudflareWorkerStatus.lastObservedPing).getTime() : NaN;
+    const genuineCronObservedRecently =
+      Number.isFinite(lastPingMs) &&
+      (Date.now() - lastPingMs) < 90 * 60 * 1000 &&
+      /ai-marketing-cron-worker|cloudflare-cron-worker/i.test(String(cloudflareWorkerStatus?.lastUserAgent || ''));
+    integrationCapabilities = IntegrationCapabilityRegistry.evaluateAll({
+      genuineCronObservedRecently,
+      cuelinksConnected: cuelinksStatus !== 'NOT_CONFIGURED',
+      cuelinksChannelApproved: cuelinksStatus === 'LIVE_VERIFIED' || cuelinksStatus === 'CHANNEL_APPROVED_NO_AFFILIATED_LINKS'
+    });
+  } catch {}
+
+  let financialAndArbitrageRadar: any = null;
+  try {
+    const { MultiAssetOpportunityRadar } = await import('../intelligence/multi-asset-opportunity-radar.js');
+    financialAndArbitrageRadar = await MultiAssetOpportunityRadar.getInstance().getRadarSummary({ skipLiveNetwork: false });
+  } catch {}
+
   return c.json({
     version: '5.8.4',
     platform: 'Autonomous Multi-Sector Revenue Organization',
     timestamp: new Date().toISOString(),
     arosControlCenter,
+    integrationCapabilities,
+    financialAndArbitrageRadar,
     buildMetadata: {
       version: '5.8.4',
       gitCommit: currentCommit,
@@ -10578,7 +10666,11 @@ const handleSiteAuditScan = async (c: any) => {
       });
     } catch {}
 
-    return c.json({ success: true, result });
+    return c.json({
+      success: true,
+      eventDriven: { mode: 'INSTANT_SYNC', processedImmediately: true },
+      result
+    });
   } catch (err: any) {
     if (err instanceof SecureFetchError) {
       return c.json({ success: false, code: err.code, error: err.message }, 400);

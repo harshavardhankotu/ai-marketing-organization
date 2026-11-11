@@ -713,6 +713,10 @@ export class CuelinksSyncManager {
 
           // Persist discovered campaigns to D1
           await this.persistCampaignsD1(organizationId, businessId, eligibleCampaigns);
+          try {
+          } catch (payoutErr: any) {
+            console.warn(`[CuelinksSyncManager] Payout hydration notice: ${payoutErr?.message}`);
+          }
         } catch (campErr: any) {
           if (campErr.statusCode === 403 || campErr.code === 'CUELINKS_FORBIDDEN') {
             forbiddenScopes.add('read:campaigns');
@@ -920,6 +924,7 @@ export class CuelinksSyncManager {
 
       await this.persistSyncD1(organizationId, businessId);
       await this.persistTelemetryD1(organizationId, businessId, this.syncStatus.telemetry);
+      await this.hydrateMissingCampaignPayoutsD1(organizationId, businessId);
 
       return {
         success: true,
@@ -1635,6 +1640,166 @@ export class CuelinksSyncManager {
   /**
    * Persist discovered campaigns into D1 workflows table
    */
+  private extractCampaignPayout(camp: any): { payoutRate: string; payoutModel: string } {
+    if (!camp || typeof camp !== 'object') {
+      return { payoutRate: '', payoutModel: 'CPS' };
+    }
+    const directModel = camp.payout_model || camp.payout_type || '';
+    const directCandidates = [camp.payout, camp.payout_rate, camp.commission_rate];
+    for (const c of directCandidates) {
+      if (c !== null && c !== undefined && String(c).trim() !== '') {
+        return { payoutRate: String(c).trim(), payoutModel: String(directModel || 'CPS').trim() };
+      }
+    }
+    if (Array.isArray(camp.payout_categories)) {
+      for (const pc of camp.payout_categories) {
+        const val = pc?.payout ?? pc?.payout_rate ?? pc?.commission;
+        if (val !== null && val !== undefined && String(val).trim() !== '') {
+          return {
+            payoutRate: String(val).trim(),
+            payoutModel: String(pc?.payout_type || pc?.payout_model || directModel || 'CPS').trim()
+          };
+        }
+      }
+    }
+    if (Array.isArray(camp.categories)) {
+      for (const cat of camp.categories) {
+        const val = cat?.payout ?? cat?.payout_rate;
+        if (val !== null && val !== undefined && String(val).trim() !== '') {
+          return {
+            payoutRate: String(val).trim(),
+            payoutModel: String(cat?.payout_type || directModel || 'CPS').trim()
+          };
+        }
+      }
+    }
+    return { payoutRate: '', payoutModel: String(directModel || 'CPS').trim() };
+  }
+
+  /**
+   * Enriches existing active cuelinks_campaigns rows whose payout_rate is NULL/empty
+   * using getCampaignDetails / searchCampaigns, then syncs resolved rates onto public_deals.
+   */
+  public async hydrateMissingCampaignPayoutsD1(
+    organizationId: string,
+    businessId: string,
+    limit: number = 15
+  ): Promise<{ inspected: number; updatedCampaigns: number; syncedPublicDeals: number }> {
+    const repo = D1RevenueRepository.getInstance();
+    const { getDb } = await import('../db/client.js');
+    let missingRows: Array<{ campaign_id: string; name: string; merchant_domain?: string; payout_rate?: string }> = [];
+    const missingSql = `
+      SELECT campaign_id, name, merchant_domain, payout_rate
+      FROM cuelinks_campaigns
+      WHERE status = 'ACTIVE' AND (payout_rate IS NULL OR TRIM(payout_rate) = '')
+      ORDER BY updated_at DESC
+      LIMIT ?
+    `;
+    try {
+      if (isProduction()) {
+        missingRows = await repo.query<any>('cuelinks_campaigns', missingSql, [limit]);
+      } else {
+        missingRows = getDb().prepare(missingSql).all(limit) as any[];
+      }
+    } catch {
+      return { inspected: 0, updatedCampaigns: 0, syncedPublicDeals: 0 };
+    }
+
+    if (!missingRows || missingRows.length === 0) {
+      return { inspected: 0, updatedCampaigns: 0, syncedPublicDeals: 0 };
+    }
+
+    const hydratedCampaigns: CuelinksCampaign[] = [];
+    for (const row of missingRows) {
+      const cid = String(row.campaign_id || '').trim();
+      if (!cid) continue;
+      let campDetail: any = null;
+      try {
+        if (typeof (this.client as any).getCampaignDetails === 'function') {
+          campDetail = await this.client.getCampaignDetails(cid);
+        }
+      } catch {}
+
+      let extracted = this.extractCampaignPayout(campDetail);
+      if (!extracted.payoutRate && row.name) {
+        try {
+          if (typeof (this.client as any).searchCampaigns === 'function') {
+            const searchRes = await this.client.searchCampaigns({ q: String(row.name).split(/\s+/)[0], access_status: 'approved', per_page: 5 });
+            const matched = (searchRes?.campaigns || []).find((c: any) =>
+              String(c?.id || '') === cid ||
+              String(c?.name || '').toLowerCase().includes(String(row.name).toLowerCase().slice(0, 8))
+            );
+            if (matched) {
+              campDetail = matched;
+              extracted = this.extractCampaignPayout(matched);
+            }
+          }
+        } catch {}
+      }
+
+      if (extracted.payoutRate) {
+        hydratedCampaigns.push({
+          id: Number(cid) || (cid as any),
+          name: campDetail?.name || row.name,
+          domain: campDetail?.domain || row.merchant_domain || '',
+          payout: extracted.payoutRate,
+          payout_type: extracted.payoutModel,
+          status: 'ACTIVE',
+          categories: campDetail?.categories || [],
+          cookie_days: campDetail?.cookie_days
+        } as any);
+      }
+    }
+
+    if (hydratedCampaigns.length > 0) {
+      await this.persistCampaignsD1(organizationId, businessId, hydratedCampaigns);
+    }
+
+    // Sync resolved numeric payout rates onto matching public_deals evidence_json for immediate SQL/SSR parity
+    let syncedPublicDeals = 0;
+    for (const hc of hydratedCampaigns) {
+      const numMatch = String(hc.payout || '').match(/(\d+(?:\.\d+)?)\s*%/);
+      const numericPct = numMatch ? Number(numMatch[1]) : null;
+      if (!numericPct || !Number.isFinite(numericPct) || numericPct <= 0) continue;
+
+      const cid = String(hc.id);
+      const domain = String(hc.domain || '').toLowerCase();
+      const nameToken = String(hc.name || '').toLowerCase().split(/\s+/)[0] || '';
+      try {
+        const allDealsSql = `SELECT id, merchant, product_url, evidence_json FROM public_deals LIMIT 250`;
+        const candidateDeals = isProduction()
+          ? await repo.query<any>('public_deals', allDealsSql)
+          : getDb().prepare(allDealsSql).all() as any[];
+
+        for (const d of candidateDeals || []) {
+          let ev: any = {};
+          try { ev = typeof d.evidence_json === 'string' ? JSON.parse(d.evidence_json || '{}') : (d.evidence_json || {}); } catch {}
+          const matchesCampaign =
+            String(ev.affiliateCampaignId || '') === cid ||
+            (domain && String(d.product_url || '').toLowerCase().includes(domain)) ||
+            (nameToken && nameToken.length >= 4 && String(d.merchant || '').toLowerCase().includes(nameToken));
+          if (!matchesCampaign) continue;
+          if (Number(ev.verifiedCommissionRatePercent) !== numericPct) {
+            ev.verifiedCommissionRatePercent = numericPct;
+            const updateSql = `UPDATE public_deals SET evidence_json = ?, updated_at = datetime('now') WHERE id = ?`;
+            if (isProduction()) {
+              await repo.executeWrite('public_deals', updateSql, [JSON.stringify(ev), d.id]);
+            } else {
+              getDb().prepare(updateSql).run(JSON.stringify(ev), d.id);
+            }
+            syncedPublicDeals++;
+          }
+        }
+      } catch {}
+    }
+
+    return {
+      inspected: missingRows.length,
+      updatedCampaigns: hydratedCampaigns.length,
+      syncedPublicDeals
+    };
+  }
+
   private async persistCampaignsD1(organizationId: string, businessId: string, campaigns: CuelinksCampaign[]): Promise<void> {
     try {
       const d1Repo = D1RevenueRepository.getInstance();
@@ -1652,18 +1817,23 @@ export class CuelinksSyncManager {
           merchantDomain = (camp.name || '').toLowerCase().replace(/[^a-z0-9.-]/g, '');
         }
 
+        const extracted = this.extractCampaignPayout(camp);
+        const safePayoutRate = extracted.payoutRate;
+        const safePayoutModel = extracted.payoutModel || 'CPS';
+        const safeStatus = String(camp.status || '').toLowerCase() === 'active' ? 'ACTIVE' : 'INACTIVE';
+
         const campSql = `
           INSERT INTO cuelinks_campaigns (
             campaign_id, name, merchant_domain, status, payout_model, payout_rate, cookie_days, category, verification_source, last_provider_sync_at, updated_at
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'CUELINKS_API_V3', datetime('now'), datetime('now'))
           ON CONFLICT(campaign_id) DO UPDATE SET
             name = excluded.name,
-            merchant_domain = excluded.merchant_domain,
+            merchant_domain = COALESCE(NULLIF(TRIM(excluded.merchant_domain), ''), cuelinks_campaigns.merchant_domain),
             status = excluded.status,
-            payout_model = excluded.payout_model,
-            payout_rate = excluded.payout_rate,
-            cookie_days = excluded.cookie_days,
-            category = excluded.category,
+            payout_model = COALESCE(NULLIF(TRIM(excluded.payout_model), ''), cuelinks_campaigns.payout_model),
+            payout_rate = COALESCE(NULLIF(TRIM(excluded.payout_rate), ''), cuelinks_campaigns.payout_rate),
+            cookie_days = COALESCE(excluded.cookie_days, cuelinks_campaigns.cookie_days),
+            category = COALESCE(NULLIF(TRIM(excluded.category), ''), cuelinks_campaigns.category),
             verification_source = 'CUELINKS_API_V3',
             last_provider_sync_at = datetime('now'),
             updated_at = datetime('now')
@@ -1674,9 +1844,9 @@ export class CuelinksSyncManager {
             String(camp.id),
             camp.name || 'Cuelinks Merchant',
             merchantDomain,
-            camp.status === 'active' ? 'ACTIVE' : 'INACTIVE',
-            (camp as any).payout_model || (camp as any).payout_type || 'CPS',
-            camp.payout || '',
+            safeStatus,
+            safePayoutModel,
+            safePayoutRate,
             (camp as any).cookie_days || 30,
             (camp as any).category || (camp.categories?.[0] ? String(camp.categories[0]) : 'General')
           ]);
@@ -1687,9 +1857,9 @@ export class CuelinksSyncManager {
               String(camp.id),
               camp.name || 'Cuelinks Merchant',
               merchantDomain,
-              camp.status === 'active' ? 'ACTIVE' : 'INACTIVE',
-              (camp as any).payout_model || (camp as any).payout_type || 'CPS',
-              camp.payout || '',
+              safeStatus,
+              safePayoutModel,
+              safePayoutRate,
               (camp as any).cookie_days || 30,
               (camp as any).category || (camp.categories?.[0] ? String(camp.categories[0]) : 'General')
             );

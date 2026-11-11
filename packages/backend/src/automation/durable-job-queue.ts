@@ -14,6 +14,61 @@ import { getDb } from '../db/client.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { isProduction } from '../config/env.js';
 
+export enum QueuePriorityLane {
+  CRITICAL_INBOUND = 0,
+  HIGH_FULFILLMENT = 1,
+  NORMAL_COMMERCIAL = 2,
+  NORMAL_RESEARCH = 3,
+  LOW_SEO_CONTENT = 4,
+  BACKGROUND_LEARNING = 5
+}
+
+const WORKFLOW_PRIORITY_MAP: Record<string, QueuePriorityLane> = {
+  inbound_lead_capture_triage: QueuePriorityLane.CRITICAL_INBOUND,
+  new_inquiry_processing: QueuePriorityLane.CRITICAL_INBOUND,
+  reply_classification_followup: QueuePriorityLane.CRITICAL_INBOUND,
+  webhook_whatsapp: QueuePriorityLane.CRITICAL_INBOUND,
+  webhook_razorpay: QueuePriorityLane.CRITICAL_INBOUND,
+  whatsapp_24h_reply: QueuePriorityLane.CRITICAL_INBOUND,
+  proposal_prep_followup: QueuePriorityLane.HIGH_FULFILLMENT,
+  site_audit_fulfillment: QueuePriorityLane.HIGH_FULFILLMENT,
+  manual_upi_claim_review: QueuePriorityLane.HIGH_FULFILLMENT,
+  daily_commercial_summary: QueuePriorityLane.HIGH_FULFILLMENT,
+  affiliate_offer_reconciliation: QueuePriorityLane.NORMAL_COMMERCIAL,
+  affiliate_discovery_publish: QueuePriorityLane.NORMAL_COMMERCIAL,
+  deal_integrity_verification: QueuePriorityLane.NORMAL_COMMERCIAL,
+  daily_market_demand_research: QueuePriorityLane.NORMAL_RESEARCH,
+  prospect_dedup_qualification: QueuePriorityLane.NORMAL_RESEARCH,
+  multi_asset_opportunity_radar: QueuePriorityLane.NORMAL_RESEARCH,
+  seo_guide_content_refresh: QueuePriorityLane.LOW_SEO_CONTENT,
+  seo_audit_landing_pages: QueuePriorityLane.LOW_SEO_CONTENT,
+  telemetry_digest_learnings: QueuePriorityLane.BACKGROUND_LEARNING,
+  backlog_cleanup: QueuePriorityLane.BACKGROUND_LEARNING
+};
+
+export function getWorkflowPriorityLane(workflowId: string): number {
+  const key = String(workflowId || '').trim().toLowerCase();
+  if (key in WORKFLOW_PRIORITY_MAP) {
+    return WORKFLOW_PRIORITY_MAP[key];
+  }
+  if (key.includes('inbound') || key.includes('reply') || key.includes('inquiry') || key.includes('webhook')) {
+    return QueuePriorityLane.CRITICAL_INBOUND;
+  }
+  if (key.includes('proposal') || key.includes('audit') || key.includes('upi') || key.includes('commercial_summary')) {
+    return QueuePriorityLane.HIGH_FULFILLMENT;
+  }
+  if (key.includes('affiliate') || key.includes('deal')) {
+    return QueuePriorityLane.NORMAL_COMMERCIAL;
+  }
+  if (key.includes('seo') || key.includes('guide')) {
+    return QueuePriorityLane.LOW_SEO_CONTENT;
+  }
+  if (key.includes('learn') || key.includes('digest') || key.includes('cleanup')) {
+    return QueuePriorityLane.BACKGROUND_LEARNING;
+  }
+  return QueuePriorityLane.NORMAL_COMMERCIAL;
+}
+
 export type JobStatus =
   | 'QUEUED'
   | 'RUNNING'
@@ -99,7 +154,7 @@ export class DurableJobQueue {
   public async enqueueJob(options: EnqueueOptions): Promise<{ enqueued: boolean; job: AutomationJobRecord }> {
     const businessId = options.businessId || 'biz_platform_aro';
     const organizationId = options.organizationId || 'org_owner_primary';
-    const priority = options.priority !== undefined ? options.priority : 1;
+    const priority = options.priority !== undefined ? options.priority : getWorkflowPriorityLane(options.workflowId);
     const maxAttempts = options.maxAttempts || 3;
     const availableAt = options.availableAt || new Date().toISOString();
     const payloadJson = JSON.stringify(options.payload || {});
@@ -222,7 +277,7 @@ export class DurableJobQueue {
       const jobId = `job_${Date.now()}_${randomUUID().substring(0, 8)}`;
       const businessId = opt.businessId || 'biz_platform_aro';
       const organizationId = opt.organizationId || 'org_owner_primary';
-      const priority = opt.priority !== undefined ? opt.priority : 1;
+      const priority = opt.priority !== undefined ? opt.priority : getWorkflowPriorityLane(opt.workflowId);
       const maxAttempts = opt.maxAttempts || 3;
       const availableAt = opt.availableAt || new Date().toISOString();
       const payloadJson = JSON.stringify(opt.payload || {});
@@ -707,23 +762,30 @@ export class DurableJobQueue {
     let oldestQueuedTs: string | null = null;
     let lastSuccessTs: string | null = null;
 
+    const toUtcMs = (ts: string): number => {
+      const s = String(ts || '').trim();
+      if (!s) return NaN;
+      if (/[zZ]$|[+\-]\d{2}:?\d{2}$/.test(s)) return new Date(s).getTime();
+      return new Date(s.includes('T') ? `${s}Z` : `${s.replace(' ', 'T')}Z`).getTime();
+    };
+
     for (const r of rows) {
       counts[r.status] = Number(r.cnt || 0);
       totalOverdue += Number(r.overdue || 0);
       totalExpiredLeases += Number(r.expired_leases || 0);
 
       if (r.oldest_overdue) {
-        if (!oldestOverdueTs || new Date(r.oldest_overdue).getTime() < new Date(oldestOverdueTs).getTime()) {
+        if (!oldestOverdueTs || toUtcMs(r.oldest_overdue) < toUtcMs(oldestOverdueTs)) {
           oldestOverdueTs = r.oldest_overdue;
         }
       }
       if (r.oldest_queued) {
-        if (!oldestQueuedTs || new Date(r.oldest_queued).getTime() < new Date(oldestQueuedTs).getTime()) {
+        if (!oldestQueuedTs || toUtcMs(r.oldest_queued) < toUtcMs(oldestQueuedTs)) {
           oldestQueuedTs = r.oldest_queued;
         }
       }
       if (r.last_success) {
-        if (!lastSuccessTs || new Date(r.last_success).getTime() > new Date(lastSuccessTs).getTime()) {
+        if (!lastSuccessTs || toUtcMs(r.last_success) > toUtcMs(lastSuccessTs)) {
           lastSuccessTs = r.last_success;
         }
       }
@@ -735,10 +797,16 @@ export class DurableJobQueue {
       oldestOverdueAgeMinutes = Math.max(0, Math.floor(diffMs / 60000));
     }
 
+    const toUtcAgeMs = (ts: string): number => {
+      const s = String(ts || '').trim();
+      if (!s) return NaN;
+      if (/[zZ]$|[+\-]\d{2}:?\d{2}$/.test(s)) return new Date(s).getTime();
+      return new Date(s.includes('T') ? `${s}Z` : `${s.replace(' ', 'T')}Z`).getTime();
+    };
     let oldestQueuedAgeMinutes = 0;
     if (oldestQueuedTs) {
-      const diffMs = Date.now() - new Date(oldestQueuedTs).getTime();
-      oldestQueuedAgeMinutes = Math.max(0, Math.floor(diffMs / 60000));
+      const diffMs = Date.now() - toUtcAgeMs(oldestQueuedTs);
+      oldestQueuedAgeMinutes = Number.isFinite(diffMs) ? Math.max(0, Math.floor(diffMs / 60000)) : 0;
     }
 
     return {
@@ -766,6 +834,140 @@ export class DurableJobQueue {
    * retaining strictly at most ONE QUEUED job per workflow_id.
    * Duplicate jobs are transitioned to 'NO_ACTION_DUE' with last_error = 'SUPERSEDED_DEDUP'.
    */
+  /**
+   * Self-heals stale (>threshold hours) queued jobs and BLOCKED jobs owned by parked/disabled workflows
+   * while obeying SQLite/D1 0044 CHECK constraints (`status = 'NO_ACTION_DUE'` with explicit `last_error` codes).
+   * Enqueues fresh jobs for active enabled workflows that no longer have a pending/running entry.
+   */
+  public async recoverStaleAndBlockedJobs(options?: {
+    staleHoursThreshold?: number;
+    activeWorkflowIds?: string[];
+    parkedWorkflowIds?: string[];
+  }): Promise<{
+    expiredLeasesRecovered: number;
+    supersededStaleCount: number;
+    cancelledParkedBlockedCount: number;
+    compactedDuplicateCount: number;
+    freshJobsScheduledCount: number;
+    queueStatsAfter: Awaited<ReturnType<DurableJobQueue['getQueueStats']>>;
+  }> {
+    const expiredLeasesRecovered = await this.recoverStaleLeases();
+    const staleHours = Math.max(1, Math.min(168, Math.floor(options?.staleHoursThreshold ?? 24)));
+
+    // Resolve active & parked workflow IDs from automation_registry when not explicitly supplied
+    const activeSet = new Set<string>(options?.activeWorkflowIds ?? []);
+    const parkedSet = new Set<string>(options?.parkedWorkflowIds ?? []);
+    if (!options?.activeWorkflowIds || !options?.parkedWorkflowIds) {
+      try {
+        const regSql = `SELECT id, enabled FROM automation_registry`;
+        const regRows = isProduction()
+          ? await this.d1Repo.query<any>('automation_registry', regSql)
+          : getDb().prepare(regSql).all() as any[];
+        for (const r of regRows) {
+          if (!r?.id) continue;
+          if (Number(r.enabled) === 1 && !options?.activeWorkflowIds) {
+            activeSet.add(String(r.id));
+          } else if (Number(r.enabled) === 0 && !options?.parkedWorkflowIds) {
+            parkedSet.add(String(r.id));
+          }
+        }
+      } catch {
+        // automation_registry may be absent in minimal unit test DBs
+      }
+    }
+
+    // 1. Supersede stale >24h QUEUED jobs using schema-valid NO_ACTION_DUE + last_error = 'SUPERSEDED_STALE_WINDOW'
+    let supersededStaleCount = 0;
+    const staleSql = `
+      UPDATE automation_jobs
+      SET status = 'NO_ACTION_DUE',
+          last_error = 'SUPERSEDED_STALE_WINDOW',
+          completed_at = COALESCE(completed_at, datetime('now')),
+          updated_at = datetime('now')
+      WHERE status = 'QUEUED'
+        AND datetime(created_at) < datetime('now', '-' || ? || ' hours')
+    `;
+    try {
+      if (isProduction()) {
+        const res = await this.d1Repo.executeWrite('automation_jobs', staleSql, [staleHours]);
+        supersededStaleCount = (res as any)?.rowsAffected ?? (res as any)?.changes ?? 0;
+      } else {
+        const res = getDb().prepare(staleSql).run(staleHours);
+        supersededStaleCount = res.changes || 0;
+      }
+    } catch (err: any) {
+      console.warn(`[JobQueue] recoverStaleAndBlockedJobs stale notice: ${err.message}`);
+    }
+
+    // 2. Clear BLOCKED jobs for parked/disabled workflows using schema-valid NO_ACTION_DUE + CANCELLED_WORKFLOW_PARKED
+    let cancelledParkedBlockedCount = 0;
+    const parkedIds = Array.from(parkedSet);
+    if (parkedIds.length > 0) {
+      const placeholders = parkedIds.map(() => '?').join(', ');
+      const parkedSql = `
+        UPDATE automation_jobs
+        SET status = 'NO_ACTION_DUE',
+            last_error = 'CANCELLED_WORKFLOW_PARKED',
+            completed_at = COALESCE(completed_at, datetime('now')),
+            updated_at = datetime('now')
+        WHERE status = 'BLOCKED'
+          AND workflow_id IN (${placeholders})
+      `;
+      try {
+        if (isProduction()) {
+          const res = await this.d1Repo.executeWrite('automation_jobs', parkedSql, parkedIds);
+          cancelledParkedBlockedCount = (res as any)?.rowsAffected ?? (res as any)?.changes ?? 0;
+        } else {
+          const res = getDb().prepare(parkedSql).run(...parkedIds);
+          cancelledParkedBlockedCount = res.changes || 0;
+        }
+      } catch (err: any) {
+        console.warn(`[JobQueue] recoverStaleAndBlockedJobs parked notice: ${err.message}`);
+      }
+    }
+
+    const compactedDuplicateCount = await this.compactStaleDuplicateQueueJobs();
+
+    // 3. Schedule 1 fresh job for each active enabled workflow that has no remaining active job
+    let freshJobsScheduledCount = 0;
+    const activeIds = Array.from(activeSet);
+    if (activeIds.length > 0 && (supersededStaleCount > 0 || options?.activeWorkflowIds)) {
+      try {
+        const activeSql = `SELECT DISTINCT workflow_id FROM automation_jobs WHERE status IN ('QUEUED', 'RUNNING', 'RETRY_WAIT')`;
+        const activeRows = isProduction()
+          ? await this.d1Repo.query<any>('automation_jobs', activeSql)
+          : getDb().prepare(activeSql).all() as any[];
+        const alreadyActive = new Set(activeRows.map((r: any) => String(r.workflow_id || '')));
+
+        const toEnqueue = activeIds
+          .filter(id => !alreadyActive.has(id))
+          .map(workflowId => ({
+            workflowId,
+            priority: getWorkflowPriorityLane(workflowId),
+            payload: { triggeredBy: 'stale_queue_recovery' },
+            idempotencyKey: `${workflowId}:recovery:${new Date().toISOString().slice(0, 13)}`
+          }));
+
+        if (toEnqueue.length > 0) {
+          const created = await this.enqueueJobsBatch(toEnqueue);
+          freshJobsScheduledCount = created.enqueuedCount;
+        }
+      } catch (err: any) {
+        console.warn(`[JobQueue] recoverStaleAndBlockedJobs reschedule notice: ${err.message}`);
+      }
+    }
+
+    const queueStatsAfter = await this.getQueueStats();
+    return {
+      expiredLeasesRecovered,
+      supersededStaleCount,
+      cancelledParkedBlockedCount,
+      compactedDuplicateCount,
+      freshJobsScheduledCount,
+      queueStatsAfter
+    };
+  }
+
   public async compactStaleDuplicateQueueJobs(): Promise<number> {
     const compactionSql = `
       UPDATE automation_jobs

@@ -1126,4 +1126,119 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
       expect(res.resultSummary.isolatedLaneErrors?.siteFixAudit).toContain('PAGESPEED_UPSTREAM_TIMEOUT');
     });
   });
+
+  describe('Workstream N — Stage I P0-P2 Queue Recovery, Inbound 24h Exemption, & Real Economics', () => {
+    it('recovers >24h stale QUEUED jobs & parked-workflow BLOCKED jobs under 0044 CHECK constraints while enforcing priority lanes', async () => {
+      const db = getDb();
+      const { DurableJobQueue, QueuePriorityLane, getWorkflowPriorityLane } = await import('../../src/automation/durable-job-queue.js');
+      expect(getWorkflowPriorityLane('new_inquiry_processing')).toBe(QueuePriorityLane.CRITICAL_INBOUND);
+      expect(getWorkflowPriorityLane('daily_market_demand_research')).toBe(QueuePriorityLane.NORMAL_RESEARCH);
+      expect(getWorkflowPriorityLane('seo_guide_content_refresh')).toBe(QueuePriorityLane.LOW_SEO_CONTENT);
+
+      db.prepare('DELETE FROM automation_jobs').run();
+      try {
+        db.prepare(`INSERT OR IGNORE INTO automation_registry (id, name, category, cadence_minutes, enabled) VALUES ('parked_legacy_wf', 'Parked WF', 'GROWTH', 360, 0)`).run();
+        db.prepare(`INSERT OR IGNORE INTO automation_registry (id, name, category, cadence_minutes, enabled) VALUES ('affiliate_offer_reconciliation', 'Affiliate Offer Reconciliation', 'COMMERCE', 60, 1)`).run();
+      } catch {}
+
+      db.prepare(`
+        INSERT INTO automation_jobs (id, organization_id, business_id, workflow_id, idempotency_key, status, priority, payload_json, created_at, updated_at)
+        VALUES ('job_stale_72h', 'org_owner_primary', 'biz_platform_aro', 'affiliate_offer_reconciliation', 'idem_stale_72h', 'QUEUED', 2, '{}', datetime('now', '-72 hours'), datetime('now', '-72 hours'))
+      `).run();
+      db.prepare(`
+        INSERT INTO automation_jobs (id, organization_id, business_id, workflow_id, idempotency_key, status, priority, payload_json, created_at, updated_at)
+        VALUES ('job_parked_blk', 'org_owner_primary', 'biz_platform_aro', 'parked_legacy_wf', 'idem_parked_blk', 'BLOCKED', 3, '{}', datetime('now', '-48 hours'), datetime('now', '-48 hours'))
+      `).run();
+
+      const recovery = await DurableJobQueue.getInstance().recoverStaleAndBlockedJobs({
+        staleHoursThreshold: 24,
+        parkedWorkflowIds: ['parked_legacy_wf'],
+        activeWorkflowIds: ['affiliate_offer_reconciliation']
+      });
+
+      expect(recovery.supersededStaleCount).toBe(1);
+      expect(recovery.cancelledParkedBlockedCount).toBe(1);
+      expect(recovery.freshJobsScheduledCount).toBe(1);
+      expect(recovery.queueStatsAfter.blocked).toBe(0);
+      expect(recovery.queueStatsAfter.oldestQueuedAgeMinutes).toBeLessThan(60);
+
+      const staleRow = db.prepare(`SELECT status, last_error FROM automation_jobs WHERE id = 'job_stale_72h'`).get() as any;
+      expect(staleRow.status).toBe('NO_ACTION_DUE');
+      expect(staleRow.last_error).toBe('SUPERSEDED_STALE_WINDOW');
+
+      const parkedRow = db.prepare(`SELECT status, last_error FROM automation_jobs WHERE id = 'job_parked_blk'`).get() as any;
+      expect(parkedRow.status).toBe('NO_ACTION_DUE');
+      expect(parkedRow.last_error).toBe('CANCELLED_WORKFLOW_PARKED');
+    });
+
+    it('exempts customer-initiated WhatsApp 24h inbound replies from 5/24h cold outbound caps while blocking 6th cold send', async () => {
+      const db = getDb();
+      const { AutonomyPolicyController } = await import('../../src/revenue/autonomy-policy.js');
+      db.prepare('DELETE FROM direct_outreach_log').run();
+      for (let i = 0; i < 5; i++) {
+        db.prepare(`
+          INSERT INTO direct_outreach_log (id, business_id, segment, prospect_name, channel, message_draft, human_approved, dispatched, dispatch_timestamp, created_at)
+          VALUES (?, 'biz_platform_aro', 'B2B_SMB', 'Prospect', 'EMAIL', 'Body', 1, 1, datetime('now'), datetime('now'))
+        `).run(`out_log_${i}_${Date.now()}`);
+      }
+
+      const policyCtrl = new AutonomyPolicyController();
+      const coldEval = policyCtrl.evaluateAction('org_default', 'OUTBOUND_DISPATCH', {
+        channel: 'EMAIL',
+        isColdOutreach: true,
+        isApproved: true,
+        isInboundResponse: false,
+        costINR: 0
+      });
+      expect(coldEval.allowed).toBe(false);
+      expect(coldEval.violatedRule).toBe('DAILY_OUTBOUND_CAP_REACHED');
+
+      const waInboundEval = policyCtrl.evaluateAction('org_default', 'OUTBOUND_DISPATCH', {
+        channel: 'WHATSAPP',
+        isColdOutreach: false,
+        isInboundResponse: true,
+        costINR: 0
+      });
+      expect({
+        allowed: waInboundEval.allowed,
+        violatedRule: waInboundEval.violatedRule,
+        reason: waInboundEval.reason
+      }).toEqual({ allowed: true, violatedRule: undefined, reason: expect.any(String) });
+    });
+
+    it('keeps prospect_dedup_qualification unblocked when >10 drafts are pending, replaces 65% hardcoded margin, and removes STRIPE global blocker', async () => {
+      const db = getDb();
+      const { AutomationRegistryEngine } = await import('../../src/automation/automation-registry-engine.js');
+      const { RealEconomicsEngine, calculateLaneUnitEconomics } = await import('../../src/revenue/real-economics.js');
+      const { SystemReadinessEngine } = await import('../../src/control-plane/system-readiness.js');
+
+      db.prepare('DELETE FROM direct_outreach_log').run();
+      for (let i = 0; i < 15; i++) {
+        db.prepare(`
+          INSERT INTO direct_outreach_log (id, business_id, segment, prospect_name, channel, message_draft, human_approved, dispatched)
+          VALUES (?, 'biz_platform_aro', 'B2B_SMB', ?, 'EMAIL', 'Draft body', 0, 0)
+        `).run(`draft_blk_${i}`, `Clinic ${i}`);
+      }
+
+      const registry = AutomationRegistryEngine.getInstance();
+      const dedupRes = await registry.executeWorkflow('prospect_dedup_qualification', 'TEST_HARNESS');
+      expect(dedupRes.resultSummary?.reason).not.toBe('UNAPPROVED_DRAFTS_BACKLOG_EXCEEDED');
+
+      const draftPrepRes = await registry.executeWorkflow('outreach_draft_preparation', 'TEST_HARNESS');
+      expect(draftPrepRes.resultSummary?.reason).toBe('UNAPPROVED_DRAFTS_BACKLOG_EXCEEDED');
+
+      const econSummary = new RealEconomicsEngine().calculate('biz_platform_aro');
+      expect(econSummary.grossMarginPercent).not.toBe(65);
+      expect(econSummary.grossMarginPercent).toBe(0);
+
+      const zeroLane = calculateLaneUnitEconomics({ lane: 'LANE_D_DIGITAL_PRODUCTS', grossRevenueINR: 0 });
+      expect(zeroLane.grossMarginPercent).toBeNull();
+      const liveLane = calculateLaneUnitEconomics({ lane: 'LANE_D_DIGITAL_PRODUCTS', grossRevenueINR: 1000, gatewayFeePercent: 2 });
+      expect(liveLane.grossMarginPercent).toBe(98);
+
+      const readiness = SystemReadinessEngine.evaluateReadiness('biz_platform_aro');
+      expect((readiness.capabilities || {})['STRIPE']).toBeUndefined();
+      expect((readiness.capabilities || {})['DIRECT_UPI']?.verified).toBe(true);
+    });
+  });
 });

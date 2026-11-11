@@ -387,10 +387,10 @@ export class AutomationRegistryEngine {
         try { getDb().prepare(updateCadenceSql).run(); } catch {}
       }
 
-      // V5.8.4 Queue Compaction: Keep queue bounded to at most 1 queued job per workflow
+      // Stage I P1 Queue Recovery & Compaction: Clear >24h stale QUEUED jobs & parked BLOCKED jobs on startup
       try {
         const { DurableJobQueue } = await import('./durable-job-queue.js');
-        await DurableJobQueue.getInstance().compactStaleDuplicateQueueJobs();
+        await DurableJobQueue.getInstance().recoverStaleAndBlockedJobs();
       } catch {}
 
       this.isInitialized = true;
@@ -864,25 +864,8 @@ export class AutomationRegistryEngine {
           await GoogleSuggestClient.getInstance().fetchSuggestions(suggestQuery, 'in');
         } catch {}
 
-        const { checkB2BResearchBacklogGuard } = await import('../revenue/b2b-research-backlog-guard.js');
-        const guard = await checkB2BResearchBacklogGuard(this.d1Repo);
-        if (!guard.allowed) {
-          console.warn(`[MarketDemandResearch] B2B Research Backlog Guard active: ${guard.unapprovedCount} drafts unapproved. Skipping cold B2B research and redirecting budget directly to Affiliate Commerce Deal Discovery & Public SiteFix Audits.`);
-          try {
-            const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
-            await SiteAuditService.getInstance().runFullAudit('https://dentalsolutions.com', 'Dental Solutions');
-          } catch {}
-          try {
-            const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
-            await AutonomousDealDiscoveryEngine.getInstance().harvestAllApprovedMerchantFeeds();
-          } catch {}
-
-          return {
-            status: 'NO_ACTION_DUE',
-            summary: { reason: 'UNAPPROVED_DRAFTS_BACKLOG_EXCEEDED', unapprovedCount: guard.unapprovedCount },
-            ownerActionRequired: `Review ${guard.unapprovedCount} pending outreach drafts before generating more research findings.`
-          };
-        }
+        // Stage I P2: Multi-lane market demand research, affiliate deals, SiteFix audits, and Financial Radar
+        // are NEVER blocked by pending B2B cold outreach drafts, and never hardcode dentalsolutions.com.
 
         // Branch 1: SECTOR_H (Local Services & B2B) and SECTOR_E (Software & Digital Services) -> Autonomous Site Audit Publication
         if (sectorCode === 'SECTOR_H_LOCAL_SERVICES_B2B' || sectorCode === 'SECTOR_E_SOFTWARE') {
@@ -1122,25 +1105,8 @@ export class AutomationRegistryEngine {
       }
 
       case 'competitor_pricing_research': {
-        const { checkB2BResearchBacklogGuard } = await import('../revenue/b2b-research-backlog-guard.js');
-        const guard = await checkB2BResearchBacklogGuard(this.d1Repo);
-        if (!guard.allowed) {
-          return {
-            status: 'NO_ACTION_DUE',
-            itemsProcessed: 0,
-            itemsSucceeded: 0,
-            itemsFailed: 0,
-            summary: {
-              reason: guard.reason,
-              unapprovedCount: guard.unapprovedCount,
-              maxLimit: guard.maxLimit,
-              message: guard.message
-            },
-            ownerActionRequired: `Review ${guard.unapprovedCount} pending outreach drafts at /owner/today to resume pricing research.`
-          };
-        }
-
-        // Collect dated competitor evidence from configured permitted sources or observed clinic fees
+        // Stage I P2: Research lane is NEVER deadlocked by cold outreach draft backlog.
+        // Collect dated competitor evidence from configured permitted sources or observed fees
         let freshFindingsCount = 0;
         try {
           // Check for existing fresh pricing benchmarks retrieved in the last 7 days
@@ -1180,24 +1146,7 @@ export class AutomationRegistryEngine {
       }
 
       case 'prospect_discovery_validation': {
-        const { checkB2BResearchBacklogGuard } = await import('../revenue/b2b-research-backlog-guard.js');
-        const guard = await checkB2BResearchBacklogGuard(this.d1Repo);
-        if (!guard.allowed) {
-          return {
-            status: 'NO_ACTION_DUE',
-            itemsProcessed: 0,
-            itemsSucceeded: 0,
-            itemsFailed: 0,
-            summary: {
-              reason: guard.reason,
-              unapprovedCount: guard.unapprovedCount,
-              maxLimit: guard.maxLimit,
-              message: guard.message
-            },
-            ownerActionRequired: `Review ${guard.unapprovedCount} pending outreach drafts at /owner/today to resume prospect discovery.`
-          };
-        }
-
+        // Stage I P2: Prospect discovery & autonomous SiteFix audit remain active regardless of draft backlog.
         const { PlatformProspectDiscoveryEngine } = await import('../revenue/platform-prospect-discovery-engine.js');
         const prospects = await PlatformProspectDiscoveryEngine.getInstance().ensureCuratedQualifiedProspectBatch();
         const auditedDomainInfo = await this.autoAuditNextUnauditedDomain().catch(() => null);
@@ -1216,24 +1165,7 @@ export class AutomationRegistryEngine {
       }
 
       case 'prospect_dedup_qualification': {
-        const { checkB2BResearchBacklogGuard } = await import('../revenue/b2b-research-backlog-guard.js');
-        const guard = await checkB2BResearchBacklogGuard(this.d1Repo);
-        if (!guard.allowed) {
-          return {
-            status: 'NO_ACTION_DUE',
-            itemsProcessed: 0,
-            itemsSucceeded: 0,
-            itemsFailed: 0,
-            summary: {
-              reason: guard.reason,
-              unapprovedCount: guard.unapprovedCount,
-              maxLimit: guard.maxLimit,
-              message: guard.message
-            },
-            ownerActionRequired: `Review ${guard.unapprovedCount} pending outreach drafts at /owner/today to resume prospect deduplication.`
-          };
-        }
-
+        // Stage I P2: Prospect dedup & qualification stay unblocked when draft backlog is high.
         // Query platform_prospects and perform canonical identity deduplication
         let candidateRows: any[] = [];
         try {

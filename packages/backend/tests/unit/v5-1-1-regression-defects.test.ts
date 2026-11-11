@@ -74,23 +74,22 @@ describe('V5.1.1 — 10 Regression Defect Repairs Verification', () => {
   // Defect 2: Workflow Backlog Protection & Zero Synthetic Pricing Rows
   // --------------------------------------------------------------------------
   describe('Defect 2: Workflow Guard Protection & Zero Synthetic Benchmarks', () => {
-    it('daily_market_demand_research halts with NO_ACTION_DUE when backlog limit exceeded', async () => {
+    it('daily_market_demand_research is NOT deadlocked by unapproved draft backlog (Stage I P2)', async () => {
       vi.spyOn(d1Repo, 'queryOne').mockResolvedValue({ cnt: 20 } as any);
 
       const engine = AutomationRegistryEngine.getInstance();
       const res = await engine.executeWorkflow('daily_market_demand_research');
-      expect(res.status).toBe('NO_ACTION_DUE');
-      expect(res.resultSummary?.reason).toBe('UNAPPROVED_DRAFTS_BACKLOG_EXCEEDED');
-      expect(res.ownerActionRequired).toMatch(/Review 20 pending outreach drafts/i);
+      expect(res.resultSummary?.reason).not.toBe('UNAPPROVED_DRAFTS_BACKLOG_EXCEEDED');
+      expect(res.status).not.toBe('FAILED');
     });
 
-    it('competitor_pricing_research halts with NO_ACTION_DUE when backlog limit exceeded', async () => {
+    it('competitor_pricing_research is NOT deadlocked by unapproved draft backlog (Stage I P2)', async () => {
       vi.spyOn(d1Repo, 'queryOne').mockResolvedValue({ cnt: 15 } as any);
 
       const engine = AutomationRegistryEngine.getInstance();
       const res = await engine.executeWorkflow('competitor_pricing_research');
-      expect(res.status).toBe('NO_ACTION_DUE');
-      expect(res.resultSummary?.reason).toBe('UNAPPROVED_DRAFTS_BACKLOG_EXCEEDED');
+      expect(res.resultSummary?.reason).not.toBe('UNAPPROVED_DRAFTS_BACKLOG_EXCEEDED');
+      expect(res.status).not.toBe('FAILED');
     });
 
     it('competitor_pricing_research returns NO_VERIFIED_EVIDENCE and DOES NOT insert synthetic benchmark rows when fresh evidence is 0', async () => {
@@ -111,13 +110,17 @@ describe('V5.1.1 — 10 Regression Defect Repairs Verification', () => {
       expect(writeSpy).not.toHaveBeenCalled();
     });
 
-    it('prospect_dedup_qualification halts with NO_ACTION_DUE when backlog limit exceeded', async () => {
+    it('prospect_dedup_qualification is NOT deadlocked by unapproved draft backlog, while outreach_draft_preparation still halts with NO_ACTION_DUE', async () => {
       vi.spyOn(d1Repo, 'queryOne').mockResolvedValue({ cnt: 11 } as any);
 
       const engine = AutomationRegistryEngine.getInstance();
-      const res = await engine.executeWorkflow('prospect_dedup_qualification');
-      expect(res.status).toBe('NO_ACTION_DUE');
-      expect(res.resultSummary?.reason).toBe('UNAPPROVED_DRAFTS_BACKLOG_EXCEEDED');
+      const dedupRes = await engine.executeWorkflow('prospect_dedup_qualification');
+      expect(dedupRes.resultSummary?.reason).not.toBe('UNAPPROVED_DRAFTS_BACKLOG_EXCEEDED');
+      expect(dedupRes.status).not.toBe('FAILED');
+
+      const draftRes = await engine.executeWorkflow('outreach_draft_preparation');
+      expect(draftRes.status).toBe('NO_ACTION_DUE');
+      expect(draftRes.resultSummary?.reason).toBe('UNAPPROVED_DRAFTS_BACKLOG_EXCEEDED');
     });
   });
 
