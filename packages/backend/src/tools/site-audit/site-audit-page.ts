@@ -6,7 +6,10 @@
  * - Displays truthful fail-closed status when checkout is locked.
  */
 
+import { OwnerAuthService } from '../../auth/owner-auth.js';
+
 export function renderSiteAuditPage(): string {
+  const upiVpa = OwnerAuthService.PLATFORM_UPI_VPA;
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -314,6 +317,38 @@ export function renderSiteAuditPage(): string {
           <button class="btn-primary" id="testPayOneRupeeBtn" onclick="initiateCheckout(100)" style="margin-top: 0.75rem; background: #10b981; border: 1px solid #059669; display: flex; align-items: center; justify-content: center; gap: 0.5rem; width: 100%;" disabled>
             <span>⚡ Launch Razorpay Sandbox Modal (₹1.00 Test Mode)</span>
           </button>
+
+          <!-- Live UPI Fallback Rail (Displayed when paymentMode !== 'LIVE') -->
+          <div id="upiFallbackCard" style="display: none; margin-top: 1.5rem; padding: 1.25rem; background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.35); border-radius: 8px; text-align: left;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem; flex-wrap: wrap; gap: 0.5rem;">
+              <strong style="color: #34d399; font-size: 0.95rem;">Direct UPI Payment Option (Live INR via GPay / PhonePe / Paytm)</strong>
+              <span style="font-size: 0.72rem; background: rgba(16, 185, 129, 0.2); color: #6ee7b7; padding: 2px 8px; border-radius: 4px; font-weight: 700;">LIVE INR FALLBACK RAIL</span>
+            </div>
+            <p style="font-size: 0.85rem; color: #d1d5db; margin-bottom: 1rem;">
+              Razorpay card gateway is in Sandbox mode. Pay <strong>₹499</strong> directly via UPI to unlock manual fulfillment upon UTR verification (zero revenue is recognized before owner bank confirmation).
+            </p>
+            <div style="display: grid; grid-template-columns: auto 1fr; gap: 1rem; align-items: center; margin-bottom: 1rem;">
+              <img src="/images/razorpay-upi-qr.jpg" alt="SiteFix AI Merchant UPI QR" style="width: 110px; height: 110px; border-radius: 8px; border: 1px solid #334155; background: #fff; object-fit: contain;">
+              <div>
+                <div style="font-size: 0.82rem; color: #9ca3af;">Merchant VPA: <code style="color: #fff; font-weight: 700;">${upiVpa}</code></div>
+                <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.65rem;">
+                  <a id="upiDeepLinkAnchor" href="upi://pay?pa=${upiVpa}&pn=SiteFix%20AI&cu=INR&am=499" class="btn-primary" style="display: inline-block; width: auto; padding: 0.5rem 0.9rem; font-size: 0.82rem; text-decoration: none; background: #10b981;">Pay ₹499 via UPI App &rarr;</a>
+                  <button type="button" onclick="navigator.clipboard.writeText('${upiVpa}'); this.innerText='Copied VPA!';" style="background: #1f2937; border: 1px solid #374151; color: #e5e7eb; padding: 0.5rem 0.85rem; border-radius: 6px; font-size: 0.82rem; cursor: pointer;">Copy UPI ID</button>
+                </div>
+              </div>
+            </div>
+            <form id="siteAuditUpiForm" onsubmit="submitSiteAuditUpiClaim(event)">
+              <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 0.65rem; margin-bottom: 0.75rem;">
+                <input type="text" id="upiPayerName" required placeholder="Your Business / Name *" style="padding: 0.55rem; border-radius: 6px; border: 1px solid #374151; background: #1f2937; color: #fff; font-size: 0.85rem;">
+                <input type="tel" id="upiPayerPhone" required placeholder="WhatsApp / Mobile *" style="padding: 0.55rem; border-radius: 6px; border: 1px solid #374151; background: #1f2937; color: #fff; font-size: 0.85rem;">
+                <input type="text" id="upiUtrInput" required minlength="12" maxlength="18" placeholder="12-Digit UPI UTR Ref *" style="padding: 0.55rem; border-radius: 6px; border: 1px solid #374151; background: #1f2937; color: #fff; font-size: 0.85rem;">
+              </div>
+              <button type="submit" id="upiClaimBtn" class="btn-primary" style="background: #059669; font-size: 0.9rem; padding: 0.65rem 1rem;">
+                Submit 12-Digit UPI UTR Claim (₹499)
+              </button>
+              <div id="upiClaimResultMsg" style="display: none; margin-top: 0.75rem; padding: 0.75rem; border-radius: 6px; font-size: 0.85rem;"></div>
+            </form>
+          </div>
         </div>
 
         <!-- Download Success Box -->
@@ -361,6 +396,12 @@ export function renderSiteAuditPage(): string {
       const text = document.getElementById('checkoutStatusText');
       const btn = document.getElementById('checkoutBtn');
       const testBtn = document.getElementById('testPayOneRupeeBtn');
+      const upiCard = document.getElementById('upiFallbackCard');
+      const paymentMode = currentReadiness?.paymentReadiness?.paymentMode || 'SANDBOX';
+
+      if (upiCard) {
+        upiCard.style.display = paymentMode !== 'LIVE' ? 'block' : 'none';
+      }
 
       if (!currentReadiness || !currentReadiness.isReady) {
         btn.disabled = true;
@@ -588,6 +629,55 @@ export function renderSiteAuditPage(): string {
       box.style.display = 'block';
       const link = document.getElementById('downloadLink');
       link.href = downloadUrl;
+    }
+
+    async function submitSiteAuditUpiClaim(e) {
+      e.preventDefault();
+      const claimBtn = document.getElementById('upiClaimBtn');
+      const msgEl = document.getElementById('upiClaimResultMsg');
+      const targetUrlVal = (document.getElementById('targetUrl')?.value || '').trim();
+      const utrVal = (document.getElementById('upiUtrInput')?.value || '').trim();
+      const payerName = (document.getElementById('upiPayerName')?.value || '').trim();
+      const payerPhone = (document.getElementById('upiPayerPhone')?.value || '').trim();
+      const auditRef = currentAuditId || (targetUrlVal ? 'sitefix_' + targetUrlVal.replace(/^https?:\/\//, '').split('/')[0] : 'sitefix_direct');
+
+      claimBtn.disabled = true;
+      claimBtn.innerText = 'Submitting UTR Claim...';
+
+      try {
+        const res = await fetch('/api/v1/offer/upi-claim', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            businessId: 'biz_platform_aro',
+            auditId: currentAuditId || undefined,
+            invoiceRef: auditRef,
+            payerName,
+            payerPhone,
+            utr: utrVal,
+            amountINR: 499,
+            serviceRendered: 'SiteFix AI Core Technical Fix-Pack',
+            notes: JSON.stringify({ auditId: currentAuditId || null, targetUrl: targetUrlVal || null, source: 'site_audit_upi_fallback' })
+          })
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+          msgEl.style.display = 'block';
+          msgEl.style.background = 'rgba(16, 185, 129, 0.15)';
+          msgEl.style.color = '#34d399';
+          msgEl.innerHTML = '<strong>✓ UPI Claim Submitted (PAYMENT_CLAIMED)!</strong> Ref: <code>' + escapeHtml(data.data?.claimId || auditRef) + '</code> &bull; Awaiting owner bank statement verification on /owner/today before fulfillment.';
+          claimBtn.style.display = 'none';
+        } else {
+          throw new Error(data.error || 'UPI claim submission failed');
+        }
+      } catch (err) {
+        msgEl.style.display = 'block';
+        msgEl.style.background = 'rgba(239, 68, 68, 0.15)';
+        msgEl.style.color = '#f87171';
+        msgEl.innerText = 'Error: ' + err.message;
+        claimBtn.disabled = false;
+        claimBtn.innerText = 'Submit 12-Digit UPI UTR Claim (₹499)';
+      }
     }
   </script>
 </body>

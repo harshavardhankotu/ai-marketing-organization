@@ -35,6 +35,7 @@ export const MAX_OFFER_FRESHNESS_HOURS = 48;
 export interface MarketArbitrageScoreResult {
   arbitrageScore: number;
   priceAdvantageRatio: number;
+  expectedCommissionYieldINR: number;
 }
 
 export interface TargetBuyerClassification {
@@ -44,16 +45,20 @@ export interface TargetBuyerClassification {
 }
 
 /**
- * Computes a deterministic 0-100 market arbitrage score measuring undervaluation
- * vs reference/category baseline combined with IN_STOCK + active Cuelinks monetization.
+ * Computes a deterministic 0.0-99.9 market arbitrage score combining discount depth,
+ * expected commission yield in INR (sweet-spot ticket scaling), and IN_STOCK + active Cuelinks monetization.
  */
 export function calculateMarketArbitrageScore(deal: Partial<NormalizedDeal>): MarketArbitrageScoreResult {
   const current = Number(deal.currentPriceINR || 0);
   const reference = Number(deal.referencePriceINR || 0);
   const rawRatio = reference > current && current > 0 && reference > 0
     ? (reference - current) / reference
-    : (deal.verifiedDiscountPercent && deal.verifiedDiscountPercent > 0 ? Math.min(0.9, deal.verifiedDiscountPercent / 100) : 0);
-  const priceAdvantageRatio = Number(Math.max(0, Math.min(0.95, rawRatio)).toFixed(4));
+    : (deal.verifiedDiscountPercent && deal.verifiedDiscountPercent > 0 ? Math.min(0.95, deal.verifiedDiscountPercent / 100) : 0);
+  const priceAdvantageRatio = Number(Math.max(0, Math.min(0.99, rawRatio)).toFixed(4));
+  const commissionRatePercent = Number(deal.commissionRatePercent || deal.evidenceJson?.commissionRatePercent || 6);
+  const expectedCommissionYieldINR = current > 0
+    ? Number((current * (commissionRatePercent / 100) * Math.max(0.15, priceAdvantageRatio)).toFixed(2))
+    : 0;
 
   if (
     deal.availability === 'OUT_OF_STOCK' ||
@@ -61,31 +66,34 @@ export function calculateMarketArbitrageScore(deal: Partial<NormalizedDeal>): Ma
     deal.verificationStatus === 'REJECTED' ||
     current <= 0
   ) {
-    return { arbitrageScore: 0, priceAdvantageRatio };
+    return { arbitrageScore: 0, priceAdvantageRatio, expectedCommissionYieldINR: 0 };
   }
 
-  // Factor 1: Undervaluation advantage relative to reference price (0-55 pts)
-  const priceAdvantagePts = Math.min(55, Math.round(priceAdvantageRatio * 80));
+  // Factor 1: Discount depth relative to reference price (0-55 pts)
+  const discountPts = Math.min(55, priceAdvantageRatio * 65);
 
-  // Factor 2: Verified live IN_STOCK inventory & product proof (0-20 pts)
-  const stockPts = (deal.availability === 'IN_STOCK' ? 15 : 5) + (deal.productVerified === true ? 5 : 0);
+  // Factor 2: Expected commission yield & ₹500-₹3,500 sweet-spot conversion scaling (0-35 pts)
+  const yieldScaledPts = Math.min(28, (expectedCommissionYieldINR / 120) * 28);
+  const ticketSweetSpotPts = (current >= 500 && current <= 3500) ? 7 : (current > 3500 ? 5 : 1);
+  const yieldPts = Math.min(35, yieldScaledPts + ticketSweetSpotPts);
 
-  // Factor 3: Active Cuelinks / monetizable tracking chain (cid=331585 aware, 0-15 pts)
+  // Factor 3: Verified live IN_STOCK inventory + Cuelinks cid=331585 affiliation (0-10 pts)
   const channelId = deal.evidenceJson?.channelId;
   const hasApprovedCuelinks = Boolean(
     deal.affiliateVerified &&
     deal.isMonetizable &&
     (deal.affiliateNetwork === 'CUELINKS' || String(channelId || '') === '331585' || Boolean(deal.trackingUrl))
   );
+  const stockAndProofPts = (deal.availability === 'IN_STOCK' ? 3 : 1) + (deal.productVerified === true ? 2 : 0);
   const affiliationPts = hasApprovedCuelinks
-    ? (String(channelId || process.env.CUELINKS_CHANNEL_ID || '') === '331585' ? 15 : 12)
-    : (deal.affiliateVerified ? 8 : 0);
+    ? (String(channelId || process.env.CUELINKS_CHANNEL_ID || '') === '331585' ? 5 : 4)
+    : (deal.affiliateVerified ? 2 : 0);
+  const verifiedPts = Math.min(10, stockAndProofPts + affiliationPts);
 
-  // Factor 4: Buyer price-band impulse velocity bonus (0-10 pts)
-  const velocityPts = current <= 1500 ? 10 : current <= 2500 ? 8 : current <= 5000 ? 5 : 2;
-
-  const arbitrageScore = Math.max(0, Math.min(100, priceAdvantagePts + stockPts + affiliationPts + velocityPts));
-  return { arbitrageScore, priceAdvantageRatio };
+  // Differentiated 0.0-99.9 scale prevents ceiling clamping ties at 100
+  const rawScore = discountPts + yieldPts + verifiedPts;
+  const arbitrageScore = Number(Math.max(0, Math.min(99.9, rawScore)).toFixed(1));
+  return { arbitrageScore, priceAdvantageRatio, expectedCommissionYieldINR };
 }
 
 /**
@@ -3371,11 +3379,12 @@ export class AutonomousDealDiscoveryEngine {
       );
     }
 
-    // Sort deterministically by market arbitrage score descending, then discount %, then buyer value score
+    // Sort deterministically by market arbitrage score descending, then expected commission yield, then price advantage ratio
     filtered.sort((a, b) =>
       (b.arbitrageScore || 0) - (a.arbitrageScore || 0) ||
-      (b.verifiedDiscountPercent || 0) - (a.verifiedDiscountPercent || 0) ||
-      (b.buyerValueScore || 0) - (a.buyerValueScore || 0)
+      (b.expectedCommissionYieldINR || 0) - (a.expectedCommissionYieldINR || 0) ||
+      (b.priceAdvantageRatio || 0) - (a.priceAdvantageRatio || 0) ||
+      (b.verifiedDiscountPercent || 0) - (a.verifiedDiscountPercent || 0)
     );
 
     const total = filtered.length;
@@ -4363,6 +4372,7 @@ export class AutonomousDealDiscoveryEngine {
     const targeting = classifyTargetBuyerSegment(deal);
     deal.arbitrageScore = arb.arbitrageScore;
     deal.priceAdvantageRatio = arb.priceAdvantageRatio;
+    deal.expectedCommissionYieldINR = arb.expectedCommissionYieldINR;
     deal.targetBuyerSegment = targeting.targetBuyerSegment;
     deal.buyerIntentKeywords = targeting.buyerIntentKeywords;
     deal.buyerIntentHook = targeting.buyerIntentHook;
@@ -4370,6 +4380,7 @@ export class AutonomousDealDiscoveryEngine {
       ...(deal.evidenceJson || { sources: [deal.productUrl], verificationLogs: [] }),
       arbitrageScore: arb.arbitrageScore,
       priceAdvantageRatio: arb.priceAdvantageRatio,
+      expectedCommissionYieldINR: arb.expectedCommissionYieldINR,
       targetBuyerSegment: targeting.targetBuyerSegment,
       buyerIntentKeywords: targeting.buyerIntentKeywords,
       buyerIntentHook: targeting.buyerIntentHook

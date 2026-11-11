@@ -219,6 +219,7 @@ export class RazorpayAdapter {
   public validatePermittedDeposit(amountINR: number, serviceName?: string): void {
     const rounded = Math.round(amountINR);
     const permittedAmounts = [
+      499, // SiteFix AI Core Technical Fix-Pack self-serve SKU
       RazorpayAdapter.STANDARD_CONSULTATION_DEPOSIT_INR, // 500
       1500,
       2999,
