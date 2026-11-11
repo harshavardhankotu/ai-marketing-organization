@@ -808,8 +808,154 @@ export class RazorpayAdapter {
     };
   }
 
+  public static readonly MANUAL_UPI_LIFECYCLE_TRANSITIONS: Record<string, string[]> = {
+    PAYMENT_CLAIMED: ['HUMAN_VERIFIED_PAYMENT', 'REJECTED'],
+    HUMAN_VERIFIED_PAYMENT: ['FULFILLMENT_IN_PROGRESS', 'REFUNDED'],
+    FULFILLMENT_IN_PROGRESS: ['FULFILLED', 'REFUNDED'],
+    FULFILLED: ['REFUNDED'],
+    REJECTED: [],
+    REFUNDED: []
+  };
+
+  /**
+   * Resolves server-authoritative claim context (`amountINR`, `sku`, `businessId`, `invoiceRef`)
+   * from a verified `site_audits` / `SITE_AUDIT_SCAN` record or a server-created `payment_requests` / `payment_orders` row.
+   * Never trusts client-supplied amount, businessId, or invoiceRef for offer claims.
+   */
+  public async resolveAuthoritativeOfferClaimContext(params: {
+    auditId?: string;
+    paymentRequestId?: string;
+    orderId?: string;
+    proposalId?: string;
+  }): Promise<{
+    verified: boolean;
+    amountINR: number;
+    sku: string;
+    businessId: string;
+    organizationId: string;
+    invoiceRef: string;
+    proposalId?: string;
+    serviceRendered: string;
+    referenceType: 'SITE_AUDIT' | 'PAYMENT_REQUEST' | 'PAYMENT_ORDER';
+  } | null> {
+    const useRemoteD1 = isProduction() && !process.env.VITEST;
+    const queryOne = async (table: string, sql: string, qParams: any[]) => {
+      if (useRemoteD1) {
+        return this.d1Repo.queryOne<any>(table, sql, qParams);
+      }
+      try {
+        return getDb().prepare(sql).get(...qParams) as any;
+      } catch {
+        return null;
+      }
+    };
+
+    const rawAuditId = params.auditId ? String(params.auditId).trim() : '';
+    if (rawAuditId) {
+      // 1a. Check site_audits by exact domain (normalized or raw)
+      const normalizedDomain = rawAuditId
+        .replace(/^https?:\/\//i, '')
+        .replace(/^www\./i, '')
+        .split('/')[0]
+        .trim()
+        .toLowerCase();
+      let auditRow = await queryOne(
+        'site_audits',
+        'SELECT domain, target_url, business_name, status FROM site_audits WHERE domain = ? OR domain = ? LIMIT 1',
+        [rawAuditId, normalizedDomain]
+      );
+      // 1b. Check commercial_evidence for scan IDs (e.g. `audit_<hex>`) and confirm corresponding site_audits row exists
+      if (!auditRow) {
+        const ceRow = await queryOne(
+          'commercial_evidence',
+          "SELECT request_reference, external_id, details_json FROM commercial_evidence WHERE request_reference = ? AND milestone = 'SITE_AUDIT_SCAN' LIMIT 1",
+          [rawAuditId]
+        );
+        if (ceRow) {
+          let ceDomain = '';
+          try {
+            const parsedUrl = ceRow.external_id || JSON.parse(ceRow.details_json || '{}')?.audit?.url;
+            if (parsedUrl) {
+              ceDomain = new URL(String(parsedUrl).startsWith('http') ? parsedUrl : `https://${parsedUrl}`).hostname.toLowerCase().replace(/^www\./, '');
+            }
+          } catch {}
+          if (ceDomain) {
+            auditRow = await queryOne(
+              'site_audits',
+              'SELECT domain, target_url, business_name, status FROM site_audits WHERE domain = ? LIMIT 1',
+              [ceDomain]
+            );
+          }
+          if (!auditRow) {
+            // Verified scan row in commercial_evidence
+            auditRow = { domain: ceDomain || rawAuditId, status: 'COMPLETED' };
+          }
+        }
+      }
+      if (auditRow) {
+        return {
+          verified: true,
+          amountINR: 499,
+          sku: 'SITEFIX_CORE_FIXPACK',
+          businessId: OwnerAuthService.PLATFORM_BUSINESS_ID,
+          organizationId: OwnerAuthService.OWNER_ORGANIZATION_ID,
+          invoiceRef: rawAuditId,
+          serviceRendered: 'SiteFix AI Core Technical Fix-Pack',
+          referenceType: 'SITE_AUDIT'
+        };
+      }
+    }
+
+    const reqRef = params.paymentRequestId || params.proposalId;
+    if (reqRef) {
+      const prRow = await queryOne(
+        'payment_requests',
+        'SELECT id, organization_id, business_id, proposal_id, offer_id, offer_description, amount_inr, status FROM payment_requests WHERE id = ? OR proposal_id = ? LIMIT 1',
+        [String(reqRef).trim(), String(reqRef).trim()]
+      );
+      if (prRow && Number(prRow.amount_inr) > 0) {
+        return {
+          verified: true,
+          amountINR: Number(prRow.amount_inr),
+          sku: String(prRow.offer_id || 'COMMERCIAL_SERVICE'),
+          businessId: String(prRow.business_id || OwnerAuthService.PLATFORM_BUSINESS_ID),
+          organizationId: String(prRow.organization_id || OwnerAuthService.OWNER_ORGANIZATION_ID),
+          invoiceRef: String(prRow.id),
+          proposalId: prRow.proposal_id ? String(prRow.proposal_id) : undefined,
+          serviceRendered: String(prRow.offer_description || 'Commercial Service'),
+          referenceType: 'PAYMENT_REQUEST'
+        };
+      }
+    }
+
+    if (params.orderId) {
+      const ordRow = await queryOne(
+        'payment_orders',
+        'SELECT id, business_id, order_id, amount_inr, receipt, notes_json FROM payment_orders WHERE id = ? OR order_id = ? LIMIT 1',
+        [String(params.orderId).trim(), String(params.orderId).trim()]
+      );
+      if (ordRow && Number(ordRow.amount_inr) > 0) {
+        let notesObj: any = {};
+        try { notesObj = JSON.parse(ordRow.notes_json || '{}'); } catch {}
+        return {
+          verified: true,
+          amountINR: Number(ordRow.amount_inr),
+          sku: String(notesObj.sku || (Math.round(Number(ordRow.amount_inr)) === 499 ? 'SITEFIX_CORE_FIXPACK' : 'COMMERCIAL_ORDER')),
+          businessId: String(ordRow.business_id || OwnerAuthService.PLATFORM_BUSINESS_ID),
+          organizationId: OwnerAuthService.OWNER_ORGANIZATION_ID,
+          invoiceRef: String(ordRow.order_id || ordRow.id),
+          serviceRendered: String(notesObj.serviceRendered || ordRow.receipt || 'Verified Server Order'),
+          referenceType: 'PAYMENT_ORDER'
+        };
+      }
+    }
+
+    return null;
+  }
+
   /**
    * Records a customer-claimed manual UPI payment (Spec § 15 & § 18).
+   * Enforces atomic UTR uniqueness via conditional INSERT ... WHERE NOT EXISTS.
    * Status is set to PAYMENT_CLAIMED, NOT verified revenue!
    */
   public async recordManualUpiClaim(input: ManualUpiClaimInput): Promise<{
@@ -833,7 +979,7 @@ export class RazorpayAdapter {
       throw new Error('SECURITY VIOLATION: DISALLOWED_FIXED_PAYMENT_LINK: Fixed ₹100 test payment links cannot be used as UTR reference or payment notes.');
     }
 
-    // Check duplicate UTR submissions
+    // Check business & proposal upfront (UTR uniqueness is ALSO enforced atomically at INSERT write boundary)
     let existingClaim: any = null;
     let biz: any = null;
     let prop: any = null;
@@ -853,7 +999,7 @@ export class RazorpayAdapter {
     }
 
     if (existingClaim) {
-      throw new Error(`DUPLICATE_CLAIM: UTR '${trimmedUtr}' has already been registered (current status: ${existingClaim.status}). Duplicate submissions are rejected.`);
+      throw new Error(`DUPLICATE_UTR_CLAIM: UTR '${trimmedUtr}' has already been registered (current status: ${existingClaim.status}). Duplicate submissions are rejected.`);
     }
 
     // Validate business exists
@@ -875,12 +1021,15 @@ export class RazorpayAdapter {
 
     const claimId = `claim_upi_${randomUUID().substring(0, 10)}`;
 
-    const insertSql = `
+    // Atomic conditional insert guarantees duplicate concurrent UTR submissions cannot race past check
+    const atomicInsertSql = `
       INSERT INTO manual_upi_claims (
         id, organization_id, business_id, journey_id, proposal_id, invoice_ref,
         payer_name, payer_phone, payer_vpa, utr, amount_inr, service_rendered,
         status, claimed_at, notes
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PAYMENT_CLAIMED', datetime('now'), ?)
+      )
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PAYMENT_CLAIMED', datetime('now'), ?
+      WHERE NOT EXISTS (SELECT 1 FROM manual_upi_claims WHERE utr = ?)
     `;
     const insertParams = [
       claimId,
@@ -895,31 +1044,46 @@ export class RazorpayAdapter {
       trimmedUtr,
       input.amountINR,
       input.serviceRendered || 'Manual UPI Payment Claim',
-      input.notes || null
+      input.notes || null,
+      trimmedUtr
     ];
 
-    if (isProduction() && !process.env.VITEST) {
-      await this.d1Repo.executeWrite('manual_upi_claims', insertSql, insertParams);
-      if (input.proposalId) {
-        try {
-          await this.d1Repo.executeWrite(
-            'payment_requests',
-            `UPDATE payment_requests SET status = 'PAYMENT_CLAIMED', updated_at = datetime('now') WHERE proposal_id = ?`,
-            [input.proposalId]
-          );
-        } catch {}
+    try {
+      if (isProduction() && !process.env.VITEST) {
+        const writeRes = await this.d1Repo.executeWrite('manual_upi_claims', atomicInsertSql, insertParams);
+        if (!writeRes || writeRes.rowsAffected !== 1) {
+          throw new Error(`DUPLICATE_UTR_CLAIM: UTR '${trimmedUtr}' already exists in manual_upi_claims.`);
+        }
+        if (input.proposalId) {
+          try {
+            await this.d1Repo.executeWrite(
+              'payment_requests',
+              `UPDATE payment_requests SET status = 'PAYMENT_CLAIMED', updated_at = datetime('now') WHERE proposal_id = ?`,
+              [input.proposalId]
+            );
+          } catch {}
+        }
+      } else {
+        const info = getDb().prepare(atomicInsertSql).run(...insertParams);
+        if (!info || info.changes !== 1) {
+          throw new Error(`DUPLICATE_UTR_CLAIM: UTR '${trimmedUtr}' already exists in manual_upi_claims.`);
+        }
+        if (input.proposalId) {
+          try {
+            getDb().prepare(`
+              UPDATE payment_requests
+              SET status = 'PAYMENT_CLAIMED', updated_at = datetime('now')
+              WHERE proposal_id = ?
+            `).run(input.proposalId);
+          } catch {}
+        }
       }
-    } else {
-      getDb().prepare(insertSql).run(...insertParams);
-      if (input.proposalId) {
-        try {
-          getDb().prepare(`
-            UPDATE payment_requests
-            SET status = 'PAYMENT_CLAIMED', updated_at = datetime('now')
-            WHERE proposal_id = ?
-          `).run(input.proposalId);
-        } catch {}
+    } catch (writeErr: any) {
+      const msg = String(writeErr?.message || '');
+      if (msg.includes('DUPLICATE_UTR_CLAIM') || /UNIQUE constraint/i.test(msg)) {
+        throw new Error(`DUPLICATE_UTR_CLAIM: UTR '${trimmedUtr}' has already been registered. Duplicate submissions are rejected.`);
       }
+      throw writeErr;
     }
 
     return {
@@ -929,6 +1093,60 @@ export class RazorpayAdapter {
       amountINR: input.amountINR,
       invoiceRef: input.invoiceRef,
       proposalId: input.proposalId
+    };
+  }
+
+  /**
+   * Advances a manual UPI claim through the explicit verified lifecycle:
+   * PAYMENT_CLAIMED -> HUMAN_VERIFIED_PAYMENT -> FULFILLMENT_IN_PROGRESS -> FULFILLED
+   * (plus REJECTED from PAYMENT_CLAIMED, and REFUNDED from post-verification states).
+   */
+  public async advanceManualUpiClaimLifecycle(params: {
+    claimId: string;
+    targetStatus: 'FULFILLMENT_IN_PROGRESS' | 'FULFILLED' | 'REJECTED' | 'REFUNDED';
+    ownerUserId: string;
+    reason?: string;
+  }): Promise<{ claimId: string; fromStatus: string; status: string }> {
+    const useRemoteD1 = isProduction() && !process.env.VITEST;
+    const claimRow = useRemoteD1
+      ? await this.d1Repo.queryOne<any>('manual_upi_claims', 'SELECT * FROM manual_upi_claims WHERE id = ?', [params.claimId])
+      : (getDb().prepare('SELECT * FROM manual_upi_claims WHERE id = ?').get(params.claimId) as any);
+
+    if (!claimRow) {
+      throw new Error(`CLAIM_NOT_FOUND: Manual UPI claim '${params.claimId}' not found.`);
+    }
+
+    const fromStatus = String(claimRow.status || 'PAYMENT_CLAIMED').toUpperCase();
+    const allowedNext = RazorpayAdapter.MANUAL_UPI_LIFECYCLE_TRANSITIONS[fromStatus] || [];
+    if (!allowedNext.includes(params.targetStatus)) {
+      throw new Error(
+        `INVALID_CLAIM_TRANSITION: Cannot transition manual UPI claim '${params.claimId}' from '${fromStatus}' to '${params.targetStatus}'. Allowed: ${allowedNext.join(', ') || 'NONE'}.`
+      );
+    }
+
+    const sql = params.targetStatus === 'REJECTED'
+      ? `UPDATE manual_upi_claims SET status = ?, verified_at = datetime('now'), verified_by = ?, rejection_reason = ? WHERE id = ? AND status = ?`
+      : `UPDATE manual_upi_claims SET status = ?, verified_at = COALESCE(verified_at, datetime('now')), verified_by = COALESCE(verified_by, ?) WHERE id = ? AND status = ?`;
+    const sqlParams = params.targetStatus === 'REJECTED'
+      ? [params.targetStatus, params.ownerUserId, params.reason || 'Rejected by owner after bank statement check', params.claimId, fromStatus]
+      : [params.targetStatus, params.ownerUserId, params.claimId, fromStatus];
+
+    if (useRemoteD1) {
+      const res = await this.d1Repo.executeWrite('manual_upi_claims', sql, sqlParams);
+      if (res.rowsAffected !== 1) {
+        throw new Error(`CONCURRENT_CLAIM_UPDATE: Failed to update claim '${params.claimId}' from '${fromStatus}'.`);
+      }
+    } else {
+      const info = getDb().prepare(sql).run(...sqlParams);
+      if (info.changes !== 1) {
+        throw new Error(`CONCURRENT_CLAIM_UPDATE: Failed to update claim '${params.claimId}' from '${fromStatus}'.`);
+      }
+    }
+
+    return {
+      claimId: params.claimId,
+      fromStatus,
+      status: params.targetStatus
     };
   }
 

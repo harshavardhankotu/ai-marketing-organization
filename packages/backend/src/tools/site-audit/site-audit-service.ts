@@ -16,7 +16,7 @@ import { SiteAuditScanner } from './site-audit-scanner.js';
 import { SiteAuditFixPackGenerator } from './site-audit-fixpack-generator.js';
 import { D1RevenueRepository } from '../../db/d1-revenue-repository.js';
 import { OwnerAuthService } from '../../auth/owner-auth.js';
-import { isProduction, isPlaceholderCredential } from '../../config/env.js';
+import { isProduction, isPlaceholderCredential, isDomainAuthorizedForPublicAudit } from '../../config/env.js';
 
 export interface SiteFixCommercialTerms {
   sku: 'SITEFIX_AI_PACK_V1' | 'SITE_AUDIT_FIXPACK';
@@ -281,7 +281,11 @@ export class SiteAuditService {
       const htmlScanStatus = ((audit as any).status === 'FAILED') ? 'FAILED' : 'COMPLETED';
       const pageSpeedStatus = audit.pageSpeed?.status === 'SUCCESS' ? 'COMPLETED' : 'UNAVAILABLE';
       const pageSpeedUnavailableReason = audit.pageSpeed?.status === 'SUCCESS' ? null : (audit.pageSpeed?.reason || 'UNAVAILABLE (Requires GOOGLE_PAGESPEED_API_KEY)');
-      const isPubliclyAuthorized = (domain === 'capturelifedentalcare.com' || domain === 'clovedental.in' || (audit as any).isPubliclyAuthorized === true) ? 1 : 0;
+      const isPubliclyAuthorized =
+        (((audit as any).isPubliclyAuthorized === true && (audit as any).userConfirmedOwnership === true) ||
+          isDomainAuthorizedForPublicAudit(domain))
+          ? 1
+          : 0;
 
       if (this.d1Repo.isRemoteD1Configured() || isProduction()) {
         await this.d1Repo.executeWrite(
@@ -345,11 +349,14 @@ export class SiteAuditService {
    * Executes a website audit scan, caches in memory, and persists durably to Cloudflare D1.
    */
   public async executeScan(
-    request: SiteAuditScanRequest & { isPubliclyAuthorized?: boolean }
+    request: SiteAuditScanRequest & { isPubliclyAuthorized?: boolean; userConfirmedOwnership?: boolean }
   ): Promise<SiteAuditResult> {
     const result = await this.scanner.scanUrl(request);
     if (request.isPubliclyAuthorized) {
       (result as any).isPubliclyAuthorized = true;
+    }
+    if (request.userConfirmedOwnership) {
+      (result as any).userConfirmedOwnership = true;
     }
 
     // Wire real Google Lighthouse & Web Vitals data (never synthetic fixtures)
@@ -452,7 +459,7 @@ export class SiteAuditService {
   public async runFullAudit(
     targetUrl: string,
     businessName?: string,
-    options?: { isPubliclyAuthorized?: boolean }
+    options?: { isPubliclyAuthorized?: boolean; userConfirmedOwnership?: boolean }
   ): Promise<SiteAuditResult> {
     const rawUrl = targetUrl.trim();
     const cleanUrl = rawUrl.startsWith('http://') || rawUrl.startsWith('https://')
@@ -469,7 +476,8 @@ export class SiteAuditService {
       url: cleanUrl,
       businessName: bName,
       skipCache: false,
-      isPubliclyAuthorized: options?.isPubliclyAuthorized
+      isPubliclyAuthorized: options?.isPubliclyAuthorized,
+      userConfirmedOwnership: options?.userConfirmedOwnership
     });
   }
 
@@ -523,7 +531,7 @@ export class SiteAuditService {
    */
   public async getAllAuditedDomains(): Promise<string[]> {
     try {
-      const sql = "SELECT domain FROM site_audits WHERE status = 'COMPLETED' AND (is_publicly_authorized = 1 OR domain = 'clovedental.in') ORDER BY updated_at DESC LIMIT 100";
+      const sql = "SELECT domain FROM site_audits WHERE status = 'COMPLETED' AND is_publicly_authorized = 1 ORDER BY updated_at DESC LIMIT 100";
       let rows: any[] = [];
       if (this.d1Repo.isRemoteD1Configured() || isProduction()) {
         rows = await this.d1Repo.query<any>('site_audits', sql);

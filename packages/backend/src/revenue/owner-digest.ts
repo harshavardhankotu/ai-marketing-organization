@@ -83,6 +83,62 @@ export interface PainPointItem {
   ownerAction: string;
 }
 
+export interface ArosControlCenterSummary {
+  generatedAt: string;
+  opportunitiesByLaneAndState: {
+    affiliateDeals: {
+      total: number;
+      verified: number;
+      indexedEligible: number;
+      unverifiedOrRejected: number;
+    };
+    siteFixAudits: {
+      total: number;
+      completed: number;
+      publiclyAuthorized: number;
+      internalProspectOnly: number;
+    };
+    unifiedOpportunities: {
+      totalTracked: number;
+      byLane: Record<string, { total: number; verified: number; qualified: number; published: number; rejected: number }>;
+      byState: Record<string, number>;
+    };
+  };
+  commercialPerformance: {
+    visitors: { value: number | null; sourceTag: 'MEASURED' | 'UNAVAILABLE' };
+    outboundClicks: { value: number | null; sourceTag: 'MEASURED' | 'UNAVAILABLE' };
+    qualifiedLeads: { value: number | null; sourceTag: 'MEASURED' | 'UNAVAILABLE' };
+    orders: { value: number | null; sourceTag: 'PROVIDER_REPORTED' | 'UNAVAILABLE' };
+    providerReportedCommissionINR: { value: number | null; sourceTag: 'PROVIDER_REPORTED' | 'UNAVAILABLE' };
+    approvedCommissionINR: { value: number | null; sourceTag: 'PROVIDER_REPORTED' | 'UNAVAILABLE' };
+    bankConfirmedCashINR: { value: number; sourceTag: 'MEASURED' };
+    operatingExpensesINR: { value: number | null; sourceTag: 'MEASURED' | 'UNAVAILABLE' };
+    netContributionINR: { value: number; sourceTag: 'MEASURED' | 'ESTIMATED' };
+  };
+  paymentAndFulfillmentQueue: {
+    countsByState: Record<string, number>;
+    pendingVerificationClaims: Array<{
+      id: string;
+      utr: string;
+      amountINR: number;
+      serviceRendered: string | null;
+      status: string;
+      claimedAt: string;
+      businessId: string;
+    }>;
+  };
+  scheduledExecutionTruth: {
+    genuineCronWorkerRuns24h: number;
+    manualOrCurlPings24h: number;
+    latestUserAgent: string | null;
+    latestPingAt: string | null;
+    latestPingIsGenuineWorker: boolean;
+    queuedJobsCount: number;
+    oldestQueuedJobAgeMinutes: number | null;
+    readinessBlockers: Array<{ domain: string; code: string; status: string; actionRequired: string }>;
+  };
+}
+
 export interface OwnerTodayDigest {
   date: string;
   yesterdayDate: string;
@@ -95,6 +151,7 @@ export interface OwnerTodayDigest {
   topPainPoints: PainPointItem[];
   yesterdayMetrics: OwnerDigestMetrics;
   nextAction: string;
+  arosControlCenter?: ArosControlCenterSummary;
 }
 
 export class OwnerDigestService {
@@ -477,9 +534,280 @@ export class OwnerDigestService {
    * In non-production, delegates to synchronous generateDigest.
    * In production, queries Cloudflare D1 as the single source of truth without falling back to local SQLite.
    */
+  private async queryCcOne<T = any>(table: string, sql: string, params: any[] = []): Promise<T | null> {
+    try {
+      if (isProduction() && !process.env.VITEST) {
+        return await this.d1Repo.queryOne<T>(table, sql, params);
+      }
+      return (getDb().prepare(sql).get(...params) as T) || null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async queryCcAll<T = any>(table: string, sql: string, params: any[] = []): Promise<T[]> {
+    try {
+      if (isProduction() && !process.env.VITEST) {
+        return await this.d1Repo.query<T>(table, sql, params);
+      }
+      return getDb().prepare(sql).all(...params) as T[];
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Computes the consolidated AROS V2 Owner Control Center snapshot with explicit
+   * source classification (`MEASURED`, `PROVIDER_REPORTED`, `ESTIMATED`, `UNAVAILABLE`)
+   * across all 4 opportunity lanes, commercial funnel, UPI queue, and cron truth.
+   */
+  public async getArosControlCenterSummary(): Promise<ArosControlCenterSummary> {
+    const dealStats = await this.queryCcOne<any>(
+      'public_deals',
+      `SELECT
+         COUNT(*) as total,
+         COALESCE(SUM(CASE WHEN product_verified = 1 AND affiliate_verified = 1 THEN 1 ELSE 0 END), 0) as verified,
+         COALESCE(SUM(CASE WHEN product_verified = 1 AND affiliate_verified = 1 AND availability = 'IN_STOCK' AND current_price_inr > 0 AND last_verified_at IS NOT NULL THEN 1 ELSE 0 END), 0) as indexed_eligible
+       FROM public_deals`
+    );
+    const dealsTotal = Number(dealStats?.total || 0);
+    const dealsVerified = Number(dealStats?.verified || 0);
+    const dealsIndexed = Number(dealStats?.indexed_eligible || 0);
+
+    const auditStats = await this.queryCcOne<any>(
+      'site_audits',
+      `SELECT
+         COUNT(*) as total,
+         COALESCE(SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END), 0) as completed,
+         COALESCE(SUM(CASE WHEN is_publicly_authorized = 1 THEN 1 ELSE 0 END), 0) as publicly_authorized
+       FROM site_audits`
+    );
+    const auditsTotal = Number(auditStats?.total || 0);
+    const auditsCompleted = Number(auditStats?.completed || 0);
+    const auditsPublic = Number(auditStats?.publicly_authorized || 0);
+
+    const oppRows = await this.queryCcAll<any>('opportunities', `SELECT status, evidence_json FROM opportunities`);
+    const byLane: Record<string, { total: number; verified: number; qualified: number; published: number; rejected: number }> = {
+      LANE_A_AFFILIATE_COMMERCE: { total: 0, verified: 0, qualified: 0, published: 0, rejected: 0 },
+      LANE_B_B2B_SERVICES: { total: 0, verified: 0, qualified: 0, published: 0, rejected: 0 },
+      LANE_C_AUTHORIZED_PARTNERSHIPS: { total: 0, verified: 0, qualified: 0, published: 0, rejected: 0 },
+      LANE_D_DIGITAL_PRODUCTS: { total: 0, verified: 0, qualified: 0, published: 0, rejected: 0 }
+    };
+    const byState: Record<string, number> = {};
+    for (const r of oppRows) {
+      const st = String(r.status || 'DISCOVERED');
+      byState[st] = (byState[st] || 0) + 1;
+      let lane = 'LANE_B_B2B_SERVICES';
+      try {
+        const parsed = JSON.parse(r.evidence_json || '{}');
+        if (parsed?.v2Contract?.lane && byLane[parsed.v2Contract.lane]) {
+          lane = parsed.v2Contract.lane;
+        }
+      } catch {}
+      byLane[lane].total++;
+      if (st === 'VERIFIED') byLane[lane].verified++;
+      if (st === 'QUALIFIED') byLane[lane].qualified++;
+      if (st === 'PUBLISHED') byLane[lane].published++;
+      if (st === 'REJECTED') byLane[lane].rejected++;
+    }
+
+    const visRow = await this.queryCcOne<any>(
+      'traffic_sessions',
+      `SELECT COUNT(*) as c FROM traffic_sessions WHERE traffic_evidence_status = 'VERIFIED_EXTERNAL' OR is_external = 1`
+    );
+    const clkRow = await this.queryCcOne<any>(
+      'referral_click_events',
+      `SELECT COALESCE(SUM(CASE WHEN (device_class IS NULL OR device_class NOT IN ('bot', 'known_bot', 'suspected_bot')) AND (click_status IS NULL OR click_status NOT IN ('DIAGNOSTIC', 'TEST')) THEN 1 ELSE 0 END), 0) as c FROM referral_click_events`
+    );
+    const leadRow = await this.queryCcOne<any>(
+      'platform_prospects',
+      `SELECT COUNT(*) as c FROM platform_prospects WHERE is_test = 0 AND (source IN ('OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', 'homepage_b2b_inquiry') OR discovery_source = 'DIRECT_INBOUND')`
+    );
+    const commRow = await this.queryCcOne<any>(
+      'commission_records',
+      `SELECT
+         COUNT(*) as total_orders,
+         COALESCE(SUM(CASE WHEN external_status IN ('PENDING', 'APPROVED', 'VALIDATED', 'PAYABLE', 'INVOICED', 'PAID') THEN expected_commission_inr ELSE 0 END), 0) as reported_inr,
+         COALESCE(SUM(CASE WHEN external_status IN ('APPROVED', 'VALIDATED', 'PAYABLE', 'INVOICED', 'PAID') THEN verified_commission_inr ELSE 0 END), 0) as approved_inr,
+         COALESCE(SUM(CASE WHEN external_status = 'PAID' THEN received_commission_inr ELSE 0 END), 0) as comm_paid_inr
+       FROM commission_records`
+    );
+    const revRow = await this.queryCcOne<any>(
+      'revenue_records',
+      `SELECT COALESCE(SUM(amount_inr), 0) as s FROM revenue_records WHERE verified = 1 AND classification IN ('REAL', 'OWNER_CONFIRMED', 'MANUAL_VERIFIED')`
+    );
+    const bankConfirmedCashINR =
+      Math.round((Number(revRow?.s || 0) + Number(commRow?.comm_paid_inr || 0)) * 100) / 100;
+
+    let operatingExpensesINR: number | null = null;
+    try {
+      const { CostAccountingEngine } = await import('./cost-accounting.js');
+      const costRow = await this.queryCcOne<any>(
+        'cost_ledger',
+        `SELECT COALESCE(SUM(amount_inr), 0) as s FROM cost_ledger WHERE is_estimated = 0`
+      );
+      if (costRow) {
+        operatingExpensesINR = Math.round(Number(costRow.s || 0) * 100) / 100;
+      } else {
+        void CostAccountingEngine;
+      }
+    } catch {}
+    const netContributionINR =
+      Math.round((bankConfirmedCashINR - (operatingExpensesINR || 0)) * 100) / 100;
+
+    const claimRows = await this.queryCcAll<any>(
+      'manual_upi_claims',
+      `SELECT id, utr, amount_inr, service_rendered, status, claimed_at, business_id
+       FROM manual_upi_claims
+       WHERE (is_test = 0 OR is_test IS NULL) AND status != 'TEST_QUARANTINED'
+       ORDER BY claimed_at DESC
+       LIMIT 50`
+    );
+    const countsByState: Record<string, number> = {
+      PAYMENT_CLAIMED: 0,
+      HUMAN_VERIFIED_PAYMENT: 0,
+      FULFILLMENT_IN_PROGRESS: 0,
+      FULFILLED: 0,
+      REJECTED: 0,
+      REFUNDED: 0
+    };
+    const pendingVerificationClaims: ArosControlCenterSummary['paymentAndFulfillmentQueue']['pendingVerificationClaims'] = [];
+    for (const c of claimRows) {
+      const st = String(c.status || 'PAYMENT_CLAIMED');
+      countsByState[st] = (countsByState[st] || 0) + 1;
+      if (st === 'PAYMENT_CLAIMED' || st === 'HUMAN_VERIFIED_PAYMENT' || st === 'FULFILLMENT_IN_PROGRESS') {
+        pendingVerificationClaims.push({
+          id: String(c.id),
+          utr: String(c.utr),
+          amountINR: Number(c.amount_inr || 0),
+          serviceRendered: c.service_rendered || null,
+          status: st,
+          claimedAt: String(c.claimed_at || ''),
+          businessId: String(c.business_id || '')
+        });
+      }
+    }
+
+    const cronRow = await this.queryCcOne<any>(
+      'cron_telemetry',
+      `SELECT last_user_agent, last_observed_ping, status FROM cron_telemetry ORDER BY last_observed_ping DESC LIMIT 1`
+    );
+    const execRows = await this.queryCcAll<any>(
+      'automation_execution_log',
+      `SELECT trigger_source, COUNT(*) as c
+       FROM automation_execution_log
+       WHERE datetime(started_at) >= datetime('now', '-24 hours')
+       GROUP BY trigger_source`
+    );
+    let genuineCronWorkerRuns24h = 0;
+    let manualOrCurlPings24h = 0;
+    for (const er of execRows) {
+      const src = String(er.trigger_source || '').toUpperCase();
+      if (src === 'CLOUDFLARE_CRON') genuineCronWorkerRuns24h += Number(er.c || 0);
+      else manualOrCurlPings24h += Number(er.c || 0);
+    }
+
+    const latestUserAgent: string | null = cronRow?.last_user_agent || null;
+    const latestPingIsGenuineWorker = Boolean(
+      latestUserAgent && latestUserAgent.toLowerCase().includes('ai-marketing-cron-worker')
+    );
+
+    const jobRow = await this.queryCcOne<any>(
+      'automation_jobs',
+      `SELECT COUNT(*) as queued_count, MIN(created_at) as oldest_created_at FROM automation_jobs WHERE status IN ('QUEUED', 'RETRY_WAIT')`
+    );
+    const queuedJobsCount = Number(jobRow?.queued_count || 0);
+    let oldestQueuedJobAgeMinutes: number | null = null;
+    if (queuedJobsCount > 0 && jobRow?.oldest_created_at) {
+      const rawTs = String(jobRow.oldest_created_at);
+      const iso = rawTs.includes('T') ? (rawTs.endsWith('Z') ? rawTs : `${rawTs}Z`) : `${rawTs.replace(' ', 'T')}Z`;
+      const ms = new Date(iso).getTime();
+      if (Number.isFinite(ms)) {
+        oldestQueuedJobAgeMinutes = Math.max(0, Math.round((Date.now() - ms) / 60000));
+      }
+    }
+
+    const readinessBlockers: Array<{ domain: string; code: string; status: string; actionRequired: string }> = [];
+    try {
+      const { SystemReadinessEngine } = await import('../control-plane/system-readiness.js');
+      const report = SystemReadinessEngine.evaluateReadiness('biz_platform_aro');
+      for (const [domainKey, cap] of Object.entries(report.capabilities || {})) {
+        if (!cap.verified) {
+          readinessBlockers.push({
+            domain: domainKey,
+            code: cap.configured ? 'CAPABILITY_DEGRADED' : 'NOT_CONFIGURED',
+            status: cap.operational ? 'DEGRADED' : 'BLOCKED',
+            actionRequired: cap.details || `Verify ${domainKey} configuration.`
+          });
+        }
+      }
+    } catch {}
+
+    return {
+      generatedAt: new Date().toISOString(),
+      opportunitiesByLaneAndState: {
+        affiliateDeals: {
+          total: dealsTotal,
+          verified: dealsVerified,
+          indexedEligible: dealsIndexed,
+          unverifiedOrRejected: Math.max(0, dealsTotal - dealsVerified)
+        },
+        siteFixAudits: {
+          total: auditsTotal,
+          completed: auditsCompleted,
+          publiclyAuthorized: auditsPublic,
+          internalProspectOnly: Math.max(0, auditsTotal - auditsPublic)
+        },
+        unifiedOpportunities: {
+          totalTracked: oppRows.length,
+          byLane,
+          byState
+        }
+      },
+      commercialPerformance: {
+        visitors: { value: visRow ? Number(visRow.c || 0) : null, sourceTag: visRow ? 'MEASURED' : 'UNAVAILABLE' },
+        outboundClicks: { value: clkRow ? Number(clkRow.c || 0) : null, sourceTag: clkRow ? 'MEASURED' : 'UNAVAILABLE' },
+        qualifiedLeads: { value: leadRow ? Number(leadRow.c || 0) : null, sourceTag: leadRow ? 'MEASURED' : 'UNAVAILABLE' },
+        orders: { value: commRow ? Number(commRow.total_orders || 0) : null, sourceTag: commRow ? 'PROVIDER_REPORTED' : 'UNAVAILABLE' },
+        providerReportedCommissionINR: {
+          value: commRow ? Math.round(Number(commRow.reported_inr || 0) * 100) / 100 : null,
+          sourceTag: commRow ? 'PROVIDER_REPORTED' : 'UNAVAILABLE'
+        },
+        approvedCommissionINR: {
+          value: commRow ? Math.round(Number(commRow.approved_inr || 0) * 100) / 100 : null,
+          sourceTag: commRow ? 'PROVIDER_REPORTED' : 'UNAVAILABLE'
+        },
+        bankConfirmedCashINR: { value: bankConfirmedCashINR, sourceTag: 'MEASURED' },
+        operatingExpensesINR: {
+          value: operatingExpensesINR,
+          sourceTag: operatingExpensesINR !== null ? 'MEASURED' : 'UNAVAILABLE'
+        },
+        netContributionINR: { value: netContributionINR, sourceTag: 'MEASURED' }
+      },
+      paymentAndFulfillmentQueue: {
+        countsByState,
+        pendingVerificationClaims: pendingVerificationClaims.slice(0, 20)
+      },
+      scheduledExecutionTruth: {
+        genuineCronWorkerRuns24h,
+        manualOrCurlPings24h,
+        latestUserAgent,
+        latestPingAt: cronRow?.last_observed_ping || null,
+        latestPingIsGenuineWorker,
+        queuedJobsCount,
+        oldestQueuedJobAgeMinutes,
+        readinessBlockers
+      }
+    };
+  }
+
   public async generateDigestAsync(asOfDate: Date = new Date()): Promise<OwnerTodayDigest> {
     if (!isProduction()) {
-      return this.generateDigest(asOfDate);
+      const localDigest = this.generateDigest(asOfDate);
+      try {
+        localDigest.arosControlCenter = await this.getArosControlCenterSummary();
+      } catch {}
+      return localDigest;
     }
 
     const todayStr = asOfDate.toISOString().slice(0, 10);
@@ -848,6 +1176,11 @@ export class OwnerDigestService {
       } catch {}
     }
 
+    let arosControlCenter: ArosControlCenterSummary | undefined;
+    try {
+      arosControlCenter = await this.getArosControlCenterSummary();
+    } catch {}
+
     return {
       date: todayStr,
       yesterdayDate: yesterdayStr,
@@ -859,7 +1192,8 @@ export class OwnerDigestService {
       inquiries,
       topPainPoints,
       yesterdayMetrics: { visits, clicks, leads, payments },
-      nextAction
+      nextAction,
+      arosControlCenter
     };
   }
 
@@ -1199,6 +1533,67 @@ export class OwnerDigestService {
     ${inquiriesHtml}
   </div>
 
+  ${digest.arosControlCenter ? `
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;flex-wrap:wrap;gap:0.5rem;">
+      <h2 style="margin:0;">🧭 AROS V2 Owner Control Center</h2>
+      <a href="/api/v1/owner/control-center" style="background:#0f172a;border:1px solid #334155;color:#38bdf8;text-decoration:none;font-weight:600;padding:0.3rem 0.65rem;border-radius:6px;font-size:0.8rem;">JSON API &rarr;</a>
+    </div>
+    <div class="metrics-grid" style="margin-bottom:1rem;">
+      <div class="metric-box">
+        <div class="val">₹${digest.arosControlCenter.commercialPerformance.bankConfirmedCashINR.value.toLocaleString('en-IN')}</div>
+        <div class="lbl">Bank Cash (${digest.arosControlCenter.commercialPerformance.bankConfirmedCashINR.value === 0 ? 'MEASURED ₹0.00' : 'MEASURED'})</div>
+      </div>
+      <div class="metric-box">
+        <div class="val">${digest.arosControlCenter.opportunitiesByLaneAndState.affiliateDeals.indexedEligible}/${digest.arosControlCenter.opportunitiesByLaneAndState.affiliateDeals.total}</div>
+        <div class="lbl">Deals Sitemap-Eligible</div>
+      </div>
+      <div class="metric-box">
+        <div class="val">${digest.arosControlCenter.opportunitiesByLaneAndState.siteFixAudits.publiclyAuthorized}/${digest.arosControlCenter.opportunitiesByLaneAndState.siteFixAudits.total}</div>
+        <div class="lbl">Audits Public vs Internal</div>
+      </div>
+      <div class="metric-box">
+        <div class="val">${digest.arosControlCenter.scheduledExecutionTruth.genuineCronWorkerRuns24h} / ${digest.arosControlCenter.scheduledExecutionTruth.manualOrCurlPings24h}</div>
+        <div class="lbl">Cron Worker vs Manual (24h)</div>
+      </div>
+    </div>
+
+    <div style="margin-bottom:1rem;padding:0.75rem;background:#0f172a;border:1px solid #334155;border-radius:8px;font-size:0.85rem;">
+      <strong style="color:#f8fafc;">Scheduled Execution &amp; Readiness Truth:</strong>
+      Latest User-Agent: <code>${digest.arosControlCenter.scheduledExecutionTruth.latestUserAgent || 'NONE'}</code>
+      (${digest.arosControlCenter.scheduledExecutionTruth.latestPingIsGenuineWorker ? '<span style="color:#10b981;">Genuine Worker</span>' : '<span style="color:#fbbf24;">Non-Worker / Manual</span>'}) &bull;
+      Queued Jobs: <strong>${digest.arosControlCenter.scheduledExecutionTruth.queuedJobsCount}</strong>
+      ${digest.arosControlCenter.scheduledExecutionTruth.oldestQueuedJobAgeMinutes !== null ? ` (Oldest: ${digest.arosControlCenter.scheduledExecutionTruth.oldestQueuedJobAgeMinutes}m)` : ''}
+      ${digest.arosControlCenter.scheduledExecutionTruth.readinessBlockers.length > 0 ? `<div style="margin-top:0.4rem;color:#fca5a5;">Blockers: ${digest.arosControlCenter.scheduledExecutionTruth.readinessBlockers.map(b => `${b.domain} (${b.status})`).join(', ')}</div>` : ''}
+    </div>
+
+    <h3 style="font-size:0.95rem;color:#94a3b8;margin-bottom:0.5rem;">Manual UPI Verification &amp; Fulfillment Queue</h3>
+    <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.75rem;font-size:0.8rem;">
+      <span style="background:#1e293b;padding:0.25rem 0.55rem;border-radius:4px;">Claimed: <strong>${digest.arosControlCenter.paymentAndFulfillmentQueue.countsByState.PAYMENT_CLAIMED || 0}</strong></span>
+      <span style="background:#1e293b;padding:0.25rem 0.55rem;border-radius:4px;">Human Verified: <strong>${digest.arosControlCenter.paymentAndFulfillmentQueue.countsByState.HUMAN_VERIFIED_PAYMENT || 0}</strong></span>
+      <span style="background:#1e293b;padding:0.25rem 0.55rem;border-radius:4px;">Fulfilling: <strong>${digest.arosControlCenter.paymentAndFulfillmentQueue.countsByState.FULFILLMENT_IN_PROGRESS || 0}</strong></span>
+      <span style="background:#1e293b;padding:0.25rem 0.55rem;border-radius:4px;color:#10b981;">Fulfilled: <strong>${digest.arosControlCenter.paymentAndFulfillmentQueue.countsByState.FULFILLED || 0}</strong></span>
+    </div>
+    ${digest.arosControlCenter.paymentAndFulfillmentQueue.pendingVerificationClaims.length === 0
+      ? '<div class="empty">No unverified manual UPI payment claims in queue.</div>'
+      : digest.arosControlCenter.paymentAndFulfillmentQueue.pendingVerificationClaims.map(cl => `
+        <div id="upi-claim-${cl.id}" style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:0.75rem;margin-bottom:0.5rem;">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;">
+            <div>
+              <strong style="color:#f8fafc;">UTR ${cl.utr}</strong> &bull; ₹${cl.amountINR}
+              <span style="font-size:0.78rem;color:#94a3b8;">(${cl.status})</span>
+              <div style="font-size:0.78rem;color:#94a3b8;">Claim ID: <code>${cl.id}</code> &bull; Service: ${cl.serviceRendered || 'SiteFix'}</div>
+            </div>
+            <div style="display:flex;gap:0.4rem;flex-wrap:wrap;">
+              ${cl.status === 'PAYMENT_CLAIMED' ? `<button onclick="advanceUpiClaimLifecycle('${cl.id}','HUMAN_VERIFIED_PAYMENT')" style="background:#059669;color:#fff;border:none;padding:0.35rem 0.65rem;border-radius:4px;cursor:pointer;font-size:0.78rem;">Verify Bank Credit</button>` : ''}
+              ${cl.status === 'HUMAN_VERIFIED_PAYMENT' ? `<button onclick="advanceUpiClaimLifecycle('${cl.id}','FULFILLMENT_IN_PROGRESS')" style="background:#0284c7;color:#fff;border:none;padding:0.35rem 0.65rem;border-radius:4px;cursor:pointer;font-size:0.78rem;">Start Fulfillment</button>` : ''}
+              ${cl.status === 'FULFILLMENT_IN_PROGRESS' ? `<button onclick="advanceUpiClaimLifecycle('${cl.id}','FULFILLED')" style="background:#16a34a;color:#fff;border:none;padding:0.35rem 0.65rem;border-radius:4px;cursor:pointer;font-size:0.78rem;">Mark Fulfilled</button>` : ''}
+              <button onclick="advanceUpiClaimLifecycle('${cl.id}','REJECTED')" style="background:#7f1d1d;color:#fff;border:none;padding:0.35rem 0.65rem;border-radius:4px;cursor:pointer;font-size:0.78rem;">Reject</button>
+            </div>
+          </div>
+        </div>`).join('')}
+  </div>` : ''}
+
   <div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;flex-wrap:wrap;gap:0.5rem;">
       <h2 style="margin:0;">⚙️ Autonomous Operations &amp; Workflows (18 Active)</h2>
@@ -1308,6 +1703,25 @@ export class OwnerDigestService {
       }).catch(() => {
         prompt('Copy message manually:', text);
       });
+    }
+
+    async function advanceUpiClaimLifecycle(claimId, nextStatus) {
+      const reason = nextStatus === 'REJECTED' ? (prompt('Rejection reason:') || 'Bank credit not found') : undefined;
+      try {
+        const res = await fetch('/api/v1/payments/manual-upi/' + encodeURIComponent(claimId) + '/lifecycle', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: nextStatus, verifiedBy: 'owner_console', reason })
+        });
+        const data = await res.json();
+        if (data.success) {
+          location.reload();
+        } else {
+          alert('Lifecycle update rejected: ' + (data.error || data.message || 'Unknown error'));
+        }
+      } catch (err) {
+        alert('Network error: ' + err.message);
+      }
     }
   </script>
 </body>
