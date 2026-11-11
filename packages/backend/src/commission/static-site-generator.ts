@@ -562,17 +562,19 @@ export class StaticSiteGenerator {
 
     const dealCards = activeDeals.map((deal: any) => {
       const targetHref = deal.id ? `${config.siteUrl}/api/v1/public/deals/${deal.id}/redirect` : (deal.trackingUrl || deal.productUrl);
+      const detailSlug = deal.slug || deal.canonicalSlug || deal.id;
+      const detailHref = detailSlug ? `/deals/${encodeURIComponent(detailSlug)}` : targetHref;
       return `
       <div class="price-card deal-card" style="background: #111827; border: 1px solid #1e293b; border-radius: 12px; padding: 1.5rem; display: flex; flex-direction: column; justify-content: space-between;">
         <div>
           <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; flex-wrap: wrap;">
             <span style="font-size: 0.75rem; font-weight: 700; color: #38bdf8; text-transform: uppercase;">${this.escapeHtml(deal.brand)}</span>
             <div style="display: flex; gap: 0.4rem; align-items: center;">
-              ${typeof deal.arbitrageScore === 'number' && deal.arbitrageScore > 0 ? `<span style="font-size: 0.72rem; background: rgba(56, 189, 248, 0.15); color: #7dd3fc; border: 1px solid rgba(56, 189, 248, 0.3); padding: 0.2rem 0.5rem; border-radius: 9999px;">Arbitrage ${deal.arbitrageScore}/100</span>` : ''}
+              ${typeof deal.arbitrageScore === 'number' && deal.arbitrageScore > 0 ? `<span style="font-size: 0.72rem; background: rgba(56, 189, 248, 0.15); color: #7dd3fc; border: 1px solid rgba(56, 189, 248, 0.3); padding: 0.2rem 0.5rem; border-radius: 9999px;">Arbitrage ${deal.arbitrageScore}</span>` : ''}
               <span style="font-size: 0.75rem; background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); padding: 0.2rem 0.5rem; border-radius: 9999px;">✓ Verified</span>
             </div>
           </div>
-          <h2 style="font-size: 1.15rem; color: #fff; margin: 0 0 0.5rem 0; line-height: 1.4;">${this.escapeHtml(deal.title)}</h2>
+          <h2 style="font-size: 1.15rem; color: #fff; margin: 0 0 0.5rem 0; line-height: 1.4;"><a href="${this.escapeHtml(detailHref)}" style="color: #fff; text-decoration: none;">${this.escapeHtml(deal.title)}</a></h2>
           <div style="font-size: 0.8rem; color: #94a3b8; margin-bottom: 0.65rem;">
             <span>${this.escapeHtml(deal.merchant)}</span> &bull; <span>${this.escapeHtml(deal.category)}</span>
           </div>
@@ -675,6 +677,144 @@ export class StaticSiteGenerator {
       <a href="/disclosure">Affiliate Disclosure</a>
     </nav>
     <p>&copy; ${new Date().getFullYear()} ${this.escapeHtml(config.siteName)}. All rights reserved.</p>
+  </footer>
+</body>
+</html>`;
+  }
+
+  /**
+   * Renders an SEO-indexable SSR product deal page at /deals/:slug with Schema.org/Product JSON-LD.
+   */
+  public renderDealDetailHtml(deal: any, relatedDeals: any[] = [], config: StaticSiteConfig): string {
+    const slug = deal.slug || deal.canonicalSlug || deal.id;
+    const canonicalUrl = `${config.siteUrl}/deals/${encodeURIComponent(slug)}`;
+    const priceNum = Number(deal.currentPriceINR || 0);
+    const refNum = Number(deal.referencePriceINR || 0);
+    const badgeText = deal.discountBadge || (deal.verifiedDiscountPercent ? `${deal.verifiedDiscountPercent}% OFF` : 'Verified Price');
+    const title = `${deal.title} — ₹${priceNum.toLocaleString('en-IN')} (${badgeText} Verified Deal) | #Ad`;
+    const description = `Verified Indian deal for ${deal.title} on ${deal.merchant} at ₹${priceNum.toLocaleString('en-IN')}${refNum > priceNum ? ` (Reference MRP ₹${refNum.toLocaleString('en-IN')})` : ''}. #Ad Commission earned on qualifying purchases.`;
+    const verifiedTs = deal.lastCheckedAt || deal.lastVerifiedAt || deal.updatedAt || new Date().toISOString();
+    const redirectHref = `/api/v1/public/deals/${encodeURIComponent(deal.id)}/redirect?utm_source=deal_ssr&utm_medium=organic`;
+
+    const productSchema: Record<string, any> = {
+      '@context': 'https://schema.org',
+      '@type': 'Product',
+      name: deal.title,
+      description,
+      url: canonicalUrl,
+      brand: {
+        '@type': 'Brand',
+        name: deal.brand || deal.merchant || 'Brand'
+      },
+      offers: {
+        '@type': 'Offer',
+        url: canonicalUrl,
+        priceCurrency: deal.currency || 'INR',
+        price: priceNum,
+        itemCondition: 'https://schema.org/NewCondition',
+        availability: deal.availability === 'OUT_OF_STOCK'
+          ? 'https://schema.org/OutOfStock'
+          : 'https://schema.org/InStock',
+        seller: {
+          '@type': 'Organization',
+          name: deal.merchant || deal.brand || 'Merchant'
+        }
+      }
+    };
+
+    const relatedHtml = relatedDeals.slice(0, 4).map((rel: any) => {
+      const relSlug = rel.slug || rel.canonicalSlug || rel.id;
+      const relPrice = Number(rel.currentPriceINR || 0);
+      const relRef = Number(rel.referencePriceINR || 0);
+      return `
+        <div style="background:#111827;border:1px solid #1e293b;border-radius:10px;padding:1rem;display:flex;flex-direction:column;justify-content:space-between;">
+          <div>
+            <div style="font-size:0.75rem;color:#38bdf8;font-weight:700;text-transform:uppercase;">${this.escapeHtml(rel.brand || rel.merchant || '')}</div>
+            <h3 style="font-size:1rem;margin:0.35rem 0;color:#fff;"><a href="/deals/${this.escapeHtml(encodeURIComponent(relSlug))}" style="color:#fff;text-decoration:none;">${this.escapeHtml(rel.title)}</a></h3>
+            <div style="font-size:0.8rem;color:#94a3b8;margin-bottom:0.5rem;">${this.escapeHtml(rel.targetBuyerSegment || rel.category || '')}</div>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:0.75rem;padding-top:0.65rem;border-top:1px solid #1e293b;">
+            <div>
+              <strong style="color:#fff;font-size:1.05rem;">₹${relPrice.toLocaleString('en-IN')}</strong>
+              ${relRef > relPrice ? `<span style="font-size:0.78rem;color:#64748b;text-decoration:line-through;margin-left:0.35rem;">₹${relRef.toLocaleString('en-IN')}</span>` : ''}
+            </div>
+            <a href="/deals/${this.escapeHtml(encodeURIComponent(relSlug))}" style="font-size:0.82rem;color:#38bdf8;font-weight:700;text-decoration:none;">View Proof &rarr;</a>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  ${this.getGoogleSiteVerificationMeta(config)}${this.getCuelinksVerificationMeta(config)}<title>${this.escapeHtml(title)}</title>
+  <meta name="description" content="${this.escapeHtml(description)}">
+  <link rel="canonical" href="${this.escapeHtml(canonicalUrl)}">
+  <meta name="robots" content="index, follow">
+  <meta property="og:title" content="${this.escapeHtml(title)}">
+  <meta property="og:description" content="${this.escapeHtml(description)}">
+  <meta property="og:url" content="${this.escapeHtml(canonicalUrl)}">
+  <meta property="og:type" content="product">
+  <script type="application/ld+json">
+${JSON.stringify(productSchema, null, 2)}
+  </script>
+  <style>
+    :root { color-scheme: dark; --bg: #090d16; --card: #111827; --text: #e2e8f0; --accent: #06b6d4; --border: #1e293b; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); margin: 0; line-height: 1.6; }
+    header { border-bottom: 1px solid var(--border); padding: 1.15rem 2rem; display: flex; justify-content: space-between; align-items: center; max-width: 1040px; margin: 0 auto; }
+    header a.brand { font-weight: 700; color: #fff; text-decoration: none; font-size: 1.1rem; }
+    header nav a { color: #94a3b8; text-decoration: none; font-size: 0.9rem; margin-left: 1.25rem; }
+    main { max-width: 1040px; margin: 2rem auto; padding: 0 1.5rem; }
+    .deal-box { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 2rem; margin-bottom: 2rem; }
+    .cta-btn { display: inline-block; background: #06b6d4; color: #020617; font-weight: 800; padding: 0.9rem 1.75rem; border-radius: 10px; text-decoration: none; font-size: 1rem; margin-top: 1rem; }
+    .related-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin-top: 1rem; }
+    footer { border-top: 1px solid var(--border); padding: 2.5rem 1.5rem; margin-top: 3rem; text-align: center; font-size: 0.85rem; color: #64748b; }
+    footer a { color: #94a3b8; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <header>
+    <a href="/" class="brand">${this.escapeHtml(config.siteName)}</a>
+    <nav>
+      <a href="/deals">All Verified Deals</a>
+      <a href="/tools/site-audit">SiteFix Audit</a>
+      <a href="/public/disclosure">Disclosure</a>
+    </nav>
+  </header>
+  <main>
+    <div style="font-size:0.85rem;color:#94a3b8;margin-bottom:1rem;">
+      <a href="/deals" style="color:#38bdf8;text-decoration:none;">Verified Deals</a> &rsaquo; <span>${this.escapeHtml(deal.category || 'Product')}</span> &rsaquo; <span>${this.escapeHtml(deal.brand || '')}</span>
+    </div>
+    <article class="deal-box">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;flex-wrap:wrap;margin-bottom:0.85rem;">
+        <span style="font-size:0.8rem;font-weight:700;color:#38bdf8;text-transform:uppercase;">#Ad &bull; ${this.escapeHtml(deal.merchant)} &bull; ${this.escapeHtml(deal.availability || 'IN_STOCK')}</span>
+        ${typeof deal.arbitrageScore === 'number' ? `<span style="font-size:0.78rem;background:rgba(56,189,248,0.15);color:#7dd3fc;border:1px solid rgba(56,189,248,0.3);padding:0.25rem 0.65rem;border-radius:9999px;">Arbitrage Score ${deal.arbitrageScore}/99.9</span>` : ''}
+      </div>
+      <h1 style="font-size:1.85rem;color:#fff;margin:0 0 0.75rem 0;line-height:1.3;">${this.escapeHtml(deal.title)}</h1>
+      ${deal.targetBuyerSegment ? `<div style="font-size:0.9rem;color:#cbd5e1;background:rgba(15,23,42,0.85);border:1px solid #334155;border-radius:8px;padding:0.6rem 0.9rem;margin-bottom:1.25rem;">Target Buyer Segment: <strong>${this.escapeHtml(deal.targetBuyerSegment)}</strong></div>` : ''}
+      <div style="display:flex;align-items:baseline;gap:1rem;flex-wrap:wrap;margin:1rem 0;">
+        <span style="font-size:2.35rem;font-weight:800;color:#fff;">₹${priceNum.toLocaleString('en-IN')}</span>
+        ${refNum > priceNum ? `<span style="font-size:1.05rem;color:#64748b;text-decoration:line-through;">Reference MRP ₹${refNum.toLocaleString('en-IN')}</span>` : ''}
+        <span style="font-size:0.9rem;font-weight:700;background:rgba(16,185,129,0.2);color:#6ee7b7;padding:0.3rem 0.75rem;border-radius:8px;">${this.escapeHtml(badgeText)}</span>
+      </div>
+      <p style="font-size:0.88rem;color:#94a3b8;margin:0.5rem 0 1rem 0;">
+        Last Verified Snapshot: <code>${this.escapeHtml(verifiedTs)}</code> &bull; Verification Status: <strong>${this.escapeHtml(deal.verificationStatus || 'VERIFIED')}</strong>
+      </p>
+      <a href="${this.escapeHtml(redirectHref)}" target="_blank" rel="sponsored nofollow noopener" class="cta-btn">Claim Verified Deal on ${this.escapeHtml(deal.merchant)} &rarr;</a>
+      <p style="font-size:0.8rem;color:#94a3b8;margin-top:1.25rem;padding-top:1rem;border-top:1px solid #1e293b;">
+        <strong>#Ad Statutory Disclosure:</strong> This page is a deterministic merchant price snapshot linking via authorized Cuelinks tracking (Channel 331585). We may earn an affiliate commission on qualifying purchases at no additional cost to you. Always confirm final live checkout price and warranty terms on the merchant store.
+      </p>
+    </article>
+    ${relatedDeals.length > 0 ? `
+    <section>
+      <h2 style="font-size:1.25rem;color:#fff;margin-bottom:0.5rem;">Related Verified Deals for This Buyer Segment</h2>
+      <div class="related-grid">${relatedHtml}</div>
+    </section>` : ''}
+  </main>
+  <footer>
+    <p><a href="/deals">All Verified Deals</a> &bull; <a href="/sitemap.xml">Sitemap</a> &bull; <a href="/public/disclosure">Affiliate Disclosure</a></p>
   </footer>
 </body>
 </html>`;

@@ -302,7 +302,7 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
   // WORKSTREAM C: Sitemap, RSS & Canonical Content URLs
   // --------------------------------------------------------------------------
   describe('Workstream C — Sitemap, RSS & Canonical Content URL Parity', () => {
-    it('excludes generic SPA shell paths (/deals/:slug) from /sitemap.xml and advertises canonical SSR URLs', async () => {
+    it('advertises canonical SSR URLs including /deals/:slug product pages and excludes /rss.xml from SPA shells', async () => {
       const db = getDb();
       db.prepare(`
         INSERT OR REPLACE INTO commission_content_assets (
@@ -324,10 +324,8 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
       expect(text).toContain('<loc>https://ai-marketing-organization.onrender.com/revenue</loc>');
       expect(text).toContain('<loc>https://ai-marketing-organization.onrender.com/public/disclosure</loc>');
       expect(text).toContain('<loc>https://ai-marketing-organization.onrender.com/guides/best-wireless-audio-smartwatches-india</loc>');
-
-      // Generic SPA shell deals (/deals/deal_...) must NOT be in sitemap.xml
-      expect(text).not.toContain('<loc>https://ai-marketing-organization.onrender.com/deals/deal_');
-      expect(text).not.toContain('<loc>https://ai-marketing-organization.onrender.com/deals/boat-');
+      // Unverified/nonexistent slugs must never appear in sitemap.xml
+      expect(text).not.toContain('/deals/nonexistent-unverified-deal');
     });
 
     it('points deals in /rss.xml to canonical /deals landing rather than SPA shells', async () => {

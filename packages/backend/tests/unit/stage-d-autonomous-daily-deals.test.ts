@@ -711,7 +711,8 @@ describe('Stage D & Stage E — Autonomous Daily Deals and Production Conversion
       });
 
       expect(strongArbitrage.priceAdvantageRatio).toBeCloseTo(0.6995, 2);
-      expect(strongArbitrage.arbitrageScore).toBeGreaterThanOrEqual(85);
+      expect(strongArbitrage.arbitrageScore).toBeGreaterThanOrEqual(70);
+      expect(strongArbitrage.arbitrageScore).toBeLessThan(100);
       expect(weakArbitrage.arbitrageScore).toBeLessThan(20);
       expect(strongArbitrage.arbitrageScore).toBeGreaterThan(weakArbitrage.arbitrageScore);
 
@@ -887,6 +888,204 @@ describe('Stage D & Stage E — Autonomous Daily Deals and Production Conversion
       expect(renderYaml).toContain('CUELINKS_VERIFICATION_CODE');
       expect(renderYaml).toContain('CUELINKS_CHANNEL_ID');
       expect(renderYaml).toContain('331585');
+    });
+  });
+
+  describe('6. Stage G — Commission-Yield Arbitrage Ranking, SSR /deals/:slug, Sitemap & Live UPI Fallback', () => {
+    it('ranks ₹1,499 77%-off smartwatch ahead of ₹299 80%-off charger via expectedCommissionYieldINR without clamping at 100', async () => {
+      const { calculateMarketArbitrageScore } = await import('../../src/commission/autonomous-deal-discovery-engine.js');
+
+      const chargerScore = calculateMarketArbitrageScore({
+        title: 'boAt 48W Fast Car Charger',
+        currentPriceINR: 299,
+        referencePriceINR: 1499,
+        verifiedDiscountPercent: 80,
+        availability: 'IN_STOCK',
+        productVerified: true,
+        affiliateVerified: true,
+        isMonetizable: true,
+        affiliateNetwork: 'CUELINKS',
+        evidenceJson: { sources: [], verificationLogs: [], channelId: '331585' }
+      });
+
+      const smartwatchScore = calculateMarketArbitrageScore({
+        title: 'boAt Lunar Connect 2 Smartwatch',
+        currentPriceINR: 1499,
+        referencePriceINR: 6499,
+        verifiedDiscountPercent: 77,
+        availability: 'IN_STOCK',
+        productVerified: true,
+        affiliateVerified: true,
+        isMonetizable: true,
+        affiliateNetwork: 'CUELINKS',
+        evidenceJson: { sources: [], verificationLogs: [], channelId: '331585' }
+      });
+
+      expect(smartwatchScore.expectedCommissionYieldINR).toBeCloseTo(69.19, 1);
+      expect(chargerScore.expectedCommissionYieldINR).toBeCloseTo(14.36, 1);
+      expect(smartwatchScore.arbitrageScore).toBeLessThan(100);
+      expect(chargerScore.arbitrageScore).toBeLessThan(100);
+      expect(smartwatchScore.arbitrageScore).toBeGreaterThan(chargerScore.arbitrageScore);
+    });
+
+    it('renders SSR GET /deals/:slug with Schema.org/Product JSON-LD, related deals, and 404 noindex for missing slugs', async () => {
+      const { app } = await import('../../src/index.js');
+      const db = getDb();
+      db.prepare('DELETE FROM public_deals').run();
+      const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
+      (dealEngine as any).dealsMap?.clear?.();
+      (dealEngine as any).dealSlugMap?.clear?.();
+      const now = new Date().toISOString();
+
+      await (dealEngine as any).persistDealToD1({
+        id: 'deal_ssr_watch_1',
+        slug: 'boat-lunar-connect-2-ssr',
+        canonicalSlug: 'boat-lunar-connect-2-ssr',
+        title: 'boAt Lunar Connect 2 Smartwatch',
+        brand: 'boAt',
+        merchant: 'boAt Lifestyle',
+        category: 'Electronics',
+        sectorCode: 'SECTOR_B_ELECTRONICS',
+        productUrl: 'https://www.boat-lifestyle.com/products/lunar-connect-2',
+        currentPriceINR: 1499,
+        referencePriceINR: 6499,
+        verifiedDiscountPercent: 77,
+        discountBadge: '77% OFF',
+        currency: 'INR',
+        discountVerificationType: 'MERCHANT_LISTED_MRP',
+        availability: 'IN_STOCK',
+        geographicRestrictions: ['India'],
+        lastCheckedAt: now,
+        sourceUrl: 'https://www.boat-lifestyle.com/products.json',
+        sourceDomain: 'boat-lifestyle.com',
+        sourceType: 'RETAILER_BRAND',
+        verificationStatus: 'AFFILIATE_VERIFIED',
+        confidenceScore: 95,
+        buyerValueScore: 90,
+        rejectionReasons: [],
+        productVerified: true,
+        affiliateVerified: true,
+        isMonetizable: true,
+        affiliateNetwork: 'CUELINKS',
+        trackingUrl: 'https://linksredirect.com/?cid=331585&source=linkkit&url=https%3A%2F%2Fwww.boat-lifestyle.com%2Fproducts%2Flunar-connect-2',
+        evidenceJson: { sources: [], verificationLogs: [], channelId: '331585' },
+        createdAt: now,
+        updatedAt: now
+      }, 'org_owner_primary', 'biz_platform_aro');
+
+      const okRes = await app.request('/deals/boat-lunar-connect-2-ssr');
+      expect(okRes.status).toBe(200);
+      const okHtml = await okRes.text();
+      expect(okHtml).toContain('<title>boAt Lunar Connect 2 Smartwatch — ₹1,499 (77% OFF Verified Deal) | #Ad</title>');
+      expect(okHtml).toContain('"@type": "Product"');
+      expect(okHtml).toContain('"priceCurrency": "INR"');
+      expect(okHtml).toContain('"availability": "https://schema.org/InStock"');
+      expect(okHtml).toContain('/api/v1/public/deals/deal_ssr_watch_1/redirect?utm_source=deal_ssr&amp;utm_medium=organic');
+      expect(okHtml).toContain('#Ad');
+
+      const missingRes = await app.request('/deals/nonexistent-deal-slug-stage-g');
+      expect(missingRes.status).toBe(404);
+      const missingHtml = await missingRes.text();
+      expect(missingHtml).toContain('noindex');
+    });
+
+    it('includes all 50 active /deals/:slug URLs in GET /sitemap.xml yielding 70+ total URLs', async () => {
+      const { app } = await import('../../src/index.js');
+      const db = getDb();
+      db.prepare('DELETE FROM public_deals').run();
+      const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
+      (dealEngine as any).dealsMap?.clear?.();
+      (dealEngine as any).dealSlugMap?.clear?.();
+      const now = new Date().toISOString();
+
+      // Seed 50 active verified deals plus 15 authorized domain audits + guides -> 70+ URLs
+      const insertDealStmt = db.prepare(`
+        INSERT INTO public_deals (
+          id, slug, canonical_slug, title, brand, merchant, category, sector_code,
+          product_url, affiliate_url, current_price_inr, currency, reference_price_inr,
+          discount_percent, availability, verification_status, deal_kind, evidence_json,
+          is_monetizable, product_verified, affiliate_verified, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'INR', ?, 70, 'IN_STOCK', 'AFFILIATE_VERIFIED', 'PRODUCT', '{}', 1, 1, 1, datetime('now'))
+      `);
+      for (let i = 1; i <= 50; i++) {
+        const slug = `stage-g-deal-${i}`;
+        insertDealStmt.run(
+          `deal_sg_${i}`,
+          slug,
+          slug,
+          `Stage G Audio Product ${i}`,
+          'boAt',
+          'boAt Lifestyle',
+          'Electronics',
+          'SECTOR_B_ELECTRONICS',
+          `https://www.boat-lifestyle.com/products/stage-g-${i}`,
+          `https://linksredirect.com/?cid=331585&url=https%3A%2F%2Fwww.boat-lifestyle.com%2Fproducts%2Fstage-g-${i}`,
+          1499,
+          4999
+        );
+      }
+
+      for (let d = 1; d <= 15; d++) {
+        db.prepare(`
+          INSERT OR REPLACE INTO site_audits (domain, target_url, business_name, seo_score, checklist_json, status, is_publicly_authorized, updated_at)
+          VALUES (?, ?, ?, 80, '[]', 'COMPLETED', 1, datetime('now'))
+        `).run(`auditdomain${d}.in`, `https://auditdomain${d}.in`, `Audit Domain ${d}`);
+      }
+
+      const origEnv = process.env.NODE_ENV;
+      process.env.NODE_ENV = 'test';
+      try {
+        // Spy getAllDeals/getEligiblePublicDeals chain requirement off for isolated SQLite sitemap check
+        vi.spyOn(dealEngine, 'getEligiblePublicDeals').mockResolvedValue({
+          deals: Array.from({ length: 50 }, (_, idx) => ({
+            id: `deal_sg_${idx + 1}`,
+            slug: `stage-g-deal-${idx + 1}`,
+            canonicalSlug: `stage-g-deal-${idx + 1}`,
+            sectorCode: 'SECTOR_B_ELECTRONICS'
+          })) as any,
+          total: 50
+        });
+
+        const res = await app.request('/sitemap.xml');
+        expect(res.status).toBe(200);
+        const xml = await res.text();
+        const urlMatches = xml.match(/<url>/g) || [];
+        expect(urlMatches.length).toBeGreaterThanOrEqual(70);
+        expect(xml).toContain('/deals/stage-g-deal-1</loc>');
+        expect(xml).toContain('/deals/stage-g-deal-50</loc>');
+      } finally {
+        process.env.NODE_ENV = origEnv;
+      }
+    });
+
+    it('renders live UPI fallback rail on /tools/site-audit and records ₹499 claim as PAYMENT_CLAIMED', async () => {
+      const { app } = await import('../../src/index.js');
+      const pageRes = await app.request('/tools/site-audit?url=https%3A%2F%2Froasterycoffee.co.in');
+      expect(pageRes.status).toBe(200);
+      const html = await pageRes.text();
+      expect(html).toContain('Direct UPI Payment Option (Live INR via GPay / PhonePe / Paytm)');
+      expect(html).toContain('upi://pay?pa=venkatasaiharsh149768.rzp@rxairtel');
+      expect(html).toContain('/api/v1/offer/upi-claim');
+
+      const utrRef = `428901${Date.now().toString().slice(-6)}`;
+      const claimRes = await app.request('/api/v1/offer/upi-claim', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          businessId: 'biz_platform_aro',
+          auditId: 'audit_roastery_test_1',
+          payerName: 'Roastery Coffee House',
+          payerPhone: '9876543210',
+          utr: utrRef,
+          amountINR: 499
+        })
+      });
+      expect(claimRes.status).toBe(201);
+      const claimData = await claimRes.json() as any;
+      expect(claimData.success).toBe(true);
+      expect(claimData.status).toBe('PAYMENT_CLAIMED');
+      expect(claimData.data.utr).toBe(utrRef);
+      expect(claimData.data.amountINR).toBe(499);
     });
   });
 });

@@ -224,6 +224,70 @@ app.get('/deals', async (c) => {
   }
 });
 
+// Top-level SSR product deal detail route (/deals/:slug) with Schema.org/Product JSON-LD
+app.get('/deals/:slug', async (c) => {
+  let slug = c.req.param('slug') || '';
+  if (slug.endsWith('.html')) {
+    slug = slug.substring(0, slug.length - 5);
+  }
+  const cleanSlug = decodeURIComponent(slug).trim().toLowerCase();
+  const { StaticSiteGenerator } = await import('./commission/static-site-generator.js');
+  const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
+  const host = c.req.header('host') || 'ai-marketing-organization.onrender.com';
+  const proto = c.req.header('x-forwarded-proto') || 'https';
+  const siteName = (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
+  const config = {
+    siteName,
+    authorName: (process.env.PUBLIC_AUTHOR_NAME || 'Editorial Desk').trim(),
+    contactEmail: (process.env.PUBLIC_CONTACT_EMAIL || `editorial@${host}`).trim(),
+    siteUrl: `${proto}://${host}`
+  };
+
+  try {
+    const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
+    const eligibleRes = await dealEngine.getEligiblePublicDeals({ limit: 1000 });
+    const allDeals = eligibleRes.deals || [];
+    const targetDeal = allDeals.find((d: any) =>
+      String(d.slug || '').toLowerCase() === cleanSlug ||
+      String(d.canonicalSlug || '').toLowerCase() === cleanSlug ||
+      String(d.id || '').toLowerCase() === cleanSlug
+    );
+
+    if (!targetDeal) {
+      return c.html(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Deal Not Found | ${siteName}</title>
+  <meta name="robots" content="noindex, nofollow">
+</head>
+<body style="font-family:sans-serif;background:#090d16;color:#e2e8f0;padding:3rem;text-align:center;">
+  <h1>Verified Deal Unavailable or Expired</h1>
+  <p>This product deal is either out of stock or has ended. Browse currently active verified Indian deals below.</p>
+  <p><a href="/deals" style="color:#38bdf8;">Return to Verified Deals Directory &rarr;</a></p>
+</body>
+</html>`, 404);
+    }
+
+    const sameSegment = allDeals.filter((d: any) =>
+      d.id !== targetDeal.id && d.targetBuyerSegment && d.targetBuyerSegment === targetDeal.targetBuyerSegment
+    );
+    const sameCategory = allDeals.filter((d: any) =>
+      d.id !== targetDeal.id && d.targetBuyerSegment !== targetDeal.targetBuyerSegment &&
+      (d.sectorCode === targetDeal.sectorCode || d.category === targetDeal.category)
+    );
+    const relatedDeals = [...sameSegment, ...sameCategory].slice(0, 4);
+
+    const html = StaticSiteGenerator.getInstance().renderDealDetailHtml(targetDeal, relatedDeals, config);
+    return c.html(html, 200);
+  } catch (err: any) {
+    if (err?.code === 'GUIDE_DATA_UNAVAILABLE' || err?.statusCode === 503) {
+      return c.json({ error: 'GUIDE_DATA_UNAVAILABLE', message: err.message }, 503);
+    }
+    throw err;
+  }
+});
+
 // Top-level public direct commercial offer routes (Part E)
 app.get('/offer', async (c) => {
   const { DirectCommercialOfferPage } = await import('./revenue/direct-offer-page.js');
@@ -1010,18 +1074,22 @@ app.get('/sitemap.xml', async (c) => {
     } catch {}
   }
 
-  // Include compare guides ONLY for sectors with verified active deals (P1 Blocker 4 - never put a noindex page in /sitemap.xml)
+  // Include compare guides ONLY for sectors with verified active deals + all SSR /deals/:slug URLs
   let compareUrls: string[] = [];
+  let dealUrls: string[] = [];
   try {
     const { COMMERCIAL_SECTORS_LIST } = await import('@ai-marketing/shared');
     const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
     const engine = AutonomousDealDiscoveryEngine.getInstance();
-    for (const sec of COMMERCIAL_SECTORS_LIST) {
-      const secRes = await engine.getEligiblePublicDeals({ sectorCode: sec.code });
-      if (secRes.deals.length > 0) {
-        compareUrls.push(`${baseUrl}/compare/${sec.id}`);
-      }
-    }
+    const eligibleRes = await engine.getEligiblePublicDeals({ limit: 1000 });
+    const activeDeals = eligibleRes.deals || [];
+    const activeSectorCodes = new Set(activeDeals.map((d: any) => d.sectorCode).filter(Boolean));
+    compareUrls = COMMERCIAL_SECTORS_LIST
+      .filter(sec => activeSectorCodes.has(sec.code))
+      .map(sec => `${baseUrl}/compare/${sec.id}`);
+    dealUrls = activeDeals
+      .filter((d: any) => d && (d.slug || d.canonicalSlug || d.id))
+      .map((d: any) => `${baseUrl}/deals/${encodeURIComponent(d.slug || d.canonicalSlug || d.id)}`);
   } catch {}
 
   // Include only publicly authorized audited domain pages (V5.8 Defect 5)
@@ -1043,8 +1111,7 @@ app.get('/sitemap.xml', async (c) => {
   ];
 
   const contentUrls = publishedSlugs.map(a => `${baseUrl}/guides/${a.slug}`);
-  // Workstream C: Exclude generic SPA shells (/deals/{slug}) whose canonical tag points to /deals
-  const allUrls = [...staticUrls, ...compareUrls, ...contentUrls, ...auditUrls];
+  const allUrls = [...staticUrls, ...compareUrls, ...contentUrls, ...auditUrls, ...dealUrls];
 
   const xmlEntries = allUrls
     .map(url => `  <url>\n    <loc>${url}</loc>\n    <changefreq>daily</changefreq>\n    <priority>0.8</priority>\n  </url>`)

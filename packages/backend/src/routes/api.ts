@@ -158,6 +158,7 @@ export const EXACT_ROUTE_POLICY = {
     '/integrations/razorpay/test-order',
     '/integrations/razorpay/test-verify',
     '/payments/manual-upi/claim',
+    '/offer/upi-claim',
     '/payments/public/create-link',
     '/proposals',
     '/compliance/dpdp/consent',
@@ -4113,7 +4114,7 @@ apiRouter.post('/payments/page-view', async (c) => {
 // ==========================================
 
 // Public customer submission endpoint: Claim payment via UTR
-apiRouter.post('/payments/manual-upi/claim', async (c) => {
+const handleManualUpiClaim = async (c: any) => {
   const clientInfo = getTrustedClientIp(c);
   const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/payments/manual-upi/claim', clientInfo.ip, 10, 600);
   if (!rateLimit.allowed) {
@@ -4121,25 +4122,27 @@ apiRouter.post('/payments/manual-upi/claim', async (c) => {
   }
 
   const body = await c.req.json();
-  const { businessId, journeyId, proposalId, invoiceRef, payerName, payerPhone, payerVpa, utr, amountINR, serviceRendered, notes } = body;
+  const { businessId, journeyId, proposalId, invoiceRef, auditId, payerName, payerPhone, payerVpa, utr, amountINR, serviceRendered, notes } = body;
+  const resolvedBusinessId = businessId || 'biz_platform_aro';
+  const resolvedInvoiceRef = invoiceRef || (auditId ? String(auditId) : undefined);
 
-  if (!businessId || !utr || !amountINR) {
-    return c.json({ success: false, error: 'Missing required fields: businessId, utr, amountINR' }, 400);
+  if (!utr || !amountINR) {
+    return c.json({ success: false, error: 'Missing required fields: utr, amountINR' }, 400);
   }
 
   try {
     const claim = await razorpayAdapter.recordManualUpiClaim({
-      businessId,
+      businessId: resolvedBusinessId,
       journeyId,
       proposalId,
-      invoiceRef,
+      invoiceRef: resolvedInvoiceRef,
       payerName,
       payerPhone,
       payerVpa,
       utr: String(utr).trim(),
       amountINR: Number(amountINR),
-      serviceRendered,
-      notes
+      serviceRendered: serviceRendered || (auditId ? 'SiteFix AI Core Technical Fix-Pack' : undefined),
+      notes: notes || (auditId ? JSON.stringify({ auditId, source: 'site_audit_upi_fallback' }) : undefined)
     });
 
     // Step 5: Trigger owner Telegram alert on new payment claim (non-blocking, hermetic safe)
@@ -4150,7 +4153,7 @@ apiRouter.post('/payments/manual-upi/claim', async (c) => {
         utr: String(utr).trim(),
         payerName,
         amountINR: Number(amountINR),
-        proposalId,
+        proposalId: proposalId || resolvedInvoiceRef,
         isTest: isTestClaim
       });
     } catch {}
@@ -4164,7 +4167,9 @@ apiRouter.post('/payments/manual-upi/claim', async (c) => {
   } catch (err: any) {
     return c.json({ success: false, error: err.message }, 400);
   }
-});
+};
+apiRouter.post('/payments/manual-upi/claim', handleManualUpiClaim);
+apiRouter.post('/offer/upi-claim', handleManualUpiClaim);
 
 // Public customer endpoint: Generate exact-amount Razorpay payment link (Method A)
 apiRouter.post('/payments/public/create-link', async (c) => {
@@ -7303,6 +7308,7 @@ apiRouter.get('/public/feeds/deals.json', async (c) => {
       discount_badge: d.discountBadge || null,
       arbitrage_score: d.arbitrageScore ?? null,
       price_advantage_ratio: d.priceAdvantageRatio ?? null,
+      expected_commission_yield_inr: d.expectedCommissionYieldINR ?? null,
       target_buyer_segment: d.targetBuyerSegment || null,
       buyer_intent_keywords: d.buyerIntentKeywords || [],
       category: d.category,
