@@ -1537,27 +1537,8 @@ apiRouter.post('/cron/ping', async (c) => {
   const isCloudflareWorker = /ai-marketing-cron-worker|cloudflare-cron-worker/i.test(userAgent) ||
     Boolean(c.req.header('cf-worker') || c.req.header('x-worker-scheduled') === 'true');
   const telemetryId = isCloudflareWorker ? 'cloudflare_worker_cron' : 'manual_ping';
-  let staleRecoverySummary: any = null;
-  try {
-    const { DurableJobQueue } = await import('../automation/durable-job-queue.js');
-    staleRecoverySummary = await DurableJobQueue.getInstance().recoverStaleAndBlockedJobs();
-  } catch {}
 
-  // Rule 1: Trigger bounded Cuelinks payout hydration in background without delaying HTTP 200 (<2s budget)
-  if (!process.env.VITEST) {
-    void (async () => {
-      try {
-        const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
-        await SiteAuditService.getInstance().reconcileUnauthorizedThirdPartyAudits();
-      } catch {}
-      try {
-        const { CuelinksSyncManager } = await import('../commission/cuelinks-sync-manager.js');
-        await CuelinksSyncManager.getInstance().hydrateMissingCampaignPayoutsD1('org_owner_primary', 'biz_platform_aro', 100);
-      } catch {}
-    })();
-  }
-
-  // 1. Record observed heartbeat & rolling 24h timestamps in cron_telemetry (fast D1 write)
+  // 1. Record observed heartbeat & rolling 24h timestamps in cron_telemetry IMMEDIATELY at start of handler (< 300ms warm)
   try {
     const nowIso = new Date().toISOString();
     const cutoff24hMs = Date.now() - 24 * 3600 * 1000;
@@ -1594,6 +1575,26 @@ apiRouter.post('/cron/ping', async (c) => {
     await d1Repo.executeWrite('cron_telemetry', sql, params);
   } catch (err: any) {
     console.error(`[Cron Ping] Telemetry write notice: ${err.message}`);
+  }
+
+  let staleRecoverySummary: any = null;
+  try {
+    const { DurableJobQueue } = await import('../automation/durable-job-queue.js');
+    staleRecoverySummary = await DurableJobQueue.getInstance().recoverStaleAndBlockedJobs();
+  } catch {}
+
+  // Rule 1: Trigger bounded Cuelinks payout hydration in background without delaying HTTP 200 (<2s budget)
+  if (!process.env.VITEST) {
+    void (async () => {
+      try {
+        const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
+        await SiteAuditService.getInstance().reconcileUnauthorizedThirdPartyAudits();
+      } catch {}
+      try {
+        const { CuelinksSyncManager } = await import('../commission/cuelinks-sync-manager.js');
+        await CuelinksSyncManager.getInstance().hydrateMissingCampaignPayoutsD1('org_owner_primary', 'biz_platform_aro', 100);
+      } catch {}
+    })();
   }
 
   // 2. Fast continuous maintenance: recover stale leases
@@ -1725,8 +1726,8 @@ apiRouter.post('/cron/worker/claim-and-run', async (c) => {
       } catch {}
     })();
   }
-  const budgetMs = Math.min(25000, Number(c.req.query('budgetMs') || 12000));
-  const maxJobs = Math.min(5, Number(c.req.query('maxJobs') || 2));
+  const budgetMs = Math.min(25000, Number(c.req.query('budgetMs') || 25000));
+  const maxJobs = Math.min(20, Number(c.req.query('maxJobs') || 20));
   const startTime = Date.now();
   const executedJobs: any[] = [];
   let lastExecResult: any = null;

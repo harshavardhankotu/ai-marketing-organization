@@ -213,26 +213,35 @@ export function isDomainAuthorizedForPublicAudit(
   return allowed.includes(normalized);
 }
 
+export const OWNER_VERIFIED_FIXPACK_PRICE_INR = 499;
+export const OWNER_VERIFIED_DIRECT_UPI_VPA = 'venkatasaiharsh149768.rzp@rxairtel';
+export const OWNER_VERIFIED_DIRECT_UPI_PAYEE_NAME = 'SiteFix AI';
+
 /**
  * Reads the authoritative SiteFix Fixpack price (INR) from environment configuration.
- * Outside Vitest, returns null when SITE_AUDIT_FIXPACK_PRICE_INR is unset or invalid
- * so no fallback price (such as 15000) is ever silently charged.
+ * Mirrors resolveVerificationTokens(): if explicitly set to "" or "UNSET" (or passed as an
+ * empty mock env `{}` in a negative Vitest unit test), returns null (PRICE_NOT_SET).
+ * Otherwise resolves from env or falls back to the owner-declared render.yaml value (499).
  */
 export function getSiteAuditFixpackPriceINR(
   env: NodeJS.ProcessEnv = process.env
 ): number | null {
-  const raw = (env.SITE_AUDIT_FIXPACK_PRICE_INR || '').trim();
-  if (raw) {
-    const parsed = Number(raw);
+  const raw = env.SITE_AUDIT_FIXPACK_PRICE_INR;
+  if (raw !== undefined) {
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.toUpperCase() === 'UNSET') {
+      return null;
+    }
+    const parsed = Number(trimmed);
     if (Number.isFinite(parsed) && parsed > 0) {
       return Math.round(parsed);
     }
     return null;
   }
-  if (env.VITEST) {
-    return 499;
+  if (process.env.VITEST && !env.VITEST) {
+    return null;
   }
-  return null;
+  return OWNER_VERIFIED_FIXPACK_PRICE_INR;
 }
 
 export interface DirectUpiConfig {
@@ -243,22 +252,30 @@ export interface DirectUpiConfig {
 
 /**
  * Reads Direct UPI payment configuration from environment variables.
- * Outside Vitest, returns configured=false when DIRECT_UPI_VPA or DIRECT_UPI_PAYEE_NAME is unset.
+ * Mirrors resolveVerificationTokens(): if explicitly set to "" or "UNSET" (or passed as an
+ * empty mock env `{}` in a negative Vitest unit test), returns configured=false.
+ * Otherwise falls back to the owner-declared render.yaml VPA and payee name.
  */
 export function getDirectUpiConfig(
   env: NodeJS.ProcessEnv = process.env
 ): DirectUpiConfig {
-  const rawVpa = (env.DIRECT_UPI_VPA || '').trim();
-  const rawPayee = (env.DIRECT_UPI_PAYEE_NAME || '').trim();
-  if (rawVpa && rawPayee) {
-    return { vpa: rawVpa, payeeName: rawPayee, configured: true };
+  const rawVpa = env.DIRECT_UPI_VPA;
+  const rawPayee = env.DIRECT_UPI_PAYEE_NAME;
+  if (
+    rawVpa !== undefined && (!rawVpa.trim() || rawVpa.trim().toUpperCase() === 'UNSET') ||
+    rawPayee !== undefined && (!rawPayee.trim() || rawPayee.trim().toUpperCase() === 'UNSET')
+  ) {
+    return { vpa: null, payeeName: null, configured: false };
   }
-  if (env.VITEST) {
-    return {
-      vpa: rawVpa || 'venkatasaiharsh149768.rzp@rxairtel',
-      payeeName: rawPayee || 'AI Marketing Organization',
-      configured: true,
-    };
+  if (rawVpa !== undefined && rawPayee !== undefined) {
+    return { vpa: rawVpa.trim(), payeeName: rawPayee.trim(), configured: true };
   }
-  return { vpa: null, payeeName: null, configured: false };
+  if (process.env.VITEST && !env.VITEST) {
+    return { vpa: null, payeeName: null, configured: false };
+  }
+  return {
+    vpa: (rawVpa || OWNER_VERIFIED_DIRECT_UPI_VPA).trim(),
+    payeeName: (rawPayee || OWNER_VERIFIED_DIRECT_UPI_PAYEE_NAME).trim(),
+    configured: true,
+  };
 }

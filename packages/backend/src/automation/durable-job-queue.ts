@@ -882,7 +882,9 @@ export class DurableJobQueue {
       // automation_registry may be absent in minimal unit test DBs
     }
 
-    // 1. Supersede overdue QUEUED / RETRY_WAIT jobs (> max(cadence_minutes, 60) minutes) using DEFERRED + SUPERSEDED_STALE_WINDOW
+    // 1. Supersede overdue QUEUED / RETRY_WAIT jobs
+    const hasExplicitThreshold =
+      options?.staleMinutesThreshold !== undefined || options?.staleHoursThreshold !== undefined;
     const explicitMinThreshold = options?.staleMinutesThreshold !== undefined
       ? Math.max(1, Math.floor(options.staleMinutesThreshold))
       : options?.staleHoursThreshold !== undefined
@@ -918,19 +920,82 @@ export class DurableJobQueue {
       };
 
       const staleIds: string[] = [];
+      const parkedQueuedIds: string[] = [];
+      const refreshIds: string[] = [];
       const nowMs = Date.now();
-      for (const row of queuedRows) {
-        const wfId = String(row.workflow_id || '');
-        const thresholdMins = explicitMinThreshold ?? Math.max(60, cadenceMap.get(wfId) ?? 60);
-        const createdMs = parseUtc(row.created_at);
-        const availMs = parseUtc(row.available_at);
-        const refMs = Number.isFinite(availMs) && availMs > nowMs
-          ? availMs
-          : (Number.isFinite(createdMs) ? createdMs : availMs);
-        const ageMins = Number.isFinite(refMs) ? (nowMs - refMs) / 60000 : 0;
-        if (ageMins > thresholdMins) {
-          staleIds.push(String(row.id));
+
+      if (!hasExplicitThreshold) {
+        // Default production recovery: defer parked workflow QUEUED rows; for enabled workflows with
+        // rows older than 60m, keep strictly the single newest row per workflow_id (reset to datetime('now'))
+        // and mark all older duplicates DEFERRED + SUPERSEDED_STALE_WINDOW.
+        const byWorkflow = new Map<string, Array<{ id: string; sortMs: number; ageMins: number }>>();
+        for (const row of queuedRows) {
+          const wfId = String(row.workflow_id || '');
+          if (parkedSet.has(wfId)) {
+            parkedQueuedIds.push(String(row.id));
+            continue;
+          }
+          const createdMs = parseUtc(row.created_at);
+          const availMs = parseUtc(row.available_at);
+          const refMs = Number.isFinite(availMs) ? availMs : (Number.isFinite(createdMs) ? createdMs : nowMs);
+          const ageMins = (nowMs - refMs) / 60000;
+          const sortMs = Number.isFinite(availMs) ? availMs : (Number.isFinite(createdMs) ? createdMs : nowMs);
+          if (!byWorkflow.has(wfId)) byWorkflow.set(wfId, []);
+          byWorkflow.get(wfId)!.push({ id: String(row.id), sortMs, ageMins });
         }
+
+        for (const [, rows] of byWorkflow.entries()) {
+          rows.sort((a, b) => b.sortMs - a.sortMs);
+          const newest = rows[0];
+          if (newest && newest.ageMins > 60) {
+            refreshIds.push(newest.id);
+          }
+          for (let i = 1; i < rows.length; i++) {
+            staleIds.push(rows[i].id);
+          }
+        }
+      } else {
+        for (const row of queuedRows) {
+          const wfId = String(row.workflow_id || '');
+          const thresholdMins = explicitMinThreshold ?? Math.max(60, cadenceMap.get(wfId) ?? 60);
+          const createdMs = parseUtc(row.created_at);
+          const availMs = parseUtc(row.available_at);
+          const refMs = Number.isFinite(availMs) && availMs > nowMs
+            ? availMs
+            : (Number.isFinite(createdMs) ? createdMs : availMs);
+          const ageMins = Number.isFinite(refMs) ? (nowMs - refMs) / 60000 : 0;
+          if (ageMins > thresholdMins) {
+            staleIds.push(String(row.id));
+          }
+        }
+      }
+
+      if (parkedQueuedIds.length > 0) {
+        const placeholders = parkedQueuedIds.map(() => '?').join(', ');
+        await execWrite(
+          `UPDATE automation_jobs
+           SET status = 'DEFERRED',
+               last_error = 'PARKED_WORKFLOW',
+               completed_at = COALESCE(completed_at, datetime('now')),
+               updated_at = datetime('now')
+           WHERE id IN (${placeholders})
+             AND status IN ('QUEUED', 'RETRY_WAIT')`,
+          parkedQueuedIds
+        );
+      }
+
+      if (refreshIds.length > 0) {
+        const placeholders = refreshIds.map(() => '?').join(', ');
+        await execWrite(
+          `UPDATE automation_jobs
+           SET status = 'QUEUED',
+               available_at = datetime('now'),
+               created_at = datetime('now'),
+               updated_at = datetime('now')
+           WHERE id IN (${placeholders})
+             AND status IN ('QUEUED', 'RETRY_WAIT')`,
+          refreshIds
+        );
       }
 
       if (staleIds.length > 0) {
@@ -1035,16 +1100,17 @@ export class DurableJobQueue {
       console.warn(`[JobQueue] recoverStaleAndBlockedJobs active blocked notice: ${err.message}`);
     }
 
-    // Clear stale BLOCKED status flags on enabled workflows in automation_registry so /cron/status resets cleanly
+    // Clear stale BLOCKED status flags & past next_scheduled_at on enabled workflows in automation_registry
     try {
       const clearRegistrySql = `
         UPDATE automation_registry
-        SET last_status = 'IDLE',
-            retry_count = 0,
-            last_error = NULL,
+        SET last_status = CASE WHEN last_status = 'BLOCKED' THEN 'IDLE' ELSE last_status END,
+            retry_count = CASE WHEN last_status = 'BLOCKED' THEN 0 ELSE retry_count END,
+            last_error = CASE WHEN last_status = 'BLOCKED' THEN NULL ELSE last_error END,
+            next_scheduled_at = CASE WHEN next_scheduled_at IS NOT NULL AND next_scheduled_at < datetime('now') THEN datetime('now') ELSE next_scheduled_at END,
             updated_at = datetime('now')
         WHERE enabled = 1
-          AND last_status = 'BLOCKED'
+          AND (last_status = 'BLOCKED' OR (next_scheduled_at IS NOT NULL AND next_scheduled_at < datetime('now')))
       `;
       if (isProduction()) {
         await this.d1Repo.executeWrite('automation_registry', clearRegistrySql, []);

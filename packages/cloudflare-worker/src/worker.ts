@@ -39,75 +39,85 @@ async function runCycle(env: Env): Promise<void> {
   const pingUrl = `${env.BACKEND_URL.replace(/\/$/, '')}/api/v1/cron/ping`;
   const claimUrl = `${env.BACKEND_URL.replace(/\/$/, '')}/api/v1/cron/worker/claim-and-run`;
 
-  try {
-    const response = await fetch(pingUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Cron-Secret': env.CRON_PING_SECRET,
-        'User-Agent': 'ai-marketing-cron-worker/1.0'
-      },
-      body: JSON.stringify({
-        triggerSource: 'CLOUDFLARE_CRON',
-        scheduledAt: new Date().toISOString(),
-        cronExpression: '0 * * * *'
-      }),
-      signal: AbortSignal.timeout(100000) // 100-second ceiling to tolerate Render cold starts
-    });
+  // Step 1: Cold-start resilient warmup & heartbeat ping (100s timeout >= 90s + 1 automatic retry after 2s on 502/503/504/timeout)
+  let response: Response | null = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      response = await fetch(pingUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Cron-Secret': env.CRON_PING_SECRET,
+          'User-Agent': 'ai-marketing-cron-worker/1.0'
+        },
+        body: JSON.stringify({
+          triggerSource: 'CLOUDFLARE_CRON',
+          scheduledAt: new Date().toISOString(),
+          cronExpression: '0 * * * *',
+          attempt
+        }),
+        signal: AbortSignal.timeout(100000)
+      });
 
-    const elapsed = Date.now() - startMs;
-
-    if (response.ok) {
-      const body = await response.json() as Record<string, unknown>;
-      console.log(
-        `[CRON WORKER] Fast ping accepted in ${elapsed}ms:`,
-        JSON.stringify(body).substring(0, 500)
-      );
-
-      // Claim & execute due jobs from durable queue via bounded drain loop
-      try {
-        const drainUrl = `${claimUrl}?budgetMs=12000&maxJobs=2`;
-        const claimStart = Date.now();
-        const claimRes = await fetch(drainUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Cron-Secret': env.CRON_PING_SECRET,
-            'User-Agent': 'ai-marketing-cron-worker/1.0'
-          },
-          signal: AbortSignal.timeout(25000)
-        });
-        const elapsedClaim = Date.now() - claimStart;
-        if (claimRes.ok) {
-          const claimBody = await claimRes.json() as Record<string, unknown>;
-          const jobsExecuted = typeof claimBody.jobsExecutedCount === 'number'
-            ? claimBody.jobsExecutedCount
-            : (Array.isArray(claimBody.executedJobs) ? claimBody.executedJobs.length : 0);
-          console.log(`[CRON WORKER] Drain completed: status=${claimRes.status}, claimed=${claimBody.claimed}, jobsExecuted=${jobsExecuted}, elapsed=${claimBody.elapsedMs ?? elapsedClaim}ms`);
-        } else {
-          const errTxt = await claimRes.text();
-          console.error(`[CRON WORKER] Drain failed: status=${claimRes.status}, in ${elapsedClaim}ms: ${errTxt.substring(0, 300)}`);
-        }
-      } catch (claimErr: any) {
-        console.warn(`[CRON WORKER] Drain loop exception: ${claimErr?.message}`);
+      if (response.ok || (response.status !== 502 && response.status !== 503 && response.status !== 504)) {
+        break;
       }
-    } else {
-      const text = await response.text();
-      console.error(
-        `[CRON WORKER] Backend returned ${response.status} in ${elapsed}ms:`,
-        text.substring(0, 200)
-      );
+      console.warn(`[CRON WORKER] Warmup ping attempt ${attempt} returned ${response.status}; retrying in 2s...`);
+    } catch (err: unknown) {
+      const error = err as { name?: string; message?: string };
+      console.warn(`[CRON WORKER] Warmup ping attempt ${attempt} failed (${error?.name || 'Error'}: ${error?.message || 'unknown'})`);
+      if (attempt === 2) {
+        console.error(`[CRON WORKER] Backend warmup failed after ${Date.now() - startMs}ms — next scheduled wake will retry.`);
+        return;
+      }
     }
-  } catch (err: unknown) {
-    const elapsed = Date.now() - startMs;
-    const error = err as { name?: string; message?: string };
+    if (attempt === 1) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+  }
 
-    if (error?.name === 'TimeoutError' || error?.message?.includes('timeout')) {
-      console.warn(
-        `[CRON WORKER] Backend timeout after ${elapsed}ms — next scheduled wake will retry.`
-      );
-    } else {
-      console.error(`[CRON WORKER] Unexpected error after ${elapsed}ms:`, error?.message);
+  const elapsed = Date.now() - startMs;
+  if (!response) return;
+
+  if (response.ok) {
+    const body = await response.json() as Record<string, unknown>;
+    console.log(
+      `[CRON WORKER] Fast ping accepted in ${elapsed}ms:`,
+      JSON.stringify(body).substring(0, 500)
+    );
+
+    // Step 2: Bounded Queue Drain (container is now warm)
+    try {
+      const drainUrl = `${claimUrl}?budgetMs=15000&maxJobs=5`;
+      const claimStart = Date.now();
+      const claimRes = await fetch(drainUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Cron-Secret': env.CRON_PING_SECRET,
+          'User-Agent': 'ai-marketing-cron-worker/1.0'
+        },
+        signal: AbortSignal.timeout(25000)
+      });
+      const elapsedClaim = Date.now() - claimStart;
+      if (claimRes.ok) {
+        const claimBody = await claimRes.json() as Record<string, unknown>;
+        const jobsExecuted = typeof claimBody.jobsExecutedCount === 'number'
+          ? claimBody.jobsExecutedCount
+          : (Array.isArray(claimBody.executedJobs) ? claimBody.executedJobs.length : 0);
+        console.log(`[CRON WORKER] Drain completed: status=${claimRes.status}, claimed=${claimBody.claimed}, jobsExecuted=${jobsExecuted}, elapsed=${claimBody.elapsedMs ?? elapsedClaim}ms`);
+      } else {
+        const errTxt = await claimRes.text();
+        console.error(`[CRON WORKER] Drain failed: status=${claimRes.status}, in ${elapsedClaim}ms: ${errTxt.substring(0, 300)}`);
+      }
+    } catch (claimErr: any) {
+      console.warn(`[CRON WORKER] Drain loop exception: ${claimErr?.message}`);
     }
+  } else {
+    const text = await response.text();
+    console.error(
+      `[CRON WORKER] Backend returned ${response.status} in ${elapsed}ms:`,
+      text.substring(0, 200)
+    );
   }
 }
