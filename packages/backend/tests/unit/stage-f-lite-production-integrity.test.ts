@@ -1626,15 +1626,51 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
       expect(tokenHtml).toContain('<meta name="robots" content="noindex, nofollow">');
       expect(tokenHtml).toContain('attagalatta.com');
 
-      // 2. Item 3 & 8: Non-Vitest env helpers fail closed when unset
+      // 2. Item 3 & 8 (Stage I.2-B): Negative test overrides fail closed while declared render.yaml fallbacks resolve
       expect(getSiteAuditFixpackPriceINR({} as NodeJS.ProcessEnv)).toBeNull();
+      expect(getSiteAuditFixpackPriceINR({ SITE_AUDIT_FIXPACK_PRICE_INR: '' } as NodeJS.ProcessEnv)).toBeNull();
+      expect(getSiteAuditFixpackPriceINR({ SITE_AUDIT_FIXPACK_PRICE_INR: 'UNSET' } as NodeJS.ProcessEnv)).toBeNull();
       expect(getSiteAuditFixpackPriceINR({ SITE_AUDIT_FIXPACK_PRICE_INR: '499' } as NodeJS.ProcessEnv)).toBe(499);
+      expect(getSiteAuditFixpackPriceINR(process.env)).toBe(499);
       expect(getDirectUpiConfig({} as NodeJS.ProcessEnv)).toEqual({ vpa: null, payeeName: null, configured: false });
+      expect(getDirectUpiConfig({ DIRECT_UPI_VPA: 'UNSET', DIRECT_UPI_PAYEE_NAME: 'SiteFix AI' } as NodeJS.ProcessEnv)).toEqual({ vpa: null, payeeName: null, configured: false });
       expect(getDirectUpiConfig({ DIRECT_UPI_VPA: 'test@upi', DIRECT_UPI_PAYEE_NAME: 'Test Org' } as NodeJS.ProcessEnv)).toEqual({
         vpa: 'test@upi',
         payeeName: 'Test Org',
         configured: true,
       });
+      expect(getDirectUpiConfig(process.env)).toEqual({
+        vpa: 'venkatasaiharsh149768.rzp@rxairtel',
+        payeeName: 'SiteFix AI',
+        configured: true,
+      });
+
+      // 2b. Stage I.2-B P0 Fix 2: default recoverStaleAndBlockedJobs() resets overdueCount & oldestOverdueAgeMinutes to 0
+      const { DurableJobQueue } = await import('../../src/automation/durable-job-queue.js');
+      db.prepare('DELETE FROM automation_jobs').run();
+      try {
+        db.prepare(`INSERT OR REPLACE INTO automation_registry (id, name, category, cadence_minutes, enabled, next_scheduled_at) VALUES ('affiliate_offer_reconciliation', 'Affiliate Offer Reconciliation', 'COMMERCE', 1440, 1, datetime('now', '-16 hours'))`).run();
+        db.prepare(`INSERT OR REPLACE INTO automation_registry (id, name, category, cadence_minutes, enabled) VALUES ('parked_legacy_wf', 'Parked WF', 'GROWTH', 360, 0)`).run();
+      } catch {}
+      db.prepare(`
+        INSERT INTO automation_jobs (id, organization_id, business_id, workflow_id, idempotency_key, status, priority, payload_json, available_at, created_at, updated_at)
+        VALUES
+        ('job_ov_old', 'org_owner_primary', 'biz_platform_aro', 'affiliate_offer_reconciliation', 'idem_ov_old', 'QUEUED', 2, '{}', datetime('now', '-18 hours'), datetime('now', '-18 hours'), datetime('now', '-18 hours')),
+        ('job_ov_new', 'org_owner_primary', 'biz_platform_aro', 'affiliate_offer_reconciliation', 'idem_ov_new', 'QUEUED', 2, '{}', datetime('now', '-16 hours'), datetime('now', '-16 hours'), datetime('now', '-16 hours')),
+        ('job_ov_parked', 'org_owner_primary', 'biz_platform_aro', 'parked_legacy_wf', 'idem_ov_parked', 'QUEUED', 3, '{}', datetime('now', '-16 hours'), datetime('now', '-16 hours'), datetime('now', '-16 hours'))
+      `).run();
+
+      const i2bRecovery = await DurableJobQueue.getInstance().recoverStaleAndBlockedJobs();
+      expect(i2bRecovery.queueStatsAfter.overdueCount).toBe(0);
+      expect(i2bRecovery.queueStatsAfter.oldestOverdueAgeMinutes).toBe(0);
+      const parkedAfter = db.prepare(`SELECT status, last_error FROM automation_jobs WHERE id = 'job_ov_parked'`).get() as any;
+      expect(parkedAfter.status).toBe('DEFERRED');
+      expect(parkedAfter.last_error).toBe('PARKED_WORKFLOW');
+      const oldDupAfter = db.prepare(`SELECT status, last_error FROM automation_jobs WHERE id = 'job_ov_old'`).get() as any;
+      expect(oldDupAfter.status).toBe('DEFERRED');
+      expect(oldDupAfter.last_error).toBe('SUPERSEDED_STALE_WINDOW');
+      const keptAfter = db.prepare(`SELECT status FROM automation_jobs WHERE id = 'job_ov_new'`).get() as any;
+      expect(keptAfter.status).toBe('QUEUED');
 
       // 3. Item 5: DurableEventBus.emitWithPersistenceAsync returns { persisted: false } on failure
       const d1Repo = D1RevenueRepository.getInstance();

@@ -28,6 +28,6 @@ services:
       - key: SITE_AUDIT_FIXPACK_PRICE_INR
         value: "499"
       - key: DIRECT_UPI_VPA
-        value: "kotuharsha1@okhdfcbank"
+        value: "venkatasaiharsh149768.rzp@rxairtel"
       - key: DIRECT_UPI_PAYEE_NAME
-        value: "AI Marketing Organization"
+        value: "SiteFix AI"

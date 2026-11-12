@@ -1358,14 +1358,14 @@ export async function startServer(): Promise<any> {
         const rec = await queue.recoverStaleAndBlockedJobs();
         console.log('[Startup Self-Heal] Queue recovery completed:', JSON.stringify(rec));
 
-        // Drain overdue/due queued jobs on boot (bounded to 25 jobs / 20s) so overdueCount converges to 0
+        // Drain overdue/due queued jobs on boot (bounded to 20 jobs / 25s) so overdueCount converges to 0
         const engine = AutomationRegistryEngine.getInstance();
         const startMs = Date.now();
         let drained = 0;
-        while (drained < 25 && (Date.now() - startMs) < 20000) {
+        while (drained < 20 && (Date.now() - startMs) < 25000) {
           const claimed = await queue.claimDueJob('boot_self_heal', 90);
           if (!claimed) break;
-          const remaining = Math.max(3000, 20000 - (Date.now() - startMs));
+          const remaining = Math.max(3000, 25000 - (Date.now() - startMs));
           const execResult = await engine.executeWorkflow(claimed.workflowId, 'CLOUDFLARE_CRON', remaining);
           if (
             execResult.status === 'COMPLETED' ||
