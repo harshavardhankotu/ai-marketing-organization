@@ -1252,9 +1252,11 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
       const liveLane = calculateLaneUnitEconomics({ lane: 'LANE_D_DIGITAL_PRODUCTS', grossRevenueINR: 1000, directCostINR: 0, gatewayFeePercent: 2 });
       expect(liveLane.grossMarginPercent).toBe(98);
 
+      db.prepare('DELETE FROM manual_upi_claims').run();
       const readiness = SystemReadinessEngine.evaluateReadiness('biz_platform_aro');
       expect((readiness.capabilities || {})['STRIPE']).toBeUndefined();
-      expect((readiness.capabilities || {})['DIRECT_UPI']?.verified).toBe(true);
+      expect((readiness.capabilities || {})['DIRECT_UPI']?.operational).toBe(true);
+      expect((readiness.capabilities || {})['DIRECT_UPI']?.verified).toBe(false);
     });
 
     it('Stage I.1 (P0, P1, P2, P6): 24/7 customer-desk resolves catalog offers & escalations, cron status reads cron_telemetry heartbeats, and GET /tools/financial-radar returns HTTP 200', async () => {
