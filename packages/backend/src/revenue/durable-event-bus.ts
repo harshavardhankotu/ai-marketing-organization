@@ -39,7 +39,8 @@ export type DurableEventType =
   | 'PROPOSAL_ACCEPTED'
   | 'CONTACT_OPT_OUT'
   | 'CYCLE_STARTED'
-  | 'CYCLE_COMPLETED';
+  | 'CYCLE_COMPLETED'
+  | 'ORDER_FULFILLED';
 
 export interface DurableEvent {
   id: string;
@@ -88,10 +89,8 @@ export class DurableEventBus {
       now
     ];
 
-    if (isProduction()) {
-      DurableEventBus.d1Repo.executeWrite('durable_events', sql, params).catch(err => {
-        console.error(`[DurableEventBus] D1 event persistence failed: ${err.message}`);
-      });
+    if (isProduction() && !process.env.VITEST) {
+      throw new Error('PRODUCTION_D1_ERROR: Synchronous DurableEventBus.emit() is disabled in production to prevent dropped events. Use await DurableEventBus.emitAsync().');
     } else {
       DurableEventBus.d1Repo.executeSync('durable_events', sql, params);
     }
@@ -100,7 +99,7 @@ export class DurableEventBus {
   }
 
   /**
-   * Asynchronous durable emit with confirmed D1 persistence in production.
+   * Asynchronous durable emit with awaited, fail-closed D1 persistence.
    */
   public static async emitAsync(input: EmitEventInput): Promise<string> {
     const id = `evt_${Date.now()}_${randomUUID().substring(0, 6)}`;
@@ -121,7 +120,11 @@ export class DurableEventBus {
       now
     ];
 
-    await DurableEventBus.d1Repo.executeWrite('durable_events', sql, params);
+    if (isProduction() && !process.env.VITEST) {
+      await DurableEventBus.d1Repo.executeWrite('durable_events', sql, params);
+    } else {
+      DurableEventBus.d1Repo.executeSync('durable_events', sql, params);
+    }
     return id;
   }
 
@@ -199,6 +202,144 @@ export class DurableEventBus {
     const params = [now, JSON.stringify(agents), error || null, eventId];
 
     await DurableEventBus.d1Repo.executeWrite('durable_events', sqlUpdate, params);
+  }
+
+  private static computeRetryTransition(
+    existingRow: { triggered_agents_json?: string; error_message?: string } | null | undefined,
+    agentId: string,
+    errorMessage: string,
+    maxAttempts: number
+  ): {
+    status: 'RETRY_WAIT' | 'DEAD_LETTER';
+    attempts: number;
+    processedFlag: number;
+    processedAt: string | null;
+    agentsJson: string;
+    errorJson: string;
+  } {
+    const now = new Date().toISOString();
+    let agents: string[] = [];
+    try {
+      agents = JSON.parse(existingRow?.triggered_agents_json || '[]');
+    } catch {}
+    if (!agents.includes(agentId)) agents.push(agentId);
+
+    let prevAttempts = 0;
+    try {
+      const parsedErr = typeof existingRow?.error_message === 'string' && existingRow.error_message.startsWith('{')
+        ? JSON.parse(existingRow.error_message)
+        : null;
+      if (parsedErr && Number.isFinite(Number(parsedErr.attempts))) {
+        prevAttempts = Number(parsedErr.attempts);
+      }
+    } catch {}
+
+    const attempts = prevAttempts + 1;
+    const isDeadLetter = attempts >= maxAttempts;
+    const status: 'RETRY_WAIT' | 'DEAD_LETTER' = isDeadLetter ? 'DEAD_LETTER' : 'RETRY_WAIT';
+
+    return {
+      status,
+      attempts,
+      processedFlag: isDeadLetter ? -1 : 0,
+      processedAt: isDeadLetter ? now : null,
+      agentsJson: JSON.stringify(agents),
+      errorJson: JSON.stringify({
+        status,
+        attempts,
+        lastError: String(errorMessage || 'Unknown event handler error').slice(0, 500),
+        lastAgentId: agentId,
+        updatedAt: now
+      })
+    };
+  }
+
+  /**
+   * Stage I.2 (P4): Record failed event delivery as RETRY_WAIT (processed=0) or DEAD_LETTER (processed=-1 when attempts >= maxAttempts).
+   */
+  public static markRetryOrDeadLetter(
+    eventId: string,
+    agentId: string,
+    errorMessage: string,
+    maxAttempts = 3
+  ): { status: 'RETRY_WAIT' | 'DEAD_LETTER'; attempts: number } {
+    const row = DurableEventBus.d1Repo.queryOneSync<any>(
+      'durable_events',
+      `SELECT triggered_agents_json, error_message FROM durable_events WHERE id = ?`,
+      [eventId]
+    );
+    const next = DurableEventBus.computeRetryTransition(row, agentId, errorMessage, maxAttempts);
+    const sql = `
+      UPDATE durable_events
+      SET processed = ?, processed_at = ?, triggered_agents_json = ?, error_message = ?
+      WHERE id = ?
+    `;
+    DurableEventBus.d1Repo.executeSync('durable_events', sql, [
+      next.processedFlag,
+      next.processedAt,
+      next.agentsJson,
+      next.errorJson,
+      eventId
+    ]);
+    return { status: next.status, attempts: next.attempts };
+  }
+
+  public static async markRetryOrDeadLetterAsync(
+    eventId: string,
+    agentId: string,
+    errorMessage: string,
+    maxAttempts = 3
+  ): Promise<{ status: 'RETRY_WAIT' | 'DEAD_LETTER'; attempts: number }> {
+    const useD1 = isProduction() && !process.env.VITEST;
+    const row = useD1
+      ? await DurableEventBus.d1Repo.queryOne<any>(
+          'durable_events',
+          `SELECT triggered_agents_json, error_message FROM durable_events WHERE id = ? LIMIT 1`,
+          [eventId]
+        )
+      : DurableEventBus.d1Repo.queryOneSync<any>(
+          'durable_events',
+          `SELECT triggered_agents_json, error_message FROM durable_events WHERE id = ? LIMIT 1`,
+          [eventId]
+        );
+    const next = DurableEventBus.computeRetryTransition(row, agentId, errorMessage, maxAttempts);
+    const sql = `
+      UPDATE durable_events
+      SET processed = ?, processed_at = ?, triggered_agents_json = ?, error_message = ?
+      WHERE id = ?
+    `;
+    const params = [next.processedFlag, next.processedAt, next.agentsJson, next.errorJson, eventId];
+    if (useD1) {
+      await DurableEventBus.d1Repo.executeWrite('durable_events', sql, params);
+    } else {
+      DurableEventBus.d1Repo.executeSync('durable_events', sql, params);
+    }
+    return { status: next.status, attempts: next.attempts };
+  }
+
+  public static listDeadLetter(organizationId: string, limit = 50): DurableEvent[] {
+    const sql = `
+      SELECT * FROM durable_events
+      WHERE organization_id = ? AND processed = -1
+      ORDER BY created_at DESC
+      LIMIT ?
+    `;
+    const rows = DurableEventBus.d1Repo.querySync<any>('durable_events', sql, [organizationId, limit]);
+    return rows.map(DurableEventBus.mapRow);
+  }
+
+  public static async listDeadLetterAsync(organizationId: string, limit = 50): Promise<DurableEvent[]> {
+    const useD1 = isProduction() && !process.env.VITEST;
+    const sql = `
+      SELECT * FROM durable_events
+      WHERE organization_id = ? AND processed = -1
+      ORDER BY created_at DESC
+      LIMIT ?
+    `;
+    const rows = useD1
+      ? await DurableEventBus.d1Repo.query<any>('durable_events', sql, [organizationId, limit])
+      : DurableEventBus.d1Repo.querySync<any>('durable_events', sql, [organizationId, limit]);
+    return rows.map(DurableEventBus.mapRow);
   }
 
   /**

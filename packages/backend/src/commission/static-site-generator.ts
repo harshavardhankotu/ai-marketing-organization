@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import { getDb } from '../db/client.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { isProduction, resolveVerificationTokens } from '../config/env.js';
+import { renderCustomerDeskWidgetHtml } from '../revenue/customer-desk-widget.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -357,6 +358,7 @@ export class StaticSiteGenerator {
     </nav>
     <p>&copy; ${new Date().getFullYear()} ${this.escapeHtml(config.siteName)}. All rights reserved.</p>
   </footer>
+  ${renderCustomerDeskWidgetHtml()}
 </body>
 </html>`;
   }
@@ -712,6 +714,7 @@ export class StaticSiteGenerator {
     </nav>
     <p>&copy; ${new Date().getFullYear()} ${this.escapeHtml(config.siteName)}. All rights reserved.</p>
   </footer>
+  ${renderCustomerDeskWidgetHtml()}
 </body>
 </html>`;
   }
@@ -1074,6 +1077,7 @@ ${this.serializeSafeJsonLd(productSchema, true)}
     </nav>
     <p>&copy; ${new Date().getFullYear()} ${this.escapeHtml(config.siteName)}. All rights reserved.</p>
   </footer>
+  ${renderCustomerDeskWidgetHtml()}
 </body>
 </html>`;
   }

@@ -325,4 +325,188 @@ export class DeliveryEngine {
       message: pubResult.message
     };
   }
+
+  /**
+   * Stage I.2 (P3): Verified Fulfillment Bridge.
+   * Provisioning MUST ONLY run for RAZORPAY_CAPTURED or HUMAN_VERIFIED_PAYMENT (never unverified PAYMENT_CLAIMED).
+   * Persists a durable D1 delivery_tasks row, advances journey/pipeline to FULFILLED, records positive
+   * CommercialLearningEngine outcome, and awaits DurableEventBus ('ORDER_FULFILLED').
+   */
+  public async provisionVerifiedOrderFulfillment(input: {
+    organizationId: string;
+    businessId: string;
+    customerJourneyId?: string;
+    orderId?: string;
+    claimId?: string;
+    paymentId?: string;
+    sku: string;
+    serviceType?: string;
+    amountINR: number;
+    verificationSource: 'RAZORPAY_CAPTURED' | 'HUMAN_VERIFIED_PAYMENT';
+    isDiagnostic?: boolean;
+  }): Promise<{
+    provisioned: boolean;
+    taskId?: string;
+    journeyId?: string;
+    learningRecorded: boolean;
+    stage: string;
+    deliverables: string[];
+  }> {
+    if (input.verificationSource !== 'RAZORPAY_CAPTURED' && input.verificationSource !== 'HUMAN_VERIFIED_PAYMENT') {
+      throw new Error(`FULFILLMENT_BLOCKED_UNVERIFIED_PAYMENT: Verification source '${input.verificationSource}' is not verified.`);
+    }
+
+    const useD1 = isProduction() && !process.env.VITEST;
+    const skuNorm = String(input.sku || input.serviceType || 'SITEFIX_CORE_499').toUpperCase();
+    const deliverables = skuNorm.includes('SITEFIX')
+      ? [
+          'Technical SEO, Schema.org & Core Web Vitals Fix-Pack Report',
+          'JSON-LD Structured Data & Canonical Patch Bundle',
+          'Post-Fix Indexability & Sitemap Verification Checklist'
+        ]
+      : DeliveryEngine.getDeliverablesForService(skuNorm);
+
+    const refKey = (input.claimId || input.orderId || input.paymentId || `${Date.now()}`).replace(/[^a-zA-Z0-9_-]/g, '');
+    const taskId = `deliv_${refKey}`;
+    let journeyId = input.customerJourneyId || '';
+
+    const runQueryOne = async (table: string, sql: string, params: any[]) =>
+      useD1 ? await this.d1Repo.queryOne<any>(table, sql, params) : this.d1Repo.queryOneSync<any>(table, sql, params);
+    const runWrite = async (table: string, sql: string, params: any[]) =>
+      useD1 ? await this.d1Repo.executeWrite(table, sql, params) : this.d1Repo.executeSync(table, sql, params);
+
+    // 1. Resolve or ensure an existing customer_journeys FK target
+    if (journeyId) {
+      const exists = await runQueryOne('customer_journeys', 'SELECT id FROM customer_journeys WHERE id = ?', [journeyId]);
+      if (!exists) journeyId = '';
+    }
+    if (!journeyId && input.claimId) {
+      try {
+        const claim = await runQueryOne('manual_upi_claims', 'SELECT notes FROM manual_upi_claims WHERE id = ?', [input.claimId]);
+        if (claim?.notes) {
+          const parsedNotes = typeof claim.notes === 'string' ? JSON.parse(claim.notes) : claim.notes;
+          if (parsedNotes?.journeyId) {
+            const jRow = await runQueryOne('customer_journeys', 'SELECT id FROM customer_journeys WHERE id = ?', [String(parsedNotes.journeyId)]);
+            if (jRow?.id) journeyId = String(jRow.id);
+          }
+        }
+      } catch {}
+    }
+    if (!journeyId && input.orderId) {
+      try {
+        const payReq = await runQueryOne('payment_requests', 'SELECT lead_id, prospect_id FROM payment_requests WHERE id = ? OR reference_id = ?', [input.orderId, input.orderId]);
+        const cand = payReq?.lead_id || payReq?.prospect_id;
+        if (cand) {
+          const jRow = await runQueryOne('customer_journeys', 'SELECT id FROM customer_journeys WHERE id = ? OR visitor_id = ?', [cand, cand]);
+          if (jRow?.id) journeyId = String(jRow.id);
+        }
+      } catch {}
+    }
+    if (!journeyId) {
+      journeyId = `cj_ord_${refKey}`;
+      await runWrite(
+        'customer_journeys',
+        `INSERT OR IGNORE INTO customer_journeys (
+          id, business_id, visitor_id, stage, first_touch_channel, last_touch_channel,
+          conversion_probability, total_lifetime_value_inr, classification, created_at, updated_at
+        ) VALUES (?, ?, ?, 'FULFILLED', 'WEB_DESK', 'PAYMENT_VERIFIED', 1.0, ?, 'REAL', datetime('now'), datetime('now'))`,
+        [journeyId, input.businessId, `visitor_${refKey}`, Number(input.amountINR || 0)]
+      );
+    }
+
+    // 2. Idempotently insert delivery_tasks record (never overwrites if already created)
+    const resultsPayload = JSON.stringify({
+      verificationSource: input.verificationSource,
+      sku: input.sku,
+      orderId: input.orderId || null,
+      claimId: input.claimId || null,
+      paymentId: input.paymentId || null,
+      amountINR: Number(input.amountINR || 0),
+      provisionedAt: new Date().toISOString()
+    });
+
+    await runWrite(
+      'delivery_tasks',
+      `INSERT OR IGNORE INTO delivery_tasks (
+        id, organization_id, business_id, customer_journey_id,
+        service_type, stage, deliverables_json, results_json,
+        action_classification, created_at
+      ) VALUES (?, ?, ?, ?, ?, 'FULFILLMENT_READY', ?, ?, 'INTERNAL_AUTOMATION', datetime('now'))`,
+      [
+        taskId,
+        input.organizationId,
+        input.businessId,
+        journeyId,
+        input.sku || input.serviceType || 'SITEFIX_CORE_499',
+        JSON.stringify(deliverables),
+        resultsPayload
+      ]
+    );
+
+    // 3. Advance customer_journeys & sales_pipeline -> FULFILLED
+    try {
+      await runWrite(
+        'customer_journeys',
+        `UPDATE customer_journeys SET stage = 'FULFILLED', total_lifetime_value_inr = COALESCE(total_lifetime_value_inr, 0) + ?, updated_at = datetime('now') WHERE id = ?`,
+        [Number(input.amountINR || 0), journeyId]
+      );
+      await runWrite(
+        'sales_pipeline',
+        `UPDATE sales_pipeline SET stage = 'FULFILLED', next_action = 'REQUEST_REVIEW', reason = ?, updated_at = datetime('now') WHERE journey_id = ?`,
+        [`Fulfillment provisioned via ${input.verificationSource}`, journeyId]
+      );
+    } catch {}
+
+    // 4. Record positive conversion signal in CommercialLearningEngine (skipped/marked diagnostic for test probes)
+    let learningRecorded = false;
+    if (!input.isDiagnostic) {
+      try {
+        const { CommercialLearningEngine } = await import('../commission/commercial-learning-engine.js');
+        const evtType =
+          input.verificationSource === 'HUMAN_VERIFIED_PAYMENT'
+            ? 'BANK_CONFIRMED_CASH'
+            : 'PAYMENT_CAPTURED_PENDING_SETTLEMENT';
+        await CommercialLearningEngine.getInstance().recordCommercialEvent('SECTOR_E_SOFTWARE', {
+          eventId: `fulfill_${refKey}`,
+          eventType: evtType,
+          cashINR: Number(input.amountINR || 0),
+          evidenceRef: taskId,
+          isDiagnostic: false,
+          metadata: {
+            sku: input.sku,
+            verificationSource: input.verificationSource,
+            journeyId
+          }
+        });
+        learningRecorded = true;
+      } catch {}
+    }
+
+    // 5. Emit awaited durable event ORDER_FULFILLED
+    try {
+      await DurableEventBus.emitAsync({
+        eventType: 'ORDER_FULFILLED',
+        organizationId: input.organizationId,
+        businessId: input.businessId,
+        payload: {
+          taskId,
+          journeyId,
+          orderId: input.orderId || null,
+          claimId: input.claimId || null,
+          sku: input.sku,
+          amountINR: Number(input.amountINR || 0),
+          verificationSource: input.verificationSource
+        }
+      });
+    } catch {}
+
+    return {
+      provisioned: true,
+      taskId,
+      journeyId,
+      learningRecorded,
+      stage: 'FULFILLMENT_READY',
+      deliverables
+    };
+  }
 }

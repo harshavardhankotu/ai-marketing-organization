@@ -220,7 +220,7 @@ export class AutonomousRevenueOrchestrator {
         })
       );
 
-      DurableEventBus.emit({
+      await DurableEventBus.emitAsync({
         eventType: 'CYCLE_STARTED',
         organizationId,
         businessId,
@@ -244,7 +244,7 @@ export class AutonomousRevenueOrchestrator {
       const tavilyStatus = quotaStatus.TAVILY;
       console.log(`[ARO] Quota status: Gemini=${geminiStatus?.mode} (${geminiStatus?.remainingAllowance} left), Tavily=${tavilyStatus?.mode} (${tavilyStatus?.remainingAllowance} left)`);
 
-      // Process due durable events
+      // Process due durable events with explicit success vs RETRY_WAIT / DEAD_LETTER handling
       const pendingEvents = isProduction()
         ? await DurableEventBus.claimPendingAsync(organizationId, 10)
         : DurableEventBus.claimPending(organizationId, 10);
@@ -258,9 +258,9 @@ export class AutonomousRevenueOrchestrator {
           }
         } catch (evtErr: any) {
           if (isProduction()) {
-            await DurableEventBus.markProcessedAsync(event.id, 'aro-orchestrator', evtErr.message);
+            await DurableEventBus.markRetryOrDeadLetterAsync(event.id, 'aro-orchestrator', evtErr?.message || 'Event processing error');
           } else {
-            DurableEventBus.markProcessed(event.id, 'aro-orchestrator', evtErr.message);
+            DurableEventBus.markRetryOrDeadLetter(event.id, 'aro-orchestrator', evtErr?.message || 'Event processing error');
           }
           errors.push(`Event ${event.id} failed: ${evtErr.message}`);
         }
@@ -509,7 +509,7 @@ export class AutonomousRevenueOrchestrator {
         cycleId
       );
 
-      DurableEventBus.emit({
+      await DurableEventBus.emitAsync({
         eventType: 'CYCLE_COMPLETED',
         organizationId,
         businessId,
@@ -1317,7 +1317,7 @@ export class AutonomousRevenueOrchestrator {
             WHERE id = ?
           `).run(action.targetId);
 
-          DurableEventBus.emit({
+          await DurableEventBus.emitAsync({
             eventType: 'OFFER_SENT',
             organizationId,
             businessId,
@@ -1620,25 +1620,20 @@ export class AutonomousRevenueOrchestrator {
           };
         }
 
-        // SPEC § 8: Resolve authorized offer and exact server-side price (never arbitrary)
+        // SPEC § 8: Resolve authorized offer strictly from catalog/proposal (never synthesize arbitrary PLATFORM_SETUP / ₹15,000 fallback)
+        const requestedOfferId = (action as any).offerId || ((action as any).metadata?.offerId as string | undefined) || '';
         let authorizedOffer: any;
         try {
-          authorizedOffer = resolveAuthorizedOffer('PLATFORM_SETUP', businessId, organizationId);
-        } catch {
-          authorizedOffer = {
-            offerId: 'PLATFORM_SETUP',
-            offerName: 'AI Inbound Lead Conversion System',
-            description: action.rationale || 'AI Lead Conversion System Setup Fee',
-            priceINR: action.expectedRevenueINR || 15000,
-            billingModel: 'ONE_TIME',
-            currency: 'INR',
-            businessId,
-            organizationId,
-            active: true,
-            deliveryTimeDays: 5,
-            qualificationRequirements: [],
-            paymentProvider: 'RAZORPAY',
-            paymentConfiguration: {}
+          if (!requestedOfferId) {
+            throw new Error('Explicit offerId required for SEND_PAYMENT_REQUEST');
+          }
+          authorizedOffer = resolveAuthorizedOffer(requestedOfferId, businessId, organizationId);
+        } catch (offerErr: any) {
+          return {
+            status: 'BLOCKED_AUTHORIZATION',
+            actionClassification: 'BLOCKED_AUTHORIZATION',
+            isRevenueAction: false,
+            error: `UNRESOLVED_OFFER_AUTHORIZATION: ${offerErr?.message || 'Cannot issue payment link without an explicitly resolved authorized offer.'}`
           };
         }
 
@@ -1716,7 +1711,7 @@ export class AutonomousRevenueOrchestrator {
           }
         }
 
-        DurableEventBus.emit({
+        await DurableEventBus.emitAsync({
           eventType: 'PAYMENT_REQUESTED',
           organizationId,
           businessId,
@@ -1868,7 +1863,7 @@ export class AutonomousRevenueOrchestrator {
 
         // Test mode only
         const externalEventId = `gcal_test_${Date.now()}`;
-        DurableEventBus.emit({
+        await DurableEventBus.emitAsync({
           eventType: 'APPOINTMENT_BOOKED',
           organizationId,
           businessId,
@@ -1913,7 +1908,7 @@ export class AutonomousRevenueOrchestrator {
           WHERE journey_id = ?
         `).run(action.targetId);
 
-        DurableEventBus.emit({
+        await DurableEventBus.emitAsync({
           eventType: 'CUSTOMER_CREATED',
           organizationId,
           businessId,
@@ -1967,7 +1962,7 @@ export class AutonomousRevenueOrchestrator {
         }
 
         if (discResult.count > 0) {
-          DurableEventBus.emit({
+          await DurableEventBus.emitAsync({
             eventType: 'RESEARCH_UPDATED',
             organizationId,
             businessId,

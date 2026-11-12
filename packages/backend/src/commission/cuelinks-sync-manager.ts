@@ -1848,7 +1848,7 @@ export class CuelinksSyncManager {
     }
 
     const campaignsById = new Map<string, any>();
-    const campaignsByRootDomain = new Map<string, any>();
+    const campaignsByRootDomain = new Map<string, any[]>();
     for (const c of activeCampaignRows) {
       const cid = String(c.campaign_id || '').trim();
       const enrichedCamp = {
@@ -1858,8 +1858,10 @@ export class CuelinksSyncManager {
       };
       if (cid) campaignsById.set(cid, enrichedCamp);
       const rootDom = normalizeRootMerchantDomain(String(c.merchant_domain || ''));
-      if (rootDom && !campaignsByRootDomain.has(rootDom)) {
-        campaignsByRootDomain.set(rootDom, enrichedCamp);
+      if (rootDom) {
+        const list = campaignsByRootDomain.get(rootDom) || [];
+        list.push(enrichedCamp);
+        campaignsByRootDomain.set(rootDom, list);
       }
     }
 
@@ -1874,14 +1876,14 @@ export class CuelinksSyncManager {
 
       const dealCid = String(ev.affiliateCampaignId || '').trim();
       const dealRootDomain = normalizeRootMerchantDomain(String(d.product_url || ''));
+      const domainMatches = dealRootDomain ? (campaignsByRootDomain.get(dealRootDomain) || []) : [];
       const matchedCamp =
         (dealCid && campaignsById.get(dealCid)) ||
-        (dealRootDomain && campaignsByRootDomain.get(dealRootDomain)) ||
-        null;
+        (domainMatches.length === 1 ? domainMatches[0] : null);
 
       const currentPriceINR = Number(d.current_price_inr || 0);
       if (!matchedCamp) {
-        const reason = 'CAMPAIGN_NOT_IN_CUELINKS_PAGE';
+        const reason = domainMatches.length > 1 ? 'AMBIGUOUS_DOMAIN_MULTIPLE_CAMPAIGNS' : 'CAMPAIGN_NOT_IN_CUELINKS_PAGE';
         missingPayoutBreakdown[reason] = (missingPayoutBreakdown[reason] || 0) + 1;
         if (ev.missingPayoutReason !== reason && !ev.verifiedCommissionRatePercent) {
           ev.missingPayoutReason = reason;
@@ -1895,7 +1897,29 @@ export class CuelinksSyncManager {
       }
 
       const parsed = parseVerifiedCampaignPayout(matchedCamp, currentPriceINR, d.category ? String(d.category) : undefined);
-      if (parsed.ratePercent !== null || parsed.flatINR !== null) {
+      if (parsed.monetizationModel === 'CPC') {
+        const cpcChanged =
+          ev.monetizationModel !== 'CPC' ||
+          ev.verifiedCpcPayoutINR !== parsed.verifiedCpcPayoutINR ||
+          ev.missingPayoutReason !== 'CPC_OFFLINE_ONLY' ||
+          ev.verifiedCommissionRatePercent != null;
+        ev.affiliateCampaignId = ev.affiliateCampaignId || String(matchedCamp.campaign_id);
+        ev.monetizationModel = 'CPC';
+        ev.verifiedCpcPayoutINR = parsed.verifiedCpcPayoutINR ?? null;
+        delete ev.verifiedCommissionRatePercent;
+        delete ev.verifiedFlatPayoutINR;
+        delete ev.grossCommissionPerApprovedOrderINR;
+        ev.missingPayoutReason = 'CPC_OFFLINE_ONLY';
+        missingPayoutBreakdown['CPC_OFFLINE_ONLY'] = (missingPayoutBreakdown['CPC_OFFLINE_ONLY'] || 0) + 1;
+        if (cpcChanged) {
+          await writeSql(
+            'public_deals',
+            `UPDATE public_deals SET evidence_json = ?, updated_at = datetime('now') WHERE id = ?`,
+            [JSON.stringify(ev), d.id]
+          );
+          syncedPublicDeals++;
+        }
+      } else if (parsed.ratePercent !== null || parsed.flatINR !== null) {
         const changed =
           Number(ev.verifiedCommissionRatePercent) !== Number(parsed.ratePercent) ||
           Number(ev.grossCommissionPerApprovedOrderINR) !== Number(parsed.grossCommissionPerApprovedOrderINR) ||
@@ -1903,6 +1927,7 @@ export class CuelinksSyncManager {
           Boolean(ev.missingPayoutReason);
 
         ev.affiliateCampaignId = ev.affiliateCampaignId || String(matchedCamp.campaign_id);
+        ev.monetizationModel = parsed.monetizationModel || 'CPS';
         if (parsed.ratePercent !== null) ev.verifiedCommissionRatePercent = parsed.ratePercent;
         if (parsed.flatINR !== null) ev.verifiedFlatPayoutINR = parsed.flatINR;
         if (parsed.grossCommissionPerApprovedOrderINR !== null) {

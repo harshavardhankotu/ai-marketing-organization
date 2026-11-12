@@ -1252,9 +1252,11 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
       const liveLane = calculateLaneUnitEconomics({ lane: 'LANE_D_DIGITAL_PRODUCTS', grossRevenueINR: 1000, directCostINR: 0, gatewayFeePercent: 2 });
       expect(liveLane.grossMarginPercent).toBe(98);
 
+      db.prepare('DELETE FROM manual_upi_claims').run();
       const readiness = SystemReadinessEngine.evaluateReadiness('biz_platform_aro');
       expect((readiness.capabilities || {})['STRIPE']).toBeUndefined();
-      expect((readiness.capabilities || {})['DIRECT_UPI']?.verified).toBe(true);
+      expect((readiness.capabilities || {})['DIRECT_UPI']?.operational).toBe(true);
+      expect((readiness.capabilities || {})['DIRECT_UPI']?.verified).toBe(false);
     });
 
     it('Stage I.1 (P0, P1, P2, P6): 24/7 customer-desk resolves catalog offers & escalations, cron status reads cron_telemetry heartbeats, and GET /tools/financial-radar returns HTTP 200', async () => {
@@ -1364,6 +1366,217 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
       expect(sitemapRes.status).toBe(200);
       const sitemapXml = await sitemapRes.text();
       expect(sitemapXml).toContain('/tools/financial-radar');
+    });
+
+    it('Stage I.2 (P0–P6): enforces anti-impersonation provenance, clarification, server-authoritative checkout, verified fulfillment bridge, retry/DLQ, honest DIRECT_UPI, and Concierge widget', async () => {
+      const db = getDb();
+      const { default: app } = await import('../../src/index.js');
+      const { OwnerDigestService } = await import('../../src/revenue/owner-digest.js');
+      const { RazorpayAdapter } = await import('../../src/integrations/razorpay.js');
+      const { DurableEventBus } = await import('../../src/revenue/durable-event-bus.js');
+      const { IntegrationCapabilityRegistry } = await import('../../src/control-plane/integration-capability-registry.js');
+
+      db.prepare('DELETE FROM outreach_suppression_list').run();
+      db.prepare('DELETE FROM demand_signals').run();
+      db.prepare('DELETE FROM manual_upi_claims').run();
+      db.prepare('DELETE FROM delivery_tasks').run();
+      db.prepare('DELETE FROM durable_events').run();
+      db.prepare('DELETE FROM payment_requests').run();
+      db.prepare('DELETE FROM public_deals').run();
+
+      // 1. Seed 2 verified wireless headphone deals for clarification test
+      db.prepare(`
+        INSERT INTO public_deals (
+          id, slug, canonical_slug, sector_code, title, brand, category, merchant,
+          product_url, affiliate_url, current_price_inr, reference_price_inr, discount_percent,
+          availability, deal_kind, product_verified, affiliate_verified, is_monetizable,
+          verification_status, evidence_json, last_verified_at
+        ) VALUES
+        ('deal_i2_hp1', 'sony-wh1000xm5-wireless', 'sony-wh1000xm5-wireless', 'SECTOR_B_ELECTRONICS',
+         'Sony WH-1000XM5 Wireless Headphones', 'Sony', 'Audio & Electronics', 'Amazon India',
+         'https://www.amazon.in/dp/B09XS7JWHH', 'https://linksredirect.com/?pub_id=1&url=https%3A%2F%2Fwww.amazon.in%2Fdp%2FB09XS7JWHH',
+         24990, 34990, 29, 'IN_STOCK', 'PRODUCT_DEAL', 1, 1, 1, 'VERIFIED', '{}', datetime('now')),
+        ('deal_i2_hp2', 'bose-quietcomfort-wireless', 'bose-quietcomfort-wireless', 'SECTOR_B_ELECTRONICS',
+         'Bose QuietComfort Wireless Headphones', 'Bose', 'Audio & Electronics', 'Flipkart',
+         'https://www.flipkart.com/bose-qc/p/itm123', 'https://linksredirect.com/?pub_id=1&url=https%3A%2F%2Fwww.flipkart.com%2Fbose-qc%2Fp%2Fitm123',
+         19990, 29990, 33, 'IN_STOCK', 'PRODUCT_DEAL', 1, 1, 1, 'VERIFIED', '{}', datetime('now'))
+      `).run();
+
+      // P0a: Payload limit (>8KB -> 413)
+      const hugeRes = await app.request('/api/v1/customer-desk/message', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'x'.repeat(8500) })
+      });
+      expect(hugeRes.status).toBe(413);
+
+      // P0b: Anti-impersonation opt-out on unverified public HTTP route must NOT add senderContact to outreach_suppression_list
+      const fakeStopRes = await app.request('/api/v1/customer-desk/message', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: 'STOP messaging me immediately',
+          senderContact: 'victim@business.in',
+          contactChannel: 'WHATSAPP'
+        })
+      });
+      expect(fakeStopRes.status).toBe(200);
+      const fakeStopJson = await fakeStopRes.json() as any;
+      expect(fakeStopJson.provenance).toBe('UNVERIFIED_WEB_CONTACT');
+      expect(fakeStopJson.suppressedScope).toBe('SESSION_ONLY');
+      expect(fakeStopJson.contactSuppressed).toBe(false);
+      const supRows = db.prepare('SELECT * FROM outreach_suppression_list WHERE identifier = ?').all('victim@business.in') as any[];
+      expect(supRows.length).toBe(0);
+
+      // P1: Broad category query triggers CLARIFICATION_NEEDED with top options
+      const clarRes = await app.request('/api/v1/customer-desk/message', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: 'Which wireless headphones do you have right now?'
+        })
+      });
+      expect(clarRes.status).toBe(200);
+      const clarJson = await clarRes.json() as any;
+      expect(clarJson.conversationState).toBe('CLARIFICATION_NEEDED');
+      expect(clarJson.clarificationOptions.length).toBe(2);
+
+      // P2a: End-to-end SiteFix inquiry -> READY_TO_BUY -> OWNED_CHECKOUT_CREATED -> UPI claim (NO fulfillment yet) -> HUMAN_VERIFIED_PAYMENT -> delivery_tasks + FULFILLED
+      const deskSession = 'sess_stage_i2_buyer';
+      const sitefixInquiryRes = await app.request('/api/v1/customer-desk/message', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: deskSession,
+          message: 'Tell me the price for SiteFix Core Fix-Pack',
+          productSlugOrContext: 'sitefix_core_499'
+        })
+      });
+      expect(sitefixInquiryRes.status).toBe(200);
+      const inqJson = await sitefixInquiryRes.json() as any;
+      expect(inqJson.resolvedOffer?.idOrSlug).toBe('sitefix_core_499');
+      expect(inqJson.journeyId).toBeTruthy();
+
+      // Verify first-party demand signal recorded cleanly
+      const sigRow = db.prepare(`SELECT * FROM demand_signals WHERE source_host = 'FIRST_PARTY_CUSTOMER_DESK'`).get() as any;
+      expect(sigRow).toBeTruthy();
+      expect(sigRow.status).toBe('DISCOVERED');
+
+      // Diagnostic probe quarantines its signal & journey
+      await app.request('/api/v1/customer-desk/message', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Diagnostic-Probe': 'true' },
+        body: JSON.stringify({
+          message: 'Diagnostic check for SiteFix audit',
+          productSlugOrContext: 'sitefix_core_499'
+        })
+      });
+      const qSig = db.prepare(`SELECT status FROM demand_signals WHERE status = 'QUARANTINED'`).get() as any;
+      expect(qSig?.status).toBe('QUARANTINED');
+
+      // Turn 2: Ready to buy in same session -> server-authoritative order created in payment_requests
+      const buyOwnedRes = await app.request('/api/v1/customer-desk/message', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: deskSession,
+          message: 'Yes buy now confirm purchase'
+        })
+      });
+      expect(buyOwnedRes.status).toBe(200);
+      const buyOwnedJson = await buyOwnedRes.json() as any;
+      expect(buyOwnedJson.checkout?.checkoutMode).toBe('OWNED_CHECKOUT_CREATED');
+      expect(buyOwnedJson.checkout?.amountINR).toBe(499);
+      expect(buyOwnedJson.checkout?.orderId).toBeTruthy();
+      expect(buyOwnedJson.pipelineStage).toBe('PAYMENT_REQUEST_CREATED');
+
+      // Honest DIRECT_UPI state before human verification
+      const capBefore = IntegrationCapabilityRegistry.evaluateAll({ humanVerifiedUpiReceiptsCount: 0, upiClaimTested: true });
+      const upiBefore = capBefore.integrations.find(i => i.id === 'DIRECT_UPI');
+      expect(upiBefore?.state).not.toBe('OPERATIONALLY_VERIFIED');
+      expect(upiBefore?.subState).toBe('PAYMENT_CLAIM_TESTED');
+
+      // Submit UTR claim (PAYMENT_CLAIMED): MUST NOT auto-provision delivery_tasks
+      const claimRes = await app.request('/api/v1/offer/upi-claim', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderId: buyOwnedJson.checkout.orderId,
+          journeyId: buyOwnedJson.journeyId,
+          utr: '432198765432',
+          payerName: 'Stage I2 Test Buyer'
+        })
+      });
+      expect(claimRes.status).toBe(201);
+      const claimJson = await claimRes.json() as any;
+      const claimId = claimJson.data.claimId;
+      expect(db.prepare('SELECT COUNT(*) as c FROM delivery_tasks').get() as any).toMatchObject({ c: 0 });
+
+      // Owner verifies bank receipt (HUMAN_VERIFIED_PAYMENT) -> fulfills delivery_tasks + FULFILLED journey + DIRECT_UPI OPERATIONALLY_VERIFIED
+      const verifyResult = await new RazorpayAdapter().confirmManualUpiClaim({
+        claimId,
+        utr: '432198765432',
+        businessId: 'biz_platform_aro',
+        organizationId: 'org_owner_primary',
+        amountINR: 499,
+        journeyId: buyOwnedJson.journeyId,
+        ownerUserId: 'usr_owner_01',
+        serviceRendered: 'SiteFix AI Core Technical Fix-Pack'
+      });
+      expect(verifyResult.status).toBe('HUMAN_VERIFIED_PAYMENT');
+      expect(verifyResult.fulfillment?.provisioned).toBe(true);
+      expect(verifyResult.fulfillment?.stage).toBe('FULFILLMENT_READY');
+
+      const delivTask = db.prepare('SELECT * FROM delivery_tasks WHERE id = ?').get(verifyResult.fulfillment.taskId) as any;
+      expect(delivTask?.stage).toBe('FULFILLMENT_READY');
+      const jRow = db.prepare('SELECT stage FROM customer_journeys WHERE id = ?').get(buyOwnedJson.journeyId) as any;
+      expect(jRow?.stage).toBe('FULFILLED');
+
+      const digestAfterVerify = await OwnerDigestService.getInstance().generateDigestAsync();
+      const upiCapAfter = digestAfterVerify.arosControlCenter?.integrationCapabilities?.integrations?.find((i: any) => i.id === 'DIRECT_UPI');
+      expect(upiCapAfter?.subState).toBe('PAYMENT_RECEIPT_HUMAN_VERIFIED');
+      expect(upiCapAfter?.state).toBe('OPERATIONALLY_VERIFIED');
+
+      // P2b: Affiliate deal READY_TO_BUY produces AFFILIATE_REDIRECT_READY
+      const buyDealRes = await app.request('/api/v1/customer-desk/message', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: 'I want to purchase now',
+          productSlugOrContext: 'sony-wh1000xm5-wireless'
+        })
+      });
+      expect(buyDealRes.status).toBe(200);
+      const buyDealJson = await buyDealRes.json() as any;
+      expect(buyDealJson.checkout?.checkoutMode).toBe('AFFILIATE_REDIRECT_READY');
+      expect(buyDealJson.checkout?.clickId).toBeTruthy();
+      expect(buyDealJson.checkout?.redirectUrl).toContain('/api/v1/public/deals/sony-wh1000xm5-wireless/redirect');
+
+      // P4: DurableEventBus retry -> RETRY_WAIT (attempts 1..2) -> DEAD_LETTER (attempt 3, surfaced in OwnerDigest)
+      const evtId = await DurableEventBus.emitAsync({
+        eventType: 'NEW_LEAD',
+        organizationId: 'org_owner_primary',
+        businessId: 'biz_platform_aro',
+        payload: { test: true }
+      });
+      const r1 = DurableEventBus.markRetryOrDeadLetter(evtId, 'aro-orchestrator', 'Transient timeout 1');
+      expect(r1).toEqual({ status: 'RETRY_WAIT', attempts: 1 });
+      const r2 = DurableEventBus.markRetryOrDeadLetter(evtId, 'aro-orchestrator', 'Transient timeout 2');
+      expect(r2).toEqual({ status: 'RETRY_WAIT', attempts: 2 });
+      const r3 = DurableEventBus.markRetryOrDeadLetter(evtId, 'aro-orchestrator', 'Fatal error 3');
+      expect(r3).toEqual({ status: 'DEAD_LETTER', attempts: 3 });
+
+      const dlqDigest = await OwnerDigestService.getInstance().generateDigestAsync();
+      expect(dlqDigest.arosControlCenter?.scheduledExecutionTruth?.deadLetterEventsCount).toBe(1);
+
+      // P6: Concierge widget present on /, /deals, and /tools/site-audit
+      for (const routePath of ['/', '/deals', '/tools/site-audit']) {
+        const htmlRes = await app.request(routePath);
+        expect(htmlRes.status).toBe(200);
+        const bodyHtml = await htmlRes.text();
+        expect(bodyHtml).toContain('aros-desk-root');
+        expect(bodyHtml).toContain('/api/v1/customer-desk/message');
+      }
     });
   });
 });

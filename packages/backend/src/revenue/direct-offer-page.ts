@@ -18,6 +18,7 @@ import { isProduction, resolveVerificationTokens } from '../config/env.js';
 import { getDb } from '../db/client.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { OwnerAuthService } from '../auth/owner-auth.js';
+import { renderCustomerDeskWidgetHtml } from './customer-desk-widget.js';
 
 export function computeOwnOfferHash(customFilePath?: string): string | null {
   try {
@@ -737,6 +738,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
       }
     }
   </script>
+  ${renderCustomerDeskWidgetHtml()}
 </body>
 </html>`;
   }
@@ -1216,6 +1218,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
       }
     }
   </script>
+  ${renderCustomerDeskWidgetHtml()}
 </body>
 </html>`;
   }

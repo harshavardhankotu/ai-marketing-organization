@@ -1614,8 +1614,13 @@ export class AutomationRegistryEngine {
         }
 
         const syncMgr = CuelinksSyncManager.getInstance(client);
-        // Consolidate provider operations: run reconciliation & channel sync, delegating offer ingestion to deal discovery engine
+        // Consolidate provider operations: run reconciliation & channel sync + hydrate missing campaign payouts
         const syncRes = await syncMgr.syncCuelinks('org_owner_primary', 'biz_platform_aro', { skipOfferFetch: true, reconciliationOnly: true });
+        try {
+          await syncMgr.hydrateMissingCampaignPayoutsD1('org_owner_primary', 'biz_platform_aro', 100);
+        } catch (hydErr: any) {
+          console.warn(`[AffiliateReconciliation] Cuelinks payout hydration notice: ${hydErr?.message}`);
+        }
 
         // Stage D + Market Arbitrage: Reconcile existing deal candidates via live Cuelinks conversion
         // and refresh published buyer guides + /sitemap.xml / feeds.json pings
