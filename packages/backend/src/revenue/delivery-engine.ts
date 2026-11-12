@@ -394,8 +394,10 @@ export class DeliveryEngine {
     }
     if (!journeyId && input.orderId) {
       try {
-        const payReq = await runQueryOne('payment_requests', 'SELECT journey_id, prospect_id FROM payment_requests WHERE id = ? OR reference_id = ?', [input.orderId, input.orderId]);
-        const cand = payReq?.journey_id || payReq?.prospect_id;
+        const payReq = useD1
+          ? await runQueryOne('payment_requests', 'SELECT lead_id, prospect_id FROM payment_requests WHERE id = ? OR reference_id = ?', [input.orderId, input.orderId])
+          : await runQueryOne('payment_requests', 'SELECT journey_id, prospect_id FROM payment_requests WHERE id = ? OR reference_id = ?', [input.orderId, input.orderId]);
+        const cand = payReq?.journey_id || payReq?.lead_id || payReq?.prospect_id;
         if (cand) {
           const jRow = await runQueryOne('customer_journeys', 'SELECT id FROM customer_journeys WHERE id = ? OR visitor_id = ?', [cand, cand]);
           if (jRow?.id) journeyId = String(jRow.id);

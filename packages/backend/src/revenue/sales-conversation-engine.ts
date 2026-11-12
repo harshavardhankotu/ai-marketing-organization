@@ -672,7 +672,7 @@ export class SalesConversationEngine {
     }
 
     // 2. Purchase / payment readiness
-    if (/ready to (buy|proceed|move forward|purchase)|confirm purchase|confirm order|yes[ ,]+buy|proceed to pay|pay now|buy now|checkout|send payment link|how do i pay|i want to purchase|send invoice|i accept|proceed with booking|book my slot|send payment/.test(lower)) {
+    if (/ready to (buy|proceed|move forward|purchase)|want to (buy|order|purchase)|buy (this|it|the)|order (this|it|now)|grab (this|it)|i'?ll take it|confirm purchase|confirm order|yes[ ,]+buy|proceed to pay|pay now|buy now|checkout|send payment link|how do i pay|send invoice|i accept|proceed with booking|book my slot|send payment/.test(lower)) {
       return 'READY_TO_BUY';
     }
 
@@ -1241,28 +1241,62 @@ export class SalesConversationEngine {
       const upiDeepLink = `upi://pay?pa=${encodeURIComponent(upiId)}&pn=${encodeURIComponent('AI Marketing Organization')}&am=${amountINR}&cu=INR&tn=${encodeURIComponent(orderId)}`;
       const checkoutUrl = `${offer.offerPath}${offer.offerPath.includes('?') ? '&' : '?'}orderId=${encodeURIComponent(orderId)}`;
 
-      await this.safeExecWrite(
-        'payment_requests',
-        `INSERT INTO payment_requests (
-          id, business_id, organization_id, journey_id, offer_id, offer_description,
-          amount_inr, currency, billing_model, payment_link, short_url, status,
-          classification, provider, reference_id, is_test, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'INR', 'ONE_TIME', ?, ?, 'PAYMENT_PENDING', ?, 'DIRECT_UPI', ?, ?, datetime('now'), datetime('now'))`,
-        [
-          orderId,
-          event.businessId,
-          event.organizationId,
-          journeyId || null,
-          offer.idOrSlug,
-          offer.title,
-          amountINR,
-          upiDeepLink,
-          checkoutUrl,
-          event.isDiagnosticProbe ? 'TEST' : 'REAL',
-          orderId,
-          event.isDiagnosticProbe ? 1 : 0
-        ]
-      );
+      const useD1 = isProduction() && !process.env.VITEST;
+      const d1InsertSql = `INSERT INTO payment_requests (
+        id, business_id, organization_id, lead_id, offer_id, offer_description,
+        amount_inr, currency, billing_model, payment_link_url, short_url, status,
+        classification, provider, reference_id, is_test, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'INR', 'ONE_TIME', ?, ?, 'PAYMENT_PENDING', ?, 'DIRECT_UPI', ?, ?, datetime('now'), datetime('now'))`;
+      const d1InsertParams = [
+        orderId,
+        event.businessId,
+        event.organizationId,
+        journeyId || sessionId,
+        offer.idOrSlug,
+        offer.title,
+        amountINR,
+        upiDeepLink,
+        checkoutUrl,
+        event.isDiagnosticProbe ? 'TEST' : 'REAL',
+        orderId,
+        event.isDiagnosticProbe ? 1 : 0
+      ];
+
+      if (useD1) {
+        // Production Cloudflare D1 (0002_core_production_schema.sql) uses lead_id & payment_link_url
+        await this.safeExecWrite('payment_requests', d1InsertSql, d1InsertParams);
+      } else {
+        try {
+          await this.safeExecWrite(
+            'payment_requests',
+            `INSERT INTO payment_requests (
+              id, business_id, organization_id, journey_id, offer_id, offer_description,
+              amount_inr, currency, billing_model, payment_link, short_url, status,
+              classification, provider, reference_id, is_test, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'INR', 'ONE_TIME', ?, ?, 'PAYMENT_PENDING', ?, 'DIRECT_UPI', ?, ?, datetime('now'), datetime('now'))`,
+            [
+              orderId,
+              event.businessId,
+              event.organizationId,
+              journeyId || null,
+              offer.idOrSlug,
+              offer.title,
+              amountINR,
+              upiDeepLink,
+              checkoutUrl,
+              event.isDiagnosticProbe ? 'TEST' : 'REAL',
+              orderId,
+              event.isDiagnosticProbe ? 1 : 0
+            ]
+          );
+        } catch (localErr: any) {
+          if (String(localErr?.message || '').includes('no such column: journey_id')) {
+            await this.safeExecWrite('payment_requests', d1InsertSql, d1InsertParams);
+          } else {
+            throw localErr;
+          }
+        }
+      }
 
       return {
         checkout: {
