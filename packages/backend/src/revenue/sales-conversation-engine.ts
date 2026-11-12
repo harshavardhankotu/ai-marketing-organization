@@ -829,29 +829,61 @@ export class SalesConversationEngine {
           at: new Date().toISOString()
         }
       ]);
+      const insertWithoutOrgSql = `INSERT INTO customer_journeys (
+        id, business_id, visitor_id, customer_name, customer_phone, customer_email,
+        stage, first_touch_channel, last_touch_channel, touchpoints_json,
+        classification, attribution_status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'LEAD', ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`;
+      const insertWithoutOrgParams = [
+        journeyId,
+        event.businessId,
+        sessionId,
+        event.senderName ? event.senderName.slice(0, 120) : null,
+        phoneVal,
+        emailVal,
+        event.channel,
+        event.channel,
+        initTouchpoints,
+        classification,
+        isVerifiedChannel ? 'VERIFIED' : provenance
+      ];
       try {
-        await this.safeExecWrite(
-          'customer_journeys',
-          `INSERT INTO customer_journeys (
-            id, organization_id, business_id, visitor_id, customer_name, customer_phone, customer_email,
-            stage, first_touch_channel, last_touch_channel, touchpoints_json,
-            classification, attribution_status, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'LEAD', ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
-          [
-            journeyId,
-            event.organizationId,
-            event.businessId,
-            sessionId,
-            event.senderName ? event.senderName.slice(0, 120) : null,
-            phoneVal,
-            emailVal,
-            event.channel,
-            event.channel,
-            initTouchpoints,
-            classification,
-            isVerifiedChannel ? 'VERIFIED' : provenance
-          ]
-        );
+        if (useD1) {
+          // Production Cloudflare D1 (0002_core_production_schema.sql) omits organization_id on customer_journeys
+          await this.safeExecWrite('customer_journeys', insertWithoutOrgSql, insertWithoutOrgParams);
+        } else {
+          // Local SQLite schema.ts defines organization_id NOT NULL on customer_journeys
+          try {
+            await this.safeExecWrite(
+              'customer_journeys',
+              `INSERT INTO customer_journeys (
+                id, organization_id, business_id, visitor_id, customer_name, customer_phone, customer_email,
+                stage, first_touch_channel, last_touch_channel, touchpoints_json,
+                classification, attribution_status, created_at, updated_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, 'LEAD', ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+              [
+                journeyId,
+                event.organizationId,
+                event.businessId,
+                sessionId,
+                event.senderName ? event.senderName.slice(0, 120) : null,
+                phoneVal,
+                emailVal,
+                event.channel,
+                event.channel,
+                initTouchpoints,
+                classification,
+                isVerifiedChannel ? 'VERIFIED' : provenance
+              ]
+            );
+          } catch (localErr: any) {
+            if (String(localErr?.message || '').includes('no such column: organization_id')) {
+              await this.safeExecWrite('customer_journeys', insertWithoutOrgSql, insertWithoutOrgParams);
+            } else {
+              throw localErr;
+            }
+          }
+        }
       } catch (err: any) {
         if (useD1) throw err;
       }

@@ -394,8 +394,8 @@ export class DeliveryEngine {
     }
     if (!journeyId && input.orderId) {
       try {
-        const payReq = await runQueryOne('payment_requests', 'SELECT lead_id, prospect_id FROM payment_requests WHERE id = ? OR reference_id = ?', [input.orderId, input.orderId]);
-        const cand = payReq?.lead_id || payReq?.prospect_id;
+        const payReq = await runQueryOne('payment_requests', 'SELECT journey_id, prospect_id FROM payment_requests WHERE id = ? OR reference_id = ?', [input.orderId, input.orderId]);
+        const cand = payReq?.journey_id || payReq?.prospect_id;
         if (cand) {
           const jRow = await runQueryOne('customer_journeys', 'SELECT id FROM customer_journeys WHERE id = ? OR visitor_id = ?', [cand, cand]);
           if (jRow?.id) journeyId = String(jRow.id);
@@ -404,14 +404,25 @@ export class DeliveryEngine {
     }
     if (!journeyId) {
       journeyId = `cj_ord_${refKey}`;
-      await runWrite(
-        'customer_journeys',
-        `INSERT OR IGNORE INTO customer_journeys (
-          id, business_id, visitor_id, stage, first_touch_channel, last_touch_channel,
-          conversion_probability, total_lifetime_value_inr, classification, created_at, updated_at
-        ) VALUES (?, ?, ?, 'FULFILLED', 'WEB_DESK', 'PAYMENT_VERIFIED', 1.0, ?, 'REAL', datetime('now'), datetime('now'))`,
-        [journeyId, input.businessId, `visitor_${refKey}`, Number(input.amountINR || 0)]
-      );
+      if (useD1) {
+        await runWrite(
+          'customer_journeys',
+          `INSERT OR IGNORE INTO customer_journeys (
+            id, business_id, visitor_id, stage, first_touch_channel, last_touch_channel,
+            total_lifetime_value_inr, classification, created_at, updated_at
+          ) VALUES (?, ?, ?, 'FULFILLED', 'WEB_DESK', 'PAYMENT_VERIFIED', ?, 'REAL', datetime('now'), datetime('now'))`,
+          [journeyId, input.businessId, `visitor_${refKey}`, Number(input.amountINR || 0)]
+        );
+      } else {
+        await runWrite(
+          'customer_journeys',
+          `INSERT OR IGNORE INTO customer_journeys (
+            id, organization_id, business_id, visitor_id, stage, first_touch_channel, last_touch_channel,
+            total_lifetime_value_inr, classification, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, 'FULFILLED', 'WEB_DESK', 'PAYMENT_VERIFIED', ?, 'REAL', datetime('now'), datetime('now'))`,
+          [journeyId, input.organizationId, input.businessId, `visitor_${refKey}`, Number(input.amountINR || 0)]
+        );
+      }
     }
 
     // 2. Idempotently insert delivery_tasks record (never overwrites if already created)
