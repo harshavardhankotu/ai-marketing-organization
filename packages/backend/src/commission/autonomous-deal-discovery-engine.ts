@@ -115,7 +115,7 @@ export function parseVerifiedCampaignPayout(
   flatINR: number | null;
   grossCommissionPerApprovedOrderINR: number | null;
   verifiedCpcPayoutINR?: number | null;
-  missingPayoutReason?: 'CAMPAIGN_NOT_IN_CUELINKS_PAGE' | 'ZERO_PAYOUT_REPORTED' | 'CPC_OFFLINE_ONLY' | 'AMBIGUOUS_DOMAIN_MULTIPLE_CAMPAIGNS' | null;
+  missingPayoutReason?: 'CAMPAIGN_NOT_IN_CUELINKS_PAGE' | 'ZERO_PAYOUT_REPORTED' | 'CPC_OFFLINE_ONLY' | 'AMBIGUOUS_DOMAIN' | null;
 } {
   if (!campaign || typeof campaign !== 'object') {
     return {
@@ -4595,8 +4595,32 @@ export class AutonomousDealDiscoveryEngine {
             affiliate_verified = excluded.affiliate_verified,
             updated_at = datetime('now')
         `;
+        // Stage I.2-A: Accumulate up to 10 price observations in public_deals.evidence_json.priceHistory
+        const observedAt = deal.lastCheckedAt || deal.lastVerifiedAt || new Date().toISOString();
+        let priorEvidence: any = {};
+        try {
+          const existingRow = await this.d1Repo.queryOne<any>(
+            'public_deals',
+            'SELECT evidence_json FROM public_deals WHERE id = ?',
+            [deal.id]
+          );
+          if (existingRow?.evidence_json) {
+            priorEvidence = typeof existingRow.evidence_json === 'string'
+              ? JSON.parse(existingRow.evidence_json || '{}')
+              : existingRow.evidence_json;
+          }
+        } catch {}
+
+        const mergedHistory = this.appendPriceHistory(
+          priorEvidence?.priceHistory || deal.evidenceJson?.priceHistory,
+          Number(deal.currentPriceINR || 0),
+          observedAt
+        );
         const evidence = {
+          ...priorEvidence,
           ...(deal.evidenceJson || {}),
+          priceHistory: mergedHistory,
+          hasVerifiedPriceDrop: this.hasVerifiedPriceDrop(mergedHistory, Number(deal.currentPriceINR || 0)),
           affiliateCampaignId: deal.affiliateCampaignId,
           affiliateNetwork: deal.affiliateNetwork,
           arbitrageScore: deal.arbitrageScore,
@@ -4842,10 +4866,51 @@ export class AutonomousDealDiscoveryEngine {
     return deal;
   }
 
+  public appendPriceHistory(
+    existingHistory: unknown,
+    currentPriceINR: number,
+    observedAt: string
+  ): Array<{ priceINR: number; observedAt: string }> {
+    const normalized: Array<{ priceINR: number; observedAt: string }> = Array.isArray(existingHistory)
+      ? existingHistory
+          .map((item: any) => ({
+            priceINR: Number(item?.priceINR ?? item?.price ?? 0),
+            observedAt: String(item?.observedAt || '').trim(),
+          }))
+          .filter(item => Number.isFinite(item.priceINR) && item.priceINR > 0 && item.observedAt.length > 0)
+      : [];
+    if (Number.isFinite(currentPriceINR) && currentPriceINR > 0 && observedAt) {
+      const last = normalized[normalized.length - 1];
+      if (!last || last.priceINR !== currentPriceINR || last.observedAt !== observedAt) {
+        normalized.push({ priceINR: currentPriceINR, observedAt });
+      }
+    }
+    return normalized.slice(-10);
+  }
+
+  public hasVerifiedPriceDrop(priceHistory: unknown, currentPriceINR: number): boolean {
+    if (!Array.isArray(priceHistory) || priceHistory.length < 2 || !(currentPriceINR > 0)) {
+      return false;
+    }
+    // Prior observations exclude the latest entry if it matches currentPriceINR at the tail
+    const prior = priceHistory.slice(0, -1);
+    return prior.some((entry: any) => {
+      const prevPrice = Number(entry?.priceINR ?? entry?.price ?? 0);
+      return Number.isFinite(prevPrice) && prevPrice > currentPriceINR;
+    });
+  }
+
   public parseDealFromPublicDealsRow(row: any): NormalizedDeal | null {
     if (!row) return null;
     try {
       const evidence = typeof row.evidence_json === 'string' ? JSON.parse(row.evidence_json || '{}') : (row.evidence_json || {});
+      const priceHistory = this.appendPriceHistory(
+        evidence.priceHistory,
+        Number(row.current_price_inr || 0),
+        String(row.last_verified_at || row.updated_at || row.created_at || '')
+      );
+      evidence.priceHistory = priceHistory;
+      evidence.hasVerifiedPriceDrop = this.hasVerifiedPriceDrop(priceHistory, Number(row.current_price_inr || 0));
       const parsed: NormalizedDeal = {
         id: row.id,
         slug: row.slug,

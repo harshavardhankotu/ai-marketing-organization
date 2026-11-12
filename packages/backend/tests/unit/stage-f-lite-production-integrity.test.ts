@@ -1497,6 +1497,7 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
       expect(upiBefore?.subState).toBe('PAYMENT_CLAIM_TESTED');
 
       // Submit UTR claim (PAYMENT_CLAIMED): MUST NOT auto-provision delivery_tasks
+      try { db.prepare(`DELETE FROM durable_rate_limits WHERE route LIKE '%upi-claim%'`).run(); } catch {}
       const claimRes = await app.request('/api/v1/offer/upi-claim', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1577,6 +1578,125 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
         expect(bodyHtml).toContain('aros-desk-root');
         expect(bodyHtml).toContain('/api/v1/customer-desk/message');
       }
+    });
+
+    it('Stage I.2-A: enforces private tokenised audits, authoritative pricing/UPI env gates, durable emit status, and honest price-history HTML', async () => {
+      const db = getDb();
+      const { default: app } = await import('../../src/index.js');
+      const { SiteAuditService } = await import('../../src/tools/site-audit/site-audit-service.js');
+      const { StaticSiteGenerator } = await import('../../src/commission/static-site-generator.js');
+      const { AutonomousDealDiscoveryEngine } = await import('../../src/commission/autonomous-deal-discovery-engine.js');
+      const { DurableEventBus } = await import('../../src/revenue/durable-event-bus.js');
+      const { getSiteAuditFixpackPriceINR, getDirectUpiConfig } = await import('../../src/config/env.js');
+
+      // 1. Item 1: Unconsented third-party SMB audits revoked, hidden from sitemap, 404 without token, 200 noindex with valid HMAC token
+      db.prepare(`
+        INSERT OR REPLACE INTO site_audits (
+          domain, target_url, business_name, performance_score, seo_score,
+          core_web_vitals_json, checklist_json, is_publicly_authorized, status
+        ) VALUES (
+          'attagalatta.com', 'https://attagalatta.com', 'Atta Galatta', 62, 74,
+          '{}', '[{"id":"schema_jsonld_present","status":"ISSUE","severity":"HIGH"}]', 1, 'COMPLETED'
+        )
+      `).run();
+
+      const auditSvc = SiteAuditService.getInstance();
+      const rev = await auditSvc.reconcileUnauthorizedThirdPartyAudits();
+      expect(rev.domains).toContain('attagalatta.com');
+
+      const domains = await auditSvc.getAllAuditedDomains();
+      expect(domains).not.toContain('attagalatta.com');
+
+      const sitemapRes = await app.request('/sitemap.xml');
+      const sitemapXml = await sitemapRes.text();
+      expect(sitemapXml).not.toContain('/audit/attagalatta.com');
+
+      const unauthAuditRes = await app.request('/audit/attagalatta.com');
+      expect(unauthAuditRes.status).toBe(404);
+      expect(unauthAuditRes.headers.get('X-Robots-Tag')).toContain('noindex');
+
+      const badTokenRes = await app.request('/audit/attagalatta.com?token=invalid_token_123');
+      expect(badTokenRes.status).toBe(404);
+
+      const validToken = auditSvc.generateAuditPreviewToken('attagalatta.com');
+      const tokenAuditRes = await app.request(`/audit/attagalatta.com?token=${validToken}`);
+      expect(tokenAuditRes.status).toBe(200);
+      expect(tokenAuditRes.headers.get('X-Robots-Tag')).toContain('noindex');
+      const tokenHtml = await tokenAuditRes.text();
+      expect(tokenHtml).toContain('<meta name="robots" content="noindex, nofollow">');
+      expect(tokenHtml).toContain('attagalatta.com');
+
+      // 2. Item 3 & 8: Non-Vitest env helpers fail closed when unset
+      expect(getSiteAuditFixpackPriceINR({} as NodeJS.ProcessEnv)).toBeNull();
+      expect(getSiteAuditFixpackPriceINR({ SITE_AUDIT_FIXPACK_PRICE_INR: '499' } as NodeJS.ProcessEnv)).toBe(499);
+      expect(getDirectUpiConfig({} as NodeJS.ProcessEnv)).toEqual({ vpa: null, payeeName: null, configured: false });
+      expect(getDirectUpiConfig({ DIRECT_UPI_VPA: 'test@upi', DIRECT_UPI_PAYEE_NAME: 'Test Org' } as NodeJS.ProcessEnv)).toEqual({
+        vpa: 'test@upi',
+        payeeName: 'Test Org',
+        configured: true,
+      });
+
+      // 3. Item 5: DurableEventBus.emitWithPersistenceAsync returns { persisted: false } on failure
+      const d1Repo = D1RevenueRepository.getInstance();
+      const syncSpy = vi.spyOn(d1Repo, 'executeSync').mockImplementationOnce(() => {
+        throw new Error('SIMULATED_D1_WRITE_FAILURE');
+      });
+      const emitFail = await DurableEventBus.emitWithPersistenceAsync({
+        eventType: 'NEW_LEAD',
+        organizationId: 'org_owner_primary',
+        businessId: 'biz_platform_aro',
+        payload: { probe: true }
+      });
+      syncSpy.mockRestore();
+      expect(emitFail.persisted).toBe(false);
+      expect(emitFail.error).toContain('SIMULATED_D1_WRITE_FAILURE');
+
+      // 4. Item 9: Price-history tracking + honest HTML on /, /deals, and /deals/:slug
+      const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
+      const hist1 = dealEngine.appendPriceHistory([], 29990, '2026-11-10T09:00:00.000Z');
+      const hist2 = dealEngine.appendPriceHistory(hist1, 24990, '2026-11-12T09:00:00.000Z');
+      expect(hist2.length).toBe(2);
+      expect(dealEngine.hasVerifiedPriceDrop(hist1, 29990)).toBe(false);
+      expect(dealEngine.hasVerifiedPriceDrop(hist2, 24990)).toBe(true);
+
+      const ssg = StaticSiteGenerator.getInstance();
+      const dealWithDrop = {
+        id: 'deal_drop_1',
+        slug: 'sony-drop-test',
+        canonicalSlug: 'sony-drop-test',
+        title: 'Sony WH-1000XM5 Headphones',
+        brand: 'Sony',
+        merchant: 'Amazon India',
+        category: 'Audio',
+        productUrl: 'https://www.amazon.in/dp/B09XS7JWHH',
+        currentPriceINR: 24990,
+        referencePriceINR: 34990,
+        verifiedDiscountPercent: 29,
+        arbitrageScore: 88.5,
+        discountBadge: '29% OFF',
+        availability: 'IN_STOCK',
+        verificationStatus: 'VERIFIED',
+        lastVerifiedAt: '2026-11-12T09:00:00.000Z',
+        evidenceJson: { priceHistory: hist2, hasVerifiedPriceDrop: true }
+      };
+
+      const dealsHtml = ssg.renderDealsHtml([dealWithDrop], testConfig);
+      expect(dealsHtml.toLowerCase()).not.toContain('arbitrage');
+      expect(dealsHtml.toLowerCase()).not.toContain('undervalued');
+      expect(dealsHtml).not.toContain('29% OFF');
+      expect(dealsHtml).toContain('Merchant Listed MRP');
+      expect(dealsHtml).toContain('Verified Price Drop');
+      expect(dealsHtml).toContain('2026-11-12T09:00:00.000Z');
+
+      const detailHtml = ssg.renderDealDetailHtml(dealWithDrop, [], testConfig);
+      expect(detailHtml.toLowerCase()).not.toContain('arbitrage');
+      expect(detailHtml.toLowerCase()).not.toContain('undervalued');
+      expect(detailHtml).not.toContain('29% OFF');
+      expect(detailHtml).toContain('Merchant Listed MRP');
+      expect(detailHtml).toContain('Verified Price Drop');
+
+      const homeHtml = await (await app.request('/')).text();
+      expect(homeHtml.toLowerCase()).not.toContain('undervalued');
     });
   });
 });

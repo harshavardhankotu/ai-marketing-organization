@@ -745,7 +745,8 @@ app.get('/guides/:slug', async (c) => {
 
 // Top-level public /audit/:domain scorecard route
 app.get('/audit/:domain', async (c) => {
-  return app.request(`/api/v1/audit/${c.req.param('domain')}`, {
+  const search = new URL(c.req.url).search || '';
+  return app.request(`/api/v1/audit/${c.req.param('domain')}${search}`, {
     method: 'GET',
     headers: c.req.raw.headers
   });
@@ -1340,15 +1341,51 @@ export async function startServer(): Promise<any> {
   // 4. Autonomous scheduling powered by durable Cloudflare D1 queue & Worker heartbeat (Spec V4.1 Phase 1 & 2)
   console.log('[Durable Queue] Background operations scheduled via Cloudflare D1 queue (Two daily IST commercial runs: 09:00 & 21:00 IST).');
 
-  // Stage I.2 Rule 1: Execute once non-blocking 5s after boot — recover stale/blocked queue jobs & hydrate Cuelinks payouts autonomously
+  // Stage I.2 / I.2-A: Execute once non-blocking 5s after boot — revoke unconsented third-party audits, recover stale/blocked queue jobs, drain due jobs, & hydrate Cuelinks payouts autonomously
   if (!process.env.VITEST && process.env.NODE_ENV !== 'test') {
     const bootRecoveryTimer = setTimeout(async () => {
       try {
-        const { DurableJobQueue } = await import('./automation/durable-job-queue.js');
-        const rec = await DurableJobQueue.getInstance().recoverStaleAndBlockedJobs();
-        console.log('[Startup Self-Heal] Queue recovery completed:', JSON.stringify(rec));
+        const { SiteAuditService } = await import('./tools/site-audit/site-audit-service.js');
+        const auditRevoke = await SiteAuditService.getInstance().reconcileUnauthorizedThirdPartyAudits();
+        console.log('[Startup Self-Heal] Unauthorized audit reconciliation:', JSON.stringify(auditRevoke));
       } catch (err: any) {
-        console.warn('[Startup Self-Heal] Queue recovery notice:', err?.message);
+        console.warn('[Startup Self-Heal] Unauthorized audit reconciliation notice:', err?.message);
+      }
+      try {
+        const { DurableJobQueue } = await import('./automation/durable-job-queue.js');
+        const { AutomationRegistryEngine } = await import('./automation/automation-registry-engine.js');
+        const queue = DurableJobQueue.getInstance();
+        const rec = await queue.recoverStaleAndBlockedJobs();
+        console.log('[Startup Self-Heal] Queue recovery completed:', JSON.stringify(rec));
+
+        // Drain overdue/due queued jobs on boot (bounded to 25 jobs / 20s) so overdueCount converges to 0
+        const engine = AutomationRegistryEngine.getInstance();
+        const startMs = Date.now();
+        let drained = 0;
+        while (drained < 25 && (Date.now() - startMs) < 20000) {
+          const claimed = await queue.claimDueJob('boot_self_heal', 90);
+          if (!claimed) break;
+          const remaining = Math.max(3000, 20000 - (Date.now() - startMs));
+          const execResult = await engine.executeWorkflow(claimed.workflowId, 'CLOUDFLARE_CRON', remaining);
+          if (
+            execResult.status === 'COMPLETED' ||
+            execResult.status === 'COMPLETED_WITH_FINDINGS' ||
+            execResult.status === 'COMPLETED_NO_FINDINGS' ||
+            execResult.status === 'NO_ACTION_DUE'
+          ) {
+            await queue.completeJob(claimed.id, execResult.status, execResult.resultSummary, claimed.leaseToken || undefined);
+          } else if (execResult.status === 'PARTIAL' || execResult.status === 'BLOCKED') {
+            await queue.completeJob(claimed.id, execResult.status, execResult.resultSummary, claimed.leaseToken || undefined);
+          } else {
+            await queue.failAttempt(claimed.id, execResult.errorMessage || execResult.status, true, undefined, claimed.leaseToken || undefined);
+          }
+          drained++;
+        }
+        if (drained > 0) {
+          console.log(`[Startup Self-Heal] Drained ${drained} due jobs on boot.`);
+        }
+      } catch (err: any) {
+        console.warn('[Startup Self-Heal] Queue recovery/drain notice:', err?.message);
       }
       try {
         const { CuelinksSyncManager } = await import('./commission/cuelinks-sync-manager.js');

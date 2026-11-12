@@ -1547,6 +1547,10 @@ apiRouter.post('/cron/ping', async (c) => {
   if (!process.env.VITEST) {
     void (async () => {
       try {
+        const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
+        await SiteAuditService.getInstance().reconcileUnauthorizedThirdPartyAudits();
+      } catch {}
+      try {
         const { CuelinksSyncManager } = await import('../commission/cuelinks-sync-manager.js');
         await CuelinksSyncManager.getInstance().hydrateMissingCampaignPayoutsD1('org_owner_primary', 'biz_platform_aro', 100);
       } catch {}
@@ -1711,6 +1715,10 @@ apiRouter.post('/cron/worker/claim-and-run', async (c) => {
   } catch {}
   if (!process.env.VITEST) {
     void (async () => {
+      try {
+        const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
+        await SiteAuditService.getInstance().reconcileUnauthorizedThirdPartyAudits();
+      } catch {}
       try {
         const { CuelinksSyncManager } = await import('../commission/cuelinks-sync-manager.js');
         await CuelinksSyncManager.getInstance().hydrateMissingCampaignPayoutsD1('org_owner_primary', 'biz_platform_aro', 100);
@@ -7833,9 +7841,29 @@ apiRouter.get('/audit/:domain', async (c) => {
     const auditData = await auditService.getAuditByDomain(cleanDomain);
 
     if (auditData) {
+      const previewToken = String(c.req.query('token') || '').trim();
+      const hasConsent = auditService.hasRecordedAuditConsent(auditData);
+      const hasValidToken = previewToken
+        ? auditService.verifyAuditPreviewToken(cleanDomain, previewToken)
+        : false;
+
+      if (!hasConsent && !hasValidToken) {
+        c.header('X-Robots-Tag', 'noindex, nofollow');
+        return c.html(
+          `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="robots" content="noindex, nofollow"><title>Audit Not Found</title></head><body><h1>404 — Private or Unauthorized Audit</h1><p>This audit report is not publicly published. Owners may access their private preview via a signed preview token.</p></body></html>`,
+          404
+        );
+      }
+
       const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
       const crossPromo = await dealEngine.getEligiblePublicDeals({ limit: 3 });
-      const html = StaticSiteGenerator.getInstance().renderAuditHtml(auditData, config, crossPromo.deals);
+      const renderInput = hasConsent
+        ? auditData
+        : { ...auditData, is_publicly_authorized: 0 };
+      const html = StaticSiteGenerator.getInstance().renderAuditHtml(renderInput, config, crossPromo.deals);
+      if (!hasConsent) {
+        c.header('X-Robots-Tag', 'noindex, nofollow');
+      }
       return c.html(html);
     }
   } catch (err: any) {

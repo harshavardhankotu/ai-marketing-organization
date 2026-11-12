@@ -1001,7 +1001,7 @@ describe('Stage D & Stage E — Autonomous Daily Deals and Production Conversion
       const okRes = await app.request('/deals/boat-lunar-connect-2-ssr');
       expect(okRes.status).toBe(200);
       const okHtml = await okRes.text();
-      expect(okHtml).toContain('<title>boAt Lunar Connect 2 Smartwatch — ₹1,499 (77% OFF Verified Deal) | #Ad</title>');
+      expect(okHtml).toContain('<title>boAt Lunar Connect 2 Smartwatch — ₹1,499 (Observed Merchant Price) | #Ad</title>');
       expect(okHtml).toContain('"@type": "Product"');
       expect(okHtml).toContain('"priceCurrency": "INR"');
       expect(okHtml).toContain('"availability": "https://schema.org/InStock"');
@@ -1118,6 +1118,7 @@ describe('Stage D & Stage E — Autonomous Daily Deals and Production Conversion
       expect(html).toContain('upi://pay?pa=venkatasaiharsh149768.rzp@rxairtel');
       expect(html).toContain('/api/v1/offer/upi-claim');
 
+      try { getDb().prepare(`DELETE FROM durable_rate_limits WHERE route LIKE '%upi-claim%'`).run(); } catch {}
       const utrRef = `428901${Date.now().toString().slice(-6)}`;
       const claimRes = await app.request('/api/v1/offer/upi-claim', {
         method: 'POST',
@@ -1653,7 +1654,7 @@ describe('Stage D & Stage E — Autonomous Daily Deals and Production Conversion
       expect(cpcInr.grossCommissionPerApprovedOrderINR).toBeNull();
       expect(cpcInr.missingPayoutReason).toBe('CPC_OFFLINE_ONLY');
 
-      // 2. Multiple active campaigns on the same root domain -> AMBIGUOUS_DOMAIN_MULTIPLE_CAMPAIGNS (no silent guesswork)
+      // 2. Multiple active campaigns on the same root domain -> AMBIGUOUS_DOMAIN (no silent guesswork)
       db.prepare('DELETE FROM cuelinks_campaigns').run();
       db.prepare('DELETE FROM public_deals').run();
       db.prepare(`
@@ -1684,11 +1685,11 @@ describe('Stage D & Stage E — Autonomous Daily Deals and Production Conversion
       } as any;
       const syncMgr = CuelinksSyncManager.getInstance(mockClient);
       const hydRes = await syncMgr.hydrateMissingCampaignPayoutsD1('org_owner_primary', 'biz_platform_aro', 50);
-      expect(hydRes.missingPayoutBreakdown['AMBIGUOUS_DOMAIN_MULTIPLE_CAMPAIGNS']).toBe(1);
+      expect(hydRes.missingPayoutBreakdown['AMBIGUOUS_DOMAIN']).toBe(1);
 
       const dealRow = db.prepare('SELECT evidence_json FROM public_deals WHERE id = ?').get('deal_amz_ambig') as any;
       const ev = JSON.parse(dealRow.evidence_json);
-      expect(ev.missingPayoutReason).toBe('AMBIGUOUS_DOMAIN_MULTIPLE_CAMPAIGNS');
+      expect(ev.missingPayoutReason).toBe('AMBIGUOUS_DOMAIN');
       expect(ev.verifiedCommissionRatePercent).toBeUndefined();
     });
   });

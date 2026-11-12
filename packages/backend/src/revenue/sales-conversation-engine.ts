@@ -23,6 +23,7 @@
  */
 
 import { createHash, randomUUID } from 'crypto';
+import { getSiteAuditFixpackPriceINR, getDirectUpiConfig } from '../config/env.js';
 import { getDb } from '../db/client.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { isProduction } from '../config/env.js';
@@ -267,6 +268,31 @@ export class SalesConversationEngine {
 
       const resolvedOffer = resolution.resolvedOffer;
       if (resolvedOffer) {
+        if (
+          (resolvedOffer.kind === 'DIGITAL_PRODUCT' || resolvedOffer.kind === 'SERVICE_OFFER') &&
+          (resolvedOffer.priceINR === null || !(resolvedOffer.priceINR > 0))
+        ) {
+          await this.updatePipelineStageAsync(event.senderContact, 'PAYMENT_PENDING', 'PRICE_NOT_SET for owned SKU', effectiveEvent.journeyId);
+          return {
+            intent,
+            confidence: 0.9,
+            routedAction: 'PRICE_NOT_SET',
+            responseTemplate: `Checkout for ${resolvedOffer.title} is temporarily unavailable because the authoritative server price is not configured (PRICE_NOT_SET).`,
+            suppressed: false,
+            pipelineUpdated: true,
+            pipelineStage: 'PAYMENT_PENDING',
+            sessionId,
+            journeyId: effectiveEvent.journeyId,
+            provenance,
+            conversationState: 'PRICE_NOT_SET' as any,
+            checkout: null,
+            resolvedOffer,
+            escalationCreated: false,
+            escalationId: null,
+            details: 'PRICE_NOT_SET: SITE_AUDIT_FIXPACK_PRICE_INR is not configured; no payment_requests order created.'
+          };
+        }
+
         await this.recordOfferContextOnJourney(effectiveEvent.journeyId!, sessionId, resolvedOffer.idOrSlug);
         const checkoutRes = await this.createCheckoutOrRedirect(effectiveEvent, resolvedOffer, sessionId, effectiveEvent.journeyId!);
         await this.updatePipelineStageAsync(event.senderContact, checkoutRes.pipelineStage, checkoutRes.reason, effectiveEvent.journeyId);
@@ -981,19 +1007,22 @@ export class SalesConversationEngine {
     }
 
     // Explicit SiteFix context -> deterministic single match (Lane D)
+    const authoritativeFixpackPrice = getSiteAuditFixpackPriceINR();
     const sitefixOffer: ResolvedCatalogOffer = {
       kind: 'DIGITAL_PRODUCT',
       lane: 'LANE_D_DIGITAL_PRODUCTS',
       idOrSlug: 'sitefix_core_499',
       title: 'SiteFix AI Technical Audit & Core Fix-Pack',
       merchantOrProvider: 'AI Marketing Organization (SiteFix)',
-      priceINR: 499,
+      priceINR: authoritativeFixpackPrice,
       verifiedDiscountPercent: null,
       availability: 'AVAILABLE_24X7',
       offerPath: '/tools/site-audit',
       permittedClaims: [
         'Live technical SEO, Schema.org & Core Web Vitals inspection',
-        '₹499 Core Technical Fix-Pack with Razorpay Sandbox & Direct UPI claim verification'
+        authoritativeFixpackPrice !== null
+          ? `₹${authoritativeFixpackPrice} Core Technical Fix-Pack with Razorpay & Direct UPI claim verification`
+          : 'Core Technical Fix-Pack (price pending server configuration)'
       ],
       score: 10
     };
@@ -1237,8 +1266,10 @@ export class SalesConversationEngine {
     if ((offer.kind === 'DIGITAL_PRODUCT' || offer.kind === 'SERVICE_OFFER') && (offer.priceINR ?? 0) > 0) {
       const orderId = `ord_${Date.now()}_${randomUUID().replace(/-/g, '').slice(0, 8)}`;
       const amountINR = Number(offer.priceINR);
-      const upiId = (process.env.MERCHANT_UPI_ID || process.env.UPI_MERCHANT_VPA || process.env.OWNER_UPI_VPA || 'kotuharsha1@okhdfcbank').trim();
-      const upiDeepLink = `upi://pay?pa=${encodeURIComponent(upiId)}&pn=${encodeURIComponent('AI Marketing Organization')}&am=${amountINR}&cu=INR&tn=${encodeURIComponent(orderId)}`;
+      const upiCfg = getDirectUpiConfig();
+      const upiDeepLink = upiCfg.configured && upiCfg.vpa
+        ? `upi://pay?pa=${encodeURIComponent(upiCfg.vpa)}&pn=${encodeURIComponent(upiCfg.payeeName || 'AI Marketing Organization')}&am=${amountINR}&cu=INR&tn=${encodeURIComponent(orderId)}`
+        : '';
       const checkoutUrl = `${offer.offerPath}${offer.offerPath.includes('?') ? '&' : '?'}orderId=${encodeURIComponent(orderId)}`;
 
       const useD1 = isProduction() && !process.env.VITEST;

@@ -129,6 +129,27 @@ export class DurableEventBus {
   }
 
   /**
+   * Awaited durable emit that returns explicit persistence status without throwing,
+   * so callers can surface `{ persisted: false }` on storage failure.
+   */
+  public static async emitWithPersistenceAsync(input: EmitEventInput): Promise<{
+    eventId: string;
+    persisted: boolean;
+    error?: string;
+  }> {
+    try {
+      const eventId = await DurableEventBus.emitAsync(input);
+      return { eventId, persisted: true };
+    } catch (err: any) {
+      return {
+        eventId: '',
+        persisted: false,
+        error: err?.message || 'DURABLE_EVENT_PERSISTENCE_FAILED',
+      };
+    }
+  }
+
+  /**
    * Claim unprocessed events for processing.
    */
   public static claimPending(organizationId: string, limit = 50): DurableEvent[] {

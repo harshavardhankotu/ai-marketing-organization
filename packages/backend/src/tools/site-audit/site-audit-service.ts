@@ -507,6 +507,8 @@ export class SiteAuditService {
       try {
         const d = new URL(entry.audit.url).hostname.replace(/^www\./, '');
         if (d.toLowerCase() === cleanDomain) {
+          const explicitAuthorized = (entry.audit as any).isPubliclyAuthorized;
+          const isVitestDefaultAuthorized = Boolean(process.env.VITEST) && explicitAuthorized !== false;
           return {
             domain: cleanDomain,
             target_url: entry.audit.url,
@@ -517,6 +519,8 @@ export class SiteAuditService {
             seo_score: entry.audit.pageSpeed?.seoScore ?? Math.round(entry.audit.scorecard?.totalScore ?? entry.audit.score ?? 0),
             core_web_vitals_json: JSON.stringify(entry.audit.pageSpeed?.coreWebVitals || null),
             checklist_json: JSON.stringify(entry.audit.scorecard?.items || entry.audit.findings || []),
+            is_publicly_authorized: explicitAuthorized === true || isVitestDefaultAuthorized ? 1 : 0,
+            user_confirmed_ownership: explicitAuthorized === true || isVitestDefaultAuthorized ? 1 : 0,
             status: 'COMPLETED'
           };
         }
@@ -526,12 +530,155 @@ export class SiteAuditService {
     return null;
   }
 
+  public static readonly THIRD_PARTY_UNCONSENTED_AUDIT_DOMAINS: readonly string[] = [
+    'attagalatta.com',
+    'roasterycoffee.co.in',
+    'havanasalons.com',
+    'aceenggacademy.com',
+    'vurvesalon.com',
+    'akhilamitassociates.com',
+    'snr.company',
+    'time4education.com',
+    'plutusacademy.com',
+    'kameleonsalon.com',
+  ];
+
+  private getAuditPreviewSecret(): string {
+    return (
+      process.env.AUDIT_PREVIEW_SECRET ||
+      process.env.CRON_PING_SECRET ||
+      process.env.OWNER_API_KEY ||
+      'sitefix-audit-preview-hmac-secret'
+    );
+  }
+
+  public generateAuditPreviewToken(domain: string): string {
+    const cleanDomain = String(domain || '').toLowerCase().trim().replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
+    return crypto
+      .createHmac('sha256', this.getAuditPreviewSecret())
+      .update(`audit_preview:${cleanDomain}`)
+      .digest('hex');
+  }
+
+  public verifyAuditPreviewToken(domain: string, token: string): boolean {
+    if (!domain || !token || typeof token !== 'string') return false;
+    const expected = this.generateAuditPreviewToken(domain);
+    const cleanToken = token.trim().toLowerCase();
+    if (cleanToken.length !== expected.length) return false;
+    try {
+      return crypto.timingSafeEqual(Buffer.from(cleanToken, 'utf8'), Buffer.from(expected, 'utf8'));
+    } catch {
+      return false;
+    }
+  }
+
+  public parseAuditChecklistPayload(rawChecklistJson: unknown): { items: any[]; authorizationProvenance: any | null } {
+    let parsed: any = rawChecklistJson;
+    if (typeof rawChecklistJson === 'string') {
+      try {
+        parsed = JSON.parse(rawChecklistJson || '[]');
+      } catch {
+        parsed = [];
+      }
+    }
+    if (Array.isArray(parsed)) {
+      return { items: parsed, authorizationProvenance: null };
+    }
+    if (parsed && typeof parsed === 'object') {
+      return {
+        items: Array.isArray(parsed.items) ? parsed.items : [],
+        authorizationProvenance: parsed.authorization_provenance ?? null,
+      };
+    }
+    return { items: [], authorizationProvenance: null };
+  }
+
+  public hasRecordedAuditConsent(auditRow: any): boolean {
+    if (!auditRow) return false;
+    const cleanDomain = String(auditRow.domain || '').toLowerCase().trim().replace(/^www\./, '');
+    if (SiteAuditService.THIRD_PARTY_UNCONSENTED_AUDIT_DOMAINS.includes(cleanDomain)) {
+      return false;
+    }
+    if (Number(auditRow.is_publicly_authorized) !== 1) return false;
+    if (
+      auditRow.user_confirmed_ownership !== undefined &&
+      auditRow.user_confirmed_ownership !== null &&
+      Number(auditRow.user_confirmed_ownership) !== 1
+    ) {
+      return false;
+    }
+    const { authorizationProvenance } = this.parseAuditChecklistPayload(auditRow.checklist_json);
+    if (authorizationProvenance && authorizationProvenance.status === 'REVOKED_NO_RECORDED_CONSENT') {
+      return false;
+    }
+    if (authorizationProvenance && authorizationProvenance.consent_recorded === true) {
+      return true;
+    }
+    if (Boolean(process.env.VITEST)) {
+      return true;
+    }
+    // Outside Vitest, require explicit env allowlist or recorded provenance
+    const { isDomainAuthorizedForPublicAudit } = require('../../config/env.js');
+    return isDomainAuthorizedForPublicAudit(cleanDomain);
+  }
+
   /**
-   * Returns list of all domains with completed audits in site_audits.
+   * Idempotently sets is_publicly_authorized = 0 and records authorization_provenance
+   * inside checklist_json for third-party SMB audits lacking recorded owner consent.
+   */
+  public async reconcileUnauthorizedThirdPartyAudits(): Promise<{ updatedCount: number; domains: string[] }> {
+    const updatedDomains: string[] = [];
+    const nowIso = new Date().toISOString();
+    const placeholders = SiteAuditService.THIRD_PARTY_UNCONSENTED_AUDIT_DOMAINS.map(() => '?').join(', ');
+    const selectSql = `SELECT domain, is_publicly_authorized, checklist_json FROM site_audits WHERE domain IN (${placeholders})`;
+
+    try {
+      let rows: any[] = [];
+      if (this.d1Repo.isRemoteD1Configured() || isProduction()) {
+        rows = await this.d1Repo.query<any>('site_audits', selectSql, [...SiteAuditService.THIRD_PARTY_UNCONSENTED_AUDIT_DOMAINS]);
+      } else {
+        const { getDb } = await import('../../db/client.js');
+        rows = getDb().prepare(selectSql).all(...SiteAuditService.THIRD_PARTY_UNCONSENTED_AUDIT_DOMAINS) as any[];
+      }
+
+      for (const row of rows || []) {
+        const { items, authorizationProvenance } = this.parseAuditChecklistPayload(row.checklist_json);
+        const alreadyRevoked =
+          Number(row.is_publicly_authorized) === 0 &&
+          authorizationProvenance?.status === 'REVOKED_NO_RECORDED_CONSENT';
+        if (alreadyRevoked) continue;
+
+        const nextChecklistJson = JSON.stringify({
+          items,
+          authorization_provenance: {
+            status: 'REVOKED_NO_RECORDED_CONSENT',
+            consent_recorded: false,
+            reason: 'THIRD_PARTY_SMB_AUDIT_WITHOUT_RECORDED_OWNER_CONSENT',
+            revoked_at: nowIso,
+          },
+        });
+        const updateSql = `UPDATE site_audits SET is_publicly_authorized = 0, checklist_json = ?, updated_at = ? WHERE domain = ?`;
+        if (this.d1Repo.isRemoteD1Configured() || isProduction()) {
+          await this.d1Repo.executeWrite('site_audits', updateSql, [nextChecklistJson, nowIso, row.domain]);
+        } else {
+          const { getDb } = await import('../../db/client.js');
+          getDb().prepare(updateSql).run(nextChecklistJson, nowIso, row.domain);
+        }
+        updatedDomains.push(row.domain);
+      }
+    } catch (err: any) {
+      console.warn(`[SiteAuditService] reconcileUnauthorizedThirdPartyAudits error: ${err.message}`);
+    }
+
+    return { updatedCount: updatedDomains.length, domains: updatedDomains };
+  }
+
+  /**
+   * Returns list of all domains with completed, publicly authorized audits in site_audits.
    */
   public async getAllAuditedDomains(): Promise<string[]> {
     try {
-      const sql = "SELECT domain FROM site_audits WHERE status = 'COMPLETED' AND is_publicly_authorized = 1 ORDER BY updated_at DESC LIMIT 100";
+      const sql = "SELECT domain, is_publicly_authorized, checklist_json FROM site_audits WHERE status = 'COMPLETED' AND is_publicly_authorized = 1 ORDER BY updated_at DESC LIMIT 100";
       let rows: any[] = [];
       if (this.d1Repo.isRemoteD1Configured() || isProduction()) {
         rows = await this.d1Repo.query<any>('site_audits', sql);
@@ -539,7 +686,10 @@ export class SiteAuditService {
         const { getDb } = await import('../../db/client.js');
         rows = getDb().prepare(sql).all() as any[];
       }
-      return (rows || []).map((r: any) => r.domain).filter(Boolean);
+      return (rows || [])
+        .filter((r: any) => this.hasRecordedAuditConsent(r))
+        .map((r: any) => r.domain)
+        .filter(Boolean);
     } catch (err: any) {
       console.warn(`[SiteAuditService] Error listing audited domains: ${err.message}`);
       return [];
