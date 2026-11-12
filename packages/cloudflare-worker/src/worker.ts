@@ -39,7 +39,7 @@ async function runCycle(env: Env): Promise<void> {
   const pingUrl = `${env.BACKEND_URL.replace(/\/$/, '')}/api/v1/cron/ping`;
   const claimUrl = `${env.BACKEND_URL.replace(/\/$/, '')}/api/v1/cron/worker/claim-and-run`;
 
-  // Step 1: Cold-start resilient warmup & heartbeat ping (55s timeout + 1 automatic retry after 2s on 502/503/504/timeout)
+  // Step 1: Cold-start resilient warmup & heartbeat ping (100s timeout >= 90s + 1 automatic retry after 2s on 502/503/504/timeout)
   let response: Response | null = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
@@ -56,7 +56,7 @@ async function runCycle(env: Env): Promise<void> {
           cronExpression: '0 * * * *',
           attempt
         }),
-        signal: AbortSignal.timeout(55000)
+        signal: AbortSignal.timeout(100000)
       });
 
       if (response.ok || (response.status !== 502 && response.status !== 503 && response.status !== 504)) {
