@@ -10,7 +10,7 @@
  * `PAYMENT_PROVIDER=stripe` or `STRIPE_SECRET_KEY` is explicitly provided.
  */
 
-import { isPlaceholderCredential } from '../config/env.js';
+import { isPlaceholderCredential, getDirectUpiConfig } from '../config/env.js';
 import { StripeAdapter } from '../integrations/stripe.js';
 import { RazorpayAdapter } from '../integrations/razorpay.js';
 
@@ -26,7 +26,7 @@ export interface IntegrationCapabilityEntry {
   name: string;
   laneScope: string;
   state: IntegrationLifecycleState;
-  subState?: 'CONFIGURED' | 'PAYMENT_CLAIM_TESTED' | 'CLAIM_PROCESSING_VERIFIED' | 'PAYMENT_RECEIPT_HUMAN_VERIFIED';
+  subState?: 'CONFIGURED_MISSING' | 'CONFIGURED' | 'PAYMENT_CLAIM_TESTED' | 'CLAIM_PROCESSING_VERIFIED' | 'PAYMENT_RECEIPT_HUMAN_VERIFIED';
   blockedLocally: boolean;
   localLaneStatus: 'ACTIVE' | 'LOCAL_LANE_BLOCKED';
   globalBlocker: boolean;
@@ -63,34 +63,37 @@ export class IntegrationCapabilityRegistry {
       (process.env.PAYMENT_PROVIDER || '').toLowerCase() === 'stripe' ||
       StripeAdapter.getInstance().isConfigured();
 
-    // 1. Direct UPI Fallback Rail (India-first primary INR fallback — honest verification sub-state)
-    const explicitUpiId = (process.env.MERCHANT_UPI_ID || process.env.UPI_MERCHANT_VPA || process.env.OWNER_UPI_VPA || '').trim();
-    const upiId = explicitUpiId || 'kotuharsha1@okhdfcbank';
+    // 1. Direct UPI Fallback Rail (India-first primary INR fallback — environment-driven)
+    const upiCfg = getDirectUpiConfig();
     const humanVerifiedUpiCount = Number(context?.humanVerifiedUpiReceiptsCount || 0);
-    const upiSubState: 'CONFIGURED' | 'PAYMENT_CLAIM_TESTED' | 'CLAIM_PROCESSING_VERIFIED' | 'PAYMENT_RECEIPT_HUMAN_VERIFIED' =
-      humanVerifiedUpiCount >= 1
-        ? 'PAYMENT_RECEIPT_HUMAN_VERIFIED'
-        : context?.upiClaimTested
-          ? 'PAYMENT_CLAIM_TESTED'
-          : explicitUpiId || context?.upiClaimProcessingVerified
-            ? 'CLAIM_PROCESSING_VERIFIED'
-            : 'CONFIGURED';
+    const upiSubState: 'CONFIGURED_MISSING' | 'CONFIGURED' | 'PAYMENT_CLAIM_TESTED' | 'CLAIM_PROCESSING_VERIFIED' | 'PAYMENT_RECEIPT_HUMAN_VERIFIED' =
+      !upiCfg.configured
+        ? 'CONFIGURED_MISSING'
+        : humanVerifiedUpiCount >= 1
+          ? 'PAYMENT_RECEIPT_HUMAN_VERIFIED'
+          : context?.upiClaimTested
+            ? 'PAYMENT_CLAIM_TESTED'
+            : 'CLAIM_PROCESSING_VERIFIED';
     const upiState: IntegrationLifecycleState =
-      upiSubState === 'PAYMENT_RECEIPT_HUMAN_VERIFIED'
-        ? 'OPERATIONALLY_VERIFIED'
-        : (upiSubState === 'PAYMENT_CLAIM_TESTED' || upiSubState === 'CLAIM_PROCESSING_VERIFIED')
-          ? 'AUTHORIZED'
-          : 'CONFIGURED';
+      upiSubState === 'CONFIGURED_MISSING'
+        ? 'DISCOVERED'
+        : upiSubState === 'PAYMENT_RECEIPT_HUMAN_VERIFIED'
+          ? 'OPERATIONALLY_VERIFIED'
+          : (upiSubState === 'PAYMENT_CLAIM_TESTED' || upiSubState === 'CLAIM_PROCESSING_VERIFIED')
+            ? 'AUTHORIZED'
+            : 'CONFIGURED';
     entries.push({
       id: 'DIRECT_UPI',
       name: 'Direct UPI INR Fallback Rail',
       laneScope: 'LANE_B_B2B_SERVICES / LANE_D_DIGITAL_PRODUCTS',
       state: upiState,
       subState: upiSubState,
-      blockedLocally: false,
-      localLaneStatus: 'ACTIVE',
+      blockedLocally: !upiCfg.configured,
+      localLaneStatus: upiCfg.configured ? 'ACTIVE' : 'LOCAL_LANE_BLOCKED',
       globalBlocker: false,
-      details: `Direct UPI UTR claim rail (${upiSubState}; VPA: ${upiId}; ${explicitUpiId ? 'env-configured' : 'fallback VPA'}; human-verified receipts: ${humanVerifiedUpiCount}; zero cash recognized until owner bank verification).`
+      details: upiCfg.configured
+        ? `Direct UPI UTR claim rail (${upiSubState}; VPA: ${upiCfg.vpa}; payee: ${upiCfg.payeeName}; human-verified receipts: ${humanVerifiedUpiCount}; zero cash recognized until owner bank verification).`
+        : 'Direct UPI UTR claim rail (CONFIGURED_MISSING; DIRECT_UPI_VPA and DIRECT_UPI_PAYEE_NAME are unset).'
     });
 
     // 2. Razorpay India Payments

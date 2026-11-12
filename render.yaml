@@ -25,3 +25,9 @@ services:
         value: VERIFY-CL-YE94W8YS
       - key: CUELINKS_CHANNEL_ID
         value: "331585"
+      - key: SITE_AUDIT_FIXPACK_PRICE_INR
+        value: "499"
+      - key: DIRECT_UPI_VPA
+        value: "kotuharsha1@okhdfcbank"
+      - key: DIRECT_UPI_PAYEE_NAME
+        value: "AI Marketing Organization"

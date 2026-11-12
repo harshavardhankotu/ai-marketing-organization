@@ -1476,7 +1476,19 @@ export class RazorpayAdapter {
     }
 
     const orderId = payment?.order_id || paymentLink?.order_id;
-    const receivedAmountPaise = Number(payment?.amount || paymentLink?.amount_paid || paymentLink?.amount || 0);
+    let receivedAmountPaise = Number(payment?.amount || paymentLink?.amount_paid || paymentLink?.amount || 0);
+
+    // Stage I.2-A: In live production with Razorpay credentials configured, independently verify capture with Razorpay API
+    if (!process.env.VITEST && isProduction() && process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET) {
+      const providerPayment = await this.fetchPayment(paymentId);
+      const providerStatus = String(providerPayment?.status || '').toLowerCase();
+      if (providerStatus !== 'captured' && providerStatus !== 'authorized') {
+        throw new Error(`SECURITY VIOLATION: Provider payment '${paymentId}' status is '${providerStatus || 'unknown'}', expected 'captured'.`);
+      }
+      if (typeof providerPayment?.amount === 'number' && providerPayment.amount > 0) {
+        receivedAmountPaise = providerPayment.amount;
+      }
+    }
     const amountINR = Math.round(receivedAmountPaise / 100);
 
     // Spec § 5: Webhook identity must come from internal stored records

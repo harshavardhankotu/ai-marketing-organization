@@ -14,7 +14,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { isProduction, resolveVerificationTokens } from '../config/env.js';
+import { isProduction, resolveVerificationTokens, getDirectUpiConfig } from '../config/env.js';
 import { getDb } from '../db/client.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { OwnerAuthService } from '../auth/owner-auth.js';
@@ -530,7 +530,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
     <!-- Section 3: Commercial Deals & Buyer Guides (Consumer Shopper Journey) -->
     <div class="card" id="consumer-deals" style="border-color: #334155; background: #0b1120;">
       <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem;">
-        <h2 style="font-size: 1.3rem; color: #fff; margin: 0;">Commercial Consumer Deals &amp; Buying Guides — Verified Undervalued Deals Showcase (#Ad)</h2>
+        <h2 style="font-size: 1.3rem; color: #fff; margin: 0;">Commercial Consumer Deals &amp; Buying Guides — Observed Merchant Price Snapshots (#Ad)</h2>
         <span class="sample-badge" style="background: rgba(14, 165, 233, 0.15); color: #38bdf8; border-color: rgba(14, 165, 233, 0.3);">#Ad — Affiliate Links</span>
       </div>
       <p style="color: #94a3b8; font-size: 0.9rem; margin-bottom: 1.25rem;">
@@ -1449,19 +1449,27 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
 
         <!-- Method B -->
         <div style="background: #0b1120; border: 1px solid #1e293b; border-radius: 12px; padding: 1.5rem; text-align: center;">
-          <h3 style="color: #34d399; font-size: 1.15rem; margin-bottom: 0.5rem;">Method B — Authentic Razorpay UPI QR</h3>
-          <p style="color: var(--text-muted); font-size: 0.88rem; margin-bottom: 1rem;">
-            Scan with Google Pay, PhonePe, Paytm, or BHIM. Enter invoice amount (₹15,000 Setup or ₹8,000 Retainer).
-          </p>
-          <div style="background: #111827; border: 1px solid #1e293b; border-radius: 10px; padding: 1rem; display: inline-block;">
-            <img src="${OwnerAuthService.PLATFORM_QR_ASSET_PATH}" alt="Razorpay UPI QR" style="max-width: 200px; width: 100%; border-radius: 8px; cursor: pointer; border: 2px solid #334155;" onclick="window.open(this.src, '_blank')">
-            <p style="font-size: 0.85rem; color: #fff; font-weight: 700; margin-top: 0.5rem;">${OwnerAuthService.PLATFORM_MERCHANT_NAME}</p>
-            <p style="font-size: 0.8rem; color: #94a3b8; margin-top: 0.15rem;"><code>${OwnerAuthService.PLATFORM_UPI_VPA}</code></p>
-            <p style="font-size: 0.75rem; color: #64748b; margin-top: 0.25rem;">Invoice Ref: <strong>${orderRef}</strong></p>
-          </div>
-          <button class="btn btn-secondary" style="margin-top: 0.75rem; font-size: 0.85rem;" onclick="navigator.clipboard.writeText('${OwnerAuthService.PLATFORM_UPI_VPA}'); alert('Merchant UPI ID copied: ${OwnerAuthService.PLATFORM_UPI_VPA}')">
-            Copy Merchant UPI ID
-          </button>
+          <h3 style="color: #34d399; font-size: 1.15rem; margin-bottom: 0.5rem;">Method B — Direct UPI QR</h3>
+          ${(() => {
+            const upiCfg = getDirectUpiConfig();
+            if (!upiCfg.configured || !upiCfg.vpa) {
+              return `<p style="color: #fcd34d; font-size: 0.88rem; margin: 1rem 0;">Direct UPI QR is currently unavailable (<code>CONFIGURED_MISSING</code>).</p>`;
+            }
+            return `
+              <p style="color: var(--text-muted); font-size: 0.88rem; margin-bottom: 1rem;">
+                Scan with Google Pay, PhonePe, Paytm, or BHIM. Enter invoice amount (₹15,000 Setup or ₹8,000 Retainer).
+              </p>
+              <div style="background: #111827; border: 1px solid #1e293b; border-radius: 10px; padding: 1rem; display: inline-block;">
+                <img src="${OwnerAuthService.PLATFORM_QR_ASSET_PATH}" alt="Razorpay UPI QR" style="max-width: 200px; width: 100%; border-radius: 8px; cursor: pointer; border: 2px solid #334155;" onclick="window.open(this.src, '_blank')">
+                <p style="font-size: 0.85rem; color: #fff; font-weight: 700; margin-top: 0.5rem;">${upiCfg.payeeName || OwnerAuthService.PLATFORM_MERCHANT_NAME}</p>
+                <p style="font-size: 0.8rem; color: #94a3b8; margin-top: 0.15rem;"><code>${upiCfg.vpa}</code></p>
+                <p style="font-size: 0.75rem; color: #64748b; margin-top: 0.25rem;">Invoice Ref: <strong>${orderRef}</strong></p>
+              </div>
+              <button class="btn btn-secondary" style="margin-top: 0.75rem; font-size: 0.85rem;" onclick="navigator.clipboard.writeText('${upiCfg.vpa}'); alert('Merchant UPI ID copied: ${upiCfg.vpa}')">
+                Copy Merchant UPI ID
+              </button>
+            `;
+          })()}
         </div>
       </div>
 

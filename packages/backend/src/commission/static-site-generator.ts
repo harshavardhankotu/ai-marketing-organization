@@ -600,13 +600,15 @@ export class StaticSiteGenerator {
       const targetHref = deal.id ? `${config.siteUrl}/api/v1/public/deals/${deal.id}/redirect` : (deal.trackingUrl || deal.productUrl);
       const detailSlug = deal.slug || deal.canonicalSlug || deal.id;
       const detailHref = detailSlug ? `/deals/${encodeURIComponent(detailSlug)}` : targetHref;
+      const observedAt = deal.lastVerifiedAt || deal.lastCheckedAt || deal.updatedAt || '';
+      const hasPriceDrop = Boolean(deal.evidenceJson?.hasVerifiedPriceDrop);
       return `
       <div class="price-card deal-card" style="background: #111827; border: 1px solid #1e293b; border-radius: 12px; padding: 1.5rem; display: flex; flex-direction: column; justify-content: space-between;">
         <div>
           <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; flex-wrap: wrap;">
             <span style="font-size: 0.75rem; font-weight: 700; color: #38bdf8; text-transform: uppercase;">${this.escapeHtml(deal.brand)}</span>
             <div style="display: flex; gap: 0.4rem; align-items: center;">
-              ${typeof deal.arbitrageScore === 'number' && deal.arbitrageScore > 0 ? `<span style="font-size: 0.72rem; background: rgba(56, 189, 248, 0.15); color: #7dd3fc; border: 1px solid rgba(56, 189, 248, 0.3); padding: 0.2rem 0.5rem; border-radius: 9999px;">Arbitrage ${deal.arbitrageScore}</span>` : ''}
+              ${hasPriceDrop ? `<span style="font-size: 0.72rem; background: rgba(16, 185, 129, 0.2); color: #6ee7b7; border: 1px solid rgba(16, 185, 129, 0.35); padding: 0.2rem 0.5rem; border-radius: 9999px;">Verified Price Drop</span>` : ''}
               <span style="font-size: 0.75rem; background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); padding: 0.2rem 0.5rem; border-radius: 9999px;">✓ Verified</span>
             </div>
           </div>
@@ -615,11 +617,11 @@ export class StaticSiteGenerator {
             <span>${this.escapeHtml(deal.merchant)}</span> &bull; <span>${this.escapeHtml(deal.category)}</span>
           </div>
           ${deal.targetBuyerSegment ? `<div style="font-size: 0.76rem; color: #cbd5e1; background: rgba(15, 23, 42, 0.85); border: 1px solid #334155; border-radius: 6px; padding: 0.35rem 0.6rem; margin-bottom: 0.75rem;">Target Buyer: <strong>${this.escapeHtml(deal.targetBuyerSegment)}</strong></div>` : ''}
-          <div style="display: flex; align-items: baseline; gap: 0.6rem; margin: 1rem 0;">
+          <div style="display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; margin: 1rem 0 0.35rem 0;">
             <span style="font-size: 1.6rem; font-weight: 800; color: #fff;">₹${Number(deal.currentPriceINR).toLocaleString('en-IN')}</span>
-            ${deal.referencePriceINR && deal.referencePriceINR > deal.currentPriceINR ? `<span style="font-size: 0.85rem; color: #64748b; text-decoration: line-through;">MRP ₹${Number(deal.referencePriceINR).toLocaleString('en-IN')}</span>` : ''}
-            ${deal.verifiedDiscountPercent ? `<span style="font-size: 0.8rem; font-weight: 700; background: rgba(16, 185, 129, 0.2); color: #6ee7b7; padding: 0.2rem 0.5rem; border-radius: 6px;">${deal.verifiedDiscountPercent}% OFF</span>` : ''}
+            ${deal.referencePriceINR && deal.referencePriceINR > deal.currentPriceINR ? `<span style="font-size: 0.85rem; color: #64748b; text-decoration: line-through;">Merchant Listed MRP ₹${Number(deal.referencePriceINR).toLocaleString('en-IN')}</span>` : ''}
           </div>
+          ${observedAt ? `<div style="font-size: 0.74rem; color: #94a3b8; margin-bottom: 0.5rem;">Observed: <code>${this.escapeHtml(observedAt)}</code></div>` : ''}
           ${deal.couponCode ? `
             <div style="background: rgba(15, 23, 42, 0.8); border: 1px solid #334155; border-radius: 8px; padding: 0.6rem 0.8rem; margin: 0.75rem 0; display: flex; justify-content: space-between; align-items: center;">
               <div>
@@ -730,9 +732,10 @@ export class StaticSiteGenerator {
     const refNum = Number(deal.referencePriceINR || 0);
     const savingsINR = refNum > priceNum ? Math.round((refNum - priceNum) * 100) / 100 : 0;
     const savingsPct = refNum > priceNum && refNum > 0 ? Math.round(((refNum - priceNum) / refNum) * 1000) / 10 : 0;
-    const badgeText = deal.discountBadge || (deal.verifiedDiscountPercent ? `${deal.verifiedDiscountPercent}% OFF` : 'Verified Price');
-    const title = `${deal.title} — ₹${priceNum.toLocaleString('en-IN')} (${badgeText} Verified Deal) | #Ad`;
-    const description = `Verified Indian deal for ${deal.title} on ${deal.merchant} at ₹${priceNum.toLocaleString('en-IN')}${refNum > priceNum ? ` (Reference MRP ₹${refNum.toLocaleString('en-IN')})` : ''}. #Ad Commission earned on qualifying purchases.`;
+    const hasPriceDrop = Boolean(deal.evidenceJson?.hasVerifiedPriceDrop);
+    const badgeText = hasPriceDrop ? 'Verified Price Drop' : 'Observed Merchant Price';
+    const title = `${deal.title} — ₹${priceNum.toLocaleString('en-IN')} (${badgeText}) | #Ad`;
+    const description = `Observed Indian price for ${deal.title} on ${deal.merchant} at ₹${priceNum.toLocaleString('en-IN')}${refNum > priceNum ? ` (Merchant Listed MRP ₹${refNum.toLocaleString('en-IN')})` : ''}. #Ad Commission earned on qualifying purchases.`;
     const verifiedTs: string | null = deal.lastVerifiedAt || deal.lastCheckedAt || deal.updatedAt || null;
     const editorialPass = passesEditorialQualityGate(deal);
     const robotsDirective = editorialPass ? 'index, follow' : 'noindex, nofollow';
@@ -804,7 +807,7 @@ export class StaticSiteGenerator {
     }).join('');
 
     const buyerFitText = deal.targetBuyerSegment
-      ? `Ideal for ${deal.targetBuyerSegment} seeking ${deal.category || 'this category'} hardware at ₹${priceNum.toLocaleString('en-IN')}${savingsINR > 0 ? ` with verified ₹${savingsINR.toLocaleString('en-IN')} (${savingsPct}%) price advantage over ₹${refNum.toLocaleString('en-IN')} MRP` : ''}.`
+      ? `Ideal for ${deal.targetBuyerSegment} seeking ${deal.category || 'this category'} hardware at ₹${priceNum.toLocaleString('en-IN')}${refNum > priceNum ? ` (Merchant Listed MRP ₹${refNum.toLocaleString('en-IN')})` : ''}.`
       : `Best suited for value-focused buyers in ${deal.category || 'consumer tech'} confirming live merchant checkout pricing of ₹${priceNum.toLocaleString('en-IN')}.`;
     const skipFitText = `Skip if you require an alternate merchant warranty policy, immediate local retail pickup today, or if live merchant cart pricing exceeds the verified ₹${priceNum.toLocaleString('en-IN')} snapshot.`;
     const verifiedRateDisclosure =
@@ -880,17 +883,17 @@ ${this.serializeSafeJsonLd(productSchema, true)}
     <article class="deal-box">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;flex-wrap:wrap;margin-bottom:0.85rem;">
         <span style="font-size:0.8rem;font-weight:700;color:#38bdf8;text-transform:uppercase;">#Ad &bull; ${this.escapeHtml(deal.merchant)} &bull; ${this.escapeHtml(deal.availability || 'IN_STOCK')}</span>
-        ${typeof deal.arbitrageScore === 'number' ? `<span style="font-size:0.78rem;background:rgba(56,189,248,0.15);color:#7dd3fc;border:1px solid rgba(56,189,248,0.3);padding:0.25rem 0.65rem;border-radius:9999px;">Arbitrage Score ${deal.arbitrageScore}/99.9</span>` : ''}
+        ${hasPriceDrop ? `<span style="font-size:0.78rem;background:rgba(16,185,129,0.2);color:#6ee7b7;border:1px solid rgba(16,185,129,0.35);padding:0.25rem 0.65rem;border-radius:9999px;">Verified Price Drop</span>` : ''}
       </div>
       <h1 style="font-size:1.85rem;color:#fff;margin:0 0 0.75rem 0;line-height:1.3;">${this.escapeHtml(deal.title)}</h1>
       ${deal.targetBuyerSegment ? `<div style="font-size:0.9rem;color:#cbd5e1;background:rgba(15,23,42,0.85);border:1px solid #334155;border-radius:8px;padding:0.6rem 0.9rem;margin-bottom:1.25rem;">Target Buyer Segment: <strong>${this.escapeHtml(deal.targetBuyerSegment)}</strong></div>` : ''}
       <div style="display:flex;align-items:baseline;gap:1rem;flex-wrap:wrap;margin:1rem 0;">
         <span style="font-size:2.35rem;font-weight:800;color:#fff;">₹${priceNum.toLocaleString('en-IN')}</span>
-        ${refNum > priceNum ? `<span style="font-size:1.05rem;color:#64748b;text-decoration:line-through;">Reference MRP ₹${refNum.toLocaleString('en-IN')}</span>` : ''}
+        ${refNum > priceNum ? `<span style="font-size:1.05rem;color:#64748b;text-decoration:line-through;">Merchant Listed MRP ₹${refNum.toLocaleString('en-IN')}</span>` : ''}
         <span style="font-size:0.9rem;font-weight:700;background:rgba(16,185,129,0.2);color:#6ee7b7;padding:0.3rem 0.75rem;border-radius:8px;">${this.escapeHtml(badgeText)}</span>
       </div>
       <p style="font-size:0.88rem;color:#94a3b8;margin:0.5rem 0 1rem 0;">
-        Last Verified Snapshot: <code>${this.escapeHtml(verifiedTs || 'Verification timestamp unavailable')}</code> &bull; Verification Status: <strong>${this.escapeHtml(deal.verificationStatus || 'VERIFIED')}</strong>
+        Observed At: <code>${this.escapeHtml(verifiedTs || 'Verification timestamp unavailable')}</code> &bull; Verification Status: <strong>${this.escapeHtml(deal.verificationStatus || 'VERIFIED')}</strong>
       </p>
       <a href="${this.escapeHtml(redirectHref)}" target="_blank" rel="sponsored nofollow noopener" class="cta-btn">Claim Verified Deal on ${this.escapeHtml(deal.merchant)} &rarr;</a>
 
@@ -1357,9 +1360,12 @@ ${this.serializeSafeJsonLd(productSchema, true)}
     const cwv = typeof auditData.core_web_vitals_json === 'string'
       ? JSON.parse(auditData.core_web_vitals_json || '{}')
       : (auditData.core_web_vitals_json || {});
-    const checklist = typeof auditData.checklist_json === 'string'
+    const rawChecklist = typeof auditData.checklist_json === 'string'
       ? JSON.parse(auditData.checklist_json || '[]')
       : (auditData.checklist_json || []);
+    const checklist = Array.isArray(rawChecklist)
+      ? rawChecklist
+      : (Array.isArray(rawChecklist?.items) ? rawChecklist.items : []);
 
     const schemaObj = {
       "@context": "https://schema.org",

@@ -1883,7 +1883,7 @@ export class CuelinksSyncManager {
 
       const currentPriceINR = Number(d.current_price_inr || 0);
       if (!matchedCamp) {
-        const reason = domainMatches.length > 1 ? 'AMBIGUOUS_DOMAIN_MULTIPLE_CAMPAIGNS' : 'CAMPAIGN_NOT_IN_CUELINKS_PAGE';
+        const reason = domainMatches.length > 1 ? 'AMBIGUOUS_DOMAIN' : 'CAMPAIGN_NOT_IN_CUELINKS_PAGE';
         missingPayoutBreakdown[reason] = (missingPayoutBreakdown[reason] || 0) + 1;
         if (ev.missingPayoutReason !== reason && !ev.verifiedCommissionRatePercent) {
           ev.missingPayoutReason = reason;

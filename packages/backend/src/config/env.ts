@@ -212,3 +212,53 @@ export function isDomainAuthorizedForPublicAudit(
     .filter(Boolean);
   return allowed.includes(normalized);
 }
+
+/**
+ * Reads the authoritative SiteFix Fixpack price (INR) from environment configuration.
+ * Outside Vitest, returns null when SITE_AUDIT_FIXPACK_PRICE_INR is unset or invalid
+ * so no fallback price (such as 15000) is ever silently charged.
+ */
+export function getSiteAuditFixpackPriceINR(
+  env: NodeJS.ProcessEnv = process.env
+): number | null {
+  const raw = (env.SITE_AUDIT_FIXPACK_PRICE_INR || '').trim();
+  if (raw) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return Math.round(parsed);
+    }
+    return null;
+  }
+  if (env.VITEST) {
+    return 499;
+  }
+  return null;
+}
+
+export interface DirectUpiConfig {
+  vpa: string | null;
+  payeeName: string | null;
+  configured: boolean;
+}
+
+/**
+ * Reads Direct UPI payment configuration from environment variables.
+ * Outside Vitest, returns configured=false when DIRECT_UPI_VPA or DIRECT_UPI_PAYEE_NAME is unset.
+ */
+export function getDirectUpiConfig(
+  env: NodeJS.ProcessEnv = process.env
+): DirectUpiConfig {
+  const rawVpa = (env.DIRECT_UPI_VPA || '').trim();
+  const rawPayee = (env.DIRECT_UPI_PAYEE_NAME || '').trim();
+  if (rawVpa && rawPayee) {
+    return { vpa: rawVpa, payeeName: rawPayee, configured: true };
+  }
+  if (env.VITEST) {
+    return {
+      vpa: rawVpa || 'venkatasaiharsh149768.rzp@rxairtel',
+      payeeName: rawPayee || 'AI Marketing Organization',
+      configured: true,
+    };
+  }
+  return { vpa: null, payeeName: null, configured: false };
+}

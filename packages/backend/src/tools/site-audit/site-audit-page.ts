@@ -6,12 +6,15 @@
  * - Displays truthful fail-closed status when checkout is locked.
  */
 
-import { OwnerAuthService } from '../../auth/owner-auth.js';
+import { getDirectUpiConfig, getSiteAuditFixpackPriceINR } from '../../config/env.js';
 
 import { renderCustomerDeskWidgetHtml } from '../../revenue/customer-desk-widget.js';
 
 export function renderSiteAuditPage(): string {
-  const upiVpa = OwnerAuthService.PLATFORM_UPI_VPA;
+  const upiCfg = getDirectUpiConfig();
+  const upiVpa = upiCfg.configured && upiCfg.vpa ? upiCfg.vpa : null;
+  const upiPayeeName = upiCfg.payeeName || 'AI Marketing Organization';
+  const fixpackPrice = getSiteAuditFixpackPriceINR() ?? 499;
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -329,16 +332,22 @@ export function renderSiteAuditPage(): string {
             <p style="font-size: 0.85rem; color: #d1d5db; margin-bottom: 1rem;">
               Razorpay card gateway is in Sandbox mode. Pay <strong>₹499</strong> directly via UPI to unlock manual fulfillment upon UTR verification (zero revenue is recognized before owner bank confirmation).
             </p>
+            ${upiVpa ? `
             <div style="display: grid; grid-template-columns: auto 1fr; gap: 1rem; align-items: center; margin-bottom: 1rem;">
               <img src="/images/razorpay-upi-qr.jpg" alt="SiteFix AI Merchant UPI QR" style="width: 110px; height: 110px; border-radius: 8px; border: 1px solid #334155; background: #fff; object-fit: contain;">
               <div>
                 <div style="font-size: 0.82rem; color: #9ca3af;">Merchant VPA: <code style="color: #fff; font-weight: 700;">${upiVpa}</code></div>
                 <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.65rem;">
-                  <a id="upiDeepLinkAnchor" href="upi://pay?pa=${upiVpa}&pn=SiteFix%20AI&cu=INR&am=499" class="btn-primary" style="display: inline-block; width: auto; padding: 0.5rem 0.9rem; font-size: 0.82rem; text-decoration: none; background: #10b981;">Pay ₹499 via UPI App &rarr;</a>
+                  <a id="upiDeepLinkAnchor" href="upi://pay?pa=${upiVpa}&pn=${encodeURIComponent(upiPayeeName)}&cu=INR&am=${fixpackPrice}" class="btn-primary" style="display: inline-block; width: auto; padding: 0.5rem 0.9rem; font-size: 0.82rem; text-decoration: none; background: #10b981;">Pay ₹${fixpackPrice} via UPI App &rarr;</a>
                   <button type="button" onclick="navigator.clipboard.writeText('${upiVpa}'); this.innerText='Copied VPA!';" style="background: #1f2937; border: 1px solid #374151; color: #e5e7eb; padding: 0.5rem 0.85rem; border-radius: 6px; font-size: 0.82rem; cursor: pointer;">Copy UPI ID</button>
                 </div>
               </div>
             </div>
+            ` : `
+            <div id="upiConfigMissingBanner" style="padding: 0.85rem; border-radius: 6px; background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); color: #fcd34d; font-size: 0.85rem; margin-bottom: 1rem;">
+              Direct UPI payment rail is currently unavailable (<code>CONFIGURED_MISSING</code>). Please configure <code>DIRECT_UPI_VPA</code> and <code>DIRECT_UPI_PAYEE_NAME</code>.
+            </div>
+            `}
             <form id="siteAuditUpiForm" onsubmit="submitSiteAuditUpiClaim(event)">
               <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 0.65rem; margin-bottom: 0.75rem;">
                 <input type="text" id="upiPayerName" required placeholder="Your Business / Name *" style="padding: 0.55rem; border-radius: 6px; border: 1px solid #374151; background: #1f2937; color: #fff; font-size: 0.85rem;">

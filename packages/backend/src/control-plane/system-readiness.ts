@@ -1,5 +1,5 @@
 import { getDb } from '../db/client.js';
-import { isProduction, isPlaceholderCredential } from '../config/env.js';
+import { isProduction, isPlaceholderCredential, getDirectUpiConfig } from '../config/env.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { D1Client } from '../db/d1-client.js';
 import { OwnerAuthService } from '../auth/owner-auth.js';
@@ -223,7 +223,7 @@ export class SystemReadinessEngine {
       };
     }
 
-    const directUpiVpa = (process.env.MERCHANT_UPI_ID || process.env.UPI_MERCHANT_VPA || process.env.OWNER_UPI_VPA || '').trim();
+    const upiCfg = getDirectUpiConfig();
     let humanVerifiedUpiCount = 0;
     try {
       const hvRow = db.prepare(
@@ -232,12 +232,14 @@ export class SystemReadinessEngine {
       humanVerifiedUpiCount = Number(hvRow?.c || 0);
     } catch {}
     capabilities['DIRECT_UPI'] = {
-      configured: Boolean(directUpiVpa),
-      authenticated: Boolean(directUpiVpa),
-      authorized: Boolean(directUpiVpa),
-      operational: true,
-      verified: humanVerifiedUpiCount >= 1,
-      details: `Direct UPI fallback rail (${humanVerifiedUpiCount >= 1 ? 'PAYMENT_RECEIPT_HUMAN_VERIFIED' : directUpiVpa ? 'CLAIM_PROCESSING_VERIFIED' : 'CONFIGURED'}; VPA: ${directUpiVpa || 'kotuharsha1@okhdfcbank'}; verified receipts: ${humanVerifiedUpiCount})`
+      configured: upiCfg.configured,
+      authenticated: upiCfg.configured,
+      authorized: upiCfg.configured,
+      operational: upiCfg.configured,
+      verified: upiCfg.configured && humanVerifiedUpiCount >= 1,
+      details: upiCfg.configured
+        ? `Direct UPI fallback rail (${humanVerifiedUpiCount >= 1 ? 'PAYMENT_RECEIPT_HUMAN_VERIFIED' : 'CLAIM_PROCESSING_VERIFIED'}; VPA: ${upiCfg.vpa}; payee: ${upiCfg.payeeName}; verified receipts: ${humanVerifiedUpiCount})`
+        : 'Direct UPI fallback rail (CONFIGURED_MISSING; DIRECT_UPI_VPA and DIRECT_UPI_PAYEE_NAME are unset)'
     };
 
     capabilities['RAZORPAY'] = {

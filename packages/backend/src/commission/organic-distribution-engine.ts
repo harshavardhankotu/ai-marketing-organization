@@ -350,18 +350,17 @@ export class OrganicDistributionEngine {
         const refStr = typeof d.referencePriceINR === 'number' && d.referencePriceINR > (d.currentPriceINR || 0)
           ? ` (merchant-reported MRP Rs. ${d.referencePriceINR.toLocaleString('en-IN')})`
           : '';
-        const arbStr = typeof d.arbitrageScore === 'number' ? ` — Arbitrage Score ${d.arbitrageScore}/100` : '';
         const segmentStr = d.targetBuyerSegment ? ` | Target Buyer: ${d.targetBuyerSegment}` : '';
-        return `${idx + 1}. **${d.title}** on ${d.merchant} — ${priceStr}${refStr}${arbStr}${segmentStr} — [View Verified Offer on ${d.merchant}](${redirectUrl})`;
+        return `${idx + 1}. **${d.title}** on ${d.merchant} — ${priceStr}${refStr}${segmentStr} — [View Verified Offer on ${d.merchant}](${redirectUrl})`;
       }).join('\n');
 
       const markdownBody = [
-        `## Verified Undervalued Picks in ${sectorDef.displayName || sectorDef.name}`,
+        `## Observed Merchant Picks in ${sectorDef.displayName || sectorDef.name}`,
         '',
         `Updated automatically from live verified merchant snapshots (${nowIso.slice(0, 10)}). All outbound deal links route through verified partner campaigns and carry **#Ad** affiliate disclosure.`,
         '',
         topSegments.length > 0 ? `### Matched Buyer Segments\n- ${topSegments.join('\n- ')}\n` : '',
-        '### Top Arbitrage Opportunities',
+        '### Top Observed Offers',
         dealBullets,
         '',
         `See full sector comparison at [Compare ${sectorDef.displayName || sectorDef.name} Deals](${cleanBase}/compare/${sectorDef.id}) or browse [All Verified Deals](${cleanBase}/deals).`,
@@ -370,7 +369,7 @@ export class OrganicDistributionEngine {
       ].filter(Boolean).join('\n');
 
       const disclosure = '#Ad Affiliate Disclosure: Qualifying purchases made through tracked merchant links may earn a referral commission at zero extra cost to you. Always confirm live price and stock on the official merchant checkout page.';
-      const title = `Top Undervalued ${sectorDef.displayName || sectorDef.name} Deals & Buyer Guide`;
+      const title = `Top Observed ${sectorDef.displayName || sectorDef.name} Deals & Buyer Guide`;
       const intentTarget = topSegments[0] || `Verified ${sectorDef.displayName || sectorDef.name} deals India`;
 
       const upsertSql = `
