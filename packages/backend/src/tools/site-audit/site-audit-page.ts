@@ -8,6 +8,8 @@
 
 import { OwnerAuthService } from '../../auth/owner-auth.js';
 
+import { renderCustomerDeskWidgetHtml } from '../../revenue/customer-desk-widget.js';
+
 export function renderSiteAuditPage(): string {
   const upiVpa = OwnerAuthService.PLATFORM_UPI_VPA;
   return `<!DOCTYPE html>
@@ -683,6 +685,7 @@ export function renderSiteAuditPage(): string {
       }
     }
   </script>
+  ${renderCustomerDeskWidgetHtml('sitefix_core_499')}
 </body>
 </html>`;
 }

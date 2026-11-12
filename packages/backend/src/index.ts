@@ -1340,6 +1340,29 @@ export async function startServer(): Promise<any> {
   // 4. Autonomous scheduling powered by durable Cloudflare D1 queue & Worker heartbeat (Spec V4.1 Phase 1 & 2)
   console.log('[Durable Queue] Background operations scheduled via Cloudflare D1 queue (Two daily IST commercial runs: 09:00 & 21:00 IST).');
 
+  // Stage I.2 Rule 1: Execute once non-blocking 5s after boot — recover stale/blocked queue jobs & hydrate Cuelinks payouts autonomously
+  if (!process.env.VITEST && process.env.NODE_ENV !== 'test') {
+    const bootRecoveryTimer = setTimeout(async () => {
+      try {
+        const { DurableJobQueue } = await import('./automation/durable-job-queue.js');
+        const rec = await DurableJobQueue.getInstance().recoverStaleAndBlockedJobs();
+        console.log('[Startup Self-Heal] Queue recovery completed:', JSON.stringify(rec));
+      } catch (err: any) {
+        console.warn('[Startup Self-Heal] Queue recovery notice:', err?.message);
+      }
+      try {
+        const { CuelinksSyncManager } = await import('./commission/cuelinks-sync-manager.js');
+        const hyd = await CuelinksSyncManager.getInstance().hydrateMissingCampaignPayoutsD1('org_owner_primary', 'biz_platform_aro', 100);
+        console.log('[Startup Self-Heal] Cuelinks payout hydration completed:', JSON.stringify(hyd));
+      } catch (err: any) {
+        console.warn('[Startup Self-Heal] Cuelinks hydration notice:', err?.message);
+      }
+    }, 5000);
+    if (typeof (bootRecoveryTimer as any)?.unref === 'function') {
+      (bootRecoveryTimer as any).unref();
+    }
+  }
+
   console.log(`\n======================================================`);
   console.log(`🚀 AI Marketing Organization Backend Service Running`);
   console.log(`📡 URL: http://localhost:${PORT}`);

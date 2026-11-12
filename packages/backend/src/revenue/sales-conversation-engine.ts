@@ -22,12 +22,19 @@
  * - Invariant: ZERO periodic polling needed; webhook immediately triggers state progression.
  */
 
+import { createHash, randomUUID } from 'crypto';
 import { getDb } from '../db/client.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { isProduction } from '../config/env.js';
 import { DurableEventBus } from './durable-event-bus.js';
 import { AutonomyPolicyController } from './autonomy-policy.js';
 import { IntegrationCapabilityRegistry } from '../control-plane/integration-capability-registry.js';
+
+export type IdentityProvenance =
+  | 'ANONYMOUS_WEB_SESSION'
+  | 'UNVERIFIED_WEB_CONTACT'
+  | 'VERIFIED_WHATSAPP_WEBHOOK'
+  | 'VERIFIED_EMAIL_WEBHOOK';
 
 export type InboundIntent =
   | 'INTERESTED'
@@ -51,7 +58,7 @@ export type InboundIntent =
 export interface InboundMessageEvent {
   businessId: string;
   organizationId: string;
-  senderContact: string; // phone or email
+  senderContact: string; // phone, email, or web session key
   senderName?: string;
   channel: 'WHATSAPP' | 'EMAIL' | 'SMS' | 'WEB_DESK';
   messageText: string;
@@ -60,10 +67,14 @@ export interface InboundMessageEvent {
   externalMessageId?: string;
   receivedAt?: string;
   journeyId?: string;
+  sessionId?: string;
+  provenance?: IdentityProvenance;
+  isDiagnosticProbe?: boolean;
 }
 
 export interface ResolvedCatalogOffer {
   kind: 'AFFILIATE_DEAL' | 'DIGITAL_PRODUCT' | 'SERVICE_OFFER' | 'FINANCIAL_RESEARCH';
+  lane?: 'LANE_A_AFFILIATE' | 'LANE_B_SERVICES' | 'LANE_C_PARTNER_OFFERS' | 'LANE_D_DIGITAL_PRODUCTS' | 'LANE_E_FINANCIAL_RADAR';
   idOrSlug: string;
   title: string;
   merchantOrProvider: string;
@@ -73,6 +84,20 @@ export interface ResolvedCatalogOffer {
   availability: string;
   offerPath: string;
   permittedClaims: string[];
+  score?: number;
+}
+
+export interface DeskCheckoutPayload {
+  checkoutMode: 'OWNED_CHECKOUT_CREATED' | 'AFFILIATE_REDIRECT_READY';
+  orderId?: string;
+  clickId?: string;
+  sku: string;
+  amountINR: number | null;
+  upiDeepLink?: string;
+  upiClaimEndpoint?: string;
+  checkoutUrl?: string;
+  redirectUrl?: string;
+  merchantUrl?: string;
 }
 
 export interface IntentProcessingResult {
@@ -81,8 +106,17 @@ export interface IntentProcessingResult {
   routedAction: string;
   responseTemplate?: string;
   suppressed: boolean;
+  contactSuppressed?: boolean;
+  suppressedScope?: 'GLOBAL_CONTACT' | 'SESSION_ONLY' | 'NONE';
   pipelineUpdated: boolean;
+  pipelineStage?: string;
   details: string;
+  sessionId?: string;
+  journeyId?: string;
+  provenance?: IdentityProvenance;
+  conversationState?: 'ANSWERED' | 'CLARIFICATION_NEEDED' | 'CHECKOUT_CREATED' | 'AFFILIATE_REDIRECT_READY' | 'ESCALATED' | 'SUPPRESSED';
+  clarificationOptions?: ResolvedCatalogOffer[];
+  checkout?: DeskCheckoutPayload | null;
   resolvedOffer?: ResolvedCatalogOffer | null;
   escalationCreated?: boolean;
   escalationId?: string | null;
@@ -100,88 +134,222 @@ export class SalesConversationEngine {
   }
 
   /**
-   * Classifies inbound text and executes the corresponding CRM/Pipeline state transition and next action.
+   * Classifies inbound text and executes durable journey/pipeline/demand persistence,
+   * 5-lane universal catalog matching, clarification, and synchronous checkout/redirect orchestration.
    */
   public async handleInboundMessage(event: InboundMessageEvent): Promise<IntentProcessingResult> {
-    const db = getDb();
+    const provenance: IdentityProvenance =
+      event.provenance ||
+      (event.channel === 'WHATSAPP'
+        ? 'VERIFIED_WHATSAPP_WEBHOOK'
+        : event.channel === 'EMAIL'
+          ? 'VERIFIED_EMAIL_WEBHOOK'
+          : /@|^\+?\d{7,15}$/.test(String(event.senderContact || '').trim())
+            ? 'UNVERIFIED_WEB_CONTACT'
+            : 'ANONYMOUS_WEB_SESSION');
+
+    const sessionId =
+      event.sessionId ||
+      `sess_${createHash('sha256').update(`${event.channel}:${event.senderContact}`).digest('hex').slice(0, 14)}`;
+
     const intent = this.classifyIntent(event.messageText);
 
-    // 1. DO_NOT_CONTACT: Permanent suppression
-    if (intent === 'DO_NOT_CONTACT') {
-      this.policyController.suppressContact(event.senderContact, 'DO_NOT_CONTACT');
-      this.updatePipelineStage(event.senderContact, 'LOST', 'Prospect requested opt-out (DO_NOT_CONTACT)', event.journeyId);
+    // 0. Ensure durable customer_journeys, sales_pipeline & FIRST_PARTY_CUSTOMER_DESK demand_signal
+    const { journeyId, lastOfferContext } = await this.ensureDurableJourneyAndDemandSignal(
+      event,
+      provenance,
+      sessionId,
+      intent
+    );
 
-      DurableEventBus.emit({
-        eventType: 'CONTACT_OPT_OUT',
-        organizationId: event.organizationId,
-        businessId: event.businessId,
-        payload: { contact: event.senderContact, reason: 'Explicit opt-out keyword received' }
-      });
+    const effectiveEvent: InboundMessageEvent = {
+      ...event,
+      journeyId: event.journeyId || journeyId,
+      sessionId,
+      provenance,
+      productSlugOrContext: event.productSlugOrContext || lastOfferContext || undefined
+    };
+
+    // 1. DO_NOT_CONTACT: Anti-impersonation guard — only verified WhatsApp/Email webhooks write senderContact to outreach_suppression_list
+    if (intent === 'DO_NOT_CONTACT') {
+      const isVerifiedChannel =
+        provenance === 'VERIFIED_WHATSAPP_WEBHOOK' || provenance === 'VERIFIED_EMAIL_WEBHOOK';
+      if (isVerifiedChannel) {
+        this.policyController.suppressContact(event.senderContact, 'DO_NOT_CONTACT');
+      }
+      await this.updatePipelineStageAsync(
+        event.senderContact,
+        'LOST',
+        isVerifiedChannel
+          ? 'Prospect requested opt-out (DO_NOT_CONTACT via verified channel)'
+          : `Unverified web session (${sessionId}) opted out; senderContact NOT globally suppressed to prevent impersonation`,
+        effectiveEvent.journeyId
+      );
+
+      if (isVerifiedChannel) {
+        await DurableEventBus.emitAsync({
+          eventType: 'CONTACT_OPT_OUT',
+          organizationId: event.organizationId,
+          businessId: event.businessId,
+          payload: { contact: event.senderContact, provenance, sessionId, reason: 'Explicit opt-out keyword received' }
+        }).catch(() => {});
+      }
 
       return {
         intent,
         confidence: 1.0,
-        routedAction: 'PERMANENT_SUPPRESSION',
-        responseTemplate: 'You have been unsubscribed. We will not contact you again.',
+        routedAction: isVerifiedChannel ? 'PERMANENT_SUPPRESSION' : 'SESSION_SUPPRESSION',
+        responseTemplate: 'You have been unsubscribed for this conversation. We will not message you again.',
         suppressed: true,
+        contactSuppressed: isVerifiedChannel,
+        suppressedScope: isVerifiedChannel ? 'GLOBAL_CONTACT' : 'SESSION_ONLY',
         pipelineUpdated: true,
-        details: 'Contact added to permanent suppression table. Outbound communication permanently halted.'
+        pipelineStage: 'LOST',
+        sessionId,
+        journeyId: effectiveEvent.journeyId,
+        provenance,
+        conversationState: 'SUPPRESSED',
+        details: isVerifiedChannel
+          ? 'Verified contact added to permanent suppression table. Outbound communication halted.'
+          : 'Unverified web opt-out quarantined to session only (outreach_suppression_list untouched).'
       };
     }
 
     // 2. NOT_INTERESTED: Mark lost
     if (intent === 'NOT_INTERESTED') {
-      this.updatePipelineStage(event.senderContact, 'LOST', 'Prospect indicated not interested', event.journeyId);
+      await this.updatePipelineStageAsync(event.senderContact, 'LOST', 'Prospect indicated not interested', effectiveEvent.journeyId);
       return {
         intent: 'NOT_INTERESTED',
         confidence: 0.9,
         routedAction: 'CLOSE_OPPORTUNITY',
         responseTemplate: 'Understood, thank you for letting us know. Best wishes.',
         suppressed: false,
+        contactSuppressed: false,
+        suppressedScope: 'NONE',
         pipelineUpdated: true,
+        pipelineStage: 'LOST',
+        sessionId,
+        journeyId: effectiveEvent.journeyId,
+        provenance,
+        conversationState: 'ANSWERED',
         details: 'Pipeline stage marked LOST.'
       };
     }
 
-    // 3. READY_TO_BUY: Proposal and payment link
+    // 3. READY_TO_BUY: Server-authoritative owned checkout (payment_requests) OR tracked affiliate redirect
     if (intent === 'READY_TO_BUY') {
-      const resolvedOffer = await this.resolveCatalogContext(event);
-      this.updatePipelineStage(event.senderContact, 'PAYMENT_PENDING', 'Customer confirmed readiness to purchase', event.journeyId);
-      DurableEventBus.emit({
+      const resolution = await this.resolveCatalogContextDetailed(effectiveEvent);
+      if (resolution.clarificationNeeded && resolution.clarificationOptions.length >= 2) {
+        await this.updatePipelineStageAsync(event.senderContact, 'QUALIFIED', 'Broad category purchase intent requires product clarification', effectiveEvent.journeyId);
+        const optionsSummary = resolution.clarificationOptions
+          .map((o, idx) => `${idx + 1}. ${o.title} (${o.priceINR !== null ? `₹${o.priceINR.toLocaleString('en-IN')}` : 'Live rate'}) — ${o.offerPath}`)
+          .join(' | ');
+        return {
+          intent,
+          confidence: 0.85,
+          routedAction: 'REQUEST_PRODUCT_CLARIFICATION',
+          responseTemplate: `Multiple active verified matches found before checkout: ${optionsSummary}. Please reply with the exact item name or slug to generate checkout.`,
+          suppressed: false,
+          pipelineUpdated: true,
+          pipelineStage: 'QUALIFIED',
+          sessionId,
+          journeyId: effectiveEvent.journeyId,
+          provenance,
+          conversationState: 'CLARIFICATION_NEEDED',
+          clarificationOptions: resolution.clarificationOptions,
+          resolvedOffer: null,
+          checkout: null,
+          escalationCreated: false,
+          escalationId: null,
+          details: 'Multiple close matches found; clarification requested prior to order creation.'
+        };
+      }
+
+      const resolvedOffer = resolution.resolvedOffer;
+      if (resolvedOffer) {
+        await this.recordOfferContextOnJourney(effectiveEvent.journeyId!, sessionId, resolvedOffer.idOrSlug);
+        const checkoutRes = await this.createCheckoutOrRedirect(effectiveEvent, resolvedOffer, sessionId, effectiveEvent.journeyId!);
+        await this.updatePipelineStageAsync(event.senderContact, checkoutRes.pipelineStage, checkoutRes.reason, effectiveEvent.journeyId);
+        await DurableEventBus.emitAsync({
+          eventType: 'LEAD_REPLIED',
+          organizationId: event.organizationId,
+          businessId: event.businessId,
+          payload: {
+            contact: event.senderContact,
+            sessionId,
+            journeyId: effectiveEvent.journeyId,
+            intent: 'READY_TO_BUY',
+            nextAction: 'SEND_PAYMENT_REQUEST',
+            checkoutMode: checkoutRes.checkout.checkoutMode,
+            orderId: checkoutRes.checkout.orderId || null,
+            clickId: checkoutRes.checkout.clickId || null
+          }
+        }).catch(() => {});
+
+        return {
+          intent,
+          confidence: 0.96,
+          routedAction: 'SEND_PAYMENT_REQUEST',
+          responseTemplate: checkoutRes.responseTemplate,
+          suppressed: false,
+          pipelineUpdated: true,
+          pipelineStage: checkoutRes.pipelineStage,
+          sessionId,
+          journeyId: effectiveEvent.journeyId,
+          provenance,
+          conversationState: checkoutRes.conversationState,
+          checkout: checkoutRes.checkout,
+          resolvedOffer,
+          escalationCreated: false,
+          escalationId: null,
+          details: checkoutRes.reason
+        };
+      }
+
+      await this.updatePipelineStageAsync(event.senderContact, 'PAYMENT_PENDING', 'Customer ready to buy but offer unresolved', effectiveEvent.journeyId);
+      const escId = await this.createOwnerEscalationTask(
+        effectiveEvent,
+        'READY_TO_BUY',
+        'Buyer expressed purchase readiness without matching an active verified catalog offer.'
+      );
+      await DurableEventBus.emitAsync({
         eventType: 'LEAD_REPLIED',
         organizationId: event.organizationId,
         businessId: event.businessId,
-        payload: { contact: event.senderContact, intent: 'READY_TO_BUY', nextAction: 'SEND_PAYMENT_REQUEST' }
-      });
-
-      const checkoutHint = resolvedOffer
-        ? ` For ${resolvedOffer.title} (${resolvedOffer.priceINR !== null ? `₹${resolvedOffer.priceINR}` : 'live catalog'}), continue directly at ${resolvedOffer.offerPath}.`
-        : ' Please confirm the exact product slug or SiteFix domain so we can share the verified checkout path.';
+        payload: { contact: event.senderContact, sessionId, journeyId: effectiveEvent.journeyId, intent: 'READY_TO_BUY', nextAction: 'OWNER_CLARIFICATION' }
+      }).catch(() => {});
 
       return {
         intent,
-        confidence: 0.95,
+        confidence: 0.9,
         routedAction: 'SEND_PAYMENT_REQUEST',
-        responseTemplate: `Thank you for confirming.${checkoutHint}`,
+        responseTemplate: 'Please share the exact verified product slug on /deals or website domain for /tools/site-audit (₹499 Core Fix-Pack) so I can create your verified checkout or merchant link immediately.',
         suppressed: false,
         pipelineUpdated: true,
-        details: 'Ready to buy detected. Product-aware checkout path provided.',
-        resolvedOffer,
-        escalationCreated: false,
-        escalationId: null
+        pipelineStage: 'PAYMENT_PENDING',
+        sessionId,
+        journeyId: effectiveEvent.journeyId,
+        provenance,
+        conversationState: 'ESCALATED',
+        checkout: null,
+        resolvedOffer: null,
+        escalationCreated: Boolean(escId),
+        escalationId: escId,
+        details: 'Purchase intent logged cleanly without fallback ₹15,000 fabrication; awaiting exact offer slug or owner review.'
       };
     }
 
     // 4. DEMO_REQUEST / ASKING_FOR_DEMO: Demo requested awaiting calendar confirmation (never auto-marked MEETING_BOOKED)
     if (intent === 'DEMO_REQUEST' || intent === 'ASKING_FOR_DEMO') {
-      const resolvedOffer = await this.resolveCatalogContext(event);
-      this.updatePipelineStage(event.senderContact, 'DEMO_REQUESTED_PENDING_CONFIRMATION', 'Prospect requested consultation/demo (awaiting slot confirmation)', event.journeyId);
-      DurableEventBus.emit({
+      const resolution = await this.resolveCatalogContextDetailed(effectiveEvent);
+      const resolvedOffer = resolution.resolvedOffer;
+      await this.updatePipelineStageAsync(event.senderContact, 'DEMO_REQUESTED_PENDING_CONFIRMATION', 'Prospect requested consultation/demo (awaiting slot confirmation)', effectiveEvent.journeyId);
+      await DurableEventBus.emitAsync({
         eventType: 'LEAD_REPLIED',
         organizationId: event.organizationId,
         businessId: event.businessId,
-        payload: { contact: event.senderContact, intent, nextAction: 'BOOK_MEETING', slotConfirmed: false }
-      });
+        payload: { contact: event.senderContact, sessionId, journeyId: effectiveEvent.journeyId, intent, nextAction: 'BOOK_MEETING', slotConfirmed: false }
+      }).catch(() => {});
 
       return {
         intent,
@@ -190,6 +358,11 @@ export class SalesConversationEngine {
         responseTemplate: 'Thank you — we have logged your demo/callback request (status: DEMO_REQUESTED_PENDING_CONFIRMATION). Please share a preferred time window tomorrow so the owner can confirm a calendar slot.',
         suppressed: false,
         pipelineUpdated: true,
+        pipelineStage: 'DEMO_REQUESTED_PENDING_CONFIRMATION',
+        sessionId,
+        journeyId: effectiveEvent.journeyId,
+        provenance,
+        conversationState: 'ANSWERED',
         details: 'Demo requested. Status set to DEMO_REQUESTED_PENDING_CONFIRMATION awaiting confirmed slot.',
         resolvedOffer,
         escalationCreated: false,
@@ -197,7 +370,36 @@ export class SalesConversationEngine {
       };
     }
 
-    const resolvedOffer = await this.resolveCatalogContext(event);
+    const resolution = await this.resolveCatalogContextDetailed(effectiveEvent);
+    if (resolution.clarificationNeeded && resolution.clarificationOptions.length >= 2) {
+      await this.updatePipelineStageAsync(event.senderContact, 'QUALIFIED', 'Broad category query matched multiple verified offers', effectiveEvent.journeyId);
+      const optionsText = resolution.clarificationOptions
+        .map((o, idx) => `${idx + 1}) ${o.title} (${o.priceINR !== null ? `₹${o.priceINR.toLocaleString('en-IN')}` : 'Live rate'}, ${o.merchantOrProvider}) — ${o.offerPath}`)
+        .join(' | ');
+      return {
+        intent,
+        confidence: 0.86,
+        routedAction: 'REQUEST_PRODUCT_CLARIFICATION',
+        responseTemplate: `We found ${resolution.clarificationOptions.length} active verified options matching your query: ${optionsText}. Which one would you like details or checkout for?`,
+        suppressed: false,
+        pipelineUpdated: true,
+        pipelineStage: 'QUALIFIED',
+        sessionId,
+        journeyId: effectiveEvent.journeyId,
+        provenance,
+        conversationState: 'CLARIFICATION_NEEDED',
+        clarificationOptions: resolution.clarificationOptions,
+        resolvedOffer: null,
+        escalationCreated: false,
+        escalationId: null,
+        details: `Broad query returned ${resolution.clarificationOptions.length} clarification candidates.`
+      };
+    }
+
+    const resolvedOffer = resolution.resolvedOffer;
+    if (resolvedOffer && effectiveEvent.journeyId) {
+      await this.recordOfferContextOnJourney(effectiveEvent.journeyId, sessionId, resolvedOffer.idOrSlug);
+    }
     const whatsAppVerified = this.isWhatsAppOperationallyVerified();
     const customOrHumanRequested = /\b(custom|bespoke|bulk|enterprise|sla|negotiate|human|manager|support|complaint|refund|special terms|clinic pilot)\b/i.test(
       `${event.messageText} ${event.productSlugOrContext || ''}`
@@ -211,7 +413,7 @@ export class SalesConversationEngine {
     let escalationId: string | null = null;
     if (needsEscalation) {
       escalationId = await this.createOwnerEscalationTask(
-        event,
+        effectiveEvent,
         intent,
         customOrHumanRequested
           ? 'Customer requested custom scope, pricing terms, or human assistance.'
@@ -221,13 +423,13 @@ export class SalesConversationEngine {
 
     // 5. PRICE_QUESTION: Live D1 catalog pricing breakdown (never hardcoded ₹15k/₹8k clinic templates)
     if (intent === 'PRICE_QUESTION') {
-      this.updatePipelineStage(event.senderContact, 'QUALIFIED', 'Pricing inquiry received', event.journeyId);
-      DurableEventBus.emit({
+      await this.updatePipelineStageAsync(event.senderContact, 'QUALIFIED', 'Pricing inquiry received', effectiveEvent.journeyId);
+      await DurableEventBus.emitAsync({
         eventType: 'LEAD_REPLIED',
         organizationId: event.organizationId,
         businessId: event.businessId,
-        payload: { contact: event.senderContact, intent: 'PRICE_QUESTION', nextAction: 'SEND_PRICING_DETAILS' }
-      });
+        payload: { contact: event.senderContact, sessionId, journeyId: effectiveEvent.journeyId, intent: 'PRICE_QUESTION', nextAction: 'SEND_PRICING_DETAILS' }
+      }).catch(() => {});
 
       let responseTemplate: string;
       if (resolvedOffer) {
@@ -245,6 +447,11 @@ export class SalesConversationEngine {
         responseTemplate,
         suppressed: false,
         pipelineUpdated: true,
+        pipelineStage: 'QUALIFIED',
+        sessionId,
+        journeyId: effectiveEvent.journeyId,
+        provenance,
+        conversationState: escalationId && !resolvedOffer ? 'ESCALATED' : 'ANSWERED',
         details: resolvedOffer
           ? `Resolved live catalog pricing for ${resolvedOffer.idOrSlug}.`
           : 'Unresolved pricing query escalated to OWNER_ESCALATION_REQUIRED.',
@@ -256,7 +463,7 @@ export class SalesConversationEngine {
 
     // 6. HOW_IT_WORKS: Deterministic delivery / workflow summary grounded in live catalog
     if (intent === 'HOW_IT_WORKS') {
-      this.updatePipelineStage(event.senderContact, 'QUALIFIED', 'Operational inquiry received', event.journeyId);
+      await this.updatePipelineStageAsync(event.senderContact, 'QUALIFIED', 'Operational inquiry received', effectiveEvent.journeyId);
       const waCapabilityNote = whatsAppVerified
         ? 'WhatsApp replies and web desk triage are both active.'
         : '24/7 web desk triage (/api/v1/customer-desk/message) and email/offer forms are active; WhatsApp Cloud API auto-dispatch awaits owner credentials (DISCOVERED).';
@@ -270,6 +477,11 @@ export class SalesConversationEngine {
         responseTemplate,
         suppressed: false,
         pipelineUpdated: true,
+        pipelineStage: 'QUALIFIED',
+        sessionId,
+        journeyId: effectiveEvent.journeyId,
+        provenance,
+        conversationState: 'ANSWERED',
         details: 'Catalog-grounded operational response dispatched.',
         resolvedOffer,
         escalationCreated: Boolean(escalationId),
@@ -279,7 +491,7 @@ export class SalesConversationEngine {
 
     // 7. WHAT_DO_YOU_DO: Truthful platform & active channel summary
     if (intent === 'WHAT_DO_YOU_DO') {
-      this.updatePipelineStage(event.senderContact, 'QUALIFIED', 'High-level inquiry received', event.journeyId);
+      await this.updatePipelineStageAsync(event.senderContact, 'QUALIFIED', 'High-level inquiry received', effectiveEvent.journeyId);
       const waStatusText = whatsAppVerified
         ? 'including verified WhatsApp replies'
         : 'via 24/7 web desk & audit tools (WhatsApp Cloud API is currently unconfigured/DISCOVERED)';
@@ -290,6 +502,11 @@ export class SalesConversationEngine {
         responseTemplate: `We operate verified Indian consumer deal comparisons (/deals), deterministic technical SEO audits (/tools/site-audit), and SEBI-educational market research tools (/tools/financial-radar), ${waStatusText}.`,
         suppressed: false,
         pipelineUpdated: true,
+        pipelineStage: 'QUALIFIED',
+        sessionId,
+        journeyId: effectiveEvent.journeyId,
+        provenance,
+        conversationState: 'ANSWERED',
         details: 'Verified capability overview dispatched.',
         resolvedOffer,
         escalationCreated: Boolean(escalationId),
@@ -299,7 +516,7 @@ export class SalesConversationEngine {
 
     // 8. CASE_STUDY_REQUEST / ASKING_FOR_CASE_STUDY: Reference proof without fabricated claims
     if (intent === 'CASE_STUDY_REQUEST' || intent === 'ASKING_FOR_CASE_STUDY') {
-      this.updatePipelineStage(event.senderContact, 'QUALIFIED', 'Case study inquiry received', event.journeyId);
+      await this.updatePipelineStageAsync(event.senderContact, 'QUALIFIED', 'Case study inquiry received', effectiveEvent.journeyId);
       return {
         intent,
         confidence: 0.88,
@@ -307,6 +524,11 @@ export class SalesConversationEngine {
         responseTemplate: 'We publish live, deterministic technical SEO audit reports at /tools/site-audit and verified merchant deal comparisons at /deals. No unverified customer revenue case studies are claimed prior to owner confirmation.',
         suppressed: false,
         pipelineUpdated: true,
+        pipelineStage: 'QUALIFIED',
+        sessionId,
+        journeyId: effectiveEvent.journeyId,
+        provenance,
+        conversationState: 'ANSWERED',
         details: 'Truthful evidence links dispatched.',
         resolvedOffer,
         escalationCreated: Boolean(escalationId),
@@ -316,7 +538,7 @@ export class SalesConversationEngine {
 
     // 9. OBJECTION_PRICE: No unsupported ROI promises
     if (intent === 'OBJECTION_PRICE') {
-      this.updatePipelineStage(event.senderContact, 'QUALIFIED', 'Price objection received', event.journeyId);
+      await this.updatePipelineStageAsync(event.senderContact, 'QUALIFIED', 'Price objection received', effectiveEvent.journeyId);
       const responseTemplate = resolvedOffer
         ? `For ${resolvedOffer.title}, the live verified price is ${resolvedOffer.priceINR !== null ? `₹${resolvedOffer.priceINR.toLocaleString('en-IN')}` : 'determined by merchant'} via ${resolvedOffer.offerPath}. We never invent projected ROI; the SiteFix Core diagnostic is ₹499 one-time and public research tools on /tools/financial-radar are free.`
         : 'We do not promise unverified ROI multipliers. Free technical diagnostics run at /tools/site-audit and ₹499 unlocks the Core Fix-Pack, while custom commercial quotes are reviewed by the owner.';
@@ -327,6 +549,11 @@ export class SalesConversationEngine {
         responseTemplate,
         suppressed: false,
         pipelineUpdated: true,
+        pipelineStage: 'QUALIFIED',
+        sessionId,
+        journeyId: effectiveEvent.journeyId,
+        provenance,
+        conversationState: escalationId ? 'ESCALATED' : 'ANSWERED',
         details: 'Transparent price response dispatched without unsupported ROI claims.',
         resolvedOffer,
         escalationCreated: Boolean(escalationId),
@@ -336,7 +563,7 @@ export class SalesConversationEngine {
 
     // 10. OBJECTION_TIMING: Defer follow-up
     if (intent === 'OBJECTION_TIMING') {
-      this.updatePipelineStage(event.senderContact, 'CONTACTED', 'Timing objection received', event.journeyId);
+      await this.updatePipelineStageAsync(event.senderContact, 'CONTACTED', 'Timing objection received', effectiveEvent.journeyId);
       return {
         intent,
         confidence: 0.8,
@@ -344,6 +571,11 @@ export class SalesConversationEngine {
         responseTemplate: 'Understood. We will check back when your schedule opens up.',
         suppressed: false,
         pipelineUpdated: true,
+        pipelineStage: 'CONTACTED',
+        sessionId,
+        journeyId: effectiveEvent.journeyId,
+        provenance,
+        conversationState: 'ANSWERED',
         details: 'Follow-up deferred on cooldown.',
         resolvedOffer,
         escalationCreated: false,
@@ -353,7 +585,7 @@ export class SalesConversationEngine {
 
     // 11. NEEDS_APPROVAL: Executive summary
     if (intent === 'NEEDS_APPROVAL') {
-      this.updatePipelineStage(event.senderContact, 'QUALIFIED', 'Stakeholder approval needed', event.journeyId);
+      await this.updatePipelineStageAsync(event.senderContact, 'QUALIFIED', 'Stakeholder approval needed', effectiveEvent.journeyId);
       return {
         intent,
         confidence: 0.85,
@@ -363,6 +595,11 @@ export class SalesConversationEngine {
           : 'Summary links for partner review: verified deals (/deals), SiteFix audits (/tools/site-audit), and financial research tools (/tools/financial-radar). Escalated to owner for formal brief if needed.',
         suppressed: false,
         pipelineUpdated: true,
+        pipelineStage: 'QUALIFIED',
+        sessionId,
+        journeyId: effectiveEvent.journeyId,
+        provenance,
+        conversationState: escalationId ? 'ESCALATED' : 'ANSWERED',
         details: 'Stakeholder brief dispatched.',
         resolvedOffer,
         escalationCreated: Boolean(escalationId),
@@ -372,7 +609,7 @@ export class SalesConversationEngine {
 
     // 12. SEND_DETAILS / NEEDS_INFORMATION: Brief & deliverables grounded in catalog
     if (intent === 'SEND_DETAILS' || intent === 'NEEDS_INFORMATION') {
-      this.updatePipelineStage(event.senderContact, 'QUALIFIED', 'Details requested', event.journeyId);
+      await this.updatePipelineStageAsync(event.senderContact, 'QUALIFIED', 'Details requested', effectiveEvent.journeyId);
       const waCapabilityNote = whatsAppVerified
         ? 'WhatsApp Cloud API replies are active.'
         : '24/7 web desk inquiries are answered immediately; WhatsApp Cloud API auto-dispatch is currently unconfigured (DISCOVERED).';
@@ -386,6 +623,11 @@ export class SalesConversationEngine {
         responseTemplate,
         suppressed: false,
         pipelineUpdated: true,
+        pipelineStage: 'QUALIFIED',
+        sessionId,
+        journeyId: effectiveEvent.journeyId,
+        provenance,
+        conversationState: escalationId && !resolvedOffer ? 'ESCALATED' : 'ANSWERED',
         details: resolvedOffer
           ? `Catalog brief dispatched for ${resolvedOffer.idOrSlug}.`
           : 'Unresolved details query escalated to OWNER_ESCALATION_REQUIRED.',
@@ -396,7 +638,7 @@ export class SalesConversationEngine {
     }
 
     // 13. INTERESTED: Catalog-grounded qualification prompt
-    this.updatePipelineStage(event.senderContact, 'QUALIFIED', 'General affirmative interest', event.journeyId);
+    await this.updatePipelineStageAsync(event.senderContact, 'QUALIFIED', 'General affirmative interest', effectiveEvent.journeyId);
     return {
       intent: 'INTERESTED',
       confidence: 0.8,
@@ -406,6 +648,11 @@ export class SalesConversationEngine {
         : 'Great! Share the deal slug, product category, or website domain you would like checked, or browse /deals and /tools/site-audit.',
       suppressed: false,
       pipelineUpdated: true,
+      pipelineStage: 'QUALIFIED',
+      sessionId,
+      journeyId: effectiveEvent.journeyId,
+      provenance,
+      conversationState: escalationId && !resolvedOffer ? 'ESCALATED' : 'ANSWERED',
       details: 'Catalog-grounded qualification prompt dispatched.',
       resolvedOffer,
       escalationCreated: Boolean(escalationId),
@@ -425,7 +672,7 @@ export class SalesConversationEngine {
     }
 
     // 2. Purchase / payment readiness
-    if (/ready to (buy|proceed|move forward|purchase)|send payment link|how do i pay|i want to purchase|send invoice|i accept|proceed with booking|book my slot|send payment/.test(lower)) {
+    if (/ready to (buy|proceed|move forward|purchase)|confirm purchase|confirm order|yes[ ,]+buy|proceed to pay|pay now|buy now|checkout|send payment link|how do i pay|i want to purchase|send invoice|i accept|proceed with booking|book my slot|send payment/.test(lower)) {
       return 'READY_TO_BUY';
     }
 
@@ -509,45 +756,228 @@ export class SalesConversationEngine {
   }
 
   private async safeExecWrite(table: string, sql: string, params: any[] = []): Promise<void> {
+    if (isProduction() && !process.env.VITEST) {
+      await D1RevenueRepository.getInstance().executeWrite(table, sql, params);
+    } else {
+      getDb().prepare(sql).run(...params);
+    }
+  }
+
+  private async safeQueryOne<T = any>(table: string, sql: string, params: any[] = []): Promise<T | null> {
     try {
       if (isProduction() && !process.env.VITEST) {
-        await D1RevenueRepository.getInstance().executeWrite(table, sql, params);
-      } else {
-        getDb().prepare(sql).run(...params);
+        return await D1RevenueRepository.getInstance().queryOne<T>(table, sql, params);
       }
+      return (getDb().prepare(sql).get(...params) as T) || null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async ensureDurableJourneyAndDemandSignal(
+    event: InboundMessageEvent,
+    provenance: IdentityProvenance,
+    sessionId: string,
+    intent: InboundIntent
+  ): Promise<{ journeyId: string; lastOfferContext: string | null }> {
+    const useD1 = isProduction() && !process.env.VITEST;
+    const isVerifiedChannel = provenance === 'VERIFIED_WHATSAPP_WEBHOOK' || provenance === 'VERIFIED_EMAIL_WEBHOOK';
+    let journeyRow: any = null;
+
+    if (event.journeyId) {
+      journeyRow = await this.safeQueryOne('customer_journeys', 'SELECT id, visitor_id, touchpoints_json FROM customer_journeys WHERE id = ?', [event.journeyId]);
+    }
+    if (!journeyRow) {
+      journeyRow = await this.safeQueryOne('customer_journeys', 'SELECT id, visitor_id, touchpoints_json FROM customer_journeys WHERE visitor_id = ? LIMIT 1', [sessionId]);
+    }
+    if (!journeyRow && isVerifiedChannel && event.senderContact) {
+      journeyRow = await this.safeQueryOne(
+        'customer_journeys',
+        'SELECT id, visitor_id, touchpoints_json FROM customer_journeys WHERE customer_phone = ? OR customer_email = ? LIMIT 1',
+        [event.senderContact, event.senderContact]
+      );
+    }
+
+    let journeyId = journeyRow?.id ? String(journeyRow.id) : '';
+    let lastOfferContext: string | null = null;
+    if (journeyRow?.touchpoints_json) {
+      try {
+        const tps = JSON.parse(journeyRow.touchpoints_json);
+        if (Array.isArray(tps)) {
+          for (let i = tps.length - 1; i >= 0; i--) {
+            if (tps[i]?.offerSlug) {
+              lastOfferContext = String(tps[i].offerSlug);
+              break;
+            }
+          }
+        }
+      } catch {}
+    }
+
+    const classification = event.isDiagnosticProbe ? 'TEST' : 'REAL';
+    const cleanContact = String(event.senderContact || '').trim();
+    const emailVal = cleanContact.includes('@') ? cleanContact.slice(0, 120) : null;
+    const phoneVal = !cleanContact.includes('@') && /\d{7,15}/.test(cleanContact) ? cleanContact.slice(0, 25) : null;
+
+    if (!journeyId) {
+      journeyId = `cj_${Date.now()}_${randomUUID().replace(/-/g, '').slice(0, 8)}`;
+      const initTouchpoints = JSON.stringify([
+        {
+          channel: event.channel,
+          provenance,
+          offerSlug: event.productSlugOrContext || null,
+          at: new Date().toISOString()
+        }
+      ]);
+      try {
+        await this.safeExecWrite(
+          'customer_journeys',
+          `INSERT INTO customer_journeys (
+            id, organization_id, business_id, visitor_id, customer_name, customer_phone, customer_email,
+            stage, first_touch_channel, last_touch_channel, touchpoints_json,
+            classification, attribution_status, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'LEAD', ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+          [
+            journeyId,
+            event.organizationId,
+            event.businessId,
+            sessionId,
+            event.senderName ? event.senderName.slice(0, 120) : null,
+            phoneVal,
+            emailVal,
+            event.channel,
+            event.channel,
+            initTouchpoints,
+            classification,
+            isVerifiedChannel ? 'VERIFIED' : provenance
+          ]
+        );
+      } catch (err: any) {
+        if (useD1) throw err;
+      }
+
+      try {
+        const existingPipe = await this.safeQueryOne('sales_pipeline', 'SELECT id FROM sales_pipeline WHERE journey_id = ? LIMIT 1', [journeyId]);
+        if (!existingPipe) {
+          await this.safeExecWrite(
+            'sales_pipeline',
+            `INSERT INTO sales_pipeline (
+              id, business_id, organization_id, journey_id, stage, owner_agent, next_action, next_action_at, reason, is_test, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, 'QUALIFIED', 'sales-conversation-engine', 'ANSWER_INQUIRY', datetime('now'), ?, ?, datetime('now'), datetime('now'))`,
+            [
+              `pipe_${Date.now()}_${randomUUID().replace(/-/g, '').slice(0, 6)}`,
+              event.businessId,
+              event.organizationId,
+              journeyId,
+              `Inbound ${event.channel} inquiry (${provenance})`,
+              event.isDiagnosticProbe ? 1 : 0
+            ]
+          );
+        }
+      } catch {}
+    }
+
+    // Persist first-party demand signal (diagnostic probes quarantined)
+    try {
+      const today = new Date().toISOString().slice(0, 10);
+      const dedupeHash = createHash('sha256')
+        .update(`${sessionId}|${today}|${String(event.messageText || '').trim().toLowerCase()}`)
+        .digest('hex')
+        .slice(0, 24);
+      const existingSig = await this.safeQueryOne('demand_signals', 'SELECT id FROM demand_signals WHERE dedupe_hash = ? LIMIT 1', [dedupeHash]);
+      if (!existingSig) {
+        const sigId = `dsig_desk_${Date.now()}_${randomUUID().replace(/-/g, '').slice(0, 6)}`;
+        const signalStatus = event.isDiagnosticProbe ? 'QUARANTINED' : 'DISCOVERED';
+        await this.safeExecWrite(
+          'demand_signals',
+          `INSERT INTO demand_signals (
+            id, organization_id, topic, category, intent_type, raw_query, evidence_snippet,
+            source_url, urgency, estimated_monthly_volume, status, intent_class, commercial_score,
+            source_host, dedupe_hash, signal_type, found_at, created_at
+          ) VALUES (?, ?, ?, ?, 'SEARCH_QUERY', ?, ?, 'first_party://customer-desk', ?, 100, ?, ?, ?, 'FIRST_PARTY_CUSTOMER_DESK', ?, 'BUYER_QUESTION', datetime('now'), datetime('now'))`,
+          [
+            sigId,
+            event.organizationId,
+            event.productSlugOrContext || 'FIRST_PARTY_CUSTOMER_DESK',
+            event.productSlugOrContext ? 'PRODUCT_INQUIRY' : 'GENERAL_DESK_INQUIRY',
+            String(event.messageText || '').slice(0, 300),
+            `First-party inquiry via ${event.channel} (${provenance})`.slice(0, 300),
+            intent === 'READY_TO_BUY' ? 0.95 : 0.7,
+            signalStatus,
+            intent === 'READY_TO_BUY' ? 'BUYING' : 'COMMERCIAL',
+            intent === 'READY_TO_BUY' ? 90 : 60,
+            dedupeHash
+          ]
+        );
+      }
+    } catch {}
+
+    return { journeyId, lastOfferContext };
+  }
+
+  private async recordOfferContextOnJourney(journeyId: string, sessionId: string, offerSlug: string): Promise<void> {
+    if (!journeyId || !offerSlug) return;
+    try {
+      const row = await this.safeQueryOne<any>('customer_journeys', 'SELECT touchpoints_json FROM customer_journeys WHERE id = ?', [journeyId]);
+      let tps: any[] = [];
+      try {
+        tps = JSON.parse(row?.touchpoints_json || '[]');
+        if (!Array.isArray(tps)) tps = [];
+      } catch {
+        tps = [];
+      }
+      if (tps[tps.length - 1]?.offerSlug === offerSlug) return;
+      tps.push({ sessionId, offerSlug, at: new Date().toISOString() });
+      await this.safeExecWrite(
+        'customer_journeys',
+        `UPDATE customer_journeys SET touchpoints_json = ?, updated_at = datetime('now') WHERE id = ?`,
+        [JSON.stringify(tps.slice(-15)), journeyId]
+      );
     } catch {}
   }
 
-  private async resolveCatalogContext(event: InboundMessageEvent): Promise<ResolvedCatalogOffer | null> {
+  private async resolveCatalogContextDetailed(event: InboundMessageEvent): Promise<{
+    resolvedOffer: ResolvedCatalogOffer | null;
+    clarificationNeeded: boolean;
+    clarificationOptions: ResolvedCatalogOffer[];
+  }> {
     const contextRaw = (event.productSlugOrContext || '').trim();
     const combinedLower = `${contextRaw} ${event.messageText || ''}`.toLowerCase();
     const isCustomScopeQuery = /\b(custom|bespoke|bulk|enterprise|sla|clinic pilot|special terms)\b/.test(combinedLower);
     if (isCustomScopeQuery && !contextRaw) {
-      return null;
+      return { resolvedOffer: null, clarificationNeeded: false, clarificationOptions: [] };
     }
 
-    // 1. Check SiteFix Audit / Fix-Pack explicit queries
-    if (/\b(sitefix|site-audit|site audit|technical audit|fix-pack|499|cwv|pagespeed)\b/.test(combinedLower)) {
-      return {
-        kind: 'DIGITAL_PRODUCT',
-        idOrSlug: 'sitefix_core_499',
-        title: 'SiteFix AI Technical Audit & Core Fix-Pack',
-        merchantOrProvider: 'AI Marketing Organization (SiteFix)',
-        priceINR: 499,
-        verifiedDiscountPercent: null,
-        availability: 'AVAILABLE_24X7',
-        offerPath: '/tools/site-audit',
-        permittedClaims: [
-          'Live technical SEO, Schema.org & Core Web Vitals inspection',
-          '₹499 Core Technical Fix-Pack with Razorpay Sandbox & Direct UPI claim verification'
-        ]
-      };
+    // Explicit SiteFix context -> deterministic single match (Lane D)
+    const sitefixOffer: ResolvedCatalogOffer = {
+      kind: 'DIGITAL_PRODUCT',
+      lane: 'LANE_D_DIGITAL_PRODUCTS',
+      idOrSlug: 'sitefix_core_499',
+      title: 'SiteFix AI Technical Audit & Core Fix-Pack',
+      merchantOrProvider: 'AI Marketing Organization (SiteFix)',
+      priceINR: 499,
+      verifiedDiscountPercent: null,
+      availability: 'AVAILABLE_24X7',
+      offerPath: '/tools/site-audit',
+      permittedClaims: [
+        'Live technical SEO, Schema.org & Core Web Vitals inspection',
+        '₹499 Core Technical Fix-Pack with Razorpay Sandbox & Direct UPI claim verification'
+      ],
+      score: 10
+    };
+    if (
+      contextRaw.toLowerCase() === 'sitefix_core_499' ||
+      contextRaw.toLowerCase() === 'sitefix' ||
+      /\b(sitefix|site-audit|site audit|technical audit|fix-pack|499|cwv|pagespeed|website audit)\b/.test(combinedLower)
+    ) {
+      return { resolvedOffer: sitefixOffer, clarificationNeeded: false, clarificationOptions: [] };
     }
 
-    // 2. Check Financial & Commodity Research Radar
+    // Explicit Financial Radar context (Lane E)
     if (/\b(financial-radar|financial radar|mfapi|mutual fund|nifty|gold etf|sgb|g-sec|bond|ytm|duration)\b/.test(combinedLower)) {
-      return {
+      const finOffer: ResolvedCatalogOffer = {
         kind: 'FINANCIAL_RESEARCH',
+        lane: 'LANE_E_FINANCIAL_RADAR',
         idOrSlug: 'financial_radar',
         title: 'SEBI-Safe Financial & Commodity Research Radar',
         merchantOrProvider: 'AI Marketing Organization Research',
@@ -558,93 +988,288 @@ export class SalesConversationEngine {
         permittedClaims: [
           'AMFI / MFAPI.in live NAV drawdown & volatility analytics',
           '10Y G-Sec YTM & SGB vs Spot Gold parity calculators (Educational Research Only)'
-        ]
+        ],
+        score: 10
       };
+      return { resolvedOffer: finOffer, clarificationNeeded: false, clarificationOptions: [] };
     }
 
-    // 3. Match verified active affiliate deals in public_deals (by exact slug or keyword scoring)
+    // Load active items across Lanes A (public_deals), B/D (customer_offers), and C (partner_offers)
     const deals = await this.safeQueryAll<any>(
       'public_deals',
-      `SELECT slug, canonical_slug, title, brand, merchant, category, current_price_inr, reference_price_inr, discount_percent, availability
+      `SELECT slug, canonical_slug, title, brand, merchant, category, current_price_inr, reference_price_inr, discount_percent, availability, last_verified_at
        FROM public_deals
-       WHERE product_verified = 1 AND affiliate_verified = 1 AND availability = 'IN_STOCK' AND current_price_inr > 0
+       WHERE product_verified = 1
+         AND affiliate_verified = 1
+         AND is_monetizable = 1
+         AND availability = 'IN_STOCK'
+         AND current_price_inr > 0
+         AND (last_verified_at IS NULL OR datetime(last_verified_at) >= datetime('now', '-14 days'))
        LIMIT 150`
     );
 
-    if (deals.length > 0) {
-      if (contextRaw) {
-        const ctxNorm = contextRaw.toLowerCase().replace(/^\/deals\//, '').replace(/\//g, '');
-        const exact = deals.find(
-          d =>
-            String(d.slug || '').toLowerCase() === ctxNorm ||
-            String(d.canonical_slug || '').toLowerCase() === ctxNorm
-        );
-        if (exact) {
-          return this.mapDealToResolvedOffer(exact);
-        }
-      }
-
-      const stopWords = new Set(['what', 'does', 'cost', 'price', 'rate', 'much', 'how', 'for', 'the', 'this', 'that', 'with', 'about', 'want', 'send', 'details', 'info', 'deal', 'live', 'buy', 'have', 'your', 'our', 'are', 'can', 'you', 'show', 'please']);
-      const tokens = Array.from(
-        new Set(
-          combinedLower
-            .replace(/[^a-z0-9]+/g, ' ')
-            .split(/\s+/)
-            .filter(t => t.length >= 3 && !stopWords.has(t))
-        )
-      );
-
-      let bestDeal: any = null;
-      let bestScore = 0;
-      for (const d of deals) {
-        const hay = `${d.slug || ''} ${d.title || ''} ${d.brand || ''} ${d.merchant || ''} ${d.category || ''}`.toLowerCase();
-        let score = 0;
-        for (const tok of tokens) {
-          if (hay.includes(tok)) {
-            score += tok.length >= 4 ? 2 : 1;
-          }
-        }
-        if (score > bestScore) {
-          bestScore = score;
-          bestDeal = d;
-        }
-      }
-      if (bestDeal && bestScore >= 2) {
-        return this.mapDealToResolvedOffer(bestDeal);
-      }
-    }
-
-    // 4. Match active rows in customer_offers when present in DB
-    const offers = await this.safeQueryAll<any>(
+    const customerOffers = await this.safeQueryAll<any>(
       'customer_offers',
       `SELECT id, title, description, category, price_minor, billing_model
        FROM customer_offers
        WHERE active = 1
        LIMIT 25`
     );
-    if (offers.length > 0 && contextRaw) {
-      const ctxNorm = contextRaw.toLowerCase();
-      const matchedOffer = offers.find(
-        o =>
-          String(o.id || '').toLowerCase() === ctxNorm ||
-          String(o.title || '').toLowerCase().includes(ctxNorm)
+
+    const partnerOffers = await this.safeQueryAll<any>(
+      'partner_offers',
+      `SELECT id, offer_slug, title, description, category, current_price_inr, destination_url, status, active
+       FROM partner_offers
+       WHERE active = 1 AND status = 'ACTIVE'
+       LIMIT 50`
+    );
+
+    // Exact slug/ID match across lanes first
+    if (contextRaw) {
+      const ctxNorm = contextRaw.toLowerCase().replace(/^\/deals\//, '').replace(/\//g, '');
+      const exactDeal = deals.find(
+        d => String(d.slug || '').toLowerCase() === ctxNorm || String(d.canonical_slug || '').toLowerCase() === ctxNorm
       );
-      if (matchedOffer) {
+      if (exactDeal) {
+        return { resolvedOffer: this.mapDealToResolvedOffer(exactDeal), clarificationNeeded: false, clarificationOptions: [] };
+      }
+
+      const exactCustOffer = customerOffers.find(
+        o => String(o.id || '').toLowerCase() === ctxNorm || String(o.title || '').toLowerCase().includes(ctxNorm)
+      );
+      if (exactCustOffer) {
         return {
-          kind: 'SERVICE_OFFER',
-          idOrSlug: String(matchedOffer.id),
-          title: String(matchedOffer.title),
-          merchantOrProvider: 'AI Marketing Organization',
-          priceINR: Number((Number(matchedOffer.price_minor || 0) / 100).toFixed(2)),
-          verifiedDiscountPercent: null,
-          availability: 'IN_STOCK',
-          offerPath: '/offer',
-          permittedClaims: [String(matchedOffer.description || matchedOffer.billing_model || 'Verified service offer')]
+          resolvedOffer: {
+            kind: 'SERVICE_OFFER',
+            lane: 'LANE_B_SERVICES',
+            idOrSlug: String(exactCustOffer.id),
+            title: String(exactCustOffer.title),
+            merchantOrProvider: 'AI Marketing Organization',
+            priceINR: Number((Number(exactCustOffer.price_minor || 0) / 100).toFixed(2)),
+            verifiedDiscountPercent: null,
+            availability: 'IN_STOCK',
+            offerPath: '/offer',
+            permittedClaims: [String(exactCustOffer.description || exactCustOffer.billing_model || 'Verified service offer')]
+          },
+          clarificationNeeded: false,
+          clarificationOptions: []
+        };
+      }
+
+      const exactPartner = partnerOffers.find(
+        p => String(p.offer_slug || '').toLowerCase() === ctxNorm || String(p.id || '').toLowerCase() === ctxNorm
+      );
+      if (exactPartner && Number(exactPartner.current_price_inr || 0) > 0) {
+        return {
+          resolvedOffer: {
+            kind: 'AFFILIATE_DEAL',
+            lane: 'LANE_C_PARTNER_OFFERS',
+            idOrSlug: String(exactPartner.offer_slug || exactPartner.id),
+            title: String(exactPartner.title || exactPartner.offer_slug),
+            merchantOrProvider: 'Verified Partner',
+            priceINR: Number(exactPartner.current_price_inr),
+            verifiedDiscountPercent: null,
+            availability: 'IN_STOCK',
+            offerPath: `/deals/${encodeURIComponent(String(exactPartner.offer_slug || exactPartner.id))}`,
+            permittedClaims: [String(exactPartner.description || 'Verified partner offer')]
+          },
+          clarificationNeeded: false,
+          clarificationOptions: []
         };
       }
     }
 
-    return null;
+    const stopWords = new Set([
+      'what', 'does', 'cost', 'price', 'rate', 'much', 'how', 'for', 'the', 'this', 'that', 'with',
+      'about', 'want', 'send', 'details', 'info', 'deal', 'deals', 'live', 'buy', 'have', 'your',
+      'our', 'are', 'can', 'you', 'show', 'please', 'which', 'best', 'find', 'looking', 'ready',
+      'purchase', 'confirm', 'order', 'proceed', 'checkout', 'under', 'good'
+    ]);
+    const tokens = Array.from(
+      new Set(
+        combinedLower
+          .replace(/[^a-z0-9]+/g, ' ')
+          .split(/\s+/)
+          .filter(t => t.length >= 3 && !stopWords.has(t))
+      )
+    );
+
+    if (tokens.length === 0) {
+      return { resolvedOffer: null, clarificationNeeded: false, clarificationOptions: [] };
+    }
+
+    const candidates: ResolvedCatalogOffer[] = [];
+    for (const d of deals) {
+      const hay = `${d.slug || ''} ${d.title || ''} ${d.brand || ''} ${d.merchant || ''} ${d.category || ''}`.toLowerCase();
+      let score = 0;
+      for (const tok of tokens) {
+        if (hay.includes(tok)) {
+          score += tok.length >= 4 ? 2 : 1;
+        }
+      }
+      if (score >= 2) {
+        const mapped = this.mapDealToResolvedOffer(d);
+        mapped.score = score;
+        candidates.push(mapped);
+      }
+    }
+
+    for (const o of customerOffers) {
+      const hay = `${o.id || ''} ${o.title || ''} ${o.description || ''} ${o.category || ''}`.toLowerCase();
+      let score = 0;
+      for (const tok of tokens) {
+        if (hay.includes(tok)) score += tok.length >= 4 ? 2 : 1;
+      }
+      if (score >= 2) {
+        candidates.push({
+          kind: 'SERVICE_OFFER',
+          lane: 'LANE_B_SERVICES',
+          idOrSlug: String(o.id),
+          title: String(o.title),
+          merchantOrProvider: 'AI Marketing Organization',
+          priceINR: Number((Number(o.price_minor || 0) / 100).toFixed(2)),
+          verifiedDiscountPercent: null,
+          availability: 'IN_STOCK',
+          offerPath: '/offer',
+          permittedClaims: [String(o.description || o.billing_model || 'Verified service offer')],
+          score
+        });
+      }
+    }
+
+    const existingSlugs = new Set(candidates.map(c => c.idOrSlug.toLowerCase()));
+    for (const p of partnerOffers) {
+      const slug = String(p.offer_slug || p.id || '');
+      if (!slug || existingSlugs.has(slug.toLowerCase()) || !(Number(p.current_price_inr || 0) > 0)) continue;
+      const hay = `${slug} ${p.title || ''} ${p.description || ''} ${p.category || ''}`.toLowerCase();
+      let score = 0;
+      for (const tok of tokens) {
+        if (hay.includes(tok)) score += tok.length >= 4 ? 2 : 1;
+      }
+      if (score >= 2) {
+        candidates.push({
+          kind: 'AFFILIATE_DEAL',
+          lane: 'LANE_C_PARTNER_OFFERS',
+          idOrSlug: slug,
+          title: String(p.title || slug),
+          merchantOrProvider: 'Verified Partner',
+          priceINR: Number(p.current_price_inr),
+          verifiedDiscountPercent: null,
+          availability: 'IN_STOCK',
+          offerPath: `/deals/${encodeURIComponent(slug)}`,
+          permittedClaims: [String(p.description || 'Verified partner offer')],
+          score
+        });
+      }
+    }
+
+    candidates.sort((a, b) => (b.score || 0) - (a.score || 0));
+    if (candidates.length === 0) {
+      return { resolvedOffer: null, clarificationNeeded: false, clarificationOptions: [] };
+    }
+
+    const topScore = candidates[0].score || 0;
+    const secondScore = candidates[1]?.score || 0;
+    const isAmbiguousCategoryQuery =
+      candidates.length >= 2 &&
+      !contextRaw &&
+      (secondScore === topScore || topScore - secondScore <= 2);
+
+    if (isAmbiguousCategoryQuery) {
+      return {
+        resolvedOffer: null,
+        clarificationNeeded: true,
+        clarificationOptions: candidates.slice(0, 3)
+      };
+    }
+
+    return {
+      resolvedOffer: candidates[0],
+      clarificationNeeded: false,
+      clarificationOptions: []
+    };
+  }
+
+  private async createCheckoutOrRedirect(
+    event: InboundMessageEvent,
+    offer: ResolvedCatalogOffer,
+    sessionId: string,
+    journeyId: string
+  ): Promise<{
+    checkout: DeskCheckoutPayload;
+    pipelineStage: string;
+    conversationState: 'CHECKOUT_CREATED' | 'AFFILIATE_REDIRECT_READY';
+    responseTemplate: string;
+    reason: string;
+  }> {
+    if ((offer.kind === 'DIGITAL_PRODUCT' || offer.kind === 'SERVICE_OFFER') && (offer.priceINR ?? 0) > 0) {
+      const orderId = `ord_${Date.now()}_${randomUUID().replace(/-/g, '').slice(0, 8)}`;
+      const amountINR = Number(offer.priceINR);
+      const upiId = (process.env.MERCHANT_UPI_ID || process.env.UPI_MERCHANT_VPA || process.env.OWNER_UPI_VPA || 'kotuharsha1@okhdfcbank').trim();
+      const upiDeepLink = `upi://pay?pa=${encodeURIComponent(upiId)}&pn=${encodeURIComponent('AI Marketing Organization')}&am=${amountINR}&cu=INR&tn=${encodeURIComponent(orderId)}`;
+      const checkoutUrl = `${offer.offerPath}${offer.offerPath.includes('?') ? '&' : '?'}orderId=${encodeURIComponent(orderId)}`;
+
+      await this.safeExecWrite(
+        'payment_requests',
+        `INSERT INTO payment_requests (
+          id, business_id, organization_id, journey_id, offer_id, offer_description,
+          amount_inr, currency, billing_model, payment_link, short_url, status,
+          classification, provider, reference_id, is_test, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'INR', 'ONE_TIME', ?, ?, 'PAYMENT_PENDING', ?, 'DIRECT_UPI', ?, ?, datetime('now'), datetime('now'))`,
+        [
+          orderId,
+          event.businessId,
+          event.organizationId,
+          journeyId || null,
+          offer.idOrSlug,
+          offer.title,
+          amountINR,
+          upiDeepLink,
+          checkoutUrl,
+          event.isDiagnosticProbe ? 'TEST' : 'REAL',
+          orderId,
+          event.isDiagnosticProbe ? 1 : 0
+        ]
+      );
+
+      return {
+        checkout: {
+          checkoutMode: 'OWNED_CHECKOUT_CREATED',
+          orderId,
+          sku: offer.idOrSlug,
+          amountINR,
+          upiDeepLink,
+          upiClaimEndpoint: '/api/v1/offer/upi-claim',
+          checkoutUrl
+        },
+        pipelineStage: 'PAYMENT_REQUEST_CREATED',
+        conversationState: 'CHECKOUT_CREATED',
+        responseTemplate: `Checkout order ${orderId} created for ${offer.title} (₹${amountINR.toLocaleString('en-IN')}). Complete UPI payment via ${upiDeepLink} and submit your 12-digit UTR to /api/v1/offer/upi-claim with orderId=${orderId} (or complete on ${checkoutUrl}).`,
+        reason: `Server-authoritative owned checkout order ${orderId} created in payment_requests (₹${amountINR}).`
+      };
+    }
+
+    const clickId = `desk_clk_${Date.now()}_${randomUUID().replace(/-/g, '').slice(0, 8)}`;
+    const redirectUrl = `/api/v1/public/deals/${encodeURIComponent(offer.idOrSlug)}/redirect?sessionId=${encodeURIComponent(sessionId)}&placement=customer_desk&clickRef=${encodeURIComponent(clickId)}`;
+    return {
+      checkout: {
+        checkoutMode: 'AFFILIATE_REDIRECT_READY',
+        clickId,
+        sku: offer.idOrSlug,
+        amountINR: offer.priceINR,
+        redirectUrl,
+        merchantUrl: offer.offerPath
+      },
+      pipelineStage: 'MERCHANT_REFERRAL_ISSUED',
+      conversationState: 'AFFILIATE_REDIRECT_READY',
+      responseTemplate: `Tracked merchant checkout link ready for ${offer.title} (${offer.priceINR !== null ? `₹${offer.priceINR.toLocaleString('en-IN')}` : 'live rate'}): proceed securely via ${redirectUrl} (Click Ref: ${clickId}).`,
+      reason: `Issued tracked affiliate merchant redirect ${clickId} for ${offer.idOrSlug}.`
+    };
+  }
+
+  private async resolveCatalogContext(event: InboundMessageEvent): Promise<ResolvedCatalogOffer | null> {
+    const detailed = await this.resolveCatalogContextDetailed(event);
+    return detailed.resolvedOffer;
   }
 
   private mapDealToResolvedOffer(d: any): ResolvedCatalogOffer {
@@ -707,42 +1332,48 @@ export class SalesConversationEngine {
     }
   }
 
-  private updatePipelineStage(contact: string, newStage: string, reason: string, journeyId?: string): void {
-    const db = getDb();
+  private async updatePipelineStageAsync(contact: string, newStage: string, reason: string, journeyId?: string): Promise<void> {
     try {
       let targetJourneyId = journeyId;
+      let targetBizId = '';
 
       if (!targetJourneyId) {
-        const journey = db.prepare(`
-          SELECT id, business_id FROM customer_journeys
-          WHERE customer_phone = ? OR customer_email = ?
-        `).get(contact, contact) as any;
+        const journey = await this.safeQueryOne<any>(
+          'customer_journeys',
+          `SELECT id, business_id FROM customer_journeys WHERE customer_phone = ? OR customer_email = ? LIMIT 1`,
+          [contact, contact]
+        );
         targetJourneyId = journey?.id;
+        targetBizId = journey?.business_id || '';
       }
 
       if (targetJourneyId) {
-        db.prepare(`
-          UPDATE sales_pipeline
-          SET stage = ?, reason = ?, updated_at = datetime('now')
-          WHERE journey_id = ?
-        `).run(newStage, reason, targetJourneyId);
+        await this.safeExecWrite(
+          'sales_pipeline',
+          `UPDATE sales_pipeline SET stage = ?, reason = ?, updated_at = datetime('now') WHERE journey_id = ?`,
+          [newStage, reason, targetJourneyId]
+        );
+        await this.safeExecWrite(
+          'customer_journeys',
+          `UPDATE customer_journeys SET stage = ?, updated_at = datetime('now') WHERE id = ?`,
+          [newStage, targetJourneyId]
+        );
 
-        db.prepare(`
-          UPDATE customer_journeys
-          SET stage = ?, updated_at = datetime('now')
-          WHERE id = ?
-        `).run(newStage, targetJourneyId);
-
-        const targetBizId = (db.prepare('SELECT business_id FROM customer_journeys WHERE id = ?').get(targetJourneyId) as any)?.business_id ||
-          (db.prepare('SELECT business_id FROM sales_pipeline WHERE journey_id = ? LIMIT 1').get(targetJourneyId) as any)?.business_id;
+        if (!targetBizId) {
+          const jRow = await this.safeQueryOne<any>('customer_journeys', 'SELECT business_id FROM customer_journeys WHERE id = ?', [targetJourneyId]);
+          const pRow = !jRow ? await this.safeQueryOne<any>('sales_pipeline', 'SELECT business_id FROM sales_pipeline WHERE journey_id = ? LIMIT 1', [targetJourneyId]) : null;
+          targetBizId = jRow?.business_id || pRow?.business_id || '';
+        }
 
         if (targetBizId) {
           const transId = `ptrans_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-          db.prepare(`
-            INSERT INTO pipeline_transitions (
+          await this.safeExecWrite(
+            'pipeline_transitions',
+            `INSERT INTO pipeline_transitions (
               id, pipeline_id, business_id, previous_state, new_state, actor, reason, timestamp
-            ) VALUES (?, ?, ?, 'AUTOMATED_INBOUND', ?, 'sales-conversation-engine', ?, datetime('now'))
-          `).run(transId, targetJourneyId, targetBizId, newStage, reason);
+            ) VALUES (?, ?, ?, 'AUTOMATED_INBOUND', ?, 'sales-conversation-engine', ?, datetime('now'))`,
+            [transId, targetJourneyId, targetBizId, newStage, reason]
+          ).catch(() => {});
         }
       }
     } catch {}

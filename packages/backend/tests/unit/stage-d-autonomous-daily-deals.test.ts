@@ -1635,5 +1635,61 @@ describe('Stage D & Stage E — Autonomous Daily Deals and Production Conversion
       expect(html).toContain('LIVE_DATED_PROVIDER_SERIES');
       expect(html).toContain('EDUCATIONAL_RESEARCH_AND_PAPER_PORTFOLIO_ONLY');
     });
+
+    it('Stage I.2 (P5): strictly separates CPC from CPS/CPA order commissions and rejects ambiguous multi-campaign root-domain fallback', async () => {
+      const db = getDb();
+      const { parseVerifiedCampaignPayout } = await import('../../src/commission/autonomous-deal-discovery-engine.js');
+      const { CuelinksSyncManager } = await import('../../src/commission/cuelinks-sync-manager.js');
+
+      // 1. INR CPC must NEVER populate flatINR or grossCommissionPerApprovedOrderINR
+      const cpcInr = parseVerifiedCampaignPayout(
+        { payout_model: 'CPC', payout_rate: '4.5', payout_currency: 'INR', payout_type: 'Per Click' },
+        1999
+      );
+      expect(cpcInr.monetizationModel).toBe('CPC');
+      expect(cpcInr.verifiedCpcPayoutINR).toBe(4.5);
+      expect(cpcInr.ratePercent).toBeNull();
+      expect(cpcInr.flatINR).toBeNull();
+      expect(cpcInr.grossCommissionPerApprovedOrderINR).toBeNull();
+      expect(cpcInr.missingPayoutReason).toBe('CPC_OFFLINE_ONLY');
+
+      // 2. Multiple active campaigns on the same root domain -> AMBIGUOUS_DOMAIN_MULTIPLE_CAMPAIGNS (no silent guesswork)
+      db.prepare('DELETE FROM cuelinks_campaigns').run();
+      db.prepare('DELETE FROM public_deals').run();
+      db.prepare(`
+        INSERT INTO cuelinks_campaigns (campaign_id, name, merchant_domain, status, payout_model, payout_rate, cookie_days, category, verification_source)
+        VALUES
+          ('6101', 'Amazon India Standard', 'www.amazon.in', 'ACTIVE', 'CPS', '5.0', 1, 'Electronics', 'CUELINKS_API_V3'),
+          ('6102', 'Amazon India Fashion', 'amazon.in', 'ACTIVE', 'CPS', '8.0', 1, 'Fashion', 'CUELINKS_API_V3')
+      `).run();
+      db.prepare(`
+        INSERT INTO public_deals (
+          id, slug, canonical_slug, sector_code, title, brand, category, merchant,
+          product_url, affiliate_url, current_price_inr,
+          reference_price_inr, availability, deal_kind, product_verified, affiliate_verified, is_monetizable,
+          verification_status, evidence_json, last_verified_at
+        ) VALUES (
+          'deal_amz_ambig', 'amazon-ambig-item-i2', 'amazon-ambig-item-i2',
+          'SECTOR_B_ELECTRONICS', 'Amazon Ambiguous Headphones', 'Sony', 'Electronics', 'Amazon India',
+          'https://www.amazon.in/dp/B09AMBIG01', 'https://linksredirect.com/?pub_id=1&url=https%3A%2F%2Fwww.amazon.in%2Fdp%2FB09AMBIG01',
+          4999, 7999, 'IN_STOCK', 'PRODUCT_DEAL', 1, 1, 1, 'VERIFIED', '{}', datetime('now')
+        )
+      `).run();
+
+      const mockClient = {
+        isConfigured: () => true,
+        getCampaignDetails: vi.fn().mockResolvedValue(null),
+        searchCampaigns: vi.fn().mockResolvedValue({ campaigns: [], total: 0 }),
+        getOffers: vi.fn().mockResolvedValue({ offers: [], total: 0 })
+      } as any;
+      const syncMgr = CuelinksSyncManager.getInstance(mockClient);
+      const hydRes = await syncMgr.hydrateMissingCampaignPayoutsD1('org_owner_primary', 'biz_platform_aro', 50);
+      expect(hydRes.missingPayoutBreakdown['AMBIGUOUS_DOMAIN_MULTIPLE_CAMPAIGNS']).toBe(1);
+
+      const dealRow = db.prepare('SELECT evidence_json FROM public_deals WHERE id = ?').get('deal_amz_ambig') as any;
+      const ev = JSON.parse(dealRow.evidence_json);
+      expect(ev.missingPayoutReason).toBe('AMBIGUOUS_DOMAIN_MULTIPLE_CAMPAIGNS');
+      expect(ev.verifiedCommissionRatePercent).toBeUndefined();
+    });
   });
 });

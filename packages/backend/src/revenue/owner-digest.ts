@@ -21,6 +21,7 @@ import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { validateOwnerEnvFacts } from '../config/owner-env-intake.js';
 import { ReplyDeskService, ReplyDraft } from './reply-desk.js';
 import { DirectCommercialOfferPage } from './direct-offer-page.js';
+import { OwnerAuthService } from '../auth/owner-auth.js';
 
 export interface OwnerDigestMetrics {
   visits: number | 'UNKNOWN';
@@ -118,6 +119,7 @@ export interface ArosControlCenterSummary {
     publishedDigitalProducts?: number;
     financialResearchModels?: number;
     buyerDemandSignals?: number;
+    firstPartyCustomerDeskSignals?: number;
     unifiedOpportunities: {
       totalTracked: number;
       byLane: Record<string, { total: number; verified: number; qualified: number; published: number; rejected: number }>;
@@ -158,6 +160,8 @@ export interface ArosControlCenterSummary {
     queuedJobsCount: number;
     oldestQueuedJobAgeMinutes: number | null;
     readinessBlockers: Array<{ domain: string; code: string; status: string; actionRequired: string }>;
+    deadLetterEventsCount?: number;
+    deadLetterEvents?: Array<{ id: string; eventType: string; errorMessage?: string; createdAt: string }>;
   };
 }
 
@@ -861,22 +865,50 @@ export class OwnerDigestService {
     } catch {}
 
     const financialResearchModelsCnt = financialAndArbitrageRadar?.researchSnapshots?.length || 0;
-    const buyerDemandSignalsCnt = Array.isArray(financialAndArbitrageRadar?.arbitrageClusters)
+    const radarDemandSignalsCnt = Array.isArray(financialAndArbitrageRadar?.arbitrageClusters)
       ? financialAndArbitrageRadar.arbitrageClusters.reduce(
           (acc: number, cl: any) => acc + (Number(cl?.demandSignalsCount) || 0),
           0
         )
       : 0;
+    let firstPartyDeskSignalsCnt = 0;
+    try {
+      const fpRow = await this.queryCcOne<any>(
+        'demand_signals',
+        `SELECT COUNT(*) as c FROM demand_signals WHERE source_host = 'FIRST_PARTY_CUSTOMER_DESK' AND status != 'QUARANTINED'`
+      );
+      firstPartyDeskSignalsCnt = Number(fpRow?.c || 0);
+    } catch {}
+    const buyerDemandSignalsCnt = radarDemandSignalsCnt + firstPartyDeskSignalsCnt;
+
+    let deadLetterEvents: Array<{ id: string; eventType: string; errorMessage?: string; createdAt: string }> = [];
+    try {
+      const { DurableEventBus } = await import('./durable-event-bus.js');
+      const dlq = await DurableEventBus.listDeadLetterAsync(OwnerAuthService.OWNER_ORGANIZATION_ID, 25);
+      deadLetterEvents = dlq.map(e => ({
+        id: e.id,
+        eventType: e.eventType,
+        errorMessage: e.errorMessage,
+        createdAt: e.createdAt
+      }));
+    } catch {}
 
     // Stage I P7: 5-State Capability Verification Matrix (eliminates false STRIPE global blocker)
     let integrationCapabilities: any = null;
     const readinessBlockers: Array<{ domain: string; code: string; status: string; actionRequired: string }> = [];
     try {
       const { IntegrationCapabilityRegistry } = await import('../control-plane/integration-capability-registry.js');
+      const humanVerifiedUpiReceiptsCount =
+        (countsByState.HUMAN_VERIFIED_PAYMENT || 0) +
+        (countsByState.FULFILLMENT_IN_PROGRESS || 0) +
+        (countsByState.FULFILLED || 0);
       integrationCapabilities = IntegrationCapabilityRegistry.evaluateAll({
         genuineCronObservedRecently: Boolean(latestPingIsGenuineWorker && genuineCronWorkerRuns24h > 0),
         cuelinksConnected: Boolean((process.env.CUELINKS_API_KEY || process.env.CUELINKS_TOKEN || '').trim()),
-        cuelinksChannelApproved: activeCampaignsCnt > 0
+        cuelinksChannelApproved: activeCampaignsCnt > 0,
+        upiClaimTested: (countsByState.PAYMENT_CLAIMED || 0) > 0,
+        upiClaimProcessingVerified: Boolean((process.env.MERCHANT_UPI_ID || process.env.UPI_MERCHANT_VPA || process.env.OWNER_UPI_VPA || '').trim()),
+        humanVerifiedUpiReceiptsCount
       });
       for (const gb of integrationCapabilities.activeGlobalBlockers || []) {
         readinessBlockers.push({
@@ -923,6 +955,7 @@ export class OwnerDigestService {
         publishedDigitalProducts: publishedDigitalProductsCnt,
         financialResearchModels: financialResearchModelsCnt,
         buyerDemandSignals: buyerDemandSignalsCnt,
+        firstPartyCustomerDeskSignals: firstPartyDeskSignalsCnt,
         unifiedOpportunities: {
           totalTracked: oppTotal,
           byLane,
@@ -963,7 +996,9 @@ export class OwnerDigestService {
         latestPingIsGenuineWorker,
         queuedJobsCount,
         oldestQueuedJobAgeMinutes,
-        readinessBlockers
+        readinessBlockers,
+        deadLetterEventsCount: deadLetterEvents.length,
+        deadLetterEvents
       }
     };
   }
@@ -1774,8 +1809,10 @@ export class OwnerDigestService {
       (${digest.arosControlCenter.scheduledExecutionTruth.latestPingIsGenuineWorker ? '<span style="color:#10b981;">Genuine Worker</span>' : '<span style="color:#fbbf24;">Non-Worker / Manual</span>'}) &bull;
       Queued Jobs: <strong>${digest.arosControlCenter.scheduledExecutionTruth.queuedJobsCount}</strong>
       ${digest.arosControlCenter.scheduledExecutionTruth.oldestQueuedJobAgeMinutes !== null ? ` (Oldest: ${digest.arosControlCenter.scheduledExecutionTruth.oldestQueuedJobAgeMinutes}m)` : ''} &bull;
-      Quarantined Test Rows: <strong>${digest.arosControlCenter.quarantinedTestRecordsCount ?? 0}</strong>
+      Quarantined Test Rows: <strong>${digest.arosControlCenter.quarantinedTestRecordsCount ?? 0}</strong> &bull;
+      Dead-Letter Events: <strong>${digest.arosControlCenter.scheduledExecutionTruth.deadLetterEventsCount ?? 0}</strong>
       ${digest.arosControlCenter.scheduledExecutionTruth.readinessBlockers.length > 0 ? `<div style="margin-top:0.4rem;color:#fca5a5;">Blockers: ${digest.arosControlCenter.scheduledExecutionTruth.readinessBlockers.map(b => `${b.domain} (${b.status})`).join(', ')}</div>` : '<div style="margin-top:0.4rem;color:#10b981;">Zero Global Blockers (India-first UPI + Affiliate + Multi-Asset Research Live)</div>'}
+      ${(digest.arosControlCenter.scheduledExecutionTruth.deadLetterEvents?.length || 0) > 0 ? `<div style="margin-top:0.4rem;color:#fca5a5;">DLQ Events: ${digest.arosControlCenter.scheduledExecutionTruth.deadLetterEvents!.map(e => `${e.eventType} (${e.id})`).join(', ')}</div>` : ''}
     </div>
 
     <h3 style="font-size:0.95rem;color:#94a3b8;margin-bottom:0.5rem;">Manual UPI Verification &amp; Fulfillment Queue</h3>

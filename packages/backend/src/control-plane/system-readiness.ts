@@ -223,14 +223,21 @@ export class SystemReadinessEngine {
       };
     }
 
-    const directUpiVpa = (process.env.OWNER_UPI_VPA || '9392784805@ybl').trim();
+    const directUpiVpa = (process.env.MERCHANT_UPI_ID || process.env.UPI_MERCHANT_VPA || process.env.OWNER_UPI_VPA || '').trim();
+    let humanVerifiedUpiCount = 0;
+    try {
+      const hvRow = db.prepare(
+        `SELECT COUNT(*) as c FROM manual_upi_claims WHERE status IN ('HUMAN_VERIFIED_PAYMENT', 'FULFILLMENT_IN_PROGRESS', 'FULFILLED') AND (is_test = 0 OR is_test IS NULL)`
+      ).get() as any;
+      humanVerifiedUpiCount = Number(hvRow?.c || 0);
+    } catch {}
     capabilities['DIRECT_UPI'] = {
       configured: Boolean(directUpiVpa),
       authenticated: Boolean(directUpiVpa),
-      authorized: true,
+      authorized: Boolean(directUpiVpa),
       operational: true,
-      verified: true,
-      details: `Direct UPI fallback rail active (VPA: ${directUpiVpa}) with UTR + manual owner verification`
+      verified: humanVerifiedUpiCount >= 1,
+      details: `Direct UPI fallback rail (${humanVerifiedUpiCount >= 1 ? 'PAYMENT_RECEIPT_HUMAN_VERIFIED' : directUpiVpa ? 'CLAIM_PROCESSING_VERIFIED' : 'CONFIGURED'}; VPA: ${directUpiVpa || 'kotuharsha1@okhdfcbank'}; verified receipts: ${humanVerifiedUpiCount})`
     };
 
     capabilities['RAZORPAY'] = {
@@ -414,9 +421,28 @@ export class SystemReadinessEngine {
 
     try {
       const { IntegrationCapabilityRegistry } = await import('./integration-capability-registry.js');
+      let humanVerifiedUpiReceiptsCount = 0;
+      let upiClaimTested = false;
+      try {
+        const claimsSql = `
+          SELECT
+            SUM(CASE WHEN status IN ('HUMAN_VERIFIED_PAYMENT', 'FULFILLMENT_IN_PROGRESS', 'FULFILLED') THEN 1 ELSE 0 END) as hv,
+            SUM(CASE WHEN status = 'PAYMENT_CLAIMED' THEN 1 ELSE 0 END) as pc
+          FROM manual_upi_claims
+          WHERE is_test = 0 OR is_test IS NULL
+        `;
+        const claimsRow = (isProduction() && !process.env.VITEST)
+          ? await D1RevenueRepository.getInstance().queryOne<any>('manual_upi_claims', claimsSql, [])
+          : (getDb().prepare(claimsSql).get() as any);
+        humanVerifiedUpiReceiptsCount = Number(claimsRow?.hv || 0);
+        upiClaimTested = Number(claimsRow?.pc || 0) > 0;
+      } catch {}
       (report as any).integrationCapabilities = IntegrationCapabilityRegistry.evaluateAll({
         cuelinksConnected: Boolean((process.env.CUELINKS_API_KEY || process.env.CUELINKS_TOKEN || '').trim()),
-        cuelinksChannelApproved: cuelinksApproved
+        cuelinksChannelApproved: cuelinksApproved,
+        upiClaimTested,
+        upiClaimProcessingVerified: Boolean((process.env.MERCHANT_UPI_ID || process.env.UPI_MERCHANT_VPA || process.env.OWNER_UPI_VPA || '').trim()),
+        humanVerifiedUpiReceiptsCount
       });
     } catch {}
     return report;

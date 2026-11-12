@@ -929,10 +929,11 @@ export class RazorpayAdapter {
     }
 
     if (params.orderId) {
+      const cleanOrdId = String(params.orderId).trim();
       const ordRow = await queryOne(
         'payment_orders',
         'SELECT id, business_id, order_id, amount_inr, receipt, notes_json FROM payment_orders WHERE id = ? OR order_id = ? LIMIT 1',
-        [String(params.orderId).trim(), String(params.orderId).trim()]
+        [cleanOrdId, cleanOrdId]
       );
       if (ordRow && Number(ordRow.amount_inr) > 0) {
         let notesObj: any = {};
@@ -944,8 +945,27 @@ export class RazorpayAdapter {
           businessId: String(ordRow.business_id || OwnerAuthService.PLATFORM_BUSINESS_ID),
           organizationId: OwnerAuthService.OWNER_ORGANIZATION_ID,
           invoiceRef: String(ordRow.order_id || ordRow.id),
-          serviceRendered: String(notesObj.serviceRendered || ordRow.receipt || 'Verified Server Order'),
+          serviceRendered: String(notesObj.serviceRendered || ordRow.receipt || 'Commercial Service'),
           referenceType: 'PAYMENT_ORDER'
+        };
+      }
+      // Stage I.2: Server-created Customer Desk / owned checkout orders also persist in payment_requests (id / reference_id)
+      const prOrdRow = await queryOne(
+        'payment_requests',
+        'SELECT id, organization_id, business_id, proposal_id, offer_id, offer_description, amount_inr, status FROM payment_requests WHERE id = ? OR reference_id = ? LIMIT 1',
+        [cleanOrdId, cleanOrdId]
+      );
+      if (prOrdRow && Number(prOrdRow.amount_inr) > 0) {
+        return {
+          verified: true,
+          amountINR: Number(prOrdRow.amount_inr),
+          sku: String(prOrdRow.offer_id || 'COMMERCIAL_SERVICE'),
+          businessId: String(prOrdRow.business_id || OwnerAuthService.PLATFORM_BUSINESS_ID),
+          organizationId: String(prOrdRow.organization_id || OwnerAuthService.OWNER_ORGANIZATION_ID),
+          invoiceRef: String(prOrdRow.id),
+          proposalId: prOrdRow.proposal_id ? String(prOrdRow.proposal_id) : undefined,
+          serviceRendered: String(prOrdRow.offer_description || 'Commercial Service'),
+          referenceType: 'PAYMENT_REQUEST'
         };
       }
     }
@@ -1169,6 +1189,7 @@ export class RazorpayAdapter {
     transactionId: string;
     classification: 'MANUAL_VERIFIED';
     status: 'HUMAN_VERIFIED_PAYMENT';
+    fulfillment?: any;
   }> {
     const trimmedUtr = params.utr.trim();
     if (!trimmedUtr || trimmedUtr.startsWith('utr_')) {
@@ -1311,11 +1332,38 @@ export class RazorpayAdapter {
       } catch {}
     }
 
+    // Stage I.2 (P3): Trigger verified fulfillment provisioning ONLY on HUMAN_VERIFIED_PAYMENT
+    let fulfillment: any = null;
+    try {
+      const { DeliveryEngine } = await import('../revenue/delivery-engine.js');
+      const skuFromClaim = (() => {
+        try {
+          const parsedNotes = typeof claimRow?.notes === 'string' ? JSON.parse(claimRow.notes) : claimRow?.notes;
+          return parsedNotes?.sku || params.serviceRendered || 'SITEFIX_CORE_499';
+        } catch {
+          return params.serviceRendered || 'SITEFIX_CORE_499';
+        }
+      })();
+      fulfillment = await DeliveryEngine.getInstance().provisionVerifiedOrderFulfillment({
+        organizationId: params.organizationId,
+        businessId: params.businessId,
+        customerJourneyId: params.journeyId,
+        claimId: params.claimId || claimRow?.id,
+        paymentId: trimmedUtr,
+        sku: String(skuFromClaim),
+        serviceType: String(skuFromClaim),
+        amountINR: Number(params.amountINR || 0),
+        verificationSource: 'HUMAN_VERIFIED_PAYMENT',
+        isDiagnostic: Number(claimRow?.is_test || 0) === 1
+      });
+    } catch {}
+
     return {
       success: true,
       transactionId: tx.id,
       classification: 'MANUAL_VERIFIED',
-      status: 'HUMAN_VERIFIED_PAYMENT'
+      status: 'HUMAN_VERIFIED_PAYMENT',
+      fulfillment
     };
   }
 
@@ -1902,6 +1950,25 @@ export class RazorpayAdapter {
     }
 
     // Advance customer journey if present
+    // Stage I.2 (P3): Verified Razorpay CAPTURED payment triggers DeliveryEngine fulfillment provisioning
+    try {
+      const { DeliveryEngine } = await import('../revenue/delivery-engine.js');
+      await DeliveryEngine.getInstance().provisionVerifiedOrderFulfillment({
+        organizationId,
+        businessId,
+        customerJourneyId: journeyId,
+        orderId: orderId || storedPayReq?.id || undefined,
+        paymentId,
+        sku: storedPayReq?.offer_id || notes?.sku || 'SITEFIX_CORE_499',
+        serviceType: serviceRendered,
+        amountINR: Number(amountINR || 0),
+        verificationSource: 'RAZORPAY_CAPTURED',
+        isDiagnostic: classification !== 'REAL'
+      });
+    } catch (fulfillErr: any) {
+      console.warn(`[RazorpayAdapter] Verified fulfillment bridge notice: ${fulfillErr?.message}`);
+    }
+
     if (journeyId) {
       try {
         let jRow: any = null;

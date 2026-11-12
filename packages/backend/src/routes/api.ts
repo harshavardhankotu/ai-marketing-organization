@@ -1543,6 +1543,16 @@ apiRouter.post('/cron/ping', async (c) => {
     staleRecoverySummary = await DurableJobQueue.getInstance().recoverStaleAndBlockedJobs();
   } catch {}
 
+  // Rule 1: Trigger bounded Cuelinks payout hydration in background without delaying HTTP 200 (<2s budget)
+  if (!process.env.VITEST) {
+    void (async () => {
+      try {
+        const { CuelinksSyncManager } = await import('../commission/cuelinks-sync-manager.js');
+        await CuelinksSyncManager.getInstance().hydrateMissingCampaignPayoutsD1('org_owner_primary', 'biz_platform_aro', 100);
+      } catch {}
+    })();
+  }
+
   // 1. Record observed heartbeat & rolling 24h timestamps in cron_telemetry (fast D1 write)
   try {
     const nowIso = new Date().toISOString();
@@ -1695,6 +1705,18 @@ apiRouter.post('/cron/worker/claim-and-run', async (c) => {
 
   const workerSource = c.req.header('cf-worker') || c.req.header('x-worker-source') || 'worker_scheduled';
   const queue = DurableJobQueue.getInstance();
+  let queueRecovery: any = null;
+  try {
+    queueRecovery = await queue.recoverStaleAndBlockedJobs();
+  } catch {}
+  if (!process.env.VITEST) {
+    void (async () => {
+      try {
+        const { CuelinksSyncManager } = await import('../commission/cuelinks-sync-manager.js');
+        await CuelinksSyncManager.getInstance().hydrateMissingCampaignPayoutsD1('org_owner_primary', 'biz_platform_aro', 100);
+      } catch {}
+    })();
+  }
   const budgetMs = Math.min(25000, Number(c.req.query('budgetMs') || 12000));
   const maxJobs = Math.min(5, Number(c.req.query('maxJobs') || 2));
   const startTime = Date.now();
@@ -4004,10 +4026,32 @@ apiRouter.post('/offer/inquiry', async (c) => {
   }
 });
 
-// Stage I.1 (P1 & P2): 24/7 Product-Aware Event-Driven Customer Desk
+// Stage I.1 & I.2: 24/7 Product-Aware Event-Driven Customer Desk with hardened provenance, rate-limit & checkout orchestration
 apiRouter.post('/customer-desk/message', async (c) => {
   try {
-    const body = await c.req.json().catch(() => ({} as any));
+    const clientInfo = getTrustedClientIp(c);
+    const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/customer-desk/message', clientInfo.ip, 25, 60);
+    if (!rateLimit.allowed) {
+      return c.json({ success: false, error: 'RATE_LIMIT_EXCEEDED', retryAfterSeconds: rateLimit.retryAfterSeconds }, 429);
+    }
+
+    const contentLen = Number(c.req.header('content-length') || 0);
+    if (contentLen > 8192) {
+      return c.json({ success: false, error: 'PAYLOAD_TOO_LARGE', message: 'Customer desk payload exceeds 8KB limit.' }, 413);
+    }
+
+    const rawText = await c.req.text().catch(() => '');
+    if (rawText.length > 8192) {
+      return c.json({ success: false, error: 'PAYLOAD_TOO_LARGE', message: 'Customer desk payload exceeds 8KB limit.' }, 413);
+    }
+
+    let body: any = {};
+    try {
+      body = rawText ? JSON.parse(rawText) : {};
+    } catch {
+      return c.json({ success: false, error: 'INVALID_JSON', message: 'Malformed JSON body.' }, 400);
+    }
+
     const messageText = String(body.message ?? body.messageText ?? '').trim();
     if (!messageText) {
       return c.json({ success: false, error: 'Message text is required' }, 400);
@@ -4019,14 +4063,30 @@ apiRouter.post('/customer-desk/message', async (c) => {
         ? rawChannel
         : 'WEB_DESK';
 
-    const senderContact = String(
-      body.senderContact || body.email || body.phone || `web_desk_visitor_${Date.now()}`
-    ).trim();
+    const sessionId = typeof body.sessionId === 'string' && body.sessionId.trim()
+      ? body.sessionId.trim().slice(0, 64)
+      : undefined;
+    const journeyId = typeof body.journeyId === 'string' && body.journeyId.trim()
+      ? body.journeyId.trim().slice(0, 64)
+      : undefined;
+
+    const suppliedContact = String(body.senderContact || body.email || body.phone || '').trim();
+    const senderContact = suppliedContact || sessionId || `web_desk_visitor_${Date.now()}`;
+    // Public HTTP route NEVER asserts verified WhatsApp/Email webhook provenance
+    const provenance = suppliedContact && /@|^\+?\d{7,15}$/.test(suppliedContact)
+      ? 'UNVERIFIED_WEB_CONTACT'
+      : 'ANONYMOUS_WEB_SESSION';
+
+    const isDiagnosticProbe =
+      String(c.req.header('x-diagnostic-probe') || '').toLowerCase() === 'true' ||
+      String(c.req.header('x-test-mode') || '').toLowerCase() === 'true' ||
+      body.isTest === true;
+
     const senderName = typeof (body.customerName || body.senderName) === 'string'
-      ? String(body.customerName || body.senderName).trim()
+      ? String(body.customerName || body.senderName).trim().slice(0, 120)
       : undefined;
     const productSlugOrContext = typeof (body.productSlugOrContext || body.productSlug) === 'string'
-      ? String(body.productSlugOrContext || body.productSlug).trim()
+      ? String(body.productSlugOrContext || body.productSlug).trim().slice(0, 120)
       : undefined;
 
     const { SalesConversationEngine } = await import('../revenue/sales-conversation-engine.js');
@@ -4039,22 +4099,36 @@ apiRouter.post('/customer-desk/message', async (c) => {
       messageText,
       productSlugOrContext,
       consentGiven: Boolean(body.consentGiven),
+      sessionId,
+      journeyId,
+      provenance,
+      isDiagnosticProbe,
       receivedAt: new Date().toISOString()
     });
 
     return c.json({
       success: true,
       deskMode: '24_7_EVENT_DRIVEN',
+      sessionId: result.sessionId,
+      journeyId: result.journeyId,
+      provenance: result.provenance || provenance,
+      conversationState: result.conversationState || 'ANSWERED',
       intent: result.intent,
       confidence: result.confidence,
       routedAction: result.routedAction,
       reply: result.responseTemplate || '',
       responseTemplate: result.responseTemplate || '',
       resolvedOffer: result.resolvedOffer ?? null,
+      clarificationOptions: result.clarificationOptions ?? [],
+      checkout: result.checkout ?? null,
       pipelineUpdated: result.pipelineUpdated,
+      pipelineStage: result.pipelineStage ?? null,
       suppressed: result.suppressed,
+      suppressedScope: result.suppressedScope ?? 'NONE',
+      contactSuppressed: Boolean(result.contactSuppressed),
       escalationCreated: Boolean(result.escalationCreated),
       escalationId: result.escalationId ?? null,
+      isDiagnosticProbe,
       details: result.details
     }, 200);
   } catch (err: any) {
@@ -7508,10 +7582,18 @@ apiRouter.get('/public/autonomy-status', async (c) => {
       Number.isFinite(lastPingMs) &&
       (Date.now() - lastPingMs) < 90 * 60 * 1000 &&
       /ai-marketing-cron-worker|cloudflare-cron-worker/i.test(String(cloudflareWorkerStatus?.lastUserAgent || ''));
+    const upiCounts = arosControlCenter?.paymentAndFulfillmentQueue?.countsByState || {};
+    const humanVerifiedUpiReceiptsCount =
+      (Number(upiCounts.HUMAN_VERIFIED_PAYMENT) || 0) +
+      (Number(upiCounts.FULFILLMENT_IN_PROGRESS) || 0) +
+      (Number(upiCounts.FULFILLED) || 0);
     integrationCapabilities = IntegrationCapabilityRegistry.evaluateAll({
       genuineCronObservedRecently,
       cuelinksConnected: cuelinksStatus !== 'NOT_CONFIGURED',
-      cuelinksChannelApproved: cuelinksStatus === 'LIVE_VERIFIED' || cuelinksStatus === 'CHANNEL_APPROVED_NO_AFFILIATED_LINKS'
+      cuelinksChannelApproved: cuelinksStatus === 'LIVE_VERIFIED' || cuelinksStatus === 'CHANNEL_APPROVED_NO_AFFILIATED_LINKS',
+      upiClaimTested: (Number(upiCounts.PAYMENT_CLAIMED) || 0) > 0,
+      upiClaimProcessingVerified: Boolean((process.env.MERCHANT_UPI_ID || process.env.UPI_MERCHANT_VPA || process.env.OWNER_UPI_VPA || '').trim()),
+      humanVerifiedUpiReceiptsCount
     });
   } catch {}
 

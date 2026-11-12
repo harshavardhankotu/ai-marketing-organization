@@ -110,16 +110,20 @@ export function parseVerifiedCampaignPayout(
   currentPriceINR: number,
   productCategory?: string
 ): {
+  monetizationModel?: 'CPS' | 'CPA' | 'CPL' | 'CPC' | 'UNKNOWN';
   ratePercent: number | null;
   flatINR: number | null;
   grossCommissionPerApprovedOrderINR: number | null;
-  missingPayoutReason?: 'CAMPAIGN_NOT_IN_CUELINKS_PAGE' | 'ZERO_PAYOUT_REPORTED' | 'CPC_OFFLINE_ONLY' | null;
+  verifiedCpcPayoutINR?: number | null;
+  missingPayoutReason?: 'CAMPAIGN_NOT_IN_CUELINKS_PAGE' | 'ZERO_PAYOUT_REPORTED' | 'CPC_OFFLINE_ONLY' | 'AMBIGUOUS_DOMAIN_MULTIPLE_CAMPAIGNS' | null;
 } {
   if (!campaign || typeof campaign !== 'object') {
     return {
+      monetizationModel: 'UNKNOWN',
       ratePercent: null,
       flatINR: null,
       grossCommissionPerApprovedOrderINR: null,
+      verifiedCpcPayoutINR: null,
       missingPayoutReason: 'CAMPAIGN_NOT_IN_CUELINKS_PAGE'
     };
   }
@@ -169,9 +173,11 @@ export function parseVerifiedCampaignPayout(
 
   if (!rawPayout || /^(?:unknown|tbd|variable|n\/a|none)$/i.test(rawPayout)) {
     return {
+      monetizationModel: 'UNKNOWN',
       ratePercent: null,
       flatINR: null,
       grossCommissionPerApprovedOrderINR: null,
+      verifiedCpcPayoutINR: null,
       missingPayoutReason: 'ZERO_PAYOUT_REPORTED'
     };
   }
@@ -180,22 +186,26 @@ export function parseVerifiedCampaignPayout(
   const val = cleaned ? parseFloat(cleaned) : NaN;
   if (!Number.isFinite(val) || val <= 0) {
     return {
+      monetizationModel: 'UNKNOWN',
       ratePercent: null,
       flatINR: null,
       grossCommissionPerApprovedOrderINR: null,
+      verifiedCpcPayoutINR: null,
       missingPayoutReason: 'ZERO_PAYOUT_REPORTED'
     };
   }
 
   const isExplicitCpcOnly =
     /\bCPC\b|PER[_ ]?CLICK/i.test(payoutTypeUpper) &&
-    !rawPayout.includes('%') &&
-    payoutCurrency !== 'INR';
+    !/\bCPS\b|PER[_ ]?SALE/i.test(payoutTypeUpper) &&
+    !rawPayout.includes('%');
   if (isExplicitCpcOnly) {
     return {
+      monetizationModel: 'CPC',
       ratePercent: null,
       flatINR: null,
       grossCommissionPerApprovedOrderINR: null,
+      verifiedCpcPayoutINR: payoutCurrency === 'INR' ? Number(val.toFixed(2)) : null,
       missingPayoutReason: 'CPC_OFFLINE_ONLY'
     };
   }
@@ -204,7 +214,7 @@ export function parseVerifiedCampaignPayout(
     !rawPayout.includes('%') &&
     (
       /₹|\bINR\b|\bRS\b/i.test(rawPayout) ||
-      /FIXED|FLAT|CPA|CPL|PER[_ ]?ORDER|CPC|PER[_ ]?CLICK/i.test(payoutTypeUpper) ||
+      /FIXED|FLAT|CPA|CPL|PER[_ ]?ORDER/i.test(payoutTypeUpper) ||
       (/\bPER[_ ]?SALE\b/i.test(payoutTypeUpper) && /FIXED|FLAT|INR/i.test(payoutTypeUpper) && payoutCurrency === 'INR')
     );
 
@@ -216,36 +226,35 @@ export function parseVerifiedCampaignPayout(
     const ratePercent = Number(val.toFixed(2));
     const gross = currentPriceINR > 0 ? Number((currentPriceINR * (ratePercent / 100)).toFixed(2)) : null;
     return {
+      monetizationModel: 'CPS',
       ratePercent,
       flatINR: null,
       grossCommissionPerApprovedOrderINR: gross,
+      verifiedCpcPayoutINR: null,
       missingPayoutReason: null
     };
   }
 
   if (payoutCurrency === 'INR' || isFlatInrIndicator) {
-    if (/\bCPC\b|PER[_ ]?CLICK/i.test(payoutTypeUpper) && !/\bCPS\b|PER[_ ]?SALE/i.test(payoutTypeUpper)) {
-      return {
-        ratePercent: null,
-        flatINR: Number(val.toFixed(2)),
-        grossCommissionPerApprovedOrderINR: Number(val.toFixed(2)),
-        missingPayoutReason: 'CPC_OFFLINE_ONLY'
-      };
-    }
     const flatINR = Number(val.toFixed(2));
     const derivedPct = currentPriceINR > 0 ? Number(((flatINR / currentPriceINR) * 100).toFixed(2)) : null;
+    const model: 'CPA' | 'CPL' | 'CPS' = /\bCPL\b/i.test(payoutTypeUpper) ? 'CPL' : /\bCPA\b|FIXED|FLAT/i.test(payoutTypeUpper) ? 'CPA' : 'CPS';
     return {
+      monetizationModel: model,
       ratePercent: derivedPct,
       flatINR,
       grossCommissionPerApprovedOrderINR: flatINR,
+      verifiedCpcPayoutINR: null,
       missingPayoutReason: null
     };
   }
 
   return {
+    monetizationModel: 'UNKNOWN',
     ratePercent: null,
     flatINR: null,
     grossCommissionPerApprovedOrderINR: null,
+    verifiedCpcPayoutINR: null,
     missingPayoutReason: 'ZERO_PAYOUT_REPORTED'
   };
 }
@@ -3730,10 +3739,12 @@ export class AutonomousDealDiscoveryEngine {
         if (byId) return byId;
         const dealRootDomain = normalizeRootMerchantDomain(dealObj.productUrl);
         if (!dealRootDomain) return undefined;
-        return campaigns.find((c: any) => {
+        // Stage I.2 (P5): Root-domain fallback ONLY when unambiguous (exactly 1 active campaign shares root domain)
+        const domainMatches = campaigns.filter((c: any) => {
           const campRoot = normalizeRootMerchantDomain(String(c.merchant_domain || ''));
           return Boolean(campRoot && campRoot === dealRootDomain);
         });
+        return domainMatches.length === 1 ? domainMatches[0] : undefined;
       };
 
       const attachStatsAndEnrich = (dealObj: NormalizedDeal, extra: Partial<NormalizedDeal> = {}): NormalizedDeal => {
