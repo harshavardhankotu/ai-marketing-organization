@@ -3405,7 +3405,7 @@ apiRouter.post('/payments/razorpay/verify', async (c) => {
         signature: razorpaySignature,
         method
       });
-      return c.json({ success: true, data: result, ...result });
+      return c.json({ data: result, ...result });
     } catch (legErr: any) {
       return c.json({ success: false, error: legErr.message }, 400);
     }
@@ -3430,7 +3430,7 @@ apiRouter.post('/payments/razorpay/verify', async (c) => {
         signature: razorpaySignature,
         method
       });
-      return c.json({ success: true, data: result, ...result });
+      return c.json({ data: result, ...result });
     } catch {}
     return c.json({ success: false, error: stdErr.message }, 400);
   }
