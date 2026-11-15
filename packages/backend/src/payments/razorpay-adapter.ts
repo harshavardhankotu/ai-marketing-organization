@@ -268,7 +268,7 @@ export class RazorpayStandardAdapter {
     const isSigValid = this.verifyPaymentSignature(razorpay_order_id, razorpay_payment_id, razorpay_signature, keySecret);
 
     if (!isSigValid) {
-      throw new Error('SECURITY_VIOLATION: Invalid Razorpay HMAC signature. Verification rejected.');
+      throw new Error('SECURITY_VIOLATION: Invalid Razorpay payment signature. Verification rejected.');
     }
 
     const keyId = this.getKeyId();

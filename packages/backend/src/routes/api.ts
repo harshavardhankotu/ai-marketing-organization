@@ -3390,6 +3390,27 @@ apiRouter.post('/payments/razorpay/verify', async (c) => {
     return c.json({ success: false, error: 'Missing required payment verification parameters: orderId, paymentId, signature' }, 400);
   }
 
+  // Check if this order exists in legacy payment_orders
+  let isLegacyPaymentOrder = false;
+  try {
+    const existing = getDb().prepare('SELECT 1 FROM payment_orders WHERE order_id = ?').get(orderId);
+    if (existing) isLegacyPaymentOrder = true;
+  } catch {}
+
+  if (isLegacyPaymentOrder) {
+    try {
+      const result = await razorpayAdapter.confirmClientPayment({
+        orderId,
+        paymentId: razorpayPaymentId,
+        signature: razorpaySignature,
+        method
+      });
+      return c.json({ success: true, data: result, ...result });
+    } catch (legErr: any) {
+      return c.json({ success: false, error: legErr.message }, 400);
+    }
+  }
+
   try {
     const { RazorpayStandardAdapter } = await import('../payments/razorpay-adapter.js');
     const result = await RazorpayStandardAdapter.getInstance().verifyPaymentAndFulfill({
@@ -3409,7 +3430,7 @@ apiRouter.post('/payments/razorpay/verify', async (c) => {
         signature: razorpaySignature,
         method
       });
-      return c.json({ success: true, data: result });
+      return c.json({ success: true, data: result, ...result });
     } catch {}
     return c.json({ success: false, error: stdErr.message }, 400);
   }
