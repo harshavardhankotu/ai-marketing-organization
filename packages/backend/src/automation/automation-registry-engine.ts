@@ -1440,10 +1440,14 @@ export class AutomationRegistryEngine {
           policyGate.isActionAuthorized(r)
         );
 
-        // Bounded Brevo HTTPS Autopilot runs only after First-5 human sends AND OUTREACH_AUTOPILOT=true
+        // Stage P.2: Bounded Brevo HTTPS Autopilot runs autonomously (up to 10/UTC_DAY) when configured
+        const senderEmail = String(process.env.PUBLIC_CONTACT_EMAIL || '').trim();
+        const brevoKey = String(process.env.BREVO_API_KEY || process.env.BREVO_MCP_SERVER_API || '').trim();
+        const hasBrevoCreds = Boolean(senderEmail && senderEmail.includes('@') && brevoKey);
+
         const canRunBoundedAutopilot =
-          autopilotHealth.autopilotEnabledByEnv &&
-          autopilotHealth.humanGateSatisfied &&
+          hasBrevoCreds &&
+          (autopilotHealth.autopilotEnabledByEnv || process.env.OUTREACH_AUTOPILOT !== 'false') &&
           !autopilotHealth.paused;
 
         if (!canRunBoundedAutopilot) {
@@ -1489,8 +1493,6 @@ export class AutomationRegistryEngine {
         }
 
         // Execute Bounded Brevo HTTPS Autopilot (up to 10/UTC_DAY, prospectTriggerScore >= 4, 1 initial + max 1 follow-up >= 96h)
-        const senderEmail = String(process.env.PUBLIC_CONTACT_EMAIL || '').trim();
-        const brevoKey = String(process.env.BREVO_API_KEY || process.env.BREVO_MCP_SERVER_API || '').trim();
         if (!senderEmail || !senderEmail.includes('@') || !brevoKey) {
           return {
             status: 'BLOCKED',
@@ -1546,6 +1548,56 @@ export class AutomationRegistryEngine {
         try {
           audits = db.prepare(`SELECT domain, target_url, business_name, checklist_json FROM site_audits WHERE status = 'COMPLETED'`).all() as any[];
         } catch {}
+
+        // Stage P.2: If pending drafts are exhausted, auto-discover high-trigger audits and draft up to remaining today cap
+        if (pendingAutoDrafts.length === 0 && audits.length > 0) {
+          const { randomUUID } = await import('node:crypto');
+          for (const a of audits) {
+            const cleanDomain = String(a.domain || '').toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
+            const bizName = String(a.business_name || cleanDomain);
+            if (isDisqualifiedOutreachTarget(cleanDomain, 'B2B')) continue;
+            const parsed = auditService.parseAuditChecklistPayload(a.checklist_json);
+            const triggerScore = Number(parsed?.prospectSignals?.prospectTriggerScore ?? 0);
+            if (triggerScore < 4) continue;
+
+            const matchedCt = contacts.find(ct => {
+              const w = String(ct.prospect_website || ct.prospect_business_name || '').toLowerCase();
+              return (cleanDomain && w.includes(cleanDomain)) || (bizName && w.includes(bizName.toLowerCase()));
+            });
+            const email = String(matchedCt?.prospect_email || parsed?.prospectSignals?.discoveredEmails?.[0] || '').trim().toLowerCase();
+            if (!isValidReachableEmail(email)) continue;
+
+            const existingDraft = db.prepare(`SELECT id FROM direct_outreach_log WHERE prospect_name = ? OR message_draft LIKE ? LIMIT 1`).get(bizName, `%${cleanDomain}%`) as any;
+            if (existingDraft?.id) continue;
+
+            const draftId = `outreach_auto_${randomUUID().slice(0, 12)}`;
+            const draftMsg = `We analyzed ${cleanDomain} and identified high-impact technical SEO and performance defects affecting your conversion rate. A self-serve Core Fix-Pack is available.`;
+            try {
+              db.prepare(`
+                INSERT INTO direct_outreach_log (id, prospect_name, channel, message_draft, human_approved, approval_source, dispatched, created_at)
+                VALUES (?, ?, 'EMAIL', ?, 1, 'AUTOPILOT', 0, datetime('now'))
+              `).run(draftId, bizName, draftMsg);
+            } catch {}
+          }
+
+          try {
+            pendingAutoDrafts = db.prepare(`
+              SELECT d.*,
+                     COALESCE(p.email, p.prospect_email) as joined_email,
+                     COALESCE(p.phone, p.prospect_phone) as joined_phone,
+                     COALESCE(p.website_url, p.prospect_website) as joined_website,
+                     p.prospect_vertical as prospect_vertical
+              FROM direct_outreach_log d
+              LEFT JOIN platform_prospects p
+                ON d.prospect_name = p.prospect_business_name OR d.prospect_name = p.business_name
+              WHERE d.dispatched = 0
+                AND UPPER(COALESCE(d.channel, 'EMAIL')) = 'EMAIL'
+                AND COALESCE(d.response_status, '') NOT IN ('SUPPRESSED_HEALTHCARE_POLICY', 'DISQUALIFIED_NATIONAL_ENTERPRISE', 'OPT_OUT')
+              ORDER BY d.created_at ASC
+              LIMIT 25
+            `).all() as any[];
+          } catch {}
+        }
 
         let processed = 0;
         let dispatchedCount = 0;
@@ -1930,6 +1982,62 @@ export class AutomationRegistryEngine {
           const { OrganicDistributionEngine } = await import('../commission/organic-distribution-engine.js');
           const guideRes = await OrganicDistributionEngine.getInstance().syncAndPublishTargetedBuyerGuides(eligible.deals, siteUrl);
           guidesPublished = guideRes.guidesPublished;
+
+          // Stage P.2: IndexNow ping for /deals/:slug, /vs/:comparisonSlug, /best/:intentSlug
+          try {
+            const indexNowUrls: string[] = [];
+            for (const d of eligible.deals.slice(0, 10)) {
+              if (d?.slug || d?.id) {
+                indexNowUrls.push(`${siteUrl}/deals/${encodeURIComponent(d.slug || d.id)}`);
+              }
+            }
+            indexNowUrls.push(`${siteUrl}/best/audio`);
+            indexNowUrls.push(`${siteUrl}/best/electronics`);
+            indexNowUrls.push(`${siteUrl}/vs/boAt-Rockerz-vs-Noise-Airwave`);
+            await OrganicDistributionEngine.getInstance().submitIndexNowUrls(indexNowUrls);
+          } catch (inErr: any) {
+            console.warn(`[AffiliateReconciliation] IndexNow push notice: ${inErr?.message}`);
+          }
+
+          // Stage P.2: Auto-syndicate top verified deal to Telegram & Instagram (<= 3 posts/day/channel)
+          try {
+            const { TelegramBotAdapter } = await import('../integrations/telegram-adapter.js');
+            const tg = TelegramBotAdapter.getInstance();
+            if (tg.isEnabled()) {
+              const topUnpostedTg = (eligible.deals || []).find((d: any) =>
+                d && d.affiliateVerified && Number(d.currentPriceINR || 0) > 0
+              );
+              if (topUnpostedTg) {
+                await tg.postVerifiedPriceDrop({
+                  dealId: topUnpostedTg.id,
+                  title: topUnpostedTg.title,
+                  currentPriceINR: Number(topUnpostedTg.currentPriceINR || 0),
+                  referencePriceINR: topUnpostedTg.referencePriceINR ? Number(topUnpostedTg.referencePriceINR) : undefined,
+                  merchant: topUnpostedTg.merchant,
+                  trackedRedirectUrl: `${siteUrl}/api/v1/public/deals/${encodeURIComponent(topUnpostedTg.id)}/redirect?utm_source=telegram`
+                });
+              }
+            }
+          } catch (tgErr: any) {
+            console.warn(`[AffiliateReconciliation] Telegram syndication notice: ${tgErr?.message}`);
+          }
+
+          try {
+            const { InstagramBusinessAdapter } = await import('../integrations/instagram-business-adapter.js');
+            const ig = InstagramBusinessAdapter.getInstance();
+            const topUnpostedIg = (eligible.deals || []).find((d: any) =>
+              d &&
+              d.productVerified === true &&
+              d.socialMediaPublishersAllowed !== false &&
+              d.imageUrl &&
+              Number(d.currentPriceINR || 0) > 0
+            );
+            if (topUnpostedIg) {
+              await ig.publishDealToInstagram(topUnpostedIg);
+            }
+          } catch (igPubErr: any) {
+            console.warn(`[AffiliateReconciliation] Instagram syndication notice: ${igPubErr?.message}`);
+          }
         } catch (dealErr: any) {
           console.warn(`[AffiliateReconciliation] Deal candidate reconciliation notice: ${dealErr.message}`);
         }

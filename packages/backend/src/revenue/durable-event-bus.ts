@@ -42,6 +42,7 @@ export type DurableEventType =
   | 'CYCLE_COMPLETED'
   | 'ORDER_FULFILLED'
   | 'IG_REPLY_SENT'
+  | 'IG_REPLY_CLAIMED'
   | 'IG_OAUTH_STATE_CONSUMED'
   | 'PIPELINE_TRANSITION';
 

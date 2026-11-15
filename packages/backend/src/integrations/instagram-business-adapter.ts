@@ -206,12 +206,62 @@ export class InstagramBusinessAdapter {
     return InstagramBusinessAdapter.verifySignedState(state, authSecret);
   }
 
+  /**
+   * Atomically claims an Instagram comment or DM reply before dispatching to Meta.
+   * Uses deterministic primary key `ig_reply_claim_${sha256Hex(itemType:itemId).slice(0, 40)}` in durable_events.
+   * Returns true if claim was successfully acquired.
+   * Returns false if item was already claimed or replied.
+   * Fails closed (throws) if D1 storage fails to prevent duplicate dispatches.
+   */
+  public async claimInstagramReplyAtomically(itemType: 'comment' | 'dm', itemId: string): Promise<boolean> {
+    const itemKey = `${itemType}:${itemId}`;
+    if (this.repliedItemIds.has(itemKey)) return false;
+
+    const deterministicId = `ig_reply_claim_${crypto.createHash('sha256').update(itemKey).digest('hex').slice(0, 40)}`;
+    const { D1RevenueRepository } = await import('../db/d1-revenue-repository.js');
+    const { OwnerAuthService } = await import('../auth/owner-auth.js');
+
+    const sql = `INSERT INTO durable_events (id, event_type, organization_id, business_id, payload_json, created_at) VALUES (?, 'IG_REPLY_CLAIMED', ?, ?, ?, datetime('now'))`;
+    const orgId = OwnerAuthService.OWNER_ORGANIZATION_ID || 'org_owner_primary';
+    const payloadJson = JSON.stringify({
+      claimedAt: new Date().toISOString(),
+      itemType,
+      itemId
+    });
+
+    try {
+      await D1RevenueRepository.getInstance().executeWrite('durable_events', sql, [
+        deterministicId,
+        orgId,
+        itemKey,
+        payloadJson
+      ]);
+      this.repliedItemIds.add(itemKey);
+      return true;
+    } catch (err: any) {
+      const errLower = (err?.message || '').toLowerCase();
+      const isDuplicate =
+        errLower.includes('unique') ||
+        errLower.includes('constraint') ||
+        errLower.includes('primary key') ||
+        errLower.includes('already exists');
+
+      if (isDuplicate) {
+        this.repliedItemIds.add(itemKey);
+        return false;
+      }
+
+      console.warn(`[InstagramAdapter] claimInstagramReplyAtomically failed for ${itemKey} (${err.message}). Failing closed.`);
+      throw new Error(`IG_REPLY_CLAIM_FAILED: Cannot claim reply lock for '${itemKey}': ${err.message}`);
+    }
+  }
+
   public async isItemReplied(itemKey: string): Promise<boolean> {
     if (this.repliedItemIds.has(itemKey)) return true;
     try {
       const row = await D1RevenueRepository.getInstance().queryOne<{ id: string }>(
         'durable_events',
-        `SELECT id FROM durable_events WHERE event_type = 'IG_REPLY_SENT' AND business_id = ? LIMIT 1`,
+        `SELECT id FROM durable_events WHERE event_type IN ('IG_REPLY_SENT', 'IG_REPLY_CLAIMED') AND business_id = ? LIMIT 1`,
         [itemKey]
       );
       if (row?.id) {
@@ -1075,6 +1125,8 @@ export class InstagramBusinessAdapter {
         processed++;
         const reply = await this.buildCommentOrDmReply(text);
         if (reply.triggered && reply.replyText) {
+          const claimed = await this.claimInstagramReplyAtomically('comment', commentId);
+          if (!claimed) continue;
           const ok = await this.sendInstagramMessage({ comment_id: commentId }, reply.replyText, fetchOverride);
           if (ok) {
             await this.markItemReplied(itemKey);
@@ -1095,6 +1147,8 @@ export class InstagramBusinessAdapter {
         processed++;
         const reply = await this.buildCommentOrDmReply(text);
         if (reply.triggered && reply.replyText) {
+          const claimed = await this.claimInstagramReplyAtomically('dm', mid);
+          if (!claimed) continue;
           const ok = await this.sendInstagramMessage({ id: senderId }, reply.replyText, fetchOverride);
           if (ok) {
             await this.markItemReplied(itemKey);
@@ -1122,6 +1176,8 @@ export class InstagramBusinessAdapter {
     commentsChecked: number;
     dmsChecked: number;
     repliesSent: number;
+    commentFetchError?: string | null;
+    dmFetchError?: string | null;
   }> {
     if (process.env.VITEST && !fetchOverride) {
       return { executed: false, reason: 'SKIPPED_IN_VITEST', commentsChecked: 0, dmsChecked: 0, repliesSent: 0 };
@@ -1137,11 +1193,16 @@ export class InstagramBusinessAdapter {
     let commentsChecked = 0;
     let dmsChecked = 0;
     let repliesSent = 0;
+    let commentFetchError: string | null = null;
+    let dmFetchError: string | null = null;
 
     try {
       const mediaUrl = `https://graph.instagram.com/${getInstagramGraphApiVersion()}/${encodeURIComponent(igUserId)}/media?fields=id,comments{id,text,username}&limit=5&access_token=${encodeURIComponent(accessToken)}`;
       const mediaRes = await fn(mediaUrl, { method: 'GET', headers: { 'Accept': 'application/json' } });
-      if (mediaRes.ok) {
+      if (!mediaRes.ok) {
+        const errText = await mediaRes.text().catch(() => '');
+        commentFetchError = `HTTP_${mediaRes.status}: ${errText.slice(0, 200)}`;
+      } else {
         const mediaJson: any = await mediaRes.json().catch(() => ({}));
         const posts = Array.isArray(mediaJson?.data) ? mediaJson.data : [];
         for (const post of posts) {
@@ -1154,6 +1215,8 @@ export class InstagramBusinessAdapter {
             commentsChecked++;
             const reply = await this.buildCommentOrDmReply(cText);
             if (reply.triggered && reply.replyText) {
+              const claimed = await this.claimInstagramReplyAtomically('comment', cId);
+              if (!claimed) continue;
               const ok = await this.sendInstagramMessage({ comment_id: cId }, reply.replyText, fn);
               if (ok) {
                 await this.markItemReplied(itemKey);
@@ -1163,12 +1226,17 @@ export class InstagramBusinessAdapter {
           }
         }
       }
-    } catch {}
+    } catch (err: any) {
+      commentFetchError = err?.message || String(err);
+    }
 
     try {
       const convUrl = `https://graph.instagram.com/${getInstagramGraphApiVersion()}/${encodeURIComponent(igUserId)}/conversations?fields=messages{id,message,from}&limit=10&access_token=${encodeURIComponent(accessToken)}`;
       const convRes = await fn(convUrl, { method: 'GET', headers: { 'Accept': 'application/json' } });
-      if (convRes.ok) {
+      if (!convRes.ok) {
+        const errText = await convRes.text().catch(() => '');
+        dmFetchError = `HTTP_${convRes.status}: ${errText.slice(0, 200)}`;
+      } else {
         const convJson: any = await convRes.json().catch(() => ({}));
         const convs = Array.isArray(convJson?.data) ? convJson.data : [];
         for (const conv of convs) {
@@ -1182,6 +1250,8 @@ export class InstagramBusinessAdapter {
           dmsChecked++;
           const reply = await this.buildCommentOrDmReply(mText);
           if (reply.triggered && reply.replyText) {
+            const claimed = await this.claimInstagramReplyAtomically('dm', mid);
+            if (!claimed) continue;
             const ok = await this.sendInstagramMessage({ id: senderId }, reply.replyText, fn);
             if (ok) {
               await this.markItemReplied(itemKey);
@@ -1190,16 +1260,23 @@ export class InstagramBusinessAdapter {
           }
         }
       }
-    } catch {}
+    } catch (err: any) {
+      dmFetchError = err?.message || String(err);
+    }
 
     this.lastPollAt = new Date().toISOString();
     await this.persistState();
 
+    const executed = !commentFetchError && !dmFetchError;
+
     return {
-      executed: true,
+      executed,
+      reason: !executed ? `POLL_ERRORS: comment=${commentFetchError || 'none'}; dm=${dmFetchError || 'none'}` : undefined,
       commentsChecked,
       dmsChecked,
-      repliesSent
+      repliesSent,
+      commentFetchError,
+      dmFetchError
     };
   }
 }

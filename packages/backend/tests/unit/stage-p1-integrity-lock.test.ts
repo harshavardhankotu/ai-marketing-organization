@@ -31,11 +31,16 @@ describe('Stage P.1 — Low-Level D1 Financial Integrity, Instagram Hardening & 
       expect(client.isDailyQuotaError(429, '{"error":"Too many requests. Please slow down."}')).toBe(false);
       expect(client.isDailyQuotaError(429, 'Rate limit exceeded: 1200 req/min')).toBe(false);
 
+      // Narrow Cloudflare D1 daily quota classifier (Spec Stage P.2):
       // True Cloudflare daily limit strings DO trip
-      expect(client.isDailyQuotaError(429, 'Rate limit exceeded: daily row read limit reached')).toBe(true);
-      expect(client.isDailyQuotaError(400, 'Cloudflare D1: exceeded d1 free tier write limit')).toBe(true);
-      expect(client.isDailyQuotaError(400, 'Error 7500: daily quota limit exceeded')).toBe(true);
-      expect(client.isDailyQuotaError(400, 'Error 7429: daily query limit exceeded')).toBe(true);
+      expect(client.isDailyQuotaError(400, "Your account has exceeded D1's free tier daily row read limit")).toBe(true);
+      expect(client.isDailyQuotaError(400, "Your account has exceeded D1’s free tier daily row write limit")).toBe(true);
+
+      // Generic quota, query, or rate limits without the exact message do NOT trip
+      expect(client.isDailyQuotaError(429, 'Rate limit exceeded: daily row read limit reached')).toBe(false);
+      expect(client.isDailyQuotaError(400, 'Cloudflare D1: exceeded d1 free tier write limit')).toBe(false);
+      expect(client.isDailyQuotaError(400, 'Error 7500: daily quota limit exceeded')).toBe(false);
+      expect(client.isDailyQuotaError(400, 'Error 7429: daily query limit exceeded')).toBe(false);
 
       // Schema and execution errors wrapped with 7500 do NOT trip
       expect(client.isDailyQuotaError(400, 'Error 7500: no such table: non_existent_tbl')).toBe(false);
@@ -169,7 +174,7 @@ describe('Stage P.1 — Low-Level D1 Financial Integrity, Instagram Hardening & 
       const replayRes = await app.request(`/api/v1/integrations/instagram/oauth/callback?code=mock_code&state=${encodeURIComponent(state)}`);
       expect(replayRes.status).toBe(400);
       const replayJson = (await replayRes.json()) as any;
-      expect(replayJson.error).toBe('OAUTH_STATE_REPLAY_OR_UNAVAILABLE');
+      expect(replayJson.error).toBe('OAUTH_STATE_REPLAY_DETECTED');
 
       handleSpy.mockRestore();
     });

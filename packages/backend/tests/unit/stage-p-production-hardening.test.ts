@@ -31,10 +31,11 @@ describe('Stage P — Production Hardening & Security Locking', () => {
     expect(client.isDailyQuotaError(400, 'Error 7500: syntax error near "SELECT"')).toBe(false);
     expect(client.isDailyQuotaError(400, 'no such column: is_verified')).toBe(false);
 
-    // True daily quota exhaustion errors DO trip
-    expect(client.isDailyQuotaError(400, 'Cloudflare D1 daily read limit reached (code 7500)')).toBe(true);
-    expect(client.isDailyQuotaError(429, 'Rate limit exceeded: daily quota')).toBe(true);
-    expect(client.isDailyQuotaError(400, 'quota exceeded for current billing cycle')).toBe(true);
+    // Narrow Cloudflare D1 daily quota classifier (Spec Stage P.2):
+    expect(client.isDailyQuotaError(400, "Your account has exceeded D1's free tier daily row read limit")).toBe(true);
+    expect(client.isDailyQuotaError(400, "Your account has exceeded D1’s free tier daily row write limit")).toBe(true);
+    expect(client.isDailyQuotaError(429, 'Rate limit exceeded: daily quota')).toBe(false);
+    expect(client.isDailyQuotaError(400, 'quota exceeded for current billing cycle')).toBe(false);
   });
 
   it('Task 1: pipeline_transitions is eliminated and emits durable_events with PIPELINE_TRANSITION', async () => {
@@ -138,14 +139,13 @@ describe('Stage P — Production Hardening & Security Locking', () => {
     });
     expect(unauthPost.status).toBe(401);
 
-    // Authenticated with owner session -> 200
+    // Authenticated GET /mcp -> 405 Method Not Allowed (Spec Stage P.2 Stateless MCP 2026-07-28)
     const session = OwnerAuthService.getInstance().createSession('127.0.0.1', 'Vitest');
     const authGet = await app.request('/api/v1/mcp', {
       headers: { Authorization: `Bearer ${session.token}` }
     });
-    expect(authGet.status).toBe(200);
-    const getJson = (await authGet.json()) as any;
-    expect(getJson.serverInfo?.name).toBe('ai-marketing-organization-mcp');
+    expect(authGet.status).toBe(405);
+    expect(authGet.headers.get('Allow')).toBe('POST');
 
     const authPost = await app.request('/api/v1/mcp', {
       method: 'POST',

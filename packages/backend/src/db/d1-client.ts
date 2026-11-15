@@ -72,35 +72,10 @@ export class D1Client {
 
   public static isDailyQuotaError(status: number, bodyText: string): boolean {
     const raw = String(bodyText || '');
-    const lower = raw.toLowerCase();
-
-    // Explicitly exclude schema and execution syntax errors that Cloudflare D1 wraps with code 7500
-    if (
-      lower.includes('no such table') ||
-      lower.includes('sqlite_error') ||
-      lower.includes('syntax error') ||
-      lower.includes('unique constraint') ||
-      lower.includes('no such column')
-    ) {
-      return false;
-    }
-
-    // Only lock d1CircuitBreaker until UTC midnight when the error body actually matches true Cloudflare row-limit exhaustion strings
-    return (
-      /exceeded.*(daily|free).*(row|read|write)|quota exceeded/i.test(raw) ||
-      lower.includes('daily row read limit') ||
-      lower.includes('daily row write limit') ||
-      lower.includes('daily read limit') ||
-      lower.includes('daily write limit') ||
-      lower.includes("exceeded d1's free tier") ||
-      lower.includes('exceeded d1’s free tier') ||
-      lower.includes('daily quota limit exceeded') ||
-      lower.includes('quota limit exceeded') ||
-      lower.includes('daily query limit exceeded') ||
-      lower.includes('daily quota') ||
-      (status === 400 && /7500/.test(raw) && /limit|quota|tier/i.test(raw)) ||
-      (status === 400 && /7429/.test(raw) && /limit|quota|daily/i.test(raw))
-    );
+    // Narrow Cloudflare D1 daily quota classifier (Spec Stage P.2):
+    // Trip circuit breaker ONLY when error matches true Cloudflare free-tier daily row limit exhaustion.
+    // Never classify bare HTTP 429, generic "quota exceeded", "daily quota", error 7429, or error 7500 as daily row quota exhaustion.
+    return /Your account has exceeded D1['’]s free tier daily row (read|write) limit/i.test(raw);
   }
 
   public isDailyQuotaError(status: number, bodyText: string): boolean {
@@ -347,7 +322,8 @@ export class D1Client {
 
       for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
         if (attempt > 0) {
-          await new Promise(r => setTimeout(r, retryDelays[attempt - 1]));
+          const jitter = Math.floor(Math.random() * 50);
+          await new Promise(r => setTimeout(r, retryDelays[attempt - 1] + jitter));
         }
 
         try {
@@ -383,8 +359,11 @@ export class D1Client {
               }
             }
 
-            // HTTP 429 throttling or transient 7500 storage / 5xx error retry with bounded exponential backoff
-            const isRetryable = response.status === 429 || (response.status === 400 && errText.includes('7500')) || response.status >= 500;
+            // HTTP 429 throttling, overloaded 7429, or transient 7500 storage / 5xx error retry with bounded exponential backoff + jitter
+            const isRetryable =
+              response.status === 429 ||
+              (response.status === 400 && (errText.includes('7500') || errText.includes('7429'))) ||
+              response.status >= 500;
             if (isRetryable && attempt < retryDelays.length) {
               continue;
             }
@@ -431,6 +410,8 @@ export class D1Client {
           }
 
           if (attempt < retryDelays.length) {
+            const jitter = Math.floor(Math.random() * 50);
+            await new Promise(r => setTimeout(r, retryDelays[attempt] + jitter));
             continue;
           }
 
@@ -489,8 +470,13 @@ export class D1Client {
   }
 
   /**
-   * Executes a batch of statements atomically.
-   * In Cloudflare D1 HTTP API, multiple statements without explicit BEGIN/COMMIT are submitted in a single query payload.
+   * Executes a batch of statements sequentially against Cloudflare D1 HTTP API.
+   * Note: The Cloudflare D1 HTTP API processes statements sequentially.
+   * If a batch contains financial statements:
+   * - Failure at index 0 throws D1_DURABLE_WRITE_UNAVAILABLE.
+   * - Failure at index > 0 throws D1_PARTIAL_BATCH_FAILURE (local replay aborted to prevent state divergence).
+   * - Network timeouts/disconnections throw D1_AMBIGUOUS_OUTCOME.
+   * Under no circumstances may financial statements fall back to local SQLite on Render.
    * In local/dev SQLite, executes wrapped in a db.transaction().
    */
   public async executeBatch(
@@ -534,7 +520,8 @@ export class D1Client {
 
         for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
           if (attempt > 0) {
-            await new Promise(r => setTimeout(r, retryDelays[attempt - 1]));
+            const jitter = Math.floor(Math.random() * 50);
+            await new Promise(r => setTimeout(r, retryDelays[attempt - 1] + jitter));
           }
 
           try {
@@ -558,7 +545,10 @@ export class D1Client {
                 break;
               }
 
-              const isTransient = response.status === 429 || (response.status === 400 && errText.includes('7500')) || response.status >= 500;
+              const isTransient =
+                response.status === 429 ||
+                (response.status === 400 && (errText.includes('7500') || errText.includes('7429'))) ||
+                response.status >= 500;
               if (isTransient && attempt < retryDelays.length) {
                 continue;
               }
@@ -577,6 +567,11 @@ export class D1Client {
             }
           } catch (netErr: any) {
             failureErrorText = netErr?.message || '';
+            const isTimeout =
+              netErr?.name === 'AbortError' ||
+              netErr?.name === 'TimeoutError' ||
+              /timeout|aborted|ETIMEDOUT|ECONNRESET/i.test(netErr?.message || '');
+
             if (D1Client.isDailyQuotaError(0, netErr?.message || '')) {
               this.tripQuotaCircuitBreaker(netErr?.message || '');
               failedIdx = idx;
@@ -584,7 +579,14 @@ export class D1Client {
               break;
             }
             if (attempt < retryDelays.length) {
+              const jitter = Math.floor(Math.random() * 50);
+              await new Promise(r => setTimeout(r, retryDelays[attempt] + jitter));
               continue;
+            }
+            if (hasFinancialStatement && isTimeout) {
+              throw new Error(
+                `D1_AMBIGUOUS_OUTCOME: Network timeout or disconnection during batch execution at statement index ${idx}. Outcome ambiguous; local replay aborted.`
+              );
             }
             failedIdx = idx;
             fallbackToLocal = true;
@@ -602,9 +604,7 @@ export class D1Client {
           if (failedIdx > 0) {
             throw new Error(`D1_PARTIAL_BATCH_FAILURE: Statement at index ${failedIdx} failed after earlier statements committed. Local replay aborted.`);
           }
-          if (isRender) {
-            throw new Error(`D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1 (${failureErrorText})`);
-          }
+          throw new Error(`D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1 (${failureErrorText})`);
         }
         if (isProduction) {
           throw new Error(`[D1 PERSISTENCE ERROR] D1 batch statement failed at index ${failedIdx}: ${failureErrorText}`);

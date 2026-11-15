@@ -1,4 +1,4 @@
-import { D1Client } from './d1-client.js';
+import { D1Client, FINANCIAL_TABLES, isFinancialSql } from './d1-client.js';
 import { getDb } from './client.js';
 import { isProduction } from '../config/env.js';
 
@@ -111,22 +111,18 @@ export class D1RevenueRepository {
     sql: string,
     params: any[] = []
   ): Promise<{ rowsAffected: number; source: 'CLOUDFLARE_D1' | 'PERSISTENT_SQLITE' }> {
-    const isFinancialTable =
-      table === 'payment_requests' ||
-      table === 'manual_upi_claims' ||
-      table === 'orders' ||
-      table === 'universal_orders' ||
-      table === 'commission_ledger' ||
-      table === 'delivery_tasks' ||
-      table === 'payout_records';
+    const isFinancialTable = FINANCIAL_TABLES.includes(table as any) || isFinancialSql(sql);
 
     const shouldSyncRemoteD1 = this.d1.isRemoteD1WriteAllowed();
     if (shouldSyncRemoteD1) {
       const res = await this.d1.executeQuery(sql, params, true, 'P0');
-      try {
-        const db = getDb();
-        db.prepare(sql).run(...params);
-      } catch {}
+      // Spec Stage P.2: Never mirror financial tables to local SQLite, and avoid duplicate write if already executed in SQLite
+      if (!isFinancialTable && res.source !== 'PERSISTENT_SQLITE') {
+        try {
+          const db = getDb();
+          db.prepare(sql).run(...params);
+        } catch {}
+      }
       return { rowsAffected: res.rowsAffected, source: res.source };
     }
 
@@ -157,27 +153,23 @@ export class D1RevenueRepository {
     }
 
     const hasFinancialTable = operations.some(
-      o =>
-        o.table === 'payment_requests' ||
-        o.table === 'manual_upi_claims' ||
-        o.table === 'orders' ||
-        o.table === 'universal_orders' ||
-        o.table === 'commission_ledger' ||
-        o.table === 'delivery_tasks' ||
-        o.table === 'payout_records'
+      o => FINANCIAL_TABLES.includes(o.table as any) || isFinancialSql(o.sql)
     );
 
     if (shouldSyncRemoteD1) {
       const res = await this.d1.executeBatch(operations.map(o => ({ sql: o.sql, params: o.params })), 'P0');
-      try {
-        const db = getDb();
-        const syncBatch = db.transaction((ops: typeof operations) => {
-          for (const op of ops) {
-            db.prepare(op.sql).run(...(op.params || []));
-          }
-        });
-        syncBatch(operations);
-      } catch {}
+      // Spec Stage P.2: Never mirror financial tables to local SQLite, and avoid duplicate write if already executed in SQLite
+      if (!hasFinancialTable && res.source !== 'PERSISTENT_SQLITE') {
+        try {
+          const db = getDb();
+          const syncBatch = db.transaction((ops: typeof operations) => {
+            for (const op of ops) {
+              db.prepare(op.sql).run(...(op.params || []));
+            }
+          });
+          syncBatch(operations);
+        } catch {}
+      }
       return { rowsAffected: res.rowsAffected, source: res.source };
     }
 

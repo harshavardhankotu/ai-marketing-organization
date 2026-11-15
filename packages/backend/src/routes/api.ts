@@ -13240,6 +13240,38 @@ const handleSiteAuditCheckout = async (c: any) => {
 
   const createdViaRazorpayApi = Boolean(orderId && !orderId.startsWith('order_test_') && !orderId.startsWith('order_sitefix_'));
 
+  // Optional hosted payment link for zero-friction UPI checkout
+  let paymentLink: string | null = null;
+  if (activeKeyId && activeKeySecret) {
+    try {
+      const rzpAuthHeader = 'Basic ' + Buffer.from(`${activeKeyId}:${activeKeySecret}`).toString('base64');
+      const plPayload = {
+        amount: amountPaise,
+        currency: 'INR',
+        accept_partial: false,
+        reference_id: (orderId || auditId).slice(0, 40),
+        description: `SiteFix AI Core Fix-Pack (${auditId})`,
+        upi_link: true,
+        notify: { sms: false, email: Boolean(customerEmail) },
+        customer: customerEmail ? { email: customerEmail } : undefined,
+        notes: { auditId, sku, orderId }
+      };
+      const plRes = await fetch('https://api.razorpay.com/v1/payment_links', {
+        method: 'POST',
+        headers: {
+          'Authorization': rzpAuthHeader,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(plPayload),
+        signal: AbortSignal.timeout(10000)
+      });
+      if (plRes.ok) {
+        const plData = await plRes.json() as any;
+        paymentLink = plData?.short_url || null;
+      }
+    } catch {}
+  }
+
   // Interconnect SiteFix Checkout -> ExperimentEngine Telemetry
   try {
     const activeExp = getDb().prepare(`SELECT id FROM experiments WHERE status IN ('RUNNING', 'ACTIVE') ORDER BY created_at DESC LIMIT 1`).get() as any;
@@ -13258,6 +13290,7 @@ const handleSiteAuditCheckout = async (c: any) => {
   return c.json({
     success: true,
     orderId,
+    paymentLink,
     createdViaRazorpayApi,
     amount: amountPaise,
     amountINR,
@@ -13269,6 +13302,7 @@ const handleSiteAuditCheckout = async (c: any) => {
     sandbox: isLive ? false : true,
     order: {
       orderId,
+      paymentLink,
       createdViaRazorpayApi,
       auditId,
       sku,
@@ -13780,8 +13814,44 @@ const handleSiteAuditRazorpayWebhook = async (c: any) => {
     if (auditId && orderId) {
       try {
         token = service.generateDeliveryToken(orderId, auditId, paymentId);
+        // Pre-generate deliverable to ensure cache is hot and package is verified
+        await service.generateDeliverable(auditId, orderId).catch(() => null);
       } catch (tErr: any) {
         console.error('[handleSiteAuditRazorpayWebhook] Token generation error:', tErr);
+      }
+    }
+
+    // Zero-touch Brevo email delivery to buyer
+    const buyerEmail = String(
+      payment?.email ||
+      storedOrder?.customer_email ||
+      storedOrder?.notes?.customerEmail ||
+      notes?.customerEmail ||
+      notes?.email ||
+      ''
+    ).trim().toLowerCase();
+
+    if (buyerEmail && token && auditId) {
+      try {
+        const siteUrl = getTrustedPublicSiteUrl().replace(/\/$/, '');
+        const downloadUrl = `${siteUrl}/api/v1/tools/site-audit/${encodeURIComponent(auditId)}/deliverable?token=${encodeURIComponent(token)}`;
+        const { BrevoMcpClient } = await import('../integrations/brevo-mcp-client.js');
+        const brevo = BrevoMcpClient.getInstance();
+        const businessName = storedOrder?.business_name || storedOrder?.domain || auditId;
+        const postalAddress = (process.env.BUSINESS_POSTAL_ADDRESS || 'SiteFix AI, Madhapur, Hyderabad, Telangana 500081, India').trim();
+        const unsubUrl = `${siteUrl}/api/v1/compliance/dpdp/erasure?email=${encodeURIComponent(buyerEmail)}`;
+
+        const emailText = `Hello,\n\nYour SiteFix AI Core Fix-Pack (₹499) has been prepared and is ready for download.\n\nDownload Link: ${downloadUrl}\n\nThis deliverable includes automated patches for Schema.org JSON-LD, Meta Tags, and Core Web Vitals.\n\n---\n${postalAddress}\nUnsubscribe / Erasure: ${unsubUrl}`;
+        const emailHtml = `<div style="font-family:sans-serif;line-height:1.6;color:#0f172a;"><h2 style="color:#2563eb;">Your SiteFix AI Core Fix-Pack is Ready</h2><p>Hello,</p><p>Thank you for purchasing the SiteFix AI Core Fix-Pack (₹499).</p><p style="margin:24px 0;"><a href="${downloadUrl}" style="background:#2563eb;color:#ffffff;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:bold;display:inline-block;">Download Core Fix-Pack</a></p><p style="font-size:13px;color:#64748b;">Or open this link: <a href="${downloadUrl}">${downloadUrl}</a></p><hr style="margin:24px 0;border:none;border-top:1px solid #e2e8f0;"/><p style="font-size:12px;color:#94a3b8;">${postalAddress}<br/><a href="${unsubUrl}">1-Click Unsubscribe / Data Erasure</a></p></div>`;
+
+        await brevo.sendTransactionalEmail({
+          to: [{ email: buyerEmail, name: businessName }],
+          subject: 'Your SiteFix AI Core Fix-Pack is Ready for Download',
+          textContent: emailText,
+          htmlContent: emailHtml
+        });
+      } catch (emailErr: any) {
+        console.warn(`[handleSiteAuditRazorpayWebhook] Automatic FixPack email delivery notice: ${emailErr.message}`);
       }
     }
 
@@ -14550,13 +14620,13 @@ const instagramOAuthCallbackHandler = async (c: any) => {
   const { InstagramBusinessAdapter } = await import('../integrations/instagram-business-adapter.js');
   const errorParam = c.req.query('error') || c.req.query('error_reason');
   const stateParam = c.req.query('state');
+  const accept = String(c.req.header('accept') || '');
 
   if (!errorParam) {
     const stateCheck = InstagramBusinessAdapter.verifySignedState(stateParam);
     if (!stateCheck.valid) {
       const errorMsg = stateCheck.error || 'INVALID_STATE';
       const statusCode = errorMsg === 'INSTAGRAM_OAUTH_NOT_CONFIGURED' ? 503 : 400;
-      const accept = String(c.req.header('accept') || '');
       if (accept.includes('text/html') && !accept.includes('application/json')) {
         return c.html(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>State Error</title></head><body style="font-family:sans-serif;background:#090d16;color:#e2e8f0;padding:40px;text-align:center;"><h1>Instagram State Error</h1><p>${errorMsg}</p><p><a href="/" style="color:#38bdf8;">Return to Owner Console</a></p></body></html>`, statusCode);
       }
@@ -14567,53 +14637,68 @@ const instagramOAuthCallbackHandler = async (c: any) => {
       }, statusCode);
     }
 
-    // Single-use Nonce Replay Protection via durable_events
+    // Single-use Nonce Replay Protection via atomic primary key insert into durable_events
     const parts = String(stateParam || '').split('.');
     const nonce = parts[1];
     if (!nonce || nonce.length < 8) {
+      if (accept.includes('text/html') && !accept.includes('application/json')) {
+        return c.html(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>State Error</title></head><body style="font-family:sans-serif;background:#090d16;color:#e2e8f0;padding:40px;text-align:center;"><h1>Invalid State</h1><p>OAuth state nonce is malformed.</p></body></html>`, 400);
+      }
       return c.json({
         success: false,
-        error: 'OAUTH_STATE_REPLAY_OR_UNAVAILABLE',
+        error: 'OAUTH_STATE_REPLAY_DETECTED',
         message: 'OAuth state nonce is malformed.'
       }, 400);
     }
 
     try {
-      const { D1RevenueRepository } = await import('../db/d1-revenue-repository.js');
-      const { DurableEventBus } = await import('../revenue/durable-event-bus.js');
-      const { OwnerAuthService } = await import('../auth/owner-auth.js');
+      const crypto = await import('node:crypto');
+      const nonceHash = crypto.createHash('sha256').update(nonce).digest('hex').slice(0, 40);
+      const deterministicId = `ig_oauth_state_${nonceHash}`;
 
-      // Check if nonce has already been consumed
-      const existing = await D1RevenueRepository.getInstance().queryOne<{ id: string }>(
-        'durable_events',
-        `SELECT id FROM durable_events WHERE event_type = 'IG_OAUTH_STATE_CONSUMED' AND business_id = ? LIMIT 1`,
-        [nonce]
-      );
-      if (existing?.id) {
+      const { D1RevenueRepository } = await import('../db/d1-revenue-repository.js');
+      const { OwnerAuthService } = await import('../auth/owner-auth.js');
+      const payloadJson = JSON.stringify({
+        consumedAt: new Date().toISOString(),
+        state: stateParam
+      });
+
+      const sql = `INSERT INTO durable_events (id, event_type, organization_id, business_id, payload_json, created_at) VALUES (?, 'IG_OAUTH_STATE_CONSUMED', ?, ?, ?, datetime('now'))`;
+      const orgId = OwnerAuthService.OWNER_ORGANIZATION_ID || 'org_owner_primary';
+      await D1RevenueRepository.getInstance().executeWrite('durable_events', sql, [
+        deterministicId,
+        orgId,
+        nonce,
+        payloadJson
+      ]);
+    } catch (d1Err: any) {
+      const errLower = (d1Err?.message || '').toLowerCase();
+      const isReplay =
+        errLower.includes('unique') ||
+        errLower.includes('constraint') ||
+        errLower.includes('primary key') ||
+        errLower.includes('already exists');
+
+      if (isReplay) {
+        if (accept.includes('text/html') && !accept.includes('application/json')) {
+          return c.html(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>State Error</title></head><body style="font-family:sans-serif;background:#090d16;color:#e2e8f0;padding:40px;text-align:center;"><h1>OAuth Replay Detected</h1><p>OAuth state nonce has already been consumed.</p><p><a href="/" style="color:#38bdf8;">Return to Owner Console</a></p></body></html>`, 400);
+        }
         return c.json({
           success: false,
-          error: 'OAUTH_STATE_REPLAY_OR_UNAVAILABLE',
-          message: 'OAuth state nonce has already been consumed (replay attack detected).'
+          error: 'OAUTH_STATE_REPLAY_DETECTED',
+          message: 'OAuth state nonce has already been consumed.'
         }, 400);
       }
 
-      // Mark nonce consumed
-      await DurableEventBus.emitAsync({
-        eventType: 'IG_OAUTH_STATE_CONSUMED',
-        organizationId: OwnerAuthService.OWNER_ORGANIZATION_ID || 'org_owner_primary',
-        businessId: nonce,
-        payload: {
-          consumedAt: new Date().toISOString(),
-          state: stateParam
-        }
-      });
-    } catch (d1Err: any) {
-      console.warn(`[InstagramOAuth] Nonce replay verification failed: ${d1Err.message}`);
+      console.warn(`[InstagramOAuth] Atomic nonce consumption failed: ${d1Err.message}`);
+      if (accept.includes('text/html') && !accept.includes('application/json')) {
+        return c.html(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Service Unavailable</title></head><body style="font-family:sans-serif;background:#090d16;color:#e2e8f0;padding:40px;text-align:center;"><h1>Durable Storage Unavailable</h1><p>Durable state verification unavailable.</p><p><a href="/" style="color:#38bdf8;">Return to Owner Console</a></p></body></html>`, 503);
+      }
       return c.json({
         success: false,
-        error: 'OAUTH_STATE_REPLAY_OR_UNAVAILABLE',
-        message: `Durable state verification failed: ${d1Err.message}`
-      }, 400);
+        error: 'D1_DURABLE_WRITE_UNAVAILABLE',
+        message: 'Durable state verification unavailable.'
+      }, 503);
     }
   }
 
@@ -14637,7 +14722,6 @@ const instagramOAuthCallbackHandler = async (c: any) => {
     reqOrigin
   );
 
-  const accept = String(c.req.header('accept') || '');
   if (accept.includes('text/html') && !accept.includes('application/json')) {
     const safeHandle = result.handle.replace(/[<>&"]/g, '');
     const safeDesc = (result.errorDescription || result.error || '').replace(/[<>&"]/g, '');
@@ -14833,23 +14917,46 @@ const MCP_TOOLS_MANIFEST = [
 ];
 
 apiRouter.get('/mcp', async (c) => {
-  const clientIp = c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || '127.0.0.1';
-  const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/mcp', clientIp, 60, 60);
-  if (!rateLimit.allowed) {
-    return c.json({ success: false, error: 'RATE_LIMIT_EXCEEDED', message: 'Rate limit exceeded: 60 requests per minute.' }, 429);
-  }
+  c.header('Allow', 'POST');
   return c.json({
-    protocolVersion: '2024-11-05',
-    serverInfo: {
-      name: 'ai-marketing-organization-mcp',
-      version: '1.0.0'
-    },
-    capabilities: { tools: {} },
-    tools: MCP_TOOLS_MANIFEST
-  });
+    jsonrpc: '2.0',
+    id: null,
+    error: {
+      code: -32601,
+      message: 'Method Not Allowed. Use POST for JSON-RPC 2.0 Streamable HTTP MCP (2026-07-28).'
+    }
+  }, 405);
 });
 
 apiRouter.post('/mcp', async (c) => {
+  const origin = c.req.header('origin');
+  if (origin) {
+    let isOriginAllowed = false;
+    try {
+      const u = new URL(origin);
+      const host = (c.req.header('host') || '').toLowerCase();
+      const trustedHost = getTrustedPublicSiteUrl().replace(/^https?:\/\//, '').replace(/\/$/, '').toLowerCase();
+      if (
+        u.hostname === 'localhost' ||
+        u.hostname === '127.0.0.1' ||
+        u.hostname === '::1' ||
+        u.host.toLowerCase() === host ||
+        (trustedHost && (u.host.toLowerCase() === trustedHost || u.hostname.toLowerCase() === trustedHost.split(':')[0])) ||
+        u.hostname.endsWith('.onrender.com')
+      ) {
+        isOriginAllowed = true;
+      }
+    } catch {}
+
+    if (!isOriginAllowed) {
+      return c.json({
+        jsonrpc: '2.0',
+        id: null,
+        error: { code: -32003, message: 'Forbidden: untrusted Origin' }
+      }, 403);
+    }
+  }
+
   const clientIp = c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || '127.0.0.1';
   const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/mcp', clientIp, 60, 60);
   if (!rateLimit.allowed) {
@@ -14871,15 +14978,68 @@ apiRouter.post('/mcp', async (c) => {
     }, 400);
   }
 
+  // Validate protocol version header if present
+  const protoHeader = c.req.header('mcp-protocol-version') || c.req.header('MCP-Protocol-Version');
+  if (protoHeader && !['2026-07-28', '2025-03-26', '2024-11-05'].includes(protoHeader.trim())) {
+    return c.json({
+      jsonrpc: '2.0',
+      id: rpcId,
+      error: { code: -32600, message: `Unsupported MCP-Protocol-Version '${protoHeader}'. Supported: 2026-07-28, 2025-03-26.` }
+    }, 400);
+  }
+
+  // Validate Mcp-Method header if present
+  const mcpMethodHeader = c.req.header('mcp-method') || c.req.header('Mcp-Method');
+  if (mcpMethodHeader && mcpMethodHeader.trim() !== body.method) {
+    return c.json({
+      jsonrpc: '2.0',
+      id: rpcId,
+      error: { code: -32600, message: `Mcp-Method header '${mcpMethodHeader}' does not match body method '${body.method}'` }
+    }, 400);
+  }
+
+  // Validate Mcp-Name header if present
+  const mcpNameHeader = c.req.header('mcp-name') || c.req.header('Mcp-Name');
+  if (mcpNameHeader && body.method === 'tools/call' && mcpNameHeader.trim() !== String(body.params?.name || '').trim()) {
+    return c.json({
+      jsonrpc: '2.0',
+      id: rpcId,
+      error: { code: -32600, message: `Mcp-Name header '${mcpNameHeader}' does not match tool name '${body.params?.name}'` }
+    }, 400);
+  }
+
+  c.header('MCP-Protocol-Version', '2026-07-28');
+
   const method = body.method;
   const params = body.params || {};
+
+  if (method === 'server/discover') {
+    return c.json({
+      jsonrpc: '2.0',
+      id: rpcId,
+      result: {
+        protocolVersions: ['2026-07-28', '2025-03-26'],
+        serverInfo: {
+          name: 'ai-marketing-organization-mcp',
+          version: '1.0.0'
+        },
+        cacheHints: {
+          ttlMs: 3600000,
+          cacheScope: 'server'
+        },
+        capabilities: {
+          tools: {}
+        }
+      }
+    });
+  }
 
   if (method === 'initialize') {
     return c.json({
       jsonrpc: '2.0',
       id: rpcId,
       result: {
-        protocolVersion: '2024-11-05',
+        protocolVersion: '2026-07-28',
         capabilities: { tools: {} },
         serverInfo: { name: 'ai-marketing-organization-mcp', version: '1.0.0' }
       }
