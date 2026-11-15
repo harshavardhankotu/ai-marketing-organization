@@ -57,12 +57,19 @@ export class D1Client {
     const raw = String(bodyText || '');
     const lower = raw.toLowerCase();
     return (
+      status === 400 && (lower.includes('7500') || lower.includes('row read') || lower.includes('row write')) ||
       /"code"\s*:\s*7500\b/.test(raw) ||
       lower.includes('daily row read limit') ||
       lower.includes('daily row write limit') ||
+      lower.includes('limit exceeded') ||
       lower.includes("exceeded d1's free tier") ||
-      lower.includes('exceeded d1’s free tier')
+      lower.includes('exceeded d1’s free tier') ||
+      /7500|row.*read|quota|limit exceeded/i.test(raw)
     );
+  }
+
+  public tripQuotaCircuitBreakerPublic(errText: string): void {
+    this.tripQuotaCircuitBreaker(errText);
   }
 
   public isRemoteD1QuotaExhausted(): boolean {

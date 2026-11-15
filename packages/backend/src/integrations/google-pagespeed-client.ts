@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { getDb } from '../db/client.js';
+import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { UnifiedQuotaService } from '../quota/unified-quota-service.js';
 import { isPlaceholderCredential, isProduction } from '../config/env.js';
 
@@ -84,6 +85,7 @@ export class GooglePageSpeedClient {
   private static instance: GooglePageSpeedClient;
   private quotaService = UnifiedQuotaService.getInstance();
   private fetchFn: typeof fetch = globalThis.fetch;
+  private inFlightRequests: Map<string, Promise<PageSpeedAuditResult>> = new Map();
 
   public static getInstance(fetchFn?: typeof fetch): GooglePageSpeedClient {
     if (!GooglePageSpeedClient.instance) {
@@ -107,6 +109,20 @@ export class GooglePageSpeedClient {
     const normalized = this.normalizeUrl(targetUrl);
     const cacheKey = `pagespeed:${strategy}:${normalized}`;
 
+    if (this.inFlightRequests.has(cacheKey)) {
+      return await this.inFlightRequests.get(cacheKey)!;
+    }
+
+    const auditPromise = this.internalRunAudit(targetUrl, strategy, cacheKey);
+    this.inFlightRequests.set(cacheKey, auditPromise);
+    try {
+      return await auditPromise;
+    } finally {
+      this.inFlightRequests.delete(cacheKey);
+    }
+  }
+
+  private async internalRunAudit(targetUrl: string, strategy: 'mobile' | 'desktop', cacheKey: string): Promise<PageSpeedAuditResult> {
     // 1. Check 24-Hour Cache in search_cache
     try {
       const db = getDb();
@@ -359,15 +375,29 @@ export class GooglePageSpeedClient {
     }
   }
 
-  private cacheResult(cacheKey: string, result: PageSpeedAuditResult): void {
+  private async cacheResult(cacheKey: string, result: PageSpeedAuditResult): Promise<void> {
+    const rawJson = JSON.stringify(result);
     try {
       const db = getDb();
       db.prepare(`
         INSERT OR REPLACE INTO search_cache (
           id, query_normalized, provider, raw_response_json, results_count, created_at, expires_at
         ) VALUES (?, ?, 'google_pagespeed', ?, 1, datetime('now'), datetime('now', '+24 hours'))
-      `).run(`ps_${randomUUID().substring(0, 10)}`, cacheKey, JSON.stringify(result));
+      `).run(`ps_${randomUUID().substring(0, 10)}`, cacheKey, rawJson);
     } catch {}
+
+    const d1Repo = D1RevenueRepository.getInstance();
+    if (d1Repo.isRemoteD1Configured()) {
+      try {
+        await d1Repo.executeWrite(
+          'search_cache',
+          `INSERT OR REPLACE INTO search_cache (
+            id, query_normalized, provider, raw_response_json, results_count, created_at, expires_at
+          ) VALUES (?, ?, 'google_pagespeed', ?, 1, datetime('now'), datetime('now', '+24 hours'))`,
+          [`ps_${randomUUID().substring(0, 10)}`, cacheKey, rawJson]
+        );
+      } catch {}
+    }
   }
 
   /**

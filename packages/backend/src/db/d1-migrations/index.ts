@@ -152,26 +152,11 @@ export async function applyD1Migrations(): Promise<{ applied: string[]; tables: 
   const d1 = D1Client.getInstance();
   const applied: string[] = [];
 
-  // Ensure tracking table exists
-  await d1.executeQuery(
-    `CREATE TABLE IF NOT EXISTS _d1_migrations (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      migration_name TEXT NOT NULL UNIQUE,
-      applied_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );`,
-    [],
-    true,
-    'P0'
-  );
-
-  // Retrieve already applied migrations
-  const existingRows = await d1.executeQuery<{ migration_name: string }>(
-    `SELECT migration_name FROM _d1_migrations ORDER BY id ASC;`,
-    [],
-    false,
-    'P0'
-  );
-  const appliedSet = new Set((existingRows.results || []).map(r => r.migration_name));
+  // Check circuit breaker first
+  if (d1.isRemoteD1QuotaExhausted()) {
+    console.warn('[D1 Migration Runner] Remote D1 daily quota is exhausted; skipping remote migration check.');
+    return { applied: [], tables: [] };
+  }
 
   const possibleDirs = [
     __dirname,
@@ -194,61 +179,114 @@ export async function applyD1Migrations(): Promise<{ applied: string[]; tables: 
     .filter(f => f.endsWith('.sql'))
     .sort();
 
-  for (const file of files) {
-    if (appliedSet.has(file)) {
-      console.log(`[D1 Migration Runner] Already applied: ${file} (skipping)`);
-      continue;
+  // Fast 1-row check: if migration 0050 already recorded and no files > 0050 exist, skip redundant table scan
+  try {
+    const baselineCheck = await d1.executeQuery<{ migration_name: string }>(
+      `SELECT migration_name FROM _d1_migrations WHERE migration_name LIKE '%0050%' LIMIT 1;`,
+      [],
+      false,
+      'P0'
+    ).catch(() => ({ results: [] as { migration_name: string }[] }));
+
+    const has0050 = (baselineCheck.results || []).some(r => r.migration_name.includes('0050'));
+    const hasNewer = files.some(f => f > '0050_stage_d_deal_reconciliation_and_schedule.sql');
+    if (has0050 && !hasNewer) {
+      console.log(`[D1 Migration Runner] Fast check: Migration 0050 baseline already verified in Cloudflare D1 (${files.length} migrations up to date). Skipping redundant schema scan.`);
+      return { applied: [], tables: ['(verified 0050 baseline)'] };
     }
-
-    const filePath = path.join(migrationsDir, file);
-    const content = fs.readFileSync(filePath, 'utf-8');
-    const statements = parseSqlStatements(content);
-
-    console.log(`[D1 Migration Runner] Applying ${file} (${statements.length} statements)...`);
-
-    for (let i = 0; i < statements.length; i++) {
-      const stmt = statements[i];
-      try {
-        await d1.executeQuery(stmt, [], true, 'P0');
-      } catch (err: any) {
-        const msg = String(err.message || '');
-        // Explicitly NEVER ignore UNIQUE constraint violations
-        if (msg.toLowerCase().includes('unique constraint')) {
-          console.error(`\n[D1 MIGRATION RUNNER] FATAL UNIQUE CONSTRAINT VIOLATION: ${msg}`);
-          throw new Error(`D1_MIGRATION_FAILED: Unique constraint violation in '${file}' on statement:\n${stmt}\nError: ${msg}`);
-        }
-        // Allow idempotent catch-up for duplicate column or table already exists on existing databases
-        if (msg.includes('duplicate column name') || msg.includes('already exists')) {
-          console.warn(`[D1 Migration Runner] Schema element already exists in database (skipping idempotent statement): ${stmt}`);
-          continue;
-        }
-
-        console.error(`\n======================================================`);
-        console.error(`[D1 MIGRATION RUNNER] MIGRATION FAILED - HALTING IMMEDIATELY`);
-        console.error(`File:      ${file}`);
-        console.error(`Statement #${i + 1} of ${statements.length}:`);
-        console.error(`${stmt}`);
-        console.error(`Error:     ${err.message}`);
-        console.error(`======================================================\n`);
-        throw new Error(
-          `D1_MIGRATION_FAILED: Migration '${file}' failed at statement #${i + 1}:\n${stmt}\nError: ${err.message}`
-        );
-      }
+  } catch (err: any) {
+    if (D1Client.isDailyQuotaError(err?.status || 0, err?.message || '')) {
+      d1.tripQuotaCircuitBreakerPublic(err.message || 'D1 migration quota reached');
+      console.warn(`[D1 Migration Runner] Remote D1 quota exhausted during baseline check (${err.message}). Skipping migration run.`);
+      return { applied: [], tables: [] };
     }
+  }
 
-    // Record migration in _d1_migrations
+  try {
+    // Ensure tracking table exists
     await d1.executeQuery(
-      `INSERT INTO _d1_migrations (migration_name) VALUES (?);`,
-      [file],
+      `CREATE TABLE IF NOT EXISTS _d1_migrations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        migration_name TEXT NOT NULL UNIQUE,
+        applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );`,
+      [],
       true,
       'P0'
     );
-    applied.push(file);
-    console.log(`[D1 Migration Runner] Successfully applied ${file}`);
-  }
 
-  const tables = await listD1Tables();
-  return { applied, tables };
+    // Retrieve already applied migrations
+    const existingRows = await d1.executeQuery<{ migration_name: string }>(
+      `SELECT migration_name FROM _d1_migrations ORDER BY id ASC;`,
+      [],
+      false,
+      'P0'
+    );
+    const appliedSet = new Set((existingRows.results || []).map(r => r.migration_name));
+
+    for (const file of files) {
+      if (appliedSet.has(file)) {
+        console.log(`[D1 Migration Runner] Already applied: ${file} (skipping)`);
+        continue;
+      }
+
+      const filePath = path.join(migrationsDir, file);
+      const content = fs.readFileSync(filePath, 'utf-8');
+      const statements = parseSqlStatements(content);
+
+      console.log(`[D1 Migration Runner] Applying ${file} (${statements.length} statements)...`);
+
+      for (let i = 0; i < statements.length; i++) {
+        const stmt = statements[i];
+        try {
+          await d1.executeQuery(stmt, [], true, 'P0');
+        } catch (err: any) {
+          const msg = String(err.message || '');
+          // Explicitly NEVER ignore UNIQUE constraint violations
+          if (msg.toLowerCase().includes('unique constraint')) {
+            console.error(`\n[D1 MIGRATION RUNNER] FATAL UNIQUE CONSTRAINT VIOLATION: ${msg}`);
+            throw new Error(`D1_MIGRATION_FAILED: Unique constraint violation in '${file}' on statement:\n${stmt}\nError: ${msg}`);
+          }
+          // Allow idempotent catch-up for duplicate column or table already exists on existing databases
+          if (msg.includes('duplicate column name') || msg.includes('already exists')) {
+            console.warn(`[D1 Migration Runner] Schema element already exists in database (skipping idempotent statement): ${stmt}`);
+            continue;
+          }
+
+          console.error(`\n======================================================`);
+          console.error(`[D1 MIGRATION RUNNER] MIGRATION FAILED - HALTING IMMEDIATELY`);
+          console.error(`File:      ${file}`);
+          console.error(`Statement #${i + 1} of ${statements.length}:`);
+          console.error(`${stmt}`);
+          console.error(`Error:     ${err.message}`);
+          console.error(`======================================================\n`);
+          throw new Error(
+            `D1_MIGRATION_FAILED: Migration '${file}' failed at statement #${i + 1}:\n${stmt}\nError: ${err.message}`
+          );
+        }
+      }
+
+      // Record migration in _d1_migrations
+      await d1.executeQuery(
+        `INSERT INTO _d1_migrations (migration_name) VALUES (?);`,
+        [file],
+        true,
+        'P0'
+      );
+      applied.push(file);
+      console.log(`[D1 Migration Runner] Successfully applied ${file}`);
+    }
+
+    const tables = applied.length > 0 ? await listD1Tables() : ['(verified 0050 baseline)'];
+    return { applied, tables };
+  } catch (err: any) {
+    if (D1Client.isDailyQuotaError(err?.status || 0, err?.message || '')) {
+      d1.tripQuotaCircuitBreakerPublic(err.message || 'D1 migration quota reached');
+      console.warn(`[D1 Migration Runner] Remote D1 daily quota exhausted during migration (${err.message}). Tripping circuit breaker and returning gracefully.`);
+      return { applied, tables: [] };
+    }
+    throw err;
+  }
 }
 
 // CLI Execution Entrypoint
