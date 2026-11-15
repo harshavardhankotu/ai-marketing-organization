@@ -239,6 +239,10 @@ describe('V5.1.2 — Commercial Integrity, Campaign Null-Guard & Variant Stock V
     });
 
     it('Test 2d: /api/v1/public/deals returns deals: [] when all candidates are quarantined', async () => {
+      try {
+        const { getDb } = await import('../../src/db/client.js');
+        getDb().prepare("DELETE FROM public_deals WHERE id LIKE 'deal_v583_%'").run();
+      } catch {}
       const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
       // Deal engine should have quarantined deals
       dealEngine.resetSources();
