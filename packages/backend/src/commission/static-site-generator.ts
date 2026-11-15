@@ -945,6 +945,9 @@ export class StaticSiteGenerator {
       const hasPriceDrop = Boolean(deal.evidenceJson?.hasVerifiedPriceDrop);
       const isFeatured = Boolean(deal.isFeatured ?? deal.evidenceJson?.isFeatured);
       const isCouponOnly = Number(deal.currentPriceINR || 0) <= 0;
+      const amazonRailLabel = (deal.affiliateNetwork === 'AMAZON_IN' || deal.merchant?.toLowerCase() === 'amazon')
+        ? "Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)"
+        : "Check Today's Live Marketplace Price &amp; Partner Coupons &rarr; (#Ad)";
       return `
       <div class="price-card deal-card" data-catalog-slot="${this.escapeHtml(deal.catalogSlot || deal.evidenceJson?.catalogSlot || 'ACTIVE')}" style="background: #111827; border: 1px solid #1e293b; border-radius: 12px; padding: 1.5rem; display: flex; flex-direction: column; justify-content: space-between;">
         <div>
@@ -984,7 +987,7 @@ export class StaticSiteGenerator {
             <span style="font-size: 0.75rem; color: #64748b;">#Ad &bull; Verified D2C Rail</span>
             <a href="${this.escapeHtml(targetHref)}" target="_blank" rel="sponsored nofollow noopener" data-ab-experiment="${this.escapeHtml(ctaAssignment.experimentId)}" data-ab-variant="${this.escapeHtml(ctaAssignment.variant)}" style="background: #06b6d4; color: #020617; font-weight: 700; font-size: 0.82rem; padding: 0.45rem 0.9rem; border-radius: 8px; text-decoration: none;">${this.escapeHtml(ctaAssignment.ctaText)}</a>
           </div>
-          <a href="${this.escapeHtml(amazonRailHref)}" target="_blank" rel="sponsored nofollow noopener" style="display: block; text-align: center; background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); color: #fcd34d; font-weight: 600; font-size: 0.76rem; padding: 0.42rem 0.65rem; border-radius: 7px; text-decoration: none;">Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)</a>
+          <a href="${this.escapeHtml(amazonRailHref)}" target="_blank" rel="sponsored nofollow noopener" style="display: block; text-align: center; background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); color: #fcd34d; font-weight: 600; font-size: 0.76rem; padding: 0.42rem 0.65rem; border-radius: 7px; text-decoration: none;">${amazonRailLabel}</a>
         </div>
       </div>
     `;
@@ -1051,13 +1054,13 @@ export class StaticSiteGenerator {
     <section id="fair-price-checker-ssr" style="background: #111827; border: 1px solid #1e293b; border-radius: 12px; padding: 1.5rem; margin-bottom: 2rem;">
       <div style="display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.5rem;">
         <h2 style="margin: 0; font-size: 1.15rem; color: #f8fafc;">Universal Fair-Price Checker &amp; Link Monetizer</h2>
-        <span style="font-size: 0.78rem; color: #94a3b8;">Observed MRP · Coupon Stacking · Amazon.in &amp; Cuelinks</span>
+        <span style="font-size: 0.78rem; color: #94a3b8;">Observed MRP · Coupon Stacking · Top Marketplaces &amp; Partner Stores</span>
       </div>
       <p style="margin: 0 0 0.9rem 0; font-size: 0.88rem; color: #94a3b8;">
-        Paste any Indian product URL (Amazon.in, D2C flagship store) or search any product to check fair market price, stacked coupon savings, and set a target price-drop alert.
+        Paste any Indian product URL (marketplace or D2C flagship store) or search any product to check fair market price, stacked coupon savings, and set a target price-drop alert.
       </p>
       <form onsubmit="handleFairPriceDealsSsr(event)" style="display: flex; gap: 0.6rem; flex-wrap: wrap;">
-        <input type="text" id="fp-query-deals-ssr" required placeholder="Paste https://amazon.in/dp/... or type e.g. best ANC earbuds under 2000" style="flex: 1 1 280px; padding: 0.7rem 0.9rem; border-radius: 8px; border: 1px solid #334155; background: #090d16; color: #fff; font-size: 0.9rem;">
+        <input type="text" id="fp-query-deals-ssr" required placeholder="Paste product URL or type e.g. best ANC earbuds under 2000" style="flex: 1 1 280px; padding: 0.7rem 0.9rem; border-radius: 8px; border: 1px solid #334155; background: #090d16; color: #fff; font-size: 0.9rem;">
         <button type="submit" id="fp-btn-deals-ssr" style="background: #06b6d4; color: #020617; font-weight: 700; border: none; border-radius: 8px; padding: 0.7rem 1.25rem; cursor: pointer; font-size: 0.88rem;">Check Fair Price</button>
       </form>
       <div id="fp-result-deals-ssr" style="display: none; margin-top: 1rem;"></div>
@@ -1134,9 +1137,9 @@ export class StaticSiteGenerator {
         var d = json.data;
         var vColor = d.verdict === 'BUY_NOW_BELOW_FAIR_PRICE' ? '#34d399' : (d.verdict === 'OVERPRICED_WAIT_FOR_DROP' ? '#f59e0b' : '#38bdf8');
         var rowsHtml = (d.crossStoreOptions || []).slice(0, 6).map(function(o) {
-          var isAmz = o.affiliateNetwork === 'AMAZON_IN' || o.isAmazonSearchRail || Number(o.effectivePriceINR || 0) <= 0;
-          var priceTxt = isAmz ? 'Live on Amazon.in' : ('₹' + Number(o.effectivePriceINR || o.currentPriceINR || 0).toLocaleString('en-IN'));
-          var btnTxt = o.ctaLabel || (isAmz ? "Check Today's Live Price & Prime Coupons on Amazon.in →" : 'Buy (#Ad) →');
+          var isAmz = Boolean(o.isMarketplaceRail || o.isSearchRail) || (o.affiliateNetwork && o.affiliateNetwork.toLowerCase() === 'amazon_in') || Number(o.effectivePriceINR || 0) <= 0;
+          var priceTxt = isAmz ? 'Live Marketplace Price' : ('₹' + Number(o.effectivePriceINR || o.currentPriceINR || 0).toLocaleString('en-IN'));
+          var btnTxt = o.ctaLabel || (isAmz ? "Check Today's Live Marketplace Price & Coupons →" : 'Buy (#Ad) →');
           return '<div style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;padding:0.55rem 0;border-top:1px solid #1e293b;font-size:0.84rem;">' +
             '<div><div style="color:#fff;font-weight:600;">' + escFp(o.title) + (o.isLowestPrice ? ' <span style="color:#34d399;">(Lowest Net)</span>' : '') + '</div>' +
             '<div style="color:#94a3b8;font-size:0.76rem;">' + escFp(o.merchant) + (o.couponCode ? ' · Code: ' + escFp(o.couponCode) : '') + ' · ' + escFp(o.disclosure || '#Ad') + '</div></div>' +

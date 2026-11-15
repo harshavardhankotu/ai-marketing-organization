@@ -541,8 +541,8 @@ export function repairTitlePriceMismatch<T extends Record<string, any>>(deal: T)
   let quarantineReason: string | undefined;
   if (!isCouponDeal && !isAmazonRail && (!Number.isFinite(current) || current <= 0)) {
     quarantined = true;
-    quarantineReason = `QUARANTINED_NON_POSITIVE_PRICE: currentPriceINR=${current}`;
-  } else if (reference > 0 && current > reference) {
+    quarantineReason = `INVALID_PRICE: Current price must be a positive number in INR (received: ${current})`;
+  } else if (deal.dealKind === 'PRODUCT' && reference > 0 && current > reference) {
     quarantined = true;
     quarantineReason = `QUARANTINED_INVERTED_MRP: currentPriceINR (₹${current}) exceeds referencePriceINR (₹${reference})`;
   }
@@ -2180,7 +2180,8 @@ export class AutonomousDealDiscoveryEngine {
             : await client.getOffers({ page: pageNum, per_page: 100 });
           const rawOffers = offersRes.offers || [];
 
-          if (rawOffers.length === 0 || rawOffers.length < 100 || (offersRes.total !== undefined && pageNum * 100 >= offersRes.total)) {
+          const isOffersEnd = rawOffers.length === 0 || (offersRes.total !== undefined ? pageNum * rawOffers.length >= offersRes.total : false);
+          if (isOffersEnd) {
             reachedOfferEnd = true;
           }
 
@@ -2381,7 +2382,8 @@ export class AutonomousDealDiscoveryEngine {
       }
 
       // 6. Advance continuation cursor across cycles (wrap around when end reached or bounded retries exceeded)
-      const isCampEnd = (campSearch.campaigns?.length || 0) < 100 || ((campSearch.total !== undefined) && cursor.campaignPage * 100 >= campSearch.total);
+      const campCount = campSearch.campaigns?.length || 0;
+      const isCampEnd = campCount === 0 || campCount < 30 || ((campSearch.total !== undefined) && cursor.campaignPage * 30 >= campSearch.total);
       let nextCampPage = isCampEnd ? 1 : cursor.campaignPage + 1;
 
       let nextOfferPage: number;
@@ -3355,13 +3357,13 @@ export class AutonomousDealDiscoveryEngine {
     if (affiliateVerified && input.isMonetizable) {
       affiliateVerified = true;
       input.isMonetizable = true;
-      if (verificationStatus !== 'VERIFIED_WITH_CONDITIONS') {
+      if (verificationStatus === 'VERIFIED') {
         verificationStatus = input.affiliateNetwork === 'AMAZON_IN' ? 'AFFILIATE_VERIFIED' : 'VERIFIED';
       }
     } else if (!cuelinksCallAttempted && (isSampleFixture || (!isProduction() && activeCampaignVerified))) {
       affiliateVerified = true;
       input.isMonetizable = true;
-      if (verificationStatus !== 'VERIFIED_WITH_CONDITIONS') {
+      if (verificationStatus === 'VERIFIED') {
         verificationStatus = 'VERIFIED';
       }
     } else {

@@ -563,6 +563,12 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
         <a href="/compare/electronics-technology" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.05rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.86rem; font-weight: 600;">
           Electronics &amp; Tech Buying Guide &rarr;
         </a>
+        <a href="/guides/best-wireless-audio-smartwatches-india" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.05rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.86rem; font-weight: 600;">
+          Audio &amp; Smartwatch Guide &rarr;
+        </a>
+        <a href="/guides/student-flight-discounts-india" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.05rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.86rem; font-weight: 600;">
+          Student Flight Discounts &rarr;
+        </a>
         <a href="/revenue" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.05rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.86rem; font-weight: 600;">
           Public Revenue Funnel &rarr;
         </a>

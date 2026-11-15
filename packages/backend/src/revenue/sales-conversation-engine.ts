@@ -1078,10 +1078,13 @@ export class SalesConversationEngine {
       ],
       score: 10
     };
+    const ctxLower = contextRaw.toLowerCase();
     if (
-      contextRaw.toLowerCase() === 'sitefix_core_499' ||
-      contextRaw.toLowerCase() === 'sitefix' ||
-      /\b(sitefix|site-audit|site audit|technical audit|fix-pack|499|cwv|pagespeed|website audit)\b/.test(combinedLower)
+      ctxLower === 'sitefix_core_499' ||
+      ctxLower === 'sitefix_ai_pack_v1' ||
+      ctxLower === 'site_audit_fixpack' ||
+      ctxLower === 'sitefix' ||
+      /\b(sitefix|sitefix_ai_pack_v1|site_audit_fixpack|site-audit|site audit|technical audit|fix-pack|499|cwv|pagespeed|website audit)\b/.test(combinedLower)
     ) {
       return { resolvedOffer: sitefixOffer, clarificationNeeded: false, clarificationOptions: [] };
     }

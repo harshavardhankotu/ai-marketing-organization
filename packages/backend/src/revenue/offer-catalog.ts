@@ -230,6 +230,7 @@ export class OfferCatalogService {
       trimmedOfferId === OfferCatalogService.SITEFIX_AI_PACK_OFFER_ID ||
       trimmedOfferId === 'SITEFIX_AI_PACK_V1' ||
       trimmedOfferId === 'SITE_AUDIT_FIXPACK' ||
+      trimmedOfferId === 'sitefix_core_499' ||
       trimmedOfferId === 'offer_sitefix_pack'
     ) {
       return {

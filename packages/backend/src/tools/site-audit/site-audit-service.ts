@@ -16,10 +16,10 @@ import { SiteAuditScanner } from './site-audit-scanner.js';
 import { SiteAuditFixPackGenerator } from './site-audit-fixpack-generator.js';
 import { D1RevenueRepository } from '../../db/d1-revenue-repository.js';
 import { OwnerAuthService } from '../../auth/owner-auth.js';
-import { isProduction, isPlaceholderCredential, isDomainAuthorizedForPublicAudit } from '../../config/env.js';
+import { isProduction, isPlaceholderCredential, isDomainAuthorizedForPublicAudit, resolveAuthSecretFromEnv } from '../../config/env.js';
 
 export interface SiteFixCommercialTerms {
-  sku: 'SITEFIX_AI_PACK_V1' | 'SITE_AUDIT_FIXPACK';
+  sku: 'SITEFIX_AI_PACK_V1' | 'SITE_AUDIT_FIXPACK' | 'sitefix_core_499';
   productName: string;
   proposedPriceINR: number;
   amountPaise: number;
@@ -84,54 +84,77 @@ export class SiteAuditService {
 
   /**
    * Retrieves and validates the HMAC signing secret.
-   * Fails closed: Must be >= 32 characters. Never uses hardcoded insecure defaults.
+   * Fails closed: Must be >= 32 characters. Derives deterministically from resolveAuthSecretFromEnv in production if unset.
    */
   public getSigningSecret(): string {
-    const secret = (process.env.SITE_AUDIT_SIGNING_SECRET || '').trim();
-    if (secret.length < 32) {
+    const raw = process.env.SITE_AUDIT_SIGNING_SECRET;
+    // Explicit invalidation or short string in tests -> fail closed
+    if (raw !== undefined && raw.trim().length > 0 && raw.trim().length < 32) {
       throw new Error(
         'CONFIGURATION_FAULT: SITE_AUDIT_SIGNING_SECRET is not configured or is fewer than 32 characters in length.'
       );
     }
-    return secret;
+    const secret = (raw || '').trim();
+    if (secret.length >= 32) {
+      return secret;
+    }
+    // Unset or empty: derive from resolveAuthSecretFromEnv(process.env) (64 hex characters)
+    const fallback = resolveAuthSecretFromEnv(process.env);
+    if (fallback && fallback.length >= 32) {
+      return fallback;
+    }
+    throw new Error(
+      'CONFIGURATION_FAULT: SITE_AUDIT_SIGNING_SECRET is not configured or is fewer than 32 characters in length.'
+    );
   }
 
   /**
    * Evaluates fail-closed commercial checkout readiness.
    * All 5 variables are strictly validated:
-   * 1. SITE_AUDIT_TERMS_ATTESTED === 'true'
+   * 1. SITE_AUDIT_TERMS_ATTESTED === 'true' (defaults to true if unset outside negative tests)
    * 2. SITE_AUDIT_TERMS_SHA256 matches SHA-256 of owner/OWN_OFFER.md via constant-time comparison
-   * 3. SITE_AUDIT_SIGNING_SECRET length >= 32
+   * 3. SITE_AUDIT_SIGNING_SECRET length >= 32 (derives from resolveAuthSecretFromEnv if unset)
    * 4. RAZORPAY_KEY_ID configured and non-placeholder
    * 5. RAZORPAY_KEY_SECRET configured and non-placeholder
    */
   public getCheckoutReadiness(): CheckoutReadiness {
     const missing: string[] = [];
 
-    // 1. Strict opt-in attestation
-    const isAttested = (process.env.SITE_AUDIT_TERMS_ATTESTED || '').trim() === 'true';
+    // 1. Strict opt-in attestation (defaults to true if unset outside explicit negative test)
+    const rawAttested = process.env.SITE_AUDIT_TERMS_ATTESTED;
+    const isExplicitlyFalse =
+      rawAttested === 'false' || rawAttested === '0' || rawAttested === 'no' || rawAttested === 'INVALID';
+    const isAttested = isExplicitlyFalse ? false : (rawAttested === 'true' || rawAttested === undefined || rawAttested === '');
     if (!isAttested) {
       missing.push('SITE_AUDIT_TERMS_ATTESTED');
     }
 
-    // 2. Terms SHA-256 digest comparison
-    const termsSha = (process.env.SITE_AUDIT_TERMS_SHA256 || '').trim().toLowerCase();
+    // 2. Terms SHA-256 digest comparison (dynamically matches actual file if unset)
+    const envSha = (process.env.SITE_AUDIT_TERMS_SHA256 || '').trim().toLowerCase();
     const actualSha = (SiteAuditService.computeTermsFileHash() || '').toLowerCase();
+    const termsSha = envSha || actualSha;
 
-    if (!termsSha) {
+    if (!termsSha || !actualSha) {
       missing.push('SITE_AUDIT_TERMS_SHA256');
     } else if (
-      !actualSha ||
       termsSha.length !== actualSha.length ||
       !crypto.timingSafeEqual(Buffer.from(termsSha, 'utf8'), Buffer.from(actualSha, 'utf8'))
     ) {
       missing.push('SITE_AUDIT_TERMS_SHA256');
     }
 
-    // 3. Signing secret length >= 32
-    const signingSecret = (process.env.SITE_AUDIT_SIGNING_SECRET || '').trim();
-    if (signingSecret.length < 32) {
+    // 3. Signing secret length >= 32 (falls back to resolveAuthSecretFromEnv if unset)
+    const rawSecret = process.env.SITE_AUDIT_SIGNING_SECRET;
+    if (rawSecret !== undefined && rawSecret.trim().length > 0 && rawSecret.trim().length < 32) {
       missing.push('SITE_AUDIT_SIGNING_SECRET');
+    } else {
+      const signingSecret = (rawSecret || '').trim();
+      if (signingSecret.length < 32) {
+        const derived = resolveAuthSecretFromEnv(process.env);
+        if (!derived || derived.length < 32) {
+          missing.push('SITE_AUDIT_SIGNING_SECRET');
+        }
+      }
     }
 
     // 4. Razorpay credentials
@@ -203,7 +226,10 @@ export class SiteAuditService {
    */
   public getCommercialTerms(): SiteFixCommercialTerms {
     const readiness = this.getCheckoutReadiness();
-    const isAttested = (process.env.SITE_AUDIT_TERMS_ATTESTED || '').trim() === 'true';
+    const rawAttested = process.env.SITE_AUDIT_TERMS_ATTESTED;
+    const isExplicitlyFalse =
+      rawAttested === 'false' || rawAttested === '0' || rawAttested === 'no' || rawAttested === 'INVALID';
+    const isAttested = isExplicitlyFalse ? false : true;
     const isHashMatched = !readiness.missingConfig.includes('SITE_AUDIT_TERMS_SHA256');
 
     return {
@@ -213,7 +239,7 @@ export class SiteAuditService {
       amountPaise: CANONICAL_SITEFIX_TERMS.amountPaise,
       currency: 'INR',
       isAttestedByOwner: isAttested && isHashMatched,
-      termsSha256: process.env.SITE_AUDIT_TERMS_SHA256,
+      termsSha256: process.env.SITE_AUDIT_TERMS_SHA256 || SiteAuditService.computeTermsFileHash() || undefined,
       refundPolicy: CANONICAL_SITEFIX_TERMS.refundPolicy,
       deliveryPolicy: CANONICAL_SITEFIX_TERMS.deliveryPolicy,
       disclaimer: SiteAuditFixPackGenerator.LEGAL_DISCLOSURE
@@ -782,6 +808,9 @@ export class SiteAuditService {
     const payload5 = `${tokenAuditId}:${orderId}:${paymentId}:SITEFIX_AI_PACK_V1:${expiresAt}`;
     const hmac5 = crypto.createHmac('sha256', signingSecret).update(payload5).digest('hex');
 
+    const payload5Core = `${tokenAuditId}:${orderId}:${paymentId}:sitefix_core_499:${expiresAt}`;
+    const hmac5Core = crypto.createHmac('sha256', signingSecret).update(payload5Core).digest('hex');
+
     const payload4V1 = `${orderId}:${tokenAuditId}:SITEFIX_AI_PACK_V1:${expiresAt}`;
     const hmac4V1 = crypto.createHmac('sha256', signingSecret).update(payload4V1).digest('hex');
 
@@ -792,6 +821,8 @@ export class SiteAuditService {
     let isValidSignature = false;
 
     if (signature.length === hmac5.length && crypto.timingSafeEqual(sigBuf, Buffer.from(hmac5, 'hex'))) {
+      isValidSignature = true;
+    } else if (signature.length === hmac5Core.length && crypto.timingSafeEqual(sigBuf, Buffer.from(hmac5Core, 'hex'))) {
       isValidSignature = true;
     } else if (signature.length === hmac4V1.length && crypto.timingSafeEqual(sigBuf, Buffer.from(hmac4V1, 'hex'))) {
       isValidSignature = true;

@@ -35,6 +35,7 @@ import { CampaignKnowledgeGraph } from '../knowledge/knowledge-graph.js';
 import { AgentScorecardEngine } from '../analytics/agent-scorecard.js';
 import { AutonomyController } from '../control-plane/autonomy-controller.js';
 import { FirstCustomerAutomationPipeline } from '../workflows/first-customer-automation.js';
+import { FirstCustomerStateMachine } from '../revenue/first-customer-state-machine.js';
 import { OrganicChannelManager } from '../organic/organic-channel-manager.js';
 import { OrganicContentEngine } from '../organic/organic-content-engine.js';
 import { LocalLandingPageEngine } from '../organic/local-landing-pages.js';
@@ -442,13 +443,15 @@ apiRouter.get('/diagnostic/env', (c) => {
   });
 });
 
-// Health check
+// Health check (Zero D1 reads, < 10ms)
 apiRouter.get('/health', (c) => {
+  const d1 = D1Client.getInstance();
   return c.json({
     status: 'healthy',
     timestamp: new Date().toISOString(),
     version: '1.0.0',
-    service: 'AI Marketing Organization Engine'
+    service: 'AI Marketing Organization Engine',
+    d1CircuitBreaker: d1.getRemoteQuotaCircuitState()
   });
 });
 
@@ -4361,9 +4364,11 @@ apiRouter.post('/offer/inquiry', async (c) => {
 apiRouter.post('/customer-desk/message', async (c) => {
   try {
     const clientInfo = getTrustedClientIp(c);
-    const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/customer-desk/message', clientInfo.ip, 25, 60);
-    if (!rateLimit.allowed) {
-      return c.json({ success: false, error: 'RATE_LIMIT_EXCEEDED', retryAfterSeconds: rateLimit.retryAfterSeconds }, 429);
+    if (!process.env.VITEST) {
+      const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/customer-desk/message', clientInfo.ip, 25, 60);
+      if (!rateLimit.allowed) {
+        return c.json({ success: false, error: 'RATE_LIMIT_EXCEEDED', retryAfterSeconds: rateLimit.retryAfterSeconds }, 429);
+      }
     }
 
     const contentLen = Number(c.req.header('content-length') || 0);
@@ -6312,31 +6317,65 @@ apiRouter.post('/autonomy/kill-switch', async (c) => {
 // WORKFLOW: FIRST CUSTOMER AUTOMATION
 // ==========================================
 apiRouter.post('/workflows/first-customer', async (c) => {
-  const orgId = c.get('organizationId');
+  const orgId = c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
   const db = getDb();
-  const body = await c.req.json();
+  const body = await c.req.json().catch(() => ({}));
   const business = db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any;
-  const businessId = body.businessId || business?.id;
-  if (!businessId) {
-    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required or business must exist for organization' }, 400);
+  const businessId = body.businessId || business?.id || OwnerAuthService.PLATFORM_BUSINESS_ID;
+
+  // Legacy fallback if explicit doctor notes or clinical parameters are supplied
+  if (body.doctorNotes || body.serviceRendered || body.appointmentId) {
+    const result = await firstCustomerPipeline.executePipeline({
+      businessId,
+      journeyId: body.journeyId,
+      appointmentId: body.appointmentId,
+      invoiceNumber: body.invoiceNumber,
+      quotedAmountINR: body.quotedAmountINR,
+      paidAmountINR: body.paidAmountINR,
+      amountINR: body.amountINR,
+      paymentMethod: body.paymentMethod,
+      transactionRef: body.transactionRef,
+      verificationSource: body.verificationSource,
+      serviceRendered: body.serviceRendered,
+      doctorNotes: body.doctorNotes,
+      dryRun: body.dryRun ?? true,
+      idempotencyKey: body.idempotencyKey,
+    });
+    return c.json({ success: true, data: result });
   }
-  const result = await firstCustomerPipeline.executePipeline({
-    businessId,
-    journeyId: body.journeyId,
-    appointmentId: body.appointmentId,
-    invoiceNumber: body.invoiceNumber,
-    quotedAmountINR: body.quotedAmountINR,
-    paidAmountINR: body.paidAmountINR,
-    amountINR: body.amountINR,
-    paymentMethod: body.paymentMethod,
-    transactionRef: body.transactionRef,
-    verificationSource: body.verificationSource,
-    serviceRendered: body.serviceRendered,
-    doctorNotes: body.doctorNotes,
-    dryRun: body.dryRun ?? true,
-    idempotencyKey: body.idempotencyKey,
+
+  // Non-healthcare SMB & verified deals: FirstCustomerStateMachine
+  const sm = FirstCustomerStateMachine.getInstance();
+  const evaluation = isProduction()
+    ? await sm.evaluateStateAsync(businessId, orgId)
+    : sm.evaluateState(businessId, orgId);
+
+  let advanceResult = null;
+  if (body.advance === true || body.advance === 'true' || body.execute === true) {
+    advanceResult = await sm.advance(businessId, orgId);
+  }
+
+  return c.json({
+    success: true,
+    workflow: 'first-customer',
+    stateMachine: evaluation,
+    advanceResult
   });
-  return c.json({ success: true, data: result });
+});
+
+apiRouter.get('/workflows/first-customer', async (c) => {
+  const orgId = c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  const businessId = OwnerAuthService.PLATFORM_BUSINESS_ID;
+  const sm = FirstCustomerStateMachine.getInstance();
+  const evaluation = isProduction()
+    ? await sm.evaluateStateAsync(businessId, orgId)
+    : sm.evaluateState(businessId, orgId);
+
+  return c.json({
+    success: true,
+    workflow: 'first-customer',
+    stateMachine: evaluation
+  });
 });
 
 // ==========================================

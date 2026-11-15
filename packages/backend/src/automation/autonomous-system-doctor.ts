@@ -947,17 +947,19 @@ export class AutonomousSystemDoctor {
     let zeroHealthcareOutreach = true;
     try {
       const activeDrafts = db.prepare(`
-        SELECT id, prospect_name, segment, response_status FROM direct_outreach_log
+        SELECT id, prospect_name, segment, response_status, human_approved FROM direct_outreach_log
         WHERE dispatched = 0
           AND COALESCE(response_status, '') NOT IN ('SUPPRESSED_HEALTHCARE_POLICY', 'DISQUALIFIED_NATIONAL_ENTERPRISE', 'OPT_OUT')
       `).all() as any[];
       for (const d of activeDrafts) {
         if (isRegulatedHealthcareTarget(d.prospect_name, d.segment)) {
-          zeroHealthcareOutreach = false;
           try {
             db.prepare(`UPDATE direct_outreach_log SET response_status = 'SUPPRESSED_HEALTHCARE_POLICY', human_approved = 0 WHERE id = ?`).run(d.id);
           } catch {}
-          violations.push(`CONSTITUTION_VIOLATION: Regulated healthcare draft '${d.prospect_name}' auto-quarantined.`);
+          if (d.human_approved === 1) {
+            zeroHealthcareOutreach = false;
+            violations.push(`CONSTITUTION_VIOLATION: Approved regulated healthcare draft '${d.prospect_name}' was halted and quarantined.`);
+          }
         }
       }
     } catch {}

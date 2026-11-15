@@ -137,7 +137,7 @@ app.use('*', async (c, next) => {
   console.log(`[HTTP] ${c.req.method} ${c.req.path} - ${c.res.status} (${ms}ms)`);
 });
 
-// Health endpoint for stability verification
+// Health endpoint for stability verification (Zero D1 reads, < 10ms)
 app.get('/api/health', (c) => {
   return c.json({
     status: 'ok',
@@ -1350,12 +1350,18 @@ export async function startServer(): Promise<any> {
       }
       console.log(`[D1 Migration Gate] Schema verified with ${res.tables.length} tables in Cloudflare D1.`);
     } catch (err: any) {
-      console.error('[D1 Migration Gate FATAL] Error during D1 migration:', err.message);
-      if (isProd) {
-        console.error('[D1 Migration Gate FATAL] Production database migration failed. Halting process before listening for traffic.');
-        process.exit(1);
+      const isQuotaErr = D1Client.isDailyQuotaError(err?.status || 0, err?.message || '');
+      if (isQuotaErr) {
+        d1.tripQuotaCircuitBreakerPublic(err.message || 'D1 migration quota reached');
+        console.warn(`[D1 Migration Gate WARNING] Remote D1 daily quota exhausted (${err.message}). Tripping circuit breaker and falling back to local SQLite mirror.`);
+      } else {
+        console.error('[D1 Migration Gate FATAL] Error during D1 migration:', err.message);
+        if (isProd) {
+          console.error('[D1 Migration Gate FATAL] Production database migration failed. Halting process before listening for traffic.');
+          process.exit(1);
+        }
+        throw err;
       }
-      throw err;
     }
   }
 

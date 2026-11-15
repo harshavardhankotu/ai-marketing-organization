@@ -34,6 +34,13 @@ describe('V5.8.3 — Auditor-Aligned Production Hardening', () => {
     CuelinksV3Client.resetInstance();
     AutonomousDealDiscoveryEngine.resetInstance();
     vi.restoreAllMocks();
+
+    try {
+      const db = getDb();
+      db.prepare("DELETE FROM payment_orders WHERE id LIKE 'po_v583_%' OR order_id LIKE 'order_v583_%'").run();
+      db.prepare("DELETE FROM public_deals WHERE id LIKE 'deal_v583_%'").run();
+      db.prepare("DELETE FROM cuelinks_campaigns WHERE campaign_id LIKE 'camp_v583_%'").run();
+    } catch {}
   });
 
   describe('1. Razorpay Auditor Verification Hardening & Replay Prevention', () => {
