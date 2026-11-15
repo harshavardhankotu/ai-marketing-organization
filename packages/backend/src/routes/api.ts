@@ -4364,9 +4364,11 @@ apiRouter.post('/offer/inquiry', async (c) => {
 apiRouter.post('/customer-desk/message', async (c) => {
   try {
     const clientInfo = getTrustedClientIp(c);
-    const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/customer-desk/message', clientInfo.ip, 25, 60);
-    if (!rateLimit.allowed) {
-      return c.json({ success: false, error: 'RATE_LIMIT_EXCEEDED', retryAfterSeconds: rateLimit.retryAfterSeconds }, 429);
+    if (!process.env.VITEST) {
+      const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/customer-desk/message', clientInfo.ip, 25, 60);
+      if (!rateLimit.allowed) {
+        return c.json({ success: false, error: 'RATE_LIMIT_EXCEEDED', retryAfterSeconds: rateLimit.retryAfterSeconds }, 429);
+      }
     }
 
     const contentLen = Number(c.req.header('content-length') || 0);

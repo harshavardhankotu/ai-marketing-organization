@@ -138,14 +138,10 @@ app.use('*', async (c, next) => {
 });
 
 // Health endpoint for stability verification (Zero D1 reads, < 10ms)
-app.get('/api/health', async (c) => {
-  const { D1Client } = await import('./db/d1-client.js');
-  const d1 = D1Client.getInstance();
+app.get('/api/health', (c) => {
   return c.json({
     status: 'ok',
-    service: 'ai-marketing-organization',
-    timestamp: new Date().toISOString(),
-    d1CircuitBreaker: d1.getRemoteQuotaCircuitState()
+    service: 'ai-marketing-organization'
   });
 });
 
