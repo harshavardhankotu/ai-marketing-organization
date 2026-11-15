@@ -136,8 +136,28 @@ export class InstagramBusinessAdapter {
     InstagramBusinessAdapter.instance = null;
   }
 
+  public static resolveOAuthSecret(explicitSecret?: string): string {
+    const isProd = process.env.RENDER === 'true' || process.env.NODE_ENV === 'production';
+    const candidate = (
+      explicitSecret ||
+      process.env.INSTAGRAM_APP_SECRET ||
+      process.env.AUTH_SECRET ||
+      process.env.OWNER_API_KEY ||
+      ''
+    ).trim();
+
+    if (isProd) {
+      if (!candidate || candidate.length < 16 || candidate === 'ig_oauth_secret') {
+        throw new Error('INSTAGRAM_OAUTH_NOT_CONFIGURED: INSTAGRAM_APP_SECRET or AUTH_SECRET (minimum 16 characters) is required in production.');
+      }
+      return candidate;
+    }
+
+    return candidate || 'ig_oauth_secret';
+  }
+
   public static generateSignedState(authSecret?: string): string {
-    const secret = authSecret || process.env.AUTH_SECRET || process.env.OWNER_API_KEY || 'ig_oauth_secret';
+    const secret = InstagramBusinessAdapter.resolveOAuthSecret(authSecret);
     const timestamp = Date.now().toString();
     const nonce = crypto.randomBytes(8).toString('hex');
     const hmac = crypto.createHmac('sha256', secret).update(`${timestamp}.${nonce}`).digest('hex');
@@ -161,7 +181,14 @@ export class InstagramBusinessAdapter {
     if (Date.now() - timestamp > 15 * 60 * 1000 || timestamp > Date.now() + 60000) {
       return { valid: false, error: 'EXPIRED_STATE' };
     }
-    const secret = authSecret || process.env.AUTH_SECRET || process.env.OWNER_API_KEY || 'ig_oauth_secret';
+
+    let secret: string;
+    try {
+      secret = InstagramBusinessAdapter.resolveOAuthSecret(authSecret);
+    } catch {
+      return { valid: false, error: 'INSTAGRAM_OAUTH_NOT_CONFIGURED' };
+    }
+
     const expectedHmac = crypto.createHmac('sha256', secret).update(`${timestampStr}.${nonce}`).digest('hex');
     const bufReceived = Buffer.from(receivedHmac, 'hex');
     const bufExpected = Buffer.from(expectedHmac, 'hex');
@@ -191,25 +218,26 @@ export class InstagramBusinessAdapter {
         this.repliedItemIds.add(itemKey);
         return true;
       }
-    } catch {}
-    return false;
+      return false;
+    } catch (err: any) {
+      console.warn(`[InstagramAdapter] isItemReplied failed for ${itemKey} (${err.message}). Failing closed to prevent duplicate dispatch.`);
+      throw new Error(`IG_REPLY_CHECK_FAILED: Cannot verify reply status for '${itemKey}': ${err.message}`);
+    }
   }
 
   public async markItemReplied(itemKey: string): Promise<void> {
     this.repliedItemIds.add(itemKey);
-    try {
-      const { DurableEventBus } = await import('../revenue/durable-event-bus.js');
-      const { OwnerAuthService } = await import('../auth/owner-auth.js');
-      await DurableEventBus.emitAsync({
-        eventType: 'IG_REPLY_SENT',
-        organizationId: OwnerAuthService.OWNER_ORGANIZATION_ID || 'org_owner_primary',
-        businessId: itemKey,
-        payload: {
-          ig_item_id: itemKey,
-          repliedAt: new Date().toISOString()
-        }
-      });
-    } catch {}
+    const { DurableEventBus } = await import('../revenue/durable-event-bus.js');
+    const { OwnerAuthService } = await import('../auth/owner-auth.js');
+    await DurableEventBus.emitAsync({
+      eventType: 'IG_REPLY_SENT',
+      organizationId: OwnerAuthService.OWNER_ORGANIZATION_ID || 'org_owner_primary',
+      businessId: itemKey,
+      payload: {
+        ig_item_id: itemKey,
+        repliedAt: new Date().toISOString()
+      }
+    });
   }
 
   public getHandle(): string {

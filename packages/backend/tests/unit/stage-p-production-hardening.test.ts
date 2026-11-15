@@ -160,7 +160,7 @@ describe('Stage P — Production Hardening & Security Locking', () => {
     expect(Array.isArray(postJson.result?.tools)).toBe(true);
   });
 
-  it('Task 3: generateBuyerIntentHubs guarantees grooming-and-perfume-bundles-under-1000 is always built', () => {
+  it('Task 3: generateBuyerIntentHubs strictly requires genuine category deals and omits hubs with insufficient category inventory', () => {
     // Zero perfume/grooming deals in input catalog
     const testDeals = [
       {
@@ -189,11 +189,43 @@ describe('Stage P — Production Hardening & Security Locking', () => {
       }
     ];
 
-    const hubs = generateBuyerIntentHubs(testDeals, 'https://ai-marketing-organization.onrender.com', 10);
-    const groomingHub = hubs.find(h => h.intentSlug === 'grooming-and-perfume-bundles-under-1000');
-    expect(groomingHub).toBeDefined();
-    expect(groomingHub?.deals.length).toBeGreaterThanOrEqual(2);
-    expect(groomingHub?.canonicalUrl).toBe('https://ai-marketing-organization.onrender.com/best/grooming-and-perfume-bundles-under-1000');
+    const hubsWithoutGrooming = generateBuyerIntentHubs(testDeals, 'https://ai-marketing-organization.onrender.com', 10);
+    const groomingHubMissing = hubsWithoutGrooming.find(h => h.intentSlug === 'grooming-and-perfume-bundles-under-1000');
+    expect(groomingHubMissing).toBeUndefined();
+
+    // Now supply genuine perfume & grooming deals
+    const testDealsWithGrooming = [
+      ...testDeals,
+      {
+        id: 'deal_grooming_1',
+        title: 'The Man Company Blanc Body Perfume',
+        merchant: 'The Man Company',
+        category: 'Perfume',
+        currentPriceINR: 499,
+        productVerified: true,
+        affiliateVerified: true,
+        isMonetizable: true,
+        availability: 'IN_STOCK',
+        affiliateNetwork: 'CUELINKS'
+      },
+      {
+        id: 'deal_grooming_2',
+        title: 'Bombay Shaving Company Charcoal Grooming Kit',
+        merchant: 'Bombay Shaving Company',
+        category: 'Grooming',
+        currentPriceINR: 799,
+        productVerified: true,
+        affiliateVerified: true,
+        isMonetizable: true,
+        availability: 'IN_STOCK',
+        affiliateNetwork: 'CUELINKS'
+      }
+    ];
+    const hubsWithGrooming = generateBuyerIntentHubs(testDealsWithGrooming, 'https://ai-marketing-organization.onrender.com', 10);
+    const groomingHubPresent = hubsWithGrooming.find(h => h.intentSlug === 'grooming-and-perfume-bundles-under-1000');
+    expect(groomingHubPresent).toBeDefined();
+    expect(groomingHubPresent?.deals.length).toBeGreaterThanOrEqual(2);
+    expect(groomingHubPresent?.canonicalUrl).toBe('https://ai-marketing-organization.onrender.com/best/grooming-and-perfume-bundles-under-1000');
   });
 
   it('Task 3: Webhook POST /webhooks/instagram verifies X-Hub-Signature-256 with INSTAGRAM_APP_SECRET', async () => {

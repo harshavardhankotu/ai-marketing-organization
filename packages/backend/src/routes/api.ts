@@ -8758,7 +8758,7 @@ apiRouter.get('/best/:intentSlug', async (c) => {
   if (!matched) {
     c.header('X-Robots-Tag', 'noindex, nofollow');
     return c.html(
-      `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="robots" content="noindex, nofollow"><title>Buyer Guide Not Found</title></head><body><h1>404 — Buyer Guide Not Found</h1><p>No active buyer guide matches '${cleanSlug.replace(/[<>&"]/g, '')}'.</p><p><a href="/deals">Browse Verified Deals</a></p></body></html>`,
+      `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="robots" content="noindex, nofollow"><title>Buyer Guide Not Found</title></head><body><h1>404 — Insufficient verified category inventory</h1><p>Insufficient verified category inventory for '${cleanSlug.replace(/[<>&"]/g, '')}'.</p><p><a href="/deals">Browse Verified Deals</a></p></body></html>`,
       404
     );
   }
@@ -14510,7 +14510,29 @@ apiRouter.get('/integrations/instagram/oauth/url', async (c) => {
 
 apiRouter.get('/integrations/instagram/oauth/authorize', async (c) => {
   const { InstagramBusinessAdapter } = await import('../integrations/instagram-business-adapter.js');
-  const state = c.req.query('state') || InstagramBusinessAdapter.generateSignedState();
+  const isProd = process.env.RENDER === 'true' || process.env.NODE_ENV === 'production';
+  let state = c.req.query('state');
+  if (!state) {
+    try {
+      state = InstagramBusinessAdapter.generateSignedState();
+    } catch {
+      return c.json({
+        success: false,
+        error: 'INSTAGRAM_OAUTH_NOT_CONFIGURED',
+        message: 'INSTAGRAM_APP_SECRET or AUTH_SECRET (>= 16 chars) is required before starting Instagram Business OAuth.'
+      }, 503);
+    }
+  } else if (isProd) {
+    try {
+      InstagramBusinessAdapter.resolveOAuthSecret();
+    } catch {
+      return c.json({
+        success: false,
+        error: 'INSTAGRAM_OAUTH_NOT_CONFIGURED',
+        message: 'INSTAGRAM_APP_SECRET or AUTH_SECRET (>= 16 chars) is required before starting Instagram Business OAuth.'
+      }, 503);
+    }
+  }
   const redirectUri = c.req.query('redirect_uri');
   const res = InstagramBusinessAdapter.getInstance().getAuthorizeUrl(state, redirectUri);
   if (!res.configured || !res.authorizeUrl) {
@@ -14533,14 +14555,64 @@ const instagramOAuthCallbackHandler = async (c: any) => {
     const stateCheck = InstagramBusinessAdapter.verifySignedState(stateParam);
     if (!stateCheck.valid) {
       const errorMsg = stateCheck.error || 'INVALID_STATE';
+      const statusCode = errorMsg === 'INSTAGRAM_OAUTH_NOT_CONFIGURED' ? 503 : 400;
       const accept = String(c.req.header('accept') || '');
       if (accept.includes('text/html') && !accept.includes('application/json')) {
-        return c.html(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>State Error</title></head><body style="font-family:sans-serif;background:#090d16;color:#e2e8f0;padding:40px;text-align:center;"><h1>Instagram State Error</h1><p>${errorMsg}</p><p><a href="/" style="color:#38bdf8;">Return to Owner Console</a></p></body></html>`, 400);
+        return c.html(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>State Error</title></head><body style="font-family:sans-serif;background:#090d16;color:#e2e8f0;padding:40px;text-align:center;"><h1>Instagram State Error</h1><p>${errorMsg}</p><p><a href="/" style="color:#38bdf8;">Return to Owner Console</a></p></body></html>`, statusCode);
       }
       return c.json({
         success: false,
         error: errorMsg,
         message: 'Invalid or expired OAuth state parameter.'
+      }, statusCode);
+    }
+
+    // Single-use Nonce Replay Protection via durable_events
+    const parts = String(stateParam || '').split('.');
+    const nonce = parts[1];
+    if (!nonce || nonce.length < 8) {
+      return c.json({
+        success: false,
+        error: 'OAUTH_STATE_REPLAY_OR_UNAVAILABLE',
+        message: 'OAuth state nonce is malformed.'
+      }, 400);
+    }
+
+    try {
+      const { D1RevenueRepository } = await import('../db/d1-revenue-repository.js');
+      const { DurableEventBus } = await import('../revenue/durable-event-bus.js');
+      const { OwnerAuthService } = await import('../auth/owner-auth.js');
+
+      // Check if nonce has already been consumed
+      const existing = await D1RevenueRepository.getInstance().queryOne<{ id: string }>(
+        'durable_events',
+        `SELECT id FROM durable_events WHERE event_type = 'IG_OAUTH_STATE_CONSUMED' AND business_id = ? LIMIT 1`,
+        [nonce]
+      );
+      if (existing?.id) {
+        return c.json({
+          success: false,
+          error: 'OAUTH_STATE_REPLAY_OR_UNAVAILABLE',
+          message: 'OAuth state nonce has already been consumed (replay attack detected).'
+        }, 400);
+      }
+
+      // Mark nonce consumed
+      await DurableEventBus.emitAsync({
+        eventType: 'IG_OAUTH_STATE_CONSUMED',
+        organizationId: OwnerAuthService.OWNER_ORGANIZATION_ID || 'org_owner_primary',
+        businessId: nonce,
+        payload: {
+          consumedAt: new Date().toISOString(),
+          state: stateParam
+        }
+      });
+    } catch (d1Err: any) {
+      console.warn(`[InstagramOAuth] Nonce replay verification failed: ${d1Err.message}`);
+      return c.json({
+        success: false,
+        error: 'OAUTH_STATE_REPLAY_OR_UNAVAILABLE',
+        message: `Durable state verification failed: ${d1Err.message}`
       }, 400);
     }
   }
@@ -14616,7 +14688,16 @@ apiRouter.get('/webhooks/instagram', async (c) => {
 apiRouter.post('/webhooks/instagram', async (c) => {
   const appSecret = (process.env.INSTAGRAM_APP_SECRET || '').trim();
   const rawBody = await c.req.text().catch(() => '');
-  if (appSecret) {
+  const isProd = process.env.RENDER === 'true' || isProduction();
+
+  if (isProd && !appSecret) {
+    return c.json({
+      success: false,
+      error: 'UNAUTHORIZED: INSTAGRAM_APP_SECRET is required in production for webhook verification'
+    }, 401);
+  }
+
+  if (appSecret || isProd) {
     const signature = c.req.header('x-hub-signature-256') || c.req.header('X-Hub-Signature-256');
     if (!signature || !signature.startsWith('sha256=')) {
       return c.json({ success: false, error: 'UNAUTHORIZED: Missing or malformed X-Hub-Signature-256 header' }, 401);
