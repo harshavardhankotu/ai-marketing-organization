@@ -542,7 +542,7 @@ export function repairTitlePriceMismatch<T extends Record<string, any>>(deal: T)
   if (!isCouponDeal && !isAmazonRail && (!Number.isFinite(current) || current <= 0)) {
     quarantined = true;
     quarantineReason = `INVALID_PRICE: Current price must be a positive number in INR (received: ${current})`;
-  } else if (reference > 0 && current > reference) {
+  } else if (deal.dealKind === 'PRODUCT' && reference > 0 && current > reference) {
     quarantined = true;
     quarantineReason = `QUARANTINED_INVERTED_MRP: currentPriceINR (₹${current}) exceeds referencePriceINR (₹${reference})`;
   }
