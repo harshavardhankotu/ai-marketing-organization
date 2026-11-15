@@ -296,7 +296,7 @@ export class RazorpayStandardAdapter {
     // Only rzp_live_ verified payments record live cash in transactions / commission_ledger!
     if (isLive) {
       try {
-        const txId = `tx_${Date.now()}_${randomUUID().slice(0, 8)}`;
+        const txId = `tx-${randomUUID()}`;
         await this.d1Repo.executeWrite(
           'transactions',
           `INSERT INTO transactions (
