@@ -115,7 +115,10 @@ export class D1RevenueRepository {
       table === 'payment_requests' ||
       table === 'manual_upi_claims' ||
       table === 'orders' ||
-      table === 'universal_orders';
+      table === 'universal_orders' ||
+      table === 'commission_ledger' ||
+      table === 'delivery_tasks' ||
+      table === 'payout_records';
 
     const shouldSyncRemoteD1 = this.d1.isRemoteD1WriteAllowed();
     if (shouldSyncRemoteD1) {
@@ -129,7 +132,7 @@ export class D1RevenueRepository {
 
     if (process.env.RENDER === 'true' && isFinancialTable) {
       throw new Error(
-        `SERVICE_UNAVAILABLE: Financial writes on '${table}' require durable Cloudflare D1 storage. Render ephemeral disk fallback is strictly prohibited for money records.`
+        `SERVICE_UNAVAILABLE: D1_DURABLE_WRITE_UNAVAILABLE: Financial writes on '${table}' require durable Cloudflare D1 storage. Render ephemeral disk fallback is strictly prohibited for money records.`
       );
     }
 
@@ -158,7 +161,10 @@ export class D1RevenueRepository {
         o.table === 'payment_requests' ||
         o.table === 'manual_upi_claims' ||
         o.table === 'orders' ||
-        o.table === 'universal_orders'
+        o.table === 'universal_orders' ||
+        o.table === 'commission_ledger' ||
+        o.table === 'delivery_tasks' ||
+        o.table === 'payout_records'
     );
 
     if (shouldSyncRemoteD1) {
@@ -177,7 +183,7 @@ export class D1RevenueRepository {
 
     if (process.env.RENDER === 'true' && hasFinancialTable) {
       throw new Error(
-        `SERVICE_UNAVAILABLE: Financial batch writes require durable Cloudflare D1 storage. Render ephemeral disk fallback is strictly prohibited for money records.`
+        `SERVICE_UNAVAILABLE: D1_DURABLE_WRITE_UNAVAILABLE: Financial batch writes require durable Cloudflare D1 storage. Render ephemeral disk fallback is strictly prohibited for money records.`
       );
     }
 

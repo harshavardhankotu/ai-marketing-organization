@@ -13,6 +13,24 @@
 
 import { getDb } from './client.js';
 
+export const FINANCIAL_TABLES = [
+  'payment_requests',
+  'manual_upi_claims',
+  'orders',
+  'universal_orders',
+  'commission_ledger',
+  'delivery_tasks',
+  'payout_records'
+] as const;
+
+export function isFinancialSql(sql: string): boolean {
+  const lower = String(sql || '').toLowerCase();
+  return FINANCIAL_TABLES.some(tbl => {
+    const regex = new RegExp(`\\b${tbl}\\b`, 'i');
+    return regex.test(lower);
+  });
+}
+
 export interface D1UsageMetrics {
   dateKey: string;
   rowsReadToday: number;
@@ -53,7 +71,6 @@ export class D1Client {
   }
 
   public static isDailyQuotaError(status: number, bodyText: string): boolean {
-    if (status === 429) return true;
     const raw = String(bodyText || '');
     const lower = raw.toLowerCase();
 
@@ -68,6 +85,7 @@ export class D1Client {
       return false;
     }
 
+    // Only lock d1CircuitBreaker until UTC midnight when the error body actually matches true Cloudflare row-limit exhaustion strings
     return (
       /exceeded.*(daily|free).*(row|read|write)|quota exceeded/i.test(raw) ||
       lower.includes('daily row read limit') ||
@@ -78,7 +96,10 @@ export class D1Client {
       lower.includes('exceeded d1’s free tier') ||
       lower.includes('daily quota limit exceeded') ||
       lower.includes('quota limit exceeded') ||
-      (status === 400 && /7500/.test(raw) && /limit|quota|tier/i.test(raw))
+      lower.includes('daily query limit exceeded') ||
+      lower.includes('daily quota') ||
+      (status === 400 && /7500/.test(raw) && /limit|quota|tier/i.test(raw)) ||
+      (status === 400 && /7429/.test(raw) && /limit|quota|daily/i.test(raw))
     );
   }
 
@@ -293,9 +314,25 @@ export class D1Client {
     }
 
     const isProduction = process.env.NODE_ENV === 'production';
+    const isRender = process.env.RENDER === 'true';
+    const isFinancial = isWrite && isFinancialSql(sql);
+
+    // Fail-closed enforcement for Render on financial tables if remote D1 is unconfigured or circuit breaker is active
+    if (isRender && isFinancial) {
+      if (!this.isRemoteD1Configured()) {
+        throw new Error('D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1 (remote D1 not configured)');
+      }
+      if (this.isRemoteD1QuotaExhausted()) {
+        throw new Error('D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1 (quota circuit breaker active)');
+      }
+    }
+
     const remoteAllowed = isWrite ? this.isRemoteD1WriteAllowed() : this.isRemoteD1ReadAllowed();
 
     if (isWrite && this.isRemoteD1Configured() && !remoteAllowed) {
+      if (isRender && isFinancial) {
+        throw new Error('D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1');
+      }
       // Stage K D1 Write Isolation: Non-Render dev/test environments write strictly to local SQLite
       const db = getDb();
       const stmt = db.prepare(sql);
@@ -306,21 +343,79 @@ export class D1Client {
 
     if (remoteAllowed) {
       const url = `https://api.cloudflare.com/client/v4/accounts/${this.getAccountId()}/d1/database/${this.getDatabaseId()}/query`;
-      try {
-        let response = await fetch(url, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${this.getApiToken()}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({ sql, params }),
-          signal: AbortSignal.timeout(10000)
-        });
+      const retryDelays = [250, 750];
 
-        if (!response.ok) {
-          const firstErrText = await response.text();
-          if (D1Client.isDailyQuotaError(response.status, firstErrText)) {
-            this.tripQuotaCircuitBreaker(firstErrText);
+      for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
+        if (attempt > 0) {
+          await new Promise(r => setTimeout(r, retryDelays[attempt - 1]));
+        }
+
+        try {
+          const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${this.getApiToken()}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ sql, params }),
+            signal: AbortSignal.timeout(10000)
+          });
+
+          if (!response.ok) {
+            const errText = await response.text();
+
+            if (D1Client.isDailyQuotaError(response.status, errText)) {
+              this.tripQuotaCircuitBreaker(errText);
+              if (isRender && isFinancial) {
+                throw new Error(`D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1 (${errText})`);
+              }
+              const db = getDb();
+              if (isWrite) {
+                const stmt = db.prepare(sql);
+                const info = stmt.run(...params);
+                this.recordUsage(0, info.changes || 1);
+                return { results: [], rowsAffected: info.changes, source: 'PERSISTENT_SQLITE' };
+              } else {
+                const stmt = db.prepare(sql);
+                const results = stmt.all(...params) as T[];
+                this.recordUsage(results.length || 1, 0);
+                return { results, rowsAffected: 0, source: 'PERSISTENT_SQLITE' };
+              }
+            }
+
+            // HTTP 429 throttling or transient 7500 storage / 5xx error retry with bounded exponential backoff
+            const isRetryable = response.status === 429 || (response.status === 400 && errText.includes('7500')) || response.status >= 500;
+            if (isRetryable && attempt < retryDelays.length) {
+              continue;
+            }
+
+            if (isRender && isFinancial) {
+              throw new Error(`D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1 (HTTP ${response.status}: ${errText})`);
+            }
+            if (isProduction) {
+              throw new Error(`[D1 PERSISTENCE ERROR] D1 returned HTTP ${response.status}: ${errText}`);
+            }
+            console.warn(`[D1Client] Cloudflare D1 HTTP ${response.status} (${errText}) — falling back to dev store`);
+            break;
+          } else {
+            const json = await response.json() as any;
+            const result = json?.result?.[0];
+            const results = result?.results || [];
+            const rowsRead = result?.meta?.rows_read || results.length || 1;
+            const rowsWritten = result?.meta?.rows_written || (isWrite ? 1 : 0);
+
+            this.recordUsage(rowsRead, rowsWritten);
+            return { results, rowsAffected: rowsWritten, source: 'CLOUDFLARE_D1' };
+          }
+        } catch (fetchErr: any) {
+          if (fetchErr.message && fetchErr.message.includes('D1_DURABLE_WRITE_UNAVAILABLE')) {
+            throw fetchErr;
+          }
+          if (D1Client.isDailyQuotaError(0, fetchErr?.message || '')) {
+            this.tripQuotaCircuitBreaker(fetchErr?.message || '');
+            if (isRender && isFinancial) {
+              throw new Error(`D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1 (${fetchErr.message})`);
+            }
             const db = getDb();
             if (isWrite) {
               const stmt = db.prepare(sql);
@@ -335,70 +430,29 @@ export class D1Client {
             }
           }
 
-          // Transient 7500 storage / 5xx error retry with 250ms backoff
-          const isTransient = (response.status === 400 && firstErrText.includes('7500')) || response.status >= 500;
-          if (isTransient) {
-            await new Promise(r => setTimeout(r, 250));
-            try {
-              const retryRes = await fetch(url, {
-                method: 'POST',
-                headers: {
-                  'Authorization': `Bearer ${this.getApiToken()}`,
-                  'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ sql, params }),
-                signal: AbortSignal.timeout(10000)
-              });
-              if (retryRes.ok) {
-                const json = await retryRes.json() as any;
-                const result = json?.result?.[0];
-                const results = result?.results || [];
-                const rowsRead = result?.meta?.rows_read || results.length || 1;
-                const rowsWritten = result?.meta?.rows_written || (isWrite ? 1 : 0);
-                this.recordUsage(rowsRead, rowsWritten);
-                return { results, rowsAffected: rowsWritten, source: 'CLOUDFLARE_D1' };
-              }
-            } catch {}
+          if (attempt < retryDelays.length) {
+            continue;
           }
 
-          const errText = firstErrText;
+          if (isRender && isFinancial) {
+            throw new Error(`D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1 (${fetchErr.message})`);
+          }
           if (isProduction) {
-            throw new Error(`[D1 PERSISTENCE ERROR] D1 returned HTTP ${response.status}: ${errText}`);
+            throw new Error(`[D1 PERSISTENCE FAULT] Production Cloudflare D1 unavailable (${fetchErr.message}). Halting to prevent non-durable state divergence.`);
           }
-          console.warn(`[D1Client] Cloudflare D1 HTTP ${response.status} (${errText}) — falling back to dev store`);
-        } else {
-          const json = await response.json() as any;
-          const result = json?.result?.[0];
-          const results = result?.results || [];
-          const rowsRead = result?.meta?.rows_read || results.length || 1;
-          const rowsWritten = result?.meta?.rows_written || (isWrite ? 1 : 0);
-
-          this.recordUsage(rowsRead, rowsWritten);
-          return { results, rowsAffected: rowsWritten, source: 'CLOUDFLARE_D1' };
+          console.warn(`[D1Client] Cloudflare D1 query failed (${fetchErr.message}) — falling back to local store in dev/test`);
+          break;
         }
-      } catch (err: any) {
-        if (D1Client.isDailyQuotaError(0, err?.message || '')) {
-          this.tripQuotaCircuitBreaker(err?.message || '');
-          const db = getDb();
-          if (isWrite) {
-            const stmt = db.prepare(sql);
-            const info = stmt.run(...params);
-            this.recordUsage(0, info.changes || 1);
-            return { results: [], rowsAffected: info.changes, source: 'PERSISTENT_SQLITE' };
-          } else {
-            const stmt = db.prepare(sql);
-            const results = stmt.all(...params) as T[];
-            this.recordUsage(results.length || 1, 0);
-            return { results, rowsAffected: 0, source: 'PERSISTENT_SQLITE' };
-          }
-        }
-        if (isProduction) {
-          throw new Error(`[D1 PERSISTENCE FAULT] Production Cloudflare D1 unavailable (${err.message}). Halting to prevent non-durable state divergence.`);
-        }
-        console.warn(`[D1Client] Cloudflare D1 query failed (${err.message}) — falling back to local store in dev/test`);
       }
     } else if (isProduction && !this.isRemoteD1Configured()) {
+      if (isRender && isFinancial) {
+        throw new Error('D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1');
+      }
       throw new Error('[D1 CONFIGURATION FAULT] Production requires remote Cloudflare D1 credentials (CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_D1_DATABASE_ID, CLOUDFLARE_D1_API_TOKEN). Ephemeral SQLite fallback is strictly prohibited in production.');
+    }
+
+    if (isRender && isFinancial) {
+      throw new Error('D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1');
     }
 
     // Local / SQLite execution (Dev / Test / Offline)
@@ -453,82 +507,122 @@ export class D1Client {
     }
 
     const isProduction = process.env.NODE_ENV === 'production';
+    const isRender = process.env.RENDER === 'true';
+    const hasFinancialStatement = statements.some(s => isFinancialSql(s.sql));
+
+    // Fail-closed enforcement for Render on financial statements
+    if (isRender && hasFinancialStatement) {
+      if (!this.isRemoteD1Configured()) {
+        throw new Error('D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1 (remote D1 not configured)');
+      }
+      if (this.isRemoteD1QuotaExhausted()) {
+        throw new Error('D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1 (quota circuit breaker active)');
+      }
+    }
 
     if (this.isRemoteD1WriteAllowed()) {
       const url = `https://api.cloudflare.com/client/v4/accounts/${this.getAccountId()}/d1/database/${this.getDatabaseId()}/query`;
-      try {
-        let totalWritten = 0;
-        let fallbackToLocal = false;
-        for (const s of statements) {
-          const response = await fetch(url, {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${this.getApiToken()}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ sql: s.sql, params: s.params || [] }),
-            signal: AbortSignal.timeout(10000)
-          });
+      const retryDelays = [250, 750];
+      let totalWritten = 0;
+      let fallbackToLocal = false;
+      let failedIdx = -1;
+      let failureErrorText = '';
 
-          if (!response.ok) {
-            const firstErrText = await response.text();
-            if (D1Client.isDailyQuotaError(response.status, firstErrText)) {
-              this.tripQuotaCircuitBreaker(firstErrText);
+      for (let idx = 0; idx < statements.length; idx++) {
+        const s = statements[idx];
+        let statementOk = false;
+
+        for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
+          if (attempt > 0) {
+            await new Promise(r => setTimeout(r, retryDelays[attempt - 1]));
+          }
+
+          try {
+            const response = await fetch(url, {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${this.getApiToken()}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({ sql: s.sql, params: s.params || [] }),
+              signal: AbortSignal.timeout(10000)
+            });
+
+            if (!response.ok) {
+              const errText = await response.text();
+              failureErrorText = errText;
+              if (D1Client.isDailyQuotaError(response.status, errText)) {
+                this.tripQuotaCircuitBreaker(errText);
+                failedIdx = idx;
+                fallbackToLocal = true;
+                break;
+              }
+
+              const isTransient = response.status === 429 || (response.status === 400 && errText.includes('7500')) || response.status >= 500;
+              if (isTransient && attempt < retryDelays.length) {
+                continue;
+              }
+
+              failedIdx = idx;
+              fallbackToLocal = true;
+              break;
+            } else {
+              const json = await response.json() as any;
+              const results = json?.result || [];
+              for (const res of results) {
+                totalWritten += res?.meta?.rows_written || 1;
+              }
+              statementOk = true;
+              break;
+            }
+          } catch (netErr: any) {
+            failureErrorText = netErr?.message || '';
+            if (D1Client.isDailyQuotaError(0, netErr?.message || '')) {
+              this.tripQuotaCircuitBreaker(netErr?.message || '');
+              failedIdx = idx;
               fallbackToLocal = true;
               break;
             }
-            const isTransient = (response.status === 400 && firstErrText.includes('7500')) || response.status >= 500;
-            if (isTransient) {
-              await new Promise(r => setTimeout(r, 250));
-              try {
-                const retryRes = await fetch(url, {
-                  method: 'POST',
-                  headers: {
-                    'Authorization': `Bearer ${this.getApiToken()}`,
-                    'Content-Type': 'application/json'
-                  },
-                  body: JSON.stringify({ sql: s.sql, params: s.params || [] }),
-                  signal: AbortSignal.timeout(10000)
-                });
-                if (retryRes.ok) {
-                  const json = await retryRes.json() as any;
-                  const results = json?.result || [];
-                  for (const res of results) {
-                    totalWritten += res?.meta?.rows_written || 1;
-                  }
-                  continue;
-                }
-              } catch {}
+            if (attempt < retryDelays.length) {
+              continue;
             }
-            if (isProduction) {
-              throw new Error(`[D1 PERSISTENCE ERROR] D1 batch statement returned HTTP ${response.status}: ${firstErrText}`);
-            }
-            console.warn(`[D1Client] Cloudflare D1 statement HTTP ${response.status} (${firstErrText}) — falling back to dev store`);
+            failedIdx = idx;
             fallbackToLocal = true;
             break;
-          } else {
-            const json = await response.json() as any;
-            const results = json?.result || [];
-            for (const res of results) {
-              totalWritten += res?.meta?.rows_written || 1;
-            }
           }
         }
-        if (!fallbackToLocal) {
-          this.recordUsage(0, totalWritten);
-          return { rowsAffected: totalWritten, source: 'CLOUDFLARE_D1' };
-        }
-      } catch (err: any) {
-        if (D1Client.isDailyQuotaError(0, err?.message || '')) {
-          this.tripQuotaCircuitBreaker(err?.message || '');
-        } else if (isProduction) {
-          throw new Error(`[D1 PERSISTENCE FAULT] Production Cloudflare D1 batch unavailable (${err.message}). Halting to prevent non-durable state divergence.`);
-        } else {
-          console.warn(`[D1Client] Cloudflare D1 batch failed (${err.message}) — falling back to local store in dev/test`);
+
+        if (!statementOk) {
+          break;
         }
       }
+
+      if (fallbackToLocal && failedIdx >= 0) {
+        if (hasFinancialStatement) {
+          if (failedIdx > 0) {
+            throw new Error(`D1_PARTIAL_BATCH_FAILURE: Statement at index ${failedIdx} failed after earlier statements committed. Local replay aborted.`);
+          }
+          if (isRender) {
+            throw new Error(`D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1 (${failureErrorText})`);
+          }
+        }
+        if (isProduction) {
+          throw new Error(`[D1 PERSISTENCE ERROR] D1 batch statement failed at index ${failedIdx}: ${failureErrorText}`);
+        }
+        console.warn(`[D1Client] Cloudflare D1 batch statement failed at index ${failedIdx} (${failureErrorText}) — falling back to dev store`);
+      } else if (!fallbackToLocal) {
+        this.recordUsage(0, totalWritten);
+        return { rowsAffected: totalWritten, source: 'CLOUDFLARE_D1' };
+      }
     } else if (isProduction && !this.isRemoteD1Configured()) {
+      if (isRender && hasFinancialStatement) {
+        throw new Error('D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1');
+      }
       throw new Error('[D1 CONFIGURATION FAULT] Production requires remote Cloudflare D1 credentials (CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_D1_DATABASE_ID, CLOUDFLARE_D1_API_TOKEN). Ephemeral SQLite fallback is strictly prohibited in production.');
+    }
+
+    if (isRender && hasFinancialStatement) {
+      throw new Error('D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1');
     }
 
     // Local / SQLite execution (Dev / Test / Offline) wrapped in transaction
