@@ -1058,7 +1058,7 @@ describe('Stage K: Pre-Deploy Security Lockdown, Fair-Price Integrity, Amazon Du
       'instagram_business_basic',
       'instagram_business_manage_messages',
       'instagram_business_manage_comments',
-      'instagram_business_content_publish'
+      'instagram_business_content_publishing'
     ]);
 
     // 2. Access denied query safely fails without 500 (including trailing-slash & popup HTML postMessage)
@@ -1088,7 +1088,7 @@ describe('Stage K: Pre-Deploy Security Lockdown, Fair-Price Integrity, Amazon Du
       if (url.includes('grant_type=ig_exchange_token')) {
         return new Response(JSON.stringify({ access_token: 'long_60d_tok_1', expires_in: 5184000 }), { status: 200 });
       }
-      if (url.includes('/v21.0/me')) {
+      if (url.includes('/me?') || url.endsWith('/me')) {
         return new Response(JSON.stringify({ id: '178414000001', username: 'bestdeals0162' }), { status: 200 });
       }
       if (url.includes('grant_type=ig_refresh_token')) {
@@ -1133,7 +1133,8 @@ describe('Stage K: Pre-Deploy Security Lockdown, Fair-Price Integrity, Amazon Du
       currentPriceINR: 1299,
       referencePriceINR: 4490,
       productVerified: true,
-      socialMediaPublishersAllowed: true
+      socialMediaPublishersAllowed: true,
+      imageUrl: 'https://images.boat-lifestyle.com/products/airdopes-141.png'
     });
     expect(okPub.ok).toBe(true);
     expect(okPub.mediaId).toBe('media_pub_999');
@@ -1204,10 +1205,23 @@ describe('Stage K: Pre-Deploy Security Lockdown, Fair-Price Integrity, Amazon Du
     const bestDealsRes = await app.request('/bestdeals');
     expect(bestDealsRes.status).toBe(200);
 
+    // MCP requires owner authentication (401 unauthenticated)
+    const unauthMcp = await app.request('/api/v1/mcp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' })
+    });
+    expect(unauthMcp.status).toBe(401);
+
+    const mcpSession = OwnerAuthService.getInstance().createSession('127.0.0.1', 'Vitest');
+
     // MCP JSON-RPC tools/list
     const mcpList = await app.request('/api/v1/mcp', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${mcpSession.token}`
+      },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' })
     });
     expect(mcpList.status).toBe(200);
@@ -1223,7 +1237,10 @@ describe('Stage K: Pre-Deploy Security Lockdown, Fair-Price Integrity, Amazon Du
     // MCP tools/call -> get_ready_sitefix_audits returns trigger score with zero PII
     const mcpAudits = await app.request('/api/v1/mcp', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${mcpSession.token}`
+      },
       body: JSON.stringify({
         jsonrpc: '2.0',
         id: 2,

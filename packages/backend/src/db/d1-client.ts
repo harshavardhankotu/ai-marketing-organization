@@ -56,16 +56,34 @@ export class D1Client {
     if (status === 429) return true;
     const raw = String(bodyText || '');
     const lower = raw.toLowerCase();
+
+    // Explicitly exclude schema and execution syntax errors that Cloudflare D1 wraps with code 7500
+    if (
+      lower.includes('no such table') ||
+      lower.includes('sqlite_error') ||
+      lower.includes('syntax error') ||
+      lower.includes('unique constraint') ||
+      lower.includes('no such column')
+    ) {
+      return false;
+    }
+
     return (
-      status === 400 && (lower.includes('7500') || lower.includes('row read') || lower.includes('row write')) ||
-      /"code"\s*:\s*7500\b/.test(raw) ||
+      /exceeded.*(daily|free).*(row|read|write)|quota exceeded/i.test(raw) ||
       lower.includes('daily row read limit') ||
       lower.includes('daily row write limit') ||
-      lower.includes('limit exceeded') ||
+      lower.includes('daily read limit') ||
+      lower.includes('daily write limit') ||
       lower.includes("exceeded d1's free tier") ||
       lower.includes('exceeded d1’s free tier') ||
-      /7500|row.*read|quota|limit exceeded/i.test(raw)
+      lower.includes('daily quota limit exceeded') ||
+      lower.includes('quota limit exceeded') ||
+      (status === 400 && /7500/.test(raw) && /limit|quota|tier/i.test(raw))
     );
+  }
+
+  public isDailyQuotaError(status: number, bodyText: string): boolean {
+    return D1Client.isDailyQuotaError(status, bodyText);
   }
 
   public tripQuotaCircuitBreakerPublic(errText: string): void {
@@ -289,7 +307,7 @@ export class D1Client {
     if (remoteAllowed) {
       const url = `https://api.cloudflare.com/client/v4/accounts/${this.getAccountId()}/d1/database/${this.getDatabaseId()}/query`;
       try {
-        const response = await fetch(url, {
+        let response = await fetch(url, {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${this.getApiToken()}`,
@@ -299,19 +317,10 @@ export class D1Client {
           signal: AbortSignal.timeout(10000)
         });
 
-        if (response.ok) {
-          const json = await response.json() as any;
-          const result = json?.result?.[0];
-          const results = result?.results || [];
-          const rowsRead = result?.meta?.rows_read || results.length || 1;
-          const rowsWritten = result?.meta?.rows_written || (isWrite ? 1 : 0);
-
-          this.recordUsage(rowsRead, rowsWritten);
-          return { results, rowsAffected: rowsWritten, source: 'CLOUDFLARE_D1' };
-        } else {
-          const errText = await response.text();
-          if (D1Client.isDailyQuotaError(response.status, errText)) {
-            this.tripQuotaCircuitBreaker(errText);
+        if (!response.ok) {
+          const firstErrText = await response.text();
+          if (D1Client.isDailyQuotaError(response.status, firstErrText)) {
+            this.tripQuotaCircuitBreaker(firstErrText);
             const db = getDb();
             if (isWrite) {
               const stmt = db.prepare(sql);
@@ -325,10 +334,47 @@ export class D1Client {
               return { results, rowsAffected: 0, source: 'PERSISTENT_SQLITE' };
             }
           }
+
+          // Transient 7500 storage / 5xx error retry with 250ms backoff
+          const isTransient = (response.status === 400 && firstErrText.includes('7500')) || response.status >= 500;
+          if (isTransient) {
+            await new Promise(r => setTimeout(r, 250));
+            try {
+              const retryRes = await fetch(url, {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Bearer ${this.getApiToken()}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ sql, params }),
+                signal: AbortSignal.timeout(10000)
+              });
+              if (retryRes.ok) {
+                const json = await retryRes.json() as any;
+                const result = json?.result?.[0];
+                const results = result?.results || [];
+                const rowsRead = result?.meta?.rows_read || results.length || 1;
+                const rowsWritten = result?.meta?.rows_written || (isWrite ? 1 : 0);
+                this.recordUsage(rowsRead, rowsWritten);
+                return { results, rowsAffected: rowsWritten, source: 'CLOUDFLARE_D1' };
+              }
+            } catch {}
+          }
+
+          const errText = firstErrText;
           if (isProduction) {
             throw new Error(`[D1 PERSISTENCE ERROR] D1 returned HTTP ${response.status}: ${errText}`);
           }
           console.warn(`[D1Client] Cloudflare D1 HTTP ${response.status} (${errText}) — falling back to dev store`);
+        } else {
+          const json = await response.json() as any;
+          const result = json?.result?.[0];
+          const results = result?.results || [];
+          const rowsRead = result?.meta?.rows_read || results.length || 1;
+          const rowsWritten = result?.meta?.rows_written || (isWrite ? 1 : 0);
+
+          this.recordUsage(rowsRead, rowsWritten);
+          return { results, rowsAffected: rowsWritten, source: 'CLOUDFLARE_D1' };
         }
       } catch (err: any) {
         if (D1Client.isDailyQuotaError(0, err?.message || '')) {
@@ -425,16 +471,39 @@ export class D1Client {
           });
 
           if (!response.ok) {
-            const errText = await response.text();
-            if (D1Client.isDailyQuotaError(response.status, errText)) {
-              this.tripQuotaCircuitBreaker(errText);
+            const firstErrText = await response.text();
+            if (D1Client.isDailyQuotaError(response.status, firstErrText)) {
+              this.tripQuotaCircuitBreaker(firstErrText);
               fallbackToLocal = true;
               break;
             }
-            if (isProduction) {
-              throw new Error(`[D1 PERSISTENCE ERROR] D1 batch statement returned HTTP ${response.status}: ${errText}`);
+            const isTransient = (response.status === 400 && firstErrText.includes('7500')) || response.status >= 500;
+            if (isTransient) {
+              await new Promise(r => setTimeout(r, 250));
+              try {
+                const retryRes = await fetch(url, {
+                  method: 'POST',
+                  headers: {
+                    'Authorization': `Bearer ${this.getApiToken()}`,
+                    'Content-Type': 'application/json'
+                  },
+                  body: JSON.stringify({ sql: s.sql, params: s.params || [] }),
+                  signal: AbortSignal.timeout(10000)
+                });
+                if (retryRes.ok) {
+                  const json = await retryRes.json() as any;
+                  const results = json?.result || [];
+                  for (const res of results) {
+                    totalWritten += res?.meta?.rows_written || 1;
+                  }
+                  continue;
+                }
+              } catch {}
             }
-            console.warn(`[D1Client] Cloudflare D1 statement HTTP ${response.status} (${errText}) — falling back to dev store`);
+            if (isProduction) {
+              throw new Error(`[D1 PERSISTENCE ERROR] D1 batch statement returned HTTP ${response.status}: ${firstErrText}`);
+            }
+            console.warn(`[D1Client] Cloudflare D1 statement HTTP ${response.status} (${firstErrText}) — falling back to dev store`);
             fallbackToLocal = true;
             break;
           } else {

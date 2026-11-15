@@ -40,7 +40,9 @@ export type DurableEventType =
   | 'CONTACT_OPT_OUT'
   | 'CYCLE_STARTED'
   | 'CYCLE_COMPLETED'
-  | 'ORDER_FULFILLED';
+  | 'ORDER_FULFILLED'
+  | 'IG_REPLY_SENT'
+  | 'PIPELINE_TRANSITION';
 
 export interface DurableEvent {
   id: string;
