@@ -269,13 +269,13 @@ export function resolveSectorFromCategory(category: string): SectorDefinition | 
   if (norm.includes('travel') || norm.includes('flight') || norm.includes('hotel') || norm.includes('holiday') || norm.includes('tour') || norm.includes('transit')) {
     return COMMERCIAL_SECTOR_TAXONOMY.SECTOR_D_TRAVEL;
   }
-  if (norm.includes('software') || norm.includes('saas') || norm.includes('cloud') || norm.includes('host') || norm.includes('gst') || norm.includes('billing')) {
+  if (norm.includes('software') || norm.includes('saas') || norm.includes('cloud') || norm.includes('host') || norm.includes('gst') || norm.includes('billing') || norm.includes('finance') || norm.includes('fintech') || norm.includes('bank') || norm.includes('credit card') || norm.includes('debit card') || norm.includes('demat') || norm.includes('insurance') || norm.includes('loan') || norm.includes('mutual fund') || norm.includes('invest')) {
     return COMMERCIAL_SECTOR_TAXONOMY.SECTOR_E_SOFTWARE;
   }
   if (norm.includes('office') || norm.includes('printer') || norm.includes('scanner') || norm.includes('barcode') || norm.includes('pos') || norm.includes('industrial') || norm.includes('tool')) {
     return COMMERCIAL_SECTOR_TAXONOMY.SECTOR_F_OFFICE_INDUSTRIAL;
   }
-  if (norm.includes('fashion') || norm.includes('apparel') || norm.includes('shoe') || norm.includes('wear') || norm.includes('beauty') || norm.includes('personal') || norm.includes('lifestyle') || norm.includes('pet')) {
+  if (norm.includes('fashion') || norm.includes('apparel') || norm.includes('shoe') || norm.includes('wear') || norm.includes('beauty') || norm.includes('personal') || norm.includes('lifestyle') || norm.includes('pet') || norm.includes('groom') || norm.includes('trimmer') || norm.includes('shav') || norm.includes('hair') || norm.includes('skin') || norm.includes('cosmetic') || norm.includes('perfume') || norm.includes('fragrance')) {
     return COMMERCIAL_SECTOR_TAXONOMY.SECTOR_G_LIFESTYLE;
   }
   if (norm.includes('clinic') || norm.includes('dental') || norm.includes('health') || norm.includes('coach') || norm.includes('estate') || norm.includes('b2b') || norm.includes('service')) {

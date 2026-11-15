@@ -10,11 +10,21 @@ import { getDirectUpiConfig, getSiteAuditFixpackPriceINR } from '../../config/en
 
 import { renderCustomerDeskWidgetHtml } from '../../revenue/customer-desk-widget.js';
 
-export function renderSiteAuditPage(): string {
+export interface SiteFixAbAssignment {
+  experimentId?: string;
+  variant?: 'baseline' | 'treatment';
+  ctaText?: string;
+}
+
+export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string {
   const upiCfg = getDirectUpiConfig();
   const upiVpa = upiCfg.configured && upiCfg.vpa ? upiCfg.vpa : null;
   const upiPayeeName = upiCfg.payeeName || 'AI Marketing Organization';
   const fixpackPrice = getSiteAuditFixpackPriceINR() ?? 499;
+  const sitefixExpId = abAssignment?.experimentId || 'exp_storefront_sitefix_cta';
+  const sitefixVariant = abAssignment?.variant || 'baseline';
+  const sitefixCtaText = abAssignment?.ctaText || `Unlock Instant Ready-to-Paste Fix-Pack — ₹${fixpackPrice}`;
+  const safeSitefixCtaText = sitefixCtaText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -276,6 +286,30 @@ export function renderSiteAuditPage(): string {
       <h3 style="margin-bottom: 1rem;">Diagnostic Findings</h3>
       <div id="findingsContainer"></div>
 
+      <!-- Stage M: Inbound Opt-In Transactional Email Closer -->
+      <div id="sendReportBox" style="margin: 1.5rem 0; padding: 1.2rem; background: rgba(14, 165, 233, 0.08); border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 10px;">
+        <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.45rem;">
+          <strong style="color: #38bdf8; font-size: 0.98rem;">Email Me This Private Audit Report &amp; Fix-Pack Link</strong>
+          <span style="font-size: 0.75rem; color: #94a3b8;">DPDP Opt-In &bull; Signed Private Scorecard</span>
+        </div>
+        <p style="font-size: 0.85rem; color: #cbd5e1; margin-bottom: 0.85rem;">
+          Receive your top 3 detected SEO &amp; conversion defects, private HMAC-signed scorecard URL, and direct ₹499 Optimization Fix-Pack link directly in your inbox.
+        </p>
+        <form id="siteAuditSendReportForm" onsubmit="submitSiteAuditSendReport(event)">
+          <div style="display: flex; gap: 0.65rem; flex-wrap: wrap; margin-bottom: 0.65rem;">
+            <input type="email" id="sendReportEmail" required placeholder="founder@yourbusiness.in" style="flex: 1 1 240px; padding: 0.6rem 0.8rem; border-radius: 6px; border: 1px solid #374151; background: #1f2937; color: #fff; font-size: 0.88rem;">
+            <button type="submit" id="sendReportBtn" class="btn-primary" style="width: auto; padding: 0.6rem 1.15rem; font-size: 0.88rem; background: #0284c7;">
+              Email Report &amp; Fix-Pack Link
+            </button>
+          </div>
+          <label style="display: flex; align-items: flex-start; gap: 0.5rem; font-size: 0.8rem; color: #cbd5e1; cursor: pointer;">
+            <input type="checkbox" id="sendReportConsent" required style="margin-top: 0.15rem;">
+            <span>I consent to receive this private technical website audit report and optional Fix-Pack checkout link by email (1-click unsubscribe anytime under DPDP Act 2023).</span>
+          </label>
+          <div id="sendReportStatus" style="display: none; margin-top: 0.7rem; padding: 0.65rem 0.8rem; border-radius: 6px; font-size: 0.84rem;"></div>
+        </form>
+      </div>
+
       <!-- Commercial Fix-Pack Area -->
       <div class="checkout-box">
         <h3>Downloadable Optimization Pack (Fix-Pack)</h3>
@@ -316,8 +350,8 @@ export function renderSiteAuditPage(): string {
             </div>
           </div>
 
-          <button class="btn-primary" id="checkoutBtn" onclick="initiateCheckout(49900)" disabled>
-            Unlock & Download Complete Fix-Pack (₹499 Sandbox Mode)
+          <button class="btn-primary" id="checkoutBtn" data-ab-experiment="${sitefixExpId}" data-ab-variant="${sitefixVariant}" data-ab-cta="${safeSitefixCtaText}" onclick="initiateCheckout(49900)" disabled>
+            ${safeSitefixCtaText}
           </button>
           <button class="btn-primary" id="testPayOneRupeeBtn" onclick="initiateCheckout(100)" style="margin-top: 0.75rem; background: #10b981; border: 1px solid #059669; display: flex; align-items: center; justify-content: center; gap: 0.5rem; width: 100%;" disabled>
             <span>⚡ Launch Razorpay Sandbox Modal (₹1.00 Test Mode)</span>
@@ -362,6 +396,33 @@ export function renderSiteAuditPage(): string {
           </div>
         </div>
 
+          <!-- Tier 2 Optional Order Bump (₹1,999 Competitor SEO Gap & 30-Day Search Console Action Pack) -->
+          <div style="margin-top: 1.5rem; padding: 1.15rem; background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.35); border-radius: 8px; text-align: left;">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.45rem;">
+              <strong style="color: #93c5fd; font-size: 0.95rem;">Tier 2 Optional Upgrade: Competitor SEO Gap &amp; 30-Day Search Console Action Pack</strong>
+              <span style="font-size: 0.85rem; font-weight: 700; color: #fff; background: rgba(59, 130, 246, 0.25); padding: 2px 8px; border-radius: 4px;">₹1,999 One-Time</span>
+            </div>
+            <p style="font-size: 0.85rem; color: #cbd5e1; margin-bottom: 0.75rem;">
+              Add SKU <code>sitefix_competitor_keyword_pack</code>: competitor keyword gap matrix, missing Schema.org templates, and a 30-day Google Search Console indexing sprint.
+            </p>
+            <button type="button" id="tier2OrderBumpBtn" onclick="requestTier2OrderBump()" style="background: #1d4ed8; color: #fff; border: 1px solid #3b82f6; border-radius: 6px; padding: 0.55rem 0.95rem; font-size: 0.85rem; font-weight: 600; cursor: pointer;">
+              Request Tier 2 Order Bump Checkout (₹1,999)
+            </button>
+            <div id="tier2OrderBumpStatus" style="display: none; margin-top: 0.65rem; font-size: 0.82rem; color: #bfdbfe;"></div>
+          </div>
+
+          <!-- Tier 3 B2B Partner Cross-Sell (Hydrated dynamically from verified high-EPC catalog) -->
+          <div id="tier3PartnerCrossSell" style="margin-top: 1.25rem; padding: 1.15rem; background: rgba(15, 23, 42, 0.7); border: 1px solid #1e293b; border-radius: 8px; text-align: left;">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.5rem;">
+              <strong style="color: #e2e8f0; font-size: 0.9rem;">Tier 3 Partner Cross-Sell: Verified Business &amp; Tech Stack Deals</strong>
+              <span style="font-size: 0.72rem; color: #94a3b8;">#Ad &bull; Verified Affiliate Catalog</span>
+            </div>
+            <div id="tier3CrossSellList" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.75rem; font-size: 0.82rem; color: #94a3b8;">
+              Loading verified partner offers...
+            </div>
+          </div>
+        </div>
+
         <!-- Download Success Box -->
         <div class="download-success-box" id="downloadSuccessBox">
           <h4 style="color: var(--success); margin-bottom: 0.5rem;">Payment Verified Successfully!</h4>
@@ -378,6 +439,7 @@ export function renderSiteAuditPage(): string {
 
   <script>
     let currentAuditId = null;
+    let currentAuditTargetUrl = null;
     let currentReadiness = null;
 
     function escapeHtml(str) {
@@ -414,6 +476,7 @@ export function renderSiteAuditPage(): string {
         upiCard.style.display = paymentMode !== 'LIVE' ? 'block' : 'none';
       }
 
+      const activeCtaText = (btn && btn.getAttribute('data-ab-cta')) || 'Unlock Instant Ready-to-Paste Fix-Pack — ₹499';
       if (!currentReadiness || !currentReadiness.isReady) {
         btn.disabled = true;
         btn.innerText = 'Checkout Locked (Pending Gateway Setup)';
@@ -422,7 +485,7 @@ export function renderSiteAuditPage(): string {
         text.innerText = 'Free technical diagnostic scan is active. Live ₹499 digital checkout is currently locked pending owner Razorpay gateway credentials and terms attestation.';
       } else {
         btn.disabled = false;
-        btn.innerText = 'Unlock & Download Complete Fix-Pack (₹499 Sandbox Mode)';
+        btn.innerText = activeCtaText;
         if (testBtn) testBtn.disabled = false;
         notice.style.borderColor = 'var(--success)';
         notice.style.background = 'rgba(16, 185, 129, 0.1)';
@@ -470,6 +533,7 @@ export function renderSiteAuditPage(): string {
         }
 
         currentAuditId = data.result.auditId;
+        currentAuditTargetUrl = data.result.url || url;
         renderResults(data.result);
       } catch (err) {
         alert('Scan error: ' + err.message);
@@ -535,6 +599,18 @@ export function renderSiteAuditPage(): string {
 
       const isTest = targetPaise === 100;
       const btn = isTest ? document.getElementById('testPayOneRupeeBtn') : document.getElementById('checkoutBtn');
+      const abExp = btn ? btn.getAttribute('data-ab-experiment') : null;
+      const abVariant = btn ? btn.getAttribute('data-ab-variant') : null;
+      if (!isTest && abExp && abVariant) {
+        try {
+          fetch('/api/v1/public/storefront-experiments/event', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ experimentId: abExp, variant: abVariant, eventType: 'click', targetId: currentAuditId }),
+            keepalive: true
+          }).catch(function() {});
+        } catch {}
+      }
       if (btn) {
         btn.disabled = true;
         btn.innerText = 'Creating Payment Order...';
@@ -642,6 +718,70 @@ export function renderSiteAuditPage(): string {
       link.href = downloadUrl;
     }
 
+    async function submitSiteAuditSendReport(e) {
+      e.preventDefault();
+      const emailEl = document.getElementById('sendReportEmail');
+      const consentEl = document.getElementById('sendReportConsent');
+      const btn = document.getElementById('sendReportBtn');
+      const statusEl = document.getElementById('sendReportStatus');
+      const targetVal = (currentAuditTargetUrl || document.getElementById('targetUrl')?.value || '').trim();
+      const emailVal = (emailEl?.value || '').trim();
+      const consentVal = Boolean(consentEl?.checked);
+
+      if (!targetVal || !emailVal || !consentVal) {
+        if (statusEl) {
+          statusEl.style.display = 'block';
+          statusEl.style.background = 'rgba(239, 68, 68, 0.15)';
+          statusEl.style.color = '#f87171';
+          statusEl.textContent = 'Please run a scan, enter a valid email, and check the DPDP consent box.';
+        }
+        return;
+      }
+
+      if (btn) {
+        btn.disabled = true;
+        btn.innerText = 'Sending Private Audit...';
+      }
+
+      try {
+        const res = await fetch('/api/v1/tools/site-audit/send-report', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            domainOrUrl: targetVal,
+            email: emailVal,
+            consentGiven: consentVal
+          })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          throw new Error(data.error || data.message || 'Unable to send audit report');
+        }
+        if (statusEl) {
+          statusEl.style.display = 'block';
+          statusEl.style.background = 'rgba(16, 185, 129, 0.15)';
+          statusEl.style.color = '#34d399';
+          statusEl.innerHTML = (data.emailDispatched
+            ? '<strong>✓ Private Audit Emailed!</strong> '
+            : '<strong>✓ Private Audit Link Ready!</strong> ') +
+            'Scorecard: <a href="' + escapeHtml(data.previewUrl) + '" style="color:#38bdf8;" target="_blank">Open Signed Report &rarr;</a>' +
+            ' &bull; <a href="' + escapeHtml(data.checkoutUrl) + '" style="color:#34d399;">₹499 Fix-Pack Checkout &rarr;</a>';
+        }
+      } catch (err) {
+        if (statusEl) {
+          statusEl.style.display = 'block';
+          statusEl.style.background = 'rgba(239, 68, 68, 0.15)';
+          statusEl.style.color = '#f87171';
+          statusEl.textContent = 'Error: ' + (err.message || 'Unable to send email');
+        }
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerText = 'Email Report & Fix-Pack Link';
+        }
+      }
+    }
+
     async function submitSiteAuditUpiClaim(e) {
       e.preventDefault();
       if (!currentAuditId) {
@@ -693,6 +833,73 @@ export function renderSiteAuditPage(): string {
         claimBtn.innerText = 'Submit 12-Digit UPI UTR Claim (₹499)';
       }
     }
+
+    async function requestTier2OrderBump() {
+      const btn = document.getElementById('tier2OrderBumpBtn');
+      const statusEl = document.getElementById('tier2OrderBumpStatus');
+      if (btn) {
+        btn.disabled = true;
+        btn.innerText = 'Creating Tier 2 Order Bump Checkout...';
+      }
+      try {
+        const res = await fetch('/api/v1/customer-desk/message', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: 'I want to buy sitefix_competitor_keyword_pack Tier 2 order bump',
+            productSlugOrContext: 'sitefix_competitor_keyword_pack',
+            channel: 'WEB_DESK'
+          })
+        });
+        const data = await res.json();
+        const checkout = data?.data?.checkout || data?.checkout;
+        if (statusEl) {
+          statusEl.style.display = 'block';
+          if (checkout?.upiDeepLink) {
+            statusEl.innerHTML = 'Order <code>' + escapeHtml(checkout.orderId || 'sitefix_competitor_keyword_pack') + '</code> created (₹1,999). <a href="' + escapeHtml(checkout.upiDeepLink) + '" style="color:#60a5fa;font-weight:600;">Pay via UPI App &rarr;</a>';
+          } else {
+            statusEl.textContent = data?.data?.responseTemplate || data?.responseTemplate || 'Tier 2 Order Bump brief sent.';
+          }
+        }
+      } catch (err) {
+        if (statusEl) {
+          statusEl.style.display = 'block';
+          statusEl.textContent = 'Unable to create Tier 2 checkout right now.';
+        }
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerText = 'Request Tier 2 Order Bump Checkout (₹1,999)';
+        }
+      }
+    }
+
+    (async function hydrateTier3CrossSells() {
+      const container = document.getElementById('tier3CrossSellList');
+      if (!container) return;
+      try {
+        const res = await fetch('/api/v1/public/deals?limit=3');
+        const json = await res.json();
+        const deals = json?.data?.deals || [];
+        if (!Array.isArray(deals) || deals.length === 0) {
+          container.innerHTML = '<div style="color:#94a3b8;">No active verified partner cross-sells currently listed. Browse <a href="/deals" style="color:#38bdf8;">/deals</a> for verified merchant offers.</div>';
+          return;
+        }
+        container.innerHTML = deals.slice(0, 3).map(function(d) {
+          const priceStr = Number(d.currentPriceINR || 0) > 0 ? '₹' + Number(d.currentPriceINR).toLocaleString('en-IN') : 'Verified Offer';
+          const href = '/api/v1/public/deals/' + encodeURIComponent(d.id) + '/redirect?placement=sitefix_tier3_cross_sell';
+          return '<div style="background:rgba(2,6,23,0.65);border:1px solid #334155;border-radius:6px;padding:0.75rem;display:flex;flex-direction:column;justify-content:space-between;gap:0.45rem;">' +
+            '<div><div style="font-size:0.7rem;color:#38bdf8;font-weight:700;">' + escapeHtml(d.category || 'Partner Tool') + '</div>' +
+            '<div style="color:#f8fafc;font-weight:600;font-size:0.82rem;margin:0.2rem 0;">' + escapeHtml(d.title) + '</div></div>' +
+            '<div style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem;">' +
+            '<span style="color:#e2e8f0;font-weight:700;">' + escapeHtml(priceStr) + '</span>' +
+            '<a href="' + escapeHtml(href) + '" target="_blank" rel="sponsored nofollow noopener" style="color:#38bdf8;font-weight:600;text-decoration:none;font-size:0.78rem;">View Partner &rarr;</a>' +
+            '</div></div>';
+        }).join('');
+      } catch {
+        container.innerHTML = '<div style="color:#94a3b8;">Browse verified partner deals at <a href="/deals" style="color:#38bdf8;">/deals</a>.</div>';
+      }
+    })();
   </script>
   ${renderCustomerDeskWidgetHtml('sitefix_core_499')}
 </body>

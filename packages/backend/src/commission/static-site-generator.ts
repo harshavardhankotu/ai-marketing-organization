@@ -48,6 +48,325 @@ export function passesEditorialQualityGate(deal: any): boolean {
   );
 }
 
+export interface ComparisonPair {
+  comparisonSlug: string;
+  title: string;
+  category: string;
+  priceTierLabel: string;
+  dealA: any;
+  dealB: any;
+}
+
+export function generateComparisonPairs(deals: any[], limit: number = 15): ComparisonPair[] {
+  const baseFilter = (d: any) =>
+    d &&
+    d.productVerified === true &&
+    d.affiliateVerified === true &&
+    d.isMonetizable !== false &&
+    d.availability === 'IN_STOCK' &&
+    d.affiliateNetwork !== 'AMAZON_IN' &&
+    Number(d.currentPriceINR || 0) > 0 &&
+    String(d.slug || d.canonicalSlug || d.id || '').trim().length > 0;
+
+  const sortCandidates = (list: any[]) =>
+    list.slice().sort((a: any, b: any) =>
+      (Number(b.expectedProfitPer100VisitorsINR || 0) - Number(a.expectedProfitPer100VisitorsINR || 0)) ||
+      (Number(b.arbitrageScore || 0) - Number(a.arbitrageScore || 0)) ||
+      String(a.id || '').localeCompare(String(b.id || ''))
+    );
+
+  const primaryCandidates = sortCandidates(
+    (deals || []).filter((d: any) =>
+      baseFilter(d) &&
+      d.evolutionStatus !== 'STALE_ROTATED_OUT' &&
+      d.catalogSlot !== 'ROTATED_OUT_STALE'
+    )
+  );
+  const fallbackCandidates = sortCandidates((deals || []).filter(baseFilter));
+
+  const getSlug = (d: any): string =>
+    String(d.slug || d.canonicalSlug || d.id)
+      .toLowerCase()
+      .replace(/[^a-z0-9-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 60);
+
+  const getPriceTier = (price: number): string => {
+    if (price < 2000) return 'Under ₹2,000 Value Tier';
+    if (price <= 10000) return '₹2,000–₹10,000 Mid Tier';
+    return '₹10,000+ Flagship Tier';
+  };
+
+  const pairs: ComparisonPair[] = [];
+  const seenSlugs = new Set<string>();
+
+  const collectPairs = (candidates: any[]) => {
+    for (let i = 0; i < candidates.length && pairs.length < limit; i++) {
+      const a = candidates[i];
+      const slugA = getSlug(a);
+      const catA = String(a.category || 'General').trim().toLowerCase();
+      const priceA = Number(a.currentPriceINR || 0);
+      const tierA = getPriceTier(priceA);
+
+      for (let j = i + 1; j < candidates.length && pairs.length < limit; j++) {
+        const b = candidates[j];
+        const slugB = getSlug(b);
+        if (!slugA || !slugB || slugA === slugB) continue;
+        const catB = String(b.category || 'General').trim().toLowerCase();
+        if (catA !== catB) continue;
+        const priceB = Number(b.currentPriceINR || 0);
+        const tierB = getPriceTier(priceB);
+        const ratio = Math.max(priceA, priceB) / Math.max(1, Math.min(priceA, priceB));
+        if (tierA !== tierB && ratio > 2.2) continue;
+
+        const [first, second] = slugA <= slugB ? [a, b] : [b, a];
+        const comparisonSlug = `${getSlug(first)}-vs-${getSlug(second)}`;
+        if (seenSlugs.has(comparisonSlug)) continue;
+        seenSlugs.add(comparisonSlug);
+
+        pairs.push({
+          comparisonSlug,
+          title: `${first.title} vs ${second.title}`,
+          category: first.category || second.category || 'Verified Deals',
+          priceTierLabel: tierA,
+          dealA: first,
+          dealB: second
+        });
+        break;
+      }
+    }
+  };
+
+  collectPairs(primaryCandidates);
+  if (pairs.length < Math.min(3, limit) && fallbackCandidates.length > primaryCandidates.length) {
+    collectPairs(fallbackCandidates);
+  }
+
+  return pairs;
+}
+
+export interface BuyerIntentHub {
+  intentSlug: string;
+  title: string;
+  h1: string;
+  description: string;
+  priceCapLabel: string;
+  categoryLabel: string;
+  deals: any[];
+  picks: {
+    bestOverallValue: any;
+    lowestObservedPrice: any;
+    premiumPick: any;
+  };
+  faqs: Array<{ question: string; answer: string }>;
+  canonicalUrl: string;
+}
+
+interface HubSeedDefinition {
+  intentSlug: string;
+  title: string;
+  h1: string;
+  description: string;
+  priceCapLabel: string;
+  categoryLabel: string;
+  maxPriceINR?: number;
+  predicate: (deal: any, text: string, price: number) => boolean;
+}
+
+const FIXED_BUYER_INTENT_HUBS: HubSeedDefinition[] = [
+  {
+    intentSlug: 'audio-and-earbuds-under-2000',
+    title: 'Best Audio & Wireless Earbuds Under ₹2,000 in India (Verified Prices)',
+    h1: 'Best Audio & Wireless Earbuds Under ₹2,000 in India',
+    description: 'Verified Indian D2C & merchant snapshot prices for TWS earbuds, ANC earphones, and wireless audio under ₹2,000 with live Amazon.in comparison.',
+    priceCapLabel: 'Under ₹2,000',
+    categoryLabel: 'Audio & Earbuds',
+    maxPriceINR: 2000,
+    predicate: (d, text, price) =>
+      price > 0 && price <= 2000 &&
+      /(earbud|tws|headphone|neckband|airpod|airdopes|audio|anc|bluetooth|earphone|nirvana|rockerz)/i.test(text + ' ' + String(d?.category || ''))
+  },
+  {
+    intentSlug: 'soundbars-and-speakers-under-10000',
+    title: 'Best Soundbars & Home Speakers Under ₹10,000 in India',
+    h1: 'Best Soundbars & Bluetooth Speakers Under ₹10,000',
+    description: 'Independent price check on home theatre soundbars, party speakers, and compact Bluetooth audio under ₹10,000 across official Indian brand stores.',
+    priceCapLabel: 'Under ₹10,000',
+    categoryLabel: 'Soundbars & Speakers',
+    maxPriceINR: 10000,
+    predicate: (d, text, price) =>
+      price > 0 && price <= 10000 &&
+      /(soundbar|speaker|aavante|stone|subwoofer|home theatre|boombox|bar \d+)/i.test(text + ' ' + String(d?.category || ''))
+  },
+  {
+    intentSlug: '4k-dashcams-and-car-tech-india',
+    title: 'Best 4K Dashcams & Car Tech Accessories in India',
+    h1: 'Best 4K Dashcams & Smart Car Accessories in India',
+    description: 'Verified Indian pricing on 4K dual-channel dashcams, tyre inflators, GPS trackers, and car electronics with live Amazon.in coupon check.',
+    priceCapLabel: 'All Tiers',
+    categoryLabel: 'Car Tech & Dashcams',
+    predicate: (d, text, price) =>
+      price > 0 &&
+      /(dashcam|dash cam|car|tyre|tire|inflator|automotive|dvr|nexdigitron|qubo|70mai)/i.test(text + ' ' + String(d?.category || ''))
+  },
+  {
+    intentSlug: 'smartwatches-and-fitness-bands-india',
+    title: 'Best Smartwatches & Fitness Trackers in India (Fair Price Guide)',
+    h1: 'Best Smartwatches & AMOLED Fitness Bands in India',
+    description: 'Verified merchant-reported prices on AMOLED smartwatches, BT calling watches, and fitness trackers in India.',
+    priceCapLabel: 'All Tiers',
+    categoryLabel: 'Wearables & Smartwatches',
+    predicate: (d, text, price) =>
+      price > 0 &&
+      /(smartwatch|watch|fitness band|wearable|amoled|noise|fire-boltt|wave|storm|xpress)/i.test(text + ' ' + String(d?.category || ''))
+  },
+  {
+    intentSlug: 'grooming-and-perfume-bundles-under-1000',
+    title: 'Best Grooming Kits & Perfume Bundles Under ₹1,000 in India',
+    h1: 'Best Grooming & Perfume Value Bundles Under ₹1,000',
+    description: 'Verified effective bundle prices on EDP fragrances, gift sets, trimmers, and men/women grooming packs under ₹1,000.',
+    priceCapLabel: 'Under ₹1,000',
+    categoryLabel: 'Grooming & Fragrances',
+    maxPriceINR: 1000,
+    predicate: (d, text, price) =>
+      price > 0 && price <= 1000 &&
+      /(perfume|fragrance|edp|eau de|groom|beard|trimmer|shav|gift set|combo|bella vita|wild stone|beardo|ustraa|skincare|serum)/i.test(text + ' ' + String(d?.category || ''))
+  },
+  {
+    intentSlug: 'top-price-drops-today-india',
+    title: 'Top Verified Price Drops & Undervalued Deals in India Today',
+    h1: 'Top Verified Price Drops & Fair-Price Deals Today in India',
+    description: 'Highest verified discounts below merchant-listed MRP across Indian D2C brands and electronics stores today.',
+    priceCapLabel: 'Verified Discounts',
+    categoryLabel: 'Top Price Drops',
+    predicate: (_d, _text, price) => price > 0
+  }
+];
+
+export function generateBuyerIntentHubs(
+  deals: any[],
+  siteUrl: string = 'https://ai-marketing-organization.onrender.com',
+  limit: number = 10
+): BuyerIntentHub[] {
+  const cleanSiteUrl = siteUrl.replace(/\/$/, '');
+  const eligible = (deals || []).filter((d: any) =>
+    d &&
+    d.productVerified === true &&
+    d.affiliateVerified === true &&
+    d.isMonetizable !== false &&
+    d.availability === 'IN_STOCK' &&
+    d.affiliateNetwork !== 'AMAZON_IN' &&
+    !/amazon\.(in|com)(\/|$)/i.test(String(d.productUrl || '')) &&
+    Number(d.currentPriceINR || 0) > 0 &&
+    d.evolutionStatus !== 'STALE_ROTATED_OUT' &&
+    d.catalogSlot !== 'ROTATED_OUT_STALE'
+  );
+
+  if (eligible.length < 2) return [];
+
+  const rankDeals = (list: any[]) =>
+    list.slice().sort((a: any, b: any) =>
+      (Number(b.expectedProfitPer100VisitorsINR || 0) - Number(a.expectedProfitPer100VisitorsINR || 0)) ||
+      (Number(b.arbitrageScore || 0) - Number(a.arbitrageScore || 0)) ||
+      (Number(b.verifiedDiscountPercent || 0) - Number(a.verifiedDiscountPercent || 0)) ||
+      (Number(a.currentPriceINR || 0) - Number(b.currentPriceINR || 0)) ||
+      String(a.id || '').localeCompare(String(b.id || ''))
+    );
+
+  const buildHubFromDeals = (def: HubSeedDefinition, matchedRaw: any[]): BuyerIntentHub => {
+    const sorted = rankDeals(matchedRaw).slice(0, 12);
+    const bestOverallValue = sorted[0];
+    const lowestObservedPrice = sorted.slice().sort((a, b) => Number(a.currentPriceINR) - Number(b.currentPriceINR))[0];
+    const premiumPick = sorted.slice().sort((a, b) => Number(b.currentPriceINR) - Number(a.currentPriceINR))[0];
+
+    const topPrice = Number(bestOverallValue.currentPriceINR || 0).toLocaleString('en-IN');
+    const lowPrice = Number(lowestObservedPrice.currentPriceINR || 0).toLocaleString('en-IN');
+
+    return {
+      intentSlug: def.intentSlug,
+      title: def.title,
+      h1: def.h1,
+      description: def.description,
+      priceCapLabel: def.priceCapLabel,
+      categoryLabel: def.categoryLabel,
+      deals: sorted,
+      picks: {
+        bestOverallValue,
+        lowestObservedPrice,
+        premiumPick
+      },
+      faqs: [
+        {
+          question: `What is the lowest verified price in ${def.categoryLabel} right now?`,
+          answer: `The lowest observed merchant price in this hub is ₹${lowPrice} for ${lowestObservedPrice.title} on ${lowestObservedPrice.merchant}. Always confirm live cart pricing and bank offers before checkout.`
+        },
+        {
+          question: `Which product offers the best overall value in ${def.categoryLabel}?`,
+          answer: `${bestOverallValue.title} at ₹${topPrice} on ${bestOverallValue.merchant} leads our verified fair-value ranking based on merchant discount depth and verified buyer demand.`
+        },
+        {
+          question: `Can I compare these prices with Amazon.in before ordering?`,
+          answer: `Yes. Every listed item includes Dual-Rail CTAs so you can inspect the verified D2C store price alongside today's live listing and Prime coupon price on Amazon.in.`
+        }
+      ],
+      canonicalUrl: `${cleanSiteUrl}/best/${encodeURIComponent(def.intentSlug)}`
+    };
+  };
+
+  const hubs: BuyerIntentHub[] = [];
+  const seenSlugs = new Set<string>();
+
+  for (const def of FIXED_BUYER_INTENT_HUBS) {
+    if (hubs.length >= limit) break;
+    const matched = eligible.filter((d: any) => {
+      const price = Number(d.currentPriceINR || 0);
+      const text = `${d.title || ''} ${d.brand || ''} ${d.category || ''} ${d.merchant || ''} ${d.targetBuyerSegment || ''}`.toLowerCase();
+      return def.predicate(d, text, price);
+    });
+    if (matched.length >= 2) {
+      hubs.push(buildHubFromDeals(def, matched));
+      seenSlugs.add(def.intentSlug);
+    }
+  }
+
+  // Dynamic category hubs for remaining slots up to `limit` (10)
+  if (hubs.length < limit) {
+    const byCategory = new Map<string, any[]>();
+    for (const d of eligible) {
+      const cat = String(d.category || 'Verified Offers').trim();
+      const arr = byCategory.get(cat) || [];
+      arr.push(d);
+      byCategory.set(cat, arr);
+    }
+    const sortedCats = Array.from(byCategory.entries()).sort((a, b) => b[1].length - a[1].length);
+    for (const [cat, catDeals] of sortedCats) {
+      if (hubs.length >= limit) break;
+      if (catDeals.length < 2) continue;
+      const slugBase = cat.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+      if (!slugBase) continue;
+      const dynSlug = `best-${slugBase}-deals-india`;
+      if (seenSlugs.has(dynSlug)) continue;
+      hubs.push(
+        buildHubFromDeals(
+          {
+            intentSlug: dynSlug,
+            title: `Best ${cat} Deals in India (Verified Merchant Prices)`,
+            h1: `Best Verified ${cat} Deals in India`,
+            description: `Ranked ${cat} offers in India with observed merchant snapshot pricing, MRP comparisons, and live Amazon.in coupon checks.`,
+            priceCapLabel: 'All Price Tiers',
+            categoryLabel: cat,
+            predicate: () => true
+          },
+          catDeals
+        )
+      );
+      seenSlugs.add(dynSlug);
+    }
+  }
+
+  return hubs.slice(0, limit);
+}
+
 export class StaticSiteGenerator {
   private static instance: StaticSiteGenerator;
 
@@ -551,13 +870,29 @@ export class StaticSiteGenerator {
   /**
    * Generates standalone static HTML for verified deals (/deals/index.html).
    */
-  public renderDealsHtml(deals: any[] = [], config: StaticSiteConfig): string {
+  public renderDealsHtml(
+    deals: any[] = [],
+    config: StaticSiteConfig,
+    options?: {
+      dealCtaAssignment?: { experimentId: string; variant: 'baseline' | 'treatment'; ctaText: string; promoted?: boolean };
+    }
+  ): string {
     const siteName = (config.siteName || '').trim();
     const title = siteName && !siteName.toLowerCase().includes('verified deals')
       ? `Verified Deals & Price Evidence | ${siteName}`
       : 'Verified Deals & Price Evidence';
 
-    const activeDeals = Array.isArray(deals) ? deals : [];
+    const rawDeals = Array.isArray(deals) ? deals : [];
+    const nonStaleDeals = rawDeals.filter((d: any) => d.catalogSlot !== 'ROTATED_OUT_STALE' && d.evidenceJson?.catalogSlot !== 'ROTATED_OUT_STALE');
+    // Rotate stale unclicked >72h deals out of featured /deals cards whenever active non-stale deals exist
+    const activeDeals = nonStaleDeals.length > 0 ? nonStaleDeals : rawDeals;
+
+    const ctaAssignment = options?.dealCtaAssignment || {
+      experimentId: 'exp_storefront_deal_cta',
+      variant: 'baseline',
+      ctaText: 'Buy at Merchant →'
+    };
+
     const merchants = Array.from(new Set(activeDeals.map((d: any) => d.merchant).filter(Boolean)));
     const merchantText = merchants.length > 0 ? merchants.join(', ') : 'authorized Indian partner stores';
     const description = `Merchant-reported Indian e-commerce deal snapshots across ${merchantText}. Always verify live pricing, stock, and terms on the official merchant checkout page.`;
@@ -575,7 +910,9 @@ export class StaticSiteGenerator {
         item: {
           '@type': 'Product',
           name: d.title,
-          description: `${d.brand} ${d.title} on ${d.merchant} at ₹${d.currentPriceINR}`,
+          description: d.currentPriceINR > 0
+            ? `${d.brand} ${d.title} on ${d.merchant} at ₹${d.currentPriceINR}`
+            : `${d.brand} ${d.title} verified offer on ${d.merchant}`,
           brand: {
             '@type': 'Brand',
             name: d.brand
@@ -597,17 +934,24 @@ export class StaticSiteGenerator {
     } : null;
 
     const dealCards = activeDeals.map((deal: any) => {
-      const targetHref = deal.id ? `${config.siteUrl}/api/v1/public/deals/${deal.id}/redirect` : (deal.trackingUrl || deal.productUrl);
+      const baseTargetHref = deal.id ? `${config.siteUrl}/api/v1/public/deals/${deal.id}/redirect` : (deal.trackingUrl || deal.productUrl);
+      const targetHref = deal.id
+        ? `${baseTargetHref}?ab_exp=${encodeURIComponent(ctaAssignment.experimentId)}&ab_variant=${encodeURIComponent(ctaAssignment.variant)}`
+        : baseTargetHref;
+      const amazonRailHref = `${config.siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(deal.title || '').slice(0, 120))}&dealId=${encodeURIComponent(String(deal.id || ''))}`;
       const detailSlug = deal.slug || deal.canonicalSlug || deal.id;
       const detailHref = detailSlug ? `/deals/${encodeURIComponent(detailSlug)}` : targetHref;
       const observedAt = deal.lastVerifiedAt || deal.lastCheckedAt || deal.updatedAt || '';
       const hasPriceDrop = Boolean(deal.evidenceJson?.hasVerifiedPriceDrop);
+      const isFeatured = Boolean(deal.isFeatured ?? deal.evidenceJson?.isFeatured);
+      const isCouponOnly = Number(deal.currentPriceINR || 0) <= 0;
       return `
-      <div class="price-card deal-card" style="background: #111827; border: 1px solid #1e293b; border-radius: 12px; padding: 1.5rem; display: flex; flex-direction: column; justify-content: space-between;">
+      <div class="price-card deal-card" data-catalog-slot="${this.escapeHtml(deal.catalogSlot || deal.evidenceJson?.catalogSlot || 'ACTIVE')}" style="background: #111827; border: 1px solid #1e293b; border-radius: 12px; padding: 1.5rem; display: flex; flex-direction: column; justify-content: space-between;">
         <div>
           <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; flex-wrap: wrap;">
             <span style="font-size: 0.75rem; font-weight: 700; color: #38bdf8; text-transform: uppercase;">${this.escapeHtml(deal.brand)}</span>
-            <div style="display: flex; gap: 0.4rem; align-items: center;">
+            <div style="display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap;">
+              ${isFeatured ? `<span style="font-size: 0.72rem; background: rgba(6, 182, 212, 0.18); color: #67e8f9; border: 1px solid rgba(6, 182, 212, 0.35); padding: 0.2rem 0.5rem; border-radius: 9999px;">Featured</span>` : ''}
               ${hasPriceDrop ? `<span style="font-size: 0.72rem; background: rgba(16, 185, 129, 0.2); color: #6ee7b7; border: 1px solid rgba(16, 185, 129, 0.35); padding: 0.2rem 0.5rem; border-radius: 9999px;">Verified Price Drop</span>` : ''}
               <span style="font-size: 0.75rem; background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); padding: 0.2rem 0.5rem; border-radius: 9999px;">✓ Verified</span>
             </div>
@@ -618,8 +962,10 @@ export class StaticSiteGenerator {
           </div>
           ${deal.targetBuyerSegment ? `<div style="font-size: 0.76rem; color: #cbd5e1; background: rgba(15, 23, 42, 0.85); border: 1px solid #334155; border-radius: 6px; padding: 0.35rem 0.6rem; margin-bottom: 0.75rem;">Target Buyer: <strong>${this.escapeHtml(deal.targetBuyerSegment)}</strong></div>` : ''}
           <div style="display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; margin: 1rem 0 0.35rem 0;">
-            <span style="font-size: 1.6rem; font-weight: 800; color: #fff;">₹${Number(deal.currentPriceINR).toLocaleString('en-IN')}</span>
-            ${deal.referencePriceINR && deal.referencePriceINR > deal.currentPriceINR ? `<span style="font-size: 0.85rem; color: #64748b; text-decoration: line-through;">Merchant Listed MRP ₹${Number(deal.referencePriceINR).toLocaleString('en-IN')}</span>` : ''}
+            ${isCouponOnly
+              ? `<span style="font-size: 1.15rem; font-weight: 800; color: #38bdf8;">Verified Merchant Offer</span>`
+              : `<span style="font-size: 1.6rem; font-weight: 800; color: #fff;">₹${Number(deal.currentPriceINR).toLocaleString('en-IN')}</span>`}
+            ${!isCouponOnly && deal.referencePriceINR && deal.referencePriceINR > deal.currentPriceINR ? `<span style="font-size: 0.85rem; color: #64748b; text-decoration: line-through;">Merchant Listed MRP ₹${Number(deal.referencePriceINR).toLocaleString('en-IN')}</span>` : ''}
           </div>
           ${observedAt ? `<div style="font-size: 0.74rem; color: #94a3b8; margin-bottom: 0.5rem;">Observed: <code>${this.escapeHtml(observedAt)}</code></div>` : ''}
           ${deal.couponCode ? `
@@ -633,13 +979,18 @@ export class StaticSiteGenerator {
           ` : ''}
           ${deal.couponConditions ? `<p style="font-size: 0.78rem; color: #94a3b8; font-style: italic; margin: 0.5rem 0 0 0;">${this.escapeHtml(deal.couponConditions)}</p>` : ''}
         </div>
-        <div style="margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid #1e293b; display: flex; justify-content: space-between; align-items: center;">
-          <span style="font-size: 0.75rem; color: #64748b;">#Ad &bull; Merchant Snapshot</span>
-          <a href="${this.escapeHtml(targetHref)}" target="_blank" rel="sponsored nofollow noopener" style="background: #06b6d4; color: #020617; font-weight: 700; font-size: 0.85rem; padding: 0.5rem 1rem; border-radius: 8px; text-decoration: none;">View Deal &rarr;</a>
+        <div style="margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid #1e293b; display: flex; flex-direction: column; gap: 0.5rem;">
+          <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;">
+            <span style="font-size: 0.75rem; color: #64748b;">#Ad &bull; Verified D2C Rail</span>
+            <a href="${this.escapeHtml(targetHref)}" target="_blank" rel="sponsored nofollow noopener" data-ab-experiment="${this.escapeHtml(ctaAssignment.experimentId)}" data-ab-variant="${this.escapeHtml(ctaAssignment.variant)}" style="background: #06b6d4; color: #020617; font-weight: 700; font-size: 0.82rem; padding: 0.45rem 0.9rem; border-radius: 8px; text-decoration: none;">${this.escapeHtml(ctaAssignment.ctaText)}</a>
+          </div>
+          <a href="${this.escapeHtml(amazonRailHref)}" target="_blank" rel="sponsored nofollow noopener" style="display: block; text-align: center; background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); color: #fcd34d; font-weight: 600; font-size: 0.76rem; padding: 0.42rem 0.65rem; border-radius: 7px; text-decoration: none;">Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)</a>
         </div>
       </div>
     `;
     }).join('');
+    const comparisonPairs = generateComparisonPairs(activeDeals, 6);
+    const buyerHubs = generateBuyerIntentHubs(activeDeals, config.siteUrl, 6);
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -649,6 +1000,7 @@ export class StaticSiteGenerator {
   ${this.getGoogleSiteVerificationMeta(config)}${this.getCuelinksVerificationMeta(config)}<title>${this.escapeHtml(title)}</title>
   <meta name="description" content="${this.escapeHtml(description)}">
   <link rel="canonical" href="${canonicalUrl}">
+  <link rel="alternate" type="application/rss+xml" title="Verified Commercial Deals RSS Feed" href="/feeds/deals.xml">
   <meta name="robots" content="index, follow">
   <meta property="og:title" content="${this.escapeHtml(title)}">
   <meta property="og:description" content="${this.escapeHtml(description)}">
@@ -696,9 +1048,48 @@ export class StaticSiteGenerator {
       <h1>Curated Commercial Offers for Indian Buyers</h1>
       <p>Promotional prices and reference MRPs shown below reflect merchant-reported snapshots observed at sync time. Prices and availability can change at any time; confirm final terms on the official merchant checkout page.</p>
     </div>
+    <section id="fair-price-checker-ssr" style="background: #111827; border: 1px solid #1e293b; border-radius: 12px; padding: 1.5rem; margin-bottom: 2rem;">
+      <div style="display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.5rem;">
+        <h2 style="margin: 0; font-size: 1.15rem; color: #f8fafc;">Universal Fair-Price Checker &amp; Link Monetizer</h2>
+        <span style="font-size: 0.78rem; color: #94a3b8;">Observed MRP · Coupon Stacking · Amazon.in &amp; Cuelinks</span>
+      </div>
+      <p style="margin: 0 0 0.9rem 0; font-size: 0.88rem; color: #94a3b8;">
+        Paste any Indian product URL (Amazon.in, D2C flagship store) or search any product to check fair market price, stacked coupon savings, and set a target price-drop alert.
+      </p>
+      <form onsubmit="handleFairPriceDealsSsr(event)" style="display: flex; gap: 0.6rem; flex-wrap: wrap;">
+        <input type="text" id="fp-query-deals-ssr" required placeholder="Paste https://amazon.in/dp/... or type e.g. best ANC earbuds under 2000" style="flex: 1 1 280px; padding: 0.7rem 0.9rem; border-radius: 8px; border: 1px solid #334155; background: #090d16; color: #fff; font-size: 0.9rem;">
+        <button type="submit" id="fp-btn-deals-ssr" style="background: #06b6d4; color: #020617; font-weight: 700; border: none; border-radius: 8px; padding: 0.7rem 1.25rem; cursor: pointer; font-size: 0.88rem;">Check Fair Price</button>
+      </form>
+      <div id="fp-result-deals-ssr" style="display: none; margin-top: 1rem;"></div>
+    </section>
+
     <div class="deals-grid">
       ${dealCards || '<p class="no-deals-message" style="color: #94a3b8; font-size: 1.1rem; text-align: center; grid-column: 1 / -1; padding: 3rem 1rem;">No currently verified offers are available in this category. Check back later.</p>'}
     </div>
+    ${buyerHubs.length > 0 ? `
+    <section style="background: #111827; border: 1px solid #1e293b; border-radius: 12px; padding: 1.35rem; margin-bottom: 1.5rem;">
+      <h2 style="font-size: 1.15rem; color: #fff; margin: 0 0 0.75rem 0;">Programmatic Fair-Price Buyer Guides (/best/)</h2>
+      <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 0.75rem;">
+        ${buyerHubs.map((hub) => `
+          <a href="/best/${this.escapeHtml(encodeURIComponent(hub.intentSlug))}" style="display: block; background: #090d16; border: 1px solid #1e293b; border-radius: 8px; padding: 0.75rem; color: #34d399; text-decoration: none; font-size: 0.84rem; font-weight: 600;">
+            ${this.escapeHtml(hub.h1)}
+            <div style="color: #94a3b8; font-size: 0.74rem; font-weight: 400; margin-top: 0.25rem;">${this.escapeHtml(hub.priceCapLabel)} &bull; ${hub.deals.length} Verified Picks</div>
+          </a>
+        `).join('')}
+      </div>
+    </section>` : ''}
+    ${comparisonPairs.length > 0 ? `
+    <section style="background: #111827; border: 1px solid #1e293b; border-radius: 12px; padding: 1.35rem; margin-bottom: 2rem;">
+      <h2 style="font-size: 1.15rem; color: #fff; margin: 0 0 0.75rem 0;">Head-to-Head Buyer Comparisons (/vs/)</h2>
+      <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 0.75rem;">
+        ${comparisonPairs.map((pair) => `
+          <a href="/vs/${this.escapeHtml(encodeURIComponent(pair.comparisonSlug))}" style="display: block; background: #090d16; border: 1px solid #1e293b; border-radius: 8px; padding: 0.75rem; color: #38bdf8; text-decoration: none; font-size: 0.84rem; font-weight: 600;">
+            ${this.escapeHtml(pair.dealA.brand || pair.dealA.title)} vs ${this.escapeHtml(pair.dealB.brand || pair.dealB.title)}
+            <div style="color: #94a3b8; font-size: 0.74rem; font-weight: 400; margin-top: 0.25rem;">${this.escapeHtml(pair.category)} &bull; ${this.escapeHtml(pair.priceTierLabel)}</div>
+          </a>
+        `).join('')}
+      </div>
+    </section>` : ''}
     <div class="disclosure-box">
       <strong style="color: #e2e8f0;">#Ad Commercial Disclosure &amp; Snapshot Notice:</strong>
       Offer pricing, stock status, and reference MRPs are merchant-reported snapshots and are not guaranteed. Where authorized affiliate agreements exist, qualifying purchases made through outgoing partner links may earn a referral commission at zero additional cost to you.
@@ -716,6 +1107,98 @@ export class StaticSiteGenerator {
     </nav>
     <p>&copy; ${new Date().getFullYear()} ${this.escapeHtml(config.siteName)}. All rights reserved.</p>
   </footer>
+  <script>
+    function escFp(s) {
+      return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+    async function handleFairPriceDealsSsr(e) {
+      e.preventDefault();
+      var qEl = document.getElementById('fp-query-deals-ssr');
+      var btn = document.getElementById('fp-btn-deals-ssr');
+      var out = document.getElementById('fp-result-deals-ssr');
+      if (!qEl || !out) return;
+      var q = qEl.value.trim();
+      if (!q) return;
+      btn.disabled = true;
+      btn.innerText = 'Checking...';
+      out.style.display = 'block';
+      out.innerHTML = '<div style="font-size:0.85rem;color:#94a3b8;">Checking observed Indian market prices and active coupons...</div>';
+      try {
+        var res = await fetch('/api/v1/public/fair-price-check', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ queryOrUrl: q })
+        });
+        var json = await res.json();
+        if (!res.ok || !json.success) throw new Error(json.message || json.error || 'Check failed');
+        var d = json.data;
+        var vColor = d.verdict === 'BUY_NOW_BELOW_FAIR_PRICE' ? '#34d399' : (d.verdict === 'OVERPRICED_WAIT_FOR_DROP' ? '#f59e0b' : '#38bdf8');
+        var rowsHtml = (d.crossStoreOptions || []).slice(0, 6).map(function(o) {
+          var isAmz = o.affiliateNetwork === 'AMAZON_IN' || o.isAmazonSearchRail || Number(o.effectivePriceINR || 0) <= 0;
+          var priceTxt = isAmz ? 'Live on Amazon.in' : ('₹' + Number(o.effectivePriceINR || o.currentPriceINR || 0).toLocaleString('en-IN'));
+          var btnTxt = o.ctaLabel || (isAmz ? "Check Today's Live Price & Prime Coupons on Amazon.in →" : 'Buy (#Ad) →');
+          return '<div style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;padding:0.55rem 0;border-top:1px solid #1e293b;font-size:0.84rem;">' +
+            '<div><div style="color:#fff;font-weight:600;">' + escFp(o.title) + (o.isLowestPrice ? ' <span style="color:#34d399;">(Lowest Net)</span>' : '') + '</div>' +
+            '<div style="color:#94a3b8;font-size:0.76rem;">' + escFp(o.merchant) + (o.couponCode ? ' · Code: ' + escFp(o.couponCode) : '') + ' · ' + escFp(o.disclosure || '#Ad') + '</div></div>' +
+            '<div style="display:flex;align-items:center;gap:0.65rem;flex-shrink:0;">' +
+              '<span style="font-weight:700;color:#fff;font-variant-numeric:tabular-nums;">' + escFp(priceTxt) + '</span>' +
+              '<a href="' + escFp(o.trackingRedirectUrl) + '" target="_blank" rel="sponsored nofollow noopener" style="background:' + (isAmz ? '#f59e0b' : '#06b6d4') + ';color:#020617;padding:0.35rem 0.7rem;border-radius:6px;font-weight:700;font-size:0.76rem;text-decoration:none;">' + escFp(btnTxt) + '</a>' +
+            '</div></div>';
+        }).join('');
+        out.innerHTML =
+          '<div style="background:#090d16;border:1px solid #1e293b;border-radius:10px;padding:1rem;">' +
+            '<div style="font-size:0.75rem;font-weight:700;color:' + vColor + ';margin-bottom:0.3rem;">' + escFp(d.verdict) + '</div>' +
+            '<div style="font-size:0.9rem;color:#e2e8f0;margin-bottom:0.45rem;">' + escFp(d.verdictSummary) + '</div>' +
+            (d.aiBuyerNote ? '<div style="font-size:0.82rem;color:#94a3b8;margin-bottom:0.5rem;">Note: ' + escFp(d.aiBuyerNote) + '</div>' : '') +
+            rowsHtml +
+            '<form onsubmit="handleFairPriceAlertSsr(event)" style="margin-top:0.85rem;padding-top:0.75rem;border-top:1px solid #1e293b;display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;">' +
+              '<input type="number" id="fp-alert-price-ssr" min="1" required placeholder="Target ₹" value="' + (d.estimatedFairPriceINR ? Math.round(d.estimatedFairPriceINR * 0.9) : '') + '" style="width:110px;padding:0.45rem 0.65rem;border-radius:6px;border:1px solid #334155;background:#111827;color:#fff;font-size:0.82rem;">' +
+              '<input type="email" id="fp-alert-email-ssr" required placeholder="Email for target price drop alert" style="flex:1 1 200px;padding:0.45rem 0.65rem;border-radius:6px;border:1px solid #334155;background:#111827;color:#fff;font-size:0.82rem;">' +
+              '<label style="font-size:0.75rem;color:#cbd5e1;display:flex;align-items:center;gap:0.35rem;cursor:pointer;"><input type="checkbox" id="fp-alert-consent-ssr" required> Opt-in alerts (DPDP)</label>' +
+              '<button type="submit" style="background:#10b981;color:#020617;border:none;padding:0.45rem 0.85rem;border-radius:6px;font-weight:700;font-size:0.8rem;cursor:pointer;">Set Price Alert</button>' +
+            '</form>' +
+            '<div id="fp-alert-status-ssr" style="font-size:0.8rem;margin-top:0.4rem;"></div>' +
+          '</div>';
+      } catch (err) {
+        out.innerHTML = '<div style="font-size:0.84rem;color:#f87171;">Error: ' + escFp(err.message || 'Check failed') + '</div>';
+      } finally {
+        btn.disabled = false;
+        btn.innerText = 'Check Fair Price';
+      }
+    }
+    async function handleFairPriceAlertSsr(e) {
+      e.preventDefault();
+      var q = (document.getElementById('fp-query-deals-ssr') || {}).value || '';
+      var price = Number((document.getElementById('fp-alert-price-ssr') || {}).value || 0);
+      var email = ((document.getElementById('fp-alert-email-ssr') || {}).value || '').trim();
+      var consent = Boolean((document.getElementById('fp-alert-consent-ssr') || {}).checked);
+      var statusEl = document.getElementById('fp-alert-status-ssr');
+      if (!statusEl) return;
+      statusEl.style.color = '#94a3b8';
+      statusEl.innerText = 'Registering target price alert...';
+      try {
+        var res = await fetch('/api/v1/public/fair-price-check', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ queryOrUrl: q, targetFairPriceINR: price, alertEmail: email, consentGiven: consent, skipAiSynthesis: true })
+        });
+        var json = await res.json();
+        var reg = json && json.data && json.data.priceDropAlertRegistered;
+        if (reg && reg.registered) {
+          statusEl.style.color = '#34d399';
+          statusEl.innerText = reg.immediateAlertDispatched
+            ? 'Alert registered & instant price-drop email sent to ' + reg.alertEmailMasked + '!'
+            : 'Alert registered for ' + reg.alertEmailMasked + ' at target ₹' + Number(reg.targetFairPriceINR || price).toLocaleString('en-IN') + '.';
+        } else {
+          statusEl.style.color = '#fbbf24';
+          statusEl.innerText = (reg && reg.reason) || json.message || 'Could not register alert.';
+        }
+      } catch (err) {
+        statusEl.style.color = '#f87171';
+        statusEl.innerText = 'Error: ' + (err.message || 'Failed');
+      }
+    }
+  </script>
   ${renderCustomerDeskWidgetHtml()}
 </body>
 </html>`;
@@ -895,7 +1378,10 @@ ${this.serializeSafeJsonLd(productSchema, true)}
       <p style="font-size:0.88rem;color:#94a3b8;margin:0.5rem 0 1rem 0;">
         Observed At: <code>${this.escapeHtml(verifiedTs || 'Verification timestamp unavailable')}</code> &bull; Verification Status: <strong>${this.escapeHtml(deal.verificationStatus || 'VERIFIED')}</strong>
       </p>
-      <a href="${this.escapeHtml(redirectHref)}" target="_blank" rel="sponsored nofollow noopener" class="cta-btn">Claim Verified Deal on ${this.escapeHtml(deal.merchant)} &rarr;</a>
+      <div style="display:flex;flex-wrap:wrap;gap:0.75rem;align-items:center;margin-top:0.5rem;">
+        <a href="${this.escapeHtml(redirectHref)}" target="_blank" rel="sponsored nofollow noopener" class="cta-btn" style="margin-top:0;">Claim Verified Deal on ${this.escapeHtml(deal.merchant)} &rarr;</a>
+        <a href="${this.escapeHtml(`${config.siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(deal.title || '').slice(0, 120))}&dealId=${encodeURIComponent(String(deal.id || ''))}`)}" target="_blank" rel="sponsored nofollow noopener" style="display:inline-block;background:rgba(245,158,11,0.14);border:1px solid rgba(245,158,11,0.4);color:#fcd34d;font-weight:700;padding:0.9rem 1.35rem;border-radius:10px;text-decoration:none;font-size:0.92rem;">Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)</a>
+      </div>
 
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1rem;margin-top:1.75rem;">
         <div style="background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.28);border-radius:10px;padding:1rem;">
@@ -933,7 +1419,7 @@ ${this.serializeSafeJsonLd(productSchema, true)}
       </section>` : ''}
 
       <p style="font-size:0.8rem;color:#94a3b8;margin-top:1.25rem;padding-top:1rem;border-top:1px solid #1e293b;">
-        <strong>#Ad Statutory Disclosure:</strong> This page is a deterministic merchant price snapshot linking via authorized Cuelinks tracking (Channel 331585). We may earn an affiliate commission on qualifying purchases at no additional cost to you. ${this.escapeHtml(verifiedRateDisclosure)} Always confirm final live checkout price and warranty terms on the merchant store.
+        <strong>#Ad Statutory Disclosure:</strong> This page is a deterministic merchant price snapshot linking via authorized Cuelinks tracking (Channel 331585) and Amazon.in Associates search referrals. We may earn an affiliate commission on qualifying purchases at no additional cost to you. ${this.escapeHtml(verifiedRateDisclosure)} Always confirm final live checkout price and warranty terms on the merchant store.
       </p>
     </article>
     ${relatedDeals.length > 0 ? `
@@ -945,6 +1431,442 @@ ${this.serializeSafeJsonLd(productSchema, true)}
   <footer>
     <p><a href="/deals">All Verified Deals</a> &bull; <a href="/sitemap.xml">Sitemap</a> &bull; <a href="/public/disclosure">Affiliate Disclosure</a></p>
   </footer>
+  ${renderCustomerDeskWidgetHtml(deal.slug || deal.canonicalSlug || deal.id || '')}
+</body>
+</html>`;
+  }
+
+  /**
+   * Renders Head-to-Head Comparison Engine HTML for `/vs/:comparisonSlug`.
+   * Includes Schema.org/ItemList JSON-LD, verified D2C price snapshots with timestamps,
+   * side-by-side specs, and Dual-Rail Cuelinks + Amazon Associates CTAs (#Ad, zero scraped Amazon prices).
+   */
+  public renderComparisonHtml(
+    pair: ComparisonPair,
+    config: StaticSiteConfig,
+    allPairs: ComparisonPair[] = []
+  ): string {
+    const a = pair.dealA;
+    const b = pair.dealB;
+    const canonicalUrl = `${config.siteUrl}/vs/${encodeURIComponent(pair.comparisonSlug)}`;
+    const title = `${a.title} vs ${b.title} — Price & Spec Comparison | ${config.siteName}`;
+    const priceA = Number(a.currentPriceINR || 0);
+    const priceB = Number(b.currentPriceINR || 0);
+    const tsA = String(a.lastVerifiedAt || a.lastCheckedAt || a.updatedAt || '');
+    const tsB = String(b.lastVerifiedAt || b.lastCheckedAt || b.updatedAt || '');
+    const description = `Compare ${a.title} (₹${priceA.toLocaleString('en-IN')}) vs ${b.title} (₹${priceB.toLocaleString('en-IN')}) in ${pair.category} with verified D2C pricing and live Amazon.in coupon checks.`;
+
+    const rail1A = `${config.siteUrl}/api/v1/public/deals/${encodeURIComponent(a.id)}/redirect?utm_source=vs_compare`;
+    const rail1B = `${config.siteUrl}/api/v1/public/deals/${encodeURIComponent(b.id)}/redirect?utm_source=vs_compare`;
+    const rail2A = `${config.siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(a.title || '').slice(0, 120))}&dealId=${encodeURIComponent(a.id)}`;
+    const rail2B = `${config.siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(b.title || '').slice(0, 120))}&dealId=${encodeURIComponent(b.id)}`;
+
+    const itemListSchema = {
+      '@context': 'https://schema.org',
+      '@type': 'ItemList',
+      name: `${a.title} vs ${b.title}`,
+      description,
+      url: canonicalUrl,
+      numberOfItems: 2,
+      itemListElement: [a, b].map((d, idx) => ({
+        '@type': 'ListItem',
+        position: idx + 1,
+        item: {
+          '@type': 'Product',
+          name: d.title,
+          brand: { '@type': 'Brand', name: d.brand || d.merchant || 'Brand' },
+          offers: {
+            '@type': 'Offer',
+            url: `${config.siteUrl}/deals/${encodeURIComponent(d.slug || d.canonicalSlug || d.id)}`,
+            priceCurrency: 'INR',
+            price: Number(d.currentPriceINR || 0),
+            availability: d.availability === 'OUT_OF_STOCK' ? 'https://schema.org/OutOfStock' : 'https://schema.org/InStock',
+            seller: { '@type': 'Organization', name: d.merchant || 'Merchant' }
+          }
+        }
+      }))
+    };
+
+    const otherPairs = (allPairs || []).filter(p => p.comparisonSlug !== pair.comparisonSlug).slice(0, 6);
+
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  ${this.getGoogleSiteVerificationMeta(config)}${this.getCuelinksVerificationMeta(config)}<title>${this.escapeHtml(title)}</title>
+  <meta name="description" content="${this.escapeHtml(description)}">
+  <link rel="canonical" href="${this.escapeHtml(canonicalUrl)}">
+  <meta name="robots" content="index, follow">
+  <meta property="og:title" content="${this.escapeHtml(title)}">
+  <meta property="og:description" content="${this.escapeHtml(description)}">
+  <meta property="og:url" content="${this.escapeHtml(canonicalUrl)}">
+  <meta property="og:type" content="website">
+  <script type="application/ld+json">
+${this.serializeSafeJsonLd(itemListSchema, true)}
+  </script>
+  <style>
+    :root { color-scheme: dark; --bg: #090d16; --card: #111827; --text: #e2e8f0; --accent: #06b6d4; --border: #1e293b; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); margin: 0; line-height: 1.6; }
+    header { border-bottom: 1px solid var(--border); padding: 1.15rem 2rem; display: flex; justify-content: space-between; align-items: center; max-width: 1040px; margin: 0 auto; }
+    header a.brand { font-weight: 700; color: #fff; text-decoration: none; font-size: 1.1rem; }
+    header nav a { color: #94a3b8; text-decoration: none; font-size: 0.9rem; margin-left: 1.25rem; }
+    main { max-width: 1040px; margin: 2rem auto; padding: 0 1.5rem; }
+    table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+    th, td { padding: 0.85rem 1rem; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+    th { background: #0f172a; color: #94a3b8; font-size: 0.84rem; width: 22%; }
+    footer { border-top: 1px solid var(--border); padding: 2.5rem 1.5rem; margin-top: 3rem; text-align: center; font-size: 0.85rem; color: #64748b; }
+    footer a { color: #94a3b8; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <header>
+    <a href="/" class="brand">${this.escapeHtml(config.siteName)}</a>
+    <nav>
+      <a href="/deals">Verified Deals</a>
+      <a href="/public/disclosure">Disclosure</a>
+    </nav>
+  </header>
+  <main>
+    <div style="font-size:0.84rem;color:#94a3b8;margin-bottom:0.85rem;">
+      <a href="/deals" style="color:#38bdf8;text-decoration:none;">Verified Deals</a> &rsaquo; <span>${this.escapeHtml(pair.category)}</span> &rsaquo; <span>${this.escapeHtml(pair.priceTierLabel)}</span>
+    </div>
+    <span style="display:inline-block;font-size:0.74rem;font-weight:700;color:#38bdf8;background:rgba(56,189,248,0.12);border:1px solid rgba(56,189,248,0.3);padding:0.2rem 0.65rem;border-radius:9999px;margin-bottom:0.75rem;">#Ad &bull; HEAD-TO-HEAD COMPARISON</span>
+    <h1 style="font-size:1.75rem;color:#fff;margin:0 0 0.75rem 0;">${this.escapeHtml(a.title)} vs ${this.escapeHtml(b.title)}</h1>
+    <p style="color:#94a3b8;font-size:0.95rem;margin-bottom:1.5rem;">${this.escapeHtml(description)}</p>
+
+    <div style="overflow-x:auto;">
+      <table>
+        <thead>
+          <tr>
+            <th>Attribute</th>
+            <th style="width:39%;color:#fff;font-size:1rem;"><a href="/deals/${this.escapeHtml(encodeURIComponent(a.slug || a.canonicalSlug || a.id))}" style="color:#fff;text-decoration:none;">${this.escapeHtml(a.title)}</a></th>
+            <th style="width:39%;color:#fff;font-size:1rem;"><a href="/deals/${this.escapeHtml(encodeURIComponent(b.slug || b.canonicalSlug || b.id))}" style="color:#fff;text-decoration:none;">${this.escapeHtml(b.title)}</a></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th>Verified D2C Price</th>
+            <td><strong style="font-size:1.3rem;color:#34d399;">₹${priceA.toLocaleString('en-IN')}</strong><div style="font-size:0.75rem;color:#94a3b8;">Observed: <code>${this.escapeHtml(tsA)}</code></div></td>
+            <td><strong style="font-size:1.3rem;color:#34d399;">₹${priceB.toLocaleString('en-IN')}</strong><div style="font-size:0.75rem;color:#94a3b8;">Observed: <code>${this.escapeHtml(tsB)}</code></div></td>
+          </tr>
+          <tr>
+            <th>Reference List MRP</th>
+            <td>${Number(a.referencePriceINR || 0) > priceA ? `₹${Number(a.referencePriceINR).toLocaleString('en-IN')} (${a.verifiedDiscountPercent || a.claimedDiscountPercent || 0}% off)` : 'Verified Direct'}</td>
+            <td>${Number(b.referencePriceINR || 0) > priceB ? `₹${Number(b.referencePriceINR).toLocaleString('en-IN')} (${b.verifiedDiscountPercent || b.claimedDiscountPercent || 0}% off)` : 'Verified Direct'}</td>
+          </tr>
+          <tr>
+            <th>Merchant &amp; Brand</th>
+            <td>${this.escapeHtml(a.merchant)} (${this.escapeHtml(a.brand || '')})</td>
+            <td>${this.escapeHtml(b.merchant)} (${this.escapeHtml(b.brand || '')})</td>
+          </tr>
+          <tr>
+            <th>Promo Code</th>
+            <td>${a.couponCode ? `<code>${this.escapeHtml(a.couponCode)}</code>` : 'Direct store pricing'}</td>
+            <td>${b.couponCode ? `<code>${this.escapeHtml(b.couponCode)}</code>` : 'Direct store pricing'}</td>
+          </tr>
+          <tr>
+            <th>Dual-Rail Checkout (#Ad)</th>
+            <td>
+              <div style="display:flex;flex-direction:column;gap:0.5rem;">
+                <a href="${this.escapeHtml(rail1A)}" target="_blank" rel="sponsored nofollow noopener" style="display:inline-block;text-align:center;background:#06b6d4;color:#020617;font-weight:700;padding:0.55rem 0.9rem;border-radius:8px;text-decoration:none;font-size:0.84rem;">Buy at ${this.escapeHtml(a.merchant)} &rarr;</a>
+                <a href="${this.escapeHtml(rail2A)}" target="_blank" rel="sponsored nofollow noopener" style="display:inline-block;text-align:center;background:rgba(245,158,11,0.14);border:1px solid rgba(245,158,11,0.4);color:#fcd34d;font-weight:600;padding:0.48rem 0.75rem;border-radius:8px;text-decoration:none;font-size:0.78rem;">Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)</a>
+              </div>
+            </td>
+            <td>
+              <div style="display:flex;flex-direction:column;gap:0.5rem;">
+                <a href="${this.escapeHtml(rail1B)}" target="_blank" rel="sponsored nofollow noopener" style="display:inline-block;text-align:center;background:#06b6d4;color:#020617;font-weight:700;padding:0.55rem 0.9rem;border-radius:8px;text-decoration:none;font-size:0.84rem;">Buy at ${this.escapeHtml(b.merchant)} &rarr;</a>
+                <a href="${this.escapeHtml(rail2B)}" target="_blank" rel="sponsored nofollow noopener" style="display:inline-block;text-align:center;background:rgba(245,158,11,0.14);border:1px solid rgba(245,158,11,0.4);color:#fcd34d;font-weight:600;padding:0.48rem 0.75rem;border-radius:8px;text-decoration:none;font-size:0.78rem;">Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)</a>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div style="background:rgba(14,165,233,0.08);border:1px solid rgba(14,165,233,0.25);border-radius:10px;padding:1rem;font-size:0.82rem;color:#94a3b8;margin-top:1.5rem;">
+      <strong style="color:#e2e8f0;">#Ad Statutory Affiliate Disclosure:</strong> D2C store prices shown above are merchant-reported snapshots verified at the listed timestamp. Amazon.in buttons redirect to live search/listing pages without displaying scraped Amazon prices. Qualifying purchases through these links may earn an affiliate commission at zero extra cost to you.
+    </div>
+
+    ${otherPairs.length > 0 ? `
+    <section style="margin-top:1.75rem;">
+      <h2 style="font-size:1.1rem;color:#fff;margin-bottom:0.65rem;">More Head-to-Head Comparisons</h2>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:0.75rem;">
+        ${otherPairs.map(op => `<a href="/vs/${this.escapeHtml(encodeURIComponent(op.comparisonSlug))}" style="background:#111827;border:1px solid #1e293b;border-radius:8px;padding:0.75rem;color:#38bdf8;text-decoration:none;font-size:0.84rem;font-weight:600;">${this.escapeHtml(op.title)}</a>`).join('')}
+      </div>
+    </section>` : ''}
+  </main>
+  <footer>
+    <p><a href="/deals">All Verified Deals</a> &bull; <a href="/sitemap.xml">Sitemap</a> &bull; <a href="/public/disclosure">Affiliate Disclosure</a></p>
+  </footer>
+  ${renderCustomerDeskWidgetHtml(pair.comparisonSlug || pair.dealA?.slug || '')}
+</body>
+</html>`;
+  }
+
+  /**
+   * Stage M Task 2: Renders Programmatic "Best Under ₹X" Buyer-Intent Hub HTML for `/best/:intentSlug`.
+   * Includes Schema.org/ItemList + Schema.org/FAQPage JSON-LD, 3 Winner Picks, Ranked Winner Table,
+   * Observed At timestamps, Dual-Rail Cuelinks + Amazon Associates CTAs (#Ad), /vs/ cross-links,
+   * and embedded Fair-Price / Price-Drop Alert Box.
+   */
+  public renderBuyerGuideHtml(
+    hub: BuyerIntentHub,
+    allHubs: BuyerIntentHub[] = [],
+    comparisons: ComparisonPair[] = [],
+    config: StaticSiteConfig
+  ): string {
+    const canonicalUrl = `${config.siteUrl}/best/${encodeURIComponent(hub.intentSlug)}`;
+    const deals = hub.deals || [];
+
+    const itemListSchema = {
+      '@context': 'https://schema.org',
+      '@type': 'ItemList',
+      name: hub.title,
+      description: hub.description,
+      url: canonicalUrl,
+      numberOfItems: deals.length,
+      itemListElement: deals.map((d: any, idx: number) => ({
+        '@type': 'ListItem',
+        position: idx + 1,
+        item: {
+          '@type': 'Product',
+          name: d.title,
+          brand: { '@type': 'Brand', name: d.brand || d.merchant || 'Brand' },
+          offers: {
+            '@type': 'Offer',
+            url: `${config.siteUrl}/deals/${encodeURIComponent(d.slug || d.canonicalSlug || d.id)}`,
+            priceCurrency: 'INR',
+            price: Number(d.currentPriceINR || 0),
+            availability: d.availability === 'OUT_OF_STOCK' ? 'https://schema.org/OutOfStock' : 'https://schema.org/InStock',
+            seller: { '@type': 'Organization', name: d.merchant || 'Merchant' }
+          }
+        }
+      }))
+    };
+
+    const faqSchema = {
+      '@context': 'https://schema.org',
+      '@type': 'FAQPage',
+      mainEntity: (hub.faqs || []).map(f => ({
+        '@type': 'Question',
+        name: f.question,
+        acceptedAnswer: {
+          '@type': 'Answer',
+          text: f.answer
+        }
+      }))
+    };
+
+    const renderPickCard = (label: string, d: any) => {
+      if (!d) return '';
+      const slug = d.slug || d.canonicalSlug || d.id;
+      const rail1 = `${config.siteUrl}/api/v1/public/deals/${encodeURIComponent(d.id)}/redirect?utm_source=best_hub_pick`;
+      const rail2 = `${config.siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(d.title || '').slice(0, 120))}&dealId=${encodeURIComponent(d.id)}`;
+      return `
+      <div style="background:#111827;border:1px solid #1e293b;border-radius:10px;padding:1rem;display:flex;flex-direction:column;justify-content:space-between;gap:0.6rem;">
+        <div>
+          <div style="font-size:0.74rem;font-weight:700;color:#38bdf8;text-transform:uppercase;letter-spacing:0.04em;margin-bottom:0.35rem;">${this.escapeHtml(label)}</div>
+          <a href="/deals/${this.escapeHtml(encodeURIComponent(slug))}" style="color:#fff;font-weight:700;font-size:0.95rem;text-decoration:none;display:block;margin-bottom:0.35rem;">${this.escapeHtml(d.title)}</a>
+          <div style="font-size:0.78rem;color:#94a3b8;margin-bottom:0.35rem;">${this.escapeHtml(d.merchant)} &bull; ${this.escapeHtml(d.category || hub.categoryLabel)}</div>
+          <div style="font-size:1.25rem;font-weight:800;color:#34d399;font-variant-numeric:tabular-nums;">₹${Number(d.currentPriceINR || 0).toLocaleString('en-IN')}</div>
+          ${Number(d.referencePriceINR || 0) > Number(d.currentPriceINR || 0) ? `<div style="font-size:0.75rem;color:#94a3b8;font-variant-numeric:tabular-nums;">Merchant Listed MRP: <span style="text-decoration:line-through;">₹${Number(d.referencePriceINR).toLocaleString('en-IN')}</span></div>` : ''}
+        </div>
+        <div style="display:flex;flex-direction:column;gap:0.4rem;">
+          <a href="${this.escapeHtml(rail1)}" target="_blank" rel="sponsored nofollow noopener" style="text-align:center;background:#06b6d4;color:#020617;font-weight:700;padding:0.48rem 0.75rem;border-radius:6px;text-decoration:none;font-size:0.8rem;">Buy at Official Store (#Ad) &rarr;</a>
+          <a href="${this.escapeHtml(rail2)}" target="_blank" rel="sponsored nofollow noopener" style="text-align:center;background:rgba(245,158,11,0.14);border:1px solid rgba(245,158,11,0.38);color:#fcd34d;font-weight:600;padding:0.4rem 0.65rem;border-radius:6px;text-decoration:none;font-size:0.75rem;">Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)</a>
+        </div>
+      </div>`;
+    };
+
+    const rowsHtml = deals.map((d: any, idx: number) => {
+      const slug = d.slug || d.canonicalSlug || d.id;
+      const observedAt = d.lastVerifiedAt || d.lastCheckedAt || d.updatedAt || '';
+      const rail1 = `${config.siteUrl}/api/v1/public/deals/${encodeURIComponent(d.id)}/redirect?utm_source=best_hub_table`;
+      const rail2 = `${config.siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(d.title || '').slice(0, 120))}&dealId=${encodeURIComponent(d.id)}`;
+      const hasMrp = Number(d.referencePriceINR || 0) > Number(d.currentPriceINR || 0);
+      return `
+      <tr>
+        <td style="font-weight:700;color:#94a3b8;font-variant-numeric:tabular-nums;">#${idx + 1}</td>
+        <td>
+          <a href="/deals/${this.escapeHtml(encodeURIComponent(slug))}" style="color:#fff;font-weight:700;text-decoration:none;display:block;">${this.escapeHtml(d.title)}</a>
+          <div style="font-size:0.78rem;color:#94a3b8;margin-top:0.2rem;">Merchant: <strong>${this.escapeHtml(d.merchant)}</strong>${d.couponCode ? ` &bull; Code: <code>${this.escapeHtml(d.couponCode)}</code>` : ''}</div>
+          ${observedAt ? `<div style="font-size:0.74rem;color:#64748b;margin-top:0.15rem;">Observed At: <code>${this.escapeHtml(observedAt)}</code></div>` : ''}
+        </td>
+        <td style="font-variant-numeric:tabular-nums;">
+          <div style="font-size:1.05rem;font-weight:800;color:#34d399;">₹${Number(d.currentPriceINR || 0).toLocaleString('en-IN')}</div>
+          ${hasMrp ? `<div style="font-size:0.75rem;color:#94a3b8;">Merchant Listed MRP: <span style="text-decoration:line-through;">₹${Number(d.referencePriceINR).toLocaleString('en-IN')}</span></div>` : ''}
+        </td>
+        <td>
+          <div style="display:flex;flex-direction:column;gap:0.4rem;min-width:210px;">
+            <a href="${this.escapeHtml(rail1)}" target="_blank" rel="sponsored nofollow noopener" style="text-align:center;background:#06b6d4;color:#020617;font-weight:700;padding:0.45rem 0.7rem;border-radius:6px;text-decoration:none;font-size:0.8rem;">Official Brand Store (#Ad) &rarr;</a>
+            <a href="${this.escapeHtml(rail2)}" target="_blank" rel="sponsored nofollow noopener" style="text-align:center;background:rgba(245,158,11,0.14);border:1px solid rgba(245,158,11,0.38);color:#fcd34d;font-weight:600;padding:0.38rem 0.6rem;border-radius:6px;text-decoration:none;font-size:0.75rem;">Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)</a>
+          </div>
+        </td>
+      </tr>`;
+    }).join('');
+
+    const otherHubs = (allHubs || []).filter(h => h.intentSlug !== hub.intentSlug).slice(0, 5);
+    const relatedComparisons = (comparisons || []).slice(0, 6);
+
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  ${this.getGoogleSiteVerificationMeta(config)}${this.getCuelinksVerificationMeta(config)}<title>${this.escapeHtml(hub.title)} | ${this.escapeHtml(config.siteName)}</title>
+  <meta name="description" content="${this.escapeHtml(hub.description)}">
+  <link rel="canonical" href="${this.escapeHtml(canonicalUrl)}">
+  <meta name="robots" content="index, follow">
+  <meta property="og:title" content="${this.escapeHtml(hub.title)}">
+  <meta property="og:description" content="${this.escapeHtml(hub.description)}">
+  <meta property="og:url" content="${this.escapeHtml(canonicalUrl)}">
+  <meta property="og:type" content="article">
+  <script type="application/ld+json">
+${this.serializeSafeJsonLd(itemListSchema, true)}
+  </script>
+  <script type="application/ld+json">
+${this.serializeSafeJsonLd(faqSchema, true)}
+  </script>
+  <style>
+    :root { color-scheme: dark; --bg: #090d16; --card: #111827; --text: #e2e8f0; --accent: #06b6d4; --border: #1e293b; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); margin: 0; line-height: 1.6; }
+    header { border-bottom: 1px solid var(--border); padding: 1.15rem 2rem; display: flex; justify-content: space-between; align-items: center; max-width: 1080px; margin: 0 auto; }
+    header a.brand { font-weight: 700; color: #fff; text-decoration: none; font-size: 1.1rem; }
+    header nav a { color: #94a3b8; text-decoration: none; font-size: 0.9rem; margin-left: 1.25rem; }
+    main { max-width: 1080px; margin: 2rem auto; padding: 0 1.5rem; }
+    h1 { text-wrap: balance; font-size: 1.9rem; color: #fff; margin: 0 0 0.6rem 0; }
+    table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+    th, td { padding: 0.85rem 1rem; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+    th { background: #0f172a; color: #94a3b8; font-size: 0.82rem; }
+    footer { border-top: 1px solid var(--border); padding: 2.5rem 1.5rem; margin-top: 3rem; text-align: center; font-size: 0.85rem; color: #64748b; }
+    footer a { color: #94a3b8; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <header>
+    <a href="/" class="brand">${this.escapeHtml(config.siteName)}</a>
+    <nav>
+      <a href="/deals">Verified Deals</a>
+      <a href="/public/disclosure">Disclosure</a>
+    </nav>
+  </header>
+  <main>
+    <div style="font-size:0.84rem;color:#94a3b8;margin-bottom:0.75rem;">
+      <a href="/" style="color:#38bdf8;text-decoration:none;">Home</a> &rsaquo; <a href="/deals" style="color:#38bdf8;text-decoration:none;">Verified Deals</a> &rsaquo; <span>${this.escapeHtml(hub.categoryLabel)}</span>
+    </div>
+    <div style="font-size:0.78rem;font-weight:700;color:#38bdf8;margin-bottom:0.4rem;">#Ad &bull; VERIFIED FAIR-PRICE BUYER GUIDE &bull; ${this.escapeHtml(hub.priceCapLabel)}</div>
+    <h1>${this.escapeHtml(hub.h1)}</h1>
+    <p style="color:#94a3b8;font-size:0.95rem;margin-bottom:1.5rem;">${this.escapeHtml(hub.description)}</p>
+
+    <section style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1rem;margin-bottom:2rem;">
+      ${renderPickCard('Best Overall Value', hub.picks.bestOverallValue)}
+      ${renderPickCard('Lowest Observed Price', hub.picks.lowestObservedPrice)}
+      ${renderPickCard('Premium Pick', hub.picks.premiumPick)}
+    </section>
+
+    <section style="margin-bottom:2rem;">
+      <h2 style="font-size:1.2rem;color:#fff;margin:0 0 0.75rem 0;">Ranked Winner Table (${deals.length} Verified Snapshots)</h2>
+      <div style="overflow-x:auto;">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:60px;">Rank</th>
+              <th>Product, Merchant &amp; Observation Time</th>
+              <th style="width:180px;">Observed Price</th>
+              <th style="width:250px;">Dual-Rail Checkout (#Ad)</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rowsHtml}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section style="background:#111827;border:1px solid #1e293b;border-radius:12px;padding:1.25rem;margin-bottom:2rem;">
+      <h2 style="font-size:1.08rem;color:#fff;margin:0 0 0.4rem 0;">Set a Fair-Price Alert or Check Another URL</h2>
+      <p style="font-size:0.84rem;color:#94a3b8;margin:0 0 0.85rem 0;">Paste any product URL or keyword to benchmark its fair price and subscribe to instant price-drop alerts.</p>
+      <form onsubmit="handleBestHubFairPrice(event)" style="display:flex;gap:0.6rem;flex-wrap:wrap;align-items:center;">
+        <input type="text" id="best-fp-query" value="${this.escapeHtml(hub.categoryLabel)}" required placeholder="Product URL or search keyword" style="flex:1 1 220px;padding:0.6rem 0.8rem;border-radius:8px;border:1px solid #334155;background:#090d16;color:#fff;font-size:0.86rem;">
+        <input type="number" id="best-fp-target" min="1" placeholder="Target ₹ (optional)" style="width:140px;padding:0.6rem 0.8rem;border-radius:8px;border:1px solid #334155;background:#090d16;color:#fff;font-size:0.86rem;">
+        <input type="email" id="best-fp-email" placeholder="Email for drop alert" style="flex:1 1 200px;padding:0.6rem 0.8rem;border-radius:8px;border:1px solid #334155;background:#090d16;color:#fff;font-size:0.86rem;">
+        <label style="font-size:0.78rem;color:#cbd5e1;display:flex;align-items:center;gap:0.35rem;cursor:pointer;"><input type="checkbox" id="best-fp-consent"> Opt-in email alert</label>
+        <button type="submit" id="best-fp-btn" style="background:#06b6d4;color:#020617;border:none;border-radius:8px;padding:0.6rem 1.05rem;font-weight:700;font-size:0.86rem;cursor:pointer;">Check &amp; Track</button>
+      </form>
+      <div id="best-fp-out" style="display:none;margin-top:0.85rem;font-size:0.84rem;"></div>
+    </section>
+
+    ${relatedComparisons.length > 0 ? `
+    <section style="margin-bottom:2rem;">
+      <h2 style="font-size:1.1rem;color:#fff;margin:0 0 0.65rem 0;">Head-to-Head Comparisons (/vs/)</h2>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:0.75rem;">
+        ${relatedComparisons.map(op => `<a href="/vs/${this.escapeHtml(encodeURIComponent(op.comparisonSlug))}" style="background:#111827;border:1px solid #1e293b;border-radius:8px;padding:0.75rem;color:#38bdf8;text-decoration:none;font-size:0.84rem;font-weight:600;">${this.escapeHtml(op.title)}</a>`).join('')}
+      </div>
+    </section>` : ''}
+
+    <section style="background:#111827;border:1px solid #1e293b;border-radius:12px;padding:1.25rem;margin-bottom:2rem;">
+      <h2 style="font-size:1.1rem;color:#fff;margin:0 0 0.75rem 0;">Frequently Asked Questions</h2>
+      ${(hub.faqs || []).map(f => `
+        <div style="margin-bottom:0.85rem;">
+          <div style="font-weight:700;color:#e2e8f0;font-size:0.92rem;">${this.escapeHtml(f.question)}</div>
+          <div style="color:#94a3b8;font-size:0.86rem;margin-top:0.2rem;">${this.escapeHtml(f.answer)}</div>
+        </div>
+      `).join('')}
+    </section>
+
+    ${otherHubs.length > 0 ? `
+    <section style="margin-bottom:2rem;">
+      <h2 style="font-size:1.1rem;color:#fff;margin:0 0 0.65rem 0;">More Fair-Price Buyer Guides</h2>
+      <div style="display:flex;gap:0.65rem;flex-wrap:wrap;">
+        ${otherHubs.map(oh => `<a href="/best/${this.escapeHtml(encodeURIComponent(oh.intentSlug))}" style="background:#111827;border:1px solid #1e293b;border-radius:8px;padding:0.6rem 0.9rem;color:#34d399;text-decoration:none;font-size:0.82rem;font-weight:600;">${this.escapeHtml(oh.h1)} &rarr;</a>`).join('')}
+      </div>
+    </section>` : ''}
+
+    <div style="background:rgba(14,165,233,0.08);border:1px solid rgba(14,165,233,0.25);border-radius:10px;padding:1rem;font-size:0.82rem;color:#94a3b8;">
+      <strong style="color:#e2e8f0;">#Ad Statutory Affiliate Disclosure:</strong> Displayed store prices reflect merchant snapshots verified at the listed <em>Observed At</em> timestamp. Amazon.in links redirect to live Amazon.in listings without displaying scraped Amazon prices. Qualifying purchases may earn an affiliate commission at zero extra cost to you.
+    </div>
+  </main>
+  <footer>
+    <p><a href="/deals">All Verified Deals</a> &bull; <a href="/sitemap.xml">Sitemap</a> &bull; <a href="/public/disclosure">Affiliate Disclosure</a></p>
+  </footer>
+  <script>
+    async function handleBestHubFairPrice(e) {
+      e.preventDefault();
+      var q = document.getElementById('best-fp-query').value.trim();
+      var t = document.getElementById('best-fp-target').value.trim();
+      var em = document.getElementById('best-fp-email').value.trim();
+      var cs = document.getElementById('best-fp-consent').checked;
+      var out = document.getElementById('best-fp-out');
+      var btn = document.getElementById('best-fp-btn');
+      btn.disabled = true;
+      btn.innerText = 'Checking...';
+      out.style.display = 'block';
+      out.textContent = 'Analyzing fair price and active coupons...';
+      try {
+        var payload = { queryOrUrl: q };
+        if (t) payload.targetFairPriceINR = Number(t);
+        if (em) payload.alertEmail = em;
+        if (cs) payload.consentGiven = true;
+        var res = await fetch('/api/v1/public/fair-price-check', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        var json = await res.json();
+        if (!res.ok || !json.success) throw new Error(json.message || json.error || 'Check failed');
+        out.style.color = '#34d399';
+        out.textContent = json.data.verdictSummary + (json.data.alertRegistered ? ' (Price-drop alert active!)' : '');
+      } catch (err) {
+        out.style.color = '#f87171';
+        out.textContent = 'Error: ' + (err.message || 'Check failed');
+      } finally {
+        btn.disabled = false;
+        btn.innerText = 'Check & Track';
+      }
+    }
+  </script>
+  ${renderCustomerDeskWidgetHtml(hub.intentSlug)}
 </body>
 </html>`;
   }
@@ -1390,12 +2312,12 @@ ${this.serializeSafeJsonLd(productSchema, true)}
     const dealsCardsHtml = crossPromoDeals.slice(0, 3).map(d => `
       <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:16px;flex:1;min-width:240px;box-sizing:border-box;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-          <span style="font-size:11px;background:#e2e8f0;color:#334155;padding:2px 6px;border-radius:4px;font-weight:bold;">${this.escapeHtml(d.category || 'Tech')}</span>
-          <span style="font-size:11px;background:#fef3c7;color:#92400e;padding:2px 6px;border-radius:4px;font-weight:bold;">#Ad</span>
+          <span style="font-size:11px;background:#e2e8f0;color:#334155;padding:2px 6px;border-radius:4px;font-weight:bold;">${this.escapeHtml(d.category || 'B2B Partner')}</span>
+          <span style="font-size:11px;background:#fef3c7;color:#92400e;padding:2px 6px;border-radius:4px;font-weight:bold;">#Ad &bull; Tier 3 Partner</span>
         </div>
         <h4 style="margin:0 0 8px 0;font-size:14px;color:#0f172a;line-height:1.4;">${this.escapeHtml(d.title)}</h4>
         <div style="font-size:18px;font-weight:bold;color:#1e293b;margin-bottom:12px;">₹${(d.currentPriceINR || 0).toLocaleString('en-IN')} ${d.discountBadge ? `<span style="font-size:12px;color:#16a34a;">(${this.escapeHtml(d.discountBadge)})</span>` : ''}</div>
-        <a href="${config.siteUrl}/api/v1/public/deals/${d.id}/redirect" target="_blank" rel="sponsored nofollow noopener" style="display:block;text-align:center;background:#0284c7;color:#fff;padding:8px 12px;border-radius:6px;text-decoration:none;font-size:13px;font-weight:bold;">View Deal on ${this.escapeHtml(d.merchant)} &rarr;</a>
+        <a href="${config.siteUrl}/api/v1/public/deals/${d.id}/redirect" target="_blank" rel="sponsored nofollow noopener" style="display:block;text-align:center;background:#0284c7;color:#fff;padding:8px 12px;border-radius:6px;text-decoration:none;font-size:13px;font-weight:bold;">View Offer on ${this.escapeHtml(d.merchant)} &rarr;</a>
       </div>
     `).join('');
 
@@ -1553,13 +2475,17 @@ ${this.serializeSafeJsonLd(schemaObj, true)}
         <a href="${selfServeToolUrl}" class="btn-primary">Open Self-Serve Checkout for ${domain}</a>
         <a href="/offer#sandbox" class="btn-secondary">₹1 Live Sandbox Validation</a>
       </div>
+      <div style="margin-top:16px;padding:14px;background:rgba(15,23,42,0.55);border:1px solid rgba(148,163,184,0.3);border-radius:8px;max-width:650px;margin-left:auto;margin-right:auto;text-align:left;">
+        <div style="font-size:13px;font-weight:bold;color:#bfdbfe;">Tier 2 Optional Order Bump: Competitor SEO Gap &amp; 30-Day Search Console Action Pack (₹1,999)</div>
+        <div style="font-size:12px;color:#cbd5e1;margin-top:4px;">Available on self-serve checkout (SKU: <code>sitefix_competitor_keyword_pack</code>).</div>
+      </div>
       <div style="font-size:11px;color:#94a3b8;margin-top:12px;">Secured via Razorpay &bull; Instant Self-Serve Delivery &bull; Zero Recurring Fees</div>
     </div>
 
     ${crossPromoDeals.length > 0 ? `
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-        <h3 style="margin:0;font-size:18px;color:#0f172a;">Verified Business & Tech Deals (#Ad)</h3>
+        <h3 style="margin:0;font-size:18px;color:#0f172a;">Tier 3 Partner Cross-Sell: Verified Business &amp; Hosting Tools (#Ad)</h3>
         <a href="/deals" style="font-size:13px;color:#0284c7;text-decoration:none;font-weight:bold;">View All Deals &rarr;</a>
       </div>
       <div style="display:flex;gap:16px;flex-wrap:wrap;">
@@ -1698,6 +2624,202 @@ ${this.serializeSafeJsonLd(schemaObj, true)}
       <p><a href="/" style="color:#64748b;">Home</a> &bull; <a href="/deals" style="color:#64748b;">All Deals</a> &bull; <a href="/offer" style="color:#64748b;">Offer</a> &bull; <a href="/public/disclosure" style="color:#64748b;">Disclosure</a></p>
     </div>
   </div>
+</body>
+</html>`;
+  }
+
+  /**
+   * Renders mobile-first /ig and /bestdeals Instagram Bio Link Storefront for @bestdeals0162.
+   */
+  public renderInstagramBioStorefrontHtml(
+    config: StaticSiteConfig,
+    deals: any[],
+    options?: { handle?: string }
+  ): string {
+    const cleanHandle = String(options?.handle || process.env.INSTAGRAM_HANDLE || 'bestdeals0162').trim().replace(/^@+/, '') || 'bestdeals0162';
+    const siteUrl = String(config.siteUrl || '').replace(/\/$/, '');
+    const eligibleDeals = (deals || [])
+      .filter((d: any) =>
+        d &&
+        d.affiliateNetwork !== 'AMAZON_IN' &&
+        !/^https?:\/\/(www\.)?amazon\.(in|com)(\/|$)/i.test(String(d.productUrl || '')) &&
+        d.socialMediaPublishersAllowed !== false &&
+        d.evidence?.socialMediaPublishersAllowed !== false &&
+        d.evidenceJson?.socialMediaPublishersAllowed !== false &&
+        Number(d.currentPriceINR || 0) > 0 &&
+        d.evolutionStatus !== 'STALE_ROTATED_OUT' &&
+        d.catalogSlot !== 'ROTATED_OUT_STALE'
+      )
+      .slice(0, 10);
+
+    const comparisons = generateComparisonPairs(eligibleDeals, 4);
+
+    const dealCardsHtml = eligibleDeals.length > 0
+      ? eligibleDeals.map((d: any) => {
+          const price = Math.round(Number(d.currentPriceINR || 0));
+          const mrp = Math.round(Number(d.referencePriceINR || 0));
+          const discount = mrp > price && price > 0
+            ? Math.round(((mrp - price) / mrp) * 100)
+            : Number(d.verifiedDiscountPercent || 0);
+          const storeUrl = `${siteUrl}/api/v1/public/deals/${encodeURIComponent(d.id)}/redirect?utm_source=ig_bio`;
+          const amazonUrl = `${siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(d.title || ''))}&utm_source=ig_bio`;
+          const safeTitle = this.escapeHtml(String(d.title || 'Verified Deal'));
+          const safeMerchant = this.escapeHtml(String(d.merchant || 'Official Store'));
+          const safeCat = this.escapeHtml(String(d.category || 'India Deals'));
+
+          return `<article class="deal-card">
+            <div class="deal-meta">
+              <span>${safeMerchant}</span>
+              <span>&bull;</span>
+              <span>${safeCat}</span>
+              ${discount > 0 ? `<span class="discount-tag">${discount}% OFF</span>` : ''}
+            </div>
+            <h2 class="deal-title">${safeTitle}</h2>
+            <div class="deal-price-row">
+              <span class="price-now">&#8377;${price.toLocaleString('en-IN')}</span>
+              ${mrp > price ? `<span class="price-mrp">MRP &#8377;${mrp.toLocaleString('en-IN')}</span>` : ''}
+            </div>
+            <div class="cta-row">
+              <a href="${this.escapeHtml(storeUrl)}" target="_blank" rel="sponsored nofollow noopener" class="cta-primary">Official Store Offer &rarr;</a>
+              <a href="${this.escapeHtml(amazonUrl)}" target="_blank" rel="sponsored nofollow noopener" class="cta-secondary">Check Live on Amazon.in</a>
+            </div>
+          </article>`;
+        }).join('\n')
+      : `<div class="empty-card">
+          <p>Fresh verified drops are syncing. Use the Fair-Price Checker above to get an instant tracked store + Amazon.in check link for any product.</p>
+          <a href="/deals" class="cta-primary" style="display:inline-block;margin-top:8px;">Browse All Deals</a>
+        </div>`;
+
+    const vsLinksHtml = comparisons.length > 0
+      ? comparisons.map(p => `<a href="/vs/${this.escapeHtml(p.comparisonSlug)}" class="quick-link">${this.escapeHtml(p.title)}</a>`).join('')
+      : '';
+
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>@${this.escapeHtml(cleanHandle)} &mdash; Verified Daily Fair-Price Drops India | #Ad</title>
+  <meta name="description" content="Official link hub for @${this.escapeHtml(cleanHandle)}. Check the fair price of any product in India, compare live Amazon.in vs official store offers, and grab verified daily drops.">
+  <link rel="canonical" href="${this.escapeHtml(siteUrl)}/ig">
+  ${this.getGoogleSiteVerificationMeta(config)}${this.getCuelinksVerificationMeta(config)}
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #090d16; color: #e2e8f0; line-height: 1.5; }
+    .shell { max-width: 540px; margin: 0 auto; padding: 20px 16px 40px; }
+    .profile { text-align: center; padding-bottom: 16px; border-bottom: 1px solid #1e293b; }
+    .handle { font-size: 20px; font-weight: 800; color: #ffffff; letter-spacing: -0.02em; margin: 0; }
+    .sub { font-size: 13px; color: #94a3b8; margin: 6px 0 0; }
+    .ad-banner { margin: 16px 0; padding: 10px 12px; border-radius: 10px; background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.35); color: #fde68a; font-size: 12px; }
+    .checker-box { background: #111827; border: 1px solid #1e293b; border-radius: 12px; padding: 14px; margin-bottom: 18px; }
+    .checker-title { font-size: 14px; font-weight: 700; color: #fff; margin: 0 0 8px; }
+    .checker-form { display: flex; gap: 8px; }
+    .checker-input { flex: 1; min-width: 0; padding: 10px 12px; border-radius: 8px; border: 1px solid #334155; background: #090d16; color: #fff; font-size: 14px; }
+    .checker-btn { padding: 10px 14px; border-radius: 8px; border: 0; background: #10b981; color: #052e16; font-weight: 800; font-size: 13px; cursor: pointer; white-space: nowrap; }
+    #fp-result { margin-top: 10px; font-size: 13px; color: #cbd5e1; display: none; padding-top: 10px; border-top: 1px solid #1e293b; }
+    .section-heading { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #94a3b8; margin: 18px 0 10px; }
+    .deal-card { background: #111827; border: 1px solid #1e293b; border-radius: 12px; padding: 14px; margin-bottom: 12px; }
+    .deal-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 11px; color: #94a3b8; margin-bottom: 6px; }
+    .discount-tag { color: #34d399; font-weight: 700; margin-left: auto; font-variant-numeric: tabular-nums; }
+    .deal-title { font-size: 15px; font-weight: 700; color: #ffffff; margin: 0 0 8px; }
+    .deal-price-row { display: flex; align-items: baseline; gap: 8px; margin-bottom: 12px; font-variant-numeric: tabular-nums; }
+    .price-now { font-size: 19px; font-weight: 800; color: #34d399; }
+    .price-mrp { font-size: 12px; color: #64748b; text-decoration: line-through; }
+    .cta-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .cta-primary { display: block; text-align: center; background: #06b6d4; color: #083344; padding: 10px 10px; border-radius: 8px; text-decoration: none; font-weight: 800; font-size: 12px; }
+    .cta-secondary { display: block; text-align: center; background: #1e293b; color: #f8fafc; border: 1px solid #334155; padding: 10px 10px; border-radius: 8px; text-decoration: none; font-weight: 700; font-size: 12px; }
+    .quick-grid { display: grid; grid-template-columns: 1fr; gap: 8px; margin-top: 12px; }
+    .quick-link { display: block; padding: 11px 14px; border-radius: 10px; background: #111827; border: 1px solid #1e293b; color: #e2e8f0; text-decoration: none; font-size: 13px; font-weight: 600; }
+    .quick-link:hover { border-color: #06b6d4; color: #38bdf8; }
+    .empty-card { background: #111827; border: 1px solid #1e293b; border-radius: 12px; padding: 18px; text-align: center; font-size: 13px; color: #94a3b8; }
+    .footer { text-align: center; margin-top: 26px; font-size: 12px; color: #64748b; }
+    .footer a { color: #94a3b8; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="profile">
+      <h1 class="handle">@${this.escapeHtml(cleanHandle)} &bull; Verified Daily Drops</h1>
+      <p class="sub">Real-time Indian fair-price checker &amp; tracked merchant offers</p>
+    </header>
+
+    <div class="ad-banner">
+      <strong>#Ad Disclosure:</strong> Qualifying purchases made via links on this page may earn us an affiliate commission at zero extra cost to you. Always verify live checkout prices &amp; stock directly on the merchant store.
+    </div>
+
+    <section class="checker-box" aria-label="Universal Fair-Price Checker">
+      <h2 class="checker-title">Check the Fair Price for Any Product</h2>
+      <form id="fp-form" class="checker-form" action="/deals" method="GET">
+        <input id="fp-input" name="q" type="text" class="checker-input" placeholder="Paste product link or name (e.g. Sony WH-1000XM5)" required>
+        <button type="submit" class="checker-btn">Check</button>
+      </form>
+      <div id="fp-result"></div>
+    </section>
+
+    <div class="section-heading">Today&#39;s Top Verified Steals</div>
+    ${dealCardsHtml}
+
+    <div class="section-heading">Smart Buyer Shortcuts</div>
+    <nav class="quick-grid" aria-label="Buyer shortcuts">
+      <a href="/best/best-deals-under-2000-india" class="quick-link">Best Verified Deals Under &#8377;2,000 &rarr;</a>
+      <a href="/deals" class="quick-link">Explore Full Verified Deal Feed &rarr;</a>
+      ${vsLinksHtml}
+      <a href="/tools/site-audit" class="quick-link">SMB Owners: Free SiteFix SEO &amp; Conversion Audit &rarr;</a>
+      <a href="/tools/financial-radar" class="quick-link">AMFI Live Mutual Fund &amp; Commodity Radar &rarr;</a>
+    </nav>
+
+    <footer class="footer">
+      <p>&copy; ${new Date().getFullYear()} ${this.escapeHtml(config.siteName)}</p>
+      <p><a href="/public/disclosure">Affiliate Disclosure</a> &bull; <a href="/revenue">Transparency Funnel</a> &bull; <a href="/api/v1/mcp">MCP Server</a></p>
+    </footer>
+  </main>
+  <script>
+    (function () {
+      var form = document.getElementById('fp-form');
+      var input = document.getElementById('fp-input');
+      var out = document.getElementById('fp-result');
+      if (!form || !input || !out) return;
+      form.addEventListener('submit', function (e) {
+        var q = (input.value || '').trim();
+        if (q.length < 2) return;
+        e.preventDefault();
+        out.style.display = 'block';
+        out.textContent = 'Checking live Indian store fair price...';
+        fetch('/api/v1/public/fair-price-check', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ queryOrUrl: q })
+        })
+          .then(function (r) { return r.json(); })
+          .then(function (json) {
+            if (!json || !json.success || !json.data) {
+              out.textContent = (json && json.message) || 'Could not evaluate query.';
+              return;
+            }
+            var d = json.data;
+            out.innerHTML = '';
+            var p = document.createElement('div');
+            p.style.fontWeight = '700';
+            p.style.marginBottom = '8px';
+            p.textContent = d.verdictSummary || 'Fair-price check completed.';
+            out.appendChild(p);
+            if (d.amazonLiveUrl) {
+              var a = document.createElement('a');
+              a.href = d.amazonLiveUrl;
+              a.target = '_blank';
+              a.rel = 'sponsored nofollow noopener';
+              a.className = 'cta-primary';
+              a.textContent = 'Check Live on Amazon.in (#Ad) ->';
+              out.appendChild(a);
+            }
+          })
+          .catch(function () {
+            window.location.href = '/deals?q=' + encodeURIComponent(q);
+          });
+      });
+    })();
+  </script>
 </body>
 </html>`;
   }

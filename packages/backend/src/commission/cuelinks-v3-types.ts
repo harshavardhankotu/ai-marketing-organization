@@ -132,6 +132,12 @@ export interface CuelinksCampaign {
   countries?: Array<{ id: number; iso: string; name: string } | string>;
   deeplink_allowed?: boolean;
   sub_ids_allowed?: boolean;
+  social_media_publishers_allowed?: boolean;
+  cookie_duration?: number | string;
+  cookie_days?: number;
+  payout_model?: string;
+  payout_rate?: string | number;
+  payout_categories?: any[];
   terms?: string;
   tracking_url?: string;
   created_at?: string;

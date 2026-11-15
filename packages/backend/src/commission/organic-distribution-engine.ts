@@ -20,6 +20,8 @@ import { isProduction } from '../config/env.js';
 import { QualifiedCommercialOpportunity } from './commercial-opportunity-selector.js';
 import { NormalizedDeal } from './deal-types.js';
 import { COMMERCIAL_SECTORS_LIST } from '@ai-marketing/shared';
+import { AutonomousPolicyGate } from '../automation/autonomous-policy-gate.js';
+import { GoogleIndexingClient } from '../integrations/google-indexing-client.js';
 
 export interface OrganicDistributionChannel {
   channelId: 'OWNED_BUYING_GUIDE' | 'DAILY_REPLY_DESK' | 'SHARE_KIT' | 'RSS_DEAL_FEED';
@@ -238,12 +240,57 @@ export class OrganicDistributionEngine {
   }
 
   /**
+   * Stage M Task 4: Submits high-intent URLs to IndexNow strictly on Render production runtime (`RENDER === 'true'`),
+   * with explicit 5s AbortSignal timeout and fail-safe non-blocking error handling.
+   */
+  public async submitIndexNowUrls(
+    urls: string[],
+    fetchFn: typeof fetch = fetch
+  ): Promise<{ status: string; submitted: boolean; submittedCount: number }> {
+    const cleanUrls = Array.from(new Set((urls || []).filter(u => typeof u === 'string' && u.startsWith('http')))).slice(0, 100);
+    if (cleanUrls.length === 0) {
+      return { status: 'NO_URLS', submitted: false, submittedCount: 0 };
+    }
+    const rawKey = (process.env.INDEXNOW_KEY || '').trim();
+    if (!rawKey || !/^[a-zA-Z0-9-]{8,128}$/.test(rawKey)) {
+      return { status: 'AWAITING_INDEXNOW_KEY', submitted: false, submittedCount: 0 };
+    }
+    if (process.env.RENDER !== 'true') {
+      return { status: 'SKIPPED_NON_RENDER_ENV', submitted: false, submittedCount: 0 };
+    }
+
+    try {
+      const firstUrl = new URL(cleanUrls[0]);
+      const host = firstUrl.host;
+      const payload = {
+        host,
+        key: rawKey,
+        keyLocation: `https://${host}/${rawKey}.txt`,
+        urlList: cleanUrls
+      };
+      const res = await fetchFn('https://api.indexnow.org/indexnow', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(5000)
+      });
+      if (!res.ok) {
+        console.warn(`[IndexNow] Render push returned HTTP ${res.status}`);
+        return { status: `HTTP_${res.status}`, submitted: false, submittedCount: 0 };
+      }
+      return { status: 'SUBMITTED', submitted: true, submittedCount: cleanUrls.length };
+    } catch (err: any) {
+      console.warn(`[IndexNow] Render push notice: ${err?.message || 'request failed'}`);
+      return { status: 'FAILED_NON_BLOCKING', submitted: false, submittedCount: 0 };
+    }
+  }
+
+  /**
    * Transitions distribution package state to PUBLISHED with verified public destination URL and timestamp.
    * Gates execution via AutonomousPolicyGate and evaluates Google Indexing schema whitelist.
    */
   public publishDistributionPackage(pkg: OrganicDistributionPackage, liveUrl: string): OrganicDistributionPackage {
     try {
-      const { AutonomousPolicyGate } = require('../automation/autonomous-policy-gate.js');
       AutonomousPolicyGate.getInstance().evaluateAction({
         actionType: 'PUBLISH_VERIFIED_DEAL',
         entityId: pkg.opportunityId
@@ -251,7 +298,6 @@ export class OrganicDistributionEngine {
     } catch {}
 
     try {
-      const { GoogleIndexingClient } = require('../integrations/google-indexing-client.js');
       GoogleIndexingClient.getInstance().publishUrl(liveUrl, 'URL_UPDATED', {
         hasJobPosting: false,
         hasBroadcastEvent: false
@@ -422,8 +468,21 @@ export class OrganicDistributionEngine {
       pingUrls.push(`${cleanBase}/guides/${guideSlug}`);
     }
 
+    try {
+      const { generateBuyerIntentHubs, generateComparisonPairs } = await import('./static-site-generator.js');
+      const hubs = generateBuyerIntentHubs(eligibleDeals, cleanBase, 10);
+      for (const h of hubs) {
+        pingUrls.push(`${cleanBase}/best/${encodeURIComponent(h.intentSlug)}`);
+      }
+      const pairs = generateComparisonPairs(eligibleDeals, 15);
+      for (const p of pairs) {
+        pingUrls.push(`${cleanBase}/vs/${encodeURIComponent(p.comparisonSlug)}`);
+      }
+    } catch {}
+
     const dedupedPingUrls = Array.from(new Set(pingUrls));
     this.pingIndexNow(dedupedPingUrls).catch(() => {});
+    this.submitIndexNowUrls(dedupedPingUrls).catch(() => {});
     return { guidesPublished, slugs, pingedUrls: dedupedPingUrls };
   }
 }

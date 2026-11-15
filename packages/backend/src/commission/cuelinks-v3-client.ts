@@ -471,6 +471,7 @@ export class CuelinksV3Client {
     page?: number;
     per_page?: number;
   }): Promise<{ campaigns: CuelinksCampaign[]; total: number; total_pages?: number; page?: number; next_page?: number | null }> {
+    const perPage = Math.min(100, Math.max(1, options?.per_page || 100));
     const res = await this.request<any>('/campaigns', {
       query: {
         q: options?.q,
@@ -480,7 +481,7 @@ export class CuelinksV3Client {
         sort: options?.sort || 'epc_7d',
         order: options?.order || 'desc',
         page: options?.page || 1,
-        per_page: options?.per_page || 30
+        per_page: perPage
       }
     });
 
@@ -489,7 +490,7 @@ export class CuelinksV3Client {
       : (Array.isArray(res?.campaigns) ? res.campaigns : (Array.isArray(res) ? res : []));
     const meta = res?.meta || res?.pagination || {};
     const total = meta.total ?? rawList.length;
-    const total_pages = meta.total_pages ?? Math.ceil(total / (options?.per_page || 30));
+    const total_pages = meta.total_pages ?? Math.max(1, Math.ceil(total / perPage));
 
     return {
       campaigns: rawList,
@@ -497,6 +498,44 @@ export class CuelinksV3Client {
       total_pages,
       page: meta.page ?? (options?.page || 1),
       next_page: meta.next_page ?? null
+    };
+  }
+
+  /**
+   * Retrieve highest 7-day EPC approved/open campaigns from /pub_api/v3/campaigns.json
+   * Scope: read:campaigns
+   */
+  public async getHighEpcCampaigns(options?: {
+    access_status?: 'approved' | 'open' | string;
+    country_id?: number | string;
+    page?: number;
+    per_page?: number;
+  }): Promise<{ campaigns: CuelinksCampaign[]; total: number; total_pages?: number; page?: number }> {
+    const perPage = Math.min(100, Math.max(1, options?.per_page || 100));
+    const page = options?.page || 1;
+    const res = await this.request<any>('/campaigns.json', {
+      query: {
+        access_status: options?.access_status || 'approved',
+        country_id: options?.country_id,
+        sort: 'epc_7d',
+        order: 'desc',
+        page,
+        per_page: perPage
+      }
+    });
+
+    const rawList: CuelinksCampaign[] = Array.isArray(res?.campaigns)
+      ? res.campaigns
+      : (Array.isArray(res?.data) ? res.data : (Array.isArray(res) ? res : []));
+    const meta = res?.meta || res?.pagination || {};
+    const total = meta.total ?? rawList.length;
+    const total_pages = meta.total_pages ?? Math.max(1, Math.ceil(total / perPage));
+
+    return {
+      campaigns: rawList,
+      total,
+      total_pages,
+      page: meta.page ?? page
     };
   }
 
@@ -533,13 +572,14 @@ export class CuelinksV3Client {
     page?: number;
     per_page?: number;
   }): Promise<{ offers: CuelinksOffer[]; total: number; total_pages?: number; page?: number; next_page?: number | null }> {
+    const perPage = Math.min(100, Math.max(1, options?.per_page || 100));
     const res = await this.request<any>('/offers', {
       query: {
         campaign_id: options?.campaign_id,
         category_id: options?.category_id,
         q: options?.q,
         page: options?.page || 1,
-        per_page: options?.per_page || 30
+        per_page: perPage
       }
     });
 
@@ -548,7 +588,7 @@ export class CuelinksV3Client {
       : (Array.isArray(res?.offers) ? res.offers : (Array.isArray(res) ? res : []));
     const meta = res?.meta || res?.pagination || {};
     const total = meta.total ?? rawOffers.length;
-    const total_pages = meta.total_pages ?? Math.ceil(total / (options?.per_page || 30));
+    const total_pages = meta.total_pages ?? Math.max(1, Math.ceil(total / perPage));
 
     return {
       offers: rawOffers,
@@ -556,6 +596,73 @@ export class CuelinksV3Client {
       total_pages,
       page: meta.page ?? (options?.page || 1),
       next_page: meta.next_page ?? null
+    };
+  }
+
+  /**
+   * Retrieve active, non-expired live daily offers from /pub_api/v3/offers.json
+   * scoped to the publisher channel (defaults to CUELINKS_CHANNEL_ID or '331585').
+   * Scope: read:offers
+   */
+  public async getLiveOffers(options?: {
+    channel_id?: number | string;
+    campaign_id?: number | string;
+    category_id?: number | string;
+    q?: string;
+    page?: number;
+    per_page?: number;
+    includeExpired?: boolean;
+  }): Promise<{ offers: CuelinksOffer[]; total: number; total_pages?: number; page?: number; next_page?: number | null; channelId: string }> {
+    const channelId = String(options?.channel_id ?? (process.env.CUELINKS_CHANNEL_ID || '331585')).trim() || '331585';
+    const perPage = Math.min(100, Math.max(1, options?.per_page || 100));
+    const page = options?.page || 1;
+    const res = await this.request<any>('/offers.json', {
+      query: {
+        channel_id: channelId,
+        status: 'live',
+        sort_column: 'id',
+        sort_direction: 'desc',
+        campaign_id: options?.campaign_id,
+        category_id: options?.category_id,
+        q: options?.q,
+        page,
+        per_page: perPage
+      }
+    });
+
+    const rawOffers: CuelinksOffer[] = Array.isArray(res?.offers)
+      ? res.offers
+      : (Array.isArray(res?.data) ? res.data : (Array.isArray(res) ? res : []));
+
+    const nowMs = Date.now();
+    const activeOffers = options?.includeExpired
+      ? rawOffers
+      : rawOffers.filter((offer: CuelinksOffer) => {
+          if (!offer) return false;
+          const status = String(offer.status || 'active').toLowerCase().trim();
+          if (['expired', 'inactive', 'paused', 'closed', 'rejected', 'deleted'].includes(status)) {
+            return false;
+          }
+          if (offer.end_date) {
+            const expMs = Date.parse(String(offer.end_date));
+            if (Number.isFinite(expMs) && expMs <= nowMs) {
+              return false;
+            }
+          }
+          return true;
+        });
+
+    const meta = res?.meta || res?.pagination || {};
+    const total = meta.total ?? activeOffers.length;
+    const total_pages = meta.total_pages ?? Math.max(1, Math.ceil(total / perPage));
+
+    return {
+      offers: activeOffers,
+      total,
+      total_pages,
+      page: meta.page ?? page,
+      next_page: meta.next_page ?? null,
+      channelId
     };
   }
 
@@ -779,7 +886,7 @@ export class CuelinksV3Client {
         campaign_id: options?.campaign_id,
         status: options?.status,
         page: options?.page || 1,
-        per_page: options?.per_page || 50
+        per_page: Math.min(100, Math.max(1, options?.per_page || 100))
       }
     });
 
@@ -814,7 +921,7 @@ export class CuelinksV3Client {
           campaign_id: options?.campaign_id,
           slice_by: options?.slice_by,
           page: options?.page || 1,
-          per_page: options?.per_page || 30
+          per_page: Math.min(100, Math.max(1, options?.per_page || 100))
         }
       });
 
@@ -843,7 +950,7 @@ export class CuelinksV3Client {
             start_date: options?.start_date,
             end_date: options?.end_date,
             page: options?.page || 1,
-            per_page: options?.per_page || 30
+            per_page: Math.min(100, Math.max(1, options?.per_page || 100))
           }
         });
         return {
@@ -852,6 +959,39 @@ export class CuelinksV3Client {
         };
       }
       throw err;
+    }
+  }
+
+  /**
+   * Retrieve unmonetized outbound click opportunities from /pub_api/v3/reports/unmonetized
+   * Gracefully returns an empty list if unsupported or empty.
+   */
+  public async getUnmonetizedTrafficReport(options?: {
+    start_date?: string;
+    end_date?: string;
+    channel_id?: number | string;
+    page?: number;
+    per_page?: number;
+  }): Promise<{ items: Array<Record<string, any>>; total: number }> {
+    try {
+      const res = await this.request<any>('/reports/unmonetized', {
+        query: {
+          start_date: options?.start_date,
+          end_date: options?.end_date,
+          channel_id: options?.channel_id,
+          page: options?.page || 1,
+          per_page: Math.min(100, Math.max(1, options?.per_page || 100))
+        }
+      });
+      const items = Array.isArray(res?.data)
+        ? res.data
+        : (Array.isArray(res?.items) ? res.items : (Array.isArray(res?.urls) ? res.urls : []));
+      return {
+        items,
+        total: Number(res?.meta?.total ?? items.length)
+      };
+    } catch {
+      return { items: [], total: 0 };
     }
   }
 

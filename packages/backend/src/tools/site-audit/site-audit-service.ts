@@ -276,7 +276,11 @@ export class SiteAuditService {
         : null;
       const seoScore = audit.pageSpeed?.seoScore ?? Math.round(audit.scorecard?.totalScore ?? audit.score ?? 0);
       const cwvJson = JSON.stringify(audit.pageSpeed?.coreWebVitals || {});
-      const checklistJson = JSON.stringify(audit.scorecard?.items ?? audit.findings ?? []);
+      const rawItems = audit.scorecard?.items ?? audit.findings ?? [];
+      const checklistPayload = audit.prospectSignals
+        ? { items: rawItems, prospect_signals: audit.prospectSignals }
+        : rawItems;
+      const checklistJson = JSON.stringify(checklistPayload);
       const bName = audit.businessName || domain;
       const htmlScanStatus = ((audit as any).status === 'FAILED') ? 'FAILED' : 'COMPLETED';
       const pageSpeedStatus = audit.pageSpeed?.status === 'SUCCESS' ? 'COMPLETED' : 'UNAVAILABLE';
@@ -572,7 +576,11 @@ export class SiteAuditService {
     }
   }
 
-  public parseAuditChecklistPayload(rawChecklistJson: unknown): { items: any[]; authorizationProvenance: any | null } {
+  public parseAuditChecklistPayload(rawChecklistJson: unknown): {
+    items: any[];
+    authorizationProvenance: any | null;
+    prospectSignals: any | null;
+  } {
     let parsed: any = rawChecklistJson;
     if (typeof rawChecklistJson === 'string') {
       try {
@@ -582,15 +590,16 @@ export class SiteAuditService {
       }
     }
     if (Array.isArray(parsed)) {
-      return { items: parsed, authorizationProvenance: null };
+      return { items: parsed, authorizationProvenance: null, prospectSignals: null };
     }
     if (parsed && typeof parsed === 'object') {
       return {
         items: Array.isArray(parsed.items) ? parsed.items : [],
         authorizationProvenance: parsed.authorization_provenance ?? null,
+        prospectSignals: parsed.prospect_signals ?? null,
       };
     }
-    return { items: [], authorizationProvenance: null };
+    return { items: [], authorizationProvenance: null, prospectSignals: null };
   }
 
   public hasRecordedAuditConsent(auditRow: any): boolean {
@@ -618,7 +627,6 @@ export class SiteAuditService {
       return true;
     }
     // Outside Vitest, require explicit env allowlist or recorded provenance
-    const { isDomainAuthorizedForPublicAudit } = require('../../config/env.js');
     return isDomainAuthorizedForPublicAudit(cleanDomain);
   }
 

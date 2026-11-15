@@ -30,6 +30,9 @@ export class D1Client {
   private accountId?: string;
   private databaseId?: string;
   private apiToken?: string;
+  private remoteQuotaExhaustedUntilMs = 0;
+  private remoteQuotaExhaustedReason = '';
+  private loggedQuotaExhaustedDate = '';
 
   // 80% safety caps for Cloudflare D1 Free Tier
   public static readonly READ_SAFETY_CAP = 4_000_000;
@@ -49,8 +52,99 @@ export class D1Client {
     return D1Client.instance;
   }
 
+  public static isDailyQuotaError(status: number, bodyText: string): boolean {
+    if (status === 429) return true;
+    const raw = String(bodyText || '');
+    const lower = raw.toLowerCase();
+    return (
+      /"code"\s*:\s*7500\b/.test(raw) ||
+      lower.includes('daily row read limit') ||
+      lower.includes('daily row write limit') ||
+      lower.includes("exceeded d1's free tier") ||
+      lower.includes('exceeded d1’s free tier')
+    );
+  }
+
+  public isRemoteD1QuotaExhausted(): boolean {
+    return Date.now() < this.remoteQuotaExhaustedUntilMs;
+  }
+
+  public getRemoteQuotaCircuitState(): { exhausted: boolean; untilIso: string | null; reason: string | null } {
+    const exhausted = this.isRemoteD1QuotaExhausted();
+    return {
+      exhausted,
+      untilIso: exhausted ? new Date(this.remoteQuotaExhaustedUntilMs).toISOString() : null,
+      reason: exhausted ? this.remoteQuotaExhaustedReason : null
+    };
+  }
+
+  public resetQuotaCircuitBreakerForTesting(): void {
+    this.remoteQuotaExhaustedUntilMs = 0;
+    this.remoteQuotaExhaustedReason = '';
+    this.loggedQuotaExhaustedDate = '';
+  }
+
+  private tripQuotaCircuitBreaker(errText: string): void {
+    const now = new Date();
+    const nextUtcMidnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 1, 0);
+    this.remoteQuotaExhaustedUntilMs = nextUtcMidnight;
+    this.remoteQuotaExhaustedReason = String(errText || '').slice(0, 300);
+    const dayKey = now.toISOString().split('T')[0];
+    if (this.loggedQuotaExhaustedDate !== dayKey) {
+      this.loggedQuotaExhaustedDate = dayKey;
+      console.info(
+        `[D1Client] Cloudflare D1 free-tier daily quota reached (code 7500); falling back cleanly to local SQLite until ${new Date(nextUtcMidnight).toISOString()}.`
+      );
+    }
+  }
+
+  private getAccountId(): string {
+    return (process.env.CLOUDFLARE_ACCOUNT_ID || this.accountId || '9b7511ff69e507dd3a00a7266fec11a3').trim();
+  }
+
+  private getDatabaseId(): string {
+    return (process.env.CLOUDFLARE_D1_DATABASE_ID || this.databaseId || '0563bb85-f6d2-483f-8b0f-0784e3d604c7').trim();
+  }
+
+  private getApiToken(): string {
+    const raw = (process.env.CLOUDFLARE_D1_API_TOKEN || process.env.CLOUDFLARE_API_TOKEN || this.apiToken || '').trim();
+    if (!raw || /^(placeholder|demo|test|none|null|undefined|change_me)$/i.test(raw) || raw.includes('your_')) {
+      return '';
+    }
+    return raw;
+  }
+
   public isRemoteD1Configured(): boolean {
-    return Boolean(this.accountId && this.databaseId && this.apiToken);
+    return Boolean(this.getAccountId() && this.getDatabaseId() && this.getApiToken());
+  }
+
+  /**
+   * Remote Cloudflare D1 reads in non-Render dev/preview (NODE_ENV !== 'production' && RENDER !== 'true')
+   * are disabled by default so dev traffic reads local SQLite cleanly and does not burn Render's
+   * 5M/day Cloudflare D1 free-tier read quota or spam HTTP 400 (code 7500) fallback logs.
+   */
+  public isRemoteD1ReadAllowed(): boolean {
+    if (process.env.VITEST && process.env.ALLOW_REMOTE_D1_READS !== 'true') return false;
+    if (!this.isRemoteD1Configured()) return false;
+    const isProd = process.env.NODE_ENV === 'production';
+    if (!isProd && this.isRemoteD1QuotaExhausted()) return false;
+    return (
+      isProd ||
+      process.env.RENDER === 'true' ||
+      process.env.ALLOW_REMOTE_D1_READS === 'true' ||
+      process.env.ALLOW_REMOTE_D1_WRITES === 'true'
+    );
+  }
+
+  /**
+   * Remote Cloudflare D1 writes are only permitted on Render production (RENDER === 'true')
+   * or when explicitly unlocked via ALLOW_REMOTE_D1_WRITES === 'true' (outside Vitest).
+   */
+  public isRemoteD1WriteAllowed(): boolean {
+    if (process.env.VITEST) return false;
+    if (!this.isRemoteD1Configured()) return false;
+    if (process.env.NODE_ENV !== 'production' && this.isRemoteD1QuotaExhausted()) return false;
+    return process.env.RENDER === 'true' || process.env.ALLOW_REMOTE_D1_WRITES === 'true';
   }
 
   /**
@@ -175,14 +269,24 @@ export class D1Client {
     }
 
     const isProduction = process.env.NODE_ENV === 'production';
+    const remoteAllowed = isWrite ? this.isRemoteD1WriteAllowed() : this.isRemoteD1ReadAllowed();
 
-    if (this.isRemoteD1Configured()) {
-      const url = `https://api.cloudflare.com/client/v4/accounts/${this.accountId}/d1/database/${this.databaseId}/query`;
+    if (isWrite && this.isRemoteD1Configured() && !remoteAllowed) {
+      // Stage K D1 Write Isolation: Non-Render dev/test environments write strictly to local SQLite
+      const db = getDb();
+      const stmt = db.prepare(sql);
+      const info = stmt.run(...params);
+      this.recordUsage(0, info.changes || 1);
+      return { results: [], rowsAffected: info.changes, source: 'PERSISTENT_SQLITE' };
+    }
+
+    if (remoteAllowed) {
+      const url = `https://api.cloudflare.com/client/v4/accounts/${this.getAccountId()}/d1/database/${this.getDatabaseId()}/query`;
       try {
         const response = await fetch(url, {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${this.apiToken}`,
+            'Authorization': `Bearer ${this.getApiToken()}`,
             'Content-Type': 'application/json'
           },
           body: JSON.stringify({ sql, params }),
@@ -203,15 +307,23 @@ export class D1Client {
           if (isProduction) {
             throw new Error(`[D1 PERSISTENCE ERROR] D1 returned HTTP ${response.status}: ${errText}`);
           }
-          console.warn(`[D1Client] Cloudflare D1 HTTP ${response.status} (${errText}) — falling back to dev store`);
+          if (D1Client.isDailyQuotaError(response.status, errText)) {
+            this.tripQuotaCircuitBreaker(errText);
+          } else {
+            console.warn(`[D1Client] Cloudflare D1 HTTP ${response.status} (${errText}) — falling back to dev store`);
+          }
         }
       } catch (err: any) {
         if (isProduction) {
           throw new Error(`[D1 PERSISTENCE FAULT] Production Cloudflare D1 unavailable (${err.message}). Halting to prevent non-durable state divergence.`);
         }
-        console.warn(`[D1Client] Cloudflare D1 query failed (${err.message}) — falling back to local store in dev/test`);
+        if (D1Client.isDailyQuotaError(0, err?.message || '')) {
+          this.tripQuotaCircuitBreaker(err?.message || '');
+        } else {
+          console.warn(`[D1Client] Cloudflare D1 query failed (${err.message}) — falling back to local store in dev/test`);
+        }
       }
-    } else if (isProduction) {
+    } else if (isProduction && !this.isRemoteD1Configured()) {
       throw new Error('[D1 CONFIGURATION FAULT] Production requires remote Cloudflare D1 credentials (CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_D1_DATABASE_ID, CLOUDFLARE_D1_API_TOKEN). Ephemeral SQLite fallback is strictly prohibited in production.');
     }
 
@@ -268,15 +380,16 @@ export class D1Client {
 
     const isProduction = process.env.NODE_ENV === 'production';
 
-    if (this.isRemoteD1Configured()) {
-      const url = `https://api.cloudflare.com/client/v4/accounts/${this.accountId}/d1/database/${this.databaseId}/query`;
+    if (this.isRemoteD1WriteAllowed()) {
+      const url = `https://api.cloudflare.com/client/v4/accounts/${this.getAccountId()}/d1/database/${this.getDatabaseId()}/query`;
       try {
         let totalWritten = 0;
+        let fallbackToLocal = false;
         for (const s of statements) {
           const response = await fetch(url, {
             method: 'POST',
             headers: {
-              'Authorization': `Bearer ${this.apiToken}`,
+              'Authorization': `Bearer ${this.getApiToken()}`,
               'Content-Type': 'application/json'
             },
             body: JSON.stringify({ sql: s.sql, params: s.params || [] }),
@@ -288,7 +401,13 @@ export class D1Client {
             if (isProduction) {
               throw new Error(`[D1 PERSISTENCE ERROR] D1 batch statement returned HTTP ${response.status}: ${errText}`);
             }
-            console.warn(`[D1Client] Cloudflare D1 statement HTTP ${response.status} (${errText}) — falling back to dev store`);
+            if (D1Client.isDailyQuotaError(response.status, errText)) {
+              this.tripQuotaCircuitBreaker(errText);
+            } else {
+              console.warn(`[D1Client] Cloudflare D1 statement HTTP ${response.status} (${errText}) — falling back to dev store`);
+            }
+            fallbackToLocal = true;
+            break;
           } else {
             const json = await response.json() as any;
             const results = json?.result || [];
@@ -297,15 +416,21 @@ export class D1Client {
             }
           }
         }
-        this.recordUsage(0, totalWritten);
-        return { rowsAffected: totalWritten, source: 'CLOUDFLARE_D1' };
+        if (!fallbackToLocal) {
+          this.recordUsage(0, totalWritten);
+          return { rowsAffected: totalWritten, source: 'CLOUDFLARE_D1' };
+        }
       } catch (err: any) {
         if (isProduction) {
           throw new Error(`[D1 PERSISTENCE FAULT] Production Cloudflare D1 batch unavailable (${err.message}). Halting to prevent non-durable state divergence.`);
         }
-        console.warn(`[D1Client] Cloudflare D1 batch failed (${err.message}) — falling back to local store in dev/test`);
+        if (D1Client.isDailyQuotaError(0, err?.message || '')) {
+          this.tripQuotaCircuitBreaker(err?.message || '');
+        } else {
+          console.warn(`[D1Client] Cloudflare D1 batch failed (${err.message}) — falling back to local store in dev/test`);
+        }
       }
-    } else if (isProduction) {
+    } else if (isProduction && !this.isRemoteD1Configured()) {
       throw new Error('[D1 CONFIGURATION FAULT] Production requires remote Cloudflare D1 credentials (CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_D1_DATABASE_ID, CLOUDFLARE_D1_API_TOKEN). Ephemeral SQLite fallback is strictly prohibited in production.');
     }
 

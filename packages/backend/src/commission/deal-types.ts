@@ -164,6 +164,8 @@ export interface NormalizedDeal {
   verifiedCommissionRatePercent?: number | null;
   grossCommissionPerApprovedOrderINR?: number | null;
   observedClicks?: number;
+  observedImpressions?: number;
+  observedInquiries?: number;
   observedOrders?: number;
   observedApprovedOrders?: number;
   observedReversedOrders?: number;
@@ -176,11 +178,21 @@ export interface NormalizedDeal {
   economicsSampleSize?: number;
   economicsConfidence?: 'VERIFIED_EMPIRICAL' | 'PROVIDER_RATE_ONLY_LOW_SAMPLE' | 'UNKNOWN_COMMISSION_RATE';
   opportunityLabel?: 'GENUINE_MARKET_ARBITRAGE' | 'VERIFIED_MERCHANT_PROMOTION';
+  isFeatured?: boolean;
+  catalogSlot?: 'FEATURED' | 'ACTIVE' | 'ROTATED_OUT_STALE';
+  evolutionStatus?: 'RISING_WINNER' | 'FRESH_EXPLORATION' | 'STALE_ROTATED_OUT';
+  exposureTier?: 'FRESH_UNEXPOSED' | 'ACTIVE_ENGAGED' | 'EXPOSED_LOW_CTR';
+  epc7d?: number | null;
+  socialMediaPublishersAllowed?: boolean;
+  expectedProfitPer100VisitorsINR?: number;
+  staleDecayPenalty?: number;
   rankingBreakdown?: {
     commercialContributionScore: number;
     evidenceConfidenceScore: number;
     priceAdvantageScore: number;
     freshnessScore: number;
+    evolutionBoostScore?: number;
+    staleDecayPenalty?: number;
   };
   targetBuyerSegment?: string;   // High-intent buyer persona matched without LLM tokens
   buyerIntentKeywords?: string[];

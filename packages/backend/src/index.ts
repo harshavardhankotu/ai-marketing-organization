@@ -67,13 +67,13 @@ app.use('*', cors({
       return requestOrigin;
     }
 
-    // 3. Local development origins strictly allowed only in non-production
+    // 3. Local development & AI Studio preview origins strictly allowed only in non-production
     if (process.env.NODE_ENV !== 'production') {
       try {
         const parsed = new URL(requestOrigin);
         if (
           (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
-          (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1')
+          (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1' || parsed.hostname.endsWith('.run.app'))
         ) {
           return requestOrigin;
         }
@@ -89,6 +89,8 @@ app.use('*', cors({
     'Content-Type',
     'Authorization',
     'x-api-key',
+    'x-owner-api-key',
+    'x-owner-session',
     'x-organization-id',
     'x-business-id',
     'x-user-id',
@@ -161,7 +163,10 @@ app.all('/owner', (c) => c.redirect('/owner/status', 302));
 // Top-level public calculator, site audit tool and capabilities routing
 app.get('/tools/site-audit', async (c) => {
   const { renderSiteAuditPage } = await import('./tools/site-audit/site-audit-page.js');
-  return c.html(renderSiteAuditPage());
+  const { ExperimentEngine, STOREFRONT_SITEFIX_CTA_EXP_ID } = await import('./experiments/experiment-engine.js');
+  const visitorKey = c.req.header('x-forwarded-for') || c.req.header('user-agent') || 'site-audit';
+  const assignment = ExperimentEngine.assignStorefrontVariant(STOREFRONT_SITEFIX_CTA_EXP_ID, visitorKey);
+  return c.html(renderSiteAuditPage(assignment));
 });
 app.get('/tools/financial-radar', async (c) => {
   const { MultiAssetOpportunityRadar } = await import('./intelligence/multi-asset-opportunity-radar.js');
@@ -193,13 +198,32 @@ app.get('/capabilities', async (c) => {
   }));
 });
 
-// Top-level public homepage route (B2B AI Inbound Lead Triage Storefront)
+// Top-level public homepage route (B2B AI Inbound Lead Triage Storefront + Evolved Featured Deals)
 app.get('/', async (c) => {
   const { DirectCommercialOfferPage } = await import('./revenue/direct-offer-page.js');
+  const { ExperimentEngine, STOREFRONT_DEAL_CTA_EXP_ID } = await import('./experiments/experiment-engine.js');
   const siteName = (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
   const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').trim();
   const contactEmail = process.env.PUBLIC_CONTACT_EMAIL ? process.env.PUBLIC_CONTACT_EMAIL.trim() : undefined;
-  const html = DirectCommercialOfferPage.getInstance().renderHomepageHtml({ siteName, siteUrl, contactEmail });
+  const visitorKey = c.req.header('x-forwarded-for') || c.req.header('user-agent') || 'homepage';
+  const dealCtaAssignment = ExperimentEngine.assignStorefrontVariant(STOREFRONT_DEAL_CTA_EXP_ID, visitorKey);
+
+  let featuredDeals: any[] = [];
+  try {
+    const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
+    const eligible = await AutonomousDealDiscoveryEngine.getInstance().getEligiblePublicDeals({ limit: 8 });
+    featuredDeals = (eligible.deals || [])
+      .filter((d: any) => d.catalogSlot !== 'ROTATED_OUT_STALE' && d.evidenceJson?.catalogSlot !== 'ROTATED_OUT_STALE')
+      .slice(0, 4);
+  } catch {}
+
+  const html = DirectCommercialOfferPage.getInstance().renderHomepageHtml({
+    siteName,
+    siteUrl,
+    contactEmail,
+    featuredDeals,
+    dealCtaAssignment
+  });
   return c.html(html);
 });
 
@@ -207,9 +231,12 @@ app.get('/', async (c) => {
 app.get('/deals', async (c) => {
   const { StaticSiteGenerator } = await import('./commission/static-site-generator.js');
   const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
+  const { ExperimentEngine, STOREFRONT_DEAL_CTA_EXP_ID } = await import('./experiments/experiment-engine.js');
   const siteUrl = getTrustedPublicSiteUrl();
   const trustedHost = new URL(siteUrl).host;
   const siteName = (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
+  const visitorKey = c.req.header('x-forwarded-for') || c.req.header('user-agent') || 'deals';
+  const dealCtaAssignment = ExperimentEngine.assignStorefrontVariant(STOREFRONT_DEAL_CTA_EXP_ID, visitorKey);
   const config = {
     siteName,
     authorName: (process.env.PUBLIC_AUTHOR_NAME || 'Editorial Desk').trim(),
@@ -220,7 +247,7 @@ app.get('/deals', async (c) => {
     const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
     const eligible = await dealEngine.getEligiblePublicDeals({ limit: 50 });
     const deals = eligible.deals;
-    const html = StaticSiteGenerator.getInstance().renderDealsHtml(deals, config);
+    const html = StaticSiteGenerator.getInstance().renderDealsHtml(deals, config, { dealCtaAssignment });
     return c.html(html);
   } catch (err: any) {
     if (err?.code === 'GUIDE_DATA_UNAVAILABLE' || err?.statusCode === 503) {
@@ -760,6 +787,37 @@ app.get('/compare/:sectorSlug', async (c) => {
   });
 });
 
+// Top-level public /vs/:comparisonSlug Head-to-Head Comparison Engine
+app.get('/vs/:comparisonSlug', async (c) => {
+  return app.request(`/api/v1/vs/${encodeURIComponent(c.req.param('comparisonSlug'))}`, {
+    method: 'GET',
+    headers: c.req.raw.headers
+  });
+});
+
+// Top-level public /best/:intentSlug Programmatic Fair-Price Buyer Hub
+app.get('/best/:intentSlug', async (c) => {
+  return app.request(`/api/v1/best/${encodeURIComponent(c.req.param('intentSlug'))}`, {
+    method: 'GET',
+    headers: c.req.raw.headers
+  });
+});
+
+// Top-level public /ig and /bestdeals Instagram Bio Link Storefront (@bestdeals0162)
+app.get('/ig', async (c) => {
+  return app.request('/api/v1/ig', {
+    method: 'GET',
+    headers: c.req.raw.headers
+  });
+});
+
+app.get('/bestdeals', async (c) => {
+  return app.request('/api/v1/bestdeals', {
+    method: 'GET',
+    headers: c.req.raw.headers
+  });
+});
+
 // Dedicated server-rendered HTML route for transparent public revenue funnel
 app.get('/revenue', async (c) => {
   const siteUrl = getTrustedPublicSiteUrl();
@@ -1075,13 +1133,15 @@ app.get('/sitemap.xml', async (c) => {
     } catch {}
   }
 
-  // Include compare guides ONLY for sectors with verified active deals + editorial-gated SSR /deals/:slug URLs
+  // Include compare guides ONLY for sectors with verified active deals + editorial-gated SSR /deals/:slug, /vs/:slug & /best/:intentSlug URLs
   let compareUrls: string[] = [];
   let dealUrls: string[] = [];
+  let vsUrls: string[] = [];
+  let bestUrls: string[] = [];
   try {
     const { COMMERCIAL_SECTORS_LIST } = await import('@ai-marketing/shared');
     const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
-    const { passesEditorialQualityGate } = await import('./commission/static-site-generator.js');
+    const { passesEditorialQualityGate, generateComparisonPairs, generateBuyerIntentHubs } = await import('./commission/static-site-generator.js');
     const engine = AutonomousDealDiscoveryEngine.getInstance();
     const eligibleRes = await engine.getEligiblePublicDeals({ limit: 1000 });
     const activeDeals = eligibleRes.deals || [];
@@ -1092,6 +1152,12 @@ app.get('/sitemap.xml', async (c) => {
     dealUrls = activeDeals
       .filter((d: any) => d && (d.slug || d.canonicalSlug || d.id) && passesEditorialQualityGate(d))
       .map((d: any) => `${baseUrl}/deals/${encodeURIComponent(d.slug || d.canonicalSlug || d.id)}`);
+    vsUrls = generateComparisonPairs(activeDeals, 15).map(
+      p => `${baseUrl}/vs/${encodeURIComponent(p.comparisonSlug)}`
+    );
+    bestUrls = generateBuyerIntentHubs(activeDeals, baseUrl, 10).map(
+      h => `${baseUrl}/best/${encodeURIComponent(h.intentSlug)}`
+    );
   } catch {}
 
   // Include only publicly authorized audited domain pages (V5.8 Defect 5)
@@ -1114,7 +1180,7 @@ app.get('/sitemap.xml', async (c) => {
   ];
 
   const contentUrls = publishedSlugs.map(a => `${baseUrl}/guides/${a.slug}`);
-  const allUrls = [...staticUrls, ...compareUrls, ...contentUrls, ...auditUrls, ...dealUrls];
+  const allUrls = [...staticUrls, ...bestUrls, ...compareUrls, ...vsUrls, ...contentUrls, ...auditUrls, ...dealUrls];
 
   const xmlEntries = allUrls
     .map(url => `  <url>\n    <loc>${url}</loc>\n    <changefreq>daily</changefreq>\n    <priority>0.8</priority>\n  </url>`)
@@ -1159,8 +1225,66 @@ ${rssItems}
   return c.text(rssXml, 200, { 'Content-Type': 'application/rss+xml; charset=utf-8' });
 });
 
-// Syndicated JSON deals feed (Engine 4)
+// Syndicated JSON & RSS 2.0 deals feeds (Engine 4)
 app.get('/feeds/deals.json', (c) => c.redirect('/api/v1/public/feeds/deals.json', 301));
+app.get('/feeds/deals.xml', async (c) => {
+  const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
+  const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
+  let eligible: any;
+  try {
+    eligible = await dealEngine.getEligiblePublicDeals({ limit: 50 });
+  } catch (err: any) {
+    if (err?.code === 'GUIDE_DATA_UNAVAILABLE' || err?.statusCode === 503) {
+      return c.json({ error: 'GUIDE_DATA_UNAVAILABLE', message: err.message }, 503);
+    }
+    throw err;
+  }
+  const baseUrl = getTrustedPublicSiteUrl().replace(/\/$/, '');
+  const topDeals = (eligible.deals || [])
+    .filter((d: any) => d.evolutionStatus !== 'STALE_ROTATED_OUT' && d.catalogSlot !== 'ROTATED_OUT_STALE')
+    .slice(0, 25);
+  const escXml = (v: unknown): string =>
+    String(v ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;');
+
+  const rssItems = topDeals
+    .map((d: any) => {
+      const redirectUrl = `${baseUrl}/api/v1/public/deals/${encodeURIComponent(d.id)}/redirect`;
+      const mrpNote = d.referencePriceINR && d.referencePriceINR > d.currentPriceINR
+        ? ` (MRP ₹${Number(d.referencePriceINR).toLocaleString('en-IN')})`
+        : '';
+      return `    <item>
+      <title>${escXml(`${d.title} — ₹${Number(d.currentPriceINR || 0).toLocaleString('en-IN')}${mrpNote} at ${d.merchant}`)}</title>
+      <link>${escXml(redirectUrl)}</link>
+      <guid isPermaLink="false">${escXml(d.id)}</guid>
+      <category>${escXml(d.category || 'Verified Deals')}</category>
+      <description><![CDATA[Verified deal: ${d.title} at ₹${d.currentPriceINR}${mrpNote} on ${d.merchant}. Direct merchant fulfillment. #Ad - Commission earned on qualifying purchases.]]></description>
+      <pubDate>${new Date(d.lastVerifiedAt || d.lastCheckedAt || d.observedAt || Date.now()).toUTCString()}</pubDate>
+    </item>`;
+    })
+    .join('\n');
+
+  const rssXml = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>AI Marketing Organization - Verified Commercial Deals Feed</title>
+    <link>${escXml(baseUrl)}/deals</link>
+    <description>Top 25 live, verified merchant deals and buying guides.</description>
+    <language>en-in</language>
+    <atom:link href="${escXml(baseUrl)}/feeds/deals.xml" rel="self" type="application/rss+xml"/>
+${rssItems}
+  </channel>
+</rss>`;
+
+  return c.text(rssXml, 200, {
+    'Content-Type': 'application/rss+xml; charset=utf-8',
+    'Cache-Control': 'public, max-age=300'
+  });
+});
 
 // Static frontend assets and public landing page routing
 const __filename = fileURLToPath(import.meta.url);
@@ -1216,7 +1340,7 @@ export async function startServer(): Promise<any> {
   const d1 = D1Client.getInstance();
   const isProd = process.env.NODE_ENV === 'production';
 
-  if (d1.isRemoteD1Configured() || isProd) {
+  if (d1.isRemoteD1ReadAllowed() || d1.isRemoteD1WriteAllowed() || isProd) {
     try {
       console.log('[D1 Migration Gate] Verifying and applying remote D1 migrations before opening traffic...');
       const { applyD1Migrations } = await import('./db/d1-migrations/index.js');
@@ -1235,111 +1359,142 @@ export async function startServer(): Promise<any> {
     }
   }
 
-  // 3. Durable Quota Gate: Synchronize counters from Cloudflare D1
-  try {
-    await UnifiedQuotaService.getInstance().syncFromD1Async();
-    console.log('[Quota Gate] Synchronized durable quota counters from Cloudflare D1.');
-  } catch (err: any) {
-    console.warn('[Quota Gate] Quota synchronization failed:', err.message);
-  }
+  const server = serve({
+    fetch: app.fetch,
+    port: PORT,
+    hostname: '0.0.0.0'
+  });
 
-  // 3b. Durable Action Cooldown Gate: Synchronize cooldowns from Cloudflare D1
-  try {
-    const { ActionCooldownManager } = await import('./revenue/action-cooldown-manager.js');
-    await ActionCooldownManager.syncFromD1Async();
-    console.log('[Cooldown Gate] Synchronized durable action cooldowns from Cloudflare D1.');
-  } catch (err: any) {
-    console.warn('[Cooldown Gate] Action cooldown synchronization failed:', err.message);
-  }
+  console.log(`\n======================================================`);
+  console.log(`🚀 AI Marketing Organization Backend Service Running`);
+  console.log(`📡 URL: http://localhost:${PORT}`);
+  console.log(`📊 API Health: http://localhost:${PORT}/api/v1/health`);
+  console.log(`🏢 Commercial Engine: Universal Multi-Tenant Ready`);
+  console.log(`🤖 Agents Active: 80 Specialized Autonomous Agents`);
+  console.log(`⏱️ Durable Queue: ACTIVE (09:00 & 21:00 IST CAMPAIGN WINDOWS)`);
+  console.log(`======================================================\n`);
 
-  // 3c. Commercial Funnel Telemetry & Deal Catalog Gate: Synchronize from Cloudflare D1
-  try {
-    const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
-    await AutonomousDealDiscoveryEngine.getInstance().hydrateFunnelTelemetryFromDb();
-    await AutonomousDealDiscoveryEngine.getInstance().syncFromD1Async();
-    console.log('[Funnel Gate] Synchronized commercial funnel telemetry and deal catalog from Cloudflare D1.');
-  } catch (err: any) {
-    console.warn('[Funnel Gate] Funnel telemetry/deal synchronization failed:', err.message);
-  }
-
-  try {
-    const { GrowthExperimentTracker } = await import('./commission/growth-experiment-tracker.js');
-    await GrowthExperimentTracker.getInstance().hydrateFromDb();
-    console.log('[Experiment Gate] Synchronized growth experiments from Cloudflare D1.');
-  } catch (err: any) {
-    console.warn('[Experiment Gate] Growth experiment synchronization failed:', err.message);
-  }
-
-  // 3d. Baseline Content Assets Gate: Ensure baseline acquisition guides exist in Cloudflare D1
-  try {
-    const { ContentAssetEngine } = await import('./commission/content-asset-engine.js');
-    await ContentAssetEngine.getInstance().syncBaselineAssetsAsync();
-  } catch (err: any) {
-    console.warn('[Content Gate] Baseline content sync failed:', err.message);
-  }
-
-  // 3e. Curated Healthcare SMB Prospects Gate: Ensure 10 researched Indian healthcare practices exist
-  try {
-    const { checkB2BResearchBacklogGuard } = await import('./revenue/b2b-research-backlog-guard.js');
-    const guard = await checkB2BResearchBacklogGuard();
-    if (guard.allowed) {
-      const { PlatformProspectDiscoveryEngine } = await import('./revenue/platform-prospect-discovery-engine.js');
-      await PlatformProspectDiscoveryEngine.getInstance().ensureCuratedQualifiedProspectBatch();
-      console.log('[Prospect Gate] Ensured curated Indian healthcare SMB prospects & drafts in Cloudflare D1.');
-    } else {
-      console.log(`[Prospect Gate] Skipped curated prospect batch seeding: ${guard.unapprovedCount} unapproved drafts pending review.`);
+  // Run synchronization and warm-up gates asynchronously so HTTP traffic is accepted immediately
+  void (async () => {
+    // 3. Durable Quota Gate: Synchronize counters from Cloudflare D1
+    try {
+      await UnifiedQuotaService.getInstance().syncFromD1Async();
+      console.log('[Quota Gate] Synchronized durable quota counters from Cloudflare D1.');
+    } catch (err: any) {
+      console.warn('[Quota Gate] Quota synchronization failed:', err.message);
     }
-  } catch (err: any) {
-    console.warn('[Prospect Gate] Curated prospect batch synchronization failed:', err.message);
-  }
 
-  // 3f. Automation Registry Gate: Ensure core workflows initialized in Cloudflare D1
-  try {
-    const { AutomationRegistryEngine, WORKFLOW_DEFINITIONS } = await import('./automation/automation-registry-engine.js');
-    await AutomationRegistryEngine.getInstance().ensureInitialized();
-    console.log(`[Automation Gate] Ensured ${WORKFLOW_DEFINITIONS.length} background automation workflows initialized in Cloudflare D1.`);
-  } catch (err: any) {
-    console.warn('[Automation Gate] Automation registry initialization failed:', err.message);
-  }
-
-  // 3g. Multi-Merchant Deals Catalog Gate: Ensure approved Cuelinks merchants feeds are hydrated (V5.7 Phase 1)
-  try {
-    const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
-    const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
-    await dealEngine.syncFromD1Async();
-    const inStock = dealEngine.getAllDeals().filter(d => d.availability === 'IN_STOCK' && (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS'));
-    if (inStock.length < 5) {
-      console.log('[Catalog Gate] Ingesting live feeds from approved Cuelinks merchants into public_deals...');
-      await dealEngine.harvestAllApprovedMerchantFeeds();
-      console.log(`[Catalog Gate] Ingested live deals. Total active in-stock: ${dealEngine.getAllDeals().filter(d => d.availability === 'IN_STOCK').length}`);
-    } else {
-      console.log(`[Catalog Gate] Verified ${inStock.length} active in-stock deals loaded.`);
+    // 3b. Durable Action Cooldown Gate: Synchronize cooldowns from Cloudflare D1
+    try {
+      const { ActionCooldownManager } = await import('./revenue/action-cooldown-manager.js');
+      await ActionCooldownManager.syncFromD1Async();
+      console.log('[Cooldown Gate] Synchronized durable action cooldowns from Cloudflare D1.');
+    } catch (err: any) {
+      console.warn('[Cooldown Gate] Action cooldown synchronization failed:', err.message);
     }
-  } catch (err: any) {
-    console.warn('[Catalog Gate] Merchant catalog feed ingestion failed:', err.message);
-  }
 
-  // 3h. Live Baseline Autonomy & SiteFix Verification Gate (V5.7 Phase 3)
-  try {
-    const { GoogleSuggestClient } = await import('./integrations/google-suggest-client.js');
-    await GoogleSuggestClient.getInstance().fetchSuggestions('electronics verified deals India', 'in');
-    console.log('[Autonomy Gate] Live GoogleSuggest baseline query executed.');
-  } catch (err: any) {
-    console.warn('[Autonomy Gate] GoogleSuggest baseline query notice:', err.message);
-  }
+    // 3c. Commercial Funnel Telemetry & Deal Catalog Gate: Synchronize from Cloudflare D1
+    try {
+      const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
+      await AutonomousDealDiscoveryEngine.getInstance().hydrateFunnelTelemetryFromDb();
+      await AutonomousDealDiscoveryEngine.getInstance().syncFromD1Async();
+      console.log('[Funnel Gate] Synchronized commercial funnel telemetry and deal catalog from Cloudflare D1.');
+    } catch (err: any) {
+      console.warn('[Funnel Gate] Funnel telemetry/deal synchronization failed:', err.message);
+    }
 
-  try {
-    const { SiteAuditService } = await import('./tools/site-audit/site-audit-service.js');
-    const auditService = SiteAuditService.getInstance();
-    console.log('[Autonomy Gate] Executing baseline SiteFix audit for capturelifedentalcare.com...');
-    await auditService.runFullAudit('https://capturelifedentalcare.com', 'Capture Life Dental Care');
-    console.log('[Autonomy Gate] Baseline SiteFix audit completed and saved.');
-  } catch (err: any) {
-    console.warn('[Autonomy Gate] Baseline SiteFix audit notice:', err.message);
-  }
+    try {
+      const { GrowthExperimentTracker } = await import('./commission/growth-experiment-tracker.js');
+      await GrowthExperimentTracker.getInstance().hydrateFromDb();
+      console.log('[Experiment Gate] Synchronized growth experiments from Cloudflare D1.');
+    } catch (err: any) {
+      console.warn('[Experiment Gate] Growth experiment synchronization failed:', err.message);
+    }
 
-  // 4. Autonomous scheduling powered by durable Cloudflare D1 queue & Worker heartbeat (Spec V4.1 Phase 1 & 2)
-  console.log('[Durable Queue] Background operations scheduled via Cloudflare D1 queue (Two daily IST commercial runs: 09:00 & 21:00 IST).');
+    try {
+      const { ExperimentEngine } = await import('./experiments/experiment-engine.js');
+      ExperimentEngine.seedDefaultStorefrontExperiments('org_owner_primary', 'biz_platform_aro');
+      console.log('[Experiment Gate] Ensured default non-test Storefront A/B experiments initialized.');
+    } catch (err: any) {
+      console.warn('[Experiment Gate] Default storefront experiment seed notice:', err.message);
+    }
+
+    // 3d. Baseline Content Assets Gate: Ensure baseline acquisition guides exist in Cloudflare D1
+    try {
+      const { ContentAssetEngine } = await import('./commission/content-asset-engine.js');
+      await ContentAssetEngine.getInstance().syncBaselineAssetsAsync();
+    } catch (err: any) {
+      console.warn('[Content Gate] Baseline content sync failed:', err.message);
+    }
+
+    // 3e. Non-Healthcare SMB Prospect Gate: Never seed regulated healthcare/dental domains (Standing Order 8)
+    console.log('[Prospect Gate] Healthcare/dental seeding disabled per Standing Order 8; using live non-healthcare SMB discovery.');
+
+    // 3f. Automation Registry Gate: Ensure core workflows initialized in Cloudflare D1
+    try {
+      const { AutomationRegistryEngine, WORKFLOW_DEFINITIONS } = await import('./automation/automation-registry-engine.js');
+      await AutomationRegistryEngine.getInstance().ensureInitialized();
+      console.log(`[Automation Gate] Ensured ${WORKFLOW_DEFINITIONS.length} background automation workflows initialized in Cloudflare D1.`);
+    } catch (err: any) {
+      console.warn('[Automation Gate] Automation registry initialization failed:', err.message);
+    }
+
+    // 3g. Multi-Merchant Deals Catalog Gate: Ensure approved Cuelinks merchants feeds are hydrated (V5.7 Phase 1)
+    try {
+      const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
+      const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
+      await dealEngine.syncFromD1Async();
+      const inStock = dealEngine.getAllDeals().filter(d => d.availability === 'IN_STOCK' && (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS'));
+      if (inStock.length < 5) {
+        console.log('[Catalog Gate] Ingesting live feeds from approved Cuelinks merchants into public_deals...');
+        await dealEngine.harvestAllApprovedMerchantFeeds();
+        console.log(`[Catalog Gate] Ingested live deals. Total active in-stock: ${dealEngine.getAllDeals().filter(d => d.availability === 'IN_STOCK').length}`);
+      } else {
+        console.log(`[Catalog Gate] Verified ${inStock.length} active in-stock deals loaded.`);
+      }
+    } catch (err: any) {
+      console.warn('[Catalog Gate] Merchant catalog feed ingestion failed:', err.message);
+    }
+
+    // 3h. Live Baseline Autonomy & Non-Healthcare SMB SiteFix Verification Gate
+    try {
+      const { GoogleSuggestClient } = await import('./integrations/google-suggest-client.js');
+      await GoogleSuggestClient.getInstance().fetchSuggestions('electronics verified deals India', 'in');
+      console.log('[Autonomy Gate] Live GoogleSuggest baseline query executed.');
+    } catch (err: any) {
+      console.warn('[Autonomy Gate] GoogleSuggest baseline query notice:', err.message);
+    }
+
+    try {
+      const { AutomationRegistryEngine } = await import('./automation/automation-registry-engine.js');
+      await AutomationRegistryEngine.getInstance().autoAuditNextUnauditedDomain();
+      console.log('[Autonomy Gate] Baseline non-healthcare SMB SiteFix audit check completed.');
+    } catch (err: any) {
+      console.warn('[Autonomy Gate] Baseline SiteFix audit notice:', err.message);
+    }
+
+    // 4. Autonomous scheduling powered by durable Cloudflare D1 queue & Worker heartbeat (Spec V4.1 Phase 1 & 2)
+    console.log('[Durable Queue] Background operations scheduled via Cloudflare D1 queue (Two daily IST commercial runs: 09:00 & 21:00 IST).');
+  })();
+
+  // Stage M Task 1: Execute AutonomousSystemDoctor in-process 2s after boot (non-blocking, unref'd, skipped under Vitest)
+  if (!process.env.VITEST && process.env.NODE_ENV !== 'test') {
+    const bootDoctorTimer = setTimeout(async () => {
+      try {
+        const { AutonomousSystemDoctor } = await import('./automation/autonomous-system-doctor.js');
+        const report = await AutonomousSystemDoctor.getInstance().runSelfHealingPass({
+          skipRecoveryRecursion: true,
+          skipLlm: true
+        });
+        console.log(`[Boot Self-Heal] Doctor run ${report.runId}: repaired=${report.priceRepair.repairedCount}, amazonPurged=${report.priceRepair.amazonStaticPricesPurged}, bottleneck=${report.funnelDiagnosis.bottleneckStage}`);
+      } catch (err: any) {
+        console.warn('[Boot Self-Heal] Doctor scan notice:', err?.message);
+      }
+    }, 2000);
+    if (typeof (bootDoctorTimer as any)?.unref === 'function') {
+      (bootDoctorTimer as any).unref();
+    }
+  }
 
   // Stage I.2 / I.2-A: Execute once non-blocking 5s after boot — revoke unconsented third-party audits, recover stale/blocked queue jobs, drain due jobs, & hydrate Cuelinks payouts autonomously
   if (!process.env.VITEST && process.env.NODE_ENV !== 'test') {
@@ -1356,7 +1511,11 @@ export async function startServer(): Promise<any> {
         const { AutomationRegistryEngine } = await import('./automation/automation-registry-engine.js');
         const queue = DurableJobQueue.getInstance();
         const rec = await queue.recoverStaleAndBlockedJobs();
-        console.log('[Startup Self-Heal] Queue recovery completed:', JSON.stringify(rec));
+        if (rec.queueStatsAfter.failedTotal > 0 || rec.expiredLeasesRecovered > 0) {
+          console.log('[Startup Self-Heal] Queue recovery completed:', JSON.stringify(rec));
+        } else {
+          console.log(`[Startup Self-Heal] Queue recovery completed: queued=${rec.queueStatsAfter.queued}, completed=${rec.queueStatsAfter.completed}, overdue=${rec.queueStatsAfter.overdueCount}`);
+        }
 
         // Drain overdue/due queued jobs on boot (bounded to 20 jobs / 25s) so overdueCount converges to 0
         const engine = AutomationRegistryEngine.getInstance();
@@ -1400,19 +1559,7 @@ export async function startServer(): Promise<any> {
     }
   }
 
-  console.log(`\n======================================================`);
-  console.log(`🚀 AI Marketing Organization Backend Service Running`);
-  console.log(`📡 URL: http://localhost:${PORT}`);
-  console.log(`📊 API Health: http://localhost:${PORT}/api/v1/health`);
-  console.log(`🏢 Commercial Engine: Universal Multi-Tenant Ready`);
-  console.log(`🤖 Agents Active: 80 Specialized Autonomous Agents`);
-  console.log(`⏱️ Durable Queue: ACTIVE (09:00 & 21:00 IST CAMPAIGN WINDOWS)`);
-  console.log(`======================================================\n`);
-
-  return serve({
-    fetch: app.fetch,
-    port: PORT
-  });
+  return server;
 }
 
 if (process.env.NODE_ENV !== 'test') {

@@ -1,5 +1,6 @@
 import { getDb } from './client.js';
 import { AGENT_REGISTRY } from '@ai-marketing/shared';
+import { ExperimentEngine } from '../experiments/experiment-engine.js';
 
 export interface SeedOptions {
   withDemoData?: boolean;
@@ -153,6 +154,11 @@ export function seedDatabase(options: SeedOptions = {}): void {
       'Direct, consultative, authoritative', 'ASSISTED', 0, 0
     )
   `).run();
+
+  // 1c. Default Non-Test Storefront A/B Experiments (Deal Card CTA + SiteFix Checkout CTA)
+  try {
+    ExperimentEngine.seedDefaultStorefrontExperiments('org_owner_primary', 'biz_platform_aro');
+  } catch {}
 
   // 2. Seed 80 Autonomous Agents (System Infrastructure)
   const insertAgentStmt = db.prepare(`
@@ -495,7 +501,13 @@ export function seedTestFixtures(db: any): void {
     ) VALUES
       ('coff_smilekraft_aligners_45000', 'biz_smilekraft_hyd', 'org_smilekraft_01',
        'Invisible Clear Aligners - Phase 1', '3D smile scan + aligner phase 1.',
-       'GENERAL', 4500000, 'INR', 'ONE_TIME', 'General', 'SERVICE_DELIVERY', 1)
+       'GENERAL', 4500000, 'INR', 'ONE_TIME', 'General', 'SERVICE_DELIVERY', 1),
+      ('sitefix_core_499', 'biz_platform_aro', 'org_owner_primary',
+       'SiteFix AI Technical Audit & Core Fix-Pack', 'Tier 1 self-serve HTML, canonical, robots.txt & Schema.org JSON-LD fix-pack.',
+       'DIGITAL_SEO_PACK', 49900, 'INR', 'ONE_TIME', 'Website Owners & SMBs', 'DIGITAL', 1),
+      ('sitefix_competitor_keyword_pack', 'biz_platform_aro', 'org_owner_primary',
+       'Competitor SEO Gap & 30-Day Search Console Action Pack', 'Tier 2 order bump: competitor keyword gap blueprint, schema templates & 30-day indexing sprint.',
+       'DIGITAL_SEO_PACK', 199900, 'INR', 'ONE_TIME', 'Website Owners & SMBs', 'DIGITAL', 1)
   `).run();
 
   // Test Goal

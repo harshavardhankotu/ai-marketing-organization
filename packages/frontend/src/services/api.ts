@@ -40,6 +40,65 @@ export class ApiError extends Error {
 export type UnauthorizedHandler = () => void;
 let unauthorizedHandler: UnauthorizedHandler | null = null;
 
+const OWNER_SESSION_STORAGE_KEY = 'aro_owner_session_token';
+let inMemoryOwnerSessionToken: string | null = null;
+
+export function getStoredOwnerSessionToken(): string | null {
+  if (inMemoryOwnerSessionToken) {
+    return inMemoryOwnerSessionToken;
+  }
+  if (typeof window !== 'undefined') {
+    try {
+      const localStored = window.localStorage?.getItem(OWNER_SESSION_STORAGE_KEY);
+      if (localStored && localStored.trim().length > 0) {
+        inMemoryOwnerSessionToken = localStored.trim();
+        return inMemoryOwnerSessionToken;
+      }
+    } catch {}
+    try {
+      const stored = window.sessionStorage?.getItem(OWNER_SESSION_STORAGE_KEY);
+      if (stored && stored.trim().length > 0) {
+        inMemoryOwnerSessionToken = stored.trim();
+        return inMemoryOwnerSessionToken;
+      }
+    } catch {}
+  }
+  return null;
+}
+
+export function setStoredOwnerSessionToken(token?: string | null): void {
+  const cleaned = typeof token === 'string' ? token.trim() : '';
+  inMemoryOwnerSessionToken = cleaned || null;
+  if (typeof window !== 'undefined') {
+    try {
+      if (cleaned) {
+        window.localStorage?.setItem(OWNER_SESSION_STORAGE_KEY, cleaned);
+      } else {
+        window.localStorage?.removeItem(OWNER_SESSION_STORAGE_KEY);
+      }
+    } catch {}
+    try {
+      if (cleaned) {
+        window.sessionStorage?.setItem(OWNER_SESSION_STORAGE_KEY, cleaned);
+      } else {
+        window.sessionStorage?.removeItem(OWNER_SESSION_STORAGE_KEY);
+      }
+    } catch {}
+  }
+}
+
+export function clearStoredOwnerSessionToken(): void {
+  inMemoryOwnerSessionToken = null;
+  if (typeof window !== 'undefined') {
+    try {
+      window.localStorage?.removeItem(OWNER_SESSION_STORAGE_KEY);
+    } catch {}
+    try {
+      window.sessionStorage?.removeItem(OWNER_SESSION_STORAGE_KEY);
+    } catch {}
+  }
+}
+
 export function onUnauthorized(handler: UnauthorizedHandler | null): void {
   unauthorizedHandler = handler;
 }
@@ -54,6 +113,7 @@ export async function fetchApi<T = any>(endpoint: string, options?: RequestInit)
     normalizedEndpoint.startsWith('/payments/razorpay/health') ||
     normalizedEndpoint.startsWith('/compliance/dpdp/');
   const isAuthCheckOrLogin = normalizedEndpoint.startsWith('/auth/owner/session') ||
+    normalizedEndpoint.startsWith('/auth/owner/auto-session') ||
     normalizedEndpoint.startsWith('/auth/owner/login') ||
     normalizedEndpoint.startsWith('/auth/owner/logout');
 
@@ -69,17 +129,28 @@ export async function fetchApi<T = any>(endpoint: string, options?: RequestInit)
     } catch {}
   }
 
+  const storedToken = getStoredOwnerSessionToken();
+  const authHeaders: Record<string, string> = {};
+  if (storedToken && !normalizedEndpoint.startsWith('/auth/owner/login')) {
+    authHeaders['Authorization'] = `Bearer ${storedToken}`;
+    authHeaders['x-owner-session'] = storedToken;
+  }
+
+  const { headers: optionHeaders, ...restOptions } = options || {};
+  const mergedHeaders: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'bypass-tunnel-reminder': '1',
+    ...(activeBizId ? { 'x-business-id': activeBizId } : {}),
+    ...authHeaders,
+    ...((optionHeaders as Record<string, string>) || {})
+  };
+
   let res: Response;
   try {
     res = await fetch(url, {
       credentials: 'include',
-      headers: {
-        'Content-Type': 'application/json',
-        'bypass-tunnel-reminder': '1',
-        ...(activeBizId ? { 'x-business-id': activeBizId } : {}),
-        ...(options?.headers || {})
-      },
-      ...options
+      ...restOptions,
+      headers: mergedHeaders
     });
   } catch (netErr: any) {
     throw new ApiError(`Network error: Could not connect to API server at ${url}. ${netErr?.message || ''}`, 0);
@@ -106,8 +177,9 @@ export async function fetchApi<T = any>(endpoint: string, options?: RequestInit)
 
   if (!res.ok) {
     const errorMsg = json?.error || `Request failed with status ${res.status}`;
-    // If 401 on an authenticated admin endpoint, transition UI cleanly to unauthenticated state
+    // If 401 on an authenticated admin endpoint, clear stale token and transition UI cleanly
     if (res.status === 401 && !isPublicEndpoint && !isAuthCheckOrLogin) {
+      clearStoredOwnerSessionToken();
       unauthorizedHandler?.();
     }
     throw new ApiError(errorMsg, res.status, json);
@@ -137,6 +209,10 @@ export const api = {
   getGoals: () => fetchApi('/goals'),
   createGoal: (data: any) => fetchApi('/goals', { method: 'POST', body: JSON.stringify(data) }),
   getCampaigns: () => fetchApi('/campaigns'),
+  createCampaignAbTest: (campaignId: string, data: any) =>
+    fetchApi(`/campaigns/${encodeURIComponent(campaignId)}/ab-tests`, { method: 'POST', body: JSON.stringify(data) }),
+  compareCampaignAbTests: (campaignId: string, data?: any) =>
+    fetchApi(`/campaigns/${encodeURIComponent(campaignId)}/ab-tests/compare`, { method: 'POST', body: JSON.stringify(data || {}) }),
   getContent: () => fetchApi('/content'),
   getResearch: (businessId?: string) => fetchApi(`/research${businessId ? `?businessId=${businessId}` : ''}`),
   runResearchPipeline: (businessId: string) => fetchApi('/research/run', { method: 'POST', body: JSON.stringify({ businessId }) }),
@@ -145,6 +221,8 @@ export const api = {
   computeStrategy: (data: any) => fetchApi('/strategy/compute', { method: 'POST', body: JSON.stringify(data) }),
   getDashboardAnalytics: () => fetchApi('/analytics/dashboard'),
   getExperiments: () => fetchApi('/experiments'),
+  compareExperiment: (experimentId: string, data?: any) =>
+    fetchApi(`/experiments/${encodeURIComponent(experimentId)}/compare`, { method: 'POST', body: JSON.stringify(data || {}) }),
   getEvolution: () => fetchApi('/evolution'),
   getApprovals: () => fetchApi('/approvals'),
   resolveApproval: (data: { requestId: string; action: 'APPROVE' | 'REJECT' | 'REQUEST_CHANGES'; feedbackNotes?: string }) =>
@@ -213,16 +291,85 @@ export const api = {
   createRazorpayPaymentLink: (data: { businessId?: string; amountINR: number; description: string; customer?: any; proposalId?: string; prospectId?: string; offerId: string; organizationId?: string }) =>
     fetchApi('/payments/razorpay/create-payment-link', { method: 'POST', body: JSON.stringify(data) }),
   // Single-Owner Auth & Administration
-  loginOwner: (apiKey: string) =>
-    fetchApi('/auth/owner/login', { method: 'POST', body: JSON.stringify({ apiKey }) }),
-  logoutOwner: () =>
-    fetchApi('/auth/owner/logout', { method: 'POST' }),
-  getOwnerSession: () =>
-    fetchApi('/auth/owner/session'),
+  loginOwner: async (apiKey: string) => {
+    const trimmed = typeof apiKey === 'string' ? apiKey.trim() : '';
+    const res = await fetchApi('/auth/owner/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        apiKey: trimmed
+      })
+    });
+    const token = res?.sessionToken || res?.token || res?.data?.token;
+    if (typeof token === 'string' && token.trim().length > 0) {
+      setStoredOwnerSessionToken(token);
+    }
+    return res;
+  },
+  logoutOwner: async () => {
+    try {
+      return await fetchApi('/auth/owner/logout', { method: 'POST' });
+    } finally {
+      clearStoredOwnerSessionToken();
+    }
+  },
+  getOwnerSession: async () => {
+    const res = await fetchApi('/auth/owner/session');
+    const token = res?.sessionToken || res?.token || res?.data?.token;
+    if (typeof token === 'string' && token.trim().length > 0) {
+      setStoredOwnerSessionToken(token);
+    }
+    return res;
+  },
   // Setup Wizard & Commercial Proof
   getSetupStatus: () => fetchApi('/setup/status'),
   runLiveSmokeTest: () => fetchApi('/setup/live-smoke-test', { method: 'POST' }),
   getCommercialProof: () => fetchApi('/commercial/proof'),
+  // Multi-Asset Financial Radar & Live AMFI NAVs
+  getFinancialRadar: (forceRefresh?: boolean) =>
+    fetchApi(`/tools/financial-radar${forceRefresh ? '?refresh=true' : ''}`),
+  getPublicAutonomyStatus: () =>
+    fetchApi('/public/autonomy-status'),
+  // Single-Owner First-Sale Execution Console
+  getFirstSaleReadyActions: () =>
+    fetchApi('/owner/first-sale/ready-actions'),
+  triggerFirstSaleLiveHarvest: () =>
+    fetchApi('/owner/first-sale/trigger-live-harvest', { method: 'POST' }),
+  approveAndSendFirstSaleDraft: (draftId: string) =>
+    fetchApi(`/owner/first-sale/approve-and-send/${encodeURIComponent(draftId)}`, { method: 'POST' }),
+  // Autonomous System Doctor & Funnel Leak Debugger
+  getSystemDoctorStatus: () =>
+    fetchApi('/owner/system-doctor/status'),
+  runSystemDoctorHeal: (data?: { skipLlm?: boolean }) =>
+    fetchApi('/owner/system-doctor/heal', { method: 'POST', body: JSON.stringify(data || {}) }),
+  // Instagram Business API (@bestdeals0162)
+  getInstagramStatus: () =>
+    fetchApi('/owner/instagram/status'),
+  getInstagramOAuthUrl: (redirectUri?: string) =>
+    fetchApi(`/integrations/instagram/oauth/url${redirectUri ? `?redirect_uri=${encodeURIComponent(redirectUri)}` : ''}`),
+  publishDealToInstagram: (data?: { dealId?: string; imageUrl?: string; caption?: string }) =>
+    fetchApi('/owner/instagram/publish', { method: 'POST', body: JSON.stringify(data || {}) }),
+  pollInstagramEngagement: () =>
+    fetchApi('/owner/instagram/poll', { method: 'POST', body: JSON.stringify({}) }),
+  // Universal Fair-Price Checker & On-Demand Link Monetizer
+  checkFairPrice: (data: {
+    queryOrUrl: string;
+    targetFairPriceINR?: number;
+    alertEmail?: string;
+    consentGiven?: boolean;
+    skipAiSynthesis?: boolean;
+  }) => fetchApi('/public/fair-price-check', { method: 'POST', body: JSON.stringify(data) }),
+  // 1-Click GitHub PR Sync Bridge (commits to feature branch & opens PR targeting main)
+  getDeployManifest: (branch = 'main', githubToken?: string) =>
+    fetchApi(`/owner/deploy/changed-files-manifest?branch=${encodeURIComponent(branch)}`, githubToken ? { headers: { 'x-github-token': githubToken } } : undefined),
+  pushDeployToGithub: (data: { githubToken?: string; commitMessage?: string; branch?: string; baseBranch?: string; files?: string[] }) =>
+    fetchApi('/owner/deploy/push-to-github', {
+      method: 'POST',
+      body: JSON.stringify({
+        branch: 'feat/stage-k-safe-profit-engine',
+        baseBranch: 'main',
+        ...data
+      })
+    }),
   // DPDP Statutory Compliance
   recordDPDPConsent: (data: any) =>
     fetchApi('/compliance/dpdp/consent', { method: 'POST', body: JSON.stringify(data) }),

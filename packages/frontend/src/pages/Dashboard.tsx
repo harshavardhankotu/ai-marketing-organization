@@ -30,6 +30,8 @@ import {
 } from 'lucide-react';
 import { formatINR } from '@ai-marketing/shared';
 import { api } from '../services/api.js';
+import { MultiAssetNavWidget } from '../components/dashboard/MultiAssetNavWidget.js';
+import { FirstSaleCommandCenter } from '../components/dashboard/FirstSaleCommandCenter.js';
 
 interface DashboardProps {
   metrics: any;
@@ -121,6 +123,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
           <span className="text-xs text-slate-300 font-semibold">Harsha Vardhan Kotu</span>
         </div>
       </div>
+
+      {/* Single-Owner First-Sale Execution Console (Live Harvest, Top EV Deals, ₹499 Audits, Brevo Outreach) */}
+      <FirstSaleCommandCenter />
 
       {/* Welcome Banner */}
       <div className="p-6 rounded-2xl bg-gradient-to-r from-slate-900 via-slate-800 to-cyan-950/40 border border-slate-700/80 shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -231,7 +236,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
             <span className="text-2xl font-bold text-white">{formatINR(realRevenueINR)}</span>
           </div>
           <p className="text-xs text-slate-400 mt-4">
-            Awaiting clinic payment: <span className="text-slate-200 font-semibold">{realCustomers > 0 ? 'Converted' : '₹0 (Pending)'}</span>
+            Customer settlement: <span className="text-slate-200 font-semibold">{realCustomers > 0 ? 'Converted' : '₹0 (Pending)'}</span>
           </p>
         </div>
 
@@ -245,7 +250,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
             <span className="text-xs text-slate-400">/ live campaign</span>
           </div>
           <p className="text-xs text-slate-400 mt-4 flex items-center gap-1 font-medium">
-            Historical Seed Ad Spend: <span className="text-slate-200 font-semibold">₹21,300</span>
+            Paid media budget cap: <span className="text-slate-200 font-semibold">₹0 (Zero-Budget Mode)</span>
           </p>
         </div>
 
@@ -266,6 +271,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
           </p>
         </div>
       </div>
+
+      {/* Real-Time Multi-Asset NAV Radar (Nifty 50, Nifty Next 50, Gold ETF, 10Y Gilt) */}
+      <MultiAssetNavWidget />
 
       {/* Executive Growth View: 6 Truth Panels */}
       <div className="space-y-4">
@@ -332,8 +340,10 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   <span className="font-bold text-slate-300 font-mono">{formatINR(realAttributedRevenueINR)}</span>
                 </div>
                 <div className="flex justify-between items-center p-2 rounded bg-slate-950/60 border border-slate-800/80">
-                  <span className="text-slate-400">Treatment Plan Quote</span>
-                  <span className="font-bold text-amber-300 font-mono">₹1,50,000 (Quote Only)</span>
+                  <span className="text-slate-400">Pipeline Quotes</span>
+                  <span className="font-bold text-amber-300 font-mono">
+                    {economics?.quotedPipelineINR ? `${formatINR(economics.quotedPipelineINR)} (Quote Only)` : '₹0 Quoted'}
+                  </span>
                 </div>
                 <div className="flex justify-between items-center p-2 rounded bg-slate-950/60 border border-slate-800/80">
                   <span className="text-slate-400">Synthetic / Bleed</span>
@@ -422,19 +432,25 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <div className="space-y-2 text-xs">
                 <div className="flex justify-between items-center p-2 rounded bg-slate-950/60 border border-slate-800/80">
                   <span className="text-slate-400">Memory Maturity</span>
-                  <span className="font-bold text-amber-300 font-mono">PROMISING (N=1 Observation)</span>
+                  <span className="font-bold text-amber-300 font-mono">
+                    {memories.length > 0 ? `ACTIVE (${memories.length} Observations)` : 'AWAITING_OBSERVATIONS'}
+                  </span>
                 </div>
                 <div className="flex justify-between items-center p-2 rounded bg-slate-950/60 border border-slate-800/80">
-                  <span className="text-slate-400">Lead Query Keyword</span>
-                  <span className="font-bold text-white font-mono truncate max-w-[150px]">invisalign banjara hills</span>
+                  <span className="text-slate-400">Top Recorded Pattern</span>
+                  <span className="font-bold text-white font-mono truncate max-w-[150px]">
+                    {memories[0]?.dimension || memories[0]?.pattern_key || 'None recorded yet'}
+                  </span>
                 </div>
                 <div className="flex justify-between items-center p-2 rounded bg-slate-950/60 border border-slate-800/80">
-                  <span className="text-slate-400">Catchment Audience</span>
-                  <span className="font-mono text-cyan-300 text-[11px] truncate max-w-[150px]">Banjara Hills (Inquiry Only)</span>
+                  <span className="text-slate-400">Primary Target Market</span>
+                  <span className="font-mono text-cyan-300 text-[11px] truncate max-w-[150px]">
+                    {business?.city || 'Pan-India (Online)'}
+                  </span>
                 </div>
                 <div className="flex justify-between items-center p-2 rounded bg-slate-950/60 border border-slate-800/80">
                   <span className="text-slate-400">Knowledge Graph Edge</span>
-                  <span className="font-bold text-amber-400 font-mono">POSSIBLY_ATTRIBUTED_TO</span>
+                  <span className="font-bold text-amber-400 font-mono">EVIDENCE_GATED</span>
                 </div>
               </div>
             </div>
@@ -486,7 +502,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
             <div className="flex items-center justify-between mb-4">
               <h3 className="font-bold text-base text-white flex items-center gap-2">
                 <Compass className="w-4 h-4 text-cyan-400" />
-                Active Campaigns ({campaigns.length || 1})
+                Active Campaigns ({campaigns.length})
               </h3>
               <button 
                 onClick={() => onNavigateTab('campaigns')}
@@ -496,72 +512,66 @@ export const Dashboard: React.FC<DashboardProps> = ({
               </button>
             </div>
 
-            <div className="space-y-3">
-              {(campaigns.length > 0 ? campaigns : [
-                {
-                  id: 'cmp_hyd_01',
-                  title: 'Hyderabad Smile Transformation Campaign',
-                  objective: 'Acquire qualified patient consultations for Clear Aligners & Implants',
-                  channels: ['WHATSAPP', 'GOOGLE_BUSINESS_PROFILE', 'INSTAGRAM'],
-                  budget_inr: 50000,
-                  spent_inr: 18500,
-                  target_qualified_leads: 100,
-                  achieved_qualified_leads: 32,
-                  status: 'ACTIVE'
-                }
-              ]).map(c => (
-                <div key={c.id} className="p-4 rounded-lg bg-slate-800/60 border border-slate-700/60 hover:border-slate-600 transition-all">
-                  <div className="flex items-center justify-between">
-                    <h4 className="font-semibold text-sm text-slate-100">{c.title}</h4>
-                    <span className="px-2 py-0.5 rounded text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                      {c.status}
-                    </span>
+            {campaigns.length === 0 ? (
+              <div className="p-4 rounded-lg bg-slate-800/40 border border-slate-800 text-xs text-slate-400">
+                No active campaigns stored yet. Open Campaigns or run a Growth Cycle to create verified campaigns.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {campaigns.slice(0, 4).map(c => (
+                  <div key={c.id} className="p-4 rounded-lg bg-slate-800/60 border border-slate-700/60 hover:border-slate-600 transition-all">
+                    <div className="flex items-center justify-between">
+                      <h4 className="font-semibold text-sm text-slate-100">{c.title}</h4>
+                      <span className="text-xs font-semibold text-emerald-400 font-mono">
+                        {c.status}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-400 mt-1">{c.objective}</p>
+                    <div className="mt-3 flex flex-wrap items-center gap-4 text-xs text-slate-300">
+                      <div>Budget: <span className="font-semibold text-slate-100">{formatINR(c.budget_inr || 0)}</span></div>
+                      <div>Spent: <span className="font-semibold text-slate-100">{formatINR(c.spent_inr || 0)}</span></div>
+                      <div>Leads: <span className="font-semibold text-cyan-400">{c.achieved_qualified_leads || 0}</span> / {c.target_qualified_leads || 0}</div>
+                    </div>
                   </div>
-                  <p className="text-xs text-slate-400 mt-1">{c.objective}</p>
-                  <div className="mt-3 flex flex-wrap items-center gap-4 text-xs text-slate-300">
-                    <div>Budget: <span className="font-semibold text-slate-100">{formatINR(c.budget_inr)}</span></div>
-                    <div>Spent: <span className="font-semibold text-slate-100">{formatINR(c.spent_inr || 0)}</span></div>
-                    <div>Leads: <span className="font-semibold text-cyan-400">{c.achieved_qualified_leads || 32}</span> / {c.target_qualified_leads}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
 
-          {/* AI Organization Actionable Recommendations */}
+          {/* Live Revenue Execution Priorities */}
           <div className="p-5 rounded-xl bg-slate-900 border border-slate-800">
             <h3 className="font-bold text-base text-white flex items-center gap-2 mb-4">
               <Sparkles className="w-4 h-4 text-cyan-400" />
-              Strategic Recommendations from Control Plane
+              Next Revenue Actions (Verified Channels)
             </h3>
 
             <div className="space-y-3">
               <div className="p-4 rounded-lg bg-cyan-950/20 border border-cyan-500/30 text-xs">
                 <div className="flex items-center justify-between">
-                  <span className="font-bold text-cyan-400">Scale WhatsApp Educational Video Sequence</span>
-                  <span className="text-slate-400">Confidence: 94%</span>
+                  <span className="font-bold text-cyan-400">Distribute Top EV/100 Affiliate Deals (#Ad)</span>
+                  <span className="text-slate-400 font-mono">Cuelinks 331585 · Amazon.in</span>
                 </div>
                 <p className="text-slate-300 mt-1.5 leading-relaxed">
-                  WhatsApp educational messages demonstrating 3D smile design preview generated <span className="text-cyan-300 font-semibold">2.3x higher appointment show-up rate</span> than direct promotional discounts over the last 21 days in Banjara Hills. Increase WhatsApp allocation from 30% to 50%.
+                  Use the First-Sale Execution Console above to trigger live Cuelinks &amp; Amazon.in deal hydration and share tracked <span className="font-mono text-cyan-300">/api/v1/public/deals/:id/redirect</span> links ranked by expected profit per 100 visitors.
                 </p>
                 <div className="mt-3 flex items-center gap-2">
                   <button 
                     onClick={onTriggerCycle}
                     className="px-3 py-1 rounded bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs"
                   >
-                    Apply Strategy Evolution
+                    Trigger Growth Cycle
                   </button>
-                  <span className="text-slate-500 text-[11px]">Reversible in 1-click</span>
+                  <span className="text-slate-500 text-[11px]">Zero paid media spend</span>
                 </div>
               </div>
 
               <div className="p-4 rounded-lg bg-slate-800/40 border border-slate-700 text-xs">
                 <div className="flex items-center justify-between">
-                  <span className="font-bold text-slate-200">Google Business Profile Local SEO Audit</span>
-                  <span className="text-slate-400">Confidence: 89%</span>
+                  <span className="font-bold text-slate-200">Approve ₹499 SiteFix Audit Outreach Drafts</span>
+                  <span className="text-slate-400 font-mono">Human-Gated Brevo Dispatch</span>
                 </div>
                 <p className="text-slate-400 mt-1">
-                  Agent <span className="text-slate-300 font-mono">res-09 (Local Market Research)</span> identified 440 monthly searches for "Painless Implants Gachibowli" with low competitor map-pack density. Schedule 2 localized clinic photo updates weekly.
+                  Review completed technical audits and explicitly click <span className="text-slate-200">Approve &amp; Send via Brevo</span> in the First-Sale Console so every outbound email is owner-verified and tracked to Direct UPI settlement.
                 </p>
               </div>
             </div>
@@ -586,7 +596,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                 <div className="bg-cyan-500 h-2 rounded-full" style={{ width: `${progressPercent}%` }}></div>
               </div>
               <div className="mt-3 flex justify-between text-xs text-slate-400">
-                <span>Current: <strong className="text-white">{primaryGoal.current_value || 32}</strong></span>
+                <span>Current: <strong className="text-white">{primaryGoal.current_value || 0}</strong></span>
                 <span>Target: <strong className="text-white">{primaryGoal.target_value}</strong></span>
               </div>
             </div>
@@ -597,7 +607,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
             <div className="flex items-center justify-between mb-3">
               <h3 className="font-bold text-base text-white flex items-center gap-2">
                 <FlaskConical className="w-4 h-4 text-cyan-400" />
-                Active Experiments
+                Active Experiments ({experiments.length})
               </h3>
               <button 
                 onClick={() => onNavigateTab('experiments')}
@@ -607,32 +617,29 @@ export const Dashboard: React.FC<DashboardProps> = ({
               </button>
             </div>
 
-            <div className="space-y-3">
-              {(experiments.length > 0 ? experiments.slice(0, 2) : [
-                {
-                  id: 'exp_01',
-                  title: 'Transparent EMI Ad Copy Test',
-                  hypothesis: 'Displaying 0% EMI pricing in INR increases patient consultation inquiries by +25%',
-                  status: 'CONCLUDED',
-                  outcome: 'SCALE',
-                  confidence_score: 0.98
-                }
-              ]).map(e => (
-                <div key={e.id} className="p-3.5 rounded-lg bg-slate-800/60 border border-slate-700/60 text-xs">
-                  <div className="flex items-center justify-between">
-                    <span className="font-semibold text-slate-200">{e.title}</span>
-                    <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-cyan-500/10 text-cyan-400">
-                      {e.outcome || e.status}
-                    </span>
+            {experiments.length === 0 ? (
+              <p className="text-xs text-slate-400">
+                No active split-test experiments returned yet. Open Lab to inspect storefront CTA optimization experiments.
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {experiments.slice(0, 3).map(e => (
+                  <div key={e.id} className="p-3.5 rounded-lg bg-slate-800/60 border border-slate-700/60 text-xs">
+                    <div className="flex items-center justify-between">
+                      <span className="font-semibold text-slate-200">{e.title}</span>
+                      <span className="text-[10px] font-bold text-cyan-400 font-mono">
+                        {e.outcome || e.status}
+                      </span>
+                    </div>
+                    <p className="text-slate-400 mt-1 text-[11px] line-clamp-2">{e.hypothesis}</p>
+                    <div className="mt-2 text-[10px] text-slate-500 flex items-center gap-1">
+                      <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                      <span>Confidence: {typeof e.confidence_score === 'number' ? `${(e.confidence_score * 100).toFixed(0)}%` : 'Evaluating'}</span>
+                    </div>
                   </div>
-                  <p className="text-slate-400 mt-1 text-[11px] line-clamp-2">{e.hypothesis}</p>
-                  <div className="mt-2 text-[10px] text-slate-500 flex items-center gap-1">
-                    <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-                    <span>Statistically significant ({(e.confidence_score * 100).toFixed(0)}% confidence)</span>
-                  </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -709,101 +716,101 @@ export const Dashboard: React.FC<DashboardProps> = ({
           </div>
         </div>
 
-        {/* 10 Organic Channels Active Portfolio */}
+        {/* Active Zero-Budget Channels */}
         <div className="space-y-3">
           <div className="flex items-center justify-between">
             <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
               <Share2 className="w-3.5 h-3.5 text-emerald-400" />
-              Active Zero-Budget Channels ({organicChannels.length || 10})
+              Active Zero-Budget Channels ({organicChannels.length})
             </h4>
             <span className="text-[11px] text-slate-400 font-mono">100% Free / Organic</span>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-            {(organicChannels.length > 0 ? organicChannels : [
-              { channel: 'GOOGLE_BUSINESS_PROFILE', callToAction: 'Book 3D Digital Smile Scan via WhatsApp', strategy: 'Local Pack SEO for clear aligners Banjara Hills' },
-              { channel: 'ORGANIC_SEO', callToAction: 'Check Aligner Candidacy Online Free', strategy: 'Long-tail guides for Banjara Hills & Gachibowli' },
-              { channel: 'WHATSAPP_INBOUND', callToAction: 'Chat with Care Desk Now', strategy: 'Direct inbound triage & automated directions' },
-              { channel: 'INSTAGRAM_ORGANIC', callToAction: 'DM "SMILE" for Free 3D Simulation', strategy: 'Doctor-led 3D aligner video reels' },
-              { channel: 'REFERRALS', callToAction: 'Gift a Friend Free 3D Scan', strategy: 'Patient family & friend scan privileges' },
-              { channel: 'LOCAL_PARTNERSHIPS', callToAction: 'Book Partner Exclusive Clinic Visit', strategy: 'Banjara Hills wellness & fitness tie-ups' }
-            ]).map((c, i) => (
-              <div key={i} className="p-3.5 rounded-xl bg-slate-900/80 border border-slate-800 flex flex-col justify-between space-y-2">
-                <div>
-                  <div className="flex items-center justify-between text-xs font-bold">
-                    <span className="text-emerald-400 font-mono text-[11px]">{c.channel}</span>
-                    <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-emerald-500/10 text-emerald-300">ACTIVE</span>
+          {organicChannels.length === 0 ? (
+            <p className="text-xs text-slate-400">No organic channels configured in workspace DB yet.</p>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+              {organicChannels.slice(0, 6).map((c, i) => (
+                <div key={i} className="p-3.5 rounded-xl bg-slate-900/80 border border-slate-800 flex flex-col justify-between space-y-2">
+                  <div>
+                    <div className="flex items-center justify-between text-xs font-bold">
+                      <span className="text-emerald-400 font-mono text-[11px]">{c.channel}</span>
+                      <span className="text-[10px] font-mono text-emerald-300">ACTIVE</span>
+                    </div>
+                    <p className="text-slate-300 text-xs mt-1.5 line-clamp-2">{c.strategy}</p>
                   </div>
-                  <p className="text-slate-300 text-xs mt-1.5 line-clamp-2">{c.strategy}</p>
+                  <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-[11px]">
+                    <span className="text-slate-400">CTA:</span>
+                    <span className="text-slate-200 font-medium truncate max-w-[180px]">{c.callToAction}</span>
+                  </div>
                 </div>
-                <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-[11px]">
-                  <span className="text-slate-400">CTA:</span>
-                  <span className="text-slate-200 font-medium truncate max-w-[180px]">{c.callToAction}</span>
-                </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
 
-        {/* Local Landing Pages Showcase */}
+        {/* Storefront & Public Funnel Routes */}
         <div className="space-y-3">
           <div className="flex items-center justify-between">
             <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
               <FileText className="w-3.5 h-3.5 text-cyan-400" />
-              Verified Local Landing Pages (No Doorway Spams)
+              Verified Storefront Routes ({landingPages.length > 0 ? landingPages.length : 3})
             </h4>
-            <span className="text-[11px] text-slate-400 font-mono">Schema.org LocalBusiness Validated</span>
+            <span className="text-[11px] text-slate-400 font-mono">Live Owner Distribution Surfaces</span>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            {[
-              { slug: '/aligners-hyderabad', title: 'Hyderabad Metro Aligner Centre', location: 'Hyderabad Metro (Banjara Hills & Gachibowli)', cta: 'Book Free 3D Digital Smile Consultation' },
-              { slug: '/aligners-banjara-hills', title: 'Banjara Hills Clinic (Road No. 12)', location: 'Banjara Hills, Hyderabad', cta: 'Reserve Banjara Hills 3D iTero Scan' },
-              { slug: '/aligners-gachibowli', title: 'Financial District & Tech Hub', location: 'Gachibowli & HITEC City', cta: 'Book Evening / Weekend Aligner Slot' },
-            ].map((p, i) => (
+            {(landingPages.length > 0 ? landingPages.slice(0, 3).map((p: any) => ({
+              slug: p.slug || p.path || '/deals',
+              title: p.title || 'Published Landing Page',
+              location: p.location || p.category || 'Pan-India',
+              cta: p.cta || 'View Verified Offer'
+            })) : [
+              { slug: '/deals', title: 'Verified Affiliate Deals Feed', location: 'Cuelinks 331585 & Amazon.in', cta: 'Tracked /api/v1/public/deals/:id/redirect' },
+              { slug: '/tools/site-audit', title: 'SiteFix AI Technical Audit & ₹499 Fixpack', location: 'Direct UPI Instant Checkout', cta: 'Generate Free Audit Preview' },
+              { slug: '/tools/financial-radar', title: 'Multi-Asset Benchmark NAV Radar', location: 'Live AMFI MFAPI Feed', cta: 'Inspect Risk-Adjusted NAV Series' }
+            ]).map((p, i) => (
               <div key={i} className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-white">{p.title}</span>
-                  <span className="text-[10px] font-mono text-cyan-400 bg-cyan-500/10 px-1.5 py-0.5 rounded">{p.slug}</span>
+                  <span className="text-[10px] font-mono text-cyan-400">{p.slug}</span>
                 </div>
                 <p className="text-xs text-slate-400">{p.location}</p>
                 <div className="pt-2 border-t border-slate-800 text-[11px] text-emerald-400 font-medium flex items-center gap-1">
-                  <Check className="w-3 h-3" /> CTA: {p.cta}
+                  <Check className="w-3 h-3" /> {p.cta}
                 </div>
               </div>
             ))}
           </div>
         </div>
 
-        {/* Zero-Budget Experiments Showcase */}
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
-              <FlaskConical className="w-3.5 h-3.5 text-purple-400" />
-              Zero-Budget Acquisition Experiments (Budget = ₹0)
-            </h4>
-            <span className="text-[11px] text-slate-400 font-mono">Paid Media Spend: ₹0</span>
-          </div>
+        {/* Zero-Budget Experiments */}
+        {zeroExperiments.length > 0 && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+                <FlaskConical className="w-3.5 h-3.5 text-purple-400" />
+                Zero-Budget Acquisition Experiments ({zeroExperiments.length})
+              </h4>
+              <span className="text-[11px] text-slate-400 font-mono">Paid Media Spend: ₹0</span>
+            </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            {(zeroExperiments.length > 0 ? zeroExperiments : [
-              { title: 'Doctor Explainer Reels vs Carousel', hypothesis: 'Doctor reels explaining 3D digital aligners drive higher direct WhatsApp inquiries than static infographics.', channel: 'INSTAGRAM_ORGANIC' },
-              { title: 'Banjara Hills Landing Page vs Metro Page', hypothesis: 'Hyper-local Banjara Hills landing page with clinic address achieves higher booking rate than city-wide page.', channel: 'ORGANIC_SEO' },
-              { title: 'Direct WhatsApp Chat vs Web Form', hypothesis: 'Direct 1-click WhatsApp chat CTA generates 2x more verified inquiries than multi-field web forms.', channel: 'WHATSAPP_INBOUND' }
-            ]).map((exp, i) => (
-              <div key={i} className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 space-y-2 text-xs">
-                <div className="flex items-center justify-between font-bold">
-                  <span className="text-slate-200">{exp.title}</span>
-                  <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-purple-500/10 text-purple-400">₹0 BUDGET</span>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              {zeroExperiments.slice(0, 3).map((exp, i) => (
+                <div key={i} className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 space-y-2 text-xs">
+                  <div className="flex items-center justify-between font-bold">
+                    <span className="text-slate-200">{exp.title}</span>
+                    <span className="text-[10px] font-mono text-purple-400">₹0 BUDGET</span>
+                  </div>
+                  <p className="text-slate-400 text-[11px] line-clamp-3">{exp.hypothesis}</p>
+                  <div className="pt-2 border-t border-slate-800 text-[10px] text-slate-500 font-mono">
+                    Channel: <span className="text-slate-300">{exp.channel}</span>
+                  </div>
                 </div>
-                <p className="text-slate-400 text-[11px] line-clamp-3">{exp.hypothesis}</p>
-                <div className="pt-2 border-t border-slate-800 text-[10px] text-slate-500 font-mono">
-                  Channel: <span className="text-slate-300">{exp.channel}</span>
-                </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );

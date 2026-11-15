@@ -93,28 +93,35 @@ export class D1RevenueRepository {
     return this.d1.isRemoteD1Configured();
   }
 
+  public isRemoteD1ReadAllowed(): boolean {
+    return this.d1.isRemoteD1ReadAllowed();
+  }
+
+  public isRemoteD1WriteAllowed(): boolean {
+    return this.d1.isRemoteD1WriteAllowed();
+  }
+
   /**
    * Executes a write operation for a revenue-critical table.
-   * In production, routes through Cloudflare D1 exclusively; throws if unconfigured or fails.
-   * In local/test, executes via SQLite.
+   * Only writes to remote Cloudflare D1 when RENDER === 'true' or ALLOW_REMOTE_D1_WRITES === 'true'
+   * (outside Vitest). Non-Render dev/test sandboxes write exclusively to local SQLite.
    */
   public async executeWrite(
     table: D1RevenueCriticalTable,
     sql: string,
     params: any[] = []
   ): Promise<{ rowsAffected: number; source: 'CLOUDFLARE_D1' | 'PERSISTENT_SQLITE' }> {
-    if (isProduction()) {
-      if (this.d1.isRemoteD1Configured()) {
-        const res = await this.d1.executeQuery(sql, params, true, 'P0');
-        try {
-          const db = getDb();
-          db.prepare(sql).run(...params);
-        } catch {}
-        return { rowsAffected: res.rowsAffected, source: 'CLOUDFLARE_D1' };
-      }
-      if (!process.env.VITEST) {
-        throw new Error(`PERSISTENCE_FAULT: Table '${table}' write requires durable Cloudflare D1 storage in production. SQLite fallback is strictly prohibited.`);
-      }
+    const shouldSyncRemoteD1 = this.d1.isRemoteD1WriteAllowed();
+    if (shouldSyncRemoteD1) {
+      const res = await this.d1.executeQuery(sql, params, true, 'P0');
+      try {
+        const db = getDb();
+        db.prepare(sql).run(...params);
+      } catch {}
+      return { rowsAffected: res.rowsAffected, source: res.source };
+    }
+    if (isProduction() && !process.env.VITEST && !this.d1.isRemoteD1Configured()) {
+      throw new Error(`PERSISTENCE_FAULT: Table '${table}' write requires durable Cloudflare D1 storage in production. SQLite fallback is strictly prohibited.`);
     }
     const db = getDb();
     const info = db.prepare(sql).run(...params);
@@ -123,34 +130,33 @@ export class D1RevenueRepository {
 
   /**
    * Executes a batch of write operations atomically across revenue-critical tables.
-   * In production, routes through Cloudflare D1 exclusively; throws if unconfigured or fails.
-   * In local/test, executes via SQLite transaction.
+   * Only writes to remote Cloudflare D1 when RENDER === 'true' or ALLOW_REMOTE_D1_WRITES === 'true'.
    */
   public async executeBatch(
     operations: Array<{ table: D1RevenueCriticalTable; sql: string; params?: any[] }>
   ): Promise<{ rowsAffected: number; source: 'CLOUDFLARE_D1' | 'PERSISTENT_SQLITE' }> {
+    const shouldSyncRemoteD1 = this.d1.isRemoteD1WriteAllowed();
     if (operations.length === 0) {
-      return { rowsAffected: 0, source: isProduction() && this.d1.isRemoteD1Configured() ? 'CLOUDFLARE_D1' : 'PERSISTENT_SQLITE' };
+      return { rowsAffected: 0, source: shouldSyncRemoteD1 ? 'CLOUDFLARE_D1' : 'PERSISTENT_SQLITE' };
     }
 
-    if (isProduction()) {
-      if (this.d1.isRemoteD1Configured()) {
-        const res = await this.d1.executeBatch(operations.map(o => ({ sql: o.sql, params: o.params })), 'P0');
-        try {
-          const db = getDb();
-          const syncBatch = db.transaction((ops: typeof operations) => {
-            for (const op of ops) {
-              db.prepare(op.sql).run(...(op.params || []));
-            }
-          });
-          syncBatch(operations);
-        } catch {}
-        return { rowsAffected: res.rowsAffected, source: 'CLOUDFLARE_D1' };
-      }
-      if (!process.env.VITEST) {
-        const tableList = operations.map(o => o.table).join(', ');
-        throw new Error(`PERSISTENCE_FAULT: Batch write on [${tableList}] requires durable Cloudflare D1 storage in production. SQLite fallback is strictly prohibited.`);
-      }
+    if (shouldSyncRemoteD1) {
+      const res = await this.d1.executeBatch(operations.map(o => ({ sql: o.sql, params: o.params })), 'P0');
+      try {
+        const db = getDb();
+        const syncBatch = db.transaction((ops: typeof operations) => {
+          for (const op of ops) {
+            db.prepare(op.sql).run(...(op.params || []));
+          }
+        });
+        syncBatch(operations);
+      } catch {}
+      return { rowsAffected: res.rowsAffected, source: res.source };
+    }
+
+    if (isProduction() && !process.env.VITEST && !this.d1.isRemoteD1Configured()) {
+      const tableList = operations.map(o => o.table).join(', ');
+      throw new Error(`PERSISTENCE_FAULT: Batch write on [${tableList}] requires durable Cloudflare D1 storage in production. SQLite fallback is strictly prohibited.`);
     }
 
     const db = getDb();
@@ -167,22 +173,21 @@ export class D1RevenueRepository {
 
   /**
    * Executes a read operation for a revenue-critical table.
-   * In production, routes through Cloudflare D1 exclusively; throws if unconfigured or fails.
-   * In local/test, executes via SQLite.
+   * Reads from remote Cloudflare D1 when isRemoteD1ReadAllowed() is true (production / Render / explicit opt-in),
+   * and reads local SQLite cleanly in non-Render dev/test or when daily quota circuit breaker is tripped.
    */
   public async executeRead<T = any>(
     table: D1RevenueCriticalTable,
     sql: string,
     params: any[] = []
   ): Promise<{ results: T[]; source: 'CLOUDFLARE_D1' | 'PERSISTENT_SQLITE' }> {
-    if (isProduction()) {
-      if (this.d1.isRemoteD1Configured()) {
-        const res = await this.d1.executeQuery<T>(sql, params, false, 'P0');
-        return { results: res.results, source: 'CLOUDFLARE_D1' };
-      }
-      if (!process.env.VITEST) {
-        throw new Error(`PERSISTENCE_FAULT: Table '${table}' read requires durable Cloudflare D1 storage in production. SQLite fallback is strictly prohibited.`);
-      }
+    const shouldQueryRemoteD1 = this.d1.isRemoteD1ReadAllowed();
+    if (shouldQueryRemoteD1) {
+      const res = await this.d1.executeQuery<T>(sql, params, false, 'P0');
+      return { results: res.results, source: res.source };
+    }
+    if (isProduction() && !process.env.VITEST) {
+      throw new Error(`PERSISTENCE_FAULT: Table '${table}' read requires durable Cloudflare D1 storage in production. SQLite fallback is strictly prohibited.`);
     }
     const db = getDb();
     const results = db.prepare(sql).all(...params) as T[];

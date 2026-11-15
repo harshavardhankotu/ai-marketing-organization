@@ -1403,6 +1403,8 @@ describe('Stage D & Stage E — Autonomous Daily Deals and Production Conversion
       // Seed active campaign missing payout_rate + matching public_deal + quarantined test row
       db.prepare('DELETE FROM cuelinks_campaigns').run();
       db.prepare('DELETE FROM public_deals').run();
+      (AutonomousDealDiscoveryEngine.getInstance() as any).dealsMap?.clear?.();
+      (AutonomousDealDiscoveryEngine.getInstance() as any).dealSlugMap?.clear?.();
       db.prepare(`
         INSERT INTO cuelinks_campaigns (
           campaign_id, name, merchant_domain, status, payout_model, payout_rate, cookie_days, category, verification_source
@@ -1605,9 +1607,13 @@ describe('Stage D & Stage E — Autonomous Daily Deals and Production Conversion
       MultiAssetOpportunityRadar.resetInstance();
       const radar = MultiAssetOpportunityRadar.getInstance();
       const mockFetch = vi.fn().mockImplementation(async (url: string) => {
-        const scheme = url.includes('119063')
-          ? { code: '119063', name: 'HDFC Gold ETF Fund of Fund - Direct Plan - Growth' }
-          : { code: '120716', name: 'UTI Nifty 50 Index Fund - Direct Plan - Growth' };
+        const scheme = url.includes('120685')
+          ? { code: '120685', name: 'ICICI Prudential Regular Gold Savings Fund (FOF) - Direct Plan - Growth' }
+          : url.includes('120684')
+            ? { code: '120684', name: 'ICICI Prudential Nifty Next 50 Index Fund - Direct Plan - Growth' }
+            : url.includes('131061')
+              ? { code: '131061', name: 'SBI Magnum Constant Maturity Fund - Direct Plan - Growth' }
+              : { code: '120716', name: 'UTI Nifty 50 Index Fund - Direct Plan - Growth' };
         return new Response(
           JSON.stringify({
             meta: { scheme_name: scheme.name },
@@ -1623,7 +1629,7 @@ describe('Stage D & Stage E — Autonomous Daily Deals and Production Conversion
 
       const summaryRadar = await radar.getRadarSummary({ skipLiveNetwork: false, fetchFn: mockFetch });
       const liveMfSnaps = summaryRadar.researchSnapshots.filter(s => s.dataFreshness === 'LIVE_DATED_PROVIDER_SERIES');
-      expect(liveMfSnaps.length).toBe(2);
+      expect(liveMfSnaps.length).toBe(6);
       expect(liveMfSnaps[0].latestObservationDate).toBe('11-11-2026');
       const laneECluster = summaryRadar.arbitrageClusters.find(c => c.clusterId === 'cluster_lane_e_financial_benchmarks');
       expect(laneECluster?.actionableOfferPath).toBe('/tools/financial-radar');

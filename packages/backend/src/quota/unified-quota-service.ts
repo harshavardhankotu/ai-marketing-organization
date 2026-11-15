@@ -635,6 +635,37 @@ export class UnifiedQuotaService {
           ]
         ).catch(() => {});
       }
+
+      // Mirror Gemini execution into provider_quota_ledger ('gemini_flash') so multi-provider telemetry stays unified
+      try {
+        const gfSpec = AUTONOMOUS_PROVIDER_SPECS.gemini_flash;
+        const gfWindowKey = UnifiedQuotaService.computeWindowKey(gfSpec.windowType);
+        const gfInsertSql = `
+          INSERT INTO provider_quota_ledger (
+            provider, window_key, window_type, configured_status, cap_limit, safety_reserve,
+            used_count, reserved_count, failed_count, last_reset_at, next_reset_at, circuit_breaker_state
+          ) VALUES ('gemini_flash', ?, ?, 'CONFIGURED', ?, ?, 0, 0, 0, datetime('now'), datetime('now', '+1 day'), 'CLOSED')
+          ON CONFLICT(provider, window_key) DO NOTHING;
+        `;
+        const gfUpdateSql = `
+          UPDATE provider_quota_ledger
+          SET used_count = used_count + ?,
+              failed_count = failed_count + ?,
+              updated_at = datetime('now')
+          WHERE provider = 'gemini_flash' AND window_key = ?;
+        `;
+        const usedInc = success ? 1 : 0;
+        const failInc = success ? 0 : 1;
+        db.prepare(gfInsertSql).run(gfWindowKey, gfSpec.windowType, gfSpec.capLimit, gfSpec.safetyReserve);
+        db.prepare(gfUpdateSql).run(usedInc, failInc, gfWindowKey);
+        if (isProduction() || this.d1Repo.isRemoteD1Configured()) {
+          this.d1Repo.executeWrite('provider_quota_ledger', gfInsertSql, [
+            gfWindowKey, gfSpec.windowType, gfSpec.capLimit, gfSpec.safetyReserve
+          ]).then(() =>
+            this.d1Repo.executeWrite('provider_quota_ledger', gfUpdateSql, [usedInc, failInc, gfWindowKey])
+          ).catch(() => {});
+        }
+      } catch {}
     } else if (provider === 'TAVILY') {
       const credits = (row.credits_consumed_month || 0) + creditsConsumed;
       const appLimit = row.application_limit || 800;

@@ -9,12 +9,93 @@ import {
   FindingCategory,
   FindingSeverity,
   FindingStatus,
+  ProspectTriggerSignals,
   SiteAuditMetrics,
   SiteAuditPreview,
   SiteAuditResult,
   SiteAuditScanRequest
 } from './site-audit-types.js';
 import { SecureFetchResult, SecureUrlFetcher } from './secure-url-fetcher.js';
+
+const NATIONAL_CHAIN_OR_DIRECTORY_DOMAINS = [
+  'careerlauncher.com',
+  'time4education.com',
+  'justdial.com',
+  'indiamart.com',
+  'sulekha.com',
+  'practo.com',
+  '1mg.com',
+  'pharmeasy.in',
+  'apollo247.com',
+  'byjus.com',
+  'allen.ac.in',
+  'aakash.ac.in',
+  'urbancompany.com',
+  'olx.in',
+  'quikr.com',
+  'amazon.in',
+  'amazon.com',
+  'flipkart.com',
+  'myntra.com',
+  'ajio.com',
+  'nykaa.com',
+  'swiggy.com',
+  'zomato.com',
+  'makemytrip.com',
+  'narayanagroup.com',
+  'linkedin.com',
+  'facebook.com',
+  'instagram.com',
+  'youtube.com',
+  'wikipedia.org'
+];
+
+const REGULATED_HEALTHCARE_PATTERN =
+  /(dental|dentist|clinic|hospital|medical|doctor|ortho|pharma|ivf|fertility|ayurved|healthcare|surgic|pathology|diagnostic|cardio|neuro|pediatric|dermatolog|ophthalmolog|physiotherap)|\b(health|dr|md|mbbs|bds|mds)\b/i;
+
+export function isRegulatedHealthcareTarget(
+  domainOrName?: string | null,
+  categoryOrSegment?: string | null
+): boolean {
+  const combined = `${String(domainOrName || '')} ${String(categoryOrSegment || '')}`.trim().toLowerCase();
+  if (!combined) return false;
+  return REGULATED_HEALTHCARE_PATTERN.test(combined);
+}
+
+export function isValidReachableEmail(email?: string | null): boolean {
+  const clean = String(email || '').trim().toLowerCase();
+  if (!clean || !/^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/.test(clean)) {
+    return false;
+  }
+  const [localPart, domainPart] = clean.split('@');
+  if (!localPart || !domainPart) return false;
+  if (
+    localPart.startsWith('noreply') ||
+    localPart.startsWith('no-reply') ||
+    localPart.startsWith('donotreply') ||
+    localPart.startsWith('do-not-reply') ||
+    localPart === 'example' ||
+    localPart === 'test' ||
+    localPart === 'placeholder'
+  ) {
+    return false;
+  }
+  if (
+    domainPart === 'example.com' ||
+    domainPart.endsWith('.png') ||
+    domainPart.endsWith('.jpg') ||
+    domainPart.endsWith('.jpeg') ||
+    domainPart.endsWith('.svg') ||
+    domainPart.endsWith('.webp') ||
+    domainPart.includes('sentry.') ||
+    domainPart.includes('wixpress.com') ||
+    domainPart.includes('w3.org') ||
+    domainPart.includes('placeholder')
+  ) {
+    return false;
+  }
+  return true;
+}
 
 export class SiteAuditScanner {
   private fetcher = new SecureUrlFetcher();
@@ -100,6 +181,13 @@ export class SiteAuditScanner {
       )
     };
 
+    const prospectSignals = this.detectProspectSignals(
+      html,
+      finalUrlObj.hostname,
+      findings,
+      request.businessName
+    );
+
     return {
       auditId,
       url: rawUrl,
@@ -110,6 +198,7 @@ export class SiteAuditScanner {
       findings,
       metrics,
       preview,
+      prospectSignals,
       disclosures: {
         notFullCrawl: true,
         noRankGuarantee: true,
@@ -841,6 +930,110 @@ export class SiteAuditScanner {
       `DISCLOSURE: This score measures technical standards conformance; it does NOT predict search engine rankings.`;
 
     return { score, overallStatus, explanation };
+  }
+
+  /**
+   * Computes Autonomous Ad-Pixel Prospect Hunter signals & buying-trigger score
+   * without requiring paid third-party intelligence APIs.
+   *
+   * Scoring:
+   *  +3: Active paid ad pixels (Meta Pixel / Google Ads AW- / Google Tag Manager)
+   *  +2: Conversion leak (missing direct booking/WhatsApp/click-to-call CTA)
+   *  +2: Reachable decision-maker/business email on site
+   *  +1: >= 2 technical SEO/schema defects
+   *  -10: National directory / enterprise chain blocklist
+   */
+  public detectProspectSignals(
+    html: string,
+    domainOrUrl: string,
+    findings: AuditFinding[] = [],
+    businessName?: string,
+    businessCategory?: string
+  ): ProspectTriggerSignals {
+    const rawHtml = String(html || '');
+    const adPixelVendors: string[] = [];
+    if (/fbq\s*\(|connect\.facebook\.net/i.test(rawHtml)) {
+      adPixelVendors.push('META_PIXEL');
+    }
+    if (/gtag\s*\(\s*['"]config['"]\s*,\s*['"]AW-|googleadservices\.com\/pagead\/conversion/i.test(rawHtml)) {
+      adPixelVendors.push('GOOGLE_ADS');
+    }
+    if (/googletagmanager\.com\/gtm\.js/i.test(rawHtml)) {
+      adPixelVendors.push('GTM');
+    }
+    const hasPaidAdPixel = adPixelVendors.length > 0;
+
+    const hasWhatsAppOrDirectBooking =
+      /(wa\.me\/|api\.whatsapp\.com|calendly\.com|cal\.com|href=["']tel:[^"']+["']|href=["']mailto:[^"']+["'])/i.test(rawHtml);
+    const hasConversionLeakFinding = findings.some(
+      f => f.id === 'conversion_no_visible_contact_or_cta' && f.status !== 'PASS'
+    );
+    const hasConversionLeak = hasConversionLeakFinding || !hasWhatsAppOrDirectBooking;
+
+    const emailMatches = rawHtml.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || [];
+    const discoveredEmails = Array.from(
+      new Set(
+        emailMatches
+          .map(e => e.toLowerCase().trim())
+          .filter(e => isValidReachableEmail(e))
+      )
+    ).slice(0, 5);
+    const hasReachableEmail = discoveredEmails.length > 0;
+
+    const defectCount = findings.filter(f => f.status === 'ISSUE' || f.status === 'WARNING').length;
+    const hasTechnicalSeoDefects = defectCount >= 2;
+
+    const normalizedHost = (() => {
+      const s = String(domainOrUrl || '').trim().toLowerCase();
+      try {
+        if (s.includes('://')) return new URL(s).hostname.replace(/^www\./, '');
+      } catch {}
+      return s.replace(/^www\./, '').split('/')[0];
+    })();
+    const nameLower = String(businessName || '').toLowerCase();
+    const isNationalChainOrDirectory = NATIONAL_CHAIN_OR_DIRECTORY_DOMAINS.some(
+      blocked =>
+        normalizedHost === blocked ||
+        normalizedHost.endsWith(`.${blocked}`) ||
+        (nameLower.length >= 6 && nameLower.replace(/\s+/g, '').includes(blocked.split('.')[0]))
+    );
+    const isRegulatedHealthcare =
+      isRegulatedHealthcareTarget(normalizedHost, businessCategory) ||
+      isRegulatedHealthcareTarget(businessName, businessCategory);
+
+    const eligibleForOutreach = !isRegulatedHealthcare && !isNationalChainOrDirectory && hasReachableEmail;
+
+    const baseScore =
+      (hasPaidAdPixel ? 3 : 0) +
+      (hasConversionLeak ? 2 : 0) +
+      (hasReachableEmail ? 2 : 0) +
+      (hasTechnicalSeoDefects ? 1 : 0) +
+      (isNationalChainOrDirectory ? -10 : 0);
+
+    const prospectTriggerScore = isRegulatedHealthcare ? -100 : baseScore;
+
+    const triggerTags: string[] = [];
+    if (hasPaidAdPixel) triggerTags.push('RUNNING_META_OR_GOOGLE_ADS');
+    if (hasConversionLeak) triggerTags.push('MISSING_WHATSAPP_OR_BOOKING_CTA');
+    if (hasReachableEmail) triggerTags.push('REACHABLE_DECISION_MAKER_EMAIL');
+    if (hasTechnicalSeoDefects) triggerTags.push('HIGH_DEFECT_TECHNICAL_SEO');
+    if (isNationalChainOrDirectory) triggerTags.push('DISQUALIFIED_NATIONAL_CHAIN');
+    if (isRegulatedHealthcare) triggerTags.push('DISQUALIFIED_REGULATED_HEALTHCARE');
+
+    return {
+      hasPaidAdPixel,
+      adPixelVendors,
+      hasConversionLeak,
+      hasReachableEmail,
+      discoveredEmails,
+      hasTechnicalSeoDefects,
+      defectCount,
+      isNationalChainOrDirectory,
+      isRegulatedHealthcare,
+      eligibleForOutreach,
+      prospectTriggerScore,
+      triggerTags
+    };
   }
 
   /**

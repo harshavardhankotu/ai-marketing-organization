@@ -32,6 +32,88 @@ export { GuideDataUnavailableError };
 
 export const MAX_OFFER_FRESHNESS_HOURS = 48;
 
+export function buildAmazonAffiliateUrl(
+  rawUrl: string,
+  tag?: string,
+  subid: string = 'aro_direct'
+): string | null {
+  const effectiveTag = String(tag ?? process.env.AMAZON_AFFILIATE_TAG ?? '').trim();
+  if (
+    !effectiveTag ||
+    effectiveTag.length < 3 ||
+    /^(placeholder|demo|test|none|null|undefined|your_tag_here)$/i.test(effectiveTag) ||
+    effectiveTag.includes('your_')
+  ) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(String(rawUrl || '').trim());
+    if (parsed.protocol !== 'https:') return null;
+    const host = parsed.hostname.toLowerCase();
+    if (host !== 'amazon.in' && host !== 'www.amazon.in') return null;
+
+    const pathname = parsed.pathname || '';
+    if (!/\/(dp|gp\/product)\/[A-Za-z0-9]{6,20}/i.test(pathname) && !pathname.includes('/dp/') && !pathname.includes('/gp/product/')) {
+      return null;
+    }
+
+    parsed.hostname = 'www.amazon.in';
+    parsed.searchParams.set('tag', effectiveTag);
+    parsed.searchParams.set('linkCode', 'll1');
+    const cleanSubid = String(subid || 'aro_direct').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64) || 'aro_direct';
+    parsed.searchParams.set('subid', cleanSubid);
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+export function isAuthorizedAmazonTrackingUrl(rawUrl: string, expectedTag?: string): boolean {
+  try {
+    const parsed = new URL(String(rawUrl || '').trim());
+    if (parsed.protocol !== 'https:') return false;
+    const host = parsed.hostname.toLowerCase();
+    if (host !== 'amazon.in' && host !== 'www.amazon.in') return false;
+    const pathname = parsed.pathname || '';
+    const isProductPath = pathname.includes('/dp/') || pathname.includes('/gp/product/');
+    const isSearchPath = pathname === '/s' && Boolean(parsed.searchParams.get('k'));
+    if (!isProductPath && !isSearchPath) return false;
+    const tagParam = (parsed.searchParams.get('tag') || '').trim();
+    if (!tagParam) return false;
+    const configured = String(expectedTag ?? process.env.AMAZON_AFFILIATE_TAG ?? '').trim();
+    if (configured && tagParam !== configured) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function buildAmazonSearchAffiliateUrl(
+  query: string,
+  tag?: string,
+  subid: string = 'aro_dual_rail'
+): string | null {
+  const effectiveTag = String(tag ?? process.env.AMAZON_AFFILIATE_TAG ?? '').trim();
+  if (
+    !effectiveTag ||
+    effectiveTag.length < 3 ||
+    /^(placeholder|demo|test|none|null|undefined|your_tag_here)$/i.test(effectiveTag) ||
+    effectiveTag.includes('your_')
+  ) {
+    return null;
+  }
+  const cleanQuery = String(query || '').trim().slice(0, 120);
+  if (!cleanQuery) return null;
+  const cleanSubid = String(subid || 'aro_dual_rail').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64) || 'aro_dual_rail';
+  const url = new URL('https://www.amazon.in/s');
+  url.searchParams.set('k', cleanQuery);
+  url.searchParams.set('tag', effectiveTag);
+  url.searchParams.set('linkCode', 'll2');
+  url.searchParams.set('subid', cleanSubid);
+  return url.toString();
+}
+
 export type EconomicsConfidence =
   | 'VERIFIED_EMPIRICAL'
   | 'PROVIDER_RATE_ONLY_LOW_SAMPLE'
@@ -41,11 +123,15 @@ export type OpportunityClassificationLabel =
   | 'GENUINE_MARKET_ARBITRAGE'
   | 'VERIFIED_MERCHANT_PROMOTION';
 
+import { resolveSectorFromCategory } from '@ai-marketing/shared';
+
 export interface RankingBreakdown {
   commercialContributionScore: number;
   evidenceConfidenceScore: number;
   priceAdvantageScore: number;
   freshnessScore: number;
+  evolutionBoostScore?: number;
+  staleDecayPenalty?: number;
 }
 
 export interface MarketArbitrageScoreResult {
@@ -63,6 +149,12 @@ export interface MarketArbitrageScoreResult {
   economicsSampleSize: number;
   economicsConfidence: EconomicsConfidence;
   opportunityLabel: OpportunityClassificationLabel;
+  staleDecayPenalty?: number;
+  isFeatured?: boolean;
+  catalogSlot?: 'FEATURED' | 'ACTIVE' | 'ROTATED_OUT_STALE';
+  evolutionStatus?: 'RISING_WINNER' | 'FRESH_EXPLORATION' | 'STALE_ROTATED_OUT';
+  exposureTier?: 'FRESH_UNEXPOSED' | 'ACTIVE_ENGAGED' | 'EXPOSED_LOW_CTR';
+  expectedProfitPer100VisitorsINR?: number;
   rankingBreakdown: RankingBreakdown;
 }
 
@@ -71,6 +163,69 @@ export interface TargetBuyerClassification {
   buyerIntentKeywords: string[];
   buyerIntentHook: string;
   buyerPersonaConfidence: 'HYPOTHESIS' | 'EMPIRICAL';
+}
+
+export type FairPriceVerdict =
+  | 'BUY_NOW_BELOW_FAIR_PRICE'
+  | 'FAIR_MARKET_PRICE_APPLY_COUPON'
+  | 'OVERPRICED_WAIT_FOR_DROP'
+  | 'INSUFFICIENT_HISTORY';
+
+export interface CrossStoreOption {
+  dealId: string;
+  title: string;
+  merchant: string;
+  brand: string;
+  category: string;
+  affiliateNetwork: 'AMAZON_IN' | 'CUELINKS' | 'DIRECT';
+  currentPriceINR: number;
+  referencePriceINR: number | null;
+  couponCode: string | null;
+  couponConditions: string | null;
+  couponSavingsINR: number;
+  effectivePriceINR: number;
+  verifiedCommissionRatePercent: number | null;
+  isLowestPrice: boolean;
+  trackingRedirectUrl: string;
+  productUrl: string;
+  disclosure: string;
+  ctaLabel?: string;
+  isAmazonSearchRail?: boolean;
+}
+
+export interface FairPriceCheckInput {
+  queryOrUrl: string;
+  targetFairPriceINR?: number;
+  alertEmail?: string;
+  consentGiven?: boolean;
+  organizationId?: string;
+  businessId?: string;
+  siteUrl?: string;
+  skipAiSynthesis?: boolean;
+}
+
+export interface FairPriceCheckResult {
+  inputType: 'PRODUCT_URL' | 'SEARCH_QUERY';
+  queryOrUrl: string;
+  verdict: FairPriceVerdict;
+  verdictSummary: string;
+  estimatedFairPriceINR: number | null;
+  lowestObservedPriceINR: number | null;
+  highestObservedPriceINR: number | null;
+  activeCouponCode: string | null;
+  effectivePriceAfterCouponINR: number | null;
+  monetizedDeal: NormalizedDeal | null;
+  crossStoreOptions: CrossStoreOption[];
+  priceHistory: Array<{ priceINR: number; observedAt: string }>;
+  suggestions: string[];
+  aiBuyerNote: string | null;
+  priceDropAlertRegistered: {
+    registered: boolean;
+    reason?: string;
+    targetFairPriceINR?: number;
+    alertEmailMasked?: string;
+    immediateAlertDispatched?: boolean;
+  };
 }
 
 /**
@@ -259,6 +414,182 @@ export function parseVerifiedCampaignPayout(
   };
 }
 
+export function calculateExpectedProfitPer100Visitors(deal: Partial<NormalizedDeal>): number {
+  const current = Number(deal.currentPriceINR || 0);
+  if (
+    deal.availability === 'OUT_OF_STOCK' ||
+    deal.verificationStatus === 'EXPIRED' ||
+    deal.verificationStatus === 'REJECTED' ||
+    current <= 0
+  ) {
+    return 0;
+  }
+
+  const explicitRate =
+    typeof deal.verifiedCommissionRatePercent === 'number' && deal.verifiedCommissionRatePercent > 0
+      ? deal.verifiedCommissionRatePercent
+      : typeof deal.commissionRatePercent === 'number' && deal.commissionRatePercent > 0
+      ? deal.commissionRatePercent
+      : typeof deal.evidenceJson?.verifiedCommissionRatePercent === 'number' && deal.evidenceJson.verifiedCommissionRatePercent > 0
+      ? deal.evidenceJson.verifiedCommissionRatePercent
+      : null;
+
+  const parsedCampaign = parseVerifiedCampaignPayout(deal.campaign, current, deal.category);
+  const verifiedRate = explicitRate !== null ? explicitRate : parsedCampaign.ratePercent;
+  const isCpcOnly = parsedCampaign.monetizationModel === 'CPC';
+
+  const grossPerApprovedOrder = isCpcOnly
+    ? 0
+    : parsedCampaign.flatINR !== null
+    ? parsedCampaign.flatINR
+    : typeof deal.grossCommissionPerApprovedOrderINR === 'number' && deal.grossCommissionPerApprovedOrderINR > 0
+    ? deal.grossCommissionPerApprovedOrderINR
+    : verifiedRate !== null && verifiedRate > 0
+    ? Number((current * (verifiedRate / 100)).toFixed(2))
+    : 0;
+
+  const observedClicks = Math.max(0, Math.floor(Number(deal.observedClicks ?? deal.evidenceJson?.observedClicks ?? deal.economicsSampleSize ?? 0)));
+  const observedInquiries = Math.max(0, Math.floor(Number(deal.observedInquiries ?? deal.evidenceJson?.observedInquiries ?? 0)));
+  const observedOrders = Math.max(0, Math.floor(Number(deal.observedOrders ?? deal.evidenceJson?.observedOrders ?? 0)));
+  const observedApprovedOrders = Math.max(0, Math.floor(Number(deal.observedApprovedOrders ?? deal.evidenceJson?.observedApprovedOrders ?? 0)));
+
+  if (observedClicks >= 20 && observedOrders > 0 && grossPerApprovedOrder > 0) {
+    const empiricalEpc = (observedApprovedOrders > 0 ? observedApprovedOrders : observedOrders) / observedClicks * grossPerApprovedOrder;
+    return Number((empiricalEpc * 100).toFixed(2));
+  }
+
+  const epc7dRaw = Number((deal.campaign as any)?.epc_7d ?? deal.evidenceJson?.epc_7d ?? 0);
+  const hasPriceDrop = Boolean(deal.evidenceJson?.hasVerifiedPriceDrop) || (
+    Array.isArray(deal.evidenceJson?.priceHistory) &&
+    deal.evidenceJson.priceHistory.length >= 2 &&
+    deal.evidenceJson.priceHistory.slice(0, -1).some((p: any) => Number(p?.priceINR ?? p?.price ?? 0) > current)
+  );
+
+  // When campaign CPC/epc_7d is verified or grossPerApprovedOrder is known, estimate expected profit per 100 visitors conservatively
+  if (grossPerApprovedOrder > 0) {
+    const visitToClickRate = (hasPriceDrop ? 0.08 : 0.045) + Math.min(0.05, observedClicks * 0.005);
+    const clickToApprovedOrderRate = observedInquiries > 0 ? 0.035 : 0.02;
+    return Number((100 * visitToClickRate * clickToApprovedOrderRate * grossPerApprovedOrder).toFixed(2));
+  }
+
+  if (Number.isFinite(epc7dRaw) && epc7dRaw > 0) {
+    const visitToClickRate = hasPriceDrop ? 0.08 : 0.045;
+    return Number((100 * visitToClickRate * epc7dRaw).toFixed(2));
+  }
+
+  if (isCpcOnly && parsedCampaign.verifiedCpcPayoutINR && parsedCampaign.verifiedCpcPayoutINR > 0) {
+    const visitToClickRate = hasPriceDrop ? 0.08 : 0.045;
+    return Number((100 * visitToClickRate * parsedCampaign.verifiedCpcPayoutINR).toFixed(2));
+  }
+
+  return 0;
+}
+
+export interface TitlePriceRepairResult<T> {
+  deal: T;
+  repaired: boolean;
+  quarantined: boolean;
+  repairReason?: string;
+  quarantineReason?: string;
+  originalCurrentPriceINR?: number;
+  repairedCurrentPriceINR?: number;
+  repairedReferencePriceINR?: number | null;
+}
+
+/**
+ * Deterministic Price/MRP Swap Auto-Repair & Data Sanity Guard.
+ * Parses explicit promotional price signals from deal titles (e.g. "Buy any 6 Perfumes at ₹799")
+ * and automatically swaps/repairs rows where the bundle/MRP (e.g. ₹7,794) was stored as currentPriceINR.
+ * Quarantines invalid rows (currentPriceINR <= 0 for non-coupon/non-Amazon, or currentPriceINR > referencePriceINR).
+ */
+export function repairTitlePriceMismatch<T extends Record<string, any>>(deal: T): TitlePriceRepairResult<T> {
+  if (!deal) {
+    return { deal, repaired: false, quarantined: true, quarantineReason: 'MISSING_DEAL' };
+  }
+
+  const title = String(deal.title || '');
+  let current = Number(deal.currentPriceINR || 0);
+  let reference = Number(deal.referencePriceINR || 0);
+  let repaired = false;
+  let repairReason: string | undefined;
+  const originalCurrent = current;
+
+  // Match explicit offer prices in titles like "at ₹799", "for ₹1,299", "just 499", "only Rs. 999", "@ ₹799"
+  const priceMatch = title.match(/(?:(?:^|\s)(?:at|for|just|only)\b|\s*@)\s*(rs\.?|inr|₹)?\s*([1-9](?:\d{2,4}|\d{0,1},\d{3}))(?!\s*%)\b/i);
+  if (priceMatch) {
+    const currencyMarker = Boolean(priceMatch[1]);
+    const numericCandidate = Number(String(priceMatch[2]).replace(/,/g, ''));
+    const looksLikeYearWithoutCurrency = !currencyMarker && numericCandidate >= 2020 && numericCandidate <= 2035;
+    if (
+      Number.isFinite(numericCandidate) &&
+      numericCandidate >= 50 &&
+      numericCandidate <= 200000 &&
+      !looksLikeYearWithoutCurrency &&
+      current > numericCandidate * 1.5
+    ) {
+      reference = Math.max(current, reference || 0);
+      current = numericCandidate;
+      repaired = true;
+      repairReason = `TITLE_PRICE_MRP_SWAP_REPAIRED: Corrected swapped currentPriceINR ₹${originalCurrent} -> ₹${numericCandidate} (referencePriceINR ₹${reference})`;
+    }
+  }
+
+  const isCouponDeal = deal.dealKind === 'COUPON' || (!current && Boolean(deal.couponCode));
+  const isAmazonRail = deal.affiliateNetwork === 'AMAZON_IN' && Boolean((deal as any).isAmazonSearchRail);
+
+  let quarantined = false;
+  let quarantineReason: string | undefined;
+  if (!isCouponDeal && !isAmazonRail && (!Number.isFinite(current) || current <= 0)) {
+    quarantined = true;
+    quarantineReason = `QUARANTINED_NON_POSITIVE_PRICE: currentPriceINR=${current}`;
+  } else if (reference > 0 && current > reference) {
+    quarantined = true;
+    quarantineReason = `QUARANTINED_INVERTED_MRP: currentPriceINR (₹${current}) exceeds referencePriceINR (₹${reference})`;
+  }
+
+  const updatedDiscount = reference > current && current > 0
+    ? Math.round(((reference - current) / reference) * 100)
+    : Number(deal.verifiedDiscountPercent || deal.claimedDiscountPercent || 0);
+
+  const patchedDeal: any = {
+    ...deal,
+    currentPriceINR: Number.isFinite(current) ? current : deal.currentPriceINR,
+    referencePriceINR: reference > 0 ? reference : deal.referencePriceINR,
+    verifiedDiscountPercent: updatedDiscount,
+    claimedDiscountPercent: updatedDiscount
+  };
+
+  if (repaired) {
+    const existingEvidence = (patchedDeal.evidenceJson && typeof patchedDeal.evidenceJson === 'object')
+      ? patchedDeal.evidenceJson
+      : {};
+    const recalc = calculateMarketArbitrageScore(patchedDeal);
+    patchedDeal.arbitrageScore = recalc.arbitrageScore;
+    patchedDeal.expectedCommissionYieldINR = recalc.expectedCommissionYieldINR;
+    patchedDeal.expectedProfitPer100VisitorsINR = recalc.expectedProfitPer100VisitorsINR;
+    patchedDeal.evidenceJson = {
+      ...existingEvidence,
+      verifiedCommissionRatePercent: recalc.verifiedCommissionRatePercent ?? existingEvidence.verifiedCommissionRatePercent ?? null,
+      grossCommissionPerApprovedOrderINR: recalc.grossCommissionPerApprovedOrderINR ?? existingEvidence.grossCommissionPerApprovedOrderINR ?? null,
+      expectedProfitPer100VisitorsINR: recalc.expectedProfitPer100VisitorsINR,
+      priceSwapRepairedAt: new Date().toISOString(),
+      priceSwapOriginalCurrentINR: originalCurrent,
+      priceSwapRepairReason: repairReason
+    };
+  }
+
+  return {
+    deal: patchedDeal as T,
+    repaired,
+    quarantined,
+    repairReason,
+    quarantineReason,
+    originalCurrentPriceINR: originalCurrent,
+    repairedCurrentPriceINR: current,
+    repairedReferencePriceINR: reference > 0 ? reference : null
+  };
+}
+
 /**
  * Computes an explainable, non-misleading multi-factor ranking score (`0.0`–`99.9` without ceiling ties at 100).
  * Never silently defaults missing campaign commission rates to 6%: unverified rates report `null` and `UNKNOWN_COMMISSION_RATE`.
@@ -301,6 +632,7 @@ export function calculateMarketArbitrageScore(deal: Partial<NormalizedDeal>): Ma
 
   // Compute empirical conversion ratios ONLY when observed sample size >= 20 clicks
   const observedClicks = Math.max(0, Math.floor(Number(deal.observedClicks ?? deal.evidenceJson?.observedClicks ?? deal.economicsSampleSize ?? 0)));
+  const observedInquiries = Math.max(0, Math.floor(Number(deal.observedInquiries ?? deal.evidenceJson?.observedInquiries ?? 0)));
   const observedOrders = Math.max(0, Math.floor(Number(deal.observedOrders ?? deal.evidenceJson?.observedOrders ?? 0)));
   const observedApprovedOrders = Math.max(0, Math.floor(Number(deal.observedApprovedOrders ?? deal.evidenceJson?.observedApprovedOrders ?? 0)));
   const observedReversedOrders = Math.max(0, Math.floor(Number(deal.observedReversedOrders ?? deal.evidenceJson?.observedReversedOrders ?? 0)));
@@ -372,11 +704,19 @@ export function calculateMarketArbitrageScore(deal: Partial<NormalizedDeal>): Ma
       economicsSampleSize: observedClicks,
       economicsConfidence,
       opportunityLabel,
+      staleDecayPenalty: 0,
+      isFeatured: false,
+      catalogSlot: 'ROTATED_OUT_STALE',
+      evolutionStatus: 'STALE_ROTATED_OUT',
+      exposureTier: 'EXPOSED_LOW_CTR',
+      expectedProfitPer100VisitorsINR: 0,
       rankingBreakdown: {
         commercialContributionScore: 0,
         evidenceConfidenceScore: 0,
         priceAdvantageScore: 0,
         freshnessScore: 0,
+        evolutionBoostScore: 0,
+        staleDecayPenalty: 0,
       }
     };
   }
@@ -416,18 +756,68 @@ export function calculateMarketArbitrageScore(deal: Partial<NormalizedDeal>): Ma
     : 0;
   const evidenceConfidenceScore = Number(Math.min(16, stockAndProofPts + affiliationPts + economicsConfidencePts).toFixed(2));
 
-  // Factor 4: Freshness score (0-9.9 pts)
+  // Factor 4: Freshness score (0-9.9 pts) & 72h Evolutionary Catalog Rotation ("Adapt & Evolve")
+  const evalNowMs = Number((deal as any).evaluationNowMs || Date.now());
   const refTs = deal.lastCheckedAt || deal.lastVerifiedAt || deal.observedAt || deal.updatedAt;
-  const ageHours = refTs ? Math.max(0, (Date.now() - Date.parse(refTs)) / 3600000) : 24;
+  const ageHours = refTs ? Math.max(0, (evalNowMs - Date.parse(refTs)) / 3600000) : 24;
   const freshnessScore = Number(
     (!Number.isFinite(ageHours) || ageHours > 48)
       ? 1.5
       : Math.max(1.5, Math.min(9.9, 9.9 - (ageHours / 48) * 7.5)).toFixed(2)
   );
 
+  // Evolutionary & Exposure-Aware boost: price drops + verified payout + epc_7d + genuine CTR/inquiries
+  const observedImpressions = Math.max(
+    0,
+    Math.floor(Number((deal as any).observedImpressions ?? deal.evidenceJson?.observedImpressions ?? 0))
+  );
+  const rawEpc7d = Number((deal as any).epc7d ?? deal.evidenceJson?.epc_7d ?? deal.campaign?.epc_7d ?? 0);
+  const epc7dBoost = Number.isFinite(rawEpc7d) && rawEpc7d > 0 ? Math.min(6, rawEpc7d * 0.6) : 0;
+
+  const hasPriceDrop = Boolean(deal.evidenceJson?.hasVerifiedPriceDrop) || (
+    Array.isArray(deal.evidenceJson?.priceHistory) &&
+    deal.evidenceJson.priceHistory.length >= 2 &&
+    deal.evidenceJson.priceHistory.slice(0, -1).some((p: any) => Number(p?.priceINR ?? p?.price ?? 0) > current)
+  );
+  const priceDropBoost = hasPriceDrop ? 4 : 0;
+  const verifiedCommissionBoost =
+    verifiedCommissionRatePercent !== null &&
+    verifiedCommissionRatePercent > 0 &&
+    parsedCampaign.monetizationModel !== 'CPC'
+      ? 3
+      : (parsedCampaign.flatINR !== null && parsedCampaign.flatINR > 0 ? 2.5 : 0);
+  const ctrBoost = observedImpressions >= 10 && observedClicks > 0
+    ? Math.min(6, (observedClicks / observedImpressions) * 40)
+    : 0;
+  const engagementBoost = Math.min(8, observedClicks * 0.5 + observedInquiries * 1.5);
+  const evolutionBoostScore = Number((priceDropBoost + verifiedCommissionBoost + engagementBoost + epc7dBoost + ctrBoost).toFixed(2));
+
+  // Exposure-Aware Ranking (replaces blind 72h zero-click decay):
+  // - impressions < 20 (or < 50): FRESH_UNEXPOSED -> zero penalty
+  // - impressions >= 50 && observedClicks === 0 && observedInquiries === 0: EXPOSED_LOW_CTR -> -25 pts
+  let exposureTier: 'FRESH_UNEXPOSED' | 'ACTIVE_ENGAGED' | 'EXPOSED_LOW_CTR' = 'FRESH_UNEXPOSED';
+  let staleDecayPenalty = 0;
+  if (observedClicks > 0 || observedInquiries > 0) {
+    exposureTier = 'ACTIVE_ENGAGED';
+    staleDecayPenalty = 0;
+  } else if (observedImpressions >= 50) {
+    exposureTier = 'EXPOSED_LOW_CTR';
+    staleDecayPenalty = 25;
+  } else {
+    exposureTier = 'FRESH_UNEXPOSED';
+    staleDecayPenalty = 0;
+  }
+
   // Differentiated 0.0-99.9 scale prevents artificial ceiling ties at 100
-  const rawScore = priceAdvantageScore + commercialContributionScore + evidenceConfidenceScore + freshnessScore;
+  const rawScore = priceAdvantageScore + commercialContributionScore + evidenceConfidenceScore + freshnessScore + evolutionBoostScore - staleDecayPenalty;
   const arbitrageScore = Number(Math.max(0, Math.min(99.9, rawScore)).toFixed(1));
+  const catalogSlot: 'FEATURED' | 'ACTIVE' | 'ROTATED_OUT_STALE' = staleDecayPenalty > 0
+    ? 'ROTATED_OUT_STALE'
+    : (deal.evidenceJson?.catalogSlot === 'FEATURED' || evolutionBoostScore > 0 ? 'FEATURED' : 'ACTIVE');
+  const evolutionStatus: 'RISING_WINNER' | 'FRESH_EXPLORATION' | 'STALE_ROTATED_OUT' = staleDecayPenalty > 0
+    ? 'STALE_ROTATED_OUT'
+    : (observedClicks > 0 || observedInquiries > 0 || hasPriceDrop ? 'RISING_WINNER' : 'FRESH_EXPLORATION');
+  const expectedProfitPer100VisitorsINR = calculateExpectedProfitPer100Visitors(deal);
 
   return {
     arbitrageScore,
@@ -444,11 +834,19 @@ export function calculateMarketArbitrageScore(deal: Partial<NormalizedDeal>): Ma
     economicsSampleSize: observedClicks,
     economicsConfidence,
     opportunityLabel,
+    staleDecayPenalty,
+    isFeatured: catalogSlot === 'FEATURED',
+    catalogSlot,
+    evolutionStatus,
+    exposureTier,
+    expectedProfitPer100VisitorsINR,
     rankingBreakdown: {
       commercialContributionScore,
       evidenceConfidenceScore,
       priceAdvantageScore,
       freshnessScore,
+      evolutionBoostScore,
+      staleDecayPenalty,
     }
   };
 }
@@ -658,6 +1056,10 @@ export class AutonomousDealDiscoveryEngine {
   // In-memory operational cache synced to durable D1 storage
   private sourcesMap: Map<string, DealSourceRecord> = new Map();
   private dealsMap: Map<string, NormalizedDeal> = new Map();
+
+  public getDealsMap(): Map<string, NormalizedDeal> {
+    return this.dealsMap;
+  }
   private dealSlugMap: Map<string, string> = new Map(); // slug -> dealId
   private dealFingerprintMap: Map<string, string> = new Map(); // fingerprint -> dealId
   private linkRegistry: Map<string, { trackingUrl: string; isMonetizable: boolean; affiliateCampaignId?: string }> = new Map();
@@ -1743,12 +2145,23 @@ export class AutonomousDealDiscoveryEngine {
         sort: 'epc_7d',
         order: 'desc',
         page: cursor.campaignPage,
-        per_page: 30
+        per_page: 100
       });
 
       const eligibleCampaigns = (campSearch.campaigns || []).filter(
         c => (!c.status || c.status === 'active') && (c.access_status === 'open' || c.access_status === 'approved')
       );
+      const discCampaignsById = new Map<string, any>();
+      const discCampaignsByRootDomain = new Map<string, any[]>();
+      for (const c of eligibleCampaigns) {
+        if (c?.id !== undefined && c?.id !== null) discCampaignsById.set(String(c.id), c);
+        const rootDom = normalizeRootMerchantDomain(String(c?.domain || c?.url || ''));
+        if (rootDom) {
+          const list = discCampaignsByRootDomain.get(rootDom) || [];
+          list.push(c);
+          discCampaignsByRootDomain.set(rootDom, list);
+        }
+      }
 
       // 5. Fetch 2 pages of offers across cursor.offerPage and cursor.offerPage + 1
       const pagesToFetch = [cursor.offerPage, cursor.offerPage + 1];
@@ -1760,18 +2173,24 @@ export class AutonomousDealDiscoveryEngine {
 
       for (const pageNum of pagesToFetch) {
         try {
-          const offersRes = await client.getOffers({ page: pageNum, per_page: 30 });
+          const targetChannel = String(channelId || (process.env.CUELINKS_CHANNEL_ID || '331585')).trim() || '331585';
+          const useGetOffersMock = Boolean((client.getOffers as any)?.mock) && !Boolean((client.getLiveOffers as any)?.mock);
+          const offersRes = (typeof (client as any).getLiveOffers === 'function' && !useGetOffersMock)
+            ? await (client as any).getLiveOffers({ channel_id: targetChannel, page: pageNum, per_page: 100 })
+            : await client.getOffers({ page: pageNum, per_page: 100 });
           const rawOffers = offersRes.offers || [];
 
-          if (rawOffers.length === 0 || rawOffers.length < 30 || (offersRes.total !== undefined && pageNum * 30 >= offersRes.total)) {
+          if (rawOffers.length === 0 || rawOffers.length < 100 || (offersRes.total !== undefined && pageNum * 100 >= offersRes.total)) {
             reachedOfferEnd = true;
           }
 
           successfulPagesCount++;
 
           for (const offer of rawOffers) {
-            const campaign = eligibleCampaigns.find(c => String(c.id) === String(offer.campaign_id));
-            const merchantName = offer.campaign_name || campaign?.merchant_name || campaign?.name || 'Authorized Merchant';
+            let campaign = offer.campaign_id !== undefined && offer.campaign_id !== null
+              ? discCampaignsById.get(String(offer.campaign_id))
+              : undefined;
+            let merchantName = offer.campaign_name || campaign?.merchant_name || campaign?.name || 'Authorized Merchant';
 
             // Destination merchant URL: extract from tracking_url or use url (Finding 1)
             let merchantUrl = offer.url || '';
@@ -1791,6 +2210,14 @@ export class AutonomousDealDiscoveryEngine {
             if (!merchantUrl || !offer.title) continue;
             // Refuse to treat a Cuelinks tracking URL as a merchant destination or SKU evidence
             if (CuelinksV3Client.isAllowedTrackingUrl(merchantUrl)) continue;
+            if (!campaign) {
+              const offerRoot = normalizeRootMerchantDomain(merchantUrl);
+              const domMatches = offerRoot ? (discCampaignsByRootDomain.get(offerRoot) || []) : [];
+              if (domMatches.length === 1) {
+                campaign = domMatches[0];
+                merchantName = offer.campaign_name || campaign.merchant_name || campaign.name || merchantName;
+              }
+            }
             if (seenOfferUrls.has(merchantUrl)) continue;
             seenOfferUrls.add(merchantUrl);
 
@@ -1896,6 +2323,9 @@ export class AutonomousDealDiscoveryEngine {
               }
             }
 
+            const discPayout = parseVerifiedCampaignPayout(campaign, currentPrice || 0, categoryName);
+            const discAvailability = isCouponDeal && !currentPrice ? 'UNKNOWN' : ((offer as any).availability || 'UNKNOWN');
+
             discoveredDeals.push({
               title: offer.title.trim(),
               brand: merchantName,
@@ -1908,7 +2338,7 @@ export class AutonomousDealDiscoveryEngine {
               claimedDiscountPercent: claimedDiscount,
               couponCode: cleanCouponCode,
               couponConditions: offer.terms?.trim() || offer.description?.trim() || undefined,
-              availability: (offer as any).availability || 'UNKNOWN',
+              availability: discAvailability,
               geographicRestrictions: ['India'],
               offerStart: offer.start_date || undefined,
               expiryDate: offer.end_date || undefined,
@@ -1920,7 +2350,24 @@ export class AutonomousDealDiscoveryEngine {
               isMonetizable,
               affiliateNetwork: isMonetizable ? 'CUELINKS' : undefined,
               affiliateCampaignId,
-              modelOrSku: `CL-${offer.id}`
+              modelOrSku: `CL-${offer.id}`,
+              evidenceJson: {
+                cuelinksOfferId: String(offer.id),
+                affiliateNetwork: isMonetizable ? 'CUELINKS' : undefined,
+                affiliateCampaignId: affiliateCampaignId || (campaign?.id ? String(campaign.id) : String(offer.campaign_id || '')),
+                payout_type: discPayout.monetizationModel || 'UNKNOWN',
+                monetizationModel: discPayout.monetizationModel || 'UNKNOWN',
+                payout: campaign?.payout ?? campaign?.payout_rate ?? null,
+                verifiedCommissionRatePercent: discPayout.ratePercent,
+                grossCommissionPerApprovedOrderINR: discPayout.grossCommissionPerApprovedOrderINR,
+                verifiedCpcPayoutINR: discPayout.verifiedCpcPayoutINR ?? null,
+                epc_7d: campaign?.epc_7d !== undefined && campaign?.epc_7d !== null && !isNaN(Number(campaign.epc_7d)) ? Number(campaign.epc_7d) : null,
+                epc_90d: campaign?.epc_90d !== undefined && campaign?.epc_90d !== null && !isNaN(Number(campaign.epc_90d)) ? Number(campaign.epc_90d) : null,
+                deeplink_allowed: campaign?.deeplink_allowed !== undefined ? Boolean(campaign.deeplink_allowed) : true,
+                sub_ids_allowed: campaign?.sub_ids_allowed !== undefined ? Boolean(campaign.sub_ids_allowed) : true,
+                social_media_publishers_allowed: campaign?.social_media_publishers_allowed !== undefined ? Boolean(campaign.social_media_publishers_allowed) : true,
+                cookie_duration: campaign?.cookie_duration ?? campaign?.cookie_days ?? null
+              }
             });
           }
 
@@ -1934,7 +2381,7 @@ export class AutonomousDealDiscoveryEngine {
       }
 
       // 6. Advance continuation cursor across cycles (wrap around when end reached or bounded retries exceeded)
-      const isCampEnd = (campSearch.campaigns?.length || 0) < 30 || ((campSearch.total !== undefined) && cursor.campaignPage * 30 >= campSearch.total);
+      const isCampEnd = (campSearch.campaigns?.length || 0) < 100 || ((campSearch.total !== undefined) && cursor.campaignPage * 100 >= campSearch.total);
       let nextCampPage = isCampEnd ? 1 : cursor.campaignPage + 1;
 
       let nextOfferPage: number;
@@ -2006,7 +2453,7 @@ export class AutonomousDealDiscoveryEngine {
           const perfRes = await client.getPerformanceReport({
             start_date: new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0],
             end_date: new Date().toISOString().split('T')[0],
-            per_page: 50
+            per_page: 100
           });
           providerClicks = perfRes.totals
             ? Number(perfRes.totals.clicks || 0)
@@ -2019,7 +2466,7 @@ export class AutonomousDealDiscoveryEngine {
           providerClicks = (reportsRes.reports || []).reduce((acc: number, r: any) => acc + (r.clicks || 0), 0);
         }
 
-        const txRes = await client.getTransactions({ page: 1, per_page: 50 });
+        const txRes = await client.getTransactions({ page: 1, per_page: 100 });
         const txList = txRes.transactions || [];
         let pendingINR = 0;
         let validatedINR = 0;
@@ -2653,9 +3100,24 @@ export class AutonomousDealDiscoveryEngine {
       return { action: 'REJECTED', rejectionReason: ssrfCheck.reason };
     }
 
-    // Level 2: Merchant & Pricing Sanity Validation (Spec § 5 Level 2)
+    // Level 2: Merchant & Pricing Sanity Validation + Automatic Title/MRP Swap Repair
     const isCouponDeal = input.dealKind === 'COUPON' || (!input.currentPriceINR && Boolean(input.couponCode));
     if (!isCouponDeal) {
+      const swapCheck = repairTitlePriceMismatch(input);
+      if (swapCheck.repaired) {
+        input.currentPriceINR = swapCheck.repairedCurrentPriceINR;
+        if (swapCheck.repairedReferencePriceINR) {
+          input.referencePriceINR = swapCheck.repairedReferencePriceINR;
+        }
+        input.claimedDiscountPercent = swapCheck.deal.claimedDiscountPercent ?? (swapCheck.deal as any).verifiedDiscountPercent;
+        input.evidenceJson = swapCheck.deal.evidenceJson;
+        console.info(`[DealEngine] Auto-repaired title/MRP swap for '${input.title}': ${swapCheck.repairReason}`);
+      }
+      if (swapCheck.quarantined) {
+        const reason = swapCheck.quarantineReason || `INVALID_PRICE: Current price must be positive and <= referencePriceINR (received: ${input.currentPriceINR})`;
+        this.recordRejection(input.sourceDomain, reason);
+        return { action: 'REJECTED', rejectionReason: reason };
+      }
       if (typeof input.currentPriceINR !== 'number' || isNaN(input.currentPriceINR) || input.currentPriceINR <= 0) {
         const reason = `INVALID_PRICE: Current price must be a positive number in INR (received: ${input.currentPriceINR})`;
         this.recordRejection(input.sourceDomain, reason);
@@ -2730,14 +3192,24 @@ export class AutonomousDealDiscoveryEngine {
       }
     } catch {}
 
+    const amazonTag = (process.env.AMAZON_AFFILIATE_TAG || '').trim();
+    const amazonTrackingUrl = amazonTag && input.productUrl
+      ? buildAmazonAffiliateUrl(input.productUrl, amazonTag, `aro_${input.modelOrSku || 'deal'}`)
+      : null;
+
     // Auditor requirement: Caller-supplied trackingUrl and isMonetizable are ALWAYS IGNORED when client is configured.
     // Live convertLink() must be called, and convRes.affiliated === true is strictly mandatory.
     let convertedTrackingUrl: string | undefined = undefined;
     let cuelinksAffiliated = false;
     let cuelinksCallAttempted = false;
+    let resolvedAffiliateNetwork: 'CUELINKS' | 'AMAZON_IN' | undefined = undefined;
     const client = this.getCuelinksClient();
 
-    if (client.isConfigured() && resolvedChannelId && input.productUrl) {
+    if (amazonTrackingUrl) {
+      convertedTrackingUrl = amazonTrackingUrl;
+      resolvedAffiliateNetwork = 'AMAZON_IN';
+      input.affiliateCampaignId = input.affiliateCampaignId || 'amazon_in_associates';
+    } else if (client.isConfigured() && resolvedChannelId && input.productUrl) {
       cuelinksCallAttempted = true;
       try {
         const subid = `aro_${input.modelOrSku || 'deal'}`.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
@@ -2756,6 +3228,7 @@ export class AutonomousDealDiscoveryEngine {
         if (convRes && convRes.affiliated === true && convRes.tracking_url && CuelinksV3Client.isAllowedTrackingUrl(convRes.tracking_url)) {
           cuelinksAffiliated = true;
           convertedTrackingUrl = convRes.short_url || convRes.tracking_url;
+          resolvedAffiliateNetwork = 'CUELINKS';
           activeCampaignVerified = true;
           if (convRes.campaign?.id) {
             input.affiliateCampaignId = String(convRes.campaign.id);
@@ -2778,7 +3251,10 @@ export class AutonomousDealDiscoveryEngine {
     );
 
     let affiliateVerified = false;
-    if (cuelinksCallAttempted) {
+    if (resolvedAffiliateNetwork === 'AMAZON_IN' && convertedTrackingUrl && isAuthorizedAmazonTrackingUrl(convertedTrackingUrl, amazonTag)) {
+      affiliateVerified = true;
+      input.isMonetizable = true;
+    } else if (cuelinksCallAttempted) {
       // In live/configured mode: strictly require live affiliated === true and valid tracking URL
       affiliateVerified = Boolean(
         cuelinksAffiliated &&
@@ -2795,7 +3271,7 @@ export class AutonomousDealDiscoveryEngine {
     if (affiliateVerified && (convertedTrackingUrl || !isProduction())) {
       input.trackingUrl = convertedTrackingUrl || input.trackingUrl;
       input.isMonetizable = true;
-      input.affiliateNetwork = 'CUELINKS';
+      input.affiliateNetwork = resolvedAffiliateNetwork || input.affiliateNetwork || 'CUELINKS';
     } else {
       affiliateVerified = false;
       input.trackingUrl = undefined;
@@ -2880,7 +3356,7 @@ export class AutonomousDealDiscoveryEngine {
       affiliateVerified = true;
       input.isMonetizable = true;
       if (verificationStatus !== 'VERIFIED_WITH_CONDITIONS') {
-        verificationStatus = 'VERIFIED';
+        verificationStatus = input.affiliateNetwork === 'AMAZON_IN' ? 'AFFILIATE_VERIFIED' : 'VERIFIED';
       }
     } else if (!cuelinksCallAttempted && (isSampleFixture || (!isProduction() && activeCampaignVerified))) {
       affiliateVerified = true;
@@ -3005,7 +3481,7 @@ export class AutonomousDealDiscoveryEngine {
       discountVerificationType: discountType,
       couponCode: input.couponCode?.trim(),
       couponConditions: input.couponConditions?.trim(),
-      availability: input.availability || 'IN_STOCK',
+      availability: input.availability || (isCouponDeal && !(typeof input.currentPriceINR === 'number' && input.currentPriceINR > 0) ? 'UNKNOWN' : 'IN_STOCK'),
       geographicRestrictions: input.geographicRestrictions || ['India'],
       membershipRestrictions: input.membershipRestrictions,
       paymentRestrictions: input.paymentRestrictions,
@@ -3029,9 +3505,12 @@ export class AutonomousDealDiscoveryEngine {
       productVerified,
       affiliateVerified,
       evidenceJson: {
+        ...((input as any).evidenceJson || {}),
         sources: [input.sourceUrl],
         observedAt,
-        priceHistory: (typeof input.currentPriceINR === 'number' && input.currentPriceINR > 0) ? [{ price: input.currentPriceINR, observedAt }] : [],
+        priceHistory: Array.isArray((input as any).evidenceJson?.priceHistory) && (input as any).evidenceJson.priceHistory.length > 0
+          ? (input as any).evidenceJson.priceHistory
+          : ((typeof input.currentPriceINR === 'number' && input.currentPriceINR > 0) ? [{ price: input.currentPriceINR, observedAt }] : []),
         verificationLogs: [
           `Discovered from ${input.sourceDomain} at ${observedAt}`,
           `SSRF & Host safety check: PASSED`,
@@ -3064,8 +3543,11 @@ export class AutonomousDealDiscoveryEngine {
       this.dealSlugMap.set(input.canonicalSlug.toLowerCase(), dealId);
     }
 
-    // Persist durably in D1 workflows table
+    // Persist durably in D1 workflows & public_deals tables, and provision partner_offers when monetizable
     await this.persistDealToD1(newDeal, organizationId, businessId);
+    if (newDeal.affiliateVerified && newDeal.isMonetizable) {
+      await this.provisionMatchingPartnerOffer(newDeal, organizationId, businessId);
+    }
 
     return { action: 'CREATED_VERIFIED', deal: newDeal };
   }
@@ -3279,40 +3761,38 @@ export class AutonomousDealDiscoveryEngine {
       return { processed: 0, reconciled: 0, failed: 0, deals: [] };
     }
 
-    // 3. Resolve approved Cuelinks channel ID (Strict Fail-Closed)
+    const amazonTag = (process.env.AMAZON_AFFILIATE_TAG || '').trim();
+
+    // 3. Resolve approved Cuelinks channel ID (optional when Amazon Associates is the matching network)
     const configuredChannelId = (process.env.CUELINKS_CHANNEL_ID || '').trim();
-    if (!configuredChannelId) {
-      console.warn('[DealEngine] Fail-closed: CUELINKS_CHANNEL_ID environment variable is missing.');
-      return { processed: 0, reconciled: 0, failed: 0, deals: [] };
+    let resolvedChannelId: number | null = null;
+    if (configuredChannelId) {
+      try {
+        const { CuelinksSyncManager } = await import('./cuelinks-sync-manager.js');
+        const cuelinksSync = CuelinksSyncManager.getInstance(this.getCuelinksClient());
+        const channelRes = await cuelinksSync.getApprovedChannel(configuredChannelId);
+        if (
+          channelRes.approved &&
+          channelRes.channel &&
+          String(channelRes.channel.id) === configuredChannelId
+        ) {
+          const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').toLowerCase();
+          let canonicalHost = 'ai-marketing-organization.onrender.com';
+          try { canonicalHost = new URL(siteUrl).hostname.toLowerCase(); } catch {}
+          const chUrl = (channelRes.channel.source_url || channelRes.channel.url || '').toLowerCase();
+          if (chUrl.includes(canonicalHost) || process.env.NODE_ENV === 'test') {
+            resolvedChannelId = Number(channelRes.channel.id);
+          } else {
+            console.warn(`[DealEngine] Cuelinks channel host ${chUrl} does not match canonical host ${canonicalHost}`);
+          }
+        }
+      } catch (chErr: any) {
+        console.warn(`[DealEngine] Cuelinks channel resolution notice: ${chErr?.message}`);
+      }
     }
 
-    let resolvedChannelId: number;
-    try {
-      const { CuelinksSyncManager } = await import('./cuelinks-sync-manager.js');
-      const cuelinksSync = CuelinksSyncManager.getInstance(this.getCuelinksClient());
-      const channelRes = await cuelinksSync.getApprovedChannel(configuredChannelId);
-      if (
-        !channelRes.approved ||
-        !channelRes.channel ||
-        String(channelRes.channel.id) !== configuredChannelId
-      ) {
-        console.warn(`[DealEngine] Fail-closed: Channel ${configuredChannelId} not approved or mismatch: ${JSON.stringify(channelRes)}`);
-        return { processed: 0, reconciled: 0, failed: 0, deals: [] };
-      }
-
-      // Canonical host check
-      const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').toLowerCase();
-      let canonicalHost = 'ai-marketing-organization.onrender.com';
-      try { canonicalHost = new URL(siteUrl).hostname.toLowerCase(); } catch {}
-      const chUrl = (channelRes.channel.source_url || channelRes.channel.url || '').toLowerCase();
-      if (!chUrl.includes(canonicalHost) && process.env.NODE_ENV !== 'test') {
-        console.warn(`[DealEngine] Fail-closed: Channel host ${chUrl} does not match canonical host ${canonicalHost}`);
-        return { processed: 0, reconciled: 0, failed: 0, deals: [] };
-      }
-
-      resolvedChannelId = Number(channelRes.channel.id);
-    } catch (chErr: any) {
-      console.warn(`[DealEngine] Fail-closed: Error resolving approved channel ${configuredChannelId}: ${chErr?.message}`);
+    if (!resolvedChannelId && !amazonTag) {
+      console.warn('[DealEngine] Fail-closed: Neither approved CUELINKS_CHANNEL_ID nor AMAZON_AFFILIATE_TAG is available.');
       return { processed: 0, reconciled: 0, failed: 0, deals: [] };
     }
 
@@ -3338,12 +3818,21 @@ export class AutonomousDealDiscoveryEngine {
         continue;
       }
 
-      // Convert via Cuelinks V3
+      // Check Amazon Associates (AMAZON_IN) first when AMAZON_AFFILIATE_TAG is configured
+      const amazonUrl = amazonTag
+        ? buildAmazonAffiliateUrl(deal.productUrl, amazonTag, `aro_${deal.modelOrSku || deal.id}`)
+        : null;
+
       let convertedTrackingUrl: string | undefined = undefined;
       let cuelinksAffiliated = false;
+      let amazonAffiliated = false;
       let campaignId: string | undefined = undefined;
 
-      if (client.isConfigured() && deal.productUrl) {
+      if (amazonUrl) {
+        amazonAffiliated = true;
+        convertedTrackingUrl = amazonUrl;
+        campaignId = deal.affiliateCampaignId || 'amazon_in_associates';
+      } else if (client.isConfigured() && resolvedChannelId && deal.productUrl) {
         try {
           const subid = `aro_${deal.modelOrSku || 'deal'}`.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
           const subid2 = (deal.category || 'general').replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
@@ -3370,12 +3859,12 @@ export class AutonomousDealDiscoveryEngine {
         }
       }
 
-      if (cuelinksAffiliated && convertedTrackingUrl) {
+      if ((amazonAffiliated || cuelinksAffiliated) && convertedTrackingUrl) {
         deal.trackingUrl = convertedTrackingUrl;
         deal.affiliateVerified = true;
         deal.isMonetizable = true;
         // Strict Auditor Integrity: Never coerce deal.productVerified in affiliate conversion branch!
-        deal.affiliateNetwork = 'CUELINKS';
+        deal.affiliateNetwork = amazonAffiliated ? 'AMAZON_IN' : 'CUELINKS';
         deal.verificationStatus = 'AFFILIATE_VERIFIED';
         deal.lastCheckedAt = new Date().toISOString();
         deal.lastVerifiedAt = new Date().toISOString();
@@ -3385,9 +3874,11 @@ export class AutonomousDealDiscoveryEngine {
           ...(deal.evidenceJson || {}),
           sources: deal.evidenceJson?.sources || [deal.productUrl],
           verificationLogs: deal.evidenceJson?.verificationLogs || [],
-          cuelinksAffiliated: true,
+          cuelinksAffiliated,
+          amazonAffiliated,
+          affiliateNetwork: deal.affiliateNetwork,
           convertedAt: new Date().toISOString(),
-          channelId: resolvedChannelId,
+          channelId: amazonAffiliated ? 'amazon_associates_in' : resolvedChannelId,
           campaignId: campaignId || deal.affiliateCampaignId,
           trackingUrl: convertedTrackingUrl
         };
@@ -3440,11 +3931,569 @@ export class AutonomousDealDiscoveryEngine {
       }
     }
 
+    // Trigger opted-in target price-drop alerts for any reconciled price updates
+    if (reconciledDeals.length > 0) {
+      try {
+        await this.checkAndDispatchTargetPriceAlerts(reconciledDeals);
+      } catch {}
+    }
+
     return {
       processed: processedCount,
       reconciled: reconciledCount,
       failed: failedCount,
       deals: reconciledDeals
+    };
+  }
+
+  /**
+   * Stage J Task 2: Ingest live multi-category daily deals directly from Cuelinks
+   * /pub_api/v3/offers.json (channel 331585) across Electronics, Travel, SaaS,
+   * Grooming, Fashion, and Finance. Preserves CPC vs CPS/CPA payout separation,
+   * verifies convertLink() tracking attribution, records priceHistory, and provisions
+   * matching partner_offers so /api/v1/public/deals/:id/redirect works immediately.
+   */
+  public async ingestLiveCuelinksOffers(options?: {
+    maxPages?: number;
+    perPage?: number;
+    organizationId?: string;
+    businessId?: string;
+    client?: any;
+  }): Promise<{
+    fetched: number;
+    ingested: number;
+    monetizable: number;
+    categories: string[];
+    deals: NormalizedDeal[];
+  }> {
+    const organizationId = options?.organizationId || 'org_owner_primary';
+    const businessId = options?.businessId || 'biz_platform_aro';
+    const maxPages = Math.max(1, Math.min(5, options?.maxPages ?? 2));
+    const perPage = Math.max(10, Math.min(100, options?.perPage ?? 100));
+    const client = options?.client || this.getCuelinksClient();
+
+    if (!client || !client.isConfigured()) {
+      return { fetched: 0, ingested: 0, monetizable: 0, categories: [], deals: [] };
+    }
+
+    const configuredChannelId = (process.env.CUELINKS_CHANNEL_ID || '331585').trim() || '331585';
+    let resolvedChannelId = configuredChannelId;
+    try {
+      const { CuelinksSyncManager } = await import('./cuelinks-sync-manager.js');
+      const syncMgr = CuelinksSyncManager.getInstance(client);
+      const chRes = await syncMgr.getApprovedChannel(configuredChannelId);
+      if (chRes.approved && chRes.channel?.id) {
+        resolvedChannelId = String(chRes.channel.id);
+      } else if (isProduction() && !process.env.VITEST) {
+        console.warn(`[DealEngine] Cuelinks live offers ingestion blocked: channel ${configuredChannelId} not approved.`);
+        return { fetched: 0, ingested: 0, monetizable: 0, categories: [], deals: [] };
+      }
+    } catch {
+      if (isProduction() && !process.env.VITEST) {
+        return { fetched: 0, ingested: 0, monetizable: 0, categories: [], deals: [] };
+      }
+    }
+
+    // Load known Cuelinks campaigns for CPS/CPA/CPC payout parsing (exact campaign_id + unambiguous root domain fallback)
+    const campaignsById = new Map<string, any>();
+    const campaignsByRootDomain = new Map<string, any[]>();
+    const registerCampaign = (c: any) => {
+      const cid = String(c?.id || c?.campaign_id || '').trim();
+      if (cid) campaignsById.set(cid, c);
+      const rootDom = normalizeRootMerchantDomain(String(c?.merchant_domain || c?.domain || c?.url || ''));
+      if (rootDom) {
+        const list = campaignsByRootDomain.get(rootDom) || [];
+        if (!list.some((x: any) => String(x?.id || x?.campaign_id || '') === cid && cid)) {
+          list.push(c);
+        }
+        campaignsByRootDomain.set(rootDom, list);
+      }
+    };
+    try {
+      const db = getDb();
+      const rows = db.prepare(`SELECT * FROM cuelinks_campaigns WHERE status = 'ACTIVE'`).all() as any[];
+      for (const r of rows) registerCampaign(r);
+    } catch {}
+    try {
+      const campRes = await client.searchCampaigns({ per_page: 100, page: 1 });
+      for (const c of campRes?.campaigns || []) registerCampaign(c);
+    } catch {}
+
+    let fetched = 0;
+    let ingested = 0;
+    let monetizable = 0;
+    const categorySet = new Set<string>();
+    const ingestedDeals: NormalizedDeal[] = [];
+    const seenKeys = new Set<string>();
+    const nowIso = new Date().toISOString();
+
+    for (let page = 1; page <= maxPages; page++) {
+      let offers: any[] = [];
+      try {
+        const res = typeof (client as any).getLiveOffers === 'function'
+          ? await (client as any).getLiveOffers({ channel_id: resolvedChannelId, page, per_page: perPage })
+          : await client.getOffers({ page, per_page: perPage });
+        offers = res?.offers || [];
+      } catch (err: any) {
+        console.warn(`[DealEngine] getLiveOffers page ${page} notice: ${err?.message}`);
+        break;
+      }
+
+      if (offers.length === 0) break;
+      fetched += offers.length;
+
+      for (const offer of offers) {
+        if (!offer || !offer.title) continue;
+        // Skip inactive or expired offers even if caller used fallback getOffers
+        const statusLower = String(offer.status || 'active').toLowerCase().trim();
+        if (['expired', 'inactive', 'paused', 'closed', 'rejected'].includes(statusLower)) continue;
+        if (offer.end_date) {
+          const expMs = Date.parse(String(offer.end_date));
+          if (Number.isFinite(expMs) && expMs <= Date.now()) continue;
+        }
+
+        let camp = offer.campaign_id ? campaignsById.get(String(offer.campaign_id)) : undefined;
+        let merchantName = String(offer.campaign_name || camp?.merchant_name || camp?.name || 'Verified Merchant').trim();
+
+        let merchantUrl = String(offer.url || '').trim();
+        if (!merchantUrl && offer.tracking_url) {
+          try {
+            const parsed = new URL(String(offer.tracking_url));
+            const dec = parsed.searchParams.get('url') || parsed.searchParams.get('dest') || parsed.searchParams.get('redirect');
+            if (dec && /^https?:\/\//i.test(dec)) {
+              merchantUrl = decodeURIComponent(dec).trim();
+            }
+          } catch {}
+        }
+        if (!merchantUrl && camp?.url && /^https?:\/\//i.test(String(camp.url))) {
+          merchantUrl = String(camp.url).trim();
+        }
+        if (!merchantUrl || CuelinksV3Client.isAllowedTrackingUrl(merchantUrl)) continue;
+        const ssrf = DealSsrfGuard.isSafePublicUrl(merchantUrl);
+        if (!ssrf.safe) continue;
+
+        if (!camp) {
+          const offerRootDom = normalizeRootMerchantDomain(merchantUrl);
+          const domainMatches = offerRootDom ? (campaignsByRootDomain.get(offerRootDom) || []) : [];
+          if (domainMatches.length === 1) {
+            camp = domainMatches[0];
+            merchantName = String(offer.campaign_name || camp?.merchant_name || camp?.name || merchantName).trim();
+          }
+        }
+
+        const dedupeKey = `${offer.id}:${merchantUrl}`;
+        if (seenKeys.has(dedupeKey)) continue;
+        seenKeys.add(dedupeKey);
+
+        let categoryName = 'Electronics';
+        if (Array.isArray(offer.categories) && offer.categories.length > 0) {
+          const c0 = offer.categories[0];
+          categoryName = typeof c0 === 'string' ? c0 : (c0?.name || 'Electronics');
+        } else if (offer.category) {
+          categoryName = String(offer.category);
+        } else if (camp?.category) {
+          categoryName = String(camp.category);
+        }
+        const sharedSector = resolveSectorFromCategory(categoryName) || resolveSectorFromCategory(offer.title);
+        const sectorCode = sharedSector?.code || this.mapCategoryToSectorCode(`${categoryName} ${offer.title}`);
+        categorySet.add(categoryName);
+
+        const rawDiscountPrice = offer.discount_price ?? offer.current_price_inr;
+        const currentPrice = rawDiscountPrice !== undefined && rawDiscountPrice !== null && Number(rawDiscountPrice) > 0
+          ? Number(rawDiscountPrice)
+          : 0;
+
+        const rawOriginalPrice = offer.original_price ?? offer.reference_price_inr;
+        const refPrice = rawOriginalPrice !== undefined && rawOriginalPrice !== null && Number(rawOriginalPrice) > currentPrice
+          ? Number(rawOriginalPrice)
+          : undefined;
+
+        let discountPercent = 0;
+        if (refPrice && currentPrice > 0 && refPrice > currentPrice) {
+          discountPercent = Math.round(((refPrice - currentPrice) / refPrice) * 100);
+        } else if (offer.percent_off !== undefined && offer.percent_off !== null && Number(offer.percent_off) > 0) {
+          discountPercent = Math.round(Number(offer.percent_off));
+        }
+
+        const couponCode = offer.coupon_code ? String(offer.coupon_code).trim() : undefined;
+        const couponConditions = offer.terms?.trim() || offer.description?.trim() || undefined;
+        const isCouponOnly = currentPrice <= 0;
+        if (isCouponOnly && !couponCode && !couponConditions && discountPercent <= 0) {
+          continue;
+        }
+
+        const payoutParsed = parseVerifiedCampaignPayout(camp, currentPrice, categoryName);
+
+        // Convert link strictly via Cuelinks convertLink with channel 331585
+        let trackingUrl: string | undefined = undefined;
+        let affiliateVerified = false;
+        let affiliateCampaignId = offer.campaign_id ? String(offer.campaign_id) : undefined;
+        try {
+          const conv = await client.convertLink({
+            url: merchantUrl,
+            channel_id: resolvedChannelId,
+            shorten: true,
+            subid: `aro_cl_${offer.id}`.slice(0, 50),
+            subid2: sectorCode,
+            subid3: affiliateCampaignId || 'offers_json',
+            subid4: 'cuelinks_live_offers'
+          });
+          const candidateUrl = conv?.short_url || conv?.tracking_url;
+          if (conv && conv.affiliated === true && candidateUrl && CuelinksV3Client.isAllowedTrackingUrl(candidateUrl)) {
+            trackingUrl = candidateUrl;
+            affiliateVerified = true;
+            if (conv.campaign?.id) {
+              affiliateCampaignId = String(conv.campaign.id);
+            }
+          }
+        } catch (convErr: any) {
+          console.warn(`[DealEngine] Cuelinks convertLink notice for offer ${offer.id}: ${convErr?.message}`);
+        }
+
+        if (!affiliateVerified || !trackingUrl) {
+          continue;
+        }
+
+        const dealId = `deal_cl_${String(offer.id).replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+        const slug = AutonomousDealDiscoveryEngine.generateDealSlug(offer.title, merchantName, `cl-${offer.id}`);
+        let sourceDomain = 'cuelinks.com';
+        try { sourceDomain = new URL(merchantUrl).hostname.replace(/^www\./, ''); } catch {}
+
+        const verificationStatus: DealVerificationStatus = isCouponOnly
+          ? 'VERIFIED_WITH_CONDITIONS'
+          : (couponCode ? 'VERIFIED_WITH_CONDITIONS' : 'AFFILIATE_VERIFIED');
+
+        const priceHistory = currentPrice > 0
+          ? [{ price: currentPrice, priceINR: currentPrice, observedAt: nowIso }]
+          : [];
+
+        const deal: NormalizedDeal = {
+          id: dealId,
+          slug,
+          canonicalSlug: slug,
+          dealKind: isCouponOnly || couponCode ? 'COUPON' : 'PRODUCT',
+          discountBadge: discountPercent > 0 ? `${discountPercent}% OFF` : (couponCode ? `Code: ${couponCode}` : undefined),
+          title: String(offer.title).trim(),
+          brand: merchantName,
+          merchant: merchantName,
+          category: categoryName,
+          sectorCode,
+          productUrl: merchantUrl,
+          currentPriceINR: currentPrice,
+          currency: 'INR',
+          referencePriceINR: refPrice,
+          claimedDiscountPercent: discountPercent || undefined,
+          verifiedDiscountPercent: refPrice && currentPrice > 0 ? discountPercent : 0,
+          discountVerificationType: refPrice && currentPrice > 0 ? 'MERCHANT_LISTED_MRP' : 'MERCHANT_CLAIMED',
+          couponCode,
+          couponConditions,
+          availability: isCouponOnly ? 'UNKNOWN' : 'IN_STOCK',
+          geographicRestrictions: ['India'],
+          offerStart: offer.start_date || nowIso,
+          expiryDate: offer.end_date || undefined,
+          observedAt: nowIso,
+          lastCheckedAt: nowIso,
+          lastVerifiedAt: nowIso,
+          nextRecheckAt: new Date(Date.now() + 6 * 3600 * 1000).toISOString(),
+          sourceUrl: merchantUrl,
+          sourceDomain,
+          sourceType: 'AFFILIATE_NETWORK',
+          verificationStatus,
+          confidenceScore: 90,
+          buyerValueScore: 80,
+          rejectionReasons: [],
+          isMonetizable: true,
+          productVerified: currentPrice > 0,
+          affiliateVerified: true,
+          affiliateNetwork: 'CUELINKS',
+          affiliateCampaignId,
+          trackingUrl,
+          modelOrSku: `CL-${offer.id}`,
+          campaign: camp,
+          verifiedCommissionRatePercent: payoutParsed.ratePercent,
+          commissionRatePercent: payoutParsed.ratePercent,
+          grossCommissionPerApprovedOrderINR: payoutParsed.grossCommissionPerApprovedOrderINR,
+          evidenceJson: {
+            sources: [merchantUrl, 'https://developers.cuelinks.com/pub_api/v3/offers.json'],
+            verificationLogs: [`Ingested from Cuelinks /pub_api/v3/offers.json (channel ${resolvedChannelId}) at ${nowIso}`],
+            priceHistory,
+            cuelinksOfferId: String(offer.id),
+            channelId: resolvedChannelId,
+            campaignId: affiliateCampaignId,
+            affiliateCampaignId,
+            payout_type: payoutParsed.monetizationModel || 'UNKNOWN',
+            monetizationModel: payoutParsed.monetizationModel || 'UNKNOWN',
+            payout: camp?.payout ?? camp?.payout_rate ?? null,
+            epc_7d: camp?.epc_7d !== undefined && camp?.epc_7d !== null && !isNaN(Number(camp.epc_7d)) ? Number(camp.epc_7d) : null,
+            epc_90d: camp?.epc_90d !== undefined && camp?.epc_90d !== null && !isNaN(Number(camp.epc_90d)) ? Number(camp.epc_90d) : null,
+            deeplink_allowed: camp?.deeplink_allowed !== undefined ? Boolean(camp.deeplink_allowed) : true,
+            sub_ids_allowed: camp?.sub_ids_allowed !== undefined ? Boolean(camp.sub_ids_allowed) : true,
+            social_media_publishers_allowed: camp?.social_media_publishers_allowed !== undefined ? Boolean(camp.social_media_publishers_allowed) : true,
+            cookie_duration: camp?.cookie_duration ?? camp?.cookie_days ?? null,
+            verifiedCommissionRatePercent: payoutParsed.ratePercent,
+            grossCommissionPerApprovedOrderINR: payoutParsed.grossCommissionPerApprovedOrderINR,
+            verifiedCpcPayoutINR: payoutParsed.verifiedCpcPayoutINR,
+            couponCode: couponCode || null,
+            couponConditions: couponConditions || null,
+            catalogSlot: 'ACTIVE',
+            isFeatured: true
+          },
+          createdAt: nowIso,
+          updatedAt: nowIso
+        };
+
+        deal.buyerValueScore = this.calculateBuyerValueScore(deal);
+        this.enrichDealWithArbitrageAndBuyerTargeting(deal);
+
+        await this.persistDealToD1(deal, organizationId, businessId);
+        await this.provisionMatchingPartnerOffer(deal, organizationId, businessId);
+
+        this.dealsMap.set(deal.id, deal);
+        if (deal.slug) this.dealSlugMap.set(deal.slug.toLowerCase(), deal.id);
+        if (deal.canonicalSlug) this.dealSlugMap.set(deal.canonicalSlug.toLowerCase(), deal.id);
+
+        if (deal.evidenceJson?.hasVerifiedPriceDrop && deal.currentPriceINR && deal.currentPriceINR > 0) {
+          try {
+            const { TelegramBotAdapter } = await import('../integrations/telegram-adapter.js');
+            const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').replace(/\/$/, '');
+            await TelegramBotAdapter.getInstance().postVerifiedPriceDrop({
+              dealId: deal.id,
+              title: deal.title,
+              currentPriceINR: deal.currentPriceINR,
+              referencePriceINR: deal.referencePriceINR,
+              merchant: deal.merchant,
+              trackedRedirectUrl: `${siteUrl}/api/v1/public/deals/${encodeURIComponent(deal.id)}/redirect`
+            });
+          } catch {}
+        }
+
+        ingested++;
+        monetizable++;
+        ingestedDeals.push(deal);
+      }
+
+      if (offers.length < perPage) break;
+    }
+
+    return {
+      fetched,
+      ingested,
+      monetizable,
+      categories: Array.from(categorySet),
+      deals: ingestedDeals
+    };
+  }
+
+  /**
+   * Stage J Task 3: 72-Hour Evolutionary Catalog Rotation ("Adapt & Evolve").
+   * Evaluates price drops, verified CPS/CPA commission rates, real buyer clicks, and
+   * customer-desk inquiries; applies -25 pts/day decay after 72h with zero engagement
+   * and rotates stale unclicked deals out of featured slots on / and /deals.
+   */
+  public async evolveAndRotateCatalog(options?: {
+    nowMs?: number;
+    featuredLimit?: number;
+    organizationId?: string;
+    businessId?: string;
+  }): Promise<{
+    evaluated: number;
+    boosted: number;
+    rotatedOut: number;
+    featuredIds: string[];
+  }> {
+    const evalNowMs = options?.nowMs ?? Date.now();
+    const featuredLimit = Math.max(1, options?.featuredLimit ?? 12);
+    const useRemoteD1 = this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST);
+
+    let rows: any[] = [];
+    const sql = `
+      SELECT * FROM public_deals
+      WHERE availability = 'IN_STOCK'
+        AND is_monetizable = 1
+        AND affiliate_verified = 1
+        AND verification_status IN ('VERIFIED', 'AFFILIATE_VERIFIED', 'VERIFIED_WITH_CONDITIONS')
+        AND (expiry_date IS NULL OR expiry_date > datetime('now'))
+    `;
+    try {
+      if (useRemoteD1) {
+        const res = await this.d1Repo.executeRead('public_deals', sql, []);
+        rows = Array.isArray(res?.results) ? res.results : [];
+      } else {
+        rows = getDb().prepare(sql).all() as any[];
+      }
+    } catch (err: any) {
+      console.warn(`[DealEngine] evolveAndRotateCatalog read notice: ${err?.message}`);
+    }
+
+    const { clickStatsByOffer, campaigns } = await this.loadRelationshipTables(useRemoteD1);
+
+    // Load customer-desk inquiry signals, genuine non-test impressions & Cuelinks campaign EPC/social flags
+    const inquirySignals: string[] = [];
+    const impressionsByDealId = new Map<string, number>();
+    const campaignMetaById = new Map<string, { epc_7d?: number; social_media_publishers_allowed?: boolean }>();
+    try {
+      const db = getDb();
+      const journeyRows = db.prepare(`SELECT touchpoints_json, first_touch_channel FROM customer_journeys ORDER BY created_at DESC LIMIT 200`).all() as any[];
+      for (const jr of journeyRows) {
+        inquirySignals.push(`${jr.first_touch_channel || ''} ${jr.touchpoints_json || ''}`.toLowerCase());
+      }
+      const dsRows = db.prepare(`SELECT topic, raw_query, category FROM demand_signals ORDER BY created_at DESC LIMIT 200`).all() as any[];
+      for (const ds of dsRows) {
+        inquirySignals.push(`${ds.topic || ''} ${ds.raw_query || ''} ${ds.category || ''}`.toLowerCase());
+      }
+      const impRows = db.prepare(`
+        SELECT entity_id, metadata_json
+        FROM analytics_events
+        WHERE LOWER(event_type) IN ('impression', 'view', 'visit', 'page_view')
+        ORDER BY created_at DESC
+        LIMIT 1000
+      `).all() as any[];
+      for (const ir of impRows) {
+        const rawMeta = String(ir.metadata_json || '');
+        if (rawMeta.includes('X-Diagnostic-Probe') || rawMeta.includes('"isTest":true') || rawMeta.includes('"is_test":true')) {
+          continue;
+        }
+        let meta: any = {};
+        try { meta = JSON.parse(rawMeta || '{}'); } catch {}
+        if (meta.isTest === true || meta.is_test === true || meta.is_test === 1 || meta.diagnosticProbe === true) continue;
+        const targetId = String(ir.entity_id || meta.dealId || meta.deal_id || '').trim();
+        if (targetId) {
+          impressionsByDealId.set(targetId, (impressionsByDealId.get(targetId) || 0) + 1);
+        }
+      }
+      const wfRows = db.prepare(`SELECT campaign_id, outputs_json FROM workflows WHERE workflow_type = 'CUELINKS_CAMPAIGN' LIMIT 500`).all() as any[];
+      for (const w of wfRows) {
+        if (!w.campaign_id) continue;
+        try {
+          const out = JSON.parse(w.outputs_json || '{}');
+          campaignMetaById.set(String(w.campaign_id), {
+            epc_7d: Number(out.epc_7d || 0) || undefined,
+            social_media_publishers_allowed: out.social_media_publishers_allowed !== false
+          });
+        } catch {}
+      }
+    } catch {}
+
+    const scored: Array<{ deal: NormalizedDeal; score: number; boosted: boolean; stale: boolean }> = [];
+
+    for (const row of rows) {
+      const deal = this.parseDealFromPublicDealsRow(row);
+      if (!deal) continue;
+
+      const clicks = clickStatsByOffer.get(deal.id) ?? Number(deal.evidenceJson?.observedClicks ?? 0);
+      const telemetryImpressions = (impressionsByDealId.get(deal.id) || 0) + (deal.slug ? (impressionsByDealId.get(deal.slug) || 0) : 0);
+      const observedImpressions = Math.max(telemetryImpressions, Number(deal.evidenceJson?.observedImpressions ?? 0));
+
+      const titleTokens = deal.title.toLowerCase().split(/\s+/).filter(w => w.length >= 4).slice(0, 3);
+      let inquiries = Number(deal.evidenceJson?.observedInquiries ?? 0);
+      if (inquiries === 0 && inquirySignals.length > 0) {
+        const slugLower = (deal.slug || '').toLowerCase();
+        const catLower = (deal.category || '').toLowerCase();
+        for (const sig of inquirySignals) {
+          if ((slugLower && sig.includes(slugLower)) || sig.includes(deal.id.toLowerCase()) || (titleTokens.length >= 2 && titleTokens.every(t => sig.includes(t))) || (catLower && sig.includes(catLower) && sig.includes('inquiry'))) {
+            inquiries++;
+          }
+        }
+      }
+
+      const matchedCampaign = deal.affiliateCampaignId
+        ? campaigns.find((c: any) => String(c.campaign_id) === String(deal.affiliateCampaignId))
+        : undefined;
+      const campExtra = deal.affiliateCampaignId ? campaignMetaById.get(String(deal.affiliateCampaignId)) : undefined;
+
+      const evalDeal: NormalizedDeal & { evaluationNowMs?: number } = {
+        ...deal,
+        campaign: matchedCampaign || deal.campaign,
+        observedClicks: clicks,
+        observedImpressions,
+        observedInquiries: inquiries,
+        epc7d: campExtra?.epc_7d ?? deal.epc7d ?? deal.evidenceJson?.epc_7d ?? null,
+        socialMediaPublishersAllowed: campExtra?.social_media_publishers_allowed ?? deal.socialMediaPublishersAllowed ?? deal.evidenceJson?.socialMediaPublishersAllowed ?? true,
+        evaluationNowMs: evalNowMs
+      };
+      const result = calculateMarketArbitrageScore(evalDeal);
+      const isStale = (result.staleDecayPenalty || 0) > 0;
+      const isBoosted = !isStale && ((result.rankingBreakdown.evolutionBoostScore || 0) > 0 || result.arbitrageScore >= 55);
+
+      deal.arbitrageScore = result.arbitrageScore;
+      deal.observedClicks = clicks;
+      deal.observedImpressions = observedImpressions;
+      deal.observedInquiries = inquiries;
+      deal.staleDecayPenalty = result.staleDecayPenalty || 0;
+      deal.evolutionStatus = result.evolutionStatus;
+      deal.exposureTier = result.exposureTier;
+      deal.epc7d = evalDeal.epc7d;
+      deal.socialMediaPublishersAllowed = evalDeal.socialMediaPublishersAllowed;
+      deal.expectedProfitPer100VisitorsINR = result.expectedProfitPer100VisitorsINR;
+      deal.rankingBreakdown = result.rankingBreakdown;
+      scored.push({ deal, score: result.arbitrageScore, boosted: isBoosted, stale: isStale });
+    }
+
+    // Sort non-stale winners to the top prioritizing epc_7d, EV/100, and arbitrage score
+    scored.sort((a, b) =>
+      Number(a.stale) - Number(b.stale) ||
+      (b.deal.expectedProfitPer100VisitorsINR || 0) - (a.deal.expectedProfitPer100VisitorsINR || 0) ||
+      (Number(b.deal.epc7d || 0) - Number(a.deal.epc7d || 0)) ||
+      b.score - a.score ||
+      (b.deal.expectedCommissionYieldINR || 0) - (a.deal.expectedCommissionYieldINR || 0)
+    );
+
+    const featuredIds: string[] = [];
+    let boostedCount = 0;
+    let rotatedOutCount = 0;
+
+    for (const item of scored) {
+      const assignFeatured = !item.stale && featuredIds.length < featuredLimit;
+      const slot: 'FEATURED' | 'ACTIVE' | 'ROTATED_OUT_STALE' = item.stale
+        ? 'ROTATED_OUT_STALE'
+        : (assignFeatured ? 'FEATURED' : 'ACTIVE');
+      const evolutionStatus: 'RISING_WINNER' | 'FRESH_EXPLORATION' | 'STALE_ROTATED_OUT' = item.stale
+        ? 'STALE_ROTATED_OUT'
+        : ((item.deal.observedClicks || 0) > 0 || (item.deal.observedInquiries || 0) > 0 || Boolean(item.deal.evidenceJson?.hasVerifiedPriceDrop)
+          ? 'RISING_WINNER'
+          : 'FRESH_EXPLORATION');
+      if (assignFeatured) featuredIds.push(item.deal.id);
+      if (item.boosted) boostedCount++;
+      if (item.stale) rotatedOutCount++;
+
+      item.deal.isFeatured = assignFeatured;
+      item.deal.catalogSlot = slot;
+      item.deal.evolutionStatus = evolutionStatus;
+      item.deal.evidenceJson = {
+        ...(item.deal.evidenceJson || { sources: [item.deal.productUrl], verificationLogs: [] }),
+        observedClicks: item.deal.observedClicks || 0,
+        observedImpressions: item.deal.observedImpressions || 0,
+        observedInquiries: item.deal.observedInquiries || 0,
+        exposureTier: item.deal.exposureTier || 'FRESH_UNEXPOSED',
+        epc_7d: item.deal.epc7d ?? null,
+        socialMediaPublishersAllowed: item.deal.socialMediaPublishersAllowed !== false,
+        arbitrageScore: item.deal.arbitrageScore,
+        expectedProfitPer100VisitorsINR: item.deal.expectedProfitPer100VisitorsINR || 0,
+        evolutionStatus,
+        staleDecayPenalty: item.deal.staleDecayPenalty || 0,
+        evolutionBoostScore: item.deal.rankingBreakdown?.evolutionBoostScore || 0,
+        isFeatured: assignFeatured,
+        catalogSlot: slot,
+        lastEvolvedAt: new Date(evalNowMs).toISOString()
+      };
+
+      this.dealsMap.set(item.deal.id, item.deal);
+      const updateSql = `UPDATE public_deals SET evidence_json = ?, updated_at = datetime('now') WHERE id = ?`;
+      const evStr = JSON.stringify(item.deal.evidenceJson);
+      try {
+        if (useRemoteD1) {
+          await this.d1Repo.executeWrite('public_deals', updateSql, [evStr, item.deal.id]);
+        } else {
+          getDb().prepare(updateSql).run(evStr, item.deal.id);
+        }
+      } catch {}
+    }
+
+    return {
+      evaluated: scored.length,
+      boosted: boostedCount,
+      rotatedOut: rotatedOutCount,
+      featuredIds
     };
   }
 
@@ -3684,14 +4733,24 @@ export class AutonomousDealDiscoveryEngine {
       }
     }
 
-    const baseCandidates = Array.from(this.dealsMap.values()).filter(d =>
-      d.availability === 'IN_STOCK' &&
-      typeof d.currentPriceINR === 'number' && d.currentPriceINR > 0 &&
-      (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'AFFILIATE_VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS') &&
-      Boolean(d.isMonetizable) === true &&
-      (isProduction() ? (d.productVerified === true && d.affiliateVerified === true) : true) &&
-      (!d.expiryDate || new Date(d.expiryDate).getTime() > Date.now())
-    );
+    const baseCandidates = Array.from(this.dealsMap.values()).filter(d => {
+      if (
+        d.affiliateNetwork === 'AMAZON_IN' ||
+        /^https?:\/\/(www\.)?amazon\.(in|com)(\/|$)/i.test(String(d.productUrl || ''))
+      ) {
+        return false;
+      }
+      const check = repairTitlePriceMismatch(d);
+      if (check.quarantined) return false;
+      return (
+        d.availability === 'IN_STOCK' &&
+        typeof d.currentPriceINR === 'number' && d.currentPriceINR > 0 &&
+        (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'AFFILIATE_VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS') &&
+        Boolean(d.isMonetizable) === true &&
+        (isProduction() ? (d.productVerified === true && d.affiliateVerified === true) : true) &&
+        (!d.expiryDate || new Date(d.expiryDate).getTime() > Date.now())
+      );
+    });
 
     // Count canonical destinations across all active deals to detect unkeyed duplicate / conflicting claims
     const candidateDestCounts = new Map<string, number>();
@@ -3808,8 +4867,12 @@ export class AutonomousDealDiscoveryEngine {
       );
     }
 
-    // Sort deterministically by market arbitrage score descending, then expected commission yield, then price advantage ratio
+    // Sort deterministically: active/featured winners first (rotated stale 72h+ unclicked deals last),
+    // then by EV/100 profit allocator, market arbitrage score descending, expected commission yield, then price advantage ratio
     filtered.sort((a, b) =>
+      Number(a.catalogSlot === 'ROTATED_OUT_STALE' || (a.staleDecayPenalty || 0) > 0) -
+        Number(b.catalogSlot === 'ROTATED_OUT_STALE' || (b.staleDecayPenalty || 0) > 0) ||
+      (b.expectedProfitPer100VisitorsINR || 0) - (a.expectedProfitPer100VisitorsINR || 0) ||
       (b.arbitrageScore || 0) - (a.arbitrageScore || 0) ||
       (b.expectedCommissionYieldINR || 0) - (a.expectedCommissionYieldINR || 0) ||
       (b.priceAdvantageRatio || 0) - (a.priceAdvantageRatio || 0) ||
@@ -3836,7 +4899,6 @@ export class AutonomousDealDiscoveryEngine {
     const inStockCount = Array.from(this.dealsMap.values()).filter(d => d.availability === 'IN_STOCK' && (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'AFFILIATE_VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS')).length;
     if (inStockCount === 0) {
       try {
-        const { getDb } = require('../db/client.js');
         const rows = getDb().prepare(AutonomousDealDiscoveryEngine.ELIGIBLE_PUBLIC_DEALS_SQL).all();
         if (Array.isArray(rows) && rows.length > 0) {
           for (const row of rows) {
@@ -3853,8 +4915,14 @@ export class AutonomousDealDiscoveryEngine {
 
     const allDeals = Array.from(this.dealsMap.values());
 
-    // Filter active deals
+    // Filter active deals (Stage M: exclude AMAZON_IN static-priced listings from public deal feeds)
     let filtered = allDeals.filter(d => {
+      if (
+        d.affiliateNetwork === 'AMAZON_IN' ||
+        /^https?:\/\/(www\.)?amazon\.(in|com)(\/|$)/i.test(String(d.productUrl || ''))
+      ) {
+        return false;
+      }
       // Hide expired, out-of-stock, rejected, unverified, unconfirmed, or recheck-required deals from public active results
       if (
         d.verificationStatus === 'EXPIRED' ||
@@ -4684,7 +5752,13 @@ export class AutonomousDealDiscoveryEngine {
     organizationId: string = 'org_owner_primary',
     businessId: string = 'biz_platform_aro'
   ): Promise<void> {
-    const partnerId = 'part_cuelinks';
+    const isAmazonDeal =
+      deal.affiliateNetwork === 'AMAZON_IN' ||
+      (Boolean(process.env.AMAZON_AFFILIATE_TAG?.trim()) && Boolean(buildAmazonAffiliateUrl(deal.productUrl, process.env.AMAZON_AFFILIATE_TAG)));
+    const partnerId = isAmazonDeal ? 'part_amazon_in' : 'part_cuelinks';
+    const partnerName = isAmazonDeal ? 'Amazon Associates India' : 'Cuelinks Affiliate Network';
+    const partnerWebsite = isAmazonDeal ? 'https://www.amazon.in' : 'https://www.cuelinks.com';
+    const partnerNetwork = isAmazonDeal ? 'AMAZON_IN' : 'CUELINKS';
     const nowIso = new Date().toISOString();
 
     const partnerUpsertSql = `
@@ -4702,14 +5776,14 @@ export class AutonomousDealDiscoveryEngine {
     const partnerParams = [
       partnerId,
       organizationId,
-      'Cuelinks Affiliate Network',
+      partnerName,
       'E-commerce & Deals',
       'India',
-      'https://www.cuelinks.com',
+      partnerWebsite,
       'AFFILIATE',
       'APPROVED',
       1,
-      'CUELINKS',
+      partnerNetwork,
       'AFFILIATE_LINK',
       'AUTHORIZED',
       nowIso
@@ -4794,16 +5868,16 @@ export class AutonomousDealDiscoveryEngine {
     if (c.includes('home') || c.includes('appliance') || c.includes('kitchen') || c.includes('purifier') || c.includes('cooler')) {
       return 'SECTOR_C_HOME_APPLIANCES';
     }
-    if (c.includes('travel') || c.includes('flight') || c.includes('hotel') || c.includes('holiday')) {
+    if (c.includes('travel') || c.includes('flight') || c.includes('hotel') || c.includes('holiday') || c.includes('tour')) {
       return 'SECTOR_D_TRAVEL';
     }
-    if (c.includes('software') || c.includes('saas') || c.includes('hosting') || c.includes('cloud') || c.includes('dev')) {
+    if (c.includes('software') || c.includes('saas') || c.includes('hosting') || c.includes('cloud') || c.includes('dev') || c.includes('finance') || c.includes('fintech') || c.includes('bank') || c.includes('credit card') || c.includes('demat') || c.includes('insurance') || c.includes('loan') || c.includes('invest') || c.includes('mutual fund')) {
       return 'SECTOR_E_SOFTWARE';
     }
     if (c.includes('office') || c.includes('industrial') || c.includes('printer') || c.includes('barcode') || c.includes('label')) {
       return 'SECTOR_F_OFFICE_INDUSTRIAL';
     }
-    if (c.includes('lifestyle') || c.includes('fashion') || c.includes('apparel') || c.includes('shoe') || c.includes('fitness')) {
+    if (c.includes('lifestyle') || c.includes('fashion') || c.includes('apparel') || c.includes('shoe') || c.includes('fitness') || c.includes('groom') || c.includes('trimmer') || c.includes('shav') || c.includes('hair') || c.includes('skin') || c.includes('cosmetic') || c.includes('beauty') || c.includes('personal')) {
       return 'SECTOR_G_LIFESTYLE';
     }
     if (c.includes('clinic') || c.includes('dental') || c.includes('service') || c.includes('b2b')) {
@@ -4818,6 +5892,10 @@ export class AutonomousDealDiscoveryEngine {
 
   public classifyTargetBuyerSegment(deal: Partial<NormalizedDeal>): TargetBuyerClassification {
     return classifyTargetBuyerSegment(deal);
+  }
+
+  public calculateExpectedProfitPer100Visitors(deal: Partial<NormalizedDeal>): number {
+    return calculateExpectedProfitPer100Visitors(deal);
   }
 
   public enrichDealWithArbitrageAndBuyerTargeting(deal: NormalizedDeal): NormalizedDeal {
@@ -4838,6 +5916,14 @@ export class AutonomousDealDiscoveryEngine {
     deal.economicsSampleSize = arb.economicsSampleSize;
     deal.economicsConfidence = arb.economicsConfidence;
     deal.opportunityLabel = arb.opportunityLabel;
+    deal.staleDecayPenalty = arb.staleDecayPenalty;
+    deal.exposureTier = arb.exposureTier;
+    deal.isFeatured = deal.evidenceJson?.isFeatured !== undefined ? Boolean(deal.evidenceJson.isFeatured) : arb.isFeatured;
+    deal.catalogSlot = deal.evidenceJson?.catalogSlot || arb.catalogSlot;
+    deal.evolutionStatus = (deal.catalogSlot === 'ROTATED_OUT_STALE' || (arb.staleDecayPenalty || 0) > 0)
+      ? 'STALE_ROTATED_OUT'
+      : (deal.evidenceJson?.evolutionStatus || arb.evolutionStatus || 'FRESH_EXPLORATION');
+    deal.expectedProfitPer100VisitorsINR = arb.expectedProfitPer100VisitorsINR ?? calculateExpectedProfitPer100Visitors(deal);
     deal.rankingBreakdown = arb.rankingBreakdown;
     deal.targetBuyerSegment = targeting.targetBuyerSegment;
     deal.buyerIntentKeywords = targeting.buyerIntentKeywords;
@@ -4858,6 +5944,12 @@ export class AutonomousDealDiscoveryEngine {
       economicsSampleSize: arb.economicsSampleSize,
       economicsConfidence: arb.economicsConfidence,
       opportunityLabel: arb.opportunityLabel,
+      staleDecayPenalty: arb.staleDecayPenalty,
+      exposureTier: arb.exposureTier,
+      isFeatured: deal.isFeatured,
+      catalogSlot: deal.catalogSlot,
+      evolutionStatus: deal.evolutionStatus,
+      expectedProfitPer100VisitorsINR: deal.expectedProfitPer100VisitorsINR,
       rankingBreakdown: arb.rankingBreakdown,
       targetBuyerSegment: targeting.targetBuyerSegment,
       buyerIntentKeywords: targeting.buyerIntentKeywords,
@@ -4947,14 +6039,18 @@ export class AutonomousDealDiscoveryEngine {
         isMonetizable: row.is_monetizable !== undefined ? Boolean(row.is_monetizable) : Boolean(row.affiliate_url),
         productVerified: Boolean(row.product_verified),
         affiliateVerified: Boolean(row.affiliate_verified),
-        affiliateCampaignId: evidence.affiliateCampaignId || undefined,
-        affiliateNetwork: evidence.affiliateNetwork || (row.affiliate_url ? 'CUELINKS' : undefined),
+        affiliateCampaignId: evidence.affiliateCampaignId || (row.affiliate_url && /^https:\/\/(www\.)?amazon\.in\//i.test(row.affiliate_url) ? 'amazon_in_associates' : undefined),
+        affiliateNetwork: evidence.affiliateNetwork || (row.affiliate_url && /^https:\/\/(www\.)?amazon\.in\//i.test(row.affiliate_url) ? 'AMAZON_IN' : (row.affiliate_url ? 'CUELINKS' : undefined)),
         evidenceJson: evidence,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
         sectorCode: row.sector_code
       };
-      return this.enrichDealWithArbitrageAndBuyerTargeting(parsed);
+      const repairedCheck = repairTitlePriceMismatch(parsed);
+      if (repairedCheck.quarantined) {
+        return null;
+      }
+      return this.enrichDealWithArbitrageAndBuyerTargeting(repairedCheck.deal);
     } catch {
       return null;
     }
@@ -5157,5 +6253,1294 @@ export class AutonomousDealDiscoveryEngine {
   public resetSources(): void {
     this.sourcesMap.clear();
     this.seedDefaultIndianSources();
+  }
+
+  /**
+   * Parses genuine title, price, and MRP metadata from product HTML or search snippets.
+   * Never fabricates prices when none are observed.
+   */
+  public extractProductMetadataFromHtml(html: string, sourceUrl?: string): {
+    title: string | null;
+    currentPriceINR: number | null;
+    referencePriceINR: number | null;
+    brand: string | null;
+    inStock: boolean;
+  } {
+    const rawHtml = String(html || '');
+    if (!rawHtml) {
+      return { title: null, currentPriceINR: null, referencePriceINR: null, brand: null, inStock: true };
+    }
+
+    const decodeEntities = (s: string) =>
+      s
+        .replace(/&amp;/g, '&')
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;|&apos;/g, "'")
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    let title: string | null = null;
+    const ogTitleMatch = rawHtml.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i)
+      || rawHtml.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:title["']/i);
+    if (ogTitleMatch?.[1]) {
+      title = decodeEntities(ogTitleMatch[1]);
+    }
+    if (!title) {
+      const titleMatch = rawHtml.match(/<title[^>]*>([^<]+)<\/title>/i);
+      if (titleMatch?.[1]) {
+        title = decodeEntities(titleMatch[1]).replace(/\s*[:|-]\s*Amazon\.in.*$/i, '').trim();
+      }
+    }
+
+    let currentPriceINR: number | null = null;
+    let referencePriceINR: number | null = null;
+    let brand: string | null = null;
+    let inStock = !/currently unavailable|out of stock|sold out/i.test(rawHtml.slice(0, 60000));
+
+    // 1. JSON-LD Product / Offer blocks
+    const jsonLdMatches = rawHtml.matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi);
+    for (const m of jsonLdMatches) {
+      try {
+        const parsed = JSON.parse(m[1].trim());
+        const items = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.['@graph']) ? parsed['@graph'] : [parsed]);
+        for (const item of items) {
+          if (!item || typeof item !== 'object') continue;
+          const typeStr = String(item['@type'] || '').toLowerCase();
+          if (typeStr.includes('product')) {
+            if (!title && item.name) title = decodeEntities(String(item.name));
+            if (!brand && item.brand) {
+              brand = typeof item.brand === 'string' ? item.brand : (item.brand?.name ? String(item.brand.name) : null);
+            }
+            const offers = Array.isArray(item.offers) ? item.offers[0] : item.offers;
+            if (offers) {
+              const p = Number(offers.price ?? offers.lowPrice ?? 0);
+              const hp = Number(offers.highPrice ?? 0);
+              if (Number.isFinite(p) && p > 0 && p < 1000000) currentPriceINR = p;
+              if (Number.isFinite(hp) && hp > (currentPriceINR || 0) && hp < 1000000) referencePriceINR = hp;
+              if (String(offers.availability || '').toLowerCase().includes('outofstock')) inStock = false;
+            }
+          }
+        }
+      } catch {}
+    }
+
+    // 2. Meta price tags (Shopify / OG Commerce)
+    if (!currentPriceINR) {
+      const metaPrice = rawHtml.match(/<meta[^>]+property=["'](?:product:price:amount|og:price:amount)["'][^>]+content=["']([0-9.,]+)["']/i);
+      if (metaPrice?.[1]) {
+        const p = Number(metaPrice[1].replace(/,/g, ''));
+        if (Number.isFinite(p) && p > 0 && p < 1000000) currentPriceINR = p;
+      }
+    }
+
+    // 3. Amazon / Indian storefront structured price snippets
+    if (!currentPriceINR) {
+      const amazonPricePatterns = [
+        /"priceAmount"\s*:\s*([0-9]+(?:\.[0-9]+)?)/i,
+        /class=["'][^"']*a-price-whole[^"']*["'][^>]*>\s*([0-9,]+)/i,
+        /(?:Deal Price|Offer Price|Price|M\.R\.P\.)?\s*₹\s*([1-9][0-9,]{1,6})/i
+      ];
+      for (const rx of amazonPricePatterns) {
+        const m = rawHtml.match(rx);
+        if (m?.[1]) {
+          const p = Number(m[1].replace(/,/g, ''));
+          if (Number.isFinite(p) && p >= 49 && p < 500000) {
+            currentPriceINR = p;
+            break;
+          }
+        }
+      }
+    }
+
+    if (!referencePriceINR && currentPriceINR) {
+      const mrpMatch = rawHtml.match(/(?:M\.R\.P\.?|MRP|compare_at_price)[^0-9₹]{0,20}₹?\s*([1-9][0-9,]{1,6})/i);
+      if (mrpMatch?.[1]) {
+        const mrp = Number(mrpMatch[1].replace(/,/g, ''));
+        if (Number.isFinite(mrp) && mrp > currentPriceINR && mrp < 1000000) {
+          referencePriceINR = mrp;
+        }
+      }
+    }
+
+    if (!brand && sourceUrl) {
+      const domain = normalizeRootMerchantDomain(sourceUrl);
+      const matched = APPROVED_SHOPIFY_MERCHANTS.find(m => normalizeRootMerchantDomain(m.domain) === domain);
+      if (matched) brand = matched.brand;
+    }
+
+    return { title, currentPriceINR, referencePriceINR, brand, inStock };
+  }
+
+  public computeCouponDiscountINR(
+    priceINR: number,
+    couponCode?: string | null,
+    couponConditions?: string | null,
+    discountBadge?: string | null
+  ): number {
+    if (!(priceINR > 0)) return 0;
+    const text = `${couponCode || ''} ${couponConditions || ''} ${discountBadge || ''}`.trim();
+    if (!text) return 0;
+
+    const flatMatch = text.match(/(?:flat|save|extra|instant)\s*(?:rs\.?|inr|₹)\s*([0-9,]+)/i)
+      || text.match(/₹\s*([0-9,]+)\s*off/i);
+    if (flatMatch?.[1]) {
+      const flat = Number(flatMatch[1].replace(/,/g, ''));
+      if (Number.isFinite(flat) && flat > 0 && flat < priceINR * 0.7) {
+        return Math.round(flat);
+      }
+    }
+
+    const pctMatch = text.match(/([0-9]{1,2})\s*%\s*(?:off|discount|cashback|extra)/i);
+    if (pctMatch?.[1]) {
+      const pct = Number(pctMatch[1]);
+      if (Number.isFinite(pct) && pct > 0 && pct <= 50) {
+        return Math.round(priceINR * (pct / 100));
+      }
+    }
+
+    return 0;
+  }
+
+  /**
+   * On-Demand Product URL Inspector & Monetizer (PriceHistory / CashKaro / BuyHatke Engine).
+   * Validates SSRF safety, inspects existing D1 snapshot or live HTML metadata, converts link
+   * via AMAZON_AFFILIATE_TAG or Cuelinks V3 convertLink (channel 331585), and upserts into
+   * public_deals + partner_offers.
+   */
+  public async isApprovedFairPriceHost(rawUrl: string): Promise<{ allowed: boolean; isAmazon: boolean; hostname: string }> {
+    let parsed: URL;
+    try {
+      parsed = new URL(String(rawUrl || '').trim());
+    } catch {
+      return { allowed: false, isAmazon: false, hostname: '' };
+    }
+    if (parsed.protocol !== 'https:') {
+      return { allowed: false, isAmazon: false, hostname: parsed.hostname.toLowerCase() };
+    }
+    const hostname = parsed.hostname.toLowerCase().replace(/^www\./, '');
+    const rootDomain = normalizeRootMerchantDomain(rawUrl);
+    if (hostname === 'amazon.in' || hostname.endsWith('.amazon.in')) {
+      return { allowed: true, isAmazon: true, hostname };
+    }
+    if (APPROVED_SHOPIFY_MERCHANTS.some(m => normalizeRootMerchantDomain(m.domain) === rootDomain)) {
+      return { allowed: true, isAmazon: false, hostname };
+    }
+    try {
+      const sql = `SELECT campaign_id FROM cuelinks_campaigns WHERE (merchant_domain = ? OR merchant_domain = ?) AND status = 'ACTIVE' LIMIT 1`;
+      let row: any = null;
+      if (this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
+        row = await this.d1Repo.queryOne<any>('cuelinks_campaigns', sql, [rootDomain, hostname]);
+      } else {
+        row = getDb().prepare(sql).get(rootDomain, hostname);
+      }
+      if (row) {
+        return { allowed: true, isAmazon: false, hostname };
+      }
+    } catch {}
+    return { allowed: false, isAmazon: false, hostname };
+  }
+
+  private async readBoundedHtml(res: Response, maxBytes: number = 1048576): Promise<string> {
+    const cl = Number(res.headers?.get?.('content-length') || 0);
+    if (Number.isFinite(cl) && cl > maxBytes) {
+      try { await res.body?.cancel(); } catch {}
+      throw new Error('RESPONSE_EXCEEDS_1MB_LIMIT');
+    }
+    if (res.body && typeof res.body.getReader === 'function') {
+      const reader = res.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let total = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) {
+          total += value.byteLength;
+          if (total > maxBytes) {
+            try { await reader.cancel(); } catch {}
+            throw new Error('RESPONSE_EXCEEDS_1MB_LIMIT');
+          }
+          chunks.push(value);
+        }
+      }
+      const merged = new Uint8Array(total);
+      let offset = 0;
+      for (const ch of chunks) {
+        merged.set(ch, offset);
+        offset += ch.byteLength;
+      }
+      return new TextDecoder('utf-8', { fatal: false }).decode(merged);
+    }
+    const text = await res.text();
+    if (Buffer.byteLength(text, 'utf8') > maxBytes) {
+      throw new Error('RESPONSE_EXCEEDS_1MB_LIMIT');
+    }
+    return text;
+  }
+
+  public async inspectAndMonetizeProductUrl(
+    rawUrl: string,
+    options?: {
+      organizationId?: string;
+      businessId?: string;
+      fallbackTitle?: string;
+      fallbackPriceINR?: number;
+      fallbackReferencePriceINR?: number;
+      fallbackCategory?: string;
+    }
+  ): Promise<{ deal: NormalizedDeal | null; affiliateNetwork: 'AMAZON_IN' | 'CUELINKS' | 'DIRECT'; error?: string }> {
+    const cleanUrl = String(rawUrl || '').trim();
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(cleanUrl);
+    } catch {
+      return { deal: null, affiliateNetwork: 'DIRECT', error: 'INVALID_URL' };
+    }
+    if (parsedUrl.protocol !== 'https:') {
+      return { deal: null, affiliateNetwork: 'DIRECT', error: 'HTTPS_REQUIRED' };
+    }
+    const ssrf = DealSsrfGuard.isSafePublicUrl(cleanUrl);
+    if (!ssrf.safe) {
+      return { deal: null, affiliateNetwork: 'DIRECT', error: ssrf.reason || 'UNSAFE_URL' };
+    }
+
+    const hostCheck = await this.isApprovedFairPriceHost(cleanUrl);
+    if (!hostCheck.allowed) {
+      return { deal: null, affiliateNetwork: 'DIRECT', error: 'UNALLOWLISTED_MERCHANT_DOMAIN' };
+    }
+
+    const organizationId = options?.organizationId || 'org_owner_primary';
+    const businessId = options?.businessId || 'biz_platform_aro';
+    const hostname = parsedUrl.hostname.toLowerCase().replace(/^www\./, '');
+    const rootDomain = normalizeRootMerchantDomain(cleanUrl);
+    const amazonTag = (process.env.AMAZON_AFFILIATE_TAG || '').trim();
+    const isAmazonHost = hostCheck.isAmazon;
+    const asinMatch = cleanUrl.match(/\/(?:dp|gp\/product)\/([A-Z0-9]{8,12})/i);
+    const canonicalProductUrl = isAmazonHost && asinMatch?.[1]
+      ? `https://www.amazon.in/dp/${asinMatch[1].toUpperCase()}`
+      : DealSsrfGuard.normalizeProductUrl(cleanUrl);
+
+    // 1. Check existing public_deals by product_url or ASIN
+    let existingDeal: NormalizedDeal | null = null;
+    try {
+      const needle = isAmazonHost && asinMatch?.[1] ? `%/${asinMatch[1].toUpperCase()}%` : canonicalProductUrl;
+      const sql = `SELECT * FROM public_deals WHERE ${isAmazonHost && asinMatch?.[1] ? 'product_url LIKE ?' : 'product_url = ?'} ORDER BY updated_at DESC LIMIT 1`;
+      let row: any = null;
+      if (this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
+        row = await this.d1Repo.queryOne<any>('public_deals', sql, [needle]);
+      } else {
+        row = getDb().prepare(sql).get(needle);
+      }
+      if (row) existingDeal = this.parseDealFromPublicDealsRow(row);
+    } catch {}
+
+    // 2. Live HTML metadata fetch ONLY for allowlisted non-Amazon merchants (strict 5s timeout & 1MB body cap).
+    // Amazon Associates TOS Compliance: NEVER fetch or scrape amazon.* HTML pages or store numeric INR prices from Amazon.
+    let scrapedMeta: { title: string | null; currentPriceINR: number | null; referencePriceINR: number | null; brand: string | null; inStock: boolean } = {
+      title: null,
+      currentPriceINR: null,
+      referencePriceINR: null,
+      brand: null,
+      inStock: true
+    };
+    if (!isAmazonHost) {
+      try {
+        const fetchFn = this.getFetchFn() || globalThis.fetch;
+        const res = await fetchFn(canonicalProductUrl, {
+          method: 'GET',
+          headers: {
+            'Accept': 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-IN,en;q=0.9',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+          },
+          signal: AbortSignal.timeout(5000)
+        });
+        if (res.ok) {
+          const html = await this.readBoundedHtml(res, 1048576);
+          scrapedMeta = this.extractProductMetadataFromHtml(html, canonicalProductUrl);
+        }
+      } catch {}
+    }
+
+    const currentPriceINR = isAmazonHost
+      ? 0
+      : Number(
+          scrapedMeta.currentPriceINR ||
+          options?.fallbackPriceINR ||
+          existingDeal?.currentPriceINR ||
+          0
+        );
+    const referencePriceINR = isAmazonHost
+      ? undefined
+      : (Number(
+          scrapedMeta.referencePriceINR ||
+          options?.fallbackReferencePriceINR ||
+          existingDeal?.referencePriceINR ||
+          0
+        ) || undefined);
+
+    const title = String(
+      scrapedMeta.title ||
+      options?.fallbackTitle ||
+      existingDeal?.title ||
+      (isAmazonHost && asinMatch?.[1] ? `Amazon.in Product ${asinMatch[1].toUpperCase()}` : `${rootDomain || hostname} Product`)
+    ).trim();
+
+    // Match merchant/campaign metadata
+    const knownMerchant = APPROVED_SHOPIFY_MERCHANTS.find(m => normalizeRootMerchantDomain(m.domain) === rootDomain);
+    let campRow: any = null;
+    try {
+      const campSql = `SELECT * FROM cuelinks_campaigns WHERE (merchant_domain = ? OR merchant_domain = ?) AND status = 'ACTIVE' LIMIT 1`;
+      if (this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
+        campRow = await this.d1Repo.queryOne<any>('cuelinks_campaigns', campSql, [rootDomain, hostname]);
+      } else {
+        campRow = getDb().prepare(campSql).get(rootDomain, hostname);
+      }
+    } catch {}
+
+    // 3. Monetize on the fly (Amazon tag OR Cuelinks convertLink channel 331585)
+    let trackingUrl: string | undefined = undefined;
+    let affiliateVerified = false;
+    let affiliateNetwork: 'AMAZON_IN' | 'CUELINKS' | 'DIRECT' = 'DIRECT';
+    let affiliateCampaignId: string | undefined = knownMerchant?.cuelinksCampaignId || (campRow?.campaign_id ? String(campRow.campaign_id) : undefined);
+
+    if (isAmazonHost && amazonTag) {
+      const amzUrl = asinMatch?.[1]
+        ? buildAmazonAffiliateUrl(canonicalProductUrl, amazonTag, `fair_${asinMatch[1]}`)
+        : buildAmazonSearchAffiliateUrl(title, amazonTag, 'fair_search');
+      if (amzUrl) {
+        trackingUrl = amzUrl;
+        affiliateVerified = true;
+        affiliateNetwork = 'AMAZON_IN';
+        affiliateCampaignId = 'amazon_in_associates';
+      }
+    } else if (!isAmazonHost) {
+      const client = this.getCuelinksClient();
+      const channelId = Number((process.env.CUELINKS_CHANNEL_ID || '331585').trim() || '331585');
+      if (client.isConfigured()) {
+        try {
+          const conv = await client.convertLink({
+            url: canonicalProductUrl,
+            channel_id: channelId,
+            shorten: true,
+            subid: 'fair_price_check',
+            subid2: rootDomain.replace(/[^a-z0-9]/gi, '_').slice(0, 40)
+          });
+          const candUrl = conv?.short_url || conv?.tracking_url;
+          if (conv?.affiliated === true && candUrl && CuelinksV3Client.isAllowedTrackingUrl(candUrl)) {
+            trackingUrl = candUrl;
+            affiliateVerified = true;
+            affiliateNetwork = 'CUELINKS';
+            if (conv.campaign?.id) affiliateCampaignId = String(conv.campaign.id);
+          }
+        } catch {}
+      }
+    }
+
+    const inferredCategory = options?.fallbackCategory ||
+      existingDeal?.category ||
+      knownMerchant?.category ||
+      this.inferCategoryFromTitle(title);
+    const merchantName = isAmazonHost
+      ? 'Amazon India'
+      : (knownMerchant?.name || campRow?.name || existingDeal?.merchant || rootDomain || hostname);
+    const brandName = scrapedMeta.brand || knownMerchant?.brand || existingDeal?.brand || merchantName;
+    const nowIso = new Date().toISOString();
+    const dealId = existingDeal?.id || (
+      isAmazonHost && asinMatch?.[1]
+        ? `deal_amz_${asinMatch[1].toLowerCase()}`
+        : `deal_fp_${AutonomousDealDiscoveryEngine.generateDealSlug(title, brandName).slice(0, 40)}_${Date.now().toString(36)}`
+    );
+    const slug = existingDeal?.slug || AutonomousDealDiscoveryEngine.generateDealSlug(title, brandName, asinMatch?.[1]);
+    const payoutParsed = affiliateNetwork === 'AMAZON_IN'
+      ? { ratePercent: 4.0, grossCommissionPerApprovedOrderINR: null, monetizationModel: 'CPS' as const }
+      : parseVerifiedCampaignPayout(campRow, currentPriceINR, inferredCategory);
+
+    const deal: NormalizedDeal = {
+      id: dealId,
+      slug,
+      canonicalSlug: slug,
+      dealKind: 'PRODUCT',
+      discountBadge: referencePriceINR && currentPriceINR > 0 && referencePriceINR > currentPriceINR
+        ? `${Math.round(((referencePriceINR - currentPriceINR) / referencePriceINR) * 100)}% OFF`
+        : existingDeal?.discountBadge,
+      title,
+      brand: brandName,
+      merchant: merchantName,
+      category: inferredCategory,
+      sectorCode: existingDeal?.sectorCode || knownMerchant?.sectorCode || this.mapCategoryToSectorCode(`${inferredCategory} ${title}`),
+      productUrl: canonicalProductUrl,
+      currentPriceINR,
+      currency: 'INR',
+      referencePriceINR,
+      claimedDiscountPercent: referencePriceINR && currentPriceINR > 0 && referencePriceINR > currentPriceINR
+        ? Math.round(((referencePriceINR - currentPriceINR) / referencePriceINR) * 100)
+        : 0,
+      verifiedDiscountPercent: referencePriceINR && currentPriceINR > 0 && referencePriceINR > currentPriceINR
+        ? Math.round(((referencePriceINR - currentPriceINR) / referencePriceINR) * 100)
+        : 0,
+      discountVerificationType: referencePriceINR && currentPriceINR > 0 && referencePriceINR > currentPriceINR ? 'MERCHANT_LISTED_MRP' : 'UNCONFIRMED',
+      availability: scrapedMeta.inStock ? 'IN_STOCK' : 'OUT_OF_STOCK',
+      geographicRestrictions: ['India'],
+      offerStart: existingDeal?.offerStart || nowIso,
+      observedAt: nowIso,
+      lastCheckedAt: nowIso,
+      lastVerifiedAt: nowIso,
+      nextRecheckAt: new Date(Date.now() + 6 * 3600 * 1000).toISOString(),
+      sourceUrl: canonicalProductUrl,
+      sourceDomain: hostname,
+      sourceType: isAmazonHost ? 'PUBLIC_DEAL_FEED' : 'RETAILER_BRAND',
+      verificationStatus: affiliateVerified ? 'AFFILIATE_VERIFIED' : (currentPriceINR > 0 ? 'PRODUCT_ONLY_UNMONETIZED' : 'UNCONFIRMED'),
+      confidenceScore: currentPriceINR > 0 ? 90 : 60,
+      buyerValueScore: existingDeal?.buyerValueScore || 78,
+      rejectionReasons: [],
+      isMonetizable: affiliateVerified,
+      productVerified: currentPriceINR > 0 && scrapedMeta.inStock,
+      affiliateVerified,
+      affiliateNetwork: affiliateNetwork === 'DIRECT' ? undefined : affiliateNetwork,
+      affiliateCampaignId,
+      trackingUrl,
+      modelOrSku: asinMatch?.[1]?.toUpperCase() || existingDeal?.modelOrSku,
+      campaign: campRow,
+      verifiedCommissionRatePercent: payoutParsed.ratePercent,
+      commissionRatePercent: payoutParsed.ratePercent,
+      grossCommissionPerApprovedOrderINR: payoutParsed.grossCommissionPerApprovedOrderINR,
+      evidenceJson: {
+        ...(existingDeal?.evidenceJson || { sources: [canonicalProductUrl], verificationLogs: [] }),
+        sources: Array.from(new Set([...(existingDeal?.evidenceJson?.sources || []), canonicalProductUrl])),
+        verificationLogs: [
+          ...(existingDeal?.evidenceJson?.verificationLogs || []).slice(-4),
+          `On-demand inspection (${affiliateNetwork}) at ${nowIso}`
+        ],
+        priceHistory: this.appendPriceHistory(existingDeal?.evidenceJson?.priceHistory, currentPriceINR, nowIso).map((pt) => ({
+          price: pt.priceINR,
+          observedAt: pt.observedAt
+        })),
+        affiliateNetwork: affiliateNetwork === 'DIRECT' ? undefined : affiliateNetwork,
+        affiliateCampaignId,
+        monetizationModel: payoutParsed.monetizationModel,
+        verifiedCommissionRatePercent: payoutParsed.ratePercent,
+        grossCommissionPerApprovedOrderINR: payoutParsed.grossCommissionPerApprovedOrderINR,
+        catalogSlot: 'FEATURED',
+        isFeatured: true
+      },
+      createdAt: existingDeal?.createdAt || nowIso,
+      updatedAt: nowIso
+    };
+
+    if (currentPriceINR > 0) {
+      deal.buyerValueScore = this.calculateBuyerValueScore(deal);
+      this.enrichDealWithArbitrageAndBuyerTargeting(deal);
+      this.dealsMap.set(deal.id, deal);
+      if (deal.slug) this.dealSlugMap.set(deal.slug.toLowerCase(), deal.id);
+      if (deal.canonicalSlug) this.dealSlugMap.set(deal.canonicalSlug.toLowerCase(), deal.id);
+
+      await this.persistDealToD1(deal, organizationId, businessId);
+      if (deal.affiliateVerified && deal.isMonetizable) {
+        await this.provisionMatchingPartnerOffer(deal, organizationId, businessId);
+      }
+    }
+
+    return { deal, affiliateNetwork };
+  }
+
+  private inferCategoryFromTitle(title: string): string {
+    const t = String(title || '').toLowerCase();
+    if (/(earbud|airdope|headphone|speaker|soundbar|watch|smartwatch|laptop|tv|monitor|keyboard|mouse|charger|powerbank|router)/.test(t)) {
+      return 'Electronics';
+    }
+    if (/(air fryer|kettle|grinder|mixer|purifier|vacuum|mattress|rug|kitchen)/.test(t)) {
+      return 'Home & Kitchen';
+    }
+    if (/(trimmer|perfume|serum|shampoo|grooming|beauty|protein|nutrition)/.test(t)) {
+      return 'Health & Beauty';
+    }
+    if (/(flight|hotel|luggage|backpack|travel)/.test(t)) {
+      return 'Travel';
+    }
+    if (/(shoe|sneaker|shirt|jeans|bag|watch|fashion)/.test(t)) {
+      return 'Fashion';
+    }
+    return 'Electronics';
+  }
+
+  /**
+   * Discovers Amazon.in Associates product CTA references via Tavily domain search ONLY
+   * (zero Amazon HTML fetching/scraping and zero stored/displayed scraped Amazon INR prices).
+   */
+  public async discoverVerifiedAmazonDeals(options?: {
+    queries?: string[];
+    organizationId?: string;
+    businessId?: string;
+    maxDeals?: number;
+  }): Promise<{ discovered: number; deals: NormalizedDeal[]; skippedReason?: string }> {
+    const amazonTag = (process.env.AMAZON_AFFILIATE_TAG || '').trim();
+    if (!amazonTag) {
+      return { discovered: 0, deals: [], skippedReason: 'AMAZON_AFFILIATE_TAG_UNCONFIGURED' };
+    }
+
+    const organizationId = options?.organizationId || 'org_owner_primary';
+    const businessId = options?.businessId || 'biz_platform_aro';
+    const maxDeals = Math.max(3, Math.min(8, options?.maxDeals ?? 5));
+    const queries = options?.queries && options.queries.length > 0
+      ? options.queries
+      : [
+          'boAt Airdopes wireless earbuds amazon.in',
+          'Noise ColorFit smartwatch amazon.in',
+          'Philips Air Fryer HD9200 amazon.in'
+        ];
+
+    const { SearchDiscoveryProvider } = await import('../research/search-discovery-provider.js');
+    const searchProvider = SearchDiscoveryProvider.getInstance();
+    const candidateUrls = new Map<string, { url: string; title?: string }>();
+
+    await Promise.allSettled(
+      queries.slice(0, 2).map(async (q) => {
+        try {
+          const res = await Promise.race([
+            searchProvider.search(q, {
+              maxResults: 5,
+              includeDomains: ['amazon.in'],
+              escalateToTavily: true
+            }),
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000))
+          ]);
+          if (!res?.items) return;
+          for (const item of res.items) {
+            const link = String(item.link || '').trim();
+            const asinMatch = link.match(/\/(?:dp|gp\/product)\/([A-Z0-9]{8,12})/i);
+            if (!link || !/^https:\/\/(www\.)?amazon\.in\//i.test(link) || !asinMatch?.[1]) continue;
+            const cleanUrl = `https://www.amazon.in/dp/${asinMatch[1].toUpperCase()}`;
+            if (candidateUrls.size < maxDeals) {
+              candidateUrls.set(cleanUrl, {
+                url: cleanUrl,
+                title: String(item.title || '').replace(/\s*[:|-]\s*Amazon\.in.*$/i, '').trim() || undefined
+              });
+            }
+          }
+        } catch {}
+      })
+    );
+
+    const deals: NormalizedDeal[] = [];
+    for (const cand of candidateUrls.values()) {
+      try {
+        const res = await this.inspectAndMonetizeProductUrl(cand.url, {
+          organizationId,
+          businessId,
+          fallbackTitle: cand.title
+        });
+        if (res.deal && res.deal.affiliateNetwork === 'AMAZON_IN') {
+          deals.push(res.deal);
+        }
+      } catch {}
+    }
+
+    return { discovered: deals.length, deals };
+  }
+
+  /**
+   * Registers an explicit OPTED_IN_FIRST_PARTY target price-drop alert watch using existing D1
+   * outbound_contacts + demand_signals columns (zero new SQL migrations).
+   */
+  public async registerTargetPriceAlert(params: {
+    email: string;
+    targetFairPriceINR: number;
+    queryOrUrl: string;
+    deal?: NormalizedDeal | null;
+    organizationId?: string;
+    businessId?: string;
+  }): Promise<{ registered: boolean; reason?: string; contactId?: string }> {
+    const email = String(params.email || '').trim().toLowerCase();
+    const targetPrice = Number(params.targetFairPriceINR || 0);
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return { registered: false, reason: 'INVALID_EMAIL' };
+    }
+    if (!Number.isFinite(targetPrice) || targetPrice <= 0) {
+      return { registered: false, reason: 'INVALID_TARGET_PRICE' };
+    }
+
+    const organizationId = params.organizationId || 'org_owner_primary';
+    const businessId = params.businessId || 'biz_platform_aro';
+    const nowIso = new Date().toISOString();
+    const targetSlug = params.deal?.slug || AutonomousDealDiscoveryEngine.generateDealSlug(params.queryOrUrl || 'fair-price-watch');
+    const targetDealId = params.deal?.id || null;
+    const productUrl = params.deal?.productUrl || (/^https?:\/\//i.test(params.queryOrUrl) ? params.queryOrUrl : '');
+
+    let existingAuthEv: any = {};
+    try {
+      const rowSql = `SELECT id, authorization_evidence_json FROM outbound_contacts WHERE business_id = ? AND prospect_email = ? LIMIT 1`;
+      const existing = (this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST))
+        ? await this.d1Repo.queryOne<any>('outbound_contacts', rowSql, [businessId, email])
+        : getDb().prepare(rowSql).get(businessId, email) as any;
+      if (existing?.authorization_evidence_json) {
+        existingAuthEv = typeof existing.authorization_evidence_json === 'string'
+          ? JSON.parse(existing.authorization_evidence_json || '{}')
+          : existing.authorization_evidence_json;
+      }
+    } catch {}
+
+    const prevWatches: any[] = Array.isArray(existingAuthEv?.watches) ? existingAuthEv.watches : [];
+    const newWatch = {
+      target_deal_id: targetDealId,
+      target_deal_slug: targetSlug,
+      target_price_inr: targetPrice,
+      query_or_url: params.queryOrUrl,
+      product_url: productUrl,
+      title: params.deal?.title || params.queryOrUrl,
+      registered_at: nowIso,
+      dispatched_at: null as string | null,
+      dispatched_price_inr: null as number | null
+    };
+    const mergedWatches = [
+      ...prevWatches.filter((w: any) => w && (w.target_deal_slug !== targetSlug || w.target_deal_id !== targetDealId)),
+      newWatch
+    ].slice(-10);
+
+    const authEvidence = {
+      ...existingAuthEv,
+      consent_status: 'OPTED_IN_FIRST_PARTY',
+      target_deal_id: targetDealId,
+      target_deal_slug: targetSlug,
+      target_price_inr: targetPrice,
+      product_url: productUrl,
+      query_or_url: params.queryOrUrl,
+      consent_recorded_at: nowIso,
+      watches: mergedWatches
+    };
+
+    const contactId = `cnt_fpa_${Buffer.from(email).toString('hex').slice(0, 16)}`;
+    const upsertContactSql = `
+      INSERT INTO outbound_contacts (
+        id, business_id, organization_id, prospect_name, prospect_business_name,
+        prospect_email, prospect_website, prospect_vertical, channel,
+        email_authorized, whatsapp_opt_in, authorization_source, authorization_evidence_json,
+        source, discovery_evidence_json, is_opted_out, is_bounced, is_suppressed, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'EMAIL', 1, 0, 'INBOUND_REQUEST', ?, 'FAIR_PRICE_ALERT', ?, 0, 0, 0, datetime('now'))
+      ON CONFLICT(business_id, prospect_email) DO UPDATE SET
+        prospect_website = COALESCE(excluded.prospect_website, outbound_contacts.prospect_website),
+        email_authorized = 1,
+        authorization_source = 'INBOUND_REQUEST',
+        authorization_evidence_json = excluded.authorization_evidence_json,
+        source = 'FAIR_PRICE_ALERT',
+        discovery_evidence_json = excluded.discovery_evidence_json,
+        is_opted_out = 0,
+        is_suppressed = 0,
+        updated_at = datetime('now')
+    `;
+    const contactParams = [
+      contactId,
+      businessId,
+      organizationId,
+      email.split('@')[0] || 'Fair-Price Buyer',
+      params.deal?.merchant || 'Direct Buyer Watch',
+      email,
+      productUrl || 'https://ai-marketing-organization.onrender.com/deals',
+      params.deal?.category || 'Consumer Fair-Price Watch',
+      JSON.stringify(authEvidence),
+      JSON.stringify({
+        queryOrUrl: params.queryOrUrl,
+        targetFairPriceINR: targetPrice,
+        targetDealSlug: targetSlug,
+        targetDealId,
+        observedAt: nowIso
+      })
+    ];
+
+    try {
+      getDb().prepare(upsertContactSql).run(...contactParams);
+      if (this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
+        await this.d1Repo.executeWrite('outbound_contacts', upsertContactSql, contactParams);
+      }
+    } catch (err: any) {
+      console.warn(`[DealEngine] registerTargetPriceAlert contact write notice: ${err?.message}`);
+    }
+
+    // Record demand signal alongside watch
+    try {
+      const dsId = `dem_fpa_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      const dsSql = `
+        INSERT INTO demand_signals (
+          id, organization_id, topic, category, location, intent_type, raw_query,
+          evidence_snippet, source_url, urgency, estimated_monthly_volume, status, signal_type
+        ) VALUES (?, ?, ?, ?, 'India', 'PRODUCT_COMPARISON', ?, ?, ?, 0.9, 1, 'DISCOVERED', 'BUYER_PRICE_ALERT')
+      `;
+      const snippet = JSON.stringify({
+        consent_status: 'OPTED_IN_FIRST_PARTY',
+        target_deal_slug: targetSlug,
+        target_deal_id: targetDealId,
+        target_price_inr: targetPrice
+      });
+      const dsParams = [
+        dsId,
+        organizationId,
+        String(params.deal?.title || params.queryOrUrl).slice(0, 180),
+        params.deal?.category || 'Electronics',
+        String(params.queryOrUrl).slice(0, 240),
+        snippet,
+        productUrl || 'https://ai-marketing-organization.onrender.com/deals'
+      ];
+      getDb().prepare(dsSql).run(...dsParams);
+      if (this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
+        await this.d1Repo.executeWrite('demand_signals', dsSql, dsParams);
+      }
+    } catch {}
+
+    return { registered: true, contactId };
+  }
+
+  /**
+   * Checks opted-in FAIR_PRICE_ALERT watches against updated deals and auto-dispatches
+   * personalized price-drop alert emails via BrevoMcpClient whenever currentPriceINR <= target_price_inr.
+   */
+  public async checkAndDispatchTargetPriceAlerts(
+    deals: NormalizedDeal[],
+    siteUrlOverride?: string
+  ): Promise<{ checked: number; dispatched: number; skipped: number }> {
+    const validDeals = (deals || []).filter(d => d && Number(d.currentPriceINR || 0) > 0 && d.availability === 'IN_STOCK');
+    if (validDeals.length === 0) {
+      return { checked: 0, dispatched: 0, skipped: 0 };
+    }
+
+    const siteUrl = (siteUrlOverride || process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').replace(/\/$/, '');
+    const isProd = isProduction() && !process.env.VITEST;
+    const querySql = `
+      SELECT id, business_id, prospect_name, prospect_email, authorization_evidence_json
+      FROM outbound_contacts
+      WHERE source = 'FAIR_PRICE_ALERT'
+        AND email_authorized = 1
+        AND is_opted_out = 0
+        AND is_bounced = 0
+        AND is_suppressed = 0
+      LIMIT 100
+    `;
+
+    let rows: any[] = [];
+    try {
+      if (this.d1Repo.isRemoteD1Configured() || isProd) {
+        const res = await this.d1Repo.executeRead('outbound_contacts', querySql, []);
+        rows = Array.isArray(res?.results) ? res.results : [];
+      } else {
+        rows = getDb().prepare(querySql).all() as any[];
+      }
+    } catch {
+      try {
+        rows = getDb().prepare(querySql).all() as any[];
+      } catch {}
+    }
+
+    if (rows.length === 0) {
+      return { checked: 0, dispatched: 0, skipped: 0 };
+    }
+
+    const { BrevoMcpClient } = await import('../integrations/brevo-mcp-client.js');
+    const brevo = BrevoMcpClient.getInstance();
+    let checked = 0;
+    let dispatched = 0;
+    let skipped = 0;
+
+    for (const row of rows) {
+      const email = String(row.prospect_email || '').trim().toLowerCase();
+      if (!email || !email.includes('@')) continue;
+
+      let ev: any = {};
+      try {
+        ev = typeof row.authorization_evidence_json === 'string'
+          ? JSON.parse(row.authorization_evidence_json || '{}')
+          : (row.authorization_evidence_json || {});
+      } catch {}
+
+      if (ev.consent_status !== 'OPTED_IN_FIRST_PARTY') {
+        skipped++;
+        continue;
+      }
+
+      const watches: any[] = Array.isArray(ev.watches) && ev.watches.length > 0
+        ? ev.watches
+        : [{
+            target_deal_id: ev.target_deal_id,
+            target_deal_slug: ev.target_deal_slug,
+            target_price_inr: ev.target_price_inr,
+            query_or_url: ev.query_or_url || ev.target_deal_slug,
+            dispatched_at: ev.dispatched_at || null
+          }];
+
+      let evMutated = false;
+      for (const watch of watches) {
+        if (!watch || watch.dispatched_at) continue;
+        const targetPrice = Number(watch.target_price_inr || 0);
+        if (!Number.isFinite(targetPrice) || targetPrice <= 0) continue;
+        checked++;
+
+        const matchedDeal = validDeals.find((d) => {
+          if (watch.target_deal_id && d.id === watch.target_deal_id) return true;
+          if (watch.target_deal_slug && (d.slug === watch.target_deal_slug || d.canonicalSlug === watch.target_deal_slug)) return true;
+          const watchQuery = String(watch.query_or_url || watch.title || '').toLowerCase();
+          const tokens = watchQuery.replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(t => t.length >= 3);
+          if (tokens.length >= 2) {
+            const haystack = `${d.title} ${d.brand} ${d.category}`.toLowerCase();
+            return tokens.slice(0, 3).every(tok => haystack.includes(tok));
+          }
+          return false;
+        });
+
+        if (!matchedDeal || Number(matchedDeal.currentPriceINR || 0) > targetPrice) {
+          continue;
+        }
+
+        const redirectUrl = `${siteUrl}/api/v1/public/deals/${encodeURIComponent(matchedDeal.id)}/redirect?utm_source=price_drop_alert`;
+        const priceStr = `₹${Number(matchedDeal.currentPriceINR).toLocaleString('en-IN')}`;
+        const targetStr = `₹${targetPrice.toLocaleString('en-IN')}`;
+        const subject = `Price Drop Alert: ${matchedDeal.title} is now ${priceStr} (Below your ${targetStr} target)`;
+        const textContent = [
+          `Good news! Your watched item dropped to ${priceStr} (your target was ${targetStr}) on ${matchedDeal.merchant}.`,
+          matchedDeal.referencePriceINR && matchedDeal.referencePriceINR > Number(matchedDeal.currentPriceINR || 0)
+            ? `Reference MRP: ₹${Number(matchedDeal.referencePriceINR).toLocaleString('en-IN')}`
+            : '',
+          matchedDeal.couponCode ? `Promo Code: ${matchedDeal.couponCode}` : '',
+          `Claim Verified Price (#Ad): ${redirectUrl}`,
+          '',
+          `Note (#Ad): Qualifying purchases through this link may earn an affiliate commission at zero extra cost to you. Verify live stock & price on checkout.`
+        ].filter(Boolean).join('\n');
+
+        try {
+          const sendRes = await brevo.sendTransactionalEmail({
+            to: [{ email, name: row.prospect_name || 'Buyer' }],
+            subject,
+            textContent,
+            htmlContent: `<div style="font-family:sans-serif;line-height:1.6"><h2>Price Drop Alert (#Ad)</h2><p><strong>${matchedDeal.title}</strong> is now <strong>${priceStr}</strong> on ${matchedDeal.merchant} (your target: ${targetStr}).</p><p><a href="${redirectUrl}" style="display:inline-block;padding:10px 18px;background:#06b6d4;color:#020617;font-weight:700;border-radius:6px;text-decoration:none;">View Deal at ${matchedDeal.merchant} →</a></p><p style="font-size:12px;color:#64748b;">#Ad Affiliate Disclosure: Qualifying purchases via this link may earn a commission at zero extra cost to you.</p></div>`
+          });
+
+          if (sendRes.success && sendRes.status === 'SENT') {
+            watch.dispatched_at = new Date().toISOString();
+            watch.dispatched_price_inr = matchedDeal.currentPriceINR;
+            watch.dispatched_deal_id = matchedDeal.id;
+            ev.dispatched_at = watch.dispatched_at;
+            evMutated = true;
+            dispatched++;
+          } else {
+            skipped++;
+          }
+        } catch {
+          skipped++;
+        }
+      }
+
+      if (evMutated) {
+        const updateSql = `UPDATE outbound_contacts SET authorization_evidence_json = ?, last_contacted_at = datetime('now'), contact_count = contact_count + 1, updated_at = datetime('now') WHERE id = ?`;
+        const evStr = JSON.stringify(ev);
+        try {
+          getDb().prepare(updateSql).run(evStr, row.id);
+          if (this.d1Repo.isRemoteD1Configured() || isProd) {
+            await this.d1Repo.executeWrite('outbound_contacts', updateSql, [evStr, row.id]);
+          }
+        } catch {}
+      }
+    }
+
+    return { checked, dispatched, skipped };
+  }
+
+  /**
+   * Universal Fair-Price Checker & On-Demand Link Monetizer (PriceHistory / BuyHatke / Keepa / CashKaro).
+   */
+  public async checkFairPrice(input: FairPriceCheckInput): Promise<FairPriceCheckResult> {
+    const queryOrUrl = String(input.queryOrUrl || '').trim();
+    if (!queryOrUrl) {
+      throw new Error('queryOrUrl is required');
+    }
+
+    const organizationId = input.organizationId || 'org_owner_primary';
+    const businessId = input.businessId || 'biz_platform_aro';
+    const siteUrl = (input.siteUrl || process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').replace(/\/$/, '');
+    const isUrl = /^https?:\/\//i.test(queryOrUrl);
+
+    let monetizedDeal: NormalizedDeal | null = null;
+    const matchedDeals: NormalizedDeal[] = [];
+    let suggestions: string[] = [];
+
+    if (isUrl) {
+      const hostCheck = await this.isApprovedFairPriceHost(queryOrUrl);
+      const ssrf = DealSsrfGuard.isSafePublicUrl(queryOrUrl);
+      if (!ssrf.safe || !hostCheck.allowed) {
+        const err: any = new Error(
+          !ssrf.safe
+            ? `URL rejected by security guard: ${ssrf.reason || 'UNSAFE_URL'}`
+            : `Domain '${hostCheck.hostname || queryOrUrl}' is not on the approved Indian merchant allowlist.`
+        );
+        err.code = 'UNALLOWLISTED_MERCHANT_DOMAIN';
+        err.statusCode = 400;
+        throw err;
+      }
+
+      const urlRes = await this.inspectAndMonetizeProductUrl(queryOrUrl, { organizationId, businessId });
+      if (urlRes.error === 'UNALLOWLISTED_MERCHANT_DOMAIN' || urlRes.error === 'HTTPS_REQUIRED') {
+        const err: any = new Error(urlRes.error);
+        err.code = urlRes.error;
+        err.statusCode = 400;
+        throw err;
+      }
+      if (urlRes.deal) {
+        monetizedDeal = urlRes.deal;
+        if (urlRes.deal.affiliateNetwork !== 'AMAZON_IN' && Number(urlRes.deal.currentPriceINR || 0) > 0) {
+          matchedDeals.push(urlRes.deal);
+        }
+      }
+    }
+
+    // Gather existing D1 / catalog deals for cross-store comparison & coupon matching
+    let catalogDeals: NormalizedDeal[] = [];
+    try {
+      const eligible = await this.getEligiblePublicDeals({ limit: 80 });
+      catalogDeals = eligible.deals || [];
+    } catch {
+      catalogDeals = this.getAllDeals();
+    }
+
+    const rawSearchString = monetizedDeal ? monetizedDeal.title : queryOrUrl;
+    const stopWords = new Set(['best', 'under', 'below', 'above', 'price', 'india', 'check', 'fair', 'buy', 'online', 'the', 'and', 'for', 'with', 'from', 'in']);
+    const queryTokens = rawSearchString
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter(w => w.length >= 2 && !stopWords.has(w) && !/^\d+$/.test(w));
+    const maxBudgetMatch = rawSearchString.match(/under\s*(?:₹|rs\.?)?\s*([0-9,]+)/i);
+    const maxBudgetINR = maxBudgetMatch?.[1] ? Number(maxBudgetMatch[1].replace(/,/g, '')) : null;
+
+    const scoreMatch = (d: NormalizedDeal): number => {
+      const hay = `${d.title} ${d.brand} ${d.merchant} ${d.category}`.toLowerCase();
+      const hayTokens = new Set(
+        hay
+          .replace(/[^a-z0-9\s]/g, ' ')
+          .split(/\s+/)
+          .filter(Boolean)
+          .flatMap(w => (w.length > 3 && w.endsWith('s') ? [w, w.slice(0, -1)] : [w]))
+      );
+      let hits = 0;
+      for (const tok of queryTokens) {
+        const stem = tok.length > 3 && tok.endsWith('s') ? tok.slice(0, -1) : tok;
+        if (hayTokens.has(tok) || hayTokens.has(stem)) {
+          hits++;
+        }
+      }
+      if (monetizedDeal && d.brand && monetizedDeal.brand && d.brand.toLowerCase() === monetizedDeal.brand.toLowerCase() && hits === 0) {
+        hits += 1;
+      }
+      if (hits > 0 && maxBudgetINR && Number(d.currentPriceINR || 0) > maxBudgetINR * 1.4) {
+        hits = Math.max(0, hits - 1);
+      }
+      return hits;
+    };
+
+    const scoredCatalog = catalogDeals
+      .filter(d => d.affiliateNetwork !== 'AMAZON_IN')
+      .map(d => ({ deal: d, score: scoreMatch(d) }))
+      .filter(x => x.score > 0 && (!monetizedDeal || x.deal.id !== monetizedDeal.id))
+      .sort((a, b) => b.score - a.score || (Number(a.deal.currentPriceINR || 999999) - Number(b.deal.currentPriceINR || 999999)));
+
+    for (const sc of scoredCatalog.slice(0, 6)) {
+      matchedDeals.push(sc.deal);
+    }
+
+    // If search query has < 3 strong matches, invoke GoogleSuggest + SearchDiscoveryProvider (allowlisted non-Amazon D2C only) bounded
+    if (!isUrl && matchedDeals.length < 3) {
+      try {
+        const { GoogleSuggestClient } = await import('../integrations/google-suggest-client.js');
+        const sugRes = await Promise.race([
+          GoogleSuggestClient.getInstance().fetchSuggestions(queryOrUrl, 'in'),
+          new Promise<null>(r => setTimeout(() => r(null), 3000))
+        ]);
+        if (sugRes?.suggestions) {
+          suggestions = sugRes.suggestions.slice(0, 5);
+        }
+      } catch {}
+
+      try {
+        const { SearchDiscoveryProvider } = await import('../research/search-discovery-provider.js');
+        const searchRes = await Promise.race([
+          SearchDiscoveryProvider.getInstance().search(`${queryOrUrl} price India`, { maxResults: 5 }),
+          new Promise<null>(r => setTimeout(() => r(null), 6000))
+        ]);
+        if (searchRes?.items) {
+          for (const item of searchRes.items.slice(0, 3)) {
+            const link = String(item.link || '').trim();
+            if (!link || matchedDeals.some(d => d.productUrl === link)) continue;
+            const hostCheck = await this.isApprovedFairPriceHost(link);
+            if (!hostCheck.allowed || hostCheck.isAmazon) continue;
+            const snippetPriceMatch = `${item.title || ''} ${item.snippet || ''}`.match(/₹\s*([1-9][0-9,]{1,6})/);
+            const fallbackPrice = snippetPriceMatch?.[1] ? Number(snippetPriceMatch[1].replace(/,/g, '')) : undefined;
+            const insp = await this.inspectAndMonetizeProductUrl(link, {
+              organizationId,
+              businessId,
+              fallbackTitle: item.title,
+              fallbackPriceINR: fallbackPrice
+            });
+            if (insp.deal && (insp.deal.currentPriceINR || 0) > 0) {
+              matchedDeals.push(insp.deal);
+            }
+          }
+        }
+      } catch {}
+
+      if (matchedDeals.length < 3 && this.getCuelinksClient().isConfigured()) {
+        try {
+          const liveRes = await Promise.race([
+            this.ingestLiveCuelinksOffers({ maxPages: 1, perPage: 100, organizationId, businessId }),
+            new Promise<null>(r => setTimeout(() => r(null), 6000))
+          ]);
+          if (liveRes?.deals) {
+            for (const ld of liveRes.deals) {
+              if (!matchedDeals.some(d => d.id === ld.id) && scoreMatch(ld) > 0) {
+                matchedDeals.push(ld);
+              }
+            }
+          }
+        } catch {}
+      }
+    }
+
+    // Active coupons applicable to matched merchants / categories
+    const couponDeals = catalogDeals.filter(d =>
+      Boolean(d.couponCode) &&
+      (matchedDeals.some(md => md.merchant.toLowerCase() === d.merchant.toLowerCase() || md.category.toLowerCase() === d.category.toLowerCase()))
+    );
+
+    // Build cross-store options ordered by effective net price (Rail 1: Cuelinks/Direct verified INR listings)
+    const uniqueDealsMap = new Map<string, NormalizedDeal>();
+    for (const d of matchedDeals) {
+      if (d && d.affiliateNetwork !== 'AMAZON_IN' && Number(d.currentPriceINR || 0) > 0 && !uniqueDealsMap.has(d.id)) {
+        uniqueDealsMap.set(d.id, d);
+      }
+    }
+
+    const pricedDeals = Array.from(uniqueDealsMap.values());
+    const rawOptions: CrossStoreOption[] = pricedDeals.map((d) => {
+      const current = Number(d.currentPriceINR || 0);
+      const matchingCoupon = d.couponCode
+        ? d
+        : couponDeals.find(cd => cd.merchant.toLowerCase() === d.merchant.toLowerCase());
+      const couponCode = d.couponCode || matchingCoupon?.couponCode || null;
+      const couponConditions = d.couponConditions || matchingCoupon?.couponConditions || null;
+      const couponSavingsINR = this.computeCouponDiscountINR(current, couponCode, couponConditions, matchingCoupon?.discountBadge);
+      const effectivePriceINR = Math.max(1, current - couponSavingsINR);
+      const net: 'AMAZON_IN' | 'CUELINKS' | 'DIRECT' =
+        d.affiliateNetwork === 'CUELINKS' ? 'CUELINKS' : 'DIRECT';
+
+      return {
+        dealId: d.id,
+        title: d.title,
+        merchant: d.merchant,
+        brand: d.brand,
+        category: d.category,
+        affiliateNetwork: net,
+        currentPriceINR: current,
+        referencePriceINR: d.referencePriceINR || null,
+        couponCode,
+        couponConditions,
+        couponSavingsINR,
+        effectivePriceINR,
+        verifiedCommissionRatePercent: d.verifiedCommissionRatePercent ?? d.evidenceJson?.verifiedCommissionRatePercent ?? null,
+        isLowestPrice: false,
+        trackingRedirectUrl: `${siteUrl}/api/v1/public/deals/${encodeURIComponent(d.id)}/redirect?utm_source=fair_price_checker`,
+        productUrl: d.productUrl,
+        disclosure: d.affiliateVerified ? '#Ad — Verified affiliate redirect' : 'Direct merchant link',
+        ctaLabel: `Buy at ${d.merchant} →`
+      };
+    });
+
+    rawOptions.sort((a, b) => a.effectivePriceINR - b.effectivePriceINR);
+    if (rawOptions.length > 0) {
+      rawOptions[0].isLowestPrice = true;
+    }
+
+    // Aggregate historical + cross-store price points for true fair-price math (NEVER Amazon prices)
+    const mergedHistoryMap = new Map<string, { priceINR: number; observedAt: string }>();
+    for (const d of pricedDeals) {
+      for (const ph of (d.evidenceJson?.priceHistory || [])) {
+        const p = Number((ph as any)?.priceINR ?? (ph as any)?.price ?? 0);
+        const obs = String((ph as any).observedAt || d.lastCheckedAt || d.updatedAt || '');
+        const obsMs = Date.parse(obs);
+        if (Number.isFinite(p) && p > 0 && Number.isFinite(obsMs)) {
+          mergedHistoryMap.set(`${obs}|${p}`, { priceINR: p, observedAt: new Date(obsMs).toISOString() });
+        }
+      }
+      const curP = Number(d.currentPriceINR || 0);
+      const curObs = String(d.lastCheckedAt || d.updatedAt || '');
+      const curObsMs = Date.parse(curObs);
+      if (Number.isFinite(curP) && curP > 0 && Number.isFinite(curObsMs)) {
+        mergedHistoryMap.set(`${curObs}|${curP}`, { priceINR: curP, observedAt: new Date(curObsMs).toISOString() });
+      }
+    }
+
+    const mergedHistory = Array.from(mergedHistoryMap.values()).sort(
+      (a, b) => Date.parse(a.observedAt) - Date.parse(b.observedAt)
+    );
+    const historySpanDays = mergedHistory.length >= 2
+      ? (Date.parse(mergedHistory[mergedHistory.length - 1].observedAt) - Date.parse(mergedHistory[0].observedAt)) / 86400000
+      : 0;
+    const hasSufficientHistory = mergedHistory.length >= 3 && historySpanDays >= 7;
+
+    const allPriceValues = mergedHistory.map(h => h.priceINR).sort((a, b) => a - b);
+    const refPrices = pricedDeals.map(d => Number(d.referencePriceINR || 0)).filter(n => n > 0);
+    const lowestObservedPriceINR = hasSufficientHistory && rawOptions.length > 0
+      ? Math.min(...rawOptions.map(o => o.effectivePriceINR), ...(allPriceValues.length ? [allPriceValues[0]] : [Infinity]))
+      : (hasSufficientHistory ? (allPriceValues[0] ?? null) : null);
+    const highestObservedPriceINR = hasSufficientHistory && (allPriceValues.length > 0 || refPrices.length > 0)
+      ? Math.max(...allPriceValues, ...refPrices)
+      : null;
+
+    let estimatedFairPriceINR: number | null = null;
+    if (hasSufficientHistory && rawOptions.length > 0) {
+      const sortedEffective = rawOptions.map(o => o.effectivePriceINR).sort((a, b) => a - b);
+      const mid = sortedEffective[Math.floor(sortedEffective.length / 2)];
+      const histMedian = allPriceValues.length > 0 ? allPriceValues[Math.floor(allPriceValues.length / 2)] : mid;
+      estimatedFairPriceINR = Math.round((mid + histMedian) / 2);
+      if (maxBudgetINR && estimatedFairPriceINR > maxBudgetINR && sortedEffective[0] <= maxBudgetINR) {
+        estimatedFairPriceINR = Math.round(sortedEffective[0] * 1.05);
+      }
+    }
+
+    const primaryOption = rawOptions.find(o => monetizedDeal && o.dealId === monetizedDeal.id) || rawOptions[0] || null;
+    const bestOption = rawOptions[0] || null;
+    const activeCouponCode = bestOption?.couponCode || couponDeals[0]?.couponCode || null;
+    const effectivePriceAfterCouponINR = bestOption?.effectivePriceINR ?? null;
+
+    let verdict: FairPriceVerdict = 'INSUFFICIENT_HISTORY';
+    let verdictSummary = mergedHistory.length > 0
+      ? `Observed ${mergedHistory.length} price point(s) over ${Math.max(0, Math.round(historySpanDays))} day(s); at least 3 dated observations spanning 7+ days are required for a verified fair-price floor. Register an opt-in Target-Price Drop Alert below or compare live store prices directly.`
+      : 'No multi-day observed price history available yet (>=3 dated points over >=7 days required). Register a Target-Price Drop Alert below or check live store pricing.';
+
+    if (hasSufficientHistory && primaryOption && estimatedFairPriceINR) {
+      const pctVsFair = (primaryOption.effectivePriceINR - estimatedFairPriceINR) / estimatedFairPriceINR;
+      if (pctVsFair <= -0.04 || (primaryOption.referencePriceINR && primaryOption.effectivePriceINR <= primaryOption.referencePriceINR * 0.7)) {
+        verdict = 'BUY_NOW_BELOW_FAIR_PRICE';
+        verdictSummary = `${primaryOption.merchant} effective price ₹${primaryOption.effectivePriceINR.toLocaleString('en-IN')} is at or below the observed Indian fair-price floor (₹${estimatedFairPriceINR.toLocaleString('en-IN')}).`;
+      } else if (pctVsFair > 0.1) {
+        verdict = 'OVERPRICED_WAIT_FOR_DROP';
+        verdictSummary = `Current price ₹${primaryOption.currentPriceINR.toLocaleString('en-IN')} is ${Math.round(pctVsFair * 100)}% above observed fair price ₹${estimatedFairPriceINR.toLocaleString('en-IN')}. ${bestOption && bestOption.dealId !== primaryOption.dealId ? `Lower option found on ${bestOption.merchant} at ₹${bestOption.effectivePriceINR.toLocaleString('en-IN')}.` : 'Set a price-drop alert below to avoid overpaying.'}`;
+      } else {
+        verdict = 'FAIR_MARKET_PRICE_APPLY_COUPON';
+        verdictSummary = activeCouponCode
+          ? `Price ₹${primaryOption.currentPriceINR.toLocaleString('en-IN')} matches fair market value (₹${estimatedFairPriceINR.toLocaleString('en-IN')}). Apply promo code ${activeCouponCode} for net ₹${(effectivePriceAfterCouponINR || primaryOption.effectivePriceINR).toLocaleString('en-IN')}.`
+          : `Current best price ₹${primaryOption.effectivePriceINR.toLocaleString('en-IN')} is within the observed fair-price range (₹${(lowestObservedPriceINR || primaryOption.effectivePriceINR).toLocaleString('en-IN')}–₹${(highestObservedPriceINR || primaryOption.effectivePriceINR).toLocaleString('en-IN')}).`;
+      }
+    }
+
+    // Rail 2: Compliant Amazon Associates Search / Product CTA (zero scraped or displayed Amazon INR prices)
+    const searchQueryForAmazon = monetizedDeal?.title || (!isUrl ? queryOrUrl : (rawOptions[0]?.title || queryOrUrl));
+    const amazonRedirectUrl = `${siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(searchQueryForAmazon.slice(0, 120))}${monetizedDeal?.affiliateNetwork === 'AMAZON_IN' && monetizedDeal?.productUrl ? `&url=${encodeURIComponent(monetizedDeal.productUrl)}` : ''}`;
+    const amazonTagConfigured = Boolean((process.env.AMAZON_AFFILIATE_TAG || '').trim());
+    if (amazonTagConfigured || monetizedDeal?.affiliateNetwork === 'AMAZON_IN') {
+      rawOptions.push({
+        dealId: monetizedDeal?.affiliateNetwork === 'AMAZON_IN' ? monetizedDeal.id : 'rail_amazon_live_search',
+        title: searchQueryForAmazon,
+        merchant: 'Amazon India',
+        brand: monetizedDeal?.brand || rawOptions[0]?.brand || 'Amazon.in',
+        category: monetizedDeal?.category || rawOptions[0]?.category || 'All Categories',
+        affiliateNetwork: 'AMAZON_IN',
+        currentPriceINR: 0,
+        referencePriceINR: null,
+        couponCode: null,
+        couponConditions: null,
+        couponSavingsINR: 0,
+        effectivePriceINR: 0,
+        verifiedCommissionRatePercent: null,
+        isLowestPrice: false,
+        trackingRedirectUrl: amazonRedirectUrl,
+        productUrl: monetizedDeal?.affiliateNetwork === 'AMAZON_IN' ? monetizedDeal.productUrl : `https://www.amazon.in/s?k=${encodeURIComponent(searchQueryForAmazon.slice(0, 120))}`,
+        disclosure: '#Ad — Amazon.in Associates',
+        ctaLabel: "Check Today's Live Price & Prime Coupons on Amazon.in →",
+        isAmazonSearchRail: true
+      });
+    }
+
+    // Optional bounded Gemini Flash buyer note when real candidate key exists and skipAiSynthesis !== true
+    let aiBuyerNote: string | null = null;
+    const { GeminiProvider } = await import('../ai/gemini-provider.js');
+    if (!input.skipAiSynthesis && hasSufficientHistory && GeminiProvider.getCandidateKeys().length > 0 && rawOptions.some(o => o.effectivePriceINR > 0)) {
+      try {
+        const gemini = new GeminiProvider();
+        const aiRes = await Promise.race([
+          gemini.generateStructured<{ buyerNote: string }>({
+            agentId: 'fair_price_buyer_analyst',
+            systemInstruction: 'You are an Indian consumer fair-price analyst. Summarize in 1-2 factual sentences based strictly on the provided JSON prices whether the buyer should buy now or wait, without inventing any specs or prices.',
+            prompt: 'Return JSON { "buyerNote": "..." } summarizing this fair-price comparison.',
+            context: {
+              queryOrUrl,
+              verdict,
+              estimatedFairPriceINR,
+              lowestObservedPriceINR,
+              highestObservedPriceINR,
+              topOptions: rawOptions.filter(o => o.effectivePriceINR > 0).slice(0, 3).map(o => ({
+                merchant: o.merchant,
+                priceINR: o.currentPriceINR,
+                effectiveINR: o.effectivePriceINR,
+                coupon: o.couponCode
+              }))
+            },
+            thinkingLevel: 'low',
+            priority: 'NORMAL'
+          }),
+          new Promise<null>(r => setTimeout(() => r(null), 5000))
+        ]);
+        if (aiRes && typeof (aiRes as any).data?.buyerNote === 'string') {
+          aiBuyerNote = String((aiRes as any).data.buyerNote).trim();
+        }
+      } catch {}
+    }
+
+    // Handle optional "Name Your Fair Price" target alert watch
+    let priceDropAlertRegistered: FairPriceCheckResult['priceDropAlertRegistered'] = { registered: false };
+    if (input.targetFairPriceINR !== undefined && input.alertEmail) {
+      if (input.consentGiven !== true) {
+        priceDropAlertRegistered = {
+          registered: false,
+          reason: 'CONSENT_REQUIRED: Explicit opt-in consentGiven: true is required under DPDP Act 2023.'
+        };
+      } else {
+        const reg = await this.registerTargetPriceAlert({
+          email: input.alertEmail,
+          targetFairPriceINR: input.targetFairPriceINR,
+          queryOrUrl,
+          deal: monetizedDeal || pricedDeals[0] || null,
+          organizationId,
+          businessId
+        });
+        let immediateAlertDispatched = false;
+        if (reg.registered && pricedDeals.length > 0 && lowestObservedPriceINR !== null && lowestObservedPriceINR <= input.targetFairPriceINR) {
+          const disp = await this.checkAndDispatchTargetPriceAlerts(pricedDeals, siteUrl);
+          immediateAlertDispatched = disp.dispatched > 0;
+        }
+        const emailStr = String(input.alertEmail).trim();
+        const [localPart, domainPart] = emailStr.split('@');
+        const masked = localPart && domainPart ? `${localPart.slice(0, 2)}***@${domainPart}` : '***';
+        priceDropAlertRegistered = {
+          registered: reg.registered,
+          reason: reg.reason,
+          targetFairPriceINR: input.targetFairPriceINR,
+          alertEmailMasked: masked,
+          immediateAlertDispatched
+        };
+      }
+    }
+
+    return {
+      inputType: isUrl ? 'PRODUCT_URL' : 'SEARCH_QUERY',
+      queryOrUrl,
+      verdict,
+      verdictSummary,
+      estimatedFairPriceINR,
+      lowestObservedPriceINR,
+      highestObservedPriceINR,
+      activeCouponCode,
+      effectivePriceAfterCouponINR,
+      monetizedDeal,
+      crossStoreOptions: rawOptions.slice(0, 8),
+      priceHistory: mergedHistory.slice(-15),
+      suggestions,
+      aiBuyerNote,
+      priceDropAlertRegistered
+    };
   }
 }

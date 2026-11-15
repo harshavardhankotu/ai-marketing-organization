@@ -138,7 +138,7 @@ export class SiteAuditFixPackGenerator {
 
     const twitterCardSnippet = twitterLines.join('\n');
 
-    // 4. Valid Schema.org JSON-LD (Strictly Verified Facts Only - Zero Hallucination)
+    // 4. Valid Schema.org JSON-LD (Strictly Verified Facts Only + Explicit Owner TODO Placeholders)
     const schemaObject: Record<string, any> = {
       '@context': 'https://schema.org',
       '@type': 'WebSite',
@@ -147,6 +147,8 @@ export class SiteAuditFixPackGenerator {
 
     if (hasRealTitle) {
       schemaObject.name = audit.preview.title.split('—')[0].split('-')[0].trim();
+    } else if (audit.businessName) {
+      schemaObject.name = audit.businessName;
     }
     if (hasRealDesc) {
       schemaObject.description = audit.preview.metaDescription;
@@ -154,15 +156,50 @@ export class SiteAuditFixPackGenerator {
     if (hasRealOgImage) {
       schemaObject.image = audit.preview.ogImage;
     }
+    const observedEmail = audit.prospectSignals?.discoveredEmails?.[0];
+    if (observedEmail) {
+      schemaObject.email = observedEmail;
+    }
 
     const schemaJsonLdSnippet = [
-      '<!-- Schema.org Structured Data (Strictly Verified Live Metadata) -->',
+      '<!-- Schema.org Structured Data (Strictly Verified Live Metadata — Zero Hallucination) -->',
+      '<!-- TODO: REPLACE_WITH_YOUR_PHONE_AND_ADDRESS_IF_LOCAL_BUSINESS before deploying if adding LocalBusiness fields -->',
       '<script type="application/ld+json">',
       JSON.stringify(schemaObject, null, 2),
       '</script>'
     ].join('\n');
 
-    // 5. Missing fields requiring owner input
+    // 5. Evidence-only robots.txt & sitemap.xml deliverables (strictly from observed canonical URL)
+    const canonicalOrigin = (() => {
+      try {
+        return new URL(cleanCanonical).origin;
+      } catch {
+        return `https://${urlHostname}`;
+      }
+    })();
+    const robotsTxtSnippet = [
+      `# SiteFix AI: Recommended /robots.txt for ${urlHostname}`,
+      '# TODO: REPLACE_WITH_YOUR_PRIVATE_PATHS if you have admin or staging routes to disallow',
+      'User-agent: *',
+      'Allow: /',
+      `Sitemap: ${canonicalOrigin}/sitemap.xml`
+    ].join('\n');
+
+    const sitemapXmlSnippet = [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      `<!-- SiteFix AI: Evidence-Only Starter Sitemap for ${urlHostname} -->`,
+      '<!-- TODO: REPLACE_WITH_YOUR_ADDITIONAL_URLS for verified service or product pages -->',
+      '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+      '  <url>',
+      `    <loc>${cleanCanonical}</loc>`,
+      `    <lastmod>${new Date().toISOString().slice(0, 10)}</lastmod>`,
+      '    <changefreq>weekly</changefreq>',
+      '    <priority>1.0</priority>',
+      '  </url>',
+      '</urlset>'
+    ].join('\n');
+
+    // 6. Missing fields requiring owner input
     const missingFieldsRequiringOwnerInput: string[] = [];
     if (!hasRealTitle) {
       missingFieldsRequiringOwnerInput.push('Website Name / Title: Add "name" attribute with your official site or business name.');
@@ -181,7 +218,7 @@ export class SiteAuditFixPackGenerator {
       'Customer Reviews: Add "aggregateRating" ONLY if verified third-party reviews exist (never self-report ratings).'
     );
 
-    // 6. Checklist Markdown
+    // 7. Checklist Markdown
     const checklistMarkdown = this.generateChecklistMarkdown(
       audit,
       hasRealTitle ? audit.preview.title : urlHostname,
@@ -199,6 +236,8 @@ export class SiteAuditFixPackGenerator {
       openGraphSnippet,
       twitterCardSnippet,
       schemaJsonLdSnippet,
+      robotsTxtSnippet,
+      sitemapXmlSnippet,
       canonicalUrlRecommendation: cleanCanonical,
       checklistMarkdown,
       recommendedOwnerAdditions: missingFieldsRequiringOwnerInput,

@@ -28,6 +28,29 @@ import { DealCandidate } from './deal-types.js';
 
 export { CUELINKS_REQUIRED_SCOPES };
 
+function normalizeSyncRootDomain(urlOrDomain: string): string {
+  const raw = String(urlOrDomain || '').trim().toLowerCase();
+  if (!raw) return '';
+  let host = raw;
+  if (raw.includes('://') || raw.includes('/')) {
+    try {
+      host = new URL(raw.includes('://') ? raw : `https://${raw}`).hostname.toLowerCase();
+    } catch {
+      host = raw.split('/')[0].toLowerCase();
+    }
+  }
+  host = host.replace(/^www\./, '').replace(/:\d+$/, '').trim();
+  if (!host || !host.includes('.')) return host;
+  const parts = host.split('.').filter(Boolean);
+  if (parts.length <= 2) return host;
+  const lastTwo = parts.slice(-2).join('.');
+  const twoPartTlds = new Set(['co.in', 'com.in', 'org.in', 'net.in', 'gov.in', 'ac.in', 'co.uk', 'com.au', 'co.jp']);
+  if (twoPartTlds.has(lastTwo) && parts.length >= 3) {
+    return parts.slice(-3).join('.');
+  }
+  return parts.slice(-2).join('.');
+}
+
 export interface VerifiedScopeResult {
   connected: boolean;
   channelId?: number;
@@ -371,10 +394,26 @@ export class CuelinksSyncManager {
     eligibleCampaigns: CuelinksCampaign[]
   ): Promise<DealCandidate[]> {
     const dealCandidates: DealCandidate[] = [];
+    const campaignsById = new Map<string, CuelinksCampaign>();
+    const campaignsByRootDomain = new Map<string, CuelinksCampaign[]>();
+
+    for (const c of eligibleCampaigns) {
+      if (c?.id !== undefined && c?.id !== null) {
+        campaignsById.set(String(c.id), c);
+      }
+      const rootDom = normalizeSyncRootDomain(String(c?.domain || c?.url || ''));
+      if (rootDom) {
+        const list = campaignsByRootDomain.get(rootDom) || [];
+        list.push(c);
+        campaignsByRootDomain.set(rootDom, list);
+      }
+    }
 
     for (const offer of rawOffers) {
-      const campaign = eligibleCampaigns.find(c => String(c.id) === String(offer.campaign_id));
-      const merchantName = offer.campaign_name || campaign?.merchant_name || campaign?.name || 'Authorized Merchant';
+      let campaign = offer.campaign_id !== undefined && offer.campaign_id !== null
+        ? campaignsById.get(String(offer.campaign_id))
+        : undefined;
+      let merchantName = offer.campaign_name || campaign?.merchant_name || campaign?.name || 'Authorized Merchant';
 
       // Clean merchant destination: extract URL from tracking_url parameter or campaign (Finding 1)
       let merchantUrl = offer.url || '';
@@ -395,6 +434,15 @@ export class CuelinksSyncManager {
       // A tracking URL alone without destination is not merchant SKU evidence (Finding 1)
       if (!merchantUrl || !offer.title) continue;
       if (CuelinksV3Client.isAllowedTrackingUrl(merchantUrl)) continue;
+
+      if (!campaign) {
+        const offerRootDom = normalizeSyncRootDomain(merchantUrl);
+        const domainMatches = offerRootDom ? (campaignsByRootDomain.get(offerRootDom) || []) : [];
+        if (domainMatches.length === 1) {
+          campaign = domainMatches[0];
+          merchantName = offer.campaign_name || campaign.merchant_name || campaign.name || merchantName;
+        }
+      }
 
       // Rule: Accept currentPriceINR only when explicitly provided by provider data (> 0)
       let currentPrice: number | undefined = undefined;
@@ -510,6 +558,22 @@ export class CuelinksSyncManager {
         }
       }
 
+      const payoutInfo = this.extractCampaignPayout(campaign, categoryName);
+      const resolvedPayoutType = payoutInfo.payoutModel || 'UNKNOWN';
+      const resolvedPayout = payoutInfo.payoutRate || null;
+      const resolvedEpc7d = campaign?.epc_7d !== undefined && campaign?.epc_7d !== null && !isNaN(Number(campaign.epc_7d))
+        ? Number(campaign.epc_7d)
+        : null;
+      const resolvedEpc90d = campaign?.epc_90d !== undefined && campaign?.epc_90d !== null && !isNaN(Number(campaign.epc_90d))
+        ? Number(campaign.epc_90d)
+        : null;
+      const resolvedDeeplinkAllowed = campaign?.deeplink_allowed !== undefined ? Boolean(campaign.deeplink_allowed) : true;
+      const resolvedSubIdsAllowed = campaign?.sub_ids_allowed !== undefined ? Boolean(campaign.sub_ids_allowed) : true;
+      const resolvedSocialAllowed = campaign?.social_media_publishers_allowed !== undefined
+        ? Boolean(campaign.social_media_publishers_allowed)
+        : true;
+      const resolvedCookieDuration = campaign?.cookie_duration ?? campaign?.cookie_days ?? null;
+
       const candidate: DealCandidate = {
         title: offer.title.trim(),
         brand: merchantName,
@@ -523,6 +587,7 @@ export class CuelinksSyncManager {
         dealKind,
         couponCode: cleanCouponCode,
         couponConditions: offer.terms?.trim() || offer.description?.trim() || undefined,
+        availability: dealKind === 'COUPON' && !currentPrice ? 'UNKNOWN' : ((offer as any).availability || undefined),
         offerStart,
         expiryDate,
         sourceUrl: merchantUrl,
@@ -530,8 +595,22 @@ export class CuelinksSyncManager {
         sourceType: 'AFFILIATE_NETWORK',
         trackingUrl: isMonetizable ? trackingUrl : undefined,
         affiliateNetwork: isMonetizable ? 'CUELINKS' : undefined,
-        affiliateCampaignId: String(offer.campaign_id),
-        isMonetizable
+        affiliateCampaignId: String(campaign?.id || offer.campaign_id),
+        isMonetizable,
+        evidenceJson: {
+          cuelinksOfferId: String(offer.id),
+          affiliateNetwork: isMonetizable ? 'CUELINKS' : undefined,
+          affiliateCampaignId: String(campaign?.id || offer.campaign_id || ''),
+          payout_type: resolvedPayoutType,
+          monetizationModel: resolvedPayoutType,
+          payout: resolvedPayout,
+          epc_7d: resolvedEpc7d,
+          epc_90d: resolvedEpc90d,
+          deeplink_allowed: resolvedDeeplinkAllowed,
+          sub_ids_allowed: resolvedSubIdsAllowed,
+          social_media_publishers_allowed: resolvedSocialAllowed,
+          cookie_duration: resolvedCookieDuration
+        }
       };
 
       dealCandidates.push(candidate);
@@ -689,31 +768,80 @@ export class CuelinksSyncManager {
       let offerError: any = null;
       const partialFailureReasons: string[] = [];
 
-      // 3. Campaign discovery (Prioritizing India country_id: 252, open access, sorted by EPC)
+      // 3. Campaign discovery (Prioritizing high-EPC approved & open India campaigns)
       let eligibleCampaigns: CuelinksCampaign[] = [];
       if (!options?.reconciliationOnly) {
         try {
-          const campaignSearch = await this.client.searchCampaigns({
-            country_id: 252,
-            access_status: 'approved',
-            sort: 'epc_7d',
-            order: 'desc',
-            per_page: 30
-          });
+          let discoveredList: CuelinksCampaign[] = [];
+          let totalDiscovered = 0;
+          const seenIds = new Set<string>();
+          const pushCampaigns = (items: CuelinksCampaign[]) => {
+            for (const c of items || []) {
+              const key = String(c?.id || '');
+              if (key && !seenIds.has(key)) {
+                seenIds.add(key);
+                discoveredList.push(c);
+              }
+            }
+          };
+
+          if (typeof (this.client as any).getHighEpcCampaigns === 'function') {
+            for (let page = 1; page <= 5; page++) {
+              const approvedRes = await (this.client as any).getHighEpcCampaigns({
+                access_status: 'approved',
+                country_id: 252,
+                page,
+                per_page: 100
+              });
+              const pageCampaigns: CuelinksCampaign[] = approvedRes?.campaigns || [];
+              pushCampaigns(pageCampaigns);
+              if (page === 1) totalDiscovered = Number(approvedRes?.total || discoveredList.length);
+              const totalPages = Number(approvedRes?.total_pages || 1);
+              if (pageCampaigns.length < 100 || page >= totalPages) break;
+            }
+            if (discoveredList.length < 15) {
+              try {
+                const openRes = await (this.client as any).getHighEpcCampaigns({
+                  access_status: 'open',
+                  country_id: 252,
+                  page: 1,
+                  per_page: 100
+                });
+                pushCampaigns(openRes?.campaigns || []);
+              } catch {}
+            }
+          }
+
+          if (discoveredList.length === 0) {
+            for (let page = 1; page <= 5; page++) {
+              const campaignSearch = await this.client.searchCampaigns({
+                country_id: 252,
+                access_status: 'approved',
+                sort: 'epc_7d',
+                order: 'desc',
+                page,
+                per_page: 100
+              });
+              const pageCampaigns = campaignSearch.campaigns || [];
+              pushCampaigns(pageCampaigns);
+              if (page === 1) totalDiscovered = campaignSearch.total;
+              const totalPages = Number(campaignSearch.total_pages || 1);
+              if (pageCampaigns.length < 100 || page >= totalPages) break;
+            }
+          }
 
           empiricallyVerifiedScopes.add('read:campaigns');
           this.updateCapability('campaignDiscovery', 'AVAILABLE');
-          this.syncStatus.campaignsDiscovered = campaignSearch.total;
-          eligibleCampaigns = (campaignSearch.campaigns || []).filter(
+          this.syncStatus.campaignsDiscovered = Math.max(totalDiscovered, discoveredList.length);
+          eligibleCampaigns = discoveredList.filter(
             c => (!c.status || c.status === 'active') && (c.access_status === 'approved' || c.access_status === 'open')
           );
           this.syncStatus.eligibleCampaignsCount = eligibleCampaigns.length;
 
-          // Note: write:links is strictly NOT inferred from campaign discovery!
-
-          // Persist discovered campaigns to D1
+          // Persist discovered campaigns + epc_7d/epc_90d/publisher flags and hydrate verified payouts onto public_deals
           await this.persistCampaignsD1(organizationId, businessId, eligibleCampaigns);
           try {
+            await this.hydrateMissingCampaignPayoutsD1(organizationId, businessId, 100);
           } catch (payoutErr: any) {
             console.warn(`[CuelinksSyncManager] Payout hydration notice: ${payoutErr?.message}`);
           }
@@ -735,10 +863,26 @@ export class CuelinksSyncManager {
       // 4. Offer discovery across eligible campaigns (skipped if skipOfferFetch or reconciliationOnly)
       if (!options?.skipOfferFetch && !options?.reconciliationOnly) {
         try {
-          const offersRes = await this.client.getOffers({ per_page: 30 });
+          const channelId = String(this.syncStatus.channel?.id || process.env.CUELINKS_CHANNEL_ID || '331585').trim() || '331585';
+          const rawOffers: CuelinksOffer[] = [];
+          const seenOfferIds = new Set<string>();
+          for (let page = 1; page <= 3; page++) {
+            const offersRes = typeof (this.client as any).getLiveOffers === 'function'
+              ? await (this.client as any).getLiveOffers({ channel_id: channelId, page, per_page: 100 })
+              : await this.client.getOffers({ page, per_page: 100 });
+            const batch: CuelinksOffer[] = offersRes?.offers || [];
+            for (const o of batch) {
+              const oid = String(o?.id || '');
+              if (oid && !seenOfferIds.has(oid)) {
+                seenOfferIds.add(oid);
+                rawOffers.push(o);
+              }
+            }
+            const totalPages = Number(offersRes?.total_pages || 1);
+            if (batch.length < 100 || page >= totalPages) break;
+          }
           empiricallyVerifiedScopes.add('read:offers');
           this.updateCapability('offerPagination', 'AVAILABLE');
-          const rawOffers = offersRes.offers || [];
           this.syncStatus.offersRetrieved = rawOffers.length;
 
           dealCandidates = await this.processOffersToCandidates(rawOffers, eligibleCampaigns);
@@ -775,7 +919,7 @@ export class CuelinksSyncManager {
             start_date: new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0],
             end_date: new Date().toISOString().split('T')[0],
             channel_id: targetChannelId,
-            per_page: 50
+            per_page: 100
           });
           empiricallyVerifiedScopes.add('read:reports');
           this.updateCapability('reporting', 'AVAILABLE');
@@ -790,6 +934,16 @@ export class CuelinksSyncManager {
         } catch {
           // Gracefully fall back to transactional totals if report API not granted
         }
+
+        // Optional: Poll unmonetized traffic report when supported by channel API key
+        try {
+          if (typeof (this.client as any).getUnmonetizedTrafficReport === 'function') {
+            await (this.client as any).getUnmonetizedTrafficReport({
+              channel_id: targetChannelId,
+              per_page: 25
+            });
+          }
+        } catch {}
 
         this.syncStatus.reconciliation = {
           ...reconciliationResult,
@@ -1530,7 +1684,7 @@ export class CuelinksSyncManager {
   public async syncCuelinksPaginated(options: CuelinksPaginatedSyncOptions = {}): Promise<CuelinksPaginatedSyncResult> {
     const orgId = options.organizationId || 'org_owner_primary';
     const bizId = options.businessId || 'biz_platform_aro';
-    const batchSize = Math.min(Math.max(1, options.batchSize || 30), 100);
+    const batchSize = Math.min(Math.max(1, options.batchSize || 100), 100);
 
     const cursor: CuelinksPaginationCursor = options.cursor ? { ...options.cursor } : {
       campaignPage: 1,
@@ -1640,15 +1794,27 @@ export class CuelinksSyncManager {
   /**
    * Persist discovered campaigns into D1 workflows table
    */
-  private extractCampaignPayout(camp: any, productCategory?: string): {
+  public extractCampaignPayout(camp: any, productCategory?: string): {
     payoutRate: string;
     payoutModel: string;
     payoutCurrency: string;
     payoutCategories: any[];
   } {
     if (!camp || typeof camp !== 'object') {
-      return { payoutRate: '', payoutModel: 'CPS', payoutCurrency: 'INR', payoutCategories: [] };
+      return { payoutRate: '', payoutModel: 'UNKNOWN', payoutCurrency: 'INR', payoutCategories: [] };
     }
+    const normalizeModel = (rawModel: any, rateStr?: string): string => {
+      const m = String(rawModel || '').trim().toUpperCase();
+      if (m.includes('CPC') || m.includes('CLICK')) return 'CPC';
+      if (m.includes('CPL') || m.includes('LEAD')) return 'CPL';
+      if (m.includes('CPA') || m.includes('ACTION') || m.includes('INSTALL')) return 'CPA';
+      if (m.includes('CPS') || m.includes('SALE') || m.includes('REVSHARE')) return 'CPS';
+      if (m) return m;
+      const numVal = Number(String(rateStr || '').replace(/[^\d.]/g, ''));
+      if (rateStr && Number.isFinite(numVal) && numVal > 0 && rateStr.includes('%')) return 'CPS';
+      return 'UNKNOWN';
+    };
+
     const directModel = camp.payout_model || camp.payout_type || '';
     const directCurrency = String(camp.payout_currency || 'INR').trim().toUpperCase();
     const payoutCategories = Array.isArray(camp.payout_categories) ? camp.payout_categories : [];
@@ -1660,9 +1826,11 @@ export class CuelinksSyncManager {
         const tierName = String(pc?.category || pc?.name || '').toLowerCase();
         const val = pc?.payout ?? pc?.payout_rate ?? pc?.commission;
         if (tierName && (catLower.includes(tierName) || tierName.includes(catLower)) && val !== null && val !== undefined && String(val).trim() !== '') {
+          const rateStr = String(val).trim();
+          const numVal = Number(rateStr.replace(/[^\d.]/g, ''));
           return {
-            payoutRate: String(val).trim(),
-            payoutModel: String(pc?.payout_type || pc?.payout_model || directModel || 'CPS').trim(),
+            payoutRate: rateStr,
+            payoutModel: numVal > 0 ? normalizeModel(pc?.payout_type || pc?.payout_model || directModel, rateStr) : 'UNKNOWN',
             payoutCurrency: String(pc?.payout_currency || directCurrency || 'INR').trim().toUpperCase(),
             payoutCategories
           };
@@ -1673,9 +1841,11 @@ export class CuelinksSyncManager {
     const directCandidates = [camp.payout, camp.payout_rate, camp.commission_rate];
     for (const c of directCandidates) {
       if (c !== null && c !== undefined && String(c).trim() !== '') {
+        const rateStr = String(c).trim();
+        const numVal = Number(rateStr.replace(/[^\d.]/g, ''));
         return {
-          payoutRate: String(c).trim(),
-          payoutModel: String(directModel || 'CPS').trim(),
+          payoutRate: rateStr,
+          payoutModel: numVal > 0 ? normalizeModel(directModel, rateStr) : 'UNKNOWN',
           payoutCurrency: directCurrency,
           payoutCategories
         };
@@ -1684,9 +1854,11 @@ export class CuelinksSyncManager {
     for (const pc of payoutCategories) {
       const val = pc?.payout ?? pc?.payout_rate ?? pc?.commission;
       if (val !== null && val !== undefined && String(val).trim() !== '') {
+        const rateStr = String(val).trim();
+        const numVal = Number(rateStr.replace(/[^\d.]/g, ''));
         return {
-          payoutRate: String(val).trim(),
-          payoutModel: String(pc?.payout_type || pc?.payout_model || directModel || 'CPS').trim(),
+          payoutRate: rateStr,
+          payoutModel: numVal > 0 ? normalizeModel(pc?.payout_type || pc?.payout_model || directModel, rateStr) : 'UNKNOWN',
           payoutCurrency: String(pc?.payout_currency || directCurrency || 'INR').trim().toUpperCase(),
           payoutCategories
         };
@@ -1696,16 +1868,18 @@ export class CuelinksSyncManager {
       for (const cat of camp.categories) {
         const val = cat?.payout ?? cat?.payout_rate;
         if (val !== null && val !== undefined && String(val).trim() !== '') {
+          const rateStr = String(val).trim();
+          const numVal = Number(rateStr.replace(/[^\d.]/g, ''));
           return {
-            payoutRate: String(val).trim(),
-            payoutModel: String(cat?.payout_type || directModel || 'CPS').trim(),
+            payoutRate: rateStr,
+            payoutModel: numVal > 0 ? normalizeModel(cat?.payout_type || directModel, rateStr) : 'UNKNOWN',
             payoutCurrency: String(cat?.payout_currency || directCurrency || 'INR').trim().toUpperCase(),
             payoutCategories
           };
         }
       }
     }
-    return { payoutRate: '', payoutModel: String(directModel || 'CPS').trim(), payoutCurrency: directCurrency, payoutCategories };
+    return { payoutRate: '', payoutModel: normalizeModel(directModel), payoutCurrency: directCurrency, payoutCategories };
   }
 
   /**
@@ -1971,14 +2145,15 @@ export class CuelinksSyncManager {
   private async persistCampaignsD1(organizationId: string, businessId: string, campaigns: CuelinksCampaign[]): Promise<void> {
     try {
       const d1Repo = D1RevenueRepository.getInstance();
-      for (const camp of campaigns.slice(0, 100)) {
+      for (const camp of campaigns.slice(0, 500)) {
         // Extract clean canonical merchant domain
         let merchantDomain = '';
-        if (camp.url) {
+        if (camp.url || camp.domain) {
           try {
-            merchantDomain = new URL(camp.url).hostname.replace(/^www\./i, '').toLowerCase();
+            const rawTarget = camp.url || `https://${camp.domain}`;
+            merchantDomain = new URL(rawTarget.startsWith('http') ? rawTarget : `https://${rawTarget}`).hostname.replace(/^www\./i, '').toLowerCase();
           } catch {
-            merchantDomain = String(camp.url || '').toLowerCase();
+            merchantDomain = String(camp.domain || camp.url || '').toLowerCase();
           }
         }
         if (!merchantDomain) {
@@ -1987,8 +2162,10 @@ export class CuelinksSyncManager {
 
         const extracted = this.extractCampaignPayout(camp);
         const safePayoutRate = extracted.payoutRate;
-        const safePayoutModel = extracted.payoutModel || 'CPS';
+        const safePayoutModel = extracted.payoutModel || 'UNKNOWN';
         const safeStatus = String(camp.status || '').toLowerCase() === 'active' ? 'ACTIVE' : 'INACTIVE';
+        const cookieDuration = Number((camp as any).cookie_duration ?? (camp as any).cookie_days ?? 30) || 30;
+        const socialAllowed = (camp as any).social_media_publishers_allowed !== false;
 
         const campSql = `
           INSERT INTO cuelinks_campaigns (
@@ -1998,7 +2175,10 @@ export class CuelinksSyncManager {
             name = excluded.name,
             merchant_domain = COALESCE(NULLIF(TRIM(excluded.merchant_domain), ''), cuelinks_campaigns.merchant_domain),
             status = excluded.status,
-            payout_model = COALESCE(NULLIF(TRIM(excluded.payout_model), ''), cuelinks_campaigns.payout_model),
+            payout_model = CASE
+              WHEN NULLIF(TRIM(excluded.payout_rate), '') IS NULL THEN 'UNKNOWN'
+              ELSE COALESCE(NULLIF(TRIM(excluded.payout_model), ''), cuelinks_campaigns.payout_model)
+            END,
             payout_rate = COALESCE(NULLIF(TRIM(excluded.payout_rate), ''), cuelinks_campaigns.payout_rate),
             cookie_days = COALESCE(excluded.cookie_days, cuelinks_campaigns.cookie_days),
             category = COALESCE(NULLIF(TRIM(excluded.category), ''), cuelinks_campaigns.category),
@@ -2015,7 +2195,7 @@ export class CuelinksSyncManager {
             safeStatus,
             safePayoutModel,
             safePayoutRate,
-            (camp as any).cookie_days || 30,
+            cookieDuration,
             (camp as any).category || (camp.categories?.[0] ? String(camp.categories[0]) : 'General')
           ]);
         } else {
@@ -2028,7 +2208,7 @@ export class CuelinksSyncManager {
               safeStatus,
               safePayoutModel,
               safePayoutRate,
-              (camp as any).cookie_days || 30,
+              cookieDuration,
               (camp as any).category || (camp.categories?.[0] ? String(camp.categories[0]) : 'General')
             );
           } catch {}
@@ -2052,7 +2232,17 @@ export class CuelinksSyncManager {
           camp.status === 'active' ? 'COMPLETED' : 'BLOCKED',
           'DISCOVER',
           JSON.stringify({ name: camp.name, url: camp.url, access_status: camp.access_status }),
-          JSON.stringify({ payout: camp.payout, epc_7d: camp.epc_7d, terms: camp.terms })
+          JSON.stringify({
+            payout: camp.payout ?? safePayoutRate,
+            payout_type: camp.payout_type ?? safePayoutModel,
+            epc_7d: (camp as any).epc_7d ?? null,
+            epc_90d: (camp as any).epc_90d ?? null,
+            deeplink_allowed: (camp as any).deeplink_allowed ?? true,
+            sub_ids_allowed: (camp as any).sub_ids_allowed ?? true,
+            social_media_publishers_allowed: socialAllowed,
+            cookie_duration: cookieDuration,
+            terms: camp.terms
+          })
         ]);
       }
     } catch (err: any) {

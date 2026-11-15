@@ -846,6 +846,7 @@ export class DurableJobQueue {
     staleMinutesThreshold?: number;
     activeWorkflowIds?: string[];
     parkedWorkflowIds?: string[];
+    skipSystemDoctor?: boolean;
   }): Promise<{
     expiredLeasesRecovered: number;
     supersededStaleCount: number;
@@ -855,6 +856,7 @@ export class DurableJobQueue {
     compactedDuplicateCount: number;
     freshJobsScheduledCount: number;
     queueStatsAfter: Awaited<ReturnType<DurableJobQueue['getQueueStats']>>;
+    systemDoctorSummary?: any;
   }> {
     const expiredLeasesRecovered = await this.recoverStaleLeases();
 
@@ -1152,6 +1154,21 @@ export class DurableJobQueue {
       }
     }
 
+    let systemDoctorSummary: any = undefined;
+    if (!options?.skipSystemDoctor) {
+      try {
+        const { AutonomousSystemDoctor } = await import('./autonomous-system-doctor.js');
+        const report = await AutonomousSystemDoctor.getInstance().runSelfHealingPass({
+          skipRecoveryRecursion: true,
+          skipLlm: true
+        });
+        systemDoctorSummary = {
+          ...(await AutonomousSystemDoctor.getInstance().getPublicSystemDoctorSummary()),
+          repairedPricesCount: report.priceRepair.repairedCount
+        };
+      } catch {}
+    }
+
     const queueStatsAfter = await this.getQueueStats();
     return {
       expiredLeasesRecovered,
@@ -1161,7 +1178,8 @@ export class DurableJobQueue {
       deferredMissingCredentialCount,
       compactedDuplicateCount,
       freshJobsScheduledCount,
-      queueStatsAfter
+      queueStatsAfter,
+      ...(systemDoctorSummary ? { systemDoctorSummary } : {})
     };
   }
 

@@ -54,6 +54,7 @@ export interface DealItem {
   paymentRestrictions?: string;
   membershipRestrictions?: string;
   geographicRestrictions?: string[];
+  affiliateNetwork?: string;
   evidenceJson?: {
     sources?: string[];
     priceHistory?: Array<{ price: number; observedAt: string }>;
@@ -63,7 +64,12 @@ export interface DealItem {
   };
 }
 
+export function isAmazonDeal(deal: DealItem): boolean {
+  return deal.affiliateNetwork === 'AMAZON_IN' || String(deal.sourceDomain || '').toLowerCase().includes('amazon.');
+}
+
 export function isCouponDeal(deal: DealItem): boolean {
+  if (isAmazonDeal(deal)) return false;
   return deal.dealKind === 'COUPON' || !deal.currentPriceINR || deal.currentPriceINR <= 0;
 }
 
@@ -106,6 +112,18 @@ export const PublicDealsPage: React.FC = () => {
   const [verifiedOnly, setVerifiedOnly] = useState<boolean>(false);
   const [hasCouponOnly, setHasCouponOnly] = useState<boolean>(false);
   const [sortBy, setSortBy] = useState<'buyer_value' | 'freshness' | 'price_asc' | 'discount'>('buyer_value');
+
+  // Universal Fair-Price Checker state
+  const [fpInput, setFpInput] = useState<string>('');
+  const [fpLoading, setFpLoading] = useState<boolean>(false);
+  const [fpError, setFpError] = useState<string | null>(null);
+  const [fpResult, setFpResult] = useState<any | null>(null);
+  const [fpAlertPrice, setFpAlertPrice] = useState<string>('');
+  const [fpAlertEmail, setFpAlertEmail] = useState<string>('');
+  const [fpAlertConsent, setFpAlertConsent] = useState<boolean>(false);
+  const [fpAlertSubmitting, setFpAlertSubmitting] = useState<boolean>(false);
+  const [fpAlertFeedback, setFpAlertFeedback] = useState<{ ok: boolean; text: string } | null>(null);
+  const [comparisons, setComparisons] = useState<Array<{ comparisonSlug: string; title: string; category: string }>>([]);
 
   // Determine canonical origin dynamically based on current host
   const canonicalOrigin = useMemo(() => {
@@ -175,9 +193,18 @@ export const PublicDealsPage: React.FC = () => {
     canonicalEl.setAttribute('href', canonicalUrl);
   }, [canonicalUrl]);
 
-  // Fetch deals from backend with automatic fallback to verified seed deals
+  // Fetch deals and /vs/ comparisons from backend
   useEffect(() => {
     fetchDeals();
+    fetch('/api/v1/public/comparisons?limit=6')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((json) => {
+        const list = Array.isArray(json?.data) ? json.data : json?.data?.comparisons;
+        if (Array.isArray(list)) {
+          setComparisons(list);
+        }
+      })
+      .catch(() => {});
   }, []);
 
   const fetchDeals = async () => {
@@ -274,6 +301,78 @@ export const PublicDealsPage: React.FC = () => {
     }
     const whatsappUrl = `https://api.whatsapp.com/send?text=${encodeURIComponent(msg)}`;
     window.open(whatsappUrl, '_blank', 'noopener,noreferrer');
+  };
+
+  const handleFairPriceCheck = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const q = fpInput.trim();
+    if (!q) return;
+    setFpLoading(true);
+    setFpError(null);
+    setFpAlertFeedback(null);
+    try {
+      const res = await fetch('/api/v1/public/fair-price-check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ queryOrUrl: q })
+      });
+      const json = await res.json();
+      if (!res.ok || !json?.success) {
+        throw new Error(json?.message || json?.error || 'Could not evaluate fair price.');
+      }
+      setFpResult(json.data);
+      if (json.data?.estimatedFairPriceINR) {
+        setFpAlertPrice(String(Math.round(json.data.estimatedFairPriceINR * 0.9)));
+      }
+      if (json.data?.monetizedDeal) {
+        fetchDeals();
+      }
+    } catch (err: any) {
+      setFpError(err?.message || 'Fair-price evaluation failed.');
+    } finally {
+      setFpLoading(false);
+    }
+  };
+
+  const handleFairPriceAlertSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const q = (fpResult?.queryOrUrl || fpInput).trim();
+    const targetNum = Number(fpAlertPrice);
+    if (!q || !Number.isFinite(targetNum) || targetNum <= 0 || !fpAlertEmail.trim()) return;
+    setFpAlertSubmitting(true);
+    setFpAlertFeedback(null);
+    try {
+      const res = await fetch('/api/v1/public/fair-price-check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          queryOrUrl: q,
+          targetFairPriceINR: targetNum,
+          alertEmail: fpAlertEmail.trim(),
+          consentGiven: fpAlertConsent,
+          skipAiSynthesis: true
+        })
+      });
+      const json = await res.json();
+      const reg = json?.data?.priceDropAlertRegistered;
+      if (res.ok && reg?.registered) {
+        setFpAlertFeedback({
+          ok: true,
+          text: reg.immediateAlertDispatched
+            ? `Price-drop watch saved and instant alert sent to ${reg.alertEmailMasked}.`
+            : `Price-drop watch registered for ${reg.alertEmailMasked} at ₹${Number(reg.targetFairPriceINR || targetNum).toLocaleString('en-IN')}.`
+        });
+      } else {
+        setFpAlertFeedback({
+          ok: false,
+          text: reg?.reason || json?.message || 'Explicit opt-in consent and a valid email are required.'
+        });
+      }
+    } catch (err: any) {
+      setFpAlertFeedback({ ok: false, text: err?.message || 'Could not register alert.' });
+    } finally {
+      setFpAlertSubmitting(false);
+    }
   };
 
   const categories = useMemo(() => {
@@ -499,6 +598,238 @@ export const PublicDealsPage: React.FC = () => {
             Zero inflated discounts. Every promotional price, MRP baseline, and promo code condition is independently corroborated across official Indian stores before listing.
           </p>
         </div>
+
+        {/* Universal Fair-Price Checker & On-Demand Link Monetizer */}
+        <section
+          aria-labelledby="fair-price-checker-heading"
+          className="mb-8 rounded-2xl bg-slate-900/90 border border-slate-800 p-5 sm:p-6 shadow-xl"
+        >
+          <div className="flex flex-col sm:flex-row sm:items-baseline justify-between gap-2 mb-3">
+            <div>
+              <h2 id="fair-price-checker-heading" className="text-base sm:text-lg font-bold text-white tracking-tight">
+                Find the Fair Price for Anything
+              </h2>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Paste any Amazon.in / D2C product URL or enter what you want to buy — check observed fair value, coupon stacking, and price-drop alerts before checkout.
+              </p>
+            </div>
+            <span className="text-[11px] font-mono text-slate-400 shrink-0">
+              Amazon.in · Cuelinks · Observed MRP
+            </span>
+          </div>
+
+          <form onSubmit={handleFairPriceCheck} className="flex flex-col sm:flex-row gap-2.5">
+            <div className="relative flex-1">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                type="text"
+                value={fpInput}
+                onChange={(e) => setFpInput(e.target.value)}
+                placeholder="Paste https://amazon.in/dp/... or search e.g. best ANC earbuds under 2000"
+                className="w-full pl-10 pr-4 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={fpLoading || !fpInput.trim()}
+              className="px-5 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-800 disabled:text-slate-500 text-slate-950 font-bold text-sm transition shrink-0"
+            >
+              {fpLoading ? 'Checking Fair Price...' : 'Check Fair Price'}
+            </button>
+          </form>
+
+          {fpError && (
+            <div className="mt-3 text-xs text-rose-300 flex items-center gap-1.5">
+              <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+              <span>{fpError}</span>
+            </div>
+          )}
+
+          {fpResult && (
+            <div className="mt-5 pt-5 border-t border-slate-800 space-y-4">
+              <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
+                <div className="space-y-1">
+                  <div className={`text-xs font-bold uppercase tracking-wider ${
+                    fpResult.verdict === 'BUY_NOW_BELOW_FAIR_PRICE'
+                      ? 'text-emerald-400'
+                      : fpResult.verdict === 'OVERPRICED_WAIT_FOR_DROP'
+                        ? 'text-amber-400'
+                        : fpResult.verdict === 'INSUFFICIENT_HISTORY'
+                          ? 'text-slate-300'
+                          : 'text-cyan-400'
+                  }`}>
+                    {fpResult.verdict === 'INSUFFICIENT_HISTORY'
+                      ? 'INSUFFICIENT HISTORY'
+                      : fpResult.verdict?.replace(/_/g, ' ')}
+                  </div>
+                  <p className="text-sm text-slate-200">{fpResult.verdictSummary}</p>
+                  {fpResult.aiBuyerNote && (
+                    <p className="text-xs text-slate-400">Analyst Note: {fpResult.aiBuyerNote}</p>
+                  )}
+                </div>
+
+                {typeof fpResult.estimatedFairPriceINR === 'number' && fpResult.estimatedFairPriceINR > 0 && (
+                  <div className="grid grid-cols-3 gap-4 text-right shrink-0 border-t md:border-t-0 pt-3 md:pt-0 border-slate-800">
+                    <div>
+                      <div className="text-[11px] text-slate-400">Fair Price</div>
+                      <div className="text-base font-bold font-mono tabular-nums text-white">
+                        ₹{Number(fpResult.estimatedFairPriceINR).toLocaleString('en-IN')}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[11px] text-slate-400">Lowest Net</div>
+                      <div className="text-base font-bold font-mono tabular-nums text-emerald-400">
+                        ₹{Number(fpResult.lowestObservedPriceINR || fpResult.estimatedFairPriceINR).toLocaleString('en-IN')}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[11px] text-slate-400">Observed High</div>
+                      <div className="text-base font-semibold font-mono tabular-nums text-slate-300">
+                        ₹{Number(fpResult.highestObservedPriceINR || fpResult.estimatedFairPriceINR).toLocaleString('en-IN')}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {Array.isArray(fpResult.crossStoreOptions) && fpResult.crossStoreOptions.length > 0 && (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-800 text-slate-400">
+                        <th className="py-2 pr-3 font-medium">Listing &amp; Merchant</th>
+                        <th className="py-2 px-3 text-right font-medium">Listed Price</th>
+                        <th className="py-2 px-3 font-right font-medium">Coupon</th>
+                        <th className="py-2 px-3 text-right font-medium">Net Price</th>
+                        <th className="py-2 pl-3 text-right font-medium">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/70">
+                      {fpResult.crossStoreOptions.map((opt: any) => {
+                        const isAmazonSearch = Boolean(opt.isAmazonSearchRail || opt.affiliateNetwork === 'AMAZON_IN');
+                        const hasPrice = typeof opt.currentPriceINR === 'number' && opt.currentPriceINR > 0 && !isAmazonSearch;
+                        return (
+                          <tr key={opt.dealId} className={opt.isLowestPrice ? 'bg-emerald-950/15' : ''}>
+                            <td className="py-2.5 pr-3">
+                              <div className="font-semibold text-white">
+                                {opt.title}{' '}
+                                {opt.isLowestPrice && <span className="text-emerald-400 text-[11px] font-bold">· Best Net Price</span>}
+                              </div>
+                              <div className="text-[11px] text-slate-400">
+                                {opt.merchant} · {opt.affiliateNetwork} · {opt.disclosure || '#Ad'}
+                              </div>
+                            </td>
+                            <td className="py-2.5 px-3 text-right font-mono tabular-nums text-slate-300">
+                              {hasPrice ? `₹${Number(opt.currentPriceINR).toLocaleString('en-IN')}` : 'Live on Amazon.in'}
+                            </td>
+                            <td className="py-2.5 px-3 font-mono text-slate-300">
+                              {opt.couponCode ? (
+                                <button
+                                  type="button"
+                                  onClick={() => handleCopyCode(opt.couponCode)}
+                                  className="text-cyan-300 hover:text-cyan-200 underline decoration-dotted"
+                                >
+                                  {opt.couponCode} (-₹{Number(opt.couponSavingsINR || 0).toLocaleString('en-IN')})
+                                </button>
+                              ) : '—'}
+                            </td>
+                            <td className="py-2.5 px-3 text-right font-mono tabular-nums font-bold text-white">
+                              {hasPrice ? `₹${Number(opt.effectivePriceINR || opt.currentPriceINR).toLocaleString('en-IN')}` : 'Live Price & Prime'}
+                            </td>
+                            <td className="py-2.5 pl-3 text-right whitespace-nowrap">
+                              <a
+                                href={opt.trackingRedirectUrl}
+                                target="_blank"
+                                rel="sponsored nofollow noopener"
+                                className={`inline-flex items-center gap-1 px-3 py-1.5 rounded-lg font-bold text-[11px] ${
+                                  isAmazonSearch
+                                    ? 'bg-amber-400 hover:bg-amber-300 text-slate-950'
+                                    : 'bg-cyan-500 hover:bg-cyan-400 text-slate-950'
+                                }`}
+                              >
+                                <span>
+                                  {opt.ctaLabel || (isAmazonSearch ? "Check Today's Live Price & Prime Coupons on Amazon.in →" : 'Buy at Store')}
+                                </span>
+                                {!opt.ctaLabel && <ExternalLink className="w-3 h-3" />}
+                              </a>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* Name Your Fair Price Alert Watch */}
+              <form onSubmit={handleFairPriceAlertSubmit} className="pt-3 border-t border-slate-800/80 flex flex-wrap items-center gap-2.5 text-xs">
+                <span className="font-semibold text-slate-200">Name Your Fair Price Alert:</span>
+                <input
+                  type="number"
+                  min={1}
+                  required
+                  value={fpAlertPrice}
+                  onChange={(e) => setFpAlertPrice(e.target.value)}
+                  placeholder="Target ₹"
+                  className="w-28 px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-white font-mono tabular-nums"
+                />
+                <input
+                  type="email"
+                  required
+                  value={fpAlertEmail}
+                  onChange={(e) => setFpAlertEmail(e.target.value)}
+                  placeholder="you@example.com"
+                  className="flex-1 min-w-[200px] px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-white"
+                />
+                <label className="flex items-center gap-1.5 text-slate-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={fpAlertConsent}
+                    onChange={(e) => setFpAlertConsent(e.target.checked)}
+                    required
+                    className="rounded bg-slate-950 border-slate-700 text-cyan-500"
+                  />
+                  <span>Opt-in email alerts (DPDP 2023)</span>
+                </label>
+                <button
+                  type="submit"
+                  disabled={fpAlertSubmitting}
+                  className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold disabled:opacity-50"
+                >
+                  {fpAlertSubmitting ? 'Saving...' : 'Notify Me on Drop'}
+                </button>
+              </form>
+              {fpAlertFeedback && (
+                <div className={`text-xs ${fpAlertFeedback.ok ? 'text-emerald-400' : 'text-amber-300'}`}>
+                  {fpAlertFeedback.text}
+                </div>
+              )}
+            </div>
+          )}
+        </section>
+
+        {comparisons.length > 0 && (
+          <section className="mb-8 rounded-2xl bg-slate-900/70 border border-slate-800 p-4 sm:p-5">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+              <h2 className="text-sm font-bold text-white tracking-tight">
+                Head-to-Head Price &amp; Store Comparisons (/vs/)
+              </h2>
+              <span className="text-[11px] font-mono text-slate-400">{comparisons.length} live matchups</span>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5">
+              {comparisons.map((cmp) => (
+                <a
+                  key={cmp.comparisonSlug}
+                  href={`/vs/${encodeURIComponent(cmp.comparisonSlug)}`}
+                  className="px-3.5 py-2.5 rounded-xl bg-slate-950/70 border border-slate-800 hover:border-cyan-500/50 text-xs text-slate-200 hover:text-cyan-300 transition flex items-center justify-between gap-2"
+                >
+                  <span className="truncate font-medium">{cmp.title}</span>
+                  <ChevronRight className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                </a>
+              ))}
+            </div>
+          </section>
+        )}
 
         {/* Primary Filtering Tabs: "All Offers" | "Product Deals" | "Coupons & Promo Codes" */}
         <div className="flex items-center justify-center gap-2.5 sm:gap-3 mb-6 sm:mb-8 overflow-x-auto pb-2 no-scrollbar">
@@ -774,7 +1105,7 @@ export const PublicDealsPage: React.FC = () => {
                       </span>
                     </div>
 
-                    {/* Honest Price Presentation (COUPON vs PRODUCT) */}
+                    {/* Honest Price Presentation (COUPON vs AMAZON LIVE vs PRODUCT) */}
                     {isCoupon ? (
                       /* DEDICATED COUPON/VOUCHER PRESENTATION (NEVER ₹0 or NaN!) */
                       <div className="mt-4 pt-3 border-t border-slate-800/80 flex items-center justify-between flex-wrap gap-2">
@@ -797,11 +1128,17 @@ export const PublicDealsPage: React.FC = () => {
                     ) : (
                       /* PRODUCT DEAL PRESENTATION WITH HONEST MRP STRIKETHROUGH */
                       <div className="mt-4 pt-3 border-t border-slate-800/80 flex items-baseline flex-wrap gap-2">
-                        <span className="text-2xl font-extrabold text-white">
-                          ₹{deal.currentPriceINR?.toLocaleString('en-IN')}
-                        </span>
+                        {isAmazonDeal(deal) && (!deal.currentPriceINR || deal.currentPriceINR <= 0) ? (
+                          <span className="text-lg font-extrabold text-amber-300">
+                            Live Price on Amazon.in
+                          </span>
+                        ) : (
+                          <span className="text-2xl font-extrabold text-white">
+                            ₹{deal.currentPriceINR?.toLocaleString('en-IN')}
+                          </span>
+                        )}
 
-                        {deal.referencePriceINR && deal.referencePriceINR > (deal.currentPriceINR || 0) && (
+                        {deal.referencePriceINR && deal.referencePriceINR > (deal.currentPriceINR || 0) && !isAmazonDeal(deal) && (
                           <span className="text-xs text-slate-500 line-through">
                             MRP ₹{deal.referencePriceINR.toLocaleString('en-IN')}
                           </span>
@@ -927,22 +1264,42 @@ export const PublicDealsPage: React.FC = () => {
                       )}
                     </div>
 
-                    {/* Outbound Redemption CTA */}
-                    <a
-                      href={targetUrl}
-                      target="_blank"
-                      rel="sponsored nofollow"
-                      className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl font-bold text-xs shadow-md transition active:scale-95 ${
-                        isCoupon
-                          ? 'bg-purple-500 hover:bg-purple-400 text-white shadow-purple-500/20'
-                          : (deal.trackingUrl || deal.affiliateVerified
-                              ? 'bg-cyan-500 hover:bg-cyan-400 text-slate-950 shadow-cyan-500/10'
-                              : 'bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700')
-                      }`}
-                    >
-                      <span>{isCoupon ? 'Redeem Coupon' : 'View Deal'}</span>
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
+                    {/* Outbound Redemption CTAs (Dual-Rail) */}
+                    <div className="flex flex-col items-end gap-1.5">
+                      <a
+                        href={targetUrl}
+                        target="_blank"
+                        rel="sponsored nofollow"
+                        className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl font-bold text-xs shadow-md transition active:scale-95 ${
+                          isCoupon
+                            ? 'bg-purple-500 hover:bg-purple-400 text-white shadow-purple-500/20'
+                            : isAmazonDeal(deal)
+                              ? 'bg-amber-400 hover:bg-amber-300 text-slate-950 shadow-amber-500/10'
+                              : (deal.trackingUrl || deal.affiliateVerified
+                                  ? 'bg-cyan-500 hover:bg-cyan-400 text-slate-950 shadow-cyan-500/10'
+                                  : 'bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700')
+                        }`}
+                      >
+                        <span>
+                          {isCoupon
+                            ? 'Redeem Coupon'
+                            : isAmazonDeal(deal)
+                              ? "Check Today's Live Price & Prime Coupons on Amazon.in →"
+                              : 'View Deal'}
+                        </span>
+                        {!isAmazonDeal(deal) && <ExternalLink className="w-3 h-3" />}
+                      </a>
+                      {!isCoupon && !isAmazonDeal(deal) && (
+                        <a
+                          href={`/api/v1/public/amazon-redirect?q=${encodeURIComponent(deal.title)}&dealId=${encodeURIComponent(deal.id)}`}
+                          target="_blank"
+                          rel="sponsored nofollow noopener"
+                          className="text-[11px] font-semibold text-amber-300 hover:text-amber-200 underline decoration-dotted"
+                        >
+                          Check Today&apos;s Live Price &amp; Prime Coupons on Amazon.in → (#Ad)
+                        </a>
+                      )}
+                    </div>
                   </div>
                 </div>
               );
@@ -1239,19 +1596,37 @@ export const PublicDealsPage: React.FC = () => {
                   </button>
                 </div>
 
-                <a
-                  href={`/api/v1/public/deals/${encodeURIComponent(inspectedDeal.id)}/redirect`}
-                  target="_blank"
-                  rel="sponsored nofollow"
-                  className={`inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-bold text-xs shadow-lg transition active:scale-95 ${
-                    isCouponDeal(inspectedDeal)
-                      ? 'bg-purple-500 hover:bg-purple-400 text-white shadow-purple-500/20'
-                      : 'bg-cyan-500 hover:bg-cyan-400 text-slate-950 shadow-cyan-500/20'
-                  }`}
-                >
-                  <span>Visit {inspectedDeal.merchant} &amp; Redeem</span>
-                  <ExternalLink className="w-4 h-4" />
-                </a>
+                <div className="flex flex-wrap items-center gap-2">
+                  {!isCouponDeal(inspectedDeal) && !isAmazonDeal(inspectedDeal) && (
+                    <a
+                      href={`/api/v1/public/amazon-redirect?q=${encodeURIComponent(inspectedDeal.title)}&dealId=${encodeURIComponent(inspectedDeal.id)}`}
+                      target="_blank"
+                      rel="sponsored nofollow noopener"
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl font-bold text-xs bg-amber-400 hover:bg-amber-300 text-slate-950 transition"
+                    >
+                      <span>Check Today&apos;s Live Price &amp; Prime Coupons on Amazon.in → (#Ad)</span>
+                    </a>
+                  )}
+                  <a
+                    href={`/api/v1/public/deals/${encodeURIComponent(inspectedDeal.id)}/redirect`}
+                    target="_blank"
+                    rel="sponsored nofollow"
+                    className={`inline-flex items-center gap-2 px-5 py-2.5 rounded-xl font-bold text-xs shadow-lg transition active:scale-95 ${
+                      isCouponDeal(inspectedDeal)
+                        ? 'bg-purple-500 hover:bg-purple-400 text-white shadow-purple-500/20'
+                        : isAmazonDeal(inspectedDeal)
+                          ? 'bg-amber-400 hover:bg-amber-300 text-slate-950 shadow-amber-500/20'
+                          : 'bg-cyan-500 hover:bg-cyan-400 text-slate-950 shadow-cyan-500/20'
+                    }`}
+                  >
+                    <span>
+                      {isAmazonDeal(inspectedDeal)
+                        ? "Check Today's Live Price & Prime Coupons on Amazon.in →"
+                        : `Visit ${inspectedDeal.merchant} & Redeem`}
+                    </span>
+                    {!isAmazonDeal(inspectedDeal) && <ExternalLink className="w-4 h-4" />}
+                  </a>
+                </div>
               </div>
             </div>
           </div>

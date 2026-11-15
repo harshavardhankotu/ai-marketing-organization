@@ -16,12 +16,19 @@
  */
 
 import { getDb } from '../db/client.js';
-import { isProduction } from '../config/env.js';
+import { isProduction, getTrustedPublicSiteUrl } from '../config/env.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { validateOwnerEnvFacts } from '../config/owner-env-intake.js';
 import { ReplyDeskService, ReplyDraft } from './reply-desk.js';
 import { DirectCommercialOfferPage } from './direct-offer-page.js';
 import { OwnerAuthService } from '../auth/owner-auth.js';
+import { SiteAuditService } from '../tools/site-audit/site-audit-service.js';
+import {
+  AutonomousSystemDoctor,
+  isDisqualifiedOutreachTarget,
+  OutreachAutopilotHealth
+} from '../automation/autonomous-system-doctor.js';
+import { isValidReachableEmail } from '../tools/site-audit/site-audit-scanner.js';
 
 export interface OwnerDigestMetrics {
   visits: number | 'UNKNOWN';
@@ -128,6 +135,28 @@ export interface ArosControlCenterSummary {
   };
   financialAndArbitrageRadar?: any;
   integrationCapabilities?: any;
+  geminiHealth?: {
+    state: 'OK' | 'BLOCKED_KEY_INVALID' | 'BLOCKED_NO_KEY' | 'CONFIGURED';
+    configuredKeysCount: number;
+    renderIsolated: boolean;
+    lastFailureReason?: string;
+    lastUpdatedAt?: string;
+  };
+  telegramSyndication?: 'LIVE_ENABLED' | 'READY_AWAITING_BOT_TOKEN';
+  evolutionaryAllocatorSummary?: {
+    risingWinnersCount: number;
+    freshExplorationCount: number;
+    staleRotatedOutCount: number;
+    topExpectedProfitPer100VisitorsINR: number;
+  };
+  systemDoctor?: {
+    lastHealRunAt: string | null;
+    repairedPricesCount: number;
+    reroutedDraftsCount: number;
+    disqualifiedEnterpriseCount: number;
+    openAnomaliesCount: number;
+    funnelDiagnosis: any;
+  };
   commercialPerformance: {
     visitors: { value: number | null; sourceTag: 'MEASURED' | 'UNAVAILABLE' };
     outboundClicks: { value: number | null; sourceTag: 'MEASURED' | 'UNAVAILABLE' };
@@ -165,6 +194,20 @@ export interface ArosControlCenterSummary {
   };
 }
 
+export interface TopHighTriggerProspectItem {
+  domain: string;
+  businessName: string;
+  defectCount: number;
+  prospectTriggerScore: number;
+  triggerTags: string[];
+  previewUrl: string;
+  checkoutUrl: string;
+  email: string | null;
+  phone: string | null;
+  mailtoUrl: string | null;
+  whatsappShareUrl: string;
+}
+
 export interface OwnerTodayDigest {
   date: string;
   yesterdayDate: string;
@@ -173,6 +216,7 @@ export interface OwnerTodayDigest {
   proposalDrafts: ProposalDigestItem[];
   outreachRows: OutreachDigestItem[];
   pendingOutreachDrafts: PendingOutreachDraftItem[];
+  topHighTriggerProspects?: TopHighTriggerProspectItem[];
   inquiries: InquiryDigestItem[];
   topPainPoints: PainPointItem[];
   yesterdayMetrics: OwnerDigestMetrics;
@@ -186,6 +230,7 @@ export interface OwnerTodayDigest {
     reason: string;
     createdAt: string;
   }>;
+  autopilotStatus?: OutreachAutopilotHealth;
   arosControlCenter?: ArosControlCenterSummary;
 }
 
@@ -549,6 +594,33 @@ export class OwnerDigestService {
       } catch {}
     }
 
+    const topHighTriggerProspects = this.scoreAndRankProspectAudits(
+      (() => {
+        try {
+          return db.prepare(`SELECT domain, target_url, business_name, checklist_json FROM site_audits WHERE status = 'COMPLETED' ORDER BY updated_at DESC LIMIT 30`).all() as any[];
+        } catch {
+          return [];
+        }
+      })(),
+      (() => {
+        try {
+          return db.prepare(`SELECT business_name, prospect_business_name, COALESCE(email, prospect_email) as email, COALESCE(phone, prospect_phone) as phone, COALESCE(website_url, prospect_website) as website_url FROM platform_prospects LIMIT 60`).all() as any[];
+        } catch {
+          return [];
+        }
+      })(),
+      (() => {
+        try {
+          return db.prepare(`SELECT prospect_name, prospect_business_name, prospect_email, prospect_phone, prospect_website FROM outbound_contacts WHERE is_opted_out = 0 AND is_suppressed = 0 LIMIT 60`).all() as any[];
+        } catch {
+          return [];
+        }
+      })(),
+      5
+    );
+
+    const autopilotStatus = AutonomousSystemDoctor.getInstance().getOutreachAutopilotHealth();
+
     return {
       date: todayStr,
       yesterdayDate: yesterdayStr,
@@ -557,11 +629,94 @@ export class OwnerDigestService {
       proposalDrafts,
       outreachRows,
       pendingOutreachDrafts,
+      topHighTriggerProspects,
+      autopilotStatus,
       inquiries,
       topPainPoints,
       yesterdayMetrics: { visits, clicks, leads, payments },
       nextAction
     };
+  }
+
+  private scoreAndRankProspectAudits(
+    audits: any[],
+    prospects: any[],
+    contacts: any[],
+    limit: number = 5
+  ): TopHighTriggerProspectItem[] {
+    const siteUrl = getTrustedPublicSiteUrl().replace(/\/$/, '');
+    const auditService = SiteAuditService.getInstance();
+    const doctor = AutonomousSystemDoctor.getInstance();
+
+    return (audits || [])
+      .filter((a: any) => !isDisqualifiedOutreachTarget(a.domain) && !isDisqualifiedOutreachTarget(a.business_name))
+      .map((a: any) => {
+        const cleanDomain = String(a.domain || '').toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
+        const parsed = auditService.parseAuditChecklistPayload(a.checklist_json);
+        const items = Array.isArray(parsed.items) ? parsed.items : [];
+        const signals = parsed.prospectSignals;
+        const defectCount = items.filter((it: any) => {
+          const st = String(it?.status || it?.severity || '').toUpperCase();
+          return st === 'FAIL' || st === 'CRITICAL' || st === 'WARNING' || st === 'MISSING' || st === 'ISSUE' || it?.passed === false;
+        }).length || items.length;
+
+        const tok = auditService.generateAuditPreviewToken(cleanDomain);
+        const previewUrl = `${siteUrl}/audit/${encodeURIComponent(cleanDomain)}?token=${encodeURIComponent(tok)}`;
+        const targetUrl = a.target_url || `https://${cleanDomain}`;
+        const checkoutUrl = `${siteUrl}/tools/site-audit?url=${encodeURIComponent(targetUrl)}`;
+
+        const matchedProspect = (prospects || []).find((p: any) => {
+          const w = String(p.website_url || '').toLowerCase();
+          const n = String(p.prospect_business_name || p.business_name || '').toLowerCase();
+          return (cleanDomain && w.includes(cleanDomain)) || (a.business_name && n.includes(String(a.business_name).toLowerCase()));
+        });
+        const matchedContact = (contacts || []).find((ct: any) => {
+          const w = String(ct.prospect_website || ct.prospect_business_name || '').toLowerCase();
+          const m = String(ct.prospect_email || '').toLowerCase();
+          return (cleanDomain && (w.includes(cleanDomain) || m.endsWith(`@${cleanDomain}`)));
+        });
+
+        const rawEmail = String(matchedProspect?.email || matchedContact?.prospect_email || signals?.discoveredEmails?.[0] || '').trim();
+        const resolvedEmail = isValidReachableEmail(rawEmail) ? rawEmail : null;
+        const resolvedPhone = String(matchedProspect?.phone || matchedContact?.prospect_phone || '').trim() || null;
+        const prospectTriggerScore = typeof signals?.prospectTriggerScore === 'number'
+          ? signals.prospectTriggerScore
+          : ((resolvedEmail ? 2 : 0) + (defectCount >= 2 ? 1 : 0));
+        const triggerTags: string[] = Array.isArray(signals?.triggerTags) ? [...signals.triggerTags] : [];
+        if (resolvedEmail && !triggerTags.includes('REACHABLE_DECISION_MAKER_EMAIL')) {
+          triggerTags.push('REACHABLE_DECISION_MAKER_EMAIL');
+        }
+
+        const actionUrls = doctor.buildOutreachActionUrls({
+          businessName: a.business_name || cleanDomain,
+          domain: cleanDomain,
+          email: resolvedEmail,
+          phone: resolvedPhone,
+          previewUrl,
+          checkoutUrl,
+          defectCount
+        });
+
+        return {
+          domain: cleanDomain,
+          businessName: a.business_name || cleanDomain,
+          defectCount,
+          prospectTriggerScore,
+          triggerTags,
+          previewUrl,
+          checkoutUrl,
+          email: resolvedEmail,
+          phone: resolvedPhone,
+          mailtoUrl: actionUrls.mailtoUrl,
+          whatsappShareUrl: actionUrls.whatsappShareUrl
+        };
+      })
+      .filter((item) => Boolean(item.email) && item.prospectTriggerScore > 0)
+      .sort((a, b) =>
+        (b.prospectTriggerScore - a.prospectTriggerScore) ||
+        (b.defectCount - a.defectCount)
+      )
+      .slice(0, limit);
   }
 
   /**
@@ -811,6 +966,10 @@ export class OwnerDigestService {
     let rejectionReasons: Record<string, number> = {};
     let withVerifiedCommissionRateCount = 0;
     const missingPayoutBreakdown: Record<string, number> = {};
+    let risingWinnersCount = 0;
+    let freshExplorationCount = 0;
+    let staleRotatedOutCount = 0;
+    let topExpectedProfitPer100VisitorsINR = 0;
     try {
       const dealEvRows = await this.queryCcAll<any>(
         'public_deals',
@@ -823,6 +982,17 @@ export class OwnerDigestService {
         }
         try {
           const ev = JSON.parse(dr.evidence_json || '{}');
+          if (ev?.evolutionStatus === 'STALE_ROTATED_OUT' || ev?.catalogSlot === 'ROTATED_OUT_STALE' || Number(ev?.staleDecayPenalty || 0) > 0) {
+            staleRotatedOutCount++;
+          } else if (ev?.evolutionStatus === 'RISING_WINNER') {
+            risingWinnersCount++;
+          } else {
+            freshExplorationCount++;
+          }
+          const ev100 = Number(ev?.expectedProfitPer100VisitorsINR || 0);
+          if (Number.isFinite(ev100) && ev100 > topExpectedProfitPer100VisitorsINR) {
+            topExpectedProfitPer100VisitorsINR = Number(ev100.toFixed(2));
+          }
           if (
             Number(ev?.verifiedCommissionRatePercent) > 0 ||
             Number(ev?.commissionRatePercent) > 0 ||
@@ -920,6 +1090,12 @@ export class OwnerDigestService {
       }
     } catch {}
 
+    let geminiHealth: ArosControlCenterSummary['geminiHealth'] = undefined;
+    try {
+      const { GeminiProvider } = await import('../ai/gemini-provider.js');
+      geminiHealth = GeminiProvider.getHealthStatus();
+    } catch {}
+
     return {
       generatedAt: new Date().toISOString(),
       quarantinedTestRecordsCount,
@@ -964,6 +1140,38 @@ export class OwnerDigestService {
       },
       financialAndArbitrageRadar,
       integrationCapabilities,
+      geminiHealth,
+      telegramSyndication:
+        process.env.TELEGRAM_ENABLED !== 'false' &&
+        Boolean(process.env.TELEGRAM_BOT_TOKEN?.trim()) &&
+        Boolean(process.env.TELEGRAM_CHANNEL_ID?.trim())
+          ? 'LIVE_ENABLED'
+          : 'READY_AWAITING_BOT_TOKEN',
+      evolutionaryAllocatorSummary: {
+        risingWinnersCount,
+        freshExplorationCount,
+        staleRotatedOutCount,
+        topExpectedProfitPer100VisitorsINR
+      },
+      systemDoctor: await (async () => {
+        try {
+          const { AutonomousSystemDoctor } = await import('../automation/autonomous-system-doctor.js');
+          const doctor = AutonomousSystemDoctor.getInstance();
+          const last = doctor.getLastReport();
+          const funnelDiagnosis = last?.funnelDiagnosis || await doctor.diagnoseFunnelLeaks({ skipLlm: true });
+          const openRow = await this.queryCcOne<any>('mistakes_board', `SELECT COUNT(*) as cnt FROM mistakes_board WHERE status = 'OPEN'`);
+          return {
+            lastHealRunAt: last?.completedAt || null,
+            repairedPricesCount: last?.priceRepair?.repairedCount ?? 0,
+            reroutedDraftsCount: last?.outreachRepair?.reroutedToEmailCount ?? 0,
+            disqualifiedEnterpriseCount: last?.outreachRepair?.disqualifiedEnterpriseCount ?? 0,
+            openAnomaliesCount: Number(openRow?.cnt || 0),
+            funnelDiagnosis
+          };
+        } catch {
+          return undefined;
+        }
+      })(),
       commercialPerformance: {
         visitors: { value: visRow ? Number(visRow.c || 0) : null, sourceTag: visRow ? 'MEASURED' : 'UNAVAILABLE' },
         outboundClicks: { value: clkRow ? Number(clkRow.c || 0) : null, sourceTag: clkRow ? 'MEASURED' : 'UNAVAILABLE' },
@@ -1410,6 +1618,14 @@ export class OwnerDigestService {
 
     const escalations = await this.getEscalationsAsync();
 
+    const [prodAudits, prodProspects, prodContacts] = await Promise.all([
+      this.queryCcAll<any>('site_audits', `SELECT domain, target_url, business_name, checklist_json FROM site_audits WHERE status = 'COMPLETED' ORDER BY updated_at DESC LIMIT 30`),
+      this.queryCcAll<any>('platform_prospects', `SELECT business_name, prospect_business_name, COALESCE(email, prospect_email) as email, COALESCE(phone, prospect_phone) as phone, COALESCE(website_url, prospect_website) as website_url FROM platform_prospects LIMIT 60`),
+      this.queryCcAll<any>('outbound_contacts', `SELECT prospect_name, prospect_business_name, prospect_email, prospect_phone, prospect_website FROM outbound_contacts WHERE is_opted_out = 0 AND is_suppressed = 0 LIMIT 60`)
+    ]);
+    const topHighTriggerProspects = this.scoreAndRankProspectAudits(prodAudits, prodProspects, prodContacts, 5);
+    const autopilotStatus = AutonomousSystemDoctor.getInstance().getOutreachAutopilotHealth();
+
     return {
       date: todayStr,
       yesterdayDate: yesterdayStr,
@@ -1418,6 +1634,8 @@ export class OwnerDigestService {
       proposalDrafts,
       outreachRows,
       pendingOutreachDrafts,
+      topHighTriggerProspects,
+      autopilotStatus,
       inquiries,
       topPainPoints,
       yesterdayMetrics: { visits, clicks, leads, payments },
@@ -1692,6 +1910,12 @@ export class OwnerDigestService {
     <span style="font-size:0.95rem;color:#f8fafc;display:block;margin-top:0.25rem;">${digest.nextAction}</span>
   </div>
 
+  ${digest.autopilotStatus?.paused ? `
+  <div class="banner" style="background:rgba(239, 68, 68, 0.15);border-color:#ef4444;color:#fca5a5;">
+    <strong style="font-size:1.05rem;">🛑 OUTREACH AUTOPILOT PAUSED (${digest.autopilotStatus.autopilotPausedReason || 'BOUNCE_OR_COMPLAINT_THRESHOLD'}):</strong><br>
+    <span style="font-size:0.9rem;color:#fee2e2;display:block;margin-top:0.25rem;">Bounce rate: ${(digest.autopilotStatus.bounceRate * 100).toFixed(1)}% (${digest.autopilotStatus.bounceCount} bounces), Spam/Unsubscribe complaints: ${digest.autopilotStatus.complaintOrUnsubCount}. All autonomous sends halted until reviewed.</span>
+  </div>` : ''}
+
   <div class="card" style="border: 1px solid #0284c7;">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;flex-wrap:wrap;gap:0.5rem;">
       <h2 style="margin:0;color:#38bdf8;">📊 Commercial Reality &amp; Operations Centre</h2>
@@ -1751,6 +1975,32 @@ export class OwnerDigestService {
       The autonomous discovery engine researched these verified Indian clinics and prepared draft personalized outreach. Under our revenue-integrity rules, no messages are sent until you explicitly review and dispatch them.
     </p>
     ${pendingDraftsHtml}
+  </div>
+
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;flex-wrap:wrap;gap:0.5rem;">
+      <h2 style="margin:0;">🎯 Top 5 Highest-Trigger Reachable SMBs (Ad-Pixel Prospect Hunter)</h2>
+      <span style="background:rgba(16, 185, 129, 0.15);color:#34d399;border:1px solid rgba(16, 185, 129, 0.3);padding:0.25rem 0.6rem;border-radius:6px;font-size:0.78rem;font-weight:700;">NATIONAL CHAINS EXCLUDED</span>
+    </div>
+    ${(digest.topHighTriggerProspects || []).length === 0
+      ? '<p style="color:#94a3b8;">No completed SMB trigger audits queued yet.</p>'
+      : (digest.topHighTriggerProspects || []).map((p, idx) => `
+        <div style="background:#1e293b;border:1px solid #334155;border-radius:8px;padding:0.9rem;margin-bottom:0.65rem;">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.4rem;">
+            <div>
+              <strong style="color:#f8fafc;">#${idx + 1} ${p.businessName}</strong>
+              <span style="color:#94a3b8;font-size:0.82rem;margin-left:0.4rem;">(${p.domain})</span>
+            </div>
+            <span style="background:#0f172a;color:#34d399;border:1px solid #10b981;font-size:0.78rem;font-weight:700;padding:0.15rem 0.5rem;border-radius:4px;">Trigger Score: ${p.prospectTriggerScore} • ${p.defectCount} Issues</span>
+          </div>
+          ${p.triggerTags.length > 0 ? `<div style="display:flex;gap:0.35rem;flex-wrap:wrap;margin-bottom:0.55rem;">${p.triggerTags.map(t => `<span style="background:#0b1120;color:#38bdf8;font-size:0.72rem;padding:0.1rem 0.45rem;border-radius:4px;border:1px solid #1e293b;">${t}</span>`).join('')}</div>` : ''}
+          <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+            <a href="${p.previewUrl}" target="_blank" rel="noopener" style="display:inline-block;background:#0284c7;color:#fff;text-decoration:none;font-weight:600;padding:0.38rem 0.75rem;border-radius:6px;font-size:0.82rem;">Review Private Audit</a>
+            ${p.mailtoUrl ? `<a href="${p.mailtoUrl}" style="display:inline-block;background:#6366f1;color:#fff;text-decoration:none;font-weight:600;padding:0.38rem 0.75rem;border-radius:6px;font-size:0.82rem;">1-Click Email (${p.email})</a>` : ''}
+            <a href="${p.whatsappShareUrl}" target="_blank" rel="noopener" style="display:inline-block;background:#10b981;color:#fff;text-decoration:none;font-weight:600;padding:0.38rem 0.75rem;border-radius:6px;font-size:0.82rem;">Click-to-Chat WhatsApp</a>
+          </div>
+        </div>
+      `).join('')}
   </div>
 
   <div class="card">

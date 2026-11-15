@@ -292,7 +292,15 @@ export class CommercialLearningEngine {
 
     const eventId = event.eventId || event.sourceClickId || `evt_${Date.now()}_${randomUUID().substring(0, 10)}`;
     const isBot = event.userAgent ? isBotTraffic(event.userAgent) : false;
-    const isDiagnostic = Boolean(event.isDiagnostic || event.eventType === 'BOT_OR_INTERNAL_CLICK' || isBot);
+    const rawMetaText = `${event.notes || ''} ${JSON.stringify(event.metadata || {})}`;
+    const isTestOrProbe = Boolean(
+      event.metadata?.isTest === true ||
+      event.metadata?.is_test === true ||
+      event.metadata?.is_test === 1 ||
+      event.metadata?.diagnosticProbe === true ||
+      rawMetaText.includes('X-Diagnostic-Probe')
+    );
+    const isDiagnostic = Boolean(event.isDiagnostic || event.eventType === 'BOT_OR_INTERNAL_CLICK' || isBot || isTestOrProbe);
     const isHumanInteraction = [
       'VERIFIED_HUMAN_VISIT',
       'SITEFIX_COMPLETED_SCAN',
@@ -446,6 +454,45 @@ export class CommercialLearningEngine {
     }
 
     return reward;
+  }
+
+  /**
+   * Incorporates statistically evaluated or active A/B test winner signals from ExperimentEngine
+   * into sector Bayesian bandit weights (non-zero conversions boost alpha and trigger weight recomputation).
+   */
+  public recordExperimentSignal(params: {
+    experimentId: string;
+    sectorCode: SectorCode;
+    winner: 'BASELINE' | 'TREATMENT' | 'INCONCLUSIVE' | null;
+    conversionsCount: number;
+    isSignificant: boolean;
+    isTest?: boolean;
+  }): void {
+    try {
+      if (params.isTest) return;
+      this.ensureBanditInitialized();
+      const state = this.sectorBanditStates.get(params.sectorCode);
+      if (!state) return;
+
+      const convBoost = Math.max(0, Math.min(3, Number(params.conversionsCount || 0) * 0.15));
+      if (convBoost <= 0 && !params.isSignificant) return;
+
+      if (params.isSignificant && (params.winner === 'TREATMENT' || params.winner === 'BASELINE')) {
+        state.alpha += Math.max(0.25, convBoost);
+      } else if (convBoost > 0) {
+        state.alpha += convBoost * 0.5;
+      }
+      state.lastUpdated = new Date().toISOString();
+      this.recomputeAllocationWeights();
+
+      try {
+        getDb().prepare(`
+          UPDATE sector_bandit_states
+          SET alpha = ?, allocation_weight = ?, updated_at = datetime('now')
+          WHERE sector_code = ?
+        `).run(state.alpha, state.allocationWeight, params.sectorCode);
+      } catch {}
+    } catch {}
   }
 
   /**

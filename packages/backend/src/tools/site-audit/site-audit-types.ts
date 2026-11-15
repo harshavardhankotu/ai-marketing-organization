@@ -82,6 +82,21 @@ export interface SiteAuditPageSpeedData {
   }>;
 }
 
+export interface ProspectTriggerSignals {
+  hasPaidAdPixel: boolean;
+  adPixelVendors: string[];
+  hasConversionLeak: boolean;
+  hasReachableEmail: boolean;
+  discoveredEmails: string[];
+  hasTechnicalSeoDefects: boolean;
+  defectCount: number;
+  isNationalChainOrDirectory: boolean;
+  isRegulatedHealthcare?: boolean;
+  eligibleForOutreach?: boolean;
+  prospectTriggerScore: number;
+  triggerTags: string[];
+}
+
 export interface SiteAuditResult {
   auditId: string;
   url: string;
@@ -93,6 +108,7 @@ export interface SiteAuditResult {
   metrics: SiteAuditMetrics;
   preview: SiteAuditPreview;
   disclosures: SiteAuditDisclosures;
+  prospectSignals?: ProspectTriggerSignals;
   pageSpeed?: SiteAuditPageSpeedData;
   businessName?: string;
   domain?: string;
@@ -122,6 +138,8 @@ export interface FixPackDeliverable {
   openGraphSnippet: string;
   twitterCardSnippet: string;
   schemaJsonLdSnippet: string;
+  robotsTxtSnippet?: string;
+  sitemapXmlSnippet?: string;
   canonicalUrlRecommendation: string;
   checklistMarkdown: string;
   recommendedOwnerAdditions?: string[];

@@ -24,6 +24,15 @@ export class TelegramBotAdapter {
     return TelegramBotAdapter.instance;
   }
 
+  public getSyndicationStatus(): 'LIVE_ENABLED' | 'READY_AWAITING_BOT_TOKEN' {
+    const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
+    const channelId = process.env.TELEGRAM_CHANNEL_ID?.trim();
+    const explicitlyDisabled = process.env.TELEGRAM_ENABLED === 'false';
+    return !explicitlyDisabled && Boolean(token && channelId)
+      ? 'LIVE_ENABLED'
+      : 'READY_AWAITING_BOT_TOKEN';
+  }
+
   /**
    * Checks whether the Telegram owned channel is configured and enabled.
    * Stays strictly off until TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, and TELEGRAM_ENABLED=true are set by owner.
@@ -33,6 +42,41 @@ export class TelegramBotAdapter {
     const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
     const channelId = process.env.TELEGRAM_CHANNEL_ID?.trim();
     return Boolean(isEnabled && token && channelId);
+  }
+
+  /**
+   * Posts a newly verified price drop deal with tracked /redirect URL to Telegram when configured,
+   * otherwise reports READY_AWAITING_BOT_TOKEN cleanly without failing sync/discovery.
+   */
+  public async postVerifiedPriceDrop(options: {
+    dealId: string;
+    title: string;
+    currentPriceINR: number;
+    referencePriceINR?: number;
+    merchant: string;
+    trackedRedirectUrl: string;
+    fetchFn?: typeof fetch;
+  }): Promise<TelegramPostResult & { status: 'LIVE_ENABLED' | 'READY_AWAITING_BOT_TOKEN' }> {
+    const status = this.getSyndicationStatus();
+    if (status !== 'LIVE_ENABLED' || process.env.VITEST) {
+      return {
+        posted: false,
+        status,
+        reason: status === 'READY_AWAITING_BOT_TOKEN'
+          ? 'READY_AWAITING_BOT_TOKEN'
+          : 'TELEGRAM_POST_SKIPPED_TEST_ENV'
+      };
+    }
+    const savingsText = options.referencePriceINR && options.referencePriceINR > options.currentPriceINR
+      ? ` (MRP ₹${options.referencePriceINR.toLocaleString('en-IN')})`
+      : '';
+    const postRes = await this.postPublishedGuide({
+      guideTitle: `Verified Price Drop: ${options.title} at ₹${options.currentPriceINR.toLocaleString('en-IN')}${savingsText} (${options.merchant})`,
+      guideUrl: options.trackedRedirectUrl,
+      disclosureText: '#Ad Disclosure: Affiliate link tracked on merchant purchase.',
+      fetchFn: options.fetchFn
+    });
+    return { ...postRes, status };
   }
 
   /**

@@ -119,6 +119,8 @@ export interface IntentProcessingResult {
   clarificationOptions?: ResolvedCatalogOffer[];
   checkout?: DeskCheckoutPayload | null;
   resolvedOffer?: ResolvedCatalogOffer | null;
+  optionalOrderBump?: ResolvedCatalogOffer | null;
+  partnerCrossSells?: ResolvedCatalogOffer[];
   escalationCreated?: boolean;
   escalationId?: string | null;
 }
@@ -312,11 +314,34 @@ export class SalesConversationEngine {
           }
         }).catch(() => {});
 
+        const isSitefixLadderOffer =
+          resolvedOffer.idOrSlug === 'sitefix_core_499' || resolvedOffer.idOrSlug === 'sitefix_competitor_keyword_pack';
+        const optionalOrderBump: ResolvedCatalogOffer | null =
+          resolvedOffer.idOrSlug === 'sitefix_core_499'
+            ? {
+                kind: 'DIGITAL_PRODUCT',
+                lane: 'LANE_D_DIGITAL_PRODUCTS',
+                idOrSlug: 'sitefix_competitor_keyword_pack',
+                title: 'Competitor SEO Gap & 30-Day Search Console Action Pack',
+                merchantOrProvider: 'AI Marketing Organization (SiteFix)',
+                priceINR: 1999,
+                verifiedDiscountPercent: null,
+                availability: 'AVAILABLE_24X7',
+                offerPath: '/tools/site-audit?bump=sitefix_competitor_keyword_pack',
+                permittedClaims: [
+                  'Tier 2 Order Bump: Competitor keyword gap audit & 30-day Google Search Console indexing sprint'
+                ]
+              }
+            : null;
+        const partnerCrossSells = isSitefixLadderOffer ? await this.loadVerifiedPartnerCrossSells(2) : [];
+
         return {
           intent,
           confidence: 0.96,
           routedAction: 'SEND_PAYMENT_REQUEST',
-          responseTemplate: checkoutRes.responseTemplate,
+          responseTemplate: optionalOrderBump
+            ? `${checkoutRes.responseTemplate} Optional Tier 2 upgrade available: ${optionalOrderBump.title} (₹${optionalOrderBump.priceINR}) via ${optionalOrderBump.offerPath}.`
+            : checkoutRes.responseTemplate,
           suppressed: false,
           pipelineUpdated: true,
           pipelineStage: checkoutRes.pipelineStage,
@@ -326,6 +351,8 @@ export class SalesConversationEngine {
           conversationState: checkoutRes.conversationState,
           checkout: checkoutRes.checkout,
           resolvedOffer,
+          optionalOrderBump,
+          partnerCrossSells,
           escalationCreated: false,
           escalationId: null,
           details: checkoutRes.reason
@@ -1006,7 +1033,31 @@ export class SalesConversationEngine {
       return { resolvedOffer: null, clarificationNeeded: false, clarificationOptions: [] };
     }
 
-    // Explicit SiteFix context -> deterministic single match (Lane D)
+    // Explicit Tier 2 SiteFix Order Bump (sitefix_competitor_keyword_pack)
+    const tier2BumpOffer: ResolvedCatalogOffer = {
+      kind: 'DIGITAL_PRODUCT',
+      lane: 'LANE_D_DIGITAL_PRODUCTS',
+      idOrSlug: 'sitefix_competitor_keyword_pack',
+      title: 'Competitor SEO Gap & 30-Day Search Console Action Pack',
+      merchantOrProvider: 'AI Marketing Organization (SiteFix)',
+      priceINR: 1999,
+      verifiedDiscountPercent: null,
+      availability: 'AVAILABLE_24X7',
+      offerPath: '/tools/site-audit?bump=sitefix_competitor_keyword_pack',
+      permittedClaims: [
+        'Competitor SEO keyword gap benchmark & schema matrix',
+        '30-day Google Search Console indexing & CWV prioritization sprint (₹1,999 one-time)'
+      ],
+      score: 10
+    };
+    if (
+      contextRaw.toLowerCase() === 'sitefix_competitor_keyword_pack' ||
+      /\b(competitor_keyword_pack|competitor seo gap|search console action pack|order bump|1999|tier 2)\b/.test(combinedLower)
+    ) {
+      return { resolvedOffer: tier2BumpOffer, clarificationNeeded: false, clarificationOptions: [] };
+    }
+
+    // Explicit SiteFix context -> deterministic single match (Lane D, Tier 1 ₹499)
     const authoritativeFixpackPrice = getSiteAuditFixpackPriceINR();
     const sitefixOffer: ResolvedCatalogOffer = {
       kind: 'DIGITAL_PRODUCT',
@@ -1022,7 +1073,8 @@ export class SalesConversationEngine {
         'Live technical SEO, Schema.org & Core Web Vitals inspection',
         authoritativeFixpackPrice !== null
           ? `₹${authoritativeFixpackPrice} Core Technical Fix-Pack with Razorpay & Direct UPI claim verification`
-          : 'Core Technical Fix-Pack (price pending server configuration)'
+          : 'Core Technical Fix-Pack (price pending server configuration)',
+        'Optional Tier 2 Order Bump: Competitor SEO Gap & 30-Day Search Console Action Pack (₹1,999)'
       ],
       score: 10
     };
@@ -1367,6 +1419,33 @@ export class SalesConversationEngine {
   private async resolveCatalogContext(event: InboundMessageEvent): Promise<ResolvedCatalogOffer | null> {
     const detailed = await this.resolveCatalogContextDetailed(event);
     return detailed.resolvedOffer;
+  }
+
+  private async loadVerifiedPartnerCrossSells(limit: number = 2): Promise<ResolvedCatalogOffer[]> {
+    try {
+      const deals = await this.safeQueryAll<any>(
+        'public_deals',
+        `SELECT slug, canonical_slug, title, brand, merchant, category, current_price_inr, reference_price_inr, discount_percent, availability
+         FROM public_deals
+         WHERE product_verified = 1
+           AND affiliate_verified = 1
+           AND is_monetizable = 1
+           AND availability = 'IN_STOCK'
+           AND current_price_inr > 0
+         ORDER BY
+           CASE WHEN lower(coalesce(category, '') || ' ' || coalesce(title, '')) LIKE '%software%'
+                  OR lower(coalesce(category, '') || ' ' || coalesce(title, '')) LIKE '%host%'
+                  OR lower(coalesce(category, '') || ' ' || coalesce(title, '')) LIKE '%b2b%'
+                  OR lower(coalesce(category, '') || ' ' || coalesce(title, '')) LIKE '%workspace%'
+                THEN 0 ELSE 1 END,
+           discount_percent DESC
+         LIMIT ?`,
+        [Math.max(1, Math.min(5, limit))]
+      );
+      return deals.map(d => this.mapDealToResolvedOffer(d));
+    } catch {
+      return [];
+    }
   }
 
   private mapDealToResolvedOffer(d: any): ResolvedCatalogOffer {

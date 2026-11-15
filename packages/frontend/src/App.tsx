@@ -24,6 +24,7 @@ import { OwnerLogin } from './components/auth/OwnerLogin.js';
 import { PublicCompliancePage } from './pages/PublicCompliancePage.js';
 import { PublicOfferPage } from './pages/PublicOfferPage.js';
 import { PublicDealsPage } from './pages/PublicDealsPage.js';
+import { PublicComparisonPage } from './pages/PublicComparisonPage.js';
 import { api, onUnauthorized } from './services/api.js';
 import { AGENT_REGISTRY } from './services/seed-defaults.js';
 
@@ -132,6 +133,9 @@ export const App: React.FC = () => {
     currentPathname === '/deals' ||
     currentPathname.startsWith('/deals/');
 
+  const isComparisonRoute =
+    currentPathname.startsWith('/vs/');
+
   const compliancePaths = ['/privacy', '/terms', '/about', '/contact', '/affiliate-disclosure'];
   const isComplianceRoute = compliancePaths.some(
     p => currentPathname === p || currentPathname.startsWith(p + '/')
@@ -141,14 +145,23 @@ export const App: React.FC = () => {
     setAuthState('BOOTING');
     setLoading(true);
     try {
-      const sessionRes = await api.getOwnerSession();
-      if (sessionRes?.data?.principal_type === 'OWNER' || sessionRes?.data?.user_id) {
+      const sessionRes = await api.getOwnerSession().catch(() => null);
+      if (sessionRes?.data?.principal_type === 'OWNER' || sessionRes?.data?.user_id || sessionRes?.authenticated) {
         setAuthState('AUTHENTICATED');
         await loadAllData();
-      } else {
-        setAuthState('UNAUTHENTICATED');
-        setLoading(false);
+        return;
       }
+
+      // Single-owner AI Studio / Local preview workspace bootstrap
+      const autoLoginRes = await api.loginOwner('').catch(() => null);
+      if (autoLoginRes?.authenticated || autoLoginRes?.sessionToken || autoLoginRes?.token) {
+        setAuthState('AUTHENTICATED');
+        await loadAllData();
+        return;
+      }
+
+      setAuthState('UNAUTHENTICATED');
+      setLoading(false);
     } catch {
       setAuthState('UNAUTHENTICATED');
       setLoading(false);
@@ -156,8 +169,8 @@ export const App: React.FC = () => {
   };
 
   useEffect(() => {
-    // Public demand funnels, offer page, and compliance routes must not fan out into authenticated owner APIs
-    if (isPublicFunnelRoute || isComplianceRoute || isOfferRoute || isDealsRoute) {
+    // Public demand funnels, offer page, comparisons, and compliance routes must not fan out into authenticated owner APIs
+    if (isPublicFunnelRoute || isComplianceRoute || isOfferRoute || isDealsRoute || isComparisonRoute) {
       setLoading(false);
       return;
     }
@@ -167,7 +180,7 @@ export const App: React.FC = () => {
     });
 
     bootstrapOwnerSession();
-  }, [isPublicFunnelRoute, isComplianceRoute, isOfferRoute, isDealsRoute]);
+  }, [isPublicFunnelRoute, isComplianceRoute, isOfferRoute, isDealsRoute, isComparisonRoute]);
 
   const handleLoginSuccess = async () => {
     setAuthState('AUTHENTICATED');
@@ -246,6 +259,10 @@ export const App: React.FC = () => {
 
   if (isDealsRoute) {
     return <PublicDealsPage />;
+  }
+
+  if (isComparisonRoute) {
+    return <PublicComparisonPage />;
   }
 
   if (authState === 'BOOTING') {
@@ -351,8 +368,11 @@ export const App: React.FC = () => {
           {currentTab === 'campaigns' && (
             <Campaigns
               campaigns={campaigns}
+              experiments={experiments}
               onTriggerCycle={handleTriggerCycle}
               isCycleRunning={isCycleRunning}
+              onRefresh={loadAllData}
+              onNavigateTab={setCurrentTab}
             />
           )}
 

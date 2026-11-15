@@ -167,14 +167,21 @@ export function getDb(dbPath?: string): Database.Database {
       title TEXT, prospect_id TEXT,
       source TEXT NOT NULL, evidence_json TEXT NOT NULL DEFAULT '[]',
       estimated_value_inr REAL NOT NULL DEFAULT 0, probability REAL NOT NULL DEFAULT 0,
+      confidence_score REAL NOT NULL DEFAULT 0.5,
       acquisition_cost_inr REAL NOT NULL DEFAULT 0, time_to_revenue_days INTEGER NOT NULL DEFAULT 30,
       authorization_requirements_json TEXT NOT NULL DEFAULT '[]', risk_level TEXT NOT NULL DEFAULT 'MEDIUM',
       next_best_action TEXT, status TEXT NOT NULL DEFAULT 'DISCOVERED',
+      is_test INTEGER NOT NULL DEFAULT 0, is_junk INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE,
       FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
     )`);
   } catch {}
+  try { db.exec(`ALTER TABLE opportunities ADD COLUMN title TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE opportunities ADD COLUMN prospect_id TEXT`); } catch {}
+  try { db.exec(`ALTER TABLE opportunities ADD COLUMN confidence_score REAL NOT NULL DEFAULT 0.5`); } catch {}
+  try { db.exec(`ALTER TABLE opportunities ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0`); } catch {}
+  try { db.exec(`ALTER TABLE opportunities ADD COLUMN is_junk INTEGER NOT NULL DEFAULT 0`); } catch {}
   try {
     db.exec(`CREATE TABLE IF NOT EXISTS durable_events (
       id TEXT PRIMARY KEY, event_type TEXT NOT NULL, business_id TEXT,
@@ -788,9 +795,6 @@ export function getDb(dbPath?: string): Database.Database {
   try { db.exec(`ALTER TABLE site_audits ADD COLUMN pagespeed_status TEXT NOT NULL DEFAULT 'UNAVAILABLE'`); } catch {}
   try { db.exec(`ALTER TABLE site_audits ADD COLUMN pagespeed_unavailable_reason TEXT`); } catch {}
   try { db.exec(`ALTER TABLE site_audits ADD COLUMN is_publicly_authorized INTEGER NOT NULL DEFAULT 0`); } catch {}
-  try {
-    db.exec(`UPDATE site_audits SET is_publicly_authorized = 1 WHERE domain IN ('capturelifedentalcare.com', 'clovedental.in')`);
-  } catch {}
   try {
     db.exec(`ALTER TABLE businesses ADD COLUMN locale TEXT DEFAULT 'en-US'`);
   } catch {}

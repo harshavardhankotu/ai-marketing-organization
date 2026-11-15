@@ -494,4 +494,50 @@ export class BrevoMcpClient {
 
     return { processed: true, suppressed: false };
   }
+
+  /**
+   * Generates a 1-sentence outreach opening line citing the exact observed HTML defect
+   * with tokenized /audit/:domain?token=... link and ₹499 checkout URL.
+   * Uses GeminiProvider when configured outside tests, with deterministic fallback.
+   */
+  public async personalizeOutreachOpeningLine(params: {
+    businessName: string;
+    domain: string;
+    defectTitle: string;
+    previewUrl: string;
+    checkoutUrl: string;
+  }): Promise<{ line: string; source: 'GEMINI' | 'DETERMINISTIC_FALLBACK' }> {
+    const fallbackLine = `We audited ${params.domain} and detected "${params.defectTitle}" affecting search visibility & leads — view your audit (${params.previewUrl}) or unlock the ₹499 Fix-Pack (${params.checkoutUrl}).`;
+
+    try {
+      const { GeminiProvider } = await import('../ai/gemini-provider.js');
+      const keys = GeminiProvider.getCandidateKeys();
+      if (!process.env.VITEST && keys.length > 0 && keys.some(k => !isPlaceholderCredential(k))) {
+        const gemini = new GeminiProvider();
+        const llmRes = await Promise.race([
+          gemini.generateStructured<{ openingLine: string }>({
+            agentId: 'brevo_outreach_personalizer',
+            systemInstruction: 'Write exactly ONE concise plain-text sentence (max 220 chars) for an SMB website owner citing the observed technical defect and referencing the preview URL and ₹499 fix-pack URL. Never invent metrics or claims.',
+            prompt: 'Return JSON { "openingLine": "..." }',
+            context: {
+              businessName: params.businessName,
+              domain: params.domain,
+              observedDefect: params.defectTitle,
+              previewUrl: params.previewUrl,
+              checkoutUrl: params.checkoutUrl
+            },
+            thinkingLevel: 'low',
+            priority: 'NORMAL'
+          }),
+          new Promise<null>(r => setTimeout(() => r(null), 4000))
+        ]);
+        const candidate = String((llmRes as any)?.data?.openingLine || '').trim();
+        if (candidate && candidate.includes(params.domain)) {
+          return { line: candidate, source: 'GEMINI' };
+        }
+      }
+    } catch {}
+
+    return { line: fallbackLine, source: 'DETERMINISTIC_FALLBACK' };
+  }
 }

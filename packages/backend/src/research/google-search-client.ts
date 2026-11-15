@@ -1,16 +1,16 @@
 import { getDb } from '../db/client.js';
 import {
   SearchDiscoveryProvider,
-  SearchResultItem,
   SearchQuotaExceededError,
   SearchConfigurationError
 } from './search-discovery-provider.js';
+import type { SearchResultItem } from './search-discovery-provider.js';
 
 export {
-  SearchResultItem,
   SearchQuotaExceededError,
   SearchConfigurationError
 };
+export type { SearchResultItem };
 
 export interface GoogleSearchResponse {
   query: string;

@@ -1,54 +1,121 @@
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 
 /**
- * Loads key-value pairs from .env or .env.local into process.env if they exist.
+ * Strips surrounding whitespace and matching single/double quotes from env values.
  */
-export function loadLocalEnvFile(): void {
-  // Step 1a: Tests must never load .env.local or local secret files
-  if (process.env.NODE_ENV === 'test' || Boolean(process.env.VITEST)) {
+export function normalizeSecretValue(val?: string | null): string {
+  if (!val) return '';
+  let trimmed = String(val).trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    trimmed = trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
+/**
+ * Parses and loads key-value pairs from a specific env file into process.env (without overwriting existing keys).
+ */
+export function loadEnvFileAtPath(filePath: string): boolean {
+  if (!fs.existsSync(filePath)) return false;
+  try {
+    const text = fs.readFileSync(filePath, 'utf-8');
+    for (const line of text.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const cleanLine = trimmed.startsWith('export ') ? trimmed.slice(7).trim() : trimmed;
+      const eqIdx = cleanLine.indexOf('=');
+      if (eqIdx !== -1) {
+        const key = cleanLine.substring(0, eqIdx).trim();
+        const val = normalizeSecretValue(cleanLine.substring(eqIdx + 1));
+        if (key && !process.env[key]) {
+          process.env[key] = val;
+        }
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Loads key-value pairs from .env.admin_secret, .env.local, .env, etc. into process.env if they exist.
+ */
+export function loadLocalEnvFile(options?: { force?: boolean }): void {
+  // Step 1a: Tests must never load .env.local or local secret files unless explicitly forced in a dedicated test
+  if (!options?.force && (process.env.NODE_ENV === 'test' || Boolean(process.env.VITEST))) {
     return;
   }
   const candidatePaths = [
+    path.resolve(process.cwd(), '.env.admin_secret'),
     path.resolve(process.cwd(), '.env.local'),
     path.resolve(process.cwd(), '.env'),
     path.resolve(process.cwd(), '.env.txt'),
     path.resolve(process.cwd(), '.env.deploy_secrets'),
+    path.resolve(process.cwd(), 'packages/backend/.env.admin_secret'),
     path.resolve(process.cwd(), 'packages/backend/.env.local'),
     path.resolve(process.cwd(), 'packages/backend/.env'),
     path.resolve(process.cwd(), 'packages/backend/.env.txt'),
     path.resolve(process.cwd(), 'packages/backend/.env.deploy_secrets'),
+    path.resolve(process.cwd(), '../.env.admin_secret'),
     path.resolve(process.cwd(), '../.env.local'),
     path.resolve(process.cwd(), '../.env'),
     path.resolve(process.cwd(), '../.env.txt'),
     path.resolve(process.cwd(), '../.env.deploy_secrets'),
+    path.resolve(process.cwd(), '../../.env.admin_secret'),
     path.resolve(process.cwd(), '../../.env.local'),
     path.resolve(process.cwd(), '../../.env'),
     path.resolve(process.cwd(), '../../.env.txt')
   ];
 
   for (const p of candidatePaths) {
-    if (fs.existsSync(p)) {
-      try {
-        const text = fs.readFileSync(p, 'utf-8');
-        for (const line of text.split('\n')) {
-          const trimmed = line.trim();
-          if (!trimmed || trimmed.startsWith('#')) continue;
-          const eqIdx = trimmed.indexOf('=');
-          if (eqIdx !== -1) {
-            const key = trimmed.substring(0, eqIdx).trim();
-            let val = trimmed.substring(eqIdx + 1).trim();
-            if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-              val = val.slice(1, -1);
-            }
-            if (!process.env[key]) {
-              process.env[key] = val;
-            }
-          }
-        }
-      } catch {}
+    loadEnvFileAtPath(p);
+  }
+}
+
+/**
+ * Resolves the configured owner key from OWNER_API_KEY, ADMIN_SECRET, OWNER_SECRET, or ADMIN_API_KEY
+ * (falling back to AUTH_SECRET if none of the explicit owner keys are set), trimming whitespace and quotes.
+ */
+export function resolveOwnerKeyFromEnv(env: NodeJS.ProcessEnv = process.env): string {
+  const candidates = [
+    env.OWNER_API_KEY,
+    env.ADMIN_SECRET,
+    env.OWNER_SECRET,
+    env.ADMIN_API_KEY,
+    env.AUTH_SECRET
+  ];
+  for (const raw of candidates) {
+    const cleaned = normalizeSecretValue(raw);
+    if (cleaned && !isPlaceholderCredential(cleaned)) {
+      return cleaned;
     }
   }
+  return '';
+}
+
+/**
+ * Resolves the cookie-signing secret from AUTH_SECRET or OWNER_SESSION_SECRET.
+ * When unset or empty, deterministically derives a SHA-256 secret from resolvedOwnerKey
+ * so HMAC cookie signing never throws on missing/empty secret.
+ */
+export function resolveAuthSecretFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  resolvedOwnerKey?: string
+): string {
+  const explicit = normalizeSecretValue(env.AUTH_SECRET || env.OWNER_SESSION_SECRET);
+  if (explicit && !isPlaceholderCredential(explicit)) {
+    return explicit;
+  }
+  const effectiveOwnerKey = resolvedOwnerKey !== undefined
+    ? normalizeSecretValue(resolvedOwnerKey)
+    : (resolveOwnerKeyFromEnv(env) || (!isProduction(env) ? 'dev_owner_key_secret' : ''));
+  return crypto.createHash('sha256').update('aro_cookie_salt_' + effectiveOwnerKey).digest('hex');
 }
 
 /**

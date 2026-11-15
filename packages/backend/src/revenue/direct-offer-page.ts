@@ -53,6 +53,13 @@ export interface OfferPageConfig {
   razorpayMeUrl?: string;
   googleSiteVerification?: string;
   cuelinksVerificationCode?: string;
+  featuredDeals?: Array<Record<string, any>>;
+  dealCtaAssignment?: {
+    experimentId: string;
+    variant: 'baseline' | 'treatment';
+    ctaText: string;
+    promoted?: boolean;
+  };
 }
 
 function escapeMetaAttr(val: string): string {
@@ -191,6 +198,7 @@ export class DirectCommercialOfferPage {
   <title>Administrative Website &amp; WhatsApp Inquiry Capture | ${siteName}</title>
   <meta name="description" content="Turn after-hours patient inquiries into booked appointments. Administrative Website &amp; WhatsApp Inquiry Capture, Instant Triage Summary, and Appointment Request Logging for Indian healthcare and dental practices.">
   <link rel="canonical" href="${siteUrl}/">
+  <link rel="alternate" type="application/rss+xml" title="Verified Commercial Deals RSS Feed" href="/feeds/deals.xml">
   <meta name="robots" content="index, follow">
 ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standard Web Checkout -->
   <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
@@ -536,23 +544,78 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
       <p style="color: #94a3b8; font-size: 0.9rem; margin-bottom: 1.25rem;">
         Listed prices and reference MRPs are merchant-reported snapshots observed at a specific timestamp, may change at any time, and must be confirmed directly on the official merchant checkout page:
       </p>
-      <div style="display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.25rem;">
-        <a href="/deals" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.1rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.88rem; font-weight: 600;">
-          🏷️ Indian Commercial Deals Directory &rarr;
+      <div style="display: flex; gap: 0.85rem; flex-wrap: wrap; margin-bottom: 1.25rem;">
+        <a href="/deals" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.05rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.86rem; font-weight: 600;">
+          Indian Commercial Deals Directory &rarr;
         </a>
-        <a href="/compare/electronics-technology" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.1rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.88rem; font-weight: 600;">
-          🎧 Electronics &amp; Tech Buying Guide &rarr;
+        <a href="/best/audio-and-earbuds-under-2000" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.05rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.86rem; font-weight: 600;">
+          Best Audio &amp; Earbuds Under ₹2,000 &rarr;
         </a>
-        <a href="/guides/best-wireless-audio-smartwatches-india" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.1rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.88rem; font-weight: 600;">
-          📱 Audio &amp; Wearables Guide &rarr;
+        <a href="/best/soundbars-and-speakers-under-10000" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.05rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.86rem; font-weight: 600;">
+          Best Soundbars Under ₹10,000 &rarr;
         </a>
-        <a href="/guides/student-flight-discounts-india" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.1rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.88rem; font-weight: 600;">
-          ✈️ Student Flight Baggage &amp; Fare Guide &rarr;
+        <a href="/best/grooming-and-perfume-bundles-under-1000" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.05rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.86rem; font-weight: 600;">
+          Grooming &amp; Perfume Bundles Under ₹1,000 &rarr;
         </a>
-        <a href="/revenue" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.1rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.88rem; font-weight: 600;">
-          📊 Public Revenue Funnel &rarr;
+        <a href="/best/top-price-drops-today-india" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.05rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.86rem; font-weight: 600;">
+          Top Price Drops Today (India) &rarr;
+        </a>
+        <a href="/compare/electronics-technology" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.05rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.86rem; font-weight: 600;">
+          Electronics &amp; Tech Buying Guide &rarr;
+        </a>
+        <a href="/revenue" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.05rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.86rem; font-weight: 600;">
+          Public Revenue Funnel &rarr;
         </a>
       </div>
+
+      <!-- Universal Fair-Price Checker & On-Demand Link Monetizer -->
+      <div id="fair-price-widget-home" style="background: #111827; border: 1px solid #1e293b; border-radius: 12px; padding: 1.25rem; margin-bottom: 1.25rem;">
+        <div style="display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.5rem;">
+          <h3 style="margin: 0; font-size: 1.05rem; color: #f8fafc;">Universal Fair-Price Checker &amp; Link Monetizer</h3>
+          <span style="font-size: 0.75rem; color: #94a3b8;">Observed MRP · Coupon Stacking · Amazon.in &amp; Cuelinks</span>
+        </div>
+        <p style="font-size: 0.84rem; color: #94a3b8; margin-bottom: 0.9rem;">
+          Paste any Indian product URL (Amazon.in, D2C store) or type what you want to buy (e.g. <em>best ANC earbuds under 2000</em>) to check true fair value before paying full MRP.
+        </p>
+        <form onsubmit="handleFairPriceHome(event)" style="display: flex; gap: 0.6rem; flex-wrap: wrap;">
+          <input type="text" id="fp-query-home" required placeholder="Paste https://amazon.in/dp/... or search e.g. wireless earbuds under 2000" style="flex: 1 1 260px; padding: 0.65rem 0.85rem; border-radius: 8px; border: 1px solid #334155; background: #090d16; color: #fff; font-size: 0.88rem;">
+          <button type="submit" id="fp-submit-home" class="btn btn-primary" style="padding: 0.65rem 1.15rem; font-size: 0.86rem;">Check Fair Price</button>
+        </form>
+        <div id="fp-result-home" style="display: none; margin-top: 1rem;"></div>
+      </div>
+      ${Array.isArray(config.featuredDeals) && config.featuredDeals.length > 0 ? (() => {
+        const dealCta = config.dealCtaAssignment || {
+          experimentId: 'exp_storefront_deal_cta',
+          variant: 'baseline' as const,
+          ctaText: 'Buy at Merchant →'
+        };
+        const activeFeatured = config.featuredDeals.filter((d: any) => d && d.catalogSlot !== 'ROTATED_OUT_STALE' && d.evidenceJson?.catalogSlot !== 'ROTATED_OUT_STALE').slice(0, 4);
+        if (activeFeatured.length === 0) return '';
+        return `
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.9rem; margin-bottom: 1.25rem;" id="featured-deals-grid">
+        ${activeFeatured.map((deal: any) => {
+          const slug = deal.slug || deal.canonicalSlug || deal.id;
+          const detailUrl = `/deals/${encodeURIComponent(String(slug))}`;
+          const outUrl = `${siteUrl}/api/v1/public/deals/${encodeURIComponent(String(deal.id))}/redirect?ab_exp=${encodeURIComponent(dealCta.experimentId)}&ab_variant=${encodeURIComponent(dealCta.variant)}`;
+          const amazonRailUrl = `${siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(deal.title || '').slice(0, 120))}&dealId=${encodeURIComponent(String(deal.id || ''))}`;
+          const priceLabel = Number(deal.currentPriceINR || 0) > 0
+            ? `₹${Number(deal.currentPriceINR).toLocaleString('en-IN')}`
+            : 'Verified Offer';
+          return `
+          <div style="background: #111827; border: 1px solid #1e293b; border-radius: 10px; padding: 1rem; display: flex; flex-direction: column; justify-content: space-between; gap: 0.75rem;">
+            <div>
+              <div style="font-size: 0.72rem; color: #38bdf8; font-weight: 700; text-transform: uppercase; margin-bottom: 0.35rem;">${escapeMetaAttr(String(deal.brand || deal.merchant || 'Verified'))} &bull; ${escapeMetaAttr(String(deal.category || 'Deals'))}</div>
+              <a href="${escapeMetaAttr(detailUrl)}" style="color: #fff; font-weight: 700; font-size: 0.92rem; text-decoration: none; display: block; margin-bottom: 0.45rem;">${escapeMetaAttr(String(deal.title || ''))}</a>
+              <div style="font-size: 1.1rem; font-weight: 800; color: #34d399;">${priceLabel}</div>
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+              <a href="${escapeMetaAttr(outUrl)}" target="_blank" rel="sponsored nofollow noopener" data-ab-experiment="${escapeMetaAttr(dealCta.experimentId)}" data-ab-variant="${escapeMetaAttr(dealCta.variant)}" style="display: inline-block; text-align: center; background: #06b6d4; color: #020617; font-weight: 700; font-size: 0.8rem; padding: 0.45rem 0.75rem; border-radius: 6px; text-decoration: none;">${escapeMetaAttr(dealCta.ctaText)}</a>
+              <a href="${escapeMetaAttr(amazonRailUrl)}" target="_blank" rel="sponsored nofollow noopener" style="display: inline-block; text-align: center; background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); color: #fcd34d; font-weight: 600; font-size: 0.73rem; padding: 0.38rem 0.6rem; border-radius: 6px; text-decoration: none;">Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)</a>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>`;
+      })() : ''}
       <p style="font-size: 0.78rem; color: #64748b; line-height: 1.4;">
         #Ad — Qualifying purchases made through outgoing affiliate links may earn a referral commission at zero additional cost to you. Offer prices, stock availability, and terms reflect merchant-reported snapshots and are subject to change without notice.
       </p>
@@ -735,6 +798,104 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
       if (box && window.__lastCsv) {
         box.style.display = box.style.display === 'none' ? 'block' : 'none';
         box.innerText = window.__lastCsv;
+      }
+    }
+
+    async function handleFairPriceHome(e) {
+      e.preventDefault();
+      var qInput = document.getElementById('fp-query-home');
+      var btn = document.getElementById('fp-submit-home');
+      var box = document.getElementById('fp-result-home');
+      if (!qInput || !box) return;
+      var q = qInput.value.trim();
+      if (!q) return;
+      btn.disabled = true;
+      btn.innerText = 'Checking...';
+      box.style.display = 'block';
+      box.innerHTML = '<div style="font-size:0.84rem;color:#94a3b8;">Checking observed Indian market prices and active coupon codes...</div>';
+      try {
+        var res = await fetch('/api/v1/public/fair-price-check', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ queryOrUrl: q })
+        });
+        var json = await res.json();
+        if (!res.ok || !json.success) {
+          throw new Error(json.message || json.error || 'Check failed');
+        }
+        var d = json.data;
+        var verdictColor = d.verdict === 'BUY_NOW_BELOW_FAIR_PRICE' ? '#34d399' : (d.verdict === 'OVERPRICED_WAIT_FOR_DROP' ? '#f59e0b' : '#38bdf8');
+        var verdictLabel = d.verdict === 'BUY_NOW_BELOW_FAIR_PRICE'
+          ? 'BUY NOW — BELOW FAIR PRICE'
+          : (d.verdict === 'OVERPRICED_WAIT_FOR_DROP'
+            ? 'OVERPRICED — WAIT OR COMPARE'
+            : (d.verdict === 'INSUFFICIENT_HISTORY' ? 'INSUFFICIENT HISTORY — SET DROP ALERT' : 'FAIR MARKET PRICE — APPLY COUPON'));
+        var optionsHtml = (d.crossStoreOptions || []).slice(0, 5).map(function(opt) {
+          var isAmz = opt.affiliateNetwork === 'AMAZON_IN' || opt.isAmazonSearchRail || Number(opt.effectivePriceINR || 0) <= 0;
+          var badge = opt.isLowestPrice ? ' <strong style="color:#34d399;">(Lowest Net)</strong>' : '';
+          var coupon = opt.couponCode ? ' · Code: <code>' + escapeHtml(opt.couponCode) + '</code>' : '';
+          var priceTxt = isAmz ? 'Live on Amazon.in' : ('₹' + Number(opt.effectivePriceINR || opt.currentPriceINR || 0).toLocaleString('en-IN'));
+          var btnTxt = opt.ctaLabel || (isAmz ? "Check Today's Live Price & Prime Coupons on Amazon.in →" : 'Buy (#Ad) →');
+          return '<div style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;padding:0.55rem 0;border-top:1px solid #1e293b;font-size:0.83rem;">' +
+            '<div style="min-width:0;"><div style="color:#f8fafc;font-weight:600;">' + escapeHtml(opt.title) + badge + '</div>' +
+            '<div style="color:#94a3b8;font-size:0.76rem;">' + escapeHtml(opt.merchant) + coupon + ' · ' + escapeHtml(opt.disclosure || '#Ad') + '</div></div>' +
+            '<div style="display:flex;align-items:center;gap:0.65rem;flex-shrink:0;">' +
+              '<span style="font-weight:700;color:#fff;">' + escapeHtml(priceTxt) + '</span>' +
+              '<a href="' + escapeHtml(opt.trackingRedirectUrl) + '" target="_blank" rel="sponsored nofollow noopener" style="background:' + (isAmz ? '#f59e0b' : '#06b6d4') + ';color:#020617;padding:0.35rem 0.7rem;border-radius:6px;font-weight:700;font-size:0.76rem;text-decoration:none;">' + escapeHtml(btnTxt) + '</a>' +
+            '</div></div>';
+        }).join('');
+        box.innerHTML =
+          '<div style="background:#090d16;border:1px solid #1e293b;border-radius:10px;padding:1rem;">' +
+            '<div style="font-size:0.75rem;font-weight:700;letter-spacing:0.04em;color:' + verdictColor + ';margin-bottom:0.3rem;">' + verdictLabel + '</div>' +
+            '<div style="font-size:0.88rem;color:#e2e8f0;margin-bottom:0.5rem;">' + escapeHtml(d.verdictSummary || '') + '</div>' +
+            (d.estimatedFairPriceINR ? '<div style="font-size:0.8rem;color:#94a3b8;margin-bottom:0.6rem;">Estimated Fair Price: <strong style="color:#fff;">₹' + Number(d.estimatedFairPriceINR).toLocaleString('en-IN') + '</strong> · Range: ₹' + Number(d.lowestObservedPriceINR || d.estimatedFairPriceINR).toLocaleString('en-IN') + ' – ₹' + Number(d.highestObservedPriceINR || d.estimatedFairPriceINR).toLocaleString('en-IN') + (d.activeCouponCode ? ' · Best Coupon: <code style="color:#38bdf8;">' + escapeHtml(d.activeCouponCode) + '</code>' : '') + '</div>' : '') +
+            optionsHtml +
+            '<form onsubmit="handleFairPriceAlertHome(event)" style="margin-top:0.85rem;padding-top:0.75rem;border-top:1px solid #1e293b;display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;">' +
+              '<input type="number" id="fp-alert-price-home" min="1" required placeholder="Target ₹ price" value="' + (d.estimatedFairPriceINR ? Math.round(d.estimatedFairPriceINR * 0.9) : '') + '" style="width:120px;padding:0.45rem 0.65rem;border-radius:6px;border:1px solid #334155;background:#111827;color:#fff;font-size:0.8rem;">' +
+              '<input type="email" id="fp-alert-email-home" required placeholder="Email for price-drop alert" style="flex:1 1 190px;padding:0.45rem 0.65rem;border-radius:6px;border:1px solid #334155;background:#111827;color:#fff;font-size:0.8rem;">' +
+              '<label style="font-size:0.74rem;color:#cbd5e1;display:flex;align-items:center;gap:0.35rem;cursor:pointer;"><input type="checkbox" id="fp-alert-consent-home" required> Opt-in alerts (DPDP)</label>' +
+              '<button type="submit" style="background:#10b981;color:#020617;border:none;padding:0.45rem 0.85rem;border-radius:6px;font-weight:700;font-size:0.78rem;cursor:pointer;">Set Price Alert</button>' +
+            '</form>' +
+            '<div id="fp-alert-status-home" style="font-size:0.78rem;margin-top:0.4rem;"></div>' +
+          '</div>';
+      } catch (err) {
+        box.innerHTML = '<div style="font-size:0.82rem;color:#f87171;">Error: ' + escapeHtml(err.message || 'Could not evaluate fair price') + '</div>';
+      } finally {
+        btn.disabled = false;
+        btn.innerText = 'Check Fair Price';
+      }
+    }
+
+    async function handleFairPriceAlertHome(e) {
+      e.preventDefault();
+      var q = (document.getElementById('fp-query-home') || {}).value || '';
+      var price = Number((document.getElementById('fp-alert-price-home') || {}).value || 0);
+      var email = ((document.getElementById('fp-alert-email-home') || {}).value || '').trim();
+      var consent = Boolean((document.getElementById('fp-alert-consent-home') || {}).checked);
+      var statusEl = document.getElementById('fp-alert-status-home');
+      if (!statusEl) return;
+      statusEl.style.color = '#94a3b8';
+      statusEl.innerText = 'Registering price-drop alert...';
+      try {
+        var res = await fetch('/api/v1/public/fair-price-check', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ queryOrUrl: q, targetFairPriceINR: price, alertEmail: email, consentGiven: consent, skipAiSynthesis: true })
+        });
+        var json = await res.json();
+        var reg = json && json.data && json.data.priceDropAlertRegistered;
+        if (reg && reg.registered) {
+          statusEl.style.color = '#34d399';
+          statusEl.innerText = reg.immediateAlertDispatched
+            ? 'Alert set & instant price-drop email sent to ' + reg.alertEmailMasked + '!'
+            : 'Price-drop alert registered for ' + reg.alertEmailMasked + ' at target ₹' + Number(reg.targetFairPriceINR || price).toLocaleString('en-IN') + '.';
+        } else {
+          statusEl.style.color = '#fbbf24';
+          statusEl.innerText = (reg && reg.reason) || json.message || 'Could not register alert.';
+        }
+      } catch (err) {
+        statusEl.style.color = '#f87171';
+        statusEl.innerText = 'Error: ' + (err.message || 'Failed');
       }
     }
   </script>

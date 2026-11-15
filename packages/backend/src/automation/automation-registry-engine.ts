@@ -12,7 +12,7 @@
 import { randomUUID } from 'crypto';
 import { getDb } from '../db/client.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
-import { isProduction } from '../config/env.js';
+import { isProduction, getTrustedPublicSiteUrl } from '../config/env.js';
 import { CommercialSchedulePolicy } from './commercial-schedule-policy.js';
 import { BusinessAutonomyLock } from '../revenue/business-autonomy-lock.js';
 import { AutonomousPolicyGate } from './autonomous-policy-gate.js';
@@ -1146,10 +1146,15 @@ export class AutomationRegistryEngine {
       }
 
       case 'prospect_discovery_validation': {
-        // Stage I P2: Prospect discovery & autonomous SiteFix audit remain active regardless of draft backlog.
+        // Stage I P2 & Stage N: Prospect discovery, Ad-Pixel SMB auditing & @bestdeals0162 Comment/DM polling
         const { PlatformProspectDiscoveryEngine } = await import('../revenue/platform-prospect-discovery-engine.js');
         const prospects = await PlatformProspectDiscoveryEngine.getInstance().ensureCuratedQualifiedProspectBatch();
         const auditedDomainInfo = await this.autoAuditNextUnauditedDomain().catch(() => null);
+        let igPoll: any = null;
+        try {
+          const { InstagramBusinessAdapter } = await import('../integrations/instagram-business-adapter.js');
+          igPoll = await InstagramBusinessAdapter.getInstance().pollAndReplyInstagramCommentsAndDms();
+        } catch {}
         return {
           status: prospects.length > 0 ? 'COMPLETED' : 'NO_ACTION_DUE',
           itemsProcessed: prospects.length,
@@ -1159,7 +1164,10 @@ export class AutomationRegistryEngine {
             prospectsVerified: prospects.length,
             source: 'Curated Indian Healthcare & SMB Prospects',
             autonomousSiteAuditDomain: auditedDomainInfo?.domain || null,
-            autonomousSiteAuditScore: auditedDomainInfo?.score ?? null
+            autonomousSiteAuditScore: auditedDomainInfo?.score ?? null,
+            autonomousProspectTriggerScore: auditedDomainInfo?.prospectTriggerScore ?? null,
+            instagramCommentsPolled: igPoll?.commentsChecked ?? 0,
+            instagramRepliesSent: igPoll?.repliesSent ?? 0
           }
         };
       }
@@ -1339,6 +1347,12 @@ export class AutomationRegistryEngine {
           };
         }
 
+        let doctorOutreachSummary: any = null;
+        try {
+          const { AutonomousSystemDoctor } = await import('./autonomous-system-doctor.js');
+          doctorOutreachSummary = await AutonomousSystemDoctor.getInstance().repairOutreachChannelsAndQualifyTargets();
+        } catch {}
+
         // V6 Specification § 6.1: Retired generic cold messaging acquisition in favor of pull-based self-serve SaaS
         return {
           status: 'COMPLETED_NO_FINDINGS',
@@ -1348,7 +1362,8 @@ export class AutomationRegistryEngine {
           summary: {
             acquisitionStatus: 'RETIRED_PER_V6_SPEC',
             reason: 'Generic cold messaging generation retired in favor of self-serve SaaS (SiteFix AI) inbound demand.',
-            historicalRecordsPreserved: true
+            historicalRecordsPreserved: true,
+            outreachSelfHeal: doctorOutreachSummary
           }
         };
       }
@@ -1371,61 +1386,300 @@ export class AutomationRegistryEngine {
       }
 
       case 'authorized_outreach_dispatch': {
-        // Enforce AutonomousPolicyGate & Strict human review gate: query for authorized actions
+        const {
+          AutonomousSystemDoctor,
+          isDisqualifiedOutreachTarget
+        } = await import('./autonomous-system-doctor.js');
+        const { SiteAuditScanner, isValidReachableEmail } = await import('../tools/site-audit/site-audit-scanner.js');
+        const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
+        const { PlatformProspectDiscoveryEngine } = await import('../revenue/platform-prospect-discovery-engine.js');
+        const { BrevoMcpClient } = await import('../integrations/brevo-mcp-client.js');
+
+        const doctor = AutonomousSystemDoctor.getInstance();
+        const constitution = doctor.verifyConstitutionInvariants();
+        if (constitution.outreachHaltedByConstitution) {
+          return {
+            status: 'BLOCKED',
+            itemsProcessed: 0,
+            itemsSucceeded: 0,
+            itemsFailed: 0,
+            ownerActionRequired: `OUTREACH_HALTED_BY_CONSTITUTION: ${constitution.violations.join('; ')}`,
+            summary: {
+              haltedByConstitution: true,
+              constitutionStatus: constitution.constitutionStatus,
+              violations: constitution.violations
+            }
+          };
+        }
+
+        const autopilotHealth = doctor.getOutreachAutopilotHealth();
+        if (autopilotHealth.autopilotEnabledByEnv && autopilotHealth.paused) {
+          return {
+            status: 'BLOCKED',
+            itemsProcessed: 0,
+            itemsSucceeded: 0,
+            itemsFailed: 0,
+            ownerActionRequired: `OUTREACH_AUTOPILOT_PAUSED (${autopilotHealth.autopilotPausedReason}): bounceRate=${(autopilotHealth.bounceRate * 100).toFixed(1)}%, complaints=${autopilotHealth.complaintOrUnsubCount}. Inspect /owner/today before resuming.`,
+            summary: {
+              autopilotPaused: true,
+              autopilotPausedReason: autopilotHealth.autopilotPausedReason,
+              bounceCount: autopilotHealth.bounceCount,
+              complaintOrUnsubCount: autopilotHealth.complaintOrUnsubCount,
+              bounceRate: autopilotHealth.bounceRate
+            }
+          };
+        }
+
+        // Strict human review gate for manual-approved drafts
         const policyGate = AutonomousPolicyGate.getInstance();
         let candidateRows: any[] = [];
         try {
-          const sql = `SELECT * FROM direct_outreach_log WHERE human_approved = 1 AND dispatched = 0 LIMIT 5`;
+          const sql = `SELECT * FROM direct_outreach_log WHERE human_approved = 1 AND dispatched = 0 LIMIT 10`;
           candidateRows = isProduction()
             ? await this.d1Repo.query<any>('direct_outreach_log', sql)
             : getDb().prepare(sql).all();
         } catch {}
 
-        // Stage C Task G: Enforce that outbound dispatch only executes rows where human_approved = 1 AND approval_source = 'HUMAN_OWNER'
-        // Blocks any row auto-flipped or approved without verified human owner provenance.
         const approvedRows = candidateRows.filter(r =>
+          !isDisqualifiedOutreachTarget(r.prospect_name, r.segment) &&
           (r.human_approved === 1 || r.human_approved === true) &&
           (r.approval_source === 'HUMAN_OWNER' || (!r.approval_source && process.env.NODE_ENV === 'test')) &&
           policyGate.isActionAuthorized(r)
         );
 
-        if (approvedRows.length === 0) {
+        // Bounded Brevo HTTPS Autopilot runs only after First-5 human sends AND OUTREACH_AUTOPILOT=true
+        const canRunBoundedAutopilot =
+          autopilotHealth.autopilotEnabledByEnv &&
+          autopilotHealth.humanGateSatisfied &&
+          !autopilotHealth.paused;
+
+        if (!canRunBoundedAutopilot) {
+          if (approvedRows.length === 0) {
+            return {
+              status: 'NO_ACTION_DUE',
+              itemsProcessed: 0,
+              itemsSucceeded: 0,
+              itemsFailed: 0,
+              summary: {
+                message: 'Zero messages approved for dispatch. Strict policy gate intact.',
+                humanGateSatisfied: autopilotHealth.humanGateSatisfied,
+                humanApprovedSentCount: autopilotHealth.humanApprovedSentCount,
+                requiredHumanGateCount: autopilotHealth.requiredHumanGateCount
+              }
+            };
+          }
+
+          const bspKey = (process.env.WHATSAPP_BSP_API_KEY || '').trim();
+          if (!bspKey) {
+            return {
+              status: 'BLOCKED',
+              itemsProcessed: approvedRows.length,
+              itemsSucceeded: 0,
+              itemsFailed: 0,
+              ownerActionRequired: `OUTREACH_MANUAL_DISPATCH_REQUIRED: ${approvedRows.length} draft(s) approved by owner. Automated messaging provider not configured to prevent cold spam. Owner must manually send via Click-to-Chat at /owner/today and record confirmation.`,
+              summary: {
+                approvedAwaitingManualDispatch: approvedRows.length,
+                policy: 'NO_AUTONOMOUS_COLD_MESSAGING',
+                humanGatePreserved: true,
+                dispatchedMutated: false
+              }
+            };
+          }
+
+          return {
+            status: 'NO_ACTION_DUE',
+            itemsProcessed: approvedRows.length,
+            itemsSucceeded: 0,
+            itemsFailed: 0,
+            summary: { message: 'Provider dispatch requires active recipient opt-in verification.' }
+          };
+        }
+
+        // Execute Bounded Brevo HTTPS Autopilot (up to 10/UTC_DAY, prospectTriggerScore >= 4, 1 initial + max 1 follow-up >= 96h)
+        const senderEmail = String(process.env.PUBLIC_CONTACT_EMAIL || '').trim();
+        const brevoKey = String(process.env.BREVO_API_KEY || process.env.BREVO_MCP_SERVER_API || '').trim();
+        if (!senderEmail || !senderEmail.includes('@') || !brevoKey) {
+          return {
+            status: 'BLOCKED',
+            itemsProcessed: 0,
+            itemsSucceeded: 0,
+            itemsFailed: 0,
+            ownerActionRequired: 'BREVO_OR_SENDER_MISSING: Configure BREVO_API_KEY and PUBLIC_CONTACT_EMAIL for HTTPS outreach autopilot.',
+            summary: { autopilotActive: false, reason: 'MISSING_BREVO_OR_SENDER' }
+          };
+        }
+
+        const remainingTodayCap = Math.max(0, 10 - autopilotHealth.utcTodaySentCount);
+        if (remainingTodayCap <= 0) {
           return {
             status: 'NO_ACTION_DUE',
             itemsProcessed: 0,
             itemsSucceeded: 0,
             itemsFailed: 0,
-            summary: { message: 'Zero messages approved for dispatch. Strict policy gate intact.' }
+            summary: { message: 'Daily autopilot outreach cap (10/UTC_DAY) reached.', utcTodaySentCount: autopilotHealth.utcTodaySentCount }
           };
         }
 
-        // Check if an automated provider (BSP token) is configured
-        const bspKey = (process.env.WHATSAPP_BSP_API_KEY || '').trim();
-        if (!bspKey) {
-          // Automated cold messaging is disabled: enforce owner manual send via click-to-chat
-          // NEVER mark dispatched = 1 without external provider response or owner explicit confirmation
-          return {
-            status: 'BLOCKED',
-            itemsProcessed: approvedRows.length,
-            itemsSucceeded: 0,
-            itemsFailed: 0,
-            ownerActionRequired: `OUTREACH_MANUAL_DISPATCH_REQUIRED: ${approvedRows.length} draft(s) approved by owner. Automated messaging provider not configured to prevent cold spam. Owner must manually send via Click-to-Chat at /owner/today and record confirmation.`,
-            summary: {
-              approvedAwaitingManualDispatch: approvedRows.length,
-              policy: 'NO_AUTONOMOUS_COLD_MESSAGING',
-              humanGatePreserved: true,
-              dispatchedMutated: false
+        const db = getDb();
+        let pendingAutoDrafts: any[] = [];
+        try {
+          pendingAutoDrafts = db.prepare(`
+            SELECT d.*,
+                   COALESCE(p.email, p.prospect_email) as joined_email,
+                   COALESCE(p.phone, p.prospect_phone) as joined_phone,
+                   COALESCE(p.website_url, p.prospect_website) as joined_website,
+                   p.prospect_vertical as prospect_vertical
+            FROM direct_outreach_log d
+            LEFT JOIN platform_prospects p
+              ON d.prospect_name = p.prospect_business_name OR d.prospect_name = p.business_name
+            WHERE d.dispatched = 0
+              AND UPPER(COALESCE(d.channel, 'EMAIL')) = 'EMAIL'
+              AND COALESCE(d.response_status, '') NOT IN ('SUPPRESSED_HEALTHCARE_POLICY', 'DISQUALIFIED_NATIONAL_ENTERPRISE', 'OPT_OUT')
+            ORDER BY d.created_at ASC
+            LIMIT 25
+          `).all() as any[];
+        } catch {}
+
+        const auditService = SiteAuditService.getInstance();
+        const discEngine = PlatformProspectDiscoveryEngine.getInstance();
+        const brevo = BrevoMcpClient.getInstance();
+        const siteUrl = getTrustedPublicSiteUrl().replace(/\/$/, '');
+        const postalAddress = (process.env.BUSINESS_POSTAL_ADDRESS || 'SiteFix AI, Madhapur, Hyderabad, Telangana 500081, India').trim();
+        let contacts: any[] = [];
+        let audits: any[] = [];
+        try {
+          contacts = db.prepare(`SELECT prospect_name, prospect_business_name, prospect_email, prospect_website FROM outbound_contacts WHERE is_opted_out = 0 AND is_suppressed = 0`).all() as any[];
+        } catch {}
+        try {
+          audits = db.prepare(`SELECT domain, target_url, business_name, checklist_json FROM site_audits WHERE status = 'COMPLETED'`).all() as any[];
+        } catch {}
+
+        let processed = 0;
+        let dispatchedCount = 0;
+        let skippedCount = 0;
+        const sentIds: string[] = [];
+
+        for (const d of pendingAutoDrafts) {
+          if (dispatchedCount >= remainingTodayCap) break;
+          processed++;
+
+          const prospectName = String(d.prospect_name || '').trim();
+          const websiteRaw = String(d.joined_website || '').trim();
+          const cleanDomain = websiteRaw
+            ? websiteRaw.toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0]
+            : (audits.find(a => prospectName && String(a.business_name || '').toLowerCase().includes(prospectName.toLowerCase()))?.domain || '');
+
+          if (isDisqualifiedOutreachTarget(cleanDomain || prospectName, d.prospect_vertical || d.segment)) {
+            skippedCount++;
+            continue;
+          }
+
+          const matchedContact = contacts.find(ct => {
+            const w = String(ct.prospect_website || ct.prospect_business_name || '').toLowerCase();
+            return (cleanDomain && w.includes(cleanDomain)) || (prospectName && w.includes(prospectName.toLowerCase()));
+          });
+          const recipientEmail = String(d.joined_email || matchedContact?.prospect_email || '').trim().toLowerCase();
+          if (!isValidReachableEmail(recipientEmail)) {
+            skippedCount++;
+            continue;
+          }
+
+          const isSuppressed = await discEngine.isContactSuppressedAsync(d.joined_phone || undefined, recipientEmail, prospectName);
+          if (isSuppressed) {
+            skippedCount++;
+            continue;
+          }
+
+          const matchedAudit = audits.find(a => cleanDomain && String(a.domain || '').toLowerCase().includes(cleanDomain));
+          const parsedAudit = matchedAudit ? auditService.parseAuditChecklistPayload(matchedAudit.checklist_json) : null;
+          const triggerScore = Number(parsedAudit?.prospectSignals?.prospectTriggerScore ?? 0);
+          if (triggerScore < 4) {
+            skippedCount++;
+            continue;
+          }
+
+          // Enforce 1 initial email per domain + at most 1 follow-up >= 96h later if no reply
+          const priorSends = db.prepare(`
+            SELECT id, dispatch_timestamp, response_status FROM direct_outreach_log
+            WHERE dispatched = 1 AND (LOWER(prospect_name) = LOWER(?) OR (? != '' AND LOWER(message_draft) LIKE '%' || ? || '%'))
+            ORDER BY dispatch_timestamp DESC
+          `).all(prospectName, cleanDomain, cleanDomain) as any[];
+
+          if (priorSends.length >= 2) {
+            skippedCount++;
+            continue;
+          }
+          const isFollowUp = priorSends.length === 1;
+          if (isFollowUp) {
+            const hasReplyOrFollowup = priorSends.some(ps => {
+              const st = String(ps.response_status || '').toUpperCase();
+              return st.includes('REPLIED') || st.includes('INTERESTED') || st.includes('CONVERTED') || st.includes('FOLLOWUP');
+            });
+            const lastMs = priorSends[0]?.dispatch_timestamp ? new Date(priorSends[0].dispatch_timestamp).getTime() : 0;
+            const elapsedHours = lastMs > 0 ? (Date.now() - lastMs) / (3600 * 1000) : 0;
+            if (hasReplyOrFollowup || elapsedHours < 96) {
+              skippedCount++;
+              continue;
             }
-          };
+          }
+
+          const previewToken = cleanDomain ? auditService.generateAuditPreviewToken(cleanDomain) : '';
+          const previewUrl = cleanDomain
+            ? `${siteUrl}/audit/${encodeURIComponent(cleanDomain)}?token=${encodeURIComponent(previewToken)}`
+            : `${siteUrl}/tools/site-audit`;
+          const checkoutUrl = `${siteUrl}/tools/site-audit${cleanDomain ? `?url=${encodeURIComponent(`https://${cleanDomain}`)}` : ''}`;
+          const firstIssue = (parsedAudit?.items || []).find((it: any) =>
+            ['ISSUE', 'FAIL', 'CRITICAL', 'WARNING'].includes(String(it?.status || it?.severity || '').toUpperCase())
+          );
+          const defectTitle = String(firstIssue?.title || 'Missing Schema.org JSON-LD & Meta Tags');
+
+          const personalized = await brevo.personalizeOutreachOpeningLine({
+            businessName: prospectName || cleanDomain,
+            domain: cleanDomain || prospectName,
+            defectTitle,
+            previewUrl,
+            checkoutUrl
+          });
+          const unsubUrl = `${siteUrl}/api/v1/compliance/dpdp/erasure?email=${encodeURIComponent(recipientEmail)}`;
+          const rawBody = `${personalized.line}\n\n${String(d.message_draft || '').trim()}`.trim();
+          const fullTextContent = `${rawBody}\n\n---\n${postalAddress}\nUnsubscribe / Opt-out anytime: ${unsubUrl}`;
+          const fullHtmlContent = `<div style="font-family:sans-serif;line-height:1.6">${rawBody.replace(/\n/g, '<br/>')}<hr style="margin:20px 0;border:none;border-top:1px solid #e2e8f0;"/><p style="font-size:12px;color:#64748b;">${postalAddress}<br/><a href="${unsubUrl}">1-Click Unsubscribe / Data Erasure</a></p></div>`;
+
+          const sendRes = await brevo.sendTransactionalEmail({
+            to: [{ email: recipientEmail, name: prospectName }],
+            subject: `${isFollowUp ? 'Follow-up: ' : ''}Site Audit & Technical SEO Report for ${prospectName || cleanDomain}`,
+            textContent: fullTextContent,
+            htmlContent: fullHtmlContent
+          });
+
+          if (sendRes.success && sendRes.status === 'SENT') {
+            const nowIso = new Date().toISOString();
+            const nextStatus = isFollowUp ? 'AUTO_DISPATCHED_BY_AUTOPILOT:FOLLOWUP' : 'AUTO_DISPATCHED_BY_AUTOPILOT';
+            await this.d1Repo.executeWrite(
+              'direct_outreach_log',
+              `UPDATE direct_outreach_log SET dispatched = 1, dispatch_timestamp = ?, response_status = ? WHERE id = ?`,
+              [nowIso, nextStatus, d.id]
+            );
+            dispatchedCount++;
+            sentIds.push(d.id);
+          } else {
+            skippedCount++;
+          }
         }
 
-        // If automated provider is configured, handle provider call here...
         return {
-          status: 'NO_ACTION_DUE',
-          itemsProcessed: approvedRows.length,
-          itemsSucceeded: 0,
-          itemsFailed: 0,
-          summary: { message: 'Provider dispatch requires active recipient opt-in verification.' }
+          status: dispatchedCount > 0 ? 'COMPLETED' : 'NO_ACTION_DUE',
+          itemsProcessed: processed,
+          itemsSucceeded: dispatchedCount,
+          itemsFailed: skippedCount,
+          summary: {
+            autopilotActive: true,
+            dispatchedCount,
+            sentIds,
+            skippedCount,
+            dailyCap: 10,
+            utcTodaySentCount: autopilotHealth.utcTodaySentCount + dispatchedCount
+          }
         };
       }
 
@@ -1622,20 +1876,59 @@ export class AutomationRegistryEngine {
           console.warn(`[AffiliateReconciliation] Cuelinks payout hydration notice: ${hydErr?.message}`);
         }
 
-        // Stage D + Market Arbitrage: Reconcile existing deal candidates via live Cuelinks conversion
-        // and refresh published buyer guides + /sitemap.xml / feeds.json pings
+        // Stage D + Stage J + Market Arbitrage:
+        // 1) Ingest live Cuelinks /pub_api/v3/offers.json multi-category deals
+        // 2) Reconcile existing deal candidates via live Cuelinks conversion
+        // 3) Run 72-hour evolutionary catalog rotation ("Adapt & Evolve")
+        // 4) Refresh published buyer guides + /sitemap.xml / feeds.json pings
+        let liveOffersFetched = 0;
+        let liveOffersIngested = 0;
         let reconciledDealsCount = 0;
         let dealCandidatesProcessed = 0;
         let candidateFailures = 0;
+        let rotatedOutStale = 0;
+        let featuredDealsCount = 0;
+        let rotatedBoostedCount = 0;
         let guidesPublished = 0;
         const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').replace(/\/$/, '');
         try {
           const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
           const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
+
+          if (typeof (dealEngine as any).ingestLiveCuelinksOffers === 'function') {
+            try {
+              const liveRes = await dealEngine.ingestLiveCuelinksOffers({
+                maxPages: 2,
+                perPage: 100,
+                organizationId: 'org_owner_primary',
+                businessId: 'biz_platform_aro',
+                client
+              });
+              liveOffersFetched = liveRes?.fetched || 0;
+              liveOffersIngested = liveRes?.ingested || 0;
+            } catch (liveErr: any) {
+              console.warn(`[AffiliateReconciliation] Live Cuelinks /offers.json ingestion notice: ${liveErr?.message}`);
+            }
+          }
+
           const recRes = await dealEngine.reconcileExistingDealCandidates(25, 'org_owner_primary', 'biz_platform_aro');
           reconciledDealsCount = recRes.reconciled;
           dealCandidatesProcessed = recRes.processed;
           candidateFailures = recRes.failed;
+
+          if (typeof (dealEngine as any).evolveAndRotateCatalog === 'function') {
+            try {
+              const evoRes = await dealEngine.evolveAndRotateCatalog({
+                organizationId: 'org_owner_primary',
+                businessId: 'biz_platform_aro'
+              });
+              rotatedOutStale = evoRes?.rotatedOut || 0;
+              featuredDealsCount = evoRes?.featuredIds?.length || 0;
+              rotatedBoostedCount = evoRes?.boosted || 0;
+            } catch (evoErr: any) {
+              console.warn(`[AffiliateReconciliation] Evolutionary catalog rotation notice: ${evoErr?.message}`);
+            }
+          }
 
           const eligible = await dealEngine.getEligiblePublicDeals({ limit: 50 });
           const { OrganicDistributionEngine } = await import('../commission/organic-distribution-engine.js');
@@ -1657,22 +1950,26 @@ export class AutomationRegistryEngine {
         if (!syncRes.success && syncRes.status.status === 'FAILED_PERMANENTLY') {
           return {
             status: 'BLOCKED',
-            itemsProcessed: syncRes.status.offersRetrieved || dealCandidatesProcessed || 0,
-            itemsSucceeded: reconciledDealsCount,
+            itemsProcessed: (syncRes.status.offersRetrieved || dealCandidatesProcessed || 0) + liveOffersFetched,
+            itemsSucceeded: reconciledDealsCount + liveOffersIngested,
             itemsFailed: 1 + candidateFailures,
             ownerActionRequired: syncRes.reason || 'Cuelinks synchronization failed permanently.',
             summary: {
               configured: true,
               cuelinksStatus: syncRes.status.status,
               reason: syncRes.reason,
+              liveOffersFetched,
+              liveOffersIngested,
               reconciledDealsCount,
+              rotatedOutStale,
+              featuredDealsCount,
               activeVerifiedDeals: verifiedDeals
             }
           };
         }
 
-        const totalItemsProcessed = (syncRes.status.offersRetrieved || syncRes.dealCandidates.length) + dealCandidatesProcessed;
-        const totalItemsSucceeded = syncRes.dealCandidates.length + reconciledDealsCount;
+        const totalItemsProcessed = (syncRes.status.offersRetrieved || syncRes.dealCandidates.length) + dealCandidatesProcessed + liveOffersFetched;
+        const totalItemsSucceeded = syncRes.dealCandidates.length + reconciledDealsCount + liveOffersIngested;
         const totalItemsFailed = (syncRes.status.status === 'PARTIAL_SUCCESS' ? 1 : 0) + candidateFailures;
 
         const wfStatus = syncRes.status.status === 'PARTIAL_SUCCESS'
@@ -1688,9 +1985,14 @@ export class AutomationRegistryEngine {
             configured: true,
             cuelinksStatus: syncRes.status.status,
             campaignsDiscovered: syncRes.status.campaignsDiscovered,
-            offersRetrieved: syncRes.status.offersRetrieved,
+            offersRetrieved: (syncRes.status.offersRetrieved || 0) + liveOffersFetched,
+            liveOffersFetched,
+            liveOffersIngested,
             dealCandidatesCount: syncRes.dealCandidates.length,
             dealCandidatesReconciled: reconciledDealsCount,
+            rotatedOutStale,
+            rotatedBoostedCount,
+            featuredDealsCount,
             activeVerifiedDeals: verifiedDeals,
             guidesRefreshed: guidesPublished,
             reconciliationMode: 'LIVE_CUELINKS_V3_SYNC'
@@ -2230,22 +2532,23 @@ export class AutomationRegistryEngine {
    */
   public async autoAuditNextUnauditedDomain(
     _preferredSectorCode?: string
-  ): Promise<{ domain: string; score: number; publishedPageUrl: string } | null> {
+  ): Promise<{ domain: string; score: number; prospectTriggerScore: number; publishedPageUrl: string } | null> {
     if (process.env.VITEST) {
       return null;
     }
 
     const siteUrl = (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').replace(/\/$/, '');
     const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
+    const { isDisqualifiedOutreachTarget } = await import('./autonomous-system-doctor.js');
     const siteAuditService = SiteAuditService.getInstance();
 
     let candidateUrl: string | null = null;
     let candidateName: string | null = null;
 
-    // 1. Check platform_prospects for live non-test/non-junk websites without a recent audit
+    // 1. Check platform_prospects for live non-test/non-junk non-healthcare SMB websites (prioritizing reachable emails & excluding national chains)
     try {
       const prospectSql = `
-        SELECT p.business_name, p.website_url
+        SELECT p.business_name, p.website_url, COALESCE(p.email, p.prospect_email) as email, p.prospect_vertical
         FROM platform_prospects p
         WHERE p.is_test = 0 AND p.is_junk = 0
           AND p.website_url IS NOT NULL AND p.website_url LIKE 'https://%'
@@ -2254,19 +2557,25 @@ export class AutomationRegistryEngine {
             WHERE (LOWER(p.website_url) LIKE '%' || sa.domain || '%')
               AND sa.updated_at >= datetime('now', '-7 days')
           )
-        ORDER BY p.updated_at DESC
-        LIMIT 1
+        ORDER BY CASE WHEN COALESCE(p.email, p.prospect_email) IS NOT NULL AND TRIM(COALESCE(p.email, p.prospect_email)) != '' THEN 0 ELSE 1 END,
+                 p.updated_at DESC
+        LIMIT 10
       `;
-      const row = (this.d1Repo.isRemoteD1Configured() || isProduction())
-        ? await this.d1Repo.queryOne<any>('platform_prospects', prospectSql)
-        : (getDb().prepare(prospectSql).get() as any);
-      if (row?.website_url) {
-        candidateUrl = String(row.website_url).trim();
-        candidateName = row.business_name ? String(row.business_name).trim() : null;
+      const rows = (this.d1Repo.isRemoteD1Configured() || isProduction())
+        ? await this.d1Repo.query<any>('platform_prospects', prospectSql)
+        : (getDb().prepare(prospectSql).all() as any[]);
+      for (const row of rows || []) {
+        const w = String(row?.website_url || '').trim();
+        const b = String(row?.business_name || '').trim();
+        if (w && !isDisqualifiedOutreachTarget(w, row?.prospect_vertical) && !isDisqualifiedOutreachTarget(b, row?.prospect_vertical)) {
+          candidateUrl = w;
+          candidateName = b || null;
+          break;
+        }
       }
     } catch {}
 
-    // 2. Fallback to curated verified public Indian SMB domains not yet audited
+    // 2. Fallback to curated verified public Indian SMB domains not yet audited (strictly excluding national enterprise chains & healthcare)
     if (!candidateUrl) {
       const curatedTargets = [
         { url: 'https://www.lookssalon.in', name: 'Looks Salon' },
@@ -2277,11 +2586,11 @@ export class AutomationRegistryEngine {
         { url: 'https://www.studioadi.in/', name: 'Studio ADI' },
         { url: 'https://digitalbuddha.in', name: 'Digitalbuddha' },
         { url: 'https://architecturaldesignstudio.in', name: 'Architectural Design Studio' },
-        { url: 'https://www.careerlauncher.com', name: 'Career Launcher' },
-        { url: 'https://narayanagroup.com/', name: 'Narayana Coaching Center' }
+        { url: 'https://attagalatta.com', name: 'Atta Galatta' }
       ];
       for (const c of curatedTargets) {
         try {
+          if (isDisqualifiedOutreachTarget(c.url) || isDisqualifiedOutreachTarget(c.name)) continue;
           const cleanD = new URL(c.url).hostname.toLowerCase().replace(/^www\./, '');
           const existing = await siteAuditService.getAuditByDomain(cleanD);
           if (!existing) {
@@ -2301,13 +2610,14 @@ export class AutomationRegistryEngine {
     const domain = new URL(audit.url).hostname.toLowerCase().replace(/^www\./, '');
     const publishedPageUrl = `${siteUrl}/audit/${domain}`;
     const score = audit.pageSpeed?.seoScore ?? Math.round(audit.scorecard?.totalScore ?? audit.score ?? 0);
+    const prospectTriggerScore = Number(audit.prospectSignals?.prospectTriggerScore ?? 0);
 
     try {
       const { OrganicDistributionEngine } = await import('../commission/organic-distribution-engine.js');
       OrganicDistributionEngine.getInstance().pingIndexNow([publishedPageUrl, `${siteUrl}/sitemap.xml`]).catch(() => {});
     } catch {}
 
-    return { domain, score, publishedPageUrl };
+    return { domain, score, prospectTriggerScore, publishedPageUrl };
   }
 
   private mapWorkflowRecord(r: any): AutomationWorkflowRecord {

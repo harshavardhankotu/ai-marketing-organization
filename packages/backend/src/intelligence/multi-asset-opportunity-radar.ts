@@ -21,6 +21,7 @@ export const SEBI_COMPLIANCE_MODE = 'EDUCATIONAL_RESEARCH_AND_PAPER_PORTFOLIO_ON
 
 export interface MutualFundResearchSnapshot {
   schemeCode: string;
+  benchmarkLabel?: string;
   schemeName: string;
   category: 'INDEX_ETF' | 'DEBT_LIQUID' | 'EQUITY_DIVERSIFIED' | 'GOLD_ETF';
   observationsCount: number;
@@ -73,12 +74,26 @@ export interface ArbitrageCluster {
   actionableOfferPath: string;
 }
 
+export interface RankedRadarAsset {
+  rank: number;
+  id: string;
+  label: string;
+  assetClass: 'MUTUAL_FUND_ETF' | 'SGB_BULLION_PARITY' | 'GSEC_DURATION';
+  sharpeOrRiskAdjustedRatio: number;
+  maxDrawdown52wPercent: number;
+  annualizedVolatilityPercent: number;
+  periodReturnPercent: number;
+  dataFreshness: 'LIVE_DATED_PROVIDER_SERIES' | 'DETERMINISTIC_SCENARIO_MODEL';
+}
+
 export interface MultiAssetRadarSummary {
   generatedAt: string;
   sebiComplianceMode: typeof SEBI_COMPLIANCE_MODE;
   personalizedAdviceBlocked: true;
   automatedTradeExecutionBlocked: true;
   trackedBenchmarksCount: number;
+  navFunds?: MutualFundResearchSnapshot[];
+  rankedAssets?: RankedRadarAsset[];
   researchSnapshots: Array<{
     id: string;
     assetClass: 'MUTUAL_FUND_ETF' | 'SGB_BULLION_PARITY' | 'GSEC_DURATION' | 'REIT_SPREAD';
@@ -197,11 +212,12 @@ export class MultiAssetOpportunityRadar {
   public async fetchAndAnalyzeMutualFund(
     schemeCode: string,
     fetchFn: typeof fetch = fetch,
-    lookbackObservations: number = 90,
-    category: MutualFundResearchSnapshot['category'] = 'INDEX_ETF'
+    lookbackObservations: number = 252,
+    category: MutualFundResearchSnapshot['category'] = 'INDEX_ETF',
+    forceRefresh: boolean = false
   ): Promise<MutualFundResearchSnapshot> {
     const cached = this.navCache.get(schemeCode);
-    if (cached && Date.now() - cached.fetchedAt < 6 * 3600 * 1000) {
+    if (!forceRefresh && cached && Date.now() - cached.fetchedAt < 6 * 3600 * 1000) {
       return cached.payload;
     }
 
@@ -485,6 +501,7 @@ export class MultiAssetOpportunityRadar {
   public async getRadarSummary(options?: {
     skipLiveNetwork?: boolean;
     fetchFn?: typeof fetch;
+    forceRefresh?: boolean;
   }): Promise<MultiAssetRadarSummary> {
     const arbitrageClusters = await this.matchBuyerDemandToSupply();
 
@@ -525,25 +542,48 @@ export class MultiAssetOpportunityRadar {
       }
     ];
 
-    const schemesToFetch: Array<{ schemeCode: string; category: MutualFundResearchSnapshot['category'] }> = [
-      { schemeCode: '120716', category: 'INDEX_ETF' },
-      { schemeCode: '119063', category: 'GOLD_ETF' }
+    const schemesToFetch: Array<{
+      schemeCode: string;
+      benchmarkLabel: string;
+      category: MutualFundResearchSnapshot['category'];
+    }> = [
+      { schemeCode: '120716', benchmarkLabel: 'Nifty 50', category: 'INDEX_ETF' },
+      { schemeCode: '120684', benchmarkLabel: 'Nifty Next 50', category: 'INDEX_ETF' },
+      { schemeCode: '120685', benchmarkLabel: 'Gold ETF', category: 'GOLD_ETF' },
+      { schemeCode: '149780', benchmarkLabel: 'Silver ETF', category: 'GOLD_ETF' },
+      { schemeCode: '119833', benchmarkLabel: 'SBI 10Y Gilt', category: 'DEBT_LIQUID' },
+      { schemeCode: '131061', benchmarkLabel: '10Y Gilt', category: 'DEBT_LIQUID' }
     ];
 
+    const navFunds: MutualFundResearchSnapshot[] = [];
     let mfapiLiveSuccessCount = 0;
     if (!options?.skipLiveNetwork) {
       const settled = await Promise.allSettled(
-        schemesToFetch.map(s => this.fetchAndAnalyzeMutualFund(s.schemeCode, options?.fetchFn ?? fetch, 90, s.category))
+        schemesToFetch.map(s =>
+          this.fetchAndAnalyzeMutualFund(
+            s.schemeCode,
+            options?.fetchFn ?? fetch,
+            252,
+            s.category,
+            Boolean(options?.forceRefresh)
+          )
+        )
       );
-      for (const r of settled) {
+      for (let idx = 0; idx < settled.length; idx++) {
+        const r = settled[idx];
+        const schemeMeta = schemesToFetch[idx];
         if (r.status === 'fulfilled') {
           mfapiLiveSuccessCount++;
-          const mf = r.value;
+          const mf: MutualFundResearchSnapshot = {
+            ...r.value,
+            benchmarkLabel: schemeMeta.benchmarkLabel
+          };
+          navFunds.push(mf);
           researchSnapshots.push({
             id: `lane_e_mfapi_${mf.schemeCode}`,
             assetClass: 'MUTUAL_FUND_ETF',
             title: mf.schemeName,
-            summaryMetric: `Latest NAV ₹${mf.latestNav} (${mf.latestDate}) | Period Return ${mf.periodReturnPercent}% | Ann Vol ${mf.annualizedVolatilityPercent}% | MaxDD ${mf.maxDrawdownPercent}%`,
+            summaryMetric: `Latest NAV ₹${mf.latestNav} (${mf.latestDate}) | 52W Return ${mf.periodReturnPercent}% | Ann Vol ${mf.annualizedVolatilityPercent}% | MaxDD ${mf.maxDrawdownPercent}% | Sharpe ${mf.riskAdjustedRatio}`,
             evidenceSource: `https://api.mfapi.in/mf/${mf.schemeCode} (Live AMFI NAV Feed)`,
             dataFreshness: 'LIVE_DATED_PROVIDER_SERIES',
             latestObservationDate: mf.latestObservationDate || mf.latestDate,
@@ -557,19 +597,62 @@ export class MultiAssetOpportunityRadar {
       researchSnapshots.push({
         id: 'lane_e_mfapi_nav_scanner',
         assetClass: 'MUTUAL_FUND_ETF',
-        title: 'AMFI / MFAPI.in Index & Gold ETF Volatility & Drawdown Model (120716 / 119063)',
-        summaryMetric: 'Deterministic NAV drawdown, Sharpe ratio & rolling volatility calculator ready',
+        title: 'AMFI / MFAPI.in Index, Gold, Silver & 10Y Gilt Volatility & Drawdown Model (120716 / 120684 / 120685 / 149780 / 119833 / 131061)',
+        summaryMetric: 'Deterministic 52W NAV drawdown, Sharpe ratio & rolling volatility calculator ready',
         evidenceSource: 'https://api.mfapi.in/mf (Live AMFI Feed — Offline/Test Model Mode)',
         dataFreshness: 'DETERMINISTIC_SCENARIO_MODEL',
         sebiComplianceMode: SEBI_COMPLIANCE_MODE
       });
     }
 
+    // Rank tracked assets deterministically by 52W Sharpe / risk-adjusted ratio descending, then lowest max drawdown ascending
+    const unrankedAssets: Array<Omit<RankedRadarAsset, 'rank'>> = [
+      ...navFunds.map(f => ({
+        id: `mf_${f.schemeCode}`,
+        label: f.benchmarkLabel || f.schemeName,
+        assetClass: 'MUTUAL_FUND_ETF' as const,
+        sharpeOrRiskAdjustedRatio: f.riskAdjustedRatio,
+        maxDrawdown52wPercent: f.maxDrawdownPercent,
+        annualizedVolatilityPercent: f.annualizedVolatilityPercent,
+        periodReturnPercent: f.periodReturnPercent,
+        dataFreshness: 'LIVE_DATED_PROVIDER_SERIES' as const
+      })),
+      {
+        id: 'lane_e_sgb_parity_model',
+        label: sgbBench.trancheLabel,
+        assetClass: 'SGB_BULLION_PARITY' as const,
+        sharpeOrRiskAdjustedRatio: Number((sgbBench.impliedEffectiveYieldAdvantagePercent / 10).toFixed(3)),
+        maxDrawdown52wPercent: 0,
+        annualizedVolatilityPercent: 10,
+        periodReturnPercent: sgbBench.impliedEffectiveYieldAdvantagePercent,
+        dataFreshness: 'DETERMINISTIC_SCENARIO_MODEL' as const
+      },
+      {
+        id: 'lane_e_gsec_10y_model',
+        label: gsecBench.instrumentName,
+        assetClass: 'GSEC_DURATION' as const,
+        sharpeOrRiskAdjustedRatio: Number((gsecBench.approxYtmPercent / Math.max(1, gsecBench.modifiedDurationYears)).toFixed(3)),
+        maxDrawdown52wPercent: 0,
+        annualizedVolatilityPercent: Number(gsecBench.modifiedDurationYears.toFixed(2)),
+        periodReturnPercent: gsecBench.approxYtmPercent,
+        dataFreshness: 'DETERMINISTIC_SCENARIO_MODEL' as const
+      }
+    ];
+    unrankedAssets.sort(
+      (a, b) =>
+        b.sharpeOrRiskAdjustedRatio - a.sharpeOrRiskAdjustedRatio ||
+        a.maxDrawdown52wPercent - b.maxDrawdown52wPercent
+    );
+    const rankedAssets: RankedRadarAsset[] = unrankedAssets.map((a, idx) => ({
+      rank: idx + 1,
+      ...a
+    }));
+
     arbitrageClusters.push({
       clusterId: 'cluster_lane_e_financial_benchmarks',
       clusterType: 'FINANCIAL_RESEARCH_CLUSTER',
       lane: 'LANE_E_FINANCIAL_INTELLIGENCE',
-      title: 'Fixed Income, SGB Bullion Parity & Index ETF Paper Research Models',
+      title: 'Fixed Income, SGB Bullion Parity, Gold/Silver & Index ETF Paper Research Models (8 Benchmarks)',
       demandSignalsCount: 0,
       matchedSupplyItemsCount: researchSnapshots.length,
       topMatchedSupplySlugOrDomain: 'api.mfapi.in',
@@ -584,6 +667,8 @@ export class MultiAssetOpportunityRadar {
       personalizedAdviceBlocked: true,
       automatedTradeExecutionBlocked: true,
       trackedBenchmarksCount: researchSnapshots.length,
+      navFunds,
+      rankedAssets,
       researchSnapshots,
       arbitrageClusters
     };
@@ -593,6 +678,41 @@ export class MultiAssetOpportunityRadar {
    * Renders the public SSR HTML page for `GET /tools/financial-radar`.
    */
   public renderFinancialRadarHtml(summary: MultiAssetRadarSummary): string {
+    const rankingRowsHtml = (summary.rankedAssets || [])
+      .map(
+        a => `
+        <tr style="border-bottom:1px solid #1f2937;">
+          <td style="padding:0.55rem 0.65rem;color:#38bdf8;font-weight:700;">#${a.rank}</td>
+          <td style="padding:0.55rem 0.65rem;color:#f8fafc;font-weight:600;">${a.label}</td>
+          <td style="padding:0.55rem 0.65rem;color:#94a3b8;font-size:0.78rem;">${a.assetClass.replace(/_/g, ' ')}</td>
+          <td style="padding:0.55rem 0.65rem;text-align:right;color:#e2e8f0;">${a.sharpeOrRiskAdjustedRatio.toFixed(3)}</td>
+          <td style="padding:0.55rem 0.65rem;text-align:right;color:#fbbf24;">-${Math.abs(a.maxDrawdown52wPercent).toFixed(2)}%</td>
+          <td style="padding:0.55rem 0.65rem;text-align:right;color:${a.periodReturnPercent >= 0 ? '#34d399' : '#f87171'};">${a.periodReturnPercent >= 0 ? '+' : ''}${a.periodReturnPercent.toFixed(2)}%</td>
+        </tr>`
+      )
+      .join('');
+
+    const rankingSectionHtml = rankingRowsHtml
+      ? `<section style="background:#0f172a;border:1px solid #1e293b;border-radius:10px;padding:1rem;margin-bottom:1.5rem;">
+          <h2 style="margin:0 0 0.75rem 0;font-size:1.05rem;color:#f8fafc;">8-Asset 52-Week Drawdown &amp; Sharpe / Risk-Adjusted Ranking</h2>
+          <div style="overflow-x:auto;">
+            <table style="width:100%;border-collapse:collapse;font-size:0.86rem;">
+              <thead>
+                <tr style="border-bottom:1px solid #334155;color:#94a3b8;text-align:left;">
+                  <th style="padding:0.45rem 0.65rem;">Rank</th>
+                  <th style="padding:0.45rem 0.65rem;">Asset Benchmark</th>
+                  <th style="padding:0.45rem 0.65rem;">Class</th>
+                  <th style="padding:0.45rem 0.65rem;text-align:right;">Sharpe / Ratio</th>
+                  <th style="padding:0.45rem 0.65rem;text-align:right;">52W Max Drawdown</th>
+                  <th style="padding:0.45rem 0.65rem;text-align:right;">Return / Yield</th>
+                </tr>
+              </thead>
+              <tbody>${rankingRowsHtml}</tbody>
+            </table>
+          </div>
+        </section>`
+      : '';
+
     const cardsHtml = summary.researchSnapshots
       .map(
         snap => `
@@ -633,6 +753,7 @@ export class MultiAssetOpportunityRadar {
     <section style="background:#172554;border:1px solid #1d4ed8;border-radius:8px;padding:0.9rem 1rem;margin-bottom:1.5rem;font-size:0.88rem;color:#dbeafe;">
       <strong>SEBI Regulatory Guardrail:</strong> Educational historical analytics &amp; paper-model calculators only. Personalized investment advice and automated trade execution are strictly disabled (<code>personalizedAdviceBlocked = true</code>).
     </section>
+    ${rankingSectionHtml}
     <section>${cardsHtml}</section>
     <footer style="margin-top:1.75rem;padding-top:1rem;border-top:1px solid #1f2937;font-size:0.85rem;color:#94a3b8;display:flex;gap:1rem;flex-wrap:wrap;">
       <a href="/deals" style="color:#38bdf8;text-decoration:none;">Verified Deals Directory</a>
