@@ -201,7 +201,8 @@ export const EXACT_ROUTE_POLICY = {
     '/feeds',
     '/ig',
     '/bestdeals',
-    '/integrations/instagram/oauth'
+    '/integrations/instagram/oauth',
+    '/integrations/telegram/status'
   ],
   WEBHOOK: [
     '/webhooks/razorpay',
@@ -228,6 +229,16 @@ export const apiRouter = new Hono<{ Variables: AppVariables }>();
 apiRouter.use('*', async (c, next) => {
   const rawPath = c.req.path;
   const path = rawPath.replace(/^\/api\/v1/, '') || '/';
+
+  // MCP 2026-07-28: Stateless streamable MCP requires POST. GET returns 405 Method Not Allowed.
+  if (c.req.method === 'GET' && path === '/mcp') {
+    c.header('Allow', 'POST');
+    return c.json({
+      jsonrpc: '2.0',
+      id: null,
+      error: { code: -32601, message: 'Method Not Allowed. Streamable MCP requires POST.' }
+    }, 405);
+  }
 
   // 1. Explicit Public Endpoints (Spec § 5, § 46, § 47)
   const isExplicitPublic = EXACT_ROUTE_POLICY.PUBLIC.some(
@@ -3219,7 +3230,35 @@ apiRouter.post('/payments/razorpay/create-order', async (c) => {
     return c.json({ success: false, error: 'RATE_LIMIT_EXCEEDED', retryAfterSeconds: rateLimit.retryAfterSeconds }, 429);
   }
 
-  const body = await c.req.json();
+  const body = await c.req.json().catch(() => ({}));
+
+  // Standard Checkout Integration (SKU: sitefix_core_499 | sitefix_competitor_keyword_pack)
+  if (body.sku || body.domainOrUrl || body.domain || !body.businessId) {
+    try {
+      const { RazorpayStandardAdapter } = await import('../payments/razorpay-adapter.js');
+      const order = await RazorpayStandardAdapter.getInstance().createStandardOrder({
+        sku: body.sku,
+        domainOrUrl: body.domainOrUrl || body.domain,
+        buyerEmail: body.buyerEmail || body.customerEmail,
+        customerName: body.customerName,
+        amountINR: body.amountINR,
+        notes: body.notes
+      });
+      return c.json({
+        success: true,
+        keyId: order.keyId,
+        orderId: order.orderId,
+        razorpayOrderId: order.razorpayOrderId,
+        amount: order.amount,
+        currency: order.currency,
+        isTestMode: order.isTestMode,
+        data: order
+      }, 200);
+    } catch (stdErr: any) {
+      return c.json({ success: false, error: stdErr.message }, 400);
+    }
+  }
+
   const businessId = body.businessId;
 
   if (!businessId) {
@@ -3340,23 +3379,60 @@ apiRouter.post('/payments/razorpay/create-order', async (c) => {
 });
 
 apiRouter.post('/payments/razorpay/verify', async (c) => {
-  const body = await c.req.json();
-  const { orderId, paymentId, signature, method } = body;
+  const body = await c.req.json().catch(() => ({}));
+  const orderId = body.orderId || body.internalOrderId || body.razorpay_order_id || body.razorpayOrderId || body.order_id;
+  const razorpayOrderId = body.razorpay_order_id || body.razorpayOrderId || body.order_id || orderId;
+  const razorpayPaymentId = body.razorpay_payment_id || body.paymentId || body.razorpayPaymentId;
+  const razorpaySignature = body.razorpay_signature || body.signature || body.razorpaySignature;
+  const method = body.method;
 
-  if (!orderId || !paymentId || !signature) {
+  if (!orderId || !razorpayPaymentId || !razorpaySignature) {
     return c.json({ success: false, error: 'Missing required payment verification parameters: orderId, paymentId, signature' }, 400);
   }
 
+  // Check if this order exists in legacy payment_orders
+  let isLegacyPaymentOrder = false;
   try {
-    const result = await razorpayAdapter.confirmClientPayment({
+    const existing = getDb().prepare('SELECT 1 FROM payment_orders WHERE order_id = ?').get(orderId);
+    if (existing) isLegacyPaymentOrder = true;
+  } catch {}
+
+  if (isLegacyPaymentOrder) {
+    try {
+      const result = await razorpayAdapter.confirmClientPayment({
+        orderId,
+        paymentId: razorpayPaymentId,
+        signature: razorpaySignature,
+        method
+      });
+      return c.json({ data: result, ...result });
+    } catch (legErr: any) {
+      return c.json({ success: false, error: legErr.message }, 400);
+    }
+  }
+
+  try {
+    const { RazorpayStandardAdapter } = await import('../payments/razorpay-adapter.js');
+    const result = await RazorpayStandardAdapter.getInstance().verifyPaymentAndFulfill({
       orderId,
-      paymentId,
-      signature,
+      razorpay_order_id: razorpayOrderId,
+      razorpay_payment_id: razorpayPaymentId,
+      razorpay_signature: razorpaySignature,
       method
     });
-    return c.json({ success: true, data: result });
-  } catch (err: any) {
-    return c.json({ success: false, error: err.message }, 400);
+    return c.json({ data: result, ...result });
+  } catch (stdErr: any) {
+    // If standard fulfillment failed, try fallback to confirmClientPayment for legacy payment_orders
+    try {
+      const result = await razorpayAdapter.confirmClientPayment({
+        orderId,
+        paymentId: razorpayPaymentId,
+        signature: razorpaySignature,
+        method
+      });
+      return c.json({ data: result, ...result });
+    } catch {}
+    return c.json({ success: false, error: stdErr.message }, 400);
   }
 });
 
@@ -4577,6 +4653,12 @@ apiRouter.post('/customer-desk/subscribe-alerts', async (c) => {
     } else {
       getDb().prepare(sql).run(...params);
     }
+
+    // Brevo contact sync (background / best-effort)
+    BrevoMcpClient.getInstance().syncContact({
+      email,
+      attributes: { SOURCE: 'SITEFIX_OR_DEAL_ALERT', CATEGORIES: categories.join(',') }
+    }).catch(() => {});
 
     return c.json({
       success: true,
@@ -8103,9 +8185,11 @@ apiRouter.get('/public/autonomy-status', async (c) => {
   } catch {}
 
   let telegramSyndication: 'LIVE_ENABLED' | 'READY_AWAITING_BOT_TOKEN' = 'READY_AWAITING_BOT_TOKEN';
+  let telegramStatus: any = null;
   try {
     const { TelegramBotAdapter } = await import('../integrations/telegram-adapter.js');
     telegramSyndication = TelegramBotAdapter.getInstance().getSyndicationStatus();
+    telegramStatus = await TelegramBotAdapter.getInstance().getStatus();
   } catch {}
 
   let systemDoctorSummary: any = null;
@@ -8131,6 +8215,7 @@ apiRouter.get('/public/autonomy-status', async (c) => {
     integrationCapabilities,
     financialAndArbitrageRadar,
     telegramSyndication,
+    telegramStatus,
     indexNowStatus,
     instagramIntegration,
     systemDoctorSummary,
@@ -13011,6 +13096,12 @@ const handleSiteAuditSendReport = async (c: any) => {
     emailStatus = brevoRes.status;
   }
 
+  // Brevo contact sync (background / best-effort)
+  BrevoMcpClient.getInstance().syncContact({
+    email,
+    attributes: { SOURCE: 'SITEFIX_OR_DEAL_ALERT', DOMAIN: cleanDomain }
+  }).catch(() => {});
+
   return c.json({
     success: true,
     domain: cleanDomain,
@@ -14873,6 +14964,12 @@ apiRouter.post('/owner/instagram/poll', async (c) => {
   return c.json({ success: true, data: result });
 });
 
+apiRouter.get('/integrations/telegram/status', async (c) => {
+  const { TelegramBotAdapter } = await import('../integrations/telegram-adapter.js');
+  const status = await TelegramBotAdapter.getInstance().getStatus();
+  return c.json({ success: true, ...status });
+});
+
 const MCP_TOOLS_MANIFEST = [
   {
     name: 'get_top_verified_deals',
@@ -15012,50 +15109,49 @@ apiRouter.post('/mcp', async (c) => {
 
   const method = body.method;
   const params = body.params || {};
-
-  if (method === 'server/discover') {
-    return c.json({
+  const requestMeta = body._meta || params._meta;
+  const withMeta = (res: any) => (requestMeta ? { ...res, _meta: requestMeta } : res);
+  const makeRpcResponse = (resultObj: any) => {
+    const res: any = {
       jsonrpc: '2.0',
       id: rpcId,
-      result: {
-        protocolVersions: ['2026-07-28', '2025-03-26'],
-        serverInfo: {
-          name: 'ai-marketing-organization-mcp',
-          version: '1.0.0'
-        },
-        cacheHints: {
-          ttlMs: 3600000,
-          cacheScope: 'server'
-        },
-        capabilities: {
-          tools: {}
-        }
+      result: withMeta(resultObj)
+    };
+    if (requestMeta) res._meta = requestMeta;
+    return res;
+  };
+
+  if (method === 'server/discover') {
+    return c.json(makeRpcResponse({
+      protocolVersions: ['2026-07-28', '2025-03-26'],
+      serverInfo: {
+        name: 'ai-marketing-organization-mcp',
+        version: '1.0.0'
+      },
+      cacheHints: {
+        ttlMs: 3600000,
+        cacheScope: 'server'
+      },
+      capabilities: {
+        tools: {}
       }
-    });
+    }));
   }
 
   if (method === 'initialize') {
-    return c.json({
-      jsonrpc: '2.0',
-      id: rpcId,
-      result: {
-        protocolVersion: '2026-07-28',
-        capabilities: { tools: {} },
-        serverInfo: { name: 'ai-marketing-organization-mcp', version: '1.0.0' }
-      }
-    });
+    return c.json(makeRpcResponse({
+      protocolVersion: '2026-07-28',
+      capabilities: { tools: {} },
+      serverInfo: { name: 'ai-marketing-organization-mcp', version: '1.0.0' }
+    }));
   }
 
   if (method === 'notifications/initialized' || method === 'ping') {
-    return c.json({ jsonrpc: '2.0', id: rpcId, result: {} });
+    return c.json(makeRpcResponse({}));
   }
 
   if (method === 'tools/list') {
-    return c.json({
-      jsonrpc: '2.0',
-      id: rpcId,
-      result: { tools: MCP_TOOLS_MANIFEST }
-    });
+    return c.json(makeRpcResponse({ tools: MCP_TOOLS_MANIFEST }));
   }
 
   if (method === 'tools/call') {
@@ -15098,10 +15194,10 @@ apiRouter.post('/mcp', async (c) => {
         return c.json({
           jsonrpc: '2.0',
           id: rpcId,
-          result: {
+          result: withMeta({
             content: [{ type: 'text', text: JSON.stringify({ deals }) }],
             structuredContent: { deals }
-          }
+          })
         });
       }
 
@@ -15125,10 +15221,10 @@ apiRouter.post('/mcp', async (c) => {
         return c.json({
           jsonrpc: '2.0',
           id: rpcId,
-          result: {
+          result: withMeta({
             content: [{ type: 'text', text: JSON.stringify(fp) }],
             structuredContent: fp
-          }
+          })
         });
       }
 
@@ -15205,10 +15301,10 @@ apiRouter.post('/mcp', async (c) => {
         return c.json({
           jsonrpc: '2.0',
           id: rpcId,
-          result: {
+          result: withMeta({
             content: [{ type: 'text', text: JSON.stringify({ audits }) }],
             structuredContent: { audits }
-          }
+          })
         });
       }
 
@@ -15230,10 +15326,10 @@ apiRouter.post('/mcp', async (c) => {
         return c.json({
           jsonrpc: '2.0',
           id: rpcId,
-          result: {
+          result: withMeta({
             content: [{ type: 'text', text: JSON.stringify(payload) }],
             structuredContent: payload
-          }
+          })
         });
       }
 

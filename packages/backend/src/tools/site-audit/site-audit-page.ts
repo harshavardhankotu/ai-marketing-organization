@@ -617,15 +617,29 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
       }
 
       try {
-        const res = await fetch('/api/v1/tools/site-audit/' + currentAuditId + '/checkout', {
+        const targetDomain = currentAuditTargetUrl || (document.getElementById('targetUrl') ? document.getElementById('targetUrl').value : '') || 'sitefix-audit.com';
+        const useStandardRoute = !currentAuditId || !isTest;
+        const checkoutUrl = useStandardRoute
+          ? '/api/v1/payments/razorpay/create-order'
+          : ('/api/v1/tools/site-audit/' + currentAuditId + '/checkout');
+        const checkoutPayload = useStandardRoute
+          ? {
+              sku: isTest ? 'SITEFIX_AI_TEST_V1' : 'sitefix_core_499',
+              domainOrUrl: targetDomain,
+              buyerEmail: 'customer@example.com',
+              amountINR: isTest ? 1 : 499
+            }
+          : {
+              customerEmail: 'customer@example.com',
+              amountPaise: isTest ? 100 : 49900,
+              amountINR: isTest ? 1 : 499,
+              isTestPayment: isTest
+            };
+
+        const res = await fetch(checkoutUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            customerEmail: 'customer@example.com',
-            amountPaise: isTest ? 100 : 49900,
-            amountINR: isTest ? 1 : 499,
-            isTestPayment: isTest
-          })
+          body: JSON.stringify(checkoutPayload)
         });
 
         const data = await res.json();
@@ -659,14 +673,29 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
           handler: async function (response) {
             if (btn) btn.innerText = 'Verifying Payment Capture...';
             try {
-              const verifyRes = await fetch('/api/v1/tools/site-audit/' + currentAuditId + '/verify-payment', {
+              const verifyUrl = useStandardRoute
+                ? '/api/v1/payments/razorpay/verify'
+                : ('/api/v1/tools/site-audit/' + currentAuditId + '/verify-payment');
+              const verifyPayload = useStandardRoute
+                ? {
+                    orderId: data.orderId,
+                    razorpay_order_id: response.razorpay_order_id,
+                    razorpay_payment_id: response.razorpay_payment_id,
+                    razorpay_signature: response.razorpay_signature,
+                    sku: isTest ? 'SITEFIX_AI_TEST_V1' : 'sitefix_core_499',
+                    domainOrUrl: targetDomain
+                  }
+                : response;
+
+              const verifyRes = await fetch(verifyUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(response)
+                body: JSON.stringify(verifyPayload)
               });
               const verifyData = await verifyRes.json();
-              if (verifyData.success && verifyData.downloadUrl) {
-                showDownloadSuccess(verifyData.downloadUrl);
+              const downloadUrl = verifyData.downloadUrl || verifyData.data?.downloadUrl;
+              if (verifyData.success && downloadUrl) {
+                showDownloadSuccess(downloadUrl);
               } else {
                 alert('Payment received but verification pending. Please poll: ' + (verifyData.error || 'Unknown error'));
               }
@@ -684,8 +713,8 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
           }
         };
 
-        if (data.createdViaRazorpayApi === true || (data.order && data.order.createdViaRazorpayApi === true)) {
-          options.order_id = data.orderId;
+        if (data.createdViaRazorpayApi === true || (data.order && data.order.createdViaRazorpayApi === true) || data.razorpayOrderId || data.orderId) {
+          options.order_id = data.razorpayOrderId || data.orderId;
         }
 
         if (!options.order_id) {

@@ -418,16 +418,18 @@ export class BrevoMcpClient {
    * Syncs consent-verified contact within 2,000 contact limit.
    */
   public async syncContact(contact: { email: string; attributes?: Record<string, any>; listIds?: number[] }): Promise<{ success: boolean; reason?: string }> {
-    const isLive = Boolean(this.apiKey && !isPlaceholderCredential(this.apiKey));
+    const activeKey = this.apiKey || process.env.BREVO_API_KEY || process.env.BREVO_MCP_SERVER_API;
+    const isLive = Boolean(activeKey && !isPlaceholderCredential(activeKey));
     if (!isLive) {
       return { success: true, reason: 'SANDBOX_SYNC_SIMULATED' };
     }
 
     try {
-      const res = await fetch('https://api.brevo.com/v3/contacts', {
+      const runner = this.fetchFn || fetch;
+      const res = await runner('https://api.brevo.com/v3/contacts', {
         method: 'POST',
         headers: {
-          'api-key': this.apiKey!,
+          'api-key': activeKey!,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
@@ -447,16 +449,18 @@ export class BrevoMcpClient {
    * Syncs CRM deal within 50 open deals limit.
    */
   public async syncDeal(deal: { name: string; amount?: number; stage?: string }): Promise<{ success: boolean; reason?: string }> {
-    const isLive = Boolean(this.apiKey && !isPlaceholderCredential(this.apiKey));
+    const activeKey = this.apiKey || process.env.BREVO_API_KEY || process.env.BREVO_MCP_SERVER_API;
+    const isLive = Boolean(activeKey && !isPlaceholderCredential(activeKey));
     if (!isLive) {
       return { success: true, reason: 'SANDBOX_DEAL_SIMULATED' };
     }
 
     try {
-      const res = await fetch('https://api.brevo.com/v3/crm/deals', {
+      const runner = this.fetchFn || fetch;
+      const res = await runner('https://api.brevo.com/v3/crm/deals', {
         method: 'POST',
         headers: {
-          'api-key': this.apiKey!,
+          'api-key': activeKey!,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
