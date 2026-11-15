@@ -186,7 +186,7 @@ export class D1RevenueRepository {
       const res = await this.d1.executeQuery<T>(sql, params, false, 'P0');
       return { results: res.results, source: res.source };
     }
-    if (isProduction() && !process.env.VITEST) {
+    if (isProduction() && !process.env.VITEST && !this.d1.isRemoteD1QuotaExhausted() && !this.d1.isRemoteD1Configured()) {
       throw new Error(`PERSISTENCE_FAULT: Table '${table}' read requires durable Cloudflare D1 storage in production. SQLite fallback is strictly prohibited.`);
     }
     const db = getDb();

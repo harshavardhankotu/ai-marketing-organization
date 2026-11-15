@@ -186,7 +186,7 @@ export async function applyD1Migrations(): Promise<{ applied: string[]; tables: 
       [],
       false,
       'P0'
-    ).catch(() => ({ results: [] as { migration_name: string }[] }));
+    );
 
     const has0050 = (baselineCheck.results || []).some(r => r.migration_name.includes('0050'));
     const hasNewer = files.some(f => f > '0050_stage_d_deal_reconciliation_and_schedule.sql');
