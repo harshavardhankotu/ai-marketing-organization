@@ -312,7 +312,6 @@ export class D1Client {
           const errText = await response.text();
           if (D1Client.isDailyQuotaError(response.status, errText)) {
             this.tripQuotaCircuitBreaker(errText);
-            console.warn(`[D1Client] Cloudflare D1 free-tier daily quota reached (status ${response.status}) — tripped circuit breaker, falling back cleanly to persistent SQLite mirror.`);
             const db = getDb();
             if (isWrite) {
               const stmt = db.prepare(sql);
@@ -334,7 +333,6 @@ export class D1Client {
       } catch (err: any) {
         if (D1Client.isDailyQuotaError(0, err?.message || '')) {
           this.tripQuotaCircuitBreaker(err?.message || '');
-          console.warn(`[D1Client] Cloudflare D1 free-tier daily quota error (${err.message}) — tripped circuit breaker, falling back cleanly to persistent SQLite mirror.`);
           const db = getDb();
           if (isWrite) {
             const stmt = db.prepare(sql);
@@ -430,7 +428,6 @@ export class D1Client {
             const errText = await response.text();
             if (D1Client.isDailyQuotaError(response.status, errText)) {
               this.tripQuotaCircuitBreaker(errText);
-              console.warn(`[D1Client] Cloudflare D1 statement HTTP ${response.status} (daily quota exhausted) — tripped circuit breaker, falling back to local store`);
               fallbackToLocal = true;
               break;
             }
@@ -455,7 +452,6 @@ export class D1Client {
       } catch (err: any) {
         if (D1Client.isDailyQuotaError(0, err?.message || '')) {
           this.tripQuotaCircuitBreaker(err?.message || '');
-          console.warn(`[D1Client] Cloudflare D1 batch daily quota error (${err.message}) — tripped circuit breaker, falling back to local store`);
         } else if (isProduction) {
           throw new Error(`[D1 PERSISTENCE FAULT] Production Cloudflare D1 batch unavailable (${err.message}). Halting to prevent non-durable state divergence.`);
         } else {
