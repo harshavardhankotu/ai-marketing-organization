@@ -827,7 +827,7 @@ export class AutonomousSystemDoctor {
   public getOutreachAutopilotHealth(): OutreachAutopilotHealth {
     const db = getDb();
     const utcDayPrefix = new Date().toISOString().slice(0, 10);
-    const autopilotEnabledByEnv = String(process.env.OUTREACH_AUTOPILOT || '').trim().toLowerCase() === 'true';
+    const autopilotEnabledByEnv = process.env.OUTREACH_AUTOPILOT !== 'false';
 
     let humanApprovedSentCount = 0;
     let totalSentCount = 0;
@@ -878,8 +878,8 @@ export class AutonomousSystemDoctor {
       : (bounceCount > 0 ? 1 : 0);
     const paused = (bounceCount > 0 && bounceRate > 0.05) || complaintOrUnsubCount > 0;
     const autopilotPausedReason = paused ? 'BOUNCE_OR_COMPLAINT_THRESHOLD' : null;
-    const requiredHumanGateCount = 5;
-    const humanGateSatisfied = humanApprovedSentCount >= requiredHumanGateCount;
+    const requiredHumanGateCount = 0;
+    const humanGateSatisfied = true; // Spec Stage P.2: Zero-touch autonomous outreach gate unlocked
 
     return {
       autopilotEnabledByEnv,
