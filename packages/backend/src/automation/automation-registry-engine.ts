@@ -1146,15 +1146,10 @@ export class AutomationRegistryEngine {
       }
 
       case 'prospect_discovery_validation': {
-        // Stage I P2 & Stage N: Prospect discovery, Ad-Pixel SMB auditing & @bestdeals0162 Comment/DM polling
+        // Stage I P2 & Stage N: Prospect discovery & Ad-Pixel SMB auditing
         const { PlatformProspectDiscoveryEngine } = await import('../revenue/platform-prospect-discovery-engine.js');
         const prospects = await PlatformProspectDiscoveryEngine.getInstance().ensureCuratedQualifiedProspectBatch();
         const auditedDomainInfo = await this.autoAuditNextUnauditedDomain().catch(() => null);
-        let igPoll: any = null;
-        try {
-          const { InstagramBusinessAdapter } = await import('../integrations/instagram-business-adapter.js');
-          igPoll = await InstagramBusinessAdapter.getInstance().pollAndReplyInstagramCommentsAndDms();
-        } catch {}
         return {
           status: prospects.length > 0 ? 'COMPLETED' : 'NO_ACTION_DUE',
           itemsProcessed: prospects.length,
@@ -1165,9 +1160,7 @@ export class AutomationRegistryEngine {
             source: 'Curated Indian Healthcare & SMB Prospects',
             autonomousSiteAuditDomain: auditedDomainInfo?.domain || null,
             autonomousSiteAuditScore: auditedDomainInfo?.score ?? null,
-            autonomousProspectTriggerScore: auditedDomainInfo?.prospectTriggerScore ?? null,
-            instagramCommentsPolled: igPoll?.commentsChecked ?? 0,
-            instagramRepliesSent: igPoll?.repliesSent ?? 0
+            autonomousProspectTriggerScore: auditedDomainInfo?.prospectTriggerScore ?? null
           }
         };
       }
@@ -1731,12 +1724,29 @@ export class AutomationRegistryEngine {
       case 'reply_classification_followup': {
         const { ReplyDeskService } = await import('../revenue/reply-desk.js');
         await ReplyDeskService.getInstance().syncFromD1Async();
+
+        let igPoll: any = null;
+        try {
+          const { InstagramBusinessAdapter } = await import('../integrations/instagram-business-adapter.js');
+          igPoll = await InstagramBusinessAdapter.getInstance().pollAndReplyInstagramCommentsAndDms();
+        } catch {}
+
+        const repliesSent = igPoll?.repliesSent ?? 0;
+        const commentsChecked = igPoll?.commentsChecked ?? 0;
+        const dmsChecked = igPoll?.dmsChecked ?? 0;
+        const itemsProcessed = commentsChecked + dmsChecked;
+
         return {
-          status: 'NO_ACTION_DUE',
-          itemsProcessed: 0,
-          itemsSucceeded: 0,
+          status: (repliesSent > 0 || itemsProcessed > 0) ? 'COMPLETED' : 'NO_ACTION_DUE',
+          itemsProcessed,
+          itemsSucceeded: repliesSent,
           itemsFailed: 0,
-          summary: { sync: 'Reply desk queries synchronized; no unhandled prospect replies.' }
+          summary: {
+            sync: 'Reply desk queries synchronized; no unhandled prospect replies.',
+            instagramCommentsPolled: commentsChecked,
+            instagramDmsPolled: dmsChecked,
+            instagramRepliesSent: repliesSent
+          }
         };
       }
 

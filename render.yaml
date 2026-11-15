@@ -7,7 +7,7 @@ services:
     autoDeployTrigger: commit
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    healthCheckPath: /api/v1/health
+    healthCheckPath: /api/health
     envVars:
       - key: CRON_PING_SECRET
         sync: false

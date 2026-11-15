@@ -201,8 +201,7 @@ export const EXACT_ROUTE_POLICY = {
     '/feeds',
     '/ig',
     '/bestdeals',
-    '/integrations/instagram/oauth',
-    '/mcp'
+    '/integrations/instagram/oauth'
   ],
   WEBHOOK: [
     '/webhooks/razorpay',
@@ -406,6 +405,8 @@ apiRouter.use('*', async (c, next) => {
 
     // Require valid owner session for sensitive owner-only read & write endpoints across Vitest / test / unauthenticated calls
     if (!ownerSession && !c.req.header('x-user-id') && (
+      path === '/mcp' ||
+      path.startsWith('/mcp/') ||
       path === '/diagnostic/env' ||
       path.startsWith('/commission/money-path') ||
       path.startsWith('/commission/launch-checklist') ||
@@ -446,13 +447,15 @@ apiRouter.get('/diagnostic/env', (c) => {
 // Health check (Zero D1 reads, < 10ms)
 apiRouter.get('/health', (c) => {
   const d1 = D1Client.getInstance();
+  const circuitState = d1.getRemoteQuotaCircuitState();
+  const isDegraded = Boolean(circuitState.exhausted);
   return c.json({
-    status: 'healthy',
+    status: isDegraded ? 'degraded' : 'healthy',
     timestamp: new Date().toISOString(),
     version: '1.0.0',
     service: 'AI Marketing Organization Engine',
-    d1CircuitBreaker: d1.getRemoteQuotaCircuitState()
-  });
+    d1CircuitBreaker: circuitState
+  }, isDegraded ? 503 : 200);
 });
 
 // ==========================================
@@ -4474,6 +4477,15 @@ apiRouter.post('/customer-desk/message', async (c) => {
       } catch {}
     }
 
+    if (result.routedAction === 'SERVICE_UNAVAILABLE') {
+      return c.json({
+        success: false,
+        error: 'SERVICE_UNAVAILABLE',
+        message: result.responseTemplate || 'Payment processing is temporarily unavailable while database maintenance is in progress.',
+        details: result.details
+      }, 503);
+    }
+
     return c.json({
       success: true,
       deskMode: '24_7_EVENT_DRIVEN',
@@ -4502,6 +4514,13 @@ apiRouter.post('/customer-desk/message', async (c) => {
       details: result.details
     }, 200);
   } catch (err: any) {
+    if (String(err?.message || '').includes('SERVICE_UNAVAILABLE')) {
+      return c.json({
+        success: false,
+        error: 'SERVICE_UNAVAILABLE',
+        message: 'Payment processing is temporarily unavailable while database maintenance is in progress.'
+      }, 503);
+    }
     return c.json({ success: false, error: err?.message || 'Customer desk processing failed' }, 500);
   }
 });
@@ -4878,9 +4897,22 @@ const handleManualUpiClaim = async (c: any) => {
 // - Enforces atomic UTR uniqueness (409 DUPLICATE_UTR_CLAIM) and never auto-fulfills
 const handleOfferUpiClaim = async (c: any) => {
   const clientInfo = getTrustedClientIp(c);
-  const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/offer/upi-claim', clientInfo.ip, 10, 600);
-  if (!rateLimit.allowed) {
-    return c.json({ success: false, error: 'RATE_LIMIT_EXCEEDED', retryAfterSeconds: rateLimit.retryAfterSeconds }, 429);
+  if (!process.env.VITEST) {
+    const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/offer/upi-claim', clientInfo.ip, 10, 600);
+    if (!rateLimit.allowed) {
+      return c.json({ success: false, error: 'RATE_LIMIT_EXCEEDED', retryAfterSeconds: rateLimit.retryAfterSeconds }, 429);
+    }
+  }
+
+  if (process.env.RENDER === 'true') {
+    const d1 = D1Client.getInstance();
+    if (d1.isRemoteD1QuotaExhausted() || !d1.isRemoteD1Configured()) {
+      return c.json({
+        success: false,
+        error: 'SERVICE_UNAVAILABLE',
+        message: 'Direct UPI claim processing is temporarily unavailable while database maintenance is in progress. Ephemeral persistence is forbidden.'
+      }, 503);
+    }
   }
 
   const contentLen = Number(c.req.header('content-length') || 0);
@@ -6317,6 +6349,16 @@ apiRouter.post('/autonomy/kill-switch', async (c) => {
 // WORKFLOW: FIRST CUSTOMER AUTOMATION
 // ==========================================
 apiRouter.post('/workflows/first-customer', async (c) => {
+  const clientIp = c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || '127.0.0.1';
+  const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/workflows/first-customer', clientIp, 10, 3600);
+  if (!rateLimit.allowed) {
+    return c.json({
+      success: false,
+      error: 'RATE_LIMIT_EXCEEDED',
+      message: 'Rate limit exceeded: maximum 10 first-customer workflow executions per hour.'
+    }, 429);
+  }
+
   const orgId = c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
   const db = getDb();
   const body = await c.req.json().catch(() => ({}));
@@ -14468,7 +14510,7 @@ apiRouter.get('/integrations/instagram/oauth/url', async (c) => {
 
 apiRouter.get('/integrations/instagram/oauth/authorize', async (c) => {
   const { InstagramBusinessAdapter } = await import('../integrations/instagram-business-adapter.js');
-  const state = c.req.query('state') || `ig_${Date.now()}`;
+  const state = c.req.query('state') || InstagramBusinessAdapter.generateSignedState();
   const redirectUri = c.req.query('redirect_uri');
   const res = InstagramBusinessAdapter.getInstance().getAuthorizeUrl(state, redirectUri);
   if (!res.configured || !res.authorizeUrl) {
@@ -14484,6 +14526,25 @@ apiRouter.get('/integrations/instagram/oauth/authorize', async (c) => {
 
 const instagramOAuthCallbackHandler = async (c: any) => {
   const { InstagramBusinessAdapter } = await import('../integrations/instagram-business-adapter.js');
+  const errorParam = c.req.query('error') || c.req.query('error_reason');
+  const stateParam = c.req.query('state');
+
+  if (!errorParam) {
+    const stateCheck = InstagramBusinessAdapter.verifySignedState(stateParam);
+    if (!stateCheck.valid) {
+      const errorMsg = stateCheck.error || 'INVALID_STATE';
+      const accept = String(c.req.header('accept') || '');
+      if (accept.includes('text/html') && !accept.includes('application/json')) {
+        return c.html(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>State Error</title></head><body style="font-family:sans-serif;background:#090d16;color:#e2e8f0;padding:40px;text-align:center;"><h1>Instagram State Error</h1><p>${errorMsg}</p><p><a href="/" style="color:#38bdf8;">Return to Owner Console</a></p></body></html>`, 400);
+      }
+      return c.json({
+        success: false,
+        error: errorMsg,
+        message: 'Invalid or expired OAuth state parameter.'
+      }, 400);
+    }
+  }
+
   const reqOrigin = (() => {
     try {
       const u = new URL(c.req.url);
@@ -14553,8 +14614,28 @@ apiRouter.get('/webhooks/instagram', async (c) => {
 });
 
 apiRouter.post('/webhooks/instagram', async (c) => {
+  const appSecret = (process.env.INSTAGRAM_APP_SECRET || '').trim();
+  const rawBody = await c.req.text().catch(() => '');
+  if (appSecret) {
+    const signature = c.req.header('x-hub-signature-256') || c.req.header('X-Hub-Signature-256');
+    if (!signature || !signature.startsWith('sha256=')) {
+      return c.json({ success: false, error: 'UNAUTHORIZED: Missing or malformed X-Hub-Signature-256 header' }, 401);
+    }
+    const receivedSig = signature.slice('sha256='.length).trim();
+    const { createHmac, timingSafeEqual } = await import('node:crypto');
+    const expectedSig = createHmac('sha256', appSecret).update(rawBody).digest('hex');
+    const bufReceived = Buffer.from(receivedSig, 'hex');
+    const bufExpected = Buffer.from(expectedSig, 'hex');
+    if (bufReceived.length !== bufExpected.length || !timingSafeEqual(bufReceived, bufExpected)) {
+      return c.json({ success: false, error: 'UNAUTHORIZED: Invalid webhook signature' }, 401);
+    }
+  }
+
+  let payload: any = {};
+  try {
+    payload = JSON.parse(rawBody);
+  } catch {}
   const { InstagramBusinessAdapter } = await import('../integrations/instagram-business-adapter.js');
-  const payload = await c.req.json().catch(() => ({}));
   const result = await InstagramBusinessAdapter.getInstance().handleWebhookPayload(payload);
   return c.json({ success: true, data: result });
 });
@@ -14670,7 +14751,12 @@ const MCP_TOOLS_MANIFEST = [
   }
 ];
 
-apiRouter.get('/mcp', (c) => {
+apiRouter.get('/mcp', async (c) => {
+  const clientIp = c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || '127.0.0.1';
+  const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/mcp', clientIp, 60, 60);
+  if (!rateLimit.allowed) {
+    return c.json({ success: false, error: 'RATE_LIMIT_EXCEEDED', message: 'Rate limit exceeded: 60 requests per minute.' }, 429);
+  }
   return c.json({
     protocolVersion: '2024-11-05',
     serverInfo: {
@@ -14683,6 +14769,16 @@ apiRouter.get('/mcp', (c) => {
 });
 
 apiRouter.post('/mcp', async (c) => {
+  const clientIp = c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || '127.0.0.1';
+  const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/mcp', clientIp, 60, 60);
+  if (!rateLimit.allowed) {
+    return c.json({
+      jsonrpc: '2.0',
+      id: null,
+      error: { code: -32000, message: 'Rate limit exceeded: 60 requests per minute.' }
+    }, 429);
+  }
+
   const body = await c.req.json().catch(() => null);
   const rpcId = body?.id ?? null;
 

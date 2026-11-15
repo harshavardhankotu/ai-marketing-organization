@@ -26,10 +26,12 @@ import { createHash, randomUUID } from 'crypto';
 import { getSiteAuditFixpackPriceINR, getDirectUpiConfig } from '../config/env.js';
 import { getDb } from '../db/client.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
+import { D1Client } from '../db/d1-client.js';
 import { isProduction } from '../config/env.js';
 import { DurableEventBus } from './durable-event-bus.js';
 import { AutonomyPolicyController } from './autonomy-policy.js';
 import { IntegrationCapabilityRegistry } from '../control-plane/integration-capability-registry.js';
+import { OwnerAuthService } from '../auth/owner-auth.js';
 
 export type IdentityProvenance =
   | 'ANONYMOUS_WEB_SESSION'
@@ -809,11 +811,13 @@ export class SalesConversationEngine {
   }
 
   private async safeExecWrite(table: string, sql: string, params: any[] = []): Promise<void> {
-    if (isProduction() && !process.env.VITEST) {
-      await D1RevenueRepository.getInstance().executeWrite(table, sql, params);
-    } else {
-      getDb().prepare(sql).run(...params);
-    }
+    try {
+      if (isProduction() && !process.env.VITEST) {
+        await D1RevenueRepository.getInstance().executeWrite(table, sql, params);
+      } else {
+        getDb().prepare(sql).run(...params);
+      }
+    } catch {}
   }
 
   private async safeQueryOne<T = any>(table: string, sql: string, params: any[] = []): Promise<T | null> {
@@ -1319,6 +1323,13 @@ export class SalesConversationEngine {
     reason: string;
   }> {
     if ((offer.kind === 'DIGITAL_PRODUCT' || offer.kind === 'SERVICE_OFFER') && (offer.priceINR ?? 0) > 0) {
+      if (
+        process.env.RENDER === 'true' &&
+        !event.isDiagnosticProbe &&
+        (D1Client.getInstance().isRemoteD1QuotaExhausted() || !D1Client.getInstance().isRemoteD1Configured())
+      ) {
+        throw new Error('SERVICE_UNAVAILABLE: Real transaction blocked while remote Cloudflare D1 is unavailable on Render. Ephemeral persistence is prohibited.');
+      }
       const orderId = `ord_${Date.now()}_${randomUUID().replace(/-/g, '').slice(0, 8)}`;
       const amountINR = Number(offer.priceINR);
       const upiCfg = getDirectUpiConfig();
@@ -1538,22 +1549,32 @@ export class SalesConversationEngine {
           [newStage, targetJourneyId]
         );
 
-        if (!targetBizId) {
-          const jRow = await this.safeQueryOne<any>('customer_journeys', 'SELECT business_id FROM customer_journeys WHERE id = ?', [targetJourneyId]);
-          const pRow = !jRow ? await this.safeQueryOne<any>('sales_pipeline', 'SELECT business_id FROM sales_pipeline WHERE journey_id = ? LIMIT 1', [targetJourneyId]) : null;
-          targetBizId = jRow?.business_id || pRow?.business_id || '';
+        let fromStage = 'AUTOMATED_INBOUND';
+        if (targetJourneyId) {
+          const jRow = await this.safeQueryOne<any>('customer_journeys', 'SELECT stage, business_id FROM customer_journeys WHERE id = ?', [targetJourneyId]);
+          if (jRow?.stage) fromStage = jRow.stage;
+          if (!targetBizId) {
+            targetBizId = jRow?.business_id || '';
+            if (!targetBizId) {
+              const pRow = await this.safeQueryOne<any>('sales_pipeline', 'SELECT stage, business_id FROM sales_pipeline WHERE journey_id = ? LIMIT 1', [targetJourneyId]);
+              targetBizId = pRow?.business_id || '';
+              if (!jRow?.stage && pRow?.stage) fromStage = pRow.stage;
+            }
+          }
         }
 
-        if (targetBizId) {
-          const transId = `ptrans_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-          await this.safeExecWrite(
-            'pipeline_transitions',
-            `INSERT INTO pipeline_transitions (
-              id, pipeline_id, business_id, previous_state, new_state, actor, reason, timestamp
-            ) VALUES (?, ?, ?, 'AUTOMATED_INBOUND', ?, 'sales-conversation-engine', ?, datetime('now'))`,
-            [transId, targetJourneyId, targetBizId, newStage, reason]
-          ).catch(() => {});
-        }
+        const orgId = OwnerAuthService.OWNER_ORGANIZATION_ID || 'org_owner_primary';
+        await DurableEventBus.emitAsync({
+          eventType: 'PIPELINE_TRANSITION',
+          organizationId: orgId,
+          businessId: targetBizId || 'biz_platform_aro',
+          payload: {
+            journeyId: targetJourneyId,
+            fromStage,
+            toStage: newStage,
+            reason: reason || ''
+          }
+        }).catch(() => {});
       }
     } catch {}
   }

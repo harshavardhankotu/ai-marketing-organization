@@ -22,8 +22,36 @@ export const INSTAGRAM_REQUIRED_SCOPES = [
   'instagram_business_basic',
   'instagram_business_manage_messages',
   'instagram_business_manage_comments',
-  'instagram_business_content_publish'
+  'instagram_business_content_publishing'
 ] as const;
+
+export const getInstagramGraphApiVersion = (): string =>
+  (process.env.INSTAGRAM_GRAPH_API_VERSION || 'v22.0').trim();
+
+export function isDirectImageUrl(url?: string): boolean {
+  if (!url || typeof url !== 'string') return false;
+  const trimmed = url.trim();
+  if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) return false;
+  try {
+    const u = new URL(trimmed);
+    if (u.pathname === '/deals' || u.pathname === '/deals/' || u.pathname.endsWith('/deals')) {
+      return false;
+    }
+    if (/\.(jpe?g|png|webp|gif|avif)($|\?)/i.test(u.pathname)) return true;
+    if (
+      u.hostname.includes('cdn') ||
+      u.hostname.includes('images') ||
+      u.hostname.includes('cloudinary') ||
+      u.hostname.includes('img') ||
+      u.hostname.includes('media')
+    ) {
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
 
 export const INSTAGRAM_TRIGGER_KEYWORDS_REGEX = /\b(DEAL|LINK|PRICE|BUY|AUDIT)\b/i;
 
@@ -106,6 +134,82 @@ export class InstagramBusinessAdapter {
 
   public static resetInstance(): void {
     InstagramBusinessAdapter.instance = null;
+  }
+
+  public static generateSignedState(authSecret?: string): string {
+    const secret = authSecret || process.env.AUTH_SECRET || process.env.OWNER_API_KEY || 'ig_oauth_secret';
+    const timestamp = Date.now().toString();
+    const nonce = crypto.randomBytes(8).toString('hex');
+    const hmac = crypto.createHmac('sha256', secret).update(`${timestamp}.${nonce}`).digest('hex');
+    return `${timestamp}.${nonce}.${hmac}`;
+  }
+
+  public static verifySignedState(state?: string, authSecret?: string): { valid: boolean; error?: string } {
+    if (!state || typeof state !== 'string') {
+      return { valid: false, error: 'MISSING_STATE' };
+    }
+    const parts = state.split('.');
+    if (parts.length !== 3) {
+      return { valid: false, error: 'MALFORMED_STATE' };
+    }
+    const [timestampStr, nonce, receivedHmac] = parts;
+    const timestamp = Number(timestampStr);
+    if (!timestamp || isNaN(timestamp)) {
+      return { valid: false, error: 'INVALID_STATE_TIMESTAMP' };
+    }
+    // Expire if older than 15 minutes or from the future
+    if (Date.now() - timestamp > 15 * 60 * 1000 || timestamp > Date.now() + 60000) {
+      return { valid: false, error: 'EXPIRED_STATE' };
+    }
+    const secret = authSecret || process.env.AUTH_SECRET || process.env.OWNER_API_KEY || 'ig_oauth_secret';
+    const expectedHmac = crypto.createHmac('sha256', secret).update(`${timestampStr}.${nonce}`).digest('hex');
+    const bufReceived = Buffer.from(receivedHmac, 'hex');
+    const bufExpected = Buffer.from(expectedHmac, 'hex');
+    if (bufReceived.length !== bufExpected.length || !crypto.timingSafeEqual(bufReceived, bufExpected)) {
+      return { valid: false, error: 'TAMPERED_STATE' };
+    }
+    return { valid: true };
+  }
+
+  public generateSignedState(authSecret?: string): string {
+    return InstagramBusinessAdapter.generateSignedState(authSecret);
+  }
+
+  public verifySignedState(state?: string, authSecret?: string): { valid: boolean; error?: string } {
+    return InstagramBusinessAdapter.verifySignedState(state, authSecret);
+  }
+
+  public async isItemReplied(itemKey: string): Promise<boolean> {
+    if (this.repliedItemIds.has(itemKey)) return true;
+    try {
+      const row = await D1RevenueRepository.getInstance().queryOne<{ id: string }>(
+        'durable_events',
+        `SELECT id FROM durable_events WHERE event_type = 'IG_REPLY_SENT' AND business_id = ? LIMIT 1`,
+        [itemKey]
+      );
+      if (row?.id) {
+        this.repliedItemIds.add(itemKey);
+        return true;
+      }
+    } catch {}
+    return false;
+  }
+
+  public async markItemReplied(itemKey: string): Promise<void> {
+    this.repliedItemIds.add(itemKey);
+    try {
+      const { DurableEventBus } = await import('../revenue/durable-event-bus.js');
+      const { OwnerAuthService } = await import('../auth/owner-auth.js');
+      await DurableEventBus.emitAsync({
+        eventType: 'IG_REPLY_SENT',
+        organizationId: OwnerAuthService.OWNER_ORGANIZATION_ID || 'org_owner_primary',
+        businessId: itemKey,
+        payload: {
+          ig_item_id: itemKey,
+          repliedAt: new Date().toISOString()
+        }
+      });
+    } catch {}
   }
 
   public getHandle(): string {
@@ -389,14 +493,13 @@ export class InstagramBusinessAdapter {
     url.searchParams.set('redirect_uri', callbackUrl);
     url.searchParams.set('response_type', 'code');
     url.searchParams.set('scope', INSTAGRAM_REQUIRED_SCOPES.join(','));
-    if (state) {
-      url.searchParams.set('state', state);
-      if (this.stateRedirectUriMap.size >= 100) {
-        const oldestKey = this.stateRedirectUriMap.keys().next().value;
-        if (oldestKey) this.stateRedirectUriMap.delete(oldestKey);
-      }
-      this.stateRedirectUriMap.set(state, callbackUrl);
+    const effectiveState = state || this.generateSignedState();
+    url.searchParams.set('state', effectiveState);
+    if (this.stateRedirectUriMap.size >= 100) {
+      const oldestKey = this.stateRedirectUriMap.keys().next().value;
+      if (oldestKey) this.stateRedirectUriMap.delete(oldestKey);
     }
+    this.stateRedirectUriMap.set(effectiveState, callbackUrl);
 
     return {
       configured: true,
@@ -526,7 +629,7 @@ export class InstagramBusinessAdapter {
       // Step 3: Optionally resolve handle / user_id from /me if missing
       let resolvedHandle = this.getHandle();
       try {
-        const meUrl = `https://graph.instagram.com/v21.0/me?fields=id,username&access_token=${encodeURIComponent(longToken)}`;
+        const meUrl = `https://graph.instagram.com/${getInstagramGraphApiVersion()}/me?fields=id,username&access_token=${encodeURIComponent(longToken)}`;
         const meRes = await fn(meUrl, { method: 'GET', headers: { 'Accept': 'application/json' } });
         if (meRes.ok) {
           const meJson: any = await meRes.json().catch(() => ({}));
@@ -714,6 +817,17 @@ export class InstagramBusinessAdapter {
       };
     }
 
+    const caption = (options?.captionOverride || this.buildDealCaption(deal)).trim();
+    const imageUrl = (options?.imageUrl || deal.imageUrl || '').trim();
+    if (!imageUrl || !isDirectImageUrl(imageUrl)) {
+      return {
+        ok: false,
+        blocked: true,
+        reason: 'INVALID_OR_NON_DIRECT_IMAGE_URL',
+        handle
+      };
+    }
+
     await this.ensureStateLoaded();
     const { accessToken, igUserId } = this.resolveActiveCredentials();
     if (!accessToken || !igUserId) {
@@ -724,13 +838,11 @@ export class InstagramBusinessAdapter {
       };
     }
 
-    const caption = (options?.captionOverride || this.buildDealCaption(deal)).trim();
-    const imageUrl = (options?.imageUrl || deal.imageUrl || `${this.getSiteUrl()}/deals`).trim();
     const fn = options?.fetchFn ?? this.fetchFn;
 
     try {
       // Step 1: Create media container
-      const createRes = await fn(`https://graph.instagram.com/v21.0/${encodeURIComponent(igUserId)}/media`, {
+      const createRes = await fn(`https://graph.instagram.com/${getInstagramGraphApiVersion()}/${encodeURIComponent(igUserId)}/media`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -754,7 +866,7 @@ export class InstagramBusinessAdapter {
       const creationId = String(createJson.id);
 
       // Step 2: Publish media container
-      const pubRes = await fn(`https://graph.instagram.com/v21.0/${encodeURIComponent(igUserId)}/media_publish`, {
+      const pubRes = await fn(`https://graph.instagram.com/${getInstagramGraphApiVersion()}/${encodeURIComponent(igUserId)}/media_publish`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -890,7 +1002,7 @@ export class InstagramBusinessAdapter {
 
     const fn = fetchOverride ?? this.fetchFn;
     try {
-      const res = await fn(`https://graph.instagram.com/v21.0/${encodeURIComponent(igUserId)}/messages`, {
+      const res = await fn(`https://graph.instagram.com/${getInstagramGraphApiVersion()}/${encodeURIComponent(igUserId)}/messages`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -930,13 +1042,14 @@ export class InstagramBusinessAdapter {
         const val = ch?.value || {};
         const commentId = String(val.id || '').trim();
         const text = String(val.text || '').trim();
-        if (!commentId || !text || this.repliedItemIds.has(`comment:${commentId}`)) continue;
+        const itemKey = `comment:${commentId}`;
+        if (!commentId || !text || (await this.isItemReplied(itemKey))) continue;
         processed++;
         const reply = await this.buildCommentOrDmReply(text);
         if (reply.triggered && reply.replyText) {
           const ok = await this.sendInstagramMessage({ comment_id: commentId }, reply.replyText, fetchOverride);
           if (ok) {
-            this.repliedItemIds.add(`comment:${commentId}`);
+            await this.markItemReplied(itemKey);
             repliesSent++;
           }
         }
@@ -949,13 +1062,14 @@ export class InstagramBusinessAdapter {
         const senderId = String(msgEvent?.sender?.id || '').trim();
         const mid = String(msgEvent?.message?.mid || `${senderId}_${msgEvent?.timestamp || Date.now()}`);
         const text = String(msgEvent?.message?.text || '').trim();
-        if (!senderId || !text || this.repliedItemIds.has(`dm:${mid}`)) continue;
+        const itemKey = `dm:${mid}`;
+        if (!senderId || !text || (await this.isItemReplied(itemKey))) continue;
         processed++;
         const reply = await this.buildCommentOrDmReply(text);
         if (reply.triggered && reply.replyText) {
           const ok = await this.sendInstagramMessage({ id: senderId }, reply.replyText, fetchOverride);
           if (ok) {
-            this.repliedItemIds.add(`dm:${mid}`);
+            await this.markItemReplied(itemKey);
             repliesSent++;
           }
         }
@@ -997,7 +1111,7 @@ export class InstagramBusinessAdapter {
     let repliesSent = 0;
 
     try {
-      const mediaUrl = `https://graph.instagram.com/v21.0/${encodeURIComponent(igUserId)}/media?fields=id,comments{id,text,username}&limit=5&access_token=${encodeURIComponent(accessToken)}`;
+      const mediaUrl = `https://graph.instagram.com/${getInstagramGraphApiVersion()}/${encodeURIComponent(igUserId)}/media?fields=id,comments{id,text,username}&limit=5&access_token=${encodeURIComponent(accessToken)}`;
       const mediaRes = await fn(mediaUrl, { method: 'GET', headers: { 'Accept': 'application/json' } });
       if (mediaRes.ok) {
         const mediaJson: any = await mediaRes.json().catch(() => ({}));
@@ -1007,13 +1121,14 @@ export class InstagramBusinessAdapter {
           for (const c of comments) {
             const cId = String(c?.id || '').trim();
             const cText = String(c?.text || '').trim();
-            if (!cId || !cText || this.repliedItemIds.has(`comment:${cId}`)) continue;
+            const itemKey = `comment:${cId}`;
+            if (!cId || !cText || (await this.isItemReplied(itemKey))) continue;
             commentsChecked++;
             const reply = await this.buildCommentOrDmReply(cText);
             if (reply.triggered && reply.replyText) {
               const ok = await this.sendInstagramMessage({ comment_id: cId }, reply.replyText, fn);
               if (ok) {
-                this.repliedItemIds.add(`comment:${cId}`);
+                await this.markItemReplied(itemKey);
                 repliesSent++;
               }
             }
@@ -1023,7 +1138,7 @@ export class InstagramBusinessAdapter {
     } catch {}
 
     try {
-      const convUrl = `https://graph.instagram.com/v21.0/${encodeURIComponent(igUserId)}/conversations?fields=messages{id,message,from}&limit=10&access_token=${encodeURIComponent(accessToken)}`;
+      const convUrl = `https://graph.instagram.com/${getInstagramGraphApiVersion()}/${encodeURIComponent(igUserId)}/conversations?fields=messages{id,message,from}&limit=10&access_token=${encodeURIComponent(accessToken)}`;
       const convRes = await fn(convUrl, { method: 'GET', headers: { 'Accept': 'application/json' } });
       if (convRes.ok) {
         const convJson: any = await convRes.json().catch(() => ({}));
@@ -1034,13 +1149,14 @@ export class InstagramBusinessAdapter {
           const mid = String(latest?.id || '').trim();
           const senderId = String(latest?.from?.id || '').trim();
           const mText = String(latest?.message || '').trim();
-          if (!mid || !senderId || senderId === igUserId || !mText || this.repliedItemIds.has(`dm:${mid}`)) continue;
+          const itemKey = `dm:${mid}`;
+          if (!mid || !senderId || senderId === igUserId || !mText || (await this.isItemReplied(itemKey))) continue;
           dmsChecked++;
           const reply = await this.buildCommentOrDmReply(mText);
           if (reply.triggered && reply.replyText) {
             const ok = await this.sendInstagramMessage({ id: senderId }, reply.replyText, fn);
             if (ok) {
-              this.repliedItemIds.add(`dm:${mid}`);
+              await this.markItemReplied(itemKey);
               repliesSent++;
             }
           }

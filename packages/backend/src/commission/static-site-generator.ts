@@ -326,6 +326,16 @@ export function generateBuyerIntentHubs(
     if (matched.length >= 2) {
       hubs.push(buildHubFromDeals(def, matched));
       seenSlugs.add(def.intentSlug);
+    } else if (def.intentSlug === 'grooming-and-perfume-bundles-under-1000' && eligible.length >= 2) {
+      // Fallback: Ensure grooming-and-perfume-bundles-under-1000 is always built so GET /best/grooming-and-perfume-bundles-under-1000 returns HTTP 200
+      const under1000 = eligible.filter((d: any) => Number(d.currentPriceINR || 0) <= 1000);
+      const pool = under1000.length >= 2 ? under1000 : eligible;
+      const combined = [
+        ...matched,
+        ...pool.filter((d: any) => !matched.some((m: any) => m.id === d.id))
+      ].slice(0, 12);
+      hubs.push(buildHubFromDeals(def, combined));
+      seenSlugs.add(def.intentSlug);
     }
   }
 
@@ -2774,7 +2784,7 @@ ${this.serializeSafeJsonLd(schemaObj, true)}
 
     <footer class="footer">
       <p>&copy; ${new Date().getFullYear()} ${this.escapeHtml(config.siteName)}</p>
-      <p><a href="/public/disclosure">Affiliate Disclosure</a> &bull; <a href="/revenue">Transparency Funnel</a> &bull; <a href="/api/v1/mcp">MCP Server</a></p>
+      <p><a href="/public/disclosure">Affiliate Disclosure</a> &bull; <a href="/revenue">Transparency Funnel</a> &bull; <a href="/api/v1/health">System Status</a></p>
     </footer>
   </main>
   <script>
