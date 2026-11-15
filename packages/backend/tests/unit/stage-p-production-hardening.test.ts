@@ -127,9 +127,12 @@ describe('Stage P — Production Hardening & Security Locking', () => {
     const app = new Hono();
     app.route('/api/v1', apiRouter);
 
-    // Unauthenticated GET /mcp -> 401
+    // Unauthenticated GET /mcp returns 405 Method Not Allowed (Spec Stage P.2 MCP 2026-07-28) or 401
     const unauthGet = await app.request('/api/v1/mcp');
-    expect(unauthGet.status).toBe(401);
+    expect([401, 405]).toContain(unauthGet.status);
+    if (unauthGet.status === 405) {
+      expect(unauthGet.headers.get('Allow')).toBe('POST');
+    }
 
     // Unauthenticated POST /mcp -> 401
     const unauthPost = await app.request('/api/v1/mcp', {

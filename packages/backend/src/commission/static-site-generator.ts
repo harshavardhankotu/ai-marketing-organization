@@ -2370,6 +2370,7 @@ ${this.serializeSafeJsonLd(faqSchema, true)}
   <meta name="description" content="Deterministic HTML, Schema.org validation, crawlability, and SEO scorecard for ${domain}. Self-Serve SiteFix Core Technical Fix-Pack.">
   <link rel="canonical" href="${config.siteUrl}/audit/${domain}">
   ${!isAuthorized ? '<meta name="robots" content="noindex, nofollow">\n  ' : ''}${this.getGoogleSiteVerificationMeta(config)}${this.getCuelinksVerificationMeta(config)}
+  <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
   <script type="application/ld+json">
 ${this.serializeSafeJsonLd(schemaObj, true)}
   </script>
@@ -2474,10 +2475,14 @@ ${this.serializeSafeJsonLd(schemaObj, true)}
       <p style="margin:8px 0 20px 0;color:#e2e8f0;font-size:15px;max-width:650px;margin-left:auto;margin-right:auto;">
         Claim the Self-Serve SiteFix Core Technical Fix-Pack engineered for <strong>${domain}</strong>: custom <code>&lt;head&gt;</code> metadata bundle, validated <code>Schema.org</code> JSON-LD script, clean <code>robots.txt</code>, and starter <code>sitemap.xml</code>.
       </p>
+      <div style="margin-bottom:12px;">
+        <button id="rzpAuditPayBtn" onclick="initiateAuditPay499('${domain}')" class="btn-primary" style="font-size:16px;padding:12px 24px;cursor:pointer;border:none;border-radius:6px;background:#38bdf8;color:#0f172a;font-weight:700;">Pay ₹499 Instantly (UPI / Card / NetBanking)</button>
+      </div>
       <div>
         <a href="${selfServeToolUrl}" class="btn-primary">Open Self-Serve Checkout for ${domain}</a>
         <a href="/offer#sandbox" class="btn-secondary">₹1 Live Sandbox Validation</a>
       </div>
+      <div id="rzpAuditStatusBox" style="display:none;margin-top:16px;padding:16px;background:rgba(15,23,42,0.85);border:1px solid #38bdf8;border-radius:8px;text-align:left;"></div>
       <div style="margin-top:16px;padding:14px;background:rgba(15,23,42,0.55);border:1px solid rgba(148,163,184,0.3);border-radius:8px;max-width:650px;margin-left:auto;margin-right:auto;text-align:left;">
         <div style="font-size:13px;font-weight:bold;color:#bfdbfe;">Tier 2 Optional Order Bump: Competitor SEO Gap &amp; 30-Day Search Console Action Pack (₹1,999)</div>
         <div style="font-size:12px;color:#cbd5e1;margin-top:4px;">Available on self-serve checkout (SKU: <code>sitefix_competitor_keyword_pack</code>).</div>
@@ -2502,6 +2507,102 @@ ${this.serializeSafeJsonLd(schemaObj, true)}
       <p><a href="/" style="color:#64748b;">Home</a> &bull; <a href="/offer" style="color:#64748b;">Offer</a> &bull; <a href="/deals" style="color:#64748b;">Deals</a> &bull; <a href="/tools/site-audit" style="color:#64748b;">Free Audit Tool</a> &bull; <a href="/public/disclosure" style="color:#64748b;">Affiliate Disclosure</a></p>
     </div>
   </div>
+
+  <script>
+    async function initiateAuditPay499(domain) {
+      const btn = document.getElementById('rzpAuditPayBtn');
+      const statusBox = document.getElementById('rzpAuditStatusBox');
+      if (btn) {
+        btn.disabled = true;
+        btn.innerText = 'Creating Payment Order...';
+      }
+      try {
+        const res = await fetch('/api/v1/payments/razorpay/create-order', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sku: 'sitefix_core_499',
+            domainOrUrl: domain
+          })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          alert('Order creation failed: ' + (data.error || 'Server error'));
+          if (btn) {
+            btn.disabled = false;
+            btn.innerText = 'Pay ₹499 Instantly (UPI / Card / NetBanking)';
+          }
+          return;
+        }
+        const options = {
+          key: data.keyId,
+          amount: data.amount,
+          currency: data.currency || 'INR',
+          name: 'SiteFix AI Core Fix-Pack',
+          description: 'Website Optimization Fix-Pack for ' + domain,
+          order_id: data.razorpayOrderId || data.orderId,
+          prefill: {
+            email: data.buyerEmail || ('buyer@' + domain)
+          },
+          theme: { color: '#0284c7' },
+          handler: async function (response) {
+            if (btn) btn.innerText = 'Verifying Payment Capture...';
+            try {
+              const verifyRes = await fetch('/api/v1/payments/razorpay/verify', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  orderId: data.orderId,
+                  razorpay_order_id: response.razorpay_order_id,
+                  razorpay_payment_id: response.razorpay_payment_id,
+                  razorpay_signature: response.razorpay_signature,
+                  sku: 'sitefix_core_499',
+                  domainOrUrl: domain
+                })
+              });
+              const verifyData = await verifyRes.json();
+              if (verifyData.success) {
+                if (btn) btn.style.display = 'none';
+                if (statusBox) {
+                  statusBox.style.display = 'block';
+                  statusBox.innerHTML = '<h4 style="color:#4ade80;margin:0 0 8px 0;">🎉 Payment Verified & Fulfilled!</h4>' +
+                    '<p style="color:#e2e8f0;font-size:14px;margin:0 0 12px 0;">Your SiteFix Core Fix-Pack is ready for instant download.</p>' +
+                    (verifyData.downloadUrl ? '<a href="' + verifyData.downloadUrl + '" class="btn-primary" style="display:inline-block;padding:10px 20px;text-decoration:none;background:#22c55e;color:#fff;border-radius:6px;font-weight:700;">Download Fix-Pack Bundle &rarr;</a>' : '');
+                }
+              } else {
+                alert('Payment verification failed: ' + (verifyData.error || 'Verification issue'));
+                if (btn) {
+                  btn.disabled = false;
+                  btn.innerText = 'Pay ₹499 Instantly (UPI / Card / NetBanking)';
+                }
+              }
+            } catch (vErr) {
+              alert('Verification request failed: ' + vErr.message);
+              if (btn) {
+                btn.disabled = false;
+                btn.innerText = 'Pay ₹499 Instantly (UPI / Card / NetBanking)';
+              }
+            }
+          }
+        };
+        const rzp = new window.Razorpay(options);
+        rzp.on('payment.failed', function (resp) {
+          alert('Payment Failed: ' + (resp.error?.description || 'Payment was not completed'));
+          if (btn) {
+            btn.disabled = false;
+            btn.innerText = 'Pay ₹499 Instantly (UPI / Card / NetBanking)';
+          }
+        });
+        rzp.open();
+      } catch (err) {
+        alert('Checkout error: ' + err.message);
+        if (btn) {
+          btn.disabled = false;
+          btn.innerText = 'Pay ₹499 Instantly (UPI / Card / NetBanking)';
+        }
+      }
+    }
+  </script>
 </body>
 </html>`;
   }
