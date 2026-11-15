@@ -1441,7 +1441,12 @@ export class AutomationRegistryEngine {
         );
 
         // Stage P.2: Bounded Brevo HTTPS Autopilot runs autonomously (up to 10/UTC_DAY) when configured
+        const senderEmail = String(process.env.PUBLIC_CONTACT_EMAIL || '').trim();
+        const brevoKey = String(process.env.BREVO_API_KEY || process.env.BREVO_MCP_SERVER_API || '').trim();
+        const hasBrevoCreds = Boolean(senderEmail && senderEmail.includes('@') && brevoKey);
+
         const canRunBoundedAutopilot =
+          hasBrevoCreds &&
           (autopilotHealth.autopilotEnabledByEnv || process.env.OUTREACH_AUTOPILOT !== 'false') &&
           !autopilotHealth.paused;
 
@@ -1488,8 +1493,6 @@ export class AutomationRegistryEngine {
         }
 
         // Execute Bounded Brevo HTTPS Autopilot (up to 10/UTC_DAY, prospectTriggerScore >= 4, 1 initial + max 1 follow-up >= 96h)
-        const senderEmail = String(process.env.PUBLIC_CONTACT_EMAIL || '').trim();
-        const brevoKey = String(process.env.BREVO_API_KEY || process.env.BREVO_MCP_SERVER_API || '').trim();
         if (!senderEmail || !senderEmail.includes('@') || !brevoKey) {
           return {
             status: 'BLOCKED',

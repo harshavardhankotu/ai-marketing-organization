@@ -255,10 +255,10 @@ describe('Stage P.2 — Zero-Touch Autonomous Revenue Engine & Production Durabi
       const json = (await res.json()) as any;
       const names = json.result?.tools?.map((t: any) => t.name);
       expect(names).toEqual([
+        'get_top_verified_deals',
         'check_fair_price',
-        'get_autonomy_and_doctor_status',
         'get_ready_sitefix_audits',
-        'get_top_verified_deals'
+        'get_autonomy_and_doctor_status'
       ]);
     });
   });

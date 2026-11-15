@@ -15051,11 +15051,10 @@ apiRouter.post('/mcp', async (c) => {
   }
 
   if (method === 'tools/list') {
-    const deterministicTools = [...MCP_TOOLS_MANIFEST].sort((a, b) => a.name.localeCompare(b.name));
     return c.json({
       jsonrpc: '2.0',
       id: rpcId,
-      result: { tools: deterministicTools }
+      result: { tools: MCP_TOOLS_MANIFEST }
     });
   }
 
