@@ -133,10 +133,9 @@ export class D1Client {
   public isRemoteD1ReadAllowed(): boolean {
     if (process.env.VITEST && process.env.ALLOW_REMOTE_D1_READS !== 'true') return false;
     if (!this.isRemoteD1Configured()) return false;
-    const isProd = process.env.NODE_ENV === 'production';
-    if (!isProd && this.isRemoteD1QuotaExhausted()) return false;
+    if (this.isRemoteD1QuotaExhausted()) return false;
     return (
-      isProd ||
+      process.env.NODE_ENV === 'production' ||
       process.env.RENDER === 'true' ||
       process.env.ALLOW_REMOTE_D1_READS === 'true' ||
       process.env.ALLOW_REMOTE_D1_WRITES === 'true'
@@ -150,7 +149,7 @@ export class D1Client {
   public isRemoteD1WriteAllowed(): boolean {
     if (process.env.VITEST) return false;
     if (!this.isRemoteD1Configured()) return false;
-    if (process.env.NODE_ENV !== 'production' && this.isRemoteD1QuotaExhausted()) return false;
+    if (this.isRemoteD1QuotaExhausted()) return false;
     return process.env.RENDER === 'true' || process.env.ALLOW_REMOTE_D1_WRITES === 'true';
   }
 
@@ -311,24 +310,46 @@ export class D1Client {
           return { results, rowsAffected: rowsWritten, source: 'CLOUDFLARE_D1' };
         } else {
           const errText = await response.text();
+          if (D1Client.isDailyQuotaError(response.status, errText)) {
+            this.tripQuotaCircuitBreaker(errText);
+            const db = getDb();
+            if (isWrite) {
+              const stmt = db.prepare(sql);
+              const info = stmt.run(...params);
+              this.recordUsage(0, info.changes || 1);
+              return { results: [], rowsAffected: info.changes, source: 'PERSISTENT_SQLITE' };
+            } else {
+              const stmt = db.prepare(sql);
+              const results = stmt.all(...params) as T[];
+              this.recordUsage(results.length || 1, 0);
+              return { results, rowsAffected: 0, source: 'PERSISTENT_SQLITE' };
+            }
+          }
           if (isProduction) {
             throw new Error(`[D1 PERSISTENCE ERROR] D1 returned HTTP ${response.status}: ${errText}`);
           }
-          if (D1Client.isDailyQuotaError(response.status, errText)) {
-            this.tripQuotaCircuitBreaker(errText);
-          } else {
-            console.warn(`[D1Client] Cloudflare D1 HTTP ${response.status} (${errText}) — falling back to dev store`);
-          }
+          console.warn(`[D1Client] Cloudflare D1 HTTP ${response.status} (${errText}) — falling back to dev store`);
         }
       } catch (err: any) {
+        if (D1Client.isDailyQuotaError(0, err?.message || '')) {
+          this.tripQuotaCircuitBreaker(err?.message || '');
+          const db = getDb();
+          if (isWrite) {
+            const stmt = db.prepare(sql);
+            const info = stmt.run(...params);
+            this.recordUsage(0, info.changes || 1);
+            return { results: [], rowsAffected: info.changes, source: 'PERSISTENT_SQLITE' };
+          } else {
+            const stmt = db.prepare(sql);
+            const results = stmt.all(...params) as T[];
+            this.recordUsage(results.length || 1, 0);
+            return { results, rowsAffected: 0, source: 'PERSISTENT_SQLITE' };
+          }
+        }
         if (isProduction) {
           throw new Error(`[D1 PERSISTENCE FAULT] Production Cloudflare D1 unavailable (${err.message}). Halting to prevent non-durable state divergence.`);
         }
-        if (D1Client.isDailyQuotaError(0, err?.message || '')) {
-          this.tripQuotaCircuitBreaker(err?.message || '');
-        } else {
-          console.warn(`[D1Client] Cloudflare D1 query failed (${err.message}) — falling back to local store in dev/test`);
-        }
+        console.warn(`[D1Client] Cloudflare D1 query failed (${err.message}) — falling back to local store in dev/test`);
       }
     } else if (isProduction && !this.isRemoteD1Configured()) {
       throw new Error('[D1 CONFIGURATION FAULT] Production requires remote Cloudflare D1 credentials (CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_D1_DATABASE_ID, CLOUDFLARE_D1_API_TOKEN). Ephemeral SQLite fallback is strictly prohibited in production.');
@@ -405,14 +426,15 @@ export class D1Client {
 
           if (!response.ok) {
             const errText = await response.text();
+            if (D1Client.isDailyQuotaError(response.status, errText)) {
+              this.tripQuotaCircuitBreaker(errText);
+              fallbackToLocal = true;
+              break;
+            }
             if (isProduction) {
               throw new Error(`[D1 PERSISTENCE ERROR] D1 batch statement returned HTTP ${response.status}: ${errText}`);
             }
-            if (D1Client.isDailyQuotaError(response.status, errText)) {
-              this.tripQuotaCircuitBreaker(errText);
-            } else {
-              console.warn(`[D1Client] Cloudflare D1 statement HTTP ${response.status} (${errText}) — falling back to dev store`);
-            }
+            console.warn(`[D1Client] Cloudflare D1 statement HTTP ${response.status} (${errText}) — falling back to dev store`);
             fallbackToLocal = true;
             break;
           } else {
@@ -428,11 +450,10 @@ export class D1Client {
           return { rowsAffected: totalWritten, source: 'CLOUDFLARE_D1' };
         }
       } catch (err: any) {
-        if (isProduction) {
-          throw new Error(`[D1 PERSISTENCE FAULT] Production Cloudflare D1 batch unavailable (${err.message}). Halting to prevent non-durable state divergence.`);
-        }
         if (D1Client.isDailyQuotaError(0, err?.message || '')) {
           this.tripQuotaCircuitBreaker(err?.message || '');
+        } else if (isProduction) {
+          throw new Error(`[D1 PERSISTENCE FAULT] Production Cloudflare D1 batch unavailable (${err.message}). Halting to prevent non-durable state divergence.`);
         } else {
           console.warn(`[D1Client] Cloudflare D1 batch failed (${err.message}) — falling back to local store in dev/test`);
         }
