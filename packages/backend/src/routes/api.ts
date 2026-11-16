@@ -3607,9 +3607,9 @@ apiRouter.post('/webhooks/razorpay', async (c) => {
   const eventType = (eventPayload.event || '').trim();
 
   // Spec Stage P.3.5 Task 1: Strict Paid-Event Allowlist
-  // Route ONLY eventType === 'payment.captured' || eventType === 'order.paid' to fulfillment.
+  // Route ONLY payment.captured, order.paid, or payment_link.paid to fulfillment.
   // Record and safely ignore payment.failed, payment.authorized, refunds, or any other event type without fulfillment.
-  if (eventType !== 'payment.captured' && eventType !== 'order.paid') {
+  if (eventType !== 'payment.captured' && eventType !== 'order.paid' && eventType !== 'payment_link.paid') {
     const rawEventId = c.req.header('x-razorpay-event-id') || createHash('sha256').update(rawBody).digest('hex');
     const eventHash = createHash('sha256').update(rawEventId).digest('hex');
     const dedupeKey = `rzp_wh_evt_${eventHash.slice(0, 40)}`;
@@ -5386,11 +5386,38 @@ const handleOfferUpiClaim = async (c: any) => {
   const orderId = body.orderId ? String(body.orderId).trim() : undefined;
   const proposalId = body.proposalId ? String(body.proposalId).trim() : undefined;
 
+  const authCtx = await razorpayAdapter.resolveAuthoritativeOfferClaimContext({
+    auditId,
+    paymentRequestId,
+    orderId,
+    proposalId
+  });
+
+  if (!authCtx || !authCtx.verified) {
+    return c.json({
+      success: false,
+      error: 'AUDIT_OR_ORDER_NOT_FOUND',
+      message: 'Claim must reference a verified auditId in site_audits or an existing server-created payment_requests / payment_orders record.'
+    }, 400);
+  }
+
+  // Strictly enforce server-derived amountINR: reject any client-supplied amount mismatch
+  const clientSubmittedAmount = body.amountINR !== undefined ? Number(body.amountINR) : (body.amount !== undefined ? Number(body.amount) : undefined);
+  if (clientSubmittedAmount !== undefined) {
+    if (!Number.isFinite(clientSubmittedAmount) || Math.round(clientSubmittedAmount) !== Math.round(authCtx.amountINR)) {
+      return c.json({
+        success: false,
+        error: 'AMOUNT_MISMATCH',
+        message: `Client-submitted amount (₹${body.amountINR ?? body.amount}) does not match server-authoritative amount (₹${authCtx.amountINR}) for SKU ${authCtx.sku}.`
+      }, 400);
+    }
+  }
+
   // Spec Stage P.3.5 Task 4: Require Buyer Email on UPI Claim
   let buyerEmail = String(body.buyerEmail || body.email || body.customerEmail || '').trim();
   if (!buyerEmail || !buyerEmail.includes('@') || !buyerEmail.includes('.')) {
-    // If orderId, proposalId, or journeyId is provided (e.g. from existing desk/order flow), resolve email
-    if (orderId || proposalId || body.journeyId) {
+    // If orderId, proposalId, journeyId, or platform businessId is provided (e.g. from existing desk/order flow), resolve email
+    if (orderId || proposalId || body.journeyId || body.businessId) {
       try {
         if (orderId) {
           const ord = await d1Repo.queryOne<any>('universal_orders', 'SELECT customer_email FROM universal_orders WHERE id = ? OR provider_order_id = ?', [orderId, orderId]);
@@ -5418,34 +5445,7 @@ const handleOfferUpiClaim = async (c: any) => {
     }, 400);
   }
 
-  const authCtx = await razorpayAdapter.resolveAuthoritativeOfferClaimContext({
-    auditId,
-    paymentRequestId,
-    orderId,
-    proposalId
-  });
-
-  if (!authCtx || !authCtx.verified) {
-    return c.json({
-      success: false,
-      error: 'AUDIT_OR_ORDER_NOT_FOUND',
-      message: 'Claim must reference a verified auditId in site_audits or an existing server-created payment_requests / payment_orders record.'
-    }, 400);
-  }
-
   const domainOrUrl = String(body.domainOrUrl || body.domain || authCtx.invoiceRef || auditId || '').trim();
-
-  // Strictly enforce server-derived amountINR: reject any client-supplied amount mismatch
-  const clientSubmittedAmount = body.amountINR !== undefined ? Number(body.amountINR) : (body.amount !== undefined ? Number(body.amount) : undefined);
-  if (clientSubmittedAmount !== undefined) {
-    if (!Number.isFinite(clientSubmittedAmount) || Math.round(clientSubmittedAmount) !== Math.round(authCtx.amountINR)) {
-      return c.json({
-        success: false,
-        error: 'AMOUNT_MISMATCH',
-        message: `Client-submitted amount (₹${body.amountINR ?? body.amount}) does not match server-authoritative amount (₹${authCtx.amountINR}) for SKU ${authCtx.sku}.`
-      }, 400);
-    }
-  }
 
   try {
     const claim = await razorpayAdapter.recordManualUpiClaim({

@@ -1234,7 +1234,7 @@ describe('Stage D & Stage E — Autonomous Daily Deals and Production Conversion
       const okRes = await app.request('/api/v1/offer/upi-claim', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-forwarded-for': '198.51.100.14' },
-        body: JSON.stringify({ auditId: testAuditId, utr: '912345678901' })
+        body: JSON.stringify({ auditId: testAuditId, utr: '912345678901', buyerEmail: 'stageh@example.com' })
       });
       expect(okRes.status).toBe(201);
       const okJson = await okRes.json() as any;
@@ -1249,7 +1249,7 @@ describe('Stage D & Stage E — Autonomous Daily Deals and Production Conversion
       const dupRes = await app.request('/api/v1/offer/upi-claim', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-forwarded-for': '198.51.100.15' },
-        body: JSON.stringify({ auditId: testAuditId, utr: '912345678901' })
+        body: JSON.stringify({ auditId: testAuditId, utr: '912345678901', buyerEmail: 'stageh@example.com' })
       });
       expect(dupRes.status).toBe(409);
       const dupJson = await dupRes.json() as any;
