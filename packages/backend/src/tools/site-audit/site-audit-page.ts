@@ -638,8 +638,18 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
       try {
         const domainInput = document.getElementById('checkoutDomainInput');
         const emailInput = document.getElementById('checkoutBuyerEmailInput');
-        let targetDomain = (domainInput ? domainInput.value : '').trim() || currentAuditTargetUrl || (document.getElementById('targetUrl') ? document.getElementById('targetUrl').value : '') || 'sitefix-audit.com';
+        let targetDomain = (domainInput ? domainInput.value : '').trim() || currentAuditTargetUrl || (document.getElementById('targetUrl') ? document.getElementById('targetUrl').value : '');
         targetDomain = targetDomain.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').trim();
+
+        if (!targetDomain || !targetDomain.includes('.')) {
+          alert('Please enter a valid website domain (e.g. example.com) to generate your custom Fix-Pack.');
+          if (domainInput) domainInput.focus();
+          if (btn) {
+            btn.disabled = false;
+            btn.innerText = isTest ? '⚡ Launch Razorpay Sandbox Modal (₹1.00 Test Mode)' : 'Unlock & Download Complete Fix-Pack (₹499)';
+          }
+          return;
+        }
 
         const buyerEmail = (emailInput ? emailInput.value : '').trim();
         if (!buyerEmail || !buyerEmail.includes('@') || !buyerEmail.includes('.')) {
@@ -647,7 +657,7 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
           if (emailInput) emailInput.focus();
           if (btn) {
             btn.disabled = false;
-            btn.innerText = isTest ? '⚡ Launch Razorpay Sandbox Modal (₹1.00 Test Mode)' : 'Unlock & Download Complete Fix-Pack (₹499 Sandbox Mode)';
+            btn.innerText = isTest ? '⚡ Launch Razorpay Sandbox Modal (₹1.00 Test Mode)' : 'Unlock & Download Complete Fix-Pack (₹499)';
           }
           return;
         }
@@ -658,7 +668,7 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
           : ('/api/v1/tools/site-audit/' + currentAuditId + '/checkout');
         const checkoutPayload = useStandardRoute
           ? {
-              sku: isTest ? 'SITEFIX_AI_TEST_V1' : 'sitefix_core_499',
+              sku: 'sitefix_core_499',
               domainOrUrl: targetDomain,
               buyerEmail: buyerEmail,
               amountINR: isTest ? 1 : 499
@@ -681,7 +691,7 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
           alert('Checkout unavailable: ' + (data.error || 'Server error'));
           if (btn) {
             btn.disabled = false;
-            btn.innerText = isTest ? '⚡ Launch Razorpay Sandbox Modal (₹1.00 Test Mode)' : 'Unlock & Download Complete Fix-Pack (₹499 Sandbox Mode)';
+            btn.innerText = isTest ? '⚡ Launch Razorpay Sandbox Modal (₹1.00 Test Mode)' : 'Unlock & Download Complete Fix-Pack (₹499)';
           }
           return;
         }
@@ -690,14 +700,15 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
           throw new Error('Payment gateway keyId is missing from server checkout response.');
         }
 
+        const isTestMode = Boolean(data.isTestMode || data.keyMode === 'TEST_SANDBOX' || (data.keyId && data.keyId.startsWith('rzp_test_')));
         const options = {
           key: data.keyId,
           amount: data.amount,
           currency: data.currency,
-          name: 'SiteFix AI (Test Sandbox)',
-          description: isTest
+          name: isTestMode ? 'SiteFix AI (Test Mode)' : 'SiteFix AI',
+          description: isTestMode
             ? 'Sandbox Mode — Simulated Test Payment (No Real Currency Moved)'
-            : 'Website Optimization Fix-Pack (Test Sandbox)',
+            : 'Website Optimization Fix-Pack',
           notes: {
             mode: 'test',
             sandbox: 'true',
@@ -716,7 +727,7 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
                     razorpay_order_id: response.razorpay_order_id,
                     razorpay_payment_id: response.razorpay_payment_id,
                     razorpay_signature: response.razorpay_signature,
-                    sku: isTest ? 'SITEFIX_AI_TEST_V1' : 'sitefix_core_499',
+                    sku: 'sitefix_core_499',
                     domainOrUrl: targetDomain
                   }
                 : response;

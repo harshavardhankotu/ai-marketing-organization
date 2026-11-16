@@ -3486,9 +3486,59 @@ apiRouter.post('/payments/razorpay/verify', async (c) => {
   }
 });
 
-apiRouter.get('/payments/razorpay/health', (c) => {
+apiRouter.get('/payments/razorpay/health', async (c) => {
   const health = razorpayAdapter.getRazorpayHealth();
-  return c.json({ success: true, data: health });
+  let configured = health.configured;
+  let keyMode: 'LIVE' | 'TEST_SANDBOX' | 'NONE' = health.live_mode ? 'LIVE' : (configured ? 'TEST_SANDBOX' : 'NONE');
+  let providerAcceptedAuth = false;
+  let httpStatus: number | null = null;
+  let activeKeyId = '';
+  let activeKeySecret = '';
+
+  try {
+    const { RazorpayStandardAdapter } = await import('../payments/razorpay-adapter.js');
+    const creds = RazorpayStandardAdapter.getInstance().resolveCredentials();
+    configured = Boolean(creds.keyId && creds.keySecret && !isPlaceholderCredential(creds.keyId));
+    keyMode = creds.mode;
+    activeKeyId = creds.keyId;
+    activeKeySecret = creds.keySecret;
+  } catch {
+    // If resolveCredentials throws, keep configured from legacy health
+  }
+
+  // When credential pair is present and not a dummy fallback, probe Razorpay Orders API
+  if (configured && activeKeyId && !activeKeyId.includes('fallback')) {
+    try {
+      const basicAuth = Buffer.from(`${activeKeyId}:${activeKeySecret}`).toString('base64');
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      const res = await fetch('https://api.razorpay.com/v1/orders?count=1', {
+        method: 'GET',
+        headers: {
+          Authorization: `Basic ${basicAuth}`,
+          'User-Agent': 'SiteFix-AI-Revenue-Engine/1.0'
+        },
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+      httpStatus = res.status;
+      providerAcceptedAuth = res.status === 200;
+    } catch {
+      providerAcceptedAuth = false;
+    }
+  }
+
+  return c.json({
+    success: true,
+    data: {
+      ...health,
+      configured,
+      keyMode,
+      providerAcceptedAuth,
+      httpStatus,
+      live_mode: keyMode === 'LIVE'
+    }
+  });
 });
 
 apiRouter.post('/webhooks/razorpay', async (c) => {
@@ -3521,16 +3571,65 @@ apiRouter.post('/webhooks/razorpay', async (c) => {
     const paymentId = payment?.id;
     const receipt = eventPayload.payload?.order?.entity?.receipt || payment?.notes?.internalOrderId;
 
-    if (orderId && (orderId.startsWith('ord_rzp_') || (receipt && receipt.startsWith('ord_rzp_')))) {
+    if (!paymentId || !orderId) {
+      return c.json({ success: false, error: 'MISSING_PROVIDER_PAYMENT_OR_ORDER_ID' }, 400);
+    }
+
+    const d1Repo = D1RevenueRepository.getInstance();
+    let isStandardOrder = Boolean(
+      (orderId && orderId.startsWith('ord_rzp_')) ||
+      (receipt && receipt.startsWith('ord_rzp_'))
+    );
+
+    if (!isStandardOrder && orderId) {
+      const matched = await d1Repo.queryOne(
+        'universal_orders',
+        `SELECT id FROM universal_orders WHERE id = ? OR provider_order_id = ?`,
+        [orderId, orderId]
+      );
+      if (matched) {
+        isStandardOrder = true;
+      }
+    }
+
+    if (isStandardOrder) {
+      // Event-level webhook deduplication (Task 3)
+      const rawEventId = c.req.header('x-razorpay-event-id') || createHash('sha256').update(rawBody).digest('hex');
+      const eventHash = createHash('sha256').update(rawEventId).digest('hex');
+      const dedupeKey = `rzp_wh_evt_${eventHash.slice(0, 40)}`;
+
+      const existingEvt = await d1Repo.queryOne(
+        'durable_events',
+        `SELECT id FROM durable_events WHERE id = ?`,
+        [dedupeKey]
+      );
+      if (existingEvt) {
+        return c.json({ success: true, received: true, duplicate: true, message: 'Webhook event already processed' }, 200);
+      }
+
+      try {
+        await d1Repo.executeWrite(
+          'durable_events',
+          `INSERT INTO durable_events (id, event_type, organization_id, payload_json, created_at) VALUES (?, 'RAZORPAY_WEBHOOK_EVENT', 'org_owner_primary', ?, datetime('now'))`,
+          [dedupeKey, JSON.stringify({ eventId: rawEventId, eventType: eventPayload.event, orderId, paymentId })]
+        );
+      } catch (evtErr: any) {
+        if (evtErr.message?.includes('UNIQUE') || evtErr.message?.includes('already exists')) {
+          return c.json({ success: true, received: true, duplicate: true, message: 'Concurrent webhook event already recorded' }, 200);
+        }
+        throw evtErr;
+      }
+
       const { RazorpayStandardAdapter } = await import('../payments/razorpay-adapter.js');
       const stdResult = await RazorpayStandardAdapter.getInstance().verifyPaymentAndFulfill({
         isWebhook: true,
         orderId: receipt || orderId,
         razorpay_order_id: orderId,
-        razorpay_payment_id: paymentId || `pay_wh_${Date.now()}`
+        razorpay_payment_id: paymentId
       });
       return c.json({
         success: true,
+        received: true,
         eventDriven: { mode: 'INSTANT_SYNC', processedImmediately: true },
         data: stdResult
       }, 200);

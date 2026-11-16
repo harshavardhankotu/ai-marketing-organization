@@ -173,8 +173,8 @@ describe('Stage P.3.2 — Unified Razorpay Order/Capture/Delivery Pipeline, Real
       // Confirm deliverable task created in delivery_tasks table
       const task = await d1Repo.queryOne<any>(
         'delivery_tasks',
-        `SELECT * FROM delivery_tasks WHERE customer_journey_id = ?`,
-        [order.orderId]
+        `SELECT * FROM delivery_tasks WHERE customer_journey_id = ? OR customer_journey_id = ?`,
+        [order.orderId, `cj_rzp_${order.orderId}`]
       );
       expect(task).toBeDefined();
       expect(task.stage).toBe('COMPLETED');

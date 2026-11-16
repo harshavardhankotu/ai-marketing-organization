@@ -271,23 +271,25 @@ export class SiteAuditService {
           [detailsJson, existing.id]
         );
       } else {
+        const externalId = audit.url || ('https://' + (audit.domain || 'sitefix-domain.com'));
         await this.d1Repo.executeWrite(
           'commercial_evidence',
           `INSERT INTO commercial_evidence (
             id, milestone, provider, external_id, timestamp, request_reference,
             tenant_id, business_id, classification, verification_source, details_json
           ) VALUES (?, 'SITE_AUDIT_SCAN', 'SITEFIX_AI', ?, datetime('now'), ?, ?, ?, 'REAL', 'HTTP_PROBE', ?)`,
-          [`audit_${audit.auditId}`, audit.url, audit.auditId, orgId, bizId, detailsJson]
+          [`audit_${audit.auditId}`, externalId, audit.auditId, orgId, bizId, detailsJson]
         );
       }
 
       // Persist to public site_audits table for public /audit/:domain SSR
+      const effectiveUrl = audit.url || (audit.domain ? `https://${audit.domain}` : 'https://sitefix-domain.com');
       const domain = (() => {
         try {
-          const u = new URL(audit.url.startsWith('http') ? audit.url : `https://${audit.url}`);
+          const u = new URL(effectiveUrl.startsWith('http') ? effectiveUrl : `https://${effectiveUrl}`);
           return u.hostname.toLowerCase().replace(/^www\./, '');
         } catch {
-          return audit.url.toLowerCase().replace(/https?:\/\//, '').replace(/^www\./, '').split('/')[0];
+          return effectiveUrl.toLowerCase().replace(/https?:\/\//, '').replace(/^www\./, '').split('/')[0];
         }
       })();
       const effectiveDeliverable = deliverable || this.generator.generateFixPack(audit);
@@ -340,7 +342,7 @@ export class SiteAuditService {
             pagespeed_unavailable_reason = excluded.pagespeed_unavailable_reason,
             is_publicly_authorized = MAX(site_audits.is_publicly_authorized, excluded.is_publicly_authorized),
             updated_at = datetime('now')`,
-          [domain, audit.url, bName, perfScore, seoScore, cwvJson, headSnippets, schemaJsonLd, checklistJson, htmlScanStatus, pageSpeedStatus, pageSpeedUnavailableReason, isPubliclyAuthorized]
+          [domain, effectiveUrl, bName, perfScore, seoScore, cwvJson, headSnippets, schemaJsonLd, checklistJson, htmlScanStatus, pageSpeedStatus, pageSpeedUnavailableReason, isPubliclyAuthorized]
         );
       } else {
         const { getDb } = await import('../../db/client.js');
@@ -365,7 +367,7 @@ export class SiteAuditService {
             pagespeed_unavailable_reason = excluded.pagespeed_unavailable_reason,
             is_publicly_authorized = MAX(site_audits.is_publicly_authorized, excluded.is_publicly_authorized),
             updated_at = datetime('now')
-        `).run(domain, audit.url, bName, perfScore, seoScore, cwvJson, headSnippets, schemaJsonLd, checklistJson, htmlScanStatus, pageSpeedStatus, pageSpeedUnavailableReason, isPubliclyAuthorized);
+        `).run(domain, effectiveUrl, bName, perfScore, seoScore, cwvJson, headSnippets, schemaJsonLd, checklistJson, htmlScanStatus, pageSpeedStatus, pageSpeedUnavailableReason, isPubliclyAuthorized);
       }
     } catch (err: any) {
       if (isProduction() && !process.env.VITEST) {
