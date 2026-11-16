@@ -490,7 +490,7 @@ export class BrevoMcpClient {
     reason?: string;
     messageId?: string;
     [key: string]: any;
-  }): Promise<{ processed: boolean; suppressed: boolean; duplicate?: boolean }> {
+  }): Promise<{ processed: boolean; suppressed: boolean; duplicate?: boolean; event?: string; status?: string }> {
     if (!event.email) return { processed: false, suppressed: false };
 
     const lowerEvent = (event.event || '').toLowerCase();
@@ -517,6 +517,34 @@ export class BrevoMcpClient {
     }
 
     const shouldSuppress = ['hard_bounce', 'soft_bounce', 'spam', 'unsubscribed', 'blocked'].includes(lowerEvent);
+
+    if (lowerEvent === 'delivered') {
+      const normalizedEmail = event.email.toLowerCase().trim();
+      try {
+        const orders = await this.d1Repo.query<any>(
+          'universal_orders',
+          `SELECT id, metadata_json FROM universal_orders WHERE (fulfillment_status = 'EMAIL_ACCEPTED' OR fulfillment_status = 'DELIVERED') AND (customer_email = ? OR metadata_json LIKE ?)`,
+          [normalizedEmail, `%"buyerEmail":"${normalizedEmail}"%`]
+        );
+        for (const order of orders) {
+          let meta = {};
+          try { meta = JSON.parse(order.metadata_json || '{}'); } catch {}
+          const updatedMeta = JSON.stringify({
+            ...meta,
+            email_receipt_status: 'DELIVERED',
+            email_delivered_at: new Date().toISOString()
+          });
+          await this.d1Repo.executeWrite(
+            'universal_orders',
+            `UPDATE universal_orders SET fulfillment_status = 'EMAIL_DELIVERED', metadata_json = ?, updated_at = datetime('now') WHERE id = ?`,
+            [updatedMeta, order.id]
+          ).catch(() => {});
+        }
+      } catch (d1OrdErr: any) {
+        console.warn(`[BrevoMcpClient] Notice updating order fulfillment to EMAIL_DELIVERED: ${d1OrdErr.message}`);
+      }
+      return { processed: true, suppressed: false, event: lowerEvent, status: 'EMAIL_DELIVERED' };
+    }
 
     if (shouldSuppress) {
       // 1. Direct write to D1 outreach_suppression_list (Fail closed on D1 write errors)

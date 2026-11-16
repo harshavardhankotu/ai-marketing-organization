@@ -193,6 +193,11 @@ export interface SelfHealingReport {
   openAnomaliesCount: number;
   funnelDiagnosis: FunnelLeakDiagnosis;
   queueRecovery?: any;
+  deliveryRecovery?: {
+    processed: number;
+    recovered: number;
+    errors: string[];
+  };
 }
 
 export class AutonomousSystemDoctor {
@@ -208,6 +213,10 @@ export class AutonomousSystemDoctor {
   }
 
   public static resetForTesting(): void {
+    AutonomousSystemDoctor.instance = null;
+  }
+
+  public static resetInstanceForTesting(): void {
     AutonomousSystemDoctor.instance = null;
   }
 
@@ -1239,6 +1248,152 @@ export class AutonomousSystemDoctor {
     return { fakeCpsCampaignsPurged, fakeCpsDealsPurged, testEventsPurged };
   }
 
+  /**
+   * Bounded durable recovery processor for pending Fix-Pack deliverables and Brevo receipts (Spec Stage P.3.4 Task E).
+   * Queries D1 universal_orders for PAYMENT_CAPTURED_PENDING_DELIVERY and DELIVERABLE_READY_EMAIL_PENDING,
+   * retries real audit scan, Fix-Pack generation, and Brevo dispatch idempotently.
+   */
+  public async recoverPendingDeliveriesAndReceipts(): Promise<{
+    processed: number;
+    recovered: number;
+    errors: string[];
+  }> {
+    let pendingOrders: any[] = [];
+    try {
+      pendingOrders = await this.d1Repo.query<any>(
+        'universal_orders',
+        `SELECT id, provider_order_id, provider_payment_id, customer_email, metadata_json, fulfillment_status, status
+         FROM universal_orders
+         WHERE fulfillment_status IN ('PAYMENT_CAPTURED_PENDING_DELIVERY', 'DELIVERABLE_READY_EMAIL_PENDING')
+         ORDER BY created_at ASC LIMIT 10`
+      );
+    } catch (e: any) {
+      return { processed: 0, recovered: 0, errors: [e.message] };
+    }
+
+    if (!pendingOrders || pendingOrders.length === 0) {
+      return { processed: 0, recovered: 0, errors: [] };
+    }
+
+    let recovered = 0;
+    const errors: string[] = [];
+
+    const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
+    const { RazorpayStandardAdapter } = await import('../payments/razorpay-adapter.js');
+    const { BrevoMcpClient } = await import('../integrations/brevo-mcp-client.js');
+    const auditService = SiteAuditService.getInstance();
+    const rzpAdapter = RazorpayStandardAdapter.getInstance();
+    const brevo = BrevoMcpClient.getInstance();
+
+    for (const order of pendingOrders) {
+      try {
+        let meta: any = {};
+        try {
+          meta = JSON.parse(order.metadata_json || '{}');
+        } catch {}
+
+        const cleanDomain = (meta.domainOrUrl || meta.domain || '').replace(/^https?:\/\//i, '').replace(/\/.*$/, '').trim();
+        const buyerEmail = (order.customer_email || meta.buyerEmail || '').trim();
+        const rzpPaymentId = order.provider_payment_id || meta.paymentId || meta.razorpayPaymentId || 'pay_recovered';
+        const journeyId = meta.journeyId || `cj_rzp_${order.id}`;
+        const siteUrl = getTrustedPublicSiteUrl().replace(/\/$/, '');
+
+        let deliverableReady = meta.deliverable_status === 'READY';
+        let downloadToken = meta.downloadToken || '';
+        let downloadUrl = meta.downloadUrl || '';
+
+        // If deliverable is still pending, run genuine scan & store deliverable
+        if (!deliverableReady && cleanDomain) {
+          let audit = await auditService.getAuditByDomain(cleanDomain);
+          if (!audit) {
+            audit = await auditService.runScan(`https://${cleanDomain}`);
+            await auditService.persistAuditToD1(audit);
+          }
+          const resolvedAuditId = audit.auditId || audit.id || `audit_${cleanDomain}`;
+          audit.auditId = resolvedAuditId;
+          auditService.setAuditInCache(audit);
+
+          downloadToken = auditService.generateSignedDeliveryToken(order.id, resolvedAuditId, rzpPaymentId, 72);
+          downloadUrl = `${siteUrl}/api/v1/offer/download/${encodeURIComponent(downloadToken)}`;
+          await auditService.generateDeliverable(resolvedAuditId, order.id);
+
+          await rzpAdapter.ensureCustomerJourney(journeyId, buyerEmail, meta.customerName || 'Customer', false, 'PAYMENT_VERIFIED');
+
+          const taskId = `deliv_${order.id}_${rzpPaymentId}`;
+          await this.d1Repo.executeWrite(
+            'delivery_tasks',
+            `INSERT INTO delivery_tasks (
+              id, organization_id, business_id, customer_journey_id,
+              service_type, stage, deliverables_json, results_json,
+              action_classification, completed_at, created_at
+            ) VALUES (?, 'org_owner_primary', 'biz_platform_aro', ?, 'SITE_AUDIT_FIXPACK', 'COMPLETED', ?, ?, 'INTERNAL_AUTOMATION', datetime('now'), datetime('now'))
+            ON CONFLICT(id) DO UPDATE SET stage = 'COMPLETED', deliverables_json = excluded.deliverables_json, results_json = excluded.results_json, completed_at = datetime('now')`,
+            [
+              taskId,
+              journeyId,
+              JSON.stringify({ auditId: resolvedAuditId, domain: cleanDomain, downloadToken, sku: meta.sku || 'sitefix_core_499' }),
+              JSON.stringify({ status: 'DELIVERABLE_READY_EMAIL_PENDING', deliveredTo: buyerEmail, paymentId: rzpPaymentId })
+            ]
+          );
+          deliverableReady = true;
+        }
+
+        // Now attempt Brevo receipt dispatch
+        let emailReceiptStatus = meta.email_receipt_status || 'PENDING_RETRY';
+        let finalFulfillmentStatus: 'EMAIL_ACCEPTED' | 'DELIVERABLE_READY_EMAIL_PENDING' = 'DELIVERABLE_READY_EMAIL_PENDING';
+
+        if (deliverableReady && buyerEmail && buyerEmail.includes('@')) {
+          try {
+            const emailRes = await brevo.sendTransactionalEmail({
+              to: buyerEmail,
+              subject: `Payment Receipt & Fix-Pack Download (${order.id})`,
+              htmlContent: `
+                <div style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px;border:1px solid #e2e8f0;border-radius:8px;">
+                  <h2 style="color:#0f172a;">Thank You for Your Order!</h2>
+                  <p>Your payment for <strong>${cleanDomain}</strong> was processed successfully.</p>
+                  <p><strong>Order ID:</strong> ${order.id}<br><strong>Payment Ref:</strong> ${rzpPaymentId}</p>
+                  <div style="margin:24px 0;">
+                    <a href="${downloadUrl}" style="background:#2563eb;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;font-weight:bold;display:inline-block;">Download Your SiteFix Technical Fix-Pack</a>
+                  </div>
+                  <p style="color:#64748b;font-size:12px;">This download link contains your 72-hour cryptographic access token.</p>
+                </div>
+              `
+            });
+            if (emailRes && emailRes.success === true && emailRes.status === 'SENT') {
+              emailReceiptStatus = 'SENT';
+              finalFulfillmentStatus = 'EMAIL_ACCEPTED';
+            }
+          } catch (e: any) {
+            console.warn(`[AutonomousSystemDoctor] Brevo dispatch attempt notice: ${e.message}`);
+          }
+        }
+
+        const updatedMetadata = JSON.stringify({
+          ...meta,
+          deliverable_status: deliverableReady ? 'READY' : 'PENDING',
+          email_receipt_status: emailReceiptStatus,
+          downloadUrl,
+          downloadToken,
+          recovered_at: new Date().toISOString()
+        });
+
+        await this.d1Repo.executeWrite(
+          'universal_orders',
+          `UPDATE universal_orders SET fulfillment_status = ?, metadata_json = ?, updated_at = datetime('now') WHERE id = ?`,
+          [finalFulfillmentStatus, updatedMetadata, order.id]
+        );
+
+        if (finalFulfillmentStatus === 'EMAIL_ACCEPTED' || (deliverableReady && order.fulfillment_status === 'PAYMENT_CAPTURED_PENDING_DELIVERY')) {
+          recovered++;
+        }
+      } catch (orderErr: any) {
+        errors.push(`Order ${order.id}: ${orderErr.message}`);
+      }
+    }
+
+    return { processed: pendingOrders.length, recovered, errors };
+  }
+
   public async runSelfHealingPass(options?: {
     skipRecoveryRecursion?: boolean;
     skipLlm?: boolean;
@@ -1265,6 +1420,14 @@ export class AutonomousSystemDoctor {
       const igRes = await InstagramBusinessAdapter.getInstance().refreshLongLivedTokenIfNeeded();
       instagramTokenRefresh = { refreshed: igRes.refreshed, reason: igRes.reason };
     } catch {}
+
+    // 2c. Recover pending deliveries and receipts (Spec Stage P.3.4 Task E)
+    let deliveryRecovery = { processed: 0, recovered: 0, errors: [] as string[] };
+    try {
+      deliveryRecovery = await this.recoverPendingDeliveriesAndReceipts();
+    } catch (dErr: any) {
+      deliveryRecovery.errors.push(dErr.message);
+    }
 
     // 3. Re-evaluate catalog rotation & EV/100 scores
     let catalogEvolution = { evaluated: 0, boosted: 0, rotatedOut: 0 };
@@ -1342,7 +1505,8 @@ export class AutonomousSystemDoctor {
       resolvedAnomaliesCount,
       openAnomaliesCount,
       funnelDiagnosis,
-      queueRecovery
+      queueRecovery,
+      deliveryRecovery
     };
 
     this.lastReport = report;

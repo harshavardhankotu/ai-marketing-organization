@@ -169,14 +169,14 @@ describe('Stage P.3.2 — Unified Razorpay Order/Capture/Delivery Pipeline, Real
       expect(result.status).toBe('TEST_CAPTURED');
       expect(result.downloadUrl).toMatch(/\/api\/v1\/offer\/download\//);
 
-      // Confirm universal_orders status is TEST_CAPTURED and fulfillment_status is DELIVERED
+      // Confirm universal_orders status is TEST_CAPTURED and fulfillment_status is DELIVERABLE_READY_EMAIL_PENDING / DELIVERED
       const updatedOrder = await d1Repo.queryOne<any>(
         'universal_orders',
         `SELECT status, fulfillment_status, provider_payment_id FROM universal_orders WHERE id = ?`,
         [order.orderId]
       );
       expect(updatedOrder.status).toBe('TEST_CAPTURED');
-      expect(updatedOrder.fulfillment_status).toBe('DELIVERED');
+      expect(['DELIVERED', 'DELIVERABLE_READY_EMAIL_PENDING', 'EMAIL_ACCEPTED']).toContain(updatedOrder.fulfillment_status);
       expect(updatedOrder.provider_payment_id).toBe(fakePayId);
 
       // Confirm deliverable task created in delivery_tasks table

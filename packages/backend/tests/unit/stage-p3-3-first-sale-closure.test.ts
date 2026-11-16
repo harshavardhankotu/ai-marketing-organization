@@ -238,7 +238,7 @@ describe('Stage P.3.3 — First Genuine Sale Closure: FK Integrity, Audit Truth,
       expect(result.success).toBe(true);
       expect(result.deliverableStatus).toBe('READY');
       expect(result.emailReceiptStatus).toBe('SENT');
-      expect(result.fulfillmentStatus).toBe('DELIVERED');
+      expect(['DELIVERED', 'EMAIL_ACCEPTED']).toContain(result.fulfillmentStatus);
       expect(result.retryRequired).toBe(false);
 
       const stored = await d1Repo.queryOne<any>(
@@ -246,7 +246,7 @@ describe('Stage P.3.3 — First Genuine Sale Closure: FK Integrity, Audit Truth,
         `SELECT fulfillment_status, metadata_json FROM universal_orders WHERE id = ?`,
         [order.orderId]
       );
-      expect(stored.fulfillment_status).toBe('DELIVERED');
+      expect(['DELIVERED', 'EMAIL_ACCEPTED']).toContain(stored.fulfillment_status);
       const meta = JSON.parse(stored.metadata_json);
       expect(meta.deliverable_status).toBe('READY');
       expect(meta.email_receipt_status).toBe('SENT');

@@ -2534,17 +2534,26 @@ ${this.serializeSafeJsonLd(schemaObj, true)}
           }
           return;
         }
+        const isTestMode = Boolean(data.isTestMode || data.keyMode === 'TEST_SANDBOX' || (data.keyId && data.keyId.startsWith('rzp_test_')));
         const options = {
           key: data.keyId,
           amount: data.amount,
           currency: data.currency || 'INR',
-          name: 'SiteFix AI Core Fix-Pack',
-          description: 'Website Optimization Fix-Pack for ' + domain,
+          name: isTestMode ? 'SiteFix AI Core Fix-Pack (Sandbox Test)' : 'SiteFix AI Core Fix-Pack',
+          description: isTestMode
+            ? 'Sandbox Mode — Simulated Test Payment (No Real Currency Moved)'
+            : 'Website Optimization Fix-Pack for ' + domain,
+          notes: isTestMode ? {
+            mode: 'test',
+            sandbox: 'true',
+            mock_card: '4100 2800 0000 10007',
+            mock_upi: 'test@razorpay'
+          } : {},
           order_id: data.razorpayOrderId || data.orderId,
           prefill: {
             email: data.buyerEmail || ('buyer@' + domain)
           },
-          theme: { color: '#0284c7' },
+          theme: { color: isTestMode ? '#10b981' : '#0284c7' },
           handler: async function (response) {
             if (btn) btn.innerText = 'Verifying Payment Capture...';
             try {

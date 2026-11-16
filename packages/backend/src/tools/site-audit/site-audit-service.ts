@@ -62,6 +62,15 @@ export class SiteAuditService {
     return SiteAuditService.instance;
   }
 
+  public static resetInstance(): void {
+    (SiteAuditService as any).instance = undefined;
+  }
+
+  public clearMemoryCaches(): void {
+    this.auditCache.clear();
+    this.deliverableCache.clear();
+  }
+
   /**
    * Computes the SHA-256 digest of the canonical terms file (owner/OWN_OFFER.md).
    */
