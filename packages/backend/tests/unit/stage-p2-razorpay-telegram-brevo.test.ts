@@ -30,9 +30,8 @@ describe('Stage P.2 — Razorpay Standard Checkout, Telegram Auto-Wire, Brevo Au
       expect(core.amountPaise).toBe(49900);
       expect(core.canonicalSku).toBe('sitefix_core_499');
 
-      const def = adapter.resolveAuthoritativePrice();
-      expect(def.amountINR).toBe(499);
-      expect(def.amountPaise).toBe(49900);
+      // Stage P.3.1: Strict SKU enforcement rejects omitted or empty SKU
+      expect(() => adapter.resolveAuthoritativePrice()).toThrow(/INVALID_SKU/);
 
       const competitor = adapter.resolveAuthoritativePrice('sitefix_competitor_keyword_pack');
       expect(competitor.amountINR).toBe(1999);
@@ -130,12 +129,14 @@ describe('Stage P.2 — Razorpay Standard Checkout, Telegram Auto-Wire, Brevo Au
       delete process.env.TELEGRAM_API_TOKEN;
       expect(tg.getSyndicationStatus()).toBe('READY_AWAITING_BOT_TOKEN');
 
+      process.env.TG_CHANNEL_ID = '-100123456';
       process.env.TG_BOT_TOKEN = '123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11';
       expect(tg.getSyndicationStatus()).toBe('LIVE_ENABLED');
 
       delete process.env.TG_BOT_TOKEN;
       process.env.TELEGRAM_TOKEN = '654321:XYZ-DEF1234ghIkl-zyx57W2v1u123ew22';
       expect(tg.getSyndicationStatus()).toBe('LIVE_ENABLED');
+      delete process.env.TG_CHANNEL_ID;
     });
 
     it('2.2: getStatus caches getMe results and reports configured status', async () => {
