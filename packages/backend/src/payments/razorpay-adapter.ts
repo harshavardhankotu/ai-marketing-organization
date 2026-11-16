@@ -21,6 +21,9 @@ export interface RazorpayStandardOrderResult {
   orderId: string;
   razorpayOrderId: string;
   amount: number; // in paise
+  amountPaise?: number;
+  amountINR?: number;
+  sku?: string;
   currency: 'INR';
   isTestMode: boolean;
 }
@@ -41,6 +44,7 @@ export interface RazorpayVerifyResult {
   razorpayPaymentId: string;
   status: 'CAPTURED' | 'TEST_CAPTURED';
   downloadUrl?: string;
+  downloadToken?: string;
   mode: 'LIVE' | 'TEST_SANDBOX';
   fulfillmentStatus?: string;
   deliverableStatus?: 'READY' | 'PENDING';
@@ -65,14 +69,17 @@ export class RazorpayStandardAdapter {
   }
 
   /**
-   * Flexible paired credential resolution (Spec Stage P.3.3 Task 4):
+   * Flexible paired credential resolution (Spec Stage P.3.3 & P.3.4 Task B):
    * Key ID and Secret must form a complete, matching pair.
-   * Supports optional process.env.RAZORPAY_MODE ('test' or 'live').
+   * Strict mode selection via process.env.RAZORPAY_MODE ('test' or 'live').
    * Supports rzp_test_* in RAZORPAY_KEY_ID + RAZORPAY_KEY_SECRET or RAZORPAY_TEST_KEY_ID + RAZORPAY_TEST_KEY_SECRET.
    * Never mixes a key ID from one variable prefix with a secret from another prefix.
    */
   public resolveCredentials(): { keyId: string; keySecret: string; isLive: boolean; mode: 'LIVE' | 'TEST_SANDBOX' } {
-    const forcedMode = (process.env.RAZORPAY_MODE || '').trim().toLowerCase();
+    const rawMode = (process.env.RAZORPAY_MODE || '').trim().toLowerCase();
+    if (rawMode && rawMode !== 'test' && rawMode !== 'live') {
+      throw new Error(`INVALID_RAZORPAY_MODE: Unknown RAZORPAY_MODE '${process.env.RAZORPAY_MODE}'. Must be 'test' or 'live'.`);
+    }
 
     const liveKeyId = (process.env.RAZORPAY_KEY_ID || process.env.RAZORPAY_KEY || '').trim();
     const liveSecret = (process.env.RAZORPAY_KEY_SECRET || process.env.RAZORPAY_SECRET || '').trim();
@@ -94,18 +101,30 @@ export class RazorpayStandardAdapter {
       testSecret.length > 0 &&
       !isPlaceholderCredential(testSecret);
 
-    // If forced to test mode
-    if (forcedMode === 'test') {
+    // Strict Live Mode
+    if (rawMode === 'live') {
+      if (hasLivePair) {
+        return { keyId: liveKeyId, keySecret: liveSecret, isLive: true, mode: 'LIVE' };
+      }
+      throw new Error('PAYMENT_PROVIDER_NOT_CONFIGURED: Valid live Razorpay credentials (rzp_live_*) required when RAZORPAY_MODE=live.');
+    }
+
+    // Strict Test Mode
+    if (rawMode === 'test') {
       if (hasDedicatedTestPair) {
         return { keyId: testKeyId, keySecret: testSecret, isLive: false, mode: 'TEST_SANDBOX' };
       }
       if (hasTestInMainPair) {
         return { keyId: liveKeyId, keySecret: liveSecret, isLive: false, mode: 'TEST_SANDBOX' };
       }
+      if (!isProduction()) {
+        return { keyId: 'rzp_test_sandbox_fallback', keySecret: 'rzp_test_secret_fallback', isLive: false, mode: 'TEST_SANDBOX' };
+      }
+      throw new Error('PAYMENT_PROVIDER_NOT_CONFIGURED: Valid test Razorpay credentials (rzp_test_*) required when RAZORPAY_MODE=test.');
     }
 
-    // Default resolution: Live first if available and not forced to test
-    if (hasLivePair && forcedMode !== 'test') {
+    // Default resolution: Live first if available
+    if (hasLivePair) {
       return { keyId: liveKeyId, keySecret: liveSecret, isLive: true, mode: 'LIVE' };
     }
 
@@ -385,6 +404,9 @@ export class RazorpayStandardAdapter {
       orderId: internalOrderId,
       razorpayOrderId,
       amount: amountPaise,
+      amountPaise,
+      amountINR,
+      sku: canonicalSku,
       currency: 'INR',
       isTestMode
     };
@@ -577,16 +599,14 @@ export class RazorpayStandardAdapter {
           `INSERT INTO transactions (
             id, organization_id, business_id, invoice_number,
             amount_inr, payment_method, payment_gateway, transaction_ref,
-            status, classification, service_rendered, created_at, updated_at
-          ) VALUES (?, 'org_owner_primary', 'biz_platform_aro', ?, ?, 'ONLINE', 'RAZORPAY', ?, 'CAPTURED', 'REAL', 'SiteFix AI Technical Fix-Pack', datetime('now'), datetime('now'))
-          ON CONFLICT(id) DO UPDATE SET updated_at = datetime('now')`,
+            status, classification, service_rendered, created_at
+          ) VALUES (?, 'org_owner_primary', 'biz_platform_aro', ?, ?, 'ONLINE', 'RAZORPAY', ?, 'CAPTURED', 'REAL', 'SiteFix AI Technical Fix-Pack', datetime('now'))
+          ON CONFLICT(id) DO NOTHING`,
           [txId, orderId, verifiedAmountINR, razorpay_payment_id]
         );
       } catch (txErr: any) {
         console.error(`[RazorpayAdapter] Failed to record transaction in financial ledger: ${txErr.message}`);
-        if (isProduction()) {
-          throw new Error(`D1_TRANSACTION_PERSISTENCE_FAILED: Failed to record transaction in financial ledger: ${txErr.message}`);
-        }
+        throw new Error(`D1_TRANSACTION_PERSISTENCE_FAILED: Failed to record transaction in financial ledger: ${txErr.message}`);
       }
     }
 
@@ -619,8 +639,8 @@ export class RazorpayStandardAdapter {
       // Task 1: Ensure parent customer_journeys row exists to satisfy FOREIGN KEY constraint
       await this.ensureCustomerJourney(journeyId, buyerEmail, customerName, isLive, 'PAYMENT_VERIFIED');
 
-      // Task 1: Persist in delivery_tasks table with valid customer_journey_id
-      const taskId = `deliv_${orderId}_${randomUUID().replace(/-/g, '').slice(0, 8)}`;
+      // Spec Stage P.3.4 Task E: Deterministic delivery_tasks ID so browser verification and webhook reuse the single task
+      const taskId = `deliv_${storedOrder.id || orderId}_${razorpay_payment_id}`;
       await this.d1Repo.executeWrite(
         'delivery_tasks',
         `INSERT INTO delivery_tasks (
@@ -628,12 +648,12 @@ export class RazorpayStandardAdapter {
           service_type, stage, deliverables_json, results_json,
           action_classification, completed_at, created_at
         ) VALUES (?, 'org_owner_primary', 'biz_platform_aro', ?, 'SITE_AUDIT_FIXPACK', 'COMPLETED', ?, ?, 'INTERNAL_AUTOMATION', datetime('now'), datetime('now'))
-        ON CONFLICT(id) DO UPDATE SET stage = 'COMPLETED', completed_at = datetime('now')`,
+        ON CONFLICT(id) DO UPDATE SET stage = 'COMPLETED', deliverables_json = excluded.deliverables_json, results_json = excluded.results_json, completed_at = datetime('now')`,
         [
           taskId,
           journeyId,
           JSON.stringify({ auditId: audit.auditId, domain: cleanDomain, downloadToken, sku: storedSku }),
-          JSON.stringify({ status: 'DELIVERED', deliveredTo: buyerEmail, paymentId: razorpay_payment_id })
+          JSON.stringify({ status: 'DELIVERABLE_READY_EMAIL_PENDING', deliveredTo: buyerEmail, paymentId: razorpay_payment_id })
         ]
       );
     } catch (fixPackErr: any) {
@@ -696,12 +716,15 @@ export class RazorpayStandardAdapter {
       emailReceiptStatus = isBrevoConfigured ? 'PENDING_RETRY' : 'SKIPPED_UNCONFIGURED';
     }
 
-    // Task 2: State transition
-    // Only set fulfillment_status = 'DELIVERED' when real Fix-Pack is stored in delivery_tasks
-    // AND (if Brevo configured) email receipt is SENT (otherwise set DELIVERABLE_READY_EMAIL_PENDING)
-    const finalFulfillmentStatus = (isBrevoConfigured && emailReceiptStatus !== 'SENT')
-      ? 'DELIVERABLE_READY_EMAIL_PENDING'
-      : 'DELIVERED';
+    // Truthful Delivery & Email States (Spec Stage P.3.4 Task E):
+    // Never mark an order DELIVERED when Brevo is unconfigured (SKIPPED_UNCONFIGURED) or failed (PENDING_RETRY).
+    // Track states separately:
+    // - DELIVERABLE_READY_EMAIL_PENDING (Fix-Pack generated and durably stored with download token)
+    // - EMAIL_ACCEPTED (Brevo API returned success: true, status: 'SENT')
+    // - EMAIL_DELIVERED (updated only when Brevo's webhook reports 'delivered')
+    const finalFulfillmentStatus = (emailReceiptStatus === 'SENT')
+      ? 'EMAIL_ACCEPTED'
+      : 'DELIVERABLE_READY_EMAIL_PENDING';
 
     const updatedMetadata = JSON.stringify({
       ...meta,
@@ -725,6 +748,19 @@ export class RazorpayStandardAdapter {
     } catch (fulErr: any) {
       console.warn(`[RazorpayAdapter] Failed to update fulfillment_status: ${fulErr.message}`);
     }
+
+    // Keep delivery_tasks results_json synchronized with actual fulfillment status
+    try {
+      const taskId = `deliv_${storedOrder.id || orderId}_${razorpay_payment_id}`;
+      await this.d1Repo.executeWrite(
+        'delivery_tasks',
+        `UPDATE delivery_tasks SET results_json = ? WHERE id = ?`,
+        [
+          JSON.stringify({ status: finalFulfillmentStatus, deliveredTo: buyerEmail, paymentId: razorpay_payment_id, emailStatus: emailReceiptStatus }),
+          taskId
+        ]
+      );
+    } catch {}
 
     // Instant Telegram Alert for successful payment
     try {
@@ -753,11 +789,12 @@ export class RazorpayStandardAdapter {
       status,
       mode,
       downloadUrl,
+      downloadToken,
       fulfillmentStatus: finalFulfillmentStatus,
       deliverableStatus: 'READY',
       emailReceiptStatus,
-      retryRequired: finalFulfillmentStatus !== 'DELIVERED',
-      message: finalFulfillmentStatus === 'DELIVERED'
+      retryRequired: (finalFulfillmentStatus as string) === 'DELIVERABLE_READY_EMAIL_PENDING' || (finalFulfillmentStatus as string) === 'PAYMENT_CAPTURED_PENDING_DELIVERY',
+      message: ((finalFulfillmentStatus as string) === 'EMAIL_ACCEPTED' || (finalFulfillmentStatus as string) === 'EMAIL_DELIVERED' || (finalFulfillmentStatus as string) === 'DELIVERED')
         ? 'Payment verified, deliverable generated, and buyer receipt sent.'
         : 'Payment verified and deliverable generated, but email receipt is pending delivery retry.'
     };

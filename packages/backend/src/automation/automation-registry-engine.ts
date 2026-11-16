@@ -2043,6 +2043,12 @@ export class AutomationRegistryEngine {
       }
 
       case 'payment_status_reconciliation': {
+        let deliveryRecovery: any = null;
+        try {
+          const { AutonomousSystemDoctor } = await import('./autonomous-system-doctor.js');
+          deliveryRecovery = await AutonomousSystemDoctor.getInstance().recoverPendingDeliveriesAndReceipts();
+        } catch {}
+
         let pendingClaims: any[] = [];
         try {
           const sql = `SELECT * FROM manual_upi_claims WHERE status = 'PAYMENT_CLAIMED'`;
@@ -2053,13 +2059,14 @@ export class AutomationRegistryEngine {
 
         if (pendingClaims.length === 0) {
           return {
-            status: 'NO_ACTION_DUE',
-            itemsProcessed: 0,
-            itemsSucceeded: 0,
-            itemsFailed: 0,
+            status: deliveryRecovery?.recovered > 0 ? 'COMPLETED' : 'NO_ACTION_DUE',
+            itemsProcessed: deliveryRecovery?.processed || 0,
+            itemsSucceeded: deliveryRecovery?.recovered || 0,
+            itemsFailed: deliveryRecovery?.errors?.length || 0,
             summary: {
               pendingUpiClaims: 0,
               verifiedBankCashINR: 0,
+              deliveryRecovery,
               cashInvariant: 'Bank cash strictly ₹0.00 until bank statement credit verification'
             }
           };
@@ -2069,14 +2076,15 @@ export class AutomationRegistryEngine {
         // NEVER report COMPLETED when claims are unverified
         return {
           status: 'BLOCKED',
-          itemsProcessed: pendingClaims.length,
-          itemsSucceeded: 0,
+          itemsProcessed: pendingClaims.length + (deliveryRecovery?.processed || 0),
+          itemsSucceeded: deliveryRecovery?.recovered || 0,
           itemsFailed: pendingClaims.length,
           ownerActionRequired: `Verify ${pendingClaims.length} manual UPI claim(s) against official bank statement credit with UTR at /owner/today. Cash remains strictly ₹0.00 until verified.`,
           summary: {
             pendingUpiClaims: pendingClaims.length,
             verificationStatus: 'AWAITING_OWNER_BANK_STATEMENT',
-            recognizedBankCashINR: 0
+            recognizedBankCashINR: 0,
+            deliveryRecovery
           }
         };
       }

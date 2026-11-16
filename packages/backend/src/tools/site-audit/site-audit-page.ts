@@ -358,11 +358,8 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
             <input type="email" id="checkoutBuyerEmailInput" required placeholder="name@company.com" style="width: 100%; box-sizing: border-box; padding: 0.55rem 0.75rem; border-radius: 6px; border: 1px solid #374151; background: #1f2937; color: #fff; font-size: 0.85rem;">
           </div>
 
-          <button class="btn-primary" id="checkoutBtn" data-ab-experiment="${sitefixExpId}" data-ab-variant="${sitefixVariant}" data-ab-cta="${safeSitefixCtaText}" onclick="initiateCheckout(49900)" disabled>
+          <button class="btn-primary" id="checkoutBtn" data-ab-experiment="${sitefixExpId}" data-ab-variant="${sitefixVariant}" data-ab-cta="${safeSitefixCtaText}" onclick="initiateCheckout()" disabled>
             ${safeSitefixCtaText}
-          </button>
-          <button class="btn-primary" id="testPayOneRupeeBtn" onclick="initiateCheckout(100)" style="margin-top: 0.75rem; background: #10b981; border: 1px solid #059669; display: flex; align-items: center; justify-content: center; gap: 0.5rem; width: 100%;" disabled>
-            <span>⚡ Launch Razorpay Sandbox Modal (₹1.00 Test Mode)</span>
           </button>
 
           <!-- Live UPI Fallback Rail (Displayed when paymentMode !== 'LIVE') -->
@@ -477,7 +474,6 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
       const notice = document.getElementById('checkoutGateNotice');
       const text = document.getElementById('checkoutStatusText');
       const btn = document.getElementById('checkoutBtn');
-      const testBtn = document.getElementById('testPayOneRupeeBtn');
       const upiCard = document.getElementById('upiFallbackCard');
       const paymentMode = currentReadiness?.paymentReadiness?.paymentMode || 'SANDBOX';
 
@@ -489,13 +485,11 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
       if (!currentReadiness || !currentReadiness.isReady) {
         btn.disabled = true;
         btn.innerText = 'Checkout Locked (Pending Gateway Setup)';
-        if (testBtn) testBtn.disabled = true;
         notice.style.borderColor = 'var(--warning)';
         text.innerText = 'Free technical diagnostic scan is active. Live ₹499 digital checkout is currently locked pending owner Razorpay gateway credentials and terms attestation.';
       } else {
         btn.disabled = false;
         btn.innerText = activeCtaText;
-        if (testBtn) testBtn.disabled = false;
         notice.style.borderColor = 'var(--success)';
         notice.style.background = 'rgba(16, 185, 129, 0.1)';
         text.innerHTML = '<strong style="color: var(--success);">Ready (Test Sandbox Mode):</strong> Razorpay Sandbox gateway connected. Use mock card or UPI to simulate transaction (Zero real currency moved).';
@@ -610,17 +604,16 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
       document.getElementById('resultsCard').scrollIntoView({ behavior: 'smooth' });
     }
 
-    async function initiateCheckout(targetPaise) {
+    async function initiateCheckout() {
       if (!currentAuditId) {
         alert('Please run a website audit scan first.');
         return;
       }
 
-      const isTest = targetPaise === 100;
-      const btn = isTest ? document.getElementById('testPayOneRupeeBtn') : document.getElementById('checkoutBtn');
+      const btn = document.getElementById('checkoutBtn');
       const abExp = btn ? btn.getAttribute('data-ab-experiment') : null;
       const abVariant = btn ? btn.getAttribute('data-ab-variant') : null;
-      if (!isTest && abExp && abVariant) {
+      if (abExp && abVariant) {
         try {
           fetch('/api/v1/public/storefront-experiments/event', {
             method: 'POST',
@@ -646,7 +639,7 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
           if (domainInput) domainInput.focus();
           if (btn) {
             btn.disabled = false;
-            btn.innerText = isTest ? '⚡ Launch Razorpay Sandbox Modal (₹1.00 Test Mode)' : 'Unlock & Download Complete Fix-Pack (₹499)';
+            btn.innerText = (btn && btn.getAttribute('data-ab-cta')) || 'Unlock Instant Ready-to-Paste Fix-Pack — ₹499';
           }
           return;
         }
@@ -657,28 +650,17 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
           if (emailInput) emailInput.focus();
           if (btn) {
             btn.disabled = false;
-            btn.innerText = isTest ? '⚡ Launch Razorpay Sandbox Modal (₹1.00 Test Mode)' : 'Unlock & Download Complete Fix-Pack (₹499)';
+            btn.innerText = (btn && btn.getAttribute('data-ab-cta')) || 'Unlock Instant Ready-to-Paste Fix-Pack — ₹499';
           }
           return;
         }
 
-        const useStandardRoute = !currentAuditId || !isTest;
-        const checkoutUrl = useStandardRoute
-          ? '/api/v1/payments/razorpay/create-order'
-          : ('/api/v1/tools/site-audit/' + currentAuditId + '/checkout');
-        const checkoutPayload = useStandardRoute
-          ? {
-              sku: 'sitefix_core_499',
-              domainOrUrl: targetDomain,
-              buyerEmail: buyerEmail,
-              amountINR: isTest ? 1 : 499
-            }
-          : {
-              customerEmail: buyerEmail,
-              amountPaise: isTest ? 100 : 49900,
-              amountINR: isTest ? 1 : 499,
-              isTestPayment: isTest
-            };
+        const checkoutUrl = '/api/v1/payments/razorpay/create-order';
+        const checkoutPayload = {
+          sku: 'sitefix_core_499',
+          domainOrUrl: targetDomain,
+          buyerEmail: buyerEmail
+        };
 
         const res = await fetch(checkoutUrl, {
           method: 'POST',
@@ -691,7 +673,7 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
           alert('Checkout unavailable: ' + (data.error || 'Server error'));
           if (btn) {
             btn.disabled = false;
-            btn.innerText = isTest ? '⚡ Launch Razorpay Sandbox Modal (₹1.00 Test Mode)' : 'Unlock & Download Complete Fix-Pack (₹499)';
+            btn.innerText = (btn && btn.getAttribute('data-ab-cta')) || 'Unlock Instant Ready-to-Paste Fix-Pack — ₹499';
           }
           return;
         }
@@ -704,33 +686,29 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
         const options = {
           key: data.keyId,
           amount: data.amount,
-          currency: data.currency,
-          name: isTestMode ? 'SiteFix AI (Test Mode)' : 'SiteFix AI',
+          currency: data.currency || 'INR',
+          name: isTestMode ? 'SiteFix AI Core Fix-Pack (Sandbox Test)' : 'SiteFix AI Core Fix-Pack',
           description: isTestMode
             ? 'Sandbox Mode — Simulated Test Payment (No Real Currency Moved)'
-            : 'Website Optimization Fix-Pack',
-          notes: {
+            : 'Website Optimization Fix-Pack for ' + targetDomain,
+          notes: isTestMode ? {
             mode: 'test',
             sandbox: 'true',
             mock_card: '4100 2800 0000 10007',
             mock_upi: 'test@razorpay'
-          },
+          } : {},
           handler: async function (response) {
             if (btn) btn.innerText = 'Verifying Payment Capture...';
             try {
-              const verifyUrl = useStandardRoute
-                ? '/api/v1/payments/razorpay/verify'
-                : ('/api/v1/tools/site-audit/' + currentAuditId + '/verify-payment');
-              const verifyPayload = useStandardRoute
-                ? {
-                    orderId: data.orderId,
-                    razorpay_order_id: response.razorpay_order_id,
-                    razorpay_payment_id: response.razorpay_payment_id,
-                    razorpay_signature: response.razorpay_signature,
-                    sku: 'sitefix_core_499',
-                    domainOrUrl: targetDomain
-                  }
-                : response;
+              const verifyUrl = '/api/v1/payments/razorpay/verify';
+              const verifyPayload = {
+                orderId: data.orderId,
+                razorpay_order_id: response.razorpay_order_id,
+                razorpay_payment_id: response.razorpay_payment_id,
+                razorpay_signature: response.razorpay_signature,
+                sku: 'sitefix_core_499',
+                domainOrUrl: targetDomain
+              };
 
               const verifyRes = await fetch(verifyUrl, {
                 method: 'POST',
@@ -754,7 +732,7 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
             contact: '9999999999'
           },
           theme: {
-            color: isTest ? '#10b981' : '#3b82f6'
+            color: isTestMode ? '#10b981' : '#0284c7'
           }
         };
 
@@ -771,7 +749,7 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
           alert('Payment Failed: ' + (resp.error?.description || 'Unknown error'));
           if (btn) {
             btn.disabled = false;
-            btn.innerText = isTest ? '⚡ Launch Razorpay Sandbox Modal (₹1.00 Test Mode)' : 'Unlock & Download Complete Fix-Pack (₹499 Sandbox Mode)';
+            btn.innerText = (btn && btn.getAttribute('data-ab-cta')) || 'Unlock Instant Ready-to-Paste Fix-Pack — ₹499';
           }
         });
         rzp.open();
@@ -779,7 +757,7 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
         alert('Checkout error: ' + err.message);
         if (btn) {
           btn.disabled = false;
-          btn.innerText = isTest ? '⚡ Launch Razorpay Sandbox Modal (₹1.00 Test Mode)' : 'Unlock & Download Complete Fix-Pack (₹499 Sandbox Mode)';
+          btn.innerText = (btn && btn.getAttribute('data-ab-cta')) || 'Unlock Instant Ready-to-Paste Fix-Pack — ₹499';
         }
       }
     }

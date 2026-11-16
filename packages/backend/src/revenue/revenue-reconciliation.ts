@@ -447,8 +447,8 @@ export class RevenueReconciliationEngine {
         `INSERT INTO transactions (
           id, organization_id, business_id, journey_id, campaign_id,
           invoice_number, amount_inr, payment_method, payment_gateway,
-          transaction_ref, status, classification, service_rendered, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          transaction_ref, status, classification, service_rendered, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
           orgId,
@@ -463,7 +463,6 @@ export class RevenueReconciliationEngine {
           status,
           classification,
           params.serviceRendered || null,
-          now,
           now
         ]
       );

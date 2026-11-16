@@ -3490,6 +3490,7 @@ apiRouter.get('/payments/razorpay/health', async (c) => {
   const health = razorpayAdapter.getRazorpayHealth();
   let configured = health.configured;
   let keyMode: 'LIVE' | 'TEST_SANDBOX' | 'NONE' = health.live_mode ? 'LIVE' : (configured ? 'TEST_SANDBOX' : 'NONE');
+  let authStatus: 'NOT_CONFIGURED' | 'CREDENTIALS_PRESENT' | 'PROVIDER_AUTHENTICATED' | 'AUTH_FAILED' = 'NOT_CONFIGURED';
   let providerAcceptedAuth = false;
   let httpStatus: number | null = null;
   let activeKeyId = '';
@@ -3504,6 +3505,10 @@ apiRouter.get('/payments/razorpay/health', async (c) => {
     activeKeySecret = creds.keySecret;
   } catch {
     // If resolveCredentials throws, keep configured from legacy health
+  }
+
+  if (configured) {
+    authStatus = 'CREDENTIALS_PRESENT';
   }
 
   // When credential pair is present and not a dummy fallback, probe Razorpay Orders API
@@ -3522,7 +3527,15 @@ apiRouter.get('/payments/razorpay/health', async (c) => {
       });
       clearTimeout(timeoutId);
       httpStatus = res.status;
-      providerAcceptedAuth = res.status === 200;
+      if (res.status === 200) {
+        providerAcceptedAuth = true;
+        authStatus = 'PROVIDER_AUTHENTICATED';
+      } else if (res.status === 401) {
+        providerAcceptedAuth = false;
+        authStatus = 'AUTH_FAILED';
+      } else {
+        providerAcceptedAuth = false;
+      }
     } catch {
       providerAcceptedAuth = false;
     }
@@ -3534,6 +3547,7 @@ apiRouter.get('/payments/razorpay/health', async (c) => {
       ...health,
       configured,
       keyMode,
+      authStatus,
       providerAcceptedAuth,
       httpStatus,
       live_mode: keyMode === 'LIVE'
@@ -3569,18 +3583,43 @@ apiRouter.post('/webhooks/razorpay', async (c) => {
     return c.json({ success: false, error: 'Invalid JSON payload' }, 400);
   }
 
+  const d1Repo = D1RevenueRepository.getInstance();
+  const eventType = (eventPayload.event || '').trim();
+
+  // Spec Stage P.3.4 Task D: Safely record and ignore payment.failed without triggering fulfillment
+  if (eventType === 'payment.failed') {
+    const rawEventId = c.req.header('x-razorpay-event-id') || createHash('sha256').update(rawBody).digest('hex');
+    const eventHash = createHash('sha256').update(rawEventId).digest('hex');
+    const dedupeKey = `rzp_wh_evt_${eventHash.slice(0, 40)}`;
+    try {
+      await d1Repo.executeWrite(
+        'durable_events',
+        `INSERT INTO durable_events (id, event_type, organization_id, payload_json, processed, processed_at, error_message, created_at)
+         VALUES (?, 'RAZORPAY_WEBHOOK_PAYMENT_FAILED', 'org_owner_primary', ?, 1, datetime('now'), NULL, datetime('now'))
+         ON CONFLICT(id) DO NOTHING`,
+        [dedupeKey, JSON.stringify({ eventId: rawEventId, eventType, payload: eventPayload.payload })]
+      );
+    } catch {}
+    return c.json({
+      success: true,
+      received: true,
+      ignored: true,
+      event: eventType,
+      message: 'Payment failure recorded without fulfillment'
+    }, 200);
+  }
+
   try {
     const payment = eventPayload.payload?.payment?.entity;
     const orderId = payment?.order_id || eventPayload.payload?.order?.entity?.id;
     const paymentId = payment?.id;
     const receipt = eventPayload.payload?.order?.entity?.receipt || payment?.notes?.internalOrderId;
 
-    const isPaymentLinkEvent = Boolean(eventPayload.event?.startsWith('payment_link.') || eventPayload.payload?.payment_link);
+    const isPaymentLinkEvent = Boolean(eventType.startsWith('payment_link.') || eventPayload.payload?.payment_link);
     if (!isPaymentLinkEvent && (!paymentId || !orderId)) {
       return c.json({ success: false, error: 'MISSING_PROVIDER_PAYMENT_OR_ORDER_ID' }, 400);
     }
 
-    const d1Repo = D1RevenueRepository.getInstance();
     let isStandardOrder = Boolean(
       (orderId && orderId.startsWith('ord_rzp_')) ||
       (receipt && receipt.startsWith('ord_rzp_'))
@@ -3598,40 +3637,104 @@ apiRouter.post('/webhooks/razorpay', async (c) => {
     }
 
     if (isStandardOrder) {
-      // Event-level webhook deduplication (Task 3)
+      // Event-level webhook deduplication and recoverable state record (Spec Stage P.3.4 Task D)
       const rawEventId = c.req.header('x-razorpay-event-id') || createHash('sha256').update(rawBody).digest('hex');
       const eventHash = createHash('sha256').update(rawEventId).digest('hex');
       const dedupeKey = `rzp_wh_evt_${eventHash.slice(0, 40)}`;
 
-      const existingEvt = await d1Repo.queryOne(
+      const existingEvt = await d1Repo.queryOne<any>(
         'durable_events',
-        `SELECT id FROM durable_events WHERE id = ?`,
+        `SELECT id, processed, error_message, created_at FROM durable_events WHERE id = ?`,
         [dedupeKey]
       );
-      if (existingEvt) {
-        return c.json({ success: true, received: true, duplicate: true, message: 'Webhook event already processed' }, 200);
-      }
 
-      try {
-        await d1Repo.executeWrite(
-          'durable_events',
-          `INSERT INTO durable_events (id, event_type, organization_id, payload_json, created_at) VALUES (?, 'RAZORPAY_WEBHOOK_EVENT', 'org_owner_primary', ?, datetime('now'))`,
-          [dedupeKey, JSON.stringify({ eventId: rawEventId, eventType: eventPayload.event, orderId, paymentId })]
-        );
-      } catch (evtErr: any) {
-        if (evtErr.message?.includes('UNIQUE') || evtErr.message?.includes('already exists')) {
-          return c.json({ success: true, received: true, duplicate: true, message: 'Concurrent webhook event already recorded' }, 200);
+      if (existingEvt) {
+        if (existingEvt.processed === 1) {
+          return c.json({ success: true, received: true, duplicate: true, message: 'Webhook event already processed' }, 200);
         }
-        throw evtErr;
+
+        // Processed === 0: check if RETRYABLE or stale lease (> 60s)
+        const isRetryable = typeof existingEvt.error_message === 'string' && existingEvt.error_message.startsWith('RETRYABLE:');
+        const createdAtMs = new Date(existingEvt.created_at).getTime();
+        const isStale = isNaN(createdAtMs) || (Date.now() - createdAtMs > 60000);
+
+        if (isRetryable || isStale) {
+          // Reclaim lease atomically
+          const reclaimRes = await d1Repo.executeWrite(
+            'durable_events',
+            `UPDATE durable_events SET error_message = 'PROCESSING', created_at = datetime('now') WHERE id = ? AND processed = 0`,
+            [dedupeKey]
+          ).catch(() => ({ rowsAffected: 0 }));
+
+          if (reclaimRes.rowsAffected === 0) {
+            return c.json({ success: true, received: true, duplicate: true, message: 'Concurrent webhook claiming in progress' }, 200);
+          }
+        } else {
+          // Active lease within 60s
+          return c.json({ success: true, received: true, duplicate: true, message: 'Webhook event currently processing' }, 200);
+        }
+      } else {
+        // First receipt: insert processed = 0, error_message = 'PROCESSING'
+        try {
+          await d1Repo.executeWrite(
+            'durable_events',
+            `INSERT INTO durable_events (id, event_type, organization_id, payload_json, processed, error_message, created_at)
+             VALUES (?, 'RAZORPAY_WEBHOOK_EVENT', 'org_owner_primary', ?, 0, 'PROCESSING', datetime('now'))`,
+            [dedupeKey, JSON.stringify({ eventId: rawEventId, eventType, orderId, paymentId })]
+          );
+        } catch (evtErr: any) {
+          if (evtErr.message?.includes('UNIQUE') || evtErr.message?.includes('already exists') || evtErr.message?.includes('constraint failed')) {
+            return c.json({ success: true, received: true, duplicate: true, message: 'Concurrent webhook event already recorded' }, 200);
+          }
+          throw evtErr;
+        }
       }
 
       const { RazorpayStandardAdapter } = await import('../payments/razorpay-adapter.js');
-      const stdResult = await RazorpayStandardAdapter.getInstance().verifyPaymentAndFulfill({
-        isWebhook: true,
-        orderId: receipt || orderId,
-        razorpay_order_id: orderId,
-        razorpay_payment_id: paymentId
-      });
+      let stdResult: any;
+      try {
+        stdResult = await RazorpayStandardAdapter.getInstance().verifyPaymentAndFulfill({
+          isWebhook: true,
+          orderId: receipt || orderId,
+          razorpay_order_id: orderId,
+          razorpay_payment_id: paymentId
+        });
+      } catch (fulFillErr: any) {
+        // On retryable failure, preserve processed = 0, set error_message = 'RETRYABLE:<reason>', and return 503
+        await d1Repo.executeWrite(
+          'durable_events',
+          `UPDATE durable_events SET error_message = ? WHERE id = ? AND processed = 0`,
+          [`RETRYABLE:${fulFillErr.message}`, dedupeKey]
+        ).catch(() => {});
+        return c.json({
+          success: false,
+          error: `WEBHOOK_FULFILLMENT_FAILED: ${fulFillErr.message}`,
+          retryRequired: true
+        }, 503);
+      }
+
+      // Check if fulfillment completed or requires retry
+      if (stdResult?.retryRequired === true && stdResult?.fulfillmentStatus === 'PAYMENT_CAPTURED_PENDING_DELIVERY') {
+        await d1Repo.executeWrite(
+          'durable_events',
+          `UPDATE durable_events SET error_message = ? WHERE id = ? AND processed = 0`,
+          [`RETRYABLE:${stdResult.message || 'Deliverable generation pending'}`, dedupeKey]
+        ).catch(() => {});
+        return c.json({
+          success: false,
+          error: `WEBHOOK_FULFILLMENT_FAILED: ${stdResult.message || 'Deliverable pending'}`,
+          retryRequired: true,
+          data: stdResult
+        }, 503);
+      }
+
+      // On full completion, atomically update processed = 1, processed_at = datetime('now'), error_message = NULL
+      await d1Repo.executeWrite(
+        'durable_events',
+        `UPDATE durable_events SET processed = 1, processed_at = datetime('now'), error_message = NULL WHERE id = ?`,
+        [dedupeKey]
+      ).catch(() => {});
+
       return c.json({
         success: true,
         received: true,
