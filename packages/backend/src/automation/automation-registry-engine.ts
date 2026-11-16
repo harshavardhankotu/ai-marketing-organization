@@ -1554,7 +1554,7 @@ export class AutomationRegistryEngine {
         let contacts: any[] = [];
         let audits: any[] = [];
         try {
-          contacts = db.prepare(`SELECT prospect_name, prospect_business_name, prospect_email, prospect_website FROM outbound_contacts WHERE is_opted_out = 0 AND is_suppressed = 0`).all() as any[];
+          contacts = db.prepare(`SELECT prospect_name, prospect_business_name, prospect_email, prospect_website, email_authorized, authorization_source, authorization_evidence_json FROM outbound_contacts WHERE is_opted_out = 0 AND is_suppressed = 0`).all() as any[];
         } catch {}
         try {
           audits = db.prepare(`SELECT domain, target_url, business_name, checklist_json FROM site_audits WHERE status = 'COMPLETED'`).all() as any[];
@@ -1646,27 +1646,56 @@ export class AutomationRegistryEngine {
             continue;
           }
 
-          // Spec Stage P.3: Enforce legitimate source / consent gate before autonomous dispatch
+          // Spec Stage P.3.1 Task 1: Strict recipient authorization & no cold/scraped outreach
+          let evidencePayload: any = {};
+          try {
+            evidencePayload = typeof d.evidence_references === 'string' ? JSON.parse(d.evidence_references || '{}') : (d.evidence_references || {});
+          } catch {}
+
           const isExplicitlyColdOrScraped =
             d.consent_type === 'COLD_UNSOLICITED' ||
             d.consent_type === 'SCRAPED' ||
+            d.consent_type === 'PUBLIC_BUSINESS_CONTACT' ||
             d.approval_source === 'SCRAPED' ||
-            d.approval_source === 'COLD_UNVERIFIED';
+            d.approval_source === 'COLD_UNVERIFIED' ||
+            evidencePayload?.consent_type === 'PUBLIC_BUSINESS_CONTACT' ||
+            evidencePayload?.consent_type === 'COLD_UNSOLICITED' ||
+            evidencePayload?.consent_type === 'SCRAPED' ||
+            matchedContact?.consent_type === 'PUBLIC_BUSINESS_CONTACT' ||
+            matchedContact?.authorization_source === 'PUBLIC_BUSINESS_CONTACT';
 
-          const hasConsent = !isExplicitlyColdOrScraped && Boolean(
+          const hasExplicitOptInOrInquiry = !isExplicitlyColdOrScraped && Boolean(
+            d.consent_status === 'OPTED_IN_FIRST_PARTY' ||
             d.consent_type === 'OPTED_IN_FIRST_PARTY' ||
-            d.email_authorized === 1 ||
-            d.is_opted_in === 1 ||
-            d.segment === 'SITEFIX_AUDIT' ||
-            matchedContact?.consent_type === 'OPTED_IN_FIRST_PARTY' ||
-            matchedContact?.email_authorized === 1 ||
-            matchedContact?.is_opted_in === 1 ||
-            d.approval_source === 'AUTOPILOT' ||
-            d.approval_source === 'MANUAL' ||
-            (!d.consent_type && !d.approval_source)
+            d.consent_type === 'EXPLICIT_OPT_IN' ||
+            d.consent_type === 'INBOUND_AUDIT_REQUEST' ||
+            evidencePayload?.consent_status === 'OPTED_IN_FIRST_PARTY' ||
+            evidencePayload?.consent_type === 'EXPLICIT_OPT_IN' ||
+            evidencePayload?.consent_type === 'INBOUND_AUDIT_REQUEST' ||
+            evidencePayload?.consent_type === 'OPTED_IN_FIRST_PARTY' ||
+            matchedContact?.consent_status === 'OPTED_IN_FIRST_PARTY' ||
+            matchedContact?.consent_type === 'EXPLICIT_OPT_IN' ||
+            matchedContact?.consent_type === 'INBOUND_AUDIT_REQUEST' ||
+            matchedContact?.authorization_source === 'EXPLICIT_CONSENT' ||
+            matchedContact?.authorization_source === 'INBOUND_REQUEST' ||
+            (matchedContact?.email_authorized === 1 && (matchedContact?.consent_status === 'OPTED_IN_FIRST_PARTY' || matchedContact?.consent_type === 'EXPLICIT_OPT_IN'))
           );
 
-          if (!hasConsent) {
+          if (!hasExplicitOptInOrInquiry) {
+            skippedCount++;
+            continue;
+          }
+
+          // Strict absence from outreach_suppression_list across D1 & SQLite
+          let inSuppression: boolean = false;
+          if (!isSuppressed) {
+            try {
+              const suppSql = `SELECT id FROM outreach_suppression_list WHERE identifier IN (?, ?, ?) LIMIT 1`;
+              const suppRow = await this.d1Repo.queryOne<any>('outreach_suppression_list', suppSql, [cleanDomain, recipientEmail, d.joined_phone || '']);
+              if (suppRow?.id) inSuppression = true;
+            } catch {}
+          }
+          if (inSuppression) {
             skippedCount++;
             continue;
           }
@@ -1726,6 +1755,62 @@ export class AutomationRegistryEngine {
             continue;
           }
 
+          // Spec Stage P.3.1 Task 1: Atomic Pre-Dispatch D1 Quota (1..10) & Domain 96h Lock
+          const { createHash, randomUUID } = await import('node:crypto');
+          const utcDate = new Date().toISOString().split('T')[0];
+          const windowBucket = Math.floor(Date.now() / (96 * 3600 * 1000));
+          const normalizedDomain = cleanDomain.toLowerCase().trim();
+          const domainLockHash = createHash('sha256').update(normalizedDomain).digest('hex').slice(0, 32);
+          const domainLockKey = `outreach_domain_${domainLockHash}_${windowBucket}`;
+
+          let claimedSlotKey: string | null = null;
+          for (let slot = 1; slot <= 10; slot++) {
+            const slotKey = `outreach_slot_${utcDate}_${slot}`;
+            try {
+              await this.d1Repo.executeWrite(
+                'durable_events',
+                `INSERT INTO durable_events (id, event_type, organization_id, payload_json, created_at)
+                 VALUES (?, 'OUTREACH_SLOT_RESERVED', 'org_owner_primary', ?, datetime('now'))`,
+                [slotKey, JSON.stringify({ draftId: d.id, domain: cleanDomain, email: recipientEmail, slot })]
+              );
+              claimedSlotKey = slotKey;
+              break;
+            } catch (slotErr: any) {
+              const errMsg = String(slotErr?.message || '');
+              if (errMsg.includes('UNIQUE') || errMsg.includes('constraint') || errMsg.includes('PRIMARY KEY')) {
+                continue; // Slot already taken by concurrent worker
+              }
+              // If D1 is down or quota error, fail closed
+              console.warn(`[OutreachAutopilot] Atomic slot reservation failed: ${errMsg}`);
+              claimedSlotKey = null;
+              break;
+            }
+          }
+
+          if (!claimedSlotKey) {
+            skippedCount++;
+            continue;
+          }
+
+          // Per-domain 96-hour lock reservation
+          let domainLockClaimed = false;
+          try {
+            await this.d1Repo.executeWrite(
+              'durable_events',
+              `INSERT INTO durable_events (id, event_type, organization_id, payload_json, created_at)
+               VALUES (?, 'OUTREACH_DOMAIN_RESERVED', 'org_owner_primary', ?, datetime('now'))`,
+              [domainLockKey, JSON.stringify({ draftId: d.id, domain: cleanDomain, email: recipientEmail, slotKey: claimedSlotKey })]
+            );
+            domainLockClaimed = true;
+          } catch (domErr: any) {
+            console.warn(`[OutreachAutopilot] Domain lock reservation failed for ${cleanDomain}: ${domErr.message}`);
+          }
+
+          if (!domainLockClaimed) {
+            skippedCount++;
+            continue;
+          }
+
           const previewToken = cleanDomain ? auditService.generateAuditPreviewToken(cleanDomain) : '';
           const previewUrl = cleanDomain
             ? `${siteUrl}/audit/${encodeURIComponent(cleanDomain)}?token=${encodeURIComponent(previewToken)}`
@@ -1748,14 +1833,30 @@ export class AutomationRegistryEngine {
           const fullTextContent = `${rawBody}\n\n---\n${postalAddress}\nUnsubscribe / Opt-out anytime: ${unsubUrl}`;
           const fullHtmlContent = `<div style="font-family:sans-serif;line-height:1.6">${rawBody.replace(/\n/g, '<br/>')}<hr style="margin:20px 0;border:none;border-top:1px solid #e2e8f0;"/><p style="font-size:12px;color:#64748b;">${postalAddress}<br/><a href="${unsubUrl}">1-Click Unsubscribe / Data Erasure</a></p></div>`;
 
-          const sendRes = await brevo.sendTransactionalEmail({
-            to: [{ email: recipientEmail, name: prospectName }],
-            subject: `${isFollowUp ? 'Follow-up: ' : ''}Site Audit & Technical SEO Report for ${prospectName || cleanDomain}`,
-            textContent: fullTextContent,
-            htmlContent: fullHtmlContent
-          });
+          let sendRes: any;
+          try {
+            sendRes = await brevo.sendTransactionalEmail({
+              to: [{ email: recipientEmail, name: prospectName }],
+              subject: `${isFollowUp ? 'Follow-up: ' : ''}Site Audit & Technical SEO Report for ${prospectName || cleanDomain}`,
+              textContent: fullTextContent,
+              htmlContent: fullHtmlContent
+            });
+          } catch (sendErr: any) {
+            // Ambiguous network error: mark reservation AMBIGUOUS_PENDING_RECONCILE and never blindly retry
+            const ambigKey = `ambig_${Date.now()}_${randomUUID().slice(0, 8)}`;
+            try {
+              await this.d1Repo.executeWrite(
+                'durable_events',
+                `INSERT INTO durable_events (id, event_type, organization_id, payload_json, created_at)
+                 VALUES (?, 'AMBIGUOUS_PENDING_RECONCILE', 'org_owner_primary', ?, datetime('now'))`,
+                [ambigKey, JSON.stringify({ draftId: d.id, domain: cleanDomain, email: recipientEmail, slotKey: claimedSlotKey, error: sendErr.message })]
+              );
+            } catch {}
+            skippedCount++;
+            continue;
+          }
 
-          if (sendRes.success && sendRes.status === 'SENT') {
+          if (sendRes?.success && sendRes?.status === 'SENT') {
             const nowIso = new Date().toISOString();
             const nextStatus = isFollowUp ? 'AUTO_DISPATCHED_BY_AUTOPILOT:FOLLOWUP' : 'AUTO_DISPATCHED_BY_AUTOPILOT';
             await this.d1Repo.executeWrite(
@@ -1765,13 +1866,12 @@ export class AutomationRegistryEngine {
             );
             // Record durable event in D1
             try {
-              const { randomUUID } = await import('node:crypto');
               const eventId = `ev_outreach_${Date.now()}_${randomUUID().slice(0, 8)}`;
               await this.d1Repo.executeWrite(
                 'durable_events',
                 `INSERT INTO durable_events (id, event_type, organization_id, payload_json, created_at)
-                 VALUES (?, 'OUTREACH_EMAIL_SENT', ?, ?, datetime('now'))`,
-                [eventId, d.organization_id || 'org_default', JSON.stringify({ draftId: d.id, domain: cleanDomain, email: recipientEmail, isFollowUp })]
+                 VALUES (?, 'OUTREACH_EMAIL_SENT', 'org_owner_primary', ?, datetime('now'))`,
+                [eventId, JSON.stringify({ draftId: d.id, domain: cleanDomain, email: recipientEmail, isFollowUp, slotKey: claimedSlotKey })]
               );
             } catch (evErr: any) {
               console.warn(`[OutreachAutopilot] Failed to record OUTREACH_EMAIL_SENT in durable_events: ${evErr.message}`);
@@ -1780,6 +1880,13 @@ export class AutomationRegistryEngine {
             sentIds.push(d.id);
           } else {
             skippedCount++;
+            // Release unfulfilled atomic reservations if send was unsuccessful and not ambiguous
+            if (claimedSlotKey) {
+              try { await this.d1Repo.executeWrite('durable_events', `DELETE FROM durable_events WHERE id = ?`, [claimedSlotKey]); } catch {}
+            }
+            if (domainLockClaimed) {
+              try { await this.d1Repo.executeWrite('durable_events', `DELETE FROM durable_events WHERE id = ?`, [domainLockKey]); } catch {}
+            }
           }
         }
 
