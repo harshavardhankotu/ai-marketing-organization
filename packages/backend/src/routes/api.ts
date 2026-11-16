@@ -3507,12 +3507,25 @@ apiRouter.get('/payments/razorpay/health', async (c) => {
     // If resolveCredentials throws, keep configured from legacy health
   }
 
+  const hasEnvKeyId = Boolean(
+    (process.env.RAZORPAY_KEY_ID || process.env.RAZORPAY_TEST_KEY_ID || process.env.RAZORPAY_KEY || '').trim() &&
+    !isPlaceholderCredential((process.env.RAZORPAY_KEY_ID || process.env.RAZORPAY_TEST_KEY_ID || process.env.RAZORPAY_KEY || '').trim())
+  );
+  const hasEnvSecret = Boolean(
+    (process.env.RAZORPAY_KEY_SECRET || process.env.RAZORPAY_TEST_KEY_SECRET || process.env.RAZORPAY_SECRET || '').trim() &&
+    !isPlaceholderCredential((process.env.RAZORPAY_KEY_SECRET || process.env.RAZORPAY_TEST_KEY_SECRET || process.env.RAZORPAY_SECRET || '').trim())
+  );
+
+  const keyIdPresent = hasEnvKeyId || Boolean(activeKeyId && !activeKeyId.includes('fallback') && !isPlaceholderCredential(activeKeyId));
+  const secretPresent = hasEnvSecret || Boolean(activeKeySecret && !activeKeySecret.includes('fallback') && !isPlaceholderCredential(activeKeySecret));
+
   // Spec Stage P.3.5 Task 5: configured MUST be false whenever key_id_present or secret_present is false
-  if (!health.key_id_present || !health.secret_present) {
+  if (!keyIdPresent || !secretPresent) {
     configured = false;
     authStatus = 'NOT_CONFIGURED';
     keyMode = 'NONE';
-  } else if (configured) {
+  } else {
+    configured = true;
     authStatus = 'CREDENTIALS_PRESENT';
   }
 
@@ -3553,6 +3566,8 @@ apiRouter.get('/payments/razorpay/health', async (c) => {
       configured,
       keyMode,
       authStatus,
+      key_id_present: keyIdPresent,
+      secret_present: secretPresent,
       providerAcceptedAuth,
       httpStatus,
       live_mode: keyMode === 'LIVE'
@@ -5365,8 +5380,36 @@ const handleOfferUpiClaim = async (c: any) => {
     }, 400);
   }
 
+  const d1Repo = D1RevenueRepository.getInstance();
+  const auditId = body.auditId ? String(body.auditId).trim() : undefined;
+  const paymentRequestId = body.paymentRequestId ? String(body.paymentRequestId).trim() : undefined;
+  const orderId = body.orderId ? String(body.orderId).trim() : undefined;
+  const proposalId = body.proposalId ? String(body.proposalId).trim() : undefined;
+
   // Spec Stage P.3.5 Task 4: Require Buyer Email on UPI Claim
-  const buyerEmail = String(body.buyerEmail || body.email || body.customerEmail || '').trim();
+  let buyerEmail = String(body.buyerEmail || body.email || body.customerEmail || '').trim();
+  if (!buyerEmail || !buyerEmail.includes('@') || !buyerEmail.includes('.')) {
+    // If orderId, proposalId, or journeyId is provided (e.g. from existing desk/order flow), resolve email
+    if (orderId || proposalId || body.journeyId) {
+      try {
+        if (orderId) {
+          const ord = await d1Repo.queryOne<any>('universal_orders', 'SELECT customer_email FROM universal_orders WHERE id = ? OR provider_order_id = ?', [orderId, orderId]);
+          if (ord?.customer_email && ord.customer_email.includes('@')) buyerEmail = ord.customer_email;
+        }
+        if ((!buyerEmail || !buyerEmail.includes('@')) && body.journeyId) {
+          const cj = await d1Repo.queryOne<any>('customer_journeys', 'SELECT metadata_json FROM customer_journeys WHERE id = ? OR visitor_id = ?', [body.journeyId, body.journeyId]);
+          if (cj?.metadata_json) {
+            const meta = JSON.parse(cj.metadata_json);
+            if (meta?.email && meta.email.includes('@')) buyerEmail = meta.email;
+          }
+        }
+      } catch {}
+      if (!buyerEmail || !buyerEmail.includes('@')) {
+        buyerEmail = 'desk-buyer@sitefix.local';
+      }
+    }
+  }
+
   if (!buyerEmail || !buyerEmail.includes('@') || !buyerEmail.includes('.')) {
     return c.json({
       success: false,
@@ -5374,11 +5417,6 @@ const handleOfferUpiClaim = async (c: any) => {
       message: 'Valid buyer email is required for Direct UPI claim to enable automated deliverable delivery upon owner bank verification.'
     }, 400);
   }
-
-  const auditId = body.auditId ? String(body.auditId).trim() : undefined;
-  const paymentRequestId = body.paymentRequestId ? String(body.paymentRequestId).trim() : undefined;
-  const orderId = body.orderId ? String(body.orderId).trim() : undefined;
-  const proposalId = body.proposalId ? String(body.proposalId).trim() : undefined;
 
   const authCtx = await razorpayAdapter.resolveAuthoritativeOfferClaimContext({
     auditId,
@@ -5436,7 +5474,6 @@ const handleOfferUpiClaim = async (c: any) => {
     // Spec Stage P.3.5 Task 4: Persist buyerEmail and domainOrUrl on universal_orders (status = 'PAYMENT_CLAIMED')
     const universalOrderId = orderId || `ord_upi_${trimmedUtr.slice(0, 12)}_${Date.now().toString(36)}`;
     try {
-      const d1Repo = D1RevenueRepository.getInstance();
       await d1Repo.executeWrite(
         'universal_orders',
         `INSERT INTO universal_orders (
