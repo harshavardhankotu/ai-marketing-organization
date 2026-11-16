@@ -1262,7 +1262,7 @@ export class AutonomousSystemDoctor {
     try {
       pendingOrders = await this.d1Repo.query<any>(
         'universal_orders',
-        `SELECT id, provider_order_id, provider_payment_id, customer_email, metadata_json, fulfillment_status, status
+        `SELECT id, provider_order_id, provider_payment_id, customer_email, metadata_json, fulfillment_status, status, payment_provider, is_test
          FROM universal_orders
          WHERE fulfillment_status IN ('PAYMENT_CAPTURED_PENDING_DELIVERY', 'DELIVERABLE_READY_EMAIL_PENDING')
          ORDER BY created_at ASC LIMIT 10`
@@ -1294,7 +1294,23 @@ export class AutonomousSystemDoctor {
 
         const cleanDomain = (meta.domainOrUrl || meta.domain || '').replace(/^https?:\/\//i, '').replace(/\/.*$/, '').trim();
         const buyerEmail = (order.customer_email || meta.buyerEmail || '').trim();
-        const rzpPaymentId = order.provider_payment_id || meta.paymentId || meta.razorpayPaymentId || 'pay_recovered';
+        const rzpPaymentId = (order.provider_payment_id || meta.paymentId || meta.razorpayPaymentId || '').trim();
+
+        // Spec Stage P.3.5 Task 2: Never generate synthetic 'pay_recovered'. Require genuine provider payment ID.
+        if (!rzpPaymentId || rzpPaymentId === 'pay_recovered') {
+          errors.push(`Order ${order.id}: MISSING_PROVIDER_PAYMENT_ID`);
+          console.error(`[AutonomousSystemDoctor] Order ${order.id} lacks a real provider payment_id (reconciliation error MISSING_PROVIDER_PAYMENT_ID), leaving pending.`);
+          continue;
+        }
+
+        const isLive = Boolean(
+          order.payment_provider === 'RAZORPAY_LIVE' ||
+          meta.isLive === true ||
+          meta.mode === 'LIVE' ||
+          meta.classification === 'REAL' ||
+          (order.is_test === 0 && order.payment_provider !== 'RAZORPAY_TEST')
+        );
+
         const journeyId = meta.journeyId || `cj_rzp_${order.id}`;
         const siteUrl = getTrustedPublicSiteUrl().replace(/\/$/, '');
 
@@ -1317,7 +1333,7 @@ export class AutonomousSystemDoctor {
           downloadUrl = `${siteUrl}/api/v1/offer/download/${encodeURIComponent(downloadToken)}`;
           await auditService.generateDeliverable(resolvedAuditId, order.id);
 
-          await rzpAdapter.ensureCustomerJourney(journeyId, buyerEmail, meta.customerName || 'Customer', false, 'PAYMENT_VERIFIED');
+          await rzpAdapter.ensureCustomerJourney(journeyId, buyerEmail, meta.customerName || 'Customer', isLive, 'PAYMENT_VERIFIED');
 
           const taskId = `deliv_${order.id}_${rzpPaymentId}`;
           await this.d1Repo.executeWrite(
@@ -1338,33 +1354,120 @@ export class AutonomousSystemDoctor {
           deliverableReady = true;
         }
 
-        // Now attempt Brevo receipt dispatch
+        // Now attempt Brevo receipt dispatch with durable per-payment idempotency (Task 3)
         let emailReceiptStatus = meta.email_receipt_status || 'PENDING_RETRY';
         let finalFulfillmentStatus: 'EMAIL_ACCEPTED' | 'DELIVERABLE_READY_EMAIL_PENDING' = 'DELIVERABLE_READY_EMAIL_PENDING';
+        const brevoReceiptKey = `brevo_receipt_${rzpPaymentId}`;
+        let shouldSendReceipt = false;
+        let receiptAlreadySent = false;
 
         if (deliverableReady && buyerEmail && buyerEmail.includes('@')) {
           try {
-            const emailRes = await brevo.sendTransactionalEmail({
-              to: buyerEmail,
-              subject: `Payment Receipt & Fix-Pack Download (${order.id})`,
-              htmlContent: `
-                <div style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px;border:1px solid #e2e8f0;border-radius:8px;">
-                  <h2 style="color:#0f172a;">Thank You for Your Order!</h2>
-                  <p>Your payment for <strong>${cleanDomain}</strong> was processed successfully.</p>
-                  <p><strong>Order ID:</strong> ${order.id}<br><strong>Payment Ref:</strong> ${rzpPaymentId}</p>
-                  <div style="margin:24px 0;">
-                    <a href="${downloadUrl}" style="background:#2563eb;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;font-weight:bold;display:inline-block;">Download Your SiteFix Technical Fix-Pack</a>
-                  </div>
-                  <p style="color:#64748b;font-size:12px;">This download link contains your 72-hour cryptographic access token.</p>
-                </div>
-              `
-            });
-            if (emailRes && emailRes.success === true && emailRes.status === 'SENT') {
-              emailReceiptStatus = 'SENT';
-              finalFulfillmentStatus = 'EMAIL_ACCEPTED';
+            const existingReceipt = await this.d1Repo.queryOne<any>(
+              'durable_events',
+              `SELECT id, processed, error_message, created_at FROM durable_events WHERE id = ?`,
+              [brevoReceiptKey]
+            );
+
+            if (existingReceipt) {
+              if (existingReceipt.processed === 1) {
+                receiptAlreadySent = true;
+                emailReceiptStatus = 'SENT';
+                finalFulfillmentStatus = 'EMAIL_ACCEPTED';
+              } else {
+                const isRetryable = typeof existingReceipt.error_message === 'string' && existingReceipt.error_message.startsWith('RETRYABLE:');
+                const createdAtMs = new Date(existingReceipt.created_at).getTime();
+                const isStale = isNaN(createdAtMs) || (Date.now() - createdAtMs > 60000);
+
+                if (isRetryable || isStale) {
+                  const reclaim = await this.d1Repo.executeWrite(
+                    'durable_events',
+                    `UPDATE durable_events SET error_message = 'PROCESSING', created_at = datetime('now') WHERE id = ? AND processed = 0 AND (error_message LIKE 'RETRYABLE:%' OR datetime(created_at) <= datetime('now', '-60 seconds') OR created_at <= datetime('now', '-60 seconds'))`,
+                    [brevoReceiptKey]
+                  ).catch(() => ({ rowsAffected: 0 }));
+
+                  const changes = (reclaim as any)?.rowsAffected ?? (reclaim as any)?.meta?.changes ?? 0;
+                  if (changes === 1) {
+                    shouldSendReceipt = true;
+                  } else {
+                    receiptAlreadySent = true;
+                    emailReceiptStatus = 'SENT';
+                    finalFulfillmentStatus = 'EMAIL_ACCEPTED';
+                  }
+                }
+              }
+            } else {
+              try {
+                await this.d1Repo.executeWrite(
+                  'durable_events',
+                  `INSERT INTO durable_events (id, event_type, organization_id, payload_json, processed, error_message, created_at)
+                   VALUES (?, 'BREVO_RECEIPT_CLAIMED', 'org_owner_primary', ?, 0, 'PROCESSING', datetime('now'))`,
+                  [brevoReceiptKey, JSON.stringify({ orderId: order.id, paymentId: rzpPaymentId, buyerEmail, domain: cleanDomain })]
+                );
+                shouldSendReceipt = true;
+              } catch (reserveErr: any) {
+                if (reserveErr.message?.includes('UNIQUE') || reserveErr.message?.includes('already exists') || reserveErr.message?.includes('constraint failed')) {
+                  receiptAlreadySent = true;
+                  emailReceiptStatus = 'SENT';
+                  finalFulfillmentStatus = 'EMAIL_ACCEPTED';
+                }
+              }
             }
           } catch (e: any) {
-            console.warn(`[AutonomousSystemDoctor] Brevo dispatch attempt notice: ${e.message}`);
+            console.warn(`[AutonomousSystemDoctor] Brevo receipt idempotency check notice: ${e.message}`);
+          }
+
+          if (shouldSendReceipt) {
+            try {
+              const emailRes = await brevo.sendTransactionalEmail({
+                to: buyerEmail,
+                subject: `Payment Receipt & Fix-Pack Download (${order.id})`,
+                htmlContent: `
+                  <div style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px;border:1px solid #e2e8f0;border-radius:8px;">
+                    <h2 style="color:#0f172a;">Thank You for Your Order!</h2>
+                    <p>Your payment for <strong>${cleanDomain}</strong> was processed successfully.</p>
+                    <p><strong>Order ID:</strong> ${order.id}<br><strong>Payment Ref:</strong> ${rzpPaymentId}</p>
+                    <div style="margin:24px 0;">
+                      <a href="${downloadUrl}" style="background:#2563eb;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;font-weight:bold;display:inline-block;">Download Your SiteFix Technical Fix-Pack</a>
+                    </div>
+                    <p style="color:#64748b;font-size:12px;">This download link contains your 72-hour cryptographic access token.</p>
+                  </div>
+                `
+              });
+              if (emailRes && emailRes.success === true && emailRes.status === 'SENT') {
+                emailReceiptStatus = 'SENT';
+                finalFulfillmentStatus = 'EMAIL_ACCEPTED';
+                await this.d1Repo.executeWrite(
+                  'durable_events',
+                  `UPDATE durable_events SET processed = 1, processed_at = datetime('now'), payload_json = ?, error_message = NULL WHERE id = ?`,
+                  [
+                    JSON.stringify({
+                      orderId: order.id,
+                      paymentId: rzpPaymentId,
+                      buyerEmail,
+                      domain: cleanDomain,
+                      messageId: emailRes.messageId || null,
+                      status: 'SENT'
+                    }),
+                    brevoReceiptKey
+                  ]
+                ).catch(() => {});
+              } else {
+                const failStatus = emailRes?.status || 'UNKNOWN_ERROR';
+                await this.d1Repo.executeWrite(
+                  'durable_events',
+                  `UPDATE durable_events SET error_message = ? WHERE id = ? AND processed = 0`,
+                  [`RETRYABLE:${failStatus}`, brevoReceiptKey]
+                ).catch(() => {});
+              }
+            } catch (e: any) {
+              await this.d1Repo.executeWrite(
+                'durable_events',
+                `UPDATE durable_events SET error_message = ? WHERE id = ? AND processed = 0`,
+                [`RETRYABLE:${e.message}`, brevoReceiptKey]
+              ).catch(() => {});
+              console.warn(`[AutonomousSystemDoctor] Brevo dispatch attempt notice: ${e.message}`);
+            }
           }
         }
 

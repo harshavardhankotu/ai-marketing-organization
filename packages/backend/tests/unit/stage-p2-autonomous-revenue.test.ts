@@ -277,6 +277,7 @@ describe('Stage P.2 — Zero-Touch Autonomous Revenue Engine & Production Durabi
     it('8.1: SiteFix checkout returns paymentLink and order configuration', async () => {
       process.env.RAZORPAY_KEY_ID = 'rzp_test_mock_key_id';
       process.env.RAZORPAY_KEY_SECRET = 'rzp_test_mock_secret';
+      process.env.SITE_AUDIT_TERMS_ATTESTED = 'true';
       delete process.env.RENDER;
 
       const { apiRouter } = await import('../../src/routes/api.js');

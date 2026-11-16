@@ -709,6 +709,7 @@ describe('Stage P.3.4 — First-Sale Recovery & Production Integrity: Transactio
       sku: 'sitefix_core_499',
       domainOrUrl: domain,
       buyerEmail: email,
+      paymentId: 'pay_p34_rec_123',
       deliverable_status: 'READY',
       email_receipt_status: 'PENDING_RETRY',
       downloadUrl: 'https://sitefix-domain.com/download',
@@ -720,8 +721,8 @@ describe('Stage P.3.4 — First-Sale Recovery & Production Integrity: Transactio
       `INSERT INTO universal_orders (
         id, business_id, organization_id, offer_id, customer_name,
         customer_email, customer_phone, amount_minor, currency, status,
-        payment_provider, provider_order_id, metadata_json, fulfillment_status, created_at, updated_at
-      ) VALUES (?, 'biz_platform_aro', 'org_owner_primary', 'sitefix_core_499', 'Rec Buyer', ?, '', 49900, 'INR', 'CAPTURED', 'RAZORPAY', ?, ?, 'DELIVERABLE_READY_EMAIL_PENDING', datetime('now'), datetime('now'))`,
+        payment_provider, provider_order_id, provider_payment_id, metadata_json, fulfillment_status, created_at, updated_at
+      ) VALUES (?, 'biz_platform_aro', 'org_owner_primary', 'sitefix_core_499', 'Rec Buyer', ?, '', 49900, 'INR', 'CAPTURED', 'RAZORPAY', ?, 'pay_p34_rec_123', ?, 'DELIVERABLE_READY_EMAIL_PENDING', datetime('now'), datetime('now'))`,
       [orderId, email, orderId, meta]
     );
 

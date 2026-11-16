@@ -129,11 +129,9 @@ export class SiteAuditService {
   public getCheckoutReadiness(): CheckoutReadiness {
     const missing: string[] = [];
 
-    // 1. Strict opt-in attestation (defaults to true if unset outside explicit negative test)
-    const rawAttested = process.env.SITE_AUDIT_TERMS_ATTESTED;
-    const isExplicitlyFalse =
-      rawAttested === 'false' || rawAttested === '0' || rawAttested === 'no' || rawAttested === 'INVALID';
-    const isAttested = isExplicitlyFalse ? false : (rawAttested === 'true' || rawAttested === undefined || rawAttested === '');
+    // 1. Strict opt-in attestation (requires explicit process.env.SITE_AUDIT_TERMS_ATTESTED === 'true', never defaults to true when unset)
+    const rawAttested = (process.env.SITE_AUDIT_TERMS_ATTESTED || '').trim().toLowerCase();
+    const isAttested = rawAttested === 'true';
     if (!isAttested) {
       missing.push('SITE_AUDIT_TERMS_ATTESTED');
     }
@@ -166,19 +164,8 @@ export class SiteAuditService {
       }
     }
 
-    // 4. Razorpay credentials
-    const keyId = (process.env.RAZORPAY_KEY_ID || process.env.RAZORPAY_TEST_KEY_ID || '').trim();
-    if (!keyId || keyId.includes('placeholder') || keyId.includes('your_') || keyId.includes('xxx')) {
-      missing.push('RAZORPAY_KEY_ID');
-    }
-
-    const keySecret = (process.env.RAZORPAY_KEY_SECRET || process.env.RAZORPAY_TEST_KEY_SECRET || '').trim();
-    if (!keySecret || keySecret.includes('placeholder') || keySecret.includes('your_') || keySecret.includes('xxx')) {
-      missing.push('RAZORPAY_KEY_SECRET');
-    }
-
-    const isReady = missing.length === 0;
-
+    // 4. Razorpay credentials matching active RAZORPAY_MODE
+    const activeMode = (process.env.RAZORPAY_MODE || 'TEST').trim().toUpperCase();
     const liveKeyId = (process.env.RAZORPAY_KEY_ID || '').trim();
     const liveKeySecret = (process.env.RAZORPAY_KEY_SECRET || '').trim();
     const isLiveKey = Boolean(
@@ -196,6 +183,28 @@ export class SiteAuditService {
       testKeySecret &&
       !isPlaceholderCredential(testKeySecret)
     );
+
+    if (activeMode === 'LIVE') {
+      if (!isLiveKey) {
+        if (!liveKeyId || !liveKeyId.startsWith('rzp_live_') || isPlaceholderCredential(liveKeyId)) {
+          missing.push('RAZORPAY_KEY_ID');
+        }
+        if (!liveKeySecret || isPlaceholderCredential(liveKeySecret)) {
+          missing.push('RAZORPAY_KEY_SECRET');
+        }
+      }
+    } else {
+      if (!isTestKey) {
+        if (!testKeyId || !testKeyId.startsWith('rzp_test_') || isPlaceholderCredential(testKeyId)) {
+          missing.push('RAZORPAY_KEY_ID');
+        }
+        if (!testKeySecret || isPlaceholderCredential(testKeySecret)) {
+          missing.push('RAZORPAY_KEY_SECRET');
+        }
+      }
+    }
+
+    const isReady = missing.length === 0;
 
     const ownerOfferAttested = isAttested && !missing.includes('SITE_AUDIT_TERMS_SHA256') && !missing.includes('SITE_AUDIT_SIGNING_SECRET');
     const liveMoneyReady = Boolean(ownerOfferAttested && isLiveKey);
@@ -235,10 +244,8 @@ export class SiteAuditService {
    */
   public getCommercialTerms(): SiteFixCommercialTerms {
     const readiness = this.getCheckoutReadiness();
-    const rawAttested = process.env.SITE_AUDIT_TERMS_ATTESTED;
-    const isExplicitlyFalse =
-      rawAttested === 'false' || rawAttested === '0' || rawAttested === 'no' || rawAttested === 'INVALID';
-    const isAttested = isExplicitlyFalse ? false : true;
+    const rawAttested = (process.env.SITE_AUDIT_TERMS_ATTESTED || '').trim().toLowerCase();
+    const isAttested = rawAttested === 'true';
     const isHashMatched = !readiness.missingConfig.includes('SITE_AUDIT_TERMS_SHA256');
 
     return {
@@ -870,9 +877,33 @@ export class SiteAuditService {
       if (!order) {
         order = await this.d1Repo.queryOne<any>(
           'universal_orders',
-          "SELECT id, provider_order_id as order_id, status, provider_payment_id as payment_id, metadata_json as notes_json FROM universal_orders WHERE id = ? OR provider_order_id = ?",
-          [orderId, orderId]
+          "SELECT id, provider_order_id as order_id, status, provider_payment_id as payment_id, metadata_json as notes_json FROM universal_orders WHERE id = ? OR provider_order_id = ? OR provider_payment_id = ?",
+          [orderId, orderId, paymentId]
         );
+      }
+
+      if (!order) {
+        // Also check manual_upi_claims for owner-verified UPI transactions
+        const upiClaim = await this.d1Repo.queryOne<any>(
+          'manual_upi_claims',
+          "SELECT id, status, utr, notes FROM manual_upi_claims WHERE id = ? OR utr = ?",
+          [orderId, paymentId]
+        );
+        if (upiClaim && (upiClaim.status === 'HUMAN_VERIFIED_PAYMENT' || upiClaim.status === 'PAID')) {
+          return { valid: true, orderId, auditId: tokenAuditId, paymentId: upiClaim.utr || paymentId };
+        }
+      }
+
+      if (!order) {
+        // Also check transactions for completed ledger entries
+        const tx = await this.d1Repo.queryOne<any>(
+          'transactions',
+          "SELECT id, status, transaction_ref, classification FROM transactions WHERE transaction_ref = ? OR id = ?",
+          [paymentId, paymentId]
+        );
+        if (tx && (tx.status === 'SUCCESS' || tx.classification === 'MANUAL_VERIFIED')) {
+          return { valid: true, orderId, auditId: tokenAuditId, paymentId: tx.transaction_ref || paymentId };
+        }
       }
 
       if (!order) {
@@ -882,7 +913,7 @@ export class SiteAuditService {
         return { valid: false, error: 'ORDER_NOT_FOUND' };
       }
 
-      if (order.status !== 'CAPTURED' && order.status !== 'PAID' && order.status !== 'TEST_CAPTURED') {
+      if (order.status !== 'CAPTURED' && order.status !== 'PAID' && order.status !== 'TEST_CAPTURED' && order.status !== 'HUMAN_VERIFIED_PAYMENT') {
         return { valid: false, error: `ORDER_NOT_CAPTURED (Status: ${order.status})` };
       }
 

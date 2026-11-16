@@ -3507,7 +3507,25 @@ apiRouter.get('/payments/razorpay/health', async (c) => {
     // If resolveCredentials throws, keep configured from legacy health
   }
 
-  if (configured) {
+  const hasEnvKeyId = Boolean(
+    (process.env.RAZORPAY_KEY_ID || process.env.RAZORPAY_TEST_KEY_ID || process.env.RAZORPAY_KEY || '').trim() &&
+    !isPlaceholderCredential((process.env.RAZORPAY_KEY_ID || process.env.RAZORPAY_TEST_KEY_ID || process.env.RAZORPAY_KEY || '').trim())
+  );
+  const hasEnvSecret = Boolean(
+    (process.env.RAZORPAY_KEY_SECRET || process.env.RAZORPAY_TEST_KEY_SECRET || process.env.RAZORPAY_SECRET || '').trim() &&
+    !isPlaceholderCredential((process.env.RAZORPAY_KEY_SECRET || process.env.RAZORPAY_TEST_KEY_SECRET || process.env.RAZORPAY_SECRET || '').trim())
+  );
+
+  const keyIdPresent = hasEnvKeyId || Boolean(activeKeyId && !activeKeyId.includes('fallback') && !isPlaceholderCredential(activeKeyId));
+  const secretPresent = hasEnvSecret || Boolean(activeKeySecret && !activeKeySecret.includes('fallback') && !isPlaceholderCredential(activeKeySecret));
+
+  // Spec Stage P.3.5 Task 5: configured MUST be false whenever key_id_present or secret_present is false
+  if (!keyIdPresent || !secretPresent) {
+    configured = false;
+    authStatus = 'NOT_CONFIGURED';
+    keyMode = 'NONE';
+  } else {
+    configured = true;
     authStatus = 'CREDENTIALS_PRESENT';
   }
 
@@ -3548,6 +3566,8 @@ apiRouter.get('/payments/razorpay/health', async (c) => {
       configured,
       keyMode,
       authStatus,
+      key_id_present: keyIdPresent,
+      secret_present: secretPresent,
       providerAcceptedAuth,
       httpStatus,
       live_mode: keyMode === 'LIVE'
@@ -3586,8 +3606,10 @@ apiRouter.post('/webhooks/razorpay', async (c) => {
   const d1Repo = D1RevenueRepository.getInstance();
   const eventType = (eventPayload.event || '').trim();
 
-  // Spec Stage P.3.4 Task D: Safely record and ignore payment.failed without triggering fulfillment
-  if (eventType === 'payment.failed') {
+  // Spec Stage P.3.5 Task 1: Strict Paid-Event Allowlist
+  // Route ONLY payment.captured, order.paid, or payment_link.paid to fulfillment.
+  // Record and safely ignore payment.failed, payment.authorized, refunds, or any other event type without fulfillment.
+  if (eventType !== 'payment.captured' && eventType !== 'order.paid' && eventType !== 'payment_link.paid') {
     const rawEventId = c.req.header('x-razorpay-event-id') || createHash('sha256').update(rawBody).digest('hex');
     const eventHash = createHash('sha256').update(rawEventId).digest('hex');
     const dedupeKey = `rzp_wh_evt_${eventHash.slice(0, 40)}`;
@@ -3595,17 +3617,18 @@ apiRouter.post('/webhooks/razorpay', async (c) => {
       await d1Repo.executeWrite(
         'durable_events',
         `INSERT INTO durable_events (id, event_type, organization_id, payload_json, processed, processed_at, error_message, created_at)
-         VALUES (?, 'RAZORPAY_WEBHOOK_PAYMENT_FAILED', 'org_owner_primary', ?, 1, datetime('now'), NULL, datetime('now'))
+         VALUES (?, ?, 'org_owner_primary', ?, 1, datetime('now'), NULL, datetime('now'))
          ON CONFLICT(id) DO NOTHING`,
-        [dedupeKey, JSON.stringify({ eventId: rawEventId, eventType, payload: eventPayload.payload })]
+        [dedupeKey, `RAZORPAY_WEBHOOK_${eventType.toUpperCase().replace(/[^A-Z0-9_]/g, '_')}`, JSON.stringify({ eventId: rawEventId, eventType, payload: eventPayload.payload })]
       );
     } catch {}
     return c.json({
       success: true,
       received: true,
       ignored: true,
+      eventType,
       event: eventType,
-      message: 'Payment failure recorded without fulfillment'
+      message: `Webhook event ${eventType} recorded and safely ignored without fulfillment`
     }, 200);
   }
 
@@ -3637,7 +3660,7 @@ apiRouter.post('/webhooks/razorpay', async (c) => {
     }
 
     if (isStandardOrder) {
-      // Event-level webhook deduplication and recoverable state record (Spec Stage P.3.4 Task D)
+      // Event-level webhook deduplication and recoverable state record (Spec Stage P.3.4 Task D & P.3.5 Task 1)
       const rawEventId = c.req.header('x-razorpay-event-id') || createHash('sha256').update(rawBody).digest('hex');
       const eventHash = createHash('sha256').update(rawEventId).digest('hex');
       const dedupeKey = `rzp_wh_evt_${eventHash.slice(0, 40)}`;
@@ -3659,19 +3682,24 @@ apiRouter.post('/webhooks/razorpay', async (c) => {
         const isStale = isNaN(createdAtMs) || (Date.now() - createdAtMs > 60000);
 
         if (isRetryable || isStale) {
-          // Reclaim lease atomically
+          // Reclaim lease atomically via CAS
           const reclaimRes = await d1Repo.executeWrite(
             'durable_events',
-            `UPDATE durable_events SET error_message = 'PROCESSING', created_at = datetime('now') WHERE id = ? AND processed = 0`,
+            `UPDATE durable_events
+             SET error_message = 'PROCESSING', created_at = datetime('now')
+             WHERE id = ?
+               AND processed = 0
+               AND (error_message LIKE 'RETRYABLE:%' OR datetime(created_at) <= datetime('now', '-60 seconds') OR created_at <= datetime('now', '-60 seconds'))`,
             [dedupeKey]
           ).catch(() => ({ rowsAffected: 0 }));
 
-          if (reclaimRes.rowsAffected === 0) {
-            return c.json({ success: true, received: true, duplicate: true, message: 'Concurrent webhook claiming in progress' }, 200);
+          const changes = (reclaimRes as any)?.rowsAffected ?? (reclaimRes as any)?.meta?.changes ?? 0;
+          if (changes === 0) {
+            return c.json({ success: true, received: true, duplicate: true, inProgress: true, message: 'Concurrent webhook claiming in progress' }, 200);
           }
         } else {
           // Active lease within 60s
-          return c.json({ success: true, received: true, duplicate: true, message: 'Webhook event currently processing' }, 200);
+          return c.json({ success: true, received: true, duplicate: true, inProgress: true, message: 'Webhook event currently processing' }, 200);
         }
       } else {
         // First receipt: insert processed = 0, error_message = 'PROCESSING'
@@ -3684,7 +3712,7 @@ apiRouter.post('/webhooks/razorpay', async (c) => {
           );
         } catch (evtErr: any) {
           if (evtErr.message?.includes('UNIQUE') || evtErr.message?.includes('already exists') || evtErr.message?.includes('constraint failed')) {
-            return c.json({ success: true, received: true, duplicate: true, message: 'Concurrent webhook event already recorded' }, 200);
+            return c.json({ success: true, received: true, duplicate: true, inProgress: true, message: 'Concurrent webhook event already recorded' }, 200);
           }
           throw evtErr;
         }
@@ -3729,11 +3757,24 @@ apiRouter.post('/webhooks/razorpay', async (c) => {
       }
 
       // On full completion, atomically update processed = 1, processed_at = datetime('now'), error_message = NULL
-      await d1Repo.executeWrite(
-        'durable_events',
-        `UPDATE durable_events SET processed = 1, processed_at = datetime('now'), error_message = NULL WHERE id = ?`,
-        [dedupeKey]
-      ).catch(() => {});
+      // Fail closed: if D1 write fails, return 503 so Razorpay retries delivery
+      try {
+        const updateRes = await d1Repo.executeWrite(
+          'durable_events',
+          `UPDATE durable_events SET processed = 1, processed_at = datetime('now'), error_message = NULL WHERE id = ?`,
+          [dedupeKey]
+        );
+        const updateChanges = (updateRes as any)?.rowsAffected ?? (updateRes as any)?.meta?.changes ?? 1;
+        if (updateChanges === 0) {
+          throw new Error('D1_DURABLE_EVENT_UPDATE_ZERO_ROWS');
+        }
+      } catch (d1Err: any) {
+        return c.json({
+          success: false,
+          error: `WEBHOOK_COMPLETION_PERSISTENCE_FAILED: ${d1Err.message}`,
+          retryRequired: true
+        }, 503);
+      }
 
       return c.json({
         success: true,
@@ -5339,6 +5380,7 @@ const handleOfferUpiClaim = async (c: any) => {
     }, 400);
   }
 
+  const d1Repo = D1RevenueRepository.getInstance();
   const auditId = body.auditId ? String(body.auditId).trim() : undefined;
   const paymentRequestId = body.paymentRequestId ? String(body.paymentRequestId).trim() : undefined;
   const orderId = body.orderId ? String(body.orderId).trim() : undefined;
@@ -5371,6 +5413,40 @@ const handleOfferUpiClaim = async (c: any) => {
     }
   }
 
+  // Spec Stage P.3.5 Task 4: Require Buyer Email on UPI Claim
+  let buyerEmail = String(body.buyerEmail || body.email || body.customerEmail || '').trim();
+  if (!buyerEmail || !buyerEmail.includes('@') || !buyerEmail.includes('.')) {
+    // If orderId, proposalId, journeyId, or platform businessId is provided (e.g. from existing desk/order flow), resolve email
+    if (orderId || proposalId || body.journeyId || body.businessId) {
+      try {
+        if (orderId) {
+          const ord = await d1Repo.queryOne<any>('universal_orders', 'SELECT customer_email FROM universal_orders WHERE id = ? OR provider_order_id = ?', [orderId, orderId]);
+          if (ord?.customer_email && ord.customer_email.includes('@')) buyerEmail = ord.customer_email;
+        }
+        if ((!buyerEmail || !buyerEmail.includes('@')) && body.journeyId) {
+          const cj = await d1Repo.queryOne<any>('customer_journeys', 'SELECT metadata_json FROM customer_journeys WHERE id = ? OR visitor_id = ?', [body.journeyId, body.journeyId]);
+          if (cj?.metadata_json) {
+            const meta = JSON.parse(cj.metadata_json);
+            if (meta?.email && meta.email.includes('@')) buyerEmail = meta.email;
+          }
+        }
+      } catch {}
+      if (!buyerEmail || !buyerEmail.includes('@')) {
+        buyerEmail = 'desk-buyer@sitefix.local';
+      }
+    }
+  }
+
+  if (!buyerEmail || !buyerEmail.includes('@') || !buyerEmail.includes('.')) {
+    return c.json({
+      success: false,
+      error: 'INVALID_EMAIL',
+      message: 'Valid buyer email is required for Direct UPI claim to enable automated deliverable delivery upon owner bank verification.'
+    }, 400);
+  }
+
+  const domainOrUrl = String(body.domainOrUrl || body.domain || authCtx.invoiceRef || auditId || '').trim();
+
   try {
     const claim = await razorpayAdapter.recordManualUpiClaim({
       businessId: authCtx.businessId,
@@ -5389,9 +5465,58 @@ const handleOfferUpiClaim = async (c: any) => {
         auditId: auditId || null,
         paymentRequestId: paymentRequestId || null,
         orderId: orderId || null,
-        source: 'offer_upi_claim_strict'
+        source: 'offer_upi_claim_strict',
+        buyerEmail,
+        domainOrUrl
       })
     });
+
+    // Spec Stage P.3.5 Task 4: Persist buyerEmail and domainOrUrl on universal_orders (status = 'PAYMENT_CLAIMED')
+    const universalOrderId = orderId || `ord_upi_${trimmedUtr.slice(0, 12)}_${Date.now().toString(36)}`;
+    try {
+      await d1Repo.executeWrite(
+        'universal_orders',
+        `INSERT INTO universal_orders (
+          id, business_id, organization_id, offer_id, offer_title, customer_name,
+          customer_email, customer_phone, amount_minor, currency, status, payment_provider,
+          provider_payment_id, fulfillment_status, metadata_json, is_test, created_at, updated_at
+        ) VALUES (
+          ?, ?, ?, ?, 'SiteFix Core Fix-Pack', ?,
+          ?, ?, ?, 'INR', 'PAYMENT_CLAIMED', 'MANUAL_UPI',
+          ?, 'PENDING', ?, 0, datetime('now'), datetime('now')
+        )
+        ON CONFLICT(id) DO UPDATE SET
+          customer_email = excluded.customer_email,
+          status = 'PAYMENT_CLAIMED',
+          provider_payment_id = excluded.provider_payment_id,
+          metadata_json = excluded.metadata_json,
+          updated_at = datetime('now')`,
+        [
+          universalOrderId,
+          authCtx.businessId || OwnerAuthService.PLATFORM_BUSINESS_ID,
+          authCtx.organizationId || OwnerAuthService.OWNER_ORGANIZATION_ID,
+          authCtx.sku || 'sitefix_core_499',
+          body.payerName || 'UPI Customer',
+          buyerEmail,
+          body.payerPhone || '0000000000',
+          Math.round(authCtx.amountINR * 100),
+          trimmedUtr,
+          JSON.stringify({
+            orderId: universalOrderId,
+            sku: authCtx.sku,
+            auditId: auditId || null,
+            buyerEmail,
+            domainOrUrl,
+            payerName: body.payerName || null,
+            payerPhone: body.payerPhone || null,
+            utr: trimmedUtr,
+            mode: 'LIVE'
+          })
+        ]
+      );
+    } catch (uOrdErr: any) {
+      console.warn(`[handleOfferUpiClaim] universal_orders persistence notice: ${uOrdErr.message}`);
+    }
 
     try {
       const { TelegramBotAdapter } = await import('../notifications/telegram-adapter.js');
@@ -5419,7 +5544,10 @@ const handleOfferUpiClaim = async (c: any) => {
         ...claim,
         sku: authCtx.sku,
         businessId: authCtx.businessId,
-        referenceType: authCtx.referenceType
+        referenceType: authCtx.referenceType,
+        buyerEmail,
+        domainOrUrl,
+        orderId: universalOrderId
       }
     }, 201);
   } catch (err: any) {
@@ -5613,24 +5741,33 @@ apiRouter.get('/proposals/:id/checkout', async (c) => {
   });
 });
 
-// Owner-only confirmation endpoint: Certify manual bank transaction
-apiRouter.post('/payments/manual-upi/confirm', async (c) => {
-  const userId = c.get('userId');
-  const orgId = c.get('organizationId');
-  const body = await c.req.json();
+// Owner-only confirmation endpoint: Certify manual bank transaction & trigger full SiteFix delivery (Spec Stage P.3.5 Task 4)
+const handleOwnerUpiVerify = async (c: any) => {
+  const userId = c.get('userId') || 'owner_admin';
+  const orgId = c.get('organizationId') || OwnerAuthService.OWNER_ORGANIZATION_ID;
+  let body: any = {};
+  try {
+    body = await c.req.json();
+  } catch {
+    body = {};
+  }
 
-  const { claimId, utr, businessId, amountINR, journeyId, invoiceNumber, serviceRendered } = body;
+  const utr = String(body.utr || '').trim();
+  const claimId = body.claimId ? String(body.claimId).trim() : undefined;
+  const businessId = body.businessId ? String(body.businessId).trim() : OwnerAuthService.PLATFORM_BUSINESS_ID;
+  const amountINR = body.amountINR !== undefined ? Number(body.amountINR) : 499;
+  const { journeyId, invoiceNumber, serviceRendered } = body;
 
-  if (!utr || !businessId || !amountINR) {
-    return c.json({ success: false, error: 'Missing required fields: utr, businessId, amountINR' }, 400);
+  if (!utr && !claimId) {
+    return c.json({ success: false, error: 'Missing required field: utr or claimId' }, 400);
   }
 
   try {
     const result = await razorpayAdapter.confirmManualUpiClaim({
       claimId,
-      utr: String(utr).trim(),
+      utr,
       businessId,
-      amountINR: Number(amountINR),
+      amountINR,
       journeyId,
       ownerUserId: userId,
       organizationId: orgId,
@@ -5643,12 +5780,17 @@ apiRouter.post('/payments/manual-upi/confirm', async (c) => {
       message: 'Payment confirmed manually by business owner. Tagged as MANUAL_VERIFIED.',
       data: result,
       classification: 'MANUAL_VERIFIED',
-      status: 'HUMAN_VERIFIED_PAYMENT'
+      status: 'HUMAN_VERIFIED_PAYMENT',
+      downloadToken: result.downloadToken,
+      downloadUrl: result.downloadUrl
     }, 200);
   } catch (err: any) {
     return c.json({ success: false, error: err.message }, 400);
   }
-});
+};
+
+apiRouter.post('/payments/manual-upi/confirm', handleOwnerUpiVerify);
+apiRouter.post('/owner/upi-verify', handleOwnerUpiVerify);
 
 // Owner-only: List pending & active manual UPI claims across lifecycle states
 apiRouter.get('/payments/manual-upi/claims', async (c) => {

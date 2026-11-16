@@ -308,7 +308,7 @@ export class BrevoMcpClient {
       }
 
       const data: any = await res.json();
-      messageId = data?.result?.messageId || data?.messageId || `msg_${randomUUID().slice(0, 12)}`;
+      messageId = data?.result?.messageId || data?.messageId || undefined;
     } catch (err: any) {
       if (quotaRes.reservationId) {
         await this.quotaService.reconcileProviderQuota('brevo_mcp', quotaRes.reservationId, 'RELEASE');
