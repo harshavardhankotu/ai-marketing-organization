@@ -36,11 +36,16 @@ export interface RazorpayVerifyParams {
 
 export interface RazorpayVerifyResult {
   success: boolean;
+  paymentCaptured?: boolean;
   orderId: string;
   razorpayPaymentId: string;
   status: 'CAPTURED' | 'TEST_CAPTURED';
   downloadUrl?: string;
   mode: 'LIVE' | 'TEST_SANDBOX';
+  fulfillmentStatus?: string;
+  deliverableStatus?: 'READY' | 'PENDING';
+  emailReceiptStatus?: 'SENT' | 'PENDING_RETRY' | 'SKIPPED_UNCONFIGURED';
+  retryRequired?: boolean;
   message?: string;
 }
 
@@ -60,41 +65,70 @@ export class RazorpayStandardAdapter {
   }
 
   /**
-   * Strictly paired credential resolution (Spec Stage P.3):
+   * Flexible paired credential resolution (Spec Stage P.3.3 Task 4):
    * Key ID and Secret must form a complete, matching pair.
-   * rzp_live_* must be paired with a valid RAZORPAY_KEY_SECRET.
-   * rzp_test_* must be paired with a valid RAZORPAY_TEST_KEY_SECRET.
-   * Incomplete or mismatched live pairs fail closed.
+   * Supports optional process.env.RAZORPAY_MODE ('test' or 'live').
+   * Supports rzp_test_* in RAZORPAY_KEY_ID + RAZORPAY_KEY_SECRET or RAZORPAY_TEST_KEY_ID + RAZORPAY_TEST_KEY_SECRET.
+   * Never mixes a key ID from one variable prefix with a secret from another prefix.
    */
-  public getCredentialPair(): { keyId: string; keySecret: string; isLive: boolean } {
+  public resolveCredentials(): { keyId: string; keySecret: string; isLive: boolean; mode: 'LIVE' | 'TEST_SANDBOX' } {
+    const forcedMode = (process.env.RAZORPAY_MODE || '').trim().toLowerCase();
+
     const liveKeyId = (process.env.RAZORPAY_KEY_ID || process.env.RAZORPAY_KEY || '').trim();
     const liveSecret = (process.env.RAZORPAY_KEY_SECRET || process.env.RAZORPAY_SECRET || '').trim();
     const testKeyId = (process.env.RAZORPAY_TEST_KEY_ID || '').trim();
     const testSecret = (process.env.RAZORPAY_TEST_KEY_SECRET || '').trim();
 
-    const isLivePairValid = liveKeyId.startsWith('rzp_live_') &&
+    const hasLivePair = liveKeyId.startsWith('rzp_live_') &&
       !isPlaceholderCredential(liveKeyId) &&
       liveSecret.length > 0 &&
       !isPlaceholderCredential(liveSecret);
 
-    if (isLivePairValid) {
-      return { keyId: liveKeyId, keySecret: liveSecret, isLive: true };
-    }
+    const hasTestInMainPair = liveKeyId.startsWith('rzp_test_') &&
+      !isPlaceholderCredential(liveKeyId) &&
+      liveSecret.length > 0 &&
+      !isPlaceholderCredential(liveSecret);
 
-    const isTestPairValid = testKeyId.startsWith('rzp_test_') &&
+    const hasDedicatedTestPair = testKeyId.startsWith('rzp_test_') &&
       !isPlaceholderCredential(testKeyId) &&
       testSecret.length > 0 &&
       !isPlaceholderCredential(testSecret);
 
-    if (isTestPairValid) {
-      return { keyId: testKeyId, keySecret: testSecret, isLive: false };
+    // If forced to test mode
+    if (forcedMode === 'test') {
+      if (hasDedicatedTestPair) {
+        return { keyId: testKeyId, keySecret: testSecret, isLive: false, mode: 'TEST_SANDBOX' };
+      }
+      if (hasTestInMainPair) {
+        return { keyId: liveKeyId, keySecret: liveSecret, isLive: false, mode: 'TEST_SANDBOX' };
+      }
+    }
+
+    // Default resolution: Live first if available and not forced to test
+    if (hasLivePair && forcedMode !== 'test') {
+      return { keyId: liveKeyId, keySecret: liveSecret, isLive: true, mode: 'LIVE' };
+    }
+
+    // Main pair configured with test keys
+    if (hasTestInMainPair) {
+      return { keyId: liveKeyId, keySecret: liveSecret, isLive: false, mode: 'TEST_SANDBOX' };
+    }
+
+    // Dedicated test pair configured
+    if (hasDedicatedTestPair) {
+      return { keyId: testKeyId, keySecret: testSecret, isLive: false, mode: 'TEST_SANDBOX' };
     }
 
     if (!isProduction()) {
-      return { keyId: 'rzp_test_sandbox_fallback', keySecret: 'rzp_test_secret_fallback', isLive: false };
+      return { keyId: 'rzp_test_sandbox_fallback', keySecret: 'rzp_test_secret_fallback', isLive: false, mode: 'TEST_SANDBOX' };
     }
 
     throw new Error('PAYMENT_PROVIDER_NOT_CONFIGURED: Valid paired Razorpay credentials (matching key ID and secret) are required.');
+  }
+
+  public getCredentialPair(): { keyId: string; keySecret: string; isLive: boolean } {
+    const creds = this.resolveCredentials();
+    return { keyId: creds.keyId, keySecret: creds.keySecret, isLive: creds.isLive };
   }
 
   public getKeyId(): string {
@@ -110,6 +144,57 @@ export class RazorpayStandardAdapter {
       return this.getCredentialPair().keySecret;
     } catch {
       return '';
+    }
+  }
+
+  /**
+   * Ensures that a genuine customer_journeys record exists for this order before inserting into delivery_tasks.
+   * Satisfies the FOREIGN KEY (customer_journey_id) REFERENCES customer_journeys(id) constraint.
+   */
+  public async ensureCustomerJourney(
+    journeyId: string,
+    buyerEmail: string,
+    customerName: string,
+    isLive: boolean,
+    stage: string = 'PAYMENT_VERIFIED'
+  ): Promise<void> {
+    const classification = isLive ? 'REAL' : 'TEST';
+    const touchpoints = JSON.stringify([{ channel: 'DIRECT_CHECKOUT', at: new Date().toISOString() }]);
+
+    // Try schema with organization_id first (local SQLite schema.ts)
+    try {
+      await this.d1Repo.executeWrite(
+        'customer_journeys',
+        `INSERT INTO customer_journeys (
+          id, organization_id, business_id, visitor_id, customer_name,
+          customer_email, stage, first_touch_channel, last_touch_channel,
+          touchpoints_json, classification, created_at, updated_at
+        ) VALUES (?, 'org_owner_primary', 'biz_platform_aro', ?, ?, ?, ?, 'DIRECT_CHECKOUT', 'DIRECT_CHECKOUT', ?, ?, datetime('now'), datetime('now'))
+        ON CONFLICT(id) DO UPDATE SET
+          stage = excluded.stage,
+          customer_email = excluded.customer_email,
+          updated_at = datetime('now')`,
+        [journeyId, journeyId, customerName || 'SiteFix Customer', buyerEmail, stage, touchpoints, classification]
+      );
+    } catch (err: any) {
+      if (String(err?.message || '').includes('no such column: organization_id')) {
+        await this.d1Repo.executeWrite(
+          'customer_journeys',
+          `INSERT INTO customer_journeys (
+            id, business_id, visitor_id, customer_name,
+            customer_email, stage, first_touch_channel, last_touch_channel,
+            touchpoints_json, classification, created_at, updated_at
+          ) VALUES (?, 'biz_platform_aro', ?, ?, ?, ?, 'DIRECT_CHECKOUT', 'DIRECT_CHECKOUT', ?, ?, datetime('now'), datetime('now'))
+          ON CONFLICT(id) DO UPDATE SET
+            stage = excluded.stage,
+            customer_email = excluded.customer_email,
+            updated_at = datetime('now')`,
+          [journeyId, journeyId, customerName || 'SiteFix Customer', buyerEmail, stage, touchpoints, classification]
+        );
+      } else {
+        console.error(`[RazorpayAdapter] Failed to ensure customer_journey: ${err.message}`);
+        throw err;
+      }
     }
   }
 
@@ -218,12 +303,15 @@ export class RazorpayStandardAdapter {
       razorpayOrderId = `order_test_${randomUUID().replace(/-/g, '').slice(0, 14)}`;
     }
 
-    // Persist in D1 universal_orders (fail-closed)
+    // Persist in D1 universal_orders and customer_journeys (fail-closed)
     const mode = isLive ? 'LIVE' : 'TEST_SANDBOX';
+    const journeyId = `cj_rzp_${internalOrderId}`;
+
     const metadataJson = JSON.stringify({
       sku: canonicalSku,
       domainOrUrl: cleanDomain,
       buyerEmail,
+      journeyId,
       mode,
       keyId: keyId ? `${keyId.slice(0, 8)}...` : 'NONE',
       notes: params.notes || {}
@@ -399,6 +487,7 @@ export class RazorpayStandardAdapter {
 
     const cleanDomain = String(meta.domainOrUrl || '').trim();
     const buyerEmail = String(storedOrder.customer_email || meta.buyerEmail || '').trim();
+    const customerName = String(meta.customerName || (storedOrder as any).customer_name || 'SiteFix Customer').trim();
 
     if (!cleanDomain) {
       throw new Error('MISSING_ORDER_DOMAIN: Order record does not contain a target domain.');
@@ -505,52 +594,16 @@ export class RazorpayStandardAdapter {
     const siteUrl = getTrustedPublicSiteUrl().replace(/\/$/, '');
     let downloadToken = '';
     let downloadUrl = '';
+    let journeyId = meta.journeyId || `cj_rzp_${storedOrder.id || orderId}`;
 
     try {
       const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
       const auditService = SiteAuditService.getInstance();
       let audit = await auditService.getAuditByDomain(cleanDomain);
       if (!audit) {
-        try {
-          audit = await auditService.runScan(`https://${cleanDomain}`);
-        } catch {
-          // If live scan cannot fetch domain (e.g. DNS or private host in test/sandbox), construct baseline audit
-          const auditId = `audit_${Date.now()}_${randomUUID().replace(/-/g, '').slice(0, 8)}`;
-          audit = {
-            auditId,
-            url: `https://${cleanDomain}`,
-            domain: cleanDomain,
-            scannedAt: new Date().toISOString(),
-            overallStatus: 'ACTION_REQUIRED',
-            score: 55,
-            scoreExplanation: 'Automated baseline audit generated for fulfillment.',
-            findings: [],
-            metrics: {
-              brokenLinksCount: 0,
-              redirectChainsCount: 0,
-              missingMetaDescription: true,
-              missingTitle: false,
-              missingCanonical: true,
-              missingOpenGraph: true,
-              missingTwitterCards: true,
-              schemaTypesFound: [],
-              insecureHttpLinksCount: 0,
-              isMobileResponsive: true
-            },
-            preview: {
-              sampleFindings: [],
-              maskedIssuesCount: 4,
-              freeTierMessage: 'Fix-Pack ready for download.'
-            },
-            disclosures: {
-              dataCollectedExplanation: 'Automated diagnostic',
-              botDisclosure: 'Antigravity Diagnostic Bot',
-              statutoryNotice: 'Automated Diagnostic'
-            }
-          };
-          auditService.setAuditInCache(audit);
-          await auditService.persistAuditToD1(audit).catch(() => {});
-        }
+        // Run genuine diagnostic scan (never fabricate fake score-55 audit)
+        audit = await auditService.runScan(`https://${cleanDomain}`);
+        await auditService.persistAuditToD1(audit);
       }
 
       const resolvedAuditId = audit.auditId || audit.id || `audit_${cleanDomain}`;
@@ -563,7 +616,10 @@ export class RazorpayStandardAdapter {
       // Generate deliverable to ensure cache is populated
       await auditService.generateDeliverable(resolvedAuditId, orderId);
 
-      // Persist in delivery_tasks table
+      // Task 1: Ensure parent customer_journeys row exists to satisfy FOREIGN KEY constraint
+      await this.ensureCustomerJourney(journeyId, buyerEmail, customerName, isLive, 'PAYMENT_VERIFIED');
+
+      // Task 1: Persist in delivery_tasks table with valid customer_journey_id
       const taskId = `deliv_${orderId}_${randomUUID().replace(/-/g, '').slice(0, 8)}`;
       await this.d1Repo.executeWrite(
         'delivery_tasks',
@@ -575,7 +631,7 @@ export class RazorpayStandardAdapter {
         ON CONFLICT(id) DO UPDATE SET stage = 'COMPLETED', completed_at = datetime('now')`,
         [
           taskId,
-          orderId,
+          journeyId,
           JSON.stringify({ auditId: audit.auditId, domain: cleanDomain, downloadToken, sku: storedSku }),
           JSON.stringify({ status: 'DELIVERED', deliveredTo: buyerEmail, paymentId: razorpay_payment_id })
         ]
@@ -587,14 +643,29 @@ export class RazorpayStandardAdapter {
         `UPDATE universal_orders SET fulfillment_status = 'PAYMENT_CAPTURED_PENDING_DELIVERY', updated_at = datetime('now') WHERE id = ? OR provider_order_id = ?`,
         [orderId, razorpay_order_id]
       ).catch(() => {});
-      throw new Error(`FIXPACK_GENERATION_FAILED: ${fixPackErr.message}`);
+      return {
+        success: true,
+        paymentCaptured: true,
+        orderId,
+        razorpayPaymentId: razorpay_payment_id,
+        status,
+        mode,
+        fulfillmentStatus: 'PAYMENT_CAPTURED_PENDING_DELIVERY',
+        deliverableStatus: 'PENDING',
+        retryRequired: true,
+        message: `Payment captured, deliverable generation pending: ${fixPackErr.message}`
+      };
     }
 
-    // Step (c): Send transactional email via Brevo to actual buyer email
-    try {
-      const brevo = BrevoMcpClient.getInstance();
-      if (buyerEmail && buyerEmail.includes('@')) {
-        await brevo.sendTransactionalEmail({
+    // Step (c): Send transactional email via Brevo to actual buyer email (Task 2)
+    let emailReceiptStatus: 'SENT' | 'PENDING_RETRY' | 'SKIPPED_UNCONFIGURED' = 'PENDING_RETRY';
+    const activeBrevoKey = (process.env.BREVO_MCP_SERVER_API || process.env.BREVO_API_KEY || '').trim();
+    const isBrevoConfigured = Boolean(activeBrevoKey && !isPlaceholderCredential(activeBrevoKey));
+
+    if (buyerEmail && buyerEmail.includes('@')) {
+      try {
+        const brevo = BrevoMcpClient.getInstance();
+        const emailRes = await brevo.sendTransactionalEmail({
           to: buyerEmail,
           subject: `Payment Receipt & Fix-Pack Download (${orderId})`,
           htmlContent: `
@@ -610,17 +681,46 @@ export class RazorpayStandardAdapter {
             </div>
           `
         });
+
+        if (emailRes && emailRes.success === true && emailRes.status === 'SENT') {
+          emailReceiptStatus = 'SENT';
+        } else {
+          emailReceiptStatus = 'PENDING_RETRY';
+          console.warn(`[RazorpayAdapter] Brevo receipt send notice: status=${emailRes?.status}, reason=${emailRes?.reason}`);
+        }
+      } catch (brevoErr: any) {
+        console.warn(`[RazorpayAdapter] Brevo receipt send notice: ${brevoErr.message}`);
+        emailReceiptStatus = 'PENDING_RETRY';
       }
-    } catch (brevoErr: any) {
-      console.warn(`[RazorpayAdapter] Brevo receipt send notice: ${brevoErr.message}`);
+    } else {
+      emailReceiptStatus = isBrevoConfigured ? 'PENDING_RETRY' : 'SKIPPED_UNCONFIGURED';
     }
 
-    // Update fulfillment_status to DELIVERED
+    // Task 2: State transition
+    // Only set fulfillment_status = 'DELIVERED' when real Fix-Pack is stored in delivery_tasks
+    // AND (if Brevo configured) email receipt is SENT (otherwise set DELIVERABLE_READY_EMAIL_PENDING)
+    const finalFulfillmentStatus = (isBrevoConfigured && emailReceiptStatus !== 'SENT')
+      ? 'DELIVERABLE_READY_EMAIL_PENDING'
+      : 'DELIVERED';
+
+    const updatedMetadata = JSON.stringify({
+      ...meta,
+      sku: storedSku,
+      domainOrUrl: cleanDomain,
+      buyerEmail,
+      journeyId,
+      deliverable_status: 'READY',
+      email_receipt_status: emailReceiptStatus,
+      downloadUrl,
+      downloadToken
+    });
+
+    // Update fulfillment_status and metadata in universal_orders
     try {
       await this.d1Repo.executeWrite(
         'universal_orders',
-        `UPDATE universal_orders SET fulfillment_status = 'DELIVERED', updated_at = datetime('now') WHERE id = ? OR provider_order_id = ?`,
-        [orderId, razorpay_order_id]
+        `UPDATE universal_orders SET fulfillment_status = ?, metadata_json = ?, updated_at = datetime('now') WHERE id = ? OR provider_order_id = ?`,
+        [finalFulfillmentStatus, updatedMetadata, orderId, razorpay_order_id]
       );
     } catch (fulErr: any) {
       console.warn(`[RazorpayAdapter] Failed to update fulfillment_status: ${fulErr.message}`);
@@ -638,6 +738,8 @@ export class RazorpayStandardAdapter {
         `• <b>SKU:</b> ${storedSku}\n` +
         `• <b>Status:</b> ${status}\n` +
         `• <b>Mode:</b> ${mode}\n` +
+        `• <b>Fulfillment:</b> ${finalFulfillmentStatus}\n` +
+        `• <b>Email Receipt:</b> ${emailReceiptStatus}\n` +
         (isLive ? `• <b>Cash Recognized:</b> ₹${verifiedAmountINR.toFixed(2)}\n` : `• <b>Ledger Note:</b> Sandbox test mode, zero bank revenue recorded\n`) +
         `• <b>Deliverable:</b> <a href="${downloadUrl}">Download Link</a>`
       ).catch(() => {});
@@ -645,12 +747,19 @@ export class RazorpayStandardAdapter {
 
     return {
       success: true,
+      paymentCaptured: true,
       orderId,
       razorpayPaymentId: razorpay_payment_id,
       status,
-      downloadUrl,
       mode,
-      message: `Payment verified successfully in ${mode} mode.`
+      downloadUrl,
+      fulfillmentStatus: finalFulfillmentStatus,
+      deliverableStatus: 'READY',
+      emailReceiptStatus,
+      retryRequired: finalFulfillmentStatus !== 'DELIVERED',
+      message: finalFulfillmentStatus === 'DELIVERED'
+        ? 'Payment verified, deliverable generated, and buyer receipt sent.'
+        : 'Payment verified and deliverable generated, but email receipt is pending delivery retry.'
     };
   }
 }

@@ -149,6 +149,15 @@ describe('Stage P.3.2 — Unified Razorpay Order/Capture/Delivery Pipeline, Real
       const fakePayId = `pay_test_${Date.now()}`;
       const sig = createHmac('sha256', keySecret).update(`${order.razorpayOrderId || order.orderId}|${fakePayId}`).digest('hex');
 
+      vi.spyOn(SiteAuditService.getInstance(), 'getAuditByDomain').mockResolvedValue({
+        auditId: 'audit_verified_client_portal',
+        domain: targetDomain,
+        url: `https://${targetDomain}`,
+        businessName: 'Verified Portal',
+        scorecard: { totalScore: 88, items: [] },
+        findings: []
+      } as any);
+
       const result = await adapter.verifyPaymentAndFulfill({
         orderId: order.orderId,
         razorpay_order_id: order.razorpayOrderId || order.orderId,
@@ -173,8 +182,8 @@ describe('Stage P.3.2 — Unified Razorpay Order/Capture/Delivery Pipeline, Real
       // Confirm deliverable task created in delivery_tasks table
       const task = await d1Repo.queryOne<any>(
         'delivery_tasks',
-        `SELECT * FROM delivery_tasks WHERE customer_journey_id = ?`,
-        [order.orderId]
+        `SELECT * FROM delivery_tasks WHERE customer_journey_id = ? OR customer_journey_id = ?`,
+        [order.orderId, `cj_rzp_${order.orderId}`]
       );
       expect(task).toBeDefined();
       expect(task.stage).toBe('COMPLETED');
