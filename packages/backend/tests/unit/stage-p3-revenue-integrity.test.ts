@@ -15,11 +15,16 @@ describe('Stage P.3 — Revenue Integrity, D1 Ledger Durability, Slug Collision 
   beforeEach(() => {
     process.env = { ...originalEnv };
     TelegramBotAdapter.resetInstance();
+    CuelinksSyncManager.resetInstance();
+    try {
+      getDb().prepare("DELETE FROM workflows WHERE id = 'wf_cuelinks_reconciliation_cursor'").run();
+    } catch {}
   });
 
   afterEach(() => {
     process.env = { ...originalEnv };
     TelegramBotAdapter.resetInstance();
+    CuelinksSyncManager.resetInstance();
     vi.restoreAllMocks();
   });
 
@@ -93,7 +98,8 @@ describe('Stage P.3 — Revenue Integrity, D1 Ledger Durability, Slug Collision 
       await expect(
         adapter.createStandardOrder({
           sku: 'sitefix_core_499',
-          domainOrUrl: 'test-failing-domain.com'
+          domainOrUrl: 'test-failing-domain.com',
+          buyerEmail: 'buyer@example.com'
         })
       ).rejects.toThrow(/D1_ORDER_PERSISTENCE_FAILED/);
     });

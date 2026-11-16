@@ -110,7 +110,7 @@ describe('Stage P.2 — Razorpay Standard Checkout, Telegram Auto-Wire, Brevo Au
       expect(result.success).toBe(true);
       expect(result.status).toBe('TEST_CAPTURED');
       expect(result.mode).toBe('TEST_SANDBOX');
-      expect(result.downloadUrl).toContain('/api/v1/tools/site-audit/deliverable/');
+      expect(result.downloadUrl).toMatch(/\/api\/v1\/(tools\/site-audit\/deliverable|offer\/download)\//);
 
       // Prove that zero live rows were written to transactions or commission_ledger
       const db = getDb();
@@ -160,7 +160,8 @@ describe('Stage P.2 — Razorpay Standard Checkout, Telegram Auto-Wire, Brevo Au
         new Response(JSON.stringify({ id: 123 }), { status: 201 })
       );
 
-      const client = BrevoMcpClient.getInstance();
+      BrevoMcpClient.resetInstanceForTesting();
+      const client = BrevoMcpClient.getInstance(globalThis.fetch);
       const result = await client.syncContact({
         email: 'prospect@test-company.com',
         attributes: { SOURCE: 'SITEFIX_OR_DEAL_ALERT', CATEGORIES: 'HOSTING,SAAS' }

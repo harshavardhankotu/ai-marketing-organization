@@ -332,6 +332,30 @@ export class TelegramBotAdapter {
     const claimHash = createHash('sha256').update(`${utcDate}:${dealIdentifier}`).digest('hex').slice(0, 36);
     const claimKey = `tg_post_claim_${claimHash}`;
 
+    // Enforce rate limit: max 3 posts per calendar day across SQLite and D1 durable_events
+    let d1PostsToday = 0;
+    try {
+      const d1Row = await this.d1Repo.queryOne<any>(
+        'durable_events',
+        `SELECT count(*) as cnt FROM durable_events WHERE event_type IN ('TELEGRAM_POST_CLAIMED', 'TELEGRAM_DEAL_POSTED', 'TELEGRAM_SLOT_RESERVED') AND date(created_at) = date('now')`
+      );
+      if (d1Row?.cnt) d1PostsToday = Number(d1Row.cnt);
+    } catch {}
+
+    const localTodayCount = (db.prepare(`
+      SELECT count(*) as cnt
+      FROM telegram_posts_log
+      WHERE date(created_at) = date('now')
+    `).get() as any)?.cnt || 0;
+
+    const effectivePostCount = Math.max(localTodayCount, d1PostsToday);
+    if (effectivePostCount >= 3) {
+      return {
+        posted: false,
+        reason: 'DAILY_LIMIT_EXCEEDED: Telegram owned channel allows at most 3 posts per day.'
+      };
+    }
+
     // Spec Stage P.3.2 Task 3: Atomic Pre-Dispatch Primary-Key Slot Reservation (1..3)
     let claimedSlotKey: string | null = null;
     for (let slot = 1; slot <= 3; slot++) {
@@ -403,10 +427,10 @@ export class TelegramBotAdapter {
         })
       });
 
-      if (!res.ok) {
-        const errorBody = await res.text();
+      if (!res || !res.ok) {
+        const errorBody = res ? await res.text() : 'No response from fetch';
         // If 4xx client rejection, delete both slot and claim to avoid leaking daily quota
-        if (res.status >= 400 && res.status < 500) {
+        if (res && res.status >= 400 && res.status < 500) {
           if (claimedSlotKey) {
             try { await this.d1Repo.executeWrite('durable_events', `DELETE FROM durable_events WHERE id = ?`, [claimedSlotKey]); } catch {}
           }
@@ -414,7 +438,7 @@ export class TelegramBotAdapter {
         }
         return {
           posted: false,
-          reason: `TELEGRAM_API_ERROR: HTTP ${res.status}: ${errorBody}`
+          reason: res ? `TELEGRAM_API_ERROR: HTTP ${res.status}: ${errorBody}` : `NETWORK_ERROR: ${errorBody}`
         };
       }
 
