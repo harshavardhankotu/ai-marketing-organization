@@ -54,37 +54,91 @@ export class RazorpayStandardAdapter {
     return RazorpayStandardAdapter.instance;
   }
 
+  /**
+   * Strictly paired credential resolution (Spec Stage P.3):
+   * Key ID and Secret must form a complete, matching pair.
+   * rzp_live_* must be paired with a valid RAZORPAY_KEY_SECRET.
+   * rzp_test_* must be paired with a valid RAZORPAY_TEST_KEY_SECRET.
+   * Incomplete or mismatched live pairs fail closed.
+   */
+  public getCredentialPair(): { keyId: string; keySecret: string; isLive: boolean } {
+    const liveKeyId = (process.env.RAZORPAY_KEY_ID || process.env.RAZORPAY_KEY || '').trim();
+    const liveSecret = (process.env.RAZORPAY_KEY_SECRET || process.env.RAZORPAY_SECRET || '').trim();
+    const testKeyId = (process.env.RAZORPAY_TEST_KEY_ID || '').trim();
+    const testSecret = (process.env.RAZORPAY_TEST_KEY_SECRET || '').trim();
+
+    const isLivePairValid = liveKeyId.startsWith('rzp_live_') &&
+      !isPlaceholderCredential(liveKeyId) &&
+      liveSecret.length > 0 &&
+      !isPlaceholderCredential(liveSecret);
+
+    if (isLivePairValid) {
+      return { keyId: liveKeyId, keySecret: liveSecret, isLive: true };
+    }
+
+    const isTestPairValid = testKeyId.startsWith('rzp_test_') &&
+      !isPlaceholderCredential(testKeyId) &&
+      testSecret.length > 0 &&
+      !isPlaceholderCredential(testSecret);
+
+    if (isTestPairValid) {
+      return { keyId: testKeyId, keySecret: testSecret, isLive: false };
+    }
+
+    if (!isProduction()) {
+      return { keyId: 'rzp_test_sandbox_fallback', keySecret: 'rzp_test_secret_fallback', isLive: false };
+    }
+
+    throw new Error('PAYMENT_PROVIDER_NOT_CONFIGURED: Valid paired Razorpay credentials (matching key ID and secret) are required.');
+  }
+
   public getKeyId(): string {
-    const liveKey = (process.env.RAZORPAY_KEY_ID || process.env.RAZORPAY_KEY || '').trim();
-    const testKey = (process.env.RAZORPAY_TEST_KEY_ID || '').trim();
-    if (liveKey && !isPlaceholderCredential(liveKey)) return liveKey;
-    if (testKey && !isPlaceholderCredential(testKey)) return testKey;
-    if (!isProduction()) return 'rzp_test_sandbox_fallback';
-    return '';
+    try {
+      return this.getCredentialPair().keyId;
+    } catch {
+      return '';
+    }
   }
 
   public getKeySecret(): string {
-    const liveSecret = (process.env.RAZORPAY_KEY_SECRET || process.env.RAZORPAY_SECRET || '').trim();
-    const testSecret = (process.env.RAZORPAY_TEST_KEY_SECRET || '').trim();
-    if (liveSecret && !isPlaceholderCredential(liveSecret)) return liveSecret;
-    if (testSecret && !isPlaceholderCredential(testSecret)) return testSecret;
-    if (!isProduction()) return 'rzp_test_secret_fallback';
-    return '';
+    try {
+      return this.getCredentialPair().keySecret;
+    } catch {
+      return '';
+    }
   }
 
+  /**
+   * Server-authoritative SKU price resolution (Spec Stage P.3).
+   * Strictly prevents client price tampering.
+   */
   public resolveAuthoritativePrice(sku?: string, requestedAmountINR?: number): { amountINR: number; amountPaise: number; canonicalSku: string } {
     const s = String(sku || '').trim().toLowerCase();
+
+    let expectedINR: number;
+    let expectedPaise: number;
+    let canonicalSku: string;
+
     if (s === 'sitefix_competitor_keyword_pack') {
-      return { amountINR: 1999, amountPaise: 199900, canonicalSku: 'sitefix_competitor_keyword_pack' };
+      expectedINR = 1999;
+      expectedPaise = 199900;
+      canonicalSku = 'sitefix_competitor_keyword_pack';
+    } else if (s === 'sitefix_core_499' || s === 'sitefix_ai_pack_v1' || s === 'sitefix_ai_core_fixpack' || !s) {
+      expectedINR = 499;
+      expectedPaise = 49900;
+      canonicalSku = 'sitefix_core_499';
+    } else {
+      throw new Error(`INVALID_SKU: Unknown SKU "${sku}". Allowed SKUs: sitefix_core_499 (₹499), sitefix_competitor_keyword_pack (₹1,999).`);
     }
-    if (s === 'sitefix_core_499' || !s) {
-      return { amountINR: 499, amountPaise: 49900, canonicalSku: 'sitefix_core_499' };
+
+    if (requestedAmountINR !== undefined && requestedAmountINR !== null) {
+      const parsedINR = Number(requestedAmountINR);
+      if (!Number.isFinite(parsedINR) || parsedINR !== expectedINR) {
+        throw new Error(`INVALID_SKU: Client-tampered amount ₹${requestedAmountINR} does not match authoritative price ₹${expectedINR} for SKU "${canonicalSku}".`);
+      }
     }
-    if (requestedAmountINR && Number.isFinite(requestedAmountINR) && requestedAmountINR > 0) {
-      const parsedINR = Math.round(requestedAmountINR);
-      return { amountINR: parsedINR, amountPaise: parsedINR * 100, canonicalSku: s };
-    }
-    return { amountINR: 499, amountPaise: 49900, canonicalSku: 'sitefix_core_499' };
+
+    return { amountINR: expectedINR, amountPaise: expectedPaise, canonicalSku };
   }
 
   /**
@@ -93,14 +147,8 @@ export class RazorpayStandardAdapter {
    */
   public async createStandardOrder(params: RazorpayStandardOrderParams): Promise<RazorpayStandardOrderResult> {
     const { amountINR, amountPaise, canonicalSku } = this.resolveAuthoritativePrice(params.sku, params.amountINR);
-    const keyId = this.getKeyId();
-    const keySecret = this.getKeySecret();
-    const isLiveKey = keyId.startsWith('rzp_live_');
-    const isTestMode = !isLiveKey;
-
-    if (isProduction() && (!keyId || !keySecret || isPlaceholderCredential(keyId) || isPlaceholderCredential(keySecret))) {
-      throw new Error('PAYMENT_GATEWAY_NOT_CONFIGURED: Production payment orders require valid RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET.');
-    }
+    const { keyId, keySecret, isLive } = this.getCredentialPair();
+    const isTestMode = !isLive;
 
     const internalOrderId = `ord_rzp_${Date.now()}_${randomUUID().replace(/-/g, '').slice(0, 8)}`;
     const domainOrUrl = String(params.domainOrUrl || '').trim();
@@ -152,8 +200,8 @@ export class RazorpayStandardAdapter {
       razorpayOrderId = `order_test_${randomUUID().replace(/-/g, '').slice(0, 14)}`;
     }
 
-    // Persist in D1 universal_orders
-    const mode = isLiveKey ? 'LIVE' : 'TEST_SANDBOX';
+    // Persist in D1 universal_orders (fail-closed)
+    const mode = isLive ? 'LIVE' : 'TEST_SANDBOX';
     const metadataJson = JSON.stringify({
       sku: canonicalSku,
       domainOrUrl,
@@ -182,10 +230,11 @@ export class RazorpayStandardAdapter {
         ]
       );
     } catch (d1Err: any) {
-      console.warn(`[RazorpayAdapter] Failed to persist universal_order in D1: ${d1Err.message}`);
+      console.error(`[RazorpayAdapter] Failed to persist universal_order in D1: ${d1Err.message}`);
+      throw new Error(`D1_ORDER_PERSISTENCE_FAILED: Failed to persist order in ledger: ${d1Err.message}`);
     }
 
-    // Also persist in payment_requests
+    // Also persist in payment_requests (fail-closed in production)
     try {
       await this.d1Repo.executeWrite(
         'payment_requests',
@@ -199,11 +248,14 @@ export class RazorpayStandardAdapter {
           domainOrUrl || internalOrderId,
           `SiteFix Fix-Pack (${canonicalSku})`,
           amountINR,
-          isLiveKey ? 'REAL' : 'TEST'
+          isLive ? 'REAL' : 'TEST'
         ]
       );
     } catch (prErr: any) {
-      console.warn(`[RazorpayAdapter] Failed to persist payment_request in D1: ${prErr.message}`);
+      console.error(`[RazorpayAdapter] Failed to persist payment_request in D1: ${prErr.message}`);
+      if (isProduction()) {
+        throw new Error(`D1_ORDER_PERSISTENCE_FAILED: Failed to persist payment_request in ledger: ${prErr.message}`);
+      }
     }
 
     // Send instant Telegram alert for new order creation
@@ -276,6 +328,25 @@ export class RazorpayStandardAdapter {
     const mode: 'LIVE' | 'TEST_SANDBOX' = isLive ? 'LIVE' : 'TEST_SANDBOX';
     const status: 'CAPTURED' | 'TEST_CAPTURED' = isLive ? 'CAPTURED' : 'TEST_CAPTURED';
 
+    // Resolve authoritative order amount from D1 universal_orders
+    let verifiedAmountINR = 499.00;
+    let storedSku = 'sitefix_core_499';
+    try {
+      const storedOrder = await this.d1Repo.queryOne<any>(
+        'universal_orders',
+        'SELECT offer_id, amount_minor FROM universal_orders WHERE id = ? OR provider_order_id = ? LIMIT 1',
+        [orderId, razorpay_order_id]
+      );
+      if (storedOrder?.amount_minor) {
+        verifiedAmountINR = Number(storedOrder.amount_minor) / 100;
+      }
+      if (storedOrder?.offer_id) {
+        storedSku = String(storedOrder.offer_id);
+      }
+    } catch (qErr: any) {
+      console.warn(`[RazorpayAdapter] Failed to query universal_orders for order amount: ${qErr.message}`);
+    }
+
     // Update D1 universal_orders
     try {
       await this.d1Repo.executeWrite(
@@ -294,21 +365,18 @@ export class RazorpayStandardAdapter {
 
     // STRICT TEST VS. LIVE CASH SEPARATION:
     // Only rzp_live_ verified payments record live cash in transactions / commission_ledger!
+    // Fail-closed in live production if transaction ledger write fails.
     if (isLive) {
-      try {
-        const txId = `tx-${randomUUID()}`;
-        await this.d1Repo.executeWrite(
-          'transactions',
-          `INSERT INTO transactions (
-            id, organization_id, business_id, invoice_number,
-            amount_inr, payment_method, payment_gateway, transaction_ref,
-            status, classification, service_rendered, created_at, updated_at
-          ) VALUES (?, 'org_owner_primary', 'biz_platform_aro', ?, 499.00, 'ONLINE', 'RAZORPAY', ?, 'CAPTURED', 'REAL', 'SiteFix AI Technical Fix-Pack', datetime('now'), datetime('now'))`,
-          [txId, orderId, razorpay_payment_id]
-        );
-      } catch (txErr: any) {
-        console.warn(`[RazorpayAdapter] Live transaction insert note: ${txErr.message}`);
-      }
+      const txId = `tx-${randomUUID()}`;
+      await this.d1Repo.executeWrite(
+        'transactions',
+        `INSERT INTO transactions (
+          id, organization_id, business_id, invoice_number,
+          amount_inr, payment_method, payment_gateway, transaction_ref,
+          status, classification, service_rendered, created_at, updated_at
+        ) VALUES (?, 'org_owner_primary', 'biz_platform_aro', ?, ?, 'ONLINE', 'RAZORPAY', ?, 'CAPTURED', 'REAL', 'SiteFix AI Technical Fix-Pack', datetime('now'), datetime('now'))`,
+        [txId, orderId, verifiedAmountINR, razorpay_payment_id]
+      );
     }
 
     // Generate Fix-Pack deliverable
@@ -324,9 +392,10 @@ export class RazorpayStandardAdapter {
         `💰 <b>Payment Confirmed (${mode})</b>\n\n` +
         `• <b>Order:</b> <code>${orderId}</code>\n` +
         `• <b>Payment ID:</b> <code>${razorpay_payment_id}</code>\n` +
+        `• <b>SKU:</b> ${storedSku}\n` +
         `• <b>Status:</b> ${status}\n` +
         `• <b>Mode:</b> ${mode}\n` +
-        (isLive ? `• <b>Cash Recognized:</b> ₹499.00\n` : `• <b>Ledger Note:</b> Sandbox test mode, zero bank revenue recorded\n`) +
+        (isLive ? `• <b>Cash Recognized:</b> ₹${verifiedAmountINR.toFixed(2)}\n` : `• <b>Ledger Note:</b> Sandbox test mode, zero bank revenue recorded\n`) +
         `• <b>Deliverable:</b> <a href="${downloadUrl}">Download Link</a>`
       ).catch(() => {});
     } catch {}
@@ -343,7 +412,7 @@ export class RazorpayStandardAdapter {
             htmlContent: `
               <div style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px;border:1px solid #e2e8f0;border-radius:8px;">
                 <h2 style="color:#0f172a;">Thank You for Your Order!</h2>
-                <p>Your payment of <strong>₹499.00</strong> was received successfully.</p>
+                <p>Your payment of <strong>₹${verifiedAmountINR.toFixed(2)}</strong> was received successfully.</p>
                 <p><strong>Order ID:</strong> ${orderId}<br><strong>Payment Ref:</strong> ${razorpay_payment_id}</p>
                 <div style="margin:24px 0;">
                   <a href="${downloadUrl}" style="background:#2563eb;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;font-weight:bold;">Download Your SiteFix Technical Fix-Pack</a>

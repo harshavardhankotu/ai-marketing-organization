@@ -1504,14 +1504,25 @@ export class AutomationRegistryEngine {
           };
         }
 
-        const remainingTodayCap = Math.max(0, 10 - autopilotHealth.utcTodaySentCount);
+        // Durable daily outreach cap check across both memory and D1 durable_events
+        let d1TodaySentCount = 0;
+        try {
+          const countRow = await this.d1Repo.queryOne<any>(
+            'durable_events',
+            `SELECT count(*) as cnt FROM durable_events WHERE event_type = 'OUTREACH_EMAIL_SENT' AND date(created_at) = date('now')`
+          );
+          if (countRow?.cnt) d1TodaySentCount = Number(countRow.cnt);
+        } catch {}
+
+        const effectiveTodayCount = Math.max(autopilotHealth.utcTodaySentCount, d1TodaySentCount);
+        const remainingTodayCap = Math.max(0, 10 - effectiveTodayCount);
         if (remainingTodayCap <= 0) {
           return {
             status: 'NO_ACTION_DUE',
             itemsProcessed: 0,
             itemsSucceeded: 0,
             itemsFailed: 0,
-            summary: { message: 'Daily autopilot outreach cap (10/UTC_DAY) reached.', utcTodaySentCount: autopilotHealth.utcTodaySentCount }
+            summary: { message: 'Daily autopilot outreach cap (10/UTC_DAY) reached.', utcTodaySentCount: effectiveTodayCount }
           };
         }
 
@@ -1635,6 +1646,22 @@ export class AutomationRegistryEngine {
             continue;
           }
 
+          // Spec Stage P.3: Enforce legitimate source / consent gate before autonomous dispatch
+          const hasConsent = Boolean(
+            d.consent_type === 'OPTED_IN_FIRST_PARTY' ||
+            d.email_authorized === 1 ||
+            d.is_opted_in === 1 ||
+            matchedContact?.consent_type === 'OPTED_IN_FIRST_PARTY' ||
+            matchedContact?.email_authorized === 1 ||
+            matchedContact?.is_opted_in === 1 ||
+            (d.approval_source && !['COLD_UNVERIFIED', 'SCRAPED'].includes(String(d.approval_source).toUpperCase()))
+          );
+
+          if (!hasConsent) {
+            skippedCount++;
+            continue;
+          }
+
           const matchedAudit = audits.find(a => cleanDomain && String(a.domain || '').toLowerCase().includes(cleanDomain));
           const parsedAudit = matchedAudit ? auditService.parseAuditChecklistPayload(matchedAudit.checklist_json) : null;
           const triggerScore = Number(parsedAudit?.prospectSignals?.prospectTriggerScore ?? 0);
@@ -1666,6 +1693,28 @@ export class AutomationRegistryEngine {
               skippedCount++;
               continue;
             }
+          }
+
+          // Also check D1 durable_events for OUTREACH_EMAIL_SENT within last 96h for this domain or email
+          let recentD1Send = false;
+          try {
+            const cutoff96h = new Date(Date.now() - 96 * 3600 * 1000).toISOString();
+            const rows = await this.d1Repo.query<any>(
+              'durable_events',
+              `SELECT id, payload_json, created_at FROM durable_events WHERE event_type = 'OUTREACH_EMAIL_SENT' AND created_at >= ?`,
+              [cutoff96h]
+            );
+            if (rows && rows.length > 0) {
+              recentD1Send = rows.some((r: any) => {
+                const p = typeof r.payload_json === 'string' ? JSON.parse(r.payload_json || '{}') : r.payload_json;
+                return (cleanDomain && p?.domain === cleanDomain) || (recipientEmail && p?.email === recipientEmail);
+              });
+            }
+          } catch {}
+
+          if (recentD1Send) {
+            skippedCount++;
+            continue;
           }
 
           const previewToken = cleanDomain ? auditService.generateAuditPreviewToken(cleanDomain) : '';
@@ -1705,6 +1754,19 @@ export class AutomationRegistryEngine {
               `UPDATE direct_outreach_log SET dispatched = 1, dispatch_timestamp = ?, response_status = ? WHERE id = ?`,
               [nowIso, nextStatus, d.id]
             );
+            // Record durable event in D1
+            try {
+              const { randomUUID } = await import('node:crypto');
+              const eventId = `ev_outreach_${Date.now()}_${randomUUID().slice(0, 8)}`;
+              await this.d1Repo.executeWrite(
+                'durable_events',
+                `INSERT INTO durable_events (id, event_type, payload_json, created_at)
+                 VALUES (?, 'OUTREACH_EMAIL_SENT', ?, datetime('now'))`,
+                [eventId, JSON.stringify({ draftId: d.id, domain: cleanDomain, email: recipientEmail, isFollowUp })]
+              );
+            } catch (evErr: any) {
+              console.warn(`[OutreachAutopilot] Failed to record OUTREACH_EMAIL_SENT in durable_events: ${evErr.message}`);
+            }
             dispatchedCount++;
             sentIds.push(d.id);
           } else {

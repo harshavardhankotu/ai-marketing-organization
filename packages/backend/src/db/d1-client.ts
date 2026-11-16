@@ -18,6 +18,7 @@ export const FINANCIAL_TABLES = [
   'manual_upi_claims',
   'orders',
   'universal_orders',
+  'transactions',
   'commission_ledger',
   'delivery_tasks',
   'payout_records'

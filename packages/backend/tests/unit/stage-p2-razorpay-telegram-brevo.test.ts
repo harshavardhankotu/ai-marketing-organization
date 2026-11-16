@@ -39,9 +39,8 @@ describe('Stage P.2 — Razorpay Standard Checkout, Telegram Auto-Wire, Brevo Au
       expect(competitor.amountPaise).toBe(199900);
       expect(competitor.canonicalSku).toBe('sitefix_competitor_keyword_pack');
 
-      const custom = adapter.resolveAuthoritativePrice('custom_plan', 899.9);
-      expect(custom.amountINR).toBe(900);
-      expect(custom.amountPaise).toBe(90000);
+      // Stage P.3: Strict SKU enforcement rejects unknown custom plans
+      expect(() => adapter.resolveAuthoritativePrice('custom_plan', 899.9)).toThrow(/INVALID_SKU/);
     });
 
     it('1.2: Cryptographically verifies valid HMAC-SHA256 and rejects invalid signatures', () => {

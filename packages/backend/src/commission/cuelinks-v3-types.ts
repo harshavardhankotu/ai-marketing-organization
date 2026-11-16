@@ -319,6 +319,7 @@ export interface CuelinksReconciliationMetrics {
   currencyUnclassifiedCount?: number;
   paidCommissionINR: number;
   cashReceivedINR: number;
+  paginationIncomplete?: boolean;
 }
 
 export type CuelinksSyncStatusCode =
@@ -376,6 +377,7 @@ export interface CuelinksPaginatedSyncResult {
   dealCandidates: any[];
   nextCursor?: CuelinksPaginationCursor;
   hasMore: boolean;
+  paginationIncomplete?: boolean;
   errorClass?: CuelinksErrorClass;
 }
 

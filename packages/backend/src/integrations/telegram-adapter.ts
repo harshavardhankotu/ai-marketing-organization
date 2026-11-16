@@ -146,32 +146,33 @@ export class TelegramBotAdapter {
 
     const chatId = await this.getChatId();
     const chatIdConfigured = Boolean(chatId);
+    const effectiveStatus: 'LIVE_ENABLED' | 'READY_AWAITING_BOT_TOKEN' = chatIdConfigured ? 'LIVE_ENABLED' : 'READY_AWAITING_BOT_TOKEN';
 
     // Return cached getMe if within 10 minutes
     const now = Date.now();
     if (this.cachedGetMe && this.cachedGetMe.expiresAt > now) {
       return {
-        connected: true,
+        connected: chatIdConfigured,
         configured: true,
         botUsername: this.cachedGetMe.data?.username || null,
         botId: this.cachedGetMe.data?.id,
         chatIdConfigured,
         channelConfigured: chatIdConfigured,
-        status: 'LIVE_ENABLED',
-        syndicationStatus: 'LIVE_ENABLED',
+        status: effectiveStatus,
+        syndicationStatus: effectiveStatus,
         dailyPostLimit: 3
       };
     }
 
     if (process.env.VITEST) {
       return {
-        connected: true,
+        connected: chatIdConfigured,
         configured: true,
         botUsername: 'MockTestBot',
-        chatIdConfigured: true,
-        channelConfigured: true,
-        status: 'LIVE_ENABLED',
-        syndicationStatus: 'LIVE_ENABLED',
+        chatIdConfigured,
+        channelConfigured: chatIdConfigured,
+        status: effectiveStatus,
+        syndicationStatus: effectiveStatus,
         dailyPostLimit: 3
       };
     }
@@ -188,11 +189,15 @@ export class TelegramBotAdapter {
             expiresAt: now + 10 * 60 * 1000 // 10 minutes
           };
           return {
-            connected: true,
+            connected: chatIdConfigured,
+            configured: true,
             botUsername: json.result.username,
             botId: json.result.id,
             chatIdConfigured,
-            status: 'LIVE_ENABLED'
+            channelConfigured: chatIdConfigured,
+            status: effectiveStatus,
+            syndicationStatus: effectiveStatus,
+            dailyPostLimit: 3
           };
         }
       }
@@ -306,14 +311,24 @@ export class TelegramBotAdapter {
       `);
     } catch {}
 
-    // Enforce rate limit: max 3 posts per calendar day
-    const todayCount = (db.prepare(`
+    // Enforce rate limit: max 3 posts per calendar day across SQLite and D1 durable_events
+    let d1PostsToday = 0;
+    try {
+      const d1Row = await this.d1Repo.queryOne<any>(
+        'durable_events',
+        `SELECT count(*) as cnt FROM durable_events WHERE event_type = 'TELEGRAM_DEAL_POSTED' AND date(created_at) = date('now')`
+      );
+      if (d1Row?.cnt) d1PostsToday = Number(d1Row.cnt);
+    } catch {}
+
+    const localTodayCount = (db.prepare(`
       SELECT count(*) as cnt
       FROM telegram_posts_log
       WHERE date(created_at) = date('now')
     `).get() as any)?.cnt || 0;
 
-    if (todayCount >= 3) {
+    const effectivePostCount = Math.max(localTodayCount, d1PostsToday);
+    if (effectivePostCount >= 3) {
       return {
         posted: false,
         reason: 'DAILY_LIMIT_EXCEEDED: Telegram owned channel allows at most 3 posts per day.'
@@ -350,7 +365,7 @@ export class TelegramBotAdapter {
       const data = (await res.json()) as any;
       const messageId = data?.result?.message_id || 1;
 
-      // Log successful post
+      // Log successful post to SQLite and D1 durable_events
       const postId = `tg_${Date.now()}`;
       try {
         db.prepare(`
@@ -358,6 +373,17 @@ export class TelegramBotAdapter {
           VALUES (?, ?, ?, ?, datetime('now'))
         `).run(postId, channelId, options.guideUrl, messageId);
       } catch {}
+
+      try {
+        await this.d1Repo.executeWrite(
+          'durable_events',
+          `INSERT INTO durable_events (id, event_type, payload_json, created_at)
+           VALUES (?, 'TELEGRAM_DEAL_POSTED', ?, datetime('now'))`,
+          [postId, JSON.stringify({ channelId, guideUrl: options.guideUrl, messageId })]
+        );
+      } catch (d1Err: any) {
+        console.warn(`[TelegramAdapter] Failed to record TELEGRAM_DEAL_POSTED in durable_events: ${d1Err.message}`);
+      }
 
       return {
         posted: true,

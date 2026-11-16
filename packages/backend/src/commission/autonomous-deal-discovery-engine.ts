@@ -3,7 +3,7 @@
  * Broad Internet Coverage · Real Verification · Zero Routine Owner Input
  */
 
-import { randomUUID } from 'crypto';
+import { randomUUID, createHash } from 'crypto';
 import { getDb } from '../db/client.js';
 import { isProduction } from '../config/env.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
@@ -1097,8 +1097,10 @@ export class AutonomousDealDiscoveryEngine {
 
   /**
    * Generates a deterministic public slug from deal metadata.
+   * If disambiguator (e.g. `${merchant}|${canonicalProductUrl || sourceId}`) is provided,
+   * appends a deterministic 6-character SHA-256 suffix to prevent cross-merchant slug collisions.
    */
-  public static generateDealSlug(title: string, brand?: string, modelOrSku?: string): string {
+  public static generateDealSlug(title: string, brand?: string, modelOrSku?: string, disambiguator?: string): string {
     const slugify = (str: string) =>
       (str || '')
         .toLowerCase()
@@ -1116,6 +1118,11 @@ export class AutonomousDealDiscoveryEngine {
       if (mSlug && !base.includes(mSlug)) {
         base = `${base}-${mSlug}`;
       }
+    }
+    base = base.substring(0, 72);
+    if (disambiguator && typeof disambiguator === 'string') {
+      const hash = createHash('sha256').update(disambiguator).digest('hex').slice(0, 6);
+      base = `${base}-${hash}`;
     }
     return base.substring(0, 80);
   }
@@ -1209,7 +1216,8 @@ export class AutonomousDealDiscoveryEngine {
           const variantUrl = `https://${cleanDomain}/products/${product.handle}?variant=${variant.id}`;
           const merchantSlug = merchant.brand.toLowerCase().replace(/[^a-z0-9]/g, '_');
           const dealId = `deal_${merchantSlug}_${product.id}_${variant.id}`;
-          const slug = AutonomousDealDiscoveryEngine.generateDealSlug(product.title, merchant.brand, String(variant.id));
+          const disambiguator = `${merchant.brand}|${product.id}_${variant.id}`;
+          const slug = AutonomousDealDiscoveryEngine.generateDealSlug(product.title, merchant.brand, String(variant.id), disambiguator);
 
           // V5.8 Defect 1 & 7: Do NOT pre-populate trackingUrl or isMonetizable (verified during ingest).
           // Do NOT invent a 30-day expiry date; schedule next_recheck_at in 6 hours.
@@ -3462,7 +3470,8 @@ export class AutonomousDealDiscoveryEngine {
     const dealId = input.id || existingDealId || `deal_${randomUUID().substring(0, 10)}`;
     const confidenceScore = (discountType as DiscountVerificationType) === 'INDEPENDENT_CORROBORATED' ? 95 : (discountType === 'MERCHANT_CLAIMED' ? 85 : 70);
     const observedAt = input.observedAt || nowIso;
-    const slug = input.slug || input.canonicalSlug || AutonomousDealDiscoveryEngine.generateDealSlug(input.title, input.brand, input.modelOrSku);
+    const disambiguator = `${input.merchant || 'merchant'}|${canonicalUrl || input.id || ''}`;
+    const slug = input.slug || input.canonicalSlug || AutonomousDealDiscoveryEngine.generateDealSlug(input.title, input.brand, input.modelOrSku, disambiguator);
 
     const newDeal: NormalizedDeal = {
       id: dealId,
@@ -4157,7 +4166,8 @@ export class AutonomousDealDiscoveryEngine {
         }
 
         const dealId = `deal_cl_${String(offer.id).replace(/[^a-zA-Z0-9_-]/g, '_')}`;
-        const slug = AutonomousDealDiscoveryEngine.generateDealSlug(offer.title, merchantName, `cl-${offer.id}`);
+        const disambiguator = `${merchantName}|${offer.url || offer.id}`;
+        const slug = AutonomousDealDiscoveryEngine.generateDealSlug(offer.title, merchantName, `cl-${offer.id}`, disambiguator);
         let sourceDomain = 'cuelinks.com';
         try { sourceDomain = new URL(merchantUrl).hostname.replace(/^www\./, ''); } catch {}
 
@@ -5727,9 +5737,28 @@ export class AutonomousDealDiscoveryEngine {
           deal.affiliateVerified ? 1 : 0
         ];
 
-        getDb().prepare(publicDealsSql).run(...publicDealsParams);
-        if (this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
-          await this.d1Repo.executeWrite('public_deals', publicDealsSql, publicDealsParams);
+        try {
+          getDb().prepare(publicDealsSql).run(...publicDealsParams);
+          if (this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
+            await this.d1Repo.executeWrite('public_deals', publicDealsSql, publicDealsParams);
+          }
+        } catch (firstErr: any) {
+          if (String(firstErr?.message || '').includes('UNIQUE constraint failed: public_deals.slug')) {
+            // Collision-safe resolution: append deterministic 6-char hash to slug and retry
+            const suffix = createHash('sha256').update(`${deal.merchant}|${deal.productUrl || deal.id}`).digest('hex').slice(0, 6);
+            const safeSlug = `${String(deal.slug || '').substring(0, 72)}-${suffix}`;
+            deal.slug = safeSlug;
+            deal.canonicalSlug = safeSlug;
+            publicDealsParams[1] = safeSlug;
+            publicDealsParams[2] = safeSlug;
+            getDb().prepare(publicDealsSql).run(...publicDealsParams);
+            if (this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
+              await this.d1Repo.executeWrite('public_deals', publicDealsSql, publicDealsParams);
+            }
+            if (deal.slug) this.dealSlugMap.set(deal.slug.toLowerCase(), deal.id);
+          } else {
+            throw firstErr;
+          }
         }
       } catch (pdErr: any) {
         if (isProduction() && !process.env.VITEST) {
