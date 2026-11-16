@@ -358,6 +358,11 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
             <input type="email" id="checkoutBuyerEmailInput" required placeholder="name@company.com" style="width: 100%; box-sizing: border-box; padding: 0.55rem 0.75rem; border-radius: 6px; border: 1px solid #374151; background: #1f2937; color: #fff; font-size: 0.85rem;">
           </div>
 
+          <!-- Pre-Checkout Technical Disclosure (Spec Stage P.3.5 Task 5) -->
+          <div style="margin: 0.85rem 0 1.15rem 0; padding: 0.85rem 1rem; border-radius: 6px; background: rgba(59, 130, 246, 0.08); border-left: 3px solid #3b82f6; font-size: 0.82rem; color: #cbd5e1; line-height: 1.5; text-align: left;">
+            Delivers a ready-to-paste HTML, Schema.org, robots.txt, and sitemap.xml Fix-Pack based on your live scan. You review and install the files; automatic live-site edits and search-ranking guarantees are not included.
+          </div>
+
           <button class="btn-primary" id="checkoutBtn" data-ab-experiment="${sitefixExpId}" data-ab-variant="${sitefixVariant}" data-ab-cta="${safeSitefixCtaText}" onclick="initiateCheckout()" disabled>
             ${safeSitefixCtaText}
           </button>
@@ -390,6 +395,7 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
             <form id="siteAuditUpiForm" onsubmit="submitSiteAuditUpiClaim(event)">
               <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 0.65rem; margin-bottom: 0.75rem;">
                 <input type="text" id="upiPayerName" required placeholder="Your Business / Name *" style="padding: 0.55rem; border-radius: 6px; border: 1px solid #374151; background: #1f2937; color: #fff; font-size: 0.85rem;">
+                <input type="email" id="upiBuyerEmail" required placeholder="Buyer Delivery Email *" style="padding: 0.55rem; border-radius: 6px; border: 1px solid #374151; background: #1f2937; color: #fff; font-size: 0.85rem;">
                 <input type="tel" id="upiPayerPhone" required placeholder="WhatsApp / Mobile *" style="padding: 0.55rem; border-radius: 6px; border: 1px solid #374151; background: #1f2937; color: #fff; font-size: 0.85rem;">
                 <input type="text" id="upiUtrInput" required minlength="12" maxlength="12" pattern="[0-9]{12}" inputmode="numeric" placeholder="12-Digit Numeric UPI UTR *" style="padding: 0.55rem; border-radius: 6px; border: 1px solid #374151; background: #1f2937; color: #fff; font-size: 0.85rem;">
               </div>
@@ -401,8 +407,8 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
           </div>
         </div>
 
-          <!-- Tier 2 Optional Order Bump (₹1,999 Competitor SEO Gap & 30-Day Search Console Action Pack) -->
-          <div style="margin-top: 1.5rem; padding: 1.15rem; background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.35); border-radius: 8px; text-align: left;">
+          <!-- Tier 2 Optional Order Bump (Hidden during first-sale conversion focus - Spec Stage P.3.5 Task 5) -->
+          <div id="tier2OrderBumpSection" style="display: none; margin-top: 1.5rem; padding: 1.15rem; background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.35); border-radius: 8px; text-align: left;">
             <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.45rem;">
               <strong style="color: #93c5fd; font-size: 0.95rem;">Tier 2 Optional Upgrade: Competitor SEO Gap &amp; 30-Day Search Console Action Pack</strong>
               <span style="font-size: 0.85rem; font-weight: 700; color: #fff; background: rgba(59, 130, 246, 0.25); padding: 2px 8px; border-radius: 4px;">₹1,999 One-Time</span>
@@ -416,8 +422,8 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
             <div id="tier2OrderBumpStatus" style="display: none; margin-top: 0.65rem; font-size: 0.82rem; color: #bfdbfe;"></div>
           </div>
 
-          <!-- Tier 3 B2B Partner Cross-Sell (Hydrated dynamically from verified high-EPC catalog) -->
-          <div id="tier3PartnerCrossSell" style="margin-top: 1.25rem; padding: 1.15rem; background: rgba(15, 23, 42, 0.7); border: 1px solid #1e293b; border-radius: 8px; text-align: left;">
+          <!-- Tier 3 B2B Partner Cross-Sell (Hidden during first-sale conversion focus - Spec Stage P.3.5 Task 5) -->
+          <div id="tier3PartnerCrossSell" style="display: none; margin-top: 1.25rem; padding: 1.15rem; background: rgba(15, 23, 42, 0.7); border: 1px solid #1e293b; border-radius: 8px; text-align: left;">
             <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.5rem;">
               <strong style="color: #e2e8f0; font-size: 0.9rem;">Tier 3 Partner Cross-Sell: Verified Business &amp; Tech Stack Deals</strong>
               <span style="font-size: 0.72rem; color: #94a3b8;">#Ad &bull; Verified Affiliate Catalog</span>
@@ -847,7 +853,27 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
       }
       const claimBtn = document.getElementById('upiClaimBtn');
       const msgEl = document.getElementById('upiClaimResultMsg');
-      const targetUrlVal = (document.getElementById('targetUrl')?.value || '').trim();
+      const domainInput = document.getElementById('checkoutDomainInput');
+      const emailInput = document.getElementById('checkoutBuyerEmailInput');
+      const upiEmailInput = document.getElementById('upiBuyerEmail');
+
+      let targetDomain = (domainInput ? domainInput.value : '').trim() || (document.getElementById('targetUrl')?.value || '').trim();
+      targetDomain = targetDomain.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').trim();
+
+      if (!targetDomain || !targetDomain.includes('.')) {
+        alert('Please enter a valid website domain (e.g. example.com) before submitting your UPI payment claim.');
+        if (domainInput) domainInput.focus();
+        return;
+      }
+
+      const buyerEmail = ((upiEmailInput ? upiEmailInput.value : '') || (emailInput ? emailInput.value : '')).trim();
+      if (!buyerEmail || !buyerEmail.includes('@') || !buyerEmail.includes('.')) {
+        alert('Please enter a valid buyer email address to receive your Fix-Pack download token upon bank verification.');
+        if (upiEmailInput) upiEmailInput.focus();
+        else if (emailInput) emailInput.focus();
+        return;
+      }
+
       const utrVal = (document.getElementById('upiUtrInput')?.value || '').trim();
       if (!/^\d{12}$/.test(utrVal)) {
         alert('Please enter a valid 12-digit numeric UPI UTR reference.');
@@ -865,6 +891,8 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             auditId: currentAuditId,
+            domainOrUrl: targetDomain,
+            buyerEmail,
             payerName,
             payerPhone,
             utr: utrVal,
@@ -876,7 +904,7 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
           msgEl.style.display = 'block';
           msgEl.style.background = 'rgba(16, 185, 129, 0.15)';
           msgEl.style.color = '#34d399';
-          msgEl.innerHTML = '<strong>✓ UPI Claim Submitted (PAYMENT_CLAIMED)!</strong> Ref: <code>' + escapeHtml(data.data?.claimId || currentAuditId) + '</code> &bull; Awaiting owner bank statement verification on /owner/today before fulfillment.';
+          msgEl.innerHTML = '<strong>✓ UPI Claim Submitted (PAYMENT_CLAIMED)!</strong> Ref: <code>' + escapeHtml(data.data?.claimId || currentAuditId) + '</code> &bull; Delivery email: <code>' + escapeHtml(buyerEmail) + '</code> &bull; Awaiting owner bank statement verification on /owner/today before fulfillment.';
           claimBtn.style.display = 'none';
         } else {
           throw new Error(data.error || 'UPI claim submission failed');
@@ -957,6 +985,22 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
         container.innerHTML = '<div style="color:#94a3b8;">Browse verified partner deals at <a href="/deals" style="color:#38bdf8;">/deals</a>.</div>';
       }
     })();
+
+    // Sync buyer delivery email across checkout inputs (Spec Stage P.3.5 Task 4)
+    document.addEventListener('DOMContentLoaded', function() {
+      var mainEmail = document.getElementById('checkoutBuyerEmailInput');
+      var upiEmail = document.getElementById('upiBuyerEmail');
+      if (mainEmail && upiEmail) {
+        mainEmail.addEventListener('input', function() {
+          if (!upiEmail.value || upiEmail.dataset.userEdited !== 'true') {
+            upiEmail.value = mainEmail.value;
+          }
+        });
+        upiEmail.addEventListener('input', function() {
+          upiEmail.dataset.userEdited = 'true';
+        });
+      }
+    });
   </script>
   ${renderCustomerDeskWidgetHtml('sitefix_core_499')}
 </body>

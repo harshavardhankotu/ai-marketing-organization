@@ -2,7 +2,7 @@ import { createHmac, timingSafeEqual, randomUUID, createHash } from 'crypto';
 import { RevenueReconciliationEngine } from '../revenue/revenue-reconciliation.js';
 import { CustomerJourneyTracker } from '../revenue/customer-journey-tracker.js';
 import { PaymentMethod, DataClassification } from '@ai-marketing/shared';
-import { isPlaceholderCredential, isProduction } from '../config/env.js';
+import { isPlaceholderCredential, isProduction, getTrustedPublicSiteUrl } from '../config/env.js';
 import { resolveAuthorizedOffer } from '../revenue/offer-catalog.js';
 import { OwnerAuthService } from '../auth/owner-auth.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
@@ -1190,6 +1190,9 @@ export class RazorpayAdapter {
     classification: 'MANUAL_VERIFIED';
     status: 'HUMAN_VERIFIED_PAYMENT';
     fulfillment?: any;
+    downloadToken?: string;
+    downloadUrl?: string;
+    deliverableStatus?: string;
   }> {
     const trimmedUtr = params.utr.trim();
     if (!trimmedUtr || trimmedUtr.startsWith('utr_')) {
@@ -1203,16 +1206,16 @@ export class RazorpayAdapter {
     if (isProduction() && !process.env.VITEST) {
       existing = await this.d1Repo.queryOne<any>('transactions', 'SELECT id FROM transactions WHERE transaction_ref = ?', [trimmedUtr]);
       if (params.claimId) {
-        claimRow = await this.d1Repo.queryOne<any>('manual_upi_claims', 'SELECT proposal_id FROM manual_upi_claims WHERE id = ?', [params.claimId]);
+        claimRow = await this.d1Repo.queryOne<any>('manual_upi_claims', 'SELECT * FROM manual_upi_claims WHERE id = ?', [params.claimId]);
       } else {
-        claimRow = await this.d1Repo.queryOne<any>('manual_upi_claims', 'SELECT proposal_id FROM manual_upi_claims WHERE utr = ?', [trimmedUtr]);
+        claimRow = await this.d1Repo.queryOne<any>('manual_upi_claims', 'SELECT * FROM manual_upi_claims WHERE utr = ?', [trimmedUtr]);
       }
     } else {
       existing = getDb().prepare('SELECT id FROM transactions WHERE transaction_ref = ?').get(trimmedUtr) as any;
       if (params.claimId) {
-        claimRow = getDb().prepare('SELECT proposal_id FROM manual_upi_claims WHERE id = ?').get(params.claimId) as any;
+        claimRow = getDb().prepare('SELECT * FROM manual_upi_claims WHERE id = ?').get(params.claimId) as any;
       } else {
-        claimRow = getDb().prepare('SELECT proposal_id FROM manual_upi_claims WHERE utr = ?').get(trimmedUtr) as any;
+        claimRow = getDb().prepare('SELECT * FROM manual_upi_claims WHERE utr = ?').get(trimmedUtr) as any;
       }
     }
 
@@ -1257,6 +1260,23 @@ export class RazorpayAdapter {
         `).run(params.ownerUserId, trimmedUtr);
       }
     }
+
+    // Update universal_orders if present for this UTR
+    try {
+      if (isProduction() && !process.env.VITEST) {
+        await this.d1Repo.executeWrite(
+          'universal_orders',
+          `UPDATE universal_orders SET status = 'PAID', fulfillment_status = 'COMPLETED', updated_at = datetime('now') WHERE provider_payment_id = ?`,
+          [trimmedUtr]
+        );
+      } else {
+        this.db.prepare(`
+          UPDATE universal_orders
+          SET status = 'PAID', fulfillment_status = 'COMPLETED', updated_at = datetime('now')
+          WHERE provider_payment_id = ?
+        `).run(trimmedUtr);
+      }
+    } catch {}
 
     // If claim is tied to a proposal, mark proposal and payment_request PAID
     if (linkedProposalId) {
@@ -1332,6 +1352,220 @@ export class RazorpayAdapter {
       } catch {}
     }
 
+    // Stage P.3.5 Task 4: Connect Owner-Verified UPI Confirmation to full SiteFix Delivery (₹499)
+    let notesObj: any = {};
+    try {
+      notesObj = typeof claimRow?.notes === 'string' ? JSON.parse(claimRow.notes) : (claimRow?.notes || {});
+    } catch {}
+
+    const cleanDomain = (notesObj.domainOrUrl || notesObj.domain || claimRow?.invoice_ref || '')
+      .replace(/^https?:\/\//i, '')
+      .replace(/^www\./i, '')
+      .replace(/\/.*$/, '')
+      .trim();
+    const buyerEmail = (notesObj.buyerEmail || notesObj.email || claimRow?.payer_email || '').trim();
+
+    let downloadToken: string | undefined;
+    let downloadUrl: string | undefined;
+    let siteFixDelivery: any = null;
+
+    if (cleanDomain && (params.amountINR === 499 || Math.round(params.amountINR) === 499 || String(notesObj.sku || '').toLowerCase().includes('sitefix') || String(params.serviceRendered || '').toLowerCase().includes('sitefix'))) {
+      try {
+        const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
+        const auditService = SiteAuditService.getInstance();
+        let audit = await auditService.getAuditByDomain(cleanDomain);
+        if (!audit) {
+          audit = await auditService.runScan(`https://${cleanDomain}`);
+          await auditService.persistAuditToD1(audit);
+        }
+        const resolvedAuditId = audit.auditId || audit.id || `audit_${cleanDomain}`;
+        audit.auditId = resolvedAuditId;
+        auditService.setAuditInCache(audit);
+
+        let uOrder: any = null;
+        try {
+          if (isProduction() && !process.env.VITEST) {
+            uOrder = await this.d1Repo.queryOne<any>('universal_orders', 'SELECT id FROM universal_orders WHERE provider_payment_id = ?', [trimmedUtr]);
+          } else {
+            uOrder = this.db.prepare('SELECT id FROM universal_orders WHERE provider_payment_id = ?').get(trimmedUtr) as any;
+          }
+        } catch {}
+
+        const effectiveOrderId = notesObj.orderId || uOrder?.id || claimRow?.id || `ord_upi_${trimmedUtr}`;
+        await auditService.generateDeliverable(resolvedAuditId, effectiveOrderId);
+
+        downloadToken = auditService.generateSignedDeliveryToken(effectiveOrderId, resolvedAuditId, trimmedUtr, 72);
+        const siteUrl = getTrustedPublicSiteUrl().replace(/\/$/, '');
+        downloadUrl = `${siteUrl}/api/v1/offer/download/${encodeURIComponent(downloadToken)}`;
+
+        const journeyId = params.journeyId || claimRow?.journey_id || `cj_upi_${effectiveOrderId}`;
+        try {
+          const { RazorpayStandardAdapter } = await import('../payments/razorpay-adapter.js');
+          await RazorpayStandardAdapter.getInstance().ensureCustomerJourney(
+            journeyId,
+            buyerEmail || 'buyer@example.com',
+            claimRow?.payer_name || 'UPI Customer',
+            true, // isLive
+            'PAYMENT_VERIFIED'
+          );
+        } catch {}
+
+        const taskId = `deliv_${effectiveOrderId}_${trimmedUtr}`;
+        await this.d1Repo.executeWrite(
+          'delivery_tasks',
+          `INSERT INTO delivery_tasks (
+            id, organization_id, business_id, customer_journey_id,
+            service_type, stage, deliverables_json, results_json,
+            action_classification, completed_at, created_at
+          ) VALUES (?, ?, ?, ?, 'SITE_AUDIT_FIXPACK', 'COMPLETED', ?, ?, 'INTERNAL_AUTOMATION', datetime('now'), datetime('now'))
+          ON CONFLICT(id) DO UPDATE SET stage = 'COMPLETED', deliverables_json = excluded.deliverables_json, results_json = excluded.results_json, completed_at = datetime('now')`,
+          [
+            taskId,
+            params.organizationId || OwnerAuthService.OWNER_ORGANIZATION_ID,
+            params.businessId || OwnerAuthService.PLATFORM_BUSINESS_ID,
+            journeyId,
+            JSON.stringify({ auditId: resolvedAuditId, domain: cleanDomain, downloadToken, sku: notesObj.sku || 'sitefix_core_499' }),
+            JSON.stringify({ status: 'DELIVERABLE_READY_EMAIL_PENDING', deliveredTo: buyerEmail, paymentId: trimmedUtr })
+          ]
+        );
+
+        // Brevo receipt dispatch with per-payment idempotency
+        let emailReceiptStatus = 'PENDING_RETRY';
+        const brevoReceiptKey = `brevo_receipt_${trimmedUtr}`;
+        let shouldSendReceipt = false;
+        let receiptAlreadySent = false;
+
+        if (buyerEmail && buyerEmail.includes('@')) {
+          try {
+            const existingReceipt = await this.d1Repo.queryOne<any>(
+              'durable_events',
+              `SELECT id, processed, error_message, created_at FROM durable_events WHERE id = ?`,
+              [brevoReceiptKey]
+            );
+
+            if (existingReceipt) {
+              if (existingReceipt.processed === 1) {
+                receiptAlreadySent = true;
+                emailReceiptStatus = 'SENT';
+              } else {
+                const isRetryable = typeof existingReceipt.error_message === 'string' && existingReceipt.error_message.startsWith('RETRYABLE:');
+                const createdAtMs = new Date(existingReceipt.created_at).getTime();
+                const isStale = isNaN(createdAtMs) || (Date.now() - createdAtMs > 60000);
+
+                if (isRetryable || isStale) {
+                  const reclaim = await this.d1Repo.executeWrite(
+                    'durable_events',
+                    `UPDATE durable_events SET error_message = 'PROCESSING', created_at = datetime('now') WHERE id = ? AND processed = 0 AND (error_message LIKE 'RETRYABLE:%' OR datetime(created_at) <= datetime('now', '-60 seconds') OR created_at <= datetime('now', '-60 seconds'))`,
+                    [brevoReceiptKey]
+                  ).catch(() => ({ rowsAffected: 0 }));
+
+                  const changes = (reclaim as any)?.rowsAffected ?? (reclaim as any)?.meta?.changes ?? 0;
+                  if (changes === 1) {
+                    shouldSendReceipt = true;
+                  } else {
+                    receiptAlreadySent = true;
+                    emailReceiptStatus = 'SENT';
+                  }
+                } else {
+                  receiptAlreadySent = true;
+                }
+              }
+            } else {
+              try {
+                await this.d1Repo.executeWrite(
+                  'durable_events',
+                  `INSERT INTO durable_events (id, event_type, organization_id, payload_json, processed, error_message, created_at)
+                   VALUES (?, 'BREVO_RECEIPT_CLAIMED', 'org_owner_primary', ?, 0, 'PROCESSING', datetime('now'))`,
+                  [brevoReceiptKey, JSON.stringify({ orderId: effectiveOrderId, paymentId: trimmedUtr, buyerEmail, domain: cleanDomain })]
+                );
+                shouldSendReceipt = true;
+              } catch (reserveErr: any) {
+                if (reserveErr.message?.includes('UNIQUE') || reserveErr.message?.includes('already exists') || reserveErr.message?.includes('constraint failed')) {
+                  receiptAlreadySent = true;
+                  emailReceiptStatus = 'SENT';
+                }
+              }
+            }
+          } catch (e: any) {
+            console.warn(`[confirmManualUpiClaim] Brevo receipt idempotency check notice: ${e.message}`);
+          }
+
+          if (shouldSendReceipt) {
+            try {
+              const { BrevoMcpClient } = await import('../integrations/brevo-mcp-client.js');
+              const brevo = BrevoMcpClient.getInstance();
+              const emailRes = await brevo.sendTransactionalEmail({
+                to: buyerEmail,
+                subject: `Payment Receipt & Fix-Pack Download (${effectiveOrderId})`,
+                htmlContent: `
+                  <div style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px;border:1px solid #e2e8f0;border-radius:8px;">
+                    <h2 style="color:#0f172a;">Thank You for Your Order!</h2>
+                    <p>Your payment of <strong>₹${Number(params.amountINR).toFixed(2)}</strong> for <strong>${cleanDomain}</strong> was verified successfully by the owner.</p>
+                    <p><strong>Order ID:</strong> ${effectiveOrderId}<br><strong>Payment Ref (UTR):</strong> ${trimmedUtr}</p>
+                    <div style="margin:24px 0;">
+                      <a href="${downloadUrl}" style="background:#2563eb;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;font-weight:bold;display:inline-block;">Download Your SiteFix Technical Fix-Pack</a>
+                    </div>
+                    <p style="color:#64748b;font-size:12px;">This download link contains your 72-hour cryptographic access token.</p>
+                    <p style="color:#64748b;font-size:12px;">AI Marketing Organization • Automated Delivery Engine</p>
+                  </div>
+                `
+              });
+
+              if (emailRes && emailRes.success === true && emailRes.status === 'SENT') {
+                emailReceiptStatus = 'SENT';
+                await this.d1Repo.executeWrite(
+                  'durable_events',
+                  `UPDATE durable_events SET processed = 1, processed_at = datetime('now'), payload_json = ?, error_message = NULL WHERE id = ?`,
+                  [
+                    JSON.stringify({
+                      orderId: effectiveOrderId,
+                      paymentId: trimmedUtr,
+                      buyerEmail,
+                      domain: cleanDomain,
+                      messageId: emailRes.messageId || null,
+                      status: 'SENT'
+                    }),
+                    brevoReceiptKey
+                  ]
+                ).catch(() => {});
+              } else {
+                const failStatus = emailRes?.status || 'UNKNOWN_ERROR';
+                await this.d1Repo.executeWrite(
+                  'durable_events',
+                  `UPDATE durable_events SET error_message = ? WHERE id = ? AND processed = 0`,
+                  [`RETRYABLE:${failStatus}`, brevoReceiptKey]
+                ).catch(() => {});
+              }
+            } catch (brevoErr: any) {
+              await this.d1Repo.executeWrite(
+                'durable_events',
+                `UPDATE durable_events SET error_message = ? WHERE id = ? AND processed = 0`,
+                [`RETRYABLE:${brevoErr.message}`, brevoReceiptKey]
+              ).catch(() => {});
+            }
+          }
+        }
+
+        const finalFulfillmentStatus = (emailReceiptStatus === 'SENT' || receiptAlreadySent) ? 'EMAIL_ACCEPTED' : 'DELIVERABLE_READY_EMAIL_PENDING';
+        await this.d1Repo.executeWrite(
+          'universal_orders',
+          `UPDATE universal_orders SET status = 'PAID', fulfillment_status = ?, updated_at = datetime('now') WHERE id = ? OR provider_payment_id = ?`,
+          [finalFulfillmentStatus, effectiveOrderId, trimmedUtr]
+        ).catch(() => {});
+
+        siteFixDelivery = {
+          auditId: resolvedAuditId,
+          domain: cleanDomain,
+          downloadToken,
+          downloadUrl,
+          fulfillmentStatus: finalFulfillmentStatus,
+          deliverableStatus: 'READY'
+        };
+      } catch (siteFixErr: any) {
+        console.error(`[confirmManualUpiClaim] SiteFix delivery error: ${siteFixErr.message}`);
+      }
+    }
+
     // Stage I.2 (P3): Trigger verified fulfillment provisioning ONLY on HUMAN_VERIFIED_PAYMENT
     let fulfillment: any = null;
     try {
@@ -1363,7 +1597,10 @@ export class RazorpayAdapter {
       transactionId: tx.id,
       classification: 'MANUAL_VERIFIED',
       status: 'HUMAN_VERIFIED_PAYMENT',
-      fulfillment
+      fulfillment: siteFixDelivery || fulfillment,
+      downloadToken,
+      downloadUrl,
+      deliverableStatus: siteFixDelivery ? 'READY' : undefined
     };
   }
 

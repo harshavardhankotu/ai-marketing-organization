@@ -677,40 +677,127 @@ export class RazorpayStandardAdapter {
       };
     }
 
-    // Step (c): Send transactional email via Brevo to actual buyer email (Task 2)
+    // Step (c): Send transactional email via Brevo to actual buyer email with durable idempotency (Task 3)
     let emailReceiptStatus: 'SENT' | 'PENDING_RETRY' | 'SKIPPED_UNCONFIGURED' = 'PENDING_RETRY';
     const activeBrevoKey = (process.env.BREVO_MCP_SERVER_API || process.env.BREVO_API_KEY || '').trim();
     const isBrevoConfigured = Boolean(activeBrevoKey && !isPlaceholderCredential(activeBrevoKey));
+    const brevoReceiptKey = `brevo_receipt_${razorpay_payment_id}`;
+    let shouldSendReceipt = false;
+    let receiptAlreadySent = false;
 
     if (buyerEmail && buyerEmail.includes('@')) {
       try {
-        const brevo = BrevoMcpClient.getInstance();
-        const emailRes = await brevo.sendTransactionalEmail({
-          to: buyerEmail,
-          subject: `Payment Receipt & Fix-Pack Download (${orderId})`,
-          htmlContent: `
-            <div style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px;border:1px solid #e2e8f0;border-radius:8px;">
-              <h2 style="color:#0f172a;">Thank You for Your Order!</h2>
-              <p>Your payment of <strong>₹${verifiedAmountINR.toFixed(2)}</strong> for <strong>${cleanDomain}</strong> was received successfully.</p>
-              <p><strong>Order ID:</strong> ${orderId}<br><strong>Payment Ref:</strong> ${razorpay_payment_id}</p>
-              <div style="margin:24px 0;">
-                <a href="${downloadUrl}" style="background:#2563eb;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;font-weight:bold;display:inline-block;">Download Your SiteFix Technical Fix-Pack</a>
-              </div>
-              <p style="color:#64748b;font-size:12px;">This download link contains your 72-hour cryptographic access token.</p>
-              <p style="color:#64748b;font-size:12px;">AI Marketing Organization • Automated Delivery Engine</p>
-            </div>
-          `
-        });
+        const existingReceipt = await this.d1Repo.queryOne<any>(
+          'durable_events',
+          `SELECT id, processed, error_message, created_at FROM durable_events WHERE id = ?`,
+          [brevoReceiptKey]
+        );
 
-        if (emailRes && emailRes.success === true && emailRes.status === 'SENT') {
-          emailReceiptStatus = 'SENT';
+        if (existingReceipt) {
+          if (existingReceipt.processed === 1) {
+            receiptAlreadySent = true;
+            emailReceiptStatus = 'SENT';
+          } else {
+            const isRetryable = typeof existingReceipt.error_message === 'string' && existingReceipt.error_message.startsWith('RETRYABLE:');
+            const createdAtMs = new Date(existingReceipt.created_at).getTime();
+            const isStale = isNaN(createdAtMs) || (Date.now() - createdAtMs > 60000);
+
+            if (isRetryable || isStale) {
+              const reclaim = await this.d1Repo.executeWrite(
+                'durable_events',
+                `UPDATE durable_events SET error_message = 'PROCESSING', created_at = datetime('now') WHERE id = ? AND processed = 0 AND (error_message LIKE 'RETRYABLE:%' OR datetime(created_at) <= datetime('now', '-60 seconds') OR created_at <= datetime('now', '-60 seconds'))`,
+                [brevoReceiptKey]
+              ).catch(() => ({ rowsAffected: 0 }));
+
+              const changes = (reclaim as any)?.rowsAffected ?? (reclaim as any)?.meta?.changes ?? 0;
+              if (changes === 1) {
+                shouldSendReceipt = true;
+              } else {
+                receiptAlreadySent = true;
+                emailReceiptStatus = 'SENT';
+              }
+            } else {
+              receiptAlreadySent = true;
+            }
+          }
         } else {
-          emailReceiptStatus = 'PENDING_RETRY';
-          console.warn(`[RazorpayAdapter] Brevo receipt send notice: status=${emailRes?.status}, reason=${emailRes?.reason}`);
+          try {
+            await this.d1Repo.executeWrite(
+              'durable_events',
+              `INSERT INTO durable_events (id, event_type, organization_id, payload_json, processed, error_message, created_at)
+               VALUES (?, 'BREVO_RECEIPT_CLAIMED', 'org_owner_primary', ?, 0, 'PROCESSING', datetime('now'))`,
+              [brevoReceiptKey, JSON.stringify({ orderId, paymentId: razorpay_payment_id, buyerEmail, domain: cleanDomain })]
+            );
+            shouldSendReceipt = true;
+          } catch (reserveErr: any) {
+            if (reserveErr.message?.includes('UNIQUE') || reserveErr.message?.includes('already exists') || reserveErr.message?.includes('constraint failed')) {
+              receiptAlreadySent = true;
+              emailReceiptStatus = 'SENT';
+            } else {
+              throw reserveErr;
+            }
+          }
         }
-      } catch (brevoErr: any) {
-        console.warn(`[RazorpayAdapter] Brevo receipt send notice: ${brevoErr.message}`);
-        emailReceiptStatus = 'PENDING_RETRY';
+      } catch (checkErr: any) {
+        console.warn(`[RazorpayAdapter] Brevo receipt idempotency check error: ${checkErr.message}`);
+      }
+
+      if (shouldSendReceipt) {
+        try {
+          const brevo = BrevoMcpClient.getInstance();
+          const emailRes = await brevo.sendTransactionalEmail({
+            to: buyerEmail,
+            subject: `Payment Receipt & Fix-Pack Download (${orderId})`,
+            htmlContent: `
+              <div style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px;border:1px solid #e2e8f0;border-radius:8px;">
+                <h2 style="color:#0f172a;">Thank You for Your Order!</h2>
+                <p>Your payment of <strong>₹${verifiedAmountINR.toFixed(2)}</strong> for <strong>${cleanDomain}</strong> was received successfully.</p>
+                <p><strong>Order ID:</strong> ${orderId}<br><strong>Payment Ref:</strong> ${razorpay_payment_id}</p>
+                <div style="margin:24px 0;">
+                  <a href="${downloadUrl}" style="background:#2563eb;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;font-weight:bold;display:inline-block;">Download Your SiteFix Technical Fix-Pack</a>
+                </div>
+                <p style="color:#64748b;font-size:12px;">This download link contains your 72-hour cryptographic access token.</p>
+                <p style="color:#64748b;font-size:12px;">AI Marketing Organization • Automated Delivery Engine</p>
+              </div>
+            `
+          });
+
+          if (emailRes && emailRes.success === true && emailRes.status === 'SENT') {
+            emailReceiptStatus = 'SENT';
+            await this.d1Repo.executeWrite(
+              'durable_events',
+              `UPDATE durable_events SET processed = 1, processed_at = datetime('now'), payload_json = ?, error_message = NULL WHERE id = ?`,
+              [
+                JSON.stringify({
+                  orderId,
+                  paymentId: razorpay_payment_id,
+                  buyerEmail,
+                  domain: cleanDomain,
+                  messageId: emailRes.messageId || null,
+                  status: 'SENT'
+                }),
+                brevoReceiptKey
+              ]
+            ).catch(() => {});
+          } else {
+            emailReceiptStatus = 'PENDING_RETRY';
+            const failStatus = emailRes?.status || 'UNKNOWN_ERROR';
+            await this.d1Repo.executeWrite(
+              'durable_events',
+              `UPDATE durable_events SET error_message = ? WHERE id = ? AND processed = 0`,
+              [`RETRYABLE:${failStatus}`, brevoReceiptKey]
+            ).catch(() => {});
+            console.warn(`[RazorpayAdapter] Brevo receipt send notice: status=${emailRes?.status}, reason=${emailRes?.reason}`);
+          }
+        } catch (brevoErr: any) {
+          emailReceiptStatus = 'PENDING_RETRY';
+          await this.d1Repo.executeWrite(
+            'durable_events',
+            `UPDATE durable_events SET error_message = ? WHERE id = ? AND processed = 0`,
+            [`RETRYABLE:${brevoErr.message}`, brevoReceiptKey]
+          ).catch(() => {});
+          console.warn(`[RazorpayAdapter] Brevo receipt send notice: ${brevoErr.message}`);
+        }
       }
     } else {
       emailReceiptStatus = isBrevoConfigured ? 'PENDING_RETRY' : 'SKIPPED_UNCONFIGURED';
@@ -720,9 +807,9 @@ export class RazorpayStandardAdapter {
     // Never mark an order DELIVERED when Brevo is unconfigured (SKIPPED_UNCONFIGURED) or failed (PENDING_RETRY).
     // Track states separately:
     // - DELIVERABLE_READY_EMAIL_PENDING (Fix-Pack generated and durably stored with download token)
-    // - EMAIL_ACCEPTED (Brevo API returned success: true, status: 'SENT')
+    // - EMAIL_ACCEPTED (Brevo API returned success: true, status: 'SENT' or previously verified)
     // - EMAIL_DELIVERED (updated only when Brevo's webhook reports 'delivered')
-    const finalFulfillmentStatus = (emailReceiptStatus === 'SENT')
+    const finalFulfillmentStatus = (emailReceiptStatus === 'SENT' || receiptAlreadySent)
       ? 'EMAIL_ACCEPTED'
       : 'DELIVERABLE_READY_EMAIL_PENDING';
 
