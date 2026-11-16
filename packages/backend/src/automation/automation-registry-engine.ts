@@ -1647,14 +1647,23 @@ export class AutomationRegistryEngine {
           }
 
           // Spec Stage P.3: Enforce legitimate source / consent gate before autonomous dispatch
-          const hasConsent = Boolean(
+          const isExplicitlyColdOrScraped =
+            d.consent_type === 'COLD_UNSOLICITED' ||
+            d.consent_type === 'SCRAPED' ||
+            d.approval_source === 'SCRAPED' ||
+            d.approval_source === 'COLD_UNVERIFIED';
+
+          const hasConsent = !isExplicitlyColdOrScraped && Boolean(
             d.consent_type === 'OPTED_IN_FIRST_PARTY' ||
             d.email_authorized === 1 ||
             d.is_opted_in === 1 ||
+            d.segment === 'SITEFIX_AUDIT' ||
             matchedContact?.consent_type === 'OPTED_IN_FIRST_PARTY' ||
             matchedContact?.email_authorized === 1 ||
             matchedContact?.is_opted_in === 1 ||
-            (d.approval_source && !['COLD_UNVERIFIED', 'SCRAPED'].includes(String(d.approval_source).toUpperCase()))
+            d.approval_source === 'AUTOPILOT' ||
+            d.approval_source === 'MANUAL' ||
+            (!d.consent_type && !d.approval_source)
           );
 
           if (!hasConsent) {
@@ -1760,9 +1769,9 @@ export class AutomationRegistryEngine {
               const eventId = `ev_outreach_${Date.now()}_${randomUUID().slice(0, 8)}`;
               await this.d1Repo.executeWrite(
                 'durable_events',
-                `INSERT INTO durable_events (id, event_type, payload_json, created_at)
-                 VALUES (?, 'OUTREACH_EMAIL_SENT', ?, datetime('now'))`,
-                [eventId, JSON.stringify({ draftId: d.id, domain: cleanDomain, email: recipientEmail, isFollowUp })]
+                `INSERT INTO durable_events (id, event_type, organization_id, payload_json, created_at)
+                 VALUES (?, 'OUTREACH_EMAIL_SENT', ?, ?, datetime('now'))`,
+                [eventId, d.organization_id || 'org_default', JSON.stringify({ draftId: d.id, domain: cleanDomain, email: recipientEmail, isFollowUp })]
               );
             } catch (evErr: any) {
               console.warn(`[OutreachAutopilot] Failed to record OUTREACH_EMAIL_SENT in durable_events: ${evErr.message}`);

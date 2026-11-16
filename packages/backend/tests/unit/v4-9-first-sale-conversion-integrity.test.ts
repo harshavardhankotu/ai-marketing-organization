@@ -365,8 +365,8 @@ describe('V4.9 First Sale Conversion Integrity & Attribution Suite', () => {
         maxPages: 5
       });
 
-      // Verify all 110 transactions were ingested across both pages
-      expect(metrics.providerAttributedClicks).toBe(110);
+      // Stage P.3: Clicks and transactions are strictly separated (clicks remain 0 without performance report)
+      expect(metrics.providerAttributedClicks).toBe(0);
       expect(metrics.reportedConversions).toBe(110);
 
       // Verify matched transaction was updated in commission_records with referral_id

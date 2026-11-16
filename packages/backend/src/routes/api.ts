@@ -1691,8 +1691,8 @@ apiRouter.post('/cron/ping', async (c) => {
   try {
     await d1Repo.executeWrite(
       'durable_events',
-      `INSERT INTO durable_events (id, event_type, payload_json, created_at)
-       VALUES (?, 'CRON_PING_RECEIVED', ?, datetime('now'))`,
+      `INSERT INTO durable_events (id, event_type, organization_id, payload_json, created_at)
+       VALUES (?, 'CRON_PING_RECEIVED', 'org_default', ?, datetime('now'))`,
       [`cron_ping_${Date.now()}_${randomUUID().slice(0, 8)}`, JSON.stringify({ correlationId, userAgent, workerSource })]
     );
     telemetryRecorded = true;

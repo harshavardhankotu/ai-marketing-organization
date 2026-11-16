@@ -377,8 +377,8 @@ export class TelegramBotAdapter {
       try {
         await this.d1Repo.executeWrite(
           'durable_events',
-          `INSERT INTO durable_events (id, event_type, payload_json, created_at)
-           VALUES (?, 'TELEGRAM_DEAL_POSTED', ?, datetime('now'))`,
+          `INSERT INTO durable_events (id, event_type, organization_id, payload_json, created_at)
+           VALUES (?, 'TELEGRAM_DEAL_POSTED', 'org_default', ?, datetime('now'))`,
           [postId, JSON.stringify({ channelId, guideUrl: options.guideUrl, messageId })]
         );
       } catch (d1Err: any) {
