@@ -489,12 +489,14 @@ export class BrevoMcpClient {
     email: string;
     reason?: string;
     messageId?: string;
+    [key: string]: any;
   }): Promise<{ processed: boolean; suppressed: boolean; duplicate?: boolean }> {
     if (!event.email) return { processed: false, suppressed: false };
 
     const lowerEvent = (event.event || '').toLowerCase();
-    const rawMessageId = event.messageId || (event as any)['message-id'] || (event as any).message_id || event.email;
-    const dedupePayload = `${rawMessageId}:${lowerEvent}:${event.email.toLowerCase().trim()}`;
+    const rawMessageId = event.messageId || (event as any)['message-id'] || (event as any).message_id || 'no_msgid';
+    const eventTimestampOrId = (event as any).date || (event as any).ts || (event as any).id || (event as any)['event-id'] || (event as any).tag || '';
+    const dedupePayload = `${rawMessageId}:${lowerEvent}:${event.email.toLowerCase().trim()}:${eventTimestampOrId}`;
     const { createHash } = await import('node:crypto');
     const eventKey = `brevo_wh_${createHash('sha256').update(dedupePayload).digest('hex').slice(0, 36)}`;
 
@@ -517,7 +519,7 @@ export class BrevoMcpClient {
     const shouldSuppress = ['hard_bounce', 'soft_bounce', 'spam', 'unsubscribed', 'blocked'].includes(lowerEvent);
 
     if (shouldSuppress) {
-      // 1. Direct write to D1 outreach_suppression_list
+      // 1. Direct write to D1 outreach_suppression_list (Fail closed on D1 write errors)
       const normalizedEmail = event.email.toLowerCase().trim();
       const suppId = `supp_brevo_${createHash('sha256').update(normalizedEmail).digest('hex').slice(0, 24)}`;
       const expiresAt = new Date(Date.now() + 180 * 86400 * 1000).toISOString();
@@ -530,7 +532,8 @@ export class BrevoMcpClient {
           [suppId, normalizedEmail, `BREVO_WEBHOOK_${lowerEvent.toUpperCase()}`, expiresAt]
         );
       } catch (d1SuppErr: any) {
-        console.warn(`[BrevoMcpClient] Direct D1 outreach_suppression_list write notice: ${d1SuppErr.message}`);
+        console.error(`[BrevoMcpClient] Direct D1 outreach_suppression_list write failed: ${d1SuppErr.message}`);
+        throw new Error(`D1_SUPPRESSION_WRITE_FAILED: Failed to persist suppression in ledger: ${d1SuppErr.message}`);
       }
 
       // 2. Also register via PlatformProspectDiscoveryEngine for local SQLite & in-memory caches

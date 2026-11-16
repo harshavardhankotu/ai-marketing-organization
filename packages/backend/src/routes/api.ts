@@ -3254,10 +3254,30 @@ apiRouter.post('/payments/razorpay/create-order', async (c) => {
     }
     try {
       const { RazorpayStandardAdapter } = await import('../payments/razorpay-adapter.js');
+      RazorpayStandardAdapter.getInstance().resolveAuthoritativePrice(body.sku, body.amountINR);
+    } catch (skuErr: any) {
+      return c.json({ success: false, error: skuErr.message }, 400);
+    }
+    const rawDomain = String(body.domainOrUrl || body.domain || '').trim();
+    if (!rawDomain) {
+      return c.json({
+        success: false,
+        error: 'INVALID_DOMAIN: A valid domain or website URL is required.'
+      }, 400);
+    }
+    const rawEmail = String(body.buyerEmail || body.customerEmail || '').trim();
+    if (!rawEmail || !rawEmail.includes('@')) {
+      return c.json({
+        success: false,
+        error: 'INVALID_EMAIL: A valid buyer email address is required.'
+      }, 400);
+    }
+    try {
+      const { RazorpayStandardAdapter } = await import('../payments/razorpay-adapter.js');
       const order = await RazorpayStandardAdapter.getInstance().createStandardOrder({
         sku: body.sku,
-        domainOrUrl: body.domainOrUrl || body.domain,
-        buyerEmail: body.buyerEmail || body.customerEmail,
+        domainOrUrl: rawDomain,
+        buyerEmail: rawEmail,
         customerName: body.customerName,
         amountINR: body.amountINR,
         notes: body.notes
@@ -3446,7 +3466,10 @@ apiRouter.post('/payments/razorpay/verify', async (c) => {
     });
     return c.json({ data: result, ...result });
   } catch (stdErr: any) {
-    if (stdErr.message?.includes('SECURITY_VIOLATION')) {
+    if (stdErr.message?.includes('ORDER_NOT_FOUND_IN_D1')) {
+      return c.json({ success: false, error: stdErr.message }, 404);
+    }
+    if (stdErr.message?.includes('SECURITY_VIOLATION') || stdErr.message?.includes('MISSING_ORDER_')) {
       return c.json({ success: false, error: stdErr.message }, 400);
     }
     // If standard fulfillment failed, try fallback to confirmClientPayment for legacy payment_orders
@@ -3493,6 +3516,26 @@ apiRouter.post('/webhooks/razorpay', async (c) => {
   }
 
   try {
+    const payment = eventPayload.payload?.payment?.entity;
+    const orderId = payment?.order_id || eventPayload.payload?.order?.entity?.id;
+    const paymentId = payment?.id;
+    const receipt = eventPayload.payload?.order?.entity?.receipt || payment?.notes?.internalOrderId;
+
+    if (orderId && (orderId.startsWith('ord_rzp_') || (receipt && receipt.startsWith('ord_rzp_')))) {
+      const { RazorpayStandardAdapter } = await import('../payments/razorpay-adapter.js');
+      const stdResult = await RazorpayStandardAdapter.getInstance().verifyPaymentAndFulfill({
+        isWebhook: true,
+        orderId: receipt || orderId,
+        razorpay_order_id: orderId,
+        razorpay_payment_id: paymentId || `pay_wh_${Date.now()}`
+      });
+      return c.json({
+        success: true,
+        eventDriven: { mode: 'INSTANT_SYNC', processedImmediately: true },
+        data: stdResult
+      }, 200);
+    }
+
     const result = await razorpayAdapter.processWebhook({
       rawBody,
       signature,
@@ -3507,7 +3550,7 @@ apiRouter.post('/webhooks/razorpay', async (c) => {
   } catch (err: any) {
     const status = err.message?.includes('SECURITY VIOLATION')
       ? 403
-      : (err.message?.includes('REVENUE_PERSISTENCE_FAILED') || err.message?.includes('D1_WRITE_FAILED'))
+      : (err.message?.includes('REVENUE_PERSISTENCE_FAILED') || err.message?.includes('D1_WRITE_FAILED') || err.message?.includes('D1_TRANSACTION_PERSISTENCE_FAILED') || err.message?.includes('FIXPACK_GENERATION_FAILED'))
         ? 500
         : 400;
     return c.json({ success: false, error: err.message }, status);
@@ -3934,13 +3977,23 @@ const handleBrevoWebhook = async (c: any) => {
 
   const body = await c.req.json().catch(() => ({}));
   const brevo = BrevoMcpClient.getInstance();
-  const res = await brevo.handleWebhookEvent({
-    event: body.event || body.type,
-    email: body.email,
-    reason: body.reason || body.tag,
-    messageId: body['message-id'] || body.messageId || body.message_id
-  });
-  return c.json({ success: true, data: res });
+  try {
+    const res = await brevo.handleWebhookEvent({
+      event: body.event || body.type,
+      email: body.email,
+      reason: body.reason || body.tag,
+      messageId: body['message-id'] || body.messageId || body.message_id,
+      date: body.date,
+      ts: body.ts,
+      id: body.id,
+      tag: body.tag
+    });
+    return c.json({ success: true, data: res });
+  } catch (err: any) {
+    const errMsg = String(err?.message || '');
+    const is503 = errMsg.includes('D1_') || errMsg.includes('SUPPRESSION') || errMsg.includes('FAILED');
+    return c.json({ success: false, error: errMsg }, is503 ? 503 : 500);
+  }
 };
 
 apiRouter.post('/webhooks/brevo', handleBrevoWebhook);
@@ -14067,6 +14120,75 @@ const handleSiteAuditDeliverable = async (c: any) => {
 };
 apiRouter.get('/tools/site-audit/:auditId/deliverable', handleSiteAuditDeliverable);
 apiRouter.get('/api/v1/tools/site-audit/:auditId/deliverable', handleSiteAuditDeliverable);
+
+/**
+ * Universal Offer & Fix-Pack Download via Cryptographic Delivery Token (Spec Stage P.3.2)
+ */
+const handleOfferDownload = async (c: any) => {
+  const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
+  const token = c.req.param('downloadToken') || c.req.query('token') || '';
+
+  const service = SiteAuditService.getInstance();
+  const verification = await service.verifyDeliveryToken(token);
+
+  if (!verification.valid || !verification.auditId) {
+    return c.json({
+      success: false,
+      error: `DELIVERY_UNAUTHORIZED: ${verification.error || 'Invalid or expired entitlement token.'}`
+    }, 403);
+  }
+
+  try {
+    const deliverable = await service.generateDeliverable(verification.auditId, verification.orderId);
+    const format = c.req.query('format') || '';
+    const acceptHeader = c.req.header('accept') || '';
+
+    if (format === 'json' || acceptHeader.includes('application/json')) {
+      return c.json({ success: true, deliverable });
+    }
+
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SiteFix AI — Technical Fix-Pack Download</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #f8fafc; padding: 2rem; margin: 0; }
+    .container { max-width: 800px; margin: 0 auto; background: #1e293b; padding: 2rem; border-radius: 12px; border: 1px solid #334155; }
+    h1 { color: #38bdf8; margin-top: 0; }
+    .meta { color: #94a3b8; font-size: 0.9rem; margin-bottom: 1.5rem; line-height: 1.6; }
+    .btn { display: inline-block; background: #2563eb; color: #fff; padding: 0.75rem 1.5rem; border-radius: 6px; text-decoration: none; font-weight: 600; margin-right: 1rem; }
+    pre { background: #0b1120; padding: 1rem; border-radius: 8px; overflow-x: auto; color: #34d399; font-size: 0.85rem; border: 1px solid #1e293b; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>SiteFix Technical Fix-Pack</h1>
+    <div class="meta">
+      <strong>Target Domain:</strong> ${deliverable.targetUrl || deliverable.canonicalUrlRecommendation || 'Verified Domain'}<br>
+      <strong>Order ID:</strong> ${verification.orderId || 'Verified'}<br>
+      <strong>Status:</strong> DELIVERED<br>
+      <strong>Delivered At:</strong> ${new Date().toISOString()}
+    </div>
+    <p>Your technical diagnostic and automated patch pack is ready. You can inspect the deliverable below or download the raw JSON.</p>
+    <div style="margin: 1.5rem 0;">
+      <a href="?format=json" class="btn">Download JSON Deliverable</a>
+    </div>
+    <h3>Executive Summary</h3>
+    <p>${(deliverable as any).executiveSummary || 'Automated Technical Audit & Fix Pack'}</p>
+    <h3>Diagnostics & Patches</h3>
+    <pre><code>${JSON.stringify(deliverable, null, 2)}</code></pre>
+  </div>
+</body>
+</html>`;
+    return c.html(html);
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 404);
+  }
+};
+apiRouter.get('/offer/download/:downloadToken', handleOfferDownload);
+apiRouter.get('/api/v1/offer/download/:downloadToken', handleOfferDownload);
 
 /**
  * =========================================================================

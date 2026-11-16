@@ -1511,9 +1511,15 @@ export class RazorpayAdapter {
     if (orderId) {
       if (isProduction() && !process.env.VITEST) {
         storedOrder = await this.d1Repo.queryOne('payment_orders', `SELECT * FROM payment_orders WHERE order_id = ?`, [orderId]);
+        if (!storedOrder) {
+          storedOrder = await this.d1Repo.queryOne('universal_orders', `SELECT id as order_id, business_id, organization_id, amount_minor, customer_phone FROM universal_orders WHERE id = ? OR provider_order_id = ?`, [orderId, orderId]);
+        }
       } else {
         try {
           storedOrder = getDb().prepare(`SELECT * FROM payment_orders WHERE order_id = ?`).get(orderId) as any;
+          if (!storedOrder) {
+            storedOrder = getDb().prepare(`SELECT id as order_id, business_id, organization_id, amount_minor, customer_phone FROM universal_orders WHERE id = ? OR provider_order_id = ?`).get(orderId, orderId) as any;
+          }
         } catch {}
       }
     }

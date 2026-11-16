@@ -350,6 +350,14 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
             </div>
           </div>
 
+          <!-- Live Buyer Domain & Email Inputs (Spec Stage P.3.2) -->
+          <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; padding: 1rem; margin-bottom: 1rem; text-align: left;">
+            <label style="display: block; font-size: 0.78rem; font-weight: 600; color: #94a3b8; margin-bottom: 0.35rem;">Target Website Domain *</label>
+            <input type="text" id="checkoutDomainInput" placeholder="example.com" style="width: 100%; box-sizing: border-box; padding: 0.55rem 0.75rem; border-radius: 6px; border: 1px solid #374151; background: #1f2937; color: #fff; font-size: 0.85rem; margin-bottom: 0.75rem;">
+            <label style="display: block; font-size: 0.78rem; font-weight: 600; color: #94a3b8; margin-bottom: 0.35rem;">Buyer Delivery Email (for receipt & fix-pack download token) *</label>
+            <input type="email" id="checkoutBuyerEmailInput" required placeholder="name@company.com" style="width: 100%; box-sizing: border-box; padding: 0.55rem 0.75rem; border-radius: 6px; border: 1px solid #374151; background: #1f2937; color: #fff; font-size: 0.85rem;">
+          </div>
+
           <button class="btn-primary" id="checkoutBtn" data-ab-experiment="${sitefixExpId}" data-ab-variant="${sitefixVariant}" data-ab-cta="${safeSitefixCtaText}" onclick="initiateCheckout(49900)" disabled>
             ${safeSitefixCtaText}
           </button>
@@ -426,9 +434,10 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
         <!-- Download Success Box -->
         <div class="download-success-box" id="downloadSuccessBox">
           <h4 style="color: var(--success); margin-bottom: 0.5rem;">Payment Verified Successfully!</h4>
-          <p style="font-size: 0.9rem; color: #d1d5db; margin-bottom: 1rem;">
+          <p style="font-size: 0.9rem; color: #d1d5db; margin-bottom: 0.75rem;">
             Your 72-hour entitlement token has been issued. Click below to download your complete Optimization Fix-Pack.
           </p>
+          <div id="downloadRefDetails" style="font-family: monospace; font-size: 0.82rem; color: #94a3b8; margin-bottom: 1rem; line-height: 1.5;"></div>
           <a id="downloadLink" href="#" class="btn-primary" style="display: inline-block; text-decoration: none; max-width: 300px; padding: 0.75rem 1.5rem;" target="_blank">
             Download Fix-Pack (JSON / Markdown)
           </a>
@@ -549,6 +558,16 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
       document.getElementById('resultStatus').textContent = 'Audit Status: ' + result.overallStatus;
       document.getElementById('resultExplanation').textContent = result.scoreExplanation;
 
+      const domainInput = document.getElementById('checkoutDomainInput');
+      if (domainInput && !domainInput.value) {
+        try {
+          const u = new URL(result.url || currentAuditTargetUrl);
+          domainInput.value = u.hostname;
+        } catch {
+          domainInput.value = result.domain || result.url || '';
+        }
+      }
+
       const container = document.getElementById('findingsContainer');
       container.innerHTML = '';
 
@@ -617,7 +636,22 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
       }
 
       try {
-        const targetDomain = currentAuditTargetUrl || (document.getElementById('targetUrl') ? document.getElementById('targetUrl').value : '') || 'sitefix-audit.com';
+        const domainInput = document.getElementById('checkoutDomainInput');
+        const emailInput = document.getElementById('checkoutBuyerEmailInput');
+        let targetDomain = (domainInput ? domainInput.value : '').trim() || currentAuditTargetUrl || (document.getElementById('targetUrl') ? document.getElementById('targetUrl').value : '') || 'sitefix-audit.com';
+        targetDomain = targetDomain.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').trim();
+
+        const buyerEmail = (emailInput ? emailInput.value : '').trim();
+        if (!buyerEmail || !buyerEmail.includes('@') || !buyerEmail.includes('.')) {
+          alert('Please provide a valid delivery email address to receive your order receipt and download token.');
+          if (emailInput) emailInput.focus();
+          if (btn) {
+            btn.disabled = false;
+            btn.innerText = isTest ? '⚡ Launch Razorpay Sandbox Modal (₹1.00 Test Mode)' : 'Unlock & Download Complete Fix-Pack (₹499 Sandbox Mode)';
+          }
+          return;
+        }
+
         const useStandardRoute = !currentAuditId || !isTest;
         const checkoutUrl = useStandardRoute
           ? '/api/v1/payments/razorpay/create-order'
@@ -626,11 +660,11 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
           ? {
               sku: isTest ? 'SITEFIX_AI_TEST_V1' : 'sitefix_core_499',
               domainOrUrl: targetDomain,
-              buyerEmail: 'customer@example.com',
+              buyerEmail: buyerEmail,
               amountINR: isTest ? 1 : 499
             }
           : {
-              customerEmail: 'customer@example.com',
+              customerEmail: buyerEmail,
               amountPaise: isTest ? 100 : 49900,
               amountINR: isTest ? 1 : 499,
               isTestPayment: isTest
@@ -695,7 +729,7 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
               const verifyData = await verifyRes.json();
               const downloadUrl = verifyData.downloadUrl || verifyData.data?.downloadUrl;
               if (verifyData.success && downloadUrl) {
-                showDownloadSuccess(downloadUrl);
+                showDownloadSuccess(downloadUrl, response.razorpay_payment_id, data.orderId || response.razorpay_order_id);
               } else {
                 alert('Payment received but verification pending. Please poll: ' + (verifyData.error || 'Unknown error'));
               }
@@ -704,8 +738,8 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
             }
           },
           prefill: {
-            name: 'Test Customer',
-            email: 'test@example.com',
+            name: 'SiteFix Customer',
+            email: buyerEmail,
             contact: '9999999999'
           },
           theme: {
@@ -739,12 +773,17 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
       }
     }
 
-    function showDownloadSuccess(downloadUrl) {
+    function showDownloadSuccess(downloadUrl, paymentId, orderId) {
       document.getElementById('checkoutActionContainer').style.display = 'none';
       const box = document.getElementById('downloadSuccessBox');
       box.style.display = 'block';
       const link = document.getElementById('downloadLink');
       link.href = downloadUrl;
+      const refEl = document.getElementById('downloadRefDetails');
+      if (refEl && (paymentId || orderId)) {
+        refEl.innerHTML = (orderId ? '<strong>Order ID:</strong> ' + escapeHtml(orderId) + '<br>' : '') +
+                          (paymentId ? '<strong>Payment ID:</strong> ' + escapeHtml(paymentId) : '');
+      }
     }
 
     async function submitSiteAuditSendReport(e) {

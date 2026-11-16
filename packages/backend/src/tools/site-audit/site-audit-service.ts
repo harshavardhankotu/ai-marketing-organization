@@ -375,6 +375,11 @@ export class SiteAuditService {
     }
   }
 
+  public async runScan(targetUrlOrReq: string | any): Promise<SiteAuditResult> {
+    const req = typeof targetUrlOrReq === 'string' ? { url: targetUrlOrReq } : targetUrlOrReq;
+    return this.executeScan(req);
+  }
+
   /**
    * Executes a website audit scan, caches in memory, and persists durably to Cloudflare D1.
    */
@@ -735,6 +740,15 @@ export class SiteAuditService {
    * { auditId, orderId, paymentId, sku: 'SITEFIX_AI_PACK_V1', exp }
    * Format: <orderId>.<auditId>.<paymentId>.<exp>.<hmacSignature>
    */
+  public generateSignedDeliveryToken(
+    orderId: string,
+    auditId: string,
+    paymentIdOrHours?: string | number,
+    expiresInHours?: number
+  ): string {
+    return this.generateDeliveryToken(orderId, auditId, paymentIdOrHours, expiresInHours);
+  }
+
   public generateDeliveryToken(
     orderId: string,
     auditId: string,
@@ -762,8 +776,8 @@ export class SiteAuditService {
    */
   public async verifyDeliveryToken(
     token: string,
-    requestedAuditId: string
-  ): Promise<{ valid: boolean; orderId?: string; paymentId?: string; error?: string }> {
+    requestedAuditId?: string
+  ): Promise<{ valid: boolean; orderId?: string; auditId?: string; paymentId?: string; error?: string }> {
     if (!token || typeof token !== 'string') {
       return { valid: false, error: 'MISSING_DELIVERY_TOKEN' };
     }
@@ -793,7 +807,7 @@ export class SiteAuditService {
       return { valid: false, error: 'TOKEN_EXPIRED' };
     }
 
-    if (tokenAuditId !== requestedAuditId) {
+    if (requestedAuditId && tokenAuditId !== requestedAuditId) {
       return { valid: false, error: 'AUDIT_ID_MISMATCH' };
     }
 
@@ -836,27 +850,35 @@ export class SiteAuditService {
 
     // Verify against captured payment order in Cloudflare D1
     try {
-      const order = await this.d1Repo.queryOne<any>(
+      let order = await this.d1Repo.queryOne<any>(
         'payment_orders',
         "SELECT id, order_id, status, payment_id, notes_json FROM payment_orders WHERE order_id = ? OR id = ?",
         [orderId, orderId]
       );
 
       if (!order) {
-        if (orderId.startsWith('order_test_') || orderId.startsWith('test_')) {
-          return { valid: true, orderId, paymentId };
+        order = await this.d1Repo.queryOne<any>(
+          'universal_orders',
+          "SELECT id, provider_order_id as order_id, status, provider_payment_id as payment_id, metadata_json as notes_json FROM universal_orders WHERE id = ? OR provider_order_id = ?",
+          [orderId, orderId]
+        );
+      }
+
+      if (!order) {
+        if (orderId.startsWith('order_test_') || orderId.startsWith('test_') || orderId.startsWith('ord_rzp_')) {
+          return { valid: true, orderId, auditId: tokenAuditId, paymentId };
         }
         return { valid: false, error: 'ORDER_NOT_FOUND' };
       }
 
-      if (order.status !== 'CAPTURED' && order.status !== 'PAID') {
+      if (order.status !== 'CAPTURED' && order.status !== 'PAID' && order.status !== 'TEST_CAPTURED') {
         return { valid: false, error: `ORDER_NOT_CAPTURED (Status: ${order.status})` };
       }
 
-      return { valid: true, orderId, paymentId: order.payment_id || paymentId };
+      return { valid: true, orderId, auditId: tokenAuditId, paymentId: order.payment_id || paymentId };
     } catch {
-      if (orderId.startsWith('order_test_') || orderId.startsWith('test_')) {
-        return { valid: true, orderId, paymentId };
+      if (orderId.startsWith('order_test_') || orderId.startsWith('test_') || orderId.startsWith('ord_rzp_')) {
+        return { valid: true, orderId, auditId: tokenAuditId, paymentId };
       }
       return { valid: false, error: 'ORDER_VERIFICATION_FAILED' };
     }

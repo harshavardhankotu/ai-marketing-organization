@@ -1808,6 +1808,12 @@ export class AutomationRegistryEngine {
 
           if (!domainLockClaimed) {
             skippedCount++;
+            // Immediately release claimed slot so daily quota (1..10) is not leaked on domain lock collisions
+            if (claimedSlotKey) {
+              try {
+                await this.d1Repo.executeWrite('durable_events', `DELETE FROM durable_events WHERE id = ?`, [claimedSlotKey]);
+              } catch {}
+            }
             continue;
           }
 

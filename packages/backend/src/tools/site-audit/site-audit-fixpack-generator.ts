@@ -24,36 +24,39 @@ export class SiteAuditFixPackGenerator {
       urlHostname = new URL(targetUrl).hostname;
     } catch {}
 
+    const preview = audit.preview || ({} as any);
+    const findings = Array.isArray(audit.findings) ? audit.findings : [];
+
     const hasRealTitle = Boolean(
-      audit.preview.title &&
-      audit.preview.title !== '(No <title> found)' &&
-      audit.preview.title !== '(No title tag found)'
+      preview.title &&
+      preview.title !== '(No <title> found)' &&
+      preview.title !== '(No title tag found)'
     );
     const hasRealDesc = Boolean(
-      audit.preview.metaDescription &&
-      audit.preview.metaDescription !== '(No meta description found)' &&
-      audit.preview.metaDescription !== '(No meta description specified)'
+      preview.metaDescription &&
+      preview.metaDescription !== '(No meta description found)' &&
+      preview.metaDescription !== '(No meta description specified)'
     );
     const hasRealCanonical = Boolean(
-      audit.preview.canonicalUrl &&
-      audit.preview.canonicalUrl !== '(No canonical URL specified)' &&
-      audit.preview.canonicalUrl !== '(No canonical link found)'
+      preview.canonicalUrl &&
+      preview.canonicalUrl !== '(No canonical URL specified)' &&
+      preview.canonicalUrl !== '(No canonical link found)'
     );
-    const cleanCanonical = hasRealCanonical ? audit.preview.canonicalUrl : targetUrl;
+    const cleanCanonical = hasRealCanonical ? preview.canonicalUrl : targetUrl;
 
     const hasRealOgTitle = Boolean(
-      audit.preview.ogTitle &&
-      audit.preview.ogTitle !== '(No og:title found)'
+      preview.ogTitle &&
+      preview.ogTitle !== '(No og:title found)'
     );
     const hasRealOgImage = Boolean(
-      audit.preview.ogImage &&
-      audit.preview.ogImage !== '(No og:image found)' &&
-      audit.preview.ogImage !== '(No og:image specified)' &&
-      !audit.preview.ogImage.includes('og-image.jpg')
+      preview.ogImage &&
+      preview.ogImage !== '(No og:image found)' &&
+      preview.ogImage !== '(No og:image specified)' &&
+      !preview.ogImage.includes('og-image.jpg')
     );
 
     // Check if the scanned page has an existing noindex directive
-    const hasNoindex = audit.findings.some(f => f.id === 'robots_noindex_detected');
+    const hasNoindex = findings.some(f => f.id === 'robots_noindex_detected');
 
     // 1. Recommended HTML Head Snippet
     const headLines = [
@@ -65,14 +68,14 @@ export class SiteAuditFixPackGenerator {
     ];
 
     if (hasRealTitle) {
-      headLines.push(`<title>${audit.preview.title}</title>`);
+      headLines.push(`<title>${preview.title}</title>`);
     } else {
       headLines.push('<!-- OWNER ACTION REQUIRED: Missing <title> tag. Add a descriptive title (50-60 chars): -->');
       headLines.push('<title><!-- [INSERT_PAGE_TITLE] --></title>');
     }
 
     if (hasRealDesc) {
-      headLines.push(`<meta name="description" content="${audit.preview.metaDescription}">`);
+      headLines.push(`<meta name="description" content="${preview.metaDescription}">`);
     } else {
       headLines.push('<!-- OWNER ACTION REQUIRED: Missing meta description. Add a summary (120-160 chars): -->');
       headLines.push('<meta name="description" content="<!-- [INSERT_META_DESCRIPTION] -->">');
@@ -100,19 +103,19 @@ export class SiteAuditFixPackGenerator {
     ];
 
     if (hasRealOgTitle || hasRealTitle) {
-      ogLines.push(`<meta property="og:title" content="${audit.preview.ogTitle || audit.preview.title}">`);
+      ogLines.push(`<meta property="og:title" content="${preview.ogTitle || preview.title}">`);
     } else {
       ogLines.push('<!-- OWNER ACTION: Add og:title -->');
     }
 
     if (hasRealDesc) {
-      ogLines.push(`<meta property="og:description" content="${audit.preview.metaDescription}">`);
+      ogLines.push(`<meta property="og:description" content="${preview.metaDescription}">`);
     } else {
       ogLines.push('<!-- OWNER ACTION: Add og:description -->');
     }
 
     if (hasRealOgImage) {
-      ogLines.push(`<meta property="og:image" content="${audit.preview.ogImage}">`);
+      ogLines.push(`<meta property="og:image" content="${preview.ogImage}">`);
       ogLines.push('<meta property="og:image:width" content="1200">');
       ogLines.push('<meta property="og:image:height" content="630">');
     } else {
@@ -127,13 +130,13 @@ export class SiteAuditFixPackGenerator {
       '<meta name="twitter:card" content="summary_large_image">'
     ];
     if (hasRealOgTitle || hasRealTitle) {
-      twitterLines.push(`<meta name="twitter:title" content="${audit.preview.ogTitle || audit.preview.title}">`);
+      twitterLines.push(`<meta name="twitter:title" content="${preview.ogTitle || preview.title}">`);
     }
     if (hasRealDesc) {
-      twitterLines.push(`<meta name="twitter:description" content="${audit.preview.metaDescription}">`);
+      twitterLines.push(`<meta name="twitter:description" content="${preview.metaDescription}">`);
     }
     if (hasRealOgImage) {
-      twitterLines.push(`<meta name="twitter:image" content="${audit.preview.ogImage}">`);
+      twitterLines.push(`<meta name="twitter:image" content="${preview.ogImage}">`);
     }
 
     const twitterCardSnippet = twitterLines.join('\n');
@@ -146,15 +149,15 @@ export class SiteAuditFixPackGenerator {
     };
 
     if (hasRealTitle) {
-      schemaObject.name = audit.preview.title.split('—')[0].split('-')[0].trim();
+      schemaObject.name = preview.title.split('—')[0].split('-')[0].trim();
     } else if (audit.businessName) {
       schemaObject.name = audit.businessName;
     }
     if (hasRealDesc) {
-      schemaObject.description = audit.preview.metaDescription;
+      schemaObject.description = preview.metaDescription;
     }
     if (hasRealOgImage) {
-      schemaObject.image = audit.preview.ogImage;
+      schemaObject.image = preview.ogImage;
     }
     const observedEmail = audit.prospectSignals?.discoveredEmails?.[0];
     if (observedEmail) {
@@ -221,7 +224,7 @@ export class SiteAuditFixPackGenerator {
     // 7. Checklist Markdown
     const checklistMarkdown = this.generateChecklistMarkdown(
       audit,
-      hasRealTitle ? audit.preview.title : urlHostname,
+      hasRealTitle ? preview.title : urlHostname,
       cleanCanonical,
       missingFieldsRequiringOwnerInput,
       hasNoindex
@@ -257,8 +260,9 @@ export class SiteAuditFixPackGenerator {
     missingFields: string[] = [],
     hasNoindex: boolean = false
   ): string {
-    const issues = audit.findings.filter((f) => f.status === 'ISSUE');
-    const warnings = audit.findings.filter((f) => f.status === 'WARNING');
+    const findings = Array.isArray(audit?.findings) ? audit.findings : [];
+    const issues = findings.filter((f) => f.status === 'ISSUE');
+    const warnings = findings.filter((f) => f.status === 'WARNING');
 
     return [
       `# SiteFix AI: Optimization Implementation Checklist`,

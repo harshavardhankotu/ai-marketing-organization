@@ -337,7 +337,7 @@ export class TelegramBotAdapter {
     try {
       const d1Row = await this.d1Repo.queryOne<any>(
         'durable_events',
-        `SELECT count(*) as cnt FROM durable_events WHERE event_type IN ('TELEGRAM_POST_CLAIMED', 'TELEGRAM_DEAL_POSTED') AND date(created_at) = date('now')`
+        `SELECT count(*) as cnt FROM durable_events WHERE event_type IN ('TELEGRAM_POST_CLAIMED', 'TELEGRAM_DEAL_POSTED', 'TELEGRAM_SLOT_RESERVED') AND date(created_at) = date('now')`
       );
       if (d1Row?.cnt) d1PostsToday = Number(d1Row.cnt);
     } catch {}
@@ -356,16 +356,52 @@ export class TelegramBotAdapter {
       };
     }
 
-    // Spec Stage P.3.1 Task 3: Atomic Pre-Dispatch Post Claim
+    // Spec Stage P.3.2 Task 3: Atomic Pre-Dispatch Primary-Key Slot Reservation (1..3)
+    let claimedSlotKey: string | null = null;
+    for (let slot = 1; slot <= 3; slot++) {
+      const slotKey = `tg_daily_slot_${utcDate}_${slot}`;
+      try {
+        await this.d1Repo.executeWrite(
+          'durable_events',
+          `INSERT INTO durable_events (id, event_type, organization_id, payload_json, created_at)
+           VALUES (?, 'TELEGRAM_SLOT_RESERVED', 'org_owner_primary', ?, datetime('now'))`,
+          [slotKey, JSON.stringify({ channelId, guideUrl: options.guideUrl, dealIdentifier, slot, utcDate })]
+        );
+        claimedSlotKey = slotKey;
+        break;
+      } catch (slotErr: any) {
+        const errMsg = String(slotErr?.message || '');
+        if (errMsg.includes('UNIQUE') || errMsg.includes('constraint') || errMsg.includes('PRIMARY KEY')) {
+          continue; // Slot already taken
+        }
+        console.warn(`[TelegramAdapter] Atomic slot reservation error: ${errMsg}`);
+        break;
+      }
+    }
+
+    if (!claimedSlotKey) {
+      return {
+        posted: false,
+        reason: 'DAILY_LIMIT_EXCEEDED: Telegram owned channel allows at most 3 posts per day.'
+      };
+    }
+
+    // Spec Stage P.3.2 Task 3: Atomic Pre-Dispatch Post Claim
     try {
       await this.d1Repo.executeWrite(
         'durable_events',
         `INSERT INTO durable_events (id, event_type, organization_id, payload_json, created_at)
          VALUES (?, 'TELEGRAM_POST_CLAIMED', 'org_owner_primary', ?, datetime('now'))`,
-        [claimKey, JSON.stringify({ channelId, guideUrl: options.guideUrl, dealIdentifier, utcDate })]
+        [claimKey, JSON.stringify({ channelId, guideUrl: options.guideUrl, dealIdentifier, utcDate, slotKey: claimedSlotKey })]
       );
     } catch (claimErr: any) {
       console.warn(`[TelegramAdapter] Pre-dispatch post claim failed: ${claimErr.message}`);
+      // Rollback claimed slot key
+      if (claimedSlotKey) {
+        try {
+          await this.d1Repo.executeWrite('durable_events', `DELETE FROM durable_events WHERE id = ?`, [claimedSlotKey]);
+        } catch {}
+      }
       return {
         posted: false,
         reason: `TELEGRAM_POST_CLAIM_FAILED: Post already claimed or D1 reservation failed: ${claimErr.message}`
@@ -391,11 +427,18 @@ export class TelegramBotAdapter {
         })
       });
 
-      if (!res.ok) {
-        const errorBody = await res.text();
+      if (!res || !res.ok) {
+        const errorBody = res ? await res.text() : 'No response from fetch';
+        // If 4xx client rejection, delete both slot and claim to avoid leaking daily quota
+        if (res && res.status >= 400 && res.status < 500) {
+          if (claimedSlotKey) {
+            try { await this.d1Repo.executeWrite('durable_events', `DELETE FROM durable_events WHERE id = ?`, [claimedSlotKey]); } catch {}
+          }
+          try { await this.d1Repo.executeWrite('durable_events', `DELETE FROM durable_events WHERE id = ?`, [claimKey]); } catch {}
+        }
         return {
           posted: false,
-          reason: `TELEGRAM_API_ERROR: HTTP ${res.status}: ${errorBody}`
+          reason: res ? `TELEGRAM_API_ERROR: HTTP ${res.status}: ${errorBody}` : `NETWORK_ERROR: ${errorBody}`
         };
       }
 
@@ -416,7 +459,7 @@ export class TelegramBotAdapter {
           'durable_events',
           `INSERT INTO durable_events (id, event_type, organization_id, payload_json, created_at)
            VALUES (?, 'TELEGRAM_DEAL_POSTED', 'org_owner_primary', ?, datetime('now'))`,
-          [postId, JSON.stringify({ channelId, guideUrl: options.guideUrl, messageId })]
+          [postId, JSON.stringify({ channelId, guideUrl: options.guideUrl, messageId, slotKey: claimedSlotKey })]
         );
       } catch (d1Err: any) {
         console.warn(`[TelegramAdapter] Failed to record TELEGRAM_DEAL_POSTED in durable_events: ${d1Err.message}`);
@@ -427,6 +470,16 @@ export class TelegramBotAdapter {
         messageId
       };
     } catch (err: any) {
+      // Mark ambiguous on network timeout to prevent double posting
+      const ambigKey = `ambig_tg_${Date.now()}`;
+      try {
+        await this.d1Repo.executeWrite(
+          'durable_events',
+          `INSERT INTO durable_events (id, event_type, organization_id, payload_json, created_at)
+           VALUES (?, 'AMBIGUOUS_DO_NOT_RESEND', 'org_owner_primary', ?, datetime('now'))`,
+          [ambigKey, JSON.stringify({ slotKey: claimedSlotKey, claimKey, error: err.message })]
+        );
+      } catch {}
       return {
         posted: false,
         reason: `NETWORK_ERROR: ${err.message}`
