@@ -1692,7 +1692,7 @@ apiRouter.post('/cron/ping', async (c) => {
     await d1Repo.executeWrite(
       'durable_events',
       `INSERT INTO durable_events (id, event_type, organization_id, payload_json, created_at)
-       VALUES (?, 'CRON_PING_RECEIVED', 'org_default', ?, datetime('now'))`,
+       VALUES (?, 'CRON_PING_RECEIVED', 'org_owner_primary', ?, datetime('now'))`,
       [`cron_ping_${Date.now()}_${randomUUID().slice(0, 8)}`, JSON.stringify({ correlationId, userAgent, workerSource })]
     );
     telemetryRecorded = true;
@@ -3246,6 +3246,12 @@ apiRouter.post('/payments/razorpay/create-order', async (c) => {
 
   // Standard Checkout Integration (SKU: sitefix_core_499 | sitefix_competitor_keyword_pack)
   if (body.sku || body.domainOrUrl || body.domain || !body.businessId) {
+    if (!body.sku || !String(body.sku).trim()) {
+      return c.json({
+        success: false,
+        error: 'INVALID_SKU: SKU is required. Allowed SKUs: sitefix_core_499 (₹499), sitefix_competitor_keyword_pack (₹1,999).'
+      }, 400);
+    }
     try {
       const { RazorpayStandardAdapter } = await import('../payments/razorpay-adapter.js');
       const order = await RazorpayStandardAdapter.getInstance().createStandardOrder({
@@ -3900,7 +3906,7 @@ apiRouter.post('/webhooks/whatsapp', async (c) => {
   return c.json({ success: false, error: 'Invalid WhatsApp webhook payload structure.' }, 400);
 });
 
-// Brevo Webhook Inbound Event Processing (Spec § 3, Stage P.3)
+// Brevo Webhook Inbound Event Processing (Spec § 3, Stage P.3 & P.3.1)
 const handleBrevoWebhook = async (c: any) => {
   const configuredSecret = (process.env.BREVO_WEBHOOK_SECRET || '').trim();
   const authHeader = c.req.header('authorization') || '';
@@ -3909,16 +3915,20 @@ const handleBrevoWebhook = async (c: any) => {
   const queryToken = (c.req.query('token') || '').trim();
   const providedSecret = bearerToken || headerSecret || queryToken;
 
+  if (!providedSecret) {
+    return c.json({ success: false, error: 'UNAUTHORIZED: Missing Brevo webhook secret.' }, 401);
+  }
+
   if (isProduction()) {
     if (!configuredSecret || isPlaceholderCredential(configuredSecret)) {
       return c.json({ success: false, error: 'BREVO_WEBHOOK_NOT_CONFIGURED: BREVO_WEBHOOK_SECRET must be configured.' }, 503);
     }
-    if (!providedSecret || providedSecret !== configuredSecret) {
-      return c.json({ success: false, error: 'UNAUTHORIZED: Invalid or missing Brevo webhook secret.' }, 401);
+    if (providedSecret !== configuredSecret) {
+      return c.json({ success: false, error: 'UNAUTHORIZED: Invalid Brevo webhook secret.' }, 401);
     }
   } else if (configuredSecret && !isPlaceholderCredential(configuredSecret)) {
     if (providedSecret !== configuredSecret) {
-      return c.json({ success: false, error: 'UNAUTHORIZED: Invalid or missing Brevo webhook secret.' }, 401);
+      return c.json({ success: false, error: 'UNAUTHORIZED: Invalid Brevo webhook secret.' }, 401);
     }
   }
 
@@ -3927,7 +3937,8 @@ const handleBrevoWebhook = async (c: any) => {
   const res = await brevo.handleWebhookEvent({
     event: body.event || body.type,
     email: body.email,
-    reason: body.reason || body.tag
+    reason: body.reason || body.tag,
+    messageId: body['message-id'] || body.messageId || body.message_id
   });
   return c.json({ success: true, data: res });
 };

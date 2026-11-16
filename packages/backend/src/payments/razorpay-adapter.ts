@@ -54,6 +54,10 @@ export class RazorpayStandardAdapter {
     return RazorpayStandardAdapter.instance;
   }
 
+  public static resetInstance(): void {
+    (RazorpayStandardAdapter as any).instance = undefined;
+  }
+
   /**
    * Strictly paired credential resolution (Spec Stage P.3):
    * Key ID and Secret must form a complete, matching pair.
@@ -109,11 +113,14 @@ export class RazorpayStandardAdapter {
   }
 
   /**
-   * Server-authoritative SKU price resolution (Spec Stage P.3).
-   * Strictly prevents client price tampering.
+   * Server-authoritative SKU price resolution (Spec Stage P.3 & P.3.1).
+   * Strictly prevents client price tampering and rejects empty/omitted SKUs.
    */
   public resolveAuthoritativePrice(sku?: string, requestedAmountINR?: number): { amountINR: number; amountPaise: number; canonicalSku: string } {
-    const s = String(sku || '').trim().toLowerCase();
+    if (!sku || !String(sku).trim()) {
+      throw new Error('INVALID_SKU: SKU is required. Allowed SKUs: sitefix_core_499 (₹499), sitefix_competitor_keyword_pack (₹1,999).');
+    }
+    const s = String(sku).trim().toLowerCase();
 
     let expectedINR: number;
     let expectedPaise: number;
@@ -123,7 +130,7 @@ export class RazorpayStandardAdapter {
       expectedINR = 1999;
       expectedPaise = 199900;
       canonicalSku = 'sitefix_competitor_keyword_pack';
-    } else if (s === 'sitefix_core_499' || s === 'sitefix_ai_pack_v1' || s === 'sitefix_ai_core_fixpack' || !s) {
+    } else if (s === 'sitefix_core_499' || s === 'sitefix_ai_pack_v1' || s === 'sitefix_ai_core_fixpack') {
       expectedINR = 499;
       expectedPaise = 49900;
       canonicalSku = 'sitefix_core_499';
@@ -363,20 +370,29 @@ export class RazorpayStandardAdapter {
       console.warn(`[RazorpayAdapter] Failed to update universal_order: ${d1Err.message}`);
     }
 
-    // STRICT TEST VS. LIVE CASH SEPARATION:
+    // STRICT TEST VS. LIVE CASH SEPARATION & IDEMPOTENT ACCOUNTING:
     // Only rzp_live_ verified payments record live cash in transactions / commission_ledger!
+    // Uses deterministic primary key tx_rzp_${razorpay_payment_id} to prevent race conditions.
     // Fail-closed in live production if transaction ledger write fails.
     if (isLive) {
-      const txId = `tx-${randomUUID()}`;
-      await this.d1Repo.executeWrite(
-        'transactions',
-        `INSERT INTO transactions (
-          id, organization_id, business_id, invoice_number,
-          amount_inr, payment_method, payment_gateway, transaction_ref,
-          status, classification, service_rendered, created_at, updated_at
-        ) VALUES (?, 'org_owner_primary', 'biz_platform_aro', ?, ?, 'ONLINE', 'RAZORPAY', ?, 'CAPTURED', 'REAL', 'SiteFix AI Technical Fix-Pack', datetime('now'), datetime('now'))`,
-        [txId, orderId, verifiedAmountINR, razorpay_payment_id]
-      );
+      const txId = `tx_rzp_${razorpay_payment_id}`;
+      try {
+        await this.d1Repo.executeWrite(
+          'transactions',
+          `INSERT INTO transactions (
+            id, organization_id, business_id, invoice_number,
+            amount_inr, payment_method, payment_gateway, transaction_ref,
+            status, classification, service_rendered, created_at, updated_at
+          ) VALUES (?, 'org_owner_primary', 'biz_platform_aro', ?, ?, 'ONLINE', 'RAZORPAY', ?, 'CAPTURED', 'REAL', 'SiteFix AI Technical Fix-Pack', datetime('now'), datetime('now'))
+          ON CONFLICT(id) DO UPDATE SET updated_at = datetime('now')`,
+          [txId, orderId, verifiedAmountINR, razorpay_payment_id]
+        );
+      } catch (txErr: any) {
+        console.error(`[RazorpayAdapter] Failed to record transaction in financial ledger: ${txErr.message}`);
+        if (isProduction()) {
+          throw new Error(`D1_TRANSACTION_PERSISTENCE_FAILED: Failed to record transaction in financial ledger: ${txErr.message}`);
+        }
+      }
     }
 
     // Generate Fix-Pack deliverable

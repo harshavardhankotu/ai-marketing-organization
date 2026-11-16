@@ -480,19 +480,68 @@ export class BrevoMcpClient {
   /**
    * Handles delivery, bounce, and unsubscribe webhook events.
    * Auto-suppresses bounced and unsubscribed emails into outreach_suppression_list.
+   * Spec Stage P.3.1 Task 4: Deduplicate webhook event IDs via deterministic primary key
+   * brevo_wh_${sha256Hex(...).slice(0, 36)} in D1 durable_events so replayed webhooks are idempotent,
+   * and persist hard_bounce, spam, and unsubscribed addresses directly to D1 outreach_suppression_list.
    */
-  public async handleWebhookEvent(event: { event: string; email: string; reason?: string }): Promise<{ processed: boolean; suppressed: boolean }> {
+  public async handleWebhookEvent(event: {
+    event: string;
+    email: string;
+    reason?: string;
+    messageId?: string;
+  }): Promise<{ processed: boolean; suppressed: boolean; duplicate?: boolean }> {
     if (!event.email) return { processed: false, suppressed: false };
 
     const lowerEvent = (event.event || '').toLowerCase();
+    const rawMessageId = event.messageId || (event as any)['message-id'] || (event as any).message_id || event.email;
+    const dedupePayload = `${rawMessageId}:${lowerEvent}:${event.email.toLowerCase().trim()}`;
+    const { createHash } = await import('node:crypto');
+    const eventKey = `brevo_wh_${createHash('sha256').update(dedupePayload).digest('hex').slice(0, 36)}`;
+
+    // Replay defense: atomic insert into D1 durable_events
+    try {
+      await this.d1Repo.executeWrite(
+        'durable_events',
+        `INSERT INTO durable_events (id, event_type, organization_id, payload_json, created_at)
+         VALUES (?, 'BREVO_WEBHOOK_EVENT', 'org_owner_primary', ?, datetime('now'))`,
+        [eventKey, JSON.stringify(event)]
+      );
+    } catch (insertErr: any) {
+      const errMsg = String(insertErr?.message || '');
+      if (errMsg.includes('UNIQUE') || errMsg.includes('constraint') || errMsg.includes('PRIMARY KEY')) {
+        return { processed: true, suppressed: false, duplicate: true };
+      }
+      console.warn(`[BrevoMcpClient] Durable webhook event insert notice: ${errMsg}`);
+    }
+
     const shouldSuppress = ['hard_bounce', 'soft_bounce', 'spam', 'unsubscribed', 'blocked'].includes(lowerEvent);
 
     if (shouldSuppress) {
-      await PlatformProspectDiscoveryEngine.getInstance().suppressContact(
-        event.email,
-        'EMAIL',
-        `BREVO_WEBHOOK_${lowerEvent.toUpperCase()}`
-      );
+      // 1. Direct write to D1 outreach_suppression_list
+      const normalizedEmail = event.email.toLowerCase().trim();
+      const suppId = `supp_brevo_${createHash('sha256').update(normalizedEmail).digest('hex').slice(0, 24)}`;
+      const expiresAt = new Date(Date.now() + 180 * 86400 * 1000).toISOString();
+      try {
+        await this.d1Repo.executeWrite(
+          'outreach_suppression_list',
+          `INSERT INTO outreach_suppression_list (id, identifier, identifier_type, reason, expires_at, created_at)
+           VALUES (?, ?, 'EMAIL', ?, ?, datetime('now'))
+           ON CONFLICT(identifier) DO UPDATE SET expires_at = excluded.expires_at, reason = excluded.reason`,
+          [suppId, normalizedEmail, `BREVO_WEBHOOK_${lowerEvent.toUpperCase()}`, expiresAt]
+        );
+      } catch (d1SuppErr: any) {
+        console.warn(`[BrevoMcpClient] Direct D1 outreach_suppression_list write notice: ${d1SuppErr.message}`);
+      }
+
+      // 2. Also register via PlatformProspectDiscoveryEngine for local SQLite & in-memory caches
+      try {
+        await PlatformProspectDiscoveryEngine.getInstance().suppressContact(
+          event.email,
+          'EMAIL',
+          `BREVO_WEBHOOK_${lowerEvent.toUpperCase()}`
+        );
+      } catch {}
+
       return { processed: true, suppressed: true };
     }
 

@@ -890,6 +890,13 @@ CREATE TABLE IF NOT EXISTS direct_outreach_log (
   dispatched INTEGER NOT NULL DEFAULT 0,
   dispatch_timestamp TEXT,
   response_status TEXT NOT NULL DEFAULT 'PENDING',
+  approval_source TEXT DEFAULT 'UNKNOWN',
+  policy_id TEXT,
+  policy_version TEXT,
+  policy_evaluation_id TEXT,
+  decision_timestamp TEXT,
+  evidence_references TEXT DEFAULT '[]',
+  quota_reservation_id TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
 );

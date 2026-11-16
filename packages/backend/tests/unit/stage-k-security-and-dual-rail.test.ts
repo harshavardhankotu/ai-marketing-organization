@@ -1561,6 +1561,13 @@ describe('Stage K: Pre-Deploy Security Lockdown, Fair-Price Integrity, Amazon Du
       )
     `).run();
     db.prepare(`
+      INSERT OR REPLACE INTO outbound_contacts (
+        id, organization_id, business_id, prospect_name, prospect_business_name, prospect_email, prospect_website, email_authorized, authorization_source, is_opted_out, is_suppressed
+      ) VALUES (
+        'ct_auto_n5', 'org_owner_primary', 'biz_platform_aro', 'Craft Coffee Roasters', 'Craft Coffee Roasters', 'hello@craftcoffeeroasters.in', 'https://craftcoffeeroasters.in', 1, 'INBOUND_REQUEST', 0, 0
+      )
+    `).run();
+    db.prepare(`
       INSERT OR REPLACE INTO direct_outreach_log (
         id, business_id, segment, prospect_name, channel, message_draft, human_approved, dispatched, response_status, created_at
       ) VALUES (
