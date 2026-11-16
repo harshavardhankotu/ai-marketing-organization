@@ -3558,6 +3558,10 @@ apiRouter.post('/webhooks/razorpay', async (c) => {
     return c.json({ success: false, error: 'Missing x-razorpay-signature header' }, 400);
   }
 
+  if (!razorpayAdapter.verifyWebhookSignature(rawBody, signature, webhookSecret)) {
+    return c.json({ success: false, error: 'INVALID_SIGNATURE: Webhook signature verification failed' }, 400);
+  }
+
   let eventPayload: any;
   try {
     eventPayload = JSON.parse(rawBody);
@@ -3571,7 +3575,8 @@ apiRouter.post('/webhooks/razorpay', async (c) => {
     const paymentId = payment?.id;
     const receipt = eventPayload.payload?.order?.entity?.receipt || payment?.notes?.internalOrderId;
 
-    if (!paymentId || !orderId) {
+    const isPaymentLinkEvent = Boolean(eventPayload.event?.startsWith('payment_link.') || eventPayload.payload?.payment_link);
+    if (!isPaymentLinkEvent && (!paymentId || !orderId)) {
       return c.json({ success: false, error: 'MISSING_PROVIDER_PAYMENT_OR_ORDER_ID' }, 400);
     }
 

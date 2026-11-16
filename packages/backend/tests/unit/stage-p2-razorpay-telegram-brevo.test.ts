@@ -100,6 +100,16 @@ describe('Stage P.2 — Razorpay Standard Checkout, Telegram Auto-Wire, Brevo Au
         .update(`${rzpOrderId}|${rzpPaymentId}`)
         .digest('hex');
 
+      const { SiteAuditService } = await import('../../src/tools/site-audit/site-audit-service.js');
+      vi.spyOn(SiteAuditService.getInstance(), 'getAuditByDomain').mockResolvedValue({
+        auditId: 'audit_test_domain',
+        domain: 'test-domain.com',
+        url: 'https://test-domain.com',
+        businessName: 'Test Business',
+        scorecard: { totalScore: 85, items: [] },
+        findings: []
+      } as any);
+
       const result = await adapter.verifyPaymentAndFulfill({
         orderId,
         razorpay_order_id: rzpOrderId,

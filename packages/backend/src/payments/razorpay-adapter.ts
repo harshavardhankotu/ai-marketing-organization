@@ -307,12 +307,6 @@ export class RazorpayStandardAdapter {
     const mode = isLive ? 'LIVE' : 'TEST_SANDBOX';
     const journeyId = `cj_rzp_${internalOrderId}`;
 
-    try {
-      await this.ensureCustomerJourney(journeyId, buyerEmail, customerName, isLive, 'CHECKOUT_INITIATED');
-    } catch (cjErr: any) {
-      console.warn(`[RazorpayAdapter] Failed to record initial customer_journey: ${cjErr.message}`);
-    }
-
     const metadataJson = JSON.stringify({
       sku: canonicalSku,
       domainOrUrl: cleanDomain,
