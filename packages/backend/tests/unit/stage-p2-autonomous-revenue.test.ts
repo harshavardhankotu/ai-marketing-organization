@@ -45,12 +45,13 @@ describe('Stage P.2 — Zero-Touch Autonomous Revenue Engine & Production Durabi
   });
 
   describe('Task 2 & 3: Financial Table Isolation & Fail-Closed Sequential Batch', () => {
-    it('2.1: FINANCIAL_TABLES includes all 7 tables and isFinancialSql detects them', () => {
+    it('2.1: FINANCIAL_TABLES includes all 8 tables and isFinancialSql detects them', () => {
       expect(FINANCIAL_TABLES).toEqual([
         'payment_requests',
         'manual_upi_claims',
         'orders',
         'universal_orders',
+        'transactions',
         'commission_ledger',
         'delivery_tasks',
         'payout_records'

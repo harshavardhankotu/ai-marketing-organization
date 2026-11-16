@@ -47,12 +47,13 @@ describe('Stage P.1 — Low-Level D1 Financial Integrity, Instagram Hardening & 
       expect(client.isDailyQuotaError(400, 'sqlite_error: UNIQUE constraint failed: orders.id')).toBe(false);
     });
 
-    it('1.2: isFinancialSql accurately identifies all 7 critical financial tables', () => {
+    it('1.2: isFinancialSql accurately identifies all 8 critical financial tables', () => {
       expect(FINANCIAL_TABLES).toEqual([
         'payment_requests',
         'manual_upi_claims',
         'orders',
         'universal_orders',
+        'transactions',
         'commission_ledger',
         'delivery_tasks',
         'payout_records'
@@ -62,6 +63,7 @@ describe('Stage P.1 — Low-Level D1 Financial Integrity, Instagram Hardening & 
       expect(isFinancialSql('UPDATE payment_requests SET status = "PAID" WHERE id = ?')).toBe(true);
       expect(isFinancialSql('INSERT INTO manual_upi_claims (utr) VALUES (?)')).toBe(true);
       expect(isFinancialSql('INSERT INTO universal_orders (id) VALUES (?)')).toBe(true);
+      expect(isFinancialSql('INSERT INTO transactions (id) VALUES (?)')).toBe(true);
       expect(isFinancialSql('INSERT INTO commission_ledger (id, amt) VALUES (?, ?)')).toBe(true);
       expect(isFinancialSql('INSERT INTO delivery_tasks (id) VALUES (?)')).toBe(true);
       expect(isFinancialSql('INSERT INTO payout_records (id) VALUES (?)')).toBe(true);

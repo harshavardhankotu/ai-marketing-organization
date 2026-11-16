@@ -923,7 +923,7 @@ export class CuelinksSyncManager {
         empiricallyVerifiedScopes.add('read:transactions');
         this.updateCapability('transactionReconciliation', 'AVAILABLE');
 
-        let providerClicks = reconciliationResult.providerAttributedClicks;
+        let providerClicks = 0;
         let reportedConversions = reconciliationResult.reportedConversions;
 
         try {
@@ -941,10 +941,10 @@ export class CuelinksSyncManager {
           const pConvs = perfRes.totals
             ? Number(perfRes.totals.transactions ?? (perfRes.totals as any).conversions ?? 0)
             : perfRes.data.reduce((acc, r) => acc + (Number(r.transactions ?? (r as any).conversions) || 0), 0);
-          if (pClicks > 0) providerClicks = pClicks;
+          providerClicks = pClicks;
           if (pConvs > 0) reportedConversions = pConvs;
         } catch {
-          // Gracefully fall back to transactional totals if report API not granted
+          // Gracefully preserve 0 clicks if performance report API not granted — never substitute with transaction count
         }
 
         // Optional: Poll unmonetized traffic report when supported by channel API key
@@ -962,6 +962,7 @@ export class CuelinksSyncManager {
           localClicks: this.syncStatus.reconciliation.localClicks,
           providerAttributedClicks: providerClicks,
           reportedConversions: reportedConversions,
+          paginationIncomplete: reconciliationResult.paginationIncomplete,
           cashReceivedINR: 0 // strictly ₹0.00 until bank statement proof
         };
       } catch (recErr: any) {
@@ -1284,9 +1285,9 @@ export class CuelinksSyncManager {
       } catch {}
     }
 
-    const isCampaignApproved = campaign && (
-      (campaign.access_status?.toLowerCase() === 'approved') ||
-      (campaign.status?.toLowerCase() === 'active' && campaign.access_status?.toLowerCase() !== 'rejected' && campaign.access_status?.toLowerCase() !== 'pending')
+    const isCampaignApproved = Boolean(
+      campaign &&
+      campaign.access_status?.toLowerCase() === 'approved'
     );
 
     if (!isCampaignApproved) {
@@ -1672,9 +1673,11 @@ export class CuelinksSyncManager {
       console.warn(`[CuelinksSync] Error saving durable reconciliation cursor: ${cursorErr.message}`);
     }
 
+    const paginationIncomplete = Boolean(hasMorePages || hasFailedWrites);
+
     return {
       localClicks: this.syncStatus.reconciliation.localClicks,
-      providerAttributedClicks: allTransactions.length,
+      providerAttributedClicks: 0,
       reportedConversions: allTransactions.filter(t => !['rejected', 'cancelled'].includes((t.status || '').toLowerCase())).length,
       pendingCommissionINR: Math.round(pending * 100) / 100,
       validatedCommissionINR: Math.round(validated * 100) / 100,
@@ -1685,7 +1688,8 @@ export class CuelinksSyncManager {
       reversedCommissionINR: Math.round(reversed * 100) / 100,
       unmatchedTransactionsCount: unmatchedCount,
       currencyUnclassifiedCount,
-      cashReceivedINR: 0
+      cashReceivedINR: 0,
+      paginationIncomplete
     };
   }
 
@@ -1799,6 +1803,7 @@ export class CuelinksSyncManager {
       dealCandidates: allCandidates,
       nextCursor: hasMore ? nextCursor : undefined,
       hasMore,
+      paginationIncomplete: Boolean(hasMore || hadError),
       errorClass: primaryErrorClass
     };
   }

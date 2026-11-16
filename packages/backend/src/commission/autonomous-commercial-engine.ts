@@ -470,7 +470,7 @@ export class AutonomousCommercialEngine {
     }
 
     // Check whether owner has authorized Cuelinks and provided Campaign Explorer link
-    const isAuthorized = isCuelinksConfigured || cuelinksPartner?.authorizationStatus === 'AUTHORIZED' || cuelinksPartner?.approvalStatus === 'APPROVED';
+    const isAuthorized = cuelinksPartner?.authorizationStatus === 'AUTHORIZED' || cuelinksPartner?.approvalStatus === 'APPROVED';
 
     const task: CommercialTaskRecord = {
       id: taskId,
@@ -577,7 +577,7 @@ export class AutonomousCommercialEngine {
           }
 
           if (!task.outputs.offerId) {
-            // Auto-authorize partner if credentials are configured and channel/scopes are approved, or if owner explicitly approved
+            // Auto-authorize partner only if explicit owner approval or all 5 independent Cuelinks authorization states pass
             if (task.outputs.partnerId) {
               try {
                 const partner = await this.partnerRegistry.getPartner(task.outputs.partnerId);
@@ -593,7 +593,25 @@ export class AutonomousCommercialEngine {
                   const hasRequiredScopes = Boolean(syncStatus.hasRequiredScopes);
                   const isExplicitOwnerApproval = Boolean(task.inputs.partnerApproved);
 
-                  if (isExplicitOwnerApproval || (syncStatus.connected && isChannelApproved && hasRequiredScopes)) {
+                  // Spec Stage P.3: Autonomous authorization requires authoritative 5-state proof:
+                  // 1. Credentials configured
+                  // 2. Publisher scopes verified
+                  // 3. Channel approved
+                  // 4. Campaign access_status === 'approved'
+                  // 5. convertLink() affiliated === true
+                  let is5StateVerified = false;
+                  if (syncStatus.connected && isChannelApproved && hasRequiredScopes) {
+                    const auth5 = await syncMgr.verify5StateAuthorization({
+                      campaignId: task.inputs.campaignId,
+                      destinationUrl: task.inputs.sourceUrl || task.inputs.destinationUrl || 'https://www.cuelinks.com',
+                      searchTerm: task.inputs.merchant || task.inputs.productTitle || 'cuelinks'
+                    });
+                    if (auth5.authorized && auth5.conversion?.affiliated === true) {
+                      is5StateVerified = true;
+                    }
+                  }
+
+                  if (isExplicitOwnerApproval || is5StateVerified) {
                     const sqlAuth = `UPDATE partners SET approval_status = 'APPROVED', active_status = 1, authorization_status = 'AUTHORIZED', updated_at = datetime('now') WHERE id = ?`;
                     if (isProduction()) {
                       await this.d1Repo.executeWrite('partners', sqlAuth, [partner.id]);

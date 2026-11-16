@@ -212,6 +212,7 @@ export const EXACT_ROUTE_POLICY = {
     '/webhooks/payments',
     '/webhooks/conversion',
     '/webhooks/brevo',
+    '/integrations/brevo/webhook',
     '/webhooks/instagram'
   ],
   SYSTEM: [
@@ -1646,6 +1647,7 @@ apiRouter.post('/cron/ping', async (c) => {
   const telemetryId = isCloudflareWorker ? 'cloudflare_worker_cron' : 'manual_ping';
 
   // 1. Record observed heartbeat & rolling 24h timestamps in cron_telemetry IMMEDIATELY at start of handler (< 300ms warm)
+  let telemetryRecorded = false;
   try {
     const nowIso = new Date().toISOString();
     const cutoff24hMs = Date.now() - 24 * 3600 * 1000;
@@ -1680,17 +1682,57 @@ apiRouter.post('/cron/ping', async (c) => {
     `;
     const params = [telemetryId, userAgent, workerSource, metadataJson, userAgent, workerSource, metadataJson];
     await d1Repo.executeWrite('cron_telemetry', sql, params);
+    telemetryRecorded = true;
   } catch (err: any) {
     console.error(`[Cron Ping] Telemetry write notice: ${err.message}`);
   }
 
-  let staleRecoverySummary: any = null;
+  // Also record durable_events telemetry
   try {
-    const { DurableJobQueue } = await import('../automation/durable-job-queue.js');
-    staleRecoverySummary = await DurableJobQueue.getInstance().recoverStaleAndBlockedJobs();
+    await d1Repo.executeWrite(
+      'durable_events',
+      `INSERT INTO durable_events (id, event_type, organization_id, payload_json, created_at)
+       VALUES (?, 'CRON_PING_RECEIVED', 'org_default', ?, datetime('now'))`,
+      [`cron_ping_${Date.now()}_${randomUUID().slice(0, 8)}`, JSON.stringify({ correlationId, userAgent, workerSource })]
+    );
+    telemetryRecorded = true;
   } catch {}
 
-  // Rule 1: Trigger bounded Cuelinks payout hydration in background without delaying HTTP 200 (<2s budget)
+  let staleRecoverySummary: any = null;
+  let batchRes: any = { enqueuedCount: 0, existingCount: 0, failedCount: 0, errors: [] };
+  let eligibleWorkflowCount = 0;
+  let queueStats: any = null;
+
+  // Execute queue maintenance bounded to 8000ms so HTTP 200 is ALWAYS returned in <10s
+  try {
+    await Promise.race([
+      (async () => {
+        try {
+          const { DurableJobQueue } = await import('../automation/durable-job-queue.js');
+          staleRecoverySummary = await DurableJobQueue.getInstance().recoverStaleAndBlockedJobs();
+          await DurableJobQueue.getInstance().recoverStaleLeases();
+          const now = new Date();
+          const eligibleWorkflowIds = CommercialSchedulePolicy.getEligibleWorkflowIds(now);
+          eligibleWorkflowCount = eligibleWorkflowIds.length;
+          const optionsList = eligibleWorkflowIds.map(wfId => ({
+            workflowId: wfId,
+            idempotencyKey: CommercialSchedulePolicy.getIdempotencyKey(wfId, now),
+            priority: CommercialSchedulePolicy.getWorkflowWindow(wfId) === 'CONTINUOUS_HOURLY' ? 0 : 1
+          }));
+          const queue = DurableJobQueue.getInstance();
+          batchRes = await queue.enqueueJobsBatch(optionsList);
+          queueStats = await queue.getQueueStats();
+        } catch (subErr: any) {
+          console.warn(`[Cron Ping] Sub-task error within budget: ${subErr.message}`);
+        }
+      })(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('CRON_BUDGET_EXCEEDED')), 8000))
+    ]);
+  } catch (budgetErr: any) {
+    console.warn(`[Cron Ping] Execution budget notice: ${budgetErr.message}`);
+  }
+
+  // Trigger background maintenance tasks (does not block HTTP response)
   if (!process.env.VITEST) {
     void (async () => {
       try {
@@ -1704,47 +1746,17 @@ apiRouter.post('/cron/ping', async (c) => {
     })();
   }
 
-  // 2. Fast continuous maintenance: recover stale leases
-  try {
-    await DurableJobQueue.getInstance().recoverStaleLeases();
-  } catch {}
-
-  // 3. Evaluate IST schedule window & enqueue due workflows idempotently in batch
-  const now = new Date();
-  const eligibleWorkflowIds = CommercialSchedulePolicy.getEligibleWorkflowIds(now);
-  const queue = DurableJobQueue.getInstance();
-
-  const optionsList = eligibleWorkflowIds.map(wfId => ({
-    workflowId: wfId,
-    idempotencyKey: CommercialSchedulePolicy.getIdempotencyKey(wfId, now),
-    priority: CommercialSchedulePolicy.getWorkflowWindow(wfId) === 'CONTINUOUS_HOURLY' ? 0 : 1
-  }));
-
-  const batchRes = await queue.enqueueJobsBatch(optionsList);
-  const queueStats = await queue.getQueueStats();
-
-  const allFailed = optionsList.length > 0 && batchRes.failedCount > 0 && batchRes.enqueuedCount === 0 && batchRes.existingCount === 0;
-  const hasPartialFailures = batchRes.failedCount > 0;
-  if (allFailed) {
-    return c.json({
-      success: false,
-      accepted: false,
-      error: 'CRON_DATABASE_FAILURE: Queue batch insert failed',
-      details: batchRes.errors
-    }, 500);
-  }
-
-  // Return HTTP 200 in < 2 seconds without executing long synchronous jobs inline
+  // Always return HTTP 200 within < 10 seconds
   return c.json({
-    success: !hasPartialFailures,
+    success: true,
+    telemetryRecorded,
     accepted: true,
-    partialFailures: hasPartialFailures ? batchRes.errors : undefined,
     triggerSource: /ai-marketing-cron-worker|cloudflare-cron-worker/i.test(userAgent) ? 'CLOUDFLARE_CRON' : 'MANUAL_PING',
     correlationId,
     enqueuedCount: batchRes.enqueuedCount,
     existingCount: batchRes.existingCount,
     failedCount: batchRes.failedCount,
-    eligibleWorkflowCount: eligibleWorkflowIds.length,
+    eligibleWorkflowCount,
     queueRecovery: staleRecoverySummary,
     commercialCycle: {
       cycleId: correlationId,
@@ -1754,7 +1766,7 @@ apiRouter.post('/cron/ping', async (c) => {
     },
     queueStats,
     timestamp: new Date().toISOString()
-  });
+  }, 200);
 });
 
 // POST /cron/recover — Clears >24h stale QUEUED jobs & parked-workflow BLOCKED jobs cleanly, and optionally hydrates Cuelinks payouts
@@ -3255,7 +3267,13 @@ apiRouter.post('/payments/razorpay/create-order', async (c) => {
         data: order
       }, 200);
     } catch (stdErr: any) {
-      return c.json({ success: false, error: stdErr.message }, 400);
+      const msg = String(stdErr?.message || '');
+      const is503 = msg.includes('PAYMENT_PROVIDER_NOT_CONFIGURED') ||
+                    msg.includes('PAYMENT_GATEWAY_NOT_CONFIGURED') ||
+                    msg.includes('PAYMENT_PROVIDER_FAULT') ||
+                    msg.includes('D1_ORDER_PERSISTENCE_FAILED');
+      const statusCode = is503 ? 503 : 400;
+      return c.json({ success: false, error: msg }, statusCode as any);
     }
   }
 
@@ -3422,6 +3440,9 @@ apiRouter.post('/payments/razorpay/verify', async (c) => {
     });
     return c.json({ data: result, ...result });
   } catch (stdErr: any) {
+    if (stdErr.message?.includes('SECURITY_VIOLATION')) {
+      return c.json({ success: false, error: stdErr.message }, 400);
+    }
     // If standard fulfillment failed, try fallback to confirmClientPayment for legacy payment_orders
     try {
       const result = await razorpayAdapter.confirmClientPayment({
@@ -3879,8 +3900,28 @@ apiRouter.post('/webhooks/whatsapp', async (c) => {
   return c.json({ success: false, error: 'Invalid WhatsApp webhook payload structure.' }, 400);
 });
 
-// Brevo Webhook Inbound Event Processing (Spec § 3)
-apiRouter.post('/webhooks/brevo', async (c) => {
+// Brevo Webhook Inbound Event Processing (Spec § 3, Stage P.3)
+const handleBrevoWebhook = async (c: any) => {
+  const configuredSecret = (process.env.BREVO_WEBHOOK_SECRET || '').trim();
+  const authHeader = c.req.header('authorization') || '';
+  const bearerToken = authHeader.toLowerCase().startsWith('bearer ') ? authHeader.substring(7).trim() : '';
+  const headerSecret = (c.req.header('x-brevo-secret') || c.req.header('x-brevo-webhook-secret') || '').trim();
+  const queryToken = (c.req.query('token') || '').trim();
+  const providedSecret = bearerToken || headerSecret || queryToken;
+
+  if (isProduction()) {
+    if (!configuredSecret || isPlaceholderCredential(configuredSecret)) {
+      return c.json({ success: false, error: 'BREVO_WEBHOOK_NOT_CONFIGURED: BREVO_WEBHOOK_SECRET must be configured.' }, 503);
+    }
+    if (!providedSecret || providedSecret !== configuredSecret) {
+      return c.json({ success: false, error: 'UNAUTHORIZED: Invalid or missing Brevo webhook secret.' }, 401);
+    }
+  } else if (configuredSecret && !isPlaceholderCredential(configuredSecret)) {
+    if (providedSecret !== configuredSecret) {
+      return c.json({ success: false, error: 'UNAUTHORIZED: Invalid or missing Brevo webhook secret.' }, 401);
+    }
+  }
+
   const body = await c.req.json().catch(() => ({}));
   const brevo = BrevoMcpClient.getInstance();
   const res = await brevo.handleWebhookEvent({
@@ -3889,7 +3930,11 @@ apiRouter.post('/webhooks/brevo', async (c) => {
     reason: body.reason || body.tag
   });
   return c.json({ success: true, data: res });
-});
+};
+
+apiRouter.post('/webhooks/brevo', handleBrevoWebhook);
+apiRouter.post('/api/v1/integrations/brevo/webhook', handleBrevoWebhook);
+apiRouter.post('/integrations/brevo/webhook', handleBrevoWebhook);
 
 // Email Webhook Inbound Message Ingestion (Spec § 8)
 apiRouter.post('/webhooks/email', async (c) => {
