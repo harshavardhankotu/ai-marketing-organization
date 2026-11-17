@@ -82,17 +82,21 @@ export const Dashboard: React.FC<DashboardProps> = ({
   };
 
   useEffect(() => {
-    api.getRealEconomics().then((res) => setEconomics(res.data)).catch(() => {});
-    api.getAutonomyStatus().then((res) => setAutonomy(res.data)).catch(() => {});
-    api.getAgentScorecards().then((res) => setScorecards(res.data || [])).catch(() => {});
-    api.getMarketingMemory().then((res) => setMemories(res.data || [])).catch(() => {});
-    api.getOrganicChannels().then((res) => setOrganicChannels(res.data || [])).catch(() => {});
-    api.getOrganicContent().then((res) => setOrganicContent(res.data || [])).catch(() => {});
-    api.getLandingPages().then((res) => setLandingPages(res.data || [])).catch(() => {});
-    api.getZeroBudgetExperiments().then((res) => setZeroExperiments(res.data || [])).catch(() => {});
-    api.getGBPInsights().then((res) => setGbpInsights(res.data || null)).catch(() => {});
-    api.getTrafficStats().then((res) => setTrafficStats(res.data)).catch(() => {});
-    api.getGBPOAuthStatus().then((res) => setGbpOAuth(res.data)).catch(() => {});
+    let isMounted = true;
+    api.getRealEconomics().then((res) => { if (isMounted) setEconomics(res.data); }).catch(() => {});
+    api.getAutonomyStatus().then((res) => { if (isMounted) setAutonomy(res.data); }).catch(() => {});
+    api.getAgentScorecards().then((res) => { if (isMounted) setScorecards(res.data || []); }).catch(() => {});
+    api.getMarketingMemory().then((res) => { if (isMounted) setMemories(res.data || []); }).catch(() => {});
+    api.getOrganicChannels().then((res) => { if (isMounted) setOrganicChannels(res.data || []); }).catch(() => {});
+    api.getOrganicContent().then((res) => { if (isMounted) setOrganicContent(res.data || []); }).catch(() => {});
+    api.getLandingPages().then((res) => { if (isMounted) setLandingPages(res.data || []); }).catch(() => {});
+    api.getZeroBudgetExperiments().then((res) => { if (isMounted) setZeroExperiments(res.data || []); }).catch(() => {});
+    api.getGBPInsights().then((res) => { if (isMounted) setGbpInsights(res.data || null); }).catch(() => {});
+    api.getTrafficStats().then((res) => { if (isMounted) setTrafficStats(res.data); }).catch(() => {});
+    api.getGBPOAuthStatus().then((res) => { if (isMounted) setGbpOAuth(res.data); }).catch(() => {});
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   const primaryGoal = goal || {

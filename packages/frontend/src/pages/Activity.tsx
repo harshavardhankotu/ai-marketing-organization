@@ -11,21 +11,28 @@ export const Activity: React.FC<ActivityProps> = ({ logs: propLogs }) => {
   const [automationLogs, setAutomationLogs] = useState<any[]>([]);
 
   useEffect(() => {
+    let isMounted = true;
     if (propLogs && propLogs.length > 0) {
       setLiveLogs(propLogs);
     } else {
       api.getActivity().then(res => {
-        setLiveLogs(Array.isArray(res.data) ? res.data : []);
+        if (isMounted) setLiveLogs(Array.isArray(res.data) ? res.data : []);
       }).catch(() => {
-        setLiveLogs([]);
+        if (isMounted) setLiveLogs([]);
       });
     }
 
     api.getOwnerAutomation().then(res => {
-      if (res.data?.recentLogs) {
+      if (isMounted && res.data?.recentLogs) {
         setAutomationLogs(res.data.recentLogs);
       }
-    }).catch(() => {});
+    }).catch(() => {
+      if (isMounted) setAutomationLogs([]);
+    });
+
+    return () => {
+      isMounted = false;
+    };
   }, [propLogs]);
 
   const displayLogs = liveLogs.length > 0 ? liveLogs : automationLogs;

@@ -20,19 +20,23 @@ interface AnalyticsProps {
 export const Analytics: React.FC<AnalyticsProps> = ({ metrics, events, attributions }) => {
   const [activeModel, setActiveModel] = useState<'FIRST_TOUCH' | 'LAST_TOUCH' | 'LINEAR' | 'ASSISTED_CONVERSION'>('ASSISTED_CONVERSION');
 
-  // Compute live channel attribution breakdown dynamically from real attributions
-  const totalAttributedRevenueINR = attributions && attributions.length > 0
-    ? attributions.reduce((acc, curr) => acc + (Number(curr.revenue_inr) || 0), 0)
-    : 0;
+  // Compute live channel attribution breakdown dynamically based strictly on selected activeModel (Spec Stage R.1 Task 3.2 & Comment #16)
+  const normalizeModel = (val?: string) => String(val || '').toUpperCase().trim();
+  const activeNormalized = normalizeModel(activeModel);
+
+  const effectiveAttributions = (attributions || []).filter(a => {
+    const rowModel = normalizeModel(a.model_type || a.attribution_model || a.model);
+    return rowModel === activeNormalized;
+  });
+
+  const totalAttributedRevenueINR = effectiveAttributions.reduce((acc, curr) => acc + (Number(curr.revenue_inr) || 0), 0);
 
   const channelMap: Record<string, { count: number; revenueINR: number }> = {};
-  if (attributions && attributions.length > 0) {
-    for (const a of attributions) {
-      const ch = (a.channel || 'DIRECT').toUpperCase();
-      if (!channelMap[ch]) channelMap[ch] = { count: 0, revenueINR: 0 };
-      channelMap[ch].count += 1;
-      channelMap[ch].revenueINR += (Number(a.revenue_inr) || 0);
-    }
+  for (const a of effectiveAttributions) {
+    const ch = (a.channel || 'DIRECT').toUpperCase();
+    if (!channelMap[ch]) channelMap[ch] = { count: 0, revenueINR: 0 };
+    channelMap[ch].count += 1;
+    channelMap[ch].revenueINR += (Number(a.revenue_inr) || 0);
   }
 
   const channels = ['WHATSAPP', 'GOOGLE_BUSINESS_PROFILE', 'INSTAGRAM', 'YOUTUBE', 'DIRECT'];

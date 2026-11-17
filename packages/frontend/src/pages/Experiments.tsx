@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect, useRef } from 'react';
 import { 
   FlaskConical, 
   CheckCircle2, 
@@ -20,6 +20,7 @@ export const Experiments: React.FC<ExperimentsProps> = ({ experiments: propExper
   const [banditData, setBanditData] = useState<any>(null);
   const [loading, setLoading] = useState<boolean>(!propExperiments || propExperiments.length === 0);
   const [error, setError] = useState<string | null>(null);
+  const reqIdRef = useRef(0);
 
   // Sector intelligence bandit allocation on mount
   useEffect(() => {
@@ -34,40 +35,41 @@ export const Experiments: React.FC<ExperimentsProps> = ({ experiments: propExper
     };
   }, []);
 
-  // Sync prop or fetch experiments with cancellation
+  // Sync prop or fetch experiments with shared request generation guard
   const fetchExperiments = () => {
+    const reqId = ++reqIdRef.current;
     setLoading(true);
     setError(null);
-    let active = true;
     api.getExperiments()
       .then(res => {
-        if (active) {
+        if (reqId === reqIdRef.current) {
           setLiveExperiments(Array.isArray(res.data) ? res.data : []);
         }
       })
       .catch(err => {
-        if (active) {
+        if (reqId === reqIdRef.current) {
           setError(err?.message || 'Could not fetch experiments.');
         }
       })
       .finally(() => {
-        if (active) {
+        if (reqId === reqIdRef.current) {
           setLoading(false);
         }
       });
-    return () => {
-      active = false;
-    };
   };
 
   useEffect(() => {
     if (propExperiments && propExperiments.length > 0) {
+      ++reqIdRef.current;
       setLiveExperiments(propExperiments);
       setLoading(false);
       setError(null);
     } else {
-      return fetchExperiments();
+      fetchExperiments();
     }
+    return () => {
+      ++reqIdRef.current;
+    };
   }, [propExperiments]);
 
   return (

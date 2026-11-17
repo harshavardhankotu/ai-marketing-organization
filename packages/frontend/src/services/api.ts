@@ -345,6 +345,8 @@ export const api = {
     fetchApi('/owner/automation'),
   verifyOwnerUpiClaim: (data: { claimId?: string; utr?: string; amountINR?: number; businessId?: string; notes?: string }) =>
     fetchApi('/owner/upi-verify', { method: 'POST', body: JSON.stringify(data) }),
+  retryOwnerFulfillment: (data: { claimId?: string; utr?: string }) =>
+    fetchApi('/owner/fulfillment/retry', { method: 'POST', body: JSON.stringify(data) }),
   // Single-Owner First-Sale Execution Console
   getFirstSaleReadyActions: () =>
     fetchApi('/owner/first-sale/ready-actions'),

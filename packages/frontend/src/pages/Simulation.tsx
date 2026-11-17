@@ -19,7 +19,13 @@ export const Simulation: React.FC = () => {
   const [realEconomics, setRealEconomics] = useState<any>(null);
 
   useEffect(() => {
-    api.getRealEconomics().then((res) => setRealEconomics(res.data)).catch(() => {});
+    let isMounted = true;
+    api.getRealEconomics().then((res) => {
+      if (isMounted) setRealEconomics(res.data);
+    }).catch(() => {});
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   const runSimulation = () => {
@@ -27,18 +33,20 @@ export const Simulation: React.FC = () => {
     setTimeout(() => {
       setSimulating(false);
       const expectedLeads = Math.round(budgetINR / 500);
-      const avgOrderValue = realEconomics?.summary?.averageOrderValueINR || realEconomics?.averageOrderValueINR || 499;
+      const rawAov = realEconomics?.averageOrderValueINR ?? realEconomics?.summary?.averageOrderValueINR ?? null;
+      const avgOrderValue = typeof rawAov === 'number' && rawAov > 0 ? rawAov : null;
       setSimResult({
         projectedLeads: expectedLeads,
-        projectedRevenueINR: Math.round(expectedLeads * avgOrderValue * 0.15),
+        projectedRevenueINR: avgOrderValue !== null ? Math.round(expectedLeads * avgOrderValue * 0.15) : null,
         expectedCPQL: 500,
         riskTier: 'LOW_RISK_SIMULATION',
+        avgOrderValue,
         recommendedChannelSplit: [
           { channel: 'WHATSAPP', percent: 40, budgetINR: budgetINR * 0.40, leads: Math.round(expectedLeads * 0.45) },
           { channel: 'GOOGLE_BUSINESS_PROFILE', percent: 35, budgetINR: budgetINR * 0.35, leads: Math.round(expectedLeads * 0.35) },
           { channel: 'INSTAGRAM', percent: 25, budgetINR: budgetINR * 0.25, leads: Math.round(expectedLeads * 0.20) }
         ],
-        complianceNotice: 'Dry-run model. Projections are purely mathematical estimates based on unit economics and do not alter ledger balances.'
+        complianceNotice: 'ESTIMATE / MODELLED dry-run simulation. Projections are purely mathematical estimates based on verified unit economics and do not alter ledger balances.'
       });
     }, 600);
   };
@@ -112,27 +120,42 @@ export const Simulation: React.FC = () => {
           <div className="flex items-center justify-between border-b border-slate-800 pb-3">
             <h3 className="font-bold text-sm text-white flex items-center gap-2">
               <TrendingUp className="w-4 h-4 text-emerald-400" />
-              Projected Simulation Outcomes
+              Projected Simulation Outcomes (ESTIMATE / MODELLED)
             </h3>
-            <span className="px-2.5 py-0.5 rounded text-[11px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-              DRY-RUN ESTIMATE
+            <span className="px-2.5 py-0.5 rounded text-[11px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/30">
+              ESTIMATE / MODELLED
             </span>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="p-4 rounded-lg bg-slate-850 border border-slate-800">
-              <span className="text-slate-400 text-xs">Projected Qualified Inquiries</span>
+              <span className="text-slate-400 text-xs flex items-center justify-between">
+                <span>Projected Qualified Inquiries</span>
+                <span className="text-[10px] text-amber-400 font-mono">ESTIMATE</span>
+              </span>
               <div className="text-2xl font-bold text-cyan-400 mt-1">{simResult.projectedLeads}</div>
             </div>
 
             <div className="p-4 rounded-lg bg-slate-850 border border-slate-800">
-              <span className="text-slate-400 text-xs">Target CPQL (Cost/Inquiry)</span>
+              <span className="text-slate-400 text-xs flex items-center justify-between">
+                <span>Target CPQL (Cost/Inquiry)</span>
+                <span className="text-[10px] text-amber-400 font-mono">MODELLED</span>
+              </span>
               <div className="text-2xl font-bold text-white mt-1">{formatINR(simResult.expectedCPQL)}</div>
             </div>
 
             <div className="p-4 rounded-lg bg-slate-850 border border-slate-800">
-              <span className="text-slate-400 text-xs">Projected Simulated Revenue</span>
-              <div className="text-2xl font-bold text-emerald-400 mt-1">{formatINR(simResult.projectedRevenueINR)}</div>
+              <span className="text-slate-400 text-xs flex items-center justify-between">
+                <span>Projected Simulated Revenue</span>
+                <span className="text-[10px] text-amber-400 font-mono">ESTIMATE</span>
+              </span>
+              <div className="text-2xl font-bold text-emerald-400 mt-1">
+                {simResult.projectedRevenueINR !== null ? (
+                  formatINR(simResult.projectedRevenueINR)
+                ) : (
+                  <span className="text-xs font-medium text-slate-400">Awaiting baseline customer revenue</span>
+                )}
+              </div>
             </div>
           </div>
 

@@ -630,6 +630,7 @@ export interface RealEconomicsSummary {
   costPerConsultationINR: number | 'UNKNOWN';
   costPerCustomerINR: number | 'UNKNOWN';
   arpcINR: number | 'UNKNOWN';
+  averageOrderValueINR?: number | null;
   grossMarginPercent: number;
   netContributionINR: number;
   verifiedRoas: number | 'N/A';

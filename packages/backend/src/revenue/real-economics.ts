@@ -182,6 +182,27 @@ export class RealEconomicsEngine {
       arpcINR = Math.round((verifiedRealRevenueINR / realCustomersCount) * 100) / 100;
     }
 
+    // Accurate Average Order Value: verified revenue divided by verified order count (Spec Stage R.1 Task 3.1 & Comment #11)
+    let verifiedOrdersCount = 0;
+    let totalOrderRevenueINR = verifiedRealRevenueINR;
+    try {
+      const ordersRow = this.db
+        .prepare(
+          `SELECT COUNT(*) as count, SUM(amount_inr) as total
+           FROM transactions
+           WHERE business_id = ? AND classification = 'REAL' AND status IN ('CLEARED', 'SETTLED', 'SUCCESS')`
+        )
+        .get(businessId) as any;
+      verifiedOrdersCount = Number(ordersRow?.count || 0);
+      if (ordersRow?.total !== null && ordersRow?.total !== undefined) {
+        totalOrderRevenueINR = Number(ordersRow.total);
+      }
+    } catch {}
+
+    const averageOrderValueINR = verifiedOrdersCount > 0
+      ? Math.round((totalOrderRevenueINR / verifiedOrdersCount) * 100) / 100
+      : null;
+
     const netContributionINR = attributedRealRevenueINR - verifiedAdSpendINR;
     // Measured gross margin only from real attributed revenue vs verified direct spend (no fabricated 65% clinical baseline)
     const grossMarginPercent = attributedRealRevenueINR > 0
@@ -342,6 +363,7 @@ export class RealEconomicsEngine {
       costPerConsultationINR,
       costPerCustomerINR: cacINR,
       arpcINR,
+      averageOrderValueINR,
       grossMarginPercent,
       netContributionINR,
       verifiedRoas,

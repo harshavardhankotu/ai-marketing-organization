@@ -31,8 +31,8 @@ export const Settings: React.FC<SettingsProps> = ({ business, quota, integration
     async function loadLiveSystemStates() {
       try {
         const [rzp, tg, auto] = await Promise.all([
-          api.getRazorpayHealth().catch(() => ({ ok: false })),
-          api.getTelegramStatus().catch(() => ({ active: false })),
+          api.getRazorpayHealth().catch(() => null),
+          api.getTelegramStatus().catch(() => null),
           api.getPublicAutonomyStatus().catch(() => null)
         ]);
         if (isMounted) {
@@ -54,30 +54,80 @@ export const Settings: React.FC<SettingsProps> = ({ business, quota, integration
     };
   }, []);
 
+  const rzpData = razorpayHealth?.data ?? razorpayHealth;
+  const tgData = telegramHealth?.data ?? telegramHealth;
+  const autoData = autonomyStatus?.data ?? autonomyStatus;
+
+  // Razorpay exact contract fields
+  const rzpConfigured = Boolean(rzpData?.configured);
+  const rzpKeyMode = rzpData?.keyMode || (rzpData?.live_mode ? 'LIVE' : (rzpConfigured ? 'TEST_SANDBOX' : 'NONE'));
+  const rzpKeyIdPresent = rzpData?.key_id_present ? 'PRESENT' : 'MISSING';
+  const rzpSecretPresent = rzpData?.secret_present ? 'PRESENT' : 'MISSING';
+  const rzpAccepted = Boolean(rzpData?.providerAcceptedAuth);
+  const rzpDiag = rzpData?.authDiagnosticCode || (rzpData ? 'UNKNOWN' : 'UNAVAILABLE');
+  const rzpHttpStatus = rzpData?.httpStatus ?? (rzpData?.provider_status_code ?? null);
+
+  const rzpStatus = rzpAccepted
+    ? 'CONNECTED'
+    : (rzpConfigured
+        ? (rzpHttpStatus === 401 || rzpDiag === 'RAZORPAY_401_REJECTED_SECRET'
+            ? 'AUTH_FAILED'
+            : (rzpHttpStatus === null || rzpDiag === 'NETWORK_ERROR' ? 'UNAVAILABLE' : 'UNKNOWN'))
+        : (rzpData ? 'NOT_CONFIGURED' : 'UNAVAILABLE'));
+
+  // Telegram exact status
+  const tgConnected = Boolean(tgData?.connected || tgData?.active);
+  const tgStatus = tgData
+    ? (tgConnected ? 'CONNECTED' : (tgData.status || 'DISCONNECTED'))
+    : 'UNAVAILABLE';
+  const tgDetails = tgData
+    ? `@${tgData.botUsername || 'ai_marketing_bot'} (Mode: ${tgData.mode || 'POLLING'} | Chat: ${tgData.chatIdConfigured ? 'CONFIGURED' : 'UNSET'})`
+    : 'Telegram Bot API (Status: UNAVAILABLE)';
+
+  // Brevo status (never default to CONNECTED without verified status)
+  const brevoState = autoData?.systemDoctor?.brevo?.status || autoData?.capabilities?.brevo?.status || autoData?.brevoStatus;
+  const brevoStatus = brevoState
+    ? (brevoState === 'LIVE_VERIFIED' || brevoState === 'OPERATIONAL' || brevoState === 'CONFIGURED' ? 'CONNECTED' : brevoState)
+    : 'UNAVAILABLE';
+  const brevoDetails = brevoState
+    ? `Brevo API v3 (Deliverability: ${brevoState})`
+    : 'Brevo Transactional Email (Status: UNAVAILABLE)';
+
+  // Cuelinks status (never default to CONNECTED without verified status)
+  const cuelinksState = autoData?.capabilities?.cuelinks?.status || autoData?.cuelinksStatus || autoData?.systemDoctor?.cuelinks?.status;
+  const cuelinksStatus = cuelinksState
+    ? (cuelinksState === 'LIVE_VERIFIED' || cuelinksState === 'CONNECTED' ? 'CONNECTED' : cuelinksState)
+    : 'UNAVAILABLE';
+  const cuelinksDetails = cuelinksState
+    ? `Cuelinks V3 & Dual-Rail Pipeline (${cuelinksState} | ${autoData?.youtubeDiscovery?.cachedReviewsCount ?? 0} cached YouTube reviews)`
+    : 'Cuelinks & Dual-Rail Engine (Status: UNAVAILABLE)';
+
   const liveIntegrations = [
     {
       provider: 'RAZORPAY STANDARD GATEWAY',
-      status: razorpayHealth?.ok ? 'CONNECTED' : (razorpayHealth?.keyId ? 'NEEDS_VERIFICATION' : 'NOT_CONFIGURED'),
-      mode: (razorpayHealth?.mode || 'TEST').toUpperCase(),
-      details: razorpayHealth ? `Key ID: ${razorpayHealth.keyId || 'Not set'} | Diag: ${razorpayHealth.authDiagnosticCode || 'UNKNOWN'}` : 'Razorpay Orders API & Standard Checkout'
+      status: rzpStatus,
+      mode: rzpKeyMode,
+      details: rzpData
+        ? `Mode: ${rzpKeyMode} | KeyId: ${rzpKeyIdPresent} | Secret: ${rzpSecretPresent} | Auth: ${rzpAccepted ? 'ACCEPTED' : (rzpHttpStatus === 401 || rzpDiag === 'RAZORPAY_401_REJECTED_SECRET' ? 'REJECTED' : 'UNVERIFIED')} (HTTP ${rzpHttpStatus ?? 'N/A'}) | Diag: ${rzpDiag}`
+        : 'Razorpay Orders API & Standard Checkout (Status: UNAVAILABLE)'
     },
     {
       provider: 'TELEGRAM NOTIFICATION BOT',
-      status: telegramHealth?.active ? 'CONNECTED' : 'DISCONNECTED',
-      mode: (telegramHealth?.mode || 'POLLING').toUpperCase(),
-      details: telegramHealth ? `@${telegramHealth.botUsername || 'ai_marketing_bot'} (Polling: ${telegramHealth.pollingActive ? 'ACTIVE' : 'STANDBY'})` : 'Telegram Bot API'
+      status: tgStatus,
+      mode: (tgData?.mode || 'POLLING').toUpperCase(),
+      details: tgDetails
     },
     {
       provider: 'BREVO TRANSACTIONAL EMAIL',
-      status: autonomyStatus?.systemDoctor?.brevo?.status === 'DEGRADED' ? 'DEGRADED' : 'CONNECTED',
-      mode: 'LIVE',
-      details: `Brevo API v3 (Deliverability: ${autonomyStatus?.systemDoctor?.brevo?.status || 'OPERATIONAL'})`
+      status: brevoStatus,
+      mode: autoData ? 'LIVE' : 'UNKNOWN',
+      details: brevoDetails
     },
     {
       provider: 'CUELINKS & AFFILIATE ENGINE',
-      status: 'CONNECTED',
-      mode: 'LIVE',
-      details: `YouTube Review Enricher & Dual-Rail Deal Pipeline (${autonomyStatus?.youtubeDiscovery?.activeEmbeds ?? 0} active embeds)`
+      status: cuelinksStatus,
+      mode: autoData ? 'LIVE' : 'UNKNOWN',
+      details: cuelinksDetails
     },
     ...(integrations || [])
   ];

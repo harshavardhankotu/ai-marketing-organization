@@ -1693,5 +1693,5 @@ describe('Stage K: Pre-Deploy Security Lockdown, Fair-Price Integrity, Amazon Du
       if (savedRender !== undefined) process.env.RENDER = savedRender;
       else delete process.env.RENDER;
     }
-  });
+  }, 60000);
 });

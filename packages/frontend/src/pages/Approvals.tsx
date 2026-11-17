@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect, useRef } from 'react';
 import { 
   CheckSquare, 
   ShieldAlert, 
@@ -10,7 +10,10 @@ import {
   Sparkles,
   Mail,
   Send,
-  Check
+  Check,
+  AlertCircle,
+  RefreshCw,
+  Loader2
 } from 'lucide-react';
 import { api } from '../services/api.js';
 
@@ -25,17 +28,38 @@ export const Approvals: React.FC<ApprovalsProps> = ({ approvals, onResolve }) =>
   const [isHarvesting, setIsHarvesting] = useState<boolean>(false);
   const [harvestMsg, setHarvestMsg] = useState<string | null>(null);
   const [readyActions, setReadyActions] = useState<any>(null);
-  const [sendingDraftId, setSendingDraftId] = useState<string | null>(null);
+  const [inFlightDraftIds, setInFlightDraftIds] = useState<Record<string, boolean>>({});
+  const [loadingDrafts, setLoadingDrafts] = useState<boolean>(true);
+  const [draftsError, setDraftsError] = useState<string | null>(null);
+  const fetchSeqRef = useRef<number>(0);
+
+  const isDispatchingAny = Object.values(inFlightDraftIds).some(Boolean) || Boolean(loadingId) || isHarvesting;
 
   const loadPendingDrafts = async () => {
+    const seq = ++fetchSeqRef.current;
+    setLoadingDrafts(true);
+    setDraftsError(null);
     try {
       const res = await api.getFirstSaleReadyActions();
-      setReadyActions(res.data);
-    } catch {}
+      if (seq === fetchSeqRef.current) {
+        setReadyActions(res?.data || null);
+      }
+    } catch (err: any) {
+      if (seq === fetchSeqRef.current) {
+        setDraftsError(err?.message || 'Failed to load outreach drafts.');
+      }
+    } finally {
+      if (seq === fetchSeqRef.current) {
+        setLoadingDrafts(false);
+      }
+    }
   };
 
   useEffect(() => {
     loadPendingDrafts();
+    return () => {
+      ++fetchSeqRef.current;
+    };
   }, []);
 
   const handleAction = async (requestId: string, action: 'APPROVE' | 'REJECT' | 'REQUEST_CHANGES') => {
@@ -66,7 +90,7 @@ export const Approvals: React.FC<ApprovalsProps> = ({ approvals, onResolve }) =>
   };
 
   const handleApproveDraft = async (draftId: string) => {
-    setSendingDraftId(draftId);
+    setInFlightDraftIds(prev => ({ ...prev, [draftId]: true }));
     try {
       await api.approveAndSendFirstSaleDraft(draftId);
       alert('Draft approved and dispatched via Brevo MCP!');
@@ -74,7 +98,11 @@ export const Approvals: React.FC<ApprovalsProps> = ({ approvals, onResolve }) =>
     } catch (err: any) {
       alert(`Dispatch failed: ${err.message || err.error}`);
     } finally {
-      setSendingDraftId(null);
+      setInFlightDraftIds(prev => {
+        const next = { ...prev };
+        delete next[draftId];
+        return next;
+      });
     }
   };
 
@@ -112,7 +140,26 @@ export const Approvals: React.FC<ApprovalsProps> = ({ approvals, onResolve }) =>
       )}
 
       {/* Pending Outreach Drafts Awaiting Human Review (Stage P / Q Live Funnel) */}
-      {pendingDrafts.length > 0 && (
+      {loadingDrafts ? (
+        <div className="p-8 rounded-xl bg-slate-900 border border-slate-800 text-center space-y-2">
+          <Loader2 className="w-5 h-5 text-cyan-400 animate-spin mx-auto" />
+          <p className="text-xs text-slate-400">Loading pending first-sale outreach drafts...</p>
+        </div>
+      ) : draftsError ? (
+        <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+            <span>{draftsError}</span>
+          </div>
+          <button
+            onClick={loadPendingDrafts}
+            className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-xs font-semibold flex items-center gap-1 shrink-0"
+          >
+            <RefreshCw className="w-3 h-3" />
+            Retry
+          </button>
+        </div>
+      ) : pendingDrafts.length > 0 ? (
         <div className="space-y-3">
           <h3 className="text-xs font-bold text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
             <Mail className="w-4 h-4 text-amber-400" />
@@ -131,11 +178,11 @@ export const Approvals: React.FC<ApprovalsProps> = ({ approvals, onResolve }) =>
                   </div>
                   <button
                     onClick={() => handleApproveDraft(d.id)}
-                    disabled={sendingDraftId === d.id}
+                    disabled={isDispatchingAny}
                     className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition-all self-end sm:self-auto"
                   >
                     <Send className="w-3 h-3" />
-                    {sendingDraftId === d.id ? 'Sending via Brevo...' : 'Approve & Send via Brevo'}
+                    {inFlightDraftIds[d.id] ? 'Sending via Brevo...' : 'Approve & Send via Brevo'}
                   </button>
                 </div>
                 <div className="p-3 bg-slate-950/70 border border-slate-800 rounded-lg text-xs text-slate-300 whitespace-pre-wrap font-mono text-[11px]">
@@ -145,11 +192,11 @@ export const Approvals: React.FC<ApprovalsProps> = ({ approvals, onResolve }) =>
             ))}
           </div>
         </div>
-      )}
+      ) : null}
 
       {/* System Policy Approvals List */}
       <div className="space-y-4">
-        {approvals.length === 0 && pendingDrafts.length === 0 ? (
+        {!loadingDrafts && !draftsError && approvals.length === 0 && pendingDrafts.length === 0 ? (
           <div className="p-12 text-center rounded-2xl bg-slate-900/60 border border-slate-800 space-y-3">
             <CheckCircle2 className="w-10 h-10 text-emerald-400 mx-auto" />
             <h3 className="text-sm font-bold text-white">All Autonomous Actions Approved</h3>
@@ -195,34 +242,36 @@ export const Approvals: React.FC<ApprovalsProps> = ({ approvals, onResolve }) =>
                 </div>
               )}
 
-              {/* Action Controls */}
-              <div className="pt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-t border-slate-800">
-                <input
-                  type="text"
-                  placeholder="Optional review feedback..."
-                  value={feedbackNotes[req.id] || ''}
-                  onChange={(e) => setFeedbackNotes({ ...feedbackNotes, [req.id]: e.target.value })}
-                  className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white placeholder-slate-500 flex-1"
-                />
+              {/* Guard resolution controls to PENDING only */}
+              {req.status === 'PENDING' && (
+                <div className="pt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-t border-slate-800">
+                  <input
+                    type="text"
+                    placeholder="Optional review feedback..."
+                    value={feedbackNotes[req.id] || ''}
+                    onChange={(e) => setFeedbackNotes({ ...feedbackNotes, [req.id]: e.target.value })}
+                    className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white placeholder-slate-500 flex-1"
+                  />
 
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => handleAction(req.id, 'REJECT')}
-                    disabled={loadingId === req.id}
-                    className="px-3.5 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-400 font-bold text-xs transition-colors"
-                  >
-                    Reject
-                  </button>
-                  <button
-                    onClick={() => handleAction(req.id, 'APPROVE')}
-                    disabled={loadingId === req.id}
-                    className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition-all"
-                  >
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    Approve Action
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => handleAction(req.id, 'REJECT')}
+                      disabled={isDispatchingAny || loadingId === req.id}
+                      className="px-3.5 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-400 font-bold text-xs transition-colors disabled:opacity-50"
+                    >
+                      Reject
+                    </button>
+                    <button
+                      onClick={() => handleAction(req.id, 'APPROVE')}
+                      disabled={isDispatchingAny || loadingId === req.id}
+                      className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition-all disabled:opacity-50"
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      Approve Action
+                    </button>
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
           ))
         )}

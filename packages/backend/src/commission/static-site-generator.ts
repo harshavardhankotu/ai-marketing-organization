@@ -2809,6 +2809,13 @@ ${this.serializeSafeJsonLd(schemaObj, true)}
               ${discount > 0 ? `<span class="discount-tag">${discount}% OFF</span>` : ''}
             </div>
             <h2 class="deal-title">${safeTitle}</h2>
+            ${d.youtubeReview ? `
+            <div class="youtube-review-embed" style="margin: 8px 0; border-radius: 8px; overflow: hidden; position: relative; padding-bottom: 56.25%; height: 0;">
+              <iframe src="${this.escapeHtml(d.youtubeReview.embedUrl)}" title="${this.escapeHtml(d.youtubeReview.title)}" style="position: absolute; top:0; left:0; width:100%; height:100%; border:0;" allowfullscreen loading="lazy"></iframe>
+            </div>
+            <div class="youtube-review-watch-link" style="margin-bottom: 8px; font-size: 0.75rem;">
+              <a href="${this.escapeHtml(d.youtubeReview.videoUrl)}" target="_blank" rel="noopener noreferrer" style="color: #06b6d4; text-decoration: none; font-weight: 500; display: inline-flex; align-items: center; gap: 4px;">Watch Review on YouTube &rarr;</a>
+            </div>` : ''}
             <div class="deal-price-row">
               <span class="price-now">&#8377;${price.toLocaleString('en-IN')}</span>
               ${mrp > price ? `<span class="price-mrp">MRP &#8377;${mrp.toLocaleString('en-IN')}</span>` : ''}
