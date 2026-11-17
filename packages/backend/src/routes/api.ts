@@ -5831,7 +5831,7 @@ const handleOwnerUpiVerify = async (c: any) => {
       message: 'Payment confirmed manually by business owner. Tagged as MANUAL_VERIFIED.',
       data: result,
       classification: 'MANUAL_VERIFIED',
-      status: 'HUMAN_VERIFIED_PAYMENT',
+      status: result.status,
       downloadToken: result.downloadToken,
       downloadUrl: result.downloadUrl
     }, 200);
@@ -5842,6 +5842,44 @@ const handleOwnerUpiVerify = async (c: any) => {
 
 apiRouter.post('/payments/manual-upi/confirm', handleOwnerUpiVerify);
 apiRouter.post('/owner/upi-verify', handleOwnerUpiVerify);
+
+// Owner-only: Retry Fix-Pack deliverable generation & Brevo receipt email dispatch (Spec Stage R Task 2)
+const handleOwnerFulfillmentRetry = async (c: any) => {
+  const userId = c.get('userId') || 'owner';
+  let body: any = {};
+  try {
+    body = await c.req.json();
+  } catch {
+    body = {};
+  }
+
+  const claimId = c.req.param('claimId') || body.claimId;
+  const utr = body.utr;
+  const identifier = String(claimId || utr || '').trim();
+
+  if (!identifier) {
+    return c.json({ success: false, error: 'Missing required field: claimId or utr' }, 400);
+  }
+
+  try {
+    const result = await razorpayAdapter.retryManualUpiFulfillment(identifier, { ownerUserId: userId });
+    return c.json({
+      success: true,
+      message: result.status === 'FULFILLED' ? 'Fulfillment and receipt email completed successfully.' : 'Deliverable prepared; receipt email queued/pending.',
+      data: result,
+      status: result.status,
+      downloadToken: result.downloadToken,
+      downloadUrl: result.downloadUrl
+    }, 200);
+  } catch (err: any) {
+    const msg = String(err?.message || '');
+    const status = (msg.includes('CLAIM_NOT_FOUND') || msg.includes('UNVERIFIED_PAYMENT') || msg.includes('CONFLICTING_CLAIM_STATUS') || msg.includes('INVALID_CLAIM_IDENTIFIER')) ? 400 : 500;
+    return c.json({ success: false, error: msg }, status);
+  }
+};
+
+apiRouter.post('/owner/fulfillment/retry', handleOwnerFulfillmentRetry);
+apiRouter.post('/payments/manual-upi/:claimId/retry-fulfillment', handleOwnerFulfillmentRetry);
 
 // Owner-only: List pending & active manual UPI claims across lifecycle states
 apiRouter.get('/payments/manual-upi/claims', async (c) => {
@@ -13689,14 +13727,18 @@ apiRouter.post('/api/v1/tools/site-audit/send-report', handleSiteAuditSendReport
 
 /**
 /**
- * Technical Diagnostic Readiness Endpoint
+ * Technical Diagnostic Readiness Endpoint (Spec Stage R Task 3)
  */
 const handleSiteAuditReadiness = async (c: any) => {
   const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
-  const readiness = SiteAuditService.getInstance().getCheckoutReadiness();
+  const { RazorpayStandardAdapter } = await import('../payments/razorpay-adapter.js');
+  const probe = await RazorpayStandardAdapter.getInstance().probeRazorpayAuth();
+  const readiness = SiteAuditService.getInstance().getCheckoutReadiness({ authProbeResult: probe });
   return c.json({
     success: true,
-    ...readiness
+    ...readiness,
+    providerAcceptedAuth: probe.providerAcceptedAuth,
+    authDiagnosticCode: probe.authDiagnosticCode
   }, 200);
 };
 apiRouter.get('/tools/site-audit/readiness', handleSiteAuditReadiness);

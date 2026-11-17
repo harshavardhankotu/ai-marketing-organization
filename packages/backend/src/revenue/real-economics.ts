@@ -342,6 +342,7 @@ export class RealEconomicsEngine {
       costPerConsultationINR,
       costPerCustomerINR: cacINR,
       arpcINR,
+      averageOrderValueINR: (realCustomersCount > 0 && typeof arpcINR === 'number') ? arpcINR : null,
       grossMarginPercent,
       netContributionINR,
       verifiedRoas,

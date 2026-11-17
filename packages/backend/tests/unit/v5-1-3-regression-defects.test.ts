@@ -495,7 +495,7 @@ describe('V5.1.3 — Regression Defects & Commercial Truth Suite', () => {
         INSERT INTO direct_outreach_log (
           id, business_id, segment, prospect_name, channel, message_draft,
           compliance_checked, human_approved, dispatched, response_status, created_at
-        ) VALUES (?, ?, 'dental', ?, 'WHATSAPP', 'Hello doctor', 1, 0, 0, ?, datetime('now'))
+        ) VALUES (?, ?, 'dental', ?, 'WHATSAPP', 'Hello doctor', 1, 0, 0, ?, datetime('now', '+1 day'))
       `);
 
       // 1 valid candidate

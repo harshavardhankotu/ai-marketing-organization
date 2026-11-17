@@ -25,6 +25,7 @@ describe('Comprehensive Razorpay & UPI QR Payment Collection System (Prompt Sect
       db.prepare(`DELETE FROM transactions WHERE transaction_ref LIKE 'pay_test_%' OR transaction_ref LIKE 'test_%'`).run();
       db.prepare(`DELETE FROM revenue_records WHERE transaction_id LIKE 'pay_test_%' OR transaction_id LIKE 'test_%'`).run();
       db.prepare(`DELETE FROM idempotent_actions WHERE idempotency_key LIKE 'evt_test_%' OR idempotency_key LIKE 'rzp_evt_test_%'`).run();
+      db.prepare(`DELETE FROM processed_webhook_events WHERE event_id LIKE 'evt_test_%' OR event_id LIKE 'rzp_evt_test_%'`).run();
       db.prepare(`DELETE FROM proposals WHERE id LIKE 'prop_test_%'`).run();
     } catch {}
   });

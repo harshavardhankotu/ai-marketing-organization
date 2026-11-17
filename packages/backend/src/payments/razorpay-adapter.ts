@@ -53,8 +53,19 @@ export interface RazorpayVerifyResult {
   message?: string;
 }
 
+export interface RazorpayAuthProbeResult {
+  providerAcceptedAuth: boolean;
+  httpStatus: number | null;
+  authDiagnosticCode: 'OK' | 'MISSING_KEYS' | 'MODE_PREFIX_MISMATCH' | 'RAZORPAY_401_REJECTED_SECRET' | 'NETWORK_ERROR';
+  authStatus: 'NOT_CONFIGURED' | 'CREDENTIALS_PRESENT' | 'PROVIDER_AUTHENTICATED' | 'AUTH_FAILED';
+  keyMode: 'LIVE' | 'TEST_SANDBOX' | 'NONE';
+  timestamp: string;
+}
+
 export class RazorpayStandardAdapter {
   private static instance: RazorpayStandardAdapter;
+  private static cachedAuthProbe: RazorpayAuthProbeResult | null = null;
+  private static authProbeLastChecked: number = 0;
   private d1Repo = D1RevenueRepository.getInstance();
 
   public static getInstance(): RazorpayStandardAdapter {
@@ -62,6 +73,122 @@ export class RazorpayStandardAdapter {
       RazorpayStandardAdapter.instance = new RazorpayStandardAdapter();
     }
     return RazorpayStandardAdapter.instance;
+  }
+
+  public static getCachedAuthProbe(): RazorpayAuthProbeResult | null {
+    return RazorpayStandardAdapter.cachedAuthProbe;
+  }
+
+  public static setCachedAuthProbe(probe: RazorpayAuthProbeResult | null): void {
+    RazorpayStandardAdapter.cachedAuthProbe = probe;
+    RazorpayStandardAdapter.authProbeLastChecked = probe ? Date.now() : 0;
+  }
+
+  public async probeRazorpayAuth(forceRefresh = false): Promise<RazorpayAuthProbeResult> {
+    const now = Date.now();
+    if (!forceRefresh && RazorpayStandardAdapter.cachedAuthProbe && (now - RazorpayStandardAdapter.authProbeLastChecked < 60000)) {
+      return RazorpayStandardAdapter.cachedAuthProbe;
+    }
+
+    let creds: { keyId: string; keySecret: string; isLive: boolean; mode: 'LIVE' | 'TEST_SANDBOX' } | null = null;
+    let resolveErrorMsg = '';
+    try {
+      creds = this.resolveCredentials();
+    } catch (err: any) {
+      resolveErrorMsg = String(err?.message || '');
+    }
+
+    if (!creds || !creds.keyId || !creds.keySecret || isPlaceholderCredential(creds.keyId) || isPlaceholderCredential(creds.keySecret)) {
+      const isMismatch = resolveErrorMsg.includes('MODE_PREFIX_MISMATCH');
+      const res: RazorpayAuthProbeResult = {
+        providerAcceptedAuth: false,
+        httpStatus: null,
+        authDiagnosticCode: isMismatch ? 'MODE_PREFIX_MISMATCH' : 'MISSING_KEYS',
+        authStatus: isMismatch ? 'AUTH_FAILED' : 'NOT_CONFIGURED',
+        keyMode: 'NONE',
+        timestamp: new Date().toISOString()
+      };
+      RazorpayStandardAdapter.setCachedAuthProbe(res);
+      return res;
+    }
+
+    if (creds.keyId.includes('fallback') || creds.keySecret.includes('fallback')) {
+      const res: RazorpayAuthProbeResult = {
+        providerAcceptedAuth: false,
+        httpStatus: null,
+        authDiagnosticCode: 'OK',
+        authStatus: 'CREDENTIALS_PRESENT',
+        keyMode: creds.mode,
+        timestamp: new Date().toISOString()
+      };
+      RazorpayStandardAdapter.setCachedAuthProbe(res);
+      return res;
+    }
+
+    try {
+      const basicAuth = Buffer.from(`${creds.keyId}:${creds.keySecret}`).toString('base64');
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      let res: Response;
+      try {
+        res = await fetch('https://api.razorpay.com/v1/orders?count=1', {
+          method: 'GET',
+          headers: {
+            Authorization: `Basic ${basicAuth}`,
+            'User-Agent': 'SiteFix-AI-Revenue-Engine/1.0'
+          },
+          signal: controller.signal
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
+
+      if (res.status === 200) {
+        const probeRes: RazorpayAuthProbeResult = {
+          providerAcceptedAuth: true,
+          httpStatus: 200,
+          authDiagnosticCode: 'OK',
+          authStatus: 'PROVIDER_AUTHENTICATED',
+          keyMode: creds.mode,
+          timestamp: new Date().toISOString()
+        };
+        RazorpayStandardAdapter.setCachedAuthProbe(probeRes);
+        return probeRes;
+      } else if (res.status === 401) {
+        const probeRes: RazorpayAuthProbeResult = {
+          providerAcceptedAuth: false,
+          httpStatus: 401,
+          authDiagnosticCode: 'RAZORPAY_401_REJECTED_SECRET',
+          authStatus: 'AUTH_FAILED',
+          keyMode: creds.mode,
+          timestamp: new Date().toISOString()
+        };
+        RazorpayStandardAdapter.setCachedAuthProbe(probeRes);
+        return probeRes;
+      } else {
+        const probeRes: RazorpayAuthProbeResult = {
+          providerAcceptedAuth: false,
+          httpStatus: res.status,
+          authDiagnosticCode: 'OK',
+          authStatus: 'AUTH_FAILED',
+          keyMode: creds.mode,
+          timestamp: new Date().toISOString()
+        };
+        RazorpayStandardAdapter.setCachedAuthProbe(probeRes);
+        return probeRes;
+      }
+    } catch {
+      const probeRes: RazorpayAuthProbeResult = {
+        providerAcceptedAuth: false,
+        httpStatus: null,
+        authDiagnosticCode: 'NETWORK_ERROR',
+        authStatus: 'AUTH_FAILED',
+        keyMode: creds.mode,
+        timestamp: new Date().toISOString()
+      };
+      RazorpayStandardAdapter.setCachedAuthProbe(probeRes);
+      return probeRes;
+    }
   }
 
   public static resetInstance(): void {
@@ -194,7 +321,9 @@ export class RazorpayStandardAdapter {
     buyerEmail: string,
     customerName: string,
     isLive: boolean,
-    stage: string = 'PAYMENT_VERIFIED'
+    stage: string = 'PAYMENT_VERIFIED',
+    organizationId: string = 'org_owner_primary',
+    businessId: string = 'biz_platform_aro'
   ): Promise<void> {
     const classification = isLive ? 'REAL' : 'TEST';
     const touchpoints = JSON.stringify([{ channel: 'DIRECT_CHECKOUT', at: new Date().toISOString() }]);
@@ -207,12 +336,12 @@ export class RazorpayStandardAdapter {
           id, organization_id, business_id, visitor_id, customer_name,
           customer_email, stage, first_touch_channel, last_touch_channel,
           touchpoints_json, classification, created_at, updated_at
-        ) VALUES (?, 'org_owner_primary', 'biz_platform_aro', ?, ?, ?, ?, 'DIRECT_CHECKOUT', 'DIRECT_CHECKOUT', ?, ?, datetime('now'), datetime('now'))
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'DIRECT_CHECKOUT', 'DIRECT_CHECKOUT', ?, ?, datetime('now'), datetime('now'))
         ON CONFLICT(id) DO UPDATE SET
           stage = excluded.stage,
           customer_email = excluded.customer_email,
           updated_at = datetime('now')`,
-        [journeyId, journeyId, customerName || 'SiteFix Customer', buyerEmail, stage, touchpoints, classification]
+        [journeyId, organizationId, businessId, journeyId, customerName || 'SiteFix Customer', buyerEmail, stage, touchpoints, classification]
       );
     } catch (err: any) {
       if (String(err?.message || '').includes('no such column: organization_id')) {
@@ -222,12 +351,12 @@ export class RazorpayStandardAdapter {
             id, business_id, visitor_id, customer_name,
             customer_email, stage, first_touch_channel, last_touch_channel,
             touchpoints_json, classification, created_at, updated_at
-          ) VALUES (?, 'biz_platform_aro', ?, ?, ?, ?, 'DIRECT_CHECKOUT', 'DIRECT_CHECKOUT', ?, ?, datetime('now'), datetime('now'))
+          ) VALUES (?, ?, ?, ?, ?, 'DIRECT_CHECKOUT', 'DIRECT_CHECKOUT', ?, ?, datetime('now'), datetime('now'))
           ON CONFLICT(id) DO UPDATE SET
             stage = excluded.stage,
             customer_email = excluded.customer_email,
             updated_at = datetime('now')`,
-          [journeyId, journeyId, customerName || 'SiteFix Customer', buyerEmail, stage, touchpoints, classification]
+          [journeyId, businessId, journeyId, customerName || 'SiteFix Customer', buyerEmail, stage, touchpoints, classification]
         );
       } else {
         console.error(`[RazorpayAdapter] Failed to ensure customer_journey: ${err.message}`);

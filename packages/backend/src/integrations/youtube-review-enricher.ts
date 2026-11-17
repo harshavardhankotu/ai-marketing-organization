@@ -45,6 +45,7 @@ export class YouTubeReviewEnricher {
 
   /**
    * Retrieves cached YouTube review from D1 durable_events table.
+   * Negative cache entries expire after 24 hours to allow recovery.
    */
   public async getCachedReview(dealId: string): Promise<YouTubeReview | null | 'NOT_FOUND'> {
     const eventId = this.getCacheEventId(dealId);
@@ -58,6 +59,10 @@ export class YouTubeReviewEnricher {
         if (row?.payload_json) {
           const parsed = JSON.parse(row.payload_json);
           if (parsed?.notFound) {
+            const cachedAt = parsed.cachedAt ? new Date(parsed.cachedAt).getTime() : 0;
+            if (Date.now() - cachedAt > 24 * 60 * 60 * 1000) {
+              return null; // Expired negative cache entry, allow fresh lookup
+            }
             return 'NOT_FOUND';
           }
           return parsed as YouTubeReview;
@@ -69,6 +74,10 @@ export class YouTubeReviewEnricher {
         if (row?.payload_json) {
           const parsed = JSON.parse(row.payload_json);
           if (parsed?.notFound) {
+            const cachedAt = parsed.cachedAt ? new Date(parsed.cachedAt).getTime() : 0;
+            if (Date.now() - cachedAt > 24 * 60 * 60 * 1000) {
+              return null; // Expired negative cache entry, allow fresh lookup
+            }
             return 'NOT_FOUND';
           }
           return parsed as YouTubeReview;
@@ -135,7 +144,7 @@ export class YouTubeReviewEnricher {
   }
 
   /**
-   * Primary: YouTube Data API v3 Search (regionCode=IN).
+   * Primary: YouTube Data API v3 Search (regionCode=IN, videoEmbeddable=true).
    */
   private async searchYouTubeApi(cleanTitle: string): Promise<YouTubeReview | null> {
     const apiKey = normalizeSecretValue(process.env.YOUTUBE_API_KEY || process.env.GOOGLE_API_KEY);
@@ -143,18 +152,16 @@ export class YouTubeReviewEnricher {
       return null;
     }
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 6000);
     try {
       const query = encodeURIComponent(`${cleanTitle} review`);
-      const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=2&regionCode=IN&q=${query}&key=${apiKey}`;
-
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 6000);
+      const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoEmbeddable=true&maxResults=2&regionCode=IN&q=${query}&key=${apiKey}`;
 
       const res = await fetch(url, {
         headers: { 'Accept': 'application/json' },
         signal: controller.signal
       });
-      clearTimeout(timeoutId);
 
       if (!res.ok) {
         return null;
@@ -187,6 +194,8 @@ export class YouTubeReviewEnricher {
       };
     } catch {
       // Fall through to Tavily fallback
+    } finally {
+      clearTimeout(timeoutId);
     }
     return null;
   }
@@ -201,10 +210,9 @@ export class YouTubeReviewEnricher {
       return null;
     }
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 6000);
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 6000);
-
       const res = await fetch('https://api.tavily.com/search', {
         method: 'POST',
         headers: {
@@ -219,7 +227,6 @@ export class YouTubeReviewEnricher {
         }),
         signal: controller.signal
       });
-      clearTimeout(timeoutId);
 
       if (!res.ok) {
         return null;
@@ -244,7 +251,9 @@ export class YouTubeReviewEnricher {
         }
       }
     } catch {
-      // Fallback exhausted
+      // Return null on failure
+    } finally {
+      clearTimeout(timeoutId);
     }
     return null;
   }
@@ -294,7 +303,7 @@ export class YouTubeReviewEnricher {
       (ytApiKey && !isPlaceholderCredential(ytApiKey)) ||
       (tavilyKey && !isPlaceholderCredential(tavilyKey))
     );
-    if (!hasKeys) {
+    if (!process.env.VITEST && !hasKeys) {
       return null;
     }
 

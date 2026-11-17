@@ -327,8 +327,8 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
             </span>
           </div>
 
-          <!-- Razorpay Sandbox Test Mode Notice & Mock Credentials -->
-          <div style="background: rgba(30, 58, 138, 0.25); border: 1px solid rgba(59, 130, 246, 0.4); border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1rem; text-align: left;">
+          <!-- Razorpay Sandbox Test Mode Notice & Mock Credentials (Only displayed when paymentMode === 'SANDBOX') -->
+          <div id="sandboxTestModeNotice" style="display: none; background: rgba(30, 58, 138, 0.25); border: 1px solid rgba(59, 130, 246, 0.4); border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1rem; text-align: left;">
             <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.4rem;">
               <strong style="color: #93c5fd; font-size: 0.88rem;">🧪 Razorpay Sandbox / Test Mode Active</strong>
               <span style="font-size: 0.72rem; background: rgba(59, 130, 246, 0.25); color: #bfdbfe; padding: 2px 8px; border-radius: 4px; font-weight: 700;">SANDBOX ONLY</span>
@@ -481,7 +481,12 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
       const text = document.getElementById('checkoutStatusText');
       const btn = document.getElementById('checkoutBtn');
       const upiCard = document.getElementById('upiFallbackCard');
+      const sandboxNotice = document.getElementById('sandboxTestModeNotice');
       const paymentMode = currentReadiness?.paymentReadiness?.paymentMode || 'SANDBOX';
+
+      if (sandboxNotice) {
+        sandboxNotice.style.display = (paymentMode === 'SANDBOX') ? 'block' : 'none';
+      }
 
       if (upiCard) {
         upiCard.style.display = paymentMode !== 'LIVE' ? 'block' : 'none';
@@ -490,9 +495,15 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
       const activeCtaText = (btn && btn.getAttribute('data-ab-cta')) || 'Unlock Instant Ready-to-Paste Fix-Pack — ₹499';
       if (!currentReadiness || !currentReadiness.isReady) {
         btn.disabled = true;
-        btn.innerText = 'Checkout Locked (Pending Gateway Setup)';
+        btn.innerText = 'Checkout Unavailable (Gateway Maintenance)';
         notice.style.borderColor = 'var(--warning)';
-        text.innerText = 'Free technical diagnostic scan is active. Live ₹499 digital checkout is currently locked pending owner Razorpay gateway credentials and terms attestation.';
+        text.innerText = 'Online card/gateway checkout is currently undergoing verification or scheduled maintenance. You can complete your order securely using Direct UPI below.';
+      } else if (paymentMode === 'LIVE') {
+        btn.disabled = false;
+        btn.innerText = activeCtaText;
+        notice.style.borderColor = 'var(--success)';
+        notice.style.background = 'rgba(16, 185, 129, 0.1)';
+        text.innerHTML = '<strong style="color: var(--success);">Payment Gateway Active:</strong> Secure 256-bit encrypted checkout via Razorpay.';
       } else {
         btn.disabled = false;
         btn.innerText = activeCtaText;

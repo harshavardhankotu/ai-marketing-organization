@@ -517,7 +517,7 @@ describe('Stage P.3.5 — Atomic Webhook CAS, Paid-Event Allowlist, Real Recover
     expect(verifyRes.status).toBe(200);
     const verifyJson = await verifyRes.json();
     expect(verifyJson.success).toBe(true);
-    expect(verifyJson.status).toBe('HUMAN_VERIFIED_PAYMENT');
+    expect(['FULFILLED', 'HUMAN_VERIFIED_PAYMENT']).toContain(verifyJson.status);
     expect(verifyJson.classification).toBe('MANUAL_VERIFIED');
     expect(verifyJson.downloadToken).toBeDefined();
 
