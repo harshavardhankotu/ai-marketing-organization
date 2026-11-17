@@ -163,18 +163,6 @@ export class RazorpayAdapter {
 
     // Imposter test key placed in live slot when mode is live or default
     if (liveKeyId.startsWith('rzp_test_') || liveKeySecret.startsWith('rzp_test_')) {
-      if (rawMode === 'live') {
-        return { keyId: '', keySecret: '', webhookSecret: '', mode: 'MISCONFIGURED_CREDENTIAL_PAIR' };
-      }
-      // If no mode specified but test keys provided in main slot
-      if (liveKeyId.startsWith('rzp_test_') && isLiveSecretSet) {
-        return {
-          keyId: liveKeyId,
-          keySecret: liveKeySecret,
-          webhookSecret: liveWebhookSecret || testWebhookSecret,
-          mode: 'SANDBOX_TEST'
-        };
-      }
       return { keyId: '', keySecret: '', webhookSecret: '', mode: 'MISCONFIGURED_CREDENTIAL_PAIR' };
     }
 
