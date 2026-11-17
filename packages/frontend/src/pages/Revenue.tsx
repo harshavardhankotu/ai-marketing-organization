@@ -29,6 +29,12 @@ export const Revenue: React.FC = () => {
   const [isIngesting, setIsIngesting] = useState(false);
   const [showModal, setShowModal] = useState(false);
 
+  // Live UPI & Financial Truth states
+  const [pendingClaims, setPendingClaims] = useState<any[]>([]);
+  const [financialTruth, setFinancialTruth] = useState<any>(null);
+  const [verifyingClaimId, setVerifyingClaimId] = useState<string | null>(null);
+  const [verificationFeedback, setVerificationFeedback] = useState<{ message: string; downloadUrl?: string } | null>(null);
+
   // Form states for transaction entry
   const [amount, setAmount] = useState('');
   const [method, setMethod] = useState('UPI');
@@ -39,20 +45,46 @@ export const Revenue: React.FC = () => {
 
   const loadData = async () => {
     try {
-      const [sumRes, txRes, costRes, readyRes, dashRes] = await Promise.all([
+      const [sumRes, txRes, costRes, readyRes, dashRes, claimsRes, truthRes] = await Promise.all([
         api.getRevenueSummary(),
         api.getTransactions(filterMode === 'ALL' ? undefined : filterMode),
         api.getAICosts(),
         api.getSystemReadiness().catch(() => ({ data: null })),
-        api.getDashboardAnalytics().catch(() => ({ data: null }))
+        api.getDashboardAnalytics().catch(() => ({ data: null })),
+        api.getPendingUpiClaims().catch(() => ({ data: [] })),
+        api.getPublicFinancialTruth().catch(() => ({ data: null }))
       ]);
       setSummary(sumRes.data);
       setTransactions(txRes.data || []);
       setAICostSummary(costRes.data?.summary || null);
       setReadiness(readyRes.data || null);
       setAnalyticsData(dashRes.data || null);
+      setPendingClaims(claimsRes?.data || []);
+      setFinancialTruth(truthRes?.data || null);
     } catch (e) {
       console.error('Failed to load revenue data', e);
+    }
+  };
+
+  const handleVerifyBankCredit = async (claim: any) => {
+    if (verifyingClaimId) return;
+    setVerifyingClaimId(claim.id);
+    setVerificationFeedback(null);
+    try {
+      const res = await api.verifyOwnerUpiClaim({
+        claimId: claim.id,
+        utr: claim.utr,
+        amountINR: claim.amount_inr || claim.amountINR || 499
+      });
+      setVerificationFeedback({
+        message: `Verified ₹${claim.amount_inr || 499} UTR ${claim.utr}. Technical Fix-Pack generated successfully!`,
+        downloadUrl: res.downloadUrl
+      });
+      await loadData();
+    } catch (err: any) {
+      alert(`Verification failed: ${err.message || err.error}`);
+    } finally {
+      setVerifyingClaimId(null);
     }
   };
 
@@ -408,6 +440,123 @@ export const Revenue: React.FC = () => {
               {aiCostSummary?.averageLatencyMs ? `${aiCostSummary.averageLatencyMs} ms` : 'N/A'}
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* Real Financial Truth Live Invariant Banner */}
+      {financialTruth && (
+        <div className="p-4 rounded-xl bg-slate-900/90 border border-emerald-500/30 flex flex-col md:flex-row items-start md:items-center justify-between gap-3 shadow-md">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400">
+              <ShieldCheck className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="text-xs font-bold text-white flex items-center gap-2">
+                <span>D1 Financial Truth Attestation</span>
+                <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-emerald-500/20 text-emerald-300 font-semibold">100% Margin Baseline</span>
+              </div>
+              <p className="text-[11px] text-slate-400 mt-0.5">{financialTruth.cashIntegrityAttestation}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-4 text-xs font-mono self-end md:self-auto">
+            <div className="text-right">
+              <span className="text-[10px] text-slate-500 uppercase block">Bank Cash</span>
+              <strong className="text-emerald-400 text-sm">₹{(financialTruth.bankConfirmedCashINR ?? 0).toFixed(2)}</strong>
+            </div>
+            <div className="text-right border-l border-slate-800 pl-4">
+              <span className="text-[10px] text-slate-500 uppercase block">Paid Ads Spend</span>
+              <strong className="text-slate-300 text-sm">₹{(financialTruth.paidAdsSpendINR ?? 0).toFixed(2)}</strong>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Pending UPI Claims & 1-Click Bank Verification Queue (Task 1) */}
+      <div className="rounded-xl bg-slate-900/80 border border-slate-800 overflow-hidden shadow-sm">
+        <div className="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-950/40">
+          <div className="flex items-center gap-2">
+            <IndianRupee className="w-4 h-4 text-amber-400" />
+            <h3 className="text-sm font-semibold text-white">Pending UPI Inbound Claims &amp; Bank Settlement Queue</h3>
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+              {pendingClaims.length} Claim(s)
+            </span>
+          </div>
+          <button
+            onClick={() => loadData()}
+            className="text-xs text-slate-400 hover:text-cyan-400 flex items-center gap-1 font-medium transition-colors"
+          >
+            Refresh
+          </button>
+        </div>
+
+        {verificationFeedback && (
+          <div className="m-4 p-3.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs flex items-center justify-between gap-3">
+            <span>{verificationFeedback.message}</span>
+            {verificationFeedback.downloadUrl && (
+              <a
+                href={verificationFeedback.downloadUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-2.5 py-1 rounded bg-emerald-600 text-white font-bold hover:bg-emerald-500 text-[11px] inline-flex items-center gap-1"
+              >
+                Download Fix-Pack &rarr;
+              </a>
+            )}
+          </div>
+        )}
+
+        <div className="p-4">
+          {pendingClaims.length === 0 ? (
+            <div className="py-6 text-center text-slate-500 text-xs">
+              No pending UPI claims awaiting verification. All buyer payments are settled or ready.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {pendingClaims.map((claim: any) => (
+                <div
+                  key={claim.id}
+                  className="p-3.5 rounded-lg bg-slate-950/70 border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                >
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-white font-mono text-sm">
+                        ₹{claim.amount_inr || claim.amountINR || 499}
+                      </span>
+                      <span className="px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/30">
+                        UTR: {claim.utr}
+                      </span>
+                      <span className="px-1.5 py-0.2 rounded text-[9px] uppercase font-bold bg-amber-500/10 text-amber-400">
+                        {claim.status}
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-slate-400 flex flex-wrap items-center gap-3">
+                      <span>Payer: <strong className="text-slate-300">{claim.payer_name || claim.payerVpa || 'UPI Buyer'}</strong></span>
+                      {claim.service_rendered && <span>Service: {claim.service_rendered}</span>}
+                      <span>Claimed: {new Date(claim.claimed_at || claim.created_at || Date.now()).toLocaleTimeString()}</span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    {claim.status === 'HUMAN_VERIFIED_PAYMENT' || claim.status === 'FULFILLED' ? (
+                      <span className="px-3 py-1.5 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-xs font-bold inline-flex items-center gap-1.5">
+                        <Check className="w-3.5 h-3.5" />
+                        Verified &amp; Delivered
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => handleVerifyBankCredit(claim)}
+                        disabled={Boolean(verifyingClaimId)}
+                        className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition-all"
+                      >
+                        <ShieldCheck className="w-3.5 h-3.5" />
+                        {verifyingClaimId === claim.id ? 'Verifying & Generating...' : 'Verify Bank Credit & Deliver Fix-Pack'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 

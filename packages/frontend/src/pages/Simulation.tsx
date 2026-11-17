@@ -1,4 +1,4 @@
-﻿import React, { useState } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { 
   PlayCircle, 
   Sparkles, 
@@ -9,31 +9,38 @@ import {
   Layers
 } from 'lucide-react';
 import { formatINR } from '@ai-marketing/shared';
+import { api } from '../services/api.js';
 
 export const Simulation: React.FC = () => {
   const [budgetINR, setBudgetINR] = useState<number>(50000);
   const [durationDays, setDurationDays] = useState<number>(30);
   const [simulating, setSimulating] = useState<boolean>(false);
   const [simResult, setSimResult] = useState<any | null>(null);
+  const [realEconomics, setRealEconomics] = useState<any>(null);
+
+  useEffect(() => {
+    api.getRealEconomics().then((res) => setRealEconomics(res.data)).catch(() => {});
+  }, []);
 
   const runSimulation = () => {
     setSimulating(true);
     setTimeout(() => {
       setSimulating(false);
       const expectedLeads = Math.round(budgetINR / 500);
+      const avgOrderValue = realEconomics?.summary?.averageOrderValueINR || realEconomics?.averageOrderValueINR || 499;
       setSimResult({
         projectedLeads: expectedLeads,
-        projectedRevenueINR: expectedLeads * 45000 * 0.12, // 12% closing rate on ₹45k ticket
+        projectedRevenueINR: Math.round(expectedLeads * avgOrderValue * 0.15),
         expectedCPQL: 500,
         riskTier: 'LOW_RISK_SIMULATION',
         recommendedChannelSplit: [
-          { channel: 'WHATSAPP', percent: 50, budgetINR: budgetINR * 0.50, leads: Math.round(expectedLeads * 0.55) },
-          { channel: 'GOOGLE_BUSINESS_PROFILE', percent: 30, budgetINR: budgetINR * 0.30, leads: Math.round(expectedLeads * 0.30) },
-          { channel: 'INSTAGRAM', percent: 20, budgetINR: budgetINR * 0.20, leads: Math.round(expectedLeads * 0.15) }
+          { channel: 'WHATSAPP', percent: 40, budgetINR: budgetINR * 0.40, leads: Math.round(expectedLeads * 0.45) },
+          { channel: 'GOOGLE_BUSINESS_PROFILE', percent: 35, budgetINR: budgetINR * 0.35, leads: Math.round(expectedLeads * 0.35) },
+          { channel: 'INSTAGRAM', percent: 25, budgetINR: budgetINR * 0.25, leads: Math.round(expectedLeads * 0.20) }
         ],
-        complianceNotice: 'All planned ad copy adheres to Medical Council of India guidelines; no guaranteed medical cure claims.'
+        complianceNotice: 'Dry-run model. Projections are purely mathematical estimates based on unit economics and do not alter ledger balances.'
       });
-    }, 1200);
+    }, 600);
   };
 
   return (
@@ -64,7 +71,7 @@ export const Simulation: React.FC = () => {
               step={5000}
               min={10000}
               onChange={(e) => setBudgetINR(Number(e.target.value))}
-              className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-cyan-500"
+              className="w-full px-3 py-2 bg-slate-850 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-cyan-500"
             />
             <span className="text-[11px] text-cyan-400 font-semibold mt-1 block">
               {formatINR(budgetINR)}
@@ -81,7 +88,7 @@ export const Simulation: React.FC = () => {
               min={7}
               max={90}
               onChange={(e) => setDurationDays(Number(e.target.value))}
-              className="w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-cyan-500"
+              className="w-full px-3 py-2 bg-slate-850 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-cyan-500"
             />
             <span className="text-[11px] text-slate-400 mt-1 block">
               {durationDays} Days Duration
@@ -108,7 +115,7 @@ export const Simulation: React.FC = () => {
               Projected Simulation Outcomes
             </h3>
             <span className="px-2.5 py-0.5 rounded text-[11px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-              DRY-RUN VERIFIED
+              DRY-RUN ESTIMATE
             </span>
           </div>
 
@@ -124,7 +131,7 @@ export const Simulation: React.FC = () => {
             </div>
 
             <div className="p-4 rounded-lg bg-slate-850 border border-slate-800">
-              <span className="text-slate-400 text-xs">Projected Clinic Revenue</span>
+              <span className="text-slate-400 text-xs">Projected Simulated Revenue</span>
               <div className="text-2xl font-bold text-emerald-400 mt-1">{formatINR(simResult.projectedRevenueINR)}</div>
             </div>
           </div>
@@ -141,7 +148,7 @@ export const Simulation: React.FC = () => {
                   </div>
                   <div className="text-slate-400 flex justify-between text-[11px]">
                     <span>Budget: {formatINR(ch.budgetINR)}</span>
-                    <span>~{ch.leads} Leads</span>
+                    <span>~{ch.leads} Inquiries</span>
                   </div>
                 </div>
               ))}

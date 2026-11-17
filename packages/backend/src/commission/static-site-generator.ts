@@ -1381,6 +1381,20 @@ ${this.serializeSafeJsonLd(productSchema, true)}
       <p style="font-size:0.88rem;color:#94a3b8;margin:0.5rem 0 1rem 0;">
         Observed At: <code>${this.escapeHtml(verifiedTs || 'Verification timestamp unavailable')}</code> &bull; Verification Status: <strong>${this.escapeHtml(deal.verificationStatus || 'VERIFIED')}</strong>
       </p>
+      ${deal.youtubeReview ? `
+      <div class="youtube-review-embed" style="margin: 1.25rem 0; padding: 1rem; background: #0f172a; border: 1px solid #334155; border-radius: 12px;">
+        <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:0.5rem; margin-bottom:0.75rem;">
+          <div style="display:flex; align-items:center; gap:0.5rem;">
+            <span style="display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;background:#ef4444;border-radius:6px;color:#fff;font-size:11px;font-weight:900;">▶</span>
+            <strong style="font-size:0.92rem; color:#f8fafc;">Watch Real Product Review: ${this.escapeHtml(deal.youtubeReview.title)}</strong>
+          </div>
+          <span style="font-size:0.75rem; color:#94a3b8; font-weight:600;">Channel: ${this.escapeHtml(deal.youtubeReview.channelTitle)}</span>
+        </div>
+        <div style="position:relative; padding-bottom:56.25%; height:0; overflow:hidden; border-radius:8px; border:1px solid #1e293b;">
+          <iframe src="${this.escapeHtml(deal.youtubeReview.embedUrl)}" title="${this.escapeHtml(deal.youtubeReview.title)}" style="position:absolute; top:0; left:0; width:100%; height:100%; border:0;" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen loading="lazy"></iframe>
+        </div>
+      </div>
+      ` : ''}
       <div style="display:flex;flex-wrap:wrap;gap:0.75rem;align-items:center;margin-top:0.5rem;">
         <a href="${this.escapeHtml(redirectHref)}" target="_blank" rel="sponsored nofollow noopener" class="cta-btn" style="margin-top:0;">Claim Verified Deal on ${this.escapeHtml(deal.merchant)} &rarr;</a>
         <a href="${this.escapeHtml(`${config.siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(deal.title || '').slice(0, 120))}&dealId=${encodeURIComponent(String(deal.id || ''))}`)}" target="_blank" rel="sponsored nofollow noopener" style="display:inline-block;background:rgba(245,158,11,0.14);border:1px solid rgba(245,158,11,0.4);color:#fcd34d;font-weight:700;padding:0.9rem 1.35rem;border-radius:10px;text-decoration:none;font-size:0.92rem;">Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)</a>
@@ -1568,6 +1582,13 @@ ${this.serializeSafeJsonLd(itemListSchema, true)}
             <td>${a.couponCode ? `<code>${this.escapeHtml(a.couponCode)}</code>` : 'Direct store pricing'}</td>
             <td>${b.couponCode ? `<code>${this.escapeHtml(b.couponCode)}</code>` : 'Direct store pricing'}</td>
           </tr>
+          ${(a.youtubeReview || b.youtubeReview) ? `
+          <tr>
+            <th>Product Video Review</th>
+            <td>${a.youtubeReview ? `<div style="font-size:0.78rem;margin-bottom:0.35rem;"><span style="color:#ef4444;font-weight:700;">▶</span> <a href="${this.escapeHtml(a.youtubeReview.videoUrl)}" target="_blank" rel="noopener noreferrer" style="color:#38bdf8;text-decoration:none;">${this.escapeHtml(a.youtubeReview.title)}</a></div><div style="position:relative;padding-bottom:56.25%;height:0;overflow:hidden;border-radius:6px;"><iframe src="${this.escapeHtml(a.youtubeReview.embedUrl)}" title="${this.escapeHtml(a.youtubeReview.title)}" style="position:absolute;top:0;left:0;width:100%;height:100%;border:0;" allowfullscreen loading="lazy"></iframe></div>` : '<span style="color:#64748b;font-size:0.8rem;">Review indexing in progress</span>'}</td>
+            <td>${b.youtubeReview ? `<div style="font-size:0.78rem;margin-bottom:0.35rem;"><span style="color:#ef4444;font-weight:700;">▶</span> <a href="${this.escapeHtml(b.youtubeReview.videoUrl)}" target="_blank" rel="noopener noreferrer" style="color:#38bdf8;text-decoration:none;">${this.escapeHtml(b.youtubeReview.title)}</a></div><div style="position:relative;padding-bottom:56.25%;height:0;overflow:hidden;border-radius:6px;"><iframe src="${this.escapeHtml(b.youtubeReview.embedUrl)}" title="${this.escapeHtml(b.youtubeReview.title)}" style="position:absolute;top:0;left:0;width:100%;height:100%;border:0;" allowfullscreen loading="lazy"></iframe></div>` : '<span style="color:#64748b;font-size:0.8rem;">Review indexing in progress</span>'}</td>
+          </tr>
+          ` : ''}
           <tr>
             <th>Dual-Rail Checkout (#Ad)</th>
             <td>

@@ -322,7 +322,15 @@ app.get('/deals/:slug', async (c) => {
     );
     const relatedDeals = [...sameSegment, ...sameCategory].slice(0, 4);
 
-    const html = StaticSiteGenerator.getInstance().renderDealDetailHtml(targetDeal, relatedDeals, config);
+    let enrichedTargetDeal = targetDeal;
+    try {
+      const { YouTubeReviewEnricher } = await import('./integrations/youtube-review-enricher.js');
+      enrichedTargetDeal = await YouTubeReviewEnricher.getInstance().enrichDeal(targetDeal);
+    } catch {
+      enrichedTargetDeal = targetDeal;
+    }
+
+    const html = StaticSiteGenerator.getInstance().renderDealDetailHtml(enrichedTargetDeal, relatedDeals, config);
     return c.html(html, 200);
   } catch (err: any) {
     if (err?.code === 'GUIDE_DATA_UNAVAILABLE' || err?.statusCode === 503) {

@@ -76,6 +76,7 @@ export interface InboundMessageEvent {
 }
 
 export interface ResolvedCatalogOffer {
+  id?: string;
   kind: 'AFFILIATE_DEAL' | 'DIGITAL_PRODUCT' | 'SERVICE_OFFER' | 'FINANCIAL_RESEARCH';
   lane?: 'LANE_A_AFFILIATE' | 'LANE_B_SERVICES' | 'LANE_C_PARTNER_OFFERS' | 'LANE_D_DIGITAL_PRODUCTS' | 'LANE_E_FINANCIAL_RADAR';
   idOrSlug: string;
@@ -88,6 +89,7 @@ export interface ResolvedCatalogOffer {
   offerPath: string;
   permittedClaims: string[];
   score?: number;
+  youtubeReview?: any;
 }
 
 export interface DeskCheckoutPayload {

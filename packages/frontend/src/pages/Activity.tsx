@@ -1,43 +1,34 @@
-﻿import React from 'react';
-import { Activity as ActivityIcon, Shield, Bot, User, CheckCircle2 } from 'lucide-react';
+﻿import React, { useState, useEffect } from 'react';
+import { Activity as ActivityIcon, Shield, Bot, User, CheckCircle2, Clock } from 'lucide-react';
+import { api } from '../services/api.js';
 
 interface ActivityProps {
   logs: any[];
 }
 
-export const Activity: React.FC<ActivityProps> = ({ logs }) => {
-  const sampleLogs = logs.length > 0 ? logs : [
-    {
-      id: 'log_1',
-      actor_type: 'AGENT',
-      actor_id: 'res-20',
-      action: 'SYNTHESIZE_MARKET_INTELLIGENCE',
-      entity_type: 'RESEARCH',
-      entity_id: 'biz_smilekraft_hyd',
-      created_at: new Date().toISOString(),
-      details: { topic: 'Local Demand & Search Trends', certainty: 'OBSERVED' }
-    },
-    {
-      id: 'log_2',
-      actor_type: 'CONTROL_PLANE',
-      actor_id: 'ai-ceo',
-      action: 'STRATEGY_VERSION_CREATED',
-      entity_type: 'STRATEGY',
-      entity_id: 'strat_v1_smilekraft',
-      created_at: new Date(Date.now() - 300000).toISOString(),
-      details: { version: 1, expected_leads: 100 }
-    },
-    {
-      id: 'log_3',
-      actor_type: 'AGENT',
-      actor_id: 'cnt-11',
-      action: 'GENERATE_CONTENT_ASSET',
-      entity_type: 'CONTENT_ASSET',
-      entity_id: 'cnt_wa_01',
-      created_at: new Date(Date.now() - 600000).toISOString(),
-      details: { channel: 'WHATSAPP', language: 'English' }
+export const Activity: React.FC<ActivityProps> = ({ logs: propLogs }) => {
+  const [liveLogs, setLiveLogs] = useState<any[]>(propLogs || []);
+  const [automationLogs, setAutomationLogs] = useState<any[]>([]);
+
+  useEffect(() => {
+    if (propLogs && propLogs.length > 0) {
+      setLiveLogs(propLogs);
+    } else {
+      api.getActivity().then(res => {
+        setLiveLogs(Array.isArray(res.data) ? res.data : []);
+      }).catch(() => {
+        setLiveLogs([]);
+      });
     }
-  ];
+
+    api.getOwnerAutomation().then(res => {
+      if (res.data?.recentLogs) {
+        setAutomationLogs(res.data.recentLogs);
+      }
+    }).catch(() => {});
+  }, [propLogs]);
+
+  const displayLogs = liveLogs.length > 0 ? liveLogs : automationLogs;
 
   return (
     <div className="space-y-6">
@@ -52,39 +43,51 @@ export const Activity: React.FC<ActivityProps> = ({ logs }) => {
       </div>
 
       <div className="p-6 rounded-xl bg-slate-900 border border-slate-800 shadow-sm space-y-4">
-        <div className="space-y-3">
-          {sampleLogs.map((log: any) => (
-            <div key={log.id} className="p-3.5 rounded-lg bg-slate-850 border border-slate-800 flex items-start gap-3 text-xs">
-              <div className="p-2 rounded-lg bg-slate-800 text-cyan-400 shrink-0 mt-0.5">
-                {log.actor_type === 'USER' ? <User className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
-              </div>
+        {displayLogs.length === 0 ? (
+          <div className="p-12 text-center rounded-2xl bg-slate-900/60 border border-slate-800 space-y-3">
+            <Clock className="w-10 h-10 text-slate-600 mx-auto" />
+            <h3 className="text-sm font-bold text-white">No Recent Activity Recorded</h3>
+            <p className="text-slate-400 text-xs max-w-sm mx-auto">
+              Workflow executions and agent decisions will appear here in real-time as autonomous cycles run.
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {displayLogs.map((log: any, idx: number) => (
+              <div key={log.id || `act_${idx}`} className="p-3.5 rounded-lg bg-slate-850 border border-slate-800 flex items-start gap-3 text-xs">
+                <div className="p-2 rounded-lg bg-slate-800 text-cyan-400 shrink-0 mt-0.5">
+                  {log.actor_type === 'USER' ? <User className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
+                </div>
 
-              <div className="flex-1 space-y-1">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className="font-bold text-slate-100">{log.action.replace(/_/g, ' ')}</span>
-                    <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-slate-800 text-slate-400">
-                      {log.actor_id}
+                <div className="flex-1 space-y-1">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-slate-100">
+                        {String(log.action || log.workflow_id || 'EXECUTE_WORKFLOW').replace(/_/g, ' ')}
+                      </span>
+                      <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-slate-800 text-slate-400">
+                        {log.actor_id || log.status || 'SYSTEM'}
+                      </span>
+                    </div>
+                    <span className="text-[11px] text-slate-500 font-mono">
+                      {new Date(log.created_at || log.started_at || Date.now()).toLocaleTimeString()}
                     </span>
                   </div>
-                  <span className="text-[11px] text-slate-500 font-mono">
-                    {new Date(log.created_at).toLocaleTimeString()}
-                  </span>
-                </div>
 
-                <div className="text-slate-400 text-[11px]">
-                  Target: <span className="text-slate-300 font-mono">{log.entity_type} ({log.entity_id})</span>
-                </div>
-
-                {log.details && (
-                  <div className="p-2 rounded bg-slate-900/60 font-mono text-[10px] text-slate-400">
-                    {JSON.stringify(log.details)}
+                  <div className="text-slate-400 text-[11px]">
+                    Target: <span className="text-slate-300 font-mono">{log.entity_type || 'WORKFLOW'} ({log.entity_id || log.workflow_id || 'cron'})</span>
                   </div>
-                )}
+
+                  {(log.details || log.findings_summary) && (
+                    <div className="p-2 rounded bg-slate-900/60 font-mono text-[10px] text-slate-400">
+                      {typeof (log.details || log.findings_summary) === 'object' ? JSON.stringify(log.details || log.findings_summary) : String(log.findings_summary || log.details)}
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
