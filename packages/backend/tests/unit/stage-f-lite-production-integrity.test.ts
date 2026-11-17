@@ -517,17 +517,22 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
     });
 
     it('returns empty array [] when direct_outreach_log has zero matching records for authenticated owner', async () => {
-      getDb().prepare(`DELETE FROM direct_outreach_log`).run();
-      const session = OwnerAuthService.getInstance().createSession('127.0.0.1');
+      const db = getDb();
+      try {
+        db.prepare(`UPDATE direct_outreach_log SET human_approved = 99 WHERE human_approved = 0 AND dispatched = 0`).run();
+        const session = OwnerAuthService.getInstance().createSession('127.0.0.1');
 
-      const res = await app.request('/api/v1/owner/direct-outreach?status=pending', {
-        headers: { Authorization: `Bearer ${session.token}` }
-      });
-      expect(res.status).toBe(200);
-      const json = await res.json();
-      expect(json.success).toBe(true);
-      expect(Array.isArray(json.data)).toBe(true);
-      expect(json.data.length).toBe(0);
+        const res = await app.request('/api/v1/owner/direct-outreach?status=pending', {
+          headers: { Authorization: `Bearer ${session.token}` }
+        });
+        expect(res.status).toBe(200);
+        const json = await res.json();
+        expect(json.success).toBe(true);
+        expect(Array.isArray(json.data)).toBe(true);
+        expect(json.data.length).toBe(0);
+      } finally {
+        db.prepare(`UPDATE direct_outreach_log SET human_approved = 0 WHERE human_approved = 99`).run();
+      }
     });
 
     it('returns formatted outreach draft rows when records exist for authenticated owner', async () => {

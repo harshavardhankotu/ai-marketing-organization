@@ -471,7 +471,7 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
         currentReadiness = data;
         updateCheckoutUI();
       } catch (e) {
-        currentReadiness = { status: 'LOCKED_MISSING_CONFIGURATION', isReady: false };
+        currentReadiness = { status: 'LOCKED_MISSING_CONFIGURATION', isReady: false, paymentReadiness: { paymentMode: 'UNCONFIGURED' } };
         updateCheckoutUI();
       }
     }
@@ -482,10 +482,11 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
       const btn = document.getElementById('checkoutBtn');
       const upiCard = document.getElementById('upiFallbackCard');
       const sandboxNotice = document.getElementById('sandboxTestModeNotice');
-      const paymentMode = currentReadiness?.paymentReadiness?.paymentMode || 'SANDBOX';
+      // Default missing or failed readiness mode to UNCONFIGURED (Spec Stage R.1 Task 3.3 & Comment #13)
+      const paymentMode = currentReadiness?.paymentReadiness?.paymentMode || 'UNCONFIGURED';
 
       if (sandboxNotice) {
-        sandboxNotice.style.display = (paymentMode === 'SANDBOX') ? 'block' : 'none';
+        sandboxNotice.style.display = (currentReadiness?.isReady && paymentMode === 'SANDBOX') ? 'block' : 'none';
       }
 
       if (upiCard) {

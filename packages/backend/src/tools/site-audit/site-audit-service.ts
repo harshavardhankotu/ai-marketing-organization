@@ -130,6 +130,7 @@ export class SiteAuditService {
   public getCheckoutReadiness(options?: {
     authProbeResult?: {
       providerAcceptedAuth?: boolean;
+      httpStatus?: number | null;
       authDiagnosticCode?: string;
       authStatus?: string;
       keyMode?: string;
@@ -212,7 +213,7 @@ export class SiteAuditService {
       }
     }
 
-    // 5. Gateway authentication probe verification (Spec Stage R Task 3)
+    // 5. Gateway authentication probe verification (Spec Stage R Task 3 & Stage R.1 Task 2.1)
     let probe = options?.authProbeResult;
     if (!probe) {
       try {
@@ -222,23 +223,31 @@ export class SiteAuditService {
     }
 
     if (activeMode === 'LIVE' && isLiveKey) {
-      if (probe && probe.providerAcceptedAuth === false) {
-        missing.push('RAZORPAY_AUTH_FAILED');
+      if (!probe || probe.providerAcceptedAuth !== true) {
+        if (probe && (probe.httpStatus === 401 || probe.authDiagnosticCode === 'RAZORPAY_401_REJECTED_SECRET')) {
+          missing.push('RAZORPAY_AUTH_FAILED');
+        } else {
+          missing.push('PROBE_UNREACHABLE');
+        }
       }
     } else if (activeMode !== 'LIVE' && isTestKey) {
-      if (probe && probe.providerAcceptedAuth === false && probe.authDiagnosticCode === 'RAZORPAY_401_REJECTED_SECRET') {
-        missing.push('RAZORPAY_AUTH_FAILED');
+      if (!probe || probe.providerAcceptedAuth !== true) {
+        if (probe && (probe.httpStatus === 401 || probe.authDiagnosticCode === 'RAZORPAY_401_REJECTED_SECRET')) {
+          missing.push('RAZORPAY_AUTH_FAILED');
+        } else if (probe && (probe.httpStatus === null || probe.authDiagnosticCode === 'NETWORK_ERROR')) {
+          missing.push('PROBE_UNREACHABLE');
+        }
       }
     }
 
-    const hasAuthFailure = missing.includes('RAZORPAY_AUTH_FAILED');
+    const hasAuthFailure = missing.includes('RAZORPAY_AUTH_FAILED') || missing.includes('PROBE_UNREACHABLE');
     const isReady = missing.length === 0;
 
     const ownerOfferAttested = isAttested && !missing.includes('SITE_AUDIT_TERMS_SHA256') && !missing.includes('SITE_AUDIT_SIGNING_SECRET');
-    const liveMoneyReady = Boolean(ownerOfferAttested && isLiveKey && !hasAuthFailure && (probe ? probe.providerAcceptedAuth === true : true));
-    const sandboxTestReady = Boolean(isTestKey && !hasAuthFailure && (probe ? probe.providerAcceptedAuth === true : true));
+    const liveMoneyReady = Boolean(ownerOfferAttested && isLiveKey && !hasAuthFailure && Boolean(probe && probe.providerAcceptedAuth === true));
+    const sandboxTestReady = Boolean(isTestKey && !hasAuthFailure && Boolean(probe && probe.providerAcceptedAuth === true));
 
-    const paymentMode: 'LIVE' | 'SANDBOX' | 'UNCONFIGURED' = (isLiveKey && !hasAuthFailure) ? 'LIVE' : ((isTestKey && !hasAuthFailure) ? 'SANDBOX' : 'UNCONFIGURED');
+    const paymentMode: 'LIVE' | 'SANDBOX' | 'UNCONFIGURED' = (isLiveKey && liveMoneyReady) ? 'LIVE' : ((isTestKey && sandboxTestReady) ? 'SANDBOX' : 'UNCONFIGURED');
     const gatewayCredentialStatus: 'VERIFIED_LIVE' | 'VERIFIED_TEST' | 'NOT_VERIFIED' = (isLiveKey && liveMoneyReady) ? 'VERIFIED_LIVE' : ((isTestKey && sandboxTestReady) ? 'VERIFIED_TEST' : 'NOT_VERIFIED');
 
     let status: 'READY' | 'LOCKED_MISSING_CONFIGURATION' | 'PENDING_OWNER_ATTESTATION';

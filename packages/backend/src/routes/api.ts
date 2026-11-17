@@ -426,6 +426,9 @@ apiRouter.use('*', async (c, next) => {
       path === '/commission/attestation' ||
       path === '/build/static-site' ||
       path === '/payments/manual-upi/confirm' ||
+      path === '/payments/manual-upi/claims' ||
+      path === '/owner/fulfillment/retry' ||
+      (path.startsWith('/payments/manual-upi/') && (path.endsWith('/retry-fulfillment') || path.endsWith('/lifecycle'))) ||
       path === '/payments/reconcile-export' ||
       isOwnerRoute
     )) {
@@ -5843,9 +5846,19 @@ const handleOwnerUpiVerify = async (c: any) => {
 apiRouter.post('/payments/manual-upi/confirm', handleOwnerUpiVerify);
 apiRouter.post('/owner/upi-verify', handleOwnerUpiVerify);
 
-// Owner-only: Retry Fix-Pack deliverable generation & Brevo receipt email dispatch (Spec Stage R Task 2)
+// Owner-only: Retry Fix-Pack deliverable generation & Brevo receipt email dispatch (Spec Stage R Task 2 & Stage R.1 Task 2.2)
 const handleOwnerFulfillmentRetry = async (c: any) => {
-  const userId = c.get('userId') || 'owner';
+  const ownerAuth = OwnerAuthService.getInstance();
+  const token = OwnerAuthService.extractTokenFromHeaders((name) => c.req.header(name));
+  const ownerSession = await ownerAuth.validateTokenAsync(token);
+  if (!ownerSession) {
+    return c.json({
+      success: false,
+      error: 'Unauthorized: Owner authentication is required via Bearer token, x-api-key, or owner_session cookie.'
+    }, 401);
+  }
+
+  const userId = ownerSession.userId || c.get('userId') || 'owner';
   let body: any = {};
   try {
     body = await c.req.json();

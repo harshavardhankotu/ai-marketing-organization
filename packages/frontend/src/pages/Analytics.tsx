@@ -20,12 +20,14 @@ interface AnalyticsProps {
 export const Analytics: React.FC<AnalyticsProps> = ({ metrics, events, attributions }) => {
   const [activeModel, setActiveModel] = useState<'FIRST_TOUCH' | 'LAST_TOUCH' | 'LINEAR' | 'ASSISTED_CONVERSION'>('ASSISTED_CONVERSION');
 
-  // Compute live channel attribution breakdown dynamically based on selected activeModel
-  const filteredAttributions = attributions && attributions.length > 0
-    ? attributions.filter(a => !a.attribution_model || a.attribution_model === activeModel || a.model === activeModel)
-    : [];
+  // Compute live channel attribution breakdown dynamically based strictly on selected activeModel (Spec Stage R.1 Task 3.2 & Comment #16)
+  const normalizeModel = (val?: string) => String(val || '').toUpperCase().trim();
+  const activeNormalized = normalizeModel(activeModel);
 
-  const effectiveAttributions = filteredAttributions.length > 0 ? filteredAttributions : (attributions || []);
+  const effectiveAttributions = (attributions || []).filter(a => {
+    const rowModel = normalizeModel(a.model_type || a.attribution_model || a.model);
+    return rowModel === activeNormalized;
+  });
 
   const totalAttributedRevenueINR = effectiveAttributions.reduce((acc, curr) => acc + (Number(curr.revenue_inr) || 0), 0);
 

@@ -33,7 +33,7 @@ export const Simulation: React.FC = () => {
     setTimeout(() => {
       setSimulating(false);
       const expectedLeads = Math.round(budgetINR / 500);
-      const rawAov = realEconomics?.averageOrderValueINR ?? realEconomics?.summary?.averageOrderValueINR ?? (typeof realEconomics?.arpcINR === 'number' && realEconomics.arpcINR > 0 ? realEconomics.arpcINR : null);
+      const rawAov = realEconomics?.averageOrderValueINR ?? realEconomics?.summary?.averageOrderValueINR ?? null;
       const avgOrderValue = typeof rawAov === 'number' && rawAov > 0 ? rawAov : null;
       setSimResult({
         projectedLeads: expectedLeads,

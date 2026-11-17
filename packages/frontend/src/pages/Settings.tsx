@@ -69,7 +69,11 @@ export const Settings: React.FC<SettingsProps> = ({ business, quota, integration
 
   const rzpStatus = rzpAccepted
     ? 'CONNECTED'
-    : (rzpConfigured ? 'AUTH_FAILED' : (rzpData ? 'NOT_CONFIGURED' : 'UNAVAILABLE'));
+    : (rzpConfigured
+        ? (rzpHttpStatus === 401 || rzpDiag === 'RAZORPAY_401_REJECTED_SECRET'
+            ? 'AUTH_FAILED'
+            : (rzpHttpStatus === null || rzpDiag === 'NETWORK_ERROR' ? 'UNAVAILABLE' : 'UNKNOWN'))
+        : (rzpData ? 'NOT_CONFIGURED' : 'UNAVAILABLE'));
 
   // Telegram exact status
   const tgConnected = Boolean(tgData?.connected || tgData?.active);
@@ -104,7 +108,7 @@ export const Settings: React.FC<SettingsProps> = ({ business, quota, integration
       status: rzpStatus,
       mode: rzpKeyMode,
       details: rzpData
-        ? `Mode: ${rzpKeyMode} | KeyId: ${rzpKeyIdPresent} | Secret: ${rzpSecretPresent} | Auth: ${rzpAccepted ? 'ACCEPTED' : 'REJECTED'} (HTTP ${rzpHttpStatus ?? 'N/A'}) | Diag: ${rzpDiag}`
+        ? `Mode: ${rzpKeyMode} | KeyId: ${rzpKeyIdPresent} | Secret: ${rzpSecretPresent} | Auth: ${rzpAccepted ? 'ACCEPTED' : (rzpHttpStatus === 401 || rzpDiag === 'RAZORPAY_401_REJECTED_SECRET' ? 'REJECTED' : 'UNVERIFIED')} (HTTP ${rzpHttpStatus ?? 'N/A'}) | Diag: ${rzpDiag}`
         : 'Razorpay Orders API & Standard Checkout (Status: UNAVAILABLE)'
     },
     {

@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual, randomUUID } from 'crypto';
 import { isProduction, isPlaceholderCredential, normalizeSecretValue } from '../config/env.js';
+import { getDb } from '../db/client.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { SiteAuditFixPackGenerator } from '../tools/site-audit/site-audit-fixpack-generator.js';
 import { TelegramBotAdapter } from '../integrations/telegram-adapter.js';
@@ -328,6 +329,20 @@ export class RazorpayStandardAdapter {
     const classification = isLive ? 'REAL' : 'TEST';
     const touchpoints = JSON.stringify([{ channel: 'DIRECT_CHECKOUT', at: new Date().toISOString() }]);
 
+    // Anti-IDOR Tenant Authorization Guard (Spec Stage R.1 Task 1 / Comment #10)
+    let existingJourney: any = null;
+    try {
+      if (isProduction() && !process.env.VITEST) {
+        existingJourney = await this.d1Repo.queryOne<any>('customer_journeys', 'SELECT id, business_id FROM customer_journeys WHERE id = ?', [journeyId]);
+      } else {
+        existingJourney = getDb().prepare('SELECT id, business_id FROM customer_journeys WHERE id = ?').get(journeyId) as any;
+      }
+    } catch {}
+
+    if (existingJourney && existingJourney.business_id && existingJourney.business_id !== businessId) {
+      throw new Error(`TENANT_MISMATCH: Journey '${journeyId}' belongs to business '${existingJourney.business_id}' and cannot be modified for business '${businessId}'.`);
+    }
+
     // Try schema with organization_id first (local SQLite schema.ts)
     try {
       await this.d1Repo.executeWrite(
@@ -340,7 +355,8 @@ export class RazorpayStandardAdapter {
         ON CONFLICT(id) DO UPDATE SET
           stage = excluded.stage,
           customer_email = excluded.customer_email,
-          updated_at = datetime('now')`,
+          updated_at = datetime('now')
+        WHERE customer_journeys.business_id = excluded.business_id`,
         [journeyId, organizationId, businessId, journeyId, customerName || 'SiteFix Customer', buyerEmail, stage, touchpoints, classification]
       );
     } catch (err: any) {
@@ -355,7 +371,8 @@ export class RazorpayStandardAdapter {
           ON CONFLICT(id) DO UPDATE SET
             stage = excluded.stage,
             customer_email = excluded.customer_email,
-            updated_at = datetime('now')`,
+            updated_at = datetime('now')
+          WHERE customer_journeys.business_id = excluded.business_id`,
           [journeyId, businessId, journeyId, customerName || 'SiteFix Customer', buyerEmail, stage, touchpoints, classification]
         );
       } else {
