@@ -977,8 +977,12 @@ export const FirstSaleCommandCenter: React.FC = () => {
                 Free Search Engine Indexing Checklist
               </h4>
             </div>
-            <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-950/50 text-emerald-400 border border-emerald-800 font-semibold font-mono">
-              IndexNow: {distKit?.searchEngineChecklist?.indexNowStatus || 'ACTIVE'}
+            <span className={`text-[11px] px-2 py-0.5 rounded-full font-semibold font-mono ${
+              distKit?.searchEngineChecklist?.indexNowStatus === 'ACTIVE'
+                ? 'bg-emerald-950/50 text-emerald-400 border border-emerald-800'
+                : 'bg-amber-950/50 text-amber-400 border border-amber-800'
+            }`}>
+              IndexNow: {distKit?.searchEngineChecklist?.indexNowStatus || 'AWAITING_INDEXNOW_KEY'}
             </span>
           </div>
 

@@ -1232,9 +1232,12 @@ export class StaticSiteGenerator {
         </div>
         <span style="font-size:0.75rem;color:#94a3b8;">Zero spam &bull; 1-click unsubscribe anytime</span>
       </div>
-      <form class="price-drop-alert-form" onsubmit="event.preventDefault(); (async function(form){
+      <form class="price-drop-alert-form" data-slug="${slug}" data-category="${category}" data-deal-id="${dealId}" onsubmit="event.preventDefault(); (async function(form){
         var email = (form.email.value || '').trim();
         var targetPrice = Number(form.targetPrice.value) || undefined;
+        var productSlug = form.dataset.slug || undefined;
+        var cat = form.dataset.category || undefined;
+        var dId = form.dataset.dealId || undefined;
         var btn = form.querySelector('button');
         var status = form.querySelector('.alert-status');
         if (!email) return;
@@ -1244,7 +1247,7 @@ export class StaticSiteGenerator {
           var res = await fetch('/api/v1/customer-desk/subscribe-alerts', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email: email, productSlug: '${slug}', category: '${category}', dealId: '${dealId}', targetPriceINR: targetPrice })
+            body: JSON.stringify({ email: email, productSlug: productSlug, category: cat, dealId: dId, targetPriceINR: targetPrice })
           });
           var data = await res.json();
           if (res.ok && data.success) {

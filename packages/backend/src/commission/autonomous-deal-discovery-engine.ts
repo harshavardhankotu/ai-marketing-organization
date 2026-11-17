@@ -122,7 +122,7 @@ export function isImpulseConversionDeal(d: NormalizedDeal | any): boolean {
   if (!d) return false;
   const price = Number(d.currentPriceINR ?? d.current_price_inr ?? 0);
   const discount = Number(d.verifiedDiscountPercent ?? d.verified_discount_percent ?? d.discountPercent ?? d.discount_percent ?? 0);
-  const isMonetizable = d.isMonetizable === true || d.affiliateVerified === true || d.is_monetizable === 1 || Boolean(d.cuelinksCampaignId || d.cuelinks_campaign_id);
+  const isMonetizable = d.isMonetizable !== false && (d.isMonetizable === true || d.affiliateVerified === true || d.is_monetizable === 1 || Boolean(d.cuelinksCampaignId || d.cuelinks_campaign_id)) && Boolean(d.trackingUrl || d.cuelinksCampaignId || d.cuelinks_campaign_id);
   const inStock = d.availability === 'IN_STOCK' || !d.availability || d.availability === 'LIMITED_STOCK';
   const isExcluded = d.catalogSlot === 'ROTATED_OUT_STALE' || (d.staleDecayPenalty || 0) > 0 || d.evolutionStatus === 'STALE_ROTATED_OUT';
   return !isExcluded && inStock && isMonetizable && price >= 299 && price <= 1499 && discount >= 25;
@@ -1070,6 +1070,7 @@ export class AutonomousDealDiscoveryEngine {
   // In-memory operational cache synced to durable D1 storage
   private sourcesMap: Map<string, DealSourceRecord> = new Map();
   private dealsMap: Map<string, NormalizedDeal> = new Map();
+  private lastPriceDropEventCursor: string = '';
 
   public getDealsMap(): Map<string, NormalizedDeal> {
     return this.dealsMap;
@@ -5020,8 +5021,6 @@ export class AutonomousDealDiscoveryEngine {
     const sortBy = params.sortBy || 'buyer_value';
     filtered.sort((a, b) => {
       if (sortBy === 'buyer_value') {
-        const impulseDiff = Number(isImpulseConversionDeal(b)) - Number(isImpulseConversionDeal(a));
-        if (impulseDiff !== 0) return impulseDiff;
         return b.buyerValueScore - a.buyerValueScore;
       }
       if (sortBy === 'freshness') {
@@ -7082,10 +7081,6 @@ export class AutonomousDealDiscoveryEngine {
       } catch {}
     }
 
-    if (rows.length === 0) {
-      return { checked: 0, dispatched: 0, skipped: 0 };
-    }
-
     const { BrevoMcpClient } = await import('../integrations/brevo-mcp-client.js');
     const brevo = BrevoMcpClient.getInstance();
     let checked = 0;
@@ -7193,7 +7188,10 @@ export class AutonomousDealDiscoveryEngine {
 
     // Stage S Task 2: Process pending durable_events with event_type = 'PRICE_DROP_SUBSCRIPTION'
     try {
-      const eventQuery = `SELECT id, payload_json FROM durable_events WHERE event_type = 'PRICE_DROP_SUBSCRIPTION' AND processed = 0 LIMIT 50`;
+      const cursorCond = this.lastPriceDropEventCursor
+        ? `AND id > '${this.lastPriceDropEventCursor.replace(/[^a-zA-Z0-9_-]/g, '')}'`
+        : '';
+      let eventQuery = `SELECT id, payload_json FROM durable_events WHERE event_type = 'PRICE_DROP_SUBSCRIPTION' AND processed = 0 ${cursorCond} ORDER BY id ASC LIMIT 50`;
       let eventRows: any[] = [];
       if (this.d1Repo.isRemoteD1Configured() || isProd) {
         const evRes = await this.d1Repo.executeRead('durable_events', eventQuery, []);
@@ -7202,7 +7200,20 @@ export class AutonomousDealDiscoveryEngine {
         eventRows = getDb().prepare(eventQuery).all() as any[];
       }
 
+      // If cursor reached the end, wrap around to beginning so pending watches keep getting evaluated
+      if (eventRows.length === 0 && this.lastPriceDropEventCursor) {
+        this.lastPriceDropEventCursor = '';
+        eventQuery = `SELECT id, payload_json FROM durable_events WHERE event_type = 'PRICE_DROP_SUBSCRIPTION' AND processed = 0 ORDER BY id ASC LIMIT 50`;
+        if (this.d1Repo.isRemoteD1Configured() || isProd) {
+          const evRes = await this.d1Repo.executeRead('durable_events', eventQuery, []);
+          eventRows = Array.isArray(evRes?.results) ? evRes.results : [];
+        } else {
+          eventRows = getDb().prepare(eventQuery).all() as any[];
+        }
+      }
+
       for (const evRow of eventRows) {
+        this.lastPriceDropEventCursor = evRow.id;
         let payload: any = {};
         try {
           payload = JSON.parse(evRow.payload_json || '{}');
@@ -7214,10 +7225,32 @@ export class AutonomousDealDiscoveryEngine {
         const targetPrice = Number(payload.targetPriceINR || 0);
         if (!email || !email.includes('@')) continue;
 
+        // Skip contacts who have opted out or are suppressed in outbound_contacts
+        const optOutCheckSql = `SELECT is_opted_out, is_suppressed FROM outbound_contacts WHERE prospect_email = ? LIMIT 1`;
+        let isOptedOut = false;
+        try {
+          let optRows: any[] = [];
+          if (this.d1Repo.isRemoteD1Configured() || isProd) {
+            const optRes = await this.d1Repo.executeRead('outbound_contacts', optOutCheckSql, [email]);
+            optRows = Array.isArray(optRes?.results) ? optRes.results : [];
+          } else {
+            optRows = getDb().prepare(optOutCheckSql).all(email) as any[];
+          }
+          if (optRows.length > 0 && (optRows[0].is_opted_out === 1 || optRows[0].is_suppressed === 1)) {
+            isOptedOut = true;
+          }
+        } catch {}
+
+        if (isOptedOut) {
+          skipped++;
+          continue;
+        }
+
+        const hasSpecificIdentity = Boolean(payload.dealId || payload.productSlug);
         const matchedDeal = validDeals.find((d) => {
           if (payload.dealId && d.id === payload.dealId) return true;
           if (payload.productSlug && (d.slug === payload.productSlug || d.canonicalSlug === payload.productSlug)) return true;
-          if (payload.category && d.category && d.category.toLowerCase() === String(payload.category).toLowerCase()) return true;
+          if (!hasSpecificIdentity && payload.category && d.category && d.category.toLowerCase() === String(payload.category).toLowerCase()) return true;
           return false;
         });
 

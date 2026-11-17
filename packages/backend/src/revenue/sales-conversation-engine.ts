@@ -73,6 +73,7 @@ export interface InboundMessageEvent {
   sessionId?: string;
   provenance?: IdentityProvenance;
   isDiagnosticProbe?: boolean;
+  isExplicitNewSearch?: boolean;
 }
 
 export interface ResolvedCatalogOffer {
@@ -89,6 +90,8 @@ export interface ResolvedCatalogOffer {
   offerPath: string;
   permittedClaims: string[];
   score?: number;
+  relevanceScore?: number;
+  isImpulse?: boolean;
   youtubeReview?: any;
 }
 
@@ -174,7 +177,7 @@ export class SalesConversationEngine {
       journeyId: event.journeyId || journeyId,
       sessionId,
       provenance,
-      productSlugOrContext: event.productSlugOrContext || lastOfferContext || undefined
+      productSlugOrContext: event.isExplicitNewSearch ? undefined : (event.productSlugOrContext || lastOfferContext || undefined)
     };
 
     // 1. DO_NOT_CONTACT: Anti-impersonation guard — only verified WhatsApp/Email webhooks write senderContact to outreach_suppression_list
@@ -1225,30 +1228,45 @@ export class SalesConversationEngine {
     // Stage S Task 1 & 2: Prioritize verified impulse offers (₹299–₹1,499) and handle top drops queries
     const isTopDropsQuery = /top (verified )?drops|drops today|best drops|today'?s deals|latest drops|trending deals/i.test(combinedLower);
     if (isTopDropsQuery) {
-      for (const d of deals.slice(0, 5)) {
+      const activeEligibleDeals = deals.filter(d => {
+        const status = String(d.verification_status || d.verificationStatus || 'VERIFIED').toUpperCase();
+        if (status === 'INACTIVE' || status === 'EXPIRED') return false;
+        const slot = String(d.catalog_slot || d.catalogSlot || 'ACTIVE').toUpperCase();
+        if (slot === 'ROTATED_OUT_STALE') return false;
+        const evolution = String(d.evolution_status || d.evolutionStatus || '').toUpperCase();
+        if (evolution === 'STALE_ROTATED_OUT') return false;
+        const avail = String(d.availability || 'IN_STOCK').toUpperCase();
+        if (avail === 'OUT_OF_STOCK') return false;
+        const expiry = d.expiry_date || d.expires_at;
+        if (expiry && new Date(expiry).getTime() <= Date.now()) return false;
+        return true;
+      });
+      for (const d of activeEligibleDeals.slice(0, 5)) {
         const mapped = this.mapDealToResolvedOffer(d);
         mapped.score = 10;
+        mapped.relevanceScore = 10;
         candidates.push(mapped);
       }
     }
 
     for (const d of deals) {
       const hay = `${d.slug || ''} ${d.title || ''} ${d.brand || ''} ${d.merchant || ''} ${d.category || ''}`.toLowerCase();
-      let score = 0;
+      let textScore = 0;
       for (const tok of tokens) {
         if (hay.includes(tok)) {
-          score += tok.length >= 4 ? 2 : 1;
+          textScore += tok.length >= 4 ? 2 : 1;
         }
       }
-      if (score >= 2) {
-        // Stage S Task 1: +5 impulse boost for verified everyday impulse deals (₹299–₹1,499 with >=25% discount)
+      if (textScore >= 2) {
         const price = Number(d.current_price_inr ?? d.currentPriceINR ?? 0);
         const discount = Number(d.verified_discount_percent ?? d.verifiedDiscountPercent ?? d.discount_percent ?? d.discountPercent ?? 0);
-        if (price >= 299 && price <= 1499 && discount >= 25) {
-          score += 5;
-        }
+        const isImpulse = price >= 299 && price <= 1499 && discount >= 25;
+        // Text relevance takes strict priority; impulse adds a 1-point tie-breaker so it doesn't bypass clarification or overtake an exact model match
+        const finalScore = textScore + (isImpulse ? 1 : 0);
         const mapped = this.mapDealToResolvedOffer(d);
-        mapped.score = score;
+        mapped.score = finalScore;
+        mapped.relevanceScore = textScore;
+        mapped.isImpulse = isImpulse;
         candidates.push(mapped);
       }
     }
@@ -1271,7 +1289,8 @@ export class SalesConversationEngine {
           availability: 'IN_STOCK',
           offerPath: '/offer',
           permittedClaims: [String(o.description || o.billing_model || 'Verified service offer')],
-          score
+          score,
+          relevanceScore: score
         });
       }
     }
@@ -1297,12 +1316,19 @@ export class SalesConversationEngine {
           availability: 'IN_STOCK',
           offerPath: `/deals/${encodeURIComponent(slug)}`,
           permittedClaims: [String(p.description || 'Verified partner offer')],
-          score
+          score,
+          relevanceScore: score
         });
       }
     }
 
-    candidates.sort((a, b) => (b.score || 0) - (a.score || 0));
+    candidates.sort((a, b) => {
+      const relDiff = (b.relevanceScore ?? b.score ?? 0) - (a.relevanceScore ?? a.score ?? 0);
+      if (relDiff !== 0) return relDiff;
+      const impDiff = (b.isImpulse ? 1 : 0) - (a.isImpulse ? 1 : 0);
+      if (impDiff !== 0) return impDiff;
+      return (b.score || 0) - (a.score || 0);
+    });
     if (candidates.length === 0) {
       return { resolvedOffer: null, clarificationNeeded: false, clarificationOptions: [] };
     }

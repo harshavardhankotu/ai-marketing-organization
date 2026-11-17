@@ -82,24 +82,27 @@ export function renderCustomerDeskWidgetHtml(defaultContext: string = ''): strin
         onClick: function() {
           var inp = document.getElementById('aros-desk-input');
           if (inp) inp.value = chip.q;
-          sendDesk(chip.q, '');
+          lastCtx = '';
+          sendDesk(chip.q, '', true);
         }
       };
     });
     setActions(acts);
   }
-  async function sendDesk(msgText, ctxSlug) {
+  async function sendDesk(msgText, ctxSlug, isExplicitNewSearch) {
     if (!msgText) return;
     appendMsg('user', msgText);
     setActions([]);
     try {
+      var resolvedContext = isExplicitNewSearch ? undefined : (ctxSlug || lastCtx || undefined);
       var res = await fetch('/api/v1/customer-desk/message', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: msgText,
           sessionId: sid,
-          productSlugOrContext: ctxSlug || lastCtx || undefined,
+          productSlugOrContext: resolvedContext,
+          isExplicitNewSearch: Boolean(isExplicitNewSearch),
           contactChannel: 'WEB_DESK'
         })
       });
@@ -115,7 +118,7 @@ export function renderCustomerDeskWidgetHtml(defaultContext: string = ''): strin
       } else if (data.checkout && data.checkout.checkoutMode === 'AFFILIATE_REDIRECT_READY') {
         extra = '<div style="margin-top:6px;display:flex;flex-direction:column;gap:5px;">' +
           '<a href="' + esc(data.checkout.redirectUrl) + '" target="_blank" rel="sponsored nofollow noopener" style="display:inline-block;background:#059669;color:#fff;padding:6px 10px;border-radius:6px;text-decoration:none;font-weight:600;text-align:center;">Go to Verified Merchant (#Ad) &rarr;</a>' +
-          (data.checkout.amazonUrl ? '<a href="' + esc(data.checkout.amazonUrl) + '" target="_blank" rel="sponsored nofollow noopener" style="display:inline-block;background:rgba(245,158,11,0.18);border:1px solid rgba(245,158,11,0.4);color:#fcd34d;padding:5px 8px;border-radius:6px;text-decoration:none;font-size:12px;font-weight:600;text-align:center;">Check on Amazon.in (#Ad) &rarr;</a>' : '') +
+          (data.checkout.amazonUrl ? '<a href="' + esc(data.checkout.amazonUrl) + '" target="_blank" rel="sponsored nofollow noopener" style="display:inline-block;background:rgba(245,158,11,0.18);border:1px solid rgba(245,158,11,0.4);color:#fcd34d;padding:5px 8px;border-radius:6px;text-decoration:none;font-size:12px;font-weight:600;text-align:center;">' + esc(data.checkout.amazonLabel || "Check Today's Marketplace Live Price (#Ad) \u2192") + '</a>' : '') +
           '</div>';
       }
       if (data.youtubeReview && data.youtubeReview.videoUrl) {

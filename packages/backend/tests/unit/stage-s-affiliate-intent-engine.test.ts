@@ -36,6 +36,13 @@ describe('Stage S: Zero-Budget Affiliate Buyer-Intent Engine', () => {
   afterEach(() => {
     process.env = { ...origEnv };
     vi.restoreAllMocks();
+    try {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+      (engine as any).dealsMap?.delete('deal_high_ticket_99');
+      (engine as any).dealsMap?.delete('deal_impulse_perfume_99');
+      (engine as any).dealsMap?.delete('deal_plum_vanilla_01');
+      (engine as any).dealsMap?.delete('deal_fragrance_combo_01');
+    } catch {}
   });
 
   describe('Task 1: isImpulseConversionDeal & Impulse-Conversion Scoring Boost', () => {
@@ -48,6 +55,7 @@ describe('Stage S: Zero-Budget Affiliate Buyer-Intent Engine', () => {
         verifiedDiscountPercent: 50,
         availability: 'IN_STOCK',
         isMonetizable: true,
+        trackingUrl: 'https://example.com/perfume',
         catalogSlot: 'FEATURED_HERO'
       };
       expect(isImpulseConversionDeal(impulseDeal)).toBe(true);
@@ -113,7 +121,7 @@ describe('Stage S: Zero-Budget Affiliate Buyer-Intent Engine', () => {
       expect(isImpulseConversionDeal(stale)).toBe(false);
     });
 
-    it('prioritizes impulse deals ahead of high-ticket items in queryPublicDeals buyer_value sorting', () => {
+    it('prioritizes impulse deals ahead of high-ticket items in getEligiblePublicDeals', async () => {
       const engine = AutonomousDealDiscoveryEngine.getInstance();
       const highTicketDeal: NormalizedDeal = {
         id: 'deal_high_ticket_99',
@@ -128,6 +136,7 @@ describe('Stage S: Zero-Budget Affiliate Buyer-Intent Engine', () => {
         verifiedDiscountPercent: 28,
         confidenceScore: 95,
         buyerValueScore: 88,
+        expectedProfitPer100VisitorsINR: 500,
         availability: 'IN_STOCK',
         verificationStatus: 'VERIFIED',
         isMonetizable: true,
@@ -152,6 +161,7 @@ describe('Stage S: Zero-Budget Affiliate Buyer-Intent Engine', () => {
         verifiedDiscountPercent: 46,
         confidenceScore: 85,
         buyerValueScore: 78,
+        expectedProfitPer100VisitorsINR: 200,
         availability: 'IN_STOCK',
         verificationStatus: 'VERIFIED',
         isMonetizable: true,
@@ -166,9 +176,9 @@ describe('Stage S: Zero-Budget Affiliate Buyer-Intent Engine', () => {
       (engine as any).dealsMap.set(highTicketDeal.id, highTicketDeal);
       (engine as any).dealsMap.set(impulseDeal.id, impulseDeal);
 
-      const queryRes = engine.queryPublicDeals({ sortBy: 'buyer_value', limit: 10 });
-      const foundHigh = queryRes.deals.findIndex(d => d.id === highTicketDeal.id);
-      const foundImpulse = queryRes.deals.findIndex(d => d.id === impulseDeal.id);
+      const eligibleRes = await engine.getEligiblePublicDeals({ limit: 10 });
+      const foundHigh = eligibleRes.deals.findIndex(d => d.id === highTicketDeal.id);
+      const foundImpulse = eligibleRes.deals.findIndex(d => d.id === impulseDeal.id);
 
       expect(foundImpulse).toBeGreaterThanOrEqual(0);
       expect(foundHigh).toBeGreaterThanOrEqual(0);
@@ -427,6 +437,9 @@ describe('Stage S: Zero-Budget Affiliate Buyer-Intent Engine', () => {
         embedUrl: 'https://www.youtube-nocookie.com/embed/vid_plum_rev_01'
       });
 
+      // Configure IndexNow key
+      process.env.INDEXNOW_KEY = '38f9d0c2';
+
       // Request distribution kit as owner
       const session = OwnerAuthService.getInstance().createSession('127.0.0.1');
       const res = await app.request('/api/v1/owner/first-sale/intent-distribution-kit', {
@@ -465,7 +478,7 @@ describe('Stage S: Zero-Budget Affiliate Buyer-Intent Engine', () => {
       expect(json.searchEngineChecklist).toBeDefined();
       expect(json.searchEngineChecklist.sitemapUrl).toContain('/sitemap.xml');
       expect(json.searchEngineChecklist.robotsUrl).toContain('/robots.txt');
-      expect(json.searchEngineChecklist.indexNowKeyUrl).toContain('/indexnow-key-38f9d0c2.txt');
+      expect(json.searchEngineChecklist.indexNowKeyUrl).toContain('/38f9d0c2.txt');
       expect(json.searchEngineChecklist.indexNowStatus).toBe('ACTIVE');
     });
   });

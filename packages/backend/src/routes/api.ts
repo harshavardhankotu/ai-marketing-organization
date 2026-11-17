@@ -5037,14 +5037,47 @@ apiRouter.post('/customer-desk/subscribe-alerts', async (c) => {
       ? body.categories.map((x: any) => String(x).trim()).filter(Boolean).slice(0, 8)
       : (body.category ? [String(body.category).trim()] : ['ALL_VERIFIED_DROPS']);
     const id = `sub_${createHash('sha256').update(email).digest('hex').slice(0, 18)}`;
-    const watches = targetPriceINR ? [{
+
+    // Finding 11: Merge incoming watch with existing watches in authorization_evidence_json before upsert
+    let existingWatches: any[] = [];
+    try {
+      const d1Repo = D1RevenueRepository.getInstance();
+      const existingSql = `SELECT authorization_evidence_json FROM outbound_contacts WHERE prospect_email = ? LIMIT 1`;
+      let existingRows: any[] = [];
+      if (d1Repo.isRemoteD1Configured() || isProduction()) {
+        const res = await d1Repo.executeRead('outbound_contacts', existingSql, [email]);
+        existingRows = Array.isArray(res?.results) ? res.results : [];
+      } else {
+        existingRows = getDb().prepare(existingSql).all(email) as any[];
+      }
+      if (existingRows.length > 0) {
+        const prevEv = JSON.parse(existingRows[0].authorization_evidence_json || '{}');
+        if (Array.isArray(prevEv.watches)) {
+          existingWatches = prevEv.watches;
+        }
+      }
+    } catch {}
+
+    const newWatch = targetPriceINR ? {
       target_deal_id: dealId || null,
       target_deal_slug: productSlug || null,
       target_price_inr: targetPriceINR,
       query_or_url: productSlug || dealId || categories[0],
       registered_at: new Date().toISOString(),
       dispatched_at: null
-    }] : [];
+    } : null;
+
+    let mergedWatches = existingWatches.filter((w: any) => {
+      if (!w) return false;
+      if (dealId && w.target_deal_id === dealId) return false;
+      if (productSlug && w.target_deal_slug === productSlug) return false;
+      return true;
+    });
+    if (newWatch) {
+      mergedWatches.push(newWatch);
+    }
+    const watches = mergedWatches.slice(-10);
+
     const evidenceJson = JSON.stringify({
       consent_status: 'OPTED_IN_FIRST_PARTY',
       subscribedAt: new Date().toISOString(),
@@ -11490,11 +11523,16 @@ apiRouter.post('/owner/system-doctor/heal', async (c) => {
 apiRouter.get('/owner/first-sale/intent-distribution-kit', async (c) => {
   const { AutonomousDealDiscoveryEngine, isImpulseConversionDeal } = await import('../commission/autonomous-deal-discovery-engine.js');
   const { YouTubeReviewEnricher } = await import('../integrations/youtube-review-enricher.js');
+  const { generateComparisonPairs, generateBuyerIntentHubs } = await import('../commission/static-site-generator.js');
   const siteUrl = getTrustedPublicSiteUrl().replace(/\/$/, '');
 
   const engine = AutonomousDealDiscoveryEngine.getInstance();
   const eligible = await engine.getEligiblePublicDeals({ limit: 50 });
   const allDeals = eligible.deals || [];
+
+  // Finding 10 & 12: Generate valid comparison pairs and buyer hubs from actual inventory
+  const generatedPairs = generateComparisonPairs(allDeals, 6);
+  const generatedHubs = generateBuyerIntentHubs(allDeals, siteUrl, 6);
 
   // Filter top 5 verified impulse deals (₹299–₹1,499)
   let impulseDeals = allDeals.filter(d => isImpulseConversionDeal(d));
@@ -11519,7 +11557,7 @@ apiRouter.get('/owner/first-sale/intent-distribution-kit', async (c) => {
     })
   );
 
-  const items = enrichedDeals.map((deal, idx) => {
+  const items = enrichedDeals.map((deal) => {
     const slug = deal.slug || deal.canonicalSlug || deal.id;
     const price = Math.round(Number(deal.currentPriceINR || 0));
     const refPrice = Math.round(Number(deal.referencePriceINR || 0));
@@ -11528,17 +11566,22 @@ apiRouter.get('/owner/first-sale/intent-distribution-kit', async (c) => {
     const officialRedirectUrl = `${siteUrl}/api/v1/public/deals/${encodeURIComponent(deal.id)}/redirect?utm_source=distribution_kit`;
     const amazonUrl = `${siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(deal.title || '').slice(0, 120))}&dealId=${encodeURIComponent(deal.id)}`;
 
-    // Comparison URL with another deal in list
-    const otherDeal = enrichedDeals[(idx + 1) % enrichedDeals.length];
-    const otherSlug = otherDeal && otherDeal.id !== deal.id ? (otherDeal.slug || otherDeal.canonicalSlug || otherDeal.id) : null;
-    const comparisonUrl = otherSlug ? `${siteUrl}/vs/${encodeURIComponent(slug)}-vs-${encodeURIComponent(otherSlug)}` : null;
+    // Finding 12: Comparison URL only for a pair that /vs/ actually serves
+    const matchingPair = generatedPairs.find(
+      (p) => p.dealA.id === deal.id || p.dealB.id === deal.id || p.dealA.slug === slug || p.dealB.slug === slug
+    );
+    const comparisonUrl = matchingPair
+      ? `${siteUrl}/vs/${encodeURIComponent(matchingPair.comparisonSlug)}`
+      : null;
 
-    // Buyer guide / intent hub URL
-    const catSlug = (deal.category || 'all').toLowerCase().replace(/[^a-z0-9]+/g, '-');
-    const buyerGuideUrl = `${siteUrl}/best/${encodeURIComponent(catSlug)}-india`;
+    // Finding 10: Buyer guide / intent hub URL only for a generated hub
+    const catLower = (deal.category || '').toLowerCase();
+    const matchingHub = generatedHubs.find(
+      (h) => h.categoryLabel.toLowerCase() === catLower || h.deals.some((d: any) => d.id === deal.id || d.slug === slug)
+    );
+    const buyerGuideUrl = matchingHub ? matchingHub.canonicalUrl : null;
 
     // Target subreddit determination
-    const catLower = (deal.category || '').toLowerCase();
     let subreddit = 'r/IndiaDeals';
     if (/perfume|fragrance|scent|cologne|attar/.test(catLower)) {
       subreddit = 'r/DesiFragranceAddicts';
@@ -11552,7 +11595,7 @@ apiRouter.get('/owner/first-sale/intent-distribution-kit', async (c) => {
     const youtubeCommentReply = `Real Price & Prime Stock Check: Observed ₹${price.toLocaleString('en-IN')}${refPrice > price ? ` (MRP ₹${refPrice.toLocaleString('en-IN')}, ${discount}% off)` : ''} at official store today: ${dealDetailUrl} | Amazon live price check & Prime coupons (#Ad): ${amazonUrl}. #Ad (Affiliate link; price verified at snapshot).`;
 
     // 2. Reddit / Community Deal & Comparison Reply
-    const redditReply = `FYI for anyone looking at ${deal.title} — official brand store is currently ₹${price.toLocaleString('en-IN')}${refPrice > price ? ` (down from ₹${refPrice.toLocaleString('en-IN')}, verified ${discount}% discount${deal.couponCode ? ` with code ${deal.couponCode}` : ''})` : ''}. Price history snapshot & head-to-head comparison: ${dealDetailUrl} (Amazon price check: ${amazonUrl}). #Ad`;
+    const redditReply = `FYI for anyone looking at ${deal.title} — official brand store is currently ₹${price.toLocaleString('en-IN')}${refPrice > price ? ` (down from ₹${refPrice.toLocaleString('en-IN')}, verified ${discount}% discount${deal.couponCode ? ` with code ${deal.couponCode}` : ''})` : ''}. Price history snapshot: ${dealDetailUrl}${comparisonUrl ? ` (Comparison: ${comparisonUrl})` : ''} (Amazon price check: ${amazonUrl}). #Ad`;
 
     // 3. Instagram / Telegram Caption Card pointing to /ig
     const categoryTag = catLower.replace(/[^a-z0-9]/g, '');
@@ -11587,11 +11630,17 @@ apiRouter.get('/owner/first-sale/intent-distribution-kit', async (c) => {
     };
   });
 
+  // Finding 9: Derive IndexNow readiness from configuration
+  const rawIndexNowKey = (process.env.INDEXNOW_KEY || '').trim();
+  const isIndexNowKeyConfigured = /^[a-zA-Z0-9-]{8,128}$/.test(rawIndexNowKey);
+  const indexNowStatus = isIndexNowKeyConfigured ? 'ACTIVE' : 'AWAITING_INDEXNOW_KEY';
+  const indexNowKeyUrl = isIndexNowKeyConfigured ? `${siteUrl}/${rawIndexNowKey}.txt` : null;
+
   const searchEngineChecklist = {
     sitemapUrl: `${siteUrl}/sitemap.xml`,
     robotsUrl: `${siteUrl}/robots.txt`,
-    indexNowKeyUrl: `${siteUrl}/indexnow-key-38f9d0c2.txt`,
-    indexNowStatus: 'ACTIVE',
+    indexNowKeyUrl,
+    indexNowStatus,
     googleSearchConsoleInstructions: `Submit sitemap URL ${siteUrl}/sitemap.xml in Google Search Console -> Sitemaps.`,
     bingWebmasterInstructions: `Submit sitemap URL ${siteUrl}/sitemap.xml in Bing Webmaster Tools -> Sitemaps. IndexNow automatically pings Bing and Yandex on deal discovery.`
   };
