@@ -329,6 +329,22 @@ export const api = {
     fetchApi(`/tools/financial-radar${forceRefresh ? '?refresh=true' : ''}`),
   getPublicAutonomyStatus: () =>
     fetchApi('/public/autonomy-status'),
+  getPublicFinancialTruth: () =>
+    fetchApi('/public/financial-truth'),
+  getPublicDeals: (params?: string) =>
+    fetchApi(`/public/deals${params ? (params.startsWith('?') ? params : `?${params}`) : ''}`),
+  getPublicComparisons: () =>
+    fetchApi('/public/comparisons'),
+  getPublicBuyerGuides: () =>
+    fetchApi('/public/buyer-guides'),
+  getRazorpayHealth: () =>
+    fetchApi('/payments/razorpay/health'),
+  getTelegramStatus: () =>
+    fetchApi('/integrations/telegram/status'),
+  getOwnerAutomation: () =>
+    fetchApi('/owner/automation'),
+  verifyOwnerUpiClaim: (data: { claimId?: string; utr?: string; amountINR?: number; businessId?: string; notes?: string }) =>
+    fetchApi('/owner/upi-verify', { method: 'POST', body: JSON.stringify(data) }),
   // Single-Owner First-Sale Execution Console
   getFirstSaleReadyActions: () =>
     fetchApi('/owner/first-sale/ready-actions'),

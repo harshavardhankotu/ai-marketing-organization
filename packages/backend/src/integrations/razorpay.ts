@@ -2,7 +2,7 @@ import { createHmac, timingSafeEqual, randomUUID, createHash } from 'crypto';
 import { RevenueReconciliationEngine } from '../revenue/revenue-reconciliation.js';
 import { CustomerJourneyTracker } from '../revenue/customer-journey-tracker.js';
 import { PaymentMethod, DataClassification } from '@ai-marketing/shared';
-import { isPlaceholderCredential, isProduction, getTrustedPublicSiteUrl } from '../config/env.js';
+import { isPlaceholderCredential, isProduction, getTrustedPublicSiteUrl, normalizeSecretValue } from '../config/env.js';
 import { resolveAuthorizedOffer } from '../revenue/offer-catalog.js';
 import { OwnerAuthService } from '../auth/owner-auth.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
@@ -113,18 +113,55 @@ export class RazorpayAdapter {
     webhookSecret: string;
     mode: 'LIVE' | 'SANDBOX_TEST' | 'MISCONFIGURED_CREDENTIAL_PAIR' | 'UNCONFIGURED';
   } {
-    const liveKeyId = (process.env.RAZORPAY_KEY_ID || '').trim();
-    const liveKeySecret = (process.env.RAZORPAY_KEY_SECRET || '').trim();
-    const liveWebhookSecret = (process.env.RAZORPAY_WEBHOOK_SECRET || '').trim();
+    const rawMode = (process.env.RAZORPAY_MODE || '').trim().toLowerCase();
+    const liveKeyId = normalizeSecretValue(process.env.RAZORPAY_KEY_ID || process.env.RAZORPAY_KEY);
+    const liveKeySecret = normalizeSecretValue(process.env.RAZORPAY_KEY_SECRET || process.env.RAZORPAY_SECRET);
+    const liveWebhookSecret = normalizeSecretValue(process.env.RAZORPAY_WEBHOOK_SECRET);
 
-    const testKeyId = (process.env.RAZORPAY_TEST_KEY_ID || '').trim();
-    const testKeySecret = (process.env.RAZORPAY_TEST_KEY_SECRET || '').trim();
-    const testWebhookSecret = (process.env.RAZORPAY_TEST_WEBHOOK_SECRET || '').trim();
+    const testKeyId = normalizeSecretValue(process.env.RAZORPAY_TEST_KEY_ID);
+    const testKeySecret = normalizeSecretValue(process.env.RAZORPAY_TEST_KEY_SECRET);
+    const testWebhookSecret = normalizeSecretValue(process.env.RAZORPAY_TEST_WEBHOOK_SECRET);
 
     const isLiveKeySet = Boolean(liveKeyId && !isPlaceholderCredential(liveKeyId));
     const isLiveSecretSet = Boolean(liveKeySecret && !isPlaceholderCredential(liveKeySecret));
 
-    // Imposter test key placed in live slot
+    // Strictly block cross-mixing rzp_test_ / rzp_live_
+    if (
+      (liveKeyId.startsWith('rzp_test_') && liveKeySecret.startsWith('rzp_live_')) ||
+      (liveKeyId.startsWith('rzp_live_') && liveKeySecret.startsWith('rzp_test_')) ||
+      testKeyId.startsWith('rzp_live_') ||
+      testKeySecret.startsWith('rzp_live_')
+    ) {
+      return { keyId: '', keySecret: '', webhookSecret: '', mode: 'MISCONFIGURED_CREDENTIAL_PAIR' };
+    }
+
+    // Support rzp_test_* in RAZORPAY_KEY_ID + RAZORPAY_KEY_SECRET when RAZORPAY_MODE === 'test' (if RAZORPAY_TEST_KEY_ID is unset)
+    if (rawMode === 'test') {
+      const isTestKeySet = Boolean(testKeyId && !isPlaceholderCredential(testKeyId));
+      const isTestSecretSet = Boolean(testKeySecret && !isPlaceholderCredential(testKeySecret));
+      if (isTestKeySet && isTestSecretSet) {
+        return {
+          keyId: testKeyId,
+          keySecret: testKeySecret,
+          webhookSecret: testWebhookSecret || liveWebhookSecret,
+          mode: 'SANDBOX_TEST'
+        };
+      }
+      if (!testKeyId && liveKeyId.startsWith('rzp_test_') && isLiveSecretSet) {
+        return {
+          keyId: liveKeyId,
+          keySecret: liveKeySecret,
+          webhookSecret: liveWebhookSecret || testWebhookSecret,
+          mode: 'SANDBOX_TEST'
+        };
+      }
+      if (liveKeyId.startsWith('rzp_live_')) {
+        return { keyId: '', keySecret: '', webhookSecret: '', mode: 'MISCONFIGURED_CREDENTIAL_PAIR' };
+      }
+      return { keyId: '', keySecret: '', webhookSecret: '', mode: 'UNCONFIGURED' };
+    }
+
+    // Imposter test key placed in live slot when mode is live or default
     if (liveKeyId.startsWith('rzp_test_') || liveKeySecret.startsWith('rzp_test_')) {
       return { keyId: '', keySecret: '', webhookSecret: '', mode: 'MISCONFIGURED_CREDENTIAL_PAIR' };
     }
@@ -191,8 +228,20 @@ export class RazorpayAdapter {
     return this.getCredentialPair().keySecret;
   }
 
-  private getWebhookSecret(): string {
-    return (process.env.RAZORPAY_WEBHOOK_SECRET || process.env.RAZORPAY_TEST_WEBHOOK_SECRET || '').trim();
+  public getWebhookSecret(): string {
+    const pair = this.getCredentialPair();
+    if (pair.webhookSecret && !isPlaceholderCredential(pair.webhookSecret)) {
+      return normalizeSecretValue(pair.webhookSecret);
+    }
+    const rawMode = (process.env.RAZORPAY_MODE || '').trim().toLowerCase();
+    if (rawMode === 'test') {
+      const testSecret = normalizeSecretValue(process.env.RAZORPAY_TEST_WEBHOOK_SECRET);
+      if (testSecret && !isPlaceholderCredential(testSecret)) {
+        return testSecret;
+      }
+      return normalizeSecretValue(process.env.RAZORPAY_WEBHOOK_SECRET || '');
+    }
+    return normalizeSecretValue(process.env.RAZORPAY_WEBHOOK_SECRET || '');
   }
 
   public isLiveConfigured(): boolean {

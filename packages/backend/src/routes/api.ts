@@ -25,7 +25,7 @@ import {
 } from '@ai-marketing/shared';
 import { PartnerNetwork } from '../commission/types.js';
 
-import { isProduction, isPlaceholderCredential, getTrustedPublicSiteUrl } from '../config/env.js';
+import { isProduction, isPlaceholderCredential, getTrustedPublicSiteUrl, normalizeSecretValue } from '../config/env.js';
 import { SystemReadinessEngine } from '../control-plane/system-readiness.js';
 import { googleAdsClient } from '../integrations/google-ads.js';
 import { AttributionEvidenceEngine } from '../revenue/attribution-evidence.js';
@@ -3491,10 +3491,18 @@ apiRouter.get('/payments/razorpay/health', async (c) => {
   let configured = health.configured;
   let keyMode: 'LIVE' | 'TEST_SANDBOX' | 'NONE' = health.live_mode ? 'LIVE' : (configured ? 'TEST_SANDBOX' : 'NONE');
   let authStatus: 'NOT_CONFIGURED' | 'CREDENTIALS_PRESENT' | 'PROVIDER_AUTHENTICATED' | 'AUTH_FAILED' = 'NOT_CONFIGURED';
+  let authDiagnosticCode: 'OK' | 'MISSING_KEYS' | 'MODE_PREFIX_MISMATCH' | 'RAZORPAY_401_REJECTED_SECRET' = 'OK';
   let providerAcceptedAuth = false;
   let httpStatus: number | null = null;
   let activeKeyId = '';
   let activeKeySecret = '';
+  let resolveErrorMsg = '';
+
+  const rawMode = (process.env.RAZORPAY_MODE || '').trim().toLowerCase();
+  const liveKeyId = normalizeSecretValue(process.env.RAZORPAY_KEY_ID || process.env.RAZORPAY_KEY);
+  const liveSecret = normalizeSecretValue(process.env.RAZORPAY_KEY_SECRET || process.env.RAZORPAY_SECRET);
+  const testKeyId = normalizeSecretValue(process.env.RAZORPAY_TEST_KEY_ID);
+  const testSecret = normalizeSecretValue(process.env.RAZORPAY_TEST_KEY_SECRET);
 
   try {
     const { RazorpayStandardAdapter } = await import('../payments/razorpay-adapter.js');
@@ -3503,30 +3511,51 @@ apiRouter.get('/payments/razorpay/health', async (c) => {
     keyMode = creds.mode;
     activeKeyId = creds.keyId;
     activeKeySecret = creds.keySecret;
-  } catch {
-    // If resolveCredentials throws, keep configured from legacy health
+  } catch (err: any) {
+    resolveErrorMsg = String(err?.message || '');
   }
 
   const hasEnvKeyId = Boolean(
-    (process.env.RAZORPAY_KEY_ID || process.env.RAZORPAY_TEST_KEY_ID || process.env.RAZORPAY_KEY || '').trim() &&
-    !isPlaceholderCredential((process.env.RAZORPAY_KEY_ID || process.env.RAZORPAY_TEST_KEY_ID || process.env.RAZORPAY_KEY || '').trim())
+    (liveKeyId || testKeyId) &&
+    !isPlaceholderCredential(liveKeyId || testKeyId)
   );
   const hasEnvSecret = Boolean(
-    (process.env.RAZORPAY_KEY_SECRET || process.env.RAZORPAY_TEST_KEY_SECRET || process.env.RAZORPAY_SECRET || '').trim() &&
-    !isPlaceholderCredential((process.env.RAZORPAY_KEY_SECRET || process.env.RAZORPAY_TEST_KEY_SECRET || process.env.RAZORPAY_SECRET || '').trim())
+    (liveSecret || testSecret) &&
+    !isPlaceholderCredential(liveSecret || testSecret)
   );
 
   const keyIdPresent = hasEnvKeyId || Boolean(activeKeyId && !activeKeyId.includes('fallback') && !isPlaceholderCredential(activeKeyId));
   const secretPresent = hasEnvSecret || Boolean(activeKeySecret && !activeKeySecret.includes('fallback') && !isPlaceholderCredential(activeKeySecret));
 
-  // Spec Stage P.3.5 Task 5: configured MUST be false whenever key_id_present or secret_present is false
+  const isCrossMixed =
+    (liveKeyId.startsWith('rzp_test_') && liveSecret.startsWith('rzp_live_')) ||
+    (liveKeyId.startsWith('rzp_live_') && liveSecret.startsWith('rzp_test_')) ||
+    testKeyId.startsWith('rzp_live_') ||
+    testSecret.startsWith('rzp_live_') ||
+    (rawMode === 'live' && liveKeyId.startsWith('rzp_test_')) ||
+    (rawMode === 'test' && liveKeyId.startsWith('rzp_live_') && !testKeyId) ||
+    resolveErrorMsg.includes('MODE_PREFIX_MISMATCH');
+
+  // Spec Stage P.3.5 Task 5 & Stage Q Task 3
   if (!keyIdPresent || !secretPresent) {
     configured = false;
     authStatus = 'NOT_CONFIGURED';
     keyMode = 'NONE';
+    authDiagnosticCode = 'MISSING_KEYS';
+  } else if (isCrossMixed) {
+    configured = false;
+    authStatus = 'AUTH_FAILED';
+    authDiagnosticCode = 'MODE_PREFIX_MISMATCH';
+  } else if (resolveErrorMsg) {
+    configured = false;
+    authStatus = 'AUTH_FAILED';
+    authDiagnosticCode = resolveErrorMsg.includes('MODE_PREFIX_MISMATCH')
+      ? 'MODE_PREFIX_MISMATCH'
+      : 'MISSING_KEYS';
   } else {
     configured = true;
     authStatus = 'CREDENTIALS_PRESENT';
+    authDiagnosticCode = 'OK';
   }
 
   // When credential pair is present and not a dummy fallback, probe Razorpay Orders API
@@ -3548,9 +3577,11 @@ apiRouter.get('/payments/razorpay/health', async (c) => {
       if (res.status === 200) {
         providerAcceptedAuth = true;
         authStatus = 'PROVIDER_AUTHENTICATED';
+        authDiagnosticCode = 'OK';
       } else if (res.status === 401) {
         providerAcceptedAuth = false;
         authStatus = 'AUTH_FAILED';
+        authDiagnosticCode = 'RAZORPAY_401_REJECTED_SECRET';
       } else {
         providerAcceptedAuth = false;
       }
@@ -3566,6 +3597,7 @@ apiRouter.get('/payments/razorpay/health', async (c) => {
       configured,
       keyMode,
       authStatus,
+      authDiagnosticCode,
       key_id_present: keyIdPresent,
       secret_present: secretPresent,
       providerAcceptedAuth,
@@ -3576,8 +3608,8 @@ apiRouter.get('/payments/razorpay/health', async (c) => {
 });
 
 apiRouter.post('/webhooks/razorpay', async (c) => {
-  // Hard-fail immediately in production if RAZORPAY_WEBHOOK_SECRET is missing or default/placeholder
-  const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
+  // Hard-fail immediately in production if webhook secret is missing or default/placeholder
+  const webhookSecret = razorpayAdapter.getWebhookSecret();
   if (isProduction() && (!webhookSecret || isPlaceholderCredential(webhookSecret))) {
     return c.json({
       success: false,
@@ -4919,6 +4951,24 @@ apiRouter.post('/customer-desk/message', async (c) => {
       }, 503);
     }
 
+    let youtubeReview: any = null;
+    let resolvedOffer: any = result.resolvedOffer ?? null;
+    if (resolvedOffer && (resolvedOffer.id || resolvedOffer.idOrSlug) && (resolvedOffer.kind === 'AFFILIATE_DEAL' || (resolvedOffer as any).affiliateNetwork || result.routedAction === 'AFFILIATE_DEAL')) {
+      try {
+        const { YouTubeReviewEnricher } = await import('../integrations/youtube-review-enricher.js');
+        youtubeReview = await YouTubeReviewEnricher.getInstance().resolveReviewForDeal({
+          id: resolvedOffer.id || resolvedOffer.idOrSlug,
+          title: resolvedOffer.title,
+          merchant: resolvedOffer.merchantOrProvider,
+          category: resolvedOffer.lane
+        });
+        resolvedOffer = {
+          ...resolvedOffer,
+          youtubeReview
+        };
+      } catch {}
+    }
+
     return c.json({
       success: true,
       deskMode: '24_7_EVENT_DRIVEN',
@@ -4931,7 +4981,8 @@ apiRouter.post('/customer-desk/message', async (c) => {
       routedAction: result.routedAction,
       reply: result.responseTemplate || '',
       responseTemplate: result.responseTemplate || '',
-      resolvedOffer: result.resolvedOffer ?? null,
+      resolvedOffer,
+      youtubeReview,
       clarificationOptions: result.clarificationOptions ?? [],
       checkout: result.checkout ?? null,
       optionalOrderBump: result.optionalOrderBump ?? null,
@@ -8655,6 +8706,26 @@ apiRouter.get('/public/autonomy-status', async (c) => {
     const { AutonomousSystemDoctor } = await import('../automation/autonomous-system-doctor.js');
     systemDoctorSummary = await AutonomousSystemDoctor.getInstance().getPublicSystemDoctorSummary();
   } catch {}
+
+  let youtubeDiscovery: any = null;
+  try {
+    const { YouTubeReviewEnricher } = await import('../integrations/youtube-review-enricher.js');
+    const ytEnricher = YouTubeReviewEnricher.getInstance();
+    const cachedCount = await ytEnricher.getCachedCount();
+    const ytApiKey = normalizeSecretValue(process.env.YOUTUBE_API_KEY || process.env.GOOGLE_API_KEY);
+    const tavilyKey = normalizeSecretValue(process.env.TAVILY_API_KEY);
+    const hasYtKey = Boolean(ytApiKey && !isPlaceholderCredential(ytApiKey));
+    const hasTavilyKey = Boolean(tavilyKey && !isPlaceholderCredential(tavilyKey));
+    youtubeDiscovery = {
+      provider: 'YouTubeReviewEnricher',
+      configured: hasYtKey || hasTavilyKey,
+      apiKeyConfigured: hasYtKey,
+      tavilyFallbackConfigured: hasTavilyKey,
+      status: hasYtKey ? 'CONFIGURED_API_KEY' : (hasTavilyKey ? 'CONFIGURED_TAVILY_FALLBACK' : 'UNCONFIGURED'),
+      cachedReviewsCount: cachedCount
+    };
+  } catch {}
+
   let instagramIntegration: any = null;
   try {
     const { InstagramBusinessAdapter } = await import('../integrations/instagram-business-adapter.js');
@@ -8677,6 +8748,8 @@ apiRouter.get('/public/autonomy-status', async (c) => {
     indexNowStatus,
     instagramIntegration,
     systemDoctorSummary,
+    systemDoctor: systemDoctorSummary,
+    youtubeDiscovery,
     buildMetadata: {
       version: '5.8.4',
       gitCommit: currentCommit,
@@ -8739,6 +8812,7 @@ apiRouter.get('/public/autonomy-status', async (c) => {
         client: 'CuelinksV3Client',
         status: cuelinksStatus
       },
+      youtubeDiscovery,
       monetizationEngines: {
         engineA_selfServeTools: pagespeedStatus === 'NOT_CONFIGURED' ? 'CONFIGURED' : 'ACTIVE',
         engineB_multiSectorAffiliate: cuelinksStatus === 'NOT_CONFIGURED' ? 'CONFIGURED' : 'ACTIVE',
@@ -8792,10 +8866,13 @@ apiRouter.get('/public/deals', async (c) => {
     const categories = Array.from(new Set(allEligible.deals.map(d => d.category))).filter(Boolean);
     const merchants = Array.from(new Set(allEligible.deals.map(d => d.merchant))).filter(Boolean);
 
+    const { YouTubeReviewEnricher } = await import('../integrations/youtube-review-enricher.js');
+    const enrichedDeals = await YouTubeReviewEnricher.getInstance().enrichDeals(eligible.deals, limit);
+
     return c.json({
       success: true,
       data: {
-        deals: eligible.deals,
+        deals: enrichedDeals,
         total: eligible.total,
         categories,
         merchants,
@@ -9169,6 +9246,13 @@ apiRouter.get('/public/comparisons/:comparisonSlug', async (c) => {
   }
 
   const siteUrl = getTrustedPublicSiteUrl().replace(/\/$/, '');
+  const { YouTubeReviewEnricher } = await import('../integrations/youtube-review-enricher.js');
+  const ytEnricher = YouTubeReviewEnricher.getInstance();
+  const [enrichedA, enrichedB] = await Promise.all([
+    ytEnricher.enrichDeal(matched.dealA),
+    ytEnricher.enrichDeal(matched.dealB)
+  ]);
+
   const formatSide = (d: any) => ({
     id: d.id,
     slug: d.slug || d.canonicalSlug || d.id,
@@ -9186,6 +9270,7 @@ apiRouter.get('/public/comparisons/:comparisonSlug', async (c) => {
     targetBuyerSegment: d.targetBuyerSegment || null,
     expectedProfitPer100VisitorsINR: Number(d.expectedProfitPer100VisitorsINR || 0),
     rawSpecs: d.evidenceJson?.rawSpecs || {},
+    youtubeReview: d.youtubeReview || null,
     rail1RedirectUrl: `${siteUrl}/api/v1/public/deals/${encodeURIComponent(d.id)}/redirect?utm_source=vs_compare`,
     rail2AmazonRedirectUrl: `${siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(d.title || '').slice(0, 120))}&dealId=${encodeURIComponent(d.id)}`,
     amazonCtaLabel: "Check Today's Live Price & Prime Coupons on Amazon.in →",
@@ -9202,8 +9287,8 @@ apiRouter.get('/public/comparisons/:comparisonSlug', async (c) => {
       canonicalUrl: `${siteUrl}/vs/${encodeURIComponent(matched.comparisonSlug)}`,
       amazonTagConfigured: Boolean((process.env.AMAZON_AFFILIATE_TAG || '').trim()),
       disclosure: 'D2C store prices are verified merchant snapshots observed at the listed timestamp. Amazon.in buttons link directly to live Amazon.in listings without scraped prices. Qualifying purchases may earn an affiliate commission (#Ad).',
-      dealA: formatSide(matched.dealA),
-      dealB: formatSide(matched.dealB),
+      dealA: formatSide(enrichedA),
+      dealB: formatSide(enrichedB),
       relatedPairs: pairs
         .filter(p => p.comparisonSlug !== matched.comparisonSlug)
         .slice(0, 6)
@@ -9246,7 +9331,16 @@ apiRouter.get('/vs/:comparisonSlug', async (c) => {
       siteUrl
     };
   }
-  return c.html(StaticSiteGenerator.getInstance().renderComparisonHtml(matched, config, pairs));
+
+  const { YouTubeReviewEnricher } = await import('../integrations/youtube-review-enricher.js');
+  const ytEnricher = YouTubeReviewEnricher.getInstance();
+  const [enrichedA, enrichedB] = await Promise.all([
+    ytEnricher.enrichDeal(matched.dealA),
+    ytEnricher.enrichDeal(matched.dealB)
+  ]);
+  const enrichedMatched = { ...matched, dealA: enrichedA, dealB: enrichedB };
+
+  return c.html(StaticSiteGenerator.getInstance().renderComparisonHtml(enrichedMatched, config, pairs));
 });
 
 /**
@@ -9317,8 +9411,24 @@ apiRouter.get('/best/:intentSlug', async (c) => {
       siteUrl
     };
   }
+  const { YouTubeReviewEnricher } = await import('../integrations/youtube-review-enricher.js');
+  const ytEnricher = YouTubeReviewEnricher.getInstance();
+  const [bov, lop, prb] = await Promise.all([
+    matched.picks.bestOverallValue ? ytEnricher.enrichDeal(matched.picks.bestOverallValue) : null,
+    matched.picks.lowestObservedPrice ? ytEnricher.enrichDeal(matched.picks.lowestObservedPrice) : null,
+    matched.picks.premiumPick ? ytEnricher.enrichDeal(matched.picks.premiumPick) : null
+  ]);
+  const enrichedMatched = {
+    ...matched,
+    picks: {
+      ...matched.picks,
+      bestOverallValue: bov || matched.picks.bestOverallValue,
+      lowestObservedPrice: lop || matched.picks.lowestObservedPrice,
+      premiumPick: prb || matched.picks.premiumPick
+    }
+  };
   const comparisons = generateComparisonPairs(eligible.deals || [], 8);
-  return c.html(StaticSiteGenerator.getInstance().renderBuyerGuideHtml(matched, hubs, comparisons, config));
+  return c.html(StaticSiteGenerator.getInstance().renderBuyerGuideHtml(enrichedMatched, hubs, comparisons, config));
 });
 
 /**
@@ -15145,10 +15255,12 @@ const renderIgStorefrontHandler = async (c: any) => {
   let deals: any[] = [];
   try {
     const eligible = await AutonomousDealDiscoveryEngine.getInstance().getEligiblePublicDeals({ limit: 50 });
-    deals = (eligible.deals || [])
+    const rawDeals = (eligible.deals || [])
       .map((d: any) => repairTitlePriceMismatch(d))
       .filter((r: any) => !r.quarantined)
       .map((r: any) => r.deal);
+    const { YouTubeReviewEnricher } = await import('../integrations/youtube-review-enricher.js');
+    deals = await YouTubeReviewEnricher.getInstance().enrichDeals(rawDeals, 8);
   } catch {}
 
   let config: any;

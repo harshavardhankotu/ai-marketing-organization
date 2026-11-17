@@ -3,18 +3,24 @@ import path from 'path';
 import crypto from 'crypto';
 
 /**
- * Strips surrounding whitespace and matching single/double quotes from env values.
+ * Strips surrounding quotes, whitespace, and literal/actual \r or \n characters from env values.
  */
 export function normalizeSecretValue(val?: string | null): string {
   if (!val) return '';
-  let trimmed = String(val).trim();
-  if (
-    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
-    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  let s = String(val).trim();
+  while (
+    (s.startsWith('"') && s.endsWith('"')) ||
+    (s.startsWith("'") && s.endsWith("'"))
   ) {
-    trimmed = trimmed.slice(1, -1).trim();
+    s = s.slice(1, -1).trim();
   }
-  return trimmed;
+  s = s.replace(/[\r\n]+/g, '').trim();
+
+  const isJson = s.startsWith('{') && s.endsWith('}');
+  if (!isJson && !s.includes('"private_key"')) {
+    s = s.replace(/\\r|\\n/g, '').trim();
+  }
+  return s;
 }
 
 /**

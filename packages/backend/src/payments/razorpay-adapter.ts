@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual, randomUUID } from 'crypto';
-import { isProduction, isPlaceholderCredential } from '../config/env.js';
+import { isProduction, isPlaceholderCredential, normalizeSecretValue } from '../config/env.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { SiteAuditFixPackGenerator } from '../tools/site-audit/site-audit-fixpack-generator.js';
 import { TelegramBotAdapter } from '../integrations/telegram-adapter.js';
@@ -81,28 +81,44 @@ export class RazorpayStandardAdapter {
       throw new Error(`INVALID_RAZORPAY_MODE: Unknown RAZORPAY_MODE '${process.env.RAZORPAY_MODE}'. Must be 'test' or 'live'.`);
     }
 
-    const liveKeyId = (process.env.RAZORPAY_KEY_ID || process.env.RAZORPAY_KEY || '').trim();
-    const liveSecret = (process.env.RAZORPAY_KEY_SECRET || process.env.RAZORPAY_SECRET || '').trim();
-    const testKeyId = (process.env.RAZORPAY_TEST_KEY_ID || '').trim();
-    const testSecret = (process.env.RAZORPAY_TEST_KEY_SECRET || '').trim();
+    const liveKeyId = normalizeSecretValue(process.env.RAZORPAY_KEY_ID || process.env.RAZORPAY_KEY);
+    const liveSecret = normalizeSecretValue(process.env.RAZORPAY_KEY_SECRET || process.env.RAZORPAY_SECRET);
+    const testKeyId = normalizeSecretValue(process.env.RAZORPAY_TEST_KEY_ID);
+    const testSecret = normalizeSecretValue(process.env.RAZORPAY_TEST_KEY_SECRET);
+
+    // Strictly block any cross-mixing
+    if (
+      (liveKeyId.startsWith('rzp_test_') && liveSecret.startsWith('rzp_live_')) ||
+      (liveKeyId.startsWith('rzp_live_') && liveSecret.startsWith('rzp_test_')) ||
+      testKeyId.startsWith('rzp_live_') ||
+      testSecret.startsWith('rzp_live_')
+    ) {
+      throw new Error('MODE_PREFIX_MISMATCH: Cross-mixing live and test Razorpay key ID and secret is strictly prohibited.');
+    }
 
     const hasLivePair = liveKeyId.startsWith('rzp_live_') &&
       !isPlaceholderCredential(liveKeyId) &&
       liveSecret.length > 0 &&
+      !liveSecret.startsWith('rzp_test_') &&
       !isPlaceholderCredential(liveSecret);
 
     const hasTestInMainPair = liveKeyId.startsWith('rzp_test_') &&
       !isPlaceholderCredential(liveKeyId) &&
       liveSecret.length > 0 &&
+      !liveSecret.startsWith('rzp_live_') &&
       !isPlaceholderCredential(liveSecret);
 
     const hasDedicatedTestPair = testKeyId.startsWith('rzp_test_') &&
       !isPlaceholderCredential(testKeyId) &&
       testSecret.length > 0 &&
+      !testSecret.startsWith('rzp_live_') &&
       !isPlaceholderCredential(testSecret);
 
     // Strict Live Mode
     if (rawMode === 'live') {
+      if (liveKeyId.startsWith('rzp_test_')) {
+        throw new Error('MODE_PREFIX_MISMATCH: Test Razorpay credentials cannot be used when RAZORPAY_MODE=live.');
+      }
       if (hasLivePair) {
         return { keyId: liveKeyId, keySecret: liveSecret, isLive: true, mode: 'LIVE' };
       }
@@ -116,6 +132,9 @@ export class RazorpayStandardAdapter {
       }
       if (hasTestInMainPair) {
         return { keyId: liveKeyId, keySecret: liveSecret, isLive: false, mode: 'TEST_SANDBOX' };
+      }
+      if (liveKeyId.startsWith('rzp_live_')) {
+        throw new Error('MODE_PREFIX_MISMATCH: Live Razorpay credentials cannot be used when RAZORPAY_MODE=test.');
       }
       if (!isProduction()) {
         return { keyId: 'rzp_test_sandbox_fallback', keySecret: 'rzp_test_secret_fallback', isLive: false, mode: 'TEST_SANDBOX' };

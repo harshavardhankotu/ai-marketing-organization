@@ -67,6 +67,19 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const [gbpInsights, setGbpInsights] = useState<any>(null);
   const [trafficStats, setTrafficStats] = useState<any>(null);
   const [gbpOAuth, setGbpOAuth] = useState<any>(null);
+  const [isHarvesting, setIsHarvesting] = useState<boolean>(false);
+
+  const handleRunFullAutonomousCycle = async () => {
+    setIsHarvesting(true);
+    try {
+      await api.triggerFirstSaleLiveHarvest().catch(() => {});
+      if (onTriggerCycle) {
+        onTriggerCycle();
+      }
+    } finally {
+      setIsHarvesting(false);
+    }
+  };
 
   useEffect(() => {
     api.getRealEconomics().then((res) => setEconomics(res.data)).catch(() => {});
@@ -157,12 +170,12 @@ export const Dashboard: React.FC<DashboardProps> = ({
             Inspect 80 Agents
           </button>
           <button
-            onClick={onTriggerCycle}
-            disabled={isCycleRunning}
+            onClick={handleRunFullAutonomousCycle}
+            disabled={isHarvesting || isCycleRunning}
             className="px-4 py-2.5 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 shadow-md shadow-emerald-500/20 disabled:opacity-50 transition-all flex items-center gap-1.5"
           >
             <Sparkles className="w-3.5 h-3.5" />
-            {isCycleRunning ? 'Autonomous Cycle Running...' : 'Trigger Growth Cycle'}
+            {isHarvesting || isCycleRunning ? 'Autonomous Cycle Running...' : 'Run Full Autonomous Cycle Now'}
           </button>
         </div>
       </div>
