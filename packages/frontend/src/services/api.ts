@@ -354,6 +354,8 @@ export const api = {
     fetchApi('/owner/first-sale/trigger-live-harvest', { method: 'POST' }),
   approveAndSendFirstSaleDraft: (draftId: string) =>
     fetchApi(`/owner/first-sale/approve-and-send/${encodeURIComponent(draftId)}`, { method: 'POST' }),
+  getIntentDistributionKit: () =>
+    fetchApi('/owner/first-sale/intent-distribution-kit'),
   // Autonomous System Doctor & Funnel Leak Debugger
   getSystemDoctorStatus: () =>
     fetchApi('/owner/system-doctor/status'),

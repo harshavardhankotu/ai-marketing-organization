@@ -114,6 +114,20 @@ export function buildAmazonSearchAffiliateUrl(
   return url.toString();
 }
 
+/**
+ * Stage S Task 1: Evaluates whether a deal qualifies as a high-conversion impulse offer (₹299–₹1,499).
+ * Impulse offers are verified in-stock items with >= 25% verified discount and confirmed monetization.
+ */
+export function isImpulseConversionDeal(d: NormalizedDeal | any): boolean {
+  if (!d) return false;
+  const price = Number(d.currentPriceINR ?? d.current_price_inr ?? 0);
+  const discount = Number(d.verifiedDiscountPercent ?? d.verified_discount_percent ?? d.discountPercent ?? d.discount_percent ?? 0);
+  const isMonetizable = d.isMonetizable === true || d.affiliateVerified === true || d.is_monetizable === 1 || Boolean(d.cuelinksCampaignId || d.cuelinks_campaign_id);
+  const inStock = d.availability === 'IN_STOCK' || !d.availability || d.availability === 'LIMITED_STOCK';
+  const isExcluded = d.catalogSlot === 'ROTATED_OUT_STALE' || (d.staleDecayPenalty || 0) > 0 || d.evolutionStatus === 'STALE_ROTATED_OUT';
+  return !isExcluded && inStock && isMonetizable && price >= 299 && price <= 1499 && discount >= 25;
+}
+
 export type EconomicsConfidence =
   | 'VERIFIED_EMPIRICAL'
   | 'PROVIDER_RATE_ONLY_LOW_SAMPLE'
@@ -3607,8 +3621,11 @@ export class AutonomousDealDiscoveryEngine {
     const merchantTrust = src?.trustScore || 80;
     const trustPart = (merchantTrust / 100) * 10;
 
+    // Stage S Task 1: High-conversion impulse bonus (+15) for verified everyday buys (₹299–₹1,499 with >=25% discount)
+    const impulseBonus = isImpulseConversionDeal(deal) ? 15 : 0;
+
     // Notice: Affiliate commission does NOT inflate rank (Spec § 7 Invariant)
-    const totalScore = Math.round(confidencePart + savingsPart + freshnessPart + stockPart + trustPart);
+    const totalScore = Math.round(confidencePart + savingsPart + freshnessPart + stockPart + trustPart + impulseBonus);
     return Math.min(100, Math.max(0, totalScore));
   }
 
@@ -4880,10 +4897,12 @@ export class AutonomousDealDiscoveryEngine {
     }
 
     // Sort deterministically: active/featured winners first (rotated stale 72h+ unclicked deals last),
+    // Stage S Task 1: high-conversion impulse offers (₹299–₹1,499 with >=25% discount) prioritized ahead of expensive items,
     // then by EV/100 profit allocator, market arbitrage score descending, expected commission yield, then price advantage ratio
     filtered.sort((a, b) =>
       Number(a.catalogSlot === 'ROTATED_OUT_STALE' || (a.staleDecayPenalty || 0) > 0) -
         Number(b.catalogSlot === 'ROTATED_OUT_STALE' || (b.staleDecayPenalty || 0) > 0) ||
+      (Number(isImpulseConversionDeal(b)) - Number(isImpulseConversionDeal(a))) ||
       (b.expectedProfitPer100VisitorsINR || 0) - (a.expectedProfitPer100VisitorsINR || 0) ||
       (b.arbitrageScore || 0) - (a.arbitrageScore || 0) ||
       (b.expectedCommissionYieldINR || 0) - (a.expectedCommissionYieldINR || 0) ||
@@ -5001,6 +5020,8 @@ export class AutonomousDealDiscoveryEngine {
     const sortBy = params.sortBy || 'buyer_value';
     filtered.sort((a, b) => {
       if (sortBy === 'buyer_value') {
+        const impulseDiff = Number(isImpulseConversionDeal(b)) - Number(isImpulseConversionDeal(a));
+        if (impulseDiff !== 0) return impulseDiff;
         return b.buyerValueScore - a.buyerValueScore;
       }
       if (sortBy === 'freshness') {
@@ -7039,7 +7060,7 @@ export class AutonomousDealDiscoveryEngine {
     const querySql = `
       SELECT id, business_id, prospect_name, prospect_email, authorization_evidence_json
       FROM outbound_contacts
-      WHERE source = 'FAIR_PRICE_ALERT'
+      WHERE source IN ('FAIR_PRICE_ALERT', 'CUSTOMER_DESK_ALERT_OPTIN')
         AND email_authorized = 1
         AND is_opted_out = 0
         AND is_bounced = 0
@@ -7120,7 +7141,7 @@ export class AutonomousDealDiscoveryEngine {
           continue;
         }
 
-        const redirectUrl = `${siteUrl}/api/v1/public/deals/${encodeURIComponent(matchedDeal.id)}/redirect?utm_source=price_drop_alert`;
+        const redirectUrl = `${siteUrl}/api/v1/public/deals/${encodeURIComponent(matchedDeal.id)}/redirect?utm_source=price_alert`;
         const priceStr = `₹${Number(matchedDeal.currentPriceINR).toLocaleString('en-IN')}`;
         const targetStr = `₹${targetPrice.toLocaleString('en-IN')}`;
         const subject = `Price Drop Alert: ${matchedDeal.title} is now ${priceStr} (Below your ${targetStr} target)`;
@@ -7169,6 +7190,66 @@ export class AutonomousDealDiscoveryEngine {
         } catch {}
       }
     }
+
+    // Stage S Task 2: Process pending durable_events with event_type = 'PRICE_DROP_SUBSCRIPTION'
+    try {
+      const eventQuery = `SELECT id, payload_json FROM durable_events WHERE event_type = 'PRICE_DROP_SUBSCRIPTION' AND processed = 0 LIMIT 50`;
+      let eventRows: any[] = [];
+      if (this.d1Repo.isRemoteD1Configured() || isProd) {
+        const evRes = await this.d1Repo.executeRead('durable_events', eventQuery, []);
+        eventRows = Array.isArray(evRes?.results) ? evRes.results : [];
+      } else {
+        eventRows = getDb().prepare(eventQuery).all() as any[];
+      }
+
+      for (const evRow of eventRows) {
+        let payload: any = {};
+        try {
+          payload = JSON.parse(evRow.payload_json || '{}');
+        } catch {
+          continue;
+        }
+
+        const email = String(payload.email || '').trim().toLowerCase();
+        const targetPrice = Number(payload.targetPriceINR || 0);
+        if (!email || !email.includes('@')) continue;
+
+        const matchedDeal = validDeals.find((d) => {
+          if (payload.dealId && d.id === payload.dealId) return true;
+          if (payload.productSlug && (d.slug === payload.productSlug || d.canonicalSlug === payload.productSlug)) return true;
+          if (payload.category && d.category && d.category.toLowerCase() === String(payload.category).toLowerCase()) return true;
+          return false;
+        });
+
+        if (!matchedDeal) continue;
+        if (targetPrice > 0 && Number(matchedDeal.currentPriceINR || 0) > targetPrice) continue;
+
+        const redirectUrl = `${siteUrl}/api/v1/public/deals/${encodeURIComponent(matchedDeal.id)}/redirect?utm_source=price_alert`;
+        const priceStr = `₹${Number(matchedDeal.currentPriceINR).toLocaleString('en-IN')}`;
+        const targetStr = targetPrice > 0 ? `₹${targetPrice.toLocaleString('en-IN')}` : 'your target';
+        const subject = `Price Drop Alert: ${matchedDeal.title} is now ${priceStr}`;
+        const textContent = `Good news! Your watched item dropped to ${priceStr} on ${matchedDeal.merchant}.\nClaim Verified Price (#Ad): ${redirectUrl}\n\n#Ad Affiliate Disclosure: Qualifying purchases through this link may earn an affiliate commission at zero extra cost to you.`;
+
+        try {
+          const sendRes = await brevo.sendTransactionalEmail({
+            to: [{ email, name: payload.name || 'Buyer' }],
+            subject,
+            textContent,
+            htmlContent: `<div style="font-family:sans-serif;line-height:1.6"><h2>Price Drop Alert (#Ad)</h2><p><strong>${matchedDeal.title}</strong> is now <strong>${priceStr}</strong> on ${matchedDeal.merchant} (target: ${targetStr}).</p><p><a href="${redirectUrl}" style="display:inline-block;padding:10px 18px;background:#06b6d4;color:#020617;font-weight:700;border-radius:6px;text-decoration:none;">View Deal at ${matchedDeal.merchant} →</a></p><p style="font-size:12px;color:#64748b;">#Ad Affiliate Disclosure: Qualifying purchases via this link may earn a commission at zero extra cost to you.</p></div>`
+          });
+
+          if (sendRes.success && sendRes.status === 'SENT') {
+            const updateEvSql = `UPDATE durable_events SET processed = 1, processed_at = datetime('now') WHERE id = ?`;
+            if (this.d1Repo.isRemoteD1Configured() || isProd) {
+              await this.d1Repo.executeWrite('durable_events', updateEvSql, [evRow.id]);
+            } else {
+              getDb().prepare(updateEvSql).run(evRow.id);
+            }
+            dispatched++;
+          }
+        } catch {}
+      }
+    } catch {}
 
     return { checked, dispatched, skipped };
   }

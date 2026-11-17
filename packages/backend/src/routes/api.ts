@@ -5028,15 +5028,32 @@ apiRouter.post('/customer-desk/subscribe-alerts', async (c) => {
     }
 
     const name = String(body.name || email.split('@')[0] || 'Subscriber').trim().slice(0, 120);
+    const productSlug = typeof body.productSlug === 'string' ? body.productSlug.trim() : undefined;
+    const dealId = typeof body.dealId === 'string' ? body.dealId.trim() : undefined;
+    const targetPriceINR = body.targetPriceINR !== undefined && body.targetPriceINR !== null && body.targetPriceINR !== ''
+      ? Number(body.targetPriceINR)
+      : undefined;
     const categories = Array.isArray(body.categories)
       ? body.categories.map((x: any) => String(x).trim()).filter(Boolean).slice(0, 8)
       : (body.category ? [String(body.category).trim()] : ['ALL_VERIFIED_DROPS']);
     const id = `sub_${createHash('sha256').update(email).digest('hex').slice(0, 18)}`;
+    const watches = targetPriceINR ? [{
+      target_deal_id: dealId || null,
+      target_deal_slug: productSlug || null,
+      target_price_inr: targetPriceINR,
+      query_or_url: productSlug || dealId || categories[0],
+      registered_at: new Date().toISOString(),
+      dispatched_at: null
+    }] : [];
     const evidenceJson = JSON.stringify({
       consent_status: 'OPTED_IN_FIRST_PARTY',
       subscribedAt: new Date().toISOString(),
       source: 'customer-desk-subscribe-alerts',
-      categories
+      categories,
+      productSlug,
+      dealId,
+      targetPriceINR,
+      watches
     });
 
     const sql = `
@@ -5065,10 +5082,40 @@ apiRouter.post('/customer-desk/subscribe-alerts', async (c) => {
       getDb().prepare(sql).run(...params);
     }
 
+    // Stage S Task 2: Persist alert subscription to durable_events for catalog cycle processing
+    const eventId = `sub_evt_${createHash('sha256').update(email + (productSlug || dealId || '') + Date.now()).digest('hex').slice(0, 24)}`;
+    const eventPayload = JSON.stringify({
+      email,
+      name,
+      productSlug,
+      category: body.category || (categories && categories[0]),
+      dealId,
+      targetPriceINR,
+      consent: 'OPTED_IN_FIRST_PARTY',
+      createdAt: new Date().toISOString()
+    });
+    try {
+      const orgId = OwnerAuthService.OWNER_ORGANIZATION_ID || 'org_owner_primary';
+      const eventSql = `INSERT INTO durable_events (id, event_type, organization_id, payload_json, processed, created_at)
+        VALUES (?, 'PRICE_DROP_SUBSCRIPTION', ?, ?, 0, datetime('now'))`;
+      if (isProduction() && !process.env.VITEST) {
+        await D1RevenueRepository.getInstance().executeWrite('durable_events', eventSql, [eventId, orgId, eventPayload]);
+      } else {
+        getDb().prepare(eventSql).run(eventId, orgId, eventPayload);
+      }
+    } catch (e: any) {
+      console.warn(`[SubscribeAlerts] Durable event persistence notice: ${e?.message}`);
+    }
+
     // Brevo contact sync (background / best-effort)
     BrevoMcpClient.getInstance().syncContact({
       email,
-      attributes: { SOURCE: 'SITEFIX_OR_DEAL_ALERT', CATEGORIES: categories.join(',') }
+      attributes: {
+        SOURCE: 'PRICE_DROP_ALERT',
+        CATEGORIES: categories.join(','),
+        PRODUCT_SLUG: productSlug || '',
+        TARGET_PRICE: targetPriceINR ? String(targetPriceINR) : ''
+      }
     }).catch(() => {});
 
     return c.json({
@@ -5076,7 +5123,10 @@ apiRouter.post('/customer-desk/subscribe-alerts', async (c) => {
       subscribed: true,
       consentStatus: 'OPTED_IN_FIRST_PARTY',
       email,
-      categories
+      productSlug,
+      targetPriceINR,
+      categories,
+      message: 'Subscribed to price-drop alerts successfully.'
     }, 201);
   } catch (err: any) {
     return c.json({ success: false, error: err?.message || 'Alert subscription failed' }, 500);
@@ -11433,6 +11483,125 @@ apiRouter.post('/owner/system-doctor/heal', async (c) => {
   return c.json({
     success: true,
     data: report
+  });
+});
+
+// Single-Owner First-Sale Execution Console — Zero-Cost Buyer-Intent Distribution Kit
+apiRouter.get('/owner/first-sale/intent-distribution-kit', async (c) => {
+  const { AutonomousDealDiscoveryEngine, isImpulseConversionDeal } = await import('../commission/autonomous-deal-discovery-engine.js');
+  const { YouTubeReviewEnricher } = await import('../integrations/youtube-review-enricher.js');
+  const siteUrl = getTrustedPublicSiteUrl().replace(/\/$/, '');
+
+  const engine = AutonomousDealDiscoveryEngine.getInstance();
+  const eligible = await engine.getEligiblePublicDeals({ limit: 50 });
+  const allDeals = eligible.deals || [];
+
+  // Filter top 5 verified impulse deals (₹299–₹1,499)
+  let impulseDeals = allDeals.filter(d => isImpulseConversionDeal(d));
+  if (impulseDeals.length < 5) {
+    const remaining = allDeals.filter(d => !impulseDeals.some(id => id.id === d.id));
+    impulseDeals = [...impulseDeals, ...remaining].slice(0, 5);
+  } else {
+    impulseDeals = impulseDeals.slice(0, 5);
+  }
+
+  // Enrich with YouTube reviews
+  const enricher = YouTubeReviewEnricher.getInstance();
+  const enrichedDeals = await Promise.all(
+    impulseDeals.map(async (deal) => {
+      let youtubeReview = (deal as any).youtubeReview || null;
+      if (!youtubeReview) {
+        try {
+          youtubeReview = await enricher.resolveReviewForDeal(deal);
+        } catch {}
+      }
+      return { ...deal, youtubeReview };
+    })
+  );
+
+  const items = enrichedDeals.map((deal, idx) => {
+    const slug = deal.slug || deal.canonicalSlug || deal.id;
+    const price = Math.round(Number(deal.currentPriceINR || 0));
+    const refPrice = Math.round(Number(deal.referencePriceINR || 0));
+    const discount = refPrice > price ? Math.round(((refPrice - price) / refPrice) * 100) : (deal.verifiedDiscountPercent || 0);
+    const dealDetailUrl = `${siteUrl}/deals/${encodeURIComponent(slug)}`;
+    const officialRedirectUrl = `${siteUrl}/api/v1/public/deals/${encodeURIComponent(deal.id)}/redirect?utm_source=distribution_kit`;
+    const amazonUrl = `${siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(deal.title || '').slice(0, 120))}&dealId=${encodeURIComponent(deal.id)}`;
+
+    // Comparison URL with another deal in list
+    const otherDeal = enrichedDeals[(idx + 1) % enrichedDeals.length];
+    const otherSlug = otherDeal && otherDeal.id !== deal.id ? (otherDeal.slug || otherDeal.canonicalSlug || otherDeal.id) : null;
+    const comparisonUrl = otherSlug ? `${siteUrl}/vs/${encodeURIComponent(slug)}-vs-${encodeURIComponent(otherSlug)}` : null;
+
+    // Buyer guide / intent hub URL
+    const catSlug = (deal.category || 'all').toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    const buyerGuideUrl = `${siteUrl}/best/${encodeURIComponent(catSlug)}-india`;
+
+    // Target subreddit determination
+    const catLower = (deal.category || '').toLowerCase();
+    let subreddit = 'r/IndiaDeals';
+    if (/perfume|fragrance|scent|cologne|attar/.test(catLower)) {
+      subreddit = 'r/DesiFragranceAddicts';
+    } else if (/earbud|headphone|audio|gadget|phone|tech|charger|laptop|watch/.test(catLower)) {
+      subreddit = 'r/IndiaTech';
+    } else if (/beauty|skin|hair|serum|cream|cosmetic|makeup/.test(catLower)) {
+      subreddit = 'r/IndianBeautyDeals';
+    }
+
+    // 1. YouTube Review Comment Reply (referencing exact video ID/title)
+    const youtubeCommentReply = `Real Price & Prime Stock Check: Observed ₹${price.toLocaleString('en-IN')}${refPrice > price ? ` (MRP ₹${refPrice.toLocaleString('en-IN')}, ${discount}% off)` : ''} at official store today: ${dealDetailUrl} | Amazon live price check & Prime coupons (#Ad): ${amazonUrl}. #Ad (Affiliate link; price verified at snapshot).`;
+
+    // 2. Reddit / Community Deal & Comparison Reply
+    const redditReply = `FYI for anyone looking at ${deal.title} — official brand store is currently ₹${price.toLocaleString('en-IN')}${refPrice > price ? ` (down from ₹${refPrice.toLocaleString('en-IN')}, verified ${discount}% discount${deal.couponCode ? ` with code ${deal.couponCode}` : ''})` : ''}. Price history snapshot & head-to-head comparison: ${dealDetailUrl} (Amazon price check: ${amazonUrl}). #Ad`;
+
+    // 3. Instagram / Telegram Caption Card pointing to /ig
+    const categoryTag = catLower.replace(/[^a-z0-9]/g, '');
+    const igTelegramCaption = `🔥 VERIFIED DROP: ${deal.title} is ₹${price.toLocaleString('en-IN')} today${refPrice > price ? ` (MRP ₹${refPrice.toLocaleString('en-IN')})` : ''}!\nVerified ${discount}% off at official store.\n\nTap link in bio to check official store + live Amazon price: ${siteUrl}/ig\n\n#Ad #DealsIndia #OnlineShopping${categoryTag ? ` #${categoryTag}` : ''}`;
+
+    return {
+      dealId: deal.id,
+      title: deal.title,
+      merchant: deal.merchant,
+      category: deal.category,
+      priceINR: price,
+      referencePriceINR: refPrice,
+      verifiedDiscountPercent: discount,
+      couponCode: deal.couponCode || null,
+      dealDetailUrl,
+      officialRedirectUrl,
+      amazonUrl,
+      comparisonUrl,
+      buyerGuideUrl,
+      targetSubreddit: subreddit,
+      youtubeReview: deal.youtubeReview ? {
+        title: deal.youtubeReview.title,
+        videoId: deal.youtubeReview.videoId,
+        videoUrl: deal.youtubeReview.videoUrl,
+        channelTitle: deal.youtubeReview.channelTitle
+      } : null,
+      snippets: {
+        youtubeCommentReply,
+        redditReply,
+        igTelegramCaption
+      }
+    };
+  });
+
+  const searchEngineChecklist = {
+    sitemapUrl: `${siteUrl}/sitemap.xml`,
+    robotsUrl: `${siteUrl}/robots.txt`,
+    indexNowKeyUrl: `${siteUrl}/indexnow-key-38f9d0c2.txt`,
+    indexNowStatus: 'ACTIVE',
+    googleSearchConsoleInstructions: `Submit sitemap URL ${siteUrl}/sitemap.xml in Google Search Console -> Sitemaps.`,
+    bingWebmasterInstructions: `Submit sitemap URL ${siteUrl}/sitemap.xml in Bing Webmaster Tools -> Sitemaps. IndexNow automatically pings Bing and Yandex on deal discovery.`
+  };
+
+  return c.json({
+    success: true,
+    siteUrl,
+    topImpulseDeals: items,
+    searchEngineChecklist,
+    generatedAt: new Date().toISOString()
   });
 });
 

@@ -1221,6 +1221,17 @@ export class SalesConversationEngine {
     }
 
     const candidates: ResolvedCatalogOffer[] = [];
+
+    // Stage S Task 1 & 2: Prioritize verified impulse offers (₹299–₹1,499) and handle top drops queries
+    const isTopDropsQuery = /top (verified )?drops|drops today|best drops|today'?s deals|latest drops|trending deals/i.test(combinedLower);
+    if (isTopDropsQuery) {
+      for (const d of deals.slice(0, 5)) {
+        const mapped = this.mapDealToResolvedOffer(d);
+        mapped.score = 10;
+        candidates.push(mapped);
+      }
+    }
+
     for (const d of deals) {
       const hay = `${d.slug || ''} ${d.title || ''} ${d.brand || ''} ${d.merchant || ''} ${d.category || ''}`.toLowerCase();
       let score = 0;
@@ -1230,6 +1241,12 @@ export class SalesConversationEngine {
         }
       }
       if (score >= 2) {
+        // Stage S Task 1: +5 impulse boost for verified everyday impulse deals (₹299–₹1,499 with >=25% discount)
+        const price = Number(d.current_price_inr ?? d.currentPriceINR ?? 0);
+        const discount = Number(d.verified_discount_percent ?? d.verifiedDiscountPercent ?? d.discount_percent ?? d.discountPercent ?? 0);
+        if (price >= 299 && price <= 1499 && discount >= 25) {
+          score += 5;
+        }
         const mapped = this.mapDealToResolvedOffer(d);
         mapped.score = score;
         candidates.push(mapped);

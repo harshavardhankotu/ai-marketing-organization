@@ -62,10 +62,31 @@ export function renderCustomerDeskWidgetHtml(defaultContext: string = ''): strin
       var btn = document.createElement('button');
       btn.type = 'button';
       btn.textContent = b.label;
-      btn.style.cssText = 'background:' + (b.bg || '#0284c7') + ';color:#fff;border:none;border-radius:6px;padding:6px 10px;font-size:12px;font-weight:600;cursor:pointer;';
+      btn.style.cssText = 'background:' + (b.bg || '#0284c7') + ';color:#fff;border:' + (b.border || 'none') + ';border-radius:6px;padding:6px 10px;font-size:12px;font-weight:600;cursor:pointer;';
       btn.onclick = b.onClick;
       area.appendChild(btn);
     });
+  }
+  var starterChips = [
+    { label: "Perfume combos under \u20B9800", q: "Perfume combos under \u20B9800" },
+    { label: "Best earbuds under \u20B91,500", q: "Best earbuds under \u20B91,500" },
+    { label: "Check if a deal is real", q: "Check if a deal is real" },
+    { label: "Top verified drops today", q: "Top verified drops today" }
+  ];
+  function renderStarterChips() {
+    var acts = starterChips.map(function(chip) {
+      return {
+        label: chip.label,
+        bg: '#1e293b',
+        border: '1px solid #334155',
+        onClick: function() {
+          var inp = document.getElementById('aros-desk-input');
+          if (inp) inp.value = chip.q;
+          sendDesk(chip.q, '');
+        }
+      };
+    });
+    setActions(acts);
   }
   async function sendDesk(msgText, ctxSlug) {
     if (!msgText) return;
@@ -92,7 +113,13 @@ export function renderCustomerDeskWidgetHtml(defaultContext: string = ''): strin
           (data.checkout.checkoutUrl ? '<div style="margin-top:4px;"><a href="' + esc(data.checkout.checkoutUrl) + '" style="color:#38bdf8;font-weight:600;">Open Checkout &rarr;</a></div>' : '') +
           '</div>';
       } else if (data.checkout && data.checkout.checkoutMode === 'AFFILIATE_REDIRECT_READY') {
-        extra = '<div style="margin-top:6px;"><a href="' + esc(data.checkout.redirectUrl) + '" target="_blank" rel="noopener noreferrer" style="display:inline-block;background:#059669;color:#fff;padding:6px 10px;border-radius:6px;text-decoration:none;font-weight:600;">Go to Verified Merchant &rarr;</a></div>';
+        extra = '<div style="margin-top:6px;display:flex;flex-direction:column;gap:5px;">' +
+          '<a href="' + esc(data.checkout.redirectUrl) + '" target="_blank" rel="sponsored nofollow noopener" style="display:inline-block;background:#059669;color:#fff;padding:6px 10px;border-radius:6px;text-decoration:none;font-weight:600;text-align:center;">Go to Verified Merchant (#Ad) &rarr;</a>' +
+          (data.checkout.amazonUrl ? '<a href="' + esc(data.checkout.amazonUrl) + '" target="_blank" rel="sponsored nofollow noopener" style="display:inline-block;background:rgba(245,158,11,0.18);border:1px solid rgba(245,158,11,0.4);color:#fcd34d;padding:5px 8px;border-radius:6px;text-decoration:none;font-size:12px;font-weight:600;text-align:center;">Check on Amazon.in (#Ad) &rarr;</a>' : '') +
+          '</div>';
+      }
+      if (data.youtubeReview && data.youtubeReview.videoUrl) {
+        extra += '<div style="margin-top:6px;font-size:12px;"><a href="' + esc(data.youtubeReview.videoUrl) + '" target="_blank" rel="noopener noreferrer" style="color:#ef4444;font-weight:600;display:inline-flex;align-items:center;gap:4px;">&#9654; Watch Review: ' + esc(data.youtubeReview.title).slice(0, 48) + '...</a></div>';
       }
       appendMsg('bot', data.reply || data.error || 'Response unavailable.', extra);
       var acts = [];
@@ -111,11 +138,17 @@ export function renderCustomerDeskWidgetHtml(defaultContext: string = ''): strin
           onClick: function() { sendDesk('I am ready to buy now. Proceed with checkout.', data.resolvedOffer.idOrSlug); }
         });
       }
-      setActions(acts);
+      if (acts.length === 0) {
+        renderStarterChips();
+      } else {
+        setActions(acts);
+      }
     } catch (err) {
       appendMsg('bot', 'Desk temporarily unreachable: ' + (err && err.message ? err.message : 'network error'));
+      renderStarterChips();
     }
   }
+  renderStarterChips();
   window.__arosDeskToggle = function() {
     var p = document.getElementById('aros-desk-panel');
     if (p) p.style.display = p.style.display === 'none' ? 'block' : 'none';

@@ -5,6 +5,7 @@ import { getDb } from '../db/client.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { isProduction, resolveVerificationTokens } from '../config/env.js';
 import { renderCustomerDeskWidgetHtml } from '../revenue/customer-desk-widget.js';
+import { isImpulseConversionDeal } from './autonomous-deal-discovery-engine.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1208,6 +1209,76 @@ export class StaticSiteGenerator {
   }
 
   /**
+   * Stage S Task 2: Inline 1-row opt-in price-drop alert box embedded below Dual-Rail buttons.
+   */
+  public renderPriceDropAlertBoxHtml(options: {
+    productSlug?: string;
+    category?: string;
+    currentPriceINR?: number;
+    dealId?: string;
+  }): string {
+    const slug = this.escapeHtml(options.productSlug || '');
+    const category = this.escapeHtml(options.category || '');
+    const dealId = this.escapeHtml(options.dealId || '');
+    const price = options.currentPriceINR ? Math.round(options.currentPriceINR) : 0;
+    const defaultTargetPrice = price > 0 ? Math.round(price * 0.9) : '';
+
+    return `
+    <div class="price-drop-alert-box" style="margin-top:1.25rem;padding:1rem 1.25rem;background:rgba(15,23,42,0.8);border:1px solid #1e293b;border-radius:10px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.6rem;">
+        <div style="display:flex;align-items:center;gap:0.5rem;">
+          <span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;background:rgba(56,189,248,0.15);border-radius:6px;color:#38bdf8;font-size:13px;">🔔</span>
+          <strong style="font-size:0.9rem;color:#f8fafc;">Get Instant Price-Drop Alert</strong>
+        </div>
+        <span style="font-size:0.75rem;color:#94a3b8;">Zero spam &bull; 1-click unsubscribe anytime</span>
+      </div>
+      <form class="price-drop-alert-form" onsubmit="event.preventDefault(); (async function(form){
+        var email = (form.email.value || '').trim();
+        var targetPrice = Number(form.targetPrice.value) || undefined;
+        var btn = form.querySelector('button');
+        var status = form.querySelector('.alert-status');
+        if (!email) return;
+        btn.disabled = true;
+        btn.textContent = 'Saving...';
+        try {
+          var res = await fetch('/api/v1/customer-desk/subscribe-alerts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: email, productSlug: '${slug}', category: '${category}', dealId: '${dealId}', targetPriceINR: targetPrice })
+          });
+          var data = await res.json();
+          if (res.ok && data.success) {
+            status.style.color = '#34d399';
+            status.textContent = '✓ Alert set! We will email you the second price drops.';
+            var inputs = form.querySelector('.inputs-row');
+            if (inputs) inputs.style.display = 'none';
+          } else {
+            status.style.color = '#f87171';
+            status.textContent = data.message || 'Subscription failed. Please try again.';
+            btn.disabled = false;
+            btn.textContent = 'Notify Me';
+          }
+        } catch (err) {
+          status.style.color = '#f87171';
+          status.textContent = 'Network error. Please try again.';
+          btn.disabled = false;
+          btn.textContent = 'Notify Me';
+        }
+      })(event.target)" style="margin:0;">
+        <div class="inputs-row" style="display:flex;flex-wrap:wrap;gap:0.6rem;align-items:center;">
+          <input type="email" name="email" required placeholder="Enter your email" style="flex:1 1 200px;min-width:180px;padding:0.55rem 0.85rem;background:#0f172a;border:1px solid #334155;border-radius:8px;color:#fff;font-size:0.85rem;" />
+          <div style="display:flex;align-items:center;background:#0f172a;border:1px solid #334155;border-radius:8px;padding:0 0.6rem;">
+            <span style="color:#94a3b8;font-size:0.85rem;">₹</span>
+            <input type="number" name="targetPrice" placeholder="Target ₹" value="${defaultTargetPrice}" style="width:85px;padding:0.55rem 0.4rem;background:transparent;border:none;color:#fff;font-size:0.85rem;outline:none;" />
+          </div>
+          <button type="submit" style="background:#06b6d4;color:#020617;font-weight:700;border:none;padding:0.55rem 1.15rem;border-radius:8px;cursor:pointer;font-size:0.85rem;white-space:nowrap;">Notify Me</button>
+        </div>
+        <div class="alert-status" style="font-size:0.8rem;margin-top:0.45rem;"></div>
+      </form>
+    </div>`;
+  }
+
+  /**
    * Renders an SEO-indexable SSR product deal page at /deals/:slug with Schema.org/Product JSON-LD.
    */
   public renderDealDetailHtml(deal: any, relatedDeals: any[] = [], config: StaticSiteConfig): string {
@@ -1399,6 +1470,7 @@ ${this.serializeSafeJsonLd(productSchema, true)}
         <a href="${this.escapeHtml(redirectHref)}" target="_blank" rel="sponsored nofollow noopener" class="cta-btn" style="margin-top:0;">Claim Verified Deal on ${this.escapeHtml(deal.merchant)} &rarr;</a>
         <a href="${this.escapeHtml(`${config.siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(deal.title || '').slice(0, 120))}&dealId=${encodeURIComponent(String(deal.id || ''))}`)}" target="_blank" rel="sponsored nofollow noopener" style="display:inline-block;background:rgba(245,158,11,0.14);border:1px solid rgba(245,158,11,0.4);color:#fcd34d;font-weight:700;padding:0.9rem 1.35rem;border-radius:10px;text-decoration:none;font-size:0.92rem;">Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)</a>
       </div>
+      ${this.renderPriceDropAlertBoxHtml({ productSlug: deal.slug || deal.canonicalSlug || deal.id, category: deal.category, currentPriceINR: priceNum, dealId: deal.id })}
 
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1rem;margin-top:1.75rem;">
         <div style="background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.28);border-radius:10px;padding:1rem;">
@@ -1612,6 +1684,8 @@ ${this.serializeSafeJsonLd(itemListSchema, true)}
       <strong style="color:#e2e8f0;">#Ad Statutory Affiliate Disclosure:</strong> D2C store prices shown above are merchant-reported snapshots verified at the listed timestamp. Amazon.in buttons redirect to live search/listing pages without displaying scraped Amazon prices. Qualifying purchases through these links may earn an affiliate commission at zero extra cost to you.
     </div>
 
+    ${this.renderPriceDropAlertBoxHtml({ productSlug: a.slug || a.canonicalSlug || a.id, category: a.category || b.category, currentPriceINR: Math.min(priceA, priceB), dealId: a.id })}
+
     ${otherPairs.length > 0 ? `
     <section style="margin-top:1.75rem;">
       <h2 style="font-size:1.1rem;color:#fff;margin-bottom:0.65rem;">More Head-to-Head Comparisons</h2>
@@ -1807,6 +1881,8 @@ ${this.serializeSafeJsonLd(faqSchema, true)}
         </table>
       </div>
     </section>
+
+    ${this.renderPriceDropAlertBoxHtml({ category: hub.categoryLabel })}
 
     <section style="background:#111827;border:1px solid #1e293b;border-radius:12px;padding:1.25rem;margin-bottom:2rem;">
       <h2 style="font-size:1.08rem;color:#fff;margin:0 0 0.4rem 0;">Set a Fair-Price Alert or Check Another URL</h2>
@@ -2784,6 +2860,10 @@ ${this.serializeSafeJsonLd(schemaObj, true)}
         d.evolutionStatus !== 'STALE_ROTATED_OUT' &&
         d.catalogSlot !== 'ROTATED_OUT_STALE'
       )
+      .sort((a: any, b: any) =>
+        (Number(isImpulseConversionDeal(b)) - Number(isImpulseConversionDeal(a))) ||
+        (Number(b.verifiedDiscountPercent || 0) - Number(a.verifiedDiscountPercent || 0))
+      )
       .slice(0, 10);
 
     const comparisons = generateComparisonPairs(eligibleDeals, 4);
@@ -2900,6 +2980,7 @@ ${this.serializeSafeJsonLd(schemaObj, true)}
 
     <div class="section-heading">Today&#39;s Top Verified Steals</div>
     ${dealCardsHtml}
+    ${this.renderPriceDropAlertBoxHtml({ category: 'Instagram Bio Verified Steals' })}
 
     <div class="section-heading">Smart Buyer Shortcuts</div>
     <nav class="quick-grid" aria-label="Buyer shortcuts">
