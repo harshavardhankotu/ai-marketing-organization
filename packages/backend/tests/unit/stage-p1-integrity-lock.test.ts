@@ -251,6 +251,12 @@ describe('Stage P.1 — Low-Level D1 Financial Integrity, Instagram Hardening & 
       const app = new Hono();
       app.route('/api/v1', apiRouter);
 
+      // Clean any accidental grooming deals inserted by other tests in shared DB
+      const db = getDb();
+      try {
+        db.prepare(`DELETE FROM deals WHERE category LIKE '%grooming%' OR category LIKE '%fragrance%' OR title LIKE '%perfume%'`).run();
+      } catch {}
+
       const res = await app.request('/api/v1/best/grooming-and-perfume-bundles-under-1000');
       // When catalog does not have 2 verified grooming deals, returns 404
       expect(res.status).toBe(404);

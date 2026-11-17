@@ -556,11 +556,12 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
       expect(res.status).toBe(200);
       const json = await res.json();
       expect(json.success).toBe(true);
-      expect(json.data.length).toBe(1);
-      expect(json.data[0].id).toBe('draft_unit_1');
-      expect(json.data[0].prospectName).toBe('Apex Dental Care');
-      expect(json.data[0].messageDraft).toContain('after-hours patient inquiries');
-      expect(json.data[0].oneClickWhatsAppUrl).toContain('https://wa.me');
+      const targetDraft = json.data.find((d: any) => d.id === 'draft_unit_1');
+      expect(targetDraft).toBeDefined();
+      expect(targetDraft.id).toBe('draft_unit_1');
+      expect(targetDraft.prospectName).toBe('Apex Dental Care');
+      expect(targetDraft.messageDraft).toContain('after-hours patient inquiries');
+      expect(targetDraft.oneClickWhatsAppUrl).toContain('https://wa.me');
     });
   });
 

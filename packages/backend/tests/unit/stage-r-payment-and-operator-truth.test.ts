@@ -20,6 +20,33 @@ describe('Stage R & R.1 — Payment Attribution, Separate Fulfillment Machine, F
     process.env = { ...originalEnv };
     process.env.VITEST = 'true';
     process.env.JWT_SECRET = 'test_jwt_secret_must_be_at_least_32_characters_long_for_security';
+
+    // Seed test organizations and businesses for foreign keys
+    db.prepare(`INSERT OR IGNORE INTO organizations (id, name, slug) VALUES ('org_owner_primary', 'Platform Org', 'platform-org')`).run();
+    db.prepare(`INSERT OR IGNORE INTO organizations (id, name, slug) VALUES ('org_smilekraft_01', 'Smilekraft Org', 'smilekraft-org')`).run();
+    db.prepare(`INSERT OR IGNORE INTO organizations (id, name, slug) VALUES ('org_test', 'Test Org', 'test-org')`).run();
+
+    db.prepare(`
+      INSERT OR IGNORE INTO businesses (
+        id, organization_id, name, vertical_id, vertical_name, city, neighborhood, brand_voice
+      ) VALUES (
+        'biz_platform_aro', 'org_owner_primary', 'ARO Platform', 'vert_platform', 'Platform', 'Bangalore', 'CBD', 'Authoritative'
+      )
+    `).run();
+    db.prepare(`
+      INSERT OR IGNORE INTO businesses (
+        id, organization_id, name, vertical_id, vertical_name, city, neighborhood, brand_voice
+      ) VALUES (
+        'biz_smilekraft_hyd', 'org_smilekraft_01', 'Smilekraft Dental', 'vert_dental', 'Dental', 'Hyderabad', 'Madhapur', 'Warm'
+      )
+    `).run();
+    db.prepare(`
+      INSERT OR IGNORE INTO businesses (
+        id, organization_id, name, vertical_id, vertical_name, city, neighborhood, brand_voice
+      ) VALUES (
+        'biz_test', 'org_test', 'Test Business', 'vert_tech', 'Tech', 'Bangalore', 'Indiranagar', 'Professional'
+      )
+    `).run();
   });
 
   afterEach(() => {
