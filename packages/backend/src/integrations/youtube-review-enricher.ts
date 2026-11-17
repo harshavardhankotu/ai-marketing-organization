@@ -288,6 +288,16 @@ export class YouTubeReviewEnricher {
     const cleanTitle = this.cleanTitleForSearch(deal.title || 'Product');
     if (!cleanTitle) return null;
 
+    const ytApiKey = normalizeSecretValue(process.env.YOUTUBE_API_KEY || process.env.GOOGLE_API_KEY);
+    const tavilyKey = normalizeSecretValue(process.env.TAVILY_API_KEY);
+    const hasKeys = Boolean(
+      (ytApiKey && !isPlaceholderCredential(ytApiKey)) ||
+      (tavilyKey && !isPlaceholderCredential(tavilyKey))
+    );
+    if (!hasKeys) {
+      return null;
+    }
+
     // 2. Primary: YouTube API
     let review = await this.searchYouTubeApi(cleanTitle);
 

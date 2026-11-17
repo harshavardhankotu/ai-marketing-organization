@@ -8690,7 +8690,7 @@ apiRouter.get('/public/autonomy-status', async (c) => {
   let financialAndArbitrageRadar: any = null;
   try {
     const { MultiAssetOpportunityRadar } = await import('../intelligence/multi-asset-opportunity-radar.js');
-    financialAndArbitrageRadar = await MultiAssetOpportunityRadar.getInstance().getRadarSummary({ skipLiveNetwork: false });
+    financialAndArbitrageRadar = await MultiAssetOpportunityRadar.getInstance().getRadarSummary({ skipLiveNetwork: true });
   } catch {}
 
   let telegramSyndication: 'LIVE_ENABLED' | 'READY_AWAITING_BOT_TOKEN' = 'READY_AWAITING_BOT_TOKEN';
