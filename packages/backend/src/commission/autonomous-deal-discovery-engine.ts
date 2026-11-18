@@ -6941,11 +6941,39 @@ export class AutonomousDealDiscoveryEngine {
     const origin = (targetDealId || (params.deal?.slug && isSingleTokenSlug)) ? 'EXPLICIT_PRODUCT' : 'QUERY_DERIVED';
     const productUrl = params.deal?.productUrl || (/^https?:\/\//i.test(params.queryOrUrl) ? params.queryOrUrl : '');
 
-    const contactId = `contact_${createHash('sha256').update(email).digest('hex').slice(0, 32)}`;
+    const contactId = `contact_${createHash('sha256').update(`${businessId}:${email}`).digest('hex').slice(0, 32)}`;
     let contactSaved = false;
-    let wasExistingContact = false;
-    let previousAuthEvidenceJson: string | null = null;
+    let savedContactId = contactId;
     let createdSubscriptionId = `sub_${randomUUID().replace(/-/g, '').slice(0, 16)}`;
+
+    // Gate 3 & CodeRabbit Finding 7: Insert durable event FIRST so watch is published only when event is durable
+    const eventId = `sub_evt_${createHash('sha256').update(email + (targetSlug || targetDealId || '') + createdSubscriptionId).digest('hex').slice(0, 24)}`;
+    const eventPayload = JSON.stringify({
+      email,
+      name: email.split('@')[0] || 'Fair-Price Buyer',
+      productSlug: targetSlug,
+      category: params.deal?.category || 'Consumer Fair-Price Watch',
+      dealId: targetDealId,
+      targetPriceINR: targetPrice,
+      origin,
+      queryOrUrl: params.queryOrUrl,
+      title: params.deal?.title || params.queryOrUrl,
+      subscriptionId: createdSubscriptionId,
+      consent: 'OPTED_IN_FIRST_PARTY',
+      createdAt: nowIso
+    });
+    try {
+      const eventSql = `INSERT INTO durable_events (id, event_type, organization_id, payload_json, processed, created_at)
+        VALUES (?, 'PRICE_DROP_SUBSCRIPTION', ?, ?, 0, datetime('now'))`;
+      if (this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
+        await this.d1Repo.executeWrite('durable_events', eventSql, [eventId, organizationId, eventPayload]);
+      } else {
+        getDb().prepare(eventSql).run(eventId, organizationId, eventPayload);
+      }
+    } catch (evErr: any) {
+      console.error(`[DealEngine] registerTargetPriceAlert durable_events insert failed: ${evErr?.message}`);
+      return { registered: false, reason: 'SUBSCRIPTION_PERSISTENCE_FAILED' };
+    }
 
     // Gate 3 & Gate 5: CAS retry loop on outbound_contacts so concurrent subscriptions merge watches cleanly
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -6960,8 +6988,8 @@ export class AutonomousDealDiscoveryEngine {
       }
 
       if (existing?.id) {
-        wasExistingContact = true;
-        previousAuthEvidenceJson = typeof existing.authorization_evidence_json === 'string'
+        savedContactId = existing.id;
+        const previousAuthEvidenceJson = typeof existing.authorization_evidence_json === 'string'
           ? existing.authorization_evidence_json
           : JSON.stringify(existing.authorization_evidence_json || {});
         let existingAuthEv: any = {};
@@ -6969,6 +6997,19 @@ export class AutonomousDealDiscoveryEngine {
           existingAuthEv = JSON.parse(previousAuthEvidenceJson || '{}');
         } catch {}
         const prevWatches: any[] = Array.isArray(existingAuthEv?.watches) ? existingAuthEv.watches : [];
+
+        // Finding 17: Retire superseded durable events when replacing an active watch target
+        const supersededWatch = prevWatches.find((w: any) => w && (w.target_deal_slug === targetSlug || (targetDealId && w.target_deal_id === targetDealId)));
+        if (supersededWatch?.subscription_id) {
+          const retireSql = `UPDATE durable_events SET processed = 1, error_message = 'SUPERSEDED_BY_NEW_TARGET' WHERE event_type = 'PRICE_DROP_SUBSCRIPTION' AND processed = 0 AND json_extract(payload_json, '$.subscriptionId') = ?`;
+          try {
+            if (this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
+              await this.d1Repo.executeWrite('durable_events', retireSql, [supersededWatch.subscription_id]);
+            } else {
+              getDb().prepare(retireSql).run(supersededWatch.subscription_id);
+            }
+          } catch {}
+        }
 
         const newWatch = {
           subscription_id: createdSubscriptionId,
@@ -6978,6 +7019,7 @@ export class AutonomousDealDiscoveryEngine {
           query_or_url: params.queryOrUrl,
           product_url: productUrl,
           title: params.deal?.title || params.queryOrUrl,
+          category: params.deal?.category || 'Consumer Fair-Price Watch',
           registered_at: nowIso,
           dispatched_at: null as string | null,
           dispatched_price_inr: null as number | null,
@@ -7048,8 +7090,7 @@ export class AutonomousDealDiscoveryEngine {
           continue;
         }
       } else {
-        wasExistingContact = false;
-        previousAuthEvidenceJson = null;
+        savedContactId = contactId;
         const newWatch = {
           subscription_id: createdSubscriptionId,
           target_deal_id: targetDealId,
@@ -7058,6 +7099,7 @@ export class AutonomousDealDiscoveryEngine {
           query_or_url: params.queryOrUrl,
           product_url: productUrl,
           title: params.deal?.title || params.queryOrUrl,
+          category: params.deal?.category || 'Consumer Fair-Price Watch',
           registered_at: nowIso,
           dispatched_at: null as string | null,
           dispatched_price_inr: null as number | null,
@@ -7120,51 +7162,13 @@ export class AutonomousDealDiscoveryEngine {
     }
 
     if (!contactSaved) {
-      return { registered: false, reason: 'SUBSCRIPTION_PERSISTENCE_FAILED' };
-    }
-
-    // Gate 3: Persist alert subscription to durable_events — FAIL CLOSED on error
-    const eventId = `sub_evt_${createHash('sha256').update(email + (targetSlug || targetDealId || '') + Date.now()).digest('hex').slice(0, 24)}`;
-    const eventPayload = JSON.stringify({
-      email,
-      name: email.split('@')[0] || 'Fair-Price Buyer',
-      productSlug: targetSlug,
-      category: params.deal?.category || 'Consumer Fair-Price Watch',
-      dealId: targetDealId,
-      targetPriceINR: targetPrice,
-      origin,
-      queryOrUrl: params.queryOrUrl,
-      title: params.deal?.title || params.queryOrUrl,
-      subscriptionId: createdSubscriptionId,
-      consent: 'OPTED_IN_FIRST_PARTY',
-      createdAt: nowIso
-    });
-    try {
-      const eventSql = `INSERT INTO durable_events (id, event_type, organization_id, payload_json, processed, created_at)
-        VALUES (?, 'PRICE_DROP_SUBSCRIPTION', ?, ?, 0, datetime('now'))`;
-      if (this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
-        await this.d1Repo.executeWrite('durable_events', eventSql, [eventId, organizationId, eventPayload]);
-      } else {
-        getDb().prepare(eventSql).run(eventId, organizationId, eventPayload);
-      }
-    } catch (evErr: any) {
-      console.error(`[DealEngine] registerTargetPriceAlert durable_events insert failed: ${evErr?.message}`);
-      // Rollback contact watch so failed subscription leaves no active watch (CodeRabbit Finding 5)
+      // Retire durable event if contact persistence failed (CodeRabbit Finding 7)
       try {
-        if (wasExistingContact && previousAuthEvidenceJson) {
-          const rollbackSql = `UPDATE outbound_contacts SET authorization_evidence_json = ? WHERE id = ?`;
-          if (this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
-            await this.d1Repo.executeWrite('outbound_contacts', rollbackSql, [previousAuthEvidenceJson, contactId]);
-          } else {
-            getDb().prepare(rollbackSql).run(previousAuthEvidenceJson, contactId);
-          }
+        const retireSql = `UPDATE durable_events SET processed = 1, error_message = 'CONTACT_WRITE_FAILED' WHERE id = ?`;
+        if (this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
+          await this.d1Repo.executeWrite('durable_events', retireSql, [eventId]);
         } else {
-          const rollbackSql = `DELETE FROM outbound_contacts WHERE id = ?`;
-          if (this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
-            await this.d1Repo.executeWrite('outbound_contacts', rollbackSql, [contactId]);
-          } else {
-            getDb().prepare(rollbackSql).run(contactId);
-          }
+          getDb().prepare(retireSql).run(eventId);
         }
       } catch {}
       return { registered: false, reason: 'SUBSCRIPTION_PERSISTENCE_FAILED' };
@@ -7200,9 +7204,10 @@ export class AutonomousDealDiscoveryEngine {
       }
     } catch {}
 
-    return { registered: true, contactId };
+    return { registered: true, contactId: savedContactId };
   }
 
+  private static priceDropContactCursor: string | null = null;
   private static priceDropEventCursor: string | null = null;
 
   /**
@@ -7262,17 +7267,28 @@ export class AutonomousDealDiscoveryEngine {
       if (Array.isArray(ev.watches)) {
         for (const w of ev.watches) {
           if (!w || w.dispatched_at) continue;
-          const matchSub = Boolean(subscriptionId && w.subscription_id && w.subscription_id === subscriptionId);
-          const matchDeal = Boolean(dealId && (w.target_deal_id === dealId || w.dispatched_deal_id === dealId));
-          const matchSlug = Boolean(dealSlug && (w.target_deal_slug === dealSlug || w.slug === dealSlug));
-          const matchKey = Boolean(watchKey && (w.query_or_url === watchKey || w.target_deal_slug === watchKey || w.category === watchKey));
+          if (subscriptionId) {
+            // CodeRabbit Finding 13: If subscriptionId is present, match it exclusively
+            if (w.subscription_id === subscriptionId) {
+              w.dispatched_at = nowIso;
+              w.dispatched_price_inr = currentPriceINR;
+              w.dispatched_deal_id = dealId;
+              mutated = true;
+              break;
+            }
+          } else {
+            // Legacy matching only when delivery has no subscription ID
+            const matchDeal = Boolean(dealId && (w.target_deal_id === dealId || w.dispatched_deal_id === dealId));
+            const matchSlug = Boolean(dealSlug && (w.target_deal_slug === dealSlug || w.slug === dealSlug));
+            const matchKey = Boolean(watchKey && (w.query_or_url === watchKey || w.target_deal_slug === watchKey || w.category === watchKey));
 
-          if (matchSub || matchDeal || matchSlug || matchKey || (Number(w.target_price_inr || 0) >= currentPriceINR && (w.target_deal_id === dealId || w.target_deal_slug === dealSlug))) {
-            w.dispatched_at = nowIso;
-            w.dispatched_price_inr = currentPriceINR;
-            w.dispatched_deal_id = dealId;
-            mutated = true;
-            break; // Mark ONLY this satisfied watch
+            if (matchDeal || matchSlug || matchKey || (Number(w.target_price_inr || 0) >= currentPriceINR && (w.target_deal_id === dealId || w.target_deal_slug === dealSlug))) {
+              w.dispatched_at = nowIso;
+              w.dispatched_price_inr = currentPriceINR;
+              w.dispatched_deal_id = dealId;
+              mutated = true;
+              break;
+            }
           }
         }
       }
@@ -7308,17 +7324,36 @@ export class AutonomousDealDiscoveryEngine {
 
   /**
    * Helper to mark matching PRICE_DROP_SUBSCRIPTION events processed.
+   * Matches by exact subscriptionId or sourceEventId, never SQL LIKE wildcards (CWE-639 / CodeRabbit Finding 4).
    */
-  private async markMatchingSubscriptionEventsProcessed(email: string, dealId?: string | null, productSlug?: string | null, category?: string | null): Promise<void> {
+  private async markMatchingSubscriptionEventsProcessed(
+    email: string,
+    subscriptionId?: string | null,
+    sourceEventId?: string | null
+  ): Promise<void> {
     const isProd = isProduction() && !process.env.VITEST;
-    const targetMatch = dealId ? `%"dealId":"${dealId}"%` : (productSlug ? `%"productSlug":"${productSlug}"%` : `%"category":"${category}"%`);
-    const sql = `UPDATE durable_events SET processed = 1, processed_at = datetime('now') WHERE event_type = 'PRICE_DROP_SUBSCRIPTION' AND processed = 0 AND payload_json LIKE ? AND payload_json LIKE ?`;
-    const emailLike = `%"email":"${email}"%`;
+    if (sourceEventId) {
+      await this.markEventProcessed(sourceEventId, null);
+      return;
+    }
+    if (subscriptionId) {
+      const sql = `UPDATE durable_events SET processed = 1, processed_at = datetime('now') WHERE event_type = 'PRICE_DROP_SUBSCRIPTION' AND processed = 0 AND json_extract(payload_json, '$.subscriptionId') = ?`;
+      try {
+        if (this.d1Repo.isRemoteD1Configured() || isProd) {
+          await this.d1Repo.executeWrite('durable_events', sql, [subscriptionId]);
+        } else {
+          getDb().prepare(sql).run(subscriptionId);
+        }
+      } catch {}
+      return;
+    }
+    // Fallback for legacy events without subscriptionId: match exact JSON extract on email
+    const sql = `UPDATE durable_events SET processed = 1, processed_at = datetime('now') WHERE event_type = 'PRICE_DROP_SUBSCRIPTION' AND processed = 0 AND json_extract(payload_json, '$.email') = ?`;
     try {
       if (this.d1Repo.isRemoteD1Configured() || isProd) {
-        await this.d1Repo.executeWrite('durable_events', sql, [emailLike, targetMatch]);
+        await this.d1Repo.executeWrite('durable_events', sql, [email]);
       } else {
-        getDb().prepare(sql).run(emailLike, targetMatch);
+        getDb().prepare(sql).run(email);
       }
     } catch {}
   }
@@ -7358,6 +7393,7 @@ export class AutonomousDealDiscoveryEngine {
 
     // Gate 1: Check outbound_contacts
     let contact = params.contactRow;
+    let contactLookupFailed = false;
     if (!contact) {
       const contactSql = `SELECT id, prospect_name, email_authorized, authorization_source, is_opted_out, is_suppressed, is_bounced, authorization_evidence_json, updated_at FROM outbound_contacts WHERE business_id = 'biz_platform_aro' AND prospect_email = ? LIMIT 1`;
       try {
@@ -7367,11 +7403,18 @@ export class AutonomousDealDiscoveryEngine {
         } else {
           contact = getDb().prepare(contactSql).get(email) as any;
         }
-      } catch {}
+      } catch {
+        contactLookupFailed = true;
+      }
+    }
+
+    if (contactLookupFailed) {
+      // CodeRabbit Finding 5: Do not reject subscription if contact lookup threw DB error; keep pending for retry
+      return 'SKIPPED';
     }
 
     if (!contact) {
-      // Gate 1 Fail-closed: No authorized contact exists
+      // Gate 1 Fail-closed: No authorized contact exists confirmed by successful lookup
       if (params.sourceEventId) {
         await this.markEventProcessed(params.sourceEventId, 'REJECTED_NO_AUTHORISED_CONTACT');
       }
@@ -7390,6 +7433,33 @@ export class AutonomousDealDiscoveryEngine {
         await this.markEventProcessed(params.sourceEventId, 'REJECTED_SUPPRESSED_OR_OPTED_OUT');
       }
       return 'SKIPPED';
+    }
+
+    // CodeRabbit Finding 17: Validate that durable event still represents an active watch
+    if (params.sourceType === 'DURABLE_EVENT' && params.subscriptionId) {
+      let evData: any = {};
+      try {
+        evData = typeof contact.authorization_evidence_json === 'string'
+          ? JSON.parse(contact.authorization_evidence_json || '{}')
+          : (contact.authorization_evidence_json || {});
+      } catch {}
+      const activeWatches: any[] = Array.isArray(evData?.watches) ? evData.watches : [];
+      if (activeWatches.length > 0) {
+        const matchingWatch = activeWatches.find((w: any) => w && w.subscription_id === params.subscriptionId);
+        if (!matchingWatch) {
+          // Watch was replaced or superseded by a newer subscription
+          if (params.sourceEventId) {
+            await this.markEventProcessed(params.sourceEventId, 'SUPERSEDED_BY_NEW_TARGET');
+          }
+          return 'SKIPPED';
+        }
+        if (matchingWatch.dispatched_at) {
+          if (params.sourceEventId) {
+            await this.markEventProcessed(params.sourceEventId, null);
+          }
+          return 'SKIPPED';
+        }
+      }
     }
 
     // Check outreach_suppression_list
@@ -7452,34 +7522,45 @@ export class AutonomousDealDiscoveryEngine {
     }
 
     // Gate 2: Deterministic claim ID
+    // CodeRabbit Finding 15: Use one claim for both copies of a subscription by scoping to subscriptionId
     const watchKey = dealId || productSlug || params.category || 'all';
     const subId = params.subscriptionId || params.watchRef?.subscription_id;
-    const claimKeyPart = subId ? `${email}:${matchedDeal.id}:${watchKey}:${subId}` : `${email}:${matchedDeal.id}:${watchKey}`;
+    const claimKeyPart = subId
+      ? `${email}:${matchedDeal.id}:${subId}`
+      : `${email}:${matchedDeal.id}:${watchKey}`;
     const claimId = `price_alert_claim_${createHash('sha256').update(claimKeyPart).digest('hex').slice(0, 36)}`;
     const orgId = OwnerAuthService.OWNER_ORGANIZATION_ID || 'org_owner_primary';
 
-    // Attempt claim insert or CAS reclaim
+    // Attempt claim insert with pre-send lease (CodeRabbit Finding 1)
     let claimAcquired = false;
+    const nowMs = Date.now();
+    const leaseTag = `PRE_SEND_LEASE:${nowMs}`;
     const insertClaimSql = `INSERT INTO durable_events (id, event_type, organization_id, payload_json, processed, error_message, created_at)
-      VALUES (?, 'PRICE_ALERT_DELIVERY_CLAIMED', ?, ?, 0, 'PROCESSING', datetime('now'))`;
-    const claimPayload = JSON.stringify({ email, dealId: matchedDeal.id, targetPriceINR: targetPrice, currentPriceINR: matchedDeal.currentPriceINR, claimedAt: new Date().toISOString() });
+      VALUES (?, 'PRICE_ALERT_DELIVERY_CLAIMED', ?, ?, 0, ?, datetime('now'))`;
+    const claimPayload = JSON.stringify({
+      email,
+      dealId: matchedDeal.id,
+      targetPriceINR: targetPrice,
+      currentPriceINR: matchedDeal.currentPriceINR,
+      subscriptionId: subId || null,
+      claimedAt: new Date().toISOString()
+    });
 
     try {
       if (this.d1Repo.isRemoteD1Configured() || isProd) {
-        const res = await this.d1Repo.executeWrite('durable_events', insertClaimSql, [claimId, orgId, claimPayload]);
+        const res = await this.d1Repo.executeWrite('durable_events', insertClaimSql, [claimId, orgId, claimPayload, leaseTag]);
         claimAcquired = (res && res.rowsAffected > 0);
       } else {
-        const info = getDb().prepare(insertClaimSql).run(claimId, orgId, claimPayload);
+        const info = getDb().prepare(insertClaimSql).run(claimId, orgId, claimPayload, leaseTag);
         claimAcquired = (info.changes > 0);
       }
     } catch {
-      // Row might already exist
       claimAcquired = false;
     }
 
     if (!claimAcquired) {
       // Check existing claim
-      const checkSql = `SELECT id, processed, error_message FROM durable_events WHERE id = ? LIMIT 1`;
+      const checkSql = `SELECT id, processed, error_message, payload_json, created_at FROM durable_events WHERE id = ? LIMIT 1`;
       let existingClaim: any = null;
       try {
         if (this.d1Repo.isRemoteD1Configured() || isProd) {
@@ -7505,20 +7586,32 @@ export class AutonomousDealDiscoveryEngine {
         return 'SKIPPED';
       }
 
-      if (existingClaim.error_message === 'PROCESSING') {
-        // Currently in flight or ambiguous post-send protection: do not duplicate send
+      const errMsg = String(existingClaim.error_message || '');
+      if (errMsg.startsWith('PROVIDER_CALL_ATTEMPTED') || errMsg === 'PROCESSING') {
+        // CodeRabbit Finding 1 & 14: Currently in flight or provider outcome unknown — duplicate-send protection
         return 'SKIPPED';
       }
 
-      if (String(existingClaim.error_message || '').startsWith('RETRYABLE:')) {
-        // Reclaim lease
-        const reclaimSql = `UPDATE durable_events SET error_message = 'PROCESSING', payload_json = ? WHERE id = ? AND processed = 0 AND error_message LIKE 'RETRYABLE:%'`;
+      // Pre-send lease recovery: If worker stopped before calling Brevo (> 5 minutes ago) or marked RETRYABLE
+      let canReclaim = false;
+      if (errMsg.startsWith('PRE_SEND_LEASE:')) {
+        const leaseTime = Number(errMsg.split(':')[1] || 0);
+        if (nowMs - leaseTime > 5 * 60 * 1000) {
+          canReclaim = true;
+        }
+      } else if (errMsg.startsWith('RETRYABLE:')) {
+        canReclaim = true;
+      }
+
+      if (canReclaim) {
+        // CAS reclaim of lease
+        const reclaimSql = `UPDATE durable_events SET error_message = ?, payload_json = ? WHERE id = ? AND processed = 0 AND error_message = ?`;
         try {
           if (this.d1Repo.isRemoteD1Configured() || isProd) {
-            const upRes = await this.d1Repo.executeWrite('durable_events', reclaimSql, [claimPayload, claimId]);
+            const upRes = await this.d1Repo.executeWrite('durable_events', reclaimSql, [leaseTag, claimPayload, claimId, errMsg]);
             claimAcquired = (upRes && upRes.rowsAffected > 0);
           } else {
-            const info = getDb().prepare(reclaimSql).run(claimPayload, claimId);
+            const info = getDb().prepare(reclaimSql).run(leaseTag, claimPayload, claimId, errMsg);
             claimAcquired = (info.changes > 0);
           }
         } catch {
@@ -7531,28 +7624,55 @@ export class AutonomousDealDiscoveryEngine {
       }
     }
 
+    // CodeRabbit Finding 3: Revalidate price after acquiring the claim to guard against price changes during D1 wait
+    const latestDeal = this.dealsMap.get(matchedDeal.id) || params.validDeals.find(d => d.id === matchedDeal.id);
+    if (!latestDeal || latestDeal.availability !== 'IN_STOCK' || (targetPrice > 0 && Number(latestDeal.currentPriceINR || 0) > targetPrice)) {
+      // Deal is no longer eligible or price rebounded above target: release pre-send lease for later drop
+      try {
+        const releaseSql = `DELETE FROM durable_events WHERE id = ? AND error_message LIKE 'PRE_SEND_LEASE:%'`;
+        if (this.d1Repo.isRemoteD1Configured() || isProd) {
+          await this.d1Repo.executeWrite('durable_events', releaseSql, [claimId]);
+        } else {
+          getDb().prepare(releaseSql).run(claimId);
+        }
+      } catch {}
+      return 'UNMATCHED';
+    }
+    const finalPriceINR = Number(latestDeal.currentPriceINR);
+
     // Prepare Brevo transactional email
-    const redirectUrl = `${params.siteUrl}/api/v1/public/deals/${encodeURIComponent(matchedDeal.id)}/redirect?utm_source=price_alert`;
-    const priceStr = `₹${Number(matchedDeal.currentPriceINR).toLocaleString('en-IN')}`;
+    const redirectUrl = `${params.siteUrl}/api/v1/public/deals/${encodeURIComponent(latestDeal.id)}/redirect?utm_source=price_alert`;
+    const priceStr = `₹${finalPriceINR.toLocaleString('en-IN')}`;
     const targetStr = targetPrice > 0 ? `₹${targetPrice.toLocaleString('en-IN')}` : 'your target';
     const recipientName = params.recipientName || contact.prospect_name || 'Buyer';
 
-    const safeTitle = escapeHtml(matchedDeal.title || 'Deal');
-    const safeMerchant = escapeHtml(matchedDeal.merchant || 'Merchant');
+    const safeTitle = escapeHtml(latestDeal.title || 'Deal');
+    const safeMerchant = escapeHtml(latestDeal.merchant || 'Merchant');
 
-    const subject = `Price Drop Alert: ${matchedDeal.title} is now ${priceStr} (Below your ${targetStr} target)`;
+    const subject = `Price Drop Alert: ${latestDeal.title} is now ${priceStr} (Below your ${targetStr} target)`;
     const textContent = [
-      `Good news! Your watched item dropped to ${priceStr} (your target was ${targetStr}) on ${matchedDeal.merchant}.`,
-      matchedDeal.referencePriceINR && matchedDeal.referencePriceINR > Number(matchedDeal.currentPriceINR || 0)
-        ? `Reference MRP: ₹${Number(matchedDeal.referencePriceINR).toLocaleString('en-IN')}`
+      `Good news! Your watched item dropped to ${priceStr} (your target was ${targetStr}) on ${latestDeal.merchant}.`,
+      latestDeal.referencePriceINR && latestDeal.referencePriceINR > finalPriceINR
+        ? `Reference MRP: ₹${Number(latestDeal.referencePriceINR).toLocaleString('en-IN')}`
         : '',
-      matchedDeal.couponCode ? `Promo Code: ${matchedDeal.couponCode}` : '',
+      latestDeal.couponCode ? `Promo Code: ${latestDeal.couponCode}` : '',
       `Claim Verified Price (#Ad): ${redirectUrl}`,
       '',
       `Note (#Ad): Qualifying purchases through this link may earn an affiliate commission at zero extra cost to you. Verify live stock & price on checkout.`
     ].filter(Boolean).join('\n');
 
     const htmlContent = `<div style="font-family:sans-serif;line-height:1.6"><h2>Price Drop Alert (#Ad)</h2><p><strong>${safeTitle}</strong> is now <strong>${priceStr}</strong> on ${safeMerchant} (your target: ${targetStr}).</p><p><a href="${redirectUrl}" style="display:inline-block;padding:10px 18px;background:#06b6d4;color:#020617;font-weight:700;border-radius:6px;text-decoration:none;">View Deal at ${safeMerchant} →</a></p><p style="font-size:12px;color:#64748b;">#Ad Affiliate Disclosure: Qualifying purchases via this link may earn a commission at zero extra cost to you.</p></div>`;
+
+    // CodeRabbit Finding 1 & 14: Transition to PROVIDER_CALL_ATTEMPTED right before calling Brevo
+    const attemptTag = `PROVIDER_CALL_ATTEMPTED:${Date.now()}`;
+    try {
+      const markAttemptSql = `UPDATE durable_events SET error_message = ? WHERE id = ? AND processed = 0`;
+      if (this.d1Repo.isRemoteD1Configured() || isProd) {
+        await this.d1Repo.executeWrite('durable_events', markAttemptSql, [attemptTag, claimId]);
+      } else {
+        getDb().prepare(markAttemptSql).run(attemptTag, claimId);
+      }
+    } catch {}
 
     try {
       const sendRes = await params.brevo.sendTransactionalEmail({
@@ -7563,9 +7683,6 @@ export class AutonomousDealDiscoveryEngine {
       });
 
       if (sendRes.success && sendRes.status === 'SENT') {
-        // Ambiguous Post-Send DB Failure Protection:
-        // If Brevo sent, try to update durable_events claim to processed = 1.
-        // If this DB write fails, LEAVE 'PROCESSING' row intact (never mark RETRYABLE:).
         try {
           const completeClaimSql = `UPDATE durable_events SET processed = 1, processed_at = datetime('now'), error_message = NULL WHERE id = ?`;
           if (this.d1Repo.isRemoteD1Configured() || isProd) {
@@ -7578,38 +7695,55 @@ export class AutonomousDealDiscoveryEngine {
         }
 
         // Update contact watch dispatched_at
-        await this.markContactWatchDispatched(contact, matchedDeal.id, Number(matchedDeal.currentPriceINR), email, watchKey, subId, matchedDeal.slug);
+        await this.markContactWatchDispatched(contact, latestDeal.id, finalPriceINR, email, watchKey, subId, latestDeal.slug);
 
-        // Mark source event or matching subscription events processed = 1
-        if (params.sourceEventId) {
-          await this.markEventProcessed(params.sourceEventId, null);
-        }
-        await this.markMatchingSubscriptionEventsProcessed(email, dealId, productSlug, params.category);
+        // Mark source event or matching subscription events processed
+        await this.markMatchingSubscriptionEventsProcessed(email, subId, params.sourceEventId);
 
         return 'DISPATCHED';
-      } else {
-        // Confirmed Brevo send failure: mark RETRYABLE
-        const retryMsg = `RETRYABLE:${sendRes.status || 'BREVO_ERROR'}`;
-        const retrySql = `UPDATE durable_events SET error_message = ?, processed = 0 WHERE id = ?`;
+      } else if (sendRes.status === 'QUEUED_NEXT_UTC_WINDOW') {
+        // CodeRabbit Finding 10: Message queued in Brevo overflow queue; do not retry via alert scan
+        try {
+          const queueClaimSql = `UPDATE durable_events SET processed = 1, processed_at = datetime('now'), error_message = 'QUEUED_BREVO_OVERFLOW' WHERE id = ?`;
+          if (this.d1Repo.isRemoteD1Configured() || isProd) {
+            await this.d1Repo.executeWrite('durable_events', queueClaimSql, [claimId]);
+          } else {
+            getDb().prepare(queueClaimSql).run(claimId);
+          }
+        } catch {}
+
+        await this.markContactWatchDispatched(contact, latestDeal.id, finalPriceINR, email, watchKey, subId, latestDeal.slug);
+        await this.markMatchingSubscriptionEventsProcessed(email, subId, params.sourceEventId);
+
+        return 'DISPATCHED';
+      } else if (sendRes.status === 'SUPPRESSED' || sendRes.status === 'BLOCKED_CREDENTIALS') {
+        // Confirmed rejection
+        const rejSql = `UPDATE durable_events SET error_message = ?, processed = 0 WHERE id = ?`;
         try {
           if (this.d1Repo.isRemoteD1Configured() || isProd) {
-            await this.d1Repo.executeWrite('durable_events', retrySql, [retryMsg, claimId]);
+            await this.d1Repo.executeWrite('durable_events', rejSql, [`REJECTED:${sendRes.status}`, claimId]);
           } else {
-            getDb().prepare(retrySql).run(retryMsg, claimId);
+            getDb().prepare(rejSql).run(`REJECTED:${sendRes.status}`, claimId);
           }
         } catch {}
         return 'SKIPPED';
-      }
-    } catch (sendErr: any) {
-      const retryMsg = `RETRYABLE:${sendErr?.message || 'NETWORK_ERROR'}`;
-      const retrySql = `UPDATE durable_events SET error_message = ?, processed = 0 WHERE id = ?`;
-      try {
-        if (this.d1Repo.isRemoteD1Configured() || isProd) {
-          await this.d1Repo.executeWrite('durable_events', retrySql, [retryMsg, claimId]);
-        } else {
-          getDb().prepare(retrySql).run(retryMsg, claimId);
+      } else {
+        // CodeRabbit Finding 14: Confirmed 5xx from Brevo can be retried; unknown errors remain PROVIDER_CALL_ATTEMPTED
+        if (String(sendRes.reason || '').includes('HTTP 5')) {
+          const retryMsg = `RETRYABLE:5xx_${Date.now()}`;
+          const retrySql = `UPDATE durable_events SET error_message = ?, processed = 0 WHERE id = ?`;
+          try {
+            if (this.d1Repo.isRemoteD1Configured() || isProd) {
+              await this.d1Repo.executeWrite('durable_events', retrySql, [retryMsg, claimId]);
+            } else {
+              getDb().prepare(retrySql).run(retryMsg, claimId);
+            }
+          } catch {}
         }
-      } catch {}
+        return 'SKIPPED';
+      }
+    } catch {
+      // CodeRabbit Finding 14: Network exception during or after send: leave PROVIDER_CALL_ATTEMPTED for duplicate-send protection
       return 'SKIPPED';
     }
   }
@@ -7626,14 +7760,27 @@ export class AutonomousDealDiscoveryEngine {
       ? Array.from(new Map([...Array.from(this.dealsMap.values()), ...deals].map(d => [d.id, d])).values())
       : Array.from(this.dealsMap.values());
     const now = new Date();
-    // CodeRabbit Finding 3: Exclude unverified cached deals from alert candidates
+    // CodeRabbit Findings 6, 11, 16: Strict price verification, redirect route eligibility, and freshness
     const validDeals = allDeals.filter(d => {
       if (!d || Number(d.currentPriceINR || 0) <= 0 || d.availability !== 'IN_STOCK') return false;
       if (d.verificationStatus === 'EXPIRED' || d.verificationStatus === 'REJECTED' || d.verificationStatus === 'OUT_OF_STOCK') return false;
       const status = String(d.verificationStatus || '').toUpperCase();
-      if (status !== 'VERIFIED' && status !== 'PRICE_VERIFIED' && status !== 'AFFILIATE_VERIFIED' && d.affiliateVerified !== true) {
+      // Finding 16: Affirmative price verification status required (affiliate approval alone does not substitute)
+      if (status !== 'VERIFIED' && status !== 'PRICE_VERIFIED') {
         return false;
       }
+      // Finding 6: Must be monetizable with verified redirect route eligibility
+      if (d.isMonetizable === false) return false;
+      if (!d.merchant || !d.productUrl) return false;
+      if (!d.affiliateCampaignId && !d.trackingUrl) return false;
+
+      // Finding 11: Freshness policy — price observed within last 48 hours
+      const lastObserved = d.lastCheckedAt || (d as any).last_verified_at || d.createdAt;
+      if (lastObserved) {
+        const ageHours = (now.getTime() - new Date(lastObserved).getTime()) / (1000 * 60 * 60);
+        if (ageHours > 48) return false;
+      }
+
       if (d.expiryDate && new Date(d.expiryDate) <= now) return false;
       return true;
     });
@@ -7649,27 +7796,49 @@ export class AutonomousDealDiscoveryEngine {
     let dispatched = 0;
     let skipped = 0;
 
-    // Scan 1: Outbound contacts watches
-    const querySql = `
-      SELECT id, business_id, prospect_name, prospect_email, email_authorized, authorization_source, is_opted_out, is_suppressed, is_bounced, authorization_evidence_json, updated_at
-      FROM outbound_contacts
-      WHERE source IN ('FAIR_PRICE_ALERT', 'CUSTOMER_DESK_ALERT_OPTIN')
-        AND email_authorized = 1
-        AND is_opted_out = 0
-        AND is_bounced = 0
-        AND is_suppressed = 0
-      LIMIT 100
-    `;
+    // Scan 1: Outbound contacts watches with cursor-based pagination (CodeRabbit Finding 18)
+    const contactCursor = AutonomousDealDiscoveryEngine.priceDropContactCursor;
+    const querySql = contactCursor
+      ? `
+        SELECT id, business_id, prospect_name, prospect_email, email_authorized, authorization_source, is_opted_out, is_suppressed, is_bounced, authorization_evidence_json, updated_at
+        FROM outbound_contacts
+        WHERE source IN ('FAIR_PRICE_ALERT', 'CUSTOMER_DESK_ALERT_OPTIN')
+          AND email_authorized = 1
+          AND is_opted_out = 0
+          AND is_bounced = 0
+          AND is_suppressed = 0
+          AND id > ?
+        ORDER BY id ASC
+        LIMIT 100
+      `
+      : `
+        SELECT id, business_id, prospect_name, prospect_email, email_authorized, authorization_source, is_opted_out, is_suppressed, is_bounced, authorization_evidence_json, updated_at
+        FROM outbound_contacts
+        WHERE source IN ('FAIR_PRICE_ALERT', 'CUSTOMER_DESK_ALERT_OPTIN')
+          AND email_authorized = 1
+          AND is_opted_out = 0
+          AND is_bounced = 0
+          AND is_suppressed = 0
+        ORDER BY id ASC
+        LIMIT 100
+      `;
+    const queryParams = contactCursor ? [contactCursor] : [];
 
     let contactRows: any[] = [];
     try {
       if (this.d1Repo.isRemoteD1Configured() || isProd) {
-        const res = await this.d1Repo.executeRead('outbound_contacts', querySql, []);
+        const res = await this.d1Repo.executeRead('outbound_contacts', querySql, queryParams);
         contactRows = Array.isArray(res?.results) ? res.results : [];
       } else {
-        contactRows = getDb().prepare(querySql).all() as any[];
+        contactRows = getDb().prepare(querySql).all(...queryParams) as any[];
       }
     } catch {}
+
+    if (contactRows.length === 100) {
+      AutonomousDealDiscoveryEngine.priceDropContactCursor = contactRows[contactRows.length - 1].id;
+    } else {
+      AutonomousDealDiscoveryEngine.priceDropContactCursor = null;
+    }
 
     for (const row of contactRows) {
       const email = String(row.prospect_email || '').trim().toLowerCase();

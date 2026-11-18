@@ -381,8 +381,8 @@ export class D1Client {
             const json = await response.json() as any;
             const result = json?.result?.[0];
             const results = result?.results || [];
-            const rowsRead = result?.meta?.rows_read || results.length || 1;
-            const rowsWritten = result?.meta?.rows_written || (isWrite ? 1 : 0);
+            const rowsRead = typeof result?.meta?.rows_read === 'number' ? result.meta.rows_read : (results.length || 0);
+            const rowsWritten = typeof result?.meta?.rows_written === 'number' ? result.meta.rows_written : (isWrite ? 1 : 0);
 
             this.recordUsage(rowsRead, rowsWritten);
             return { results, rowsAffected: rowsWritten, source: 'CLOUDFLARE_D1' };
@@ -561,7 +561,7 @@ export class D1Client {
               const json = await response.json() as any;
               const results = json?.result || [];
               for (const res of results) {
-                totalWritten += res?.meta?.rows_written || 1;
+                totalWritten += typeof res?.meta?.rows_written === 'number' ? res.meta.rows_written : (typeof res?.meta?.changes === 'number' ? res.meta.changes : 1);
               }
               statementOk = true;
               break;

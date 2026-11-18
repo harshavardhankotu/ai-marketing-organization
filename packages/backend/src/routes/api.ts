@@ -5042,7 +5042,7 @@ apiRouter.post('/customer-desk/subscribe-alerts', async (c) => {
     const categories = Array.isArray(body.categories)
       ? body.categories.map((x: any) => String(x).trim()).filter(Boolean).slice(0, 8)
       : (body.category ? [String(body.category).trim()] : ['ALL_VERIFIED_DROPS']);
-    const contactId = `contact_${createHash('sha256').update(email).digest('hex').slice(0, 32)}`;
+    const contactId = `contact_${createHash('sha256').update(`biz_platform_aro:${email}`).digest('hex').slice(0, 32)}`;
     const origin = (dealId || (productSlug && !productSlug.includes(' '))) ? 'EXPLICIT_PRODUCT' : 'QUERY_DERIVED';
     const subscriptionId = `sub_${randomUUID().replace(/-/g, '').slice(0, 16)}`;
 
@@ -5053,15 +5053,45 @@ apiRouter.post('/customer-desk/subscribe-alerts', async (c) => {
       target_price_inr: targetPriceINR,
       query_or_url: productSlug || dealId || categories[0],
       title: productSlug || dealId || categories[0],
+      category: body.category || (categories && categories[0]),
       registered_at: new Date().toISOString(),
       dispatched_at: null,
       origin
     } : null;
 
     const d1Repo = D1RevenueRepository.getInstance();
+
+    // Stage S Task 2 & Gate 3: Persist alert subscription to durable_events FIRST — FAIL CLOSED on error
+    const eventId = `sub_evt_${createHash('sha256').update(email + (productSlug || dealId || '') + subscriptionId).digest('hex').slice(0, 24)}`;
+    const eventPayload = JSON.stringify({
+      email,
+      name,
+      productSlug,
+      category: body.category || (categories && categories[0]),
+      dealId,
+      targetPriceINR,
+      origin,
+      subscriptionId,
+      queryOrUrl: productSlug || dealId || (categories && categories[0]),
+      title: productSlug || dealId || (categories && categories[0]),
+      consent: 'OPTED_IN_FIRST_PARTY',
+      createdAt: new Date().toISOString()
+    });
+    try {
+      const orgId = OwnerAuthService.OWNER_ORGANIZATION_ID || 'org_owner_primary';
+      const eventSql = `INSERT INTO durable_events (id, event_type, organization_id, payload_json, processed, created_at)
+        VALUES (?, 'PRICE_DROP_SUBSCRIPTION', ?, ?, 0, datetime('now'))`;
+      if (d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
+        await d1Repo.executeWrite('durable_events', eventSql, [eventId, orgId, eventPayload]);
+      } else {
+        getDb().prepare(eventSql).run(eventId, orgId, eventPayload);
+      }
+    } catch (e: any) {
+      console.error(`[SubscribeAlerts] Durable event persistence failed: ${e?.message}`);
+      return c.json({ success: false, error: 'SUBSCRIPTION_PERSISTENCE_FAILED' }, 503);
+    }
+
     let contactSaved = false;
-    let wasExistingContact = false;
-    let previousEvidenceJson: string | null = null;
 
     // Gate 3 & Gate 5: CAS retry loop on outbound_contacts so concurrent subscriptions merge watches cleanly
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -5080,11 +5110,9 @@ apiRouter.post('/customer-desk/subscribe-alerts', async (c) => {
 
       if (existingRows.length > 0) {
         const existingRow = existingRows[0];
-        wasExistingContact = true;
         const prevEvStr = typeof existingRow.authorization_evidence_json === 'string'
           ? existingRow.authorization_evidence_json
           : JSON.stringify(existingRow.authorization_evidence_json || {});
-        previousEvidenceJson = prevEvStr;
 
         let prevEv: any = {};
         try {
@@ -5092,7 +5120,20 @@ apiRouter.post('/customer-desk/subscribe-alerts', async (c) => {
         } catch {}
         const existingWatches: any[] = Array.isArray(prevEv.watches) ? prevEv.watches : [];
 
-        // Finding 7: Do not delete existing watches if newWatch is null
+        // Finding 17: Retire superseded durable events when replacing an active watch target
+        const supersededWatch = existingWatches.find((w: any) => w && (w.target_deal_slug === productSlug || (dealId && w.target_deal_id === dealId)));
+        if (supersededWatch?.subscription_id) {
+          const retireSql = `UPDATE durable_events SET processed = 1, error_message = 'SUPERSEDED_BY_NEW_TARGET' WHERE event_type = 'PRICE_DROP_SUBSCRIPTION' AND processed = 0 AND json_extract(payload_json, '$.subscriptionId') = ?`;
+          try {
+            if (d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
+              await d1Repo.executeWrite('durable_events', retireSql, [supersededWatch.subscription_id]);
+            } else {
+              getDb().prepare(retireSql).run(supersededWatch.subscription_id);
+            }
+          } catch {}
+        }
+
+        // Do not delete existing watches if newWatch is null
         let mergedWatches = [...existingWatches];
         if (newWatch) {
           mergedWatches = existingWatches.filter((w: any) => {
@@ -5149,8 +5190,6 @@ apiRouter.post('/customer-desk/subscribe-alerts', async (c) => {
           continue;
         }
       } else {
-        wasExistingContact = false;
-        previousEvidenceJson = null;
         const evidenceJson = JSON.stringify({
           consent_status: 'OPTED_IN_FIRST_PARTY',
           subscribedAt: new Date().toISOString(),
@@ -5193,52 +5232,13 @@ apiRouter.post('/customer-desk/subscribe-alerts', async (c) => {
     }
 
     if (!contactSaved) {
-      return c.json({ success: false, error: 'SUBSCRIPTION_PERSISTENCE_FAILED' }, 503);
-    }
-
-    // Stage S Task 2 & Gate 3: Persist alert subscription to durable_events — FAIL CLOSED on error
-    const eventId = `sub_evt_${createHash('sha256').update(email + (productSlug || dealId || '') + Date.now()).digest('hex').slice(0, 24)}`;
-    const eventPayload = JSON.stringify({
-      email,
-      name,
-      productSlug,
-      category: body.category || (categories && categories[0]),
-      dealId,
-      targetPriceINR,
-      origin,
-      subscriptionId,
-      queryOrUrl: productSlug || dealId || (categories && categories[0]),
-      title: productSlug || dealId || (categories && categories[0]),
-      consent: 'OPTED_IN_FIRST_PARTY',
-      createdAt: new Date().toISOString()
-    });
-    try {
-      const orgId = OwnerAuthService.OWNER_ORGANIZATION_ID || 'org_owner_primary';
-      const eventSql = `INSERT INTO durable_events (id, event_type, organization_id, payload_json, processed, created_at)
-        VALUES (?, 'PRICE_DROP_SUBSCRIPTION', ?, ?, 0, datetime('now'))`;
-      if (d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
-        await d1Repo.executeWrite('durable_events', eventSql, [eventId, orgId, eventPayload]);
-      } else {
-        getDb().prepare(eventSql).run(eventId, orgId, eventPayload);
-      }
-    } catch (e: any) {
-      console.error(`[SubscribeAlerts] Durable event persistence failed: ${e?.message}`);
-      // Rollback contact watch so failed subscription leaves no active watch (CodeRabbit Finding 15)
+      // Retire durable event if contact persistence failed
       try {
-        if (wasExistingContact && previousEvidenceJson) {
-          const rollbackSql = `UPDATE outbound_contacts SET authorization_evidence_json = ? WHERE id = ?`;
-          if (d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
-            await d1Repo.executeWrite('outbound_contacts', rollbackSql, [previousEvidenceJson, contactId]);
-          } else {
-            getDb().prepare(rollbackSql).run(previousEvidenceJson, contactId);
-          }
+        const retireSql = `UPDATE durable_events SET processed = 1, error_message = 'CONTACT_WRITE_FAILED' WHERE id = ?`;
+        if (d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
+          await d1Repo.executeWrite('durable_events', retireSql, [eventId]);
         } else {
-          const rollbackSql = `DELETE FROM outbound_contacts WHERE id = ?`;
-          if (d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
-            await d1Repo.executeWrite('outbound_contacts', rollbackSql, [contactId]);
-          } else {
-            getDb().prepare(rollbackSql).run(contactId);
-          }
+          getDb().prepare(retireSql).run(eventId);
         }
       } catch {}
       return c.json({ success: false, error: 'SUBSCRIPTION_PERSISTENCE_FAILED' }, 503);
