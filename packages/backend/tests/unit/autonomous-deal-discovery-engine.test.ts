@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import { AutonomousDealDiscoveryEngine, MAX_OFFER_FRESHNESS_HOURS } from '../../src/commission/autonomous-deal-discovery-engine.js';
 import { SAMPLE_DEAL_CANDIDATES_FIXTURE, SAMPLE_COUPON_CANDIDATES_FIXTURE } from '../fixtures/sample-deal-candidates.js';
 import { DealSsrfGuard } from '../../src/commission/deal-ssrf-guard.js';
@@ -31,6 +31,15 @@ describe('Autonomous Deal Discovery Engine V1.1 (Spec §§ 1–15)', () => {
     engine.setCuelinksClient(null);
     engine.setFetchFn(null);
     engine.clearInjectedDealsForTesting();
+  });
+
+  afterAll(() => {
+    try {
+      const db = getDb();
+      db.prepare(`DELETE FROM workflows WHERE workflow_type IN ('PUBLIC_DEAL', 'CUELINKS_SYNC_CURSOR')`).run();
+      db.prepare(`DELETE FROM public_deals`).run();
+    } catch {}
+    AutonomousDealDiscoveryEngine.resetInstance();
   });
 
   describe('1. SSRF & Network Security Gate (Spec § 3 & § 13)', () => {

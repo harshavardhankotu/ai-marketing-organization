@@ -4905,6 +4905,7 @@ apiRouter.post('/customer-desk/message', async (c) => {
       channel,
       messageText,
       productSlugOrContext,
+      isExplicitNewSearch: Boolean(body.isExplicitNewSearch),
       consentGiven: Boolean(body.consentGiven),
       sessionId,
       journeyId,
@@ -5028,47 +5029,235 @@ apiRouter.post('/customer-desk/subscribe-alerts', async (c) => {
     }
 
     const name = String(body.name || email.split('@')[0] || 'Subscriber').trim().slice(0, 120);
+    const productSlug = typeof body.productSlug === 'string' ? body.productSlug.trim() : undefined;
+    const dealId = typeof body.dealId === 'string' ? body.dealId.trim() : undefined;
+
+    const rawTarget = body.targetPriceINR;
+    if (rawTarget === undefined || rawTarget === null || rawTarget === '' || String(rawTarget).trim() === '') {
+      return c.json({ success: false, error: 'INVALID_TARGET_PRICE', message: 'A positive target price in INR is required for price-drop alerts.' }, 400);
+    }
+    const targetPriceINR = Number(rawTarget);
+    if (!Number.isFinite(targetPriceINR) || targetPriceINR <= 0) {
+      return c.json({ success: false, error: 'INVALID_TARGET_PRICE', message: 'A positive target price in INR is required for price-drop alerts.' }, 400);
+    }
+
     const categories = Array.isArray(body.categories)
       ? body.categories.map((x: any) => String(x).trim()).filter(Boolean).slice(0, 8)
       : (body.category ? [String(body.category).trim()] : ['ALL_VERIFIED_DROPS']);
-    const id = `sub_${createHash('sha256').update(email).digest('hex').slice(0, 18)}`;
-    const evidenceJson = JSON.stringify({
-      consent_status: 'OPTED_IN_FIRST_PARTY',
-      subscribedAt: new Date().toISOString(),
-      source: 'customer-desk-subscribe-alerts',
-      categories
-    });
+    const contactId = `contact_${createHash('sha256').update(`biz_platform_aro:${email}`).digest('hex').slice(0, 32)}`;
+    const origin = (dealId || (productSlug && !/\s/.test(productSlug))) ? 'EXPLICIT_PRODUCT' : 'CATEGORY_QUERY';
+    const subscriptionId = `sub_${randomUUID().replace(/-/g, '').slice(0, 16)}`;
 
-    const sql = `
-      INSERT INTO outbound_contacts (
-        id, business_id, organization_id, prospect_name, prospect_email, channel,
-        email_authorized, whatsapp_opt_in, authorization_source, authorization_evidence_json,
-        source, status, is_opted_out, is_bounced, is_suppressed, created_at, updated_at
-      ) VALUES (
-        ?, 'biz_platform_aro', ?, ?, ?, 'EMAIL',
-        1, 0, 'EXPLICIT_CONSENT', ?,
-        'CUSTOMER_DESK_ALERT_OPTIN', 'ACTIVE', 0, 0, 0, datetime('now'), datetime('now')
-      )
-      ON CONFLICT(business_id, prospect_email) DO UPDATE SET
-        prospect_name = COALESCE(NULLIF(TRIM(excluded.prospect_name), ''), outbound_contacts.prospect_name),
-        email_authorized = 1,
-        authorization_source = 'EXPLICIT_CONSENT',
-        authorization_evidence_json = excluded.authorization_evidence_json,
-        is_opted_out = 0,
-        status = 'ACTIVE',
-        updated_at = datetime('now')
-    `;
-    const params = [id, OwnerAuthService.OWNER_ORGANIZATION_ID, name, email, evidenceJson];
-    if (isProduction() && !process.env.VITEST) {
-      await D1RevenueRepository.getInstance().executeWrite('outbound_contacts', sql, params);
-    } else {
-      getDb().prepare(sql).run(...params);
+    const watchQueryOrUrl = productSlug || dealId || null;
+    const watchTitle = productSlug || dealId || (categories && categories[0]) || 'Price Alert Watch';
+
+    const newWatch = {
+      subscription_id: subscriptionId,
+      target_deal_id: dealId || null,
+      target_deal_slug: productSlug || null,
+      target_price_inr: targetPriceINR,
+      query_or_url: watchQueryOrUrl,
+      title: watchTitle,
+      category: body.category || (categories && categories[0]),
+      registered_at: new Date().toISOString(),
+      dispatched_at: null,
+      origin
+    };
+
+    const d1Repo = D1RevenueRepository.getInstance();
+
+    // Stage S Task 2 & Gate 3: Persist alert subscription to durable_events FIRST — FAIL CLOSED on error
+    const eventId = `sub_evt_${createHash('sha256').update(email + (productSlug || dealId || '') + subscriptionId).digest('hex').slice(0, 24)}`;
+    const eventPayload = JSON.stringify({
+      email,
+      name,
+      productSlug,
+      category: body.category || (categories && categories[0]),
+      dealId,
+      targetPriceINR,
+      origin,
+      subscriptionId,
+      queryOrUrl: watchQueryOrUrl,
+      title: watchTitle,
+      consent: 'OPTED_IN_FIRST_PARTY',
+      createdAt: new Date().toISOString()
+    });
+    try {
+      const orgId = OwnerAuthService.OWNER_ORGANIZATION_ID || 'org_owner_primary';
+      const eventSql = `INSERT INTO durable_events (id, event_type, organization_id, payload_json, processed, created_at)
+        VALUES (?, 'PRICE_DROP_SUBSCRIPTION', ?, ?, 0, datetime('now'))`;
+      if (d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
+        await d1Repo.executeWrite('durable_events', eventSql, [eventId, orgId, eventPayload]);
+      } else {
+        getDb().prepare(eventSql).run(eventId, orgId, eventPayload);
+      }
+    } catch (e: any) {
+      console.error(`[SubscribeAlerts] Durable event persistence failed: ${e?.message}`);
+      return c.json({ success: false, error: 'SUBSCRIPTION_PERSISTENCE_FAILED' }, 503);
+    }
+
+    let contactSaved = false;
+
+    // Gate 3 & Gate 5: CAS retry loop on outbound_contacts so concurrent subscriptions merge watches cleanly
+    for (let attempt = 0; attempt < 3; attempt++) {
+      let existingRows: any[] = [];
+      const readSql = `SELECT id, authorization_evidence_json, updated_at FROM outbound_contacts WHERE business_id = 'biz_platform_aro' AND prospect_email = ? LIMIT 1`;
+      try {
+        if (d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
+          const res = await d1Repo.executeRead('outbound_contacts', readSql, [email]);
+          existingRows = Array.isArray(res?.results) ? res.results : [];
+        } else {
+          existingRows = getDb().prepare(readSql).all(email) as any[];
+        }
+      } catch {
+        continue;
+      }
+
+      if (existingRows.length > 0) {
+        const existingRow = existingRows[0];
+        const prevEvStr = typeof existingRow.authorization_evidence_json === 'string'
+          ? existingRow.authorization_evidence_json
+          : JSON.stringify(existingRow.authorization_evidence_json || {});
+
+        let prevEv: any = {};
+        try {
+          prevEv = JSON.parse(prevEvStr || '{}');
+        } catch {}
+        const existingWatches: any[] = Array.isArray(prevEv.watches) ? prevEv.watches : [];
+
+        // Finding 17: Retire superseded durable events when replacing an active watch target
+        const supersededWatch = existingWatches.find((w: any) => w && (w.target_deal_slug === productSlug || (dealId && w.target_deal_id === dealId)));
+        if (supersededWatch?.subscription_id) {
+          const retireSql = `UPDATE durable_events SET processed = 1, error_message = 'SUPERSEDED_BY_NEW_TARGET' WHERE event_type = 'PRICE_DROP_SUBSCRIPTION' AND processed = 0 AND json_extract(payload_json, '$.subscriptionId') = ?`;
+          try {
+            if (d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
+              await d1Repo.executeWrite('durable_events', retireSql, [supersededWatch.subscription_id]);
+            } else {
+              getDb().prepare(retireSql).run(supersededWatch.subscription_id);
+            }
+          } catch {}
+        }
+
+        // Do not delete existing watches if newWatch is null
+        let mergedWatches = [...existingWatches];
+        if (newWatch) {
+          mergedWatches = existingWatches.filter((w: any) => {
+            if (!w) return false;
+            if (dealId && w.target_deal_id === dealId) return false;
+            if (productSlug && w.target_deal_slug === productSlug) return false;
+            return true;
+          });
+          mergedWatches.push(newWatch);
+        }
+        const watches = mergedWatches.slice(-10);
+
+        const evidenceJson = JSON.stringify({
+          ...prevEv,
+          consent_status: 'OPTED_IN_FIRST_PARTY',
+          subscribedAt: new Date().toISOString(),
+          source: 'customer-desk-subscribe-alerts',
+          categories,
+          productSlug,
+          dealId,
+          targetPriceINR,
+          origin,
+          watches
+        });
+
+        const updateSql = `
+          UPDATE outbound_contacts
+          SET prospect_name = COALESCE(NULLIF(TRIM(?), ''), outbound_contacts.prospect_name),
+              email_authorized = CASE WHEN outbound_contacts.is_opted_out = 1 OR outbound_contacts.is_suppressed = 1 THEN outbound_contacts.email_authorized ELSE 1 END,
+              authorization_source = 'EXPLICIT_CONSENT',
+              authorization_evidence_json = ?,
+              is_opted_out = CASE WHEN outbound_contacts.is_opted_out = 1 THEN 1 ELSE 0 END,
+              is_suppressed = CASE WHEN outbound_contacts.is_suppressed = 1 THEN 1 ELSE 0 END,
+              status = CASE WHEN outbound_contacts.is_opted_out = 1 THEN 'OPTED_OUT' WHEN outbound_contacts.is_suppressed = 1 THEN 'SUPPRESSED' ELSE 'ACTIVE' END,
+              updated_at = datetime('now')
+          WHERE id = ? AND authorization_evidence_json = ?
+        `;
+        const params = [name, evidenceJson, existingRow.id, prevEvStr];
+        try {
+          if (d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
+            const upRes = await d1Repo.executeWrite('outbound_contacts', updateSql, params);
+            if (upRes && upRes.rowsAffected > 0) {
+              contactSaved = true;
+              break;
+            }
+          } else {
+            const info = getDb().prepare(updateSql).run(...params);
+            if (info.changes > 0) {
+              contactSaved = true;
+              break;
+            }
+          }
+        } catch {
+          continue;
+        }
+      } else {
+        const evidenceJson = JSON.stringify({
+          consent_status: 'OPTED_IN_FIRST_PARTY',
+          subscribedAt: new Date().toISOString(),
+          source: 'customer-desk-subscribe-alerts',
+          categories,
+          productSlug,
+          dealId,
+          targetPriceINR,
+          origin,
+          watches: newWatch ? [newWatch] : []
+        });
+
+        const insertSql = `
+          INSERT INTO outbound_contacts (
+            id, business_id, organization_id, prospect_name, prospect_email, channel,
+            email_authorized, whatsapp_opt_in, authorization_source, authorization_evidence_json,
+            source, status, is_opted_out, is_bounced, is_suppressed, created_at, updated_at
+          ) VALUES (
+            ?, 'biz_platform_aro', ?, ?, ?, 'EMAIL',
+            1, 0, 'EXPLICIT_CONSENT', ?,
+            'CUSTOMER_DESK_ALERT_OPTIN', 'ACTIVE', 0, 0, 0, datetime('now'), datetime('now')
+          )
+        `;
+        const params = [contactId, OwnerAuthService.OWNER_ORGANIZATION_ID, name, email, evidenceJson];
+        try {
+          if (d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
+            await d1Repo.executeWrite('outbound_contacts', insertSql, params);
+            contactSaved = true;
+            break;
+          } else {
+            getDb().prepare(insertSql).run(...params);
+            contactSaved = true;
+            break;
+          }
+        } catch {
+          // Concurrent insert race condition: retry will find the inserted row
+          continue;
+        }
+      }
+    }
+
+    if (!contactSaved) {
+      // Retire durable event if contact persistence failed
+      try {
+        const retireSql = `UPDATE durable_events SET processed = 1, error_message = 'CONTACT_WRITE_FAILED' WHERE id = ?`;
+        if (d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
+          await d1Repo.executeWrite('durable_events', retireSql, [eventId]);
+        } else {
+          getDb().prepare(retireSql).run(eventId);
+        }
+      } catch {}
+      return c.json({ success: false, error: 'SUBSCRIPTION_PERSISTENCE_FAILED' }, 503);
     }
 
     // Brevo contact sync (background / best-effort)
     BrevoMcpClient.getInstance().syncContact({
       email,
-      attributes: { SOURCE: 'SITEFIX_OR_DEAL_ALERT', CATEGORIES: categories.join(',') }
+      attributes: {
+        SOURCE: 'PRICE_DROP_ALERT',
+        CATEGORIES: categories.join(','),
+        PRODUCT_SLUG: productSlug || '',
+        TARGET_PRICE: targetPriceINR ? String(targetPriceINR) : ''
+      }
     }).catch(() => {});
 
     return c.json({
@@ -5076,7 +5265,10 @@ apiRouter.post('/customer-desk/subscribe-alerts', async (c) => {
       subscribed: true,
       consentStatus: 'OPTED_IN_FIRST_PARTY',
       email,
-      categories
+      productSlug,
+      targetPriceINR,
+      categories,
+      message: 'Subscribed to price-drop alerts successfully.'
     }, 201);
   } catch (err: any) {
     return c.json({ success: false, error: err?.message || 'Alert subscription failed' }, 500);
@@ -8973,6 +9165,12 @@ apiRouter.get('/public/feeds/deals.json', async (c) => {
       merchant_discount_percent: d.merchantDiscountPercent ?? null,
       arbitrage_score: d.arbitrageScore ?? null,
       expected_profit_per_100_visitors_inr: d.expectedProfitPer100VisitorsINR ?? null,
+      modelled_illustrative_ev_per_100_visitors_inr: d.modelledIllustrativeEvPer100VisitorsINR ?? d.expectedProfitPer100VisitorsINR ?? null,
+      modelled_profit_type: 'MODELLED_ILLUSTRATIVE_ONLY',
+      provider_epc_7d_inr: d.providerEpc7dINR ?? (d.evidenceJson?.epc_7d ? Number(d.evidenceJson.epc_7d) : null),
+      measured_clicks: Number(d.measuredClicks ?? d.evidenceJson?.observedClicks ?? d.observedClicks ?? 0),
+      measured_approved_orders: Number(d.measuredApprovedOrders ?? d.evidenceJson?.observedApprovedOrders ?? d.observedApprovedOrders ?? 0),
+      measured_commission_inr: Number(d.measuredCommissionINR ?? 0),
       evolution_status: d.evolutionStatus || 'FRESH_EXPLORATION',
       ranking_breakdown: d.rankingBreakdown ?? null,
       opportunity_label: d.opportunityLabel || 'VERIFIED_MERCHANT_PROMOTION',
@@ -11286,6 +11484,24 @@ apiRouter.get('/owner/first-sale/ready-actions', async (c) => {
           : '';
         const shareText = `${d.title} at ₹${Number(d.currentPriceINR || 0).toLocaleString('en-IN')}${mrpClause} on ${d.merchant}.\nVerified link (#Ad): ${trackedShareUrl}`;
 
+        const measuredClicks = Number(d.measuredClicks ?? d.evidenceJson?.observedClicks ?? d.observedClicks ?? 0);
+        const measuredApprovedOrders = Number(d.measuredApprovedOrders ?? d.evidenceJson?.observedApprovedOrders ?? d.observedApprovedOrders ?? 0);
+        const verifiedCommRate = d.evidenceJson?.verifiedCommissionRatePercent ?? d.verifiedCommissionRatePercent ?? null;
+        const grossCommOrder = d.evidenceJson?.grossCommissionPerApprovedOrderINR ?? d.grossCommissionPerApprovedOrderINR ?? null;
+        const measuredCommissionINR = Number(
+          (d.measuredCommissionINR ?? (measuredApprovedOrders * (Number(grossCommOrder) || (Number(d.currentPriceINR || 0) * (Number(verifiedCommRate) || 0) / 100)))).toFixed(2)
+        );
+        const rawEpc = d.providerEpc7dINR ?? d.evidenceJson?.epc_7d ?? (d.campaign as any)?.epc_7d ?? null;
+        const providerEpc7dINR = rawEpc !== null && rawEpc !== undefined && !Number.isNaN(Number(rawEpc)) && Number(rawEpc) > 0
+          ? Number(Number(rawEpc).toFixed(2))
+          : null;
+        const modelledIllustrativeEvPer100VisitorsINR = Number(
+          d.modelledIllustrativeEvPer100VisitorsINR ||
+          d.expectedProfitPer100VisitorsINR ||
+          dealEngine.calculateExpectedProfitPer100Visitors(d) ||
+          0
+        );
+
         return {
           id: d.id,
           title: d.title,
@@ -11295,9 +11511,15 @@ apiRouter.get('/owner/first-sale/ready-actions', async (c) => {
           currentPriceINR: d.currentPriceINR,
           referencePriceINR: d.referencePriceINR || null,
           verifiedDiscountPercent: d.verifiedDiscountPercent || 0,
-          expectedProfitPer100VisitorsINR: Number(d.expectedProfitPer100VisitorsINR || 0),
-          verifiedCommissionRatePercent: d.evidenceJson?.verifiedCommissionRatePercent ?? null,
-          grossCommissionPerApprovedOrderINR: d.evidenceJson?.grossCommissionPerApprovedOrderINR ?? null,
+          expectedProfitPer100VisitorsINR: modelledIllustrativeEvPer100VisitorsINR,
+          modelledIllustrativeEvPer100VisitorsINR,
+          modelledProfitType: 'MODELLED_ILLUSTRATIVE_ONLY',
+          providerEpc7dINR,
+          measuredClicks,
+          measuredApprovedOrders,
+          measuredCommissionINR,
+          verifiedCommissionRatePercent: verifiedCommRate,
+          grossCommissionPerApprovedOrderINR: grossCommOrder,
           evolutionStatus: d.evolutionStatus || 'FRESH_EXPLORATION',
           trackedShareUrl,
           shareText
@@ -11433,6 +11655,208 @@ apiRouter.post('/owner/system-doctor/heal', async (c) => {
   return c.json({
     success: true,
     data: report
+  });
+});
+
+// Single-Owner First-Sale Execution Console — Zero-Cost Buyer-Intent Distribution Kit
+apiRouter.get('/owner/first-sale/intent-distribution-kit', async (c) => {
+  const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
+  const { CuelinksV3Client } = await import('../commission/cuelinks-v3-client.js');
+  const { YouTubeReviewEnricher } = await import('../integrations/youtube-review-enricher.js');
+  const { generateComparisonPairs, generateBuyerIntentHubs } = await import('../commission/static-site-generator.js');
+  const siteUrl = getTrustedPublicSiteUrl().replace(/\/$/, '');
+
+  const engine = AutonomousDealDiscoveryEngine.getInstance();
+  const eligible = await engine.getEligiblePublicDeals({ limit: 80 });
+  const allDeals = eligible.deals || [];
+
+  // Generate comparison pairs and buyer hubs matching the destination routes (limit 15 and 10), then trim to 6
+  const availablePairs = generateComparisonPairs(allDeals, 15);
+  const availableHubs = generateBuyerIntentHubs(allDeals, siteUrl, 10);
+  const generatedPairs = availablePairs.slice(0, 6);
+  const generatedHubs = availableHubs.slice(0, 6);
+
+  // Filter strictly for deals that satisfy ALL four conditions (no non-qualified fallback):
+  // a) Impulse price band: currentPriceINR >= 299 && currentPriceINR <= 1499
+  // b) Fresh & in stock: availability === 'IN_STOCK', verificationStatus === 'VERIFIED', not expired or rotated out
+  // c) Active tracked link: valid redirect backed by an approved Cuelinks link or verified Amazon Associates tag
+  // d) Verified commission economics: confirmed positive CPS/commission rate or provider epc_7d > 0 (never unknown/unmapped payouts)
+  const isDistributionKitQualified = (d: any): boolean => {
+    const price = Number(d.currentPriceINR ?? d.current_price_inr ?? 0);
+    if (price < 299 || price > 1499) return false;
+
+    const availability = String(d.availability || '').toUpperCase();
+    if (availability !== 'IN_STOCK') return false;
+
+    const verStatus = String(d.verificationStatus || d.verification_status || '').toUpperCase();
+    if (verStatus !== 'VERIFIED' && verStatus !== 'AFFILIATE_VERIFIED') return false;
+
+    if (d.expiryDate && new Date(d.expiryDate).getTime() < Date.now()) return false;
+    if (d.catalogSlot === 'ROTATED_OUT_STALE' || (d.staleDecayPenalty || 0) > 0 || d.evolutionStatus === 'STALE_ROTATED_OUT') return false;
+
+    const lastChecked = d.lastCheckedAt || d.last_checked_at;
+    if (lastChecked) {
+      const ageMs = Date.now() - new Date(lastChecked).getTime();
+      if (Number.isFinite(ageMs) && ageMs > 48 * 60 * 60 * 1000) return false;
+    }
+
+    const isAmazon = d.affiliateNetwork === 'AMAZON_IN' ||
+      /^https?:\/\/(www\.)?amazon\.(in|com)(\/|$)/i.test(String(d.productUrl || ''));
+    const trackingUrl = String(d.trackingUrl || d.affiliate_url || '').trim();
+    const hasValidTrackedLink = isAmazon
+      ? Boolean(d.affiliateVerified || trackingUrl.includes('tag=') || d.affiliateCampaignId === 'amazon_in_associates')
+      : (Boolean(trackingUrl) && CuelinksV3Client.isAllowedTrackingUrl(trackingUrl));
+    if (!hasValidTrackedLink) return false;
+
+    if (d.isMonetizable === false || d.is_monetizable === 0) return false;
+    const ev = typeof d.evidenceJson === 'string' ? JSON.parse(d.evidenceJson || '{}') : (d.evidenceJson || {});
+    if (ev.missingPayoutReason) return false;
+
+    const ratePercent = Number(d.verifiedCommissionRatePercent ?? ev.verifiedCommissionRatePercent ?? 0);
+    const flatPayout = Number(d.verifiedFlatPayoutINR ?? ev.verifiedFlatPayoutINR ?? 0);
+    const grossComm = Number(d.grossCommissionPerApprovedOrderINR ?? ev.grossCommissionPerApprovedOrderINR ?? 0);
+    const epc7d = Number(d.providerEpc7dINR ?? ev.epc_7d ?? (d.campaign as any)?.epc_7d ?? 0);
+
+    const hasVerifiedEconomics = ratePercent > 0 || flatPayout > 0 || grossComm > 0 || epc7d > 0;
+    if (!hasVerifiedEconomics) return false;
+
+    return true;
+  };
+
+  const impulseDeals = allDeals.filter(d => isDistributionKitQualified(d)).slice(0, 5);
+  const diagnostic = impulseDeals.length === 0 ? 'NO_QUALIFIED_IMPULSE_DEALS' : null;
+
+  // Enrich with YouTube reviews
+  const enricher = YouTubeReviewEnricher.getInstance();
+  const enrichedDeals = await Promise.all(
+    impulseDeals.map(async (deal) => {
+      let youtubeReview = (deal as any).youtubeReview || null;
+      if (!youtubeReview) {
+        try {
+          youtubeReview = await enricher.resolveReviewForDeal(deal);
+        } catch {}
+      }
+      return { ...deal, youtubeReview };
+    })
+  );
+
+  const items = enrichedDeals.map((deal) => {
+    const slug = deal.slug || deal.canonicalSlug || deal.id;
+    const price = Math.round(Number(deal.currentPriceINR || 0));
+    const refPrice = Math.round(Number(deal.referencePriceINR || 0));
+    const discount = refPrice > price ? Math.round(((refPrice - price) / refPrice) * 100) : (deal.verifiedDiscountPercent || 0);
+    const dealDetailUrl = `${siteUrl}/deals/${encodeURIComponent(slug)}`;
+    const officialRedirectUrl = `${siteUrl}/api/v1/public/deals/${encodeURIComponent(deal.id)}/redirect?utm_source=distribution_kit`;
+    const amazonUrl = `${siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(deal.title || '').slice(0, 120))}&dealId=${encodeURIComponent(deal.id)}`;
+
+    // Comparison URL only for a pair that /vs/ actually serves
+    const matchingPair = availablePairs.find(
+      (p) => p.dealA.id === deal.id || p.dealB.id === deal.id || p.dealA.slug === slug || p.dealB.slug === slug
+    );
+    const comparisonUrl = matchingPair
+      ? `${siteUrl}/vs/${encodeURIComponent(matchingPair.comparisonSlug)}`
+      : null;
+
+    // Buyer guide / intent hub URL only for a generated hub served by /best/
+    const catLower = (deal.category || '').toLowerCase();
+    const matchingHub = availableHubs.find(
+      (h) => h.categoryLabel.toLowerCase() === catLower || h.deals.some((d: any) => d.id === deal.id || d.slug === slug)
+    );
+    const buyerGuideUrl = matchingHub ? matchingHub.canonicalUrl : null;
+
+    // Target subreddit determination
+    let subreddit = 'r/IndiaDeals';
+    if (/perfume|fragrance|scent|cologne|attar/.test(catLower)) {
+      subreddit = 'r/DesiFragranceAddicts';
+    } else if (/earbud|headphone|audio|gadget|phone|tech|charger|laptop|watch/.test(catLower)) {
+      subreddit = 'r/IndiaTech';
+    } else if (/beauty|skin|hair|serum|cream|cosmetic|makeup/.test(catLower)) {
+      subreddit = 'r/IndianBeautyDeals';
+    }
+
+    // 1. YouTube Review Comment Reply (referencing exact video ID/title)
+    const youtubeCommentReply = `Real Price & Prime Stock Check: Observed ₹${price.toLocaleString('en-IN')}${refPrice > price ? ` (MRP ₹${refPrice.toLocaleString('en-IN')}, ${discount}% off)` : ''} at official store today: ${dealDetailUrl} | Amazon live price check & Prime coupons (#Ad): ${amazonUrl}. #Ad (Affiliate link; price verified at snapshot).`;
+
+    // 2. Reddit / Community Deal & Comparison Reply
+    const redditReply = `FYI for anyone looking at ${deal.title} — official brand store is currently ₹${price.toLocaleString('en-IN')}${refPrice > price ? ` (down from ₹${refPrice.toLocaleString('en-IN')}, verified ${discount}% discount${deal.couponCode ? ` with code ${deal.couponCode}` : ''})` : ''}. Price history snapshot: ${dealDetailUrl}${comparisonUrl ? ` (Comparison: ${comparisonUrl})` : ''} (Amazon price check: ${amazonUrl}). #Ad`;
+
+    // 3. Instagram / Telegram Caption Card pointing to /ig (or deal detail URL for Amazon/disallowed deals - CodeRabbit Finding 12)
+    const categoryTag = catLower.replace(/[^a-z0-9]/g, '');
+    const isIgAllowed = !deal.sourceDomain?.toLowerCase().includes('amazon') && (deal as any).socialMediaPublishersAllowed !== false;
+    const igDestinationUrl = isIgAllowed ? `${siteUrl}/ig` : dealDetailUrl;
+    const igTelegramCaption = `🔥 VERIFIED DROP: ${deal.title} is ₹${price.toLocaleString('en-IN')} today${refPrice > price ? ` (MRP ₹${refPrice.toLocaleString('en-IN')})` : ''}!\nVerified ${discount}% off at official store.\n\nTap link in bio to check official store + live Amazon price: ${igDestinationUrl}\n\n#Ad #DealsIndia #OnlineShopping${categoryTag ? ` #${categoryTag}` : ''}`;
+
+    return {
+      dealId: deal.id,
+      title: deal.title,
+      merchant: deal.merchant,
+      category: deal.category,
+      priceINR: price,
+      referencePriceINR: refPrice,
+      verifiedDiscountPercent: discount,
+      couponCode: deal.couponCode || null,
+      dealDetailUrl,
+      officialRedirectUrl,
+      amazonUrl,
+      comparisonUrl,
+      buyerGuideUrl,
+      targetSubreddit: subreddit,
+      youtubeReview: deal.youtubeReview ? {
+        title: deal.youtubeReview.title,
+        videoId: deal.youtubeReview.videoId,
+        videoUrl: deal.youtubeReview.videoUrl,
+        channelTitle: deal.youtubeReview.channelTitle
+      } : null,
+      snippets: {
+        youtubeCommentReply,
+        redditReply,
+        igTelegramCaption
+      }
+    };
+  });
+
+  // Gate 9: Truthful indexing readiness derived from live D1 catalog rows and configuration
+  const d1Repo = D1RevenueRepository.getInstance();
+  let hasIndexNowSubmission = false;
+  try {
+    const subSql = `SELECT id FROM durable_events WHERE (event_type = 'INDEXNOW_SUBMISSION' OR event_type = 'INDEXNOW_PING') AND (processed = 1 OR payload_json LIKE '%"status":200%' OR payload_json LIKE '%"status":202%') LIMIT 1`;
+    let subRows: any[] = [];
+    if (d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
+      const res = await d1Repo.executeRead('durable_events', subSql, []);
+      subRows = Array.isArray(res?.results) ? res.results : [];
+    } else {
+      subRows = getDb().prepare(subSql).all() as any[];
+    }
+    hasIndexNowSubmission = subRows.length > 0;
+  } catch {}
+
+  const rawIndexNowKey = (process.env.INDEXNOW_KEY || '').trim();
+  const isIndexNowKeyConfigured = /^[a-zA-Z0-9-]{8,128}$/.test(rawIndexNowKey);
+  const indexNowStatus = hasIndexNowSubmission
+    ? 'SUBMITTED'
+    : (isIndexNowKeyConfigured ? 'CONFIGURED_READY' : 'NOT_CONFIGURED');
+  const indexNowKeyUrl = isIndexNowKeyConfigured ? `${siteUrl}/${rawIndexNowKey}.txt` : null;
+  const sitemapUrlCount = allDeals.length + availablePairs.length + availableHubs.length + 3;
+
+  const searchEngineChecklist = {
+    sitemapUrl: `${siteUrl}/sitemap.xml`,
+    sitemapStatus: 'GENERATED_DYNAMIC',
+    sitemapUrlCount,
+    robotsUrl: `${siteUrl}/robots.txt`,
+    indexNowKeyUrl,
+    indexNowStatus,
+    searchEngineIndexing: 'EXTERNAL_CONSOLE_CHECK_REQUIRED',
+    googleSearchConsoleInstructions: `Submit sitemap URL ${siteUrl}/sitemap.xml in Google Search Console -> Sitemaps. External Google Search Console property ownership verification is required and cannot be inferred from files.`,
+    bingWebmasterInstructions: `Submit sitemap URL ${siteUrl}/sitemap.xml in Bing Webmaster Tools -> Sitemaps. External Bing verification is required; IndexNow automatically pings Bing and Yandex once active.`
+  };
+
+  return c.json({
+    success: true,
+    siteUrl,
+    diagnostic,
+    topImpulseDeals: items,
+    searchEngineChecklist,
+    generatedAt: new Date().toISOString()
   });
 });
 

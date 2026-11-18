@@ -183,6 +183,11 @@ export interface NormalizedDeal {
   evolutionStatus?: 'RISING_WINNER' | 'FRESH_EXPLORATION' | 'STALE_ROTATED_OUT';
   exposureTier?: 'FRESH_UNEXPOSED' | 'ACTIVE_ENGAGED' | 'EXPOSED_LOW_CTR';
   epc7d?: number | null;
+  providerEpc7dINR?: number | null;
+  measuredClicks?: number;
+  measuredApprovedOrders?: number;
+  measuredCommissionINR?: number;
+  modelledIllustrativeEvPer100VisitorsINR?: number;
   socialMediaPublishersAllowed?: boolean;
   expectedProfitPer100VisitorsINR?: number;
   staleDecayPenalty?: number;

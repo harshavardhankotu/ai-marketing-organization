@@ -160,6 +160,7 @@ export class DurableEventBus {
     const sql = `
       SELECT * FROM durable_events
       WHERE organization_id = ? AND processed = 0
+        AND event_type NOT IN ('PRICE_DROP_SUBSCRIPTION', 'PRICE_ALERT_DELIVERY_CLAIMED')
       ORDER BY created_at ASC
       LIMIT ?
     `;
@@ -175,6 +176,7 @@ export class DurableEventBus {
     const sql = `
       SELECT * FROM durable_events
       WHERE organization_id = ? AND processed = 0
+        AND event_type NOT IN ('PRICE_DROP_SUBSCRIPTION', 'PRICE_ALERT_DELIVERY_CLAIMED')
       ORDER BY created_at ASC
       LIMIT ?
     `;
