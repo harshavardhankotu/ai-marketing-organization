@@ -46,6 +46,7 @@ interface DistributionKitDeal {
 
 interface DistributionKitData {
   siteUrl: string;
+  diagnostic?: string | null;
   topImpulseDeals: DistributionKitDeal[];
   searchEngineChecklist: {
     sitemapUrl: string;
@@ -125,6 +126,11 @@ interface TopDealItem {
   referencePriceINR: number | null;
   verifiedDiscountPercent: number;
   expectedProfitPer100VisitorsINR: number;
+  modelledIllustrativeEvPer100VisitorsINR?: number;
+  providerEpc7dINR?: number | null;
+  measuredClicks?: number;
+  measuredApprovedOrders?: number;
+  measuredCommissionINR?: number;
   verifiedCommissionRatePercent: number | null;
   grossCommissionPerApprovedOrderINR: number | null;
   evolutionStatus: string;
@@ -650,9 +656,9 @@ export const FirstSaleCommandCenter: React.FC = () => {
       <div className="space-y-3 border-b border-slate-800 pb-5">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
           <div>
-            <h4 className="text-sm font-bold text-white">Top Deals Ranked by EV / 100 Visitors</h4>
+            <h4 className="text-sm font-bold text-white">Top Deals Ranked by Modelled Illustrative EV</h4>
             <p className="text-xs text-slate-400">
-              Tracked links resolve through /api/v1/public/deals/:id/redirect with #Ad disclosure and subid attribution
+              Tracked links resolve through /api/v1/public/deals/:id/redirect with #Ad disclosure and subid attribution. Real provider 7d EPC and measured orders shown separately from modelled projections.
             </p>
           </div>
           <span className="text-xs font-mono tabular-nums text-slate-400">
@@ -674,7 +680,9 @@ export const FirstSaleCommandCenter: React.FC = () => {
                   <th className="py-2 pr-4 font-medium">Deal &amp; Merchant</th>
                   <th className="py-2 px-3 text-right font-medium">Price</th>
                   <th className="py-2 px-3 text-right font-medium">Rate</th>
-                  <th className="py-2 px-3 text-right font-medium">EV / 100 Visits</th>
+                  <th className="py-2 px-3 text-right font-medium">Provider 7d EPC</th>
+                  <th className="py-2 px-3 text-right font-medium">Measured</th>
+                  <th className="py-2 px-3 text-right font-medium">Modelled Illustrative EV / 100 Visits</th>
                   <th className="py-2 pl-3 text-right font-medium">Share Action</th>
                 </tr>
               </thead>
@@ -709,8 +717,20 @@ export const FirstSaleCommandCenter: React.FC = () => {
                             ? `₹${Number(deal.grossCommissionPerApprovedOrderINR).toLocaleString('en-IN')}`
                             : '—'}
                       </td>
+                      <td className="py-2.5 px-3 text-right font-mono tabular-nums text-slate-300 whitespace-nowrap">
+                        {deal.providerEpc7dINR !== null && deal.providerEpc7dINR !== undefined
+                          ? `₹${Number(deal.providerEpc7dINR).toFixed(2)}`
+                          : '—'}
+                      </td>
+                      <td className="py-2.5 px-3 text-right font-mono tabular-nums text-slate-300 whitespace-nowrap">
+                        <div>{(deal.measuredClicks || 0)}c / {(deal.measuredApprovedOrders || 0)}o</div>
+                        {(deal.measuredCommissionINR || 0) > 0 && (
+                          <div className="text-[10px] text-emerald-400">₹{Number(deal.measuredCommissionINR).toLocaleString('en-IN')}</div>
+                        )}
+                      </td>
                       <td className="py-2.5 px-3 text-right font-mono tabular-nums font-bold text-emerald-400 whitespace-nowrap">
-                        ₹{Number(deal.expectedProfitPer100VisitorsINR || 0).toLocaleString('en-IN')}
+                        <div>₹{Number(deal.modelledIllustrativeEvPer100VisitorsINR ?? deal.expectedProfitPer100VisitorsINR ?? 0).toLocaleString('en-IN')}</div>
+                        <div className="text-[9px] uppercase tracking-wider text-slate-500 font-sans font-normal">Illustrative Only</div>
                       </td>
                       <td className="py-2.5 pl-3 text-right whitespace-nowrap">
                         <div className="inline-flex items-center gap-1.5">
@@ -924,9 +944,16 @@ export const FirstSaleCommandCenter: React.FC = () => {
             </div>
 
             {(!distKit.topImpulseDeals || distKit.topImpulseDeals.length === 0) ? (
-              <p className="text-xs text-slate-400 py-2">
-                No impulse deals available yet. Run a live harvest cycle to sync catalog.
-              </p>
+              <div className="py-3 px-3 rounded border border-amber-900/60 bg-amber-950/20 text-xs text-amber-300">
+                <p className="font-semibold">
+                  {distKit.diagnostic === 'NO_QUALIFIED_IMPULSE_DEALS'
+                    ? 'No verified impulse deals (₹299–₹1,499) qualified yet'
+                    : 'No impulse deals available yet'}
+                </p>
+                <p className="text-[11px] text-slate-400 mt-1">
+                  Requires ₹299–₹1,499 price, verified stock, active tracked affiliate link, and confirmed commission payout. Run a live harvest cycle to sync and hydrate catalog.
+                </p>
+              </div>
             ) : (
               <div className="space-y-3">
                 {distKit.topImpulseDeals.map((deal) => (

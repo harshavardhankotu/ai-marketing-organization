@@ -9165,6 +9165,12 @@ apiRouter.get('/public/feeds/deals.json', async (c) => {
       merchant_discount_percent: d.merchantDiscountPercent ?? null,
       arbitrage_score: d.arbitrageScore ?? null,
       expected_profit_per_100_visitors_inr: d.expectedProfitPer100VisitorsINR ?? null,
+      modelled_illustrative_ev_per_100_visitors_inr: d.modelledIllustrativeEvPer100VisitorsINR ?? d.expectedProfitPer100VisitorsINR ?? null,
+      modelled_profit_type: 'MODELLED_ILLUSTRATIVE_ONLY',
+      provider_epc_7d_inr: d.providerEpc7dINR ?? (d.evidenceJson?.epc_7d ? Number(d.evidenceJson.epc_7d) : null),
+      measured_clicks: Number(d.measuredClicks ?? d.evidenceJson?.observedClicks ?? d.observedClicks ?? 0),
+      measured_approved_orders: Number(d.measuredApprovedOrders ?? d.evidenceJson?.observedApprovedOrders ?? d.observedApprovedOrders ?? 0),
+      measured_commission_inr: Number(d.measuredCommissionINR ?? 0),
       evolution_status: d.evolutionStatus || 'FRESH_EXPLORATION',
       ranking_breakdown: d.rankingBreakdown ?? null,
       opportunity_label: d.opportunityLabel || 'VERIFIED_MERCHANT_PROMOTION',
@@ -11478,6 +11484,24 @@ apiRouter.get('/owner/first-sale/ready-actions', async (c) => {
           : '';
         const shareText = `${d.title} at ₹${Number(d.currentPriceINR || 0).toLocaleString('en-IN')}${mrpClause} on ${d.merchant}.\nVerified link (#Ad): ${trackedShareUrl}`;
 
+        const measuredClicks = Number(d.measuredClicks ?? d.evidenceJson?.observedClicks ?? d.observedClicks ?? 0);
+        const measuredApprovedOrders = Number(d.measuredApprovedOrders ?? d.evidenceJson?.observedApprovedOrders ?? d.observedApprovedOrders ?? 0);
+        const verifiedCommRate = d.evidenceJson?.verifiedCommissionRatePercent ?? d.verifiedCommissionRatePercent ?? null;
+        const grossCommOrder = d.evidenceJson?.grossCommissionPerApprovedOrderINR ?? d.grossCommissionPerApprovedOrderINR ?? null;
+        const measuredCommissionINR = Number(
+          (d.measuredCommissionINR ?? (measuredApprovedOrders * (Number(grossCommOrder) || (Number(d.currentPriceINR || 0) * (Number(verifiedCommRate) || 0) / 100)))).toFixed(2)
+        );
+        const rawEpc = d.providerEpc7dINR ?? d.evidenceJson?.epc_7d ?? (d.campaign as any)?.epc_7d ?? null;
+        const providerEpc7dINR = rawEpc !== null && rawEpc !== undefined && !Number.isNaN(Number(rawEpc)) && Number(rawEpc) > 0
+          ? Number(Number(rawEpc).toFixed(2))
+          : null;
+        const modelledIllustrativeEvPer100VisitorsINR = Number(
+          d.modelledIllustrativeEvPer100VisitorsINR ||
+          d.expectedProfitPer100VisitorsINR ||
+          dealEngine.calculateExpectedProfitPer100Visitors(d) ||
+          0
+        );
+
         return {
           id: d.id,
           title: d.title,
@@ -11487,9 +11511,15 @@ apiRouter.get('/owner/first-sale/ready-actions', async (c) => {
           currentPriceINR: d.currentPriceINR,
           referencePriceINR: d.referencePriceINR || null,
           verifiedDiscountPercent: d.verifiedDiscountPercent || 0,
-          expectedProfitPer100VisitorsINR: Number(d.expectedProfitPer100VisitorsINR || 0),
-          verifiedCommissionRatePercent: d.evidenceJson?.verifiedCommissionRatePercent ?? null,
-          grossCommissionPerApprovedOrderINR: d.evidenceJson?.grossCommissionPerApprovedOrderINR ?? null,
+          expectedProfitPer100VisitorsINR: modelledIllustrativeEvPer100VisitorsINR,
+          modelledIllustrativeEvPer100VisitorsINR,
+          modelledProfitType: 'MODELLED_ILLUSTRATIVE_ONLY',
+          providerEpc7dINR,
+          measuredClicks,
+          measuredApprovedOrders,
+          measuredCommissionINR,
+          verifiedCommissionRatePercent: verifiedCommRate,
+          grossCommissionPerApprovedOrderINR: grossCommOrder,
           evolutionStatus: d.evolutionStatus || 'FRESH_EXPLORATION',
           trackedShareUrl,
           shareText
@@ -11630,7 +11660,8 @@ apiRouter.post('/owner/system-doctor/heal', async (c) => {
 
 // Single-Owner First-Sale Execution Console — Zero-Cost Buyer-Intent Distribution Kit
 apiRouter.get('/owner/first-sale/intent-distribution-kit', async (c) => {
-  const { AutonomousDealDiscoveryEngine, isImpulseConversionDeal } = await import('../commission/autonomous-deal-discovery-engine.js');
+  const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
+  const { CuelinksV3Client } = await import('../commission/cuelinks-v3-client.js');
   const { YouTubeReviewEnricher } = await import('../integrations/youtube-review-enricher.js');
   const { generateComparisonPairs, generateBuyerIntentHubs } = await import('../commission/static-site-generator.js');
   const siteUrl = getTrustedPublicSiteUrl().replace(/\/$/, '');
@@ -11645,14 +11676,55 @@ apiRouter.get('/owner/first-sale/intent-distribution-kit', async (c) => {
   const generatedPairs = availablePairs.slice(0, 6);
   const generatedHubs = availableHubs.slice(0, 6);
 
-  // Filter top 5 verified impulse deals (₹299–₹1,499)
-  let impulseDeals = allDeals.filter(d => isImpulseConversionDeal(d));
-  if (impulseDeals.length < 5) {
-    const remaining = allDeals.filter(d => !impulseDeals.some(id => id.id === d.id));
-    impulseDeals = [...impulseDeals, ...remaining].slice(0, 5);
-  } else {
-    impulseDeals = impulseDeals.slice(0, 5);
-  }
+  // Filter strictly for deals that satisfy ALL four conditions (no non-qualified fallback):
+  // a) Impulse price band: currentPriceINR >= 299 && currentPriceINR <= 1499
+  // b) Fresh & in stock: availability === 'IN_STOCK', verificationStatus === 'VERIFIED', not expired or rotated out
+  // c) Active tracked link: valid redirect backed by an approved Cuelinks link or verified Amazon Associates tag
+  // d) Verified commission economics: confirmed positive CPS/commission rate or provider epc_7d > 0 (never unknown/unmapped payouts)
+  const isDistributionKitQualified = (d: any): boolean => {
+    const price = Number(d.currentPriceINR ?? d.current_price_inr ?? 0);
+    if (price < 299 || price > 1499) return false;
+
+    const availability = String(d.availability || '').toUpperCase();
+    if (availability !== 'IN_STOCK') return false;
+
+    const verStatus = String(d.verificationStatus || d.verification_status || '').toUpperCase();
+    if (verStatus !== 'VERIFIED' && verStatus !== 'AFFILIATE_VERIFIED') return false;
+
+    if (d.expiryDate && new Date(d.expiryDate).getTime() < Date.now()) return false;
+    if (d.catalogSlot === 'ROTATED_OUT_STALE' || (d.staleDecayPenalty || 0) > 0 || d.evolutionStatus === 'STALE_ROTATED_OUT') return false;
+
+    const lastChecked = d.lastCheckedAt || d.last_checked_at;
+    if (lastChecked) {
+      const ageMs = Date.now() - new Date(lastChecked).getTime();
+      if (Number.isFinite(ageMs) && ageMs > 48 * 60 * 60 * 1000) return false;
+    }
+
+    const isAmazon = d.affiliateNetwork === 'AMAZON_IN' ||
+      /^https?:\/\/(www\.)?amazon\.(in|com)(\/|$)/i.test(String(d.productUrl || ''));
+    const trackingUrl = String(d.trackingUrl || d.affiliate_url || '').trim();
+    const hasValidTrackedLink = isAmazon
+      ? Boolean(d.affiliateVerified || trackingUrl.includes('tag=') || d.affiliateCampaignId === 'amazon_in_associates')
+      : (Boolean(trackingUrl) && CuelinksV3Client.isAllowedTrackingUrl(trackingUrl));
+    if (!hasValidTrackedLink) return false;
+
+    if (d.isMonetizable === false || d.is_monetizable === 0) return false;
+    const ev = typeof d.evidenceJson === 'string' ? JSON.parse(d.evidenceJson || '{}') : (d.evidenceJson || {});
+    if (ev.missingPayoutReason) return false;
+
+    const ratePercent = Number(d.verifiedCommissionRatePercent ?? ev.verifiedCommissionRatePercent ?? 0);
+    const flatPayout = Number(d.verifiedFlatPayoutINR ?? ev.verifiedFlatPayoutINR ?? 0);
+    const grossComm = Number(d.grossCommissionPerApprovedOrderINR ?? ev.grossCommissionPerApprovedOrderINR ?? 0);
+    const epc7d = Number(d.providerEpc7dINR ?? ev.epc_7d ?? (d.campaign as any)?.epc_7d ?? 0);
+
+    const hasVerifiedEconomics = ratePercent > 0 || flatPayout > 0 || grossComm > 0 || epc7d > 0;
+    if (!hasVerifiedEconomics) return false;
+
+    return true;
+  };
+
+  const impulseDeals = allDeals.filter(d => isDistributionKitQualified(d)).slice(0, 5);
+  const diagnostic = impulseDeals.length === 0 ? 'NO_QUALIFIED_IMPULSE_DEALS' : null;
 
   // Enrich with YouTube reviews
   const enricher = YouTubeReviewEnricher.getInstance();
@@ -11781,6 +11853,7 @@ apiRouter.get('/owner/first-sale/intent-distribution-kit', async (c) => {
   return c.json({
     success: true,
     siteUrl,
+    diagnostic,
     topImpulseDeals: items,
     searchEngineChecklist,
     generatedAt: new Date().toISOString()

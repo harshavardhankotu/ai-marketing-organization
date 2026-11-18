@@ -787,7 +787,6 @@ export class CuelinksSyncManager {
 
           if (Boolean(process.env.VITEST) || process.env.NODE_ENV === 'test') {
             const campaignSearch = await this.client.searchCampaigns({
-              country_id: 252,
               access_status: 'approved',
               sort: 'epc_7d',
               order: 'desc',
@@ -795,48 +794,33 @@ export class CuelinksSyncManager {
             });
             pushCampaigns(campaignSearch.campaigns || []);
             totalDiscovered = campaignSearch.total || (campaignSearch.campaigns || []).length;
-          } else if (typeof (this.client as any).getHighEpcCampaigns === 'function') {
+          } else {
+            // Paginate GET /pub_api/v3/campaigns (per_page=250, filtering access_status=approved)
             for (let page = 1; page <= 5; page++) {
-              const approvedRes = await (this.client as any).getHighEpcCampaigns({
+              const approvedRes = await this.client.searchCampaigns({
                 access_status: 'approved',
-                country_id: 252,
+                sort: 'epc_7d',
+                order: 'desc',
                 page,
-                per_page: 100
+                per_page: 250
               });
               const pageCampaigns: CuelinksCampaign[] = approvedRes?.campaigns || [];
               pushCampaigns(pageCampaigns);
               if (page === 1) totalDiscovered = Number(approvedRes?.total || discoveredList.length);
               const totalPages = Number(approvedRes?.total_pages || 1);
-              if (pageCampaigns.length < 100 || page >= totalPages) break;
+              if (pageCampaigns.length < 250 || page >= totalPages) break;
             }
             if (discoveredList.length < 15) {
               try {
-                const openRes = await (this.client as any).getHighEpcCampaigns({
+                const openRes = await this.client.searchCampaigns({
                   access_status: 'open',
-                  country_id: 252,
+                  sort: 'epc_7d',
+                  order: 'desc',
                   page: 1,
-                  per_page: 100
+                  per_page: 250
                 });
                 pushCampaigns(openRes?.campaigns || []);
               } catch {}
-            }
-          }
-
-          if (!process.env.VITEST && process.env.NODE_ENV !== 'test' && discoveredList.length === 0) {
-            for (let page = 1; page <= 5; page++) {
-              const campaignSearch = await this.client.searchCampaigns({
-                country_id: 252,
-                access_status: 'approved',
-                sort: 'epc_7d',
-                order: 'desc',
-                page,
-                per_page: 100
-              });
-              const pageCampaigns = campaignSearch.campaigns || [];
-              pushCampaigns(pageCampaigns);
-              if (page === 1) totalDiscovered = campaignSearch.total;
-              const totalPages = Number(campaignSearch.total_pages || 1);
-              if (pageCampaigns.length < 100 || page >= totalPages) break;
             }
           }
 
@@ -2014,7 +1998,7 @@ export class CuelinksSyncManager {
       if ((hc as any).payout_currency) currencyMapByCid.set(cid, String((hc as any).payout_currency));
     }
 
-    // Load ALL active campaigns (up to 200) + ALL active public_deals so existing numeric-string rates also join
+    // Load ALL active campaigns (up to 500) + ALL active public_deals so existing numeric-string rates also join
     let activeCampaignRows: any[] = [];
     let candidateDeals: any[] = [];
     try {
@@ -2023,11 +2007,38 @@ export class CuelinksSyncManager {
         `SELECT campaign_id, name, merchant_domain, payout_model, payout_rate, category
          FROM cuelinks_campaigns
          WHERE status = 'ACTIVE'
-         LIMIT 200`
+         LIMIT 500`
       );
+
+      // If activeCampaignRows is very small and client has searchCampaigns, fetch approved campaigns (page 1)
+      if (activeCampaignRows.length < 5 && typeof (this.client as any).searchCampaigns === 'function') {
+        try {
+          const initSearch = await this.client.searchCampaigns({
+            access_status: 'approved',
+            sort: 'epc_7d',
+            order: 'desc',
+            page: 1,
+            per_page: 250
+          });
+          const fetchedCampaigns = initSearch?.campaigns || [];
+          if (fetchedCampaigns.length > 0) {
+            await this.persistCampaignsD1(organizationId, businessId, fetchedCampaigns);
+            activeCampaignRows = await readAll<any>(
+              'cuelinks_campaigns',
+              `SELECT campaign_id, name, merchant_domain, payout_model, payout_rate, category
+               FROM cuelinks_campaigns
+               WHERE status = 'ACTIVE'
+               LIMIT 500`
+            );
+          }
+        } catch {}
+      }
+
       candidateDeals = await readAll<any>(
         'public_deals',
-        `SELECT id, merchant, category, product_url, current_price_inr, evidence_json FROM public_deals LIMIT 250`
+        `SELECT id, merchant, category, product_url, affiliate_url, current_price_inr, is_monetizable, affiliate_verified, evidence_json
+         FROM public_deals
+         LIMIT 250`
       );
     } catch {
       return {
@@ -2056,10 +2067,26 @@ export class CuelinksSyncManager {
       }
     }
 
+    // Sort candidate deals to prioritize unmapped deals (up to 50 deals per sync cycle)
+    const MAX_DEALS_PER_SYNC_CYCLE = 50;
+    const prioritizedDeals = (candidateDeals || []).slice().sort((a, b) => {
+      let aEv: any = {};
+      let bEv: any = {};
+      try { aEv = typeof a.evidence_json === 'string' ? JSON.parse(a.evidence_json || '{}') : (a.evidence_json || {}); } catch {}
+      try { bEv = typeof b.evidence_json === 'string' ? JSON.parse(b.evidence_json || '{}') : (b.evidence_json || {}); } catch {}
+      const aNeeds = Boolean(aEv.missingPayoutReason) || !aEv.verifiedCommissionRatePercent || a.is_monetizable === 0;
+      const bNeeds = Boolean(bEv.missingPayoutReason) || !bEv.verifiedCommissionRatePercent || b.is_monetizable === 0;
+      return Number(bNeeds) - Number(aNeeds);
+    });
+
     let syncedPublicDeals = 0;
     const missingPayoutBreakdown: Record<string, number> = {};
+    const batchOps: Array<{ table: any; sql: string; params: any[] }> = [];
+    let convertedDealCount = 0;
 
-    for (const d of candidateDeals || []) {
+    for (const d of prioritizedDeals) {
+      if (syncedPublicDeals >= MAX_DEALS_PER_SYNC_CYCLE) break;
+
       let ev: any = {};
       try {
         ev = typeof d.evidence_json === 'string' ? JSON.parse(d.evidence_json || '{}') : (d.evidence_json || {});
@@ -2067,33 +2094,108 @@ export class CuelinksSyncManager {
 
       const dealCid = String(ev.affiliateCampaignId || '').trim();
       const dealRootDomain = normalizeRootMerchantDomain(String(d.product_url || ''));
-      const domainMatches = dealRootDomain ? (campaignsByRootDomain.get(dealRootDomain) || []) : [];
-      const matchedCamp =
+      const isAmazon = /^https?:\/\/(www\.)?amazon\.(in|com)(\/|$)/i.test(String(d.product_url || '')) || ev.affiliateNetwork === 'AMAZON_IN';
+
+      if (isAmazon) {
+        // Amazon deals are handled by Amazon Associates tag, not Cuelinks
+        continue;
+      }
+
+      let domainMatches = dealRootDomain ? (campaignsByRootDomain.get(dealRootDomain) || []) : [];
+      let matchedCamp =
         (dealCid && campaignsById.get(dealCid)) ||
         (domainMatches.length === 1 ? domainMatches[0] : null);
 
+      let dealTrackingUrl: string | null = d.affiliate_url || null;
+
+      // If no matched campaign or campaign lacks payout, attempt live Cuelinks convertLink resolution (up to 50 unmapped deals per cycle)
+      const needsPayoutResolution = !matchedCamp || (!matchedCamp.payout_rate && !matchedCamp.epc_7d);
+      if (needsPayoutResolution && convertedDealCount < MAX_DEALS_PER_SYNC_CYCLE && typeof (this.client as any).convertLink === 'function') {
+        try {
+          convertedDealCount++;
+          const convRes = await this.client.convertLink({ url: String(d.product_url || '') });
+          if (convRes && convRes.affiliated && convRes.campaign) {
+            const dynamicCid = String(convRes.campaign.id || matchedCamp?.campaign_id || '');
+            const rawPayout = convRes.campaign.payout || convRes.campaign.commission_rate || '';
+            const campObj = {
+              campaign_id: dynamicCid,
+              name: convRes.campaign.name || d.merchant || 'Cuelinks Merchant',
+              merchant_domain: dealRootDomain || '',
+              status: 'ACTIVE',
+              payout_model: (convRes.campaign as any).payout_type || 'CPS',
+              payout_rate: String(rawPayout),
+              epc_7d: convRes.campaign.epc_7d ? Number(convRes.campaign.epc_7d) : null
+            };
+            if (dynamicCid) campaignsById.set(dynamicCid, campObj);
+            if (dealRootDomain) {
+              campaignsByRootDomain.set(dealRootDomain, [campObj]);
+            }
+            matchedCamp = campObj;
+            if (convRes.tracking_url) dealTrackingUrl = convRes.tracking_url;
+            // Persist newly discovered campaign to cuelinks_campaigns
+            try {
+              await this.persistCampaignsD1(organizationId, businessId, [{
+                id: dynamicCid,
+                name: campObj.name,
+                domain: campObj.merchant_domain,
+                url: d.product_url,
+                payout: campObj.payout_rate,
+                payout_type: campObj.payout_model,
+                status: 'ACTIVE'
+              } as any]);
+            } catch {}
+          } else if (convRes && convRes.affiliated === false) {
+            // Explicitly not affiliated / merchant unapproved -> quarantine
+            const reason = 'UNAPPROVED_OR_UNVERIFIED_CAMPAIGN';
+            missingPayoutBreakdown[reason] = (missingPayoutBreakdown[reason] || 0) + 1;
+            ev.missingPayoutReason = reason;
+            delete ev.verifiedCommissionRatePercent;
+            delete ev.verifiedFlatPayoutINR;
+            delete ev.grossCommissionPerApprovedOrderINR;
+            batchOps.push({
+              table: 'public_deals',
+              sql: `UPDATE public_deals SET evidence_json = ?, is_monetizable = 0, affiliate_verified = 0, updated_at = datetime('now') WHERE id = ?`,
+              params: [JSON.stringify(ev), d.id]
+            });
+            batchOps.push({
+              table: 'partner_offers',
+              sql: `UPDATE partner_offers SET evidence_json = ?, active = 0, status = 'INACTIVE', updated_at = datetime('now') WHERE id = ? OR destination_url = ?`,
+              params: [JSON.stringify(ev), d.id, d.product_url]
+            });
+            syncedPublicDeals++;
+            continue;
+          }
+        } catch {}
+      }
+
       const currentPriceINR = Number(d.current_price_inr || 0);
       if (!matchedCamp) {
+        // Quarantine any deal lacking campaign mapping
         const reason = domainMatches.length > 1 ? 'AMBIGUOUS_DOMAIN' : 'CAMPAIGN_NOT_IN_CUELINKS_PAGE';
         missingPayoutBreakdown[reason] = (missingPayoutBreakdown[reason] || 0) + 1;
-        if (ev.missingPayoutReason !== reason && !ev.verifiedCommissionRatePercent) {
-          ev.missingPayoutReason = reason;
-          await writeSql(
-            'public_deals',
-            `UPDATE public_deals SET evidence_json = ?, updated_at = datetime('now') WHERE id = ?`,
-            [JSON.stringify(ev), d.id]
-          );
-        }
+        ev.missingPayoutReason = reason;
+        delete ev.verifiedCommissionRatePercent;
+        delete ev.verifiedFlatPayoutINR;
+        delete ev.grossCommissionPerApprovedOrderINR;
+        batchOps.push({
+          table: 'public_deals',
+          sql: `UPDATE public_deals SET evidence_json = ?, is_monetizable = 0, affiliate_verified = 0, updated_at = datetime('now') WHERE id = ?`,
+          params: [JSON.stringify(ev), d.id]
+        });
+        batchOps.push({
+          table: 'partner_offers',
+          sql: `UPDATE partner_offers SET evidence_json = ?, active = 0, status = 'INACTIVE', updated_at = datetime('now') WHERE id = ? OR destination_url = ?`,
+          params: [JSON.stringify(ev), d.id, d.product_url]
+        });
+        syncedPublicDeals++;
         continue;
       }
 
       const parsed = parseVerifiedCampaignPayout(matchedCamp, currentPriceINR, d.category ? String(d.category) : undefined);
+      const epc7d = Number((matchedCamp as any).epc_7d ?? ev.epc_7d ?? 0);
+      if (epc7d > 0) ev.epc_7d = epc7d;
+
       if (parsed.monetizationModel === 'CPC') {
-        const cpcChanged =
-          ev.monetizationModel !== 'CPC' ||
-          ev.verifiedCpcPayoutINR !== parsed.verifiedCpcPayoutINR ||
-          ev.missingPayoutReason !== 'CPC_OFFLINE_ONLY' ||
-          ev.verifiedCommissionRatePercent != null;
         ev.affiliateCampaignId = ev.affiliateCampaignId || String(matchedCamp.campaign_id);
         ev.monetizationModel = 'CPC';
         ev.verifiedCpcPayoutINR = parsed.verifiedCpcPayoutINR ?? null;
@@ -2102,21 +2204,18 @@ export class CuelinksSyncManager {
         delete ev.grossCommissionPerApprovedOrderINR;
         ev.missingPayoutReason = 'CPC_OFFLINE_ONLY';
         missingPayoutBreakdown['CPC_OFFLINE_ONLY'] = (missingPayoutBreakdown['CPC_OFFLINE_ONLY'] || 0) + 1;
-        if (cpcChanged) {
-          await writeSql(
-            'public_deals',
-            `UPDATE public_deals SET evidence_json = ?, updated_at = datetime('now') WHERE id = ?`,
-            [JSON.stringify(ev), d.id]
-          );
-          syncedPublicDeals++;
-        }
-      } else if (parsed.ratePercent !== null || parsed.flatINR !== null) {
-        const changed =
-          Number(ev.verifiedCommissionRatePercent) !== Number(parsed.ratePercent) ||
-          Number(ev.grossCommissionPerApprovedOrderINR) !== Number(parsed.grossCommissionPerApprovedOrderINR) ||
-          (parsed.flatINR !== null && Number(ev.verifiedFlatPayoutINR) !== Number(parsed.flatINR)) ||
-          Boolean(ev.missingPayoutReason);
-
+        batchOps.push({
+          table: 'public_deals',
+          sql: `UPDATE public_deals SET evidence_json = ?, is_monetizable = 0, affiliate_verified = 0, updated_at = datetime('now') WHERE id = ?`,
+          params: [JSON.stringify(ev), d.id]
+        });
+        batchOps.push({
+          table: 'partner_offers',
+          sql: `UPDATE partner_offers SET evidence_json = ?, active = 0, status = 'INACTIVE', updated_at = datetime('now') WHERE id = ? OR destination_url = ?`,
+          params: [JSON.stringify(ev), d.id, d.product_url]
+        });
+        syncedPublicDeals++;
+      } else if (parsed.ratePercent !== null || parsed.flatINR !== null || (ev.epc_7d && ev.epc_7d > 0)) {
         ev.affiliateCampaignId = ev.affiliateCampaignId || String(matchedCamp.campaign_id);
         ev.monetizationModel = parsed.monetizationModel || 'CPS';
         if (parsed.ratePercent !== null) ev.verifiedCommissionRatePercent = parsed.ratePercent;
@@ -2126,27 +2225,74 @@ export class CuelinksSyncManager {
         }
         delete ev.missingPayoutReason;
 
-        if (changed) {
-          await writeSql(
-            'public_deals',
-            `UPDATE public_deals SET evidence_json = ?, updated_at = datetime('now') WHERE id = ?`,
-            [JSON.stringify(ev), d.id]
-          );
-          syncedPublicDeals++;
-        }
+        const commModel = parsed.flatINR !== null ? 'FIXED' : 'PERCENTAGE';
+        const commAmount = parsed.flatINR !== null ? parsed.flatINR : (parsed.ratePercent ?? 0);
+
+        batchOps.push({
+          table: 'public_deals',
+          sql: `UPDATE public_deals
+                SET evidence_json = ?,
+                    is_monetizable = 1,
+                    affiliate_verified = 1,
+                    affiliate_url = COALESCE(?, affiliate_url),
+                    updated_at = datetime('now')
+                WHERE id = ?`,
+          params: [JSON.stringify(ev), dealTrackingUrl, d.id]
+        });
+        batchOps.push({
+          table: 'partner_offers',
+          sql: `UPDATE partner_offers
+                SET evidence_json = ?,
+                    commission_model = ?,
+                    commission_amount_inr = ?,
+                    authorized_tracking_url = COALESCE(?, authorized_tracking_url),
+                    active = 1,
+                    status = 'ACTIVE',
+                    updated_at = datetime('now')
+                WHERE id = ? OR destination_url = ?`,
+          params: [JSON.stringify(ev), commModel, commAmount, dealTrackingUrl, d.id, d.product_url]
+        });
+        syncedPublicDeals++;
       } else {
+        // Campaign exists but lacks verified payout/EPC evidence -> quarantine
         const fallbackReason =
           parsed.missingPayoutReason ||
           lookupOutcomeByCampaignId.get(String(matchedCamp.campaign_id)) ||
-          'ZERO_PAYOUT_REPORTED';
+          'UNAPPROVED_OR_UNVERIFIED_CAMPAIGN';
         missingPayoutBreakdown[fallbackReason] = (missingPayoutBreakdown[fallbackReason] || 0) + 1;
-        if (ev.missingPayoutReason !== fallbackReason && !ev.verifiedCommissionRatePercent) {
-          ev.missingPayoutReason = fallbackReason;
-          await writeSql(
-            'public_deals',
-            `UPDATE public_deals SET evidence_json = ?, updated_at = datetime('now') WHERE id = ?`,
-            [JSON.stringify(ev), d.id]
-          );
+        ev.missingPayoutReason = fallbackReason;
+        delete ev.verifiedCommissionRatePercent;
+        delete ev.verifiedFlatPayoutINR;
+        delete ev.grossCommissionPerApprovedOrderINR;
+        batchOps.push({
+          table: 'public_deals',
+          sql: `UPDATE public_deals SET evidence_json = ?, is_monetizable = 0, affiliate_verified = 0, updated_at = datetime('now') WHERE id = ?`,
+          params: [JSON.stringify(ev), d.id]
+        });
+        batchOps.push({
+          table: 'partner_offers',
+          sql: `UPDATE partner_offers SET evidence_json = ?, active = 0, status = 'INACTIVE', updated_at = datetime('now') WHERE id = ? OR destination_url = ?`,
+          params: [JSON.stringify(ev), d.id, d.product_url]
+        });
+        syncedPublicDeals++;
+      }
+    }
+
+    // Execute collected batch writes in chunks of 50 operations
+    if (batchOps.length > 0) {
+      const CHUNK_SIZE = 50;
+      for (let i = 0; i < batchOps.length; i += CHUNK_SIZE) {
+        const chunk = batchOps.slice(i, i + CHUNK_SIZE);
+        if (isProduction() && !process.env.VITEST) {
+          await repo.executeBatch(chunk as any);
+        } else {
+          const db = getDb();
+          const tx = db.transaction((ops: typeof chunk) => {
+            for (const op of ops) {
+              db.prepare(op.sql).run(...(op.params || []));
+            }
+          });
+          tx(chunk);
         }
       }
     }

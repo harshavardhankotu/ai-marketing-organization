@@ -5,6 +5,8 @@ import {
   isImpulseConversionDeal,
   NormalizedDeal
 } from '../../src/commission/autonomous-deal-discovery-engine.js';
+import { CuelinksSyncManager } from '../../src/commission/cuelinks-sync-manager.js';
+import { CuelinksV3Client } from '../../src/commission/cuelinks-v3-client.js';
 import { StaticSiteGenerator } from '../../src/commission/static-site-generator.js';
 import { renderCustomerDeskWidgetHtml } from '../../src/revenue/customer-desk-widget.js';
 import { SalesConversationEngine } from '../../src/revenue/sales-conversation-engine.js';
@@ -499,8 +501,10 @@ describe('Stage S: Zero-Budget Affiliate Buyer-Intent Engine', () => {
         sourceDomain: 'plumgoodness.com',
         observedAt: new Date().toISOString(),
         lastCheckedAt: new Date().toISOString(),
-        trackingUrl: 'https://plumgoodness.com/vanilla',
+        trackingUrl: 'https://clnk.in/plumvanilla',
         productUrl: 'https://plumgoodness.com/vanilla',
+        verifiedCommissionRatePercent: 8.0,
+        evidenceJson: { verifiedCommissionRatePercent: 8.0 },
         evidence: {} as any
       };
 
@@ -1500,6 +1504,326 @@ describe('Stage S: Zero-Budget Affiliate Buyer-Intent Engine', () => {
       const res = await engine.checkAndDispatchTargetPriceAlerts([qualifyingDeal]);
       expect(sendSpy).not.toHaveBeenCalled();
       expect(res.dispatched).toBe(0);
+    });
+  });
+
+  describe('Stage S.1.2: Cuelinks Campaign Payout Hydration, Strict Qualified Distribution Kit & Earnings Separation', () => {
+    it('1. Cuelinks campaign hydration maps merchant domains/campaign IDs across multiple deals in batches and quarantines deals lacking verified campaign payout mapping', async () => {
+      // Clean up public_deals and cuelinks_campaigns for test isolation
+      db.prepare(`DELETE FROM public_deals WHERE id IN ('deal_hydr_01', 'deal_hydr_02', 'deal_hydr_03')`).run();
+      db.prepare(`DELETE FROM cuelinks_campaigns WHERE campaign_id IN ('camp_hydr_nykaa', 'camp_hydr_boat')`).run();
+
+      // Insert known campaign for Nykaa with verified 8.5% CPS rate
+      db.prepare(`
+        INSERT INTO cuelinks_campaigns (campaign_id, name, merchant_domain, status, payout_model, payout_rate, cookie_days, category, verification_source, updated_at)
+        VALUES ('camp_hydr_nykaa', 'Nykaa Beauty', 'nykaa.com', 'ACTIVE', 'CPS', '8.5%', 30, 'Beauty', 'TEST', datetime('now'))
+      `).run();
+
+      // Deal 1: Nykaa (matched via campaign_id or domain, verified rate 8.5%)
+      db.prepare(`
+        INSERT INTO public_deals (id, slug, title, merchant, category, sector_code, product_url, affiliate_url, current_price_inr, availability, verification_status, is_monetizable, affiliate_verified, evidence_json)
+        VALUES ('deal_hydr_01', 'nykaa-matte-lipstick', 'Nykaa Matte Lipstick', 'Nykaa', 'Beauty', 'SECTOR_A_BEAUTY', 'https://nykaa.com/matte-lipstick', 'https://clnk.in/nykaa01', 499, 'IN_STOCK', 'VERIFIED', 0, 0, '{"affiliateCampaignId":"camp_hydr_nykaa"}')
+      `).run();
+
+      // Deal 2: Boat (resolved via convertLink returning campaign metadata: 6.0% payout, epc_7d: 14.2)
+      db.prepare(`
+        INSERT INTO public_deals (id, slug, title, merchant, category, sector_code, product_url, affiliate_url, current_price_inr, availability, verification_status, is_monetizable, affiliate_verified, evidence_json)
+        VALUES ('deal_hydr_02', 'boat-airdope-141', 'boAt Airdopes 141', 'boAt', 'Electronics', 'SECTOR_B_ELECTRONICS', 'https://boat-lifestyle.com/airdope-141', 'https://boat-lifestyle.com/airdope-141', 999, 'IN_STOCK', 'VERIFIED', 0, 0, '{}')
+      `).run();
+
+      // Deal 3: Unapproved store (convertLink returns affiliated: false -> must be quarantined)
+      db.prepare(`
+        INSERT INTO public_deals (id, slug, title, merchant, category, sector_code, product_url, affiliate_url, current_price_inr, availability, verification_status, is_monetizable, affiliate_verified, evidence_json)
+        VALUES ('deal_hydr_03', 'unapproved-gizmo', 'Unapproved Gizmo', 'SketchyStore', 'Gadgets', 'SECTOR_B_ELECTRONICS', 'https://sketchystore.in/gizmo', 'https://sketchystore.in/gizmo', 399, 'IN_STOCK', 'VERIFIED', 1, 1, '{}')
+      `).run();
+
+      // Create a mock Cuelinks client that handles convertLink and searchCampaigns
+      const mockClient = {
+        isConfigured: vi.fn().mockReturnValue(true),
+        searchCampaigns: vi.fn().mockResolvedValue({
+          campaigns: [
+            { id: 'camp_hydr_nykaa', name: 'Nykaa Beauty', domain: 'nykaa.com', payout: '8.5%', payout_type: 'CPS', status: 'ACTIVE' }
+          ],
+          total: 1
+        }),
+        convertLink: vi.fn().mockImplementation(async ({ url }: { url: string }) => {
+          if (url.includes('boat-lifestyle.com')) {
+            return {
+              url,
+              tracking_url: 'https://clnk.in/boat141',
+              affiliated: true,
+              campaign: {
+                id: 'camp_hydr_boat',
+                name: 'boAt Lifestyle',
+                payout: '6.0%',
+                payout_type: 'CPS',
+                epc_7d: 14.2
+              }
+            };
+          }
+          if (url.includes('sketchystore.in')) {
+            return {
+              url,
+              tracking_url: url,
+              affiliated: false
+            };
+          }
+          return { url, tracking_url: url, affiliated: false };
+        })
+      };
+
+      const syncManager = CuelinksSyncManager.getInstance(mockClient as any);
+      const res = await syncManager.hydrateMissingCampaignPayoutsD1('org_owner_primary', 'biz_platform_aro', 50);
+
+      expect(res.syncedPublicDeals).toBeGreaterThanOrEqual(2);
+
+      // Verify Deal 1: Nykaa has verifiedCommissionRatePercent: 8.5, is_monetizable: 1, affiliate_verified: 1
+      const row1: any = db.prepare(`SELECT is_monetizable, affiliate_verified, evidence_json FROM public_deals WHERE id = 'deal_hydr_01'`).get();
+      expect(row1.is_monetizable).toBe(1);
+      expect(row1.affiliate_verified).toBe(1);
+      const ev1 = JSON.parse(row1.evidence_json);
+      expect(ev1.verifiedCommissionRatePercent).toBe(8.5);
+      expect(ev1.missingPayoutReason).toBeUndefined();
+
+      // Verify Deal 2: Boat has verifiedCommissionRatePercent: 6, epc_7d: 14.2, is_monetizable: 1, affiliate_url: 'https://clnk.in/boat141'
+      const row2: any = db.prepare(`SELECT is_monetizable, affiliate_verified, affiliate_url, evidence_json FROM public_deals WHERE id = 'deal_hydr_02'`).get();
+      expect(row2.is_monetizable).toBe(1);
+      expect(row2.affiliate_verified).toBe(1);
+      expect(row2.affiliate_url).toBe('https://clnk.in/boat141');
+      const ev2 = JSON.parse(row2.evidence_json);
+      expect(ev2.verifiedCommissionRatePercent).toBe(6);
+      expect(ev2.epc_7d).toBe(14.2);
+
+      // Verify Deal 3: SketchyStore quarantined with is_monetizable: 0, affiliate_verified: 0, missingPayoutReason: 'UNAPPROVED_OR_UNVERIFIED_CAMPAIGN'
+      const row3: any = db.prepare(`SELECT is_monetizable, affiliate_verified, evidence_json FROM public_deals WHERE id = 'deal_hydr_03'`).get();
+      expect(row3.is_monetizable).toBe(0);
+      expect(row3.affiliate_verified).toBe(0);
+      const ev3 = JSON.parse(row3.evidence_json);
+      expect(ev3.missingPayoutReason).toBe('UNAPPROVED_OR_UNVERIFIED_CAMPAIGN');
+    });
+
+    it('2. intent-distribution-kit returns fewer than 5 deals (and never high-ticket ₹17,999 or unmapped deals) when fewer than 5 impulse deals qualify, and returns NO_QUALIFIED_IMPULSE_DEALS when 0 qualify', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+      (engine as any).dealsMap?.clear();
+
+      // Deal 1: Qualified impulse deal (₹499, IN_STOCK, VERIFIED, tracked clnk.in link, verified rate 6%)
+      const deal1: NormalizedDeal = {
+        id: 'deal_qual_01',
+        slug: 'boat-bassheads-100',
+        title: 'boAt BassHeads 100 Wired Earphones',
+        brand: 'boAt',
+        merchant: 'boAt',
+        category: 'Electronics',
+        currentPriceINR: 499,
+        referencePriceINR: 999,
+        verifiedDiscountPercent: 50,
+        confidenceScore: 95,
+        buyerValueScore: 90,
+        availability: 'IN_STOCK',
+        verificationStatus: 'VERIFIED',
+        isMonetizable: true,
+        sourceDomain: 'boat-lifestyle.com',
+        productUrl: 'https://boat-lifestyle.com/bassheads-100',
+        trackingUrl: 'https://clnk.in/boat100',
+        verifiedCommissionRatePercent: 6.0,
+        lastCheckedAt: new Date().toISOString(),
+        evidenceJson: { verifiedCommissionRatePercent: 6.0 }
+      };
+
+      // Deal 2: Qualified impulse deal (₹899, IN_STOCK, VERIFIED, tracked clnk.in link, verified rate 8.5%)
+      const deal2: NormalizedDeal = {
+        id: 'deal_qual_02',
+        slug: 'plum-green-tea-night-gel',
+        title: 'Plum Green Tea Renewed Clarity Night Gel',
+        brand: 'Plum',
+        merchant: 'Plum Goodness',
+        category: 'Skincare',
+        currentPriceINR: 899,
+        referencePriceINR: 1200,
+        verifiedDiscountPercent: 25,
+        confidenceScore: 92,
+        buyerValueScore: 88,
+        availability: 'IN_STOCK',
+        verificationStatus: 'VERIFIED',
+        isMonetizable: true,
+        sourceDomain: 'plumgoodness.com',
+        productUrl: 'https://plumgoodness.com/green-tea-gel',
+        trackingUrl: 'https://clnk.in/plumgel',
+        verifiedCommissionRatePercent: 8.5,
+        lastCheckedAt: new Date().toISOString(),
+        evidenceJson: { verifiedCommissionRatePercent: 8.5 }
+      };
+
+      // Deal 3: High-ticket deal (₹17,999) - MUST NOT BE PROMOTED AS IMPULSE DEAL
+      const deal3: NormalizedDeal = {
+        id: 'deal_high_ticket_03',
+        slug: 'sony-wh-1000xm4',
+        title: 'Sony WH-1000XM4 Wireless Noise Cancelling Headphones',
+        brand: 'Sony',
+        merchant: 'Sony Center',
+        category: 'Electronics',
+        currentPriceINR: 17999,
+        referencePriceINR: 24999,
+        verifiedDiscountPercent: 28,
+        confidenceScore: 98,
+        buyerValueScore: 95,
+        availability: 'IN_STOCK',
+        verificationStatus: 'VERIFIED',
+        isMonetizable: true,
+        sourceDomain: 'sonycenter.in',
+        productUrl: 'https://sonycenter.in/xm4',
+        trackingUrl: 'https://clnk.in/sonyxm4',
+        verifiedCommissionRatePercent: 4.0,
+        lastCheckedAt: new Date().toISOString(),
+        evidenceJson: { verifiedCommissionRatePercent: 4.0 }
+      };
+
+      // Deal 4: Unmapped/quarantined deal (₹599) - lacks verified payout/campaign
+      const deal4: NormalizedDeal = {
+        id: 'deal_unmapped_04',
+        slug: 'unmapped-gizmo-deal',
+        title: 'Unmapped Gizmo Deal',
+        brand: 'Generic',
+        merchant: 'UnknownStore',
+        category: 'Electronics',
+        currentPriceINR: 599,
+        referencePriceINR: 999,
+        verifiedDiscountPercent: 40,
+        confidenceScore: 50,
+        buyerValueScore: 40,
+        availability: 'IN_STOCK',
+        verificationStatus: 'VERIFIED',
+        isMonetizable: false,
+        sourceDomain: 'unknownstore.in',
+        productUrl: 'https://unknownstore.in/item',
+        trackingUrl: 'https://unknownstore.in/item',
+        lastCheckedAt: new Date().toISOString(),
+        evidenceJson: { missingPayoutReason: 'UNAPPROVED_OR_UNVERIFIED_CAMPAIGN' }
+      };
+
+      // Spy on getEligiblePublicDeals to return these 4 deals
+      const eligibleSpy = vi.spyOn(engine, 'getEligiblePublicDeals').mockResolvedValue({
+        deals: [deal1, deal2, deal3, deal4],
+        total: 4
+      });
+
+      const session = OwnerAuthService.getInstance().createSession('127.0.0.1');
+      const res = await app.request('/api/v1/owner/first-sale/intent-distribution-kit', {
+        headers: { Authorization: `Bearer ${session.token}` }
+      });
+
+      expect(res.status).toBe(200);
+      const json = await res.json();
+      expect(json.success).toBe(true);
+      expect(json.diagnostic).toBeNull();
+      // Strictly 2 deals qualify (Deal 1 and Deal 2) - NO fallback backfilling to 5!
+      expect(json.topImpulseDeals).toHaveLength(2);
+      const dealIds = json.topImpulseDeals.map((d: any) => d.dealId);
+      expect(dealIds).toContain('deal_qual_01');
+      expect(dealIds).toContain('deal_qual_02');
+      expect(dealIds).not.toContain('deal_high_ticket_03'); // Never ₹17,999 in distribution kit
+      expect(dealIds).not.toContain('deal_unmapped_04');    // Never unmapped deal in distribution kit
+
+      // Test zero-qualifying case: returns 0 deals with NO_QUALIFIED_IMPULSE_DEALS diagnostic
+      eligibleSpy.mockResolvedValueOnce({
+        deals: [deal3, deal4], // only high-ticket and unmapped
+        total: 2
+      });
+
+      const resEmpty = await app.request('/api/v1/owner/first-sale/intent-distribution-kit', {
+        headers: { Authorization: `Bearer ${session.token}` }
+      });
+      expect(resEmpty.status).toBe(200);
+      const jsonEmpty = await resEmpty.json();
+      expect(jsonEmpty.success).toBe(true);
+      expect(jsonEmpty.topImpulseDeals).toHaveLength(0);
+      expect(jsonEmpty.diagnostic).toBe('NO_QUALIFIED_IMPULSE_DEALS');
+    });
+
+    it('3. providerEpc7dINR and measuredCommissionINR are strictly separated from modelledIllustrativeEvPer100VisitorsINR', async () => {
+      const dealWithZeroConversions: NormalizedDeal = {
+        id: 'deal_sep_test_01',
+        slug: 'noise-earbuds-zero-conv',
+        title: 'Noise Buds VS102',
+        brand: 'Noise',
+        merchant: 'Noise',
+        category: 'Electronics',
+        currentPriceINR: 1000,
+        referencePriceINR: 2000,
+        verifiedDiscountPercent: 50,
+        availability: 'IN_STOCK',
+        verificationStatus: 'VERIFIED',
+        isMonetizable: true,
+        sourceDomain: 'gonoise.com',
+        productUrl: 'https://gonoise.com/buds',
+        trackingUrl: 'https://clnk.in/noisebuds',
+        verifiedCommissionRatePercent: 8.5,
+        grossCommissionPerApprovedOrderINR: 85,
+        observedClicks: 12,
+        observedApprovedOrders: 0,
+        lastCheckedAt: new Date().toISOString(),
+        evidenceJson: {
+          verifiedCommissionRatePercent: 8.5,
+          grossCommissionPerApprovedOrderINR: 85,
+          observedClicks: 12,
+          observedApprovedOrders: 0,
+          epc_7d: 15.75
+        }
+      };
+
+      const score = AutonomousDealDiscoveryEngine.getInstance().calculateMarketArbitrageScore(dealWithZeroConversions);
+
+      // Verify provider reported 7d EPC is separated and accurately captured
+      expect(score.providerEpc7dINR).toBe(15.75);
+
+      // Verify measured conversions and commission reflect real ledger counts: 0 approved orders = ₹0.00 earned
+      expect(score.measuredClicks).toBe(12);
+      expect(score.measuredApprovedOrders).toBe(0);
+      expect(score.measuredCommissionINR).toBe(0);
+
+      // Verify modelled EV is labelled and separate from actual zero earned commission
+      expect(score.modelledIllustrativeEvPer100VisitorsINR).toBeGreaterThan(0);
+      expect(score.expectedProfitPer100VisitorsINR).toBe(score.modelledIllustrativeEvPer100VisitorsINR);
+
+      // Test when there ARE real approved orders (e.g. 3 approved orders)
+      const dealWithConversions: NormalizedDeal = {
+        ...dealWithZeroConversions,
+        observedClicks: 50,
+        observedApprovedOrders: 3,
+        evidenceJson: {
+          ...dealWithZeroConversions.evidenceJson,
+          observedClicks: 50,
+          observedApprovedOrders: 3
+        }
+      };
+      const scoreWithConv = AutonomousDealDiscoveryEngine.getInstance().calculateMarketArbitrageScore(dealWithConversions);
+      expect(scoreWithConv.measuredApprovedOrders).toBe(3);
+      expect(scoreWithConv.measuredCommissionINR).toBe(255); // 3 * ₹85 = ₹255.00
+      expect(scoreWithConv.providerEpc7dINR).toBe(15.75);
+
+      // Verify /owner/first-sale/ready-actions exposes these separated fields truthfully
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+      vi.spyOn(engine, 'getEligiblePublicDeals').mockResolvedValue({
+        deals: [dealWithZeroConversions],
+        total: 1
+      });
+
+      const session = OwnerAuthService.getInstance().createSession('127.0.0.1');
+      const res = await app.request('/api/v1/owner/first-sale/ready-actions', {
+        headers: { Authorization: `Bearer ${session.token}` }
+      });
+      expect(res.status).toBe(200);
+      const json = await res.json();
+      expect(json.data).toBeDefined();
+      expect(json.data.topDeals).toBeDefined();
+      expect(json.data.topDeals.length).toBeGreaterThan(0);
+      const actionDeal = json.data.topDeals[0];
+      expect(actionDeal.providerEpc7dINR).toBe(15.75);
+      expect(actionDeal.measuredClicks).toBe(12);
+      expect(actionDeal.measuredApprovedOrders).toBe(0);
+      expect(actionDeal.measuredCommissionINR).toBe(0);
+      expect(actionDeal.modelledIllustrativeEvPer100VisitorsINR).toBeGreaterThan(0);
+      expect(actionDeal.modelledProfitType).toBe('MODELLED_ILLUSTRATIVE_ONLY');
     });
   });
 });

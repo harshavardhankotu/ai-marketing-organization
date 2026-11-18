@@ -471,7 +471,7 @@ export class CuelinksV3Client {
     page?: number;
     per_page?: number;
   }): Promise<{ campaigns: CuelinksCampaign[]; total: number; total_pages?: number; page?: number; next_page?: number | null }> {
-    const perPage = Math.min(100, Math.max(1, options?.per_page || 100));
+    const perPage = Math.min(250, Math.max(1, options?.per_page || 100));
     const res = await this.request<any>('/campaigns', {
       query: {
         q: options?.q,
@@ -511,7 +511,7 @@ export class CuelinksV3Client {
     page?: number;
     per_page?: number;
   }): Promise<{ campaigns: CuelinksCampaign[]; total: number; total_pages?: number; page?: number }> {
-    const perPage = Math.min(100, Math.max(1, options?.per_page || 100));
+    const perPage = Math.min(250, Math.max(1, options?.per_page || 100));
     const page = options?.page || 1;
     const res = await this.request<any>('/campaigns.json', {
       query: {

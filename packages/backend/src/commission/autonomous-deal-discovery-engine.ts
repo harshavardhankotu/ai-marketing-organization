@@ -190,6 +190,11 @@ export interface MarketArbitrageScoreResult {
   evolutionStatus?: 'RISING_WINNER' | 'FRESH_EXPLORATION' | 'STALE_ROTATED_OUT';
   exposureTier?: 'FRESH_UNEXPOSED' | 'ACTIVE_ENGAGED' | 'EXPOSED_LOW_CTR';
   expectedProfitPer100VisitorsINR?: number;
+  modelledIllustrativeEvPer100VisitorsINR?: number;
+  providerEpc7dINR?: number | null;
+  measuredClicks?: number;
+  measuredApprovedOrders?: number;
+  measuredCommissionINR?: number;
   rankingBreakdown: RankingBreakdown;
 }
 
@@ -853,6 +858,16 @@ export function calculateMarketArbitrageScore(deal: Partial<NormalizedDeal>): Ma
     ? 'STALE_ROTATED_OUT'
     : (observedClicks > 0 || observedInquiries > 0 || hasPriceDrop ? 'RISING_WINNER' : 'FRESH_EXPLORATION');
   const expectedProfitPer100VisitorsINR = calculateExpectedProfitPer100Visitors(deal);
+  const rawProviderEpc = (deal.campaign as any)?.epc_7d ?? deal.evidenceJson?.epc_7d ?? (deal as any).epc7d ?? (deal as any).providerEpc7dINR ?? null;
+  const providerEpc7dINR = rawProviderEpc !== null && rawProviderEpc !== undefined && !Number.isNaN(Number(rawProviderEpc)) && Number(rawProviderEpc) > 0
+    ? Number(Number(rawProviderEpc).toFixed(2))
+    : null;
+  const measuredClicks = observedClicks;
+  const measuredApprovedOrders = observedApprovedOrders;
+  const measuredCommissionINR = Number(
+    (measuredApprovedOrders * (grossCommissionPerApprovedOrderINR || (deal.currentPriceINR && verifiedCommissionRatePercent ? (deal.currentPriceINR * verifiedCommissionRatePercent / 100) : 0))).toFixed(2)
+  );
+  const modelledIllustrativeEvPer100VisitorsINR = expectedProfitPer100VisitorsINR;
 
   return {
     arbitrageScore,
@@ -875,6 +890,11 @@ export function calculateMarketArbitrageScore(deal: Partial<NormalizedDeal>): Ma
     evolutionStatus,
     exposureTier,
     expectedProfitPer100VisitorsINR,
+    modelledIllustrativeEvPer100VisitorsINR,
+    providerEpc7dINR,
+    measuredClicks,
+    measuredApprovedOrders,
+    measuredCommissionINR,
     rankingBreakdown: {
       commercialContributionScore,
       evidenceConfidenceScore,
@@ -5995,6 +6015,11 @@ export class AutonomousDealDiscoveryEngine {
       ? 'STALE_ROTATED_OUT'
       : (deal.evidenceJson?.evolutionStatus || arb.evolutionStatus || 'FRESH_EXPLORATION');
     deal.expectedProfitPer100VisitorsINR = arb.expectedProfitPer100VisitorsINR ?? calculateExpectedProfitPer100Visitors(deal);
+    deal.modelledIllustrativeEvPer100VisitorsINR = arb.modelledIllustrativeEvPer100VisitorsINR ?? deal.expectedProfitPer100VisitorsINR;
+    deal.providerEpc7dINR = arb.providerEpc7dINR ?? null;
+    deal.measuredClicks = arb.measuredClicks ?? 0;
+    deal.measuredApprovedOrders = arb.measuredApprovedOrders ?? 0;
+    deal.measuredCommissionINR = arb.measuredCommissionINR ?? 0;
     deal.rankingBreakdown = arb.rankingBreakdown;
     deal.targetBuyerSegment = targeting.targetBuyerSegment;
     deal.buyerIntentKeywords = targeting.buyerIntentKeywords;
@@ -6021,6 +6046,11 @@ export class AutonomousDealDiscoveryEngine {
       catalogSlot: deal.catalogSlot,
       evolutionStatus: deal.evolutionStatus,
       expectedProfitPer100VisitorsINR: deal.expectedProfitPer100VisitorsINR,
+      modelledIllustrativeEvPer100VisitorsINR: deal.modelledIllustrativeEvPer100VisitorsINR,
+      providerEpc7dINR: deal.providerEpc7dINR,
+      measuredClicks: deal.measuredClicks,
+      measuredApprovedOrders: deal.measuredApprovedOrders,
+      measuredCommissionINR: deal.measuredCommissionINR,
       rankingBreakdown: arb.rankingBreakdown,
       targetBuyerSegment: targeting.targetBuyerSegment,
       buyerIntentKeywords: targeting.buyerIntentKeywords,

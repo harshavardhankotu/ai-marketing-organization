@@ -197,6 +197,13 @@ export interface CuelinksLinkConvertResponse {
   campaign?: {
     id: number | string;
     name: string;
+    payout?: string | number;
+    commission_rate?: string | number;
+    payout_type?: string;
+    payout_currency?: string;
+    payout_categories?: unknown[];
+    epc_7d?: string | number;
+    [key: string]: unknown;
   };
   channel_id?: number | string;
 }
