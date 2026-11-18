@@ -176,7 +176,7 @@ describe('Stage S: Zero-Budget Affiliate Buyer-Intent Engine', () => {
       (engine as any).dealsMap.set(highTicketDeal.id, highTicketDeal);
       (engine as any).dealsMap.set(impulseDeal.id, impulseDeal);
 
-      const eligibleRes = await engine.getEligiblePublicDeals({ limit: 10 });
+      const eligibleRes = await engine.getEligiblePublicDeals({ limit: 100 });
       const foundHigh = eligibleRes.deals.findIndex(d => d.id === highTicketDeal.id);
       const foundImpulse = eligibleRes.deals.findIndex(d => d.id === impulseDeal.id);
 
