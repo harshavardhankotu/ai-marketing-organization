@@ -1070,7 +1070,6 @@ export class AutonomousDealDiscoveryEngine {
   // In-memory operational cache synced to durable D1 storage
   private sourcesMap: Map<string, DealSourceRecord> = new Map();
   private dealsMap: Map<string, NormalizedDeal> = new Map();
-  private lastPriceDropEventCursor: string = '';
 
   public getDealsMap(): Map<string, NormalizedDeal> {
     return this.dealsMap;
@@ -7049,7 +7048,10 @@ export class AutonomousDealDiscoveryEngine {
     deals: NormalizedDeal[],
     siteUrlOverride?: string
   ): Promise<{ checked: number; dispatched: number; skipped: number }> {
-    const validDeals = (deals || []).filter(d => d && Number(d.currentPriceINR || 0) > 0 && d.availability === 'IN_STOCK');
+    const allDeals = (deals && deals.length > 0)
+      ? Array.from(new Map([...Array.from(this.dealsMap.values()), ...deals].map(d => [d.id, d])).values())
+      : Array.from(this.dealsMap.values());
+    const validDeals = allDeals.filter(d => d && Number(d.currentPriceINR || 0) > 0 && d.availability === 'IN_STOCK');
     if (validDeals.length === 0) {
       return { checked: 0, dispatched: 0, skipped: 0 };
     }
@@ -7188,10 +7190,7 @@ export class AutonomousDealDiscoveryEngine {
 
     // Stage S Task 2: Process pending durable_events with event_type = 'PRICE_DROP_SUBSCRIPTION'
     try {
-      const cursorCond = this.lastPriceDropEventCursor
-        ? `AND id > '${this.lastPriceDropEventCursor.replace(/[^a-zA-Z0-9_-]/g, '')}'`
-        : '';
-      let eventQuery = `SELECT id, payload_json FROM durable_events WHERE event_type = 'PRICE_DROP_SUBSCRIPTION' AND processed = 0 ${cursorCond} ORDER BY id ASC LIMIT 50`;
+      const eventQuery = `SELECT id, payload_json FROM durable_events WHERE event_type = 'PRICE_DROP_SUBSCRIPTION' AND processed = 0 ORDER BY created_at ASC LIMIT 100`;
       let eventRows: any[] = [];
       if (this.d1Repo.isRemoteD1Configured() || isProd) {
         const evRes = await this.d1Repo.executeRead('durable_events', eventQuery, []);
@@ -7200,20 +7199,7 @@ export class AutonomousDealDiscoveryEngine {
         eventRows = getDb().prepare(eventQuery).all() as any[];
       }
 
-      // If cursor reached the end, wrap around to beginning so pending watches keep getting evaluated
-      if (eventRows.length === 0 && this.lastPriceDropEventCursor) {
-        this.lastPriceDropEventCursor = '';
-        eventQuery = `SELECT id, payload_json FROM durable_events WHERE event_type = 'PRICE_DROP_SUBSCRIPTION' AND processed = 0 ORDER BY id ASC LIMIT 50`;
-        if (this.d1Repo.isRemoteD1Configured() || isProd) {
-          const evRes = await this.d1Repo.executeRead('durable_events', eventQuery, []);
-          eventRows = Array.isArray(evRes?.results) ? evRes.results : [];
-        } else {
-          eventRows = getDb().prepare(eventQuery).all() as any[];
-        }
-      }
-
       for (const evRow of eventRows) {
-        this.lastPriceDropEventCursor = evRow.id;
         let payload: any = {};
         try {
           payload = JSON.parse(evRow.payload_json || '{}');

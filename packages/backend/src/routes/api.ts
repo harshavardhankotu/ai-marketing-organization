@@ -5038,11 +5038,11 @@ apiRouter.post('/customer-desk/subscribe-alerts', async (c) => {
       : (body.category ? [String(body.category).trim()] : ['ALL_VERIFIED_DROPS']);
     const id = `sub_${createHash('sha256').update(email).digest('hex').slice(0, 18)}`;
 
-    // Finding 11: Merge incoming watch with existing watches in authorization_evidence_json before upsert
+    // Merge incoming watch with existing watches in authorization_evidence_json before upsert
     let existingWatches: any[] = [];
+    const d1Repo = D1RevenueRepository.getInstance();
+    const existingSql = `SELECT authorization_evidence_json FROM outbound_contacts WHERE business_id = 'biz_platform_aro' AND prospect_email = ? LIMIT 1`;
     try {
-      const d1Repo = D1RevenueRepository.getInstance();
-      const existingSql = `SELECT authorization_evidence_json FROM outbound_contacts WHERE prospect_email = ? LIMIT 1`;
       let existingRows: any[] = [];
       if (d1Repo.isRemoteD1Configured() || isProduction()) {
         const res = await d1Repo.executeRead('outbound_contacts', existingSql, [email]);
@@ -5056,7 +5056,10 @@ apiRouter.post('/customer-desk/subscribe-alerts', async (c) => {
           existingWatches = prevEv.watches;
         }
       }
-    } catch {}
+    } catch (readErr: any) {
+      console.error(`[SubscribeAlerts] Failed reading existing watches for ${email}: ${readErr?.message}`);
+      return c.json({ success: false, error: 'Database read error, please retry subscription' }, 500);
+    }
 
     const newWatch = targetPriceINR ? {
       target_deal_id: dealId || null,
@@ -11527,12 +11530,14 @@ apiRouter.get('/owner/first-sale/intent-distribution-kit', async (c) => {
   const siteUrl = getTrustedPublicSiteUrl().replace(/\/$/, '');
 
   const engine = AutonomousDealDiscoveryEngine.getInstance();
-  const eligible = await engine.getEligiblePublicDeals({ limit: 50 });
+  const eligible = await engine.getEligiblePublicDeals({ limit: 80 });
   const allDeals = eligible.deals || [];
 
-  // Finding 10 & 12: Generate valid comparison pairs and buyer hubs from actual inventory
-  const generatedPairs = generateComparisonPairs(allDeals, 6);
-  const generatedHubs = generateBuyerIntentHubs(allDeals, siteUrl, 6);
+  // Generate comparison pairs and buyer hubs matching the destination routes (limit 15 and 10), then trim to 6
+  const availablePairs = generateComparisonPairs(allDeals, 15);
+  const availableHubs = generateBuyerIntentHubs(allDeals, siteUrl, 10);
+  const generatedPairs = availablePairs.slice(0, 6);
+  const generatedHubs = availableHubs.slice(0, 6);
 
   // Filter top 5 verified impulse deals (₹299–₹1,499)
   let impulseDeals = allDeals.filter(d => isImpulseConversionDeal(d));
@@ -11566,17 +11571,17 @@ apiRouter.get('/owner/first-sale/intent-distribution-kit', async (c) => {
     const officialRedirectUrl = `${siteUrl}/api/v1/public/deals/${encodeURIComponent(deal.id)}/redirect?utm_source=distribution_kit`;
     const amazonUrl = `${siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(deal.title || '').slice(0, 120))}&dealId=${encodeURIComponent(deal.id)}`;
 
-    // Finding 12: Comparison URL only for a pair that /vs/ actually serves
-    const matchingPair = generatedPairs.find(
+    // Comparison URL only for a pair that /vs/ actually serves
+    const matchingPair = availablePairs.find(
       (p) => p.dealA.id === deal.id || p.dealB.id === deal.id || p.dealA.slug === slug || p.dealB.slug === slug
     );
     const comparisonUrl = matchingPair
       ? `${siteUrl}/vs/${encodeURIComponent(matchingPair.comparisonSlug)}`
       : null;
 
-    // Finding 10: Buyer guide / intent hub URL only for a generated hub
+    // Buyer guide / intent hub URL only for a generated hub served by /best/
     const catLower = (deal.category || '').toLowerCase();
-    const matchingHub = generatedHubs.find(
+    const matchingHub = availableHubs.find(
       (h) => h.categoryLabel.toLowerCase() === catLower || h.deals.some((d: any) => d.id === deal.id || d.slug === slug)
     );
     const buyerGuideUrl = matchingHub ? matchingHub.canonicalUrl : null;
