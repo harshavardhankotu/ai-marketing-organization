@@ -5031,33 +5031,38 @@ apiRouter.post('/customer-desk/subscribe-alerts', async (c) => {
     const name = String(body.name || email.split('@')[0] || 'Subscriber').trim().slice(0, 120);
     const productSlug = typeof body.productSlug === 'string' ? body.productSlug.trim() : undefined;
     const dealId = typeof body.dealId === 'string' ? body.dealId.trim() : undefined;
-    let targetPriceINR: number | undefined = undefined;
-    if (body.targetPriceINR !== undefined && body.targetPriceINR !== null && body.targetPriceINR !== '') {
-      const parsed = Number(body.targetPriceINR);
-      if (!Number.isFinite(parsed) || parsed <= 0) {
-        return c.json({ success: false, error: 'INVALID_TARGET_PRICE', message: 'Target price must be a finite positive number in INR.' }, 400);
-      }
-      targetPriceINR = parsed;
+
+    const rawTarget = body.targetPriceINR;
+    if (rawTarget === undefined || rawTarget === null || rawTarget === '' || String(rawTarget).trim() === '') {
+      return c.json({ success: false, error: 'INVALID_TARGET_PRICE', message: 'A positive target price in INR is required for price-drop alerts.' }, 400);
     }
+    const targetPriceINR = Number(rawTarget);
+    if (!Number.isFinite(targetPriceINR) || targetPriceINR <= 0) {
+      return c.json({ success: false, error: 'INVALID_TARGET_PRICE', message: 'A positive target price in INR is required for price-drop alerts.' }, 400);
+    }
+
     const categories = Array.isArray(body.categories)
       ? body.categories.map((x: any) => String(x).trim()).filter(Boolean).slice(0, 8)
       : (body.category ? [String(body.category).trim()] : ['ALL_VERIFIED_DROPS']);
     const contactId = `contact_${createHash('sha256').update(`biz_platform_aro:${email}`).digest('hex').slice(0, 32)}`;
-    const origin = (dealId || (productSlug && !productSlug.includes(' '))) ? 'EXPLICIT_PRODUCT' : 'QUERY_DERIVED';
+    const origin = (dealId || (productSlug && !/\s/.test(productSlug))) ? 'EXPLICIT_PRODUCT' : 'CATEGORY_QUERY';
     const subscriptionId = `sub_${randomUUID().replace(/-/g, '').slice(0, 16)}`;
 
-    const newWatch = targetPriceINR ? {
+    const watchQueryOrUrl = productSlug || dealId || null;
+    const watchTitle = productSlug || dealId || (categories && categories[0]) || 'Price Alert Watch';
+
+    const newWatch = {
       subscription_id: subscriptionId,
       target_deal_id: dealId || null,
       target_deal_slug: productSlug || null,
       target_price_inr: targetPriceINR,
-      query_or_url: productSlug || dealId || categories[0],
-      title: productSlug || dealId || categories[0],
+      query_or_url: watchQueryOrUrl,
+      title: watchTitle,
       category: body.category || (categories && categories[0]),
       registered_at: new Date().toISOString(),
       dispatched_at: null,
       origin
-    } : null;
+    };
 
     const d1Repo = D1RevenueRepository.getInstance();
 
@@ -5072,8 +5077,8 @@ apiRouter.post('/customer-desk/subscribe-alerts', async (c) => {
       targetPriceINR,
       origin,
       subscriptionId,
-      queryOrUrl: productSlug || dealId || (categories && categories[0]),
-      title: productSlug || dealId || (categories && categories[0]),
+      queryOrUrl: watchQueryOrUrl,
+      title: watchTitle,
       consent: 'OPTED_IN_FIRST_PARTY',
       createdAt: new Date().toISOString()
     });
@@ -5162,12 +5167,12 @@ apiRouter.post('/customer-desk/subscribe-alerts', async (c) => {
         const updateSql = `
           UPDATE outbound_contacts
           SET prospect_name = COALESCE(NULLIF(TRIM(?), ''), outbound_contacts.prospect_name),
-              email_authorized = 1,
+              email_authorized = CASE WHEN outbound_contacts.is_opted_out = 1 OR outbound_contacts.is_suppressed = 1 THEN outbound_contacts.email_authorized ELSE 1 END,
               authorization_source = 'EXPLICIT_CONSENT',
               authorization_evidence_json = ?,
-              is_opted_out = 0,
-              is_suppressed = 0,
-              status = 'ACTIVE',
+              is_opted_out = CASE WHEN outbound_contacts.is_opted_out = 1 THEN 1 ELSE 0 END,
+              is_suppressed = CASE WHEN outbound_contacts.is_suppressed = 1 THEN 1 ELSE 0 END,
+              status = CASE WHEN outbound_contacts.is_opted_out = 1 THEN 'OPTED_OUT' WHEN outbound_contacts.is_suppressed = 1 THEN 'SUPPRESSED' ELSE 'ACTIVE' END,
               updated_at = datetime('now')
           WHERE id = ? AND authorization_evidence_json = ?
         `;

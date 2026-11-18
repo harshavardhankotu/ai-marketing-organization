@@ -1060,4 +1060,446 @@ describe('Stage S: Zero-Budget Affiliate Buyer-Intent Engine', () => {
       expect(json2.searchEngineChecklist.indexNowStatus).toBe('SUBMITTED');
     });
   });
+
+  describe('Stage S.1.1: Final PR #78 Reliability Closure (Strict Positive Target Price, Fail-Closed PROVIDER_CALL_ATTEMPTED CAS & Suppression Guard)', () => {
+    it('1. Blank target, product selected: POST /api/v1/customer-desk/subscribe-alerts with productSlug and blank/missing targetPriceINR returns HTTP 400 and triggers zero Brevo emails', async () => {
+      const { BrevoMcpClient } = await import('../../src/integrations/brevo-mcp-client.js');
+      const brevo = BrevoMcpClient.getInstance();
+      const sendSpy = vi.spyOn(brevo, 'sendTransactionalEmail').mockResolvedValue({
+        success: true,
+        messageId: 'msg_test_blank_target_prod',
+        status: 'SENT'
+      });
+
+      const res = await app.request('/api/v1/customer-desk/subscribe-alerts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: `blank_target_${Date.now()}@example.com`,
+          productSlug: 'boat-airdopes-141-anc',
+          targetPriceINR: '' // blank target
+        })
+      });
+
+      expect(res.status).toBe(400);
+      const json = await res.json();
+      expect(json.success).toBe(false);
+      expect(json.error).toBe('INVALID_TARGET_PRICE');
+      expect(sendSpy).not.toHaveBeenCalled();
+
+      // Missing targetPriceINR
+      const resMissing = await app.request('/api/v1/customer-desk/subscribe-alerts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: `missing_target_${Date.now()}@example.com`,
+          productSlug: 'boat-airdopes-141-anc'
+        })
+      });
+
+      expect(resMissing.status).toBe(400);
+      expect(sendSpy).not.toHaveBeenCalled();
+    });
+
+    it('2. Blank target, category selected: POST /api/v1/customer-desk/subscribe-alerts with category and blank/missing targetPriceINR returns HTTP 400 and triggers zero Brevo emails', async () => {
+      const { BrevoMcpClient } = await import('../../src/integrations/brevo-mcp-client.js');
+      const brevo = BrevoMcpClient.getInstance();
+      const sendSpy = vi.spyOn(brevo, 'sendTransactionalEmail').mockResolvedValue({
+        success: true,
+        messageId: 'msg_test_blank_target_cat',
+        status: 'SENT'
+      });
+
+      const res = await app.request('/api/v1/customer-desk/subscribe-alerts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: `blank_cat_${Date.now()}@example.com`,
+          category: 'Consumer Electronics',
+          targetPriceINR: 0 // 0 target
+        })
+      });
+
+      expect(res.status).toBe(400);
+      const json = await res.json();
+      expect(json.success).toBe(false);
+      expect(json.error).toBe('INVALID_TARGET_PRICE');
+      expect(sendSpy).not.toHaveBeenCalled();
+    });
+
+    it('3. Pre-send state update throws: Simulated DB error on PRE_SEND_LEASE -> PROVIDER_CALL_ATTEMPTED transition aborts before sendTransactionalEmail is ever called', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+      const { BrevoMcpClient } = await import('../../src/integrations/brevo-mcp-client.js');
+      const brevo = BrevoMcpClient.getInstance();
+      const sendSpy = vi.spyOn(brevo, 'sendTransactionalEmail').mockResolvedValue({
+        success: true,
+        messageId: 'msg_test_should_not_fire',
+        status: 'SENT'
+      });
+
+      const testEmail = `presend_err_${Date.now()}@example.com`;
+      await engine.registerTargetPriceAlert({
+        email: testEmail,
+        targetFairPriceINR: 1000,
+        queryOrUrl: 'boat-smartwatch',
+        deal: {
+          id: 'deal_presend_err_01',
+          slug: 'boat-smartwatch',
+          canonicalSlug: 'boat-smartwatch',
+          title: 'boAt Smartwatch X',
+          brand: 'boAt',
+          category: 'Wearables',
+          merchant: 'boAt',
+          currentPriceINR: 899,
+          referencePriceINR: 1999,
+          availability: 'IN_STOCK',
+          verificationStatus: 'VERIFIED',
+          isMonetizable: true,
+          affiliateCampaignId: 'cuelinks_boat',
+          trackingUrl: 'https://cuelinks.com/boat',
+          productUrl: 'https://boat-lifestyle.com/watch',
+          lastCheckedAt: new Date().toISOString(),
+          createdAt: new Date().toISOString()
+        } as any
+      });
+
+      const qualifyingDeal: NormalizedDeal = {
+        id: 'deal_presend_err_01',
+        slug: 'boat-smartwatch',
+        canonicalSlug: 'boat-smartwatch',
+        title: 'boAt Smartwatch X',
+        brand: 'boAt',
+        category: 'Wearables',
+        merchant: 'boAt',
+        currentPriceINR: 899,
+        referencePriceINR: 1999,
+        availability: 'IN_STOCK',
+        verificationStatus: 'VERIFIED',
+        isMonetizable: true,
+        affiliateCampaignId: 'cuelinks_boat',
+        trackingUrl: 'https://cuelinks.com/boat',
+        productUrl: 'https://boat-lifestyle.com/watch',
+        lastCheckedAt: new Date().toISOString(),
+        createdAt: new Date().toISOString()
+      };
+
+      // Spy on db.prepare to throw when updating to PROVIDER_CALL_ATTEMPTED
+      const origPrepare = db.prepare.bind(db);
+      vi.spyOn(db, 'prepare').mockImplementation((sql: string) => {
+        if (sql.includes('UPDATE durable_events') && sql.includes('PRE_SEND_LEASE:%')) {
+          return {
+            run: () => {
+              throw new Error('SIMULATED_D1_WRITE_TIMEOUT');
+            }
+          } as any;
+        }
+        return origPrepare(sql);
+      });
+
+      const res = await engine.checkAndDispatchTargetPriceAlerts([qualifyingDeal]);
+      expect(sendSpy).not.toHaveBeenCalled();
+      expect(res.dispatched).toBe(0);
+    });
+
+    it('4. Pre-send state update affects 0 rows: Simulated rowsAffected === 0 on PRE_SEND_LEASE -> PROVIDER_CALL_ATTEMPTED transition aborts before sendTransactionalEmail is ever called', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+      const { BrevoMcpClient } = await import('../../src/integrations/brevo-mcp-client.js');
+      const brevo = BrevoMcpClient.getInstance();
+      const sendSpy = vi.spyOn(brevo, 'sendTransactionalEmail').mockResolvedValue({
+        success: true,
+        messageId: 'msg_test_zero_rows',
+        status: 'SENT'
+      });
+
+      const testEmail = `zero_rows_${Date.now()}@example.com`;
+      await engine.registerTargetPriceAlert({
+        email: testEmail,
+        targetFairPriceINR: 1000,
+        queryOrUrl: 'noise-smartwatch',
+        deal: {
+          id: 'deal_zero_rows_01',
+          slug: 'noise-smartwatch',
+          canonicalSlug: 'noise-smartwatch',
+          title: 'Noise Smartwatch',
+          brand: 'Noise',
+          category: 'Wearables',
+          merchant: 'Noise',
+          currentPriceINR: 799,
+          referencePriceINR: 1999,
+          availability: 'IN_STOCK',
+          verificationStatus: 'VERIFIED',
+          isMonetizable: true,
+          affiliateCampaignId: 'cuelinks_noise',
+          trackingUrl: 'https://cuelinks.com/noise',
+          productUrl: 'https://noise.com/watch',
+          lastCheckedAt: new Date().toISOString(),
+          createdAt: new Date().toISOString()
+        } as any
+      });
+
+      const qualifyingDeal: NormalizedDeal = {
+        id: 'deal_zero_rows_01',
+        slug: 'noise-smartwatch',
+        canonicalSlug: 'noise-smartwatch',
+        title: 'Noise Smartwatch',
+        brand: 'Noise',
+        category: 'Wearables',
+        merchant: 'Noise',
+        currentPriceINR: 799,
+        referencePriceINR: 1999,
+        availability: 'IN_STOCK',
+        verificationStatus: 'VERIFIED',
+        isMonetizable: true,
+        affiliateCampaignId: 'cuelinks_noise',
+        trackingUrl: 'https://cuelinks.com/noise',
+        productUrl: 'https://noise.com/watch',
+        lastCheckedAt: new Date().toISOString(),
+        createdAt: new Date().toISOString()
+      };
+
+      // Spy on db.prepare to return changes: 0 for the PRE_SEND_LEASE -> PROVIDER_CALL_ATTEMPTED update
+      const origPrepare = db.prepare.bind(db);
+      vi.spyOn(db, 'prepare').mockImplementation((sql: string) => {
+        if (sql.includes('UPDATE durable_events') && sql.includes('PRE_SEND_LEASE:%')) {
+          return {
+            run: () => ({ changes: 0 })
+          } as any;
+        }
+        return origPrepare(sql);
+      });
+
+      const res = await engine.checkAndDispatchTargetPriceAlerts([qualifyingDeal]);
+      expect(sendSpy).not.toHaveBeenCalled();
+      expect(res.dispatched).toBe(0);
+    });
+
+    it('5. Worker resumes after genuine pre-send crash: Stale PRE_SEND_LEASE (> 5 minutes old, never reached PROVIDER_CALL_ATTEMPTED) is reclaimed by a recovery worker and completes with one valid delivery and no duplicate', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+      const { BrevoMcpClient } = await import('../../src/integrations/brevo-mcp-client.js');
+      const brevo = BrevoMcpClient.getInstance();
+      const sendSpy = vi.spyOn(brevo, 'sendTransactionalEmail').mockResolvedValue({
+        success: true,
+        messageId: 'msg_test_reclaimed',
+        status: 'SENT'
+      });
+
+      const testEmail = `crash_recovery_${Date.now()}@example.com`;
+      await engine.registerTargetPriceAlert({
+        email: testEmail,
+        targetFairPriceINR: 1200,
+        queryOrUrl: 'realme-buds',
+        deal: {
+          id: 'deal_crash_rec_01',
+          slug: 'realme-buds',
+          canonicalSlug: 'realme-buds',
+          title: 'Realme Buds Air',
+          brand: 'Realme',
+          category: 'Audio',
+          merchant: 'Realme',
+          currentPriceINR: 999,
+          referencePriceINR: 2499,
+          availability: 'IN_STOCK',
+          verificationStatus: 'VERIFIED',
+          isMonetizable: true,
+          affiliateCampaignId: 'cuelinks_realme',
+          trackingUrl: 'https://cuelinks.com/realme',
+          productUrl: 'https://realme.com/buds',
+          lastCheckedAt: new Date().toISOString(),
+          createdAt: new Date().toISOString()
+        } as any
+      });
+
+      const qualifyingDeal: NormalizedDeal = {
+        id: 'deal_crash_rec_01',
+        slug: 'realme-buds',
+        canonicalSlug: 'realme-buds',
+        title: 'Realme Buds Air',
+        brand: 'Realme',
+        category: 'Audio',
+        merchant: 'Realme',
+        currentPriceINR: 999,
+        referencePriceINR: 2499,
+        availability: 'IN_STOCK',
+        verificationStatus: 'VERIFIED',
+        isMonetizable: true,
+        affiliateCampaignId: 'cuelinks_realme',
+        trackingUrl: 'https://cuelinks.com/realme',
+        productUrl: 'https://realme.com/buds',
+        lastCheckedAt: new Date().toISOString(),
+        createdAt: new Date().toISOString()
+      };
+
+      // Simulate a crashed worker: Insert a stale PRE_SEND_LEASE (10 minutes old)
+      const contact = db.prepare('SELECT authorization_evidence_json FROM outbound_contacts WHERE prospect_email = ?').get(testEmail) as any;
+      const ev = JSON.parse(contact.authorization_evidence_json);
+      const subId = ev.watches[0].subscription_id;
+      const claimKeyPart = `${testEmail}:${qualifyingDeal.id}:${subId}`;
+      const claimId = `price_alert_claim_${createHash('sha256').update(claimKeyPart).digest('hex').slice(0, 36)}`;
+      const staleTime = Date.now() - 10 * 60 * 1000; // 10 minutes ago
+      db.prepare(`
+        INSERT INTO durable_events (id, event_type, organization_id, payload_json, processed, error_message, created_at)
+        VALUES (?, 'PRICE_ALERT_DELIVERY_CLAIMED', 'org_owner_primary', ?, 0, ?, datetime('now', '-10 minutes'))
+      `).run(claimId, JSON.stringify({ email: testEmail, dealId: qualifyingDeal.id, targetPriceINR: 1200 }), `PRE_SEND_LEASE:${staleTime}`);
+
+      // Now the recovery worker runs:
+      const res = await engine.checkAndDispatchTargetPriceAlerts([qualifyingDeal]);
+      expect(res.dispatched).toBe(1);
+      expect(sendSpy).toHaveBeenCalledTimes(1);
+
+      // Verify claim is marked completed in DB
+      const claimRow = db.prepare('SELECT processed, error_message FROM durable_events WHERE id = ?').get(claimId) as any;
+      expect(claimRow.processed).toBe(1);
+      expect(claimRow.error_message).toBeNull();
+
+      // Second worker run must NOT deliver again (duplicate-send protection)
+      const res2 = await engine.checkAndDispatchTargetPriceAlerts([qualifyingDeal]);
+      expect(res2.dispatched).toBe(0);
+      expect(sendSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('6. Two concurrent workers process one subscription: Parallel Promise.all runs of checkAndDispatchTargetPriceAlerts() result in sendTransactionalEmail being called exactly once', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+      const { BrevoMcpClient } = await import('../../src/integrations/brevo-mcp-client.js');
+      const brevo = BrevoMcpClient.getInstance();
+      const sendSpy = vi.spyOn(brevo, 'sendTransactionalEmail').mockImplementation(async () => {
+        // Add a slight latency to simulate network send
+        await new Promise(r => setTimeout(r, 20));
+        return {
+          success: true,
+          messageId: 'msg_test_concurrent_single',
+          status: 'SENT'
+        };
+      });
+
+      const testEmail = `concurrent_worker_${Date.now()}@example.com`;
+      await engine.registerTargetPriceAlert({
+        email: testEmail,
+        targetFairPriceINR: 1500,
+        queryOrUrl: 'boat-airdopes-441',
+        deal: {
+          id: 'deal_concurrent_01',
+          slug: 'boat-airdopes-441',
+          canonicalSlug: 'boat-airdopes-441',
+          title: 'boAt Airdopes 441 TWS',
+          brand: 'boAt',
+          category: 'Audio',
+          merchant: 'boAt',
+          currentPriceINR: 1199,
+          referencePriceINR: 2999,
+          availability: 'IN_STOCK',
+          verificationStatus: 'VERIFIED',
+          isMonetizable: true,
+          affiliateCampaignId: 'cuelinks_boat',
+          trackingUrl: 'https://cuelinks.com/boat-441',
+          productUrl: 'https://boat-lifestyle.com/airdopes-441',
+          lastCheckedAt: new Date().toISOString(),
+          createdAt: new Date().toISOString()
+        } as any
+      });
+
+      const qualifyingDeal: NormalizedDeal = {
+        id: 'deal_concurrent_01',
+        slug: 'boat-airdopes-441',
+        canonicalSlug: 'boat-airdopes-441',
+        title: 'boAt Airdopes 441 TWS',
+        brand: 'boAt',
+        category: 'Audio',
+        merchant: 'boAt',
+        currentPriceINR: 1199,
+        referencePriceINR: 2999,
+        availability: 'IN_STOCK',
+        verificationStatus: 'VERIFIED',
+        isMonetizable: true,
+        affiliateCampaignId: 'cuelinks_boat',
+        trackingUrl: 'https://cuelinks.com/boat-441',
+        productUrl: 'https://boat-lifestyle.com/airdopes-441',
+        lastCheckedAt: new Date().toISOString(),
+        createdAt: new Date().toISOString()
+      };
+
+      // Run two workers simultaneously
+      const [worker1Res, worker2Res] = await Promise.all([
+        engine.checkAndDispatchTargetPriceAlerts([qualifyingDeal]),
+        engine.checkAndDispatchTargetPriceAlerts([qualifyingDeal])
+      ]);
+
+      expect(sendSpy).toHaveBeenCalledTimes(1);
+      const totalDispatched = worker1Res.dispatched + worker2Res.dispatched;
+      expect(totalDispatched).toBe(1);
+    });
+
+    it('7. Suppression lookup DB failure fails closed: Simulated outreach_suppression_list query error aborts dispatch without calling Brevo', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+      const { BrevoMcpClient } = await import('../../src/integrations/brevo-mcp-client.js');
+      const brevo = BrevoMcpClient.getInstance();
+      const sendSpy = vi.spyOn(brevo, 'sendTransactionalEmail').mockResolvedValue({
+        success: true,
+        messageId: 'msg_test_supp_err',
+        status: 'SENT'
+      });
+
+      const testEmail = `supp_err_${Date.now()}@example.com`;
+      await engine.registerTargetPriceAlert({
+        email: testEmail,
+        targetFairPriceINR: 1500,
+        queryOrUrl: 'noise-colorfit',
+        deal: {
+          id: 'deal_supp_err_01',
+          slug: 'noise-colorfit',
+          canonicalSlug: 'noise-colorfit',
+          title: 'Noise ColorFit Pulse',
+          brand: 'Noise',
+          category: 'Wearables',
+          merchant: 'Noise',
+          currentPriceINR: 1299,
+          referencePriceINR: 2999,
+          availability: 'IN_STOCK',
+          verificationStatus: 'VERIFIED',
+          isMonetizable: true,
+          affiliateCampaignId: 'cuelinks_noise',
+          trackingUrl: 'https://cuelinks.com/noise',
+          productUrl: 'https://noise.com/colorfit',
+          lastCheckedAt: new Date().toISOString(),
+          createdAt: new Date().toISOString()
+        } as any
+      });
+
+      const qualifyingDeal: NormalizedDeal = {
+        id: 'deal_supp_err_01',
+        slug: 'noise-colorfit',
+        canonicalSlug: 'noise-colorfit',
+        title: 'Noise ColorFit Pulse',
+        brand: 'Noise',
+        category: 'Wearables',
+        merchant: 'Noise',
+        currentPriceINR: 1299,
+        referencePriceINR: 2999,
+        availability: 'IN_STOCK',
+        verificationStatus: 'VERIFIED',
+        isMonetizable: true,
+        affiliateCampaignId: 'cuelinks_noise',
+        trackingUrl: 'https://cuelinks.com/noise',
+        productUrl: 'https://noise.com/colorfit',
+        lastCheckedAt: new Date().toISOString(),
+        createdAt: new Date().toISOString()
+      };
+
+      // Spy on db.prepare to throw error when querying outreach_suppression_list
+      const origPrepare = db.prepare.bind(db);
+      vi.spyOn(db, 'prepare').mockImplementation((sql: string) => {
+        if (sql.includes('FROM outreach_suppression_list')) {
+          return {
+            get: () => {
+              throw new Error('SIMULATED_SUPPRESSION_DB_OFFLINE');
+            }
+          } as any;
+        }
+        return origPrepare(sql);
+      });
+
+      const res = await engine.checkAndDispatchTargetPriceAlerts([qualifyingDeal]);
+      expect(sendSpy).not.toHaveBeenCalled();
+      expect(res.dispatched).toBe(0);
+    });
+  });
 });

@@ -1234,13 +1234,18 @@ export class StaticSiteGenerator {
       </div>
       <form class="price-drop-alert-form" data-slug="${slug}" data-category="${category}" data-deal-id="${dealId}" onsubmit="event.preventDefault(); (async function(form){
         var email = (form.email.value || '').trim();
-        var targetPrice = Number(form.targetPrice.value) || undefined;
+        var targetPrice = Number(form.targetPrice.value);
         var productSlug = form.dataset.slug || undefined;
         var cat = form.dataset.category || undefined;
         var dId = form.dataset.dealId || undefined;
         var btn = form.querySelector('button');
         var status = form.querySelector('.alert-status');
         if (!email) return;
+        if (!Number.isFinite(targetPrice) || targetPrice <= 0) {
+          status.style.color = '#f87171';
+          status.textContent = 'Please enter a valid target price greater than ₹0.';
+          return;
+        }
         btn.disabled = true;
         btn.textContent = 'Saving...';
         try {
@@ -1272,7 +1277,7 @@ export class StaticSiteGenerator {
           <input type="email" name="email" required placeholder="Enter your email" style="flex:1 1 200px;min-width:180px;padding:0.55rem 0.85rem;background:#0f172a;border:1px solid #334155;border-radius:8px;color:#fff;font-size:0.85rem;" />
           <div style="display:flex;align-items:center;background:#0f172a;border:1px solid #334155;border-radius:8px;padding:0 0.6rem;">
             <span style="color:#94a3b8;font-size:0.85rem;">₹</span>
-            <input type="number" name="targetPrice" placeholder="Target ₹" value="${defaultTargetPrice}" style="width:85px;padding:0.55rem 0.4rem;background:transparent;border:none;color:#fff;font-size:0.85rem;outline:none;" />
+            <input type="number" name="targetPrice" required min="1" step="1" placeholder="Target ₹" value="${defaultTargetPrice}" style="width:85px;padding:0.55rem 0.4rem;background:transparent;border:none;color:#fff;font-size:0.85rem;outline:none;" />
           </div>
           <button type="submit" style="background:#06b6d4;color:#020617;font-weight:700;border:none;padding:0.55rem 1.15rem;border-radius:8px;cursor:pointer;font-size:0.85rem;white-space:nowrap;">Notify Me</button>
         </div>

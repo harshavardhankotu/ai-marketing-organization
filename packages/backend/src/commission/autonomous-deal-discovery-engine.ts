@@ -6950,6 +6950,7 @@ export class AutonomousDealDiscoveryEngine {
     const eventId = `sub_evt_${createHash('sha256').update(email + (targetSlug || targetDealId || '') + createdSubscriptionId).digest('hex').slice(0, 24)}`;
     const eventPayload = JSON.stringify({
       email,
+      businessId,
       name: email.split('@')[0] || 'Fair-Price Buyer',
       productSlug: targetSlug,
       category: params.deal?.category || 'Consumer Fair-Price Watch',
@@ -6979,7 +6980,7 @@ export class AutonomousDealDiscoveryEngine {
     for (let attempt = 0; attempt < 3; attempt++) {
       let existing: any = null;
       try {
-        const rowSql = `SELECT id, authorization_evidence_json, updated_at FROM outbound_contacts WHERE business_id = ? AND prospect_email = ? LIMIT 1`;
+        const rowSql = `SELECT id, authorization_evidence_json, updated_at, is_opted_out, is_suppressed FROM outbound_contacts WHERE business_id = ? AND prospect_email = ? LIMIT 1`;
         existing = (this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST))
           ? await this.d1Repo.queryOne<any>('outbound_contacts', rowSql, [businessId, email])
           : getDb().prepare(rowSql).get(businessId, email) as any;
@@ -7046,14 +7047,14 @@ export class AutonomousDealDiscoveryEngine {
         const updateContactSql = `
           UPDATE outbound_contacts
           SET prospect_website = COALESCE(?, outbound_contacts.prospect_website),
-              email_authorized = 1,
+              email_authorized = CASE WHEN outbound_contacts.is_opted_out = 1 OR outbound_contacts.is_suppressed = 1 THEN outbound_contacts.email_authorized ELSE 1 END,
               authorization_source = 'INBOUND_REQUEST',
               authorization_evidence_json = ?,
               source = 'FAIR_PRICE_ALERT',
               discovery_evidence_json = ?,
-              is_opted_out = 0,
-              is_suppressed = 0,
-              status = 'ACTIVE',
+              is_opted_out = CASE WHEN outbound_contacts.is_opted_out = 1 THEN 1 ELSE 0 END,
+              is_suppressed = CASE WHEN outbound_contacts.is_suppressed = 1 THEN 1 ELSE 0 END,
+              status = CASE WHEN outbound_contacts.is_opted_out = 1 THEN 'OPTED_OUT' WHEN outbound_contacts.is_suppressed = 1 THEN 'SUPPRESSED' ELSE 'ACTIVE' END,
               updated_at = datetime('now')
           WHERE id = ? AND authorization_evidence_json = ?
         `;
@@ -7389,6 +7390,12 @@ export class AutonomousDealDiscoveryEngine {
     }
 
     const targetPrice = Number(params.targetPriceINR || 0);
+    if (!Number.isFinite(targetPrice) || targetPrice <= 0) {
+      if (params.sourceEventId) {
+        await this.markEventProcessed(params.sourceEventId, 'INVALID_TARGET_PRICE');
+      }
+      return 'SKIPPED';
+    }
     const isProd = isProduction() && !process.env.VITEST;
 
     // Gate 1: Check outbound_contacts
@@ -7462,7 +7469,7 @@ export class AutonomousDealDiscoveryEngine {
       }
     }
 
-    // Check outreach_suppression_list
+    // Task 2.2: Fail-Closed Secondary Suppression Lookup
     const suppSql = `SELECT id FROM outreach_suppression_list WHERE identifier = ? LIMIT 1`;
     let isSuppressed = false;
     try {
@@ -7472,7 +7479,10 @@ export class AutonomousDealDiscoveryEngine {
       } else {
         isSuppressed = Boolean(getDb().prepare(suppSql).get(email));
       }
-    } catch {}
+    } catch (suppErr: any) {
+      console.error(`[DealEngine] outreach_suppression_list lookup failed for ${email}: ${suppErr?.message}; failing closed`);
+      return 'SKIPPED';
+    }
     if (isSuppressed) {
       if (params.sourceEventId) {
         await this.markEventProcessed(params.sourceEventId, 'REJECTED_SUPPRESSED_OR_OPTED_OUT');
@@ -7485,27 +7495,27 @@ export class AutonomousDealDiscoveryEngine {
     const dealId = params.dealId;
     const productSlug = params.productSlug;
     const isSingleTokenSlug = Boolean(productSlug && !productSlug.includes(' ') && !productSlug.includes('/'));
-    const isExplicit = origin === 'EXPLICIT_PRODUCT' || (origin !== 'QUERY_DERIVED' && Boolean(dealId || (productSlug && isSingleTokenSlug)));
+    const isExplicit = origin === 'EXPLICIT_PRODUCT' || (origin !== 'QUERY_DERIVED' && origin !== 'CATEGORY_QUERY' && Boolean(dealId || (productSlug && isSingleTokenSlug)));
 
     let matchedDeal: NormalizedDeal | undefined;
     if (isExplicit) {
       matchedDeal = params.validDeals.find(d => {
+        if (Number(d.currentPriceINR || 0) > targetPrice) return false;
         if (dealId && d.id === dealId) return true;
         if (productSlug && (d.slug === productSlug || d.canonicalSlug === productSlug)) return true;
         return false;
       });
     } else {
       matchedDeal = params.validDeals.find(d => {
+        if (Number(d.currentPriceINR || 0) > targetPrice) return false;
         if (productSlug && (d.slug === productSlug || d.canonicalSlug === productSlug)) return true;
         const watchQuery = String(params.queryOrUrl || params.title || '').toLowerCase();
         const tokens = watchQuery.replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(t => t.length >= 3);
         if (tokens.length >= 2) {
-          if (targetPrice > 0 && Number(d.currentPriceINR || 0) > targetPrice) return false;
           const haystack = `${d.title} ${d.brand} ${d.category}`.toLowerCase();
-          return tokens.slice(0, 3).every(tok => haystack.includes(tok));
+          return tokens.every(tok => haystack.includes(tok));
         }
         if (params.category && d.category && d.category.toLowerCase() === String(params.category).toLowerCase()) {
-          if (targetPrice > 0 && Number(d.currentPriceINR || 0) > targetPrice) return false;
           return true;
         }
         return false;
@@ -7516,13 +7526,13 @@ export class AutonomousDealDiscoveryEngine {
       return 'UNMATCHED';
     }
 
-    if (targetPrice > 0 && Number(matchedDeal.currentPriceINR || 0) > targetPrice) {
+    if (Number(matchedDeal.currentPriceINR || 0) > targetPrice) {
       // Target price not reached yet; leave watch/subscription active!
       return 'UNMATCHED';
     }
 
     // Gate 2: Deterministic claim ID
-    // CodeRabbit Finding 15: Use one claim for both copies of a subscription by scoping to subscriptionId
+    // Scope claim to subscriptionId when present to prevent duplicate sends across concurrent candidates
     const watchKey = dealId || productSlug || params.category || 'all';
     const subId = params.subscriptionId || params.watchRef?.subscription_id;
     const claimKeyPart = subId
@@ -7629,11 +7639,11 @@ export class AutonomousDealDiscoveryEngine {
     if (!latestDeal || latestDeal.availability !== 'IN_STOCK' || (targetPrice > 0 && Number(latestDeal.currentPriceINR || 0) > targetPrice)) {
       // Deal is no longer eligible or price rebounded above target: release pre-send lease for later drop
       try {
-        const releaseSql = `DELETE FROM durable_events WHERE id = ? AND error_message LIKE 'PRE_SEND_LEASE:%'`;
+        const releaseSql = `DELETE FROM durable_events WHERE id = ? AND error_message = ?`;
         if (this.d1Repo.isRemoteD1Configured() || isProd) {
-          await this.d1Repo.executeWrite('durable_events', releaseSql, [claimId]);
+          await this.d1Repo.executeWrite('durable_events', releaseSql, [claimId, leaseTag]);
         } else {
-          getDb().prepare(releaseSql).run(claimId);
+          getDb().prepare(releaseSql).run(claimId, leaseTag);
         }
       } catch {}
       return 'UNMATCHED';
@@ -7663,16 +7673,32 @@ export class AutonomousDealDiscoveryEngine {
 
     const htmlContent = `<div style="font-family:sans-serif;line-height:1.6"><h2>Price Drop Alert (#Ad)</h2><p><strong>${safeTitle}</strong> is now <strong>${priceStr}</strong> on ${safeMerchant} (your target: ${targetStr}).</p><p><a href="${redirectUrl}" style="display:inline-block;padding:10px 18px;background:#06b6d4;color:#020617;font-weight:700;border-radius:6px;text-decoration:none;">View Deal at ${safeMerchant} →</a></p><p style="font-size:12px;color:#64748b;">#Ad Affiliate Disclosure: Qualifying purchases via this link may earn a commission at zero extra cost to you.</p></div>`;
 
-    // CodeRabbit Finding 1 & 14: Transition to PROVIDER_CALL_ATTEMPTED right before calling Brevo
-    const attemptTag = `PROVIDER_CALL_ATTEMPTED:${Date.now()}`;
+    // Task 2.1: Fail-Closed Pre-Send State Transition from PRE_SEND_LEASE to PROVIDER_CALL_ATTEMPTED
+    const attemptTag = `PROVIDER_CALL_ATTEMPTED:${new Date().toISOString()}`;
+    const markAttemptSql = `UPDATE durable_events
+      SET error_message = ?
+      WHERE id = ?
+        AND processed = 0
+        AND error_message = ?
+        AND error_message LIKE 'PRE_SEND_LEASE:%'`;
+    let attemptRowsAffected = 0;
     try {
-      const markAttemptSql = `UPDATE durable_events SET error_message = ? WHERE id = ? AND processed = 0`;
       if (this.d1Repo.isRemoteD1Configured() || isProd) {
-        await this.d1Repo.executeWrite('durable_events', markAttemptSql, [attemptTag, claimId]);
+        const upRes = await this.d1Repo.executeWrite('durable_events', markAttemptSql, [attemptTag, claimId, leaseTag]);
+        attemptRowsAffected = typeof upRes?.rowsAffected === 'number' ? upRes.rowsAffected : 0;
       } else {
-        getDb().prepare(markAttemptSql).run(attemptTag, claimId);
+        const info = getDb().prepare(markAttemptSql).run(attemptTag, claimId, leaseTag);
+        attemptRowsAffected = typeof info?.changes === 'number' ? info.changes : 0;
       }
-    } catch {}
+    } catch (err: any) {
+      console.error(`[DealEngine] Pre-send state update to PROVIDER_CALL_ATTEMPTED failed for claim ${claimId}: ${err?.message}`);
+      return 'SKIPPED';
+    }
+
+    if (attemptRowsAffected !== 1) {
+      console.warn(`[DealEngine] Pre-send state update affected ${attemptRowsAffected} rows (expected 1) for claim ${claimId}; aborting dispatch.`);
+      return 'SKIPPED';
+    }
 
     try {
       const sendRes = await params.brevo.sendTransactionalEmail({
@@ -7716,14 +7742,26 @@ export class AutonomousDealDiscoveryEngine {
         await this.markMatchingSubscriptionEventsProcessed(email, subId, params.sourceEventId);
 
         return 'DISPATCHED';
-      } else if (sendRes.status === 'SUPPRESSED' || sendRes.status === 'BLOCKED_CREDENTIALS') {
-        // Confirmed rejection
+      } else if (sendRes.status === 'SUPPRESSED') {
+        // Confirmed recipient suppression
         const rejSql = `UPDATE durable_events SET error_message = ?, processed = 0 WHERE id = ?`;
         try {
           if (this.d1Repo.isRemoteD1Configured() || isProd) {
             await this.d1Repo.executeWrite('durable_events', rejSql, [`REJECTED:${sendRes.status}`, claimId]);
           } else {
             getDb().prepare(rejSql).run(`REJECTED:${sendRes.status}`, claimId);
+          }
+        } catch {}
+        return 'SKIPPED';
+      } else if (sendRes.status === 'BLOCKED_CREDENTIALS') {
+        // Transient missing/invalid credentials: leave retryable once credentials are provided
+        const retryMsg = `RETRYABLE:BLOCKED_CREDENTIALS_${Date.now()}`;
+        const retrySql = `UPDATE durable_events SET error_message = ?, processed = 0 WHERE id = ?`;
+        try {
+          if (this.d1Repo.isRemoteD1Configured() || isProd) {
+            await this.d1Repo.executeWrite('durable_events', retrySql, [retryMsg, claimId]);
+          } else {
+            getDb().prepare(retrySql).run(retryMsg, claimId);
           }
         } catch {}
         return 'SKIPPED';
@@ -7870,7 +7908,10 @@ export class AutonomousDealDiscoveryEngine {
       for (const watch of watches) {
         if (!watch || watch.dispatched_at) continue;
         const targetPrice = Number(watch.target_price_inr || 0);
-        if (!Number.isFinite(targetPrice) || targetPrice <= 0) continue;
+        if (!Number.isFinite(targetPrice) || targetPrice <= 0) {
+          skipped++;
+          continue;
+        }
         checked++;
 
         const outcome = await this.processSinglePriceAlertCandidate({
@@ -7928,10 +7969,20 @@ export class AutonomousDealDiscoveryEngine {
           continue;
         }
 
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+          await this.markEventProcessed(evRow.id, 'MALFORMED_PAYLOAD');
+          continue;
+        }
+
         const email = String(payload.email || '').trim().toLowerCase();
         const targetPrice = Number(payload.targetPriceINR || 0);
         if (!email || !email.includes('@')) {
           await this.markEventProcessed(evRow.id, 'MALFORMED_PAYLOAD');
+          continue;
+        }
+        if (!Number.isFinite(targetPrice) || targetPrice <= 0) {
+          await this.markEventProcessed(evRow.id, 'INVALID_TARGET_PRICE');
+          skipped++;
           continue;
         }
 
