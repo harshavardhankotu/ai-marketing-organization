@@ -7122,14 +7122,17 @@ export class AutonomousDealDiscoveryEngine {
         if (!Number.isFinite(targetPrice) || targetPrice <= 0) continue;
         checked++;
 
+        const hasExplicitId = Boolean(watch.target_deal_id || watch.target_deal_slug);
         const matchedDeal = validDeals.find((d) => {
           if (watch.target_deal_id && d.id === watch.target_deal_id) return true;
           if (watch.target_deal_slug && (d.slug === watch.target_deal_slug || d.canonicalSlug === watch.target_deal_slug)) return true;
-          const watchQuery = String(watch.query_or_url || watch.title || '').toLowerCase();
-          const tokens = watchQuery.replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(t => t.length >= 3);
-          if (tokens.length >= 2) {
-            const haystack = `${d.title} ${d.brand} ${d.category}`.toLowerCase();
-            return tokens.slice(0, 3).every(tok => haystack.includes(tok));
+          if (!hasExplicitId) {
+            const watchQuery = String(watch.query_or_url || watch.title || '').toLowerCase();
+            const tokens = watchQuery.replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(t => t.length >= 3);
+            if (tokens.length >= 2) {
+              const haystack = `${d.title} ${d.brand} ${d.category}`.toLowerCase();
+              return tokens.slice(0, 3).every(tok => haystack.includes(tok));
+            }
           }
           return false;
         });
@@ -7236,7 +7239,13 @@ export class AutonomousDealDiscoveryEngine {
         const matchedDeal = validDeals.find((d) => {
           if (payload.dealId && d.id === payload.dealId) return true;
           if (payload.productSlug && (d.slug === payload.productSlug || d.canonicalSlug === payload.productSlug)) return true;
-          if (!hasSpecificIdentity && payload.category && d.category && d.category.toLowerCase() === String(payload.category).toLowerCase()) return true;
+          if (!hasSpecificIdentity && payload.category && d.category && d.category.toLowerCase() === String(payload.category).toLowerCase()) {
+            // Apply targetPrice directly during category match selection so deals above target don't block eligible deals
+            if (targetPrice > 0 && Number(d.currentPriceINR || 0) > targetPrice) {
+              return false;
+            }
+            return true;
+          }
           return false;
         });
 
