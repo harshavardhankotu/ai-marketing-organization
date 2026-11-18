@@ -32,6 +32,7 @@ import { DurableEventBus } from './durable-event-bus.js';
 import { AutonomyPolicyController } from './autonomy-policy.js';
 import { IntegrationCapabilityRegistry } from '../control-plane/integration-capability-registry.js';
 import { OwnerAuthService } from '../auth/owner-auth.js';
+import { isImpulseConversionDeal } from '../commission/autonomous-deal-discovery-engine.js';
 
 export type IdentityProvenance =
   | 'ANONYMOUS_WEB_SESSION'
@@ -862,11 +863,15 @@ export class SalesConversationEngine {
 
     let journeyId = journeyRow?.id ? String(journeyRow.id) : '';
     let lastOfferContext: string | null = null;
-    if (journeyRow?.touchpoints_json) {
+    if (journeyRow?.touchpoints_json && !event.isExplicitNewSearch) {
       try {
         const tps = JSON.parse(journeyRow.touchpoints_json);
         if (Array.isArray(tps)) {
           for (let i = tps.length - 1; i >= 0; i--) {
+            if (tps[i]?.resetOfferContext) {
+              // Found a reset marker: stop scanning backwards so pre-reset offers are not reused
+              break;
+            }
             if (tps[i]?.offerSlug) {
               lastOfferContext = String(tps[i].offerSlug);
               break;
@@ -874,6 +879,10 @@ export class SalesConversationEngine {
           }
         }
       } catch {}
+    }
+
+    if (event.isExplicitNewSearch) {
+      lastOfferContext = null;
     }
 
     const classification = event.isDiagnosticProbe ? 'TEST' : 'REAL';
@@ -1006,6 +1015,25 @@ export class SalesConversationEngine {
       }
     } catch {}
 
+    if (event.isExplicitNewSearch && journeyId) {
+      try {
+        const row = await this.safeQueryOne<any>('customer_journeys', 'SELECT touchpoints_json FROM customer_journeys WHERE id = ?', [journeyId]);
+        let tps: any[] = [];
+        try {
+          tps = JSON.parse(row?.touchpoints_json || '[]');
+          if (!Array.isArray(tps)) tps = [];
+        } catch {
+          tps = [];
+        }
+        tps.push({ sessionId, resetOfferContext: true, at: new Date().toISOString() });
+        await this.safeExecWrite(
+          'customer_journeys',
+          `UPDATE customer_journeys SET touchpoints_json = ?, updated_at = datetime('now') WHERE id = ?`,
+          [JSON.stringify(tps.slice(-15)), journeyId]
+        );
+      } catch {}
+    }
+
     return { journeyId, lastOfferContext };
   }
 
@@ -1120,9 +1148,9 @@ export class SalesConversationEngine {
     }
 
     // Load active items across Lanes A (public_deals), B/D (customer_offers), and C (partner_offers)
-    const deals = await this.safeQueryAll<any>(
+    const rawDeals = await this.safeQueryAll<any>(
       'public_deals',
-      `SELECT slug, canonical_slug, title, brand, merchant, category, current_price_inr, reference_price_inr, discount_percent, availability, last_verified_at
+      `SELECT id, slug, canonical_slug, title, brand, merchant, category, current_price_inr, reference_price_inr, discount_percent, availability, verification_status, expiry_date, last_verified_at, is_monetizable, evidence_json, affiliate_url
        FROM public_deals
        WHERE product_verified = 1
          AND affiliate_verified = 1
@@ -1130,8 +1158,39 @@ export class SalesConversationEngine {
          AND availability = 'IN_STOCK'
          AND current_price_inr > 0
          AND (last_verified_at IS NULL OR datetime(last_verified_at) >= datetime('now', '-14 days'))
+         AND (expiry_date IS NULL OR datetime(expiry_date) > datetime('now'))
        LIMIT 150`
     );
+
+    const deals = rawDeals.map((d: any) => {
+      let ev: any = {};
+      try { ev = JSON.parse(d.evidence_json || '{}'); } catch {}
+      return {
+        ...d,
+        ...ev,
+        id: d.id,
+        slug: d.slug,
+        canonicalSlug: d.canonical_slug,
+        title: d.title,
+        brand: d.brand,
+        merchant: d.merchant,
+        category: d.category,
+        currentPriceINR: d.current_price_inr,
+        referencePriceINR: d.reference_price_inr,
+        verifiedDiscountPercent: d.discount_percent,
+        discountPercent: d.discount_percent,
+        availability: d.availability,
+        verificationStatus: d.verification_status,
+        expiryDate: d.expiry_date || ev.expiryDate || ev.expiry_date,
+        catalogSlot: ev.catalogSlot || ev.catalog_slot,
+        evolutionStatus: ev.evolutionStatus || ev.evolution_status,
+        buyerValueScore: ev.buyerValueScore || ev.buyer_value_score || 0,
+        epc_7d: ev.epc_7d || ev.epc7d || 0,
+        isRotatedOut: ev.isRotatedOut || ev.is_rotated_out || false,
+        trackingUrl: d.affiliate_url || ev.trackingUrl || ev.tracking_url || '',
+        lastCheckedAt: d.last_verified_at || ev.lastCheckedAt || ev.last_checked_at || null
+      };
+    });
 
     const customerOffers = await this.safeQueryAll<any>(
       'customer_offers',
@@ -1228,28 +1287,79 @@ export class SalesConversationEngine {
     // Stage S Task 1 & 2: Prioritize verified impulse offers (₹299–₹1,499) and handle top drops queries
     const isTopDropsQuery = /top (verified )?drops|drops today|best drops|today'?s deals|latest drops|trending deals/i.test(combinedLower);
     if (isTopDropsQuery) {
+      const seenDealIds = new Set<string>();
+      const seenDealSlugs = new Set<string>();
+
       const activeEligibleDeals = deals.filter(d => {
+        if (!d) return false;
+        const id = String(d.id || '').trim();
+        const slug = String(d.slug || d.canonicalSlug || '').trim().toLowerCase();
+        if (id && seenDealIds.has(id)) return false;
+        if (slug && seenDealSlugs.has(slug)) return false;
+
         const status = String(d.verification_status || d.verificationStatus || 'VERIFIED').toUpperCase();
-        if (status === 'INACTIVE' || status === 'EXPIRED') return false;
+        if (status === 'INACTIVE' || status === 'EXPIRED' || status === 'REJECTED' || status === 'OUT_OF_STOCK') return false;
         const slot = String(d.catalog_slot || d.catalogSlot || 'ACTIVE').toUpperCase();
         if (slot === 'ROTATED_OUT_STALE') return false;
         const evolution = String(d.evolution_status || d.evolutionStatus || '').toUpperCase();
         if (evolution === 'STALE_ROTATED_OUT') return false;
         const avail = String(d.availability || 'IN_STOCK').toUpperCase();
-        if (avail === 'OUT_OF_STOCK') return false;
-        const expiry = d.expiry_date || d.expires_at;
+        if (avail !== 'IN_STOCK') return false;
+        const expiry = d.expiry_date || d.expires_at || d.expiryDate;
         if (expiry && new Date(expiry).getTime() <= Date.now()) return false;
+        if (d.isRotatedOut === true || d.is_rotated_out === 1) return false;
+
+        if (id) seenDealIds.add(id);
+        if (slug) seenDealSlugs.add(slug);
         return true;
       });
+
+      // Sort by impulse status + buyerValueScore + discount + epc_7d descending BEFORE slicing top 5
+      activeEligibleDeals.sort((a, b) => {
+        const aImpulse = isImpulseConversionDeal(a) ? 1 : 0;
+        const bImpulse = isImpulseConversionDeal(b) ? 1 : 0;
+        if (bImpulse !== aImpulse) return bImpulse - aImpulse;
+
+        const aScore = Number(a.buyerValueScore ?? a.buyer_value_score ?? 0);
+        const bScore = Number(b.buyerValueScore ?? b.buyer_value_score ?? 0);
+        if (bScore !== aScore) return bScore - aScore;
+
+        const aDisc = Number(a.verifiedDiscountPercent ?? a.verified_discount_percent ?? a.discountPercent ?? a.discount_percent ?? 0);
+        const bDisc = Number(b.verifiedDiscountPercent ?? b.verified_discount_percent ?? b.discountPercent ?? b.discount_percent ?? 0);
+        if (bDisc !== aDisc) return bDisc - aDisc;
+
+        const aEpc = Number(a.epc_7d ?? a.epc7d ?? 0);
+        const bEpc = Number(b.epc_7d ?? b.epc7d ?? 0);
+        return bEpc - aEpc;
+      });
+
       for (const d of activeEligibleDeals.slice(0, 5)) {
         const mapped = this.mapDealToResolvedOffer(d);
         mapped.score = 10;
         mapped.relevanceScore = 10;
+        mapped.isImpulse = isImpulseConversionDeal(d);
         candidates.push(mapped);
       }
     }
 
-    for (const d of deals) {
+    const seenCandidateKeys = new Set<string>();
+    for (const c of candidates) {
+      if (c.id) seenCandidateKeys.add(c.id);
+      if (c.idOrSlug) seenCandidateKeys.add(c.idOrSlug);
+    }
+
+    // CodeRabbit Finding 4: Filter out expired/rejected/rotated deals before text matching loop
+    const eligibleTextDeals = deals.filter(d => {
+      if (!d || d.isRotatedOut) return false;
+      if (d.availability && d.availability !== 'IN_STOCK') return false;
+      const status = String(d.verificationStatus || '').toUpperCase();
+      if (status === 'EXPIRED' || status === 'REJECTED' || status === 'OUT_OF_STOCK' || status === 'INACTIVE') return false;
+      if (d.expiryDate && new Date(d.expiryDate).getTime() <= Date.now()) return false;
+      return true;
+    });
+
+    for (const d of eligibleTextDeals) {
+      if ((d.id && seenCandidateKeys.has(d.id)) || (d.slug && seenCandidateKeys.has(d.slug))) continue;
       const hay = `${d.slug || ''} ${d.title || ''} ${d.brand || ''} ${d.merchant || ''} ${d.category || ''}`.toLowerCase();
       let textScore = 0;
       for (const tok of tokens) {
@@ -1258,16 +1368,15 @@ export class SalesConversationEngine {
         }
       }
       if (textScore >= 2) {
-        const price = Number(d.current_price_inr ?? d.currentPriceINR ?? 0);
-        const discount = Number(d.verified_discount_percent ?? d.verifiedDiscountPercent ?? d.discount_percent ?? d.discountPercent ?? 0);
-        const isImpulse = price >= 299 && price <= 1499 && discount >= 25;
-        // Text relevance takes strict priority; impulse adds a 1-point tie-breaker so it doesn't bypass clarification or overtake an exact model match
+        const isImpulse = isImpulseConversionDeal(d);
         const finalScore = textScore + (isImpulse ? 1 : 0);
         const mapped = this.mapDealToResolvedOffer(d);
         mapped.score = finalScore;
         mapped.relevanceScore = textScore;
         mapped.isImpulse = isImpulse;
         candidates.push(mapped);
+        if (d.id) seenCandidateKeys.add(d.id);
+        if (d.slug) seenCandidateKeys.add(d.slug);
       }
     }
 
@@ -1508,16 +1617,20 @@ export class SalesConversationEngine {
   }
 
   private mapDealToResolvedOffer(d: any): ResolvedCatalogOffer {
-    const cur = Number(d.current_price_inr || 0);
-    const ref = d.reference_price_inr ? Number(d.reference_price_inr) : null;
+    const cur = Number(d.currentPriceINR ?? d.current_price_inr ?? 0);
+    const rawRef = d.referencePriceINR ?? d.reference_price_inr;
+    const ref = rawRef ? Number(rawRef) : null;
+    const rawDisc = d.verifiedDiscountPercent ?? d.verified_discount_percent ?? d.discountPercent ?? d.discount_percent;
     const disc =
       ref && ref > cur && cur > 0
         ? Math.round(((ref - cur) / ref) * 100)
-        : d.discount_percent
-        ? Number(d.discount_percent)
+        : rawDisc
+        ? Number(rawDisc)
         : null;
-    const slug = String(d.slug || d.canonical_slug || '');
+    const slug = String(d.slug || d.canonicalSlug || d.canonical_slug || '');
+    const id = String(d.id || slug);
     return {
+      id,
       kind: 'AFFILIATE_DEAL',
       idOrSlug: slug,
       title: String(d.title || slug),

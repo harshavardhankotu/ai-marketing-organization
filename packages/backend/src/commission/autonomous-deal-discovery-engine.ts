@@ -7,6 +7,7 @@ import { randomUUID, createHash } from 'crypto';
 import { getDb } from '../db/client.js';
 import { isProduction } from '../config/env.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
+import { OwnerAuthService } from '../auth/owner-auth.js';
 import { DealSsrfGuard } from './deal-ssrf-guard.js';
 import { CuelinksSyncManager } from './cuelinks-sync-manager.js';
 import { CuelinksV3Client } from './cuelinks-v3-client.js';
@@ -31,6 +32,15 @@ import {
 export { GuideDataUnavailableError };
 
 export const MAX_OFFER_FRESHNESS_HOURS = 48;
+
+function escapeHtml(str: string): string {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 export function buildAmazonAffiliateUrl(
   rawUrl: string,
@@ -120,12 +130,23 @@ export function buildAmazonSearchAffiliateUrl(
  */
 export function isImpulseConversionDeal(d: NormalizedDeal | any): boolean {
   if (!d) return false;
+  if (d.isRotatedOut === true || d.is_rotated_out === 1 || d.is_rotated_out === true) return false;
+  const verStatus = String(d.verificationStatus || d.verification_status || '').toUpperCase();
+  if (verStatus === 'EXPIRED' || verStatus === 'REJECTED' || verStatus === 'OUT_OF_STOCK' || verStatus === 'INACTIVE') return false;
+  const availability = String(d.availability || '').toUpperCase();
+  if (availability !== 'IN_STOCK') return false;
+
+  const lastChecked = d.lastCheckedAt || d.last_checked_at;
+  if (lastChecked) {
+    const ageMs = Date.now() - new Date(lastChecked).getTime();
+    if (Number.isFinite(ageMs) && ageMs > 48 * 60 * 60 * 1000) return false;
+  }
+
   const price = Number(d.currentPriceINR ?? d.current_price_inr ?? 0);
   const discount = Number(d.verifiedDiscountPercent ?? d.verified_discount_percent ?? d.discountPercent ?? d.discount_percent ?? 0);
   const isMonetizable = d.isMonetizable !== false && (d.isMonetizable === true || d.affiliateVerified === true || d.is_monetizable === 1 || Boolean(d.cuelinksCampaignId || d.cuelinks_campaign_id)) && Boolean(d.trackingUrl || d.cuelinksCampaignId || d.cuelinks_campaign_id);
-  const inStock = d.availability === 'IN_STOCK' || !d.availability || d.availability === 'LIMITED_STOCK';
   const isExcluded = d.catalogSlot === 'ROTATED_OUT_STALE' || (d.staleDecayPenalty || 0) > 0 || d.evolutionStatus === 'STALE_ROTATED_OUT';
-  return !isExcluded && inStock && isMonetizable && price >= 299 && price <= 1499 && discount >= 25;
+  return !isExcluded && isMonetizable && price >= 299 && price <= 1499 && discount >= 25;
 }
 
 export type EconomicsConfidence =
@@ -6914,105 +6935,239 @@ export class AutonomousDealDiscoveryEngine {
     const organizationId = params.organizationId || 'org_owner_primary';
     const businessId = params.businessId || 'biz_platform_aro';
     const nowIso = new Date().toISOString();
-    const isResolvedDeal = Boolean(params.deal?.id || params.deal?.slug);
-    const targetSlug = params.deal?.slug || AutonomousDealDiscoveryEngine.generateDealSlug(params.queryOrUrl || 'fair-price-watch');
     const targetDealId = params.deal?.id || null;
-    const origin = isResolvedDeal ? 'EXPLICIT_PRODUCT' : 'QUERY_DERIVED';
+    const targetSlug = params.deal?.slug || AutonomousDealDiscoveryEngine.generateDealSlug(params.queryOrUrl || 'fair-price-watch');
+    const isSingleTokenSlug = Boolean(targetSlug && !targetSlug.includes(' ') && !targetSlug.includes('/'));
+    const origin = (targetDealId || (params.deal?.slug && isSingleTokenSlug)) ? 'EXPLICIT_PRODUCT' : 'QUERY_DERIVED';
     const productUrl = params.deal?.productUrl || (/^https?:\/\//i.test(params.queryOrUrl) ? params.queryOrUrl : '');
 
-    let existingAuthEv: any = {};
-    let existingContactId: string | null = null;
-    try {
-      const rowSql = `SELECT id, authorization_evidence_json FROM outbound_contacts WHERE business_id = ? AND prospect_email = ? LIMIT 1`;
-      const existing = (this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST))
-        ? await this.d1Repo.queryOne<any>('outbound_contacts', rowSql, [businessId, email])
-        : getDb().prepare(rowSql).get(businessId, email) as any;
+    const contactId = `contact_${createHash('sha256').update(email).digest('hex').slice(0, 32)}`;
+    let contactSaved = false;
+    let wasExistingContact = false;
+    let previousAuthEvidenceJson: string | null = null;
+    let createdSubscriptionId = `sub_${randomUUID().replace(/-/g, '').slice(0, 16)}`;
+
+    // Gate 3 & Gate 5: CAS retry loop on outbound_contacts so concurrent subscriptions merge watches cleanly
+    for (let attempt = 0; attempt < 3; attempt++) {
+      let existing: any = null;
+      try {
+        const rowSql = `SELECT id, authorization_evidence_json, updated_at FROM outbound_contacts WHERE business_id = ? AND prospect_email = ? LIMIT 1`;
+        existing = (this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST))
+          ? await this.d1Repo.queryOne<any>('outbound_contacts', rowSql, [businessId, email])
+          : getDb().prepare(rowSql).get(businessId, email) as any;
+      } catch {
+        continue;
+      }
+
       if (existing?.id) {
-        existingContactId = existing.id;
+        wasExistingContact = true;
+        previousAuthEvidenceJson = typeof existing.authorization_evidence_json === 'string'
+          ? existing.authorization_evidence_json
+          : JSON.stringify(existing.authorization_evidence_json || {});
+        let existingAuthEv: any = {};
+        try {
+          existingAuthEv = JSON.parse(previousAuthEvidenceJson || '{}');
+        } catch {}
+        const prevWatches: any[] = Array.isArray(existingAuthEv?.watches) ? existingAuthEv.watches : [];
+
+        const newWatch = {
+          subscription_id: createdSubscriptionId,
+          target_deal_id: targetDealId,
+          target_deal_slug: targetSlug,
+          target_price_inr: targetPrice,
+          query_or_url: params.queryOrUrl,
+          product_url: productUrl,
+          title: params.deal?.title || params.queryOrUrl,
+          registered_at: nowIso,
+          dispatched_at: null as string | null,
+          dispatched_price_inr: null as number | null,
+          origin
+        };
+        const mergedWatches = [
+          ...prevWatches.filter((w: any) => w && (w.target_deal_slug !== targetSlug || w.target_deal_id !== targetDealId)),
+          newWatch
+        ].slice(-10);
+
+        const authEvidence = {
+          ...existingAuthEv,
+          consent_status: 'OPTED_IN_FIRST_PARTY',
+          target_deal_id: targetDealId,
+          target_deal_slug: targetSlug,
+          target_price_inr: targetPrice,
+          product_url: productUrl,
+          query_or_url: params.queryOrUrl,
+          origin,
+          consent_recorded_at: nowIso,
+          watches: mergedWatches
+        };
+
+        const updateContactSql = `
+          UPDATE outbound_contacts
+          SET prospect_website = COALESCE(?, outbound_contacts.prospect_website),
+              email_authorized = 1,
+              authorization_source = 'INBOUND_REQUEST',
+              authorization_evidence_json = ?,
+              source = 'FAIR_PRICE_ALERT',
+              discovery_evidence_json = ?,
+              is_opted_out = 0,
+              is_suppressed = 0,
+              status = 'ACTIVE',
+              updated_at = datetime('now')
+          WHERE id = ? AND authorization_evidence_json = ?
+        `;
+        const discoveryEv = JSON.stringify({
+          queryOrUrl: params.queryOrUrl,
+          targetFairPriceINR: targetPrice,
+          targetDealSlug: targetSlug,
+          targetDealId,
+          observedAt: nowIso
+        });
+        const updateParams = [
+          productUrl || 'https://ai-marketing-organization.onrender.com/deals',
+          JSON.stringify(authEvidence),
+          discoveryEv,
+          existing.id,
+          previousAuthEvidenceJson
+        ];
+
+        try {
+          if (this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
+            const upRes = await this.d1Repo.executeWrite('outbound_contacts', updateContactSql, updateParams);
+            if (upRes && upRes.rowsAffected > 0) {
+              contactSaved = true;
+              break;
+            }
+          } else {
+            const info = getDb().prepare(updateContactSql).run(...updateParams);
+            if (info.changes > 0) {
+              contactSaved = true;
+              break;
+            }
+          }
+        } catch {
+          continue;
+        }
+      } else {
+        wasExistingContact = false;
+        previousAuthEvidenceJson = null;
+        const newWatch = {
+          subscription_id: createdSubscriptionId,
+          target_deal_id: targetDealId,
+          target_deal_slug: targetSlug,
+          target_price_inr: targetPrice,
+          query_or_url: params.queryOrUrl,
+          product_url: productUrl,
+          title: params.deal?.title || params.queryOrUrl,
+          registered_at: nowIso,
+          dispatched_at: null as string | null,
+          dispatched_price_inr: null as number | null,
+          origin
+        };
+        const authEvidence = {
+          consent_status: 'OPTED_IN_FIRST_PARTY',
+          target_deal_id: targetDealId,
+          target_deal_slug: targetSlug,
+          target_price_inr: targetPrice,
+          product_url: productUrl,
+          query_or_url: params.queryOrUrl,
+          origin,
+          consent_recorded_at: nowIso,
+          watches: [newWatch]
+        };
+
+        const insertContactSql = `
+          INSERT INTO outbound_contacts (
+            id, business_id, organization_id, prospect_name, prospect_business_name,
+            prospect_email, prospect_website, prospect_vertical, channel,
+            email_authorized, whatsapp_opt_in, authorization_source, authorization_evidence_json,
+            source, discovery_evidence_json, is_opted_out, is_bounced, is_suppressed, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'EMAIL', 1, 0, 'INBOUND_REQUEST', ?, 'FAIR_PRICE_ALERT', ?, 0, 0, 0, datetime('now'), datetime('now'))
+        `;
+        const insertParams = [
+          contactId,
+          businessId,
+          organizationId,
+          email.split('@')[0] || 'Fair-Price Buyer',
+          params.deal?.merchant || 'Direct Buyer Watch',
+          email,
+          productUrl || 'https://ai-marketing-organization.onrender.com/deals',
+          params.deal?.category || 'Consumer Fair-Price Watch',
+          JSON.stringify(authEvidence),
+          JSON.stringify({
+            queryOrUrl: params.queryOrUrl,
+            targetFairPriceINR: targetPrice,
+            targetDealSlug: targetSlug,
+            targetDealId,
+            observedAt: nowIso
+          })
+        ];
+
+        try {
+          if (this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
+            await this.d1Repo.executeWrite('outbound_contacts', insertContactSql, insertParams);
+            contactSaved = true;
+            break;
+          } else {
+            getDb().prepare(insertContactSql).run(...insertParams);
+            contactSaved = true;
+            break;
+          }
+        } catch {
+          // Unique conflict on concurrent insert: retry loop will read existing
+          continue;
+        }
       }
-      if (existing?.authorization_evidence_json) {
-        existingAuthEv = typeof existing.authorization_evidence_json === 'string'
-          ? JSON.parse(existing.authorization_evidence_json || '{}')
-          : existing.authorization_evidence_json;
-      }
-    } catch {}
+    }
 
-    const prevWatches: any[] = Array.isArray(existingAuthEv?.watches) ? existingAuthEv.watches : [];
-    const newWatch = {
-      target_deal_id: targetDealId,
-      target_deal_slug: targetSlug,
-      target_price_inr: targetPrice,
-      query_or_url: params.queryOrUrl,
-      product_url: productUrl,
-      title: params.deal?.title || params.queryOrUrl,
-      registered_at: nowIso,
-      dispatched_at: null as string | null,
-      dispatched_price_inr: null as number | null,
-      origin
-    };
-    const mergedWatches = [
-      ...prevWatches.filter((w: any) => w && (w.target_deal_slug !== targetSlug || w.target_deal_id !== targetDealId)),
-      newWatch
-    ].slice(-10);
+    if (!contactSaved) {
+      return { registered: false, reason: 'SUBSCRIPTION_PERSISTENCE_FAILED' };
+    }
 
-    const authEvidence = {
-      ...existingAuthEv,
-      consent_status: 'OPTED_IN_FIRST_PARTY',
-      target_deal_id: targetDealId,
-      target_deal_slug: targetSlug,
-      target_price_inr: targetPrice,
-      product_url: productUrl,
-      query_or_url: params.queryOrUrl,
-      origin,
-      consent_recorded_at: nowIso,
-      watches: mergedWatches
-    };
-
-    const contactId = existingContactId || `cnt_fpa_${createHash('sha256').update(email).digest('hex').slice(0, 24)}`;
-    const upsertContactSql = `
-      INSERT INTO outbound_contacts (
-        id, business_id, organization_id, prospect_name, prospect_business_name,
-        prospect_email, prospect_website, prospect_vertical, channel,
-        email_authorized, whatsapp_opt_in, authorization_source, authorization_evidence_json,
-        source, discovery_evidence_json, is_opted_out, is_bounced, is_suppressed, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'EMAIL', 1, 0, 'INBOUND_REQUEST', ?, 'FAIR_PRICE_ALERT', ?, 0, 0, 0, datetime('now'))
-      ON CONFLICT(business_id, prospect_email) DO UPDATE SET
-        prospect_website = COALESCE(excluded.prospect_website, outbound_contacts.prospect_website),
-        email_authorized = 1,
-        authorization_source = 'INBOUND_REQUEST',
-        authorization_evidence_json = excluded.authorization_evidence_json,
-        source = 'FAIR_PRICE_ALERT',
-        discovery_evidence_json = excluded.discovery_evidence_json,
-        is_opted_out = 0,
-        is_suppressed = 0,
-        updated_at = datetime('now')
-    `;
-    const contactParams = [
-      contactId,
-      businessId,
-      organizationId,
-      email.split('@')[0] || 'Fair-Price Buyer',
-      params.deal?.merchant || 'Direct Buyer Watch',
+    // Gate 3: Persist alert subscription to durable_events — FAIL CLOSED on error
+    const eventId = `sub_evt_${createHash('sha256').update(email + (targetSlug || targetDealId || '') + Date.now()).digest('hex').slice(0, 24)}`;
+    const eventPayload = JSON.stringify({
       email,
-      productUrl || 'https://ai-marketing-organization.onrender.com/deals',
-      params.deal?.category || 'Consumer Fair-Price Watch',
-      JSON.stringify(authEvidence),
-      JSON.stringify({
-        queryOrUrl: params.queryOrUrl,
-        targetFairPriceINR: targetPrice,
-        targetDealSlug: targetSlug,
-        targetDealId,
-        observedAt: nowIso
-      })
-    ];
-
+      name: email.split('@')[0] || 'Fair-Price Buyer',
+      productSlug: targetSlug,
+      category: params.deal?.category || 'Consumer Fair-Price Watch',
+      dealId: targetDealId,
+      targetPriceINR: targetPrice,
+      origin,
+      queryOrUrl: params.queryOrUrl,
+      title: params.deal?.title || params.queryOrUrl,
+      subscriptionId: createdSubscriptionId,
+      consent: 'OPTED_IN_FIRST_PARTY',
+      createdAt: nowIso
+    });
     try {
-      getDb().prepare(upsertContactSql).run(...contactParams);
+      const eventSql = `INSERT INTO durable_events (id, event_type, organization_id, payload_json, processed, created_at)
+        VALUES (?, 'PRICE_DROP_SUBSCRIPTION', ?, ?, 0, datetime('now'))`;
       if (this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
-        await this.d1Repo.executeWrite('outbound_contacts', upsertContactSql, contactParams);
+        await this.d1Repo.executeWrite('durable_events', eventSql, [eventId, organizationId, eventPayload]);
+      } else {
+        getDb().prepare(eventSql).run(eventId, organizationId, eventPayload);
       }
-    } catch (err: any) {
-      console.warn(`[DealEngine] registerTargetPriceAlert contact write notice: ${err?.message}`);
+    } catch (evErr: any) {
+      console.error(`[DealEngine] registerTargetPriceAlert durable_events insert failed: ${evErr?.message}`);
+      // Rollback contact watch so failed subscription leaves no active watch (CodeRabbit Finding 5)
+      try {
+        if (wasExistingContact && previousAuthEvidenceJson) {
+          const rollbackSql = `UPDATE outbound_contacts SET authorization_evidence_json = ? WHERE id = ?`;
+          if (this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
+            await this.d1Repo.executeWrite('outbound_contacts', rollbackSql, [previousAuthEvidenceJson, contactId]);
+          } else {
+            getDb().prepare(rollbackSql).run(previousAuthEvidenceJson, contactId);
+          }
+        } else {
+          const rollbackSql = `DELETE FROM outbound_contacts WHERE id = ?`;
+          if (this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
+            await this.d1Repo.executeWrite('outbound_contacts', rollbackSql, [contactId]);
+          } else {
+            getDb().prepare(rollbackSql).run(contactId);
+          }
+        }
+      } catch {}
+      return { registered: false, reason: 'SUBSCRIPTION_PERSISTENCE_FAILED' };
     }
 
     // Record demand signal alongside watch
@@ -7048,6 +7203,417 @@ export class AutonomousDealDiscoveryEngine {
     return { registered: true, contactId };
   }
 
+  private static priceDropEventCursor: string | null = null;
+
+  /**
+   * Helper to mark a durable event processed with optional error message.
+   */
+  private async markEventProcessed(eventId: string, errorMessage: string | null): Promise<void> {
+    const isProd = isProduction() && !process.env.VITEST;
+    const sql = `UPDATE durable_events SET processed = 1, processed_at = datetime('now'), error_message = ? WHERE id = ?`;
+    try {
+      if (this.d1Repo.isRemoteD1Configured() || isProd) {
+        await this.d1Repo.executeWrite('durable_events', sql, [errorMessage, eventId]);
+      } else {
+        getDb().prepare(sql).run(errorMessage, eventId);
+      }
+    } catch {}
+  }
+
+  /**
+   * Helper to update contact watch dispatched_at (CodeRabbit Findings 3 & 8).
+   * Re-reads the latest contact row and uses CAS on authorization_evidence_json so concurrently added watches are preserved.
+   */
+  private async markContactWatchDispatched(
+    contact: any,
+    dealId: string,
+    currentPriceINR: number,
+    email: string,
+    watchKey?: string,
+    subscriptionId?: string,
+    dealSlug?: string
+  ): Promise<void> {
+    const isProd = isProduction() && !process.env.VITEST;
+    const nowIso = new Date().toISOString();
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      let freshContact: any = null;
+      try {
+        const selSql = `SELECT id, authorization_evidence_json FROM outbound_contacts WHERE id = ? LIMIT 1`;
+        if (this.d1Repo.isRemoteD1Configured() || isProd) {
+          const res = await this.d1Repo.executeRead('outbound_contacts', selSql, [contact.id]);
+          freshContact = Array.isArray(res?.results) ? res.results[0] : null;
+        } else {
+          freshContact = getDb().prepare(selSql).get(contact.id);
+        }
+      } catch {
+        continue;
+      }
+      if (!freshContact) break;
+
+      let ev: any = {};
+      try {
+        ev = typeof freshContact.authorization_evidence_json === 'string'
+          ? JSON.parse(freshContact.authorization_evidence_json || '{}')
+          : (freshContact.authorization_evidence_json || {});
+      } catch {}
+
+      let mutated = false;
+      if (Array.isArray(ev.watches)) {
+        for (const w of ev.watches) {
+          if (!w || w.dispatched_at) continue;
+          const matchSub = Boolean(subscriptionId && w.subscription_id && w.subscription_id === subscriptionId);
+          const matchDeal = Boolean(dealId && (w.target_deal_id === dealId || w.dispatched_deal_id === dealId));
+          const matchSlug = Boolean(dealSlug && (w.target_deal_slug === dealSlug || w.slug === dealSlug));
+          const matchKey = Boolean(watchKey && (w.query_or_url === watchKey || w.target_deal_slug === watchKey || w.category === watchKey));
+
+          if (matchSub || matchDeal || matchSlug || matchKey || (Number(w.target_price_inr || 0) >= currentPriceINR && (w.target_deal_id === dealId || w.target_deal_slug === dealSlug))) {
+            w.dispatched_at = nowIso;
+            w.dispatched_price_inr = currentPriceINR;
+            w.dispatched_deal_id = dealId;
+            mutated = true;
+            break; // Mark ONLY this satisfied watch
+          }
+        }
+      }
+      if (!ev.watches || ev.watches.length === 0) {
+        ev.dispatched_at = nowIso;
+        ev.dispatched_price_inr = currentPriceINR;
+        ev.dispatched_deal_id = dealId;
+        mutated = true;
+      }
+
+      if (mutated) {
+        const prevEvStr = typeof freshContact.authorization_evidence_json === 'string'
+          ? freshContact.authorization_evidence_json
+          : JSON.stringify(freshContact.authorization_evidence_json || {});
+        const updateSql = `UPDATE outbound_contacts SET authorization_evidence_json = ?, last_contacted_at = datetime('now'), contact_count = contact_count + 1, updated_at = datetime('now') WHERE id = ? AND authorization_evidence_json = ?`;
+        const evStr = JSON.stringify(ev);
+        try {
+          if (this.d1Repo.isRemoteD1Configured() || isProd) {
+            const upRes = await this.d1Repo.executeWrite('outbound_contacts', updateSql, [evStr, contact.id, prevEvStr]);
+            if (upRes && upRes.rowsAffected > 0) break;
+          } else {
+            const info = getDb().prepare(updateSql).run(evStr, contact.id, prevEvStr);
+            if (info.changes > 0) break;
+          }
+        } catch {
+          continue;
+        }
+      } else {
+        break;
+      }
+    }
+  }
+
+  /**
+   * Helper to mark matching PRICE_DROP_SUBSCRIPTION events processed.
+   */
+  private async markMatchingSubscriptionEventsProcessed(email: string, dealId?: string | null, productSlug?: string | null, category?: string | null): Promise<void> {
+    const isProd = isProduction() && !process.env.VITEST;
+    const targetMatch = dealId ? `%"dealId":"${dealId}"%` : (productSlug ? `%"productSlug":"${productSlug}"%` : `%"category":"${category}"%`);
+    const sql = `UPDATE durable_events SET processed = 1, processed_at = datetime('now') WHERE event_type = 'PRICE_DROP_SUBSCRIPTION' AND processed = 0 AND payload_json LIKE ? AND payload_json LIKE ?`;
+    const emailLike = `%"email":"${email}"%`;
+    try {
+      if (this.d1Repo.isRemoteD1Configured() || isProd) {
+        await this.d1Repo.executeWrite('durable_events', sql, [emailLike, targetMatch]);
+      } else {
+        getDb().prepare(sql).run(emailLike, targetMatch);
+      }
+    } catch {}
+  }
+
+  /**
+   * Routes an alert candidate through the 5 gates and atomic delivery claim.
+   */
+  private async processSinglePriceAlertCandidate(params: {
+    email: string;
+    recipientName?: string;
+    dealId?: string | null;
+    productSlug?: string | null;
+    category?: string | null;
+    targetPriceINR: number;
+    origin?: string | null;
+    queryOrUrl?: string | null;
+    title?: string | null;
+    subscriptionId?: string | null;
+    validDeals: NormalizedDeal[];
+    siteUrl: string;
+    brevo: any;
+    sourceType: 'CONTACT_WATCH' | 'DURABLE_EVENT';
+    sourceEventId?: string;
+    watchRef?: any;
+    contactRow?: any;
+  }): Promise<'DISPATCHED' | 'SKIPPED' | 'UNMATCHED'> {
+    const email = String(params.email || '').trim().toLowerCase();
+    if (!email || !email.includes('@')) {
+      if (params.sourceEventId) {
+        await this.markEventProcessed(params.sourceEventId, 'MALFORMED_PAYLOAD');
+      }
+      return 'SKIPPED';
+    }
+
+    const targetPrice = Number(params.targetPriceINR || 0);
+    const isProd = isProduction() && !process.env.VITEST;
+
+    // Gate 1: Check outbound_contacts
+    let contact = params.contactRow;
+    if (!contact) {
+      const contactSql = `SELECT id, prospect_name, email_authorized, authorization_source, is_opted_out, is_suppressed, is_bounced, authorization_evidence_json, updated_at FROM outbound_contacts WHERE business_id = 'biz_platform_aro' AND prospect_email = ? LIMIT 1`;
+      try {
+        if (this.d1Repo.isRemoteD1Configured() || isProd) {
+          const res = await this.d1Repo.executeRead('outbound_contacts', contactSql, [email]);
+          contact = Array.isArray(res?.results) ? res.results[0] : null;
+        } else {
+          contact = getDb().prepare(contactSql).get(email) as any;
+        }
+      } catch {}
+    }
+
+    if (!contact) {
+      // Gate 1 Fail-closed: No authorized contact exists
+      if (params.sourceEventId) {
+        await this.markEventProcessed(params.sourceEventId, 'REJECTED_NO_AUTHORISED_CONTACT');
+      }
+      return 'SKIPPED';
+    }
+
+    if (contact.email_authorized !== 1 || (contact.authorization_source !== 'EXPLICIT_CONSENT' && contact.authorization_source !== 'INBOUND_REQUEST')) {
+      if (params.sourceEventId) {
+        await this.markEventProcessed(params.sourceEventId, 'REJECTED_UNAUTHORIZED_CONTACT');
+      }
+      return 'SKIPPED';
+    }
+
+    if (contact.is_opted_out === 1 || contact.is_suppressed === 1 || contact.is_bounced === 1) {
+      if (params.sourceEventId) {
+        await this.markEventProcessed(params.sourceEventId, 'REJECTED_SUPPRESSED_OR_OPTED_OUT');
+      }
+      return 'SKIPPED';
+    }
+
+    // Check outreach_suppression_list
+    const suppSql = `SELECT id FROM outreach_suppression_list WHERE identifier = ? LIMIT 1`;
+    let isSuppressed = false;
+    try {
+      if (this.d1Repo.isRemoteD1Configured() || isProd) {
+        const suppRes = await this.d1Repo.executeRead('outreach_suppression_list', suppSql, [email]);
+        isSuppressed = Array.isArray(suppRes?.results) && suppRes.results.length > 0;
+      } else {
+        isSuppressed = Boolean(getDb().prepare(suppSql).get(email));
+      }
+    } catch {}
+    if (isSuppressed) {
+      if (params.sourceEventId) {
+        await this.markEventProcessed(params.sourceEventId, 'REJECTED_SUPPRESSED_OR_OPTED_OUT');
+      }
+      return 'SKIPPED';
+    }
+
+    // Gate 4: Match against validDeals
+    const origin = params.origin;
+    const dealId = params.dealId;
+    const productSlug = params.productSlug;
+    const isSingleTokenSlug = Boolean(productSlug && !productSlug.includes(' ') && !productSlug.includes('/'));
+    const isExplicit = origin === 'EXPLICIT_PRODUCT' || (origin !== 'QUERY_DERIVED' && Boolean(dealId || (productSlug && isSingleTokenSlug)));
+
+    let matchedDeal: NormalizedDeal | undefined;
+    if (isExplicit) {
+      matchedDeal = params.validDeals.find(d => {
+        if (dealId && d.id === dealId) return true;
+        if (productSlug && (d.slug === productSlug || d.canonicalSlug === productSlug)) return true;
+        return false;
+      });
+    } else {
+      matchedDeal = params.validDeals.find(d => {
+        if (productSlug && (d.slug === productSlug || d.canonicalSlug === productSlug)) return true;
+        const watchQuery = String(params.queryOrUrl || params.title || '').toLowerCase();
+        const tokens = watchQuery.replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(t => t.length >= 3);
+        if (tokens.length >= 2) {
+          if (targetPrice > 0 && Number(d.currentPriceINR || 0) > targetPrice) return false;
+          const haystack = `${d.title} ${d.brand} ${d.category}`.toLowerCase();
+          return tokens.slice(0, 3).every(tok => haystack.includes(tok));
+        }
+        if (params.category && d.category && d.category.toLowerCase() === String(params.category).toLowerCase()) {
+          if (targetPrice > 0 && Number(d.currentPriceINR || 0) > targetPrice) return false;
+          return true;
+        }
+        return false;
+      });
+    }
+
+    if (!matchedDeal) {
+      return 'UNMATCHED';
+    }
+
+    if (targetPrice > 0 && Number(matchedDeal.currentPriceINR || 0) > targetPrice) {
+      // Target price not reached yet; leave watch/subscription active!
+      return 'UNMATCHED';
+    }
+
+    // Gate 2: Deterministic claim ID
+    const watchKey = dealId || productSlug || params.category || 'all';
+    const subId = params.subscriptionId || params.watchRef?.subscription_id;
+    const claimKeyPart = subId ? `${email}:${matchedDeal.id}:${watchKey}:${subId}` : `${email}:${matchedDeal.id}:${watchKey}`;
+    const claimId = `price_alert_claim_${createHash('sha256').update(claimKeyPart).digest('hex').slice(0, 36)}`;
+    const orgId = OwnerAuthService.OWNER_ORGANIZATION_ID || 'org_owner_primary';
+
+    // Attempt claim insert or CAS reclaim
+    let claimAcquired = false;
+    const insertClaimSql = `INSERT INTO durable_events (id, event_type, organization_id, payload_json, processed, error_message, created_at)
+      VALUES (?, 'PRICE_ALERT_DELIVERY_CLAIMED', ?, ?, 0, 'PROCESSING', datetime('now'))`;
+    const claimPayload = JSON.stringify({ email, dealId: matchedDeal.id, targetPriceINR: targetPrice, currentPriceINR: matchedDeal.currentPriceINR, claimedAt: new Date().toISOString() });
+
+    try {
+      if (this.d1Repo.isRemoteD1Configured() || isProd) {
+        const res = await this.d1Repo.executeWrite('durable_events', insertClaimSql, [claimId, orgId, claimPayload]);
+        claimAcquired = (res && res.rowsAffected > 0);
+      } else {
+        const info = getDb().prepare(insertClaimSql).run(claimId, orgId, claimPayload);
+        claimAcquired = (info.changes > 0);
+      }
+    } catch {
+      // Row might already exist
+      claimAcquired = false;
+    }
+
+    if (!claimAcquired) {
+      // Check existing claim
+      const checkSql = `SELECT id, processed, error_message FROM durable_events WHERE id = ? LIMIT 1`;
+      let existingClaim: any = null;
+      try {
+        if (this.d1Repo.isRemoteD1Configured() || isProd) {
+          const res = await this.d1Repo.executeRead('durable_events', checkSql, [claimId]);
+          existingClaim = Array.isArray(res?.results) ? res.results[0] : null;
+        } else {
+          existingClaim = getDb().prepare(checkSql).get(claimId) as any;
+        }
+      } catch {}
+
+      if (!existingClaim) {
+        return 'SKIPPED';
+      }
+
+      if (existingClaim.processed === 1) {
+        // Already successfully delivered! Sync state
+        if (params.sourceEventId) {
+          await this.markEventProcessed(params.sourceEventId, null);
+        }
+        if (params.watchRef && !params.watchRef.dispatched_at) {
+          await this.markContactWatchDispatched(contact, matchedDeal.id, Number(matchedDeal.currentPriceINR), email, watchKey, subId, matchedDeal.slug);
+        }
+        return 'SKIPPED';
+      }
+
+      if (existingClaim.error_message === 'PROCESSING') {
+        // Currently in flight or ambiguous post-send protection: do not duplicate send
+        return 'SKIPPED';
+      }
+
+      if (String(existingClaim.error_message || '').startsWith('RETRYABLE:')) {
+        // Reclaim lease
+        const reclaimSql = `UPDATE durable_events SET error_message = 'PROCESSING', payload_json = ? WHERE id = ? AND processed = 0 AND error_message LIKE 'RETRYABLE:%'`;
+        try {
+          if (this.d1Repo.isRemoteD1Configured() || isProd) {
+            const upRes = await this.d1Repo.executeWrite('durable_events', reclaimSql, [claimPayload, claimId]);
+            claimAcquired = (upRes && upRes.rowsAffected > 0);
+          } else {
+            const info = getDb().prepare(reclaimSql).run(claimPayload, claimId);
+            claimAcquired = (info.changes > 0);
+          }
+        } catch {
+          claimAcquired = false;
+        }
+      }
+
+      if (!claimAcquired) {
+        return 'SKIPPED';
+      }
+    }
+
+    // Prepare Brevo transactional email
+    const redirectUrl = `${params.siteUrl}/api/v1/public/deals/${encodeURIComponent(matchedDeal.id)}/redirect?utm_source=price_alert`;
+    const priceStr = `₹${Number(matchedDeal.currentPriceINR).toLocaleString('en-IN')}`;
+    const targetStr = targetPrice > 0 ? `₹${targetPrice.toLocaleString('en-IN')}` : 'your target';
+    const recipientName = params.recipientName || contact.prospect_name || 'Buyer';
+
+    const safeTitle = escapeHtml(matchedDeal.title || 'Deal');
+    const safeMerchant = escapeHtml(matchedDeal.merchant || 'Merchant');
+
+    const subject = `Price Drop Alert: ${matchedDeal.title} is now ${priceStr} (Below your ${targetStr} target)`;
+    const textContent = [
+      `Good news! Your watched item dropped to ${priceStr} (your target was ${targetStr}) on ${matchedDeal.merchant}.`,
+      matchedDeal.referencePriceINR && matchedDeal.referencePriceINR > Number(matchedDeal.currentPriceINR || 0)
+        ? `Reference MRP: ₹${Number(matchedDeal.referencePriceINR).toLocaleString('en-IN')}`
+        : '',
+      matchedDeal.couponCode ? `Promo Code: ${matchedDeal.couponCode}` : '',
+      `Claim Verified Price (#Ad): ${redirectUrl}`,
+      '',
+      `Note (#Ad): Qualifying purchases through this link may earn an affiliate commission at zero extra cost to you. Verify live stock & price on checkout.`
+    ].filter(Boolean).join('\n');
+
+    const htmlContent = `<div style="font-family:sans-serif;line-height:1.6"><h2>Price Drop Alert (#Ad)</h2><p><strong>${safeTitle}</strong> is now <strong>${priceStr}</strong> on ${safeMerchant} (your target: ${targetStr}).</p><p><a href="${redirectUrl}" style="display:inline-block;padding:10px 18px;background:#06b6d4;color:#020617;font-weight:700;border-radius:6px;text-decoration:none;">View Deal at ${safeMerchant} →</a></p><p style="font-size:12px;color:#64748b;">#Ad Affiliate Disclosure: Qualifying purchases via this link may earn a commission at zero extra cost to you.</p></div>`;
+
+    try {
+      const sendRes = await params.brevo.sendTransactionalEmail({
+        to: [{ email, name: recipientName }],
+        subject,
+        textContent,
+        htmlContent
+      });
+
+      if (sendRes.success && sendRes.status === 'SENT') {
+        // Ambiguous Post-Send DB Failure Protection:
+        // If Brevo sent, try to update durable_events claim to processed = 1.
+        // If this DB write fails, LEAVE 'PROCESSING' row intact (never mark RETRYABLE:).
+        try {
+          const completeClaimSql = `UPDATE durable_events SET processed = 1, processed_at = datetime('now'), error_message = NULL WHERE id = ?`;
+          if (this.d1Repo.isRemoteD1Configured() || isProd) {
+            await this.d1Repo.executeWrite('durable_events', completeClaimSql, [claimId]);
+          } else {
+            getDb().prepare(completeClaimSql).run(claimId);
+          }
+        } catch (dbErr: any) {
+          console.error(`[DealEngine] Post-send claim completion update failed for ${claimId}: ${dbErr?.message}`);
+        }
+
+        // Update contact watch dispatched_at
+        await this.markContactWatchDispatched(contact, matchedDeal.id, Number(matchedDeal.currentPriceINR), email, watchKey, subId, matchedDeal.slug);
+
+        // Mark source event or matching subscription events processed = 1
+        if (params.sourceEventId) {
+          await this.markEventProcessed(params.sourceEventId, null);
+        }
+        await this.markMatchingSubscriptionEventsProcessed(email, dealId, productSlug, params.category);
+
+        return 'DISPATCHED';
+      } else {
+        // Confirmed Brevo send failure: mark RETRYABLE
+        const retryMsg = `RETRYABLE:${sendRes.status || 'BREVO_ERROR'}`;
+        const retrySql = `UPDATE durable_events SET error_message = ?, processed = 0 WHERE id = ?`;
+        try {
+          if (this.d1Repo.isRemoteD1Configured() || isProd) {
+            await this.d1Repo.executeWrite('durable_events', retrySql, [retryMsg, claimId]);
+          } else {
+            getDb().prepare(retrySql).run(retryMsg, claimId);
+          }
+        } catch {}
+        return 'SKIPPED';
+      }
+    } catch (sendErr: any) {
+      const retryMsg = `RETRYABLE:${sendErr?.message || 'NETWORK_ERROR'}`;
+      const retrySql = `UPDATE durable_events SET error_message = ?, processed = 0 WHERE id = ?`;
+      try {
+        if (this.d1Repo.isRemoteD1Configured() || isProd) {
+          await this.d1Repo.executeWrite('durable_events', retrySql, [retryMsg, claimId]);
+        } else {
+          getDb().prepare(retrySql).run(retryMsg, claimId);
+        }
+      } catch {}
+      return 'SKIPPED';
+    }
+  }
+
   /**
    * Checks opted-in FAIR_PRICE_ALERT watches against updated deals and auto-dispatches
    * personalized price-drop alert emails via BrevoMcpClient whenever currentPriceINR <= target_price_inr.
@@ -7060,9 +7626,14 @@ export class AutonomousDealDiscoveryEngine {
       ? Array.from(new Map([...Array.from(this.dealsMap.values()), ...deals].map(d => [d.id, d])).values())
       : Array.from(this.dealsMap.values());
     const now = new Date();
+    // CodeRabbit Finding 3: Exclude unverified cached deals from alert candidates
     const validDeals = allDeals.filter(d => {
       if (!d || Number(d.currentPriceINR || 0) <= 0 || d.availability !== 'IN_STOCK') return false;
       if (d.verificationStatus === 'EXPIRED' || d.verificationStatus === 'REJECTED' || d.verificationStatus === 'OUT_OF_STOCK') return false;
+      const status = String(d.verificationStatus || '').toUpperCase();
+      if (status !== 'VERIFIED' && status !== 'PRICE_VERIFIED' && status !== 'AFFILIATE_VERIFIED' && d.affiliateVerified !== true) {
+        return false;
+      }
       if (d.expiryDate && new Date(d.expiryDate) <= now) return false;
       return true;
     });
@@ -7072,8 +7643,15 @@ export class AutonomousDealDiscoveryEngine {
 
     const siteUrl = (siteUrlOverride || process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').replace(/\/$/, '');
     const isProd = isProduction() && !process.env.VITEST;
+    const { BrevoMcpClient } = await import('../integrations/brevo-mcp-client.js');
+    const brevo = BrevoMcpClient.getInstance();
+    let checked = 0;
+    let dispatched = 0;
+    let skipped = 0;
+
+    // Scan 1: Outbound contacts watches
     const querySql = `
-      SELECT id, business_id, prospect_name, prospect_email, authorization_evidence_json
+      SELECT id, business_id, prospect_name, prospect_email, email_authorized, authorization_source, is_opted_out, is_suppressed, is_bounced, authorization_evidence_json, updated_at
       FROM outbound_contacts
       WHERE source IN ('FAIR_PRICE_ALERT', 'CUSTOMER_DESK_ALERT_OPTIN')
         AND email_authorized = 1
@@ -7083,27 +7661,17 @@ export class AutonomousDealDiscoveryEngine {
       LIMIT 100
     `;
 
-    let rows: any[] = [];
+    let contactRows: any[] = [];
     try {
       if (this.d1Repo.isRemoteD1Configured() || isProd) {
         const res = await this.d1Repo.executeRead('outbound_contacts', querySql, []);
-        rows = Array.isArray(res?.results) ? res.results : [];
+        contactRows = Array.isArray(res?.results) ? res.results : [];
       } else {
-        rows = getDb().prepare(querySql).all() as any[];
+        contactRows = getDb().prepare(querySql).all() as any[];
       }
-    } catch {
-      try {
-        rows = getDb().prepare(querySql).all() as any[];
-      } catch {}
-    }
+    } catch {}
 
-    const { BrevoMcpClient } = await import('../integrations/brevo-mcp-client.js');
-    const brevo = BrevoMcpClient.getInstance();
-    let checked = 0;
-    let dispatched = 0;
-    let skipped = 0;
-
-    for (const row of rows) {
+    for (const row of contactRows) {
       const email = String(row.prospect_email || '').trim().toLowerCase();
       if (!email || !email.includes('@')) continue;
 
@@ -7130,114 +7698,56 @@ export class AutonomousDealDiscoveryEngine {
             origin: ev.origin || null
           }];
 
-      let evMutated = false;
       for (const watch of watches) {
         if (!watch || watch.dispatched_at) continue;
         const targetPrice = Number(watch.target_price_inr || 0);
         if (!Number.isFinite(targetPrice) || targetPrice <= 0) continue;
         checked++;
 
-        const isQueryDerived =
-          watch.origin === 'QUERY_DERIVED' ||
-          watch.origin === 'CATEGORY_QUERY' ||
-          (!watch.origin && !watch.target_deal_id && (
-            Boolean(watch.query_or_url && (
-              /\s/.test(watch.query_or_url) ||
-              (AutonomousDealDiscoveryEngine.generateDealSlug(watch.query_or_url) === watch.target_deal_slug && watch.query_or_url !== watch.target_deal_slug)
-            ))
-          ));
-
-        const hasExplicitId = Boolean((watch.target_deal_id || watch.target_deal_slug) && !isQueryDerived);
-        const matchedDeal = validDeals.find((d) => {
-          if (hasExplicitId) {
-            if (watch.target_deal_id && d.id === watch.target_deal_id) return true;
-            if (watch.target_deal_slug && (d.slug === watch.target_deal_slug || d.canonicalSlug === watch.target_deal_slug)) return true;
-            return false;
-          }
-
-          // Query-derived watches: match either exact slug if it matches, or text tokens
-          if (watch.target_deal_slug && (d.slug === watch.target_deal_slug || d.canonicalSlug === watch.target_deal_slug)) {
-            return true;
-          }
-          const watchQuery = String(watch.query_or_url || watch.title || '').toLowerCase();
-          const tokens = watchQuery.replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(t => t.length >= 3);
-          if (tokens.length >= 2) {
-            if (targetPrice > 0 && Number(d.currentPriceINR || 0) > targetPrice) {
-              return false;
-            }
-            const haystack = `${d.title} ${d.brand} ${d.category}`.toLowerCase();
-            return tokens.slice(0, 3).every(tok => haystack.includes(tok));
-          }
-          return false;
+        const outcome = await this.processSinglePriceAlertCandidate({
+          email,
+          recipientName: row.prospect_name,
+          dealId: watch.target_deal_id,
+          productSlug: watch.target_deal_slug,
+          category: watch.category,
+          targetPriceINR: targetPrice,
+          origin: watch.origin,
+          queryOrUrl: watch.query_or_url,
+          title: watch.title,
+          subscriptionId: watch.subscription_id,
+          validDeals,
+          siteUrl,
+          brevo,
+          sourceType: 'CONTACT_WATCH',
+          watchRef: watch,
+          contactRow: row
         });
 
-        if (!matchedDeal || Number(matchedDeal.currentPriceINR || 0) > targetPrice) {
-          continue;
-        }
-
-        const redirectUrl = `${siteUrl}/api/v1/public/deals/${encodeURIComponent(matchedDeal.id)}/redirect?utm_source=price_alert`;
-        const priceStr = `₹${Number(matchedDeal.currentPriceINR).toLocaleString('en-IN')}`;
-        const targetStr = `₹${targetPrice.toLocaleString('en-IN')}`;
-        const subject = `Price Drop Alert: ${matchedDeal.title} is now ${priceStr} (Below your ${targetStr} target)`;
-        const textContent = [
-          `Good news! Your watched item dropped to ${priceStr} (your target was ${targetStr}) on ${matchedDeal.merchant}.`,
-          matchedDeal.referencePriceINR && matchedDeal.referencePriceINR > Number(matchedDeal.currentPriceINR || 0)
-            ? `Reference MRP: ₹${Number(matchedDeal.referencePriceINR).toLocaleString('en-IN')}`
-            : '',
-          matchedDeal.couponCode ? `Promo Code: ${matchedDeal.couponCode}` : '',
-          `Claim Verified Price (#Ad): ${redirectUrl}`,
-          '',
-          `Note (#Ad): Qualifying purchases through this link may earn an affiliate commission at zero extra cost to you. Verify live stock & price on checkout.`
-        ].filter(Boolean).join('\n');
-
-        try {
-          const sendRes = await brevo.sendTransactionalEmail({
-            to: [{ email, name: row.prospect_name || 'Buyer' }],
-            subject,
-            textContent,
-            htmlContent: `<div style="font-family:sans-serif;line-height:1.6"><h2>Price Drop Alert (#Ad)</h2><p><strong>${matchedDeal.title}</strong> is now <strong>${priceStr}</strong> on ${matchedDeal.merchant} (your target: ${targetStr}).</p><p><a href="${redirectUrl}" style="display:inline-block;padding:10px 18px;background:#06b6d4;color:#020617;font-weight:700;border-radius:6px;text-decoration:none;">View Deal at ${matchedDeal.merchant} →</a></p><p style="font-size:12px;color:#64748b;">#Ad Affiliate Disclosure: Qualifying purchases via this link may earn a commission at zero extra cost to you.</p></div>`
-          });
-
-          if (sendRes.success && sendRes.status === 'SENT') {
-            watch.dispatched_at = new Date().toISOString();
-            watch.dispatched_price_inr = matchedDeal.currentPriceINR;
-            watch.dispatched_deal_id = matchedDeal.id;
-            ev.dispatched_at = watch.dispatched_at;
-            evMutated = true;
-            dispatched++;
-          } else {
-            skipped++;
-          }
-        } catch {
-          skipped++;
-        }
-      }
-
-      if (evMutated) {
-        const updateSql = `UPDATE outbound_contacts SET authorization_evidence_json = ?, last_contacted_at = datetime('now'), contact_count = contact_count + 1, updated_at = datetime('now') WHERE id = ?`;
-        const evStr = JSON.stringify(ev);
-        const completeEvSql = `UPDATE durable_events SET processed = 1, processed_at = datetime('now') WHERE event_type = 'PRICE_DROP_SUBSCRIPTION' AND processed = 0 AND payload_json LIKE ?`;
-        const emailLike = `%"email":"${email}"%`;
-        try {
-          getDb().prepare(updateSql).run(evStr, row.id);
-          getDb().prepare(completeEvSql).run(emailLike);
-          if (this.d1Repo.isRemoteD1Configured() || isProd) {
-            await this.d1Repo.executeWrite('outbound_contacts', updateSql, [evStr, row.id]);
-            await this.d1Repo.executeWrite('durable_events', completeEvSql, [emailLike]);
-          }
-        } catch {}
+        if (outcome === 'DISPATCHED') dispatched++;
+        else if (outcome === 'SKIPPED') skipped++;
       }
     }
 
-    // Stage S Task 2: Process pending durable_events with event_type = 'PRICE_DROP_SUBSCRIPTION'
+    // Scan 2: Pending durable_events with continuation cursor (CodeRabbit Finding 1)
     try {
-      const eventQuery = `SELECT id, payload_json FROM durable_events WHERE event_type = 'PRICE_DROP_SUBSCRIPTION' AND processed = 0 ORDER BY created_at ASC LIMIT 100`;
+      const cursor = AutonomousDealDiscoveryEngine.priceDropEventCursor;
+      const eventQuery = cursor
+        ? `SELECT id, payload_json FROM durable_events WHERE event_type = 'PRICE_DROP_SUBSCRIPTION' AND processed = 0 AND id > ? ORDER BY id ASC LIMIT 50`
+        : `SELECT id, payload_json FROM durable_events WHERE event_type = 'PRICE_DROP_SUBSCRIPTION' AND processed = 0 ORDER BY id ASC LIMIT 50`;
+      const eventParams = cursor ? [cursor] : [];
+
       let eventRows: any[] = [];
       if (this.d1Repo.isRemoteD1Configured() || isProd) {
-        const evRes = await this.d1Repo.executeRead('durable_events', eventQuery, []);
+        const evRes = await this.d1Repo.executeRead('durable_events', eventQuery, eventParams);
         eventRows = Array.isArray(evRes?.results) ? evRes.results : [];
       } else {
-        eventRows = getDb().prepare(eventQuery).all() as any[];
+        eventRows = getDb().prepare(eventQuery).all(...eventParams) as any[];
+      }
+
+      if (eventRows.length === 50) {
+        AutonomousDealDiscoveryEngine.priceDropEventCursor = eventRows[eventRows.length - 1].id;
+      } else {
+        AutonomousDealDiscoveryEngine.priceDropEventCursor = null;
       }
 
       for (const evRow of eventRows) {
@@ -7245,97 +7755,38 @@ export class AutonomousDealDiscoveryEngine {
         try {
           payload = JSON.parse(evRow.payload_json || '{}');
         } catch {
+          await this.markEventProcessed(evRow.id, 'MALFORMED_PAYLOAD');
           continue;
         }
 
         const email = String(payload.email || '').trim().toLowerCase();
         const targetPrice = Number(payload.targetPriceINR || 0);
-        if (!email || !email.includes('@')) continue;
-
-        // Skip contacts who have opted out or are suppressed in outbound_contacts, or whose watch was already dispatched
-        const optOutCheckSql = `SELECT is_opted_out, is_suppressed, authorization_evidence_json FROM outbound_contacts WHERE prospect_email = ? LIMIT 1`;
-        let isOptedOut = false;
-        let isAlreadyDispatched = false;
-        try {
-          let optRows: any[] = [];
-          if (this.d1Repo.isRemoteD1Configured() || isProd) {
-            const optRes = await this.d1Repo.executeRead('outbound_contacts', optOutCheckSql, [email]);
-            optRows = Array.isArray(optRes?.results) ? optRes.results : [];
-          } else {
-            optRows = getDb().prepare(optOutCheckSql).all(email) as any[];
-          }
-          if (optRows.length > 0) {
-            if (optRows[0].is_opted_out === 1 || optRows[0].is_suppressed === 1) {
-              isOptedOut = true;
-            }
-            const authEv = JSON.parse(optRows[0].authorization_evidence_json || '{}');
-            const watches: any[] = Array.isArray(authEv.watches) ? authEv.watches : [];
-            const matchingWatch = watches.find((w: any) =>
-              w && ((payload.dealId && w.target_deal_id === payload.dealId) || (payload.productSlug && w.target_deal_slug === payload.productSlug))
-            );
-            if (matchingWatch?.dispatched_at) {
-              isAlreadyDispatched = true;
-            }
-          }
-        } catch {}
-
-        if (isOptedOut) {
-          skipped++;
+        if (!email || !email.includes('@')) {
+          await this.markEventProcessed(evRow.id, 'MALFORMED_PAYLOAD');
           continue;
         }
 
-        if (isAlreadyDispatched) {
-          try {
-            const completeSql = `UPDATE durable_events SET processed = 1, processed_at = datetime('now') WHERE id = ?`;
-            getDb().prepare(completeSql).run(evRow.id);
-            if (this.d1Repo.isRemoteD1Configured() || isProd) {
-              await this.d1Repo.executeWrite('durable_events', completeSql, [evRow.id]);
-            }
-          } catch {}
-          continue;
-        }
-
-        const hasSpecificIdentity = Boolean(payload.dealId || payload.productSlug);
-        const matchedDeal = validDeals.find((d) => {
-          if (payload.dealId && d.id === payload.dealId) return true;
-          if (payload.productSlug && (d.slug === payload.productSlug || d.canonicalSlug === payload.productSlug)) return true;
-          if (!hasSpecificIdentity && payload.category && d.category && d.category.toLowerCase() === String(payload.category).toLowerCase()) {
-            // Apply targetPrice directly during category match selection so deals above target don't block eligible deals
-            if (targetPrice > 0 && Number(d.currentPriceINR || 0) > targetPrice) {
-              return false;
-            }
-            return true;
-          }
-          return false;
+        checked++;
+        const outcome = await this.processSinglePriceAlertCandidate({
+          email,
+          recipientName: payload.name,
+          dealId: payload.dealId,
+          productSlug: payload.productSlug,
+          category: payload.category,
+          targetPriceINR: targetPrice,
+          origin: payload.origin,
+          queryOrUrl: payload.queryOrUrl,
+          title: payload.title,
+          subscriptionId: payload.subscriptionId,
+          validDeals,
+          siteUrl,
+          brevo,
+          sourceType: 'DURABLE_EVENT',
+          sourceEventId: evRow.id
         });
 
-        if (!matchedDeal) continue;
-        if (targetPrice > 0 && Number(matchedDeal.currentPriceINR || 0) > targetPrice) continue;
-
-        const redirectUrl = `${siteUrl}/api/v1/public/deals/${encodeURIComponent(matchedDeal.id)}/redirect?utm_source=price_alert`;
-        const priceStr = `₹${Number(matchedDeal.currentPriceINR).toLocaleString('en-IN')}`;
-        const targetStr = targetPrice > 0 ? `₹${targetPrice.toLocaleString('en-IN')}` : 'your target';
-        const subject = `Price Drop Alert: ${matchedDeal.title} is now ${priceStr}`;
-        const textContent = `Good news! Your watched item dropped to ${priceStr} on ${matchedDeal.merchant}.\nClaim Verified Price (#Ad): ${redirectUrl}\n\n#Ad Affiliate Disclosure: Qualifying purchases through this link may earn an affiliate commission at zero extra cost to you.`;
-
-        try {
-          const sendRes = await brevo.sendTransactionalEmail({
-            to: [{ email, name: payload.name || 'Buyer' }],
-            subject,
-            textContent,
-            htmlContent: `<div style="font-family:sans-serif;line-height:1.6"><h2>Price Drop Alert (#Ad)</h2><p><strong>${matchedDeal.title}</strong> is now <strong>${priceStr}</strong> on ${matchedDeal.merchant} (target: ${targetStr}).</p><p><a href="${redirectUrl}" style="display:inline-block;padding:10px 18px;background:#06b6d4;color:#020617;font-weight:700;border-radius:6px;text-decoration:none;">View Deal at ${matchedDeal.merchant} →</a></p><p style="font-size:12px;color:#64748b;">#Ad Affiliate Disclosure: Qualifying purchases via this link may earn a commission at zero extra cost to you.</p></div>`
-          });
-
-          if (sendRes.success && sendRes.status === 'SENT') {
-            const updateEvSql = `UPDATE durable_events SET processed = 1, processed_at = datetime('now') WHERE id = ?`;
-            if (this.d1Repo.isRemoteD1Configured() || isProd) {
-              await this.d1Repo.executeWrite('durable_events', updateEvSql, [evRow.id]);
-            } else {
-              getDb().prepare(updateEvSql).run(evRow.id);
-            }
-            dispatched++;
-          }
-        } catch {}
+        if (outcome === 'DISPATCHED') dispatched++;
+        else if (outcome === 'SKIPPED') skipped++;
       }
     } catch {}
 

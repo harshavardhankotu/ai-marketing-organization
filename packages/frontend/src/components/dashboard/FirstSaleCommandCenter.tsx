@@ -49,9 +49,12 @@ interface DistributionKitData {
   topImpulseDeals: DistributionKitDeal[];
   searchEngineChecklist: {
     sitemapUrl: string;
+    sitemapStatus?: string;
+    sitemapUrlCount?: number;
     robotsUrl: string;
-    indexNowKeyUrl: string;
+    indexNowKeyUrl: string | null;
     indexNowStatus: string;
+    searchEngineIndexing?: string;
     googleSearchConsoleInstructions: string;
     bingWebmasterInstructions: string;
   };
@@ -876,151 +879,194 @@ export const FirstSaleCommandCenter: React.FC = () => {
         </div>
 
         {distKitError && (
-          <div className="py-2 px-3 rounded-lg bg-rose-950/30 border border-rose-500/30 text-xs text-rose-200">
-            {distKitError}
+          <div className="py-2.5 px-3.5 rounded-lg bg-rose-950/40 border border-rose-500/40 text-xs text-rose-200 flex items-center justify-between gap-2">
+            <span>{distKitError}</span>
+            <button
+              type="button"
+              onClick={loadDistributionKit}
+              className="px-2.5 py-1 text-[11px] font-semibold rounded bg-rose-900/60 hover:bg-rose-800 text-white border border-rose-700 transition-colors"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+
+        {distKitLoading && !distKit && (
+          <div className="py-8 text-center text-xs text-slate-400 space-y-2">
+            <RefreshCw className="w-5 h-5 mx-auto animate-spin text-cyan-400" />
+            <p>Loading buyer-intent distribution kit and verified impulse deals...</p>
+          </div>
+        )}
+
+        {!distKitLoading && !distKit && !distKitError && (
+          <div className="py-6 text-center text-xs text-slate-400 space-y-2">
+            <p>No distribution kit loaded yet.</p>
+            <button
+              type="button"
+              onClick={loadDistributionKit}
+              className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-cyan-900/40 hover:bg-cyan-800/60 text-cyan-200 border border-cyan-700 transition-colors"
+            >
+              Load Distribution Kit
+            </button>
           </div>
         )}
 
         {/* Top 5 Live Verified Impulse Deals Snippets */}
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <h4 className="text-xs font-bold uppercase tracking-wider text-slate-300">
-              Top Verified Impulse Deals (₹299–₹1,499) &amp; Grounded Snippets
-            </h4>
-            <span className="text-xs font-mono text-slate-400">
-              {distKit?.topImpulseDeals?.length ?? 0} active
-            </span>
-          </div>
-
-          {(!distKit?.topImpulseDeals || distKit.topImpulseDeals.length === 0) ? (
-            <p className="text-xs text-slate-400 py-2">
-              {distKitLoading ? 'Loading verified impulse deals...' : 'No impulse deals available yet. Run a live harvest cycle to sync catalog.'}
-            </p>
-          ) : (
-            <div className="space-y-3">
-              {distKit.topImpulseDeals.map((deal) => (
-                <div key={deal.dealId} className="rounded-lg border border-slate-800 bg-slate-950/60 p-3 space-y-2">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-bold text-white truncate max-w-md">{deal.title}</span>
-                        <span className="text-[11px] font-semibold text-emerald-400">₹{deal.priceINR}</span>
-                        {deal.referencePriceINR > deal.priceINR && (
-                          <span className="text-[10px] text-slate-500 line-through">MRP ₹{deal.referencePriceINR}</span>
-                        )}
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-950/60 text-emerald-300 border border-emerald-800">
-                          {deal.verifiedDiscountPercent}% OFF
-                        </span>
-                      </div>
-                      <div className="text-[11px] text-slate-400 mt-0.5">
-                        <span>{deal.merchant}</span> &bull; <span>{deal.category}</span> &bull; Target: <span className="font-mono text-cyan-300">{deal.targetSubreddit}</span>
-                      </div>
-                    </div>
-                    {deal.youtubeReview && (
-                      <div className="text-[11px] text-slate-400 flex items-center gap-1.5">
-                        <span className="text-red-400 font-bold">▶</span>
-                        <span className="truncate max-w-[200px]" title={deal.youtubeReview.title}>
-                          {deal.youtubeReview.title}
-                        </span>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* 3 Copy Action Buttons */}
-                  <div className="flex flex-wrap gap-2 pt-1 border-t border-slate-800/60">
-                    <button
-                      type="button"
-                      onClick={() => handleCopy(`yt_${deal.dealId}`, deal.snippets.youtubeCommentReply)}
-                      className="px-2.5 py-1 text-[11px] font-semibold rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition-colors flex items-center gap-1.5"
-                    >
-                      {copiedKey === `yt_${deal.dealId}` ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3 text-red-400" />}
-                      <span>Copy YouTube Reply</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleCopy(`rd_${deal.dealId}`, deal.snippets.redditReply)}
-                      className="px-2.5 py-1 text-[11px] font-semibold rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition-colors flex items-center gap-1.5"
-                    >
-                      {copiedKey === `rd_${deal.dealId}` ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3 text-orange-400" />}
-                      <span>Copy Reddit Reply ({deal.targetSubreddit})</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleCopy(`ig_${deal.dealId}`, deal.snippets.igTelegramCaption)}
-                      className="px-2.5 py-1 text-[11px] font-semibold rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition-colors flex items-center gap-1.5"
-                    >
-                      {copiedKey === `ig_${deal.dealId}` ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3 text-pink-400" />}
-                      <span>Copy IG/Telegram Caption</span>
-                    </button>
-                    <a
-                      href={deal.dealDetailUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="px-2 py-1 text-[11px] font-semibold rounded bg-slate-800/40 hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition-colors flex items-center gap-1 ml-auto"
-                    >
-                      <ExternalLink className="w-3 h-3" />
-                      <span>View Deal</span>
-                    </a>
-                  </div>
-                </div>
-              ))}
+        {distKit && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-300">
+                Top Verified Impulse Deals (₹299–₹1,499) &amp; Grounded Snippets
+              </h4>
+              <span className="text-xs font-mono text-slate-400">
+                {distKit.topImpulseDeals?.length ?? 0} active
+              </span>
             </div>
-          )}
-        </div>
+
+            {(!distKit.topImpulseDeals || distKit.topImpulseDeals.length === 0) ? (
+              <p className="text-xs text-slate-400 py-2">
+                No impulse deals available yet. Run a live harvest cycle to sync catalog.
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {distKit.topImpulseDeals.map((deal) => (
+                  <div key={deal.dealId} className="rounded-lg border border-slate-800 bg-slate-950/60 p-3 space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-white truncate max-w-md">{deal.title}</span>
+                          <span className="text-[11px] font-semibold text-emerald-400">₹{deal.priceINR}</span>
+                          {deal.referencePriceINR > deal.priceINR && (
+                            <span className="text-[10px] text-slate-500 line-through">MRP ₹{deal.referencePriceINR}</span>
+                          )}
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-950/60 text-emerald-300 border border-emerald-800">
+                            {deal.verifiedDiscountPercent}% OFF
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-slate-400 mt-0.5">
+                          <span>{deal.merchant}</span> &bull; <span>{deal.category}</span> &bull; Target: <span className="font-mono text-cyan-300">{deal.targetSubreddit}</span>
+                        </div>
+                      </div>
+                      {deal.youtubeReview && (
+                        <div className="text-[11px] text-slate-400 flex items-center gap-1.5">
+                          <span className="text-red-400 font-bold">▶</span>
+                          <span className="truncate max-w-[200px]" title={deal.youtubeReview.title}>
+                            {deal.youtubeReview.title}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* 3 Copy Action Buttons */}
+                    <div className="flex flex-wrap gap-2 pt-1 border-t border-slate-800/60">
+                      <button
+                        type="button"
+                        onClick={() => handleCopy(`yt_${deal.dealId}`, deal.snippets.youtubeCommentReply)}
+                        className="px-2.5 py-1 text-[11px] font-semibold rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition-colors flex items-center gap-1.5"
+                      >
+                        {copiedKey === `yt_${deal.dealId}` ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3 text-red-400" />}
+                        <span>Copy YouTube Reply</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleCopy(`rd_${deal.dealId}`, deal.snippets.redditReply)}
+                        className="px-2.5 py-1 text-[11px] font-semibold rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition-colors flex items-center gap-1.5"
+                      >
+                        {copiedKey === `rd_${deal.dealId}` ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3 text-orange-400" />}
+                        <span>Copy Reddit Reply ({deal.targetSubreddit})</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleCopy(`ig_${deal.dealId}`, deal.snippets.igTelegramCaption)}
+                        className="px-2.5 py-1 text-[11px] font-semibold rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition-colors flex items-center gap-1.5"
+                      >
+                        {copiedKey === `ig_${deal.dealId}` ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3 text-pink-400" />}
+                        <span>Copy IG/Telegram Caption</span>
+                      </button>
+                      <a
+                        href={deal.dealDetailUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-2 py-1 text-[11px] font-semibold rounded bg-slate-800/40 hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition-colors flex items-center gap-1 ml-auto"
+                      >
+                        <ExternalLink className="w-3 h-3" />
+                        <span>View Deal</span>
+                      </a>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Search Engine Free Indexing Checklist */}
-        <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 space-y-2">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Globe className="w-4 h-4 text-emerald-400" />
-              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-300">
-                Free Search Engine Indexing Checklist
-              </h4>
-            </div>
-            <span className={`text-[11px] px-2 py-0.5 rounded-full font-semibold font-mono ${
-              distKit?.searchEngineChecklist?.indexNowStatus === 'ACTIVE'
-                ? 'bg-emerald-950/50 text-emerald-400 border border-emerald-800'
-                : 'bg-amber-950/50 text-amber-400 border border-amber-800'
-            }`}>
-              IndexNow: {distKit?.searchEngineChecklist?.indexNowStatus || 'AWAITING_INDEXNOW_KEY'}
-            </span>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs text-slate-400 pt-1">
-            <div className="rounded bg-slate-900/60 p-2 border border-slate-800 space-y-1">
-              <div className="flex items-center justify-between">
-                <span className="font-semibold text-slate-200">Sitemap URL:</span>
-                <button
-                  type="button"
-                  onClick={() => handleCopy('sitemap', distKit?.searchEngineChecklist?.sitemapUrl || 'https://ai-marketing-organization.onrender.com/sitemap.xml')}
-                  className="text-[11px] text-cyan-400 hover:underline flex items-center gap-1"
-                >
-                  {copiedKey === 'sitemap' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                  <span>Copy</span>
-                </button>
+        {distKit && (
+          <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Globe className="w-4 h-4 text-emerald-400" />
+                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-300">
+                  Free Search Engine Indexing Checklist
+                </h4>
               </div>
-              <div className="font-mono text-[11px] text-slate-300 truncate">
-                {distKit?.searchEngineChecklist?.sitemapUrl || 'https://ai-marketing-organization.onrender.com/sitemap.xml'}
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] px-2 py-0.5 rounded-full font-mono bg-slate-800 text-slate-300 border border-slate-700">
+                  {distKit.searchEngineChecklist.searchEngineIndexing || 'EXTERNAL_CONSOLE_CHECK_REQUIRED'}
+                </span>
+                <span className={`text-[11px] px-2 py-0.5 rounded-full font-semibold font-mono ${
+                  distKit.searchEngineChecklist.indexNowStatus === 'SUBMITTED'
+                    ? 'bg-emerald-950/50 text-emerald-400 border border-emerald-800'
+                    : distKit.searchEngineChecklist.indexNowStatus === 'CONFIGURED_READY'
+                    ? 'bg-cyan-950/50 text-cyan-300 border border-cyan-800'
+                    : 'bg-slate-900 text-slate-400 border border-slate-700'
+                }`}>
+                  IndexNow: {distKit.searchEngineChecklist.indexNowStatus}
+                </span>
               </div>
-              <p className="text-[11px] text-slate-500 pt-1">
-                {distKit?.searchEngineChecklist?.googleSearchConsoleInstructions || 'Submit sitemap in Google Search Console -> Sitemaps.'}
-              </p>
             </div>
 
-            <div className="rounded bg-slate-900/60 p-2 border border-slate-800 space-y-1">
-              <div className="flex items-center justify-between">
-                <span className="font-semibold text-slate-200">IndexNow Live Key:</span>
-                <span className="text-[10px] text-emerald-400 font-mono">Auto-pings Bing &amp; Yandex</span>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs text-slate-400 pt-1">
+              <div className="rounded bg-slate-900/60 p-2 border border-slate-800 space-y-1">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-semibold text-slate-200">Sitemap URL:</span>
+                    <span className="text-[10px] px-1.5 py-0.2 rounded bg-cyan-950/60 text-cyan-300 border border-cyan-800 font-mono">
+                      {distKit.searchEngineChecklist.sitemapStatus || 'GENERATED_DYNAMIC'} ({distKit.searchEngineChecklist.sitemapUrlCount ?? 0} URLs)
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleCopy('sitemap', distKit.searchEngineChecklist.sitemapUrl)}
+                    className="text-[11px] text-cyan-400 hover:underline flex items-center gap-1"
+                  >
+                    {copiedKey === 'sitemap' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                    <span>Copy</span>
+                  </button>
+                </div>
+                <div className="font-mono text-[11px] text-slate-300 truncate">
+                  {distKit.searchEngineChecklist.sitemapUrl}
+                </div>
+                <p className="text-[11px] text-slate-500 pt-1">
+                  {distKit.searchEngineChecklist.googleSearchConsoleInstructions}
+                </p>
               </div>
-              <div className="font-mono text-[11px] text-slate-300 truncate">
-                {distKit?.searchEngineChecklist?.indexNowKeyUrl || 'https://ai-marketing-organization.onrender.com/indexnow-key-38f9d0c2.txt'}
+
+              <div className="rounded bg-slate-900/60 p-2 border border-slate-800 space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-slate-200">IndexNow Live Key:</span>
+                  <span className="text-[10px] text-emerald-400 font-mono">Auto-pings Bing &amp; Yandex</span>
+                </div>
+                <div className="font-mono text-[11px] text-slate-300 truncate">
+                  {distKit.searchEngineChecklist.indexNowKeyUrl || 'Not configured (Set INDEXNOW_KEY env)'}
+                </div>
+                <p className="text-[11px] text-slate-500 pt-1">
+                  {distKit.searchEngineChecklist.bingWebmasterInstructions}
+                </p>
               </div>
-              <p className="text-[11px] text-slate-500 pt-1">
-                {distKit?.searchEngineChecklist?.bingWebmasterInstructions || 'Submit sitemap in Bing Webmaster Tools -> Sitemaps. IndexNow automatically pings on deal discovery.'}
-              </p>
             </div>
           </div>
-        </div>
+        )}
       </div>
 
       {/* 3. Ready ₹499 SiteFix Audits & Pending Brevo Outreach */}

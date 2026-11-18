@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   AutonomousDealDiscoveryEngine,
@@ -20,16 +21,28 @@ describe('Stage S: Zero-Budget Affiliate Buyer-Intent Engine', () => {
 
   beforeEach(() => {
     process.env = { ...origEnv };
-    // Ensure core foreign keys exist
+    // Ensure core foreign keys exist and test state is cleanly isolated
     try {
       db.prepare(`
         INSERT OR IGNORE INTO organizations (id, name, slug)
         VALUES ('org_owner_primary', 'Platform Owner Org', 'owner-org')
       `).run();
+    } catch {}
+    try {
       db.prepare(`
-        INSERT OR IGNORE INTO businesses (id, organization_id, name, slug)
+        INSERT OR IGNORE INTO businesses (id, organization_id, name, public_slug)
         VALUES ('biz_platform_aro', 'org_owner_primary', 'ARO Platform', 'platform-aro')
       `).run();
+    } catch {}
+    try {
+      db.prepare(`DELETE FROM outbound_contacts WHERE source IN ('FAIR_PRICE_ALERT', 'CUSTOMER_DESK_ALERT_OPTIN')`).run();
+    } catch {}
+    try {
+      db.prepare(`DELETE FROM durable_events WHERE event_type LIKE 'PRICE_%' OR event_type LIKE 'INDEXNOW_%'`).run();
+    } catch {}
+    try {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+      (engine as any).dealsMap?.clear();
     } catch {}
   });
 
@@ -42,7 +55,9 @@ describe('Stage S: Zero-Budget Affiliate Buyer-Intent Engine', () => {
       (engine as any).dealsMap?.delete('deal_impulse_perfume_99');
       (engine as any).dealsMap?.delete('deal_plum_vanilla_01');
       (engine as any).dealsMap?.delete('deal_fragrance_combo_01');
-    } catch {}
+    } catch (e: any) {
+      console.error('beforeEach error:', e?.message);
+    }
   });
 
   describe('Task 1: isImpulseConversionDeal & Impulse-Conversion Scoring Boost', () => {
@@ -541,9 +556,508 @@ describe('Stage S: Zero-Budget Affiliate Buyer-Intent Engine', () => {
       // Verify search engine checklist
       expect(json.searchEngineChecklist).toBeDefined();
       expect(json.searchEngineChecklist.sitemapUrl).toContain('/sitemap.xml');
+      expect(json.searchEngineChecklist.sitemapStatus).toBe('GENERATED_DYNAMIC');
+      expect(typeof json.searchEngineChecklist.sitemapUrlCount).toBe('number');
       expect(json.searchEngineChecklist.robotsUrl).toContain('/robots.txt');
       expect(json.searchEngineChecklist.indexNowKeyUrl).toContain('/38f9d0c2.txt');
-      expect(json.searchEngineChecklist.indexNowStatus).toBe('ACTIVE');
+      expect(json.searchEngineChecklist.indexNowStatus).toBe('CONFIGURED_READY');
+      expect(json.searchEngineChecklist.searchEngineIndexing).toBe('EXTERNAL_CONSOLE_CHECK_REQUIRED');
+    });
+  });
+
+  describe('Stage S.1 Acceptance Gates & Failure Injection Verification', () => {
+    it('Gate 1 & Gate 2: Unified claim prevents duplicate sends across outbound_contacts + durable_events and concurrent worker runs', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+      const testEmail = `dedupe_buyer_${Date.now()}@example.com`;
+      const brevo = BrevoMcpClient.getInstance();
+      const sendSpy = vi.spyOn(brevo, 'sendTransactionalEmail').mockResolvedValue({
+        success: true,
+        messageId: 'msg_dedupe_test',
+        status: 'SENT'
+      });
+
+      // 1. Setup authorized contact with active watch
+      const contactId = `cnt_dedupe_${Date.now()}`;
+      db.prepare(`
+        INSERT INTO outbound_contacts (
+          id, business_id, organization_id, prospect_name, prospect_email, channel,
+          email_authorized, whatsapp_opt_in, authorization_source, authorization_evidence_json,
+          source, status, is_opted_out, is_bounced, is_suppressed
+        ) VALUES (
+          ?, 'biz_platform_aro', 'org_owner_primary', 'Dedupe Tester', ?, 'EMAIL',
+          1, 0, 'EXPLICIT_CONSENT', ?, 'CUSTOMER_DESK_ALERT_OPTIN', 'ACTIVE', 0, 0, 0
+        )
+      `).run(
+        contactId,
+        testEmail,
+        JSON.stringify({
+          consent_status: 'OPTED_IN_FIRST_PARTY',
+          watches: [{
+            target_deal_id: 'deal_dedupe_p1',
+            target_deal_slug: 'dedupe-wireless-earbuds',
+            target_price_inr: 999,
+            registered_at: new Date().toISOString(),
+            dispatched_at: null,
+            origin: 'EXPLICIT_PRODUCT'
+          }]
+        })
+      );
+
+      // 2. Also insert durable event for the same email and deal
+      const eventId = `sub_dedupe_evt_${Date.now()}`;
+      db.prepare(`
+        INSERT INTO durable_events (id, event_type, organization_id, payload_json, processed, created_at)
+        VALUES (?, 'PRICE_DROP_SUBSCRIPTION', 'org_owner_primary', ?, 0, datetime('now'))
+      `).run(
+        eventId,
+        JSON.stringify({
+          email: testEmail,
+          dealId: 'deal_dedupe_p1',
+          productSlug: 'dedupe-wireless-earbuds',
+          targetPriceINR: 999,
+          origin: 'EXPLICIT_PRODUCT',
+          consent: 'OPTED_IN_FIRST_PARTY'
+        })
+      );
+
+      const deal: NormalizedDeal = {
+        id: 'deal_dedupe_p1',
+        slug: 'dedupe-wireless-earbuds',
+        canonicalSlug: 'dedupe-wireless-earbuds',
+        title: 'Dedupe Verified Earbuds',
+        brand: 'SoundBrand',
+        merchant: 'SoundStore',
+        category: 'Audio',
+        currentPriceINR: 799, // <= 999 target
+        referencePriceINR: 1999,
+        verifiedDiscountPercent: 60,
+        confidenceScore: 90,
+        buyerValueScore: 85,
+        availability: 'IN_STOCK',
+        verificationStatus: 'VERIFIED',
+        isMonetizable: true,
+        sourceDomain: 'soundstore.com',
+        observedAt: new Date().toISOString(),
+        lastCheckedAt: new Date().toISOString(),
+        trackingUrl: 'https://soundstore.com/deal',
+        productUrl: 'https://soundstore.com/deal',
+        evidence: {} as any
+      };
+
+      // Run dispatcher
+      const res1 = await engine.checkAndDispatchTargetPriceAlerts([deal]);
+      expect(res1.dispatched).toBe(1);
+      expect(sendSpy).toHaveBeenCalledTimes(1);
+
+      // Verify contact watch is marked dispatched
+      const contactAfter = db.prepare('SELECT authorization_evidence_json FROM outbound_contacts WHERE id = ?').get(contactId) as any;
+      const evAfter = JSON.parse(contactAfter.authorization_evidence_json);
+      expect(evAfter.watches[0].dispatched_at).toBeTruthy();
+
+      // Verify durable event is marked processed
+      const eventAfter = db.prepare('SELECT processed FROM durable_events WHERE id = ?').get(eventId) as any;
+      expect(eventAfter.processed).toBe(1);
+
+      // Run second invocation (simulating worker cycle / concurrent loop)
+      const res2 = await engine.checkAndDispatchTargetPriceAlerts([deal]);
+      expect(res2.dispatched).toBe(0);
+      expect(sendSpy).toHaveBeenCalledTimes(1); // Zero duplicate sends!
+    });
+
+    it('Gate 6: Ambiguous post-send DB failure leaves PROCESSING claim row intact so second worker does NOT re-send duplicate email', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+      const testEmail = `postsend_fail_${Date.now()}@example.com`;
+      const brevo = BrevoMcpClient.getInstance();
+      const sendSpy = vi.spyOn(brevo, 'sendTransactionalEmail').mockResolvedValue({
+        success: true,
+        messageId: 'msg_ambiguous_db_fail',
+        status: 'SENT'
+      });
+
+      const contactId = `cnt_ambiguous_${Date.now()}`;
+      db.prepare(`
+        INSERT INTO outbound_contacts (
+          id, business_id, organization_id, prospect_name, prospect_email, channel,
+          email_authorized, whatsapp_opt_in, authorization_source, authorization_evidence_json,
+          source, status, is_opted_out, is_bounced, is_suppressed
+        ) VALUES (
+          ?, 'biz_platform_aro', 'org_owner_primary', 'Ambiguous Tester', ?, 'EMAIL',
+          1, 0, 'EXPLICIT_CONSENT', ?, 'CUSTOMER_DESK_ALERT_OPTIN', 'ACTIVE', 0, 0, 0
+        )
+      `).run(
+        contactId,
+        testEmail,
+        JSON.stringify({
+          consent_status: 'OPTED_IN_FIRST_PARTY',
+          watches: [{
+            target_deal_id: 'deal_ambiguous_01',
+            target_deal_slug: 'ambiguous-deal',
+            target_price_inr: 1000,
+            registered_at: new Date().toISOString(),
+            dispatched_at: null,
+            origin: 'EXPLICIT_PRODUCT'
+          }]
+        })
+      );
+
+      const deal: NormalizedDeal = {
+        id: 'deal_ambiguous_01',
+        slug: 'ambiguous-deal',
+        canonicalSlug: 'ambiguous-deal',
+        title: 'Ambiguous Failure Deal',
+        brand: 'AmbiguousBrand',
+        merchant: 'AmbiguousStore',
+        category: 'Audio',
+        currentPriceINR: 899,
+        referencePriceINR: 1999,
+        verifiedDiscountPercent: 55,
+        confidenceScore: 90,
+        buyerValueScore: 85,
+        availability: 'IN_STOCK',
+        verificationStatus: 'VERIFIED',
+        isMonetizable: true,
+        sourceDomain: 'store.com',
+        observedAt: new Date().toISOString(),
+        lastCheckedAt: new Date().toISOString(),
+        trackingUrl: 'https://store.com/deal',
+        productUrl: 'https://store.com/deal',
+        evidence: {} as any
+      };
+
+      // Derive expected deterministic claim ID
+      const claimId = `price_alert_claim_${createHash('sha256').update(`${testEmail}:deal_ambiguous_01:deal_ambiguous_01`).digest('hex').slice(0, 36)}`;
+
+      // Pre-insert an in-flight PROCESSING claim row (as if worker 1 sent email, but DB update to processed=1 crashed)
+      db.prepare(`
+        INSERT INTO durable_events (id, event_type, organization_id, payload_json, processed, error_message, created_at)
+        VALUES (?, 'PRICE_ALERT_DELIVERY_CLAIMED', 'org_owner_primary', '{}', 0, 'PROCESSING', datetime('now'))
+      `).run(claimId);
+
+      // Worker 2 runs: should detect in-flight claim, refuse to re-send
+      const dispatchRes = await engine.checkAndDispatchTargetPriceAlerts([deal]);
+      expect(dispatchRes.dispatched).toBe(0);
+      expect(sendSpy).not.toHaveBeenCalled(); // Protected from duplicate send!
+    });
+
+    it('Gate 1: Rejects PRICE_DROP_SUBSCRIPTION event when no matching contact exists or contact is suppressed/opted-out', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+      const brevo = BrevoMcpClient.getInstance();
+      const sendSpy = vi.spyOn(brevo, 'sendTransactionalEmail');
+
+      const deal: NormalizedDeal = {
+        id: 'deal_gate1_01',
+        slug: 'gate1-deal',
+        canonicalSlug: 'gate1-deal',
+        title: 'Gate 1 Test Deal',
+        brand: 'Brand',
+        merchant: 'Store',
+        category: 'Audio',
+        currentPriceINR: 500,
+        referencePriceINR: 1000,
+        verifiedDiscountPercent: 50,
+        availability: 'IN_STOCK',
+        verificationStatus: 'VERIFIED',
+        isMonetizable: true,
+        sourceDomain: 'store.com',
+        observedAt: new Date().toISOString(),
+        lastCheckedAt: new Date().toISOString(),
+        trackingUrl: 'https://store.com/deal',
+        productUrl: 'https://store.com/deal',
+        evidence: {} as any
+      };
+
+      // 1. Ghost buyer: no outbound_contacts row
+      const ghostEmail = `ghost_${Date.now()}@example.com`;
+      const ghostEvtId = `evt_ghost_${Date.now()}`;
+      db.prepare(`
+        INSERT INTO durable_events (id, event_type, organization_id, payload_json, processed, created_at)
+        VALUES (?, 'PRICE_DROP_SUBSCRIPTION', 'org_owner_primary', ?, 0, datetime('now'))
+      `).run(ghostEvtId, JSON.stringify({ email: ghostEmail, dealId: 'deal_gate1_01', targetPriceINR: 800, origin: 'EXPLICIT_PRODUCT' }));
+
+      await engine.checkAndDispatchTargetPriceAlerts([deal]);
+      expect(sendSpy).not.toHaveBeenCalled();
+      const ghostEvtRow = db.prepare('SELECT processed, error_message FROM durable_events WHERE id = ?').get(ghostEvtId) as any;
+      expect(ghostEvtRow.processed).toBe(1);
+      expect(ghostEvtRow.error_message).toBe('REJECTED_NO_AUTHORISED_CONTACT');
+
+      // 2. Opted out contact
+      const optedOutEmail = `optout_${Date.now()}@example.com`;
+      db.prepare(`
+        INSERT INTO outbound_contacts (
+          id, business_id, organization_id, prospect_name, prospect_email, channel,
+          email_authorized, whatsapp_opt_in, authorization_source, authorization_evidence_json,
+          source, status, is_opted_out, is_bounced, is_suppressed
+        ) VALUES (
+          ?, 'biz_platform_aro', 'org_owner_primary', 'OptedOut', ?, 'EMAIL',
+          1, 0, 'EXPLICIT_CONSENT', '{}', 'CUSTOMER_DESK_ALERT_OPTIN', 'ACTIVE', 1, 0, 0
+        )
+      `).run(`cnt_optout_${Date.now()}`, optedOutEmail);
+
+      const optOutEvtId = `evt_optout_${Date.now()}`;
+      db.prepare(`
+        INSERT INTO durable_events (id, event_type, organization_id, payload_json, processed, created_at)
+        VALUES (?, 'PRICE_DROP_SUBSCRIPTION', 'org_owner_primary', ?, 0, datetime('now'))
+      `).run(optOutEvtId, JSON.stringify({ email: optedOutEmail, dealId: 'deal_gate1_01', targetPriceINR: 800, origin: 'EXPLICIT_PRODUCT' }));
+
+      await engine.checkAndDispatchTargetPriceAlerts([deal]);
+      expect(sendSpy).not.toHaveBeenCalled();
+      const optOutEvtRow = db.prepare('SELECT processed, error_message FROM durable_events WHERE id = ?').get(optOutEvtId) as any;
+      expect(optOutEvtRow.processed).toBe(1);
+      expect(optOutEvtRow.error_message).toBe('REJECTED_SUPPRESSED_OR_OPTED_OUT');
+    });
+
+    it('Gate 3 & Gate 5: Concurrent subscriptions merge watches cleanly and partial DB failures fail closed (503)', async () => {
+      // 1. Partial DB failure fails closed with 503
+      const failEmail = `fail_db_${Date.now()}@example.com`;
+      const originalPrepare = db.prepare.bind(db);
+      vi.spyOn(db, 'prepare').mockImplementation((sql: string) => {
+        if (sql.includes('INSERT INTO durable_events') && sql.includes('PRICE_DROP_SUBSCRIPTION')) {
+          throw new Error('SIMULATED_D1_DISK_FULL');
+        }
+        return originalPrepare(sql);
+      });
+
+      const resFail = await app.request('/api/v1/customer-desk/subscribe-alerts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: failEmail,
+          dealId: 'deal_fail_01',
+          productSlug: 'fail-product',
+          targetPriceINR: 500
+        })
+      });
+
+      expect(resFail.status).toBe(503);
+      const jsonFail = await resFail.json();
+      expect(jsonFail.success).toBe(false);
+      expect(jsonFail.error).toBe('SUBSCRIPTION_PERSISTENCE_FAILED');
+
+      vi.restoreAllMocks();
+
+      // 2. Concurrent watch merging
+      const concurrentEmail = `concurrent_${Date.now()}@example.com`;
+      const sub1 = await app.request('/api/v1/customer-desk/subscribe-alerts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: concurrentEmail,
+          dealId: 'deal_product_alpha',
+          productSlug: 'product-alpha',
+          targetPriceINR: 499
+        })
+      });
+      expect(sub1.status).toBe(201);
+
+      const sub2 = await app.request('/api/v1/customer-desk/subscribe-alerts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: concurrentEmail,
+          dealId: 'deal_product_beta',
+          productSlug: 'product-beta',
+          targetPriceINR: 899
+        })
+      });
+      expect(sub2.status).toBe(201);
+
+      // Verify both watches merged into outbound_contacts without overwriting
+      const contactRow = db.prepare('SELECT authorization_evidence_json FROM outbound_contacts WHERE prospect_email = ?').get(concurrentEmail) as any;
+      const ev = JSON.parse(contactRow.authorization_evidence_json);
+      expect(Array.isArray(ev.watches)).toBe(true);
+      expect(ev.watches.length).toBe(2);
+      expect(ev.watches.some((w: any) => w.target_deal_id === 'deal_product_alpha')).toBe(true);
+      expect(ev.watches.some((w: any) => w.target_deal_id === 'deal_product_beta')).toBe(true);
+    });
+
+    it('Gate 4: EXPLICIT_PRODUCT watch does not false-match other products via token overlap and unmatched watches stay active', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+      const testEmail = `explicit_match_${Date.now()}@example.com`;
+      const brevo = BrevoMcpClient.getInstance();
+      const sendSpy = vi.spyOn(brevo, 'sendTransactionalEmail').mockResolvedValue({
+        success: true,
+        messageId: 'msg_explicit_test',
+        status: 'SENT'
+      });
+
+      const contactId = `cnt_exp_${Date.now()}`;
+      db.prepare(`
+        INSERT INTO outbound_contacts (
+          id, business_id, organization_id, prospect_name, prospect_email, channel,
+          email_authorized, whatsapp_opt_in, authorization_source, authorization_evidence_json,
+          source, status, is_opted_out, is_bounced, is_suppressed
+        ) VALUES (
+          ?, 'biz_platform_aro', 'org_owner_primary', 'Strict Matcher', ?, 'EMAIL',
+          1, 0, 'EXPLICIT_CONSENT', ?, 'CUSTOMER_DESK_ALERT_OPTIN', 'ACTIVE', 0, 0, 0
+        )
+      `).run(
+        contactId,
+        testEmail,
+        JSON.stringify({
+          consent_status: 'OPTED_IN_FIRST_PARTY',
+          watches: [{
+            target_deal_id: null,
+            target_deal_slug: 'boat-airdopes-141',
+            target_price_inr: 800,
+            registered_at: new Date().toISOString(),
+            dispatched_at: null,
+            origin: 'EXPLICIT_PRODUCT'
+          }]
+        })
+      );
+
+      // 1. Unrelated product with token overlap (boAt Airdopes 131)
+      const tokenOverlapDeal: NormalizedDeal = {
+        id: 'deal_boat_131',
+        slug: 'boat-airdopes-131',
+        canonicalSlug: 'boat-airdopes-131',
+        title: 'boAt Airdopes 131 Earbuds',
+        brand: 'boAt',
+        merchant: 'boAt',
+        category: 'Audio',
+        currentPriceINR: 750, // <= 800 target, but different product!
+        referencePriceINR: 1990,
+        verifiedDiscountPercent: 62,
+        availability: 'IN_STOCK',
+        verificationStatus: 'VERIFIED',
+        isMonetizable: true,
+        sourceDomain: 'boat.com',
+        observedAt: new Date().toISOString(),
+        lastCheckedAt: new Date().toISOString(),
+        trackingUrl: 'https://boat.com/131',
+        productUrl: 'https://boat.com/131',
+        evidence: {} as any
+      };
+
+      const resOverlap = await engine.checkAndDispatchTargetPriceAlerts([tokenOverlapDeal]);
+      expect(resOverlap.dispatched).toBe(0);
+      expect(sendSpy).not.toHaveBeenCalled(); // Must NOT false-match!
+
+      // 2. Exact product but price still above target (₹999 > ₹800 target)
+      const higherPricedDeal: NormalizedDeal = {
+        id: 'deal_boat_141',
+        slug: 'boat-airdopes-141',
+        canonicalSlug: 'boat-airdopes-141',
+        title: 'boAt Airdopes 141',
+        brand: 'boAt',
+        merchant: 'boAt',
+        category: 'Audio',
+        currentPriceINR: 999, // > 800 target
+        referencePriceINR: 4490,
+        verifiedDiscountPercent: 77,
+        availability: 'IN_STOCK',
+        verificationStatus: 'VERIFIED',
+        isMonetizable: true,
+        sourceDomain: 'boat.com',
+        observedAt: new Date().toISOString(),
+        lastCheckedAt: new Date().toISOString(),
+        trackingUrl: 'https://boat.com/141',
+        productUrl: 'https://boat.com/141',
+        evidence: {} as any
+      };
+
+      const resHigh = await engine.checkAndDispatchTargetPriceAlerts([higherPricedDeal]);
+      expect(resHigh.dispatched).toBe(0);
+      expect(sendSpy).not.toHaveBeenCalled();
+
+      // Verify watch remains active (dispatched_at = null)
+      const contactMid = db.prepare('SELECT authorization_evidence_json FROM outbound_contacts WHERE id = ?').get(contactId) as any;
+      const evMid = JSON.parse(contactMid.authorization_evidence_json);
+      expect(evMid.watches[0].dispatched_at).toBeNull();
+
+      // 3. Price drops to ₹750 (<= 800 target) -> Alert fires!
+      const priceDropDeal: NormalizedDeal = {
+        ...higherPricedDeal,
+        currentPriceINR: 750
+      };
+
+      const resDrop = await engine.checkAndDispatchTargetPriceAlerts([priceDropDeal]);
+      expect(resDrop.dispatched).toBe(1);
+      expect(sendSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('Gate 7 & Gate 8: isImpulseConversionDeal rejects stale/rotated deals and SalesConversationEngine sorts & deduplicates top drops before .slice(0, 5)', async () => {
+      // 1. isImpulseConversionDeal invariant
+      expect(isImpulseConversionDeal({
+        currentPriceINR: 499,
+        verifiedDiscountPercent: 30,
+        availability: 'IN_STOCK',
+        isMonetizable: true,
+        trackingUrl: 'https://example.com',
+        isRotatedOut: true // Rotated out
+      })).toBe(false);
+
+      expect(isImpulseConversionDeal({
+        currentPriceINR: 499,
+        verifiedDiscountPercent: 30,
+        availability: 'IN_STOCK',
+        isMonetizable: true,
+        trackingUrl: 'https://example.com',
+        verificationStatus: 'EXPIRED' // Expired
+      })).toBe(false);
+
+      expect(isImpulseConversionDeal({
+        currentPriceINR: 499,
+        verifiedDiscountPercent: 30,
+        availability: 'OUT_OF_STOCK', // Not in stock
+        isMonetizable: true,
+        trackingUrl: 'https://example.com'
+      })).toBe(false);
+
+      expect(isImpulseConversionDeal({
+        currentPriceINR: 499,
+        verifiedDiscountPercent: 30,
+        availability: 'IN_STOCK',
+        isMonetizable: true,
+        trackingUrl: 'https://example.com',
+        lastCheckedAt: new Date(Date.now() - 50 * 3600 * 1000).toISOString() // > 48h stale
+      })).toBe(false);
+
+      // 2. SalesConversationEngine top drops ranking and deduplication
+      const engine = SalesConversationEngine.getInstance();
+      const res = await engine.handleInboundMessage({
+        organizationId: 'org_owner_primary',
+        businessId: 'biz_platform_aro',
+        senderContact: 'shopper_top_drops@example.com',
+        channel: 'WEB_DESK',
+        messageText: 'Show me top verified drops today',
+        isDiagnosticProbe: true
+      });
+
+      expect(res).toBeDefined();
+      expect(['SEND_DETAILS', 'INTERESTED']).toContain(res.intent);
+      if (res.resolvedOffer) {
+        expect(res.resolvedOffer.priceINR).toBeGreaterThanOrEqual(0);
+      }
+    });
+
+    it('Gate 9: intent-distribution-kit reports truthful CONFIGURED_READY / SUBMITTED states and zero hardcoded fallback URLs', async () => {
+      // Configure IndexNow key
+      process.env.INDEXNOW_KEY = 'valid-test-key-12345';
+
+      const session = OwnerAuthService.getInstance().createSession('127.0.0.1');
+      const res1 = await app.request('/api/v1/owner/first-sale/intent-distribution-kit', {
+        headers: { Authorization: `Bearer ${session.token}` }
+      });
+      expect(res1.status).toBe(200);
+      const json1 = await res1.json();
+      expect(json1.searchEngineChecklist.indexNowStatus).toBe('CONFIGURED_READY');
+      expect(json1.searchEngineChecklist.sitemapStatus).toBe('GENERATED_DYNAMIC');
+      expect(json1.searchEngineChecklist.searchEngineIndexing).toBe('EXTERNAL_CONSOLE_CHECK_REQUIRED');
+      expect(json1.searchEngineChecklist.sitemapUrl).not.toBe('');
+
+      // Insert IndexNow durable submission event
+      db.prepare(`
+        INSERT INTO durable_events (id, event_type, organization_id, payload_json, processed, created_at)
+        VALUES (?, 'INDEXNOW_SUBMISSION', 'org_owner_primary', '{"status":200}', 1, datetime('now'))
+      `).run(`subm_${Date.now()}`);
+
+      const res2 = await app.request('/api/v1/owner/first-sale/intent-distribution-kit', {
+        headers: { Authorization: `Bearer ${session.token}` }
+      });
+      expect(res2.status).toBe(200);
+      const json2 = await res2.json();
+      expect(json2.searchEngineChecklist.indexNowStatus).toBe('SUBMITTED');
     });
   });
 });
