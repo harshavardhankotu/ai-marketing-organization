@@ -388,6 +388,70 @@ describe('Stage S: Zero-Budget Affiliate Buyer-Intent Engine', () => {
       expect(lastCall.textContent).toContain('utm_source=price_alert');
     });
 
+    it('distinguishes query-derived vs explicit-product watches and reaches text matching for queries', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+      const db = getDb();
+      const { BrevoMcpClient } = await import('../../src/integrations/brevo-mcp-client.js');
+      const brevo = BrevoMcpClient.getInstance();
+      const sendSpy = vi.spyOn(brevo, 'sendTransactionalEmail').mockResolvedValue({
+        success: true,
+        messageId: 'msg_test_query_reach',
+        status: 'SENT'
+      });
+
+      // 1. Register query-derived watch (no deal passed)
+      const queryEmail = `query_buyer_${Date.now()}@example.com`;
+      await engine.registerTargetPriceAlert({
+        email: queryEmail,
+        targetFairPriceINR: 1500,
+        queryOrUrl: 'boAt Airdopes 141'
+      });
+
+      const contact = db.prepare('SELECT authorization_evidence_json FROM outbound_contacts WHERE prospect_email = ?').get(queryEmail) as any;
+      const ev = JSON.parse(contact.authorization_evidence_json);
+      expect(ev.origin).toBe('QUERY_DERIVED');
+      expect(ev.watches[0].origin).toBe('QUERY_DERIVED');
+
+      // 2. Incoming deal has longer/different slug 'boat-airdopes-141-anc-true-wireless-earbuds'
+      const longSlugDeal: NormalizedDeal = {
+        id: 'deal_boat_long_slug',
+        slug: 'boat-airdopes-141-anc-true-wireless-earbuds',
+        canonicalSlug: 'boat-airdopes-141-anc-true-wireless-earbuds',
+        title: 'boAt Airdopes 141 Wireless Earbuds',
+        brand: 'boAt',
+        merchant: 'boAt Lifestyle',
+        category: 'Audio',
+        currentPriceINR: 1299, // <= 1500 target
+        referencePriceINR: 4490,
+        verifiedDiscountPercent: 71,
+        confidenceScore: 95,
+        buyerValueScore: 92,
+        availability: 'IN_STOCK',
+        verificationStatus: 'VERIFIED',
+        isMonetizable: true,
+        sourceDomain: 'boat-lifestyle.com',
+        observedAt: new Date().toISOString(),
+        lastCheckedAt: new Date().toISOString(),
+        trackingUrl: 'https://boat-lifestyle.com/deal',
+        productUrl: 'https://boat-lifestyle.com/deal',
+        evidence: {} as any
+      };
+
+      const dispatchResult = await engine.checkAndDispatchTargetPriceAlerts([longSlugDeal]);
+      expect(dispatchResult.dispatched).toBeGreaterThanOrEqual(1);
+
+      // 3. Exclude expired deals from alert candidates
+      sendSpy.mockClear();
+      const expiredDeal: NormalizedDeal = {
+        ...longSlugDeal,
+        id: 'deal_expired_01',
+        verificationStatus: 'EXPIRED'
+      };
+      const expiredResult = await engine.checkAndDispatchTargetPriceAlerts([expiredDeal]);
+      expect(expiredResult.dispatched).toBe(0);
+      expect(sendSpy).not.toHaveBeenCalled();
+    });
+
     it('renders the 4 intent starter chips in Customer Desk Concierge widget', () => {
       const widgetHtml = renderCustomerDeskWidgetHtml();
       expect(widgetHtml).toContain('Perfume combos under');

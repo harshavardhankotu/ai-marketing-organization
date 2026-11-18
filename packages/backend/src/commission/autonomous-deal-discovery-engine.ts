@@ -6914,16 +6914,22 @@ export class AutonomousDealDiscoveryEngine {
     const organizationId = params.organizationId || 'org_owner_primary';
     const businessId = params.businessId || 'biz_platform_aro';
     const nowIso = new Date().toISOString();
+    const isResolvedDeal = Boolean(params.deal?.id || params.deal?.slug);
     const targetSlug = params.deal?.slug || AutonomousDealDiscoveryEngine.generateDealSlug(params.queryOrUrl || 'fair-price-watch');
     const targetDealId = params.deal?.id || null;
+    const origin = isResolvedDeal ? 'EXPLICIT_PRODUCT' : 'QUERY_DERIVED';
     const productUrl = params.deal?.productUrl || (/^https?:\/\//i.test(params.queryOrUrl) ? params.queryOrUrl : '');
 
     let existingAuthEv: any = {};
+    let existingContactId: string | null = null;
     try {
       const rowSql = `SELECT id, authorization_evidence_json FROM outbound_contacts WHERE business_id = ? AND prospect_email = ? LIMIT 1`;
       const existing = (this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST))
         ? await this.d1Repo.queryOne<any>('outbound_contacts', rowSql, [businessId, email])
         : getDb().prepare(rowSql).get(businessId, email) as any;
+      if (existing?.id) {
+        existingContactId = existing.id;
+      }
       if (existing?.authorization_evidence_json) {
         existingAuthEv = typeof existing.authorization_evidence_json === 'string'
           ? JSON.parse(existing.authorization_evidence_json || '{}')
@@ -6941,7 +6947,8 @@ export class AutonomousDealDiscoveryEngine {
       title: params.deal?.title || params.queryOrUrl,
       registered_at: nowIso,
       dispatched_at: null as string | null,
-      dispatched_price_inr: null as number | null
+      dispatched_price_inr: null as number | null,
+      origin
     };
     const mergedWatches = [
       ...prevWatches.filter((w: any) => w && (w.target_deal_slug !== targetSlug || w.target_deal_id !== targetDealId)),
@@ -6956,11 +6963,12 @@ export class AutonomousDealDiscoveryEngine {
       target_price_inr: targetPrice,
       product_url: productUrl,
       query_or_url: params.queryOrUrl,
+      origin,
       consent_recorded_at: nowIso,
       watches: mergedWatches
     };
 
-    const contactId = `cnt_fpa_${Buffer.from(email).toString('hex').slice(0, 16)}`;
+    const contactId = existingContactId || `cnt_fpa_${createHash('sha256').update(email).digest('hex').slice(0, 24)}`;
     const upsertContactSql = `
       INSERT INTO outbound_contacts (
         id, business_id, organization_id, prospect_name, prospect_business_name,
@@ -7051,7 +7059,13 @@ export class AutonomousDealDiscoveryEngine {
     const allDeals = (deals && deals.length > 0)
       ? Array.from(new Map([...Array.from(this.dealsMap.values()), ...deals].map(d => [d.id, d])).values())
       : Array.from(this.dealsMap.values());
-    const validDeals = allDeals.filter(d => d && Number(d.currentPriceINR || 0) > 0 && d.availability === 'IN_STOCK');
+    const now = new Date();
+    const validDeals = allDeals.filter(d => {
+      if (!d || Number(d.currentPriceINR || 0) <= 0 || d.availability !== 'IN_STOCK') return false;
+      if (d.verificationStatus === 'EXPIRED' || d.verificationStatus === 'REJECTED' || d.verificationStatus === 'OUT_OF_STOCK') return false;
+      if (d.expiryDate && new Date(d.expiryDate) <= now) return false;
+      return true;
+    });
     if (validDeals.length === 0) {
       return { checked: 0, dispatched: 0, skipped: 0 };
     }
@@ -7112,7 +7126,8 @@ export class AutonomousDealDiscoveryEngine {
             target_deal_slug: ev.target_deal_slug,
             target_price_inr: ev.target_price_inr,
             query_or_url: ev.query_or_url || ev.target_deal_slug,
-            dispatched_at: ev.dispatched_at || null
+            dispatched_at: ev.dispatched_at || null,
+            origin: ev.origin || null
           }];
 
       let evMutated = false;
@@ -7122,17 +7137,33 @@ export class AutonomousDealDiscoveryEngine {
         if (!Number.isFinite(targetPrice) || targetPrice <= 0) continue;
         checked++;
 
-        const hasExplicitId = Boolean(watch.target_deal_id || watch.target_deal_slug);
+        const isQueryDerived =
+          watch.origin === 'QUERY_DERIVED' ||
+          watch.origin === 'CATEGORY_QUERY' ||
+          (!watch.origin && !watch.target_deal_id && (
+            Boolean(watch.query_or_url && (
+              /\s/.test(watch.query_or_url) ||
+              (AutonomousDealDiscoveryEngine.generateDealSlug(watch.query_or_url) === watch.target_deal_slug && watch.query_or_url !== watch.target_deal_slug)
+            ))
+          ));
+
+        const hasExplicitId = Boolean((watch.target_deal_id || watch.target_deal_slug) && !isQueryDerived);
         const matchedDeal = validDeals.find((d) => {
-          if (watch.target_deal_id && d.id === watch.target_deal_id) return true;
-          if (watch.target_deal_slug && (d.slug === watch.target_deal_slug || d.canonicalSlug === watch.target_deal_slug)) return true;
-          if (!hasExplicitId) {
-            const watchQuery = String(watch.query_or_url || watch.title || '').toLowerCase();
-            const tokens = watchQuery.replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(t => t.length >= 3);
-            if (tokens.length >= 2) {
-              const haystack = `${d.title} ${d.brand} ${d.category}`.toLowerCase();
-              return tokens.slice(0, 3).every(tok => haystack.includes(tok));
-            }
+          if (hasExplicitId) {
+            if (watch.target_deal_id && d.id === watch.target_deal_id) return true;
+            if (watch.target_deal_slug && (d.slug === watch.target_deal_slug || d.canonicalSlug === watch.target_deal_slug)) return true;
+            return false;
+          }
+
+          // Query-derived watches: match either exact slug if it matches, or text tokens
+          if (watch.target_deal_slug && (d.slug === watch.target_deal_slug || d.canonicalSlug === watch.target_deal_slug)) {
+            return true;
+          }
+          const watchQuery = String(watch.query_or_url || watch.title || '').toLowerCase();
+          const tokens = watchQuery.replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(t => t.length >= 3);
+          if (tokens.length >= 2) {
+            const haystack = `${d.title} ${d.brand} ${d.category}`.toLowerCase();
+            return tokens.slice(0, 3).every(tok => haystack.includes(tok));
           }
           return false;
         });

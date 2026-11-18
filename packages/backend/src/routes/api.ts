@@ -5067,7 +5067,8 @@ apiRouter.post('/customer-desk/subscribe-alerts', async (c) => {
       target_price_inr: targetPriceINR,
       query_or_url: productSlug || dealId || categories[0],
       registered_at: new Date().toISOString(),
-      dispatched_at: null
+      dispatched_at: null,
+      origin: (dealId || productSlug) ? 'EXPLICIT_PRODUCT' : 'CATEGORY_QUERY'
     } : null;
 
     let mergedWatches = existingWatches.filter((w: any) => {
