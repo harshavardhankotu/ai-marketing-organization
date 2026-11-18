@@ -2094,10 +2094,10 @@ export class CuelinksSyncManager {
 
       const dealCid = String(ev.affiliateCampaignId || '').trim();
       const dealRootDomain = normalizeRootMerchantDomain(String(d.product_url || ''));
-      const isAmazon = /^https?:\/\/(www\.)?amazon\.(in|com)(\/|$)/i.test(String(d.product_url || '')) || ev.affiliateNetwork === 'AMAZON_IN';
+      const isAmazonAssociates = ev.affiliateNetwork === 'AMAZON_IN' && !String(d.affiliate_url || '').includes('linksredirect.com') && !String(d.affiliate_url || '').includes('clnk.in');
 
-      if (isAmazon) {
-        // Amazon deals are handled by Amazon Associates tag, not Cuelinks
+      if (isAmazonAssociates) {
+        // Pure Amazon Associates deals are handled by Amazon Associates rate card, not Cuelinks
         continue;
       }
 
