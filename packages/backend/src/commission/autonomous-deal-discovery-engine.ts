@@ -7162,6 +7162,9 @@ export class AutonomousDealDiscoveryEngine {
           const watchQuery = String(watch.query_or_url || watch.title || '').toLowerCase();
           const tokens = watchQuery.replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(t => t.length >= 3);
           if (tokens.length >= 2) {
+            if (targetPrice > 0 && Number(d.currentPriceINR || 0) > targetPrice) {
+              return false;
+            }
             const haystack = `${d.title} ${d.brand} ${d.category}`.toLowerCase();
             return tokens.slice(0, 3).every(tok => haystack.includes(tok));
           }
@@ -7213,10 +7216,14 @@ export class AutonomousDealDiscoveryEngine {
       if (evMutated) {
         const updateSql = `UPDATE outbound_contacts SET authorization_evidence_json = ?, last_contacted_at = datetime('now'), contact_count = contact_count + 1, updated_at = datetime('now') WHERE id = ?`;
         const evStr = JSON.stringify(ev);
+        const completeEvSql = `UPDATE durable_events SET processed = 1, processed_at = datetime('now') WHERE event_type = 'PRICE_DROP_SUBSCRIPTION' AND processed = 0 AND payload_json LIKE ?`;
+        const emailLike = `%"email":"${email}"%`;
         try {
           getDb().prepare(updateSql).run(evStr, row.id);
+          getDb().prepare(completeEvSql).run(emailLike);
           if (this.d1Repo.isRemoteD1Configured() || isProd) {
             await this.d1Repo.executeWrite('outbound_contacts', updateSql, [evStr, row.id]);
+            await this.d1Repo.executeWrite('durable_events', completeEvSql, [emailLike]);
           }
         } catch {}
       }
@@ -7245,9 +7252,10 @@ export class AutonomousDealDiscoveryEngine {
         const targetPrice = Number(payload.targetPriceINR || 0);
         if (!email || !email.includes('@')) continue;
 
-        // Skip contacts who have opted out or are suppressed in outbound_contacts
-        const optOutCheckSql = `SELECT is_opted_out, is_suppressed FROM outbound_contacts WHERE prospect_email = ? LIMIT 1`;
+        // Skip contacts who have opted out or are suppressed in outbound_contacts, or whose watch was already dispatched
+        const optOutCheckSql = `SELECT is_opted_out, is_suppressed, authorization_evidence_json FROM outbound_contacts WHERE prospect_email = ? LIMIT 1`;
         let isOptedOut = false;
+        let isAlreadyDispatched = false;
         try {
           let optRows: any[] = [];
           if (this.d1Repo.isRemoteD1Configured() || isProd) {
@@ -7256,13 +7264,34 @@ export class AutonomousDealDiscoveryEngine {
           } else {
             optRows = getDb().prepare(optOutCheckSql).all(email) as any[];
           }
-          if (optRows.length > 0 && (optRows[0].is_opted_out === 1 || optRows[0].is_suppressed === 1)) {
-            isOptedOut = true;
+          if (optRows.length > 0) {
+            if (optRows[0].is_opted_out === 1 || optRows[0].is_suppressed === 1) {
+              isOptedOut = true;
+            }
+            const authEv = JSON.parse(optRows[0].authorization_evidence_json || '{}');
+            const watches: any[] = Array.isArray(authEv.watches) ? authEv.watches : [];
+            const matchingWatch = watches.find((w: any) =>
+              w && ((payload.dealId && w.target_deal_id === payload.dealId) || (payload.productSlug && w.target_deal_slug === payload.productSlug))
+            );
+            if (matchingWatch?.dispatched_at) {
+              isAlreadyDispatched = true;
+            }
           }
         } catch {}
 
         if (isOptedOut) {
           skipped++;
+          continue;
+        }
+
+        if (isAlreadyDispatched) {
+          try {
+            const completeSql = `UPDATE durable_events SET processed = 1, processed_at = datetime('now') WHERE id = ?`;
+            getDb().prepare(completeSql).run(evRow.id);
+            if (this.d1Repo.isRemoteD1Configured() || isProd) {
+              await this.d1Repo.executeWrite('durable_events', completeSql, [evRow.id]);
+            }
+          } catch {}
           continue;
         }
 
