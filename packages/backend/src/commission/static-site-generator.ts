@@ -244,6 +244,28 @@ const FIXED_BUYER_INTENT_HUBS: HubSeedDefinition[] = [
   }
 ];
 
+/**
+ * Normalizes a category input (string, object with name/title/slug, or nested) into a clean string name.
+ * Strictly prevents "[object Object]" serialization and "/best/best-object-object-deals-india" slugs.
+ */
+export function normalizeCategoryName(cat: any): string {
+  if (!cat) return 'General';
+  let cur = cat;
+  while (cur && typeof cur === 'object') {
+    if (typeof cur.name === 'string' && cur.name.trim()) return cur.name.trim();
+    if (typeof cur.title === 'string' && cur.title.trim()) return cur.title.trim();
+    if (typeof cur.slug === 'string' && cur.slug.trim()) return cur.slug.trim();
+    if (cur.category !== undefined && cur.category !== cur) {
+      cur = cur.category;
+    } else {
+      break;
+    }
+  }
+  const str = String(cur || '').trim();
+  if (!str || str.toLowerCase() === '[object object]') return 'General';
+  return str;
+}
+
 export function generateBuyerIntentHubs(
   deals: any[],
   siteUrl: string = 'https://ai-marketing-organization.onrender.com',
@@ -334,7 +356,8 @@ export function generateBuyerIntentHubs(
   if (hubs.length < limit) {
     const byCategory = new Map<string, any[]>();
     for (const d of eligible) {
-      const cat = String(d.category || 'Verified Offers').trim();
+      const cat = normalizeCategoryName(d.category);
+      if (cat.toLowerCase() === 'general' || cat.toLowerCase() === '[object object]') continue;
       const arr = byCategory.get(cat) || [];
       arr.push(d);
       byCategory.set(cat, arr);
@@ -344,7 +367,7 @@ export function generateBuyerIntentHubs(
       if (hubs.length >= limit) break;
       if (catDeals.length < 2) continue;
       const slugBase = cat.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-      if (!slugBase) continue;
+      if (!slugBase || slugBase === 'object-object') continue;
       const dynSlug = `best-${slugBase}-deals-india`;
       if (seenSlugs.has(dynSlug)) continue;
       hubs.push(

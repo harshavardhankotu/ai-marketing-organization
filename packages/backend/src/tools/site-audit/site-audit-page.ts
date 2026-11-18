@@ -226,6 +226,15 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
   </style>
 </head>
 <body>
+  <nav style="max-width: 900px; margin: 1rem auto 0 auto; display: flex; justify-content: space-between; align-items: center; padding: 0.75rem 0; border-bottom: 1px solid var(--card-border); flex-wrap: wrap; gap: 0.75rem;">
+    <a href="/" style="color: #60a5fa; font-weight: 700; text-decoration: none; font-size: 1.05rem;">SiteFix AI</a>
+    <div style="display: flex; gap: 1.25rem; align-items: center; flex-wrap: wrap;">
+      <a href="/" style="color: var(--text-muted); text-decoration: none; font-size: 0.88rem;">Home</a>
+      <a href="/deals" style="color: var(--text-muted); text-decoration: none; font-size: 0.88rem;">Verified Deals</a>
+      <a href="/privacy" style="color: var(--text-muted); text-decoration: none; font-size: 0.88rem;">Privacy Policy</a>
+      <a href="/terms" style="color: var(--text-muted); text-decoration: none; font-size: 0.88rem;">Terms</a>
+    </div>
+  </nav>
   <header>
     <div class="badge">SiteFix AI • Factual Technical Website Audit & Fixes</div>
     <h1>Instant Website Audit & Optimization Pack</h1>
@@ -1014,6 +1023,15 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
       }
     });
   </script>
+  <footer style="max-width: 900px; margin: 3rem auto 1rem auto; padding-top: 1.5rem; border-top: 1px solid var(--card-border); text-align: center; color: var(--text-muted); font-size: 0.85rem;">
+    <div style="display: flex; justify-content: center; gap: 1.5rem; flex-wrap: wrap; margin-bottom: 0.75rem;">
+      <a href="/" style="color: #60a5fa; text-decoration: none;">Home</a>
+      <a href="/deals" style="color: var(--text-muted); text-decoration: none;">Verified Deals</a>
+      <a href="/privacy" style="color: var(--text-muted); text-decoration: none;">Privacy Policy</a>
+      <a href="/terms" style="color: var(--text-muted); text-decoration: none;">Terms of Service</a>
+    </div>
+    <p>&copy; ${new Date().getFullYear()} SiteFix AI. All rights reserved. Deterministic technical website diagnostics &amp; optimization fix-packs.</p>
+  </footer>
   ${renderCustomerDeskWidgetHtml('sitefix_core_499')}
 </body>
 </html>`;

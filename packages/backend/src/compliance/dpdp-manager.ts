@@ -66,8 +66,29 @@ export class DPDPComplianceManager {
              OR discovery_source IN ('DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR'))
     `).run(thresholdDateStr);
 
+    // Purge or delete expired price drop subscriptions and alert delivery claims in durable_events older than 30 days
+    let purgedEventsCount = 0;
+    try {
+      const purgeEventsResult = db.prepare(`
+        DELETE FROM durable_events
+        WHERE created_at < ?
+          AND event_type IN ('PRICE_DROP_SUBSCRIPTION', 'PRICE_ALERT_DELIVERY_CLAIMED')
+      `).run(thresholdDateStr);
+      purgedEventsCount = purgeEventsResult.changes || 0;
+    } catch {}
+
+    try {
+      import('../db/d1-revenue-repository.js').then(({ D1RevenueRepository }) => {
+        D1RevenueRepository.getInstance().query(
+          'durable_events',
+          `DELETE FROM durable_events WHERE created_at < ? AND event_type IN ('PRICE_DROP_SUBSCRIPTION', 'PRICE_ALERT_DELIVERY_CLAIMED')`,
+          [thresholdDateStr]
+        ).catch(() => {});
+      }).catch(() => {});
+    } catch {}
+
     return {
-      purgedCount: result.changes,
+      purgedCount: result.changes + purgedEventsCount,
       timestamp: new Date().toISOString()
     };
   }

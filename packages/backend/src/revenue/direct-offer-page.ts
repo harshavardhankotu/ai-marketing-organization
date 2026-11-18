@@ -44,6 +44,35 @@ export function computeOwnOfferHash(customFilePath?: string): string | null {
   }
 }
 
+/**
+ * Computes SHA-256 digest specifically for owner/DIRECT_OFFER.md (Lane B B2B Offer).
+ * Cross-product invariant: Strictly rejects owner/OWN_OFFER.md (which belongs to SiteFix ₹499).
+ */
+export function computeDirectOfferHash(customFilePath?: string): string | null {
+  try {
+    let filePath = customFilePath;
+    if (filePath && path.basename(filePath).toLowerCase().includes('own_offer')) {
+      // Cross-product isolation: SiteFix OWN_OFFER.md can NEVER unlock DIRECT_OFFER
+      return null;
+    }
+    if (!filePath) {
+      const candidates = [
+        path.resolve(process.cwd(), 'owner', 'DIRECT_OFFER.md'),
+        path.resolve(process.cwd(), '..', 'owner', 'DIRECT_OFFER.md'),
+        path.resolve(process.cwd(), '..', '..', 'owner', 'DIRECT_OFFER.md')
+      ];
+      filePath = candidates.find(c => fs.existsSync(c));
+    }
+    if (!filePath || !fs.existsSync(filePath)) {
+      return null;
+    }
+    const content = fs.readFileSync(filePath);
+    return crypto.createHash('sha256').update(content).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
 export interface OfferPageConfig {
   siteName?: string;
   siteUrl?: string;
@@ -78,6 +107,10 @@ export class DirectCommercialOfferPage {
     return computeOwnOfferHash(customFilePath);
   }
 
+  public static computeDirectOfferHash(customFilePath?: string): string | null {
+    return computeDirectOfferHash(customFilePath);
+  }
+
   public static getInstance(): DirectCommercialOfferPage {
     if (!DirectCommercialOfferPage.instance) {
       DirectCommercialOfferPage.instance = new DirectCommercialOfferPage();
@@ -87,17 +120,17 @@ export class DirectCommercialOfferPage {
 
   /**
    * P0 Safety Gate: Checks whether Lane B commercial terms have been explicitly attested by the owner.
-   * /offer opens only when Render env DIRECT_OFFER_TERMS_SHA256 equals SHA-256 of owner/OWN_OFFER.md.
-   * Any file edit to owner/OWN_OFFER.md alters the hash and closes the page immediately.
+   * /offer opens only when DIRECT_OFFER_TERMS_ATTESTED is 'true'
+   * and DIRECT_OFFER_TERMS_SHA256 equals SHA-256 of owner/DIRECT_OFFER.md.
+   * Any file edit to owner/DIRECT_OFFER.md alters the hash and closes the page immediately.
+   * Cross-product isolation: SiteFix owner/OWN_OFFER.md can NEVER unlock Lane B direct offers.
    */
   public static isDirectOfferAttested(customFilePath?: string): boolean {
-    // Step 2e: DIRECT_OFFER_TERMS_SHA256 counts as valid ONLY when OWN_OFFER_CONFIRMED=true is set by the owner script.
-    // A hash match proves the page equals the file; it does not prove that the owner approved it without explicit confirmation.
-    const isConfirmed = (process.env.OWN_OFFER_CONFIRMED || '').trim().toLowerCase() === 'true';
-    if (!isConfirmed) {
+    const isAttested = (process.env.DIRECT_OFFER_TERMS_ATTESTED || '').trim().toLowerCase() === 'true';
+    if (!isAttested) {
       return false;
     }
-    const computedHash = computeOwnOfferHash(customFilePath);
+    const computedHash = computeDirectOfferHash(customFilePath);
     if (!computedHash) {
       return false;
     }
@@ -195,8 +228,8 @@ export class DirectCommercialOfferPage {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Administrative Website &amp; WhatsApp Inquiry Capture | ${siteName}</title>
-  <meta name="description" content="Turn after-hours patient inquiries into booked appointments. Administrative Website &amp; WhatsApp Inquiry Capture, Instant Triage Summary, and Appointment Request Logging for Indian healthcare and dental practices.">
+  <title>SiteFix AI — Free Website SEO Audit &amp; Fair-Price Deals India</title>
+  <meta name="description" content="Run a free technical website scan and get ready-to-paste SEO &amp; Schema fixes for ₹499, or compare verified fair-price deals in India.">
   <link rel="canonical" href="${siteUrl}/">
   <link rel="alternate" type="application/rss+xml" title="Verified Commercial Deals RSS Feed" href="/feeds/deals.xml">
   <meta name="robots" content="index, follow">
@@ -330,32 +363,35 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
   <nav class="top-nav">
     <a href="/" class="brand">${siteName}</a>
     <div class="nav-links">
-      <a href="/" class="active">After-Hours Lead Capture</a>
-      <a href="/tools/site-audit">SiteFix AI Audit</a>
-      <a href="/offer">Commercial Overview</a>
-      <a href="#interactive-demo">Interactive Demo</a>
+      <a href="/" class="active">Home</a>
+      <a href="/tools/site-audit">SiteFix AI Audit (₹499)</a>
+      <a href="/deals">Verified Deals &amp; Price Drops</a>
       <a href="/revenue">Revenue Funnel</a>
-      <a href="/deals">Consumer Deals</a>
-      <a href="/guides/student-flight-discounts-india">Travel Guides</a>
+      <a href="/offer">Commercial Overview</a>
+      <a href="/privacy">Privacy Policy</a>
+      <a href="/terms">Terms</a>
     </div>
   </nav>
 
   <div class="container">
     <header class="hero">
-      <div class="status-badge">Administrative After-Hours Lead Capture • India First</div>
-      <h1>Never Lose Another Evening Customer Inquiry</h1>
+      <div class="status-badge">₹0 Paid Acquisition • Live Verified Offers</div>
+      <h1>SiteFix AI &amp; Fair-Price Deals</h1>
       <p class="subtitle">
-        Administrative Website &amp; WhatsApp Inquiry Capture, Message Logging, and Callback Request System for local Indian practices, clinics, and professional services.
+        Run a free technical website scan and get ready-to-paste SEO &amp; Schema fixes for ₹499, or compare verified fair-price deals in India.
       </p>
       <div class="cta-group">
-        <a href="#interactive-demo" class="btn btn-primary">Try Interactive Demo</a>
-        <a href="#inquiry-card" class="btn btn-secondary">Request Practice Walkthrough</a>
+        <a href="/tools/site-audit" class="btn btn-primary">Run Free Technical Website Scan &rarr;</a>
+        <a href="/deals" class="btn btn-secondary">Browse Verified Fair-Price Deals &rarr;</a>
       </div>
     </header>
 
-    <!-- The Problem Section -->
-    <div class="card">
-      <h2>The Problem: The 8 PM to 8 AM Inquiry Gap</h2>
+    <!-- Section 1: Administrative Lead Capture -->
+    <div class="card" id="b2b-lead-capture">
+      <h2>Administrative Website &amp; WhatsApp Inquiry Capture</h2>
+      <h3 style="color: #cbd5e1; font-size: 1.15rem; margin-top: 0.5rem; margin-bottom: 1rem;">
+        Never Lose Another Evening Customer Inquiry — The 8 PM to 8 AM Inquiry Gap
+      </h3>
       <p style="color: #cbd5e1; font-size: 1.05rem; margin-bottom: 1.5rem;">
         Indian dental clinics and local practices lose prospective clients every evening because inquiries arrive outside reception working hours.
       </p>
@@ -634,7 +670,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
       <strong>#Ad Statutory Affiliate Disclosure &amp; Commercial Terms:</strong> Consumer buying guides and commercial deal directories on this platform may contain tracked affiliate links to authorized partner programs. When visitors make qualifying purchases through those links, we may receive an affiliate commission at zero additional cost to the purchaser. Always verify live pricing and terms on the merchant's checkout page. Our B2B direct administrative lead capture service and SiteFix AI technical checks are separate professional offerings.
     </p>
     <p style="margin-top: 0.75rem;">
-      <a href="/privacy">Privacy Policy</a> • <a href="/revenue">Revenue Funnel</a> • <a href="/offer">Service Overview</a> • <a href="/deals">Deals</a> • <a href="/public/disclosure">Affiliate Disclosure</a> • ${contactEmail ? `Contact: <a href="mailto:${contactEmail}">${contactEmail}</a>` : 'Contact: Inquiries via Form'}
+      <a href="/">Home</a> • <a href="/tools/site-audit">SiteFix AI Audit</a> • <a href="/deals">Verified Deals</a> • <a href="/revenue">Revenue Funnel</a> • <a href="/offer">Commercial Overview</a> • <a href="/privacy">Privacy Policy</a> • <a href="/terms">Terms</a> • <a href="/public/disclosure">Affiliate Disclosure</a> • ${contactEmail ? `Contact: <a href="mailto:${contactEmail}">${contactEmail}</a>` : 'Contact: Inquiries via Form'}
     </p>
   </footer>
 

@@ -6216,13 +6216,13 @@ apiRouter.all('/owner/proposal', async (c) => {
       success: true,
       isAttested: true,
       isPayable: true,
-      message: 'Authoritative proposal generated from attested owner commercial terms (owner/OWN_OFFER.md).',
+      message: 'Authoritative proposal generated from attested owner commercial terms (owner/DIRECT_OFFER.md).',
       ownerBioPreview: bioContent.slice(0, 300),
       data: {
         title: 'AI Inbound Lead Conversion System Implementation',
         setupPriceINR: 15000,
         monthlyPriceINR: 8000,
-        source: 'owner/OWN_OFFER.md'
+        source: 'owner/DIRECT_OFFER.md'
       }
     });
   }
@@ -6231,13 +6231,13 @@ apiRouter.all('/owner/proposal', async (c) => {
     success: true,
     isAttested: false,
     isPayable: false,
-    message: 'Informational proposal draft. Commercial terms not yet attested via owner/OWN_OFFER.md; payable payment links are suppressed.',
+    message: 'Informational proposal draft. Commercial terms not yet attested via owner/DIRECT_OFFER.md; payable payment links are suppressed.',
     ownerBioPreview: bioContent.slice(0, 300),
     data: {
       title: 'AI Inbound Lead Conversion System Implementation',
       setupPriceINR: 15000,
       monthlyPriceINR: 8000,
-      source: 'PROVISIONAL_ESTIMATE (Awaiting owner/OWN_OFFER.md attestation)'
+      source: 'PROVISIONAL_ESTIMATE (Awaiting owner/DIRECT_OFFER.md attestation)'
     }
   });
 });
@@ -10722,7 +10722,7 @@ apiRouter.post('/build/static-site', async (c) => {
  */
 apiRouter.get('/owner/facts-status', async (c) => {
   const { validateOwnerEnvFacts, validateSiteIdentityFacts } = await import('../config/owner-env-intake.js');
-  const { computeOwnOfferHash } = await import('../revenue/direct-offer-page.js');
+  const { computeDirectOfferHash } = await import('../revenue/direct-offer-page.js');
   const validation = validateOwnerEnvFacts();
   const siteIdentityValidation = validateSiteIdentityFacts();
 
@@ -10768,7 +10768,7 @@ apiRouter.get('/owner/facts-status', async (c) => {
 
   // 8. DIRECT_OFFER_TERMS_SHA256
   const termsHashVal = process.env.DIRECT_OFFER_TERMS_SHA256?.trim();
-  const currentComputedHash = computeOwnOfferHash();
+  const currentComputedHash = computeDirectOfferHash();
   const isHashMatch = Boolean(termsHashVal && currentComputedHash && termsHashVal.toLowerCase() === currentComputedHash.toLowerCase());
   const isSetWithoutConfirmation = Boolean(termsHashVal && !isOwnOfferConfirmed);
 
@@ -10780,7 +10780,7 @@ apiRouter.get('/owner/facts-status', async (c) => {
       ? 'Environment variable not set'
       : (!isOwnOfferConfirmed
         ? 'Invalid (Set without OWN_OFFER_CONFIRMED: delete it in Render or let owner-apply.mjs overwrite it)'
-        : (isHashMatch ? 'Valid (Matches owner/OWN_OFFER.md)' : 'Invalid (Hash mismatch with owner/OWN_OFFER.md)')),
+        : (isHashMatch ? 'Valid (Matches owner/DIRECT_OFFER.md)' : 'Invalid (Hash mismatch with owner/DIRECT_OFFER.md)')),
     note: 'A hash match proves the page equals the file. It does not prove that the owner wrote or approved the file. Delete it in Render or let owner-apply.mjs overwrite it.'
   });
 

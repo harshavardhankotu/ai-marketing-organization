@@ -63,11 +63,11 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
       expect(html).not.toContain('upi://pay');
     });
 
-    it('match: renders authoritative tiers with attested prices when DIRECT_OFFER_TERMS_SHA256 matches owner/OWN_OFFER.md', () => {
-      const actualHash = DirectCommercialOfferPage.computeOwnOfferHash();
+    it('match: renders authoritative tiers with attested prices when DIRECT_OFFER_TERMS_SHA256 matches owner/DIRECT_OFFER.md', () => {
+      const actualHash = DirectCommercialOfferPage.computeDirectOfferHash();
 
-      process.env.DIRECT_OFFER_TERMS_SHA256 = actualHash;
-      process.env.OWN_OFFER_CONFIRMED = 'true';
+      process.env.DIRECT_OFFER_TERMS_SHA256 = actualHash!;
+      process.env.DIRECT_OFFER_TERMS_ATTESTED = 'true';
       process.env.OWNER_UPI_VPA = 'owner@okhdfcbank';
       process.env.PUBLIC_WHATSAPP_NUMBER = '919876543210';
 
@@ -91,7 +91,7 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
       expect(html).toContain('Monthly Retainer &amp; SLA');
       expect(html).toContain('₹8,000');
 
-      // Audience & Refund terms from OWN_OFFER.md
+      // Audience & Refund terms from DIRECT_OFFER.md
       expect(html).toContain('Who It Is For');
       expect(html).toContain('Who Should NOT Buy');
       expect(html).toContain('14-Day Performance Guarantee');
@@ -101,11 +101,11 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
       expect(html).toContain('am=15000');
     });
 
-    it('file edit closes page: any edit to owner/OWN_OFFER.md alters hash and closes the page', () => {
-      const originalHash = DirectCommercialOfferPage.computeOwnOfferHash();
+    it('file edit closes page: any edit to owner/DIRECT_OFFER.md alters hash and closes the page', () => {
+      const originalHash = DirectCommercialOfferPage.computeDirectOfferHash();
 
-      process.env.DIRECT_OFFER_TERMS_SHA256 = originalHash;
-      process.env.OWN_OFFER_CONFIRMED = 'true';
+      process.env.DIRECT_OFFER_TERMS_SHA256 = originalHash!;
+      process.env.DIRECT_OFFER_TERMS_ATTESTED = 'true';
       expect(DirectCommercialOfferPage.isDirectOfferAttested()).toBe(true);
 
       // Simulate file edit: hash changes, so expected !== computed
@@ -238,10 +238,10 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
     });
 
     it('serves attested commercial tiers on GET /offer when owner confirms commercial terms', async () => {
-      const actualHash = DirectCommercialOfferPage.computeOwnOfferHash();
+      const actualHash = DirectCommercialOfferPage.computeDirectOfferHash();
 
-      process.env.DIRECT_OFFER_TERMS_SHA256 = actualHash;
-      process.env.OWN_OFFER_CONFIRMED = 'true';
+      process.env.DIRECT_OFFER_TERMS_SHA256 = actualHash!;
+      process.env.DIRECT_OFFER_TERMS_ATTESTED = 'true';
       process.env.OWNER_UPI_VPA = 'owner@okhdfcbank';
       process.env.PUBLIC_WHATSAPP_NUMBER = '919876543210';
 
@@ -253,7 +253,7 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
       expect(html).toContain('Monthly Retainer &amp; SLA');
       expect(html).toContain('₹15,000');
       expect(html).toContain('₹8,000');
-      delete process.env.OWN_OFFER_CONFIRMED;
+      delete process.env.DIRECT_OFFER_TERMS_ATTESTED;
     });
 
     it('lead leakage calculator includes a direct link to the offer page', () => {
@@ -268,9 +268,9 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
       expect(html).toContain('View Technical Overview');
 
       // When attested by owner, links to commercial pricing
-      const computedHash = DirectCommercialOfferPage.computeOwnOfferHash();
+      const computedHash = DirectCommercialOfferPage.computeDirectOfferHash();
       if (computedHash) {
-        process.env.OWN_OFFER_CONFIRMED = 'true';
+        process.env.DIRECT_OFFER_TERMS_ATTESTED = 'true';
         process.env.DIRECT_OFFER_TERMS_SHA256 = computedHash;
         const attestedHtml = calc.renderCalculatorHtml({
           siteName: 'SupplySpecs India',
@@ -279,7 +279,7 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
         });
         expect(attestedHtml).toContain('href="/offer"');
         expect(attestedHtml).toContain('View Commercial Offer &amp; Pricing');
-        delete process.env.OWN_OFFER_CONFIRMED;
+        delete process.env.DIRECT_OFFER_TERMS_ATTESTED;
         delete process.env.DIRECT_OFFER_TERMS_SHA256;
       }
     });

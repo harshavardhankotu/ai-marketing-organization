@@ -28,8 +28,9 @@ import {
   SectorCode,
   GuideDataUnavailableError
 } from './deal-types.js';
+import { normalizeCategoryName } from './static-site-generator.js';
 
-export { GuideDataUnavailableError };
+export { GuideDataUnavailableError, normalizeCategoryName };
 
 export const MAX_OFFER_FRESHNESS_HOURS = 48;
 
@@ -2332,10 +2333,9 @@ export class AutonomousDealDiscoveryEngine {
             // Category resolution
             let categoryName = 'eCommerce & Retail';
             if (Array.isArray(offer.categories) && offer.categories.length > 0) {
-              const c0 = offer.categories[0];
-              categoryName = typeof c0 === 'string' ? c0 : (c0?.name || 'eCommerce & Retail');
+              categoryName = normalizeCategoryName(offer.categories[0]);
             } else if (offer.category) {
-              categoryName = offer.category;
+              categoryName = normalizeCategoryName(offer.category);
             }
 
             // Link conversion & monetization gate
@@ -5951,8 +5951,8 @@ export class AutonomousDealDiscoveryEngine {
     }
   }
 
-  public mapCategoryToSectorCode(category: string): SectorCode {
-    const c = (category || '').toLowerCase();
+  public mapCategoryToSectorCode(category: any): SectorCode {
+    const c = normalizeCategoryName(category).toLowerCase();
     if (c.includes('jewel') || c.includes('gold') || c.includes('silver') || c.includes('coin') || c.includes('bullion')) {
       return 'SECTOR_A_PRECIOUS_METALS';
     }

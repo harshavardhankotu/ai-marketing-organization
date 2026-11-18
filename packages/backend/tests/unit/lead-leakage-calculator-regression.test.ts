@@ -54,9 +54,9 @@ describe('LeadLeakageCalculator Regression & Inquiry Integration Suite', () => {
 
     it('when offer is attested: renders commercial offer link and pricing', () => {
       // Simulate attested offer
-      const computedHash = DirectCommercialOfferPage.computeOwnOfferHash();
+      const computedHash = DirectCommercialOfferPage.computeDirectOfferHash();
       if (computedHash) {
-        process.env.OWN_OFFER_CONFIRMED = 'true';
+        process.env.DIRECT_OFFER_TERMS_ATTESTED = 'true';
         process.env.DIRECT_OFFER_TERMS_SHA256 = computedHash;
 
         const calc = LeadLeakageCalculator.getInstance();
@@ -68,6 +68,8 @@ describe('LeadLeakageCalculator Regression & Inquiry Integration Suite', () => {
 
         expect(html).toContain('View Commercial Offer &amp; Pricing');
         expect(html).toContain('mailto:owner@verified.com');
+        delete process.env.DIRECT_OFFER_TERMS_ATTESTED;
+        delete process.env.DIRECT_OFFER_TERMS_SHA256;
       }
     });
 

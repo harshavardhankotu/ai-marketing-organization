@@ -303,29 +303,44 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
   // --------------------------------------------------------------------------
   describe('Workstream C — Sitemap, RSS & Canonical Content URL Parity', () => {
     it('advertises canonical SSR URLs including /deals/:slug product pages and excludes /rss.xml from SPA shells', async () => {
-      const db = getDb();
-      db.prepare(`
-        INSERT OR REPLACE INTO commission_content_assets (
-          id, organization_id, slug, asset_type, title, category, location, intent_target,
-          content_markdown, primary_offer_id, status
-        ) VALUES ('guide_test_c', 'org_owner_primary', 'best-wireless-audio-smartwatches-india', 'BUYING_GUIDE', 'Electronics Guide', 'Electronics', 'India', 'Intent', 'Content', 'deal_4ea10ff4-5', 'PUBLISHED')
-      `).run();
+      const { computeDirectOfferHash } = await import('../../src/revenue/direct-offer-page.js');
+      const directHash = computeDirectOfferHash();
+      const origSha = process.env.DIRECT_OFFER_TERMS_SHA256;
+      const origAtt = process.env.DIRECT_OFFER_TERMS_ATTESTED;
+      if (directHash) {
+        process.env.DIRECT_OFFER_TERMS_SHA256 = directHash;
+        process.env.DIRECT_OFFER_TERMS_ATTESTED = 'true';
+      }
+      try {
+        const db = getDb();
+        db.prepare(`
+          INSERT OR REPLACE INTO commission_content_assets (
+            id, organization_id, slug, asset_type, title, category, location, intent_target,
+            content_markdown, primary_offer_id, status
+          ) VALUES ('guide_test_c', 'org_owner_primary', 'best-wireless-audio-smartwatches-india', 'BUYING_GUIDE', 'Electronics Guide', 'Electronics', 'India', 'Intent', 'Content', 'deal_4ea10ff4-5', 'PUBLISHED')
+        `).run();
 
-      const res = await app.request('/sitemap.xml');
-      expect(res.status).toBe(200);
-      const text = await res.text();
+        const res = await app.request('/sitemap.xml');
+        expect(res.status).toBe(200);
+        const text = await res.text();
 
-      // Must include primary SSR canonical URLs
-      expect(text).toContain('<loc>https://ai-marketing-organization.onrender.com/</loc>');
-      expect(text).toContain('<loc>https://ai-marketing-organization.onrender.com/deals</loc>');
-      expect(text).toContain('<loc>https://ai-marketing-organization.onrender.com/offer</loc>');
-      expect(text).toContain('<loc>https://ai-marketing-organization.onrender.com/tools/site-audit</loc>');
-      expect(text).toContain('<loc>https://ai-marketing-organization.onrender.com/tools/lead-leakage-calculator</loc>');
-      expect(text).toContain('<loc>https://ai-marketing-organization.onrender.com/revenue</loc>');
-      expect(text).toContain('<loc>https://ai-marketing-organization.onrender.com/public/disclosure</loc>');
-      expect(text).toContain('<loc>https://ai-marketing-organization.onrender.com/guides/best-wireless-audio-smartwatches-india</loc>');
-      // Unverified/nonexistent slugs must never appear in sitemap.xml
-      expect(text).not.toContain('/deals/nonexistent-unverified-deal');
+        // Must include primary SSR canonical URLs
+        expect(text).toContain('<loc>https://ai-marketing-organization.onrender.com/</loc>');
+        expect(text).toContain('<loc>https://ai-marketing-organization.onrender.com/deals</loc>');
+        expect(text).toContain('<loc>https://ai-marketing-organization.onrender.com/offer</loc>');
+        expect(text).toContain('<loc>https://ai-marketing-organization.onrender.com/tools/site-audit</loc>');
+        expect(text).toContain('<loc>https://ai-marketing-organization.onrender.com/tools/lead-leakage-calculator</loc>');
+        expect(text).toContain('<loc>https://ai-marketing-organization.onrender.com/revenue</loc>');
+        expect(text).toContain('<loc>https://ai-marketing-organization.onrender.com/public/disclosure</loc>');
+        expect(text).toContain('<loc>https://ai-marketing-organization.onrender.com/guides/best-wireless-audio-smartwatches-india</loc>');
+        // Unverified/nonexistent slugs must never appear in sitemap.xml
+        expect(text).not.toContain('/deals/nonexistent-unverified-deal');
+      } finally {
+        if (origSha !== undefined) process.env.DIRECT_OFFER_TERMS_SHA256 = origSha;
+        else delete process.env.DIRECT_OFFER_TERMS_SHA256;
+        if (origAtt !== undefined) process.env.DIRECT_OFFER_TERMS_ATTESTED = origAtt;
+        else delete process.env.DIRECT_OFFER_TERMS_ATTESTED;
+      }
     });
 
     it('points deals in /rss.xml to canonical /deals landing rather than SPA shells', async () => {

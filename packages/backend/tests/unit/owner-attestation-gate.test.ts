@@ -5,10 +5,12 @@ import { apiRouter } from '../../src/routes/api.js';
 describe('Owner Attestation Gate & Offer Truth (mst_p1_agent_set_owner_attestation_variable)', () => {
   const originalHash = process.env.DIRECT_OFFER_TERMS_SHA256;
   const originalConfirmed = process.env.OWN_OFFER_CONFIRMED;
+  const originalAttested = process.env.DIRECT_OFFER_TERMS_ATTESTED;
 
   beforeEach(() => {
     delete process.env.DIRECT_OFFER_TERMS_SHA256;
     delete process.env.OWN_OFFER_CONFIRMED;
+    delete process.env.DIRECT_OFFER_TERMS_ATTESTED;
   });
 
   afterEach(() => {
@@ -17,25 +19,37 @@ describe('Owner Attestation Gate & Offer Truth (mst_p1_agent_set_owner_attestati
 
     if (originalConfirmed) process.env.OWN_OFFER_CONFIRMED = originalConfirmed;
     else delete process.env.OWN_OFFER_CONFIRMED;
+
+    if (originalAttested) process.env.DIRECT_OFFER_TERMS_ATTESTED = originalAttested;
+    else delete process.env.DIRECT_OFFER_TERMS_ATTESTED;
   });
 
-  it('1. Refuses attestation if OWN_OFFER_CONFIRMED is missing, even if hash matches', () => {
-    const computedHash = DirectCommercialOfferPage.computeOwnOfferHash();
+  it('1. Refuses attestation if DIRECT_OFFER_TERMS_ATTESTED is missing, even if hash matches', () => {
+    const computedHash = DirectCommercialOfferPage.computeDirectOfferHash();
     expect(computedHash).toBeDefined();
 
-    // Set matching hash, but leave OWN_OFFER_CONFIRMED unset
+    // Set matching hash, but leave DIRECT_OFFER_TERMS_ATTESTED unset
     process.env.DIRECT_OFFER_TERMS_SHA256 = computedHash!;
-    delete process.env.OWN_OFFER_CONFIRMED;
+    delete process.env.DIRECT_OFFER_TERMS_ATTESTED;
 
     expect(DirectCommercialOfferPage.isDirectOfferAttested()).toBe(false);
   });
 
-  it('2. Attestation succeeds only when both OWN_OFFER_CONFIRMED=true and hash matches', () => {
-    const computedHash = DirectCommercialOfferPage.computeOwnOfferHash();
+  it('2. Attestation succeeds only when both DIRECT_OFFER_TERMS_ATTESTED=true and hash matches DIRECT_OFFER.md', () => {
+    const computedHash = DirectCommercialOfferPage.computeDirectOfferHash();
     process.env.DIRECT_OFFER_TERMS_SHA256 = computedHash!;
-    process.env.OWN_OFFER_CONFIRMED = 'true';
+    process.env.DIRECT_OFFER_TERMS_ATTESTED = 'true';
 
     expect(DirectCommercialOfferPage.isDirectOfferAttested()).toBe(true);
+  });
+
+  it('SiteFix OWN_OFFER.md hash does not unlock DirectCommercialOfferPage', () => {
+    const sitefixHash = DirectCommercialOfferPage.computeOwnOfferHash();
+    process.env.DIRECT_OFFER_TERMS_SHA256 = sitefixHash!;
+    process.env.DIRECT_OFFER_TERMS_ATTESTED = 'true';
+    process.env.OWN_OFFER_CONFIRMED = 'true';
+
+    expect(DirectCommercialOfferPage.isDirectOfferAttested()).toBe(false);
   });
 
   it('3. Unattested /offer page hides price, guarantee, deliverable list, and payment section', () => {
