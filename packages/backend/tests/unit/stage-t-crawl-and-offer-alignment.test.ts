@@ -372,10 +372,11 @@ describe('Stage T — Live OpenSEO Crawl Leaks & Commercial Offer Alignment (PR 
         const res = await DPDPComplianceManager.getInstance().purgeExpiredInquiries(30);
         expect(res.remoteStatus).toBe('EXECUTED');
         expect(res.remoteDeleted).toBeGreaterThanOrEqual(1);
-        expect(writesLogged.length).toBe(4);
+        expect(writesLogged.length).toBe(6);
         expect(writesLogged.some(w => w.table === 'platform_prospects')).toBe(true);
         expect(writesLogged.some(w => w.table === 'durable_events' && w.sql.includes('PRICE_DROP_SUBSCRIPTION'))).toBe(true);
         expect(writesLogged.some(w => w.table === 'durable_events' && w.sql.includes('PRICE_ALERT_DELIVERY_CLAIMED'))).toBe(true);
+        expect(writesLogged.some(w => w.table === 'outbound_contacts')).toBe(true);
       } finally {
         d1Repo.isRemoteD1WriteAllowed = origIsWriteAllowed;
         d1Repo.executeWrite = origExecuteWrite;
