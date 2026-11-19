@@ -252,9 +252,9 @@ export function normalizeCategoryName(cat: any): string {
   if (!cat) return 'General';
   let cur = cat;
   while (cur && typeof cur === 'object') {
-    if (typeof cur.name === 'string' && cur.name.trim()) return cur.name.trim();
-    if (typeof cur.title === 'string' && cur.title.trim()) return cur.title.trim();
-    if (typeof cur.slug === 'string' && cur.slug.trim()) return cur.slug.trim();
+    if (typeof cur.name === 'string' && cur.name.trim()) { cur = cur.name.trim(); break; }
+    if (typeof cur.title === 'string' && cur.title.trim()) { cur = cur.title.trim(); break; }
+    if (typeof cur.slug === 'string' && cur.slug.trim()) { cur = cur.slug.trim(); break; }
     if (cur.category !== undefined && cur.category !== cur) {
       cur = cur.category;
     } else {
@@ -263,7 +263,20 @@ export function normalizeCategoryName(cat: any): string {
   }
   const str = String(cur || '').trim();
   if (!str || str.toLowerCase() === '[object object]') return 'General';
-  return str;
+
+  // Normalize casing and hyphenation consistently across variants:
+  // e.g. "audio" -> "Audio", "AUDIO" -> "Audio", "smart-watches" -> "Smart Watches"
+  const cleaned = str.replace(/[-_]+/g, ' ').trim();
+  const normalized = cleaned
+    .split(/\s+/)
+    .map(word => {
+      if (!word) return '';
+      if (word === '&' || word.toLowerCase() === 'and') return word === '&' ? '&' : 'and';
+      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+    })
+    .join(' ');
+
+  return normalized || 'General';
 }
 
 export function generateBuyerIntentHubs(

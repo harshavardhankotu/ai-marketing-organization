@@ -292,7 +292,7 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
         
         <p style="color: #cbd5e1; font-size: 0.92rem; margin: 1rem 0 1.25rem 0;">
           Here is an authentic sample deliverable generated from our own production site (<code>ai-marketing-organization.onrender.com</code>).
-          When you purchase the ₹${fixpackPrice} Fix-Pack, you receive a tailored zip archive containing exact, ready-to-paste snippets for your website.
+          When you purchase the ₹${fixpackPrice} Fix-Pack, you receive a downloadable package containing ready-to-paste JSON, Markdown, HTML &lt;head&gt;, robots.txt, and sitemap.xml fix files for your website.
         </p>
 
         <!-- Clear Honest Disclosure -->
@@ -394,6 +394,11 @@ Sitemap: https://ai-marketing-organization.onrender.com/sitemap.xml</code></pre>
         <div>
           <h2 id="resultStatus">Audit Completed</h2>
           <p id="resultExplanation" style="color: var(--text-muted); font-size: 0.9rem; max-width: 600px; margin-top: 0.25rem;"></p>
+          <div style="margin-top: 0.75rem;">
+            <button type="button" id="copyHandoverSummaryBtn" onclick="copyDeveloperHandoverSummary()" style="background: #1e293b; border: 1px solid #38bdf8; color: #38bdf8; padding: 0.45rem 0.9rem; border-radius: 6px; font-size: 0.82rem; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 0.4rem;">
+              📋 Copy Developer Handover Summary
+            </button>
+          </div>
         </div>
         <div class="score-circle" id="scoreDisplay">--</div>
       </div>
@@ -559,6 +564,21 @@ Sitemap: https://ai-marketing-organization.onrender.com/sitemap.xml</code></pre>
           <a id="downloadLink" href="#" class="btn-primary" style="display: inline-block; text-decoration: none; max-width: 300px; padding: 0.75rem 1.5rem;" target="_blank">
             Download Fix-Pack (JSON / Markdown)
           </a>
+
+          <!-- Post-Fix Included Verification Recheck Section -->
+          <div id="postFixRecheckSection" style="margin-top: 1.25rem; padding: 1.15rem; background: rgba(15, 23, 42, 0.85); border: 1px solid #334155; border-radius: 8px; text-align: left;">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.4rem;">
+              <h4 style="margin: 0; color: #38bdf8; font-size: 0.95rem;">Verify Fixes (Included Recheck)</h4>
+              <span style="font-size: 0.72rem; background: rgba(56, 189, 248, 0.2); color: #7dd3fc; padding: 2px 8px; border-radius: 4px; font-weight: 700;">INCLUDED 1-CLICK VERIFICATION</span>
+            </div>
+            <p style="font-size: 0.84rem; color: #cbd5e1; margin: 0 0 0.85rem 0;">
+              After your developer applies the Fix-Pack files (<code>&lt;head&gt;</code>, Schema JSON-LD, <code>robots.txt</code>, and <code>sitemap.xml</code>), run your included verification scan to confirm resolved defects.
+            </p>
+            <button type="button" id="verifyFixesRecheckBtn" onclick="runPostFixRecheck()" style="background: #0284c7; color: #fff; border: 1px solid #38bdf8; padding: 0.6rem 1.15rem; border-radius: 6px; font-size: 0.85rem; font-weight: 600; cursor: pointer;">
+              Verify Fixes (Included Recheck) &rarr;
+            </button>
+            <div id="recheckResultBox" style="display: none; margin-top: 0.85rem; padding: 0.85rem; border-radius: 6px; font-size: 0.85rem;"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -568,6 +588,8 @@ Sitemap: https://ai-marketing-organization.onrender.com/sitemap.xml</code></pre>
     let currentAuditId = null;
     let currentAuditTargetUrl = null;
     let currentReadiness = null;
+    let activeDownloadToken = null;
+    let activeRecheckAuditId = null;
 
     function escapeHtml(str) {
       if (!str) return '';
@@ -634,7 +656,12 @@ Sitemap: https://ai-marketing-organization.onrender.com/sitemap.xml</code></pre>
     (function prefillUrlParam() {
       try {
         const params = new URLSearchParams(window.location.search);
-        const qUrl = params.get('url');
+        let qUrl = params.get('url');
+        const qDomain = params.get('domain');
+        if (!qUrl && qDomain) {
+          const trimmed = qDomain.trim();
+          qUrl = (trimmed.startsWith('http://') || trimmed.startsWith('https://')) ? trimmed : 'https://' + trimmed;
+        }
         if (qUrl && (qUrl.startsWith('http://') || qUrl.startsWith('https://'))) {
           const input = document.getElementById('targetUrl');
           if (input) input.value = qUrl;
@@ -777,6 +804,7 @@ Sitemap: https://ai-marketing-organization.onrender.com/sitemap.xml</code></pre>
 
         // Action Recommendation
         const recDiv = document.createElement('div');
+        recDiv.className = 'finding-action';
         recDiv.style.fontSize = '0.85rem';
         recDiv.style.marginTop = '0.25rem';
         recDiv.innerHTML = '<strong>Action:</strong> ' + escapeHtml(f.recommendation);
@@ -959,12 +987,156 @@ Sitemap: https://ai-marketing-organization.onrender.com/sitemap.xml</code></pre>
       }
     }
 
+    function copyDeveloperHandoverSummary() {
+      if (!currentAuditTargetUrl) {
+        alert('Please run a website audit scan first.');
+        return;
+      }
+      const score = document.getElementById('scoreDisplay') ? document.getElementById('scoreDisplay').textContent : '--';
+      const status = document.getElementById('resultStatus') ? document.getElementById('resultStatus').textContent : '';
+      let domain = '';
+      try {
+        domain = new URL(currentAuditTargetUrl).hostname;
+      } catch {
+        domain = currentAuditTargetUrl;
+      }
+
+      const findingElements = document.querySelectorAll('#findingsContainer .finding-item');
+      let defectsText = '';
+      let defectIndex = 1;
+
+      findingElements.forEach(el => {
+        if (!el.classList.contains('PASS')) {
+          const header = el.querySelector('.finding-header');
+          const title = header ? header.textContent.trim() : 'Defect';
+          const recDiv = el.querySelector('.finding-action') || el.querySelector('div:nth-of-type(3)');
+          const rec = recDiv ? recDiv.textContent.replace(/^Action:\s*/i, '').trim() : '';
+          defectsText += defectIndex + '. ' + title + '\\n   ' + rec + '\\n';
+          defectIndex++;
+        }
+      });
+
+      if (!defectsText) {
+        defectsText = 'No critical technical defects detected. All core technical launch checks passed.\\n';
+      }
+
+      const summary = '### Website Launch QA Summary: ' + domain + '\\n' +
+        '- Target URL: ' + currentAuditTargetUrl + '\\n' +
+        '- Score: ' + score + '/100 (' + status + ')\\n' +
+        '- Detected Findings:\\n' + defectsText + '\\n' +
+        'Unlock ready-to-paste Fix-Pack files & verification recheck (₹499): https://ai-marketing-organization.onrender.com/tools/site-audit?url=' + encodeURIComponent(currentAuditTargetUrl || ('https://' + domain));
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(summary).then(() => {
+          const btn = document.getElementById('copyHandoverSummaryBtn');
+          if (btn) {
+            const original = btn.innerHTML;
+            btn.innerHTML = '✓ Copied Developer Summary!';
+            btn.style.borderColor = '#10b981';
+            btn.style.color = '#34d399';
+            setTimeout(() => {
+              btn.innerHTML = original;
+              btn.style.borderColor = '#38bdf8';
+              btn.style.color = '#38bdf8';
+            }, 2500);
+          }
+        }).catch(err => {
+          alert('Could not copy summary to clipboard: ' + err.message);
+        });
+      } else {
+        alert('Clipboard API unavailable. Summary:\\n\\n' + summary);
+      }
+    }
+
+    async function runPostFixRecheck() {
+      const targetAuditId = activeRecheckAuditId || currentAuditId;
+      if (!targetAuditId || !activeDownloadToken) {
+        alert('Please complete payment and verify entitlement token first.');
+        return;
+      }
+      const btn = document.getElementById('verifyFixesRecheckBtn');
+      const box = document.getElementById('recheckResultBox');
+      if (btn) {
+        btn.disabled = true;
+        btn.innerText = 'Re-Scanning Website...';
+      }
+      if (box) {
+        box.style.display = 'block';
+        box.style.background = '#1e293b';
+        box.style.color = '#cbd5e1';
+        box.innerHTML = 'Connecting to public website and verifying applied fixes...';
+      }
+
+      try {
+        const recheckUrl = '/api/v1/tools/site-audit/' + encodeURIComponent(targetAuditId) + '/recheck?token=' + encodeURIComponent(activeDownloadToken);
+        const res = await fetch(recheckUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        });
+        const data = await res.json();
+        if (!data.success) {
+          box.style.background = 'rgba(239, 68, 68, 0.15)';
+          box.style.color = '#fca5a5';
+          box.innerHTML = '<strong>Recheck Error:</strong> ' + escapeHtml(data.error);
+          return;
+        }
+
+        let html = '<div style="margin-bottom: 0.5rem;"><strong style="color: #34d399;">Recheck Completed:</strong> Score updated from <strong>' + data.beforeScore + '/100</strong> to <strong>' + data.afterScore + '/100</strong>.</div>';
+        if (data.fixedChecks && data.fixedChecks.length > 0) {
+          html += '<div style="margin-bottom: 0.5rem; color: #34d399;"><strong>' + data.fixedChecks.length + ' Check(s) Flipped to VERIFIED:</strong><ul style="margin: 0.25rem 0 0 1.25rem;">';
+          data.fixedChecks.forEach(fc => {
+            html += '<li>[' + escapeHtml(fc.category) + '] ' + escapeHtml(fc.title) + ' &mdash; <span style="color:#6ee7b7;">VERIFIED</span></li>';
+          });
+          html += '</ul></div>';
+        }
+        if (data.remainingChecks && data.remainingChecks.length > 0) {
+          html += '<div style="color: #fcd34d;"><strong>' + data.remainingChecks.length + ' Remaining Defect(s):</strong><ul style="margin: 0.25rem 0 0 1.25rem;">';
+          data.remainingChecks.forEach(rc => {
+            html += '<li>[' + escapeHtml(rc.category) + '] ' + escapeHtml(rc.title) + ' &mdash; ' + escapeHtml(rc.recommendation) + '</li>';
+          });
+          html += '</ul></div>';
+        } else if (data.fixedChecks && data.fixedChecks.length > 0) {
+          html += '<div style="color: #34d399; font-weight: 700;">✓ All detected technical defects have been verified as resolved!</div>';
+        }
+
+        box.style.background = 'rgba(16, 185, 129, 0.15)';
+        box.innerHTML = html;
+      } catch (err) {
+        box.style.background = 'rgba(239, 68, 68, 0.15)';
+        box.style.color = '#fca5a5';
+        box.innerHTML = '<strong>Network error during recheck:</strong> ' + escapeHtml(err.message);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerText = 'Verify Fixes (Included Recheck) →';
+        }
+      }
+    }
+
     function showDownloadSuccess(downloadUrl, paymentId, orderId) {
       document.getElementById('checkoutActionContainer').style.display = 'none';
       const box = document.getElementById('downloadSuccessBox');
       box.style.display = 'block';
       const link = document.getElementById('downloadLink');
       link.href = downloadUrl;
+      activeRecheckAuditId = currentAuditId;
+      try {
+        const u = new URL(downloadUrl, window.location.origin);
+        activeDownloadToken = u.searchParams.get('token');
+        const mPath = u.pathname.match(new RegExp('/tools/site-audit/([^/]+)/deliverable'));
+        if (mPath && mPath[1]) {
+          activeRecheckAuditId = decodeURIComponent(mPath[1]);
+        }
+      } catch {
+        const m = downloadUrl.match(/token=([^&]+)/);
+        if (m) activeDownloadToken = m[1];
+      }
+      if (activeDownloadToken) {
+        const parts = activeDownloadToken.split('.');
+        if (parts.length >= 2 && parts[1]) {
+          activeRecheckAuditId = parts[1];
+        }
+      }
       const refEl = document.getElementById('downloadRefDetails');
       if (refEl && (paymentId || orderId)) {
         refEl.innerHTML = (orderId ? '<strong>Order ID:</strong> ' + escapeHtml(orderId) + '<br>' : '') +

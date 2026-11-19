@@ -48,11 +48,10 @@ export function computeOwnOfferHash(customFilePath?: string): string | null {
  * Computes SHA-256 digest specifically for owner/DIRECT_OFFER.md (Lane B B2B Offer).
  * Cross-product invariant: Strictly rejects owner/OWN_OFFER.md (which belongs to SiteFix ₹499).
  */
-export function computeDirectOfferHash(customFilePath?: string): string | null {
+export function resolveDirectOfferPath(customFilePath?: string): string | null {
   try {
     let filePath = customFilePath;
     if (filePath && path.basename(filePath).toLowerCase().includes('own_offer')) {
-      // Cross-product isolation: SiteFix OWN_OFFER.md can NEVER unlock DIRECT_OFFER
       return null;
     }
     if (!filePath) {
@@ -63,7 +62,69 @@ export function computeDirectOfferHash(customFilePath?: string): string | null {
       ];
       filePath = candidates.find(c => fs.existsSync(c));
     }
-    if (!filePath || !fs.existsSync(filePath)) {
+    return (filePath && fs.existsSync(filePath)) ? filePath : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface DirectOfferTerms {
+  offerId: string;
+  title: string;
+  priceRaw: string;
+  setupPriceINR: number | null;
+  monthlyPriceINR: number | null;
+  isPayable: boolean;
+  targetAudience: string;
+  billingModel: string;
+}
+
+export function parseDirectOfferTerms(customFilePath?: string): DirectOfferTerms {
+  const filePath = resolveDirectOfferPath(customFilePath);
+  if (!filePath) {
+    return {
+      offerId: 'PLATFORM_SETUP',
+      title: 'AI Inbound Lead Conversion System — Day 0-5 Setup & Integration',
+      priceRaw: 'TBD',
+      setupPriceINR: null,
+      monthlyPriceINR: null,
+      isPayable: false,
+      targetAudience: 'Indian local service businesses and professional firms.',
+      billingModel: 'TBD'
+    };
+  }
+  const content = fs.readFileSync(filePath, 'utf8');
+  const priceMatch = content.match(/\*\*Price:\*\*\s*(.+)/i);
+  const priceRaw = priceMatch ? priceMatch[1].trim() : 'TBD';
+  const numericMatch = priceRaw.match(/\b(\d[\d,]*)\b/);
+  const numericPrice = numericMatch ? parseInt(numericMatch[1].replace(/,/g, ''), 10) : null;
+  const isPayable = numericPrice !== null && !priceRaw.toLowerCase().includes('tbd');
+
+  const titleMatch = content.match(/\*\*Full Title:\*\*\s*(.+)/i);
+  const title = titleMatch ? titleMatch[1].trim() : 'AI Inbound Lead Conversion System — Day 0-5 Setup & Integration';
+
+  const audienceMatch = content.match(/\*\*Target Audience:\*\*\s*(.+)/i);
+  const targetAudience = audienceMatch ? audienceMatch[1].trim() : 'Indian local service businesses and professional firms.';
+
+  const billingMatch = content.match(/\*\*Billing Model:\*\*\s*(.+)/i);
+  const billingModel = billingMatch ? billingMatch[1].trim() : 'TBD';
+
+  return {
+    offerId: 'PLATFORM_SETUP',
+    title,
+    priceRaw,
+    setupPriceINR: isPayable ? numericPrice : null,
+    monthlyPriceINR: null,
+    isPayable,
+    targetAudience,
+    billingModel
+  };
+}
+
+export function computeDirectOfferHash(customFilePath?: string): string | null {
+  try {
+    const filePath = resolveDirectOfferPath(customFilePath);
+    if (!filePath) {
       return null;
     }
     const content = fs.readFileSync(filePath);
@@ -92,6 +153,14 @@ export interface OfferPageConfig {
 }
 
 function escapeMetaAttr(val: string): string {
+  return String(val)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function escapeHtml(val: string): string {
   return String(val)
     .replace(/&/g, '&amp;')
     .replace(/"/g, '&quot;')
@@ -202,7 +271,7 @@ export class DirectCommercialOfferPage {
       return this.renderUnattestedOverviewHtml(siteName, siteUrl, contactEmail);
     }
 
-    return this.renderAttestedOfferHtml(siteName, siteUrl, contactEmail, config);
+    return this.renderAttestedOfferHtml(siteName, siteUrl, contactEmail, config, customOfferPath);
   }
 
   /**
@@ -376,15 +445,40 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
   <div class="container">
     <header class="hero">
       <div class="status-badge">₹0 Paid Acquisition • Live Verified Offers</div>
-      <h1>SiteFix AI &amp; Fair-Price Deals</h1>
+      <h1>Website Technical Launch Check &amp; Developer Fix-Pack — ₹499</h1>
       <p class="subtitle">
-        Run a free technical website scan and get ready-to-paste SEO &amp; Schema fixes for ₹499, or compare verified fair-price deals in India.
+        Run a free public HTML, metadata, Schema.org JSON-LD, robots.txt, and sitemap check before client handover. Unlock ready-to-paste fix files + 1 post-fix verification recheck for ₹499.
       </p>
       <div class="cta-group">
         <a href="/tools/site-audit" class="btn btn-primary">Run Free Technical Website Scan &rarr;</a>
         <a href="/deals" class="btn btn-secondary">Browse Verified Fair-Price Deals &rarr;</a>
       </div>
     </header>
+
+    <!-- Section 1: SiteFix AI — Self-Serve Technical Website Audit -->
+    <div class="card" id="sitefix-audit" style="border-color: #06b6d4; background: linear-gradient(180deg, #111827 0%, #0b1120 100%);">
+      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem;">
+        <h2 style="margin: 0; font-size: 1.35rem; color: #fff;">SiteFix AI — Self-Serve Website &amp; Metadata Check</h2>
+        <span class="sample-badge" style="background: rgba(6, 182, 212, 0.15); color: #38bdf8; border-color: rgba(6, 182, 212, 0.3);">Self-Serve SiteFix Core Technical Fix-Pack</span>
+      </div>
+      <p style="color: #cbd5e1; font-size: 0.95rem; margin-bottom: 1.25rem;">
+        Inspect deterministic HTML syntax, <code>&lt;head&gt;</code> metadata tags, <code>Schema.org</code> JSON-LD markup, <code>robots.txt</code>, <code>sitemap.xml</code>, and security headers on your public URL. When live PageSpeed API access is configured and within quota, mobile speed metrics are shown; otherwise PageSpeed metrics are marked <code>UNAVAILABLE</code>. Outputs are deterministic technical observations with zero ranking or clinical guarantees.
+      </p>
+      <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
+        <a href="/tools/site-audit" class="btn btn-primary" style="font-size: 0.9rem; text-decoration: none;">
+          Run Free Website Audit &rarr;
+        </a>
+        <a href="/tools/lead-leakage-calculator" class="btn btn-secondary" style="font-size: 0.9rem; text-decoration: none;">
+          Calculate Lead Leakage Cost &rarr;
+        </a>
+        <a href="/audit/attagalatta.com" class="btn btn-secondary" style="font-size: 0.85rem; text-decoration: none;">
+          Sample Audit: attagalatta.com &rarr;
+        </a>
+        <a href="/audit/roasterycoffee.co.in" class="btn btn-secondary" style="font-size: 0.85rem; text-decoration: none;">
+          Sample Audit: roasterycoffee.co.in &rarr;
+        </a>
+      </div>
+    </div>
 
     <!-- Section 1: Administrative Lead Capture -->
     <div class="card" id="b2b-lead-capture">
@@ -546,32 +640,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
       </form>
     </div>
 
-    <!-- Section 2: SiteFix AI — Self-Serve Technical Website Audit -->
-    <div class="card" id="sitefix-audit" style="border-color: #06b6d4; background: linear-gradient(180deg, #111827 0%, #0b1120 100%);">
-      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem;">
-        <h2 style="margin: 0; font-size: 1.35rem; color: #fff;">SiteFix AI — Self-Serve Website &amp; Metadata Check</h2>
-        <span class="sample-badge" style="background: rgba(6, 182, 212, 0.15); color: #38bdf8; border-color: rgba(6, 182, 212, 0.3);">Self-Serve SiteFix Core Technical Fix-Pack</span>
-      </div>
-      <p style="color: #cbd5e1; font-size: 0.95rem; margin-bottom: 1.25rem;">
-        Inspect deterministic HTML syntax, <code>&lt;head&gt;</code> metadata tags, <code>Schema.org</code> JSON-LD markup, <code>robots.txt</code>, <code>sitemap.xml</code>, and security headers on your public URL. When live PageSpeed API access is configured and within quota, mobile speed metrics are shown; otherwise PageSpeed metrics are marked <code>UNAVAILABLE</code>. Outputs are deterministic technical observations with zero ranking or clinical guarantees.
-      </p>
-      <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
-        <a href="/tools/site-audit" class="btn btn-primary" style="font-size: 0.9rem; text-decoration: none;">
-          Run Free Website Audit &rarr;
-        </a>
-        <a href="/tools/lead-leakage-calculator" class="btn btn-secondary" style="font-size: 0.9rem; text-decoration: none;">
-          Calculate Lead Leakage Cost &rarr;
-        </a>
-        <a href="/audit/attagalatta.com" class="btn btn-secondary" style="font-size: 0.85rem; text-decoration: none;">
-          Sample Audit: attagalatta.com &rarr;
-        </a>
-        <a href="/audit/roasterycoffee.co.in" class="btn btn-secondary" style="font-size: 0.85rem; text-decoration: none;">
-          Sample Audit: roasterycoffee.co.in &rarr;
-        </a>
-      </div>
-    </div>
-
-    <!-- Section 3: Commercial Deals & Buyer Guides (Consumer Shopper Journey) -->
+    <!-- Section 2: Commercial Deals & Buyer Guides (Consumer Shopper Journey) -->
     <div class="card" id="consumer-deals" style="border-color: #334155; background: #0b1120;">
       <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem;">
         <h2 style="font-size: 1.3rem; color: #fff; margin: 0;">Commercial Consumer Deals &amp; Buying Guides — Observed Merchant Price Snapshots (#Ad)</h2>
@@ -1433,17 +1502,20 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
     siteName: string,
     siteUrl: string,
     contactEmail: string | null,
-    config: Partial<OfferPageConfig>
+    config: Partial<OfferPageConfig>,
+    customOfferPath?: string
   ): string {
+    const terms = parseDirectOfferTerms(customOfferPath);
     const upiVpa = config.upiVpa || process.env.OWNER_UPI_VPA || process.env.PLATFORM_UPI_VPA || null;
     const razorpayUrl = config.razorpayMeUrl || process.env.OWNER_RAZORPAY_ME_URL || process.env.PLATFORM_RAZORPAY_ME_URL || null;
     const whatsappNum = (config.contactPhone || process.env.OWNER_WHATSAPP_NUMBER || process.env.PUBLIC_WHATSAPP_NUMBER || '').replace(/[^0-9]/g, '');
     const orderRef = this.generateOrderReference('LCS');
 
-    const setupPriceINR = 15000;
-    const monthlyPriceINR = 8000;
+    const setupPriceINR = terms.setupPriceINR;
+    const monthlyPriceINR = terms.monthlyPriceINR;
+    const isPayable = terms.isPayable && setupPriceINR !== null;
 
-    const upiUri = upiVpa
+    const upiUri = (upiVpa && isPayable && setupPriceINR)
       ? `upi://pay?pa=${encodeURIComponent(upiVpa)}&pn=${encodeURIComponent(siteName)}&am=${setupPriceINR}&tr=${encodeURIComponent(orderRef)}&cu=INR&tn=${encodeURIComponent(`Platform Setup Ref ${orderRef}`)}`
       : null;
 
@@ -1583,7 +1655,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
         <h2 class="tier-name">Day 0–5 Setup &amp; Integration</h2>
         <p class="tier-desc">Complete setup, qualification rules, and 24/7 lead conversion activation. Delivery Time: 5 Business Days.</p>
         <div class="price-box">
-          <span class="price-amount">₹${setupPriceINR.toLocaleString('en-IN')}</span>
+          <span class="price-amount">${isPayable && setupPriceINR !== null ? `₹${setupPriceINR.toLocaleString('en-IN')}` : 'TBD (Owner Scope)'}</span>
           <span class="price-period">one-time investment (5-day delivery)</span>
         </div>
         <ul class="feature-list">
@@ -1593,8 +1665,8 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
           <li>✓ Direct calendar booking integration</li>
           <li>✓ Live system handover report &amp; staff walkthrough</li>
         </ul>
-        ${upiUri ? `<a href="${upiUri}" class="btn">Pay ₹${setupPriceINR.toLocaleString('en-IN')} via UPI</a>` : ''}
-        ${razorpayUrl ? `<a href="${razorpayUrl}" class="btn btn-secondary" target="_blank" rel="noopener">Pay via Razorpay</a>` : ''}
+        ${(upiUri && isPayable && setupPriceINR !== null) ? `<a href="${upiUri}" class="btn">Pay ₹${setupPriceINR.toLocaleString('en-IN')} via UPI</a>` : ''}
+        ${(razorpayUrl && isPayable) ? `<a href="${razorpayUrl}" class="btn btn-secondary" target="_blank" rel="noopener">Pay via Razorpay</a>` : ''}
       </div>
 
       <!-- Tier 2 -->
@@ -1602,7 +1674,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
         <h2 class="tier-name">Monthly Retainer &amp; SLA</h2>
         <p class="tier-desc">Continuous triage optimization, reminder workflows, and monthly conversion reporting. Continuous 30-day service.</p>
         <div class="price-box">
-          <span class="price-amount">₹${monthlyPriceINR.toLocaleString('en-IN')}</span>
+          <span class="price-amount">${isPayable && monthlyPriceINR !== null ? `₹${monthlyPriceINR.toLocaleString('en-IN')}` : 'TBD (Owner Scope)'}</span>
           <span class="price-period">/ month (cancel anytime)</span>
         </div>
         <ul class="feature-list">
@@ -1615,7 +1687,23 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
       </div>
     </div>
 
-    <!-- Verified Payment Methods: Method A (Razorpay Dynamic Link) & Method B (Attached UPI QR) -->
+    <!-- Verified Payment Options or Attested Pending Pricing Notice -->
+    ${!isPayable ? `
+    <div style="background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 16px; padding: 2.5rem 2rem; margin-bottom: 2.5rem; text-align: center;">
+      <h2 style="font-size: 1.45rem; color: #38bdf8; margin-bottom: 0.5rem;">Commercial Terms Attested — Pricing Pending Definition</h2>
+      <p style="color: var(--text-muted); font-size: 0.95rem; max-width: 620px; margin: 0.5rem auto 1.5rem;">
+        The human owner has attested direct commercial terms in <code>owner/DIRECT_OFFER.md</code>. However, final implementation pricing remains <strong>${escapeHtml(terms.priceRaw)}</strong>.
+        Online payment checkout and automated UPI claims remain suppressed until explicit numeric pricing is configured by the owner.
+      </p>
+      ${whatsappNum ? `
+      <a href="https://wa.me/${whatsappNum}?text=${encodeURIComponent('Hi, I would like to request custom scope details for the AI Lead Conversion System.')}" class="btn" style="display: inline-block;" target="_blank" rel="noopener">Request Custom Scope via WhatsApp &rarr;</a>
+      ` : (contactEmail ? `
+      <a href="mailto:${contactEmail}?subject=${encodeURIComponent('AI Lead Conversion System — Custom Scope Request')}" class="btn" style="display: inline-block;">Request Custom Scope via Email &rarr;</a>
+      ` : `
+      <a href="/tools/site-audit" class="btn" style="display: inline-block;">Run Free Technical Audit &rarr;</a>
+      `)}
+    </div>
+    ` : `
     <div style="background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 16px; padding: 2rem; margin-bottom: 2.5rem;">
       <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.5rem;">
         <div>
@@ -1635,12 +1723,14 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
             Generate an authenticated Razorpay payment link for the exact approved invoice amount. Supports Credit/Debit Cards, Netbanking, and UPI with instant webhook verification.
           </p>
           <div style="display: flex; flex-direction: column; gap: 0.75rem;">
-            <button onclick="createDynamicLink('PLATFORM_SETUP', 'Day 0-5 Setup', 15000)" class="btn" style="padding: 0.75rem; font-size: 0.92rem;">
-              Generate ₹15,000 Setup Link
+            <button onclick="createDynamicLink('PLATFORM_SETUP', 'Day 0-5 Setup', ${setupPriceINR})" class="btn" style="padding: 0.75rem; font-size: 0.92rem;">
+              Generate ₹${setupPriceINR.toLocaleString('en-IN')} Setup Link
             </button>
-            <button onclick="createDynamicLink('PLATFORM_MONTHLY', 'Monthly Retainer', 8000)" class="btn btn-secondary" style="padding: 0.75rem; font-size: 0.92rem; margin-top: 0;">
-              Generate ₹8,000 Retainer Link
+            ${monthlyPriceINR ? `
+            <button onclick="createDynamicLink('PLATFORM_MONTHLY', 'Monthly Retainer', ${monthlyPriceINR})" class="btn btn-secondary" style="padding: 0.75rem; font-size: 0.92rem; margin-top: 0;">
+              Generate ₹${monthlyPriceINR.toLocaleString('en-IN')} Retainer Link
             </button>
+            ` : ''}
           </div>
           <div id="dynamic-link-box" style="display: none; margin-top: 1rem; padding: 0.85rem; background: rgba(56, 189, 248, 0.1); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 8px;">
             <p style="font-size: 0.82rem; color: #bae6fd; margin-bottom: 0.5rem;" id="dynamic-link-desc"></p>
@@ -1660,7 +1750,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
             }
             return `
               <p style="color: var(--text-muted); font-size: 0.88rem; margin-bottom: 1rem;">
-                Scan with Google Pay, PhonePe, Paytm, or BHIM. Enter invoice amount (₹15,000 Setup or ₹8,000 Retainer).
+                Scan with Google Pay, PhonePe, Paytm, or BHIM. Enter invoice amount (₹${setupPriceINR.toLocaleString('en-IN')} Setup${monthlyPriceINR ? ` or ₹${monthlyPriceINR.toLocaleString('en-IN')} Retainer` : ''}).
               </p>
               <div style="background: #111827; border: 1px solid #1e293b; border-radius: 10px; padding: 1rem; display: inline-block;">
                 <img src="${OwnerAuthService.PLATFORM_QR_ASSET_PATH}" alt="Razorpay UPI QR" style="max-width: 200px; width: 100%; border-radius: 8px; cursor: pointer; border: 2px solid #334155;" onclick="window.open(this.src, '_blank')">
@@ -1686,7 +1776,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
           <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1rem;">
             <div>
               <label style="display: block; font-size: 0.82rem; color: #94a3b8; margin-bottom: 0.25rem;">Business / Contact Name *</label>
-              <input type="text" id="offer-payer-name" required placeholder="Dr. Rajesh Sharma" style="width: 100%; padding: 0.6rem; border-radius: 8px; border: 1px solid #334155; background: #0b1120; color: #fff; font-size: 0.9rem;">
+              <input type="text" id="offer-payer-name" required placeholder="Name / Business" style="width: 100%; padding: 0.6rem; border-radius: 8px; border: 1px solid #334155; background: #0b1120; color: #fff; font-size: 0.9rem;">
             </div>
             <div>
               <label style="display: block; font-size: 0.82rem; color: #94a3b8; margin-bottom: 0.25rem;">Mobile / WhatsApp *</label>
@@ -1695,8 +1785,8 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
             <div>
               <label style="display: block; font-size: 0.82rem; color: #94a3b8; margin-bottom: 0.25rem;">Service Tier Paid *</label>
               <select id="offer-service-tier" style="width: 100%; padding: 0.6rem; border-radius: 8px; border: 1px solid #334155; background: #0b1120; color: #fff; font-size: 0.9rem;" onchange="updateOfferAmount(this.value)">
-                <option value="15000">Day 0-5 Setup (₹15,000)</option>
-                <option value="8000">Monthly Retainer (₹8,000)</option>
+                <option value="${setupPriceINR}">Day 0-5 Setup (₹${setupPriceINR.toLocaleString('en-IN')})</option>
+                ${monthlyPriceINR ? `<option value="${monthlyPriceINR}">Monthly Retainer (₹${monthlyPriceINR.toLocaleString('en-IN')})</option>` : ''}
               </select>
             </div>
             <div>
@@ -1711,12 +1801,13 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
         </form>
       </div>
     </div>
+    `}
 
-    <!-- Commercial Terms & Scope from owner/OWN_OFFER.md -->
+    <!-- Commercial Terms & Scope from owner/DIRECT_OFFER.md -->
     <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; margin-bottom: 2rem;">
       <div style="background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 1.5rem;">
         <h3 style="color: #38bdf8; font-size: 1.1rem; margin-bottom: 0.75rem;">Who It Is For</h3>
-        <p style="color: #cbd5e1; font-size: 0.9rem; line-height: 1.5;">Local service businesses, healthcare practices, clinics, dental centers, coaching institutes, and professional service firms in India seeking automated 24/7 inquiry triage without extra ad spend.</p>
+        <p style="color: #cbd5e1; font-size: 0.9rem; line-height: 1.5;">${escapeHtml(terms.targetAudience || 'Indian local service businesses and professional firms seeking automated 24/7 inquiry triage without extra ad spend.')}</p>
       </div>
 
       <div style="background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 1.5rem;">
@@ -1726,7 +1817,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
 
       <div style="background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 1.5rem;">
         <h3 style="color: #34d399; font-size: 1.1rem; margin-bottom: 0.75rem;">Refund Terms &amp; Guarantee</h3>
-        <p style="color: #cbd5e1; font-size: 0.9rem; line-height: 1.5;"><strong>14-Day Performance Guarantee:</strong> 100% full refund of ₹15,000 setup fee if the automated triage fails to capture inquiries within 14 days due to unresolved platform defect. Monthly Retainer: Cancel anytime before the next billing cycle.</p>
+        <p style="color: #cbd5e1; font-size: 0.9rem; line-height: 1.5;"><strong>14-Day Performance Guarantee:</strong> 100% full refund of ${setupPriceINR ? `₹${setupPriceINR.toLocaleString('en-IN')}` : 'agreed'} setup fee if the automated triage fails to capture inquiries within 14 days due to unresolved platform defect. Monthly Retainer: Cancel anytime before the next billing cycle.</p>
       </div>
     </div>
 
@@ -1750,7 +1841,8 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             offerId: offerId,
-            customerName: 'Commercial Client - ' + title
+            customerName: 'Commercial Client - ' + title,
+            amountINR: amount
           })
         });
         var data = await res.json();

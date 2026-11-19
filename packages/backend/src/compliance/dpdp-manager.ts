@@ -101,6 +101,7 @@ export class DPDPComplianceManager {
       WHERE created_at < ?
         AND event_type = 'PRICE_ALERT_DELIVERY_CLAIMED'
         AND (processed = 0 OR error_message LIKE 'PROVIDER_CALL_ATTEMPTED%' OR error_message LIKE 'PRE_SEND_LEASE%')
+        AND payload_json NOT LIKE '%"dpdp_retention_purged":true%'
     `;
 
     const localErrors: string[] = [];

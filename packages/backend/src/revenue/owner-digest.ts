@@ -554,7 +554,7 @@ export class OwnerDigestService {
 
     // 4. Missing owner facts by lane
     const missingAffiliate = ['ASSOCIATES_APPLICATION_DATE', 'ASSOCIATES_LISTED_SITE_URL', 'ASSOCIATES_AGREEMENT_READ'].filter(f => !process.env[f]);
-    const missingDirect = ['OWN_OFFER_CONFIRMED', 'DIRECT_OFFER_TERMS_SHA256'].filter(f => !process.env[f]);
+    const missingDirect = ['DIRECT_OFFER_TERMS_ATTESTED', 'DIRECT_OFFER_TERMS_SHA256'].filter(f => !process.env[f]);
     const missingSite = ['PUBLIC_SITE_NAME', 'PUBLIC_AUTHOR_NAME', 'PUBLIC_CONTACT_EMAIL'].filter(f => !process.env[f]);
     topPainPoints.push({
       rank: 4,
@@ -584,7 +584,7 @@ export class OwnerDigestService {
     if (missingOwnerFacts.length > 0) {
       nextAction = `Set statutory owner variables in Render environment (${ownerValidation.missingFields.concat(ownerValidation.invalidFields.map(f => f.field)).join(', ')}).`;
     } else if (!DirectCommercialOfferPage.isDirectOfferAttested()) {
-      nextAction = 'Attest Lane B commercial offer by setting DIRECT_OFFER_TERMS_SHA256 and OWN_OFFER_CONFIRMED=true.';
+      nextAction = 'Attest Lane B commercial offer by setting DIRECT_OFFER_TERMS_SHA256 and DIRECT_OFFER_TERMS_ATTESTED=true.';
     } else {
       try {
         const pendingClaims = db.prepare(`SELECT COUNT(*) as c FROM manual_upi_claims WHERE status = 'PAYMENT_CLAIMED' AND is_test = 0 AND status != 'TEST_QUARANTINED'`).get() as any;
@@ -1568,7 +1568,7 @@ export class OwnerDigestService {
 
     // 4. Missing owner facts by lane
     const missingAffiliate = ['ASSOCIATES_APPLICATION_DATE', 'ASSOCIATES_LISTED_SITE_URL', 'ASSOCIATES_AGREEMENT_READ'].filter(f => !process.env[f]);
-    const missingDirect = ['OWN_OFFER_CONFIRMED', 'DIRECT_OFFER_TERMS_SHA256'].filter(f => !process.env[f]);
+    const missingDirect = ['DIRECT_OFFER_TERMS_ATTESTED', 'DIRECT_OFFER_TERMS_SHA256'].filter(f => !process.env[f]);
     const missingSite = ['PUBLIC_SITE_NAME', 'PUBLIC_AUTHOR_NAME', 'PUBLIC_CONTACT_EMAIL'].filter(f => !process.env[f]);
     topPainPoints.push({
       rank: 4,
@@ -1598,7 +1598,7 @@ export class OwnerDigestService {
     if (missingOwnerFacts.length > 0) {
       nextAction = `Set statutory owner variables in Render environment (${ownerValidation.missingFields.concat(ownerValidation.invalidFields.map(f => f.field)).join(', ')}).`;
     } else if (!DirectCommercialOfferPage.isDirectOfferAttested()) {
-      nextAction = 'Attest Lane B commercial offer by setting DIRECT_OFFER_TERMS_SHA256 and OWN_OFFER_CONFIRMED=true.';
+      nextAction = 'Attest Lane B commercial offer by setting DIRECT_OFFER_TERMS_SHA256 and DIRECT_OFFER_TERMS_ATTESTED=true.';
     } else {
       try {
         const pendingClaims = await this.d1Repo.queryOne<{ c: number }>(

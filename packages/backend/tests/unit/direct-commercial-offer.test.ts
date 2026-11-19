@@ -81,24 +81,26 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
         upiVpa: 'owner@okhdfcbank'
       });
 
-      // Tier 1: PLATFORM_SETUP (₹15,000)
+      // Tier 1: PLATFORM_SETUP (TBD per owner/DIRECT_OFFER.md)
       expect(html).toContain('Day 0–5 Setup &amp; Integration');
-      expect(html).toContain('₹15,000');
+      expect(html).toContain('TBD (Owner Scope)');
       expect(html).toContain('Custom WhatsApp qualification &amp; FAQ bot');
       expect(html).toContain('Delivery Time: 5 Business Days');
 
-      // Tier 2: PLATFORM_MONTHLY (₹8,000)
+      // Tier 2: PLATFORM_MONTHLY (TBD per owner/DIRECT_OFFER.md)
       expect(html).toContain('Monthly Retainer &amp; SLA');
-      expect(html).toContain('₹8,000');
+
+      // Pricing Pending Definition notice rendered
+      expect(html).toContain('Commercial Terms Attested — Pricing Pending Definition');
+      expect(html).not.toContain('Generate ₹15,000 Setup Link');
 
       // Audience & Refund terms from DIRECT_OFFER.md
       expect(html).toContain('Who It Is For');
       expect(html).toContain('Who Should NOT Buy');
       expect(html).toContain('14-Day Performance Guarantee');
 
-      // Payment option: UPI
-      expect(html).toContain('upi://pay?pa=owner%40okhdfcbank');
-      expect(html).toContain('am=15000');
+      // Online payment suppressed when pricing is TBD
+      expect(html).not.toContain('upi://pay?pa=owner%40okhdfcbank');
     });
 
     it('file edit closes page: any edit to owner/DIRECT_OFFER.md alters hash and closes the page', () => {
@@ -113,6 +115,29 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
       expect(modifiedHash).not.toBe(originalHash);
       const isAttestedAfterEdit = originalHash === modifiedHash;
       expect(isAttestedAfterEdit).toBe(false);
+    });
+
+    it('cross-offer isolation: OWN_OFFER.md (computeOwnOfferHash) can NEVER unlock /offer', () => {
+      const ownOfferHash = computeOwnOfferHash();
+      expect(ownOfferHash).toBeDefined();
+
+      process.env.DIRECT_OFFER_TERMS_SHA256 = ownOfferHash!;
+      process.env.DIRECT_OFFER_TERMS_ATTESTED = 'true';
+      process.env.OWN_OFFER_CONFIRMED = 'true';
+
+      // Crucial: /offer checks DIRECT_OFFER_TERMS_SHA256 against DIRECT_OFFER.md, NOT OWN_OFFER.md
+      expect(DirectCommercialOfferPage.isDirectOfferAttested()).toBe(false);
+
+      const page = DirectCommercialOfferPage.getInstance();
+      const html = page.renderOfferHtml({
+        siteName: 'SupplySpecs India',
+        siteUrl: 'https://supplyspecs.in',
+        contactEmail: 'contact@supplyspecs.in'
+      });
+
+      expect(html).toContain('Configuration Pending Owner Attestation');
+      expect(html).toContain('noindex, nofollow');
+      expect(html).not.toContain('upi://pay');
     });
   });
 
@@ -251,8 +276,9 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
       expect(html).toContain('AI Inbound Lead Conversion System');
       expect(html).toContain('Day 0–5 Setup &amp; Integration');
       expect(html).toContain('Monthly Retainer &amp; SLA');
-      expect(html).toContain('₹15,000');
-      expect(html).toContain('₹8,000');
+      expect(html).toContain('TBD (Owner Scope)');
+      expect(html).toContain('Commercial Terms Attested — Pricing Pending Definition');
+      expect(html).not.toContain('Generate ₹15,000 Setup Link');
       delete process.env.DIRECT_OFFER_TERMS_ATTESTED;
     });
 

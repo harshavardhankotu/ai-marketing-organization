@@ -90,7 +90,7 @@ import { DurableRateLimiter } from '../security/durable-rate-limiter.js';
 import { validateOwnerEnvFacts } from '../config/owner-env-intake.js';
 import { ProductOpportunityPipeline } from '../commission/product-opportunity-pipeline.js';
 import { GENUINE_BUYER_DEMAND_SQL_CONDITION } from '../commission/demand-signal-eligibility.js';
-import { DirectCommercialOfferPage } from '../revenue/direct-offer-page.js';
+import { DirectCommercialOfferPage, parseDirectOfferTerms } from '../revenue/direct-offer-page.js';
 import { CoordinatedAgentOrchestrator } from '../agents/coordinated-orchestrator.js';
 import { DurableJobQueue } from '../automation/durable-job-queue.js';
 import { CommercialSchedulePolicy } from '../automation/commercial-schedule-policy.js';
@@ -5820,6 +5820,17 @@ apiRouter.post('/payments/public/create-link', async (c) => {
     ? OfferCatalogService.PLATFORM_MONTHLY_OFFER_ID
     : OfferCatalogService.PLATFORM_SETUP_OFFER_ID;
 
+  if (validOfferId === OfferCatalogService.PLATFORM_SETUP_OFFER_ID || validOfferId === OfferCatalogService.PLATFORM_MONTHLY_OFFER_ID) {
+    const terms = parseDirectOfferTerms();
+    if (!terms.isPayable) {
+      return c.json({
+        success: false,
+        error: 'OFFER_PRICING_PENDING',
+        message: 'Platform direct offer pricing is pending owner definition. Online payment link creation is suppressed.'
+      }, 400);
+    }
+  }
+
   // Resolve authoritative offer price to prevent price tampering
   const offer = OfferCatalogService.getInstance().resolveAuthorizedOffer(
     validOfferId,
@@ -6208,10 +6219,11 @@ apiRouter.all('/owner/proposal', async (c) => {
   }
 
   const bioContent = fs.readFileSync(bioPath, 'utf8');
-  const { DirectCommercialOfferPage } = await import('../revenue/direct-offer-page.js');
+  const { DirectCommercialOfferPage, parseDirectOfferTerms } = await import('../revenue/direct-offer-page.js');
   const isAttested = DirectCommercialOfferPage.isDirectOfferAttested();
+  const terms = parseDirectOfferTerms();
 
-  if (isAttested) {
+  if (isAttested && terms.isPayable && terms.setupPriceINR !== null) {
     return c.json({
       success: true,
       isAttested: true,
@@ -6219,9 +6231,9 @@ apiRouter.all('/owner/proposal', async (c) => {
       message: 'Authoritative proposal generated from attested owner commercial terms (owner/DIRECT_OFFER.md).',
       ownerBioPreview: bioContent.slice(0, 300),
       data: {
-        title: 'AI Inbound Lead Conversion System Implementation',
-        setupPriceINR: 15000,
-        monthlyPriceINR: 8000,
+        title: terms.title,
+        setupPriceINR: terms.setupPriceINR,
+        monthlyPriceINR: terms.monthlyPriceINR,
         source: 'owner/DIRECT_OFFER.md'
       }
     });
@@ -6229,15 +6241,18 @@ apiRouter.all('/owner/proposal', async (c) => {
 
   return c.json({
     success: true,
-    isAttested: false,
+    isAttested,
     isPayable: false,
-    message: 'Informational proposal draft. Commercial terms not yet attested via owner/DIRECT_OFFER.md; payable payment links are suppressed.',
+    message: isAttested
+      ? 'Commercial terms attested in owner/DIRECT_OFFER.md, but pricing remains TBD (Owner decides); payable payment links are suppressed.'
+      : 'Informational proposal draft. Commercial terms not yet attested via owner/DIRECT_OFFER.md; payable payment links are suppressed.',
     ownerBioPreview: bioContent.slice(0, 300),
     data: {
-      title: 'AI Inbound Lead Conversion System Implementation',
-      setupPriceINR: 15000,
-      monthlyPriceINR: 8000,
-      source: 'PROVISIONAL_ESTIMATE (Awaiting owner/DIRECT_OFFER.md attestation)'
+      title: terms.title,
+      setupPriceINR: null,
+      monthlyPriceINR: null,
+      priceDescription: terms.priceRaw,
+      source: isAttested ? 'owner/DIRECT_OFFER.md (Price: TBD)' : 'PROVISIONAL_ESTIMATE (Awaiting owner/DIRECT_OFFER.md attestation)'
     }
   });
 });
@@ -9933,12 +9948,17 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
     }
     const referralOfferId = existingOffer.id;
 
+    const hashedIp = createHash('sha256')
+      .update(`${new Date().toISOString().slice(0, 10)}:${clientInfo.ip}`)
+      .digest('hex')
+      .slice(0, 32);
+
     const insertRefSql = `
       INSERT INTO referrals (
         id, click_id, destination_url, organization_id, offer_id, partner_id, ip, user_agent, referer, placement, device_class, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     `;
-    const refParams = [referralId, clickId, targetUrl, orgId, referralOfferId, partnerId, clientInfo.ip, userAgent.substring(0, 200), referrer.substring(0, 200), sanitizedPlacement, trafficClass];
+    const refParams = [referralId, clickId, targetUrl, orgId, referralOfferId, partnerId, hashedIp, userAgent.substring(0, 200), referrer.substring(0, 200), sanitizedPlacement, trafficClass];
 
     const insertClickSql = `
       INSERT INTO referral_click_events (
@@ -10754,7 +10774,19 @@ apiRouter.get('/owner/facts-status', async (c) => {
     });
   }
 
-  // 7. OWN_OFFER_CONFIRMED
+  // 7. DIRECT_OFFER_TERMS_ATTESTED (Lane B /offer attestation)
+  const directOfferAttestedVal = process.env.DIRECT_OFFER_TERMS_ATTESTED?.trim();
+  const isDirectOfferAttested = directOfferAttestedVal?.toLowerCase() === 'true';
+  facts.push({
+    field: 'DIRECT_OFFER_TERMS_ATTESTED',
+    status: directOfferAttestedVal ? 'SET' : 'MISSING',
+    validity: isDirectOfferAttested ? 'VALID' : 'INVALID',
+    reason: directOfferAttestedVal
+      ? (isDirectOfferAttested ? 'Valid (Owner attested)' : 'Invalid (Must be explicitly "true")')
+      : 'Environment variable not set (Requires manual human attestation)'
+  });
+
+  // 7b. OWN_OFFER_CONFIRMED (Lane A / historical confirmation)
   const ownOfferConfirmedVal = process.env.OWN_OFFER_CONFIRMED?.trim();
   const isOwnOfferConfirmed = ownOfferConfirmedVal?.toLowerCase() === 'true';
   facts.push({
@@ -10770,16 +10802,16 @@ apiRouter.get('/owner/facts-status', async (c) => {
   const termsHashVal = process.env.DIRECT_OFFER_TERMS_SHA256?.trim();
   const currentComputedHash = computeDirectOfferHash();
   const isHashMatch = Boolean(termsHashVal && currentComputedHash && termsHashVal.toLowerCase() === currentComputedHash.toLowerCase());
-  const isSetWithoutConfirmation = Boolean(termsHashVal && !isOwnOfferConfirmed);
+  const isSetWithoutAttestation = Boolean(termsHashVal && !isDirectOfferAttested);
 
   facts.push({
     field: 'DIRECT_OFFER_TERMS_SHA256',
-    status: isSetWithoutConfirmation ? ('SET_BY_UNKNOWN' as any) : (termsHashVal ? 'SET' : 'MISSING'),
-    validity: (termsHashVal && isHashMatch && isOwnOfferConfirmed) ? 'VALID' : 'INVALID',
+    status: isSetWithoutAttestation ? ('SET_BY_UNKNOWN' as any) : (termsHashVal ? 'SET' : 'MISSING'),
+    validity: (termsHashVal && isHashMatch && isDirectOfferAttested) ? 'VALID' : 'INVALID',
     reason: !termsHashVal
       ? 'Environment variable not set (Expected SHA256 of owner/DIRECT_OFFER.md)'
-      : (!isOwnOfferConfirmed
-        ? 'Invalid (Set without OWN_OFFER_CONFIRMED: delete it in Render or let owner-apply.mjs overwrite it)'
+      : (!isDirectOfferAttested
+        ? 'Invalid (Set without DIRECT_OFFER_TERMS_ATTESTED: delete it in Render or let owner-apply.mjs overwrite it)'
         : (isHashMatch ? 'Valid (Matches owner/DIRECT_OFFER.md)' : 'Invalid (Hash mismatch with owner/DIRECT_OFFER.md)')),
     note: 'A hash match proves the page equals the file. It does not prove that the owner wrote or approved the file. Delete it in Render or let owner-apply.mjs overwrite it.'
   });
@@ -10854,18 +10886,18 @@ apiRouter.get('/owner/facts-status', async (c) => {
   const affiliateInvalidNames = validation.invalidFields.filter(f => statutoryFields.includes(f.field)).map(f => f.field);
   const affiliateLaneReady = affiliateMissingNames.length === 0 && affiliateInvalidNames.length === 0;
 
-  // 4. direct lane = OWN_OFFER_CONFIRMED, DIRECT_OFFER_TERMS_SHA256
+  // 4. direct lane = DIRECT_OFFER_TERMS_ATTESTED, DIRECT_OFFER_TERMS_SHA256 (Lane B /offer)
   const directMissingNames: string[] = [];
   const directInvalidNames: string[] = [];
-  if (!ownOfferConfirmedVal) {
-    directMissingNames.push('OWN_OFFER_CONFIRMED');
-  } else if (!isOwnOfferConfirmed) {
-    directInvalidNames.push('OWN_OFFER_CONFIRMED');
+  if (!directOfferAttestedVal) {
+    directMissingNames.push('DIRECT_OFFER_TERMS_ATTESTED');
+  } else if (!isDirectOfferAttested) {
+    directInvalidNames.push('DIRECT_OFFER_TERMS_ATTESTED');
   }
 
   if (!termsHashVal) {
     directMissingNames.push('DIRECT_OFFER_TERMS_SHA256');
-  } else if (!isOwnOfferConfirmed || !isHashMatch) {
+  } else if (!isDirectOfferAttested || !isHashMatch) {
     directInvalidNames.push('DIRECT_OFFER_TERMS_SHA256');
   }
   const directLaneReady = directMissingNames.length === 0 && directInvalidNames.length === 0;
@@ -10885,7 +10917,7 @@ apiRouter.get('/owner/facts-status', async (c) => {
   if (!tgEnabled) optionalMissingNames.push('TELEGRAM_ENABLED');
   else if (!isTgEnabledValid) optionalInvalidNames.push('TELEGRAM_ENABLED');
 
-  const directFacts = facts.filter(f => ['OWN_OFFER_CONFIRMED', 'DIRECT_OFFER_TERMS_SHA256'].includes(f.field));
+  const directFacts = facts.filter(f => ['DIRECT_OFFER_TERMS_ATTESTED', 'DIRECT_OFFER_TERMS_SHA256'].includes(f.field));
   const optionalFacts = facts.filter(f => ['OWNER_WHATSAPP_NUMBER', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_OWNER_CHAT_ID', 'TELEGRAM_ENABLED'].includes(f.field));
 
   return c.json({
@@ -15058,6 +15090,164 @@ const handleSiteAuditDeliverable = async (c: any) => {
 };
 apiRouter.get('/tools/site-audit/:auditId/deliverable', handleSiteAuditDeliverable);
 apiRouter.get('/api/v1/tools/site-audit/:auditId/deliverable', handleSiteAuditDeliverable);
+
+const recheckInFlight = new Set<string>();
+const recheckResultCache = new Map<string, any>();
+
+/**
+ * Idempotent Post-Fix Verification Recheck for Paid/Fulfilled Orders (Spec Stage U)
+ * POST /api/v1/tools/site-audit/:auditId/recheck
+ * Re-scans the public URL once after developer applies the Fix-Pack and identifies checks
+ * that flipped from NEEDS_FIX (ISSUE/WARNING) to VERIFIED (PASS).
+ */
+const handleSiteAuditRecheck = async (c: any) => {
+  const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
+  const auditId = c.req.param('auditId');
+  let body: any = {};
+  try {
+    body = await c.req.json();
+  } catch {}
+  const token = c.req.query('token') || c.req.header('x-delivery-token') || body?.token || '';
+
+  const service = SiteAuditService.getInstance();
+  const priorAudit = await service.getAudit(auditId);
+  if (!priorAudit) {
+    return c.json({ success: false, error: 'AUDIT_NOT_FOUND: The requested auditId does not exist.' }, 404);
+  }
+
+  const verification = await service.verifyDeliveryToken(token, auditId);
+  if (!verification.valid) {
+    return c.json({
+      success: false,
+      error: `RECHECK_UNAUTHORIZED: ${verification.error || 'Valid paid entitlement token required for included verification recheck.'}`
+    }, 403);
+  }
+
+  // 1. Idempotency Check: Return already completed recheck result if present
+  if (recheckResultCache.has(auditId)) {
+    return c.json(recheckResultCache.get(auditId));
+  }
+  try {
+    const { D1RevenueRepository } = await import('../db/d1-revenue-repository.js');
+    const d1Repo = D1RevenueRepository.getInstance();
+    const existingRow = await d1Repo.queryOne<any>(
+      'commercial_evidence',
+      "SELECT details_json FROM commercial_evidence WHERE request_reference = ? AND milestone = 'SITE_AUDIT_RECHECK'",
+      [auditId]
+    );
+    if (existingRow && existingRow.details_json) {
+      const parsed = JSON.parse(existingRow.details_json);
+      recheckResultCache.set(auditId, parsed);
+      return c.json(parsed);
+    }
+  } catch {}
+
+  // 2. Concurrency Claim: Atomically prevent multiple concurrent scans for the same audit
+  if (recheckInFlight.has(auditId)) {
+    return c.json({
+      success: false,
+      error: 'RECHECK_IN_PROGRESS: Verification scan is currently in progress for this audit.'
+    }, 409);
+  }
+  recheckInFlight.add(auditId);
+
+  try {
+    const rescanResult = await service.runScan(priorAudit.url);
+
+    // Compute flipped checks (checks that were ISSUE/WARNING/NEEDS_FIX in prior audit and are now PASS)
+    const priorDefectMap = new Map<string, any>();
+    for (const f of priorAudit.findings || []) {
+      if (f.status !== 'PASS') {
+        priorDefectMap.set(`${f.category}:${f.title}`, f);
+      }
+    }
+
+    const fixedChecks: any[] = [];
+    const remainingChecks: any[] = [];
+    const matchedPriorKeys = new Set<string>();
+
+    for (const f of rescanResult.findings || []) {
+      const key = `${f.category}:${f.title}`;
+      if (priorDefectMap.has(key)) {
+        matchedPriorKeys.add(key);
+        if (f.status === 'PASS') {
+          fixedChecks.push({
+            category: f.category,
+            title: f.title,
+            previousStatus: priorDefectMap.get(key).status,
+            currentStatus: 'VERIFIED',
+            recommendation: f.recommendation
+          });
+        } else {
+          remainingChecks.push({
+            category: f.category,
+            title: f.title,
+            currentStatus: f.status,
+            recommendation: f.recommendation
+          });
+        }
+      } else if (f.status !== 'PASS') {
+        // Any new or unmatched defect in the rescan must be reported as remaining
+        remainingChecks.push({
+          category: f.category,
+          title: f.title,
+          currentStatus: f.status,
+          recommendation: f.recommendation
+        });
+      }
+    }
+
+    // Any prior defect whose key is absent from the rescan and was not matched to a PASS
+    for (const [key, priorDefect] of priorDefectMap.entries()) {
+      if (!matchedPriorKeys.has(key)) {
+        remainingChecks.push({
+          category: priorDefect.category,
+          title: priorDefect.title,
+          currentStatus: priorDefect.status,
+          recommendation: priorDefect.recommendation
+        });
+      }
+    }
+
+    const responsePayload = {
+      success: true,
+      auditId,
+      url: priorAudit.url,
+      recheckAuditId: rescanResult.auditId,
+      recheckPassed: fixedChecks.length > 0 && remainingChecks.length === 0,
+      beforeScore: priorAudit.score,
+      afterScore: rescanResult.score,
+      fixedCount: fixedChecks.length,
+      remainingCount: remainingChecks.length,
+      fixedChecks,
+      remainingChecks
+    };
+
+    // Cache in memory for subsequent idempotent requests
+    recheckResultCache.set(auditId, responsePayload);
+
+    // Persist to commercial_evidence in D1 for long-term idempotency
+    try {
+      const { D1RevenueRepository } = await import('../db/d1-revenue-repository.js');
+      const d1Repo = D1RevenueRepository.getInstance();
+      const recId = `recheck_${auditId}_${Date.now()}`;
+      await d1Repo.executeWrite(
+        'commercial_evidence',
+        `INSERT INTO commercial_evidence (id, organization_id, request_reference, milestone, details_json, created_at)
+         VALUES (?, 'org_owner_primary', ?, 'SITE_AUDIT_RECHECK', ?, datetime('now'))`,
+        [recId, auditId, JSON.stringify(responsePayload)]
+      );
+    } catch {}
+
+    return c.json(responsePayload);
+  } catch (err: any) {
+    return c.json({ success: false, error: `RECHECK_FAILED: ${err.message}` }, 500);
+  } finally {
+    recheckInFlight.delete(auditId);
+  }
+};
+apiRouter.post('/tools/site-audit/:auditId/recheck', handleSiteAuditRecheck);
+apiRouter.post('/api/v1/tools/site-audit/:auditId/recheck', handleSiteAuditRecheck);
 
 /**
  * Universal Offer & Fix-Pack Download via Cryptographic Delivery Token (Spec Stage P.3.2)

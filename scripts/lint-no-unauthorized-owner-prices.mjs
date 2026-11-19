@@ -23,11 +23,9 @@ export function checkOwnerFile(filePath) {
   // - OWN_OFFER.legacy_agent_written.md: historical artifact explicitly blocked by SHA in owner-apply.mjs
   // - OWN_OFFER.draft.md: draft template that owner edits
   // - OWN_OFFER.md: authoritative attested owner offer for SiteFix (Lane A)
-  // - DIRECT_OFFER.md: authoritative attested owner offer for Platform Setup (Lane B)
   if (
     filename === 'OWN_OFFER.legacy_agent_written.md' ||
-    filename === 'OWN_OFFER.md' ||
-    filename === 'DIRECT_OFFER.md'
+    filename === 'OWN_OFFER.md'
   ) {
     return errors;
   }

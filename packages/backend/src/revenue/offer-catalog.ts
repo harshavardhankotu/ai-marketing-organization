@@ -14,7 +14,7 @@
 
 import { getDb } from '../db/client.js';
 import { OwnerAuthService } from '../auth/owner-auth.js';
-import { DirectCommercialOfferPage } from './direct-offer-page.js';
+import { DirectCommercialOfferPage, parseDirectOfferTerms } from './direct-offer-page.js';
 import { isProduction } from '../config/env.js';
 
 export interface AuthorizedOffer {
@@ -268,6 +268,13 @@ export class OfferCatalogService {
       if ((isProduction() || process.env.STRICT_DIRECT_OFFER_ATTESTATION === 'true') && !DirectCommercialOfferPage.isDirectOfferAttested()) {
         throw new Error(`COMMERCIAL_TERMS_UNATTESTED: Platform direct offer (${trimmedOfferId}) terms have not been attested by the owner. Commercial payment flows are blocked in production.`);
       }
+      let resolvedSetupPrice = 15000;
+      try {
+        const terms = parseDirectOfferTerms();
+        if (terms.isPayable && terms.setupPriceINR !== null) {
+          resolvedSetupPrice = terms.setupPriceINR;
+        }
+      } catch {}
       return {
         offerId: OfferCatalogService.PLATFORM_SETUP_OFFER_ID,
         offerName: 'AI Inbound Lead Conversion System — Day 0-5 Setup & Integration',
@@ -279,7 +286,7 @@ export class OfferCatalogService {
           'Direct calendar booking integration',
           'Live system handover report'
         ],
-        priceINR: 15000,
+        priceINR: resolvedSetupPrice,
         billingModel: 'ONE_TIME',
         currency: 'INR',
         businessId: OwnerAuthService.PLATFORM_BUSINESS_ID,
@@ -304,6 +311,13 @@ export class OfferCatalogService {
       if ((isProduction() || process.env.STRICT_DIRECT_OFFER_ATTESTATION === 'true') && !DirectCommercialOfferPage.isDirectOfferAttested()) {
         throw new Error(`COMMERCIAL_TERMS_UNATTESTED: Platform direct offer (${trimmedOfferId}) terms have not been attested by the owner. Commercial payment flows are blocked in production.`);
       }
+      let resolvedMonthlyPrice = 8000;
+      try {
+        const terms = parseDirectOfferTerms();
+        if (terms.isPayable && terms.monthlyPriceINR !== null) {
+          resolvedMonthlyPrice = terms.monthlyPriceINR;
+        }
+      } catch {}
       return {
         offerId: OfferCatalogService.PLATFORM_MONTHLY_OFFER_ID,
         offerName: 'AI Inbound Lead Conversion System — Monthly Retainer & SLA',
@@ -314,7 +328,7 @@ export class OfferCatalogService {
           'Weekly appointment show-rate reporting',
           'Continuous DPDP compliance monitoring'
         ],
-        priceINR: 8000,
+        priceINR: resolvedMonthlyPrice,
         billingModel: 'MONTHLY',
         currency: 'INR',
         businessId: OwnerAuthService.PLATFORM_BUSINESS_ID,

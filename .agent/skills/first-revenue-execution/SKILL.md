@@ -15,7 +15,7 @@ The organization operates under a strict **zero-paid-spend invariant**:
 - **Lane A — SiteFix AI Technical Fix-Pack (₹499):**
   - Self-serve, deterministic audit scanner on `/tools/site-audit`.
   - Audits public `<head>` tags, Schema.org JSON-LD, `robots.txt`, `sitemap.xml`, and security headers with strict OWASP SSRF protection (5s timeout).
-  - Delivers a downloadable, ready-to-paste Fix-Pack zip containing exact code snippets.
+  - Delivers a downloadable package containing ready-to-paste JSON, Markdown, HTML `<head>`, `robots.txt`, and `sitemap.xml` fix files.
   - Transparent disclosure: *"Files are generated from your live scan for you or your developer to review and paste. SiteFix does not modify your live server or guarantee search rankings."*
 - **Lane B — Verified Dual-Rail Affiliate Monetization:**
   - Cuelinks V3 API campaigns + Dual-Rail Amazon.in affiliate redirects (`/api/v1/public/amazon-redirect`).
@@ -44,18 +44,21 @@ The organization operates under a strict **zero-paid-spend invariant**:
 
 ## 3. Four-State Payment Truth Protocol (Direct UPI & Razorpay)
 
-Revenue recognition is strictly tied to verified cash in bank:
+Revenue recognition is strictly tied to verified cash in bank, separating instant digital capture from cash settlement:
 - **State 1 (`PAYMENT_PAGE_VIEW`):**
   - Visitor opened `/proposals/:id/checkout` or `/tools/site-audit`.
   - Logged as navigation traffic. **₹0.00 revenue recognized.**
 - **State 2 (`PAYMENT_CLAIMED`):**
-  - Customer submitted a 12-digit numeric UPI UTR or Razorpay pending token.
+  - Customer submitted a 12-digit numeric UPI UTR or initialized Razorpay payment.
   - Stored for operator reconciliation with `is_verified = 0`. **₹0.00 revenue recognized.**
-- **State 3 (`MANUAL_VERIFIED` / `CAPTURED`):**
-  - Bank statement credit physically confirmed by the owner via `/api/v1/owner/verify-payment` or signed Razorpay webhook.
+- **State 3 (`PAYMENT_CAPTURED` / `HUMAN_VERIFIED_PAYMENT`):**
+  - Instant digital confirmation via signed Razorpay webhook (`payment.captured`) or operator manual UTR verification.
+  - Unlocks customer deliverable entitlement. **Strictly separated from cash settlement.**
+- **State 4 (`BANK_SETTLED`):**
+  - Real cash settlement into the merchant bank account (typically T+2 working days for Razorpay / confirmed bank statement credit match for manual UPI).
   - Real cash ledgers into `financial_truth_ledger`.
-- **State 4 (`FULFILLED`):**
-  - 72-hour entitlement token issued; Fix-Pack zip delivered.
+- **Fulfillment (`FULFILLED`):**
+  - 72-hour entitlement token issued; ready-to-paste JSON/Markdown/HTML/XML Fix-Pack delivered.
 
 ---
 

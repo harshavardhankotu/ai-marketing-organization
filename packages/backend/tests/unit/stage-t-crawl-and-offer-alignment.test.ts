@@ -133,8 +133,11 @@ describe('Stage T — Live OpenSEO Crawl Leaks & Commercial Offer Alignment (PR 
     it('normalizeCategoryName correctly handles objects, strings, nulls, and eliminates [object Object]', () => {
       expect(normalizeCategoryName({ name: 'Electronics & Audio' })).toBe('Electronics & Audio');
       expect(normalizeCategoryName({ title: 'Grooming & Fragrance' })).toBe('Grooming & Fragrance');
-      expect(normalizeCategoryName({ slug: 'smart-watches' })).toBe('smart-watches');
+      expect(normalizeCategoryName({ slug: 'smart-watches' })).toBe('Smart Watches');
       expect(normalizeCategoryName('Fashion & Apparel')).toBe('Fashion & Apparel');
+      expect(normalizeCategoryName('audio')).toBe('Audio');
+      expect(normalizeCategoryName('Audio')).toBe('Audio');
+      expect(normalizeCategoryName('AUDIO')).toBe('Audio');
       expect(normalizeCategoryName(null)).toBe('General');
       expect(normalizeCategoryName(undefined)).toBe('General');
       expect(normalizeCategoryName('[object Object]')).toBe('General');

@@ -276,7 +276,7 @@ app.get('/privacy', async (c) => {
     <h2>2. Affiliate Links &amp; Non-PII Attribution (#Ad)</h2>
     <p>Outbound links to verified merchants (Amazon.in, Cuelinks partner stores) utilize purely non-PII first-party <code>clickId</code> tokens and Cuelinks SubID attribution parameters. These parameters contain zero personally identifiable information (PII), zero device fingerprinting, and zero cross-site tracking pixels, serving solely to attribute qualified referral commissions upon verified merchant checkout.</p>
     <h2>3. Data Retention &amp; Erasure</h2>
-    <p>Inquiry and price drop alert records are retained for a maximum of 30 days and purged through automated DPDP retention jobs or deleted upon user request under the DPDP Act 2023.</p>
+    <p>Non-converted business inquiries, website audit requests, and price drop alert subscriptions are retained for a maximum of 30 days before automated daily purging under DPDP Act 2023 retention policies, or immediately erased upon user request. In contrast, statutory commercial transaction records, financial ledgers, and tax invoices are retained for mandatory accounting compliance periods as required by applicable Indian tax and financial reporting laws.</p>
     <h2>4. Contact</h2>
     <p>For data privacy requests or erasures, contact: <a href="mailto:${process.env.PUBLIC_CONTACT_EMAIL || 'contact@aimarketing.org'}">${process.env.PUBLIC_CONTACT_EMAIL || 'contact@aimarketing.org'}</a></p>
   </div>
