@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import crypto from 'node:crypto';
 import fs from 'fs';
 import path from 'path';
 import app from '../../src/index.js';
@@ -189,6 +190,11 @@ describe('Stage U — Close All PR #79 Blockers, Fix lint:owner-prices, Align Pr
       expect(refRow.ip).not.toBe(rawTestIp);
       // It should be a 32-char hex SHA-256 hash prefix
       expect(refRow.ip).toMatch(/^[a-f0-9]{32}$/);
+      const expectedDigest = crypto.createHash('sha256')
+        .update(`${new Date().toISOString().slice(0, 10)}:${rawTestIp}`)
+        .digest('hex')
+        .substring(0, 32);
+      expect(refRow.ip).toBe(expectedDigest);
 
       // Cleanup
       db.prepare(`DELETE FROM partner_offers WHERE id = ?`).run(testDealId);
@@ -287,6 +293,81 @@ describe('Stage U — Close All PR #79 Blockers, Fix lint:owner-prices, Align Pr
       expect(homeHtml).toContain('<a href="#inquiry-card"');
       expect(homeHtml).not.toContain('<a href="/tools/site-audit" style="display: inline-block; background: #0284c7; color: #fff; text-decoration: none; padding: 0.35rem 0.7rem; border-radius: 6px; font-size: 0.8rem; font-weight: 600;">Reserve Slot:');
     });
+
+    it('1.9 generateOrderReference and verifyIssuedOrderReference handle paise precision and fail closed without secret', async () => {
+      const { generateOrderReference, verifyIssuedOrderReference } = await import('../../src/revenue/direct-offer-page.js');
+
+      // With fractional amount (paise precision): ₹499.50
+      const refPaise = generateOrderReference('LCS', 499.5);
+      expect(refPaise).toMatch(/^LCS-499\.50-\d{6}-[A-Z0-9]{4}-[A-F0-9]{6}$/);
+
+      const verified = verifyIssuedOrderReference(refPaise);
+      expect(verified).not.toBeNull();
+      expect(verified!.valid).toBe(true);
+      expect(verified!.amountINR).toBe(499.5);
+      expect(verified!.paise).toBe(49950);
+      expect(verified!.boundOfferId).toBe('PLATFORM_SETUP');
+
+      // Monthly retainer prefix LCM binds to PLATFORM_MONTHLY
+      const refMonthly = generateOrderReference('LCM', 8000);
+      const verifiedMonthly = verifyIssuedOrderReference(refMonthly);
+      expect(verifiedMonthly!.boundOfferId).toBe('PLATFORM_MONTHLY');
+
+      // Fail-closed verification when secret is missing
+      const origSecret = process.env.SITE_AUDIT_SIGNING_SECRET;
+      delete process.env.SITE_AUDIT_SIGNING_SECRET;
+      delete process.env.AUTH_SECRET;
+      try {
+        expect(verifyIssuedOrderReference(refPaise)).toBeNull();
+      } finally {
+        process.env.SITE_AUDIT_SIGNING_SECRET = origSecret;
+      }
+    });
+
+    it('1.10 recordManualUpiClaim rejects offerId mismatch against order reference boundOfferId (CWE-863)', async () => {
+      const { RazorpayAdapter } = await import('../../src/integrations/razorpay.js');
+      const { generateOrderReference } = await import('../../src/revenue/direct-offer-page.js');
+      const razorpay = new RazorpayAdapter();
+
+      // Issue monthly retainer quote (bound to PLATFORM_MONTHLY)
+      const monthlyRef = generateOrderReference('LCM', 8000);
+
+      // Caller attempts to claim PLATFORM_SETUP with this monthly reference
+      await expect(
+        razorpay.recordManualUpiClaim({
+          businessId: 'biz_platform_aro',
+          offerId: 'PLATFORM_SETUP',
+          invoiceRef: monthlyRef,
+          utr: 'UTR_OFFER_MISMATCH_ATTACK_01',
+          amountINR: 8000,
+          payerName: 'Confused Caller'
+        })
+      ).rejects.toThrow(/OFFER_MISMATCH/);
+    });
+
+    it('1.11 parseDirectOfferTerms validates comma grouping and rejects malformed commas', async () => {
+      const { parseDirectOfferTerms } = await import('../../src/revenue/direct-offer-page.js');
+
+      // Valid Indian grouping
+      const validIndian = parseDirectOfferTerms(undefined, '**Price:** ₹1,50,000 Setup\n');
+      expect(validIndian.isPayable).toBe(true);
+      expect(validIndian.setupPriceINR).toBe(150000);
+
+      // Valid Western grouping
+      const validWestern = parseDirectOfferTerms(undefined, '**Price:** ₹150,000 Setup\n');
+      expect(validWestern.isPayable).toBe(true);
+      expect(validWestern.setupPriceINR).toBe(150000);
+
+      // Invalid double comma
+      const invalidDouble = parseDirectOfferTerms(undefined, '**Price:** ₹15,,000 Setup\n');
+      expect(invalidDouble.isPayable).toBe(false);
+      expect(invalidDouble.setupPriceINR).toBeNull();
+
+      // Invalid grouping
+      const invalidGrouping = parseDirectOfferTerms(undefined, '**Price:** ₹15,00 Setup\n');
+      expect(invalidGrouping.isPayable).toBe(false);
+      expect(invalidGrouping.setupPriceINR).toBeNull();
+    });
   });
 
   describe('Task 2: Developer Website Launch QA Pivot & Recheck API', () => {
@@ -328,63 +409,97 @@ describe('Stage U — Close All PR #79 Blockers, Fix lint:owner-prices, Align Pr
     });
 
     it('2.3 POST /api/v1/tools/site-audit/:auditId/recheck fails closed without valid audit or entitlement token', async () => {
-      // 1. Non-existent auditId -> 404
-      const res404 = await app.request('/api/v1/tools/site-audit/audit_non_existent/recheck', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token: 'mock_token' })
+      const { SecureUrlFetcher } = await import('../../src/tools/site-audit/secure-url-fetcher.js');
+      const fetchSpy = vi.spyOn(SecureUrlFetcher.prototype, 'fetch').mockResolvedValue({
+        url: 'https://example.com',
+        finalUrl: 'https://example.com',
+        statusCode: 200,
+        headers: { 'content-type': 'text/html' },
+        body: '<!DOCTYPE html><html><head><title>Example Domain</title><meta name="description" content="Example domain"></head><body><h1>Example</h1></body></html>',
+        contentType: 'text/html',
+        finalResolvedIp: '93.184.216.34',
+        timingMs: 45,
+        redirectsCount: 0
       });
-      expect(res404.status).toBe(404);
-      const json404 = await res404.json() as any;
-      expect(json404.error).toContain('AUDIT_NOT_FOUND');
 
-      // 2. Existing audit without token -> 403
-      const service = SiteAuditService.getInstance();
-      const mockAudit = await service.runScan('https://example.com');
-      expect(mockAudit.auditId).toBeDefined();
+      try {
+        // 1. Non-existent auditId -> 404
+        const res404 = await app.request('/api/v1/tools/site-audit/audit_non_existent/recheck', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: 'mock_token' })
+        });
+        expect(res404.status).toBe(404);
+        const json404 = await res404.json() as any;
+        expect(json404.error).toContain('AUDIT_NOT_FOUND');
 
-      const res403 = await app.request(`/api/v1/tools/site-audit/${mockAudit.auditId}/recheck`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token: 'invalid_token' })
-      });
-      expect(res403.status).toBe(403);
-      const json403 = await res403.json() as any;
-      expect(json403.error).toContain('RECHECK_UNAUTHORIZED');
+        // 2. Existing audit without token -> 403
+        const service = SiteAuditService.getInstance();
+        const mockAudit = await service.runScan('https://example.com');
+        expect(mockAudit.auditId).toBeDefined();
+
+        const res403 = await app.request(`/api/v1/tools/site-audit/${mockAudit.auditId}/recheck`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: 'invalid_token' })
+        });
+        expect(res403.status).toBe(403);
+        const json403 = await res403.json() as any;
+        expect(json403.error).toContain('RECHECK_UNAUTHORIZED');
+      } finally {
+        fetchSpy.mockRestore();
+      }
     });
 
     it('2.4 POST /api/v1/tools/site-audit/:auditId/recheck executes scan, evaluates defects, and is idempotent on repeat calls', async () => {
-      const service = SiteAuditService.getInstance();
-      const mockAudit = await service.runScan('https://example.com');
-      const auditId = mockAudit.auditId;
-
-      // Generate genuine delivery token for this audit with order_test_ prefix
-      const token = service.generateDeliveryToken('order_test_recheck', auditId, 'pay_test_recheck');
-
-      // 1. First recheck call
-      const res1 = await app.request(`/api/v1/tools/site-audit/${auditId}/recheck`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token })
+      const { SecureUrlFetcher } = await import('../../src/tools/site-audit/secure-url-fetcher.js');
+      const fetchSpy = vi.spyOn(SecureUrlFetcher.prototype, 'fetch').mockResolvedValue({
+        url: 'https://example.com',
+        finalUrl: 'https://example.com',
+        statusCode: 200,
+        headers: { 'content-type': 'text/html' },
+        body: '<!DOCTYPE html><html><head><title>Example Domain</title><meta name="description" content="Example domain"></head><body><h1>Example</h1></body></html>',
+        contentType: 'text/html',
+        finalResolvedIp: '93.184.216.34',
+        timingMs: 45,
+        redirectsCount: 0
       });
-      expect(res1.status).toBe(200);
-      const json1 = await res1.json() as any;
-      expect(json1.success).toBe(true);
-      expect(json1.auditId).toBe(auditId);
-      expect(json1.beforeScore).toBe(mockAudit.score);
-      expect(typeof json1.afterScore).toBe('number');
-      expect(Array.isArray(json1.fixedChecks)).toBe(true);
-      expect(Array.isArray(json1.remainingChecks)).toBe(true);
 
-      // 2. Second recheck call (Idempotency test: returns cached payload without re-scanning)
-      const res2 = await app.request(`/api/v1/tools/site-audit/${auditId}/recheck`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token })
-      });
-      expect(res2.status).toBe(200);
-      const json2 = await res2.json() as any;
-      expect(json2).toEqual(json1);
+      try {
+        const service = SiteAuditService.getInstance();
+        const mockAudit = await service.runScan('https://example.com');
+        const auditId = mockAudit.auditId;
+
+        // Generate genuine delivery token for this audit with order_test_ prefix
+        const token = service.generateDeliveryToken('order_test_recheck', auditId, 'pay_test_recheck');
+
+        // 1. First recheck call
+        const res1 = await app.request(`/api/v1/tools/site-audit/${auditId}/recheck`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token })
+        });
+        expect(res1.status).toBe(200);
+        const json1 = await res1.json() as any;
+        expect(json1.success).toBe(true);
+        expect(json1.auditId).toBe(auditId);
+        expect(json1.beforeScore).toBe(mockAudit.score);
+        expect(typeof json1.afterScore).toBe('number');
+        expect(Array.isArray(json1.fixedChecks)).toBe(true);
+        expect(Array.isArray(json1.remainingChecks)).toBe(true);
+
+        // 2. Second recheck call (Idempotency test: returns cached payload without re-scanning)
+        const res2 = await app.request(`/api/v1/tools/site-audit/${auditId}/recheck`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token })
+        });
+        expect(res2.status).toBe(200);
+        const json2 = await res2.json() as any;
+        expect(json2).toEqual(json1);
+      } finally {
+        fetchSpy.mockRestore();
+      }
     });
 
     it('2.5 /owner/proposal and /offer keep payable checkout suppressed when DIRECT_OFFER.md has Price: TBD', async () => {
@@ -418,14 +533,12 @@ describe('Stage U — Close All PR #79 Blockers, Fix lint:owner-prices, Align Pr
         expect(propJson.data.setupPriceINR).toBeNull();
 
         // /offer HTML with attested terms renders the pending pricing notice rather than payment buttons or dead anchor
-        const { resolveDirectOfferPath } = await import('../../src/revenue/direct-offer-page.js');
-        const resolvedOfferPath = resolveDirectOfferPath();
-        const actualHash = DirectCommercialOfferPage.computeDirectOfferHash(resolvedOfferPath || undefined);
+        const actualHash = DirectCommercialOfferPage.computeDirectOfferHash();
         process.env.DIRECT_OFFER_TERMS_SHA256 = actualHash!;
         process.env.DIRECT_OFFER_TERMS_ATTESTED = 'true';
 
         const page = DirectCommercialOfferPage.getInstance();
-        const offerHtml = page.renderOfferHtml({}, resolvedOfferPath || undefined);
+        const offerHtml = page.renderOfferHtml({});
         // When attested with pricing TBD, it does not offer ₹15,000 checkout buttons or dead #inquiry-card anchor
         expect(offerHtml).not.toContain('Generate ₹15,000 Setup Link');
         expect(offerHtml).not.toContain('href="#inquiry-card"');

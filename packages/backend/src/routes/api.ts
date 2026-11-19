@@ -15166,6 +15166,9 @@ const handleSiteAuditRecheck = async (c: any) => {
   }
 
   // 2. Concurrency Claim: Atomically prevent multiple concurrent scans for the same audit
+  if (recheckResultCache.has(auditId)) {
+    return c.json(recheckResultCache.get(auditId));
+  }
   if (recheckInFlight.has(auditId)) {
     return c.json({
       success: false,
@@ -15319,6 +15322,13 @@ const handleSiteAuditRecheck = async (c: any) => {
 
     return c.json(responsePayload);
   } catch (err: any) {
+    try {
+      await d1Repo.executeWrite(
+        'commercial_evidence',
+        `DELETE FROM commercial_evidence WHERE id = ?`,
+        [claimId]
+      );
+    } catch {}
     return c.json({ success: false, error: `RECHECK_FAILED: ${err.message}` }, 500);
   } finally {
     recheckInFlight.delete(auditId);

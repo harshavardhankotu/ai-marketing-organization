@@ -500,7 +500,7 @@ export class OwnerDigestService {
           rank: 1,
           title: 'Zero Proposals Sent (Pipeline Stalled)',
           metric: 'proposals_sent = 0, verified_revenue = ₹0',
-          ownerAction: 'Edit owner/OWN_OFFER.draft.md into owner terms and attest via scripts/owner-apply.mjs.'
+          ownerAction: 'Attest Lane B commercial offer (owner/DIRECT_OFFER.md) by setting DIRECT_OFFER_TERMS_SHA256 and DIRECT_OFFER_TERMS_ATTESTED=true.'
         });
       } else {
         topPainPoints.push({
@@ -1508,7 +1508,7 @@ export class OwnerDigestService {
           rank: 1,
           title: 'Zero Proposals Sent (Pipeline Stalled)',
           metric: 'proposals_sent = 0, verified_revenue = ₹0',
-          ownerAction: 'Edit owner/OWN_OFFER.draft.md into owner terms and attest via scripts/owner-apply.mjs.'
+          ownerAction: 'Attest Lane B commercial offer (owner/DIRECT_OFFER.md) by setting DIRECT_OFFER_TERMS_SHA256 and DIRECT_OFFER_TERMS_ATTESTED=true.'
         });
       } else {
         topPainPoints.push({

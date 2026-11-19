@@ -1151,7 +1151,10 @@ export class RazorpayAdapter {
           // Check if invoiceRef is an authentic issued order reference (e.g. HMAC-signed quote)
           const { DirectCommercialOfferPage } = await import('../revenue/direct-offer-page.js');
           const verifiedQuote = DirectCommercialOfferPage.verifyIssuedOrderReference(input.invoiceRef);
-          if (verifiedQuote && verifiedQuote.amountINR > 0) {
+          if (verifiedQuote && verifiedQuote.valid && verifiedQuote.amountINR > 0) {
+            if (verifiedQuote.boundOfferId && input.offerId && input.offerId !== verifiedQuote.boundOfferId) {
+              throw new Error(`OFFER_MISMATCH: Order reference '${input.invoiceRef}' was issued for offer '${verifiedQuote.boundOfferId}', but caller supplied offer '${input.offerId}'.`);
+            }
             issuedPriceINR = verifiedQuote.amountINR;
           }
         }
@@ -1176,6 +1179,22 @@ export class RazorpayAdapter {
 
     const claimId = `claim_upi_${randomUUID().substring(0, 10)}`;
 
+    let notesPayload: string | null = null;
+    try {
+      let baseNotes: Record<string, any> = {};
+      if (input.notes) {
+        baseNotes = typeof input.notes === 'string' ? JSON.parse(input.notes) : input.notes;
+      }
+      notesPayload = JSON.stringify({
+        ...baseNotes,
+        offerId: input.offerId || (input.invoiceRef?.startsWith('LCM') ? 'PLATFORM_MONTHLY' : (input.invoiceRef?.startsWith('LCS') ? 'PLATFORM_SETUP' : undefined)),
+        amountINR: input.amountINR,
+        serviceRendered: input.serviceRendered
+      });
+    } catch {
+      notesPayload = input.notes ? String(input.notes) : null;
+    }
+
     // Atomic conditional insert guarantees duplicate concurrent UTR submissions cannot race past check
     const atomicInsertSql = `
       INSERT INTO manual_upi_claims (
@@ -1199,7 +1218,7 @@ export class RazorpayAdapter {
       trimmedUtr,
       input.amountINR,
       input.serviceRendered || 'Manual UPI Payment Claim',
-      input.notes || null,
+      notesPayload,
       trimmedUtr
     ];
 
@@ -1407,6 +1426,7 @@ export class RazorpayAdapter {
       ? Number(claimRow.amount_inr)
       : Number(params.amountINR || 499);
     const authoritativeJourneyId = claimRow?.journey_id || notesObj.journeyId || params.journeyId || undefined;
+    const authoritativeService = claimRow?.service_rendered || notesObj.serviceRendered || params.serviceRendered || 'Manual UPI Payment - Owner Confirmed';
     const linkedProposalId: string | undefined = claimRow?.proposal_id;
 
     // Durably record transaction BEFORE publishing verified status (Spec Stage R.1 Task 2.3 & Comment #5)
@@ -1421,7 +1441,7 @@ export class RazorpayAdapter {
       transactionRef: trimmedUtr,
       status: 'SUCCESS',
       classification: 'MANUAL_VERIFIED',
-      serviceRendered: params.serviceRendered || 'Manual UPI Payment - Owner Confirmed'
+      serviceRendered: authoritativeService
     });
 
     const isPlatform = authoritativeBusinessId === OwnerAuthService.PLATFORM_BUSINESS_ID || authoritativeBusinessId === 'biz_platform_aro';

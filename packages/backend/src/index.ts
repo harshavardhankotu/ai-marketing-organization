@@ -276,7 +276,7 @@ app.get('/privacy', async (c) => {
     <h2>2. Affiliate Links &amp; Non-PII Attribution (#Ad)</h2>
     <p>Outbound links to verified merchants (Amazon.in, Cuelinks partner stores) utilize purely non-PII first-party <code>clickId</code> tokens and Cuelinks SubID attribution parameters. These parameters contain zero personally identifiable information (PII), zero device fingerprinting, and zero cross-site tracking pixels, serving solely to attribute qualified referral commissions upon verified merchant checkout.</p>
     <h2>3. Data Retention &amp; Erasure</h2>
-    <p>Non-converted business inquiries, website audit requests, and price drop alert subscriptions are retained for a maximum of 30 days before automated daily purging under DPDP Act 2023 retention policies, or immediately erased upon user request. In contrast, statutory commercial transaction records, financial ledgers, and tax invoices are retained for mandatory accounting compliance periods as required by applicable Indian tax and financial reporting laws.</p>
+    <p>Non-converted business inquiries and price drop alert subscriptions are retained for a maximum of 30 days before automated daily purging under DPDP Act 2023 retention policies, or immediately erased upon user request. In contrast, website audit scan logs, statutory commercial transaction records, financial ledgers, and tax invoices are retained for technical verification and mandatory accounting compliance periods as required by applicable law.</p>
     <h2>4. Contact</h2>
     <p>For data privacy requests or erasures, contact: <a href="mailto:${process.env.PUBLIC_CONTACT_EMAIL || 'contact@aimarketing.org'}">${process.env.PUBLIC_CONTACT_EMAIL || 'contact@aimarketing.org'}</a></p>
   </div>
@@ -742,10 +742,11 @@ app.all('/owner/proposal', async (c) => {
   }
 
   const bioContent = fs.readFileSync(bioPath, 'utf8');
-  const { DirectCommercialOfferPage } = await import('./revenue/direct-offer-page.js');
+  const { DirectCommercialOfferPage, parseDirectOfferTerms } = await import('./revenue/direct-offer-page.js');
+  const terms = parseDirectOfferTerms();
   const isAttested = DirectCommercialOfferPage.isDirectOfferAttested();
 
-  if (isAttested) {
+  if (isAttested && terms.isPayable && terms.setupPriceINR !== null) {
     return c.json({
       success: true,
       isAttested: true,
@@ -753,9 +754,9 @@ app.all('/owner/proposal', async (c) => {
       message: 'Authoritative proposal generated from attested owner commercial terms (owner/DIRECT_OFFER.md).',
       ownerBioPreview: bioContent.slice(0, 300),
       data: {
-        title: 'AI Inbound Lead Conversion System Implementation',
-        setupPriceINR: 15000,
-        monthlyPriceINR: 8000,
+        title: terms.title || 'AI Inbound Lead Conversion System Implementation',
+        setupPriceINR: terms.setupPriceINR,
+        monthlyPriceINR: terms.monthlyPriceINR,
         source: 'owner/DIRECT_OFFER.md'
       }
     });
@@ -763,15 +764,17 @@ app.all('/owner/proposal', async (c) => {
 
   return c.json({
     success: true,
-    isAttested: false,
+    isAttested: isAttested,
     isPayable: false,
-    message: 'Informational proposal draft. Commercial terms not yet attested via owner/DIRECT_OFFER.md; payable payment links are suppressed.',
+    message: isAttested
+      ? 'Proposal pricing pending owner definition in owner/DIRECT_OFFER.md.'
+      : 'Informational proposal draft. Commercial terms not yet attested via owner/DIRECT_OFFER.md; payable payment links are suppressed.',
     ownerBioPreview: bioContent.slice(0, 300),
     data: {
-      title: 'AI Inbound Lead Conversion System Implementation',
-      setupPriceINR: 15000,
-      monthlyPriceINR: 8000,
-      source: 'PROVISIONAL_ESTIMATE (Awaiting owner/DIRECT_OFFER.md attestation)'
+      title: terms.title || 'AI Inbound Lead Conversion System Implementation',
+      setupPriceINR: terms.setupPriceINR,
+      monthlyPriceINR: terms.monthlyPriceINR,
+      source: isAttested ? 'PRICING_PENDING (owner/DIRECT_OFFER.md)' : 'PROVISIONAL_ESTIMATE (Awaiting owner/DIRECT_OFFER.md attestation)'
     }
   });
 });

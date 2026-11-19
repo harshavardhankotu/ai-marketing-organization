@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 import { getDb } from '../../src/db/client.js';
 import { DirectCommercialOfferPage, computeOwnOfferHash } from '../../src/revenue/direct-offer-page.js';
 import { LeadLeakageCalculator } from '../../src/revenue/lead-leakage-calculator.js';
@@ -104,17 +107,25 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
     });
 
     it('file edit closes page: any edit to owner/DIRECT_OFFER.md alters hash and closes the page', () => {
-      const originalHash = DirectCommercialOfferPage.computeDirectOfferHash();
+      const tempOfferPath = path.join(os.tmpdir(), `test_direct_offer_${Date.now()}_${Math.random().toString(36).substring(2, 6)}.md`);
+      try {
+        fs.writeFileSync(tempOfferPath, '# Direct Commercial Offer\n**Price:** ₹15,000 Setup\n');
+        const originalHash = DirectCommercialOfferPage.computeDirectOfferHash(tempOfferPath);
+        expect(originalHash).toBeDefined();
 
-      process.env.DIRECT_OFFER_TERMS_SHA256 = originalHash!;
-      process.env.DIRECT_OFFER_TERMS_ATTESTED = 'true';
-      expect(DirectCommercialOfferPage.isDirectOfferAttested()).toBe(true);
+        process.env.DIRECT_OFFER_TERMS_SHA256 = originalHash!;
+        process.env.DIRECT_OFFER_TERMS_ATTESTED = 'true';
+        expect(DirectCommercialOfferPage.isDirectOfferAttested(tempOfferPath)).toBe(true);
 
-      // Simulate file edit: hash changes, so expected !== computed
-      const modifiedHash = 'edited_' + originalHash;
-      expect(modifiedHash).not.toBe(originalHash);
-      const isAttestedAfterEdit = originalHash === modifiedHash;
-      expect(isAttestedAfterEdit).toBe(false);
+        // Actual file edit: modify the fixture on disk
+        fs.writeFileSync(tempOfferPath, '# Direct Commercial Offer\n**Price:** ₹25,000 Setup\n');
+        // Gate must return false because the on-disk file hash no longer matches the attested hash
+        expect(DirectCommercialOfferPage.isDirectOfferAttested(tempOfferPath)).toBe(false);
+      } finally {
+        if (fs.existsSync(tempOfferPath)) {
+          fs.unlinkSync(tempOfferPath);
+        }
+      }
     });
 
     it('cross-offer isolation: OWN_OFFER.md (computeOwnOfferHash) can NEVER unlock /offer', () => {

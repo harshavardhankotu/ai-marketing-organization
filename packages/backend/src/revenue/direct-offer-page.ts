@@ -105,7 +105,18 @@ function parseSinglePayableAmount(raw: string, type: 'setup' | 'monthly'): numbe
   const match = trimmed.match(regex);
   if (!match) return null;
 
-  const parsed = parseFloat(match[1].replace(/,/g, ''));
+  const rawNum = match[1];
+  if (rawNum.includes(',')) {
+    // Validate comma grouping: reject invalid comma patterns like 15,,000, 15,00, leading/trailing commas
+    const intPart = rawNum.split('.')[0];
+    const isValidIndian = /^\d{1,2}(,\d{2})*,\d{3}$/.test(intPart);
+    const isValidWestern = /^\d{1,3}(,\d{3})+$/.test(intPart);
+    if (!isValidIndian && !isValidWestern) {
+      return null;
+    }
+  }
+
+  const parsed = parseFloat(rawNum.replace(/,/g, ''));
   if (Number.isNaN(parsed) || parsed <= 0) return null;
   return parsed;
 }
@@ -183,15 +194,15 @@ export function computeDirectOfferHash(customFilePath?: string): string | null {
 export function generateOrderReference(prefix: string = 'LCS', amountINR?: number): string {
   const dateStr = new Date().toISOString().slice(2, 10).replace(/-/g, ''); // 6 chars: YYMMDD
   const rand = Math.random().toString(36).substring(2, 6).toUpperCase(); // 4 chars
-  if (amountINR && amountINR > 0) {
-    const cleanAmount = Math.round(amountINR);
-    const secret = process.env.SITE_AUDIT_SIGNING_SECRET || process.env.AUTH_SECRET || 'aro_order_ref_salt_default';
+  const secret = process.env.SITE_AUDIT_SIGNING_SECRET || process.env.AUTH_SECRET;
+  if (amountINR && amountINR > 0 && secret) {
+    const amountStr = amountINR % 1 === 0 ? String(Math.round(amountINR)) : amountINR.toFixed(2);
     const hmac = crypto.createHmac('sha256', secret)
-      .update(`${prefix}:${cleanAmount}:${dateStr}:${rand}`)
+      .update(`${prefix}:${amountStr}:${dateStr}:${rand}`)
       .digest('hex')
       .slice(0, 6)
       .toUpperCase();
-    return `${prefix}-${cleanAmount}-${dateStr}-${rand}-${hmac}`;
+    return `${prefix}-${amountStr}-${dateStr}-${rand}-${hmac}`;
   }
   const fullDate = new Date().toISOString().slice(0, 10).replace(/-/g, '');
   const fallbackRand = Math.random().toString(36).substring(2, 7).toUpperCase();
@@ -201,26 +212,54 @@ export function generateOrderReference(prefix: string = 'LCS', amountINR?: numbe
 /**
  * Verifies an authentic HMAC-signed order reference and extracts the issued snapshot amount.
  */
-export function verifyIssuedOrderReference(ref: string): { valid: boolean; amountINR: number; prefix: string } | null {
+export function verifyIssuedOrderReference(
+  ref: string
+): { valid: boolean; amountINR: number; prefix: string; paise: number; boundOfferId: string | null } | null {
   if (!ref || typeof ref !== 'string') return null;
   const parts = ref.trim().split('-');
   if (parts.length !== 5) return null;
   const [prefix, amountStr, dateStr, rand, hmac] = parts;
-  const amountINR = parseFloat(amountStr);
-  if (Number.isNaN(amountINR) || amountINR <= 0) return null;
   if (!/^[A-Z0-9]+$/i.test(prefix) || !/^\d{6}$/.test(dateStr) || !/^[A-Z0-9]+$/i.test(rand) || !/^[A-F0-9]+$/i.test(hmac)) {
     return null;
   }
-  const secret = process.env.SITE_AUDIT_SIGNING_SECRET || process.env.AUTH_SECRET || 'aro_order_ref_salt_default';
+  if (!/^\d+(?:\.\d{1,2})?$/.test(amountStr)) {
+    return null;
+  }
+  const amountINR = parseFloat(amountStr);
+  if (Number.isNaN(amountINR) || amountINR <= 0) return null;
+  const paise = Math.round(amountINR * 100);
+
+  const secret = process.env.SITE_AUDIT_SIGNING_SECRET || process.env.AUTH_SECRET;
+  if (!secret) return null;
+
   const expectedHmac = crypto.createHmac('sha256', secret)
     .update(`${prefix}:${amountStr}:${dateStr}:${rand}`)
     .digest('hex')
     .slice(0, 6)
     .toUpperCase();
-  if (hmac.toUpperCase() !== expectedHmac) {
+
+  let isHmacValid = hmac.toUpperCase() === expectedHmac;
+  if (!isHmacValid && amountStr.includes('.')) {
+    const wholeRupees = String(Math.round(amountINR));
+    const altHmac = crypto.createHmac('sha256', secret)
+      .update(`${prefix}:${wholeRupees}:${dateStr}:${rand}`)
+      .digest('hex')
+      .slice(0, 6)
+      .toUpperCase();
+    if (hmac.toUpperCase() === altHmac) {
+      isHmacValid = true;
+    }
+  }
+
+  if (!isHmacValid) {
     return null;
   }
-  return { valid: true, amountINR, prefix };
+
+  const boundOfferId = prefix.toUpperCase() === 'LCM'
+    ? 'PLATFORM_MONTHLY'
+    : (prefix.toUpperCase() === 'LCS' ? 'PLATFORM_SETUP' : null);
+
+  return { valid: true, amountINR, prefix, paise, boundOfferId };
 }
 
 export interface OfferPageConfig {
@@ -355,7 +394,7 @@ export class DirectCommercialOfferPage {
     return generateOrderReference(prefix, amountINR);
   }
 
-  public static verifyIssuedOrderReference(ref: string): { valid: boolean; amountINR: number; prefix: string } | null {
+  public static verifyIssuedOrderReference(ref: string): { valid: boolean; amountINR: number; prefix: string; paise: number; boundOfferId: string | null } | null {
     return verifyIssuedOrderReference(ref);
   }
 
@@ -364,18 +403,21 @@ export class DirectCommercialOfferPage {
    * If commercial terms are un-attested, renders a safe informational overview with zero payment links.
    */
   public renderOfferHtml(config: Partial<OfferPageConfig> = {}, customOfferPath?: string): string {
+    const siteName = config.siteName || (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
+    const siteUrl = config.siteUrl || (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').trim();
+    const contactEmail = config.contactEmail || (process.env.PUBLIC_CONTACT_EMAIL ? process.env.PUBLIC_CONTACT_EMAIL.trim() : null);
+
     let offerContent: string | undefined = undefined;
     const filePath = resolveDirectOfferPath(customOfferPath);
     if (filePath) {
       try {
         offerContent = fs.readFileSync(filePath, 'utf8');
-      } catch {}
+      } catch {
+        return this.renderUnattestedOverviewHtml(siteName, siteUrl, contactEmail);
+      }
     }
 
     const isAttested = DirectCommercialOfferPage.isDirectOfferAttested(customOfferPath, offerContent);
-    const siteName = config.siteName || (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
-    const siteUrl = config.siteUrl || (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').trim();
-    const contactEmail = config.contactEmail || (process.env.PUBLIC_CONTACT_EMAIL ? process.env.PUBLIC_CONTACT_EMAIL.trim() : null);
 
     if (!isAttested) {
       return this.renderUnattestedOverviewHtml(siteName, siteUrl, contactEmail);
@@ -390,6 +432,10 @@ export class DirectCommercialOfferPage {
    */
   public renderHomepageHtml(config: Partial<OfferPageConfig> = {}): string {
     const isAttested = DirectCommercialOfferPage.isDirectOfferAttested();
+    const parsedTerms = parseDirectOfferTerms();
+    const setupPriceDisplay = (isAttested && parsedTerms.isPayable && parsedTerms.setupPriceINR)
+      ? `Custom proposal reviewed and approved directly by the human owner (₹${parsedTerms.setupPriceINR.toLocaleString('en-IN')} one-time setup).`
+      : 'Custom Pilot Pricing — Request Scope &amp; Attested Quote';
     const siteName = config.siteName || (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
     const siteUrl = config.siteUrl || (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').trim();
     const contactEmail = config.contactEmail || (process.env.PUBLIC_CONTACT_EMAIL ? process.env.PUBLIC_CONTACT_EMAIL.trim() : null);
@@ -685,7 +731,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
         <div>
           <h3 style="color: #38bdf8; font-size: 1.2rem; margin-bottom: 0.5rem;">Introductory Pilot Implementation</h3>
           <p style="color: #cbd5e1; font-size: 0.95rem; margin-bottom: 0.75rem;">
-            <strong>Setup Investment:</strong> ${isAttested ? 'Custom proposal reviewed and approved directly by the human owner (₹15,000 one-time setup).' : 'Custom Pilot Pricing — Request Scope &amp; Attested Quote'}
+            <strong>Setup Investment:</strong> ${setupPriceDisplay}
           </p>
           <p style="color: #94a3b8; font-size: 0.9rem;">
             Includes full workflow configuration, prompt tuning, Google Calendar synchronization, receptionist training, and 14-day handover monitoring.
