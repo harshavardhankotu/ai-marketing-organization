@@ -388,9 +388,9 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
 
     <!-- Section 1: Administrative Lead Capture -->
     <div class="card" id="b2b-lead-capture">
-      <h2>Administrative After-Hours Lead Capture &amp; Inquiry Intake</h2>
+      <h2>Administrative Website &amp; WhatsApp Inquiry Capture</h2>
       <h3 style="color: #cbd5e1; font-size: 1.15rem; margin-top: 0.5rem; margin-bottom: 1rem;">
-        Never Lose Another Evening Customer Inquiry — The 8 PM to 8 AM Inquiry Gap
+        Administrative After-Hours Lead Capture: Never Lose Another Evening Customer Inquiry — The 8 PM to 8 AM Inquiry Gap
       </h3>
       <p style="color: #cbd5e1; font-size: 1.05rem; margin-bottom: 1.5rem;">
         Indian dental clinics and local practices lose prospective clients every evening because inquiries arrive outside reception working hours.
