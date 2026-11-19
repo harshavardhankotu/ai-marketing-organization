@@ -268,13 +268,11 @@ export class OfferCatalogService {
       if ((isProduction() || process.env.STRICT_DIRECT_OFFER_ATTESTATION === 'true') && !DirectCommercialOfferPage.isDirectOfferAttested()) {
         throw new Error(`COMMERCIAL_TERMS_UNATTESTED: Platform direct offer (${trimmedOfferId}) terms have not been attested by the owner. Commercial payment flows are blocked in production.`);
       }
-      let resolvedSetupPrice = 15000;
-      try {
-        const terms = parseDirectOfferTerms();
-        if (terms.isPayable && terms.setupPriceINR !== null) {
-          resolvedSetupPrice = terms.setupPriceINR;
-        }
-      } catch {}
+      const terms = parseDirectOfferTerms();
+      if (!terms.isPayable || terms.setupPriceINR === null) {
+        throw new Error(`OFFER_PRICING_PENDING: Platform direct offer (${trimmedOfferId}) setup pricing is pending owner definition.`);
+      }
+      const resolvedSetupPrice = terms.setupPriceINR;
       return {
         offerId: OfferCatalogService.PLATFORM_SETUP_OFFER_ID,
         offerName: 'AI Inbound Lead Conversion System — Day 0-5 Setup & Integration',
@@ -311,13 +309,11 @@ export class OfferCatalogService {
       if ((isProduction() || process.env.STRICT_DIRECT_OFFER_ATTESTATION === 'true') && !DirectCommercialOfferPage.isDirectOfferAttested()) {
         throw new Error(`COMMERCIAL_TERMS_UNATTESTED: Platform direct offer (${trimmedOfferId}) terms have not been attested by the owner. Commercial payment flows are blocked in production.`);
       }
-      let resolvedMonthlyPrice = 8000;
-      try {
-        const terms = parseDirectOfferTerms();
-        if (terms.isPayable && terms.monthlyPriceINR !== null) {
-          resolvedMonthlyPrice = terms.monthlyPriceINR;
-        }
-      } catch {}
+      const terms = parseDirectOfferTerms();
+      if (!terms.isPayable || terms.monthlyPriceINR === null) {
+        throw new Error(`OFFER_PRICING_PENDING: Platform direct offer (${trimmedOfferId}) monthly retainer pricing is pending owner definition.`);
+      }
+      const resolvedMonthlyPrice = terms.monthlyPriceINR;
       return {
         offerId: OfferCatalogService.PLATFORM_MONTHLY_OFFER_ID,
         offerName: 'AI Inbound Lead Conversion System — Monthly Retainer & SLA',

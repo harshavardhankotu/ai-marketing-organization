@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'fs';
 import path from 'path';
 import app from '../../src/index.js';
 import { getDb } from '../../src/db/client.js';
@@ -337,6 +338,150 @@ describe('Stage U — Close All PR #79 Blockers, Fix lint:owner-prices, Align Pr
       expect(linkRes.status).toBe(400);
       const linkJson = await linkRes.json() as any;
       expect(linkJson.error).toBe('OFFER_PRICING_PENDING');
+    });
+
+    it('2.6 parseDirectOfferTerms rejects price ranges, parses decimals and monthly retainer', async () => {
+      const { parseDirectOfferTerms } = await import('../../src/revenue/direct-offer-page.js');
+      const originalReadFileSync = fs.readFileSync;
+
+      // Range check
+      const spyRange = vi.spyOn(fs, 'readFileSync').mockImplementation((filePath: any, encoding?: any) => {
+        if (String(filePath).includes('DIRECT_OFFER.md')) {
+          return '# Direct Offer\n\n**Price:** ₹15,000–₹25,000 (scope dependent)\n**Billing Model:** ONE_TIME\n';
+        }
+        return originalReadFileSync(filePath, encoding);
+      });
+      try {
+        const termsRange = parseDirectOfferTerms();
+        expect(termsRange.isPayable).toBe(false);
+        expect(termsRange.setupPriceINR).toBeNull();
+      } finally {
+        spyRange.mockRestore();
+      }
+
+      // Valid decimal + monthly retainer check
+      const spyValid = vi.spyOn(fs, 'readFileSync').mockImplementation((filePath: any, encoding?: any) => {
+        if (String(filePath).includes('DIRECT_OFFER.md')) {
+          return '# Direct Offer\n\n**Price:** ₹14,999.50 Setup\n**Monthly Retainer:** ₹7,999/month\n**Billing Model:** ONE_TIME\n';
+        }
+        return originalReadFileSync(filePath, encoding);
+      });
+      try {
+        const termsValid = parseDirectOfferTerms();
+        expect(termsValid.isPayable).toBe(true);
+        expect(termsValid.setupPriceINR).toBe(14999.5);
+        expect(termsValid.monthlyPriceINR).toBe(7999);
+      } finally {
+        spyValid.mockRestore();
+      }
+    });
+
+    it('2.7 resolveAuthorizedOffer strictly fails closed when offer has no payable price', async () => {
+      const { resolveAuthorizedOffer } = await import('../../src/revenue/offer-catalog.js');
+      expect(() => resolveAuthorizedOffer('PLATFORM_SETUP', 'biz_platform_aro', 'org_owner_primary'))
+        .toThrow(/OFFER_PRICING_PENDING/i);
+      expect(() => resolveAuthorizedOffer('PLATFORM_MONTHLY', 'biz_platform_aro', 'org_owner_primary'))
+        .toThrow(/OFFER_PRICING_PENDING/i);
+    });
+
+    it('2.8 proposal checkout validates against approved proposal price rather than direct offer pricing', async () => {
+      const db = getDb();
+      const testPropId = `prop_val_checkout_${Date.now()}`;
+      db.prepare(`
+        INSERT INTO proposals (
+          id, organization_id, business_id, prospect_id, title,
+          customer_problem, proposed_solution, deliverables_json, timeline_days,
+          setup_price_inr, monthly_price_inr, payment_terms, scope_boundary,
+          next_step, status, created_at
+        ) VALUES (
+          ?, 'org_owner_primary', 'biz_platform_aro', 'prosp_test_1',
+          'Approved Proposal', 'Prob', 'Sol', '[]', 5,
+          15000, 8000, '50% upfront', 'Boundary',
+          'Deploy', 'APPROVED', datetime('now')
+        )
+      `).run(testPropId);
+
+      // Tampered amount (100) is rejected against the proposal's approved amount (15000)
+      const resTampered = await app.request('/api/v1/payments/public/create-link', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          proposalId: testPropId,
+          amountINR: 100
+        })
+      });
+      expect(resTampered.status).toBe(400);
+      const jsonTampered = await resTampered.json() as any;
+      expect(jsonTampered.error).toBe('PRICE_TAMPERING_REJECTED');
+
+      // Matching amount (15000) succeeds even though DIRECT_OFFER.md is TBD
+      const resMatch = await app.request('/api/v1/payments/public/create-link', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          proposalId: testPropId,
+          amountINR: 15000
+        })
+      });
+      expect([200, 201]).toContain(resMatch.status);
+      const jsonMatch = await resMatch.json() as any;
+      expect(jsonMatch.success).toBe(true);
+      expect(jsonMatch.data.amountINR).toBe(15000);
+    });
+
+    it('2.9 handleSiteAuditRecheck correctly matches fixed checks by stable checkId', async () => {
+      const { SiteAuditService } = await import('../../src/tools/site-audit/site-audit-service.js');
+      const service = SiteAuditService.getInstance();
+      const testUrl = 'https://example.com';
+
+      // 1. Initial scan of example.com (which has defects like meta_description_missing)
+      const initialAudit = await service.runScan(testUrl);
+
+      // Verify initial findings include at least one defect with a stable checkId
+      const initialDefect = initialAudit.findings.find(f => f.status !== 'PASS');
+      expect(initialDefect).toBeDefined();
+      const defectCheckId = initialDefect?.checkId;
+      expect(defectCheckId).toBeDefined();
+
+      // 2. Generate genuine delivery token for audit
+      const token = service.generateDeliveryToken('order_test_checkid', initialAudit.auditId, 'pay_test_checkid');
+
+      // 3. Mock rescan result where the defect is now resolved to PASS
+      const originalRunScan = service.runScan.bind(service);
+      vi.spyOn(service, 'runScan').mockImplementation(async (url: string) => {
+        const fresh = await originalRunScan(url);
+        // Flip the initial defect finding to PASS with the same checkId
+        fresh.findings = fresh.findings.map(f => {
+          if (f.checkId === defectCheckId) {
+            return {
+              ...f,
+              id: `${defectCheckId}_optimal`,
+              title: `${f.title} (Resolved Optimal)`,
+              status: 'PASS',
+              severity: 'INFO'
+            };
+          }
+          return f;
+        });
+        return fresh;
+      });
+
+      try {
+        const recheckRes = await app.request(`/api/v1/tools/site-audit/${initialAudit.auditId}/recheck`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token })
+        });
+        expect(recheckRes.status).toBe(200);
+        const recheckJson = await recheckRes.json() as any;
+        expect(recheckJson.success).toBe(true);
+        expect(recheckJson.fixedCount).toBeGreaterThanOrEqual(1);
+        const fixedDefect = recheckJson.fixedChecks.find((f: any) => f.checkId === defectCheckId);
+        expect(fixedDefect).toBeDefined();
+        expect(fixedDefect.currentStatus).toBe('VERIFIED');
+      } finally {
+        vi.restoreAllMocks();
+      }
     });
   });
 });

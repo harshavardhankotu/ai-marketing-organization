@@ -5890,13 +5890,41 @@ apiRouter.post('/payments/public/create-link', async (c) => {
     }
   }
 
-  // 2. Resolve authoritative offer price to prevent price tampering
-  const offer = OfferCatalogService.getInstance().resolveAuthorizedOffer(
-    validOfferId,
-    OwnerAuthService.PLATFORM_BUSINESS_ID,
-    OwnerAuthService.OWNER_ORGANIZATION_ID
-  );
-  const expectedPriceINR = offer.priceINR;
+  // 2. Resolve authoritative price to prevent price tampering
+  let expectedPriceINR: number;
+  if (verifiedProposal) {
+    // For bespoke proposal checkout, use the approved proposal setup price
+    expectedPriceINR = verifiedProposal.setupPriceINR !== undefined ? verifiedProposal.setupPriceINR : verifiedProposal.setup_price_inr;
+  } else {
+    // 3. For public direct offer checkout without a bespoke proposal, fail closed if pricing is TBD
+    if (validOfferId === OfferCatalogService.PLATFORM_SETUP_OFFER_ID || validOfferId === OfferCatalogService.PLATFORM_MONTHLY_OFFER_ID) {
+      const terms = parseDirectOfferTerms();
+      if (!terms.isPayable) {
+        return c.json({
+          success: false,
+          error: 'OFFER_PRICING_PENDING',
+          message: 'Platform direct offer pricing is pending owner definition. Online payment link creation is suppressed.'
+        }, 400);
+      }
+    }
+    try {
+      const offer = OfferCatalogService.getInstance().resolveAuthorizedOffer(
+        validOfferId,
+        OwnerAuthService.PLATFORM_BUSINESS_ID,
+        OwnerAuthService.OWNER_ORGANIZATION_ID
+      );
+      expectedPriceINR = offer.priceINR;
+    } catch (err: any) {
+      if (err?.message?.includes('OFFER_PRICING_PENDING') || err?.message?.includes('COMMERCIAL_TERMS_UNATTESTED')) {
+        return c.json({
+          success: false,
+          error: 'OFFER_PRICING_PENDING',
+          message: 'Platform direct offer pricing is pending owner definition. Online payment link creation is suppressed.'
+        }, 400);
+      }
+      throw err;
+    }
+  }
 
   // Check for client-supplied price tampering
   const suppliedAmount = amountINR !== undefined ? Number(amountINR) : (amount !== undefined ? Number(amount) : undefined);
@@ -5904,20 +5932,8 @@ apiRouter.post('/payments/public/create-link', async (c) => {
     return c.json({
       success: false,
       error: 'PRICE_TAMPERING_REJECTED',
-      message: `Supplied amount ₹${suppliedAmount} does not match authoritative offer price ₹${expectedPriceINR}. Price tampering is rejected.`
+      message: `Supplied amount ₹${suppliedAmount} does not match authoritative ${verifiedProposal ? 'proposal' : 'offer'} price ₹${expectedPriceINR}. Price tampering is rejected.`
     }, 400);
-  }
-
-  // 3. For public direct offer checkout without a bespoke proposal, fail closed if pricing is TBD
-  if (!proposalId && (validOfferId === OfferCatalogService.PLATFORM_SETUP_OFFER_ID || validOfferId === OfferCatalogService.PLATFORM_MONTHLY_OFFER_ID)) {
-    const terms = parseDirectOfferTerms();
-    if (!terms.isPayable) {
-      return c.json({
-        success: false,
-        error: 'OFFER_PRICING_PENDING',
-        message: 'Platform direct offer pricing is pending owner definition. Online payment link creation is suppressed.'
-      }, 400);
-    }
   }
 
   try {
@@ -5926,6 +5942,7 @@ apiRouter.post('/payments/public/create-link', async (c) => {
       businessId: OwnerAuthService.PLATFORM_BUSINESS_ID,
       offerId: validOfferId,
       proposalId: proposalId || undefined,
+      amountINR: expectedPriceINR,
       customer: {
         name: customerName || (verifiedProposal ? verifiedProposal.prospectName : 'Valued Commercial Client'),
         email: customerEmail || (verifiedProposal ? verifiedProposal.prospectEmail : undefined),
@@ -15103,6 +15120,10 @@ const recheckResultCache = new Map<string, any>();
  */
 const handleSiteAuditRecheck = async (c: any) => {
   const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
+  const { getStableCheckId } = await import('../tools/site-audit/site-audit-scanner.js');
+  const { D1RevenueRepository } = await import('../db/d1-revenue-repository.js');
+  const d1Repo = D1RevenueRepository.getInstance();
+
   const auditId = c.req.param('auditId');
   let body: any = {};
   try {
@@ -15129,11 +15150,9 @@ const handleSiteAuditRecheck = async (c: any) => {
     return c.json(recheckResultCache.get(auditId));
   }
   try {
-    const { D1RevenueRepository } = await import('../db/d1-revenue-repository.js');
-    const d1Repo = D1RevenueRepository.getInstance();
     const existingRow = await d1Repo.queryOne<any>(
       'commercial_evidence',
-      "SELECT details_json FROM commercial_evidence WHERE request_reference = ? AND milestone = 'SITE_AUDIT_RECHECK'",
+      "SELECT details_json FROM commercial_evidence WHERE request_reference = ? AND milestone = 'SITE_AUDIT_RECHECK' LIMIT 1",
       [auditId]
     );
     if (existingRow && existingRow.details_json) {
@@ -15141,7 +15160,9 @@ const handleSiteAuditRecheck = async (c: any) => {
       recheckResultCache.set(auditId, parsed);
       return c.json(parsed);
     }
-  } catch {}
+  } catch (err) {
+    console.warn(`[SiteAuditRecheck] Existing row check notice:`, err);
+  }
 
   // 2. Concurrency Claim: Atomically prevent multiple concurrent scans for the same audit
   if (recheckInFlight.has(auditId)) {
@@ -15150,7 +15171,37 @@ const handleSiteAuditRecheck = async (c: any) => {
       error: 'RECHECK_IN_PROGRESS: Verification scan is currently in progress for this audit.'
     }, 409);
   }
+  try {
+    const claimRow = await d1Repo.queryOne<any>(
+      'commercial_evidence',
+      "SELECT id, timestamp FROM commercial_evidence WHERE request_reference = ? AND milestone = 'SITE_AUDIT_RECHECK_CLAIMED' LIMIT 1",
+      [auditId]
+    );
+    if (claimRow && claimRow.timestamp) {
+      const claimAgeMs = Date.now() - new Date(claimRow.timestamp).getTime();
+      if (claimAgeMs < 120000) {
+        return c.json({
+          success: false,
+          error: 'RECHECK_IN_PROGRESS: Verification scan is currently in progress for this audit.'
+        }, 409);
+      }
+    }
+  } catch {}
+
   recheckInFlight.add(auditId);
+  const claimId = `recheck_claim_${auditId}`;
+  try {
+    await d1Repo.executeWrite(
+      'commercial_evidence',
+      `INSERT OR REPLACE INTO commercial_evidence (
+        id, milestone, provider, external_id, timestamp, request_reference,
+        tenant_id, business_id, classification, verification_source, details_json
+      ) VALUES (?, 'SITE_AUDIT_RECHECK_CLAIMED', 'SITEFIX_AI', ?, datetime('now'), ?, 'org_owner_primary', 'biz_platform_aro', 'REAL', 'HTTP_PROBE', '{}')`,
+      [claimId, priorAudit.url, auditId]
+    );
+  } catch (claimErr) {
+    console.warn(`[SiteAuditRecheck] Failed to record in-flight claim:`, claimErr);
+  }
 
   try {
     const rescanResult = await service.runScan(priorAudit.url);
@@ -15159,7 +15210,7 @@ const handleSiteAuditRecheck = async (c: any) => {
     const priorDefectMap = new Map<string, any>();
     for (const f of priorAudit.findings || []) {
       if (f.status !== 'PASS') {
-        priorDefectMap.set(`${f.category}:${f.title}`, f);
+        priorDefectMap.set(getStableCheckId(f), f);
       }
     }
 
@@ -15168,19 +15219,22 @@ const handleSiteAuditRecheck = async (c: any) => {
     const matchedPriorKeys = new Set<string>();
 
     for (const f of rescanResult.findings || []) {
-      const key = `${f.category}:${f.title}`;
+      const key = getStableCheckId(f);
       if (priorDefectMap.has(key)) {
         matchedPriorKeys.add(key);
+        const priorFinding = priorDefectMap.get(key);
         if (f.status === 'PASS') {
           fixedChecks.push({
+            checkId: key,
             category: f.category,
-            title: f.title,
-            previousStatus: priorDefectMap.get(key).status,
+            title: priorFinding.title,
+            previousStatus: priorFinding.status,
             currentStatus: 'VERIFIED',
             recommendation: f.recommendation
           });
         } else {
           remainingChecks.push({
+            checkId: key,
             category: f.category,
             title: f.title,
             currentStatus: f.status,
@@ -15190,6 +15244,7 @@ const handleSiteAuditRecheck = async (c: any) => {
       } else if (f.status !== 'PASS') {
         // Any new or unmatched defect in the rescan must be reported as remaining
         remainingChecks.push({
+          checkId: key,
           category: f.category,
           title: f.title,
           currentStatus: f.status,
@@ -15202,6 +15257,7 @@ const handleSiteAuditRecheck = async (c: any) => {
     for (const [key, priorDefect] of priorDefectMap.entries()) {
       if (!matchedPriorKeys.has(key)) {
         remainingChecks.push({
+          checkId: key,
           category: priorDefect.category,
           title: priorDefect.title,
           currentStatus: priorDefect.status,
@@ -15224,21 +15280,28 @@ const handleSiteAuditRecheck = async (c: any) => {
       remainingChecks
     };
 
-    // Cache in memory for subsequent idempotent requests
-    recheckResultCache.set(auditId, responsePayload);
+    // Persist completion record to commercial_evidence in D1 for long-term durability and idempotency
+    const recId = `recheck_${auditId}_${Date.now()}`;
+    await d1Repo.executeWrite(
+      'commercial_evidence',
+      `INSERT INTO commercial_evidence (
+        id, milestone, provider, external_id, timestamp, request_reference,
+        tenant_id, business_id, classification, verification_source, details_json
+      ) VALUES (?, 'SITE_AUDIT_RECHECK', 'SITEFIX_AI', ?, datetime('now'), ?, 'org_owner_primary', 'biz_platform_aro', 'REAL', 'HTTP_PROBE', ?)`,
+      [recId, priorAudit.url, auditId, JSON.stringify(responsePayload)]
+    );
 
-    // Persist to commercial_evidence in D1 for long-term idempotency
+    // Clean up claim row
     try {
-      const { D1RevenueRepository } = await import('../db/d1-revenue-repository.js');
-      const d1Repo = D1RevenueRepository.getInstance();
-      const recId = `recheck_${auditId}_${Date.now()}`;
       await d1Repo.executeWrite(
         'commercial_evidence',
-        `INSERT INTO commercial_evidence (id, organization_id, request_reference, milestone, details_json, created_at)
-         VALUES (?, 'org_owner_primary', ?, 'SITE_AUDIT_RECHECK', ?, datetime('now'))`,
-        [recId, auditId, JSON.stringify(responsePayload)]
+        `DELETE FROM commercial_evidence WHERE id = ?`,
+        [claimId]
       );
     } catch {}
+
+    // Cache in memory for subsequent idempotent requests
+    recheckResultCache.set(auditId, responsePayload);
 
     return c.json(responsePayload);
   } catch (err: any) {

@@ -471,31 +471,49 @@ export class RazorpayAdapter {
     D1RevenueRepository.getInstance().assertDurableStorage('payment_requests');
 
     // Spec § 1: Razorpay Adapter must own price authority
-    if (!input.offerId) {
-      throw new Error('UNAUTHORIZED_OFFER: offerId is required. RazorpayAdapter must resolve pricing from an authoritative offer.');
-    }
-    const offer = resolveAuthorizedOffer(input.offerId, input.businessId, input.organizationId);
-    if (!offer) {
-      throw new Error(`UNAUTHORIZED_OFFER: Offer '${input.offerId}' could not be resolved for business '${input.businessId}'.`);
+    let authoritativeAmountINR: number;
+    let billingModel = input.billingModel || 'ONE_TIME';
+    let description = input.description;
+
+    if (input.proposalId) {
+      let proposal: any = null;
+      if (isProduction()) {
+        proposal = await this.d1Repo.queryOne<any>('proposals', 'SELECT id, setup_price_inr, prospect_id FROM proposals WHERE id = ?', [input.proposalId]);
+      } else {
+        proposal = this.db.prepare('SELECT id, setup_price_inr, prospect_id FROM proposals WHERE id = ?').get(input.proposalId) as any;
+      }
+      if (!proposal) {
+        throw new Error(`PROPOSAL_NOT_FOUND: Proposal '${input.proposalId}' does not exist.`);
+      }
+      authoritativeAmountINR = proposal.setup_price_inr !== undefined ? proposal.setup_price_inr : (proposal as any).setupPriceINR;
+      description = description || `Proposal ${input.proposalId} Setup & Integration`;
+    } else {
+      if (!input.offerId) {
+        throw new Error('UNAUTHORIZED_OFFER: offerId is required. RazorpayAdapter must resolve pricing from an authoritative offer.');
+      }
+      const offer = resolveAuthorizedOffer(input.offerId, input.businessId, input.organizationId);
+      if (!offer) {
+        throw new Error(`UNAUTHORIZED_OFFER: Offer '${input.offerId}' could not be resolved for business '${input.businessId}'.`);
+      }
+
+      // Validate business/org ownership
+      if (offer.businessId !== input.businessId) {
+        throw new Error(`UNAUTHORIZED_OFFER: Offer '${input.offerId}' belongs to business '${offer.businessId}', but caller supplied '${input.businessId}'.`);
+      }
+      if (offer.organizationId !== input.organizationId) {
+        throw new Error(`UNAUTHORIZED_OFFER: Offer '${input.offerId}' belongs to organization '${offer.organizationId}', but caller supplied '${input.organizationId}'.`);
+      }
+
+      // Authoritative server-side price & billing model
+      authoritativeAmountINR = offer.priceINR;
+      billingModel = input.billingModel || offer.billingModel || 'ONE_TIME';
+      description = description || offer.offerName;
     }
 
-    // Validate business/org ownership
-    if (offer.businessId !== input.businessId) {
-      throw new Error(`UNAUTHORIZED_OFFER: Offer '${input.offerId}' belongs to business '${offer.businessId}', but caller supplied '${input.businessId}'.`);
-    }
-    if (offer.organizationId !== input.organizationId) {
-      throw new Error(`UNAUTHORIZED_OFFER: Offer '${input.offerId}' belongs to organization '${offer.organizationId}', but caller supplied '${input.organizationId}'.`);
-    }
-
-    // Authoritative server-side price & billing model
-    const authoritativeAmountINR = offer.priceINR;
-    const billingModel = input.billingModel || offer.billingModel || 'ONE_TIME';
-    const description = input.description || offer.offerName;
-
-    // Backward compatibility assertion: caller amount === authoritative offer amount
+    // Backward compatibility assertion: caller amount === authoritative amount
     if (input.amountINR !== undefined && input.amountINR !== null) {
       if (Number(input.amountINR) !== authoritativeAmountINR) {
-        throw new Error(`SECURITY VIOLATION: AMOUNT MISMATCH: Caller supplied amount ₹${input.amountINR} does not match authoritative offer price ₹${authoritativeAmountINR}. Arbitrary pricing is rejected.`);
+        throw new Error(`SECURITY VIOLATION: AMOUNT MISMATCH: Caller supplied amount ₹${input.amountINR} does not match authoritative ${input.proposalId ? 'proposal' : 'offer'} price ₹${authoritativeAmountINR}. Arbitrary pricing is rejected.`);
       }
     }
 

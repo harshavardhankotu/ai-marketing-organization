@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'fs';
 import { createHmac } from 'crypto';
 import { getDb } from '../../src/db/client.js';
 import { OwnerAuthService } from '../../src/auth/owner-auth.js';
@@ -13,8 +14,17 @@ describe('Comprehensive Razorpay & UPI QR Payment Collection System (Prompt Sect
   const ORG_ID = OwnerAuthService.OWNER_ORGANIZATION_ID;
   const TEST_WEBHOOK_SECRET = 'test_webhook_secret_key_12345';
   let razorpay: RazorpayAdapter;
+  const originalReadFileSync = fs.readFileSync;
+  let fsSpy: any = null;
 
   beforeEach(() => {
+    fsSpy = vi.spyOn(fs, 'readFileSync').mockImplementation((filePath: any, encoding?: any) => {
+      const p = String(filePath);
+      if (p.includes('DIRECT_OFFER.md')) {
+        return '# AI Inbound Lead Conversion System\n\n**Price:** ₹15,000 Setup\n**Monthly Retainer:** ₹8,000/month\n**Billing Model:** ONE_TIME\n';
+      }
+      return originalReadFileSync(filePath, encoding);
+    });
     razorpay = new RazorpayAdapter();
     const db = getDb();
     try {
@@ -31,6 +41,9 @@ describe('Comprehensive Razorpay & UPI QR Payment Collection System (Prompt Sect
   });
 
   afterEach(() => {
+    if (fsSpy) {
+      fsSpy.mockRestore();
+    }
     delete process.env.DIRECT_OFFER_TERMS_SHA256;
   });
 

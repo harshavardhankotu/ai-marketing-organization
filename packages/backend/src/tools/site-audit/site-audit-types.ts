@@ -22,6 +22,7 @@ export type FindingSeverity = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'INFO';
 
 export interface AuditFinding {
   id: string;
+  checkId?: string;
   category: FindingCategory;
   title: string;
   status: FindingStatus;

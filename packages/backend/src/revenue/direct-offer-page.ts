@@ -99,9 +99,40 @@ export function parseDirectOfferTerms(customFilePath?: string): DirectOfferTerms
   const content = fs.readFileSync(filePath, 'utf8');
   const priceMatch = content.match(/\*\*Price:\*\*\s*(.+)/i);
   const priceRaw = priceMatch ? priceMatch[1].trim() : 'TBD';
-  const numericMatch = priceRaw.match(/\b(\d[\d,]*)\b/);
-  const numericPrice = numericMatch ? parseInt(numericMatch[1].replace(/,/g, ''), 10) : null;
-  const isPayable = numericPrice !== null && !priceRaw.toLowerCase().includes('tbd');
+
+  // Finding 2: Reject ranges (e.g. ₹15,000–₹25,000, 15000 to 25000) and ambiguous values (scope dependent, custom, quote)
+  const isExplicitlyTbd = /\b(tbd|variable|quote|custom|scope dependent|contact)\b/i.test(priceRaw);
+  const isRange = /[-–—]|\bto\b/i.test(priceRaw);
+
+  let numericPrice: number | null = null;
+  if (!isExplicitlyTbd && !isRange) {
+    const singlePriceMatch = priceRaw.match(/(?:₹|INR|Rs\.?)?\s*(\d[\d,]*(?:\.\d{1,2})?)/i);
+    if (singlePriceMatch) {
+      const parsed = parseFloat(singlePriceMatch[1].replace(/,/g, ''));
+      if (!Number.isNaN(parsed) && parsed > 0) {
+        numericPrice = parsed;
+      }
+    }
+  }
+  const isPayable = numericPrice !== null && !isExplicitlyTbd && !isRange;
+
+  // Monthly Retainer / Price parsing if explicitly defined in markdown
+  const monthlyMatch = content.match(/\*\*(?:Monthly Price|Monthly Retainer):\*\*\s*(.+)/i);
+  let monthlyPriceINR: number | null = null;
+  if (monthlyMatch) {
+    const monthlyRaw = monthlyMatch[1].trim();
+    const isMonthlyTbd = /\b(tbd|variable|quote|custom|scope dependent|contact)\b/i.test(monthlyRaw);
+    const isMonthlyRange = /[-–—]|\bto\b/i.test(monthlyRaw);
+    if (!isMonthlyTbd && !isMonthlyRange) {
+      const singleMonthlyMatch = monthlyRaw.match(/(?:₹|INR|Rs\.?)?\s*(\d[\d,]*(?:\.\d{1,2})?)/i);
+      if (singleMonthlyMatch) {
+        const parsedMonthly = parseFloat(singleMonthlyMatch[1].replace(/,/g, ''));
+        if (!Number.isNaN(parsedMonthly) && parsedMonthly > 0) {
+          monthlyPriceINR = parsedMonthly;
+        }
+      }
+    }
+  }
 
   const titleMatch = content.match(/\*\*Full Title:\*\*\s*(.+)/i);
   const title = titleMatch ? titleMatch[1].trim() : 'AI Inbound Lead Conversion System — Day 0-5 Setup & Integration';
@@ -117,7 +148,7 @@ export function parseDirectOfferTerms(customFilePath?: string): DirectOfferTerms
     title,
     priceRaw,
     setupPriceINR: isPayable ? numericPrice : null,
-    monthlyPriceINR: null,
+    monthlyPriceINR,
     isPayable,
     targetAudience,
     billingModel
