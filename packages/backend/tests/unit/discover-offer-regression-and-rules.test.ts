@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'fs';
 import { getDb } from '../../src/db/client.js';
 import { AutomaticOfferLane, GeneratedGuide, SpecLineRecord } from '../../src/commission/automatic-offer-lane.js';
 import { AutonomousRevenueOrchestrator } from '../../src/revenue/autonomous-revenue-orchestrator.js';
@@ -293,14 +294,25 @@ describe('Discovery, Publication & Revenue Governance Regression Suite', () => {
 
   describe('Section 7 & OWN_OFFER.md: Commercial Offer Consistency', () => {
     it('8. Ensures PLATFORM_SETUP offer terms match OWN_OFFER.md (14-day performance guarantee)', () => {
-      const catalog = OfferCatalogService.getInstance();
-      const setupOffer = catalog.resolveAuthorizedOffer(OfferCatalogService.PLATFORM_SETUP_OFFER_ID);
+      const originalReadFileSync = fs.readFileSync;
+      const spy = vi.spyOn(fs, 'readFileSync').mockImplementation((filePath: any, encoding?: any) => {
+        if (String(filePath).includes('DIRECT_OFFER.md')) {
+          return '# Direct Commercial Offer\n\n**Price:** ₹15,000 Setup\n**Billing Model:** ONE_TIME\n';
+        }
+        return originalReadFileSync(filePath, encoding);
+      });
+      try {
+        const catalog = OfferCatalogService.getInstance();
+        const setupOffer = catalog.resolveAuthorizedOffer(OfferCatalogService.PLATFORM_SETUP_OFFER_ID);
 
-      expect(setupOffer.priceINR).toBe(15000);
-      expect(setupOffer.deliveryTimeDays).toBe(5);
-      expect(setupOffer.billingModel).toBe('ONE_TIME');
-      expect(setupOffer.qualificationRequirements).toContain('Active WhatsApp Business number');
-      expect(setupOffer.qualificationRequirements).toContain('Claimed Google Business Profile');
+        expect(setupOffer.priceINR).toBe(15000);
+        expect(setupOffer.deliveryTimeDays).toBe(5);
+        expect(setupOffer.billingModel).toBe('ONE_TIME');
+        expect(setupOffer.qualificationRequirements).toContain('Active WhatsApp Business number');
+        expect(setupOffer.qualificationRequirements).toContain('Claimed Google Business Profile');
+      } finally {
+        spy.mockRestore();
+      }
     });
 
     it('9. Ensures ProposalEngine default payment terms specify 50% upfront setup on approval', () => {

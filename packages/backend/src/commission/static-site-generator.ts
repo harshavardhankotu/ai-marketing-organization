@@ -244,6 +244,55 @@ const FIXED_BUYER_INTENT_HUBS: HubSeedDefinition[] = [
   }
 ];
 
+/**
+ * Extracts a normalized category string from category input (string, object with name/title/slug, or nested).
+ * Returns null if the category is missing, empty, cyclic, or a placeholder like "[object Object]".
+ */
+export function extractCategoryName(cat: any): string | null {
+  if (!cat) return null;
+  let cur = cat;
+  const seen = new Set<any>();
+  const isPlaceholder = (s: any) => !s || typeof s !== 'string' || !s.trim() || s.trim().toLowerCase() === '[object object]';
+  while (cur && typeof cur === 'object') {
+    if (seen.has(cur)) {
+      return null;
+    }
+    seen.add(cur);
+    if (!isPlaceholder(cur.name)) { cur = cur.name.trim(); break; }
+    if (!isPlaceholder(cur.title)) { cur = cur.title.trim(); break; }
+    if (!isPlaceholder(cur.slug)) { cur = cur.slug.trim(); break; }
+    if (cur.category !== undefined && cur.category !== cur) {
+      cur = cur.category;
+    } else {
+      break;
+    }
+  }
+  const str = String(cur || '').trim();
+  if (isPlaceholder(str)) return null;
+
+  // Normalize casing and hyphenation consistently across variants:
+  // e.g. "audio" -> "Audio", "AUDIO" -> "Audio", "smart-watches" -> "Smart Watches"
+  const cleaned = str.replace(/[-_]+/g, ' ').trim();
+  const normalized = cleaned
+    .split(/\s+/)
+    .map(word => {
+      if (!word) return '';
+      if (word === '&' || word.toLowerCase() === 'and') return word === '&' ? '&' : 'and';
+      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+    })
+    .join(' ');
+
+  return normalized || null;
+}
+
+/**
+ * Normalizes a category input into a clean string name, defaulting to 'General' if invalid or missing.
+ * Strictly prevents "[object Object]" serialization and "/best/best-object-object-deals-india" slugs.
+ */
+export function normalizeCategoryName(cat: any): string {
+  return extractCategoryName(cat) || 'General';
+}
+
 export function generateBuyerIntentHubs(
   deals: any[],
   siteUrl: string = 'https://ai-marketing-organization.onrender.com',
@@ -334,7 +383,8 @@ export function generateBuyerIntentHubs(
   if (hubs.length < limit) {
     const byCategory = new Map<string, any[]>();
     for (const d of eligible) {
-      const cat = String(d.category || 'Verified Offers').trim();
+      const cat = extractCategoryName(d.category);
+      if (!cat || cat.toLowerCase() === '[object object]') continue;
       const arr = byCategory.get(cat) || [];
       arr.push(d);
       byCategory.set(cat, arr);
@@ -344,7 +394,7 @@ export function generateBuyerIntentHubs(
       if (hubs.length >= limit) break;
       if (catDeals.length < 2) continue;
       const slugBase = cat.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-      if (!slugBase) continue;
+      if (!slugBase || slugBase === 'object-object') continue;
       const dynSlug = `best-${slugBase}-deals-india`;
       if (seenSlugs.has(dynSlug)) continue;
       hubs.push(
@@ -1767,6 +1817,7 @@ ${this.serializeSafeJsonLd(itemListSchema, true)}
     const renderPickCard = (label: string, d: any) => {
       if (!d) return '';
       const slug = d.slug || d.canonicalSlug || d.id;
+      const catLabel = extractCategoryName(d.category) || hub.categoryLabel;
       const rail1 = `${config.siteUrl}/api/v1/public/deals/${encodeURIComponent(d.id)}/redirect?utm_source=best_hub_pick`;
       const rail2 = `${config.siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(d.title || '').slice(0, 120))}&dealId=${encodeURIComponent(d.id)}`;
       return `
@@ -1774,7 +1825,7 @@ ${this.serializeSafeJsonLd(itemListSchema, true)}
         <div>
           <div style="font-size:0.74rem;font-weight:700;color:#38bdf8;text-transform:uppercase;letter-spacing:0.04em;margin-bottom:0.35rem;">${this.escapeHtml(label)}</div>
           <a href="/deals/${this.escapeHtml(encodeURIComponent(slug))}" style="color:#fff;font-weight:700;font-size:0.95rem;text-decoration:none;display:block;margin-bottom:0.35rem;">${this.escapeHtml(d.title)}</a>
-          <div style="font-size:0.78rem;color:#94a3b8;margin-bottom:0.35rem;">${this.escapeHtml(d.merchant)} &bull; ${this.escapeHtml(d.category || hub.categoryLabel)}</div>
+          <div style="font-size:0.78rem;color:#94a3b8;margin-bottom:0.35rem;">${this.escapeHtml(d.merchant)} &bull; ${this.escapeHtml(catLabel)}</div>
           <div style="font-size:1.25rem;font-weight:800;color:#34d399;font-variant-numeric:tabular-nums;">₹${Number(d.currentPriceINR || 0).toLocaleString('en-IN')}</div>
           ${Number(d.referencePriceINR || 0) > Number(d.currentPriceINR || 0) ? `<div style="font-size:0.75rem;color:#94a3b8;font-variant-numeric:tabular-nums;">Merchant Listed MRP: <span style="text-decoration:line-through;">₹${Number(d.referencePriceINR).toLocaleString('en-IN')}</span></div>` : ''}
         </div>
@@ -2420,7 +2471,7 @@ ${this.serializeSafeJsonLd(faqSchema, true)}
     const dealsCardsHtml = crossPromoDeals.slice(0, 3).map(d => `
       <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:16px;flex:1;min-width:240px;box-sizing:border-box;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-          <span style="font-size:11px;background:#e2e8f0;color:#334155;padding:2px 6px;border-radius:4px;font-weight:bold;">${this.escapeHtml(d.category || 'B2B Partner')}</span>
+          <span style="font-size:11px;background:#e2e8f0;color:#334155;padding:2px 6px;border-radius:4px;font-weight:bold;">${this.escapeHtml(extractCategoryName(d.category) || 'B2B Partner')}</span>
           <span style="font-size:11px;background:#fef3c7;color:#92400e;padding:2px 6px;border-radius:4px;font-weight:bold;">#Ad &bull; Tier 3 Partner</span>
         </div>
         <h4 style="margin:0 0 8px 0;font-size:14px;color:#0f172a;line-height:1.4;">${this.escapeHtml(d.title)}</h4>

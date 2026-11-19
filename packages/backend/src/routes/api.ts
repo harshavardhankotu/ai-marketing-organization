@@ -90,7 +90,7 @@ import { DurableRateLimiter } from '../security/durable-rate-limiter.js';
 import { validateOwnerEnvFacts } from '../config/owner-env-intake.js';
 import { ProductOpportunityPipeline } from '../commission/product-opportunity-pipeline.js';
 import { GENUINE_BUYER_DEMAND_SQL_CONDITION } from '../commission/demand-signal-eligibility.js';
-import { DirectCommercialOfferPage } from '../revenue/direct-offer-page.js';
+import { DirectCommercialOfferPage, parseDirectOfferTerms } from '../revenue/direct-offer-page.js';
 import { CoordinatedAgentOrchestrator } from '../agents/coordinated-orchestrator.js';
 import { DurableJobQueue } from '../automation/durable-job-queue.js';
 import { CommercialSchedulePolicy } from '../automation/commercial-schedule-policy.js';
@@ -4393,7 +4393,7 @@ apiRouter.post('/compliance/dpdp/erasure', async (c) => {
     return c.json({ success: false, error: 'Phone number or Journey ID required for Section 12 erasure request' }, 400);
   }
 
-  const result = dpdpManager.requestErasure({
+  const result = await dpdpManager.requestErasure({
     businessId,
     phoneOrJourneyId: body.phoneOrJourneyId,
     reason: body.reason || 'Patient consent withdrawal'
@@ -4404,7 +4404,7 @@ apiRouter.post('/compliance/dpdp/erasure', async (c) => {
     await LeadLeakageCalculator.getInstance().requestErasure(body.phoneOrJourneyId);
   } catch {}
 
-  return c.json({ success: true, data: result }, 200);
+  return c.json({ success: result.success, data: result }, 200);
 });
 
 apiRouter.get('/compliance/dpdp/status/:identifier', (c) => {
@@ -5527,7 +5527,7 @@ const handleManualUpiClaim = async (c: any) => {
     return c.json({ success: false, error: 'INVALID_JSON', message: 'Malformed JSON body.' }, 400);
   }
 
-  const { businessId, journeyId, proposalId, invoiceRef, auditId, payerName, payerPhone, payerVpa, utr, amountINR, serviceRendered, notes } = body;
+  const { businessId, journeyId, proposalId, offerId, invoiceRef, auditId, payerName, payerPhone, payerVpa, utr, amountINR, serviceRendered, notes } = body;
   const resolvedBusinessId = businessId || 'biz_platform_aro';
   const resolvedInvoiceRef = invoiceRef || (auditId ? String(auditId) : undefined);
 
@@ -5540,6 +5540,7 @@ const handleManualUpiClaim = async (c: any) => {
       businessId: resolvedBusinessId,
       journeyId,
       proposalId,
+      offerId,
       invoiceRef: resolvedInvoiceRef,
       payerName,
       payerPhone,
@@ -5820,25 +5821,7 @@ apiRouter.post('/payments/public/create-link', async (c) => {
     ? OfferCatalogService.PLATFORM_MONTHLY_OFFER_ID
     : OfferCatalogService.PLATFORM_SETUP_OFFER_ID;
 
-  // Resolve authoritative offer price to prevent price tampering
-  const offer = OfferCatalogService.getInstance().resolveAuthorizedOffer(
-    validOfferId,
-    OwnerAuthService.PLATFORM_BUSINESS_ID,
-    OwnerAuthService.OWNER_ORGANIZATION_ID
-  );
-  const expectedPriceINR = offer.priceINR;
-
-  // Check for client-supplied price tampering
-  const suppliedAmount = amountINR !== undefined ? Number(amountINR) : (amount !== undefined ? Number(amount) : undefined);
-  if (suppliedAmount !== undefined && !Number.isNaN(suppliedAmount) && suppliedAmount !== expectedPriceINR) {
-    return c.json({
-      success: false,
-      error: 'PRICE_TAMPERING_REJECTED',
-      message: `Supplied amount ₹${suppliedAmount} does not match authoritative offer price ₹${expectedPriceINR}. Price tampering is rejected.`
-    }, 400);
-  }
-
-  // If proposalId is provided, validate its existence, status, and reuse existing active link
+  // 1. If proposalId is provided, validate its existence, status, and reuse existing active link
   let verifiedProposal: any = null;
   if (proposalId) {
     const pe = ProposalEngine.getInstance();
@@ -5908,12 +5891,66 @@ apiRouter.post('/payments/public/create-link', async (c) => {
     }
   }
 
+  // 2. Resolve authoritative price to prevent price tampering
+  let expectedPriceINR: number;
+  if (verifiedProposal) {
+    // For bespoke proposal checkout, use the approved proposal setup price
+    expectedPriceINR = verifiedProposal.setupPriceINR !== undefined ? verifiedProposal.setupPriceINR : verifiedProposal.setup_price_inr;
+  } else {
+    // 3. For public direct offer checkout without a bespoke proposal, fail closed if pricing is TBD
+    if (validOfferId === OfferCatalogService.PLATFORM_SETUP_OFFER_ID || validOfferId === OfferCatalogService.PLATFORM_MONTHLY_OFFER_ID) {
+      const terms = parseDirectOfferTerms();
+      if (!terms.isPayable) {
+        return c.json({
+          success: false,
+          error: 'OFFER_PRICING_PENDING',
+          message: 'Platform direct offer pricing is pending owner definition. Online payment link creation is suppressed.'
+        }, 400);
+      }
+    }
+    try {
+      const offer = OfferCatalogService.getInstance().resolveAuthorizedOffer(
+        validOfferId,
+        OwnerAuthService.PLATFORM_BUSINESS_ID,
+        OwnerAuthService.OWNER_ORGANIZATION_ID
+      );
+      if (offer.nonPayable || !offer.active || offer.priceINR <= 0) {
+        return c.json({
+          success: false,
+          error: 'OFFER_NON_PAYABLE',
+          message: 'This offer is currently non-payable. Online payment link creation is suppressed.'
+        }, 403);
+      }
+      expectedPriceINR = offer.priceINR;
+    } catch (err: any) {
+      if (err?.message?.includes('OFFER_PRICING_PENDING') || err?.message?.includes('COMMERCIAL_TERMS_UNATTESTED') || err?.message?.includes('OFFER_NON_PAYABLE')) {
+        return c.json({
+          success: false,
+          error: 'OFFER_PRICING_PENDING',
+          message: 'Platform direct offer pricing is pending owner definition. Online payment link creation is suppressed.'
+        }, 400);
+      }
+      throw err;
+    }
+  }
+
+  // Check for client-supplied price tampering
+  const suppliedAmount = amountINR !== undefined ? Number(amountINR) : (amount !== undefined ? Number(amount) : undefined);
+  if (suppliedAmount !== undefined && !Number.isNaN(suppliedAmount) && suppliedAmount !== expectedPriceINR) {
+    return c.json({
+      success: false,
+      error: 'PRICE_TAMPERING_REJECTED',
+      message: `Supplied amount ₹${suppliedAmount} does not match authoritative ${verifiedProposal ? 'proposal' : 'offer'} price ₹${expectedPriceINR}. Price tampering is rejected.`
+    }, 400);
+  }
+
   try {
     const linkRes = await razorpayAdapter.createPaymentLink({
       organizationId: OwnerAuthService.OWNER_ORGANIZATION_ID,
       businessId: OwnerAuthService.PLATFORM_BUSINESS_ID,
       offerId: validOfferId,
       proposalId: proposalId || undefined,
+      amountINR: expectedPriceINR,
       customer: {
         name: customerName || (verifiedProposal ? verifiedProposal.prospectName : 'Valued Commercial Client'),
         email: customerEmail || (verifiedProposal ? verifiedProposal.prospectEmail : undefined),
@@ -6208,36 +6245,40 @@ apiRouter.all('/owner/proposal', async (c) => {
   }
 
   const bioContent = fs.readFileSync(bioPath, 'utf8');
-  const { DirectCommercialOfferPage } = await import('../revenue/direct-offer-page.js');
+  const { DirectCommercialOfferPage, parseDirectOfferTerms } = await import('../revenue/direct-offer-page.js');
   const isAttested = DirectCommercialOfferPage.isDirectOfferAttested();
+  const terms = parseDirectOfferTerms();
 
-  if (isAttested) {
+  if (isAttested && terms.isPayable && terms.setupPriceINR !== null) {
     return c.json({
       success: true,
       isAttested: true,
       isPayable: true,
-      message: 'Authoritative proposal generated from attested owner commercial terms (owner/OWN_OFFER.md).',
+      message: 'Authoritative proposal generated from attested owner commercial terms (owner/DIRECT_OFFER.md).',
       ownerBioPreview: bioContent.slice(0, 300),
       data: {
-        title: 'AI Inbound Lead Conversion System Implementation',
-        setupPriceINR: 15000,
-        monthlyPriceINR: 8000,
-        source: 'owner/OWN_OFFER.md'
+        title: terms.title,
+        setupPriceINR: terms.setupPriceINR,
+        monthlyPriceINR: terms.monthlyPriceINR,
+        source: 'owner/DIRECT_OFFER.md'
       }
     });
   }
 
   return c.json({
     success: true,
-    isAttested: false,
+    isAttested,
     isPayable: false,
-    message: 'Informational proposal draft. Commercial terms not yet attested via owner/OWN_OFFER.md; payable payment links are suppressed.',
+    message: isAttested
+      ? 'Commercial terms attested in owner/DIRECT_OFFER.md, but pricing remains TBD (Owner decides); payable payment links are suppressed.'
+      : 'Informational proposal draft. Commercial terms not yet attested via owner/DIRECT_OFFER.md; payable payment links are suppressed.',
     ownerBioPreview: bioContent.slice(0, 300),
     data: {
-      title: 'AI Inbound Lead Conversion System Implementation',
-      setupPriceINR: 15000,
-      monthlyPriceINR: 8000,
-      source: 'PROVISIONAL_ESTIMATE (Awaiting owner/OWN_OFFER.md attestation)'
+      title: terms.title,
+      setupPriceINR: null,
+      monthlyPriceINR: null,
+      priceDescription: terms.priceRaw,
+      source: isAttested ? 'owner/DIRECT_OFFER.md (Price: TBD)' : 'PROVISIONAL_ESTIMATE (Awaiting owner/DIRECT_OFFER.md attestation)'
     }
   });
 });
@@ -9933,12 +9974,17 @@ apiRouter.get('/public/deals/:id/redirect', async (c) => {
     }
     const referralOfferId = existingOffer.id;
 
+    const hashedIp = createHash('sha256')
+      .update(`${new Date().toISOString().slice(0, 10)}:${clientInfo.ip}`)
+      .digest('hex')
+      .slice(0, 32);
+
     const insertRefSql = `
       INSERT INTO referrals (
         id, click_id, destination_url, organization_id, offer_id, partner_id, ip, user_agent, referer, placement, device_class, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     `;
-    const refParams = [referralId, clickId, targetUrl, orgId, referralOfferId, partnerId, clientInfo.ip, userAgent.substring(0, 200), referrer.substring(0, 200), sanitizedPlacement, trafficClass];
+    const refParams = [referralId, clickId, targetUrl, orgId, referralOfferId, partnerId, hashedIp, userAgent.substring(0, 200), referrer.substring(0, 200), sanitizedPlacement, trafficClass];
 
     const insertClickSql = `
       INSERT INTO referral_click_events (
@@ -10722,7 +10768,7 @@ apiRouter.post('/build/static-site', async (c) => {
  */
 apiRouter.get('/owner/facts-status', async (c) => {
   const { validateOwnerEnvFacts, validateSiteIdentityFacts } = await import('../config/owner-env-intake.js');
-  const { computeOwnOfferHash } = await import('../revenue/direct-offer-page.js');
+  const { computeDirectOfferHash } = await import('../revenue/direct-offer-page.js');
   const validation = validateOwnerEnvFacts();
   const siteIdentityValidation = validateSiteIdentityFacts();
 
@@ -10754,7 +10800,19 @@ apiRouter.get('/owner/facts-status', async (c) => {
     });
   }
 
-  // 7. OWN_OFFER_CONFIRMED
+  // 7. DIRECT_OFFER_TERMS_ATTESTED (Lane B /offer attestation)
+  const directOfferAttestedVal = process.env.DIRECT_OFFER_TERMS_ATTESTED?.trim();
+  const isDirectOfferAttested = directOfferAttestedVal?.toLowerCase() === 'true';
+  facts.push({
+    field: 'DIRECT_OFFER_TERMS_ATTESTED',
+    status: directOfferAttestedVal ? 'SET' : 'MISSING',
+    validity: isDirectOfferAttested ? 'VALID' : 'INVALID',
+    reason: directOfferAttestedVal
+      ? (isDirectOfferAttested ? 'Valid (Owner attested)' : 'Invalid (Must be explicitly "true")')
+      : 'Environment variable not set (Requires manual human attestation)'
+  });
+
+  // 7b. OWN_OFFER_CONFIRMED (Lane A / historical confirmation)
   const ownOfferConfirmedVal = process.env.OWN_OFFER_CONFIRMED?.trim();
   const isOwnOfferConfirmed = ownOfferConfirmedVal?.toLowerCase() === 'true';
   facts.push({
@@ -10768,19 +10826,19 @@ apiRouter.get('/owner/facts-status', async (c) => {
 
   // 8. DIRECT_OFFER_TERMS_SHA256
   const termsHashVal = process.env.DIRECT_OFFER_TERMS_SHA256?.trim();
-  const currentComputedHash = computeOwnOfferHash();
+  const currentComputedHash = computeDirectOfferHash();
   const isHashMatch = Boolean(termsHashVal && currentComputedHash && termsHashVal.toLowerCase() === currentComputedHash.toLowerCase());
-  const isSetWithoutConfirmation = Boolean(termsHashVal && !isOwnOfferConfirmed);
+  const isSetWithoutAttestation = Boolean(termsHashVal && !isDirectOfferAttested);
 
   facts.push({
     field: 'DIRECT_OFFER_TERMS_SHA256',
-    status: isSetWithoutConfirmation ? ('SET_BY_UNKNOWN' as any) : (termsHashVal ? 'SET' : 'MISSING'),
-    validity: (termsHashVal && isHashMatch && isOwnOfferConfirmed) ? 'VALID' : 'INVALID',
+    status: isSetWithoutAttestation ? ('SET_BY_UNKNOWN' as any) : (termsHashVal ? 'SET' : 'MISSING'),
+    validity: (termsHashVal && isHashMatch && isDirectOfferAttested) ? 'VALID' : 'INVALID',
     reason: !termsHashVal
-      ? 'Environment variable not set'
-      : (!isOwnOfferConfirmed
-        ? 'Invalid (Set without OWN_OFFER_CONFIRMED: delete it in Render or let owner-apply.mjs overwrite it)'
-        : (isHashMatch ? 'Valid (Matches owner/OWN_OFFER.md)' : 'Invalid (Hash mismatch with owner/OWN_OFFER.md)')),
+      ? 'Environment variable not set (Expected SHA256 of owner/DIRECT_OFFER.md)'
+      : (!isDirectOfferAttested
+        ? 'Invalid (Set without DIRECT_OFFER_TERMS_ATTESTED: delete it in Render or let owner-apply.mjs overwrite it)'
+        : (isHashMatch ? 'Valid (Matches owner/DIRECT_OFFER.md)' : 'Invalid (Hash mismatch with owner/DIRECT_OFFER.md)')),
     note: 'A hash match proves the page equals the file. It does not prove that the owner wrote or approved the file. Delete it in Render or let owner-apply.mjs overwrite it.'
   });
 
@@ -10854,18 +10912,18 @@ apiRouter.get('/owner/facts-status', async (c) => {
   const affiliateInvalidNames = validation.invalidFields.filter(f => statutoryFields.includes(f.field)).map(f => f.field);
   const affiliateLaneReady = affiliateMissingNames.length === 0 && affiliateInvalidNames.length === 0;
 
-  // 4. direct lane = OWN_OFFER_CONFIRMED, DIRECT_OFFER_TERMS_SHA256
+  // 4. direct lane = DIRECT_OFFER_TERMS_ATTESTED, DIRECT_OFFER_TERMS_SHA256 (Lane B /offer)
   const directMissingNames: string[] = [];
   const directInvalidNames: string[] = [];
-  if (!ownOfferConfirmedVal) {
-    directMissingNames.push('OWN_OFFER_CONFIRMED');
-  } else if (!isOwnOfferConfirmed) {
-    directInvalidNames.push('OWN_OFFER_CONFIRMED');
+  if (!directOfferAttestedVal) {
+    directMissingNames.push('DIRECT_OFFER_TERMS_ATTESTED');
+  } else if (!isDirectOfferAttested) {
+    directInvalidNames.push('DIRECT_OFFER_TERMS_ATTESTED');
   }
 
   if (!termsHashVal) {
     directMissingNames.push('DIRECT_OFFER_TERMS_SHA256');
-  } else if (!isOwnOfferConfirmed || !isHashMatch) {
+  } else if (!isDirectOfferAttested || !isHashMatch) {
     directInvalidNames.push('DIRECT_OFFER_TERMS_SHA256');
   }
   const directLaneReady = directMissingNames.length === 0 && directInvalidNames.length === 0;
@@ -10885,7 +10943,7 @@ apiRouter.get('/owner/facts-status', async (c) => {
   if (!tgEnabled) optionalMissingNames.push('TELEGRAM_ENABLED');
   else if (!isTgEnabledValid) optionalInvalidNames.push('TELEGRAM_ENABLED');
 
-  const directFacts = facts.filter(f => ['OWN_OFFER_CONFIRMED', 'DIRECT_OFFER_TERMS_SHA256'].includes(f.field));
+  const directFacts = facts.filter(f => ['DIRECT_OFFER_TERMS_ATTESTED', 'DIRECT_OFFER_TERMS_SHA256'].includes(f.field));
   const optionalFacts = facts.filter(f => ['OWNER_WHATSAPP_NUMBER', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_OWNER_CHAT_ID', 'TELEGRAM_ENABLED'].includes(f.field));
 
   return c.json({
@@ -13723,7 +13781,7 @@ apiRouter.get('/capabilities', async (c) => {
   const catalog = OfferCatalogService.getInstance();
   let deliverables: string[] = [];
   try {
-    const offer = catalog.resolveAuthorizedOffer(offerId);
+    const offer = catalog.resolveAuthorizedOffer(offerId, undefined, undefined, { allowPendingPricing: true });
     deliverables = offer.deliverables;
   } catch {}
   const readiness = deliverables.length > 0
@@ -14979,8 +15037,9 @@ const handleSiteAuditRazorpayWebhook = async (c: any) => {
         const postalAddress = (process.env.BUSINESS_POSTAL_ADDRESS || 'SiteFix AI, Madhapur, Hyderabad, Telangana 500081, India').trim();
         const unsubUrl = `${siteUrl}/api/v1/compliance/dpdp/erasure?email=${encodeURIComponent(buyerEmail)}`;
 
-        const emailText = `Hello,\n\nYour SiteFix AI Core Fix-Pack (₹499) has been prepared and is ready for download.\n\nDownload Link: ${downloadUrl}\n\nThis deliverable includes automated patches for Schema.org JSON-LD, Meta Tags, and Core Web Vitals.\n\n---\n${postalAddress}\nUnsubscribe / Erasure: ${unsubUrl}`;
-        const emailHtml = `<div style="font-family:sans-serif;line-height:1.6;color:#0f172a;"><h2 style="color:#2563eb;">Your SiteFix AI Core Fix-Pack is Ready</h2><p>Hello,</p><p>Thank you for purchasing the SiteFix AI Core Fix-Pack (₹499).</p><p style="margin:24px 0;"><a href="${downloadUrl}" style="background:#2563eb;color:#ffffff;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:bold;display:inline-block;">Download Core Fix-Pack</a></p><p style="font-size:13px;color:#64748b;">Or open this link: <a href="${downloadUrl}">${downloadUrl}</a></p><hr style="margin:24px 0;border:none;border-top:1px solid #e2e8f0;"/><p style="font-size:12px;color:#94a3b8;">${postalAddress}<br/><a href="${unsubUrl}">1-Click Unsubscribe / Data Erasure</a></p></div>`;
+        const recheckUrl = `${siteUrl}/tools/site-audit?auditId=${encodeURIComponent(auditId)}&token=${encodeURIComponent(token)}&domain=${encodeURIComponent(storedOrder?.domain || '')}`;
+        const emailText = `Hello,\n\nYour SiteFix AI Core Fix-Pack (₹499) has been prepared and is ready for download.\n\nDownload Link: ${downloadUrl}\nIncluded Verification Recheck: ${recheckUrl}\n\nYour purchase delivers a structured JSON & Markdown Fix-Pack containing ready-to-paste HTML <head> tags, Schema.org JSON-LD, robots.txt rules, sitemap.xml entries (to merge into your site's sitemap), and a verification checklist. The sitemap snippet lists only your scanned canonical URL, so merge it into your existing sitemap instead of replacing it.\n\n---\n${postalAddress}\nUnsubscribe / Erasure: ${unsubUrl}`;
+        const emailHtml = `<div style="font-family:sans-serif;line-height:1.6;color:#0f172a;"><h2 style="color:#2563eb;">Your SiteFix AI Core Fix-Pack is Ready</h2><p>Hello,</p><p>Thank you for purchasing the SiteFix AI Core Fix-Pack (₹499).</p><p style="font-size:14px;color:#334155;line-height:1.5;">Your purchase delivers a structured JSON &amp; Markdown Fix-Pack containing ready-to-paste HTML &lt;head&gt; tags, Schema.org JSON-LD, robots.txt rules, sitemap.xml entries (to merge into your site's sitemap), and a verification checklist. The sitemap snippet lists only your scanned canonical URL, so merge it into your existing sitemap instead of replacing it.</p><div style="margin:24px 0;display:flex;gap:12px;flex-wrap:wrap;"><a href="${downloadUrl}" style="background:#2563eb;color:#ffffff;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:bold;display:inline-block;">Download Core Fix-Pack</a><a href="${recheckUrl}" style="background:#0284c7;color:#ffffff;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:bold;display:inline-block;">Run Included Verification Recheck &rarr;</a></div><p style="font-size:13px;color:#64748b;">Or open this link: <a href="${downloadUrl}">${downloadUrl}</a></p><hr style="margin:24px 0;border:none;border-top:1px solid #e2e8f0;"/><p style="font-size:12px;color:#94a3b8;">${postalAddress}<br/><a href="${unsubUrl}">1-Click Unsubscribe / Data Erasure</a></p></div>`;
 
         await brevo.sendTransactionalEmail({
           to: [{ email: buyerEmail, name: businessName }],
@@ -15059,6 +15118,248 @@ const handleSiteAuditDeliverable = async (c: any) => {
 apiRouter.get('/tools/site-audit/:auditId/deliverable', handleSiteAuditDeliverable);
 apiRouter.get('/api/v1/tools/site-audit/:auditId/deliverable', handleSiteAuditDeliverable);
 
+const recheckInFlight = new Set<string>();
+const recheckResultCache = new Map<string, any>();
+
+/**
+ * Idempotent Post-Fix Verification Recheck for Paid/Fulfilled Orders (Spec Stage U)
+ * POST /api/v1/tools/site-audit/:auditId/recheck
+ * Re-scans the public URL once after developer applies the Fix-Pack and identifies checks
+ * that flipped from NEEDS_FIX (ISSUE/WARNING) to VERIFIED (PASS).
+ */
+const handleSiteAuditRecheck = async (c: any) => {
+  const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
+  const { getStableCheckId } = await import('../tools/site-audit/site-audit-scanner.js');
+  const { D1RevenueRepository } = await import('../db/d1-revenue-repository.js');
+  const d1Repo = D1RevenueRepository.getInstance();
+
+  const auditId = c.req.param('auditId');
+  let body: any = {};
+  try {
+    body = await c.req.json();
+  } catch {}
+  const token = c.req.query('token') || c.req.header('x-delivery-token') || body?.token || '';
+
+  const service = SiteAuditService.getInstance();
+  const priorAudit = await service.getAudit(auditId);
+  if (!priorAudit) {
+    return c.json({ success: false, error: 'AUDIT_NOT_FOUND: The requested auditId does not exist.' }, 404);
+  }
+
+  const verification = await service.verifyDeliveryToken(token, auditId);
+  if (!verification.valid) {
+    return c.json({
+      success: false,
+      error: `RECHECK_UNAUTHORIZED: ${verification.error || 'Valid paid entitlement token required for included verification recheck.'}`
+    }, 403);
+  }
+
+  // 1. Idempotency Check: Return already completed recheck result if present
+  if (recheckResultCache.has(auditId)) {
+    return c.json(recheckResultCache.get(auditId));
+  }
+  try {
+    const existingRow = await d1Repo.queryOne<any>(
+      'commercial_evidence',
+      "SELECT details_json FROM commercial_evidence WHERE request_reference = ? AND milestone = 'SITE_AUDIT_RECHECK' ORDER BY datetime(timestamp) DESC LIMIT 1",
+      [auditId]
+    );
+    if (existingRow && existingRow.details_json) {
+      const parsed = JSON.parse(existingRow.details_json);
+      recheckResultCache.set(auditId, parsed);
+      return c.json(parsed);
+    }
+  } catch (err) {
+    console.warn(`[SiteAuditRecheck] Existing row check notice:`, err);
+  }
+
+  // 2. Concurrency Claim: Atomically prevent multiple concurrent scans for the same audit
+  if (recheckResultCache.has(auditId)) {
+    return c.json(recheckResultCache.get(auditId));
+  }
+  if (recheckInFlight.has(auditId)) {
+    return c.json({
+      success: false,
+      error: 'RECHECK_IN_PROGRESS: Verification scan is currently in progress for this audit.'
+    }, 409);
+  }
+  recheckInFlight.add(auditId);
+
+  const claimId = `recheck_claim_${auditId}`;
+  try {
+    // Clean up expired in-flight claim (>120s old)
+    try {
+      await d1Repo.executeWrite(
+        'commercial_evidence',
+        "DELETE FROM commercial_evidence WHERE id = ? AND milestone = 'SITE_AUDIT_RECHECK_CLAIMED' AND datetime(timestamp) < datetime('now', '-120 seconds')",
+        [claimId]
+      );
+    } catch {}
+
+    const claimInsertSql = `
+      INSERT INTO commercial_evidence (
+        id, milestone, provider, external_id, timestamp, request_reference,
+        tenant_id, business_id, classification, verification_source, details_json
+      )
+      SELECT ?, 'SITE_AUDIT_RECHECK_CLAIMED', 'SITEFIX_AI', ?, datetime('now'), ?, 'org_owner_primary', 'biz_platform_aro', 'REAL', 'HTTP_PROBE', '{}'
+      WHERE NOT EXISTS (
+        SELECT 1 FROM commercial_evidence
+        WHERE id = ? AND milestone = 'SITE_AUDIT_RECHECK_CLAIMED'
+      )
+    `;
+
+    let claimAcquired = false;
+    try {
+      const claimRes = await d1Repo.executeWrite('commercial_evidence', claimInsertSql, [
+        claimId, priorAudit.url, auditId, claimId
+      ]);
+      const rowsAffected = (claimRes as any)?.rowsAffected ?? (claimRes as any)?.meta?.changes ?? 0;
+      claimAcquired = rowsAffected > 0;
+    } catch (claimErr: any) {
+      console.warn(`[SiteAuditRecheck] Failed to record in-flight claim:`, claimErr);
+      recheckInFlight.delete(auditId);
+      return c.json({
+        success: false,
+        error: `RECHECK_CLAIM_FAILED: Could not establish exclusive recheck lease (${claimErr.message}).`
+      }, 500);
+    }
+
+    if (!claimAcquired) {
+      recheckInFlight.delete(auditId);
+      return c.json({
+        success: false,
+        error: 'RECHECK_IN_PROGRESS: Verification scan is currently in progress for this audit.'
+      }, 409);
+    }
+
+    const rescanResult = await service.runScan(priorAudit.url);
+
+    // Compute flipped checks (checks that were ISSUE/WARNING/NEEDS_FIX in prior audit and are now PASS)
+    const priorDefectMap = new Map<string, any>();
+    for (const f of priorAudit.findings || []) {
+      if (f.status !== 'PASS') {
+        priorDefectMap.set(getStableCheckId(f), f);
+      }
+    }
+
+    const fixedChecks: any[] = [];
+    const remainingChecks: any[] = [];
+    const matchedPriorKeys = new Set<string>();
+
+    // Collect all checkIds that still have failing/non-PASS findings in the rescan
+    const failingRescanKeys = new Set<string>();
+    for (const f of rescanResult.findings || []) {
+      if (f.status !== 'PASS') {
+        failingRescanKeys.add(getStableCheckId(f));
+      }
+    }
+
+    for (const f of rescanResult.findings || []) {
+      const key = getStableCheckId(f);
+      if (priorDefectMap.has(key)) {
+        if (f.status === 'PASS') {
+          // If this key still has active failures elsewhere in the rescan, it is not fixed
+          if (!failingRescanKeys.has(key)) {
+            matchedPriorKeys.add(key);
+            const priorFinding = priorDefectMap.get(key);
+            fixedChecks.push({
+              checkId: key,
+              category: f.category,
+              title: priorFinding.title,
+              previousStatus: priorFinding.status,
+              currentStatus: 'VERIFIED',
+              recommendation: f.recommendation
+            });
+          }
+        } else {
+          matchedPriorKeys.add(key);
+          remainingChecks.push({
+            checkId: key,
+            category: f.category,
+            title: f.title,
+            currentStatus: f.status,
+            recommendation: f.recommendation
+          });
+        }
+      } else if (f.status !== 'PASS') {
+        // Any new or unmatched defect in the rescan must be reported as remaining
+        remainingChecks.push({
+          checkId: key,
+          category: f.category,
+          title: f.title,
+          currentStatus: f.status,
+          recommendation: f.recommendation
+        });
+      }
+    }
+
+    // Any prior defect whose key is absent from the rescan and was not matched to a PASS
+    for (const [key, priorDefect] of priorDefectMap.entries()) {
+      if (!matchedPriorKeys.has(key)) {
+        remainingChecks.push({
+          checkId: key,
+          category: priorDefect.category,
+          title: priorDefect.title,
+          currentStatus: priorDefect.status,
+          recommendation: priorDefect.recommendation
+        });
+      }
+    }
+
+    const responsePayload = {
+      success: true,
+      auditId,
+      url: priorAudit.url,
+      recheckAuditId: rescanResult.auditId,
+      recheckPassed: fixedChecks.length > 0 && remainingChecks.length === 0,
+      beforeScore: priorAudit.score,
+      afterScore: rescanResult.score,
+      fixedCount: fixedChecks.length,
+      remainingCount: remainingChecks.length,
+      fixedChecks,
+      remainingChecks
+    };
+
+    // Persist completion record to commercial_evidence in D1 for long-term durability and idempotency
+    const recId = `recheck_${auditId}_${Date.now()}`;
+    await d1Repo.executeWrite(
+      'commercial_evidence',
+      `INSERT INTO commercial_evidence (
+        id, milestone, provider, external_id, timestamp, request_reference,
+        tenant_id, business_id, classification, verification_source, details_json
+      ) VALUES (?, 'SITE_AUDIT_RECHECK', 'SITEFIX_AI', ?, datetime('now'), ?, 'org_owner_primary', 'biz_platform_aro', 'REAL', 'HTTP_PROBE', ?)`,
+      [recId, priorAudit.url, auditId, JSON.stringify(responsePayload)]
+    );
+
+    // Clean up claim row
+    try {
+      await d1Repo.executeWrite(
+        'commercial_evidence',
+        `DELETE FROM commercial_evidence WHERE id = ?`,
+        [claimId]
+      );
+    } catch {}
+
+    // Cache in memory for subsequent idempotent requests
+    recheckResultCache.set(auditId, responsePayload);
+
+    return c.json(responsePayload);
+  } catch (err: any) {
+    try {
+      await d1Repo.executeWrite(
+        'commercial_evidence',
+        `DELETE FROM commercial_evidence WHERE id = ?`,
+        [claimId]
+      );
+    } catch {}
+    return c.json({ success: false, error: `RECHECK_FAILED: ${err.message}` }, 500);
+  } finally {
+    recheckInFlight.delete(auditId);
+  }
+};
+apiRouter.post('/tools/site-audit/:auditId/recheck', handleSiteAuditRecheck);
+apiRouter.post('/api/v1/tools/site-audit/:auditId/recheck', handleSiteAuditRecheck);
+
 /**
  * Universal Offer & Fix-Pack Download via Cryptographic Delivery Token (Spec Stage P.3.2)
  */
@@ -15082,7 +15383,11 @@ const handleOfferDownload = async (c: any) => {
     const acceptHeader = c.req.header('accept') || '';
 
     if (format === 'json' || acceptHeader.includes('application/json')) {
-      return c.json({ success: true, deliverable });
+      return c.json({
+        success: true,
+        deliverable,
+        recheckUrl: `/tools/site-audit?auditId=${encodeURIComponent(verification.auditId)}&token=${encodeURIComponent(token)}&domain=${encodeURIComponent(deliverable.targetUrl || deliverable.canonicalUrlRecommendation || '')}`
+      });
     }
 
     const html = `<!DOCTYPE html>
@@ -15110,8 +15415,9 @@ const handleOfferDownload = async (c: any) => {
       <strong>Delivered At:</strong> ${new Date().toISOString()}
     </div>
     <p>Your technical diagnostic and automated patch pack is ready. You can inspect the deliverable below or download the raw JSON.</p>
-    <div style="margin: 1.5rem 0;">
+    <div style="margin: 1.5rem 0; display: flex; gap: 1rem; flex-wrap: wrap;">
       <a href="?format=json" class="btn">Download JSON Deliverable</a>
+      <a href="/tools/site-audit?auditId=${encodeURIComponent(verification.auditId)}&token=${encodeURIComponent(token)}&domain=${encodeURIComponent(deliverable.targetUrl || deliverable.canonicalUrlRecommendation || '')}" class="btn" style="background:#0284c7;">Run Included Verification Recheck &rarr;</a>
     </div>
     <h3>Executive Summary</h3>
     <p>${(deliverable as any).executiveSummary || 'Automated Technical Audit & Fix Pack'}</p>

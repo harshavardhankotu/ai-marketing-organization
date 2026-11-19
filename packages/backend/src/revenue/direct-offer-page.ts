@@ -44,6 +44,280 @@ export function computeOwnOfferHash(customFilePath?: string): string | null {
   }
 }
 
+/**
+ * Computes SHA-256 digest specifically for owner/DIRECT_OFFER.md (Lane B B2B Offer).
+ * Cross-product invariant: Strictly rejects owner/OWN_OFFER.md (which belongs to SiteFix ₹499).
+ */
+export function resolveDirectOfferPath(customFilePath?: string): string | null {
+  try {
+    let filePath = customFilePath;
+    if (filePath && path.basename(filePath).toLowerCase().includes('own_offer')) {
+      return null;
+    }
+    if (filePath && !fs.existsSync(filePath)) {
+      filePath = undefined;
+    }
+    if (!filePath) {
+      const candidates = [
+        path.resolve(process.cwd(), 'owner', 'DIRECT_OFFER.md'),
+        path.resolve(process.cwd(), '..', 'owner', 'DIRECT_OFFER.md'),
+        path.resolve(process.cwd(), '..', '..', 'owner', 'DIRECT_OFFER.md')
+      ];
+      filePath = candidates.find(c => fs.existsSync(c));
+    }
+    return (filePath && fs.existsSync(filePath)) ? filePath : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface DirectOfferTerms {
+  offerId: string;
+  title: string;
+  priceRaw: string;
+  setupPriceINR: number | null;
+  monthlyPriceINR: number | null;
+  isPayable: boolean;
+  targetAudience: string;
+  billingModel: string;
+}
+
+function parseSinglePayableAmount(raw: string, type: 'setup' | 'monthly'): number | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  // Reject ranges, ambiguous markers, alternative conjunctions, and disclaimers
+  if (/\b(tbd|variable|quote|custom|scope dependent|contact|or|and)\b/i.test(trimmed)) return null;
+  if (/\bto\b|[–—]|\d\s*-\s*\d/i.test(trimmed)) return null;
+  // If slash is present, only allow /month or /mo
+  if (/\/(?!month\b|mo\b)/i.test(trimmed)) return null;
+
+  // Reject strings containing multiple numeric figures (e.g. '₹15,000 or ₹25,000')
+  const allNumberMatches = trimmed.match(/\d[\d,]*(?:\.\d{1,2})?/g);
+  if (!allNumberMatches || allNumberMatches.length !== 1) {
+    return null;
+  }
+
+  // Validate complete supported expression with strict boundary
+  const regex = type === 'setup'
+    ? /^(?:₹|INR|Rs\.?)?\s*(\d[\d,]*(?:\.\d{1,2})?)(?:\s*(?:Setup|One[- ]time|Deposit))?$/i
+    : /^(?:₹|INR|Rs\.?)?\s*(\d[\d,]*(?:\.\d{1,2})?)(?:\s*(?:\/(?:month|mo)|per month|monthly|retainer))?$/i;
+
+  const match = trimmed.match(regex);
+  if (!match) return null;
+
+  const rawNum = match[1];
+  if (rawNum.includes(',')) {
+    // Validate comma grouping: reject invalid comma patterns like 15,,000, 15,00, leading/trailing commas
+    const intPart = rawNum.split('.')[0];
+    const isValidIndian = /^\d{1,2}(,\d{2})*,\d{3}$/.test(intPart);
+    const isValidWestern = /^\d{1,3}(,\d{3})+$/.test(intPart);
+    if (!isValidIndian && !isValidWestern) {
+      return null;
+    }
+  }
+
+  const parsed = parseFloat(rawNum.replace(/,/g, ''));
+  if (Number.isNaN(parsed) || parsed <= 0) return null;
+  return parsed;
+}
+
+export function parseDirectOfferTerms(customFilePath?: string, offerContent?: string | null): DirectOfferTerms {
+  let content = offerContent;
+  if (offerContent !== undefined) {
+    if (offerContent === null) {
+      return {
+        offerId: 'PLATFORM_SETUP',
+        title: 'AI Inbound Lead Conversion System — Day 0-5 Setup & Integration',
+        priceRaw: 'TBD',
+        setupPriceINR: null,
+        monthlyPriceINR: null,
+        isPayable: false,
+        targetAudience: 'Indian local service businesses and professional firms.',
+        billingModel: 'TBD'
+      };
+    }
+  } else {
+    try {
+      const filePath = resolveDirectOfferPath(customFilePath);
+      if (!filePath) {
+        return {
+          offerId: 'PLATFORM_SETUP',
+          title: 'AI Inbound Lead Conversion System — Day 0-5 Setup & Integration',
+          priceRaw: 'TBD',
+          setupPriceINR: null,
+          monthlyPriceINR: null,
+          isPayable: false,
+          targetAudience: 'Indian local service businesses and professional firms.',
+          billingModel: 'TBD'
+        };
+      }
+      content = fs.readFileSync(filePath, 'utf8');
+    } catch {
+      return {
+        offerId: 'PLATFORM_SETUP',
+        title: 'AI Inbound Lead Conversion System — Day 0-5 Setup & Integration',
+        priceRaw: 'TBD',
+        setupPriceINR: null,
+        monthlyPriceINR: null,
+        isPayable: false,
+        targetAudience: 'Indian local service businesses and professional firms.',
+        billingModel: 'TBD'
+      };
+    }
+  }
+
+  if (!content) {
+    return {
+      offerId: 'PLATFORM_SETUP',
+      title: 'AI Inbound Lead Conversion System — Day 0-5 Setup & Integration',
+      priceRaw: 'TBD',
+      setupPriceINR: null,
+      monthlyPriceINR: null,
+      isPayable: false,
+      targetAudience: 'Indian local service businesses and professional firms.',
+      billingModel: 'TBD'
+    };
+  }
+
+  const priceMatches = [...content.matchAll(/\*\*Price:\*\*\s*(.+)/gi)];
+  const monthlyMatches = [...content.matchAll(/\*\*(?:Monthly Price|Monthly Retainer):\*\*\s*(.+)/gi)];
+
+  const titleMatch = content.match(/\*\*Full Title:\*\*\s*(.+)/i);
+  const title = titleMatch ? titleMatch[1].trim() : 'AI Inbound Lead Conversion System — Day 0-5 Setup & Integration';
+
+  const audienceMatch = content.match(/\*\*Target Audience:\*\*\s*(.+)/i);
+  const targetAudience = audienceMatch ? audienceMatch[1].trim() : 'Indian local service businesses and professional firms.';
+
+  const billingMatch = content.match(/\*\*Billing Model:\*\*\s*(.+)/i);
+  const billingModel = billingMatch ? billingMatch[1].trim() : 'TBD';
+
+  // Require exactly one setup price field and at most one monthly price field. Reject conflicting or duplicate declarations.
+  if (priceMatches.length !== 1 || monthlyMatches.length > 1) {
+    return {
+      offerId: 'PLATFORM_SETUP',
+      title,
+      priceRaw: priceMatches.length > 1 ? 'CONFLICTING' : (priceMatches[0] ? priceMatches[0][1].trim() : 'TBD'),
+      setupPriceINR: null,
+      monthlyPriceINR: null,
+      isPayable: false,
+      targetAudience,
+      billingModel
+    };
+  }
+
+  const priceRaw = priceMatches[0][1].trim();
+  const numericPrice = parseSinglePayableAmount(priceRaw, 'setup');
+  const isPayable = numericPrice !== null;
+
+  let monthlyPriceINR: number | null = null;
+  if (monthlyMatches.length === 1) {
+    monthlyPriceINR = parseSinglePayableAmount(monthlyMatches[0][1].trim(), 'monthly');
+  }
+
+  return {
+    offerId: 'PLATFORM_SETUP',
+    title,
+    priceRaw,
+    setupPriceINR: isPayable ? numericPrice : null,
+    monthlyPriceINR,
+    isPayable,
+    targetAudience,
+    billingModel
+  };
+}
+
+export function computeDirectOfferHash(customFilePath?: string): string | null {
+  try {
+    const filePath = resolveDirectOfferPath(customFilePath);
+    if (!filePath) {
+      return null;
+    }
+    const content = fs.readFileSync(filePath);
+    return crypto.createHash('sha256').update(content).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Generates an order reference ID for payment tracking.
+ * When amountINR is supplied, cryptographically binds the order reference to the exact price
+ * displayed to the buyer at render time, ensuring stale-price claims are honored if the offer is later repriced.
+ */
+export function generateOrderReference(prefix: string = 'LCS', amountINR?: number): string {
+  const dateStr = new Date().toISOString().slice(2, 10).replace(/-/g, ''); // 6 chars: YYMMDD
+  const rand = Math.random().toString(36).substring(2, 6).toUpperCase(); // 4 chars
+  const secret = process.env.SITE_AUDIT_SIGNING_SECRET || process.env.AUTH_SECRET;
+  if (amountINR && amountINR > 0) {
+    if (!secret) {
+      throw new Error('Cannot issue payable order reference without SITE_AUDIT_SIGNING_SECRET or AUTH_SECRET configured');
+    }
+    const amountStr = amountINR % 1 === 0 ? String(Math.round(amountINR)) : amountINR.toFixed(2);
+    const hmac = crypto.createHmac('sha256', secret)
+      .update(`${prefix}:${amountStr}:${dateStr}:${rand}`)
+      .digest('hex')
+      .slice(0, 6)
+      .toUpperCase();
+    return `${prefix}-${amountStr}-${dateStr}-${rand}-${hmac}`;
+  }
+  const fullDate = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const fallbackRand = Math.random().toString(36).substring(2, 7).toUpperCase();
+  return `${prefix}-${fullDate}-${fallbackRand}`;
+}
+
+/**
+ * Verifies an authentic HMAC-signed order reference and extracts the issued snapshot amount.
+ */
+export function verifyIssuedOrderReference(
+  ref: string
+): { valid: boolean; amountINR: number; prefix: string; paise: number; boundOfferId: string | null } | null {
+  if (!ref || typeof ref !== 'string') return null;
+  const parts = ref.trim().split('-');
+  if (parts.length !== 5) return null;
+  const [prefix, amountStr, dateStr, rand, hmac] = parts;
+  if (!/^[A-Z0-9]+$/i.test(prefix) || !/^\d{6}$/.test(dateStr) || !/^[A-Z0-9]+$/i.test(rand) || !/^[A-F0-9]+$/i.test(hmac)) {
+    return null;
+  }
+  if (!/^\d+(?:\.\d{1,2})?$/.test(amountStr)) {
+    return null;
+  }
+  const amountINR = parseFloat(amountStr);
+  if (Number.isNaN(amountINR) || amountINR <= 0) return null;
+  const paise = Math.round(amountINR * 100);
+
+  const secret = process.env.SITE_AUDIT_SIGNING_SECRET || process.env.AUTH_SECRET;
+  if (!secret) return null;
+
+  const expectedHmac = crypto.createHmac('sha256', secret)
+    .update(`${prefix}:${amountStr}:${dateStr}:${rand}`)
+    .digest('hex')
+    .slice(0, 6)
+    .toUpperCase();
+
+  let isHmacValid = hmac.toUpperCase() === expectedHmac;
+  if (!isHmacValid && amountINR % 1 === 0) {
+    const altAmountStr = amountStr.includes('.') ? String(Math.round(amountINR)) : `${amountINR}.00`;
+    const altHmac = crypto.createHmac('sha256', secret)
+      .update(`${prefix}:${altAmountStr}:${dateStr}:${rand}`)
+      .digest('hex')
+      .slice(0, 6)
+      .toUpperCase();
+    if (hmac.toUpperCase() === altHmac) {
+      isHmacValid = true;
+    }
+  }
+
+  if (!isHmacValid) {
+    return null;
+  }
+
+  const boundOfferId = prefix.toUpperCase() === 'LCM'
+    ? 'PLATFORM_MONTHLY'
+    : (prefix.toUpperCase() === 'LCS' ? 'PLATFORM_SETUP' : null);
+
+  return { valid: true, amountINR, prefix, paise, boundOfferId };
+}
+
 export interface OfferPageConfig {
   siteName?: string;
   siteUrl?: string;
@@ -70,12 +344,34 @@ function escapeMetaAttr(val: string): string {
     .replace(/>/g, '&gt;');
 }
 
+function escapeHtml(val: string): string {
+  return String(val)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 export class DirectCommercialOfferPage {
   private static instance: DirectCommercialOfferPage;
   private d1Repo = D1RevenueRepository.getInstance();
 
   public static computeOwnOfferHash(customFilePath?: string): string | null {
     return computeOwnOfferHash(customFilePath);
+  }
+
+  public static computeDirectOfferHash(customFilePath?: string): string | null {
+    return computeDirectOfferHash(customFilePath);
+  }
+
+  public static readDirectOfferFileSnapshot(customFilePath?: string): string | null {
+    const filePath = resolveDirectOfferPath(customFilePath);
+    if (!filePath) return null;
+    try {
+      return fs.readFileSync(filePath, 'utf8');
+    } catch {
+      return null;
+    }
   }
 
   public static getInstance(): DirectCommercialOfferPage {
@@ -87,17 +383,25 @@ export class DirectCommercialOfferPage {
 
   /**
    * P0 Safety Gate: Checks whether Lane B commercial terms have been explicitly attested by the owner.
-   * /offer opens only when Render env DIRECT_OFFER_TERMS_SHA256 equals SHA-256 of owner/OWN_OFFER.md.
-   * Any file edit to owner/OWN_OFFER.md alters the hash and closes the page immediately.
+   * /offer opens only when DIRECT_OFFER_TERMS_ATTESTED is 'true'
+   * and DIRECT_OFFER_TERMS_SHA256 equals SHA-256 of owner/DIRECT_OFFER.md.
+   * Any file edit to owner/DIRECT_OFFER.md alters the hash and closes the page immediately.
+   * Cross-product isolation: SiteFix owner/OWN_OFFER.md can NEVER unlock Lane B direct offers.
    */
-  public static isDirectOfferAttested(customFilePath?: string): boolean {
-    // Step 2e: DIRECT_OFFER_TERMS_SHA256 counts as valid ONLY when OWN_OFFER_CONFIRMED=true is set by the owner script.
-    // A hash match proves the page equals the file; it does not prove that the owner approved it without explicit confirmation.
-    const isConfirmed = (process.env.OWN_OFFER_CONFIRMED || '').trim().toLowerCase() === 'true';
-    if (!isConfirmed) {
+  public static isDirectOfferAttested(customFilePath?: string, offerContent?: string | null): boolean {
+    const isAttested = (process.env.DIRECT_OFFER_TERMS_ATTESTED || '').trim().toLowerCase() === 'true';
+    if (!isAttested) {
       return false;
     }
-    const computedHash = computeOwnOfferHash(customFilePath);
+    let computedHash: string | null = null;
+    if (offerContent !== undefined) {
+      if (offerContent === null) {
+        return false;
+      }
+      computedHash = crypto.createHash('sha256').update(Buffer.from(offerContent, 'utf8')).digest('hex');
+    } else {
+      computedHash = computeDirectOfferHash(customFilePath);
+    }
     if (!computedHash) {
       return false;
     }
@@ -147,29 +451,50 @@ export class DirectCommercialOfferPage {
   }
 
   /**
-   * Generates a deterministic order reference ID for payment tracking.
+   * Generates a deterministic, HMAC-signed order reference ID for payment tracking.
+   * When amountINR is supplied, cryptographically binds the order reference to the exact price
+   * displayed to the buyer at render time, ensuring stale-price claims are honored if the offer is later repriced.
    */
-  public generateOrderReference(prefix: string = 'LCS'): string {
-    const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-    const rand = Math.random().toString(36).substring(2, 7).toUpperCase();
-    return `${prefix}-${dateStr}-${rand}`;
+  public generateOrderReference(prefix: string = 'LCS', amountINR?: number): string {
+    return generateOrderReference(prefix, amountINR);
+  }
+
+  public static generateOrderReference(prefix: string = 'LCS', amountINR?: number): string {
+    return generateOrderReference(prefix, amountINR);
+  }
+
+  public static verifyIssuedOrderReference(ref: string): { valid: boolean; amountINR: number; prefix: string; paise: number; boundOfferId: string | null } | null {
+    return verifyIssuedOrderReference(ref);
   }
 
   /**
    * Renders the HTML offer page.
    * If commercial terms are un-attested, renders a safe informational overview with zero payment links.
    */
-  public renderOfferHtml(config: Partial<OfferPageConfig> = {}, customOfferPath?: string): string {
-    const isAttested = DirectCommercialOfferPage.isDirectOfferAttested(customOfferPath);
+  public renderOfferHtml(config: Partial<OfferPageConfig> = {}, customOfferPath?: string, directOfferContent?: string): string {
     const siteName = config.siteName || (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
     const siteUrl = config.siteUrl || (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').trim();
     const contactEmail = config.contactEmail || (process.env.PUBLIC_CONTACT_EMAIL ? process.env.PUBLIC_CONTACT_EMAIL.trim() : null);
+
+    let offerContent: string | undefined = directOfferContent;
+    if (offerContent === undefined) {
+      const filePath = resolveDirectOfferPath(customOfferPath);
+      if (filePath) {
+        try {
+          offerContent = fs.readFileSync(filePath, 'utf8');
+        } catch {
+          return this.renderUnattestedOverviewHtml(siteName, siteUrl, contactEmail);
+        }
+      }
+    }
+
+    const isAttested = DirectCommercialOfferPage.isDirectOfferAttested(customOfferPath, offerContent);
 
     if (!isAttested) {
       return this.renderUnattestedOverviewHtml(siteName, siteUrl, contactEmail);
     }
 
-    return this.renderAttestedOfferHtml(siteName, siteUrl, contactEmail, config);
+    return this.renderAttestedOfferHtml(siteName, siteUrl, contactEmail, config, customOfferPath, offerContent);
   }
 
   /**
@@ -177,7 +502,21 @@ export class DirectCommercialOfferPage {
    * for Indian healthcare and local practices, with cleanly segregated consumer affiliate links.
    */
   public renderHomepageHtml(config: Partial<OfferPageConfig> = {}): string {
-    const isAttested = DirectCommercialOfferPage.isDirectOfferAttested();
+    const snapshot = DirectCommercialOfferPage.readDirectOfferFileSnapshot();
+    const isAttested = snapshot !== null && DirectCommercialOfferPage.isDirectOfferAttested(undefined, snapshot);
+    const parsedTerms = snapshot !== null ? parseDirectOfferTerms(undefined, snapshot) : {
+      offerId: 'PLATFORM_SETUP',
+      title: 'AI Inbound Lead Conversion System — Day 0-5 Setup & Integration',
+      priceRaw: 'TBD',
+      setupPriceINR: null,
+      monthlyPriceINR: null,
+      isPayable: false,
+      targetAudience: 'Indian local service businesses and professional firms.',
+      billingModel: 'TBD'
+    };
+    const setupPriceDisplay = (isAttested && parsedTerms.isPayable && parsedTerms.setupPriceINR)
+      ? `Custom proposal reviewed and approved directly by the human owner (₹${parsedTerms.setupPriceINR.toLocaleString('en-IN')} one-time setup).`
+      : 'Custom Pilot Pricing — Request Scope &amp; Attested Quote';
     const siteName = config.siteName || (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
     const siteUrl = config.siteUrl || (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').trim();
     const contactEmail = config.contactEmail || (process.env.PUBLIC_CONTACT_EMAIL ? process.env.PUBLIC_CONTACT_EMAIL.trim() : null);
@@ -195,8 +534,8 @@ export class DirectCommercialOfferPage {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Administrative Website &amp; WhatsApp Inquiry Capture | ${siteName}</title>
-  <meta name="description" content="Turn after-hours patient inquiries into booked appointments. Administrative Website &amp; WhatsApp Inquiry Capture, Instant Triage Summary, and Appointment Request Logging for Indian healthcare and dental practices.">
+  <title>SiteFix AI — Free Website SEO Audit &amp; Fair-Price Deals India</title>
+  <meta name="description" content="Run a free technical website scan and get ready-to-paste SEO &amp; Schema fixes for ₹499, or compare verified fair-price deals in India.">
   <link rel="canonical" href="${siteUrl}/">
   <link rel="alternate" type="application/rss+xml" title="Verified Commercial Deals RSS Feed" href="/feeds/deals.xml">
   <meta name="robots" content="index, follow">
@@ -330,32 +669,60 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
   <nav class="top-nav">
     <a href="/" class="brand">${siteName}</a>
     <div class="nav-links">
-      <a href="/" class="active">After-Hours Lead Capture</a>
-      <a href="/tools/site-audit">SiteFix AI Audit</a>
-      <a href="/offer">Commercial Overview</a>
-      <a href="#interactive-demo">Interactive Demo</a>
+      <a href="/" class="active">Home</a>
+      <a href="/tools/site-audit">SiteFix AI Audit (₹499)</a>
+      <a href="/deals">Verified Deals &amp; Price Drops</a>
       <a href="/revenue">Revenue Funnel</a>
-      <a href="/deals">Consumer Deals</a>
-      <a href="/guides/student-flight-discounts-india">Travel Guides</a>
+      <a href="/offer">Commercial Overview</a>
+      <a href="/privacy">Privacy Policy</a>
+      <a href="/terms">Terms</a>
     </div>
   </nav>
 
   <div class="container">
     <header class="hero">
-      <div class="status-badge">Administrative After-Hours Lead Capture • India First</div>
-      <h1>Never Lose Another Evening Customer Inquiry</h1>
+      <div class="status-badge">₹0 Paid Acquisition • Live Verified Offers</div>
+      <h1>Website Technical Launch Check &amp; Developer Fix-Pack — ₹499</h1>
       <p class="subtitle">
-        Administrative Website &amp; WhatsApp Inquiry Capture, Message Logging, and Callback Request System for local Indian practices, clinics, and professional services.
+        Run a free public HTML, metadata, Schema.org JSON-LD, robots.txt, and sitemap check before client handover. Unlock ready-to-paste fix files + 1 post-fix verification recheck for ₹499.
       </p>
       <div class="cta-group">
-        <a href="#interactive-demo" class="btn btn-primary">Try Interactive Demo</a>
-        <a href="#inquiry-card" class="btn btn-secondary">Request Practice Walkthrough</a>
+        <a href="/tools/site-audit" class="btn btn-primary">Run Free Technical Website Scan &rarr;</a>
+        <a href="/deals" class="btn btn-secondary">Browse Verified Fair-Price Deals &rarr;</a>
       </div>
     </header>
 
-    <!-- The Problem Section -->
-    <div class="card">
-      <h2>The Problem: The 8 PM to 8 AM Inquiry Gap</h2>
+    <!-- Section 1: SiteFix AI — Self-Serve Technical Website Audit -->
+    <div class="card" id="sitefix-audit" style="border-color: #06b6d4; background: linear-gradient(180deg, #111827 0%, #0b1120 100%);">
+      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem;">
+        <h2 style="margin: 0; font-size: 1.35rem; color: #fff;">SiteFix AI — Self-Serve Website &amp; Metadata Check</h2>
+        <span class="sample-badge" style="background: rgba(6, 182, 212, 0.15); color: #38bdf8; border-color: rgba(6, 182, 212, 0.3);">Self-Serve SiteFix Core Technical Fix-Pack</span>
+      </div>
+      <p style="color: #cbd5e1; font-size: 0.95rem; margin-bottom: 1.25rem;">
+        Inspect deterministic HTML syntax, <code>&lt;head&gt;</code> metadata tags, <code>Schema.org</code> JSON-LD markup, <code>robots.txt</code>, <code>sitemap.xml</code>, and security headers on your public URL. When live PageSpeed API access is configured and within quota, mobile speed metrics are shown; otherwise PageSpeed metrics are marked <code>UNAVAILABLE</code>. Outputs are deterministic technical observations with zero ranking or clinical guarantees.
+      </p>
+      <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
+        <a href="/tools/site-audit" class="btn btn-primary" style="font-size: 0.9rem; text-decoration: none;">
+          Run Free Website Audit &rarr;
+        </a>
+        <a href="/tools/lead-leakage-calculator" class="btn btn-secondary" style="font-size: 0.9rem; text-decoration: none;">
+          Calculate Lead Leakage Cost &rarr;
+        </a>
+        <a href="/audit/attagalatta.com" class="btn btn-secondary" style="font-size: 0.85rem; text-decoration: none;">
+          Sample Audit: attagalatta.com &rarr;
+        </a>
+        <a href="/audit/roasterycoffee.co.in" class="btn btn-secondary" style="font-size: 0.85rem; text-decoration: none;">
+          Sample Audit: roasterycoffee.co.in &rarr;
+        </a>
+      </div>
+    </div>
+
+    <!-- Section 1: Administrative Lead Capture -->
+    <div class="card" id="b2b-lead-capture">
+      <h2>Administrative Website &amp; WhatsApp Inquiry Capture</h2>
+      <h3 style="color: #cbd5e1; font-size: 1.15rem; margin-top: 0.5rem; margin-bottom: 1rem;">
+        Administrative After-Hours Lead Capture: Never Lose Another Evening Customer Inquiry — The 8 PM to 8 AM Inquiry Gap
+      </h3>
       <p style="color: #cbd5e1; font-size: 1.05rem; margin-bottom: 1.5rem;">
         Indian dental clinics and local practices lose prospective clients every evening because inquiries arrive outside reception working hours.
       </p>
@@ -445,7 +812,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
         <div>
           <h3 style="color: #38bdf8; font-size: 1.2rem; margin-bottom: 0.5rem;">Introductory Pilot Implementation</h3>
           <p style="color: #cbd5e1; font-size: 0.95rem; margin-bottom: 0.75rem;">
-            <strong>Setup Investment:</strong> ${isAttested ? 'Custom proposal reviewed and approved directly by the human owner (₹15,000 one-time setup).' : 'Custom Pilot Pricing — Request Scope &amp; Attested Quote'}
+            <strong>Setup Investment:</strong> ${setupPriceDisplay}
           </p>
           <p style="color: #94a3b8; font-size: 0.9rem;">
             Includes full workflow configuration, prompt tuning, Google Calendar synchronization, receptionist training, and 14-day handover monitoring.
@@ -510,32 +877,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
       </form>
     </div>
 
-    <!-- Section 2: SiteFix AI — Self-Serve Technical Website Audit -->
-    <div class="card" id="sitefix-audit" style="border-color: #06b6d4; background: linear-gradient(180deg, #111827 0%, #0b1120 100%);">
-      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem;">
-        <h2 style="margin: 0; font-size: 1.35rem; color: #fff;">SiteFix AI — Self-Serve Website &amp; Metadata Check</h2>
-        <span class="sample-badge" style="background: rgba(6, 182, 212, 0.15); color: #38bdf8; border-color: rgba(6, 182, 212, 0.3);">Self-Serve SiteFix Core Technical Fix-Pack</span>
-      </div>
-      <p style="color: #cbd5e1; font-size: 0.95rem; margin-bottom: 1.25rem;">
-        Inspect deterministic HTML syntax, <code>&lt;head&gt;</code> metadata tags, <code>Schema.org</code> JSON-LD markup, <code>robots.txt</code>, <code>sitemap.xml</code>, and security headers on your public URL. When live PageSpeed API access is configured and within quota, mobile speed metrics are shown; otherwise PageSpeed metrics are marked <code>UNAVAILABLE</code>. Outputs are deterministic technical observations with zero ranking or clinical guarantees.
-      </p>
-      <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
-        <a href="/tools/site-audit" class="btn btn-primary" style="font-size: 0.9rem; text-decoration: none;">
-          Run Free Website Audit &rarr;
-        </a>
-        <a href="/tools/lead-leakage-calculator" class="btn btn-secondary" style="font-size: 0.9rem; text-decoration: none;">
-          Calculate Lead Leakage Cost &rarr;
-        </a>
-        <a href="/audit/attagalatta.com" class="btn btn-secondary" style="font-size: 0.85rem; text-decoration: none;">
-          Sample Audit: attagalatta.com &rarr;
-        </a>
-        <a href="/audit/roasterycoffee.co.in" class="btn btn-secondary" style="font-size: 0.85rem; text-decoration: none;">
-          Sample Audit: roasterycoffee.co.in &rarr;
-        </a>
-      </div>
-    </div>
-
-    <!-- Section 3: Commercial Deals & Buyer Guides (Consumer Shopper Journey) -->
+    <!-- Section 2: Commercial Deals & Buyer Guides (Consumer Shopper Journey) -->
     <div class="card" id="consumer-deals" style="border-color: #334155; background: #0b1120;">
       <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem;">
         <h2 style="font-size: 1.3rem; color: #fff; margin: 0;">Commercial Consumer Deals &amp; Buying Guides — Observed Merchant Price Snapshots (#Ad)</h2>
@@ -634,7 +976,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
       <strong>#Ad Statutory Affiliate Disclosure &amp; Commercial Terms:</strong> Consumer buying guides and commercial deal directories on this platform may contain tracked affiliate links to authorized partner programs. When visitors make qualifying purchases through those links, we may receive an affiliate commission at zero additional cost to the purchaser. Always verify live pricing and terms on the merchant's checkout page. Our B2B direct administrative lead capture service and SiteFix AI technical checks are separate professional offerings.
     </p>
     <p style="margin-top: 0.75rem;">
-      <a href="/privacy">Privacy Policy</a> • <a href="/revenue">Revenue Funnel</a> • <a href="/offer">Service Overview</a> • <a href="/deals">Deals</a> • <a href="/public/disclosure">Affiliate Disclosure</a> • ${contactEmail ? `Contact: <a href="mailto:${contactEmail}">${contactEmail}</a>` : 'Contact: Inquiries via Form'}
+      <a href="/">Home</a> • <a href="/tools/site-audit">SiteFix AI Audit</a> • <a href="/deals">Verified Deals</a> • <a href="/revenue">Revenue Funnel</a> • <a href="/offer">Commercial Overview</a> • <a href="/privacy">Privacy Policy</a> • <a href="/terms">Terms</a> • <a href="/public/disclosure">Affiliate Disclosure</a> • ${contactEmail ? `Contact: <a href="mailto:${contactEmail}">${contactEmail}</a>` : 'Contact: Inquiries via Form'}
     </p>
   </footer>
 
@@ -1397,17 +1739,24 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
     siteName: string,
     siteUrl: string,
     contactEmail: string | null,
-    config: Partial<OfferPageConfig>
+    config: Partial<OfferPageConfig>,
+    customOfferPath?: string,
+    offerContent?: string
   ): string {
+    const terms = parseDirectOfferTerms(customOfferPath, offerContent);
     const upiVpa = config.upiVpa || process.env.OWNER_UPI_VPA || process.env.PLATFORM_UPI_VPA || null;
     const razorpayUrl = config.razorpayMeUrl || process.env.OWNER_RAZORPAY_ME_URL || process.env.PLATFORM_RAZORPAY_ME_URL || null;
     const whatsappNum = (config.contactPhone || process.env.OWNER_WHATSAPP_NUMBER || process.env.PUBLIC_WHATSAPP_NUMBER || '').replace(/[^0-9]/g, '');
-    const orderRef = this.generateOrderReference('LCS');
 
-    const setupPriceINR = 15000;
-    const monthlyPriceINR = 8000;
+    const setupPriceINR = terms.setupPriceINR;
+    const monthlyPriceINR = terms.monthlyPriceINR;
+    const hasSigningSecret = Boolean(process.env.SITE_AUDIT_SIGNING_SECRET || process.env.AUTH_SECRET);
+    const isPayable = terms.isPayable && setupPriceINR !== null && hasSigningSecret;
+    const orderRefSetup = isPayable ? this.generateOrderReference('LCS', setupPriceINR) : this.generateOrderReference('LCS');
+    const orderRefMonthly = (isPayable && monthlyPriceINR) ? this.generateOrderReference('LCM', monthlyPriceINR) : null;
+    const orderRef = orderRefSetup;
 
-    const upiUri = upiVpa
+    const upiUri = (upiVpa && isPayable && setupPriceINR)
       ? `upi://pay?pa=${encodeURIComponent(upiVpa)}&pn=${encodeURIComponent(siteName)}&am=${setupPriceINR}&tr=${encodeURIComponent(orderRef)}&cu=INR&tn=${encodeURIComponent(`Platform Setup Ref ${orderRef}`)}`
       : null;
 
@@ -1547,7 +1896,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
         <h2 class="tier-name">Day 0–5 Setup &amp; Integration</h2>
         <p class="tier-desc">Complete setup, qualification rules, and 24/7 lead conversion activation. Delivery Time: 5 Business Days.</p>
         <div class="price-box">
-          <span class="price-amount">₹${setupPriceINR.toLocaleString('en-IN')}</span>
+          <span class="price-amount">${isPayable && setupPriceINR !== null ? `₹${setupPriceINR.toLocaleString('en-IN')}` : 'TBD (Owner Scope)'}</span>
           <span class="price-period">one-time investment (5-day delivery)</span>
         </div>
         <ul class="feature-list">
@@ -1557,8 +1906,8 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
           <li>✓ Direct calendar booking integration</li>
           <li>✓ Live system handover report &amp; staff walkthrough</li>
         </ul>
-        ${upiUri ? `<a href="${upiUri}" class="btn">Pay ₹${setupPriceINR.toLocaleString('en-IN')} via UPI</a>` : ''}
-        ${razorpayUrl ? `<a href="${razorpayUrl}" class="btn btn-secondary" target="_blank" rel="noopener">Pay via Razorpay</a>` : ''}
+        ${(upiUri && isPayable && setupPriceINR !== null) ? `<a href="${upiUri}" class="btn">Pay ₹${setupPriceINR.toLocaleString('en-IN')} via UPI</a>` : ''}
+        ${(isPayable && setupPriceINR !== null) ? `<a href="#verified-payment-options" onclick="createDynamicLink('PLATFORM_SETUP', 'Day 0-5 Setup', ${setupPriceINR})" class="btn btn-secondary">Pay via Razorpay</a>` : ''}
       </div>
 
       <!-- Tier 2 -->
@@ -1566,7 +1915,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
         <h2 class="tier-name">Monthly Retainer &amp; SLA</h2>
         <p class="tier-desc">Continuous triage optimization, reminder workflows, and monthly conversion reporting. Continuous 30-day service.</p>
         <div class="price-box">
-          <span class="price-amount">₹${monthlyPriceINR.toLocaleString('en-IN')}</span>
+          <span class="price-amount">${isPayable && monthlyPriceINR !== null ? `₹${monthlyPriceINR.toLocaleString('en-IN')}` : 'TBD (Owner Scope)'}</span>
           <span class="price-period">/ month (cancel anytime)</span>
         </div>
         <ul class="feature-list">
@@ -1579,8 +1928,25 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
       </div>
     </div>
 
-    <!-- Verified Payment Methods: Method A (Razorpay Dynamic Link) & Method B (Attached UPI QR) -->
-    <div style="background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 16px; padding: 2rem; margin-bottom: 2.5rem;">
+    <!-- Verified Payment Options or Attested Pending Pricing Notice -->
+    ${!isPayable ? `
+    <div style="background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 16px; padding: 2.5rem 2rem; margin-bottom: 2.5rem; text-align: center;">
+      <h2 style="font-size: 1.45rem; color: #38bdf8; margin-bottom: 0.5rem;">Commercial Terms Attested — ${!hasSigningSecret ? 'Payment Verification Key Not Configured' : 'Pricing Pending Definition'}</h2>
+      <p style="color: var(--text-muted); font-size: 0.95rem; max-width: 620px; margin: 0.5rem auto 1.5rem;">
+        ${!hasSigningSecret
+          ? 'Payment gateway signature secret is not configured in this environment. Online checkout and automated UPI claims remain safely disabled.'
+          : `The human owner has attested direct commercial terms in <code>owner/DIRECT_OFFER.md</code>. However, final implementation pricing remains <strong>${escapeHtml(terms.priceRaw)}</strong>. Online payment checkout and automated UPI claims remain suppressed until explicit numeric pricing is configured by the owner.`}
+      </p>
+      ${whatsappNum ? `
+      <a href="https://wa.me/${whatsappNum}?text=${encodeURIComponent('Hi, I would like to request custom scope details for the AI Lead Conversion System.')}" class="btn" style="display: inline-block;" target="_blank" rel="noopener">Request Custom Scope via WhatsApp &rarr;</a>
+      ` : (contactEmail ? `
+      <a href="mailto:${contactEmail}?subject=${encodeURIComponent('AI Lead Conversion System — Custom Scope Request')}" class="btn" style="display: inline-block;">Request Custom Scope via Email &rarr;</a>
+      ` : `
+      <a href="/tools/site-audit" class="btn" style="display: inline-block;">Run Free Technical Audit &rarr;</a>
+      `)}
+    </div>
+    ` : `
+    <div id="verified-payment-options" style="background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 16px; padding: 2rem; margin-bottom: 2.5rem;">
       <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.5rem;">
         <div>
           <h2 style="font-size: 1.5rem; color: #fff;">Verified Payment Options</h2>
@@ -1599,12 +1965,14 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
             Generate an authenticated Razorpay payment link for the exact approved invoice amount. Supports Credit/Debit Cards, Netbanking, and UPI with instant webhook verification.
           </p>
           <div style="display: flex; flex-direction: column; gap: 0.75rem;">
-            <button onclick="createDynamicLink('PLATFORM_SETUP', 'Day 0-5 Setup', 15000)" class="btn" style="padding: 0.75rem; font-size: 0.92rem;">
-              Generate ₹15,000 Setup Link
+            <button onclick="createDynamicLink('PLATFORM_SETUP', 'Day 0-5 Setup', ${setupPriceINR})" class="btn" style="padding: 0.75rem; font-size: 0.92rem;">
+              Generate ₹${setupPriceINR.toLocaleString('en-IN')} Setup Link
             </button>
-            <button onclick="createDynamicLink('PLATFORM_MONTHLY', 'Monthly Retainer', 8000)" class="btn btn-secondary" style="padding: 0.75rem; font-size: 0.92rem; margin-top: 0;">
-              Generate ₹8,000 Retainer Link
+            ${monthlyPriceINR ? `
+            <button onclick="createDynamicLink('PLATFORM_MONTHLY', 'Monthly Retainer', ${monthlyPriceINR})" class="btn btn-secondary" style="padding: 0.75rem; font-size: 0.92rem; margin-top: 0;">
+              Generate ₹${monthlyPriceINR.toLocaleString('en-IN')} Retainer Link
             </button>
+            ` : ''}
           </div>
           <div id="dynamic-link-box" style="display: none; margin-top: 1rem; padding: 0.85rem; background: rgba(56, 189, 248, 0.1); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 8px;">
             <p style="font-size: 0.82rem; color: #bae6fd; margin-bottom: 0.5rem;" id="dynamic-link-desc"></p>
@@ -1624,13 +1992,13 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
             }
             return `
               <p style="color: var(--text-muted); font-size: 0.88rem; margin-bottom: 1rem;">
-                Scan with Google Pay, PhonePe, Paytm, or BHIM. Enter invoice amount (₹15,000 Setup or ₹8,000 Retainer).
+                Scan with Google Pay, PhonePe, Paytm, or BHIM. Enter invoice amount (₹${setupPriceINR.toLocaleString('en-IN')} Setup${monthlyPriceINR ? ` or ₹${monthlyPriceINR.toLocaleString('en-IN')} Retainer` : ''}).
               </p>
               <div style="background: #111827; border: 1px solid #1e293b; border-radius: 10px; padding: 1rem; display: inline-block;">
                 <img src="${OwnerAuthService.PLATFORM_QR_ASSET_PATH}" alt="Razorpay UPI QR" style="max-width: 200px; width: 100%; border-radius: 8px; cursor: pointer; border: 2px solid #334155;" onclick="window.open(this.src, '_blank')">
                 <p style="font-size: 0.85rem; color: #fff; font-weight: 700; margin-top: 0.5rem;">${upiCfg.payeeName || OwnerAuthService.PLATFORM_MERCHANT_NAME}</p>
                 <p style="font-size: 0.8rem; color: #94a3b8; margin-top: 0.15rem;"><code>${upiCfg.vpa}</code></p>
-                <p style="font-size: 0.75rem; color: #64748b; margin-top: 0.25rem;">Invoice Ref: <strong>${orderRef}</strong></p>
+                <p style="font-size: 0.75rem; color: #64748b; margin-top: 0.25rem;">Invoice Ref: <strong id="displayed-order-ref">${orderRef}</strong></p>
               </div>
               <button class="btn btn-secondary" style="margin-top: 0.75rem; font-size: 0.85rem;" onclick="navigator.clipboard.writeText('${upiCfg.vpa}'); alert('Merchant UPI ID copied: ${upiCfg.vpa}')">
                 Copy Merchant UPI ID
@@ -1650,7 +2018,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
           <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1rem;">
             <div>
               <label style="display: block; font-size: 0.82rem; color: #94a3b8; margin-bottom: 0.25rem;">Business / Contact Name *</label>
-              <input type="text" id="offer-payer-name" required placeholder="Dr. Rajesh Sharma" style="width: 100%; padding: 0.6rem; border-radius: 8px; border: 1px solid #334155; background: #0b1120; color: #fff; font-size: 0.9rem;">
+              <input type="text" id="offer-payer-name" required placeholder="Name / Business" style="width: 100%; padding: 0.6rem; border-radius: 8px; border: 1px solid #334155; background: #0b1120; color: #fff; font-size: 0.9rem;">
             </div>
             <div>
               <label style="display: block; font-size: 0.82rem; color: #94a3b8; margin-bottom: 0.25rem;">Mobile / WhatsApp *</label>
@@ -1658,9 +2026,9 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
             </div>
             <div>
               <label style="display: block; font-size: 0.82rem; color: #94a3b8; margin-bottom: 0.25rem;">Service Tier Paid *</label>
-              <select id="offer-service-tier" style="width: 100%; padding: 0.6rem; border-radius: 8px; border: 1px solid #334155; background: #0b1120; color: #fff; font-size: 0.9rem;" onchange="updateOfferAmount(this.value)">
-                <option value="15000">Day 0-5 Setup (₹15,000)</option>
-                <option value="8000">Monthly Retainer (₹8,000)</option>
+              <select id="offer-service-tier" style="width: 100%; padding: 0.6rem; border-radius: 8px; border: 1px solid #334155; background: #0b1120; color: #fff; font-size: 0.9rem;" onchange="updateOfferTier(this)">
+                <option value="${setupPriceINR}" data-offer-id="PLATFORM_SETUP" data-order-ref="${orderRefSetup}">Day 0-5 Setup (₹${setupPriceINR.toLocaleString('en-IN')})</option>
+                ${monthlyPriceINR ? `<option value="${monthlyPriceINR}" data-offer-id="PLATFORM_MONTHLY" data-order-ref="${orderRefMonthly}">Monthly Retainer (₹${monthlyPriceINR.toLocaleString('en-IN')})</option>` : ''}
               </select>
             </div>
             <div>
@@ -1675,12 +2043,13 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
         </form>
       </div>
     </div>
+    `}
 
-    <!-- Commercial Terms & Scope from owner/OWN_OFFER.md -->
+    <!-- Commercial Terms & Scope from owner/DIRECT_OFFER.md -->
     <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; margin-bottom: 2rem;">
       <div style="background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 1.5rem;">
         <h3 style="color: #38bdf8; font-size: 1.1rem; margin-bottom: 0.75rem;">Who It Is For</h3>
-        <p style="color: #cbd5e1; font-size: 0.9rem; line-height: 1.5;">Local service businesses, healthcare practices, clinics, dental centers, coaching institutes, and professional service firms in India seeking automated 24/7 inquiry triage without extra ad spend.</p>
+        <p style="color: #cbd5e1; font-size: 0.9rem; line-height: 1.5;">${escapeHtml(terms.targetAudience || 'Indian local service businesses and professional firms seeking automated 24/7 inquiry triage without extra ad spend.')}</p>
       </div>
 
       <div style="background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 1.5rem;">
@@ -1690,7 +2059,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
 
       <div style="background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 1.5rem;">
         <h3 style="color: #34d399; font-size: 1.1rem; margin-bottom: 0.75rem;">Refund Terms &amp; Guarantee</h3>
-        <p style="color: #cbd5e1; font-size: 0.9rem; line-height: 1.5;"><strong>14-Day Performance Guarantee:</strong> 100% full refund of ₹15,000 setup fee if the automated triage fails to capture inquiries within 14 days due to unresolved platform defect. Monthly Retainer: Cancel anytime before the next billing cycle.</p>
+        <p style="color: #cbd5e1; font-size: 0.9rem; line-height: 1.5;"><strong>14-Day Performance Guarantee:</strong> 100% full refund of ${setupPriceINR ? `₹${setupPriceINR.toLocaleString('en-IN')}` : 'agreed'} setup fee if the automated triage fails to capture inquiries within 14 days due to unresolved platform defect. Monthly Retainer: Cancel anytime before the next billing cycle.</p>
       </div>
     </div>
 
@@ -1701,11 +2070,17 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
   </div>
 
   <script>
+    var currentLinkRequestId = 0;
     async function createDynamicLink(offerId, title, amount) {
+      var requestId = ++currentLinkRequestId;
       var box = document.getElementById('dynamic-link-box');
       var desc = document.getElementById('dynamic-link-desc');
       var anchor = document.getElementById('dynamic-link-anchor');
       desc.innerText = 'Creating verified link for ' + title + ' (₹' + amount.toLocaleString('en-IN') + ')...';
+      if (anchor) {
+        anchor.removeAttribute('href');
+        anchor.style.display = 'none';
+      }
       box.style.display = 'block';
 
       try {
@@ -1714,19 +2089,36 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             offerId: offerId,
-            customerName: 'Commercial Client - ' + title
+            customerName: 'Commercial Client - ' + title,
+            amountINR: amount
           })
         });
         var data = await res.json();
+        if (requestId !== currentLinkRequestId) return;
         if (data.success && data.data && data.data.paymentLinkUrl) {
           desc.innerHTML = '✓ Link Ready: <strong>' + data.data.providerLinkId + '</strong> (₹' + data.data.amountINR.toLocaleString('en-IN') + ')';
-          anchor.href = data.data.paymentLinkUrl;
+          if (anchor) {
+            anchor.href = data.data.paymentLinkUrl;
+            anchor.style.display = 'inline-block';
+          }
         } else {
           throw new Error(data.error || 'Failed to create payment link');
         }
       } catch (err) {
+        if (requestId !== currentLinkRequestId) return;
+        if (anchor) {
+          anchor.removeAttribute('href');
+          anchor.style.display = 'none';
+        }
         desc.innerText = 'Error: ' + err.message;
       }
+    }
+
+    function updateOfferTier(selectEl) {
+      var opt = selectEl.options[selectEl.selectedIndex];
+      var ref = opt ? (opt.getAttribute('data-order-ref') || '${orderRef}') : '${orderRef}';
+      var refEl = document.getElementById('displayed-order-ref');
+      if (refEl) refEl.innerText = ref;
     }
 
     async function handleOfferUpiSubmit(e) {
@@ -1736,15 +2128,20 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
       btn.disabled = true;
       btn.innerText = 'Submitting Claim...';
 
-      var amount = Number(document.getElementById('offer-service-tier').value);
+      var tierSelect = document.getElementById('offer-service-tier');
+      var selectedOption = tierSelect.options[tierSelect.selectedIndex];
+      var selectedOfferId = selectedOption ? selectedOption.getAttribute('data-offer-id') : 'PLATFORM_SETUP';
+      var selectedOrderRef = selectedOption ? (selectedOption.getAttribute('data-order-ref') || '${orderRef}') : '${orderRef}';
+      var amount = Number(tierSelect.value);
       var payload = {
         businessId: 'biz_platform_aro',
-        invoiceRef: '${orderRef}',
+        offerId: selectedOfferId,
+        invoiceRef: selectedOrderRef,
         payerName: document.getElementById('offer-payer-name').value.trim(),
         payerPhone: document.getElementById('offer-payer-phone').value.trim(),
         amountINR: amount,
         utr: document.getElementById('offer-payer-utr').value.trim(),
-        serviceRendered: amount === 15000 ? 'Day 0-5 Setup & Integration' : 'Monthly Retainer & SLA'
+        serviceRendered: selectedOfferId === 'PLATFORM_SETUP' ? 'Day 0-5 Setup & Integration' : 'Monthly Retainer & SLA'
       };
 
       try {

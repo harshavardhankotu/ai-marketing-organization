@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 import { getDb } from '../../src/db/client.js';
 import { DirectCommercialOfferPage, computeOwnOfferHash } from '../../src/revenue/direct-offer-page.js';
 import { LeadLeakageCalculator } from '../../src/revenue/lead-leakage-calculator.js';
@@ -63,11 +66,11 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
       expect(html).not.toContain('upi://pay');
     });
 
-    it('match: renders authoritative tiers with attested prices when DIRECT_OFFER_TERMS_SHA256 matches owner/OWN_OFFER.md', () => {
-      const actualHash = DirectCommercialOfferPage.computeOwnOfferHash();
+    it('match: renders authoritative tiers with attested prices when DIRECT_OFFER_TERMS_SHA256 matches owner/DIRECT_OFFER.md', () => {
+      const actualHash = DirectCommercialOfferPage.computeDirectOfferHash();
 
-      process.env.DIRECT_OFFER_TERMS_SHA256 = actualHash;
-      process.env.OWN_OFFER_CONFIRMED = 'true';
+      process.env.DIRECT_OFFER_TERMS_SHA256 = actualHash!;
+      process.env.DIRECT_OFFER_TERMS_ATTESTED = 'true';
       process.env.OWNER_UPI_VPA = 'owner@okhdfcbank';
       process.env.PUBLIC_WHATSAPP_NUMBER = '919876543210';
 
@@ -81,38 +84,71 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
         upiVpa: 'owner@okhdfcbank'
       });
 
-      // Tier 1: PLATFORM_SETUP (₹15,000)
+      // Tier 1: PLATFORM_SETUP (TBD per owner/DIRECT_OFFER.md)
       expect(html).toContain('Day 0–5 Setup &amp; Integration');
-      expect(html).toContain('₹15,000');
+      expect(html).toContain('TBD (Owner Scope)');
       expect(html).toContain('Custom WhatsApp qualification &amp; FAQ bot');
       expect(html).toContain('Delivery Time: 5 Business Days');
 
-      // Tier 2: PLATFORM_MONTHLY (₹8,000)
+      // Tier 2: PLATFORM_MONTHLY (TBD per owner/DIRECT_OFFER.md)
       expect(html).toContain('Monthly Retainer &amp; SLA');
-      expect(html).toContain('₹8,000');
 
-      // Audience & Refund terms from OWN_OFFER.md
+      // Pricing Pending Definition notice rendered
+      expect(html).toContain('Commercial Terms Attested — Pricing Pending Definition');
+      expect(html).not.toContain('Generate ₹15,000 Setup Link');
+
+      // Audience & Refund terms from DIRECT_OFFER.md
       expect(html).toContain('Who It Is For');
       expect(html).toContain('Who Should NOT Buy');
       expect(html).toContain('14-Day Performance Guarantee');
 
-      // Payment option: UPI
-      expect(html).toContain('upi://pay?pa=owner%40okhdfcbank');
-      expect(html).toContain('am=15000');
+      // Online payment suppressed when pricing is TBD
+      expect(html).not.toContain('upi://pay?pa=owner%40okhdfcbank');
     });
 
-    it('file edit closes page: any edit to owner/OWN_OFFER.md alters hash and closes the page', () => {
-      const originalHash = DirectCommercialOfferPage.computeOwnOfferHash();
+    it('file edit closes page: any edit to owner/DIRECT_OFFER.md alters hash and closes the page', () => {
+      const tempOfferPath = path.join(os.tmpdir(), `test_direct_offer_${Date.now()}_${Math.random().toString(36).substring(2, 6)}.md`);
+      try {
+        fs.writeFileSync(tempOfferPath, '# Direct Commercial Offer\n**Price:** ₹15,000 Setup\n');
+        const originalHash = DirectCommercialOfferPage.computeDirectOfferHash(tempOfferPath);
+        expect(originalHash).toBeDefined();
 
-      process.env.DIRECT_OFFER_TERMS_SHA256 = originalHash;
+        process.env.DIRECT_OFFER_TERMS_SHA256 = originalHash!;
+        process.env.DIRECT_OFFER_TERMS_ATTESTED = 'true';
+        expect(DirectCommercialOfferPage.isDirectOfferAttested(tempOfferPath)).toBe(true);
+
+        // Actual file edit: modify the fixture on disk
+        fs.writeFileSync(tempOfferPath, '# Direct Commercial Offer\n**Price:** ₹25,000 Setup\n');
+        // Gate must return false because the on-disk file hash no longer matches the attested hash
+        expect(DirectCommercialOfferPage.isDirectOfferAttested(tempOfferPath)).toBe(false);
+      } finally {
+        if (fs.existsSync(tempOfferPath)) {
+          fs.unlinkSync(tempOfferPath);
+        }
+      }
+    });
+
+    it('cross-offer isolation: OWN_OFFER.md (computeOwnOfferHash) can NEVER unlock /offer', () => {
+      const ownOfferHash = computeOwnOfferHash();
+      expect(ownOfferHash).toBeDefined();
+
+      process.env.DIRECT_OFFER_TERMS_SHA256 = ownOfferHash!;
+      process.env.DIRECT_OFFER_TERMS_ATTESTED = 'true';
       process.env.OWN_OFFER_CONFIRMED = 'true';
-      expect(DirectCommercialOfferPage.isDirectOfferAttested()).toBe(true);
 
-      // Simulate file edit: hash changes, so expected !== computed
-      const modifiedHash = 'edited_' + originalHash;
-      expect(modifiedHash).not.toBe(originalHash);
-      const isAttestedAfterEdit = originalHash === modifiedHash;
-      expect(isAttestedAfterEdit).toBe(false);
+      // Crucial: /offer checks DIRECT_OFFER_TERMS_SHA256 against DIRECT_OFFER.md, NOT OWN_OFFER.md
+      expect(DirectCommercialOfferPage.isDirectOfferAttested()).toBe(false);
+
+      const page = DirectCommercialOfferPage.getInstance();
+      const html = page.renderOfferHtml({
+        siteName: 'SupplySpecs India',
+        siteUrl: 'https://supplyspecs.in',
+        contactEmail: 'contact@supplyspecs.in'
+      });
+
+      expect(html).toContain('Configuration Pending Owner Attestation');
+      expect(html).toContain('noindex, nofollow');
+      expect(html).not.toContain('upi://pay');
     });
   });
 
@@ -238,10 +274,10 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
     });
 
     it('serves attested commercial tiers on GET /offer when owner confirms commercial terms', async () => {
-      const actualHash = DirectCommercialOfferPage.computeOwnOfferHash();
+      const actualHash = DirectCommercialOfferPage.computeDirectOfferHash();
 
-      process.env.DIRECT_OFFER_TERMS_SHA256 = actualHash;
-      process.env.OWN_OFFER_CONFIRMED = 'true';
+      process.env.DIRECT_OFFER_TERMS_SHA256 = actualHash!;
+      process.env.DIRECT_OFFER_TERMS_ATTESTED = 'true';
       process.env.OWNER_UPI_VPA = 'owner@okhdfcbank';
       process.env.PUBLIC_WHATSAPP_NUMBER = '919876543210';
 
@@ -251,9 +287,10 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
       expect(html).toContain('AI Inbound Lead Conversion System');
       expect(html).toContain('Day 0–5 Setup &amp; Integration');
       expect(html).toContain('Monthly Retainer &amp; SLA');
-      expect(html).toContain('₹15,000');
-      expect(html).toContain('₹8,000');
-      delete process.env.OWN_OFFER_CONFIRMED;
+      expect(html).toContain('TBD (Owner Scope)');
+      expect(html).toContain('Commercial Terms Attested — Pricing Pending Definition');
+      expect(html).not.toContain('Generate ₹15,000 Setup Link');
+      delete process.env.DIRECT_OFFER_TERMS_ATTESTED;
     });
 
     it('lead leakage calculator includes a direct link to the offer page', () => {
@@ -268,9 +305,9 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
       expect(html).toContain('View Technical Overview');
 
       // When attested by owner, links to commercial pricing
-      const computedHash = DirectCommercialOfferPage.computeOwnOfferHash();
+      const computedHash = DirectCommercialOfferPage.computeDirectOfferHash();
       if (computedHash) {
-        process.env.OWN_OFFER_CONFIRMED = 'true';
+        process.env.DIRECT_OFFER_TERMS_ATTESTED = 'true';
         process.env.DIRECT_OFFER_TERMS_SHA256 = computedHash;
         const attestedHtml = calc.renderCalculatorHtml({
           siteName: 'SupplySpecs India',
@@ -279,7 +316,7 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
         });
         expect(attestedHtml).toContain('href="/offer"');
         expect(attestedHtml).toContain('View Commercial Offer &amp; Pricing');
-        delete process.env.OWN_OFFER_CONFIRMED;
+        delete process.env.DIRECT_OFFER_TERMS_ATTESTED;
         delete process.env.DIRECT_OFFER_TERMS_SHA256;
       }
     });

@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'fs';
 import { resetDbForTesting, getDb } from '../../src/db/client.js';
 import { seedDatabase } from '../../src/db/seed.js';
 import { OwnerAuthService } from '../../src/auth/owner-auth.js';
@@ -17,6 +18,8 @@ import { createHmac, randomUUID } from 'crypto';
 describe('Autonomous Revenue Closed-Loop E2E Verification', () => {
   const orgId = OwnerAuthService.OWNER_ORGANIZATION_ID;
   const bizId = OwnerAuthService.PLATFORM_BUSINESS_ID;
+  const originalReadFileSync = fs.readFileSync;
+  let fsSpy: any;
 
   beforeEach(() => {
     resetDbForTesting();
@@ -25,9 +28,18 @@ describe('Autonomous Revenue Closed-Loop E2E Verification', () => {
     (PlatformProspectDiscoveryEngine as any).instance = undefined;
     (ProposalEngine as any).instance = undefined;
     (LearningEngine as any).instance = undefined;
+
+    fsSpy = vi.spyOn(fs, 'readFileSync').mockImplementation((filePath: any, encoding?: any) => {
+      const p = String(filePath);
+      if (p.includes('DIRECT_OFFER.md')) {
+        return '# AI Inbound Lead Conversion System\n\n**Price:** ₹15,000 Setup\n**Monthly Retainer:** ₹8,000/month\n**Billing Model:** ONE_TIME\n';
+      }
+      return originalReadFileSync(filePath, encoding);
+    });
   });
 
   afterEach(() => {
+    fsSpy?.mockRestore();
     process.env.NODE_ENV = 'test';
   });
 

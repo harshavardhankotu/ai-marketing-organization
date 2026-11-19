@@ -2466,7 +2466,7 @@ export class AutomationRegistryEngine {
         const { UnifiedQuotaService } = await import('../quota/unified-quota-service.js');
         await UnifiedQuotaService.getInstance().syncFromD1Async();
         const { DPDPComplianceManager } = await import('../compliance/dpdp-manager.js');
-        const purge = DPDPComplianceManager.getInstance().purgeExpiredInquiries(30);
+        const purge = await DPDPComplianceManager.getInstance().purgeExpiredInquiries(30);
 
         // Drain Brevo overflow queue within daily quota limit
         let drainedCount = 0;
@@ -2478,14 +2478,34 @@ export class AutomationRegistryEngine {
           remainingQueued = drainRes.remainingQueued;
         } catch {}
 
+        const isPurgeFailed = purge.remoteStatus === 'ERROR' || purge.localStatus === 'ERROR';
+        const isPurgePartial = purge.remoteStatus === 'PARTIAL' || purge.localStatus === 'PARTIAL';
         const totalHandled = purge.purgedCount + drainedCount;
+
+        let status: 'COMPLETED' | 'NO_ACTION_DUE' | 'PARTIAL' | 'ERROR' = 'COMPLETED';
+        if (isPurgeFailed) {
+          status = totalHandled > 0 ? 'PARTIAL' : 'ERROR';
+        } else if (isPurgePartial) {
+          status = 'PARTIAL';
+        } else if (totalHandled === 0) {
+          status = 'NO_ACTION_DUE';
+        }
+
+        const failedItems = (isPurgeFailed || isPurgePartial) ? 1 : 0;
+
         return {
-          status: totalHandled > 0 ? 'COMPLETED' : 'NO_ACTION_DUE',
+          status,
           itemsProcessed: totalHandled,
-          itemsSucceeded: totalHandled,
-          itemsFailed: 0,
+          itemsSucceeded: isPurgeFailed ? drainedCount + purge.purgedCount : totalHandled,
+          itemsFailed: failedItems,
           summary: {
             dpdpPurgedCount: purge.purgedCount,
+            dpdpLocalDeleted: purge.localDeleted,
+            dpdpLocalStatus: purge.localStatus,
+            ...(purge.localErrors && purge.localErrors.length > 0 ? { dpdpLocalErrors: purge.localErrors } : {}),
+            dpdpRemoteDeleted: purge.remoteDeleted,
+            dpdpRemoteStatus: purge.remoteStatus,
+            ...(purge.remoteError ? { dpdpRemoteError: purge.remoteError } : {}),
             quotaSynced: true,
             brevoDrainedCount: drainedCount,
             brevoRemainingQueued: remainingQueued
@@ -2530,15 +2550,34 @@ export class AutomationRegistryEngine {
 
       case 'b2b_suppression_and_compliance_audit': {
         const { DPDPComplianceManager } = await import('../compliance/dpdp-manager.js');
-        const purge = DPDPComplianceManager.getInstance().purgeExpiredInquiries(30);
+        const purge = await DPDPComplianceManager.getInstance().purgeExpiredInquiries(30);
+
+        const isPurgeFailed = purge.remoteStatus === 'ERROR' || purge.localStatus === 'ERROR';
+        const isPurgePartial = purge.remoteStatus === 'PARTIAL' || purge.localStatus === 'PARTIAL';
+
+        let status: 'COMPLETED' | 'PARTIAL' | 'ERROR' = 'COMPLETED';
+        if (isPurgeFailed) {
+          status = purge.purgedCount > 0 ? 'PARTIAL' : 'ERROR';
+        } else if (isPurgePartial) {
+          status = 'PARTIAL';
+        }
+
+        const failedItems = (isPurgeFailed || isPurgePartial) ? 1 : 0;
+
         return {
-          status: 'COMPLETED',
+          status,
           itemsProcessed: purge.purgedCount,
           itemsSucceeded: purge.purgedCount,
-          itemsFailed: 0,
+          itemsFailed: failedItems,
           summary: {
             cooldownEnforcedDays: 60,
-            dpdpPurgedCount: purge.purgedCount
+            dpdpPurgedCount: purge.purgedCount,
+            dpdpLocalDeleted: purge.localDeleted,
+            dpdpLocalStatus: purge.localStatus,
+            ...(purge.localErrors && purge.localErrors.length > 0 ? { dpdpLocalErrors: purge.localErrors } : {}),
+            dpdpRemoteDeleted: purge.remoteDeleted,
+            dpdpRemoteStatus: purge.remoteStatus,
+            ...(purge.remoteError ? { dpdpRemoteError: purge.remoteError } : {})
           }
         };
       }

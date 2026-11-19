@@ -177,6 +177,14 @@ describe('Stage K: Pre-Deploy Security Lockdown, Fair-Price Integrity, Amazon Du
     expect(fetchSpy.mock.calls.filter(([u]) => String(u).includes('api.cloudflare.com')).length).toBe(1);
     const d1Warns = warnSpy.mock.calls.filter(([msg]) => String(msg).includes('[D1Client]'));
     expect(d1Warns.length).toBe(0);
+
+    delete process.env.CLOUDFLARE_ACCOUNT_ID;
+    delete process.env.CLOUDFLARE_D1_DATABASE_ID;
+    delete process.env.CLOUDFLARE_D1_API_TOKEN;
+    delete process.env.ALLOW_REMOTE_D1_READS;
+    delete process.env.ALLOW_REMOTE_D1_WRITES;
+    fetchSpy.mockRestore();
+    warnSpy.mockRestore();
   });
 
   it('Task 3: Rejects direct push to main/master (HTTP 400) and opens PR from feature branch targeting main', async () => {
@@ -1531,6 +1539,25 @@ describe('Stage K: Pre-Deploy Security Lockdown, Fair-Price Integrity, Amazon Du
     process.env.PUBLIC_CONTACT_EMAIL = 'harsha@sitefix.in';
     process.env.OUTREACH_AUTOPILOT = 'true';
 
+    let brevoSendAllowed = false;
+    const brevoPayloads: any[] = [];
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: any, init?: any) => {
+      const url = String(input);
+      if (url.includes('api.brevo.com/v3/smtp/email')) {
+        if (!brevoSendAllowed) {
+          return new Response(JSON.stringify({ message: 'Unauthorized' }), { status: 401 });
+        }
+        brevoPayloads.push(JSON.parse(String(init?.body || '{}')));
+        return new Response(JSON.stringify({ messageId: `<n5_${brevoPayloads.length}@brevo>` }), { status: 201 });
+      }
+      if (url.includes('/brevo/mcp') || url.includes('mcp.brevo.com')) {
+        return new Response('{"error":"MCP not supported"}', { status: 404 });
+      }
+      return new Response('{}', { status: 404 });
+    });
+    BrevoMcpClient.resetInstanceForTesting();
+    BrevoMcpClient.getInstance(globalThis.fetch);
+
     const db = getDb();
     db.prepare(`INSERT OR IGNORE INTO organizations (id, name, slug) VALUES ('org_owner_primary', 'Owner Org', 'owner-primary')`).run();
     db.prepare(`
@@ -1543,7 +1570,7 @@ describe('Stage K: Pre-Deploy Security Lockdown, Fair-Price Integrity, Amazon Du
       )
     `).run();
 
-    // 1. Blocked when < 5 human-approved sends
+    // 1. Blocked when send is unfulfilled / unauthorized
     db.prepare(`
       INSERT OR REPLACE INTO site_audits (
         domain, target_url, business_name, performance_score, seo_score, checklist_json, status, updated_at
@@ -1590,17 +1617,7 @@ describe('Stage K: Pre-Deploy Security Lockdown, Fair-Price Integrity, Amazon Du
       `).run(`draft_hist_human_${i}`, `Historical Studio ${i}`, oldIso, oldIso);
     }
 
-    const brevoPayloads: any[] = [];
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: any, init?: any) => {
-      if (String(input).includes('api.brevo.com/v3/smtp/email')) {
-        brevoPayloads.push(JSON.parse(String(init?.body || '{}')));
-        return new Response(JSON.stringify({ messageId: `<n5_${brevoPayloads.length}@brevo>` }), { status: 201 });
-      }
-      return new Response('{}', { status: 404 });
-    });
-    BrevoMcpClient.resetInstanceForTesting();
-    BrevoMcpClient.getInstance(globalThis.fetch);
-
+    brevoSendAllowed = true;
     const autoRes = await engine.executeWorkflow('authorized_outreach_dispatch', 'MANUAL');
     expect(autoRes.status).toBe('COMPLETED');
     expect(autoRes.itemsSucceeded).toBe(1);

@@ -114,7 +114,7 @@ describe('Steps 3c, 9d, 9e: Inquiry Lifecycle, D1 Persistence, Purge Job & Delet
     expect(row.email).toBeNull();
   });
 
-  it('Step 9d: Daily purge job purges unconverted inquiries older than 30 days', () => {
+  it('Step 9d: Daily purge job purges unconverted inquiries older than 30 days', async () => {
     const expiredPhone = '919988776699';
     const oldDateStr = new Date(Date.now() - 35 * 24 * 60 * 60 * 1000).toISOString();
 
@@ -132,7 +132,7 @@ describe('Steps 3c, 9d, 9e: Inquiry Lifecycle, D1 Persistence, Purge Job & Delet
     `).run(expiredPhone, expiredPhone, oldDateStr, oldDateStr);
 
     const dpdp = DPDPComplianceManager.getInstance();
-    const purgeResult = dpdp.purgeExpiredInquiries(30);
+    const purgeResult = await dpdp.purgeExpiredInquiries(30);
 
     expect(purgeResult.purgedCount).toBeGreaterThanOrEqual(1);
 

@@ -349,7 +349,7 @@ describe('Razorpay Automated Payment Gateway & DPDP Compliance Suite', () => {
       expect(retrieved?.purpose).toContain('Orthodontic consultation');
     });
 
-    it('implements Section 12 Right to Erasure: anonymizes personal data while preserving tax ledgers', () => {
+    it('implements Section 12 Right to Erasure: anonymizes personal data while preserving tax ledgers', async () => {
       const db = getDb();
       const journeyId = 'journey_erasure_test_01';
       const phone = '+919988776655';
@@ -392,7 +392,7 @@ describe('Razorpay Automated Payment Gateway & DPDP Compliance Suite', () => {
       });
 
       // Execute Section 12 Erasure Request
-      const erasureResult = dpdp.requestErasure({
+      const erasureResult = await dpdp.requestErasure({
         businessId,
         phoneOrJourneyId: phone,
         reason: 'Patient exercised DPDP Section 12 Right to Erasure'

@@ -195,10 +195,10 @@ describe('Schema Parity Verification & Inquiry Lifecycle (Steps 2, 3, 4, 6)', ()
 
   describe('3. Lane Facts Status & Gated DIRECT_OFFER_TERMS_SHA256 (Step 3)', () => {
     it('returns affiliateLane, directLane, optional groups and flags SET_BY_UNKNOWN without confirmation', async () => {
-      const prevConfirmed = process.env.OWN_OFFER_CONFIRMED;
+      const prevAttested = process.env.DIRECT_OFFER_TERMS_ATTESTED;
       const prevHash = process.env.DIRECT_OFFER_TERMS_SHA256;
       try {
-        delete process.env.OWN_OFFER_CONFIRMED;
+        delete process.env.DIRECT_OFFER_TERMS_ATTESTED;
         process.env.DIRECT_OFFER_TERMS_SHA256 = 'abc1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcd';
 
         const req = new Request('http://localhost/owner/facts-status', {
@@ -215,7 +215,7 @@ describe('Schema Parity Verification & Inquiry Lifecycle (Steps 2, 3, 4, 6)', ()
         expect(json.data.optional).toBeDefined();
 
         expect(json.data.directLane.ready).toBe(false);
-        expect(json.data.directLane.missingNames).toContain('OWN_OFFER_CONFIRMED');
+        expect(json.data.directLane.missingNames).toContain('DIRECT_OFFER_TERMS_ATTESTED');
         expect(json.data.directLane.invalidNames).toContain('DIRECT_OFFER_TERMS_SHA256');
 
         const shaFact = json.data.allFacts.find((f: any) => f.field === 'DIRECT_OFFER_TERMS_SHA256');
@@ -224,8 +224,8 @@ describe('Schema Parity Verification & Inquiry Lifecycle (Steps 2, 3, 4, 6)', ()
         expect(shaFact.validity).toBe('INVALID');
         expect(shaFact.note).toContain('Delete it in Render or let owner-apply.mjs overwrite it');
       } finally {
-        if (prevConfirmed !== undefined) process.env.OWN_OFFER_CONFIRMED = prevConfirmed;
-        else delete process.env.OWN_OFFER_CONFIRMED;
+        if (prevAttested !== undefined) process.env.DIRECT_OFFER_TERMS_ATTESTED = prevAttested;
+        else delete process.env.DIRECT_OFFER_TERMS_ATTESTED;
         if (prevHash !== undefined) process.env.DIRECT_OFFER_TERMS_SHA256 = prevHash;
         else delete process.env.DIRECT_OFFER_TERMS_SHA256;
       }

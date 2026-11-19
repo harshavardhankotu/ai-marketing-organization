@@ -28,8 +28,9 @@ import {
   SectorCode,
   GuideDataUnavailableError
 } from './deal-types.js';
+import { normalizeCategoryName } from './static-site-generator.js';
 
-export { GuideDataUnavailableError };
+export { GuideDataUnavailableError, normalizeCategoryName };
 
 export const MAX_OFFER_FRESHNESS_HOURS = 48;
 
@@ -338,10 +339,19 @@ export function parseVerifiedCampaignPayout(
       })();
 
   if (Array.isArray(rawCategories) && rawCategories.length > 0 && productCategory) {
-    const catLower = productCategory.toLowerCase();
+    const normProd = normalizeCategoryName(productCategory).toLowerCase();
+    const rawProdLower = String(productCategory).toLowerCase();
     tierCandidate = rawCategories.find((pc: any) => {
-      const tierName = String(pc?.category || pc?.name || '').toLowerCase();
-      return tierName && (catLower.includes(tierName) || tierName.includes(catLower));
+      const rawTier = String(pc?.category || pc?.name || '').trim();
+      if (!rawTier) return false;
+      const rawTierLower = rawTier.toLowerCase();
+      const normTier = normalizeCategoryName(rawTier).toLowerCase();
+      return (
+        normProd.includes(normTier) ||
+        normTier.includes(normProd) ||
+        rawProdLower.includes(rawTierLower) ||
+        rawTierLower.includes(rawProdLower)
+      );
     }) || null;
   }
 
@@ -2332,10 +2342,9 @@ export class AutonomousDealDiscoveryEngine {
             // Category resolution
             let categoryName = 'eCommerce & Retail';
             if (Array.isArray(offer.categories) && offer.categories.length > 0) {
-              const c0 = offer.categories[0];
-              categoryName = typeof c0 === 'string' ? c0 : (c0?.name || 'eCommerce & Retail');
+              categoryName = normalizeCategoryName(offer.categories[0]);
             } else if (offer.category) {
-              categoryName = offer.category;
+              categoryName = normalizeCategoryName(offer.category);
             }
 
             // Link conversion & monetization gate
@@ -5951,8 +5960,9 @@ export class AutonomousDealDiscoveryEngine {
     }
   }
 
-  public mapCategoryToSectorCode(category: string): SectorCode {
-    const c = (category || '').toLowerCase();
+  public mapCategoryToSectorCode(category: any): SectorCode {
+    const rawNormalized = normalizeCategoryName(category).toLowerCase();
+    const c = rawNormalized.replace(/[-_]+/g, ' ');
     if (c.includes('jewel') || c.includes('gold') || c.includes('silver') || c.includes('coin') || c.includes('bullion')) {
       return 'SECTOR_A_PRECIOUS_METALS';
     }

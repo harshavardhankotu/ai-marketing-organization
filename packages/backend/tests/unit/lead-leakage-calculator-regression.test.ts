@@ -54,11 +54,12 @@ describe('LeadLeakageCalculator Regression & Inquiry Integration Suite', () => {
 
     it('when offer is attested: renders commercial offer link and pricing', () => {
       // Simulate attested offer
-      const computedHash = DirectCommercialOfferPage.computeOwnOfferHash();
-      if (computedHash) {
-        process.env.OWN_OFFER_CONFIRMED = 'true';
-        process.env.DIRECT_OFFER_TERMS_SHA256 = computedHash;
+      const computedHash = DirectCommercialOfferPage.computeDirectOfferHash();
+      expect(computedHash).not.toBeNull();
+      process.env.DIRECT_OFFER_TERMS_ATTESTED = 'true';
+      process.env.DIRECT_OFFER_TERMS_SHA256 = computedHash!;
 
+      try {
         const calc = LeadLeakageCalculator.getInstance();
         const html = calc.renderCalculatorHtml({
           siteName: 'AI Marketing Organization',
@@ -68,6 +69,9 @@ describe('LeadLeakageCalculator Regression & Inquiry Integration Suite', () => {
 
         expect(html).toContain('View Commercial Offer &amp; Pricing');
         expect(html).toContain('mailto:owner@verified.com');
+      } finally {
+        delete process.env.DIRECT_OFFER_TERMS_ATTESTED;
+        delete process.env.DIRECT_OFFER_TERMS_SHA256;
       }
     });
 
@@ -236,7 +240,7 @@ describe('LeadLeakageCalculator Regression & Inquiry Integration Suite', () => {
   });
 
   describe('5. DPDP Act 2023 Retention Purge', () => {
-    it('purges INBOUND_LEAKAGE_CALCULATOR inquiries older than retention threshold', () => {
+    it('purges INBOUND_LEAKAGE_CALCULATOR inquiries older than retention threshold', async () => {
       const db = getDb();
       const oldDate = new Date(Date.now() - 35 * 24 * 3600 * 1000).toISOString();
       const oldTestId = `prosp_test_old_${Date.now()}`;
@@ -255,7 +259,7 @@ describe('LeadLeakageCalculator Regression & Inquiry Integration Suite', () => {
         )
       `).run(oldTestId, oldDate, oldDate);
 
-      const purgeResult = DPDPComplianceManager.getInstance().purgeExpiredInquiries(30);
+      const purgeResult = await DPDPComplianceManager.getInstance().purgeExpiredInquiries(30);
       expect(purgeResult.purgedCount).toBeGreaterThanOrEqual(1);
 
       const purgedRow = db.prepare(`SELECT * FROM platform_prospects WHERE id = ?`).get(oldTestId) as any;

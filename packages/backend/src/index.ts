@@ -238,6 +238,96 @@ app.get('/', async (c) => {
   return c.html(html);
 });
 
+// Top-level public Privacy Policy route
+app.get('/privacy', async (c) => {
+  const siteName = (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
+  const siteUrl = getTrustedPublicSiteUrl();
+  return c.html(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Privacy Policy | ${siteName}</title>
+  <meta name="description" content="Privacy Policy &amp; Data Protection Compliance under DPDP Act 2023 for ${siteName}.">
+  <link rel="canonical" href="${siteUrl}/privacy">
+  <meta name="robots" content="index, follow">
+  <style>
+    :root { color-scheme: dark; --bg: #090d16; --card-bg: #111827; --card-border: #1e293b; --text-main: #f8fafc; --text-muted: #94a3b8; --accent: #06b6d4; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text-main); line-height: 1.6; padding: 2rem 1.25rem; max-width: 840px; margin: 0 auto; }
+    h1, h2 { color: var(--accent); margin-bottom: 0.5rem; }
+    p { margin-bottom: 1rem; color: #cbd5e1; }
+    a { color: var(--accent); text-decoration: none; }
+    .card { background: var(--card-bg); border-radius: 10px; padding: 1.75rem; margin-top: 1.25rem; border: 1px solid var(--card-border); }
+    nav.top { margin-bottom: 2rem; padding-bottom: 1rem; border-bottom: 1px solid var(--card-border); display: flex; gap: 1rem; flex-wrap: wrap; }
+  </style>
+</head>
+<body>
+  <nav class="top">
+    <a href="/">← Home</a>
+    <a href="/tools/site-audit">SiteFix Audit</a>
+    <a href="/deals">Verified Deals</a>
+    <a href="/terms">Terms of Service</a>
+  </nav>
+  <h1>Privacy Policy &amp; Consent Notice</h1>
+  <p style="color: var(--text-muted);">Last updated: October 2026 • Digital Personal Data Protection (DPDP) Act 2023 Compliance</p>
+  <div class="card">
+    <h2>1. Data Collection &amp; Use</h2>
+    <p>When you use SiteFix AI or submit a business inquiry, we process only the technical domain URL and contact information you explicitly provide. No cookies are used for ad tracking.</p>
+    <h2>2. Affiliate Links &amp; Non-PII Attribution (#Ad)</h2>
+    <p>Outbound links to verified merchants (Amazon.in, Cuelinks partner stores) utilize purely non-PII first-party <code>clickId</code> tokens and Cuelinks SubID attribution parameters, alongside daily-salted SHA-256 hashed network digests for click fraud prevention. These parameters contain zero personally identifiable information (PII), zero device fingerprinting, and zero cross-site tracking pixels, serving solely to attribute qualified referral commissions upon verified merchant checkout.</p>
+    <h2>3. Data Retention &amp; Erasure</h2>
+    <p>Non-converted business inquiries and price drop alert subscriptions are retained for approximately 30 days before automated daily purging under DPDP Act 2023 retention policies, or immediately erased upon user request (scrubbing personal contact details while preserving non-PII suppression tombstones to ensure persistent opt-out enforcement). Converted business inquiries, customer orders, website audit scan logs, statutory commercial transaction records, financial ledgers, and tax invoices are retained for technical verification and mandatory accounting compliance periods as required by applicable law.</p>
+    <h2>4. Contact</h2>
+    <p>For data privacy requests or erasures, contact: <a href="mailto:${process.env.PUBLIC_CONTACT_EMAIL || 'contact@aimarketing.org'}">${process.env.PUBLIC_CONTACT_EMAIL || 'contact@aimarketing.org'}</a></p>
+  </div>
+</body>
+</html>`);
+});
+
+// Top-level public Terms of Service route
+app.get('/terms', async (c) => {
+  const siteName = (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
+  const siteUrl = getTrustedPublicSiteUrl();
+  return c.html(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Terms of Service | ${siteName}</title>
+  <meta name="description" content="Terms of Service &amp; Commercial Terms for ${siteName}.">
+  <link rel="canonical" href="${siteUrl}/terms">
+  <meta name="robots" content="index, follow">
+  <style>
+    :root { color-scheme: dark; --bg: #090d16; --card-bg: #111827; --card-border: #1e293b; --text-main: #f8fafc; --text-muted: #94a3b8; --accent: #06b6d4; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text-main); line-height: 1.6; padding: 2rem 1.25rem; max-width: 840px; margin: 0 auto; }
+    h1, h2 { color: var(--accent); margin-bottom: 0.5rem; }
+    p { margin-bottom: 1rem; color: #cbd5e1; }
+    a { color: var(--accent); text-decoration: none; }
+    .card { background: var(--card-bg); border-radius: 10px; padding: 1.75rem; margin-top: 1.25rem; border: 1px solid var(--card-border); }
+    nav.top { margin-bottom: 2rem; padding-bottom: 1rem; border-bottom: 1px solid var(--card-border); display: flex; gap: 1rem; flex-wrap: wrap; }
+  </style>
+</head>
+<body>
+  <nav class="top">
+    <a href="/">← Home</a>
+    <a href="/tools/site-audit">SiteFix Audit</a>
+    <a href="/deals">Verified Deals</a>
+    <a href="/privacy">Privacy Policy</a>
+  </nav>
+  <h1>Terms of Service</h1>
+  <p style="color: var(--text-muted);">Last updated: October 2026 • Commercial Transparency</p>
+  <div class="card">
+    <h2>1. SiteFix AI Optimization Packs</h2>
+    <p>SiteFix AI delivers deterministic technical diagnostic reports and ready-to-paste code suggestions for review and implementation. It does not directly modify customer servers or guarantee third-party search engine rankings.</p>
+    <h2>2. Commercial Deal Directory &amp; Price Drops (#Ad)</h2>
+    <p>Reported merchant prices and discounts are point-in-time snapshots. Qualifying purchases through outbound affiliate links may earn referral commissions at zero extra cost to the buyer.</p>
+    <h2>3. Refund Policy</h2>
+    <p>SiteFix Fix-Packs include a 7-day refund guarantee if technical deliverables fail to generate accurately.</p>
+  </div>
+</body>
+</html>`);
+});
+
 // Top-level public verified deals directory route
 app.get('/deals', async (c) => {
   const { StaticSiteGenerator } = await import('./commission/static-site-generator.js');
@@ -652,36 +742,40 @@ app.all('/owner/proposal', async (c) => {
   }
 
   const bioContent = fs.readFileSync(bioPath, 'utf8');
-  const { DirectCommercialOfferPage } = await import('./revenue/direct-offer-page.js');
-  const isAttested = DirectCommercialOfferPage.isDirectOfferAttested();
+  const { DirectCommercialOfferPage, parseDirectOfferTerms } = await import('./revenue/direct-offer-page.js');
+  const snapshot = DirectCommercialOfferPage.readDirectOfferFileSnapshot() || '';
+  const isAttested = DirectCommercialOfferPage.isDirectOfferAttested(undefined, snapshot);
+  const terms = parseDirectOfferTerms(undefined, snapshot);
 
-  if (isAttested) {
+  if (isAttested && terms.isPayable && terms.setupPriceINR !== null) {
     return c.json({
       success: true,
       isAttested: true,
       isPayable: true,
-      message: 'Authoritative proposal generated from attested owner commercial terms (owner/OWN_OFFER.md).',
+      message: 'Authoritative proposal generated from attested owner commercial terms (owner/DIRECT_OFFER.md).',
       ownerBioPreview: bioContent.slice(0, 300),
       data: {
-        title: 'AI Inbound Lead Conversion System Implementation',
-        setupPriceINR: 15000,
-        monthlyPriceINR: 8000,
-        source: 'owner/OWN_OFFER.md'
+        title: terms.title || 'AI Inbound Lead Conversion System Implementation',
+        setupPriceINR: terms.setupPriceINR,
+        monthlyPriceINR: terms.monthlyPriceINR,
+        source: 'owner/DIRECT_OFFER.md'
       }
     });
   }
 
   return c.json({
     success: true,
-    isAttested: false,
+    isAttested: isAttested,
     isPayable: false,
-    message: 'Informational proposal draft. Commercial terms not yet attested via owner/OWN_OFFER.md; payable payment links are suppressed.',
+    message: isAttested
+      ? 'Proposal pricing pending owner definition in owner/DIRECT_OFFER.md.'
+      : 'Informational proposal draft. Commercial terms not yet attested via owner/DIRECT_OFFER.md; payable payment links are suppressed.',
     ownerBioPreview: bioContent.slice(0, 300),
     data: {
-      title: 'AI Inbound Lead Conversion System Implementation',
-      setupPriceINR: 15000,
-      monthlyPriceINR: 8000,
-      source: 'PROVISIONAL_ESTIMATE (Awaiting owner/OWN_OFFER.md attestation)'
+      title: terms.title || 'AI Inbound Lead Conversion System Implementation',
+      setupPriceINR: terms.setupPriceINR,
+      monthlyPriceINR: terms.monthlyPriceINR,
+      source: isAttested ? 'PRICING_PENDING (owner/DIRECT_OFFER.md)' : 'PROVISIONAL_ESTIMATE (Awaiting owner/DIRECT_OFFER.md attestation)'
     }
   });
 });
@@ -755,7 +849,11 @@ app.get('/guides/:slug', async (c) => {
 
     const asset = await ContentAssetEngine.getInstance().getAssetBySlug(slug, true);
     if (!asset) {
-      return c.text('Guide not found', 404);
+      c.header('X-Robots-Tag', 'noindex, nofollow');
+      return c.html(
+        `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="robots" content="noindex, nofollow"><title>Guide Not Found</title></head><body><h1>404 — Guide Not Found</h1><p>The requested guide is unavailable.</p><p><a href="/deals">Browse Verified Deals</a></p></body></html>`,
+        404
+      );
     }
 
     let config: any;
@@ -778,11 +876,14 @@ app.get('/guides/:slug', async (c) => {
     const html = StaticSiteGenerator.getInstance().renderGuideHtml(asset, config, eligibleDeals);
     return c.html(html);
   } catch (err: any) {
-    console.error(`[GuideRoute] Failed rendering guide '${slug}': ${err.message}`);
+    console.warn(`[GuideRoute] Failed rendering guide '${slug}': ${err.message}`);
+    if (err?.code === 'GUIDE_MOVED_PERMANENTLY' || err?.status === 301) {
+      return c.redirect('/deals', 301);
+    }
     return c.json(
       {
-        error: err?.code === 'GUIDE_DATA_UNAVAILABLE' ? 'GUIDE_DATA_UNAVAILABLE' : 'GUIDE_DATA_UNAVAILABLE',
-        message: err?.message || 'Guide or offer data is temporarily unavailable.'
+        error: err?.code || 'GUIDE_DATA_UNAVAILABLE',
+        message: err?.message || 'Guide or offer data is temporarily unavailable. Please retry later.'
       },
       503
     );
@@ -1174,9 +1275,9 @@ app.get('/sitemap.xml', async (c) => {
     vsUrls = generateComparisonPairs(activeDeals, 15).map(
       p => `${baseUrl}/vs/${encodeURIComponent(p.comparisonSlug)}`
     );
-    bestUrls = generateBuyerIntentHubs(activeDeals, baseUrl, 10).map(
-      h => `${baseUrl}/best/${encodeURIComponent(h.intentSlug)}`
-    );
+    bestUrls = generateBuyerIntentHubs(activeDeals, baseUrl, 10)
+      .filter(h => h && h.intentSlug && !h.intentSlug.includes('object-object') && Array.isArray(h.deals) && h.deals.length >= 2)
+      .map(h => `${baseUrl}/best/${encodeURIComponent(h.intentSlug)}`);
   } catch {}
 
   // Include only publicly authorized audited domain pages (V5.8 Defect 5)
@@ -1187,19 +1288,24 @@ app.get('/sitemap.xml', async (c) => {
     auditUrls = domains.map(d => `${baseUrl}/audit/${d}`);
   } catch {}
 
+  const { DirectCommercialOfferPage } = await import('./revenue/direct-offer-page.js');
+  const isOfferAttested = DirectCommercialOfferPage.isDirectOfferAttested();
+
   const staticUrls = [
     `${baseUrl}/`,
     `${baseUrl}/deals`,
-    `${baseUrl}/offer`,
+    ...(isOfferAttested ? [`${baseUrl}/offer`] : []),
     `${baseUrl}/tools/site-audit`,
     `${baseUrl}/tools/financial-radar`,
     `${baseUrl}/tools/lead-leakage-calculator`,
     `${baseUrl}/revenue`,
+    `${baseUrl}/privacy`,
+    `${baseUrl}/terms`,
     `${baseUrl}/public/disclosure`
   ];
 
   const contentUrls = publishedSlugs.map(a => `${baseUrl}/guides/${a.slug}`);
-  const allUrls = [...staticUrls, ...bestUrls, ...compareUrls, ...vsUrls, ...contentUrls, ...auditUrls, ...dealUrls];
+  const allUrls = Array.from(new Set([...staticUrls, ...bestUrls, ...compareUrls, ...vsUrls, ...contentUrls, ...auditUrls, ...dealUrls]));
 
   const xmlEntries = allUrls
     .map(url => `  <url>\n    <loc>${url}</loc>\n    <changefreq>daily</changefreq>\n    <priority>0.8</priority>\n  </url>`)

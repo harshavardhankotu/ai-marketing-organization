@@ -98,6 +98,26 @@ export function isValidReachableEmail(email?: string | null): boolean {
   return true;
 }
 
+export function getStableCheckId(finding: { id?: string; checkId?: string; category?: string; title?: string }): string {
+  if (finding.checkId) return finding.checkId;
+  const id = finding.id || '';
+  if (id.startsWith('meta_title_')) return 'check_meta_title';
+  if (id.startsWith('meta_description_')) return 'check_meta_description';
+  if (id.startsWith('canonical_tag_')) return 'check_canonical_tag';
+  if (id.startsWith('viewport_')) return 'check_viewport';
+  if (id.startsWith('opengraph_tags_')) return 'check_opengraph';
+  if (id.startsWith('twitter_card_')) return 'check_twitter_card';
+  if (id.startsWith('schema_')) return 'check_schema_jsonld';
+  if (id.startsWith('security_')) return 'check_security_https';
+  if (id.startsWith('http_non_200')) return 'check_http_status';
+  if (id.startsWith('robots_noindex')) return 'check_robots_noindex';
+  if (id.startsWith('robots_txt_')) return 'check_robots_txt';
+  if (id.startsWith('perf_html_size_')) return 'check_perf_html_size';
+  if (id.startsWith('perf_ttfb')) return 'check_perf_ttfb';
+  if (id.startsWith('conversion_')) return 'check_conversion_channels';
+  return id || `${finding.category || ''}:${finding.title || ''}`;
+}
+
 export class SiteAuditScanner {
   private fetcher = new SecureUrlFetcher();
 
@@ -150,6 +170,13 @@ export class SiteAuditScanner {
     // 6. Perform Category E: Conversion Path Indicators
     const conversionFindings = this.auditConversionPath(html);
     findings.push(...conversionFindings.findings);
+
+    // Populate stable checkId on each finding for idempotent recheck matching
+    for (const f of findings) {
+      if (!f.checkId) {
+        f.checkId = getStableCheckId(f);
+      }
+    }
 
     // 7. Calculate Deterministic Score (0-100)
     const { score, overallStatus, explanation } = this.calculateDeterministicScore(findings);

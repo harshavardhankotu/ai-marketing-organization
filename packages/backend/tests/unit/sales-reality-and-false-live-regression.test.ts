@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'fs';
 import { Hono } from 'hono';
 import { apiRouter } from '../../src/routes/api.js';
 import { getDb, resetDbForTesting } from '../../src/db/client.js';
@@ -15,8 +16,17 @@ import { createHmac } from 'crypto';
 describe('Sales Reality, False-Live Regression Invariants & Real State Machine (Spec §§ 44–47)', () => {
   let app: Hono;
   const originalEnv = { ...process.env };
+  const originalReadFileSync = fs.readFileSync;
+  let fsSpy: any = null;
 
   beforeEach(() => {
+    fsSpy = vi.spyOn(fs, 'readFileSync').mockImplementation((filePath: any, encoding?: any) => {
+      const p = String(filePath);
+      if (p.includes('DIRECT_OFFER.md')) {
+        return '# AI Inbound Lead Conversion System\n\n**Price:** ₹15,000 Setup\n**Monthly Retainer:** ₹8,000/month\n**Billing Model:** ONE_TIME\n';
+      }
+      return originalReadFileSync(filePath, encoding);
+    });
     resetDbForTesting();
     seedDatabase();
     OfferCatalogService.getInstance().ensurePlatformOffers();
@@ -26,6 +36,9 @@ describe('Sales Reality, False-Live Regression Invariants & Real State Machine (
   });
 
   afterEach(() => {
+    if (fsSpy) {
+      fsSpy.mockRestore();
+    }
     process.env = { ...originalEnv };
   });
 

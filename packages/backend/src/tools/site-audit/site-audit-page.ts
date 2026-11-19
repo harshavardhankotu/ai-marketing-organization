@@ -226,6 +226,15 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
   </style>
 </head>
 <body>
+  <nav style="max-width: 900px; margin: 1rem auto 0 auto; display: flex; justify-content: space-between; align-items: center; padding: 0.75rem 0; border-bottom: 1px solid var(--card-border); flex-wrap: wrap; gap: 0.75rem;">
+    <a href="/" style="color: #60a5fa; font-weight: 700; text-decoration: none; font-size: 1.05rem;">SiteFix AI</a>
+    <div style="display: flex; gap: 1.25rem; align-items: center; flex-wrap: wrap;">
+      <a href="/" style="color: var(--text-muted); text-decoration: none; font-size: 0.88rem;">Home</a>
+      <a href="/deals" style="color: var(--text-muted); text-decoration: none; font-size: 0.88rem;">Verified Deals</a>
+      <a href="/privacy" style="color: var(--text-muted); text-decoration: none; font-size: 0.88rem;">Privacy Policy</a>
+      <a href="/terms" style="color: var(--text-muted); text-decoration: none; font-size: 0.88rem;">Terms</a>
+    </div>
+  </nav>
   <header>
     <div class="badge">SiteFix AI • Factual Technical Website Audit & Fixes</div>
     <h1>Instant Website Audit & Optimization Pack</h1>
@@ -273,12 +282,142 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
       </form>
     </div>
 
+    <!-- Persistent Pinned Recheck Entitlement Card (#activeRecheckBannerCard - Spec Stage U.1 & Comment #4627545935, #4627545950) -->
+    <div class="card" id="activeRecheckBannerCard" style="display: none; margin-top: 1.5rem; background: linear-gradient(180deg, rgba(2, 132, 199, 0.15) 0%, rgba(15, 23, 42, 0.95) 100%); border: 1px solid #0284c7;">
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.5rem;">
+        <strong style="color: #38bdf8; font-size: 1rem;">Included Verification Recheck Entitlement Active</strong>
+        <span style="font-size: 0.72rem; background: rgba(56, 189, 248, 0.25); color: #7dd3fc; padding: 2px 8px; border-radius: 4px; font-weight: 700;">72-HOUR RECHECK TOKEN VERIFIED</span>
+      </div>
+      <p style="font-size: 0.88rem; color: #e2e8f0; margin-bottom: 0.85rem;">
+        Paid Target Domain: <code id="activeRecheckDomainLabel" style="color: #38bdf8; font-weight: 700; font-size: 0.92rem;"></code>
+        <br><span style="font-size: 0.78rem; color: #94a3b8;">Audit Reference ID: <span id="activeRecheckAuditIdLabel" style="font-family: monospace;"></span></span>
+      </p>
+      <div id="activeRecheckDomainMismatchNotice" style="display: none; background: rgba(245, 158, 11, 0.12); border-left: 3px solid #f59e0b; padding: 0.65rem 0.85rem; border-radius: 4px; font-size: 0.82rem; color: #fcd34d; margin-bottom: 0.85rem;">
+        Notice: You are currently viewing findings for a different scanned website. Your included verification scan is strictly pinned to your paid target domain (<span class="pinnedDomainText"></span>).
+      </div>
+      <button type="button" id="activeRecheckBannerBtn" onclick="runPostFixRecheck()" style="background: #0284c7; color: #fff; border: 1px solid #38bdf8; padding: 0.65rem 1.25rem; border-radius: 6px; font-size: 0.88rem; font-weight: 600; cursor: pointer;">
+        Run Included Verification Recheck for <span class="pinnedDomainText">Paid Domain</span> &rarr;
+      </button>
+      <div id="activeRecheckBannerResultBox" style="display: none; margin-top: 0.85rem; padding: 0.85rem; border-radius: 6px; font-size: 0.85rem;"></div>
+    </div>
+
+    <!-- Concrete Sample Deliverable Drawer / Preview (#sampleFixPackSection) -->
+    <div class="card" id="sampleFixPackSection" style="margin-top: 1.5rem; background: linear-gradient(180deg, #111827 0%, #0b1120 100%); border: 1px solid #1e293b;">
+      <details id="sampleFixPackDetails" open style="cursor: pointer;">
+        <summary style="font-size: 1.15rem; font-weight: 700; color: #38bdf8; list-style: none; display: flex; align-items: center; justify-content: space-between; user-select: none;">
+          <span>📦 Inspect Real Sample Fix-Pack (Before You Pay ₹${fixpackPrice})</span>
+          <span style="font-size: 0.8rem; background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); padding: 0.2rem 0.6rem; border-radius: 4px;">LIVE CANONICAL PREVIEW</span>
+        </summary>
+        
+        <p style="color: #cbd5e1; font-size: 0.92rem; margin: 1rem 0 1.25rem 0;">
+          Here is an authentic sample deliverable generated from our own production site (<code>ai-marketing-organization.onrender.com</code>).
+          When you purchase the ₹${fixpackPrice} Fix-Pack, you receive a structured JSON &amp; Markdown Fix-Pack containing ready-to-paste HTML &lt;head&gt; tags, Schema.org JSON-LD, robots.txt rules, sitemap.xml entries (to merge into your site's sitemap), and a verification checklist for your website. The sitemap snippet lists only your scanned canonical URL, so merge it into your existing sitemap instead of replacing it.
+        </p>
+
+        <!-- Clear Honest Disclosure -->
+        <div style="background: rgba(245, 158, 11, 0.08); border-left: 3px solid #f59e0b; padding: 0.75rem 1rem; border-radius: 4px; font-size: 0.84rem; color: #fcd34d; margin-bottom: 1.25rem;">
+          <strong>Clear &amp; Honest Disclosure:</strong> Files are generated from your live scan for you or your developer to review and paste. SiteFix does not modify your live server or guarantee search rankings.
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 1.25rem;">
+          <!-- 1. Before/After Meta -->
+          <div style="background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 1rem;">
+            <h4 style="margin: 0 0 0.5rem 0; color: #f8fafc; font-size: 0.95rem;">1. Before / After &lt;title&gt; &amp; &lt;meta name="description"&gt; Tags</h4>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 0.75rem; font-size: 0.82rem;">
+              <div style="background: #1e293b; padding: 0.75rem; border-radius: 6px; border-left: 3px solid #ef4444;">
+                <strong style="color: #f87171; display: block; margin-bottom: 0.35rem;">BEFORE SCAN (Vague / Missing Intent)</strong>
+                <code style="color: #cbd5e1; display: block; word-break: break-all;">&lt;title&gt;Home - Welcome&lt;/title&gt;<br>&lt;meta name="description" content="Welcome to our company website."&gt;</code>
+                <span style="color: #94a3b8; font-size: 0.75rem; display: block; margin-top: 0.4rem;">Result: Generic SERP snippet, low click-through rate, no target keywords.</span>
+              </div>
+              <div style="background: #1e293b; padding: 0.75rem; border-radius: 6px; border-left: 3px solid #10b981;">
+                <strong style="color: #34d399; display: block; margin-bottom: 0.35rem;">AFTER SITEFIX (Ready-to-Paste Fix)</strong>
+                <code style="color: #cbd5e1; display: block; word-break: break-all;">&lt;title&gt;SiteFix AI — Free Website SEO Audit &amp; Fair-Price Deals India&lt;/title&gt;<br>&lt;meta name="description" content="Run a free technical website scan and get ready-to-paste SEO &amp; Schema fixes for ₹499, or compare verified fair-price deals in India."&gt;</code>
+                <span style="color: #34d399; font-size: 0.75rem; display: block; margin-top: 0.4rem;">Result: Exact 60-char title &amp; 132-char description matching Google SERP guidelines.</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 2. Valid Schema.org JSON-LD -->
+          <div style="background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 1rem;">
+            <h4 style="margin: 0 0 0.5rem 0; color: #f8fafc; font-size: 0.95rem;">2. Valid Schema.org WebApplication &amp; Organization JSON-LD Block</h4>
+            <pre style="background: #090d16; padding: 0.85rem; border-radius: 6px; color: #38bdf8; font-size: 0.78rem; overflow-x: auto; margin: 0; line-height: 1.45;"><code>&lt;script type="application/ld+json"&gt;
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "Organization",
+      "@id": "https://ai-marketing-organization.onrender.com/#organization",
+      "name": "SiteFix AI",
+      "url": "https://ai-marketing-organization.onrender.com",
+      "logo": "https://ai-marketing-organization.onrender.com/favicon.ico"
+    },
+    {
+      "@type": "WebApplication",
+      "@id": "https://ai-marketing-organization.onrender.com/#webapp",
+      "name": "SiteFix AI Website Audit Scanner",
+      "url": "https://ai-marketing-organization.onrender.com/tools/site-audit",
+      "applicationCategory": "BusinessApplication",
+      "operatingSystem": "All",
+      "offers": {
+        "@type": "Offer",
+        "price": "499.00",
+        "priceCurrency": "INR"
+      }
+    }
+  ]
+}
+&lt;/script&gt;</code></pre>
+          </div>
+
+          <!-- 3. Clean robots.txt & sitemap.xml Rules -->
+          <div style="background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 1rem;">
+            <h4 style="margin: 0 0 0.5rem 0; color: #f8fafc; font-size: 0.95rem;">3. Clean robots.txt &amp; sitemap.xml Rules</h4>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 0.75rem;">
+              <div>
+                <span style="font-size: 0.78rem; color: #94a3b8; font-weight: 600; display: block; margin-bottom: 0.25rem;">robots.txt:</span>
+                <pre style="background: #090d16; padding: 0.65rem; border-radius: 6px; color: #34d399; font-size: 0.76rem; overflow-x: auto; margin: 0;"><code>User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /owner/
+Sitemap: https://ai-marketing-organization.onrender.com/sitemap.xml</code></pre>
+              </div>
+              <div>
+                <span style="font-size: 0.78rem; color: #94a3b8; font-weight: 600; display: block; margin-bottom: 0.25rem;">sitemap.xml (sample entry):</span>
+                <pre style="background: #090d16; padding: 0.65rem; border-radius: 6px; color: #34d399; font-size: 0.76rem; overflow-x: auto; margin: 0;"><code>&lt;url&gt;
+  &lt;loc&gt;https://ai-marketing-organization.onrender.com/tools/site-audit&lt;/loc&gt;
+  &lt;changefreq&gt;weekly&lt;/changefreq&gt;
+  &lt;priority&gt;0.8&lt;/priority&gt;
+&lt;/url&gt;</code></pre>
+              </div>
+            </div>
+          </div>
+
+          <!-- 4. 5-Step Developer/Owner Verification Checklist -->
+          <div style="background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 1rem;">
+            <h4 style="margin: 0 0 0.5rem 0; color: #f8fafc; font-size: 0.95rem;">4. 5-Step Developer / Owner Verification Checklist</h4>
+            <ol style="margin: 0; padding-left: 1.25rem; color: #cbd5e1; font-size: 0.82rem; line-height: 1.6;">
+              <li><strong>Backup:</strong> Create a quick backup copy of your current active template or <code>index.html</code>.</li>
+              <li><strong>Metadata Insertion:</strong> Paste the generated <code>&lt;head&gt;</code> block into your site template before closing <code>&lt;/head&gt;</code>.</li>
+              <li><strong>Schema Validation:</strong> Paste the generated JSON-LD script and verify syntax on Google Rich Results Test.</li>
+              <li><strong>Crawl Files:</strong> Upload <code>robots.txt</code> and <code>sitemap.xml</code> to your public root folder and confirm HTTP 200 via curl.</li>
+              <li><strong>Inspection:</strong> Submit your updated homepage to Google Search Console for live URL re-indexing.</li>
+            </ol>
+          </div>
+        </div>
+      </details>
+    </div>
+
     <!-- Results Area -->
     <div class="card results-area" id="resultsCard">
       <div class="score-banner">
         <div>
           <h2 id="resultStatus">Audit Completed</h2>
           <p id="resultExplanation" style="color: var(--text-muted); font-size: 0.9rem; max-width: 600px; margin-top: 0.25rem;"></p>
+          <div style="margin-top: 0.75rem;">
+            <button type="button" id="copyHandoverSummaryBtn" onclick="copyDeveloperHandoverSummary()" style="background: #1e293b; border: 1px solid #38bdf8; color: #38bdf8; padding: 0.45rem 0.9rem; border-radius: 6px; font-size: 0.82rem; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 0.4rem;">
+              📋 Copy Developer Handover Summary
+            </button>
+          </div>
         </div>
         <div class="score-circle" id="scoreDisplay">--</div>
       </div>
@@ -360,7 +499,7 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
 
           <!-- Pre-Checkout Technical Disclosure (Spec Stage P.3.5 Task 5) -->
           <div style="margin: 0.85rem 0 1.15rem 0; padding: 0.85rem 1rem; border-radius: 6px; background: rgba(59, 130, 246, 0.08); border-left: 3px solid #3b82f6; font-size: 0.82rem; color: #cbd5e1; line-height: 1.5; text-align: left;">
-            Delivers a ready-to-paste HTML, Schema.org, robots.txt, and sitemap.xml Fix-Pack based on your live scan. You review and install the files; automatic live-site edits and search-ranking guarantees are not included.
+            Delivers a structured JSON &amp; Markdown Fix-Pack containing ready-to-paste HTML &lt;head&gt; tags, Schema.org JSON-LD, robots.txt rules, sitemap.xml entries (to merge into your site's sitemap), and a verification checklist based on your live scan. You review and install the files; automatic live-site edits and search-ranking guarantees are not included.
           </div>
 
           <button class="btn-primary" id="checkoutBtn" data-ab-experiment="${sitefixExpId}" data-ab-variant="${sitefixVariant}" data-ab-cta="${safeSitefixCtaText}" onclick="initiateCheckout()" disabled>
@@ -444,6 +583,21 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
           <a id="downloadLink" href="#" class="btn-primary" style="display: inline-block; text-decoration: none; max-width: 300px; padding: 0.75rem 1.5rem;" target="_blank">
             Download Fix-Pack (JSON / Markdown)
           </a>
+
+          <!-- Post-Fix Included Verification Recheck Section -->
+          <div id="postFixRecheckSection" style="margin-top: 1.25rem; padding: 1.15rem; background: rgba(15, 23, 42, 0.85); border: 1px solid #334155; border-radius: 8px; text-align: left;">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.4rem;">
+              <h4 style="margin: 0; color: #38bdf8; font-size: 0.95rem;">Verify Fixes (Included Recheck)</h4>
+              <span style="font-size: 0.72rem; background: rgba(56, 189, 248, 0.2); color: #7dd3fc; padding: 2px 8px; border-radius: 4px; font-weight: 700;">INCLUDED 1-CLICK VERIFICATION</span>
+            </div>
+            <p style="font-size: 0.84rem; color: #cbd5e1; margin: 0 0 0.85rem 0;">
+              After your developer applies the Fix-Pack files (HTML &lt;head&gt; tags, Schema.org JSON-LD, robots.txt rules, and sitemap.xml entries merged into your sitemap), run your included verification scan to confirm resolved defects.
+            </p>
+            <button type="button" id="verifyFixesRecheckBtn" onclick="runPostFixRecheck()" style="background: #0284c7; color: #fff; border: 1px solid #38bdf8; padding: 0.6rem 1.15rem; border-radius: 6px; font-size: 0.85rem; font-weight: 600; cursor: pointer;">
+              Verify Fixes (Included Recheck) &rarr;
+            </button>
+            <div id="recheckResultBox" style="display: none; margin-top: 0.85rem; padding: 0.85rem; border-radius: 6px; font-size: 0.85rem;"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -453,6 +607,9 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
     let currentAuditId = null;
     let currentAuditTargetUrl = null;
     let currentReadiness = null;
+    let activeDownloadToken = null;
+    let activeRecheckAuditId = null;
+    let activeRecheckDomain = null;
 
     function escapeHtml(str) {
       if (!str) return '';
@@ -519,7 +676,12 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
     (function prefillUrlParam() {
       try {
         const params = new URLSearchParams(window.location.search);
-        const qUrl = params.get('url');
+        let qUrl = params.get('url');
+        const qDomain = params.get('domain');
+        if (!qUrl && qDomain) {
+          const trimmed = qDomain.trim();
+          qUrl = (trimmed.startsWith('http://') || trimmed.startsWith('https://')) ? trimmed : 'https://' + trimmed;
+        }
         if (qUrl && (qUrl.startsWith('http://') || qUrl.startsWith('https://'))) {
           const input = document.getElementById('targetUrl');
           if (input) input.value = qUrl;
@@ -570,6 +732,15 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
       document.getElementById('resultStatus').textContent = 'Audit Status: ' + result.overallStatus;
       document.getElementById('resultExplanation').textContent = result.scoreExplanation;
 
+      // Clear previous recheck results display when a new audit replaces findings (Comment #4627545950)
+      const box = document.getElementById('recheckResultBox');
+      if (box) { box.style.display = 'none'; box.innerHTML = ''; }
+      const bannerBox = document.getElementById('activeRecheckBannerResultBox');
+      if (bannerBox) { bannerBox.style.display = 'none'; bannerBox.innerHTML = ''; }
+      if (activeRecheckDomain && activeRecheckAuditId && activeDownloadToken) {
+        displayPinnedRecheckCard();
+      }
+
       const domainInput = document.getElementById('checkoutDomainInput');
       if (domainInput && !domainInput.value) {
         try {
@@ -582,6 +753,49 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
 
       const container = document.getElementById('findingsContainer');
       container.innerHTML = '';
+
+      function getCommercialImpact(finding) {
+        if (finding.commercialImpact) return finding.commercialImpact;
+        if (finding.status === 'PASS') {
+          return 'Verified optimal. Maintains search engine discovery and buyer trust.';
+        }
+        const cat = String(finding.category || '').toUpperCase();
+        const title = String(finding.title || '').toLowerCase();
+        if (cat.includes('TITLE') || title.includes('title')) {
+          return 'Search engines display truncated or generic SERP listings, lowering organic click-through rate (CTR) and losing high-intent searchers to competitors.';
+        }
+        if (cat.includes('DESCRIPTION') || title.includes('description')) {
+          return 'Search snippets lack clear value propositions or exceed mobile display bounds, causing searchers to scroll past your listing.';
+        }
+        if (cat.includes('SCHEMA') || cat.includes('STRUCTURED') || title.includes('schema') || title.includes('json-ld')) {
+          return 'Disqualifies your site from Google rich results, knowledge panels, FAQs, and entity graph recognition, diminishing SERP prominence.';
+        }
+        if (cat.includes('ROBOTS') || cat.includes('SITEMAP') || title.includes('robots') || title.includes('sitemap')) {
+          return 'Hinders search crawler discovery of fresh service URLs and wastes search engine crawl budget on low-priority endpoints.';
+        }
+        if (cat.includes('CANONICAL') || title.includes('canonical')) {
+          return 'Causes duplicate URL splitting penalties, diluting domain authority and page ranking strength.';
+        }
+        if (cat.includes('SECURITY') || title.includes('security') || title.includes('ssl')) {
+          return 'Missing security headers or weak transport configuration erodes buyer confidence and triggers browser trust warnings.';
+        }
+        if (cat.includes('PERFORMANCE') || title.includes('speed') || title.includes('pagespeed')) {
+          return 'Slow loading times increase mobile bounce rates before visitors ever see your offer.';
+        }
+        return 'Technical crawl friction and metadata omissions reduce organic reach and visitor conversions.';
+      }
+
+      function getFixPackDeliverable(finding) {
+        if (finding.fixPackDeliverable) return finding.fixPackDeliverable;
+        if (finding.status === 'PASS') return 'Verified (No action needed)';
+        if (finding.canAutoGenerate) return 'Ready-to-paste snippet';
+        const cat = String(finding.category || '').toUpperCase();
+        const title = String(finding.title || '').toLowerCase();
+        if (cat.includes('TITLE') || cat.includes('DESCRIPTION') || cat.includes('META') || cat.includes('SCHEMA') || cat.includes('ROBOTS') || cat.includes('SITEMAP')) {
+          return 'Ready-to-paste snippet';
+        }
+        return 'Owner action checklist';
+      }
 
       result.findings.forEach(f => {
         const div = document.createElement('div');
@@ -601,20 +815,42 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
         header.appendChild(badgeSpan);
         div.appendChild(header);
 
-        if (f.evidence) {
-          const evidenceDiv = document.createElement('div');
-          evidenceDiv.style.fontSize = '0.85rem';
-          evidenceDiv.style.color = '#9ca3af';
-          evidenceDiv.style.marginBottom = '0.25rem';
-          evidenceDiv.textContent = f.evidence;
-          div.appendChild(evidenceDiv);
-        }
+        // (a) Observed Evidence
+        const evidenceDiv = document.createElement('div');
+        evidenceDiv.style.fontSize = '0.85rem';
+        evidenceDiv.style.color = '#9ca3af';
+        evidenceDiv.style.marginTop = '0.35rem';
+        evidenceDiv.innerHTML = '<strong>Observed Evidence:</strong> ' + escapeHtml(f.evidence || f.explanation || 'No syntax defect observed.');
+        div.appendChild(evidenceDiv);
 
+        // (b) Commercial Impact
+        const impactDiv = document.createElement('div');
+        impactDiv.style.fontSize = '0.85rem';
+        impactDiv.style.color = '#fbbf24';
+        impactDiv.style.marginTop = '0.25rem';
+        impactDiv.innerHTML = '<strong>Commercial Impact:</strong> ' + escapeHtml(getCommercialImpact(f));
+        div.appendChild(impactDiv);
+
+        // Action Recommendation
         const recDiv = document.createElement('div');
-        recDiv.style.fontSize = '0.9rem';
+        recDiv.className = 'finding-action';
+        recDiv.style.fontSize = '0.85rem';
         recDiv.style.marginTop = '0.25rem';
         recDiv.innerHTML = '<strong>Action:</strong> ' + escapeHtml(f.recommendation);
         div.appendChild(recDiv);
+
+        // (c) Fix-Pack Deliverable Badge
+        const deliverableType = getFixPackDeliverable(f);
+        const fixPackDiv = document.createElement('div');
+        fixPackDiv.style.marginTop = '0.45rem';
+        if (f.status === 'PASS') {
+          fixPackDiv.innerHTML = '<span style="background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.3); color: #38bdf8; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600;">Status: ' + escapeHtml(deliverableType) + '</span>';
+        } else if (deliverableType === 'Ready-to-paste snippet') {
+          fixPackDiv.innerHTML = '<span style="background: rgba(16, 185, 129, 0.18); border: 1px solid rgba(16, 185, 129, 0.4); color: #34d399; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600;">Included in ₹${fixpackPrice} Fix-Pack: Ready-to-paste snippet</span>';
+        } else {
+          fixPackDiv.innerHTML = '<span style="background: rgba(100, 116, 139, 0.18); border: 1px solid rgba(100, 116, 139, 0.4); color: #cbd5e1; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600;">Included in ₹${fixpackPrice} Fix-Pack: ' + escapeHtml(deliverableType) + '</span>';
+        }
+        div.appendChild(fixPackDiv);
 
         container.appendChild(div);
       });
@@ -780,17 +1016,266 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
       }
     }
 
+    function copyDeveloperHandoverSummary() {
+      if (!currentAuditTargetUrl) {
+        alert('Please run a website audit scan first.');
+        return;
+      }
+      const score = document.getElementById('scoreDisplay') ? document.getElementById('scoreDisplay').textContent : '--';
+      const status = document.getElementById('resultStatus') ? document.getElementById('resultStatus').textContent : '';
+      let domain = '';
+      try {
+        domain = new URL(currentAuditTargetUrl).hostname;
+      } catch {
+        domain = currentAuditTargetUrl;
+      }
+
+      const findingElements = document.querySelectorAll('#findingsContainer .finding-item');
+      let defectsText = '';
+      let defectIndex = 1;
+
+      findingElements.forEach(el => {
+        if (!el.classList.contains('PASS')) {
+          const header = el.querySelector('.finding-header');
+          const title = header ? header.textContent.trim() : 'Defect';
+          const recDiv = el.querySelector('.finding-action') || el.querySelector('div:nth-of-type(3)');
+          const rec = recDiv ? recDiv.textContent.replace(/^Action:\s*/i, '').trim() : '';
+          defectsText += defectIndex + '. ' + title + '\\n   ' + rec + '\\n';
+          defectIndex++;
+        }
+      });
+
+      if (!defectsText) {
+        defectsText = 'No critical technical defects detected. All core technical launch checks passed.\\n';
+      }
+
+      const summary = '### Website Launch QA Summary: ' + domain + '\\n' +
+        '- Target URL: ' + currentAuditTargetUrl + '\\n' +
+        '- Score: ' + score + '/100 (' + status + ')\\n' +
+        '- Detected Findings:\\n' + defectsText + '\\n' +
+        'Unlock ready-to-paste Fix-Pack files & verification recheck (₹499): https://ai-marketing-organization.onrender.com/tools/site-audit?url=' + encodeURIComponent(currentAuditTargetUrl || ('https://' + domain));
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(summary).then(() => {
+          const btn = document.getElementById('copyHandoverSummaryBtn');
+          if (btn) {
+            const original = btn.innerHTML;
+            btn.innerHTML = '✓ Copied Developer Summary!';
+            btn.style.borderColor = '#10b981';
+            btn.style.color = '#34d399';
+            setTimeout(() => {
+              btn.innerHTML = original;
+              btn.style.borderColor = '#38bdf8';
+              btn.style.color = '#38bdf8';
+            }, 2500);
+          }
+        }).catch(err => {
+          alert('Could not copy summary to clipboard: ' + err.message);
+        });
+      } else {
+        alert('Clipboard API unavailable. Summary:\\n\\n' + summary);
+      }
+    }
+
+    async function runPostFixRecheck() {
+      const targetAuditId = activeRecheckAuditId || currentAuditId;
+      if (!targetAuditId || !activeDownloadToken) {
+        alert('Please complete payment and verify entitlement token first.');
+        return;
+      }
+      const btn = document.getElementById('verifyFixesRecheckBtn');
+      const bannerBtn = document.getElementById('activeRecheckBannerBtn');
+      const box = document.getElementById('recheckResultBox');
+      const bannerBox = document.getElementById('activeRecheckBannerResultBox');
+
+      const setButtonsState = (disabled, text) => {
+        if (btn) { btn.disabled = disabled; btn.innerText = text; }
+        if (bannerBtn) { bannerBtn.disabled = disabled; bannerBtn.innerText = text; }
+      };
+
+      const setBoxesState = (htmlContent, isError = false) => {
+        [box, bannerBox].forEach(b => {
+          if (b) {
+            b.style.display = 'block';
+            b.style.background = isError ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.15)';
+            b.style.color = isError ? '#fca5a5' : '#e2e8f0';
+            b.innerHTML = htmlContent;
+          }
+        });
+      };
+
+      setButtonsState(true, 'Re-Scanning Website...');
+      setBoxesState('Connecting to public website and verifying applied fixes...', false);
+
+      try {
+        const recheckUrl = '/api/v1/tools/site-audit/' + encodeURIComponent(targetAuditId) + '/recheck?token=' + encodeURIComponent(activeDownloadToken);
+        const res = await fetch(recheckUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        });
+        const data = await res.json();
+        if (!data.success) {
+          setBoxesState('<strong>Recheck Error:</strong> ' + escapeHtml(data.error), true);
+          return;
+        }
+
+        const targetDisplayName = data.url || activeRecheckDomain || 'Paid Target Website';
+        let html = '<div style="margin-bottom: 0.5rem;"><strong style="color: #34d399;">Post-Fix Verification Results for ' + escapeHtml(targetDisplayName) + ':</strong> Score updated from <strong>' + data.beforeScore + '/100</strong> to <strong>' + data.afterScore + '/100</strong>.</div>';
+        if (data.fixedChecks && data.fixedChecks.length > 0) {
+          html += '<div style="margin-bottom: 0.5rem; color: #34d399;"><strong>' + data.fixedChecks.length + ' Check(s) Flipped to VERIFIED:</strong><ul style="margin: 0.25rem 0 0 1.25rem;">';
+          data.fixedChecks.forEach(fc => {
+            html += '<li>[' + escapeHtml(fc.category) + '] ' + escapeHtml(fc.title) + ' &mdash; <span style="color:#6ee7b7;">VERIFIED</span></li>';
+          });
+          html += '</ul></div>';
+        }
+        if (data.remainingChecks && data.remainingChecks.length > 0) {
+          html += '<div style="color: #fcd34d;"><strong>' + data.remainingChecks.length + ' Remaining Defect(s):</strong><ul style="margin: 0.25rem 0 0 1.25rem;">';
+          data.remainingChecks.forEach(rc => {
+            html += '<li>[' + escapeHtml(rc.category) + '] ' + escapeHtml(rc.title) + ' &mdash; ' + escapeHtml(rc.recommendation) + '</li>';
+          });
+          html += '</ul></div>';
+        } else if (data.fixedChecks && data.fixedChecks.length > 0) {
+          html += '<div style="color: #34d399; font-weight: 700;">✓ All detected technical defects have been verified as resolved!</div>';
+        }
+
+        setBoxesState(html, false);
+      } catch (err) {
+        setBoxesState('<strong>Network error during recheck:</strong> ' + escapeHtml(err.message), true);
+      } finally {
+        setButtonsState(false, 'Verify Fixes (Included Recheck) →');
+      }
+    }
+
     function showDownloadSuccess(downloadUrl, paymentId, orderId) {
       document.getElementById('checkoutActionContainer').style.display = 'none';
       const box = document.getElementById('downloadSuccessBox');
       box.style.display = 'block';
       const link = document.getElementById('downloadLink');
       link.href = downloadUrl;
+      activeRecheckAuditId = currentAuditId;
+      activeRecheckDomain = (document.getElementById('checkoutDomainInput')?.value || '').trim() || currentAuditTargetUrl;
+      try {
+        const u = new URL(downloadUrl, window.location.origin);
+        activeDownloadToken = u.searchParams.get('token');
+        if (!activeDownloadToken) {
+          const mOfferToken = u.pathname.match(new RegExp('/offer/download/([^/]+)'));
+          if (mOfferToken && mOfferToken[1]) {
+            activeDownloadToken = decodeURIComponent(mOfferToken[1]);
+          }
+        }
+        const mPath = u.pathname.match(new RegExp('/tools/site-audit/([^/]+)/deliverable'));
+        if (mPath && mPath[1]) {
+          activeRecheckAuditId = decodeURIComponent(mPath[1]);
+        }
+      } catch {
+        const m = downloadUrl.match(new RegExp('token=([^&]+)'));
+        if (m) activeDownloadToken = m[1];
+        if (!activeDownloadToken) {
+          const mOfferToken = downloadUrl.match(new RegExp('/offer/download/([^/?#]+)'));
+          if (mOfferToken && mOfferToken[1]) activeDownloadToken = decodeURIComponent(mOfferToken[1]);
+        }
+      }
+      if (activeDownloadToken) {
+        const parts = activeDownloadToken.split('.');
+        if (parts.length >= 2 && parts[1]) {
+          activeRecheckAuditId = parts[1];
+        }
+      }
       const refEl = document.getElementById('downloadRefDetails');
       if (refEl && (paymentId || orderId)) {
         refEl.innerHTML = (orderId ? '<strong>Order ID:</strong> ' + escapeHtml(orderId) + '<br>' : '') +
                           (paymentId ? '<strong>Payment ID:</strong> ' + escapeHtml(paymentId) : '');
       }
+
+      // Persist to localStorage for 72-hour entitlement retention (Spec Stage U.1 & Comment #4627545935)
+      try {
+        localStorage.setItem('sitefix_active_recheck', JSON.stringify({
+          auditId: activeRecheckAuditId,
+          downloadToken: activeDownloadToken,
+          domain: activeRecheckDomain,
+          timestamp: Date.now()
+        }));
+      } catch {}
+
+      displayPinnedRecheckCard();
+    }
+
+    function displayPinnedRecheckCard() {
+      if (!activeRecheckAuditId || !activeDownloadToken) return;
+
+      const card = document.getElementById('activeRecheckBannerCard');
+      const domainLabel = document.getElementById('activeRecheckDomainLabel');
+      const auditIdLabel = document.getElementById('activeRecheckAuditIdLabel');
+      const mismatchNotice = document.getElementById('activeRecheckDomainMismatchNotice');
+      const pinnedTexts = document.querySelectorAll('.pinnedDomainText');
+
+      const domainDisplay = activeRecheckDomain || 'Paid Target Website';
+      if (domainLabel) domainLabel.textContent = domainDisplay;
+      if (auditIdLabel) auditIdLabel.textContent = activeRecheckAuditId;
+      pinnedTexts.forEach(function(el) { el.textContent = domainDisplay; });
+
+      // Check for mismatch against currently scanned target (Comment #4627545950)
+      if (currentAuditTargetUrl && activeRecheckDomain) {
+        let curHost = '';
+        let paidHost = '';
+        try { curHost = new URL(currentAuditTargetUrl).hostname; } catch { curHost = currentAuditTargetUrl; }
+        try { paidHost = new URL(activeRecheckDomain).hostname; } catch { paidHost = activeRecheckDomain; }
+        if (curHost && paidHost && !curHost.includes(paidHost) && !paidHost.includes(curHost)) {
+          if (mismatchNotice) mismatchNotice.style.display = 'block';
+        } else {
+          if (mismatchNotice) mismatchNotice.style.display = 'none';
+        }
+      } else {
+        if (mismatchNotice) mismatchNotice.style.display = 'none';
+      }
+
+      if (card) card.style.display = 'block';
+    }
+
+    function initRecheckEntitlementRecovery() {
+      try {
+        const urlParams = new URLSearchParams(window.location.search);
+        const qAuditId = urlParams.get('auditId');
+        const qToken = urlParams.get('token');
+        const qDomain = urlParams.get('domain');
+
+        if (qAuditId && qToken) {
+          let tokenExpired = false;
+          const tokenParts = qToken.split('.');
+          if (tokenParts.length >= 4) {
+            const expMs = Number(tokenParts[3]);
+            if (!isNaN(expMs) && expMs > 0 && Date.now() >= expMs) {
+              tokenExpired = true;
+            }
+          }
+          if (!tokenExpired) {
+            activeRecheckAuditId = qAuditId;
+            activeDownloadToken = qToken;
+            activeRecheckDomain = qDomain || '';
+            try {
+              localStorage.setItem('sitefix_active_recheck', JSON.stringify({
+                auditId: activeRecheckAuditId,
+                downloadToken: activeDownloadToken,
+                domain: activeRecheckDomain,
+                timestamp: Date.now()
+              }));
+            } catch {}
+            displayPinnedRecheckCard();
+            return;
+          }
+        }
+
+        const rawSaved = localStorage.getItem('sitefix_active_recheck');
+        if (rawSaved) {
+          const saved = JSON.parse(rawSaved);
+          if (saved.auditId && saved.downloadToken && (Date.now() - (saved.timestamp || 0) < 259200000)) {
+            activeRecheckAuditId = saved.auditId;
+            activeDownloadToken = saved.downloadToken;
+            activeRecheckDomain = saved.domain || '';
+            displayPinnedRecheckCard();
+          }
+        }
+      } catch {}
     }
 
     async function submitSiteAuditSendReport(e) {
@@ -998,8 +1483,9 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
       }
     })();
 
-    // Sync buyer delivery email across checkout inputs (Spec Stage P.3.5 Task 4)
+    // Sync buyer delivery email across checkout inputs (Spec Stage P.3.5 Task 4) and recover active recheck entitlement (Spec Stage U.1)
     document.addEventListener('DOMContentLoaded', function() {
+      initRecheckEntitlementRecovery();
       var mainEmail = document.getElementById('checkoutBuyerEmailInput');
       var upiEmail = document.getElementById('upiBuyerEmail');
       if (mainEmail && upiEmail) {
@@ -1014,6 +1500,15 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
       }
     });
   </script>
+  <footer style="max-width: 900px; margin: 3rem auto 1rem auto; padding-top: 1.5rem; border-top: 1px solid var(--card-border); text-align: center; color: var(--text-muted); font-size: 0.85rem;">
+    <div style="display: flex; justify-content: center; gap: 1.5rem; flex-wrap: wrap; margin-bottom: 0.75rem;">
+      <a href="/" style="color: #60a5fa; text-decoration: none;">Home</a>
+      <a href="/deals" style="color: var(--text-muted); text-decoration: none;">Verified Deals</a>
+      <a href="/privacy" style="color: var(--text-muted); text-decoration: none;">Privacy Policy</a>
+      <a href="/terms" style="color: var(--text-muted); text-decoration: none;">Terms of Service</a>
+    </div>
+    <p>&copy; ${new Date().getFullYear()} SiteFix AI. All rights reserved. Deterministic technical website diagnostics &amp; optimization fix-packs.</p>
+  </footer>
   ${renderCustomerDeskWidgetHtml('sitefix_core_499')}
 </body>
 </html>`;
