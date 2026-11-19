@@ -245,14 +245,19 @@ const FIXED_BUYER_INTENT_HUBS: HubSeedDefinition[] = [
 ];
 
 /**
- * Normalizes a category input (string, object with name/title/slug, or nested) into a clean string name.
- * Strictly prevents "[object Object]" serialization and "/best/best-object-object-deals-india" slugs.
+ * Extracts a normalized category string from category input (string, object with name/title/slug, or nested).
+ * Returns null if the category is missing, empty, cyclic, or a placeholder like "[object Object]".
  */
-export function normalizeCategoryName(cat: any): string {
-  if (!cat) return 'General';
+export function extractCategoryName(cat: any): string | null {
+  if (!cat) return null;
   let cur = cat;
+  const seen = new Set<any>();
   const isPlaceholder = (s: any) => !s || typeof s !== 'string' || !s.trim() || s.trim().toLowerCase() === '[object object]';
   while (cur && typeof cur === 'object') {
+    if (seen.has(cur)) {
+      return null;
+    }
+    seen.add(cur);
     if (!isPlaceholder(cur.name)) { cur = cur.name.trim(); break; }
     if (!isPlaceholder(cur.title)) { cur = cur.title.trim(); break; }
     if (!isPlaceholder(cur.slug)) { cur = cur.slug.trim(); break; }
@@ -263,7 +268,7 @@ export function normalizeCategoryName(cat: any): string {
     }
   }
   const str = String(cur || '').trim();
-  if (isPlaceholder(str)) return 'General';
+  if (isPlaceholder(str)) return null;
 
   // Normalize casing and hyphenation consistently across variants:
   // e.g. "audio" -> "Audio", "AUDIO" -> "Audio", "smart-watches" -> "Smart Watches"
@@ -277,7 +282,15 @@ export function normalizeCategoryName(cat: any): string {
     })
     .join(' ');
 
-  return normalized || 'General';
+  return normalized || null;
+}
+
+/**
+ * Normalizes a category input into a clean string name, defaulting to 'General' if invalid or missing.
+ * Strictly prevents "[object Object]" serialization and "/best/best-object-object-deals-india" slugs.
+ */
+export function normalizeCategoryName(cat: any): string {
+  return extractCategoryName(cat) || 'General';
 }
 
 export function generateBuyerIntentHubs(
@@ -370,8 +383,8 @@ export function generateBuyerIntentHubs(
   if (hubs.length < limit) {
     const byCategory = new Map<string, any[]>();
     for (const d of eligible) {
-      const cat = normalizeCategoryName(d.category);
-      if (cat.toLowerCase() === 'general' || cat.toLowerCase() === '[object object]') continue;
+      const cat = extractCategoryName(d.category);
+      if (!cat || cat.toLowerCase() === '[object object]') continue;
       const arr = byCategory.get(cat) || [];
       arr.push(d);
       byCategory.set(cat, arr);

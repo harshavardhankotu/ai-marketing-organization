@@ -373,6 +373,31 @@ describe('Stage U — Close All PR #79 Blockers, Fix lint:owner-prices, Align Pr
       ).rejects.toThrow(/OFFER_MISMATCH/);
     });
 
+    it('1.10b recordManualUpiClaim rejects platform issued quote submitted under non-platform business (CWE-863)', async () => {
+      const { RazorpayAdapter } = await import('../../src/integrations/razorpay.js');
+      const { generateOrderReference } = await import('../../src/revenue/direct-offer-page.js');
+      const razorpay = new RazorpayAdapter();
+      const testDb = getDb();
+
+      // Seed another tenant org & business
+      testDb.prepare("INSERT OR REPLACE INTO organizations (id, name, slug) VALUES ('org_tenant_other', 'Other Tenant Org', 'other-tenant-org')").run();
+      testDb.prepare("INSERT OR REPLACE INTO businesses (id, organization_id, name, public_slug, vertical_id, vertical_name, city, neighborhood, brand_voice) VALUES ('biz_tenant_other', 'org_tenant_other', 'Other Tenant Clinic', 'other-tenant', 'dental', 'Dental', 'Hyderabad', 'Banjara', 'Default Voice')").run();
+
+      // Genuine platform quote reference
+      const platformQuoteRef = generateOrderReference('LCS', 15000);
+
+      // Caller attempts to submit genuine platform quote under different business
+      await expect(
+        razorpay.recordManualUpiClaim({
+          businessId: 'biz_tenant_other',
+          invoiceRef: platformQuoteRef,
+          utr: 'UTR_BUSINESS_MISMATCH_ATTACK_01',
+          amountINR: 15000,
+          payerName: 'Tenant Client'
+        })
+      ).rejects.toThrow(/UNAUTHORIZED_QUOTE_REFERENCE/);
+    });
+
     it('1.11 parseDirectOfferTerms validates comma grouping and rejects malformed commas', async () => {
       const { parseDirectOfferTerms } = await import('../../src/revenue/direct-offer-page.js');
 
@@ -1091,7 +1116,7 @@ describe('Stage U — Close All PR #79 Blockers, Fix lint:owner-prices, Align Pr
       expect(recentCheck).toBeDefined();
 
       // Now test immediate erasure request for the recent subscriber
-      const erasureRes = dpdp.requestErasure({
+      const erasureRes = await dpdp.requestErasure({
         businessId: 'biz_platform_aro',
         phoneOrJourneyId: recentEmail,
         reason: 'User unsubscribe & erasure request'

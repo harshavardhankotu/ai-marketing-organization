@@ -31,7 +31,7 @@ export interface RazorpayOrderResult {
 export interface RazorpayPaymentLinkInput {
   organizationId: string;
   businessId: string;
-  offerId: string;
+  offerId?: string;
   prospectId?: string;
   opportunityId?: string;
   journeyId?: string;
@@ -70,6 +70,15 @@ export interface ManualUpiClaimInput {
   amountINR: number;
   serviceRendered?: string;
   notes?: string;
+}
+
+function isHttpsOrigin(urlStr: string): boolean {
+  try {
+    const parsed = new URL(urlStr);
+    return parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
 }
 
 export class RazorpayAdapter {
@@ -514,6 +523,13 @@ export class RazorpayAdapter {
       }
 
       authoritativeAmountINR = proposal.setup_price_inr !== undefined ? proposal.setup_price_inr : (proposal as any).setupPriceINR;
+      if (typeof authoritativeAmountINR !== 'number' || !Number.isFinite(authoritativeAmountINR) || authoritativeAmountINR <= 0) {
+        throw new Error(`INVALID_PROPOSAL_AMOUNT: Proposal '${input.proposalId}' has non-positive or invalid setup price (${authoritativeAmountINR}). Must be a positive finite number.`);
+      }
+      const propPaise = Math.round(authoritativeAmountINR * 100);
+      if (!Number.isSafeInteger(propPaise) || propPaise <= 0) {
+        throw new Error(`INVALID_PROPOSAL_AMOUNT: Proposal '${input.proposalId}' price ₹${authoritativeAmountINR} does not convert to a valid positive integer number of paise.`);
+      }
       description = description || `Proposal ${input.proposalId} Setup & Integration`;
     } else {
       if (!input.offerId) {
@@ -549,9 +565,15 @@ export class RazorpayAdapter {
       }
     }
 
+    if (typeof authoritativeAmountINR !== 'number' || !Number.isFinite(authoritativeAmountINR) || authoritativeAmountINR <= 0) {
+      throw new Error(`INVALID_AMOUNT: Authoritative amount (${authoritativeAmountINR}) must be a positive finite number.`);
+    }
     const keyId = this.getKeyId();
     const keySecret = this.getKeySecret();
     const amountPaise = Math.round(authoritativeAmountINR * 100);
+    if (!Number.isSafeInteger(amountPaise) || amountPaise <= 0) {
+      throw new Error(`INVALID_AMOUNT: Authoritative amount ₹${authoritativeAmountINR} does not convert to a valid positive integer number of paise.`);
+    }
     const referenceId = `ref_${randomUUID().substring(0, 12)}`;
 
     let resolvedProspectId = input.prospectId;
@@ -1158,7 +1180,7 @@ export class RazorpayAdapter {
         if (isProduction() && !process.env.VITEST) {
           linkRow = await this.d1Repo.queryOne<any>(
             'payment_provider_links',
-            'SELECT amount_inr, business_id, organization_id, proposal_id FROM payment_provider_links WHERE (id = ? OR provider_link_id = ?) LIMIT 1',
+            'SELECT amount_inr, business_id, organization_id, proposal_id, provider_link_id FROM payment_provider_links WHERE (id = ? OR provider_link_id = ?) LIMIT 1',
             [input.invoiceRef, input.invoiceRef]
           );
           payReqRow = await this.d1Repo.queryOne<any>(
@@ -1168,12 +1190,28 @@ export class RazorpayAdapter {
           );
         } else {
           linkRow = getDb().prepare(
-            'SELECT amount_inr, business_id, organization_id, proposal_id FROM payment_provider_links WHERE (id = ? OR provider_link_id = ?) LIMIT 1'
+            'SELECT amount_inr, business_id, organization_id, proposal_id, provider_link_id FROM payment_provider_links WHERE (id = ? OR provider_link_id = ?) LIMIT 1'
           ).get(input.invoiceRef, input.invoiceRef) as any;
           payReqRow = getDb().prepare(
             'SELECT amount_inr, business_id, organization_id, offer_id, offer_description FROM payment_requests WHERE (id = ? OR provider_link_id = ? OR reference_id = ?) LIMIT 1'
           ).get(input.invoiceRef, input.invoiceRef, input.invoiceRef) as any;
         }
+
+        // If linkRow was found by internal ID (e.g. rzk_plink_xxx), resolve companion payment_requests by provider_link_id
+        if (linkRow && !payReqRow && linkRow.provider_link_id) {
+          if (isProduction() && !process.env.VITEST) {
+            payReqRow = await this.d1Repo.queryOne<any>(
+              'payment_requests',
+              'SELECT amount_inr, business_id, organization_id, offer_id, offer_description FROM payment_requests WHERE (id = ? OR provider_link_id = ? OR reference_id = ?) LIMIT 1',
+              [linkRow.provider_link_id, linkRow.provider_link_id, linkRow.provider_link_id]
+            );
+          } else {
+            payReqRow = getDb().prepare(
+              'SELECT amount_inr, business_id, organization_id, offer_id, offer_description FROM payment_requests WHERE (id = ? OR provider_link_id = ? OR reference_id = ?) LIMIT 1'
+            ).get(linkRow.provider_link_id, linkRow.provider_link_id, linkRow.provider_link_id) as any;
+          }
+        }
+
         if (linkRow || payReqRow) {
           const matchedBiz = linkRow?.business_id || payReqRow?.business_id;
           const matchedOrg = linkRow?.organization_id || payReqRow?.organization_id;
@@ -1195,6 +1233,14 @@ export class RazorpayAdapter {
           const { DirectCommercialOfferPage } = await import('../revenue/direct-offer-page.js');
           const verifiedQuote = DirectCommercialOfferPage.verifyIssuedOrderReference(input.invoiceRef);
           if (verifiedQuote && verifiedQuote.valid && verifiedQuote.amountINR > 0) {
+            // CWE-863 Guard: Issued quote reference is strictly bound to primary platform business and owner organization
+            const isPlatformBiz = input.businessId === 'biz_platform_aro' ||
+              input.businessId === 'biz_default' ||
+              input.businessId === OwnerAuthService.PLATFORM_BUSINESS_ID;
+            const isPlatformOrg = biz.organization_id === OwnerAuthService.OWNER_ORGANIZATION_ID;
+            if (!isPlatformBiz || !isPlatformOrg) {
+              throw new Error(`UNAUTHORIZED_QUOTE_REFERENCE: Issued quote reference '${input.invoiceRef}' is only valid for platform business '${OwnerAuthService.PLATFORM_BUSINESS_ID}' and cannot be claimed under business '${input.businessId}'.`);
+            }
             if (verifiedQuote.boundOfferId && input.offerId && input.offerId !== verifiedQuote.boundOfferId) {
               throw new Error(`OFFER_MISMATCH: Order reference '${input.invoiceRef}' was issued for offer '${verifiedQuote.boundOfferId}', but caller supplied offer '${input.offerId}'.`);
             }
@@ -1240,7 +1286,13 @@ export class RazorpayAdapter {
         serviceRendered: input.serviceRendered
       });
     } catch {
-      notesPayload = input.notes ? String(input.notes) : null;
+      const fallbackOfferId = boundOfferId || input.offerId || (input.invoiceRef?.startsWith('LCM') ? 'PLATFORM_MONTHLY' : (input.invoiceRef?.startsWith('LCS') ? 'PLATFORM_SETUP' : undefined));
+      notesPayload = JSON.stringify({
+        rawNotes: input.notes ? String(input.notes) : undefined,
+        offerId: fallbackOfferId,
+        amountINR: input.amountINR,
+        serviceRendered: input.serviceRendered
+      });
     }
 
     // Atomic conditional insert guarantees duplicate concurrent UTR submissions cannot race past check
@@ -1474,7 +1526,11 @@ export class RazorpayAdapter {
       ? Number(claimRow.amount_inr)
       : Number(params.amountINR || 499);
     const authoritativeJourneyId = claimRow?.journey_id || notesObj.journeyId || params.journeyId || undefined;
-    const authoritativeService = claimRow?.service_rendered || notesObj.serviceRendered || params.serviceRendered || 'Manual UPI Payment - Owner Confirmed';
+    const isPlaceholderService = (s?: string | null) => !s || s.trim() === 'Manual UPI Payment Claim';
+    const specificClaimService = !isPlaceholderService(claimRow?.service_rendered)
+      ? claimRow.service_rendered
+      : (!isPlaceholderService(notesObj.serviceRendered) ? notesObj.serviceRendered : null);
+    const authoritativeService = params.serviceRendered || specificClaimService || 'Manual UPI Payment - Owner Confirmed';
     const linkedProposalId: string | undefined = claimRow?.proposal_id;
 
     // Durably record transaction BEFORE publishing verified status (Spec Stage R.1 Task 2.3 & Comment #5)
@@ -1749,7 +1805,10 @@ export class RazorpayAdapter {
             try {
               const { BrevoMcpClient } = await import('../integrations/brevo-mcp-client.js');
               const brevo = BrevoMcpClient.getInstance();
-              const recheckReturnUrl = `${siteUrl}/tools/site-audit?auditId=${encodeURIComponent(resolvedAuditId || '')}&token=${encodeURIComponent(downloadToken || '')}&domain=${encodeURIComponent(cleanDomain || '')}`;
+              const isSecureOrigin = isHttpsOrigin(siteUrl) || (process.env.VITEST && !isProduction());
+              const recheckReturnUrl = isSecureOrigin
+                ? `${siteUrl}/tools/site-audit?auditId=${encodeURIComponent(resolvedAuditId || '')}&token=${encodeURIComponent(downloadToken || '')}&domain=${encodeURIComponent(cleanDomain || '')}`
+                : `${siteUrl}/tools/site-audit?auditId=${encodeURIComponent(resolvedAuditId || '')}&domain=${encodeURIComponent(cleanDomain || '')}`;
               const emailRes = await brevo.sendTransactionalEmail({
                 to: buyerEmail,
                 subject: `Payment Receipt & Fix-Pack Download (${effectiveOrderId})`,
@@ -2118,7 +2177,10 @@ export class RazorpayAdapter {
         try {
           const { BrevoMcpClient } = await import('../integrations/brevo-mcp-client.js');
           const brevo = BrevoMcpClient.getInstance();
-          const recheckReturnUrl = `${siteUrl}/tools/site-audit?auditId=${encodeURIComponent(resolvedAuditId || '')}&token=${encodeURIComponent(downloadToken || '')}&domain=${encodeURIComponent(cleanDomain || '')}`;
+          const isSecureOrigin = isHttpsOrigin(siteUrl) || (process.env.VITEST && !isProduction());
+          const recheckReturnUrl = isSecureOrigin
+            ? `${siteUrl}/tools/site-audit?auditId=${encodeURIComponent(resolvedAuditId || '')}&token=${encodeURIComponent(downloadToken || '')}&domain=${encodeURIComponent(cleanDomain || '')}`
+            : `${siteUrl}/tools/site-audit?auditId=${encodeURIComponent(resolvedAuditId || '')}&domain=${encodeURIComponent(cleanDomain || '')}`;
           const emailRes = await brevo.sendTransactionalEmail({
             to: buyerEmail,
             subject: `Payment Receipt & Fix-Pack Download (${effectiveOrderId})`,

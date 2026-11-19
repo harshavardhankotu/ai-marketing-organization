@@ -333,16 +333,17 @@ export class DPDPComplianceManager {
    * Implements Section 12 of the DPDP Act 2023 (Right to Erasure / Withdrawal of Consent).
    * Anonymizes identifiable personal data while preserving statutory tax/accounting records.
    */
-  public requestErasure(params: {
+  public async requestErasure(params: {
     businessId: string;
     phoneOrJourneyId: string;
     reason?: string;
-  }): {
+  }): Promise<{
     success: boolean;
     anonymizedRecordsCount: number;
     financialRecordsPreservedCount: number;
     auditMessage: string;
-  } {
+    errors?: string[];
+  }> {
     const now = new Date().toISOString();
     const identifier = params.phoneOrJourneyId;
 
@@ -392,11 +393,11 @@ export class DPDPComplianceManager {
 
     const errors: string[] = [];
 
-    // 4. Anonymize Outbound Contacts (Price Drop Alerts & Inquiries) (Spec Stage U.1 & Comment #4629753815)
+    // 4. Anonymize Outbound Contacts (Price Drop Alerts & Inquiries) (Spec Stage U.1, CWE-639 Business Scope & Remote D1 Parity)
     try {
       const outboundRows = this.db.prepare(
-        `SELECT id, is_suppressed, is_opted_out FROM outbound_contacts WHERE prospect_email = ? OR prospect_phone = ? OR id = ?`
-      ).all(identifier, identifier, identifier) as any[];
+        `SELECT id, is_suppressed, is_opted_out FROM outbound_contacts WHERE (prospect_email = ? OR prospect_phone = ? OR id = ?) AND business_id = ?`
+      ).all(identifier, identifier, identifier, params.businessId) as any[];
 
       for (const row of outboundRows) {
         this.db.prepare(
@@ -408,26 +409,60 @@ export class DPDPComplianceManager {
                is_opted_out = 1,
                is_suppressed = 1,
                updated_at = ?
-           WHERE id = ?`
-        ).run(now, now, row.id);
+           WHERE id = ? AND business_id = ?`
+        ).run(now, now, row.id, params.businessId);
         anonymizedCount++;
 
         if (this.d1Repo.isRemoteD1WriteAllowed()) {
-          this.d1Repo.executeWrite(
-            'outbound_contacts',
-            `UPDATE outbound_contacts
-             SET prospect_name = '[ERASED_DPDP_REQUEST]',
-                 prospect_email = CASE WHEN is_suppressed = 1 OR is_opted_out = 1 THEN prospect_email ELSE NULL END,
-                 prospect_phone = NULL,
-                 authorization_evidence_json = '{"erased":true,"dpdp_erasure_timestamp":"' || ? || '"}',
-                 is_opted_out = 1,
-                 is_suppressed = 1,
-                 updated_at = ?
-             WHERE id = ?`,
-            [now, now, row.id]
-          ).catch((d1Err: any) => {
+          try {
+            await this.d1Repo.executeWrite(
+              'outbound_contacts',
+              `UPDATE outbound_contacts
+               SET prospect_name = '[ERASED_DPDP_REQUEST]',
+                   prospect_email = CASE WHEN is_suppressed = 1 OR is_opted_out = 1 THEN prospect_email ELSE NULL END,
+                   prospect_phone = NULL,
+                   authorization_evidence_json = '{"erased":true,"dpdp_erasure_timestamp":"' || ? || '"}',
+                   is_opted_out = 1,
+                   is_suppressed = 1,
+                   updated_at = ?
+               WHERE id = ? AND business_id = ?`,
+              [now, now, row.id, params.businessId]
+            );
+          } catch (d1Err: any) {
             console.warn(`[DPDPComplianceManager] Remote D1 outbound_contacts erasure write failed: ${d1Err?.message || String(d1Err)}`);
-          });
+            errors.push(`remote_d1_outbound_contacts_erasure_failed: ${d1Err?.message || String(d1Err)}`);
+          }
+        }
+      }
+
+      if (this.d1Repo.isRemoteD1WriteAllowed()) {
+        try {
+          const remoteRows = await this.d1Repo.query<any>(
+            'outbound_contacts',
+            `SELECT id, is_suppressed, is_opted_out FROM outbound_contacts WHERE (prospect_email = ? OR prospect_phone = ? OR id = ?) AND business_id = ?`,
+            [identifier, identifier, identifier, params.businessId]
+          );
+          const localIds = new Set(outboundRows.map(r => r.id));
+          for (const rRow of (remoteRows || [])) {
+            if (!localIds.has(rRow.id)) {
+              await this.d1Repo.executeWrite(
+                'outbound_contacts',
+                `UPDATE outbound_contacts
+                 SET prospect_name = '[ERASED_DPDP_REQUEST]',
+                     prospect_email = CASE WHEN is_suppressed = 1 OR is_opted_out = 1 THEN prospect_email ELSE NULL END,
+                     prospect_phone = NULL,
+                     authorization_evidence_json = '{"erased":true,"dpdp_erasure_timestamp":"' || ? || '"}',
+                     is_opted_out = 1,
+                     is_suppressed = 1,
+                     updated_at = ?
+                 WHERE id = ? AND business_id = ?`,
+                [now, now, rRow.id, params.businessId]
+              );
+              anonymizedCount++;
+            }
+          }
+        } catch (remErr: any) {
+          errors.push(`remote_d1_outbound_contacts_query_failed: ${remErr?.message || String(remErr)}`);
         }
       }
     } catch (err: any) {

@@ -4393,7 +4393,7 @@ apiRouter.post('/compliance/dpdp/erasure', async (c) => {
     return c.json({ success: false, error: 'Phone number or Journey ID required for Section 12 erasure request' }, 400);
   }
 
-  const result = dpdpManager.requestErasure({
+  const result = await dpdpManager.requestErasure({
     businessId,
     phoneOrJourneyId: body.phoneOrJourneyId,
     reason: body.reason || 'Patient consent withdrawal'
@@ -15161,7 +15161,7 @@ const handleSiteAuditRecheck = async (c: any) => {
   try {
     const existingRow = await d1Repo.queryOne<any>(
       'commercial_evidence',
-      "SELECT details_json FROM commercial_evidence WHERE request_reference = ? AND milestone = 'SITE_AUDIT_RECHECK' LIMIT 1",
+      "SELECT details_json FROM commercial_evidence WHERE request_reference = ? AND milestone = 'SITE_AUDIT_RECHECK' ORDER BY datetime(timestamp) DESC LIMIT 1",
       [auditId]
     );
     if (existingRow && existingRow.details_json) {
@@ -15187,34 +15187,49 @@ const handleSiteAuditRecheck = async (c: any) => {
 
   const claimId = `recheck_claim_${auditId}`;
   try {
-    try {
-      const claimRow = await d1Repo.queryOne<any>(
-        'commercial_evidence',
-        "SELECT id, timestamp FROM commercial_evidence WHERE request_reference = ? AND milestone = 'SITE_AUDIT_RECHECK_CLAIMED' LIMIT 1",
-        [auditId]
-      );
-      if (claimRow && claimRow.timestamp) {
-        const claimAgeMs = Date.now() - new Date(claimRow.timestamp).getTime();
-        if (claimAgeMs < 120000) {
-          return c.json({
-            success: false,
-            error: 'RECHECK_IN_PROGRESS: Verification scan is currently in progress for this audit.'
-          }, 409);
-        }
-      }
-    } catch {}
-
+    // Clean up expired in-flight claim (>120s old)
     try {
       await d1Repo.executeWrite(
         'commercial_evidence',
-        `INSERT OR REPLACE INTO commercial_evidence (
-          id, milestone, provider, external_id, timestamp, request_reference,
-          tenant_id, business_id, classification, verification_source, details_json
-        ) VALUES (?, 'SITE_AUDIT_RECHECK_CLAIMED', 'SITEFIX_AI', ?, datetime('now'), ?, 'org_owner_primary', 'biz_platform_aro', 'REAL', 'HTTP_PROBE', '{}')`,
-        [claimId, priorAudit.url, auditId]
+        "DELETE FROM commercial_evidence WHERE id = ? AND milestone = 'SITE_AUDIT_RECHECK_CLAIMED' AND datetime(timestamp) < datetime('now', '-120 seconds')",
+        [claimId]
       );
-    } catch (claimErr) {
+    } catch {}
+
+    const claimInsertSql = `
+      INSERT INTO commercial_evidence (
+        id, milestone, provider, external_id, timestamp, request_reference,
+        tenant_id, business_id, classification, verification_source, details_json
+      )
+      SELECT ?, 'SITE_AUDIT_RECHECK_CLAIMED', 'SITEFIX_AI', ?, datetime('now'), ?, 'org_owner_primary', 'biz_platform_aro', 'REAL', 'HTTP_PROBE', '{}'
+      WHERE NOT EXISTS (
+        SELECT 1 FROM commercial_evidence
+        WHERE id = ? AND milestone = 'SITE_AUDIT_RECHECK_CLAIMED'
+      )
+    `;
+
+    let claimAcquired = false;
+    try {
+      const claimRes = await d1Repo.executeWrite('commercial_evidence', claimInsertSql, [
+        claimId, priorAudit.url, auditId, claimId
+      ]);
+      const rowsAffected = (claimRes as any)?.rowsAffected ?? (claimRes as any)?.meta?.changes ?? 0;
+      claimAcquired = rowsAffected > 0;
+    } catch (claimErr: any) {
       console.warn(`[SiteAuditRecheck] Failed to record in-flight claim:`, claimErr);
+      recheckInFlight.delete(auditId);
+      return c.json({
+        success: false,
+        error: `RECHECK_CLAIM_FAILED: Could not establish exclusive recheck lease (${claimErr.message}).`
+      }, 500);
+    }
+
+    if (!claimAcquired) {
+      recheckInFlight.delete(auditId);
+      return c.json({
+        success: false,
+        error: 'RECHECK_IN_PROGRESS: Verification scan is currently in progress for this audit.'
+      }, 409);
     }
 
     const rescanResult = await service.runScan(priorAudit.url);

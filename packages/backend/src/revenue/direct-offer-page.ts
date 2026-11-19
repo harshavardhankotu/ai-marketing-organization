@@ -123,7 +123,20 @@ function parseSinglePayableAmount(raw: string, type: 'setup' | 'monthly'): numbe
 
 export function parseDirectOfferTerms(customFilePath?: string, offerContent?: string | null): DirectOfferTerms {
   let content = offerContent;
-  if (content === undefined || content === null) {
+  if (offerContent !== undefined) {
+    if (offerContent === null) {
+      return {
+        offerId: 'PLATFORM_SETUP',
+        title: 'AI Inbound Lead Conversion System — Day 0-5 Setup & Integration',
+        priceRaw: 'TBD',
+        setupPriceINR: null,
+        monthlyPriceINR: null,
+        isPayable: false,
+        targetAudience: 'Indian local service businesses and professional firms.',
+        billingModel: 'TBD'
+      };
+    }
+  } else {
     try {
       const filePath = resolveDirectOfferPath(customFilePath);
       if (!filePath) {
@@ -152,6 +165,20 @@ export function parseDirectOfferTerms(customFilePath?: string, offerContent?: st
       };
     }
   }
+
+  if (!content) {
+    return {
+      offerId: 'PLATFORM_SETUP',
+      title: 'AI Inbound Lead Conversion System — Day 0-5 Setup & Integration',
+      priceRaw: 'TBD',
+      setupPriceINR: null,
+      monthlyPriceINR: null,
+      isPayable: false,
+      targetAudience: 'Indian local service businesses and professional firms.',
+      billingModel: 'TBD'
+    };
+  }
+
   const priceMatches = [...content.matchAll(/\*\*Price:\*\*\s*(.+)/gi)];
   const monthlyMatches = [...content.matchAll(/\*\*(?:Monthly Price|Monthly Retainer):\*\*\s*(.+)/gi)];
 
@@ -367,7 +394,10 @@ export class DirectCommercialOfferPage {
       return false;
     }
     let computedHash: string | null = null;
-    if (offerContent !== undefined && offerContent !== null) {
+    if (offerContent !== undefined) {
+      if (offerContent === null) {
+        return false;
+      }
       computedHash = crypto.createHash('sha256').update(Buffer.from(offerContent, 'utf8')).digest('hex');
     } else {
       computedHash = computeDirectOfferHash(customFilePath);
@@ -473,8 +503,17 @@ export class DirectCommercialOfferPage {
    */
   public renderHomepageHtml(config: Partial<OfferPageConfig> = {}): string {
     const snapshot = DirectCommercialOfferPage.readDirectOfferFileSnapshot();
-    const isAttested = DirectCommercialOfferPage.isDirectOfferAttested(undefined, snapshot);
-    const parsedTerms = parseDirectOfferTerms(undefined, snapshot);
+    const isAttested = snapshot !== null && DirectCommercialOfferPage.isDirectOfferAttested(undefined, snapshot);
+    const parsedTerms = snapshot !== null ? parseDirectOfferTerms(undefined, snapshot) : {
+      offerId: 'PLATFORM_SETUP',
+      title: 'AI Inbound Lead Conversion System — Day 0-5 Setup & Integration',
+      priceRaw: 'TBD',
+      setupPriceINR: null,
+      monthlyPriceINR: null,
+      isPayable: false,
+      targetAudience: 'Indian local service businesses and professional firms.',
+      billingModel: 'TBD'
+    };
     const setupPriceDisplay = (isAttested && parsedTerms.isPayable && parsedTerms.setupPriceINR)
       ? `Custom proposal reviewed and approved directly by the human owner (₹${parsedTerms.setupPriceINR.toLocaleString('en-IN')} one-time setup).`
       : 'Custom Pilot Pricing — Request Scope &amp; Attested Quote';
@@ -1868,7 +1907,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
           <li>✓ Live system handover report &amp; staff walkthrough</li>
         </ul>
         ${(upiUri && isPayable && setupPriceINR !== null) ? `<a href="${upiUri}" class="btn">Pay ₹${setupPriceINR.toLocaleString('en-IN')} via UPI</a>` : ''}
-        ${(razorpayUrl && isPayable) ? `<a href="${razorpayUrl}" class="btn btn-secondary" target="_blank" rel="noopener">Pay via Razorpay</a>` : ''}
+        ${(isPayable && setupPriceINR !== null) ? `<a href="#verified-payment-options" onclick="createDynamicLink('PLATFORM_SETUP', 'Day 0-5 Setup', ${setupPriceINR})" class="btn btn-secondary">Pay via Razorpay</a>` : ''}
       </div>
 
       <!-- Tier 2 -->
@@ -1907,7 +1946,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
       `)}
     </div>
     ` : `
-    <div style="background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 16px; padding: 2rem; margin-bottom: 2.5rem;">
+    <div id="verified-payment-options" style="background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 16px; padding: 2rem; margin-bottom: 2.5rem;">
       <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.5rem;">
         <div>
           <h2 style="font-size: 1.5rem; color: #fff;">Verified Payment Options</h2>
@@ -2036,6 +2075,10 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
       var desc = document.getElementById('dynamic-link-desc');
       var anchor = document.getElementById('dynamic-link-anchor');
       desc.innerText = 'Creating verified link for ' + title + ' (₹' + amount.toLocaleString('en-IN') + ')...';
+      if (anchor) {
+        anchor.removeAttribute('href');
+        anchor.style.display = 'none';
+      }
       box.style.display = 'block';
 
       try {
@@ -2051,11 +2094,18 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
         var data = await res.json();
         if (data.success && data.data && data.data.paymentLinkUrl) {
           desc.innerHTML = '✓ Link Ready: <strong>' + data.data.providerLinkId + '</strong> (₹' + data.data.amountINR.toLocaleString('en-IN') + ')';
-          anchor.href = data.data.paymentLinkUrl;
+          if (anchor) {
+            anchor.href = data.data.paymentLinkUrl;
+            anchor.style.display = 'inline-block';
+          }
         } else {
           throw new Error(data.error || 'Failed to create payment link');
         }
       } catch (err) {
+        if (anchor) {
+          anchor.removeAttribute('href');
+          anchor.style.display = 'none';
+        }
         desc.innerText = 'Error: ' + err.message;
       }
     }

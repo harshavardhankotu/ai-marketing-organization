@@ -1158,7 +1158,7 @@ Sitemap: https://ai-marketing-organization.onrender.com/sitemap.xml</code></pre>
         const u = new URL(downloadUrl, window.location.origin);
         activeDownloadToken = u.searchParams.get('token');
         if (!activeDownloadToken) {
-          const mOfferToken = u.pathname.match(/\/offer\/download\/([^/]+)/);
+          const mOfferToken = u.pathname.match(new RegExp('/offer/download/([^/]+)'));
           if (mOfferToken && mOfferToken[1]) {
             activeDownloadToken = decodeURIComponent(mOfferToken[1]);
           }
@@ -1168,10 +1168,10 @@ Sitemap: https://ai-marketing-organization.onrender.com/sitemap.xml</code></pre>
           activeRecheckAuditId = decodeURIComponent(mPath[1]);
         }
       } catch {
-        const m = downloadUrl.match(/token=([^&]+)/);
+        const m = downloadUrl.match(new RegExp('token=([^&]+)'));
         if (m) activeDownloadToken = m[1];
         if (!activeDownloadToken) {
-          const mOfferToken = downloadUrl.match(/\/offer\/download\/([^/?#]+)/);
+          const mOfferToken = downloadUrl.match(new RegExp('/offer/download/([^/?#]+)'));
           if (mOfferToken && mOfferToken[1]) activeDownloadToken = decodeURIComponent(mOfferToken[1]);
         }
       }
