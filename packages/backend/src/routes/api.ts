@@ -15172,39 +15172,40 @@ const handleSiteAuditRecheck = async (c: any) => {
       error: 'RECHECK_IN_PROGRESS: Verification scan is currently in progress for this audit.'
     }, 409);
   }
-  try {
-    const claimRow = await d1Repo.queryOne<any>(
-      'commercial_evidence',
-      "SELECT id, timestamp FROM commercial_evidence WHERE request_reference = ? AND milestone = 'SITE_AUDIT_RECHECK_CLAIMED' LIMIT 1",
-      [auditId]
-    );
-    if (claimRow && claimRow.timestamp) {
-      const claimAgeMs = Date.now() - new Date(claimRow.timestamp).getTime();
-      if (claimAgeMs < 120000) {
-        return c.json({
-          success: false,
-          error: 'RECHECK_IN_PROGRESS: Verification scan is currently in progress for this audit.'
-        }, 409);
-      }
-    }
-  } catch {}
-
   recheckInFlight.add(auditId);
+
   const claimId = `recheck_claim_${auditId}`;
   try {
-    await d1Repo.executeWrite(
-      'commercial_evidence',
-      `INSERT OR REPLACE INTO commercial_evidence (
-        id, milestone, provider, external_id, timestamp, request_reference,
-        tenant_id, business_id, classification, verification_source, details_json
-      ) VALUES (?, 'SITE_AUDIT_RECHECK_CLAIMED', 'SITEFIX_AI', ?, datetime('now'), ?, 'org_owner_primary', 'biz_platform_aro', 'REAL', 'HTTP_PROBE', '{}')`,
-      [claimId, priorAudit.url, auditId]
-    );
-  } catch (claimErr) {
-    console.warn(`[SiteAuditRecheck] Failed to record in-flight claim:`, claimErr);
-  }
+    try {
+      const claimRow = await d1Repo.queryOne<any>(
+        'commercial_evidence',
+        "SELECT id, timestamp FROM commercial_evidence WHERE request_reference = ? AND milestone = 'SITE_AUDIT_RECHECK_CLAIMED' LIMIT 1",
+        [auditId]
+      );
+      if (claimRow && claimRow.timestamp) {
+        const claimAgeMs = Date.now() - new Date(claimRow.timestamp).getTime();
+        if (claimAgeMs < 120000) {
+          return c.json({
+            success: false,
+            error: 'RECHECK_IN_PROGRESS: Verification scan is currently in progress for this audit.'
+          }, 409);
+        }
+      }
+    } catch {}
 
-  try {
+    try {
+      await d1Repo.executeWrite(
+        'commercial_evidence',
+        `INSERT OR REPLACE INTO commercial_evidence (
+          id, milestone, provider, external_id, timestamp, request_reference,
+          tenant_id, business_id, classification, verification_source, details_json
+        ) VALUES (?, 'SITE_AUDIT_RECHECK_CLAIMED', 'SITEFIX_AI', ?, datetime('now'), ?, 'org_owner_primary', 'biz_platform_aro', 'REAL', 'HTTP_PROBE', '{}')`,
+        [claimId, priorAudit.url, auditId]
+      );
+    } catch (claimErr) {
+      console.warn(`[SiteAuditRecheck] Failed to record in-flight claim:`, claimErr);
+    }
+
     const rescanResult = await service.runScan(priorAudit.url);
 
     // Compute flipped checks (checks that were ISSUE/WARNING/NEEDS_FIX in prior audit and are now PASS)

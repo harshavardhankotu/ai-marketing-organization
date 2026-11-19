@@ -32,7 +32,7 @@ The organization operates under a strict **zero-paid-spend invariant**:
 3. **First Paying Customer Focus:** Reject abstractions or unneeded dashboard tabs that do not advance conversion.
 4. **Self-Sourced Autonomous Discovery:** The system discovers, scores, and audits leads autonomously. Never demand manual prospect lists from the owner.
 5. **System Doctor Scope Lock:** `AutonomousSystemDoctor` is purely a deterministic self-healing engine (repairing corrupt payloads, fixing schema anomalies, cleaning expired records). It is not a business strategist.
-6. **Automation Bounded by Law & Money:** Automate auditing, drafting, and syndication. Human gate applies to legal compliance, Brevo email review (First-5 gate), and bank statement credit verification.
+6. **Automation Bounded by Law & Money:** Automate auditing, drafting, and syndication. Human gate applies to legal compliance, owner review for every outbound email, manual Click-to-Chat trigger for WhatsApp direct contact, and bank statement credit verification.
 7. **Durable State in D1/SQLite:** Never rely on ephemeral in-memory state for revenue, ledger, suppression, or payment truth.
 8. **Hard Fail-Closed Rules:**
    - **No passwordless owner login:** `autoEnvLogin` returns 401 under `VITEST`, `NODE_ENV=test`, or `RENDER=true`.
@@ -83,7 +83,7 @@ When evaluating or generating an audit scorecard for local SMBs:
 2. **Healthcare Policy Guard:** Verify domain and business title with `isRegulatedHealthcareTarget()`. Immediately drop clinics, dental practices, pharmacies, hospitals, and diagnostic labs.
 3. **Commercial Impact Mapping:**
    - Label findings with (a) Observed Evidence, (b) Commercial Impact (why visitors/crawlers drop off), and (c) Fix-Pack Deliverable (`Ready-to-paste snippet` vs `Owner action checklist`).
-4. **First-5 Human Gate:** All drafted outbound emails remain in `PENDING_REVIEW` until the owner clicks approve in `/owner/direct-outreach`.
+4. **Mandatory Human Outbound Gate:** All drafted outbound emails remain in `PENDING_REVIEW` until the owner clicks approve in `/owner/direct-outreach`. Outbound WhatsApp messaging strictly requires a manual Click-to-Chat trigger by the owner.
 
 ---
 
@@ -91,5 +91,5 @@ When evaluating or generating an audit scorecard for local SMBs:
 
 On Windows host machines:
 - **Never use `Invoke-WebRequest`** (hangs indefinitely or corrupts binary streams).
-- **Use ONLY `curl.exe -sS --max-time 25`** or bounded Node scripts ending with `process.exit(0)`.
+- **Use ONLY `curl.exe -sS --max-time 25`** or bounded Node scripts (exiting with non-zero status on failure and `process.exit(0)` on clean success).
 - Always verify the shell working directory is set to the repository root before executing workspace commands.

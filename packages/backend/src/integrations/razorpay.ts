@@ -475,9 +475,9 @@ export class RazorpayAdapter {
     let authoritativeAmountINR: number;
     let billingModel = input.billingModel || 'ONE_TIME';
     let description = input.description;
+    let proposal: any = null;
 
     if (input.proposalId) {
-      let proposal: any = null;
       if (isProduction()) {
         proposal = await this.d1Repo.queryOne<any>('proposals', 'SELECT id, organization_id, business_id, setup_price_inr, prospect_id FROM proposals WHERE id = ?', [input.proposalId]);
       } else {
@@ -533,15 +533,27 @@ export class RazorpayAdapter {
     const referenceId = `ref_${randomUUID().substring(0, 12)}`;
 
     let resolvedProspectId = input.prospectId;
+    if (input.proposalId && proposal && !resolvedProspectId) {
+      resolvedProspectId = proposal.prospect_id;
+    }
     const custEmail = input.customer?.email || (input as any).customerEmail;
     const custPhone = input.customer?.contact || (input as any).customerPhone;
     if (!resolvedProspectId && (custEmail || custPhone)) {
-      const pRow = this.db.prepare(`
-        SELECT id FROM platform_prospects
-        WHERE (prospect_email = ? AND ? != '') OR (prospect_phone = ? AND ? != '')
-        LIMIT 1
-      `).get(custEmail || '', custEmail || '', custPhone || '', custPhone || '') as any;
-      resolvedProspectId = pRow?.id;
+      if (isProduction()) {
+        const pRow = await this.d1Repo.queryOne<any>('platform_prospects', `
+          SELECT id FROM platform_prospects
+          WHERE (prospect_email = ? AND ? != '') OR (prospect_phone = ? AND ? != '')
+          LIMIT 1
+        `, [custEmail || '', custEmail || '', custPhone || '', custPhone || '']);
+        resolvedProspectId = pRow?.id;
+      } else {
+        const pRow = this.db.prepare(`
+          SELECT id FROM platform_prospects
+          WHERE (prospect_email = ? AND ? != '') OR (prospect_phone = ? AND ? != '')
+          LIMIT 1
+        `).get(custEmail || '', custEmail || '', custPhone || '', custPhone || '') as any;
+        resolvedProspectId = pRow?.id;
+      }
     }
 
     let providerLinkId: string;
@@ -1109,19 +1121,45 @@ export class RazorpayAdapter {
       if (!prop) {
         throw new Error(`PROPOSAL_NOT_FOUND: Proposal '${input.proposalId}' does not exist.`);
       }
-      if (Math.round(input.amountINR) !== Math.round(prop.setup_price_inr)) {
+      if (Math.round(input.amountINR * 100) !== Math.round(prop.setup_price_inr * 100)) {
         throw new Error(`AMOUNT_MISMATCH: Claim amount ₹${input.amountINR} does not match proposal invoice amount ₹${prop.setup_price_inr}.`);
       }
-    } else if (input.offerId) {
-      const offer = resolveAuthorizedOffer(input.offerId, input.businessId, biz.organization_id);
-      if (!offer) {
-        throw new Error(`UNAUTHORIZED_OFFER: Offer '${input.offerId}' could not be resolved.`);
-      }
-      if (Math.round(input.amountINR) !== Math.round(offer.priceINR)) {
-        throw new Error(`AMOUNT_MISMATCH: Claim amount ₹${input.amountINR} does not match authoritative offer price ₹${offer.priceINR}.`);
-      }
     } else {
-      this.validatePermittedDeposit(input.amountINR, input.serviceRendered);
+      // Check if invoiceRef binds to an issued payment link or order snapshot
+      let issuedPriceINR: number | null = null;
+      if (input.invoiceRef) {
+        let linkRow: any = null;
+        if (isProduction() && !process.env.VITEST) {
+          linkRow = await this.d1Repo.queryOne<any>(
+            'payment_provider_links',
+            'SELECT amount_inr FROM payment_provider_links WHERE (id = ? OR provider_link_id = ?) LIMIT 1',
+            [input.invoiceRef, input.invoiceRef]
+          );
+        } else {
+          linkRow = getDb().prepare(
+            'SELECT amount_inr FROM payment_provider_links WHERE (id = ? OR provider_link_id = ?) LIMIT 1'
+          ).get(input.invoiceRef, input.invoiceRef) as any;
+        }
+        if (linkRow && typeof linkRow.amount_inr === 'number' && linkRow.amount_inr > 0) {
+          issuedPriceINR = linkRow.amount_inr;
+        }
+      }
+
+      if (issuedPriceINR !== null) {
+        if (Math.round(input.amountINR * 100) !== Math.round(issuedPriceINR * 100)) {
+          throw new Error(`AMOUNT_MISMATCH: Claim amount ₹${input.amountINR} does not match issued payment link amount ₹${issuedPriceINR}.`);
+        }
+      } else if (input.offerId) {
+        const offer = resolveAuthorizedOffer(input.offerId, input.businessId, biz.organization_id);
+        if (!offer) {
+          throw new Error(`UNAUTHORIZED_OFFER: Offer '${input.offerId}' could not be resolved.`);
+        }
+        if (Math.round(input.amountINR * 100) !== Math.round(offer.priceINR * 100)) {
+          throw new Error(`AMOUNT_MISMATCH: Claim amount ₹${input.amountINR} does not match authoritative offer price ₹${offer.priceINR}.`);
+        }
+      } else {
+        this.validatePermittedDeposit(input.amountINR, input.serviceRendered);
+      }
     }
 
     const claimId = `claim_upi_${randomUUID().substring(0, 10)}`;

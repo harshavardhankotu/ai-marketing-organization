@@ -87,7 +87,7 @@ function parseSinglePayableAmount(raw: string, type: 'setup' | 'monthly'): numbe
   const trimmed = raw.trim();
   // Reject ranges, ambiguous markers, alternative conjunctions, and disclaimers
   if (/\b(tbd|variable|quote|custom|scope dependent|contact|or|and)\b/i.test(trimmed)) return null;
-  if (/[-–—]|\bto\b/i.test(trimmed)) return null;
+  if (/\bto\b|[–—]|\d\s*-\s*\d/i.test(trimmed)) return null;
   // If slash is present, only allow /month or /mo
   if (/\/(?!month\b|mo\b)/i.test(trimmed)) return null;
 
