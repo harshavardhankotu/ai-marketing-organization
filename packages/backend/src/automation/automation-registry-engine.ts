@@ -2555,13 +2555,11 @@ export class AutomationRegistryEngine {
         const isPurgeFailed = purge.remoteStatus === 'ERROR' || purge.localStatus === 'ERROR';
         const isPurgePartial = purge.remoteStatus === 'PARTIAL' || purge.localStatus === 'PARTIAL';
 
-        let status: 'COMPLETED' | 'NO_ACTION_DUE' | 'PARTIAL' | 'ERROR' = 'COMPLETED';
+        let status: 'COMPLETED' | 'PARTIAL' | 'ERROR' = 'COMPLETED';
         if (isPurgeFailed) {
           status = purge.localDeleted > 0 ? 'PARTIAL' : 'ERROR';
         } else if (isPurgePartial) {
           status = 'PARTIAL';
-        } else if (purge.purgedCount === 0) {
-          status = 'NO_ACTION_DUE';
         }
 
         const failedItems = (isPurgeFailed || isPurgePartial) ? 1 : 0;
