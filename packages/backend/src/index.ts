@@ -876,17 +876,16 @@ app.get('/guides/:slug', async (c) => {
     return c.html(html);
   } catch (err: any) {
     console.warn(`[GuideRoute] Failed rendering guide '${slug}': ${err.message}`);
-    if (err?.code === 'GUIDE_DATA_UNAVAILABLE') {
-      return c.json(
-        {
-          error: 'GUIDE_DATA_UNAVAILABLE',
-          message: err?.message || 'Guide or offer data is temporarily unavailable.'
-        },
-        503
-      );
+    if (err?.code === 'GUIDE_MOVED_PERMANENTLY' || err?.status === 301) {
+      return c.redirect('/deals', 301);
     }
-    // Graceful 301 redirect to /deals so crawlers never hit 502/503 errors on legacy routes
-    return c.redirect('/deals', 301);
+    return c.json(
+      {
+        error: err?.code || 'GUIDE_DATA_UNAVAILABLE',
+        message: err?.message || 'Guide or offer data is temporarily unavailable. Please retry later.'
+      },
+      503
+    );
   }
 });
 

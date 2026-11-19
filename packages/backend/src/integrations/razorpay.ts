@@ -479,9 +479,9 @@ export class RazorpayAdapter {
 
     if (input.proposalId) {
       if (isProduction()) {
-        proposal = await this.d1Repo.queryOne<any>('proposals', 'SELECT id, organization_id, business_id, setup_price_inr, prospect_id FROM proposals WHERE id = ?', [input.proposalId]);
+        proposal = await this.d1Repo.queryOne<any>('proposals', 'SELECT id, organization_id, business_id, setup_price_inr, prospect_id, status FROM proposals WHERE id = ?', [input.proposalId]);
       } else {
-        proposal = this.db.prepare('SELECT id, organization_id, business_id, setup_price_inr, prospect_id FROM proposals WHERE id = ?').get(input.proposalId) as any;
+        proposal = this.db.prepare('SELECT id, organization_id, business_id, setup_price_inr, prospect_id, status FROM proposals WHERE id = ?').get(input.proposalId) as any;
       }
       if (!proposal) {
         throw new Error(`PROPOSAL_NOT_FOUND: Proposal '${input.proposalId}' does not exist.`);
@@ -493,6 +493,13 @@ export class RazorpayAdapter {
       }
       if (input.organizationId && proposal.organization_id !== input.organizationId) {
         throw new Error(`UNAUTHORIZED_PROPOSAL: Proposal '${input.proposalId}' belongs to organization '${proposal.organization_id}', but caller supplied '${input.organizationId}'.`);
+      }
+
+      // Proposal status check to prevent payable links for draft, rejected or unapproved proposals (CWE-863)
+      const proposalStatus = (proposal.status || '').toUpperCase();
+      const eligibleStatuses = ['APPROVED', 'ACCEPTED', 'SENT'];
+      if (!eligibleStatuses.includes(proposalStatus)) {
+        throw new Error(`UNAUTHORIZED_PROPOSAL_STATUS: Proposal '${input.proposalId}' has status '${proposal.status}', but must be one of [${eligibleStatuses.join(', ')}] to create a payment link.`);
       }
 
       authoritativeAmountINR = proposal.setup_price_inr !== undefined ? proposal.setup_price_inr : (proposal as any).setupPriceINR;
@@ -1779,7 +1786,7 @@ export class RazorpayAdapter {
       const skuFromClaim = (() => {
         try {
           const parsedNotes = typeof claimRow?.notes === 'string' ? JSON.parse(claimRow.notes) : claimRow?.notes;
-          return parsedNotes?.sku || params.serviceRendered || 'SITEFIX_CORE_499';
+          return parsedNotes?.sku || params.serviceRendered || parsedNotes?.offerId || 'SITEFIX_CORE_499';
         } catch {
           return params.serviceRendered || 'SITEFIX_CORE_499';
         }
@@ -2300,7 +2307,7 @@ export class RazorpayAdapter {
         receivedAmountPaise = providerPayment.amount;
       }
     }
-    const amountINR = Math.round(receivedAmountPaise / 100);
+    const amountINR = receivedAmountPaise / 100;
 
     // Spec § 5: Webhook identity must come from internal stored records
     let storedLink: any = null;

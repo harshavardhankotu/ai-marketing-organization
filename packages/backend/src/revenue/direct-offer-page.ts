@@ -124,8 +124,22 @@ function parseSinglePayableAmount(raw: string, type: 'setup' | 'monthly'): numbe
 export function parseDirectOfferTerms(customFilePath?: string, offerContent?: string): DirectOfferTerms {
   let content = offerContent;
   if (content === undefined) {
-    const filePath = resolveDirectOfferPath(customFilePath);
-    if (!filePath) {
+    try {
+      const filePath = resolveDirectOfferPath(customFilePath);
+      if (!filePath) {
+        return {
+          offerId: 'PLATFORM_SETUP',
+          title: 'AI Inbound Lead Conversion System — Day 0-5 Setup & Integration',
+          priceRaw: 'TBD',
+          setupPriceINR: null,
+          monthlyPriceINR: null,
+          isPayable: false,
+          targetAudience: 'Indian local service businesses and professional firms.',
+          billingModel: 'TBD'
+        };
+      }
+      content = fs.readFileSync(filePath, 'utf8');
+    } catch {
       return {
         offerId: 'PLATFORM_SETUP',
         title: 'AI Inbound Lead Conversion System — Day 0-5 Setup & Integration',
@@ -137,7 +151,6 @@ export function parseDirectOfferTerms(customFilePath?: string, offerContent?: st
         billingModel: 'TBD'
       };
     }
-    content = fs.readFileSync(filePath, 'utf8');
   }
   const priceMatch = content.match(/\*\*Price:\*\*\s*(.+)/i);
   const priceRaw = priceMatch ? priceMatch[1].trim() : 'TBD';
@@ -195,7 +208,10 @@ export function generateOrderReference(prefix: string = 'LCS', amountINR?: numbe
   const dateStr = new Date().toISOString().slice(2, 10).replace(/-/g, ''); // 6 chars: YYMMDD
   const rand = Math.random().toString(36).substring(2, 6).toUpperCase(); // 4 chars
   const secret = process.env.SITE_AUDIT_SIGNING_SECRET || process.env.AUTH_SECRET;
-  if (amountINR && amountINR > 0 && secret) {
+  if (amountINR && amountINR > 0) {
+    if (!secret) {
+      throw new Error('Cannot issue payable order reference without SITE_AUDIT_SIGNING_SECRET or AUTH_SECRET configured');
+    }
     const amountStr = amountINR % 1 === 0 ? String(Math.round(amountINR)) : amountINR.toFixed(2);
     const hmac = crypto.createHmac('sha256', secret)
       .update(`${prefix}:${amountStr}:${dateStr}:${rand}`)
@@ -239,10 +255,10 @@ export function verifyIssuedOrderReference(
     .toUpperCase();
 
   let isHmacValid = hmac.toUpperCase() === expectedHmac;
-  if (!isHmacValid && amountStr.includes('.')) {
-    const wholeRupees = String(Math.round(amountINR));
+  if (!isHmacValid && amountINR % 1 === 0) {
+    const altAmountStr = amountStr.includes('.') ? String(Math.round(amountINR)) : `${amountINR}.00`;
     const altHmac = crypto.createHmac('sha256', secret)
-      .update(`${prefix}:${wholeRupees}:${dateStr}:${rand}`)
+      .update(`${prefix}:${altAmountStr}:${dateStr}:${rand}`)
       .digest('hex')
       .slice(0, 6)
       .toUpperCase();
@@ -1669,9 +1685,10 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
 
     const setupPriceINR = terms.setupPriceINR;
     const monthlyPriceINR = terms.monthlyPriceINR;
-    const isPayable = terms.isPayable && setupPriceINR !== null;
-    const orderRefSetup = this.generateOrderReference('LCS', setupPriceINR || undefined);
-    const orderRefMonthly = monthlyPriceINR ? this.generateOrderReference('LCM', monthlyPriceINR) : null;
+    const hasSigningSecret = Boolean(process.env.SITE_AUDIT_SIGNING_SECRET || process.env.AUTH_SECRET);
+    const isPayable = terms.isPayable && setupPriceINR !== null && hasSigningSecret;
+    const orderRefSetup = isPayable ? this.generateOrderReference('LCS', setupPriceINR) : this.generateOrderReference('LCS');
+    const orderRefMonthly = (isPayable && monthlyPriceINR) ? this.generateOrderReference('LCM', monthlyPriceINR) : null;
     const orderRef = orderRefSetup;
 
     const upiUri = (upiVpa && isPayable && setupPriceINR)
@@ -1849,10 +1866,11 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
     <!-- Verified Payment Options or Attested Pending Pricing Notice -->
     ${!isPayable ? `
     <div style="background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 16px; padding: 2.5rem 2rem; margin-bottom: 2.5rem; text-align: center;">
-      <h2 style="font-size: 1.45rem; color: #38bdf8; margin-bottom: 0.5rem;">Commercial Terms Attested — Pricing Pending Definition</h2>
+      <h2 style="font-size: 1.45rem; color: #38bdf8; margin-bottom: 0.5rem;">Commercial Terms Attested — ${!hasSigningSecret ? 'Payment Verification Key Not Configured' : 'Pricing Pending Definition'}</h2>
       <p style="color: var(--text-muted); font-size: 0.95rem; max-width: 620px; margin: 0.5rem auto 1.5rem;">
-        The human owner has attested direct commercial terms in <code>owner/DIRECT_OFFER.md</code>. However, final implementation pricing remains <strong>${escapeHtml(terms.priceRaw)}</strong>.
-        Online payment checkout and automated UPI claims remain suppressed until explicit numeric pricing is configured by the owner.
+        ${!hasSigningSecret
+          ? 'Payment gateway signature secret is not configured in this environment. Online checkout and automated UPI claims remain safely disabled.'
+          : `The human owner has attested direct commercial terms in <code>owner/DIRECT_OFFER.md</code>. However, final implementation pricing remains <strong>${escapeHtml(terms.priceRaw)}</strong>. Online payment checkout and automated UPI claims remain suppressed until explicit numeric pricing is configured by the owner.`}
       </p>
       ${whatsappNum ? `
       <a href="https://wa.me/${whatsappNum}?text=${encodeURIComponent('Hi, I would like to request custom scope details for the AI Lead Conversion System.')}" class="btn" style="display: inline-block;" target="_blank" rel="noopener">Request Custom Scope via WhatsApp &rarr;</a>

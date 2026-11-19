@@ -319,6 +319,7 @@ describe('Stage U — Close All PR #79 Blockers, Fix lint:owner-prices, Align Pr
       delete process.env.AUTH_SECRET;
       try {
         expect(verifyIssuedOrderReference(refPaise)).toBeNull();
+        expect(() => generateOrderReference('LCS', 499.5)).toThrow(/Cannot issue payable order reference without/);
       } finally {
         process.env.SITE_AUDIT_SIGNING_SECRET = origSecret;
       }
@@ -367,6 +368,121 @@ describe('Stage U — Close All PR #79 Blockers, Fix lint:owner-prices, Align Pr
       const invalidGrouping = parseDirectOfferTerms(undefined, '**Price:** ₹15,00 Setup\n');
       expect(invalidGrouping.isPayable).toBe(false);
       expect(invalidGrouping.setupPriceINR).toBeNull();
+    });
+
+    it('1.12 createPaymentLink rejects unapproved or draft proposals (CWE-863)', async () => {
+      const db = getDb();
+      const { RazorpayAdapter } = await import('../../src/integrations/razorpay.js');
+      const razorpay = new RazorpayAdapter();
+
+      // Seed organization and business
+      db.prepare(`INSERT OR IGNORE INTO organizations (id, name, slug) VALUES ('org_test_prop_stat', 'Org Prop Stat', 'org-prop-stat')`).run();
+      db.prepare(`
+        INSERT OR IGNORE INTO businesses (id, organization_id, name, public_slug, vertical_id, vertical_name, risk_tier, country, currency, timezone, city, neighborhood, brand_voice, autonomy_mode, kill_switch_active, public_live)
+        VALUES ('biz_test_prop_stat', 'org_test_prop_stat', 'Prop Stat Biz', 'prop-stat', 'TECHNOLOGY', 'Technology', 'LOW', 'IN', 'INR', 'Asia/Kolkata', 'Hyderabad', 'Madhapur', 'Direct', 'ASSISTED', 0, 0)
+      `).run();
+
+      // Insert draft proposal
+      const draftPropId = `prop_draft_${Date.now()}`;
+      db.prepare(`
+        INSERT INTO proposals (
+          id, organization_id, business_id, prospect_id, title,
+          customer_problem, proposed_solution, deliverables_json, timeline_days,
+          setup_price_inr, monthly_price_inr, payment_terms, scope_boundary,
+          next_step, status, created_at
+        ) VALUES (
+          ?, 'org_test_prop_stat', 'biz_test_prop_stat', 'pros_01',
+          'Draft Proposal', 'Triage Delay', 'AI Bot', '[]', 5,
+          15000, 8000, 'Upfront', 'Scope',
+          'Deploy', 'DRAFT', datetime('now')
+        )
+      `).run(draftPropId);
+
+      await expect(
+        razorpay.createPaymentLink({
+          businessId: 'biz_test_prop_stat',
+          organizationId: 'org_test_prop_stat',
+          proposalId: draftPropId
+        })
+      ).rejects.toThrow(/UNAUTHORIZED_PROPOSAL_STATUS/);
+
+      // Transition to APPROVED -> should proceed past status check
+      db.prepare(`UPDATE proposals SET status = 'APPROVED' WHERE id = ?`).run(draftPropId);
+      const link = await razorpay.createPaymentLink({
+        businessId: 'biz_test_prop_stat',
+        organizationId: 'org_test_prop_stat',
+        proposalId: draftPropId
+      });
+      expect(link.shortUrl).toBeTruthy();
+      expect(link.amountINR).toBe(15000);
+    });
+
+    it('1.13 verifyIssuedOrderReference rejects whole-rupee fallback if amount is fractional', async () => {
+      const { generateOrderReference, verifyIssuedOrderReference } = await import('../../src/revenue/direct-offer-page.js');
+      const refFractional = generateOrderReference('LCS', 499.5);
+      expect(refFractional).toBeTruthy();
+
+      // Tamper with the hmac
+      const parts = refFractional.split('-');
+      const tamperedRef = `${parts[0]}-${parts[1]}-${parts[2]}-${parts[3]}-AAAAAA`;
+      expect(verifyIssuedOrderReference(tamperedRef)).toBeNull();
+    });
+
+    it('1.14 parseDirectOfferTerms returns safe nonpayable defaults if file reading throws', async () => {
+      const { parseDirectOfferTerms } = await import('../../src/revenue/direct-offer-page.js');
+      const spy = vi.spyOn(fs, 'readFileSync').mockImplementationOnce(() => {
+        throw new Error('EACCES: permission denied');
+      });
+      try {
+        const terms = parseDirectOfferTerms();
+        expect(terms.isPayable).toBe(false);
+        expect(terms.setupPriceINR).toBeNull();
+        expect(terms.monthlyPriceINR).toBeNull();
+        expect(terms.priceRaw).toBe('TBD');
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('1.15 renderAttestedOfferHtml fails closed when signing secret is missing', async () => {
+      const { DirectCommercialOfferPage } = await import('../../src/revenue/direct-offer-page.js');
+      const offerPage = DirectCommercialOfferPage.getInstance();
+
+      const origSecret = process.env.SITE_AUDIT_SIGNING_SECRET;
+      const origAuth = process.env.AUTH_SECRET;
+      delete process.env.SITE_AUDIT_SIGNING_SECRET;
+      delete process.env.AUTH_SECRET;
+
+      try {
+        const sampleMarkdown = '# Terms\n**Price:** ₹15,000 Setup\n**Monthly Price:** ₹8,000\n**Target Audience:** Indian SMBs\n';
+        const html = (offerPage as any).renderAttestedOfferHtml(
+          'Test Platform',
+          'https://example.com',
+          'test@example.com',
+          {},
+          undefined,
+          sampleMarkdown
+        );
+        expect(html).toContain('Payment Verification Key Not Configured');
+        expect(html).not.toContain('Pay ₹15,000 via UPI');
+        expect(html).not.toContain('Proceed to Razorpay Checkout');
+      } finally {
+        if (origSecret) process.env.SITE_AUDIT_SIGNING_SECRET = origSecret;
+        if (origAuth) process.env.AUTH_SECRET = origAuth;
+      }
+    });
+
+    it('1.16 GET /guides/:slug returns 503 for unexpected failures', async () => {
+      const { ContentAssetEngine } = await import('../../src/commission/content-asset-engine.js');
+      const spy = vi.spyOn(ContentAssetEngine.getInstance(), 'getAssetBySlug').mockRejectedValueOnce(new Error('Unexpected DB breakdown'));
+      try {
+        const res = await app.request('/guides/some-guide-slug');
+        expect(res.status).toBe(503);
+        const json = await res.json() as any;
+        expect(json.error).toBe('GUIDE_DATA_UNAVAILABLE');
+      } finally {
+        spy.mockRestore();
+      }
     });
   });
 
