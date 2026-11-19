@@ -80,10 +80,18 @@ describe('Stage U — Close All PR #79 Blockers, Fix lint:owner-prices, Align Pr
       const testDealId = `deal_test_hash_${Date.now()}`;
       const testSlug = `test-deal-ip-hash-${Date.now()}`;
 
+      // Reset any leaked D1 credentials from earlier test suites
+      delete process.env.CLOUDFLARE_D1_DATABASE_ID;
+      delete process.env.CLOUDFLARE_ACCOUNT_ID;
+      delete process.env.CLOUDFLARE_D1_API_TOKEN;
+      delete process.env.ALLOW_REMOTE_D1_READS;
+      delete process.env.ALLOW_REMOTE_D1_WRITES;
+
       // Clean up any stale data from previous test runs
       db.prepare(`DELETE FROM partner_offers WHERE destination_url LIKE '%example.com%'`).run();
       db.prepare(`DELETE FROM referrals WHERE destination_url LIKE '%example.com%'`).run();
       db.prepare(`DELETE FROM referral_click_events WHERE destination_url LIKE '%example.com%'`).run();
+      db.prepare(`DELETE FROM public_deals WHERE id = ?`).run(testDealId);
 
       const { AutonomousDealDiscoveryEngine } = await import('../../src/commission/autonomous-deal-discovery-engine.js');
       const engine = AutonomousDealDiscoveryEngine.getInstance();
@@ -106,6 +114,29 @@ describe('Stage U — Close All PR #79 Blockers, Fix lint:owner-prices, Align Pr
         buyerValueScore: 92,
         scannedAt: new Date().toISOString()
       });
+
+      // Insert persistent public_deals record for DB query resolution
+      db.prepare(`
+        INSERT OR REPLACE INTO public_deals (
+          id, slug, canonical_slug, deal_kind, title, brand, merchant, category,
+          sector_code, product_url, affiliate_url, current_price_inr, reference_price_inr,
+          currency, availability, verification_status, evidence_json,
+          created_at, updated_at
+        ) VALUES (
+          ?, ?, ?, 'PRODUCT', 'Test Earbuds ANC Pro', 'TestBrand', 'ExampleMerchant', 'Audio',
+          'CONS_ELEC', 'https://example.com/product', 'https://linksredirect.com/?id=123', 999, 1999,
+          'INR', 'IN_STOCK', 'VERIFIED', ?,
+          datetime('now'), datetime('now')
+        )
+      `).run(
+        testDealId,
+        testSlug,
+        testSlug,
+        JSON.stringify({
+          affiliateCampaignId: '123',
+          affiliateNetwork: 'CUELINKS'
+        })
+      );
 
       // Mock approved channel & dynamic conversion
       const { CuelinksSyncManager } = await import('../../src/commission/cuelinks-sync-manager.js');
@@ -153,6 +184,7 @@ describe('Stage U — Close All PR #79 Blockers, Fix lint:owner-prices, Align Pr
 
       // Cleanup
       db.prepare(`DELETE FROM partner_offers WHERE id = ?`).run(testDealId);
+      db.prepare(`DELETE FROM public_deals WHERE id = ?`).run(testDealId);
       db.prepare(`DELETE FROM referrals WHERE offer_id = ?`).run(testDealId);
       db.prepare(`DELETE FROM referral_click_events WHERE offer_id = ?`).run(testDealId);
     });
@@ -277,12 +309,14 @@ describe('Stage U — Close All PR #79 Blockers, Fix lint:owner-prices, Align Pr
       expect(propJson.data.setupPriceINR).toBeNull();
 
       // /offer HTML with attested terms renders the pending pricing notice rather than payment buttons or dead anchor
-      const actualHash = DirectCommercialOfferPage.computeDirectOfferHash();
+      const { resolveDirectOfferPath } = await import('../../src/revenue/direct-offer-page.js');
+      const resolvedOfferPath = resolveDirectOfferPath();
+      const actualHash = DirectCommercialOfferPage.computeDirectOfferHash(resolvedOfferPath || undefined);
       process.env.DIRECT_OFFER_TERMS_SHA256 = actualHash!;
       process.env.DIRECT_OFFER_TERMS_ATTESTED = 'true';
 
       const page = DirectCommercialOfferPage.getInstance();
-      const offerHtml = page.renderOfferHtml({}, path.resolve(process.cwd(), 'owner', 'DIRECT_OFFER.md'));
+      const offerHtml = page.renderOfferHtml({}, resolvedOfferPath || undefined);
       // When attested with pricing TBD, it does not offer ₹15,000 checkout buttons or dead #inquiry-card anchor
       expect(offerHtml).not.toContain('Generate ₹15,000 Setup Link');
       expect(offerHtml).not.toContain('href="#inquiry-card"');

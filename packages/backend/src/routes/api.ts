@@ -5820,36 +5820,7 @@ apiRouter.post('/payments/public/create-link', async (c) => {
     ? OfferCatalogService.PLATFORM_MONTHLY_OFFER_ID
     : OfferCatalogService.PLATFORM_SETUP_OFFER_ID;
 
-  if (validOfferId === OfferCatalogService.PLATFORM_SETUP_OFFER_ID || validOfferId === OfferCatalogService.PLATFORM_MONTHLY_OFFER_ID) {
-    const terms = parseDirectOfferTerms();
-    if (!terms.isPayable) {
-      return c.json({
-        success: false,
-        error: 'OFFER_PRICING_PENDING',
-        message: 'Platform direct offer pricing is pending owner definition. Online payment link creation is suppressed.'
-      }, 400);
-    }
-  }
-
-  // Resolve authoritative offer price to prevent price tampering
-  const offer = OfferCatalogService.getInstance().resolveAuthorizedOffer(
-    validOfferId,
-    OwnerAuthService.PLATFORM_BUSINESS_ID,
-    OwnerAuthService.OWNER_ORGANIZATION_ID
-  );
-  const expectedPriceINR = offer.priceINR;
-
-  // Check for client-supplied price tampering
-  const suppliedAmount = amountINR !== undefined ? Number(amountINR) : (amount !== undefined ? Number(amount) : undefined);
-  if (suppliedAmount !== undefined && !Number.isNaN(suppliedAmount) && suppliedAmount !== expectedPriceINR) {
-    return c.json({
-      success: false,
-      error: 'PRICE_TAMPERING_REJECTED',
-      message: `Supplied amount ₹${suppliedAmount} does not match authoritative offer price ₹${expectedPriceINR}. Price tampering is rejected.`
-    }, 400);
-  }
-
-  // If proposalId is provided, validate its existence, status, and reuse existing active link
+  // 1. If proposalId is provided, validate its existence, status, and reuse existing active link
   let verifiedProposal: any = null;
   if (proposalId) {
     const pe = ProposalEngine.getInstance();
@@ -5916,6 +5887,36 @@ apiRouter.post('/payments/public/create-link', async (c) => {
           reused: true
         }
       }, 200);
+    }
+  }
+
+  // 2. Resolve authoritative offer price to prevent price tampering
+  const offer = OfferCatalogService.getInstance().resolveAuthorizedOffer(
+    validOfferId,
+    OwnerAuthService.PLATFORM_BUSINESS_ID,
+    OwnerAuthService.OWNER_ORGANIZATION_ID
+  );
+  const expectedPriceINR = offer.priceINR;
+
+  // Check for client-supplied price tampering
+  const suppliedAmount = amountINR !== undefined ? Number(amountINR) : (amount !== undefined ? Number(amount) : undefined);
+  if (suppliedAmount !== undefined && !Number.isNaN(suppliedAmount) && suppliedAmount !== expectedPriceINR) {
+    return c.json({
+      success: false,
+      error: 'PRICE_TAMPERING_REJECTED',
+      message: `Supplied amount ₹${suppliedAmount} does not match authoritative offer price ₹${expectedPriceINR}. Price tampering is rejected.`
+    }, 400);
+  }
+
+  // 3. For public direct offer checkout without a bespoke proposal, fail closed if pricing is TBD
+  if (!proposalId && (validOfferId === OfferCatalogService.PLATFORM_SETUP_OFFER_ID || validOfferId === OfferCatalogService.PLATFORM_MONTHLY_OFFER_ID)) {
+    const terms = parseDirectOfferTerms();
+    if (!terms.isPayable) {
+      return c.json({
+        success: false,
+        error: 'OFFER_PRICING_PENDING',
+        message: 'Platform direct offer pricing is pending owner definition. Online payment link creation is suppressed.'
+      }, 400);
     }
   }
 

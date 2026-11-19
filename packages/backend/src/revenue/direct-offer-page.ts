@@ -54,6 +54,9 @@ export function resolveDirectOfferPath(customFilePath?: string): string | null {
     if (filePath && path.basename(filePath).toLowerCase().includes('own_offer')) {
       return null;
     }
+    if (filePath && !fs.existsSync(filePath)) {
+      filePath = undefined;
+    }
     if (!filePath) {
       const candidates = [
         path.resolve(process.cwd(), 'owner', 'DIRECT_OFFER.md'),
@@ -801,7 +804,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
         '<div style="align-self: flex-start; max-width: 85%; background: #1e293b; color: #f8fafc; padding: 0.65rem 0.9rem; border-radius: 12px 12px 12px 0; font-size: 0.88rem; line-height: 1.4; border: 1px solid #334155;">' +
           '<div>' + s.bot.replace(/\\n/g, '<br>') + '</div>' +
           '<div style="margin-top: 0.6rem; border-top: 1px solid #334155; padding-top: 0.5rem;">' +
-            '<a href="#inquiry-card" style="display: inline-block; background: #0284c7; color: #fff; text-decoration: none; padding: 0.35rem 0.7rem; border-radius: 6px; font-size: 0.8rem; font-weight: 600;">Reserve Slot: ' + s.slot + '</a>' +
+            '<a href="/tools/site-audit" style="display: inline-block; background: #0284c7; color: #fff; text-decoration: none; padding: 0.35rem 0.7rem; border-radius: 6px; font-size: 0.8rem; font-weight: 600;">Reserve Slot: ' + s.slot + '</a>' +
           '</div>' +
           '<div style="text-align: right; font-size: 0.72rem; color: #94a3b8; margin-top: 0.35rem;">Triage Response in 28s ✓✓</div>' +
         '</div>';
@@ -1328,7 +1331,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
         '<div style="align-self: flex-start; max-width: 85%; background: #1e293b; color: #f8fafc; padding: 0.65rem 0.9rem; border-radius: 12px 12px 12px 0; font-size: 0.88rem; line-height: 1.4; border: 1px solid #334155;">' +
           '<div>' + s.bot.replace(/\\n/g, '<br>') + '</div>' +
           '<div style="margin-top: 0.6rem; border-top: 1px solid #334155; padding-top: 0.5rem;">' +
-            '<a href="#inquiry-card" style="display: inline-block; background: #0284c7; color: #fff; text-decoration: none; padding: 0.35rem 0.7rem; border-radius: 6px; font-size: 0.8rem; font-weight: 600;">Reserve Slot: ' + s.slot + '</a>' +
+            '<a href="/tools/site-audit" style="display: inline-block; background: #0284c7; color: #fff; text-decoration: none; padding: 0.35rem 0.7rem; border-radius: 6px; font-size: 0.8rem; font-weight: 600;">Reserve Slot: ' + s.slot + '</a>' +
           '</div>' +
           '<div style="text-align: right; font-size: 0.72rem; color: #94a3b8; margin-top: 0.35rem;">Triage Response in 28s ✓✓</div>' +
         '</div>';

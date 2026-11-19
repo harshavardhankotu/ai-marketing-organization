@@ -177,6 +177,14 @@ describe('Stage K: Pre-Deploy Security Lockdown, Fair-Price Integrity, Amazon Du
     expect(fetchSpy.mock.calls.filter(([u]) => String(u).includes('api.cloudflare.com')).length).toBe(1);
     const d1Warns = warnSpy.mock.calls.filter(([msg]) => String(msg).includes('[D1Client]'));
     expect(d1Warns.length).toBe(0);
+
+    delete process.env.CLOUDFLARE_ACCOUNT_ID;
+    delete process.env.CLOUDFLARE_D1_DATABASE_ID;
+    delete process.env.CLOUDFLARE_D1_API_TOKEN;
+    delete process.env.ALLOW_REMOTE_D1_READS;
+    delete process.env.ALLOW_REMOTE_D1_WRITES;
+    fetchSpy.mockRestore();
+    warnSpy.mockRestore();
   });
 
   it('Task 3: Rejects direct push to main/master (HTTP 400) and opens PR from feature branch targeting main', async () => {

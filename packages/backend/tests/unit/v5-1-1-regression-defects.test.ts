@@ -438,7 +438,10 @@ describe('V5.1.1 — 10 Regression Defect Repairs Verification', () => {
 
     it('/owner/proposal sources pricing from owner/OWN_OFFER.md only when isDirectOfferAttested() is true', async () => {
       vi.spyOn(fs, 'existsSync').mockReturnValue(true);
-      vi.spyOn(fs, 'readFileSync').mockReturnValue('# Harsha Vardhan Kotu\nBio content');
+      vi.spyOn(fs, 'readFileSync').mockImplementation((p: any) => {
+        if (String(p).includes('BIO.md')) return '# Harsha Vardhan Kotu\nBio content';
+        return '# AI Inbound Lead Conversion System\n\n**Price:** ₹15,000 Setup\n**Billing Model:** ONE_TIME\n';
+      });
       vi.spyOn(DirectCommercialOfferPage, 'isDirectOfferAttested').mockReturnValue(true);
 
       const res = await app.request('/api/v1/owner/proposal', {
