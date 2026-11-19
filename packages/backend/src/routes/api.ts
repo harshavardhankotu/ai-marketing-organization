@@ -5527,7 +5527,7 @@ const handleManualUpiClaim = async (c: any) => {
     return c.json({ success: false, error: 'INVALID_JSON', message: 'Malformed JSON body.' }, 400);
   }
 
-  const { businessId, journeyId, proposalId, invoiceRef, auditId, payerName, payerPhone, payerVpa, utr, amountINR, serviceRendered, notes } = body;
+  const { businessId, journeyId, proposalId, offerId, invoiceRef, auditId, payerName, payerPhone, payerVpa, utr, amountINR, serviceRendered, notes } = body;
   const resolvedBusinessId = businessId || 'biz_platform_aro';
   const resolvedInvoiceRef = invoiceRef || (auditId ? String(auditId) : undefined);
 
@@ -5540,6 +5540,7 @@ const handleManualUpiClaim = async (c: any) => {
       businessId: resolvedBusinessId,
       journeyId,
       proposalId,
+      offerId,
       invoiceRef: resolvedInvoiceRef,
       payerName,
       payerPhone,
@@ -13773,7 +13774,7 @@ apiRouter.get('/capabilities', async (c) => {
   const catalog = OfferCatalogService.getInstance();
   let deliverables: string[] = [];
   try {
-    const offer = catalog.resolveAuthorizedOffer(offerId);
+    const offer = catalog.resolveAuthorizedOffer(offerId, undefined, undefined, { allowPendingPricing: true });
     deliverables = offer.deliverables;
   } catch {}
   const readiness = deliverables.length > 0
@@ -15218,21 +15219,33 @@ const handleSiteAuditRecheck = async (c: any) => {
     const remainingChecks: any[] = [];
     const matchedPriorKeys = new Set<string>();
 
+    // Collect all checkIds that still have failing/non-PASS findings in the rescan
+    const failingRescanKeys = new Set<string>();
+    for (const f of rescanResult.findings || []) {
+      if (f.status !== 'PASS') {
+        failingRescanKeys.add(getStableCheckId(f));
+      }
+    }
+
     for (const f of rescanResult.findings || []) {
       const key = getStableCheckId(f);
       if (priorDefectMap.has(key)) {
-        matchedPriorKeys.add(key);
-        const priorFinding = priorDefectMap.get(key);
         if (f.status === 'PASS') {
-          fixedChecks.push({
-            checkId: key,
-            category: f.category,
-            title: priorFinding.title,
-            previousStatus: priorFinding.status,
-            currentStatus: 'VERIFIED',
-            recommendation: f.recommendation
-          });
+          // If this key still has active failures elsewhere in the rescan, it is not fixed
+          if (!failingRescanKeys.has(key)) {
+            matchedPriorKeys.add(key);
+            const priorFinding = priorDefectMap.get(key);
+            fixedChecks.push({
+              checkId: key,
+              category: f.category,
+              title: priorFinding.title,
+              previousStatus: priorFinding.status,
+              currentStatus: 'VERIFIED',
+              recommendation: f.recommendation
+            });
+          }
         } else {
+          matchedPriorKeys.add(key);
           remainingChecks.push({
             checkId: key,
             category: f.category,

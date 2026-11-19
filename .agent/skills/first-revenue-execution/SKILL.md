@@ -92,4 +92,4 @@ When evaluating or generating an audit scorecard for local SMBs:
 On Windows host machines:
 - **Never use `Invoke-WebRequest`** (hangs indefinitely or corrupts binary streams).
 - **Use ONLY `curl.exe -sS --max-time 25`** or bounded Node scripts ending with `process.exit(0)`.
-- Always verify working directory prefix: `cd C:\Users\vardh\.gemini\antigravity\scratch\ai-marketing-organization;`.
+- Always verify the shell working directory is set to the repository root before executing workspace commands.

@@ -61,6 +61,7 @@ export interface ManualUpiClaimInput {
   businessId: string;
   journeyId?: string;
   proposalId?: string;
+  offerId?: string;
   invoiceRef?: string;
   payerName?: string;
   payerPhone?: string;
@@ -478,13 +479,22 @@ export class RazorpayAdapter {
     if (input.proposalId) {
       let proposal: any = null;
       if (isProduction()) {
-        proposal = await this.d1Repo.queryOne<any>('proposals', 'SELECT id, setup_price_inr, prospect_id FROM proposals WHERE id = ?', [input.proposalId]);
+        proposal = await this.d1Repo.queryOne<any>('proposals', 'SELECT id, organization_id, business_id, setup_price_inr, prospect_id FROM proposals WHERE id = ?', [input.proposalId]);
       } else {
-        proposal = this.db.prepare('SELECT id, setup_price_inr, prospect_id FROM proposals WHERE id = ?').get(input.proposalId) as any;
+        proposal = this.db.prepare('SELECT id, organization_id, business_id, setup_price_inr, prospect_id FROM proposals WHERE id = ?').get(input.proposalId) as any;
       }
       if (!proposal) {
         throw new Error(`PROPOSAL_NOT_FOUND: Proposal '${input.proposalId}' does not exist.`);
       }
+
+      // Tenant ownership check to prevent IDOR (CWE-639)
+      if (input.businessId && proposal.business_id !== input.businessId) {
+        throw new Error(`UNAUTHORIZED_PROPOSAL: Proposal '${input.proposalId}' belongs to business '${proposal.business_id}', but caller supplied '${input.businessId}'.`);
+      }
+      if (input.organizationId && proposal.organization_id !== input.organizationId) {
+        throw new Error(`UNAUTHORIZED_PROPOSAL: Proposal '${input.proposalId}' belongs to organization '${proposal.organization_id}', but caller supplied '${input.organizationId}'.`);
+      }
+
       authoritativeAmountINR = proposal.setup_price_inr !== undefined ? proposal.setup_price_inr : (proposal as any).setupPriceINR;
       description = description || `Proposal ${input.proposalId} Setup & Integration`;
     } else {
@@ -1094,13 +1104,21 @@ export class RazorpayAdapter {
       throw new Error(`BUSINESS_NOT_FOUND: Business ${input.businessId} does not exist.`);
     }
 
-    // Validate deposit amount against proposal or permitted deposit amounts
+    // Validate deposit amount against proposal, offer, or permitted deposit amounts
     if (input.proposalId) {
       if (!prop) {
         throw new Error(`PROPOSAL_NOT_FOUND: Proposal '${input.proposalId}' does not exist.`);
       }
       if (Math.round(input.amountINR) !== Math.round(prop.setup_price_inr)) {
         throw new Error(`AMOUNT_MISMATCH: Claim amount ₹${input.amountINR} does not match proposal invoice amount ₹${prop.setup_price_inr}.`);
+      }
+    } else if (input.offerId) {
+      const offer = resolveAuthorizedOffer(input.offerId, input.businessId, biz.organization_id);
+      if (!offer) {
+        throw new Error(`UNAUTHORIZED_OFFER: Offer '${input.offerId}' could not be resolved.`);
+      }
+      if (Math.round(input.amountINR) !== Math.round(offer.priceINR)) {
+        throw new Error(`AMOUNT_MISMATCH: Claim amount ₹${input.amountINR} does not match authoritative offer price ₹${offer.priceINR}.`);
       }
     } else {
       this.validatePermittedDeposit(input.amountINR, input.serviceRendered);

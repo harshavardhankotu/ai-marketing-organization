@@ -290,54 +290,67 @@ describe('Stage U — Close All PR #79 Blockers, Fix lint:owner-prices, Align Pr
     });
 
     it('2.5 /owner/proposal and /offer keep payable checkout suppressed when DIRECT_OFFER.md has Price: TBD', async () => {
-      const { parseDirectOfferTerms, DirectCommercialOfferPage } = await import('../../src/revenue/direct-offer-page.js');
-      const { OwnerAuthService } = await import('../../src/auth/owner-auth.js');
-      const terms = parseDirectOfferTerms();
-      expect(terms.isPayable).toBe(false);
-      expect(terms.setupPriceINR).toBeNull();
-      expect(terms.priceRaw).toContain('TBD');
-
-      // /owner/proposal requires owner session and returns isPayable: false and setupPriceINR: null
-      const session = OwnerAuthService.getInstance().createSession('127.0.0.1');
-      const propRes = await app.request('/owner/proposal', {
-        headers: {
-          Authorization: `Bearer ${session.token}`
+      const origReadFileSync = fs.readFileSync;
+      const fsSpy = vi.spyOn(fs, 'readFileSync').mockImplementation((filePath: any, encoding?: any) => {
+        const p = String(filePath);
+        if (p.includes('DIRECT_OFFER.md')) {
+          return '# AI Inbound Lead Conversion System\n\n**Price:** TBD. Owner decides.\n**Monthly Retainer:** TBD\n**Billing Model:** TBD\n';
         }
+        return origReadFileSync(filePath, encoding);
       });
-      expect(propRes.status).toBe(200);
-      const propJson = await propRes.json() as any;
-      expect(propJson.isPayable).toBe(false);
-      expect(propJson.data.setupPriceINR).toBeNull();
 
-      // /offer HTML with attested terms renders the pending pricing notice rather than payment buttons or dead anchor
-      const { resolveDirectOfferPath } = await import('../../src/revenue/direct-offer-page.js');
-      const resolvedOfferPath = resolveDirectOfferPath();
-      const actualHash = DirectCommercialOfferPage.computeDirectOfferHash(resolvedOfferPath || undefined);
-      process.env.DIRECT_OFFER_TERMS_SHA256 = actualHash!;
-      process.env.DIRECT_OFFER_TERMS_ATTESTED = 'true';
+      try {
+        const { parseDirectOfferTerms, DirectCommercialOfferPage } = await import('../../src/revenue/direct-offer-page.js');
+        const { OwnerAuthService } = await import('../../src/auth/owner-auth.js');
+        const terms = parseDirectOfferTerms();
+        expect(terms.isPayable).toBe(false);
+        expect(terms.setupPriceINR).toBeNull();
+        expect(terms.priceRaw).toContain('TBD');
 
-      const page = DirectCommercialOfferPage.getInstance();
-      const offerHtml = page.renderOfferHtml({}, resolvedOfferPath || undefined);
-      // When attested with pricing TBD, it does not offer ₹15,000 checkout buttons or dead #inquiry-card anchor
-      expect(offerHtml).not.toContain('Generate ₹15,000 Setup Link');
-      expect(offerHtml).not.toContain('href="#inquiry-card"');
-      expect(offerHtml).toContain('Commercial Terms Attested — Pricing Pending Definition');
+        // /owner/proposal requires owner session and returns isPayable: false and setupPriceINR: null
+        const session = OwnerAuthService.getInstance().createSession('127.0.0.1');
+        const propRes = await app.request('/owner/proposal', {
+          headers: {
+            Authorization: `Bearer ${session.token}`
+          }
+        });
+        expect(propRes.status).toBe(200);
+        const propJson = await propRes.json() as any;
+        expect(propJson.isPayable).toBe(false);
+        expect(propJson.data.setupPriceINR).toBeNull();
 
-      delete process.env.DIRECT_OFFER_TERMS_ATTESTED;
-      delete process.env.DIRECT_OFFER_TERMS_SHA256;
+        // /offer HTML with attested terms renders the pending pricing notice rather than payment buttons or dead anchor
+        const { resolveDirectOfferPath } = await import('../../src/revenue/direct-offer-page.js');
+        const resolvedOfferPath = resolveDirectOfferPath();
+        const actualHash = DirectCommercialOfferPage.computeDirectOfferHash(resolvedOfferPath || undefined);
+        process.env.DIRECT_OFFER_TERMS_SHA256 = actualHash!;
+        process.env.DIRECT_OFFER_TERMS_ATTESTED = 'true';
 
-      // POST /api/v1/payments/public/create-link fails closed when terms.isPayable is false
-      const linkRes = await app.request('/api/v1/payments/public/create-link', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          offerId: 'PLATFORM_SETUP',
-          customerName: 'Test Client'
-        })
-      });
-      expect(linkRes.status).toBe(400);
-      const linkJson = await linkRes.json() as any;
-      expect(linkJson.error).toBe('OFFER_PRICING_PENDING');
+        const page = DirectCommercialOfferPage.getInstance();
+        const offerHtml = page.renderOfferHtml({}, resolvedOfferPath || undefined);
+        // When attested with pricing TBD, it does not offer ₹15,000 checkout buttons or dead #inquiry-card anchor
+        expect(offerHtml).not.toContain('Generate ₹15,000 Setup Link');
+        expect(offerHtml).not.toContain('href="#inquiry-card"');
+        expect(offerHtml).toContain('Commercial Terms Attested — Pricing Pending Definition');
+
+        delete process.env.DIRECT_OFFER_TERMS_ATTESTED;
+        delete process.env.DIRECT_OFFER_TERMS_SHA256;
+
+        // POST /api/v1/payments/public/create-link fails closed when terms.isPayable is false
+        const linkRes = await app.request('/api/v1/payments/public/create-link', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            offerId: 'PLATFORM_SETUP',
+            customerName: 'Test Client'
+          })
+        });
+        expect(linkRes.status).toBe(400);
+        const linkJson = await linkRes.json() as any;
+        expect(linkJson.error).toBe('OFFER_PRICING_PENDING');
+      } finally {
+        fsSpy.mockRestore();
+      }
     });
 
     it('2.6 parseDirectOfferTerms rejects price ranges, parses decimals and monthly retainer', async () => {
@@ -377,11 +390,24 @@ describe('Stage U — Close All PR #79 Blockers, Fix lint:owner-prices, Align Pr
     });
 
     it('2.7 resolveAuthorizedOffer strictly fails closed when offer has no payable price', async () => {
-      const { resolveAuthorizedOffer } = await import('../../src/revenue/offer-catalog.js');
-      expect(() => resolveAuthorizedOffer('PLATFORM_SETUP', 'biz_platform_aro', 'org_owner_primary'))
-        .toThrow(/OFFER_PRICING_PENDING/i);
-      expect(() => resolveAuthorizedOffer('PLATFORM_MONTHLY', 'biz_platform_aro', 'org_owner_primary'))
-        .toThrow(/OFFER_PRICING_PENDING/i);
+      const origReadFileSync = fs.readFileSync;
+      const fsSpy = vi.spyOn(fs, 'readFileSync').mockImplementation((filePath: any, encoding?: any) => {
+        const p = String(filePath);
+        if (p.includes('DIRECT_OFFER.md')) {
+          return '# AI Inbound Lead Conversion System\n\n**Price:** TBD. Owner decides.\n**Monthly Retainer:** TBD\n**Billing Model:** TBD\n';
+        }
+        return origReadFileSync(filePath, encoding);
+      });
+
+      try {
+        const { resolveAuthorizedOffer } = await import('../../src/revenue/offer-catalog.js');
+        expect(() => resolveAuthorizedOffer('PLATFORM_SETUP', 'biz_platform_aro', 'org_owner_primary'))
+          .toThrow(/OFFER_PRICING_PENDING/i);
+        expect(() => resolveAuthorizedOffer('PLATFORM_MONTHLY', 'biz_platform_aro', 'org_owner_primary'))
+          .toThrow(/OFFER_PRICING_PENDING/i);
+      } finally {
+        fsSpy.mockRestore();
+      }
     });
 
     it('2.8 proposal checkout validates against approved proposal price rather than direct offer pricing', async () => {
@@ -431,10 +457,22 @@ describe('Stage U — Close All PR #79 Blockers, Fix lint:owner-prices, Align Pr
 
     it('2.9 handleSiteAuditRecheck correctly matches fixed checks by stable checkId', async () => {
       const { SiteAuditService } = await import('../../src/tools/site-audit/site-audit-service.js');
+      const { SecureUrlFetcher } = await import('../../src/tools/site-audit/secure-url-fetcher.js');
       const service = SiteAuditService.getInstance();
       const testUrl = 'https://example.com';
 
-      // 1. Initial scan of example.com (which has defects like meta_description_missing)
+      // Hermetic deterministic fetch stub to prevent live network dependency
+      const fetchSpy = vi.spyOn(SecureUrlFetcher.prototype, 'fetch').mockResolvedValue({
+        status: 200,
+        statusText: 'OK',
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+        body: '<!DOCTYPE html><html><head><title>Test Example Site</title></head><body><h1>Deterministic Test</h1></body></html>',
+        finalUrl: 'https://example.com',
+        redirectCount: 0,
+        timingMs: 40
+      } as any);
+
+      // 1. Initial scan of example.com (has defects like meta_description_missing, schema_jsonld_missing)
       const initialAudit = await service.runScan(testUrl);
 
       // Verify initial findings include at least one defect with a stable checkId
@@ -448,7 +486,7 @@ describe('Stage U — Close All PR #79 Blockers, Fix lint:owner-prices, Align Pr
 
       // 3. Mock rescan result where the defect is now resolved to PASS
       const originalRunScan = service.runScan.bind(service);
-      vi.spyOn(service, 'runScan').mockImplementation(async (url: string) => {
+      const rescanSpy = vi.spyOn(service, 'runScan').mockImplementation(async (url: string) => {
         const fresh = await originalRunScan(url);
         // Flip the initial defect finding to PASS with the same checkId
         fresh.findings = fresh.findings.map(f => {
@@ -480,7 +518,8 @@ describe('Stage U — Close All PR #79 Blockers, Fix lint:owner-prices, Align Pr
         expect(fixedDefect).toBeDefined();
         expect(fixedDefect.currentStatus).toBe('VERIFIED');
       } finally {
-        vi.restoreAllMocks();
+        fetchSpy.mockRestore();
+        rescanSpy.mockRestore();
       }
     });
   });

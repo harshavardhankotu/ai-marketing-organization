@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'fs';
 import { Hono } from 'hono';
 import { createHmac } from 'crypto';
 import { apiRouter } from '../../src/routes/api.js';
@@ -14,6 +15,8 @@ describe('Revenue Authority, Payment Link Integrity & Production Security Guaran
   let app: Hono;
   let razorpay: RazorpayAdapter;
   const originalEnv = { ...process.env };
+  const originalReadFileSync = fs.readFileSync;
+  let fsSpy: any;
 
   beforeEach(() => {
     resetDbForTesting();
@@ -23,9 +26,18 @@ describe('Revenue Authority, Payment Link Integrity & Production Security Guaran
     app = new Hono();
     app.route('/api/v1', apiRouter);
     process.env = { ...originalEnv };
+
+    fsSpy = vi.spyOn(fs, 'readFileSync').mockImplementation((filePath: any, encoding?: any) => {
+      const p = String(filePath);
+      if (p.includes('DIRECT_OFFER.md')) {
+        return '# AI Inbound Lead Conversion System\n\n**Price:** ₹15,000 Setup\n**Monthly Retainer:** ₹8,000/month\n**Billing Model:** ONE_TIME\n';
+      }
+      return originalReadFileSync(filePath, encoding);
+    });
   });
 
   afterEach(() => {
+    fsSpy?.mockRestore();
     process.env = { ...originalEnv };
   });
 

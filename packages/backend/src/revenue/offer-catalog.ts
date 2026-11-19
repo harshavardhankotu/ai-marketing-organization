@@ -216,7 +216,8 @@ export class OfferCatalogService {
   public resolveAuthorizedOffer(
     offerId: string,
     businessId?: string,
-    organizationId?: string
+    organizationId?: string,
+    options?: { allowPendingPricing?: boolean }
   ): AuthorizedOffer {
     if (!offerId || typeof offerId !== 'string') {
       throw new Error('INVALID_OFFER_REQUEST: offer_id is required for server-side pricing resolution.');
@@ -270,9 +271,11 @@ export class OfferCatalogService {
       }
       const terms = parseDirectOfferTerms();
       if (!terms.isPayable || terms.setupPriceINR === null) {
-        throw new Error(`OFFER_PRICING_PENDING: Platform direct offer (${trimmedOfferId}) setup pricing is pending owner definition.`);
+        if (!options?.allowPendingPricing) {
+          throw new Error(`OFFER_PRICING_PENDING: Platform direct offer (${trimmedOfferId}) setup pricing is pending owner definition.`);
+        }
       }
-      const resolvedSetupPrice = terms.setupPriceINR;
+      const resolvedSetupPrice = terms.setupPriceINR ?? 0;
       return {
         offerId: OfferCatalogService.PLATFORM_SETUP_OFFER_ID,
         offerName: 'AI Inbound Lead Conversion System — Day 0-5 Setup & Integration',
@@ -311,9 +314,11 @@ export class OfferCatalogService {
       }
       const terms = parseDirectOfferTerms();
       if (!terms.isPayable || terms.monthlyPriceINR === null) {
-        throw new Error(`OFFER_PRICING_PENDING: Platform direct offer (${trimmedOfferId}) monthly retainer pricing is pending owner definition.`);
+        if (!options?.allowPendingPricing) {
+          throw new Error(`OFFER_PRICING_PENDING: Platform direct offer (${trimmedOfferId}) monthly retainer pricing is pending owner definition.`);
+        }
       }
-      const resolvedMonthlyPrice = terms.monthlyPriceINR;
+      const resolvedMonthlyPrice = terms.monthlyPriceINR ?? 0;
       return {
         offerId: OfferCatalogService.PLATFORM_MONTHLY_OFFER_ID,
         offerName: 'AI Inbound Lead Conversion System — Monthly Retainer & SLA',
@@ -573,7 +578,8 @@ export class OfferCatalogService {
 export function resolveAuthorizedOffer(
   offerId: string,
   businessId?: string,
-  organizationId?: string
+  organizationId?: string,
+  options?: { allowPendingPricing?: boolean }
 ): AuthorizedOffer {
-  return OfferCatalogService.getInstance().resolveAuthorizedOffer(offerId, businessId, organizationId);
+  return OfferCatalogService.getInstance().resolveAuthorizedOffer(offerId, businessId, organizationId, options);
 }

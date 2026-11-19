@@ -82,6 +82,34 @@ export interface DirectOfferTerms {
   billingModel: string;
 }
 
+function parseSinglePayableAmount(raw: string, type: 'setup' | 'monthly'): number | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  // Reject ranges, ambiguous markers, alternative conjunctions, and disclaimers
+  if (/\b(tbd|variable|quote|custom|scope dependent|contact|or|and)\b/i.test(trimmed)) return null;
+  if (/[-–—]|\bto\b/i.test(trimmed)) return null;
+  // If slash is present, only allow /month or /mo
+  if (/\/(?!month\b|mo\b)/i.test(trimmed)) return null;
+
+  // Reject strings containing multiple numeric figures (e.g. '₹15,000 or ₹25,000')
+  const allNumberMatches = trimmed.match(/\d[\d,]*(?:\.\d{1,2})?/g);
+  if (!allNumberMatches || allNumberMatches.length !== 1) {
+    return null;
+  }
+
+  // Validate complete supported expression with strict boundary
+  const regex = type === 'setup'
+    ? /^(?:₹|INR|Rs\.?)?\s*(\d[\d,]*(?:\.\d{1,2})?)(?:\s*(?:Setup|One[- ]time|Deposit))?$/i
+    : /^(?:₹|INR|Rs\.?)?\s*(\d[\d,]*(?:\.\d{1,2})?)(?:\s*(?:\/(?:month|mo)|per month|monthly|retainer))?$/i;
+
+  const match = trimmed.match(regex);
+  if (!match) return null;
+
+  const parsed = parseFloat(match[1].replace(/,/g, ''));
+  if (Number.isNaN(parsed) || parsed <= 0) return null;
+  return parsed;
+}
+
 export function parseDirectOfferTerms(customFilePath?: string): DirectOfferTerms {
   const filePath = resolveDirectOfferPath(customFilePath);
   if (!filePath) {
@@ -100,38 +128,14 @@ export function parseDirectOfferTerms(customFilePath?: string): DirectOfferTerms
   const priceMatch = content.match(/\*\*Price:\*\*\s*(.+)/i);
   const priceRaw = priceMatch ? priceMatch[1].trim() : 'TBD';
 
-  // Finding 2: Reject ranges (e.g. ₹15,000–₹25,000, 15000 to 25000) and ambiguous values (scope dependent, custom, quote)
-  const isExplicitlyTbd = /\b(tbd|variable|quote|custom|scope dependent|contact)\b/i.test(priceRaw);
-  const isRange = /[-–—]|\bto\b/i.test(priceRaw);
-
-  let numericPrice: number | null = null;
-  if (!isExplicitlyTbd && !isRange) {
-    const singlePriceMatch = priceRaw.match(/(?:₹|INR|Rs\.?)?\s*(\d[\d,]*(?:\.\d{1,2})?)/i);
-    if (singlePriceMatch) {
-      const parsed = parseFloat(singlePriceMatch[1].replace(/,/g, ''));
-      if (!Number.isNaN(parsed) && parsed > 0) {
-        numericPrice = parsed;
-      }
-    }
-  }
-  const isPayable = numericPrice !== null && !isExplicitlyTbd && !isRange;
+  const numericPrice = parseSinglePayableAmount(priceRaw, 'setup');
+  const isPayable = numericPrice !== null;
 
   // Monthly Retainer / Price parsing if explicitly defined in markdown
   const monthlyMatch = content.match(/\*\*(?:Monthly Price|Monthly Retainer):\*\*\s*(.+)/i);
   let monthlyPriceINR: number | null = null;
   if (monthlyMatch) {
-    const monthlyRaw = monthlyMatch[1].trim();
-    const isMonthlyTbd = /\b(tbd|variable|quote|custom|scope dependent|contact)\b/i.test(monthlyRaw);
-    const isMonthlyRange = /[-–—]|\bto\b/i.test(monthlyRaw);
-    if (!isMonthlyTbd && !isMonthlyRange) {
-      const singleMonthlyMatch = monthlyRaw.match(/(?:₹|INR|Rs\.?)?\s*(\d[\d,]*(?:\.\d{1,2})?)/i);
-      if (singleMonthlyMatch) {
-        const parsedMonthly = parseFloat(singleMonthlyMatch[1].replace(/,/g, ''));
-        if (!Number.isNaN(parsedMonthly) && parsedMonthly > 0) {
-          monthlyPriceINR = parsedMonthly;
-        }
-      }
-    }
+    monthlyPriceINR = parseSinglePayableAmount(monthlyMatch[1].trim(), 'monthly');
   }
 
   const titleMatch = content.match(/\*\*Full Title:\*\*\s*(.+)/i);
@@ -1819,8 +1823,8 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
             <div>
               <label style="display: block; font-size: 0.82rem; color: #94a3b8; margin-bottom: 0.25rem;">Service Tier Paid *</label>
               <select id="offer-service-tier" style="width: 100%; padding: 0.6rem; border-radius: 8px; border: 1px solid #334155; background: #0b1120; color: #fff; font-size: 0.9rem;" onchange="updateOfferAmount(this.value)">
-                <option value="${setupPriceINR}">Day 0-5 Setup (₹${setupPriceINR.toLocaleString('en-IN')})</option>
-                ${monthlyPriceINR ? `<option value="${monthlyPriceINR}">Monthly Retainer (₹${monthlyPriceINR.toLocaleString('en-IN')})</option>` : ''}
+                <option value="${setupPriceINR}" data-offer-id="PLATFORM_SETUP">Day 0-5 Setup (₹${setupPriceINR.toLocaleString('en-IN')})</option>
+                ${monthlyPriceINR ? `<option value="${monthlyPriceINR}" data-offer-id="PLATFORM_MONTHLY">Monthly Retainer (₹${monthlyPriceINR.toLocaleString('en-IN')})</option>` : ''}
               </select>
             </div>
             <div>
@@ -1898,15 +1902,19 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
       btn.disabled = true;
       btn.innerText = 'Submitting Claim...';
 
-      var amount = Number(document.getElementById('offer-service-tier').value);
+      var tierSelect = document.getElementById('offer-service-tier');
+      var selectedOption = tierSelect.options[tierSelect.selectedIndex];
+      var selectedOfferId = selectedOption ? selectedOption.getAttribute('data-offer-id') : 'PLATFORM_SETUP';
+      var amount = Number(tierSelect.value);
       var payload = {
         businessId: 'biz_platform_aro',
+        offerId: selectedOfferId,
         invoiceRef: '${orderRef}',
         payerName: document.getElementById('offer-payer-name').value.trim(),
         payerPhone: document.getElementById('offer-payer-phone').value.trim(),
         amountINR: amount,
         utr: document.getElementById('offer-payer-utr').value.trim(),
-        serviceRendered: amount === 15000 ? 'Day 0-5 Setup & Integration' : 'Monthly Retainer & SLA'
+        serviceRendered: selectedOfferId === 'PLATFORM_SETUP' ? 'Day 0-5 Setup & Integration' : 'Monthly Retainer & SLA'
       };
 
       try {
