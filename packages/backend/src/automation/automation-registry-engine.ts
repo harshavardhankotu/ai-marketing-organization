@@ -2496,7 +2496,7 @@ export class AutomationRegistryEngine {
         return {
           status,
           itemsProcessed: totalHandled,
-          itemsSucceeded: isPurgeFailed ? drainedCount + purge.localDeleted : totalHandled,
+          itemsSucceeded: isPurgeFailed ? drainedCount + purge.purgedCount : totalHandled,
           itemsFailed: failedItems,
           summary: {
             dpdpPurgedCount: purge.purgedCount,
@@ -2557,7 +2557,7 @@ export class AutomationRegistryEngine {
 
         let status: 'COMPLETED' | 'PARTIAL' | 'ERROR' = 'COMPLETED';
         if (isPurgeFailed) {
-          status = purge.localDeleted > 0 ? 'PARTIAL' : 'ERROR';
+          status = purge.purgedCount > 0 ? 'PARTIAL' : 'ERROR';
         } else if (isPurgePartial) {
           status = 'PARTIAL';
         }
@@ -2567,7 +2567,7 @@ export class AutomationRegistryEngine {
         return {
           status,
           itemsProcessed: purge.purgedCount,
-          itemsSucceeded: isPurgeFailed ? purge.localDeleted : purge.purgedCount,
+          itemsSucceeded: purge.purgedCount,
           itemsFailed: failedItems,
           summary: {
             cooldownEnforcedDays: 60,

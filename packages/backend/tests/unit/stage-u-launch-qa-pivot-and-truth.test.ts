@@ -435,13 +435,20 @@ describe('Stage U — Close All PR #79 Blockers, Fix lint:owner-prices, Align Pr
 
       // Transition to APPROVED -> should proceed past status check
       db.prepare(`UPDATE proposals SET status = 'APPROVED' WHERE id = ?`).run(draftPropId);
-      const link = await razorpay.createPaymentLink({
-        businessId: 'biz_test_prop_stat',
-        organizationId: 'org_test_prop_stat',
-        proposalId: draftPropId
-      });
-      expect(link.shortUrl).toBeTruthy();
-      expect(link.amountINR).toBe(15000);
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(JSON.stringify({ id: 'plink_mock_prop_01', short_url: 'https://rzp.io/i/mock_prop', status: 'created' }), { status: 200 })
+      );
+      try {
+        const link = await razorpay.createPaymentLink({
+          businessId: 'biz_test_prop_stat',
+          organizationId: 'org_test_prop_stat',
+          proposalId: draftPropId
+        });
+        expect(link.shortUrl).toBeTruthy();
+        expect(link.amountINR).toBe(15000);
+      } finally {
+        fetchSpy.mockRestore();
+      }
     });
 
     it('1.13 verifyIssuedOrderReference rejects whole-rupee fallback if amount is fractional', async () => {

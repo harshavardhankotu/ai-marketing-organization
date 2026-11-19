@@ -482,9 +482,9 @@ export class RazorpayAdapter {
 
     if (input.proposalId) {
       if (isProduction()) {
-        proposal = await this.d1Repo.queryOne<any>('proposals', 'SELECT id, organization_id, business_id, setup_price_inr, prospect_id, status FROM proposals WHERE id = ?', [input.proposalId]);
+        proposal = await this.d1Repo.queryOne<any>('proposals', 'SELECT id, organization_id, business_id, setup_price_inr, prospect_id, status, offer_id FROM proposals WHERE id = ?', [input.proposalId]);
       } else {
-        proposal = this.db.prepare('SELECT id, organization_id, business_id, setup_price_inr, prospect_id, status FROM proposals WHERE id = ?').get(input.proposalId) as any;
+        proposal = this.db.prepare('SELECT id, organization_id, business_id, setup_price_inr, prospect_id, status, offer_id FROM proposals WHERE id = ?').get(input.proposalId) as any;
       }
       if (!proposal) {
         throw new Error(`PROPOSAL_NOT_FOUND: Proposal '${input.proposalId}' does not exist.`);
@@ -505,14 +505,12 @@ export class RazorpayAdapter {
         throw new Error(`UNAUTHORIZED_PROPOSAL_STATUS: Proposal '${input.proposalId}' has status '${proposal.status}', but must be one of [${eligibleStatuses.join(', ')}] to create a payment link.`);
       }
 
-      if (input.offerId) {
-        const propOfferId = proposal.offer_id || (proposal as any).offerId;
-        if (propOfferId && input.offerId !== propOfferId) {
-          throw new Error(`OFFER_MISMATCH: Requested offerId '${input.offerId}' conflicts with proposal offerId '${propOfferId}'`);
-        }
-        if (proposal.setup_price_inr !== undefined && (input.offerId === 'PLATFORM_MONTHLY' || input.offerId === 'offer_platform_monthly')) {
-          throw new Error(`OFFER_MISMATCH: Requested offerId '${input.offerId}' conflicts with setup proposal '${input.proposalId}'.`);
-        }
+      const propOfferId = proposal.offer_id || (proposal as any).offerId || 'PLATFORM_SETUP';
+      if (input.offerId && input.offerId !== propOfferId) {
+        throw new Error(`OFFER_MISMATCH: Requested offerId '${input.offerId}' conflicts with proposal offerId '${propOfferId}'`);
+      }
+      if (proposal.setup_price_inr !== undefined && (input.offerId === 'PLATFORM_MONTHLY' || input.offerId === 'offer_platform_monthly')) {
+        throw new Error(`OFFER_MISMATCH: Requested offerId '${input.offerId}' conflicts with setup proposal '${input.proposalId}'.`);
       }
 
       authoritativeAmountINR = proposal.setup_price_inr !== undefined ? proposal.setup_price_inr : (proposal as any).setupPriceINR;
@@ -683,7 +681,7 @@ export class RazorpayAdapter {
         ]
       );
 
-      const resolvedOfferId = input.offerId || proposal?.offer_id || (proposal as any)?.offerId || (proposal ? 'PLATFORM_SETUP' : null);
+      const resolvedOfferId = proposal ? (proposal.offer_id || (proposal as any)?.offerId || 'PLATFORM_SETUP') : input.offerId;
 
       await this.d1Repo.executeWrite(
         'payment_requests',
@@ -1833,7 +1831,7 @@ export class RazorpayAdapter {
       const skuFromClaim = (() => {
         try {
           const parsedNotes = typeof claimRow?.notes === 'string' ? JSON.parse(claimRow.notes) : claimRow?.notes;
-          return parsedNotes?.sku || params.serviceRendered || parsedNotes?.offerId || 'SITEFIX_CORE_499';
+          return parsedNotes?.sku || parsedNotes?.offerId || params.serviceRendered || 'SITEFIX_CORE_499';
         } catch {
           return params.serviceRendered || 'SITEFIX_CORE_499';
         }

@@ -121,9 +121,9 @@ function parseSinglePayableAmount(raw: string, type: 'setup' | 'monthly'): numbe
   return parsed;
 }
 
-export function parseDirectOfferTerms(customFilePath?: string, offerContent?: string): DirectOfferTerms {
+export function parseDirectOfferTerms(customFilePath?: string, offerContent?: string | null): DirectOfferTerms {
   let content = offerContent;
-  if (content === undefined) {
+  if (content === undefined || content === null) {
     try {
       const filePath = resolveDirectOfferPath(customFilePath);
       if (!filePath) {
@@ -361,13 +361,13 @@ export class DirectCommercialOfferPage {
    * Any file edit to owner/DIRECT_OFFER.md alters the hash and closes the page immediately.
    * Cross-product isolation: SiteFix owner/OWN_OFFER.md can NEVER unlock Lane B direct offers.
    */
-  public static isDirectOfferAttested(customFilePath?: string, offerContent?: string): boolean {
+  public static isDirectOfferAttested(customFilePath?: string, offerContent?: string | null): boolean {
     const isAttested = (process.env.DIRECT_OFFER_TERMS_ATTESTED || '').trim().toLowerCase() === 'true';
     if (!isAttested) {
       return false;
     }
     let computedHash: string | null = null;
-    if (offerContent !== undefined) {
+    if (offerContent !== undefined && offerContent !== null) {
       computedHash = crypto.createHash('sha256').update(Buffer.from(offerContent, 'utf8')).digest('hex');
     } else {
       computedHash = computeDirectOfferHash(customFilePath);
@@ -472,8 +472,9 @@ export class DirectCommercialOfferPage {
    * for Indian healthcare and local practices, with cleanly segregated consumer affiliate links.
    */
   public renderHomepageHtml(config: Partial<OfferPageConfig> = {}): string {
-    const isAttested = DirectCommercialOfferPage.isDirectOfferAttested();
-    const parsedTerms = parseDirectOfferTerms();
+    const snapshot = DirectCommercialOfferPage.readDirectOfferFileSnapshot();
+    const isAttested = DirectCommercialOfferPage.isDirectOfferAttested(undefined, snapshot);
+    const parsedTerms = parseDirectOfferTerms(undefined, snapshot);
     const setupPriceDisplay = (isAttested && parsedTerms.isPayable && parsedTerms.setupPriceINR)
       ? `Custom proposal reviewed and approved directly by the human owner (₹${parsedTerms.setupPriceINR.toLocaleString('en-IN')} one-time setup).`
       : 'Custom Pilot Pricing — Request Scope &amp; Attested Quote';

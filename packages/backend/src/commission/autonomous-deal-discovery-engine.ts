@@ -5952,7 +5952,8 @@ export class AutonomousDealDiscoveryEngine {
   }
 
   public mapCategoryToSectorCode(category: any): SectorCode {
-    const c = normalizeCategoryName(category).toLowerCase();
+    const rawNormalized = normalizeCategoryName(category).toLowerCase();
+    const c = rawNormalized.replace(/[-_]+/g, ' ');
     if (c.includes('jewel') || c.includes('gold') || c.includes('silver') || c.includes('coin') || c.includes('bullion')) {
       return 'SECTOR_A_PRECIOUS_METALS';
     }

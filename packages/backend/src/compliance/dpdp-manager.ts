@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { getDb } from '../db/client.js';
+import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 
 export interface ConsentRecordInput {
   businessId: string;
@@ -49,6 +50,10 @@ export class DPDPComplianceManager {
     return getDb();
   }
 
+  private get d1Repo() {
+    return D1RevenueRepository.getInstance();
+  }
+
   /**
    * Step 9d: Daily 30-Day Retention Purge Job (DPDP Act 2023)
    * Purges unconverted lead inquiries older than 30 days.
@@ -72,7 +77,7 @@ export class DPDPComplianceManager {
         stage = 'PURGED_RETENTION_EXPIRED',
         notes = COALESCE(notes, '') || ' | Purged after 30-day retention period pursuant to DPDP policy',
         updated_at = datetime('now')
-      WHERE created_at < ?
+      WHERE datetime(created_at) < datetime(?)
         AND status != 'CONVERTED'
         AND status != 'PURGED_RETENTION_EXPIRED'
         AND (source IN ('OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR')
@@ -81,14 +86,14 @@ export class DPDPComplianceManager {
 
     const deleteSubEventsSql = `
       DELETE FROM durable_events
-      WHERE created_at < ?
+      WHERE datetime(created_at) < datetime(?)
         AND event_type = 'PRICE_DROP_SUBSCRIPTION'
     `;
 
     // Only purge terminal completed claims (processed = 1); NEVER delete in-flight or uncertain provider calls
     const deleteTerminalClaimsSql = `
       DELETE FROM durable_events
-      WHERE created_at < ?
+      WHERE datetime(created_at) < datetime(?)
         AND event_type = 'PRICE_ALERT_DELIVERY_CLAIMED'
         AND processed = 1
         AND (error_message IS NULL OR (error_message NOT LIKE 'PROVIDER_CALL_ATTEMPTED%' AND error_message NOT LIKE 'PRE_SEND_LEASE%'))
@@ -98,7 +103,7 @@ export class DPDPComplianceManager {
     const scrubInFlightClaimsSql = `
       UPDATE durable_events
       SET payload_json = '{"scrubbed":true,"dpdp_retention_purged":true}'
-      WHERE created_at < ?
+      WHERE datetime(created_at) < datetime(?)
         AND event_type = 'PRICE_ALERT_DELIVERY_CLAIMED'
         AND (processed = 0 OR error_message LIKE 'PROVIDER_CALL_ATTEMPTED%' OR error_message LIKE 'PRE_SEND_LEASE%')
         AND payload_json NOT LIKE '%"dpdp_retention_purged":true%'
@@ -107,7 +112,7 @@ export class DPDPComplianceManager {
     // Purge expired active price-drop alert subscriptions from outbound_contacts (Spec Stage U.1 & Comment #4629753815)
     const purgeOutboundPriceAlertsSql = `
       DELETE FROM outbound_contacts
-      WHERE created_at < ?
+      WHERE datetime(created_at) < datetime(?)
         AND source IN ('PRICE_DROP_ALERT', 'FAIR_PRICE_ALERT', 'CUSTOMER_DESK_ALERT_OPTIN')
         AND is_opted_out = 0
         AND is_suppressed = 0
@@ -118,12 +123,13 @@ export class DPDPComplianceManager {
       UPDATE outbound_contacts
       SET prospect_name = '[PURGED_RETENTION_EXPIRED]',
           prospect_email = NULL,
+          prospect_phone = NULL,
           authorization_evidence_json = '{"purged":true,"dpdp_retention_purged":true}',
           updated_at = datetime('now')
-      WHERE created_at < ?
+      WHERE datetime(created_at) < datetime(?)
         AND source IN ('PRICE_DROP_ALERT', 'FAIR_PRICE_ALERT', 'CUSTOMER_DESK_ALERT_OPTIN')
         AND (is_opted_out = 1 OR is_suppressed = 1)
-        AND prospect_email IS NOT NULL
+        AND (prospect_email IS NOT NULL OR prospect_phone IS NOT NULL OR prospect_name != '[PURGED_RETENTION_EXPIRED]')
     `;
 
     const localErrors: string[] = [];
@@ -384,6 +390,8 @@ export class DPDPComplianceManager {
       anonymizedCount++;
     }
 
+    const errors: string[] = [];
+
     // 4. Anonymize Outbound Contacts (Price Drop Alerts & Inquiries) (Spec Stage U.1 & Comment #4629753815)
     try {
       const outboundRows = this.db.prepare(
@@ -403,8 +411,28 @@ export class DPDPComplianceManager {
            WHERE id = ?`
         ).run(now, now, row.id);
         anonymizedCount++;
+
+        if (this.d1Repo.isRemoteD1WriteAllowed()) {
+          this.d1Repo.executeWrite(
+            'outbound_contacts',
+            `UPDATE outbound_contacts
+             SET prospect_name = '[ERASED_DPDP_REQUEST]',
+                 prospect_email = CASE WHEN is_suppressed = 1 OR is_opted_out = 1 THEN prospect_email ELSE NULL END,
+                 prospect_phone = NULL,
+                 authorization_evidence_json = '{"erased":true,"dpdp_erasure_timestamp":"' || ? || '"}',
+                 is_opted_out = 1,
+                 is_suppressed = 1,
+                 updated_at = ?
+             WHERE id = ?`,
+            [now, now, row.id]
+          ).catch((d1Err: any) => {
+            console.warn(`[DPDPComplianceManager] Remote D1 outbound_contacts erasure write failed: ${d1Err?.message || String(d1Err)}`);
+          });
+        }
       }
-    } catch {}
+    } catch (err: any) {
+      errors.push(`outbound_contacts_erasure_failed: ${err?.message || String(err)}`);
+    }
 
     // Check financial transactions preserved under Section 8/12 statutory exception (tax & audit requirement)
     let financialCount = 0;
@@ -420,10 +448,11 @@ export class DPDPComplianceManager {
     }
 
     return {
-      success: true,
+      success: errors.length === 0,
       anonymizedRecordsCount: anonymizedCount,
       financialRecordsPreservedCount: financialCount,
       auditMessage: `Personal data erased under DPDP Act Section 12 for ${identifier}. Financial ledgers preserved under statutory accounting laws.`,
+      ...(errors.length > 0 ? { errors } : {})
     };
   }
 }

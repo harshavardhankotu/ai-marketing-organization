@@ -80,8 +80,9 @@ export class OfferCatalogService {
       `).run(bizId, orgId);
     } catch {}
 
-    const terms = parseDirectOfferTerms();
-    const isAttested = DirectCommercialOfferPage.isDirectOfferAttested();
+    const snapshot = DirectCommercialOfferPage.readDirectOfferFileSnapshot();
+    const terms = parseDirectOfferTerms(undefined, snapshot);
+    const isAttested = DirectCommercialOfferPage.isDirectOfferAttested(undefined, snapshot);
     const attestationRequired = isProduction() || process.env.STRICT_DIRECT_OFFER_ATTESTATION === 'true';
     const isAttestedValid = !attestationRequired || isAttested;
     const setupPrice = (terms.isPayable && isAttestedValid && terms.setupPriceINR !== null) ? terms.setupPriceINR : 0;
@@ -218,14 +219,14 @@ export class OfferCatalogService {
       }
 
       try {
-        db.prepare(`UPDATE offers SET price = ?, active = ? WHERE id = ?`).run(
+        db.prepare(`UPDATE offers SET price_inr = ?, status = ?, updated_at = datetime('now') WHERE id = ?`).run(
           setupPrice,
-          setupActive ? 1 : 0,
+          setupActive ? 'ACTIVE' : 'INACTIVE',
           OfferCatalogService.PLATFORM_SETUP_OFFER_ID
         );
-        db.prepare(`UPDATE offers SET price = ?, active = ? WHERE id = ?`).run(
+        db.prepare(`UPDATE offers SET price_inr = ?, status = ?, updated_at = datetime('now') WHERE id = ?`).run(
           monthlyPrice,
-          monthlyActive ? 1 : 0,
+          monthlyActive ? 'ACTIVE' : 'INACTIVE',
           OfferCatalogService.PLATFORM_MONTHLY_OFFER_ID
         );
       } catch {}

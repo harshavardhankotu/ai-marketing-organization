@@ -1153,10 +1153,16 @@ Sitemap: https://ai-marketing-organization.onrender.com/sitemap.xml</code></pre>
       const link = document.getElementById('downloadLink');
       link.href = downloadUrl;
       activeRecheckAuditId = currentAuditId;
-      activeRecheckDomain = currentAuditTargetUrl || (document.getElementById('checkoutDomainInput')?.value || '').trim();
+      activeRecheckDomain = (document.getElementById('checkoutDomainInput')?.value || '').trim() || currentAuditTargetUrl;
       try {
         const u = new URL(downloadUrl, window.location.origin);
         activeDownloadToken = u.searchParams.get('token');
+        if (!activeDownloadToken) {
+          const mOfferToken = u.pathname.match(/\/offer\/download\/([^/]+)/);
+          if (mOfferToken && mOfferToken[1]) {
+            activeDownloadToken = decodeURIComponent(mOfferToken[1]);
+          }
+        }
         const mPath = u.pathname.match(new RegExp('/tools/site-audit/([^/]+)/deliverable'));
         if (mPath && mPath[1]) {
           activeRecheckAuditId = decodeURIComponent(mPath[1]);
@@ -1164,6 +1170,10 @@ Sitemap: https://ai-marketing-organization.onrender.com/sitemap.xml</code></pre>
       } catch {
         const m = downloadUrl.match(/token=([^&]+)/);
         if (m) activeDownloadToken = m[1];
+        if (!activeDownloadToken) {
+          const mOfferToken = downloadUrl.match(/\/offer\/download\/([^/?#]+)/);
+          if (mOfferToken && mOfferToken[1]) activeDownloadToken = decodeURIComponent(mOfferToken[1]);
+        }
       }
       if (activeDownloadToken) {
         const parts = activeDownloadToken.split('.');
@@ -1230,19 +1240,29 @@ Sitemap: https://ai-marketing-organization.onrender.com/sitemap.xml</code></pre>
         const qDomain = urlParams.get('domain');
 
         if (qAuditId && qToken) {
-          activeRecheckAuditId = qAuditId;
-          activeDownloadToken = qToken;
-          activeRecheckDomain = qDomain || '';
-          try {
-            localStorage.setItem('sitefix_active_recheck', JSON.stringify({
-              auditId: activeRecheckAuditId,
-              downloadToken: activeDownloadToken,
-              domain: activeRecheckDomain,
-              timestamp: Date.now()
-            }));
-          } catch {}
-          displayPinnedRecheckCard();
-          return;
+          let tokenExpired = false;
+          const tokenParts = qToken.split('.');
+          if (tokenParts.length >= 4) {
+            const expMs = Number(tokenParts[3]);
+            if (!isNaN(expMs) && expMs > 0 && Date.now() >= expMs) {
+              tokenExpired = true;
+            }
+          }
+          if (!tokenExpired) {
+            activeRecheckAuditId = qAuditId;
+            activeDownloadToken = qToken;
+            activeRecheckDomain = qDomain || '';
+            try {
+              localStorage.setItem('sitefix_active_recheck', JSON.stringify({
+                auditId: activeRecheckAuditId,
+                downloadToken: activeDownloadToken,
+                domain: activeRecheckDomain,
+                timestamp: Date.now()
+              }));
+            } catch {}
+            displayPinnedRecheckCard();
+            return;
+          }
         }
 
         const rawSaved = localStorage.getItem('sitefix_active_recheck');

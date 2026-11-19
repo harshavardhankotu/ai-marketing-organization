@@ -251,10 +251,11 @@ const FIXED_BUYER_INTENT_HUBS: HubSeedDefinition[] = [
 export function normalizeCategoryName(cat: any): string {
   if (!cat) return 'General';
   let cur = cat;
+  const isPlaceholder = (s: any) => !s || typeof s !== 'string' || !s.trim() || s.trim().toLowerCase() === '[object object]';
   while (cur && typeof cur === 'object') {
-    if (typeof cur.name === 'string' && cur.name.trim()) { cur = cur.name.trim(); break; }
-    if (typeof cur.title === 'string' && cur.title.trim()) { cur = cur.title.trim(); break; }
-    if (typeof cur.slug === 'string' && cur.slug.trim()) { cur = cur.slug.trim(); break; }
+    if (!isPlaceholder(cur.name)) { cur = cur.name.trim(); break; }
+    if (!isPlaceholder(cur.title)) { cur = cur.title.trim(); break; }
+    if (!isPlaceholder(cur.slug)) { cur = cur.slug.trim(); break; }
     if (cur.category !== undefined && cur.category !== cur) {
       cur = cur.category;
     } else {
@@ -262,7 +263,7 @@ export function normalizeCategoryName(cat: any): string {
     }
   }
   const str = String(cur || '').trim();
-  if (!str || str.toLowerCase() === '[object object]') return 'General';
+  if (isPlaceholder(str)) return 'General';
 
   // Normalize casing and hyphenation consistently across variants:
   // e.g. "audio" -> "Audio", "AUDIO" -> "Audio", "smart-watches" -> "Smart Watches"

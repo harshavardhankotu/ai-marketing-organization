@@ -91,5 +91,5 @@ When evaluating or generating an audit scorecard for local SMBs:
 
 On Windows host machines:
 - **Never use `Invoke-WebRequest`** (hangs indefinitely or corrupts binary streams).
-- **Use ONLY `curl.exe -sS --max-time 25`** or bounded Node scripts (exiting with non-zero status on failure and `process.exit(0)` on clean success).
+- **For HTTP and network requests in PowerShell, use ONLY `curl.exe -sS --max-time 25`** or bounded Node scripts (exiting with non-zero status on failure and `process.exit(0)` on clean success). Standard development commands (`npm`, `git`, `gh`) remain permitted.
 - Always verify the shell working directory is set to the repository root before executing workspace commands.
