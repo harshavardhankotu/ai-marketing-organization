@@ -22,7 +22,13 @@ export function checkOwnerFile(filePath) {
   // Files exempted from strict zero-rupee rule:
   // - OWN_OFFER.legacy_agent_written.md: historical artifact explicitly blocked by SHA in owner-apply.mjs
   // - OWN_OFFER.draft.md: draft template that owner edits
-  if (filename === 'OWN_OFFER.legacy_agent_written.md' || filename === 'OWN_OFFER.md') {
+  // - OWN_OFFER.md: authoritative attested owner offer for SiteFix (Lane A)
+  // - DIRECT_OFFER.md: authoritative attested owner offer for Platform Setup (Lane B)
+  if (
+    filename === 'OWN_OFFER.legacy_agent_written.md' ||
+    filename === 'OWN_OFFER.md' ||
+    filename === 'DIRECT_OFFER.md'
+  ) {
     return errors;
   }
 
