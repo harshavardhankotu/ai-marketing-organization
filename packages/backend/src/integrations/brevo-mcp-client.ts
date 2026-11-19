@@ -243,7 +243,8 @@ export class BrevoMcpClient {
           templateId: payload.templateId,
           params: payload.params,
           attachment: payload.attachment
-        })
+        }),
+        signal: AbortSignal.timeout(15000)
       });
     };
 
