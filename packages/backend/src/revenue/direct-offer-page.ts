@@ -175,6 +175,54 @@ export function computeDirectOfferHash(customFilePath?: string): string | null {
   }
 }
 
+/**
+ * Generates an order reference ID for payment tracking.
+ * When amountINR is supplied, cryptographically binds the order reference to the exact price
+ * displayed to the buyer at render time, ensuring stale-price claims are honored if the offer is later repriced.
+ */
+export function generateOrderReference(prefix: string = 'LCS', amountINR?: number): string {
+  const dateStr = new Date().toISOString().slice(2, 10).replace(/-/g, ''); // 6 chars: YYMMDD
+  const rand = Math.random().toString(36).substring(2, 6).toUpperCase(); // 4 chars
+  if (amountINR && amountINR > 0) {
+    const cleanAmount = Math.round(amountINR);
+    const secret = process.env.SITE_AUDIT_SIGNING_SECRET || process.env.AUTH_SECRET || 'aro_order_ref_salt_default';
+    const hmac = crypto.createHmac('sha256', secret)
+      .update(`${prefix}:${cleanAmount}:${dateStr}:${rand}`)
+      .digest('hex')
+      .slice(0, 6)
+      .toUpperCase();
+    return `${prefix}-${cleanAmount}-${dateStr}-${rand}-${hmac}`;
+  }
+  const fullDate = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const fallbackRand = Math.random().toString(36).substring(2, 7).toUpperCase();
+  return `${prefix}-${fullDate}-${fallbackRand}`;
+}
+
+/**
+ * Verifies an authentic HMAC-signed order reference and extracts the issued snapshot amount.
+ */
+export function verifyIssuedOrderReference(ref: string): { valid: boolean; amountINR: number; prefix: string } | null {
+  if (!ref || typeof ref !== 'string') return null;
+  const parts = ref.trim().split('-');
+  if (parts.length !== 5) return null;
+  const [prefix, amountStr, dateStr, rand, hmac] = parts;
+  const amountINR = parseFloat(amountStr);
+  if (Number.isNaN(amountINR) || amountINR <= 0) return null;
+  if (!/^[A-Z0-9]+$/i.test(prefix) || !/^\d{6}$/.test(dateStr) || !/^[A-Z0-9]+$/i.test(rand) || !/^[A-F0-9]+$/i.test(hmac)) {
+    return null;
+  }
+  const secret = process.env.SITE_AUDIT_SIGNING_SECRET || process.env.AUTH_SECRET || 'aro_order_ref_salt_default';
+  const expectedHmac = crypto.createHmac('sha256', secret)
+    .update(`${prefix}:${amountStr}:${dateStr}:${rand}`)
+    .digest('hex')
+    .slice(0, 6)
+    .toUpperCase();
+  if (hmac.toUpperCase() !== expectedHmac) {
+    return null;
+  }
+  return { valid: true, amountINR, prefix };
+}
+
 export interface OfferPageConfig {
   siteName?: string;
   siteUrl?: string;
@@ -295,12 +343,20 @@ export class DirectCommercialOfferPage {
   }
 
   /**
-   * Generates a deterministic order reference ID for payment tracking.
+   * Generates a deterministic, HMAC-signed order reference ID for payment tracking.
+   * When amountINR is supplied, cryptographically binds the order reference to the exact price
+   * displayed to the buyer at render time, ensuring stale-price claims are honored if the offer is later repriced.
    */
-  public generateOrderReference(prefix: string = 'LCS'): string {
-    const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-    const rand = Math.random().toString(36).substring(2, 7).toUpperCase();
-    return `${prefix}-${dateStr}-${rand}`;
+  public generateOrderReference(prefix: string = 'LCS', amountINR?: number): string {
+    return generateOrderReference(prefix, amountINR);
+  }
+
+  public static generateOrderReference(prefix: string = 'LCS', amountINR?: number): string {
+    return generateOrderReference(prefix, amountINR);
+  }
+
+  public static verifyIssuedOrderReference(ref: string): { valid: boolean; amountINR: number; prefix: string } | null {
+    return verifyIssuedOrderReference(ref);
   }
 
   /**
@@ -855,7 +911,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
         '<div style="align-self: flex-start; max-width: 85%; background: #1e293b; color: #f8fafc; padding: 0.65rem 0.9rem; border-radius: 12px 12px 12px 0; font-size: 0.88rem; line-height: 1.4; border: 1px solid #334155;">' +
           '<div>' + s.bot.replace(/\\n/g, '<br>') + '</div>' +
           '<div style="margin-top: 0.6rem; border-top: 1px solid #334155; padding-top: 0.5rem;">' +
-            '<a href="/tools/site-audit" style="display: inline-block; background: #0284c7; color: #fff; text-decoration: none; padding: 0.35rem 0.7rem; border-radius: 6px; font-size: 0.8rem; font-weight: 600;">Reserve Slot: ' + s.slot + '</a>' +
+            '<a href="#inquiry-card" style="display: inline-block; background: #0284c7; color: #fff; text-decoration: none; padding: 0.35rem 0.7rem; border-radius: 6px; font-size: 0.8rem; font-weight: 600;">Reserve Slot: ' + s.slot + '</a>' +
           '</div>' +
           '<div style="text-align: right; font-size: 0.72rem; color: #94a3b8; margin-top: 0.35rem;">Triage Response in 28s ✓✓</div>' +
         '</div>';
@@ -1382,7 +1438,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
         '<div style="align-self: flex-start; max-width: 85%; background: #1e293b; color: #f8fafc; padding: 0.65rem 0.9rem; border-radius: 12px 12px 12px 0; font-size: 0.88rem; line-height: 1.4; border: 1px solid #334155;">' +
           '<div>' + s.bot.replace(/\\n/g, '<br>') + '</div>' +
           '<div style="margin-top: 0.6rem; border-top: 1px solid #334155; padding-top: 0.5rem;">' +
-            '<a href="/tools/site-audit" style="display: inline-block; background: #0284c7; color: #fff; text-decoration: none; padding: 0.35rem 0.7rem; border-radius: 6px; font-size: 0.8rem; font-weight: 600;">Reserve Slot: ' + s.slot + '</a>' +
+            '<a href="#inquiry-card" style="display: inline-block; background: #0284c7; color: #fff; text-decoration: none; padding: 0.35rem 0.7rem; border-radius: 6px; font-size: 0.8rem; font-weight: 600;">Reserve Slot: ' + s.slot + '</a>' +
           '</div>' +
           '<div style="text-align: right; font-size: 0.72rem; color: #94a3b8; margin-top: 0.35rem;">Triage Response in 28s ✓✓</div>' +
         '</div>';
@@ -1564,11 +1620,13 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
     const upiVpa = config.upiVpa || process.env.OWNER_UPI_VPA || process.env.PLATFORM_UPI_VPA || null;
     const razorpayUrl = config.razorpayMeUrl || process.env.OWNER_RAZORPAY_ME_URL || process.env.PLATFORM_RAZORPAY_ME_URL || null;
     const whatsappNum = (config.contactPhone || process.env.OWNER_WHATSAPP_NUMBER || process.env.PUBLIC_WHATSAPP_NUMBER || '').replace(/[^0-9]/g, '');
-    const orderRef = this.generateOrderReference('LCS');
 
     const setupPriceINR = terms.setupPriceINR;
     const monthlyPriceINR = terms.monthlyPriceINR;
     const isPayable = terms.isPayable && setupPriceINR !== null;
+    const orderRefSetup = this.generateOrderReference('LCS', setupPriceINR || undefined);
+    const orderRefMonthly = monthlyPriceINR ? this.generateOrderReference('LCM', monthlyPriceINR) : null;
+    const orderRef = orderRefSetup;
 
     const upiUri = (upiVpa && isPayable && setupPriceINR)
       ? `upi://pay?pa=${encodeURIComponent(upiVpa)}&pn=${encodeURIComponent(siteName)}&am=${setupPriceINR}&tr=${encodeURIComponent(orderRef)}&cu=INR&tn=${encodeURIComponent(`Platform Setup Ref ${orderRef}`)}`
@@ -1811,7 +1869,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
                 <img src="${OwnerAuthService.PLATFORM_QR_ASSET_PATH}" alt="Razorpay UPI QR" style="max-width: 200px; width: 100%; border-radius: 8px; cursor: pointer; border: 2px solid #334155;" onclick="window.open(this.src, '_blank')">
                 <p style="font-size: 0.85rem; color: #fff; font-weight: 700; margin-top: 0.5rem;">${upiCfg.payeeName || OwnerAuthService.PLATFORM_MERCHANT_NAME}</p>
                 <p style="font-size: 0.8rem; color: #94a3b8; margin-top: 0.15rem;"><code>${upiCfg.vpa}</code></p>
-                <p style="font-size: 0.75rem; color: #64748b; margin-top: 0.25rem;">Invoice Ref: <strong>${orderRef}</strong></p>
+                <p style="font-size: 0.75rem; color: #64748b; margin-top: 0.25rem;">Invoice Ref: <strong id="displayed-order-ref">${orderRef}</strong></p>
               </div>
               <button class="btn btn-secondary" style="margin-top: 0.75rem; font-size: 0.85rem;" onclick="navigator.clipboard.writeText('${upiCfg.vpa}'); alert('Merchant UPI ID copied: ${upiCfg.vpa}')">
                 Copy Merchant UPI ID
@@ -1839,9 +1897,9 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
             </div>
             <div>
               <label style="display: block; font-size: 0.82rem; color: #94a3b8; margin-bottom: 0.25rem;">Service Tier Paid *</label>
-              <select id="offer-service-tier" style="width: 100%; padding: 0.6rem; border-radius: 8px; border: 1px solid #334155; background: #0b1120; color: #fff; font-size: 0.9rem;" onchange="updateOfferAmount(this.value)">
-                <option value="${setupPriceINR}" data-offer-id="PLATFORM_SETUP">Day 0-5 Setup (₹${setupPriceINR.toLocaleString('en-IN')})</option>
-                ${monthlyPriceINR ? `<option value="${monthlyPriceINR}" data-offer-id="PLATFORM_MONTHLY">Monthly Retainer (₹${monthlyPriceINR.toLocaleString('en-IN')})</option>` : ''}
+              <select id="offer-service-tier" style="width: 100%; padding: 0.6rem; border-radius: 8px; border: 1px solid #334155; background: #0b1120; color: #fff; font-size: 0.9rem;" onchange="updateOfferTier(this)">
+                <option value="${setupPriceINR}" data-offer-id="PLATFORM_SETUP" data-order-ref="${orderRefSetup}">Day 0-5 Setup (₹${setupPriceINR.toLocaleString('en-IN')})</option>
+                ${monthlyPriceINR ? `<option value="${monthlyPriceINR}" data-offer-id="PLATFORM_MONTHLY" data-order-ref="${orderRefMonthly}">Monthly Retainer (₹${monthlyPriceINR.toLocaleString('en-IN')})</option>` : ''}
               </select>
             </div>
             <div>
@@ -1912,6 +1970,13 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
       }
     }
 
+    function updateOfferTier(selectEl) {
+      var opt = selectEl.options[selectEl.selectedIndex];
+      var ref = opt ? (opt.getAttribute('data-order-ref') || '${orderRef}') : '${orderRef}';
+      var refEl = document.getElementById('displayed-order-ref');
+      if (refEl) refEl.innerText = ref;
+    }
+
     async function handleOfferUpiSubmit(e) {
       e.preventDefault();
       var btn = document.getElementById('offer-claim-btn');
@@ -1922,11 +1987,12 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
       var tierSelect = document.getElementById('offer-service-tier');
       var selectedOption = tierSelect.options[tierSelect.selectedIndex];
       var selectedOfferId = selectedOption ? selectedOption.getAttribute('data-offer-id') : 'PLATFORM_SETUP';
+      var selectedOrderRef = selectedOption ? (selectedOption.getAttribute('data-order-ref') || '${orderRef}') : '${orderRef}';
       var amount = Number(tierSelect.value);
       var payload = {
         businessId: 'biz_platform_aro',
         offerId: selectedOfferId,
-        invoiceRef: '${orderRef}',
+        invoiceRef: selectedOrderRef,
         payerName: document.getElementById('offer-payer-name').value.trim(),
         payerPhone: document.getElementById('offer-payer-phone').value.trim(),
         amountINR: amount,

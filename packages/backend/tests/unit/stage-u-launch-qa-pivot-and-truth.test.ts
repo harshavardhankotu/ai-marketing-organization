@@ -240,6 +240,53 @@ describe('Stage U — Close All PR #79 Blockers, Fix lint:owner-prices, Align Pr
       expect(terms.setupPriceINR).toBe(15000);
       expect(terms.billingModel).toBe('One-Time');
     });
+
+    it('1.7 recordManualUpiClaim honors authentic issued order reference even after offer is repriced (prevents stale-price rejection)', async () => {
+      const db = getDb();
+      const { RazorpayAdapter } = await import('../../src/integrations/razorpay.js');
+      const { DirectCommercialOfferPage, generateOrderReference } = await import('../../src/revenue/direct-offer-page.js');
+      const razorpay = new RazorpayAdapter();
+
+      // Issue an order reference at displayed price ₹15,000
+      const issuedRef = generateOrderReference('LCS', 15000);
+      expect(issuedRef).toMatch(/^LCS-15000-/);
+
+      // Now simulate owner repricing the catalog in DIRECT_OFFER.md to ₹18,000
+      const repricedContent = '# Commercial Terms\n**Price:** ₹18,000 Setup\n**Target Audience:** SMBs\n**Billing Model:** One-Time';
+      const readSpy = vi.spyOn(fs, 'readFileSync').mockReturnValue(repricedContent as any);
+
+      try {
+        // Buyer submitted claim with the issued quote reference for ₹15,000
+        const claimRes = await razorpay.recordManualUpiClaim({
+          businessId: 'biz_platform_aro',
+          offerId: 'PLATFORM_SETUP',
+          invoiceRef: issuedRef,
+          utr: 'UTR_STALE_PRICE_HONORED_01',
+          amountINR: 15000,
+          payerName: 'Honored Buyer'
+        });
+
+        expect(claimRes.status).toBe('PAYMENT_CLAIMED');
+        expect(claimRes.amountINR).toBe(15000);
+
+        // Verify claim is persisted in database
+        const savedClaim = db.prepare('SELECT status, amount_inr, invoice_ref FROM manual_upi_claims WHERE utr = ?').get('UTR_STALE_PRICE_HONORED_01') as any;
+        expect(savedClaim).toBeDefined();
+        expect(savedClaim.status).toBe('PAYMENT_CLAIMED');
+        expect(savedClaim.amount_inr).toBe(15000);
+        expect(savedClaim.invoice_ref).toBe(issuedRef);
+      } finally {
+        readSpy.mockRestore();
+      }
+    });
+
+    it('1.8 demo chat widget Reserve Slot button anchors to on-page #inquiry-card', async () => {
+      const { DirectCommercialOfferPage } = await import('../../src/revenue/direct-offer-page.js');
+      const offerPage = DirectCommercialOfferPage.getInstance();
+      const homeHtml = offerPage.renderHomepageHtml();
+      expect(homeHtml).toContain('<a href="#inquiry-card"');
+      expect(homeHtml).not.toContain('<a href="/tools/site-audit" style="display: inline-block; background: #0284c7; color: #fff; text-decoration: none; padding: 0.35rem 0.7rem; border-radius: 6px; font-size: 0.8rem; font-weight: 600;">Reserve Slot:');
+    });
   });
 
   describe('Task 2: Developer Website Launch QA Pivot & Recheck API', () => {

@@ -1147,6 +1147,13 @@ export class RazorpayAdapter {
           if (typeof linkRow.amount_inr === 'number' && linkRow.amount_inr > 0) {
             issuedPriceINR = linkRow.amount_inr;
           }
+        } else {
+          // Check if invoiceRef is an authentic issued order reference (e.g. HMAC-signed quote)
+          const { DirectCommercialOfferPage } = await import('../revenue/direct-offer-page.js');
+          const verifiedQuote = DirectCommercialOfferPage.verifyIssuedOrderReference(input.invoiceRef);
+          if (verifiedQuote && verifiedQuote.amountINR > 0) {
+            issuedPriceINR = verifiedQuote.amountINR;
+          }
         }
       }
 
