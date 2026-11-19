@@ -2,13 +2,20 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import app from '../../src/index.js';
-import { getDb } from '../../src/db/client.js';
+import { getDb, resetDbForTesting } from '../../src/db/client.js';
 import { SiteAuditService } from '../../src/tools/site-audit/site-audit-service.js';
 import { DPDPComplianceManager } from '../../src/compliance/dpdp-manager.js';
 import { normalizeCategoryName } from '../../src/commission/static-site-generator.js';
 
 describe('Stage U — Close All PR #79 Blockers, Fix lint:owner-prices, Align Privacy/Deliverable Truth & Launch Developer Website Launch QA Pivot', () => {
   beforeEach(() => {
+    const db = resetDbForTesting();
+    db.prepare(`INSERT OR IGNORE INTO organizations (id, name, slug) VALUES ('org_default', 'Default Org', 'default-org')`).run();
+    db.prepare(`INSERT OR IGNORE INTO organizations (id, name, slug) VALUES ('org_owner_primary', 'Owner Org', 'owner-primary')`).run();
+    db.prepare(`
+      INSERT OR IGNORE INTO businesses (id, organization_id, name, public_slug, vertical_id, vertical_name, risk_tier, country, currency, timezone, city, neighborhood, brand_voice, autonomy_mode, kill_switch_active, public_live)
+      VALUES ('biz_platform_aro', 'org_owner_primary', 'Platform ARO', 'platform-aro', 'TECHNOLOGY', 'Technology', 'LOW', 'IN', 'INR', 'Asia/Kolkata', 'Hyderabad', 'Banjara Hills', 'Direct', 'ASSISTED', 0, 0)
+    `).run();
     process.env.PUBLIC_SITE_NAME = 'SiteFix AI';
     process.env.PUBLIC_SITE_URL = 'https://ai-marketing-organization.onrender.com';
     process.env.PUBLIC_CONTACT_EMAIL = 'contact@sitefix.ai';
@@ -188,6 +195,50 @@ describe('Stage U — Close All PR #79 Blockers, Fix lint:owner-prices, Align Pr
       db.prepare(`DELETE FROM public_deals WHERE id = ?`).run(testDealId);
       db.prepare(`DELETE FROM referrals WHERE offer_id = ?`).run(testDealId);
       db.prepare(`DELETE FROM referral_click_events WHERE offer_id = ?`).run(testDealId);
+    });
+
+    it('1.5 recordManualUpiClaim rejects IDOR attempts when invoiceRef belongs to another business or organization', async () => {
+      const db = getDb();
+      const { RazorpayAdapter } = await import('../../src/integrations/razorpay.js');
+      const razorpay = new RazorpayAdapter();
+
+      // Seed organization and two businesses
+      db.prepare(`INSERT OR IGNORE INTO organizations (id, name, slug) VALUES ('org_test_idor_1', 'Org 1', 'org-idor-1')`).run();
+      db.prepare(`
+        INSERT OR IGNORE INTO businesses (id, organization_id, name, public_slug, vertical_id, vertical_name, risk_tier, country, currency, timezone, city, neighborhood, brand_voice, autonomy_mode, kill_switch_active, public_live)
+        VALUES ('biz_victim_01', 'org_test_idor_1', 'Victim Biz', 'victim', 'TECHNOLOGY', 'Technology', 'LOW', 'IN', 'INR', 'Asia/Kolkata', 'Hyderabad', 'Madhapur', 'Direct', 'ASSISTED', 0, 0)
+      `).run();
+      db.prepare(`
+        INSERT OR IGNORE INTO businesses (id, organization_id, name, public_slug, vertical_id, vertical_name, risk_tier, country, currency, timezone, city, neighborhood, brand_voice, autonomy_mode, kill_switch_active, public_live)
+        VALUES ('biz_attacker_01', 'org_test_idor_1', 'Attacker Biz', 'attacker', 'TECHNOLOGY', 'Technology', 'LOW', 'IN', 'INR', 'Asia/Kolkata', 'Hyderabad', 'Madhapur', 'Direct', 'ASSISTED', 0, 0)
+      `).run();
+
+      // Seed payment link belonging to biz_victim_01
+      const victimLinkId = `plink_victim_${Date.now()}`;
+      db.prepare(`
+        INSERT INTO payment_provider_links (id, business_id, organization_id, provider_link_id, short_url, reference_id, amount_inr, status, created_at)
+        VALUES (?, 'biz_victim_01', 'org_test_idor_1', ?, 'https://rzp.io/l/victim', 'ref_victim_01', 15000, 'CREATED', datetime('now'))
+      `).run(victimLinkId, victimLinkId);
+
+      // Attempt by biz_attacker_01 to claim victim's link reference must be rejected with UNAUTHORIZED_LINK_REFERENCE
+      await expect(
+        razorpay.recordManualUpiClaim({
+          businessId: 'biz_attacker_01',
+          invoiceRef: victimLinkId,
+          utr: 'UTR_ATTACKER_IDOR_01',
+          amountINR: 15000,
+          payerName: 'Attacker'
+        })
+      ).rejects.toThrow(/UNAUTHORIZED_LINK_REFERENCE/);
+    });
+
+    it('1.6 DirectCommercialOfferPage supports single-read content for both attestation check and terms parsing', async () => {
+      const { DirectCommercialOfferPage, parseDirectOfferTerms } = await import('../../src/revenue/direct-offer-page.js');
+      const sampleTerms = '# Commercial Terms\n**Full Title:** AI Inbound Lead Conversion System\n**Price:** ₹15,000 Setup\n**Target Audience:** Indian SMBs\n**Billing Model:** One-Time';
+      const terms = parseDirectOfferTerms(undefined, sampleTerms);
+      expect(terms.isPayable).toBe(true);
+      expect(terms.setupPriceINR).toBe(15000);
+      expect(terms.billingModel).toBe('One-Time');
     });
   });
 

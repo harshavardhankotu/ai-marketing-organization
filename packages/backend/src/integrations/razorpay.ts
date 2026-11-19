@@ -1132,16 +1132,21 @@ export class RazorpayAdapter {
         if (isProduction() && !process.env.VITEST) {
           linkRow = await this.d1Repo.queryOne<any>(
             'payment_provider_links',
-            'SELECT amount_inr FROM payment_provider_links WHERE (id = ? OR provider_link_id = ?) LIMIT 1',
+            'SELECT amount_inr, business_id, organization_id FROM payment_provider_links WHERE (id = ? OR provider_link_id = ?) LIMIT 1',
             [input.invoiceRef, input.invoiceRef]
           );
         } else {
           linkRow = getDb().prepare(
-            'SELECT amount_inr FROM payment_provider_links WHERE (id = ? OR provider_link_id = ?) LIMIT 1'
+            'SELECT amount_inr, business_id, organization_id FROM payment_provider_links WHERE (id = ? OR provider_link_id = ?) LIMIT 1'
           ).get(input.invoiceRef, input.invoiceRef) as any;
         }
-        if (linkRow && typeof linkRow.amount_inr === 'number' && linkRow.amount_inr > 0) {
-          issuedPriceINR = linkRow.amount_inr;
+        if (linkRow) {
+          if (linkRow.business_id !== input.businessId || linkRow.organization_id !== biz.organization_id) {
+            throw new Error(`UNAUTHORIZED_LINK_REFERENCE: Payment link '${input.invoiceRef}' does not belong to business '${input.businessId}'.`);
+          }
+          if (typeof linkRow.amount_inr === 'number' && linkRow.amount_inr > 0) {
+            issuedPriceINR = linkRow.amount_inr;
+          }
         }
       }
 

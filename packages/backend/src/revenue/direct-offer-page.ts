@@ -110,21 +110,24 @@ function parseSinglePayableAmount(raw: string, type: 'setup' | 'monthly'): numbe
   return parsed;
 }
 
-export function parseDirectOfferTerms(customFilePath?: string): DirectOfferTerms {
-  const filePath = resolveDirectOfferPath(customFilePath);
-  if (!filePath) {
-    return {
-      offerId: 'PLATFORM_SETUP',
-      title: 'AI Inbound Lead Conversion System — Day 0-5 Setup & Integration',
-      priceRaw: 'TBD',
-      setupPriceINR: null,
-      monthlyPriceINR: null,
-      isPayable: false,
-      targetAudience: 'Indian local service businesses and professional firms.',
-      billingModel: 'TBD'
-    };
+export function parseDirectOfferTerms(customFilePath?: string, offerContent?: string): DirectOfferTerms {
+  let content = offerContent;
+  if (content === undefined) {
+    const filePath = resolveDirectOfferPath(customFilePath);
+    if (!filePath) {
+      return {
+        offerId: 'PLATFORM_SETUP',
+        title: 'AI Inbound Lead Conversion System — Day 0-5 Setup & Integration',
+        priceRaw: 'TBD',
+        setupPriceINR: null,
+        monthlyPriceINR: null,
+        isPayable: false,
+        targetAudience: 'Indian local service businesses and professional firms.',
+        billingModel: 'TBD'
+      };
+    }
+    content = fs.readFileSync(filePath, 'utf8');
   }
-  const content = fs.readFileSync(filePath, 'utf8');
   const priceMatch = content.match(/\*\*Price:\*\*\s*(.+)/i);
   const priceRaw = priceMatch ? priceMatch[1].trim() : 'TBD';
 
@@ -232,12 +235,17 @@ export class DirectCommercialOfferPage {
    * Any file edit to owner/DIRECT_OFFER.md alters the hash and closes the page immediately.
    * Cross-product isolation: SiteFix owner/OWN_OFFER.md can NEVER unlock Lane B direct offers.
    */
-  public static isDirectOfferAttested(customFilePath?: string): boolean {
+  public static isDirectOfferAttested(customFilePath?: string, offerContent?: string): boolean {
     const isAttested = (process.env.DIRECT_OFFER_TERMS_ATTESTED || '').trim().toLowerCase() === 'true';
     if (!isAttested) {
       return false;
     }
-    const computedHash = computeDirectOfferHash(customFilePath);
+    let computedHash: string | null = null;
+    if (offerContent !== undefined) {
+      computedHash = crypto.createHash('sha256').update(Buffer.from(offerContent, 'utf8')).digest('hex');
+    } else {
+      computedHash = computeDirectOfferHash(customFilePath);
+    }
     if (!computedHash) {
       return false;
     }
@@ -300,7 +308,15 @@ export class DirectCommercialOfferPage {
    * If commercial terms are un-attested, renders a safe informational overview with zero payment links.
    */
   public renderOfferHtml(config: Partial<OfferPageConfig> = {}, customOfferPath?: string): string {
-    const isAttested = DirectCommercialOfferPage.isDirectOfferAttested(customOfferPath);
+    let offerContent: string | undefined = undefined;
+    const filePath = resolveDirectOfferPath(customOfferPath);
+    if (filePath) {
+      try {
+        offerContent = fs.readFileSync(filePath, 'utf8');
+      } catch {}
+    }
+
+    const isAttested = DirectCommercialOfferPage.isDirectOfferAttested(customOfferPath, offerContent);
     const siteName = config.siteName || (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
     const siteUrl = config.siteUrl || (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').trim();
     const contactEmail = config.contactEmail || (process.env.PUBLIC_CONTACT_EMAIL ? process.env.PUBLIC_CONTACT_EMAIL.trim() : null);
@@ -309,7 +325,7 @@ export class DirectCommercialOfferPage {
       return this.renderUnattestedOverviewHtml(siteName, siteUrl, contactEmail);
     }
 
-    return this.renderAttestedOfferHtml(siteName, siteUrl, contactEmail, config, customOfferPath);
+    return this.renderAttestedOfferHtml(siteName, siteUrl, contactEmail, config, customOfferPath, offerContent);
   }
 
   /**
@@ -1541,9 +1557,10 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
     siteUrl: string,
     contactEmail: string | null,
     config: Partial<OfferPageConfig>,
-    customOfferPath?: string
+    customOfferPath?: string,
+    offerContent?: string
   ): string {
-    const terms = parseDirectOfferTerms(customOfferPath);
+    const terms = parseDirectOfferTerms(customOfferPath, offerContent);
     const upiVpa = config.upiVpa || process.env.OWNER_UPI_VPA || process.env.PLATFORM_UPI_VPA || null;
     const razorpayUrl = config.razorpayMeUrl || process.env.OWNER_RAZORPAY_ME_URL || process.env.PLATFORM_RAZORPAY_ME_URL || null;
     const whatsappNum = (config.contactPhone || process.env.OWNER_WHATSAPP_NUMBER || process.env.PUBLIC_WHATSAPP_NUMBER || '').replace(/[^0-9]/g, '');
