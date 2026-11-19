@@ -433,7 +433,7 @@ export class DPDPComplianceManager {
 
         if (this.d1Repo.isRemoteD1WriteAllowed()) {
           try {
-            await this.d1Repo.executeWrite(
+            const writeRes = await this.d1Repo.executeWrite(
               'outbound_contacts',
               `UPDATE outbound_contacts
                SET prospect_name = '[ERASED_DPDP_REQUEST]',
@@ -446,6 +446,9 @@ export class DPDPComplianceManager {
                WHERE id = ? AND business_id = ?`,
               [now, now, row.id, params.businessId]
             );
+            if (writeRes.source !== 'CLOUDFLARE_D1') {
+              errors.push(`remote_d1_outbound_contacts_erasure_fallback: expected CLOUDFLARE_D1 but got ${writeRes.source}`);
+            }
           } catch (d1Err: any) {
             console.warn(`[DPDPComplianceManager] Remote D1 outbound_contacts erasure write failed: ${d1Err?.message || String(d1Err)}`);
             errors.push(`remote_d1_outbound_contacts_erasure_failed: ${d1Err?.message || String(d1Err)}`);
@@ -455,15 +458,19 @@ export class DPDPComplianceManager {
 
       if (this.d1Repo.isRemoteD1WriteAllowed()) {
         try {
-          const remoteRows = await this.d1Repo.query<any>(
+          const readRes = await this.d1Repo.executeRead<any>(
             'outbound_contacts',
             `SELECT id, is_suppressed, is_opted_out FROM outbound_contacts WHERE (prospect_email = ? OR prospect_phone = ? OR id = ?) AND business_id = ?`,
             [identifier, identifier, identifier, params.businessId]
           );
+          if (readRes.source !== 'CLOUDFLARE_D1') {
+            errors.push(`remote_d1_outbound_contacts_read_fallback: expected CLOUDFLARE_D1 but got ${readRes.source}`);
+          }
+          const remoteRows = readRes.results || [];
           const localIds = new Set(outboundRows.map(r => r.id));
-          for (const rRow of (remoteRows || [])) {
+          for (const rRow of remoteRows) {
             if (!localIds.has(rRow.id)) {
-              await this.d1Repo.executeWrite(
+              const writeRes = await this.d1Repo.executeWrite(
                 'outbound_contacts',
                 `UPDATE outbound_contacts
                  SET prospect_name = '[ERASED_DPDP_REQUEST]',
@@ -476,6 +483,9 @@ export class DPDPComplianceManager {
                  WHERE id = ? AND business_id = ?`,
                 [now, now, rRow.id, params.businessId]
               );
+              if (writeRes.source !== 'CLOUDFLARE_D1') {
+                errors.push(`remote_d1_outbound_contacts_erasure_fallback: expected CLOUDFLARE_D1 but got ${writeRes.source}`);
+              }
               anonymizedCount++;
             }
           }

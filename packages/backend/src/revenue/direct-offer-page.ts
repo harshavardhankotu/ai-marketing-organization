@@ -2070,7 +2070,9 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
   </div>
 
   <script>
+    var currentLinkRequestId = 0;
     async function createDynamicLink(offerId, title, amount) {
+      var requestId = ++currentLinkRequestId;
       var box = document.getElementById('dynamic-link-box');
       var desc = document.getElementById('dynamic-link-desc');
       var anchor = document.getElementById('dynamic-link-anchor');
@@ -2092,6 +2094,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
           })
         });
         var data = await res.json();
+        if (requestId !== currentLinkRequestId) return;
         if (data.success && data.data && data.data.paymentLinkUrl) {
           desc.innerHTML = '✓ Link Ready: <strong>' + data.data.providerLinkId + '</strong> (₹' + data.data.amountINR.toLocaleString('en-IN') + ')';
           if (anchor) {
@@ -2102,6 +2105,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <!-- Razorpay Standa
           throw new Error(data.error || 'Failed to create payment link');
         }
       } catch (err) {
+        if (requestId !== currentLinkRequestId) return;
         if (anchor) {
           anchor.removeAttribute('href');
           anchor.style.display = 'none';

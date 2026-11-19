@@ -1817,6 +1817,7 @@ ${this.serializeSafeJsonLd(itemListSchema, true)}
     const renderPickCard = (label: string, d: any) => {
       if (!d) return '';
       const slug = d.slug || d.canonicalSlug || d.id;
+      const catLabel = extractCategoryName(d.category) || hub.categoryLabel;
       const rail1 = `${config.siteUrl}/api/v1/public/deals/${encodeURIComponent(d.id)}/redirect?utm_source=best_hub_pick`;
       const rail2 = `${config.siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(d.title || '').slice(0, 120))}&dealId=${encodeURIComponent(d.id)}`;
       return `
@@ -1824,7 +1825,7 @@ ${this.serializeSafeJsonLd(itemListSchema, true)}
         <div>
           <div style="font-size:0.74rem;font-weight:700;color:#38bdf8;text-transform:uppercase;letter-spacing:0.04em;margin-bottom:0.35rem;">${this.escapeHtml(label)}</div>
           <a href="/deals/${this.escapeHtml(encodeURIComponent(slug))}" style="color:#fff;font-weight:700;font-size:0.95rem;text-decoration:none;display:block;margin-bottom:0.35rem;">${this.escapeHtml(d.title)}</a>
-          <div style="font-size:0.78rem;color:#94a3b8;margin-bottom:0.35rem;">${this.escapeHtml(d.merchant)} &bull; ${this.escapeHtml(d.category || hub.categoryLabel)}</div>
+          <div style="font-size:0.78rem;color:#94a3b8;margin-bottom:0.35rem;">${this.escapeHtml(d.merchant)} &bull; ${this.escapeHtml(catLabel)}</div>
           <div style="font-size:1.25rem;font-weight:800;color:#34d399;font-variant-numeric:tabular-nums;">₹${Number(d.currentPriceINR || 0).toLocaleString('en-IN')}</div>
           ${Number(d.referencePriceINR || 0) > Number(d.currentPriceINR || 0) ? `<div style="font-size:0.75rem;color:#94a3b8;font-variant-numeric:tabular-nums;">Merchant Listed MRP: <span style="text-decoration:line-through;">₹${Number(d.referencePriceINR).toLocaleString('en-IN')}</span></div>` : ''}
         </div>
@@ -2470,7 +2471,7 @@ ${this.serializeSafeJsonLd(faqSchema, true)}
     const dealsCardsHtml = crossPromoDeals.slice(0, 3).map(d => `
       <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:16px;flex:1;min-width:240px;box-sizing:border-box;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-          <span style="font-size:11px;background:#e2e8f0;color:#334155;padding:2px 6px;border-radius:4px;font-weight:bold;">${this.escapeHtml(d.category || 'B2B Partner')}</span>
+          <span style="font-size:11px;background:#e2e8f0;color:#334155;padding:2px 6px;border-radius:4px;font-weight:bold;">${this.escapeHtml(extractCategoryName(d.category) || 'B2B Partner')}</span>
           <span style="font-size:11px;background:#fef3c7;color:#92400e;padding:2px 6px;border-radius:4px;font-weight:bold;">#Ad &bull; Tier 3 Partner</span>
         </div>
         <h4 style="margin:0 0 8px 0;font-size:14px;color:#0f172a;line-height:1.4;">${this.escapeHtml(d.title)}</h4>

@@ -4404,7 +4404,7 @@ apiRouter.post('/compliance/dpdp/erasure', async (c) => {
     await LeadLeakageCalculator.getInstance().requestErasure(body.phoneOrJourneyId);
   } catch {}
 
-  return c.json({ success: true, data: result }, 200);
+  return c.json({ success: result.success, data: result }, 200);
 });
 
 apiRouter.get('/compliance/dpdp/status/:identifier', (c) => {
