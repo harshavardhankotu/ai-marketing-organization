@@ -5914,9 +5914,16 @@ apiRouter.post('/payments/public/create-link', async (c) => {
         OwnerAuthService.PLATFORM_BUSINESS_ID,
         OwnerAuthService.OWNER_ORGANIZATION_ID
       );
+      if (offer.nonPayable || !offer.active || offer.priceINR <= 0) {
+        return c.json({
+          success: false,
+          error: 'OFFER_NON_PAYABLE',
+          message: 'This offer is currently non-payable. Online payment link creation is suppressed.'
+        }, 403);
+      }
       expectedPriceINR = offer.priceINR;
     } catch (err: any) {
-      if (err?.message?.includes('OFFER_PRICING_PENDING') || err?.message?.includes('COMMERCIAL_TERMS_UNATTESTED')) {
+      if (err?.message?.includes('OFFER_PRICING_PENDING') || err?.message?.includes('COMMERCIAL_TERMS_UNATTESTED') || err?.message?.includes('OFFER_NON_PAYABLE')) {
         return c.json({
           success: false,
           error: 'OFFER_PRICING_PENDING',
@@ -15030,8 +15037,9 @@ const handleSiteAuditRazorpayWebhook = async (c: any) => {
         const postalAddress = (process.env.BUSINESS_POSTAL_ADDRESS || 'SiteFix AI, Madhapur, Hyderabad, Telangana 500081, India').trim();
         const unsubUrl = `${siteUrl}/api/v1/compliance/dpdp/erasure?email=${encodeURIComponent(buyerEmail)}`;
 
-        const emailText = `Hello,\n\nYour SiteFix AI Core Fix-Pack (₹499) has been prepared and is ready for download.\n\nDownload Link: ${downloadUrl}\n\nThis deliverable includes automated patches for Schema.org JSON-LD, Meta Tags, and Core Web Vitals.\n\n---\n${postalAddress}\nUnsubscribe / Erasure: ${unsubUrl}`;
-        const emailHtml = `<div style="font-family:sans-serif;line-height:1.6;color:#0f172a;"><h2 style="color:#2563eb;">Your SiteFix AI Core Fix-Pack is Ready</h2><p>Hello,</p><p>Thank you for purchasing the SiteFix AI Core Fix-Pack (₹499).</p><p style="margin:24px 0;"><a href="${downloadUrl}" style="background:#2563eb;color:#ffffff;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:bold;display:inline-block;">Download Core Fix-Pack</a></p><p style="font-size:13px;color:#64748b;">Or open this link: <a href="${downloadUrl}">${downloadUrl}</a></p><hr style="margin:24px 0;border:none;border-top:1px solid #e2e8f0;"/><p style="font-size:12px;color:#94a3b8;">${postalAddress}<br/><a href="${unsubUrl}">1-Click Unsubscribe / Data Erasure</a></p></div>`;
+        const recheckUrl = `${siteUrl}/tools/site-audit?auditId=${encodeURIComponent(auditId)}&token=${encodeURIComponent(token)}&domain=${encodeURIComponent(storedOrder?.domain || '')}`;
+        const emailText = `Hello,\n\nYour SiteFix AI Core Fix-Pack (₹499) has been prepared and is ready for download.\n\nDownload Link: ${downloadUrl}\nIncluded Verification Recheck: ${recheckUrl}\n\nYour purchase delivers a structured JSON & Markdown Fix-Pack containing ready-to-paste HTML <head> tags, Schema.org JSON-LD, robots.txt rules, sitemap.xml entries (to merge into your site's sitemap), and a verification checklist. The sitemap snippet lists only your scanned canonical URL, so merge it into your existing sitemap instead of replacing it.\n\n---\n${postalAddress}\nUnsubscribe / Erasure: ${unsubUrl}`;
+        const emailHtml = `<div style="font-family:sans-serif;line-height:1.6;color:#0f172a;"><h2 style="color:#2563eb;">Your SiteFix AI Core Fix-Pack is Ready</h2><p>Hello,</p><p>Thank you for purchasing the SiteFix AI Core Fix-Pack (₹499).</p><p style="font-size:14px;color:#334155;line-height:1.5;">Your purchase delivers a structured JSON &amp; Markdown Fix-Pack containing ready-to-paste HTML &lt;head&gt; tags, Schema.org JSON-LD, robots.txt rules, sitemap.xml entries (to merge into your site's sitemap), and a verification checklist. The sitemap snippet lists only your scanned canonical URL, so merge it into your existing sitemap instead of replacing it.</p><div style="margin:24px 0;display:flex;gap:12px;flex-wrap:wrap;"><a href="${downloadUrl}" style="background:#2563eb;color:#ffffff;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:bold;display:inline-block;">Download Core Fix-Pack</a><a href="${recheckUrl}" style="background:#0284c7;color:#ffffff;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:bold;display:inline-block;">Run Included Verification Recheck &rarr;</a></div><p style="font-size:13px;color:#64748b;">Or open this link: <a href="${downloadUrl}">${downloadUrl}</a></p><hr style="margin:24px 0;border:none;border-top:1px solid #e2e8f0;"/><p style="font-size:12px;color:#94a3b8;">${postalAddress}<br/><a href="${unsubUrl}">1-Click Unsubscribe / Data Erasure</a></p></div>`;
 
         await brevo.sendTransactionalEmail({
           to: [{ email: buyerEmail, name: businessName }],
@@ -15360,7 +15368,11 @@ const handleOfferDownload = async (c: any) => {
     const acceptHeader = c.req.header('accept') || '';
 
     if (format === 'json' || acceptHeader.includes('application/json')) {
-      return c.json({ success: true, deliverable });
+      return c.json({
+        success: true,
+        deliverable,
+        recheckUrl: `/tools/site-audit?auditId=${encodeURIComponent(verification.auditId)}&token=${encodeURIComponent(token)}&domain=${encodeURIComponent(deliverable.targetUrl || deliverable.canonicalUrlRecommendation || '')}`
+      });
     }
 
     const html = `<!DOCTYPE html>
@@ -15388,8 +15400,9 @@ const handleOfferDownload = async (c: any) => {
       <strong>Delivered At:</strong> ${new Date().toISOString()}
     </div>
     <p>Your technical diagnostic and automated patch pack is ready. You can inspect the deliverable below or download the raw JSON.</p>
-    <div style="margin: 1.5rem 0;">
+    <div style="margin: 1.5rem 0; display: flex; gap: 1rem; flex-wrap: wrap;">
       <a href="?format=json" class="btn">Download JSON Deliverable</a>
+      <a href="/tools/site-audit?auditId=${encodeURIComponent(verification.auditId)}&token=${encodeURIComponent(token)}&domain=${encodeURIComponent(deliverable.targetUrl || deliverable.canonicalUrlRecommendation || '')}" class="btn" style="background:#0284c7;">Run Included Verification Recheck &rarr;</a>
     </div>
     <h3>Executive Summary</h3>
     <p>${(deliverable as any).executiveSummary || 'Automated Technical Audit & Fix Pack'}</p>

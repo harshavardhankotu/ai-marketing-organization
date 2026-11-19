@@ -32,6 +32,7 @@ export interface AuthorizedOffer {
   qualificationRequirements: string[];
   paymentProvider: string;
   paymentConfiguration: Record<string, unknown>;
+  nonPayable?: boolean;
 }
 
 export class OfferCatalogService {
@@ -79,6 +80,15 @@ export class OfferCatalogService {
       `).run(bizId, orgId);
     } catch {}
 
+    const terms = parseDirectOfferTerms();
+    const isAttested = DirectCommercialOfferPage.isDirectOfferAttested();
+    const attestationRequired = isProduction() || process.env.STRICT_DIRECT_OFFER_ATTESTATION === 'true';
+    const isAttestedValid = !attestationRequired || isAttested;
+    const setupPrice = (terms.isPayable && isAttestedValid && terms.setupPriceINR !== null) ? terms.setupPriceINR : 0;
+    const monthlyPrice = (terms.isPayable && isAttestedValid && terms.monthlyPriceINR !== null) ? terms.monthlyPriceINR : 0;
+    const setupActive = terms.isPayable && isAttestedValid && terms.setupPriceINR !== null;
+    const monthlyActive = terms.isPayable && isAttestedValid && terms.monthlyPriceINR !== null;
+
     const canonicalOffers = [
       {
         id: OfferCatalogService.PLATFORM_SETUP_OFFER_ID,
@@ -91,7 +101,7 @@ export class OfferCatalogService {
           'Direct calendar booking integration',
           'Live system handover report'
         ],
-        priceINR: 15000,
+        priceINR: setupPrice,
         billingModel: 'ONE_TIME' as const,
         deliveryTimeDays: 5,
         qualificationRequirements: ['Active WhatsApp Business number', 'Claimed Google Business Profile']
@@ -106,7 +116,7 @@ export class OfferCatalogService {
           'Weekly appointment show-rate reporting',
           'Continuous DPDP compliance monitoring'
         ],
-        priceINR: 8000,
+        priceINR: monthlyPrice,
         billingModel: 'MONTHLY' as const,
         deliveryTimeDays: 30,
         qualificationRequirements: ['Active platform setup completed']
@@ -206,6 +216,19 @@ export class OfferCatalogService {
       } catch (err: any) {
         // Safe if table doesn't exist yet or constraint met
       }
+
+      try {
+        db.prepare(`UPDATE offers SET price = ?, active = ? WHERE id = ?`).run(
+          setupPrice,
+          setupActive ? 1 : 0,
+          OfferCatalogService.PLATFORM_SETUP_OFFER_ID
+        );
+        db.prepare(`UPDATE offers SET price = ?, active = ? WHERE id = ?`).run(
+          monthlyPrice,
+          monthlyActive ? 1 : 0,
+          OfferCatalogService.PLATFORM_MONTHLY_OFFER_ID
+        );
+      } catch {}
     }
   }
 
@@ -265,17 +288,20 @@ export class OfferCatalogService {
       if (organizationId && organizationId !== OwnerAuthService.OWNER_ORGANIZATION_ID) {
         throw new Error(`UNAUTHORIZED_OFFER: PLATFORM_SETUP offer is restricted to the owner organization (${OwnerAuthService.OWNER_ORGANIZATION_ID}). Caller supplied organizationId='${organizationId}'.`);
       }
+      const isAttested = DirectCommercialOfferPage.isDirectOfferAttested();
+      const attestationRequired = isProduction() || process.env.STRICT_DIRECT_OFFER_ATTESTATION === 'true';
       // Gate: In production (or strict test mode), direct commercial terms must be explicitly attested by owner
-      if ((isProduction() || process.env.STRICT_DIRECT_OFFER_ATTESTATION === 'true') && !DirectCommercialOfferPage.isDirectOfferAttested()) {
+      if (attestationRequired && !isAttested) {
         throw new Error(`COMMERCIAL_TERMS_UNATTESTED: Platform direct offer (${trimmedOfferId}) terms have not been attested by the owner. Commercial payment flows are blocked in production.`);
       }
       const terms = parseDirectOfferTerms();
-      if (!terms.isPayable || terms.setupPriceINR === null) {
+      const isPayableSetup = (!attestationRequired || isAttested) && terms.isPayable && terms.setupPriceINR !== null;
+      if (!isPayableSetup) {
         if (!options?.allowPendingPricing) {
           throw new Error(`OFFER_PRICING_PENDING: Platform direct offer (${trimmedOfferId}) setup pricing is pending owner definition.`);
         }
       }
-      const resolvedSetupPrice = terms.setupPriceINR ?? 0;
+      const resolvedSetupPrice = isPayableSetup ? (terms.setupPriceINR ?? 0) : 0;
       return {
         offerId: OfferCatalogService.PLATFORM_SETUP_OFFER_ID,
         offerName: 'AI Inbound Lead Conversion System — Day 0-5 Setup & Integration',
@@ -292,7 +318,8 @@ export class OfferCatalogService {
         currency: 'INR',
         businessId: OwnerAuthService.PLATFORM_BUSINESS_ID,
         organizationId: OwnerAuthService.OWNER_ORGANIZATION_ID,
-        active: terms.setupPriceINR !== null,
+        active: isPayableSetup,
+        nonPayable: !isPayableSetup,
         deliveryTimeDays: 5,
         qualificationRequirements: ['Active WhatsApp Business number', 'Claimed Google Business Profile'],
         paymentProvider: 'RAZORPAY',
@@ -308,17 +335,20 @@ export class OfferCatalogService {
       if (organizationId && organizationId !== OwnerAuthService.OWNER_ORGANIZATION_ID) {
         throw new Error(`UNAUTHORIZED_OFFER: PLATFORM_MONTHLY offer is restricted to the owner organization (${OwnerAuthService.OWNER_ORGANIZATION_ID}). Caller supplied organizationId='${organizationId}'.`);
       }
+      const isAttested = DirectCommercialOfferPage.isDirectOfferAttested();
+      const attestationRequired = isProduction() || process.env.STRICT_DIRECT_OFFER_ATTESTATION === 'true';
       // Gate: In production (or strict test mode), direct commercial terms must be explicitly attested by owner
-      if ((isProduction() || process.env.STRICT_DIRECT_OFFER_ATTESTATION === 'true') && !DirectCommercialOfferPage.isDirectOfferAttested()) {
+      if (attestationRequired && !isAttested) {
         throw new Error(`COMMERCIAL_TERMS_UNATTESTED: Platform direct offer (${trimmedOfferId}) terms have not been attested by the owner. Commercial payment flows are blocked in production.`);
       }
       const terms = parseDirectOfferTerms();
-      if (!terms.isPayable || terms.monthlyPriceINR === null) {
+      const isPayableMonthly = (!attestationRequired || isAttested) && terms.isPayable && terms.monthlyPriceINR !== null;
+      if (!isPayableMonthly) {
         if (!options?.allowPendingPricing) {
           throw new Error(`OFFER_PRICING_PENDING: Platform direct offer (${trimmedOfferId}) monthly retainer pricing is pending owner definition.`);
         }
       }
-      const resolvedMonthlyPrice = terms.monthlyPriceINR ?? 0;
+      const resolvedMonthlyPrice = isPayableMonthly ? (terms.monthlyPriceINR ?? 0) : 0;
       return {
         offerId: OfferCatalogService.PLATFORM_MONTHLY_OFFER_ID,
         offerName: 'AI Inbound Lead Conversion System — Monthly Retainer & SLA',
@@ -334,7 +364,8 @@ export class OfferCatalogService {
         currency: 'INR',
         businessId: OwnerAuthService.PLATFORM_BUSINESS_ID,
         organizationId: OwnerAuthService.OWNER_ORGANIZATION_ID,
-        active: terms.monthlyPriceINR !== null,
+        active: isPayableMonthly,
+        nonPayable: !isPayableMonthly,
         deliveryTimeDays: 30,
         qualificationRequirements: ['Active platform setup completed'],
         paymentProvider: 'RAZORPAY',

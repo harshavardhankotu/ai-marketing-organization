@@ -356,6 +356,9 @@ export class RazorpayAdapter {
     // Server-side authoritative offer resolution (Spec § 5)
     if (input.offerId) {
       const authorizedOffer = resolveAuthorizedOffer(input.offerId, input.businessId, input.organizationId);
+      if (!authorizedOffer.active || (authorizedOffer as any).nonPayable || authorizedOffer.priceINR <= 0) {
+        throw new Error(`OFFER_NON_PAYABLE: Offer '${input.offerId}' is currently non-payable or pricing is pending owner attestation.`);
+      }
       finalAmountINR = authorizedOffer.priceINR;
     } else if (finalAmountINR !== undefined) {
       // Server-side validation of permitted deposit amount
@@ -502,6 +505,16 @@ export class RazorpayAdapter {
         throw new Error(`UNAUTHORIZED_PROPOSAL_STATUS: Proposal '${input.proposalId}' has status '${proposal.status}', but must be one of [${eligibleStatuses.join(', ')}] to create a payment link.`);
       }
 
+      if (input.offerId) {
+        const propOfferId = proposal.offer_id || (proposal as any).offerId;
+        if (propOfferId && input.offerId !== propOfferId) {
+          throw new Error(`OFFER_MISMATCH: Requested offerId '${input.offerId}' conflicts with proposal offerId '${propOfferId}'`);
+        }
+        if (proposal.setup_price_inr !== undefined && (input.offerId === 'PLATFORM_MONTHLY' || input.offerId === 'offer_platform_monthly')) {
+          throw new Error(`OFFER_MISMATCH: Requested offerId '${input.offerId}' conflicts with setup proposal '${input.proposalId}'.`);
+        }
+      }
+
       authoritativeAmountINR = proposal.setup_price_inr !== undefined ? proposal.setup_price_inr : (proposal as any).setupPriceINR;
       description = description || `Proposal ${input.proposalId} Setup & Integration`;
     } else {
@@ -511,6 +524,10 @@ export class RazorpayAdapter {
       const offer = resolveAuthorizedOffer(input.offerId, input.businessId, input.organizationId);
       if (!offer) {
         throw new Error(`UNAUTHORIZED_OFFER: Offer '${input.offerId}' could not be resolved for business '${input.businessId}'.`);
+      }
+
+      if (!offer.active || (offer as any).nonPayable || offer.priceINR <= 0) {
+        throw new Error(`OFFER_NON_PAYABLE: Offer '${input.offerId}' is currently non-payable or pricing is pending owner attestation.`);
       }
 
       // Validate business/org ownership
@@ -666,6 +683,8 @@ export class RazorpayAdapter {
         ]
       );
 
+      const resolvedOfferId = input.offerId || proposal?.offer_id || (proposal as any)?.offerId || (proposal ? 'PLATFORM_SETUP' : null);
+
       await this.d1Repo.executeWrite(
         'payment_requests',
         `INSERT INTO payment_requests (
@@ -682,7 +701,7 @@ export class RazorpayAdapter {
           input.opportunityId || null,
           input.journeyId || null,
           input.proposalId || null,
-          input.offerId,
+          resolvedOfferId,
           description,
           authoritativeAmountINR,
           billingModel,
@@ -1124,6 +1143,7 @@ export class RazorpayAdapter {
     }
 
     // Validate deposit amount against proposal, offer, or permitted deposit amounts
+    let boundOfferId: string | undefined = undefined;
     if (input.proposalId) {
       if (!prop) {
         throw new Error(`PROPOSAL_NOT_FOUND: Proposal '${input.proposalId}' does not exist.`);
@@ -1136,23 +1156,41 @@ export class RazorpayAdapter {
       let issuedPriceINR: number | null = null;
       if (input.invoiceRef) {
         let linkRow: any = null;
+        let payReqRow: any = null;
         if (isProduction() && !process.env.VITEST) {
           linkRow = await this.d1Repo.queryOne<any>(
             'payment_provider_links',
-            'SELECT amount_inr, business_id, organization_id FROM payment_provider_links WHERE (id = ? OR provider_link_id = ?) LIMIT 1',
+            'SELECT amount_inr, business_id, organization_id, proposal_id FROM payment_provider_links WHERE (id = ? OR provider_link_id = ?) LIMIT 1',
             [input.invoiceRef, input.invoiceRef]
+          );
+          payReqRow = await this.d1Repo.queryOne<any>(
+            'payment_requests',
+            'SELECT amount_inr, business_id, organization_id, offer_id, offer_description FROM payment_requests WHERE (id = ? OR provider_link_id = ? OR reference_id = ?) LIMIT 1',
+            [input.invoiceRef, input.invoiceRef, input.invoiceRef]
           );
         } else {
           linkRow = getDb().prepare(
-            'SELECT amount_inr, business_id, organization_id FROM payment_provider_links WHERE (id = ? OR provider_link_id = ?) LIMIT 1'
+            'SELECT amount_inr, business_id, organization_id, proposal_id FROM payment_provider_links WHERE (id = ? OR provider_link_id = ?) LIMIT 1'
           ).get(input.invoiceRef, input.invoiceRef) as any;
+          payReqRow = getDb().prepare(
+            'SELECT amount_inr, business_id, organization_id, offer_id, offer_description FROM payment_requests WHERE (id = ? OR provider_link_id = ? OR reference_id = ?) LIMIT 1'
+          ).get(input.invoiceRef, input.invoiceRef, input.invoiceRef) as any;
         }
-        if (linkRow) {
-          if (linkRow.business_id !== input.businessId || linkRow.organization_id !== biz.organization_id) {
+        if (linkRow || payReqRow) {
+          const matchedBiz = linkRow?.business_id || payReqRow?.business_id;
+          const matchedOrg = linkRow?.organization_id || payReqRow?.organization_id;
+          if (matchedBiz !== input.businessId || matchedOrg !== biz.organization_id) {
             throw new Error(`UNAUTHORIZED_LINK_REFERENCE: Payment link '${input.invoiceRef}' does not belong to business '${input.businessId}'.`);
           }
-          if (typeof linkRow.amount_inr === 'number' && linkRow.amount_inr > 0) {
-            issuedPriceINR = linkRow.amount_inr;
+          if (payReqRow?.offer_id) {
+            if (input.offerId && input.offerId !== payReqRow.offer_id) {
+              throw new Error(`OFFER_MISMATCH: Payment link '${input.invoiceRef}' was issued for offer '${payReqRow.offer_id}', but caller supplied offer '${input.offerId}'.`);
+            }
+            boundOfferId = payReqRow.offer_id;
+          }
+          const linkAmount = typeof payReqRow?.amount_inr === 'number' ? payReqRow.amount_inr : (typeof linkRow?.amount_inr === 'number' ? linkRow.amount_inr : null);
+          if (linkAmount !== null && linkAmount > 0) {
+            issuedPriceINR = linkAmount;
           }
         } else {
           // Check if invoiceRef is an authentic issued order reference (e.g. HMAC-signed quote)
@@ -1163,6 +1201,7 @@ export class RazorpayAdapter {
               throw new Error(`OFFER_MISMATCH: Order reference '${input.invoiceRef}' was issued for offer '${verifiedQuote.boundOfferId}', but caller supplied offer '${input.offerId}'.`);
             }
             issuedPriceINR = verifiedQuote.amountINR;
+            boundOfferId = verifiedQuote.boundOfferId || undefined;
           }
         }
       }
@@ -1176,9 +1215,13 @@ export class RazorpayAdapter {
         if (!offer) {
           throw new Error(`UNAUTHORIZED_OFFER: Offer '${input.offerId}' could not be resolved.`);
         }
+        if (offer.currency !== 'INR') {
+          throw new Error(`NON_INR_OFFER_REJECTED: Manual UPI claims are strictly restricted to INR currency offers. Offer '${offer.offerId || input.offerId}' currency is '${offer.currency}'.`);
+        }
         if (Math.round(input.amountINR * 100) !== Math.round(offer.priceINR * 100)) {
           throw new Error(`AMOUNT_MISMATCH: Claim amount ₹${input.amountINR} does not match authoritative offer price ₹${offer.priceINR}.`);
         }
+        boundOfferId = offer.offerId;
       } else {
         this.validatePermittedDeposit(input.amountINR, input.serviceRendered);
       }
@@ -1194,7 +1237,7 @@ export class RazorpayAdapter {
       }
       notesPayload = JSON.stringify({
         ...baseNotes,
-        offerId: input.offerId || (input.invoiceRef?.startsWith('LCM') ? 'PLATFORM_MONTHLY' : (input.invoiceRef?.startsWith('LCS') ? 'PLATFORM_SETUP' : undefined)),
+        offerId: boundOfferId || input.offerId || (input.invoiceRef?.startsWith('LCM') ? 'PLATFORM_MONTHLY' : (input.invoiceRef?.startsWith('LCS') ? 'PLATFORM_SETUP' : undefined)),
         amountINR: input.amountINR,
         serviceRendered: input.serviceRendered
       });
@@ -1571,6 +1614,8 @@ export class RazorpayAdapter {
 
     let downloadToken: string | undefined;
     let downloadUrl: string | undefined;
+    let resolvedAuditId: string | undefined;
+    const siteUrl = getTrustedPublicSiteUrl().replace(/\/$/, '');
     let siteFixDelivery: any = null;
     let emailReceiptStatus = 'PENDING_RETRY';
     let receiptAlreadySent = false;
@@ -1585,7 +1630,7 @@ export class RazorpayAdapter {
           await auditService.persistAuditToD1(audit);
         }
         // Dot-free audit identifier prevents malformed delivery token split (Spec Stage R.1 Task 1 / Comment #6)
-        const resolvedAuditId = (audit.auditId || audit.id || `audit_${cleanDomain}`).replace(/\./g, '_');
+        resolvedAuditId = (audit.auditId || audit.id || `audit_${cleanDomain}`).replace(/\./g, '_');
         audit.auditId = resolvedAuditId;
         auditService.setAuditInCache(audit);
 
@@ -1599,11 +1644,10 @@ export class RazorpayAdapter {
         } catch {}
 
         const effectiveOrderId = notesObj.orderId || uOrder?.id || claimRow?.id || `ord_upi_${trimmedUtr}`;
-        await auditService.generateDeliverable(resolvedAuditId, effectiveOrderId);
+        await auditService.generateDeliverable(resolvedAuditId!, effectiveOrderId);
 
-        downloadToken = auditService.generateSignedDeliveryToken(effectiveOrderId, resolvedAuditId, trimmedUtr, 72);
-        const siteUrl = getTrustedPublicSiteUrl().replace(/\/$/, '');
-        downloadUrl = `${siteUrl}/api/v1/offer/download/${encodeURIComponent(downloadToken)}`;
+        downloadToken = auditService.generateSignedDeliveryToken(effectiveOrderId, resolvedAuditId!, trimmedUtr, 72);
+        downloadUrl = `${siteUrl}/api/v1/offer/download/${encodeURIComponent(downloadToken || '')}`;
 
         const resolvedJourneyId = authoritativeJourneyId || claimRow?.journey_id || notesObj.journeyId || params.journeyId || `cj_upi_${effectiveOrderId}`;
         try {
@@ -1707,6 +1751,7 @@ export class RazorpayAdapter {
             try {
               const { BrevoMcpClient } = await import('../integrations/brevo-mcp-client.js');
               const brevo = BrevoMcpClient.getInstance();
+              const recheckReturnUrl = `${siteUrl}/tools/site-audit?auditId=${encodeURIComponent(resolvedAuditId || '')}&token=${encodeURIComponent(downloadToken || '')}&domain=${encodeURIComponent(cleanDomain || '')}`;
               const emailRes = await brevo.sendTransactionalEmail({
                 to: buyerEmail,
                 subject: `Payment Receipt & Fix-Pack Download (${effectiveOrderId})`,
@@ -1715,8 +1760,10 @@ export class RazorpayAdapter {
                     <h2 style="color:#0f172a;">Thank You for Your Order!</h2>
                     <p>Your payment of <strong>₹${Number(authoritativeAmountINR).toFixed(2)}</strong> for <strong>${cleanDomain}</strong> was verified successfully by the owner.</p>
                     <p><strong>Order ID:</strong> ${effectiveOrderId}<br><strong>Payment Ref (UTR):</strong> ${trimmedUtr}</p>
-                    <div style="margin:24px 0;">
+                    <p style="font-size:14px;color:#334155;line-height:1.5;">Your purchase delivers a structured JSON &amp; Markdown Fix-Pack containing ready-to-paste HTML &lt;head&gt; tags, Schema.org JSON-LD, robots.txt rules, sitemap.xml entries (to merge into your site's sitemap), and a verification checklist. The sitemap snippet lists only your scanned canonical URL, so merge it into your existing sitemap instead of replacing it.</p>
+                    <div style="margin:24px 0;display:flex;gap:12px;flex-wrap:wrap;">
                       <a href="${downloadUrl}" style="background:#2563eb;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;font-weight:bold;display:inline-block;">Download Your SiteFix Technical Fix-Pack</a>
+                      <a href="${recheckReturnUrl}" style="background:#0284c7;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;font-weight:bold;display:inline-block;">Run Included Verification Recheck</a>
                     </div>
                     <p style="color:#64748b;font-size:12px;">This download link contains your 72-hour cryptographic access token.</p>
                     <p style="color:#64748b;font-size:12px;">AI Marketing Organization • Automated Delivery Engine</p>
@@ -1944,6 +1991,8 @@ export class RazorpayAdapter {
     let downloadToken: string | undefined;
     let downloadUrl: string | undefined;
     let deliverableStatus = 'PENDING';
+    let resolvedAuditId: string | undefined;
+    const siteUrl = getTrustedPublicSiteUrl().replace(/\/$/, '');
 
     if (cleanDomain) {
       try {
@@ -1955,14 +2004,13 @@ export class RazorpayAdapter {
           await auditService.persistAuditToD1(audit);
         }
         // Dot-free audit identifier prevents malformed delivery token split (Spec Stage R.1 Task 1 / Comment #6)
-        const resolvedAuditId = (audit.auditId || audit.id || `audit_${cleanDomain}`).replace(/\./g, '_');
+        resolvedAuditId = (audit.auditId || audit.id || `audit_${cleanDomain}`).replace(/\./g, '_');
         audit.auditId = resolvedAuditId;
         auditService.setAuditInCache(audit);
 
-        await auditService.generateDeliverable(resolvedAuditId, effectiveOrderId);
-        downloadToken = auditService.generateSignedDeliveryToken(effectiveOrderId, resolvedAuditId, trimmedUtr, 72);
-        const siteUrl = getTrustedPublicSiteUrl().replace(/\/$/, '');
-        downloadUrl = `${siteUrl}/api/v1/offer/download/${encodeURIComponent(downloadToken)}`;
+        await auditService.generateDeliverable(resolvedAuditId!, effectiveOrderId);
+        downloadToken = auditService.generateSignedDeliveryToken(effectiveOrderId, resolvedAuditId!, trimmedUtr, 72);
+        downloadUrl = `${siteUrl}/api/v1/offer/download/${encodeURIComponent(downloadToken || '')}`;
         deliverableStatus = 'READY';
 
         const journeyId = claimRow.journey_id || notesObj.journeyId || `cj_upi_${effectiveOrderId}`;
@@ -2072,6 +2120,7 @@ export class RazorpayAdapter {
         try {
           const { BrevoMcpClient } = await import('../integrations/brevo-mcp-client.js');
           const brevo = BrevoMcpClient.getInstance();
+          const recheckReturnUrl = `${siteUrl}/tools/site-audit?auditId=${encodeURIComponent(resolvedAuditId || '')}&token=${encodeURIComponent(downloadToken || '')}&domain=${encodeURIComponent(cleanDomain || '')}`;
           const emailRes = await brevo.sendTransactionalEmail({
             to: buyerEmail,
             subject: `Payment Receipt & Fix-Pack Download (${effectiveOrderId})`,
@@ -2080,8 +2129,10 @@ export class RazorpayAdapter {
                 <h2 style="color:#0f172a;">Thank You for Your Order!</h2>
                 <p>Your payment of <strong>₹${Number(claimRow.amount_inr || 499).toFixed(2)}</strong> for <strong>${cleanDomain}</strong> was verified successfully.</p>
                 <p><strong>Order ID:</strong> ${effectiveOrderId}<br><strong>Payment Ref (UTR):</strong> ${trimmedUtr}</p>
-                <div style="margin:24px 0;">
+                <p style="font-size:14px;color:#334155;line-height:1.5;">Your purchase delivers a structured JSON &amp; Markdown Fix-Pack containing ready-to-paste HTML &lt;head&gt; tags, Schema.org JSON-LD, robots.txt rules, sitemap.xml entries (to merge into your site's sitemap), and a verification checklist. The sitemap snippet lists only your scanned canonical URL, so merge it into your existing sitemap instead of replacing it.</p>
+                <div style="margin:24px 0;display:flex;gap:12px;flex-wrap:wrap;">
                   <a href="${downloadUrl}" style="background:#2563eb;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;font-weight:bold;display:inline-block;">Download Your SiteFix Technical Fix-Pack</a>
+                  <a href="${recheckReturnUrl}" style="background:#0284c7;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;font-weight:bold;display:inline-block;">Run Included Verification Recheck</a>
                 </div>
                 <p style="color:#64748b;font-size:12px;">This download link contains your 72-hour cryptographic access token.</p>
                 <p style="color:#64748b;font-size:12px;">AI Marketing Organization • Automated Delivery Engine</p>

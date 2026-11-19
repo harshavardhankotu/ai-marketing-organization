@@ -240,11 +240,34 @@ describe('Stage U — Close All PR #79 Blockers, Fix lint:owner-prices, Align Pr
 
     it('1.6 DirectCommercialOfferPage supports single-read content for both attestation check and terms parsing', async () => {
       const { DirectCommercialOfferPage, parseDirectOfferTerms } = await import('../../src/revenue/direct-offer-page.js');
+      const crypto = await import('crypto');
       const sampleTerms = '# Commercial Terms\n**Full Title:** AI Inbound Lead Conversion System\n**Price:** ₹15,000 Setup\n**Target Audience:** Indian SMBs\n**Billing Model:** One-Time';
-      const terms = parseDirectOfferTerms(undefined, sampleTerms);
-      expect(terms.isPayable).toBe(true);
-      expect(terms.setupPriceINR).toBe(15000);
-      expect(terms.billingModel).toBe('One-Time');
+      const hash = crypto.createHash('sha256').update(Buffer.from(sampleTerms, 'utf8')).digest('hex');
+
+      const origAttested = process.env.DIRECT_OFFER_TERMS_ATTESTED;
+      const origSha = process.env.DIRECT_OFFER_TERMS_SHA256;
+      process.env.DIRECT_OFFER_TERMS_ATTESTED = 'true';
+      process.env.DIRECT_OFFER_TERMS_SHA256 = hash;
+
+      try {
+        const isAttested = DirectCommercialOfferPage.isDirectOfferAttested(undefined, sampleTerms);
+        expect(isAttested).toBe(true);
+
+        const terms = parseDirectOfferTerms(undefined, sampleTerms);
+        expect(terms.isPayable).toBe(true);
+        expect(terms.setupPriceINR).toBe(15000);
+        expect(terms.billingModel).toBe('One-Time');
+
+        const page = DirectCommercialOfferPage.getInstance();
+        const html = page.renderOfferHtml({}, undefined, sampleTerms);
+        expect(html).toContain('₹15,000');
+        expect(html).toContain('AI Inbound Lead Conversion System');
+      } finally {
+        if (origAttested !== undefined) process.env.DIRECT_OFFER_TERMS_ATTESTED = origAttested;
+        else delete process.env.DIRECT_OFFER_TERMS_ATTESTED;
+        if (origSha !== undefined) process.env.DIRECT_OFFER_TERMS_SHA256 = origSha;
+        else delete process.env.DIRECT_OFFER_TERMS_SHA256;
+      }
     });
 
     it('1.7 recordManualUpiClaim honors authentic issued order reference even after offer is repriced (prevents stale-price rejection)', async () => {
@@ -315,13 +338,17 @@ describe('Stage U — Close All PR #79 Blockers, Fix lint:owner-prices, Align Pr
 
       // Fail-closed verification when secret is missing
       const origSecret = process.env.SITE_AUDIT_SIGNING_SECRET;
+      const origAuthSecret = process.env.AUTH_SECRET;
       delete process.env.SITE_AUDIT_SIGNING_SECRET;
       delete process.env.AUTH_SECRET;
       try {
         expect(verifyIssuedOrderReference(refPaise)).toBeNull();
         expect(() => generateOrderReference('LCS', 499.5)).toThrow(/Cannot issue payable order reference without/);
       } finally {
-        process.env.SITE_AUDIT_SIGNING_SECRET = origSecret;
+        if (origSecret !== undefined) process.env.SITE_AUDIT_SIGNING_SECRET = origSecret;
+        else delete process.env.SITE_AUDIT_SIGNING_SECRET;
+        if (origAuthSecret !== undefined) process.env.AUTH_SECRET = origAuthSecret;
+        else delete process.env.AUTH_SECRET;
       }
     });
 
@@ -619,6 +646,8 @@ describe('Stage U — Close All PR #79 Blockers, Fix lint:owner-prices, Align Pr
     });
 
     it('2.5 /owner/proposal and /offer keep payable checkout suppressed when DIRECT_OFFER.md has Price: TBD', async () => {
+      const origAttested = process.env.DIRECT_OFFER_TERMS_ATTESTED;
+      const origSha = process.env.DIRECT_OFFER_TERMS_SHA256;
       const origReadFileSync = fs.readFileSync;
       const fsSpy = vi.spyOn(fs, 'readFileSync').mockImplementation((filePath: any, encoding?: any) => {
         const p = String(filePath);
@@ -660,9 +689,6 @@ describe('Stage U — Close All PR #79 Blockers, Fix lint:owner-prices, Align Pr
         expect(offerHtml).not.toContain('href="#inquiry-card"');
         expect(offerHtml).toContain('Commercial Terms Attested — Pricing Pending Definition');
 
-        delete process.env.DIRECT_OFFER_TERMS_ATTESTED;
-        delete process.env.DIRECT_OFFER_TERMS_SHA256;
-
         // POST /api/v1/payments/public/create-link fails closed when terms.isPayable is false
         const linkRes = await app.request('/api/v1/payments/public/create-link', {
           method: 'POST',
@@ -677,6 +703,10 @@ describe('Stage U — Close All PR #79 Blockers, Fix lint:owner-prices, Align Pr
         expect(linkJson.error).toBe('OFFER_PRICING_PENDING');
       } finally {
         fsSpy.mockRestore();
+        if (origAttested !== undefined) process.env.DIRECT_OFFER_TERMS_ATTESTED = origAttested;
+        else delete process.env.DIRECT_OFFER_TERMS_ATTESTED;
+        if (origSha !== undefined) process.env.DIRECT_OFFER_TERMS_SHA256 = origSha;
+        else delete process.env.DIRECT_OFFER_TERMS_SHA256;
       }
     });
 
@@ -847,6 +877,274 @@ describe('Stage U — Close All PR #79 Blockers, Fix lint:owner-prices, Align Pr
       } finally {
         fetchSpy.mockRestore();
         rescanSpy.mockRestore();
+      }
+    });
+  });
+
+  describe('Task 3: Stage U.1 Defect Closure & Parity Verification', () => {
+    it('3.1 parseDirectOfferTerms rejects duplicate and conflicting **Price:** declarations', async () => {
+      const { parseDirectOfferTerms } = await import('../../src/revenue/direct-offer-page.js');
+      // Conflicting declarations: ₹15,000 followed by TBD
+      const conflicting = '# Commercial Terms\n**Full Title:** Title\n**Price:** ₹15,000 Setup\n**Price:** TBD\n**Billing Model:** ONE_TIME';
+      const termsConflict = parseDirectOfferTerms(undefined, conflicting);
+      expect(termsConflict.isPayable).toBe(false);
+      expect(termsConflict.setupPriceINR).toBeNull();
+      expect(termsConflict.priceRaw).toBe('CONFLICTING');
+
+      // Duplicate setup prices
+      const duplicate = '# Commercial Terms\n**Full Title:** Title\n**Price:** ₹15,000 Setup\n**Price:** ₹20,000 Setup\n**Billing Model:** ONE_TIME';
+      const termsDup = parseDirectOfferTerms(undefined, duplicate);
+      expect(termsDup.isPayable).toBe(false);
+      expect(termsDup.setupPriceINR).toBeNull();
+      expect(termsDup.priceRaw).toBe('CONFLICTING');
+
+      // Valid single declaration
+      const valid = '# Commercial Terms\n**Full Title:** Title\n**Price:** ₹15,000 Setup\n**Billing Model:** ONE_TIME';
+      const termsValid = parseDirectOfferTerms(undefined, valid);
+      expect(termsValid.isPayable).toBe(true);
+      expect(termsValid.setupPriceINR).toBe(15000);
+    });
+
+    it('3.2 OfferCatalogService marks platform offers nonPayable and price 0 when DIRECT_OFFER.md is pending/TBD', async () => {
+      const { OfferCatalogService } = await import('../../src/revenue/offer-catalog.js');
+      const catalog = OfferCatalogService.getInstance();
+      
+      // When terms are TBD and unattested
+      expect(() => {
+        catalog.resolveAuthorizedOffer('PLATFORM_SETUP');
+      }).toThrow(/OFFER_PRICING_PENDING|COMMERCIAL_TERMS_UNATTESTED/);
+
+      // With allowPendingPricing: true
+      const offerPending = catalog.resolveAuthorizedOffer('PLATFORM_SETUP', undefined, undefined, { allowPendingPricing: true });
+      expect(offerPending.priceINR).toBe(0);
+      expect(offerPending.active).toBe(false);
+      expect(offerPending.nonPayable).toBe(true);
+    });
+
+    it('3.3 createPaymentOrder and createPaymentLink reject nonPayable offers with OFFER_NON_PAYABLE', async () => {
+      const { RazorpayAdapter } = await import('../../src/integrations/razorpay.js');
+      const razorpay = new RazorpayAdapter();
+
+      await expect(
+        razorpay.createPaymentOrder({
+          offerId: 'PLATFORM_SETUP',
+          service: 'AI Inbound Setup'
+        })
+      ).rejects.toThrow(/OFFER_PRICING_PENDING|OFFER_NON_PAYABLE|COMMERCIAL_TERMS_UNATTESTED/);
+
+      await expect(
+        razorpay.createPaymentLink({
+          offerId: 'PLATFORM_SETUP',
+          businessId: 'biz_platform_aro',
+          organizationId: 'org_owner_primary'
+        })
+      ).rejects.toThrow(/OFFER_PRICING_PENDING|OFFER_NON_PAYABLE|COMMERCIAL_TERMS_UNATTESTED/);
+    });
+
+    it('3.4 createPaymentLink rejects offerId conflicting with proposal offer type', async () => {
+      const db = getDb();
+      const { RazorpayAdapter } = await import('../../src/integrations/razorpay.js');
+      const razorpay = new RazorpayAdapter();
+
+      const propId = 'prop_test_offer_conflict_01';
+      db.prepare(`
+        INSERT OR REPLACE INTO proposals (
+          id, organization_id, business_id, prospect_id, title, status,
+          setup_price_inr, customer_problem, proposed_solution,
+          deliverables_json, timeline_days, payment_terms, scope_boundary, next_step,
+          created_at, updated_at
+        ) VALUES (
+          ?, 'org_owner_primary', 'biz_platform_aro', 'prosp_test_prop', 'Proposal', 'APPROVED',
+          12000, 'Problem', 'Solution', '[]', 5, 'Immediate', 'None', 'Sign', datetime('now'), datetime('now')
+        )
+      `).run(propId);
+
+      // Attempting to checkout a setup proposal with PLATFORM_MONTHLY offerId
+      await expect(
+        razorpay.createPaymentLink({
+          proposalId: propId,
+          offerId: 'PLATFORM_MONTHLY',
+          businessId: 'biz_platform_aro',
+          organizationId: 'org_owner_primary'
+        })
+      ).rejects.toThrow(/OFFER_MISMATCH/);
+    });
+
+    it('3.5 recordManualUpiClaim rejects non-INR offers and binds issued link offer identity', async () => {
+      const db = getDb();
+      const { RazorpayAdapter } = await import('../../src/integrations/razorpay.js');
+      const razorpay = new RazorpayAdapter();
+
+      // Seed a custom USD offer into customer_offers table
+      db.prepare(`
+        INSERT OR REPLACE INTO customer_offers (
+          id, organization_id, business_id, title, description,
+          deliverables_json, price_minor, currency, billing_model, active,
+          created_at, updated_at
+        ) VALUES (
+          'OFFER_USD_TEST', 'org_owner_primary', 'biz_platform_aro', 'USD Offer', 'USD Description',
+          '[]', 49900, 'USD', 'ONE_TIME', 1, datetime('now'), datetime('now')
+        )
+      `).run();
+
+      // Attempt to claim non-INR offer via manual UPI
+      await expect(
+        razorpay.recordManualUpiClaim({
+          businessId: 'biz_platform_aro',
+          offerId: 'OFFER_USD_TEST',
+          amountINR: 499,
+          utr: 'UTR_NON_INR_OFFER_01',
+          payerName: 'USD Buyer'
+        })
+      ).rejects.toThrow(/NON_INR_OFFER_REJECTED/);
+
+      // Create an issued payment request with offer_id 'SITEFIX_AI_PACK_V1'
+      const issuedPlink = 'plink_issued_offer_bind_01';
+      db.prepare(`
+        INSERT OR REPLACE INTO payment_requests (
+          id, organization_id, business_id, offer_id, offer_description,
+          amount_inr, currency, billing_model, provider, provider_link_id,
+          short_url, reference_id, classification, status, created_at, updated_at
+        ) VALUES (
+          'payreq_offer_bind_01', 'org_owner_primary', 'biz_platform_aro', 'SITEFIX_AI_PACK_V1',
+          'SiteFix Pack', 499, 'INR', 'ONE_TIME', 'RAZORPAY', ?, 'https://rzp.io/test',
+          'ref_offer_bind_01', 'REAL', 'PROVIDER_CREATED', datetime('now'), datetime('now')
+        )
+      `).run(issuedPlink);
+
+      // Attempt to claim with conflicting offerId
+      await expect(
+        razorpay.recordManualUpiClaim({
+          businessId: 'biz_platform_aro',
+          invoiceRef: issuedPlink,
+          offerId: 'PLATFORM_SETUP',
+          amountINR: 499,
+          utr: 'UTR_OFFER_BIND_MISMATCH_01',
+          payerName: 'Conflicting Buyer'
+        })
+      ).rejects.toThrow(/OFFER_MISMATCH/);
+
+      // Valid claim matching issued link offer
+      const validClaim = await razorpay.recordManualUpiClaim({
+        businessId: 'biz_platform_aro',
+        invoiceRef: issuedPlink,
+        offerId: 'SITEFIX_AI_PACK_V1',
+        amountINR: 499,
+        utr: 'UTR_OFFER_BIND_MATCH_01',
+        payerName: 'Valid Buyer'
+      });
+      expect(validClaim.status).toBe('PAYMENT_CLAIMED');
+      const claimRow = db.prepare('SELECT notes FROM manual_upi_claims WHERE utr = ?').get('UTR_OFFER_BIND_MATCH_01') as any;
+      expect(claimRow?.notes).toContain('SITEFIX_AI_PACK_V1');
+    });
+
+    it('3.6 DPDPComplianceManager purges and erases outbound_contacts price-drop alerts', async () => {
+      const db = getDb();
+      const { DPDPComplianceManager } = await import('../../src/compliance/dpdp-manager.js');
+
+      // Seed an expired price alert contact (> 30 days old)
+      const expiredEmail = 'expired.subscriber@example.com';
+      db.prepare(`
+        INSERT OR REPLACE INTO outbound_contacts (
+          id, business_id, organization_id, prospect_name, prospect_email, channel,
+          email_authorized, whatsapp_opt_in, authorization_source, authorization_evidence_json,
+          source, status, is_opted_out, is_bounced, is_suppressed, created_at, updated_at
+        ) VALUES (
+          'cnt_expired_sub_01', 'biz_platform_aro', 'org_owner_primary', 'Old Subscriber', ?, 'EMAIL',
+          1, 0, 'EXPLICIT_CONSENT', '{"test":true}',
+          'CUSTOMER_DESK_ALERT_OPTIN', 'ACTIVE', 0, 0, 0, datetime('now', '-35 days'), datetime('now', '-35 days')
+        )
+      `).run(expiredEmail);
+
+      // Seed an active recent contact (5 days old)
+      const recentEmail = 'recent.subscriber@example.com';
+      db.prepare(`
+        INSERT OR REPLACE INTO outbound_contacts (
+          id, business_id, organization_id, prospect_name, prospect_email, channel,
+          email_authorized, whatsapp_opt_in, authorization_source, authorization_evidence_json,
+          source, status, is_opted_out, is_bounced, is_suppressed, created_at, updated_at
+        ) VALUES (
+          'cnt_recent_sub_01', 'biz_platform_aro', 'org_owner_primary', 'New Subscriber', ?, 'EMAIL',
+          1, 0, 'EXPLICIT_CONSENT', '{"test":true}',
+          'CUSTOMER_DESK_ALERT_OPTIN', 'ACTIVE', 0, 0, 0, datetime('now', '-5 days'), datetime('now', '-5 days')
+        )
+      `).run(recentEmail);
+
+      // Run automated purge
+      const dpdp = new DPDPComplianceManager(db);
+      const purgeRes = await dpdp.purgeExpiredInquiries(30);
+      expect(purgeRes.localDeleted).toBeGreaterThanOrEqual(1);
+
+      // Expired contact must be purged
+      const expiredCheck = db.prepare('SELECT id FROM outbound_contacts WHERE prospect_email = ?').get(expiredEmail);
+      expect(expiredCheck).toBeUndefined();
+
+      // Recent contact must still exist
+      const recentCheck = db.prepare('SELECT id FROM outbound_contacts WHERE prospect_email = ?').get(recentEmail);
+      expect(recentCheck).toBeDefined();
+
+      // Now test immediate erasure request for the recent subscriber
+      const erasureRes = dpdp.requestErasure({
+        businessId: 'biz_platform_aro',
+        phoneOrJourneyId: recentEmail,
+        reason: 'User unsubscribe & erasure request'
+      });
+      expect(erasureRes.success).toBe(true);
+
+      // Check outbound_contacts was scrubbed and marked erased
+      const erasedContact = db.prepare('SELECT prospect_name, prospect_email, is_suppressed, is_opted_out FROM outbound_contacts WHERE id = ?').get('cnt_recent_sub_01') as any;
+      expect(erasedContact.prospect_name).toBe('[ERASED_DPDP_REQUEST]');
+      expect(erasedContact.is_suppressed).toBe(1);
+      expect(erasedContact.is_opted_out).toBe(1);
+    });
+
+    it('3.7 site-audit page HTML contains pinned recheck card and deliverable format truth', async () => {
+      const res = await app.request('/tools/site-audit');
+      expect(res.status).toBe(200);
+      const html = await res.text();
+
+      // Pinned recheck card elements
+      expect(html).toContain('id="activeRecheckBannerCard"');
+      expect(html).toContain('id="activeRecheckDomainLabel"');
+      expect(html).toContain('id="activeRecheckDomainMismatchNotice"');
+      expect(html).toContain('initRecheckEntitlementRecovery()');
+
+      // Standardized deliverable description
+      expect(html).toContain('a structured JSON &amp; Markdown Fix-Pack containing ready-to-paste HTML &lt;head&gt; tags, Schema.org JSON-LD, robots.txt rules, sitemap.xml entries (to merge into your site\'s sitemap), and a verification checklist');
+      expect(html).toContain('merge it into your existing sitemap instead of replacing it');
+    });
+
+    it('3.8 offer deliverable download page includes direct return link to site-audit recheck', async () => {
+      const { SiteAuditService } = await import('../../src/tools/site-audit/site-audit-service.js');
+      const service = SiteAuditService.getInstance();
+      const token = service.generateDeliveryToken('order_test_deliverable_01', 'audit_deliverable_01', 'pay_deliverable_01');
+
+      // Mock generateDeliverable
+      const genSpy = vi.spyOn(service, 'generateDeliverable').mockResolvedValueOnce({
+        auditId: 'audit_deliverable_01',
+        orderId: 'order_test_deliverable_01',
+        targetUrl: 'https://clientstore.in',
+        canonicalUrlRecommendation: 'https://clientstore.in',
+        score: 65,
+        overallStatus: 'WARN',
+        generatedAt: new Date().toISOString(),
+        headTagsPatch: '<title>Store</title>',
+        schemaJsonLd: '{}',
+        robotsTxtSnippet: 'User-agent: *',
+        sitemapXmlSnippet: '<url><loc>https://clientstore.in</loc></url>',
+        checklist: [],
+        license: 'SiteFix'
+      } as any);
+
+      try {
+        const res = await app.request(`/api/v1/offer/download/${token}`);
+        expect(res.status).toBe(200);
+        const html = await res.text();
+        expect(html).toContain('Run Included Verification Recheck');
+        expect(html).toContain('/tools/site-audit?auditId=audit_deliverable_01');
+        expect(html).toContain('token=' + encodeURIComponent(token));
+      } finally {
+        genSpy.mockRestore();
       }
     });
   });

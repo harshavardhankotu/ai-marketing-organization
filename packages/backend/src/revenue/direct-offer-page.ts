@@ -152,18 +152,8 @@ export function parseDirectOfferTerms(customFilePath?: string, offerContent?: st
       };
     }
   }
-  const priceMatch = content.match(/\*\*Price:\*\*\s*(.+)/i);
-  const priceRaw = priceMatch ? priceMatch[1].trim() : 'TBD';
-
-  const numericPrice = parseSinglePayableAmount(priceRaw, 'setup');
-  const isPayable = numericPrice !== null;
-
-  // Monthly Retainer / Price parsing if explicitly defined in markdown
-  const monthlyMatch = content.match(/\*\*(?:Monthly Price|Monthly Retainer):\*\*\s*(.+)/i);
-  let monthlyPriceINR: number | null = null;
-  if (monthlyMatch) {
-    monthlyPriceINR = parseSinglePayableAmount(monthlyMatch[1].trim(), 'monthly');
-  }
+  const priceMatches = [...content.matchAll(/\*\*Price:\*\*\s*(.+)/gi)];
+  const monthlyMatches = [...content.matchAll(/\*\*(?:Monthly Price|Monthly Retainer):\*\*\s*(.+)/gi)];
 
   const titleMatch = content.match(/\*\*Full Title:\*\*\s*(.+)/i);
   const title = titleMatch ? titleMatch[1].trim() : 'AI Inbound Lead Conversion System — Day 0-5 Setup & Integration';
@@ -173,6 +163,29 @@ export function parseDirectOfferTerms(customFilePath?: string, offerContent?: st
 
   const billingMatch = content.match(/\*\*Billing Model:\*\*\s*(.+)/i);
   const billingModel = billingMatch ? billingMatch[1].trim() : 'TBD';
+
+  // Require exactly one setup price field and at most one monthly price field. Reject conflicting or duplicate declarations.
+  if (priceMatches.length !== 1 || monthlyMatches.length > 1) {
+    return {
+      offerId: 'PLATFORM_SETUP',
+      title,
+      priceRaw: priceMatches.length > 1 ? 'CONFLICTING' : (priceMatches[0] ? priceMatches[0][1].trim() : 'TBD'),
+      setupPriceINR: null,
+      monthlyPriceINR: null,
+      isPayable: false,
+      targetAudience,
+      billingModel
+    };
+  }
+
+  const priceRaw = priceMatches[0][1].trim();
+  const numericPrice = parseSinglePayableAmount(priceRaw, 'setup');
+  const isPayable = numericPrice !== null;
+
+  let monthlyPriceINR: number | null = null;
+  if (monthlyMatches.length === 1) {
+    monthlyPriceINR = parseSinglePayableAmount(monthlyMatches[0][1].trim(), 'monthly');
+  }
 
   return {
     offerId: 'PLATFORM_SETUP',
@@ -324,6 +337,16 @@ export class DirectCommercialOfferPage {
     return computeDirectOfferHash(customFilePath);
   }
 
+  public static readDirectOfferFileSnapshot(customFilePath?: string): string | null {
+    const filePath = resolveDirectOfferPath(customFilePath);
+    if (!filePath) return null;
+    try {
+      return fs.readFileSync(filePath, 'utf8');
+    } catch {
+      return null;
+    }
+  }
+
   public static getInstance(): DirectCommercialOfferPage {
     if (!DirectCommercialOfferPage.instance) {
       DirectCommercialOfferPage.instance = new DirectCommercialOfferPage();
@@ -418,18 +441,20 @@ export class DirectCommercialOfferPage {
    * Renders the HTML offer page.
    * If commercial terms are un-attested, renders a safe informational overview with zero payment links.
    */
-  public renderOfferHtml(config: Partial<OfferPageConfig> = {}, customOfferPath?: string): string {
+  public renderOfferHtml(config: Partial<OfferPageConfig> = {}, customOfferPath?: string, directOfferContent?: string): string {
     const siteName = config.siteName || (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
     const siteUrl = config.siteUrl || (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').trim();
     const contactEmail = config.contactEmail || (process.env.PUBLIC_CONTACT_EMAIL ? process.env.PUBLIC_CONTACT_EMAIL.trim() : null);
 
-    let offerContent: string | undefined = undefined;
-    const filePath = resolveDirectOfferPath(customOfferPath);
-    if (filePath) {
-      try {
-        offerContent = fs.readFileSync(filePath, 'utf8');
-      } catch {
-        return this.renderUnattestedOverviewHtml(siteName, siteUrl, contactEmail);
+    let offerContent: string | undefined = directOfferContent;
+    if (offerContent === undefined) {
+      const filePath = resolveDirectOfferPath(customOfferPath);
+      if (filePath) {
+        try {
+          offerContent = fs.readFileSync(filePath, 'utf8');
+        } catch {
+          return this.renderUnattestedOverviewHtml(siteName, siteUrl, contactEmail);
+        }
       }
     }
 

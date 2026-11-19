@@ -104,6 +104,28 @@ export class DPDPComplianceManager {
         AND payload_json NOT LIKE '%"dpdp_retention_purged":true%'
     `;
 
+    // Purge expired active price-drop alert subscriptions from outbound_contacts (Spec Stage U.1 & Comment #4629753815)
+    const purgeOutboundPriceAlertsSql = `
+      DELETE FROM outbound_contacts
+      WHERE created_at < ?
+        AND source IN ('PRICE_DROP_ALERT', 'FAIR_PRICE_ALERT', 'CUSTOMER_DESK_ALERT_OPTIN')
+        AND is_opted_out = 0
+        AND is_suppressed = 0
+    `;
+
+    // Scrub PII from suppressed or opted-out price-drop alert contacts older than 30 days while preserving tombstone status
+    const scrubOutboundPriceAlertSuppressedSql = `
+      UPDATE outbound_contacts
+      SET prospect_name = '[PURGED_RETENTION_EXPIRED]',
+          prospect_email = NULL,
+          authorization_evidence_json = '{"purged":true,"dpdp_retention_purged":true}',
+          updated_at = datetime('now')
+      WHERE created_at < ?
+        AND source IN ('PRICE_DROP_ALERT', 'FAIR_PRICE_ALERT', 'CUSTOMER_DESK_ALERT_OPTIN')
+        AND (is_opted_out = 1 OR is_suppressed = 1)
+        AND prospect_email IS NOT NULL
+    `;
+
     const localErrors: string[] = [];
     let localProspectsCount = 0;
     try {
@@ -137,9 +159,25 @@ export class DPDPComplianceManager {
       localErrors.push(`claims_scrub_failed: ${err?.message || String(err)}`);
     }
 
-    const localDeleted = localProspectsCount + localSubCount + localTerminalClaimsCount + localScrubbedClaimsCount;
+    let localOutboundPurgedCount = 0;
+    try {
+      const res = db.prepare(purgeOutboundPriceAlertsSql).run(thresholdDateStr);
+      localOutboundPurgedCount = res.changes || 0;
+    } catch (err: any) {
+      localErrors.push(`outbound_contacts_purge_failed: ${err?.message || String(err)}`);
+    }
+
+    let localOutboundScrubbedCount = 0;
+    try {
+      const res = db.prepare(scrubOutboundPriceAlertSuppressedSql).run(thresholdDateStr);
+      localOutboundScrubbedCount = res.changes || 0;
+    } catch (err: any) {
+      localErrors.push(`outbound_contacts_scrub_failed: ${err?.message || String(err)}`);
+    }
+
+    const localDeleted = localProspectsCount + localSubCount + localTerminalClaimsCount + localScrubbedClaimsCount + localOutboundPurgedCount + localOutboundScrubbedCount;
     let localStatus: 'EXECUTED' | 'ERROR' | 'PARTIAL' = 'EXECUTED';
-    if (localErrors.length === 4) {
+    if (localErrors.length === 6) {
       localStatus = 'ERROR';
     } else if (localErrors.length > 0) {
       localStatus = 'PARTIAL';
@@ -159,7 +197,9 @@ export class DPDPComplianceManager {
           { table: 'platform_prospects', sql: updateProspectsSql, desc: 'prospects_update' },
           { table: 'durable_events', sql: deleteSubEventsSql, desc: 'sub_events_delete' },
           { table: 'durable_events', sql: deleteTerminalClaimsSql, desc: 'terminal_claims_delete' },
-          { table: 'durable_events', sql: scrubInFlightClaimsSql, desc: 'in_flight_claims_scrub' }
+          { table: 'durable_events', sql: scrubInFlightClaimsSql, desc: 'in_flight_claims_scrub' },
+          { table: 'outbound_contacts', sql: purgeOutboundPriceAlertsSql, desc: 'outbound_contacts_delete' },
+          { table: 'outbound_contacts', sql: scrubOutboundPriceAlertSuppressedSql, desc: 'outbound_contacts_scrub' }
         ];
 
         const remoteWrites: Array<{ rowsAffected: number; source: string; desc: string }> = [];
@@ -343,6 +383,28 @@ export class DPDPComplianceManager {
 
       anonymizedCount++;
     }
+
+    // 4. Anonymize Outbound Contacts (Price Drop Alerts & Inquiries) (Spec Stage U.1 & Comment #4629753815)
+    try {
+      const outboundRows = this.db.prepare(
+        `SELECT id, is_suppressed, is_opted_out FROM outbound_contacts WHERE prospect_email = ? OR prospect_phone = ? OR id = ?`
+      ).all(identifier, identifier, identifier) as any[];
+
+      for (const row of outboundRows) {
+        this.db.prepare(
+          `UPDATE outbound_contacts
+           SET prospect_name = '[ERASED_DPDP_REQUEST]',
+               prospect_email = CASE WHEN is_suppressed = 1 OR is_opted_out = 1 THEN prospect_email ELSE NULL END,
+               prospect_phone = NULL,
+               authorization_evidence_json = '{"erased":true,"dpdp_erasure_timestamp":"' || ? || '"}',
+               is_opted_out = 1,
+               is_suppressed = 1,
+               updated_at = ?
+           WHERE id = ?`
+        ).run(now, now, row.id);
+        anonymizedCount++;
+      }
+    } catch {}
 
     // Check financial transactions preserved under Section 8/12 statutory exception (tax & audit requirement)
     let financialCount = 0;

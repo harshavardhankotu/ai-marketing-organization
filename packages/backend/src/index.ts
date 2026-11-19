@@ -743,8 +743,9 @@ app.all('/owner/proposal', async (c) => {
 
   const bioContent = fs.readFileSync(bioPath, 'utf8');
   const { DirectCommercialOfferPage, parseDirectOfferTerms } = await import('./revenue/direct-offer-page.js');
-  const terms = parseDirectOfferTerms();
-  const isAttested = DirectCommercialOfferPage.isDirectOfferAttested();
+  const snapshot = DirectCommercialOfferPage.readDirectOfferFileSnapshot() || '';
+  const isAttested = DirectCommercialOfferPage.isDirectOfferAttested(undefined, snapshot);
+  const terms = parseDirectOfferTerms(undefined, snapshot);
 
   if (isAttested && terms.isPayable && terms.setupPriceINR !== null) {
     return c.json({

@@ -15,7 +15,7 @@ The organization operates under a strict **zero-paid-spend invariant**:
 - **Lane A — SiteFix AI Technical Fix-Pack (₹499):**
   - Self-serve, deterministic audit scanner on `/tools/site-audit`.
   - Audits public `<head>` tags, Schema.org JSON-LD, `robots.txt`, `sitemap.xml`, and security headers with strict OWASP SSRF protection (5s timeout).
-  - Delivers a downloadable package containing ready-to-paste JSON, Markdown, HTML `<head>`, `robots.txt`, and `sitemap.xml` fix files.
+  - Delivers one downloadable JSON deliverable, also shown as an HTML page, with starter snippets for `<head>`, `robots.txt`, and `sitemap.xml`. The sitemap snippet lists only the scanned canonical URL, so merge it into the existing sitemap instead of replacing it.
   - Transparent disclosure: *"Files are generated from your live scan for you or your developer to review and paste. SiteFix does not modify your live server or guarantee search rankings."*
 - **Lane B — Verified Dual-Rail Affiliate Monetization:**
   - Cuelinks V3 API campaigns + Dual-Rail Amazon.in affiliate redirects (`/api/v1/public/amazon-redirect`).
