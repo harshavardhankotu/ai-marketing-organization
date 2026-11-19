@@ -24,6 +24,17 @@ export interface ConsentRecord {
   consentTimestamp: string;
 }
 
+export interface DPDPPurgeResult {
+  purgedCount: number;
+  localDeleted: number;
+  localStatus: 'EXECUTED' | 'ERROR' | 'PARTIAL';
+  remoteDeleted: number;
+  remoteStatus: 'EXECUTED' | 'SKIPPED' | 'ERROR' | 'PARTIAL';
+  timestamp: string;
+  localErrors?: string[];
+  remoteError?: string;
+}
+
 export class DPDPComplianceManager {
   private static instance: DPDPComplianceManager;
 
@@ -42,12 +53,14 @@ export class DPDPComplianceManager {
    * Step 9d: Daily 30-Day Retention Purge Job (DPDP Act 2023)
    * Purges unconverted lead inquiries older than 30 days.
    * Clears personal identifiable data (phone, email, contact name) and marks status 'PURGED_RETENTION_EXPIRED'.
+   * Safely purges expired price drop subscriptions and terminal claims while strictly preserving delivery-safety tombstones.
+   * Executes remote D1 deletion through the authorized write path (executeWrite) and awaits completion.
    */
-  public purgeExpiredInquiries(retentionDays: number = 30): { purgedCount: number; timestamp: string } {
+  public async purgeExpiredInquiries(retentionDays: number = 30): Promise<DPDPPurgeResult> {
     const db = getDb();
     const thresholdDateStr = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
 
-    const result = db.prepare(`
+    const updateProspectsSql = `
       UPDATE platform_prospects
       SET
         phone = NULL,
@@ -64,32 +77,139 @@ export class DPDPComplianceManager {
         AND status != 'PURGED_RETENTION_EXPIRED'
         AND (source IN ('OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR')
              OR discovery_source IN ('DIRECT_INBOUND', 'INBOUND_LEAKAGE_CALCULATOR'))
-    `).run(thresholdDateStr);
+    `;
 
-    // Purge or delete expired price drop subscriptions and alert delivery claims in durable_events older than 30 days
-    let purgedEventsCount = 0;
+    const deleteSubEventsSql = `
+      DELETE FROM durable_events
+      WHERE created_at < ?
+        AND event_type = 'PRICE_DROP_SUBSCRIPTION'
+    `;
+
+    // Only purge terminal completed claims (processed = 1); NEVER delete in-flight or uncertain provider calls
+    const deleteTerminalClaimsSql = `
+      DELETE FROM durable_events
+      WHERE created_at < ?
+        AND event_type = 'PRICE_ALERT_DELIVERY_CLAIMED'
+        AND processed = 1
+        AND (error_message IS NULL OR (error_message NOT LIKE 'PROVIDER_CALL_ATTEMPTED%' AND error_message NOT LIKE 'PRE_SEND_LEASE%'))
+    `;
+
+    // Scrub PII payload from in-flight or uncertain provider calls older than 30 days while preserving the non-PII tombstone ID
+    const scrubInFlightClaimsSql = `
+      UPDATE durable_events
+      SET payload_json = '{"scrubbed":true,"dpdp_retention_purged":true}'
+      WHERE created_at < ?
+        AND event_type = 'PRICE_ALERT_DELIVERY_CLAIMED'
+        AND (processed = 0 OR error_message LIKE 'PROVIDER_CALL_ATTEMPTED%' OR error_message LIKE 'PRE_SEND_LEASE%')
+    `;
+
+    const localErrors: string[] = [];
+    let localProspectsCount = 0;
     try {
-      const purgeEventsResult = db.prepare(`
-        DELETE FROM durable_events
-        WHERE created_at < ?
-          AND event_type IN ('PRICE_DROP_SUBSCRIPTION', 'PRICE_ALERT_DELIVERY_CLAIMED')
-      `).run(thresholdDateStr);
-      purgedEventsCount = purgeEventsResult.changes || 0;
-    } catch {}
+      const res = db.prepare(updateProspectsSql).run(thresholdDateStr);
+      localProspectsCount = res.changes || 0;
+    } catch (err: any) {
+      localErrors.push(`prospects_update_failed: ${err?.message || String(err)}`);
+    }
+
+    let localSubCount = 0;
+    try {
+      const res = db.prepare(deleteSubEventsSql).run(thresholdDateStr);
+      localSubCount = res.changes || 0;
+    } catch (err: any) {
+      localErrors.push(`sub_events_delete_failed: ${err?.message || String(err)}`);
+    }
+
+    let localTerminalClaimsCount = 0;
+    try {
+      const res = db.prepare(deleteTerminalClaimsSql).run(thresholdDateStr);
+      localTerminalClaimsCount = res.changes || 0;
+    } catch (err: any) {
+      localErrors.push(`terminal_claims_delete_failed: ${err?.message || String(err)}`);
+    }
+
+    let localScrubbedClaimsCount = 0;
+    try {
+      const res = db.prepare(scrubInFlightClaimsSql).run(thresholdDateStr);
+      localScrubbedClaimsCount = res.changes || 0;
+    } catch (err: any) {
+      localErrors.push(`claims_scrub_failed: ${err?.message || String(err)}`);
+    }
+
+    const localDeleted = localProspectsCount + localSubCount + localTerminalClaimsCount + localScrubbedClaimsCount;
+    let localStatus: 'EXECUTED' | 'ERROR' | 'PARTIAL' = 'EXECUTED';
+    if (localErrors.length === 4) {
+      localStatus = 'ERROR';
+    } else if (localErrors.length > 0) {
+      localStatus = 'PARTIAL';
+    }
+
+    // Remote Cloudflare D1 authorized write path
+    let remoteDeleted = 0;
+    let remoteStatus: 'EXECUTED' | 'SKIPPED' | 'ERROR' | 'PARTIAL' = 'SKIPPED';
+    let remoteError: string | undefined = undefined;
 
     try {
-      import('../db/d1-revenue-repository.js').then(({ D1RevenueRepository }) => {
-        D1RevenueRepository.getInstance().query(
-          'durable_events',
-          `DELETE FROM durable_events WHERE created_at < ? AND event_type IN ('PRICE_DROP_SUBSCRIPTION', 'PRICE_ALERT_DELIVERY_CLAIMED')`,
-          [thresholdDateStr]
-        ).catch(() => {});
-      }).catch(() => {});
-    } catch {}
+      const { D1RevenueRepository } = await import('../db/d1-revenue-repository.js');
+      const d1Repo = D1RevenueRepository.getInstance();
+
+      if (d1Repo.isRemoteD1WriteAllowed()) {
+        const writeSpecs: Array<{ table: any; sql: string; desc: string }> = [
+          { table: 'platform_prospects', sql: updateProspectsSql, desc: 'prospects_update' },
+          { table: 'durable_events', sql: deleteSubEventsSql, desc: 'sub_events_delete' },
+          { table: 'durable_events', sql: deleteTerminalClaimsSql, desc: 'terminal_claims_delete' },
+          { table: 'durable_events', sql: scrubInFlightClaimsSql, desc: 'in_flight_claims_scrub' }
+        ];
+
+        const remoteWrites: Array<{ rowsAffected: number; source: string; desc: string }> = [];
+        const remoteWriteErrors: string[] = [];
+
+        for (const spec of writeSpecs) {
+          try {
+            const w = await d1Repo.executeWrite(spec.table, spec.sql, [thresholdDateStr]);
+            remoteWrites.push({ ...w, desc: spec.desc });
+          } catch (writeErr: any) {
+            remoteWriteErrors.push(`${spec.desc}: ${writeErr?.message || String(writeErr)}`);
+          }
+        }
+
+        const successfulRemote = remoteWrites.filter(w => w.source === 'CLOUDFLARE_D1');
+        const fallbackLocal = remoteWrites.filter(w => w.source !== 'CLOUDFLARE_D1');
+
+        remoteDeleted = successfulRemote.reduce((acc, w) => acc + (w.rowsAffected || 0), 0);
+
+        if (remoteWriteErrors.length === 0 && fallbackLocal.length === 0 && successfulRemote.length === writeSpecs.length) {
+          remoteStatus = 'EXECUTED';
+        } else if (successfulRemote.length > 0) {
+          remoteStatus = 'PARTIAL';
+          const errParts: string[] = [];
+          if (remoteWriteErrors.length > 0) errParts.push(`Remote write errors: ${remoteWriteErrors.join('; ')}`);
+          if (fallbackLocal.length > 0) errParts.push(`${fallbackLocal.length} writes fell back to local SQLite`);
+          remoteError = errParts.join(' | ');
+        } else {
+          remoteStatus = 'ERROR';
+          remoteError = remoteWriteErrors.length > 0
+            ? `All remote writes failed: ${remoteWriteErrors.join('; ')}`
+            : 'All remote writes fell back to local SQLite';
+        }
+      } else {
+        remoteStatus = 'SKIPPED';
+      }
+    } catch (err: any) {
+      remoteStatus = 'ERROR';
+      remoteError = err?.message || String(err);
+      console.error(`[DPDPComplianceManager] Remote D1 purge write error: ${remoteError}`);
+    }
 
     return {
-      purgedCount: result.changes + purgedEventsCount,
-      timestamp: new Date().toISOString()
+      purgedCount: localDeleted + remoteDeleted,
+      localDeleted,
+      localStatus,
+      remoteDeleted,
+      remoteStatus,
+      timestamp: new Date().toISOString(),
+      ...(localErrors.length > 0 ? { localErrors } : {}),
+      ...(remoteError ? { remoteError } : {})
     };
   }
 

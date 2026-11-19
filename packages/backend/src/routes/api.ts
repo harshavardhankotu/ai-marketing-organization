@@ -10777,7 +10777,7 @@ apiRouter.get('/owner/facts-status', async (c) => {
     status: isSetWithoutConfirmation ? ('SET_BY_UNKNOWN' as any) : (termsHashVal ? 'SET' : 'MISSING'),
     validity: (termsHashVal && isHashMatch && isOwnOfferConfirmed) ? 'VALID' : 'INVALID',
     reason: !termsHashVal
-      ? 'Environment variable not set'
+      ? 'Environment variable not set (Expected SHA256 of owner/DIRECT_OFFER.md)'
       : (!isOwnOfferConfirmed
         ? 'Invalid (Set without OWN_OFFER_CONFIRMED: delete it in Render or let owner-apply.mjs overwrite it)'
         : (isHashMatch ? 'Valid (Matches owner/DIRECT_OFFER.md)' : 'Invalid (Hash mismatch with owner/DIRECT_OFFER.md)')),

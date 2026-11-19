@@ -282,6 +282,112 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
       </form>
     </div>
 
+    <!-- Concrete Sample Deliverable Drawer / Preview (#sampleFixPackSection) -->
+    <div class="card" id="sampleFixPackSection" style="margin-top: 1.5rem; background: linear-gradient(180deg, #111827 0%, #0b1120 100%); border: 1px solid #1e293b;">
+      <details id="sampleFixPackDetails" open style="cursor: pointer;">
+        <summary style="font-size: 1.15rem; font-weight: 700; color: #38bdf8; list-style: none; display: flex; align-items: center; justify-content: space-between; user-select: none;">
+          <span>📦 Inspect Real Sample Fix-Pack (Before You Pay ₹${fixpackPrice})</span>
+          <span style="font-size: 0.8rem; background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); padding: 0.2rem 0.6rem; border-radius: 4px;">LIVE CANONICAL PREVIEW</span>
+        </summary>
+        
+        <p style="color: #cbd5e1; font-size: 0.92rem; margin: 1rem 0 1.25rem 0;">
+          Here is an authentic sample deliverable generated from our own production site (<code>ai-marketing-organization.onrender.com</code>).
+          When you purchase the ₹${fixpackPrice} Fix-Pack, you receive a tailored zip archive containing exact, ready-to-paste snippets for your website.
+        </p>
+
+        <!-- Clear Honest Disclosure -->
+        <div style="background: rgba(245, 158, 11, 0.08); border-left: 3px solid #f59e0b; padding: 0.75rem 1rem; border-radius: 4px; font-size: 0.84rem; color: #fcd34d; margin-bottom: 1.25rem;">
+          <strong>Clear &amp; Honest Disclosure:</strong> Files are generated from your live scan for you or your developer to review and paste. SiteFix does not modify your live server or guarantee search rankings.
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 1.25rem;">
+          <!-- 1. Before/After Meta -->
+          <div style="background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 1rem;">
+            <h4 style="margin: 0 0 0.5rem 0; color: #f8fafc; font-size: 0.95rem;">1. Before / After &lt;title&gt; &amp; &lt;meta name="description"&gt; Tags</h4>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 0.75rem; font-size: 0.82rem;">
+              <div style="background: #1e293b; padding: 0.75rem; border-radius: 6px; border-left: 3px solid #ef4444;">
+                <strong style="color: #f87171; display: block; margin-bottom: 0.35rem;">BEFORE SCAN (Vague / Missing Intent)</strong>
+                <code style="color: #cbd5e1; display: block; word-break: break-all;">&lt;title&gt;Home - Welcome&lt;/title&gt;<br>&lt;meta name="description" content="Welcome to our company website."&gt;</code>
+                <span style="color: #94a3b8; font-size: 0.75rem; display: block; margin-top: 0.4rem;">Result: Generic SERP snippet, low click-through rate, no target keywords.</span>
+              </div>
+              <div style="background: #1e293b; padding: 0.75rem; border-radius: 6px; border-left: 3px solid #10b981;">
+                <strong style="color: #34d399; display: block; margin-bottom: 0.35rem;">AFTER SITEFIX (Ready-to-Paste Fix)</strong>
+                <code style="color: #cbd5e1; display: block; word-break: break-all;">&lt;title&gt;SiteFix AI — Free Website SEO Audit &amp; Fair-Price Deals India&lt;/title&gt;<br>&lt;meta name="description" content="Run a free technical website scan and get ready-to-paste SEO &amp; Schema fixes for ₹499, or compare verified fair-price deals in India."&gt;</code>
+                <span style="color: #34d399; font-size: 0.75rem; display: block; margin-top: 0.4rem;">Result: Exact 60-char title &amp; 132-char description matching Google SERP guidelines.</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 2. Valid Schema.org JSON-LD -->
+          <div style="background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 1rem;">
+            <h4 style="margin: 0 0 0.5rem 0; color: #f8fafc; font-size: 0.95rem;">2. Valid Schema.org WebApplication &amp; Organization JSON-LD Block</h4>
+            <pre style="background: #090d16; padding: 0.85rem; border-radius: 6px; color: #38bdf8; font-size: 0.78rem; overflow-x: auto; margin: 0; line-height: 1.45;"><code>&lt;script type="application/ld+json"&gt;
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "Organization",
+      "@id": "https://ai-marketing-organization.onrender.com/#organization",
+      "name": "SiteFix AI",
+      "url": "https://ai-marketing-organization.onrender.com",
+      "logo": "https://ai-marketing-organization.onrender.com/favicon.ico"
+    },
+    {
+      "@type": "WebApplication",
+      "@id": "https://ai-marketing-organization.onrender.com/#webapp",
+      "name": "SiteFix AI Website Audit Scanner",
+      "url": "https://ai-marketing-organization.onrender.com/tools/site-audit",
+      "applicationCategory": "BusinessApplication",
+      "operatingSystem": "All",
+      "offers": {
+        "@type": "Offer",
+        "price": "499.00",
+        "priceCurrency": "INR"
+      }
+    }
+  ]
+}
+&lt;/script&gt;</code></pre>
+          </div>
+
+          <!-- 3. Clean robots.txt & sitemap.xml Rules -->
+          <div style="background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 1rem;">
+            <h4 style="margin: 0 0 0.5rem 0; color: #f8fafc; font-size: 0.95rem;">3. Clean robots.txt &amp; sitemap.xml Rules</h4>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 0.75rem;">
+              <div>
+                <span style="font-size: 0.78rem; color: #94a3b8; font-weight: 600; display: block; margin-bottom: 0.25rem;">robots.txt:</span>
+                <pre style="background: #090d16; padding: 0.65rem; border-radius: 6px; color: #34d399; font-size: 0.76rem; overflow-x: auto; margin: 0;"><code>User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /owner/
+Sitemap: https://ai-marketing-organization.onrender.com/sitemap.xml</code></pre>
+              </div>
+              <div>
+                <span style="font-size: 0.78rem; color: #94a3b8; font-weight: 600; display: block; margin-bottom: 0.25rem;">sitemap.xml (sample entry):</span>
+                <pre style="background: #090d16; padding: 0.65rem; border-radius: 6px; color: #34d399; font-size: 0.76rem; overflow-x: auto; margin: 0;"><code>&lt;url&gt;
+  &lt;loc&gt;https://ai-marketing-organization.onrender.com/tools/site-audit&lt;/loc&gt;
+  &lt;changefreq&gt;weekly&lt;/changefreq&gt;
+  &lt;priority&gt;0.8&lt;/priority&gt;
+&lt;/url&gt;</code></pre>
+              </div>
+            </div>
+          </div>
+
+          <!-- 4. 5-Step Developer/Owner Verification Checklist -->
+          <div style="background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 1rem;">
+            <h4 style="margin: 0 0 0.5rem 0; color: #f8fafc; font-size: 0.95rem;">4. 5-Step Developer / Owner Verification Checklist</h4>
+            <ol style="margin: 0; padding-left: 1.25rem; color: #cbd5e1; font-size: 0.82rem; line-height: 1.6;">
+              <li><strong>Backup:</strong> Create a quick backup copy of your current active template or <code>index.html</code>.</li>
+              <li><strong>Metadata Insertion:</strong> Paste the generated <code>&lt;head&gt;</code> block into your site template before closing <code>&lt;/head&gt;</code>.</li>
+              <li><strong>Schema Validation:</strong> Paste the generated JSON-LD script and verify syntax on Google Rich Results Test.</li>
+              <li><strong>Crawl Files:</strong> Upload <code>robots.txt</code> and <code>sitemap.xml</code> to your public root folder and confirm HTTP 200 via curl.</li>
+              <li><strong>Inspection:</strong> Submit your updated homepage to Google Search Console for live URL re-indexing.</li>
+            </ol>
+          </div>
+        </div>
+      </details>
+    </div>
+
     <!-- Results Area -->
     <div class="card results-area" id="resultsCard">
       <div class="score-banner">
@@ -592,6 +698,49 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
       const container = document.getElementById('findingsContainer');
       container.innerHTML = '';
 
+      function getCommercialImpact(finding) {
+        if (finding.commercialImpact) return finding.commercialImpact;
+        if (finding.status === 'PASS') {
+          return 'Verified optimal. Maintains search engine discovery and buyer trust.';
+        }
+        const cat = String(finding.category || '').toUpperCase();
+        const title = String(finding.title || '').toLowerCase();
+        if (cat.includes('TITLE') || title.includes('title')) {
+          return 'Search engines display truncated or generic SERP listings, lowering organic click-through rate (CTR) and losing high-intent searchers to competitors.';
+        }
+        if (cat.includes('DESCRIPTION') || title.includes('description')) {
+          return 'Search snippets lack clear value propositions or exceed mobile display bounds, causing searchers to scroll past your listing.';
+        }
+        if (cat.includes('SCHEMA') || cat.includes('STRUCTURED') || title.includes('schema') || title.includes('json-ld')) {
+          return 'Disqualifies your site from Google rich results, knowledge panels, FAQs, and entity graph recognition, diminishing SERP prominence.';
+        }
+        if (cat.includes('ROBOTS') || cat.includes('SITEMAP') || title.includes('robots') || title.includes('sitemap')) {
+          return 'Hinders search crawler discovery of fresh service URLs and wastes search engine crawl budget on low-priority endpoints.';
+        }
+        if (cat.includes('CANONICAL') || title.includes('canonical')) {
+          return 'Causes duplicate URL splitting penalties, diluting domain authority and page ranking strength.';
+        }
+        if (cat.includes('SECURITY') || title.includes('security') || title.includes('ssl')) {
+          return 'Missing security headers or weak transport configuration erodes buyer confidence and triggers browser trust warnings.';
+        }
+        if (cat.includes('PERFORMANCE') || title.includes('speed') || title.includes('pagespeed')) {
+          return 'Slow loading times increase mobile bounce rates before visitors ever see your offer.';
+        }
+        return 'Technical crawl friction and metadata omissions reduce organic reach and visitor conversions.';
+      }
+
+      function getFixPackDeliverable(finding) {
+        if (finding.fixPackDeliverable) return finding.fixPackDeliverable;
+        if (finding.status === 'PASS') return 'Verified (No action needed)';
+        if (finding.canAutoGenerate) return 'Ready-to-paste snippet';
+        const cat = String(finding.category || '').toUpperCase();
+        const title = String(finding.title || '').toLowerCase();
+        if (cat.includes('TITLE') || cat.includes('DESCRIPTION') || cat.includes('META') || cat.includes('SCHEMA') || cat.includes('ROBOTS') || cat.includes('SITEMAP')) {
+          return 'Ready-to-paste snippet';
+        }
+        return 'Owner action checklist';
+      }
+
       result.findings.forEach(f => {
         const div = document.createElement('div');
         div.className = 'finding-item ' + (f.status === 'PASS' || f.status === 'WARNING' || f.status === 'ISSUE' ? f.status : 'INFO');
@@ -610,20 +759,41 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
         header.appendChild(badgeSpan);
         div.appendChild(header);
 
-        if (f.evidence) {
-          const evidenceDiv = document.createElement('div');
-          evidenceDiv.style.fontSize = '0.85rem';
-          evidenceDiv.style.color = '#9ca3af';
-          evidenceDiv.style.marginBottom = '0.25rem';
-          evidenceDiv.textContent = f.evidence;
-          div.appendChild(evidenceDiv);
-        }
+        // (a) Observed Evidence
+        const evidenceDiv = document.createElement('div');
+        evidenceDiv.style.fontSize = '0.85rem';
+        evidenceDiv.style.color = '#9ca3af';
+        evidenceDiv.style.marginTop = '0.35rem';
+        evidenceDiv.innerHTML = '<strong>Observed Evidence:</strong> ' + escapeHtml(f.evidence || f.explanation || 'No syntax defect observed.');
+        div.appendChild(evidenceDiv);
 
+        // (b) Commercial Impact
+        const impactDiv = document.createElement('div');
+        impactDiv.style.fontSize = '0.85rem';
+        impactDiv.style.color = '#fbbf24';
+        impactDiv.style.marginTop = '0.25rem';
+        impactDiv.innerHTML = '<strong>Commercial Impact:</strong> ' + escapeHtml(getCommercialImpact(f));
+        div.appendChild(impactDiv);
+
+        // Action Recommendation
         const recDiv = document.createElement('div');
-        recDiv.style.fontSize = '0.9rem';
+        recDiv.style.fontSize = '0.85rem';
         recDiv.style.marginTop = '0.25rem';
         recDiv.innerHTML = '<strong>Action:</strong> ' + escapeHtml(f.recommendation);
         div.appendChild(recDiv);
+
+        // (c) Fix-Pack Deliverable Badge
+        const deliverableType = getFixPackDeliverable(f);
+        const fixPackDiv = document.createElement('div');
+        fixPackDiv.style.marginTop = '0.45rem';
+        if (f.status === 'PASS') {
+          fixPackDiv.innerHTML = '<span style="background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.3); color: #38bdf8; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600;">Status: ' + escapeHtml(deliverableType) + '</span>';
+        } else if (deliverableType === 'Ready-to-paste snippet') {
+          fixPackDiv.innerHTML = '<span style="background: rgba(16, 185, 129, 0.18); border: 1px solid rgba(16, 185, 129, 0.4); color: #34d399; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600;">Included in ₹${fixpackPrice} Fix-Pack: Ready-to-paste snippet</span>';
+        } else {
+          fixPackDiv.innerHTML = '<span style="background: rgba(100, 116, 139, 0.18); border: 1px solid rgba(100, 116, 139, 0.4); color: #cbd5e1; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600;">Included in ₹${fixpackPrice} Fix-Pack: ' + escapeHtml(deliverableType) + '</span>';
+        }
+        div.appendChild(fixPackDiv);
 
         container.appendChild(div);
       });

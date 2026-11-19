@@ -273,10 +273,10 @@ app.get('/privacy', async (c) => {
   <div class="card">
     <h2>1. Data Collection &amp; Use</h2>
     <p>When you use SiteFix AI or submit a business inquiry, we process only the technical domain URL and contact information you explicitly provide. No cookies are used for ad tracking.</p>
-    <h2>2. Affiliate Links (#Ad)</h2>
-    <p>Outbound links to verified merchants (Amazon.in, Cuelinks partner stores) use anonymized click identifiers without storing personal identifiers or tracking pixels.</p>
+    <h2>2. Affiliate Links &amp; Non-PII Attribution (#Ad)</h2>
+    <p>Outbound links to verified merchants (Amazon.in, Cuelinks partner stores) utilize purely non-PII first-party <code>clickId</code> tokens and Cuelinks SubID attribution parameters. These parameters contain zero personally identifiable information (PII), zero device fingerprinting, and zero cross-site tracking pixels, serving solely to attribute qualified referral commissions upon verified merchant checkout.</p>
     <h2>3. Data Retention &amp; Erasure</h2>
-    <p>Inquiry and price alert records are retained for a maximum of 30 days and deleted upon user request under the DPDP Act 2023.</p>
+    <p>Inquiry and price drop alert records are retained for a maximum of 30 days and purged through automated DPDP retention jobs or deleted upon user request under the DPDP Act 2023.</p>
     <h2>4. Contact</h2>
     <p>For data privacy requests or erasures, contact: <a href="mailto:${process.env.PUBLIC_CONTACT_EMAIL || 'contact@aimarketing.org'}">${process.env.PUBLIC_CONTACT_EMAIL || 'contact@aimarketing.org'}</a></p>
   </div>
@@ -750,13 +750,13 @@ app.all('/owner/proposal', async (c) => {
       success: true,
       isAttested: true,
       isPayable: true,
-      message: 'Authoritative proposal generated from attested owner commercial terms (owner/OWN_OFFER.md).',
+      message: 'Authoritative proposal generated from attested owner commercial terms (owner/DIRECT_OFFER.md).',
       ownerBioPreview: bioContent.slice(0, 300),
       data: {
         title: 'AI Inbound Lead Conversion System Implementation',
         setupPriceINR: 15000,
         monthlyPriceINR: 8000,
-        source: 'owner/OWN_OFFER.md'
+        source: 'owner/DIRECT_OFFER.md'
       }
     });
   }
@@ -765,13 +765,13 @@ app.all('/owner/proposal', async (c) => {
     success: true,
     isAttested: false,
     isPayable: false,
-    message: 'Informational proposal draft. Commercial terms not yet attested via owner/OWN_OFFER.md; payable payment links are suppressed.',
+    message: 'Informational proposal draft. Commercial terms not yet attested via owner/DIRECT_OFFER.md; payable payment links are suppressed.',
     ownerBioPreview: bioContent.slice(0, 300),
     data: {
       title: 'AI Inbound Lead Conversion System Implementation',
       setupPriceINR: 15000,
       monthlyPriceINR: 8000,
-      source: 'PROVISIONAL_ESTIMATE (Awaiting owner/OWN_OFFER.md attestation)'
+      source: 'PROVISIONAL_ESTIMATE (Awaiting owner/DIRECT_OFFER.md attestation)'
     }
   });
 });

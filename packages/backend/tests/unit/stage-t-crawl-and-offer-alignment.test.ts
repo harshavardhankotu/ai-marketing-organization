@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import path from 'path';
 import fs from 'fs';
 import { app } from '../../src/index.js';
+import { OwnerAuthService } from '../../src/auth/owner-auth.js';
 import { DirectCommercialOfferPage, computeOwnOfferHash, computeDirectOfferHash } from '../../src/revenue/direct-offer-page.js';
 import { normalizeCategoryName, generateBuyerIntentHubs } from '../../src/commission/static-site-generator.js';
 import { normalizeCategoryName as dealEngineNormalize } from '../../src/commission/autonomous-deal-discovery-engine.js';
@@ -285,8 +286,10 @@ describe('Stage T — Live OpenSEO Crawl Leaks & Commercial Offer Alignment (PR 
         VALUES ('evt_recent_dpdp_test', 'PRICE_DROP_SUBSCRIPTION', 'org_owner_primary', '{"email":"recent@test.com"}', 0, ?)
       `).run(recentDate);
 
-      const res = DPDPComplianceManager.getInstance().purgeExpiredInquiries(30);
+      const res = await DPDPComplianceManager.getInstance().purgeExpiredInquiries(30);
       expect(res.purgedCount).toBeGreaterThanOrEqual(1);
+      expect(res.localDeleted).toBeGreaterThanOrEqual(1);
+      expect(['EXECUTED', 'SKIPPED']).toContain(res.remoteStatus);
 
       const oldEvt = db.prepare(`SELECT * FROM durable_events WHERE id = 'evt_old_dpdp_test'`).get();
       expect(oldEvt).toBeUndefined();
@@ -296,6 +299,151 @@ describe('Stage T — Live OpenSEO Crawl Leaks & Commercial Offer Alignment (PR 
 
       // Clean up
       db.prepare(`DELETE FROM durable_events WHERE id = 'evt_recent_dpdp_test'`).run();
+    });
+
+    it('DPDP purge preserves PROVIDER_CALL_ATTEMPTED and PRE_SEND_LEASE delivery-safety tombstones while scrubbing PII', async () => {
+      const { getDb } = await import('../../src/db/client.js');
+      const { DPDPComplianceManager } = await import('../../src/compliance/dpdp-manager.js');
+      const db = getDb();
+
+      const oldDate = new Date(Date.now() - 35 * 24 * 60 * 60 * 1000).toISOString();
+
+      // 1. In-flight claim with PROVIDER_CALL_ATTEMPTED (MUST NOT BE DELETED; PII scrubbed)
+      db.prepare(`
+        INSERT INTO durable_events (id, event_type, organization_id, payload_json, processed, error_message, created_at)
+        VALUES ('price_alert_claim_attempted_01', 'PRICE_ALERT_DELIVERY_CLAIMED', 'org_owner_primary', '{"email":"patient@provider.com","targetPrice":499}', 0, 'PROVIDER_CALL_ATTEMPTED:BREVO:1795000000', ?)
+      `).run(oldDate);
+
+      // 2. In-flight claim with PRE_SEND_LEASE (MUST NOT BE DELETED; PII scrubbed)
+      db.prepare(`
+        INSERT INTO durable_events (id, event_type, organization_id, payload_json, processed, error_message, created_at)
+        VALUES ('price_alert_claim_leased_02', 'PRICE_ALERT_DELIVERY_CLAIMED', 'org_owner_primary', '{"email":"leased@customer.com","targetPrice":299}', 0, 'PRE_SEND_LEASE:1795000000', ?)
+      `).run(oldDate);
+
+      // 3. Completed terminal claim without lease/attempted error (MUST BE DELETED)
+      db.prepare(`
+        INSERT INTO durable_events (id, event_type, organization_id, payload_json, processed, error_message, created_at)
+        VALUES ('price_alert_claim_completed_03', 'PRICE_ALERT_DELIVERY_CLAIMED', 'org_owner_primary', '{"email":"done@customer.com","targetPrice":999}', 1, NULL, ?)
+      `).run(oldDate);
+
+      const res = await DPDPComplianceManager.getInstance().purgeExpiredInquiries(30);
+      expect(res.localDeleted).toBeGreaterThanOrEqual(1);
+
+      // Check attempted claim: row remains, PII scrubbed
+      const attemptedRow = db.prepare(`SELECT * FROM durable_events WHERE id = 'price_alert_claim_attempted_01'`).get() as any;
+      expect(attemptedRow).toBeDefined();
+      expect(attemptedRow.payload_json).not.toContain('patient@provider.com');
+      expect(attemptedRow.payload_json).toContain('"scrubbed":true');
+
+      // Check leased claim: row remains, PII scrubbed
+      const leasedRow = db.prepare(`SELECT * FROM durable_events WHERE id = 'price_alert_claim_leased_02'`).get() as any;
+      expect(leasedRow).toBeDefined();
+      expect(leasedRow.payload_json).not.toContain('leased@customer.com');
+      expect(leasedRow.payload_json).toContain('"scrubbed":true');
+
+      // Check terminal claim: row deleted completely
+      const completedRow = db.prepare(`SELECT * FROM durable_events WHERE id = 'price_alert_claim_completed_03'`).get();
+      expect(completedRow).toBeUndefined();
+
+      // Clean up
+      db.prepare(`DELETE FROM durable_events WHERE id IN ('price_alert_claim_attempted_01', 'price_alert_claim_leased_02')`).run();
+    });
+
+    it('DPDP purge uses D1 authorized write path (executeWrite) when remote D1 writes are allowed', async () => {
+      const { D1RevenueRepository } = await import('../../src/db/d1-revenue-repository.js');
+      const { DPDPComplianceManager } = await import('../../src/compliance/dpdp-manager.js');
+      const d1Repo = D1RevenueRepository.getInstance();
+
+      const writesLogged: Array<{ table: string; sql: string; params: any[] }> = [];
+      const origIsWriteAllowed = d1Repo.isRemoteD1WriteAllowed.bind(d1Repo);
+      const origExecuteWrite = d1Repo.executeWrite.bind(d1Repo);
+
+      // Mock remote D1 write allowed and track executeWrite calls
+      d1Repo.isRemoteD1WriteAllowed = () => true;
+      d1Repo.executeWrite = async (table: any, sql: string, params: any[] = []) => {
+        writesLogged.push({ table, sql, params });
+        return { rowsAffected: 1, source: 'CLOUDFLARE_D1' };
+      };
+
+      try {
+        const res = await DPDPComplianceManager.getInstance().purgeExpiredInquiries(30);
+        expect(res.remoteStatus).toBe('EXECUTED');
+        expect(res.remoteDeleted).toBeGreaterThanOrEqual(1);
+        expect(writesLogged.length).toBe(4);
+        expect(writesLogged.some(w => w.table === 'platform_prospects')).toBe(true);
+        expect(writesLogged.some(w => w.table === 'durable_events' && w.sql.includes('PRICE_DROP_SUBSCRIPTION'))).toBe(true);
+        expect(writesLogged.some(w => w.table === 'durable_events' && w.sql.includes('PRICE_ALERT_DELIVERY_CLAIMED'))).toBe(true);
+      } finally {
+        d1Repo.isRemoteD1WriteAllowed = origIsWriteAllowed;
+        d1Repo.executeWrite = origExecuteWrite;
+      }
+    });
+
+    it('/tools/site-audit renders #sampleFixPackSection with real snippets and honest disclosure', async () => {
+      const res = await app.request('/tools/site-audit');
+      expect(res.status).toBe(200);
+      const html = await res.text();
+
+      // Inspect Real Sample Fix-Pack drawer exists
+      expect(html).toContain('id="sampleFixPackSection"');
+      expect(html).toContain('Inspect Real Sample Fix-Pack (Before You Pay ₹499)');
+
+      // Disclosure statement
+      expect(html).toContain('Files are generated from your live scan for you or your developer to review and paste. SiteFix does not modify your live server or guarantee search rankings.');
+
+      // Before / After meta snippets
+      expect(html).toContain('Before / After &lt;title&gt; &amp; &lt;meta name="description"&gt;');
+      expect(html).toContain('SiteFix AI — Free Website SEO Audit &amp; Fair-Price Deals India');
+
+      // Valid Schema.org WebApplication snippet
+      expect(html).toContain('"@type": "WebApplication"');
+      expect(html).toContain('"applicationCategory": "BusinessApplication"');
+
+      // robots.txt and sitemap.xml rules
+      expect(html).toContain('robots.txt:');
+      expect(html).toContain('Sitemap: https://ai-marketing-organization.onrender.com/sitemap.xml');
+
+      // 5-step checklist
+      expect(html).toContain('5-Step Developer / Owner Verification Checklist');
+      expect(html).toContain('Google Rich Results Test');
+
+      // Findings template includes Commercial Impact & Fix-Pack deliverable tagging
+      expect(html).toContain('Commercial Impact:');
+      expect(html).toContain('Included in ₹499 Fix-Pack:');
+    });
+
+    it('/owner/proposal and /owner/facts-status consistently reference owner/DIRECT_OFFER.md', async () => {
+      const session = OwnerAuthService.getInstance().createSession('127.0.0.1');
+      const propRes = await app.request('/owner/proposal', {
+        headers: {
+          Authorization: `Bearer ${session.token}`
+        }
+      });
+      expect(propRes.status).toBe(200);
+      const propJson = await propRes.json();
+      expect(propJson.message).toContain('owner/DIRECT_OFFER.md');
+      expect(propJson.data.source).toContain('owner/DIRECT_OFFER.md');
+
+      const factsRes = await app.request('/api/v1/owner/facts-status', {
+        headers: {
+          Authorization: `Bearer ${session.token}`
+        }
+      });
+      expect(factsRes.status).toBe(200);
+      const factsJson = await factsRes.json();
+      const directCheck = factsJson.directLane?.facts?.find((c: any) => c.field === 'DIRECT_OFFER_TERMS_SHA256')
+        || factsJson.data?.allFacts?.find((c: any) => c.field === 'DIRECT_OFFER_TERMS_SHA256');
+      expect(directCheck).toBeDefined();
+      expect(directCheck.reason).toContain('owner/DIRECT_OFFER.md');
+    });
+
+    it('/privacy explicitly describes non-PII first-party clickId and Cuelinks SubID attribution', async () => {
+      const res = await app.request('/privacy');
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain('clickId');
+      expect(html).toContain('Cuelinks SubID');
+      expect(html).toContain('zero device fingerprinting');
     });
   });
 });
