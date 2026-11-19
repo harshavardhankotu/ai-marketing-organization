@@ -339,10 +339,19 @@ export function parseVerifiedCampaignPayout(
       })();
 
   if (Array.isArray(rawCategories) && rawCategories.length > 0 && productCategory) {
-    const catLower = productCategory.toLowerCase();
+    const normProd = normalizeCategoryName(productCategory).toLowerCase();
+    const rawProdLower = String(productCategory).toLowerCase();
     tierCandidate = rawCategories.find((pc: any) => {
-      const tierName = String(pc?.category || pc?.name || '').toLowerCase();
-      return tierName && (catLower.includes(tierName) || tierName.includes(catLower));
+      const rawTier = String(pc?.category || pc?.name || '').trim();
+      if (!rawTier) return false;
+      const rawTierLower = rawTier.toLowerCase();
+      const normTier = normalizeCategoryName(rawTier).toLowerCase();
+      return (
+        normProd.includes(normTier) ||
+        normTier.includes(normProd) ||
+        rawProdLower.includes(rawTierLower) ||
+        rawTierLower.includes(rawProdLower)
+      );
     }) || null;
   }
 

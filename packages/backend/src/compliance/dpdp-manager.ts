@@ -62,7 +62,6 @@ export class DPDPComplianceManager {
    * Executes remote D1 deletion through the authorized write path (executeWrite) and awaits completion.
    */
   public async purgeExpiredInquiries(retentionDays: number = 30): Promise<DPDPPurgeResult> {
-    const db = getDb();
     const thresholdDateStr = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
 
     const updateProspectsSql = `
@@ -133,52 +132,71 @@ export class DPDPComplianceManager {
     `;
 
     const localErrors: string[] = [];
-    let localProspectsCount = 0;
+    let db: any = null;
     try {
-      const res = db.prepare(updateProspectsSql).run(thresholdDateStr);
-      localProspectsCount = res.changes || 0;
-    } catch (err: any) {
-      localErrors.push(`prospects_update_failed: ${err?.message || String(err)}`);
+      db = getDb();
+    } catch (dbInitErr: any) {
+      localErrors.push(`sqlite_init_failed: ${dbInitErr?.message || String(dbInitErr)}`);
+    }
+
+    let localProspectsCount = 0;
+    if (db) {
+      try {
+        const res = db.prepare(updateProspectsSql).run(thresholdDateStr);
+        localProspectsCount = res.changes || 0;
+      } catch (err: any) {
+        localErrors.push(`prospects_update_failed: ${err?.message || String(err)}`);
+      }
     }
 
     let localSubCount = 0;
-    try {
-      const res = db.prepare(deleteSubEventsSql).run(thresholdDateStr);
-      localSubCount = res.changes || 0;
-    } catch (err: any) {
-      localErrors.push(`sub_events_delete_failed: ${err?.message || String(err)}`);
+    if (db) {
+      try {
+        const res = db.prepare(deleteSubEventsSql).run(thresholdDateStr);
+        localSubCount = res.changes || 0;
+      } catch (err: any) {
+        localErrors.push(`sub_events_delete_failed: ${err?.message || String(err)}`);
+      }
     }
 
     let localTerminalClaimsCount = 0;
-    try {
-      const res = db.prepare(deleteTerminalClaimsSql).run(thresholdDateStr);
-      localTerminalClaimsCount = res.changes || 0;
-    } catch (err: any) {
-      localErrors.push(`terminal_claims_delete_failed: ${err?.message || String(err)}`);
+    if (db) {
+      try {
+        const res = db.prepare(deleteTerminalClaimsSql).run(thresholdDateStr);
+        localTerminalClaimsCount = res.changes || 0;
+      } catch (err: any) {
+        localErrors.push(`terminal_claims_delete_failed: ${err?.message || String(err)}`);
+      }
     }
 
     let localScrubbedClaimsCount = 0;
-    try {
-      const res = db.prepare(scrubInFlightClaimsSql).run(thresholdDateStr);
-      localScrubbedClaimsCount = res.changes || 0;
-    } catch (err: any) {
-      localErrors.push(`claims_scrub_failed: ${err?.message || String(err)}`);
+    if (db) {
+      try {
+        const res = db.prepare(scrubInFlightClaimsSql).run(thresholdDateStr);
+        localScrubbedClaimsCount = res.changes || 0;
+      } catch (err: any) {
+        localErrors.push(`claims_scrub_failed: ${err?.message || String(err)}`);
+      }
     }
 
     let localOutboundPurgedCount = 0;
-    try {
-      const res = db.prepare(purgeOutboundPriceAlertsSql).run(thresholdDateStr);
-      localOutboundPurgedCount = res.changes || 0;
-    } catch (err: any) {
-      localErrors.push(`outbound_contacts_purge_failed: ${err?.message || String(err)}`);
+    if (db) {
+      try {
+        const res = db.prepare(purgeOutboundPriceAlertsSql).run(thresholdDateStr);
+        localOutboundPurgedCount = res.changes || 0;
+      } catch (err: any) {
+        localErrors.push(`outbound_contacts_purge_failed: ${err?.message || String(err)}`);
+      }
     }
 
     let localOutboundScrubbedCount = 0;
-    try {
-      const res = db.prepare(scrubOutboundPriceAlertSuppressedSql).run(thresholdDateStr);
-      localOutboundScrubbedCount = res.changes || 0;
-    } catch (err: any) {
-      localErrors.push(`outbound_contacts_scrub_failed: ${err?.message || String(err)}`);
+    if (db) {
+      try {
+        const res = db.prepare(scrubOutboundPriceAlertSuppressedSql).run(thresholdDateStr);
+        localOutboundScrubbedCount = res.changes || 0;
+      } catch (err: any) {
+        localErrors.push(`outbound_contacts_scrub_failed: ${err?.message || String(err)}`);
+      }
     }
 
     const localDeleted = localProspectsCount + localSubCount + localTerminalClaimsCount + localScrubbedClaimsCount + localOutboundPurgedCount + localOutboundScrubbedCount;
