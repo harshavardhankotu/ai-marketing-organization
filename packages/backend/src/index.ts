@@ -186,7 +186,8 @@ app.get('/tools/site-audit', async (c) => {
     isProbe: probe.isProbe,
     probeReason: probe.probeReason,
     url: c.req.query('url') || '/tools/site-audit',
-    userAgent: probe.userAgent
+    userAgent: probe.userAgent,
+    visitorHash: probe.visitorHash
   });
   return c.html(renderSiteAuditPage(assignment));
 });
@@ -201,7 +202,8 @@ app.get('/tools/whatsapp-link-preview-checker', async (c) => {
     isProbe: probe.isProbe,
     probeReason: probe.probeReason,
     url: c.req.query('url') || `/tools/${def.slug}`,
-    userAgent: probe.userAgent
+    userAgent: probe.userAgent,
+    visitorHash: probe.visitorHash
   });
   return c.html(renderOwnerToolPage(def.slug, { apiBaseUrl: '', canonicalOrigin: getTrustedPublicSiteUrl() }));
 });
@@ -216,7 +218,8 @@ app.get('/tools/open-graph-checker', async (c) => {
     isProbe: probe.isProbe,
     probeReason: probe.probeReason,
     url: c.req.query('url') || `/tools/${def.slug}`,
-    userAgent: probe.userAgent
+    userAgent: probe.userAgent,
+    visitorHash: probe.visitorHash
   });
   return c.html(renderOwnerToolPage(def.slug, { apiBaseUrl: '', canonicalOrigin: getTrustedPublicSiteUrl() }));
 });
@@ -231,7 +234,8 @@ app.get('/tools/robots-and-sitemap-validator', async (c) => {
     isProbe: probe.isProbe,
     probeReason: probe.probeReason,
     url: c.req.query('url') || `/tools/${def.slug}`,
-    userAgent: probe.userAgent
+    userAgent: probe.userAgent,
+    visitorHash: probe.visitorHash
   });
   return c.html(renderOwnerToolPage(def.slug, { apiBaseUrl: '', canonicalOrigin: getTrustedPublicSiteUrl() }));
 });
@@ -246,7 +250,8 @@ app.get('/tools/json-ld-tester', async (c) => {
     isProbe: probe.isProbe,
     probeReason: probe.probeReason,
     url: c.req.query('url') || `/tools/${def.slug}`,
-    userAgent: probe.userAgent
+    userAgent: probe.userAgent,
+    visitorHash: probe.visitorHash
   });
   return c.html(renderOwnerToolPage(def.slug, { apiBaseUrl: '', canonicalOrigin: getTrustedPublicSiteUrl() }));
 });
@@ -1332,6 +1337,10 @@ app.get('/sitemap.xml', async (c) => {
     `${baseUrl}/deals`,
     `${baseUrl}/offer`,
     `${baseUrl}/tools/site-audit`,
+    `${baseUrl}/tools/whatsapp-link-preview-checker`,
+    `${baseUrl}/tools/open-graph-checker`,
+    `${baseUrl}/tools/robots-and-sitemap-validator`,
+    `${baseUrl}/tools/json-ld-tester`,
     `${baseUrl}/tools/financial-radar`,
     `${baseUrl}/tools/lead-leakage-calculator`,
     `${baseUrl}/revenue`,

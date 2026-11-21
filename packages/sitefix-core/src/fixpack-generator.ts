@@ -1,9 +1,79 @@
 /**
  * SiteFix Core: Pure Zero-Hallucination Optimization Fix-Pack Generator
  * Never invents business info; unknown fields remain explicit owner placeholders.
+ *
+ * Security hardening (Pass 2.1):
+ * - Strictly HTML-escapes all observed metadata interpolated into <title>, <meta>, Open Graph, and Twitter Card attributes.
+ * - Strictly validates observed URLs (canonical, og:url, og:image, twitter:image, JSON-LD url/image, sitemap <loc>) to http: or https: schemes.
+ * - Neutralizes `<` (as `\u003c`) and `</script>` sequences inside JSON-LD embedded within `<script type="application/ld+json">`.
  */
 
 import type { FixPackDeliverable, SiteAuditResult } from './types.js';
+
+const PLACEHOLDER_CANONICAL_URL = 'https://example.com/';
+
+/**
+ * Escapes HTML special characters for safe interpolation inside element text and double-quoted attributes.
+ */
+export function escapeHtml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * Neutralizes comment-closing sequences and angle brackets inside HTML comments.
+ */
+export function escapeHtmlComment(value: unknown): string {
+  return String(value ?? '')
+    .replace(/--+/g, '- -')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/[\r\n]+/g, ' ');
+}
+
+/**
+ * Validates that a URL strictly uses http: or https: and contains no control characters.
+ * Rejects javascript:, data:, vbscript:, file:, and malformed URLs.
+ */
+export function sanitizeHttpUrl(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed || /[\u0000-\u001f\u007f]/.test(trimmed)) {
+    return null;
+  }
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return null;
+    }
+    if (!parsed.hostname) {
+      return null;
+    }
+    const normalized = parsed.toString();
+    if (parsed.pathname === '/' && !parsed.search && !parsed.hash && !trimmed.endsWith('/')) {
+      return normalized.slice(0, -1);
+    }
+    return normalized;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Safely serializes JSON-LD for embedding inside <script type="application/ld+json">.
+ * Escapes `<` as `\u003c`, `>` as `\u003e`, and line/paragraph separators so `</script>` can never break out.
+ */
+export function serializeJsonLdSafely(value: unknown): string {
+  return JSON.stringify(value, null, 2)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+}
 
 export class SiteAuditFixPackGenerator {
   public static readonly LEGAL_DISCLOSURE =
@@ -17,7 +87,8 @@ export class SiteAuditFixPackGenerator {
     audit: SiteAuditResult,
     orderId?: string
   ): FixPackDeliverable {
-    const targetUrl = audit.url;
+    const safeTargetUrl = sanitizeHttpUrl(audit.url);
+    const targetUrl = safeTargetUrl || PLACEHOLDER_CANONICAL_URL;
     let urlHostname = 'yourwebsite.com';
     try {
       urlHostname = new URL(targetUrl).hostname;
@@ -36,50 +107,88 @@ export class SiteAuditFixPackGenerator {
       preview.metaDescription !== '(No meta description found)' &&
       preview.metaDescription !== '(No meta description specified)'
     );
-    const hasRealCanonical = Boolean(
+    const rawHasRealCanonical = Boolean(
       preview.canonicalUrl &&
       preview.canonicalUrl !== '(No canonical URL specified)' &&
       preview.canonicalUrl !== '(No canonical link found)'
     );
-    const cleanCanonical = hasRealCanonical ? preview.canonicalUrl : targetUrl;
+    const safeCanonicalCandidate = rawHasRealCanonical
+      ? sanitizeHttpUrl(preview.canonicalUrl)
+      : null;
+    const cleanCanonical = safeCanonicalCandidate || safeTargetUrl || PLACEHOLDER_CANONICAL_URL;
+    const canonicalWasUnsafe = rawHasRealCanonical && !safeCanonicalCandidate;
 
     const hasRealOgTitle = Boolean(
       preview.ogTitle &&
       preview.ogTitle !== '(No og:title found)'
     );
-    const hasRealOgImage = Boolean(
+    const hasRealOgDesc = Boolean(
+      preview.ogDescription &&
+      preview.ogDescription !== '(No og:description found)'
+    );
+    const rawHasRealOgImage = Boolean(
       preview.ogImage &&
       preview.ogImage !== '(No og:image found)' &&
       preview.ogImage !== '(No og:image specified)' &&
       !preview.ogImage.includes('og-image.jpg')
     );
+    const safeOgImage = rawHasRealOgImage ? sanitizeHttpUrl(preview.ogImage) : null;
+    const hasRealOgImage = Boolean(safeOgImage);
+
+    const rawOgUrl = sanitizeHttpUrl(preview.ogUrl);
+    const safeOgUrl = rawOgUrl || cleanCanonical;
+
+    const rawTwitterImage = sanitizeHttpUrl(preview.twitterImage);
+    const safeTwitterImage = rawTwitterImage || safeOgImage;
 
     const hasNoindex = findings.some(f => f.id === 'robots_noindex_detected');
+
+    const escapedTitle = hasRealTitle ? escapeHtml(preview.title) : '';
+    const escapedDesc = hasRealDesc ? escapeHtml(preview.metaDescription) : '';
+    const escapedCanonical = escapeHtml(cleanCanonical);
+    const escapedOgTitle = escapeHtml(
+      hasRealOgTitle ? preview.ogTitle : (hasRealTitle ? preview.title : '')
+    );
+    const escapedOgDesc = escapeHtml(
+      hasRealOgDesc ? preview.ogDescription : (hasRealDesc ? preview.metaDescription : '')
+    );
+    const escapedOgUrl = escapeHtml(safeOgUrl);
+    const escapedOgImage = safeOgImage ? escapeHtml(safeOgImage) : '';
+    const escapedTwitterTitle = escapeHtml(
+      preview.twitterTitle || (hasRealOgTitle ? preview.ogTitle : (hasRealTitle ? preview.title : ''))
+    );
+    const escapedTwitterDesc = escapeHtml(
+      preview.twitterDescription || (hasRealOgDesc ? preview.ogDescription : (hasRealDesc ? preview.metaDescription : ''))
+    );
+    const escapedTwitterImage = safeTwitterImage ? escapeHtml(safeTwitterImage) : '';
 
     // 1. Recommended HTML Head Snippet
     const headLines = [
       '<!-- ======================================================= -->',
       '<!-- SiteFix AI: Recommended <head> Optimization Tags        -->',
-      `<!-- Target: ${targetUrl}                                    -->`,
+      `<!-- Target: ${escapeHtmlComment(targetUrl)}                                    -->`,
       `<!-- Generated: ${new Date().toISOString()}                  -->`,
       '<!-- ======================================================= -->'
     ];
 
     if (hasRealTitle) {
-      headLines.push(`<title>${preview.title}</title>`);
+      headLines.push(`<title>${escapedTitle}</title>`);
     } else {
       headLines.push('<!-- OWNER ACTION REQUIRED: Missing <title> tag. Add a descriptive title (50-60 chars): -->');
       headLines.push('<title><!-- [INSERT_PAGE_TITLE] --></title>');
     }
 
     if (hasRealDesc) {
-      headLines.push(`<meta name="description" content="${preview.metaDescription}">`);
+      headLines.push(`<meta name="description" content="${escapedDesc}">`);
     } else {
       headLines.push('<!-- OWNER ACTION REQUIRED: Missing meta description. Add a summary (120-160 chars): -->');
       headLines.push('<meta name="description" content="<!-- [INSERT_META_DESCRIPTION] -->">');
     }
 
-    headLines.push(`<link rel="canonical" href="${cleanCanonical}">`);
+    if (canonicalWasUnsafe) {
+      headLines.push('<!-- SECURITY NOTICE: Observed canonical URL used an unsafe or malformed scheme and was replaced with the verified HTTP(S) page URL. -->');
+    }
+    headLines.push(`<link rel="canonical" href="${escapedCanonical}">`);
     headLines.push('<meta name="viewport" content="width=device-width, initial-scale=1.0">');
     headLines.push('<meta charset="utf-8">');
 
@@ -97,23 +206,23 @@ export class SiteAuditFixPackGenerator {
     const ogLines = [
       '<!-- Open Graph Social Sharing Meta Tags -->',
       '<meta property="og:type" content="website">',
-      `<meta property="og:url" content="${cleanCanonical}">`
+      `<meta property="og:url" content="${escapedOgUrl}">`
     ];
 
     if (hasRealOgTitle || hasRealTitle) {
-      ogLines.push(`<meta property="og:title" content="${preview.ogTitle || preview.title}">`);
+      ogLines.push(`<meta property="og:title" content="${escapedOgTitle}">`);
     } else {
       ogLines.push('<!-- OWNER ACTION: Add og:title -->');
     }
 
-    if (hasRealDesc) {
-      ogLines.push(`<meta property="og:description" content="${preview.metaDescription}">`);
+    if (hasRealOgDesc || hasRealDesc) {
+      ogLines.push(`<meta property="og:description" content="${escapedOgDesc}">`);
     } else {
       ogLines.push('<!-- OWNER ACTION: Add og:description -->');
     }
 
-    if (hasRealOgImage) {
-      ogLines.push(`<meta property="og:image" content="${preview.ogImage}">`);
+    if (hasRealOgImage && escapedOgImage) {
+      ogLines.push(`<meta property="og:image" content="${escapedOgImage}">`);
       ogLines.push('<meta property="og:image:width" content="1200">');
       ogLines.push('<meta property="og:image:height" content="630">');
     } else {
@@ -127,19 +236,19 @@ export class SiteAuditFixPackGenerator {
       '<!-- Twitter / X Card Meta Tags -->',
       '<meta name="twitter:card" content="summary_large_image">'
     ];
-    if (hasRealOgTitle || hasRealTitle) {
-      twitterLines.push(`<meta name="twitter:title" content="${preview.ogTitle || preview.title}">`);
+    if (escapedTwitterTitle) {
+      twitterLines.push(`<meta name="twitter:title" content="${escapedTwitterTitle}">`);
     }
-    if (hasRealDesc) {
-      twitterLines.push(`<meta name="twitter:description" content="${preview.metaDescription}">`);
+    if (escapedTwitterDesc) {
+      twitterLines.push(`<meta name="twitter:description" content="${escapedTwitterDesc}">`);
     }
-    if (hasRealOgImage) {
-      twitterLines.push(`<meta name="twitter:image" content="${preview.ogImage}">`);
+    if (escapedTwitterImage) {
+      twitterLines.push(`<meta name="twitter:image" content="${escapedTwitterImage}">`);
     }
 
     const twitterCardSnippet = twitterLines.join('\n');
 
-    // 4. Valid Schema.org JSON-LD (Strictly Verified Facts Only + Explicit Owner TODO Placeholders)
+    // 4. Valid Schema.org JSON-LD (Strictly Verified Facts Only + Safe Script Serialization)
     const schemaObject: Record<string, any> = {
       '@context': 'https://schema.org',
       '@type': 'WebSite',
@@ -147,15 +256,15 @@ export class SiteAuditFixPackGenerator {
     };
 
     if (hasRealTitle) {
-      schemaObject.name = preview.title.split('—')[0].split('-')[0].trim();
+      schemaObject.name = String(preview.title).split('—')[0].split('-')[0].trim();
     } else if (audit.businessName) {
-      schemaObject.name = audit.businessName;
+      schemaObject.name = String(audit.businessName);
     }
     if (hasRealDesc) {
-      schemaObject.description = preview.metaDescription;
+      schemaObject.description = String(preview.metaDescription);
     }
-    if (hasRealOgImage) {
-      schemaObject.image = preview.ogImage;
+    if (safeOgImage) {
+      schemaObject.image = safeOgImage;
     }
     const observedEmail = audit.prospectSignals?.discoveredEmails?.[0];
     if (observedEmail) {
@@ -166,11 +275,11 @@ export class SiteAuditFixPackGenerator {
       '<!-- Schema.org Structured Data (Strictly Verified Live Metadata — Zero Hallucination) -->',
       '<!-- TODO: REPLACE_WITH_YOUR_PHONE_AND_ADDRESS_IF_LOCAL_BUSINESS before deploying if adding LocalBusiness fields -->',
       '<script type="application/ld+json">',
-      JSON.stringify(schemaObject, null, 2),
+      serializeJsonLdSafely(schemaObject),
       '</script>'
     ].join('\n');
 
-    // 5. Evidence-only robots.txt & sitemap.xml deliverables (strictly from observed canonical URL)
+    // 5. Evidence-only robots.txt & sitemap.xml deliverables (strictly from validated HTTP(S) canonical URL)
     const canonicalOrigin = (() => {
       try {
         return new URL(cleanCanonical).origin;
@@ -179,7 +288,7 @@ export class SiteAuditFixPackGenerator {
       }
     })();
     const robotsTxtSnippet = [
-      `# SiteFix AI: Recommended /robots.txt for ${urlHostname}`,
+      `# SiteFix AI: Recommended /robots.txt for ${escapeHtmlComment(urlHostname)}`,
       '# TODO: REPLACE_WITH_YOUR_PRIVATE_PATHS if you have admin or staging routes to disallow',
       'User-agent: *',
       'Allow: /',
@@ -188,11 +297,11 @@ export class SiteAuditFixPackGenerator {
 
     const sitemapXmlSnippet = [
       '<?xml version="1.0" encoding="UTF-8"?>',
-      `<!-- SiteFix AI: Evidence-Only Starter Sitemap for ${urlHostname} -->`,
+      `<!-- SiteFix AI: Evidence-Only Starter Sitemap for ${escapeHtmlComment(urlHostname)} -->`,
       '<!-- TODO: REPLACE_WITH_YOUR_ADDITIONAL_URLS for verified service or product pages -->',
       '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
       '  <url>',
-      `    <loc>${cleanCanonical}</loc>`,
+      `    <loc>${escapedCanonical}</loc>`,
       `    <lastmod>${new Date().toISOString().slice(0, 10)}</lastmod>`,
       '    <changefreq>weekly</changefreq>',
       '    <priority>1.0</priority>',
@@ -209,7 +318,7 @@ export class SiteAuditFixPackGenerator {
       missingFieldsRequiringOwnerInput.push('Description: Add "description" attribute describing your business or service.');
     }
     if (!hasRealOgImage) {
-      missingFieldsRequiringOwnerInput.push('Brand Image: Add "image" attribute with absolute URL to brand logo or banner.');
+      missingFieldsRequiringOwnerInput.push('Brand Image: Add "image" attribute with absolute HTTPS URL to brand logo or banner.');
     }
     missingFieldsRequiringOwnerInput.push(
       'Business Phone Number: Add "telephone": "+91XXXXXXXXXX" if offering direct customer phone support.',

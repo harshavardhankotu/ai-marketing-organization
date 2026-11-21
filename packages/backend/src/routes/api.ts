@@ -14038,7 +14038,10 @@ apiRouter.post('/api/v1/tools/site-audit/scan', handleSiteAuditScan);
  * mandatory strict boolean confirmAuthorized: true, and source attribution tracking.
  */
 const handleHardenedPublicScan = async (c: any) => {
-  const { executeHardenedPublicScan } = await import('../tools/site-audit/public-scan-service.js');
+  const {
+    executeHardenedPublicScan,
+    PUBLIC_SCAN_AUTHORIZATION_MODE
+  } = await import('../tools/site-audit/public-scan-service.js');
   const { SecureFetchError } = await import('../tools/site-audit/secure-url-fetcher.js');
   const {
     normalizeSiteFixSource,
@@ -14061,7 +14064,7 @@ const handleHardenedPublicScan = async (c: any) => {
       {
         success: false,
         code: 'CONFIRM_AUTHORIZED_REQUIRED',
-        error: 'confirmAuthorized must be boolean true to confirm you own or are authorized to scan this URL.'
+        error: 'confirmAuthorized must be boolean true to self-declare authorization to scan this URL.'
       },
       400
     );
@@ -14076,29 +14079,33 @@ const handleHardenedPublicScan = async (c: any) => {
     const globalDailyCap = Math.max(1, parseInt(process.env.PUBLIC_SCAN_GLOBAL_DAILY_CAP || '500', 10) || 500);
     const limiter = DurableRateLimiter.getInstance();
 
-    const ipRate = await limiter.checkRateLimit('/public/scan:ip', clientIp, ipDailyCap, 86400);
-    if (!ipRate.allowed) {
-      c.header('Retry-After', String(ipRate.retryAfterSeconds));
-      return c.json(
-        {
-          success: false,
-          code: 'IP_DAILY_RATE_LIMIT_EXCEEDED',
-          error: `Per-IP daily scan limit (${ipDailyCap}/day) exceeded. Please try again later.`,
-          retryAfterSeconds: ipRate.retryAfterSeconds
-        },
-        429
-      );
-    }
+    const capResult = await limiter.checkPublicScanDailyCaps(clientIp, {
+      ipDailyCap,
+      globalDailyCap
+    });
 
-    const globalRate = await limiter.checkRateLimit('/public/scan:global', 'global', globalDailyCap, 86400);
-    if (!globalRate.allowed) {
-      c.header('Retry-After', String(globalRate.retryAfterSeconds));
+    if (!capResult.allowed) {
+      c.header('Retry-After', String(capResult.retryAfterSeconds));
+      if (capResult.reason === 'RATE_LIMITER_UNAVAILABLE') {
+        return c.json(
+          {
+            success: false,
+            code: 'RATE_LIMITER_UNAVAILABLE',
+            error: 'Rate limiter storage is temporarily unavailable; public scan failed closed without fetching target URL.',
+            retryAfterSeconds: capResult.retryAfterSeconds
+          },
+          503
+        );
+      }
+      const isGlobal = capResult.reason === 'GLOBAL_DAILY_RATE_LIMIT_EXCEEDED';
       return c.json(
         {
           success: false,
-          code: 'GLOBAL_DAILY_RATE_LIMIT_EXCEEDED',
-          error: `Global daily public scan capacity (${globalDailyCap}/day) reached. Please try again later.`,
-          retryAfterSeconds: globalRate.retryAfterSeconds
+          code: capResult.reason || 'RATE_LIMIT_EXCEEDED',
+          error: isGlobal
+            ? `Global daily public scan capacity (${globalDailyCap}/day) reached. Please try again later.`
+            : `Per-IP daily scan limit (${ipDailyCap}/day) exceeded. Please try again later.`,
+          retryAfterSeconds: capResult.retryAfterSeconds
         },
         429
       );
@@ -14111,7 +14118,17 @@ const handleHardenedPublicScan = async (c: any) => {
   );
   const probe = classifySiteFixProbe(c);
   const siteUrl = getTrustedPublicSiteUrl();
-  const razorpayHostedFallbackUrl = (process.env.RAZORPAY_HOSTED_PAYMENT_LINK_URL || '').trim() || null;
+
+  await recordSiteFixFunnelEvent({
+    stage: 'scan_attempt',
+    source,
+    isProbe: probe.isProbe,
+    probeReason: probe.probeReason,
+    url: rawUrl,
+    userAgent: probe.userAgent,
+    visitorHash: probe.visitorHash,
+    authorizationMode: PUBLIC_SCAN_AUTHORIZATION_MODE
+  });
 
   try {
     const scanOut = await executeHardenedPublicScan({
@@ -14126,22 +14143,34 @@ const handleHardenedPublicScan = async (c: any) => {
       probeReason: probe.probeReason,
       auditId: scanOut.result.auditId,
       url: scanOut.result.url || rawUrl,
-      userAgent: probe.userAgent
+      userAgent: probe.userAgent,
+      visitorHash: probe.visitorHash,
+      authorizationMode: PUBLIC_SCAN_AUTHORIZATION_MODE
     });
 
+    const cfg = scanOut.commercialConfig;
     const targetEncoded = encodeURIComponent(scanOut.result.url || rawUrl);
-    const checkoutUrl = `${siteUrl}/tools/site-audit?url=${targetEncoded}&source=${encodeURIComponent(source)}`;
+    const checkoutUrl = cfg.checkoutLocked
+      ? null
+      : `${siteUrl}/tools/site-audit?url=${targetEncoded}&source=${encodeURIComponent(source)}`;
 
     return c.json({
       success: true,
       cached: scanOut.cached,
+      cacheStatus: scanOut.cacheStatus,
       cacheTtlHours: scanOut.cacheTtlHours,
       cachedAt: scanOut.cachedAt,
+      authorizationMode: scanOut.authorizationMode,
       source,
-      canonicalSku: 'SITEFIX_AI_PACK_V1',
-      priceINR: 499,
+      canonicalSku: cfg.canonicalSku,
+      priceINR: cfg.priceINR,
+      ownerOfferAttested: cfg.ownerOfferAttested,
+      checkoutReady: cfg.checkoutReady,
+      checkoutLocked: cfg.checkoutLocked,
+      checkoutLockReason: cfg.checkoutLockReason,
       checkoutUrl,
-      razorpayHostedFallbackUrl,
+      hostedPaymentLinkUrl: cfg.hostedPaymentLinkUrl,
+      razorpayHostedFallbackUrl: cfg.hostedPaymentLinkUrl,
       result: scanOut.result,
       fixPackPreview: scanOut.fixPackPreview
     });
@@ -14180,7 +14209,8 @@ const handleOwnerToolPage = async (c: any, slug: any) => {
     isProbe: probe.isProbe,
     probeReason: probe.probeReason,
     url: c.req.query('url') || `/tools/${def.slug}`,
-    userAgent: probe.userAgent
+    userAgent: probe.userAgent,
+    visitorHash: probe.visitorHash
   });
   const siteUrl = getTrustedPublicSiteUrl();
   return c.html(
@@ -14777,7 +14807,8 @@ const handleSiteAuditCheckout = async (c: any) => {
     probeReason: probe.probeReason,
     auditId,
     orderId,
-    userAgent: probe.userAgent
+    userAgent: probe.userAgent,
+    visitorHash: probe.visitorHash
   });
 
   return c.json({
@@ -15033,7 +15064,8 @@ const handleSiteAuditVerifyPayment = async (c: any) => {
       auditId,
       orderId,
       paymentId,
-      userAgent: probe.userAgent
+      userAgent: probe.userAgent,
+      visitorHash: probe.visitorHash
     });
   } catch {}
 
@@ -15439,11 +15471,13 @@ const handleSiteAuditDeliverable = async (c: any) => {
       const {
         normalizeSiteFixSource,
         classifySiteFixProbe,
-        recordSiteFixFunnelEvent
+        recordSiteFixFunnelEvent,
+        resolveStoredOrderSource
       } = await import('../tools/site-audit/sitefix-funnel-attribution.js');
       const probe = classifySiteFixProbe(c);
+      const storedSource = await resolveStoredOrderSource(verification.orderId, auditId);
       const source = normalizeSiteFixSource(
-        c.req.query('source') || c.req.header('x-sitefix-source'),
+        c.req.query('source') || c.req.header('x-sitefix-source') || storedSource,
         'web'
       );
       await recordSiteFixFunnelEvent({
@@ -15453,7 +15487,8 @@ const handleSiteAuditDeliverable = async (c: any) => {
         probeReason: probe.probeReason,
         auditId,
         orderId: verification.orderId || null,
-        userAgent: probe.userAgent
+        userAgent: probe.userAgent,
+        visitorHash: probe.visitorHash
       });
     } catch {}
     return c.json({ success: true, deliverable });
@@ -15487,11 +15522,13 @@ const handleOfferDownload = async (c: any) => {
       const {
         normalizeSiteFixSource,
         classifySiteFixProbe,
-        recordSiteFixFunnelEvent
+        recordSiteFixFunnelEvent,
+        resolveStoredOrderSource
       } = await import('../tools/site-audit/sitefix-funnel-attribution.js');
       const probe = classifySiteFixProbe(c);
+      const storedSource = await resolveStoredOrderSource(verification.orderId, verification.auditId);
       const source = normalizeSiteFixSource(
-        c.req.query('source') || c.req.header('x-sitefix-source'),
+        c.req.query('source') || c.req.header('x-sitefix-source') || storedSource,
         'web'
       );
       await recordSiteFixFunnelEvent({
@@ -15501,7 +15538,8 @@ const handleOfferDownload = async (c: any) => {
         probeReason: probe.probeReason,
         auditId: verification.auditId,
         orderId: verification.orderId || null,
-        userAgent: probe.userAgent
+        userAgent: probe.userAgent,
+        visitorHash: probe.visitorHash
       });
     } catch {}
     const format = c.req.query('format') || '';
@@ -17021,9 +17059,28 @@ apiRouter.post('/public/mcp', async (c) => {
   }
 
   const clientIp = getTrustedClientIp(c).ip;
-  if (!process.env.VITEST) {
-    const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/public/mcp', clientIp, 30, 600);
+  const shouldEnforceMcpLimits =
+    !process.env.VITEST || process.env.ENFORCE_PUBLIC_MCP_LIMITS_IN_TEST === 'true';
+  if (shouldEnforceMcpLimits) {
+    const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit(
+      '/public/mcp',
+      clientIp,
+      30,
+      600,
+      { failClosed: true }
+    );
     if (!rateLimit.allowed) {
+      c.header('Retry-After', String(rateLimit.retryAfterSeconds));
+      if (rateLimit.reason === 'RATE_LIMITER_UNAVAILABLE') {
+        return c.json({
+          jsonrpc: '2.0',
+          id: null,
+          error: {
+            code: -32000,
+            message: 'RATE_LIMITER_UNAVAILABLE: Rate limiter storage unavailable; public MCP failed closed.'
+          }
+        }, 503);
+      }
       return c.json({
         jsonrpc: '2.0',
         id: null,

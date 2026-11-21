@@ -1335,13 +1335,27 @@ export class SiteAuditScanner {
     desc: string,
     _types: string[]
   ): string {
-    const cleanTitle = title || '<!-- [INSERT_PAGE_TITLE] -->';
-    const cleanDesc = desc || '<!-- [INSERT_META_DESCRIPTION] -->';
+    const esc = (v: string) =>
+      String(v || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    let safeUrl = 'https://example.com/';
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        safeUrl = parsed.toString();
+      }
+    } catch {}
+    const cleanTitle = title ? esc(title) : '<!-- [INSERT_PAGE_TITLE] -->';
+    const cleanDesc = desc ? esc(desc) : '<!-- [INSERT_META_DESCRIPTION] -->';
     return [
       '<!-- SiteFix AI Recommended Head Preview -->',
       `<title>${cleanTitle}</title>`,
       `<meta name="description" content="${cleanDesc}">`,
-      `<link rel="canonical" href="${url}">`,
+      `<link rel="canonical" href="${esc(safeUrl)}">`,
       `<meta property="og:title" content="${cleanTitle}">`,
       `<meta name="twitter:card" content="summary_large_image">`
     ].join('\n');

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { getDb } from '../../db/client.js';
 import { isProduction } from '../../config/env.js';
 import { D1RevenueRepository } from '../../db/d1-revenue-repository.js';
@@ -14,6 +14,7 @@ export type SiteFixLaunchSource =
   | 'web_json_ld';
 
 export type SiteFixFunnelStage =
+  | 'scan_attempt'
   | 'scan'
   | 'preview_open'
   | 'checkout_start'
@@ -45,6 +46,12 @@ export function normalizeSiteFixSource(
     return clean as SiteFixLaunchSource;
   }
   return fallback;
+}
+
+export function hashFunnelVisitorKey(rawVisitorKey: string | null | undefined): string | null {
+  const clean = String(rawVisitorKey || '').trim();
+  if (!clean) return null;
+  return createHash('sha256').update(clean).digest('hex').slice(0, 16);
 }
 
 function readHeader(reqLike: any, name: string): string {
@@ -79,9 +86,12 @@ export function classifySiteFixProbe(reqLike: any): {
   isProbe: boolean;
   probeReason: string | null;
   userAgent: string;
+  visitorHash: string | null;
 } {
   const probeHeader = readHeader(reqLike, 'x-diagnostic-probe');
   const userAgent = readHeader(reqLike, 'user-agent');
+  const forwarded = readHeader(reqLike, 'x-forwarded-for') || readHeader(reqLike, 'cf-connecting-ip');
+  const visitorHash = hashFunnelVisitorKey(`${forwarded || 'anon'}|${userAgent || 'ua'}`);
 
   if (
     probeHeader &&
@@ -91,7 +101,8 @@ export function classifySiteFixProbe(reqLike: any): {
     return {
       isProbe: true,
       probeReason: `X-Diagnostic-Probe:${probeHeader.slice(0, 64)}`,
-      userAgent
+      userAgent,
+      visitorHash
     };
   }
 
@@ -99,23 +110,29 @@ export function classifySiteFixProbe(reqLike: any): {
     return {
       isProbe: true,
       probeReason: `CI_OR_PROBE_UA:${userAgent.slice(0, 80)}`,
-      userAgent
+      userAgent,
+      visitorHash
     };
   }
 
   return {
     isProbe: false,
     probeReason: null,
-    userAgent
+    userAgent,
+    visitorHash
   };
 }
 
 export interface SiteFixFunnelStageCounts {
+  uniqueVisitors: number;
+  scanAttempts: number;
+  completedScans: number;
   scan: number;
   preview_open: number;
   checkout_start: number;
   capture: number;
   delivery: number;
+  delivered: number;
 }
 
 export interface SiteFixFunnelAttributionSummary {
@@ -127,12 +144,68 @@ export interface SiteFixFunnelAttributionSummary {
 
 function emptyStageCounts(): SiteFixFunnelStageCounts {
   return {
+    uniqueVisitors: 0,
+    scanAttempts: 0,
+    completedScans: 0,
     scan: 0,
     preview_open: 0,
     checkout_start: 0,
     capture: 0,
-    delivery: 0
+    delivery: 0,
+    delivered: 0
   };
+}
+
+/**
+ * Resolves the originating attribution source stored on payment_orders.notes_json
+ * so capture and delivery stages preserve the exact source from scan -> preview_open -> checkout_start.
+ */
+export async function resolveStoredOrderSource(
+  orderId?: string | null,
+  auditId?: string | null
+): Promise<SiteFixLaunchSource | null> {
+  const cleanOrderId = String(orderId || '').trim();
+  const cleanAuditId = String(auditId || '').trim();
+  if (!cleanOrderId && !cleanAuditId) return null;
+
+  try {
+    const d1Repo = D1RevenueRepository.getInstance();
+    let row: { notes_json?: string | null } | null = null;
+    if (d1Repo.isRemoteD1Configured() && isProduction() && !process.env.VITEST) {
+      row = cleanOrderId
+        ? await d1Repo.queryOne<{ notes_json?: string | null }>(
+            'payment_orders',
+            `SELECT notes_json FROM payment_orders WHERE order_id = ? ORDER BY created_at DESC LIMIT 1`,
+            [cleanOrderId]
+          )
+        : await d1Repo.queryOne<{ notes_json?: string | null }>(
+            'payment_orders',
+            `SELECT notes_json FROM payment_orders WHERE receipt = ? ORDER BY created_at DESC LIMIT 1`,
+            [cleanAuditId]
+          );
+    } else {
+      const db = getDb();
+      row = (cleanOrderId
+        ? db
+            .prepare(`SELECT notes_json FROM payment_orders WHERE order_id = ? ORDER BY created_at DESC LIMIT 1`)
+            .get(cleanOrderId)
+        : db
+            .prepare(`SELECT notes_json FROM payment_orders WHERE receipt = ? ORDER BY created_at DESC LIMIT 1`)
+            .get(cleanAuditId)) as { notes_json?: string | null } | undefined || null;
+    }
+
+    if (row?.notes_json) {
+      const parsed = JSON.parse(row.notes_json);
+      if (parsed?.source) {
+        const clean = String(parsed.source).trim().toLowerCase();
+        if ((ALLOWED_SITEFIX_SOURCES as readonly string[]).includes(clean)) {
+          return clean as SiteFixLaunchSource;
+        }
+      }
+    }
+  } catch {}
+
+  return null;
 }
 
 export async function recordSiteFixFunnelEvent(params: {
@@ -145,6 +218,8 @@ export async function recordSiteFixFunnelEvent(params: {
   paymentId?: string | null;
   url?: string | null;
   userAgent?: string | null;
+  visitorHash?: string | null;
+  authorizationMode?: 'SELF_DECLARED_AUTHORIZATION' | null;
 }): Promise<void> {
   const id = `sfx_evt_${randomUUID().replace(/-/g, '').slice(0, 20)}`;
   const payload = {
@@ -157,6 +232,8 @@ export async function recordSiteFixFunnelEvent(params: {
     paymentId: params.paymentId || null,
     url: params.url || null,
     userAgent: params.userAgent ? String(params.userAgent).slice(0, 120) : null,
+    visitorHash: params.visitorHash || hashFunnelVisitorKey(params.userAgent || params.orderId || params.auditId || id),
+    authorizationMode: params.authorizationMode || null,
     recordedAt: new Date().toISOString()
   };
 
@@ -200,6 +277,17 @@ function aggregateFunnelRows(rows: Array<{ payload_json?: string | null }>): Sit
     web_robots_sitemap: 0,
     web_json_ld: 0
   };
+  const totalVisitors = new Set<string>();
+  const visitorsBySource: Record<SiteFixLaunchSource, Set<string>> = {
+    cli: new Set<string>(),
+    action: new Set<string>(),
+    web: new Set<string>(),
+    mcp: new Set<string>(),
+    web_whatsapp_preview: new Set<string>(),
+    web_open_graph: new Set<string>(),
+    web_robots_sitemap: new Set<string>(),
+    web_json_ld: new Set<string>()
+  };
   let excludedProbesCount = 0;
 
   for (const row of rows || []) {
@@ -216,11 +304,51 @@ function aggregateFunnelRows(rows: Array<{ payload_json?: string | null }>): Sit
         continue;
       }
 
-      if (stage in totals) {
-        totals[stage]++;
-        bySource[source][stage]++;
+      const vHash =
+        typeof parsed?.visitorHash === 'string' && parsed.visitorHash.trim()
+          ? parsed.visitorHash.trim()
+          : null;
+      if (vHash) {
+        totalVisitors.add(vHash);
+        visitorsBySource[source].add(vHash);
+      }
+
+      if (stage === 'scan_attempt') {
+        totals.scanAttempts++;
+        bySource[source].scanAttempts++;
+      } else if (stage === 'scan') {
+        totals.scan++;
+        totals.completedScans++;
+        bySource[source].scan++;
+        bySource[source].completedScans++;
+      } else if (stage === 'preview_open') {
+        totals.preview_open++;
+        bySource[source].preview_open++;
+      } else if (stage === 'checkout_start') {
+        totals.checkout_start++;
+        bySource[source].checkout_start++;
+      } else if (stage === 'capture') {
+        totals.capture++;
+        bySource[source].capture++;
+      } else if (stage === 'delivery') {
+        totals.delivery++;
+        totals.delivered++;
+        bySource[source].delivery++;
+        bySource[source].delivered++;
       }
     } catch {}
+  }
+
+  totals.uniqueVisitors = totalVisitors.size;
+  for (const src of ALLOWED_SITEFIX_SOURCES) {
+    bySource[src].uniqueVisitors = visitorsBySource[src].size;
+    // If historical scan rows exist without separate scan_attempt events, ensure scanAttempts >= completedScans
+    if (bySource[src].scanAttempts < bySource[src].completedScans) {
+      bySource[src].scanAttempts = bySource[src].completedScans;
+    }
+  }
+  if (totals.scanAttempts < totals.completedScans) {
+    totals.scanAttempts = totals.completedScans;
   }
 
   return {

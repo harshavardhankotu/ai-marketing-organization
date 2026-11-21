@@ -1130,19 +1130,41 @@ export function renderOwnerToolPage(
             snippetWrap.style.display = 'none';
           }
 
+          var isLocked = Boolean(data.checkoutLocked === true || data.ownerOfferAttested === false);
           var checkoutUrl = data.checkoutUrl ||
             (CFG.checkoutOrigin + '/tools/site-audit?url=' + encodeURIComponent(audit.url || rawUrl) + '&source=' + encodeURIComponent(CFG.source));
-          primaryCheckoutLink.href = checkoutUrl;
+          var priceLabel = typeof data.priceINR === 'number' ? ('₹' + data.priceINR) : 'Price pending owner attestation';
+          var skuLabel = data.canonicalSku || 'SITEFIX_AI_PACK_V1';
+          var fallbackNoteEl = document.getElementById('checkout-fallback-note');
 
-          var hostedFallback = data.razorpayHostedFallbackUrl || CFG.razorpayFallbackUrl;
-          if (hostedFallback) {
-            hostedFallbackLink.href = hostedFallback;
-            hostedFallbackLink.textContent = 'Razorpay Hosted Payment Link Fallback (₹499)';
-            hostedFallbackLink.setAttribute('target', '_blank');
-            hostedFallbackLink.setAttribute('rel', 'noopener noreferrer');
+          if (isLocked) {
+            primaryCheckoutLink.removeAttribute('href');
+            primaryCheckoutLink.setAttribute('aria-disabled', 'true');
+            primaryCheckoutLink.style.opacity = '0.55';
+            primaryCheckoutLink.style.pointerEvents = 'none';
+            primaryCheckoutLink.textContent = 'Checkout Locked — Pending Owner Offer Attestation (' + skuLabel + ')';
+            hostedFallbackLink.style.display = 'none';
+            if (fallbackNoteEl) {
+              fallbackNoteEl.textContent = 'Your free diagnostic scan above is complete. Paid Fix-Pack checkout is currently locked pending owner offer attestation and gateway readiness (' + (data.checkoutLockReason || 'LOCKED') + ').';
+            }
           } else {
-            hostedFallbackLink.href = checkoutUrl + '#checkout';
-            hostedFallbackLink.textContent = 'Open Full Audit & Checkout Page';
+            primaryCheckoutLink.href = checkoutUrl;
+            primaryCheckoutLink.removeAttribute('aria-disabled');
+            primaryCheckoutLink.style.opacity = '1';
+            primaryCheckoutLink.style.pointerEvents = 'auto';
+            primaryCheckoutLink.textContent = 'Unlock ' + priceLabel + ' Copy-Paste Fix-Pack (' + skuLabel + ')';
+
+            var hostedFallback = data.hostedPaymentLinkUrl || data.razorpayHostedFallbackUrl || CFG.razorpayFallbackUrl;
+            hostedFallbackLink.style.display = 'inline-flex';
+            if (hostedFallback) {
+              hostedFallbackLink.href = hostedFallback;
+              hostedFallbackLink.textContent = 'Razorpay Hosted Payment Link Fallback (' + priceLabel + ')';
+              hostedFallbackLink.setAttribute('target', '_blank');
+              hostedFallbackLink.setAttribute('rel', 'noopener noreferrer');
+            } else {
+              hostedFallbackLink.href = checkoutUrl + '#checkout';
+              hostedFallbackLink.textContent = 'Open Full Audit & Checkout Page';
+            }
           }
 
           resultsSection.style.display = 'block';

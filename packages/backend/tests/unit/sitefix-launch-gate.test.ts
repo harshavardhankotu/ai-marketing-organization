@@ -1118,6 +1118,10 @@ describe('SiteFix Launch Gate — Part 1 Security/Payment/Ledger + Part 2 Pull I
          VALUES (?, ?, 'org_owner_primary', ?, datetime('now'))`
       ).run(`sfx_cache_${cacheHash}_unit0001`, PUBLIC_SCAN_CACHE_EVENT_TYPE, JSON.stringify(cachedPayload));
 
+      process.env.SITE_AUDIT_TERMS_ATTESTED = 'true';
+      process.env.RAZORPAY_TEST_KEY_ID = 'rzp_test_pubscan_01';
+      process.env.RAZORPAY_TEST_KEY_SECRET = 'rzp_test_pubscan_secret_01';
+
       const cachedRes = await app.request('/api/v1/public/scan', {
         method: 'POST',
         headers: {
@@ -1134,11 +1138,19 @@ describe('SiteFix Launch Gate — Part 1 Security/Payment/Ledger + Part 2 Pull I
       const cachedJson = await cachedRes.json() as any;
       expect(cachedJson.success).toBe(true);
       expect(cachedJson.cached).toBe(true);
+      expect(cachedJson.cacheStatus).toBe('HIT_D1');
+      expect(cachedJson.authorizationMode).toBe('SELF_DECLARED_AUTHORIZATION');
       expect(cachedJson.cacheTtlHours).toBe(24);
       expect(cachedJson.source).toBe('web_whatsapp_preview');
       expect(cachedJson.canonicalSku).toBe('SITEFIX_AI_PACK_V1');
       expect(cachedJson.priceINR).toBe(499);
+      expect(cachedJson.ownerOfferAttested).toBe(true);
+      expect(cachedJson.checkoutLocked).toBe(false);
       expect(cachedJson.checkoutUrl).toContain('source=web_whatsapp_preview');
+
+      delete process.env.SITE_AUDIT_TERMS_ATTESTED;
+      delete process.env.RAZORPAY_TEST_KEY_ID;
+      delete process.env.RAZORPAY_TEST_KEY_SECRET;
 
       // 4. Verify per-IP daily cap and global daily cap return HTTP 429 when enforced
       process.env.ENFORCE_PUBLIC_SCAN_LIMITS_IN_TEST = 'true';
