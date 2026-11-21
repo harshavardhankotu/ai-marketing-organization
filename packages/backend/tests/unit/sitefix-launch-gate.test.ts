@@ -629,47 +629,60 @@ describe('SiteFix Launch Gate — Part 1 Security/Payment/Ledger + Part 2 Pull I
     });
   });
 
-  describe('9. Zero-Install CLI (packages/cli), Prebuilt Action Entrypoint (action-dist/cli.mjs) & action.yml', () => {
-    it('fails closed (exit 2, zero HTTP calls) without --confirm-authorized and succeeds when explicitly confirmed', async () => {
-      const mockAudit: CliAuditResult = {
-        auditId: 'aud_cli_1',
-        url: 'https://launch-demo.dev',
-        overallStatus: 'ACTION_REQUIRED',
-        score: 52,
-        findings: [
-          {
-            id: 'schema_jsonld_syntax_error_1',
-            category: 'STRUCTURED_DATA',
-            title: 'JSON-LD Syntax Error in Block #1',
-            status: 'ISSUE',
-            severity: 'CRITICAL',
-            evidence: 'Unexpected token }'
-          },
-          {
-            id: 'meta_description_missing',
-            category: 'HTML_METADATA',
-            title: 'Missing Meta Description',
-            status: 'ISSUE',
-            severity: 'HIGH',
-            evidence: 'No meta description tag'
-          }
-        ],
-        metrics: {
-          httpStatus: 200,
-          hasRobotsTxt: true,
-          hasSitemap: false,
-          jsonLdTypesFound: []
-        }
-      };
+  describe('9. Zero-Install Local CLI (packages/cli), Prebuilt Action Entrypoint (action-dist/cli.mjs) & action.yml', () => {
+    it('fails closed (exit 2, zero HTTP calls) without --confirm-authorized, runs locally via sitefix-core, and contacts backend ONLY for --unlock', async () => {
+      const sampleHtml = `<!doctype html>
+<html>
+<head>
+  <title>Launch Demo</title>
+  <script type="application/ld+json">{ invalid json }</script>
+</head>
+<body><h1>Hello Launch Demo</h1></body>
+</html>`;
 
-      let fetchCallCount = 0;
-      let lastRequestBody: any = null;
-      const fakeFetch = (async (_url: any, init?: any) => {
-        fetchCallCount++;
-        lastRequestBody = init?.body ? JSON.parse(String(init.body)) : null;
-        return new Response(JSON.stringify({ success: true, result: mockAudit }), {
+      const requestedUrls: string[] = [];
+      const fakeFetch = (async (input: any) => {
+        const urlStr = typeof input === 'string' ? input : input?.url || String(input);
+        requestedUrls.push(urlStr);
+        if (urlStr.endsWith('/robots.txt')) {
+          return new Response('User-agent: *\nAllow: /\n', {
+            status: 200,
+            headers: { 'Content-Type': 'text/plain' }
+          });
+        }
+        if (urlStr.endsWith('/sitemap.xml')) {
+          return new Response('Not Found', {
+            status: 404,
+            headers: { 'Content-Type': 'text/plain' }
+          });
+        }
+        if (urlStr.includes('/api/v1/offer/download/tok_paid_123')) {
+          return new Response(
+            JSON.stringify({
+              success: true,
+              deliverable: {
+                auditId: 'aud_paid_1',
+                orderId: 'ord_paid_1',
+                generatedAt: new Date().toISOString(),
+                targetUrl: 'https://launch-demo.dev',
+                headMetadataSnippet: '<title>Launch Demo</title>',
+                openGraphSnippet: '<meta property="og:title" content="Launch Demo">',
+                twitterCardSnippet: '<meta name="twitter:card" content="summary_large_image">',
+                schemaJsonLdSnippet: '<script type="application/ld+json">{}</script>',
+                robotsTxtSnippet: 'User-agent: *\nAllow: /',
+                sitemapXmlSnippet: '<urlset></urlset>',
+                canonicalUrlRecommendation: 'https://launch-demo.dev/',
+                checklistMarkdown: '# Checklist',
+                fullReportJson: {},
+                disclosure: 'No ranking guarantee.'
+              }
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        return new Response(sampleHtml, {
           status: 200,
-          headers: { 'Content-Type': 'application/json' }
+          headers: { 'Content-Type': 'text/html; charset=utf-8' }
         });
       }) as unknown as typeof fetch;
 
@@ -677,43 +690,61 @@ describe('SiteFix Launch Gate — Part 1 Security/Payment/Ledger + Part 2 Pull I
       const resUnauth = await runSitefixCheck(['https://launch-demo.dev', '--fail-on-critical'], fakeFetch, {});
       expect(resUnauth.exitCode).toBe(2);
       expect(resUnauth.stderr).toContain(AUTHORIZATION_REQUIRED_MESSAGE);
-      expect(fetchCallCount).toBe(0);
+      expect(requestedUrls.length).toBe(0);
 
-      // 2. With --confirm-authorized and --fail-on-critical -> calls API with default source='cli' and exits 1 on CRITICAL defect
+      // 2. Local scan with --confirm-authorized and --fail-on-critical -> runs locally (ZERO Render backend calls) and exits 1 on CRITICAL JSON-LD defect
       const resFail = await runSitefixCheck(
         ['https://launch-demo.dev', '--confirm-authorized', '--fail-on-critical'],
         fakeFetch,
         {}
       );
-      expect(fetchCallCount).toBe(1);
-      expect(lastRequestBody?.userConfirmedOwnership).toBe(true);
-      expect(lastRequestBody?.source).toBe('cli');
       expect(resFail.exitCode).toBe(1);
-      expect(resFail.criticalCount).toBe(1);
+      expect(resFail.criticalCount).toBeGreaterThanOrEqual(1);
       expect(resFail.stdout).toContain('check_schema_jsonld_syntax_error_1');
+      expect(resFail.stdout).toContain('Execution: LOCAL — Zero Backend Latency');
+      expect(resFail.stdout).toContain('Fix-Pack Preview');
       expect(resFail.stdout).toContain(
         'https://ai-marketing-organization.onrender.com/tools/site-audit?url=https%3A%2F%2Flaunch-demo.dev&source=cli'
       );
+      // Confirm ZERO Render backend API scan calls occurred
+      expect(requestedUrls.some(u => u.includes('ai-marketing-organization.onrender.com'))).toBe(false);
 
-      // 3. Explicit --source action overrides default cli attribution
+      // 3. Explicit --source action overrides default cli attribution in JSON output
       const resAction = await runSitefixCheck(
         ['https://launch-demo.dev', '--confirm-authorized', '--source', 'action', '--json'],
         fakeFetch,
         {}
       );
       expect(resAction.exitCode).toBe(0);
-      expect(lastRequestBody?.source).toBe('action');
       const parsedActionJson = JSON.parse(resAction.stdout);
+      expect(parsedActionJson.executionMode).toBe('LOCAL');
       expect(parsedActionJson.source).toBe('action');
       expect(parsedActionJson.checkoutUrl).toContain('&source=action');
+      expect(parsedActionJson.fixPackPreview?.headMetadataPreview).toBeTruthy();
 
       // 4. Env fallback SITEFIX_CONFIRM_AUTHORIZED=true succeeds cleanly without --fail-on-critical
       const resPass = await runSitefixCheck(['https://launch-demo.dev'], fakeFetch, {
         SITEFIX_CONFIRM_AUTHORIZED: 'true'
       });
       expect(resPass.exitCode).toBe(0);
-      expect(fetchCallCount).toBe(3);
 
+      // 5. --unlock <orderToken> contacts backend download endpoint ONLY and writes files when --out <dir> is provided
+      const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sitefix-unlock-out-'));
+      try {
+        const resUnlock = await runSitefixCheck(
+          ['--unlock', 'tok_paid_123', '--out', outDir, '--api-url', 'https://api.example.test'],
+          fakeFetch,
+          {}
+        );
+        expect(resUnlock.exitCode).toBe(0);
+        expect(requestedUrls).toContain('https://api.example.test/api/v1/offer/download/tok_paid_123');
+        expect(fs.existsSync(path.join(outDir, 'head-metadata.html'))).toBe(true);
+        expect(fs.existsSync(path.join(outDir, 'fix-pack.json'))).toBe(true);
+      } finally {
+        fs.rmSync(outDir, { recursive: true, force: true });
+      }
+
+      const mockAudit: CliAuditResult = resAction.audit!;
       const table = formatAuditTable(mockAudit);
       expect(table).toContain('SITEFIX_AI_PACK_V1');
       const md = formatMarkdownSummary(mockAudit);
@@ -721,7 +752,7 @@ describe('SiteFix Launch Gate — Part 1 Security/Payment/Ledger + Part 2 Pull I
       expect(md).toContain('check_schema_jsonld_syntax_error_1');
     });
 
-    it('root action.yml requires confirm-authorized, passes --source action, and invokes prebuilt action-dist/cli.mjs with zero runtime npm build', () => {
+    it('root action.yml and packages/cli/README.md document local execution, --unlock, and link cleanly to all 4 owner tool pages', () => {
       const actionYml = fs.readFileSync(path.join(REPO_ROOT, 'action.yml'), 'utf8');
       expect(actionYml).toContain("name: 'SiteFix Launch Gate — Pre-Deployment Website QA'");
       expect(actionYml).toContain('url:');
@@ -734,6 +765,17 @@ describe('SiteFix Launch Gate — Part 1 Security/Payment/Ledger + Part 2 Pull I
       expect(actionYml).toContain('--confirm-authorized');
       expect(actionYml).toContain('--source action');
       expect(actionYml).not.toContain('npm --prefix');
+      expect(actionYml).toContain('/tools/whatsapp-link-preview-checker');
+      expect(actionYml).toContain('/tools/open-graph-checker');
+      expect(actionYml).toContain('/tools/robots-and-sitemap-validator');
+      expect(actionYml).toContain('/tools/json-ld-tester');
+
+      const cliReadme = fs.readFileSync(path.join(REPO_ROOT, 'packages', 'cli', 'README.md'), 'utf8');
+      expect(cliReadme).toContain('--unlock');
+      expect(cliReadme).toContain('/tools/whatsapp-link-preview-checker');
+      expect(cliReadme).toContain('/tools/open-graph-checker');
+      expect(cliReadme).toContain('/tools/robots-and-sitemap-validator');
+      expect(cliReadme).toContain('/tools/json-ld-tester');
     });
 
     it('committed action-dist/cli.mjs matches built CLI output and executes cleanly from an isolated temp directory with zero node_modules', async () => {
@@ -755,36 +797,40 @@ describe('SiteFix Launch Gate — Part 1 Security/Payment/Ledger + Part 2 Pull I
       // Copy ONLY the standalone bundle into a completely isolated temp directory (no package.json, no node_modules)
       const isolatedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sitefix-isolated-action-'));
       const isolatedBundle = path.join(isolatedDir, 'cli.mjs');
+      const sampleHtmlFile = path.join(isolatedDir, 'index.html');
       fs.copyFileSync(actionBundlePath, isolatedBundle);
+      fs.writeFileSync(
+        sampleHtmlFile,
+        `<!doctype html><html><head><title>Isolated Local Scan Page Title For QA</title><meta name="description" content="A clean deterministic local HTML scan fixture that runs with zero node_modules and zero Render cold starts."><link rel="canonical" href="https://isolated.example/"><meta property="og:title" content="Isolated QA"><meta property="og:description" content="Clean preview"><meta property="og:image" content="https://isolated.example/og.png"><meta name="twitter:card" content="summary_large_image"><script type="application/ld+json">{"@context":"https://schema.org","@type":"WebSite","name":"Isolated QA","url":"https://isolated.example/"}</script></head><body><h1>Isolated QA</h1></body></html>`,
+        'utf8'
+      );
 
-      // Spin up a local loopback mock SiteFix API to verify end-to-end execution
+      // Spin up a local loopback mock ONLY for --unlock download verification
       const server = http.createServer((req, res) => {
-        let body = '';
-        req.on('data', chunk => { body += chunk; });
-        req.on('end', () => {
-          const parsed = JSON.parse(body || '{}');
+        if (req.url === '/api/v1/offer/download/tok_iso_99') {
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({
-            success: true,
-            result: {
-              auditId: 'aud_isolated_1',
-              url: parsed.url,
-              overallStatus: 'OPTIMIZED',
-              score: 96,
-              findings: [
-                {
-                  id: 'schema_types_detected',
-                  category: 'STRUCTURED_DATA',
-                  title: 'Valid JSON-LD',
-                  status: 'PASS',
-                  severity: 'INFO',
-                  evidence: 'WebSite'
-                }
-              ],
-              metrics: { httpStatus: 200, hasRobotsTxt: true, hasSitemap: true, jsonLdTypesFound: ['WebSite'] }
-            }
-          }));
-        });
+          res.end(
+            JSON.stringify({
+              success: true,
+              deliverable: {
+                auditId: 'aud_iso_99',
+                targetUrl: 'https://isolated.example/',
+                generatedAt: new Date().toISOString(),
+                headMetadataSnippet: '<title>Isolated QA</title>',
+                openGraphSnippet: '<meta property="og:title" content="Isolated QA">',
+                twitterCardSnippet: '<meta name="twitter:card" content="summary_large_image">',
+                schemaJsonLdSnippet: '<script type="application/ld+json">{}</script>',
+                canonicalUrlRecommendation: 'https://isolated.example/',
+                checklistMarkdown: '# Checklist',
+                fullReportJson: {},
+                disclosure: 'No ranking guarantee.'
+              }
+            })
+          );
+          return;
+        }
+        res.writeHead(404);
+        res.end();
       });
 
       try {
@@ -801,20 +847,44 @@ describe('SiteFix Launch Gate — Part 1 Security/Payment/Ledger + Part 2 Pull I
         expect(unauthRun.status).toBe(2);
         expect(unauthRun.stderr).toContain(AUTHORIZATION_REQUIRED_MESSAGE);
 
-        // 2. Succeeds with --confirm-authorized --json against loopback API from isolated dir (async so parent HTTP server responds)
-        const { stdout: authOut } = await execFileAsync(
+        // 2. SSRF guard blocks private loopback target in isolated standalone bundle
+        const ssrfRun = spawnSync('node', [isolatedBundle, 'https://127.0.0.1', '--confirm-authorized'], {
+          cwd: isolatedDir,
+          encoding: 'utf8',
+          env: { PATH: process.env.PATH }
+        });
+        expect(ssrfRun.status).toBe(2);
+        expect(ssrfRun.stderr).toMatch(/SSRF|Blocked|private|loopback|reserved/i);
+
+        // 3. Runs local deterministic scan via --html-file with zero node_modules and zero network
+        const { stdout: localOut } = await execFileAsync(
           'node',
-          [isolatedBundle, 'https://isolated.example', '--confirm-authorized', '--api-url', `http://127.0.0.1:${port}`, '--json'],
+          [isolatedBundle, 'https://isolated.example/', '--confirm-authorized', '--html-file', sampleHtmlFile, '--json'],
           {
             cwd: isolatedDir,
             encoding: 'utf8',
             env: { PATH: process.env.PATH }
           }
         );
-        const parsedOut = JSON.parse(authOut);
-        expect(parsedOut.auditId).toBe('aud_isolated_1');
-        expect(parsedOut.score).toBe(96);
-        expect(parsedOut.canonicalSku).toBe('SITEFIX_AI_PACK_V1');
+        const parsedLocal = JSON.parse(localOut);
+        expect(parsedLocal.executionMode).toBe('LOCAL');
+        expect(parsedLocal.canonicalSku).toBe('SITEFIX_AI_PACK_V1');
+        expect(parsedLocal.score).toBeGreaterThanOrEqual(70);
+        expect(parsedLocal.fixPackPreview?.headMetadataPreview).toContain('<title>');
+
+        // 4. --unlock contacts backend API cleanly from isolated temp dir
+        const { stdout: unlockOut } = await execFileAsync(
+          'node',
+          [isolatedBundle, '--unlock', 'tok_iso_99', '--api-url', `http://127.0.0.1:${port}`, '--json'],
+          {
+            cwd: isolatedDir,
+            encoding: 'utf8',
+            env: { PATH: process.env.PATH }
+          }
+        );
+        const parsedUnlock = JSON.parse(unlockOut);
+        expect(parsedUnlock.success).toBe(true);
+        expect(parsedUnlock.deliverable.auditId).toBe('aud_iso_99');
       } finally {
         server.close();
         fs.rmSync(isolatedDir, { recursive: true, force: true });
@@ -891,6 +961,316 @@ describe('SiteFix Launch Gate — Part 1 Security/Payment/Ledger + Part 2 Pull I
 
       // Clean up test events
       db.prepare(`DELETE FROM durable_events WHERE event_type = 'SITEFIX_FUNNEL_EVENT'`).run();
+    });
+  });
+
+  // =========================================================================
+  // PASS 2 — PURE @ai-marketing/sitefix-core, HARDENED POST /api/v1/public/scan, & 4 OWNER TOOL PAGES
+  // =========================================================================
+  describe('11. Pass 2: Pure @ai-marketing/sitefix-core, Hardened POST /api/v1/public/scan & 4 Owner Diagnostic Pages', () => {
+    it('pure @ai-marketing/sitefix-core extracts OG/WhatsApp, Twitter Card, robots/sitemap, and JSON-LD diagnostics without inventing business info', async () => {
+      const {
+        SiteAuditScanner,
+        SiteAuditFixPackGenerator,
+        WHATSAPP_CACHE_NOTICE
+      } = await import('@ai-marketing/sitefix-core');
+
+      const mockHtml = `<!doctype html>
+<html>
+<head>
+  <title>Acme Bakery Mumbai</title>
+  <meta name="robots" content="noindex, follow">
+  <meta property="og:title" content="Acme Bakery">
+  <meta property="og:image" content="http://acmebakery.example/cake.jpg">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Organization","name":"Acme Bakery"}</script>
+  <script type="application/ld+json">{ broken json </script>
+</head>
+<body><h1>Acme Bakery</h1></body>
+</html>`;
+
+      const injectedFetch = (async (input: any) => {
+        const u = String(typeof input === 'string' ? input : input?.url);
+        if (u.endsWith('/robots.txt')) {
+          return new Response('User-agent: *\nDisallow: /\nSitemap: https://acmebakery.example/sitemap.xml\n', {
+            status: 200,
+            headers: { 'Content-Type': 'text/plain' }
+          });
+        }
+        if (u.endsWith('/sitemap.xml')) {
+          return new Response('<?xml version="1.0"?><urlset></urlset>', {
+            status: 200,
+            headers: { 'Content-Type': 'application/xml' }
+          });
+        }
+        return new Response(mockHtml, {
+          status: 200,
+          headers: { 'Content-Type': 'text/html; charset=utf-8' }
+        });
+      }) as unknown as typeof fetch;
+
+      const scanner = new SiteAuditScanner(injectedFetch);
+      const audit = await scanner.scanUrl(
+        { url: 'https://acmebakery.example', userConfirmedOwnership: true },
+        undefined,
+        { fetchImpl: injectedFetch, skipDnsForInjectedFetch: true }
+      );
+
+      expect(audit.diagnostics?.openGraph.ogTitle).toBe('Acme Bakery');
+      expect(audit.diagnostics?.openGraph.ogImageIsHttps).toBe(false);
+      expect(audit.diagnostics?.openGraph.whatsappCacheNotice).toBe(WHATSAPP_CACHE_NOTICE);
+      expect(audit.diagnostics?.robotsAndSitemap.metaRobotsNoindex).toBe(true);
+      expect(audit.diagnostics?.robotsAndSitemap.robotsTxtDisallowsAll).toBe(true);
+      expect(audit.diagnostics?.robotsAndSitemap.sitemapReachable).toBe(true);
+      expect(audit.diagnostics?.jsonLd.blockCount).toBe(2);
+      expect(audit.diagnostics?.jsonLd.validBlockCount).toBe(1);
+      expect(audit.diagnostics?.jsonLd.invalidBlockCount).toBe(1);
+      expect(audit.diagnostics?.jsonLd.blocks[0].missingRecommendedFields.some(m => m.field === 'url')).toBe(true);
+
+      const fixPack = new SiteAuditFixPackGenerator().generateFixPack(audit);
+      expect(fixPack.headMetadataSnippet).toContain('[INSERT_META_DESCRIPTION]');
+      expect(fixPack.schemaJsonLdSnippet).toContain('REPLACE_WITH_YOUR_');
+      expect(fixPack.missingFieldsRequiringOwnerInput?.length).toBeGreaterThan(0);
+    });
+
+    it('POST /api/v1/public/scan enforces strict confirmAuthorized boolean, SSRF blocks, per-IP/global daily caps, 24h cache, and 4 web tool sources', async () => {
+      const {
+        clearPublicScanCacheForTesting,
+        PUBLIC_SCAN_CACHE_EVENT_TYPE,
+        normalizeUrlForPublicCache
+      } = await import('../../src/tools/site-audit/public-scan-service.js');
+
+      const db = getDb();
+      clearPublicScanCacheForTesting();
+      db.prepare(`DELETE FROM durable_events WHERE event_type IN (?, 'SITEFIX_FUNNEL_EVENT')`).run(
+        PUBLIC_SCAN_CACHE_EVENT_TYPE
+      );
+
+      // 1. Missing or non-boolean confirmAuthorized MUST return 400
+      const noAuthRes = await app.request('/api/v1/public/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: 'https://example.com', confirmAuthorized: 'true', source: 'web_whatsapp_preview' })
+      });
+      expect(noAuthRes.status).toBe(400);
+      const noAuthJson = await noAuthRes.json() as any;
+      expect(noAuthJson.code).toBe('CONFIRM_AUTHORIZED_REQUIRED');
+
+      // 2. Private/loopback/metadata SSRF URLs MUST fail closed with 400
+      for (const badUrl of ['http://127.0.0.1/admin', 'http://169.254.169.254/latest/meta-data/', 'http://localhost:3000']) {
+        const ssrfRes = await app.request('/api/v1/public/scan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: badUrl, confirmAuthorized: true, source: 'web_open_graph' })
+        });
+        expect(ssrfRes.status).toBe(400);
+        const ssrfJson = await ssrfRes.json() as any;
+        expect(ssrfJson.success).toBe(false);
+      }
+
+      // 3. Seed a 24h durable_events cache row and verify cache hit returns cached: true + source attribution + checkoutUrl
+      const normalized = normalizeUrlForPublicCache('https://cached-owner-site.example');
+      const cacheHash = crypto.createHash('sha256').update(normalized).digest('hex').slice(0, 24);
+      const cachedPayload = {
+        normalizedUrl: normalized,
+        cachedAt: new Date().toISOString(),
+        expiresAt: Date.now() + 24 * 60 * 60 * 1000,
+        result: {
+          auditId: 'aud_cached_24h',
+          url: normalized,
+          scannedAt: new Date().toISOString(),
+          overallStatus: 'NEEDS_IMPROVEMENT',
+          score: 74,
+          scoreExplanation: 'Cached deterministic test result',
+          findings: [],
+          metrics: {
+            httpStatus: 200,
+            responseTimeMs: 42,
+            htmlSizeBytes: 512,
+            contentType: 'text/html',
+            redirectChain: [normalized],
+            hasRobotsTxt: true,
+            hasSitemap: true,
+            jsonLdTypesFound: ['WebSite'],
+            contactChannelsFound: []
+          },
+          preview: {
+            title: 'Cached Owner Site',
+            metaDescription: 'Cached description',
+            canonicalUrl: normalized,
+            ogTitle: 'Cached Owner Site',
+            ogImage: 'https://cached-owner-site.example/og.png',
+            fixPackSnippetPreview: '<meta property="og:title" content="Cached Owner Site">'
+          },
+          disclosures: { notFullCrawl: true, noRankGuarantee: true, noWebVitalsClaim: true }
+        },
+        fixPackPreview: {
+          canonicalSku: 'SITEFIX_AI_PACK_V1',
+          priceINR: 499,
+          snippetPreview: '<meta property="og:title" content="Cached Owner Site">',
+          deliverablesIncluded: ['Open Graph tags'],
+          missingFieldsRequiringOwnerInput: [],
+          disclosure: 'No ranking guarantee.'
+        }
+      };
+
+      db.prepare(
+        `INSERT INTO durable_events (id, event_type, organization_id, payload_json, created_at)
+         VALUES (?, ?, 'org_owner_primary', ?, datetime('now'))`
+      ).run(`sfx_cache_${cacheHash}_unit0001`, PUBLIC_SCAN_CACHE_EVENT_TYPE, JSON.stringify(cachedPayload));
+
+      const cachedRes = await app.request('/api/v1/public/scan', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36'
+        },
+        body: JSON.stringify({
+          url: 'https://cached-owner-site.example',
+          confirmAuthorized: true,
+          source: 'web_whatsapp_preview'
+        })
+      });
+      expect(cachedRes.status).toBe(200);
+      const cachedJson = await cachedRes.json() as any;
+      expect(cachedJson.success).toBe(true);
+      expect(cachedJson.cached).toBe(true);
+      expect(cachedJson.cacheTtlHours).toBe(24);
+      expect(cachedJson.source).toBe('web_whatsapp_preview');
+      expect(cachedJson.canonicalSku).toBe('SITEFIX_AI_PACK_V1');
+      expect(cachedJson.priceINR).toBe(499);
+      expect(cachedJson.checkoutUrl).toContain('source=web_whatsapp_preview');
+
+      // 4. Verify per-IP daily cap and global daily cap return HTTP 429 when enforced
+      process.env.ENFORCE_PUBLIC_SCAN_LIMITS_IN_TEST = 'true';
+      process.env.PUBLIC_SCAN_IP_DAILY_CAP = '2';
+      process.env.PUBLIC_SCAN_GLOBAL_DAILY_CAP = '5';
+      try {
+        db.prepare(`DELETE FROM durable_rate_limits`).run();
+        const r1 = await app.request('/api/v1/public/scan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-forwarded-for': '203.0.113.10' },
+          body: JSON.stringify({ url: 'https://cached-owner-site.example', confirmAuthorized: true, source: 'web_open_graph' })
+        });
+        const r2 = await app.request('/api/v1/public/scan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-forwarded-for': '203.0.113.10' },
+          body: JSON.stringify({ url: 'https://cached-owner-site.example', confirmAuthorized: true, source: 'web_robots_sitemap' })
+        });
+        const r3 = await app.request('/api/v1/public/scan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-forwarded-for': '203.0.113.10' },
+          body: JSON.stringify({ url: 'https://cached-owner-site.example', confirmAuthorized: true, source: 'web_json_ld' })
+        });
+        expect(r1.status).toBe(200);
+        expect(r2.status).toBe(200);
+        expect(r3.status).toBe(429);
+        const r3Json = await r3.json() as any;
+        expect(r3Json.code).toBe('IP_DAILY_RATE_LIMIT_EXCEEDED');
+      } finally {
+        delete process.env.ENFORCE_PUBLIC_SCAN_LIMITS_IN_TEST;
+        delete process.env.PUBLIC_SCAN_IP_DAILY_CAP;
+        delete process.env.PUBLIC_SCAN_GLOBAL_DAILY_CAP;
+        clearPublicScanCacheForTesting();
+        db.prepare(`DELETE FROM durable_events WHERE event_type IN (?, 'SITEFIX_FUNNEL_EVENT')`).run(
+          PUBLIC_SCAN_CACHE_EVENT_TYPE
+        );
+      }
+    });
+
+    it('all 4 owner diagnostic pages render HTTP 200 with unique copy, WhatsApp cache notice, cold-start auto-retry, ₹499 CTA + fallback, and Firebase CORS', async () => {
+      const routes: Array<{ path: string; source: string; mustContain: string[] }> = [
+        {
+          path: '/tools/whatsapp-link-preview-checker',
+          source: 'web_whatsapp_preview',
+          mustContain: [
+            'WhatsApp Link Preview Checker',
+            'cannot guarantee WhatsApp',
+            'SITEFIX_AI_PACK_V1',
+            '₹499',
+            '/api/v1/public/scan',
+            'attempt 2 of 2',
+            'Razorpay Hosted Payment Link'
+          ]
+        },
+        {
+          path: '/tools/open-graph-checker',
+          source: 'web_open_graph',
+          mustContain: [
+            'Open Graph &amp; Social Share Card Checker',
+            'twitter:card',
+            'SITEFIX_AI_PACK_V1',
+            '₹499',
+            '/api/v1/public/scan',
+            'attempt 2 of 2'
+          ]
+        },
+        {
+          path: '/tools/robots-and-sitemap-validator',
+          source: 'web_robots_sitemap',
+          mustContain: [
+            'Robots.txt &amp; Sitemap Validator',
+            'noindex',
+            'sitemap.xml',
+            'SITEFIX_AI_PACK_V1',
+            '₹499',
+            '/api/v1/public/scan'
+          ]
+        },
+        {
+          path: '/tools/json-ld-tester',
+          source: 'web_json_ld',
+          mustContain: [
+            'JSON-LD Structured Data Tester',
+            'application/ld+json',
+            'Organization',
+            'WebSite',
+            'Product',
+            'SITEFIX_AI_PACK_V1',
+            '₹499'
+          ]
+        }
+      ];
+
+      for (const rt of routes) {
+        const res = await app.request(rt.path, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+        });
+        expect(res.status).toBe(200);
+        const html = await res.text();
+        expect(html).toContain(rt.source);
+        for (const snippet of rt.mustContain) {
+          expect(html).toContain(snippet);
+        }
+      }
+
+      // Verify exact Firebase Hosting origin is allowlisted via CORS (no wildcard)
+      const corsRes = await app.request('/api/v1/public/scan', {
+        method: 'OPTIONS',
+        headers: {
+          Origin: 'https://gen-lang-client-0916255372.web.app',
+          'Access-Control-Request-Method': 'POST'
+        }
+      });
+      expect(corsRes.headers.get('access-control-allow-origin')).toBe(
+        'https://gen-lang-client-0916255372.web.app'
+      );
+
+      // Verify static HTML files were emitted to both Firebase Hosting dist and public/tools
+      for (const slug of [
+        'whatsapp-link-preview-checker',
+        'open-graph-checker',
+        'robots-and-sitemap-validator',
+        'json-ld-tester'
+      ]) {
+        const distHtmlPath = path.join(REPO_ROOT, 'packages', 'frontend', 'dist', 'tools', slug, 'index.html');
+        const publicHtmlPath = path.join(REPO_ROOT, 'public', 'tools', slug, 'index.html');
+        expect(fs.existsSync(distHtmlPath)).toBe(true);
+        expect(fs.existsSync(publicHtmlPath)).toBe(true);
+        const staticHtml = fs.readFileSync(distHtmlPath, 'utf8');
+        expect(staticHtml).toContain('https://ai-marketing-organization.onrender.com');
+        expect(staticHtml).toContain('/api/v1/public/scan');
+        expect(staticHtml).toContain('SITEFIX_AI_PACK_V1');
+      }
     });
   });
 });

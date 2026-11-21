@@ -1,5 +1,14 @@
+# SiteFix Launch Gate GitHub Action (Local Zero-Latency Execution via @ai-marketing/sitefix-core)
+#
+# Free Browser Tools for Website Owners:
+# - WhatsApp Link Preview Checker: https://ai-marketing-organization.onrender.com/tools/whatsapp-link-preview-checker
+# - Open Graph Checker:            https://ai-marketing-organization.onrender.com/tools/open-graph-checker
+# - Robots & Sitemap Validator:    https://ai-marketing-organization.onrender.com/tools/robots-and-sitemap-validator
+# - JSON-LD Schema Tester:         https://ai-marketing-organization.onrender.com/tools/json-ld-tester
+# - Full Launch Gate & Fix-Pack:   https://ai-marketing-organization.onrender.com/tools/site-audit
+
 name: 'SiteFix Launch Gate — Pre-Deployment Website QA'
-description: 'Deterministic pre-deployment website QA for HTML metadata, Open Graph, Schema.org JSON-LD, robots.txt, and sitemap.xml with Markdown PR/run summaries.'
+description: 'Local deterministic pre-deployment website QA for HTML metadata, Open Graph, Schema.org JSON-LD, robots.txt, and sitemap.xml with zero remote cold starts.'
 author: 'SiteFix AI'
 branding:
   icon: 'shield'
@@ -7,7 +16,7 @@ branding:
 
 inputs:
   url:
-    description: 'Public website URL (staging or production) to audit before launch.'
+    description: 'Public website URL (staging or production) to audit locally before launch.'
     required: true
   confirm-authorized:
     description: "Set to 'true' to confirm you own or are authorized to audit the target URL."
@@ -17,7 +26,7 @@ inputs:
     required: false
     default: 'false'
   api-url:
-    description: 'SiteFix Launch Gate API base URL.'
+    description: 'SiteFix Launch Gate base URL used for ₹499 Fix-Pack checkout links and --unlock.'
     required: false
     default: 'https://ai-marketing-organization.onrender.com'
 
@@ -32,7 +41,7 @@ outputs:
 runs:
   using: 'composite'
   steps:
-    - name: Run SiteFix Launch Gate Audit
+    - name: Run SiteFix Launch Gate Audit (Local)
       id: sitefix-scan
       shell: bash
       env:
@@ -76,7 +85,7 @@ runs:
             if (process.env.GITHUB_OUTPUT) {
               fs.appendFileSync(process.env.GITHUB_OUTPUT, `score=${data.score ?? 0}\nfailed_checks=${data.failedChecks ?? 0}\n`);
             }
-            console.log(`SiteFix Launch Gate Score: ${data.score}/100 | Failed Checks: ${data.failedChecks} | Critical: ${data.criticalCount}`);
+            console.log(`SiteFix Launch Gate Score: ${data.score}/100 | Failed Checks: ${data.failedChecks} | Critical: ${data.criticalCount} (Local Execution)`);
             console.log(`Fix-Pack (₹499) + Verification Recheck: ${data.checkoutUrl}`);
           ' "$REPORT_FILE"
         fi

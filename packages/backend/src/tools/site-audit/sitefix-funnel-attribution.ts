@@ -3,7 +3,15 @@ import { getDb } from '../../db/client.js';
 import { isProduction } from '../../config/env.js';
 import { D1RevenueRepository } from '../../db/d1-revenue-repository.js';
 
-export type SiteFixLaunchSource = 'cli' | 'action' | 'web' | 'mcp';
+export type SiteFixLaunchSource =
+  | 'cli'
+  | 'action'
+  | 'web'
+  | 'mcp'
+  | 'web_whatsapp_preview'
+  | 'web_open_graph'
+  | 'web_robots_sitemap'
+  | 'web_json_ld';
 
 export type SiteFixFunnelStage =
   | 'scan'
@@ -16,7 +24,11 @@ export const ALLOWED_SITEFIX_SOURCES: readonly SiteFixLaunchSource[] = [
   'cli',
   'action',
   'web',
-  'mcp'
+  'mcp',
+  'web_whatsapp_preview',
+  'web_open_graph',
+  'web_robots_sitemap',
+  'web_json_ld'
 ] as const;
 
 export const SITEFIX_FUNNEL_EVENT_TYPE = 'SITEFIX_FUNNEL_EVENT';
@@ -29,8 +41,8 @@ export function normalizeSiteFixSource(
   fallback: SiteFixLaunchSource = 'web'
 ): SiteFixLaunchSource {
   const clean = String(raw ?? '').trim().toLowerCase();
-  if (clean === 'cli' || clean === 'action' || clean === 'web' || clean === 'mcp') {
-    return clean;
+  if ((ALLOWED_SITEFIX_SOURCES as readonly string[]).includes(clean)) {
+    return clean as SiteFixLaunchSource;
   }
   return fallback;
 }
@@ -172,13 +184,21 @@ function aggregateFunnelRows(rows: Array<{ payload_json?: string | null }>): Sit
     cli: emptyStageCounts(),
     action: emptyStageCounts(),
     web: emptyStageCounts(),
-    mcp: emptyStageCounts()
+    mcp: emptyStageCounts(),
+    web_whatsapp_preview: emptyStageCounts(),
+    web_open_graph: emptyStageCounts(),
+    web_robots_sitemap: emptyStageCounts(),
+    web_json_ld: emptyStageCounts()
   };
   const excludedBySource: Record<SiteFixLaunchSource, number> = {
     cli: 0,
     action: 0,
     web: 0,
-    mcp: 0
+    mcp: 0,
+    web_whatsapp_preview: 0,
+    web_open_graph: 0,
+    web_robots_sitemap: 0,
+    web_json_ld: 0
   };
   let excludedProbesCount = 0;
 

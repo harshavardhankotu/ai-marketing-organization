@@ -55,14 +55,11 @@ app.use('*', cors({
       return requestOrigin;
     }
 
-    // 2. Exact known production Render frontend origin
-    if (requestOrigin === 'https://ai-marketing-organization.onrender.com') {
-      return requestOrigin;
-    }
-
-    // 2b. Exact canonical site origin
+    // 2. Exact known production Render & Firebase Hosting frontend origins
     if (
-      requestOrigin === 'https://ai-marketing-organization.onrender.com'
+      requestOrigin === 'https://ai-marketing-organization.onrender.com' ||
+      requestOrigin === 'https://gen-lang-client-0916255372.web.app' ||
+      requestOrigin === 'https://gen-lang-client-0916255372.firebaseapp.com'
     ) {
       return requestOrigin;
     }
@@ -192,6 +189,66 @@ app.get('/tools/site-audit', async (c) => {
     userAgent: probe.userAgent
   });
   return c.html(renderSiteAuditPage(assignment));
+});
+app.get('/tools/whatsapp-link-preview-checker', async (c) => {
+  const { renderOwnerToolPage, OWNER_TOOL_DEFINITIONS } = await import('./tools/site-audit/owner-tool-pages.js');
+  const { classifySiteFixProbe, recordSiteFixFunnelEvent } = await import('./tools/site-audit/sitefix-funnel-attribution.js');
+  const def = OWNER_TOOL_DEFINITIONS['whatsapp-link-preview-checker'];
+  const probe = classifySiteFixProbe(c);
+  await recordSiteFixFunnelEvent({
+    stage: 'preview_open',
+    source: def.source,
+    isProbe: probe.isProbe,
+    probeReason: probe.probeReason,
+    url: c.req.query('url') || `/tools/${def.slug}`,
+    userAgent: probe.userAgent
+  });
+  return c.html(renderOwnerToolPage(def.slug, { apiBaseUrl: '', canonicalOrigin: getTrustedPublicSiteUrl() }));
+});
+app.get('/tools/open-graph-checker', async (c) => {
+  const { renderOwnerToolPage, OWNER_TOOL_DEFINITIONS } = await import('./tools/site-audit/owner-tool-pages.js');
+  const { classifySiteFixProbe, recordSiteFixFunnelEvent } = await import('./tools/site-audit/sitefix-funnel-attribution.js');
+  const def = OWNER_TOOL_DEFINITIONS['open-graph-checker'];
+  const probe = classifySiteFixProbe(c);
+  await recordSiteFixFunnelEvent({
+    stage: 'preview_open',
+    source: def.source,
+    isProbe: probe.isProbe,
+    probeReason: probe.probeReason,
+    url: c.req.query('url') || `/tools/${def.slug}`,
+    userAgent: probe.userAgent
+  });
+  return c.html(renderOwnerToolPage(def.slug, { apiBaseUrl: '', canonicalOrigin: getTrustedPublicSiteUrl() }));
+});
+app.get('/tools/robots-and-sitemap-validator', async (c) => {
+  const { renderOwnerToolPage, OWNER_TOOL_DEFINITIONS } = await import('./tools/site-audit/owner-tool-pages.js');
+  const { classifySiteFixProbe, recordSiteFixFunnelEvent } = await import('./tools/site-audit/sitefix-funnel-attribution.js');
+  const def = OWNER_TOOL_DEFINITIONS['robots-and-sitemap-validator'];
+  const probe = classifySiteFixProbe(c);
+  await recordSiteFixFunnelEvent({
+    stage: 'preview_open',
+    source: def.source,
+    isProbe: probe.isProbe,
+    probeReason: probe.probeReason,
+    url: c.req.query('url') || `/tools/${def.slug}`,
+    userAgent: probe.userAgent
+  });
+  return c.html(renderOwnerToolPage(def.slug, { apiBaseUrl: '', canonicalOrigin: getTrustedPublicSiteUrl() }));
+});
+app.get('/tools/json-ld-tester', async (c) => {
+  const { renderOwnerToolPage, OWNER_TOOL_DEFINITIONS } = await import('./tools/site-audit/owner-tool-pages.js');
+  const { classifySiteFixProbe, recordSiteFixFunnelEvent } = await import('./tools/site-audit/sitefix-funnel-attribution.js');
+  const def = OWNER_TOOL_DEFINITIONS['json-ld-tester'];
+  const probe = classifySiteFixProbe(c);
+  await recordSiteFixFunnelEvent({
+    stage: 'preview_open',
+    source: def.source,
+    isProbe: probe.isProbe,
+    probeReason: probe.probeReason,
+    url: c.req.query('url') || `/tools/${def.slug}`,
+    userAgent: probe.userAgent
+  });
+  return c.html(renderOwnerToolPage(def.slug, { apiBaseUrl: '', canonicalOrigin: getTrustedPublicSiteUrl() }));
 });
 app.get('/tools/financial-radar', async (c) => {
   const { MultiAssetOpportunityRadar } = await import('./intelligence/multi-asset-opportunity-radar.js');

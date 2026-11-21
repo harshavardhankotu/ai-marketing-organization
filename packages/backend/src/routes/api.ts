@@ -179,6 +179,7 @@ export const EXACT_ROUTE_POLICY = {
     '/public/fair-price-check',
     '/public/autonomy-status',
     '/public/mcp',
+    '/public/scan',
     '/deals',
     '/best',
     '/vs',
@@ -14029,6 +14030,170 @@ const handleSiteAuditScan = async (c: any) => {
 };
 apiRouter.post('/tools/site-audit/scan', handleSiteAuditScan);
 apiRouter.post('/api/v1/tools/site-audit/scan', handleSiteAuditScan);
+
+/**
+ * Hardened Public Scan API for Owner-Facing Web Tools (POST /api/v1/public/scan)
+ * Enforces strict SSRF protection (public IPs only, DNS resolve-then-connect, redirect hop revalidation),
+ * 5s timeout, 1 MB body cap, per-IP and global daily caps, 24h URL result cache, clear User-Agent,
+ * mandatory strict boolean confirmAuthorized: true, and source attribution tracking.
+ */
+const handleHardenedPublicScan = async (c: any) => {
+  const { executeHardenedPublicScan } = await import('../tools/site-audit/public-scan-service.js');
+  const { SecureFetchError } = await import('../tools/site-audit/secure-url-fetcher.js');
+  const {
+    normalizeSiteFixSource,
+    classifySiteFixProbe,
+    recordSiteFixFunnelEvent
+  } = await import('../tools/site-audit/sitefix-funnel-attribution.js');
+
+  const body = await c.req.json().catch(() => null);
+  if (!body || typeof body !== 'object') {
+    return c.json({ success: false, code: 'INVALID_JSON', error: 'Invalid JSON request body.' }, 400);
+  }
+
+  const rawUrl = typeof body.url === 'string' ? body.url.trim() : '';
+  if (!rawUrl) {
+    return c.json({ success: false, code: 'MISSING_URL', error: 'Please provide a public https:// website URL.' }, 400);
+  }
+
+  if (body.confirmAuthorized !== true) {
+    return c.json(
+      {
+        success: false,
+        code: 'CONFIRM_AUTHORIZED_REQUIRED',
+        error: 'confirmAuthorized must be boolean true to confirm you own or are authorized to scan this URL.'
+      },
+      400
+    );
+  }
+
+  const clientIp = getTrustedClientIp(c).ip;
+  const shouldEnforceLimits =
+    !process.env.VITEST || process.env.ENFORCE_PUBLIC_SCAN_LIMITS_IN_TEST === 'true';
+
+  if (shouldEnforceLimits) {
+    const ipDailyCap = Math.max(1, parseInt(process.env.PUBLIC_SCAN_IP_DAILY_CAP || '20', 10) || 20);
+    const globalDailyCap = Math.max(1, parseInt(process.env.PUBLIC_SCAN_GLOBAL_DAILY_CAP || '500', 10) || 500);
+    const limiter = DurableRateLimiter.getInstance();
+
+    const ipRate = await limiter.checkRateLimit('/public/scan:ip', clientIp, ipDailyCap, 86400);
+    if (!ipRate.allowed) {
+      c.header('Retry-After', String(ipRate.retryAfterSeconds));
+      return c.json(
+        {
+          success: false,
+          code: 'IP_DAILY_RATE_LIMIT_EXCEEDED',
+          error: `Per-IP daily scan limit (${ipDailyCap}/day) exceeded. Please try again later.`,
+          retryAfterSeconds: ipRate.retryAfterSeconds
+        },
+        429
+      );
+    }
+
+    const globalRate = await limiter.checkRateLimit('/public/scan:global', 'global', globalDailyCap, 86400);
+    if (!globalRate.allowed) {
+      c.header('Retry-After', String(globalRate.retryAfterSeconds));
+      return c.json(
+        {
+          success: false,
+          code: 'GLOBAL_DAILY_RATE_LIMIT_EXCEEDED',
+          error: `Global daily public scan capacity (${globalDailyCap}/day) reached. Please try again later.`,
+          retryAfterSeconds: globalRate.retryAfterSeconds
+        },
+        429
+      );
+    }
+  }
+
+  const source = normalizeSiteFixSource(
+    body.source || c.req.query('source') || c.req.header('x-sitefix-source'),
+    'web'
+  );
+  const probe = classifySiteFixProbe(c);
+  const siteUrl = getTrustedPublicSiteUrl();
+  const razorpayHostedFallbackUrl = (process.env.RAZORPAY_HOSTED_PAYMENT_LINK_URL || '').trim() || null;
+
+  try {
+    const scanOut = await executeHardenedPublicScan({
+      url: rawUrl,
+      skipCache: body.skipCache === true
+    });
+
+    await recordSiteFixFunnelEvent({
+      stage: 'scan',
+      source,
+      isProbe: probe.isProbe,
+      probeReason: probe.probeReason,
+      auditId: scanOut.result.auditId,
+      url: scanOut.result.url || rawUrl,
+      userAgent: probe.userAgent
+    });
+
+    const targetEncoded = encodeURIComponent(scanOut.result.url || rawUrl);
+    const checkoutUrl = `${siteUrl}/tools/site-audit?url=${targetEncoded}&source=${encodeURIComponent(source)}`;
+
+    return c.json({
+      success: true,
+      cached: scanOut.cached,
+      cacheTtlHours: scanOut.cacheTtlHours,
+      cachedAt: scanOut.cachedAt,
+      source,
+      canonicalSku: 'SITEFIX_AI_PACK_V1',
+      priceINR: 499,
+      checkoutUrl,
+      razorpayHostedFallbackUrl,
+      result: scanOut.result,
+      fixPackPreview: scanOut.fixPackPreview
+    });
+  } catch (err: any) {
+    if (err instanceof SecureFetchError || err?.name === 'SecureFetchError') {
+      const status =
+        err.code === 'PAYLOAD_TOO_LARGE'
+          ? 413
+          : err.code === 'FETCH_TIMEOUT'
+            ? 504
+            : 400;
+      return c.json({ success: false, code: err.code, error: err.message }, status);
+    }
+    return c.json(
+      { success: false, code: 'PUBLIC_SCAN_FAILED', error: err?.message || 'Public scan failed.' },
+      500
+    );
+  }
+};
+apiRouter.post('/public/scan', handleHardenedPublicScan);
+apiRouter.post('/api/v1/public/scan', handleHardenedPublicScan);
+
+/**
+ * Owner-facing free diagnostic tool pages (/api/v1/tools/<slug> fallback & forwarded routes)
+ */
+const handleOwnerToolPage = async (c: any, slug: any) => {
+  const { renderOwnerToolPage, OWNER_TOOL_DEFINITIONS } = await import('../tools/site-audit/owner-tool-pages.js');
+  const { classifySiteFixProbe, recordSiteFixFunnelEvent } = await import(
+    '../tools/site-audit/sitefix-funnel-attribution.js'
+  );
+  const def = OWNER_TOOL_DEFINITIONS[slug as keyof typeof OWNER_TOOL_DEFINITIONS];
+  const probe = classifySiteFixProbe(c);
+  await recordSiteFixFunnelEvent({
+    stage: 'preview_open',
+    source: def.source,
+    isProbe: probe.isProbe,
+    probeReason: probe.probeReason,
+    url: c.req.query('url') || `/tools/${def.slug}`,
+    userAgent: probe.userAgent
+  });
+  const siteUrl = getTrustedPublicSiteUrl();
+  return c.html(
+    renderOwnerToolPage(def.slug, {
+      apiBaseUrl: '',
+      canonicalOrigin: siteUrl
+    })
+  );
+};
+apiRouter.get('/tools/whatsapp-link-preview-checker', (c) => handleOwnerToolPage(c, 'whatsapp-link-preview-checker'));
+apiRouter.get('/tools/open-graph-checker', (c) => handleOwnerToolPage(c, 'open-graph-checker'));
+apiRouter.get('/tools/robots-and-sitemap-validator', (c) => handleOwnerToolPage(c, 'robots-and-sitemap-validator'));
+apiRouter.get('/tools/json-ld-tester', (c) => handleOwnerToolPage(c, 'json-ld-tester'));
 
 /**
  * Public Fix-Pack Verification Recheck (authorized strictly by valid non-expired HMAC delivery token)

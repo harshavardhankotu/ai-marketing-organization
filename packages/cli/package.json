@@ -1,7 +1,7 @@
 {
   "name": "sitefix-check",
   "version": "1.0.0",
-  "description": "SiteFix Launch Gate CLI — deterministic pre-deployment website QA for HTML metadata, Open Graph, Schema.org JSON-LD, robots.txt, and sitemap.xml.",
+  "description": "SiteFix Launch Gate CLI — local deterministic pre-deployment website QA for HTML metadata, Open Graph, Schema.org JSON-LD, robots.txt, and sitemap.xml.",
   "type": "module",
   "bin": {
     "sitefix-check": "./dist/cli.js"
@@ -32,5 +32,8 @@
   "scripts": {
     "build": "tsc && node scripts/sync-action-dist.mjs",
     "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@ai-marketing/sitefix-core": "*"
   }
 }

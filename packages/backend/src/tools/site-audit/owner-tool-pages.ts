@@ -1,0 +1,1164 @@
+/**
+ * Owner-Facing Free Website Diagnostic Tool Pages (Pass 2 — Task 3)
+ *
+ * Four fast, static-hosting-ready, non-jargon diagnostic doors:
+ * 1. /tools/whatsapp-link-preview-checker  (source: web_whatsapp_preview)
+ * 2. /tools/open-graph-checker             (source: web_open_graph)
+ * 3. /tools/robots-and-sitemap-validator   (source: web_robots_sitemap)
+ * 4. /tools/json-ld-tester                 (source: web_json_ld)
+ *
+ * Each page:
+ * - Loads instantly with zero external JS bundles
+ * - Runs a real in-browser scan via POST /api/v1/public/scan
+ * - Shows a friendly Render cold-start notice and performs 1 automatic retry on wake-up errors
+ * - Displays observed evidence + plain-English fix explanations
+ * - Presents a clear ₹499 Fix-Pack (SITEFIX_AI_PACK_V1) CTA + Razorpay Hosted Payment Link fallback
+ */
+
+import { WHATSAPP_CACHE_NOTICE } from '@ai-marketing/sitefix-core';
+import type { SiteFixLaunchSource } from './sitefix-funnel-attribution.js';
+
+export type OwnerToolSlug =
+  | 'whatsapp-link-preview-checker'
+  | 'open-graph-checker'
+  | 'robots-and-sitemap-validator'
+  | 'json-ld-tester';
+
+export const OWNER_TOOL_SLUGS: readonly OwnerToolSlug[] = [
+  'whatsapp-link-preview-checker',
+  'open-graph-checker',
+  'robots-and-sitemap-validator',
+  'json-ld-tester'
+] as const;
+
+export interface OwnerToolDefinition {
+  slug: OwnerToolSlug;
+  source: SiteFixLaunchSource;
+  navLabel: string;
+  title: string;
+  metaDescription: string;
+  badge: string;
+  headline: string;
+  subheadline: string;
+  urlPlaceholder: string;
+  ctaButtonText: string;
+  whyItMattersTitle: string;
+  whyItMattersPoints: Array<{ title: string; body: string }>;
+  scopeNotice?: string;
+}
+
+export const OWNER_TOOL_DEFINITIONS: Record<OwnerToolSlug, OwnerToolDefinition> = {
+  'whatsapp-link-preview-checker': {
+    slug: 'whatsapp-link-preview-checker',
+    source: 'web_whatsapp_preview',
+    navLabel: 'WhatsApp Preview',
+    title: 'WhatsApp Link Preview Checker — Free Open Graph Readiness Tool | SiteFix AI',
+    metaDescription:
+      'Check why your website link shows a blank box or missing image when shared on WhatsApp. Inspect og:title, og:description, og:image, HTTPS URL, and dimensions.',
+    badge: 'Free Owner Diagnostic • WhatsApp Share Readiness',
+    headline: 'WhatsApp Link Preview Checker',
+    subheadline:
+      'Paste your website address to see whether your page provides the exact headline, summary, and HTTPS image tags WhatsApp looks for when someone shares your link in chat.',
+    urlPlaceholder: 'https://yourbusiness.com',
+    ctaButtonText: 'Check WhatsApp Link Readiness',
+    whyItMattersTitle: 'What makes a website link show a clean thumbnail in WhatsApp?',
+    whyItMattersPoints: [
+      {
+        title: 'Clear og:title and og:description tags',
+        body: 'When these tags are missing, messaging apps either fall back to an awkward page header or leave the card nearly empty.'
+      },
+      {
+        title: 'Direct HTTPS og:image URL',
+        body: 'Relative paths (like /banner.jpg) or plain HTTP image links frequently fail to load as share thumbnails.'
+      },
+      {
+        title: 'Explicit image width and height',
+        body: 'Declaring og:image:width and og:image:height (such as 1200×630) helps apps render your preview card on the first share instead of waiting for a second fetch.'
+      }
+    ],
+    scopeNotice: WHATSAPP_CACHE_NOTICE
+  },
+  'open-graph-checker': {
+    slug: 'open-graph-checker',
+    source: 'web_open_graph',
+    navLabel: 'Open Graph & X',
+    title: 'Open Graph & Twitter/X Card Checker — Social Share Validator | SiteFix AI',
+    metaDescription:
+      'Validate Open Graph tags (og:title, og:description, og:image, og:url, og:type) and Twitter/X Card tags before sharing your website on LinkedIn, Facebook, or X.',
+    badge: 'Free Owner Diagnostic • Social Share Cards',
+    headline: 'Open Graph & Social Share Card Checker',
+    subheadline:
+      'Inspect every Open Graph and Twitter/X Card tag on your live page so your links look intentional and trustworthy on LinkedIn, Facebook, Slack, and X.',
+    urlPlaceholder: 'https://yourcompany.com/landing-page',
+    ctaButtonText: 'Validate Social Share Tags',
+    whyItMattersTitle: 'Why social share cards break even when a website looks fine',
+    whyItMattersPoints: [
+      {
+        title: 'Social crawlers read hidden <head> tags, not your visual layout',
+        body: 'Even a well-designed homepage can share as a plain blue URL if og:title, og:description, and og:image are absent.'
+      },
+      {
+        title: 'X (Twitter) expects its own twitter:card declaration',
+        body: 'Setting twitter:card to summary_large_image tells X to display a prominent landscape preview instead of a tiny square icon.'
+      },
+      {
+        title: 'Canonical og:url prevents split share metrics',
+        body: 'Matching og:url to your clean HTTPS page URL stops tracking parameters from breaking preview consistency.'
+      }
+    ]
+  },
+  'robots-and-sitemap-validator': {
+    slug: 'robots-and-sitemap-validator',
+    source: 'web_robots_sitemap',
+    navLabel: 'Robots & Sitemap',
+    title: 'Robots.txt & Sitemap.xml Validator — Search Blocking Check | SiteFix AI',
+    metaDescription:
+      'Check if accidental noindex tags or robots.txt Disallow rules are hiding your site from Google, and verify whether your sitemap.xml is reachable.',
+    badge: 'Free Owner Diagnostic • Search Indexing Safety',
+    headline: 'Robots.txt & Sitemap Validator',
+    subheadline:
+      'Verify in seconds that a leftover staging rule is not blocking Google from indexing your website, and confirm your XML sitemap actually responds with HTTP 200.',
+    urlPlaceholder: 'https://yourwebsite.com',
+    ctaButtonText: 'Inspect Robots.txt & Sitemap',
+    whyItMattersTitle: 'Three silent crawl mistakes that keep websites off Google',
+    whyItMattersPoints: [
+      {
+        title: 'Accidental meta robots "noindex" tag',
+        body: 'Many templates and agency handoffs leave a noindex tag in <head>, instructing Google to drop the page from search results entirely.'
+      },
+      {
+        title: 'Broad "Disallow: /" in robots.txt',
+        body: 'A single staging line in /robots.txt blocks search crawlers from reading your entire domain.'
+      },
+      {
+        title: 'Missing or broken sitemap.xml',
+        body: 'A reachable XML sitemap referenced inside robots.txt gives search engines a clean inventory of your important pages.'
+      }
+    ]
+  },
+  'json-ld-tester': {
+    slug: 'json-ld-tester',
+    source: 'web_json_ld',
+    navLabel: 'JSON-LD Tester',
+    title: 'JSON-LD Structured Data Tester — Organization, WebSite & Product Check | SiteFix AI',
+    metaDescription:
+      'Test application/ld+json blocks on your live webpage for JSON syntax errors and missing Organization, WebSite, or Product fields.',
+    badge: 'Free Owner Diagnostic • Structured Data Validation',
+    headline: 'JSON-LD Structured Data Tester',
+    subheadline:
+      'Find broken JSON-LD script blocks and missing Organization, WebSite, or Product properties so search engines read your business identity cleanly.',
+    urlPlaceholder: 'https://yourstore.com',
+    ctaButtonText: 'Validate JSON-LD Blocks',
+    whyItMattersTitle: 'Why broken JSON-LD goes unnoticed by website owners',
+    whyItMattersPoints: [
+      {
+        title: 'One trailing comma voids the entire block',
+        body: 'Visitors never see a JSON syntax error inside <script type="application/ld+json">, but search crawlers silently discard the whole block.'
+      },
+      {
+        title: 'Incomplete Organization and WebSite fields',
+        body: 'Declaring name, url, and logo on Organization (plus name and url on WebSite) gives crawlers unambiguous brand context.'
+      },
+      {
+        title: 'Product pages need name and offers details',
+        body: 'If you mark up a Product schema without name or offers, rich-result validators flag it as incomplete.'
+      }
+    ]
+  }
+};
+
+export function isOwnerToolSlug(value: string): value is OwnerToolSlug {
+  return (OWNER_TOOL_SLUGS as readonly string[]).includes(value);
+}
+
+function escapeHtmlAttr(str: string): string {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+export interface RenderOwnerToolPageOptions {
+  /**
+   * API base URL for POST /api/v1/public/scan and checkout redirects.
+   * Empty string '' uses same-origin relative URLs (for Render SSR).
+   * Full origin (e.g. 'https://ai-marketing-organization.onrender.com') is used for static Firebase hosting builds.
+   */
+  apiBaseUrl?: string;
+  /** Canonical public site origin used in <link rel="canonical"> and cross-links */
+  canonicalOrigin?: string;
+  /** Optional Razorpay Hosted Payment Link URL fallback if API checkout is unavailable */
+  razorpayFallbackUrl?: string | null;
+}
+
+export function renderOwnerToolPage(
+  slug: OwnerToolSlug,
+  options: RenderOwnerToolPageOptions = {}
+): string {
+  const def = OWNER_TOOL_DEFINITIONS[slug];
+  const apiBase = (options.apiBaseUrl ?? '').replace(/\/+$/, '');
+  const canonicalOrigin = (
+    options.canonicalOrigin ||
+    'https://ai-marketing-organization.onrender.com'
+  ).replace(/\/+$/, '');
+  const checkoutOrigin = apiBase || canonicalOrigin;
+  const fallbackUrl = (
+    options.razorpayFallbackUrl ??
+    process.env.RAZORPAY_HOSTED_PAYMENT_LINK_URL ??
+    ''
+  ).trim();
+  const canonicalHref = `${canonicalOrigin}/tools/${def.slug}`;
+
+  const navLinksHtml = OWNER_TOOL_SLUGS.map((itemSlug) => {
+    const item = OWNER_TOOL_DEFINITIONS[itemSlug];
+    const activeClass = itemSlug === def.slug ? ' class="active"' : '';
+    return `<a href="/tools/${item.slug}"${activeClass}>${escapeHtmlAttr(item.navLabel)}</a>`;
+  }).join('\n        ');
+
+  const pointsHtml = def.whyItMattersPoints
+    .map(
+      (pt) => `
+        <div class="info-card">
+          <h3>${escapeHtmlAttr(pt.title)}</h3>
+          <p>${escapeHtmlAttr(pt.body)}</p>
+        </div>`
+    )
+    .join('');
+
+  const scopeNoticeHtml = def.scopeNotice
+    ? `<div class="scope-notice" role="note"><strong>Scope notice:</strong> ${escapeHtmlAttr(def.scopeNotice)}</div>`
+    : '';
+
+  const toolConfigJson = JSON.stringify({
+    slug: def.slug,
+    source: def.source,
+    apiBase,
+    checkoutOrigin,
+    razorpayFallbackUrl: fallbackUrl || null,
+    whatsappCacheNotice: WHATSAPP_CACHE_NOTICE
+  }).replace(/</g, '\\u003c');
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeHtmlAttr(def.title)}</title>
+  <meta name="description" content="${escapeHtmlAttr(def.metaDescription)}">
+  <link rel="canonical" href="${escapeHtmlAttr(canonicalHref)}">
+  <meta name="robots" content="index, follow">
+  <meta property="og:title" content="${escapeHtmlAttr(def.title)}">
+  <meta property="og:description" content="${escapeHtmlAttr(def.metaDescription)}">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="${escapeHtmlAttr(canonicalHref)}">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="${escapeHtmlAttr(def.title)}">
+  <meta name="twitter:description" content="${escapeHtmlAttr(def.metaDescription)}">
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #080d17;
+      --surface: #111827;
+      --surface-2: #0d1424;
+      --border: #1f2937;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --accent-strong: #0ea5e9;
+      --ok: #10b981;
+      --warn: #f59e0b;
+      --bad: #ef4444;
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+    .topbar {
+      border-bottom: 1px solid var(--border);
+      background: rgba(11, 17, 32, 0.92);
+    }
+    .topbar-inner {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 0.95rem 1.25rem;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+    }
+    .brand {
+      color: #fff;
+      font-weight: 800;
+      text-decoration: none;
+      letter-spacing: -0.02em;
+      font-size: 1.05rem;
+    }
+    .topnav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.9rem;
+      align-items: center;
+    }
+    .topnav a {
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 0.88rem;
+      font-weight: 500;
+      padding-bottom: 2px;
+      border-bottom: 2px solid transparent;
+    }
+    .topnav a:hover, .topnav a.active {
+      color: #fff;
+      border-bottom-color: var(--accent);
+    }
+    main {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 2.25rem 1.25rem 4rem;
+    }
+    .hero {
+      margin-bottom: 1.75rem;
+    }
+    .eyebrow {
+      display: inline-block;
+      font-size: 0.78rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--accent);
+      margin-bottom: 0.65rem;
+    }
+    h1 {
+      font-size: clamp(1.85rem, 4vw, 2.5rem);
+      font-weight: 800;
+      letter-spacing: -0.025em;
+      line-height: 1.18;
+      margin-bottom: 0.75rem;
+      color: #fff;
+    }
+    .lead {
+      color: var(--muted);
+      font-size: 1.05rem;
+      max-width: 720px;
+    }
+    .scope-notice {
+      margin-top: 1.1rem;
+      background: rgba(245, 158, 11, 0.08);
+      border: 1px solid rgba(245, 158, 11, 0.32);
+      border-radius: 10px;
+      padding: 0.85rem 1rem;
+      color: #fde68a;
+      font-size: 0.88rem;
+    }
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+    }
+    label.field-label {
+      display: block;
+      font-weight: 600;
+      font-size: 0.92rem;
+      margin-bottom: 0.45rem;
+      color: #e2e8f0;
+    }
+    .input-row {
+      display: flex;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+    }
+    input[type="url"] {
+      flex: 1 1 320px;
+      padding: 0.82rem 1rem;
+      background: var(--surface-2);
+      border: 1px solid #334155;
+      border-radius: 10px;
+      color: #fff;
+      font-size: 1rem;
+      outline: none;
+    }
+    input[type="url"]:focus {
+      border-color: var(--accent);
+    }
+    .btn-primary {
+      background: var(--accent-strong);
+      color: #03111c;
+      border: none;
+      border-radius: 10px;
+      padding: 0.85rem 1.35rem;
+      font-size: 0.98rem;
+      font-weight: 800;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.4rem;
+    }
+    .btn-primary:hover { background: #38bdf8; }
+    .btn-primary:disabled { background: #334155; color: #94a3b8; cursor: not-allowed; }
+    .btn-secondary {
+      background: transparent;
+      color: #e2e8f0;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      padding: 0.75rem 1.15rem;
+      font-size: 0.92rem;
+      font-weight: 600;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .btn-secondary:hover { border-color: var(--accent); color: #fff; }
+    .consent-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.65rem;
+      margin-top: 0.95rem;
+      font-size: 0.88rem;
+      color: var(--muted);
+    }
+    .consent-row input { margin-top: 0.25rem; }
+    .status-banner {
+      display: none;
+      margin-top: 1rem;
+      padding: 0.9rem 1rem;
+      border-radius: 10px;
+      font-size: 0.9rem;
+    }
+    .status-banner.info {
+      display: block;
+      background: rgba(56, 189, 248, 0.1);
+      border: 1px solid rgba(56, 189, 248, 0.35);
+      color: #bae6fd;
+    }
+    .status-banner.error {
+      display: block;
+      background: rgba(239, 68, 68, 0.12);
+      border: 1px solid rgba(239, 68, 68, 0.4);
+      color: #fecaca;
+    }
+    #results-section { display: none; }
+    .summary-strip {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 1.25rem;
+    }
+    .score-box {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+    .score-num {
+      font-size: 1.9rem;
+      font-weight: 800;
+      padding: 0.4rem 0.85rem;
+      border-radius: 10px;
+      background: var(--surface-2);
+      border: 1px solid #334155;
+      min-width: 78px;
+      text-align: center;
+    }
+    .meta-note { font-size: 0.82rem; color: var(--muted); }
+    .preview-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1rem;
+      margin-bottom: 1.25rem;
+    }
+    .social-card {
+      background: #0b1220;
+      border: 1px solid #263248;
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .social-card-head {
+      padding: 0.55rem 0.85rem;
+      font-size: 0.78rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+      border-bottom: 1px solid #1e293b;
+    }
+    .social-card-img {
+      width: 100%;
+      height: 156px;
+      background: #172033;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #94a3b8;
+      font-size: 0.85rem;
+      overflow: hidden;
+    }
+    .social-card-img img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .social-card-body {
+      padding: 0.85rem 1rem;
+    }
+    .social-card-domain {
+      font-size: 0.76rem;
+      color: #64748b;
+      text-transform: uppercase;
+      margin-bottom: 0.2rem;
+    }
+    .social-card-title {
+      font-weight: 700;
+      font-size: 0.98rem;
+      color: #f8fafc;
+      margin-bottom: 0.25rem;
+    }
+    .social-card-desc {
+      font-size: 0.86rem;
+      color: #cbd5e1;
+    }
+    .kv-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 1.25rem;
+      font-size: 0.9rem;
+    }
+    .kv-table th, .kv-table td {
+      text-align: left;
+      padding: 0.65rem 0.75rem;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    .kv-table th {
+      color: var(--muted);
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .tag-ok { color: var(--ok); font-weight: 700; }
+    .tag-warn { color: var(--warn); font-weight: 700; }
+    .tag-bad { color: var(--bad); font-weight: 700; }
+    .finding {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-left: 4px solid #475569;
+      border-radius: 10px;
+      padding: 0.95rem 1.05rem;
+      margin-bottom: 0.75rem;
+    }
+    .finding.ISSUE { border-left-color: var(--bad); }
+    .finding.WARNING { border-left-color: var(--warn); }
+    .finding.PASS { border-left-color: var(--ok); }
+    .finding-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 0.75rem;
+      font-weight: 700;
+      margin-bottom: 0.35rem;
+    }
+    .finding-ev {
+      font-size: 0.86rem;
+      color: #cbd5e1;
+      margin-bottom: 0.35rem;
+      word-break: break-word;
+    }
+    .finding-fix {
+      font-size: 0.86rem;
+      color: var(--muted);
+    }
+    pre.code-preview {
+      background: #050912;
+      border: 1px solid #1e293b;
+      border-radius: 10px;
+      padding: 0.9rem 1rem;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      color: #cbd5e1;
+      margin: 0.85rem 0 1.25rem;
+    }
+    .cta-box {
+      background: linear-gradient(135deg, rgba(14, 165, 233, 0.14), rgba(16, 185, 129, 0.09));
+      border: 1px solid rgba(56, 189, 248, 0.38);
+      border-radius: 14px;
+      padding: 1.4rem;
+      margin-top: 1.25rem;
+    }
+    .cta-box h2 {
+      font-size: 1.25rem;
+      margin-bottom: 0.45rem;
+      color: #fff;
+    }
+    .cta-box p {
+      color: #cbd5e1;
+      font-size: 0.93rem;
+      margin-bottom: 0.9rem;
+    }
+    .cta-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      align-items: center;
+    }
+    .cta-list {
+      margin: 0.65rem 0 1rem 1.15rem;
+      color: #cbd5e1;
+      font-size: 0.88rem;
+    }
+    .cta-list li { margin-bottom: 0.25rem; }
+    .fallback-note {
+      margin-top: 0.85rem;
+      font-size: 0.83rem;
+      color: var(--muted);
+    }
+    .fallback-note a { color: #7dd3fc; }
+    .info-section h2 {
+      font-size: 1.25rem;
+      margin-bottom: 0.9rem;
+      color: #fff;
+    }
+    .info-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 1rem;
+    }
+    .info-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.15rem;
+    }
+    .info-card h3 {
+      font-size: 0.98rem;
+      color: #f8fafc;
+      margin-bottom: 0.4rem;
+    }
+    .info-card p {
+      font-size: 0.88rem;
+      color: var(--muted);
+    }
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 1.75rem 1.25rem;
+      color: var(--muted);
+      font-size: 0.84rem;
+      text-align: center;
+    }
+    footer nav {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 1rem;
+      margin-bottom: 0.65rem;
+    }
+    footer a { color: #94a3b8; text-decoration: none; }
+    footer a:hover { color: var(--accent); }
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.86em;
+      color: #bae6fd;
+    }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="${escapeHtmlAttr(checkoutOrigin)}/tools/site-audit">SiteFix AI</a>
+      <nav class="topnav" aria-label="Owner diagnostic tools">
+        ${navLinksHtml}
+        <a href="${escapeHtmlAttr(checkoutOrigin)}/tools/site-audit">Full Site Audit</a>
+      </nav>
+    </div>
+  </div>
+
+  <main>
+    <section class="hero">
+      <div class="eyebrow">${escapeHtmlAttr(def.badge)}</div>
+      <h1>${escapeHtmlAttr(def.headline)}</h1>
+      <p class="lead">${escapeHtmlAttr(def.subheadline)}</p>
+      ${scopeNoticeHtml}
+    </section>
+
+    <section class="panel" aria-label="Website diagnostic form">
+      <form id="tool-scan-form">
+        <label class="field-label" for="site-url-input">Your public website URL (HTTPS)</label>
+        <div class="input-row">
+          <input
+            type="url"
+            id="site-url-input"
+            name="url"
+            placeholder="${escapeHtmlAttr(def.urlPlaceholder)}"
+            required
+            autocomplete="url"
+          >
+          <button type="submit" id="scan-submit-btn" class="btn-primary">${escapeHtmlAttr(def.ctaButtonText)}</button>
+        </div>
+        <label class="consent-row">
+          <input type="checkbox" id="confirm-authorized-checkbox" required>
+          <span>I confirm that I own this website or have explicit authorization to run a public read-only diagnostic check on this URL.</span>
+        </label>
+        <div id="scan-status-banner" class="status-banner" role="status" aria-live="polite"></div>
+      </form>
+    </section>
+
+    <section id="results-section" class="panel" aria-live="polite">
+      <div class="summary-strip">
+        <div class="score-box">
+          <div id="result-score" class="score-num">--</div>
+          <div>
+            <div id="result-url" style="font-weight:700;color:#fff;word-break:break-all;"></div>
+            <div id="result-meta" class="meta-note"></div>
+          </div>
+        </div>
+        <div id="result-cache-badge" class="meta-note"></div>
+      </div>
+
+      <div id="tool-specific-output"></div>
+
+      <h3 style="font-size:1.05rem;margin:1.25rem 0 0.75rem;color:#fff;">Observed Findings &amp; Plain-English Fixes</h3>
+      <div id="findings-list"></div>
+
+      <div id="snippet-preview-wrap" style="display:none;">
+        <h3 style="font-size:1rem;margin-top:1.1rem;color:#fff;">Fix-Pack Preview Snippet</h3>
+        <pre id="snippet-preview-code" class="code-preview"></pre>
+      </div>
+
+      <div class="cta-box" id="fixpack-cta-box">
+        <h2>Want the ready-to-paste fix files for this page? — ₹499 (SITEFIX_AI_PACK_V1)</h2>
+        <p>
+          Skip manual tag assembly. Unlock the complete copy-paste Fix-Pack generated directly from your live scan evidence (with explicit placeholders for any details not visible on your page — zero invented claims) plus 1 verification recheck after you deploy.
+        </p>
+        <ul class="cta-list">
+          <li>Copy-paste <code>&lt;head&gt;</code> metadata, Open Graph, and Twitter/X Card tags</li>
+          <li>Valid Schema.org JSON-LD template tailored to your detected markup</li>
+          <li><code>robots.txt</code> and <code>sitemap.xml</code> recommendations + deployment checklist</li>
+          <li>Includes 1 post-deployment verification recheck to confirm fixes live</li>
+        </ul>
+        <div class="cta-actions">
+          <a
+            id="primary-checkout-link"
+            class="btn-primary"
+            href="${escapeHtmlAttr(checkoutOrigin)}/tools/site-audit?source=${escapeHtmlAttr(def.source)}"
+          >Unlock ₹499 Copy-Paste Fix-Pack (SITEFIX_AI_PACK_V1)</a>
+          <a
+            id="hosted-fallback-link"
+            class="btn-secondary"
+            href="${escapeHtmlAttr(fallbackUrl || `${checkoutOrigin}/tools/site-audit?source=${def.source}#checkout`)}"
+            ${fallbackUrl ? 'target="_blank" rel="noopener noreferrer"' : ''}
+          >${fallbackUrl ? 'Razorpay Hosted Payment Link Fallback' : 'Open Full Audit & Checkout Page'}</a>
+        </div>
+        <div class="fallback-note" id="checkout-fallback-note">
+          If interactive API checkout is temporarily waking up or unavailable, you can complete the ₹499 <code>SITEFIX_AI_PACK_V1</code> purchase via our Razorpay Hosted Payment Link fallback or the full <a href="${escapeHtmlAttr(checkoutOrigin)}/tools/site-audit?source=${escapeHtmlAttr(def.source)}">SiteFix AI checkout page</a>.
+        </div>
+      </div>
+    </section>
+
+    <section class="info-section">
+      <h2>${escapeHtmlAttr(def.whyItMattersTitle)}</h2>
+      <div class="info-grid">
+        ${pointsHtml}
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <nav aria-label="Tool directory">
+      ${navLinksHtml}
+      <a href="${escapeHtmlAttr(checkoutOrigin)}/tools/site-audit">Full Website Audit</a>
+    </nav>
+    <p>SiteFix AI • Deterministic single-URL technical inspection. No ranking guarantees or invented metrics.</p>
+  </footer>
+
+  <script>
+    (function () {
+      var CFG = ${toolConfigJson};
+      var form = document.getElementById('tool-scan-form');
+      var urlInput = document.getElementById('site-url-input');
+      var consentBox = document.getElementById('confirm-authorized-checkbox');
+      var submitBtn = document.getElementById('scan-submit-btn');
+      var statusBanner = document.getElementById('scan-status-banner');
+      var resultsSection = document.getElementById('results-section');
+      var resultScore = document.getElementById('result-score');
+      var resultUrl = document.getElementById('result-url');
+      var resultMeta = document.getElementById('result-meta');
+      var resultCacheBadge = document.getElementById('result-cache-badge');
+      var toolSpecificOutput = document.getElementById('tool-specific-output');
+      var findingsList = document.getElementById('findings-list');
+      var snippetWrap = document.getElementById('snippet-preview-wrap');
+      var snippetCode = document.getElementById('snippet-preview-code');
+      var primaryCheckoutLink = document.getElementById('primary-checkout-link');
+      var hostedFallbackLink = document.getElementById('hosted-fallback-link');
+
+      function esc(str) {
+        return String(str == null ? '' : str)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      }
+
+      function setBanner(type, message) {
+        statusBanner.className = 'status-banner ' + type;
+        statusBanner.textContent = message;
+      }
+
+      function clearBanner() {
+        statusBanner.className = 'status-banner';
+        statusBanner.textContent = '';
+      }
+
+      try {
+        var qp = new URLSearchParams(window.location.search);
+        var presetUrl = qp.get('url');
+        if (presetUrl && /^https?:\\/\\//i.test(presetUrl)) {
+          urlInput.value = presetUrl;
+        }
+      } catch (e) {}
+
+      async function postPublicScanWithColdStartRetry(targetUrl) {
+        var endpoint = (CFG.apiBase || '') + '/api/v1/public/scan';
+        var payload = JSON.stringify({
+          url: targetUrl,
+          confirmAuthorized: true,
+          source: CFG.source
+        });
+
+        var maxAttempts = 2; // 1 initial attempt + 1 automatic retry if Render is waking up
+        var lastError = null;
+
+        for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+          if (attempt === 1) {
+            setBanner(
+              'info',
+              'Running live technical check… If our free diagnostic server was asleep (cold start), the first scan can take 15–25 seconds while it wakes up.'
+            );
+          } else {
+            setBanner(
+              'info',
+              'The free diagnostic server is waking up — retrying automatically (attempt 2 of 2)…'
+            );
+          }
+
+          var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+          var timer = controller ? setTimeout(function () { controller.abort(); }, 28000) : null;
+
+          try {
+            var response = await fetch(endpoint, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: payload,
+              signal: controller ? controller.signal : undefined
+            });
+            if (timer) clearTimeout(timer);
+
+            var data = await response.json().catch(function () { return null; });
+            if (response.ok && data && data.success) {
+              return data;
+            }
+
+            var isWakeupStatus = response.status === 502 || response.status === 503 || response.status === 504;
+            if (isWakeupStatus && attempt < maxAttempts) {
+              await new Promise(function (resolve) { setTimeout(resolve, 2500); });
+              continue;
+            }
+
+            var errMsg = (data && (data.error || data.message)) || ('Scan failed with HTTP ' + response.status);
+            throw new Error(errMsg);
+          } catch (err) {
+            if (timer) clearTimeout(timer);
+            lastError = err;
+            var isNetworkOrAbort =
+              err && (err.name === 'AbortError' || err.name === 'TypeError' || /network|fetch|timeout/i.test(String(err.message || '')));
+            if (isNetworkOrAbort && attempt < maxAttempts) {
+              await new Promise(function (resolve) { setTimeout(resolve, 2500); });
+              continue;
+            }
+            throw err;
+          }
+        }
+        throw lastError || new Error('Unable to reach diagnostic server.');
+      }
+
+      function renderStatusTag(ok, okText, failText, isWarn) {
+        if (ok) return '<span class="tag-ok">' + esc(okText) + '</span>';
+        return '<span class="' + (isWarn ? 'tag-warn' : 'tag-bad') + '">' + esc(failText) + '</span>';
+      }
+
+      function renderToolSpecific(audit) {
+        var diag = audit.diagnostics || {};
+        var preview = audit.preview || {};
+        var hostLabel = '';
+        try { hostLabel = new URL(audit.url).hostname; } catch (e) { hostLabel = audit.url || ''; }
+
+        if (CFG.slug === 'whatsapp-link-preview-checker') {
+          var og = diag.openGraph || {
+            ogTitle: preview.ogTitle || null,
+            ogDescription: preview.ogDescription || null,
+            ogImage: preview.ogImage || null,
+            ogImageIsHttps: Boolean(preview.ogImage && preview.ogImage.indexOf('https://') === 0),
+            ogImageWidth: preview.ogImageWidth || null,
+            ogImageHeight: preview.ogImageHeight || null,
+            whatsappReadinessStatus: (preview.ogTitle && preview.ogImage) ? 'NEEDS_ATTENTION' : 'INCOMPLETE',
+            whatsappCacheNotice: CFG.whatsappCacheNotice
+          };
+          var imgHtml = og.ogImage && og.ogImageIsHttps
+            ? '<img src="' + esc(og.ogImage) + '" alt="Observed Open Graph preview image">'
+            : '<span>No valid HTTPS og:image detected</span>';
+          var dimText = (og.ogImageWidth && og.ogImageHeight)
+            ? (og.ogImageWidth + ' × ' + og.ogImageHeight)
+            : 'Not declared in HTML';
+
+          return '' +
+            '<div class="preview-grid">' +
+              '<div class="social-card">' +
+                '<div class="social-card-head">Simulated WhatsApp Link Card (Based on Live HTML Tags)</div>' +
+                '<div class="social-card-img">' + imgHtml + '</div>' +
+                '<div class="social-card-body">' +
+                  '<div class="social-card-title">' + esc(og.ogTitle || preview.title || 'Missing og:title') + '</div>' +
+                  '<div class="social-card-desc">' + esc(og.ogDescription || preview.metaDescription || 'Missing og:description — WhatsApp may show no summary.') + '</div>' +
+                  '<div class="social-card-domain" style="margin-top:0.35rem;">' + esc(hostLabel) + '</div>' +
+                '</div>' +
+              '</div>' +
+              '<div class="social-card">' +
+                '<div class="social-card-head">WhatsApp Open Graph Readiness Checklist</div>' +
+                '<div class="social-card-body">' +
+                  '<table class="kv-table" style="margin-bottom:0;">' +
+                    '<tr><th>Tag</th><th>Status</th><th>Observed Value</th></tr>' +
+                    '<tr><td><code>og:title</code></td><td>' + renderStatusTag(Boolean(og.ogTitle), 'Present', 'Missing') + '</td><td>' + esc(og.ogTitle || '—') + '</td></tr>' +
+                    '<tr><td><code>og:description</code></td><td>' + renderStatusTag(Boolean(og.ogDescription), 'Present', 'Missing', true) + '</td><td>' + esc(og.ogDescription || '—') + '</td></tr>' +
+                    '<tr><td><code>og:image</code></td><td>' + renderStatusTag(Boolean(og.ogImage && og.ogImageIsHttps), 'HTTPS Ready', og.ogImage ? 'Non-HTTPS URL' : 'Missing') + '</td><td style="word-break:break-all;">' + esc(og.ogImage || '—') + '</td></tr>' +
+                    '<tr><td>Dimensions</td><td>' + renderStatusTag(Boolean(og.ogImageWidth && og.ogImageHeight), 'Declared', 'Not Set', true) + '</td><td>' + esc(dimText) + '</td></tr>' +
+                  '</table>' +
+                '</div>' +
+              '</div>' +
+            '</div>' +
+            '<div class="scope-notice" style="margin-top:0;margin-bottom:1rem;"><strong>Reminder:</strong> ' + esc(og.whatsappCacheNotice || CFG.whatsappCacheNotice) + '</div>';
+        }
+
+        if (CFG.slug === 'open-graph-checker') {
+          var og2 = diag.openGraph || {};
+          var tw = diag.twitterCard || {};
+          var ogImg = og2.ogImage || preview.ogImage || '';
+          var twImg = tw.twitterImage || ogImg || '';
+          return '' +
+            '<div class="preview-grid">' +
+              '<div class="social-card">' +
+                '<div class="social-card-head">Open Graph Share Card (LinkedIn / Facebook)</div>' +
+                '<div class="social-card-img">' + (ogImg && ogImg.indexOf('https://') === 0 ? '<img src="' + esc(ogImg) + '" alt="OG preview">' : '<span>No HTTPS og:image found</span>') + '</div>' +
+                '<div class="social-card-body">' +
+                  '<div class="social-card-domain">' + esc(hostLabel) + '</div>' +
+                  '<div class="social-card-title">' + esc(og2.ogTitle || preview.title || 'Missing og:title') + '</div>' +
+                  '<div class="social-card-desc">' + esc(og2.ogDescription || preview.metaDescription || 'Missing og:description') + '</div>' +
+                '</div>' +
+              '</div>' +
+              '<div class="social-card">' +
+                '<div class="social-card-head">Twitter / X Card (' + esc(tw.twitterCard || 'not declared') + ')</div>' +
+                '<div class="social-card-img">' + (twImg && twImg.indexOf('https://') === 0 ? '<img src="' + esc(twImg) + '" alt="Twitter card preview">' : '<span>No HTTPS twitter:image or og:image</span>') + '</div>' +
+                '<div class="social-card-body">' +
+                  '<div class="social-card-title">' + esc(tw.twitterTitle || og2.ogTitle || preview.title || 'Missing twitter:title') + '</div>' +
+                  '<div class="social-card-desc">' + esc(tw.twitterDescription || og2.ogDescription || preview.metaDescription || 'Missing twitter:description') + '</div>' +
+                  '<div class="social-card-domain" style="margin-top:0.35rem;">' + esc(hostLabel) + '</div>' +
+                '</div>' +
+              '</div>' +
+            '</div>' +
+            '<table class="kv-table">' +
+              '<tr><th>Tag</th><th>Status</th><th>Observed Value</th></tr>' +
+              '<tr><td><code>og:title</code></td><td>' + renderStatusTag(Boolean(og2.ogTitle), 'OK', 'Missing') + '</td><td>' + esc(og2.ogTitle || '—') + '</td></tr>' +
+              '<tr><td><code>og:description</code></td><td>' + renderStatusTag(Boolean(og2.ogDescription), 'OK', 'Missing', true) + '</td><td>' + esc(og2.ogDescription || '—') + '</td></tr>' +
+              '<tr><td><code>og:image</code></td><td>' + renderStatusTag(Boolean(og2.ogImage && og2.ogImageIsHttps), 'HTTPS OK', og2.ogImage ? 'Not HTTPS' : 'Missing') + '</td><td style="word-break:break-all;">' + esc(og2.ogImage || '—') + '</td></tr>' +
+              '<tr><td><code>og:url</code></td><td>' + renderStatusTag(Boolean(og2.ogUrl), 'OK', 'Missing', true) + '</td><td style="word-break:break-all;">' + esc(og2.ogUrl || '—') + '</td></tr>' +
+              '<tr><td><code>og:type</code></td><td>' + renderStatusTag(Boolean(og2.ogType), 'OK', 'Missing', true) + '</td><td>' + esc(og2.ogType || '—') + '</td></tr>' +
+              '<tr><td><code>twitter:card</code></td><td>' + renderStatusTag(Boolean(tw.twitterCard), 'OK', 'Missing', true) + '</td><td>' + esc(tw.twitterCard || '—') + '</td></tr>' +
+              '<tr><td><code>twitter:image</code></td><td>' + renderStatusTag(Boolean(tw.twitterImage), 'OK', 'Falls back to og:image', true) + '</td><td style="word-break:break-all;">' + esc(tw.twitterImage || '—') + '</td></tr>' +
+            '</table>';
+        }
+
+        if (CFG.slug === 'robots-and-sitemap-validator') {
+          var rs = diag.robotsAndSitemap || {
+            metaRobotsNoindex: false,
+            metaRobotsContent: null,
+            robotsTxtUrl: '',
+            robotsTxtStatus: null,
+            robotsTxtFound: Boolean(audit.metrics && audit.metrics.hasRobotsTxt),
+            robotsTxtDisallowsAll: false,
+            robotsTxtDirectives: [],
+            sitemapUrlsDeclared: [],
+            sitemapCheckedUrl: null,
+            sitemapReachable: Boolean(audit.metrics && audit.metrics.hasSitemap),
+            sitemapHttpStatus: null
+          };
+          var dirPreview = rs.robotsTxtDirectives && rs.robotsTxtDirectives.length > 0
+            ? '<pre class="code-preview">' + esc(rs.robotsTxtDirectives.join('\\n')) + '</pre>'
+            : '<p class="meta-note" style="margin-bottom:1rem;">No active directives observed in /robots.txt.</p>';
+          return '' +
+            '<table class="kv-table">' +
+              '<tr><th>Indexing Check</th><th>Status</th><th>Observed Evidence</th></tr>' +
+              '<tr><td>Page <code>meta robots</code></td><td>' + renderStatusTag(!rs.metaRobotsNoindex, 'Indexable', 'BLOCKED (noindex)') + '</td><td>' + esc(rs.metaRobotsContent || 'No noindex directive found') + '</td></tr>' +
+              '<tr><td><code>/robots.txt</code> file</td><td>' + renderStatusTag(rs.robotsTxtFound, 'HTTP ' + (rs.robotsTxtStatus || 200), 'Not Found / Unreachable', true) + '</td><td style="word-break:break-all;">' + esc(rs.robotsTxtUrl || '/robots.txt') + '</td></tr>' +
+              '<tr><td>Site-wide <code>Disallow: /</code></td><td>' + renderStatusTag(!rs.robotsTxtDisallowsAll, 'Not Blocked', 'CRITICAL BLOCK') + '</td><td>' + (rs.robotsTxtDisallowsAll ? 'robots.txt blocks crawlers from the entire site' : 'No site-wide disallow block detected') + '</td></tr>' +
+              '<tr><td>XML Sitemap Reachability</td><td>' + renderStatusTag(rs.sitemapReachable, 'Reachable (HTTP ' + (rs.sitemapHttpStatus || 200) + ')', 'Unreachable / Missing', true) + '</td><td style="word-break:break-all;">' + esc(rs.sitemapCheckedUrl || '/sitemap.xml') + '</td></tr>' +
+            '</table>' +
+            '<h3 style="font-size:0.98rem;margin-bottom:0.45rem;color:#fff;">Observed robots.txt Directives</h3>' +
+            dirPreview;
+        }
+
+        if (CFG.slug === 'json-ld-tester') {
+          var jld = diag.jsonLd || {
+            blockCount: 0,
+            validBlockCount: 0,
+            invalidBlockCount: 0,
+            typesFound: (audit.metrics && audit.metrics.jsonLdTypesFound) || [],
+            blocks: []
+          };
+          var rowsHtml = '';
+          if (!jld.blocks || jld.blocks.length === 0) {
+            rowsHtml = '<tr><td colspan="4" class="tag-bad">No &lt;script type="application/ld+json"&gt; blocks were found in the HTML.</td></tr>';
+          } else {
+            rowsHtml = jld.blocks.map(function (b) {
+              var missingHtml = (b.missingRecommendedFields && b.missingRecommendedFields.length > 0)
+                ? b.missingRecommendedFields.map(function (m) {
+                    return '<div><code>' + esc(m.type + '.' + m.field) + '</code> — ' + esc(m.reason) + '</div>';
+                  }).join('')
+                : '<span class="tag-ok">All checked fields present</span>';
+              return '<tr>' +
+                '<td>#' + esc(b.blockIndex) + '</td>' +
+                '<td>' + renderStatusTag(b.validSyntax, 'Valid JSON', 'Syntax Error') + (b.syntaxError ? '<div class="meta-note">' + esc(b.syntaxError) + '</div>' : '') + '</td>' +
+                '<td>' + esc((b.types && b.types.length > 0) ? b.types.join(', ') : 'None detected') + '</td>' +
+                '<td>' + (b.validSyntax ? missingHtml : '<span class="tag-bad">Fix JSON syntax first</span>') + '</td>' +
+              '</tr>';
+            }).join('');
+          }
+          return '' +
+            '<table class="kv-table">' +
+              '<tr><th>Block</th><th>JSON Syntax</th><th>Detected @type</th><th>Organization / WebSite / Product Field Check</th></tr>' +
+              rowsHtml +
+            '</table>';
+        }
+
+        return '';
+      }
+
+      function filterFindingsForTool(allFindings) {
+        if (!Array.isArray(allFindings)) return [];
+        var priorityMap = {
+          'whatsapp-link-preview-checker': ['og_', 'meta_title', 'meta_desc'],
+          'open-graph-checker': ['og_', 'twitter_', 'meta_title', 'meta_desc', 'canonical'],
+          'robots-and-sitemap-validator': ['robots_', 'sitemap_', 'canonical'],
+          'json-ld-tester': ['schema_']
+        };
+        var prefixes = priorityMap[CFG.slug] || [];
+        var primary = allFindings.filter(function (f) {
+          return prefixes.some(function (p) { return String(f.id || '').indexOf(p) === 0; });
+        });
+        var rest = allFindings.filter(function (f) {
+          return primary.indexOf(f) === -1 && (f.status === 'ISSUE' || f.status === 'WARNING');
+        });
+        return primary.concat(rest);
+      }
+
+      form.addEventListener('submit', async function (event) {
+        event.preventDefault();
+        var rawUrl = (urlInput.value || '').trim();
+        if (!rawUrl) {
+          setBanner('error', 'Please enter a public https:// website URL.');
+          return;
+        }
+        if (!consentBox.checked) {
+          setBanner('error', 'Please confirm you own or are authorized to inspect this website.');
+          return;
+        }
+
+        submitBtn.disabled = true;
+        resultsSection.style.display = 'none';
+
+        try {
+          var data = await postPublicScanWithColdStartRetry(rawUrl);
+          clearBanner();
+
+          var audit = data.result || {};
+          resultScore.textContent = String(audit.score != null ? audit.score : '--') + '/100';
+          resultUrl.textContent = audit.url || rawUrl;
+          resultMeta.textContent =
+            'HTTP ' + (audit.metrics ? audit.metrics.httpStatus : 200) +
+            ' • ' + (audit.metrics ? audit.metrics.responseTimeMs : 0) + ' ms' +
+            ' • Status: ' + (audit.overallStatus || 'COMPLETED');
+          resultCacheBadge.textContent = data.cached
+            ? 'Served from 24-hour scan cache'
+            : 'Fresh live scan (cached for 24h)';
+
+          toolSpecificOutput.innerHTML = renderToolSpecific(audit);
+
+          var relevantFindings = filterFindingsForTool(audit.findings);
+          if (relevantFindings.length === 0) {
+            findingsList.innerHTML = '<div class="finding PASS"><div class="finding-top"><span>No blocking issues found</span><span class="tag-ok">PASS</span></div></div>';
+          } else {
+            findingsList.innerHTML = relevantFindings.map(function (f) {
+              return '' +
+                '<div class="finding ' + esc(f.status) + '">' +
+                  '<div class="finding-top">' +
+                    '<span>' + esc(f.title) + '</span>' +
+                    '<span>' + esc(f.status) + ' • ' + esc(f.severity) + '</span>' +
+                  '</div>' +
+                  '<div class="finding-ev"><strong>Observed:</strong> ' + esc(f.evidence) + '</div>' +
+                  '<div class="finding-fix"><strong>Plain-English fix:</strong> ' + esc(f.recommendation || f.explanation) + '</div>' +
+                '</div>';
+            }).join('');
+          }
+
+          var previewSnippet = (data.fixPackPreview && data.fixPackPreview.snippetPreview) ||
+            (audit.preview && audit.preview.fixPackSnippetPreview) || '';
+          if (previewSnippet) {
+            snippetCode.textContent = previewSnippet;
+            snippetWrap.style.display = 'block';
+          } else {
+            snippetWrap.style.display = 'none';
+          }
+
+          var checkoutUrl = data.checkoutUrl ||
+            (CFG.checkoutOrigin + '/tools/site-audit?url=' + encodeURIComponent(audit.url || rawUrl) + '&source=' + encodeURIComponent(CFG.source));
+          primaryCheckoutLink.href = checkoutUrl;
+
+          var hostedFallback = data.razorpayHostedFallbackUrl || CFG.razorpayFallbackUrl;
+          if (hostedFallback) {
+            hostedFallbackLink.href = hostedFallback;
+            hostedFallbackLink.textContent = 'Razorpay Hosted Payment Link Fallback (₹499)';
+            hostedFallbackLink.setAttribute('target', '_blank');
+            hostedFallbackLink.setAttribute('rel', 'noopener noreferrer');
+          } else {
+            hostedFallbackLink.href = checkoutUrl + '#checkout';
+            hostedFallbackLink.textContent = 'Open Full Audit & Checkout Page';
+          }
+
+          resultsSection.style.display = 'block';
+          resultsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        } catch (err) {
+          setBanner(
+            'error',
+            'Diagnostic check could not complete: ' + (err && err.message ? err.message : 'Unknown error') +
+              '. If the site blocks automated requests or the URL is unreachable, verify it loads publicly over HTTPS.'
+          );
+        } finally {
+          submitBtn.disabled = false;
+        }
+      });
+    })();
+  </script>
+</body>
+</html>`;
+}
