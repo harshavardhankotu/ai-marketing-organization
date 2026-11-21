@@ -1058,7 +1058,7 @@ describe('Stage K: Pre-Deploy Security Lockdown, Fair-Price Integrity, Amazon Du
       'instagram_business_basic',
       'instagram_business_manage_messages',
       'instagram_business_manage_comments',
-      'instagram_business_content_publishing'
+      'instagram_business_content_publish'
     ]);
 
     // 2. Access denied query safely fails without 500 (including trailing-slash & popup HTML postMessage)

@@ -647,7 +647,7 @@ describe('Stage P.3.4 — First-Sale Recovery & Production Integrity: Transactio
 
     expect(order.amountPaise).toBe(49900);
     expect(order.amountINR).toBe(499);
-    expect(order.sku).toBe('sitefix_core_499');
+    expect(order.sku).toBe('SITEFIX_AI_PACK_V1');
 
     const payId = `pay_test_${Date.now()}`;
     const sig = createHmac('sha256', adapter.getKeySecret())

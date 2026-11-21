@@ -70,7 +70,7 @@ describe('Stage P.3 — Revenue Integrity, D1 Ledger Durability, Slug Collision 
       const core = adapter.resolveAuthoritativePrice('sitefix_core_499');
       expect(core.amountINR).toBe(499);
       expect(core.amountPaise).toBe(49900);
-      expect(core.canonicalSku).toBe('sitefix_core_499');
+      expect(core.canonicalSku).toBe('SITEFIX_AI_PACK_V1');
 
       const coreWithMatch = adapter.resolveAuthoritativePrice('sitefix_core_499', 499);
       expect(coreWithMatch.amountINR).toBe(499);

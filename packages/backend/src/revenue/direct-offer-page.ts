@@ -832,6 +832,17 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <style>
       <p style="margin-top: 0.35rem;">Technical overview page • Not an offer to contract until terms are owner-attested. • <a href="/privacy" style="color: var(--text-muted); text-decoration: underline;">Privacy Policy</a> • <a href="/tools/site-audit" style="color: var(--text-muted); text-decoration: underline;">SiteFix Audit</a> • <a href="/deals" style="color: var(--text-muted); text-decoration: underline;">Deals</a> • <a href="/revenue" style="color: var(--text-muted); text-decoration: underline;">Revenue Funnel</a></p>
     </footer>
   </div>
+  <script>
+    (function() {
+      try {
+        fetch('/api/v1/referrals/beacon', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: '/offer', referrer: document.referrer || '' })
+        }).catch(function() {});
+      } catch (e) {}
+    })();
+  </script>
 </body>
 </html>`;
   }

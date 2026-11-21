@@ -61,10 +61,10 @@ runs:
         REPORT_FILE="$(mktemp)"
         set +e
         if [ "$INPUT_FAIL_ON_CRITICAL" = "true" ]; then
-          node "$CLI_ENTRY" "$INPUT_URL" --confirm-authorized --api-url "$INPUT_API_URL" --json --fail-on-critical "${SUMMARY_FLAG[@]}" > "$REPORT_FILE"
+          node "$CLI_ENTRY" "$INPUT_URL" --confirm-authorized --source action --api-url "$INPUT_API_URL" --json --fail-on-critical "${SUMMARY_FLAG[@]}" > "$REPORT_FILE"
           EXIT_CODE=$?
         else
-          node "$CLI_ENTRY" "$INPUT_URL" --confirm-authorized --api-url "$INPUT_API_URL" --json "${SUMMARY_FLAG[@]}" > "$REPORT_FILE"
+          node "$CLI_ENTRY" "$INPUT_URL" --confirm-authorized --source action --api-url "$INPUT_API_URL" --json "${SUMMARY_FLAG[@]}" > "$REPORT_FILE"
           EXIT_CODE=$?
         fi
         set -e

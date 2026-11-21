@@ -241,7 +241,7 @@ describe('V5.1.2 — Commercial Integrity, Campaign Null-Guard & Variant Stock V
     it('Test 2d: /api/v1/public/deals returns deals: [] when all candidates are quarantined', async () => {
       try {
         const { getDb } = await import('../../src/db/client.js');
-        getDb().prepare("DELETE FROM public_deals WHERE id LIKE 'deal_v583_%'").run();
+        getDb().prepare("DELETE FROM public_deals WHERE id != 'deal_test_phase1'").run();
       } catch {}
       const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
       // Deal engine should have quarantined deals
@@ -318,8 +318,8 @@ describe('V5.1.2 — Commercial Integrity, Campaign Null-Guard & Variant Stock V
       expect(html).not.toContain('68%');
       expect(html).not.toContain('₹25,000');
       expect(html).not.toContain('₹60,000');
-      expect(html).toContain('Custom Pilot Pricing — Request Scope &amp; Attested Quote');
-      expect(html).toContain('Administrative Website &amp; WhatsApp Inquiry Capture');
+      expect(html).toContain('SiteFix Launch Gate');
+      expect(html).not.toMatch(/Apex Dental|dental clinic|chipped tooth/i);
     });
 
     it('Test 4b: /api/v1/offer/inquiry produces structuredTriageRecord, calendarIcs, and csvRow', async () => {

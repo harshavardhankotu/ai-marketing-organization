@@ -8,9 +8,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 export const DEFAULT_SITEFIX_API_URL = 'https://ai-marketing-organization.onrender.com';
+export function normalizeSource(raw, fallback = 'cli') {
+    const clean = String(raw || '').trim().toLowerCase();
+    if (clean === 'cli' || clean === 'action' || clean === 'web' || clean === 'mcp') {
+        return clean;
+    }
+    return fallback;
+}
 export function parseCliArgs(argv, env = process.env) {
     let url = null;
     let apiUrl = (env.SITEFIX_API_URL || DEFAULT_SITEFIX_API_URL).replace(/\/+$/, '');
+    let source = normalizeSource(env.SITEFIX_SOURCE, 'cli');
     let confirmAuthorized = String(env.SITEFIX_CONFIRM_AUTHORIZED || '').trim().toLowerCase() === 'true';
     let failOnCritical = false;
     let json = false;
@@ -33,6 +41,12 @@ export function parseCliArgs(argv, env = process.env) {
         else if (arg === '--json') {
             json = true;
         }
+        else if (arg === '--source' && argv[i + 1]) {
+            source = normalizeSource(argv[++i], 'cli');
+        }
+        else if (arg.startsWith('--source=')) {
+            source = normalizeSource(arg.slice('--source='.length), 'cli');
+        }
         else if (arg === '--api-url' && argv[i + 1]) {
             apiUrl = argv[++i].trim().replace(/\/+$/, '');
         }
@@ -49,11 +63,11 @@ export function parseCliArgs(argv, env = process.env) {
             url = arg.trim();
         }
     }
-    return { url, apiUrl, confirmAuthorized, failOnCritical, json, summaryFile, help };
+    return { url, apiUrl, source, confirmAuthorized, failOnCritical, json, summaryFile, help };
 }
-export function buildCheckoutUrl(targetUrl, apiUrl = DEFAULT_SITEFIX_API_URL) {
+export function buildCheckoutUrl(targetUrl, apiUrl = DEFAULT_SITEFIX_API_URL, source = 'cli') {
     const base = apiUrl.replace(/\/+$/, '');
-    return `${base}/tools/site-audit?url=${encodeURIComponent(targetUrl)}`;
+    return `${base}/tools/site-audit?url=${encodeURIComponent(targetUrl)}&source=${encodeURIComponent(source)}`;
 }
 export function getCheckId(findingId) {
     const clean = String(findingId || '').trim();
@@ -76,11 +90,11 @@ function padCell(value, width) {
         return clean.padEnd(width, ' ');
     return clean.slice(0, Math.max(1, width - 1)) + '…';
 }
-export function formatAuditTable(result, apiUrl = DEFAULT_SITEFIX_API_URL) {
+export function formatAuditTable(result, apiUrl = DEFAULT_SITEFIX_API_URL, source = 'cli') {
     const findings = Array.isArray(result.findings) ? result.findings : [];
     const criticalCount = countCriticalDefects(findings);
     const failedCount = countFailedChecks(findings);
-    const checkoutUrl = buildCheckoutUrl(result.url, apiUrl);
+    const checkoutUrl = buildCheckoutUrl(result.url, apiUrl, source);
     const lines = [];
     lines.push('');
     lines.push('SiteFix Launch Gate — Pre-Deployment Website QA');
@@ -105,11 +119,11 @@ export function formatAuditTable(result, apiUrl = DEFAULT_SITEFIX_API_URL) {
     lines.push('');
     return lines.join('\n');
 }
-export function formatMarkdownSummary(result, apiUrl = DEFAULT_SITEFIX_API_URL) {
+export function formatMarkdownSummary(result, apiUrl = DEFAULT_SITEFIX_API_URL, source = 'cli') {
     const findings = Array.isArray(result.findings) ? result.findings : [];
     const criticalCount = countCriticalDefects(findings);
     const failedCount = countFailedChecks(findings);
-    const checkoutUrl = buildCheckoutUrl(result.url, apiUrl);
+    const checkoutUrl = buildCheckoutUrl(result.url, apiUrl, source);
     const statusBadge = criticalCount > 0 ? 'FAIL (Critical Defects Found)' : failedCount > 0 ? 'WARN (Non-Critical Issues)' : 'PASS';
     const escapeMd = (v) => String(v || '').replace(/\|/g, '\\|').replace(/\r?\n/g, ' ').trim();
     const rows = findings.map(f => `| ${escapeMd(f.status)} | ${escapeMd(f.severity)} | \`${escapeMd(getCheckId(f.id))}\` | ${escapeMd(f.title)} | ${escapeMd(f.evidence || '')} |`);
@@ -137,12 +151,13 @@ export async function runSitefixCheck(argv, fetchImpl = fetch, env = process.env
     const parsed = parseCliArgs(argv, env);
     if (parsed.help || !parsed.url) {
         const usage = [
-            'Usage: npx sitefix-check <url> --confirm-authorized [--fail-on-critical] [--api-url <url>] [--json] [--summary-file <path>]',
+            'Usage: npx sitefix-check <url> --confirm-authorized [--source cli|action|web|mcp] [--fail-on-critical] [--api-url <url>] [--json] [--summary-file <path>]',
             '',
             'Required:',
             '  --confirm-authorized Confirm you own or are authorized to audit the target URL (or set SITEFIX_CONFIRM_AUTHORIZED=true)',
             '',
             'Options:',
+            '  --source <src>       Attribution source: cli | action | web | mcp (default: cli)',
             '  --fail-on-critical   Exit with code 1 if any CRITICAL defect is detected',
             `  --api-url <url>      Override API base URL (default: ${DEFAULT_SITEFIX_API_URL})`,
             '  --json               Print structured JSON report to stdout',
@@ -177,12 +192,14 @@ export async function runSitefixCheck(argv, fetchImpl = fetch, env = process.env
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'User-Agent': 'sitefix-check-cli/1.0.0'
+                'User-Agent': parsed.source === 'action' ? 'sitefix-launch-gate-action/1.0.0' : 'sitefix-check-cli/1.0.0',
+                'X-SiteFix-Source': parsed.source
             },
             body: JSON.stringify({
                 url: normalizedUrl,
                 websiteType: 'DEVELOPER_LAUNCH_QA',
-                userConfirmedOwnership: parsed.confirmAuthorized
+                userConfirmedOwnership: parsed.confirmAuthorized,
+                source: parsed.source
             })
         });
     }
@@ -209,15 +226,16 @@ export async function runSitefixCheck(argv, fetchImpl = fetch, env = process.env
     const audit = payload.result;
     const criticalCount = countCriticalDefects(audit.findings);
     const failedChecks = countFailedChecks(audit.findings);
-    const checkoutUrl = buildCheckoutUrl(audit.url || normalizedUrl, parsed.apiUrl);
+    const checkoutUrl = buildCheckoutUrl(audit.url || normalizedUrl, parsed.apiUrl, parsed.source);
     if (parsed.summaryFile) {
-        const md = formatMarkdownSummary(audit, parsed.apiUrl);
+        const md = formatMarkdownSummary(audit, parsed.apiUrl, parsed.source);
         fs.appendFileSync(parsed.summaryFile, md, 'utf8');
     }
     const stdout = parsed.json
         ? JSON.stringify({
             auditId: audit.auditId,
             url: audit.url,
+            source: parsed.source,
             score: audit.score,
             overallStatus: audit.overallStatus,
             failedChecks,
@@ -226,7 +244,7 @@ export async function runSitefixCheck(argv, fetchImpl = fetch, env = process.env
             checkoutUrl,
             findings: audit.findings.map(f => ({ ...f, checkId: getCheckId(f.id) }))
         }, null, 2) + '\n'
-        : formatAuditTable(audit, parsed.apiUrl);
+        : formatAuditTable(audit, parsed.apiUrl, parsed.source);
     const exitCode = parsed.failOnCritical && criticalCount > 0 ? 1 : 0;
     return {
         exitCode,

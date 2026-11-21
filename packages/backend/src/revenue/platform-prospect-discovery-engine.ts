@@ -865,7 +865,7 @@ export class PlatformProspectDiscoveryEngine {
       ]
     };
 
-    const candidates = fixtureMap[vertical] || fixtureMap.dental;
+    const candidates = fixtureMap[vertical] || fixtureMap.salon;
     return candidates.slice(0, limit);
   }
 
@@ -1188,9 +1188,8 @@ export class PlatformProspectDiscoveryEngine {
   }
 
   public async pickNextTargetVerticalAsync(): Promise<'clinic' | 'dental' | 'salon' | 'coaching' | 'real_estate' | 'professional_services'> {
-    const verticals: Array<'clinic' | 'dental' | 'salon' | 'coaching' | 'real_estate' | 'professional_services'> = [
-      'dental',
-      'clinic',
+    // Standing Order 8: strictly exclude healthcare/dental/clinic verticals from default SMB discovery rotation
+    const verticals: Array<'salon' | 'coaching' | 'real_estate' | 'professional_services'> = [
       'salon',
       'coaching',
       'real_estate',
@@ -1263,9 +1262,8 @@ export class PlatformProspectDiscoveryEngine {
   }
 
   public pickNextTargetVertical(): 'clinic' | 'dental' | 'salon' | 'coaching' | 'real_estate' | 'professional_services' {
-    const verticals: Array<'clinic' | 'dental' | 'salon' | 'coaching' | 'real_estate' | 'professional_services'> = [
-      'dental',
-      'clinic',
+    // Standing Order 8: strictly exclude healthcare/dental/clinic verticals from default SMB discovery rotation
+    const verticals: Array<'salon' | 'coaching' | 'real_estate' | 'professional_services'> = [
       'salon',
       'coaching',
       'real_estate',

@@ -144,7 +144,7 @@ describe('Stage P.3.1 — Production Integrity Closure, Atomic D1 Reservations, 
       const core = adapter.resolveAuthoritativePrice('sitefix_core_499');
       expect(core.amountINR).toBe(499);
       expect(core.amountPaise).toBe(49900);
-      expect(core.canonicalSku).toBe('sitefix_core_499');
+      expect(core.canonicalSku).toBe('SITEFIX_AI_PACK_V1');
 
       const competitor = adapter.resolveAuthoritativePrice('sitefix_competitor_keyword_pack');
       expect(competitor.amountINR).toBe(1999);

@@ -44,7 +44,8 @@ describe('SiteFix Launch Gate — Part 1 Security/Payment/Ledger + Part 2 Pull I
       'DIRECT_OFFER_TERMS_SHA256',
       'OWN_OFFER_CONFIRMED',
       'OWNER_UPI_VPA',
-      'RAZORPAY_WEBHOOK_SECRET'
+      'RAZORPAY_WEBHOOK_SECRET',
+      'PUBLIC_MCP_ENABLED'
     ]) {
       savedEnv[key] = process.env[key];
       delete process.env[key];
@@ -478,8 +479,57 @@ describe('SiteFix Launch Gate — Part 1 Security/Payment/Ledger + Part 2 Pull I
   // =========================================================================
   // PART 2 — THREE PULL INTERFACES (CLI, GITHUB ACTION, ISOLATED PUBLIC MCP)
   // =========================================================================
-  describe('8. Isolated Public MCP (/api/v1/public/mcp), /.well-known/mcp.json & server.json', () => {
-    it('exposes ONLY the 3 safe SiteFix tools on POST /api/v1/public/mcp and rejects owner tools with -32601', async () => {
+  describe('8. Isolated Public MCP (/api/v1/public/mcp), PUBLIC_MCP_ENABLED Guard, /.well-known/mcp.json & server.json', () => {
+    it('fails closed by default (PUBLIC_MCP_ENABLED unset/false) with HTTP 503, JSON-RPC -32000, enabled: false manifest, and keeps owner /api/v1/mcp 401-gated', async () => {
+      delete process.env.PUBLIC_MCP_ENABLED;
+
+      const listDisabledRes = await app.request('/api/v1/public/mcp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' })
+      });
+      expect(listDisabledRes.status).toBe(503);
+      const listDisabledJson = await listDisabledRes.json() as any;
+      expect(listDisabledJson.error.code).toBe(-32000);
+      expect(listDisabledJson.error.message).toContain('PUBLIC_MCP_DISABLED');
+
+      process.env.PUBLIC_MCP_ENABLED = 'false';
+      const callDisabledRes = await app.request('/api/v1/public/mcp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 2,
+          method: 'tools/call',
+          params: { name: 'sitefix_check_url', arguments: { url: 'https://example.com', confirmAuthorized: true } }
+        })
+      });
+      expect(callDisabledRes.status).toBe(503);
+      const callDisabledJson = await callDisabledRes.json() as any;
+      expect(callDisabledJson.error.code).toBe(-32000);
+      expect(callDisabledJson.error.message).toContain('PUBLIC_MCP_DISABLED');
+
+      const wkDisabledRes = await app.request('/.well-known/mcp.json');
+      expect(wkDisabledRes.status).toBe(200);
+      const wkDisabled = await wkDisabledRes.json() as any;
+      expect(wkDisabled.enabled).toBe(false);
+      expect(wkDisabled.status).toBe('DISABLED');
+      expect(wkDisabled.remotes).toEqual([]);
+      expect(wkDisabled.tools).toEqual([]);
+      expect(wkDisabled.authentication.type).toBe('disabled');
+
+      // Owner /api/v1/mcp stays strictly auth-gated (401 unauthenticated)
+      const ownerMcpRes = await app.request('/api/v1/mcp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/list' })
+      });
+      expect(ownerMcpRes.status).toBe(401);
+    });
+
+    it('when PUBLIC_MCP_ENABLED=true exposes ONLY the 3 safe SiteFix tools on POST /api/v1/public/mcp and rejects owner tools with -32601', async () => {
+      process.env.PUBLIC_MCP_ENABLED = 'true';
+
       const listRes = await app.request('/api/v1/public/mcp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -552,10 +602,13 @@ describe('SiteFix Launch Gate — Part 1 Security/Payment/Ledger + Part 2 Pull I
       expect(ownerMcpRes.status).toBe(401);
     });
 
-    it('serves /.well-known/mcp.json and schema-valid root server.json with GitHub-verifiable namespace and remotes', async () => {
+    it('when PUBLIC_MCP_ENABLED=true serves /.well-known/mcp.json (enabled: true) and schema-valid root server.json with GitHub-verifiable namespace and remotes', async () => {
+      process.env.PUBLIC_MCP_ENABLED = 'true';
+
       const wellKnownRes = await app.request('/.well-known/mcp.json');
       expect(wellKnownRes.status).toBe(200);
       const wk = await wellKnownRes.json() as any;
+      expect(wk.enabled).toBe(true);
       expect(wk.name).toBe('io.github.harshavardhankotu/sitefix-launch-gate');
       expect(wk.remotes[0].url).toContain('/api/v1/public/mcp');
       expect(wk.transport.url).toContain('/api/v1/public/mcp');
@@ -626,7 +679,7 @@ describe('SiteFix Launch Gate — Part 1 Security/Payment/Ledger + Part 2 Pull I
       expect(resUnauth.stderr).toContain(AUTHORIZATION_REQUIRED_MESSAGE);
       expect(fetchCallCount).toBe(0);
 
-      // 2. With --confirm-authorized and --fail-on-critical -> calls API and exits 1 on CRITICAL defect
+      // 2. With --confirm-authorized and --fail-on-critical -> calls API with default source='cli' and exits 1 on CRITICAL defect
       const resFail = await runSitefixCheck(
         ['https://launch-demo.dev', '--confirm-authorized', '--fail-on-critical'],
         fakeFetch,
@@ -634,19 +687,32 @@ describe('SiteFix Launch Gate — Part 1 Security/Payment/Ledger + Part 2 Pull I
       );
       expect(fetchCallCount).toBe(1);
       expect(lastRequestBody?.userConfirmedOwnership).toBe(true);
+      expect(lastRequestBody?.source).toBe('cli');
       expect(resFail.exitCode).toBe(1);
       expect(resFail.criticalCount).toBe(1);
       expect(resFail.stdout).toContain('check_schema_jsonld_syntax_error_1');
       expect(resFail.stdout).toContain(
-        'https://ai-marketing-organization.onrender.com/tools/site-audit?url=https%3A%2F%2Flaunch-demo.dev'
+        'https://ai-marketing-organization.onrender.com/tools/site-audit?url=https%3A%2F%2Flaunch-demo.dev&source=cli'
       );
 
-      // 3. Env fallback SITEFIX_CONFIRM_AUTHORIZED=true succeeds cleanly without --fail-on-critical
+      // 3. Explicit --source action overrides default cli attribution
+      const resAction = await runSitefixCheck(
+        ['https://launch-demo.dev', '--confirm-authorized', '--source', 'action', '--json'],
+        fakeFetch,
+        {}
+      );
+      expect(resAction.exitCode).toBe(0);
+      expect(lastRequestBody?.source).toBe('action');
+      const parsedActionJson = JSON.parse(resAction.stdout);
+      expect(parsedActionJson.source).toBe('action');
+      expect(parsedActionJson.checkoutUrl).toContain('&source=action');
+
+      // 4. Env fallback SITEFIX_CONFIRM_AUTHORIZED=true succeeds cleanly without --fail-on-critical
       const resPass = await runSitefixCheck(['https://launch-demo.dev'], fakeFetch, {
         SITEFIX_CONFIRM_AUTHORIZED: 'true'
       });
       expect(resPass.exitCode).toBe(0);
-      expect(fetchCallCount).toBe(2);
+      expect(fetchCallCount).toBe(3);
 
       const table = formatAuditTable(mockAudit);
       expect(table).toContain('SITEFIX_AI_PACK_V1');
@@ -655,7 +721,7 @@ describe('SiteFix Launch Gate — Part 1 Security/Payment/Ledger + Part 2 Pull I
       expect(md).toContain('check_schema_jsonld_syntax_error_1');
     });
 
-    it('root action.yml requires confirm-authorized and invokes prebuilt action-dist/cli.mjs with zero runtime npm build', () => {
+    it('root action.yml requires confirm-authorized, passes --source action, and invokes prebuilt action-dist/cli.mjs with zero runtime npm build', () => {
       const actionYml = fs.readFileSync(path.join(REPO_ROOT, 'action.yml'), 'utf8');
       expect(actionYml).toContain("name: 'SiteFix Launch Gate — Pre-Deployment Website QA'");
       expect(actionYml).toContain('url:');
@@ -666,6 +732,7 @@ describe('SiteFix Launch Gate — Part 1 Security/Payment/Ledger + Part 2 Pull I
       expect(actionYml).toContain('GITHUB_STEP_SUMMARY');
       expect(actionYml).toContain('action-dist/cli.mjs');
       expect(actionYml).toContain('--confirm-authorized');
+      expect(actionYml).toContain('--source action');
       expect(actionYml).not.toContain('npm --prefix');
     });
 
@@ -752,6 +819,78 @@ describe('SiteFix Launch Gate — Part 1 Security/Payment/Ledger + Part 2 Pull I
         server.close();
         fs.rmSync(isolatedDir, { recursive: true, force: true });
       }
+    });
+  });
+
+  // =========================================================================
+  // PART 3 — SOURCE ATTRIBUTION ('cli' | 'action' | 'web' | 'mcp') & PROBE EXCLUSION
+  // =========================================================================
+  describe('10. Source Attribution (cli/action/web/mcp) & X-Diagnostic-Probe / CI UA Exclusion on /api/v1/owner/today', () => {
+    it('persists explicit source across preview_open and checkout_start and excludes X-Diagnostic-Probe and CI UAs from /api/v1/owner/today', async () => {
+      const db = getDb();
+      db.prepare(`DELETE FROM durable_events WHERE event_type = 'SITEFIX_FUNNEL_EVENT'`).run();
+
+      // 1. Genuine external web preview open (?source=cli from CLI checkout link)
+      const extPreviewRes = await app.request('/tools/site-audit?url=https%3A%2F%2Fexternal-user.dev&source=cli', {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36' }
+      });
+      expect(extPreviewRes.status).toBe(200);
+
+      // 2. Genuine external checkout_start from action source
+      process.env.RAZORPAY_TEST_KEY_ID = 'rzp_test_attr_001';
+      process.env.RAZORPAY_TEST_KEY_SECRET = 'rzp_test_attr_secret';
+      const extOrderRes = await app.request('/api/v1/payments/razorpay/create-order', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        },
+        body: JSON.stringify({
+          sku: 'SITEFIX_AI_PACK_V1',
+          domainOrUrl: 'external-user.dev',
+          buyerEmail: 'founder@external-user.dev',
+          source: 'action'
+        })
+      });
+      expect(extOrderRes.status).toBe(200);
+      const extOrderJson = await extOrderRes.json() as any;
+      expect(extOrderJson.source).toBe('action');
+
+      // 3. Diagnostic probe request (X-Diagnostic-Probe: true) MUST be excluded from external counts
+      const probeRes = await app.request('/tools/site-audit?url=https%3A%2F%2Fprobe-check.dev&source=web', {
+        headers: {
+          'User-Agent': 'Mozilla/5.0',
+          'X-Diagnostic-Probe': 'true'
+        }
+      });
+      expect(probeRes.status).toBe(200);
+
+      // 4. Repository CI User-Agent MUST be excluded from external counts
+      const ciRes = await app.request('/tools/site-audit?url=https%3A%2F%2Fci-smoke.dev&source=action', {
+        headers: {
+          'User-Agent': 'GitHub-Actions/sitefix-ci-probe'
+        }
+      });
+      expect(ciRes.status).toBe(200);
+
+      // 5. Verify /api/v1/owner/today aggregates external events by source and excludes probes/CI
+      const ownerSession = OwnerAuthService.getInstance().createSession('127.0.0.1');
+      const todayRes = await app.request('/api/v1/owner/today', {
+        headers: { Authorization: `Bearer ${ownerSession.token}` }
+      });
+      expect(todayRes.status).toBe(200);
+      const todayJson = await todayRes.json() as any;
+      const attr = todayJson.data?.sitefixFunnelAttribution;
+      expect(attr).toBeDefined();
+      expect(attr.totals.preview_open).toBe(1);
+      expect(attr.bySource.cli.preview_open).toBe(1);
+      expect(attr.totals.checkout_start).toBe(1);
+      expect(attr.bySource.action.checkout_start).toBe(1);
+      expect(attr.bySource.web.preview_open).toBe(0);
+      expect(attr.excludedProbesCount).toBe(2);
+
+      // Clean up test events
+      db.prepare(`DELETE FROM durable_events WHERE event_type = 'SITEFIX_FUNNEL_EVENT'`).run();
     });
   });
 });

@@ -29,6 +29,11 @@ import {
   OutreachAutopilotHealth
 } from '../automation/autonomous-system-doctor.js';
 import { isValidReachableEmail } from '../tools/site-audit/site-audit-scanner.js';
+import {
+  getSiteFixFunnelAttributionSummarySync,
+  getSiteFixFunnelAttributionSummaryAsync,
+  type SiteFixFunnelAttributionSummary
+} from '../tools/site-audit/sitefix-funnel-attribution.js';
 
 export interface OwnerDigestMetrics {
   visits: number | 'UNKNOWN';
@@ -232,6 +237,7 @@ export interface OwnerTodayDigest {
   }>;
   autopilotStatus?: OutreachAutopilotHealth;
   arosControlCenter?: ArosControlCenterSummary;
+  sitefixFunnelAttribution?: SiteFixFunnelAttributionSummary;
 }
 
 export class OwnerDigestService {
@@ -620,6 +626,7 @@ export class OwnerDigestService {
     );
 
     const autopilotStatus = AutonomousSystemDoctor.getInstance().getOutreachAutopilotHealth();
+    const sitefixFunnelAttribution = getSiteFixFunnelAttributionSummarySync();
 
     return {
       date: todayStr,
@@ -634,7 +641,8 @@ export class OwnerDigestService {
       inquiries,
       topPainPoints,
       yesterdayMetrics: { visits, clicks, leads, payments },
-      nextAction
+      nextAction,
+      sitefixFunnelAttribution
     };
   }
 
@@ -1625,6 +1633,7 @@ export class OwnerDigestService {
     ]);
     const topHighTriggerProspects = this.scoreAndRankProspectAudits(prodAudits, prodProspects, prodContacts, 5);
     const autopilotStatus = AutonomousSystemDoctor.getInstance().getOutreachAutopilotHealth();
+    const sitefixFunnelAttribution = await getSiteFixFunnelAttributionSummaryAsync(this.d1Repo);
 
     return {
       date: todayStr,
@@ -1641,7 +1650,8 @@ export class OwnerDigestService {
       yesterdayMetrics: { visits, clicks, leads, payments },
       nextAction,
       escalations,
-      arosControlCenter
+      arosControlCenter,
+      sitefixFunnelAttribution
     };
   }
 

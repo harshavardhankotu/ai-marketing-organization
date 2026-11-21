@@ -42,16 +42,22 @@ describe('Owner Attestation Gate & Offer Truth (mst_p1_agent_set_owner_attestati
     delete process.env.OWN_OFFER_CONFIRMED;
     const html = DirectCommercialOfferPage.getInstance().renderOfferHtml();
 
-    // Must show Problem and short description and inquiry form
-    expect(html).toContain('The Problem');
-    expect(html.toLowerCase()).toContain('falling through the cracks');
-    expect(html).toContain('lead-inquiry-form');
+    // Must render non-payable SiteFix technical overview with owner-attestation notice
+    expect(html).toContain('Configuration Pending Owner Attestation');
+    expect(html).toContain('noindex, nofollow');
+    expect(html).toContain('SiteFix Launch Gate');
+    expect(html).toContain('Technical Scope (Non-Payable Overview)');
+    expect(html).toContain('/tools/site-audit');
 
-    // Must hide pricing, guarantees, deliverable checklist, and payment rails
+    // Must hide pricing, guarantees, payment links, and legacy healthcare/lead-gen copy
     expect(html).not.toContain('₹15,000');
+    expect(html).not.toContain('₹8,000');
+    expect(html).not.toContain('₹499');
     expect(html).not.toContain('14-Day Performance Guarantee');
     expect(html).not.toContain('What The System Delivers');
     expect(html).not.toContain('razorpay.me');
+    expect(html).not.toContain('upi://pay');
+    expect(html).not.toMatch(/dental|clinic|patient/i);
   });
 
   it('4. GET /api/v1/owner/facts-status returns attestation notice and validates OWN_OFFER_CONFIRMED', async () => {

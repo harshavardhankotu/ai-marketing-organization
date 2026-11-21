@@ -174,8 +174,23 @@ app.all('/workflows/first-customer', async (c) => {
 app.get('/tools/site-audit', async (c) => {
   const { renderSiteAuditPage } = await import('./tools/site-audit/site-audit-page.js');
   const { ExperimentEngine, STOREFRONT_SITEFIX_CTA_EXP_ID } = await import('./experiments/experiment-engine.js');
+  const {
+    normalizeSiteFixSource,
+    classifySiteFixProbe,
+    recordSiteFixFunnelEvent
+  } = await import('./tools/site-audit/sitefix-funnel-attribution.js');
   const visitorKey = c.req.header('x-forwarded-for') || c.req.header('user-agent') || 'site-audit';
   const assignment = ExperimentEngine.assignStorefrontVariant(STOREFRONT_SITEFIX_CTA_EXP_ID, visitorKey);
+  const source = normalizeSiteFixSource(c.req.query('source') || c.req.header('x-sitefix-source'), 'web');
+  const probe = classifySiteFixProbe(c);
+  await recordSiteFixFunnelEvent({
+    stage: 'preview_open',
+    source,
+    isProbe: probe.isProbe,
+    probeReason: probe.probeReason,
+    url: c.req.query('url') || '/tools/site-audit',
+    userAgent: probe.userAgent
+  });
   return c.html(renderSiteAuditPage(assignment));
 });
 app.get('/tools/financial-radar', async (c) => {
@@ -208,14 +223,38 @@ app.get('/capabilities', async (c) => {
   }));
 });
 
-// Official Public MCP Discovery Manifest (strictly isolated to SiteFix Launch Gate tools)
+// Official Public MCP Discovery Manifest (strictly isolated to SiteFix Launch Gate tools; off by default unless PUBLIC_MCP_ENABLED=true)
 app.get('/.well-known/mcp.json', (c) => {
   const siteUrl = getTrustedPublicSiteUrl();
+  const publicMcpEnabled = process.env.PUBLIC_MCP_ENABLED === 'true';
+
+  if (!publicMcpEnabled) {
+    return c.json({
+      schemaVersion: '1.0',
+      name: 'io.github.harshavardhankotu/sitefix-launch-gate',
+      title: 'SiteFix Launch Gate — Pre-Deployment Website QA MCP',
+      version: '1.0.0',
+      enabled: false,
+      status: 'DISABLED',
+      description: 'Public unauthenticated MCP execution is disabled by default (PUBLIC_MCP_ENABLED=false).',
+      notice: 'Set PUBLIC_MCP_ENABLED=true on the server to enable unauthenticated Streamable HTTP MCP execution.',
+      remotes: [],
+      transport: null,
+      authentication: {
+        required: false,
+        type: 'disabled'
+      },
+      tools: []
+    });
+  }
+
   return c.json({
     schemaVersion: '1.0',
     name: 'io.github.harshavardhankotu/sitefix-launch-gate',
     title: 'SiteFix Launch Gate — Pre-Deployment Website QA MCP',
     version: '1.0.0',
+    enabled: true,
+    status: 'ENABLED',
     description: 'Strictly isolated, unauthenticated Streamable HTTP MCP server for deterministic website launch QA (HTML metadata, Open Graph, Schema.org JSON-LD, robots.txt, sitemap.xml). Requires explicit confirmAuthorized: true on URL scans. Returns zero PII.',
     remotes: [
       {

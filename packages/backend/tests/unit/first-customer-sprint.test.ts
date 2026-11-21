@@ -206,19 +206,18 @@ describe('First Real Customer Sprint — Commercial Feasibility & Measurement In
   });
 
   describe('3. Offer Landing Page & Inquiry Intake Integration', () => {
-    it('renders interactive lead intake form on GET /offer when unattested', async () => {
+    it('renders non-payable SiteFix technical overview with beacon on GET /offer when unattested', async () => {
       const res = await app.request('/offer');
       expect(res.status).toBe(200);
       const html = await res.text();
 
-      // Form elements present
-      expect(html).toContain('Request Lead Triage Demonstration');
-      expect(html).toContain('id="lead-inquiry-form"');
-      expect(html).toContain('id="cust-name"');
-      expect(html).toContain('id="cust-phone"');
-      expect(html).toContain('id="cust-service"');
-      expect(html).toContain('/api/v1/offer/inquiry');
+      expect(html).toContain('Configuration Pending Owner Attestation');
+      expect(html).toContain('SiteFix Launch Gate');
+      expect(html).toContain('Technical Scope (Non-Payable Overview)');
+      expect(html).toContain('/tools/site-audit');
       expect(html).toContain('/api/v1/referrals/beacon');
+      expect(html).not.toContain('upi://pay');
+      expect(html).not.toContain('₹15,000');
     });
 
     it('records inquiry from offer page via POST /api/v1/offer/inquiry into sales pipeline', async () => {

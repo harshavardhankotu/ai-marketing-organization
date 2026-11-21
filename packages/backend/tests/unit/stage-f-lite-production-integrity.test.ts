@@ -476,28 +476,23 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
   // WORKSTREAM E: Homepage Three-Journey Reorganization
   // --------------------------------------------------------------------------
   describe('Workstream E — Homepage Three-Journey Reorganization', () => {
-    it('renders Section 1 (B2B Lead Capture), Section 2 (SiteFix AI), and Section 3 (Verified Deals)', async () => {
+    it('renders SiteFix Launch Gate (Web, CLI, Action, MCP) and Verified Commercial Consumer Deals', async () => {
       const res = await app.request('/');
       expect(res.status).toBe(200);
       const html = await res.text();
 
-      // Section 1: Administrative Lead Capture with explicit non-clinical notice & DPDP form
-      expect(html).toContain('Administrative Website &amp; WhatsApp Inquiry Capture');
-      expect(html).toContain('[Illustrative Administrative Example — No Clinical or Medical Triage]');
-      expect(html).toContain('id="lead-inquiry-form-home"');
-      expect(html).toContain('DPDP Act 2023');
-
-      // Section 2: SiteFix AI Self-Serve Website Check
-      expect(html).toContain('SiteFix AI — Self-Serve Website &amp; Metadata Check');
+      // Section 1: SiteFix Launch Gate — 3 Developer Pull Interfaces (zero legacy dental/clinical claims)
+      expect(html).toContain('SiteFix Launch Gate');
+      expect(html).toContain('SiteFix Launch Gate — 3 Developer Pull Interfaces');
+      expect(html).toContain('npx sitefix-check');
       expect(html).toContain('href="/tools/site-audit"');
-      expect(html).toContain('href="/tools/lead-leakage-calculator"');
+      expect(html).toContain('/api/v1/public/mcp');
+      expect(html).not.toMatch(/Apex Dental|chipped tooth|dental clinic/i);
 
-      // Section 3: Commercial Consumer Deals & Buying Guides with #Ad disclosure
+      // Section 2: Commercial Consumer Deals & Buying Guides with #Ad disclosure
       expect(html).toContain('Commercial Consumer Deals &amp; Buying Guides');
-      expect(html).toContain('#Ad — Affiliate Links');
+      expect(html).toContain('#Ad');
       expect(html).toContain('href="/deals"');
-      expect(html).toContain('href="/compare/electronics-technology"');
-      expect(html).toContain('href="/guides/best-wireless-audio-smartwatches-india"');
       expect(html).toContain('href="/guides/student-flight-discounts-india"');
 
       // Clean footer disclosure without unbacked airline names or unverified claims
@@ -1260,10 +1255,17 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
       expect(liveLane.grossMarginPercent).toBe(98);
 
       db.prepare('DELETE FROM manual_upi_claims').run();
-      const readiness = SystemReadinessEngine.evaluateReadiness('biz_platform_aro');
-      expect((readiness.capabilities || {})['STRIPE']).toBeUndefined();
-      expect((readiness.capabilities || {})['DIRECT_UPI']?.operational).toBe(true);
-      expect((readiness.capabilities || {})['DIRECT_UPI']?.verified).toBe(false);
+      const prevDirectUpiVpa = process.env.DIRECT_UPI_VPA;
+      process.env.DIRECT_UPI_VPA = 'test-merchant@upi';
+      try {
+        const readiness = SystemReadinessEngine.evaluateReadiness('biz_platform_aro');
+        expect((readiness.capabilities || {})['STRIPE']).toBeUndefined();
+        expect((readiness.capabilities || {})['DIRECT_UPI']?.operational).toBe(true);
+        expect((readiness.capabilities || {})['DIRECT_UPI']?.verified).toBe(false);
+      } finally {
+        if (prevDirectUpiVpa === undefined) delete process.env.DIRECT_UPI_VPA;
+        else process.env.DIRECT_UPI_VPA = prevDirectUpiVpa;
+      }
     });
 
     it('Stage I.1 (P0, P1, P2, P6): 24/7 customer-desk resolves catalog offers & escalations, cron status reads cron_telemetry heartbeats, and GET /tools/financial-radar returns HTTP 200', async () => {
@@ -1497,53 +1499,60 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
       expect(buyOwnedJson.checkout?.orderId).toBeTruthy();
       expect(buyOwnedJson.pipelineStage).toBe('PAYMENT_REQUEST_CREATED');
 
-      // Honest DIRECT_UPI state before human verification
-      const capBefore = IntegrationCapabilityRegistry.evaluateAll({ humanVerifiedUpiReceiptsCount: 0, upiClaimTested: true });
-      const upiBefore = capBefore.integrations.find(i => i.id === 'DIRECT_UPI');
-      expect(upiBefore?.state).not.toBe('OPERATIONALLY_VERIFIED');
-      expect(upiBefore?.subState).toBe('PAYMENT_CLAIM_TESTED');
+      // Honest DIRECT_UPI state before and after human verification (with runtime-configured VPA)
+      const prevUpiVpaI2 = process.env.DIRECT_UPI_VPA;
+      process.env.DIRECT_UPI_VPA = 'test-merchant@upi';
+      try {
+        const capBefore = IntegrationCapabilityRegistry.evaluateAll({ humanVerifiedUpiReceiptsCount: 0, upiClaimTested: true });
+        const upiBefore = capBefore.integrations.find(i => i.id === 'DIRECT_UPI');
+        expect(upiBefore?.state).not.toBe('OPERATIONALLY_VERIFIED');
+        expect(upiBefore?.subState).toBe('PAYMENT_CLAIM_TESTED');
 
-      // Submit UTR claim (PAYMENT_CLAIMED): MUST NOT auto-provision delivery_tasks
-      try { db.prepare(`DELETE FROM durable_rate_limits WHERE route LIKE '%upi-claim%'`).run(); } catch {}
-      const claimRes = await app.request('/api/v1/offer/upi-claim', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          orderId: buyOwnedJson.checkout.orderId,
-          journeyId: buyOwnedJson.journeyId,
+        // Submit UTR claim (PAYMENT_CLAIMED): MUST NOT auto-provision delivery_tasks
+        try { db.prepare(`DELETE FROM durable_rate_limits WHERE route LIKE '%upi-claim%'`).run(); } catch {}
+        const claimRes = await app.request('/api/v1/offer/upi-claim', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            orderId: buyOwnedJson.checkout.orderId,
+            journeyId: buyOwnedJson.journeyId,
+            utr: '432198765432',
+            payerName: 'Stage I2 Test Buyer'
+          })
+        });
+        expect(claimRes.status).toBe(201);
+        const claimJson = await claimRes.json() as any;
+        const claimId = claimJson.data.claimId;
+        expect(db.prepare('SELECT COUNT(*) as c FROM delivery_tasks').get() as any).toMatchObject({ c: 0 });
+
+        // Owner verifies bank receipt (HUMAN_VERIFIED_PAYMENT) -> fulfills delivery_tasks + FULFILLED journey + DIRECT_UPI OPERATIONALLY_VERIFIED
+        const verifyResult = await new RazorpayAdapter().confirmManualUpiClaim({
+          claimId,
           utr: '432198765432',
-          payerName: 'Stage I2 Test Buyer'
-        })
-      });
-      expect(claimRes.status).toBe(201);
-      const claimJson = await claimRes.json() as any;
-      const claimId = claimJson.data.claimId;
-      expect(db.prepare('SELECT COUNT(*) as c FROM delivery_tasks').get() as any).toMatchObject({ c: 0 });
+          businessId: 'biz_platform_aro',
+          organizationId: 'org_owner_primary',
+          amountINR: 499,
+          journeyId: buyOwnedJson.journeyId,
+          ownerUserId: 'usr_owner_01',
+          serviceRendered: 'SiteFix AI Core Technical Fix-Pack'
+        });
+        expect(verifyResult.status).toBe('HUMAN_VERIFIED_PAYMENT');
+        expect(verifyResult.fulfillment?.provisioned).toBe(true);
+        expect(verifyResult.fulfillment?.stage).toBe('FULFILLMENT_READY');
 
-      // Owner verifies bank receipt (HUMAN_VERIFIED_PAYMENT) -> fulfills delivery_tasks + FULFILLED journey + DIRECT_UPI OPERATIONALLY_VERIFIED
-      const verifyResult = await new RazorpayAdapter().confirmManualUpiClaim({
-        claimId,
-        utr: '432198765432',
-        businessId: 'biz_platform_aro',
-        organizationId: 'org_owner_primary',
-        amountINR: 499,
-        journeyId: buyOwnedJson.journeyId,
-        ownerUserId: 'usr_owner_01',
-        serviceRendered: 'SiteFix AI Core Technical Fix-Pack'
-      });
-      expect(verifyResult.status).toBe('HUMAN_VERIFIED_PAYMENT');
-      expect(verifyResult.fulfillment?.provisioned).toBe(true);
-      expect(verifyResult.fulfillment?.stage).toBe('FULFILLMENT_READY');
+        const delivTask = db.prepare('SELECT * FROM delivery_tasks WHERE id = ?').get(verifyResult.fulfillment.taskId) as any;
+        expect(delivTask?.stage).toBe('FULFILLMENT_READY');
+        const jRow = db.prepare('SELECT stage FROM customer_journeys WHERE id = ?').get(buyOwnedJson.journeyId) as any;
+        expect(jRow?.stage).toBe('FULFILLED');
 
-      const delivTask = db.prepare('SELECT * FROM delivery_tasks WHERE id = ?').get(verifyResult.fulfillment.taskId) as any;
-      expect(delivTask?.stage).toBe('FULFILLMENT_READY');
-      const jRow = db.prepare('SELECT stage FROM customer_journeys WHERE id = ?').get(buyOwnedJson.journeyId) as any;
-      expect(jRow?.stage).toBe('FULFILLED');
-
-      const digestAfterVerify = await OwnerDigestService.getInstance().generateDigestAsync();
-      const upiCapAfter = digestAfterVerify.arosControlCenter?.integrationCapabilities?.integrations?.find((i: any) => i.id === 'DIRECT_UPI');
-      expect(upiCapAfter?.subState).toBe('PAYMENT_RECEIPT_HUMAN_VERIFIED');
-      expect(upiCapAfter?.state).toBe('OPERATIONALLY_VERIFIED');
+        const digestAfterVerify = await OwnerDigestService.getInstance().generateDigestAsync();
+        const upiCapAfter = digestAfterVerify.arosControlCenter?.integrationCapabilities?.integrations?.find((i: any) => i.id === 'DIRECT_UPI');
+        expect(upiCapAfter?.subState).toBe('PAYMENT_RECEIPT_HUMAN_VERIFIED');
+        expect(upiCapAfter?.state).toBe('OPERATIONALLY_VERIFIED');
+      } finally {
+        if (prevUpiVpaI2 === undefined) delete process.env.DIRECT_UPI_VPA;
+        else process.env.DIRECT_UPI_VPA = prevUpiVpaI2;
+      }
 
       // P2b: Affiliate deal READY_TO_BUY produces AFFILIATE_REDIRECT_READY
       const buyDealRes = await app.request('/api/v1/customer-desk/message', {

@@ -3282,13 +3282,37 @@ apiRouter.post('/payments/razorpay/create-order', async (c) => {
     }
     try {
       const { RazorpayStandardAdapter } = await import('../payments/razorpay-adapter.js');
+      const {
+        normalizeSiteFixSource,
+        classifySiteFixProbe,
+        recordSiteFixFunnelEvent
+      } = await import('../tools/site-audit/sitefix-funnel-attribution.js');
+      const source = normalizeSiteFixSource(
+        body.source || body.notes?.source || c.req.query('source') || c.req.header('x-sitefix-source'),
+        'web'
+      );
+      const probe = classifySiteFixProbe(c);
+      const mergedNotes = {
+        ...(body.notes && typeof body.notes === 'object' ? body.notes : {}),
+        source
+      };
       const order = await RazorpayStandardAdapter.getInstance().createStandardOrder({
         sku: body.sku,
         domainOrUrl: rawDomain,
         buyerEmail: rawEmail,
         customerName: body.customerName,
         amountINR: body.amountINR,
-        notes: body.notes
+        notes: mergedNotes
+      });
+      await recordSiteFixFunnelEvent({
+        stage: 'checkout_start',
+        source,
+        isProbe: probe.isProbe,
+        probeReason: probe.probeReason,
+        auditId: mergedNotes.auditId || null,
+        orderId: order.orderId,
+        url: rawDomain,
+        userAgent: probe.userAgent
       });
       return c.json({
         success: true,
@@ -3298,6 +3322,7 @@ apiRouter.post('/payments/razorpay/create-order', async (c) => {
         amount: order.amount,
         currency: order.currency,
         isTestMode: order.isTestMode,
+        source,
         data: order
       }, 200);
     } catch (stdErr: any) {
@@ -3465,6 +3490,11 @@ apiRouter.post('/payments/razorpay/verify', async (c) => {
 
   try {
     const { RazorpayStandardAdapter } = await import('../payments/razorpay-adapter.js');
+    const {
+      normalizeSiteFixSource,
+      classifySiteFixProbe,
+      recordSiteFixFunnelEvent
+    } = await import('../tools/site-audit/sitefix-funnel-attribution.js');
     const result = await RazorpayStandardAdapter.getInstance().verifyPaymentAndFulfill({
       orderId,
       razorpay_order_id: razorpayOrderId,
@@ -3472,6 +3502,33 @@ apiRouter.post('/payments/razorpay/verify', async (c) => {
       razorpay_signature: razorpaySignature,
       method
     });
+    const probe = classifySiteFixProbe(c);
+    const source = normalizeSiteFixSource(
+      body.source || c.req.query('source') || c.req.header('x-sitefix-source') || (result as any)?.source,
+      'web'
+    );
+    await recordSiteFixFunnelEvent({
+      stage: 'capture',
+      source,
+      isProbe: probe.isProbe,
+      probeReason: probe.probeReason,
+      auditId: (result as any)?.auditId || null,
+      orderId,
+      paymentId: razorpayPaymentId,
+      userAgent: probe.userAgent
+    });
+    if ((result as any)?.downloadToken || (result as any)?.downloadUrl || (result as any)?.delivered) {
+      await recordSiteFixFunnelEvent({
+        stage: 'delivery',
+        source,
+        isProbe: probe.isProbe,
+        probeReason: probe.probeReason,
+        auditId: (result as any)?.auditId || null,
+        orderId,
+        paymentId: razorpayPaymentId,
+        userAgent: probe.userAgent
+      });
+    }
     return c.json({ data: result, ...result });
   } catch (stdErr: any) {
     if (stdErr.message?.includes('ORDER_NOT_FOUND_IN_D1')) {
@@ -5778,6 +5835,29 @@ const handleOfferUpiClaim = async (c: any) => {
         amountINR: authCtx.amountINR,
         proposalId: authCtx.invoiceRef,
         isTest: isTestClaim
+      });
+    } catch {}
+
+    try {
+      const {
+        normalizeSiteFixSource,
+        classifySiteFixProbe,
+        recordSiteFixFunnelEvent
+      } = await import('../tools/site-audit/sitefix-funnel-attribution.js');
+      const source = normalizeSiteFixSource(
+        body.source || c.req.query('source') || c.req.header('x-sitefix-source'),
+        'web'
+      );
+      const probe = classifySiteFixProbe(c);
+      await recordSiteFixFunnelEvent({
+        stage: 'checkout_start',
+        source,
+        isProbe: probe.isProbe,
+        probeReason: probe.probeReason,
+        auditId: body.auditId || null,
+        orderId: universalOrderId,
+        url: domainOrUrl,
+        userAgent: probe.userAgent
       });
     } catch {}
 
@@ -13845,6 +13925,21 @@ apiRouter.post('/api/v1/tools/lead-leakage-audit/submit', handleLeakageSubmissio
  */
 apiRouter.get('/tools/site-audit', async (c) => {
   const { renderSiteAuditPage } = await import('../tools/site-audit/site-audit-page.js');
+  const {
+    normalizeSiteFixSource,
+    classifySiteFixProbe,
+    recordSiteFixFunnelEvent
+  } = await import('../tools/site-audit/sitefix-funnel-attribution.js');
+  const source = normalizeSiteFixSource(c.req.query('source') || c.req.header('x-sitefix-source'), 'web');
+  const probe = classifySiteFixProbe(c);
+  await recordSiteFixFunnelEvent({
+    stage: 'preview_open',
+    source,
+    isProbe: probe.isProbe,
+    probeReason: probe.probeReason,
+    url: c.req.query('url') || '/tools/site-audit',
+    userAgent: probe.userAgent
+  });
   return c.html(renderSiteAuditPage());
 });
 
@@ -13854,10 +13949,20 @@ apiRouter.get('/tools/site-audit', async (c) => {
 const handleSiteAuditScan = async (c: any) => {
   const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
   const { SecureFetchError } = await import('../tools/site-audit/secure-url-fetcher.js');
+  const {
+    normalizeSiteFixSource,
+    classifySiteFixProbe,
+    recordSiteFixFunnelEvent
+  } = await import('../tools/site-audit/sitefix-funnel-attribution.js');
   const clientIp = getTrustedClientIp(c).ip;
 
   const body = await c.req.json().catch(() => ({}));
   const rawUrl = typeof body.url === 'string' ? body.url.trim() : '';
+  const source = normalizeSiteFixSource(
+    body.source || c.req.query('source') || c.req.header('x-sitefix-source'),
+    'web'
+  );
+  const probe = classifySiteFixProbe(c);
 
   if (!rawUrl) {
     return c.json({ success: false, error: 'MISSING_URL: Please provide a public website URL to audit.' }, 400);
@@ -13890,17 +13995,28 @@ const handleSiteAuditScan = async (c: any) => {
       userConfirmedOwnership: true
     });
 
+    await recordSiteFixFunnelEvent({
+      stage: 'scan',
+      source,
+      isProbe: probe.isProbe,
+      probeReason: probe.probeReason,
+      auditId: result.auditId,
+      url: result.url || rawUrl,
+      userAgent: probe.userAgent
+    });
+
     try {
       const { CommercialLearningEngine } = await import('../commission/commercial-learning-engine.js');
       CommercialLearningEngine.getInstance().recordCommercialEvent('SECTOR_H_LOCAL_SERVICES_B2B', {
         eventId: `scan_${result.auditId}`,
         eventType: 'SITEFIX_COMPLETED_SCAN',
-        isDiagnostic: false
+        isDiagnostic: probe.isProbe
       });
     } catch {}
 
     return c.json({
       success: true,
+      source,
       eventDriven: { mode: 'INSTANT_SYNC', processedImmediately: true },
       result
     });
@@ -14389,6 +14505,17 @@ const handleSiteAuditCheckout = async (c: any) => {
     }, 503);
   }
 
+  const {
+    normalizeSiteFixSource,
+    classifySiteFixProbe,
+    recordSiteFixFunnelEvent
+  } = await import('../tools/site-audit/sitefix-funnel-attribution.js');
+  const source = normalizeSiteFixSource(
+    body.source || c.req.query('source') || c.req.header('x-sitefix-source'),
+    'web'
+  );
+  const probe = classifySiteFixProbe(c);
+
   const notesJson = JSON.stringify({
     auditId,
     sku,
@@ -14397,7 +14524,8 @@ const handleSiteAuditCheckout = async (c: any) => {
     amountINR,
     currency: 'INR',
     mode: checkoutMode,
-    sandbox: isLive ? false : true
+    sandbox: isLive ? false : true,
+    source
   });
 
   const { D1RevenueRepository } = await import('../db/d1-revenue-repository.js');
@@ -14477,8 +14605,19 @@ const handleSiteAuditCheckout = async (c: any) => {
     }
   } catch {}
 
+  await recordSiteFixFunnelEvent({
+    stage: 'checkout_start',
+    source,
+    isProbe: probe.isProbe,
+    probeReason: probe.probeReason,
+    auditId,
+    orderId,
+    userAgent: probe.userAgent
+  });
+
   return c.json({
     success: true,
+    source,
     orderId,
     paymentLink,
     createdViaRazorpayApi,
@@ -14704,6 +14843,34 @@ const handleSiteAuditVerifyPayment = async (c: any) => {
   // 7. Generate delivery entitlement only after capture is proven
   const downloadToken = service.generateDeliveryToken(orderId, auditId, paymentId, 72);
   const downloadUrl = `/api/v1/tools/site-audit/${auditId}/deliverable?token=${downloadToken}`;
+
+  try {
+    const {
+      normalizeSiteFixSource,
+      classifySiteFixProbe,
+      recordSiteFixFunnelEvent
+    } = await import('../tools/site-audit/sitefix-funnel-attribution.js');
+    const probe = classifySiteFixProbe(c);
+    let storedSource: unknown = undefined;
+    try {
+      const parsedNotes = storedOrder?.notes_json ? JSON.parse(storedOrder.notes_json) : null;
+      storedSource = parsedNotes?.source;
+    } catch {}
+    const source = normalizeSiteFixSource(
+      body.source || c.req.query('source') || c.req.header('x-sitefix-source') || storedSource,
+      'web'
+    );
+    await recordSiteFixFunnelEvent({
+      stage: 'capture',
+      source,
+      isProbe: probe.isProbe,
+      probeReason: probe.probeReason,
+      auditId,
+      orderId,
+      paymentId,
+      userAgent: probe.userAgent
+    });
+  } catch {}
 
   return c.json({
     success: true,
@@ -15103,6 +15270,27 @@ const handleSiteAuditDeliverable = async (c: any) => {
 
   try {
     const deliverable = await service.generateDeliverable(auditId, verification.orderId);
+    try {
+      const {
+        normalizeSiteFixSource,
+        classifySiteFixProbe,
+        recordSiteFixFunnelEvent
+      } = await import('../tools/site-audit/sitefix-funnel-attribution.js');
+      const probe = classifySiteFixProbe(c);
+      const source = normalizeSiteFixSource(
+        c.req.query('source') || c.req.header('x-sitefix-source'),
+        'web'
+      );
+      await recordSiteFixFunnelEvent({
+        stage: 'delivery',
+        source,
+        isProbe: probe.isProbe,
+        probeReason: probe.probeReason,
+        auditId,
+        orderId: verification.orderId || null,
+        userAgent: probe.userAgent
+      });
+    } catch {}
     return c.json({ success: true, deliverable });
   } catch (err: any) {
     return c.json({ success: false, error: err.message }, 404);
@@ -15130,6 +15318,27 @@ const handleOfferDownload = async (c: any) => {
 
   try {
     const deliverable = await service.generateDeliverable(verification.auditId, verification.orderId);
+    try {
+      const {
+        normalizeSiteFixSource,
+        classifySiteFixProbe,
+        recordSiteFixFunnelEvent
+      } = await import('../tools/site-audit/sitefix-funnel-attribution.js');
+      const probe = classifySiteFixProbe(c);
+      const source = normalizeSiteFixSource(
+        c.req.query('source') || c.req.header('x-sitefix-source'),
+        'web'
+      );
+      await recordSiteFixFunnelEvent({
+        stage: 'delivery',
+        source,
+        isProbe: probe.isProbe,
+        probeReason: probe.probeReason,
+        auditId: verification.auditId,
+        orderId: verification.orderId || null,
+        userAgent: probe.userAgent
+      });
+    } catch {}
     const format = c.req.query('format') || '';
     const acceptHeader = c.req.header('accept') || '';
 
@@ -16610,11 +16819,21 @@ function sanitizePublicSitefixAudit(audit: any, siteUrl: string) {
     },
     disclosures: audit.disclosures,
     canonicalSku: 'SITEFIX_AI_PACK_V1',
-    checkoutUrl: `${siteUrl}/tools/site-audit?url=${encodeURIComponent(targetUrl)}`
+    checkoutUrl: `${siteUrl}/tools/site-audit?url=${encodeURIComponent(targetUrl)}&source=mcp`
   };
 }
 
 apiRouter.get('/public/mcp', (c) => {
+  if (process.env.PUBLIC_MCP_ENABLED !== 'true') {
+    return c.json({
+      jsonrpc: '2.0',
+      id: null,
+      error: {
+        code: -32000,
+        message: 'PUBLIC_MCP_DISABLED: Public MCP server is disabled by default. Set PUBLIC_MCP_ENABLED=true to enable.'
+      }
+    }, 503);
+  }
   c.header('Allow', 'POST');
   return c.json({
     jsonrpc: '2.0',
@@ -16624,6 +16843,18 @@ apiRouter.get('/public/mcp', (c) => {
 });
 
 apiRouter.post('/public/mcp', async (c) => {
+  // Off-by-default guard: fail closed with HTTP 503 / JSON-RPC -32000 unless PUBLIC_MCP_ENABLED=true
+  if (process.env.PUBLIC_MCP_ENABLED !== 'true') {
+    return c.json({
+      jsonrpc: '2.0',
+      id: null,
+      error: {
+        code: -32000,
+        message: 'PUBLIC_MCP_DISABLED: Public MCP server is disabled by default. Set PUBLIC_MCP_ENABLED=true to enable.'
+      }
+    }, 503);
+  }
+
   const clientIp = getTrustedClientIp(c).ip;
   if (!process.env.VITEST) {
     const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/public/mcp', clientIp, 30, 600);
@@ -16717,6 +16948,11 @@ apiRouter.post('/public/mcp', async (c) => {
     try {
       const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
       const { SecureFetchError } = await import('../tools/site-audit/secure-url-fetcher.js');
+      const {
+        classifySiteFixProbe,
+        recordSiteFixFunnelEvent
+      } = await import('../tools/site-audit/sitefix-funnel-attribution.js');
+      const probe = classifySiteFixProbe(c);
       const service = SiteAuditService.getInstance();
 
       if (toolName === 'sitefix_check_url') {
@@ -16743,6 +16979,15 @@ apiRouter.post('/public/mcp', async (c) => {
             url: rawUrl,
             websiteType: 'DEVELOPER_LAUNCH_QA',
             userConfirmedOwnership: args.confirmAuthorized === true
+          });
+          await recordSiteFixFunnelEvent({
+            stage: 'scan',
+            source: 'mcp',
+            isProbe: probe.isProbe,
+            probeReason: probe.probeReason,
+            auditId: audit.auditId,
+            url: audit.url || rawUrl,
+            userAgent: probe.userAgent
           });
           const payload = sanitizePublicSitefixAudit(audit, siteUrl);
           return c.json({
@@ -16782,6 +17027,15 @@ apiRouter.post('/public/mcp', async (c) => {
             error: { code: -32004, message: `Audit '${auditId}' not found.` }
           }, 404);
         }
+        await recordSiteFixFunnelEvent({
+          stage: 'preview_open',
+          source: 'mcp',
+          isProbe: probe.isProbe,
+          probeReason: probe.probeReason,
+          auditId: audit.auditId,
+          url: audit.url || null,
+          userAgent: probe.userAgent
+        });
         const payload = sanitizePublicSitefixAudit(audit, siteUrl);
         return c.json({
           jsonrpc: '2.0',
@@ -16818,11 +17072,30 @@ apiRouter.post('/public/mcp', async (c) => {
             websiteType: 'DEVELOPER_LAUNCH_QA',
             userConfirmedOwnership: args.confirmAuthorized === true
           });
+          await recordSiteFixFunnelEvent({
+            stage: 'scan',
+            source: 'mcp',
+            isProbe: probe.isProbe,
+            probeReason: probe.probeReason,
+            auditId: audit.auditId,
+            url: audit.url || rawUrl,
+            userAgent: probe.userAgent
+          });
+          await recordSiteFixFunnelEvent({
+            stage: 'preview_open',
+            source: 'mcp',
+            isProbe: probe.isProbe,
+            probeReason: probe.probeReason,
+            auditId: audit.auditId,
+            url: audit.url || rawUrl,
+            userAgent: probe.userAgent
+          });
           const sanitized = sanitizePublicSitefixAudit(audit, siteUrl);
           const failingChecks = sanitized.findings.filter((f: any) => f.status === 'ISSUE' || f.status === 'WARNING');
           const previewPayload = {
             auditId: sanitized.auditId,
             url: sanitized.url,
+            source: 'mcp',
             score: sanitized.score,
             overallStatus: sanitized.overallStatus,
             defectCount: failingChecks.length,

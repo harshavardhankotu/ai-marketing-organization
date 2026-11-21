@@ -183,40 +183,21 @@ describe('Revenue Engine V3.2 — First Customer & Commercial Conversion', () =>
   });
 
   describe('3. Public Storefront & Offer Page (GET / and GET /offer)', () => {
-    it('serves B2B AI Inbound Lead Triage storefront on GET /', async () => {
+    it('serves SiteFix Launch Gate storefront & segregated verified deals on GET /', async () => {
       const res = await app.request('/');
       expect(res.status).toBe(200);
       const html = await res.text();
 
-      // Positioning & Headline
-      expect(html).toMatch(/Never Lose Another Evening (Patient|Customer) Inquiry/);
-      expect(html).toMatch(/AI Inbound Lead Conversion System|Administrative Website/);
+      // Positioning & Developer Pull Interfaces (zero legacy dental/clinic lead-gen claims)
+      expect(html).toContain('SiteFix Launch Gate');
+      expect(html).toContain('SiteFix Launch Gate — 3 Developer Pull Interfaces');
+      expect(html).toContain('npx sitefix-check');
+      expect(html).toContain('/tools/site-audit');
+      expect(html).toContain('/api/v1/public/mcp');
+      expect(html).not.toMatch(/Apex Dental|chipped tooth|8 PM to 8 AM Inquiry Gap|dental clinic/i);
 
-      // Problem description
-      expect(html).toContain('8 PM to 8 AM Inquiry Gap');
-      expect(html).toContain('Competitor Leakage');
-
-      // Defined Deliverables
-      expect(html).toMatch(/24\/7 WhatsApp Instant Away (Triage|Inquiry Logging)/);
-      expect(html).toMatch(/Top 10 Practice (Quick Replies|Administrative Quick Replies)/);
-      expect(html).toMatch(/Direct Calendar (Appointment Booking|Callback Request Logging)/);
-      expect(html).toContain('Shared Real-Time Inquiry Tracking Sheet');
-
-      // Interactive Demonstration with Sample Data Explicitly Labelled
-      expect(html).toMatch(/Interactive Demonstration: (Inbound Patient Triage|Administrative After-Hours Inquiry Capture)/);
-      expect(html).toMatch(/SAMPLE DATA ONLY — INBOUND PATIENT TRIAGE PREVIEW|Illustrative Administrative Example — No Clinical or Medical Triage/);
-      expect(html).toMatch(/Apex Dental Triage Assistant|Apex Reception Inquiry Assistant/);
-
-      // Transparent Commercial Terms
-      expect(html).toContain('Introductory Pilot Implementation');
-      expect(html).toContain('Zero Mandatory Third-Party SaaS Fees');
-
-      // DPDP Enquiry Form
-      expect(html).toContain('id="lead-inquiry-form-home"');
-      expect(html).toContain('cust-consent-h');
-      expect(html).toContain('name="website_trap"');
-
-      // Segregated Consumer Deals and Travel Guide links
+      // Segregated Consumer Deals, Revenue Funnel & Travel Guide links
+      expect(html).toContain('Commercial Consumer Deals &amp; Buying Guides');
       expect(html).toContain('href="/deals"');
       expect(html).toContain('href="/guides/student-flight-discounts-india"');
       expect(html).toContain('href="/revenue"');
@@ -235,15 +216,17 @@ describe('Revenue Engine V3.2 — First Customer & Commercial Conversion', () =>
       expect(html).not.toContain('Sign In to Owner Portal');
     });
 
-    it('serves safe overview on GET /offer with sample data labelled preview and zero unconfirmed prices', async () => {
+    it('serves safe non-payable SiteFix overview on GET /offer with zero unconfirmed prices', async () => {
       const res = await app.request('/offer');
       expect(res.status).toBe(200);
       const html = await res.text();
       expect(html).toContain('Configuration Pending Owner Attestation');
       expect(html).toContain('noindex, nofollow');
-      expect(html).toMatch(/SAMPLE DATA ONLY — INBOUND PATIENT TRIAGE PREVIEW|Illustrative Administrative Example — No Clinical or Medical Triage/);
-      expect(html).toContain('Scope of Technical Deliverables');
+      expect(html).toContain('Technical Scope (Non-Payable Overview)');
+      expect(html).toContain('SiteFix Launch Gate');
       expect(html).toContain('href="/deals"');
+      expect(html).not.toContain('₹15,000');
+      expect(html).not.toContain('upi://pay');
     });
 
     it('processes inbound lead inquiry through POST /api/v1/offer/inquiry and returns DPDP deletion code', async () => {
@@ -509,7 +492,7 @@ describe('Revenue Engine V3.2 — First Customer & Commercial Conversion', () =>
       const html = await res.text();
 
       expect(html).toContain('Public Commercial Funnel');
-      expect(html).toContain('Direct B2B Lead Conversion Funnel');
+      expect(html).toContain('Direct Commercial &amp; SiteFix Launch Gate Funnel');
       expect(html).toContain('Researched Prospects');
       expect(html).toContain('Inbound Inquiries');
       expect(html).toContain('Operating Costs &amp; Cash Profitability');

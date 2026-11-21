@@ -124,13 +124,13 @@ describe('Stage B Production Recovery Tests', () => {
       const html = DirectCommercialOfferPage.getInstance().renderOfferHtml();
 
       expect(html).toContain("fetch('/api/v1/referrals/beacon'");
-      // Ensure the try block is properly closed with catch before downloadIcsFile
-      const beaconIdx = html.indexOf("fetch('/api/v1/referrals/beacon'");
-      const icsIdx = html.indexOf('function downloadIcsFile()', beaconIdx);
-      expect(icsIdx).toBeGreaterThan(beaconIdx);
-
-      const snippetBetween = html.substring(beaconIdx, icsIdx);
-      expect(snippetBetween).toContain('} catch');
+      const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+      expect(scriptMatch).not.toBeNull();
+      const scriptBody = scriptMatch![1];
+      expect(scriptBody).toContain('try {');
+      expect(scriptBody).toContain('} catch');
+      // Verify the inline script parses cleanly with zero JS syntax errors
+      expect(() => new Function(scriptBody)).not.toThrow();
     });
   });
 });

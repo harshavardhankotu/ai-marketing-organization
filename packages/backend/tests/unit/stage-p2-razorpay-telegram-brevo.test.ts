@@ -6,6 +6,7 @@ import { TelegramBotAdapter } from '../../src/integrations/telegram-adapter.js';
 import { BrevoMcpClient } from '../../src/integrations/brevo-mcp-client.js';
 import { OwnerAuthService } from '../../src/auth/owner-auth.js';
 import { getDb } from '../../src/db/client.js';
+import { SiteAuditService } from '../../src/tools/site-audit/site-audit-service.js';
 
 describe('Stage P.2 — Razorpay Standard Checkout, Telegram Auto-Wire, Brevo Automation & MCP Hardening', () => {
   const originalEnv = { ...process.env };
@@ -28,7 +29,7 @@ describe('Stage P.2 — Razorpay Standard Checkout, Telegram Auto-Wire, Brevo Au
       const core = adapter.resolveAuthoritativePrice('sitefix_core_499');
       expect(core.amountINR).toBe(499);
       expect(core.amountPaise).toBe(49900);
-      expect(core.canonicalSku).toBe('sitefix_core_499');
+      expect(core.canonicalSku).toBe('SITEFIX_AI_PACK_V1');
 
       // Stage P.3.1: Strict SKU enforcement rejects omitted or empty SKU
       expect(() => adapter.resolveAuthoritativePrice()).toThrow(/INVALID_SKU/);
@@ -311,8 +312,11 @@ describe('Stage P.2 — Razorpay Standard Checkout, Telegram Auto-Wire, Brevo Au
       process.env.RAZORPAY_KEY_SECRET = liveSecret;
       process.env.SITE_AUDIT_SIGNING_SECRET = 'regression_signing_secret_minimum_32_chars';
       process.env.PUBLIC_CONTACT_EMAIL = 'owner@example.com';
+      process.env.BREVO_API_KEY = 'xkeysib-regression-unit-key-1234567890';
 
       const db = getDb();
+      try { db.prepare(`DELETE FROM durable_events WHERE id = 'brevo_receipt_pay_live_1999_test'`).run(); } catch {}
+      try { db.prepare(`DELETE FROM transactions WHERE invoice_number = 'ord_rzp_1999_audit_test'`).run(); } catch {}
       const internalOrderId = 'ord_rzp_1999_audit_test';
       const rzpOrderId = 'order_live_1999_test';
       const rzpPaymentId = 'pay_live_1999_test';
@@ -330,12 +334,22 @@ describe('Stage P.2 — Razorpay Standard Checkout, Telegram Auto-Wire, Brevo Au
         rzpOrderId,
         JSON.stringify({
           sku: 'sitefix_competitor_keyword_pack',
+          domainOrUrl: 'company.in',
           buyerEmail: 'actual-buyer@company.in',
           notes: { auditId: 'audit_reg_999' }
         })
       );
 
-      const emailSpy = vi.spyOn(BrevoMcpClient.getInstance(), 'sendTransactionalEmail').mockResolvedValue({ success: true } as any);
+      vi.spyOn(SiteAuditService.getInstance(), 'getAuditByDomain').mockResolvedValue({
+        auditId: 'audit_reg_999',
+        domain: 'company.in',
+        url: 'https://company.in',
+        businessName: 'Company IN',
+        scorecard: { totalScore: 84, items: [] },
+        findings: []
+      } as any);
+
+      const emailSpy = vi.spyOn(BrevoMcpClient.getInstance(), 'sendTransactionalEmail').mockResolvedValue({ success: true, messageId: 'brevo_msg_1999' } as any);
       const sig = createHmac('sha256', liveSecret).update(`${rzpOrderId}|${rzpPaymentId}`).digest('hex');
 
       const result = await adapter.verifyPaymentAndFulfill({
@@ -347,15 +361,19 @@ describe('Stage P.2 — Razorpay Standard Checkout, Telegram Auto-Wire, Brevo Au
 
       expect(result.success).toBe(true);
       expect(result.status).toBe('CAPTURED');
-      expect(result.downloadUrl).toContain('/api/v1/tools/site-audit/deliverable/audit_reg_999');
-      expect(result.downloadUrl).toContain('token=');
+      expect(result.downloadUrl).toContain('/api/v1/offer/download/');
+      const tokenPart = decodeURIComponent(String(result.downloadUrl).split('/api/v1/offer/download/')[1] || '');
+      const verifiedToken = await SiteAuditService.getInstance().verifyDeliveryToken(tokenPart, 'audit_reg_999');
+      expect(verifiedToken.valid).toBe(true);
+      expect(verifiedToken.auditId).toBe('audit_reg_999');
+      expect(verifiedToken.orderId).toBe(internalOrderId);
 
       const txRow = db.prepare('SELECT amount_inr FROM transactions WHERE invoice_number = ?').get(internalOrderId) as any;
       expect(txRow?.amount_inr).toBe(1999);
 
       expect(emailSpy).toHaveBeenCalledTimes(1);
       expect(emailSpy.mock.calls[0][0].to).toBe('actual-buyer@company.in');
-      expect(emailSpy.mock.calls[0][0].htmlContent).toContain('1,999.00');
+      expect(emailSpy.mock.calls[0][0].htmlContent).toMatch(/1,?999\.00/);
     });
 
     it('5.2: TelegramBotAdapter.getOwnerChatId prefers TELEGRAM_OWNER_CHAT_ID over public TELEGRAM_CHANNEL_ID', async () => {

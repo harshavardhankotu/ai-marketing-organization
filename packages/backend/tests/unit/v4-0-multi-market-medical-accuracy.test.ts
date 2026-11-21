@@ -274,25 +274,18 @@ describe('V4.0 Multi-Market Revenue, Medical Accuracy & Profitability Engine', (
   });
 
   describe('8. Offer Catalog V4.0 Multi-Market Offers', () => {
-    it('8a. Resolves HEALTHCARE_SETUP, HEALTHCARE_RETAINER, EDUCATION_SETUP, and EDUCATION_RETAINER', () => {
+    it('8a. Quarantines legacy HEALTHCARE_* and EDUCATION_* offers per Standing Order 8 and resolves active SITEFIX_AI_PACK_V1', () => {
       const catalog = OfferCatalogService.getInstance();
 
-      const hcSetup = catalog.resolveAuthorizedOffer(OfferCatalogService.HEALTHCARE_SETUP_OFFER_ID);
-      expect(hcSetup.priceINR).toBe(15000);
-      expect(hcSetup.billingModel).toBe('ONE_TIME');
-      expect(hcSetup.deliverables.length).toBeGreaterThanOrEqual(4);
+      expect(() => catalog.resolveAuthorizedOffer(OfferCatalogService.HEALTHCARE_SETUP_OFFER_ID)).toThrow(/QUARANTINED_LEGACY_OFFER/);
+      expect(() => catalog.resolveAuthorizedOffer(OfferCatalogService.HEALTHCARE_RETAINER_OFFER_ID)).toThrow(/QUARANTINED_LEGACY_OFFER/);
+      expect(() => catalog.resolveAuthorizedOffer(OfferCatalogService.EDUCATION_SETUP_OFFER_ID)).toThrow(/QUARANTINED_LEGACY_OFFER/);
+      expect(() => catalog.resolveAuthorizedOffer(OfferCatalogService.EDUCATION_RETAINER_OFFER_ID)).toThrow(/QUARANTINED_LEGACY_OFFER/);
 
-      const hcRetainer = catalog.resolveAuthorizedOffer(OfferCatalogService.HEALTHCARE_RETAINER_OFFER_ID);
-      expect(hcRetainer.priceINR).toBe(8000);
-      expect(hcRetainer.billingModel).toBe('MONTHLY');
-
-      const eduSetup = catalog.resolveAuthorizedOffer(OfferCatalogService.EDUCATION_SETUP_OFFER_ID);
-      expect(eduSetup.priceINR).toBe(12000);
-      expect(eduSetup.billingModel).toBe('ONE_TIME');
-
-      const eduRetainer = catalog.resolveAuthorizedOffer(OfferCatalogService.EDUCATION_RETAINER_OFFER_ID);
-      expect(eduRetainer.priceINR).toBe(6000);
-      expect(eduRetainer.billingModel).toBe('MONTHLY');
+      const sitefix = catalog.resolveAuthorizedOffer('SITEFIX_AI_PACK_V1');
+      expect(sitefix.priceINR).toBe(499);
+      expect(sitefix.billingModel).toBe('ONE_TIME');
+      expect(sitefix.deliverables.length).toBeGreaterThanOrEqual(4);
     });
   });
 

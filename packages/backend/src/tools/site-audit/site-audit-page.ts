@@ -528,6 +528,14 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
       } catch {}
     })();
 
+    function getLaunchAttributionSource() {
+      try {
+        const raw = (new URLSearchParams(window.location.search).get('source') || '').trim().toLowerCase();
+        if (raw === 'cli' || raw === 'action' || raw === 'web' || raw === 'mcp') return raw;
+      } catch {}
+      return 'web';
+    }
+
     async function handleAudit(e) {
       e.preventDefault();
       const url = document.getElementById('targetUrl').value;
@@ -544,7 +552,8 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
           body: JSON.stringify({
             url,
             websiteType,
-            userConfirmedOwnership: true
+            userConfirmedOwnership: true,
+            source: getLaunchAttributionSource()
           })
         });
 
@@ -678,7 +687,8 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
         const checkoutPayload = {
           sku: 'SITEFIX_AI_PACK_V1',
           domainOrUrl: targetDomain,
-          buyerEmail: buyerEmail
+          buyerEmail: buyerEmail,
+          source: getLaunchAttributionSource()
         };
 
         const res = await fetch(checkoutUrl, {
@@ -726,7 +736,8 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
                 razorpay_payment_id: response.razorpay_payment_id,
                 razorpay_signature: response.razorpay_signature,
                 sku: 'SITEFIX_AI_PACK_V1',
-                domainOrUrl: targetDomain
+                domainOrUrl: targetDomain,
+                source: getLaunchAttributionSource()
               };
 
               const verifyRes = await fetch(verifyUrl, {
@@ -993,6 +1004,7 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
           body: JSON.stringify({
             auditId: currentAuditId,
             domainOrUrl: targetDomain,
+            source: getLaunchAttributionSource(),
             buyerEmail,
             payerName,
             payerPhone,

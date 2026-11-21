@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { getDb } from '../db/client.js';
 import { isPlaceholderCredential } from '../config/env.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
@@ -5,6 +6,7 @@ import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 export interface TelegramPostOptions {
   guideTitle: string;
   guideUrl: string;
+  dealId?: string;
   disclosureText?: string;
   fetchFn?: typeof fetch;
 }
@@ -25,6 +27,7 @@ export interface TelegramBotStatus {
   status: 'LIVE_ENABLED' | 'READY_AWAITING_BOT_TOKEN';
   syndicationStatus?: 'LIVE_ENABLED' | 'READY_AWAITING_BOT_TOKEN';
   dailyPostLimit?: number;
+  missingRequirement: 'MISSING_BOT_TOKEN' | 'MISSING_CHAT_ID' | null;
 }
 
 export class TelegramBotAdapter {
@@ -162,39 +165,48 @@ export class TelegramBotAdapter {
         connected: false,
         botUsername: null,
         chatIdConfigured: false,
-        status: 'READY_AWAITING_BOT_TOKEN'
+        status: 'READY_AWAITING_BOT_TOKEN',
+        missingRequirement: 'MISSING_BOT_TOKEN'
       };
     }
 
     const chatId = await this.getChatId();
     const chatIdConfigured = Boolean(chatId);
+    const resolvedStatus: 'LIVE_ENABLED' | 'READY_AWAITING_BOT_TOKEN' = chatIdConfigured
+      ? 'LIVE_ENABLED'
+      : 'READY_AWAITING_BOT_TOKEN';
+    const missingRequirement: 'MISSING_BOT_TOKEN' | 'MISSING_CHAT_ID' | null = chatIdConfigured
+      ? null
+      : 'MISSING_CHAT_ID';
 
     // Return cached getMe if within 10 minutes
     const now = Date.now();
     if (this.cachedGetMe && this.cachedGetMe.expiresAt > now) {
       return {
-        connected: true,
+        connected: chatIdConfigured,
         configured: true,
         botUsername: this.cachedGetMe.data?.username || null,
         botId: this.cachedGetMe.data?.id,
         chatIdConfigured,
         channelConfigured: chatIdConfigured,
-        status: 'LIVE_ENABLED',
-        syndicationStatus: 'LIVE_ENABLED',
-        dailyPostLimit: 3
+        status: resolvedStatus,
+        syndicationStatus: resolvedStatus,
+        dailyPostLimit: 3,
+        missingRequirement
       };
     }
 
     if (process.env.VITEST) {
       return {
-        connected: true,
+        connected: chatIdConfigured,
         configured: true,
         botUsername: 'MockTestBot',
-        chatIdConfigured: true,
-        channelConfigured: true,
-        status: 'LIVE_ENABLED',
-        syndicationStatus: 'LIVE_ENABLED',
-        dailyPostLimit: 3
+        chatIdConfigured,
+        channelConfigured: chatIdConfigured,
+        status: resolvedStatus,
+        syndicationStatus: resolvedStatus,
+        dailyPostLimit: 3,
+        missingRequirement
       };
     }
 
@@ -210,15 +222,16 @@ export class TelegramBotAdapter {
             expiresAt: now + 10 * 60 * 1000 // 10 minutes
           };
           return {
-            connected: true,
+            connected: chatIdConfigured,
             configured: true,
             botUsername: json.result.username,
             botId: json.result.id,
             chatIdConfigured,
             channelConfigured: chatIdConfigured,
-            status: 'LIVE_ENABLED',
-            syndicationStatus: this.getSyndicationStatus(),
-            dailyPostLimit: 3
+            status: resolvedStatus,
+            syndicationStatus: resolvedStatus,
+            dailyPostLimit: 3,
+            missingRequirement
           };
         }
       }
@@ -232,7 +245,8 @@ export class TelegramBotAdapter {
       channelConfigured: chatIdConfigured,
       status: 'READY_AWAITING_BOT_TOKEN',
       syndicationStatus: this.getSyndicationStatus(),
-      dailyPostLimit: 3
+      dailyPostLimit: 3,
+      missingRequirement
     };
   }
 
@@ -292,6 +306,7 @@ export class TelegramBotAdapter {
     const postRes = await this.postPublishedGuide({
       guideTitle: `Verified Price Drop: ${options.title} at ₹${options.currentPriceINR.toLocaleString('en-IN')}${savingsText} (${options.merchant})`,
       guideUrl: options.trackedRedirectUrl,
+      dealId: options.dealId,
       disclosureText: '#Ad Statutory Disclosure: Affiliate link tracked on merchant purchase.',
       fetchFn: options.fetchFn
     });
@@ -336,18 +351,66 @@ export class TelegramBotAdapter {
       `);
     } catch {}
 
-    // Enforce rate limit: max 3 posts per calendar day
-    const todayCount = (db.prepare(`
-      SELECT count(*) as cnt
-      FROM telegram_posts_log
-      WHERE date(created_at) = date('now')
-    `).get() as any)?.cnt || 0;
+    // Enforce durable rate limit: max 3 posts per calendar day via D1 durable_events + local fallback
+    let durableTodayCount = 0;
+    try {
+      const durableRow = await this.d1Repo.queryOne<{ cnt: number }>(
+        'durable_events',
+        `SELECT COUNT(*) as cnt
+         FROM durable_events
+         WHERE event_type IN ('TELEGRAM_POST_CLAIMED', 'TELEGRAM_GUIDE_POSTED')
+           AND date(created_at) = date('now')`
+      );
+      durableTodayCount = Number(durableRow?.cnt || 0);
+    } catch {}
 
-    if (todayCount >= 3) {
+    const localTodayCount = Number(
+      (db.prepare(`
+        SELECT count(*) as cnt
+        FROM telegram_posts_log
+        WHERE date(created_at) = date('now')
+      `).get() as any)?.cnt || 0
+    );
+
+    if (Math.max(durableTodayCount, localTodayCount) >= 3) {
       return {
         posted: false,
         reason: 'DAILY_LIMIT_EXCEEDED: Telegram owned channel allows at most 3 posts per day.'
       };
+    }
+
+    // Atomic per-deal/per-day durable claim to prevent duplicate concurrent syndication
+    let claimId: string | null = null;
+    if (options.dealId) {
+      const utcDate = new Date().toISOString().split('T')[0];
+      const claimHash = createHash('sha256').update(`${utcDate}:${options.dealId}`).digest('hex').slice(0, 36);
+      claimId = `tg_post_claim_${claimHash}`;
+      try {
+        const existingClaim = await this.d1Repo.queryOne<{ id: string }>(
+          'durable_events',
+          `SELECT id FROM durable_events WHERE id = ? LIMIT 1`,
+          [claimId]
+        );
+        if (existingClaim?.id) {
+          return {
+            posted: false,
+            reason: `DUPLICATE_DEAL_POST_BLOCKED: Deal '${options.dealId}' already claimed for ${utcDate}.`
+          };
+        }
+        await this.d1Repo.executeWrite(
+          'durable_events',
+          `INSERT INTO durable_events (id, event_type, organization_id, payload_json, created_at)
+           VALUES (?, 'TELEGRAM_POST_CLAIMED', 'org_owner_primary', ?, datetime('now'))`,
+          [claimId, JSON.stringify({ dealId: options.dealId, guideUrl: options.guideUrl, channelId, claimedAt: new Date().toISOString() })]
+        );
+      } catch (claimErr: any) {
+        if (String(claimErr?.message || '').toLowerCase().includes('unique')) {
+          return {
+            posted: false,
+            reason: `DUPLICATE_DEAL_POST_BLOCKED: Deal '${options.dealId}' already claimed.`
+          };
+        }
+      }
     }
 
     const disclosure = options.disclosureText || this.defaultDisclosure;
@@ -388,6 +451,17 @@ export class TelegramBotAdapter {
           VALUES (?, ?, ?, ?, datetime('now'))
         `).run(postId, channelId, options.guideUrl, messageId);
       } catch {}
+
+      if (!claimId) {
+        try {
+          await this.d1Repo.executeWrite(
+            'durable_events',
+            `INSERT OR IGNORE INTO durable_events (id, event_type, organization_id, payload_json, created_at)
+             VALUES (?, 'TELEGRAM_GUIDE_POSTED', 'org_owner_primary', ?, datetime('now'))`,
+            [postId, JSON.stringify({ guideUrl: options.guideUrl, channelId, messageId })]
+          );
+        } catch {}
+      }
 
       return {
         posted: true,

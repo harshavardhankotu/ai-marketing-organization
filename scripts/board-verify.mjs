@@ -1,6 +1,24 @@
 import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
+import { createRequire } from 'module';
+
+function loadBetterSqlite3() {
+  const candidates = [
+    path.resolve('packages/backend/package.json'),
+    path.resolve('package.json')
+  ];
+  for (const pkgJson of candidates) {
+    if (fs.existsSync(pkgJson)) {
+      try {
+        const req = createRequire(pkgJson);
+        return req('better-sqlite3');
+      } catch {}
+    }
+  }
+  const fallbackReq = createRequire(import.meta.url);
+  return fallbackReq('better-sqlite3');
+}
 
 function getCfToken() {
   if (process.env.CLOUDFLARE_D1_API_TOKEN) return process.env.CLOUDFLARE_D1_API_TOKEN;
@@ -24,7 +42,7 @@ async function fetchFixedMistakesFromMigrations() {
   const migrationsDir = path.resolve('packages/backend/src/db/d1-migrations');
   if (!fs.existsSync(migrationsDir)) return [];
   try {
-    const Database = (await import('better-sqlite3')).default;
+    const Database = loadBetterSqlite3();
     const db = new Database(':memory:');
     const files = fs.readdirSync(migrationsDir).filter((f) => f.endsWith('.sql')).sort();
     for (const file of files) {
@@ -77,7 +95,7 @@ async function fetchFixedMistakes() {
     const full = path.resolve(dbPath);
     if (fs.existsSync(full)) {
       try {
-        const Database = (await import('better-sqlite3')).default;
+        const Database = loadBetterSqlite3();
         const db = new Database(full);
         const rows = db.prepare(sql).all();
         if (Array.isArray(rows) && rows.length > 0) {
@@ -155,6 +173,38 @@ async function main() {
       verifiedCount++;
       console.log(`✓ [CHECKED] ${id}: Test file and guard reference validated (${filePath})`);
     } else if (guardType === 'HOOK') {
+      if (guardRef.startsWith('doctor:')) {
+        const doctorModule = guardRef.slice('doctor:'.length).trim();
+        const doctorSourcePath = path.resolve('packages/backend/src/automation/autonomous-system-doctor.ts');
+        if (!doctorModule || !fs.existsSync(doctorSourcePath)) {
+          console.error(`❌ [FAIL] ${id}: AutonomousSystemDoctor source missing for HOOK guard: ${guardRef}`);
+          failures++;
+          continue;
+        }
+        const doctorSource = fs.readFileSync(doctorSourcePath, 'utf8');
+        const hasModuleHook =
+          doctorSource.includes(`module: '${doctorModule}'`) ||
+          doctorSource.includes(`module: "${doctorModule}"`);
+        if (!hasModuleHook) {
+          console.error(`❌ [FAIL] ${id}: AutonomousSystemDoctor does not implement module hook '${doctorModule}'`);
+          failures++;
+          continue;
+        }
+        const doctorCompiledPath = path.resolve('packages/backend/dist/automation/autonomous-system-doctor.js');
+        if (fs.existsSync(doctorCompiledPath)) {
+          try {
+            execSync(`node --check "${doctorCompiledPath}"`, { stdio: 'pipe', encoding: 'utf8' });
+          } catch (err) {
+            console.error(`❌ [FAIL] ${id}: Compiled AutonomousSystemDoctor failed syntax check: ${err.message}`);
+            failures++;
+            continue;
+          }
+        }
+        verifiedCount++;
+        console.log(`✓ [PASS] ${id}: Verified AutonomousSystemDoctor HOOK guard '${guardRef}' in packages/backend/src/automation/autonomous-system-doctor.ts`);
+        continue;
+      }
+
       const resolvedPath = path.resolve(guardRef);
       if (!fs.existsSync(resolvedPath)) {
         console.error(`❌ [FAIL] ${id}: Hook file does not exist: ${guardRef}`);
@@ -203,7 +253,7 @@ async function main() {
     }
     const fileArgs = Array.from(pendingTestFiles).map((f) => `"${f}"`).join(' ');
     try {
-      execSync(`npx vitest run --root packages/backend ${fileArgs} --test-timeout=30000`, {
+      execSync(`npm --workspace=packages/backend exec -- vitest run ${fileArgs} --test-timeout=30000`, {
         stdio: 'pipe',
         encoding: 'utf8',
         env: {
