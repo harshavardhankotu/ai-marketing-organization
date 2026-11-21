@@ -300,7 +300,8 @@ export const PublicDealsPage: React.FC = () => {
       msg = `🔥 *Verified Deal*: ${deal.title}\n💰 *Price*: ₹${deal.currentPriceINR?.toLocaleString('en-IN')}${deal.referencePriceINR ? ` ~₹${deal.referencePriceINR.toLocaleString('en-IN')}~ (${deal.verifiedDiscountPercent || deal.claimedDiscountPercent}% OFF)` : ''}\n🏪 *Merchant*: ${deal.merchant}${deal.couponCode ? `\n🎟️ *Promo Code*: ${deal.couponCode}` : ''}\n🔗 *Verify Deal*: ${shareUrl}`;
     }
     const whatsappUrl = `https://api.whatsapp.com/send?text=${encodeURIComponent(msg)}`;
-    window.open(whatsappUrl, '_blank', 'noopener,noreferrer');
+    navigator.clipboard?.writeText(`${msg}\n${whatsappUrl}`).catch(() => {});
+    showToast('WhatsApp share message & link copied to clipboard!');
   };
 
   const handleFairPriceCheck = async (e: React.FormEvent) => {

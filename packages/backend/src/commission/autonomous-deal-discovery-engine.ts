@@ -310,7 +310,13 @@ export function parseVerifiedCampaignPayout(
   flatINR: number | null;
   grossCommissionPerApprovedOrderINR: number | null;
   verifiedCpcPayoutINR?: number | null;
-  missingPayoutReason?: 'CAMPAIGN_NOT_IN_CUELINKS_PAGE' | 'ZERO_PAYOUT_REPORTED' | 'CPC_OFFLINE_ONLY' | 'AMBIGUOUS_DOMAIN' | null;
+  missingPayoutReason?:
+    | 'CAMPAIGN_NOT_IN_CUELINKS_PAGE'
+    | 'ZERO_PAYOUT_REPORTED'
+    | 'CPC_OFFLINE_ONLY'
+    | 'AMBIGUOUS_DOMAIN'
+    | 'INVALID_PAYOUT_CATEGORY'
+    | null;
 } {
   if (!campaign || typeof campaign !== 'object') {
     return {
@@ -323,26 +329,90 @@ export function parseVerifiedCampaignPayout(
     };
   }
 
-  // Match category-specific payout tier first when campaign exposes multiple tiers
-  let tierCandidate: any = null;
-  const rawCategories = Array.isArray(campaign.payout_categories)
-    ? campaign.payout_categories
-    : (() => {
-        try {
-          return typeof campaign.payout_categories_json === 'string'
-            ? JSON.parse(campaign.payout_categories_json)
-            : [];
-        } catch {
-          return [];
-        }
-      })();
+  // Validate payout_categories / payout_categories_json strictly — fail closed on invalid string/JSON
+  let rawCategories: any[] = [];
+  if (campaign.payout_categories !== undefined && campaign.payout_categories !== null) {
+    if (!Array.isArray(campaign.payout_categories)) {
+      return {
+        monetizationModel: 'UNKNOWN',
+        ratePercent: null,
+        flatINR: null,
+        grossCommissionPerApprovedOrderINR: null,
+        verifiedCpcPayoutINR: null,
+        missingPayoutReason: 'INVALID_PAYOUT_CATEGORY'
+      };
+    }
+    rawCategories = campaign.payout_categories;
+  } else if (typeof campaign.payout_categories_json === 'string' && campaign.payout_categories_json.trim() !== '') {
+    try {
+      const parsed = JSON.parse(campaign.payout_categories_json);
+      if (!Array.isArray(parsed)) {
+        return {
+          monetizationModel: 'UNKNOWN',
+          ratePercent: null,
+          flatINR: null,
+          grossCommissionPerApprovedOrderINR: null,
+          verifiedCpcPayoutINR: null,
+          missingPayoutReason: 'INVALID_PAYOUT_CATEGORY'
+        };
+      }
+      rawCategories = parsed;
+    } catch {
+      return {
+        monetizationModel: 'UNKNOWN',
+        ratePercent: null,
+        flatINR: null,
+        grossCommissionPerApprovedOrderINR: null,
+        verifiedCpcPayoutINR: null,
+        missingPayoutReason: 'INVALID_PAYOUT_CATEGORY'
+      };
+    }
+  }
 
-  if (Array.isArray(rawCategories) && rawCategories.length > 0 && productCategory) {
-    const catLower = productCategory.toLowerCase();
-    tierCandidate = rawCategories.find((pc: any) => {
-      const tierName = String(pc?.category || pc?.name || '').toLowerCase();
-      return tierName && (catLower.includes(tierName) || tierName.includes(catLower));
-    }) || null;
+  // Match category-specific payout tier first when campaign exposes multiple tiers.
+  // Fail closed on invalid/unmatched explicit category strings instead of falling back to 'General'.
+  let tierCandidate: any = null;
+  if (productCategory !== undefined && productCategory !== null) {
+    const trimmedCategory = String(productCategory).trim();
+    const isInvalidCategoryString =
+      typeof productCategory !== 'string' ||
+      trimmedCategory.length === 0 ||
+      /^(?:null|undefined|nan|invalid|unknown|none|n\/a|\[\[.*\]\])$/i.test(trimmedCategory) ||
+      /^[^a-zA-Z0-9]+$/.test(trimmedCategory);
+
+    if (isInvalidCategoryString) {
+      return {
+        monetizationModel: 'UNKNOWN',
+        ratePercent: null,
+        flatINR: null,
+        grossCommissionPerApprovedOrderINR: null,
+        verifiedCpcPayoutINR: null,
+        missingPayoutReason: 'INVALID_PAYOUT_CATEGORY'
+      };
+    }
+
+    if (rawCategories.length > 0) {
+      const catLower = trimmedCategory.toLowerCase();
+      tierCandidate = rawCategories.find((pc: any) => {
+        const tierName = String(pc?.category || pc?.name || '').trim().toLowerCase();
+        return tierName && (catLower.includes(tierName) || tierName.includes(catLower));
+      }) || null;
+
+      // When explicit category tiers exist and no campaign-level default payout is declared, fail closed
+      const hasCampaignDefaultPayout = Boolean(
+        String(campaign.payout_rate ?? campaign.payout ?? campaign.commission_rate ?? '').trim()
+      );
+      if (!tierCandidate && !hasCampaignDefaultPayout) {
+        return {
+          monetizationModel: 'UNKNOWN',
+          ratePercent: null,
+          flatINR: null,
+          grossCommissionPerApprovedOrderINR: null,
+          verifiedCpcPayoutINR: null,
+          missingPayoutReason: 'INVALID_PAYOUT_CATEGORY'
+        };
+      }
+    }
   }
 
   const rawPayout = String(
@@ -6264,9 +6334,12 @@ export class AutonomousDealDiscoveryEngine {
         SELECT id, status, current_step, inputs_json, outputs_json, error_info, created_at, updated_at
         FROM workflows
         WHERE workflow_type = 'PUBLIC_DEAL' AND organization_id = ?
+        ORDER BY updated_at DESC LIMIT 50
       `;
 
-      const { results } = await this.d1Repo.executeRead('workflows', sql, [organizationId]);
+      const results = this.d1Repo.isRemoteD1ReadAllowed()
+        ? (await this.d1Repo.executeRead('workflows', sql, [organizationId])).results
+        : (getDb().prepare(sql).all(organizationId) as any[]);
       if (Array.isArray(results)) {
         for (const row of results) {
           try {
@@ -6292,7 +6365,7 @@ export class AutonomousDealDiscoveryEngine {
       // Sync from dedicated public_deals table (V5.6 / V5.8)
       try {
         let publicDealRows: any[] = [];
-        if (this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
+        if (this.d1Repo.isRemoteD1ReadAllowed()) {
           const res = await this.d1Repo.executeRead('public_deals', AutonomousDealDiscoveryEngine.ELIGIBLE_PUBLIC_DEALS_SQL, []);
           publicDealRows = res.results || [];
         } else {

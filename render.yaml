@@ -28,6 +28,6 @@ services:
       - key: SITE_AUDIT_FIXPACK_PRICE_INR
         value: "499"
       - key: DIRECT_UPI_VPA
-        value: "venkatasaiharsh149768.rzp@rxairtel"
+        sync: false
       - key: DIRECT_UPI_PAYEE_NAME
         value: "SiteFix AI"

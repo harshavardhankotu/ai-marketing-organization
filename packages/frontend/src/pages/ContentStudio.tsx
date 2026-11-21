@@ -1,18 +1,14 @@
-import React, { useState } from 'react';
-import { 
-  FileText, 
-  MessageSquare, 
-  Instagram, 
-  CheckCircle2, 
-  Copy, 
-  ShieldCheck, 
-  Sparkles, 
-  Globe, 
-  Share2,
-  AlertCircle,
-  Clock
+import React, { useState, useEffect } from 'react';
+import {
+  FileText,
+  CheckCircle2,
+  Copy,
+  ShieldCheck,
+  Globe,
+  ExternalLink
 } from 'lucide-react';
 import { INDIAN_LANGUAGES } from '@ai-marketing/shared';
+import { api } from '../services/api.js';
 
 interface ContentStudioProps {
   contentAssets: any[];
@@ -23,8 +19,23 @@ export const ContentStudio: React.FC<ContentStudioProps> = ({ contentAssets, bus
   const [selectedLanguage, setSelectedLanguage] = useState<string>('ALL');
   const [selectedChannel, setSelectedChannel] = useState<string>('ALL');
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [liveDeals, setLiveDeals] = useState<any[]>([]);
+  const [comparisons, setComparisons] = useState<any[]>([]);
+  const [buyerGuides, setBuyerGuides] = useState<any[]>([]);
 
-  const channels = ['ALL', 'WHATSAPP', 'INSTAGRAM', 'GOOGLE_BUSINESS_PROFILE', 'META_ADS', 'EMAIL'];
+  useEffect(() => {
+    Promise.all([
+      api.getPublicDeals(8).catch(() => null),
+      api.getPublicComparisons(6).catch(() => null),
+      api.getPublicBuyerGuides(6).catch(() => null)
+    ]).then(([dealsRes, cmpRes, guideRes]) => {
+      setLiveDeals(dealsRes?.deals || dealsRes?.data || []);
+      setComparisons(cmpRes?.comparisons || cmpRes?.data || []);
+      setBuyerGuides(guideRes?.guides || guideRes?.data || []);
+    });
+  }, []);
+
+  const channels = ['ALL', 'INSTAGRAM', 'TELEGRAM', 'EMAIL', 'SEO_COMPARISON', 'BUYER_GUIDE'];
 
   const activeBiz = propBusiness || (() => {
     if (typeof window !== 'undefined') {
@@ -36,56 +47,47 @@ export const ContentStudio: React.FC<ContentStudioProps> = ({ contentAssets, bus
     return null;
   })();
 
-  const bizName = activeBiz?.name || 'Local Business';
-  const bizVertical = activeBiz?.vertical_name || 'Commercial Services';
-  const bizCity = activeBiz?.city || 'India';
-  const isHealthcare = /dental|health|clinic|doctor|hospital|ortho/i.test(bizVertical + ' ' + (activeBiz?.vertical_id || ''));
+  const bizName = activeBiz?.name || 'Single-Owner Catalog';
 
-  // If no generated content assets exist in the system yet, provide dynamic preview templates customized per active business
-  const dynamicPreviewTemplates = [
-    {
-      id: 'tpl_wa_intro',
-      isTemplate: true,
-      title: `${bizVertical} Client Consultation Invitation`,
-      channel: 'WHATSAPP',
+  // Convert live verified deals, /vs/ comparisons, and /best/ buyer guides into ready copyable distribution assets
+  const liveDistributionAssets = [
+    ...liveDeals.map((d: any) => {
+      const price = Math.round(Number(d.dealPriceINR || d.currentPriceINR || 0));
+      const ytLine = d.youtubeReview?.videoUrl ? `\nReview Video: ${d.youtubeReview.videoUrl}` : '';
+      return {
+        id: `deal_ig_${d.id}`,
+        title: d.title,
+        channel: 'INSTAGRAM',
+        language: 'English',
+        content: `#Ad Verified Fair-Price Offer: ${d.title}\nLive Price: ₹${price.toLocaleString('en-IN')} on ${d.merchant}${ytLine}\nComment "DEAL" or visit /ig for tracked Store + Amazon.in check links.`,
+        call_to_action: `${window.location.origin}/deals/${encodeURIComponent(d.slug || d.id)}`,
+        status: d.youtubeReview?.videoUrl ? 'YOUTUBE_ENRICHED' : 'LIVE_DEAL',
+        externalUrl: `/deals/${encodeURIComponent(d.slug || d.id)}`
+      };
+    }),
+    ...comparisons.map((c: any) => ({
+      id: `cmp_${c.slug}`,
+      title: c.title || `${c.productA} vs ${c.productB}`,
+      channel: 'SEO_COMPARISON',
       language: 'English',
-      content: `Hi! Looking for premier ${bizVertical.toLowerCase()} in ${bizCity}? ${bizName} offers tailored solutions backed by verified expertise and transparent pricing.\n\n✨ Certified Quality & Punctual Scheduling\n✨ Transparent fee structure with easy digital payments\n✨ Dedicated support in ${bizCity}\n\nContact ${bizName} this week to schedule your personalized consultation!`,
-      call_to_action: `Reply "CONNECT" to schedule with ${bizName}`,
-      brand_voice_score: 0.95,
-      factual_confidence: 0.98,
-      status: 'PREVIEW_TEMPLATE',
-      target_funnel_stage: 'CONSIDERATION'
-    },
-    {
-      id: 'tpl_gmb_spotlight',
-      isTemplate: true,
-      title: `${bizCity} Local Search Spotlight`,
-      channel: 'GOOGLE_BUSINESS_PROFILE',
+      content: c.summary || `Head-to-head Indian pricing comparison: ${c.title}`,
+      call_to_action: `${window.location.origin}/vs/${encodeURIComponent(c.slug)}`,
+      status: 'PUBLISHED_VS_PAGE',
+      externalUrl: `/vs/${encodeURIComponent(c.slug)}`
+    })),
+    ...buyerGuides.map((g: any) => ({
+      id: `guide_${g.slug}`,
+      title: g.title || g.slug,
+      channel: 'BUYER_GUIDE',
       language: 'English',
-      content: `Looking for trusted ${bizVertical.toLowerCase()} in ${bizCity}? ${bizName} is open and accepting appointments. Verified client reviews, professional staff, and transparent quotes. Visit us or call today!`,
-      call_to_action: `Book consultation with ${bizName}`,
-      brand_voice_score: 0.94,
-      factual_confidence: 0.99,
-      status: 'PREVIEW_TEMPLATE',
-      target_funnel_stage: 'AWARENESS'
-    },
-    {
-      id: 'tpl_ig_showcase',
-      isTemplate: true,
-      title: `${bizName} Feature & Service Excellence`,
-      channel: 'INSTAGRAM',
-      language: 'English',
-      content: `Excellence in ${bizVertical.toLowerCase()} right here in ${bizCity}. At ${bizName}, we prioritize quality outcomes, client satisfaction, and absolute integrity.\n\n📍 Serving ${bizCity} and surrounding neighborhoods\n💬 DM us or visit our link in bio to book your session!`,
-      call_to_action: `Tap link in bio to connect with ${bizName}`,
-      brand_voice_score: 0.92,
-      factual_confidence: 0.97,
-      status: 'PREVIEW_TEMPLATE',
-      target_funnel_stage: 'CONSIDERATION'
-    }
+      content: g.intro || `Curated buyer guide for ${g.title || g.slug}`,
+      call_to_action: `${window.location.origin}/best/${encodeURIComponent(g.slug)}`,
+      status: 'PUBLISHED_GUIDE',
+      externalUrl: `/best/${encodeURIComponent(g.slug)}`
+    }))
   ];
 
-  const hasRealAssets = contentAssets && contentAssets.length > 0;
-  const baseAssets = hasRealAssets ? contentAssets : dynamicPreviewTemplates;
+  const baseAssets = [...(contentAssets || []), ...liveDistributionAssets];
 
   const filteredAssets = baseAssets.filter(asset => {
     const matchesLang = selectedLanguage === 'ALL' || asset.language === selectedLanguage;
@@ -101,27 +103,24 @@ export const ContentStudio: React.FC<ContentStudioProps> = ({ contentAssets, bus
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h2 className="text-xl font-extrabold text-white flex items-center gap-2">
             <FileText className="w-5 h-5 text-cyan-400" />
-            Multi-Lingual Content Studio
+            Content Studio &amp; Public SEO Asset Library
           </h2>
           <p className="text-slate-400 text-xs mt-1">
-            Generated by 20 Content Agents, QA verified for statutory advertising compliance, and tuned for <strong className="text-cyan-300">{bizName}</strong>.
+            Live Deal Posts (with #Ad &amp; YouTube Reviews), published /vs/ comparisons, and /best/ buyer guides for <strong className="text-cyan-300">{bizName}</strong>.
           </p>
         </div>
-      </div>
-
-      {!hasRealAssets && (
-        <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-start gap-3">
-          <AlertCircle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
-          <div className="text-xs text-amber-200 leading-relaxed">
-            <span className="font-bold text-amber-300">Preview Templates Active:</span> Below are dynamically customized starter templates generated for <strong className="text-white">{bizName}</strong> ({bizCity}). Once you run the autonomous workflow cycle or content agent pipeline, live AI-generated posts will automatically replace these previews.
-          </div>
+        <div className="flex items-center gap-3 text-xs font-mono tabular-nums text-slate-300">
+          <span>{liveDeals.length} Live Deals</span>
+          <span aria-hidden="true">·</span>
+          <span>{comparisons.length} /vs/ Pages</span>
+          <span aria-hidden="true">·</span>
+          <span>{buyerGuides.length} /best/ Guides</span>
         </div>
-      )}
+      </div>
 
       {/* Filters */}
       <div className="flex flex-wrap items-center justify-between gap-4 p-4 rounded-xl bg-slate-900 border border-slate-800">
@@ -133,8 +132,8 @@ export const ContentStudio: React.FC<ContentStudioProps> = ({ contentAssets, bus
                 key={ch}
                 onClick={() => setSelectedChannel(ch)}
                 className={`px-2.5 py-1 rounded text-xs font-semibold transition-all ${
-                  selectedChannel === ch 
-                    ? 'bg-cyan-500 text-slate-950 font-bold' 
+                  selectedChannel === ch
+                    ? 'bg-cyan-500 text-slate-950 font-bold'
                     : 'bg-slate-800 text-slate-400 hover:text-slate-200'
                 }`}
               >
@@ -164,9 +163,9 @@ export const ContentStudio: React.FC<ContentStudioProps> = ({ contentAssets, bus
       {/* Assets Grid */}
       {filteredAssets.length === 0 ? (
         <div className="p-12 text-center rounded-xl bg-slate-900 border border-slate-800 space-y-2">
-          <p className="text-sm font-semibold text-slate-300">No content assets found matching filter</p>
+          <p className="text-sm font-semibold text-slate-300">No live content assets matched filters</p>
           <p className="text-xs text-slate-500">
-            Selected Channel: <span className="text-cyan-400">{selectedChannel}</span> • Language: <span className="text-cyan-400">{selectedLanguage}</span>
+            Run Trigger 1 Live Harvest Cycle on Overview or adjust channel/language filters above.
           </p>
           <button
             onClick={() => { setSelectedChannel('ALL'); setSelectedLanguage('ALL'); }}
@@ -178,47 +177,48 @@ export const ContentStudio: React.FC<ContentStudioProps> = ({ contentAssets, bus
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {filteredAssets.map((asset: any) => (
-            <div key={asset.id} className="p-5 rounded-xl bg-slate-900 border border-slate-800 flex flex-col justify-between space-y-4 shadow-sm">
+            <div key={asset.id} className="p-5 rounded-xl bg-slate-900 border border-slate-800 flex flex-col justify-between space-y-4">
               <div>
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-slate-800 text-cyan-400 border border-slate-700">
-                      {asset.channel}
-                    </span>
-                    <span className="px-2 py-0.5 rounded text-[11px] font-medium bg-slate-800 text-slate-300">
-                      {asset.language}
-                    </span>
+                <div className="flex items-center justify-between mb-2 text-[11px] font-mono">
+                  <div className="text-cyan-400">
+                    <span>{asset.channel}</span>
+                    <span aria-hidden="true"> · </span>
+                    <span className="text-slate-400">{asset.language || 'English'}</span>
                   </div>
-                  {asset.isTemplate ? (
-                    <span className="flex items-center gap-1 text-[11px] text-amber-400 font-semibold px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/30">
-                      <Clock className="w-3 h-3" />
-                      Preview Template
-                    </span>
-                  ) : (
-                    <span className="flex items-center gap-1 text-xs text-emerald-400 font-semibold">
-                      <ShieldCheck className="w-3.5 h-3.5" />
-                      {asset.status || 'APPROVED'}
-                    </span>
-                  )}
+                  <span className="flex items-center gap-1 text-emerald-400 font-semibold">
+                    <ShieldCheck className="w-3.5 h-3.5" />
+                    {asset.status || 'PUBLISHED'}
+                  </span>
                 </div>
 
                 <h3 className="font-bold text-sm text-slate-100 mb-2">{asset.title}</h3>
 
-                <div className="p-3.5 rounded-lg bg-slate-850 border border-slate-800 text-xs text-slate-300 whitespace-pre-line leading-relaxed font-sans">
+                <div className="p-3.5 rounded-lg bg-slate-950 border border-slate-800 text-xs text-slate-300 whitespace-pre-line leading-relaxed">
                   {asset.content}
                 </div>
 
-                <div className="mt-3 p-2.5 rounded bg-slate-800/40 border border-slate-800 text-xs flex items-center justify-between">
-                  <span className="text-slate-400">Call to Action:</span>
-                  <span className="font-bold text-cyan-400">{asset.call_to_action}</span>
-                </div>
+                {asset.call_to_action && (
+                  <div className="mt-3 p-2.5 rounded bg-slate-950 border border-slate-800 text-xs flex items-center justify-between gap-2">
+                    <span className="text-slate-400 shrink-0">Destination:</span>
+                    <span className="font-mono text-cyan-400 truncate">{asset.call_to_action}</span>
+                  </div>
+                )}
               </div>
 
               <div className="pt-3 border-t border-slate-800 flex items-center justify-between text-xs text-slate-400">
-                <div className="flex items-center gap-3 text-[11px]">
-                  <span>Voice: <strong className="text-slate-200">{(asset.brand_voice_score * 100).toFixed(0)}%</strong></span>
-                  <span>Factual: <strong className="text-slate-200">{(asset.factual_confidence * 100).toFixed(0)}%</strong></span>
-                </div>
+                {asset.externalUrl ? (
+                  <a
+                    href={asset.externalUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-cyan-400 hover:underline inline-flex items-center gap-1"
+                  >
+                    <span>Open Live Page</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                ) : (
+                  <span className="text-slate-500">Workspace Asset</span>
+                )}
 
                 <button
                   onClick={() => handleCopy(asset.id, asset.content)}
@@ -232,7 +232,7 @@ export const ContentStudio: React.FC<ContentStudioProps> = ({ contentAssets, bus
                   ) : (
                     <>
                       <Copy className="w-3.5 h-3.5" />
-                      <span>Copy Text</span>
+                      <span>Copy Post</span>
                     </>
                   )}
                 </button>

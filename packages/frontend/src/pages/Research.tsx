@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  Search, 
-  ExternalLink, 
-  MapPin, 
-  AlertCircle, 
-  Sparkles, 
+import {
+  Search,
+  ExternalLink,
+  MapPin,
+  AlertCircle,
+  Sparkles,
   CheckCircle2,
   Clock,
   Shield,
@@ -27,35 +27,35 @@ export const Research: React.FC<ResearchProps> = ({ findings, businessId, onRefr
   const [runSuccess, setRunSuccess] = useState<string | null>(null);
   const [lockReport, setLockReport] = useState<any>(null);
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
-  const [loadingLogs, setLoadingLogs] = useState<boolean>(false);
-
-  const certaintyColors: Record<string, string> = {
-    OBSERVED: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30',
-    CONFIRMED: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30',
-    INFERRED: 'bg-blue-500/10 text-blue-400 border-blue-500/30',
-    HYPOTHESIZED: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
-    PREDICTED: 'bg-purple-500/10 text-purple-400 border-purple-500/30',
-  };
+  const [autonomyStatus, setAutonomyStatus] = useState<any>(null);
+  const [liveDeals, setLiveDeals] = useState<any[]>([]);
+  const [readyAudits, setReadyAudits] = useState<any[]>([]);
+  const [radarBenchmarks, setRadarBenchmarks] = useState<any[]>([]);
 
   const loadLocksAndLogs = async () => {
     try {
-      const lockRes = await api.getUniversalLocks();
-      if (lockRes.data) {
-        setLockReport(lockRes.data);
-      }
+      const [lockRes, statusRes, dealsRes, readyRes, radarRes] = await Promise.all([
+        api.getUniversalLocks().catch(() => ({ data: null })),
+        api.getPublicAutonomyStatus().catch(() => null),
+        api.getPublicDeals(8).catch(() => null),
+        api.getFirstSaleReadyActions().catch(() => null),
+        api.getFinancialRadar(false).catch(() => null)
+      ]);
+      if (lockRes?.data) setLockReport(lockRes.data);
+      setAutonomyStatus(statusRes?.data || statusRes || null);
+      const dealsList = dealsRes?.deals || dealsRes?.data || [];
+      setLiveDeals(Array.isArray(dealsList) ? dealsList : []);
+      const auditsList = readyRes?.readyAudits || readyRes?.data?.readyAudits || [];
+      setReadyAudits(Array.isArray(auditsList) ? auditsList : []);
+      const series = radarRes?.benchmarks || radarRes?.data?.benchmarks || [];
+      setRadarBenchmarks(Array.isArray(series) ? series : []);
     } catch {}
 
     if (businessId) {
-      setLoadingLogs(true);
       try {
         const logsRes = await api.getResearchLogs(businessId);
-        if (logsRes.data) {
-          setAuditLogs(logsRes.data);
-        }
+        if (logsRes?.data) setAuditLogs(logsRes.data);
       } catch {}
-      finally {
-        setLoadingLogs(false);
-      }
     }
   };
 
@@ -65,7 +65,7 @@ export const Research: React.FC<ResearchProps> = ({ findings, businessId, onRefr
 
   const handleRunPipeline = async () => {
     if (!businessId) {
-      setRunError('No active business selected. Please onboard or select a business first.');
+      setRunError('No active business selected. Onboard or select a business profile first to store research logs.');
       return;
     }
     setIsRunning(true);
@@ -93,6 +93,7 @@ export const Research: React.FC<ResearchProps> = ({ findings, businessId, onRefr
 
   const customSearchStatus = lockReport?.services?.GOOGLE_CUSTOM_SEARCH;
   const geminiStatus = lockReport?.services?.GEMINI_API;
+  const ytStatus = autonomyStatus?.youtubeDiscovery;
 
   return (
     <div className="space-y-6">
@@ -101,10 +102,10 @@ export const Research: React.FC<ResearchProps> = ({ findings, businessId, onRefr
         <div>
           <h2 className="text-xl font-extrabold text-white flex items-center gap-2">
             <Search className="w-5 h-5 text-cyan-400" />
-            Dual-Engine Market Intelligence Hub
+            Research, Deal Intel &amp; YouTube Discovery Hub
           </h2>
           <p className="text-slate-400 text-xs mt-1">
-            Real external market intelligence powered by Google Custom Search JSON API and Gemini Search Grounding. Zero synthetic data.
+            Live Tavily/Google discovery, Cuelinks + Dual-Rail catalog health, YouTube product review matching, SiteFix HTML defect audits, and AMFI MFAPI benchmarks.
           </p>
         </div>
 
@@ -112,14 +113,14 @@ export const Research: React.FC<ResearchProps> = ({ findings, businessId, onRefr
           <button
             onClick={loadLocksAndLogs}
             className="p-2.5 rounded-xl text-xs font-medium text-slate-400 bg-slate-800 hover:text-white transition-colors"
-            title="Refresh Lock Status"
+            title="Refresh Intelligence Feed"
           >
             <RefreshCw className="w-4 h-4" />
           </button>
           <button
             onClick={handleRunPipeline}
             disabled={isRunning || !businessId}
-            className="px-4 py-2.5 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 shadow-md shadow-cyan-500/20 disabled:opacity-50 transition-all flex items-center gap-1.5"
+            className="px-4 py-2.5 rounded-xl text-xs font-bold text-white bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 transition-all flex items-center gap-1.5"
           >
             <Sparkles className="w-3.5 h-3.5" />
             {isRunning ? 'Querying Live Search...' : 'Run Live Market Research'}
@@ -127,67 +128,56 @@ export const Research: React.FC<ResearchProps> = ({ findings, businessId, onRefr
         </div>
       </div>
 
-      {/* Universal Free-Tier Lock Bar */}
-      <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800/80 pb-3">
-          <div className="flex items-center gap-2">
-            <Shield className="w-4 h-4 text-cyan-400" />
-            <span className="text-xs font-bold text-white uppercase tracking-wider">Universal Free-Tier Circuit Breakers</span>
+      {/* Live YouTube Discovery, Quota Locks & MFAPI Feed */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+        <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-1.5">
+          <div className="flex items-center justify-between">
+            <span className="font-bold text-slate-200 flex items-center gap-1.5">
+              <Globe className="w-3.5 h-3.5 text-cyan-400" />
+              YouTube Review Engine
+            </span>
+            <span className={`font-mono text-[11px] ${ytStatus?.configured ? 'text-emerald-400' : 'text-amber-300'}`}>
+              {ytStatus?.mode || 'TAVILY_FALLBACK'}
+            </span>
           </div>
-          <span className="text-[11px] font-mono text-slate-400 flex items-center gap-1">
-            <Lock className="w-3 h-3 text-amber-400" />
-            Zero Paid Overages Permitted • Auto-pauses at free daily limit
-          </span>
+          <div className="text-slate-400 font-mono tabular-nums">
+            Cached Reviews: <strong className="text-white">{ytStatus?.cachedReviewsCount ?? 0}</strong>
+          </div>
+          <p className="text-[11px] text-slate-500">
+            Attaches verified Indian tech/product review videos to /deals, /vs/, /best/, and Customer Desk replies.
+          </p>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {/* Google Custom Search Lock Status */}
-          <div className="p-3 rounded-lg bg-slate-850 border border-slate-750 flex items-center justify-between">
-            <div className="space-y-1">
-              <div className="flex items-center gap-1.5">
-                <Globe className="w-3.5 h-3.5 text-blue-400" />
-                <span className="text-xs font-bold text-slate-200">Google Custom Search API</span>
-              </div>
-              <div className="text-[11px] text-slate-400">
-                Queries Today: <strong className="text-white">{customSearchStatus?.requestsCountToday ?? 0}</strong> / {customSearchStatus?.maxFreeDailyRequests ?? 100} free limit
-              </div>
-            </div>
-            <div>
-              {customSearchStatus?.isLocked ? (
-                <span className="px-2.5 py-1 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[10px] font-bold">
-                  LOCKED (Quota Reached)
-                </span>
-              ) : (
-                <span className="px-2.5 py-1 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold">
-                  ACTIVE ({customSearchStatus?.remainingFreeRequests ?? 100} left)
-                </span>
-              )}
-            </div>
+        <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-1.5">
+          <div className="flex items-center justify-between">
+            <span className="font-bold text-slate-200 flex items-center gap-1.5">
+              <Shield className="w-3.5 h-3.5 text-blue-400" />
+              Search Free-Tier Cap
+            </span>
+            <span className={`font-mono text-[11px] ${customSearchStatus?.isLocked ? 'text-rose-400' : 'text-emerald-400'}`}>
+              {customSearchStatus?.isLocked ? 'LOCKED' : 'ACTIVE'}
+            </span>
           </div>
+          <div className="text-slate-400 font-mono tabular-nums">
+            Today: <strong className="text-white">{customSearchStatus?.requestsCountToday ?? 0}</strong> / {customSearchStatus?.maxFreeDailyRequests ?? 100}
+          </div>
+          <p className="text-[11px] text-slate-500">Strict zero-overage circuit breaker.</p>
+        </div>
 
-          {/* Gemini API Lock Status */}
-          <div className="p-3 rounded-lg bg-slate-850 border border-slate-750 flex items-center justify-between">
-            <div className="space-y-1">
-              <div className="flex items-center gap-1.5">
-                <Database className="w-3.5 h-3.5 text-purple-400" />
-                <span className="text-xs font-bold text-slate-200">Gemini Search & Reasoning</span>
-              </div>
-              <div className="text-[11px] text-slate-400">
-                Requests Today: <strong className="text-white">{geminiStatus?.requestsCountToday ?? 0}</strong> / {geminiStatus?.maxFreeDailyRequests ?? 1500} free limit
-              </div>
-            </div>
-            <div>
-              {geminiStatus?.isLocked ? (
-                <span className="px-2.5 py-1 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[10px] font-bold">
-                  LOCKED (Quota Reached)
-                </span>
-              ) : (
-                <span className="px-2.5 py-1 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold">
-                  ACTIVE ({geminiStatus?.remainingFreeRequests ?? 1500} left)
-                </span>
-              )}
-            </div>
+        <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-1.5">
+          <div className="flex items-center justify-between">
+            <span className="font-bold text-slate-200 flex items-center gap-1.5">
+              <Database className="w-3.5 h-3.5 text-purple-400" />
+              Gemini Quota Guard
+            </span>
+            <span className={`font-mono text-[11px] ${geminiStatus?.isLocked ? 'text-rose-400' : 'text-emerald-400'}`}>
+              {geminiStatus?.isLocked ? 'LOCKED' : 'ACTIVE'}
+            </span>
           </div>
+          <div className="text-slate-400 font-mono tabular-nums">
+            Today: <strong className="text-white">{geminiStatus?.requestsCountToday ?? 0}</strong> / {geminiStatus?.maxFreeDailyRequests ?? 1500}
+          </div>
+          <p className="text-[11px] text-slate-500">Zero paid-tier upgrade fallback permitted.</p>
         </div>
       </div>
 
@@ -206,140 +196,173 @@ export const Research: React.FC<ResearchProps> = ({ findings, businessId, onRefr
         </div>
       )}
 
-      {/* Findings Content Area */}
-      {findings.length === 0 ? (
-        <div className="p-12 text-center rounded-2xl bg-slate-900/60 border border-slate-800 space-y-3">
-          <div className="w-12 h-12 rounded-xl bg-slate-800 flex items-center justify-center mx-auto text-slate-500">
-            <Search className="w-6 h-6" />
-          </div>
-          <h3 className="text-base font-bold text-white">No Research Has Been Run Yet</h3>
-          <p className="text-slate-400 text-xs max-w-md mx-auto leading-relaxed">
-            There are no market research findings in the database for this business. Click <strong>"Run Live Market Research"</strong> to execute real search queries under strict free-tier quota protection.
-          </p>
+      {/* Live Monetized Deal & YouTube Review Enrichment Feed */}
+      <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-bold text-white">
+            Live Verified Deals &amp; YouTube Review Attachments ({liveDeals.length})
+          </h3>
+          <a href="/deals" target="_blank" rel="noopener noreferrer" className="text-xs text-cyan-400 hover:underline inline-flex items-center gap-1">
+            <span>Open Public /deals</span>
+            <ExternalLink className="w-3 h-3" />
+          </a>
         </div>
-      ) : (
+        {liveDeals.length === 0 ? (
+          <p className="text-xs text-slate-400">No verified deals currently indexed. Trigger Live Harvest on Overview.</p>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+            {liveDeals.map((deal: any) => (
+              <div key={deal.id} className="p-3.5 rounded-lg bg-slate-950 border border-slate-800 space-y-1.5">
+                <div className="flex items-start justify-between gap-2">
+                  <span className="font-semibold text-white line-clamp-1">{deal.title}</span>
+                  <span className="font-mono tabular-nums text-emerald-400 shrink-0">
+                    ₹{Number(deal.dealPriceINR || deal.currentPriceINR || 0).toLocaleString('en-IN')}
+                  </span>
+                </div>
+                <div className="text-[11px] text-slate-400">
+                  <span>{deal.merchant}</span>
+                  <span aria-hidden="true"> · </span>
+                  <span className="font-mono">{deal.affiliateNetwork}</span>
+                  {deal.youtubeReview?.videoUrl ? (
+                    <>
+                      <span aria-hidden="true"> · </span>
+                      <a href={deal.youtubeReview.videoUrl} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline">
+                        YouTube Review Attached
+                      </a>
+                    </>
+                  ) : (
+                    <>
+                      <span aria-hidden="true"> · </span>
+                      <span className="text-slate-500">Pending Video Match</span>
+                    </>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Live Ready SMB Audits (HTML Defects Verified) */}
+      <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-bold text-white">
+            Live SMB Website Defect Research ({readyAudits.length})
+          </h3>
+          <span className="text-[11px] font-mono text-slate-400">
+            Standing Order #8: Healthcare Excluded · Email Required
+          </span>
+        </div>
+        {readyAudits.length === 0 ? (
+          <p className="text-xs text-slate-400">
+            No reachable non-healthcare SMB audits queued yet. Run a scan in Onboard Business or Trigger 1 Live Harvest Cycle.
+          </p>
+        ) : (
+          <div className="divide-y divide-slate-800 border-t border-slate-800 text-xs">
+            {readyAudits.slice(0, 6).map((a: any) => (
+              <div key={a.domain} className="py-2.5 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <span className="font-semibold text-white">{a.businessName}</span>
+                  <span className="text-slate-400 font-mono ml-2">({a.domain})</span>
+                  <div className="text-[11px] text-slate-400">
+                    Defects: {a.defectCount} · Perf: {a.performanceScore ?? '—'} · SEO: {a.seoScore ?? '—'} · Contact: {a.matchedContactEmail || '—'}
+                  </div>
+                </div>
+                <a href={a.previewUrl} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline font-medium inline-flex items-center gap-1">
+                  <span>Inspect Report</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* AMFI Mutual Fund Benchmark Summary */}
+      {radarBenchmarks.length > 0 && (
+        <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
+          <h3 className="text-sm font-bold text-white">Live AMFI Financial Radar Benchmarks</h3>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-xs">
+            {radarBenchmarks.slice(0, 4).map((b: any, i: number) => (
+              <div key={i} className="p-3 rounded-lg bg-slate-950 border border-slate-800">
+                <div className="text-slate-400 truncate">{b.name || b.schemeName}</div>
+                <div className="font-mono tabular-nums font-bold text-white mt-1">
+                  NAV ₹{Number(b.latestNav ?? b.nav ?? 0).toFixed(2)}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Business Research Findings */}
+      {findings.length > 0 && (
         <div className="space-y-4">
           <div className="flex items-center justify-between text-xs text-slate-400 px-1">
-            <span>Showing {findings.length} verified research finding(s)</span>
+            <span>Business Search Findings ({findings.length})</span>
             <span className="text-[11px] font-mono text-emerald-400 flex items-center gap-1">
-              <CheckCircle2 className="w-3 h-3" /> Real-time external evidence with audit trails
+              <CheckCircle2 className="w-3 h-3" /> External Search Evidence
             </span>
           </div>
 
           {findings.map((f: any) => (
-            <div key={f.id} className="p-6 rounded-xl bg-slate-900 border border-slate-800 space-y-3 shadow-sm">
+            <div key={f.id} className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-2.5 text-xs">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
                   <h3 className="font-bold text-sm text-white">{f.topic}</h3>
-                  <span className="flex items-center gap-1 text-xs text-slate-400">
+                  <span className="flex items-center gap-1 text-slate-400">
                     <MapPin className="w-3 h-3 text-cyan-400" />
-                    {f.market || 'Local Market'}
+                    {f.market || 'Pan-India'}
                   </span>
                 </div>
-                <div className="flex items-center gap-2">
-                  <span className="px-2 py-0.5 rounded bg-slate-800 text-[10px] font-mono text-cyan-300 border border-slate-700">
-                    {f.source_type || 'GOOGLE_SEARCH_API'}
-                  </span>
-                  <span className={`px-2.5 py-0.5 rounded border text-xs font-bold ${
-                    certaintyColors[f.certainty] || certaintyColors.OBSERVED
-                  }`}>
-                    {f.certainty || 'OBSERVED'}
-                  </span>
-                </div>
+                <span className="font-mono text-[11px] text-cyan-300">
+                  {f.source_type || 'SEARCH_API'} · {f.certainty || 'OBSERVED'}
+                </span>
               </div>
-
-              <p className="text-xs text-slate-200 leading-relaxed font-medium">
-                {f.finding}
-              </p>
-
-              {/* Extracted Evidence Box */}
-              {f.extracted_evidence && (
-                <div className="p-3.5 rounded-lg bg-slate-850 border border-slate-800 text-xs text-slate-400 space-y-1">
-                  <span className="text-slate-300 font-semibold block text-[11px]">Real Search Evidence:</span>
-                  <p className="italic text-slate-300">"{f.extracted_evidence}"</p>
-                </div>
+              <p className="text-slate-200 leading-relaxed">{f.finding}</p>
+              {f.source_url && (
+                <a
+                  href={f.source_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-cyan-400 hover:underline inline-flex items-center gap-1"
+                >
+                  <ExternalLink className="w-3 h-3" />
+                  <span>Verify Source</span>
+                </a>
               )}
-
-              <div className="pt-2 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-500 border-t border-slate-800/80">
-                <div className="flex items-center gap-3">
-                  <span>Source: <strong className="text-slate-400">{f.source}</strong></span>
-                  {f.source_url && (
-                    <a
-                      href={f.source_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-cyan-400 hover:text-cyan-300 inline-flex items-center gap-1 underline text-[11px]"
-                    >
-                      <ExternalLink className="w-3 h-3" />
-                      Verify URL
-                    </a>
-                  )}
-                </div>
-                <div className="flex items-center gap-3">
-                  {f.confidence_score && (
-                    <span>Confidence: <strong className="text-cyan-400">{(f.confidence_score * 100).toFixed(0)}%</strong></span>
-                  )}
-                  {f.retrieved_at && (
-                    <span className="text-[10px] text-slate-500 flex items-center gap-1">
-                      <Clock className="w-2.5 h-2.5" />
-                      {new Date(f.retrieved_at).toLocaleDateString()}
-                    </span>
-                  )}
-                </div>
-              </div>
             </div>
           ))}
         </div>
       )}
 
-      {/* Outbound Search Query Audit Log Table */}
+      {/* Outbound Search Audit Log */}
       {auditLogs.length > 0 && (
         <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Globe className="w-4 h-4 text-cyan-400" />
-              <h3 className="text-xs font-bold text-white uppercase tracking-wider">Outbound Search Audit Trail ({auditLogs.length} logged queries)</h3>
-            </div>
-            <span className="text-[11px] font-mono text-slate-400">Audit Proof Invariant</span>
-          </div>
-
+          <h3 className="text-xs font-bold text-white uppercase tracking-wider">
+            Outbound Search Audit Trail ({auditLogs.length})
+          </h3>
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead className="border-b border-slate-800 text-slate-400">
                 <tr>
-                  <th className="py-2 px-3 font-semibold">Timestamp</th>
-                  <th className="py-2 px-3 font-semibold">Provider</th>
-                  <th className="py-2 px-3 font-semibold">Query</th>
-                  <th className="py-2 px-3 font-semibold">Status</th>
-                  <th className="py-2 px-3 font-semibold">Cached</th>
-                  <th className="py-2 px-3 font-semibold">Results</th>
+                  <th className="py-2 px-3">Timestamp</th>
+                  <th className="py-2 px-3">Provider</th>
+                  <th className="py-2 px-3">Query</th>
+                  <th className="py-2 px-3">Status</th>
+                  <th className="py-2 px-3">Results</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60 text-slate-300">
                 {auditLogs.map((log) => (
-                  <tr key={log.id} className="hover:bg-slate-850/50">
-                    <td className="py-2 px-3 text-slate-500 text-[11px] whitespace-nowrap">
+                  <tr key={log.id}>
+                    <td className="py-2 px-3 text-slate-500 font-mono text-[11px] whitespace-nowrap">
                       {new Date(log.created_at).toLocaleTimeString()}
                     </td>
-                    <td className="py-2 px-3 font-mono text-[11px] text-cyan-400">
-                      {log.provider}
-                    </td>
-                    <td className="py-2 px-3 font-medium text-white max-w-xs truncate" title={log.query_text}>
-                      {log.query_text}
-                    </td>
-                    <td className="py-2 px-3">
-                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${
-                        log.status_code === 200 ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400'
-                      }`}>
-                        {log.status_code}
-                      </span>
-                    </td>
-                    <td className="py-2 px-3 text-[11px] text-slate-400">
-                      {log.is_cached ? '48h Cache' : 'Live Outbound'}
-                    </td>
-                    <td className="py-2 px-3 font-mono text-[11px] text-slate-300">
-                      {log.results_count} items
-                    </td>
+                    <td className="py-2 px-3 font-mono text-[11px] text-cyan-400">{log.provider}</td>
+                    <td className="py-2 px-3 text-white max-w-xs truncate">{log.query_text}</td>
+                    <td className="py-2 px-3 font-mono text-[11px]">{log.status_code}</td>
+                    <td className="py-2 px-3 font-mono tabular-nums">{log.results_count}</td>
                   </tr>
                 ))}
               </tbody>

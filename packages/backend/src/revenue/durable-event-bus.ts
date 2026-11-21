@@ -372,7 +372,7 @@ export class DurableEventBus {
   /**
    * List recent events for dashboard/audit.
    */
-  public static listRecent(organizationId: string, limit = 100): DurableEvent[] {
+  public static listRecent(organizationId: string, limit = 50): DurableEvent[] {
     const sql = `
       SELECT * FROM durable_events
       WHERE organization_id = ?
@@ -383,7 +383,7 @@ export class DurableEventBus {
     return rows.map(DurableEventBus.mapRow);
   }
 
-  public static async listRecentAsync(organizationId: string, limit = 100): Promise<DurableEvent[]> {
+  public static async listRecentAsync(organizationId: string, limit = 50): Promise<DurableEvent[]> {
     const sql = `
       SELECT * FROM durable_events
       WHERE organization_id = ?

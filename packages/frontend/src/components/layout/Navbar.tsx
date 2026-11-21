@@ -46,45 +46,36 @@ export const Navbar: React.FC<NavbarProps> = ({
   return (
     <header className="h-16 bg-slate-900/90 backdrop-blur-md border-b border-slate-800 px-6 flex items-center justify-between shrink-0">
       {/* Business & Mode Context */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 text-xs">
         <span className="font-semibold text-slate-200 text-sm">{businessName}</span>
-        <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-500/10 text-amber-300 border border-amber-500/30">
-          <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-          OWNER: ME
-        </div>
-        <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/30">
-          {autonomyMode} Mode
-        </span>
+        <span aria-hidden="true" className="text-slate-600">·</span>
+        <span className="font-mono font-bold text-amber-300">OWNER: ME</span>
+        <span aria-hidden="true" className="text-slate-600">·</span>
+        <span className="font-mono text-cyan-400">{autonomyMode} Mode</span>
         {operatingMilestone && (
-          <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold font-mono border flex items-center gap-1.5 ${
-            operatingMilestone === 'PROFITABLE' || operatingMilestone === 'AUTONOMOUS_SCALING'
-              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-              : operatingMilestone === 'FIRST_REAL_CUSTOMER' || operatingMilestone === 'FIRST_VERIFIED_REVENUE' || operatingMilestone === 'FIRST_MARKETING_ATTRIBUTED_REVENUE'
-              ? 'bg-purple-500/20 text-purple-300 border-purple-500/40'
-              : 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
-          }`}>
-            <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping" />
-            Milestone: {operatingMilestone}
-          </span>
+          <>
+            <span aria-hidden="true" className="text-slate-600">·</span>
+            <span className="font-mono font-semibold text-cyan-300">
+              Milestone: {operatingMilestone}
+            </span>
+          </>
         )}
         {killSwitchActive && (
-          <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40 flex items-center gap-1.5 animate-pulse">
+          <span className="px-2 py-0.5 rounded text-xs font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40 flex items-center gap-1.5">
             <AlertOctagon className="w-3.5 h-3.5 text-rose-400" />
             EMERGENCY STOP ACTIVE
           </span>
         )}
       </div>
 
-      {/* Action Controls & Quota Pill */}
+      {/* Action Controls & Quota Indicator */}
       <div className="flex items-center gap-4">
-        {/* Free-tier Quota indicator */}
         <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700/60 text-xs">
           <Cpu className="w-3.5 h-3.5 text-cyan-400" />
           <span className="text-slate-400">Gemini Free-Tier:</span>
-          <span className="font-semibold text-slate-200">
-            {quotaInfo?.requestsToday ?? 14} / {quotaInfo?.maxRequests ?? 1500} reqs
+          <span className="font-semibold font-mono tabular-nums text-slate-200">
+            {quotaInfo?.requestsToday ?? 0} / {quotaInfo?.maxRequests ?? 1500} reqs
           </span>
-          <span className="inline-block w-2 h-2 rounded-full bg-emerald-400"></span>
         </div>
 
         {/* Backend API Server Status & Configuration */}

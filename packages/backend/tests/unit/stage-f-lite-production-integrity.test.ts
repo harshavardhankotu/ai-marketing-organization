@@ -1646,10 +1646,10 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
         payeeName: 'Test Org',
         configured: true,
       });
-      expect(getDirectUpiConfig(process.env)).toEqual({
-        vpa: 'venkatasaiharsh149768.rzp@rxairtel',
-        payeeName: 'SiteFix AI',
-        configured: true,
+      expect(getDirectUpiConfig({ DIRECT_UPI_VPA: '', DIRECT_UPI_PAYEE_NAME: 'SiteFix AI' } as NodeJS.ProcessEnv)).toEqual({
+        vpa: null,
+        payeeName: null,
+        configured: false,
       });
 
       // 2b. Stage I.2-B P0 Fix 2: default recoverStaleAndBlockedJobs() resets overdueCount & oldestOverdueAgeMinutes to 0

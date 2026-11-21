@@ -331,18 +331,48 @@ export const api = {
     fetchApi('/public/autonomy-status'),
   getPublicFinancialTruth: () =>
     fetchApi('/public/financial-truth'),
-  getPublicDeals: (params?: string) =>
-    fetchApi(`/public/deals${params ? (params.startsWith('?') ? params : `?${params}`) : ''}`),
-  getPublicComparisons: () =>
-    fetchApi('/public/comparisons'),
-  getPublicBuyerGuides: () =>
-    fetchApi('/public/buyer-guides'),
+  getPublicDeals: (params?: string | number) => {
+    const qs =
+      typeof params === 'number'
+        ? `?limit=${params}`
+        : params
+        ? (params.startsWith('?') ? params : `?${params}`)
+        : '';
+    return fetchApi(`/public/deals${qs}`);
+  },
+  getPublicComparisons: (limit?: number | string) => {
+    const qs =
+      typeof limit === 'number'
+        ? `?limit=${limit}`
+        : limit
+        ? (limit.startsWith('?') ? limit : `?limit=${encodeURIComponent(limit)}`)
+        : '';
+    return fetchApi(`/public/comparisons${qs}`);
+  },
+  getPublicBuyerGuides: (limit?: number | string) => {
+    const qs =
+      typeof limit === 'number'
+        ? `?limit=${limit}`
+        : limit
+        ? (limit.startsWith('?') ? limit : `?limit=${encodeURIComponent(limit)}`)
+        : '';
+    return fetchApi(`/public/buyer-guides${qs}`);
+  },
+  scanSiteAudit: (data: { url: string; businessName?: string; websiteType?: string; businessCategory?: string; userConfirmedOwnership?: boolean }) =>
+    fetchApi('/tools/site-audit/scan', {
+      method: 'POST',
+      body: JSON.stringify({ userConfirmedOwnership: true, ...data })
+    }),
   getRazorpayHealth: () =>
     fetchApi('/payments/razorpay/health'),
   getTelegramStatus: () =>
     fetchApi('/integrations/telegram/status'),
   getOwnerAutomation: () =>
     fetchApi('/owner/automation'),
+  runAutomationWorkflow: (workflowId: string) =>
+    fetchApi('/owner/automation/run', { method: 'POST', body: JSON.stringify({ workflowId }) }),
+  toggleAutomationWorkflow: (workflowId: string, enabled: boolean) =>
+    fetchApi('/owner/automation/toggle', { method: 'POST', body: JSON.stringify({ workflowId, enabled }) }),
   verifyOwnerUpiClaim: (data: { claimId?: string; utr?: string; amountINR?: number; businessId?: string; notes?: string }) =>
     fetchApi('/owner/upi-verify', { method: 'POST', body: JSON.stringify(data) }),
   retryOwnerFulfillment: (data: { claimId?: string; utr?: string }) =>

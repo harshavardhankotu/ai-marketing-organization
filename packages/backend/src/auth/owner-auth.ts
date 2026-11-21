@@ -40,8 +40,12 @@ export class OwnerAuthService {
   public static readonly OWNER_USER_ID = 'usr_owner_primary';
   public static readonly PLATFORM_BUSINESS_ID = 'biz_platform_aro';
   public static readonly PLATFORM_RAZORPAY_PAYMENT_PAGE_URL = 'https://razorpay.me/@venkatasaiharshavardhankotu';
-  public static readonly PLATFORM_UPI_VPA = 'venkatasaiharsh149768.rzp@rxairtel';
-  public static readonly PLATFORM_MERCHANT_NAME = 'VENKATA SAI HARSHAVARDHAN KOTU';
+  public static get PLATFORM_UPI_VPA(): string | null {
+    const raw = normalizeSecretValue(process.env.DIRECT_UPI_VPA || process.env.PLATFORM_UPI_VPA);
+    if (!raw || raw.toUpperCase() === 'UNSET') return null;
+    return raw;
+  }
+  public static readonly PLATFORM_MERCHANT_NAME = 'SiteFix AI';
   public static readonly PLATFORM_QR_ASSET_PATH = '/images/razorpay-upi-qr.jpg';
 
   /**

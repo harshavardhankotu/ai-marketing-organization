@@ -31,6 +31,7 @@ import { PlatformCommercialEngine } from './platform-commercial-engine.js';
 import { PlatformProspectDiscoveryEngine } from './platform-prospect-discovery-engine.js';
 import { ProposalEngine } from './proposal-engine.js';
 import { AutonomyPolicyController } from './autonomy-policy.js';
+import { isDisqualifiedOutreachTarget } from '../automation/autonomous-system-doctor.js';
 
 export type FirstCustomerStage =
   | 'NO_PROSPECTS'
@@ -89,8 +90,16 @@ export class FirstCustomerStateMachine {
     const custRow = await this.d1Repo.queryOne('customer_journeys', `SELECT COUNT(*) as count FROM customer_journeys WHERE organization_id = ? AND stage IN ('CUSTOMER', 'CONVERTED')`, [organizationId]);
     const customerCount = Number(custRow?.count || 0);
 
-    const prospectCountRow = await this.d1Repo.queryOne('platform_prospects', `SELECT COUNT(*) as count FROM platform_prospects WHERE is_opted_out = 0`);
-    const prospectCount = Number(prospectCountRow?.count || 0);
+    const candidateProspects = await this.d1Repo.query<any>(
+      'platform_prospects',
+      `SELECT * FROM platform_prospects WHERE is_opted_out = 0 ORDER BY created_at DESC LIMIT 50`
+    );
+    const eligibleProspects = (candidateProspects || []).filter((p: any) =>
+      !isDisqualifiedOutreachTarget(p.website_url || p.prospect_website || '') &&
+      !isDisqualifiedOutreachTarget(p.prospect_business_name || p.business_name || '') &&
+      !isDisqualifiedOutreachTarget(p.prospect_vertical || '')
+    );
+    const prospectCount = eligibleProspects.length;
 
     let outreachSentCount = 0;
     try {
@@ -296,12 +305,8 @@ export class FirstCustomerStateMachine {
       };
     }
 
-    // 8. Check prospects in platform_prospects
-    const prospects = await this.d1Repo.queryOne('platform_prospects', `
-      SELECT * FROM platform_prospects
-      WHERE is_opted_out = 0
-      ORDER BY created_at DESC LIMIT 1
-    `);
+    // 8. Check non-healthcare SMB prospects in platform_prospects
+    const prospects = eligibleProspects[0] || null;
 
     if (prospects) {
       const dispatch = PlatformCommercialEngine.getInstance().evaluateOutboundDispatchEligibility();
@@ -385,8 +390,16 @@ export class FirstCustomerStateMachine {
     const custRow = this.d1Repo.queryOneSync('customer_journeys', `SELECT COUNT(*) as count FROM customer_journeys WHERE organization_id = ? AND stage IN ('CUSTOMER', 'CONVERTED')`, [organizationId]);
     const customerCount = Number(custRow?.count || 0);
 
-    const prospectCountRow = this.d1Repo.queryOneSync('platform_prospects', `SELECT COUNT(*) as count FROM platform_prospects WHERE is_opted_out = 0`);
-    const prospectCount = Number(prospectCountRow?.count || 0);
+    const candidateProspects = this.d1Repo.querySync<any>(
+      'platform_prospects',
+      `SELECT * FROM platform_prospects WHERE is_opted_out = 0 ORDER BY created_at DESC LIMIT 50`
+    );
+    const eligibleProspects = (candidateProspects || []).filter((p: any) =>
+      !isDisqualifiedOutreachTarget(p.website_url || p.prospect_website || '') &&
+      !isDisqualifiedOutreachTarget(p.prospect_business_name || p.business_name || '') &&
+      !isDisqualifiedOutreachTarget(p.prospect_vertical || '')
+    );
+    const prospectCount = eligibleProspects.length;
 
     let outreachSentCount = 0;
     try {
@@ -592,12 +605,8 @@ export class FirstCustomerStateMachine {
       };
     }
 
-    // 8. Check prospects in platform_prospects
-    const prospects = this.d1Repo.queryOneSync('platform_prospects', `
-      SELECT * FROM platform_prospects
-      WHERE is_opted_out = 0
-      ORDER BY created_at DESC LIMIT 1
-    `);
+    // 8. Check non-healthcare SMB prospects in platform_prospects
+    const prospects = eligibleProspects[0] || null;
 
     if (prospects) {
       const dispatch = PlatformCommercialEngine.getInstance().evaluateOutboundDispatchEligibility();

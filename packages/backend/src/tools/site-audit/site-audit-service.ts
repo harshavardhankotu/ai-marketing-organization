@@ -10,9 +10,10 @@ import {
   SiteAuditResult,
   FixPackDeliverable,
   SiteAuditScanRequest,
-  CheckoutReadiness
+  CheckoutReadiness,
+  RecheckComparisonResult
 } from './site-audit-types.js';
-import { SiteAuditScanner } from './site-audit-scanner.js';
+import { SiteAuditScanner, compareAuditForRecheck, getRecheckCheckId } from './site-audit-scanner.js';
 import { SiteAuditFixPackGenerator } from './site-audit-fixpack-generator.js';
 import { D1RevenueRepository } from '../../db/d1-revenue-repository.js';
 import { OwnerAuthService } from '../../auth/owner-auth.js';
@@ -989,5 +990,50 @@ export class SiteAuditService {
     await this.persistAuditToD1(audit, deliverable).catch(() => {});
 
     return deliverable;
+  }
+
+  /**
+   * Executes the included post-fix verification recheck authorized by a valid Fix-Pack HMAC token.
+   * Compares baseline vs fresh audit using distinct per-finding check IDs (`check_<id>`).
+   */
+  public async verifyFixPackRecheck(params: {
+    token: string;
+    url?: string;
+    recheckAuditOverride?: SiteAuditResult;
+  }): Promise<{
+    valid: boolean;
+    error?: string;
+    comparison?: RecheckComparisonResult;
+    recheckAudit?: SiteAuditResult;
+  }> {
+    const verification = await this.verifyDeliveryToken(params.token);
+    if (!verification.valid || !verification.auditId) {
+      return { valid: false, error: verification.error || 'INVALID_DELIVERY_TOKEN' };
+    }
+
+    const baselineAudit = await this.getAudit(verification.auditId);
+    if (!baselineAudit) {
+      return { valid: false, error: 'BASELINE_AUDIT_NOT_FOUND' };
+    }
+
+    const targetUrl = params.url && params.url.trim() ? params.url.trim() : baselineAudit.url;
+    const recheckAudit = params.recheckAuditOverride
+      ? params.recheckAuditOverride
+      : await this.executeScan({
+          url: targetUrl,
+          websiteType: 'DEVELOPER_LAUNCH_QA',
+          userConfirmedOwnership: true
+        });
+
+    const comparison = compareAuditForRecheck(baselineAudit, recheckAudit);
+    return {
+      valid: true,
+      comparison,
+      recheckAudit
+    };
+  }
+
+  public getRecheckCheckId(findingId: string): string {
+    return getRecheckCheckId(findingId);
   }
 }

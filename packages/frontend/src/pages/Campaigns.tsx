@@ -12,7 +12,8 @@ import {
   X,
   ArrowUpRight,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  ExternalLink
 } from 'lucide-react';
 import { formatINR } from '@ai-marketing/shared';
 import { api } from '../services/api.js';
@@ -127,6 +128,24 @@ export const Campaigns: React.FC<CampaignsProps> = ({
     treatmentConversions: 18
   });
   const [feedbackBanner, setFeedbackBanner] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [comparisons, setComparisons] = useState<any[]>([]);
+  const [buyerGuides, setBuyerGuides] = useState<any[]>([]);
+  const [telegramStatus, setTelegramStatus] = useState<any>(null);
+  const [igStatus, setIgStatus] = useState<any>(null);
+
+  React.useEffect(() => {
+    Promise.all([
+      api.getPublicComparisons(6).catch(() => null),
+      api.getPublicBuyerGuides(6).catch(() => null),
+      api.getTelegramStatus().catch(() => null),
+      api.getInstagramStatus().catch(() => null)
+    ]).then(([cmpRes, guideRes, tgRes, igRes]) => {
+      setComparisons(cmpRes?.comparisons || cmpRes?.data || []);
+      setBuyerGuides(guideRes?.guides || guideRes?.data || []);
+      setTelegramStatus(tgRes?.data || tgRes || null);
+      setIgStatus(igRes?.data || igRes || null);
+    });
+  }, []);
 
   const experimentsByCampaign = useMemo(() => {
     const map: Record<string, any[]> = {};
@@ -435,6 +454,56 @@ export const Campaigns: React.FC<CampaignsProps> = ({
           </button>
         </div>
       )}
+
+      {/* Live Public Distribution Surfaces (/vs/, /best/, Telegram, Instagram) */}
+      <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-bold text-white">Live Organic Distribution Channels</h3>
+          <div className="text-xs font-mono text-slate-400">
+            <span>Telegram: {telegramStatus?.configured ? 'CONFIGURED' : 'NOT_CONFIGURED'}</span>
+            <span aria-hidden="true"> · </span>
+            <span>Instagram: {igStatus?.status || 'UNKNOWN'}</span>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+          <div className="p-3.5 rounded-lg bg-slate-950 border border-slate-800 space-y-2">
+            <div className="font-semibold text-slate-200">Published /vs/ Comparisons ({comparisons.length})</div>
+            {comparisons.length === 0 ? (
+              <p className="text-slate-500">No /vs/ comparison pages generated yet.</p>
+            ) : (
+              <ul className="space-y-1">
+                {comparisons.slice(0, 4).map((c: any) => (
+                  <li key={c.slug} className="flex items-center justify-between gap-2">
+                    <span className="truncate text-slate-300">{c.title || c.slug}</span>
+                    <a href={`/vs/${encodeURIComponent(c.slug)}`} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline inline-flex items-center gap-1 shrink-0">
+                      <span>Open</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <div className="p-3.5 rounded-lg bg-slate-950 border border-slate-800 space-y-2">
+            <div className="font-semibold text-slate-200">Published /best/ Buyer Guides ({buyerGuides.length})</div>
+            {buyerGuides.length === 0 ? (
+              <p className="text-slate-500">No /best/ buyer guides published yet.</p>
+            ) : (
+              <ul className="space-y-1">
+                {buyerGuides.slice(0, 4).map((g: any) => (
+                  <li key={g.slug} className="flex items-center justify-between gap-2">
+                    <span className="truncate text-slate-300">{g.title || g.slug}</span>
+                    <a href={`/best/${encodeURIComponent(g.slug)}`} target="_blank" rel="noopener noreferrer" className="text-emerald-400 hover:underline inline-flex items-center gap-1 shrink-0">
+                      <span>Open</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      </div>
 
       {/* Search & Filter Toolbar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-1 border-b border-slate-800/80">

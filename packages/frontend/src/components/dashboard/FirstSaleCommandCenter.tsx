@@ -136,6 +136,12 @@ interface TopDealItem {
   evolutionStatus: string;
   trackedShareUrl: string;
   shareText: string;
+  youtubeReview?: {
+    videoUrl: string;
+    title: string;
+    channelTitle?: string;
+    source: string;
+  } | null;
 }
 
 interface ApiUtilizationItem {
@@ -270,6 +276,7 @@ export const FirstSaleCommandCenter: React.FC = () => {
   const [doctorError, setDoctorError] = useState<string | null>(null);
   const [igPublishing, setIgPublishing] = useState<boolean>(false);
   const [igPolling, setIgPolling] = useState<boolean>(false);
+  const [igAuthUrl, setIgAuthUrl] = useState<string | null>(null);
   const [igMessage, setIgMessage] = useState<string | null>(null);
   const [igError, setIgError] = useState<string | null>(null);
   const [distKit, setDistKit] = useState<DistributionKitData | null>(null);
@@ -414,14 +421,8 @@ export const FirstSaleCommandCenter: React.FC = () => {
         setIgError('Instagram OAuth URL is unavailable. Verify INSTAGRAM_APP_ID.');
         return;
       }
-      const authWindow = window.open(
-        authUrl,
-        'instagram_oauth_popup',
-        'width=600,height=700'
-      );
-      if (!authWindow) {
-        setIgError('Popup blocked by browser. Please allow popups for this site to connect Instagram.');
-      }
+      setIgAuthUrl(authUrl);
+      setIgMessage('Instagram OAuth authorization link generated. Click Open Meta Authorization below to complete connection.');
     } catch (err: any) {
       setIgError(err?.data?.message || err?.message || 'Failed to initiate Instagram OAuth.');
     }
@@ -696,12 +697,25 @@ export const FirstSaleCommandCenter: React.FC = () => {
                         <div className="font-semibold text-slate-100 truncate" title={deal.title}>
                           {deal.title}
                         </div>
-                        <div className="text-[11px] text-slate-400 mt-0.5">
+                        <div className="text-[11px] text-slate-400 mt-0.5 flex flex-wrap items-center gap-1.5">
                           <span>{deal.merchant}</span>
                           <span aria-hidden="true"> · </span>
                           <span className="font-mono">{deal.affiliateNetwork}</span>
                           <span aria-hidden="true"> · </span>
                           <span>{deal.category}</span>
+                          {deal.youtubeReview?.videoUrl && (
+                            <>
+                              <span aria-hidden="true"> · </span>
+                              <a
+                                href={deal.youtubeReview.videoUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-cyan-400 hover:underline font-medium"
+                              >
+                                YouTube Review
+                              </a>
+                            </>
+                          )}
                         </div>
                       </td>
                       <td className="py-2.5 px-3 text-right font-mono tabular-nums text-white whitespace-nowrap">
@@ -816,15 +830,25 @@ export const FirstSaleCommandCenter: React.FC = () => {
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
-                {ig && !ig.hasLiveToken && ig.appConfigured && (
+                {ig && !ig.hasLiveToken && ig.appConfigured && !igAuthUrl && (
                   <button
                     type="button"
                     onClick={handleConnectInstagramOAuth}
                     className="px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold inline-flex items-center gap-1.5"
                   >
-                    <span>Connect {ig.handle} via Meta OAuth</span>
-                    <ExternalLink className="w-3 h-3" />
+                    <span>Generate {ig.handle} OAuth Link</span>
                   </button>
+                )}
+                {igAuthUrl && (
+                  <a
+                    href={igAuthUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold inline-flex items-center gap-1.5"
+                  >
+                    <span>Open Meta Authorization</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
                 )}
                 <button
                   type="button"

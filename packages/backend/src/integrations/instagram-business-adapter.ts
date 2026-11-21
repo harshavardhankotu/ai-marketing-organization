@@ -22,7 +22,7 @@ export const INSTAGRAM_REQUIRED_SCOPES = [
   'instagram_business_basic',
   'instagram_business_manage_messages',
   'instagram_business_manage_comments',
-  'instagram_business_content_publishing'
+  'instagram_business_content_publish'
 ] as const;
 
 export const getInstagramGraphApiVersion = (): string =>
@@ -256,6 +256,26 @@ export class InstagramBusinessAdapter {
     }
   }
 
+  /**
+   * Releases an atomic reply claim when outbound Graph API delivery fails
+   * so transient network/API errors can be retried cleanly.
+   */
+  public async releaseInstagramReplyClaim(itemType: 'comment' | 'dm', itemId: string): Promise<void> {
+    const itemKey = `${itemType}:${itemId}`;
+    this.repliedItemIds.delete(itemKey);
+    const deterministicId = `ig_reply_claim_${crypto.createHash('sha256').update(itemKey).digest('hex').slice(0, 40)}`;
+    const sql = `DELETE FROM durable_events WHERE id = ? AND event_type = 'IG_REPLY_CLAIMED'`;
+    try {
+      if (isProduction() && !process.env.VITEST) {
+        const { D1RevenueRepository } = await import('../db/d1-revenue-repository.js');
+        await D1RevenueRepository.getInstance().executeWrite('durable_events', sql, [deterministicId]);
+      } else {
+        const { getDb } = await import('../db/client.js');
+        getDb().prepare(sql).run(deterministicId);
+      }
+    } catch {}
+  }
+
   public async isItemReplied(itemKey: string): Promise<boolean> {
     if (this.repliedItemIds.has(itemKey)) return true;
     try {
@@ -417,7 +437,7 @@ export class InstagramBusinessAdapter {
       // Non-fatal in test/boot environments before DB schema hydration
     }
 
-    // Fallback to environment token if DB has none yet
+    // Fallback to environment token if DB has none yet (persist in non-test runtime so 25-day age survives restarts)
     if (!this.tokenState && this.getEnvAccessToken()) {
       const nowIso = new Date().toISOString();
       this.tokenState = {
@@ -431,6 +451,9 @@ export class InstagramBusinessAdapter {
         scopes: [...INSTAGRAM_REQUIRED_SCOPES],
         tokenSource: 'ENV'
       };
+      if (!process.env.VITEST) {
+        await this.persistState();
+      }
     }
   }
 
@@ -1131,6 +1154,8 @@ export class InstagramBusinessAdapter {
           if (ok) {
             await this.markItemReplied(itemKey);
             repliesSent++;
+          } else {
+            await this.releaseInstagramReplyClaim('comment', commentId);
           }
         }
       }
@@ -1153,6 +1178,8 @@ export class InstagramBusinessAdapter {
           if (ok) {
             await this.markItemReplied(itemKey);
             repliesSent++;
+          } else {
+            await this.releaseInstagramReplyClaim('dm', mid);
           }
         }
       }
@@ -1221,6 +1248,8 @@ export class InstagramBusinessAdapter {
               if (ok) {
                 await this.markItemReplied(itemKey);
                 repliesSent++;
+              } else {
+                await this.releaseInstagramReplyClaim('comment', cId);
               }
             }
           }
@@ -1256,6 +1285,8 @@ export class InstagramBusinessAdapter {
             if (ok) {
               await this.markItemReplied(itemKey);
               repliesSent++;
+            } else {
+              await this.releaseInstagramReplyClaim('dm', mid);
             }
           }
         }

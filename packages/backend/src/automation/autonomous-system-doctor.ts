@@ -339,12 +339,12 @@ export class AutonomousSystemDoctor {
   }> {
     const db = getDb();
     const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
-    const useRemoteD1Read = this.d1Repo.isRemoteD1Configured() && !process.env.VITEST;
+    const useRemoteD1Read = this.d1Repo.isRemoteD1ReadAllowed();
     const allowRemoteWrite = this.d1Repo.isRemoteD1WriteAllowed();
 
     const rowMap = new Map<string, any>();
     try {
-      const localRows = db.prepare(`SELECT * FROM public_deals`).all() as any[];
+      const localRows = db.prepare(`SELECT * FROM public_deals ORDER BY updated_at DESC LIMIT 50`).all() as any[];
       for (const r of localRows) {
         if (r?.id) rowMap.set(r.id, r);
       }
@@ -352,7 +352,7 @@ export class AutonomousSystemDoctor {
 
     if (useRemoteD1Read) {
       try {
-        const res = await this.d1Repo.executeRead('public_deals', `SELECT * FROM public_deals LIMIT 200`, []);
+        const res = await this.d1Repo.executeRead('public_deals', `SELECT * FROM public_deals ORDER BY updated_at DESC LIMIT 50`, []);
         for (const r of res?.results || []) {
           if (r?.id) rowMap.set(r.id, r);
         }
@@ -1694,7 +1694,7 @@ export class AutonomousSystemDoctor {
 
     let topSmbAuditsPreview: Array<any> = [];
     try {
-      const useRemoteD1Read = this.d1Repo.isRemoteD1Configured() && !process.env.VITEST;
+      const useRemoteD1Read = this.d1Repo.isRemoteD1ReadAllowed();
       const readRows = async (table: string, sql: string): Promise<any[]> => {
         if (useRemoteD1Read) {
           try {
@@ -1715,11 +1715,11 @@ export class AutonomousSystemDoctor {
       );
       const prospects = await readRows(
         'platform_prospects',
-        `SELECT business_name, prospect_business_name, COALESCE(email, prospect_email) as email, COALESCE(phone, prospect_phone) as phone, COALESCE(website_url, prospect_website) as website_url FROM platform_prospects LIMIT 60`
+        `SELECT business_name, prospect_business_name, COALESCE(email, prospect_email) as email, COALESCE(phone, prospect_phone) as phone, COALESCE(website_url, prospect_website) as website_url FROM platform_prospects ORDER BY created_at DESC LIMIT 50`
       );
       const contacts = await readRows(
         'outbound_contacts',
-        `SELECT prospect_name, prospect_business_name, prospect_email, prospect_phone, prospect_website FROM outbound_contacts WHERE is_opted_out = 0 AND is_suppressed = 0 LIMIT 60`
+        `SELECT prospect_name, prospect_business_name, prospect_email, prospect_phone, prospect_website FROM outbound_contacts WHERE is_opted_out = 0 AND is_suppressed = 0 ORDER BY updated_at DESC LIMIT 50`
       );
 
       topSmbAuditsPreview = audits

@@ -178,6 +178,7 @@ export const EXACT_ROUTE_POLICY = {
     '/public/amazon-redirect',
     '/public/fair-price-check',
     '/public/autonomy-status',
+    '/public/mcp',
     '/deals',
     '/best',
     '/vs',
@@ -1101,11 +1102,15 @@ apiRouter.post('/workflows/trigger-cycle', async (c) => {
       data: result
     });
   } catch (err: any) {
-    console.error('[TRIGGER CYCLE ERROR]:', err);
+    const msg = String(err?.message || 'Failed to execute closed loop marketing cycle');
+    const isConfigOrKeyError = /API_KEY_INVALID|API key not valid|PERMISSION_DENIED|GEMINI_API_KEY|Settings > Secrets/i.test(msg);
+    const isUpstreamLlmError = /LLM EXECUTION = FAILED|Gemini API error|QUOTA LOCK/i.test(msg);
+    const status = isConfigOrKeyError ? 400 : isUpstreamLlmError ? 502 : 500;
     return c.json({
       success: false,
-      error: err.message || 'Failed to execute closed loop marketing cycle'
-    }, 500);
+      code: isConfigOrKeyError ? 'GEMINI_API_KEY_INVALID' : isUpstreamLlmError ? 'GEMINI_UPSTREAM_ERROR' : 'WORKFLOW_CYCLE_ERROR',
+      error: msg
+    }, status);
   }
 });
 
@@ -5854,12 +5859,34 @@ apiRouter.post('/payments/public/create-link', async (c) => {
       }, 404);
     }
 
-    if (verifiedProposal.status === 'PAID') {
+    // Duplicate Checkout Guard: Block if proposal OR any linked payment record is already PAID/CAPTURED
+    let linkedAlreadyPaid = verifiedProposal.status === 'PAID';
+    if (!linkedAlreadyPaid) {
+      if (isProduction()) {
+        const d1 = D1RevenueRepository.getInstance();
+        const [paidLink, paidReq, paidClaim] = await Promise.all([
+          d1.queryOne<any>('payment_provider_links', `SELECT provider_link_id FROM payment_provider_links WHERE proposal_id = ? AND status IN ('PAID', 'CAPTURED') LIMIT 1`, [proposalId]).catch(() => null),
+          d1.queryOne<any>('payment_requests', `SELECT id FROM payment_requests WHERE proposal_id = ? AND status IN ('PAID', 'CAPTURED') LIMIT 1`, [proposalId]).catch(() => null),
+          d1.queryOne<any>('manual_upi_claims', `SELECT id FROM manual_upi_claims WHERE proposal_id = ? AND status IN ('PAID', 'HUMAN_VERIFIED_PAYMENT', 'FULFILLED') LIMIT 1`, [proposalId]).catch(() => null)
+        ]);
+        linkedAlreadyPaid = Boolean(paidLink || paidReq || paidClaim);
+      } else {
+        const db = getDb();
+        try {
+          const paidLink = db.prepare(`SELECT provider_link_id FROM payment_provider_links WHERE proposal_id = ? AND status IN ('PAID', 'CAPTURED') LIMIT 1`).get(proposalId);
+          const paidReq = db.prepare(`SELECT id FROM payment_requests WHERE proposal_id = ? AND status IN ('PAID', 'CAPTURED') LIMIT 1`).get(proposalId);
+          const paidClaim = db.prepare(`SELECT id FROM manual_upi_claims WHERE proposal_id = ? AND status IN ('PAID', 'HUMAN_VERIFIED_PAYMENT', 'FULFILLED') LIMIT 1`).get(proposalId);
+          linkedAlreadyPaid = Boolean(paidLink || paidReq || paidClaim);
+        } catch {}
+      }
+    }
+
+    if (linkedAlreadyPaid) {
       return c.json({
         success: false,
         error: 'PROPOSAL_ALREADY_PAID',
         message: `Proposal '${proposalId}' has already been paid in full.`
-      }, 400);
+      }, 409);
     }
 
     const eligibleStatuses = ['APPROVED', 'ACCEPTED', 'SENT'];
@@ -5933,6 +5960,9 @@ apiRouter.post('/payments/public/create-link', async (c) => {
       }
     }, 201);
   } catch (err: any) {
+    if (String(err?.message || '').includes('PROPOSAL_ALREADY_PAID')) {
+      return c.json({ success: false, error: 'PROPOSAL_ALREADY_PAID', message: err.message }, 409);
+    }
     return c.json({ success: false, error: err.message }, 400);
   }
 });
@@ -6617,6 +6647,9 @@ apiRouter.post('/payments/razorpay/create-payment-link', async (c) => {
 
     return c.json({ success: true, data: link }, 201);
   } catch (err: any) {
+    if (String(err?.message || '').includes('PROPOSAL_ALREADY_PAID')) {
+      return c.json({ success: false, error: 'PROPOSAL_ALREADY_PAID', message: err.message }, 409);
+    }
     return c.json({ success: false, error: err.message }, 400);
   }
 });
@@ -6873,31 +6906,6 @@ apiRouter.get('/system/readiness', async (c) => {
   return c.json({ success: true, data: report });
 });
 
-// ==========================================
-// WORKFLOW TRIGGER: CLOSED LOOP CYCLE
-// ==========================================
-apiRouter.post('/workflows/trigger-cycle', async (c) => {
-  const orgId = c.get('organizationId');
-  const db = getDb();
-  const body = await c.req.json();
-  const businessId = body.businessId || (db.prepare('SELECT id FROM businesses WHERE organization_id = ?').get(orgId) as any)?.id;
-  if (!businessId) {
-    return c.json({ success: false, error: 'BUSINESS_REQUIRED: Explicit businessId required' }, 400);
-  }
-  const goalId = body.goalId || 'goal_100_leads_hyd';
-
-  const cycle = new ClosedLoopMarketingCycle();
-  try {
-    const result = await cycle.executeCompleteCycle({
-      organizationId: orgId,
-      businessId,
-      goalId
-    });
-    return c.json({ success: true, data: result });
-  } catch (err: any) {
-    return c.json({ success: false, error: err.message }, 500);
-  }
-});
 
 // ==========================================
 // ATTRIBUTION EVIDENCE & PROVENANCE (GCLID-FIRST)
@@ -7861,22 +7869,28 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   let unverifiedCurrencyAmounts = 0;
   let commissionLedgerStatus = 'VERIFIED_ZERO';
 
-  const commRows = await safeQuery<any[]>(
-    'commission_records',
-    `SELECT
-      external_status,
-      expected_commission_inr,
-      verified_commission_inr,
-      received_commission_inr,
-      evidence_json
-    FROM commission_records`,
-    [],
-    'commission_records.buckets'
-  );
+  let commRows: any[] | null = null;
+  try {
+    commRows = await d1Repo.query<any>(
+      'commission_records',
+      `SELECT
+        external_status,
+        expected_commission_inr,
+        verified_commission_inr,
+        received_commission_inr,
+        evidence_json
+      FROM commission_records`,
+      []
+    );
+  } catch (commErr: any) {
+    console.warn(`[RevenueFunnel] commission_records.buckets query error: ${commErr?.message || commErr}`);
+    commRows = null;
+  }
 
   if (commRows === null) {
     commissionLedgerStatus = 'UNAVAILABLE_QUERY_ERROR';
   } else if (Array.isArray(commRows)) {
+    commissionLedgerStatus = commRows.length > 0 ? 'VERIFIED_ACTIVE' : 'VERIFIED_ZERO';
     for (const r of commRows) {
       let isExplicitInr = true;
       try {
@@ -8043,7 +8057,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
 
   const ordersRow = await safeQuery<any>(
     'payment_orders',
-    "SELECT COUNT(*) as c, COALESCE(SUM(CASE WHEN status = 'CAPTURED' OR status = 'PAID' THEN amount_inr ELSE 0 END), 0) as s FROM payment_orders WHERE (notes_json LIKE '%SITEFIX_AI_PACK_V1%' OR notes_json LIKE '%SITE_AUDIT_FIXPACK%') AND (notes_json NOT LIKE '%\"is_test\":true%' AND notes_json NOT LIKE '%\"test\":true%')",
+    "SELECT COUNT(*) as c, COALESCE(SUM(CASE WHEN status = 'CAPTURED' OR status = 'PAID' THEN amount_inr ELSE 0 END), 0) as s FROM payment_orders WHERE (notes_json LIKE '%SITEFIX_AI_PACK_V1%' OR notes_json LIKE '%SITE_AUDIT_FIXPACK%' OR notes_json LIKE '%sitefix_core_499%') AND (notes_json NOT LIKE '%\"is_test\":true%' AND notes_json NOT LIKE '%\"test\":true%')",
     [],
     'payment_orders.sitefix'
   );
@@ -8052,7 +8066,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
 
   const capturedRow = await safeQuery<any>(
     'payment_orders',
-    "SELECT COUNT(*) as c FROM payment_orders WHERE (status = 'CAPTURED' OR status = 'PAID') AND (notes_json LIKE '%SITEFIX_AI_PACK_V1%' OR notes_json LIKE '%SITE_AUDIT_FIXPACK%') AND (notes_json NOT LIKE '%\"is_test\":true%')",
+    "SELECT COUNT(*) as c FROM payment_orders WHERE (status = 'CAPTURED' OR status = 'PAID') AND (notes_json LIKE '%SITEFIX_AI_PACK_V1%' OR notes_json LIKE '%SITE_AUDIT_FIXPACK%' OR notes_json LIKE '%sitefix_core_499%') AND (notes_json NOT LIKE '%\"is_test\":true%')",
     [],
     'payment_orders.captured'
   );
@@ -13901,6 +13915,44 @@ apiRouter.post('/tools/site-audit/scan', handleSiteAuditScan);
 apiRouter.post('/api/v1/tools/site-audit/scan', handleSiteAuditScan);
 
 /**
+ * Public Fix-Pack Verification Recheck (authorized strictly by valid non-expired HMAC delivery token)
+ */
+const handleSiteAuditRecheck = async (c: any) => {
+  const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
+  const { SecureFetchError } = await import('../tools/site-audit/secure-url-fetcher.js');
+  const body = await c.req.json().catch(() => ({}));
+  const token = typeof body.token === 'string' ? body.token.trim() : '';
+  const url = typeof body.url === 'string' ? body.url.trim() : undefined;
+
+  if (!token) {
+    return c.json({ success: false, error: 'MISSING_DELIVERY_TOKEN' }, 400);
+  }
+
+  try {
+    const res = await SiteAuditService.getInstance().verifyFixPackRecheck({ token, url });
+    if (!res.valid) {
+      const statusCode = res.error === 'BASELINE_AUDIT_NOT_FOUND' ? 404 : 401;
+      return c.json({ success: false, error: res.error || 'INVALID_DELIVERY_TOKEN' }, statusCode);
+    }
+    return c.json({
+      success: true,
+      data: {
+        comparison: res.comparison,
+        recheckAuditId: res.recheckAudit?.auditId,
+        recheckScore: res.recheckAudit?.score
+      }
+    });
+  } catch (err: any) {
+    if (err instanceof SecureFetchError) {
+      return c.json({ success: false, code: err.code, error: err.message }, 400);
+    }
+    return c.json({ success: false, error: err?.message || 'Verification recheck failed.' }, 500);
+  }
+};
+apiRouter.post('/tools/site-audit/recheck', handleSiteAuditRecheck);
+apiRouter.post('/api/v1/tools/site-audit/recheck', handleSiteAuditRecheck);
+
+/**
  * Stage M Task 3: Inbound Opt-In ₹499 SiteFix Email Closer
  */
 const handleSiteAuditSendReport = async (c: any) => {
@@ -16461,6 +16513,336 @@ apiRouter.post('/mcp', async (c) => {
         jsonrpc: '2.0',
         id: rpcId,
         error: { code: -32603, message: err?.message || 'Internal MCP execution error' }
+      }, 500);
+    }
+  }
+
+  return c.json({
+    jsonrpc: '2.0',
+    id: rpcId,
+    error: { code: -32601, message: `Unsupported JSON-RPC method '${method}'` }
+  }, 404);
+});
+
+// ==========================================
+// SITEFIX LAUNCH GATE — STRICTLY ISOLATED PUBLIC MCP SERVER (POST /api/v1/public/mcp)
+// Exposes ONLY 3 safe SiteAuditService-backed tools. Zero PII, zero owner tools, zero internal status.
+// ==========================================
+
+const PUBLIC_SITEFIX_MCP_TOOLS = [
+  {
+    name: 'sitefix_check_url',
+    description: 'Run a deterministic, SSRF-protected pre-deployment website QA audit on a public URL (HTML metadata, Open Graph, Schema.org JSON-LD, robots.txt, sitemap.xml). Returns zero PII.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'Public http(s) URL to inspect' }
+      },
+      required: ['url']
+    }
+  },
+  {
+    name: 'sitefix_get_findings',
+    description: 'Fetch the deterministic findings and per-check IDs for an existing completed SiteFix audit ID. Returns zero PII or prospect data.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        auditId: { type: 'string', description: 'Completed SiteFix audit ID' }
+      },
+      required: ['auditId']
+    }
+  },
+  {
+    name: 'sitefix_generate_fix_preview',
+    description: 'Generate a non-PII defect summary and Fix-Pack preview showing which technical artifacts (head metadata, Open Graph, JSON-LD, robots.txt, sitemap.xml) the ₹499 Fix-Pack + included verification recheck resolves for a public URL.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'Public http(s) URL to preview Fix-Pack deliverables for' }
+      },
+      required: ['url']
+    }
+  }
+];
+
+function sanitizePublicSitefixAudit(audit: any, siteUrl: string) {
+  const findings = Array.isArray(audit?.findings)
+    ? audit.findings.map((f: any) => ({
+        checkId: String(f.id || '').startsWith('check_') ? f.id : `check_${f.id}`,
+        id: f.id,
+        category: f.category,
+        title: f.title,
+        status: f.status,
+        severity: f.severity,
+        location: f.location,
+        evidence: f.evidence,
+        recommendation: f.recommendation,
+        canAutoGenerate: Boolean(f.canAutoGenerate)
+      }))
+    : [];
+  const criticalCount = findings.filter((f: any) => f.status === 'ISSUE' && f.severity === 'CRITICAL').length;
+  const issueCount = findings.filter((f: any) => f.status === 'ISSUE' || f.status === 'WARNING').length;
+  const targetUrl = String(audit?.url || '');
+  return {
+    auditId: audit.auditId,
+    url: targetUrl,
+    scannedAt: audit.scannedAt,
+    overallStatus: audit.overallStatus,
+    score: audit.score,
+    scoreExplanation: audit.scoreExplanation,
+    criticalCount,
+    issueCount,
+    findings,
+    metrics: {
+      httpStatus: audit?.metrics?.httpStatus,
+      responseTimeMs: audit?.metrics?.responseTimeMs,
+      hasRobotsTxt: Boolean(audit?.metrics?.hasRobotsTxt),
+      hasSitemap: Boolean(audit?.metrics?.hasSitemap),
+      jsonLdTypesFound: Array.isArray(audit?.metrics?.jsonLdTypesFound) ? audit.metrics.jsonLdTypesFound : []
+    },
+    disclosures: audit.disclosures,
+    canonicalSku: 'SITEFIX_AI_PACK_V1',
+    checkoutUrl: `${siteUrl}/tools/site-audit?url=${encodeURIComponent(targetUrl)}`
+  };
+}
+
+apiRouter.get('/public/mcp', (c) => {
+  c.header('Allow', 'POST');
+  return c.json({
+    jsonrpc: '2.0',
+    id: null,
+    error: { code: -32600, message: 'Method Not Allowed: Send JSON-RPC 2.0 requests via POST /api/v1/public/mcp.' }
+  }, 405);
+});
+
+apiRouter.post('/public/mcp', async (c) => {
+  const clientIp = getTrustedClientIp(c).ip;
+  if (!process.env.VITEST) {
+    const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/public/mcp', clientIp, 30, 600);
+    if (!rateLimit.allowed) {
+      return c.json({
+        jsonrpc: '2.0',
+        id: null,
+        error: { code: -32029, message: `Rate limit exceeded. Retry after ${rateLimit.retryAfterSeconds}s.` }
+      }, 429);
+    }
+  }
+
+  const body = await c.req.json().catch(() => null);
+  if (!body || typeof body !== 'object') {
+    return c.json({
+      jsonrpc: '2.0',
+      id: null,
+      error: { code: -32700, message: 'Parse error: invalid JSON payload' }
+    }, 400);
+  }
+
+  const rpcId = body.id ?? null;
+  const method = String(body.method || '').trim();
+  const params = body.params && typeof body.params === 'object' ? body.params : {};
+  const siteUrl = getTrustedPublicSiteUrl();
+  const protocolVersion = '2025-03-26';
+
+  if (method === 'initialize') {
+    return c.json({
+      jsonrpc: '2.0',
+      id: rpcId,
+      result: {
+        protocolVersion,
+        capabilities: { tools: { listChanged: false } },
+        serverInfo: {
+          name: 'sitefix-launch-gate-public-mcp',
+          version: '1.0.0'
+        }
+      }
+    });
+  }
+
+  if (method === 'notifications/initialized') {
+    return c.body(null, 202);
+  }
+
+  if (method === 'ping') {
+    return c.json({ jsonrpc: '2.0', id: rpcId, result: {} });
+  }
+
+  if (method === 'server/discover') {
+    return c.json({
+      jsonrpc: '2.0',
+      id: rpcId,
+      result: {
+        protocolVersion,
+        name: 'sitefix-launch-gate-public-mcp',
+        version: '1.0.0',
+        endpoint: `${siteUrl}/api/v1/public/mcp`,
+        tools: PUBLIC_SITEFIX_MCP_TOOLS
+      }
+    });
+  }
+
+  if (method === 'tools/list') {
+    return c.json({
+      jsonrpc: '2.0',
+      id: rpcId,
+      result: {
+        tools: PUBLIC_SITEFIX_MCP_TOOLS
+      }
+    });
+  }
+
+  if (method === 'tools/call') {
+    const toolName = String(params.name || '').trim();
+    const args = params.arguments && typeof params.arguments === 'object' ? params.arguments : {};
+
+    const allowedTools = new Set(['sitefix_check_url', 'sitefix_get_findings', 'sitefix_generate_fix_preview']);
+    if (!allowedTools.has(toolName)) {
+      return c.json({
+        jsonrpc: '2.0',
+        id: rpcId,
+        error: {
+          code: -32601,
+          message: `Unknown or restricted tool '${toolName}'. Public MCP exposes only sitefix_check_url, sitefix_get_findings, and sitefix_generate_fix_preview.`
+        }
+      }, 404);
+    }
+
+    try {
+      const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
+      const { SecureFetchError } = await import('../tools/site-audit/secure-url-fetcher.js');
+      const service = SiteAuditService.getInstance();
+
+      if (toolName === 'sitefix_check_url') {
+        const rawUrl = typeof args.url === 'string' ? args.url.trim() : '';
+        if (!rawUrl) {
+          return c.json({
+            jsonrpc: '2.0',
+            id: rpcId,
+            error: { code: -32602, message: 'Invalid params: url is required' }
+          }, 400);
+        }
+        try {
+          const audit = await service.executeScan({
+            url: rawUrl,
+            websiteType: 'DEVELOPER_LAUNCH_QA',
+            userConfirmedOwnership: true
+          });
+          const payload = sanitizePublicSitefixAudit(audit, siteUrl);
+          return c.json({
+            jsonrpc: '2.0',
+            id: rpcId,
+            result: {
+              content: [{ type: 'text', text: JSON.stringify(payload) }],
+              structuredContent: payload
+            }
+          });
+        } catch (scanErr: any) {
+          if (scanErr instanceof SecureFetchError) {
+            return c.json({
+              jsonrpc: '2.0',
+              id: rpcId,
+              error: { code: -32602, message: `Blocked or invalid URL (${scanErr.code}): ${scanErr.message}` }
+            }, 400);
+          }
+          throw scanErr;
+        }
+      }
+
+      if (toolName === 'sitefix_get_findings') {
+        const auditId = typeof args.auditId === 'string' ? args.auditId.trim() : '';
+        if (!auditId) {
+          return c.json({
+            jsonrpc: '2.0',
+            id: rpcId,
+            error: { code: -32602, message: 'Invalid params: auditId is required' }
+          }, 400);
+        }
+        const audit = await service.getAudit(auditId);
+        if (!audit) {
+          return c.json({
+            jsonrpc: '2.0',
+            id: rpcId,
+            error: { code: -32004, message: `Audit '${auditId}' not found.` }
+          }, 404);
+        }
+        const payload = sanitizePublicSitefixAudit(audit, siteUrl);
+        return c.json({
+          jsonrpc: '2.0',
+          id: rpcId,
+          result: {
+            content: [{ type: 'text', text: JSON.stringify(payload) }],
+            structuredContent: payload
+          }
+        });
+      }
+
+      if (toolName === 'sitefix_generate_fix_preview') {
+        const rawUrl = typeof args.url === 'string' ? args.url.trim() : '';
+        if (!rawUrl) {
+          return c.json({
+            jsonrpc: '2.0',
+            id: rpcId,
+            error: { code: -32602, message: 'Invalid params: url is required' }
+          }, 400);
+        }
+        try {
+          const audit = await service.executeScan({
+            url: rawUrl,
+            websiteType: 'DEVELOPER_LAUNCH_QA',
+            userConfirmedOwnership: true
+          });
+          const sanitized = sanitizePublicSitefixAudit(audit, siteUrl);
+          const failingChecks = sanitized.findings.filter((f: any) => f.status === 'ISSUE' || f.status === 'WARNING');
+          const previewPayload = {
+            auditId: sanitized.auditId,
+            url: sanitized.url,
+            score: sanitized.score,
+            overallStatus: sanitized.overallStatus,
+            defectCount: failingChecks.length,
+            criticalCount: sanitized.criticalCount,
+            failingCheckIds: failingChecks.map((f: any) => f.checkId),
+            fixPackPreview: {
+              sku: 'SITEFIX_AI_PACK_V1',
+              priceINR: 499,
+              currency: 'INR',
+              includedArtifacts: [
+                'headMetadataSnippet',
+                'openGraphSnippet',
+                'twitterCardSnippet',
+                'schemaJsonLdSnippet',
+                'robotsTxtSnippet',
+                'sitemapXmlSnippet',
+                'checklistMarkdown'
+              ],
+              includedVerificationRecheck: true,
+              snippetPreview: audit?.preview?.fixPackSnippetPreview || ''
+            },
+            checkoutUrl: sanitized.checkoutUrl,
+            disclosures: sanitized.disclosures
+          };
+          return c.json({
+            jsonrpc: '2.0',
+            id: rpcId,
+            result: {
+              content: [{ type: 'text', text: JSON.stringify(previewPayload) }],
+              structuredContent: previewPayload
+            }
+          });
+        } catch (scanErr: any) {
+          if (scanErr instanceof SecureFetchError) {
+            return c.json({
+              jsonrpc: '2.0',
+              id: rpcId,
+              error: { code: -32602, message: `Blocked or invalid URL (${scanErr.code}): ${scanErr.message}` }
+            }, 400);
+          }
+          throw scanErr;
+        }
+      }
+    } catch (err: any) {
+      return c.json({
+        jsonrpc: '2.0',
+        id: rpcId,
+        error: { code: -32603, message: err?.message || 'Public SiteFix MCP error' }
       }, 500);
     }
   }

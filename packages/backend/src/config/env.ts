@@ -287,7 +287,6 @@ export function isDomainAuthorizedForPublicAudit(
 }
 
 export const OWNER_VERIFIED_FIXPACK_PRICE_INR = 499;
-export const OWNER_VERIFIED_DIRECT_UPI_VPA = 'venkatasaiharsh149768.rzp@rxairtel';
 export const OWNER_VERIFIED_DIRECT_UPI_PAYEE_NAME = 'SiteFix AI';
 
 /**
@@ -324,31 +323,32 @@ export interface DirectUpiConfig {
 }
 
 /**
- * Reads Direct UPI payment configuration from environment variables.
- * Mirrors resolveVerificationTokens(): if explicitly set to "" or "UNSET" (or passed as an
- * empty mock env `{}` in a negative Vitest unit test), returns configured=false.
- * Otherwise falls back to the owner-declared render.yaml VPA and payee name.
+ * Reads Direct UPI payment configuration strictly from private runtime environment variables.
+ * Never falls back to any hardcoded personal VPA in source code.
+ * Returns configured=false if DIRECT_UPI_VPA (or PLATFORM_UPI_VPA) is unset, empty, or "UNSET".
  */
 export function getDirectUpiConfig(
   env: NodeJS.ProcessEnv = process.env
 ): DirectUpiConfig {
-  const rawVpa = env.DIRECT_UPI_VPA;
+  const rawVpa = env.DIRECT_UPI_VPA !== undefined ? env.DIRECT_UPI_VPA : env.PLATFORM_UPI_VPA;
   const rawPayee = env.DIRECT_UPI_PAYEE_NAME;
-  if (
-    rawVpa !== undefined && (!rawVpa.trim() || rawVpa.trim().toUpperCase() === 'UNSET') ||
-    rawPayee !== undefined && (!rawPayee.trim() || rawPayee.trim().toUpperCase() === 'UNSET')
-  ) {
+
+  const trimmedVpa = normalizeSecretValue(rawVpa);
+  if (!trimmedVpa || trimmedVpa.toUpperCase() === 'UNSET') {
     return { vpa: null, payeeName: null, configured: false };
   }
-  if (rawVpa !== undefined && rawPayee !== undefined) {
-    return { vpa: rawVpa.trim(), payeeName: rawPayee.trim(), configured: true };
+
+  if (rawPayee !== undefined) {
+    const trimmedPayee = rawPayee.trim();
+    if (!trimmedPayee || trimmedPayee.toUpperCase() === 'UNSET') {
+      return { vpa: null, payeeName: null, configured: false };
+    }
+    return { vpa: trimmedVpa, payeeName: trimmedPayee, configured: true };
   }
-  if (process.env.VITEST && !env.VITEST) {
-    return { vpa: null, payeeName: null, configured: false };
-  }
+
   return {
-    vpa: (rawVpa || OWNER_VERIFIED_DIRECT_UPI_VPA).trim(),
-    payeeName: (rawPayee || OWNER_VERIFIED_DIRECT_UPI_PAYEE_NAME).trim(),
+    vpa: trimmedVpa,
+    payeeName: OWNER_VERIFIED_DIRECT_UPI_PAYEE_NAME,
     configured: true,
   };
 }

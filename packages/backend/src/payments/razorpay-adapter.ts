@@ -388,7 +388,7 @@ export class RazorpayStandardAdapter {
    */
   public resolveAuthoritativePrice(sku?: string, requestedAmountINR?: number): { amountINR: number; amountPaise: number; canonicalSku: string } {
     if (!sku || !String(sku).trim()) {
-      throw new Error('INVALID_SKU: SKU is required. Allowed SKUs: sitefix_core_499 (₹499), sitefix_competitor_keyword_pack (₹1,999).');
+      throw new Error('INVALID_SKU: SKU is required. Allowed SKUs: SITEFIX_AI_PACK_V1 (₹499), sitefix_competitor_keyword_pack (₹1,999).');
     }
     const s = String(sku).trim().toLowerCase();
 
@@ -400,12 +400,12 @@ export class RazorpayStandardAdapter {
       expectedINR = 1999;
       expectedPaise = 199900;
       canonicalSku = 'sitefix_competitor_keyword_pack';
-    } else if (s === 'sitefix_core_499' || s === 'sitefix_ai_pack_v1' || s === 'sitefix_ai_core_fixpack') {
+    } else if (s === 'sitefix_ai_pack_v1' || s === 'sitefix_core_499' || s === 'sitefix_ai_core_fixpack') {
       expectedINR = 499;
       expectedPaise = 49900;
-      canonicalSku = 'sitefix_core_499';
+      canonicalSku = 'SITEFIX_AI_PACK_V1';
     } else {
-      throw new Error(`INVALID_SKU: Unknown SKU "${sku}". Allowed SKUs: sitefix_core_499 (₹499), sitefix_competitor_keyword_pack (₹1,999).`);
+      throw new Error(`INVALID_SKU: Unknown SKU "${sku}". Allowed SKUs: SITEFIX_AI_PACK_V1 (₹499), sitefix_competitor_keyword_pack (₹1,999).`);
     }
 
     if (requestedAmountINR !== undefined && requestedAmountINR !== null) {

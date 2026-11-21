@@ -287,12 +287,12 @@ export class ActionCooldownManager {
    * Syncs cooldown state from durable D1 into local SQLite on startup / cycle wake.
    */
   public static async syncFromD1Async(): Promise<void> {
-    if (!isProduction()) return;
+    const d1Repo = D1RevenueRepository.getInstance();
+    if (!d1Repo.isRemoteD1ReadAllowed()) return;
     try {
-      const d1Repo = D1RevenueRepository.getInstance();
       const rows = await d1Repo.query<any>(
         'action_cooldowns',
-        'SELECT * FROM action_cooldowns',
+        'SELECT * FROM action_cooldowns ORDER BY updated_at DESC LIMIT 50',
         []
       );
       if (!rows || rows.length === 0) return;

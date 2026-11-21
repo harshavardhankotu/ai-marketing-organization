@@ -500,9 +500,9 @@ export class UnifiedQuotaService {
   }
 
   public async syncFromD1Async(): Promise<void> {
-    if (!isProduction()) return;
+    if (!this.d1Repo.isRemoteD1ReadAllowed()) return;
     try {
-      const rows = await this.d1Repo.query('provider_quota_state', `SELECT * FROM provider_quota_state`);
+      const rows = await this.d1Repo.query('provider_quota_state', `SELECT * FROM provider_quota_state LIMIT 50`);
       if (Array.isArray(rows) && rows.length > 0) {
         const db = getDb();
         for (const row of rows) {

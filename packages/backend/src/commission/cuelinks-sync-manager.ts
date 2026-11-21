@@ -242,6 +242,67 @@ export class CuelinksSyncManager {
     };
   }
 
+  /**
+   * Hydrates in-memory Cuelinks sync status from D1/SQLite (`wf_cuelinks_sync_latest`,
+   * `cuelinks_campaigns`, and `public_deals`) after a container boot when memory is empty.
+   */
+  public async getStatusHydrated(): Promise<CuelinksSyncStatus> {
+    this.syncStatus.configured = this.client.isConfigured();
+    if (this.syncStatus.lastSyncTimestamp === 'NEVER' && this.syncStatus.campaignsDiscovered === 0) {
+      try {
+        const d1Repo = D1RevenueRepository.getInstance();
+        let wfRow: any = null;
+        let campCounts: any = null;
+        let dealCounts: any = null;
+
+        if (isProduction() && !process.env.VITEST) {
+          [wfRow, campCounts, dealCounts] = await Promise.all([
+            d1Repo.queryOne<any>('workflows', "SELECT status, inputs_json, outputs_json, updated_at FROM workflows WHERE id = 'wf_cuelinks_sync_latest' LIMIT 1"),
+            d1Repo.queryOne<any>('cuelinks_campaigns', "SELECT COUNT(*) as total, SUM(CASE WHEN payout_model = 'CPS' AND COALESCE(verified_commission_percent, 0) > 0 THEN 1 ELSE 0 END) as eligible FROM cuelinks_campaigns"),
+            d1Repo.queryOne<any>('public_deals', "SELECT COUNT(*) as verified_deals FROM public_deals WHERE affiliate_verified = 1 AND is_monetizable = 1 AND verification_status IN ('VERIFIED', 'AFFILIATE_VERIFIED')")
+          ]);
+        } else {
+          const { getDb } = await import('../db/client.js');
+          const db = getDb();
+          try {
+            wfRow = db.prepare("SELECT status, inputs_json, outputs_json, updated_at FROM workflows WHERE id = 'wf_cuelinks_sync_latest' LIMIT 1").get();
+          } catch {}
+          try {
+            campCounts = db.prepare("SELECT COUNT(*) as total, SUM(CASE WHEN payout_model = 'CPS' AND COALESCE(verified_commission_percent, 0) > 0 THEN 1 ELSE 0 END) as eligible FROM cuelinks_campaigns").get();
+          } catch {}
+          try {
+            dealCounts = db.prepare("SELECT COUNT(*) as verified_deals FROM public_deals WHERE affiliate_verified = 1 AND is_monetizable = 1 AND verification_status IN ('VERIFIED', 'AFFILIATE_VERIFIED')").get();
+          } catch {}
+        }
+
+        if (wfRow?.outputs_json) {
+          const outputs = JSON.parse(wfRow.outputs_json);
+          const inputs = wfRow.inputs_json ? JSON.parse(wfRow.inputs_json) : {};
+          if (inputs.channel) this.syncStatus.channel = inputs.channel;
+          this.syncStatus.campaignsDiscovered = Number(outputs.campaignsDiscovered || campCounts?.total || 0);
+          this.syncStatus.eligibleCampaignsCount = Number(outputs.eligibleCampaignsCount || campCounts?.eligible || 0);
+          this.syncStatus.offersRetrieved = Number(outputs.offersRetrieved || dealCounts?.verified_deals || 0);
+          this.syncStatus.linksConverted = Number(outputs.linksConverted || 0);
+          if (outputs.reconciliation) {
+            this.syncStatus.reconciliation = { ...this.syncStatus.reconciliation, ...outputs.reconciliation };
+          }
+          if (wfRow.updated_at) this.syncStatus.lastSyncTimestamp = String(wfRow.updated_at);
+          if (wfRow.status === 'COMPLETED' || this.syncStatus.campaignsDiscovered > 0 || Number(dealCounts?.verified_deals || 0) > 0) {
+            this.syncStatus.connected = this.syncStatus.configured;
+            this.syncStatus.status = 'SUCCESS';
+          }
+        } else if (Number(campCounts?.total || 0) > 0 || Number(dealCounts?.verified_deals || 0) > 0) {
+          this.syncStatus.campaignsDiscovered = Number(campCounts?.total || 0);
+          this.syncStatus.eligibleCampaignsCount = Number(campCounts?.eligible || 0);
+          this.syncStatus.offersRetrieved = Number(dealCounts?.verified_deals || 0);
+          this.syncStatus.connected = this.syncStatus.configured;
+          if (this.syncStatus.configured) this.syncStatus.status = 'SUCCESS';
+        }
+      } catch {}
+    }
+    return this.getStatus();
+  }
+
   public getAttemptCount(): number {
     return this.attemptCount;
   }

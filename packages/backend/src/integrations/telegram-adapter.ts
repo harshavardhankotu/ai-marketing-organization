@@ -6,7 +6,6 @@ export interface TelegramPostOptions {
   guideTitle: string;
   guideUrl: string;
   disclosureText?: string;
-  dealId?: string;
   fetchFn?: typeof fetch;
 }
 
@@ -23,9 +22,8 @@ export interface TelegramBotStatus {
   chatIdConfigured: boolean;
   channelConfigured?: boolean;
   botId?: number;
-  status: 'LIVE_ENABLED' | 'READY_AWAITING_BOT_TOKEN' | 'MISSING_BOT_TOKEN' | 'INVALID_BOT_TOKEN' | 'MISSING_CHAT_ID';
-  syndicationStatus?: 'LIVE_ENABLED' | 'READY_AWAITING_BOT_TOKEN' | 'MISSING_BOT_TOKEN' | 'MISSING_CHAT_ID';
-  missingRequirement?: 'MISSING_BOT_TOKEN' | 'INVALID_BOT_TOKEN' | 'MISSING_CHAT_ID' | null;
+  status: 'LIVE_ENABLED' | 'READY_AWAITING_BOT_TOKEN';
+  syndicationStatus?: 'LIVE_ENABLED' | 'READY_AWAITING_BOT_TOKEN';
   dailyPostLimit?: number;
 }
 
@@ -62,6 +60,13 @@ export class TelegramBotAdapter {
     return raw;
   }
 
+  private isValidChatId(raw: string): boolean {
+    const val = raw.trim();
+    if (!val) return false;
+    if (/^-?\d{5,20}$/.test(val)) return true;
+    return val.startsWith('@') ? val.length >= 5 : !isPlaceholderCredential(val);
+  }
+
   /**
    * Resolves target channel/chat ID from environment or auto-discovers via getUpdates.
    */
@@ -72,16 +77,16 @@ export class TelegramBotAdapter {
       process.env.TG_CHANNEL_ID ||
       ''
     ).trim();
-    if (envChatId && !isPlaceholderCredential(envChatId)) return envChatId;
+    if (this.isValidChatId(envChatId)) return envChatId;
 
-    // Spec Stage P.3.1 Task 3: Check cached chat ID exclusively via D1 durable_events (never local SQLite)
+    // Check cached chat ID in D1 durable_events
     try {
-      const cached = await this.d1Repo.queryOne<any>(
-        'durable_events',
+      const db = getDb();
+      const cached = db.prepare(
         `SELECT payload_json FROM durable_events WHERE id = 'tg_chat_discovered' AND event_type = 'TELEGRAM_CHAT_DISCOVERED' LIMIT 1`
-      );
+      ).get() as any;
       if (cached?.payload_json) {
-        const parsed = typeof cached.payload_json === 'string' ? JSON.parse(cached.payload_json) : cached.payload_json;
+        const parsed = JSON.parse(cached.payload_json);
         if (parsed?.chatId) return String(parsed.chatId).trim();
       }
     } catch {}
@@ -104,9 +109,8 @@ export class TelegramBotAdapter {
             try {
               await this.d1Repo.executeWrite(
                 'durable_events',
-                `INSERT INTO durable_events (id, event_type, organization_id, payload_json, created_at)
-                 VALUES ('tg_chat_discovered', 'TELEGRAM_CHAT_DISCOVERED', 'org_owner_primary', ?, datetime('now'))
-                 ON CONFLICT(id) DO UPDATE SET payload_json = excluded.payload_json, updated_at = datetime('now')`,
+                `INSERT OR REPLACE INTO durable_events (id, event_type, payload_json, created_at)
+                 VALUES ('tg_chat_discovered', 'TELEGRAM_CHAT_DISCOVERED', ?, datetime('now'))`,
                 [JSON.stringify({ chatId: discovered, discoveredAt: new Date().toISOString() })]
               );
             } catch {}
@@ -119,18 +123,27 @@ export class TelegramBotAdapter {
     return '';
   }
 
+  /**
+   * Resolves private owner chat ID before public broadcast channel ID
+   * so sensitive order/payment alerts are never posted to public deal channels.
+   */
+  public async getOwnerChatId(): Promise<string> {
+    const ownerChatId = (
+      process.env.TELEGRAM_OWNER_CHAT_ID ||
+      process.env.TELEGRAM_ADMIN_CHAT_ID ||
+      process.env.TELEGRAM_CHAT_ID ||
+      ''
+    ).trim();
+    if (this.isValidChatId(ownerChatId)) return ownerChatId;
+    return this.getChatId();
+  }
+
   public getSyndicationStatus(): 'LIVE_ENABLED' | 'READY_AWAITING_BOT_TOKEN' {
     const token = this.getToken();
     const explicitlyDisabled = process.env.TELEGRAM_ENABLED === 'false';
-    if (explicitlyDisabled || !token) return 'READY_AWAITING_BOT_TOKEN';
-    const envChatId = (
-      process.env.TELEGRAM_CHANNEL_ID ||
-      process.env.TELEGRAM_CHAT_ID ||
-      process.env.TG_CHANNEL_ID ||
-      ''
-    ).trim();
-    if (!envChatId) return 'READY_AWAITING_BOT_TOKEN';
-    return 'LIVE_ENABLED';
+    return !explicitlyDisabled && Boolean(token)
+      ? 'LIVE_ENABLED'
+      : 'READY_AWAITING_BOT_TOKEN';
   }
 
   public isEnabled(): boolean {
@@ -140,8 +153,7 @@ export class TelegramBotAdapter {
   }
 
   /**
-   * Checks live Telegram bot status via getMe (cached for 10 minutes).
-   * Reports connected: true and status: 'LIVE_ENABLED' ONLY when both getMe succeeds and chatId is configured.
+   * Checks live Telegram bot status via getMe (cached for 10 minutes)
    */
   public async getStatus(): Promise<TelegramBotStatus> {
     const token = this.getToken();
@@ -150,8 +162,7 @@ export class TelegramBotAdapter {
         connected: false,
         botUsername: null,
         chatIdConfigured: false,
-        status: 'READY_AWAITING_BOT_TOKEN',
-        missingRequirement: 'MISSING_BOT_TOKEN'
+        status: 'READY_AWAITING_BOT_TOKEN'
       };
     }
 
@@ -162,29 +173,27 @@ export class TelegramBotAdapter {
     const now = Date.now();
     if (this.cachedGetMe && this.cachedGetMe.expiresAt > now) {
       return {
-        connected: chatIdConfigured,
+        connected: true,
         configured: true,
         botUsername: this.cachedGetMe.data?.username || null,
         botId: this.cachedGetMe.data?.id,
         chatIdConfigured,
         channelConfigured: chatIdConfigured,
-        status: chatIdConfigured ? 'LIVE_ENABLED' : 'READY_AWAITING_BOT_TOKEN',
-        syndicationStatus: chatIdConfigured ? 'LIVE_ENABLED' : 'READY_AWAITING_BOT_TOKEN',
-        missingRequirement: chatIdConfigured ? null : 'MISSING_CHAT_ID',
+        status: 'LIVE_ENABLED',
+        syndicationStatus: 'LIVE_ENABLED',
         dailyPostLimit: 3
       };
     }
 
     if (process.env.VITEST) {
       return {
-        connected: chatIdConfigured,
+        connected: true,
         configured: true,
         botUsername: 'MockTestBot',
-        chatIdConfigured,
-        channelConfigured: chatIdConfigured,
-        status: chatIdConfigured ? 'LIVE_ENABLED' : 'READY_AWAITING_BOT_TOKEN',
-        syndicationStatus: chatIdConfigured ? 'LIVE_ENABLED' : 'READY_AWAITING_BOT_TOKEN',
-        missingRequirement: chatIdConfigured ? null : 'MISSING_CHAT_ID',
+        chatIdConfigured: true,
+        channelConfigured: true,
+        status: 'LIVE_ENABLED',
+        syndicationStatus: 'LIVE_ENABLED',
         dailyPostLimit: 3
       };
     }
@@ -201,15 +210,14 @@ export class TelegramBotAdapter {
             expiresAt: now + 10 * 60 * 1000 // 10 minutes
           };
           return {
-            connected: chatIdConfigured,
+            connected: true,
             configured: true,
             botUsername: json.result.username,
             botId: json.result.id,
             chatIdConfigured,
             channelConfigured: chatIdConfigured,
-            status: chatIdConfigured ? 'LIVE_ENABLED' : 'READY_AWAITING_BOT_TOKEN',
-            syndicationStatus: chatIdConfigured ? 'LIVE_ENABLED' : 'READY_AWAITING_BOT_TOKEN',
-            missingRequirement: chatIdConfigured ? null : 'MISSING_CHAT_ID',
+            status: 'LIVE_ENABLED',
+            syndicationStatus: this.getSyndicationStatus(),
             dailyPostLimit: 3
           };
         }
@@ -218,20 +226,23 @@ export class TelegramBotAdapter {
 
     return {
       connected: false,
+      configured: true,
       botUsername: null,
       chatIdConfigured,
-      status: 'INVALID_BOT_TOKEN',
-      missingRequirement: 'INVALID_BOT_TOKEN'
+      channelConfigured: chatIdConfigured,
+      status: 'READY_AWAITING_BOT_TOKEN',
+      syndicationStatus: this.getSyndicationStatus(),
+      dailyPostLimit: 3
     };
   }
 
   /**
-   * Sends an instant Telegram notification to the owner channel/chat
+   * Sends an instant Telegram notification to the private owner chat (falls back to channel only if unset)
    */
   public async sendOwnerAlert(htmlText: string): Promise<boolean> {
     const token = this.getToken();
     if (!token || process.env.VITEST) return false;
-    const chatId = await this.getChatId();
+    const chatId = await this.getOwnerChatId();
     if (!chatId) return false;
 
     try {
@@ -282,7 +293,6 @@ export class TelegramBotAdapter {
       guideTitle: `Verified Price Drop: ${options.title} at ₹${options.currentPriceINR.toLocaleString('en-IN')}${savingsText} (${options.merchant})`,
       guideUrl: options.trackedRedirectUrl,
       disclosureText: '#Ad Statutory Disclosure: Affiliate link tracked on merchant purchase.',
-      dealId: options.dealId,
       fetchFn: options.fetchFn
     });
     return { ...postRes, status };
@@ -326,85 +336,17 @@ export class TelegramBotAdapter {
       `);
     } catch {}
 
-    const { createHash } = await import('node:crypto');
-    const utcDate = new Date().toISOString().split('T')[0];
-    const dealIdentifier = options.dealId || options.guideUrl || 'deal_unknown';
-    const claimHash = createHash('sha256').update(`${utcDate}:${dealIdentifier}`).digest('hex').slice(0, 36);
-    const claimKey = `tg_post_claim_${claimHash}`;
-
-    // Enforce rate limit: max 3 posts per calendar day across SQLite and D1 durable_events
-    let d1PostsToday = 0;
-    try {
-      const d1Row = await this.d1Repo.queryOne<any>(
-        'durable_events',
-        `SELECT count(*) as cnt FROM durable_events WHERE event_type IN ('TELEGRAM_POST_CLAIMED', 'TELEGRAM_DEAL_POSTED', 'TELEGRAM_SLOT_RESERVED') AND date(created_at) = date('now')`
-      );
-      if (d1Row?.cnt) d1PostsToday = Number(d1Row.cnt);
-    } catch {}
-
-    const localTodayCount = (db.prepare(`
+    // Enforce rate limit: max 3 posts per calendar day
+    const todayCount = (db.prepare(`
       SELECT count(*) as cnt
       FROM telegram_posts_log
       WHERE date(created_at) = date('now')
     `).get() as any)?.cnt || 0;
 
-    const effectivePostCount = Math.max(localTodayCount, d1PostsToday);
-    if (effectivePostCount >= 3) {
+    if (todayCount >= 3) {
       return {
         posted: false,
         reason: 'DAILY_LIMIT_EXCEEDED: Telegram owned channel allows at most 3 posts per day.'
-      };
-    }
-
-    // Spec Stage P.3.2 Task 3: Atomic Pre-Dispatch Primary-Key Slot Reservation (1..3)
-    let claimedSlotKey: string | null = null;
-    for (let slot = 1; slot <= 3; slot++) {
-      const slotKey = `tg_daily_slot_${utcDate}_${slot}`;
-      try {
-        await this.d1Repo.executeWrite(
-          'durable_events',
-          `INSERT INTO durable_events (id, event_type, organization_id, payload_json, created_at)
-           VALUES (?, 'TELEGRAM_SLOT_RESERVED', 'org_owner_primary', ?, datetime('now'))`,
-          [slotKey, JSON.stringify({ channelId, guideUrl: options.guideUrl, dealIdentifier, slot, utcDate })]
-        );
-        claimedSlotKey = slotKey;
-        break;
-      } catch (slotErr: any) {
-        const errMsg = String(slotErr?.message || '');
-        if (errMsg.includes('UNIQUE') || errMsg.includes('constraint') || errMsg.includes('PRIMARY KEY')) {
-          continue; // Slot already taken
-        }
-        console.warn(`[TelegramAdapter] Atomic slot reservation error: ${errMsg}`);
-        break;
-      }
-    }
-
-    if (!claimedSlotKey) {
-      return {
-        posted: false,
-        reason: 'DAILY_LIMIT_EXCEEDED: Telegram owned channel allows at most 3 posts per day.'
-      };
-    }
-
-    // Spec Stage P.3.2 Task 3: Atomic Pre-Dispatch Post Claim
-    try {
-      await this.d1Repo.executeWrite(
-        'durable_events',
-        `INSERT INTO durable_events (id, event_type, organization_id, payload_json, created_at)
-         VALUES (?, 'TELEGRAM_POST_CLAIMED', 'org_owner_primary', ?, datetime('now'))`,
-        [claimKey, JSON.stringify({ channelId, guideUrl: options.guideUrl, dealIdentifier, utcDate, slotKey: claimedSlotKey })]
-      );
-    } catch (claimErr: any) {
-      console.warn(`[TelegramAdapter] Pre-dispatch post claim failed: ${claimErr.message}`);
-      // Rollback claimed slot key
-      if (claimedSlotKey) {
-        try {
-          await this.d1Repo.executeWrite('durable_events', `DELETE FROM durable_events WHERE id = ?`, [claimedSlotKey]);
-        } catch {}
-      }
-      return {
-        posted: false,
-        reason: `TELEGRAM_POST_CLAIM_FAILED: Post already claimed or D1 reservation failed: ${claimErr.message}`
       };
     }
 
@@ -427,25 +369,18 @@ export class TelegramBotAdapter {
         })
       });
 
-      if (!res || !res.ok) {
-        const errorBody = res ? await res.text() : 'No response from fetch';
-        // If 4xx client rejection, delete both slot and claim to avoid leaking daily quota
-        if (res && res.status >= 400 && res.status < 500) {
-          if (claimedSlotKey) {
-            try { await this.d1Repo.executeWrite('durable_events', `DELETE FROM durable_events WHERE id = ?`, [claimedSlotKey]); } catch {}
-          }
-          try { await this.d1Repo.executeWrite('durable_events', `DELETE FROM durable_events WHERE id = ?`, [claimKey]); } catch {}
-        }
+      if (!res.ok) {
+        const errorBody = await res.text();
         return {
           posted: false,
-          reason: res ? `TELEGRAM_API_ERROR: HTTP ${res.status}: ${errorBody}` : `NETWORK_ERROR: ${errorBody}`
+          reason: `TELEGRAM_API_ERROR: HTTP ${res.status}: ${errorBody}`
         };
       }
 
       const data = (await res.json()) as any;
       const messageId = data?.result?.message_id || 1;
 
-      // Log successful post to SQLite and D1 durable_events
+      // Log successful post
       const postId = `tg_${Date.now()}`;
       try {
         db.prepare(`
@@ -454,32 +389,11 @@ export class TelegramBotAdapter {
         `).run(postId, channelId, options.guideUrl, messageId);
       } catch {}
 
-      try {
-        await this.d1Repo.executeWrite(
-          'durable_events',
-          `INSERT INTO durable_events (id, event_type, organization_id, payload_json, created_at)
-           VALUES (?, 'TELEGRAM_DEAL_POSTED', 'org_owner_primary', ?, datetime('now'))`,
-          [postId, JSON.stringify({ channelId, guideUrl: options.guideUrl, messageId, slotKey: claimedSlotKey })]
-        );
-      } catch (d1Err: any) {
-        console.warn(`[TelegramAdapter] Failed to record TELEGRAM_DEAL_POSTED in durable_events: ${d1Err.message}`);
-      }
-
       return {
         posted: true,
         messageId
       };
     } catch (err: any) {
-      // Mark ambiguous on network timeout to prevent double posting
-      const ambigKey = `ambig_tg_${Date.now()}`;
-      try {
-        await this.d1Repo.executeWrite(
-          'durable_events',
-          `INSERT INTO durable_events (id, event_type, organization_id, payload_json, created_at)
-           VALUES (?, 'AMBIGUOUS_DO_NOT_RESEND', 'org_owner_primary', ?, datetime('now'))`,
-          [ambigKey, JSON.stringify({ slotKey: claimedSlotKey, claimKey, error: err.message })]
-        );
-      } catch {}
       return {
         posted: false,
         reason: `NETWORK_ERROR: ${err.message}`

@@ -325,7 +325,7 @@ export const App: React.FC = () => {
 
           <HealthStatusCard />
 
-          {(currentTab === 'onboarding' || (!business && currentTab === 'dashboard')) && (
+          {currentTab === 'onboarding' && (
             <BusinessOnboarding
               onCompleted={(newBiz) => {
                 setBusiness(newBiz);
@@ -335,7 +335,7 @@ export const App: React.FC = () => {
             />
           )}
 
-          {currentTab === 'dashboard' && business && (
+          {currentTab === 'dashboard' && (
             <Dashboard
               metrics={analyticsData.metrics}
               business={business}
@@ -408,6 +408,7 @@ export const App: React.FC = () => {
             <Approvals
               approvals={approvals}
               onResolve={handleResolveApproval}
+              onRefresh={loadAllData}
             />
           )}
 
@@ -424,6 +425,7 @@ export const App: React.FC = () => {
               business={business}
               quota={quota}
               integrations={integrations}
+              onRefresh={loadAllData}
             />
           )}
 

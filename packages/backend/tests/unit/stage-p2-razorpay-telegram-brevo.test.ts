@@ -302,4 +302,90 @@ describe('Stage P.2 — Razorpay Standard Checkout, Telegram Auto-Wire, Brevo Au
       expect(data.telegramStatus).toBeDefined();
     });
   });
+
+  describe('Task 5: API Business Logic Regression Locks', () => {
+    it('5.1: verifyPaymentAndFulfill uses authoritative SKU amount (₹1999), signed auditId token, and buyerEmail', async () => {
+      const adapter = RazorpayStandardAdapter.getInstance();
+      const liveSecret = 'rzp_live_secret_regression_123';
+      process.env.RAZORPAY_KEY_ID = 'rzp_live_regression_key';
+      process.env.RAZORPAY_KEY_SECRET = liveSecret;
+      process.env.SITE_AUDIT_SIGNING_SECRET = 'regression_signing_secret_minimum_32_chars';
+      process.env.PUBLIC_CONTACT_EMAIL = 'owner@example.com';
+
+      const db = getDb();
+      const internalOrderId = 'ord_rzp_1999_audit_test';
+      const rzpOrderId = 'order_live_1999_test';
+      const rzpPaymentId = 'pay_live_1999_test';
+
+      db.prepare(`
+        INSERT OR REPLACE INTO universal_orders (
+          id, business_id, organization_id, offer_id, customer_name,
+          customer_email, customer_phone, amount_minor, currency, status,
+          payment_provider, provider_order_id, metadata_json, created_at, updated_at
+        ) VALUES (?, 'biz_platform_aro', 'org_owner_primary', 'sitefix_competitor_keyword_pack', 'Buyer Name',
+          'actual-buyer@company.in', '', 199900, 'INR', 'CHECKOUT',
+          'RAZORPAY', ?, ?, datetime('now'), datetime('now'))
+      `).run(
+        internalOrderId,
+        rzpOrderId,
+        JSON.stringify({
+          sku: 'sitefix_competitor_keyword_pack',
+          buyerEmail: 'actual-buyer@company.in',
+          notes: { auditId: 'audit_reg_999' }
+        })
+      );
+
+      const emailSpy = vi.spyOn(BrevoMcpClient.getInstance(), 'sendTransactionalEmail').mockResolvedValue({ success: true } as any);
+      const sig = createHmac('sha256', liveSecret).update(`${rzpOrderId}|${rzpPaymentId}`).digest('hex');
+
+      const result = await adapter.verifyPaymentAndFulfill({
+        orderId: internalOrderId,
+        razorpay_order_id: rzpOrderId,
+        razorpay_payment_id: rzpPaymentId,
+        razorpay_signature: sig
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.status).toBe('CAPTURED');
+      expect(result.downloadUrl).toContain('/api/v1/tools/site-audit/deliverable/audit_reg_999');
+      expect(result.downloadUrl).toContain('token=');
+
+      const txRow = db.prepare('SELECT amount_inr FROM transactions WHERE invoice_number = ?').get(internalOrderId) as any;
+      expect(txRow?.amount_inr).toBe(1999);
+
+      expect(emailSpy).toHaveBeenCalledTimes(1);
+      expect(emailSpy.mock.calls[0][0].to).toBe('actual-buyer@company.in');
+      expect(emailSpy.mock.calls[0][0].htmlContent).toContain('1,999.00');
+    });
+
+    it('5.2: TelegramBotAdapter.getOwnerChatId prefers TELEGRAM_OWNER_CHAT_ID over public TELEGRAM_CHANNEL_ID', async () => {
+      process.env.TELEGRAM_CHANNEL_ID = '-100999888777';
+      process.env.TELEGRAM_OWNER_CHAT_ID = '987654321';
+
+      const tg = TelegramBotAdapter.getInstance();
+      expect(await tg.getChatId()).toBe('-100999888777');
+      expect(await tg.getOwnerChatId()).toBe('987654321');
+    });
+
+    it('5.3: POST /api/v1/webhooks/brevo rejects unauthorized requests when BREVO_WEBHOOK_SECRET is set', async () => {
+      process.env.BREVO_WEBHOOK_SECRET = 'brevo_hook_secret_32_chars_min';
+      const { apiRouter } = await import('../../src/routes/api.js');
+      const app = new Hono();
+      app.route('/api/v1', apiRouter);
+
+      const badRes = await app.request('/api/v1/webhooks/brevo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-brevo-secret': 'wrong-secret' },
+        body: JSON.stringify({ event: 'hard_bounce', email: 'bounce@example.com' })
+      });
+      expect(badRes.status).toBe(401);
+
+      const goodRes = await app.request('/api/v1/webhooks/brevo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-brevo-secret': 'brevo_hook_secret_32_chars_min' },
+        body: JSON.stringify({ event: 'delivered', email: 'ok@example.com' })
+      });
+      expect(goodRes.status).toBe(200);
+    });
+  });
 });

@@ -94,7 +94,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab, pendi
                 <span>{item.label}</span>
               </div>
               {item.badge && item.badge > 0 ? (
-                <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                <span className="px-1.5 py-0.5 text-[11px] font-semibold font-mono tabular-nums rounded bg-amber-500/20 text-amber-300 border border-amber-500/40">
                   {item.badge}
                 </span>
               ) : null}
@@ -114,11 +114,11 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab, pendi
         return (
           <div className="p-4 border-t border-slate-800 text-xs text-slate-500 flex flex-col gap-1">
             <div className="flex items-center justify-between text-slate-400 font-medium">
-              <span>Target Business</span>
-              <span className="text-cyan-400 font-mono">{activeBiz?.city || 'Local Market'}</span>
+              <span>Operating Scope</span>
+              <span className="text-cyan-400 font-mono">{activeBiz?.city || 'Pan-India'}</span>
             </div>
             <div className="font-semibold text-slate-300 truncate">
-              {activeBiz?.name || 'Active Business'} {activeBiz?.monthly_budget_inr ? `(₹${(activeBiz.monthly_budget_inr / 1000).toFixed(0)}k/mo)` : ''}
+              {activeBiz?.name || 'Single-Owner System'}
             </div>
           </div>
         );

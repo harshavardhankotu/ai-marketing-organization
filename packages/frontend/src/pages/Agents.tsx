@@ -1,15 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  Bot, 
-  Search, 
-  Filter, 
-  CheckCircle2, 
-  Clock, 
-  AlertCircle, 
-  ExternalLink,
-  Shield,
-  Layers,
-  Sparkles,
+import {
+  Bot,
+  Search,
+  Play,
+  RefreshCw,
   X
 } from 'lucide-react';
 import { AgentDescriptor, formatINR } from '@ai-marketing/shared';
@@ -24,40 +18,69 @@ export const Agents: React.FC<AgentsProps> = ({ agents }) => {
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedAgent, setSelectedAgent] = useState<AgentDescriptor | null>(null);
   const [scorecards, setScorecards] = useState<Record<string, any>>({});
+  const [automationData, setAutomationData] = useState<any>(null);
+  const [runningWorkflowId, setRunningWorkflowId] = useState<string | null>(null);
+  const [workflowMessage, setWorkflowMessage] = useState<string | null>(null);
+
+  const loadAutomationAndScorecards = async () => {
+    const [scRes, autoRes] = await Promise.all([
+      api.getAgentScorecards().catch(() => ({ data: [] })),
+      api.getOwnerAutomation().catch(() => null)
+    ]);
+    const list = scRes?.data || [];
+    const map: Record<string, any> = {};
+    for (const sc of list) {
+      if (sc.agentId) map[sc.agentId] = sc;
+    }
+    setScorecards(map);
+    setAutomationData(autoRes?.data || autoRes || null);
+  };
 
   useEffect(() => {
-    let isMounted = true;
-    api.getAgentScorecards()
-      .then((res: any) => {
-        if (!isMounted) return;
-        const list = res?.data || [];
-        const map: Record<string, any> = {};
-        for (const sc of list) {
-          if (sc.agentId) {
-            map[sc.agentId] = sc;
-          }
-        }
-        setScorecards(map);
-      })
-      .catch(() => {});
-    return () => { isMounted = false; };
+    loadAutomationAndScorecards();
   }, []);
+
+  const handleRunWorkflow = async (workflowId: string) => {
+    setRunningWorkflowId(workflowId);
+    setWorkflowMessage(null);
+    try {
+      const res = await api.runAutomationWorkflow(workflowId);
+      setWorkflowMessage(
+        `Workflow ${workflowId} executed (${res?.status || res?.data?.status || 'COMPLETED'}).`
+      );
+      await loadAutomationAndScorecards();
+    } catch (err: any) {
+      setWorkflowMessage(err?.data?.error || err?.message || `Failed to run ${workflowId}.`);
+    } finally {
+      setRunningWorkflowId(null);
+    }
+  };
+
+  const handleToggleWorkflow = async (workflowId: string, nextEnabled: boolean) => {
+    try {
+      await api.toggleAutomationWorkflow(workflowId, nextEnabled);
+      await loadAutomationAndScorecards();
+    } catch {}
+  };
 
   const categories = [
     { id: 'ALL', label: 'All 80 Agents', count: agents.length },
     { id: 'RESEARCH_INTELLIGENCE', label: 'Research & Intel', count: 20 },
     { id: 'CONTENT', label: 'Content Studio', count: 20 },
     { id: 'MARKETING_GROWTH', label: 'Marketing & Growth', count: 20 },
-    { id: 'ANALYTICS_LEARNING', label: 'Analytics & Learning', count: 20 },
+    { id: 'ANALYTICS_LEARNING', label: 'Analytics & Learning', count: 20 }
   ];
 
   const filteredAgents = agents.filter(agent => {
     const matchesCategory = activeCategory === 'ALL' || agent.category === activeCategory;
-    const matchesSearch = agent.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                          agent.role.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                          agent.id.toLowerCase().includes(searchQuery.toLowerCase());
+    const matchesSearch =
+      agent.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      agent.role.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      agent.id.toLowerCase().includes(searchQuery.toLowerCase());
     return matchesCategory && matchesSearch;
   });
+
+  const workflows: any[] = automationData?.workflows || automationData?.listWorkflows || [];
 
   return (
     <div className="space-y-6">
@@ -66,14 +89,13 @@ export const Agents: React.FC<AgentsProps> = ({ agents }) => {
         <div>
           <h2 className="text-xl font-extrabold text-white flex items-center gap-2">
             <Bot className="w-5 h-5 text-cyan-400" />
-            The 80-Agent Autonomous Organization
+            AI Org (80 Agents) &amp; Live Workflow Registry
           </h2>
           <p className="text-slate-400 text-xs mt-1">
-            Governed by the Control Plane. Specialized workers orchestrated via priority queues under Gemini free-tier capacity.
+            Orchestrated via AutomationRegistryEngine and SystemDoctor under strict Gemini free-tier quotas.
           </p>
         </div>
 
-        {/* Search */}
         <div className="relative w-full sm:w-64">
           <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
           <input
@@ -86,7 +108,73 @@ export const Agents: React.FC<AgentsProps> = ({ agents }) => {
         </div>
       </div>
 
-      {/* Division Tabs */}
+      {/* Live Autonomous Workflows & Heartbeats */}
+      <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h3 className="text-sm font-bold text-white">Live Autonomous Workflows ({workflows.length})</h3>
+            <p className="text-xs text-slate-400">
+              Global Pause: <span className="font-mono text-slate-200">{automationData?.isGlobalPaused ? 'PAUSED' : 'ACTIVE'}</span>
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={loadAutomationAndScorecards}
+            className="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium inline-flex items-center gap-1.5"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span>Refresh Heartbeats</span>
+          </button>
+        </div>
+
+        {workflowMessage && (
+          <div className="p-3 rounded bg-slate-950 border border-cyan-500/30 text-xs text-cyan-200">
+            {workflowMessage}
+          </div>
+        )}
+
+        {workflows.length === 0 ? (
+          <p className="text-xs text-slate-400">No active workflow definitions returned yet.</p>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 text-xs">
+            {workflows.map((wf: any) => (
+              <div key={wf.id} className="p-3.5 rounded-lg bg-slate-950 border border-slate-800 space-y-2 flex flex-col justify-between">
+                <div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-white truncate">{wf.name || wf.id}</span>
+                    <span className={`font-mono text-[11px] ${wf.enabled ? 'text-emerald-400' : 'text-slate-500'}`}>
+                      {wf.enabled ? 'ENABLED' : 'DISABLED'}
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-slate-400 font-mono mt-1">
+                    Last Run: {wf.lastRunAt ? new Date(wf.lastRunAt).toLocaleString() : 'Never'}
+                  </div>
+                </div>
+                <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => handleToggleWorkflow(wf.id, !wf.enabled)}
+                    className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px]"
+                  >
+                    {wf.enabled ? 'Pause' : 'Enable'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={runningWorkflowId === wf.id}
+                    onClick={() => handleRunWorkflow(wf.id)}
+                    className="px-2.5 py-1 rounded bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white font-semibold text-[11px] inline-flex items-center gap-1"
+                  >
+                    <Play className="w-3 h-3" />
+                    <span>{runningWorkflowId === wf.id ? 'Running...' : 'Run Now'}</span>
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Division Filter Bar */}
       <div className="flex flex-wrap items-center gap-2 border-b border-slate-800 pb-3">
         {categories.map(c => (
           <button
@@ -94,16 +182,12 @@ export const Agents: React.FC<AgentsProps> = ({ agents }) => {
             onClick={() => setActiveCategory(c.id)}
             className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${
               activeCategory === c.id
-                ? 'bg-cyan-500 text-slate-950 shadow-md shadow-cyan-500/20 font-bold'
-                : 'bg-slate-800/80 text-slate-400 hover:text-slate-200'
+                ? 'bg-cyan-500 text-slate-950 font-bold'
+                : 'bg-slate-800 text-slate-400 hover:text-slate-200'
             }`}
           >
             <span>{c.label}</span>
-            <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${
-              activeCategory === c.id ? 'bg-slate-950 text-cyan-400' : 'bg-slate-700 text-slate-300'
-            }`}>
-              {c.count}
-            </span>
+            <span className="font-mono tabular-nums text-[11px] opacity-80">({c.count})</span>
           </button>
         ))}
       </div>
@@ -114,35 +198,28 @@ export const Agents: React.FC<AgentsProps> = ({ agents }) => {
           <div
             key={agent.id}
             onClick={() => setSelectedAgent(agent)}
-            className="p-4 rounded-xl bg-slate-900 border border-slate-800 hover:border-cyan-500/50 hover:bg-slate-850 cursor-pointer transition-all flex flex-col justify-between group shadow-sm"
+            className="p-4 rounded-xl bg-slate-900 border border-slate-800 hover:border-cyan-500/50 cursor-pointer transition-all flex flex-col justify-between group"
           >
             <div>
               <div className="flex items-center justify-between mb-2">
-                <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">
-                  {agent.id}
-                </span>
-                <span className="flex items-center gap-1 text-[11px] text-emerald-400 font-medium">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                  {agent.status}
-                </span>
+                <span className="font-mono text-[11px] text-slate-400">{agent.id}</span>
+                <span className="text-[11px] font-mono text-emerald-400 font-medium">{agent.status}</span>
               </div>
               <h3 className="font-bold text-sm text-slate-100 group-hover:text-cyan-400 transition-colors">
                 {agent.name}
               </h3>
-              <p className="text-xs text-slate-400 mt-1 line-clamp-2 leading-relaxed">
-                {agent.role}
-              </p>
+              <p className="text-xs text-slate-400 mt-1 line-clamp-2 leading-relaxed">{agent.role}</p>
             </div>
 
-            <div className="mt-4 pt-3 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-500">
+            <div className="mt-4 pt-3 border-t border-slate-800 flex items-center justify-between text-[11px] text-slate-500">
               {scorecards[agent.id] && scorecards[agent.id].realDecisionsCount > 0 ? (
                 <>
-                  <span>Decisions: <strong className="text-slate-300">{scorecards[agent.id].realDecisionsCount}</strong></span>
-                  <span>Quality: <strong className="text-slate-300">{(scorecards[agent.id].outcomeQualityScore * 100).toFixed(0)}%</strong></span>
+                  <span>Decisions: <strong className="text-slate-300 font-mono tabular-nums">{scorecards[agent.id].realDecisionsCount}</strong></span>
+                  <span>Quality: <strong className="text-slate-300 font-mono tabular-nums">{(scorecards[agent.id].outcomeQualityScore * 100).toFixed(0)}%</strong></span>
                 </>
               ) : (
                 <>
-                  <span className="font-mono text-[9px] text-slate-500 font-semibold tracking-wide">NO_VERIFIED_EXECUTION_DATA</span>
+                  <span className="font-mono text-[10px] text-slate-500">NO_EXECUTIONS</span>
                   <span>Scope: <strong className="text-slate-400">{agent.memoryScope}</strong></span>
                 </>
               )}
@@ -154,7 +231,7 @@ export const Agents: React.FC<AgentsProps> = ({ agents }) => {
       {/* Agent Contract Inspector Modal */}
       {selectedAgent && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-          <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-2xl w-full p-6 shadow-2xl relative max-h-[85vh] overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700 rounded-xl max-w-2xl w-full p-6 shadow-2xl relative max-h-[85vh] overflow-y-auto">
             <button
               onClick={() => setSelectedAgent(null)}
               className="absolute top-4 right-4 text-slate-400 hover:text-white"
@@ -163,58 +240,48 @@ export const Agents: React.FC<AgentsProps> = ({ agents }) => {
             </button>
 
             <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 flex items-center justify-center font-mono font-bold">
+              <div className="w-10 h-10 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 flex items-center justify-center font-mono font-bold">
                 {selectedAgent.id.split('-')[0]}
               </div>
               <div>
-                <div className="flex items-center gap-2">
-                  <h3 className="text-lg font-bold text-white">{selectedAgent.name}</h3>
-                  <span className="font-mono text-xs text-slate-400 bg-slate-800 px-2 py-0.5 rounded">
-                    v{selectedAgent.version}
-                  </span>
-                </div>
-                <p className="text-xs text-slate-400">{selectedAgent.role}</p>
+                <h3 className="text-lg font-bold text-white">{selectedAgent.name}</h3>
+                <p className="text-xs text-slate-400">
+                  {selectedAgent.role} · v{selectedAgent.version}
+                </p>
               </div>
             </div>
 
             <div className="space-y-4 text-xs">
-              {/* System Instruction */}
               <div>
                 <label className="block text-slate-400 font-semibold mb-1">System Instruction</label>
-                <div className="p-3 bg-slate-850 rounded-lg border border-slate-800 text-slate-300 font-mono text-[11px] leading-relaxed">
+                <div className="p-3 bg-slate-950 rounded-lg border border-slate-800 text-slate-300 font-mono text-[11px] leading-relaxed">
                   {selectedAgent.systemInstruction}
                 </div>
               </div>
 
-              {/* Capabilities & Tools */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-slate-400 font-semibold mb-1">Allowed Tools</label>
-                  <div className="flex flex-wrap gap-1">
+                  <div className="text-slate-300 font-mono text-[11px] space-y-1">
                     {selectedAgent.allowedTools.map((t, idx) => (
-                      <span key={idx} className="px-2 py-1 rounded bg-slate-800 text-slate-300 border border-slate-700">
-                        {t}
-                      </span>
+                      <div key={idx} className="p-1.5 rounded bg-slate-950 border border-slate-800">{t}</div>
                     ))}
                   </div>
                 </div>
                 <div>
                   <label className="block text-slate-400 font-semibold mb-1">Task Permissions</label>
-                  <div className="flex flex-wrap gap-1">
+                  <div className="text-cyan-400 font-mono text-[11px] space-y-1">
                     {selectedAgent.taskPermissions.map((p, idx) => (
-                      <span key={idx} className="px-2 py-1 rounded bg-cyan-950/40 text-cyan-400 border border-cyan-800/40">
-                        {p}
-                      </span>
+                      <div key={idx} className="p-1.5 rounded bg-slate-950 border border-slate-800">{p}</div>
                     ))}
                   </div>
                 </div>
               </div>
 
-              {/* Metrics */}
               <div>
-                <label className="block text-slate-400 font-semibold mb-1">Measured Performance & Telemetry</label>
+                <label className="block text-slate-400 font-semibold mb-1">Measured Performance &amp; Telemetry</label>
                 {selectedAgent && scorecards[selectedAgent.id] && scorecards[selectedAgent.id].realDecisionsCount > 0 ? (
-                  <div className="grid grid-cols-4 gap-2 p-3 bg-slate-850 rounded-lg border border-slate-800 text-center">
+                  <div className="grid grid-cols-4 gap-2 p-3 bg-slate-950 rounded-lg border border-slate-800 text-center font-mono tabular-nums">
                     <div>
                       <div className="text-slate-500 text-[10px]">Real Decisions</div>
                       <div className="font-bold text-slate-200 text-sm">{scorecards[selectedAgent.id].realDecisionsCount}</div>
@@ -233,9 +300,9 @@ export const Agents: React.FC<AgentsProps> = ({ agents }) => {
                     </div>
                   </div>
                 ) : (
-                  <div className="p-3 bg-slate-850 rounded-lg border border-slate-800 text-center">
+                  <div className="p-3 bg-slate-950 rounded-lg border border-slate-800 text-center">
                     <div className="font-mono text-xs font-semibold text-amber-400 mb-1">NO_VERIFIED_EXECUTION_DATA</div>
-                    <div className="text-slate-500 text-[11px]">Zero verified production executions recorded for {selectedAgent?.name}. Telemetry populates as autonomous cycles execute real tasks.</div>
+                    <div className="text-slate-500 text-[11px]">Zero verified production executions recorded yet for {selectedAgent?.name}.</div>
                   </div>
                 )}
               </div>

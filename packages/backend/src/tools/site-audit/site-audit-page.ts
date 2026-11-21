@@ -246,10 +246,11 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
         <div class="form-group">
           <label for="websiteType">Website Category (Optional)</label>
           <select id="websiteType">
-            <option value="LOCAL_BUSINESS">Local Business / Clinic / Service Provider</option>
+            <option value="DEVELOPER_LAUNCH_QA" selected>Developer / Website Launch QA</option>
+            <option value="SAAS">SaaS / Web App</option>
             <option value="SHOPIFY_ECOMMERCE">Shopify / Ecommerce Store</option>
             <option value="FREELANCER_PORTFOLIO">Freelancer / Portfolio / Agency</option>
-            <option value="SAAS">SaaS / Web App</option>
+            <option value="LOCAL_BUSINESS">Local Business / Service Provider</option>
             <option value="GENERAL_CONTENT">General Blog / Content Website</option>
           </select>
         </div>
@@ -675,7 +676,7 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
 
         const checkoutUrl = '/api/v1/payments/razorpay/create-order';
         const checkoutPayload = {
-          sku: 'sitefix_core_499',
+          sku: 'SITEFIX_AI_PACK_V1',
           domainOrUrl: targetDomain,
           buyerEmail: buyerEmail
         };
@@ -724,7 +725,7 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
                 razorpay_order_id: response.razorpay_order_id,
                 razorpay_payment_id: response.razorpay_payment_id,
                 razorpay_signature: response.razorpay_signature,
-                sku: 'sitefix_core_499',
+                sku: 'SITEFIX_AI_PACK_V1',
                 domainOrUrl: targetDomain
               };
 
@@ -780,16 +781,104 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
       }
     }
 
+    function parseEmbeddedTokenExpiry(token) {
+      if (!token || typeof token !== 'string') return null;
+      const parts = token.trim().split('.');
+      let expStr = null;
+      if (parts.length === 5) expStr = parts[3];
+      else if (parts.length === 4) expStr = parts[2];
+      else return null;
+      const expMs = Number.parseInt(expStr, 10);
+      return Number.isFinite(expMs) && expMs > 0 ? expMs : null;
+    }
+
+    function isEmbeddedRecheckTokenValid(token) {
+      const expMs = parseEmbeddedTokenExpiry(token);
+      return expMs !== null && Date.now() <= expMs;
+    }
+
+    function getValidRecheckToken() {
+      try {
+        const params = new URLSearchParams(window.location.search || '');
+        const urlToken = (params.get('recheckToken') || params.get('token') || '').trim();
+        if (urlToken) {
+          if (isEmbeddedRecheckTokenValid(urlToken)) {
+            try { localStorage.setItem('sitefix_recheck_token', urlToken); } catch {}
+            return urlToken;
+          }
+          try { localStorage.removeItem('sitefix_recheck_token'); } catch {}
+          return null;
+        }
+        const storedToken = (localStorage.getItem('sitefix_recheck_token') || '').trim();
+        if (storedToken) {
+          if (isEmbeddedRecheckTokenValid(storedToken)) {
+            return storedToken;
+          }
+          localStorage.removeItem('sitefix_recheck_token');
+        }
+      } catch {}
+      return null;
+    }
+
+    async function runIncludedVerificationRecheck() {
+      const token = getValidRecheckToken();
+      const outEl = document.getElementById('recheckStatusBox');
+      if (!token) {
+        if (outEl) {
+          outEl.style.display = 'block';
+          outEl.style.color = '#f87171';
+          outEl.textContent = 'Your Fix-Pack verification token is missing or expired. Expired tokens are automatically cleared.';
+        }
+        return;
+      }
+      if (outEl) {
+        outEl.style.display = 'block';
+        outEl.style.color = '#38bdf8';
+        outEl.textContent = 'Running fresh verification recheck...';
+      }
+      try {
+        const res = await fetch('/api/v1/tools/site-audit/recheck', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: token })
+        });
+        const json = await res.json();
+        if (!res.ok || !json.success) {
+          throw new Error(json.error || 'Recheck failed');
+        }
+        const cmp = json.data.comparison;
+        if (outEl) {
+          outEl.style.color = '#34d399';
+          outEl.innerHTML = '<strong>Recheck Complete:</strong> Score ' + cmp.baselineScore + ' &rarr; ' + cmp.recheckScore +
+            ' (Delta: ' + (cmp.scoreDelta >= 0 ? '+' : '') + cmp.scoreDelta + ') &bull; Resolved: ' +
+            cmp.resolvedChecks.length + ' &bull; Remaining: ' + cmp.remainingChecks.length;
+        }
+      } catch (err) {
+        if (outEl) {
+          outEl.style.color = '#f87171';
+          outEl.textContent = 'Recheck error: ' + err.message;
+        }
+      }
+    }
+
     function showDownloadSuccess(downloadUrl, paymentId, orderId) {
       document.getElementById('checkoutActionContainer').style.display = 'none';
       const box = document.getElementById('downloadSuccessBox');
       box.style.display = 'block';
       const link = document.getElementById('downloadLink');
       link.href = downloadUrl;
+      try {
+        const parsed = new URL(downloadUrl, window.location.origin);
+        const dlToken = parsed.searchParams.get('token');
+        if (dlToken && isEmbeddedRecheckTokenValid(dlToken)) {
+          localStorage.setItem('sitefix_recheck_token', dlToken);
+        }
+      } catch {}
       const refEl = document.getElementById('downloadRefDetails');
       if (refEl && (paymentId || orderId)) {
         refEl.innerHTML = (orderId ? '<strong>Order ID:</strong> ' + escapeHtml(orderId) + '<br>' : '') +
-                          (paymentId ? '<strong>Payment ID:</strong> ' + escapeHtml(paymentId) : '');
+                          (paymentId ? '<strong>Payment ID:</strong> ' + escapeHtml(paymentId) : '') +
+                          '<div style="margin-top:0.75rem;"><button type="button" onclick="runIncludedVerificationRecheck()" class="btn-primary" style="font-size:0.85rem;padding:0.5rem 0.9rem;">Run Included Verification Recheck</button><div id="recheckStatusBox" style="display:none;margin-top:0.5rem;font-size:0.85rem;"></div></div>';
       }
     }
 
@@ -998,7 +1087,7 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
       }
     })();
 
-    // Sync buyer delivery email across checkout inputs (Spec Stage P.3.5 Task 4)
+    // Sync buyer delivery email across checkout inputs & hydrate ?url= / valid recheck token
     document.addEventListener('DOMContentLoaded', function() {
       var mainEmail = document.getElementById('checkoutBuyerEmailInput');
       var upiEmail = document.getElementById('upiBuyerEmail');
@@ -1012,9 +1101,18 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
           upiEmail.dataset.userEdited = 'true';
         });
       }
+      try {
+        var params = new URLSearchParams(window.location.search || '');
+        var prefillUrl = (params.get('url') || '').trim();
+        var urlInput = document.getElementById('targetUrl');
+        if (prefillUrl && urlInput && !urlInput.value) {
+          urlInput.value = prefillUrl;
+        }
+        getValidRecheckToken();
+      } catch {}
     });
   </script>
-  ${renderCustomerDeskWidgetHtml('sitefix_core_499')}
+  ${renderCustomerDeskWidgetHtml('SITEFIX_AI_PACK_V1')}
 </body>
 </html>`;
 }

@@ -13,6 +13,7 @@
 import { isPlaceholderCredential, getDirectUpiConfig } from '../config/env.js';
 import { StripeAdapter } from '../integrations/stripe.js';
 import { RazorpayAdapter } from '../integrations/razorpay.js';
+import { GeminiProvider } from '../ai/gemini-provider.js';
 
 export type IntegrationLifecycleState =
   | 'DISCOVERED'
@@ -47,6 +48,27 @@ export interface IntegrationCapabilityMatrixReport {
 function hasValidEnv(key: string): boolean {
   const val = process.env[key];
   return Boolean(val && val.trim().length > 0 && !isPlaceholderCredential(val));
+}
+
+function hasValidServiceAccountJson(): boolean {
+  const candidates = [
+    process.env.GOOGLE_INDEXING_CREDENTIALS_JSON,
+    process.env.GOOGLE_SERVICE_ACCOUNT_JSON,
+    process.env.GOOGLE_SERVICE_ACCOUNT_KEY,
+    process.env.GOOGLE_INDEXING_SERVICE_ACCOUNT_KEY,
+    process.env.GOOGLE_INDEXING_API
+  ];
+  for (const raw of candidates) {
+    if (!raw || isPlaceholderCredential(raw)) continue;
+    try {
+      const str = raw.trim();
+      const parsed = str.startsWith('{')
+        ? JSON.parse(str)
+        : JSON.parse(Buffer.from(str, 'base64').toString('utf8'));
+      if (parsed?.client_email && parsed?.private_key) return true;
+    } catch {}
+  }
+  return false;
 }
 
 export class IntegrationCapabilityRegistry {
@@ -160,14 +182,18 @@ export class IntegrationCapabilityRegistry {
     });
 
     // 5. Meta WhatsApp Cloud API
-    const hasWaToken = hasValidEnv('WHATSAPP_ACCESS_TOKEN') || hasValidEnv('META_WHATSAPP_TOKEN');
+    const hasWaToken =
+      hasValidEnv('META_ACCESS_TOKEN') ||
+      hasValidEnv('WHATSAPP_ACCESS_TOKEN') ||
+      hasValidEnv('META_WHATSAPP_TOKEN');
     const hasWaPhone = hasValidEnv('WHATSAPP_PHONE_NUMBER_ID');
+    const hasWaSecret = hasValidEnv('META_APP_SECRET') || hasValidEnv('WHATSAPP_APP_SECRET');
     const waActive = hasWaToken && hasWaPhone;
     entries.push({
       id: 'META_WHATSAPP',
       name: 'Meta WhatsApp Cloud API',
       laneScope: 'INBOUND_SERVICE_REPLIES',
-      state: waActive && hasValidEnv('META_APP_SECRET') ? 'OPERATIONALLY_VERIFIED' : waActive ? 'AUTHENTICATED' : 'DISCOVERED',
+      state: waActive && hasWaSecret ? 'OPERATIONALLY_VERIFIED' : waActive ? 'AUTHENTICATED' : 'DISCOVERED',
       blockedLocally: !waActive,
       localLaneStatus: waActive ? 'ACTIVE' : 'LOCAL_LANE_BLOCKED',
       globalBlocker: false,
@@ -178,8 +204,13 @@ export class IntegrationCapabilityRegistry {
     });
 
     // 6. Brevo Email
-    const hasBrevo = hasValidEnv('BREVO_API_KEY') || hasValidEnv('SENDINBLUE_API_KEY');
-    const emailOutboundEnabled = process.env.OUTBOUND_ENABLED === 'true';
+    const hasBrevo =
+      hasValidEnv('BREVO_API_KEY') ||
+      hasValidEnv('BREVO_MCP_SERVER_API') ||
+      hasValidEnv('SENDINBLUE_API_KEY');
+    const emailOutboundEnabled =
+      process.env.OUTBOUND_ENABLED !== 'false' &&
+      process.env.OUTREACH_AUTOPILOT !== 'false';
     entries.push({
       id: 'BREVO_EMAIL',
       name: 'Brevo Transactional & Approved Outreach Email',
@@ -189,13 +220,13 @@ export class IntegrationCapabilityRegistry {
       localLaneStatus: hasBrevo ? 'ACTIVE' : 'LOCAL_LANE_BLOCKED',
       globalBlocker: false,
       details: hasBrevo
-        ? `Brevo API configured (${emailOutboundEnabled ? 'owner-approved dispatch live' : 'awaiting OUTBOUND_ENABLED=true'}).`
+        ? `Brevo API configured (${emailOutboundEnabled ? 'HTTPS autopilot dispatch live (<=10/day cap)' : 'paused by OUTBOUND_ENABLED=false / OUTREACH_AUTOPILOT=false'}).`
         : 'BREVO_API_KEY absent; automated email dispatch gated locally.',
       requiredAction: hasBrevo ? undefined : 'Provide BREVO_API_KEY to enable owner-approved email delivery.'
     });
 
     // 7. Google Search Console / Indexing API
-    const hasGsc = hasValidEnv('GOOGLE_INDEXING_CREDENTIALS_JSON') || hasValidEnv('GOOGLE_SERVICE_ACCOUNT_JSON');
+    const hasGsc = hasValidServiceAccountJson();
     entries.push({
       id: 'GOOGLE_SEARCH_CONSOLE',
       name: 'Google Search Indexing & GSC',
@@ -206,7 +237,7 @@ export class IntegrationCapabilityRegistry {
       globalBlocker: false,
       details: hasGsc
         ? 'RS256 OAuth2 indexing submissions configured.'
-        : 'Sitemap & HTML canonicals active; active push indexing awaits service account JSON.'
+        : 'Sitemap & HTML canonicals active; active push indexing awaits valid Service Account JSON (client_email + private_key).'
     });
 
     // 8. Google PageSpeed Insights
@@ -236,16 +267,23 @@ export class IntegrationCapabilityRegistry {
     });
 
     // 10. Google Gemini
-    const hasGemini = hasValidEnv('GEMINI_API_KEY');
+    const geminiHealth = GeminiProvider.getHealthStatus();
+    const hasGemini = geminiHealth.configuredKeysCount > 0;
+    const geminiInvalid = geminiHealth.state === 'BLOCKED_KEY_INVALID';
     entries.push({
       id: 'GOOGLE_GEMINI',
       name: 'Google Gemini AI',
       laneScope: 'EDITORIAL_SUMMARIZATION_OPTIONAL',
-      state: hasGemini ? 'AUTHORIZED' : 'DISCOVERED',
-      blockedLocally: false,
-      localLaneStatus: 'ACTIVE',
+      state: !hasGemini ? 'DISCOVERED' : geminiInvalid ? 'CONFIGURED' : 'AUTHORIZED',
+      blockedLocally: geminiInvalid,
+      localLaneStatus: geminiInvalid ? 'LOCAL_LANE_BLOCKED' : 'ACTIVE',
       globalBlocker: false,
-      details: hasGemini ? 'Gemini configured (capped at 48 calls/day).' : 'Deterministic zero-token engines active without Gemini.'
+      details: !hasGemini
+        ? 'Deterministic zero-token engines active without Gemini.'
+        : geminiInvalid
+          ? `GEMINI_API_KEY failed authentication (${geminiHealth.reason || 'API_KEY_INVALID'}); deterministic zero-token engines remain active.`
+          : 'Gemini configured (capped at 48 calls/day).',
+      requiredAction: geminiInvalid ? 'Replace GEMINI_API_KEY with a valid Google AI Studio key.' : undefined
     });
 
     // 11. Cloudflare Worker Cron

@@ -10,6 +10,8 @@ import {
   FindingSeverity,
   FindingStatus,
   ProspectTriggerSignals,
+  RecheckCheckItem,
+  RecheckComparisonResult,
   SiteAuditMetrics,
   SiteAuditPreview,
   SiteAuditResult,
@@ -1057,4 +1059,102 @@ export class SiteAuditScanner {
       `<meta name="twitter:card" content="summary_large_image">`
     ].join('\n');
   }
+}
+
+/**
+ * Generates a deterministic, stable recheck check ID for an audit finding.
+ * Every individual finding (including every individual `schema_*` check such as
+ * `schema_jsonld_missing`, `schema_jsonld_syntax_error_1`, `schema_missing_business_name`,
+ * `schema_missing_telephone`, `schema_types_detected`) receives its own distinct ID (`check_<id>`).
+ * Never collapses `schema_*` findings into a single `check_schema_jsonld` bucket.
+ */
+export function getRecheckCheckId(findingId: string): string {
+  const normalized = String(findingId || '').trim();
+  if (!normalized) return 'check_unknown';
+  return normalized.startsWith('check_') ? normalized : `check_${normalized}`;
+}
+
+/**
+ * Deterministically compares a baseline audit against a post-fix verification recheck audit
+ * using stable per-finding check IDs.
+ */
+export function compareAuditForRecheck(
+  baseline: SiteAuditResult,
+  recheck: SiteAuditResult
+): RecheckComparisonResult {
+  const isFailing = (status: FindingStatus) => status === 'ISSUE' || status === 'WARNING';
+
+  const baselineByCheckId = new Map<string, AuditFinding>();
+  for (const f of baseline.findings || []) {
+    baselineByCheckId.set(getRecheckCheckId(f.id), f);
+  }
+
+  const recheckByCheckId = new Map<string, AuditFinding>();
+  for (const f of recheck.findings || []) {
+    recheckByCheckId.set(getRecheckCheckId(f.id), f);
+  }
+
+  const resolvedChecks: RecheckCheckItem[] = [];
+  const remainingChecks: RecheckCheckItem[] = [];
+  const regressions: RecheckCheckItem[] = [];
+
+  for (const [checkId, baseFinding] of baselineByCheckId.entries()) {
+    if (!isFailing(baseFinding.status)) continue;
+    const afterFinding = recheckByCheckId.get(checkId);
+    if (!afterFinding || !isFailing(afterFinding.status)) {
+      resolvedChecks.push({
+        checkId,
+        findingId: baseFinding.id,
+        category: baseFinding.category,
+        title: baseFinding.title,
+        baselineStatus: baseFinding.status,
+        recheckStatus: afterFinding?.status || 'PASS',
+        severity: baseFinding.severity
+      });
+    } else {
+      remainingChecks.push({
+        checkId,
+        findingId: afterFinding.id,
+        category: afterFinding.category,
+        title: afterFinding.title,
+        baselineStatus: baseFinding.status,
+        recheckStatus: afterFinding.status,
+        severity: afterFinding.severity
+      });
+    }
+  }
+
+  for (const [checkId, afterFinding] of recheckByCheckId.entries()) {
+    if (!isFailing(afterFinding.status)) continue;
+    const baseFinding = baselineByCheckId.get(checkId);
+    if (!baseFinding || !isFailing(baseFinding.status)) {
+      regressions.push({
+        checkId,
+        findingId: afterFinding.id,
+        category: afterFinding.category,
+        title: afterFinding.title,
+        baselineStatus: baseFinding?.status || 'PASS',
+        recheckStatus: afterFinding.status,
+        severity: afterFinding.severity
+      });
+    }
+  }
+
+  const allCriticalResolved =
+    remainingChecks.every(c => c.severity !== 'CRITICAL') &&
+    regressions.every(c => c.severity !== 'CRITICAL');
+
+  return {
+    baselineAuditId: baseline.auditId,
+    recheckAuditId: recheck.auditId,
+    url: recheck.url,
+    baselineScore: baseline.score,
+    recheckScore: recheck.score,
+    scoreDelta: recheck.score - baseline.score,
+    resolvedChecks,
+    remainingChecks,
+    regressions,
+    allCriticalResolved,
+    checkedAt: new Date().toISOString()
+  };
 }

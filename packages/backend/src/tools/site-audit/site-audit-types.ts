@@ -122,11 +122,41 @@ export interface SiteAuditResult {
 
 export interface SiteAuditScanRequest {
   url: string;
-  websiteType?: 'LOCAL_BUSINESS' | 'SHOPIFY_ECOMMERCE' | 'FREELANCER_PORTFOLIO' | 'SAAS' | 'GENERAL_CONTENT';
+  websiteType?:
+    | 'DEVELOPER_LAUNCH_QA'
+    | 'LOCAL_BUSINESS'
+    | 'SHOPIFY_ECOMMERCE'
+    | 'FREELANCER_PORTFOLIO'
+    | 'SAAS'
+    | 'GENERAL_CONTENT';
   businessCategory?: string;
   businessName?: string;
   skipCache?: boolean;
   userConfirmedOwnership?: boolean;
+}
+
+export interface RecheckCheckItem {
+  checkId: string;
+  findingId: string;
+  category: FindingCategory;
+  title: string;
+  baselineStatus?: FindingStatus;
+  recheckStatus?: FindingStatus;
+  severity: FindingSeverity;
+}
+
+export interface RecheckComparisonResult {
+  baselineAuditId: string;
+  recheckAuditId: string;
+  url: string;
+  baselineScore: number;
+  recheckScore: number;
+  scoreDelta: number;
+  resolvedChecks: RecheckCheckItem[];
+  remainingChecks: RecheckCheckItem[];
+  regressions: RecheckCheckItem[];
+  allCriticalResolved: boolean;
+  checkedAt: string;
 }
 
 export interface FixPackDeliverable {

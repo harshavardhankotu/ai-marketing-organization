@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   CheckSquare, 
   ShieldAlert, 
@@ -20,13 +20,15 @@ import { api } from '../services/api.js';
 interface ApprovalsProps {
   approvals: any[];
   onResolve: (data: { requestId: string; action: 'APPROVE' | 'REJECT' | 'REQUEST_CHANGES'; feedbackNotes?: string }) => Promise<void>;
+  onRefresh?: () => Promise<void> | void;
 }
 
-export const Approvals: React.FC<ApprovalsProps> = ({ approvals, onResolve }) => {
+export const Approvals: React.FC<ApprovalsProps> = ({ approvals, onResolve, onRefresh }) => {
   const [feedbackNotes, setFeedbackNotes] = useState<Record<string, string>>({});
   const [loadingId, setLoadingId] = useState<string | null>(null);
   const [isHarvesting, setIsHarvesting] = useState<boolean>(false);
   const [harvestMsg, setHarvestMsg] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [readyActions, setReadyActions] = useState<any>(null);
   const [inFlightDraftIds, setInFlightDraftIds] = useState<Record<string, boolean>>({});
   const [loadingDrafts, setLoadingDrafts] = useState<boolean>(true);
@@ -78,12 +80,14 @@ export const Approvals: React.FC<ApprovalsProps> = ({ approvals, onResolve }) =>
   const handleRunFullCycle = async () => {
     setIsHarvesting(true);
     setHarvestMsg(null);
+    setActionError(null);
     try {
       await api.triggerFirstSaleLiveHarvest();
       setHarvestMsg('Full autonomous cycle executed! New deals, audits, and drafts refreshed.');
       await loadPendingDrafts();
+      await onRefresh?.();
     } catch (err: any) {
-      alert(`Harvest trigger failed: ${err.message || err.error}`);
+      setActionError(`Harvest trigger failed: ${err?.data?.error || err?.message || 'Unknown error'}`);
     } finally {
       setIsHarvesting(false);
     }
@@ -91,12 +95,14 @@ export const Approvals: React.FC<ApprovalsProps> = ({ approvals, onResolve }) =>
 
   const handleApproveDraft = async (draftId: string) => {
     setInFlightDraftIds(prev => ({ ...prev, [draftId]: true }));
+    setActionError(null);
     try {
       await api.approveAndSendFirstSaleDraft(draftId);
-      alert('Draft approved and dispatched via Brevo MCP!');
+      setHarvestMsg('Draft approved and dispatched via Brevo MCP!');
       await loadPendingDrafts();
+      await onRefresh?.();
     } catch (err: any) {
-      alert(`Dispatch failed: ${err.message || err.error}`);
+      setActionError(`Dispatch failed: ${err?.data?.error || err?.message || 'Unknown error'}`);
     } finally {
       setInFlightDraftIds(prev => {
         const next = { ...prev };
@@ -136,6 +142,13 @@ export const Approvals: React.FC<ApprovalsProps> = ({ approvals, onResolve }) =>
         <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs flex items-center gap-2">
           <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
           <span>{harvestMsg}</span>
+        </div>
+      )}
+
+      {actionError && (
+        <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-2">
+          <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+          <span>{actionError}</span>
         </div>
       )}
 

@@ -470,41 +470,59 @@ describe('Comprehensive Razorpay & UPI QR Payment Collection System (Prompt Sect
   });
 
   // 17. Correct display of the supplied QR
-  it('Case 17: Serves the authentic Razorpay UPI QR image with correct merchant VPA and name', async () => {
+  it('Case 17: Serves the authentic Razorpay UPI QR image and reads merchant VPA strictly from runtime env', async () => {
     const imgRes = await app.request('/images/razorpay-upi-qr.jpg');
     expect(imgRes.status).toBe(200);
     expect(imgRes.headers.get('content-type')).toContain('image/jpeg');
 
-    expect(OwnerAuthService.PLATFORM_UPI_VPA).toBe('venkatasaiharsh149768.rzp@rxairtel');
-    expect(OwnerAuthService.PLATFORM_MERCHANT_NAME).toBe('VENKATA SAI HARSHAVARDHAN KOTU');
-    expect(OwnerAuthService.PLATFORM_QR_ASSET_PATH).toBe('/images/razorpay-upi-qr.jpg');
+    const prevVpa = process.env.DIRECT_UPI_VPA;
+    const prevPlatformVpa = process.env.PLATFORM_UPI_VPA;
+    try {
+      delete process.env.DIRECT_UPI_VPA;
+      delete process.env.PLATFORM_UPI_VPA;
+      expect(OwnerAuthService.PLATFORM_UPI_VPA).toBeNull();
+
+      process.env.DIRECT_UPI_VPA = 'test-merchant@upi';
+      expect(OwnerAuthService.PLATFORM_UPI_VPA).toBe('test-merchant@upi');
+      expect(OwnerAuthService.PLATFORM_MERCHANT_NAME).toBe('SiteFix AI');
+      expect(OwnerAuthService.PLATFORM_QR_ASSET_PATH).toBe('/images/razorpay-upi-qr.jpg');
+    } finally {
+      if (prevVpa !== undefined) process.env.DIRECT_UPI_VPA = prevVpa; else delete process.env.DIRECT_UPI_VPA;
+      if (prevPlatformVpa !== undefined) process.env.PLATFORM_UPI_VPA = prevPlatformVpa; else delete process.env.PLATFORM_UPI_VPA;
+    }
   });
 
   // 18. Mobile and desktop payment-page behavior
   it('Case 18: Renders responsive proposal checkout page with Method A and Method B instructions', async () => {
-    const pe = ProposalEngine.getInstance();
-    const prop = pe.createProposal({
-      organizationId: ORG_ID,
-      businessId: BIZ_ID,
-      prospectId: 'pros_test_ui_01',
-      title: 'Apex Dental Care Implementation',
-      setupPriceINR: 15000,
-      monthlyPriceINR: 8000,
-      deliverables: ['Custom WhatsApp Bot', 'GBP Integration']
-    });
+    const prevVpa = process.env.DIRECT_UPI_VPA;
+    process.env.DIRECT_UPI_VPA = 'test-merchant@upi';
+    try {
+      const pe = ProposalEngine.getInstance();
+      const prop = pe.createProposal({
+        organizationId: ORG_ID,
+        businessId: BIZ_ID,
+        prospectId: 'pros_test_ui_01',
+        title: 'SiteFix Technical Implementation',
+        setupPriceINR: 15000,
+        monthlyPriceINR: 8000,
+        deliverables: ['Website Launch Audit', 'JSON-LD Fixes']
+      });
 
-    const res = await app.request(`/proposals/${prop.id}/checkout`);
-    expect(res.status).toBe(200);
-    const html = await res.text();
+      const res = await app.request(`/proposals/${prop.id}/checkout`);
+      expect(res.status).toBe(200);
+      const html = await res.text();
 
-    expect(html).toContain('Apex Dental Care Implementation');
-    expect(html).toContain('₹15,000');
-    expect(html).toContain('Method A — Razorpay Payment Link');
-    expect(html).toContain('Method B — Scan &amp; Pay via UPI QR');
-    expect(html).toContain('venkatasaiharsh149768.rzp@rxairtel');
-    expect(html).toContain('VENKATA SAI HARSHAVARDHAN KOTU');
-    expect(html).toContain('/images/razorpay-upi-qr.jpg');
-    expect(html).toContain('Report Paid UPI Transaction');
+      expect(html).toContain('SiteFix Technical Implementation');
+      expect(html).toContain('₹15,000');
+      expect(html).toContain('Method A — Razorpay Payment Link');
+      expect(html).toContain('Method B — Scan &amp; Pay via UPI QR');
+      expect(html).toContain('test-merchant@upi');
+      expect(html).toContain('SiteFix AI');
+      expect(html).toContain('/images/razorpay-upi-qr.jpg');
+      expect(html).toContain('Report Paid UPI Transaction');
+    } finally {
+      if (prevVpa !== undefined) process.env.DIRECT_UPI_VPA = prevVpa; else delete process.env.DIRECT_UPI_VPA;
+    }
   });
 
   // 19. Missing credentials and provider-unavailable behavior
@@ -599,7 +617,7 @@ describe('Comprehensive Razorpay & UPI QR Payment Collection System (Prompt Sect
         proposalId: paidPropId
       })
     });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(409);
     const body = await res.json() as any;
     expect(body.error).toBe('PROPOSAL_ALREADY_PAID');
   });
@@ -655,15 +673,21 @@ describe('Comprehensive Razorpay & UPI QR Payment Collection System (Prompt Sect
       ) VALUES (?, ?, ?, 'prosp_test_03', 'Inspect Proposal', 'Problem', 'Solution', '[]', 5, 15000, 8000, '50-50', 'WhatsApp GBP', 'Pay', 'SENT', 'test_inspect_key', datetime('now'), datetime('now'))
     `).run(propId, ORG_ID, BIZ_ID);
 
-    const res = await app.request(`/api/v1/proposals/${propId}/checkout`);
-    expect(res.status).toBe(200);
-    const body = await res.json() as any;
-    expect(body.success).toBe(true);
-    expect(body.data.proposal.id).toBe(propId);
-    expect(body.data.paymentMethods.methodA.amountINR).toBe(15000);
-    expect(body.data.paymentMethods.methodB.upiVpa).toBe('venkatasaiharsh149768.rzp@rxairtel');
-    expect(body.data.paymentMethods.methodB.merchantName).toBe('VENKATA SAI HARSHAVARDHAN KOTU');
-    expect(body.data.paymentMethods.methodB.qrAssetPath).toBe('/images/razorpay-upi-qr.jpg');
+    const prevVpa = process.env.DIRECT_UPI_VPA;
+    process.env.DIRECT_UPI_VPA = 'test-merchant@upi';
+    try {
+      const res = await app.request(`/api/v1/proposals/${propId}/checkout`);
+      expect(res.status).toBe(200);
+      const body = await res.json() as any;
+      expect(body.success).toBe(true);
+      expect(body.data.proposal.id).toBe(propId);
+      expect(body.data.paymentMethods.methodA.amountINR).toBe(15000);
+      expect(body.data.paymentMethods.methodB.upiVpa).toBe('test-merchant@upi');
+      expect(body.data.paymentMethods.methodB.merchantName).toBe('SiteFix AI');
+      expect(body.data.paymentMethods.methodB.qrAssetPath).toBe('/images/razorpay-upi-qr.jpg');
+    } finally {
+      if (prevVpa !== undefined) process.env.DIRECT_UPI_VPA = prevVpa; else delete process.env.DIRECT_UPI_VPA;
+    }
   });
 
   // 26. RazorpayAdapter supports test key fallback without claiming live

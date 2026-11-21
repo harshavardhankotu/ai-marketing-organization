@@ -47,34 +47,46 @@ describe('Stage J: Live Cuelinks /offers.json, 72h Evolutionary Rotation, Storef
       payeeName: null
     });
 
-    // 2. Default process.env fallback returns ₹499 + SiteFix AI UPI rail
-    delete process.env.SITE_AUDIT_FIXPACK_PRICE_INR;
-    delete process.env.DIRECT_UPI_VPA;
-    delete process.env.DIRECT_UPI_PAYEE_NAME;
-    expect(getSiteAuditFixpackPriceINR()).toBe(499);
-    const upi = getDirectUpiConfig();
-    expect(upi.configured).toBe(true);
-    expect(upi.vpa).toBe('venkatasaiharsh149768.rzp@rxairtel');
-    expect(upi.payeeName).toBe('SiteFix AI');
+    // 2. Default process.env returns ₹499; UPI VPA is strictly fail-closed until DIRECT_UPI_VPA is provided via runtime env
+    const prevVpa = process.env.DIRECT_UPI_VPA;
+    const prevPayee = process.env.DIRECT_UPI_PAYEE_NAME;
+    try {
+      delete process.env.SITE_AUDIT_FIXPACK_PRICE_INR;
+      delete process.env.DIRECT_UPI_VPA;
+      delete process.env.DIRECT_UPI_PAYEE_NAME;
+      expect(getSiteAuditFixpackPriceINR()).toBe(499);
+      const upiUnset = getDirectUpiConfig();
+      expect(upiUnset.configured).toBe(false);
+      expect(upiUnset.vpa).toBeNull();
 
-    // 3. SalesConversationEngine READY_TO_BUY on sitefix_core_499 -> OWNED_CHECKOUT_CREATED (₹499)
-    const engine = SalesConversationEngine.getInstance();
-    const res = await engine.handleInboundMessage({
-      organizationId: 'org_owner_primary',
-      businessId: 'biz_platform_aro',
-      channel: 'WEB_DESK',
-      messageText: 'I want to buy SiteFix Core Fix-Pack right now, send checkout link please',
-      productSlugOrContext: 'sitefix_core_499',
-      sessionId: 'sess_stagej_sitefix_01',
-      senderContact: 'founder@clinic.in',
-      senderName: 'Dr. Kavita'
-    });
+      process.env.DIRECT_UPI_VPA = 'test-merchant@upi';
+      const upi = getDirectUpiConfig();
+      expect(upi.configured).toBe(true);
+      expect(upi.vpa).toBe('test-merchant@upi');
+      expect(upi.payeeName).toBe('SiteFix AI');
 
-    expect(res.intent).toBe('READY_TO_BUY');
-    expect(res.conversationState).toBe('CHECKOUT_CREATED');
-    expect(res.checkout?.checkoutMode).toBe('OWNED_CHECKOUT_CREATED');
-    expect(res.checkout?.amountINR).toBe(499);
-    expect(res.checkout?.upiDeepLink).toContain('venkatasaiharsh149768.rzp%40rxairtel');
+      // 3. SalesConversationEngine READY_TO_BUY on sitefix_core_499 -> OWNED_CHECKOUT_CREATED (₹499)
+      const engine = SalesConversationEngine.getInstance();
+      const res = await engine.handleInboundMessage({
+        organizationId: 'org_owner_primary',
+        businessId: 'biz_platform_aro',
+        channel: 'WEB_DESK',
+        messageText: 'I want to buy SiteFix Core Fix-Pack right now, send checkout link please',
+        productSlugOrContext: 'sitefix_core_499',
+        sessionId: 'sess_stagej_sitefix_01',
+        senderContact: 'founder@saas.in',
+        senderName: 'Kavita'
+      });
+
+      expect(res.intent).toBe('READY_TO_BUY');
+      expect(res.conversationState).toBe('CHECKOUT_CREATED');
+      expect(res.checkout?.checkoutMode).toBe('OWNED_CHECKOUT_CREATED');
+      expect(res.checkout?.amountINR).toBe(499);
+      expect(res.checkout?.upiDeepLink).toContain('test-merchant%40upi');
+    } finally {
+      if (prevVpa !== undefined) process.env.DIRECT_UPI_VPA = prevVpa; else delete process.env.DIRECT_UPI_VPA;
+      if (prevPayee !== undefined) process.env.DIRECT_UPI_PAYEE_NAME = prevPayee; else delete process.env.DIRECT_UPI_PAYEE_NAME;
+    }
   });
 
   it('Task 2: Cuelinks /pub_api/v3/offers.json multi-category ingestion, CPC vs CPS parity, partner_offers & redirect resolution', async () => {

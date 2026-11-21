@@ -1111,12 +1111,18 @@ describe('Stage D & Stage E — Autonomous Daily Deals and Production Conversion
         VALUES ('audit_roastery_test_1', 'https://roasterycoffee.co.in', 'Roastery Coffee House', 78, '[]', 'COMPLETED', 0)
       `).run();
 
-      const pageRes = await app.request('/tools/site-audit?url=https%3A%2F%2Froasterycoffee.co.in');
-      expect(pageRes.status).toBe(200);
-      const html = await pageRes.text();
-      expect(html).toContain('Direct UPI Payment Option (Live INR via GPay / PhonePe / Paytm)');
-      expect(html).toContain('upi://pay?pa=venkatasaiharsh149768.rzp@rxairtel');
-      expect(html).toContain('/api/v1/offer/upi-claim');
+      const prevVpa = process.env.DIRECT_UPI_VPA;
+      process.env.DIRECT_UPI_VPA = 'test-merchant@upi';
+      try {
+        const pageRes = await app.request('/tools/site-audit?url=https%3A%2F%2Froasterycoffee.co.in');
+        expect(pageRes.status).toBe(200);
+        const html = await pageRes.text();
+        expect(html).toContain('Direct UPI Payment Option (Live INR via GPay / PhonePe / Paytm)');
+        expect(html).toContain('upi://pay?pa=test-merchant@upi');
+        expect(html).toContain('/api/v1/offer/upi-claim');
+      } finally {
+        if (prevVpa !== undefined) process.env.DIRECT_UPI_VPA = prevVpa; else delete process.env.DIRECT_UPI_VPA;
+      }
 
       try { getDb().prepare(`DELETE FROM durable_rate_limits WHERE route LIKE '%upi-claim%'`).run(); } catch {}
       const utrRef = `428901${Date.now().toString().slice(-6)}`;

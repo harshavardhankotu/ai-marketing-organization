@@ -160,15 +160,14 @@ app.all('/owner/*', async (c) => {
 });
 app.all('/owner', (c) => c.redirect('/owner/status', 302));
 
-// Top-level /cron/* routing: forwarded to /api/v1/cron/* for Cloudflare Worker cron ping reliability
-app.all('/cron/*', async (c) => {
-  const targetPath = '/api/v1' + c.req.path;
-  const newReq = new Request(new URL(targetPath, c.req.url).toString(), {
+// Top-level /workflows/first-customer route forwarding strictly to FirstCustomerStateMachine endpoint
+app.all('/workflows/first-customer', async (c) => {
+  const targetUrl = new URL('/api/v1/workflows/first-customer', c.req.url);
+  return app.fetch(new Request(targetUrl.toString(), {
     method: c.req.method,
     headers: c.req.raw.headers,
     body: ['GET', 'HEAD'].includes(c.req.method) ? undefined : await c.req.raw.clone().blob()
-  });
-  return app.fetch(newReq);
+  }));
 });
 
 // Top-level public calculator, site audit tool and capabilities routing
@@ -207,6 +206,42 @@ app.get('/capabilities', async (c) => {
     method: 'GET',
     headers: c.req.raw.headers
   }));
+});
+
+// Official Public MCP Discovery Manifest (strictly isolated to SiteFix Launch Gate tools)
+app.get('/.well-known/mcp.json', (c) => {
+  const siteUrl = getTrustedPublicSiteUrl();
+  return c.json({
+    schemaVersion: '1.0',
+    name: 'sitefix-launch-gate-public-mcp',
+    title: 'SiteFix Launch Gate — Pre-Deployment Website QA MCP',
+    version: '1.0.0',
+    description: 'Strictly isolated, unauthenticated Streamable HTTP MCP server for deterministic website launch QA (HTML metadata, Open Graph, Schema.org JSON-LD, robots.txt, sitemap.xml). Returns zero PII.',
+    transport: {
+      type: 'streamable-http',
+      url: `${siteUrl}/api/v1/public/mcp`,
+      method: 'POST',
+      protocolVersion: '2025-03-26'
+    },
+    authentication: {
+      required: false,
+      type: 'none'
+    },
+    tools: [
+      {
+        name: 'sitefix_check_url',
+        description: 'Run a deterministic website QA audit on a public URL.'
+      },
+      {
+        name: 'sitefix_get_findings',
+        description: 'Retrieve deterministic findings and per-check IDs for an existing audit ID.'
+      },
+      {
+        name: 'sitefix_generate_fix_preview',
+        description: 'Preview copy-paste Fix-Pack deliverables and verification recheck coverage for a public URL.'
+      }
+    ]
+  });
 });
 
 // Top-level public homepage route (B2B AI Inbound Lead Triage Storefront + Evolved Featured Deals)
@@ -457,13 +492,16 @@ app.get('/proposals/:id/checkout', async (c) => {
       <!-- Method B -->
       <div class="card">
         <h3 style="color: #34d399; margin-bottom: 0.75rem;">Method B — Scan &amp; Pay via UPI QR</h3>
+        ${upiVpa ? `
         <p style="color: var(--muted); font-size: 0.9rem; margin-bottom: 1rem;">Scan using Google Pay, PhonePe, Paytm, or BHIM. Enter invoice amount ₹${proposal.setupPriceINR.toLocaleString('en-IN')}.</p>
         <div class="qr-box">
           <img src="${qrAssetPath}" alt="Razorpay UPI QR" class="qr-img" onclick="window.open(this.src, '_blank')">
           <p style="font-size: 0.85rem; color: #fff; font-weight: 600; margin-top: 0.5rem;">${merchantName}</p>
           <p style="font-size: 0.8rem; color: var(--muted); margin-top: 0.2rem;"><code>${upiVpa}</code></p>
           <button class="btn btn-secondary" onclick="navigator.clipboard.writeText('${upiVpa}'); alert('UPI ID copied!')">Copy UPI ID</button>
-        </div>
+        </div>` : `
+        <p style="color: #fcd34d; font-size: 0.9rem; margin-bottom: 0.5rem;">Direct UPI VPA is not configured in this environment. Use Method A (Razorpay Payment Link) for instant checkout.</p>
+        `}
       </div>
     </div>
 
@@ -938,18 +976,18 @@ app.get('/revenue', async (c) => {
       <p>Real-time metrics separating external visitor demand from test runs. We never report test clicks as real visitors, nor pending commissions as cash.</p>
     </div>
 
-    <!-- Direct B2B Lead Conversion Funnel Section -->
-    <h2 class="section-title">Direct B2B Lead Conversion Funnel (Healthcare &amp; Local Services)</h2>
+    <!-- Direct Commercial & SiteFix Launch Gate Funnel Section -->
+    <h2 class="section-title">Direct Commercial &amp; SiteFix Launch Gate Funnel</h2>
     <div class="grid">
       <div class="metric-card">
         <div class="metric-label">Researched Prospects</div>
         <div class="metric-value">${b2b.prospectsResearched}</div>
-        <div class="metric-sub">Verified Indian healthcare &amp; dental practices</div>
+        <div class="metric-sub">Verified business &amp; web launch records</div>
       </div>
       <div class="metric-card">
         <div class="metric-label">Inbound Inquiries</div>
         <div class="metric-value">${b2b.inquiriesReceived}</div>
-        <div class="metric-sub">Direct clinic inquiries received</div>
+        <div class="metric-sub">Direct inbound requests received</div>
       </div>
       <div class="metric-card">
         <div class="metric-label">Outreach Drafts Prepared</div>
@@ -1401,39 +1439,52 @@ export async function startServer(): Promise<any> {
 
   // Run synchronization and warm-up gates asynchronously so HTTP traffic is accepted immediately
   void (async () => {
+    const quotaTrippedOnBoot = d1.isRemoteD1QuotaExhausted();
+    if (quotaTrippedOnBoot) {
+      console.info('[Startup Sync] Remote D1 quota circuit breaker open; skipping remote D1 startup syncs and using local SQLite cache.');
+    }
+
     // 3. Durable Quota Gate: Synchronize counters from Cloudflare D1
-    try {
-      await UnifiedQuotaService.getInstance().syncFromD1Async();
-      console.log('[Quota Gate] Synchronized durable quota counters from Cloudflare D1.');
-    } catch (err: any) {
-      console.warn('[Quota Gate] Quota synchronization failed:', err.message);
+    if (!quotaTrippedOnBoot && !d1.isRemoteD1QuotaExhausted()) {
+      try {
+        await UnifiedQuotaService.getInstance().syncFromD1Async();
+        console.log('[Quota Gate] Synchronized durable quota counters from Cloudflare D1.');
+      } catch (err: any) {
+        console.warn('[Quota Gate] Quota synchronization failed:', err.message);
+      }
     }
 
     // 3b. Durable Action Cooldown Gate: Synchronize cooldowns from Cloudflare D1
-    try {
-      const { ActionCooldownManager } = await import('./revenue/action-cooldown-manager.js');
-      await ActionCooldownManager.syncFromD1Async();
-      console.log('[Cooldown Gate] Synchronized durable action cooldowns from Cloudflare D1.');
-    } catch (err: any) {
-      console.warn('[Cooldown Gate] Action cooldown synchronization failed:', err.message);
+    if (!quotaTrippedOnBoot && !d1.isRemoteD1QuotaExhausted()) {
+      try {
+        const { ActionCooldownManager } = await import('./revenue/action-cooldown-manager.js');
+        await ActionCooldownManager.syncFromD1Async();
+        console.log('[Cooldown Gate] Synchronized durable action cooldowns from Cloudflare D1.');
+      } catch (err: any) {
+        console.warn('[Cooldown Gate] Action cooldown synchronization failed:', err.message);
+      }
     }
 
     // 3c. Commercial Funnel Telemetry & Deal Catalog Gate: Synchronize from Cloudflare D1
-    try {
-      const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
-      await AutonomousDealDiscoveryEngine.getInstance().hydrateFunnelTelemetryFromDb();
-      await AutonomousDealDiscoveryEngine.getInstance().syncFromD1Async();
-      console.log('[Funnel Gate] Synchronized commercial funnel telemetry and deal catalog from Cloudflare D1.');
-    } catch (err: any) {
-      console.warn('[Funnel Gate] Funnel telemetry/deal synchronization failed:', err.message);
+    if (!quotaTrippedOnBoot && !d1.isRemoteD1QuotaExhausted()) {
+      try {
+        const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
+        await AutonomousDealDiscoveryEngine.getInstance().hydrateFunnelTelemetryFromDb();
+        await AutonomousDealDiscoveryEngine.getInstance().syncFromD1Async();
+        console.log('[Funnel Gate] Synchronized commercial funnel telemetry and deal catalog from Cloudflare D1.');
+      } catch (err: any) {
+        console.warn('[Funnel Gate] Funnel telemetry/deal synchronization failed:', err.message);
+      }
     }
 
-    try {
-      const { GrowthExperimentTracker } = await import('./commission/growth-experiment-tracker.js');
-      await GrowthExperimentTracker.getInstance().hydrateFromDb();
-      console.log('[Experiment Gate] Synchronized growth experiments from Cloudflare D1.');
-    } catch (err: any) {
-      console.warn('[Experiment Gate] Growth experiment synchronization failed:', err.message);
+    if (!quotaTrippedOnBoot && !d1.isRemoteD1QuotaExhausted()) {
+      try {
+        const { GrowthExperimentTracker } = await import('./commission/growth-experiment-tracker.js');
+        await GrowthExperimentTracker.getInstance().hydrateFromDb();
+        console.log('[Experiment Gate] Synchronized growth experiments from Cloudflare D1.');
+      } catch (err: any) {
+        console.warn('[Experiment Gate] Growth experiment synchronization failed:', err.message);
+      }
     }
 
     try {
@@ -1445,32 +1496,35 @@ export async function startServer(): Promise<any> {
     }
 
     // 3d. Baseline Content Assets Gate: Ensure baseline acquisition guides exist in Cloudflare D1
-    try {
-      const { ContentAssetEngine } = await import('./commission/content-asset-engine.js');
-      await ContentAssetEngine.getInstance().syncBaselineAssetsAsync();
-    } catch (err: any) {
-      console.warn('[Content Gate] Baseline content sync failed:', err.message);
+    if (!quotaTrippedOnBoot && !d1.isRemoteD1QuotaExhausted()) {
+      try {
+        const { ContentAssetEngine } = await import('./commission/content-asset-engine.js');
+        await ContentAssetEngine.getInstance().syncBaselineAssetsAsync();
+      } catch (err: any) {
+        console.warn('[Content Gate] Baseline content sync failed:', err.message);
+      }
     }
 
     // 3e. Non-Healthcare SMB Prospect Gate: Never seed regulated healthcare/dental domains (Standing Order 8)
     console.log('[Prospect Gate] Healthcare/dental seeding disabled per Standing Order 8; using live non-healthcare SMB discovery.');
 
     // 3f. Automation Registry Gate: Ensure core workflows initialized in Cloudflare D1
-    try {
-      const { AutomationRegistryEngine, WORKFLOW_DEFINITIONS } = await import('./automation/automation-registry-engine.js');
-      await AutomationRegistryEngine.getInstance().ensureInitialized();
-      console.log(`[Automation Gate] Ensured ${WORKFLOW_DEFINITIONS.length} background automation workflows initialized in Cloudflare D1.`);
-    } catch (err: any) {
-      console.warn('[Automation Gate] Automation registry initialization failed:', err.message);
+    if (!quotaTrippedOnBoot && !d1.isRemoteD1QuotaExhausted()) {
+      try {
+        const { AutomationRegistryEngine, WORKFLOW_DEFINITIONS } = await import('./automation/automation-registry-engine.js');
+        await AutomationRegistryEngine.getInstance().ensureInitialized();
+        console.log(`[Automation Gate] Ensured ${WORKFLOW_DEFINITIONS.length} background automation workflows initialized in Cloudflare D1.`);
+      } catch (err: any) {
+        console.warn('[Automation Gate] Automation registry initialization failed:', err.message);
+      }
     }
 
     // 3g. Multi-Merchant Deals Catalog Gate: Ensure approved Cuelinks merchants feeds are hydrated (V5.7 Phase 1)
     try {
       const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
       const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
-      await dealEngine.syncFromD1Async();
       const inStock = dealEngine.getAllDeals().filter(d => d.availability === 'IN_STOCK' && (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS'));
-      if (inStock.length < 5) {
+      if (inStock.length < 5 && !d1.isRemoteD1QuotaExhausted()) {
         console.log('[Catalog Gate] Ingesting live feeds from approved Cuelinks merchants into public_deals...');
         await dealEngine.harvestAllApprovedMerchantFeeds();
         console.log(`[Catalog Gate] Ingested live deals. Total active in-stock: ${dealEngine.getAllDeals().filter(d => d.availability === 'IN_STOCK').length}`);

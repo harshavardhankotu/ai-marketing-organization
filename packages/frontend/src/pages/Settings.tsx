@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Settings as SettingsIcon, 
   Cpu, 
@@ -17,6 +17,7 @@ interface SettingsProps {
   business: any;
   quota: any;
   integrations: any[];
+  onRefresh?: () => Promise<void> | void;
 }
 
 export const Settings: React.FC<SettingsProps> = ({ business, quota, integrations }) => {

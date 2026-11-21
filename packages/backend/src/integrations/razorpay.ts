@@ -499,6 +499,37 @@ export class RazorpayAdapter {
       }
     }
 
+    // Duplicate Checkout Guard: Never mint a new payment link if the linked proposal or any linked payment record is already PAID
+    if (input.proposalId) {
+      let proposalAlreadyPaid = false;
+      if (isProduction() && !process.env.VITEST) {
+        const [propRow, paidLink, paidReq, paidClaim] = await Promise.all([
+          this.d1Repo.queryOne<any>('proposals', `SELECT status FROM proposals WHERE id = ?`, [input.proposalId]).catch(() => null),
+          this.d1Repo.queryOne<any>('payment_provider_links', `SELECT provider_link_id FROM payment_provider_links WHERE proposal_id = ? AND status IN ('PAID', 'CAPTURED') LIMIT 1`, [input.proposalId]).catch(() => null),
+          this.d1Repo.queryOne<any>('payment_requests', `SELECT id FROM payment_requests WHERE proposal_id = ? AND status IN ('PAID', 'CAPTURED') LIMIT 1`, [input.proposalId]).catch(() => null),
+          this.d1Repo.queryOne<any>('manual_upi_claims', `SELECT id FROM manual_upi_claims WHERE proposal_id = ? AND status IN ('PAID', 'HUMAN_VERIFIED_PAYMENT', 'FULFILLED') LIMIT 1`, [input.proposalId]).catch(() => null),
+        ]);
+        proposalAlreadyPaid = Boolean(
+          (propRow && String(propRow.status || '').toUpperCase() === 'PAID') ||
+          paidLink || paidReq || paidClaim
+        );
+      } else {
+        try {
+          const propRow = this.db.prepare(`SELECT status FROM proposals WHERE id = ?`).get(input.proposalId) as any;
+          const paidLink = this.db.prepare(`SELECT provider_link_id FROM payment_provider_links WHERE proposal_id = ? AND status IN ('PAID', 'CAPTURED') LIMIT 1`).get(input.proposalId) as any;
+          const paidReq = this.db.prepare(`SELECT id FROM payment_requests WHERE proposal_id = ? AND status IN ('PAID', 'CAPTURED') LIMIT 1`).get(input.proposalId) as any;
+          const paidClaim = this.db.prepare(`SELECT id FROM manual_upi_claims WHERE proposal_id = ? AND status IN ('PAID', 'HUMAN_VERIFIED_PAYMENT', 'FULFILLED') LIMIT 1`).get(input.proposalId) as any;
+          proposalAlreadyPaid = Boolean(
+            (propRow && String(propRow.status || '').toUpperCase() === 'PAID') ||
+            paidLink || paidReq || paidClaim
+          );
+        } catch {}
+      }
+      if (proposalAlreadyPaid) {
+        throw new Error(`PROPOSAL_ALREADY_PAID: Proposal '${input.proposalId}' has already been paid.`);
+      }
+    }
+
     const keyId = this.getKeyId();
     const keySecret = this.getKeySecret();
     const amountPaise = Math.round(authoritativeAmountINR * 100);
@@ -2543,6 +2574,34 @@ export class RazorpayAdapter {
                 updated_at = datetime('now')
             WHERE provider_link_id = ? AND status != 'PAID'
           `).run(paymentId, matchedLinkId);
+        } catch {}
+      }
+    }
+
+    // Atomic Proposal PAID Sync on payment_link.paid / payment.captured / order.paid webhooks
+    const linkedProposalId: string | undefined =
+      storedLink?.proposal_id ||
+      storedPayReq?.proposal_id ||
+      storedOrder?.proposal_id ||
+      notes.proposal_id ||
+      notes.proposalId ||
+      undefined;
+
+    if (linkedProposalId && String(linkedProposalId).trim()) {
+      const cleanProposalId = String(linkedProposalId).trim();
+      if (isProduction() && !process.env.VITEST) {
+        await this.d1Repo.executeWrite(
+          'proposals',
+          `UPDATE proposals SET status = 'PAID', updated_at = datetime('now') WHERE id = ? AND status != 'PAID'`,
+          [cleanProposalId]
+        );
+      } else {
+        try {
+          getDb().prepare(`
+            UPDATE proposals
+            SET status = 'PAID', updated_at = datetime('now')
+            WHERE id = ? AND status != 'PAID'
+          `).run(cleanProposalId);
         } catch {}
       }
     }

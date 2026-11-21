@@ -1,0 +1,32 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
+  "name": "io.github.harshavardhankotu/sitefix-launch-gate",
+  "title": "SiteFix Launch Gate — Pre-Deployment Website QA",
+  "description": "Strictly isolated public MCP server for deterministic website launch QA (HTML metadata, Open Graph, Schema.org JSON-LD, robots.txt, sitemap.xml). Zero PII, zero auth required.",
+  "version": "1.0.0",
+  "repository": {
+    "url": "https://github.com/harshavardhankotu/ai-marketing-organization",
+    "source": "github"
+  },
+  "websiteUrl": "https://ai-marketing-organization.onrender.com/tools/site-audit",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://ai-marketing-organization.onrender.com/api/v1/public/mcp"
+    }
+  ],
+  "tools": [
+    {
+      "name": "sitefix_check_url",
+      "description": "Run a deterministic, SSRF-protected pre-deployment website QA audit on a public URL."
+    },
+    {
+      "name": "sitefix_get_findings",
+      "description": "Fetch deterministic findings and distinct per-check IDs for an existing completed SiteFix audit ID."
+    },
+    {
+      "name": "sitefix_generate_fix_preview",
+      "description": "Generate a non-PII defect summary and ₹499 Fix-Pack + verification recheck preview for a public URL."
+    }
+  ]
+}

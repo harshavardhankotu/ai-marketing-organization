@@ -1,0 +1,74 @@
+name: 'SiteFix Launch Gate — Pre-Deployment Website QA'
+description: 'Deterministic pre-deployment website QA for HTML metadata, Open Graph, Schema.org JSON-LD, robots.txt, and sitemap.xml with Markdown PR/run summaries.'
+author: 'SiteFix AI'
+branding:
+  icon: 'shield'
+  color: 'blue'
+
+inputs:
+  url:
+    description: 'Public website URL (staging or production) to audit before launch.'
+    required: true
+  fail-on-critical:
+    description: 'Fail the workflow step (exit 1) if any CRITICAL launch defect is detected (true/false).'
+    required: false
+    default: 'false'
+  api-url:
+    description: 'SiteFix Launch Gate API base URL.'
+    required: false
+    default: 'https://ai-marketing-organization.onrender.com'
+
+outputs:
+  score:
+    description: 'Deterministic SiteFix Launch Gate audit score (0-100).'
+    value: ${{ steps.sitefix-scan.outputs.score }}
+  failed_checks:
+    description: 'Total count of failing/warning launch checks.'
+    value: ${{ steps.sitefix-scan.outputs.failed_checks }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Run SiteFix Launch Gate Audit
+      id: sitefix-scan
+      shell: bash
+      env:
+        INPUT_URL: ${{ inputs.url }}
+        INPUT_FAIL_ON_CRITICAL: ${{ inputs.fail-on-critical }}
+        INPUT_API_URL: ${{ inputs.api-url }}
+      run: |
+        set -euo pipefail
+        CLI_ENTRY="${{ github.action_path }}/packages/cli/dist/cli.js"
+        if [ ! -f "$CLI_ENTRY" ]; then
+          npm --prefix "${{ github.action_path }}/packages/cli" run build
+        fi
+
+        SUMMARY_FLAG=()
+        if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+          SUMMARY_FLAG=(--summary-file "$GITHUB_STEP_SUMMARY")
+        fi
+
+        REPORT_FILE="$(mktemp)"
+        set +e
+        if [ "$INPUT_FAIL_ON_CRITICAL" = "true" ]; then
+          node "$CLI_ENTRY" "$INPUT_URL" --api-url "$INPUT_API_URL" --json --fail-on-critical "${SUMMARY_FLAG[@]}" > "$REPORT_FILE"
+          EXIT_CODE=$?
+        else
+          node "$CLI_ENTRY" "$INPUT_URL" --api-url "$INPUT_API_URL" --json "${SUMMARY_FLAG[@]}" > "$REPORT_FILE"
+          EXIT_CODE=$?
+        fi
+        set -e
+
+        if [ -s "$REPORT_FILE" ]; then
+          node -e '
+            const fs = require("fs");
+            const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            if (process.env.GITHUB_OUTPUT) {
+              fs.appendFileSync(process.env.GITHUB_OUTPUT, `score=${data.score ?? 0}\nfailed_checks=${data.failedChecks ?? 0}\n`);
+            }
+            console.log(`SiteFix Launch Gate Score: ${data.score}/100 | Failed Checks: ${data.failedChecks} | Critical: ${data.criticalCount}`);
+            console.log(`Fix-Pack (₹499) + Verification Recheck: ${data.checkoutUrl}`);
+          ' "$REPORT_FILE"
+        fi
+        rm -f "$REPORT_FILE"
+        exit "$EXIT_CODE"

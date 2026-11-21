@@ -74,15 +74,56 @@ export class GeminiProvider implements ModelProvider {
     };
   }
 
+  private static readonly DEPRECATED_MODELS = new Set([
+    'gemini-1.5-flash',
+    'gemini-1.5-pro',
+    'gemini-pro',
+    'gemini-2.0-flash',
+    'gemini-2.0-pro',
+    'gemini-2.0-flash-thinking'
+  ]);
+
+  public static isValidModelId(rawModel?: string | null): string | null {
+    const cleaned = typeof rawModel === 'string' ? rawModel.trim() : '';
+    if (!cleaned) return null;
+    if (!/^gemini-[a-z0-9._-]+$/i.test(cleaned)) return null;
+    if (GeminiProvider.DEPRECATED_MODELS.has(cleaned.toLowerCase())) return null;
+    return cleaned;
+  }
+
+  public static formatApiError(status: number, rawBody: string): string {
+    const trimmed = String(rawBody || '').trim();
+    let summary = trimmed.replace(/\s+/g, ' ');
+    try {
+      const parsed = JSON.parse(trimmed);
+      const errObj = parsed?.error || parsed;
+      const errStatus = errObj?.status ? `${errObj.status}` : '';
+      const errMsg = typeof errObj?.message === 'string' ? errObj.message.trim() : '';
+      const details = Array.isArray(errObj?.details) ? errObj.details : [];
+      const reason = details.find((d: any) => typeof d?.reason === 'string')?.reason || '';
+      const tag = [errStatus, reason].filter(Boolean).join(' / ');
+      if (errMsg || tag) {
+        summary = tag ? `(${tag}) ${errMsg}` : errMsg;
+      }
+    } catch {}
+
+    const isKeyErr = status === 400 || status === 403 || /API_KEY_INVALID|API key not valid|PERMISSION_DENIED/i.test(summary);
+    const hint = isKeyErr ? ' Check GEMINI_API_KEY in Settings > Secrets.' : '';
+    return `LLM EXECUTION = FAILED: Gemini API error ${status}: ${summary.slice(0, 240)}${hint}`;
+  }
+
   public static getModelName(): string {
-    return process.env.GEMINI_MODEL || (process.env.NODE_ENV === 'test' ? 'gemini-3.8-flash' : 'gemini-2.5-flash');
+    const validEnv = GeminiProvider.isValidModelId(process.env.GEMINI_MODEL);
+    if (validEnv) return validEnv;
+    return process.env.NODE_ENV === 'test' ? 'gemini-3.8-flash' : 'gemini-4-hydrogen';
   }
 
   public static getCandidateModels(env: NodeJS.ProcessEnv = process.env): string[] {
     const isTestEnv = env.NODE_ENV === 'test';
+    const validEnv = GeminiProvider.isValidModelId(env.GEMINI_MODEL);
     const rawList = isTestEnv
-      ? [env.GEMINI_MODEL, 'gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']
-      : [env.GEMINI_MODEL, 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+      ? [validEnv, 'gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-4-hydrogen']
+      : [validEnv, 'gemini-4-hydrogen', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'];
     const seen = new Set<string>();
     const out: string[] = [];
     for (const raw of rawList) {
@@ -308,7 +349,7 @@ export class GeminiProvider implements ModelProvider {
       if (isRateLimit && lockQuotaOnRateLimit) {
         quotaService.lockProvider('GEMINI', `Gemini API quota exhausted (${response.status})`);
       }
-      const err = new Error(`LLM EXECUTION = FAILED: Gemini API error ${response.status}: ${errText}`);
+      const err = new Error(GeminiProvider.formatApiError(response.status, errText));
       (err as any).status = response.status;
       throw err;
     }
@@ -382,7 +423,7 @@ export class GeminiProvider implements ModelProvider {
     source: 'GROUNDED_GEMINI' | 'BLOCKED_NO_KEY' | 'BLOCKED_QUOTA';
   } | null> {
     const candidates = GeminiProvider.getCandidateKeys().filter((k) => !isPlaceholderCredential(k));
-    const researchModel = process.env.GEMINI_RESEARCH_MODEL || 'gemini-2.5-flash-lite';
+    const researchModel = GeminiProvider.isValidModelId(process.env.GEMINI_RESEARCH_MODEL) || 'gemini-2.5-flash-lite';
 
     if (candidates.length === 0) {
       GeminiProvider.healthState = 'BLOCKED_NO_KEY';
@@ -419,23 +460,24 @@ export class GeminiProvider implements ModelProvider {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${researchModel}:generateContent?key=${apiKey}`;
         const response = await fetch(url, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'User-Agent': 'aistudio-build' },
           body: JSON.stringify(requestBody)
         });
 
         if (!response.ok) {
           const errText = await response.text();
+          const formattedErr = GeminiProvider.formatApiError(response.status, errText);
           const isRateLimit = response.status === 429 || errText.includes('RESOURCE_EXHAUSTED');
           const isInvalidKey = response.status === 400 || response.status === 403 || /API_KEY_INVALID|API key not valid|PERMISSION_DENIED/i.test(errText);
           if (isInvalidKey) {
             GeminiProvider.healthState = 'BLOCKED_KEY_INVALID';
-            GeminiProvider.lastHealthError = `Gemini API ${response.status}: ${errText.slice(0, 160)}`;
+            GeminiProvider.lastHealthError = formattedErr.slice(0, 200);
             GeminiProvider.lastHealthCheckedAt = new Date().toISOString();
             if (i < candidates.length - 1) continue;
           }
           quotaService.reconcile(reservation.reservationId, 1, false, undefined, isRateLimit);
           if (isRateLimit) quotaService.lockProvider('GEMINI', `Grounded research quota exhausted (${response.status})`);
-          console.error(`[GeminiProvider][grounded] API error ${response.status}: ${errText.substring(0, 200)}`);
+          console.error(`[GeminiProvider][grounded] ${formattedErr}`);
           return null;
         }
 

@@ -372,7 +372,7 @@ export class D1Client {
             if (isRender && isFinancial) {
               throw new Error(`D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1 (HTTP ${response.status}: ${errText})`);
             }
-            if (isProduction) {
+            if (isProduction && !this.isRemoteD1QuotaExhausted()) {
               throw new Error(`[D1 PERSISTENCE ERROR] D1 returned HTTP ${response.status}: ${errText}`);
             }
             console.warn(`[D1Client] Cloudflare D1 HTTP ${response.status} (${errText}) — falling back to dev store`);
@@ -607,10 +607,12 @@ export class D1Client {
           }
           throw new Error(`D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1 (${failureErrorText})`);
         }
-        if (isProduction) {
+        if (isProduction && !this.isRemoteD1QuotaExhausted()) {
           throw new Error(`[D1 PERSISTENCE ERROR] D1 batch statement failed at index ${failedIdx}: ${failureErrorText}`);
         }
-        console.warn(`[D1Client] Cloudflare D1 batch statement failed at index ${failedIdx} (${failureErrorText}) — falling back to dev store`);
+        if (!this.isRemoteD1QuotaExhausted()) {
+          console.warn(`[D1Client] Cloudflare D1 batch statement failed at index ${failedIdx} (${failureErrorText}) — falling back to dev store`);
+        }
       } else if (!fallbackToLocal) {
         this.recordUsage(0, totalWritten);
         return { rowsAffected: totalWritten, source: 'CLOUDFLARE_D1' };

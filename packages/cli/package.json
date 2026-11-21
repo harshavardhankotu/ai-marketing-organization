@@ -1,0 +1,36 @@
+{
+  "name": "sitefix-check",
+  "version": "1.0.0",
+  "description": "SiteFix Launch Gate CLI — deterministic pre-deployment website QA for HTML metadata, Open Graph, Schema.org JSON-LD, robots.txt, and sitemap.xml.",
+  "type": "module",
+  "bin": {
+    "sitefix-check": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "seo",
+    "website-qa",
+    "schema-org",
+    "json-ld",
+    "open-graph",
+    "launch-gate",
+    "ci",
+    "sitefix"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/harshavardhankotu/ai-marketing-organization.git",
+    "directory": "packages/cli"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  }
+}

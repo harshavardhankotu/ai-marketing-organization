@@ -38,7 +38,7 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
         contactEmail: 'contact@supplyspecs.in'
       });
 
-      expect(html).toContain('AI Inbound Lead Conversion System');
+      expect(html).toContain('SiteFix Launch Gate');
       expect(html).toContain('Configuration Pending Owner Attestation');
       expect(html).toContain('noindex, nofollow');
       expect(html).toContain('Direct online checkout is disabled');
@@ -81,24 +81,15 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
         upiVpa: 'owner@okhdfcbank'
       });
 
-      // Tier 1: PLATFORM_SETUP (₹15,000)
-      expect(html).toContain('Day 0–5 Setup &amp; Integration');
-      expect(html).toContain('₹15,000');
-      expect(html).toContain('Custom WhatsApp qualification &amp; FAQ bot');
-      expect(html).toContain('Delivery Time: 5 Business Days');
+      // Authoritative attested offer from owner/OWN_OFFER.md (SITEFIX_AI_PACK_V1 at ₹499, zero ₹15,000/₹8,000 fallbacks)
+      expect(html).toContain('SITEFIX_AI_PACK_V1');
+      expect(html).toContain('₹499');
+      expect(html).not.toContain('₹15,000');
+      expect(html).not.toContain('₹8,000');
 
-      // Tier 2: PLATFORM_MONTHLY (₹8,000)
-      expect(html).toContain('Monthly Retainer &amp; SLA');
-      expect(html).toContain('₹8,000');
-
-      // Audience & Refund terms from OWN_OFFER.md
-      expect(html).toContain('Who It Is For');
-      expect(html).toContain('Who Should NOT Buy');
-      expect(html).toContain('14-Day Performance Guarantee');
-
-      // Payment option: UPI
+      // Payment option: UPI using exact attested price
       expect(html).toContain('upi://pay?pa=owner%40okhdfcbank');
-      expect(html).toContain('am=15000');
+      expect(html).toContain('am=499');
     });
 
     it('file edit closes page: any edit to owner/OWN_OFFER.md alters hash and closes the page', () => {
@@ -136,7 +127,7 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
       const row = db.prepare(`SELECT * FROM referrals WHERE landing_page = '/offer' ORDER BY created_at DESC LIMIT 1`).get() as any;
       expect(row).toBeDefined();
       expect(row.landing_page).toBe('/offer');
-      expect(row.offer_id).toBe('PLATFORM_SETUP');
+      expect(row.offer_id).toBe('SITEFIX_AI_PACK_V1');
 
       // Verify ZERO revenue in revenue_records
       const revCount = (db.prepare(`SELECT COUNT(*) as c FROM revenue_records WHERE source = 'PAYMENT_PAGE_VIEW'`).get() as any).c;
@@ -227,14 +218,14 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
       const resTop = await app.request('/offer');
       expect(resTop.status).toBe(200);
       const htmlTop = await resTop.text();
-      expect(htmlTop).toContain('AI Inbound Lead Conversion System');
+      expect(htmlTop).toContain('SiteFix Launch Gate');
       expect(htmlTop).toContain('Configuration Pending Owner Attestation');
       expect(htmlTop).toContain('noindex, nofollow');
 
       const resApi = await app.request('/api/v1/offer');
       expect(resApi.status).toBe(200);
       const htmlApi = await resApi.text();
-      expect(htmlApi).toContain('AI Inbound Lead Conversion System');
+      expect(htmlApi).toContain('SiteFix Launch Gate');
     });
 
     it('serves attested commercial tiers on GET /offer when owner confirms commercial terms', async () => {
@@ -248,11 +239,10 @@ describe('Part E: Direct Lane & 4-State Payment Truth Test Suite', () => {
       const res = await app.request('/offer');
       expect(res.status).toBe(200);
       const html = await res.text();
-      expect(html).toContain('AI Inbound Lead Conversion System');
-      expect(html).toContain('Day 0–5 Setup &amp; Integration');
-      expect(html).toContain('Monthly Retainer &amp; SLA');
-      expect(html).toContain('₹15,000');
-      expect(html).toContain('₹8,000');
+      expect(html).toContain('SITEFIX_AI_PACK_V1');
+      expect(html).toContain('₹499');
+      expect(html).not.toContain('₹15,000');
+      expect(html).not.toContain('₹8,000');
       delete process.env.OWN_OFFER_CONFIRMED;
     });
 

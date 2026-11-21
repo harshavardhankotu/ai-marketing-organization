@@ -18,6 +18,7 @@ import { isPlaceholderCredential } from '../config/env.js';
 import { WhatsAppAdapter, EmailAdapter } from '../integrations/adapter-base.js';
 import { UnifiedQuotaService } from '../quota/unified-quota-service.js';
 import { D1Client } from '../db/d1-client.js';
+import { GeminiProvider } from '../ai/gemini-provider.js';
 
 export type ProviderActivationState =
   | 'NOT_CONFIGURED'
@@ -247,16 +248,25 @@ export class LiveProviderActivation {
       }
 
       case 'OUTBOUND_EMAIL': {
-        const key = process.env.SENDGRID_API_KEY;
-        const sender = process.env.PLATFORM_SENDER_EMAIL || process.env.EMAIL_FROM_ADDRESS || process.env.SENDER_EMAIL;
+        const key =
+          process.env.BREVO_API_KEY ||
+          process.env.BREVO_MCP_SERVER_API ||
+          process.env.SENDGRID_API_KEY ||
+          process.env.RESEND_API_KEY;
+        const sender =
+          process.env.BREVO_SENDER_EMAIL ||
+          process.env.PLATFORM_SENDER_EMAIL ||
+          process.env.EMAIL_FROM_ADDRESS ||
+          process.env.SENDER_EMAIL ||
+          process.env.PUBLIC_CONTACT_EMAIL;
         const hasKey = Boolean(key && !isPlaceholderCredential(key));
         const hasSender = Boolean(sender && !isPlaceholderCredential(sender) && !sender.includes('smilekraft.in'));
         const hasCreds = hasKey && hasSender;
         let failureReason: string | undefined;
         if (!hasKey) {
-          failureReason = 'SENDGRID_API_KEY is missing or placeholder';
+          failureReason = 'BREVO_API_KEY / SENDGRID_API_KEY is missing or placeholder';
         } else if (!hasSender) {
-          failureReason = 'PLATFORM_SENDER_EMAIL or EMAIL_FROM_ADDRESS is missing, placeholder, or invalid';
+          failureReason = 'BREVO_SENDER_EMAIL or PUBLIC_CONTACT_EMAIL is missing, placeholder, or invalid';
         }
         return {
           provider,
@@ -266,7 +276,7 @@ export class LiveProviderActivation {
           lastHealthCheck: now,
           lastVerifiedAt: null,
           failureReason,
-          requiredCredentials: ['SENDGRID_API_KEY', 'PLATFORM_SENDER_EMAIL or EMAIL_FROM_ADDRESS']
+          requiredCredentials: ['BREVO_API_KEY or SENDGRID_API_KEY', 'BREVO_SENDER_EMAIL or PUBLIC_CONTACT_EMAIL']
         };
       }
 
@@ -333,17 +343,29 @@ export class LiveProviderActivation {
       }
 
       case 'AI': {
-        const key = process.env.GEMINI_API_KEY;
-        const hasCreds = Boolean(key && !isPlaceholderCredential(key));
+        const geminiHealth = GeminiProvider.getHealthStatus();
+        const hasCreds = geminiHealth.configuredKeysCount > 0;
         const quota = UnifiedQuotaService.getInstance().getStatus().GEMINI;
+        const keyInvalid = geminiHealth.state === 'BLOCKED_KEY_INVALID';
+        const state: ProviderActivationState = !hasCreds
+          ? 'NOT_CONFIGURED'
+          : (keyInvalid || quota.isLocked)
+            ? 'FAILED'
+            : 'HEALTHY';
         return {
           provider,
           category: 'INTELLIGENCE',
-          state: hasCreds ? (quota.isLocked ? 'FAILED' : 'HEALTHY') : 'NOT_CONFIGURED',
-          isLiveVerified: hasCreds && !quota.isLocked,
+          state,
+          isLiveVerified: state === 'HEALTHY',
           lastHealthCheck: now,
-          lastVerifiedAt: hasCreds ? now : null,
-          failureReason: hasCreds ? (quota.isLocked ? 'Quota locked' : undefined) : 'GEMINI_API_KEY is missing or placeholder',
+          lastVerifiedAt: state === 'HEALTHY' ? now : null,
+          failureReason: !hasCreds
+            ? 'GEMINI_API_KEY is missing or placeholder'
+            : keyInvalid
+              ? (geminiHealth.reason || 'GEMINI_API_KEY rejected by Google Generative Language API (API_KEY_INVALID)')
+              : quota.isLocked
+                ? 'Quota locked'
+                : undefined,
           requiredCredentials: ['GEMINI_API_KEY']
         };
       }
@@ -369,7 +391,7 @@ export class LiveProviderActivation {
   private getRequiredCredentials(provider: CommercialProvider): string[] {
     switch (provider) {
       case 'OUTBOUND_WHATSAPP': return ['WHATSAPP_ACCESS_TOKEN', 'WHATSAPP_PHONE_NUMBER_ID'];
-      case 'OUTBOUND_EMAIL': return ['SENDGRID_API_KEY', 'PLATFORM_SENDER_EMAIL / EMAIL_FROM_ADDRESS'];
+      case 'OUTBOUND_EMAIL': return ['BREVO_API_KEY / SENDGRID_API_KEY', 'BREVO_SENDER_EMAIL / PUBLIC_CONTACT_EMAIL'];
       case 'CALENDAR': return ['GOOGLE_CALENDAR_CREDENTIALS'];
       case 'PAYMENTS': return ['RAZORPAY_KEY_ID', 'RAZORPAY_KEY_SECRET', 'RAZORPAY_WEBHOOK_SECRET'];
       case 'RESEARCH': return ['TAVILY_API_KEY'];
