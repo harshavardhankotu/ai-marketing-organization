@@ -9,6 +9,9 @@ inputs:
   url:
     description: 'Public website URL (staging or production) to audit before launch.'
     required: true
+  confirm-authorized:
+    description: "Set to 'true' to confirm you own or are authorized to audit the target URL."
+    required: true
   fail-on-critical:
     description: 'Fail the workflow step (exit 1) if any CRITICAL launch defect is detected (true/false).'
     required: false
@@ -34,13 +37,20 @@ runs:
       shell: bash
       env:
         INPUT_URL: ${{ inputs.url }}
+        INPUT_CONFIRM_AUTHORIZED: ${{ inputs.confirm-authorized }}
         INPUT_FAIL_ON_CRITICAL: ${{ inputs.fail-on-critical }}
         INPUT_API_URL: ${{ inputs.api-url }}
       run: |
         set -euo pipefail
-        CLI_ENTRY="${{ github.action_path }}/packages/cli/dist/cli.js"
+        if [ "${INPUT_CONFIRM_AUTHORIZED:-}" != "true" ]; then
+          echo "::error::Authorization required: set confirm-authorized: 'true' to confirm you own or are authorized to audit the target URL." >&2
+          exit 2
+        fi
+
+        CLI_ENTRY="${{ github.action_path }}/action-dist/cli.mjs"
         if [ ! -f "$CLI_ENTRY" ]; then
-          npm --prefix "${{ github.action_path }}/packages/cli" run build
+          echo "::error::Missing prebuilt SiteFix Action entrypoint at $CLI_ENTRY." >&2
+          exit 2
         fi
 
         SUMMARY_FLAG=()
@@ -51,16 +61,16 @@ runs:
         REPORT_FILE="$(mktemp)"
         set +e
         if [ "$INPUT_FAIL_ON_CRITICAL" = "true" ]; then
-          node "$CLI_ENTRY" "$INPUT_URL" --api-url "$INPUT_API_URL" --json --fail-on-critical "${SUMMARY_FLAG[@]}" > "$REPORT_FILE"
+          node "$CLI_ENTRY" "$INPUT_URL" --confirm-authorized --api-url "$INPUT_API_URL" --json --fail-on-critical "${SUMMARY_FLAG[@]}" > "$REPORT_FILE"
           EXIT_CODE=$?
         else
-          node "$CLI_ENTRY" "$INPUT_URL" --api-url "$INPUT_API_URL" --json "${SUMMARY_FLAG[@]}" > "$REPORT_FILE"
+          node "$CLI_ENTRY" "$INPUT_URL" --confirm-authorized --api-url "$INPUT_API_URL" --json "${SUMMARY_FLAG[@]}" > "$REPORT_FILE"
           EXIT_CODE=$?
         fi
         set -e
 
         if [ -s "$REPORT_FILE" ]; then
-          node -e '
+          node --input-type=commonjs -e '
             const fs = require("fs");
             const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
             if (process.env.GITHUB_OUTPUT) {

@@ -30,7 +30,7 @@
     "directory": "packages/cli"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/sync-action-dist.mjs",
     "typecheck": "tsc --noEmit"
   }
 }

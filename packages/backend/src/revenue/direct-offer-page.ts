@@ -490,7 +490,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <style>
         <div class="feature-item">
           <h3 style="color: #38bdf8;">1. Zero-Install CLI</h3>
           <p>Audit any staging or production URL from your terminal or CI pipeline and optionally fail builds on critical launch defects.</p>
-          <div class="code-box">npx sitefix-check https://your-site.com --fail-on-critical</div>
+          <div class="code-box">npx sitefix-check https://your-site.com --confirm-authorized --fail-on-critical</div>
         </div>
         <div class="feature-item">
           <h3 style="color: #34d399;">2. Free GitHub Action</h3>

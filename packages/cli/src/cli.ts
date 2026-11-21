@@ -6,6 +6,7 @@
  */
 
 import fs from 'node:fs';
+import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export const DEFAULT_SITEFIX_API_URL = 'https://ai-marketing-organization.onrender.com';
@@ -41,15 +42,20 @@ export interface CliAuditResult {
 export interface ParsedCliArgs {
   url: string | null;
   apiUrl: string;
+  confirmAuthorized: boolean;
   failOnCritical: boolean;
   json: boolean;
   summaryFile: string | null;
   help: boolean;
 }
 
-export function parseCliArgs(argv: string[]): ParsedCliArgs {
+export function parseCliArgs(
+  argv: string[],
+  env: Record<string, string | undefined> = process.env
+): ParsedCliArgs {
   let url: string | null = null;
-  let apiUrl = (process.env.SITEFIX_API_URL || DEFAULT_SITEFIX_API_URL).replace(/\/+$/, '');
+  let apiUrl = (env.SITEFIX_API_URL || DEFAULT_SITEFIX_API_URL).replace(/\/+$/, '');
+  let confirmAuthorized = String(env.SITEFIX_CONFIRM_AUTHORIZED || '').trim().toLowerCase() === 'true';
   let failOnCritical = false;
   let json = false;
   let summaryFile: string | null = null;
@@ -59,6 +65,10 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     const arg = argv[i];
     if (arg === '--help' || arg === '-h') {
       help = true;
+    } else if (arg === '--confirm-authorized') {
+      confirmAuthorized = true;
+    } else if (arg.startsWith('--confirm-authorized=')) {
+      confirmAuthorized = arg.slice('--confirm-authorized='.length).trim().toLowerCase() === 'true';
     } else if (arg === '--fail-on-critical') {
       failOnCritical = true;
     } else if (arg === '--json') {
@@ -76,7 +86,7 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
     }
   }
 
-  return { url, apiUrl, failOnCritical, json, summaryFile, help };
+  return { url, apiUrl, confirmAuthorized, failOnCritical, json, summaryFile, help };
 }
 
 export function buildCheckoutUrl(targetUrl: string, apiUrl: string = DEFAULT_SITEFIX_API_URL): string {
@@ -195,15 +205,22 @@ export interface RunSitefixCheckResult {
   checkoutUrl?: string;
 }
 
+export const AUTHORIZATION_REQUIRED_MESSAGE =
+  'Authorization required: pass --confirm-authorized to confirm you own or are authorized to audit the target URL.';
+
 export async function runSitefixCheck(
   argv: string[],
-  fetchImpl: typeof fetch = fetch
+  fetchImpl: typeof fetch = fetch,
+  env: Record<string, string | undefined> = process.env
 ): Promise<RunSitefixCheckResult> {
-  const parsed = parseCliArgs(argv);
+  const parsed = parseCliArgs(argv, env);
 
   if (parsed.help || !parsed.url) {
     const usage = [
-      'Usage: npx sitefix-check <url> [--fail-on-critical] [--api-url <url>] [--json] [--summary-file <path>]',
+      'Usage: npx sitefix-check <url> --confirm-authorized [--fail-on-critical] [--api-url <url>] [--json] [--summary-file <path>]',
+      '',
+      'Required:',
+      '  --confirm-authorized Confirm you own or are authorized to audit the target URL (or set SITEFIX_CONFIRM_AUTHORIZED=true)',
       '',
       'Options:',
       '  --fail-on-critical   Exit with code 1 if any CRITICAL defect is detected',
@@ -216,6 +233,16 @@ export async function runSitefixCheck(
       exitCode: parsed.help ? 0 : 2,
       stdout: parsed.help ? usage + '\n' : '',
       stderr: parsed.help ? '' : usage + '\n',
+      criticalCount: 0,
+      failedChecks: 0
+    };
+  }
+
+  if (!parsed.confirmAuthorized) {
+    return {
+      exitCode: 2,
+      stdout: '',
+      stderr: `${AUTHORIZATION_REQUIRED_MESSAGE}\n`,
       criticalCount: 0,
       failedChecks: 0
     };
@@ -238,7 +265,7 @@ export async function runSitefixCheck(
       body: JSON.stringify({
         url: normalizedUrl,
         websiteType: 'DEVELOPER_LAUNCH_QA',
-        userConfirmedOwnership: true
+        userConfirmedOwnership: parsed.confirmAuthorized
       })
     });
   } catch (err: any) {
@@ -304,14 +331,19 @@ export async function runSitefixCheck(
   };
 }
 
-// Direct CLI execution guard (safe when imported in tests)
-const isDirectExecution =
-  typeof process !== 'undefined' &&
-  Array.isArray(process.argv) &&
-  process.argv[1] &&
-  import.meta.url === pathToFileURL(process.argv[1]).href;
+function isInvokedDirectly(): boolean {
+  if (typeof process === 'undefined' || !Array.isArray(process.argv) || !process.argv[1]) {
+    return false;
+  }
+  try {
+    const resolvedArgv = fs.realpathSync(process.argv[1]);
+    return import.meta.url === pathToFileURL(resolvedArgv).href;
+  } catch {
+    return import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+  }
+}
 
-if (isDirectExecution) {
+if (isInvokedDirectly()) {
   runSitefixCheck(process.argv.slice(2))
     .then(res => {
       if (res.stdout) process.stdout.write(res.stdout);

@@ -5,10 +5,14 @@ Zero-install CLI for **SiteFix Launch Gate** — deterministic pre-deployment we
 ## Usage
 
 ```bash
-npx sitefix-check https://your-site.com
-npx sitefix-check https://your-site.com --fail-on-critical
-npx sitefix-check https://your-site.com --json
+npx sitefix-check https://your-site.com --confirm-authorized
+npx sitefix-check https://your-site.com --confirm-authorized --fail-on-critical
+npx sitefix-check https://your-site.com --confirm-authorized --json
 ```
+
+## Required Authorization
+
+- `--confirm-authorized`: Required flag confirming you own or are explicitly authorized to audit the target URL (or set `SITEFIX_CONFIRM_AUTHORIZED=true`). Omitting this flag fails closed with exit code `2` before any network request is made.
 
 ## Options
 

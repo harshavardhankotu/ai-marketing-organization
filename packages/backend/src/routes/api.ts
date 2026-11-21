@@ -16536,9 +16536,13 @@ const PUBLIC_SITEFIX_MCP_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        url: { type: 'string', description: 'Public http(s) URL to inspect' }
+        url: { type: 'string', description: 'Public http(s) URL to inspect' },
+        confirmAuthorized: {
+          type: 'boolean',
+          description: 'Must be true to confirm ownership or explicit authorization to scan the target URL.'
+        }
       },
-      required: ['url']
+      required: ['url', 'confirmAuthorized']
     }
   },
   {
@@ -16558,9 +16562,13 @@ const PUBLIC_SITEFIX_MCP_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        url: { type: 'string', description: 'Public http(s) URL to preview Fix-Pack deliverables for' }
+        url: { type: 'string', description: 'Public http(s) URL to preview Fix-Pack deliverables for' },
+        confirmAuthorized: {
+          type: 'boolean',
+          description: 'Must be true to confirm ownership or explicit authorization to scan the target URL.'
+        }
       },
-      required: ['url']
+      required: ['url', 'confirmAuthorized']
     }
   }
 ];
@@ -16720,11 +16728,21 @@ apiRouter.post('/public/mcp', async (c) => {
             error: { code: -32602, message: 'Invalid params: url is required' }
           }, 400);
         }
+        if (args.confirmAuthorized !== true) {
+          return c.json({
+            jsonrpc: '2.0',
+            id: rpcId,
+            error: {
+              code: -32602,
+              message: 'Invalid params: confirmAuthorized must be true to confirm ownership or explicit authorization to scan the target URL.'
+            }
+          }, 400);
+        }
         try {
           const audit = await service.executeScan({
             url: rawUrl,
             websiteType: 'DEVELOPER_LAUNCH_QA',
-            userConfirmedOwnership: true
+            userConfirmedOwnership: args.confirmAuthorized === true
           });
           const payload = sanitizePublicSitefixAudit(audit, siteUrl);
           return c.json({
@@ -16784,11 +16802,21 @@ apiRouter.post('/public/mcp', async (c) => {
             error: { code: -32602, message: 'Invalid params: url is required' }
           }, 400);
         }
+        if (args.confirmAuthorized !== true) {
+          return c.json({
+            jsonrpc: '2.0',
+            id: rpcId,
+            error: {
+              code: -32602,
+              message: 'Invalid params: confirmAuthorized must be true to confirm ownership or explicit authorization to scan the target URL.'
+            }
+          }, 400);
+        }
         try {
           const audit = await service.executeScan({
             url: rawUrl,
             websiteType: 'DEVELOPER_LAUNCH_QA',
-            userConfirmedOwnership: true
+            userConfirmedOwnership: args.confirmAuthorized === true
           });
           const sanitized = sanitizePublicSitefixAudit(audit, siteUrl);
           const failingChecks = sanitized.findings.filter((f: any) => f.status === 'ISSUE' || f.status === 'WARNING');

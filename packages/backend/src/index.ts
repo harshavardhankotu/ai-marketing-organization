@@ -213,10 +213,16 @@ app.get('/.well-known/mcp.json', (c) => {
   const siteUrl = getTrustedPublicSiteUrl();
   return c.json({
     schemaVersion: '1.0',
-    name: 'sitefix-launch-gate-public-mcp',
+    name: 'io.github.harshavardhankotu/sitefix-launch-gate',
     title: 'SiteFix Launch Gate — Pre-Deployment Website QA MCP',
     version: '1.0.0',
-    description: 'Strictly isolated, unauthenticated Streamable HTTP MCP server for deterministic website launch QA (HTML metadata, Open Graph, Schema.org JSON-LD, robots.txt, sitemap.xml). Returns zero PII.',
+    description: 'Strictly isolated, unauthenticated Streamable HTTP MCP server for deterministic website launch QA (HTML metadata, Open Graph, Schema.org JSON-LD, robots.txt, sitemap.xml). Requires explicit confirmAuthorized: true on URL scans. Returns zero PII.',
+    remotes: [
+      {
+        type: 'streamable-http',
+        url: `${siteUrl}/api/v1/public/mcp`
+      }
+    ],
     transport: {
       type: 'streamable-http',
       url: `${siteUrl}/api/v1/public/mcp`,
@@ -230,7 +236,7 @@ app.get('/.well-known/mcp.json', (c) => {
     tools: [
       {
         name: 'sitefix_check_url',
-        description: 'Run a deterministic website QA audit on a public URL.'
+        description: 'Run a deterministic website QA audit on an authorized public URL (requires confirmAuthorized: true).'
       },
       {
         name: 'sitefix_get_findings',
@@ -238,7 +244,7 @@ app.get('/.well-known/mcp.json', (c) => {
       },
       {
         name: 'sitefix_generate_fix_preview',
-        description: 'Preview copy-paste Fix-Pack deliverables and verification recheck coverage for a public URL.'
+        description: 'Preview copy-paste Fix-Pack deliverables and verification recheck coverage for an authorized public URL (requires confirmAuthorized: true).'
       }
     ]
   });

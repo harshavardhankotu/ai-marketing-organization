@@ -3,6 +3,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import http from 'node:http';
+import { execFile, spawnSync } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
+
+const execFileAsync = promisify(execFile);
 import app from '../../src/index.js';
 import { getDb } from '../../src/db/client.js';
 import { getDirectUpiConfig } from '../../src/config/env.js';
@@ -18,13 +24,14 @@ import { renderSiteAuditPage } from '../../src/tools/site-audit/site-audit-page.
 import { DPDPComplianceManager } from '../../src/compliance/dpdp-manager.js';
 import { parseVerifiedCampaignPayout } from '../../src/commission/autonomous-deal-discovery-engine.js';
 import {
+  AUTHORIZATION_REQUIRED_MESSAGE,
   formatAuditTable,
   formatMarkdownSummary,
   runSitefixCheck,
   type CliAuditResult
 } from '../../../cli/src/cli.js';
 
-const REPO_ROOT = path.resolve(process.cwd(), '..', '..');
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 
 describe('SiteFix Launch Gate — Part 1 Security/Payment/Ledger + Part 2 Pull Interfaces', () => {
   const savedEnv: Record<string, string | undefined> = {};
@@ -487,6 +494,38 @@ describe('SiteFix Launch Gate — Part 1 Security/Payment/Ledger + Part 2 Pull I
         'sitefix_generate_fix_preview'
       ]);
 
+      // Verify confirmAuthorized is required boolean on scan tools
+      const checkTool = listJson.result.tools.find((t: any) => t.name === 'sitefix_check_url');
+      const previewTool = listJson.result.tools.find((t: any) => t.name === 'sitefix_generate_fix_preview');
+      expect(checkTool.inputSchema.required).toEqual(['url', 'confirmAuthorized']);
+      expect(checkTool.inputSchema.properties.confirmAuthorized.type).toBe('boolean');
+      expect(previewTool.inputSchema.required).toEqual(['url', 'confirmAuthorized']);
+      expect(previewTool.inputSchema.properties.confirmAuthorized.type).toBe('boolean');
+
+      // Reject missing or false confirmAuthorized with JSON-RPC -32602 BEFORE invoking SiteAuditService
+      for (const scanTool of ['sitefix_check_url', 'sitefix_generate_fix_preview']) {
+        for (const badArgs of [
+          { url: 'https://example.com' },
+          { url: 'https://example.com', confirmAuthorized: false },
+          { url: 'https://example.com', confirmAuthorized: 'true' }
+        ]) {
+          const authErrRes = await app.request('/api/v1/public/mcp', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              jsonrpc: '2.0',
+              id: 10,
+              method: 'tools/call',
+              params: { name: scanTool, arguments: badArgs }
+            })
+          });
+          expect(authErrRes.status).toBe(400);
+          const authErrJson = await authErrRes.json() as any;
+          expect(authErrJson.error.code).toBe(-32602);
+          expect(authErrJson.error.message).toContain('confirmAuthorized');
+        }
+      }
+
       // Reject owner-only tools strictly
       for (const forbiddenTool of ['get_top_verified_deals', 'get_ready_sitefix_audits', 'get_autonomy_and_doctor_status', 'get_owner_today']) {
         const callRes = await app.request('/api/v1/public/mcp', {
@@ -513,10 +552,12 @@ describe('SiteFix Launch Gate — Part 1 Security/Payment/Ledger + Part 2 Pull I
       expect(ownerMcpRes.status).toBe(401);
     });
 
-    it('serves /.well-known/mcp.json and valid root server.json pointing strictly to /api/v1/public/mcp', async () => {
+    it('serves /.well-known/mcp.json and schema-valid root server.json with GitHub-verifiable namespace and remotes', async () => {
       const wellKnownRes = await app.request('/.well-known/mcp.json');
       expect(wellKnownRes.status).toBe(200);
       const wk = await wellKnownRes.json() as any;
+      expect(wk.name).toBe('io.github.harshavardhankotu/sitefix-launch-gate');
+      expect(wk.remotes[0].url).toContain('/api/v1/public/mcp');
       expect(wk.transport.url).toContain('/api/v1/public/mcp');
       expect(wk.tools.map((t: any) => t.name)).toEqual([
         'sitefix_check_url',
@@ -525,17 +566,18 @@ describe('SiteFix Launch Gate — Part 1 Security/Payment/Ledger + Part 2 Pull I
       ]);
 
       const serverJson = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'server.json'), 'utf8'));
-      expect(serverJson.remotes[0].url).toBe('https://ai-marketing-organization.onrender.com/api/v1/public/mcp');
-      expect(serverJson.tools.map((t: any) => t.name)).toEqual([
-        'sitefix_check_url',
-        'sitefix_get_findings',
-        'sitefix_generate_fix_preview'
-      ]);
+      expect(serverJson.name).toBe('io.github.harshavardhankotu/sitefix-launch-gate');
+      expect(serverJson.description.length).toBeLessThanOrEqual(100);
+      expect(serverJson.remotes[0]).toEqual({
+        type: 'streamable-http',
+        url: 'https://ai-marketing-organization.onrender.com/api/v1/public/mcp'
+      });
+      expect(serverJson.tools).toBeUndefined();
     });
   });
 
-  describe('9. Zero-Install CLI (packages/cli) & Free GitHub Action (action.yml)', () => {
-    it('formats terminal table, prints checkout URL, and exits 1 on --fail-on-critical when critical defects exist', async () => {
+  describe('9. Zero-Install CLI (packages/cli), Prebuilt Action Entrypoint (action-dist/cli.mjs) & action.yml', () => {
+    it('fails closed (exit 2, zero HTTP calls) without --confirm-authorized and succeeds when explicitly confirmed', async () => {
       const mockAudit: CliAuditResult = {
         auditId: 'aud_cli_1',
         url: 'https://launch-demo.dev',
@@ -567,13 +609,31 @@ describe('SiteFix Launch Gate — Part 1 Security/Payment/Ledger + Part 2 Pull I
         }
       };
 
-      const fakeFetch = (async () =>
-        new Response(JSON.stringify({ success: true, result: mockAudit }), {
+      let fetchCallCount = 0;
+      let lastRequestBody: any = null;
+      const fakeFetch = (async (_url: any, init?: any) => {
+        fetchCallCount++;
+        lastRequestBody = init?.body ? JSON.parse(String(init.body)) : null;
+        return new Response(JSON.stringify({ success: true, result: mockAudit }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' }
-        })) as unknown as typeof fetch;
+        });
+      }) as unknown as typeof fetch;
 
-      const resFail = await runSitefixCheck(['https://launch-demo.dev', '--fail-on-critical'], fakeFetch);
+      // 1. Missing --confirm-authorized MUST fail closed with exit 2 and ZERO network calls
+      const resUnauth = await runSitefixCheck(['https://launch-demo.dev', '--fail-on-critical'], fakeFetch, {});
+      expect(resUnauth.exitCode).toBe(2);
+      expect(resUnauth.stderr).toContain(AUTHORIZATION_REQUIRED_MESSAGE);
+      expect(fetchCallCount).toBe(0);
+
+      // 2. With --confirm-authorized and --fail-on-critical -> calls API and exits 1 on CRITICAL defect
+      const resFail = await runSitefixCheck(
+        ['https://launch-demo.dev', '--confirm-authorized', '--fail-on-critical'],
+        fakeFetch,
+        {}
+      );
+      expect(fetchCallCount).toBe(1);
+      expect(lastRequestBody?.userConfirmedOwnership).toBe(true);
       expect(resFail.exitCode).toBe(1);
       expect(resFail.criticalCount).toBe(1);
       expect(resFail.stdout).toContain('check_schema_jsonld_syntax_error_1');
@@ -581,8 +641,12 @@ describe('SiteFix Launch Gate — Part 1 Security/Payment/Ledger + Part 2 Pull I
         'https://ai-marketing-organization.onrender.com/tools/site-audit?url=https%3A%2F%2Flaunch-demo.dev'
       );
 
-      const resPass = await runSitefixCheck(['https://launch-demo.dev'], fakeFetch);
+      // 3. Env fallback SITEFIX_CONFIRM_AUTHORIZED=true succeeds cleanly without --fail-on-critical
+      const resPass = await runSitefixCheck(['https://launch-demo.dev'], fakeFetch, {
+        SITEFIX_CONFIRM_AUTHORIZED: 'true'
+      });
       expect(resPass.exitCode).toBe(0);
+      expect(fetchCallCount).toBe(2);
 
       const table = formatAuditTable(mockAudit);
       expect(table).toContain('SITEFIX_AI_PACK_V1');
@@ -591,14 +655,103 @@ describe('SiteFix Launch Gate — Part 1 Security/Payment/Ledger + Part 2 Pull I
       expect(md).toContain('check_schema_jsonld_syntax_error_1');
     });
 
-    it('root action.yml defines composite GitHub Action with required inputs and outputs', () => {
+    it('root action.yml requires confirm-authorized and invokes prebuilt action-dist/cli.mjs with zero runtime npm build', () => {
       const actionYml = fs.readFileSync(path.join(REPO_ROOT, 'action.yml'), 'utf8');
       expect(actionYml).toContain("name: 'SiteFix Launch Gate — Pre-Deployment Website QA'");
       expect(actionYml).toContain('url:');
+      expect(actionYml).toContain('confirm-authorized:');
       expect(actionYml).toContain('fail-on-critical:');
       expect(actionYml).toContain('score:');
       expect(actionYml).toContain('failed_checks:');
       expect(actionYml).toContain('GITHUB_STEP_SUMMARY');
+      expect(actionYml).toContain('action-dist/cli.mjs');
+      expect(actionYml).toContain('--confirm-authorized');
+      expect(actionYml).not.toContain('npm --prefix');
+    });
+
+    it('committed action-dist/cli.mjs matches built CLI output and executes cleanly from an isolated temp directory with zero node_modules', async () => {
+      const actionBundlePath = path.join(REPO_ROOT, 'action-dist', 'cli.mjs');
+      const builtCliPath = path.join(REPO_ROOT, 'packages', 'cli', 'dist', 'cli.js');
+      expect(fs.existsSync(actionBundlePath)).toBe(true);
+      expect(fs.existsSync(builtCliPath)).toBe(true);
+
+      const actionBytes = fs.readFileSync(actionBundlePath, 'utf8');
+      const builtBytes = fs.readFileSync(builtCliPath, 'utf8');
+      expect(actionBytes).toBe(builtBytes);
+
+      // Verify zero external imports outside Node built-ins
+      const importMatches = [...actionBytes.matchAll(/from\s+['"]([^'"]+)['"]/g)].map(m => m[1]);
+      for (const spec of importMatches) {
+        expect(spec.startsWith('node:')).toBe(true);
+      }
+
+      // Copy ONLY the standalone bundle into a completely isolated temp directory (no package.json, no node_modules)
+      const isolatedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sitefix-isolated-action-'));
+      const isolatedBundle = path.join(isolatedDir, 'cli.mjs');
+      fs.copyFileSync(actionBundlePath, isolatedBundle);
+
+      // Spin up a local loopback mock SiteFix API to verify end-to-end execution
+      const server = http.createServer((req, res) => {
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+          const parsed = JSON.parse(body || '{}');
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            success: true,
+            result: {
+              auditId: 'aud_isolated_1',
+              url: parsed.url,
+              overallStatus: 'OPTIMIZED',
+              score: 96,
+              findings: [
+                {
+                  id: 'schema_types_detected',
+                  category: 'STRUCTURED_DATA',
+                  title: 'Valid JSON-LD',
+                  status: 'PASS',
+                  severity: 'INFO',
+                  evidence: 'WebSite'
+                }
+              ],
+              metrics: { httpStatus: 200, hasRobotsTxt: true, hasSitemap: true, jsonLdTypesFound: ['WebSite'] }
+            }
+          }));
+        });
+      });
+
+      try {
+        await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
+        const addr = server.address();
+        const port = typeof addr === 'object' && addr ? addr.port : 0;
+
+        // 1. Fails closed without --confirm-authorized from isolated dir
+        const unauthRun = spawnSync('node', [isolatedBundle, 'https://isolated.example'], {
+          cwd: isolatedDir,
+          encoding: 'utf8',
+          env: { PATH: process.env.PATH }
+        });
+        expect(unauthRun.status).toBe(2);
+        expect(unauthRun.stderr).toContain(AUTHORIZATION_REQUIRED_MESSAGE);
+
+        // 2. Succeeds with --confirm-authorized --json against loopback API from isolated dir (async so parent HTTP server responds)
+        const { stdout: authOut } = await execFileAsync(
+          'node',
+          [isolatedBundle, 'https://isolated.example', '--confirm-authorized', '--api-url', `http://127.0.0.1:${port}`, '--json'],
+          {
+            cwd: isolatedDir,
+            encoding: 'utf8',
+            env: { PATH: process.env.PATH }
+          }
+        );
+        const parsedOut = JSON.parse(authOut);
+        expect(parsedOut.auditId).toBe('aud_isolated_1');
+        expect(parsedOut.score).toBe(96);
+        expect(parsedOut.canonicalSku).toBe('SITEFIX_AI_PACK_V1');
+      } finally {
+        server.close();
+        fs.rmSync(isolatedDir, { recursive: true, force: true });
+      }
     });
   });
 });
