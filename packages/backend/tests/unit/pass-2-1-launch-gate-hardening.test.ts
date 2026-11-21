@@ -23,6 +23,8 @@ import {
 } from '../../src/tools/site-audit/public-scan-service.js';
 import {
   recordSiteFixFunnelEvent,
+  hashFunnelVisitorKey,
+  resetSiteFixFunnelWriteMetricsForTesting,
   SITEFIX_FUNNEL_EVENT_TYPE,
   type SiteFixLaunchSource
 } from '../../src/tools/site-audit/sitefix-funnel-attribution.js';
@@ -604,15 +606,17 @@ describe('PASS 2.1 — Security & Commercial Integrity Closure', () => {
         });
 
         // 1. Scan attempt + completed scan (same visitor runs 2 scan attempts: 1 failed attempt + 1 completed scan)
-        await recordSiteFixFunnelEvent({
+        const expectedVisitorHash = hashFunnelVisitorKey(`${visitorIp}|${visitorUa}`);
+        const attemptWrite = await recordSiteFixFunnelEvent({
           stage: 'scan_attempt',
           source: src,
           isProbe: false,
           url: targetUrl,
           userAgent: visitorUa,
-          visitorHash: crypto.createHash('sha256').update(`${visitorIp}|${visitorUa}`).digest('hex').slice(0, 16),
+          visitorHash: expectedVisitorHash,
           authorizationMode: 'SELF_DECLARED_AUTHORIZATION'
         });
+        expect(attemptWrite.persisted).toBe(true);
         const scanRes = await app.request('/api/v1/public/scan', {
           method: 'POST',
           headers: {
@@ -654,7 +658,7 @@ describe('PASS 2.1 — Security & Commercial Integrity Closure', () => {
           auditId,
           orderId,
           userAgent: visitorUa,
-          visitorHash: crypto.createHash('sha256').update(`${visitorIp}|${visitorUa}`).digest('hex').slice(0, 16)
+          visitorHash: expectedVisitorHash
         });
 
         // 4. capture -> transition payment_orders to PAID + record capture with same source
@@ -669,7 +673,7 @@ describe('PASS 2.1 — Security & Commercial Integrity Closure', () => {
           orderId,
           paymentId,
           userAgent: visitorUa,
-          visitorHash: crypto.createHash('sha256').update(`${visitorIp}|${visitorUa}`).digest('hex').slice(0, 16)
+          visitorHash: expectedVisitorHash
         });
 
         // 5. delivered -> download WITHOUT ?source= query param; MUST inherit source from payment_orders.notes_json!
@@ -692,9 +696,11 @@ describe('PASS 2.1 — Security & Commercial Integrity Closure', () => {
       const todayJson = (await todayRes.json()) as any;
       const attr = todayJson.data?.sitefixFunnelAttribution;
       expect(attr).toBeDefined();
+      expect(attr.reportingWindow).toBe('LATEST_5000_EVENTS');
+      expect(attr.eventLimitReached).toBe(false);
 
       for (const src of sourcesToVerify) {
-        expect(attr.bySource[src].uniqueVisitors).toBe(1);
+        expect(attr.bySource[src].distinctVisitorFingerprints).toBe(1);
         expect(attr.bySource[src].scanAttempts).toBe(2);
         expect(attr.bySource[src].completedScans).toBe(1);
         expect(attr.bySource[src].scan).toBe(1);
@@ -705,10 +711,11 @@ describe('PASS 2.1 — Security & Commercial Integrity Closure', () => {
         expect(attr.bySource[src].delivered).toBe(1);
       }
 
-      expect(attr.totals.uniqueVisitors).toBe(4);
+      expect(attr.totals.distinctVisitorFingerprints).toBe(4);
       expect(attr.totals.scanAttempts).toBe(8);
       expect(attr.totals.completedScans).toBe(4);
       expect(attr.totals.delivered).toBe(4);
+      resetSiteFixFunnelWriteMetricsForTesting();
     });
   });
 });

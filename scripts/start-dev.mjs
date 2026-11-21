@@ -11,7 +11,7 @@ console.log('================================================================\n'
 const isWindows = process.platform === 'win32';
 const npmCmd = isWindows ? 'npm.cmd' : 'npm';
 
-// Ensure workspace package @ai-marketing/shared is compiled before dev:backend / dev:frontend boot
+// Ensure workspace packages @ai-marketing/shared and @ai-marketing/sitefix-core are compiled before dev:backend / dev:frontend boot
 const sharedEntry = path.resolve(process.cwd(), 'packages/shared/dist/index.js');
 if (!fs.existsSync(sharedEntry)) {
   console.log('🔧 Building @ai-marketing/shared before starting dev servers...');
@@ -22,6 +22,19 @@ if (!fs.existsSync(sharedEntry)) {
   if (sharedBuild.status !== 0) {
     console.error('❌ Failed to build @ai-marketing/shared');
     process.exit(sharedBuild.status || 1);
+  }
+}
+
+const sitefixCoreEntry = path.resolve(process.cwd(), 'packages/sitefix-core/dist/index.js');
+if (!fs.existsSync(sitefixCoreEntry)) {
+  console.log('🔧 Building @ai-marketing/sitefix-core before starting dev servers...');
+  const sitefixCoreBuild = spawnSync(npmCmd, ['run', 'build', '--workspace=packages/sitefix-core'], {
+    stdio: 'inherit',
+    shell: true
+  });
+  if (sitefixCoreBuild.status !== 0) {
+    console.error('❌ Failed to build @ai-marketing/sitefix-core');
+    process.exit(sitefixCoreBuild.status || 1);
   }
 }
 

@@ -95,7 +95,7 @@ export const IngestAnalyticsEventSchema = z.object({
   ]),
   userIdentifier: z.string().optional(),
   revenueINR: z.number().optional().default(0),
-  metadata: z.record(z.any()).optional()
+  metadata: z.record(z.string(), z.any()).optional()
 });
 
 export const EmergencyKillSwitchSchema = z.object({
@@ -134,7 +134,7 @@ export const CreateFunnelSchema = z.object({
   paymentStrategy: z.enum(['REQUIRED', 'DEPOSIT', 'OPTIONAL', 'NONE']).default('OPTIONAL'),
   language: z.string().default('en'),
   currency: z.string().default('INR'),
-  designConfig: z.record(z.any()).default({})
+  designConfig: z.record(z.string(), z.any()).default({})
 });
 
 export const CustomerOfferSchema = z.object({
@@ -149,7 +149,7 @@ export const CustomerOfferSchema = z.object({
   targetSegment: z.string().optional(),
   deliverables: z.array(z.string()).default([]),
   qualificationRules: z.array(z.string()).default([]),
-  availabilityRules: z.record(z.any()).default({}),
+  availabilityRules: z.record(z.string(), z.any()).default({}),
   fulfillmentType: z.enum(['APPOINTMENT', 'SERVICE_DELIVERY', 'DIGITAL', 'SHIPMENT', 'SUBSCRIPTION', 'CONSULTATION']).default('SERVICE_DELIVERY'),
   active: z.boolean().default(true)
 });
@@ -163,7 +163,7 @@ export const UniversalOrderSchema = z.object({
   amountMinor: z.number().min(0),
   currency: z.string().default('INR'),
   paymentProvider: z.enum(['RAZORPAY', 'STRIPE', 'MANUAL']).optional(),
-  metadata: z.record(z.any()).default({})
+  metadata: z.record(z.string(), z.any()).default({})
 });
 
 export const StructuredIntentSchema = z.object({
@@ -196,5 +196,5 @@ export const BookingReservationSchema = z.object({
   serviceTitle: z.string().min(1),
   startTime: z.string(),
   endTime: z.string(),
-  metadata: z.record(z.any()).optional()
+  metadata: z.record(z.string(), z.any()).optional()
 });

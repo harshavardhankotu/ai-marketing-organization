@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -1283,6 +1283,183 @@ describe('SiteFix Launch Gate — Part 1 Security/Payment/Ledger + Part 2 Pull I
         expect(staticHtml).toContain('/api/v1/public/scan');
         expect(staticHtml).toContain('SITEFIX_AI_PACK_V1');
       }
+    });
+  });
+
+  // =========================================================================
+  // PASS 2.2 — FUNNEL WRITE OBSERVABILITY, DAILY-SALTED TRUSTED FINGERPRINTS
+  //            & HONEST REPORTING WINDOW LABELING
+  // =========================================================================
+  describe('12. Pass 2.2: Funnel Write Observability & Honest Visitor/Window Labeling', () => {
+    it('returns { persisted: false, storageStatus: WRITE_FAILED } on simulated DB/D1 failure and surfaces funnelWriteFailureCount + persistenceWarning on /api/v1/owner/today', async () => {
+      const {
+        recordSiteFixFunnelEvent,
+        resetSiteFixFunnelWriteMetricsForTesting,
+        getSiteFixFunnelWriteMetrics
+      } = await import('../../src/tools/site-audit/sitefix-funnel-attribution.js');
+
+      resetSiteFixFunnelWriteMetricsForTesting();
+      const db = getDb();
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const origPrepare = db.prepare.bind(db);
+      const prepareSpy = vi.spyOn(db, 'prepare').mockImplementation(((sql: string) => {
+        if (String(sql).includes('INSERT OR IGNORE INTO durable_events')) {
+          throw new Error('SIMULATED_FUNNEL_DB_WRITE_OUTAGE');
+        }
+        return origPrepare(sql);
+      }) as any);
+
+      try {
+        const result = await recordSiteFixFunnelEvent({
+          stage: 'scan',
+          source: 'web_whatsapp_preview',
+          isProbe: false,
+          url: 'https://failed-write-check.example',
+          userAgent: 'Mozilla/5.0'
+        });
+
+        expect(result.persisted).toBe(false);
+        expect(result.storageStatus).toBe('WRITE_FAILED');
+        expect(result.error).toContain('SIMULATED_FUNNEL_DB_WRITE_OUTAGE');
+        expect(warnSpy).toHaveBeenCalledWith(
+          '[SiteFixFunnelAttribution] WRITE_FAILED',
+          expect.stringContaining('SIMULATED_FUNNEL_DB_WRITE_OUTAGE')
+        );
+        expect(getSiteFixFunnelWriteMetrics().funnelWriteFailureCount).toBe(1);
+      } finally {
+        prepareSpy.mockRestore();
+        warnSpy.mockRestore();
+      }
+
+      // Verify /api/v1/owner/today surfaces non-zero funnelWriteFailureCount & persistenceWarning
+      const ownerSession = OwnerAuthService.getInstance().createSession('127.0.0.1');
+      const todayRes = await app.request('/api/v1/owner/today', {
+        headers: { Authorization: `Bearer ${ownerSession.token}` }
+      });
+      expect(todayRes.status).toBe(200);
+      const todayJson = (await todayRes.json()) as any;
+      const attr = todayJson.data?.sitefixFunnelAttribution;
+      expect(attr).toBeDefined();
+      expect(attr.funnelWriteFailureCount).toBeGreaterThanOrEqual(1);
+      expect(typeof attr.persistenceWarning).toBe('string');
+      expect(attr.persistenceWarning).toContain('funnel event write failure');
+
+      // Also verify simulated remote D1 failure path returns WRITE_FAILED cleanly
+      const prevNodeEnv = process.env.NODE_ENV;
+      const prevVitest = process.env.VITEST;
+      const { D1RevenueRepository } = await import('../../src/db/d1-revenue-repository.js');
+      const d1Repo = D1RevenueRepository.getInstance();
+      const cfgSpy = vi.spyOn(d1Repo, 'isRemoteD1Configured').mockReturnValue(true);
+      const execSpy = vi
+        .spyOn(d1Repo, 'executeWrite')
+        .mockRejectedValue(new Error('SIMULATED_REMOTE_D1_WRITE_ERROR'));
+      const warnSpy2 = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      process.env.NODE_ENV = 'production';
+      delete process.env.VITEST;
+      try {
+        const d1FailResult = await recordSiteFixFunnelEvent({
+          stage: 'preview_open',
+          source: 'cli',
+          isProbe: false,
+          url: 'https://d1-fail-check.example',
+          userAgent: 'Mozilla/5.0'
+        });
+        expect(d1FailResult.persisted).toBe(false);
+        expect(d1FailResult.storageStatus).toBe('WRITE_FAILED');
+        expect(d1FailResult.error).toContain('SIMULATED_REMOTE_D1_WRITE_ERROR');
+      } finally {
+        process.env.NODE_ENV = prevNodeEnv;
+        if (prevVitest !== undefined) process.env.VITEST = prevVitest;
+        cfgSpy.mockRestore();
+        execSpy.mockRestore();
+        warnSpy2.mockRestore();
+        resetSiteFixFunnelWriteMetricsForTesting();
+      }
+    });
+
+    it('rotates daily-salted SHA-256 visitor fingerprints across UTC dates, prefers trusted req.ip over spoofable X-Forwarded-For, and exposes distinctVisitorFingerprints + LATEST_5000_EVENTS on /api/v1/owner/today', async () => {
+      const {
+        classifySiteFixProbe,
+        extractTrustedVisitorIp,
+        hashFunnelVisitorKey,
+        recordSiteFixFunnelEvent,
+        resetSiteFixFunnelWriteMetricsForTesting
+      } = await import('../../src/tools/site-audit/sitefix-funnel-attribution.js');
+
+      resetSiteFixFunnelWriteMetricsForTesting();
+      const db = getDb();
+      db.prepare(`DELETE FROM durable_events WHERE event_type = 'SITEFIX_FUNNEL_EVENT'`).run();
+
+      // 1. Daily salt rotation: identical IP+UA yields different SHA-256 fingerprints on different UTC dates,
+      //    and NEVER equals an unsalted sha256(ip|ua) hash
+      const rawKey = '203.0.113.55|Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)';
+      const unsalted = crypto.createHash('sha256').update(rawKey).digest('hex').slice(0, 16);
+      const day1 = hashFunnelVisitorKey(rawKey, '2026-11-20');
+      const day1Repeat = hashFunnelVisitorKey(rawKey, '2026-11-20');
+      const day2 = hashFunnelVisitorKey(rawKey, '2026-11-21');
+      expect(day1).toBeTruthy();
+      expect(day1).toBe(day1Repeat);
+      expect(day1).not.toBe(day2);
+      expect(day1).not.toBe(unsalted);
+      expect(day2).not.toBe(unsalted);
+
+      // 2. Trusted IP extraction prefers framework-trusted req.ip over spoofable X-Forwarded-For headers
+      const reqWithTrustedIpAndSpoofedXff = {
+        ip: '203.0.113.77',
+        headers: {
+          'x-forwarded-for': '198.51.100.99, 198.51.100.88',
+          'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'
+        }
+      };
+      const reqWithSameTrustedIpDifferentSpoof = {
+        ip: '203.0.113.77',
+        headers: {
+          'x-forwarded-for': '192.0.2.250',
+          'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'
+        }
+      };
+      expect(extractTrustedVisitorIp(reqWithTrustedIpAndSpoofedXff)).toBe('203.0.113.77');
+      const p1 = classifySiteFixProbe(reqWithTrustedIpAndSpoofedXff, '2026-11-21');
+      const p2 = classifySiteFixProbe(reqWithSameTrustedIpDifferentSpoof, '2026-11-21');
+      expect(p1.visitorHash).toBe(p2.visitorHash);
+
+      // 3. When behind reverse proxies without req.ip, trailing proxy hops are stripped and leftmost spoofed XFF is ignored
+      const reqBehindProxy = {
+        headers: {
+          'x-forwarded-for': '198.51.100.1, 203.0.113.88, 10.0.0.12',
+          'user-agent': 'Mozilla/5.0'
+        }
+      };
+      expect(extractTrustedVisitorIp(reqBehindProxy)).toBe('203.0.113.88');
+
+      // 4. Persisted funnel events appear under distinctVisitorFingerprints + LATEST_5000_EVENTS on /api/v1/owner/today
+      const okWrite = await recordSiteFixFunnelEvent({
+        stage: 'scan',
+        source: 'web_open_graph',
+        isProbe: false,
+        url: 'https://window-label-check.example',
+        userAgent: 'Mozilla/5.0',
+        visitorHash: p1.visitorHash
+      });
+      expect(okWrite).toEqual({ persisted: true, storageStatus: 'PERSISTED_LOCAL' });
+
+      const ownerSession = OwnerAuthService.getInstance().createSession('127.0.0.1');
+      const todayRes = await app.request('/api/v1/owner/today', {
+        headers: { Authorization: `Bearer ${ownerSession.token}` }
+      });
+      expect(todayRes.status).toBe(200);
+      const todayJson = (await todayRes.json()) as any;
+      const attr = todayJson.data?.sitefixFunnelAttribution;
+      expect(attr).toBeDefined();
+      expect(attr.reportingWindow).toBe('LATEST_5000_EVENTS');
+      expect(attr.eventLimitReached).toBe(false);
+      expect(attr.funnelWriteFailureCount).toBe(0);
+      expect(attr.persistenceWarning).toBeNull();
+      expect(attr.totals.distinctVisitorFingerprints).toBe(1);
+      expect(attr.bySource.web_open_graph.distinctVisitorFingerprints).toBe(1);
+      expect((attr.totals as any).uniqueVisitors).toBeUndefined();
+
+      db.prepare(`DELETE FROM durable_events WHERE event_type = 'SITEFIX_FUNNEL_EVENT'`).run();
     });
   });
 });

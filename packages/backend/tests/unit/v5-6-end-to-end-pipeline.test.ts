@@ -17,10 +17,15 @@ describe('V5.6 — End-to-End Autonomous Pipeline Wiring', () => {
     GooglePageSpeedClient.resetInstance();
     BrevoMcpClient.resetInstance();
 
+    const db = getDb();
     try {
-      const db = getDb();
-      db.prepare("DELETE FROM provider_quotas WHERE provider = 'google_pagespeed'").run();
+      db.prepare("DELETE FROM provider_quota_ledger WHERE provider = 'google_pagespeed'").run();
+    } catch {}
+    try {
       db.prepare("DELETE FROM search_cache WHERE query_normalized LIKE 'pagespeed%'").run();
+    } catch {}
+    try {
+      db.prepare("DELETE FROM provider_quotas WHERE provider = 'google_pagespeed'").run();
     } catch {}
   });
 
@@ -230,6 +235,9 @@ describe('V5.6 — End-to-End Autonomous Pipeline Wiring', () => {
 
   describe('5. Server-Rendered Public /compare/:sectorSlug Buying Guide', () => {
     it('renders comparison guide with ItemList JSON-LD and #Ad statutory disclosure', async () => {
+      try {
+        getDb().prepare('DELETE FROM public_deals').run();
+      } catch {}
       const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
       dealEngine.registerDealCandidate({
         title: 'boAt Nirvana Ion ANC Earbuds',

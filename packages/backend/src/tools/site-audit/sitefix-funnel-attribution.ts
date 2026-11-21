@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { getDb } from '../../db/client.js';
 import { isProduction } from '../../config/env.js';
 import { D1RevenueRepository } from '../../db/d1-revenue-repository.js';
+import { getTrustedClientIp, isPrivateOrCloudflareIp } from '../../security/client-ip.js';
 
 export type SiteFixLaunchSource =
   | 'cli'
@@ -21,6 +22,17 @@ export type SiteFixFunnelStage =
   | 'capture'
   | 'delivery';
 
+export type SiteFixFunnelStorageStatus =
+  | 'PERSISTED_D1'
+  | 'PERSISTED_LOCAL'
+  | 'WRITE_FAILED';
+
+export interface SiteFixFunnelRecordResult {
+  persisted: boolean;
+  storageStatus: SiteFixFunnelStorageStatus;
+  error?: string;
+}
+
 export const ALLOWED_SITEFIX_SOURCES: readonly SiteFixLaunchSource[] = [
   'cli',
   'action',
@@ -33,9 +45,51 @@ export const ALLOWED_SITEFIX_SOURCES: readonly SiteFixLaunchSource[] = [
 ] as const;
 
 export const SITEFIX_FUNNEL_EVENT_TYPE = 'SITEFIX_FUNNEL_EVENT';
+export const SITEFIX_FUNNEL_WINDOW_LIMIT = 5000;
+export const SITEFIX_FUNNEL_REPORTING_WINDOW = 'LATEST_5000_EVENTS' as const;
 
 const REPO_CI_AND_PROBE_UA_REGEX =
   /github-actions|ai-marketing-organization-ci|sitefix-ci-probe|sitefix-diagnostic|diagnostic-probe|curl\/|wget\/|httpie\/|vitest|node-fetch|undici/i;
+
+// In-process write-failure observability counters surfaced on /api/v1/owner/today
+let funnelWriteFailureCount = 0;
+let lastFunnelWriteFailureError: string | null = null;
+let lastFunnelWriteFailureAt: string | null = null;
+
+export function resetSiteFixFunnelWriteMetricsForTesting(): void {
+  funnelWriteFailureCount = 0;
+  lastFunnelWriteFailureError = null;
+  lastFunnelWriteFailureAt = null;
+}
+
+export function getSiteFixFunnelWriteMetrics(): {
+  funnelWriteFailureCount: number;
+  lastError: string | null;
+  lastFailureAt: string | null;
+} {
+  return {
+    funnelWriteFailureCount,
+    lastError: lastFunnelWriteFailureError,
+    lastFailureAt: lastFunnelWriteFailureAt
+  };
+}
+
+function recordFunnelWriteFailure(target: 'D1' | 'LOCAL_SQLITE', stage: string, source: string, errorMessage: string): void {
+  funnelWriteFailureCount += 1;
+  lastFunnelWriteFailureError = errorMessage;
+  lastFunnelWriteFailureAt = new Date().toISOString();
+  console.warn(
+    '[SiteFixFunnelAttribution] WRITE_FAILED',
+    JSON.stringify({
+      target,
+      stage,
+      source,
+      funnelWriteFailureCount,
+      error: errorMessage,
+      timestamp: lastFunnelWriteFailureAt
+    })
+  );
+}
 
 export function normalizeSiteFixSource(
   raw: unknown,
@@ -48,10 +102,35 @@ export function normalizeSiteFixSource(
   return fallback;
 }
 
-export function hashFunnelVisitorKey(rawVisitorKey: string | null | undefined): string | null {
+/**
+ * Returns a daily rotating secret salt (secret + UTC YYYY-MM-DD) so visitor
+ * fingerprints are never unsalted IP+UA hashes and rotate cleanly every UTC day.
+ */
+export function getFunnelDailySalt(dateKey?: string): string {
+  const utcDay =
+    dateKey && /^\d{4}-\d{2}-\d{2}$/.test(dateKey)
+      ? dateKey
+      : new Date().toISOString().slice(0, 10);
+  const secret = (
+    process.env.AUTH_SECRET ||
+    process.env.SITE_AUDIT_SIGNING_SECRET ||
+    process.env.IP_HASH_SALT ||
+    'sitefix_funnel_daily_fallback_salt'
+  ).trim();
+  return `${secret}:${utcDay}`;
+}
+
+export function hashFunnelVisitorKey(
+  rawVisitorKey: string | null | undefined,
+  dateKey?: string
+): string | null {
   const clean = String(rawVisitorKey || '').trim();
   if (!clean) return null;
-  return createHash('sha256').update(clean).digest('hex').slice(0, 16);
+  const dailySalt = getFunnelDailySalt(dateKey);
+  return createHash('sha256')
+    .update(`${dailySalt}:${clean}`)
+    .digest('hex')
+    .slice(0, 16);
 }
 
 function readHeader(reqLike: any, name: string): string {
@@ -66,10 +145,18 @@ function readHeader(reqLike: any, name: string): string {
     if (typeof reqLike.get === 'function') {
       return String(reqLike.get(name) || '').trim();
     }
+    if (typeof reqLike.headers === 'object' && reqLike.headers !== null) {
+      const lower = name.toLowerCase();
+      for (const [k, v] of Object.entries(reqLike.headers)) {
+        if (k.toLowerCase() === lower && v != null) {
+          return String(v).trim();
+        }
+      }
+    }
     if (typeof reqLike === 'object') {
       const lower = name.toLowerCase();
       for (const [k, v] of Object.entries(reqLike)) {
-        if (k.toLowerCase() === lower && v != null) {
+        if (k.toLowerCase() === lower && v != null && typeof v !== 'object') {
           return String(v).trim();
         }
       }
@@ -78,11 +165,81 @@ function readHeader(reqLike: any, name: string): string {
   return '';
 }
 
+function normalizeRemoteAddr(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  let trimmed = raw.trim();
+  if (trimmed.startsWith('::ffff:')) {
+    trimmed = trimmed.slice(7);
+  }
+  return trimmed;
+}
+
+/**
+ * Extracts a trusted client IP without trusting raw spoofable leftmost X-Forwarded-For headers.
+ * Priority:
+ * 1. Express-style trusted `req.ip` (set by framework trust-proxy configuration).
+ * 2. Direct Node socket `remoteAddress` when it is a public non-proxy IP.
+ * 3. Hono `getTrustedClientIp(c)` trailing-proxy-stripping resolution (drops Cloudflare/private
+ *    proxy hops from the right and takes the rightmost remaining entry; ignores `cf-connecting-ip`
+ *    unless `TRUST_CF_HEADER === 'true'`).
+ * 4. Same rightmost non-proxy extraction for plain header maps in unit tests.
+ */
+export function extractTrustedVisitorIp(reqLike: any): string {
+  if (!reqLike || typeof reqLike !== 'object') return 'unknown';
+
+  // 1. Prefer framework-trusted req.ip (e.g. Express req.ip) over raw X-Forwarded-For headers
+  const expressIp = normalizeRemoteAddr(reqLike.ip ?? reqLike.req?.ip);
+  if (expressIp) {
+    return expressIp;
+  }
+
+  // 2. Direct public socket peer address (not behind a private/Cloudflare reverse proxy)
+  const socketIp = normalizeRemoteAddr(
+    reqLike.env?.incoming?.socket?.remoteAddress ??
+      reqLike.socket?.remoteAddress ??
+      reqLike.req?.raw?.socket?.remoteAddress
+  );
+  if (socketIp && !isPrivateOrCloudflareIp(socketIp)) {
+    return socketIp;
+  }
+
+  // 3. Hono Context behind Render/Cloudflare proxy: use trailing-proxy-dropping trusted IP resolver
+  if (typeof reqLike.req?.header === 'function') {
+    const trusted = getTrustedClientIp(reqLike);
+    if (trusted.ip && trusted.ip !== 'unknown') {
+      return trusted.ip;
+    }
+  }
+
+  // 4. Generic header-map fallback using identical trailing-proxy-dropping semantics
+  const trustCf = process.env.TRUST_CF_HEADER === 'true';
+  const cfIp = readHeader(reqLike, 'cf-connecting-ip');
+  if (trustCf && cfIp && !isPrivateOrCloudflareIp(cfIp)) {
+    return cfIp;
+  }
+
+  const xff = readHeader(reqLike, 'x-forwarded-for');
+  if (xff) {
+    const parts = xff.split(',').map((p) => p.trim()).filter(Boolean);
+    while (parts.length > 0 && isPrivateOrCloudflareIp(parts[parts.length - 1])) {
+      parts.pop();
+    }
+    if (parts.length > 0) {
+      return parts[parts.length - 1];
+    }
+  }
+
+  return socketIp || 'unknown';
+}
+
 /**
  * Classifies whether a request is an internal diagnostic probe or repository CI run
  * that must be excluded from external funnel metrics on /api/v1/owner/today.
  */
-export function classifySiteFixProbe(reqLike: any): {
+export function classifySiteFixProbe(
+  reqLike: any,
+  dateKey?: string
+): {
   isProbe: boolean;
   probeReason: string | null;
   userAgent: string;
@@ -90,8 +247,8 @@ export function classifySiteFixProbe(reqLike: any): {
 } {
   const probeHeader = readHeader(reqLike, 'x-diagnostic-probe');
   const userAgent = readHeader(reqLike, 'user-agent');
-  const forwarded = readHeader(reqLike, 'x-forwarded-for') || readHeader(reqLike, 'cf-connecting-ip');
-  const visitorHash = hashFunnelVisitorKey(`${forwarded || 'anon'}|${userAgent || 'ua'}`);
+  const trustedIp = extractTrustedVisitorIp(reqLike);
+  const visitorHash = hashFunnelVisitorKey(`${trustedIp}|${userAgent || 'ua'}`, dateKey);
 
   if (
     probeHeader &&
@@ -124,7 +281,8 @@ export function classifySiteFixProbe(reqLike: any): {
 }
 
 export interface SiteFixFunnelStageCounts {
-  uniqueVisitors: number;
+  /** Distinct daily-salted SHA-256 IP+UA fingerprints observed in the reporting window (not verified unique people). */
+  distinctVisitorFingerprints: number;
   scanAttempts: number;
   completedScans: number;
   scan: number;
@@ -136,6 +294,11 @@ export interface SiteFixFunnelStageCounts {
 }
 
 export interface SiteFixFunnelAttributionSummary {
+  reportingWindow: typeof SITEFIX_FUNNEL_REPORTING_WINDOW;
+  eventLimitReached: boolean;
+  eventsSampled: number;
+  funnelWriteFailureCount: number;
+  persistenceWarning: string | null;
   totals: SiteFixFunnelStageCounts;
   bySource: Record<SiteFixLaunchSource, SiteFixFunnelStageCounts>;
   excludedProbesCount: number;
@@ -144,7 +307,7 @@ export interface SiteFixFunnelAttributionSummary {
 
 function emptyStageCounts(): SiteFixFunnelStageCounts {
   return {
-    uniqueVisitors: 0,
+    distinctVisitorFingerprints: 0,
     scanAttempts: 0,
     completedScans: 0,
     scan: 0,
@@ -203,7 +366,9 @@ export async function resolveStoredOrderSource(
         }
       }
     }
-  } catch {}
+  } catch (err: any) {
+    console.warn('[SiteFixFunnelAttribution] Failed to resolve stored order source:', err?.message || err);
+  }
 
   return null;
 }
@@ -220,11 +385,12 @@ export async function recordSiteFixFunnelEvent(params: {
   userAgent?: string | null;
   visitorHash?: string | null;
   authorizationMode?: 'SELF_DECLARED_AUTHORIZATION' | null;
-}): Promise<void> {
+}): Promise<SiteFixFunnelRecordResult> {
   const id = `sfx_evt_${randomUUID().replace(/-/g, '').slice(0, 20)}`;
+  const normalizedSource = normalizeSiteFixSource(params.source, 'web');
   const payload = {
     stage: params.stage,
-    source: normalizeSiteFixSource(params.source, 'web'),
+    source: normalizedSource,
     isProbe: Boolean(params.isProbe),
     probeReason: params.probeReason || null,
     auditId: params.auditId || null,
@@ -243,19 +409,74 @@ export async function recordSiteFixFunnelEvent(params: {
   `;
   const sqlParams = [id, SITEFIX_FUNNEL_EVENT_TYPE, JSON.stringify(payload)];
 
+  const d1Repo = D1RevenueRepository.getInstance();
+  const useRemoteD1 = d1Repo.isRemoteD1Configured() && isProduction() && !process.env.VITEST;
+
+  if (useRemoteD1) {
+    try {
+      await d1Repo.executeWrite('durable_events', sql, sqlParams);
+    } catch (err: any) {
+      const errorMessage = err?.message || String(err);
+      recordFunnelWriteFailure('D1', params.stage, normalizedSource, errorMessage);
+      return {
+        persisted: false,
+        storageStatus: 'WRITE_FAILED',
+        error: errorMessage
+      };
+    }
+
+    // Best-effort local SQLite cache mirror when D1 succeeded
+    try {
+      getDb().prepare(sql).run(...sqlParams);
+    } catch (localErr: any) {
+      console.warn(
+        '[SiteFixFunnelAttribution] Local SQLite mirror write warning after D1 success:',
+        localErr?.message || String(localErr)
+      );
+    }
+
+    return {
+      persisted: true,
+      storageStatus: 'PERSISTED_D1'
+    };
+  }
+
   try {
     getDb().prepare(sql).run(...sqlParams);
-  } catch {}
-
-  try {
-    const d1Repo = D1RevenueRepository.getInstance();
-    if (d1Repo.isRemoteD1Configured() && isProduction() && !process.env.VITEST) {
-      await d1Repo.executeWrite('durable_events', sql, sqlParams);
-    }
-  } catch {}
+    return {
+      persisted: true,
+      storageStatus: 'PERSISTED_LOCAL'
+    };
+  } catch (err: any) {
+    const errorMessage = err?.message || String(err);
+    recordFunnelWriteFailure('LOCAL_SQLITE', params.stage, normalizedSource, errorMessage);
+    return {
+      persisted: false,
+      storageStatus: 'WRITE_FAILED',
+      error: errorMessage
+    };
+  }
 }
 
-function aggregateFunnelRows(rows: Array<{ payload_json?: string | null }>): SiteFixFunnelAttributionSummary {
+function buildPersistenceWarning(readError: string | null = null): string | null {
+  const parts: string[] = [];
+  if (funnelWriteFailureCount > 0) {
+    parts.push(
+      `${funnelWriteFailureCount} funnel event write failure(s) detected in current runtime` +
+        (lastFunnelWriteFailureError ? ` (latest: ${lastFunnelWriteFailureError})` : '')
+    );
+  }
+  if (readError) {
+    parts.push(`Funnel attribution read failed: ${readError}`);
+  }
+  return parts.length > 0 ? parts.join('; ') : null;
+}
+
+function aggregateFunnelRows(
+  rows: Array<{ payload_json?: string | null }>,
+  eventLimitReached: boolean,
+  readError: string | null = null
+): SiteFixFunnelAttributionSummary {
   const totals = emptyStageCounts();
   const bySource: Record<SiteFixLaunchSource, SiteFixFunnelStageCounts> = {
     cli: emptyStageCounts(),
@@ -277,8 +498,8 @@ function aggregateFunnelRows(rows: Array<{ payload_json?: string | null }>): Sit
     web_robots_sitemap: 0,
     web_json_ld: 0
   };
-  const totalVisitors = new Set<string>();
-  const visitorsBySource: Record<SiteFixLaunchSource, Set<string>> = {
+  const totalFingerprints = new Set<string>();
+  const fingerprintsBySource: Record<SiteFixLaunchSource, Set<string>> = {
     cli: new Set<string>(),
     action: new Set<string>(),
     web: new Set<string>(),
@@ -309,8 +530,8 @@ function aggregateFunnelRows(rows: Array<{ payload_json?: string | null }>): Sit
           ? parsed.visitorHash.trim()
           : null;
       if (vHash) {
-        totalVisitors.add(vHash);
-        visitorsBySource[source].add(vHash);
+        totalFingerprints.add(vHash);
+        fingerprintsBySource[source].add(vHash);
       }
 
       if (stage === 'scan_attempt') {
@@ -339,9 +560,9 @@ function aggregateFunnelRows(rows: Array<{ payload_json?: string | null }>): Sit
     } catch {}
   }
 
-  totals.uniqueVisitors = totalVisitors.size;
+  totals.distinctVisitorFingerprints = totalFingerprints.size;
   for (const src of ALLOWED_SITEFIX_SOURCES) {
-    bySource[src].uniqueVisitors = visitorsBySource[src].size;
+    bySource[src].distinctVisitorFingerprints = fingerprintsBySource[src].size;
     // If historical scan rows exist without separate scan_attempt events, ensure scanAttempts >= completedScans
     if (bySource[src].scanAttempts < bySource[src].completedScans) {
       bySource[src].scanAttempts = bySource[src].completedScans;
@@ -352,6 +573,11 @@ function aggregateFunnelRows(rows: Array<{ payload_json?: string | null }>): Sit
   }
 
   return {
+    reportingWindow: SITEFIX_FUNNEL_REPORTING_WINDOW,
+    eventLimitReached,
+    eventsSampled: (rows || []).length,
+    funnelWriteFailureCount,
+    persistenceWarning: buildPersistenceWarning(readError),
     totals,
     bySource,
     excludedProbesCount,
@@ -361,14 +587,18 @@ function aggregateFunnelRows(rows: Array<{ payload_json?: string | null }>): Sit
 
 export function getSiteFixFunnelAttributionSummarySync(): SiteFixFunnelAttributionSummary {
   try {
-    const rows = getDb()
+    const rawRows = getDb()
       .prepare(
-        `SELECT payload_json FROM durable_events WHERE event_type = ? ORDER BY created_at DESC LIMIT 5000`
+        `SELECT payload_json FROM durable_events WHERE event_type = ? ORDER BY created_at DESC LIMIT ${SITEFIX_FUNNEL_WINDOW_LIMIT + 1}`
       )
       .all(SITEFIX_FUNNEL_EVENT_TYPE) as Array<{ payload_json?: string | null }>;
-    return aggregateFunnelRows(rows);
-  } catch {
-    return aggregateFunnelRows([]);
+    const eventLimitReached = rawRows.length > SITEFIX_FUNNEL_WINDOW_LIMIT;
+    const rows = eventLimitReached ? rawRows.slice(0, SITEFIX_FUNNEL_WINDOW_LIMIT) : rawRows;
+    return aggregateFunnelRows(rows, eventLimitReached);
+  } catch (err: any) {
+    const errorMessage = err?.message || String(err);
+    console.warn('[SiteFixFunnelAttribution] Sync summary read failed:', errorMessage);
+    return aggregateFunnelRows([], false, errorMessage);
   }
 }
 
@@ -377,13 +607,23 @@ export async function getSiteFixFunnelAttributionSummaryAsync(
 ): Promise<SiteFixFunnelAttributionSummary> {
   if (d1Repo.isRemoteD1Configured() && isProduction() && !process.env.VITEST) {
     try {
-      const rows = await d1Repo.query<{ payload_json?: string | null }>(
+      const rawRows = await d1Repo.query<{ payload_json?: string | null }>(
         'durable_events',
-        `SELECT payload_json FROM durable_events WHERE event_type = ? ORDER BY created_at DESC LIMIT 5000`,
+        `SELECT payload_json FROM durable_events WHERE event_type = ? ORDER BY created_at DESC LIMIT ${SITEFIX_FUNNEL_WINDOW_LIMIT + 1}`,
         [SITEFIX_FUNNEL_EVENT_TYPE]
       );
-      return aggregateFunnelRows(rows);
-    } catch {}
+      const eventLimitReached = rawRows.length > SITEFIX_FUNNEL_WINDOW_LIMIT;
+      const rows = eventLimitReached ? rawRows.slice(0, SITEFIX_FUNNEL_WINDOW_LIMIT) : rawRows;
+      return aggregateFunnelRows(rows, eventLimitReached);
+    } catch (err: any) {
+      const errorMessage = err?.message || String(err);
+      console.warn('[SiteFixFunnelAttribution] Remote D1 summary read failed, falling back to local SQLite:', errorMessage);
+      const fallback = getSiteFixFunnelAttributionSummarySync();
+      return {
+        ...fallback,
+        persistenceWarning: buildPersistenceWarning(`D1 read failed (${errorMessage}); showing local fallback`)
+      };
+    }
   }
   return getSiteFixFunnelAttributionSummarySync();
 }

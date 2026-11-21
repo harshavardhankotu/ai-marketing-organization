@@ -1510,8 +1510,10 @@ describe('Stage S: Zero-Budget Affiliate Buyer-Intent Engine', () => {
   describe('Stage S.1.2: Cuelinks Campaign Payout Hydration, Strict Qualified Distribution Kit & Earnings Separation', () => {
     it('1. Cuelinks campaign hydration maps merchant domains/campaign IDs across multiple deals in batches and quarantines deals lacking verified campaign payout mapping', async () => {
       // Clean up public_deals and cuelinks_campaigns for test isolation
-      db.prepare(`DELETE FROM public_deals WHERE id IN ('deal_hydr_01', 'deal_hydr_02', 'deal_hydr_03')`).run();
-      db.prepare(`DELETE FROM cuelinks_campaigns WHERE campaign_id IN ('camp_hydr_nykaa', 'camp_hydr_boat')`).run();
+      db.prepare(`DELETE FROM public_deals`).run();
+      db.prepare(
+        `DELETE FROM cuelinks_campaigns WHERE campaign_id IN ('camp_hydr_nykaa', 'camp_hydr_boat') OR LOWER(merchant_domain) LIKE '%boat-lifestyle.com%' OR LOWER(merchant_domain) LIKE '%nykaa.com%' OR LOWER(merchant_domain) LIKE '%sketchystore.in%'`
+      ).run();
 
       // Insert known campaign for Nykaa with verified 8.5% CPS rate
       db.prepare(`

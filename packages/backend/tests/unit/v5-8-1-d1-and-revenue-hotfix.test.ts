@@ -16,7 +16,7 @@ describe('V5.8.1 — Production Hotfix: D1 Schema, Quota Ledger, True Cuelinks &
       const db = getDb();
       db.prepare("DELETE FROM public_deals WHERE id LIKE 'deal_hotfix_%'").run();
       db.prepare("DELETE FROM site_audits WHERE domain LIKE 'test-hotfix-%'").run();
-      db.prepare("DELETE FROM provider_quota_ledger WHERE provider LIKE 'test_%'").run();
+      db.prepare("DELETE FROM provider_quota_ledger WHERE provider LIKE 'test_%' OR provider IN ('google_pagespeed', 'google_suggest')").run();
     } catch {}
   });
 

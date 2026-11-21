@@ -251,6 +251,10 @@ async function main() {
     if (!fs.existsSync(sharedEntry)) {
       execSync('npm run build --workspace=packages/shared', { stdio: 'pipe', encoding: 'utf8' });
     }
+    const sitefixCoreEntry = path.resolve('packages/sitefix-core/dist/index.js');
+    if (!fs.existsSync(sitefixCoreEntry)) {
+      execSync('npm run build --workspace=packages/sitefix-core', { stdio: 'pipe', encoding: 'utf8' });
+    }
     const fileArgs = Array.from(pendingTestFiles).map((f) => `"${f}"`).join(' ');
     try {
       execSync(`npm --workspace=packages/backend exec -- vitest run ${fileArgs} --test-timeout=30000`, {

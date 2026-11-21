@@ -19,6 +19,7 @@ describe('V5.8.2 — Production Completion & First Genuine Revenue Activation', 
     try {
       const db = getDb();
       db.prepare("DELETE FROM search_cache WHERE provider = 'google_pagespeed'").run();
+      db.prepare("DELETE FROM provider_quota_ledger WHERE provider = 'google_pagespeed'").run();
       db.prepare("DELETE FROM payment_orders WHERE id LIKE 'po_test_v582_%' OR order_id LIKE 'order_v582_%'").run();
       db.prepare("DELETE FROM public_deals WHERE id LIKE 'deal_v582_%'").run();
     } catch {}

@@ -5,9 +5,11 @@ WORKDIR /app
 # Copy package descriptors
 COPY package*.json ./
 COPY packages/shared/package*.json ./packages/shared/
+COPY packages/sitefix-core/package*.json ./packages/sitefix-core/
 COPY packages/backend/package*.json ./packages/backend/
 COPY packages/frontend/package*.json ./packages/frontend/
 COPY packages/cloudflare-worker/package*.json ./packages/cloudflare-worker/
+COPY packages/cli/package*.json ./packages/cli/
 
 # Install all dependencies
 RUN npm ci
@@ -29,6 +31,8 @@ ENV PORT=3001
 COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/packages/shared/package*.json ./packages/shared/
 COPY --from=builder /app/packages/shared/dist ./packages/shared/dist
+COPY --from=builder /app/packages/sitefix-core/package*.json ./packages/sitefix-core/
+COPY --from=builder /app/packages/sitefix-core/dist ./packages/sitefix-core/dist
 COPY --from=builder /app/packages/backend/package*.json ./packages/backend/
 COPY --from=builder /app/packages/backend/dist ./packages/backend/dist
 COPY --from=builder /app/packages/backend/public ./packages/backend/public

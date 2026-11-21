@@ -27,7 +27,7 @@ describe('UCOS Static Production Integrity Audit (Rule 33 & 34)', () => {
 
     expect(result.success).toBe(false);
     if (!result.success) {
-      const errorFields = result.error.errors.map(e => e.path.join('.'));
+      const errorFields = result.error.issues.map(e => e.path.join('.'));
       expect(errorFields).toContain('country');
       expect(errorFields).toContain('currency');
       expect(errorFields).toContain('timezone');

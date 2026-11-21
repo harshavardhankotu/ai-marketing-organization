@@ -870,7 +870,7 @@ apiRouter.post('/business', async (c) => {
   const parsed = CreateBusinessProfileSchema.safeParse(body);
 
   if (!parsed.success) {
-    return c.json({ success: false, errors: parsed.error.errors }, 400);
+    return c.json({ success: false, errors: parsed.error.issues }, 400);
   }
 
   const data = parsed.data;
@@ -1036,7 +1036,7 @@ apiRouter.post('/goals', async (c) => {
   const orgId = c.get('organizationId');
   const body = await c.req.json();
   const parsed = CreateGoalSchema.safeParse(body);
-  if (!parsed.success) return c.json({ success: false, errors: parsed.error.errors }, 400);
+  if (!parsed.success) return c.json({ success: false, errors: parsed.error.issues }, 400);
 
   const d = parsed.data;
   const goalId = `goal_${Date.now()}`;
@@ -2839,7 +2839,7 @@ apiRouter.post('/approvals/resolve', async (c) => {
   const userId = c.get('userId');
   const body = await c.req.json();
   const parsed = ApprovalActionSchema.safeParse(body);
-  if (!parsed.success) return c.json({ success: false, errors: parsed.error.errors }, 400);
+  if (!parsed.success) return c.json({ success: false, errors: parsed.error.issues }, 400);
 
   ApprovalManager.resolveApproval(parsed.data.requestId, parsed.data.action, userId, parsed.data.feedbackNotes);
   return c.json({ success: true, message: `Request successfully resolved as ${parsed.data.action}` });
@@ -2851,7 +2851,7 @@ apiRouter.post('/kill-switch', async (c) => {
   const userId = c.get('userId');
   const body = await c.req.json();
   const parsed = EmergencyKillSwitchSchema.safeParse(body);
-  if (!parsed.success) return c.json({ success: false, errors: parsed.error.errors }, 400);
+  if (!parsed.success) return c.json({ success: false, errors: parsed.error.issues }, 400);
 
   if (parsed.data.active) {
     KillSwitchController.trigger(parsed.data.businessId, orgId, userId, parsed.data.reason);
