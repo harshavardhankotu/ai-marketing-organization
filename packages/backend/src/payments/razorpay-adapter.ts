@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual, randomUUID } from 'crypto';
 import { isProduction, isPlaceholderCredential, normalizeSecretValue } from '../config/env.js';
 import { getDb } from '../db/client.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
+import { D1Client } from '../db/d1-client.js';
 import { SiteAuditFixPackGenerator } from '../tools/site-audit/site-audit-fixpack-generator.js';
 import { TelegramBotAdapter } from '../integrations/telegram-adapter.js';
 import { BrevoMcpClient } from '../integrations/brevo-mcp-client.js';
@@ -68,6 +69,7 @@ export class RazorpayStandardAdapter {
   private static cachedAuthProbe: RazorpayAuthProbeResult | null = null;
   private static authProbeLastChecked: number = 0;
   private d1Repo = D1RevenueRepository.getInstance();
+  private d1 = D1Client.getInstance();
 
   public static getInstance(): RazorpayStandardAdapter {
     if (!RazorpayStandardAdapter.instance) {
@@ -526,21 +528,43 @@ export class RazorpayStandardAdapter {
 
     // Also persist in payment_requests (fail-closed in production)
     try {
-      await this.d1Repo.executeWrite(
-        'payment_requests',
-        `INSERT INTO payment_requests (
-          id, business_id, organization_id, reference_id, offer_description,
-          amount_inr, currency, billing_model, status, classification,
-          provider, created_at, updated_at
-        ) VALUES (?, 'biz_platform_aro', 'org_owner_primary', ?, ?, ?, 'INR', 'ONE_TIME', 'REQUEST_CREATED', ?, 'RAZORPAY', datetime('now'), datetime('now'))`,
-        [
-          internalOrderId,
-          cleanDomain,
-          `SiteFix Fix-Pack (${canonicalSku})`,
-          amountINR,
-          isLive ? 'REAL' : 'TEST'
-        ]
-      );
+      const isRemoteD1 = this.d1.isRemoteD1WriteAllowed();
+      if (isRemoteD1) {
+        // Production Cloudflare D1 (0002_core_production_schema.sql) strictly requires NOT NULL lead_id
+        await this.d1Repo.executeWrite(
+          'payment_requests',
+          `INSERT INTO payment_requests (
+            id, business_id, organization_id, lead_id, reference_id, offer_description,
+            amount_inr, currency, billing_model, status, classification,
+            provider, is_test, created_at, updated_at
+          ) VALUES (?, 'biz_platform_aro', 'org_owner_primary', ?, ?, ?, ?, 'INR', 'ONE_TIME', 'REQUEST_CREATED', ?, 'RAZORPAY', ?, datetime('now'), datetime('now'))`,
+          [
+            internalOrderId,
+            journeyId,
+            cleanDomain,
+            `SiteFix Fix-Pack (${canonicalSku})`,
+            amountINR,
+            isLive ? 'REAL' : 'TEST',
+            isLive ? 0 : 1
+          ]
+        );
+      } else {
+        await this.d1Repo.executeWrite(
+          'payment_requests',
+          `INSERT INTO payment_requests (
+            id, business_id, organization_id, reference_id, offer_description,
+            amount_inr, currency, billing_model, status, classification,
+            provider, created_at, updated_at
+          ) VALUES (?, 'biz_platform_aro', 'org_owner_primary', ?, ?, ?, 'INR', 'ONE_TIME', 'REQUEST_CREATED', ?, 'RAZORPAY', datetime('now'), datetime('now'))`,
+          [
+            internalOrderId,
+            cleanDomain,
+            `SiteFix Fix-Pack (${canonicalSku})`,
+            amountINR,
+            isLive ? 'REAL' : 'TEST'
+          ]
+        );
+      }
     } catch (prErr: any) {
       console.error(`[RazorpayAdapter] Failed to persist payment_request in D1: ${prErr.message}`);
       if (isProduction()) {
