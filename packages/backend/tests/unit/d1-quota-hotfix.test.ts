@@ -561,15 +561,34 @@ describe('D1 Quota Hotfix & Circuit Breaker Decoupling (PR #81)', () => {
       vi.spyOn(d1Repo, 'isRemoteD1Configured').mockReturnValue(true);
       vi.spyOn(d1Repo, 'executeRead').mockResolvedValue({ results: [], rowsRead: 0, source: 'CLOUDFLARE_D1' } as any);
 
+      const qualifyingDeal: any = {
+        id: 'deal_dummy_01',
+        slug: 'dummy-deal',
+        canonicalSlug: 'dummy-deal',
+        title: 'Dummy Deal',
+        brand: 'Dummy',
+        category: 'Electronics',
+        merchant: 'DummyMerchant',
+        currentPriceINR: 999,
+        availability: 'IN_STOCK',
+        verificationStatus: 'VERIFIED',
+        isMonetizable: true,
+        affiliateCampaignId: 'cuelinks_dummy',
+        trackingUrl: 'https://cuelinks.com/dummy',
+        productUrl: 'https://dummy.com/product',
+        lastCheckedAt: new Date().toISOString(),
+        createdAt: new Date().toISOString()
+      };
+
       // If contactCursor is set (continuation in progress), backoff must NOT trigger
       (AutonomousDealDiscoveryEngine as any).priceDropContactCursor = 'contact_prev_99';
-      await engine.checkAndDispatchTargetPriceAlerts([]);
+      await engine.checkAndDispatchTargetPriceAlerts([qualifyingDeal]);
       expect((AutonomousDealDiscoveryEngine as any).priceAlertEmptyBackoffUntilMs).toBe(0);
 
       // When cursors are null (started from beginning) and 0 rows found: backoff engages
       (AutonomousDealDiscoveryEngine as any).priceDropContactCursor = null;
       (AutonomousDealDiscoveryEngine as any).priceDropEventCursor = null;
-      await engine.checkAndDispatchTargetPriceAlerts([]);
+      await engine.checkAndDispatchTargetPriceAlerts([qualifyingDeal]);
       expect((AutonomousDealDiscoveryEngine as any).priceAlertEmptyBackoffUntilMs).toBeGreaterThan(Date.now());
     });
   });
