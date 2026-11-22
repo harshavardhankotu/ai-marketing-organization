@@ -556,6 +556,11 @@ describe('D1 Quota Hotfix & Circuit Breaker Decoupling (PR #81)', () => {
       const engine = AutonomousDealDiscoveryEngine.getInstance();
       AutonomousDealDiscoveryEngine.resetPriceAlertBackoffForTesting();
 
+      // Hermetic mock: ensure 0 rows returned cleanly from reads
+      const d1Repo = D1RevenueRepository.getInstance();
+      vi.spyOn(d1Repo, 'isRemoteD1Configured').mockReturnValue(true);
+      vi.spyOn(d1Repo, 'executeRead').mockResolvedValue({ results: [], rowsRead: 0, source: 'CLOUDFLARE_D1' } as any);
+
       // If contactCursor is set (continuation in progress), backoff must NOT trigger
       (AutonomousDealDiscoveryEngine as any).priceDropContactCursor = 'contact_prev_99';
       await engine.checkAndDispatchTargetPriceAlerts([]);
