@@ -3274,7 +3274,7 @@ apiRouter.post('/payments/razorpay/create-order', async (c) => {
         error: 'INVALID_DOMAIN: A valid domain or website URL is required.'
       }, 400);
     }
-    const rawEmail = String(body.buyerEmail || body.customerEmail || '').trim();
+    const rawEmail = String(body.buyerEmail || body.customerEmail || body.email || '').trim();
     if (!rawEmail || !rawEmail.includes('@')) {
       return c.json({
         success: false,
