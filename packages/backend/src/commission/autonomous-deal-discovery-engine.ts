@@ -4653,6 +4653,57 @@ export class AutonomousDealDiscoveryEngine {
     LIMIT 250
   `;
 
+  public static buildEligiblePublicDealsQuery(filter?: {
+    sectorCode?: string;
+    category?: string;
+    merchant?: string;
+    minPrice?: number;
+    maxPrice?: number;
+    q?: string;
+  }): { sql: string; params: any[] } {
+    let sql = `
+      SELECT * FROM public_deals
+      WHERE availability = 'IN_STOCK'
+        AND current_price_inr > 0
+        AND verification_status IN ('VERIFIED', 'AFFILIATE_VERIFIED')
+        AND is_monetizable = 1
+        AND product_verified = 1
+        AND affiliate_verified = 1
+        AND (expiry_date IS NULL OR expiry_date > datetime('now'))
+    `;
+    const params: any[] = [];
+
+    if (filter?.sectorCode) {
+      sql += ` AND sector_code = ?`;
+      params.push(filter.sectorCode);
+    }
+    if (filter?.category && filter.category !== 'all') {
+      sql += ` AND LOWER(category) = LOWER(?)`;
+      params.push(filter.category);
+    }
+    if (filter?.merchant && filter.merchant !== 'all') {
+      sql += ` AND LOWER(merchant) = LOWER(?)`;
+      params.push(filter.merchant);
+    }
+    if (filter?.minPrice !== undefined) {
+      sql += ` AND current_price_inr >= ?`;
+      params.push(filter.minPrice);
+    }
+    if (filter?.maxPrice !== undefined) {
+      sql += ` AND current_price_inr <= ?`;
+      params.push(filter.maxPrice);
+    }
+    if (filter?.q) {
+      const q = `%${filter.q.toLowerCase().trim()}%`;
+      sql += ` AND (LOWER(title) LIKE ? OR LOWER(brand) LIKE ? OR LOWER(merchant) LIKE ?)`;
+      params.push(q, q, q);
+    }
+
+    sql += ` ORDER BY created_at DESC LIMIT 250`;
+    return { sql, params };
+  }
+
+  private static readonly MAX_ELIGIBLE_DEALS_CACHE_ENTRIES = 100;
   private static eligibleDealsCacheMap = new Map<string, { data: { deals: NormalizedDeal[]; total: number }; expiresAt: number }>();
   private static priceAlertEmptyBackoffUntilMs = 0;
 
@@ -4660,8 +4711,30 @@ export class AutonomousDealDiscoveryEngine {
     AutonomousDealDiscoveryEngine.eligibleDealsCacheMap.clear();
   }
 
+  public static clearPriceAlertBackoff(): void {
+    AutonomousDealDiscoveryEngine.priceAlertEmptyBackoffUntilMs = 0;
+  }
+
   public static resetPriceAlertBackoffForTesting(): void {
     AutonomousDealDiscoveryEngine.priceAlertEmptyBackoffUntilMs = 0;
+  }
+
+  private static pruneExpiredEligibleDealsCache(): void {
+    const now = Date.now();
+    for (const [key, entry] of AutonomousDealDiscoveryEngine.eligibleDealsCacheMap.entries()) {
+      if (now >= entry.expiresAt) {
+        AutonomousDealDiscoveryEngine.eligibleDealsCacheMap.delete(key);
+      }
+    }
+  }
+
+  private static setEligibleDealsCache(key: string, data: { deals: NormalizedDeal[]; total: number }, expiresAt: number): void {
+    AutonomousDealDiscoveryEngine.pruneExpiredEligibleDealsCache();
+    if (AutonomousDealDiscoveryEngine.eligibleDealsCacheMap.size >= AutonomousDealDiscoveryEngine.MAX_ELIGIBLE_DEALS_CACHE_ENTRIES) {
+      const firstKey = AutonomousDealDiscoveryEngine.eligibleDealsCacheMap.keys().next().value;
+      if (firstKey) AutonomousDealDiscoveryEngine.eligibleDealsCacheMap.delete(firstKey);
+    }
+    AutonomousDealDiscoveryEngine.eligibleDealsCacheMap.set(key, { data, expiresAt });
   }
 
   /**
@@ -4831,11 +4904,16 @@ export class AutonomousDealDiscoveryEngine {
     const shouldCache = !process.env.VITEST || process.env.ALLOW_D1_CACHE_IN_TEST === 'true';
     if (shouldCache) {
       const cached = AutonomousDealDiscoveryEngine.eligibleDealsCacheMap.get(filterKey);
-      if (cached && Date.now() < cached.expiresAt) {
-        return cached.data;
+      if (cached) {
+        if (Date.now() < cached.expiresAt) {
+          return cached.data;
+        } else {
+          AutonomousDealDiscoveryEngine.eligibleDealsCacheMap.delete(filterKey);
+        }
       }
     }
 
+    const { sql: querySql, params: queryParams } = AutonomousDealDiscoveryEngine.buildEligiblePublicDealsQuery(filter);
     const useRemoteD1 = this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST);
     let rows: any[] = [];
     if (useRemoteD1) {
@@ -4843,7 +4921,7 @@ export class AutonomousDealDiscoveryEngine {
       this.dealsMap.clear();
       this.dealSlugMap.clear();
       try {
-        const res = await this.d1Repo.executeRead('public_deals', AutonomousDealDiscoveryEngine.ELIGIBLE_PUBLIC_DEALS_SQL, []);
+        const res = await this.d1Repo.executeRead('public_deals', querySql, queryParams);
         rows = res?.results || [];
       } catch (err: any) {
         console.error(`[DealEngine] getEligiblePublicDeals D1 read error: ${err.message}`);
@@ -4851,8 +4929,7 @@ export class AutonomousDealDiscoveryEngine {
       }
     } else {
       try {
-        const testSql = AutonomousDealDiscoveryEngine.ELIGIBLE_PUBLIC_DEALS_SQL;
-        rows = getDb().prepare(testSql).all();
+        rows = getDb().prepare(querySql).all(...queryParams);
       } catch (err: any) {
         console.error(`[DealEngine] getEligiblePublicDeals SQLite read error: ${err.message}`);
         throw new GuideDataUnavailableError(`Failed to read eligible public deals from SQLite: ${err?.message || 'SQLite read failure'}`);
@@ -5041,10 +5118,24 @@ export class AutonomousDealDiscoveryEngine {
 
     const result = { deals: paged, total };
     if (shouldCache) {
-      AutonomousDealDiscoveryEngine.eligibleDealsCacheMap.set(filterKey, {
-        data: result,
-        expiresAt: Date.now() + 15 * 60 * 1000 // 15-minute in-memory cache
-      });
+      const defaultTtlMs = 15 * 60 * 1000;
+      let earliestExpiryMs = Date.now() + defaultTtlMs;
+      for (const d of paged) {
+        if (d.expiryDate) {
+          const expMs = new Date(d.expiryDate).getTime();
+          if (expMs > Date.now() && expMs < earliestExpiryMs) {
+            earliestExpiryMs = expMs;
+          }
+        }
+        const offerExpiry = (d.partnerOffer as any)?.expiry_date || (d.partnerOffer as any)?.end_date;
+        if (offerExpiry) {
+          const expMs = new Date(offerExpiry).getTime();
+          if (expMs > Date.now() && expMs < earliestExpiryMs) {
+            earliestExpiryMs = expMs;
+          }
+        }
+      }
+      AutonomousDealDiscoveryEngine.setEligibleDealsCache(filterKey, result, earliestExpiryMs);
     }
     return result;
   }
@@ -7328,6 +7419,7 @@ export class AutonomousDealDiscoveryEngine {
       }
     } catch {}
 
+    AutonomousDealDiscoveryEngine.clearPriceAlertBackoff();
     return { registered: true, contactId: savedContactId };
   }
 
@@ -7990,6 +8082,10 @@ export class AutonomousDealDiscoveryEngine {
       `;
     const queryParams = contactCursor ? [contactCursor] : [];
 
+    const hadContactCursor = Boolean(contactCursor);
+    const hadEventCursor = Boolean(AutonomousDealDiscoveryEngine.priceDropEventCursor);
+    let contactReadSuccess = false;
+    let eventReadSuccess = false;
     let contactRows: any[] = [];
     let eventRows: any[] = [];
     try {
@@ -7999,6 +8095,7 @@ export class AutonomousDealDiscoveryEngine {
       } else {
         contactRows = getDb().prepare(querySql).all(...queryParams) as any[];
       }
+      contactReadSuccess = true;
     } catch {}
 
     if (contactRows.length === 100) {
@@ -8082,6 +8179,7 @@ export class AutonomousDealDiscoveryEngine {
       } else {
         eventRows = getDb().prepare(eventQuery).all(...eventParams) as any[];
       }
+      eventReadSuccess = true;
 
       if (eventRows.length === 50) {
         AutonomousDealDiscoveryEngine.priceDropEventCursor = eventRows[eventRows.length - 1].id;
@@ -8139,7 +8237,14 @@ export class AutonomousDealDiscoveryEngine {
       }
     } catch {}
 
-    if (contactRows.length === 0 && eventRows.length === 0) {
+    if (
+      contactReadSuccess &&
+      eventReadSuccess &&
+      contactRows.length === 0 &&
+      eventRows.length === 0 &&
+      !hadContactCursor &&
+      !hadEventCursor
+    ) {
       if (shouldBackoff) {
         AutonomousDealDiscoveryEngine.priceAlertEmptyBackoffUntilMs = Date.now() + 2 * 60 * 60 * 1000;
       }

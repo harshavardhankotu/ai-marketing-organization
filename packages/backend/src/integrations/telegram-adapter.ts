@@ -385,9 +385,11 @@ export class TelegramBotAdapter {
 
       maxTodayCount = Math.max(durableTodayCount, localTodayCount);
       if (shouldCache) {
+        const now = new Date();
+        const nextUtcMidnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0);
         TelegramBotAdapter.telegramPostCountCache = {
           count: maxTodayCount,
-          expiresAt: Date.now() + 5 * 60 * 1000 // 5-minute cache
+          expiresAt: Math.min(Date.now() + 5 * 60 * 1000, nextUtcMidnight) // earlier of 5-min cache or UTC midnight
         };
       }
     }
@@ -423,6 +425,7 @@ export class TelegramBotAdapter {
            VALUES (?, 'TELEGRAM_POST_CLAIMED', 'org_owner_primary', ?, datetime('now'))`,
           [claimId, JSON.stringify({ dealId: options.dealId, guideUrl: options.guideUrl, channelId, claimedAt: new Date().toISOString() })]
         );
+        TelegramBotAdapter.telegramPostCountCache = null;
       } catch (claimErr: any) {
         if (String(claimErr?.message || '').toLowerCase().includes('unique')) {
           return {

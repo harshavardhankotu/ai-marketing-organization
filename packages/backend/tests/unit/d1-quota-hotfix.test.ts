@@ -84,6 +84,29 @@ describe('D1 Quota Hotfix & Circuit Breaker Decoupling (PR #81)', () => {
       expect(d1.isRemoteD1ReadQuotaExhausted()).toBe(false);
       expect(d1.isRemoteD1WriteQuotaExhausted()).toBe(true);
     });
+
+    it('blocks remote reads and writes if either read or write quota is exhausted (PR #82)', () => {
+      vi.spyOn(d1, 'isRemoteD1Configured').mockReturnValue(true);
+      process.env.ALLOW_REMOTE_D1_READS = 'true';
+      process.env.ALLOW_REMOTE_D1_WRITES = 'true';
+
+      expect(d1.isRemoteD1ReadAllowed()).toBe(true);
+      expect(d1.isRemoteD1WriteAllowed()).toBe(true);
+
+      // Trip write quota: both write AND read should be blocked from remote D1
+      d1.tripWriteQuotaCircuitBreaker('D1 write limit');
+      expect(d1.isRemoteD1WriteAllowed()).toBe(false);
+      expect(d1.isRemoteD1ReadAllowed()).toBe(false);
+
+      // Reset and trip read quota: both write AND read should be blocked from remote D1
+      d1.resetQuotaCircuitBreakerForTesting();
+      d1.tripReadQuotaCircuitBreaker('D1 read limit');
+      expect(d1.isRemoteD1ReadAllowed()).toBe(false);
+      expect(d1.isRemoteD1WriteAllowed()).toBe(false);
+
+      delete process.env.ALLOW_REMOTE_D1_READS;
+      delete process.env.ALLOW_REMOTE_D1_WRITES;
+    });
   });
 
   describe('2. Health Check Endpoint State', () => {
@@ -151,12 +174,48 @@ describe('D1 Quota Hotfix & Circuit Breaker Decoupling (PR #81)', () => {
       expect(secondRun.tables).toContain('(verified 0050 baseline)');
       expect(executeQuerySpy).toHaveBeenCalledTimes(1);
     });
+
+    it('does NOT cache baseline when source is PERSISTENT_SQLITE (PR #82)', async () => {
+      const executeQuerySpy = vi.spyOn(d1, 'executeQuery').mockResolvedValue({
+        results: [{ migration_name: '0050_stage_d_deal_reconciliation_and_schedule.sql' }],
+        rowsAffected: 0,
+        source: 'PERSISTENT_SQLITE'
+      });
+
+      const firstRun = await applyD1Migrations();
+      expect(firstRun.tables).toContain('(verified 0050 baseline)');
+      expect(executeQuerySpy).toHaveBeenCalledTimes(1);
+
+      // Second call must query again because PERSISTENT_SQLITE was not cached as remote verified
+      const secondRun = await applyD1Migrations();
+      expect(secondRun.tables).toContain('(verified 0050 baseline)');
+      expect(executeQuerySpy).toHaveBeenCalledTimes(2);
+    });
   });
 
   describe('5. Deals Query Bounding & Caching', () => {
     it('ELIGIBLE_PUBLIC_DEALS_SQL contains LIMIT 250', () => {
       expect(AutonomousDealDiscoveryEngine.ELIGIBLE_PUBLIC_DEALS_SQL).toContain('LIMIT 250');
       expect(AutonomousDealDiscoveryEngine.ELIGIBLE_PUBLIC_DEALS_SQL).toContain('ORDER BY created_at DESC');
+    });
+
+    it('buildEligiblePublicDealsQuery pushes sector, category, merchant, and price filters before LIMIT 250 (PR #82)', () => {
+      const built = AutonomousDealDiscoveryEngine.buildEligiblePublicDealsQuery({
+        sectorCode: 'TECH',
+        category: 'Electronics',
+        merchant: 'Amazon',
+        minPrice: 500,
+        maxPrice: 5000,
+        q: 'laptop'
+      });
+
+      expect(built.sql).toContain('sector_code = ?');
+      expect(built.sql).toContain('LOWER(category) = LOWER(?)');
+      expect(built.sql).toContain('LOWER(merchant) = LOWER(?)');
+      expect(built.sql).toContain('current_price_inr >= ?');
+      expect(built.sql).toContain('current_price_inr <= ?');
+      expect(built.sql).toContain('LIMIT 250');
+      expect(built.params).toEqual(['TECH', 'Electronics', 'Amazon', 500, 5000, '%laptop%', '%laptop%', '%laptop%']);
     });
 
     it('caches getEligiblePublicDeals results in memory for 15 minutes', async () => {

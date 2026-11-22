@@ -1313,6 +1313,7 @@ app.get('/sitemap.xml', async (c) => {
   let dealUrls: string[] = [];
   let vsUrls: string[] = [];
   let bestUrls: string[] = [];
+  let dealGenerationSucceeded = true;
   try {
     const { COMMERCIAL_SECTORS_LIST } = await import('@ai-marketing/shared');
     const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
@@ -1333,7 +1334,9 @@ app.get('/sitemap.xml', async (c) => {
     bestUrls = generateBuyerIntentHubs(activeDeals, baseUrl, 10).map(
       h => `${baseUrl}/best/${encodeURIComponent(h.intentSlug)}`
     );
-  } catch {}
+  } catch {
+    dealGenerationSucceeded = false;
+  }
 
   // Include only publicly authorized audited domain pages (V5.8 Defect 5)
   let auditUrls: string[] = [];
@@ -1367,7 +1370,7 @@ app.get('/sitemap.xml', async (c) => {
 
   const sitemapXml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${xmlEntries}\n</urlset>`;
 
-  if (shouldCache) {
+  if (shouldCache && dealGenerationSucceeded) {
     sitemapCache = {
       xml: sitemapXml,
       expiresAt: Date.now() + 15 * 60 * 1000 // 15-minute in-memory cache

@@ -496,6 +496,7 @@ describe('Comprehensive Razorpay & UPI QR Payment Collection System (Prompt Sect
   it('Case 18: Renders responsive proposal checkout page with Method A and Method B instructions', async () => {
     const prevVpa = process.env.DIRECT_UPI_VPA;
     process.env.DIRECT_UPI_VPA = 'test-merchant@upi';
+    let propId: string | null = null;
     try {
       const pe = ProposalEngine.getInstance();
       const prop = pe.createProposal({
@@ -507,6 +508,7 @@ describe('Comprehensive Razorpay & UPI QR Payment Collection System (Prompt Sect
         monthlyPriceINR: 8000,
         deliverables: ['Website Launch Audit', 'JSON-LD Fixes']
       });
+      propId = prop.id;
 
       const res = await app.request(`/proposals/${prop.id}/checkout`);
       expect(res.status).toBe(200);
@@ -522,6 +524,12 @@ describe('Comprehensive Razorpay & UPI QR Payment Collection System (Prompt Sect
       expect(html).toContain('Report Paid UPI Transaction');
     } finally {
       if (prevVpa !== undefined) process.env.DIRECT_UPI_VPA = prevVpa; else delete process.env.DIRECT_UPI_VPA;
+      if (propId) {
+        try {
+          const { getDb } = await import('../../src/db/client.js');
+          getDb().prepare(`DELETE FROM proposals WHERE id = ?`).run(propId);
+        } catch {}
+      }
     }
   });
 

@@ -435,7 +435,7 @@ export async function recordSiteFixFunnelEvent(params: {
       );
     }
 
-    funnelAttributionCache = null;
+    invalidateFunnelAttributionCache();
     return {
       persisted: true,
       storageStatus: 'PERSISTED_D1'
@@ -444,7 +444,7 @@ export async function recordSiteFixFunnelEvent(params: {
 
   try {
     getDb().prepare(sql).run(...sqlParams);
-    funnelAttributionCache = null;
+    invalidateFunnelAttributionCache();
     return {
       persisted: true,
       storageStatus: 'PERSISTED_LOCAL'
@@ -587,10 +587,19 @@ function aggregateFunnelRows(
   };
 }
 
+let funnelAttributionGeneration = 0;
 let funnelAttributionCache: { data: SiteFixFunnelAttributionSummary; expiresAt: number } | null = null;
+let inFlightSummaryPromise: Promise<SiteFixFunnelAttributionSummary> | null = null;
+
+export function invalidateFunnelAttributionCache(): void {
+  funnelAttributionCache = null;
+  funnelAttributionGeneration++;
+}
 
 export function resetSiteFixFunnelAttributionCacheForTesting(): void {
   funnelAttributionCache = null;
+  inFlightSummaryPromise = null;
+  funnelAttributionGeneration++;
 }
 
 export function getSiteFixFunnelAttributionSummarySync(): SiteFixFunnelAttributionSummary {
@@ -618,39 +627,56 @@ export async function getSiteFixFunnelAttributionSummaryAsync(
     return funnelAttributionCache.data;
   }
 
-  if (d1Repo.isRemoteD1Configured() && isProduction() && !process.env.VITEST) {
-    try {
-      const rawRows = await d1Repo.query<{ payload_json?: string | null }>(
-        'durable_events',
-        `SELECT payload_json FROM durable_events WHERE event_type = ? AND created_at >= datetime('now', '-90 days') ORDER BY created_at DESC LIMIT ${SITEFIX_FUNNEL_WINDOW_LIMIT + 1}`,
-        [SITEFIX_FUNNEL_EVENT_TYPE]
-      );
-      const eventLimitReached = rawRows.length > SITEFIX_FUNNEL_WINDOW_LIMIT;
-      const rows = eventLimitReached ? rawRows.slice(0, SITEFIX_FUNNEL_WINDOW_LIMIT) : rawRows;
-      const result = aggregateFunnelRows(rows, eventLimitReached);
-      if (shouldCache) {
-        funnelAttributionCache = {
-          data: result,
-          expiresAt: Date.now() + 10 * 60 * 1000 // 10-minute cache
+  if (inFlightSummaryPromise) {
+    return inFlightSummaryPromise;
+  }
+
+  const generationAtStart = funnelAttributionGeneration;
+  const executeSummary = async (): Promise<SiteFixFunnelAttributionSummary> => {
+    if (d1Repo.isRemoteD1Configured() && isProduction() && !process.env.VITEST) {
+      try {
+        const rawRows = await d1Repo.query<{ payload_json?: string | null }>(
+          'durable_events',
+          `SELECT payload_json FROM durable_events WHERE event_type = ? AND created_at >= datetime('now', '-90 days') ORDER BY created_at DESC LIMIT ${SITEFIX_FUNNEL_WINDOW_LIMIT + 1}`,
+          [SITEFIX_FUNNEL_EVENT_TYPE]
+        );
+        const eventLimitReached = rawRows.length > SITEFIX_FUNNEL_WINDOW_LIMIT;
+        const rows = eventLimitReached ? rawRows.slice(0, SITEFIX_FUNNEL_WINDOW_LIMIT) : rawRows;
+        const result = aggregateFunnelRows(rows, eventLimitReached);
+        if (shouldCache && generationAtStart === funnelAttributionGeneration) {
+          funnelAttributionCache = {
+            data: result,
+            expiresAt: Date.now() + 10 * 60 * 1000 // 10-minute cache
+          };
+        }
+        return result;
+      } catch (err: any) {
+        const errorMessage = err?.message || String(err);
+        console.warn('[SiteFixFunnelAttribution] Remote D1 summary read failed, falling back to local SQLite:', errorMessage);
+        const fallback = getSiteFixFunnelAttributionSummarySync();
+        return {
+          ...fallback,
+          persistenceWarning: buildPersistenceWarning(`D1 read failed (${errorMessage}); showing local fallback`)
         };
       }
-      return result;
-    } catch (err: any) {
-      const errorMessage = err?.message || String(err);
-      console.warn('[SiteFixFunnelAttribution] Remote D1 summary read failed, falling back to local SQLite:', errorMessage);
-      const fallback = getSiteFixFunnelAttributionSummarySync();
-      return {
-        ...fallback,
-        persistenceWarning: buildPersistenceWarning(`D1 read failed (${errorMessage}); showing local fallback`)
+    }
+    const syncResult = getSiteFixFunnelAttributionSummarySync();
+    if (shouldCache && !syncResult.persistenceWarning && generationAtStart === funnelAttributionGeneration) {
+      funnelAttributionCache = {
+        data: syncResult,
+        expiresAt: Date.now() + 10 * 60 * 1000 // 10-minute cache
       };
     }
+    return syncResult;
+  };
+
+  const currentPromise = executeSummary();
+  inFlightSummaryPromise = currentPromise;
+  try {
+    return await currentPromise;
+  } finally {
+    if (inFlightSummaryPromise === currentPromise) {
+      inFlightSummaryPromise = null;
+    }
   }
-  const syncResult = getSiteFixFunnelAttributionSummarySync();
-  if (shouldCache) {
-    funnelAttributionCache = {
-      data: syncResult,
-      expiresAt: Date.now() + 10 * 60 * 1000 // 10-minute cache
-    };
-  }
-  return syncResult;
 }

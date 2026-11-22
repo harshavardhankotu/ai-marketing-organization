@@ -229,7 +229,7 @@ export class D1Client {
   public isRemoteD1ReadAllowed(): boolean {
     if (process.env.VITEST && process.env.ALLOW_REMOTE_D1_READS !== 'true') return false;
     if (!this.isRemoteD1Configured()) return false;
-    if (this.isRemoteD1ReadQuotaExhausted()) return false;
+    if (this.isRemoteD1ReadQuotaExhausted() || this.isRemoteD1WriteQuotaExhausted()) return false;
     return (
       process.env.NODE_ENV === 'production' ||
       process.env.RENDER === 'true' ||
@@ -243,9 +243,9 @@ export class D1Client {
    * or when explicitly unlocked via ALLOW_REMOTE_D1_WRITES === 'true' (outside Vitest).
    */
   public isRemoteD1WriteAllowed(): boolean {
-    if (process.env.VITEST) return false;
+    if (process.env.VITEST && process.env.ALLOW_REMOTE_D1_WRITES !== 'true') return false;
     if (!this.isRemoteD1Configured()) return false;
-    if (this.isRemoteD1WriteQuotaExhausted()) return false;
+    if (this.isRemoteD1WriteQuotaExhausted() || this.isRemoteD1ReadQuotaExhausted()) return false;
     return process.env.RENDER === 'true' || process.env.ALLOW_REMOTE_D1_WRITES === 'true';
   }
 
@@ -374,12 +374,12 @@ export class D1Client {
     const isRender = process.env.RENDER === 'true';
     const isFinancial = isWrite && isFinancialSql(sql);
 
-    // Fail-closed enforcement for Render on financial tables if remote D1 is unconfigured or write circuit breaker is active
+    // Fail-closed enforcement for Render on financial tables if remote D1 is unconfigured or either quota circuit breaker is active
     if (isRender && isFinancial) {
       if (!this.isRemoteD1Configured()) {
         throw new Error('D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1 (remote D1 not configured)');
       }
-      if (this.isRemoteD1WriteQuotaExhausted()) {
+      if (this.isRemoteD1WriteQuotaExhausted() || this.isRemoteD1ReadQuotaExhausted()) {
         throw new Error('D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1 (quota circuit breaker active)');
       }
     }
@@ -453,7 +453,7 @@ export class D1Client {
             if (isRender && isFinancial) {
               throw new Error(`D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1 (HTTP ${response.status}: ${errText})`);
             }
-            if (isProduction && !(isWrite ? this.isRemoteD1WriteQuotaExhausted() : this.isRemoteD1ReadQuotaExhausted())) {
+            if (isProduction && !(this.isRemoteD1ReadQuotaExhausted() || this.isRemoteD1WriteQuotaExhausted())) {
               throw new Error(`[D1 PERSISTENCE ERROR] D1 returned HTTP ${response.status}: ${errText}`);
             }
             console.warn(`[D1Client] Cloudflare D1 HTTP ${response.status} (${errText}) — falling back to dev store`);
@@ -578,12 +578,12 @@ export class D1Client {
     const isRender = process.env.RENDER === 'true';
     const hasFinancialStatement = statements.some(s => isFinancialSql(s.sql));
 
-    // Fail-closed enforcement for Render on financial statements
+    // Fail-closed enforcement for Render on financial statements if remote D1 is unconfigured or either quota circuit breaker is active
     if (isRender && hasFinancialStatement) {
       if (!this.isRemoteD1Configured()) {
         throw new Error('D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1 (remote D1 not configured)');
       }
-      if (this.isRemoteD1WriteQuotaExhausted()) {
+      if (this.isRemoteD1WriteQuotaExhausted() || this.isRemoteD1ReadQuotaExhausted()) {
         throw new Error('D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1 (quota circuit breaker active)');
       }
     }
@@ -688,10 +688,10 @@ export class D1Client {
           }
           throw new Error(`D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1 (${failureErrorText})`);
         }
-        if (isProduction && !this.isRemoteD1WriteQuotaExhausted()) {
+        if (isProduction && !(this.isRemoteD1ReadQuotaExhausted() || this.isRemoteD1WriteQuotaExhausted())) {
           throw new Error(`[D1 PERSISTENCE ERROR] D1 batch statement failed at index ${failedIdx}: ${failureErrorText}`);
         }
-        if (!this.isRemoteD1WriteQuotaExhausted()) {
+        if (!(this.isRemoteD1ReadQuotaExhausted() || this.isRemoteD1WriteQuotaExhausted())) {
           console.warn(`[D1Client] Cloudflare D1 batch statement failed at index ${failedIdx} (${failureErrorText}) — falling back to dev store`);
         }
       } else if (!fallbackToLocal) {

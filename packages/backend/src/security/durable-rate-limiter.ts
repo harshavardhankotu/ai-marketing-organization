@@ -231,6 +231,18 @@ export class DurableRateLimiter {
         currentCount = 1;
       }
 
+      if (options.failClosed && d1.isRemoteD1Configured() && (d1.isRemoteD1ReadQuotaExhausted() || d1.isRemoteD1WriteQuotaExhausted())) {
+        return {
+          allowed: false,
+          limit: maxRequests,
+          remaining: 0,
+          retryAfterSeconds: 60,
+          ipHash,
+          reason: 'RATE_LIMITER_UNAVAILABLE',
+          bucketKey: key
+        };
+      }
+
       const allowed = currentCount <= maxRequests;
       const remaining = Math.max(0, maxRequests - currentCount);
 
