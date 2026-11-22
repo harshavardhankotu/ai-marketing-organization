@@ -32,6 +32,9 @@ export const ALLOWED_SITEFIX_SOURCES: readonly SiteFixLaunchSource[] = [
 ] as const;
 
 export const SITEFIX_FUNNEL_EVENT_TYPE = 'SITEFIX_FUNNEL_EVENT';
+const SITEFIX_FUNNEL_READ_WINDOW = `created_at >= datetime('now', '-90 days')`;
+const SITEFIX_FUNNEL_CACHE_TTL_MS = 10 * 60 * 1000;
+let cachedD1Summary: { expiresAt: number; summary: SiteFixFunnelAttributionSummary } | null = null;
 
 const REPO_CI_AND_PROBE_UA_REGEX =
   /github-actions|ai-marketing-organization-ci|sitefix-ci-probe|sitefix-diagnostic|diagnostic-probe|curl\/|wget\/|httpie\/|vitest|node-fetch|undici/i;
@@ -235,7 +238,7 @@ export function getSiteFixFunnelAttributionSummarySync(): SiteFixFunnelAttributi
   try {
     const rows = getDb()
       .prepare(
-        `SELECT payload_json FROM durable_events WHERE event_type = ? ORDER BY created_at DESC LIMIT 5000`
+        `SELECT payload_json FROM durable_events WHERE event_type = ? AND ${SITEFIX_FUNNEL_READ_WINDOW} ORDER BY created_at DESC LIMIT 250`
       )
       .all(SITEFIX_FUNNEL_EVENT_TYPE) as Array<{ payload_json?: string | null }>;
     return aggregateFunnelRows(rows);
@@ -248,13 +251,18 @@ export async function getSiteFixFunnelAttributionSummaryAsync(
   d1Repo: D1RevenueRepository = D1RevenueRepository.getInstance()
 ): Promise<SiteFixFunnelAttributionSummary> {
   if (d1Repo.isRemoteD1Configured() && isProduction() && !process.env.VITEST) {
+    if (cachedD1Summary && cachedD1Summary.expiresAt > Date.now()) {
+      return JSON.parse(JSON.stringify(cachedD1Summary.summary)) as SiteFixFunnelAttributionSummary;
+    }
     try {
       const rows = await d1Repo.query<{ payload_json?: string | null }>(
         'durable_events',
-        `SELECT payload_json FROM durable_events WHERE event_type = ? ORDER BY created_at DESC LIMIT 5000`,
+        `SELECT payload_json FROM durable_events WHERE event_type = ? AND ${SITEFIX_FUNNEL_READ_WINDOW} ORDER BY created_at DESC LIMIT 250`,
         [SITEFIX_FUNNEL_EVENT_TYPE]
       );
-      return aggregateFunnelRows(rows);
+      const summary = aggregateFunnelRows(rows);
+      cachedD1Summary = { expiresAt: Date.now() + SITEFIX_FUNNEL_CACHE_TTL_MS, summary };
+      return summary;
     } catch {}
   }
   return getSiteFixFunnelAttributionSummarySync();

@@ -6,6 +6,7 @@ import { loadLocalEnvFile } from '../../config/env.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+let verified0050Baseline = false;
 
 /**
  * Robust SQL statement parser that handles:
@@ -179,26 +180,32 @@ export async function applyD1Migrations(): Promise<{ applied: string[]; tables: 
     .filter(f => f.endsWith('.sql'))
     .sort();
 
-  // Fast 1-row check: if migration 0050 already recorded and no files > 0050 exist, skip redundant table scan
-  try {
-    const baselineCheck = await d1.executeQuery<{ migration_name: string }>(
-      `SELECT migration_name FROM _d1_migrations WHERE migration_name LIKE '%0050%' LIMIT 1;`,
-      [],
-      false,
-      'P0'
-    );
+  const hasNewer = files.some(f => f > '0050_stage_d_deal_reconciliation_and_schedule.sql');
+  if (verified0050Baseline && !hasNewer) {
+    return { applied: [], tables: ['(verified 0050 baseline)'] };
+  }
 
-    const has0050 = (baselineCheck.results || []).some(r => r.migration_name.includes('0050'));
-    const hasNewer = files.some(f => f > '0050_stage_d_deal_reconciliation_and_schedule.sql');
-    if (has0050 && !hasNewer) {
-      console.log(`[D1 Migration Runner] Fast check: Migration 0050 baseline already verified in Cloudflare D1 (${files.length} migrations up to date). Skipping redundant schema scan.`);
-      return { applied: [], tables: ['(verified 0050 baseline)'] };
-    }
-  } catch (err: any) {
-    if (D1Client.isDailyQuotaError(err?.status || 0, err?.message || '')) {
-      d1.tripQuotaCircuitBreakerPublic(err.message || 'D1 migration quota reached');
-      console.warn(`[D1 Migration Runner] Remote D1 quota exhausted during baseline check (${err.message}). Skipping migration run.`);
-      return { applied: [], tables: [] };
+  // Verify the strict migration baseline once per process; subsequent startup checks reuse this result.
+  if (!verified0050Baseline) {
+    try {
+      const baselineCheck = await d1.executeQuery<{ migration_name: string }>(
+        `SELECT migration_name FROM _d1_migrations WHERE migration_name LIKE '%0050%' LIMIT 1;`,
+        [],
+        false,
+        'P0'
+      );
+
+      verified0050Baseline = (baselineCheck.results || []).some(r => r.migration_name.includes('0050'));
+      if (verified0050Baseline && !hasNewer) {
+        console.log(`[D1 Migration Runner] Fast check: Migration 0050 baseline already verified in Cloudflare D1 (${files.length} migrations up to date). Skipping redundant schema scan.`);
+        return { applied: [], tables: ['(verified 0050 baseline)'] };
+      }
+    } catch (err: any) {
+      if (D1Client.isDailyQuotaError(err?.status || 0, err?.message || '')) {
+        d1.tripQuotaCircuitBreakerPublic(err.message || 'D1 migration quota reached');
+        console.warn(`[D1 Migration Runner] Remote D1 quota exhausted during baseline check (${err.message}). Skipping migration run.`);
+        return { applied: [], tables: [] };
+      }
     }
   }
 
@@ -275,6 +282,13 @@ export async function applyD1Migrations(): Promise<{ applied: string[]; tables: 
       );
       applied.push(file);
       console.log(`[D1 Migration Runner] Successfully applied ${file}`);
+    }
+
+    if (
+      appliedSet.has('0050_stage_d_deal_reconciliation_and_schedule.sql') ||
+      applied.includes('0050_stage_d_deal_reconciliation_and_schedule.sql')
+    ) {
+      verified0050Baseline = true;
     }
 
     const tables = applied.length > 0 ? await listD1Tables() : ['(verified 0050 baseline)'];

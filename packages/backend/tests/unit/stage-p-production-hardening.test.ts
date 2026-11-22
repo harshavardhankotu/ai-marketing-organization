@@ -275,7 +275,7 @@ describe('Stage P — Production Hardening & Security Locking', () => {
   it('Task 1: Fail-closed on Render (process.env.RENDER=true) when D1 circuit breaker is open', async () => {
     process.env.RENDER = 'true';
     const d1 = D1Client.getInstance();
-    d1.tripQuotaCircuitBreakerPublic('Daily quota reached (code 7500)');
+    d1.tripQuotaCircuitBreakerPublic("Your account has exceeded D1's free tier daily row read limit (Error 7500)");
 
     const { apiRouter } = await import('../../src/routes/api.js');
     const app = new Hono();

@@ -3822,6 +3822,7 @@ export class AutonomousDealDiscoveryEngine {
     deals: NormalizedDeal[];
   }> {
     const isProd = isProduction() && !process.env.VITEST;
+    const boundedLimit = Math.max(1, Math.min(50, Math.floor(Number(limit) || 25)));
     let candidates: NormalizedDeal[] = [];
 
     // 1. Query candidates from public_deals (Strict Stage E filters)
@@ -3839,11 +3840,11 @@ export class AutonomousDealDiscoveryEngine {
       `;
       let rows: any[] = [];
       if (this.d1Repo.isRemoteD1Configured() || isProd) {
-        const res = await this.d1Repo.executeRead('public_deals', selectSql, [limit]);
+        const res = await this.d1Repo.executeRead('public_deals', selectSql, [boundedLimit]);
         rows = res.results || [];
       } else {
         const { getDb } = await import('../db/client.js');
-        rows = getDb().prepare(selectSql).all(limit);
+        rows = getDb().prepare(selectSql).all(boundedLimit);
       }
 
       for (const row of rows) {
@@ -3857,8 +3858,8 @@ export class AutonomousDealDiscoveryEngine {
     }
 
     // 2. If fewer than limit candidates found in public_deals, check workflows table for VERIFIED PUBLIC_DEAL
-    if (candidates.length < limit) {
-      const remainingLimit = limit - candidates.length;
+    if (candidates.length < boundedLimit) {
+      const remainingLimit = boundedLimit - candidates.length;
       try {
         const candidateIds = candidates.map(c => c.id);
         const placeholders = candidateIds.length > 0 ? candidateIds.map(() => '?').join(',') : "''";
@@ -4453,6 +4454,8 @@ export class AutonomousDealDiscoveryEngine {
         AND affiliate_verified = 1
         AND verification_status IN ('VERIFIED', 'AFFILIATE_VERIFIED', 'VERIFIED_WITH_CONDITIONS')
         AND (expiry_date IS NULL OR expiry_date > datetime('now'))
+      ORDER BY updated_at DESC
+      LIMIT 250
     `;
     try {
       if (useRemoteD1) {
@@ -4486,7 +4489,7 @@ export class AutonomousDealDiscoveryEngine {
         FROM analytics_events
         WHERE LOWER(event_type) IN ('impression', 'view', 'visit', 'page_view')
         ORDER BY created_at DESC
-        LIMIT 1000
+        LIMIT 250
       `).all() as any[];
       for (const ir of impRows) {
         const rawMeta = String(ir.metadata_json || '');
@@ -4649,6 +4652,8 @@ export class AutonomousDealDiscoveryEngine {
       AND product_verified = 1
       AND affiliate_verified = 1
       AND (expiry_date IS NULL OR expiry_date > datetime('now'))
+    ORDER BY updated_at DESC
+    LIMIT 250
   `;
 
   /**
@@ -4838,6 +4843,8 @@ export class AutonomousDealDiscoveryEngine {
             AND product_verified = 1
             AND affiliate_verified = 1
             AND (expiry_date IS NULL OR expiry_date > datetime('now'))
+          ORDER BY updated_at DESC
+          LIMIT 1000
         `;
         rows = getDb().prepare(testSql).all();
       } catch (err: any) {
@@ -7313,6 +7320,7 @@ export class AutonomousDealDiscoveryEngine {
 
   private static priceDropContactCursor: string | null = null;
   private static priceDropEventCursor: string | null = null;
+  private static emptyPriceDropScanUntilMs = 0;
 
   /**
    * Helper to mark a durable event processed with optional error message.
@@ -8042,11 +8050,15 @@ export class AutonomousDealDiscoveryEngine {
     }
 
     // Scan 2: Pending durable_events with continuation cursor (CodeRabbit Finding 1)
+    if (!contactRows.length && Date.now() < AutonomousDealDiscoveryEngine.emptyPriceDropScanUntilMs) {
+      return { checked, dispatched, skipped };
+    }
+
     try {
       const cursor = AutonomousDealDiscoveryEngine.priceDropEventCursor;
       const eventQuery = cursor
-        ? `SELECT id, payload_json FROM durable_events WHERE event_type = 'PRICE_DROP_SUBSCRIPTION' AND processed = 0 AND id > ? ORDER BY id ASC LIMIT 50`
-        : `SELECT id, payload_json FROM durable_events WHERE event_type = 'PRICE_DROP_SUBSCRIPTION' AND processed = 0 ORDER BY id ASC LIMIT 50`;
+        ? `SELECT id, payload_json FROM durable_events WHERE event_type = 'PRICE_DROP_SUBSCRIPTION' AND processed = 0 AND created_at >= datetime('now', '-90 days') AND id > ? ORDER BY id ASC LIMIT 25`
+        : `SELECT id, payload_json FROM durable_events WHERE event_type = 'PRICE_DROP_SUBSCRIPTION' AND processed = 0 AND created_at >= datetime('now', '-90 days') ORDER BY id ASC LIMIT 25`;
       const eventParams = cursor ? [cursor] : [];
 
       let eventRows: any[] = [];
@@ -8057,11 +8069,13 @@ export class AutonomousDealDiscoveryEngine {
         eventRows = getDb().prepare(eventQuery).all(...eventParams) as any[];
       }
 
-      if (eventRows.length === 50) {
+      if (eventRows.length === 25) {
         AutonomousDealDiscoveryEngine.priceDropEventCursor = eventRows[eventRows.length - 1].id;
       } else {
         AutonomousDealDiscoveryEngine.priceDropEventCursor = null;
       }
+      AutonomousDealDiscoveryEngine.emptyPriceDropScanUntilMs =
+        contactRows.length === 0 && eventRows.length === 0 ? Date.now() + 2 * 60 * 60 * 1000 : 0;
 
       for (const evRow of eventRows) {
         let payload: any = {};

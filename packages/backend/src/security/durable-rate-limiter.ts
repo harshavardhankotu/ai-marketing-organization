@@ -8,6 +8,7 @@
 
 import { createHash } from 'crypto';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
+import { D1Client } from '../db/d1-client.js';
 import { getDb } from '../db/client.js';
 import { isProduction } from '../config/env.js';
 
@@ -17,6 +18,8 @@ export interface RateLimitResult {
   remaining: number;
   retryAfterSeconds: number;
   ipHash: string;
+  storageUnavailable?: boolean;
+  reason?: 'STORAGE_UNAVAILABLE';
 }
 
 export class DurableRateLimiter {
@@ -47,7 +50,8 @@ export class DurableRateLimiter {
     route: string,
     clientIp: string,
     maxRequests = 10,
-    windowSeconds = 600
+    windowSeconds = 600,
+    requireHealthyD1 = false
   ): Promise<RateLimitResult> {
     const ipHash = this.hashIp(clientIp);
     const nowMs = Date.now();
@@ -60,6 +64,10 @@ export class DurableRateLimiter {
     let currentCount = 1;
 
     try {
+      if (requireHealthyD1 && D1Client.getInstance().isRemoteD1QuotaExhausted()) {
+        throw new Error('D1 quota circuit breaker is active; durable rate limit cannot be verified.');
+      }
+
       if (isProduction()) {
         await this.d1Repo.executeWrite(
           'durable_rate_limits',
@@ -92,7 +100,15 @@ export class DurableRateLimiter {
       }
     } catch (err: any) {
       console.warn(`[DurableRateLimiter] Rate limit storage error: ${err.message}.`);
-      currentCount = 1;
+      return {
+        allowed: false,
+        limit: maxRequests,
+        remaining: 0,
+        retryAfterSeconds: 60,
+        ipHash,
+        storageUnavailable: true,
+        reason: 'STORAGE_UNAVAILABLE'
+      };
     }
 
     const remaining = Math.max(0, maxRequests - currentCount);

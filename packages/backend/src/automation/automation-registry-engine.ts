@@ -1509,7 +1509,7 @@ export class AutomationRegistryEngine {
         try {
           const countRow = await this.d1Repo.queryOne<any>(
             'durable_events',
-            `SELECT count(*) as cnt FROM durable_events WHERE event_type = 'OUTREACH_EMAIL_SENT' AND date(created_at) = date('now')`
+            `SELECT count(*) as cnt FROM durable_events WHERE event_type = 'OUTREACH_EMAIL_SENT' AND created_at >= datetime('now', 'start of day') AND created_at < datetime('now', 'start of day', '+1 day')`
           );
           if (countRow?.cnt) d1TodaySentCount = Number(countRow.cnt);
         } catch {}
@@ -1739,7 +1739,7 @@ export class AutomationRegistryEngine {
             const cutoff96h = new Date(Date.now() - 96 * 3600 * 1000).toISOString();
             const rows = await this.d1Repo.query<any>(
               'durable_events',
-              `SELECT id, payload_json, created_at FROM durable_events WHERE event_type = 'OUTREACH_EMAIL_SENT' AND created_at >= ?`,
+              `SELECT id, payload_json, created_at FROM durable_events WHERE event_type = 'OUTREACH_EMAIL_SENT' AND created_at >= ? ORDER BY created_at DESC LIMIT 50`,
               [cutoff96h]
             );
             if (rows && rows.length > 0) {

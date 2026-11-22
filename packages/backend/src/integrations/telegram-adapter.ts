@@ -359,7 +359,8 @@ export class TelegramBotAdapter {
         `SELECT COUNT(*) as cnt
          FROM durable_events
          WHERE event_type IN ('TELEGRAM_POST_CLAIMED', 'TELEGRAM_GUIDE_POSTED')
-           AND date(created_at) = date('now')`
+           AND created_at >= datetime('now', 'start of day')
+           AND created_at < datetime('now', 'start of day', '+1 day')`
       );
       durableTodayCount = Number(durableRow?.cnt || 0);
     } catch {}

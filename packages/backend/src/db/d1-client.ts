@@ -18,7 +18,9 @@ export const FINANCIAL_TABLES = [
   'manual_upi_claims',
   'orders',
   'universal_orders',
+  'payment_orders',
   'transactions',
+  'durable_events',
   'commission_ledger',
   'delivery_tasks',
   'payout_records'
@@ -49,8 +51,10 @@ export class D1Client {
   private accountId?: string;
   private databaseId?: string;
   private apiToken?: string;
-  private remoteQuotaExhaustedUntilMs = 0;
-  private remoteQuotaExhaustedReason = '';
+  private remoteReadQuotaExhaustedUntilMs = 0;
+  private remoteWriteQuotaExhaustedUntilMs = 0;
+  private remoteReadQuotaExhaustedReason = '';
+  private remoteWriteQuotaExhaustedReason = '';
   private loggedQuotaExhaustedDate = '';
 
   // 80% safety caps for Cloudflare D1 Free Tier
@@ -73,10 +77,13 @@ export class D1Client {
 
   public static isDailyQuotaError(status: number, bodyText: string): boolean {
     const raw = String(bodyText || '');
-    // Narrow Cloudflare D1 daily quota classifier (Spec Stage P.2):
-    // Trip circuit breaker ONLY when error matches true Cloudflare free-tier daily row limit exhaustion.
-    // Never classify bare HTTP 429, generic "quota exceeded", "daily quota", error 7429, or error 7500 as daily row quota exhaustion.
-    return /Your account has exceeded D1['’]s free tier daily row (read|write) limit/i.test(raw);
+    return D1Client.getDailyQuotaType(raw) !== null;
+  }
+
+  private static getDailyQuotaType(bodyText: string): 'read' | 'write' | null {
+    const match = String(bodyText || '').match(/Your account has exceeded D1['’]s free tier daily row (read|write|written) limit/i);
+    if (!match) return null;
+    return match[1].toLowerCase() === 'read' ? 'read' : 'write';
   }
 
   public isDailyQuotaError(status: number, bodyText: string): boolean {
@@ -88,34 +95,71 @@ export class D1Client {
   }
 
   public isRemoteD1QuotaExhausted(): boolean {
-    return Date.now() < this.remoteQuotaExhaustedUntilMs;
+    return this.isRemoteD1ReadQuotaExhausted() || this.isRemoteD1WriteQuotaExhausted();
   }
 
-  public getRemoteQuotaCircuitState(): { exhausted: boolean; untilIso: string | null; reason: string | null } {
-    const exhausted = this.isRemoteD1QuotaExhausted();
+  public isRemoteD1ReadQuotaExhausted(): boolean {
+    return Date.now() < this.remoteReadQuotaExhaustedUntilMs;
+  }
+
+  public isRemoteD1WriteQuotaExhausted(): boolean {
+    return Date.now() < this.remoteWriteQuotaExhaustedUntilMs;
+  }
+
+  public getRemoteQuotaCircuitState(): {
+    exhausted: boolean;
+    readExhausted: boolean;
+    writeExhausted: boolean;
+    readUntilIso: string | null;
+    writeUntilIso: string | null;
+    untilIso: string | null;
+    reason: string | null;
+    readReason: string | null;
+    writeReason: string | null;
+  } {
+    const readExhausted = this.isRemoteD1ReadQuotaExhausted();
+    const writeExhausted = this.isRemoteD1WriteQuotaExhausted();
+    const exhausted = readExhausted || writeExhausted;
     return {
       exhausted,
-      untilIso: exhausted ? new Date(this.remoteQuotaExhaustedUntilMs).toISOString() : null,
-      reason: exhausted ? this.remoteQuotaExhaustedReason : null
+      readExhausted,
+      writeExhausted,
+      readUntilIso: readExhausted ? new Date(this.remoteReadQuotaExhaustedUntilMs).toISOString() : null,
+      writeUntilIso: writeExhausted ? new Date(this.remoteWriteQuotaExhaustedUntilMs).toISOString() : null,
+      untilIso: exhausted
+        ? new Date(Math.max(readExhausted ? this.remoteReadQuotaExhaustedUntilMs : 0, writeExhausted ? this.remoteWriteQuotaExhaustedUntilMs : 0)).toISOString()
+        : null,
+      reason: readExhausted ? this.remoteReadQuotaExhaustedReason : writeExhausted ? this.remoteWriteQuotaExhaustedReason : null,
+      readReason: readExhausted ? this.remoteReadQuotaExhaustedReason : null,
+      writeReason: writeExhausted ? this.remoteWriteQuotaExhaustedReason : null
     };
   }
 
   public resetQuotaCircuitBreakerForTesting(): void {
-    this.remoteQuotaExhaustedUntilMs = 0;
-    this.remoteQuotaExhaustedReason = '';
+    this.remoteReadQuotaExhaustedUntilMs = 0;
+    this.remoteWriteQuotaExhaustedUntilMs = 0;
+    this.remoteReadQuotaExhaustedReason = '';
+    this.remoteWriteQuotaExhaustedReason = '';
     this.loggedQuotaExhaustedDate = '';
   }
 
   private tripQuotaCircuitBreaker(errText: string): void {
     const now = new Date();
     const nextUtcMidnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 1, 0);
-    this.remoteQuotaExhaustedUntilMs = nextUtcMidnight;
-    this.remoteQuotaExhaustedReason = String(errText || '').slice(0, 300);
+    const quotaType = D1Client.getDailyQuotaType(errText);
+    if (!quotaType) return;
+    if (quotaType === 'read') {
+      this.remoteReadQuotaExhaustedUntilMs = nextUtcMidnight;
+      this.remoteReadQuotaExhaustedReason = String(errText || '').slice(0, 300);
+    } else {
+      this.remoteWriteQuotaExhaustedUntilMs = nextUtcMidnight;
+      this.remoteWriteQuotaExhaustedReason = String(errText || '').slice(0, 300);
+    }
     const dayKey = now.toISOString().split('T')[0];
     if (this.loggedQuotaExhaustedDate !== dayKey) {
       this.loggedQuotaExhaustedDate = dayKey;
       console.info(
-        `[D1Client] Cloudflare D1 free-tier daily quota reached (code 7500); falling back cleanly to local SQLite until ${new Date(nextUtcMidnight).toISOString()}.`
+        `[D1Client] Cloudflare D1 daily row ${quotaType} quota reached (code 7500); circuit open until ${new Date(nextUtcMidnight).toISOString()}.`
       );
     }
   }
@@ -148,7 +192,7 @@ export class D1Client {
   public isRemoteD1ReadAllowed(): boolean {
     if (process.env.VITEST && process.env.ALLOW_REMOTE_D1_READS !== 'true') return false;
     if (!this.isRemoteD1Configured()) return false;
-    if (this.isRemoteD1QuotaExhausted()) return false;
+    if (this.isRemoteD1ReadQuotaExhausted()) return false;
     return (
       process.env.NODE_ENV === 'production' ||
       process.env.RENDER === 'true' ||
@@ -164,7 +208,7 @@ export class D1Client {
   public isRemoteD1WriteAllowed(): boolean {
     if (process.env.VITEST) return false;
     if (!this.isRemoteD1Configured()) return false;
-    if (this.isRemoteD1QuotaExhausted()) return false;
+    if (this.isRemoteD1WriteQuotaExhausted()) return false;
     return process.env.RENDER === 'true' || process.env.ALLOW_REMOTE_D1_WRITES === 'true';
   }
 
@@ -298,7 +342,7 @@ export class D1Client {
       if (!this.isRemoteD1Configured()) {
         throw new Error('D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1 (remote D1 not configured)');
       }
-      if (this.isRemoteD1QuotaExhausted()) {
+      if (this.isRemoteD1WriteQuotaExhausted()) {
         throw new Error('D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1 (quota circuit breaker active)');
       }
     }
@@ -502,7 +546,7 @@ export class D1Client {
       if (!this.isRemoteD1Configured()) {
         throw new Error('D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1 (remote D1 not configured)');
       }
-      if (this.isRemoteD1QuotaExhausted()) {
+      if (this.isRemoteD1WriteQuotaExhausted()) {
         throw new Error('D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1 (quota circuit breaker active)');
       }
     }

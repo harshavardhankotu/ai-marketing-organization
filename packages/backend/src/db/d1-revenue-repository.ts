@@ -2,6 +2,41 @@ import { D1Client, FINANCIAL_TABLES, isFinancialSql } from './d1-client.js';
 import { getDb } from './client.js';
 import { isProduction } from '../config/env.js';
 
+const PUBLIC_DEALS_READ_CACHE_TTL_MS = 15 * 60 * 1000;
+const publicDealsReadCache = new Map<string, {
+  expiresAt: number;
+  results: any[];
+  source: 'CLOUDFLARE_D1' | 'PERSISTENT_SQLITE';
+}>();
+
+function publicDealsCacheKey(sql: string, params: any[]): string | null {
+  try {
+    return `public_deals:${sql.trim()}:${JSON.stringify(params)}`;
+  } catch {
+    return null;
+  }
+}
+
+function clearPublicDealsReadCache(): void {
+  publicDealsReadCache.clear();
+}
+
+function cachePublicDealsRead(
+  key: string,
+  results: any[],
+  source: 'CLOUDFLARE_D1' | 'PERSISTENT_SQLITE'
+): void {
+  if (!publicDealsReadCache.has(key) && publicDealsReadCache.size >= 128) {
+    const oldestKey = publicDealsReadCache.keys().next().value;
+    if (oldestKey) publicDealsReadCache.delete(oldestKey);
+  }
+  publicDealsReadCache.set(key, {
+    expiresAt: Date.now() + PUBLIC_DEALS_READ_CACHE_TTL_MS,
+    results: JSON.parse(JSON.stringify(results)),
+    source
+  });
+}
+
 export const D1_REVENUE_CRITICAL_TABLES = [
   'payment_requests',
   'payment_provider_links',
@@ -112,6 +147,7 @@ export class D1RevenueRepository {
     params: any[] = []
   ): Promise<{ rowsAffected: number; source: 'CLOUDFLARE_D1' | 'PERSISTENT_SQLITE' }> {
     const isFinancialTable = FINANCIAL_TABLES.includes(table as any) || isFinancialSql(sql);
+    if (table === 'public_deals') clearPublicDealsReadCache();
 
     const shouldSyncRemoteD1 = this.d1.isRemoteD1WriteAllowed();
     if (shouldSyncRemoteD1) {
@@ -147,6 +183,7 @@ export class D1RevenueRepository {
   public async executeBatch(
     operations: Array<{ table: D1RevenueCriticalTable; sql: string; params?: any[] }>
   ): Promise<{ rowsAffected: number; source: 'CLOUDFLARE_D1' | 'PERSISTENT_SQLITE' }> {
+    if (operations.some(operation => operation.table === 'public_deals')) clearPublicDealsReadCache();
     const shouldSyncRemoteD1 = this.d1.isRemoteD1WriteAllowed();
     if (operations.length === 0) {
       return { rowsAffected: 0, source: shouldSyncRemoteD1 ? 'CLOUDFLARE_D1' : 'PERSISTENT_SQLITE' };
@@ -206,9 +243,26 @@ export class D1RevenueRepository {
     sql: string,
     params: any[] = []
   ): Promise<{ results: T[]; source: 'CLOUDFLARE_D1' | 'PERSISTENT_SQLITE' }> {
+    const cacheKey = table === 'public_deals' &&
+      process.env.NODE_ENV === 'production' &&
+      !process.env.VITEST &&
+      /^\s*SELECT\b/i.test(sql)
+      ? publicDealsCacheKey(sql, params)
+      : null;
+    if (cacheKey) {
+      const cached = publicDealsReadCache.get(cacheKey);
+      if (cached && cached.expiresAt > Date.now()) {
+        return { results: JSON.parse(JSON.stringify(cached.results)) as T[], source: cached.source };
+      }
+      if (cached) publicDealsReadCache.delete(cacheKey);
+    }
+
     const shouldQueryRemoteD1 = this.d1.isRemoteD1ReadAllowed();
     if (shouldQueryRemoteD1) {
       const res = await this.d1.executeQuery<T>(sql, params, false, 'P0');
+      if (cacheKey) {
+        cachePublicDealsRead(cacheKey, res.results, res.source);
+      }
       return { results: res.results, source: res.source };
     }
     if (isProduction() && !process.env.VITEST && !this.d1.isRemoteD1QuotaExhausted() && !this.d1.isRemoteD1Configured()) {
@@ -216,6 +270,9 @@ export class D1RevenueRepository {
     }
     const db = getDb();
     const results = db.prepare(sql).all(...params) as T[];
+    if (cacheKey) {
+      cachePublicDealsRead(cacheKey, results, 'PERSISTENT_SQLITE');
+    }
     return { results, source: 'PERSISTENT_SQLITE' };
   }
 

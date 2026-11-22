@@ -323,4 +323,47 @@ describe('SiteFix AI: Optimization Fix-Pack Deliverable Generator (Part 2.4)', (
     expect(deliverable.checklistMarkdown).toContain('LEGAL NOTICE');
     expect(deliverable.disclosure).toBe(SiteAuditFixPackGenerator.LEGAL_DISCLOSURE);
   });
+
+  it('escapes malicious observed metadata and rejects javascript: URLs in generated output', async () => {
+    const mockHtml = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>&lt;script&gt;alert("title")&lt;/script&gt;</title>
+        <meta name="description" content='&quot; onmouseover=&quot;alert(1)&lt;/script&gt;'>
+        <meta property="og:title" content='&quot;&gt;&lt;script&gt;alert("og")&lt;/script&gt;'>
+        <meta property="og:image" content="javascript:alert(1)">
+        <link rel="canonical" href="javascript:alert(1)">
+      </head>
+      <body></body>
+      </html>
+    `;
+
+    const audit = await scanner.scanUrl(
+      { url: 'https://malicious.example.com', userConfirmedOwnership: true },
+      {
+        url: 'https://malicious.example.com',
+        finalUrl: 'https://malicious.example.com',
+        statusCode: 200,
+        headers: { 'content-type': 'text/html' },
+        body: mockHtml,
+        timingMs: 50,
+        bytesReceived: mockHtml.length,
+        contentType: 'text/html',
+        redirectChain: ['https://malicious.example.com']
+      }
+    );
+
+    const deliverable = generator.generateFixPack(audit, 'order_malicious_test');
+    const combined =
+      deliverable.headMetadataSnippet +
+      deliverable.openGraphSnippet +
+      deliverable.twitterCardSnippet +
+      deliverable.schemaJsonLdSnippet +
+      deliverable.sitemapXmlSnippet;
+
+    expect(combined).not.toContain('javascript:');
+    expect(combined).not.toContain('<script>alert');
+    expect(combined).not.toContain('</script><script>');
+  });
 });

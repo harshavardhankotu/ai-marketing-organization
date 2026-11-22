@@ -32,6 +32,8 @@ export const PUBLIC_SCAN_USER_AGENT =
 export interface PublicScanFixPackPreview {
   canonicalSku: 'SITEFIX_AI_PACK_V1';
   priceINR: number;
+  checkoutLocked: boolean;
+  authorizationMode: 'SELF_DECLARED_AUTHORIZATION';
   snippetPreview: string;
   deliverablesIncluded: string[];
   missingFieldsRequiringOwnerInput: string[];
@@ -40,6 +42,7 @@ export interface PublicScanFixPackPreview {
 
 export interface HardenedPublicScanOutput {
   cached: boolean;
+  cacheStatus: 'HIT_D1' | 'HIT_MEMORY' | 'MISS' | 'D1_WRITE_FAILED' | 'D1_READ_FAILED';
   cacheTtlHours: number;
   cachedAt: string;
   normalizedUrl: string;
@@ -81,6 +84,8 @@ function hashCacheKey(normalizedUrl: string): string {
 
 export function buildPublicFixPackPreview(audit: SiteAuditResult): PublicScanFixPackPreview {
   const pack = fixPackGenerator.generateFixPack(audit);
+  const readiness = SiteAuditService.getInstance().getCheckoutReadiness();
+  const checkoutLocked = !readiness.isReady;
   const deliverablesIncluded = [
     'Copy-paste <head> title, description & canonical tags',
     'Open Graph & WhatsApp link preview meta tags',
@@ -92,6 +97,8 @@ export function buildPublicFixPackPreview(audit: SiteAuditResult): PublicScanFix
   return {
     canonicalSku: 'SITEFIX_AI_PACK_V1',
     priceINR: 499,
+    checkoutLocked,
+    authorizationMode: 'SELF_DECLARED_AUTHORIZATION',
     snippetPreview: audit.preview?.fixPackSnippetPreview || pack.headMetadataSnippet,
     deliverablesIncluded,
     missingFieldsRequiringOwnerInput: pack.missingFieldsRequiringOwnerInput || [],
@@ -204,10 +211,12 @@ export async function executeHardenedPublicScan(params: {
   const normalizedUrl = normalizeUrlForPublicCache(params.url);
 
   if (!params.skipCache) {
+    const wasMemoryHit = memoryScanCache.has(normalizedUrl);
     const cached = await readDurableCacheEntry(normalizedUrl);
     if (cached) {
       return {
         cached: true,
+        cacheStatus: wasMemoryHit ? 'HIT_MEMORY' : 'HIT_D1',
         cacheTtlHours: 24,
         cachedAt: cached.cachedAt,
         normalizedUrl,
@@ -255,6 +264,7 @@ export async function executeHardenedPublicScan(params: {
 
   return {
     cached: false,
+    cacheStatus: 'MISS',
     cacheTtlHours: 24,
     cachedAt,
     normalizedUrl,

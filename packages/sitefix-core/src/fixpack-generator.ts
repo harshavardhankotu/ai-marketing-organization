@@ -17,6 +17,31 @@ export class SiteAuditFixPackGenerator {
     audit: SiteAuditResult,
     orderId?: string
   ): FixPackDeliverable {
+    const escapeHtmlText = (value: unknown): string =>
+      String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+
+    const escapeHtmlAttribute = (value: unknown): string =>
+      escapeHtmlText(value).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+    const safeObservedHttpUrl = (value: unknown): string | null => {
+      const raw = String(value || '').trim();
+      if (!/^https?:\/\//i.test(raw)) return null;
+      try {
+        const parsed = new URL(raw);
+        return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? raw : null;
+      } catch {
+        return null;
+      }
+    };
+
+    const escapeJsonLd = (value: unknown): string =>
+      JSON.stringify(value, null, 2)
+        .replace(/</g, '\\u003c')
+        .replace(/>/g, '\\u003e')
+        .replace(/&/g, '\\u0026');
     const targetUrl = audit.url;
     let urlHostname = 'yourwebsite.com';
     try {
@@ -41,7 +66,9 @@ export class SiteAuditFixPackGenerator {
       preview.canonicalUrl !== '(No canonical URL specified)' &&
       preview.canonicalUrl !== '(No canonical link found)'
     );
-    const cleanCanonical = hasRealCanonical ? preview.canonicalUrl : targetUrl;
+    const cleanCanonical = (hasRealCanonical
+      ? safeObservedHttpUrl(preview.canonicalUrl)
+      : safeObservedHttpUrl(targetUrl)) || `https://${urlHostname}`;
 
     const hasRealOgTitle = Boolean(
       preview.ogTitle &&
@@ -60,26 +87,26 @@ export class SiteAuditFixPackGenerator {
     const headLines = [
       '<!-- ======================================================= -->',
       '<!-- SiteFix AI: Recommended <head> Optimization Tags        -->',
-      `<!-- Target: ${targetUrl}                                    -->`,
+      `<!-- Target: ${escapeHtmlText(targetUrl)}                                    -->`,
       `<!-- Generated: ${new Date().toISOString()}                  -->`,
       '<!-- ======================================================= -->'
     ];
 
     if (hasRealTitle) {
-      headLines.push(`<title>${preview.title}</title>`);
+      headLines.push(`<title>${escapeHtmlText(preview.title)}</title>`);
     } else {
       headLines.push('<!-- OWNER ACTION REQUIRED: Missing <title> tag. Add a descriptive title (50-60 chars): -->');
       headLines.push('<title><!-- [INSERT_PAGE_TITLE] --></title>');
     }
 
     if (hasRealDesc) {
-      headLines.push(`<meta name="description" content="${preview.metaDescription}">`);
+      headLines.push(`<meta name="description" content="${escapeHtmlAttribute(preview.metaDescription)}">`);
     } else {
       headLines.push('<!-- OWNER ACTION REQUIRED: Missing meta description. Add a summary (120-160 chars): -->');
       headLines.push('<meta name="description" content="<!-- [INSERT_META_DESCRIPTION] -->">');
     }
 
-    headLines.push(`<link rel="canonical" href="${cleanCanonical}">`);
+    headLines.push(`<link rel="canonical" href="${escapeHtmlAttribute(cleanCanonical)}">`);
     headLines.push('<meta name="viewport" content="width=device-width, initial-scale=1.0">');
     headLines.push('<meta charset="utf-8">');
 
@@ -97,23 +124,23 @@ export class SiteAuditFixPackGenerator {
     const ogLines = [
       '<!-- Open Graph Social Sharing Meta Tags -->',
       '<meta property="og:type" content="website">',
-      `<meta property="og:url" content="${cleanCanonical}">`
+      `<meta property="og:url" content="${escapeHtmlAttribute(cleanCanonical)}">`
     ];
 
     if (hasRealOgTitle || hasRealTitle) {
-      ogLines.push(`<meta property="og:title" content="${preview.ogTitle || preview.title}">`);
+      ogLines.push(`<meta property="og:title" content="${escapeHtmlAttribute(preview.ogTitle || preview.title)}">`);
     } else {
       ogLines.push('<!-- OWNER ACTION: Add og:title -->');
     }
 
     if (hasRealDesc) {
-      ogLines.push(`<meta property="og:description" content="${preview.metaDescription}">`);
+      ogLines.push(`<meta property="og:description" content="${escapeHtmlAttribute(preview.metaDescription)}">`);
     } else {
       ogLines.push('<!-- OWNER ACTION: Add og:description -->');
     }
 
     if (hasRealOgImage) {
-      ogLines.push(`<meta property="og:image" content="${preview.ogImage}">`);
+      ogLines.push(`<meta property="og:image" content="${escapeHtmlAttribute(safeObservedHttpUrl(preview.ogImage) || '')}">`);
       ogLines.push('<meta property="og:image:width" content="1200">');
       ogLines.push('<meta property="og:image:height" content="630">');
     } else {
@@ -128,13 +155,13 @@ export class SiteAuditFixPackGenerator {
       '<meta name="twitter:card" content="summary_large_image">'
     ];
     if (hasRealOgTitle || hasRealTitle) {
-      twitterLines.push(`<meta name="twitter:title" content="${preview.ogTitle || preview.title}">`);
+      twitterLines.push(`<meta name="twitter:title" content="${escapeHtmlAttribute(preview.ogTitle || preview.title)}">`);
     }
     if (hasRealDesc) {
-      twitterLines.push(`<meta name="twitter:description" content="${preview.metaDescription}">`);
+      twitterLines.push(`<meta name="twitter:description" content="${escapeHtmlAttribute(preview.metaDescription)}">`);
     }
     if (hasRealOgImage) {
-      twitterLines.push(`<meta name="twitter:image" content="${preview.ogImage}">`);
+      twitterLines.push(`<meta name="twitter:image" content="${escapeHtmlAttribute(safeObservedHttpUrl(preview.ogImage) || '')}">`);
     }
 
     const twitterCardSnippet = twitterLines.join('\n');
@@ -147,15 +174,15 @@ export class SiteAuditFixPackGenerator {
     };
 
     if (hasRealTitle) {
-      schemaObject.name = preview.title.split('—')[0].split('-')[0].trim();
+      schemaObject.name = escapeHtmlText(preview.title.split('—')[0].split('-')[0].trim());
     } else if (audit.businessName) {
       schemaObject.name = audit.businessName;
     }
     if (hasRealDesc) {
-      schemaObject.description = preview.metaDescription;
+      schemaObject.description = escapeHtmlText(preview.metaDescription);
     }
     if (hasRealOgImage) {
-      schemaObject.image = preview.ogImage;
+      schemaObject.image = safeObservedHttpUrl(preview.ogImage) || undefined;
     }
     const observedEmail = audit.prospectSignals?.discoveredEmails?.[0];
     if (observedEmail) {
@@ -166,7 +193,7 @@ export class SiteAuditFixPackGenerator {
       '<!-- Schema.org Structured Data (Strictly Verified Live Metadata — Zero Hallucination) -->',
       '<!-- TODO: REPLACE_WITH_YOUR_PHONE_AND_ADDRESS_IF_LOCAL_BUSINESS before deploying if adding LocalBusiness fields -->',
       '<script type="application/ld+json">',
-      JSON.stringify(schemaObject, null, 2),
+      escapeJsonLd(schemaObject),
       '</script>'
     ].join('\n');
 
@@ -192,7 +219,7 @@ export class SiteAuditFixPackGenerator {
       '<!-- TODO: REPLACE_WITH_YOUR_ADDITIONAL_URLS for verified service or product pages -->',
       '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
       '  <url>',
-      `    <loc>${cleanCanonical}</loc>`,
+      `    <loc>${escapeHtmlText(cleanCanonical)}</loc>`,
       `    <lastmod>${new Date().toISOString().slice(0, 10)}</lastmod>`,
       '    <changefreq>weekly</changefreq>',
       '    <priority>1.0</priority>',

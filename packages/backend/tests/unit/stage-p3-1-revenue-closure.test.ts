@@ -180,7 +180,9 @@ describe('Stage P.3.1 — Production Integrity Closure, Atomic D1 Reservations, 
       expect(FINANCIAL_TABLES).toContain('transactions');
       expect(FINANCIAL_TABLES).toContain('universal_orders');
       expect(FINANCIAL_TABLES).toContain('commission_ledger');
-      expect(FINANCIAL_TABLES.length).toBe(8);
+      expect(FINANCIAL_TABLES).toContain('payment_orders');
+      expect(FINANCIAL_TABLES).toContain('durable_events');
+      expect(FINANCIAL_TABLES.length).toBe(10);
     });
   });
 

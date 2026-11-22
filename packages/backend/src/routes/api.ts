@@ -3274,7 +3274,7 @@ apiRouter.post('/payments/razorpay/create-order', async (c) => {
         error: 'INVALID_DOMAIN: A valid domain or website URL is required.'
       }, 400);
     }
-    const rawEmail = String(body.buyerEmail || body.customerEmail || '').trim();
+    const rawEmail = String(body.buyerEmail || body.email || body.customerEmail || '').trim();
     if (!rawEmail || !rawEmail.includes('@')) {
       return c.json({
         success: false,
@@ -5654,7 +5654,7 @@ const handleOfferUpiClaim = async (c: any) => {
 
   if (process.env.RENDER === 'true') {
     const d1 = D1Client.getInstance();
-    if (d1.isRemoteD1QuotaExhausted() || !d1.isRemoteD1Configured()) {
+    if (d1.isRemoteD1WriteQuotaExhausted() || !d1.isRemoteD1Configured()) {
       return c.json({
         success: false,
         error: 'SERVICE_UNAVAILABLE',
@@ -7795,6 +7795,7 @@ apiRouter.post('/organic/affiliate-clicks', async (c) => {
  * 5. Bank cash received (strictly ₹0.00 until independent bank verification)
  * 6. Offline tracking and validation delay notices
  */
+const publicRevenueFunnelCache = new Map<string, { expiresAt: number; result: any }>();
 apiRouter.get('/public/revenue-funnel', async (c) => {
   const d1Repo = D1RevenueRepository.getInstance();
   const failedQueries: string[] = [];
@@ -7811,11 +7812,28 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
       return null;
     }
   };
+  const safeCachedQuery = async <T = any>(table: string, sql: string, params: any[] = [], queryName: string): Promise<T | null> => {
+    if (process.env.NODE_ENV !== 'production' || process.env.VITEST) {
+      return safeQuery<T>(table, sql, params, queryName);
+    }
+    const now = Date.now();
+    const cached = publicRevenueFunnelCache.get(queryName);
+    if (cached && cached.expiresAt > now) return JSON.parse(JSON.stringify(cached.result)) as T;
+    if (cached) publicRevenueFunnelCache.delete(queryName);
+    const result = await safeQuery<T>(table, sql, params, queryName);
+    if (result !== null) {
+      publicRevenueFunnelCache.set(queryName, {
+        expiresAt: now + 10 * 60 * 1000,
+        result: JSON.parse(JSON.stringify(result))
+      });
+    }
+    return result;
+  };
 
   // 1. External Visits vs Internal Test Sessions
   let verifiedExternalVisits = 0;
   let testSessions = 0;
-  const extRow = await safeQuery<any>(
+  const extRow = await safeCachedQuery<any>(
     'traffic_sessions',
     "SELECT COUNT(*) as c FROM traffic_sessions WHERE traffic_evidence_status = 'VERIFIED_EXTERNAL' OR is_external = 1",
     [],
@@ -7823,7 +7841,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   );
   verifiedExternalVisits = extRow?.c ?? 0;
 
-  const testRow = await safeQuery<any>(
+  const testRow = await safeCachedQuery<any>(
     'traffic_sessions',
     "SELECT COUNT(*) as c FROM traffic_sessions WHERE traffic_evidence_status = 'TEST' OR is_external = 0",
     [],
@@ -7868,7 +7886,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
       COALESCE(SUM(CASE WHEN (device_class = 'unknown' OR device_class IS NULL) AND NOT (${diagnosticCond} OR ${testCond}) THEN 1 ELSE 0 END), 0) as unk
     FROM referral_click_events
   `;
-  const clickRow = await safeQuery<any>('referral_click_events', disaggregatedSql, [], 'referral_click_events.disaggregated');
+  const clickRow = await safeCachedQuery<any>('referral_click_events', disaggregatedSql, [], 'referral_click_events.disaggregated');
   if (clickRow) {
     internalDiagnosticClicks = Number(clickRow.diag ?? 0);
     testClicks = Number(clickRow.testClicks ?? 0);
@@ -8023,7 +8041,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   let proposalsAccepted = 0;
   let verifiedClientPaymentsINR = 0.00;
 
-  const prosRow = await safeQuery<any>(
+  const prosRow = await safeCachedQuery<any>(
     'platform_prospects',
     "SELECT COUNT(*) as c FROM platform_prospects WHERE is_test = 0 AND is_junk = 0",
     [],
@@ -8031,7 +8049,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   );
   prospectsResearched = prosRow?.c ?? 0;
 
-  const inqRow = await safeQuery<any>(
+  const inqRow = await safeCachedQuery<any>(
     'platform_prospects',
     "SELECT COUNT(*) as c FROM platform_prospects WHERE is_test = 0 AND (source IN ('OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', 'homepage_b2b_inquiry') OR discovery_source = 'DIRECT_INBOUND')",
     [],
@@ -8039,7 +8057,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   );
   inquiriesReceived = inqRow?.c ?? 0;
 
-  const lifetimeDraftsRow = await safeQuery<any>(
+  const lifetimeDraftsRow = await safeCachedQuery<any>(
     'direct_outreach_log',
     "SELECT COUNT(*) as c FROM direct_outreach_log",
     [],
@@ -8047,7 +8065,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   );
   lifetimeDraftsPrepared = lifetimeDraftsRow?.c ?? 0;
 
-  const pendingDraftsRow = await safeQuery<any>(
+  const pendingDraftsRow = await safeCachedQuery<any>(
     'direct_outreach_log',
     "SELECT COUNT(*) as c FROM direct_outreach_log WHERE human_approved = 0 AND dispatched = 0",
     [],
@@ -8056,7 +8074,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   pendingUnapprovedDrafts = pendingDraftsRow?.c ?? 0;
   outreachDraftsPrepared = pendingUnapprovedDrafts;
 
-  const approvedDraftsRow = await safeQuery<any>(
+  const approvedDraftsRow = await safeCachedQuery<any>(
     'direct_outreach_log',
     "SELECT COUNT(*) as c FROM direct_outreach_log WHERE human_approved = 1 AND dispatched = 0",
     [],
@@ -8064,7 +8082,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   );
   ownerApprovedDrafts = approvedDraftsRow?.c ?? 0;
 
-  const dispatchedRow = await safeQuery<any>(
+  const dispatchedRow = await safeCachedQuery<any>(
     'direct_outreach_log',
     "SELECT COUNT(*) as c FROM direct_outreach_log WHERE dispatched = 1",
     [],
@@ -8072,7 +8090,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   );
   messagesDispatched = dispatchedRow?.c ?? 0;
 
-  const deliveredRow = await safeQuery<any>(
+  const deliveredRow = await safeCachedQuery<any>(
     'direct_outreach_log',
     "SELECT COUNT(*) as c FROM direct_outreach_log WHERE dispatched = 1 AND response_status = 'DELIVERED'",
     [],
@@ -8080,7 +8098,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   );
   providerConfirmedDeliveries = deliveredRow?.c ?? 0;
 
-  const propSentRow = await safeQuery<any>(
+  const propSentRow = await safeCachedQuery<any>(
     'proposals',
     "SELECT COUNT(*) as c FROM proposals WHERE is_test = 0 AND status IN ('SENT', 'VIEWED', 'ACCEPTED', 'PAYMENT_REQUESTED')",
     [],
@@ -8088,7 +8106,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   );
   proposalsSent = propSentRow?.c ?? 0;
 
-  const propAccRow = await safeQuery<any>(
+  const propAccRow = await safeCachedQuery<any>(
     'proposals',
     "SELECT COUNT(*) as c FROM proposals WHERE is_test = 0 AND status = 'ACCEPTED'",
     [],
@@ -8119,7 +8137,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   let fulfilmentsFailed = 0;
   let saasGrossCapturedINR = 0.00;
 
-  const auditsRow = await safeQuery<any>(
+  const auditsRow = await safeCachedQuery<any>(
     'site_audits',
     "SELECT COUNT(*) as c FROM site_audits WHERE status = 'COMPLETED'",
     [],
@@ -8128,7 +8146,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   siteAuditsCompleted = auditsRow?.c ?? 0;
   siteAuditsStarted = siteAuditsCompleted;
 
-  const pageSpeedRow = await safeQuery<any>(
+  const pageSpeedRow = await safeCachedQuery<any>(
     'site_audits',
     "SELECT COUNT(*) as c FROM site_audits WHERE pagespeed_status = 'COMPLETED' OR (performance_score IS NOT NULL AND performance_score > 0)",
     [],
@@ -11914,7 +11932,7 @@ apiRouter.get('/owner/first-sale/intent-distribution-kit', async (c) => {
   const d1Repo = D1RevenueRepository.getInstance();
   let hasIndexNowSubmission = false;
   try {
-    const subSql = `SELECT id FROM durable_events WHERE (event_type = 'INDEXNOW_SUBMISSION' OR event_type = 'INDEXNOW_PING') AND (processed = 1 OR payload_json LIKE '%"status":200%' OR payload_json LIKE '%"status":202%') LIMIT 1`;
+    const subSql = `SELECT id FROM durable_events WHERE created_at >= datetime('now', '-90 days') AND (event_type = 'INDEXNOW_SUBMISSION' OR event_type = 'INDEXNOW_PING') AND (processed = 1 OR payload_json LIKE '%"status":200%' OR payload_json LIKE '%"status":202%') LIMIT 1`;
     let subRows: any[] = [];
     if (d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
       const res = await d1Repo.executeRead('durable_events', subSql, []);
@@ -14076,9 +14094,20 @@ const handleHardenedPublicScan = async (c: any) => {
     const globalDailyCap = Math.max(1, parseInt(process.env.PUBLIC_SCAN_GLOBAL_DAILY_CAP || '500', 10) || 500);
     const limiter = DurableRateLimiter.getInstance();
 
-    const ipRate = await limiter.checkRateLimit('/public/scan:ip', clientIp, ipDailyCap, 86400);
+    const ipRate = await limiter.checkRateLimit('/public/scan:ip', clientIp, ipDailyCap, 86400, true);
     if (!ipRate.allowed) {
       c.header('Retry-After', String(ipRate.retryAfterSeconds));
+      if (ipRate.storageUnavailable) {
+        return c.json(
+          {
+            success: false,
+            code: 'RATE_LIMITER_UNAVAILABLE',
+            error: 'Public scan capacity could not be verified safely. Please retry shortly.',
+            retryAfterSeconds: ipRate.retryAfterSeconds
+          },
+          503
+        );
+      }
       return c.json(
         {
           success: false,
@@ -14090,9 +14119,20 @@ const handleHardenedPublicScan = async (c: any) => {
       );
     }
 
-    const globalRate = await limiter.checkRateLimit('/public/scan:global', 'global', globalDailyCap, 86400);
+    const globalRate = await limiter.checkRateLimit('/public/scan:global', 'global', globalDailyCap, 86400, true);
     if (!globalRate.allowed) {
       c.header('Retry-After', String(globalRate.retryAfterSeconds));
+      if (globalRate.storageUnavailable) {
+        return c.json(
+          {
+            success: false,
+            code: 'RATE_LIMITER_UNAVAILABLE',
+            error: 'Public scan capacity could not be verified safely. Please retry shortly.',
+            retryAfterSeconds: globalRate.retryAfterSeconds
+          },
+          503
+        );
+      }
       return c.json(
         {
           success: false,
@@ -14135,6 +14175,8 @@ const handleHardenedPublicScan = async (c: any) => {
     return c.json({
       success: true,
       cached: scanOut.cached,
+      cacheStatus: scanOut.cacheStatus,
+      authorizationMode: 'SELF_DECLARED_AUTHORIZATION',
       cacheTtlHours: scanOut.cacheTtlHours,
       cachedAt: scanOut.cachedAt,
       source,

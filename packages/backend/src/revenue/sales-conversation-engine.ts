@@ -1480,7 +1480,7 @@ export class SalesConversationEngine {
       if (
         process.env.RENDER === 'true' &&
         !event.isDiagnosticProbe &&
-        (D1Client.getInstance().isRemoteD1QuotaExhausted() || !D1Client.getInstance().isRemoteD1Configured())
+        (D1Client.getInstance().isRemoteD1WriteQuotaExhausted() || !D1Client.getInstance().isRemoteD1Configured())
       ) {
         throw new Error('SERVICE_UNAVAILABLE: Real transaction blocked while remote Cloudflare D1 is unavailable on Render. Ephemeral persistence is prohibited.');
       }

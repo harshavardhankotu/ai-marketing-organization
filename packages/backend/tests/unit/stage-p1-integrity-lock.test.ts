@@ -47,13 +47,15 @@ describe('Stage P.1 — Low-Level D1 Financial Integrity, Instagram Hardening & 
       expect(client.isDailyQuotaError(400, 'sqlite_error: UNIQUE constraint failed: orders.id')).toBe(false);
     });
 
-    it('1.2: isFinancialSql accurately identifies all 8 critical financial tables', () => {
+    it('1.2: isFinancialSql accurately identifies all critical financial tables', () => {
       expect(FINANCIAL_TABLES).toEqual([
         'payment_requests',
         'manual_upi_claims',
         'orders',
         'universal_orders',
+        'payment_orders',
         'transactions',
+        'durable_events',
         'commission_ledger',
         'delivery_tasks',
         'payout_records'
@@ -75,7 +77,7 @@ describe('Stage P.1 — Low-Level D1 Financial Integrity, Instagram Hardening & 
     it('1.3: D1Client.executeQuery on Render fails closed for financial writes when circuit breaker is active', async () => {
       process.env.RENDER = 'true';
       const client = D1Client.getInstance();
-      client.tripQuotaCircuitBreakerPublic('Daily read limit reached');
+      client.tripQuotaCircuitBreakerPublic("Your account has exceeded D1's free tier daily row written limit (Error 7500)");
 
       await expect(
         client.executeQuery('INSERT INTO orders (id, amount) VALUES (?, ?)', ['ord_123', 499], true, 'P0')

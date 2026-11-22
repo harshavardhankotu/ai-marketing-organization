@@ -112,7 +112,9 @@ describe('Stage P.3 — Revenue Integrity, D1 Ledger Durability, Slug Collision 
         'manual_upi_claims',
         'orders',
         'universal_orders',
+        'payment_orders',
         'transactions',
+        'durable_events',
         'commission_ledger',
         'delivery_tasks',
         'payout_records'
