@@ -4649,7 +4649,20 @@ export class AutonomousDealDiscoveryEngine {
       AND product_verified = 1
       AND affiliate_verified = 1
       AND (expiry_date IS NULL OR expiry_date > datetime('now'))
+    ORDER BY created_at DESC
+    LIMIT 250
   `;
+
+  private static eligibleDealsCacheMap = new Map<string, { data: { deals: NormalizedDeal[]; total: number }; expiresAt: number }>();
+  private static priceAlertEmptyBackoffUntilMs = 0;
+
+  public static invalidateEligibleDealsCache(): void {
+    AutonomousDealDiscoveryEngine.eligibleDealsCacheMap.clear();
+  }
+
+  public static resetPriceAlertBackoffForTesting(): void {
+    AutonomousDealDiscoveryEngine.priceAlertEmptyBackoffUntilMs = 0;
+  }
 
   /**
    * Universal deal eligibility resolver (V5.8 Defect 2 & V5.8.1 P1 Blocker 4).
@@ -4814,6 +4827,15 @@ export class AutonomousDealDiscoveryEngine {
     offset?: number;
     requireStrictChain?: boolean;
   }): Promise<{ deals: NormalizedDeal[]; total: number }> {
+    const filterKey = JSON.stringify(filter || {});
+    const shouldCache = !process.env.VITEST || process.env.ALLOW_D1_CACHE_IN_TEST === 'true';
+    if (shouldCache) {
+      const cached = AutonomousDealDiscoveryEngine.eligibleDealsCacheMap.get(filterKey);
+      if (cached && Date.now() < cached.expiresAt) {
+        return cached.data;
+      }
+    }
+
     const useRemoteD1 = this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST);
     let rows: any[] = [];
     if (useRemoteD1) {
@@ -4829,16 +4851,7 @@ export class AutonomousDealDiscoveryEngine {
       }
     } else {
       try {
-        const testSql = `
-          SELECT * FROM public_deals
-          WHERE availability = 'IN_STOCK'
-            AND current_price_inr > 0
-            AND verification_status IN ('VERIFIED', 'AFFILIATE_VERIFIED')
-            AND is_monetizable = 1
-            AND product_verified = 1
-            AND affiliate_verified = 1
-            AND (expiry_date IS NULL OR expiry_date > datetime('now'))
-        `;
+        const testSql = AutonomousDealDiscoveryEngine.ELIGIBLE_PUBLIC_DEALS_SQL;
         rows = getDb().prepare(testSql).all();
       } catch (err: any) {
         console.error(`[DealEngine] getEligiblePublicDeals SQLite read error: ${err.message}`);
@@ -5026,7 +5039,14 @@ export class AutonomousDealDiscoveryEngine {
     const limit = filter?.limit !== undefined ? filter.limit : total;
     const paged = filtered.slice(offset, offset + limit);
 
-    return { deals: paged, total };
+    const result = { deals: paged, total };
+    if (shouldCache) {
+      AutonomousDealDiscoveryEngine.eligibleDealsCacheMap.set(filterKey, {
+        data: result,
+        expiresAt: Date.now() + 15 * 60 * 1000 // 15-minute in-memory cache
+      });
+    }
+    return result;
   }
 
   public queryPublicDeals(params: DealQueryParams = {}): {
@@ -7897,6 +7917,11 @@ export class AutonomousDealDiscoveryEngine {
     deals: NormalizedDeal[],
     siteUrlOverride?: string
   ): Promise<{ checked: number; dispatched: number; skipped: number }> {
+    const shouldBackoff = !process.env.VITEST || process.env.ALLOW_D1_CACHE_IN_TEST === 'true';
+    if (shouldBackoff && Date.now() < AutonomousDealDiscoveryEngine.priceAlertEmptyBackoffUntilMs) {
+      return { checked: 0, dispatched: 0, skipped: 0 };
+    }
+
     const allDeals = (deals && deals.length > 0)
       ? Array.from(new Map([...Array.from(this.dealsMap.values()), ...deals].map(d => [d.id, d])).values())
       : Array.from(this.dealsMap.values());
@@ -7966,6 +7991,7 @@ export class AutonomousDealDiscoveryEngine {
     const queryParams = contactCursor ? [contactCursor] : [];
 
     let contactRows: any[] = [];
+    let eventRows: any[] = [];
     try {
       if (this.d1Repo.isRemoteD1Configured() || isProd) {
         const res = await this.d1Repo.executeRead('outbound_contacts', querySql, queryParams);
@@ -8049,7 +8075,7 @@ export class AutonomousDealDiscoveryEngine {
         : `SELECT id, payload_json FROM durable_events WHERE event_type = 'PRICE_DROP_SUBSCRIPTION' AND processed = 0 ORDER BY id ASC LIMIT 50`;
       const eventParams = cursor ? [cursor] : [];
 
-      let eventRows: any[] = [];
+      eventRows = [];
       if (this.d1Repo.isRemoteD1Configured() || isProd) {
         const evRes = await this.d1Repo.executeRead('durable_events', eventQuery, eventParams);
         eventRows = Array.isArray(evRes?.results) ? evRes.results : [];
@@ -8112,6 +8138,12 @@ export class AutonomousDealDiscoveryEngine {
         else if (outcome === 'SKIPPED') skipped++;
       }
     } catch {}
+
+    if (contactRows.length === 0 && eventRows.length === 0) {
+      if (shouldBackoff) {
+        AutonomousDealDiscoveryEngine.priceAlertEmptyBackoffUntilMs = Date.now() + 2 * 60 * 60 * 1000;
+      }
+    }
 
     return { checked, dispatched, skipped };
   }

@@ -7795,6 +7795,41 @@ apiRouter.post('/organic/affiliate-clicks', async (c) => {
  * 5. Bank cash received (strictly ₹0.00 until independent bank verification)
  * 6. Offline tracking and validation delay notices
  */
+interface RevenueFunnelNonCashCache {
+  verifiedExternalVisits: number;
+  testSessions: number;
+  verifiedHumanOutboundClicks: number;
+  browserCandidateOutboundClicks: number;
+  internalDiagnosticClicks: number;
+  testClicks: number;
+  botClicks: number;
+  unknownClicks: number;
+  externalOutboundClicks: number;
+  ctrPercent: string;
+  cuelinksData: any;
+  prospectsResearched: number;
+  inquiriesReceived: number;
+  lifetimeDraftsPrepared: number;
+  pendingUnapprovedDrafts: number;
+  ownerApprovedDrafts: number;
+  messagesDispatched: number;
+  providerConfirmedDeliveries: number;
+  proposalsSent: number;
+  proposalsAccepted: number;
+  siteAuditsStarted: number;
+  siteAuditsCompleted: number;
+  pageSpeedCompleted: number;
+  monetizedPartners: any[];
+  monetizedPartnersStatus: string;
+  cachedAt: number;
+}
+
+let revenueFunnelNonCashCache: RevenueFunnelNonCashCache | null = null;
+
+export function resetRevenueFunnelCacheForTesting(): void {
+  revenueFunnelNonCashCache = null;
+}
+
 apiRouter.get('/public/revenue-funnel', async (c) => {
   const d1Repo = D1RevenueRepository.getInstance();
   const failedQueries: string[] = [];
@@ -7812,26 +7847,10 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
     }
   };
 
-  // 1. External Visits vs Internal Test Sessions
+  // Non-cash metrics (traffic, clicks, CTR, Cuelinks summary, prospects, drafts, proposals, audits, monetized partners)
+  // are cached in memory for 10 minutes to protect Cloudflare D1 free tier read quotas.
   let verifiedExternalVisits = 0;
   let testSessions = 0;
-  const extRow = await safeQuery<any>(
-    'traffic_sessions',
-    "SELECT COUNT(*) as c FROM traffic_sessions WHERE traffic_evidence_status = 'VERIFIED_EXTERNAL' OR is_external = 1",
-    [],
-    'traffic_sessions.verified_external'
-  );
-  verifiedExternalVisits = extRow?.c ?? 0;
-
-  const testRow = await safeQuery<any>(
-    'traffic_sessions',
-    "SELECT COUNT(*) as c FROM traffic_sessions WHERE traffic_evidence_status = 'TEST' OR is_external = 0",
-    [],
-    'traffic_sessions.test'
-  );
-  testSessions = testRow?.c ?? 0;
-
-  // 2. Real Outbound Clicks vs Internal Diagnostic Clicks (Stage C Task F Disaggregation)
   let verifiedHumanOutboundClicks = 0;
   let browserCandidateOutboundClicks = 0;
   let internalDiagnosticClicks = 0;
@@ -7839,52 +7858,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   let botClicks = 0;
   let unknownClicks = 0;
   let externalOutboundClicks = 0;
-
-  const diagnosticCond = `(
-    click_id LIKE 'clk_test_%' OR 
-    referral_id LIKE 'ref_clk_test_%' OR 
-    click_id LIKE 'clk_live_pilot_%' OR 
-    device_class IN ('diagnostic', 'internal') OR
-    placement IN ('diagnostic', 'direct_beacon') OR 
-    source IN ('direct_beacon', 'diagnostic') OR 
-    medium IN ('beacon', 'diagnostic')
-  )`;
-
-  const testCond = `(
-    click_id LIKE 'clk_test_%' OR
-    device_class = 'test' OR
-    placement = 'test' OR
-    source = 'test' OR
-    medium = 'test'
-  )`;
-
-  const disaggregatedSql = `
-    SELECT 
-      COALESCE(SUM(CASE WHEN ${diagnosticCond} THEN 1 ELSE 0 END), 0) as diag,
-      COALESCE(SUM(CASE WHEN ${testCond} AND NOT ${diagnosticCond} THEN 1 ELSE 0 END), 0) as testClicks,
-      COALESCE(SUM(CASE WHEN (device_class = 'verified_human' OR device_class = 'human') AND NOT (${diagnosticCond} OR ${testCond}) THEN 1 ELSE 0 END), 0) as human,
-      COALESCE(SUM(CASE WHEN device_class IN ('browser_candidate', 'mobile', 'desktop') AND NOT (${diagnosticCond} OR ${testCond}) THEN 1 ELSE 0 END), 0) as browserCandidate,
-      COALESCE(SUM(CASE WHEN device_class IN ('bot', 'known_bot', 'suspected_bot') AND NOT (${diagnosticCond} OR ${testCond}) THEN 1 ELSE 0 END), 0) as bot,
-      COALESCE(SUM(CASE WHEN (device_class = 'unknown' OR device_class IS NULL) AND NOT (${diagnosticCond} OR ${testCond}) THEN 1 ELSE 0 END), 0) as unk
-    FROM referral_click_events
-  `;
-  const clickRow = await safeQuery<any>('referral_click_events', disaggregatedSql, [], 'referral_click_events.disaggregated');
-  if (clickRow) {
-    internalDiagnosticClicks = Number(clickRow.diag ?? 0);
-    testClicks = Number(clickRow.testClicks ?? 0);
-    verifiedHumanOutboundClicks = Number(clickRow.human ?? clickRow.verifiedHuman ?? 0);
-    browserCandidateOutboundClicks = Number(clickRow.browserCandidate ?? 0);
-    botClicks = Number(clickRow.bot ?? 0);
-    unknownClicks = Number(clickRow.unk ?? 0);
-    externalOutboundClicks = verifiedHumanOutboundClicks;
-  }
-
-  // 3. CTR
-  const ctrPercent = verifiedExternalVisits > 0
-    ? ((externalOutboundClicks / verifiedExternalVisits) * 100).toFixed(2) + '%'
-    : '0.00%';
-
-  // 4. Live Cuelinks Performance Data (Stage C Task C Scoped Attribution)
+  let ctrPercent = '0.00%';
   let cuelinksData = {
     configured: false,
     channelId: undefined as number | undefined,
@@ -7897,49 +7871,340 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
     reportingLatency: '48-72h (Offline Tracking Mode)',
     validationCycle: '45-60 days'
   };
+  let prospectsResearched = 0;
+  let inquiriesReceived = 0;
+  let lifetimeDraftsPrepared = 0;
+  let pendingUnapprovedDrafts = 0;
+  let ownerApprovedDrafts = 0;
+  let messagesDispatched = 0;
+  let providerConfirmedDeliveries = 0;
+  let proposalsSent = 0;
+  let proposalsAccepted = 0;
+  let siteAuditsStarted = 0;
+  let siteAuditsCompleted = 0;
+  let pageSpeedCompleted = 0;
+  let monetizedPartners: any[] = [];
+  let monetizedPartnersStatus = 'NO_VERIFIED_AFFILIATED_OFFERS';
 
-  try {
-    const { CuelinksV3Client } = await import('../commission/cuelinks-v3-client.js');
-    const { CuelinksSyncManager } = await import('../commission/cuelinks-sync-manager.js');
-    const client = CuelinksV3Client.getInstance();
-    const syncMgr = CuelinksSyncManager.getInstance(client);
-    if (client.isConfigured()) {
-      cuelinksData.configured = true;
-      const channelRes = await syncMgr.getApprovedChannel();
-      if (!channelRes.approved || !channelRes.channel?.id) {
-        cuelinksData.channelStatus = channelRes.channel?.status?.toUpperCase() || 'UNAPPROVED';
-        cuelinksData.providerAttributionStatus = 'BLOCKED_NO_APPROVED_CHANNEL';
-        // Safeguard: Never call unfiltered report endpoint without verified approved channel!
-      } else {
-        const chId = Number(channelRes.channel.id);
-        const chUrl = channelRes.channel.source_url || channelRes.channel.url || '';
-        cuelinksData.channelId = chId;
-        cuelinksData.channelStatus = 'APPROVED';
-        cuelinksData.providerAttributionStatus = 'CHANNEL_SCOPED';
-        cuelinksData.reportScope = { channelId: chId, channelUrl: chUrl, retrievedAt: new Date().toISOString() };
+  const shouldCache = !process.env.VITEST || process.env.ALLOW_D1_CACHE_IN_TEST === 'true';
+  const cached = shouldCache ? revenueFunnelNonCashCache : null;
 
-        try {
-          const perf = await client.getPerformanceReport({ start_date: '2026-10-01', channel_id: chId });
-          const repClicks = perf.totals?.clicks ?? perf.data?.reduce((acc, row) => acc + (row.clicks || 0), 0) ?? 0;
-          const repTx = perf.totals?.transactions ?? perf.data?.reduce((acc, row) => acc + (row.transactions || 0), 0) ?? 0;
-          const repComm = Number(perf.totals?.commission ?? perf.data?.reduce((acc, row) => acc + (Number(row.commission) || 0), 0)) || 0;
+  if (cached && (Date.now() - cached.cachedAt < 10 * 60 * 1000)) {
+    verifiedExternalVisits = cached.verifiedExternalVisits;
+    testSessions = cached.testSessions;
+    verifiedHumanOutboundClicks = cached.verifiedHumanOutboundClicks;
+    browserCandidateOutboundClicks = cached.browserCandidateOutboundClicks;
+    internalDiagnosticClicks = cached.internalDiagnosticClicks;
+    testClicks = cached.testClicks;
+    botClicks = cached.botClicks;
+    unknownClicks = cached.unknownClicks;
+    externalOutboundClicks = cached.externalOutboundClicks;
+    ctrPercent = cached.ctrPercent;
+    cuelinksData = cached.cuelinksData;
+    prospectsResearched = cached.prospectsResearched;
+    inquiriesReceived = cached.inquiriesReceived;
+    lifetimeDraftsPrepared = cached.lifetimeDraftsPrepared;
+    pendingUnapprovedDrafts = cached.pendingUnapprovedDrafts;
+    ownerApprovedDrafts = cached.ownerApprovedDrafts;
+    messagesDispatched = cached.messagesDispatched;
+    providerConfirmedDeliveries = cached.providerConfirmedDeliveries;
+    proposalsSent = cached.proposalsSent;
+    proposalsAccepted = cached.proposalsAccepted;
+    siteAuditsStarted = cached.siteAuditsStarted;
+    siteAuditsCompleted = cached.siteAuditsCompleted;
+    pageSpeedCompleted = cached.pageSpeedCompleted;
+    monetizedPartners = cached.monetizedPartners;
+    monetizedPartnersStatus = cached.monetizedPartnersStatus;
+  } else {
+    // 1. External Visits vs Internal Test Sessions
+    const extRow = await safeQuery<any>(
+      'traffic_sessions',
+      "SELECT COUNT(*) as c FROM traffic_sessions WHERE traffic_evidence_status = 'VERIFIED_EXTERNAL' OR is_external = 1",
+      [],
+      'traffic_sessions.verified_external'
+    );
+    verifiedExternalVisits = extRow?.c ?? 0;
 
-          cuelinksData.reportedClicks = repClicks;
-          cuelinksData.reportedTransactions = repTx;
-          cuelinksData.providerReportSummary = {
-            clicks: repClicks,
-            transactions: repTx,
-            commissionINR: repComm,
-            retrievedAt: new Date().toISOString()
-          };
-        } catch (err: any) {
-          console.warn(`[RevenueFunnel] Provider report notice: ${err.message}`);
+    const testRow = await safeQuery<any>(
+      'traffic_sessions',
+      "SELECT COUNT(*) as c FROM traffic_sessions WHERE traffic_evidence_status = 'TEST' OR is_external = 0",
+      [],
+      'traffic_sessions.test'
+    );
+    testSessions = testRow?.c ?? 0;
+
+    // 2. Real Outbound Clicks vs Internal Diagnostic Clicks (Stage C Task F Disaggregation)
+    const diagnosticCond = `(
+      click_id LIKE 'clk_test_%' OR 
+      referral_id LIKE 'ref_clk_test_%' OR 
+      click_id LIKE 'clk_live_pilot_%' OR 
+      device_class IN ('diagnostic', 'internal') OR
+      placement IN ('diagnostic', 'direct_beacon') OR 
+      source IN ('direct_beacon', 'diagnostic') OR 
+      medium IN ('beacon', 'diagnostic')
+    )`;
+
+    const testCond = `(
+      click_id LIKE 'clk_test_%' OR
+      device_class = 'test' OR
+      placement = 'test' OR
+      source = 'test' OR
+      medium = 'test'
+    )`;
+
+    const disaggregatedSql = `
+      SELECT 
+        COALESCE(SUM(CASE WHEN ${diagnosticCond} THEN 1 ELSE 0 END), 0) as diag,
+        COALESCE(SUM(CASE WHEN ${testCond} AND NOT ${diagnosticCond} THEN 1 ELSE 0 END), 0) as testClicks,
+        COALESCE(SUM(CASE WHEN (device_class = 'verified_human' OR device_class = 'human') AND NOT (${diagnosticCond} OR ${testCond}) THEN 1 ELSE 0 END), 0) as human,
+        COALESCE(SUM(CASE WHEN device_class IN ('browser_candidate', 'mobile', 'desktop') AND NOT (${diagnosticCond} OR ${testCond}) THEN 1 ELSE 0 END), 0) as browserCandidate,
+        COALESCE(SUM(CASE WHEN device_class IN ('bot', 'known_bot', 'suspected_bot') AND NOT (${diagnosticCond} OR ${testCond}) THEN 1 ELSE 0 END), 0) as bot,
+        COALESCE(SUM(CASE WHEN (device_class = 'unknown' OR device_class IS NULL) AND NOT (${diagnosticCond} OR ${testCond}) THEN 1 ELSE 0 END), 0) as unk
+      FROM referral_click_events
+    `;
+    const clickRow = await safeQuery<any>('referral_click_events', disaggregatedSql, [], 'referral_click_events.disaggregated');
+    if (clickRow) {
+      internalDiagnosticClicks = Number(clickRow.diag ?? 0);
+      testClicks = Number(clickRow.testClicks ?? 0);
+      verifiedHumanOutboundClicks = Number(clickRow.human ?? clickRow.verifiedHuman ?? 0);
+      browserCandidateOutboundClicks = Number(clickRow.browserCandidate ?? 0);
+      botClicks = Number(clickRow.bot ?? 0);
+      unknownClicks = Number(clickRow.unk ?? 0);
+      externalOutboundClicks = verifiedHumanOutboundClicks;
+    }
+
+    // 3. CTR
+    ctrPercent = verifiedExternalVisits > 0
+      ? ((externalOutboundClicks / verifiedExternalVisits) * 100).toFixed(2) + '%'
+      : '0.00%';
+
+    // 4. Live Cuelinks Performance Data (Stage C Task C Scoped Attribution)
+    try {
+      const { CuelinksV3Client } = await import('../commission/cuelinks-v3-client.js');
+      const { CuelinksSyncManager } = await import('../commission/cuelinks-sync-manager.js');
+      const client = CuelinksV3Client.getInstance();
+      const syncMgr = CuelinksSyncManager.getInstance(client);
+      if (client.isConfigured()) {
+        cuelinksData.configured = true;
+        const channelRes = await syncMgr.getApprovedChannel();
+        if (!channelRes.approved || !channelRes.channel?.id) {
+          cuelinksData.channelStatus = channelRes.channel?.status?.toUpperCase() || 'UNAPPROVED';
+          cuelinksData.providerAttributionStatus = 'BLOCKED_NO_APPROVED_CHANNEL';
+        } else {
+          const chId = Number(channelRes.channel.id);
+          const chUrl = channelRes.channel.source_url || channelRes.channel.url || '';
+          cuelinksData.channelId = chId;
+          cuelinksData.channelStatus = 'APPROVED';
+          cuelinksData.providerAttributionStatus = 'CHANNEL_SCOPED';
+          cuelinksData.reportScope = { channelId: chId, channelUrl: chUrl, retrievedAt: new Date().toISOString() };
+
+          try {
+            const perf = await client.getPerformanceReport({ start_date: '2026-10-01', channel_id: chId });
+            const repClicks = perf.totals?.clicks ?? perf.data?.reduce((acc, row) => acc + (row.clicks || 0), 0) ?? 0;
+            const repTx = perf.totals?.transactions ?? perf.data?.reduce((acc, row) => acc + (row.transactions || 0), 0) ?? 0;
+            const repComm = Number(perf.totals?.commission ?? perf.data?.reduce((acc, row) => acc + (Number(row.commission) || 0), 0)) || 0;
+
+            cuelinksData.reportedClicks = repClicks;
+            cuelinksData.reportedTransactions = repTx;
+            cuelinksData.providerReportSummary = {
+              clicks: repClicks,
+              transactions: repTx,
+              commissionINR: repComm,
+              retrievedAt: new Date().toISOString()
+            };
+          } catch (err: any) {
+            console.warn(`[RevenueFunnel] Provider report notice: ${err.message}`);
+          }
         }
       }
-    }
-  } catch {}
+    } catch {}
 
-  // 5. Transaction-Led Commission Status Buckets (Stage C Task E Truth)
+    // 6. Direct B2B Lead Conversion Funnel (Empirical Evidence)
+    const prosRow = await safeQuery<any>(
+      'platform_prospects',
+      "SELECT COUNT(*) as c FROM platform_prospects WHERE is_test = 0 AND is_junk = 0",
+      [],
+      'platform_prospects.count'
+    );
+    prospectsResearched = prosRow?.c ?? 0;
+
+    const inqRow = await safeQuery<any>(
+      'platform_prospects',
+      "SELECT COUNT(*) as c FROM platform_prospects WHERE is_test = 0 AND (source IN ('OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', 'homepage_b2b_inquiry') OR discovery_source = 'DIRECT_INBOUND')",
+      [],
+      'platform_prospects.inquiries'
+    );
+    inquiriesReceived = inqRow?.c ?? 0;
+
+    const lifetimeDraftsRow = await safeQuery<any>(
+      'direct_outreach_log',
+      "SELECT COUNT(*) as c FROM direct_outreach_log",
+      [],
+      'direct_outreach_log.lifetime'
+    );
+    lifetimeDraftsPrepared = lifetimeDraftsRow?.c ?? 0;
+
+    const pendingDraftsRow = await safeQuery<any>(
+      'direct_outreach_log',
+      "SELECT COUNT(*) as c FROM direct_outreach_log WHERE human_approved = 0 AND dispatched = 0",
+      [],
+      'direct_outreach_log.pending'
+    );
+    pendingUnapprovedDrafts = pendingDraftsRow?.c ?? 0;
+
+    const approvedDraftsRow = await safeQuery<any>(
+      'direct_outreach_log',
+      "SELECT COUNT(*) as c FROM direct_outreach_log WHERE human_approved = 1 AND dispatched = 0",
+      [],
+      'direct_outreach_log.approved'
+    );
+    ownerApprovedDrafts = approvedDraftsRow?.c ?? 0;
+
+    const dispatchedRow = await safeQuery<any>(
+      'direct_outreach_log',
+      "SELECT COUNT(*) as c FROM direct_outreach_log WHERE dispatched = 1",
+      [],
+      'direct_outreach_log.dispatched'
+    );
+    messagesDispatched = dispatchedRow?.c ?? 0;
+
+    const deliveredRow = await safeQuery<any>(
+      'direct_outreach_log',
+      "SELECT COUNT(*) as c FROM direct_outreach_log WHERE dispatched = 1 AND response_status = 'DELIVERED'",
+      [],
+      'direct_outreach_log.delivered'
+    );
+    providerConfirmedDeliveries = deliveredRow?.c ?? 0;
+
+    const propSentRow = await safeQuery<any>(
+      'proposals',
+      "SELECT COUNT(*) as c FROM proposals WHERE is_test = 0 AND status IN ('SENT', 'VIEWED', 'ACCEPTED', 'PAYMENT_REQUESTED')",
+      [],
+      'proposals.sent'
+    );
+    proposalsSent = propSentRow?.c ?? 0;
+
+    const propAccRow = await safeQuery<any>(
+      'proposals',
+      "SELECT COUNT(*) as c FROM proposals WHERE is_test = 0 AND status = 'ACCEPTED'",
+      [],
+      'proposals.accepted'
+    );
+    proposalsAccepted = propAccRow?.c ?? 0;
+
+    // 6b. Self-Serve SaaS Non-Financial Audit Counters
+    const auditsRow = await safeQuery<any>(
+      'site_audits',
+      "SELECT COUNT(*) as c FROM site_audits WHERE status = 'COMPLETED'",
+      [],
+      'site_audits.completed'
+    );
+    siteAuditsCompleted = auditsRow?.c ?? 0;
+    siteAuditsStarted = siteAuditsCompleted;
+
+    const pageSpeedRow = await safeQuery<any>(
+      'site_audits',
+      "SELECT COUNT(*) as c FROM site_audits WHERE pagespeed_status = 'COMPLETED' OR (performance_score IS NOT NULL AND performance_score > 0)",
+      [],
+      'site_audits.pagespeed'
+    );
+    pageSpeedCompleted = pageSpeedRow?.c ?? 0;
+
+    // 10. Dynamic Monetized Partners (Stage C Task B: Zero False Partners, Strict Proof)
+    try {
+      const querySql = `
+        SELECT
+          d.id as dealId,
+          COALESCE(d.title, d.brand, d.merchant) as name,
+          c.campaign_id as campaignId,
+          c.payout_model as model,
+          c.payout_rate as payoutINR,
+          c.cookie_days || ' Days' as cookieWindow,
+          d.affiliate_url as trackingUrl,
+          'Offline (48h delay)' as trackingMode
+        FROM public_deals d
+        JOIN cuelinks_campaigns c ON (
+          d.affiliate_url LIKE '%subid3=' || c.campaign_id || '%' OR
+          d.affiliate_url LIKE '%cmp_' || c.campaign_id || '%' OR
+          LOWER(d.merchant) = LOWER(c.name)
+        )
+        WHERE d.is_monetizable = 1
+          AND d.affiliate_verified = 1
+          AND c.status = 'ACTIVE'
+          AND c.verification_source = 'CUELINKS_API_V3'
+          AND d.affiliate_url IS NOT NULL
+          AND d.affiliate_url != ''
+          AND (d.affiliate_url LIKE 'https://linksredirect.com%' OR d.affiliate_url LIKE 'https://clnk.in%')
+        LIMIT 10
+      `;
+
+      let qualifiedDeals: any[] = [];
+      if (d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
+        qualifiedDeals = await d1Repo.query<any>('public_deals', querySql);
+      } else {
+        const { getDb } = await import('../db/client.js');
+        try {
+          qualifiedDeals = getDb().prepare(querySql).all() as any[];
+        } catch {
+          qualifiedDeals = [];
+        }
+      }
+
+      if (qualifiedDeals && qualifiedDeals.length > 0) {
+        monetizedPartners = qualifiedDeals.map(p => ({
+          name: p.name,
+          campaignId: Number(p.campaignId) || p.campaignId,
+          model: p.model || 'CPS',
+          payoutINR: p.payoutINR || 'Dynamic CPS Rate',
+          cookieWindow: p.cookieWindow || '30 Days',
+          trackingUrl: p.trackingUrl,
+          trackingMode: p.trackingMode || 'Offline (48h delay)'
+        }));
+        monetizedPartnersStatus = 'VERIFIED_LIVE_OFFERS';
+      } else {
+        monetizedPartners = [];
+        monetizedPartnersStatus = 'NO_VERIFIED_AFFILIATED_OFFERS';
+      }
+    } catch (partnersErr: any) {
+      failedQueries.push('monetizedPartners.query');
+      measurementStatus = 'DEGRADED_DB_ERROR';
+      monetizedPartnersStatus = 'UNAVAILABLE_QUERY_ERROR';
+    }
+
+    // Save non-cash metrics into 10-minute cache
+    if (shouldCache) {
+      revenueFunnelNonCashCache = {
+        verifiedExternalVisits,
+        testSessions,
+        verifiedHumanOutboundClicks,
+        browserCandidateOutboundClicks,
+        internalDiagnosticClicks,
+        testClicks,
+        botClicks,
+        unknownClicks,
+        externalOutboundClicks,
+        ctrPercent,
+        cuelinksData,
+        prospectsResearched,
+        inquiriesReceived,
+        lifetimeDraftsPrepared,
+        pendingUnapprovedDrafts,
+        ownerApprovedDrafts,
+        messagesDispatched,
+        providerConfirmedDeliveries,
+        proposalsSent,
+        proposalsAccepted,
+        siteAuditsStarted,
+        siteAuditsCompleted,
+        pageSpeedCompleted,
+        monetizedPartners,
+        monetizedPartnersStatus,
+        cachedAt: Date.now()
+      };
+    }
+  }
+
+  // 5. Transaction-Led Commission Status Buckets (Stage C Task E Truth) — ALWAYS QUERY LIVE / REAL-TIME
   let pendingCommissionINR = 0;
   let validatedCommissionINR = 0;
   let payableCommissionINR = 0;
@@ -8010,92 +8275,8 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
     }
   }
 
-  // 6. Direct B2B Lead Conversion Funnel (Empirical Evidence)
-  let prospectsResearched = 0;
-  let inquiriesReceived = 0;
-  let lifetimeDraftsPrepared = 0;
-  let pendingUnapprovedDrafts = 0;
-  let outreachDraftsPrepared = 0;
-  let ownerApprovedDrafts = 0;
-  let messagesDispatched = 0;
-  let providerConfirmedDeliveries = 0;
-  let proposalsSent = 0;
-  let proposalsAccepted = 0;
+  // Real-time client payments from revenue_records — ALWAYS QUERY LIVE / REAL-TIME
   let verifiedClientPaymentsINR = 0.00;
-
-  const prosRow = await safeQuery<any>(
-    'platform_prospects',
-    "SELECT COUNT(*) as c FROM platform_prospects WHERE is_test = 0 AND is_junk = 0",
-    [],
-    'platform_prospects.count'
-  );
-  prospectsResearched = prosRow?.c ?? 0;
-
-  const inqRow = await safeQuery<any>(
-    'platform_prospects',
-    "SELECT COUNT(*) as c FROM platform_prospects WHERE is_test = 0 AND (source IN ('OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', 'homepage_b2b_inquiry') OR discovery_source = 'DIRECT_INBOUND')",
-    [],
-    'platform_prospects.inquiries'
-  );
-  inquiriesReceived = inqRow?.c ?? 0;
-
-  const lifetimeDraftsRow = await safeQuery<any>(
-    'direct_outreach_log',
-    "SELECT COUNT(*) as c FROM direct_outreach_log",
-    [],
-    'direct_outreach_log.lifetime'
-  );
-  lifetimeDraftsPrepared = lifetimeDraftsRow?.c ?? 0;
-
-  const pendingDraftsRow = await safeQuery<any>(
-    'direct_outreach_log',
-    "SELECT COUNT(*) as c FROM direct_outreach_log WHERE human_approved = 0 AND dispatched = 0",
-    [],
-    'direct_outreach_log.pending'
-  );
-  pendingUnapprovedDrafts = pendingDraftsRow?.c ?? 0;
-  outreachDraftsPrepared = pendingUnapprovedDrafts;
-
-  const approvedDraftsRow = await safeQuery<any>(
-    'direct_outreach_log',
-    "SELECT COUNT(*) as c FROM direct_outreach_log WHERE human_approved = 1 AND dispatched = 0",
-    [],
-    'direct_outreach_log.approved'
-  );
-  ownerApprovedDrafts = approvedDraftsRow?.c ?? 0;
-
-  const dispatchedRow = await safeQuery<any>(
-    'direct_outreach_log',
-    "SELECT COUNT(*) as c FROM direct_outreach_log WHERE dispatched = 1",
-    [],
-    'direct_outreach_log.dispatched'
-  );
-  messagesDispatched = dispatchedRow?.c ?? 0;
-
-  const deliveredRow = await safeQuery<any>(
-    'direct_outreach_log',
-    "SELECT COUNT(*) as c FROM direct_outreach_log WHERE dispatched = 1 AND response_status = 'DELIVERED'",
-    [],
-    'direct_outreach_log.delivered'
-  );
-  providerConfirmedDeliveries = deliveredRow?.c ?? 0;
-
-  const propSentRow = await safeQuery<any>(
-    'proposals',
-    "SELECT COUNT(*) as c FROM proposals WHERE is_test = 0 AND status IN ('SENT', 'VIEWED', 'ACCEPTED', 'PAYMENT_REQUESTED')",
-    [],
-    'proposals.sent'
-  );
-  proposalsSent = propSentRow?.c ?? 0;
-
-  const propAccRow = await safeQuery<any>(
-    'proposals',
-    "SELECT COUNT(*) as c FROM proposals WHERE is_test = 0 AND status = 'ACCEPTED'",
-    [],
-    'proposals.accepted'
-  );
-  proposalsAccepted = propAccRow?.c ?? 0;
-
   const clientPayRow = await safeQuery<any>(
     'revenue_records',
     "SELECT COALESCE(SUM(amount_inr), 0) as s FROM revenue_records WHERE verified = 1 AND classification IN ('REAL', 'OWNER_CONFIRMED', 'MANUAL_VERIFIED')",
@@ -8104,10 +8285,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   );
   verifiedClientPaymentsINR = Number(clientPayRow?.s ?? 0);
 
-  // 6b. Self-Serve SaaS Micro-SaaS Funnel (SiteFix AI — Part 7.1)
-  let siteAuditsStarted = 0;
-  let siteAuditsCompleted = 0;
-  let pageSpeedCompleted = 0;
+  // Real-time SaaS Orders from payment_orders — ALWAYS QUERY LIVE / REAL-TIME
   let siteAuditsFailed = 0;
   let fixPackPreviews = 0;
   let checkoutInitiated = 0;
@@ -8118,23 +8296,6 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   let fulfilmentsCompleted = 0;
   let fulfilmentsFailed = 0;
   let saasGrossCapturedINR = 0.00;
-
-  const auditsRow = await safeQuery<any>(
-    'site_audits',
-    "SELECT COUNT(*) as c FROM site_audits WHERE status = 'COMPLETED'",
-    [],
-    'site_audits.completed'
-  );
-  siteAuditsCompleted = auditsRow?.c ?? 0;
-  siteAuditsStarted = siteAuditsCompleted;
-
-  const pageSpeedRow = await safeQuery<any>(
-    'site_audits',
-    "SELECT COUNT(*) as c FROM site_audits WHERE pagespeed_status = 'COMPLETED' OR (performance_score IS NOT NULL AND performance_score > 0)",
-    [],
-    'site_audits.pagespeed'
-  );
-  pageSpeedCompleted = pageSpeedRow?.c ?? 0;
 
   const ordersRow = await safeQuery<any>(
     'payment_orders',
@@ -8185,71 +8346,6 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   // 9. Bank Cash Received (Strict Empirical Truth)
   const bankCashReceivedINR = 0.00;
   const bankConfirmedCashINR = 0.00;
-
-  // 10. Dynamic Monetized Partners (Stage C Task B: Zero False Partners, Strict Proof)
-  let monetizedPartners: any[] = [];
-  let monetizedPartnersStatus = 'NO_VERIFIED_AFFILIATED_OFFERS';
-
-  try {
-    // Only return records with active campaign, verified monetizable deal, and verified allowlisted affiliate tracking URL
-    const querySql = `
-      SELECT
-        d.id as dealId,
-        COALESCE(d.title, d.brand, d.merchant) as name,
-        c.campaign_id as campaignId,
-        c.payout_model as model,
-        c.payout_rate as payoutINR,
-        c.cookie_days || ' Days' as cookieWindow,
-        d.affiliate_url as trackingUrl,
-        'Offline (48h delay)' as trackingMode
-      FROM public_deals d
-      JOIN cuelinks_campaigns c ON (
-        d.affiliate_url LIKE '%subid3=' || c.campaign_id || '%' OR
-        d.affiliate_url LIKE '%cmp_' || c.campaign_id || '%' OR
-        LOWER(d.merchant) = LOWER(c.name)
-      )
-      WHERE d.is_monetizable = 1
-        AND d.affiliate_verified = 1
-        AND c.status = 'ACTIVE'
-        AND c.verification_source = 'CUELINKS_API_V3'
-        AND d.affiliate_url IS NOT NULL
-        AND d.affiliate_url != ''
-        AND (d.affiliate_url LIKE 'https://linksredirect.com%' OR d.affiliate_url LIKE 'https://clnk.in%')
-      LIMIT 10
-    `;
-
-    let qualifiedDeals: any[] = [];
-    if (d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
-      qualifiedDeals = await d1Repo.query<any>('public_deals', querySql);
-    } else {
-      const { getDb } = await import('../db/client.js');
-      try {
-        qualifiedDeals = getDb().prepare(querySql).all() as any[];
-      } catch {
-        qualifiedDeals = [];
-      }
-    }
-
-    if (qualifiedDeals && qualifiedDeals.length > 0) {
-      monetizedPartners = qualifiedDeals.map(p => ({
-        name: p.name,
-        campaignId: Number(p.campaignId) || p.campaignId,
-        model: p.model || 'CPS',
-        payoutINR: p.payoutINR || 'Dynamic CPS Rate',
-        cookieWindow: p.cookieWindow || '30 Days',
-        trackingUrl: p.trackingUrl,
-        trackingMode: p.trackingMode || 'Offline (48h delay)'
-      }));
-      monetizedPartnersStatus = 'VERIFIED_LIVE_OFFERS';
-    } else {
-      monetizedPartners = [];
-      monetizedPartnersStatus = 'NO_VERIFIED_AFFILIATED_OFFERS';
-    }
-  } catch (partnersErr: any) {
-    failedQueries.push('monetizedPartners.query');
-    measurementStatus = 'DEGRADED_DB_ERROR';
-    monetizedPartnersStatus = 'UNAVAILABLE_QUERY_ERROR';
-  }
 
   return c.json({
     success: true,

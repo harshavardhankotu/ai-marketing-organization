@@ -501,7 +501,7 @@ describe('Comprehensive Razorpay & UPI QR Payment Collection System (Prompt Sect
       const prop = pe.createProposal({
         organizationId: ORG_ID,
         businessId: BIZ_ID,
-        prospectId: 'pros_test_ui_01',
+        prospectId: `pros_test_ui_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         title: 'SiteFix Technical Implementation',
         setupPriceINR: 15000,
         monthlyPriceINR: 8000,
