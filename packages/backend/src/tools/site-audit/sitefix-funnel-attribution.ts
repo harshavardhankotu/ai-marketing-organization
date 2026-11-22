@@ -435,6 +435,7 @@ export async function recordSiteFixFunnelEvent(params: {
       );
     }
 
+    funnelAttributionCache = null;
     return {
       persisted: true,
       storageStatus: 'PERSISTED_D1'
@@ -443,6 +444,7 @@ export async function recordSiteFixFunnelEvent(params: {
 
   try {
     getDb().prepare(sql).run(...sqlParams);
+    funnelAttributionCache = null;
     return {
       persisted: true,
       storageStatus: 'PERSISTED_LOCAL'
@@ -585,11 +587,17 @@ function aggregateFunnelRows(
   };
 }
 
+let funnelAttributionCache: { data: SiteFixFunnelAttributionSummary; expiresAt: number } | null = null;
+
+export function resetSiteFixFunnelAttributionCacheForTesting(): void {
+  funnelAttributionCache = null;
+}
+
 export function getSiteFixFunnelAttributionSummarySync(): SiteFixFunnelAttributionSummary {
   try {
     const rawRows = getDb()
       .prepare(
-        `SELECT payload_json FROM durable_events WHERE event_type = ? ORDER BY created_at DESC LIMIT ${SITEFIX_FUNNEL_WINDOW_LIMIT + 1}`
+        `SELECT payload_json FROM durable_events WHERE event_type = ? AND created_at >= datetime('now', '-90 days') ORDER BY created_at DESC LIMIT ${SITEFIX_FUNNEL_WINDOW_LIMIT + 1}`
       )
       .all(SITEFIX_FUNNEL_EVENT_TYPE) as Array<{ payload_json?: string | null }>;
     const eventLimitReached = rawRows.length > SITEFIX_FUNNEL_WINDOW_LIMIT;
@@ -605,16 +613,28 @@ export function getSiteFixFunnelAttributionSummarySync(): SiteFixFunnelAttributi
 export async function getSiteFixFunnelAttributionSummaryAsync(
   d1Repo: D1RevenueRepository = D1RevenueRepository.getInstance()
 ): Promise<SiteFixFunnelAttributionSummary> {
+  const shouldCache = !process.env.VITEST || process.env.ALLOW_D1_CACHE_IN_TEST === 'true';
+  if (shouldCache && funnelAttributionCache && Date.now() < funnelAttributionCache.expiresAt) {
+    return funnelAttributionCache.data;
+  }
+
   if (d1Repo.isRemoteD1Configured() && isProduction() && !process.env.VITEST) {
     try {
       const rawRows = await d1Repo.query<{ payload_json?: string | null }>(
         'durable_events',
-        `SELECT payload_json FROM durable_events WHERE event_type = ? ORDER BY created_at DESC LIMIT ${SITEFIX_FUNNEL_WINDOW_LIMIT + 1}`,
+        `SELECT payload_json FROM durable_events WHERE event_type = ? AND created_at >= datetime('now', '-90 days') ORDER BY created_at DESC LIMIT ${SITEFIX_FUNNEL_WINDOW_LIMIT + 1}`,
         [SITEFIX_FUNNEL_EVENT_TYPE]
       );
       const eventLimitReached = rawRows.length > SITEFIX_FUNNEL_WINDOW_LIMIT;
       const rows = eventLimitReached ? rawRows.slice(0, SITEFIX_FUNNEL_WINDOW_LIMIT) : rawRows;
-      return aggregateFunnelRows(rows, eventLimitReached);
+      const result = aggregateFunnelRows(rows, eventLimitReached);
+      if (shouldCache) {
+        funnelAttributionCache = {
+          data: result,
+          expiresAt: Date.now() + 10 * 60 * 1000 // 10-minute cache
+        };
+      }
+      return result;
     } catch (err: any) {
       const errorMessage = err?.message || String(err);
       console.warn('[SiteFixFunnelAttribution] Remote D1 summary read failed, falling back to local SQLite:', errorMessage);
@@ -625,5 +645,12 @@ export async function getSiteFixFunnelAttributionSummaryAsync(
       };
     }
   }
-  return getSiteFixFunnelAttributionSummarySync();
+  const syncResult = getSiteFixFunnelAttributionSummarySync();
+  if (shouldCache) {
+    funnelAttributionCache = {
+      data: syncResult,
+      expiresAt: Date.now() + 10 * 60 * 1000 // 10-minute cache
+    };
+  }
+  return syncResult;
 }

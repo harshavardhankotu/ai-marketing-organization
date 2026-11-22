@@ -36,6 +36,7 @@ export class TelegramBotAdapter {
   private d1Repo = D1RevenueRepository.getInstance();
 
   private cachedGetMe: { data: any; expiresAt: number } | null = null;
+  private static telegramPostCountCache: { count: number; expiresAt: number } | null = null;
 
   public static getInstance(): TelegramBotAdapter {
     if (!TelegramBotAdapter.instance) {
@@ -46,6 +47,11 @@ export class TelegramBotAdapter {
 
   public static resetInstance(): void {
     TelegramBotAdapter.instance = null;
+    TelegramBotAdapter.telegramPostCountCache = null;
+  }
+
+  public static resetTelegramPostCountCacheForTesting(): void {
+    TelegramBotAdapter.telegramPostCountCache = null;
   }
 
   /**
@@ -352,27 +358,41 @@ export class TelegramBotAdapter {
     } catch {}
 
     // Enforce durable rate limit: max 3 posts per calendar day via D1 durable_events + local fallback
-    let durableTodayCount = 0;
-    try {
-      const durableRow = await this.d1Repo.queryOne<{ cnt: number }>(
-        'durable_events',
-        `SELECT COUNT(*) as cnt
-         FROM durable_events
-         WHERE event_type IN ('TELEGRAM_POST_CLAIMED', 'TELEGRAM_GUIDE_POSTED')
-           AND date(created_at) = date('now')`
+    const shouldCache = !process.env.VITEST || process.env.ALLOW_D1_CACHE_IN_TEST === 'true';
+    let maxTodayCount = 0;
+    if (shouldCache && TelegramBotAdapter.telegramPostCountCache && Date.now() < TelegramBotAdapter.telegramPostCountCache.expiresAt) {
+      maxTodayCount = TelegramBotAdapter.telegramPostCountCache.count;
+    } else {
+      let durableTodayCount = 0;
+      try {
+        const durableRow = await this.d1Repo.queryOne<{ cnt: number }>(
+          'durable_events',
+          `SELECT COUNT(*) as cnt
+           FROM durable_events
+           WHERE event_type IN ('TELEGRAM_POST_CLAIMED', 'TELEGRAM_GUIDE_POSTED')
+             AND created_at >= date('now')`
+        );
+        durableTodayCount = Number(durableRow?.cnt || 0);
+      } catch {}
+
+      const localTodayCount = Number(
+        (db.prepare(`
+          SELECT count(*) as cnt
+          FROM telegram_posts_log
+          WHERE created_at >= date('now')
+        `).get() as any)?.cnt || 0
       );
-      durableTodayCount = Number(durableRow?.cnt || 0);
-    } catch {}
 
-    const localTodayCount = Number(
-      (db.prepare(`
-        SELECT count(*) as cnt
-        FROM telegram_posts_log
-        WHERE date(created_at) = date('now')
-      `).get() as any)?.cnt || 0
-    );
+      maxTodayCount = Math.max(durableTodayCount, localTodayCount);
+      if (shouldCache) {
+        TelegramBotAdapter.telegramPostCountCache = {
+          count: maxTodayCount,
+          expiresAt: Date.now() + 5 * 60 * 1000 // 5-minute cache
+        };
+      }
+    }
 
-    if (Math.max(durableTodayCount, localTodayCount) >= 3) {
+    if (maxTodayCount >= 3) {
       return {
         posted: false,
         reason: 'DAILY_LIMIT_EXCEEDED: Telegram owned channel allows at most 3 posts per day.'
@@ -463,6 +483,7 @@ export class TelegramBotAdapter {
         } catch {}
       }
 
+      TelegramBotAdapter.telegramPostCountCache = null;
       return {
         posted: true,
         messageId

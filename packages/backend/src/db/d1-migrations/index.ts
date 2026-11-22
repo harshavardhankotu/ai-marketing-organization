@@ -7,6 +7,12 @@ import { loadLocalEnvFile } from '../../config/env.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+let baseline0050Verified = false;
+
+export function resetBaseline0050VerifiedForTesting(): void {
+  baseline0050Verified = false;
+}
+
 /**
  * Robust SQL statement parser that handles:
  * - Single-line comments
@@ -152,9 +158,15 @@ export async function applyD1Migrations(): Promise<{ applied: string[]; tables: 
   const d1 = D1Client.getInstance();
   const applied: string[] = [];
 
+  const shouldCache = !process.env.VITEST || process.env.ALLOW_D1_CACHE_IN_TEST === 'true';
+  // In-process cache: Migration baseline 0050 only needs to be verified once per process lifetime
+  if (shouldCache && baseline0050Verified) {
+    return { applied: [], tables: ['(verified 0050 baseline)'] };
+  }
+
   // Check circuit breaker first
-  if (d1.isRemoteD1QuotaExhausted()) {
-    console.warn('[D1 Migration Runner] Remote D1 daily quota is exhausted; skipping remote migration check.');
+  if (d1.isRemoteD1ReadQuotaExhausted() || d1.isRemoteD1QuotaExhausted()) {
+    console.warn('[D1 Migration Runner] Remote D1 daily read quota is exhausted; skipping remote migration check.');
     return { applied: [], tables: [] };
   }
 
@@ -191,12 +203,15 @@ export async function applyD1Migrations(): Promise<{ applied: string[]; tables: 
     const has0050 = (baselineCheck.results || []).some(r => r.migration_name.includes('0050'));
     const hasNewer = files.some(f => f > '0050_stage_d_deal_reconciliation_and_schedule.sql');
     if (has0050 && !hasNewer) {
+      if (shouldCache) {
+        baseline0050Verified = true;
+      }
       console.log(`[D1 Migration Runner] Fast check: Migration 0050 baseline already verified in Cloudflare D1 (${files.length} migrations up to date). Skipping redundant schema scan.`);
       return { applied: [], tables: ['(verified 0050 baseline)'] };
     }
   } catch (err: any) {
     if (D1Client.isDailyQuotaError(err?.status || 0, err?.message || '')) {
-      d1.tripQuotaCircuitBreakerPublic(err.message || 'D1 migration quota reached');
+      d1.tripReadQuotaCircuitBreaker(err.message || 'D1 migration quota reached');
       console.warn(`[D1 Migration Runner] Remote D1 quota exhausted during baseline check (${err.message}). Skipping migration run.`);
       return { applied: [], tables: [] };
     }

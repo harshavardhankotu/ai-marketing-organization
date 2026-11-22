@@ -18,6 +18,7 @@
 
 import { createHash } from 'crypto';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
+import { D1Client } from '../db/d1-client.js';
 import { getDb } from '../db/client.js';
 import { isProduction } from '../config/env.js';
 
@@ -138,6 +139,19 @@ export class DurableRateLimiter {
 
     return this.runSerialized(key, async () => {
       let currentCount = 1;
+
+      const d1 = D1Client.getInstance();
+      if (options.failClosed && d1.isRemoteD1Configured() && (d1.isRemoteD1ReadQuotaExhausted() || d1.isRemoteD1WriteQuotaExhausted())) {
+        return {
+          allowed: false,
+          limit: maxRequests,
+          remaining: 0,
+          retryAfterSeconds: 60,
+          ipHash,
+          reason: 'RATE_LIMITER_UNAVAILABLE',
+          bucketKey: key
+        };
+      }
 
       try {
         if (isProduction()) {

@@ -1273,7 +1273,18 @@ app.get('/public/financial-truth', async (c) => {
   return c.json({ success: true, data: snapshot });
 });
 
+let sitemapCache: { xml: string; expiresAt: number } | null = null;
+
+export function resetSitemapCacheForTesting(): void {
+  sitemapCache = null;
+}
+
 app.get('/sitemap.xml', async (c) => {
+  const shouldCache = !process.env.VITEST || process.env.ALLOW_D1_CACHE_IN_TEST === 'true';
+  if (shouldCache && sitemapCache && Date.now() < sitemapCache.expiresAt) {
+    return c.text(sitemapCache.xml, 200, { 'Content-Type': 'application/xml; charset=utf-8' });
+  }
+
   const baseUrl = getTrustedPublicSiteUrl();
 
   let publishedSlugs: { slug: string; updated_at?: string }[] = [];
@@ -1355,6 +1366,13 @@ app.get('/sitemap.xml', async (c) => {
     .join('\n');
 
   const sitemapXml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${xmlEntries}\n</urlset>`;
+
+  if (shouldCache) {
+    sitemapCache = {
+      xml: sitemapXml,
+      expiresAt: Date.now() + 15 * 60 * 1000 // 15-minute in-memory cache
+    };
+  }
 
   return c.text(sitemapXml, 200, { 'Content-Type': 'application/xml; charset=utf-8' });
 });
