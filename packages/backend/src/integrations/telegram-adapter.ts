@@ -363,6 +363,8 @@ export class TelegramBotAdapter {
     if (shouldCache && TelegramBotAdapter.telegramPostCountCache && Date.now() < TelegramBotAdapter.telegramPostCountCache.expiresAt) {
       maxTodayCount = TelegramBotAdapter.telegramPostCountCache.count;
     } else {
+      const now = new Date();
+      const nextUtcMidnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0);
       let durableTodayCount = 0;
       try {
         const durableRow = await this.d1Repo.queryOne<{ cnt: number }>(
@@ -385,8 +387,6 @@ export class TelegramBotAdapter {
 
       maxTodayCount = Math.max(durableTodayCount, localTodayCount);
       if (shouldCache) {
-        const now = new Date();
-        const nextUtcMidnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0);
         TelegramBotAdapter.telegramPostCountCache = {
           count: maxTodayCount,
           expiresAt: Math.min(Date.now() + 5 * 60 * 1000, nextUtcMidnight) // earlier of 5-min cache or UTC midnight
@@ -457,6 +457,16 @@ export class TelegramBotAdapter {
 
       if (!res.ok) {
         const errorBody = await res.text();
+        if (claimId) {
+          try {
+            await this.d1Repo.executeWrite(
+              'durable_events',
+              `DELETE FROM durable_events WHERE id = ?`,
+              [claimId]
+            );
+          } catch {}
+          TelegramBotAdapter.telegramPostCountCache = null;
+        }
         return {
           posted: false,
           reason: `TELEGRAM_API_ERROR: HTTP ${res.status}: ${errorBody}`
@@ -492,6 +502,16 @@ export class TelegramBotAdapter {
         messageId
       };
     } catch (err: any) {
+      if (claimId) {
+        try {
+          await this.d1Repo.executeWrite(
+            'durable_events',
+            `DELETE FROM durable_events WHERE id = ?`,
+            [claimId]
+          );
+        } catch {}
+        TelegramBotAdapter.telegramPostCountCache = null;
+      }
       return {
         posted: false,
         reason: `NETWORK_ERROR: ${err.message}`

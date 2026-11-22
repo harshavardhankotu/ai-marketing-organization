@@ -593,6 +593,7 @@ let inFlightSummaryPromise: Promise<SiteFixFunnelAttributionSummary> | null = nu
 
 export function invalidateFunnelAttributionCache(): void {
   funnelAttributionCache = null;
+  inFlightSummaryPromise = null;
   funnelAttributionGeneration++;
 }
 

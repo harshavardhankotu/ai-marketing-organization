@@ -8156,11 +8156,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
         qualifiedDeals = await d1Repo.query<any>('public_deals', querySql);
       } else {
         const { getDb } = await import('../db/client.js');
-        try {
-          qualifiedDeals = getDb().prepare(querySql).all() as any[];
-        } catch {
-          qualifiedDeals = [];
-        }
+        qualifiedDeals = getDb().prepare(querySql).all() as any[];
       }
 
       if (qualifiedDeals && qualifiedDeals.length > 0) {

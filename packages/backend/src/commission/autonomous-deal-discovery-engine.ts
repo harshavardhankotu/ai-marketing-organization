@@ -4673,10 +4673,9 @@ export class AutonomousDealDiscoveryEngine {
     `;
     const params: any[] = [];
 
-    if (filter?.sectorCode) {
-      sql += ` AND sector_code = ?`;
-      params.push(filter.sectorCode);
-    }
+    // Note (PR #82): sectorCode and maxPrice are intentionally filtered in memory:
+    // - sectorCode check includes both stored sector_code and category-derived sectors.
+    // - maxPrice check runs against normalized/repaired price rather than unparsed raw DB values.
     if (filter?.category && filter.category !== 'all') {
       sql += ` AND LOWER(category) = LOWER(?)`;
       params.push(filter.category);
@@ -4688,10 +4687,6 @@ export class AutonomousDealDiscoveryEngine {
     if (filter?.minPrice !== undefined) {
       sql += ` AND current_price_inr >= ?`;
       params.push(filter.minPrice);
-    }
-    if (filter?.maxPrice !== undefined) {
-      sql += ` AND current_price_inr <= ?`;
-      params.push(filter.maxPrice);
     }
     if (filter?.q) {
       const q = `%${filter.q.toLowerCase().trim()}%`;
@@ -4706,6 +4701,7 @@ export class AutonomousDealDiscoveryEngine {
   private static readonly MAX_ELIGIBLE_DEALS_CACHE_ENTRIES = 100;
   private static eligibleDealsCacheMap = new Map<string, { data: { deals: NormalizedDeal[]; total: number }; expiresAt: number }>();
   private static priceAlertEmptyBackoffUntilMs = 0;
+  private static priceAlertBackoffGeneration = 0;
 
   public static invalidateEligibleDealsCache(): void {
     AutonomousDealDiscoveryEngine.eligibleDealsCacheMap.clear();
@@ -4713,10 +4709,12 @@ export class AutonomousDealDiscoveryEngine {
 
   public static clearPriceAlertBackoff(): void {
     AutonomousDealDiscoveryEngine.priceAlertEmptyBackoffUntilMs = 0;
+    AutonomousDealDiscoveryEngine.priceAlertBackoffGeneration++;
   }
 
   public static resetPriceAlertBackoffForTesting(): void {
     AutonomousDealDiscoveryEngine.priceAlertEmptyBackoffUntilMs = 0;
+    AutonomousDealDiscoveryEngine.priceAlertBackoffGeneration++;
   }
 
   private static pruneExpiredEligibleDealsCache(): void {
@@ -4788,7 +4786,7 @@ export class AutonomousDealDiscoveryEngine {
           const res = await this.d1Repo.executeRead(table, sql, []);
           return Array.isArray(res?.results) ? res.results : [];
         } catch (err: any) {
-          if (!allowMissing && isProduction() && !process.env.VITEST) {
+          if (!allowMissing) {
             throw new GuideDataUnavailableError(`Failed to read ${table} from D1: ${err?.message || 'D1 read error'}`);
           }
           return [];
@@ -4913,7 +4911,9 @@ export class AutonomousDealDiscoveryEngine {
       }
     }
 
-    const { sql: querySql, params: queryParams } = AutonomousDealDiscoveryEngine.buildEligiblePublicDealsQuery(filter);
+    // PR #82: Always query the full eligible deal population (capped at 250) so candidate destination conflicts
+    // are determined across all categories identically in both remote D1 and local SQLite before request filters are applied.
+    const fullSql = AutonomousDealDiscoveryEngine.ELIGIBLE_PUBLIC_DEALS_SQL;
     const useRemoteD1 = this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST);
     let rows: any[] = [];
     if (useRemoteD1) {
@@ -4921,7 +4921,7 @@ export class AutonomousDealDiscoveryEngine {
       this.dealsMap.clear();
       this.dealSlugMap.clear();
       try {
-        const res = await this.d1Repo.executeRead('public_deals', querySql, queryParams);
+        const res = await this.d1Repo.executeRead('public_deals', fullSql, []);
         rows = res?.results || [];
       } catch (err: any) {
         console.error(`[DealEngine] getEligiblePublicDeals D1 read error: ${err.message}`);
@@ -4929,7 +4929,7 @@ export class AutonomousDealDiscoveryEngine {
       }
     } else {
       try {
-        rows = getDb().prepare(querySql).all(...queryParams);
+        rows = getDb().prepare(fullSql).all();
       } catch (err: any) {
         console.error(`[DealEngine] getEligiblePublicDeals SQLite read error: ${err.message}`);
         throw new GuideDataUnavailableError(`Failed to read eligible public deals from SQLite: ${err?.message || 'SQLite read failure'}`);
@@ -8014,6 +8014,8 @@ export class AutonomousDealDiscoveryEngine {
       return { checked: 0, dispatched: 0, skipped: 0 };
     }
 
+    const scanGeneration = AutonomousDealDiscoveryEngine.priceAlertBackoffGeneration;
+
     const allDeals = (deals && deals.length > 0)
       ? Array.from(new Map([...Array.from(this.dealsMap.values()), ...deals].map(d => [d.id, d])).values())
       : Array.from(this.dealsMap.values());
@@ -8245,7 +8247,7 @@ export class AutonomousDealDiscoveryEngine {
       !hadContactCursor &&
       !hadEventCursor
     ) {
-      if (shouldBackoff) {
+      if (shouldBackoff && scanGeneration === AutonomousDealDiscoveryEngine.priceAlertBackoffGeneration) {
         AutonomousDealDiscoveryEngine.priceAlertEmptyBackoffUntilMs = Date.now() + 2 * 60 * 60 * 1000;
       }
     }

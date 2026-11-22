@@ -453,7 +453,7 @@ export class D1Client {
             if (isRender && isFinancial) {
               throw new Error(`D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1 (HTTP ${response.status}: ${errText})`);
             }
-            if (isProduction && !(this.isRemoteD1ReadQuotaExhausted() || this.isRemoteD1WriteQuotaExhausted())) {
+            if (isProduction) {
               throw new Error(`[D1 PERSISTENCE ERROR] D1 returned HTTP ${response.status}: ${errText}`);
             }
             console.warn(`[D1Client] Cloudflare D1 HTTP ${response.status} (${errText}) — falling back to dev store`);
@@ -682,10 +682,10 @@ export class D1Client {
       }
 
       if (fallbackToLocal && failedIdx >= 0) {
+        if (failedIdx > 0) {
+          throw new Error(`D1_PARTIAL_BATCH_FAILURE: Statement at index ${failedIdx} failed after earlier statements committed. Local replay aborted.`);
+        }
         if (hasFinancialStatement) {
-          if (failedIdx > 0) {
-            throw new Error(`D1_PARTIAL_BATCH_FAILURE: Statement at index ${failedIdx} failed after earlier statements committed. Local replay aborted.`);
-          }
           throw new Error(`D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1 (${failureErrorText})`);
         }
         if (isProduction && !(this.isRemoteD1ReadQuotaExhausted() || this.isRemoteD1WriteQuotaExhausted())) {

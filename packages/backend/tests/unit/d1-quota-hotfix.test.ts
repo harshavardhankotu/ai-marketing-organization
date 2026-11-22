@@ -5,7 +5,7 @@ import { applyD1Migrations, resetBaseline0050VerifiedForTesting } from '../../sr
 import { AutonomousDealDiscoveryEngine } from '../../src/commission/autonomous-deal-discovery-engine.js';
 import { resetSitemapCacheForTesting } from '../../src/index.js';
 import { resetRevenueFunnelCacheForTesting } from '../../src/routes/api.js';
-import { getSiteFixFunnelAttributionSummaryAsync, resetSiteFixFunnelAttributionCacheForTesting } from '../../src/tools/site-audit/sitefix-funnel-attribution.js';
+import { getSiteFixFunnelAttributionSummaryAsync, resetSiteFixFunnelAttributionCacheForTesting, invalidateFunnelAttributionCache } from '../../src/tools/site-audit/sitefix-funnel-attribution.js';
 import { TelegramBotAdapter } from '../../src/integrations/telegram-adapter.js';
 import { D1RevenueRepository } from '../../src/db/d1-revenue-repository.js';
 import { apiRouter } from '../../src/routes/api.js';
@@ -199,7 +199,7 @@ describe('D1 Quota Hotfix & Circuit Breaker Decoupling (PR #81)', () => {
       expect(AutonomousDealDiscoveryEngine.ELIGIBLE_PUBLIC_DEALS_SQL).toContain('ORDER BY created_at DESC');
     });
 
-    it('buildEligiblePublicDealsQuery pushes sector, category, merchant, and price filters before LIMIT 250 (PR #82)', () => {
+    it('buildEligiblePublicDealsQuery pushes category, merchant, minPrice, and q filters before LIMIT 250 while leaving sectorCode and maxPrice to in-memory filtering (PR #82)', () => {
       const built = AutonomousDealDiscoveryEngine.buildEligiblePublicDealsQuery({
         sectorCode: 'TECH',
         category: 'Electronics',
@@ -209,13 +209,13 @@ describe('D1 Quota Hotfix & Circuit Breaker Decoupling (PR #81)', () => {
         q: 'laptop'
       });
 
-      expect(built.sql).toContain('sector_code = ?');
+      expect(built.sql).not.toContain('sector_code = ?');
       expect(built.sql).toContain('LOWER(category) = LOWER(?)');
       expect(built.sql).toContain('LOWER(merchant) = LOWER(?)');
       expect(built.sql).toContain('current_price_inr >= ?');
-      expect(built.sql).toContain('current_price_inr <= ?');
+      expect(built.sql).not.toContain('current_price_inr <= ?');
       expect(built.sql).toContain('LIMIT 250');
-      expect(built.params).toEqual(['TECH', 'Electronics', 'Amazon', 500, 5000, '%laptop%', '%laptop%', '%laptop%']);
+      expect(built.params).toEqual(['Electronics', 'Amazon', 500, '%laptop%', '%laptop%', '%laptop%']);
     });
 
     it('caches getEligiblePublicDeals results in memory for 15 minutes', async () => {
@@ -228,6 +228,13 @@ describe('D1 Quota Hotfix & Circuit Breaker Decoupling (PR #81)', () => {
       AutonomousDealDiscoveryEngine.invalidateEligibleDealsCache();
       const res3 = await engine.getEligiblePublicDeals({ sectorCode: 'TRAVEL_FLIGHTS' });
       expect(res3).not.toBe(res1); // Fresh object reference after invalidation
+    });
+
+    it('increments priceAlertBackoffGeneration when clearing backoff to prevent race conditions (PR #82)', () => {
+      const genBefore = (AutonomousDealDiscoveryEngine as any).priceAlertBackoffGeneration;
+      AutonomousDealDiscoveryEngine.clearPriceAlertBackoff();
+      const genAfter = (AutonomousDealDiscoveryEngine as any).priceAlertBackoffGeneration;
+      expect(genAfter).toBe(genBefore + 1);
     });
   });
 
@@ -252,6 +259,52 @@ describe('D1 Quota Hotfix & Circuit Breaker Decoupling (PR #81)', () => {
       const summary1 = await getSiteFixFunnelAttributionSummaryAsync();
       const summary2 = await getSiteFixFunnelAttributionSummaryAsync();
       expect(summary1).toBe(summary2); // Same reference from 10m cache
+    });
+
+    it('invalidateFunnelAttributionCache clears cache and increments generation (PR #82)', async () => {
+      const summary1 = await getSiteFixFunnelAttributionSummaryAsync();
+      invalidateFunnelAttributionCache();
+      const summary2 = await getSiteFixFunnelAttributionSummaryAsync();
+      expect(summary2).not.toBe(summary1); // Fresh fetch after invalidation
+    });
+  });
+
+  describe('8. Batch Execution Partial Failure Safety (PR #82)', () => {
+    it('throws D1_PARTIAL_BATCH_FAILURE when statement at index > 0 fails during batch execution', async () => {
+      vi.spyOn(d1, 'isRemoteD1Configured').mockReturnValue(true);
+      const isRemoteAllowedSpy = vi.spyOn(d1, 'isRemoteD1WriteAllowed').mockReturnValue(true);
+
+      // Mock fetch so first statement succeeds and second statement fails with HTTP 500
+      let callCount = 0;
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = vi.fn().mockImplementation(async () => {
+        callCount++;
+        if (callCount === 1) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              result: [{ meta: { rows_written: 1 }, results: [] }]
+            })
+          };
+        }
+        return {
+          ok: false,
+          status: 500,
+          text: async () => 'Internal DB error at statement 2'
+        };
+      }) as any;
+
+      try {
+        await expect(
+          d1.executeBatch([
+            { table: 'durable_events', sql: 'INSERT INTO durable_events (id) VALUES (?)', params: ['evt_1'] },
+            { table: 'durable_events', sql: 'INSERT INTO durable_events (id) VALUES (?)', params: ['evt_2'] }
+          ])
+        ).rejects.toThrow('D1_PARTIAL_BATCH_FAILURE: Statement at index 1 failed after earlier statements committed. Local replay aborted.');
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
     });
   });
 });
