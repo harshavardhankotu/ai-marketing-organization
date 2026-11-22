@@ -1288,24 +1288,30 @@ app.get('/sitemap.xml', async (c) => {
   const baseUrl = getTrustedPublicSiteUrl();
 
   let publishedSlugs: { slug: string; updated_at?: string }[] = [];
+  let publishedSlugsSucceeded = true;
   try {
     const { D1RevenueRepository } = await import('./db/d1-revenue-repository.js');
     const d1Repo = D1RevenueRepository.getInstance();
-    publishedSlugs = await d1Repo.query<any>(
-      'commission_content_assets',
-      `SELECT slug, updated_at FROM commission_content_assets WHERE status = 'PUBLISHED' ORDER BY updated_at DESC`,
-      []
-    );
+    if (d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
+      publishedSlugs = await d1Repo.query<any>(
+        'commission_content_assets',
+        `SELECT slug, updated_at FROM commission_content_assets WHERE status = 'PUBLISHED' ORDER BY updated_at DESC`,
+        []
+      );
+    }
   } catch {
+    publishedSlugsSucceeded = false;
     publishedSlugs = [];
   }
 
-  if (publishedSlugs.length === 0) {
+  if (publishedSlugs.length === 0 && publishedSlugsSucceeded) {
     try {
       const { getDb } = await import('./db/client.js');
       const db = getDb();
       publishedSlugs = db.prepare("SELECT slug, updated_at FROM commission_content_assets WHERE status = 'PUBLISHED' ORDER BY updated_at DESC").all() as any[];
-    } catch {}
+    } catch {
+      publishedSlugsSucceeded = false;
+    }
   }
 
   // Include compare guides ONLY for sectors with verified active deals + editorial-gated SSR /deals/:slug, /vs/:slug & /best/:intentSlug URLs
@@ -1313,6 +1319,7 @@ app.get('/sitemap.xml', async (c) => {
   let dealUrls: string[] = [];
   let vsUrls: string[] = [];
   let bestUrls: string[] = [];
+  let dealGenerationSucceeded = true;
   try {
     const { COMMERCIAL_SECTORS_LIST } = await import('@ai-marketing/shared');
     const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
@@ -1333,15 +1340,20 @@ app.get('/sitemap.xml', async (c) => {
     bestUrls = generateBuyerIntentHubs(activeDeals, baseUrl, 10).map(
       h => `${baseUrl}/best/${encodeURIComponent(h.intentSlug)}`
     );
-  } catch {}
+  } catch {
+    dealGenerationSucceeded = false;
+  }
 
   // Include only publicly authorized audited domain pages (V5.8 Defect 5)
   let auditUrls: string[] = [];
+  let auditUrlsSucceeded = true;
   try {
     const { SiteAuditService } = await import('./tools/site-audit/site-audit-service.js');
-    const domains = await SiteAuditService.getInstance().getAllAuditedDomains();
+    const domains = await SiteAuditService.getInstance().getAllAuditedDomains({ throwOnError: true });
     auditUrls = domains.map(d => `${baseUrl}/audit/${d}`);
-  } catch {}
+  } catch {
+    auditUrlsSucceeded = false;
+  }
 
   const staticUrls = [
     `${baseUrl}/`,
@@ -1367,7 +1379,8 @@ app.get('/sitemap.xml', async (c) => {
 
   const sitemapXml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${xmlEntries}\n</urlset>`;
 
-  if (shouldCache) {
+  const sitemapSucceeded = dealGenerationSucceeded && publishedSlugsSucceeded && auditUrlsSucceeded;
+  if (shouldCache && sitemapSucceeded) {
     sitemapCache = {
       xml: sitemapXml,
       expiresAt: Date.now() + 15 * 60 * 1000 // 15-minute in-memory cache

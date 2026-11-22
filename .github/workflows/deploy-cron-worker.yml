@@ -32,6 +32,12 @@ jobs:
       - name: Build backend
         run: npm run build --workspace=packages/backend
 
+      - name: Build frontend package and static owner tools
+        run: npm run build --workspace=packages/frontend && node scripts/build-static-owner-tools.mjs
+
+      - name: Build CLI package
+        run: npm run build --workspace=packages/cli
+
       - name: Build cloudflare-worker
         run: npm run build --workspace=packages/cloudflare-worker
 

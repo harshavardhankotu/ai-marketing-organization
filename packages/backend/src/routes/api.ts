@@ -5323,6 +5323,11 @@ apiRouter.post('/customer-desk/subscribe-alerts', async (c) => {
       }
     }).catch(() => {});
 
+    try {
+      const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
+      AutonomousDealDiscoveryEngine.clearPriceAlertBackoff();
+    } catch {}
+
     return c.json({
       success: true,
       subscribed: true,
@@ -7821,6 +7826,8 @@ interface RevenueFunnelNonCashCache {
   pageSpeedCompleted: number;
   monetizedPartners: any[];
   monetizedPartnersStatus: string;
+  measurementStatus: 'VERIFIED_LIVE_DB' | 'DEGRADED_DB_ERROR';
+  failedQueries: string[];
   cachedAt: number;
 }
 
@@ -7915,6 +7922,12 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
     pageSpeedCompleted = cached.pageSpeedCompleted;
     monetizedPartners = cached.monetizedPartners;
     monetizedPartnersStatus = cached.monetizedPartnersStatus;
+    if (cached.measurementStatus === 'DEGRADED_DB_ERROR') {
+      measurementStatus = 'DEGRADED_DB_ERROR';
+    }
+    if (cached.failedQueries && cached.failedQueries.length > 0) {
+      failedQueries.push(...cached.failedQueries);
+    }
   } else {
     // 1. External Visits vs Internal Test Sessions
     const extRow = await safeQuery<any>(
@@ -8143,11 +8156,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
         qualifiedDeals = await d1Repo.query<any>('public_deals', querySql);
       } else {
         const { getDb } = await import('../db/client.js');
-        try {
-          qualifiedDeals = getDb().prepare(querySql).all() as any[];
-        } catch {
-          qualifiedDeals = [];
-        }
+        qualifiedDeals = getDb().prepare(querySql).all() as any[];
       }
 
       if (qualifiedDeals && qualifiedDeals.length > 0) {
@@ -8171,8 +8180,8 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
       monetizedPartnersStatus = 'UNAVAILABLE_QUERY_ERROR';
     }
 
-    // Save non-cash metrics into 10-minute cache
-    if (shouldCache) {
+    // Save non-cash metrics into 10-minute cache ONLY when measurements succeeded cleanly
+    if (shouldCache && measurementStatus === 'VERIFIED_LIVE_DB' && failedQueries.length === 0) {
       revenueFunnelNonCashCache = {
         verifiedExternalVisits,
         testSessions,
@@ -8199,6 +8208,8 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
         pageSpeedCompleted,
         monetizedPartners,
         monetizedPartnersStatus,
+        measurementStatus,
+        failedQueries: [...failedQueries],
         cachedAt: Date.now()
       };
     }

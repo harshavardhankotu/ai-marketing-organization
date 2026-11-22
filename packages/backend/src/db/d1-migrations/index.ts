@@ -203,10 +203,10 @@ export async function applyD1Migrations(): Promise<{ applied: string[]; tables: 
     const has0050 = (baselineCheck.results || []).some(r => r.migration_name.includes('0050'));
     const hasNewer = files.some(f => f > '0050_stage_d_deal_reconciliation_and_schedule.sql');
     if (has0050 && !hasNewer) {
-      if (shouldCache) {
+      if (shouldCache && baselineCheck.source === 'CLOUDFLARE_D1') {
         baseline0050Verified = true;
       }
-      console.log(`[D1 Migration Runner] Fast check: Migration 0050 baseline already verified in Cloudflare D1 (${files.length} migrations up to date). Skipping redundant schema scan.`);
+      console.log(`[D1 Migration Runner] Fast check: Migration 0050 baseline already verified in ${baselineCheck.source === 'CLOUDFLARE_D1' ? 'Cloudflare D1' : 'local store'} (${files.length} migrations up to date). Skipping redundant schema scan.`);
       return { applied: [], tables: ['(verified 0050 baseline)'] };
     }
   } catch (err: any) {

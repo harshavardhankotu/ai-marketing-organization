@@ -363,6 +363,8 @@ export class TelegramBotAdapter {
     if (shouldCache && TelegramBotAdapter.telegramPostCountCache && Date.now() < TelegramBotAdapter.telegramPostCountCache.expiresAt) {
       maxTodayCount = TelegramBotAdapter.telegramPostCountCache.count;
     } else {
+      const now = new Date();
+      const nextUtcMidnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0);
       let durableTodayCount = 0;
       try {
         const durableRow = await this.d1Repo.queryOne<{ cnt: number }>(
@@ -387,7 +389,7 @@ export class TelegramBotAdapter {
       if (shouldCache) {
         TelegramBotAdapter.telegramPostCountCache = {
           count: maxTodayCount,
-          expiresAt: Date.now() + 5 * 60 * 1000 // 5-minute cache
+          expiresAt: Math.min(Date.now() + 5 * 60 * 1000, nextUtcMidnight) // earlier of 5-min cache or UTC midnight
         };
       }
     }
@@ -423,6 +425,7 @@ export class TelegramBotAdapter {
            VALUES (?, 'TELEGRAM_POST_CLAIMED', 'org_owner_primary', ?, datetime('now'))`,
           [claimId, JSON.stringify({ dealId: options.dealId, guideUrl: options.guideUrl, channelId, claimedAt: new Date().toISOString() })]
         );
+        TelegramBotAdapter.telegramPostCountCache = null;
       } catch (claimErr: any) {
         if (String(claimErr?.message || '').toLowerCase().includes('unique')) {
           return {
@@ -453,7 +456,28 @@ export class TelegramBotAdapter {
       });
 
       if (!res.ok) {
-        const errorBody = await res.text();
+        // PR #82: Release claim ONLY on deterministic rejections (e.g. HTTP 400, 401, 403, 404).
+        // Release BEFORE reading error body so body-read failures cannot leave the rejected post's claim held.
+        // For uncertain outcomes (HTTP 429 rate limit or 5xx server errors), PRESERVE the claim to prevent duplicate syndication.
+        const isDeterministicRejection = res.status >= 400 && res.status < 500 && res.status !== 429;
+        if (claimId && isDeterministicRejection) {
+          try {
+            await this.d1Repo.executeWrite(
+              'durable_events',
+              `DELETE FROM durable_events WHERE id = ? AND event_type = 'TELEGRAM_POST_CLAIMED'`,
+              [claimId]
+            );
+          } catch {}
+          TelegramBotAdapter.telegramPostCountCache = null;
+        }
+
+        let errorBody = '';
+        try {
+          errorBody = await res.text();
+        } catch {
+          errorBody = '<failed to read error response body>';
+        }
+
         return {
           posted: false,
           reason: `TELEGRAM_API_ERROR: HTTP ${res.status}: ${errorBody}`
@@ -489,6 +513,8 @@ export class TelegramBotAdapter {
         messageId
       };
     } catch (err: any) {
+      // PR #82: On network errors, timeouts, or aborts, outcome is uncertain — Telegram may have broadcast.
+      // Do NOT delete the claim; preserving it prevents duplicate posting.
       return {
         posted: false,
         reason: `NETWORK_ERROR: ${err.message}`
