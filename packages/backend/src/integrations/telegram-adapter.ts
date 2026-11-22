@@ -457,7 +457,10 @@ export class TelegramBotAdapter {
 
       if (!res.ok) {
         const errorBody = await res.text();
-        if (claimId) {
+        // PR #82: Release claim ONLY on deterministic rejections (e.g. HTTP 400, 401, 403, 404).
+        // For uncertain outcomes (HTTP 429 rate limit or 5xx server errors), PRESERVE the claim to prevent duplicate syndication.
+        const isDeterministicRejection = res.status >= 400 && res.status < 500 && res.status !== 429;
+        if (claimId && isDeterministicRejection) {
           try {
             await this.d1Repo.executeWrite(
               'durable_events',
@@ -502,16 +505,8 @@ export class TelegramBotAdapter {
         messageId
       };
     } catch (err: any) {
-      if (claimId) {
-        try {
-          await this.d1Repo.executeWrite(
-            'durable_events',
-            `DELETE FROM durable_events WHERE id = ?`,
-            [claimId]
-          );
-        } catch {}
-        TelegramBotAdapter.telegramPostCountCache = null;
-      }
+      // PR #82: On network errors, timeouts, or aborts, outcome is uncertain — Telegram may have broadcast.
+      // Do NOT delete the claim; preserving it prevents duplicate posting.
       return {
         posted: false,
         reason: `NETWORK_ERROR: ${err.message}`

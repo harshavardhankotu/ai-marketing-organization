@@ -4963,24 +4963,28 @@ export class AutonomousDealDiscoveryEngine {
       }
     }
 
-    const baseCandidates = Array.from(this.dealsMap.values()).filter(d => {
-      if (
-        d.affiliateNetwork === 'AMAZON_IN' ||
-        /^https?:\/\/(www\.)?amazon\.(in|com)(\/|$)/i.test(String(d.productUrl || ''))
-      ) {
-        return false;
-      }
-      const check = repairTitlePriceMismatch(d);
-      if (check.quarantined) return false;
-      return (
-        d.availability === 'IN_STOCK' &&
-        typeof d.currentPriceINR === 'number' && d.currentPriceINR > 0 &&
-        (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'AFFILIATE_VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS') &&
-        Boolean(d.isMonetizable) === true &&
-        (isProduction() ? (d.productVerified === true && d.affiliateVerified === true) : true) &&
-        (!d.expiryDate || new Date(d.expiryDate).getTime() > Date.now())
-      );
-    });
+    const baseCandidates = Array.from(this.dealsMap.values())
+      .map(d => {
+        const check = repairTitlePriceMismatch(d);
+        return check.quarantined ? null : (check.deal as NormalizedDeal);
+      })
+      .filter((d): d is NormalizedDeal => {
+        if (!d) return false;
+        if (
+          d.affiliateNetwork === 'AMAZON_IN' ||
+          /^https?:\/\/(www\.)?amazon\.(in|com)(\/|$)/i.test(String(d.productUrl || ''))
+        ) {
+          return false;
+        }
+        return (
+          d.availability === 'IN_STOCK' &&
+          typeof d.currentPriceINR === 'number' && d.currentPriceINR > 0 &&
+          (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'AFFILIATE_VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS') &&
+          Boolean(d.isMonetizable) === true &&
+          (isProduction() ? (d.productVerified === true && d.affiliateVerified === true) : true) &&
+          (!d.expiryDate || new Date(d.expiryDate).getTime() > Date.now())
+        );
+      });
 
     // Count canonical destinations across all active deals to detect unkeyed duplicate / conflicting claims
     const candidateDestCounts = new Map<string, number>();
@@ -8245,7 +8249,9 @@ export class AutonomousDealDiscoveryEngine {
       contactRows.length === 0 &&
       eventRows.length === 0 &&
       !hadContactCursor &&
-      !hadEventCursor
+      !hadEventCursor &&
+      AutonomousDealDiscoveryEngine.priceDropContactCursor === null &&
+      AutonomousDealDiscoveryEngine.priceDropEventCursor === null
     ) {
       if (shouldBackoff && scanGeneration === AutonomousDealDiscoveryEngine.priceAlertBackoffGeneration) {
         AutonomousDealDiscoveryEngine.priceAlertEmptyBackoffUntilMs = Date.now() + 2 * 60 * 60 * 1000;

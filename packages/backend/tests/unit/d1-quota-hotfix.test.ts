@@ -3,7 +3,7 @@ import { D1Client } from '../../src/db/d1-client.js';
 import { DurableRateLimiter } from '../../src/security/durable-rate-limiter.js';
 import { applyD1Migrations, resetBaseline0050VerifiedForTesting } from '../../src/db/d1-migrations/index.js';
 import { AutonomousDealDiscoveryEngine } from '../../src/commission/autonomous-deal-discovery-engine.js';
-import { resetSitemapCacheForTesting } from '../../src/index.js';
+import { resetSitemapCacheForTesting, app } from '../../src/index.js';
 import { resetRevenueFunnelCacheForTesting } from '../../src/routes/api.js';
 import { getSiteFixFunnelAttributionSummaryAsync, resetSiteFixFunnelAttributionCacheForTesting, invalidateFunnelAttributionCache } from '../../src/tools/site-audit/sitefix-funnel-attribution.js';
 import { TelegramBotAdapter } from '../../src/integrations/telegram-adapter.js';
@@ -305,6 +305,267 @@ describe('D1 Quota Hotfix & Circuit Breaker Decoupling (PR #81)', () => {
       } finally {
         globalThis.fetch = originalFetch;
       }
+    });
+
+    it('throws D1_DURABLE_WRITE_UNAVAILABLE in production when remote D1 is configured and read quota breaker is tripped (PR #82 Fix 1)', async () => {
+      const prevEnv = process.env.NODE_ENV;
+      process.env.NODE_ENV = 'production';
+      vi.spyOn(d1, 'isRemoteD1Configured').mockReturnValue(true);
+      d1.tripReadQuotaCircuitBreaker('Daily read limit reached');
+
+      try {
+        await expect(
+          d1.executeBatch([{ table: 'durable_events', sql: 'INSERT INTO durable_events (id) VALUES (?)', params: ['evt_1'] }])
+        ).rejects.toThrow('D1_DURABLE_WRITE_UNAVAILABLE: Production batch writes require durable remote D1 (quota circuit breaker active)');
+      } finally {
+        process.env.NODE_ENV = prevEnv;
+      }
+    });
+
+    it('throws D1_DURABLE_WRITE_UNAVAILABLE in production when remote D1 is configured and write quota breaker is tripped (PR #82 Fix 1)', async () => {
+      const prevEnv = process.env.NODE_ENV;
+      process.env.NODE_ENV = 'production';
+      vi.spyOn(d1, 'isRemoteD1Configured').mockReturnValue(true);
+      d1.tripWriteQuotaCircuitBreaker('Daily write limit reached');
+
+      try {
+        await expect(
+          d1.executeBatch([{ table: 'durable_events', sql: 'INSERT INTO durable_events (id) VALUES (?)', params: ['evt_1'] }])
+        ).rejects.toThrow('D1_DURABLE_WRITE_UNAVAILABLE: Production batch writes require durable remote D1 (quota circuit breaker active)');
+      } finally {
+        process.env.NODE_ENV = prevEnv;
+      }
+    });
+
+    it('throws [D1 PERSISTENCE ERROR] in production when remote D1 returns HTTP 500 at statement index 0 without falling back to local SQLite (PR #82 Fix 1)', async () => {
+      const prevEnv = process.env.NODE_ENV;
+      process.env.NODE_ENV = 'production';
+      vi.spyOn(d1, 'isRemoteD1Configured').mockReturnValue(true);
+      vi.spyOn(d1, 'isRemoteD1WriteAllowed').mockReturnValue(true);
+
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        text: async () => 'D1 internal server error'
+      }) as any;
+
+      try {
+        await expect(
+          d1.executeBatch([{ table: 'durable_events', sql: 'INSERT INTO durable_events (id) VALUES (?)', params: ['evt_1'] }])
+        ).rejects.toThrow('[D1 PERSISTENCE ERROR] D1 batch statement failed at index 0');
+      } finally {
+        globalThis.fetch = originalFetch;
+        process.env.NODE_ENV = prevEnv;
+      }
+    });
+  });
+
+  describe('9. Destination Conflict Quarantine & Price Normalization (PR #82 Fix 2)', () => {
+    it('cross-category destination conflict is quarantined identically under both filtered and unfiltered queries', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+      (engine as any).dealsMap.clear();
+
+      const deal1: any = {
+        id: 'deal_electronics_conflict_1',
+        slug: 'gadget-a',
+        canonicalSlug: 'gadget-a',
+        title: 'Gadget Alpha',
+        category: 'Electronics',
+        merchant: 'PartnerX',
+        productUrl: 'https://partnerx.com/products/item-123',
+        currentPriceINR: 1200,
+        availability: 'IN_STOCK',
+        verificationStatus: 'VERIFIED',
+        isMonetizable: true,
+        productVerified: true,
+        affiliateVerified: true,
+        evidenceJson: { sources: ['https://partnerx.com/products/item-123'] }
+      };
+
+      const deal2: any = {
+        id: 'deal_fashion_conflict_2',
+        slug: 'fashion-b',
+        canonicalSlug: 'fashion-b',
+        title: 'Fashion Beta',
+        category: 'Fashion',
+        merchant: 'PartnerX',
+        productUrl: 'https://partnerx.com/products/item-123', // Same destination!
+        currentPriceINR: 800,
+        availability: 'IN_STOCK',
+        verificationStatus: 'VERIFIED',
+        isMonetizable: true,
+        productVerified: true,
+        affiliateVerified: true,
+        evidenceJson: { sources: ['https://partnerx.com/products/item-123'] }
+      };
+
+      (engine as any).dealsMap.set(deal1.id, deal1);
+      (engine as any).dealsMap.set(deal2.id, deal2);
+
+      // Unfiltered query: both must be quarantined due to duplicate destination
+      const unfiltered = await engine.getEligiblePublicDeals({});
+      const unfilteredConflict1 = unfiltered.deals.find(d => d.id === deal1.id);
+      const unfilteredConflict2 = unfiltered.deals.find(d => d.id === deal2.id);
+      expect(unfilteredConflict1).toBeUndefined();
+      expect(unfilteredConflict2).toBeUndefined();
+
+      // Filtered query for Electronics: deal1 must STILL be quarantined even though deal2 is in Fashion
+      AutonomousDealDiscoveryEngine.invalidateEligibleDealsCache();
+      const filtered = await engine.getEligiblePublicDeals({ category: 'Electronics' });
+      const filteredConflict1 = filtered.deals.find(d => d.id === deal1.id);
+      expect(filteredConflict1).toBeUndefined();
+    });
+
+    it('a deal whose raw price/MRP was swapped matches maxPrice accurately after normalization', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+      (engine as any).dealsMap.clear();
+
+      // Title says "at ₹499", raw currentPriceINR is ₹3596, referencePriceINR is ₹3596
+      const swappedDeal: any = {
+        id: 'deal_swapped_price_1',
+        slug: 'perfume-combo-499',
+        canonicalSlug: 'perfume-combo-499',
+        title: 'Buy 4 Perfumes at 499',
+        category: 'Fragrance',
+        merchant: 'PlumGoodness',
+        productUrl: 'https://plumgoodness.com/products/perfume-combo-499',
+        currentPriceINR: 3596,
+        referencePriceINR: 3596,
+        availability: 'IN_STOCK',
+        verificationStatus: 'VERIFIED',
+        isMonetizable: true,
+        productVerified: true,
+        affiliateVerified: true,
+        evidenceJson: { sources: ['https://plumgoodness.com/products/perfume-combo-499'] }
+      };
+
+      (engine as any).dealsMap.set(swappedDeal.id, swappedDeal);
+
+      // Filter with maxPrice: 600.
+      // Unnormalized: 3596 > 600 (would fail).
+      // Normalized: title repair corrects currentPriceINR to 499 <= 600 (must match).
+      AutonomousDealDiscoveryEngine.invalidateEligibleDealsCache();
+      const res = await engine.getEligiblePublicDeals({ maxPrice: 600 });
+      const found = res.deals.find(d => d.id === swappedDeal.id);
+      expect(found).toBeDefined();
+      expect(found?.currentPriceINR).toBe(499);
+    });
+  });
+
+  describe('10. Telegram Publish Claim Delivery Uncertainty (PR #82 Fix 3)', () => {
+    const telegramAdapter = TelegramBotAdapter.getInstance();
+
+    it('preserves TELEGRAM_POST_CLAIMED on network timeout or HTTP 5xx to prevent duplicate syndication', async () => {
+      const prevToken = process.env.TELEGRAM_BOT_TOKEN;
+      const prevChat = process.env.TELEGRAM_CHANNEL_ID;
+      process.env.TELEGRAM_BOT_TOKEN = '123456789:ABCdefGHIjklMNOpqrsTUVwxyz123456789';
+      process.env.TELEGRAM_CHANNEL_ID = '-1001234567890';
+
+      const originalFetch = globalThis.fetch;
+      // Mock HTTP 500 server error
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        text: async () => 'Internal Telegram Server Error'
+      }) as any;
+
+      const executeWriteSpy = vi.spyOn(D1RevenueRepository.getInstance(), 'executeWrite').mockResolvedValue({
+        rowsAffected: 1,
+        source: 'CLOUDFLARE_D1'
+      } as any);
+
+      try {
+        const res = await telegramAdapter.postPublishedGuide({
+          guideTitle: 'Test Guide 500',
+          guideUrl: 'https://example.com/guide/test-500',
+          dealId: 'deal_uncertain_1'
+        });
+
+        expect(res.posted).toBe(false);
+        // executeWrite was called for INSERT TELEGRAM_POST_CLAIMED, but NOT DELETE
+        const deleteCalls = executeWriteSpy.mock.calls.filter(call =>
+          typeof call[1] === 'string' && call[1].toUpperCase().includes('DELETE FROM DURABLE_EVENTS')
+        );
+        expect(deleteCalls.length).toBe(0); // Claim is preserved!
+      } finally {
+        globalThis.fetch = originalFetch;
+        process.env.TELEGRAM_BOT_TOKEN = prevToken;
+        process.env.TELEGRAM_CHANNEL_ID = prevChat;
+      }
+    });
+
+    it('releases TELEGRAM_POST_CLAIMED on deterministic HTTP 400 or 403 error', async () => {
+      const prevToken = process.env.TELEGRAM_BOT_TOKEN;
+      const prevChat = process.env.TELEGRAM_CHANNEL_ID;
+      process.env.TELEGRAM_BOT_TOKEN = '123456789:ABCdefGHIjklMNOpqrsTUVwxyz123456789';
+      process.env.TELEGRAM_CHANNEL_ID = '-1001234567890';
+
+      const originalFetch = globalThis.fetch;
+      // Mock HTTP 403 Forbidden (bot kicked from channel)
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 403,
+        text: async () => 'Forbidden: bot was kicked from the supergroup'
+      }) as any;
+
+      const executeWriteSpy = vi.spyOn(D1RevenueRepository.getInstance(), 'executeWrite').mockResolvedValue({
+        rowsAffected: 1,
+        source: 'CLOUDFLARE_D1'
+      } as any);
+
+      try {
+        const res = await telegramAdapter.postPublishedGuide({
+          guideTitle: 'Test Guide 403',
+          guideUrl: 'https://example.com/guide/test-403',
+          dealId: 'deal_deterministic_1'
+        });
+
+        expect(res.posted).toBe(false);
+        // executeWrite WAS called to DELETE the claim on deterministic rejection
+        const deleteCalls = executeWriteSpy.mock.calls.filter(call =>
+          typeof call[1] === 'string' && call[1].toUpperCase().includes('DELETE FROM DURABLE_EVENTS')
+        );
+        expect(deleteCalls.length).toBe(1); // Claim released!
+      } finally {
+        globalThis.fetch = originalFetch;
+        process.env.TELEGRAM_BOT_TOKEN = prevToken;
+        process.env.TELEGRAM_CHANNEL_ID = prevChat;
+      }
+    });
+  });
+
+  describe('11. Sitemap Cache Shield & Price-Alert Backoff Cursor Truth (PR #82 Fix 4)', () => {
+    it('does not populate sitemapCache when an underlying query throws or degrades', async () => {
+      resetSitemapCacheForTesting();
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+      const dealsSpy = vi.spyOn(engine, 'getEligiblePublicDeals').mockRejectedValueOnce(new Error('D1 read failure'));
+
+      const res = await app.request('/sitemap.xml');
+      expect(res.status).toBe(200);
+
+      // Next request should NOT hit cache if previous run failed deal generation
+      // We verify by checking that getEligiblePublicDeals is called again
+      dealsSpy.mockClear();
+      dealsSpy.mockResolvedValueOnce({ deals: [], total: 0 });
+      await app.request('/sitemap.xml');
+      expect(dealsSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('triggers 2-hour backoff only when scan started with null cursors and returned zero rows without continuation', async () => {
+      const engine = AutonomousDealDiscoveryEngine.getInstance();
+      AutonomousDealDiscoveryEngine.resetPriceAlertBackoffForTesting();
+
+      // If contactCursor is set (continuation in progress), backoff must NOT trigger
+      (AutonomousDealDiscoveryEngine as any).priceDropContactCursor = 'contact_prev_99';
+      await engine.checkAndDispatchTargetPriceAlerts([]);
+      expect((AutonomousDealDiscoveryEngine as any).priceAlertEmptyBackoffUntilMs).toBe(0);
+
+      // When cursors are null (started from beginning) and 0 rows found: backoff engages
+      (AutonomousDealDiscoveryEngine as any).priceDropContactCursor = null;
+      (AutonomousDealDiscoveryEngine as any).priceDropEventCursor = null;
+      await engine.checkAndDispatchTargetPriceAlerts([]);
+      expect((AutonomousDealDiscoveryEngine as any).priceAlertEmptyBackoffUntilMs).toBeGreaterThan(Date.now());
     });
   });
 });

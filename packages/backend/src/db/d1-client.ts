@@ -588,6 +588,13 @@ export class D1Client {
       }
     }
 
+    // In production with remote D1 configured: fail closed if either read or write quota breaker is active
+    if (isProduction && this.isRemoteD1Configured()) {
+      if (this.isRemoteD1ReadQuotaExhausted() || this.isRemoteD1WriteQuotaExhausted() || !this.isRemoteD1WriteAllowed()) {
+        throw new Error('D1_DURABLE_WRITE_UNAVAILABLE: Production batch writes require durable remote D1 (quota circuit breaker active)');
+      }
+    }
+
     if (this.isRemoteD1WriteAllowed()) {
       const url = `https://api.cloudflare.com/client/v4/accounts/${this.getAccountId()}/d1/database/${this.getDatabaseId()}/query`;
       const retryDelays = [250, 750];
@@ -597,6 +604,14 @@ export class D1Client {
       let failureErrorText = '';
 
       for (let idx = 0; idx < statements.length; idx++) {
+        // Concurrent trip guard: if either quota circuit breaker was tripped during this batch, halt immediately
+        if (isProduction && (this.isRemoteD1ReadQuotaExhausted() || this.isRemoteD1WriteQuotaExhausted() || !this.isRemoteD1WriteAllowed())) {
+          failedIdx = idx;
+          fallbackToLocal = true;
+          failureErrorText = 'quota circuit breaker active during batch';
+          break;
+        }
+
         const s = statements[idx];
         let statementOk = false;
 
@@ -688,7 +703,10 @@ export class D1Client {
         if (hasFinancialStatement) {
           throw new Error(`D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1 (${failureErrorText})`);
         }
-        if (isProduction && !(this.isRemoteD1ReadQuotaExhausted() || this.isRemoteD1WriteQuotaExhausted())) {
+        if (isProduction) {
+          if (this.isRemoteD1ReadQuotaExhausted() || this.isRemoteD1WriteQuotaExhausted()) {
+            throw new Error(`D1_DURABLE_WRITE_UNAVAILABLE: Production batch writes require durable remote D1 (${failureErrorText})`);
+          }
           throw new Error(`[D1 PERSISTENCE ERROR] D1 batch statement failed at index ${failedIdx}: ${failureErrorText}`);
         }
         if (!(this.isRemoteD1ReadQuotaExhausted() || this.isRemoteD1WriteQuotaExhausted())) {
@@ -703,6 +721,10 @@ export class D1Client {
         throw new Error('D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1');
       }
       throw new Error('[D1 CONFIGURATION FAULT] Production requires remote Cloudflare D1 credentials (CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_D1_DATABASE_ID, CLOUDFLARE_D1_API_TOKEN). Ephemeral SQLite fallback is strictly prohibited in production.');
+    }
+
+    if (isProduction && this.isRemoteD1Configured()) {
+      throw new Error('D1_DURABLE_WRITE_UNAVAILABLE: Production batch writes require durable remote D1');
     }
 
     if (isRender && hasFinancialStatement) {
