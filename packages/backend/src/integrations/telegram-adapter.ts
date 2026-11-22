@@ -456,20 +456,28 @@ export class TelegramBotAdapter {
       });
 
       if (!res.ok) {
-        const errorBody = await res.text();
         // PR #82: Release claim ONLY on deterministic rejections (e.g. HTTP 400, 401, 403, 404).
+        // Release BEFORE reading error body so body-read failures cannot leave the rejected post's claim held.
         // For uncertain outcomes (HTTP 429 rate limit or 5xx server errors), PRESERVE the claim to prevent duplicate syndication.
         const isDeterministicRejection = res.status >= 400 && res.status < 500 && res.status !== 429;
         if (claimId && isDeterministicRejection) {
           try {
             await this.d1Repo.executeWrite(
               'durable_events',
-              `DELETE FROM durable_events WHERE id = ?`,
+              `DELETE FROM durable_events WHERE id = ? AND event_type = 'TELEGRAM_POST_CLAIMED'`,
               [claimId]
             );
           } catch {}
           TelegramBotAdapter.telegramPostCountCache = null;
         }
+
+        let errorBody = '';
+        try {
+          errorBody = await res.text();
+        } catch {
+          errorBody = '<failed to read error response body>';
+        }
+
         return {
           posted: false,
           reason: `TELEGRAM_API_ERROR: HTTP ${res.status}: ${errorBody}`

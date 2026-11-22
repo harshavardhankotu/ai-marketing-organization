@@ -776,7 +776,7 @@ export class SiteAuditService {
   /**
    * Returns list of all domains with completed, publicly authorized audits in site_audits.
    */
-  public async getAllAuditedDomains(): Promise<string[]> {
+  public async getAllAuditedDomains(options?: { throwOnError?: boolean }): Promise<string[]> {
     try {
       const sql = "SELECT domain, is_publicly_authorized, checklist_json FROM site_audits WHERE status = 'COMPLETED' AND is_publicly_authorized = 1 ORDER BY updated_at DESC LIMIT 100";
       let rows: any[] = [];
@@ -792,6 +792,9 @@ export class SiteAuditService {
         .filter(Boolean);
     } catch (err: any) {
       console.warn(`[SiteAuditService] Error listing audited domains: ${err.message}`);
+      if (options?.throwOnError) {
+        throw err;
+      }
       return [];
     }
   }

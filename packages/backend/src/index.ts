@@ -1349,7 +1349,7 @@ app.get('/sitemap.xml', async (c) => {
   let auditUrlsSucceeded = true;
   try {
     const { SiteAuditService } = await import('./tools/site-audit/site-audit-service.js');
-    const domains = await SiteAuditService.getInstance().getAllAuditedDomains();
+    const domains = await SiteAuditService.getInstance().getAllAuditedDomains({ throwOnError: true });
     auditUrls = domains.map(d => `${baseUrl}/audit/${d}`);
   } catch {
     auditUrlsSucceeded = false;

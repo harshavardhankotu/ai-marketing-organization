@@ -533,6 +533,47 @@ describe('D1 Quota Hotfix & Circuit Breaker Decoupling (PR #81)', () => {
         process.env.TELEGRAM_CHANNEL_ID = prevChat;
       }
     });
+
+    it('releases TELEGRAM_POST_CLAIMED with ownership guard on deterministic 403 error even if response body read fails (PR #82)', async () => {
+      const prevToken = process.env.TELEGRAM_BOT_TOKEN;
+      const prevChat = process.env.TELEGRAM_CHANNEL_ID;
+      process.env.TELEGRAM_BOT_TOKEN = '123456789:ABCdefGHIjklMNOpqrsTUVwxyz123456789';
+      process.env.TELEGRAM_CHANNEL_ID = '-1001234567890';
+
+      const originalFetch = globalThis.fetch;
+      // Mock HTTP 403 Forbidden where text() throws stream read failure
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 403,
+        text: async () => { throw new Error('Stream read failure'); }
+      }) as any;
+
+      const executeWriteSpy = vi.spyOn(D1RevenueRepository.getInstance(), 'executeWrite').mockResolvedValue({
+        rowsAffected: 1,
+        source: 'CLOUDFLARE_D1'
+      } as any);
+
+      try {
+        const res = await telegramAdapter.postPublishedGuide({
+          guideTitle: 'Test Guide 403 Body Fail',
+          guideUrl: 'https://example.com/guide/test-403-fail',
+          dealId: 'deal_deterministic_body_fail'
+        });
+
+        expect(res.posted).toBe(false);
+        // executeWrite WAS called to DELETE the claim with ownership guard AND event_type = 'TELEGRAM_POST_CLAIMED'
+        const deleteCalls = executeWriteSpy.mock.calls.filter(call =>
+          typeof call[1] === 'string' &&
+          call[1].toUpperCase().includes('DELETE FROM DURABLE_EVENTS') &&
+          call[1].toUpperCase().includes("EVENT_TYPE = 'TELEGRAM_POST_CLAIMED'")
+        );
+        expect(deleteCalls.length).toBe(1);
+      } finally {
+        globalThis.fetch = originalFetch;
+        process.env.TELEGRAM_BOT_TOKEN = prevToken;
+        process.env.TELEGRAM_CHANNEL_ID = prevChat;
+      }
+    });
   });
 
   describe('11. Sitemap Cache Shield & Price-Alert Backoff Cursor Truth (PR #82 Fix 4)', () => {
@@ -550,6 +591,21 @@ describe('D1 Quota Hotfix & Circuit Breaker Decoupling (PR #81)', () => {
       dealsSpy.mockResolvedValueOnce({ deals: [], total: 0 });
       await app.request('/sitemap.xml');
       expect(dealsSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not populate sitemapCache when site audit domain query throws with throwOnError (PR #82)', async () => {
+      resetSitemapCacheForTesting();
+      const { SiteAuditService } = await import('../../src/tools/site-audit/site-audit-service.js');
+      const auditSpy = vi.spyOn(SiteAuditService.getInstance(), 'getAllAuditedDomains').mockRejectedValueOnce(new Error('D1 audit table query failure'));
+
+      const res = await app.request('/sitemap.xml');
+      expect(res.status).toBe(200);
+
+      // Next request should NOT hit cache if previous run failed audit domains query
+      auditSpy.mockClear();
+      auditSpy.mockResolvedValueOnce(['example.com']);
+      await app.request('/sitemap.xml');
+      expect(auditSpy).toHaveBeenCalledTimes(1);
     });
 
     it('triggers 2-hour backoff only when scan started with null cursors and returned zero rows without continuation', async () => {
