@@ -2674,8 +2674,8 @@ ${this.serializeSafeJsonLd(schemaObj, true)}
           notes: isTestMode ? {
             mode: 'test',
             sandbox: 'true',
-            mock_card: '4100 2800 0000 10007',
-            mock_upi: 'test@razorpay'
+            mock_card: '4100 2800 0000 1007',
+            mock_upi: 'success@razorpay'
           } : {},
           order_id: data.razorpayOrderId || data.orderId,
           prefill: {

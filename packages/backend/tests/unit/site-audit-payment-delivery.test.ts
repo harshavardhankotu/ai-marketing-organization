@@ -435,4 +435,13 @@ describe('SiteFix AI: Route Integration Tests via Hono apiRouter', () => {
     }
     expect(blockCount).toBeGreaterThanOrEqual(2);
   });
+
+  it('renders official 16-digit Razorpay test card copy and valid test upi id without malformed digits', async () => {
+    const { renderSiteAuditPage } = await import('../../src/tools/site-audit/site-audit-page.js');
+    const html = renderSiteAuditPage({ siteUrl: 'https://ai-marketing-organization.onrender.com' });
+    expect(html).toContain('4100 2800 0000 1007');
+    expect(html).toContain('success@razorpay');
+    expect(html).not.toContain('10007');
+    expect(html).not.toContain('test@razorpay');
+  });
 });

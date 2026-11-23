@@ -340,12 +340,12 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; font-size: 0.82rem; font-family: monospace;">
               <div style="background: rgba(0,0,0,0.35); padding: 0.6rem 0.75rem; border-radius: 6px; border: 1px solid rgba(255,255,255,0.08);">
                 <span style="color: #9ca3af; display: block; font-family: sans-serif; font-size: 0.75rem;">Mock Card (Any 6-digit OTP)</span>
-                <strong style="color: #60a5fa; font-size: 0.9rem;">4100 2800 0000 10007</strong>
+                <strong style="color: #60a5fa; font-size: 0.9rem;">4100 2800 0000 1007</strong>
                 <span style="color: #9ca3af; display: block; font-size: 0.75rem; margin-top: 2px;">Exp: 12/26 • CVV: 123</span>
               </div>
               <div style="background: rgba(0,0,0,0.35); padding: 0.6rem 0.75rem; border-radius: 6px; border: 1px solid rgba(255,255,255,0.08);">
                 <span style="color: #9ca3af; display: block; font-family: sans-serif; font-size: 0.75rem;">Mock UPI ID (Auto-Approve)</span>
-                <strong style="color: #34d399; font-size: 0.9rem;">test@razorpay</strong>
+                <strong style="color: #34d399; font-size: 0.9rem;">success@razorpay</strong>
                 <span style="color: #9ca3af; display: block; font-size: 0.75rem; margin-top: 2px;">Instant simulated capture</span>
               </div>
             </div>
@@ -724,8 +724,8 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
           notes: isTestMode ? {
             mode: 'test',
             sandbox: 'true',
-            mock_card: '4100 2800 0000 10007',
-            mock_upi: 'test@razorpay'
+            mock_card: '4100 2800 0000 1007',
+            mock_upi: 'success@razorpay'
           } : {},
           handler: async function (response) {
             if (btn) btn.innerText = 'Verifying Payment Capture...';
