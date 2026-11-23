@@ -422,4 +422,17 @@ describe('SiteFix AI: Route Integration Tests via Hono apiRouter', () => {
       if (prev !== undefined) process.env.SITE_AUDIT_SIGNING_SECRET = prev;
     }
   });
+
+  it('renders site-audit-page with 100% syntactically valid client-side JavaScript', async () => {
+    const { renderSiteAuditPage } = await import('../../src/tools/site-audit/site-audit-page.js');
+    const html = renderSiteAuditPage({ siteUrl: 'https://ai-marketing-organization.onrender.com' });
+    const scriptRegex = /<script(?![^>]*src=)[^>]*>([\s\S]*?)<\/script>/gi;
+    let match;
+    let blockCount = 0;
+    while ((match = scriptRegex.exec(html)) !== null) {
+      blockCount++;
+      expect(() => new Function(match[1])).not.toThrow();
+    }
+    expect(blockCount).toBeGreaterThanOrEqual(2);
+  });
 });

@@ -660,7 +660,7 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
         const domainInput = document.getElementById('checkoutDomainInput');
         const emailInput = document.getElementById('checkoutBuyerEmailInput');
         let targetDomain = (domainInput ? domainInput.value : '').trim() || currentAuditTargetUrl || (document.getElementById('targetUrl') ? document.getElementById('targetUrl').value : '');
-        targetDomain = targetDomain.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').trim();
+        targetDomain = targetDomain.replace(/^https?:\\/\\//i, '').split('/')[0].trim();
 
         if (!targetDomain || !targetDomain.includes('.')) {
           alert('Please enter a valid website domain (e.g. example.com) to generate your custom Fix-Pack.');
@@ -981,7 +981,7 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
       const upiEmailInput = document.getElementById('upiBuyerEmail');
 
       let targetDomain = (domainInput ? domainInput.value : '').trim() || (document.getElementById('targetUrl')?.value || '').trim();
-      targetDomain = targetDomain.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').trim();
+      targetDomain = targetDomain.replace(/^https?:\\/\\//i, '').split('/')[0].trim();
 
       if (!targetDomain || !targetDomain.includes('.')) {
         alert('Please enter a valid website domain (e.g. example.com) before submitting your UPI payment claim.');
@@ -998,7 +998,7 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
       }
 
       const utrVal = (document.getElementById('upiUtrInput')?.value || '').trim();
-      if (!/^\d{12}$/.test(utrVal)) {
+      if (!/^[0-9]{12}$/.test(utrVal)) {
         alert('Please enter a valid 12-digit numeric UPI UTR reference.');
         return;
       }
