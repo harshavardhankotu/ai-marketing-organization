@@ -1016,8 +1016,8 @@ describe('D1 Quota Hotfix & Circuit Breaker Decoupling (PR #81)', () => {
         'site_audits',
         `INSERT OR REPLACE INTO site_audits (
           domain, target_url, business_name, performance_score, seo_score,
-          core_web_vitals_json, head_snippets, schema_json_ld, checklist_json, status, updated_at
-        ) VALUES (?, ?, 'Flat Row Business', 88, 77, '{}', '<meta name="og">', '{}', ?, 'COMPLETED', datetime('now'))`,
+          core_web_vitals_json, head_snippets, schema_json_ld, checklist_json, status, html_scan_status, updated_at
+        ) VALUES (?, ?, 'Flat Row Business', 88, 77, '{}', '<meta name="og">', '{}', ?, 'COMPLETED', 'FAILED', datetime('now'))`,
         [domain, `https://${domain}`, JSON.stringify(initialFindings)]
       );
 
@@ -1025,22 +1025,25 @@ describe('D1 Quota Hotfix & Circuit Breaker Decoupling (PR #81)', () => {
       expect(flatRow).toBeTruthy();
       expect(flatRow.seo_score).toBe(77);
       expect(flatRow.performance_score).toBe(88);
+      expect(flatRow.html_scan_status).toBe('FAILED');
 
       // Reconstruct
       const reconstructed = SiteAuditService.reconstructAuditFromDbRow(flatRow, `audit_${domain}`);
       expect(reconstructed.auditId).toBe(`audit_${domain}`);
       expect(reconstructed.score).toBe(77);
       expect(reconstructed.pageSpeed?.performanceScore).toBe(88);
+      expect((reconstructed as any).htmlScanStatus).toBe('FAILED');
       expect(reconstructed.findings.length).toBe(1);
       expect(reconstructed.findings[0].id).toBe('c_og');
       expect(reconstructed.scorecard?.totalScore).toBe(77);
 
-      // Persist the reconstructed audit and ensure site_audits scores remain 77 and 88
+      // Persist the reconstructed audit and ensure site_audits scores and failed scan status survive
       await service.persistAuditToD1(reconstructed);
 
       const verifyRow = await service.getAuditByDomain(domain);
       expect(verifyRow.seo_score).toBe(77);
       expect(verifyRow.performance_score).toBe(88);
+      expect(verifyRow.html_scan_status).toBe('FAILED');
       const parsed = service.parseAuditChecklistPayload(verifyRow.checklist_json);
       expect(parsed.items.length).toBe(1);
       expect(parsed.items[0].id).toBe('c_og');

@@ -388,7 +388,9 @@ export class SiteAuditService {
       };
       const checklistJson = JSON.stringify(checklistPayload);
       const bName = audit.businessName || domain;
-      const htmlScanStatus = ((audit as any).status === 'FAILED') ? 'FAILED' : 'COMPLETED';
+      const htmlScanStatus = ((audit as any).htmlScanStatus || (audit as any).html_scan_status)
+        ? ((audit as any).htmlScanStatus || (audit as any).html_scan_status)
+        : (((audit as any).status === 'FAILED') ? 'FAILED' : 'COMPLETED');
       const pageSpeedStatus = audit.pageSpeed?.status === 'SUCCESS' ? 'COMPLETED' : 'UNAVAILABLE';
       const pageSpeedUnavailableReason = audit.pageSpeed?.status === 'SUCCESS' ? null : (audit.pageSpeed?.reason || 'UNAVAILABLE (Requires GOOGLE_PAGESPEED_API_KEY)');
       const isPubliclyAuthorized =
@@ -860,6 +862,10 @@ export class SiteAuditService {
 
     if (authProvenance) {
       (result as any).authorizationProvenance = authProvenance;
+    }
+
+    if (row.html_scan_status) {
+      (result as any).htmlScanStatus = row.html_scan_status;
     }
 
     return result;
