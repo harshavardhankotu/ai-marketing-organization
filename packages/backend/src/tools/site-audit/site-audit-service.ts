@@ -38,7 +38,7 @@ export const CANONICAL_SITEFIX_TERMS = {
   priceINR: 499,
   amountPaise: 49900,
   currency: 'INR' as const,
-  refundPolicy: 'Full refund within 7 days if the technical diagnostic report fails to generate or has persistent inaccuracies.',
+  refundPolicy: '7-Day 100% Refund Policy: Full refund if Fix-Pack deliverables fail verification recheck. Support: support@ai-marketing-organization.com',
   deliveryPolicy: 'Instant automated digital delivery upon verified Razorpay payment capture.',
   disclaimer: SiteAuditFixPackGenerator.LEGAL_DISCLOSURE
 };
@@ -776,7 +776,7 @@ export class SiteAuditService {
   /**
    * Returns list of all domains with completed, publicly authorized audits in site_audits.
    */
-  public async getAllAuditedDomains(options?: { throwOnError?: boolean }): Promise<string[]> {
+  public async getAllAuditedDomains(options?: { strict?: boolean; throwOnError?: boolean }): Promise<string[]> {
     try {
       const sql = "SELECT domain, is_publicly_authorized, checklist_json FROM site_audits WHERE status = 'COMPLETED' AND is_publicly_authorized = 1 ORDER BY updated_at DESC LIMIT 100";
       let rows: any[] = [];
@@ -792,7 +792,7 @@ export class SiteAuditService {
         .filter(Boolean);
     } catch (err: any) {
       console.warn(`[SiteAuditService] Error listing audited domains: ${err.message}`);
-      if (options?.throwOnError) {
+      if (options?.strict || options?.throwOnError) {
         throw err;
       }
       return [];
@@ -820,7 +820,7 @@ export class SiteAuditService {
     expiresInHours?: number
   ): string {
     let paymentId = 'pay_verified';
-    let hours = 72;
+    let hours = 168; // 7 days (168 hours) to fully cover the 7-day money-back guarantee and included verification recheck window
     if (typeof paymentIdOrHours === 'number') {
       hours = paymentIdOrHours;
     } else if (typeof paymentIdOrHours === 'string') {
@@ -953,7 +953,7 @@ export class SiteAuditService {
       }
 
       if (!order) {
-        if (orderId.startsWith('order_test_') || orderId.startsWith('test_') || orderId.startsWith('ord_rzp_')) {
+        if (orderId.startsWith('order_test_') || orderId.startsWith('test_')) {
           return { valid: true, orderId, auditId: tokenAuditId, paymentId };
         }
         return { valid: false, error: 'ORDER_NOT_FOUND' };
@@ -965,7 +965,7 @@ export class SiteAuditService {
 
       return { valid: true, orderId, auditId: tokenAuditId, paymentId: order.payment_id || paymentId };
     } catch {
-      if (orderId.startsWith('order_test_') || orderId.startsWith('test_') || orderId.startsWith('ord_rzp_')) {
+      if (orderId.startsWith('order_test_') || orderId.startsWith('test_')) {
         return { valid: true, orderId, auditId: tokenAuditId, paymentId };
       }
       return { valid: false, error: 'ORDER_VERIFICATION_FAILED' };

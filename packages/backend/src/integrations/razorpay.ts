@@ -1519,7 +1519,7 @@ export class RazorpayAdapter {
         const effectiveOrderId = notesObj.orderId || uOrder?.id || claimRow?.id || `ord_upi_${trimmedUtr}`;
         await auditService.generateDeliverable(resolvedAuditId, effectiveOrderId);
 
-        downloadToken = auditService.generateSignedDeliveryToken(effectiveOrderId, resolvedAuditId, trimmedUtr, 72);
+        downloadToken = auditService.generateSignedDeliveryToken(effectiveOrderId, resolvedAuditId, trimmedUtr, 168);
         const siteUrl = getTrustedPublicSiteUrl().replace(/\/$/, '');
         downloadUrl = `${siteUrl}/api/v1/offer/download/${encodeURIComponent(downloadToken)}`;
 
@@ -1636,7 +1636,7 @@ export class RazorpayAdapter {
                     <div style="margin:24px 0;">
                       <a href="${downloadUrl}" style="background:#2563eb;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;font-weight:bold;display:inline-block;">Download Your SiteFix Technical Fix-Pack</a>
                     </div>
-                    <p style="color:#64748b;font-size:12px;">This download link contains your 72-hour cryptographic access token.</p>
+                    <p style="color:#64748b;font-size:12px;">This download link contains your 7-day (168-hour) cryptographic access token and included verification recheck entitlement.</p>
                     <p style="color:#64748b;font-size:12px;">AI Marketing Organization • Automated Delivery Engine</p>
                   </div>
                 `
@@ -1878,7 +1878,7 @@ export class RazorpayAdapter {
         auditService.setAuditInCache(audit);
 
         await auditService.generateDeliverable(resolvedAuditId, effectiveOrderId);
-        downloadToken = auditService.generateSignedDeliveryToken(effectiveOrderId, resolvedAuditId, trimmedUtr, 72);
+        downloadToken = auditService.generateSignedDeliveryToken(effectiveOrderId, resolvedAuditId, trimmedUtr, 168);
         const siteUrl = getTrustedPublicSiteUrl().replace(/\/$/, '');
         downloadUrl = `${siteUrl}/api/v1/offer/download/${encodeURIComponent(downloadToken)}`;
         deliverableStatus = 'READY';
@@ -2001,7 +2001,7 @@ export class RazorpayAdapter {
                 <div style="margin:24px 0;">
                   <a href="${downloadUrl}" style="background:#2563eb;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;font-weight:bold;display:inline-block;">Download Your SiteFix Technical Fix-Pack</a>
                 </div>
-                <p style="color:#64748b;font-size:12px;">This download link contains your 72-hour cryptographic access token.</p>
+                <p style="color:#64748b;font-size:12px;">This download link contains your 7-day (168-hour) cryptographic access token and included verification recheck entitlement.</p>
                 <p style="color:#64748b;font-size:12px;">AI Marketing Organization • Automated Delivery Engine</p>
               </div>
             `

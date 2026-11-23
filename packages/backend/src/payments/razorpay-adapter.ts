@@ -47,6 +47,7 @@ export interface RazorpayVerifyResult {
   status: 'CAPTURED' | 'TEST_CAPTURED';
   downloadUrl?: string;
   downloadToken?: string;
+  recheckToken?: string;
   mode: 'LIVE' | 'TEST_SANDBOX';
   fulfillmentStatus?: string;
   deliverableStatus?: 'READY' | 'PENDING';
@@ -635,37 +636,30 @@ export class RazorpayStandardAdapter {
       throw new Error('MISSING_VERIFICATION_PARAMS: orderId and razorpay_payment_id are required.');
     }
 
-    if (!params.isWebhook) {
-      if (!razorpay_signature) {
-        throw new Error('MISSING_VERIFICATION_PARAMS: razorpay_signature is required.');
-      }
-      const keySecret = this.getKeySecret();
-      const isSigValid = this.verifyPaymentSignature(razorpay_order_id || orderId, razorpay_payment_id, razorpay_signature, keySecret);
-      if (!isSigValid) {
-        throw new Error('SECURITY_VIOLATION: Invalid Razorpay payment signature. Verification rejected.');
-      }
-    }
-
     // Resolve authoritative order record from D1 universal_orders
     let storedOrder = await this.d1Repo.queryOne<any>(
       'universal_orders',
-      'SELECT id, offer_id, amount_minor, customer_email, customer_name, metadata_json, status, fulfillment_status FROM universal_orders WHERE id = ? OR provider_order_id = ? LIMIT 1',
+      'SELECT id, offer_id, amount_minor, customer_email, customer_name, metadata_json, status, fulfillment_status, provider_order_id FROM universal_orders WHERE id = ? OR provider_order_id = ? LIMIT 1',
       [orderId, razorpay_order_id]
     );
 
     if (!storedOrder) {
       const pr = await this.d1Repo.queryOne<any>(
         'payment_requests',
-        'SELECT id, reference_id, amount_inr, status FROM payment_requests WHERE id = ? OR reference_id = ? LIMIT 1',
+        'SELECT id, reference_id, amount_inr, status, provider_order_id FROM payment_requests WHERE id = ? OR reference_id = ? LIMIT 1',
         [orderId, orderId]
       );
       if (pr) {
         storedOrder = {
           id: pr.id,
+          provider_order_id: pr.provider_order_id || '',
           offer_id: 'sitefix_core_499',
           amount_minor: Math.round(Number(pr.amount_inr) * 100),
           customer_email: '',
-          metadata_json: JSON.stringify({ domainOrUrl: pr.reference_id })
+          customer_name: 'Customer',
+          metadata_json: JSON.stringify({ domainOrUrl: pr.reference_id }),
+          status: pr.status || 'CREATED',
+          fulfillment_status: 'PENDING'
         };
       }
     }
@@ -674,6 +668,7 @@ export class RazorpayStandardAdapter {
       if (!isProduction() && (orderId.startsWith('order_test_') || orderId.startsWith('ord_test_') || orderId.includes('_test_') || orderId.startsWith('test_'))) {
         storedOrder = {
           id: orderId,
+          provider_order_id: razorpay_order_id,
           offer_id: 'sitefix_core_499',
           amount_minor: 49900,
           customer_email: 'test@example.com',
@@ -681,6 +676,53 @@ export class RazorpayStandardAdapter {
         };
       } else {
         throw new Error('ORDER_NOT_FOUND_IN_D1: Order ID not found in database ledger.');
+      }
+    }
+
+    // Ensure authoritative provider order ID is pre-bound on the order record
+    if (!storedOrder?.provider_order_id) {
+      if (!isProduction() && (orderId.startsWith('order_test_') || orderId.startsWith('ord_test_') || orderId.includes('_test_') || orderId.startsWith('test_'))) {
+        storedOrder.provider_order_id = razorpay_order_id;
+      } else {
+        throw new Error(`SECURITY_VIOLATION: Order '${storedOrder?.id || orderId}' has no pre-bound gateway order. Verification rejected.`);
+      }
+    }
+
+    // Enforce authorization consistency: caller-supplied orderId / razorpay_order_id must match the resolved record
+    if (params.orderId && storedOrder) {
+      const matchesInternal = storedOrder.id && params.orderId === storedOrder.id;
+      const matchesProvider = storedOrder.provider_order_id && params.orderId === storedOrder.provider_order_id;
+      if (!matchesInternal && !matchesProvider) {
+        throw new Error(`SECURITY_VIOLATION: Provided orderId '${params.orderId}' does not identify the verified order record.`);
+      }
+    }
+
+    if (params.razorpay_order_id) {
+      const matchesInternal = storedOrder.id && params.razorpay_order_id === storedOrder.id;
+      const matchesProvider = storedOrder.provider_order_id && params.razorpay_order_id === storedOrder.provider_order_id;
+      if (!matchesInternal && !matchesProvider) {
+        throw new Error(`SECURITY_VIOLATION: Provided razorpay_order_id '${params.razorpay_order_id}' does not match the verified order record.`);
+      }
+    }
+
+    const authoritativeOrderId = storedOrder.id;
+
+    if (!params.isWebhook) {
+      if (!razorpay_signature) {
+        throw new Error('MISSING_VERIFICATION_PARAMS: razorpay_signature is required.');
+      }
+      const keySecret = this.getKeySecret();
+      const candidateOrderIds = Array.from(new Set([
+        storedOrder?.provider_order_id,
+        razorpay_order_id,
+        orderId
+      ])).filter(Boolean) as string[];
+
+      const isSigValid = candidateOrderIds.some(candId =>
+        this.verifyPaymentSignature(candId, razorpay_payment_id, razorpay_signature, keySecret)
+      );
+      if (!isSigValid) {
+        throw new Error('SECURITY_VIOLATION: Invalid Razorpay payment signature. Verification rejected.');
       }
     }
 
@@ -726,8 +768,8 @@ export class RazorpayStandardAdapter {
         }
         const payment = (await payRes.json()) as any;
 
-        if (payment.order_id && razorpay_order_id && payment.order_id !== razorpay_order_id) {
-          throw new Error(`SECURITY_VIOLATION: Razorpay payment order_id mismatch. Expected '${razorpay_order_id}', got '${payment.order_id}'.`);
+        if (payment.order_id !== storedOrder.provider_order_id) {
+          throw new Error(`SECURITY_VIOLATION: Razorpay payment order_id mismatch. Expected '${storedOrder.provider_order_id}', got '${payment.order_id || 'NONE'}'.`);
         }
 
         const expectedPaise = Math.round(verifiedAmountINR * 100);
@@ -757,13 +799,20 @@ export class RazorpayStandardAdapter {
           throw new Error(`PAYMENT_NOT_CAPTURED: Payment status is '${payment.status}', expected 'captured'.`);
         }
       } catch (fetchErr: any) {
-        if (isProduction()) {
+        if (
+          isProduction() ||
+          isLive ||
+          fetchErr.message?.startsWith('SECURITY_VIOLATION') ||
+          fetchErr.message?.startsWith('PAYMENT_AMOUNT_MISMATCH') ||
+          fetchErr.message?.startsWith('PAYMENT_CURRENCY_MISMATCH') ||
+          fetchErr.message?.startsWith('PAYMENT_NOT_CAPTURED')
+        ) {
           throw new Error(`PAYMENT_PROVIDER_VERIFICATION_FAILED: ${fetchErr.message}`);
         }
       }
     }
 
-    // Step (a): Update D1 universal_orders
+    // Step (a): Update D1 universal_orders and payment_requests
     try {
       await this.d1Repo.executeWrite(
         'universal_orders',
@@ -771,11 +820,24 @@ export class RazorpayStandardAdapter {
           status = ?,
           provider_payment_id = ?,
           updated_at = datetime('now')
-        WHERE id = ? OR provider_order_id = ?`,
-        [status, razorpay_payment_id, orderId, razorpay_order_id]
+        WHERE id = ?`,
+        [status, razorpay_payment_id, authoritativeOrderId]
       );
     } catch (d1Err: any) {
       console.warn(`[RazorpayAdapter] Failed to update universal_order status: ${d1Err.message}`);
+    }
+
+    try {
+      await this.d1Repo.executeWrite(
+        'payment_requests',
+        `UPDATE payment_requests SET
+          status = 'PAID',
+          updated_at = datetime('now')
+        WHERE id = ?`,
+        [authoritativeOrderId]
+      );
+    } catch (prErr: any) {
+      console.warn(`[RazorpayAdapter] Failed to update payment_request status: ${prErr.message}`);
     }
 
     // STRICT TEST VS. LIVE CASH SEPARATION & IDEMPOTENT ACCOUNTING:
@@ -791,7 +853,7 @@ export class RazorpayStandardAdapter {
             status, classification, service_rendered, created_at
           ) VALUES (?, 'org_owner_primary', 'biz_platform_aro', ?, ?, 'ONLINE', 'RAZORPAY', ?, 'CAPTURED', 'REAL', 'SiteFix AI Technical Fix-Pack', datetime('now'))
           ON CONFLICT(id) DO NOTHING`,
-          [txId, orderId, verifiedAmountINR, razorpay_payment_id]
+          [txId, authoritativeOrderId, verifiedAmountINR, razorpay_payment_id]
         );
       } catch (txErr: any) {
         console.error(`[RazorpayAdapter] Failed to record transaction in financial ledger: ${txErr.message}`);
@@ -803,7 +865,7 @@ export class RazorpayStandardAdapter {
     const siteUrl = getTrustedPublicSiteUrl().replace(/\/$/, '');
     let downloadToken = '';
     let downloadUrl = '';
-    let journeyId = meta.journeyId || `cj_rzp_${storedOrder.id || orderId}`;
+    let journeyId = meta.journeyId || `cj_rzp_${authoritativeOrderId}`;
 
     try {
       const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
@@ -815,21 +877,21 @@ export class RazorpayStandardAdapter {
         await auditService.persistAuditToD1(audit);
       }
 
-      const resolvedAuditId = audit.auditId || audit.id || `audit_${cleanDomain}`;
+      const resolvedAuditId = (audit.auditId || audit.id || `audit_${cleanDomain}`).replace(/\./g, '_');
       audit.auditId = resolvedAuditId;
       auditService.setAuditInCache(audit);
 
-      downloadToken = auditService.generateSignedDeliveryToken(orderId, resolvedAuditId, razorpay_payment_id, 72);
+      downloadToken = auditService.generateSignedDeliveryToken(authoritativeOrderId, resolvedAuditId, razorpay_payment_id, 168);
       downloadUrl = `${siteUrl}/api/v1/offer/download/${encodeURIComponent(downloadToken)}`;
 
       // Generate deliverable to ensure cache is populated
-      await auditService.generateDeliverable(resolvedAuditId, orderId);
+      await auditService.generateDeliverable(resolvedAuditId, authoritativeOrderId);
 
       // Task 1: Ensure parent customer_journeys row exists to satisfy FOREIGN KEY constraint
       await this.ensureCustomerJourney(journeyId, buyerEmail, customerName, isLive, 'PAYMENT_VERIFIED');
 
       // Spec Stage P.3.4 Task E: Deterministic delivery_tasks ID so browser verification and webhook reuse the single task
-      const taskId = `deliv_${storedOrder.id || orderId}_${razorpay_payment_id}`;
+      const taskId = `deliv_${authoritativeOrderId}_${razorpay_payment_id}`;
       await this.d1Repo.executeWrite(
         'delivery_tasks',
         `INSERT INTO delivery_tasks (
@@ -849,13 +911,13 @@ export class RazorpayStandardAdapter {
       console.error(`[RazorpayAdapter] Fix-Pack generation failed: ${fixPackErr.message}`);
       await this.d1Repo.executeWrite(
         'universal_orders',
-        `UPDATE universal_orders SET fulfillment_status = 'PAYMENT_CAPTURED_PENDING_DELIVERY', updated_at = datetime('now') WHERE id = ? OR provider_order_id = ?`,
-        [orderId, razorpay_order_id]
+        `UPDATE universal_orders SET fulfillment_status = 'PAYMENT_CAPTURED_PENDING_DELIVERY', updated_at = datetime('now') WHERE id = ?`,
+        [authoritativeOrderId]
       ).catch(() => {});
       return {
         success: true,
         paymentCaptured: true,
-        orderId,
+        orderId: authoritativeOrderId,
         razorpayPaymentId: razorpay_payment_id,
         status,
         mode,
@@ -915,7 +977,7 @@ export class RazorpayStandardAdapter {
               'durable_events',
               `INSERT INTO durable_events (id, event_type, organization_id, payload_json, processed, error_message, created_at)
                VALUES (?, 'BREVO_RECEIPT_CLAIMED', 'org_owner_primary', ?, 0, 'PROCESSING', datetime('now'))`,
-              [brevoReceiptKey, JSON.stringify({ orderId, paymentId: razorpay_payment_id, buyerEmail, domain: cleanDomain })]
+              [brevoReceiptKey, JSON.stringify({ orderId: authoritativeOrderId, paymentId: razorpay_payment_id, buyerEmail, domain: cleanDomain })]
             );
             shouldSendReceipt = true;
           } catch (reserveErr: any) {
@@ -936,16 +998,16 @@ export class RazorpayStandardAdapter {
           const brevo = BrevoMcpClient.getInstance();
           const emailRes = await brevo.sendTransactionalEmail({
             to: buyerEmail,
-            subject: `Payment Receipt & Fix-Pack Download (${orderId})`,
+            subject: `Payment Receipt & Fix-Pack Download (${authoritativeOrderId})`,
             htmlContent: `
               <div style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px;border:1px solid #e2e8f0;border-radius:8px;">
                 <h2 style="color:#0f172a;">Thank You for Your Order!</h2>
                 <p>Your payment of <strong>₹${verifiedAmountINR.toFixed(2)}</strong> for <strong>${cleanDomain}</strong> was received successfully.</p>
-                <p><strong>Order ID:</strong> ${orderId}<br><strong>Payment Ref:</strong> ${razorpay_payment_id}</p>
+                <p><strong>Order ID:</strong> ${authoritativeOrderId}<br><strong>Payment Ref:</strong> ${razorpay_payment_id}</p>
                 <div style="margin:24px 0;">
                   <a href="${downloadUrl}" style="background:#2563eb;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;font-weight:bold;display:inline-block;">Download Your SiteFix Technical Fix-Pack</a>
                 </div>
-                <p style="color:#64748b;font-size:12px;">This download link contains your 72-hour cryptographic access token.</p>
+                <p style="color:#64748b;font-size:12px;">This download link contains your 7-day (168-hour) cryptographic access token and included verification recheck entitlement.</p>
                 <p style="color:#64748b;font-size:12px;">AI Marketing Organization • Automated Delivery Engine</p>
               </div>
             `
@@ -958,7 +1020,7 @@ export class RazorpayStandardAdapter {
               `UPDATE durable_events SET processed = 1, processed_at = datetime('now'), payload_json = ?, error_message = NULL WHERE id = ?`,
               [
                 JSON.stringify({
-                  orderId,
+                  orderId: authoritativeOrderId,
                   paymentId: razorpay_payment_id,
                   buyerEmail,
                   domain: cleanDomain,
@@ -1018,8 +1080,8 @@ export class RazorpayStandardAdapter {
     try {
       await this.d1Repo.executeWrite(
         'universal_orders',
-        `UPDATE universal_orders SET fulfillment_status = ?, metadata_json = ?, updated_at = datetime('now') WHERE id = ? OR provider_order_id = ?`,
-        [finalFulfillmentStatus, updatedMetadata, orderId, razorpay_order_id]
+        `UPDATE universal_orders SET fulfillment_status = ?, metadata_json = ?, updated_at = datetime('now') WHERE id = ?`,
+        [finalFulfillmentStatus, updatedMetadata, authoritativeOrderId]
       );
     } catch (fulErr: any) {
       console.warn(`[RazorpayAdapter] Failed to update fulfillment_status: ${fulErr.message}`);
@@ -1027,7 +1089,7 @@ export class RazorpayStandardAdapter {
 
     // Keep delivery_tasks results_json synchronized with actual fulfillment status
     try {
-      const taskId = `deliv_${storedOrder.id || orderId}_${razorpay_payment_id}`;
+      const taskId = `deliv_${authoritativeOrderId}_${razorpay_payment_id}`;
       await this.d1Repo.executeWrite(
         'delivery_tasks',
         `UPDATE delivery_tasks SET results_json = ? WHERE id = ?`,
@@ -1043,7 +1105,7 @@ export class RazorpayStandardAdapter {
       const tg = TelegramBotAdapter.getInstance();
       tg.sendOwnerAlert(
         `💰 <b>Payment Confirmed (${mode})</b>\n\n` +
-        `• <b>Order:</b> <code>${orderId}</code>\n` +
+        `• <b>Order:</b> <code>${authoritativeOrderId}</code>\n` +
         `• <b>Payment ID:</b> <code>${razorpay_payment_id}</code>\n` +
         `• <b>Domain:</b> ${cleanDomain}\n` +
         `• <b>Customer:</b> ${buyerEmail}\n` +
@@ -1060,12 +1122,13 @@ export class RazorpayStandardAdapter {
     return {
       success: true,
       paymentCaptured: true,
-      orderId,
+      orderId: authoritativeOrderId,
       razorpayPaymentId: razorpay_payment_id,
       status,
       mode,
       downloadUrl,
       downloadToken,
+      recheckToken: downloadToken,
       fulfillmentStatus: finalFulfillmentStatus,
       deliverableStatus: 'READY',
       emailReceiptStatus,

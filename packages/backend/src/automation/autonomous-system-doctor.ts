@@ -1265,7 +1265,7 @@ export class AutonomousSystemDoctor {
         `SELECT id, provider_order_id, provider_payment_id, customer_email, metadata_json, fulfillment_status, status, payment_provider, is_test
          FROM universal_orders
          WHERE fulfillment_status IN ('PAYMENT_CAPTURED_PENDING_DELIVERY', 'DELIVERABLE_READY_EMAIL_PENDING')
-         ORDER BY created_at ASC LIMIT 10`
+         ORDER BY updated_at ASC, created_at ASC LIMIT 10`
       );
     } catch (e: any) {
       return { processed: 0, recovered: 0, errors: [e.message] };
@@ -1300,6 +1300,20 @@ export class AutonomousSystemDoctor {
         if (!rzpPaymentId || rzpPaymentId === 'pay_recovered') {
           errors.push(`Order ${order.id}: MISSING_PROVIDER_PAYMENT_ID`);
           console.error(`[AutonomousSystemDoctor] Order ${order.id} lacks a real provider payment_id (reconciliation error MISSING_PROVIDER_PAYMENT_ID), leaving pending.`);
+          // Touch updated_at so unresolvable orders rotate to back of queue rather than starving pending queue
+          await this.d1Repo.executeWrite(
+            'universal_orders',
+            `UPDATE universal_orders SET updated_at = datetime('now'), metadata_json = ? WHERE id = ?`,
+            [
+              JSON.stringify({
+                ...meta,
+                recovery_error: 'MISSING_PROVIDER_PAYMENT_ID',
+                recovery_attempts: (meta.recovery_attempts || 0) + 1,
+                last_recovery_attempt_at: new Date().toISOString()
+              }),
+              order.id
+            ]
+          ).catch(() => {});
           continue;
         }
 
@@ -1317,19 +1331,23 @@ export class AutonomousSystemDoctor {
         let deliverableReady = meta.deliverable_status === 'READY';
         let downloadToken = meta.downloadToken || '';
         let downloadUrl = meta.downloadUrl || '';
+        let resolvedAuditId = (meta.auditId || meta.audit_id || '').trim().replace(/\./g, '_');
 
         // If deliverable is still pending, run genuine scan & store deliverable
         if (!deliverableReady && cleanDomain) {
           let audit = await auditService.getAuditByDomain(cleanDomain);
           if (!audit) {
             audit = await auditService.runScan(`https://${cleanDomain}`);
-            await auditService.persistAuditToD1(audit);
+          } else {
+            audit.url = audit.url || audit.target_url || `https://${cleanDomain}`;
+            audit.businessName = audit.businessName || audit.business_name || cleanDomain;
           }
-          const resolvedAuditId = audit.auditId || audit.id || `audit_${cleanDomain}`;
+          resolvedAuditId = (audit.auditId || audit.id || `audit_${cleanDomain}`).replace(/\./g, '_');
           audit.auditId = resolvedAuditId;
+          await auditService.persistAuditToD1(audit);
           auditService.setAuditInCache(audit);
 
-          downloadToken = auditService.generateSignedDeliveryToken(order.id, resolvedAuditId, rzpPaymentId, 72);
+          downloadToken = auditService.generateSignedDeliveryToken(order.id, resolvedAuditId, rzpPaymentId, 168);
           downloadUrl = `${siteUrl}/api/v1/offer/download/${encodeURIComponent(downloadToken)}`;
           await auditService.generateDeliverable(resolvedAuditId, order.id);
 
@@ -1352,6 +1370,74 @@ export class AutonomousSystemDoctor {
             ]
           );
           deliverableReady = true;
+        } else if (deliverableReady) {
+          // If deliverable is already ready, check if existing token is still active to avoid rolling expiry forward on retries
+          let hasActiveToken = false;
+          if (meta.downloadToken) {
+            const tokenParts = String(meta.downloadToken).split('.');
+            const expMs = tokenParts.length === 5 ? parseInt(tokenParts[3], 10) : (tokenParts.length === 4 ? parseInt(tokenParts[2], 10) : NaN);
+            if (!isNaN(expMs) && expMs > Date.now()) {
+              hasActiveToken = true;
+              downloadToken = meta.downloadToken;
+              downloadUrl = meta.downloadUrl || `${siteUrl}/api/v1/offer/download/${encodeURIComponent(downloadToken)}`;
+            }
+          }
+
+          if (!hasActiveToken) {
+            // Reuse authoritative audit ID from metadata, delivery_tasks (scoped to this order), or stored downloadToken
+            if (!resolvedAuditId) {
+              try {
+                const task = await this.d1Repo.queryOne<any>(
+                  'delivery_tasks',
+                  `SELECT deliverables_json FROM delivery_tasks WHERE id = ? OR id LIKE ? ORDER BY created_at DESC LIMIT 1`,
+                  [`deliv_${order.id}_${rzpPaymentId}`, `deliv_${order.id}_%`]
+                );
+                if (task?.deliverables_json) {
+                  const dJson = JSON.parse(task.deliverables_json);
+                  if (dJson.auditId) {
+                    resolvedAuditId = String(dJson.auditId).trim().replace(/\./g, '_');
+                  }
+                }
+              } catch {}
+            }
+            if (!resolvedAuditId && meta.downloadToken) {
+              const tokenParts = String(meta.downloadToken).split('.');
+              if ((tokenParts.length === 5 || tokenParts.length === 4) && tokenParts[1]) {
+                const candidateId = tokenParts[1].trim().replace(/\./g, '_');
+                try {
+                  const confirmedAudit = await auditService.getAudit(candidateId);
+                  if (confirmedAudit) {
+                    resolvedAuditId = candidateId;
+                  }
+                } catch {}
+              }
+            }
+            if (resolvedAuditId) {
+              resolvedAuditId = resolvedAuditId.replace(/\./g, '_');
+              downloadToken = auditService.generateSignedDeliveryToken(order.id, resolvedAuditId, rzpPaymentId, 168);
+              downloadUrl = `${siteUrl}/api/v1/offer/download/${encodeURIComponent(downloadToken)}`;
+            } else {
+              // CodeRabbit safety: When stored token has expired and authoritative audit ID cannot be resolved,
+              // do NOT dispatch the expired token via Brevo or mark fulfilled.
+              // Touch updated_at so this order rotates to back of queue rather than starving pending queue.
+              errors.push(`Order ${order.id}: EXPIRED_TOKEN_UNRESOLVABLE_AUDIT`);
+              console.error(`[AutonomousSystemDoctor] Order ${order.id} has expired download token and unresolvable audit ID. Leaving pending for retry.`);
+              await this.d1Repo.executeWrite(
+                'universal_orders',
+                `UPDATE universal_orders SET updated_at = datetime('now'), metadata_json = ? WHERE id = ?`,
+                [
+                  JSON.stringify({
+                    ...meta,
+                    recovery_error: 'EXPIRED_TOKEN_UNRESOLVABLE_AUDIT',
+                    recovery_attempts: (meta.recovery_attempts || 0) + 1,
+                    last_recovery_attempt_at: new Date().toISOString()
+                  }),
+                  order.id
+                ]
+              ).catch(() => {});
+              continue;
+            }
+          }
         }
 
         // Now attempt Brevo receipt dispatch with durable per-payment idempotency (Task 3)
@@ -1418,6 +1504,18 @@ export class AutonomousSystemDoctor {
           }
 
           if (shouldSendReceipt) {
+            // Re-check token validity before outbound receipt send (CodeRabbit safety)
+            if (downloadToken) {
+              const tokenParts = String(downloadToken).split('.');
+              const expMs = tokenParts.length === 5 ? parseInt(tokenParts[3], 10) : (tokenParts.length === 4 ? parseInt(tokenParts[2], 10) : NaN);
+              if (!isNaN(expMs) && expMs <= Date.now()) {
+                console.warn(`[AutonomousSystemDoctor] Token expired before Brevo dispatch for order ${order.id}; deferring receipt.`);
+                shouldSendReceipt = false;
+              }
+            }
+          }
+
+          if (shouldSendReceipt) {
             try {
               const emailRes = await brevo.sendTransactionalEmail({
                 to: buyerEmail,
@@ -1430,7 +1528,7 @@ export class AutonomousSystemDoctor {
                     <div style="margin:24px 0;">
                       <a href="${downloadUrl}" style="background:#2563eb;color:#fff;padding:12px 20px;border-radius:6px;text-decoration:none;font-weight:bold;display:inline-block;">Download Your SiteFix Technical Fix-Pack</a>
                     </div>
-                    <p style="color:#64748b;font-size:12px;">This download link contains your 72-hour cryptographic access token.</p>
+                    <p style="color:#64748b;font-size:12px;">This download link contains your 7-day (168-hour) cryptographic access token and included verification recheck entitlement.</p>
                   </div>
                 `
               });
@@ -1473,6 +1571,7 @@ export class AutonomousSystemDoctor {
 
         const updatedMetadata = JSON.stringify({
           ...meta,
+          ...(resolvedAuditId ? { auditId: resolvedAuditId } : {}),
           deliverable_status: deliverableReady ? 'READY' : 'PENDING',
           email_receipt_status: emailReceiptStatus,
           downloadUrl,
