@@ -364,9 +364,28 @@ export class SiteAuditService {
       const seoScore = audit.pageSpeed?.seoScore ?? Math.round(audit.scorecard?.totalScore ?? audit.score ?? 0);
       const cwvJson = JSON.stringify(audit.pageSpeed?.coreWebVitals || {});
       const rawItems = audit.scorecard?.items ?? audit.findings ?? [];
-      const checklistPayload = audit.prospectSignals
-        ? { items: rawItems, prospect_signals: audit.prospectSignals }
-        : rawItems;
+
+      // Preserve authorization_provenance from audit or existing site_audits DB row
+      let existingAuthProvenance: any = (audit as any).authorizationProvenance || null;
+      if (!existingAuthProvenance) {
+        try {
+          const existingAudit = (this.d1Repo.isRemoteD1Configured() || isProduction())
+            ? await this.d1Repo.queryOne<any>('site_audits', 'SELECT checklist_json FROM site_audits WHERE domain = ?', [domain])
+            : (await import('../../db/client.js')).getDb().prepare('SELECT checklist_json FROM site_audits WHERE domain = ?').get(domain);
+          if (existingAudit?.checklist_json) {
+            const parsed = this.parseAuditChecklistPayload(existingAudit.checklist_json);
+            if (parsed.authorizationProvenance) {
+              existingAuthProvenance = parsed.authorizationProvenance;
+            }
+          }
+        } catch {}
+      }
+
+      const checklistPayload: any = {
+        items: rawItems,
+        ...(audit.prospectSignals ? { prospect_signals: audit.prospectSignals } : {}),
+        ...(existingAuthProvenance ? { authorization_provenance: existingAuthProvenance } : {})
+      };
       const checklistJson = JSON.stringify(checklistPayload);
       const bName = audit.businessName || domain;
       const htmlScanStatus = ((audit as any).status === 'FAILED') ? 'FAILED' : 'COMPLETED';
@@ -429,10 +448,11 @@ export class SiteAuditService {
         `).run(domain, effectiveUrl, bName, perfScore, seoScore, cwvJson, headSnippets, schemaJsonLd, checklistJson, htmlScanStatus, pageSpeedStatus, pageSpeedUnavailableReason, isPubliclyAuthorized);
       }
     } catch (err: any) {
-      if (isProduction() && !process.env.VITEST) {
+      if (isProduction()) {
         throw new Error(`D1_WRITE_FAILED: Failed to persist audit to D1: ${err.message}`);
       }
       console.warn(`[SiteAuditService] Error persisting audit to D1 (dev/test): ${err.message}`);
+      throw err;
     }
   }
 
@@ -534,6 +554,26 @@ export class SiteAuditService {
       }
     } catch (err: any) {
       console.warn(`[SiteAuditService] Error retrieving audit from D1: ${err.message}`);
+    }
+
+    // 3. Fallback: Query site_audits table by domain or normalized auditId
+    try {
+      const normalizedDomain = auditId
+        .replace(/^audit_/, '')
+        .replace(/_/g, '.')
+        .toLowerCase()
+        .trim();
+      const auditRow = await this.getAuditByDomain(normalizedDomain);
+      if (auditRow) {
+        const reconstructed = SiteAuditService.reconstructAuditFromDbRow(auditRow, auditId);
+        this.auditCache.set(auditId, {
+          audit: reconstructed,
+          expiresAt: Date.now() + 2 * 60 * 60 * 1000
+        });
+        return reconstructed;
+      }
+    } catch (err: any) {
+      console.warn(`[SiteAuditService] Error recovering audit from site_audits: ${err.message}`);
     }
 
     return null;
@@ -666,6 +706,163 @@ export class SiteAuditService {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Reconstructs a full SiteAuditResult from a database row (e.g. from site_audits table)
+   * preserving scores, findings/checklist, and performance metrics without data loss.
+   */
+  public static reconstructAuditFromDbRow(row: any, overrideAuditId?: string): SiteAuditResult {
+    if (!row) {
+      throw new Error('Cannot reconstruct SiteAuditResult from null or undefined row');
+    }
+
+    // If it's already a complete SiteAuditResult with findings array and score, preserve it
+    if (Array.isArray(row.findings) && typeof row.score === 'number' && row.auditId) {
+      if (overrideAuditId && row.auditId !== overrideAuditId) {
+        return { ...row, auditId: overrideAuditId };
+      }
+      return row as SiteAuditResult;
+    }
+
+    const domain = (row.domain || '').toLowerCase().trim().replace(/^www\./, '');
+    const cleanUrl = row.target_url || row.url || (domain ? `https://${domain}` : 'https://sitefix-domain.com');
+    const businessName = row.business_name || row.businessName || domain || 'Website';
+    const seoScore = typeof row.seo_score === 'number'
+      ? row.seo_score
+      : (typeof row.score === 'number' ? row.score : (row.scorecard?.totalScore ?? 0));
+
+    // Parse checklist, authorization provenance and prospect signals
+    let items: any[] = [];
+    let prospectSignals: any = null;
+    let authProvenance: any = null;
+
+    if (row.checklist_json) {
+      try {
+        let parsed: any = row.checklist_json;
+        if (typeof parsed === 'string') {
+          parsed = JSON.parse(parsed);
+        }
+        if (Array.isArray(parsed)) {
+          items = parsed;
+        } else if (parsed && typeof parsed === 'object') {
+          items = Array.isArray(parsed.items) ? parsed.items : [];
+          prospectSignals = parsed.prospect_signals || null;
+          authProvenance = parsed.authorization_provenance || null;
+        }
+      } catch {
+        items = [];
+      }
+    } else if (Array.isArray(row.findings)) {
+      items = row.findings;
+    } else if (Array.isArray(row.scorecard?.items)) {
+      items = row.scorecard.items;
+    }
+
+    if (!authProvenance && (row as any).authorizationProvenance) {
+      authProvenance = (row as any).authorizationProvenance;
+    }
+
+    if (!prospectSignals && row.prospectSignals) {
+      prospectSignals = row.prospectSignals;
+    }
+
+    // Normalize checklist items into full AuditFinding shape with explicit status and pass
+    const normalizedFindings = items.map((item: any, idx: number) => {
+      const isPass = item.pass === true || item.status === 'PASS';
+      const status: 'PASS' | 'WARNING' | 'FAIL' =
+        item.status === 'PASS' || item.status === 'WARNING' || item.status === 'FAIL'
+          ? item.status
+          : (isPass ? 'PASS' : (item.severity === 'HIGH' ? 'FAIL' : 'WARNING'));
+      return {
+        id: item.id || `finding_${idx + 1}`,
+        category: item.category || 'TECHNICAL',
+        severity: item.severity || (status === 'FAIL' ? 'HIGH' : status === 'WARNING' ? 'MEDIUM' : 'LOW'),
+        title: item.title || 'Audit Check',
+        description: item.description || '',
+        ...item,
+        status,
+        pass: isPass
+      };
+    });
+
+    let coreWebVitals: any = null;
+    if (row.core_web_vitals_json) {
+      try {
+        coreWebVitals = typeof row.core_web_vitals_json === 'string'
+          ? JSON.parse(row.core_web_vitals_json)
+          : row.core_web_vitals_json;
+      } catch {}
+    } else if (row.pageSpeed?.coreWebVitals) {
+      coreWebVitals = row.pageSpeed.coreWebVitals;
+    }
+
+    const perfScore = typeof row.performance_score === 'number'
+      ? row.performance_score
+      : (typeof row.pageSpeed?.performanceScore === 'number' ? row.pageSpeed.performanceScore : null);
+
+    const auditId = overrideAuditId || row.auditId || row.id || `audit_${domain.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+
+    const overallStatus: 'OPTIMIZED' | 'NEEDS_IMPROVEMENT' | 'ACTION_REQUIRED' =
+      seoScore >= 80 ? 'OPTIMIZED' : (seoScore >= 50 ? 'NEEDS_IMPROVEMENT' : 'ACTION_REQUIRED');
+
+    const result: SiteAuditResult = {
+      auditId,
+      url: cleanUrl,
+      scannedAt: row.updated_at || row.created_at || row.scannedAt || new Date().toISOString(),
+      overallStatus,
+      score: seoScore,
+      scoreExplanation: row.scoreExplanation || `Audit score ${seoScore}/100 based on technical and on-page criteria`,
+      findings: normalizedFindings,
+      metrics: row.metrics || {
+        loadTimeMs: 0,
+        htmlSizeBytes: 0,
+        titleLength: 0,
+        metaDescriptionLength: 0,
+        h1Count: 0,
+        imagesWithoutAltCount: 0,
+        internalLinksCount: 0,
+        externalLinksCount: 0
+      },
+      preview: row.preview || {
+        title: businessName,
+        metaDescription: '',
+        canonicalUrl: cleanUrl,
+        ogTitle: businessName,
+        ogImage: '',
+        twitterCard: 'summary_large_image',
+        fixPackSnippetPreview: row.head_snippets || ''
+      },
+      disclosures: row.disclosures || {
+        notFullCrawl: true,
+        noRankGuarantee: true,
+        noWebVitalsClaim: true
+      },
+      businessName,
+      domain,
+      scorecard: {
+        totalScore: seoScore,
+        items: normalizedFindings
+      },
+      pageSpeed: {
+        status: (perfScore !== null && perfScore !== undefined) ? 'SUCCESS' : 'UNAVAILABLE',
+        reason: (perfScore !== null && perfScore !== undefined) ? undefined : (row.pagespeed_unavailable_reason || 'UNAVAILABLE'),
+        performanceScore: perfScore,
+        seoScore,
+        coreWebVitals,
+        opportunities: []
+      }
+    };
+
+    if (prospectSignals) {
+      result.prospectSignals = prospectSignals;
+    }
+
+    if (authProvenance) {
+      (result as any).authorizationProvenance = authProvenance;
+    }
+
+    return result;
   }
 
   public parseAuditChecklistPayload(rawChecklistJson: unknown): {
@@ -987,10 +1184,11 @@ export class SiteAuditService {
     }
 
     const deliverable = this.generator.generateFixPack(audit, orderId);
-    this.deliverableCache.set(auditId, deliverable);
 
-    // Save to D1
-    await this.persistAuditToD1(audit, deliverable).catch(() => {});
+    // Save to D1 durably before returning (fail-closed)
+    await this.persistAuditToD1(audit, deliverable);
+
+    this.deliverableCache.set(auditId, deliverable);
 
     return deliverable;
   }

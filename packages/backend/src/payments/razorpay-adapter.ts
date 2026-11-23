@@ -875,17 +875,19 @@ export class RazorpayStandardAdapter {
         // Run genuine diagnostic scan (never fabricate fake score-55 audit)
         audit = await auditService.runScan(`https://${cleanDomain}`);
         await auditService.persistAuditToD1(audit);
+      } else {
+        audit = SiteAuditService.reconstructAuditFromDbRow(audit);
       }
 
       const resolvedAuditId = (audit.auditId || audit.id || `audit_${cleanDomain}`).replace(/\./g, '_');
       audit.auditId = resolvedAuditId;
       auditService.setAuditInCache(audit);
 
+      // Await deliverable generation and durable D1 persistence BEFORE generating and returning signed delivery token
+      await auditService.generateDeliverable(resolvedAuditId, authoritativeOrderId);
+
       downloadToken = auditService.generateSignedDeliveryToken(authoritativeOrderId, resolvedAuditId, razorpay_payment_id, 168);
       downloadUrl = `${siteUrl}/api/v1/offer/download/${encodeURIComponent(downloadToken)}`;
-
-      // Generate deliverable to ensure cache is populated
-      await auditService.generateDeliverable(resolvedAuditId, authoritativeOrderId);
 
       // Task 1: Ensure parent customer_journeys row exists to satisfy FOREIGN KEY constraint
       await this.ensureCustomerJourney(journeyId, buyerEmail, customerName, isLive, 'PAYMENT_VERIFIED');

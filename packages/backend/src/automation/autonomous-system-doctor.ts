@@ -1338,18 +1338,19 @@ export class AutonomousSystemDoctor {
           let audit = await auditService.getAuditByDomain(cleanDomain);
           if (!audit) {
             audit = await auditService.runScan(`https://${cleanDomain}`);
+            await auditService.persistAuditToD1(audit);
           } else {
-            audit.url = audit.url || audit.target_url || `https://${cleanDomain}`;
-            audit.businessName = audit.businessName || audit.business_name || cleanDomain;
+            audit = SiteAuditService.reconstructAuditFromDbRow(audit, resolvedAuditId || undefined);
           }
           resolvedAuditId = (audit.auditId || audit.id || `audit_${cleanDomain}`).replace(/\./g, '_');
           audit.auditId = resolvedAuditId;
-          await auditService.persistAuditToD1(audit);
           auditService.setAuditInCache(audit);
+
+          // Generate deliverable and durably persist to D1 BEFORE token issuance:
+          await auditService.generateDeliverable(resolvedAuditId, order.id);
 
           downloadToken = auditService.generateSignedDeliveryToken(order.id, resolvedAuditId, rzpPaymentId, 168);
           downloadUrl = `${siteUrl}/api/v1/offer/download/${encodeURIComponent(downloadToken)}`;
-          await auditService.generateDeliverable(resolvedAuditId, order.id);
 
           await rzpAdapter.ensureCustomerJourney(journeyId, buyerEmail, meta.customerName || 'Customer', isLive, 'PAYMENT_VERIFIED');
 

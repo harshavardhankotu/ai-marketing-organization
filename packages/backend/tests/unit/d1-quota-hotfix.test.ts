@@ -923,4 +923,206 @@ describe('D1 Quota Hotfix & Circuit Breaker Decoupling (PR #81)', () => {
       expect(verifyResult.auditId).toBe(`audit_${domain}`);
     });
   });
+
+  describe('13. Audit Reconstruction, Flat Row Safety & Fail-Closed Token Issuance (PR #83)', () => {
+    it('preserves existing audit scores and findings when doctor recovers pending order (scores survive recovery)', async () => {
+      const { AutonomousSystemDoctor } = await import('../../src/automation/autonomous-system-doctor.js');
+      const { SiteAuditService } = await import('../../src/tools/site-audit/site-audit-service.js');
+      const doctor = AutonomousSystemDoctor.getInstance();
+      const nonce = Date.now();
+      const domain = `survivaltest-${nonce}.com`;
+      const orderId = `ord_rzp_doctor_surv_${nonce}`;
+      const paymentId = `pay_rzp_doctor_surv_${nonce}`;
+
+      // Clean up stale orders
+      await D1RevenueRepository.getInstance().executeWrite(
+        'universal_orders',
+        `DELETE FROM universal_orders WHERE id LIKE 'ord_rzp_doctor_%'`,
+        []
+      );
+
+      // Seed site_audits with rich scores & findings
+      const initialFinding = { id: 'c1', title: 'SEO Title Check', pass: true, severity: 'LOW' };
+      await D1RevenueRepository.getInstance().executeWrite(
+        'site_audits',
+        `INSERT OR REPLACE INTO site_audits (
+          domain, target_url, business_name, performance_score, seo_score,
+          core_web_vitals_json, head_snippets, schema_json_ld, checklist_json, status, updated_at
+        ) VALUES (?, ?, 'Survival Business', 92, 85, '{}', '<meta name="test">', '{}', ?, 'COMPLETED', datetime('now'))`,
+        [domain, `https://${domain}`, JSON.stringify([initialFinding])]
+      );
+
+      // Insert an unfulfilled order
+      const metadata = JSON.stringify({
+        sku: 'SITEFIX_AI_PACK_V1',
+        domainOrUrl: domain,
+        paymentId: paymentId,
+        deliverable_status: 'PENDING'
+      });
+
+      await D1RevenueRepository.getInstance().executeWrite(
+        'universal_orders',
+        `INSERT OR REPLACE INTO universal_orders (
+          id, business_id, organization_id, offer_id, customer_name,
+          customer_email, customer_phone, amount_minor, currency, status, fulfillment_status,
+          payment_provider, provider_order_id, provider_payment_id, metadata_json, created_at, updated_at
+        ) VALUES (?, 'biz_platform_aro', 'org_owner_primary', 'sitefix_core_499', 'Customer',
+          'doctor@example.com', '', 49900, 'INR', 'PAID', 'PAYMENT_CAPTURED_PENDING_DELIVERY',
+          'RAZORPAY', ?, ?, ?, datetime('now'), datetime('now'))`,
+        [orderId, orderId, paymentId, metadata]
+      );
+
+      const healResult = await doctor.recoverPendingDeliveriesAndReceipts();
+      expect(healResult.processed).toBeGreaterThanOrEqual(1);
+
+      // Verify site_audits scores survived recovery intact!
+      const auditRow = await SiteAuditService.getInstance().getAuditByDomain(domain);
+      expect(auditRow).toBeTruthy();
+      expect(auditRow.seo_score).toBe(85);
+      expect(auditRow.performance_score).toBe(92);
+      const { items } = SiteAuditService.getInstance().parseAuditChecklistPayload(auditRow.checklist_json);
+      expect(items.length).toBeGreaterThanOrEqual(1);
+      expect(items[0].id).toBe('c1');
+    });
+
+    it('reconstructs full SiteAuditResult from flat DB row without data loss and does not clobber scores (flat row not overwritten)', async () => {
+      const { SiteAuditService } = await import('../../src/tools/site-audit/site-audit-service.js');
+      const service = SiteAuditService.getInstance();
+      const domain = 'flatroverwrite-test.com';
+
+      const initialFindings = [
+        { id: 'c_og', title: 'Open Graph Verification', pass: false, severity: 'MEDIUM' }
+      ];
+
+      await D1RevenueRepository.getInstance().executeWrite(
+        'site_audits',
+        `INSERT OR REPLACE INTO site_audits (
+          domain, target_url, business_name, performance_score, seo_score,
+          core_web_vitals_json, head_snippets, schema_json_ld, checklist_json, status, updated_at
+        ) VALUES (?, ?, 'Flat Row Business', 88, 77, '{}', '<meta name="og">', '{}', ?, 'COMPLETED', datetime('now'))`,
+        [domain, `https://${domain}`, JSON.stringify(initialFindings)]
+      );
+
+      const flatRow = await service.getAuditByDomain(domain);
+      expect(flatRow).toBeTruthy();
+      expect(flatRow.seo_score).toBe(77);
+      expect(flatRow.performance_score).toBe(88);
+
+      // Reconstruct
+      const reconstructed = SiteAuditService.reconstructAuditFromDbRow(flatRow, `audit_${domain}`);
+      expect(reconstructed.auditId).toBe(`audit_${domain}`);
+      expect(reconstructed.score).toBe(77);
+      expect(reconstructed.pageSpeed?.performanceScore).toBe(88);
+      expect(reconstructed.findings.length).toBe(1);
+      expect(reconstructed.findings[0].id).toBe('c_og');
+      expect(reconstructed.scorecard?.totalScore).toBe(77);
+
+      // Persist the reconstructed audit and ensure site_audits scores remain 77 and 88
+      await service.persistAuditToD1(reconstructed);
+
+      const verifyRow = await service.getAuditByDomain(domain);
+      expect(verifyRow.seo_score).toBe(77);
+      expect(verifyRow.performance_score).toBe(88);
+      const parsed = service.parseAuditChecklistPayload(verifyRow.checklist_json);
+      expect(parsed.items.length).toBe(1);
+      expect(parsed.items[0].id).toBe('c_og');
+    });
+
+    it('aborts token issuance and leaves order pending delivery when durable persistence fails (persistence failure blocks token issuance)', async () => {
+      const { RazorpayStandardAdapter } = await import('../../src/payments/razorpay-adapter.js');
+      const { SiteAuditService } = await import('../../src/tools/site-audit/site-audit-service.js');
+      const crypto = await import('crypto');
+      const adapter = RazorpayStandardAdapter.getInstance();
+      const service = SiteAuditService.getInstance();
+      const nonce = Date.now();
+      const orderId = `order_test_fail_${nonce}`;
+      const paymentId = `pay_test_fail_${nonce}`;
+      const domain = `persistfail-${nonce}.com`;
+
+      // Seed an existing audit so verifyPaymentAndFulfill reaches generateDeliverable without scanning
+      await D1RevenueRepository.getInstance().executeWrite(
+        'site_audits',
+        `INSERT OR REPLACE INTO site_audits (
+          domain, target_url, business_name, performance_score, seo_score,
+          core_web_vitals_json, head_snippets, schema_json_ld, checklist_json, status, updated_at
+        ) VALUES (?, ?, 'Persist Fail Test', 80, 75, '{}', '', '{}', '[]', 'COMPLETED', datetime('now'))`,
+        [domain, `https://${domain}`]
+      );
+
+      await D1RevenueRepository.getInstance().executeWrite(
+        'universal_orders',
+        `INSERT OR REPLACE INTO universal_orders (
+          id, business_id, organization_id, offer_id, customer_name,
+          customer_email, customer_phone, amount_minor, currency, status, payment_provider,
+          provider_order_id, metadata_json, created_at, updated_at
+        ) VALUES (?, 'biz_platform_aro', 'org_owner_primary', 'sitefix_core_499', 'Customer',
+          'failtest@example.com', '', 49900, 'INR', 'CHECKOUT', 'RAZORPAY_TEST',
+          ?, ?, datetime('now'), datetime('now'))`,
+        [orderId, orderId, JSON.stringify({ domainOrUrl: domain, buyerEmail: 'failtest@example.com' })]
+      );
+
+      const secret = (adapter as any).getKeySecret();
+      const sig = crypto.createHmac('sha256', secret)
+        .update(`${orderId}|${paymentId}`)
+        .digest('hex');
+
+      // Mock generateDeliverable to throw persistence error
+      const deliverableSpy = vi.spyOn(service, 'generateDeliverable').mockRejectedValueOnce(
+        new Error('D1_DURABLE_WRITE_UNAVAILABLE: Remote write circuit breaker open')
+      );
+
+      try {
+        const result = await adapter.verifyPaymentAndFulfill({
+          orderId,
+          razorpay_order_id: orderId,
+          razorpay_payment_id: paymentId,
+          razorpay_signature: sig
+        });
+
+        // Payment captured but token issuance aborted
+        expect(result.success).toBe(true);
+        expect(result.paymentCaptured).toBe(true);
+        expect(result.fulfillmentStatus).toBe('PAYMENT_CAPTURED_PENDING_DELIVERY');
+        expect(result.deliverableStatus).toBe('PENDING');
+        expect(result.retryRequired).toBe(true);
+        expect((result as any).downloadToken).toBeUndefined();
+      } finally {
+        deliverableSpy.mockRestore();
+      }
+    });
+
+    it('recovers normalized audit and generates deliverable after memory cache is cleared (normalized audit recovers after cache clear)', async () => {
+      const { SiteAuditService } = await import('../../src/tools/site-audit/site-audit-service.js');
+      const service = SiteAuditService.getInstance();
+      const domain = 'roasterycoffee.co.in';
+      const normalizedAuditId = `audit_${domain.replace(/\./g, '_')}`;
+
+      // Insert audit into site_audits
+      const findings = [{ id: 'f1', title: 'Speed Check', pass: true }];
+      await D1RevenueRepository.getInstance().executeWrite(
+        'site_audits',
+        `INSERT OR REPLACE INTO site_audits (
+          domain, target_url, business_name, performance_score, seo_score,
+          core_web_vitals_json, head_snippets, schema_json_ld, checklist_json, status, updated_at
+        ) VALUES (?, ?, 'Roastery Coffee', 90, 84, '{}', '<meta name="rc">', '{}', ?, 'COMPLETED', datetime('now'))`,
+        [domain, `https://${domain}`, JSON.stringify(findings)]
+      );
+
+      // Force-clear memory caches
+      (service as any).auditCache.clear();
+      (service as any).deliverableCache.clear();
+
+      // Retrieve via normalized auditId after cache clear
+      const recoveredAudit = await service.getAudit(normalizedAuditId);
+      expect(recoveredAudit).toBeTruthy();
+      expect(recoveredAudit!.score).toBe(84);
+      expect(recoveredAudit!.url).toBe(`https://${domain}`);
+      expect(recoveredAudit!.findings.length).toBe(1);
+
+      // Generate deliverable from recovered audit
+      const deliverable = await service.generateDeliverable(normalizedAuditId);
+      expect(deliverable).toBeTruthy();
+      expect(deliverable.headMetadataSnippet).toBeTruthy();
+    });
+  });
 });
