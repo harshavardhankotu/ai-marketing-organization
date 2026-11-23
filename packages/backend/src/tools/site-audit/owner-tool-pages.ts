@@ -1148,9 +1148,13 @@ export function renderOwnerToolPage(
             primaryCheckoutLink.style.opacity = '0.55';
             primaryCheckoutLink.style.pointerEvents = 'none';
             primaryCheckoutLink.textContent = 'Checkout Locked — Pending Owner Offer Attestation (' + skuLabel + ')';
-            hostedFallbackLink.style.display = 'none';
+            hostedFallbackLink.style.display = 'inline-flex';
+            hostedFallbackLink.href = 'https://wa.me/919550452624?text=' + encodeURIComponent('Hi, I scanned ' + (audit.url || rawUrl) + ' on SiteFix and want to unlock the ₹499 Fix-Pack.');
+            hostedFallbackLink.textContent = 'Request ₹499 Fix-Pack via WhatsApp (Direct Delivery)';
+            hostedFallbackLink.setAttribute('target', '_blank');
+            hostedFallbackLink.setAttribute('rel', 'noopener noreferrer');
             if (fallbackNoteEl) {
-              fallbackNoteEl.textContent = 'Your free diagnostic scan above is complete. Paid Fix-Pack checkout is currently locked pending owner offer attestation and gateway readiness (' + (data.checkoutLockReason || 'LOCKED') + ').';
+              fallbackNoteEl.textContent = 'Automated gateway checkout is currently pending owner live-key attestation (' + (data.checkoutLockReason || 'LOCKED') + '). You can request immediate manual delivery via WhatsApp above with zero wait.';
             }
           } else {
             primaryCheckoutLink.href = checkoutUrl;

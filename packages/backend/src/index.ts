@@ -1616,8 +1616,39 @@ app.get('/sitemap.xml', async (c) => {
   const contentUrls = publishedSlugs.map(a => `${baseUrl}/guides/${a.slug}`);
   const allUrls = [...staticUrls, ...bestUrls, ...compareUrls, ...vsUrls, ...contentUrls, ...auditUrls, ...dealUrls];
 
+  const todayIso = new Date().toISOString().split('T')[0];
+  const highPriorityUrls = new Set([
+    `${baseUrl}/`,
+    `${baseUrl}/tools/site-audit`,
+    `${baseUrl}/tools/whatsapp-link-preview-checker`,
+    `${baseUrl}/tools/open-graph-checker`,
+    `${baseUrl}/tools/robots-and-sitemap-validator`,
+    `${baseUrl}/tools/json-ld-tester`,
+    `${baseUrl}/deals`,
+    `${baseUrl}/offer`
+  ]);
+  const lowPriorityUrls = new Set([
+    `${baseUrl}/privacy`,
+    `${baseUrl}/terms`,
+    `${baseUrl}/refund`,
+    `${baseUrl}/contact`,
+    `${baseUrl}/disclosure`,
+    `${baseUrl}/public/disclosure`
+  ]);
+
   const xmlEntries = allUrls
-    .map(url => `  <url>\n    <loc>${url}</loc>\n    <changefreq>daily</changefreq>\n    <priority>0.8</priority>\n  </url>`)
+    .map(url => {
+      let priority = '0.8';
+      let changefreq = 'daily';
+      if (highPriorityUrls.has(url)) {
+        priority = url === `${baseUrl}/` ? '1.0' : '0.9';
+        changefreq = 'daily';
+      } else if (lowPriorityUrls.has(url)) {
+        priority = '0.3';
+        changefreq = 'monthly';
+      }
+      return `  <url>\n    <loc>${url}</loc>\n    <lastmod>${todayIso}</lastmod>\n    <changefreq>${changefreq}</changefreq>\n    <priority>${priority}</priority>\n  </url>`;
+    })
     .join('\n');
 
   const sitemapXml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${xmlEntries}\n</urlset>`;
