@@ -273,96 +273,102 @@ describe('Stage K: Pre-Deploy Security Lockdown, Fair-Price Integrity, Amazon Du
   });
 
   it('Task 4: Enforces allowlisted domains, zero Amazon scraping, >=7d/>=3-point history gate, Dual-Rail search CTA & 20/min rate limit', async () => {
-    process.env.AMAZON_AFFILIATE_TAG = 'harshavardhan-21';
-    const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-01T12:00:01.000Z'));
+    try {
+      process.env.AMAZON_AFFILIATE_TAG = 'harshavardhan-21';
+      const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
 
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: any) => {
-      const url = String(input);
-      if (url.includes('amazon.')) {
-        throw new Error('Violation: Amazon HTML fetch attempted');
-      }
-      return new Response('{}', { status: 404 });
-    });
-    dealEngine.setFetchFn(globalThis.fetch);
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: any) => {
+        const url = String(input);
+        if (url.includes('amazon.')) {
+          throw new Error('Violation: Amazon HTML fetch attempted');
+        }
+        return new Response('{}', { status: 404 });
+      });
+      dealEngine.setFetchFn(globalThis.fetch);
 
-    // 1. Unallowlisted merchant URL -> 400 UNALLOWLISTED_MERCHANT_DOMAIN
-    const badHostRes = await app.request('/api/v1/public/fair-price-check', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-forwarded-for': '203.0.113.10'
-      },
-      body: JSON.stringify({
-        queryOrUrl: 'https://untrusted-random-shop.example.com/product/123',
-        skipAiSynthesis: true
-      })
-    });
-    expect(badHostRes.status).toBe(400);
-    const badHostJson = (await badHostRes.json()) as any;
-    expect(badHostJson.error).toBe('UNALLOWLISTED_MERCHANT_DOMAIN');
-
-    // 2. Amazon URL never triggers outbound fetch to amazon.*, returns INSUFFICIENT_HISTORY, null fair price & Amazon search rail CTA (#Ad)
-    const amzRes = await app.request('/api/v1/public/fair-price-check', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-forwarded-for': '203.0.113.10'
-      },
-      body: JSON.stringify({
-        queryOrUrl: 'https://www.amazon.in/dp/B09G9BL5CP',
-        skipAiSynthesis: true
-      })
-    });
-    expect(amzRes.status).toBe(200);
-    const amzJson = (await amzRes.json()) as any;
-    expect(amzJson.data?.verdict).toBe('INSUFFICIENT_HISTORY');
-    expect(amzJson.data?.estimatedFairPriceINR).toBeNull();
-    expect(amzJson.data?.monetizedDeal?.currentPriceINR).toBe(0);
-    const amazonRail = amzJson.data?.crossStoreOptions?.find((o: any) => o.isAmazonSearchRail || o.affiliateNetwork === 'AMAZON_IN');
-    expect(amazonRail).toBeDefined();
-    expect(amazonRail.disclosure).toContain('#Ad');
-    expect(amazonRail.ctaLabel).toContain("Check Today's Live Price & Prime Coupons on Amazon.in");
-    expect(amazonRail.trackingRedirectUrl).toContain('/api/v1/public/amazon-redirect?');
-
-    const outboundAmazonCalls = fetchSpy.mock.calls.filter(([u]) => String(u).includes('amazon.'));
-    expect(outboundAmazonCalls.length).toBe(0);
-
-    // 3. Verify GET /api/v1/public/amazon-redirect returns 302 with tag=harshavardhan-21
-    const redirRes = await app.request('/api/v1/public/amazon-redirect?q=Sony+WH-1000XM5');
-    expect(redirRes.status).toBe(302);
-    const redirLoc = redirRes.headers.get('location') || '';
-    expect(redirLoc).toContain('amazon.in/s?k=');
-    expect(redirLoc).toContain('tag=harshavardhan-21');
-
-    // 4. Rate limit: remaining 18 calls under same IP succeed, 21st call -> 429 RATE_LIMITED
-    for (let i = 0; i < 18; i++) {
-      const r = await app.request('/api/v1/public/fair-price-check', {
+      // 1. Unallowlisted merchant URL -> 400 UNALLOWLISTED_MERCHANT_DOMAIN
+      const badHostRes = await app.request('/api/v1/public/fair-price-check', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'x-forwarded-for': '203.0.113.10'
         },
         body: JSON.stringify({
-          queryOrUrl: 'no history query check',
+          queryOrUrl: 'https://untrusted-random-shop.example.com/product/123',
           skipAiSynthesis: true
         })
       });
-      expect(r.status).toBe(200);
+      expect(badHostRes.status).toBe(400);
+      const badHostJson = (await badHostRes.json()) as any;
+      expect(badHostJson.error).toBe('UNALLOWLISTED_MERCHANT_DOMAIN');
+
+      // 2. Amazon URL never triggers outbound fetch to amazon.*, returns INSUFFICIENT_HISTORY, null fair price & Amazon search rail CTA (#Ad)
+      const amzRes = await app.request('/api/v1/public/fair-price-check', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-forwarded-for': '203.0.113.10'
+        },
+        body: JSON.stringify({
+          queryOrUrl: 'https://www.amazon.in/dp/B09G9BL5CP',
+          skipAiSynthesis: true
+        })
+      });
+      expect(amzRes.status).toBe(200);
+      const amzJson = (await amzRes.json()) as any;
+      expect(amzJson.data?.verdict).toBe('INSUFFICIENT_HISTORY');
+      expect(amzJson.data?.estimatedFairPriceINR).toBeNull();
+      expect(amzJson.data?.monetizedDeal?.currentPriceINR).toBe(0);
+      const amazonRail = amzJson.data?.crossStoreOptions?.find((o: any) => o.isAmazonSearchRail || o.affiliateNetwork === 'AMAZON_IN');
+      expect(amazonRail).toBeDefined();
+      expect(amazonRail.disclosure).toContain('#Ad');
+      expect(amazonRail.ctaLabel).toContain("Check Today's Live Price & Prime Coupons on Amazon.in");
+      expect(amazonRail.trackingRedirectUrl).toContain('/api/v1/public/amazon-redirect?');
+
+      const outboundAmazonCalls = fetchSpy.mock.calls.filter(([u]) => String(u).includes('amazon.'));
+      expect(outboundAmazonCalls.length).toBe(0);
+
+      // 3. Verify GET /api/v1/public/amazon-redirect returns 302 with tag=harshavardhan-21
+      const redirRes = await app.request('/api/v1/public/amazon-redirect?q=Sony+WH-1000XM5');
+      expect(redirRes.status).toBe(302);
+      const redirLoc = redirRes.headers.get('location') || '';
+      expect(redirLoc).toContain('amazon.in/s?k=');
+      expect(redirLoc).toContain('tag=harshavardhan-21');
+
+      // 4. Rate limit: remaining 18 calls under same IP succeed, 21st call -> 429 RATE_LIMITED
+      for (let i = 0; i < 18; i++) {
+        const r = await app.request('/api/v1/public/fair-price-check', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-forwarded-for': '203.0.113.10'
+          },
+          body: JSON.stringify({
+            queryOrUrl: 'no history query check',
+            skipAiSynthesis: true
+          })
+        });
+        expect(r.status).toBe(200);
+      }
+      const limitedRes = await app.request('/api/v1/public/fair-price-check', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-forwarded-for': '203.0.113.10'
+        },
+        body: JSON.stringify({
+          queryOrUrl: '21st rate limited call',
+          skipAiSynthesis: true
+        })
+      });
+      expect(limitedRes.status).toBe(429);
+      const limitedJson = (await limitedRes.json()) as any;
+      expect(limitedJson.error).toBe('RATE_LIMITED');
+    } finally {
+      vi.useRealTimers();
     }
-    const limitedRes = await app.request('/api/v1/public/fair-price-check', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-forwarded-for': '203.0.113.10'
-      },
-      body: JSON.stringify({
-        queryOrUrl: '21st rate limited call',
-        skipAiSynthesis: true
-      })
-    });
-    expect(limitedRes.status).toBe(429);
-    const limitedJson = (await limitedRes.json()) as any;
-    expect(limitedJson.error).toBe('RATE_LIMITED');
   });
 
   it('Task 5: Exposes Head-to-Head /public/comparisons, SSR /vs/:comparisonSlug (200/404), and /sitemap.xml', async () => {
