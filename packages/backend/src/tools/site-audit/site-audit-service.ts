@@ -516,10 +516,10 @@ export class SiteAuditService {
       expiresAt: Date.now() + 2 * 60 * 60 * 1000
     });
     const deliverable = this.generator.generateFixPack(result);
-    this.deliverableCache.set(result.auditId, deliverable);
 
     // Durable Cloudflare D1 persistence
     await this.persistAuditToD1(result, deliverable);
+    this.deliverableCache.set(result.auditId, deliverable);
 
     return result;
   }
@@ -1181,7 +1181,10 @@ export class SiteAuditService {
    */
   public async generateDeliverable(auditId: string, orderId?: string): Promise<FixPackDeliverable> {
     if (this.deliverableCache.has(auditId)) {
-      return this.deliverableCache.get(auditId)!;
+      const cached = this.deliverableCache.get(auditId)!;
+      if (!orderId || (cached as any).orderId === orderId) {
+        return cached;
+      }
     }
 
     const audit = await this.getAudit(auditId);
