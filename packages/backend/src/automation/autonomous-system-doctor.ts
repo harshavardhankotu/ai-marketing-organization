@@ -1375,8 +1375,15 @@ export class AutonomousSystemDoctor {
           let hasActiveToken = false;
           if (meta.downloadToken) {
             const tokenParts = String(meta.downloadToken).split('.');
-            const expMs = tokenParts.length === 5 ? parseInt(tokenParts[3], 10) : (tokenParts.length === 4 ? parseInt(tokenParts[2], 10) : NaN);
-            if (!isNaN(expMs) && expMs > Date.now()) {
+            if (tokenParts.length === 5 || tokenParts.length === 4) {
+              const expMs = tokenParts.length === 5 ? parseInt(tokenParts[3], 10) : parseInt(tokenParts[2], 10);
+              if (!isNaN(expMs) && expMs > Date.now()) {
+                hasActiveToken = true;
+                downloadToken = meta.downloadToken;
+                downloadUrl = meta.downloadUrl || `${siteUrl}/api/v1/offer/download/${encodeURIComponent(downloadToken)}`;
+              }
+            } else if (tokenParts.length < 4 && meta.downloadToken) {
+              // Legacy or mock non-timestamped token: preserve existing deliverable token
               hasActiveToken = true;
               downloadToken = meta.downloadToken;
               downloadUrl = meta.downloadUrl || `${siteUrl}/api/v1/offer/download/${encodeURIComponent(downloadToken)}`;
