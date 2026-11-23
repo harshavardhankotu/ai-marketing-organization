@@ -975,6 +975,24 @@ describe('D1 Quota Hotfix & Circuit Breaker Decoupling (PR #81)', () => {
       const healResult = await doctor.recoverPendingDeliveriesAndReceipts();
       expect(healResult.processed).toBeGreaterThanOrEqual(1);
 
+      // Verify the seeded order was recovered to READY and delivery task completed
+      const updatedOrder = await D1RevenueRepository.getInstance().queryOne<any>(
+        'universal_orders',
+        `SELECT metadata_json, fulfillment_status FROM universal_orders WHERE id = ?`,
+        [orderId]
+      );
+      expect(updatedOrder).toBeTruthy();
+      const updatedMeta = JSON.parse(updatedOrder.metadata_json);
+      expect(updatedMeta.deliverable_status).toBe('READY');
+
+      const deliveryTask = await D1RevenueRepository.getInstance().queryOne<any>(
+        'delivery_tasks',
+        `SELECT stage FROM delivery_tasks WHERE id = ?`,
+        [`deliv_${orderId}_${paymentId}`]
+      );
+      expect(deliveryTask).toBeTruthy();
+      expect(deliveryTask.stage).toBe('COMPLETED');
+
       // Verify site_audits scores survived recovery intact!
       const auditRow = await SiteAuditService.getInstance().getAuditByDomain(domain);
       expect(auditRow).toBeTruthy();
