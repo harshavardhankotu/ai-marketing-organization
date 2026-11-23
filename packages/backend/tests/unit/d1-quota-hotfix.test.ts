@@ -490,8 +490,10 @@ describe('D1 Quota Hotfix & Circuit Breaker Decoupling (PR #81)', () => {
         expect(deleteCalls.length).toBe(0); // Claim is preserved!
       } finally {
         globalThis.fetch = originalFetch;
-        process.env.TELEGRAM_BOT_TOKEN = prevToken;
-        process.env.TELEGRAM_CHANNEL_ID = prevChat;
+        if (prevToken !== undefined) process.env.TELEGRAM_BOT_TOKEN = prevToken;
+        else delete process.env.TELEGRAM_BOT_TOKEN;
+        if (prevChat !== undefined) process.env.TELEGRAM_CHANNEL_ID = prevChat;
+        else delete process.env.TELEGRAM_CHANNEL_ID;
       }
     });
 
@@ -529,8 +531,10 @@ describe('D1 Quota Hotfix & Circuit Breaker Decoupling (PR #81)', () => {
         expect(deleteCalls.length).toBe(1); // Claim released!
       } finally {
         globalThis.fetch = originalFetch;
-        process.env.TELEGRAM_BOT_TOKEN = prevToken;
-        process.env.TELEGRAM_CHANNEL_ID = prevChat;
+        if (prevToken !== undefined) process.env.TELEGRAM_BOT_TOKEN = prevToken;
+        else delete process.env.TELEGRAM_BOT_TOKEN;
+        if (prevChat !== undefined) process.env.TELEGRAM_CHANNEL_ID = prevChat;
+        else delete process.env.TELEGRAM_CHANNEL_ID;
       }
     });
 
@@ -570,8 +574,42 @@ describe('D1 Quota Hotfix & Circuit Breaker Decoupling (PR #81)', () => {
         expect(deleteCalls.length).toBe(1);
       } finally {
         globalThis.fetch = originalFetch;
-        process.env.TELEGRAM_BOT_TOKEN = prevToken;
-        process.env.TELEGRAM_CHANNEL_ID = prevChat;
+        if (prevToken !== undefined) process.env.TELEGRAM_BOT_TOKEN = prevToken;
+        else delete process.env.TELEGRAM_BOT_TOKEN;
+        if (prevChat !== undefined) process.env.TELEGRAM_CHANNEL_ID = prevChat;
+        else delete process.env.TELEGRAM_CHANNEL_ID;
+      }
+    });
+
+    it('fails closed with TELEGRAM_CLAIM_FAILED when claim DB write throws, without making outbound HTTP calls', async () => {
+      const prevToken = process.env.TELEGRAM_BOT_TOKEN;
+      const prevChat = process.env.TELEGRAM_CHANNEL_ID;
+      process.env.TELEGRAM_BOT_TOKEN = '123456789:ABCdefGHIjklMNOpqrsTUVwxyz123456789';
+      process.env.TELEGRAM_CHANNEL_ID = '-1001234567890';
+
+      const mockFetch = vi.fn();
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = mockFetch as any;
+
+      vi.spyOn(D1RevenueRepository.getInstance(), 'queryOne').mockResolvedValue(null);
+      vi.spyOn(D1RevenueRepository.getInstance(), 'executeWrite').mockRejectedValueOnce(new Error('D1 durable_events connection timeout'));
+
+      try {
+        const res = await telegramAdapter.postPublishedGuide({
+          guideTitle: 'Test Guide Claim Error',
+          guideUrl: 'https://example.com/guide/test-claim-err',
+          dealId: 'deal_claim_err_1'
+        });
+
+        expect(res.posted).toBe(false);
+        expect(res.reason).toContain('TELEGRAM_CLAIM_FAILED');
+        expect(mockFetch).not.toHaveBeenCalled();
+      } finally {
+        globalThis.fetch = originalFetch;
+        if (prevToken !== undefined) process.env.TELEGRAM_BOT_TOKEN = prevToken;
+        else delete process.env.TELEGRAM_BOT_TOKEN;
+        if (prevChat !== undefined) process.env.TELEGRAM_CHANNEL_ID = prevChat;
+        else delete process.env.TELEGRAM_CHANNEL_ID;
       }
     });
   });
@@ -646,6 +684,466 @@ describe('D1 Quota Hotfix & Circuit Breaker Decoupling (PR #81)', () => {
       (AutonomousDealDiscoveryEngine as any).priceDropEventCursor = null;
       await engine.checkAndDispatchTargetPriceAlerts([qualifyingDeal]);
       expect((AutonomousDealDiscoveryEngine as any).priceAlertEmptyBackoffUntilMs).toBeGreaterThan(Date.now());
+    });
+
+    it('SiteAuditService.getAllAuditedDomains({ strict: true }) rethrows DB errors while default call returns empty array', async () => {
+      const { SiteAuditService } = await import('../../src/tools/site-audit/site-audit-service.js');
+      const service = SiteAuditService.getInstance();
+      const d1Repo = D1RevenueRepository.getInstance();
+      vi.spyOn(d1Repo, 'isRemoteD1Configured').mockReturnValue(true);
+      vi.spyOn(d1Repo, 'query').mockRejectedValueOnce(new Error('Simulated D1 transient failure'));
+
+      // Strict mode MUST rethrow
+      await expect(service.getAllAuditedDomains({ strict: true })).rejects.toThrow('Simulated D1 transient failure');
+
+      // Default call returns empty array safely
+      vi.spyOn(d1Repo, 'query').mockRejectedValueOnce(new Error('Simulated D1 transient failure'));
+      const safeResult = await service.getAllAuditedDomains();
+      expect(safeResult).toEqual([]);
+    });
+  });
+
+  describe('12. Razorpay Compliance, Checkout & Signature Verification', () => {
+    it('serves /terms, /privacy, /refund, /contact with HTTP 200 containing statutory terms and 7-day refund policy', async () => {
+      const termsRes = await app.request('/terms');
+      expect(termsRes.status).toBe(200);
+      const termsHtml = await termsRes.text();
+      expect(termsHtml).toContain('SITEFIX_AI_PACK_V1');
+      expect(termsHtml).toContain('7-Day 100% Money-Back Guarantee');
+      expect(termsHtml).toContain('support@ai-marketing-organization.com');
+
+      const privacyRes = await app.request('/privacy');
+      expect(privacyRes.status).toBe(200);
+      const privacyHtml = await privacyRes.text();
+      expect(privacyHtml).toContain('Digital Personal Data Protection');
+      expect(privacyHtml).toContain('privacy@ai-marketing-organization.com');
+
+      const refundRes = await app.request('/refund');
+      expect(refundRes.status).toBe(200);
+      const refundHtml = await refundRes.text();
+      expect(refundHtml).toContain('100% Satisfaction Guarantee');
+      expect(refundHtml).toContain('7-Day Money-Back Guarantee');
+
+      const contactRes = await app.request('/contact');
+      expect(contactRes.status).toBe(200);
+      const contactHtml = await contactRes.text();
+      expect(contactHtml).toContain('Customer Support');
+      expect(contactHtml).toContain('support@ai-marketing-organization.com');
+
+      const disclosureRes = await app.request('/disclosure');
+      expect(disclosureRes.status).toBe(200);
+      const disclosureHtml = await disclosureRes.text();
+      expect(disclosureHtml).toContain('Affiliate &amp; Commercial Referral Disclosure');
+      expect(disclosureHtml).toContain('As an Amazon Associate I earn from qualifying purchases');
+      expect(disclosureHtml).toContain('Zero Extra Cost to Consumers');
+      expect(disclosureHtml).toContain('/disclosure');
+
+      const disclosureAliasRes = await app.request('/affiliate-disclosure');
+      expect(disclosureAliasRes.status).toBe(200);
+      const disclosureAliasHtml = await disclosureAliasRes.text();
+      expect(disclosureAliasHtml).toContain('Affiliate &amp; Commercial Referral Disclosure');
+      expect(disclosureAliasHtml).toContain('/disclosure');
+    });
+
+    it('rejects client price tampering and validates authoritative ₹499 price for SITEFIX_AI_PACK_V1', async () => {
+      const { RazorpayStandardAdapter } = await import('../../src/payments/razorpay-adapter.js');
+      const adapter = RazorpayStandardAdapter.getInstance();
+
+      // Tampered amount rejected
+      expect(() => adapter.resolveAuthoritativePrice('SITEFIX_AI_PACK_V1', 1)).toThrow('Client-tampered amount');
+
+      // Authoritative resolution
+      const resolved = adapter.resolveAuthoritativePrice('SITEFIX_AI_PACK_V1', 499);
+      expect(resolved.amountINR).toBe(499);
+      expect(resolved.amountPaise).toBe(49900);
+      expect(resolved.canonicalSku).toBe('SITEFIX_AI_PACK_V1');
+    });
+
+    it('validates genuine HMAC-SHA256 signature and rejects forged signature', async () => {
+      const { RazorpayStandardAdapter } = await import('../../src/payments/razorpay-adapter.js');
+      const adapter = RazorpayStandardAdapter.getInstance();
+      const crypto = await import('node:crypto');
+
+      const orderId = 'order_test_rzp_12345';
+      const paymentId = 'pay_test_rzp_67890';
+      const secret = 'test_secret_for_hmac_verification';
+
+      const validSignature = crypto.createHmac('sha256', secret)
+        .update(`${orderId}|${paymentId}`)
+        .digest('hex');
+
+      expect(adapter.verifyPaymentSignature(orderId, paymentId, validSignature, secret)).toBe(true);
+      expect(adapter.verifyPaymentSignature(orderId, paymentId, 'tampered_invalid_signature', secret)).toBe(false);
+    });
+
+    it('rejects mismatched caller-supplied orderId to prevent authorization bypass (CWE-863)', async () => {
+      const { RazorpayStandardAdapter } = await import('../../src/payments/razorpay-adapter.js');
+      const adapter = RazorpayStandardAdapter.getInstance();
+      const crypto = await import('node:crypto');
+
+      const nonce = Date.now();
+      const internalOrderId = `ord_rzp_secure_owner_${nonce}`;
+      const providerOrderId = `order_rzp_provider_${nonce}`;
+      const paymentId = `pay_rzp_attacker_payment_${nonce}`;
+      const secret = adapter.getKeySecret();
+
+      await D1RevenueRepository.getInstance().executeWrite(
+        'universal_orders',
+        `INSERT OR REPLACE INTO universal_orders (
+          id, business_id, organization_id, offer_id, customer_name,
+          customer_email, customer_phone, amount_minor, currency, status, payment_provider,
+          provider_order_id, metadata_json, created_at, updated_at
+        ) VALUES (?, 'biz_platform_aro', 'org_owner_primary', 'sitefix_core_499', 'Customer',
+          'cust@example.com', '', 49900, 'INR', 'CHECKOUT', 'RAZORPAY',
+          ?, '{"domainOrUrl":"victim.com"}', datetime('now'), datetime('now'))`,
+        [internalOrderId, providerOrderId]
+      );
+
+      const sig = crypto.createHmac('sha256', secret)
+        .update(`${providerOrderId}|${paymentId}`)
+        .digest('hex');
+
+      await expect(adapter.verifyPaymentAndFulfill({
+        orderId: 'ord_rzp_unrelated_target_2',
+        razorpay_order_id: providerOrderId,
+        razorpay_payment_id: paymentId,
+        razorpay_signature: sig
+      })).rejects.toThrow(/Provided orderId 'ord_rzp_unrelated_target_2' does not identify the verified order record/);
+    });
+
+    it('maps cancellation & refund policy to /refund canonical URL in static site generator', async () => {
+      const { StaticSiteGenerator } = await import('../../src/commission/static-site-generator.js');
+      const generator = new StaticSiteGenerator();
+      const html = generator.renderRefundHtml({
+        siteName: 'SiteFix AI',
+        siteUrl: 'https://sitefix.ai',
+        niche: 'technical-seo',
+        authorName: 'SiteFix Team',
+        contactEmail: 'support@sitefix.ai'
+      });
+      expect(html).toContain('<link rel="canonical" href="https://sitefix.ai/refund">');
+    });
+
+    it('issues delivery tokens with 168-hour (7-day) validity across issuance paths and fails closed on missing ord_rzp_', async () => {
+      const { SiteAuditService } = await import('../../src/tools/site-audit/site-audit-service.js');
+      const service = SiteAuditService.getInstance();
+
+      const orderId = 'ord_rzp_test_lifetime_1';
+      const auditId = 'aud_test_1';
+      const paymentId = 'pay_test_1';
+
+      // 1. generateDeliveryToken with default
+      const defaultToken = service.generateDeliveryToken(orderId, auditId, paymentId);
+      const partsDefault = defaultToken.split('.');
+      const expDefault = parseInt(partsDefault[3], 10);
+      const hoursDefault = (expDefault - Date.now()) / (3600 * 1000);
+      expect(hoursDefault).toBeGreaterThan(167);
+      expect(hoursDefault).toBeLessThanOrEqual(168.1);
+
+      // 2. generateSignedDeliveryToken with explicit 168 hours
+      const signedToken = service.generateSignedDeliveryToken(orderId, auditId, paymentId, 168);
+      const partsSigned = signedToken.split('.');
+      const expSigned = parseInt(partsSigned[3], 10);
+      const hoursSigned = (expSigned - Date.now()) / (3600 * 1000);
+      expect(hoursSigned).toBeGreaterThan(167);
+      expect(hoursSigned).toBeLessThanOrEqual(168.1);
+
+      // 3. verifyDeliveryToken fails closed when ord_rzp_ order is absent from D1
+      const verifyMissing = await service.verifyDeliveryToken(defaultToken, auditId);
+      expect(verifyMissing.valid).toBe(false);
+      expect(verifyMissing.error).toBe('ORDER_NOT_FOUND');
+    });
+
+    it('renews delivery token with 168-hour lifetime during autonomous recovery when deliverable is already READY', async () => {
+      const { AutonomousSystemDoctor } = await import('../../src/automation/autonomous-system-doctor.js');
+      const doctor = AutonomousSystemDoctor.getInstance();
+      const nonce = Date.now();
+      const orderId = `ord_rzp_doctor_ready_${nonce}`;
+      const paymentId = `pay_rzp_doctor_ready_${nonce}`;
+      const domain = 'doctorreadytest';
+
+      // Clean up any stale doctor test orders so LIMIT 10 in recoverPendingDeliveriesAndReceipts sees this fresh order
+      await D1RevenueRepository.getInstance().executeWrite(
+        'universal_orders',
+        `DELETE FROM universal_orders WHERE id LIKE 'ord_rzp_doctor_ready_%'`,
+        []
+      );
+
+      // Insert an order that already has deliverable_status: READY with an expired token
+      const oldExp = Date.now() - 3600 * 1000;
+      const oldToken = `${orderId}.audit_${domain}.${paymentId}.${oldExp}.fake_hmac`;
+      const metadata = JSON.stringify({
+        sku: 'SITEFIX_AI_PACK_V1',
+        domainOrUrl: domain,
+        auditId: `audit_${domain}`,
+        paymentId: paymentId,
+        deliverable_status: 'READY',
+        downloadToken: oldToken,
+        downloadUrl: `/api/v1/offer/download/${oldToken}`,
+        email_receipt_status: 'PENDING_RETRY'
+      });
+
+      await D1RevenueRepository.getInstance().executeWrite(
+        'universal_orders',
+        `INSERT OR REPLACE INTO universal_orders (
+          id, business_id, organization_id, offer_id, customer_name,
+          customer_email, customer_phone, amount_minor, currency, status, fulfillment_status,
+          payment_provider, provider_order_id, provider_payment_id, metadata_json, created_at, updated_at
+        ) VALUES (?, 'biz_platform_aro', 'org_owner_primary', 'sitefix_core_499', 'Customer',
+          'doctor@example.com', '', 49900, 'INR', 'PAID', 'PAYMENT_CAPTURED_PENDING_DELIVERY',
+          'RAZORPAY', ?, ?, ?, datetime('now'), datetime('now'))`,
+        [orderId, orderId, paymentId, metadata]
+      );
+
+      const healResult = await doctor.recoverPendingDeliveriesAndReceipts();
+      expect(healResult.processed).toBeGreaterThanOrEqual(1);
+
+      // Verify the order in D1 now has a renewed 168-hour token
+      const updatedOrder = await D1RevenueRepository.getInstance().queryOne<any>(
+        'universal_orders',
+        `SELECT metadata_json FROM universal_orders WHERE id = ?`,
+        [orderId]
+      );
+      expect(updatedOrder).toBeTruthy();
+      const updatedMeta = JSON.parse(updatedOrder.metadata_json);
+      expect(updatedMeta.downloadToken).toBeTruthy();
+      expect(updatedMeta.downloadToken).not.toBe(oldToken);
+
+      const parts = updatedMeta.downloadToken.split('.');
+      const expMs = parseInt(parts[3], 10);
+      const hoursRemaining = (expMs - Date.now()) / (3600 * 1000);
+      expect(hoursRemaining).toBeGreaterThan(167);
+      expect(hoursRemaining).toBeLessThanOrEqual(168.1);
+
+      // Verify the renewed token authorizes download and passes verifyDeliveryToken
+      const { SiteAuditService } = await import('../../src/tools/site-audit/site-audit-service.js');
+      const verifyResult = await SiteAuditService.getInstance().verifyDeliveryToken(updatedMeta.downloadToken, `audit_${domain}`);
+      expect(verifyResult.valid).toBe(true);
+      expect(verifyResult.orderId).toBe(orderId);
+      expect(verifyResult.auditId).toBe(`audit_${domain}`);
+    });
+  });
+
+  describe('13. Audit Reconstruction, Flat Row Safety & Fail-Closed Token Issuance (PR #83)', () => {
+    it('preserves existing audit scores and findings when doctor recovers pending order (scores survive recovery)', async () => {
+      const { AutonomousSystemDoctor } = await import('../../src/automation/autonomous-system-doctor.js');
+      const { SiteAuditService } = await import('../../src/tools/site-audit/site-audit-service.js');
+      const doctor = AutonomousSystemDoctor.getInstance();
+      const nonce = Date.now();
+      const domain = `survivaltest-${nonce}.com`;
+      const orderId = `ord_rzp_doctor_surv_${nonce}`;
+      const paymentId = `pay_rzp_doctor_surv_${nonce}`;
+
+      // Clean up stale orders
+      await D1RevenueRepository.getInstance().executeWrite(
+        'universal_orders',
+        `DELETE FROM universal_orders WHERE id LIKE 'ord_rzp_doctor_%'`,
+        []
+      );
+
+      // Seed site_audits with rich scores & findings
+      const initialFinding = { id: 'c1', title: 'SEO Title Check', pass: true, severity: 'LOW' };
+      await D1RevenueRepository.getInstance().executeWrite(
+        'site_audits',
+        `INSERT OR REPLACE INTO site_audits (
+          domain, target_url, business_name, performance_score, seo_score,
+          core_web_vitals_json, head_snippets, schema_json_ld, checklist_json, status, updated_at
+        ) VALUES (?, ?, 'Survival Business', 92, 85, '{}', '<meta name="test">', '{}', ?, 'COMPLETED', datetime('now'))`,
+        [domain, `https://${domain}`, JSON.stringify([initialFinding])]
+      );
+
+      // Insert an unfulfilled order
+      const metadata = JSON.stringify({
+        sku: 'SITEFIX_AI_PACK_V1',
+        domainOrUrl: domain,
+        paymentId: paymentId,
+        deliverable_status: 'PENDING'
+      });
+
+      await D1RevenueRepository.getInstance().executeWrite(
+        'universal_orders',
+        `INSERT OR REPLACE INTO universal_orders (
+          id, business_id, organization_id, offer_id, customer_name,
+          customer_email, customer_phone, amount_minor, currency, status, fulfillment_status,
+          payment_provider, provider_order_id, provider_payment_id, metadata_json, created_at, updated_at
+        ) VALUES (?, 'biz_platform_aro', 'org_owner_primary', 'sitefix_core_499', 'Customer',
+          'doctor@example.com', '', 49900, 'INR', 'PAID', 'PAYMENT_CAPTURED_PENDING_DELIVERY',
+          'RAZORPAY', ?, ?, ?, datetime('now'), datetime('now'))`,
+        [orderId, orderId, paymentId, metadata]
+      );
+
+      const healResult = await doctor.recoverPendingDeliveriesAndReceipts();
+      expect(healResult.processed).toBeGreaterThanOrEqual(1);
+
+      // Verify the seeded order was recovered to READY and delivery task completed
+      const updatedOrder = await D1RevenueRepository.getInstance().queryOne<any>(
+        'universal_orders',
+        `SELECT metadata_json, fulfillment_status FROM universal_orders WHERE id = ?`,
+        [orderId]
+      );
+      expect(updatedOrder).toBeTruthy();
+      const updatedMeta = JSON.parse(updatedOrder.metadata_json);
+      expect(updatedMeta.deliverable_status).toBe('READY');
+
+      const deliveryTask = await D1RevenueRepository.getInstance().queryOne<any>(
+        'delivery_tasks',
+        `SELECT stage FROM delivery_tasks WHERE id = ?`,
+        [`deliv_${orderId}_${paymentId}`]
+      );
+      expect(deliveryTask).toBeTruthy();
+      expect(deliveryTask.stage).toBe('COMPLETED');
+
+      // Verify site_audits scores survived recovery intact!
+      const auditRow = await SiteAuditService.getInstance().getAuditByDomain(domain);
+      expect(auditRow).toBeTruthy();
+      expect(auditRow.seo_score).toBe(85);
+      expect(auditRow.performance_score).toBe(92);
+      const { items } = SiteAuditService.getInstance().parseAuditChecklistPayload(auditRow.checklist_json);
+      expect(items.length).toBeGreaterThanOrEqual(1);
+      expect(items[0].id).toBe('c1');
+    });
+
+    it('reconstructs full SiteAuditResult from flat DB row without data loss and does not clobber scores (flat row not overwritten)', async () => {
+      const { SiteAuditService } = await import('../../src/tools/site-audit/site-audit-service.js');
+      const service = SiteAuditService.getInstance();
+      const domain = 'flatroverwrite-test.com';
+
+      const initialFindings = [
+        { id: 'c_og', title: 'Open Graph Verification', pass: false, severity: 'MEDIUM' }
+      ];
+
+      await D1RevenueRepository.getInstance().executeWrite(
+        'site_audits',
+        `INSERT OR REPLACE INTO site_audits (
+          domain, target_url, business_name, performance_score, seo_score,
+          core_web_vitals_json, head_snippets, schema_json_ld, checklist_json, status, html_scan_status, updated_at
+        ) VALUES (?, ?, 'Flat Row Business', 88, 77, '{}', '<meta name="og">', '{}', ?, 'COMPLETED', 'FAILED', datetime('now'))`,
+        [domain, `https://${domain}`, JSON.stringify(initialFindings)]
+      );
+
+      const flatRow = await service.getAuditByDomain(domain);
+      expect(flatRow).toBeTruthy();
+      expect(flatRow.seo_score).toBe(77);
+      expect(flatRow.performance_score).toBe(88);
+      expect(flatRow.html_scan_status).toBe('FAILED');
+
+      // Reconstruct
+      const reconstructed = SiteAuditService.reconstructAuditFromDbRow(flatRow, `audit_${domain}`);
+      expect(reconstructed.auditId).toBe(`audit_${domain}`);
+      expect(reconstructed.score).toBe(77);
+      expect(reconstructed.pageSpeed?.performanceScore).toBe(88);
+      expect((reconstructed as any).htmlScanStatus).toBe('FAILED');
+      expect(reconstructed.findings.length).toBe(1);
+      expect(reconstructed.findings[0].id).toBe('c_og');
+      expect(reconstructed.scorecard?.totalScore).toBe(77);
+
+      // Persist the reconstructed audit and ensure site_audits scores and failed scan status survive
+      await service.persistAuditToD1(reconstructed);
+
+      const verifyRow = await service.getAuditByDomain(domain);
+      expect(verifyRow.seo_score).toBe(77);
+      expect(verifyRow.performance_score).toBe(88);
+      expect(verifyRow.html_scan_status).toBe('FAILED');
+      const parsed = service.parseAuditChecklistPayload(verifyRow.checklist_json);
+      expect(parsed.items.length).toBe(1);
+      expect(parsed.items[0].id).toBe('c_og');
+    });
+
+    it('aborts token issuance and leaves order pending delivery when durable persistence fails (persistence failure blocks token issuance)', async () => {
+      const { RazorpayStandardAdapter } = await import('../../src/payments/razorpay-adapter.js');
+      const { SiteAuditService } = await import('../../src/tools/site-audit/site-audit-service.js');
+      const crypto = await import('crypto');
+      const adapter = RazorpayStandardAdapter.getInstance();
+      const service = SiteAuditService.getInstance();
+      const nonce = Date.now();
+      const orderId = `order_test_fail_${nonce}`;
+      const paymentId = `pay_test_fail_${nonce}`;
+      const domain = `persistfail-${nonce}.com`;
+
+      // Seed an existing audit so verifyPaymentAndFulfill reaches generateDeliverable without scanning
+      await D1RevenueRepository.getInstance().executeWrite(
+        'site_audits',
+        `INSERT OR REPLACE INTO site_audits (
+          domain, target_url, business_name, performance_score, seo_score,
+          core_web_vitals_json, head_snippets, schema_json_ld, checklist_json, status, updated_at
+        ) VALUES (?, ?, 'Persist Fail Test', 80, 75, '{}', '', '{}', '[]', 'COMPLETED', datetime('now'))`,
+        [domain, `https://${domain}`]
+      );
+
+      await D1RevenueRepository.getInstance().executeWrite(
+        'universal_orders',
+        `INSERT OR REPLACE INTO universal_orders (
+          id, business_id, organization_id, offer_id, customer_name,
+          customer_email, customer_phone, amount_minor, currency, status, payment_provider,
+          provider_order_id, metadata_json, created_at, updated_at
+        ) VALUES (?, 'biz_platform_aro', 'org_owner_primary', 'sitefix_core_499', 'Customer',
+          'failtest@example.com', '', 49900, 'INR', 'CHECKOUT', 'RAZORPAY_TEST',
+          ?, ?, datetime('now'), datetime('now'))`,
+        [orderId, orderId, JSON.stringify({ domainOrUrl: domain, buyerEmail: 'failtest@example.com' })]
+      );
+
+      const secret = (adapter as any).getKeySecret();
+      const sig = crypto.createHmac('sha256', secret)
+        .update(`${orderId}|${paymentId}`)
+        .digest('hex');
+
+      // Mock generateDeliverable to throw persistence error
+      const deliverableSpy = vi.spyOn(service, 'generateDeliverable').mockRejectedValueOnce(
+        new Error('D1_DURABLE_WRITE_UNAVAILABLE: Remote write circuit breaker open')
+      );
+
+      try {
+        const result = await adapter.verifyPaymentAndFulfill({
+          orderId,
+          razorpay_order_id: orderId,
+          razorpay_payment_id: paymentId,
+          razorpay_signature: sig
+        });
+
+        // Payment captured but token issuance aborted
+        expect(result.success).toBe(true);
+        expect(result.paymentCaptured).toBe(true);
+        expect(result.fulfillmentStatus).toBe('PAYMENT_CAPTURED_PENDING_DELIVERY');
+        expect(result.deliverableStatus).toBe('PENDING');
+        expect(result.retryRequired).toBe(true);
+        expect((result as any).downloadToken).toBeUndefined();
+      } finally {
+        deliverableSpy.mockRestore();
+      }
+    });
+
+    it('recovers normalized audit and generates deliverable after memory cache is cleared (normalized audit recovers after cache clear)', async () => {
+      const { SiteAuditService } = await import('../../src/tools/site-audit/site-audit-service.js');
+      const service = SiteAuditService.getInstance();
+      const domain = 'roasterycoffee.co.in';
+      const normalizedAuditId = `audit_${domain.replace(/\./g, '_')}`;
+
+      // Insert audit into site_audits
+      const findings = [{ id: 'f1', title: 'Speed Check', pass: true }];
+      await D1RevenueRepository.getInstance().executeWrite(
+        'site_audits',
+        `INSERT OR REPLACE INTO site_audits (
+          domain, target_url, business_name, performance_score, seo_score,
+          core_web_vitals_json, head_snippets, schema_json_ld, checklist_json, status, updated_at
+        ) VALUES (?, ?, 'Roastery Coffee', 90, 84, '{}', '<meta name="rc">', '{}', ?, 'COMPLETED', datetime('now'))`,
+        [domain, `https://${domain}`, JSON.stringify(findings)]
+      );
+
+      // Force-clear memory caches
+      (service as any).auditCache.clear();
+      (service as any).deliverableCache.clear();
+
+      // Retrieve via normalized auditId after cache clear
+      const recoveredAudit = await service.getAudit(normalizedAuditId);
+      expect(recoveredAudit).toBeTruthy();
+      expect(recoveredAudit!.score).toBe(84);
+      expect(recoveredAudit!.url).toBe(`https://${domain}`);
+      expect(recoveredAudit!.findings.length).toBe(1);
+
+      // Generate deliverable from recovered audit
+      const deliverable = await service.generateDeliverable(normalizedAuditId);
+      expect(deliverable).toBeTruthy();
+      expect(deliverable.headMetadataSnippet).toBeTruthy();
     });
   });
 });

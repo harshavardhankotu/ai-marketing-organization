@@ -1273,6 +1273,244 @@ app.get('/public/financial-truth', async (c) => {
   return c.json({ success: true, data: snapshot });
 });
 
+function renderComplianceDocumentHtml(title: string, canonicalPath: string, contentHtml: string): string {
+  const siteUrl = getTrustedPublicSiteUrl();
+  const safeTitle = title.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${safeTitle} | AI Marketing Organization</title>
+  <link rel="canonical" href="${siteUrl}${canonicalPath}">
+  <style>
+    :root {
+      --bg: #090d16;
+      --card-bg: #111827;
+      --border: #1f2937;
+      --text: #f9fafb;
+      --muted: #9ca3af;
+      --accent: #38bdf8;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      line-height: 1.6;
+      padding: 0;
+      margin: 0;
+    }
+    header {
+      background: var(--card-bg);
+      border-bottom: 1px solid var(--border);
+      padding: 1rem 1.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    header a.brand {
+      color: var(--text);
+      font-weight: 700;
+      text-decoration: none;
+      font-size: 1.1rem;
+    }
+    header nav a {
+      color: var(--muted);
+      text-decoration: none;
+      margin-left: 1.25rem;
+      font-size: 0.9rem;
+    }
+    header nav a:hover { color: var(--accent); }
+    main {
+      max-width: 800px;
+      margin: 2.5rem auto;
+      padding: 0 1.25rem;
+    }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 2.5rem;
+    }
+    h1 { font-size: 1.85rem; margin-bottom: 0.75rem; color: #fff; }
+    .updated { color: var(--muted); font-size: 0.85rem; margin-bottom: 2rem; border-bottom: 1px solid var(--border); padding-bottom: 1rem; }
+    h2 { font-size: 1.25rem; margin: 1.75rem 0 0.75rem; color: var(--accent); }
+    p { margin-bottom: 1rem; color: #d1d5db; }
+    ul { margin: 0 0 1rem 1.5rem; color: #d1d5db; }
+    li { margin-bottom: 0.4rem; }
+    .notice {
+      background: rgba(56, 189, 248, 0.08);
+      border: 1px solid rgba(56, 189, 248, 0.25);
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+      margin: 1.5rem 0;
+      color: #bae6fd;
+    }
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 2rem 1rem;
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.85rem;
+      margin-top: 4rem;
+    }
+    footer nav {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 1.25rem;
+      margin-bottom: 0.75rem;
+    }
+    footer a { color: var(--muted); text-decoration: none; }
+    footer a:hover { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <header>
+    <a href="/" class="brand">AI Marketing Organization</a>
+    <nav>
+      <a href="/deals">Deals</a>
+      <a href="/tools/site-audit">SiteFix AI</a>
+      <a href="/contact">Contact</a>
+    </nav>
+  </header>
+  <main>
+    <div class="card">
+      ${contentHtml}
+    </div>
+  </main>
+  <footer>
+    <nav>
+      <a href="/">Home</a>
+      <a href="/deals">Verified Deals</a>
+      <a href="/tools/site-audit">Full Site Audit</a>
+      <a href="/privacy">Privacy Policy</a>
+      <a href="/terms">Terms of Service</a>
+      <a href="/refund">7-Day Refund Policy</a>
+      <a href="/contact">Contact &amp; Grievance</a>
+      <a href="/disclosure">Affiliate Disclosure</a>
+    </nav>
+    <p style="margin-bottom: 0.4rem;"><strong>7-Day 100% Refund Policy:</strong> Full refund if Fix-Pack deliverables fail verification recheck. Support: <a href="mailto:support@ai-marketing-organization.com" style="color: var(--accent);">support@ai-marketing-organization.com</a></p>
+    <p>&copy; ${new Date().getFullYear()} AI Marketing Organization. Registered in Hyderabad, Telangana, India.</p>
+  </footer>
+</body>
+</html>`;
+}
+
+const termsHandler = (c: any) => {
+  const content = `
+    <h1>Terms of Service &amp; Operating Agreement</h1>
+    <div class="updated">Last Updated: November 2026 &bull; Jurisdiction: Hyderabad, Telangana, India</div>
+    <p>Welcome to <strong>AI Marketing Organization</strong>. By accessing our website, diagnostic tools (including SiteFix AI), or digital services, you agree to these Terms of Service.</p>
+    <h2>1. Digital Products &amp; Services</h2>
+    <p>AI Marketing Organization provides automated website audit software, developer diagnostics, and the <strong>SiteFix AI Core Fix-Pack</strong> (SKU: <code>SITEFIX_AI_PACK_V1</code>, authoritative price: ₹499 inclusive of taxes). Deliverables are provided electronically with a 7-day (168-hour) cryptographic download token and include one automated post-fix verification recheck.</p>
+    <h2>2. Payment &amp; Gateway Security</h2>
+    <p>All commercial transactions are securely processed through Reserve Bank of India (RBI) authorized payment aggregators, specifically <strong>Razorpay</strong>. We accept UPI, RuPay, Visa, Mastercard, and NetBanking. We do not store full credit card numbers, debit card numbers, or UPI MPINs on our servers.</p>
+    <h2>3. 7-Day Refund Policy &amp; Verification Recheck</h2>
+    <p>We stand behind our technical diagnostics with an explicit <strong>7-Day 100% Money-Back Guarantee</strong>. If your SiteFix AI Fix-Pack deliverables fail to resolve the identified technical diagnostic defects upon running the included verification recheck within 7 days of purchase, email us at <a href="mailto:support@ai-marketing-organization.com" style="color:var(--accent);">support@ai-marketing-organization.com</a> with your Order ID for a full refund.</p>
+    <h2>4. Digital Personal Data Protection (DPDP) Act Compliance</h2>
+    <p>Customer contact details collected during checkout or lead intake are handled strictly in compliance with the Digital Personal Data Protection (DPDP) Act, 2023. Personal data is never sold, rented, or traded.</p>
+    <h2>5. Governing Law &amp; Dispute Resolution</h2>
+    <p>These terms and any transactions conducted on this platform are governed by the laws of India. Any legal disputes shall be subject to the exclusive jurisdiction of the competent courts in Hyderabad, Telangana, India.</p>
+  `;
+  return c.html(renderComplianceDocumentHtml('Terms of Service & Operating Agreement', '/terms', content), 200);
+};
+
+const privacyHandler = (c: any) => {
+  const content = `
+    <h1>Privacy Policy &amp; Statutory DPDP Act Notice</h1>
+    <div class="updated">Effective: November 2026 &bull; Compliant with DPDP Act 2023 &amp; IT Act 2000</div>
+    <p><strong>AI Marketing Organization</strong> acts as a Data Fiduciary under the Digital Personal Data Protection (DPDP) Act, 2023. This policy explains our data collection and protection practices.</p>
+    <h2>1. Data We Collect</h2>
+    <p>We collect only the minimum personal data strictly necessary to fulfill your requested digital services:</p>
+    <ul>
+      <li><strong>Buyer Email Address:</strong> Used solely to deliver order receipts, cryptographic download tokens, and customer support communications.</li>
+      <li><strong>Target Website Domain:</strong> Inspected public URL used solely to run automated technical diagnostics.</li>
+      <li><strong>Pseudonymized Telemetry:</strong> Salted cryptographic SHA-256 hashes of client IP addresses for brute-force rate-limiting and fraud prevention. Raw IP addresses are not stored permanently.</li>
+    </ul>
+    <h2>2. Payment Data</h2>
+    <p>Payment information is processed directly by Razorpay in accordance with PCI-DSS standards. We never receive or store card details, CVVs, or bank credentials.</p>
+    <h2>3. Rights of Data Principals</h2>
+    <p>Under the DPDP Act 2023, you have the right to request a summary of personal data processed, correction of inaccurate data, and complete erasure of your data. To exercise these rights, email our Grievance Officer at <a href="mailto:privacy@ai-marketing-organization.com" style="color:var(--accent);">privacy@ai-marketing-organization.com</a>.</p>
+    <h2>4. Grievance Redressal</h2>
+    <p>Data Protection &amp; Grievance Redressal Officer:<br>
+    <strong>Email:</strong> <a href="mailto:privacy@ai-marketing-organization.com" style="color:var(--accent);">privacy@ai-marketing-organization.com</a><br>
+    <strong>Location:</strong> Hyderabad, Telangana, India<br>
+    Statutory response time: within 48 hours of receipt.</p>
+  `;
+  return c.html(renderComplianceDocumentHtml('Privacy Policy & DPDP Act Notice', '/privacy', content), 200);
+};
+
+const refundHandler = (c: any) => {
+  const content = `
+    <h1>Cancellation &amp; Refund Policy</h1>
+    <div class="updated">Last Updated: November 2026 &bull; Explicit 7-Day Customer Protection</div>
+    <div class="notice">
+      <strong>100% Satisfaction Guarantee:</strong> Every purchase of the SiteFix AI Technical Fix-Pack (₹499) includes an automated verification recheck. If the Fix-Pack fails to resolve reported technical diagnostic defects, you are entitled to a full refund within 7 days.
+    </div>
+    <h2>1. 7-Day Money-Back Guarantee</h2>
+    <p>We provide a clear 7-day refund window on the SiteFix AI Fix-Pack. If after applying the supplied technical fixes to your website and running the included verification recheck the reported technical defects persist, you may request a 100% refund.</p>
+    <h2>2. How to Request a Refund</h2>
+    <p>Send an email to <a href="mailto:support@ai-marketing-organization.com" style="color:var(--accent);">support@ai-marketing-organization.com</a> with:</p>
+    <ul>
+      <li>Your Order ID (e.g. <code>ord_rzp_...</code>) or Payment ID</li>
+      <li>Your target website domain</li>
+      <li>A brief note regarding the recheck result</li>
+    </ul>
+    <p>Our team will process the refund request within 24 to 48 business hours. Refunds are credited back to the original payment source (UPI account, credit/debit card, or bank account) via our payment gateway Razorpay within 5–7 business days according to standard banking settlement schedules.</p>
+    <h2>3. Cancellation of Digital Services</h2>
+    <p>Because technical Fix-Packs are generated dynamically and delivered immediately upon payment verification, pre-delivery cancellation is not available. However, our 7-day money-back guarantee applies fully after delivery.</p>
+  `;
+  return c.html(renderComplianceDocumentHtml('Cancellation & Refund Policy', '/refund', content), 200);
+};
+
+const contactHandler = (c: any) => {
+  const content = `
+    <h1>Contact &amp; Customer Support</h1>
+    <div class="updated">Customer Support &bull; Grievance Redressal &bull; Business Information</div>
+    <p>We are committed to providing reliable automated diagnostic software and prompt customer support.</p>
+    <h2>Official Communication Channels</h2>
+    <div class="notice" style="background:var(--card-bg); border-color:var(--border);">
+      <p><strong>Customer Support:</strong> <a href="mailto:support@ai-marketing-organization.com" style="color:var(--accent);">support@ai-marketing-organization.com</a><br><span style="font-size:0.85rem;color:var(--muted);">For order queries, Fix-Pack delivery, refunds, or invoice assistance.</span></p>
+      <p style="margin-top:1rem;"><strong>Grievance &amp; Privacy Officer:</strong> <a href="mailto:privacy@ai-marketing-organization.com" style="color:var(--accent);">privacy@ai-marketing-organization.com</a><br><span style="font-size:0.85rem;color:var(--muted);">For DPDP Act 2023 statutory requests, data correction, or erasure requests.</span></p>
+      <p style="margin-top:1rem;"><strong>Registered Location:</strong> Hyderabad, Telangana, India</p>
+      <p style="margin-top:1rem;"><strong>Business Hours:</strong> Monday – Friday, 09:00 – 18:00 IST (Automated scan, order creation, and Fix-Pack delivery operate 24x7)</p>
+    </div>
+  `;
+  return c.html(renderComplianceDocumentHtml('Contact & Customer Support', '/contact', content), 200);
+};
+
+const disclosureHandler = (c: any) => {
+  const content = `
+    <h1>Affiliate &amp; Commercial Referral Disclosure</h1>
+    <div class="updated">Last Updated: November 2026 &bull; Statutory Commercial Transparency</div>
+    <div class="notice">
+      <strong>Transparency Notice:</strong> &ldquo;As an Amazon Associate I earn from qualifying purchases.&rdquo; AI Marketing Organization participates in verified affiliate and commercial referral programs.
+    </div>
+    <h2>1. Referral &amp; Affiliate Commission Notice</h2>
+    <p>The AI Marketing Organization website, diagnostic tools, and associated recommendation guides contain affiliate and referral tracking links. When you click through one of these links and make a purchase or book an appointment on a partner website, our organization may receive a commission from the respective merchant or provider.</p>
+    <h2>2. Zero Extra Cost to Consumers</h2>
+    <p>Any affiliate commission earned comes at <strong>absolutely zero additional cost to you</strong>. The price you pay on the merchant platform is identical whether you visit directly or via our tracked recommendation links. In many cases, our partner agreements provide verified discount codes or lower promotional pricing.</p>
+    <h2>3. Editorial &amp; Attribution Integrity</h2>
+    <p>We maintain strict separation between editorial diagnostic accuracy and affiliate relationships. We do not accept payment to write positive reviews, nor do we fabricate ratings or testimonials. Referral links support continuous research, infrastructure upkeep, and autonomous market analysis.</p>
+  `;
+  return c.html(renderComplianceDocumentHtml('Affiliate & Commercial Referral Disclosure', '/disclosure', content), 200);
+};
+
+app.get('/terms', termsHandler);
+app.get('/terms-and-conditions', termsHandler);
+app.get('/privacy', privacyHandler);
+app.get('/privacy-policy', privacyHandler);
+app.get('/refund', refundHandler);
+app.get('/refund-policy', refundHandler);
+app.get('/cancellation-and-refund', refundHandler);
+app.get('/contact', contactHandler);
+app.get('/contact-us', contactHandler);
+app.get('/affiliate-disclosure', disclosureHandler);
+app.get('/disclosure', disclosureHandler);
+app.get('/public/disclosure', disclosureHandler);
+
 let sitemapCache: { xml: string; expiresAt: number } | null = null;
 
 export function resetSitemapCacheForTesting(): void {
@@ -1349,7 +1587,7 @@ app.get('/sitemap.xml', async (c) => {
   let auditUrlsSucceeded = true;
   try {
     const { SiteAuditService } = await import('./tools/site-audit/site-audit-service.js');
-    const domains = await SiteAuditService.getInstance().getAllAuditedDomains({ throwOnError: true });
+    const domains = await SiteAuditService.getInstance().getAllAuditedDomains({ strict: true });
     auditUrls = domains.map(d => `${baseUrl}/audit/${d}`);
   } catch {
     auditUrlsSucceeded = false;
@@ -1367,7 +1605,12 @@ app.get('/sitemap.xml', async (c) => {
     `${baseUrl}/tools/financial-radar`,
     `${baseUrl}/tools/lead-leakage-calculator`,
     `${baseUrl}/revenue`,
-    `${baseUrl}/public/disclosure`
+    `${baseUrl}/disclosure`,
+    `${baseUrl}/public/disclosure`,
+    `${baseUrl}/privacy`,
+    `${baseUrl}/terms`,
+    `${baseUrl}/refund`,
+    `${baseUrl}/contact`
   ];
 
   const contentUrls = publishedSlugs.map(a => `${baseUrl}/guides/${a.slug}`);
@@ -1379,8 +1622,9 @@ app.get('/sitemap.xml', async (c) => {
 
   const sitemapXml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${xmlEntries}\n</urlset>`;
 
-  const sitemapSucceeded = dealGenerationSucceeded && publishedSlugsSucceeded && auditUrlsSucceeded;
-  if (shouldCache && sitemapSucceeded) {
+  const sitemapIncomplete = !dealGenerationSucceeded || !publishedSlugsSucceeded || !auditUrlsSucceeded;
+  const sitemapSucceeded = !sitemapIncomplete;
+  if (shouldCache && !sitemapIncomplete) {
     sitemapCache = {
       xml: sitemapXml,
       expiresAt: Date.now() + 15 * 60 * 1000 // 15-minute in-memory cache

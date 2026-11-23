@@ -3258,7 +3258,7 @@ apiRouter.post('/payments/razorpay/create-order', async (c) => {
     if (!body.sku || !String(body.sku).trim()) {
       return c.json({
         success: false,
-        error: 'INVALID_SKU: SKU is required. Allowed SKUs: sitefix_core_499 (₹499), sitefix_competitor_keyword_pack (₹1,999).'
+        error: 'INVALID_SKU: SKU is required. Allowed SKUs: SITEFIX_AI_PACK_V1 (₹499), sitefix_competitor_keyword_pack (₹1,999).'
       }, 400);
     }
     try {
@@ -15144,7 +15144,7 @@ const handleSiteAuditVerifyPayment = async (c: any) => {
   }
 
   // 7. Generate delivery entitlement only after capture is proven
-  const downloadToken = service.generateDeliveryToken(orderId, auditId, paymentId, 72);
+  const downloadToken = service.generateDeliveryToken(orderId, auditId, paymentId, 168);
   const downloadUrl = `/api/v1/tools/site-audit/${auditId}/deliverable?token=${downloadToken}`;
 
   try {
@@ -15279,7 +15279,7 @@ const handleSiteAuditPaymentStatus = async (c: any) => {
 
   if (isCaptured) {
     const paymentId = order.payment_id;
-    downloadToken = service.generateDeliveryToken(orderId, auditId, paymentId, 72);
+    downloadToken = service.generateDeliveryToken(orderId, auditId, paymentId, 168);
     downloadUrl = `/api/v1/tools/site-audit/${auditId}/deliverable?token=${downloadToken}`;
   }
 

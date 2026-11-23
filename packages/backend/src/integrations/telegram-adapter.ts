@@ -403,6 +403,7 @@ export class TelegramBotAdapter {
 
     // Atomic per-deal/per-day durable claim to prevent duplicate concurrent syndication
     let claimId: string | null = null;
+    let claimAcquired = false;
     if (options.dealId) {
       const utcDate = new Date().toISOString().split('T')[0];
       const claimHash = createHash('sha256').update(`${utcDate}:${options.dealId}`).digest('hex').slice(0, 36);
@@ -425,6 +426,7 @@ export class TelegramBotAdapter {
            VALUES (?, 'TELEGRAM_POST_CLAIMED', 'org_owner_primary', ?, datetime('now'))`,
           [claimId, JSON.stringify({ dealId: options.dealId, guideUrl: options.guideUrl, channelId, claimedAt: new Date().toISOString() })]
         );
+        claimAcquired = true;
         TelegramBotAdapter.telegramPostCountCache = null;
       } catch (claimErr: any) {
         if (String(claimErr?.message || '').toLowerCase().includes('unique')) {
@@ -433,6 +435,10 @@ export class TelegramBotAdapter {
             reason: `DUPLICATE_DEAL_POST_BLOCKED: Deal '${options.dealId}' already claimed.`
           };
         }
+        return {
+          posted: false,
+          reason: `TELEGRAM_CLAIM_FAILED: ${claimErr?.message || 'Failed to acquire deal claim'}`
+        };
       }
     }
 
@@ -460,7 +466,7 @@ export class TelegramBotAdapter {
         // Release BEFORE reading error body so body-read failures cannot leave the rejected post's claim held.
         // For uncertain outcomes (HTTP 429 rate limit or 5xx server errors), PRESERVE the claim to prevent duplicate syndication.
         const isDeterministicRejection = res.status >= 400 && res.status < 500 && res.status !== 429;
-        if (claimId && isDeterministicRejection) {
+        if (claimId && claimAcquired && isDeterministicRejection) {
           try {
             await this.d1Repo.executeWrite(
               'durable_events',

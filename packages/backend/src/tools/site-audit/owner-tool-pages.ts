@@ -780,8 +780,13 @@ export function renderOwnerToolPage(
     <nav aria-label="Tool directory">
       ${navLinksHtml}
       <a href="${escapeHtmlAttr(checkoutOrigin)}/tools/site-audit">Full Website Audit</a>
+      <a href="${escapeHtmlAttr(checkoutOrigin)}/privacy">Privacy Policy</a>
+      <a href="${escapeHtmlAttr(checkoutOrigin)}/terms">Terms of Service</a>
+      <a href="${escapeHtmlAttr(checkoutOrigin)}/refund">7-Day Refund Policy</a>
+      <a href="${escapeHtmlAttr(checkoutOrigin)}/contact">Contact</a>
     </nav>
     <p>SiteFix AI • Deterministic single-URL technical inspection. No ranking guarantees or invented metrics.</p>
+    <p style="margin-top: 0.4rem; font-size: 0.78rem; color: #94a3b8;">7-Day 100% Refund Policy: Full refund if Fix-Pack deliverables fail verification recheck. Support: <a href="mailto:support@ai-marketing-organization.com" style="color: #38bdf8;">support@ai-marketing-organization.com</a></p>
   </footer>
 
   <script>

@@ -555,6 +555,7 @@ export class StaticSiteGenerator {
       { path: 'contact', title: 'Contact & Grievance Redressal', render: () => this.renderContactHtml(config) },
       { path: 'privacy', title: 'Privacy Policy', render: () => this.renderPrivacyHtml(config) },
       { path: 'terms', title: 'Terms of Service', render: () => this.renderTermsHtml(config) },
+      { path: 'refund', title: 'Cancellation & Refund Policy', render: () => this.renderRefundHtml(config) },
       { path: 'disclosure', title: 'Affiliate & Commercial Referral Disclosure', render: () => this.renderDisclosureHtml(config) }
     ];
 
@@ -674,6 +675,7 @@ export class StaticSiteGenerator {
       <a href="/contact">Contact</a>
       <a href="/privacy">Privacy Policy</a>
       <a href="/terms">Terms of Service</a>
+      <a href="/refund">7-Day Refund Policy</a>
       <a href="/disclosure">Affiliate Disclosure</a>
     </nav>
     <p>&copy; ${new Date().getFullYear()} ${this.escapeHtml(config.siteName)}. All rights reserved.</p>
@@ -798,6 +800,7 @@ export class StaticSiteGenerator {
       <a href="/contact">Contact</a>
       <a href="/privacy">Privacy Policy</a>
       <a href="/terms">Terms of Service</a>
+      <a href="/refund">7-Day Refund Policy</a>
       <a href="/disclosure">Affiliate Disclosure</a>
     </nav>
     <p>&copy; ${new Date().getFullYear()} ${this.escapeHtml(config.siteName)}. All rights reserved.</p>
@@ -1107,6 +1110,7 @@ export class StaticSiteGenerator {
       <a href="/contact">Contact</a>
       <a href="/privacy">Privacy Policy</a>
       <a href="/terms">Terms of Service</a>
+      <a href="/refund">7-Day Refund Policy</a>
       <a href="/disclosure">Affiliate Disclosure</a>
     </nav>
     <p>&copy; ${new Date().getFullYear()} ${this.escapeHtml(config.siteName)}. All rights reserved.</p>
@@ -2036,6 +2040,20 @@ ${this.serializeSafeJsonLd(faqSchema, true)}
     `);
   }
 
+  public renderRefundHtml(config: StaticSiteConfig): string {
+    return this.renderLegalLayout('Cancellation & Refund Policy', config, `
+      <h1>Cancellation &amp; Refund Policy</h1>
+      <p><em>Last updated: November 2026</em></p>
+      <div style="background: rgba(56, 189, 248, 0.1); border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 8px; padding: 1.2rem; margin: 1.5rem 0; font-size: 1.05rem; color: #bae6fd; font-weight: 500;">
+        <strong>7-Day 100% Money-Back Guarantee:</strong> Every purchase of the SiteFix AI Technical Fix-Pack (₹499) includes an automated verification recheck. If the supplied Fix-Pack code and instructions fail to resolve reported technical diagnostic defects upon running your verification recheck within 7 days of purchase, you are eligible for an immediate, full refund.
+      </div>
+      <h2>How to Request a Refund</h2>
+      <p>Email our support team at <a href="mailto:${this.escapeHtml(config.contactEmail)}" style="color: #38bdf8;">${this.escapeHtml(config.contactEmail)}</a> with your Order ID (ord_rzp_...) and target website domain. Refunds are processed within 24 to 48 business hours and credited back to your original payment method (UPI / Card / NetBanking) via our payment gateway Razorpay within 5–7 business days according to standard banking settlement schedules.</p>
+      <h2>Digital Fulfillment &amp; Cancellation</h2>
+      <p>Because technical Fix-Packs are generated dynamically and delivered instantly with a 7-day (168-hour) cryptographic download token, pre-delivery cancellation is not applicable; our 7-day satisfaction guarantee applies post-delivery.</p>
+    `);
+  }
+
   public renderDisclosureHtml(config: StaticSiteConfig): string {
     return this.renderLegalLayout('Affiliate & Commercial Referral Disclosure', config, `
       <h1>Affiliate &amp; Commercial Referral Disclosure</h1>
@@ -2061,6 +2079,9 @@ ${this.serializeSafeJsonLd(faqSchema, true)}
       'privacy policy': 'privacy',
       'terms': 'terms',
       'terms of service': 'terms',
+      'refund': 'refund',
+      'refund policy': 'refund',
+      'cancellation & refund policy': 'refund',
       'disclosure': 'disclosure',
       'affiliate & commercial referral disclosure': 'disclosure'
     };
@@ -2106,6 +2127,7 @@ ${this.serializeSafeJsonLd(faqSchema, true)}
       <a href="/contact">Contact</a>
       <a href="/privacy">Privacy Policy</a>
       <a href="/terms">Terms of Service</a>
+      <a href="/refund">7-Day Refund Policy</a>
       <a href="/disclosure">Affiliate Disclosure</a>
     </nav>
     <p>&copy; ${new Date().getFullYear()} ${this.escapeHtml(config.siteName)}. All rights reserved.</p>
@@ -2124,6 +2146,7 @@ ${this.serializeSafeJsonLd(faqSchema, true)}
       `${config.siteUrl}/contact`,
       `${config.siteUrl}/privacy`,
       `${config.siteUrl}/terms`,
+      `${config.siteUrl}/refund`,
       `${config.siteUrl}/disclosure`,
       ...guides.map(g => `${config.siteUrl}/guides/${g.slug}`)
     ];

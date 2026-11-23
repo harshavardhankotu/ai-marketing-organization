@@ -6,8 +6,8 @@
  * - Displays truthful fail-closed status when checkout is locked.
  */
 
-import { getDirectUpiConfig, getSiteAuditFixpackPriceINR } from '../../config/env.js';
-
+import { getDirectUpiConfig } from '../../config/env.js';
+import { CANONICAL_SITEFIX_TERMS } from './site-audit-service.js';
 import { renderCustomerDeskWidgetHtml } from '../../revenue/customer-desk-widget.js';
 
 export interface SiteFixAbAssignment {
@@ -20,7 +20,7 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
   const upiCfg = getDirectUpiConfig();
   const upiVpa = upiCfg.configured && upiCfg.vpa ? upiCfg.vpa : null;
   const upiPayeeName = upiCfg.payeeName || 'AI Marketing Organization';
-  const fixpackPrice = getSiteAuditFixpackPriceINR() ?? 499;
+  const fixpackPrice = CANONICAL_SITEFIX_TERMS.priceINR;
   const sitefixExpId = abAssignment?.experimentId || 'exp_storefront_sitefix_cta';
   const sitefixVariant = abAssignment?.variant || 'baseline';
   const sitefixCtaText = abAssignment?.ctaText || `Unlock Instant Ready-to-Paste Fix-Pack — ₹${fixpackPrice}`;
@@ -439,7 +439,7 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
         <div class="download-success-box" id="downloadSuccessBox">
           <h4 style="color: var(--success); margin-bottom: 0.5rem;">Payment Verified Successfully!</h4>
           <p style="font-size: 0.9rem; color: #d1d5db; margin-bottom: 0.75rem;">
-            Your 72-hour entitlement token has been issued. Click below to download your complete Optimization Fix-Pack.
+            Your 7-day (168-hour) entitlement token has been issued. Click below to download your complete Optimization Fix-Pack.
           </p>
           <div id="downloadRefDetails" style="font-family: monospace; font-size: 0.82rem; color: #94a3b8; margin-bottom: 1rem; line-height: 1.5;"></div>
           <a id="downloadLink" href="#" class="btn-primary" style="display: inline-block; text-decoration: none; max-width: 300px; padding: 0.75rem 1.5rem;" target="_blank">
@@ -686,6 +686,7 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
         const checkoutUrl = '/api/v1/payments/razorpay/create-order';
         const checkoutPayload = {
           sku: 'SITEFIX_AI_PACK_V1',
+          amountINR: 499,
           domainOrUrl: targetDomain,
           buyerEmail: buyerEmail,
           source: getLaunchAttributionSource()
@@ -747,8 +748,9 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
               });
               const verifyData = await verifyRes.json();
               const downloadUrl = verifyData.downloadUrl || verifyData.data?.downloadUrl;
+              const token = verifyData.recheckToken || verifyData.downloadToken || verifyData.data?.recheckToken || verifyData.data?.downloadToken;
               if (verifyData.success && downloadUrl) {
-                showDownloadSuccess(downloadUrl, response.razorpay_payment_id, data.orderId || response.razorpay_order_id);
+                showDownloadSuccess(downloadUrl, response.razorpay_payment_id, data.orderId || response.razorpay_order_id, token);
               } else {
                 alert('Payment received but verification pending. Please poll: ' + (verifyData.error || 'Unknown error'));
               }
@@ -808,8 +810,13 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
       return expMs !== null && Date.now() <= expMs;
     }
 
+    let currentPurchaseRecheckToken = '';
+
     function getValidRecheckToken() {
       try {
+        if (currentPurchaseRecheckToken && isEmbeddedRecheckTokenValid(currentPurchaseRecheckToken)) {
+          return currentPurchaseRecheckToken;
+        }
         const params = new URLSearchParams(window.location.search || '');
         const urlToken = (params.get('recheckToken') || params.get('token') || '').trim();
         if (urlToken) {
@@ -872,16 +879,20 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
       }
     }
 
-    function showDownloadSuccess(downloadUrl, paymentId, orderId) {
+    function showDownloadSuccess(downloadUrl, paymentId, orderId, token) {
       document.getElementById('checkoutActionContainer').style.display = 'none';
       const box = document.getElementById('downloadSuccessBox');
       box.style.display = 'block';
       const link = document.getElementById('downloadLink');
       link.href = downloadUrl;
       try {
-        const parsed = new URL(downloadUrl, window.location.origin);
-        const dlToken = parsed.searchParams.get('token');
+        let dlToken = token || '';
+        if (!dlToken && downloadUrl) {
+          const parsed = new URL(downloadUrl, window.location.origin);
+          dlToken = parsed.searchParams.get('token') || parsed.pathname.split('/').filter(Boolean).pop() || '';
+        }
         if (dlToken && isEmbeddedRecheckTokenValid(dlToken)) {
+          currentPurchaseRecheckToken = dlToken;
           localStorage.setItem('sitefix_recheck_token', dlToken);
         }
       } catch {}
@@ -1124,6 +1135,20 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
       } catch {}
     });
   </script>
+  <footer style="margin-top: 3rem; border-top: 1px solid var(--card-border); padding: 2rem 1rem; text-align: center; color: var(--text-muted); font-size: 0.85rem;">
+    <nav style="display: flex; flex-wrap: wrap; justify-content: center; gap: 1.25rem; margin-bottom: 0.75rem;">
+      <a href="/" style="color: var(--text-muted); text-decoration: none;">Home</a>
+      <a href="/deals" style="color: var(--text-muted); text-decoration: none;">Verified Deals</a>
+      <a href="/tools/site-audit" style="color: var(--text-muted); text-decoration: none;">Full Site Audit</a>
+      <a href="/privacy" style="color: var(--text-muted); text-decoration: none;">Privacy Policy</a>
+      <a href="/terms" style="color: var(--text-muted); text-decoration: none;">Terms of Service</a>
+      <a href="/refund" style="color: var(--text-muted); text-decoration: none;">7-Day Refund Policy</a>
+      <a href="/contact" style="color: var(--text-muted); text-decoration: none;">Contact &amp; Grievance</a>
+      <a href="/disclosure" style="color: var(--text-muted); text-decoration: none;">Affiliate Disclosure</a>
+    </nav>
+    <p style="margin-bottom: 0.4rem;"><strong>7-Day 100% Refund Policy:</strong> Full refund if Fix-Pack deliverables fail verification recheck. Support: <a href="mailto:support@ai-marketing-organization.com" style="color: var(--primary); text-decoration: underline;">support@ai-marketing-organization.com</a></p>
+    <p style="font-size: 0.8rem; color: #6b7280;">&copy; ${new Date().getFullYear()} AI Marketing Organization. All rights reserved. Registered in Hyderabad, Telangana, India.</p>
+  </footer>
   ${renderCustomerDeskWidgetHtml('SITEFIX_AI_PACK_V1')}
 </body>
 </html>`;
