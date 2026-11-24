@@ -15,6 +15,15 @@ export type SiteFixLaunchSource =
   | 'web_json_ld';
 
 export type SiteFixFunnelStage =
+  | 'page_view'
+  | 'scan_started'
+  | 'scan_completed'
+  | 'preview_displayed'
+  | 'order_created'
+  | 'checkout_modal_opened'
+  | 'payment_captured'
+  | 'deliverable_ready'
+  | 'email_delivered'
   | 'scan_attempt'
   | 'scan'
   | 'preview_open'
@@ -25,11 +34,14 @@ export type SiteFixFunnelStage =
 export type SiteFixFunnelStorageStatus =
   | 'PERSISTED_D1'
   | 'PERSISTED_LOCAL'
+  | 'FALLBACK_LOCAL_ONLY'
   | 'WRITE_FAILED';
 
 export interface SiteFixFunnelRecordResult {
   persisted: boolean;
   storageStatus: SiteFixFunnelStorageStatus;
+  recorded?: boolean;
+  d1Persisted?: boolean;
   error?: string;
 }
 
@@ -283,6 +295,21 @@ export function classifySiteFixProbe(
 export interface SiteFixFunnelStageCounts {
   /** Distinct daily-salted SHA-256 IP+UA fingerprints observed in the reporting window (not verified unique people). */
   distinctVisitorFingerprints: number;
+  distinctSessionFingerprints: number;
+  externalPageViews: number;
+
+  // 9 Clean Funnel Stages (Stage U.1)
+  page_view: number;
+  scan_started: number;
+  scan_completed: number;
+  preview_displayed: number;
+  order_created: number;
+  checkout_modal_opened: number;
+  payment_captured: number;
+  deliverable_ready: number;
+  email_delivered: number;
+
+  // Backward-compatibility counters
   scanAttempts: number;
   completedScans: number;
   scan: number;
@@ -308,6 +335,17 @@ export interface SiteFixFunnelAttributionSummary {
 function emptyStageCounts(): SiteFixFunnelStageCounts {
   return {
     distinctVisitorFingerprints: 0,
+    distinctSessionFingerprints: 0,
+    externalPageViews: 0,
+    page_view: 0,
+    scan_started: 0,
+    scan_completed: 0,
+    preview_displayed: 0,
+    order_created: 0,
+    checkout_modal_opened: 0,
+    payment_captured: 0,
+    deliverable_ready: 0,
+    email_delivered: 0,
     scanAttempts: 0,
     completedScans: 0,
     scan: 0,
@@ -474,7 +512,13 @@ export async function recordToolVisitSession(params: {
   utmMedium?: string | null;
   utmCampaign?: string | null;
   utmContent?: string | null;
-}): Promise<{ recorded: boolean; isExternal: boolean; sessionId: string }> {
+}): Promise<{
+  recorded: boolean;
+  isExternal: boolean;
+  sessionId: string;
+  d1Persisted: boolean;
+  storageStatus: 'PERSISTED_D1' | 'FALLBACK_LOCAL_ONLY' | 'WRITE_FAILED';
+}> {
   const isExternal = !params.isProbe;
   const trafficEvidenceStatus = isExternal ? 'VERIFIED_EXTERNAL' : 'TEST';
   const verificationReason = isExternal ? 'GENUINE_BROWSER_VISIT' : (params.probeReason || 'DIAGNOSTIC_OR_BOT_TRAFFIC');
@@ -513,26 +557,41 @@ export async function recordToolVisitSession(params: {
   const d1Repo = D1RevenueRepository.getInstance();
   const useRemoteD1 = d1Repo.isRemoteD1Configured() && isProduction() && !process.env.VITEST;
 
+  let d1Persisted = false;
+  let storageStatus: 'PERSISTED_D1' | 'FALLBACK_LOCAL_ONLY' | 'WRITE_FAILED' = 'FALLBACK_LOCAL_ONLY';
+  let recorded = false;
+
   if (useRemoteD1) {
     try {
       await d1Repo.executeWrite('traffic_sessions', sql, sqlParams);
+      d1Persisted = true;
+      storageStatus = 'PERSISTED_D1';
+      recorded = true;
     } catch (err: any) {
       console.warn('[SiteFixFunnelAttribution] D1 traffic_sessions write error:', err.message);
+      storageStatus = 'WRITE_FAILED';
     }
     try {
       getDb().prepare(sql).run(...sqlParams);
+      if (!d1Persisted) {
+        storageStatus = 'FALLBACK_LOCAL_ONLY';
+        recorded = true;
+      }
     } catch {}
   } else {
     try {
       getDb().prepare(sql).run(...sqlParams);
+      storageStatus = 'FALLBACK_LOCAL_ONLY';
+      recorded = true;
     } catch (err: any) {
       console.warn('[SiteFixFunnelAttribution] Local traffic_sessions write error:', err.message);
+      storageStatus = 'WRITE_FAILED';
     }
   }
 
-  // Also record the preview_open event in durable_events
+  // Record ONLY page_view event in durable_events (Stage U.1: stop logging preview_open on page load)
   await recordSiteFixFunnelEvent({
-    stage: 'preview_open',
+    stage: 'page_view',
     source: normalizedSource,
     isProbe: params.isProbe,
     probeReason: params.probeReason,
@@ -544,9 +603,11 @@ export async function recordToolVisitSession(params: {
   invalidateFunnelAttributionCache();
 
   return {
-    recorded: true,
+    recorded,
     isExternal,
-    sessionId
+    sessionId,
+    d1Persisted,
+    storageStatus
   };
 }
 
@@ -626,42 +687,71 @@ function aggregateFunnelRows(
         fingerprintsBySource[source].add(vHash);
       }
 
-      if (stage === 'scan_attempt') {
+      if (stage === 'page_view') {
+        totals.page_view++;
+        totals.externalPageViews++;
+        bySource[source].page_view++;
+        bySource[source].externalPageViews++;
+      } else if (stage === 'scan_started' || stage === 'scan_attempt') {
+        totals.scan_started++;
         totals.scanAttempts++;
+        bySource[source].scan_started++;
         bySource[source].scanAttempts++;
-      } else if (stage === 'scan') {
-        totals.scan++;
+      } else if (stage === 'scan_completed' || stage === 'scan') {
+        totals.scan_completed++;
         totals.completedScans++;
-        bySource[source].scan++;
+        totals.scan++;
+        bySource[source].scan_completed++;
         bySource[source].completedScans++;
-      } else if (stage === 'preview_open') {
+        bySource[source].scan++;
+      } else if (stage === 'preview_displayed' || stage === 'preview_open') {
+        totals.preview_displayed++;
         totals.preview_open++;
+        bySource[source].preview_displayed++;
         bySource[source].preview_open++;
-      } else if (stage === 'checkout_start') {
+      } else if (stage === 'order_created' || stage === 'checkout_start') {
+        totals.order_created++;
         totals.checkout_start++;
+        bySource[source].order_created++;
         bySource[source].checkout_start++;
-      } else if (stage === 'capture') {
+      } else if (stage === 'checkout_modal_opened') {
+        totals.checkout_modal_opened++;
+        totals.checkout_start = Math.max(totals.checkout_start, totals.checkout_modal_opened);
+        bySource[source].checkout_modal_opened++;
+        bySource[source].checkout_start = Math.max(bySource[source].checkout_start, bySource[source].checkout_modal_opened);
+      } else if (stage === 'payment_captured' || stage === 'capture') {
+        totals.payment_captured++;
         totals.capture++;
+        bySource[source].payment_captured++;
         bySource[source].capture++;
-      } else if (stage === 'delivery') {
+      } else if (stage === 'deliverable_ready' || stage === 'delivery') {
+        totals.deliverable_ready++;
         totals.delivery++;
         totals.delivered++;
+        bySource[source].deliverable_ready++;
         bySource[source].delivery++;
         bySource[source].delivered++;
+      } else if (stage === 'email_delivered') {
+        totals.email_delivered++;
+        bySource[source].email_delivered++;
       }
     } catch {}
   }
 
   totals.distinctVisitorFingerprints = totalFingerprints.size;
+  totals.distinctSessionFingerprints = totalFingerprints.size;
   for (const src of ALLOWED_SITEFIX_SOURCES) {
     bySource[src].distinctVisitorFingerprints = fingerprintsBySource[src].size;
-    // If historical scan rows exist without separate scan_attempt events, ensure scanAttempts >= completedScans
+    bySource[src].distinctSessionFingerprints = fingerprintsBySource[src].size;
+    // If historical scan rows exist without separate scan_started events, ensure scanAttempts >= completedScans
     if (bySource[src].scanAttempts < bySource[src].completedScans) {
       bySource[src].scanAttempts = bySource[src].completedScans;
+      bySource[src].scan_started = bySource[src].completedScans;
     }
   }
   if (totals.scanAttempts < totals.completedScans) {
     totals.scanAttempts = totals.completedScans;
+    totals.scan_started = totals.completedScans;
   }
 
   return {

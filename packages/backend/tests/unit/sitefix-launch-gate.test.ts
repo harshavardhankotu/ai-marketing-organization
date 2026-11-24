@@ -952,11 +952,11 @@ describe('SiteFix Launch Gate — Part 1 Security/Payment/Ledger + Part 2 Pull I
       const todayJson = await todayRes.json() as any;
       const attr = todayJson.data?.sitefixFunnelAttribution;
       expect(attr).toBeDefined();
-      expect(attr.totals.preview_open).toBe(1);
-      expect(attr.bySource.cli.preview_open).toBe(1);
+      expect(attr.totals.page_view).toBe(1);
+      expect(attr.bySource.cli.page_view).toBe(1);
       expect(attr.totals.checkout_start).toBe(1);
       expect(attr.bySource.action.checkout_start).toBe(1);
-      expect(attr.bySource.web.preview_open).toBe(0);
+      expect(attr.bySource.web.page_view).toBe(0);
       expect(attr.excludedProbesCount).toBe(2);
 
       // Clean up test events

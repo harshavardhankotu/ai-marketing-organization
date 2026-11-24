@@ -295,7 +295,7 @@
           <li><strong>1. HTML &lt;head&gt; Meta &amp; Social Tags:</strong> Clean title, meta description, Open Graph, and Twitter/X Card tags.</li>
           <li><strong>2. Schema.org Structured Data:</strong> Syntax-validated JSON-LD (Organization, WebSite, or Product) tailored to your detected markup.</li>
           <li><strong>3. Search Engine Directives:</strong> Optimized <code>robots.txt</code> directives and declared <code>sitemap.xml</code> configuration.</li>
-          <li><strong>4. Instant Delivery:</strong> Instant downloadable fix files (.html, .json, .txt) plus immediate email backup.</li>
+          <li><strong>4. Instant Delivery:</strong> instant browser download + email receipt.</li>
           <li><strong>5. 7-Day Verification Recheck:</strong> 1 automated post-deployment recheck within 7 days to verify all tags validate live.</li>
           <li><strong>6. 7-Day Refund Guarantee:</strong> 100% money-back guarantee if technical fixes do not validate.</li>
         </ul>
@@ -1118,11 +1118,18 @@
       } catch {}
 
       try {
+        var sKey = 'sitefix_session_uuid';
+        var sessId = window.sessionStorage.getItem(sKey);
+        if (!sessId) {
+          sessId = 'sess_' + (window.crypto && window.crypto.randomUUID ? window.crypto.randomUUID().replace(/-/g, '') : Math.random().toString(36).substring(2) + Date.now().toString(36));
+          window.sessionStorage.setItem(sKey, sessId);
+        }
         fetch('/api/v1/referrals/beacon', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             source: 'site-audit',
+            sessionId: sessId,
             url: window.location.href,
             referrer: document.referrer || ''
           }),

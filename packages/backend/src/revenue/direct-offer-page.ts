@@ -804,6 +804,9 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <style>
       <p style="color: #94a3b8; font-size: 0.88rem; margin-bottom: 0.75rem;">Direct online checkout is disabled until commercial terms are attested by the owner.</p>
       <h1>SiteFix Launch Gate — Technical Website QA</h1>
       <p class="subtitle">Deterministic pre-deployment HTML metadata, Open Graph, Schema.org JSON-LD, robots.txt, and sitemap.xml auditing for web teams.</p>
+      <div style="margin-top: 1.25rem;">
+        <a href="/tools/site-audit" class="btn btn-primary" style="display: inline-block; background: #06b6d4; color: #090d16; font-weight: 700; padding: 0.75rem 1.4rem; border-radius: 8px; text-decoration: none; font-size: 0.95rem;">Run Free Website Audit &amp; Technical Fix-Pack &rarr;</a>
+      </div>
     </header>
 
     <div class="card">
@@ -835,10 +838,16 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <style>
   <script>
     (function() {
       try {
+        var sKey = 'sitefix_session_uuid';
+        var sessId = window.sessionStorage.getItem(sKey);
+        if (!sessId) {
+          sessId = 'sess_' + (window.crypto && window.crypto.randomUUID ? window.crypto.randomUUID().replace(/-/g, '') : Math.random().toString(36).substring(2) + Date.now().toString(36));
+          window.sessionStorage.setItem(sKey, sessId);
+        }
         fetch('/api/v1/referrals/beacon', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path: '/offer', referrer: document.referrer || '' })
+          body: JSON.stringify({ path: '/offer', source: 'web', sessionId: sessId, referrer: document.referrer || '' })
         }).catch(function() {});
       } catch (e) {}
     })();
@@ -884,6 +893,9 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <style>
     <div class="card">
       <h2>Pricing Status: TBD</h2>
       <p style="color: #cbd5e1; margin-top: 0.5rem;">Direct online checkout is disabled while commercial pricing is marked <strong>TBD</strong> in the attested offer specification.</p>
+      <div style="margin-top: 1rem;">
+        <a href="/tools/site-audit" class="btn btn-primary" style="display: inline-block; background: #06b6d4; color: #090d16; font-weight: 700; padding: 0.75rem 1.4rem; border-radius: 8px; text-decoration: none; font-size: 0.95rem;">Run Free Website Audit &amp; Access Fix-Pack &rarr;</a>
+      </div>
       ${snapshot.disclaimer ? `<p style="color: #94a3b8; font-size: 0.88rem; margin-top: 1rem;">${escapeHtmlText(snapshot.disclaimer)}</p>` : ''}
     </div>
   </div>

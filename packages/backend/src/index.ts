@@ -524,8 +524,12 @@ app.get('/images/razorpay-upi-qr.jpg', async (c) => {
 });
 app.get('/assets/razorpay-upi-qr.jpg', (c) => c.redirect('/images/razorpay-upi-qr.jpg', 301));
 
-// Checkout Redirect (Directs to official offer and payment checkout page)
-app.get('/checkout', (c) => c.redirect('/offer', 302));
+// Checkout Redirect (Directs to attested ₹499 SiteFix checkout)
+app.get('/checkout', (c) => {
+  const url = new URL(c.req.url);
+  const target = url.search ? `/tools/site-audit${url.search}` : '/tools/site-audit';
+  return c.redirect(target, 302);
+});
 
 // Proposal Checkout Page (Method A Razorpay Link + Method B UPI QR)
 app.get('/proposals/:id/checkout', async (c) => {
