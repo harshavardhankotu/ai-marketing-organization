@@ -180,6 +180,8 @@ export const EXACT_ROUTE_POLICY = {
     '/public/autonomy-status',
     '/public/mcp',
     '/public/scan',
+    '/b2b',
+    '/b2b/pilot-proposal',
     '/deals',
     '/best',
     '/vs',
