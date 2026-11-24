@@ -184,6 +184,7 @@ export interface SiteAuditResult {
   diagnostics?: SiteAuditDetailedDiagnostics;
   prospectSignals?: ProspectTriggerSignals;
   pageSpeed?: SiteAuditPageSpeedData;
+  pageSpeedStatus?: 'SUCCESS' | 'UNAVAILABLE' | 'UNAVAILABLE_RATE_LIMITED' | 'UNAVAILABLE_KEY_ERROR';
   businessName?: string;
   domain?: string;
   probedAt?: string;
