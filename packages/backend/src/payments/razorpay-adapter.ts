@@ -1152,9 +1152,10 @@ export class RazorpayStandardAdapter {
   }
 
   /**
-   * Idempotently reconciles refund.processed webhook event (Spec Stage U.1.1).
-   * Records refund into processed_webhook_events, updates universal_orders & payment_orders,
-   * preserves captured transaction for gross accounting, and computes netCapturedINR.
+   * Idempotently reconciles refund.processed webhook event (Spec Stage U.1.1, PR #91 Hardening).
+   * Persists deduplicated refund into durable_events and processed_webhook_events,
+   * accurately computes partial vs full refund status, preserves captured gross amounts,
+   * and fails closed by throwing on any persistence failure (triggering HTTP 503 retry).
    */
   public async handleRefundProcessed(params: {
     eventId: string;
@@ -1164,71 +1165,171 @@ export class RazorpayStandardAdapter {
     paymentId?: string;
     amountPaise: number;
     rawPayload: any;
-  }): Promise<{ processed: boolean; duplicate?: boolean; refundAmountINR: number; orderId?: string }> {
+  }): Promise<{ processed: boolean; duplicate?: boolean; refundAmountINR: number; orderId?: string; status: 'REFUNDED' | 'PARTIALLY_REFUNDED' }> {
     const refundAmountINR = params.amountPaise > 0 ? params.amountPaise / 100 : 0;
     const isProd = isProduction() && !process.env.VITEST;
-
-    // Idempotency check via processed_webhook_events
-    try {
-      let existing: any = null;
-      if (isProd) {
-        existing = await this.d1Repo.queryOne<any>(
-          'processed_webhook_events',
-          'SELECT event_id FROM processed_webhook_events WHERE event_id = ?',
-          [params.eventId]
-        );
-      } else {
-        existing = getDb()
-          .prepare('SELECT event_id FROM processed_webhook_events WHERE event_id = ?')
-          .get(params.eventId);
-      }
-      if (existing) {
-        return { processed: true, duplicate: true, refundAmountINR, orderId: params.orderId };
-      }
-    } catch (e: any) {
-      console.warn(`[RazorpayAdapter] Webhook deduplication query warning: ${e.message}`);
-    }
-
-    // Insert into processed_webhook_events
-    try {
-      const insertSql = `INSERT OR IGNORE INTO processed_webhook_events (event_id, event_type, payload_hash, order_id, payment_id, created_at) VALUES (?, 'refund.processed', ?, ?, ?, datetime('now'))`;
-      if (isProd) {
-        await this.d1Repo.executeWrite('processed_webhook_events', insertSql, [
-          params.eventId,
-          params.payloadHash,
-          params.orderId || null,
-          params.paymentId || null
-        ]);
-      } else {
-        getDb().prepare(insertSql).run(params.eventId, params.payloadHash, params.orderId || null, params.paymentId || null);
-      }
-    } catch (insErr: any) {
-      console.warn(`[RazorpayAdapter] processed_webhook_events insert warning: ${insErr.message}`);
-    }
-
-    // Update universal_orders and payment_orders status to REFUNDED
     const targetOrderId = params.orderId;
     const targetPaymentId = params.paymentId;
-    if (targetOrderId || targetPaymentId) {
-      const orderUpdateSql = `UPDATE universal_orders SET status = 'REFUNDED', updated_at = datetime('now') WHERE id = ? OR provider_order_id = ? OR provider_payment_id = ?`;
-      const poUpdateSql = `UPDATE payment_orders SET status = 'REFUNDED', updated_at = datetime('now') WHERE order_id = ? OR payment_id = ?`;
-      if (isProd) {
-        try {
-          await this.d1Repo.executeWrite('universal_orders', orderUpdateSql, [targetOrderId || '', targetOrderId || '', targetPaymentId || '']);
-        } catch {}
-        try {
-          await this.d1Repo.executeWrite('payment_orders', poUpdateSql, [targetOrderId || '', targetPaymentId || '']);
-        } catch {}
-      } else {
-        try {
-          getDb().prepare(orderUpdateSql).run(targetOrderId || '', targetOrderId || '', targetPaymentId || '');
-        } catch {}
-        try {
-          getDb().prepare(poUpdateSql).run(targetOrderId || '', targetPaymentId || '');
-        } catch {}
+    const refundDurableEventId = `rfnd_evt_${params.refundId}`;
+
+    // 1. Strict Idempotency check via processed_webhook_events AND durable_events
+    let isDuplicate = false;
+    if (isProd) {
+      const existingWebhook = await this.d1Repo.queryOne<any>(
+        'processed_webhook_events',
+        'SELECT event_id FROM processed_webhook_events WHERE event_id = ?',
+        [params.eventId]
+      );
+      if (existingWebhook) isDuplicate = true;
+
+      if (!isDuplicate) {
+        const existingDurable = await this.d1Repo.queryOne<any>(
+          'durable_events',
+          'SELECT id FROM durable_events WHERE id = ?',
+          [refundDurableEventId]
+        );
+        if (existingDurable) isDuplicate = true;
+      }
+    } else {
+      const db = getDb();
+      const existingWebhook = db.prepare('SELECT event_id FROM processed_webhook_events WHERE event_id = ?').get(params.eventId);
+      if (existingWebhook) isDuplicate = true;
+
+      if (!isDuplicate) {
+        const existingDurable = db.prepare('SELECT id FROM durable_events WHERE id = ?').get(refundDurableEventId);
+        if (existingDurable) isDuplicate = true;
       }
     }
 
-    return { processed: true, duplicate: false, refundAmountINR, orderId: targetOrderId };
+    if (isDuplicate) {
+      return { processed: true, duplicate: true, refundAmountINR, orderId: targetOrderId, status: 'REFUNDED' };
+    }
+
+    // 2. Fetch original order to check captured amount
+    let originalCapturedPaise = 0;
+    try {
+      if (targetOrderId || targetPaymentId) {
+        let uOrder: any = null;
+        if (isProd) {
+          uOrder = await this.d1Repo.queryOne<any>(
+            'universal_orders',
+            'SELECT amount_minor FROM universal_orders WHERE id = ? OR provider_order_id = ? OR provider_payment_id = ?',
+            [targetOrderId || '', targetOrderId || '', targetPaymentId || '']
+          );
+        } else {
+          uOrder = getDb()
+            .prepare('SELECT amount_minor FROM universal_orders WHERE id = ? OR provider_order_id = ? OR provider_payment_id = ?')
+            .get(targetOrderId || '', targetOrderId || '', targetPaymentId || '');
+        }
+        if (uOrder && typeof uOrder.amount_minor === 'number') {
+          originalCapturedPaise = uOrder.amount_minor;
+        } else {
+          // Check payment_orders fallback
+          let pOrder: any = null;
+          if (isProd) {
+            pOrder = await this.d1Repo.queryOne<any>(
+              'payment_orders',
+              'SELECT amount_inr, amount_paise FROM payment_orders WHERE order_id = ? OR payment_id = ?',
+              [targetOrderId || '', targetPaymentId || '']
+            );
+          } else {
+            pOrder = getDb()
+              .prepare('SELECT amount_inr, amount_paise FROM payment_orders WHERE order_id = ? OR payment_id = ?')
+              .get(targetOrderId || '', targetPaymentId || '');
+          }
+          if (pOrder) {
+            originalCapturedPaise = pOrder.amount_paise ?? Math.round((Number(pOrder.amount_inr) || 0) * 100);
+          }
+        }
+      }
+    } catch (fetchErr: any) {
+      console.warn(`[RazorpayAdapter] Failed to fetch original order for refund check: ${fetchErr.message}`);
+    }
+
+    // 3. Sum previous deduplicated refunds for this order/payment from durable_events
+    let cumulativeRefundedPaise = params.amountPaise;
+    try {
+      let pastRefundRows: any[] = [];
+      const pastRefundsSql = `SELECT payload_json FROM durable_events WHERE event_type = 'RAZORPAY_REFUND_PROCESSED'`;
+      if (isProd) {
+        pastRefundRows = await this.d1Repo.query<any>('durable_events', pastRefundsSql, []);
+      } else {
+        pastRefundRows = getDb().prepare(pastRefundsSql).all();
+      }
+      for (const row of pastRefundRows) {
+        try {
+          const p = typeof row.payload_json === 'string' ? JSON.parse(row.payload_json) : (row.payload_json || {});
+          if (
+            (targetOrderId && p.orderId === targetOrderId) ||
+            (targetPaymentId && p.paymentId === targetPaymentId)
+          ) {
+            if (p.refundId !== params.refundId) {
+              cumulativeRefundedPaise += Number(p.amountPaise || 0);
+            }
+          }
+        } catch {}
+      }
+    } catch (pastErr: any) {
+      console.warn(`[RazorpayAdapter] Warning checking past refunds: ${pastErr.message}`);
+    }
+
+    // Determine status: full vs partial refund
+    const isFullRefund = originalCapturedPaise > 0
+      ? cumulativeRefundedPaise >= originalCapturedPaise
+      : true;
+    const newStatus: 'REFUNDED' | 'PARTIALLY_REFUNDED' = isFullRefund ? 'REFUNDED' : 'PARTIALLY_REFUNDED';
+
+    const refundPayloadJson = JSON.stringify({
+      refundId: params.refundId,
+      paymentId: targetPaymentId || null,
+      orderId: targetOrderId || null,
+      amountPaise: params.amountPaise,
+      amountINR: refundAmountINR,
+      cumulativeRefundedPaise,
+      originalCapturedPaise,
+      newStatus,
+      reconciledAt: new Date().toISOString()
+    });
+
+    // 4. Persist to durable_events (FAIL CLOSED: do NOT swallow errors)
+    const durableInsertSql = `INSERT INTO durable_events (
+      id, event_type, organization_id, business_id, payload_json, processed, processed_at, created_at
+    ) VALUES (?, 'RAZORPAY_REFUND_PROCESSED', 'org_owner_primary', 'biz_platform_aro', ?, 1, datetime('now'), datetime('now'))
+    ON CONFLICT(id) DO NOTHING`;
+
+    if (isProd) {
+      await this.d1Repo.executeWrite('durable_events', durableInsertSql, [refundDurableEventId, refundPayloadJson]);
+    } else {
+      getDb().prepare(durableInsertSql).run(refundDurableEventId, refundPayloadJson);
+    }
+
+    // 5. Persist to processed_webhook_events (FAIL CLOSED)
+    const insertWebhookSql = `INSERT OR IGNORE INTO processed_webhook_events (event_id, event_type, payload_hash, order_id, payment_id, created_at) VALUES (?, 'refund.processed', ?, ?, ?, datetime('now'))`;
+    if (isProd) {
+      await this.d1Repo.executeWrite('processed_webhook_events', insertWebhookSql, [
+        params.eventId,
+        params.payloadHash,
+        targetOrderId || null,
+        targetPaymentId || null
+      ]);
+    } else {
+      getDb().prepare(insertWebhookSql).run(params.eventId, params.payloadHash, targetOrderId || null, targetPaymentId || null);
+    }
+
+    // 6. Update order records (FAIL CLOSED: throw if DB fails)
+    if (targetOrderId || targetPaymentId) {
+      const orderUpdateSql = `UPDATE universal_orders SET status = ?, updated_at = datetime('now') WHERE id = ? OR provider_order_id = ? OR provider_payment_id = ?`;
+      const poUpdateSql = `UPDATE payment_orders SET status = ?, updated_at = datetime('now') WHERE order_id = ? OR payment_id = ?`;
+
+      if (isProd) {
+        await this.d1Repo.executeWrite('universal_orders', orderUpdateSql, [newStatus, targetOrderId || '', targetOrderId || '', targetPaymentId || '']);
+        await this.d1Repo.executeWrite('payment_orders', poUpdateSql, [newStatus, targetOrderId || '', targetPaymentId || '']);
+      } else {
+        getDb().prepare(orderUpdateSql).run(newStatus, targetOrderId || '', targetOrderId || '', targetPaymentId || '');
+        getDb().prepare(poUpdateSql).run(newStatus, targetOrderId || '', targetPaymentId || '');
+      }
+    }
+
+    return { processed: true, duplicate: false, refundAmountINR, orderId: targetOrderId, status: newStatus };
   }
 }

@@ -3716,30 +3716,41 @@ apiRouter.post('/webhooks/razorpay', async (c) => {
     const amountPaise = Number(refund?.amount ?? 0);
 
     const { RazorpayStandardAdapter } = await import('../payments/razorpay-adapter.js');
-    const refundResult = await RazorpayStandardAdapter.getInstance().handleRefundProcessed({
-      eventId: rawEventId,
-      payloadHash,
-      refundId,
-      orderId,
-      paymentId,
-      amountPaise,
-      rawPayload: eventPayload
-    });
-
-    return c.json({
-      success: true,
-      received: true,
-      processed: true,
-      duplicate: refundResult.duplicate === true,
-      eventType,
-      refund: {
-        id: refundId,
+    try {
+      const refundResult = await RazorpayStandardAdapter.getInstance().handleRefundProcessed({
+        eventId: rawEventId,
+        payloadHash,
+        refundId,
         orderId,
         paymentId,
-        amountINR: refundResult.refundAmountINR,
-        status: 'REFUNDED'
-      }
-    }, 200);
+        amountPaise,
+        rawPayload: eventPayload
+      });
+
+      return c.json({
+        success: true,
+        received: true,
+        processed: true,
+        duplicate: refundResult.duplicate === true,
+        eventType,
+        refund: {
+          id: refundId,
+          orderId,
+          paymentId,
+          amountINR: refundResult.refundAmountINR,
+          status: refundResult.status
+        }
+      }, 200);
+    } catch (refundErr: any) {
+      console.error(`[RazorpayWebhook] Durable refund reconciliation failed (FAIL CLOSED): ${refundErr.message}`);
+      return c.json({
+        success: false,
+        received: true,
+        processed: false,
+        error: `SERVICE_UNAVAILABLE: Refund durable reconciliation failed: ${refundErr.message}`,
+        retry: true
+      }, 503);
+    }
   }
 
   // Spec Stage P.3.5 Task 1: Strict Paid-Event Allowlist
@@ -8190,7 +8201,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
       'site_audits.started'
     );
     siteAuditsCompleted = auditsCompletedRow?.c ?? 0;
-    siteAuditsStarted = auditsStartedRow?.c ?? siteAuditsCompleted;
+    siteAuditsStarted = auditsStartedRow?.c ?? 0;
 
     const pageSpeedRow = await safeQuery<any>(
       'site_audits',
@@ -8401,10 +8412,10 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   const orderLedgerQuery = `
     SELECT 
       COUNT(DISTINCT order_id) as totalOrders,
-      COUNT(DISTINCT CASE WHEN status IN ('CAPTURED', 'PAID', 'COMPLETED', 'REFUNDED') THEN order_id END) as capturedCount,
-      COALESCE(SUM(CASE WHEN status IN ('CAPTURED', 'PAID', 'COMPLETED', 'REFUNDED') THEN amount_inr ELSE 0 END), 0) as grossCapturedINR,
-      COUNT(DISTINCT CASE WHEN status = 'REFUNDED' THEN order_id END) as refundCount,
-      COALESCE(SUM(CASE WHEN status = 'REFUNDED' THEN amount_inr ELSE 0 END), 0) as refundAmountINR
+      COUNT(DISTINCT CASE WHEN status IN ('CAPTURED', 'PAID', 'COMPLETED', 'REFUNDED', 'PARTIALLY_REFUNDED') THEN order_id END) as capturedCount,
+      COALESCE(SUM(CASE WHEN status IN ('CAPTURED', 'PAID', 'COMPLETED', 'REFUNDED', 'PARTIALLY_REFUNDED') THEN amount_inr ELSE 0 END), 0) as grossCapturedINR,
+      COUNT(DISTINCT CASE WHEN status IN ('REFUNDED', 'PARTIALLY_REFUNDED') THEN order_id END) as refundCount,
+      COALESCE(SUM(CASE WHEN status IN ('REFUNDED', 'PARTIALLY_REFUNDED') THEN amount_inr ELSE 0 END), 0) as refundAmountINR
     FROM (
       SELECT 
         id as order_id, 
@@ -8433,16 +8444,40 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
     'universal_orders.authoritative_ledger'
   );
 
+  // Real-time deduplicated refund accounting from durable_events (P0 Financial Safety)
+  let durableRefundCount = 0;
+  let durableRefundAmountINR = 0.00;
+  try {
+    const refundEvents = await safeQuery<any[]>(
+      'durable_events',
+      "SELECT payload_json FROM durable_events WHERE event_type = 'RAZORPAY_REFUND_PROCESSED'",
+      [],
+      'durable_events.refunds'
+    );
+    if (Array.isArray(refundEvents)) {
+      durableRefundCount = refundEvents.length;
+      for (const row of refundEvents) {
+        try {
+          const p = typeof row.payload_json === 'string' ? JSON.parse(row.payload_json) : (row.payload_json || {});
+          durableRefundAmountINR += Number(p.amountINR ?? (p.amountPaise ? p.amountPaise / 100 : 0));
+        } catch {}
+      }
+    }
+  } catch (durableErr: any) {
+    console.warn('[RevenueFunnel] Error querying durable_events for refunds:', durableErr.message);
+  }
+
   const totalLedgerOrders = Number(orderLedger?.totalOrders ?? 0);
   const ledgerCapturedCount = Number(orderLedger?.capturedCount ?? 0);
   saasGrossCapturedINR = Number(orderLedger?.grossCapturedINR ?? 0.00);
-  const refundsCount = Number(orderLedger?.refundCount ?? 0);
-  const refundAmountINR = Number(orderLedger?.refundAmountINR ?? 0.00);
+  const refundsCount = durableRefundCount > 0 ? durableRefundCount : Number(orderLedger?.refundCount ?? 0);
+  const refundAmountINR = durableRefundAmountINR > 0 ? durableRefundAmountINR : Number(orderLedger?.refundAmountINR ?? 0.00);
   const netCapturedINR = Math.max(0, saasGrossCapturedINR - refundAmountINR);
 
   paymentOrdersCreated = totalLedgerOrders || Number(sfxTotals?.order_created ?? sfxTotals?.checkout_start ?? 0);
+  const checkoutOpenInvokedCount = Number(sfxTotals?.checkout_open_invoked ?? 0);
   const checkoutModalOpenedCount = Number(sfxTotals?.checkout_modal_opened ?? 0);
-  checkoutInitiated = checkoutModalOpenedCount || Number(sfxTotals?.checkout_start ?? 0);
+  checkoutInitiated = checkoutOpenInvokedCount || checkoutModalOpenedCount;
   paymentCaptured = ledgerCapturedCount || Number(sfxTotals?.payment_captured ?? sfxTotals?.capture ?? 0);
   // Stage U.1 Truth: Pure page load logs page_view and does NOT increment preview_displayed
   fixPackPreviews = Number(sfxTotals?.preview_displayed ?? 0);
@@ -8565,6 +8600,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
         preview_displayed: fixPackPreviews,
         previewDisplayed: fixPackPreviews,
         checkoutInitiated,
+        checkout_open_invoked: checkoutOpenInvokedCount,
         checkoutModalOpened: checkoutModalOpenedCount,
         paymentOrdersCreated,
         paymentAuthorized,
@@ -8594,6 +8630,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
           scan_completed: siteAuditsCompleted,
           preview_displayed: fixPackPreviews,
           order_created: paymentOrdersCreated,
+          checkout_open_invoked: checkoutOpenInvokedCount,
           checkout_modal_opened: checkoutModalOpenedCount,
           payment_captured: paymentCaptured,
           deliverable_ready: deliverableReadyCount,
@@ -8938,7 +8975,15 @@ apiRouter.post('/referrals/beacon', async (c) => {
 
   // Tool page visit beacon (when offerId is absent)
   if (!offerId) {
-    if (body.stage === 'checkout_modal_opened' || body.event === 'checkout_modal_opened') {
+    if (
+      body.stage === 'checkout_open_invoked' ||
+      body.event === 'checkout_open_invoked' ||
+      body.stage === 'checkout_modal_opened' ||
+      body.event === 'checkout_modal_opened'
+    ) {
+      const stageName = (body.stage === 'checkout_open_invoked' || body.event === 'checkout_open_invoked')
+        ? 'checkout_open_invoked'
+        : 'checkout_modal_opened';
       const { recordSiteFixFunnelEvent, normalizeSiteFixSource, classifySiteFixProbe } = await import('../tools/site-audit/sitefix-funnel-attribution.js');
       const probe = classifySiteFixProbe(c);
       const isBot = isBotTraffic(userAgent) || probe.isProbe;
@@ -8951,7 +8996,7 @@ apiRouter.post('/referrals/beacon', async (c) => {
       );
       const source = normalizeSiteFixSource(body.source, 'web');
       await recordSiteFixFunnelEvent({
-        stage: 'checkout_modal_opened',
+        stage: stageName,
         source,
         isProbe: isBot || isTestTraffic,
         probeReason: probe.probeReason || (isBot ? 'BOT_TRAFFIC' : (isTestTraffic ? 'TEST_TRAFFIC' : null)),
@@ -8961,7 +9006,7 @@ apiRouter.post('/referrals/beacon', async (c) => {
         userAgent
       });
       revenueFunnelNonCashCache = null;
-      return c.json({ success: true, recorded: true, stage: 'checkout_modal_opened' });
+      return c.json({ success: true, recorded: true, stage: stageName });
     }
 
     const { classifySiteFixProbe, normalizeSiteFixSource, recordToolVisitSession } = await import('../tools/site-audit/sitefix-funnel-attribution.js');
@@ -15593,30 +15638,41 @@ const handleSiteAuditRazorpayWebhook = async (c: any) => {
     const amountPaise = Number(refund?.amount ?? 0);
 
     const { RazorpayStandardAdapter } = await import('../payments/razorpay-adapter.js');
-    const refundResult = await RazorpayStandardAdapter.getInstance().handleRefundProcessed({
-      eventId,
-      payloadHash,
-      refundId,
-      orderId,
-      paymentId,
-      amountPaise,
-      rawPayload: eventPayload
-    });
-
-    return c.json({
-      success: true,
-      received: true,
-      processed: true,
-      duplicate: refundResult.duplicate === true,
-      eventType,
-      refund: {
-        id: refundId,
+    try {
+      const refundResult = await RazorpayStandardAdapter.getInstance().handleRefundProcessed({
+        eventId,
+        payloadHash,
+        refundId,
         orderId,
         paymentId,
-        amountINR: refundResult.refundAmountINR,
-        status: 'REFUNDED'
-      }
-    }, 200);
+        amountPaise,
+        rawPayload: eventPayload
+      });
+
+      return c.json({
+        success: true,
+        received: true,
+        processed: true,
+        duplicate: refundResult.duplicate === true,
+        eventType,
+        refund: {
+          id: refundId,
+          orderId,
+          paymentId,
+          amountINR: refundResult.refundAmountINR,
+          status: refundResult.status
+        }
+      }, 200);
+    } catch (refundErr: any) {
+      console.error(`[RazorpayWebhook] Durable refund reconciliation failed (FAIL CLOSED): ${refundErr.message}`);
+      return c.json({
+        success: false,
+        received: true,
+        processed: false,
+        error: `SERVICE_UNAVAILABLE: Refund durable reconciliation failed: ${refundErr.message}`,
+        retry: true
+      }, 503);
+    }
   }
 
   if (eventType === 'payment.captured') {

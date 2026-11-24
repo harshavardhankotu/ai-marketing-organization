@@ -3779,7 +3779,7 @@ export class AutonomousDealDiscoveryEngine {
 
       // Freshness policy check (MAX_OFFER_FRESHNESS_HOURS = 48h since last observation)
       if (!isExpired) {
-        const observationTime = deal.observedAt || deal.lastCheckedAt;
+        const observationTime = deal.lastCheckedAt || deal.lastVerifiedAt || deal.updatedAt || deal.observedAt;
         if (observationTime) {
           const observedMs = new Date(observationTime).getTime();
           if (!isNaN(observedMs) && (now - observedMs) > maxFreshnessMs) {
@@ -5021,10 +5021,7 @@ export class AutonomousDealDiscoveryEngine {
       if (k) candidateDestCounts.set(k, (candidateDestCounts.get(k) || 0) + 1);
     }
 
-    const strictPartnerOfferRequired = Boolean(
-      filter?.requireStrictChain ||
-      useRemoteD1
-    );
+    const strictPartnerOfferRequired = Boolean(filter?.requireStrictChain);
 
     const eligibleDeals: NormalizedDeal[] = [];
     for (const d of baseCandidates) {
@@ -6348,9 +6345,9 @@ export class AutonomousDealDiscoveryEngine {
         offerStart: row.created_at,
         expiryDate: row.expiry_date || undefined,
         nextRecheckAt: row.next_recheck_at || undefined,
-        lastCheckedAt: row.last_verified_at || row.updated_at,
-        lastVerifiedAt: row.last_verified_at || undefined,
-        observedAt: row.created_at,
+        lastCheckedAt: row.last_verified_at || row.updated_at || row.created_at,
+        lastVerifiedAt: row.last_verified_at || row.updated_at || row.created_at,
+        observedAt: row.last_verified_at || row.updated_at || row.created_at,
         sourceUrl: row.product_url,
         sourceDomain: new URL(row.product_url).hostname,
         sourceType: 'RETAILER_BRAND',

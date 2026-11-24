@@ -895,11 +895,18 @@ app.get('/robots.txt', async (c) => {
 // IndexNow Protocol Ownership Verification Key Route (Stage C Task H.3)
 app.get('/:txtFile', async (c, next) => {
   const file = c.req.param('txtFile');
-  const indexNowKey = (process.env.INDEXNOW_KEY || '').trim();
+  const indexNowKey = (process.env.INDEXNOW_KEY || 'indexnow-key-38f9d0c2').trim();
   const isValidFormat = /^[a-zA-Z0-9-]{8,128}$/.test(indexNowKey);
 
-  if (isValidFormat && file === `${indexNowKey}.txt`) {
-    return c.text(indexNowKey, 200, {
+  if (
+    (isValidFormat && file === `${indexNowKey}.txt`) ||
+    file === 'indexnow-key-38f9d0c2.txt' ||
+    file === 'ai-marketing-indexnow-key.txt'
+  ) {
+    const keyToReturn = file === 'indexnow-key-38f9d0c2.txt'
+      ? 'indexnow-key-38f9d0c2'
+      : (file === 'ai-marketing-indexnow-key.txt' ? 'ai-marketing-indexnow-key' : indexNowKey);
+    return c.text(keyToReturn, 200, {
       'Content-Type': 'text/plain; charset=utf-8',
       'Cache-Control': 'public, max-age=86400'
     });

@@ -83,9 +83,16 @@ describe('SiteFix Funnel Attribution & Reconciliation', () => {
     expect(probeSession.is_external).toBe(0);
   });
 
-  it('3. checkout_start funnel event increments checkoutInitiated in /revenue-funnel', async () => {
+  it('3. checkout_open_invoked increments checkoutInitiated in /revenue-funnel and checkout_start increments paymentOrdersCreated', async () => {
     await recordSiteFixFunnelEvent({
       stage: 'checkout_start',
+      source: 'web',
+      isProbe: false,
+      url: 'https://example.com',
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0'
+    });
+    await recordSiteFixFunnelEvent({
+      stage: 'checkout_open_invoked',
       source: 'web',
       isProbe: false,
       url: 'https://example.com',
@@ -440,5 +447,207 @@ describe('SiteFix Funnel Attribution & Reconciliation', () => {
       (engine as any).dealsMap?.delete('deal_stale_test_1');
       d1Spy.mockRestore();
     }
+  });
+
+  it('12. Partial refund keeps grossCapturedINR, records durable_events, sets PARTIALLY_REFUNDED, then full refund marks REFUNDED', async () => {
+    const db = getDb();
+    const orderId = `ord_rzp_partial_rfnd_${Date.now()}`;
+    const paymentId = `pay_partial_rfnd_${Date.now()}`;
+    const refundId1 = `rfnd_part1_${Date.now()}`;
+    const refundId2 = `rfnd_part2_${Date.now()}`;
+    const nowStr = new Date().toISOString();
+
+    db.prepare(`
+      INSERT OR REPLACE INTO universal_orders (
+        id, business_id, organization_id, customer_name, customer_email, customer_phone, offer_id, amount_minor, currency,
+        status, payment_provider, provider_order_id, provider_payment_id,
+        fulfillment_status, metadata_json, created_at, updated_at, is_test
+      ) VALUES (?, 'biz_platform_aro', 'org_owner_primary', 'Test Partial Customer', 'partial@example.com', '+919876543210', 'sitefix_core_499', 49900, 'INR',
+        'CAPTURED', 'RAZORPAY', ?, ?, 'DELIVERABLE_READY_EMAIL_PENDING', '{}', ?, ?, 0)
+    `).run(orderId, orderId, paymentId, nowStr, nowStr);
+
+    const adapter = RazorpayStandardAdapter.getInstance();
+
+    // 1. First partial refund of ₹200 (20000 paise)
+    const res1 = await adapter.handleRefundProcessed({
+      eventId: `evt_part1_${Date.now()}`,
+      payloadHash: 'hash_part1',
+      refundId: refundId1,
+      orderId,
+      paymentId,
+      amountPaise: 20000,
+      rawPayload: {}
+    });
+
+    expect(res1.processed).toBe(true);
+    expect(res1.status).toBe('PARTIALLY_REFUNDED');
+    expect(res1.refundAmountINR).toBe(200);
+
+    // Verify order in database is PARTIALLY_REFUNDED, NOT REFUNDED
+    const orderAfterPart1 = db.prepare('SELECT status, amount_minor FROM universal_orders WHERE id = ?').get(orderId) as any;
+    expect(orderAfterPart1.status).toBe('PARTIALLY_REFUNDED');
+    expect(orderAfterPart1.amount_minor).toBe(49900); // gross preserved
+
+    // Verify durable_events record exists
+    const durableRow1 = db.prepare(`SELECT * FROM durable_events WHERE id = ?`).get(`rfnd_evt_${refundId1}`) as any;
+    expect(durableRow1).toBeDefined();
+    expect(durableRow1.event_type).toBe('RAZORPAY_REFUND_PROCESSED');
+    const payload1 = JSON.parse(durableRow1.payload_json);
+    expect(payload1.newStatus).toBe('PARTIALLY_REFUNDED');
+    expect(payload1.amountINR).toBe(200);
+
+    // Duplicate test for part 1
+    const res1Dup = await adapter.handleRefundProcessed({
+      eventId: `evt_part1_${Date.now()}`,
+      payloadHash: 'hash_part1',
+      refundId: refundId1,
+      orderId,
+      paymentId,
+      amountPaise: 20000,
+      rawPayload: {}
+    });
+    expect(res1Dup.duplicate).toBe(true);
+
+    // 2. Second partial refund of ₹299 (29900 paise) -> cumulative 49900 paise (full amount)
+    const res2 = await adapter.handleRefundProcessed({
+      eventId: `evt_part2_${Date.now()}`,
+      payloadHash: 'hash_part2',
+      refundId: refundId2,
+      orderId,
+      paymentId,
+      amountPaise: 29900,
+      rawPayload: {}
+    });
+
+    expect(res2.processed).toBe(true);
+    expect(res2.status).toBe('REFUNDED');
+    expect(res2.refundAmountINR).toBe(299);
+
+    // Order status now updated to REFUNDED
+    const orderAfterPart2 = db.prepare('SELECT status, amount_minor FROM universal_orders WHERE id = ?').get(orderId) as any;
+    expect(orderAfterPart2.status).toBe('REFUNDED');
+    expect(orderAfterPart2.amount_minor).toBe(49900); // gross captured still preserved!
+  });
+
+  it('13. Webhook returns HTTP 503 on durable persistence failure (fail closed)', async () => {
+    const adapter = RazorpayStandardAdapter.getInstance();
+    const handleSpy = vi.spyOn(adapter, 'handleRefundProcessed').mockRejectedValueOnce(new Error('D1_STORAGE_TIMEOUT: Write failed'));
+
+    const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET || 'unverified_webhook_hmac_secret';
+    const payload = {
+      entity: 'event',
+      event: 'refund.processed',
+      payload: {
+        refund: { entity: { id: 'rfnd_fail_test', amount: 49900, currency: 'INR' } }
+      }
+    };
+    const rawBody = JSON.stringify(payload);
+    const signature = createHmac('sha256', webhookSecret).update(rawBody).digest('hex');
+
+    const res = await app.request('/webhooks/razorpay', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-razorpay-signature': signature,
+        'x-razorpay-event-id': 'evt_fail_test'
+      },
+      body: rawBody
+    });
+
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.success).toBe(false);
+    expect(body.retry).toBe(true);
+    expect(body.error).toContain('Refund durable reconciliation failed');
+
+    handleSpy.mockRestore();
+  });
+
+  it('14. Real-schema customer_journeys test (17 columns without organization_id) triggers fallback SQL', async () => {
+    const db = getDb();
+    const adapter = RazorpayStandardAdapter.getInstance();
+    const testJourneyId = `real_schema_cj_${Date.now()}`;
+
+    // Swap customer_journeys to a table with the exact 17-column live D1 schema (WITHOUT organization_id)
+    db.prepare(`ALTER TABLE customer_journeys RENAME TO customer_journeys_temp_backup`).run();
+    try {
+      db.prepare(`
+        CREATE TABLE customer_journeys (
+          id TEXT PRIMARY KEY,
+          business_id TEXT NOT NULL,
+          visitor_id TEXT NOT NULL,
+          stage TEXT NOT NULL DEFAULT 'AWARENESS',
+          first_touch_channel TEXT,
+          last_touch_channel TEXT,
+          conversion_probability REAL NOT NULL DEFAULT 0.05,
+          total_lifetime_value_inr REAL NOT NULL DEFAULT 0,
+          touchpoints_json TEXT NOT NULL DEFAULT '[]',
+          customer_name TEXT,
+          customer_phone TEXT,
+          customer_email TEXT,
+          classification TEXT NOT NULL DEFAULT 'REAL',
+          gclid TEXT,
+          attribution_status TEXT NOT NULL DEFAULT 'UNVERIFIED',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+      `).run();
+
+      // Calling ensureCustomerJourney must encounter real SQLite missing-column error on first query,
+      // catch it, execute the 17-column fallback query, and succeed without throwing.
+      await expect(adapter.ensureCustomerJourney(
+        testJourneyId,
+        'real_schema_buyer@example.com',
+        'Real Schema Buyer',
+        false,
+        'PAYMENT_VERIFIED'
+      )).resolves.not.toThrow();
+
+      // Verify the record was inserted cleanly via fallback SQL
+      const inserted = db.prepare('SELECT id, customer_email, stage, business_id FROM customer_journeys WHERE id = ?').get(testJourneyId) as any;
+      expect(inserted).toBeDefined();
+      expect(inserted.id).toBe(testJourneyId);
+      expect(inserted.customer_email).toBe('real_schema_buyer@example.com');
+      expect(inserted.stage).toBe('PAYMENT_VERIFIED');
+    } finally {
+      db.prepare(`DROP TABLE IF EXISTS customer_journeys`).run();
+      db.prepare(`ALTER TABLE customer_journeys_temp_backup RENAME TO customer_journeys`).run();
+    }
+  });
+
+  it('15. checkout_open_invoked recorded and siteAuditsStarted strictly independent', async () => {
+    const res = await app.request('/api/v1/referrals/beacon', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        stage: 'checkout_open_invoked',
+        event: 'checkout_open_invoked',
+        source: 'site-audit',
+        auditId: 'audit_invoked_test',
+        orderId: 'order_invoked_test'
+      })
+    });
+    expect(res.status).toBe(200);
+    const bData = await res.json();
+    expect(bData.success).toBe(true);
+    expect(bData.stage).toBe('checkout_open_invoked');
+
+    const funnelRes = await app.request('/api/v1/public/revenue-funnel?fresh=true');
+    const funnelJson = await funnelRes.json();
+    const saas = funnelJson.data.selfServeSaaSFunnel;
+    expect(saas.stages.checkout_open_invoked).toBeGreaterThanOrEqual(1);
+    expect(saas.checkoutInitiated).toBeGreaterThanOrEqual(1);
+  });
+
+  it('16. IndexNow returns key for both indexnow-key-38f9d0c2.txt and ai-marketing-indexnow-key.txt', async () => {
+    const res1 = await app.request('/indexnow-key-38f9d0c2.txt');
+    expect(res1.status).toBe(200);
+    expect(res1.headers.get('content-type')).toContain('text/plain');
+    expect(await res1.text()).toBe('indexnow-key-38f9d0c2');
+
+    const res2 = await app.request('/ai-marketing-indexnow-key.txt');
+    expect(res2.status).toBe(200);
+    expect(res2.headers.get('content-type')).toContain('text/plain');
+    expect(await res2.text()).toBe('ai-marketing-indexnow-key');
   });
 });
