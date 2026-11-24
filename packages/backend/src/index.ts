@@ -1893,124 +1893,20 @@ export async function startServer(): Promise<any> {
   console.log(`⏱️ Durable Queue: ACTIVE (09:00 & 21:00 IST CAMPAIGN WINDOWS)`);
   console.log(`======================================================\n`);
 
-  // Run synchronization and warm-up gates asynchronously so HTTP traffic is accepted immediately
-  void (async () => {
-    const quotaTrippedOnBoot = d1.isRemoteD1QuotaExhausted();
-    if (quotaTrippedOnBoot) {
-      console.info('[Startup Sync] Remote D1 quota circuit breaker open; skipping remote D1 startup syncs and using local SQLite cache.');
-    }
+  // PR #96: Zero-Scan Cold Boot — ONLY local SQLite storefront A/B initialization runs at startup.
+  // All background D1 sync hydrations, merchant catalog harvesting, Google Suggest queries,
+  // and auto-audit sweeps are strictly removed from boot so Render Free cold starts
+  // perform zero background D1 scans. Maintenance runs exclusively inside bounded cron cycles.
+  try {
+    const { ExperimentEngine } = await import('./experiments/experiment-engine.js');
+    ExperimentEngine.seedDefaultStorefrontExperiments('org_owner_primary', 'biz_platform_aro');
+    console.log('[Experiment Gate] Ensured default non-test Storefront A/B experiments initialized locally.');
+  } catch (err: any) {
+    console.warn('[Experiment Gate] Default storefront experiment seed notice:', err.message);
+  }
 
-    // 3. Durable Quota Gate: Synchronize counters from Cloudflare D1
-    if (!quotaTrippedOnBoot && !d1.isRemoteD1QuotaExhausted()) {
-      try {
-        await UnifiedQuotaService.getInstance().syncFromD1Async();
-        console.log('[Quota Gate] Synchronized durable quota counters from Cloudflare D1.');
-      } catch (err: any) {
-        console.warn('[Quota Gate] Quota synchronization failed:', err.message);
-      }
-    }
-
-    // 3b. Durable Action Cooldown Gate: Synchronize cooldowns from Cloudflare D1
-    if (!quotaTrippedOnBoot && !d1.isRemoteD1QuotaExhausted()) {
-      try {
-        const { ActionCooldownManager } = await import('./revenue/action-cooldown-manager.js');
-        await ActionCooldownManager.syncFromD1Async();
-        console.log('[Cooldown Gate] Synchronized durable action cooldowns from Cloudflare D1.');
-      } catch (err: any) {
-        console.warn('[Cooldown Gate] Action cooldown synchronization failed:', err.message);
-      }
-    }
-
-    // 3c. Commercial Funnel Telemetry & Deal Catalog Gate: Synchronize from Cloudflare D1
-    if (!quotaTrippedOnBoot && !d1.isRemoteD1QuotaExhausted()) {
-      try {
-        const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
-        await AutonomousDealDiscoveryEngine.getInstance().hydrateFunnelTelemetryFromDb();
-        await AutonomousDealDiscoveryEngine.getInstance().syncFromD1Async();
-        console.log('[Funnel Gate] Synchronized commercial funnel telemetry and deal catalog from Cloudflare D1.');
-      } catch (err: any) {
-        console.warn('[Funnel Gate] Funnel telemetry/deal synchronization failed:', err.message);
-      }
-    }
-
-    if (!quotaTrippedOnBoot && !d1.isRemoteD1QuotaExhausted()) {
-      try {
-        const { GrowthExperimentTracker } = await import('./commission/growth-experiment-tracker.js');
-        await GrowthExperimentTracker.getInstance().hydrateFromDb();
-        console.log('[Experiment Gate] Synchronized growth experiments from Cloudflare D1.');
-      } catch (err: any) {
-        console.warn('[Experiment Gate] Growth experiment synchronization failed:', err.message);
-      }
-    }
-
-    try {
-      const { ExperimentEngine } = await import('./experiments/experiment-engine.js');
-      ExperimentEngine.seedDefaultStorefrontExperiments('org_owner_primary', 'biz_platform_aro');
-      console.log('[Experiment Gate] Ensured default non-test Storefront A/B experiments initialized.');
-    } catch (err: any) {
-      console.warn('[Experiment Gate] Default storefront experiment seed notice:', err.message);
-    }
-
-    // 3d. Baseline Content Assets Gate: Ensure baseline acquisition guides exist in Cloudflare D1
-    if (!quotaTrippedOnBoot && !d1.isRemoteD1QuotaExhausted()) {
-      try {
-        const { ContentAssetEngine } = await import('./commission/content-asset-engine.js');
-        await ContentAssetEngine.getInstance().syncBaselineAssetsAsync();
-      } catch (err: any) {
-        console.warn('[Content Gate] Baseline content sync failed:', err.message);
-      }
-    }
-
-    // 3e. Non-Healthcare SMB Prospect Gate: Never seed regulated healthcare/dental domains (Standing Order 8)
-    console.log('[Prospect Gate] Healthcare/dental seeding disabled per Standing Order 8; using live non-healthcare SMB discovery.');
-
-    // 3f. Automation Registry Gate: Ensure core workflows initialized in Cloudflare D1
-    if (!quotaTrippedOnBoot && !d1.isRemoteD1QuotaExhausted()) {
-      try {
-        const { AutomationRegistryEngine, WORKFLOW_DEFINITIONS } = await import('./automation/automation-registry-engine.js');
-        await AutomationRegistryEngine.getInstance().ensureInitialized();
-        console.log(`[Automation Gate] Ensured ${WORKFLOW_DEFINITIONS.length} background automation workflows initialized in Cloudflare D1.`);
-      } catch (err: any) {
-        console.warn('[Automation Gate] Automation registry initialization failed:', err.message);
-      }
-    }
-
-    // 3g. Multi-Merchant Deals Catalog Gate: Ensure approved Cuelinks merchants feeds are hydrated (V5.7 Phase 1)
-    try {
-      const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
-      const dealEngine = AutonomousDealDiscoveryEngine.getInstance();
-      const inStock = dealEngine.getAllDeals().filter(d => d.availability === 'IN_STOCK' && (d.verificationStatus === 'VERIFIED' || d.verificationStatus === 'VERIFIED_WITH_CONDITIONS'));
-      if (inStock.length < 5 && !d1.isRemoteD1QuotaExhausted()) {
-        console.log('[Catalog Gate] Ingesting live feeds from approved Cuelinks merchants into public_deals...');
-        await dealEngine.harvestAllApprovedMerchantFeeds();
-        console.log(`[Catalog Gate] Ingested live deals. Total active in-stock: ${dealEngine.getAllDeals().filter(d => d.availability === 'IN_STOCK').length}`);
-      } else {
-        console.log(`[Catalog Gate] Verified ${inStock.length} active in-stock deals loaded.`);
-      }
-    } catch (err: any) {
-      console.warn('[Catalog Gate] Merchant catalog feed ingestion failed:', err.message);
-    }
-
-    // 3h. Live Baseline Autonomy & Non-Healthcare SMB SiteFix Verification Gate
-    try {
-      const { GoogleSuggestClient } = await import('./integrations/google-suggest-client.js');
-      await GoogleSuggestClient.getInstance().fetchSuggestions('electronics verified deals India', 'in');
-      console.log('[Autonomy Gate] Live GoogleSuggest baseline query executed.');
-    } catch (err: any) {
-      console.warn('[Autonomy Gate] GoogleSuggest baseline query notice:', err.message);
-    }
-
-    try {
-      const { AutomationRegistryEngine } = await import('./automation/automation-registry-engine.js');
-      await AutomationRegistryEngine.getInstance().autoAuditNextUnauditedDomain();
-      console.log('[Autonomy Gate] Baseline non-healthcare SMB SiteFix audit check completed.');
-    } catch (err: any) {
-      console.warn('[Autonomy Gate] Baseline SiteFix audit notice:', err.message);
-    }
-
-    // 4. Autonomous scheduling powered by durable Cloudflare D1 queue & Worker heartbeat (Spec V4.1 Phase 1 & 2)
-    console.log('[Durable Queue] Background operations scheduled via Cloudflare D1 queue (Two daily IST commercial runs: 09:00 & 21:00 IST).');
-  })();
+  console.log('[Prospect Gate] Healthcare/dental seeding disabled per Standing Order 8; cold-start background D1 scans sealed.');
+  console.log('[Durable Queue] Background operations scheduled via Cloudflare D1 queue (Two daily IST commercial runs: 09:00 & 21:00 IST / 30 3,15 * * *).');
 
   // PR #92: Cold starts perform ZERO background catalog/doctor/hydration sweeps to stop D1 row-read bleed on Render Free spin-downs.
   // All maintenance sweeps run strictly under Cloudflare Worker cron triggers.

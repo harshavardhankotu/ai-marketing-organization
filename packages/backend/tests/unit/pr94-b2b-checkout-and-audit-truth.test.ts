@@ -623,9 +623,21 @@ describe('PR #94: B2B Checkout Truth, Audit Truth, Catalog Honesty, Category Gui
       expect(res.results[0].ok).toBe(1);
     });
 
-    it('exposes instanceLocalDailyBackgroundRowsRead and d1Status in readiness endpoints', async () => {
+    it('exposes instanceLocalDailyBackgroundRowsRead and backward-compatible d1Status object + d1Health string in readiness endpoints', async () => {
       const app = createTestApp();
       const d1 = D1Client.getInstance();
+      vi.spyOn(d1, 'isRemoteD1Configured').mockReturnValue(true);
+      process.env.SITE_AUDIT_TERMS_ATTESTED = 'true';
+      process.env.SITE_AUDIT_SIGNING_SECRET = 'test_signing_secret_32_chars_long_pr94';
+      const { RazorpayStandardAdapter } = await import('../../src/payments/razorpay-adapter.js');
+      vi.spyOn(RazorpayStandardAdapter.getInstance(), 'probeRazorpayAuth').mockResolvedValue({
+        providerAcceptedAuth: true,
+        httpStatus: 200,
+        authDiagnosticCode: 'OK',
+        authStatus: 'PROVIDER_AUTHENTICATED',
+        keyMode: 'TEST_SANDBOX'
+      });
+
       d1.startBackgroundCycle(2500);
       d1.recordCycleUsage(42, 1);
       d1.endBackgroundCycle();
@@ -642,14 +654,21 @@ describe('PR #94: B2B Checkout Truth, Audit Truth, Catalog Honesty, Category Gui
       expect(siteAuditReadyRes.status).toBe(200);
       const readyJson = await siteAuditReadyRes.json() as any;
       expect(readyJson.instanceLocalDailyBackgroundRowsRead).toBe(42);
-      expect(readyJson.d1Status).toBe('HEALTHY');
+      expect(readyJson.d1Health).toBe('HEALTHY');
+      expect(readyJson.quotaStatus).toBe('HEALTHY');
+      expect(readyJson.d1Status.status).toBe('HEALTHY');
+      expect(readyJson.d1Status.remoteD1Configured).toBe(true);
+      expect(readyJson.d1Status.instanceLocalDailyBackgroundRowsRead).toBe(42);
       expect(readyJson.d1Telemetry.instanceLocalDailyBackgroundRowsRead).toBe(42);
       expect(readyJson.telemetryScopeNote).toMatch(/instance-local/i);
 
       const b2bReadyRes = await app.request('/api/v1/b2b/readiness');
       expect(b2bReadyRes.status).toBe(200);
       const b2bReadyJson = await b2bReadyRes.json() as any;
-      expect(b2bReadyJson.d1Status).toBe('HEALTHY');
+      expect(b2bReadyJson.d1Health).toBe('HEALTHY');
+      expect(b2bReadyJson.quotaStatus).toBe('HEALTHY');
+      expect(b2bReadyJson.d1Status.status).toBe('HEALTHY');
+      expect(b2bReadyJson.d1Status.circuitBreaker).toBeDefined();
       expect(b2bReadyJson.instanceLocalDailyBackgroundRowsRead).toBe(42);
       expect(b2bReadyJson.telemetryScopeNote).toMatch(/instance-local/i);
 
@@ -657,15 +676,21 @@ describe('PR #94: B2B Checkout Truth, Audit Truth, Catalog Honesty, Category Gui
       d1.tripReadQuotaCircuitBreaker('Your account has exceeded D1 free tier daily row read limit (code 7500)');
       const degradedAuditRes = await app.request('/api/v1/tools/site-audit/readiness');
       const degradedAuditJson = await degradedAuditRes.json() as any;
-      expect(degradedAuditJson.d1Status).toBe('DEGRADED_QUOTA_EXHAUSTED');
+      expect(degradedAuditJson.d1Health).toBe('DEGRADED_QUOTA_EXHAUSTED');
+      expect(degradedAuditJson.quotaStatus).toBe('DEGRADED_QUOTA_EXHAUSTED');
+      expect(degradedAuditJson.d1Status.status).toBe('QUOTA_CIRCUIT_OPEN');
+      expect(degradedAuditJson.d1Status.readExhausted).toBe(true);
       expect(degradedAuditJson.status).toBe('DEGRADED_QUOTA_EXHAUSTED');
       expect(degradedAuditJson.isReady).toBe(false);
 
       const degradedB2bRes = await app.request('/api/v1/b2b/readiness');
       const degradedB2bJson = await degradedB2bRes.json() as any;
-      expect(degradedB2bJson.d1Status).toBe('DEGRADED_QUOTA_EXHAUSTED');
+      expect(degradedB2bJson.d1Health).toBe('DEGRADED_QUOTA_EXHAUSTED');
+      expect(degradedB2bJson.quotaStatus).toBe('DEGRADED_QUOTA_EXHAUSTED');
+      expect(degradedB2bJson.d1Status.status).toBe('QUOTA_CIRCUIT_OPEN');
       expect(degradedB2bJson.status).toBe('DEGRADED_QUOTA_EXHAUSTED');
       expect(degradedB2bJson.isReady).toBe(false);
+      expect(degradedB2bJson.proposalDraftingAvailable).toBe(false);
       expect(degradedB2bJson.checkoutOrderCreationReady).toBe(false);
       d1.resetQuotaCircuitBreakerForTesting();
 

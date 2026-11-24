@@ -1507,7 +1507,7 @@ apiRouter.get('/cron/status', async (c) => {
       try {
         const parsed = typeof tRow.metadata_json === 'string' ? JSON.parse(tRow.metadata_json) : tRow.metadata_json;
         if (Array.isArray(parsed?.pings24h)) {
-          pingsList = parsed.pings24h.filter((ts: any) => typeof ts === 'string' && new Date(ts).getTime() >= cutoff24hMs);
+          pingsList = parsed.pings24h.filter((ts: any) => typeof ts === 'string' && parseSqliteTimestampMs(ts) >= cutoff24hMs);
         }
       } catch {}
 
@@ -1662,28 +1662,12 @@ apiRouter.post('/cron/ping', async (c) => {
     Boolean(c.req.header('cf-worker') || c.req.header('x-worker-scheduled') === 'true');
   const telemetryId = isCloudflareWorker ? 'cloudflare_worker_cron' : 'manual_ping';
 
-  // 1. Record observed heartbeat & rolling 24h timestamps in cron_telemetry IMMEDIATELY at start of handler (< 300ms warm)
+  // 1. PR #96 Zero-Read Lightweight Heartbeat: record cron_telemetry directly without any SELECT read,
+  //    queue recovery, stale-lease scan, job enqueueing, or getQueueStats(), while preserving pings24h atomically in JSON1.
   let telemetryRecorded = false;
+  const nowIso = new Date().toISOString();
   try {
-    const nowIso = new Date().toISOString();
-    const cutoff24hMs = Date.now() - 24 * 3600 * 1000;
-    let existingPings24h: string[] = [];
-    try {
-      const existingRow = await d1Repo.queryOne<{ metadata_json?: string }>(
-        'cron_telemetry',
-        `SELECT metadata_json FROM cron_telemetry WHERE id = ?`,
-        [telemetryId]
-      );
-      const parsedMeta = typeof existingRow?.metadata_json === 'string'
-        ? JSON.parse(existingRow.metadata_json)
-        : existingRow?.metadata_json;
-      if (Array.isArray(parsedMeta?.pings24h)) {
-        existingPings24h = parsedMeta.pings24h.filter((ts: any) => typeof ts === 'string' && new Date(ts).getTime() >= cutoff24hMs);
-      }
-    } catch {}
-    const nextPings24h = [...existingPings24h, nowIso].slice(-200);
-    const metadataJson = JSON.stringify({ pings24h: nextPings24h });
-
+    const initialMetadataJson = JSON.stringify({ lastPingIso: nowIso, pings24h: [nowIso] });
     const sql = `
       INSERT INTO cron_telemetry (id, status, last_observed_ping, total_pings, last_user_agent, worker_source, metadata_json, updated_at)
       VALUES (?, 'OBSERVED', datetime('now'), 1, ?, ?, ?, datetime('now'))
@@ -1693,17 +1677,30 @@ apiRouter.post('/cron/ping', async (c) => {
         total_pings = total_pings + 1,
         last_user_agent = ?,
         worker_source = ?,
-        metadata_json = ?,
+        metadata_json = json_set(
+          CASE WHEN json_valid(cron_telemetry.metadata_json) THEN cron_telemetry.metadata_json ELSE '{}' END,
+          '$.lastPingIso', ?,
+          '$.pings24h', json_insert(
+            CASE
+              WHEN json_type(cron_telemetry.metadata_json, '$.pings24h') = 'array'
+                THEN json_extract(cron_telemetry.metadata_json, '$.pings24h')
+              WHEN cron_telemetry.total_pings > 0 AND cron_telemetry.last_observed_ping IS NOT NULL
+                THEN json_array(cron_telemetry.last_observed_ping)
+              ELSE json_array()
+            END,
+            '$[#]', ?
+          )
+        ),
         updated_at = datetime('now')
     `;
-    const params = [telemetryId, userAgent, workerSource, metadataJson, userAgent, workerSource, metadataJson];
+    const params = [telemetryId, userAgent, workerSource, initialMetadataJson, userAgent, workerSource, nowIso, nowIso];
     await d1Repo.executeWrite('cron_telemetry', sql, params);
     telemetryRecorded = true;
   } catch (err: any) {
     console.error(`[Cron Ping] Telemetry write notice: ${err.message}`);
   }
 
-  // Also record durable_events telemetry
+  // Also record durable_events heartbeat trace (fail-open only for cron ping telemetry if D1 degraded)
   try {
     await d1Repo.executeWrite(
       'durable_events',
@@ -1714,63 +1711,35 @@ apiRouter.post('/cron/ping', async (c) => {
     telemetryRecorded = true;
   } catch {}
 
-  let staleRecoverySummary: any = null;
-  let batchRes: any = { enqueuedCount: 0, existingCount: 0, failedCount: 0, errors: [] };
-  let eligibleWorkflowCount = 0;
-  let queueStats: any = null;
+  const queueStats = {
+    mode: 'HEARTBEAT_ZERO_READ',
+    total: 0,
+    queued: 0,
+    running: 0,
+    completed: 0,
+    failed: 0
+  };
 
-  // Execute queue maintenance bounded to 8000ms so HTTP 200 is ALWAYS returned in <10s
-  try {
-    await Promise.race([
-      (async () => {
-        try {
-          const { DurableJobQueue } = await import('../automation/durable-job-queue.js');
-          staleRecoverySummary = await DurableJobQueue.getInstance().recoverStaleAndBlockedJobs();
-          await DurableJobQueue.getInstance().recoverStaleLeases();
-          const now = new Date();
-          const eligibleWorkflowIds = CommercialSchedulePolicy.getEligibleWorkflowIds(now);
-          eligibleWorkflowCount = eligibleWorkflowIds.length;
-          const optionsList = eligibleWorkflowIds.map(wfId => ({
-            workflowId: wfId,
-            idempotencyKey: CommercialSchedulePolicy.getIdempotencyKey(wfId, now),
-            priority: CommercialSchedulePolicy.getWorkflowWindow(wfId) === 'CONTINUOUS_HOURLY' ? 0 : 1
-          }));
-          const queue = DurableJobQueue.getInstance();
-          batchRes = await queue.enqueueJobsBatch(optionsList);
-          queueStats = await queue.getQueueStats();
-        } catch (subErr: any) {
-          console.warn(`[Cron Ping] Sub-task error within budget: ${subErr.message}`);
-        }
-      })(),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('CRON_BUDGET_EXCEEDED')), 8000))
-    ]);
-  } catch (budgetErr: any) {
-    console.warn(`[Cron Ping] Execution budget notice: ${budgetErr.message}`);
-  }
-
-  // PR #92: Payout hydration and maintenance consolidated exclusively into scheduled worker step (affiliate_offer_reconciliation).
-  // Zero unawaited background sweeps on /cron/ping to stop D1 row-read bleed.
-
-  // Always return HTTP 200 within < 10 seconds
+  // Always return HTTP 200 within < 1 second
   return c.json({
     success: true,
     telemetryRecorded,
     accepted: true,
     triggerSource: /ai-marketing-cron-worker|cloudflare-cron-worker/i.test(userAgent) ? 'CLOUDFLARE_CRON' : 'MANUAL_PING',
     correlationId,
-    enqueuedCount: batchRes.enqueuedCount,
-    existingCount: batchRes.existingCount,
-    failedCount: batchRes.failedCount,
-    eligibleWorkflowCount,
-    queueRecovery: staleRecoverySummary,
+    enqueuedCount: 0,
+    existingCount: 0,
+    failedCount: 0,
+    eligibleWorkflowCount: 0,
+    queueRecovery: null,
     commercialCycle: {
       cycleId: correlationId,
       status: 'ENQUEUED',
       mode: 'DURABLE_QUEUE',
-      enqueuedCount: batchRes.enqueuedCount
+      enqueuedCount: 0
     },
     queueStats,
-    timestamp: new Date().toISOString()
+    timestamp: nowIso
   }, 200);
 });
 
@@ -1834,12 +1803,9 @@ apiRouter.post('/cron/worker/claim-and-run', async (c) => {
 
   const workerSource = c.req.header('cf-worker') || c.req.header('x-worker-source') || 'worker_scheduled';
   const queue = DurableJobQueue.getInstance();
-  let queueRecovery: any = null;
-  try {
-    queueRecovery = await queue.recoverStaleAndBlockedJobs();
-  } catch {}
 
-  // PR #92: Enforce per-run D1 row-read budget cap of 2,500 rows. Payout hydration consolidated into affiliate_offer_reconciliation.
+  // PR #96: Enforce per-run D1 row-read budget cap (2,500 rows) BEFORE recoverStaleAndBlockedJobs,
+  // workflow enqueueing, AutonomousSystemDoctor.runSelfHealingPass, and getQueueStats, with guaranteed finally close.
   const { D1Client } = await import('../db/d1-client.js');
   const d1Client = D1Client.getInstance();
   d1Client.startBackgroundCycle(2500);
@@ -1848,115 +1814,151 @@ apiRouter.post('/cron/worker/claim-and-run', async (c) => {
   const maxJobs = Math.min(20, Number(c.req.query('maxJobs') || 20));
   const startTime = Date.now();
   const executedJobs: any[] = [];
+  let queueRecovery: any = null;
   let lastExecResult: any = null;
   let claimedCount = 0;
   let startedCount = 0;
   let completedCount = 0;
   let timedOutCount = 0;
   let failedCount = 0;
+  let systemDoctorSummary: any = null;
+  let stats: any = null;
+  let cycleTelemetry: any = null;
+  let budgetStopped = false;
 
-  const { AutomationRegistryEngine } = await import('../automation/automation-registry-engine.js');
-  const engine = AutomationRegistryEngine.getInstance();
-
-  while (executedJobs.length < maxJobs && (Date.now() - startTime) < (budgetMs - 3000)) {
-    // Check D1 row-read budget cap before claiming next job
-    if (d1Client.isCycleBudgetExceeded()) {
-      console.log('[D1 Cycle Telemetry]', JSON.stringify({
-        workflowId: lastExecResult?.workflowId || 'cron_cycle',
-        queriesExecuted: d1Client.getCycleUsage().queriesExecuted,
-        rowsRead: d1Client.getCycleUsage().rowsRead,
-        rowsWritten: d1Client.getCycleUsage().rowsWritten,
-        budgetStopped: true
-      }));
-      break;
+  try {
+    try {
+      queueRecovery = await queue.recoverStaleAndBlockedJobs();
+    } catch (recErr: any) {
+      if (String(recErr?.message || '').includes('D1_BACKGROUND_BUDGET_EXCEEDED')) {
+        budgetStopped = true;
+      }
     }
 
-    const claimedJob = await queue.claimDueJob(workerSource, 90);
-    if (!claimedJob) break;
-    claimedCount++;
-
-    // Check remaining budget before starting execution
-    const elapsedSoFar = Date.now() - startTime;
-    const remainingBudget = Math.max(3000, budgetMs - elapsedSoFar);
-    if (remainingBudget <= 3000) {
-      timedOutCount++;
-      // Release lease back to queue
-      await queue.failAttempt(claimedJob.id, 'BUDGET_EXHAUSTED_BEFORE_START', true, undefined, claimedJob.leaseToken || undefined);
-      break;
+    if (!budgetStopped && !d1Client.isCycleBudgetExceeded()) {
+      try {
+        const now = new Date();
+        const eligibleWorkflowIds = CommercialSchedulePolicy.getEligibleWorkflowIds(now);
+        const optionsList = eligibleWorkflowIds.map(wfId => ({
+          workflowId: wfId,
+          idempotencyKey: CommercialSchedulePolicy.getIdempotencyKey(wfId, now),
+          priority: CommercialSchedulePolicy.getWorkflowWindow(wfId) === 'CONTINUOUS_HOURLY' ? 0 : 1
+        }));
+        await queue.enqueueJobsBatch(optionsList);
+      } catch (enqErr: any) {
+        if (String(enqErr?.message || '').includes('D1_BACKGROUND_BUDGET_EXCEEDED')) {
+          budgetStopped = true;
+        }
+      }
     }
 
-    startedCount++;
-    const execResult = await engine.executeWorkflow(claimedJob.workflowId, 'CLOUDFLARE_CRON', remainingBudget);
-    lastExecResult = execResult;
+    const { AutomationRegistryEngine } = await import('../automation/automation-registry-engine.js');
+    const engine = AutomationRegistryEngine.getInstance();
 
-    // Complete or fail the job attempt with durable checkpoints and lease fencing
-    if (
-      execResult.status === 'COMPLETED' ||
-      execResult.status === 'COMPLETED_WITH_FINDINGS' ||
-      execResult.status === 'COMPLETED_NO_FINDINGS' ||
-      execResult.status === 'NO_ACTION_DUE'
-    ) {
-      completedCount++;
-      await queue.completeJob(claimedJob.id, execResult.status, execResult.resultSummary, claimedJob.leaseToken || undefined);
-    } else if (execResult.status === 'PARTIAL') {
-      completedCount++;
-      await queue.completeJob(claimedJob.id, 'PARTIAL', execResult.resultSummary, claimedJob.leaseToken || undefined);
-    } else if (execResult.status === 'BLOCKED') {
-      failedCount++;
-      await queue.completeJob(claimedJob.id, 'BLOCKED', execResult.resultSummary, claimedJob.leaseToken || undefined);
-    } else if (execResult.status === 'NOT_IMPLEMENTED') {
-      failedCount++;
-      await queue.completeJob(claimedJob.id, 'NOT_IMPLEMENTED', execResult.resultSummary, claimedJob.leaseToken || undefined);
-    } else {
-      // Check if timeout or error
-      if ((execResult.durationMs && execResult.durationMs >= remainingBudget) || (execResult.errorMessage && execResult.errorMessage.includes('timeout'))) {
+    while (!budgetStopped && executedJobs.length < maxJobs && (Date.now() - startTime) < (budgetMs - 3000)) {
+      if (d1Client.isCycleBudgetExceeded()) {
+        budgetStopped = true;
+        break;
+      }
+
+      const claimedJob = await queue.claimDueJob(workerSource, 90);
+      if (!claimedJob) break;
+      claimedCount++;
+
+      const elapsedSoFar = Date.now() - startTime;
+      const remainingBudget = Math.max(3000, budgetMs - elapsedSoFar);
+      if (remainingBudget <= 3000) {
         timedOutCount++;
-      } else {
+        await queue.failAttempt(claimedJob.id, 'BUDGET_EXHAUSTED_BEFORE_START', true, undefined, claimedJob.leaseToken || undefined);
+        break;
+      }
+
+      startedCount++;
+      const execResult = await engine.executeWorkflow(claimedJob.workflowId, 'CLOUDFLARE_CRON', remainingBudget);
+      lastExecResult = execResult;
+
+      if (
+        execResult.status === 'COMPLETED' ||
+        execResult.status === 'COMPLETED_WITH_FINDINGS' ||
+        execResult.status === 'COMPLETED_NO_FINDINGS' ||
+        execResult.status === 'NO_ACTION_DUE'
+      ) {
+        completedCount++;
+        await queue.completeJob(claimedJob.id, execResult.status, execResult.resultSummary, claimedJob.leaseToken || undefined);
+      } else if (execResult.status === 'PARTIAL') {
+        completedCount++;
+        await queue.completeJob(claimedJob.id, 'PARTIAL', execResult.resultSummary, claimedJob.leaseToken || undefined);
+      } else if (execResult.status === 'BLOCKED') {
         failedCount++;
+        await queue.completeJob(claimedJob.id, 'BLOCKED', execResult.resultSummary, claimedJob.leaseToken || undefined);
+      } else if (execResult.status === 'NOT_IMPLEMENTED') {
+        failedCount++;
+        await queue.completeJob(claimedJob.id, 'NOT_IMPLEMENTED', execResult.resultSummary, claimedJob.leaseToken || undefined);
+      } else {
+        if ((execResult.durationMs && execResult.durationMs >= remainingBudget) || (execResult.errorMessage && execResult.errorMessage.includes('timeout'))) {
+          timedOutCount++;
+        } else {
+          failedCount++;
+        }
+        if (execResult.resultSummary) {
+          await queue.updateCheckpoint(claimedJob.id, execResult.resultSummary, undefined, claimedJob.leaseToken || undefined);
+        }
+        const isTransient = (execResult.status as string) !== 'FAILED_PERMANENTLY';
+        await queue.failAttempt(claimedJob.id, execResult.errorMessage || `Workflow ended with status: ${execResult.status}`, isTransient, undefined, claimedJob.leaseToken || undefined);
       }
-      // DEFERRED or ERROR: fail attempt with exponential backoff & preserve checkpoint
-      if (execResult.resultSummary) {
-        await queue.updateCheckpoint(claimedJob.id, execResult.resultSummary, undefined, claimedJob.leaseToken || undefined);
-      }
-      const isTransient = (execResult.status as string) !== 'FAILED_PERMANENTLY';
-      await queue.failAttempt(claimedJob.id, execResult.errorMessage || `Workflow ended with status: ${execResult.status}`, isTransient, undefined, claimedJob.leaseToken || undefined);
+
+      const updatedJob = await queue.getJobById(claimedJob.id);
+      executedJobs.push({
+        jobId: claimedJob.id,
+        workflowId: claimedJob.workflowId,
+        status: updatedJob?.status || execResult.status,
+        durationMs: execResult.durationMs
+      });
     }
 
-    const updatedJob = await queue.getJobById(claimedJob.id);
-    executedJobs.push({
-      jobId: claimedJob.id,
-      workflowId: claimedJob.workflowId,
-      status: updatedJob?.status || execResult.status,
-      durationMs: execResult.durationMs
-    });
+    const ensureSystemDoctorSummary = async () => {
+      if (queueRecovery?.systemDoctorSummary) return queueRecovery.systemDoctorSummary;
+      if (budgetStopped || d1Client.isCycleBudgetExceeded()) return null;
+      try {
+        const { AutonomousSystemDoctor } = await import('../automation/autonomous-system-doctor.js');
+        const doctor = AutonomousSystemDoctor.getInstance();
+        if (!process.env.VITEST && !doctor.getLastReport()) {
+          await doctor.runSelfHealingPass({ skipRecoveryRecursion: true, skipLlm: true });
+        }
+        return await doctor.getPublicSystemDoctorSummary();
+      } catch {
+        return null;
+      }
+    };
+    systemDoctorSummary = await ensureSystemDoctorSummary();
+
+    if (executedJobs.length === 0 && !budgetStopped && !d1Client.isCycleBudgetExceeded()) {
+      try {
+        stats = await queue.getQueueStats();
+      } catch (statsErr: any) {
+        if (String(statsErr?.message || '').includes('D1_BACKGROUND_BUDGET_EXCEEDED')) {
+          budgetStopped = true;
+        }
+      }
+    }
+  } catch (cycleErr: any) {
+    if (String(cycleErr?.message || '').includes('D1_BACKGROUND_BUDGET_EXCEEDED')) {
+      budgetStopped = true;
+    } else {
+      throw cycleErr;
+    }
+  } finally {
+    cycleTelemetry = d1Client.endBackgroundCycle();
+    console.log('[D1 Cycle Telemetry]', JSON.stringify({
+      workflowId: lastExecResult?.workflowId || (executedJobs[0]?.workflowId) || 'cron_cycle',
+      queriesExecuted: cycleTelemetry.queriesExecuted,
+      rowsRead: cycleTelemetry.rowsRead,
+      rowsWritten: cycleTelemetry.rowsWritten,
+      budgetStopped: cycleTelemetry.budgetStopped || budgetStopped
+    }));
   }
 
-  const ensureSystemDoctorSummary = async () => {
-    if (queueRecovery?.systemDoctorSummary) return queueRecovery.systemDoctorSummary;
-    try {
-      const { AutonomousSystemDoctor } = await import('../automation/autonomous-system-doctor.js');
-      const doctor = AutonomousSystemDoctor.getInstance();
-      if (!process.env.VITEST && !doctor.getLastReport()) {
-        await doctor.runSelfHealingPass({ skipRecoveryRecursion: true, skipLlm: true });
-      }
-      return await doctor.getPublicSystemDoctorSummary();
-    } catch {
-      return null;
-    }
-  };
-  const systemDoctorSummary = await ensureSystemDoctorSummary();
-
-  const cycleTelemetry = d1Client.endBackgroundCycle();
-  console.log('[D1 Cycle Telemetry]', JSON.stringify({
-    workflowId: lastExecResult?.workflowId || (executedJobs[0]?.workflowId) || 'cron_cycle',
-    queriesExecuted: cycleTelemetry.queriesExecuted,
-    rowsRead: cycleTelemetry.rowsRead,
-    rowsWritten: cycleTelemetry.rowsWritten,
-    budgetStopped: cycleTelemetry.budgetStopped
-  }));
-
   if (executedJobs.length === 0) {
-    const stats = await queue.getQueueStats();
     return c.json({
       success: true,
       claimed: false,
@@ -1965,7 +1967,8 @@ apiRouter.post('/cron/worker/claim-and-run', async (c) => {
       completedCount: 0,
       timedOutCount: 0,
       failedCount: 0,
-      message: 'NO_JOBS_DUE',
+      budgetStopped: cycleTelemetry?.budgetStopped || budgetStopped,
+      message: budgetStopped ? 'D1_BACKGROUND_BUDGET_EXCEEDED' : 'NO_JOBS_DUE',
       queueStats: stats,
       systemDoctorSummary,
       d1CycleTelemetry: cycleTelemetry
@@ -14988,22 +14991,32 @@ const handleSiteAuditReadiness = async (c: any) => {
   const d1 = D1Client.getInstance();
   const circuit = d1.getRemoteQuotaCircuitState();
   const d1Telemetry = d1.getD1Status();
-  const isD1QuotaExhausted = Boolean(circuit.exhausted || d1Telemetry.dailyBackgroundBudgetExceeded);
-  const d1Status: 'HEALTHY' | 'DEGRADED_QUOTA_EXHAUSTED' = isD1QuotaExhausted
-    ? 'DEGRADED_QUOTA_EXHAUSTED'
-    : 'HEALTHY';
-  const effectiveReady = Boolean(readiness.isReady && !isD1QuotaExhausted);
-  const effectiveStatus = isD1QuotaExhausted ? 'DEGRADED_QUOTA_EXHAUSTED' : readiness.status;
+  const remoteConfigured = Boolean(d1Telemetry.remoteD1Configured);
+  const circuitClosed = !circuit.exhausted && !circuit.readExhausted && !circuit.writeExhausted;
+  const durableOperational = remoteConfigured && circuitClosed && !d1Telemetry.dailyBackgroundBudgetExceeded;
+  const d1Health: 'HEALTHY' | 'DEGRADED_QUOTA_EXHAUSTED' | 'UNCONFIGURED' = !remoteConfigured
+    ? 'UNCONFIGURED'
+    : (durableOperational ? 'HEALTHY' : 'DEGRADED_QUOTA_EXHAUSTED');
+  const effectiveReady = Boolean(
+    readiness.isReady &&
+    probe.providerAcceptedAuth === true &&
+    remoteConfigured &&
+    circuitClosed &&
+    durableOperational
+  );
+  const effectiveStatus = d1Health === 'HEALTHY' ? readiness.status : d1Health;
   return c.json({
     success: true,
     ...readiness,
     status: effectiveStatus,
     isReady: effectiveReady,
-    d1Status,
+    d1Status: d1Telemetry,
+    d1Health,
+    quotaStatus: d1Health,
     providerAcceptedAuth: probe.providerAcceptedAuth,
     authDiagnosticCode: probe.authDiagnosticCode,
     instanceLocalDailyBackgroundRowsRead: d1Telemetry.instanceLocalDailyBackgroundRowsRead,
-    telemetryScopeNote: 'Instance-local counter in process memory; resets across process restarts or redeploys.',
+    telemetryScopeNote: d1Telemetry.telemetryScopeNote,
     d1Telemetry,
     d1CircuitBreaker: circuit
   }, 200);
@@ -15012,8 +15025,8 @@ apiRouter.get('/tools/site-audit/readiness', handleSiteAuditReadiness);
 apiRouter.get('/api/v1/tools/site-audit/readiness', handleSiteAuditReadiness);
 
 /**
- * PR #94 / Follow-up: B2B Service & Checkout Readiness Endpoint
- * Surfaces honest D1 quota degradation so checkout readiness never claims healthy when /health returns 503.
+ * PR #95 / PR #96: B2B Service & Checkout Readiness Endpoint
+ * Backward-compatible d1Status object + additive d1Health/quotaStatus strings + 4-gate readiness check.
  */
 const handleB2BReadiness = async (c: any) => {
   const { RazorpayStandardAdapter } = await import('../payments/razorpay-adapter.js');
@@ -15021,25 +15034,29 @@ const handleB2BReadiness = async (c: any) => {
   const d1 = D1Client.getInstance();
   const circuit = d1.getRemoteQuotaCircuitState();
   const d1Telemetry = d1.getD1Status();
-  const isD1QuotaExhausted = Boolean(circuit.exhausted || d1Telemetry.dailyBackgroundBudgetExceeded);
-  const d1Status: 'HEALTHY' | 'DEGRADED_QUOTA_EXHAUSTED' = isD1QuotaExhausted
-    ? 'DEGRADED_QUOTA_EXHAUSTED'
-    : 'HEALTHY';
-  const razorpayReady = Boolean(probe.providerAcceptedAuth);
-  const isReady = razorpayReady && !isD1QuotaExhausted;
+  const remoteConfigured = Boolean(d1Telemetry.remoteD1Configured);
+  const circuitClosed = !circuit.exhausted && !circuit.readExhausted && !circuit.writeExhausted;
+  const durableOperational = remoteConfigured && circuitClosed && !d1Telemetry.dailyBackgroundBudgetExceeded;
+  const d1Health: 'HEALTHY' | 'DEGRADED_QUOTA_EXHAUSTED' | 'UNCONFIGURED' = !remoteConfigured
+    ? 'UNCONFIGURED'
+    : (durableOperational ? 'HEALTHY' : 'DEGRADED_QUOTA_EXHAUSTED');
+  const razorpayReady = probe.providerAcceptedAuth === true;
+  const isReady = razorpayReady && remoteConfigured && circuitClosed && durableOperational;
   return c.json({
     success: true,
-    status: isD1QuotaExhausted
-      ? 'DEGRADED_QUOTA_EXHAUSTED'
+    status: d1Health !== 'HEALTHY'
+      ? d1Health
       : (razorpayReady ? 'READY' : 'LOCKED_MISSING_CONFIGURATION'),
     isReady,
-    proposalDraftingAvailable: true,
+    proposalDraftingAvailable: d1Health === 'HEALTHY',
     checkoutOrderCreationReady: isReady,
-    d1Status,
+    d1Status: d1Telemetry,
+    d1Health,
+    quotaStatus: d1Health,
     providerAcceptedAuth: probe.providerAcceptedAuth,
     authDiagnosticCode: probe.authDiagnosticCode,
     instanceLocalDailyBackgroundRowsRead: d1Telemetry.instanceLocalDailyBackgroundRowsRead,
-    telemetryScopeNote: 'Instance-local counter in process memory; resets across process restarts or redeploys.',
+    telemetryScopeNote: d1Telemetry.telemetryScopeNote,
     d1Telemetry,
     d1CircuitBreaker: circuit
   }, 200);
@@ -16179,6 +16196,9 @@ apiRouter.post('/b2b/pilot-proposal', async (c) => {
     if (msg.startsWith('SCAN_FAILED:')) {
       return c.json({ success: false, error: 'SCAN_FAILED', message: msg }, 422);
     }
+    if (msg.includes('D1_DURABLE_WRITE_UNAVAILABLE') || msg.includes('PERSISTENCE_FAULT') || msg.includes('SERVICE_UNAVAILABLE')) {
+      return c.json({ success: false, error: 'D1_DURABLE_WRITE_UNAVAILABLE', message: msg }, 503);
+    }
     return c.json({ success: false, error: msg }, 500);
   }
 });
@@ -16210,9 +16230,18 @@ apiRouter.get('/b2b/pilot-proposal', async (c) => {
   } catch (err: any) {
     const msg = String(err?.message || 'PROPOSAL_GENERATION_FAILED');
     const format = c.req.query('format') || 'html';
-    const statusCode = msg.startsWith('INVALID_URL:') ? 400 : (msg.startsWith('SCAN_FAILED:') ? 422 : 500);
+    const isDurableUnavailable = msg.includes('D1_DURABLE_WRITE_UNAVAILABLE') || msg.includes('PERSISTENCE_FAULT') || msg.includes('SERVICE_UNAVAILABLE');
+    const statusCode = isDurableUnavailable
+      ? 503
+      : (msg.startsWith('INVALID_URL:') ? 400 : (msg.startsWith('SCAN_FAILED:') ? 422 : 500));
     if (format === 'json') {
-      return c.json({ success: false, error: msg.startsWith('SCAN_FAILED:') ? 'SCAN_FAILED' : 'PROPOSAL_GENERATION_FAILED', message: msg }, statusCode as any);
+      return c.json({
+        success: false,
+        error: isDurableUnavailable
+          ? 'D1_DURABLE_WRITE_UNAVAILABLE'
+          : (msg.startsWith('SCAN_FAILED:') ? 'SCAN_FAILED' : 'PROPOSAL_GENERATION_FAILED'),
+        message: msg
+      }, statusCode as any);
     }
     return c.text(`Error generating proposal: ${msg}`, statusCode as any);
   }
@@ -16247,6 +16276,9 @@ apiRouter.post('/owner/b2b/proposals/:proposalId/approve', async (c) => {
     if (msg.includes('INVALID_PRICE') || msg.includes('INVALID_REQUEST')) {
       return c.json({ success: false, error: msg }, 400);
     }
+    if (msg.includes('D1_DURABLE_WRITE_UNAVAILABLE') || msg.includes('PERSISTENCE_FAULT') || msg.includes('SERVICE_UNAVAILABLE')) {
+      return c.json({ success: false, error: 'D1_DURABLE_WRITE_UNAVAILABLE', message: msg }, 503);
+    }
     return c.json({ success: false, error: msg || 'PROPOSAL_APPROVAL_FAILED' }, 500);
   }
 });
@@ -16258,7 +16290,19 @@ apiRouter.get('/b2b/checkout/:proposalId', async (c) => {
   const proposalId = c.req.param('proposalId');
   const { B2BPilotService } = await import('../revenue/b2b-pilot-service.js');
   const service = B2BPilotService.getInstance();
-  const proposal = await service.getProposalById(proposalId);
+  let proposal: any = null;
+  try {
+    proposal = await service.getProposalById(proposalId);
+  } catch (err: any) {
+    const msg = String(err?.message || '');
+    if (msg.includes('D1_DURABLE_WRITE_UNAVAILABLE') || msg.includes('PERSISTENCE_FAULT') || msg.includes('SERVICE_UNAVAILABLE')) {
+      return c.html(
+        `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="robots" content="noindex, nofollow"><title>Checkout Temporarily Unavailable</title></head><body style="font-family:sans-serif;background:#090d16;color:#f8fafc;padding:3rem;text-align:center;"><h1>503 — Durable Storage Temporarily Unavailable</h1><p>B2B checkout requires durable Cloudflare D1 storage and cannot proceed while D1 is degraded.</p></body></html>`,
+        503
+      );
+    }
+    throw err;
+  }
   if (!proposal) {
     return c.html(
       `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="robots" content="noindex, nofollow"><title>Proposal Not Found</title></head><body style="font-family:sans-serif;background:#090d16;color:#f8fafc;padding:3rem;text-align:center;"><h1>404 — Proposal Not Found</h1><p>No B2B pilot proposal matches the specified ID.</p></body></html>`,

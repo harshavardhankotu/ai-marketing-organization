@@ -1,6 +1,15 @@
-import { D1Client, FINANCIAL_TABLES, isFinancialSql } from './d1-client.js';
+import {
+  D1Client,
+  FINANCIAL_TABLES,
+  DURABLE_REQUIRED_TABLES,
+  isFinancialSql,
+  isDurableRequiredTable,
+  isDurableRequiredSql
+} from './d1-client.js';
 import { getDb } from './client.js';
 import { isProduction } from '../config/env.js';
+
+export { DURABLE_REQUIRED_TABLES };
 
 export const D1_REVENUE_CRITICAL_TABLES = [
   'payment_requests',
@@ -112,14 +121,15 @@ export class D1RevenueRepository {
     params: any[] = []
   ): Promise<{ rowsAffected: number; source: 'CLOUDFLARE_D1' | 'PERSISTENT_SQLITE' }> {
     const isFinancialTable = FINANCIAL_TABLES.includes(table as any) || isFinancialSql(sql);
-    if (this.d1.isCycleActive() && !isFinancialTable) {
-      this.d1.assertBackgroundBudgetAvailable(sql, 'P0', true);
+    const isDurableRequired = isFinancialTable || isDurableRequiredTable(String(table)) || isDurableRequiredSql(sql);
+    if (this.d1.isCycleActive() || this.d1.isDailyBackgroundBudgetExceeded()) {
+      this.d1.assertBackgroundBudgetAvailable(sql, 'P0', this.d1.isCycleActive());
     }
 
     const shouldSyncRemoteD1 = this.d1.isRemoteD1WriteAllowed();
     if (shouldSyncRemoteD1) {
       const res = await this.d1.executeQuery(sql, params, true, 'P0');
-      // Spec Stage P.2: Never mirror financial tables to local SQLite, and avoid duplicate write if already executed in SQLite
+      // Spec Stage P.2: Never mirror financial/durable-required tables to local SQLite, and avoid duplicate write if already executed in SQLite
       if (!isFinancialTable && res.source !== 'PERSISTENT_SQLITE') {
         try {
           const db = getDb();
@@ -132,6 +142,15 @@ export class D1RevenueRepository {
     if (process.env.RENDER === 'true' && isFinancialTable) {
       throw new Error(
         `SERVICE_UNAVAILABLE: D1_DURABLE_WRITE_UNAVAILABLE: Financial writes on '${table}' require durable Cloudflare D1 storage. Render ephemeral disk fallback is strictly prohibited for money records.`
+      );
+    }
+
+    const strictProdDurable =
+      (process.env.RENDER === 'true' && !process.env.VITEST) ||
+      (isProduction() && (!process.env.VITEST || this.d1.isRemoteD1Configured()));
+    if (strictProdDurable && isDurableRequired) {
+      throw new Error(
+        `SERVICE_UNAVAILABLE: D1_DURABLE_WRITE_UNAVAILABLE: Durable table '${table}' write requires available remote Cloudflare D1 storage in production. Ephemeral SQLite fallback is strictly prohibited.`
       );
     }
 
@@ -161,8 +180,11 @@ export class D1RevenueRepository {
     const hasFinancialTable = operations.some(
       o => FINANCIAL_TABLES.includes(o.table as any) || isFinancialSql(o.sql)
     );
-    if (this.d1.isCycleActive() && !hasFinancialTable) {
-      this.d1.assertBackgroundBudgetAvailable(operations.map(o => o.sql).join(' '), 'P0', true);
+    const hasDurableRequired = hasFinancialTable || operations.some(
+      o => isDurableRequiredTable(String(o.table)) || isDurableRequiredSql(o.sql)
+    );
+    if (this.d1.isCycleActive() || this.d1.isDailyBackgroundBudgetExceeded()) {
+      this.d1.assertBackgroundBudgetAvailable(operations.map(o => o.sql).join(' '), 'P0', this.d1.isCycleActive());
     }
 
     if (shouldSyncRemoteD1) {
@@ -185,6 +207,16 @@ export class D1RevenueRepository {
     if (process.env.RENDER === 'true' && hasFinancialTable) {
       throw new Error(
         `SERVICE_UNAVAILABLE: D1_DURABLE_WRITE_UNAVAILABLE: Financial batch writes require durable Cloudflare D1 storage. Render ephemeral disk fallback is strictly prohibited for money records.`
+      );
+    }
+
+    const strictProdDurable =
+      (process.env.RENDER === 'true' && !process.env.VITEST) ||
+      (isProduction() && (!process.env.VITEST || this.d1.isRemoteD1Configured()));
+    if (strictProdDurable && hasDurableRequired) {
+      const tableList = operations.map(o => o.table).join(', ');
+      throw new Error(
+        `SERVICE_UNAVAILABLE: D1_DURABLE_WRITE_UNAVAILABLE: Batch write on [${tableList}] requires durable Cloudflare D1 storage in production. Ephemeral SQLite fallback is strictly prohibited.`
       );
     }
 
@@ -219,13 +251,22 @@ export class D1RevenueRepository {
     params: any[] = []
   ): Promise<{ results: T[]; source: 'CLOUDFLARE_D1' | 'PERSISTENT_SQLITE' }> {
     const isFinancialTable = FINANCIAL_TABLES.includes(table as any) || isFinancialSql(sql);
-    if (this.d1.isCycleActive() && !isFinancialTable) {
-      this.d1.assertBackgroundBudgetAvailable(sql, 'P0', true);
+    const isDurableRequired = isFinancialTable || isDurableRequiredTable(String(table)) || isDurableRequiredSql(sql);
+    if (this.d1.isCycleActive() || this.d1.isDailyBackgroundBudgetExceeded()) {
+      this.d1.assertBackgroundBudgetAvailable(sql, 'P0', this.d1.isCycleActive());
     }
     const shouldQueryRemoteD1 = this.d1.isRemoteD1ReadAllowed();
     if (shouldQueryRemoteD1) {
       const res = await this.d1.executeQuery<T>(sql, params, false, 'P0');
       return { results: res.results, source: res.source };
+    }
+    const strictProdDurable =
+      (process.env.RENDER === 'true' && !process.env.VITEST) ||
+      (isProduction() && (!process.env.VITEST || this.d1.isRemoteD1Configured()));
+    if (strictProdDurable && isDurableRequired) {
+      throw new Error(
+        `SERVICE_UNAVAILABLE: D1_DURABLE_WRITE_UNAVAILABLE: Durable table '${table}' read requires available remote Cloudflare D1 storage in production. Ephemeral SQLite fallback is strictly prohibited.`
+      );
     }
     if (isProduction() && !process.env.VITEST && !this.d1.isRemoteD1QuotaExhausted() && !this.d1.isRemoteD1Configured()) {
       throw new Error(`PERSISTENCE_FAULT: Table '${table}' read requires durable Cloudflare D1 storage in production. SQLite fallback is strictly prohibited.`);

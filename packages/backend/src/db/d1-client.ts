@@ -24,9 +24,29 @@ export const FINANCIAL_TABLES = [
   'payout_records'
 ] as const;
 
+export const DURABLE_REQUIRED_TABLES = [
+  ...FINANCIAL_TABLES,
+  'durable_events',
+  'customer_journeys',
+  'proposals'
+] as const;
+
 export function isFinancialSql(sql: string): boolean {
   const lower = String(sql || '').toLowerCase();
   return FINANCIAL_TABLES.some(tbl => {
+    const regex = new RegExp(`\\b${tbl}\\b`, 'i');
+    return regex.test(lower);
+  });
+}
+
+export function isDurableRequiredTable(table: string): boolean {
+  const clean = String(table || '').trim().toLowerCase();
+  return DURABLE_REQUIRED_TABLES.some(tbl => tbl === clean);
+}
+
+export function isDurableRequiredSql(sql: string): boolean {
+  const lower = String(sql || '').toLowerCase();
+  return DURABLE_REQUIRED_TABLES.some(tbl => {
     const regex = new RegExp(`\\b${tbl}\\b`, 'i');
     return regex.test(lower);
   });
@@ -334,8 +354,12 @@ export class D1Client {
   }
 
   public getD1Status(): {
-    status: 'HEALTHY' | 'CYCLE_BUDGET_EXCEEDED' | 'DAILY_BACKGROUND_BUDGET_EXCEEDED' | 'QUOTA_CIRCUIT_OPEN';
+    status: 'HEALTHY' | 'CYCLE_BUDGET_EXCEEDED' | 'DAILY_BACKGROUND_BUDGET_EXCEEDED' | 'QUOTA_CIRCUIT_OPEN' | 'UNCONFIGURED';
+    d1Health: 'HEALTHY' | 'DEGRADED_QUOTA_EXHAUSTED' | 'UNCONFIGURED';
+    quotaStatus: 'HEALTHY' | 'DEGRADED_QUOTA_EXHAUSTED' | 'UNCONFIGURED';
     remoteD1Configured: boolean;
+    readExhausted: boolean;
+    writeExhausted: boolean;
     dateKey: string;
     instanceLocalDailyBackgroundRowsRead: number;
     instanceLocalDailyBackgroundRowsWritten: number;
@@ -345,19 +369,31 @@ export class D1Client {
     currentCycleRowsRead: number;
     cycleBudgetCap: number;
     cycleBudgetExceeded: boolean;
+    telemetryScopeNote: string;
     circuitBreaker: ReturnType<D1Client['getRemoteQuotaCircuitState']>;
   } {
     this.checkAndResetDailyUsage();
+    const remoteConfigured = this.isRemoteD1Configured();
     const circuit = this.getRemoteQuotaCircuitState();
     const dailyExceeded = this.isDailyBackgroundBudgetExceeded();
     const cycleExceeded = this.isCycleBudgetExceeded();
+    const isDegraded = circuit.exhausted || dailyExceeded;
+    const d1Health: 'HEALTHY' | 'DEGRADED_QUOTA_EXHAUSTED' | 'UNCONFIGURED' = !remoteConfigured
+      ? 'UNCONFIGURED'
+      : (isDegraded ? 'DEGRADED_QUOTA_EXHAUSTED' : 'HEALTHY');
     return {
-      status: circuit.exhausted
-        ? 'QUOTA_CIRCUIT_OPEN'
-        : (dailyExceeded
-            ? 'DAILY_BACKGROUND_BUDGET_EXCEEDED'
-            : (cycleExceeded ? 'CYCLE_BUDGET_EXCEEDED' : 'HEALTHY')),
-      remoteD1Configured: this.isRemoteD1Configured(),
+      status: !remoteConfigured
+        ? 'UNCONFIGURED'
+        : (circuit.exhausted
+            ? 'QUOTA_CIRCUIT_OPEN'
+            : (dailyExceeded
+                ? 'DAILY_BACKGROUND_BUDGET_EXCEEDED'
+                : (cycleExceeded ? 'CYCLE_BUDGET_EXCEEDED' : 'HEALTHY'))),
+      d1Health,
+      quotaStatus: d1Health,
+      remoteD1Configured: remoteConfigured,
+      readExhausted: circuit.readExhausted,
+      writeExhausted: circuit.writeExhausted,
       dateKey: this.currentDailyDateKey,
       instanceLocalDailyBackgroundRowsRead: this.dailyBackgroundRowsRead,
       instanceLocalDailyBackgroundRowsWritten: this.dailyBackgroundRowsWritten,
@@ -367,6 +403,7 @@ export class D1Client {
       currentCycleRowsRead: this.currentCycleRowsRead,
       cycleBudgetCap: this.cycleBudgetCeiling,
       cycleBudgetExceeded: cycleExceeded,
+      telemetryScopeNote: 'Instance-local counter in process memory; resets across process restarts or redeploys.',
       circuitBreaker: circuit
     };
   }
@@ -378,10 +415,10 @@ export class D1Client {
   ): void {
     const backgroundQuery = isBackground === true || this.cycleActive || priority === 'P3' || priority === 'P4';
     if (!backgroundQuery) return;
-    if (isFinancialSql(sql) && priority === 'P0' && isBackground !== true) return;
+    if (isFinancialSql(sql) && priority === 'P0' && isBackground !== true && !this.cycleActive) return;
     if (this.isCycleBudgetExceeded() || this.isDailyBackgroundBudgetExceeded()) {
       throw new Error(
-        `[D1 BUDGET GUARD] Background D1 budget exceeded (cycleRowsRead=${this.currentCycleRowsRead}/${this.cycleBudgetCeiling}, dailyRowsRead=${this.dailyBackgroundRowsRead}/${this.dailyBudgetCap}). Background query blocked.`
+        `D1_BACKGROUND_BUDGET_EXCEEDED: [D1 BUDGET GUARD] Background D1 budget exceeded (cycleRowsRead=${this.currentCycleRowsRead}/${this.cycleBudgetCeiling}, dailyRowsRead=${this.dailyBackgroundRowsRead}/${this.dailyBudgetCap}). Background query blocked.`
       );
     }
   }
@@ -570,22 +607,26 @@ export class D1Client {
     const isProduction = process.env.NODE_ENV === 'production';
     const isRender = process.env.RENDER === 'true';
     const isFinancial = isWrite && isFinancialSql(sql);
+    const isDurableRequired = isDurableRequiredSql(sql);
+    const enforceDurableFailClosed =
+      (isRender && (isFinancial || (isDurableRequired && !process.env.VITEST))) ||
+      (isProduction && isDurableRequired && (!process.env.VITEST || isRender || this.isRemoteD1Configured()));
 
-    // Fail-closed enforcement for Render on financial tables if remote D1 is unconfigured or either quota circuit breaker is active
-    if (isRender && isFinancial) {
+    // Fail-closed enforcement on DURABLE_REQUIRED_TABLES & FINANCIAL_TABLES in production / Render
+    if (enforceDurableFailClosed) {
       if (!this.isRemoteD1Configured()) {
-        throw new Error('D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1 (remote D1 not configured)');
+        throw new Error('D1_DURABLE_WRITE_UNAVAILABLE: Durable customer/proposal/financial operations require remote Cloudflare D1 (remote D1 not configured)');
       }
       if (this.isRemoteD1WriteQuotaExhausted() || this.isRemoteD1ReadQuotaExhausted()) {
-        throw new Error('D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1 (quota circuit breaker active)');
+        throw new Error('D1_DURABLE_WRITE_UNAVAILABLE: Durable customer/proposal/financial operations require remote Cloudflare D1 (quota circuit breaker active)');
       }
     }
 
     const remoteAllowed = isWrite ? this.isRemoteD1WriteAllowed() : this.isRemoteD1ReadAllowed();
 
     if (isWrite && this.isRemoteD1Configured() && !remoteAllowed) {
-      if (isRender && isFinancial) {
-        throw new Error('D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1');
+      if ((isRender && isFinancial) || enforceDurableFailClosed) {
+        throw new Error('D1_DURABLE_WRITE_UNAVAILABLE: Durable writes require remote Cloudflare D1');
       }
       // Stage K D1 Write Isolation: Non-Render dev/test environments write strictly to local SQLite
       const db = getDb();
@@ -618,11 +659,13 @@ export class D1Client {
 
           if (!response.ok) {
             const errText = await response.text();
+            const cfRay = response.headers?.get?.('cf-ray') || response.headers?.get?.('cf-request-id') || 'none';
+            console.error(`[D1Client ERROR] HTTP ${response.status} (cf-ray=${cfRay}): ${errText}`);
 
             if (D1Client.isDailyQuotaError(response.status, errText)) {
               this.tripQuotaCircuitBreaker(errText, isWrite ? 'write' : 'read');
-              if (isRender && isFinancial) {
-                throw new Error(`D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1 (${errText})`);
+              if ((isRender && isFinancial) || enforceDurableFailClosed) {
+                throw new Error(`D1_DURABLE_WRITE_UNAVAILABLE: Durable operations require remote Cloudflare D1 (${errText})`);
               }
               const db = getDb();
               if (isWrite) {
@@ -647,13 +690,13 @@ export class D1Client {
               continue;
             }
 
-            if (isRender && isFinancial) {
-              throw new Error(`D1_DURABLE_WRITE_UNAVAILABLE: Financial writes require durable remote D1 (HTTP ${response.status}: ${errText})`);
+            if ((isRender && isFinancial) || enforceDurableFailClosed) {
+              throw new Error(`D1_DURABLE_WRITE_UNAVAILABLE: Durable operations require remote Cloudflare D1 (HTTP ${response.status}, cf-ray=${cfRay}: ${errText})`);
             }
             if (isProduction) {
-              throw new Error(`[D1 PERSISTENCE ERROR] D1 returned HTTP ${response.status}: ${errText}`);
+              throw new Error(`[D1 PERSISTENCE ERROR] D1 returned HTTP ${response.status} (cf-ray=${cfRay}): ${errText}`);
             }
-            console.warn(`[D1Client] Cloudflare D1 HTTP ${response.status} (${errText}) — falling back to dev store`);
+            console.warn(`[D1Client] Cloudflare D1 HTTP ${response.status} (cf-ray=${cfRay}, ${errText}) — falling back to dev store`);
             break;
           } else {
             const json = await response.json() as any;
@@ -835,6 +878,8 @@ export class D1Client {
 
             if (!response.ok) {
               const errText = await response.text();
+              const cfRay = response.headers?.get?.('cf-ray') || response.headers?.get?.('cf-request-id') || 'none';
+              console.error(`[D1Client BATCH ERROR] HTTP ${response.status} (cf-ray=${cfRay}) at index ${idx}: ${errText}`);
               failureErrorText = errText;
               if (D1Client.isDailyQuotaError(response.status, errText)) {
                 this.tripQuotaCircuitBreaker(errText, 'write');

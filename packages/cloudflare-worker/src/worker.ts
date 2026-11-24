@@ -16,7 +16,7 @@ export default {
     return new Response('Not found', { status: 404 });
   },
 
-  // Scheduled handler — fires hourly via `0 * * * *`
+  // Scheduled handler — fires twice daily at 03:30 & 15:30 UTC (09:00 & 21:00 IST) via `30 3,15 * * *`
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(runCycle(env));
   }
@@ -53,7 +53,7 @@ async function runCycle(env: Env): Promise<void> {
         body: JSON.stringify({
           triggerSource: 'CLOUDFLARE_CRON',
           scheduledAt: new Date().toISOString(),
-          cronExpression: '0 * * * *',
+          cronExpression: '30 3,15 * * *',
           attempt
         }),
         signal: AbortSignal.timeout(100000)
