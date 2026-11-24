@@ -322,6 +322,12 @@ app.get('/b2b/checkout/:proposalId', async (c) => {
     headers: c.req.raw.headers
   });
 });
+app.get('/b2b/readiness', async (c) => {
+  return app.request('/api/v1/b2b/readiness', {
+    method: 'GET',
+    headers: c.req.raw.headers
+  });
+});
 
 // Official Public MCP Discovery Manifest (strictly isolated to SiteFix Launch Gate tools; off by default unless PUBLIC_MCP_ENABLED=true)
 app.get('/.well-known/mcp.json', (c) => {
