@@ -752,7 +752,7 @@ export function renderOwnerToolPage(
           <li><strong>1. HTML &lt;head&gt; Meta &amp; Social Tags:</strong> Clean title, meta description, Open Graph (og:title, og:description, og:image, og:url), and Twitter/X Card tags.</li>
           <li><strong>2. Schema.org Structured Data:</strong> Syntax-validated JSON-LD (Organization, WebSite, or Product) tailored to your detected markup.</li>
           <li><strong>3. Search Engine Directives:</strong> Optimized <code>robots.txt</code> rules and declared <code>sitemap.xml</code> configuration with deployment checklist.</li>
-          <li><strong>4. Instant Delivery:</strong> Instant downloadable fix files (.html, .json, .txt) plus immediate email backup.</li>
+          <li><strong>4. Instant Delivery:</strong> instant browser download + email receipt.</li>
           <li><strong>5. 7-Day Verification Recheck:</strong> 1 automated post-deployment re-scan within 7 days to verify all tags validate live.</li>
           <li><strong>6. 7-Day Refund Guarantee:</strong> 100% money-back guarantee if the technical fix files fail schema or markup validation.</li>
         </ul>
@@ -818,12 +818,19 @@ export function renderOwnerToolPage(
 
       // Dispatch client-side visit beacon on page load
       try {
+        var sKey = 'sitefix_session_uuid';
+        var sessId = window.sessionStorage.getItem(sKey);
+        if (!sessId) {
+          sessId = 'sess_' + (window.crypto && window.crypto.randomUUID ? window.crypto.randomUUID().replace(/-/g, '') : Math.random().toString(36).substring(2) + Date.now().toString(36));
+          window.sessionStorage.setItem(sKey, sessId);
+        }
         var beaconEndpoint = (CFG.apiBaseUrl || '') + '/api/v1/referrals/beacon';
         fetch(beaconEndpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             source: CFG.source,
+            sessionId: sessId,
             url: window.location.href,
             referrer: document.referrer || ''
           }),

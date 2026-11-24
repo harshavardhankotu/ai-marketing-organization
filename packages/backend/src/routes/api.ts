@@ -7810,6 +7810,8 @@ apiRouter.post('/organic/affiliate-clicks', async (c) => {
  */
 interface RevenueFunnelNonCashCache {
   verifiedExternalVisits: number;
+  externalPageViews?: number;
+  distinctSessionFingerprints?: number;
   testSessions: number;
   verifiedHumanOutboundClicks: number;
   browserCandidateOutboundClicks: number;
@@ -7878,6 +7880,8 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   // Non-cash metrics (traffic, clicks, CTR, Cuelinks summary, prospects, drafts, proposals, audits, monetized partners)
   // are cached in memory for 10 minutes to protect Cloudflare D1 free tier read quotas.
   let verifiedExternalVisits = 0;
+  let externalPageViews = 0;
+  let distinctSessionFingerprints = 0;
   let testSessions = 0;
   let verifiedHumanOutboundClicks = 0;
   let browserCandidateOutboundClicks = 0;
@@ -7919,6 +7923,8 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
 
   if (cached && (Date.now() - cached.cachedAt < 10 * 60 * 1000)) {
     verifiedExternalVisits = cached.verifiedExternalVisits;
+    externalPageViews = cached.externalPageViews ?? cached.verifiedExternalVisits ?? 0;
+    distinctSessionFingerprints = cached.distinctSessionFingerprints ?? cached.verifiedExternalVisits ?? 0;
     testSessions = cached.testSessions;
     verifiedHumanOutboundClicks = cached.verifiedHumanOutboundClicks;
     browserCandidateOutboundClicks = cached.browserCandidateOutboundClicks;
@@ -7950,14 +7956,16 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
       failedQueries.push(...cached.failedQueries);
     }
   } else {
-    // 1. External Visits vs Internal Test Sessions
+    // 1. External Visits vs Internal Test Sessions (Excludes diagnostic probes & QA traffic)
     const extRow = await safeQuery<any>(
       'traffic_sessions',
-      "SELECT COUNT(*) as c FROM traffic_sessions WHERE traffic_evidence_status = 'VERIFIED_EXTERNAL' OR is_external = 1",
+      "SELECT COUNT(*) as c, COUNT(DISTINCT session_id) as distinctSessions FROM traffic_sessions WHERE (traffic_evidence_status = 'VERIFIED_EXTERNAL' OR is_external = 1) AND (verification_reason NOT LIKE '%DIAGNOSTIC%' OR verification_reason IS NULL)",
       [],
       'traffic_sessions.verified_external'
     );
-    verifiedExternalVisits = extRow?.c ?? 0;
+    externalPageViews = extRow?.c ?? 0;
+    distinctSessionFingerprints = extRow?.distinctSessions ?? 0;
+    verifiedExternalVisits = distinctSessionFingerprints || externalPageViews;
 
     const testRow = await safeQuery<any>(
       'traffic_sessions',
@@ -8205,6 +8213,8 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
     if (shouldCache && measurementStatus === 'VERIFIED_LIVE_DB' && failedQueries.length === 0) {
       revenueFunnelNonCashCache = {
         verifiedExternalVisits,
+        externalPageViews,
+        distinctSessionFingerprints,
         testSessions,
         verifiedHumanOutboundClicks,
         browserCandidateOutboundClicks,
@@ -8329,34 +8339,6 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   let fulfilmentsFailed = 0;
   let saasGrossCapturedINR = 0.00;
 
-  const ordersRow = await safeQuery<any>(
-    'payment_orders',
-    "SELECT COUNT(*) as c, COALESCE(SUM(CASE WHEN status = 'CAPTURED' OR status = 'PAID' THEN amount_inr ELSE 0 END), 0) as s FROM payment_orders WHERE (notes_json LIKE '%SITEFIX_AI_PACK_V1%' OR notes_json LIKE '%SITE_AUDIT_FIXPACK%' OR notes_json LIKE '%sitefix_core_499%') AND (notes_json NOT LIKE '%\"is_test\":true%' AND notes_json NOT LIKE '%\"test\":true%')",
-    [],
-    'payment_orders.sitefix'
-  );
-
-  const univOrdersRow = await safeQuery<any>(
-    'universal_orders',
-    "SELECT COUNT(*) as c, COALESCE(SUM(CASE WHEN status = 'PAID' OR status = 'COMPLETED' THEN (amount_minor / 100.0) ELSE 0 END), 0) as s FROM universal_orders WHERE is_test = 0 AND (offer_id LIKE '%sitefix%' OR offer_id LIKE '%SITEFIX%' OR metadata_json LIKE '%SITEFIX%' OR metadata_json LIKE '%sitefix%')",
-    [],
-    'universal_orders.sitefix'
-  );
-
-  const capturedRow = await safeQuery<any>(
-    'payment_orders',
-    "SELECT COUNT(*) as c FROM payment_orders WHERE (status = 'CAPTURED' OR status = 'PAID') AND (notes_json LIKE '%SITEFIX_AI_PACK_V1%' OR notes_json LIKE '%SITE_AUDIT_FIXPACK%' OR notes_json LIKE '%sitefix_core_499%') AND (notes_json NOT LIKE '%\"is_test\":true%')",
-    [],
-    'payment_orders.captured'
-  );
-
-  const univCapturedRow = await safeQuery<any>(
-    'universal_orders',
-    "SELECT COUNT(*) as c FROM universal_orders WHERE is_test = 0 AND (status = 'PAID' OR status = 'COMPLETED') AND (offer_id LIKE '%sitefix%' OR offer_id LIKE '%SITEFIX%' OR metadata_json LIKE '%SITEFIX%' OR metadata_json LIKE '%sitefix%')",
-    [],
-    'universal_orders.captured'
-  );
-
   let sitefixAttribution: any = null;
   try {
     const { getSiteFixFunnelAttributionSummaryAsync } = await import('../tools/site-audit/sitefix-funnel-attribution.js');
@@ -8364,16 +8346,57 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   } catch (err: any) {
     console.warn('[RevenueFunnel] SiteFix funnel attribution query failed:', err.message);
   }
-
   const sfxTotals = sitefixAttribution?.totals;
-  checkoutInitiated = Math.max(ordersRow?.c ?? 0, univOrdersRow?.c ?? 0, sfxTotals?.checkout_start ?? 0);
-  paymentOrdersCreated = Math.max(ordersRow?.c ?? 0, univOrdersRow?.c ?? 0, checkoutInitiated);
-  paymentCaptured = Math.max(capturedRow?.c ?? 0, univCapturedRow?.c ?? 0, sfxTotals?.capture ?? 0);
-  fixPackPreviews = Math.max(sfxTotals?.preview_open ?? 0, siteAuditsCompleted);
-  saasGrossCapturedINR = Number((ordersRow?.s ?? 0) + (univOrdersRow?.s ?? 0));
-  if (sfxTotals?.distinctVisitorFingerprints) {
-    verifiedExternalVisits = Math.max(verifiedExternalVisits, sfxTotals.distinctVisitorFingerprints);
-  }
+
+  // Single Authoritative Provider-Verified Ledger Query (Stage U.1 Truth: zero Math.max, zero double-counting across tables)
+  const orderLedgerQuery = `
+    SELECT 
+      COUNT(DISTINCT order_id) as totalOrders,
+      COUNT(DISTINCT CASE WHEN status IN ('CAPTURED', 'PAID', 'COMPLETED') THEN order_id END) as capturedCount,
+      COALESCE(SUM(CASE WHEN status IN ('CAPTURED', 'PAID', 'COMPLETED') THEN amount_inr ELSE 0 END), 0) as grossCapturedINR,
+      COUNT(DISTINCT CASE WHEN status = 'REFUNDED' THEN order_id END) as refundCount,
+      COALESCE(SUM(CASE WHEN status = 'REFUNDED' THEN amount_inr ELSE 0 END), 0) as refundAmountINR
+    FROM (
+      SELECT 
+        id as order_id, 
+        status, 
+        (amount_minor / 100.0) as amount_inr 
+      FROM universal_orders 
+      WHERE is_test = 0 AND (offer_id LIKE '%sitefix%' OR offer_id LIKE '%SITEFIX%' OR metadata_json LIKE '%SITEFIX%' OR metadata_json LIKE '%sitefix%')
+      UNION
+      SELECT 
+        order_id, 
+        status, 
+        amount_inr 
+      FROM payment_orders 
+      WHERE (notes_json LIKE '%SITEFIX%' OR notes_json LIKE '%sitefix%') 
+        AND (notes_json NOT LIKE '%"is_test":true%' AND notes_json NOT LIKE '%"test":true%')
+        AND order_id NOT IN (
+          SELECT id FROM universal_orders WHERE is_test = 0
+        )
+    )
+  `;
+
+  const orderLedger = await safeQuery<any>(
+    'universal_orders',
+    orderLedgerQuery,
+    [],
+    'universal_orders.authoritative_ledger'
+  );
+
+  const totalLedgerOrders = Number(orderLedger?.totalOrders ?? 0);
+  const ledgerCapturedCount = Number(orderLedger?.capturedCount ?? 0);
+  saasGrossCapturedINR = Number(orderLedger?.grossCapturedINR ?? 0.00);
+  const refundsCount = Number(orderLedger?.refundCount ?? 0);
+  const refundAmountINR = Number(orderLedger?.refundAmountINR ?? 0.00);
+  const netCapturedINR = Math.max(0, saasGrossCapturedINR - refundAmountINR);
+
+  paymentOrdersCreated = totalLedgerOrders || Number(sfxTotals?.order_created ?? sfxTotals?.checkout_start ?? 0);
+  checkoutInitiated = totalLedgerOrders || Number(sfxTotals?.checkout_modal_opened ?? sfxTotals?.order_created ?? sfxTotals?.checkout_start ?? 0);
+  paymentCaptured = ledgerCapturedCount || Number(sfxTotals?.payment_captured ?? sfxTotals?.capture ?? 0);
+  // Stage U.1 Truth: Pure page load logs page_view and does NOT increment preview_displayed
+  fixPackPreviews = Number(sfxTotals?.preview_displayed ?? 0);
+  fulfilmentsCompleted = Number(sfxTotals?.deliverable_ready ?? sfxTotals?.delivery ?? 0);
 
   // 7. Operating Costs (Strict ₹0 Cash Outflow Rule with Quota Accounting)
   const operatingCosts = {
@@ -8429,6 +8452,8 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
       },
       funnel: {
         verifiedExternalVisits,
+        externalPageViews,
+        distinctSessionFingerprints,
         internalTestSessions: testSessions,
         verifiedHumanOutboundClicks,
         browserCandidateOutboundClicks,
@@ -8483,6 +8508,8 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
         pageSpeedCompleted,
         siteAuditsFailed,
         fixPackPreviews,
+        preview_displayed: fixPackPreviews,
+        previewDisplayed: fixPackPreviews,
         checkoutInitiated,
         paymentOrdersCreated,
         paymentAuthorized,
@@ -8490,15 +8517,29 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
         fulfilmentsPending,
         fulfilmentsCompleted,
         fulfilmentsFailed,
-        refunds: 0,
+        refunds: refundsCount,
+        refundsCount,
         grossCapturedINR: saasGrossCapturedINR,
-        refundAmountINR: 0.00,
-        netCapturedINR: saasGrossCapturedINR,
+        refundAmountINR,
+        netCapturedINR,
         settledINR: 0.00,
         bankConfirmedCashINR: 0.00,
         commercialAttestationStatus: SiteAuditService.getInstance().getCheckoutReadiness().status,
         checkoutStatus: SiteAuditService.getInstance().getCheckoutReadiness().status,
-        missingConfiguration: SiteAuditService.getInstance().getCheckoutReadiness().missingConfig
+        missingConfiguration: SiteAuditService.getInstance().getCheckoutReadiness().missingConfig,
+        externalPageViews,
+        distinctSessionFingerprints,
+        stages: {
+          page_view: externalPageViews,
+          scan_started: siteAuditsStarted,
+          scan_completed: siteAuditsCompleted,
+          preview_displayed: fixPackPreviews,
+          order_created: paymentOrdersCreated,
+          checkout_modal_opened: checkoutInitiated,
+          payment_captured: paymentCaptured,
+          deliverable_ready: fulfilmentsCompleted,
+          email_delivered: fulfilmentsCompleted
+        }
       },
       operatingCosts,
       profitability,
@@ -8860,7 +8901,8 @@ apiRouter.post('/referrals/beacon', async (c) => {
       clientIp: clientInfo.ip,
       isProbe: isBot || isTestTraffic,
       probeReason: probe.probeReason || (isBot ? 'BOT_TRAFFIC' : (isTestTraffic ? 'TEST_TRAFFIC' : null)),
-      visitorHash: probe.visitorHash
+      visitorHash: probe.visitorHash,
+      sessionId: body.sessionId || null
     });
 
     revenueFunnelNonCashCache = null;
@@ -8869,6 +8911,8 @@ apiRouter.post('/referrals/beacon', async (c) => {
       success: true,
       data: {
         recorded: sessionRes.recorded,
+        d1Persisted: sessionRes.d1Persisted,
+        storageStatus: sessionRes.storageStatus,
         isExternal: sessionRes.isExternal,
         trafficEvidenceStatus: sessionRes.isExternal ? 'VERIFIED_EXTERNAL' : 'TEST',
         sessionId: sessionRes.sessionId,
@@ -14130,7 +14174,7 @@ apiRouter.get('/tools/site-audit', async (c) => {
   const source = normalizeSiteFixSource(c.req.query('source') || c.req.header('x-sitefix-source'), 'web');
   const probe = classifySiteFixProbe(c);
   await recordSiteFixFunnelEvent({
-    stage: 'preview_open',
+    stage: 'page_view',
     source,
     isProbe: probe.isProbe,
     probeReason: probe.probeReason,
@@ -14400,7 +14444,7 @@ const handleOwnerToolPage = async (c: any, slug: any) => {
   const def = OWNER_TOOL_DEFINITIONS[slug as keyof typeof OWNER_TOOL_DEFINITIONS];
   const probe = classifySiteFixProbe(c);
   await recordSiteFixFunnelEvent({
-    stage: 'preview_open',
+    stage: 'page_view',
     source: def.source,
     isProbe: probe.isProbe,
     probeReason: probe.probeReason,

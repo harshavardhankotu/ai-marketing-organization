@@ -104,5 +104,5 @@ I put together a set of lightweight, free diagnostic tools focused on the techni
 
 Link: https://ai-marketing-organization.onrender.com/tools/site-audit
 
-No signup, no tracking cookies, no paywalls on the diagnostic reports. If you test your site and spot any parser quirks, let me know!
+No signup, zero third-party ad/tracking cookies (lightweight first-party server telemetry only), no paywalls on the diagnostic reports. If you test your site and spot any parser quirks, let me know!
 ```

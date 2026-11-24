@@ -108,6 +108,7 @@ describe('SiteFix Funnel Attribution & Reconciliation', () => {
     expect(ownerHtml).toContain('2. Schema.org Structured Data');
     expect(ownerHtml).toContain('3. Search Engine Directives');
     expect(ownerHtml).toContain('4. Instant Delivery');
+    expect(ownerHtml).toContain('instant browser download + email receipt');
     expect(ownerHtml).toContain('5. 7-Day Verification Recheck');
     expect(ownerHtml).toContain('6. 7-Day Refund Guarantee');
     expect(ownerHtml).toContain('WhatsApp Link Preview Comparison (Before vs. After Fix-Pack)');
@@ -121,8 +122,75 @@ describe('SiteFix Funnel Attribution & Reconciliation', () => {
     expect(siteAuditHtml).toContain('2. Schema.org Structured Data');
     expect(siteAuditHtml).toContain('3. Search Engine Directives');
     expect(siteAuditHtml).toContain('4. Instant Delivery');
+    expect(siteAuditHtml).toContain('instant browser download + email receipt');
     expect(siteAuditHtml).toContain('5. 7-Day Verification Recheck');
     expect(siteAuditHtml).toContain('6. 7-Day Refund Guarantee');
     expect(siteAuditHtml).toContain('/api/v1/referrals/beacon');
+  });
+
+  it('5. Page load logs page_view and does NOT increment preview_displayed', async () => {
+    // Initial funnel check
+    const initialRes = await app.request('/api/v1/public/revenue-funnel?fresh=true');
+    const initialData = await initialRes.json();
+    const initialPreviews = initialData.data.selfServeSaaSFunnel.preview_displayed || 0;
+
+    // Simulate page load visit
+    const visitRes = await recordToolVisitSession({
+      source: 'web',
+      landingPage: '/tools/site-audit',
+      referrer: 'https://google.com',
+      isProbe: false
+    });
+
+    expect(visitRes.recorded).toBe(true);
+    expect(visitRes.storageStatus).toBe('FALLBACK_LOCAL_ONLY');
+    expect(visitRes.d1Persisted).toBe(false);
+
+    // Verify durable_events has page_view event, not preview_open
+    const db = getDb();
+    const evt = db.prepare(`SELECT payload_json FROM durable_events WHERE event_type = 'SITEFIX_FUNNEL_EVENT' ORDER BY created_at DESC LIMIT 1`).get() as any;
+    expect(evt).toBeDefined();
+    const payload = JSON.parse(evt.payload_json);
+    expect(payload.stage).toBe('page_view');
+
+    // Verify /public/revenue-funnel?fresh=true does NOT increment preview_displayed
+    const afterRes = await app.request('/api/v1/public/revenue-funnel?fresh=true');
+    const afterData = await afterRes.json();
+    expect(afterData.data.selfServeSaaSFunnel.preview_displayed).toBe(initialPreviews);
+  });
+
+  it('6. GET /checkout routes to /tools/site-audit and preserves query parameters', async () => {
+    const res = await app.request('/checkout?source=test_flow', { method: 'GET', redirect: 'manual' });
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe('/tools/site-audit?source=test_flow');
+  });
+
+  it('7. Revenue funnel returns real refund accounting, honest metric labels, and clean stages', async () => {
+    const res = await app.request('/api/v1/public/revenue-funnel?fresh=true');
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.success).toBe(true);
+
+    const saas = json.data.selfServeSaaSFunnel;
+    expect(saas.refundsCount).toBeDefined();
+    expect(typeof saas.refundsCount).toBe('number');
+    expect(saas.netCapturedINR).toBeDefined();
+    expect(typeof saas.netCapturedINR).toBe('number');
+    expect(saas.grossCapturedINR).toBeDefined();
+    expect(typeof saas.grossCapturedINR).toBe('number');
+    expect(saas.netCapturedINR).toBe(Math.max(0, saas.grossCapturedINR - (saas.refundAmountINR || 0)));
+
+    expect(saas.externalPageViews).toBeDefined();
+    expect(saas.distinctSessionFingerprints).toBeDefined();
+    expect(saas.stages).toBeDefined();
+    expect(saas.stages.page_view).toBeDefined();
+    expect(saas.stages.scan_started).toBeDefined();
+    expect(saas.stages.scan_completed).toBeDefined();
+    expect(saas.stages.preview_displayed).toBeDefined();
+    expect(saas.stages.order_created).toBeDefined();
+    expect(saas.stages.checkout_modal_opened).toBeDefined();
+    expect(saas.stages.payment_captured).toBeDefined();
+    expect(saas.stages.deliverable_ready).toBeDefined();
+    expect(saas.stages.email_delivered).toBeDefined();
   });
 });

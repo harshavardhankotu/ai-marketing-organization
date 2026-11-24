@@ -17,6 +17,7 @@ import { SiteAuditScanner, compareAuditForRecheck, getRecheckCheckId } from './s
 import { SiteAuditFixPackGenerator } from './site-audit-fixpack-generator.js';
 import { D1RevenueRepository } from '../../db/d1-revenue-repository.js';
 import { OwnerAuthService } from '../../auth/owner-auth.js';
+import { RazorpayStandardAdapter } from '../../payments/razorpay-adapter.js';
 import { isProduction, isPlaceholderCredential, isDomainAuthorizedForPublicAudit, resolveAuthSecretFromEnv } from '../../config/env.js';
 
 export interface SiteFixCommercialTerms {
@@ -218,13 +219,12 @@ export class SiteAuditService {
     let probe = options?.authProbeResult;
     if (!probe) {
       try {
-        const { RazorpayStandardAdapter } = require('../../payments/razorpay-adapter.js');
         probe = RazorpayStandardAdapter.getCachedAuthProbe() || undefined;
       } catch {}
     }
 
     // In unit test runner (VITEST), synthesize a valid sandbox probe for test keys if no explicit probe was supplied
-    if (!probe && process.env.VITEST && isTestKey && !isLiveKey) {
+    if (!options?.authProbeResult && process.env.VITEST && isTestKey && !isLiveKey) {
       probe = { providerAcceptedAuth: true, keyMode: 'SANDBOX' };
     }
 
