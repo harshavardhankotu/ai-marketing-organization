@@ -1186,7 +1186,7 @@ export class DurableJobQueue {
   public async compactStaleDuplicateQueueJobs(): Promise<number> {
     try {
       // PR #92: Replace correlated subquery with bounded indexed scan + primary-key batch update
-      const queuedSql = `SELECT id, workflow_id FROM automation_jobs WHERE status = 'QUEUED' ORDER BY id DESC LIMIT 100`;
+      const queuedSql = `SELECT id, workflow_id FROM automation_jobs WHERE status = 'QUEUED' ORDER BY created_at DESC, id DESC LIMIT 100`;
       const rows = isProduction() && !process.env.VITEST
         ? await this.d1Repo.query<any>('automation_jobs', queuedSql)
         : getDb().prepare(queuedSql).all() as any[];
@@ -1194,11 +1194,11 @@ export class DurableJobQueue {
       if (!rows || rows.length <= 1) return 0;
 
       const seenWorkflows = new Set<string>();
-      const duplicateIds: number[] = [];
+      const duplicateIds: string[] = [];
       for (const row of rows) {
         const wf = String(row.workflow_id || '');
         if (seenWorkflows.has(wf)) {
-          duplicateIds.push(Number(row.id));
+          duplicateIds.push(String(row.id));
         } else {
           seenWorkflows.add(wf);
         }

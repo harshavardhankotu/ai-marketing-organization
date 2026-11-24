@@ -1991,9 +1991,21 @@ export class CuelinksSyncManager {
       return { inspected: 0, updatedCampaigns: 0, syncedPublicDeals: 0, missingPayoutBreakdown: {} };
     }
 
-    // PR #92: Skip immediately when 0 campaigns lack payouts to avoid scanning 500 campaigns and 250 deals
+    // PR #92: Skip immediately when 0 campaigns lack payouts AND 0 deals need payout synchronization
     if (missingRows.length === 0) {
-      return { inspected: 0, updatedCampaigns: 0, syncedPublicDeals: 0, missingPayoutBreakdown: {} };
+      let dealsNeedingSync: any[] = [];
+      try {
+        dealsNeedingSync = await readAll<any>(
+          'public_deals',
+          `SELECT id FROM public_deals
+           WHERE is_monetizable = 1
+             AND (evidence_json IS NULL OR evidence_json = '{}' OR (evidence_json NOT LIKE '%missingPayoutReason%' AND evidence_json NOT LIKE '%verifiedCommissionRatePercent%'))
+           LIMIT 1`
+        );
+      } catch {}
+      if (dealsNeedingSync.length === 0) {
+        return { inspected: 0, updatedCampaigns: 0, syncedPublicDeals: 0, missingPayoutBreakdown: {} };
+      }
     }
 
     const hydratedCampaigns: CuelinksCampaign[] = [];

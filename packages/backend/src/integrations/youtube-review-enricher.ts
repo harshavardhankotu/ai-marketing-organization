@@ -315,12 +315,22 @@ export class YouTubeReviewEnricher {
       return [];
     }
 
+    // Helper to normalize array vs single review object (for tests/legacy spies)
+    const normalizeReviews = (res: any): YouTubeReview[] => {
+      if (!res) return [];
+      if (Array.isArray(res)) return res;
+      if (typeof res === 'object' && (res.videoId || res.videoUrl || res.url)) return [res];
+      return [];
+    };
+
     // 2. Primary: YouTube API
-    let reviews = await this.searchYouTubeApi(cleanTitle, 3);
+    const rawYt = await this.searchYouTubeApi(cleanTitle, 3);
+    let reviews = normalizeReviews(rawYt);
 
     // 3. Fallback: Tavily Search
-    if (!reviews || reviews.length === 0) {
-      reviews = await this.searchTavilyFallback(cleanTitle, 3);
+    if (reviews.length === 0) {
+      const rawTavily = await this.searchTavilyFallback(cleanTitle, 3);
+      reviews = normalizeReviews(rawTavily);
     }
 
     // 4. Cache durably if found, else cache negative result

@@ -12,6 +12,7 @@ describe('PR #92: D1 2,500-Budget Containment & Real Buyer-Decision Engine', () 
 
   beforeEach(() => {
     process.env.ALLOW_D1_CACHE_IN_TEST = 'true';
+    process.env.ENABLE_STARTER_DEALS_IN_TEST = 'true';
     d1.resetQuotaCircuitBreakerForTesting();
     d1.endBackgroundCycle();
     AutonomousDealDiscoveryEngine.invalidateEligibleDealsCache();
@@ -21,6 +22,7 @@ describe('PR #92: D1 2,500-Budget Containment & Real Buyer-Decision Engine', () 
 
   afterEach(() => {
     delete process.env.ALLOW_D1_CACHE_IN_TEST;
+    delete process.env.ENABLE_STARTER_DEALS_IN_TEST;
     d1.resetQuotaCircuitBreakerForTesting();
     d1.endBackgroundCycle();
     AutonomousDealDiscoveryEngine.invalidateEligibleDealsCache();
