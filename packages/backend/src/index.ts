@@ -174,83 +174,88 @@ app.get('/tools/site-audit', async (c) => {
   const {
     normalizeSiteFixSource,
     classifySiteFixProbe,
-    recordSiteFixFunnelEvent
+    recordToolVisitSession
   } = await import('./tools/site-audit/sitefix-funnel-attribution.js');
   const visitorKey = c.req.header('x-forwarded-for') || c.req.header('user-agent') || 'site-audit';
   const assignment = ExperimentEngine.assignStorefrontVariant(STOREFRONT_SITEFIX_CTA_EXP_ID, visitorKey);
   const source = normalizeSiteFixSource(c.req.query('source') || c.req.header('x-sitefix-source'), 'web');
   const probe = classifySiteFixProbe(c);
-  await recordSiteFixFunnelEvent({
-    stage: 'preview_open',
+  await recordToolVisitSession({
     source,
+    landingPage: c.req.query('url') || '/tools/site-audit',
+    referrer: c.req.header('referer') || '',
+    userAgent: probe.userAgent,
+    clientIp: c.req.header('x-forwarded-for') || null,
     isProbe: probe.isProbe,
     probeReason: probe.probeReason,
-    url: c.req.query('url') || '/tools/site-audit',
-    userAgent: probe.userAgent,
     visitorHash: probe.visitorHash
   });
   return c.html(renderSiteAuditPage(assignment));
 });
 app.get('/tools/whatsapp-link-preview-checker', async (c) => {
   const { renderOwnerToolPage, OWNER_TOOL_DEFINITIONS } = await import('./tools/site-audit/owner-tool-pages.js');
-  const { classifySiteFixProbe, recordSiteFixFunnelEvent } = await import('./tools/site-audit/sitefix-funnel-attribution.js');
+  const { classifySiteFixProbe, recordToolVisitSession } = await import('./tools/site-audit/sitefix-funnel-attribution.js');
   const def = OWNER_TOOL_DEFINITIONS['whatsapp-link-preview-checker'];
   const probe = classifySiteFixProbe(c);
-  await recordSiteFixFunnelEvent({
-    stage: 'preview_open',
+  await recordToolVisitSession({
     source: def.source,
+    landingPage: c.req.query('url') || `/tools/${def.slug}`,
+    referrer: c.req.header('referer') || '',
+    userAgent: probe.userAgent,
+    clientIp: c.req.header('x-forwarded-for') || null,
     isProbe: probe.isProbe,
     probeReason: probe.probeReason,
-    url: c.req.query('url') || `/tools/${def.slug}`,
-    userAgent: probe.userAgent,
     visitorHash: probe.visitorHash
   });
   return c.html(renderOwnerToolPage(def.slug, { apiBaseUrl: '', canonicalOrigin: getTrustedPublicSiteUrl() }));
 });
 app.get('/tools/open-graph-checker', async (c) => {
   const { renderOwnerToolPage, OWNER_TOOL_DEFINITIONS } = await import('./tools/site-audit/owner-tool-pages.js');
-  const { classifySiteFixProbe, recordSiteFixFunnelEvent } = await import('./tools/site-audit/sitefix-funnel-attribution.js');
+  const { classifySiteFixProbe, recordToolVisitSession } = await import('./tools/site-audit/sitefix-funnel-attribution.js');
   const def = OWNER_TOOL_DEFINITIONS['open-graph-checker'];
   const probe = classifySiteFixProbe(c);
-  await recordSiteFixFunnelEvent({
-    stage: 'preview_open',
+  await recordToolVisitSession({
     source: def.source,
+    landingPage: c.req.query('url') || `/tools/${def.slug}`,
+    referrer: c.req.header('referer') || '',
+    userAgent: probe.userAgent,
+    clientIp: c.req.header('x-forwarded-for') || null,
     isProbe: probe.isProbe,
     probeReason: probe.probeReason,
-    url: c.req.query('url') || `/tools/${def.slug}`,
-    userAgent: probe.userAgent,
     visitorHash: probe.visitorHash
   });
   return c.html(renderOwnerToolPage(def.slug, { apiBaseUrl: '', canonicalOrigin: getTrustedPublicSiteUrl() }));
 });
 app.get('/tools/robots-and-sitemap-validator', async (c) => {
   const { renderOwnerToolPage, OWNER_TOOL_DEFINITIONS } = await import('./tools/site-audit/owner-tool-pages.js');
-  const { classifySiteFixProbe, recordSiteFixFunnelEvent } = await import('./tools/site-audit/sitefix-funnel-attribution.js');
+  const { classifySiteFixProbe, recordToolVisitSession } = await import('./tools/site-audit/sitefix-funnel-attribution.js');
   const def = OWNER_TOOL_DEFINITIONS['robots-and-sitemap-validator'];
   const probe = classifySiteFixProbe(c);
-  await recordSiteFixFunnelEvent({
-    stage: 'preview_open',
+  await recordToolVisitSession({
     source: def.source,
+    landingPage: c.req.query('url') || `/tools/${def.slug}`,
+    referrer: c.req.header('referer') || '',
+    userAgent: probe.userAgent,
+    clientIp: c.req.header('x-forwarded-for') || null,
     isProbe: probe.isProbe,
     probeReason: probe.probeReason,
-    url: c.req.query('url') || `/tools/${def.slug}`,
-    userAgent: probe.userAgent,
     visitorHash: probe.visitorHash
   });
   return c.html(renderOwnerToolPage(def.slug, { apiBaseUrl: '', canonicalOrigin: getTrustedPublicSiteUrl() }));
 });
 app.get('/tools/json-ld-tester', async (c) => {
   const { renderOwnerToolPage, OWNER_TOOL_DEFINITIONS } = await import('./tools/site-audit/owner-tool-pages.js');
-  const { classifySiteFixProbe, recordSiteFixFunnelEvent } = await import('./tools/site-audit/sitefix-funnel-attribution.js');
+  const { classifySiteFixProbe, recordToolVisitSession } = await import('./tools/site-audit/sitefix-funnel-attribution.js');
   const def = OWNER_TOOL_DEFINITIONS['json-ld-tester'];
   const probe = classifySiteFixProbe(c);
-  await recordSiteFixFunnelEvent({
-    stage: 'preview_open',
+  await recordToolVisitSession({
     source: def.source,
+    landingPage: c.req.query('url') || `/tools/${def.slug}`,
+    referrer: c.req.header('referer') || '',
+    userAgent: probe.userAgent,
+    clientIp: c.req.header('x-forwarded-for') || null,
     isProbe: probe.isProbe,
     probeReason: probe.probeReason,
-    url: c.req.query('url') || `/tools/${def.slug}`,
-    userAgent: probe.userAgent,
     visitorHash: probe.visitorHash
   });
   return c.html(renderOwnerToolPage(def.slug, { apiBaseUrl: '', canonicalOrigin: getTrustedPublicSiteUrl() }));

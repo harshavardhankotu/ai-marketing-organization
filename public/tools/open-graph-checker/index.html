@@ -489,6 +489,11 @@
         <div id="result-cache-badge" class="meta-note"></div>
       </div>
 
+      <div id="issues-summary-bar" style="margin: 1.25rem 0; padding: 0.85rem 1.15rem; background: rgba(17, 24, 39, 0.7); border: 1px solid var(--border); border-radius: 8px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.75rem;">
+        <div style="font-weight: 600; color: #fff; font-size: 0.95rem;">Issues Identified on URL:</div>
+        <div id="issues-badges" style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;"></div>
+      </div>
+
       <div id="tool-specific-output"></div>
 
       <h3 style="font-size:1.05rem;margin:1.25rem 0 0.75rem;color:#fff;">Observed Findings &amp; Plain-English Fixes</h3>
@@ -505,17 +510,19 @@
           Skip manual tag assembly. Unlock the complete copy-paste Fix-Pack generated directly from your live scan evidence (with explicit placeholders for any details not visible on your page — zero invented claims) plus 1 verification recheck after you deploy.
         </p>
         <ul class="cta-list">
-          <li>Copy-paste <code>&lt;head&gt;</code> metadata, Open Graph, and Twitter/X Card tags</li>
-          <li>Valid Schema.org JSON-LD template tailored to your detected markup</li>
-          <li><code>robots.txt</code> and <code>sitemap.xml</code> recommendations + deployment checklist</li>
-          <li>Includes 1 post-deployment verification recheck to confirm fixes live</li>
+          <li><strong>1. HTML &lt;head&gt; Meta &amp; Social Tags:</strong> Clean title, meta description, Open Graph (og:title, og:description, og:image, og:url), and Twitter/X Card tags.</li>
+          <li><strong>2. Schema.org Structured Data:</strong> Syntax-validated JSON-LD (Organization, WebSite, or Product) tailored to your detected markup.</li>
+          <li><strong>3. Search Engine Directives:</strong> Optimized <code>robots.txt</code> rules and declared <code>sitemap.xml</code> configuration with deployment checklist.</li>
+          <li><strong>4. Instant Delivery:</strong> Instant downloadable fix files (.html, .json, .txt) plus immediate email backup.</li>
+          <li><strong>5. 7-Day Verification Recheck:</strong> 1 automated post-deployment re-scan within 7 days to verify all tags validate live.</li>
+          <li><strong>6. 7-Day Refund Guarantee:</strong> 100% money-back guarantee if the technical fix files fail schema or markup validation.</li>
         </ul>
         <div class="cta-actions">
           <a
             id="primary-checkout-link"
             class="btn-primary"
             href="https://ai-marketing-organization.onrender.com/tools/site-audit?source=web_open_graph"
-          >Unlock ₹499 Copy-Paste Fix-Pack (SITEFIX_AI_PACK_V1)</a>
+          >Fix All Issues for ₹499 — Instant AI Pack</a>
           <a
             id="hosted-fallback-link"
             class="btn-secondary"
@@ -584,6 +591,21 @@
       var snippetCode = document.getElementById('snippet-preview-code');
       var primaryCheckoutLink = document.getElementById('primary-checkout-link');
       var hostedFallbackLink = document.getElementById('hosted-fallback-link');
+
+      // Dispatch client-side visit beacon on page load
+      try {
+        var beaconEndpoint = (CFG.apiBaseUrl || '') + '/api/v1/referrals/beacon';
+        fetch(beaconEndpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            source: CFG.source,
+            url: window.location.href,
+            referrer: document.referrer || ''
+          }),
+          keepalive: true
+        }).catch(function () {});
+      } catch (e) {}
 
       function esc(str) {
         return String(str == null ? '' : str)
@@ -698,38 +720,52 @@
             whatsappReadinessStatus: (preview.ogTitle && preview.ogImage) ? 'NEEDS_ATTENTION' : 'INCOMPLETE',
             whatsappCacheNotice: CFG.whatsappCacheNotice
           };
-          var imgHtml = og.ogImage && og.ogImageIsHttps
+          var currentImgHtml = og.ogImage && og.ogImageIsHttps
             ? '<img src="' + esc(og.ogImage) + '" alt="Observed Open Graph preview image">'
-            : '<span>No valid HTTPS og:image detected</span>';
+            : '<div style="padding:1.5rem;text-align:center;color:#ef4444;background:rgba(239,68,68,0.1);border-radius:4px;">No valid HTTPS og:image tag found (WhatsApp displays blank gray box)</div>';
+          var fixedImgHtml = og.ogImage && og.ogImageIsHttps
+            ? '<img src="' + esc(og.ogImage) + '" alt="Optimized Open Graph preview image">'
+            : '<div style="padding:1.5rem;text-align:center;color:#10b981;background:rgba(16,185,129,0.1);border-radius:4px;">Direct 1200×630 HTTPS og:image tag configured in Fix-Pack</div>';
+
           var dimText = (og.ogImageWidth && og.ogImageHeight)
             ? (og.ogImageWidth + ' × ' + og.ogImageHeight)
             : 'Not declared in HTML';
 
           return '' +
+            '<div style="margin: 1.25rem 0 0.5rem 0; font-weight:700; color:#fff; font-size:1.05rem;">WhatsApp Link Preview Comparison (Before vs. After Fix-Pack)</div>' +
             '<div class="preview-grid">' +
-              '<div class="social-card">' +
-                '<div class="social-card-head">Simulated WhatsApp Link Card (Based on Live HTML Tags)</div>' +
-                '<div class="social-card-img">' + imgHtml + '</div>' +
+              '<div class="social-card" style="border: 1px solid rgba(239,68,68,0.4);">' +
+                '<div class="social-card-head" style="display:flex;justify-content:space-between;align-items:center;"><span>Current Live WhatsApp Preview</span><span class="tag-bad">CURRENT</span></div>' +
+                '<div class="social-card-img">' + currentImgHtml + '</div>' +
                 '<div class="social-card-body">' +
-                  '<div class="social-card-title">' + esc(og.ogTitle || preview.title || 'Missing og:title') + '</div>' +
-                  '<div class="social-card-desc">' + esc(og.ogDescription || preview.metaDescription || 'Missing og:description — WhatsApp may show no summary.') + '</div>' +
+                  '<div class="social-card-title">' + esc(og.ogTitle || preview.title || 'Missing og:title tag') + '</div>' +
+                  '<div class="social-card-desc">' + esc(og.ogDescription || preview.metaDescription || 'Missing og:description — WhatsApp shows no summary.') + '</div>' +
                   '<div class="social-card-domain" style="margin-top:0.35rem;">' + esc(hostLabel) + '</div>' +
                 '</div>' +
               '</div>' +
-              '<div class="social-card">' +
-                '<div class="social-card-head">WhatsApp Open Graph Readiness Checklist</div>' +
+              '<div class="social-card" style="border: 1px solid rgba(16,185,129,0.5);">' +
+                '<div class="social-card-head" style="display:flex;justify-content:space-between;align-items:center;"><span>Optimized WhatsApp Preview</span><span class="tag-ok">FIXED PREVIEW</span></div>' +
+                '<div class="social-card-img">' + fixedImgHtml + '</div>' +
                 '<div class="social-card-body">' +
-                  '<table class="kv-table" style="margin-bottom:0;">' +
-                    '<tr><th>Tag</th><th>Status</th><th>Observed Value</th></tr>' +
-                    '<tr><td><code>og:title</code></td><td>' + renderStatusTag(Boolean(og.ogTitle), 'Present', 'Missing') + '</td><td>' + esc(og.ogTitle || '—') + '</td></tr>' +
-                    '<tr><td><code>og:description</code></td><td>' + renderStatusTag(Boolean(og.ogDescription), 'Present', 'Missing', true) + '</td><td>' + esc(og.ogDescription || '—') + '</td></tr>' +
-                    '<tr><td><code>og:image</code></td><td>' + renderStatusTag(Boolean(og.ogImage && og.ogImageIsHttps), 'HTTPS Ready', og.ogImage ? 'Non-HTTPS URL' : 'Missing') + '</td><td style="word-break:break-all;">' + esc(og.ogImage || '—') + '</td></tr>' +
-                    '<tr><td>Dimensions</td><td>' + renderStatusTag(Boolean(og.ogImageWidth && og.ogImageHeight), 'Declared', 'Not Set', true) + '</td><td>' + esc(dimText) + '</td></tr>' +
-                  '</table>' +
+                  '<div class="social-card-title" style="color:#6ee7b7;">' + esc(og.ogTitle || preview.title || (hostLabel + ' — Verified Services')) + '</div>' +
+                  '<div class="social-card-desc">' + esc(og.ogDescription || preview.metaDescription || 'Accurate description, HTTPS image, and verified social metadata included in SiteFix Fix-Pack.') + '</div>' +
+                  '<div class="social-card-domain" style="margin-top:0.35rem;">' + esc(hostLabel) + '</div>' +
                 '</div>' +
               '</div>' +
             '</div>' +
-            '<div class="scope-notice" style="margin-top:0;margin-bottom:1rem;"><strong>Reminder:</strong> ' + esc(og.whatsappCacheNotice || CFG.whatsappCacheNotice) + '</div>';
+            '<div class="social-card" style="margin-top:1rem;">' +
+              '<div class="social-card-head">WhatsApp Open Graph Readiness Checklist</div>' +
+              '<div class="social-card-body">' +
+                '<table class="kv-table" style="margin-bottom:0;">' +
+                  '<tr><th>Tag</th><th>Status</th><th>Observed Value</th></tr>' +
+                  '<tr><td><code>og:title</code></td><td>' + renderStatusTag(Boolean(og.ogTitle), 'Present', 'Missing') + '</td><td>' + esc(og.ogTitle || '—') + '</td></tr>' +
+                  '<tr><td><code>og:description</code></td><td>' + renderStatusTag(Boolean(og.ogDescription), 'Present', 'Missing', true) + '</td><td>' + esc(og.ogDescription || '—') + '</td></tr>' +
+                  '<tr><td><code>og:image</code></td><td>' + renderStatusTag(Boolean(og.ogImage && og.ogImageIsHttps), 'HTTPS Ready', og.ogImage ? 'Non-HTTPS URL' : 'Missing') + '</td><td style="word-break:break-all;">' + esc(og.ogImage || '—') + '</td></tr>' +
+                  '<tr><td>Dimensions</td><td>' + renderStatusTag(Boolean(og.ogImageWidth && og.ogImageHeight), 'Declared', 'Not Set', true) + '</td><td>' + esc(dimText) + '</td></tr>' +
+                '</table>' +
+              '</div>' +
+            '</div>' +
+            '<div class="scope-notice" style="margin-top:1rem;margin-bottom:1rem;"><strong>Reminder:</strong> ' + esc(og.whatsappCacheNotice || CFG.whatsappCacheNotice) + '</div>';
         }
 
         if (CFG.slug === 'open-graph-checker') {
@@ -737,28 +773,36 @@
           var tw = diag.twitterCard || {};
           var ogImg = og2.ogImage || preview.ogImage || '';
           var twImg = tw.twitterImage || ogImg || '';
+          var currentOgImg = ogImg && ogImg.indexOf('https://') === 0
+            ? '<img src="' + esc(ogImg) + '" alt="OG preview">'
+            : '<div style="padding:1.5rem;text-align:center;color:#ef4444;background:rgba(239,68,68,0.1);border-radius:4px;">No HTTPS og:image tag found</div>';
+          var fixedOgImg = ogImg && ogImg.indexOf('https://') === 0
+            ? '<img src="' + esc(ogImg) + '" alt="Optimized OG preview">'
+            : '<div style="padding:1.5rem;text-align:center;color:#10b981;background:rgba(16,185,129,0.1);border-radius:4px;">Direct HTTPS Open Graph &amp; Twitter image configured</div>';
+
           return '' +
+            '<div style="margin: 1.25rem 0 0.5rem 0; font-weight:700; color:#fff; font-size:1.05rem;">Social Share Preview Comparison (Current vs. Optimized)</div>' +
             '<div class="preview-grid">' +
-              '<div class="social-card">' +
-                '<div class="social-card-head">Open Graph Share Card (LinkedIn / Facebook)</div>' +
-                '<div class="social-card-img">' + (ogImg && ogImg.indexOf('https://') === 0 ? '<img src="' + esc(ogImg) + '" alt="OG preview">' : '<span>No HTTPS og:image found</span>') + '</div>' +
+              '<div class="social-card" style="border: 1px solid rgba(239,68,68,0.4);">' +
+                '<div class="social-card-head" style="display:flex;justify-content:space-between;align-items:center;"><span>Current Live Social Preview</span><span class="tag-bad">CURRENT</span></div>' +
+                '<div class="social-card-img">' + currentOgImg + '</div>' +
                 '<div class="social-card-body">' +
                   '<div class="social-card-domain">' + esc(hostLabel) + '</div>' +
                   '<div class="social-card-title">' + esc(og2.ogTitle || preview.title || 'Missing og:title') + '</div>' +
                   '<div class="social-card-desc">' + esc(og2.ogDescription || preview.metaDescription || 'Missing og:description') + '</div>' +
                 '</div>' +
               '</div>' +
-              '<div class="social-card">' +
-                '<div class="social-card-head">Twitter / X Card (' + esc(tw.twitterCard || 'not declared') + ')</div>' +
-                '<div class="social-card-img">' + (twImg && twImg.indexOf('https://') === 0 ? '<img src="' + esc(twImg) + '" alt="Twitter card preview">' : '<span>No HTTPS twitter:image or og:image</span>') + '</div>' +
+              '<div class="social-card" style="border: 1px solid rgba(16,185,129,0.5);">' +
+                '<div class="social-card-head" style="display:flex;justify-content:space-between;align-items:center;"><span>Optimized Social Share Card</span><span class="tag-ok">FIXED PREVIEW</span></div>' +
+                '<div class="social-card-img">' + fixedOgImg + '</div>' +
                 '<div class="social-card-body">' +
-                  '<div class="social-card-title">' + esc(tw.twitterTitle || og2.ogTitle || preview.title || 'Missing twitter:title') + '</div>' +
-                  '<div class="social-card-desc">' + esc(tw.twitterDescription || og2.ogDescription || preview.metaDescription || 'Missing twitter:description') + '</div>' +
-                  '<div class="social-card-domain" style="margin-top:0.35rem;">' + esc(hostLabel) + '</div>' +
+                  '<div class="social-card-domain">' + esc(hostLabel) + '</div>' +
+                  '<div class="social-card-title" style="color:#6ee7b7;">' + esc(og2.ogTitle || preview.title || (hostLabel + ' — Verified Services')) + '</div>' +
+                  '<div class="social-card-desc">' + esc(og2.ogDescription || preview.metaDescription || 'Complete Open Graph &amp; Twitter summary_large_image card tags generated for copy-paste.') + '</div>' +
                 '</div>' +
               '</div>' +
             '</div>' +
-            '<table class="kv-table">' +
+            '<table class="kv-table" style="margin-top:1rem;">' +
               '<tr><th>Tag</th><th>Status</th><th>Observed Value</th></tr>' +
               '<tr><td><code>og:title</code></td><td>' + renderStatusTag(Boolean(og2.ogTitle), 'OK', 'Missing') + '</td><td>' + esc(og2.ogTitle || '—') + '</td></tr>' +
               '<tr><td><code>og:description</code></td><td>' + renderStatusTag(Boolean(og2.ogDescription), 'OK', 'Missing', true) + '</td><td>' + esc(og2.ogDescription || '—') + '</td></tr>' +
@@ -885,6 +929,22 @@
 
           toolSpecificOutput.innerHTML = renderToolSpecific(audit);
 
+          var highCount = 0;
+          var medCount = 0;
+          (audit.findings || []).forEach(function (f) {
+            var sev = String(f.severity || '').toUpperCase();
+            if (sev === 'HIGH' || sev === 'CRITICAL' || f.status === 'FAIL') highCount++;
+            else if (sev === 'MEDIUM' || f.status === 'ISSUE' || f.status === 'WARNING') medCount++;
+          });
+          var totalIssues = highCount + medCount;
+          var issuesBadges = document.getElementById('issues-badges');
+          if (issuesBadges) {
+            issuesBadges.innerHTML = '' +
+              '<span class="tag-bad" style="font-weight:700;">' + highCount + ' High Priority Issue' + (highCount === 1 ? '' : 's') + '</span>' +
+              '<span class="tag-warn" style="font-weight:700;">' + medCount + ' Medium Priority Issue' + (medCount === 1 ? '' : 's') + '</span>' +
+              '<span class="tag-ok">' + (audit.findings ? Math.max(0, audit.findings.length - totalIssues) : 0) + ' Passed Checks</span>';
+          }
+
           var relevantFindings = filterFindingsForTool(audit.findings);
           if (relevantFindings.length === 0) {
             findingsList.innerHTML = '<div class="finding PASS"><div class="finding-top"><span>No blocking issues found</span><span class="tag-ok">PASS</span></div></div>';
@@ -933,7 +993,7 @@
             primaryCheckoutLink.removeAttribute('aria-disabled');
             primaryCheckoutLink.style.opacity = '1';
             primaryCheckoutLink.style.pointerEvents = 'auto';
-            primaryCheckoutLink.textContent = 'Unlock ' + priceLabel + ' Copy-Paste Fix-Pack (' + skuLabel + ')';
+            primaryCheckoutLink.textContent = 'Fix All Issues for ' + priceLabel + ' — Instant AI Pack';
 
             var hostedFallback = data.hostedPaymentLinkUrl || data.razorpayHostedFallbackUrl || CFG.razorpayFallbackUrl;
             hostedFallbackLink.style.display = 'inline-flex';

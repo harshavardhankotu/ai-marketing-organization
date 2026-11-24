@@ -23,7 +23,7 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
   const fixpackPrice = CANONICAL_SITEFIX_TERMS.priceINR;
   const sitefixExpId = abAssignment?.experimentId || 'exp_storefront_sitefix_cta';
   const sitefixVariant = abAssignment?.variant || 'baseline';
-  const sitefixCtaText = abAssignment?.ctaText || `Unlock Instant Ready-to-Paste Fix-Pack — ₹${fixpackPrice}`;
+  const sitefixCtaText = abAssignment?.ctaText || `Fix All Issues for ₹${fixpackPrice} — Instant AI Pack`;
   const safeSitefixCtaText = sitefixCtaText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   return `<!DOCTYPE html>
 <html lang="en">
@@ -284,6 +284,7 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
         <div class="score-circle" id="scoreDisplay">--</div>
       </div>
 
+      <div id="findingsSummaryBanner" style="display:none;margin:1rem 0;padding:0.75rem 1rem;background:rgba(17,24,39,0.8);border:1px solid var(--card-border);border-radius:8px;font-size:0.92rem;"></div>
       <h3 style="margin-bottom: 1rem;">Diagnostic Findings</h3>
       <div id="findingsContainer"></div>
 
@@ -313,11 +314,18 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
 
       <!-- Commercial Fix-Pack Area -->
       <div class="checkout-box">
-        <h3>Downloadable Optimization Pack (Fix-Pack)</h3>
+        <h3>Downloadable Optimization Pack (Fix-Pack) — ₹499 (SITEFIX_AI_PACK_V1)</h3>
         <p style="color: var(--text-muted); font-size: 0.95rem; margin: 0.5rem 0 1rem 0;">
-          Get ready-to-use HTML &lt;head&gt; tags, valid Schema.org JSON-LD structured data,
-          and a step-by-step implementation checklist for WordPress, Shopify, or custom HTML.
+          Unlock the complete copy-paste technical package generated from your live scan evidence. Everything needed to resolve metadata gaps, social share card errors, and search crawler blockers:
         </p>
+        <ul style="color: #cbd5e1; font-size: 0.88rem; line-height: 1.6; text-align: left; margin: 0 0 1.25rem 1.25rem; padding: 0;">
+          <li><strong>1. HTML &lt;head&gt; Meta &amp; Social Tags:</strong> Clean title, meta description, Open Graph, and Twitter/X Card tags.</li>
+          <li><strong>2. Schema.org Structured Data:</strong> Syntax-validated JSON-LD (Organization, WebSite, or Product) tailored to your detected markup.</li>
+          <li><strong>3. Search Engine Directives:</strong> Optimized <code>robots.txt</code> directives and declared <code>sitemap.xml</code> configuration.</li>
+          <li><strong>4. Instant Delivery:</strong> Instant downloadable fix files (.html, .json, .txt) plus immediate email backup.</li>
+          <li><strong>5. 7-Day Verification Recheck:</strong> 1 automated post-deployment recheck within 7 days to verify all tags validate live.</li>
+          <li><strong>6. 7-Day Refund Guarantee:</strong> 100% money-back guarantee if technical fixes do not validate.</li>
+        </ul>
 
         <!-- Dynamic Checkout Container -->
         <div id="checkoutActionContainer">
@@ -494,7 +502,7 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
         upiCard.style.display = paymentMode !== 'LIVE' ? 'block' : 'none';
       }
 
-      const activeCtaText = (btn && btn.getAttribute('data-ab-cta')) || 'Unlock Instant Ready-to-Paste Fix-Pack — ₹499';
+      const activeCtaText = (btn && btn.getAttribute('data-ab-cta')) || 'Fix All Issues for ₹499 — Instant AI Pack';
       if (!currentReadiness || !currentReadiness.isReady) {
         btn.disabled = true;
         btn.innerText = 'Checkout Unavailable (Gateway Maintenance)';
@@ -579,6 +587,19 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
       document.getElementById('scoreDisplay').textContent = String(result.score);
       document.getElementById('resultStatus').textContent = 'Audit Status: ' + result.overallStatus;
       document.getElementById('resultExplanation').textContent = result.scoreExplanation;
+
+      let highCount = 0;
+      let medCount = 0;
+      (result.findings || []).forEach(f => {
+        const sev = String(f.severity || '').toUpperCase();
+        if (sev === 'HIGH' || sev === 'CRITICAL' || f.status === 'FAIL') highCount++;
+        else if (sev === 'MEDIUM' || f.status === 'ISSUE' || f.status === 'WARNING') medCount++;
+      });
+      const summaryBanner = document.getElementById('findingsSummaryBanner');
+      if (summaryBanner) {
+        summaryBanner.style.display = 'block';
+        summaryBanner.innerHTML = '<span style="color:#ef4444;font-weight:700;">' + highCount + ' High Priority Issues</span> &bull; <span style="color:#f59e0b;font-weight:700;">' + medCount + ' Medium Priority Issues</span> identified on ' + escapeHtml(result.domain || result.url || '');
+      }
 
       const domainInput = document.getElementById('checkoutDomainInput');
       if (domainInput && !domainInput.value) {
@@ -1132,6 +1153,19 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
           urlInput.value = prefillUrl;
         }
         getValidRecheckToken();
+      } catch {}
+
+      try {
+        fetch('/api/v1/referrals/beacon', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            source: 'site-audit',
+            url: window.location.href,
+            referrer: document.referrer || ''
+          }),
+          keepalive: true
+        }).catch(function() {});
       } catch {}
     });
   </script>

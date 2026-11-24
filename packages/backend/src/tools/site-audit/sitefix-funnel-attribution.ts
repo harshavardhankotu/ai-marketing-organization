@@ -460,6 +460,96 @@ export async function recordSiteFixFunnelEvent(params: {
   }
 }
 
+export async function recordToolVisitSession(params: {
+  source: SiteFixLaunchSource;
+  landingPage: string;
+  referrer?: string | null;
+  userAgent?: string | null;
+  clientIp?: string | null;
+  isProbe: boolean;
+  probeReason?: string | null;
+  visitorHash?: string | null;
+  sessionId?: string | null;
+  utmSource?: string | null;
+  utmMedium?: string | null;
+  utmCampaign?: string | null;
+  utmContent?: string | null;
+}): Promise<{ recorded: boolean; isExternal: boolean; sessionId: string }> {
+  const isExternal = !params.isProbe;
+  const trafficEvidenceStatus = isExternal ? 'VERIFIED_EXTERNAL' : 'TEST';
+  const verificationReason = isExternal ? 'GENUINE_BROWSER_VISIT' : (params.probeReason || 'DIAGNOSTIC_OR_BOT_TRAFFIC');
+
+  const id = `sess_${randomUUID().replace(/-/g, '').slice(0, 24)}`;
+  const sessionId = params.sessionId || id;
+  const visitorId = params.visitorHash || hashFunnelVisitorKey(params.clientIp || params.userAgent || id);
+  const normalizedSource = normalizeSiteFixSource(params.source, 'web');
+
+  const sql = `
+    INSERT INTO traffic_sessions (
+      id, business_id, visitor_id, session_id, source, referrer, landing_page,
+      timestamp, utm_source, utm_medium, utm_campaign, utm_content,
+      traffic_evidence_status, ip_address, user_agent, is_external,
+      verification_reason, created_at
+    ) VALUES (?, 'biz_platform_aro', ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  `;
+  const sqlParams = [
+    id,
+    visitorId,
+    sessionId,
+    normalizedSource,
+    params.referrer || '',
+    params.landingPage,
+    params.utmSource || null,
+    params.utmMedium || null,
+    params.utmCampaign || null,
+    params.utmContent || null,
+    trafficEvidenceStatus,
+    params.clientIp || null,
+    params.userAgent ? String(params.userAgent).slice(0, 255) : null,
+    isExternal ? 1 : 0,
+    verificationReason
+  ];
+
+  const d1Repo = D1RevenueRepository.getInstance();
+  const useRemoteD1 = d1Repo.isRemoteD1Configured() && isProduction() && !process.env.VITEST;
+
+  if (useRemoteD1) {
+    try {
+      await d1Repo.executeWrite('traffic_sessions', sql, sqlParams);
+    } catch (err: any) {
+      console.warn('[SiteFixFunnelAttribution] D1 traffic_sessions write error:', err.message);
+    }
+    try {
+      getDb().prepare(sql).run(...sqlParams);
+    } catch {}
+  } else {
+    try {
+      getDb().prepare(sql).run(...sqlParams);
+    } catch (err: any) {
+      console.warn('[SiteFixFunnelAttribution] Local traffic_sessions write error:', err.message);
+    }
+  }
+
+  // Also record the preview_open event in durable_events
+  await recordSiteFixFunnelEvent({
+    stage: 'preview_open',
+    source: normalizedSource,
+    isProbe: params.isProbe,
+    probeReason: params.probeReason,
+    url: params.landingPage,
+    userAgent: params.userAgent,
+    visitorHash: visitorId
+  });
+
+  invalidateFunnelAttributionCache();
+
+  return {
+    recorded: true,
+    isExternal,
+    sessionId
+  };
+}
+
 function buildPersistenceWarning(readError: string | null = null): string | null {
   const parts: string[] = [];
   if (funnelWriteFailureCount > 0) {
