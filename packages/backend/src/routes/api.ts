@@ -3866,6 +3866,14 @@ apiRouter.post('/webhooks/razorpay', async (c) => {
         if (updateChanges === 0) {
           throw new Error('D1_DURABLE_EVENT_UPDATE_ZERO_ROWS');
         }
+
+        // Record in processed_webhook_events for cross-table idempotency (D1 Migration 0049)
+        await d1Repo.executeWrite(
+          'processed_webhook_events',
+          `INSERT OR IGNORE INTO processed_webhook_events (event_id, event_type, payload_hash, order_id, payment_id, created_at)
+           VALUES (?, ?, ?, ?, ?, datetime('now'))`,
+          [rawEventId, eventType, eventHash, orderId, paymentId]
+        );
       } catch (d1Err: any) {
         return c.json({
           success: false,

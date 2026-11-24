@@ -825,6 +825,9 @@ export class RazorpayStandardAdapter {
       );
     } catch (d1Err: any) {
       console.warn(`[RazorpayAdapter] Failed to update universal_order status: ${d1Err.message}`);
+      if (isProduction()) {
+        throw new Error(`D1_ORDER_PERSISTENCE_FAILED: Failed to update universal_order status: ${d1Err.message}`);
+      }
     }
 
     try {
@@ -838,6 +841,9 @@ export class RazorpayStandardAdapter {
       );
     } catch (prErr: any) {
       console.warn(`[RazorpayAdapter] Failed to update payment_request status: ${prErr.message}`);
+      if (isProduction()) {
+        throw new Error(`D1_ORDER_PERSISTENCE_FAILED: Failed to update payment_request status: ${prErr.message}`);
+      }
     }
 
     // STRICT TEST VS. LIVE CASH SEPARATION & IDEMPOTENT ACCOUNTING:
