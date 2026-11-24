@@ -3,7 +3,7 @@ main = "src/worker.ts"
 compatibility_date = "2024-01-01"
 
 [triggers]
-crons = ["0 * * * *"]
+crons = ["30 3,15 * * *"]
 
 # Environment variables (non-secret)
 [vars]

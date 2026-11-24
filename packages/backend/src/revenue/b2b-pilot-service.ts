@@ -455,23 +455,16 @@ export class B2BPilotService {
     if (!cleanId) return null;
     const eventId = cleanId.startsWith('b2b_proposal_') ? cleanId : `b2b_proposal_${cleanId}`;
 
+    const requireDurableD1 = isProduction() && (process.env.RENDER === 'true' || this.d1Repo.isRemoteD1Configured() || !process.env.VITEST);
     let row: any = null;
-    try {
-      if (this.d1Repo.isRemoteD1ReadAllowed() || (isProduction() && !process.env.VITEST)) {
-        row = await this.d1Repo.queryOne<any>(
-          'durable_events',
-          'SELECT * FROM durable_events WHERE id = ? LIMIT 1',
-          [eventId]
-        );
-      } else {
-        row = getDb().prepare('SELECT * FROM durable_events WHERE id = ? LIMIT 1').get(eventId) as any;
-      }
-    } catch {
-      try {
-        row = getDb().prepare('SELECT * FROM durable_events WHERE id = ? LIMIT 1').get(eventId) as any;
-      } catch {
-        row = null;
-      }
+    if (this.d1Repo.isRemoteD1ReadAllowed() || requireDurableD1) {
+      row = await this.d1Repo.queryOne<any>(
+        'durable_events',
+        'SELECT * FROM durable_events WHERE id = ? LIMIT 1',
+        [eventId]
+      );
+    } else {
+      row = getDb().prepare('SELECT * FROM durable_events WHERE id = ? LIMIT 1').get(eventId) as any;
     }
 
     if (!row || !row.payload_json) return null;
