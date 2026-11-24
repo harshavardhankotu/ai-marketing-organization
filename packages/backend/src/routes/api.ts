@@ -156,6 +156,7 @@ export const EXACT_ROUTE_POLICY = {
     '/auth/owner/logout',
     '/owner/login',
     '/payments/razorpay/create-order',
+    '/payments/razorpay/create-b2b-order',
     '/payments/razorpay/verify',
     '/integrations/razorpay/test-readiness',
     '/integrations/razorpay/test-order',
@@ -182,6 +183,7 @@ export const EXACT_ROUTE_POLICY = {
     '/public/scan',
     '/b2b',
     '/b2b/pilot-proposal',
+    '/b2b/checkout',
     '/deals',
     '/best',
     '/vs',
@@ -467,13 +469,16 @@ apiRouter.get('/diagnostic/env', (c) => {
 apiRouter.get('/health', (c) => {
   const d1 = D1Client.getInstance();
   const circuitState = d1.getRemoteQuotaCircuitState();
+  const d1Status = d1.getD1Status();
   const isDegraded = Boolean(circuitState.exhausted);
   return c.json({
     status: isDegraded ? 'degraded' : 'healthy',
     timestamp: new Date().toISOString(),
     version: '1.0.0',
     service: 'AI Marketing Organization Engine',
-    d1CircuitBreaker: circuitState
+    d1CircuitBreaker: circuitState,
+    instanceLocalDailyBackgroundRowsRead: d1Status.instanceLocalDailyBackgroundRowsRead,
+    d1Status
   }, isDegraded ? 503 : 200);
 });
 
@@ -3251,6 +3256,60 @@ apiRouter.get('/public/availability', handleGetAvailability);
 // ==========================================
 // AUTOMATED RAZORPAY PAYMENT GATEWAY & WEBHOOKS
 // ==========================================
+
+apiRouter.post('/payments/razorpay/create-b2b-order', async (c) => {
+  const clientInfo = getTrustedClientIp(c);
+  const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit('/payments/razorpay/create-b2b-order', clientInfo.ip, 10, 600);
+  if (!rateLimit.allowed) {
+    return c.json({ success: false, error: 'RATE_LIMIT_EXCEEDED', retryAfterSeconds: rateLimit.retryAfterSeconds }, 429);
+  }
+
+  const body = await c.req.json().catch(() => ({}));
+  const proposalId = typeof body.proposalId === 'string' ? body.proposalId.trim() : '';
+  if (!proposalId) {
+    return c.json({ success: false, error: 'PROPOSAL_ID_REQUIRED: proposalId is required.' }, 400);
+  }
+
+  const customerEmail = String(body.customerEmail || body.buyerEmail || body.email || '').trim();
+  const customerName = typeof body.customerName === 'string' ? body.customerName.trim() : undefined;
+  const customerPhone = typeof body.customerPhone === 'string' ? body.customerPhone.trim() : undefined;
+
+  try {
+    const { RazorpayStandardAdapter } = await import('../payments/razorpay-adapter.js');
+    // Strictly ignores any client-supplied priceINR/amountINR; resolves ONLY D1-stored approvedPriceINR
+    const order = await RazorpayStandardAdapter.getInstance().createB2BOrder({
+      proposalId,
+      customerEmail: customerEmail || undefined,
+      customerName,
+      customerPhone
+    });
+    return c.json({
+      success: true,
+      keyId: order.keyId,
+      orderId: order.orderId,
+      razorpayOrderId: order.razorpayOrderId,
+      amount: order.amount,
+      amountINR: order.amountINR,
+      offerId: order.offerId,
+      proposalId: order.proposalId,
+      currency: order.currency,
+      isTestMode: order.isTestMode,
+      data: order
+    }, 200);
+  } catch (err: any) {
+    const msg = String(err?.message || '');
+    if (msg.includes('PROPOSAL_NOT_FOUND')) {
+      return c.json({ success: false, error: msg }, 404);
+    }
+    if (msg.includes('PROPOSAL_NOT_APPROVED') || msg.includes('PROPOSAL_EXPIRED')) {
+      return c.json({ success: false, error: msg }, 403);
+    }
+    if (msg.includes('PAYMENT_PROVIDER_NOT_CONFIGURED') || msg.includes('PAYMENT_PROVIDER_FAULT') || msg.includes('D1_ORDER_PERSISTENCE_FAILED')) {
+      return c.json({ success: false, error: msg }, 503);
+    }
+    return c.json({ success: false, error: msg }, 400);
+  }
+});
 
 apiRouter.post('/payments/razorpay/create-order', async (c) => {
   const clientInfo = getTrustedClientIp(c);
@@ -9485,6 +9544,8 @@ apiRouter.get('/public/autonomy-status', async (c) => {
       paidSpendApprovedINR: 0
     },
     paymentReadiness: siteAuditReadiness.paymentReadiness,
+    instanceLocalDailyBackgroundRowsRead: D1Client.getInstance().getD1Status().instanceLocalDailyBackgroundRowsRead,
+    d1Status: D1Client.getInstance().getD1Status(),
     recentWorkflowExecutions24h,
     quotaLedger,
     sectorIntelligence,
@@ -9955,11 +10016,10 @@ apiRouter.get('/public/comparisons/:comparisonSlug', async (c) => {
   if (rawSlug.endsWith('.html')) rawSlug = rawSlug.slice(0, -5);
   const cleanSlug = decodeURIComponent(rawSlug).toLowerCase().trim();
   const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
-  const { generateComparisonPairs } = await import('../commission/static-site-generator.js');
+  const { findComparisonPairBySlug, isSeedFallbackDeal } = await import('../commission/static-site-generator.js');
 
   const eligible = await AutonomousDealDiscoveryEngine.getInstance().getEligiblePublicDeals({ limit: 80 });
-  const pairs = generateComparisonPairs(eligible.deals || [], 15);
-  const matched = pairs.find((p) => p.comparisonSlug.toLowerCase() === cleanSlug);
+  const { matched, allPairs: pairs } = findComparisonPairBySlug(eligible.deals || [], cleanSlug, 100);
   if (!matched) {
     return c.json({
       success: false,
@@ -9990,6 +10050,8 @@ apiRouter.get('/public/comparisons/:comparisonSlug', async (c) => {
     couponConditions: d.couponConditions || null,
     availability: d.availability || 'IN_STOCK',
     lastVerifiedAt: d.lastVerifiedAt || d.lastCheckedAt || d.updatedAt || null,
+    isSeedFallback: isSeedFallbackDeal(d),
+    verificationLabel: isSeedFallbackDeal(d) ? 'SEED_SNAPSHOT' : (d.verificationStatus || 'VERIFIED'),
     targetBuyerSegment: d.targetBuyerSegment || null,
     expectedProfitPer100VisitorsINR: Number(d.expectedProfitPer100VisitorsINR || 0),
     rawSpecs: d.evidenceJson?.rawSpecs || {},
@@ -10030,16 +10092,18 @@ apiRouter.get('/vs/:comparisonSlug', async (c) => {
   if (rawSlug.endsWith('.html')) rawSlug = rawSlug.slice(0, -5);
   const cleanSlug = decodeURIComponent(rawSlug).toLowerCase().trim();
   const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
-  const { StaticSiteGenerator, generateComparisonPairs } = await import('../commission/static-site-generator.js');
+  const { StaticSiteGenerator, findComparisonPairBySlug, isSeedFallbackDeal } = await import('../commission/static-site-generator.js');
 
   const eligible = await AutonomousDealDiscoveryEngine.getInstance().getEligiblePublicDeals({ limit: 80 });
-  const pairs = generateComparisonPairs(eligible.deals || [], 15);
-  const matched = pairs.find((p) => p.comparisonSlug.toLowerCase() === cleanSlug);
+  const { matched, allPairs: pairs } = findComparisonPairBySlug(eligible.deals || [], cleanSlug, 100);
   if (!matched) {
     return c.html(
       `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="robots" content="noindex, nofollow"><title>Comparison Not Found</title></head><body><h1>404 — Comparison Not Found</h1><p>No active comparison pair matches '${cleanSlug.replace(/[<>&"]/g, '')}'.</p><p><a href="/deals">Browse Verified Deals</a></p></body></html>`,
       404
     );
+  }
+  if (isSeedFallbackDeal(matched.dealA) || isSeedFallbackDeal(matched.dealB)) {
+    c.header('X-Robots-Tag', 'noindex, nofollow');
   }
 
   let config: any;
@@ -10109,7 +10173,7 @@ apiRouter.get('/best/:intentSlug', async (c) => {
   if (rawSlug.endsWith('.html')) rawSlug = rawSlug.slice(0, -5);
   const cleanSlug = decodeURIComponent(rawSlug).toLowerCase().trim();
   const { AutonomousDealDiscoveryEngine } = await import('../commission/autonomous-deal-discovery-engine.js');
-  const { StaticSiteGenerator, generateBuyerIntentHubs, generateComparisonPairs } = await import('../commission/static-site-generator.js');
+  const { StaticSiteGenerator, generateBuyerIntentHubs, generateComparisonPairs, isSeedFallbackDeal } = await import('../commission/static-site-generator.js');
 
   const siteUrl = getTrustedPublicSiteUrl().replace(/\/$/, '');
   const eligible = await AutonomousDealDiscoveryEngine.getInstance().getEligiblePublicDeals({ limit: 80 });
@@ -10121,6 +10185,9 @@ apiRouter.get('/best/:intentSlug', async (c) => {
       `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="robots" content="noindex, nofollow"><title>Buyer Guide Not Found</title></head><body><h1>404 — Insufficient verified category inventory</h1><p>Insufficient verified category inventory for '${cleanSlug.replace(/[<>&"]/g, '')}'.</p><p><a href="/deals">Browse Verified Deals</a></p></body></html>`,
       404
     );
+  }
+  if ((matched.deals || []).some((d: any) => isSeedFallbackDeal(d))) {
+    c.header('X-Robots-Tag', 'noindex, nofollow');
   }
 
   let config: any;
@@ -10150,7 +10217,12 @@ apiRouter.get('/best/:intentSlug', async (c) => {
       premiumPick: prb || matched.picks.premiumPick
     }
   };
-  const comparisons = generateComparisonPairs(eligible.deals || [], 8);
+  const allComparisons = generateComparisonPairs(eligible.deals || [], 50);
+  const hubDealIds = new Set((matched.deals || []).map((d: any) => String(d.id || '')));
+  const matchingComparisons = allComparisons.filter(
+    p => hubDealIds.has(String(p.dealA?.id || '')) || hubDealIds.has(String(p.dealB?.id || ''))
+  );
+  const comparisons = (matchingComparisons.length > 0 ? matchingComparisons : allComparisons).slice(0, 8);
   return c.html(StaticSiteGenerator.getInstance().renderBuyerGuideHtml(enrichedMatched, hubs, comparisons, config));
 });
 
@@ -14913,11 +14985,14 @@ const handleSiteAuditReadiness = async (c: any) => {
   const { RazorpayStandardAdapter } = await import('../payments/razorpay-adapter.js');
   const probe = await RazorpayStandardAdapter.getInstance().probeRazorpayAuth();
   const readiness = SiteAuditService.getInstance().getCheckoutReadiness({ authProbeResult: probe });
+  const d1Status = D1Client.getInstance().getD1Status();
   return c.json({
     success: true,
     ...readiness,
     providerAcceptedAuth: probe.providerAcceptedAuth,
-    authDiagnosticCode: probe.authDiagnosticCode
+    authDiagnosticCode: probe.authDiagnosticCode,
+    instanceLocalDailyBackgroundRowsRead: d1Status.instanceLocalDailyBackgroundRowsRead,
+    d1Status
   }, 200);
 };
 apiRouter.get('/tools/site-audit/readiness', handleSiteAuditReadiness);
@@ -16018,28 +16093,26 @@ apiRouter.get('/offer/download/:downloadToken', handleOfferDownload);
 apiRouter.get('/api/v1/offer/download/:downloadToken', handleOfferDownload);
 
 /**
- * PR #93: Done-For-You B2B Service Pilot Proposal Endpoints
+ * PR #93 / PR #94: Done-For-You B2B Service Pilot Proposal Endpoints
  * Generates verified Before-Action Audit & Implementation Proposal for local businesses & training institutes.
+ * Public endpoints strictly ignore client-supplied ownerApproved/priceINR and fail closed on scan failures.
  */
 apiRouter.post('/b2b/pilot-proposal', async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const targetUrl = body.url || body.targetUrl;
   if (!targetUrl || typeof targetUrl !== 'string') {
-    return c.json({ error: 'INVALID_REQUEST: targetUrl string is required' }, 400);
+    return c.json({ success: false, error: 'INVALID_REQUEST: targetUrl string is required' }, 400);
   }
-  const businessName = body.businessName || 'Business Owner';
-  const ownerApproved = body.ownerApproved === true;
-  const priceINR = typeof body.priceINR === 'number' ? body.priceINR : null;
-  const checkoutBaseUrl = getTrustedPublicSiteUrl();
+  const businessName = typeof body.businessName === 'string' && body.businessName.trim() ? body.businessName.trim() : 'Business Owner';
+  const contactEmail = typeof body.contactEmail === 'string' ? body.contactEmail.trim() : undefined;
 
   const { B2BPilotService } = await import('../revenue/b2b-pilot-service.js');
   try {
+    // Never forward client-supplied ownerApproved or priceINR from public requests
     const proposal = await B2BPilotService.getInstance().generateProposal({
       targetUrl,
       businessName,
-      ownerApproved,
-      priceINR,
-      checkoutBaseUrl
+      contactEmail
     });
     const format = c.req.query('format') || body.format;
     if (format === 'html') {
@@ -16050,7 +16123,14 @@ apiRouter.post('/b2b/pilot-proposal', async (c) => {
     }
     return c.json({ success: true, data: proposal });
   } catch (err: any) {
-    return c.json({ error: err.message || 'PROPOSAL_GENERATION_FAILED' }, 500);
+    const msg = String(err?.message || 'PROPOSAL_GENERATION_FAILED');
+    if (msg.startsWith('INVALID_URL:')) {
+      return c.json({ success: false, error: 'INVALID_URL', message: msg }, 400);
+    }
+    if (msg.startsWith('SCAN_FAILED:')) {
+      return c.json({ success: false, error: 'SCAN_FAILED', message: msg }, 422);
+    }
+    return c.json({ success: false, error: msg }, 500);
   }
 });
 
@@ -16060,18 +16140,15 @@ apiRouter.get('/b2b/pilot-proposal', async (c) => {
     return c.text('Missing required query parameter: url', 400);
   }
   const businessName = c.req.query('businessName') || 'Business Owner';
-  const ownerApproved = c.req.query('ownerApproved') === 'true';
-  const priceINR = c.req.query('priceINR') ? Number(c.req.query('priceINR')) : null;
-  const checkoutBaseUrl = getTrustedPublicSiteUrl();
+  const contactEmail = c.req.query('contactEmail') || undefined;
 
   const { B2BPilotService } = await import('../revenue/b2b-pilot-service.js');
   try {
+    // Never forward client-supplied ownerApproved or priceINR from public requests
     const proposal = await B2BPilotService.getInstance().generateProposal({
       targetUrl,
       businessName,
-      ownerApproved,
-      priceINR,
-      checkoutBaseUrl
+      contactEmail
     });
     const format = c.req.query('format') || 'html';
     if (format === 'json') {
@@ -16082,8 +16159,68 @@ apiRouter.get('/b2b/pilot-proposal', async (c) => {
     }
     return c.html(proposal.html);
   } catch (err: any) {
-    return c.text(`Error generating proposal: ${err.message}`, 500);
+    const msg = String(err?.message || 'PROPOSAL_GENERATION_FAILED');
+    const format = c.req.query('format') || 'html';
+    const statusCode = msg.startsWith('INVALID_URL:') ? 400 : (msg.startsWith('SCAN_FAILED:') ? 422 : 500);
+    if (format === 'json') {
+      return c.json({ success: false, error: msg.startsWith('SCAN_FAILED:') ? 'SCAN_FAILED' : 'PROPOSAL_GENERATION_FAILED', message: msg }, statusCode as any);
+    }
+    return c.text(`Error generating proposal: ${msg}`, statusCode as any);
   }
+});
+
+/**
+ * PR #94: Authenticated Owner Price Approval Route for B2B Pilot Proposals
+ */
+apiRouter.post('/owner/b2b/proposals/:proposalId/approve', async (c) => {
+  const proposalId = c.req.param('proposalId');
+  const body = await c.req.json().catch(() => ({}));
+  const priceINR = Number(body.priceINR);
+  if (!Number.isFinite(priceINR) || priceINR < 1) {
+    return c.json({ success: false, error: 'INVALID_PRICE: Positive numeric priceINR is required.' }, 400);
+  }
+
+  const { B2BPilotService } = await import('../revenue/b2b-pilot-service.js');
+  try {
+    const approved = await B2BPilotService.getInstance().approveProposal({
+      proposalId,
+      priceINR,
+      scopeNotes: typeof body.scopeNotes === 'string' ? body.scopeNotes : undefined,
+      expiresInHours: body.expiresInHours !== undefined ? Number(body.expiresInHours) : undefined,
+      checkoutBaseUrl: getTrustedPublicSiteUrl()
+    });
+    return c.json({ success: true, data: approved });
+  } catch (err: any) {
+    const msg = String(err?.message || '');
+    if (msg.includes('PROPOSAL_NOT_FOUND')) {
+      return c.json({ success: false, error: msg }, 404);
+    }
+    if (msg.includes('INVALID_PRICE') || msg.includes('INVALID_REQUEST')) {
+      return c.json({ success: false, error: msg }, 400);
+    }
+    return c.json({ success: false, error: msg || 'PROPOSAL_APPROVAL_FAILED' }, 500);
+  }
+});
+
+/**
+ * PR #94: Public B2B Razorpay Checkout Route (Fails closed unless proposal is OWNER_APPROVED & unexpired)
+ */
+apiRouter.get('/b2b/checkout/:proposalId', async (c) => {
+  const proposalId = c.req.param('proposalId');
+  const { B2BPilotService } = await import('../revenue/b2b-pilot-service.js');
+  const service = B2BPilotService.getInstance();
+  const proposal = await service.getProposalById(proposalId);
+  if (!proposal) {
+    return c.html(
+      `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="robots" content="noindex, nofollow"><title>Proposal Not Found</title></head><body style="font-family:sans-serif;background:#090d16;color:#f8fafc;padding:3rem;text-align:center;"><h1>404 — Proposal Not Found</h1><p>No B2B pilot proposal matches the specified ID.</p></body></html>`,
+      404
+    );
+  }
+  const html = service.renderB2BCheckoutHtml(proposal);
+  if (proposal.approvalStatus !== 'OWNER_APPROVED') {
+    return c.html(html, 403);
+  }
+  return c.html(html, 200);
 });
 
 /**

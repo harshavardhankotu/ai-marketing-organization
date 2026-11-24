@@ -27,14 +27,25 @@ export interface StaticSiteBuildResult {
   config: StaticSiteConfig;
 }
 
+export function isSeedFallbackDeal(deal: any): boolean {
+  return Boolean(
+    deal &&
+    (deal.isSeedFallback === true ||
+      deal.evidenceJson?.isSeedFallback === true ||
+      deal.evidence?.isSeedFallback === true)
+  );
+}
+
 /**
  * Priority 3 Editorial Quality Gate:
  * Only deals passing strict product/affiliate verification, IN_STOCK availability,
- * positive INR price, recorded verification timestamp, and >=15 char descriptive title
- * are eligible for public indexing (`index, follow`) and `/sitemap.xml` inclusion.
+ * positive INR price, recorded verification timestamp, >=15 char descriptive title,
+ * and NOT marked isSeedFallback: true are eligible for public indexing (`index, follow`)
+ * and `/sitemap.xml` inclusion.
  */
 export function passesEditorialQualityGate(deal: any): boolean {
   if (!deal) return false;
+  if (isSeedFallbackDeal(deal)) return false;
   const priceNum = Number(deal.currentPriceINR || 0);
   const titleStr = String(deal.title || '').trim();
   const hasTimestamp = Boolean(deal.lastVerifiedAt || deal.lastCheckedAt);
@@ -170,6 +181,68 @@ export function generateComparisonPairs(deals: any[], limit: number = 15): Compa
   return pairs;
 }
 
+/**
+ * Resolves a /vs/:comparisonSlug against generated pairs OR direct `<slugA>-vs-<slugB>` match
+ * across eligible deals so every emitted /vs/ link resolves cleanly to HTTP 200.
+ */
+export function findComparisonPairBySlug(
+  deals: any[],
+  rawSlug: string,
+  limit: number = 100
+): { matched: ComparisonPair | null; allPairs: ComparisonPair[] } {
+  const cleanSlug = decodeURIComponent(String(rawSlug || '')).toLowerCase().trim();
+  const allPairs = generateComparisonPairs(deals || [], limit);
+  const exact = allPairs.find((p) => p.comparisonSlug.toLowerCase() === cleanSlug);
+  if (exact) {
+    return { matched: exact, allPairs };
+  }
+
+  const normalizeDealSlug = (d: any): string =>
+    String(d?.slug || d?.canonicalSlug || d?.id || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 60);
+
+  const eligible = (deals || []).filter((d: any) =>
+    d &&
+    d.productVerified === true &&
+    d.affiliateVerified === true &&
+    d.isMonetizable !== false &&
+    d.availability === 'IN_STOCK' &&
+    d.affiliateNetwork !== 'AMAZON_IN' &&
+    Number(d.currentPriceINR || 0) > 0 &&
+    normalizeDealSlug(d).length > 0
+  );
+
+  // Try splitting on `-vs-` across all split points in case product slugs contain `-vs-`
+  let idx = cleanSlug.indexOf('-vs-');
+  while (idx !== -1) {
+    const left = cleanSlug.slice(0, idx);
+    const right = cleanSlug.slice(idx + 4);
+    const dealA = eligible.find((d: any) => normalizeDealSlug(d) === left);
+    const dealB = eligible.find((d: any) => normalizeDealSlug(d) === right);
+    if (dealA && dealB && dealA.id !== dealB.id) {
+      const priceA = Number(dealA.currentPriceINR || 0);
+      const tier = priceA < 2000 ? 'Under ₹2,000 Value Tier' : (priceA <= 10000 ? '₹2,000–₹10,000 Mid Tier' : '₹10,000+ Flagship Tier');
+      return {
+        matched: {
+          comparisonSlug: cleanSlug,
+          title: `${dealA.title} vs ${dealB.title}`,
+          category: dealA.category || dealB.category || 'Verified Deals',
+          priceTierLabel: tier,
+          dealA,
+          dealB
+        },
+        allPairs
+      };
+    }
+    idx = cleanSlug.indexOf('-vs-', idx + 4);
+  }
+
+  return { matched: null, allPairs };
+}
+
 export interface BuyerIntentHub {
   intentSlug: string;
   title: string;
@@ -232,7 +305,7 @@ const FIXED_BUYER_INTENT_HUBS: HubSeedDefinition[] = [
     categoryLabel: 'Car Tech & Dashcams',
     predicate: (d, text, price) =>
       price > 0 &&
-      /(dashcam|dash cam|car|tyre|tire|inflator|automotive|dvr|nexdigitron|qubo|70mai)/i.test(text + ' ' + String(d?.category || ''))
+      /(dashcam|dash cam|\bcar\b|\bcar tech\b|tyre|tire|inflator|automotive|dvr|nexdigitron|qubo|70mai)/i.test(text + ' ' + String(d?.category || ''))
   },
   {
     intentSlug: 'smartwatches-and-fitness-bands-india',
@@ -1023,7 +1096,9 @@ export class StaticSiteGenerator {
             <div style="display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap;">
               ${isFeatured ? `<span style="font-size: 0.72rem; background: rgba(6, 182, 212, 0.18); color: #67e8f9; border: 1px solid rgba(6, 182, 212, 0.35); padding: 0.2rem 0.5rem; border-radius: 9999px;">Featured</span>` : ''}
               ${hasPriceDrop ? `<span style="font-size: 0.72rem; background: rgba(16, 185, 129, 0.2); color: #6ee7b7; border: 1px solid rgba(16, 185, 129, 0.35); padding: 0.2rem 0.5rem; border-radius: 9999px;">Verified Price Drop</span>` : ''}
-              <span style="font-size: 0.75rem; background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); padding: 0.2rem 0.5rem; border-radius: 9999px;">✓ Verified</span>
+              ${isSeedFallbackDeal(deal)
+                ? `<span style="font-size: 0.75rem; background: rgba(245, 158, 11, 0.16); color: #fcd34d; border: 1px solid rgba(245, 158, 11, 0.35); padding: 0.2rem 0.5rem; border-radius: 9999px;">SEED_SNAPSHOT</span>`
+                : `<span style="font-size: 0.75rem; background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); padding: 0.2rem 0.5rem; border-radius: 9999px;">✓ Verified</span>`}
             </div>
           </div>
           <h2 style="font-size: 1.15rem; color: #fff; margin: 0 0 0.5rem 0; line-height: 1.4;"><a href="${this.escapeHtml(detailHref)}" style="color: #fff; text-decoration: none;">${this.escapeHtml(deal.title)}</a></h2>
@@ -1061,6 +1136,7 @@ export class StaticSiteGenerator {
     }).join('');
     const comparisonPairs = generateComparisonPairs(activeDeals, 6);
     const buyerHubs = generateBuyerIntentHubs(activeDeals, config.siteUrl, 6);
+    const allSeedFallback = activeDeals.length > 0 && activeDeals.every((d: any) => isSeedFallbackDeal(d));
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -1071,7 +1147,7 @@ export class StaticSiteGenerator {
   <meta name="description" content="${this.escapeHtml(description)}">
   <link rel="canonical" href="${canonicalUrl}">
   <link rel="alternate" type="application/rss+xml" title="Verified Commercial Deals RSS Feed" href="/feeds/deals.xml">
-  <meta name="robots" content="index, follow">
+  <meta name="robots" content="${allSeedFallback ? 'noindex, nofollow' : 'index, follow'}">
   <meta property="og:title" content="${this.escapeHtml(title)}">
   <meta property="og:description" content="${this.escapeHtml(description)}">
   <meta property="og:url" content="${canonicalUrl}">
@@ -1525,7 +1601,7 @@ ${this.serializeSafeJsonLd(productSchema, true)}
         <span style="font-size:0.9rem;font-weight:700;background:rgba(16,185,129,0.2);color:#6ee7b7;padding:0.3rem 0.75rem;border-radius:8px;">${this.escapeHtml(badgeText)}</span>
       </div>
       <p style="font-size:0.88rem;color:#94a3b8;margin:0.5rem 0 1rem 0;">
-        Observed At: <code>${this.escapeHtml(verifiedTs || 'Verification timestamp unavailable')}</code> &bull; Verification Status: <strong>${this.escapeHtml(deal.verificationStatus || 'VERIFIED')}</strong>
+        Observed At: <code>${this.escapeHtml(verifiedTs || 'Verification timestamp unavailable')}</code> &bull; Verification Status: <strong>${this.escapeHtml(isSeedFallbackDeal(deal) ? 'SEED_SNAPSHOT' : (deal.verificationStatus || 'VERIFIED'))}</strong>
       </p>
       ${(() => {
         const reviews = Array.isArray((deal as any).youtubeReviews) && (deal as any).youtubeReviews.length > 0
@@ -1667,6 +1743,7 @@ ${this.serializeSafeJsonLd(productSchema, true)}
     };
 
     const otherPairs = (allPairs || []).filter(p => p.comparisonSlug !== pair.comparisonSlug).slice(0, 6);
+    const hasSeedFallback = isSeedFallbackDeal(a) || isSeedFallbackDeal(b);
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -1676,7 +1753,7 @@ ${this.serializeSafeJsonLd(productSchema, true)}
   ${this.getGoogleSiteVerificationMeta(config)}${this.getCuelinksVerificationMeta(config)}<title>${this.escapeHtml(title)}</title>
   <meta name="description" content="${this.escapeHtml(description)}">
   <link rel="canonical" href="${this.escapeHtml(canonicalUrl)}">
-  <meta name="robots" content="index, follow">
+  <meta name="robots" content="${hasSeedFallback ? 'noindex, nofollow' : 'index, follow'}">
   <meta property="og:title" content="${this.escapeHtml(title)}">
   <meta property="og:description" content="${this.escapeHtml(description)}">
   <meta property="og:url" content="${this.escapeHtml(canonicalUrl)}">
@@ -1710,7 +1787,7 @@ ${this.serializeSafeJsonLd(itemListSchema, true)}
     <div style="font-size:0.84rem;color:#94a3b8;margin-bottom:0.85rem;">
       <a href="/deals" style="color:#38bdf8;text-decoration:none;">Verified Deals</a> &rsaquo; <span>${this.escapeHtml(pair.category)}</span> &rsaquo; <span>${this.escapeHtml(pair.priceTierLabel)}</span>
     </div>
-    <span style="display:inline-block;font-size:0.74rem;font-weight:700;color:#38bdf8;background:rgba(56,189,248,0.12);border:1px solid rgba(56,189,248,0.3);padding:0.2rem 0.65rem;border-radius:9999px;margin-bottom:0.75rem;">#Ad &bull; HEAD-TO-HEAD COMPARISON</span>
+    <span style="display:inline-block;font-size:0.74rem;font-weight:700;color:${hasSeedFallback ? '#fcd34d' : '#38bdf8'};background:${hasSeedFallback ? 'rgba(245,158,11,0.14)' : 'rgba(56,189,248,0.12)'};border:1px solid ${hasSeedFallback ? 'rgba(245,158,11,0.35)' : 'rgba(56,189,248,0.3)'};padding:0.2rem 0.65rem;border-radius:9999px;margin-bottom:0.75rem;">#Ad &bull; ${hasSeedFallback ? 'SEED_SNAPSHOT &bull; ' : ''}HEAD-TO-HEAD COMPARISON</span>
     <h1 style="font-size:1.75rem;color:#fff;margin:0 0 0.75rem 0;">${this.escapeHtml(a.title)} vs ${this.escapeHtml(b.title)}</h1>
     <p style="color:#94a3b8;font-size:0.95rem;margin-bottom:1.5rem;">${this.escapeHtml(description)}</p>
 
@@ -1896,6 +1973,7 @@ ${this.serializeSafeJsonLd(itemListSchema, true)}
 
     const otherHubs = (allHubs || []).filter(h => h.intentSlug !== hub.intentSlug).slice(0, 5);
     const relatedComparisons = (comparisons || []).slice(0, 6);
+    const hasSeedFallback = deals.some((d: any) => isSeedFallbackDeal(d));
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -1905,7 +1983,7 @@ ${this.serializeSafeJsonLd(itemListSchema, true)}
   ${this.getGoogleSiteVerificationMeta(config)}${this.getCuelinksVerificationMeta(config)}<title>${this.escapeHtml(hub.title)} | ${this.escapeHtml(config.siteName)}</title>
   <meta name="description" content="${this.escapeHtml(hub.description)}">
   <link rel="canonical" href="${this.escapeHtml(canonicalUrl)}">
-  <meta name="robots" content="index, follow">
+  <meta name="robots" content="${hasSeedFallback ? 'noindex, nofollow' : 'index, follow'}">
   <meta property="og:title" content="${this.escapeHtml(hub.title)}">
   <meta property="og:description" content="${this.escapeHtml(hub.description)}">
   <meta property="og:url" content="${this.escapeHtml(canonicalUrl)}">
@@ -1943,7 +2021,7 @@ ${this.serializeSafeJsonLd(faqSchema, true)}
     <div style="font-size:0.84rem;color:#94a3b8;margin-bottom:0.75rem;">
       <a href="/" style="color:#38bdf8;text-decoration:none;">Home</a> &rsaquo; <a href="/deals" style="color:#38bdf8;text-decoration:none;">Verified Deals</a> &rsaquo; <span>${this.escapeHtml(hub.categoryLabel)}</span>
     </div>
-    <div style="font-size:0.78rem;font-weight:700;color:#38bdf8;margin-bottom:0.4rem;">#Ad &bull; VERIFIED FAIR-PRICE BUYER GUIDE &bull; ${this.escapeHtml(hub.priceCapLabel)}</div>
+    <div style="font-size:0.78rem;font-weight:700;color:${hasSeedFallback ? '#fcd34d' : '#38bdf8'};margin-bottom:0.4rem;">#Ad &bull; ${hasSeedFallback ? 'SEED_SNAPSHOT &bull; ' : ''}VERIFIED FAIR-PRICE BUYER GUIDE &bull; ${this.escapeHtml(hub.priceCapLabel)}</div>
     <h1>${this.escapeHtml(hub.h1)}</h1>
     <p style="color:#94a3b8;font-size:0.95rem;margin-bottom:1.5rem;">${this.escapeHtml(hub.description)}</p>
 
@@ -1954,7 +2032,7 @@ ${this.serializeSafeJsonLd(faqSchema, true)}
     </section>
 
     <section style="margin-bottom:2rem;">
-      <h2 style="font-size:1.2rem;color:#fff;margin:0 0 0.75rem 0;">Ranked Winner Table (${deals.length} Verified Snapshots)</h2>
+      <h2 style="font-size:1.2rem;color:#fff;margin:0 0 0.75rem 0;">Ranked Winner Table (${deals.length} ${hasSeedFallback ? 'SEED_SNAPSHOT Entries' : 'Verified Snapshots'})</h2>
       <div style="overflow-x:auto;">
         <table>
           <thead>
@@ -2976,6 +3054,7 @@ ${this.serializeSafeJsonLd(schemaObj, true)}
       .slice(0, 10);
 
     const comparisons = generateComparisonPairs(eligibleDeals, 4);
+    const activeIgHubs = generateBuyerIntentHubs(eligibleDeals, siteUrl, 2);
 
     const dealCardsHtml = eligibleDeals.length > 0
       ? eligibleDeals.map((d: any) => {
@@ -3093,7 +3172,7 @@ ${this.serializeSafeJsonLd(schemaObj, true)}
 
     <div class="section-heading">Smart Buyer Shortcuts</div>
     <nav class="quick-grid" aria-label="Buyer shortcuts">
-      <a href="/best/best-deals-under-2000-india" class="quick-link">Best Verified Deals Under &#8377;2,000 &rarr;</a>
+      ${activeIgHubs.map(h => `<a href="/best/${this.escapeHtml(encodeURIComponent(h.intentSlug))}" class="quick-link">${this.escapeHtml(h.h1)} &rarr;</a>`).join('')}
       <a href="/deals" class="quick-link">Explore Full Verified Deal Feed &rarr;</a>
       ${vsLinksHtml}
       <a href="/tools/site-audit" class="quick-link">SMB Owners: Free SiteFix SEO &amp; Conversion Audit &rarr;</a>

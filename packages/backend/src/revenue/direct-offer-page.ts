@@ -524,11 +524,11 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <style>
         <a href="/deals" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.05rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.86rem; font-weight: 600;">
           Indian Commercial Deals Directory &rarr;
         </a>
-        <a href="/best/audio-and-earbuds-under-2000" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.05rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.86rem; font-weight: 600;">
-          Best Audio &amp; Earbuds Under ₹2,000 &rarr;
+        <a href="/best/skincare-and-grooming-under-2000" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.05rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.86rem; font-weight: 600;">
+          Skincare &amp; Grooming Under ₹2,000 &rarr;
         </a>
-        <a href="/best/soundbars-and-speakers-under-10000" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.05rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.86rem; font-weight: 600;">
-          Best Soundbars Under ₹10,000 &rarr;
+        <a href="/best/daily-personal-care-and-grooming-under-500" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.05rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.86rem; font-weight: 600;">
+          Personal Care Under ₹500 &rarr;
         </a>
         <a href="/best/grooming-and-perfume-bundles-under-1000" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.05rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.86rem; font-weight: 600;">
           Grooming &amp; Perfume Bundles Under ₹1,000 &rarr;

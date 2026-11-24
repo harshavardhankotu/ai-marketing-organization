@@ -17,6 +17,14 @@ export interface RazorpayStandardOrderParams {
   notes?: Record<string, string>;
 }
 
+export interface B2BOrderParams {
+  proposalId: string;
+  customerEmail?: string;
+  customerName?: string;
+  customerPhone?: string;
+  notes?: Record<string, string>;
+}
+
 export interface RazorpayStandardOrderResult {
   success: boolean;
   keyId: string;
@@ -26,6 +34,8 @@ export interface RazorpayStandardOrderResult {
   amountPaise?: number;
   amountINR?: number;
   sku?: string;
+  offerId?: string;
+  proposalId?: string;
   currency: 'INR';
   isTestMode: boolean;
 }
@@ -431,11 +441,9 @@ export class RazorpayStandardAdapter {
    */
   public async createStandardOrder(params: RazorpayStandardOrderParams): Promise<RazorpayStandardOrderResult> {
     const { amountINR, amountPaise, canonicalSku } = this.resolveAuthoritativePrice(params.sku, params.amountINR);
-    const { keyId, keySecret, isLive } = this.getCredentialPair();
-    const isTestMode = !isLive;
 
     const rawDomain = String(params.domainOrUrl || '').trim();
-    let cleanDomain = rawDomain.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').trim().toLowerCase();
+    const cleanDomain = rawDomain.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').trim().toLowerCase();
     if (!cleanDomain || !cleanDomain.includes('.') || cleanDomain.length < 3) {
       throw new Error('INVALID_DOMAIN: A valid domain or website URL is required.');
     }
@@ -445,24 +453,119 @@ export class RazorpayStandardAdapter {
       throw new Error('INVALID_EMAIL: A valid buyer email address is required.');
     }
 
-    const internalOrderId = `ord_rzp_${Date.now()}_${randomUUID().replace(/-/g, '').slice(0, 8)}`;
     const customerName = String(params.customerName || 'SiteFix Customer').trim();
+    return this.createGatewayOrderAndPersist({
+      offerId: canonicalSku,
+      amountINR,
+      amountPaise,
+      cleanDomain,
+      buyerEmail,
+      customerName,
+      customerPhone: '',
+      offerDescription: `SiteFix Fix-Pack (${canonicalSku})`,
+      notes: {
+        sku: canonicalSku,
+        domainOrUrl: cleanDomain,
+        buyerEmail,
+        ...(params.notes || {})
+      },
+      extraMeta: { sku: canonicalSku, domainOrUrl: cleanDomain }
+    });
+  }
+
+  /**
+   * Server-Side B2B Order Creation (POST /api/v1/payments/razorpay/create-b2b-order)
+   * Looks up proposalId from D1, fails closed if not OWNER_APPROVED or expired,
+   * and uses ONLY D1-stored approvedPriceINR.
+   */
+  public async createB2BOrder(params: B2BOrderParams): Promise<RazorpayStandardOrderResult> {
+    const proposalId = String(params.proposalId || '').trim();
+    if (!proposalId) {
+      throw new Error('PROPOSAL_ID_REQUIRED: proposalId is required.');
+    }
+
+    const { B2BPilotService, B2B_PILOT_OFFER_ID } = await import('../revenue/b2b-pilot-service.js');
+    const proposal = await B2BPilotService.getInstance().getProposalById(proposalId);
+    if (!proposal) {
+      throw new Error(`PROPOSAL_NOT_FOUND: No B2B pilot proposal found for ID '${proposalId}'.`);
+    }
+    if (proposal.approvalStatus === 'EXPIRED' || (proposal.expiresAt && Date.parse(proposal.expiresAt) <= Date.now())) {
+      throw new Error(`PROPOSAL_EXPIRED: Proposal '${proposalId}' has expired.`);
+    }
+    if (proposal.approvalStatus !== 'OWNER_APPROVED' || !proposal.approvedPriceINR || proposal.approvedPriceINR <= 0) {
+      throw new Error(`PROPOSAL_NOT_APPROVED: Proposal '${proposalId}' is not owner-approved for checkout (status: ${proposal.approvalStatus}).`);
+    }
+
+    const buyerEmail = String(params.customerEmail || proposal.contactEmail || '').trim().toLowerCase();
+    if (!buyerEmail || !buyerEmail.includes('@') || !buyerEmail.includes('.') || buyerEmail.indexOf('@') >= buyerEmail.lastIndexOf('.')) {
+      throw new Error('INVALID_EMAIL: A valid customerEmail address is required.');
+    }
+
+    const amountINR = proposal.approvedPriceINR;
+    const amountPaise = Math.round(amountINR * 100);
+    const cleanDomain = String(proposal.targetUrl || '').replace(/^https?:\/\//i, '').replace(/\/.*$/, '').trim().toLowerCase() || proposalId;
+    const customerName = String(params.customerName || proposal.businessName || 'B2B Client').trim();
+    const customerPhone = String(params.customerPhone || '').trim();
+
+    return this.createGatewayOrderAndPersist({
+      offerId: B2B_PILOT_OFFER_ID,
+      proposalId,
+      amountINR,
+      amountPaise,
+      cleanDomain,
+      buyerEmail,
+      customerName,
+      customerPhone,
+      offerDescription: `B2B Pilot Setup (${proposalId})`,
+      notes: {
+        offerId: B2B_PILOT_OFFER_ID,
+        proposalId,
+        targetUrl: proposal.targetUrl,
+        businessName: proposal.businessName,
+        buyerEmail,
+        ...(params.notes || {})
+      },
+      extraMeta: {
+        sku: B2B_PILOT_OFFER_ID,
+        offerId: B2B_PILOT_OFFER_ID,
+        proposalId,
+        targetUrl: proposal.targetUrl,
+        domainOrUrl: proposal.targetUrl,
+        businessName: proposal.businessName,
+        scopeNotes: proposal.scopeNotes,
+        approvedPriceINR: amountINR
+      }
+    });
+  }
+
+  private async createGatewayOrderAndPersist(input: {
+    offerId: string;
+    proposalId?: string;
+    amountINR: number;
+    amountPaise: number;
+    cleanDomain: string;
+    buyerEmail: string;
+    customerName: string;
+    customerPhone: string;
+    offerDescription: string;
+    notes: Record<string, string>;
+    extraMeta: Record<string, any>;
+  }): Promise<RazorpayStandardOrderResult> {
+    const { keyId, keySecret, isLive } = this.getCredentialPair();
+    const isTestMode = !isLive;
+    const internalOrderId = `ord_rzp_${Date.now()}_${randomUUID().replace(/-/g, '').slice(0, 8)}`;
 
     let razorpayOrderId = '';
-
     if (keyId && keySecret && !isPlaceholderCredential(keyId) && !isPlaceholderCredential(keySecret)) {
       const basicAuth = 'Basic ' + Buffer.from(`${keyId}:${keySecret}`).toString('base64');
       const orderPayload = {
-        amount: amountPaise,
+        amount: input.amountPaise,
         currency: 'INR',
         receipt: internalOrderId.slice(0, 40),
         payment_capture: 1,
         notes: {
-          sku: canonicalSku,
-          domainOrUrl: cleanDomain,
-          buyerEmail,
           internalOrderId,
-          ...(params.notes || {})
+          ...input.notes
         }
       };
 
@@ -494,18 +597,22 @@ export class RazorpayStandardAdapter {
       razorpayOrderId = `order_test_${randomUUID().replace(/-/g, '').slice(0, 14)}`;
     }
 
-    // Persist in D1 universal_orders and customer_journeys (fail-closed)
     const mode = isLive ? 'LIVE' : 'TEST_SANDBOX';
     const journeyId = `cj_rzp_${internalOrderId}`;
 
+    // Persist parent customer_journey cleanly (for FK integrity & B2B audit trail)
+    if (input.proposalId) {
+      await this.ensureCustomerJourney(journeyId, input.buyerEmail, input.customerName, isLive, 'CHECKOUT');
+    }
+
     const metadataJson = JSON.stringify({
-      sku: canonicalSku,
-      domainOrUrl: cleanDomain,
-      buyerEmail,
+      ...input.extraMeta,
+      buyerEmail: input.buyerEmail,
+      customerName: input.customerName,
       journeyId,
       mode,
       keyId: keyId ? `${keyId.slice(0, 8)}...` : 'NONE',
-      notes: params.notes || {}
+      notes: input.notes
     });
 
     try {
@@ -515,13 +622,14 @@ export class RazorpayStandardAdapter {
           id, business_id, organization_id, offer_id, customer_name,
           customer_email, customer_phone, amount_minor, currency, status,
           payment_provider, provider_order_id, metadata_json, created_at, updated_at
-        ) VALUES (?, 'biz_platform_aro', 'org_owner_primary', ?, ?, ?, '', ?, 'INR', 'CHECKOUT', 'RAZORPAY', ?, ?, datetime('now'), datetime('now'))`,
+        ) VALUES (?, 'biz_platform_aro', 'org_owner_primary', ?, ?, ?, ?, ?, 'INR', 'CHECKOUT', 'RAZORPAY', ?, ?, datetime('now'), datetime('now'))`,
         [
           internalOrderId,
-          canonicalSku,
-          customerName,
-          buyerEmail,
-          amountPaise,
+          input.offerId,
+          input.customerName,
+          input.buyerEmail,
+          input.customerPhone || '',
+          input.amountPaise,
           razorpayOrderId,
           metadataJson
         ]
@@ -531,11 +639,9 @@ export class RazorpayStandardAdapter {
       throw new Error(`D1_ORDER_PERSISTENCE_FAILED: Failed to persist order in ledger: ${d1Err.message}`);
     }
 
-    // Also persist in payment_requests (fail-closed in production)
     try {
       const isRemoteD1 = this.d1.isRemoteD1WriteAllowed();
       if (isRemoteD1) {
-        // Production Cloudflare D1 (0002_core_production_schema.sql) strictly requires NOT NULL lead_id
         await this.d1Repo.executeWrite(
           'payment_requests',
           `INSERT INTO payment_requests (
@@ -546,9 +652,9 @@ export class RazorpayStandardAdapter {
           [
             internalOrderId,
             journeyId,
-            cleanDomain,
-            `SiteFix Fix-Pack (${canonicalSku})`,
-            amountINR,
+            input.cleanDomain,
+            input.offerDescription,
+            input.amountINR,
             isLive ? 'REAL' : 'TEST',
             isLive ? 0 : 1
           ]
@@ -563,9 +669,9 @@ export class RazorpayStandardAdapter {
           ) VALUES (?, 'biz_platform_aro', 'org_owner_primary', ?, ?, ?, 'INR', 'ONE_TIME', 'REQUEST_CREATED', ?, 'RAZORPAY', datetime('now'), datetime('now'))`,
           [
             internalOrderId,
-            cleanDomain,
-            `SiteFix Fix-Pack (${canonicalSku})`,
-            amountINR,
+            input.cleanDomain,
+            input.offerDescription,
+            input.amountINR,
             isLive ? 'REAL' : 'TEST'
           ]
         );
@@ -577,17 +683,17 @@ export class RazorpayStandardAdapter {
       }
     }
 
-    // Send instant Telegram alert for new order creation
     try {
       const tg = TelegramBotAdapter.getInstance();
       tg.sendOwnerAlert(
-        `🛍️ <b>New SiteFix Order Created</b>\n\n` +
+        `🛍️ <b>New ${input.proposalId ? 'B2B Pilot' : 'SiteFix'} Order Created</b>\n\n` +
         `• <b>Order ID:</b> <code>${internalOrderId}</code>\n` +
         `• <b>Razorpay Order:</b> <code>${razorpayOrderId}</code>\n` +
-        `• <b>SKU:</b> ${canonicalSku}\n` +
-        `• <b>Amount:</b> ₹${amountINR.toLocaleString('en-IN')}\n` +
-        `• <b>Domain:</b> ${cleanDomain}\n` +
-        `• <b>Customer:</b> ${buyerEmail}\n` +
+        `• <b>Offer / SKU:</b> ${input.offerId}\n` +
+        (input.proposalId ? `• <b>Proposal ID:</b> <code>${input.proposalId}</code>\n` : '') +
+        `• <b>Amount:</b> ₹${input.amountINR.toLocaleString('en-IN')}\n` +
+        `• <b>Target:</b> ${input.cleanDomain}\n` +
+        `• <b>Customer:</b> ${input.buyerEmail}\n` +
         `• <b>Mode:</b> ${mode}`
       ).catch(() => {});
     } catch {}
@@ -597,10 +703,12 @@ export class RazorpayStandardAdapter {
       keyId: keyId || 'rzp_test_placeholder',
       orderId: internalOrderId,
       razorpayOrderId,
-      amount: amountPaise,
-      amountPaise,
-      amountINR,
-      sku: canonicalSku,
+      amount: input.amountPaise,
+      amountPaise: input.amountPaise,
+      amountINR: input.amountINR,
+      sku: input.offerId,
+      offerId: input.offerId,
+      ...(input.proposalId ? { proposalId: input.proposalId } : {}),
       currency: 'INR',
       isTestMode
     };
@@ -871,11 +979,94 @@ export class RazorpayStandardAdapter {
       }
     }
 
-    // Step (b): Generate Fix-Pack deliverable for actual target domain and store signed delivery token
+    // Step (b): B2B Implementation Delivery Task vs. Self-Serve Fix-Pack Deliverable
     const siteUrl = getTrustedPublicSiteUrl().replace(/\/$/, '');
     let downloadToken = '';
     let downloadUrl = '';
-    let journeyId = meta.journeyId || `cj_rzp_${authoritativeOrderId}`;
+    const journeyId = meta.journeyId || `cj_rzp_${authoritativeOrderId}`;
+    const isB2BOrder = storedSku === 'B2B_WEBSITE_ENQUIRY_SETUP' || Boolean(meta.proposalId);
+
+    if (isB2BOrder) {
+      await this.ensureCustomerJourney(journeyId, buyerEmail, customerName, isLive, 'PAYMENT_VERIFIED');
+      const taskId = `deliv_${authoritativeOrderId}_${razorpay_payment_id}`;
+      await this.d1Repo.executeWrite(
+        'delivery_tasks',
+        `INSERT INTO delivery_tasks (
+          id, organization_id, business_id, customer_journey_id,
+          service_type, stage, deliverables_json, results_json,
+          action_classification, completed_at, created_at
+        ) VALUES (?, 'org_owner_primary', 'biz_platform_aro', ?, 'B2B_WEBSITE_ENQUIRY_SETUP', 'PENDING_IMPLEMENTATION', ?, ?, 'INTERNAL_AUTOMATION', NULL, datetime('now'))
+        ON CONFLICT(id) DO UPDATE SET stage = 'PENDING_IMPLEMENTATION', deliverables_json = excluded.deliverables_json, results_json = excluded.results_json`,
+        [
+          taskId,
+          journeyId,
+          JSON.stringify({
+            proposalId: meta.proposalId || null,
+            targetUrl: meta.targetUrl || cleanDomain,
+            businessName: meta.businessName || customerName,
+            offerId: 'B2B_WEBSITE_ENQUIRY_SETUP',
+            approvedPriceINR: verifiedAmountINR,
+            scopeNotes: meta.scopeNotes || null
+          }),
+          JSON.stringify({
+            status: 'PENDING_IMPLEMENTATION',
+            deliveredTo: buyerEmail,
+            paymentId: razorpay_payment_id,
+            orderId: authoritativeOrderId
+          })
+        ]
+      );
+
+      const updatedMetadata = JSON.stringify({
+        ...meta,
+        sku: 'B2B_WEBSITE_ENQUIRY_SETUP',
+        offerId: 'B2B_WEBSITE_ENQUIRY_SETUP',
+        deliveryTaskId: taskId,
+        fulfillmentStatus: 'PENDING_IMPLEMENTATION',
+        journeyId
+      });
+      await this.d1Repo.executeWrite(
+        'universal_orders',
+        `UPDATE universal_orders SET fulfillment_status = 'PENDING_IMPLEMENTATION', metadata_json = ?, updated_at = datetime('now') WHERE id = ?`,
+        [updatedMetadata, authoritativeOrderId]
+      ).catch(() => {});
+
+      if (meta.proposalId) {
+        try {
+          const { B2BPilotService } = await import('../revenue/b2b-pilot-service.js');
+          await B2BPilotService.getInstance().markProposalPaid(meta.proposalId, authoritativeOrderId, razorpay_payment_id);
+        } catch {}
+      }
+
+      try {
+        const tg = TelegramBotAdapter.getInstance();
+        tg.sendOwnerAlert(
+          `🏢 <b>B2B Pilot Payment Confirmed (${mode})</b>\n\n` +
+          `• <b>Order:</b> <code>${authoritativeOrderId}</code>\n` +
+          `• <b>Proposal:</b> <code>${meta.proposalId || 'N/A'}</code>\n` +
+          `• <b>Delivery Task:</b> <code>${taskId}</code> (PENDING_IMPLEMENTATION)\n` +
+          `• <b>Target:</b> ${meta.targetUrl || cleanDomain}\n` +
+          `• <b>Customer:</b> ${buyerEmail}\n` +
+          `• <b>Amount:</b> ₹${verifiedAmountINR.toFixed(2)}`
+        ).catch(() => {});
+      } catch {}
+
+      return {
+        success: true,
+        paymentCaptured: true,
+        orderId: authoritativeOrderId,
+        razorpayPaymentId: razorpay_payment_id,
+        status,
+        mode,
+        fulfillmentStatus: 'PENDING_IMPLEMENTATION',
+        deliverableStatus: 'PENDING',
+        retryRequired: false,
+        deliveryTaskId: taskId,
+        proposalId: meta.proposalId || undefined,
+        offerId: 'B2B_WEBSITE_ENQUIRY_SETUP',
+        message: 'Payment verified and B2B implementation delivery task created (PENDING_IMPLEMENTATION).'
+      } as RazorpayVerifyResult & { deliveryTaskId?: string; proposalId?: string; offerId?: string };
+    }
 
     try {
       const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');

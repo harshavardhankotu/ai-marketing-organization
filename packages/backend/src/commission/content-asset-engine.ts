@@ -653,6 +653,116 @@ export class ContentAssetEngine {
   }
 
   /**
+   * Resolves strictly category-specific template wording so thermal-printer/logistics
+   * copy never leaks into skincare, audio, SaaS, or general product guides.
+   */
+  private resolveGuideCategoryProfile(category: string, displayName: string): {
+    key: 'PRINTER_LOGISTICS' | 'SKINCARE_GROOMING' | 'AUDIO_ELECTRONICS' | 'SOFTWARE_SAAS' | 'GENERAL';
+    introAudience: string;
+    defaultSpecSummary: string;
+    fallbackAudience: string;
+    fallbackConsiderations: string[];
+    operationalHeading: string;
+    operationalIntro: string;
+    operationalBullets: string[];
+  } {
+    const combined = `${category || ''} ${displayName || ''}`.toLowerCase();
+    if (/(printer|thermal|barcode|label|pos\b|scanner)/i.test(combined)) {
+      return {
+        key: 'PRINTER_LOGISTICS',
+        introAudience: 'logistics, retail operations, and small business document printing across India',
+        defaultSpecSummary: 'Direct thermal printing specification',
+        fallbackAudience: 'Ideal for commercial logistics and small-business workflows requiring verified thermal output.',
+        fallbackConsiderations: [
+          '- **Limitations to Verify:** Confirm wireless vs wired connectivity and driver support for your operating system before deployment.'
+        ],
+        operationalHeading: '## Operational Considerations & Deployment',
+        operationalIntro: 'When evaluating direct thermal equipment for small business logistics:',
+        operationalBullets: [
+          '1. **Operating Environment:** Ensure hardware drivers and connectivity protocols match your active inventory and dispatch workstations.',
+          '2. **Consumables & Media:** Verify media width compatibility and adhesive requirements for standard shipping label sizes before full workflow integration.',
+          '3. **Commercial Terms:** Verify official warranty terms, merchant fulfillment policies, and return conditions directly on the authorized retailer platform.'
+        ]
+      };
+    }
+
+    if (/(skin|beauty|groom|beard|serum|face|hair|perfume|fragrance|personal\s*care|cosmetic|moisturiz|scrub|sunscreen|mask)/i.test(combined)) {
+      return {
+        key: 'SKINCARE_GROOMING',
+        introAudience: 'daily personal care, skincare, and grooming routines across India',
+        defaultSpecSummary: 'Verified ingredient and formulation specification',
+        fallbackAudience: 'Suited for buyers seeking the listed formulation, pack size, and active ingredients documented above.',
+        fallbackConsiderations: [
+          '- **Usage & Suitability Check:** Review the complete ingredient list for personal sensitivities and perform a patch test when introducing new topical actives.'
+        ],
+        operationalHeading: '## Usage & Selection Considerations',
+        operationalIntro: 'Before purchasing personal care or grooming formulations:',
+        operationalBullets: [
+          '1. **Skin & Hair Compatibility:** Match active ingredients and formulation texture to your specific skin or hair type.',
+          '2. **Packaging & Shelf Life:** Check net volume, batch manufacturing date, and storage instructions on the official merchant listing.',
+          '3. **Commercial Terms:** Confirm return eligibility (personal care consumables are often non-returnable once opened) and live bundle discounts on the authorized merchant checkout.'
+        ]
+      };
+    }
+
+    if (/(audio|earbud|headphone|speaker|soundbar|watch|dashcam|electronic|tech|laptop|mobile|gadget|charger)/i.test(combined)) {
+      return {
+        key: 'AUDIO_ELECTRONICS',
+        introAudience: 'everyday consumer electronics and mobile accessory buyers across India',
+        defaultSpecSummary: 'Verified hardware and connectivity specification',
+        fallbackAudience: 'Suited for buyers whose device ecosystem and daily workflow match the verified hardware specifications listed above.',
+        fallbackConsiderations: [
+          '- **Compatibility Check:** Confirm wireless protocol version, charging port type, and companion app requirements against your primary device.'
+        ],
+        operationalHeading: '## Compatibility & Ownership Considerations',
+        operationalIntro: 'Before ordering consumer electronics hardware:',
+        operationalBullets: [
+          '1. **Device Compatibility:** Verify Bluetooth/USB interface standards and OS support with your phone, tablet, or PC.',
+          '2. **Battery & Accessories:** Confirm included cables, adapters, and stated battery runtime conditions.',
+          '3. **Warranty & Returns:** Check manufacturer service center coverage in India and the merchant replacement window before checkout.'
+        ]
+      };
+    }
+
+    if (/(software|saas|app|cloud|automation|template|license)/i.test(combined)) {
+      return {
+        key: 'SOFTWARE_SAAS',
+        introAudience: 'digital productivity and software tool buyers across India',
+        defaultSpecSummary: 'Verified platform and license specification',
+        fallbackAudience: 'Suited for teams and solo operators whose workflow requirements match the documented plan limits.',
+        fallbackConsiderations: [
+          '- **Plan Limits Check:** Confirm seat limits, API quotas, and renewal/lifetime terms directly on the vendor pricing page.'
+        ],
+        operationalHeading: '## Implementation & Licensing Considerations',
+        operationalIntro: 'Before activating software or SaaS subscriptions:',
+        operationalBullets: [
+          '1. **Platform Compatibility:** Confirm browser, OS, and integration support for your existing stack.',
+          '2. **Data Export & Privacy:** Review data portability and privacy terms prior to migrating production workflows.',
+          '3. **Commercial Terms:** Confirm billing currency, GST invoicing, and refund window directly with the merchant.'
+        ]
+      };
+    }
+
+    const cleanCat = (category || 'Commercial Product').trim();
+    return {
+      key: 'GENERAL',
+      introAudience: `${cleanCat.toLowerCase()} buyers across India`,
+      defaultSpecSummary: `Verified ${cleanCat.toLowerCase()} product specification`,
+      fallbackAudience: `Suited for buyers seeking verified ${cleanCat.toLowerCase()} specifications documented from the official listing.`,
+      fallbackConsiderations: [
+        '- **Verification Note:** Confirm live merchant availability, variant options, and seller terms prior to checkout.'
+      ],
+      operationalHeading: '## Buying & Ownership Considerations',
+      operationalIntro: `When evaluating ${cleanCat.toLowerCase()} options:`,
+      operationalBullets: [
+        '1. **Specification Fit:** Confirm dimensions, capacity, or variant details match your intended use case.',
+        '2. **Seller & Fulfillment:** Verify seller authorization, shipping timeline, and GST invoice availability.',
+        '3. **Commercial Terms:** Confirm official warranty terms, merchant fulfillment policies, and return conditions directly on the authorized retailer platform.'
+      ]
+    };
+  }
+
+  /**
    * Generates a factual guide for an approved partner offer using ONLY the 3 listing facts + lint-approved template.
    * Performs at most ONE Gemini Flash call (logged to provider_call_logs).
    * Lints the generated markdown.
@@ -665,6 +775,7 @@ export class ContentAssetEngine {
       templateFallback?: boolean;
       invokeGemini?: boolean;
       fetchFn?: typeof fetch;
+      reviewSnippets?: string[];
     }
   ): Promise<ContentAsset> {
     const isProd = process.env.NODE_ENV === 'production';
@@ -714,12 +825,22 @@ export class ContentAssetEngine {
       } catch {}
     }
 
-    // PR #93: Honest Gemini structured synthesis — parses and incorporates real Gemini synthesis;
-    // logs 1 call only when Gemini successfully yields valid structured output; 0 calls on fallback.
+    const categoryProfile = this.resolveGuideCategoryProfile(offerRow.category, displayName);
+    const reviewSnippets = (
+      Array.isArray(options?.reviewSnippets)
+        ? options!.reviewSnippets!
+        : (Array.isArray(evidence.review_snippets) ? evidence.review_snippets : [])
+    )
+      .map((s: any) => String(s || '').trim())
+      .filter(Boolean);
+    const hasReviewSnippets = reviewSnippets.length > 0;
+
+    // PR #93 / PR #94: Honest Gemini structured synthesis — only prompts for reviewer trade-offs when actual review snippets are passed.
     let geminiSynthesis: {
       whoShouldBuy: string;
       whoShouldAvoid: string;
-      verifiedSpecsVsTradeoffs: string;
+      verifiedSpecsSummary?: string;
+      verifiedSpecsVsTradeoffs?: string;
       honestLimitations: string;
     } | null = null;
     let geminiCallsUsed = 0;
@@ -733,15 +854,26 @@ export class ContentAssetEngine {
     if (shouldInvokeGemini && (options?.fetchFn || (!process.env.VITEST && hasValidKey))) {
       try {
         const fetchImpl = options?.fetchFn || globalThis.fetch;
-        const prompt = `Synthesize an objective, honest buyer guide for product: "${displayName}". Category: ${offerRow.category}. Key specifications: ${specSummary || facts.map((f: any) => f.fact).join('; ')}. Manufacturer: ${manufacturerName || 'Official Manufacturer'}.
+        const prompt = hasReviewSnippets
+          ? `Synthesize an objective, honest buyer guide for product: "${displayName}". Category: ${offerRow.category}. Key specifications: ${specSummary || facts.map((f: any) => f.fact).join('; ')}. Manufacturer: ${manufacturerName || 'Official Manufacturer'}.
+Actual reviewer snippets: ${reviewSnippets.slice(0, 5).join(' | ')}
 Return strictly a JSON object with exactly these 4 keys:
 {
   "whoShouldBuy": "1-2 factual sentences on who should buy",
   "whoShouldAvoid": "1-2 factual sentences on who should avoid or look elsewhere",
-  "verifiedSpecsVsTradeoffs": "1-2 factual sentences on verified specs vs user reviewer trade-offs",
+  "verifiedSpecsVsTradeoffs": "1-2 factual sentences on verified specs vs the provided reviewer trade-offs",
   "honestLimitations": "1-2 factual sentences on honest hardware or operational limitations"
 }
-No superlatives like best, #1, perfect. No invented prices or unsupported claims.`;
+No superlatives like best, #1, perfect. No invented prices or unsupported claims.`
+          : `Synthesize an objective, honest buyer guide for product: "${displayName}". Category: ${offerRow.category}. Key specifications: ${specSummary || facts.map((f: any) => f.fact).join('; ')}. Manufacturer: ${manufacturerName || 'Official Manufacturer'}.
+Return strictly a JSON object with exactly these 4 keys:
+{
+  "whoShouldBuy": "1-2 factual sentences on who should buy based strictly on the specifications above",
+  "whoShouldAvoid": "1-2 factual sentences on who should look elsewhere based strictly on the specifications above",
+  "verifiedSpecsSummary": "1-2 factual sentences summarizing the verified manufacturer specifications without inventing user reviews",
+  "honestLimitations": "1-2 factual sentences on honest specification boundaries or operational constraints"
+}
+No superlatives like best, #1, perfect. No invented prices, no invented user reviews, or unsupported claims.`;
 
         const res = await fetchImpl(
           `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey || 'test_key'}`,
@@ -769,17 +901,25 @@ No superlatives like best, #1, perfect. No invented prices or unsupported claims
             }
           }
 
+          const specField = hasReviewSnippets
+            ? (typeof parsed?.verifiedSpecsVsTradeoffs === 'string' ? parsed.verifiedSpecsVsTradeoffs.trim() : '')
+            : (typeof parsed?.verifiedSpecsSummary === 'string'
+                ? parsed.verifiedSpecsSummary.trim()
+                : (typeof parsed?.verifiedSpecsVsTradeoffs === 'string' ? parsed.verifiedSpecsVsTradeoffs.trim() : ''));
+
           if (
             parsed &&
             typeof parsed.whoShouldBuy === 'string' && parsed.whoShouldBuy.trim() &&
             typeof parsed.whoShouldAvoid === 'string' && parsed.whoShouldAvoid.trim() &&
-            typeof parsed.verifiedSpecsVsTradeoffs === 'string' && parsed.verifiedSpecsVsTradeoffs.trim() &&
+            specField &&
             typeof parsed.honestLimitations === 'string' && parsed.honestLimitations.trim()
           ) {
             geminiSynthesis = {
               whoShouldBuy: parsed.whoShouldBuy.trim(),
               whoShouldAvoid: parsed.whoShouldAvoid.trim(),
-              verifiedSpecsVsTradeoffs: parsed.verifiedSpecsVsTradeoffs.trim(),
+              ...(hasReviewSnippets
+                ? { verifiedSpecsVsTradeoffs: specField }
+                : { verifiedSpecsSummary: specField }),
               honestLimitations: parsed.honestLimitations.trim()
             };
             geminiCallsUsed = 1;
@@ -838,7 +978,7 @@ No superlatives like best, #1, perfect. No invented prices or unsupported claims
       '',
       'As an Amazon Associate I earn from qualifying purchases.',
       '',
-      `This technical specification and commercial buyer guide details key attributes of the **${displayName}** for logistics, retail operations, and small business document printing across India.`,
+      `This technical specification and commercial buyer guide details key attributes of the **${displayName}** for ${categoryProfile.introAudience}.`,
       '',
       '## Verified Technical Specifications (Owner-Approved)',
       '',
@@ -850,9 +990,9 @@ No superlatives like best, #1, perfect. No invented prices or unsupported claims
       '',
       '## Manufacturer Specifications & Documentation',
       '',
-      `Official manufacturer details documented for this commercial equipment:`,
-      `- **Manufacturer:** ${manufacturerName || 'Official Equipment Manufacturer'}`,
-      `- **Manufacturer Specifications:** ${specSummary || 'Direct thermal printing specification'}`,
+      `Official manufacturer details documented for this ${offerRow.category || 'commercial'} product:`,
+      `- **Manufacturer:** ${manufacturerName || 'Official Manufacturer'}`,
+      `- **Manufacturer Specifications:** ${specSummary || categoryProfile.defaultSpecSummary}`,
       `- **Official Documentation Source:** ${sourceUrl || 'Official manufacturer product portal'}${retrievalDate ? ` (Retrieved: ${retrievalDate})` : ''}`,
       '',
       ...(geminiSynthesis ? [
@@ -860,23 +1000,22 @@ No superlatives like best, #1, perfect. No invented prices or unsupported claims
         '',
         `- **Who Should Buy:** ${geminiSynthesis.whoShouldBuy}`,
         `- **Who Should Avoid:** ${geminiSynthesis.whoShouldAvoid}`,
-        `- **Verified Specifications vs Trade-offs:** ${geminiSynthesis.verifiedSpecsVsTradeoffs}`,
+        ...(geminiSynthesis.verifiedSpecsVsTradeoffs
+          ? [`- **Verified Specifications vs Trade-offs:** ${geminiSynthesis.verifiedSpecsVsTradeoffs}`]
+          : [`- **Verified Specifications Summary:** ${geminiSynthesis.verifiedSpecsSummary}`]),
         `- **Honest Limitations:** ${geminiSynthesis.honestLimitations}`,
         ''
       ] : [
         '## Objective Buyer Considerations',
         '',
-        '- **Target Audience:** Ideal for commercial logistics and small-business workflows requiring verified thermal output.',
-        '- **Reviewer Trade-offs:** Reviewers note limited support for third-party uncalibrated media rolls.',
-        '- **Honest Limitations:** Lacks native wireless networking on base hardware; requires wired workstation connectivity.',
+        `- **Target Audience:** ${categoryProfile.fallbackAudience}`,
+        ...categoryProfile.fallbackConsiderations,
         ''
       ]),
-      '## Operational Considerations & Deployment',
+      categoryProfile.operationalHeading,
       '',
-      'When evaluating direct thermal equipment for small business logistics:',
-      '1. **Operating Environment:** Ensure hardware drivers and connectivity protocols match your active inventory and dispatch workstations.',
-      '2. **Consumables & Media:** Verify media width compatibility and adhesive requirements for standard shipping label sizes before full workflow integration.',
-      '3. **Commercial Terms:** Verify official warranty terms, merchant fulfillment policies, and return conditions directly on the authorized retailer platform.',
+      categoryProfile.operationalIntro,
+      ...categoryProfile.operationalBullets,
       '',
       '## Verification Scope & Editorial Independence',
       '',

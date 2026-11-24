@@ -310,8 +310,8 @@ export class D1Client {
   /**
    * Tracks rows read/written to ensure Cloudflare Free Tier caps are never exceeded.
    */
-  public recordUsage(rowsRead = 0, rowsWritten = 0): void {
-    this.recordCycleUsage(rowsRead, rowsWritten);
+  public recordUsage(rowsRead = 0, rowsWritten = 0, isBackground = false): void {
+    this.recordCycleUsage(rowsRead, rowsWritten, isBackground);
     if (process.env.NODE_ENV === 'production') return;
     try {
       this.ensureUsageTable();
@@ -327,6 +327,63 @@ export class D1Client {
           updated_at = datetime('now')
       `).run(dateKey, rowsRead, rowsWritten, rowsRead, rowsWritten);
     } catch {}
+  }
+
+  public isCycleActive(): boolean {
+    return this.cycleActive;
+  }
+
+  public getD1Status(): {
+    status: 'HEALTHY' | 'CYCLE_BUDGET_EXCEEDED' | 'DAILY_BACKGROUND_BUDGET_EXCEEDED' | 'QUOTA_CIRCUIT_OPEN';
+    remoteD1Configured: boolean;
+    dateKey: string;
+    instanceLocalDailyBackgroundRowsRead: number;
+    instanceLocalDailyBackgroundRowsWritten: number;
+    dailyBackgroundBudgetCap: number;
+    dailyBackgroundBudgetExceeded: boolean;
+    cycleActive: boolean;
+    currentCycleRowsRead: number;
+    cycleBudgetCap: number;
+    cycleBudgetExceeded: boolean;
+    circuitBreaker: ReturnType<D1Client['getRemoteQuotaCircuitState']>;
+  } {
+    this.checkAndResetDailyUsage();
+    const circuit = this.getRemoteQuotaCircuitState();
+    const dailyExceeded = this.isDailyBackgroundBudgetExceeded();
+    const cycleExceeded = this.isCycleBudgetExceeded();
+    return {
+      status: circuit.exhausted
+        ? 'QUOTA_CIRCUIT_OPEN'
+        : (dailyExceeded
+            ? 'DAILY_BACKGROUND_BUDGET_EXCEEDED'
+            : (cycleExceeded ? 'CYCLE_BUDGET_EXCEEDED' : 'HEALTHY')),
+      remoteD1Configured: this.isRemoteD1Configured(),
+      dateKey: this.currentDailyDateKey,
+      instanceLocalDailyBackgroundRowsRead: this.dailyBackgroundRowsRead,
+      instanceLocalDailyBackgroundRowsWritten: this.dailyBackgroundRowsWritten,
+      dailyBackgroundBudgetCap: this.dailyBudgetCap,
+      dailyBackgroundBudgetExceeded: dailyExceeded,
+      cycleActive: this.cycleActive,
+      currentCycleRowsRead: this.currentCycleRowsRead,
+      cycleBudgetCap: this.cycleBudgetCeiling,
+      cycleBudgetExceeded: cycleExceeded,
+      circuitBreaker: circuit
+    };
+  }
+
+  public assertBackgroundBudgetAvailable(
+    sql: string,
+    priority: 'P0' | 'P1' | 'P2' | 'P3' | 'P4' = 'P1',
+    isBackground?: boolean
+  ): void {
+    const backgroundQuery = isBackground === true || this.cycleActive || priority === 'P3' || priority === 'P4';
+    if (!backgroundQuery) return;
+    if (isFinancialSql(sql) && priority === 'P0' && isBackground !== true) return;
+    if (this.isCycleBudgetExceeded() || this.isDailyBackgroundBudgetExceeded()) {
+      throw new Error(
+        `[D1 BUDGET GUARD] Background D1 budget exceeded (cycleRowsRead=${this.currentCycleRowsRead}/${this.cycleBudgetCeiling}, dailyRowsRead=${this.dailyBackgroundRowsRead}/${this.dailyBudgetCap}). Background query blocked.`
+      );
+    }
   }
 
   // PR #93: Daily check & reset helper
@@ -435,12 +492,15 @@ export class D1Client {
     };
   }
 
-  public recordCycleUsage(rowsRead = 0, rowsWritten = 0): void {
+  public recordCycleUsage(rowsRead = 0, rowsWritten = 0, isBackground = false): void {
     this.checkAndResetDailyUsage();
     if (this.cycleActive) {
       this.currentCycleQueries++;
       this.currentCycleRowsRead += rowsRead;
       this.currentCycleRowsWritten += rowsWritten;
+      this.dailyBackgroundRowsRead += rowsRead;
+      this.dailyBackgroundRowsWritten += rowsWritten;
+    } else if (isBackground) {
       this.dailyBackgroundRowsRead += rowsRead;
       this.dailyBackgroundRowsWritten += rowsWritten;
     }
@@ -492,8 +552,12 @@ export class D1Client {
     sql: string,
     params: any[] = [],
     isWrite = false,
-    priority: 'P0' | 'P1' | 'P2' | 'P3' | 'P4' = 'P1'
+    priority: 'P0' | 'P1' | 'P2' | 'P3' | 'P4' = 'P1',
+    isBackground?: boolean
   ): Promise<{ results: T[]; rowsAffected: number; source: 'CLOUDFLARE_D1' | 'PERSISTENT_SQLITE' }> {
+    const trackAsBackground = isBackground === true || this.cycleActive || priority === 'P3' || priority === 'P4';
+    this.assertBackgroundBudgetAvailable(sql, priority, isBackground);
+
     const usage = this.getUsage();
 
     // Spec § 18: Guard check — when D1 safety cap is approached, pause low priority (P3/P4) queries
@@ -527,7 +591,7 @@ export class D1Client {
       const db = getDb();
       const stmt = db.prepare(sql);
       const info = stmt.run(...params);
-      this.recordUsage(0, info.changes || 1);
+      this.recordUsage(0, info.changes || 1, trackAsBackground);
       return { results: [], rowsAffected: info.changes, source: 'PERSISTENT_SQLITE' };
     }
 
@@ -598,7 +662,7 @@ export class D1Client {
             const rowsRead = typeof result?.meta?.rows_read === 'number' ? result.meta.rows_read : (results.length || 0);
             const rowsWritten = typeof result?.meta?.rows_written === 'number' ? result.meta.rows_written : (isWrite ? 1 : 0);
 
-            this.recordUsage(rowsRead, rowsWritten);
+            this.recordUsage(rowsRead, rowsWritten, trackAsBackground);
             return { results, rowsAffected: rowsWritten, source: 'CLOUDFLARE_D1' };
           }
         } catch (fetchErr: any) {
@@ -656,12 +720,12 @@ export class D1Client {
     if (isWrite) {
       const stmt = db.prepare(sql);
       const info = stmt.run(...params);
-      this.recordUsage(0, info.changes || 1);
+      this.recordUsage(0, info.changes || 1, trackAsBackground);
       return { results: [], rowsAffected: info.changes, source: 'PERSISTENT_SQLITE' };
     } else {
       const stmt = db.prepare(sql);
       const results = stmt.all(...params) as T[];
-      this.recordUsage(results.length || 1, 0);
+      this.recordUsage(results.length || 1, 0, trackAsBackground);
       return { results, rowsAffected: 0, source: 'PERSISTENT_SQLITE' };
     }
   }
@@ -696,11 +760,15 @@ export class D1Client {
    */
   public async executeBatch(
     statements: Array<{ sql: string; params?: any[] }>,
-    priority: 'P0' | 'P1' | 'P2' | 'P3' | 'P4' = 'P0'
+    priority: 'P0' | 'P1' | 'P2' | 'P3' | 'P4' = 'P0',
+    isBackground?: boolean
   ): Promise<{ rowsAffected: number; source: 'CLOUDFLARE_D1' | 'PERSISTENT_SQLITE' }> {
     if (statements.length === 0) {
       return { rowsAffected: 0, source: this.isRemoteD1Configured() ? 'CLOUDFLARE_D1' : 'PERSISTENT_SQLITE' };
     }
+
+    const trackAsBackground = isBackground === true || this.cycleActive || priority === 'P3' || priority === 'P4';
+    this.assertBackgroundBudgetAvailable(statements.map(s => s.sql).join(' '), priority, isBackground);
 
     const usage = this.getUsage();
     if (usage.isWriteThrottled && (priority === 'P3' || priority === 'P4')) {
@@ -792,7 +860,7 @@ export class D1Client {
               for (const res of results) {
                 totalWritten += typeof res?.meta?.rows_written === 'number' ? res.meta.rows_written : (typeof res?.meta?.changes === 'number' ? res.meta.changes : 1);
                 const rRead = typeof res?.meta?.rows_read === 'number' ? res.meta.rows_read : 0;
-                if (rRead > 0) this.recordUsage(rRead, 0);
+                if (rRead > 0) this.recordUsage(rRead, 0, trackAsBackground);
               }
               statementOk = true;
               break;
@@ -848,7 +916,7 @@ export class D1Client {
           console.warn(`[D1Client] Cloudflare D1 batch statement failed at index ${failedIdx} (${failureErrorText}) — falling back to dev store`);
         }
       } else if (!fallbackToLocal) {
-        this.recordUsage(0, totalWritten);
+        this.recordUsage(0, totalWritten, trackAsBackground);
         return { rowsAffected: totalWritten, source: 'CLOUDFLARE_D1' };
       }
     } else if (isProduction && !this.isRemoteD1Configured()) {
@@ -878,7 +946,7 @@ export class D1Client {
     });
 
     runBatch(statements);
-    this.recordUsage(0, totalChanges);
+    this.recordUsage(0, totalChanges, trackAsBackground);
     return { rowsAffected: totalChanges, source: 'PERSISTENT_SQLITE' };
   }
 }

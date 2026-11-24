@@ -315,6 +315,13 @@ app.post('/b2b/pilot-proposal', async (c) => {
     body: await c.req.raw.arrayBuffer()
   });
 });
+app.get('/b2b/checkout/:proposalId', async (c) => {
+  const proposalId = encodeURIComponent(c.req.param('proposalId'));
+  return app.request(`/api/v1/b2b/checkout/${proposalId}`, {
+    method: 'GET',
+    headers: c.req.raw.headers
+  });
+});
 
 // Official Public MCP Discovery Manifest (strictly isolated to SiteFix Launch Gate tools; off by default unless PUBLIC_MCP_ENABLED=true)
 app.get('/.well-known/mcp.json', (c) => {
@@ -1617,21 +1624,22 @@ app.get('/sitemap.xml', async (c) => {
   try {
     const { COMMERCIAL_SECTORS_LIST } = await import('@ai-marketing/shared');
     const { AutonomousDealDiscoveryEngine } = await import('./commission/autonomous-deal-discovery-engine.js');
-    const { passesEditorialQualityGate, generateComparisonPairs, generateBuyerIntentHubs } = await import('./commission/static-site-generator.js');
+    const { passesEditorialQualityGate, generateComparisonPairs, generateBuyerIntentHubs, isSeedFallbackDeal } = await import('./commission/static-site-generator.js');
     const engine = AutonomousDealDiscoveryEngine.getInstance();
     const eligibleRes = await engine.getEligiblePublicDeals({ limit: 1000 });
     const activeDeals = eligibleRes.deals || [];
-    const activeSectorCodes = new Set(activeDeals.map((d: any) => d.sectorCode).filter(Boolean));
+    const nonSeedDeals = activeDeals.filter((d: any) => !isSeedFallbackDeal(d));
+    const activeSectorCodes = new Set(nonSeedDeals.map((d: any) => d.sectorCode).filter(Boolean));
     compareUrls = COMMERCIAL_SECTORS_LIST
       .filter(sec => activeSectorCodes.has(sec.code))
       .map(sec => `${baseUrl}/compare/${sec.id}`);
     dealUrls = activeDeals
       .filter((d: any) => d && (d.slug || d.canonicalSlug || d.id) && passesEditorialQualityGate(d))
       .map((d: any) => `${baseUrl}/deals/${encodeURIComponent(d.slug || d.canonicalSlug || d.id)}`);
-    vsUrls = generateComparisonPairs(activeDeals, 15).map(
+    vsUrls = generateComparisonPairs(nonSeedDeals, 15).map(
       p => `${baseUrl}/vs/${encodeURIComponent(p.comparisonSlug)}`
     );
-    bestUrls = generateBuyerIntentHubs(activeDeals, baseUrl, 10).map(
+    bestUrls = generateBuyerIntentHubs(nonSeedDeals, baseUrl, 10).map(
       h => `${baseUrl}/best/${encodeURIComponent(h.intentSlug)}`
     );
   } catch {
