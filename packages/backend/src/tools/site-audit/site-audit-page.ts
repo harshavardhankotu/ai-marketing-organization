@@ -805,6 +805,20 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
             btn.innerText = (btn && btn.getAttribute('data-ab-cta')) || 'Unlock Instant Ready-to-Paste Fix-Pack — ₹499';
           }
         });
+        try {
+          fetch('/api/v1/referrals/beacon', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              stage: 'checkout_modal_opened',
+              event: 'checkout_modal_opened',
+              source: 'site-audit',
+              auditId: (data && (data.auditId || (data.order && data.order.auditId))) || null,
+              orderId: options.order_id
+            }),
+            keepalive: true
+          }).catch(function () {});
+        } catch (e) {}
         rzp.open();
       } catch (err) {
         alert('Checkout error: ' + err.message);

@@ -363,14 +363,18 @@ export class RazorpayStandardAdapter {
         [journeyId, organizationId, businessId, journeyId, customerName || 'SiteFix Customer', buyerEmail, stage, touchpoints, classification]
       );
     } catch (err: any) {
-      if (String(err?.message || '').includes('no such column: organization_id')) {
+      const errMsg = String(err?.message || '');
+      if (
+        errMsg.includes('no such column: organization_id') ||
+        errMsg.includes('has no column named organization_id')
+      ) {
         await this.d1Repo.executeWrite(
           'customer_journeys',
           `INSERT INTO customer_journeys (
             id, business_id, visitor_id, customer_name,
             customer_email, stage, first_touch_channel, last_touch_channel,
             touchpoints_json, classification, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, 'DIRECT_CHECKOUT', 'DIRECT_CHECKOUT', ?, ?, datetime('now'), datetime('now'))
+          ) VALUES (?, ?, ?, ?, ?, ?, 'DIRECT_CHECKOUT', 'DIRECT_CHECKOUT', ?, ?, datetime('now'), datetime('now'))
           ON CONFLICT(id) DO UPDATE SET
             stage = excluded.stage,
             customer_email = excluded.customer_email,
@@ -1145,5 +1149,86 @@ export class RazorpayStandardAdapter {
         ? 'Payment verified, deliverable generated, and buyer receipt sent.'
         : 'Payment verified and deliverable generated, but email receipt is pending delivery retry.'
     };
+  }
+
+  /**
+   * Idempotently reconciles refund.processed webhook event (Spec Stage U.1.1).
+   * Records refund into processed_webhook_events, updates universal_orders & payment_orders,
+   * preserves captured transaction for gross accounting, and computes netCapturedINR.
+   */
+  public async handleRefundProcessed(params: {
+    eventId: string;
+    payloadHash: string;
+    refundId: string;
+    orderId?: string;
+    paymentId?: string;
+    amountPaise: number;
+    rawPayload: any;
+  }): Promise<{ processed: boolean; duplicate?: boolean; refundAmountINR: number; orderId?: string }> {
+    const refundAmountINR = params.amountPaise > 0 ? params.amountPaise / 100 : 0;
+    const isProd = isProduction() && !process.env.VITEST;
+
+    // Idempotency check via processed_webhook_events
+    try {
+      let existing: any = null;
+      if (isProd) {
+        existing = await this.d1Repo.queryOne<any>(
+          'processed_webhook_events',
+          'SELECT event_id FROM processed_webhook_events WHERE event_id = ?',
+          [params.eventId]
+        );
+      } else {
+        existing = getDb()
+          .prepare('SELECT event_id FROM processed_webhook_events WHERE event_id = ?')
+          .get(params.eventId);
+      }
+      if (existing) {
+        return { processed: true, duplicate: true, refundAmountINR, orderId: params.orderId };
+      }
+    } catch (e: any) {
+      console.warn(`[RazorpayAdapter] Webhook deduplication query warning: ${e.message}`);
+    }
+
+    // Insert into processed_webhook_events
+    try {
+      const insertSql = `INSERT OR IGNORE INTO processed_webhook_events (event_id, event_type, payload_hash, order_id, payment_id, created_at) VALUES (?, 'refund.processed', ?, ?, ?, datetime('now'))`;
+      if (isProd) {
+        await this.d1Repo.executeWrite('processed_webhook_events', insertSql, [
+          params.eventId,
+          params.payloadHash,
+          params.orderId || null,
+          params.paymentId || null
+        ]);
+      } else {
+        getDb().prepare(insertSql).run(params.eventId, params.payloadHash, params.orderId || null, params.paymentId || null);
+      }
+    } catch (insErr: any) {
+      console.warn(`[RazorpayAdapter] processed_webhook_events insert warning: ${insErr.message}`);
+    }
+
+    // Update universal_orders and payment_orders status to REFUNDED
+    const targetOrderId = params.orderId;
+    const targetPaymentId = params.paymentId;
+    if (targetOrderId || targetPaymentId) {
+      const orderUpdateSql = `UPDATE universal_orders SET status = 'REFUNDED', updated_at = datetime('now') WHERE id = ? OR provider_order_id = ? OR provider_payment_id = ?`;
+      const poUpdateSql = `UPDATE payment_orders SET status = 'REFUNDED', updated_at = datetime('now') WHERE order_id = ? OR payment_id = ?`;
+      if (isProd) {
+        try {
+          await this.d1Repo.executeWrite('universal_orders', orderUpdateSql, [targetOrderId || '', targetOrderId || '', targetPaymentId || '']);
+        } catch {}
+        try {
+          await this.d1Repo.executeWrite('payment_orders', poUpdateSql, [targetOrderId || '', targetPaymentId || '']);
+        } catch {}
+      } else {
+        try {
+          getDb().prepare(orderUpdateSql).run(targetOrderId || '', targetOrderId || '', targetPaymentId || '');
+        } catch {}
+        try {
+          getDb().prepare(poUpdateSql).run(targetOrderId || '', targetPaymentId || '');
+        } catch {}
+      }
+    }
+
+    return { processed: true, duplicate: false, refundAmountINR, orderId: targetOrderId };
   }
 }

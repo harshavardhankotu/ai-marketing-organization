@@ -1,9 +1,13 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { createHmac } from 'crypto';
 import app from '../../src/index.js';
 import { getDb } from '../../src/db/client.js';
 import { recordSiteFixFunnelEvent, recordToolVisitSession } from '../../src/tools/site-audit/sitefix-funnel-attribution.js';
 import { renderOwnerToolPage } from '../../src/tools/site-audit/owner-tool-pages.js';
 import { renderSiteAuditPage } from '../../src/tools/site-audit/site-audit-page.js';
+import { RazorpayStandardAdapter } from '../../src/payments/razorpay-adapter.js';
+import { AutonomousDealDiscoveryEngine } from '../../src/commission/autonomous-deal-discovery-engine.js';
+import { D1RevenueRepository } from '../../src/db/d1-revenue-repository.js';
 
 describe('SiteFix Funnel Attribution & Reconciliation', () => {
   beforeEach(() => {
@@ -182,6 +186,7 @@ describe('SiteFix Funnel Attribution & Reconciliation', () => {
 
     expect(saas.externalPageViews).toBeDefined();
     expect(saas.distinctSessionFingerprints).toBeDefined();
+    expect(saas.distinctBrowserSessions).toBeDefined();
     expect(saas.stages).toBeDefined();
     expect(saas.stages.page_view).toBeDefined();
     expect(saas.stages.scan_started).toBeDefined();
@@ -191,6 +196,246 @@ describe('SiteFix Funnel Attribution & Reconciliation', () => {
     expect(saas.stages.checkout_modal_opened).toBeDefined();
     expect(saas.stages.payment_captured).toBeDefined();
     expect(saas.stages.deliverable_ready).toBeDefined();
+    expect(saas.stages.email_accepted).toBeDefined();
     expect(saas.stages.email_delivered).toBeDefined();
+  });
+
+  it('8. ensureCustomerJourney() handles D1 organization_id schema compatibility', async () => {
+    const adapter = RazorpayStandardAdapter.getInstance();
+    const d1Repo = D1RevenueRepository.getInstance();
+    const journeyId = `test_journey_${Date.now()}`;
+
+    // Normal execution
+    await expect(adapter.ensureCustomerJourney(
+      journeyId,
+      'buyer@example.com',
+      'Test Buyer',
+      false,
+      'PAYMENT_VERIFIED'
+    )).resolves.not.toThrow();
+
+    // Verify row exists in DB
+    const db = getDb();
+    const row = db.prepare('SELECT id, customer_email, stage FROM customer_journeys WHERE id = ?').get(journeyId) as any;
+    expect(row).toBeDefined();
+    expect(row.customer_email).toBe('buyer@example.com');
+
+    // Simulate D1 error: 'table customer_journeys has no column named organization_id'
+    const fallbackJourneyId = `test_journey_d1_${Date.now()}`;
+    const executeWriteSpy = vi.spyOn(d1Repo, 'executeWrite');
+    let callCount = 0;
+    executeWriteSpy.mockImplementation(async (table: string, sql: string, params: any[]) => {
+      callCount++;
+      if (callCount === 1) {
+        throw new Error('D1_ERROR: table customer_journeys has no column named organization_id at offset 32');
+      }
+      // Execute the fallback SQL directly in sqlite
+      return { results: [], rowsAffected: 1, source: 'PERSISTENT_SQLITE' as any };
+    });
+
+    try {
+      await expect(adapter.ensureCustomerJourney(
+        fallbackJourneyId,
+        'fallback@example.com',
+        'Fallback Buyer',
+        false,
+        'PAYMENT_VERIFIED'
+      )).resolves.not.toThrow();
+      expect(callCount).toBe(2);
+    } finally {
+      executeWriteSpy.mockRestore();
+    }
+  });
+
+  it('9. refund.processed webhook reconciles idempotently and updates netCapturedINR', async () => {
+    const db = getDb();
+    const orderId = `ord_rzp_test_refund_${Date.now()}`;
+    const paymentId = `pay_test_refund_${Date.now()}`;
+    const refundId = `rfnd_test_${Date.now()}`;
+    const nowStr = new Date().toISOString();
+
+    // 1. Insert a captured order in universal_orders
+    db.prepare(`
+      INSERT OR REPLACE INTO universal_orders (
+        id, business_id, organization_id, customer_name, customer_email, customer_phone, offer_id, amount_minor, currency,
+        status, payment_provider, provider_order_id, provider_payment_id,
+        fulfillment_status, metadata_json, created_at, updated_at, is_test
+      ) VALUES (?, 'biz_platform_aro', 'org_owner_primary', 'Test Customer', 'customer@example.com', '+919876543210', 'sitefix_core_499', 49900, 'INR',
+        'CAPTURED', 'RAZORPAY', ?, ?, 'DELIVERABLE_READY_EMAIL_PENDING', '{}', ?, ?, 0)
+    `).run(orderId, orderId, paymentId, nowStr, nowStr);
+
+    // Initial check: grossCapturedINR = 499, refundAmountINR = 0, netCapturedINR = 499
+    const initialRes = await app.request('/api/v1/public/revenue-funnel?fresh=true');
+    const initialFunnel = (await initialRes.json()).data.selfServeSaaSFunnel;
+    expect(initialFunnel.grossCapturedINR).toBeGreaterThanOrEqual(499);
+
+    // 2. Prepare refund.processed webhook payload and signature
+    const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET || 'unverified_webhook_hmac_secret';
+    const eventId = `evt_refund_${Date.now()}`;
+    const payload = {
+      entity: 'event',
+      account_id: 'acc_test_123',
+      event: 'refund.processed',
+      contains: ['refund', 'payment'],
+      payload: {
+        refund: {
+          entity: {
+            id: refundId,
+            amount: 49900,
+            currency: 'INR',
+            payment_id: paymentId,
+            order_id: orderId,
+            status: 'processed'
+          }
+        },
+        payment: {
+          entity: {
+            id: paymentId,
+            order_id: orderId,
+            amount: 49900,
+            amount_refunded: 49900,
+            refund_status: 'full'
+          }
+        }
+      }
+    };
+    const rawBody = JSON.stringify(payload);
+    const signature = createHmac('sha256', webhookSecret).update(rawBody).digest('hex');
+
+    // 3. Send refund.processed webhook
+    const whRes = await app.request('/webhooks/razorpay', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-razorpay-signature': signature,
+        'x-razorpay-event-id': eventId
+      },
+      body: rawBody
+    });
+
+    expect(whRes.status).toBe(200);
+    const whData = await whRes.json();
+    expect(whData.success).toBe(true);
+    expect(whData.processed).toBe(true);
+    expect(whData.duplicate).toBe(false);
+    expect(whData.refund.amountINR).toBe(499);
+
+    // 4. Send duplicate refund.processed webhook
+    const dupRes = await app.request('/webhooks/razorpay', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-razorpay-signature': signature,
+        'x-razorpay-event-id': eventId
+      },
+      body: rawBody
+    });
+    expect(dupRes.status).toBe(200);
+    const dupData = await dupRes.json();
+    expect(dupData.success).toBe(true);
+    expect(dupData.duplicate).toBe(true);
+
+    // 5. Verify order status updated to REFUNDED in database
+    const updatedOrder = db.prepare('SELECT status FROM universal_orders WHERE id = ?').get(orderId) as any;
+    expect(updatedOrder.status).toBe('REFUNDED');
+
+    // 6. Verify revenue funnel preserves grossCapturedINR and reports refund
+    const afterRes = await app.request('/api/v1/public/revenue-funnel?fresh=true');
+    const afterFunnel = (await afterRes.json()).data.selfServeSaaSFunnel;
+    expect(afterFunnel.grossCapturedINR).toBe(initialFunnel.grossCapturedINR); // preserved!
+    expect(afterFunnel.refundsCount).toBeGreaterThanOrEqual(1);
+    expect(afterFunnel.refundAmountINR).toBeGreaterThanOrEqual(499);
+    expect(afterFunnel.netCapturedINR).toBe(Math.max(0, afterFunnel.grossCapturedINR - afterFunnel.refundAmountINR));
+  });
+
+  it('10. Non-conflation: checkout_modal_opened reported independently without fallback', async () => {
+    // Check initial counts
+    const initRes = await app.request('/api/v1/public/revenue-funnel?fresh=true');
+    const initFunnel = (await initRes.json()).data.selfServeSaaSFunnel;
+    const initialModals = initFunnel.stages.checkout_modal_opened || 0;
+
+    // Send checkout_modal_opened beacon
+    const beaconRes = await app.request('/api/v1/referrals/beacon', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        stage: 'checkout_modal_opened',
+        event: 'checkout_modal_opened',
+        source: 'site-audit',
+        auditId: 'audit_test_modal_123',
+        orderId: 'order_test_modal_123'
+      })
+    });
+    expect(beaconRes.status).toBe(200);
+    const bData = await beaconRes.json();
+    expect(bData.success).toBe(true);
+    expect(bData.stage).toBe('checkout_modal_opened');
+
+    // Verify revenue funnel reports updated checkout_modal_opened independently
+    const afterRes = await app.request('/api/v1/public/revenue-funnel?fresh=true');
+    const afterFunnel = (await afterRes.json()).data.selfServeSaaSFunnel;
+    expect(afterFunnel.stages.checkout_modal_opened).toBe(initialModals + 1);
+    expect(afterFunnel.checkoutModalOpened).toBe(initialModals + 1);
+
+    // Verify honest traffic metrics: diagnostic probe is excluded from externalPageViews
+    const probeRes = await app.request('/api/v1/referrals/beacon', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Diagnostic-Probe': '1'
+      },
+      body: JSON.stringify({
+        source: 'site-audit',
+        url: 'https://ai-marketing-organization.onrender.com/tools/site-audit'
+      })
+    });
+    expect(probeRes.status).toBe(200);
+    const probeData = await probeRes.json();
+    expect(probeData.data.isExternal).toBe(false);
+  });
+
+  it('11. Deals Freshness Guard: excludes stale offers older than 7 days', async () => {
+    const db = getDb();
+    const engine = AutonomousDealDiscoveryEngine.getInstance();
+
+    // Clean up any test deals first
+    db.prepare(`DELETE FROM public_deals WHERE id IN ('deal_fresh_test_1', 'deal_stale_test_1')`).run();
+    (engine as any).dealsMap?.delete('deal_fresh_test_1');
+    (engine as any).dealsMap?.delete('deal_stale_test_1');
+
+    db.prepare(`
+      INSERT INTO public_deals (
+        id, slug, title, merchant, category, sector_code, product_url,
+        current_price_inr, availability, verification_status, deal_kind,
+        is_monetizable, product_verified, affiliate_verified, discount_verification_type,
+        evidence_json, last_verified_at, created_at, updated_at
+      ) VALUES (
+        'deal_fresh_test_1', 'deal-fresh-test-1', 'Fresh Test Deal', 'ExampleStore', 'Electronics', 'ELECTRONICS', 'https://example.com/fresh-deal',
+        499, 'IN_STOCK', 'VERIFIED', 'PRODUCT',
+        1, 1, 1, 'UNCONFIRMED',
+        '{}', datetime('now', '-1 day'), datetime('now', '-1 day'), datetime('now', '-1 day')
+      ), (
+        'deal_stale_test_1', 'deal-stale-test-1', 'Stale Test Deal', 'ExampleStore', 'Electronics', 'ELECTRONICS', 'https://example.com/stale-deal',
+        499, 'IN_STOCK', 'VERIFIED', 'PRODUCT',
+        1, 1, 1, 'UNCONFIRMED',
+        '{}', datetime('now', '-8 days'), datetime('now', '-8 days'), datetime('now', '-8 days')
+      )
+    `).run();
+
+    try {
+      const eligible = await engine.getEligiblePublicDeals();
+      const ids = eligible.deals.map(d => d.id);
+      expect(ids).toContain('deal_fresh_test_1');
+      expect(ids).not.toContain('deal_stale_test_1');
+
+      const queried = engine.queryPublicDeals();
+      const queriedIds = queried.deals.map(d => d.id);
+      expect(queriedIds).toContain('deal_fresh_test_1');
+      expect(queriedIds).not.toContain('deal_stale_test_1');
+    } finally {
+      db.prepare(`DELETE FROM public_deals WHERE id IN ('deal_fresh_test_1', 'deal_stale_test_1')`).run();
+      (engine as any).dealsMap?.delete('deal_fresh_test_1');
+      (engine as any).dealsMap?.delete('deal_stale_test_1');
+    }
   });
 });

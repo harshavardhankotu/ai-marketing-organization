@@ -3704,9 +3704,47 @@ apiRouter.post('/webhooks/razorpay', async (c) => {
   const d1Repo = D1RevenueRepository.getInstance();
   const eventType = (eventPayload.event || '').trim();
 
+  // Stage U.1.1: Dedicated Idempotent Handler for refund.processed Webhook Reconciliation
+  if (eventType === 'refund.processed') {
+    const rawEventId = c.req.header('x-razorpay-event-id') || eventPayload?.id || createHash('sha256').update(rawBody).digest('hex');
+    const payloadHash = createHash('sha256').update(rawBody).digest('hex');
+    const refund = eventPayload.payload?.refund?.entity;
+    const payment = eventPayload.payload?.payment?.entity;
+    const refundId = refund?.id || `rfnd_${payloadHash.slice(0, 16)}`;
+    const paymentId = refund?.payment_id || payment?.id;
+    const orderId = payment?.order_id || refund?.notes?.order_id || refund?.order_id;
+    const amountPaise = Number(refund?.amount ?? 0);
+
+    const { RazorpayStandardAdapter } = await import('../payments/razorpay-adapter.js');
+    const refundResult = await RazorpayStandardAdapter.getInstance().handleRefundProcessed({
+      eventId: rawEventId,
+      payloadHash,
+      refundId,
+      orderId,
+      paymentId,
+      amountPaise,
+      rawPayload: eventPayload
+    });
+
+    return c.json({
+      success: true,
+      received: true,
+      processed: true,
+      duplicate: refundResult.duplicate === true,
+      eventType,
+      refund: {
+        id: refundId,
+        orderId,
+        paymentId,
+        amountINR: refundResult.refundAmountINR,
+        status: 'REFUNDED'
+      }
+    }, 200);
+  }
+
   // Spec Stage P.3.5 Task 1: Strict Paid-Event Allowlist
   // Route ONLY payment.captured, order.paid, or payment_link.paid to fulfillment.
-  // Record and safely ignore payment.failed, payment.authorized, refunds, or any other event type without fulfillment.
+  // Record and safely ignore payment.failed, payment.authorized, or any other event type without fulfillment.
   if (eventType !== 'payment.captured' && eventType !== 'order.paid' && eventType !== 'payment_link.paid') {
     const rawEventId = c.req.header('x-razorpay-event-id') || createHash('sha256').update(rawBody).digest('hex');
     const eventHash = createHash('sha256').update(rawEventId).digest('hex');
@@ -7812,6 +7850,7 @@ interface RevenueFunnelNonCashCache {
   verifiedExternalVisits: number;
   externalPageViews?: number;
   distinctSessionFingerprints?: number;
+  distinctBrowserSessions?: number;
   testSessions: number;
   verifiedHumanOutboundClicks: number;
   browserCandidateOutboundClicks: number;
@@ -7882,6 +7921,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   let verifiedExternalVisits = 0;
   let externalPageViews = 0;
   let distinctSessionFingerprints = 0;
+  let distinctBrowserSessions = 0;
   let testSessions = 0;
   let verifiedHumanOutboundClicks = 0;
   let browserCandidateOutboundClicks = 0;
@@ -7925,6 +7965,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
     verifiedExternalVisits = cached.verifiedExternalVisits;
     externalPageViews = cached.externalPageViews ?? cached.verifiedExternalVisits ?? 0;
     distinctSessionFingerprints = cached.distinctSessionFingerprints ?? cached.verifiedExternalVisits ?? 0;
+    distinctBrowserSessions = cached.distinctBrowserSessions ?? distinctSessionFingerprints;
     testSessions = cached.testSessions;
     verifiedHumanOutboundClicks = cached.verifiedHumanOutboundClicks;
     browserCandidateOutboundClicks = cached.browserCandidateOutboundClicks;
@@ -7959,17 +8000,18 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
     // 1. External Visits vs Internal Test Sessions (Excludes diagnostic probes & QA traffic)
     const extRow = await safeQuery<any>(
       'traffic_sessions',
-      "SELECT COUNT(*) as c, COUNT(DISTINCT session_id) as distinctSessions FROM traffic_sessions WHERE (traffic_evidence_status = 'VERIFIED_EXTERNAL' OR is_external = 1) AND (verification_reason NOT LIKE '%DIAGNOSTIC%' OR verification_reason IS NULL)",
+      "SELECT COUNT(*) as c, COUNT(DISTINCT session_id) as distinctSessions FROM traffic_sessions WHERE (traffic_evidence_status = 'VERIFIED_EXTERNAL' OR is_external = 1) AND (verification_reason NOT LIKE '%DIAGNOSTIC%' OR verification_reason IS NULL) AND (verification_reason NOT LIKE '%QA%' AND verification_reason NOT LIKE '%TEST%' OR verification_reason IS NULL)",
       [],
       'traffic_sessions.verified_external'
     );
     externalPageViews = extRow?.c ?? 0;
     distinctSessionFingerprints = extRow?.distinctSessions ?? 0;
-    verifiedExternalVisits = distinctSessionFingerprints || externalPageViews;
+    distinctBrowserSessions = distinctSessionFingerprints;
+    verifiedExternalVisits = distinctBrowserSessions || externalPageViews;
 
     const testRow = await safeQuery<any>(
       'traffic_sessions',
-      "SELECT COUNT(*) as c FROM traffic_sessions WHERE traffic_evidence_status = 'TEST' OR is_external = 0",
+      "SELECT COUNT(*) as c FROM traffic_sessions WHERE traffic_evidence_status = 'TEST' OR is_external = 0 OR verification_reason LIKE '%DIAGNOSTIC%' OR verification_reason LIKE '%QA%' OR verification_reason LIKE '%TEST%'",
       [],
       'traffic_sessions.test'
     );
@@ -8135,14 +8177,20 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
     proposalsAccepted = propAccRow?.c ?? 0;
 
     // 6b. Self-Serve SaaS Non-Financial Audit Counters
-    const auditsRow = await safeQuery<any>(
+    const auditsCompletedRow = await safeQuery<any>(
       'site_audits',
       "SELECT COUNT(*) as c FROM site_audits WHERE status = 'COMPLETED'",
       [],
       'site_audits.completed'
     );
-    siteAuditsCompleted = auditsRow?.c ?? 0;
-    siteAuditsStarted = siteAuditsCompleted;
+    const auditsStartedRow = await safeQuery<any>(
+      'site_audits',
+      "SELECT COUNT(*) as c FROM site_audits",
+      [],
+      'site_audits.started'
+    );
+    siteAuditsCompleted = auditsCompletedRow?.c ?? 0;
+    siteAuditsStarted = auditsStartedRow?.c ?? siteAuditsCompleted;
 
     const pageSpeedRow = await safeQuery<any>(
       'site_audits',
@@ -8214,6 +8262,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
       revenueFunnelNonCashCache = {
         verifiedExternalVisits,
         externalPageViews,
+        distinctBrowserSessions,
         distinctSessionFingerprints,
         testSessions,
         verifiedHumanOutboundClicks,
@@ -8352,8 +8401,8 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   const orderLedgerQuery = `
     SELECT 
       COUNT(DISTINCT order_id) as totalOrders,
-      COUNT(DISTINCT CASE WHEN status IN ('CAPTURED', 'PAID', 'COMPLETED') THEN order_id END) as capturedCount,
-      COALESCE(SUM(CASE WHEN status IN ('CAPTURED', 'PAID', 'COMPLETED') THEN amount_inr ELSE 0 END), 0) as grossCapturedINR,
+      COUNT(DISTINCT CASE WHEN status IN ('CAPTURED', 'PAID', 'COMPLETED', 'REFUNDED') THEN order_id END) as capturedCount,
+      COALESCE(SUM(CASE WHEN status IN ('CAPTURED', 'PAID', 'COMPLETED', 'REFUNDED') THEN amount_inr ELSE 0 END), 0) as grossCapturedINR,
       COUNT(DISTINCT CASE WHEN status = 'REFUNDED' THEN order_id END) as refundCount,
       COALESCE(SUM(CASE WHEN status = 'REFUNDED' THEN amount_inr ELSE 0 END), 0) as refundAmountINR
     FROM (
@@ -8392,11 +8441,15 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   const netCapturedINR = Math.max(0, saasGrossCapturedINR - refundAmountINR);
 
   paymentOrdersCreated = totalLedgerOrders || Number(sfxTotals?.order_created ?? sfxTotals?.checkout_start ?? 0);
-  checkoutInitiated = totalLedgerOrders || Number(sfxTotals?.checkout_modal_opened ?? sfxTotals?.order_created ?? sfxTotals?.checkout_start ?? 0);
+  const checkoutModalOpenedCount = Number(sfxTotals?.checkout_modal_opened ?? 0);
+  checkoutInitiated = checkoutModalOpenedCount || Number(sfxTotals?.checkout_start ?? 0);
   paymentCaptured = ledgerCapturedCount || Number(sfxTotals?.payment_captured ?? sfxTotals?.capture ?? 0);
   // Stage U.1 Truth: Pure page load logs page_view and does NOT increment preview_displayed
   fixPackPreviews = Number(sfxTotals?.preview_displayed ?? 0);
-  fulfilmentsCompleted = Number(sfxTotals?.deliverable_ready ?? sfxTotals?.delivery ?? 0);
+  const deliverableReadyCount = Number(sfxTotals?.deliverable_ready ?? sfxTotals?.delivery ?? 0);
+  const emailAcceptedCount = Number(sfxTotals?.email_accepted ?? 0);
+  const emailDeliveredCount = Number(sfxTotals?.email_delivered ?? 0);
+  fulfilmentsCompleted = deliverableReadyCount;
 
   // 7. Operating Costs (Strict ₹0 Cash Outflow Rule with Quota Accounting)
   const operatingCosts = {
@@ -8453,6 +8506,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
       funnel: {
         verifiedExternalVisits,
         externalPageViews,
+        distinctBrowserSessions,
         distinctSessionFingerprints,
         internalTestSessions: testSessions,
         verifiedHumanOutboundClicks,
@@ -8511,11 +8565,15 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
         preview_displayed: fixPackPreviews,
         previewDisplayed: fixPackPreviews,
         checkoutInitiated,
+        checkoutModalOpened: checkoutModalOpenedCount,
         paymentOrdersCreated,
         paymentAuthorized,
         paymentCaptured,
         fulfilmentsPending,
         fulfilmentsCompleted,
+        deliverable_ready: deliverableReadyCount,
+        email_accepted: emailAcceptedCount,
+        email_delivered: emailDeliveredCount,
         fulfilmentsFailed,
         refunds: refundsCount,
         refundsCount,
@@ -8528,6 +8586,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
         checkoutStatus: SiteAuditService.getInstance().getCheckoutReadiness().status,
         missingConfiguration: SiteAuditService.getInstance().getCheckoutReadiness().missingConfig,
         externalPageViews,
+        distinctBrowserSessions,
         distinctSessionFingerprints,
         stages: {
           page_view: externalPageViews,
@@ -8535,10 +8594,11 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
           scan_completed: siteAuditsCompleted,
           preview_displayed: fixPackPreviews,
           order_created: paymentOrdersCreated,
-          checkout_modal_opened: checkoutInitiated,
+          checkout_modal_opened: checkoutModalOpenedCount,
           payment_captured: paymentCaptured,
-          deliverable_ready: fulfilmentsCompleted,
-          email_delivered: fulfilmentsCompleted
+          deliverable_ready: deliverableReadyCount,
+          email_accepted: emailAcceptedCount,
+          email_delivered: emailDeliveredCount
         }
       },
       operatingCosts,
@@ -8878,6 +8938,32 @@ apiRouter.post('/referrals/beacon', async (c) => {
 
   // Tool page visit beacon (when offerId is absent)
   if (!offerId) {
+    if (body.stage === 'checkout_modal_opened' || body.event === 'checkout_modal_opened') {
+      const { recordSiteFixFunnelEvent, normalizeSiteFixSource, classifySiteFixProbe } = await import('../tools/site-audit/sitefix-funnel-attribution.js');
+      const probe = classifySiteFixProbe(c);
+      const isBot = isBotTraffic(userAgent) || probe.isProbe;
+      const isTestTraffic = Boolean(
+        probe.isProbe ||
+        c.req.header('x-test-mode') === 'true' ||
+        c.req.header('x-test-traffic') === 'true' ||
+        c.req.header('x-diagnostic-probe') ||
+        body.isTestTraffic === true
+      );
+      const source = normalizeSiteFixSource(body.source, 'web');
+      await recordSiteFixFunnelEvent({
+        stage: 'checkout_modal_opened',
+        source,
+        isProbe: isBot || isTestTraffic,
+        probeReason: probe.probeReason || (isBot ? 'BOT_TRAFFIC' : (isTestTraffic ? 'TEST_TRAFFIC' : null)),
+        auditId: body.auditId || null,
+        orderId: body.orderId || null,
+        visitorHash: probe.visitorHash,
+        userAgent
+      });
+      revenueFunnelNonCashCache = null;
+      return c.json({ success: true, recorded: true, stage: 'checkout_modal_opened' });
+    }
+
     const { classifySiteFixProbe, normalizeSiteFixSource, recordToolVisitSession } = await import('../tools/site-audit/sitefix-funnel-attribution.js');
     const probe = classifySiteFixProbe(c);
     const isBot = isBotTraffic(userAgent) || probe.isProbe;
@@ -15498,6 +15584,41 @@ const handleSiteAuditRazorpayWebhook = async (c: any) => {
   }
 
   const eventType = eventPayload.event;
+  if (eventType === 'refund.processed') {
+    const refund = eventPayload.payload?.refund?.entity;
+    const payment = eventPayload.payload?.payment?.entity;
+    const refundId = refund?.id || `rfnd_${payloadHash.slice(0, 16)}`;
+    const paymentId = refund?.payment_id || payment?.id;
+    const orderId = payment?.order_id || refund?.notes?.order_id || refund?.order_id;
+    const amountPaise = Number(refund?.amount ?? 0);
+
+    const { RazorpayStandardAdapter } = await import('../payments/razorpay-adapter.js');
+    const refundResult = await RazorpayStandardAdapter.getInstance().handleRefundProcessed({
+      eventId,
+      payloadHash,
+      refundId,
+      orderId,
+      paymentId,
+      amountPaise,
+      rawPayload: eventPayload
+    });
+
+    return c.json({
+      success: true,
+      received: true,
+      processed: true,
+      duplicate: refundResult.duplicate === true,
+      eventType,
+      refund: {
+        id: refundId,
+        orderId,
+        paymentId,
+        amountINR: refundResult.refundAmountINR,
+        status: 'REFUNDED'
+      }
+    }, 200);
+  }
+
   if (eventType === 'payment.captured') {
     const payment = eventPayload.payload?.payment?.entity;
     const orderId = payment?.order_id || payment?.notes?.order_id || eventPayload.payload?.order?.entity?.id;
