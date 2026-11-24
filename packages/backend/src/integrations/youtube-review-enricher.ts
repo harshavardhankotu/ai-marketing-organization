@@ -10,6 +10,9 @@ export interface YouTubeReview {
   thumbnailUrl: string;
   videoUrl: string;
   embedUrl: string;
+  label?: string;
+  curationMethod?: string;
+  aiWatchedFullVideo?: boolean;
 }
 
 export class YouTubeReviewEnricher {
@@ -233,27 +236,65 @@ export class YouTubeReviewEnricher {
 
       const data = await res.json() as any;
       const results = Array.isArray(data.results) ? data.results : [];
-      const ytRegex = /(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/;
       const reviews: YouTubeReview[] = [];
       const seenIds = new Set<string>();
+      const seenChannels = new Set<string>();
 
       for (const r of results) {
-        const match = String(r.url || '').match(ytRegex);
-        if (match && match[1]) {
-          const videoId = match[1];
-          if (!seenIds.has(videoId)) {
-            seenIds.add(videoId);
-            reviews.push({
-              videoId,
-              title: r.title || `${cleanTitle} Review`,
-              channelTitle: 'YouTube',
-              thumbnailUrl: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-              videoUrl: `https://www.youtube.com/watch?v=${videoId}`,
-              embedUrl: `https://www.youtube.com/embed/${videoId}`
-            });
-            if (reviews.length >= maxResults) break;
+        const rawUrl = String(r.url || '').trim();
+        let parsedUrl: URL;
+        try {
+          parsedUrl = new URL(rawUrl);
+        } catch {
+          continue;
+        }
+
+        const validHost = ['youtube.com', 'www.youtube.com', 'm.youtube.com', 'youtu.be'].includes(parsedUrl.hostname.toLowerCase());
+        if (!validHost) continue;
+
+        let videoId: string | null = null;
+        if (parsedUrl.hostname.toLowerCase() === 'youtu.be') {
+          const pathId = parsedUrl.pathname.replace(/^\//, '').slice(0, 11);
+          if (/^[a-zA-Z0-9_-]{11}$/.test(pathId)) videoId = pathId;
+        } else if (parsedUrl.pathname === '/watch') {
+          const v = parsedUrl.searchParams.get('v');
+          if (v && /^[a-zA-Z0-9_-]{11}$/.test(v)) videoId = v;
+        } else if (parsedUrl.pathname.startsWith('/embed/')) {
+          const embId = parsedUrl.pathname.replace(/^\/embed\//, '').slice(0, 11);
+          if (/^[a-zA-Z0-9_-]{11}$/.test(embId)) videoId = embId;
+        }
+
+        if (!videoId || seenIds.has(videoId)) continue;
+
+        let rawChannel = String(r.author || r.siteName || '').trim();
+        if (!rawChannel && typeof r.title === 'string' && r.title.includes(' - ')) {
+          const parts = r.title.split(' - ');
+          if (parts.length > 1 && parts[parts.length - 1].length < 35) {
+            rawChannel = parts[parts.length - 1].trim();
           }
         }
+        const cleanChannel = rawChannel || 'Independent Review Channel';
+        const channelKey = cleanChannel.toLowerCase();
+        if (seenChannels.has(channelKey) && seenChannels.size < results.length) {
+          continue;
+        }
+
+        seenIds.add(videoId);
+        seenChannels.add(channelKey);
+
+        reviews.push({
+          videoId,
+          title: r.title || `${cleanTitle} Review`,
+          channelTitle: cleanChannel,
+          thumbnailUrl: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+          videoUrl: `https://www.youtube.com/watch?v=${videoId}`,
+          embedUrl: `https://www.youtube.com/embed/${videoId}`,
+          label: 'Independent Video Reviews to Watch',
+          curationMethod: 'EXTERNAL_INDEPENDENT_REVIEWER',
+          aiWatchedFullVideo: false
+        });
+
+        if (reviews.length >= maxResults) break;
       }
       return reviews;
     } catch {

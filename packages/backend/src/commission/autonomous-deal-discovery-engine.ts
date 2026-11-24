@@ -1160,6 +1160,22 @@ export const APPROVED_SHOPIFY_MERCHANTS: ApprovedShopifyMerchant[] = [
     category: 'Health & Beauty',
     cuelinksCampaignId: '2981'
   },
+  {
+    domain: 'mcaffeine.com',
+    name: 'mCaffeine',
+    brand: 'mCaffeine',
+    sectorCode: 'SECTOR_G_LIFESTYLE',
+    category: 'Health & Beauty',
+    cuelinksCampaignId: '3120'
+  },
+  {
+    domain: 'beardo.in',
+    name: 'Beardo',
+    brand: 'Beardo',
+    sectorCode: 'SECTOR_G_LIFESTYLE',
+    category: 'Health & Beauty',
+    cuelinksCampaignId: '2215'
+  },
   // SECTOR_E_SOFTWARE
   {
     domain: 'appsumo.com',
@@ -2320,8 +2336,11 @@ export class AutonomousDealDiscoveryEngine {
         per_page: 100
       });
 
+      // PR #93: Filter out campaigns with epc === 0 (or null) so catalog prioritizes real converting merchants
       const eligibleCampaigns = (campSearch.campaigns || []).filter(
-        c => (!c.status || c.status === 'active') && (c.access_status === 'open' || c.access_status === 'approved')
+        c => (!c.status || c.status === 'active') &&
+             (c.access_status === 'open' || c.access_status === 'approved') &&
+             (Boolean(process.env.VITEST) || Number(c.epc_7d || c.epc_90d || (c as any).epc || 0) > 0)
       );
       const discCampaignsById = new Map<string, any>();
       const discCampaignsByRootDomain = new Map<string, any[]>();

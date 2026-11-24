@@ -301,6 +301,21 @@ app.get('/capabilities', async (c) => {
   }));
 });
 
+// Top-level B2B Service Pilot Proposal routes (PR #93)
+app.get('/b2b/pilot-proposal', async (c) => {
+  const query = c.req.url.includes('?') ? c.req.url.slice(c.req.url.indexOf('?')) : '';
+  return app.request(`/api/v1/b2b/pilot-proposal${query}`, {
+    headers: c.req.raw.headers
+  });
+});
+app.post('/b2b/pilot-proposal', async (c) => {
+  return app.request('/api/v1/b2b/pilot-proposal', {
+    method: 'POST',
+    headers: c.req.raw.headers,
+    body: await c.req.raw.arrayBuffer()
+  });
+});
+
 // Official Public MCP Discovery Manifest (strictly isolated to SiteFix Launch Gate tools; off by default unless PUBLIC_MCP_ENABLED=true)
 app.get('/.well-known/mcp.json', (c) => {
   const siteUrl = getTrustedPublicSiteUrl();
@@ -509,8 +524,11 @@ app.get('/offer', async (c) => {
 });
 app.get('/offers/lead-conversion-system', (c) => c.redirect('/offer', 301));
 
-// Static QR asset serving
+// Static QR asset serving (supports runtime DIRECT_UPI_QR_URL redirect)
 app.get('/images/razorpay-upi-qr.jpg', async (c) => {
+  if (process.env.DIRECT_UPI_QR_URL) {
+    return c.redirect(process.env.DIRECT_UPI_QR_URL, 302);
+  }
   const candidatePaths = [
     path.resolve(process.cwd(), 'packages/backend/public/images/razorpay-upi-qr.jpg'),
     path.resolve(process.cwd(), 'public/images/razorpay-upi-qr.jpg'),
@@ -531,7 +549,7 @@ app.get('/images/razorpay-upi-qr.jpg', async (c) => {
       }
     });
   }
-  return c.text('Image not found', 404);
+  return c.text('Payment QR asset not configured locally. Configure DIRECT_UPI_QR_URL runtime environment variable.', 404);
 });
 app.get('/assets/razorpay-upi-qr.jpg', (c) => c.redirect('/images/razorpay-upi-qr.jpg', 301));
 

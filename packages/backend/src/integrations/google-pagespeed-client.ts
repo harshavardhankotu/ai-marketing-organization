@@ -24,8 +24,9 @@ export interface PageSpeedMetrics {
 }
 
 export interface PageSpeedAuditResult {
-  status: 'SUCCESS' | 'UNAVAILABLE';
-  reason?: 'MISSING_API_KEY' | 'QUOTA_EXHAUSTED' | string;
+  status: 'SUCCESS' | 'UNAVAILABLE' | 'UNAVAILABLE_RATE_LIMITED' | 'UNAVAILABLE_KEY_ERROR';
+  pageSpeedStatus?: 'SUCCESS' | 'UNAVAILABLE' | 'UNAVAILABLE_RATE_LIMITED' | 'UNAVAILABLE_KEY_ERROR';
+  reason?: 'MISSING_API_KEY' | 'QUOTA_EXHAUSTED' | 'UNAVAILABLE_RATE_LIMITED' | 'UNAVAILABLE_KEY_ERROR' | string;
   executionPath?: 'KEYED_SUCCESS' | 'KEYLESS_SUCCESS' | 'FALLBACK_KEYLESS_SUCCESS' | 'UNAVAILABLE';
   targetUrl: string;
   strategy: 'mobile' | 'desktop';
@@ -243,9 +244,15 @@ export class GooglePageSpeedClient {
       if (!res.ok) {
         await this.quotaService.reconcileProviderQuota('google_pagespeed', reservation.reservationId, 'RELEASE');
         console.warn(`[GooglePageSpeedClient] API returned HTTP ${res.status}`);
+        const mappedStatus = res.status === 429
+          ? 'UNAVAILABLE_RATE_LIMITED'
+          : (res.status === 400 || res.status === 401 || res.status === 403)
+            ? 'UNAVAILABLE_KEY_ERROR'
+            : 'UNAVAILABLE';
         return {
-          status: 'UNAVAILABLE',
-          reason: `API_HTTP_${res.status}`,
+          status: mappedStatus,
+          pageSpeedStatus: mappedStatus,
+          reason: mappedStatus,
           executionPath: 'UNAVAILABLE',
           targetUrl,
           strategy,

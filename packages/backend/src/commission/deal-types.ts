@@ -204,6 +204,8 @@ export interface NormalizedDeal {
   buyerIntentHook?: string;
   rejectionReasons: string[];
   isMonetizable: boolean;
+  isSeedFallback?: boolean;
+  priceVerifiedAt?: string;
   productVerified?: boolean;
   affiliateVerified?: boolean;
   nextRecheckAt?: string;

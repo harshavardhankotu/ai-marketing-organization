@@ -386,8 +386,8 @@ export function renderSiteAuditPage(abAssignment?: SiteFixAbAssignment): string 
               Razorpay card gateway is in Sandbox mode. Pay <strong>₹499</strong> directly via UPI to unlock manual fulfillment upon UTR verification (zero revenue is recognized before owner bank confirmation).
             </p>
             ${upiVpa ? `
-            <div style="display: grid; grid-template-columns: auto 1fr; gap: 1rem; align-items: center; margin-bottom: 1rem;">
-              <img src="/images/razorpay-upi-qr.jpg" alt="SiteFix AI Merchant UPI QR" style="width: 110px; height: 110px; border-radius: 8px; border: 1px solid #334155; background: #fff; object-fit: contain;">
+            <div style="display: grid; grid-template-columns: ${process.env.DIRECT_UPI_QR_URL ? 'auto 1fr' : '1fr'}; gap: 1rem; align-items: center; margin-bottom: 1rem;">
+              ${process.env.DIRECT_UPI_QR_URL ? `<img src="${process.env.DIRECT_UPI_QR_URL}" alt="SiteFix AI Merchant UPI QR" style="width: 110px; height: 110px; border-radius: 8px; border: 1px solid #334155; background: #fff; object-fit: contain;">` : ''}
               <div>
                 <div style="font-size: 0.82rem; color: #9ca3af;">Merchant VPA: <code style="color: #fff; font-weight: 700;">${upiVpa}</code></div>
                 <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.65rem;">

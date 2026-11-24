@@ -67,6 +67,13 @@ export class D1Client {
   private currentCycleQueries = 0;
   private cycleBudgetCeiling = 2500;
 
+  // PR #93: Daily cumulative background read budget guard (250,000 rows/day = 5% of 5M free limit)
+  public static readonly DAILY_BACKGROUND_READ_BUDGET_CAP = 250_000;
+  private dailyBackgroundRowsRead = 0;
+  private dailyBackgroundRowsWritten = 0;
+  private dailyBudgetCap = 250_000;
+  private currentDailyDateKey = new Date().toISOString().split('T')[0];
+
   private constructor() {
     this.accountId = process.env.CLOUDFLARE_ACCOUNT_ID || '9b7511ff69e507dd3a00a7266fec11a3';
     this.databaseId = process.env.CLOUDFLARE_D1_DATABASE_ID || '0563bb85-f6d2-483f-8b0f-0784e3d604c7';
@@ -322,8 +329,51 @@ export class D1Client {
     } catch {}
   }
 
-  // PR #92: Background Cycle Budget Tracking
+  // PR #93: Daily check & reset helper
+  private checkAndResetDailyUsage(): void {
+    const todayKey = new Date().toISOString().split('T')[0];
+    if (this.currentDailyDateKey !== todayKey) {
+      this.currentDailyDateKey = todayKey;
+      this.dailyBackgroundRowsRead = 0;
+      this.dailyBackgroundRowsWritten = 0;
+    }
+  }
+
+  public isDailyBackgroundBudgetExceeded(): boolean {
+    this.checkAndResetDailyUsage();
+    return this.dailyBackgroundRowsRead >= this.dailyBudgetCap;
+  }
+
+  public getDailyBackgroundUsage(): {
+    dateKey: string;
+    dailyRowsRead: number;
+    dailyRowsWritten: number;
+    dailyBudgetCap: number;
+    dailyBudgetExceeded: boolean;
+  } {
+    this.checkAndResetDailyUsage();
+    return {
+      dateKey: this.currentDailyDateKey,
+      dailyRowsRead: this.dailyBackgroundRowsRead,
+      dailyRowsWritten: this.dailyBackgroundRowsWritten,
+      dailyBudgetCap: this.dailyBudgetCap,
+      dailyBudgetExceeded: this.isDailyBackgroundBudgetExceeded()
+    };
+  }
+
+  public setDailyBackgroundBudgetCap(cap: number): void {
+    this.dailyBudgetCap = cap;
+  }
+
+  public resetDailyBackgroundUsage(): void {
+    this.dailyBackgroundRowsRead = 0;
+    this.dailyBackgroundRowsWritten = 0;
+    this.currentDailyDateKey = new Date().toISOString().split('T')[0];
+  }
+
+  // PR #92 & PR #93: Background Cycle & Daily Budget Tracking
   public startBackgroundCycle(budget: number = D1Client.PER_CYCLE_READ_BUDGET_CAP): void {
+    this.checkAndResetDailyUsage();
     this.currentCycleRowsRead = 0;
     this.currentCycleRowsWritten = 0;
     this.currentCycleQueries = 0;
@@ -337,20 +387,29 @@ export class D1Client {
     rowsWritten: number;
     budgetStopped: boolean;
     budgetCap: number;
+    dailyRowsRead: number;
+    dailyBudgetCap: number;
+    dailyBudgetExceeded: boolean;
   } {
+    this.checkAndResetDailyUsage();
     const summary = {
       queriesExecuted: this.currentCycleQueries,
       rowsRead: this.currentCycleRowsRead,
       rowsWritten: this.currentCycleRowsWritten,
       budgetStopped: this.isCycleBudgetExceeded(),
-      budgetCap: this.cycleBudgetCeiling
+      budgetCap: this.cycleBudgetCeiling,
+      dailyRowsRead: this.dailyBackgroundRowsRead,
+      dailyBudgetCap: this.dailyBudgetCap,
+      dailyBudgetExceeded: this.isDailyBackgroundBudgetExceeded()
     };
     this.cycleActive = false;
     return summary;
   }
 
   public isCycleBudgetExceeded(): boolean {
-    return this.cycleActive && this.currentCycleRowsRead >= this.cycleBudgetCeiling;
+    this.checkAndResetDailyUsage();
+    return (this.cycleActive && this.currentCycleRowsRead >= this.cycleBudgetCeiling) ||
+           this.isDailyBackgroundBudgetExceeded();
   }
 
   public getCycleUsage(): {
@@ -359,21 +418,31 @@ export class D1Client {
     rowsWritten: number;
     budgetLimit: number;
     budgetExceeded: boolean;
+    dailyRowsRead: number;
+    dailyBudgetCap: number;
+    dailyBudgetExceeded: boolean;
   } {
+    this.checkAndResetDailyUsage();
     return {
       queriesExecuted: this.currentCycleQueries,
       rowsRead: this.currentCycleRowsRead,
       rowsWritten: this.currentCycleRowsWritten,
       budgetLimit: this.cycleBudgetCeiling,
-      budgetExceeded: this.isCycleBudgetExceeded()
+      budgetExceeded: this.isCycleBudgetExceeded(),
+      dailyRowsRead: this.dailyBackgroundRowsRead,
+      dailyBudgetCap: this.dailyBudgetCap,
+      dailyBudgetExceeded: this.isDailyBackgroundBudgetExceeded()
     };
   }
 
   public recordCycleUsage(rowsRead = 0, rowsWritten = 0): void {
+    this.checkAndResetDailyUsage();
     if (this.cycleActive) {
       this.currentCycleQueries++;
       this.currentCycleRowsRead += rowsRead;
       this.currentCycleRowsWritten += rowsWritten;
+      this.dailyBackgroundRowsRead += rowsRead;
+      this.dailyBackgroundRowsWritten += rowsWritten;
     }
   }
 
