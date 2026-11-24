@@ -7845,10 +7845,23 @@ export function resetRevenueFunnelCacheForTesting(): void {
   revenueFunnelNonCashCache = null;
 }
 
+export function invalidateRevenueFunnelCache(): void {
+  revenueFunnelNonCashCache = null;
+}
+
 apiRouter.get('/public/revenue-funnel', async (c) => {
   const d1Repo = D1RevenueRepository.getInstance();
   const failedQueries: string[] = [];
   let measurementStatus: 'VERIFIED_LIVE_DB' | 'DEGRADED_DB_ERROR' = 'VERIFIED_LIVE_DB';
+
+  const isFresh = c.req.query('fresh') === 'true';
+  if (isFresh) {
+    revenueFunnelNonCashCache = null;
+    try {
+      const { invalidateFunnelAttributionCache } = await import('../tools/site-audit/sitefix-funnel-attribution.js');
+      invalidateFunnelAttributionCache();
+    } catch {}
+  }
 
   const safeQuery = async <T = any>(table: string, sql: string, params: any[] = [], queryName: string): Promise<T | null> => {
     try {
@@ -7901,7 +7914,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   let monetizedPartners: any[] = [];
   let monetizedPartnersStatus = 'NO_VERIFIED_AFFILIATED_OFFERS';
 
-  const shouldCache = !process.env.VITEST || process.env.ALLOW_D1_CACHE_IN_TEST === 'true';
+  const shouldCache = (!process.env.VITEST || process.env.ALLOW_D1_CACHE_IN_TEST === 'true') && !isFresh;
   const cached = shouldCache ? revenueFunnelNonCashCache : null;
 
   if (cached && (Date.now() - cached.cachedAt < 10 * 60 * 1000)) {
@@ -8304,7 +8317,7 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
   );
   verifiedClientPaymentsINR = Number(clientPayRow?.s ?? 0);
 
-  // Real-time SaaS Orders from payment_orders — ALWAYS QUERY LIVE / REAL-TIME
+  // Real-time SaaS Orders from universal_orders, payment_orders & durable_events — ALWAYS QUERY LIVE / REAL-TIME
   let siteAuditsFailed = 0;
   let fixPackPreviews = 0;
   let checkoutInitiated = 0;
@@ -8322,8 +8335,13 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
     [],
     'payment_orders.sitefix'
   );
-  paymentOrdersCreated = ordersRow?.c ?? 0;
-  saasGrossCapturedINR = Number(ordersRow?.s ?? 0);
+
+  const univOrdersRow = await safeQuery<any>(
+    'universal_orders',
+    "SELECT COUNT(*) as c, COALESCE(SUM(CASE WHEN status = 'PAID' OR status = 'COMPLETED' THEN (amount_minor / 100.0) ELSE 0 END), 0) as s FROM universal_orders WHERE is_test = 0 AND (offer_id LIKE '%sitefix%' OR offer_id LIKE '%SITEFIX%' OR metadata_json LIKE '%SITEFIX%' OR metadata_json LIKE '%sitefix%')",
+    [],
+    'universal_orders.sitefix'
+  );
 
   const capturedRow = await safeQuery<any>(
     'payment_orders',
@@ -8331,7 +8349,31 @@ apiRouter.get('/public/revenue-funnel', async (c) => {
     [],
     'payment_orders.captured'
   );
-  paymentCaptured = capturedRow?.c ?? 0;
+
+  const univCapturedRow = await safeQuery<any>(
+    'universal_orders',
+    "SELECT COUNT(*) as c FROM universal_orders WHERE is_test = 0 AND (status = 'PAID' OR status = 'COMPLETED') AND (offer_id LIKE '%sitefix%' OR offer_id LIKE '%SITEFIX%' OR metadata_json LIKE '%SITEFIX%' OR metadata_json LIKE '%sitefix%')",
+    [],
+    'universal_orders.captured'
+  );
+
+  let sitefixAttribution: any = null;
+  try {
+    const { getSiteFixFunnelAttributionSummaryAsync } = await import('../tools/site-audit/sitefix-funnel-attribution.js');
+    sitefixAttribution = await getSiteFixFunnelAttributionSummaryAsync(d1Repo);
+  } catch (err: any) {
+    console.warn('[RevenueFunnel] SiteFix funnel attribution query failed:', err.message);
+  }
+
+  const sfxTotals = sitefixAttribution?.totals;
+  checkoutInitiated = Math.max(ordersRow?.c ?? 0, univOrdersRow?.c ?? 0, sfxTotals?.checkout_start ?? 0);
+  paymentOrdersCreated = Math.max(ordersRow?.c ?? 0, univOrdersRow?.c ?? 0, checkoutInitiated);
+  paymentCaptured = Math.max(capturedRow?.c ?? 0, univCapturedRow?.c ?? 0, sfxTotals?.capture ?? 0);
+  fixPackPreviews = Math.max(sfxTotals?.preview_open ?? 0, siteAuditsCompleted);
+  saasGrossCapturedINR = Number((ordersRow?.s ?? 0) + (univOrdersRow?.s ?? 0));
+  if (sfxTotals?.distinctVisitorFingerprints) {
+    verifiedExternalVisits = Math.max(verifiedExternalVisits, sfxTotals.distinctVisitorFingerprints);
+  }
 
   // 7. Operating Costs (Strict ₹0 Cash Outflow Rule with Quota Accounting)
   const operatingCosts = {
@@ -8791,8 +8833,48 @@ apiRouter.post('/referrals/beacon', async (c) => {
 
   const body = await c.req.json().catch(() => ({}));
   const offerId = body.offerId;
+  const userAgent = c.req.header('user-agent') || '';
+
+  // Tool page visit beacon (when offerId is absent)
   if (!offerId) {
-    return c.json({ success: false, error: 'MISSING_OFFER_ID', message: 'offerId is required' }, 400);
+    const { classifySiteFixProbe, normalizeSiteFixSource, recordToolVisitSession } = await import('../tools/site-audit/sitefix-funnel-attribution.js');
+    const probe = classifySiteFixProbe(c);
+    const isBot = isBotTraffic(userAgent) || probe.isProbe;
+    const isTestTraffic = Boolean(
+      probe.isProbe ||
+      c.req.header('x-test-mode') === 'true' ||
+      c.req.header('x-test-traffic') === 'true' ||
+      c.req.header('x-diagnostic-probe') ||
+      body.isTestTraffic === true
+    );
+
+    const source = normalizeSiteFixSource(body.source, 'web');
+    const landingPage = body.url || body.landingPage || '/tools/site-audit';
+    const referrer = body.referrer || c.req.header('referer') || '';
+
+    const sessionRes = await recordToolVisitSession({
+      source,
+      landingPage,
+      referrer,
+      userAgent,
+      clientIp: clientInfo.ip,
+      isProbe: isBot || isTestTraffic,
+      probeReason: probe.probeReason || (isBot ? 'BOT_TRAFFIC' : (isTestTraffic ? 'TEST_TRAFFIC' : null)),
+      visitorHash: probe.visitorHash
+    });
+
+    revenueFunnelNonCashCache = null;
+
+    return c.json({
+      success: true,
+      data: {
+        recorded: sessionRes.recorded,
+        isExternal: sessionRes.isExternal,
+        trafficEvidenceStatus: sessionRes.isExternal ? 'VERIFIED_EXTERNAL' : 'TEST',
+        sessionId: sessionRes.sessionId,
+        source
+      }
+    });
   }
 
   const d1Repo = D1RevenueRepository.getInstance();
@@ -8801,7 +8883,6 @@ apiRouter.post('/referrals/beacon', async (c) => {
     return c.json({ success: false, error: 'OFFER_NOT_FOUND', message: `Active offer '${offerId}' not found` }, 404);
   }
 
-  const userAgent = c.req.header('user-agent') || '';
   const isBot = isBotTraffic(userAgent);
   const isTestTraffic = Boolean(
     c.req.header('x-test-mode') === 'true' ||

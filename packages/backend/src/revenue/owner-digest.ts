@@ -417,7 +417,7 @@ export class OwnerDigestService {
     let payments: number | 'UNKNOWN' = 'UNKNOWN';
 
     try {
-      const visitRow = db.prepare(`SELECT COUNT(*) as c FROM referrals WHERE created_at LIKE ?`).get(`${yesterdayStr}%`) as any;
+      const visitRow = db.prepare(`SELECT COUNT(*) as c FROM traffic_sessions WHERE (traffic_evidence_status = 'VERIFIED_EXTERNAL' OR is_external = 1) AND created_at LIKE ?`).get(`${yesterdayStr}%`) as any;
       if (visitRow && typeof visitRow.c === 'number') visits = visitRow.c;
     } catch {}
 
@@ -1405,8 +1405,8 @@ export class OwnerDigestService {
 
     try {
       const visitRow = await this.d1Repo.queryOne<{ c: number }>(
-        'referrals',
-        `SELECT COUNT(*) as c FROM referrals WHERE created_at LIKE ?`,
+        'traffic_sessions',
+        `SELECT COUNT(*) as c FROM traffic_sessions WHERE (traffic_evidence_status = 'VERIFIED_EXTERNAL' OR is_external = 1) AND created_at LIKE ?`,
         [`${yesterdayStr}%`]
       );
       if (visitRow && typeof visitRow.c === 'number') visits = visitRow.c;

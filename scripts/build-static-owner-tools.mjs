@@ -21,6 +21,10 @@ async function main() {
     repoRoot,
     'packages/backend/dist/tools/site-audit/owner-tool-pages.js'
   );
+  const compiledSiteAuditPath = path.resolve(
+    repoRoot,
+    'packages/backend/dist/tools/site-audit/site-audit-page.js'
+  );
 
   if (!fs.existsSync(compiledModulePath)) {
     console.error(
@@ -31,6 +35,12 @@ async function main() {
 
   const mod = await import(pathToFileURL(compiledModulePath).href);
   const { OWNER_TOOL_SLUGS, renderOwnerToolPage } = mod;
+
+  let renderSiteAuditPage = null;
+  if (fs.existsSync(compiledSiteAuditPath)) {
+    const siteAuditMod = await import(pathToFileURL(compiledSiteAuditPath).href);
+    renderSiteAuditPage = siteAuditMod.renderSiteAuditPage;
+  }
 
   const apiBaseUrl = (
     process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com'
@@ -46,6 +56,14 @@ async function main() {
 
   let emittedCount = 0;
   for (const targetRoot of targetRoots) {
+    if (renderSiteAuditPage) {
+      const siteAuditDir = path.join(targetRoot, 'site-audit');
+      fs.mkdirSync(siteAuditDir, { recursive: true });
+      const siteAuditHtml = renderSiteAuditPage();
+      fs.writeFileSync(path.join(siteAuditDir, 'index.html'), siteAuditHtml, 'utf8');
+      emittedCount++;
+    }
+
     for (const slug of OWNER_TOOL_SLUGS) {
       const outDir = path.join(targetRoot, slug);
       fs.mkdirSync(outDir, { recursive: true });
