@@ -730,7 +730,7 @@ export class ContentAssetEngine {
     const geminiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
     const hasValidKey = geminiKey && !isPlaceholderCredential(geminiKey);
 
-    if (shouldInvokeGemini && (hasValidKey || options?.fetchFn)) {
+    if (shouldInvokeGemini && (options?.fetchFn || (!process.env.VITEST && hasValidKey))) {
       try {
         const fetchImpl = options?.fetchFn || globalThis.fetch;
         const prompt = `Synthesize an objective, honest buyer guide for product: "${displayName}". Category: ${offerRow.category}. Key specifications: ${specSummary || facts.map((f: any) => f.fact).join('; ')}. Manufacturer: ${manufacturerName || 'Official Manufacturer'}.
