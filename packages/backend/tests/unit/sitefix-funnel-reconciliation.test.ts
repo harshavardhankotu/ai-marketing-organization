@@ -397,6 +397,8 @@ describe('SiteFix Funnel Attribution & Reconciliation', () => {
   it('11. Deals Freshness Guard: excludes stale offers older than 7 days', async () => {
     const db = getDb();
     const engine = AutonomousDealDiscoveryEngine.getInstance();
+    const d1Repo = D1RevenueRepository.getInstance();
+    const d1Spy = vi.spyOn(d1Repo, 'isRemoteD1Configured').mockReturnValue(false);
 
     // Clean up any test deals first
     db.prepare(`DELETE FROM public_deals WHERE id IN ('deal_fresh_test_1', 'deal_stale_test_1')`).run();
@@ -436,6 +438,7 @@ describe('SiteFix Funnel Attribution & Reconciliation', () => {
       db.prepare(`DELETE FROM public_deals WHERE id IN ('deal_fresh_test_1', 'deal_stale_test_1')`).run();
       (engine as any).dealsMap?.delete('deal_fresh_test_1');
       (engine as any).dealsMap?.delete('deal_stale_test_1');
+      d1Spy.mockRestore();
     }
   });
 });
