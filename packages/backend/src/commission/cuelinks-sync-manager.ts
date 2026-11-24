@@ -893,15 +893,9 @@ export class CuelinksSyncManager {
           );
           this.syncStatus.eligibleCampaignsCount = eligibleCampaigns.length;
 
-          // Persist discovered campaigns + epc_7d/epc_90d/publisher flags and hydrate verified payouts onto public_deals
+          // Persist discovered campaigns + epc_7d/epc_90d/publisher flags
           await this.persistCampaignsD1(organizationId, businessId, eligibleCampaigns);
-          if (!process.env.VITEST && process.env.NODE_ENV !== 'test') {
-            try {
-              await this.hydrateMissingCampaignPayoutsD1(organizationId, businessId, 100);
-            } catch (payoutErr: any) {
-              console.warn(`[CuelinksSyncManager] Payout hydration notice: ${payoutErr?.message}`);
-            }
-          }
+          // PR #92: Payout hydration consolidated exclusively into scheduled step (affiliate_offer_reconciliation)
         } catch (campErr: any) {
           if (campErr.statusCode === 403 || campErr.code === 'CUELINKS_FORBIDDEN') {
             forbiddenScopes.add('read:campaigns');
@@ -1136,7 +1130,7 @@ export class CuelinksSyncManager {
 
       await this.persistSyncD1(organizationId, businessId);
       await this.persistTelemetryD1(organizationId, businessId, this.syncStatus.telemetry);
-      await this.hydrateMissingCampaignPayoutsD1(organizationId, businessId);
+      // PR #92: Payout hydration consolidated exclusively into scheduled step (affiliate_offer_reconciliation)
 
       return {
         success: true,
@@ -1997,6 +1991,11 @@ export class CuelinksSyncManager {
       return { inspected: 0, updatedCampaigns: 0, syncedPublicDeals: 0, missingPayoutBreakdown: {} };
     }
 
+    // PR #92: Skip immediately when 0 campaigns lack payouts to avoid scanning 500 campaigns and 250 deals
+    if (missingRows.length === 0) {
+      return { inspected: 0, updatedCampaigns: 0, syncedPublicDeals: 0, missingPayoutBreakdown: {} };
+    }
+
     const hydratedCampaigns: CuelinksCampaign[] = [];
     const lookupOutcomeByCampaignId = new Map<string, 'CAMPAIGN_NOT_IN_CUELINKS_PAGE' | 'ZERO_PAYOUT_REPORTED'>();
 
@@ -2220,8 +2219,8 @@ export class CuelinksSyncManager {
             });
             batchOps.push({
               table: 'partner_offers',
-              sql: `UPDATE partner_offers SET evidence_json = ?, active = 0, status = 'INACTIVE', updated_at = datetime('now') WHERE id = ? OR destination_url = ?`,
-              params: [JSON.stringify(ev), d.id, d.product_url]
+              sql: `UPDATE partner_offers SET evidence_json = ?, active = 0, status = 'INACTIVE', updated_at = datetime('now') WHERE id = ?`,
+              params: [JSON.stringify(ev), d.id]
             });
             syncedPublicDeals++;
             continue;
@@ -2245,8 +2244,8 @@ export class CuelinksSyncManager {
         });
         batchOps.push({
           table: 'partner_offers',
-          sql: `UPDATE partner_offers SET evidence_json = ?, active = 0, status = 'INACTIVE', updated_at = datetime('now') WHERE id = ? OR destination_url = ?`,
-          params: [JSON.stringify(ev), d.id, d.product_url]
+          sql: `UPDATE partner_offers SET evidence_json = ?, active = 0, status = 'INACTIVE', updated_at = datetime('now') WHERE id = ?`,
+          params: [JSON.stringify(ev), d.id]
         });
         syncedPublicDeals++;
         continue;
@@ -2272,8 +2271,8 @@ export class CuelinksSyncManager {
         });
         batchOps.push({
           table: 'partner_offers',
-          sql: `UPDATE partner_offers SET evidence_json = ?, active = 0, status = 'INACTIVE', updated_at = datetime('now') WHERE id = ? OR destination_url = ?`,
-          params: [JSON.stringify(ev), d.id, d.product_url]
+          sql: `UPDATE partner_offers SET evidence_json = ?, active = 0, status = 'INACTIVE', updated_at = datetime('now') WHERE id = ?`,
+          params: [JSON.stringify(ev), d.id]
         });
         syncedPublicDeals++;
       } else if (parsed.ratePercent !== null || parsed.flatINR !== null || (ev.epc_7d && ev.epc_7d > 0)) {
@@ -2310,8 +2309,8 @@ export class CuelinksSyncManager {
                     active = 1,
                     status = 'ACTIVE',
                     updated_at = datetime('now')
-                WHERE id = ? OR destination_url = ?`,
-          params: [JSON.stringify(ev), commModel, commAmount, dealTrackingUrl, d.id, d.product_url]
+                WHERE id = ?`,
+          params: [JSON.stringify(ev), commModel, commAmount, dealTrackingUrl, d.id]
         });
         syncedPublicDeals++;
       } else {
@@ -2332,8 +2331,8 @@ export class CuelinksSyncManager {
         });
         batchOps.push({
           table: 'partner_offers',
-          sql: `UPDATE partner_offers SET evidence_json = ?, active = 0, status = 'INACTIVE', updated_at = datetime('now') WHERE id = ? OR destination_url = ?`,
-          params: [JSON.stringify(ev), d.id, d.product_url]
+          sql: `UPDATE partner_offers SET evidence_json = ?, active = 0, status = 'INACTIVE', updated_at = datetime('now') WHERE id = ?`,
+          params: [JSON.stringify(ev), d.id]
         });
         syncedPublicDeals++;
       }

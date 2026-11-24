@@ -44,44 +44,37 @@ export class YouTubeReviewEnricher {
   }
 
   /**
-   * Retrieves cached YouTube review from D1 durable_events table.
+   * Retrieves cached YouTube reviews from D1 durable_events table.
    * Negative cache entries expire after 24 hours to allow recovery.
    */
-  public async getCachedReview(dealId: string): Promise<YouTubeReview | null | 'NOT_FOUND'> {
+  public async getCachedReviews(dealId: string): Promise<YouTubeReview[] | null | 'NOT_FOUND'> {
     const eventId = this.getCacheEventId(dealId);
     try {
-      if (isProduction() && !process.env.VITEST) {
-        const row = await this.d1Repo.queryOne<{ payload_json: string }>(
-          'durable_events',
-          `SELECT payload_json FROM durable_events WHERE id = ? AND event_type = 'YOUTUBE_REVIEW_CACHED' LIMIT 1`,
-          [eventId]
-        );
-        if (row?.payload_json) {
-          const parsed = JSON.parse(row.payload_json);
-          if (parsed?.notFound) {
-            const cachedAt = parsed.cachedAt ? new Date(parsed.cachedAt).getTime() : 0;
-            if (Date.now() - cachedAt > 24 * 60 * 60 * 1000) {
-              return null; // Expired negative cache entry, allow fresh lookup
-            }
-            return 'NOT_FOUND';
-          }
-          return parsed as YouTubeReview;
+      const fetchRow = async () => {
+        if (isProduction() && !process.env.VITEST) {
+          return await this.d1Repo.queryOne<{ payload_json: string }>(
+            'durable_events',
+            `SELECT payload_json FROM durable_events WHERE id = ? AND event_type = 'YOUTUBE_REVIEW_CACHED' LIMIT 1`,
+            [eventId]
+          );
         }
-      } else {
-        const row = getDb().prepare(
+        return getDb().prepare(
           `SELECT payload_json FROM durable_events WHERE id = ? AND event_type = 'YOUTUBE_REVIEW_CACHED' LIMIT 1`
         ).get(eventId) as any;
-        if (row?.payload_json) {
-          const parsed = JSON.parse(row.payload_json);
-          if (parsed?.notFound) {
-            const cachedAt = parsed.cachedAt ? new Date(parsed.cachedAt).getTime() : 0;
-            if (Date.now() - cachedAt > 24 * 60 * 60 * 1000) {
-              return null; // Expired negative cache entry, allow fresh lookup
-            }
-            return 'NOT_FOUND';
+      };
+
+      const row = await fetchRow();
+      if (row?.payload_json) {
+        const parsed = JSON.parse(row.payload_json);
+        if (parsed?.notFound) {
+          const cachedAt = parsed.cachedAt ? new Date(parsed.cachedAt).getTime() : 0;
+          if (Date.now() - cachedAt > 24 * 60 * 60 * 1000) {
+            return null; // Expired negative cache entry, allow fresh lookup
           }
-          return parsed as YouTubeReview;
+          return 'NOT_FOUND';
         }
+        if (Array.isArray(parsed)) return parsed as YouTubeReview[];
+        return [parsed as YouTubeReview];
       }
     } catch {
       // Return null on cache read miss or transient error
@@ -89,12 +82,19 @@ export class YouTubeReviewEnricher {
     return null;
   }
 
+  public async getCachedReview(dealId: string): Promise<YouTubeReview | null | 'NOT_FOUND'> {
+    const res = await this.getCachedReviews(dealId);
+    if (res === 'NOT_FOUND') return 'NOT_FOUND';
+    if (Array.isArray(res)) return res[0] || null;
+    return null;
+  }
+
   /**
-   * Persists resolved review into D1 durable_events.
+   * Persists resolved reviews into D1 durable_events.
    */
-  public async cacheReview(dealId: string, review: YouTubeReview): Promise<void> {
+  public async cacheReviews(dealId: string, reviews: YouTubeReview[]): Promise<void> {
     const eventId = this.getCacheEventId(dealId);
-    const payloadJson = JSON.stringify(review);
+    const payloadJson = JSON.stringify(reviews);
     try {
       if (isProduction() && !process.env.VITEST) {
         await this.d1Repo.executeWrite(
@@ -114,6 +114,10 @@ export class YouTubeReviewEnricher {
     } catch {
       // Non-fatal if write fails
     }
+  }
+
+  public async cacheReview(dealId: string, review: YouTubeReview): Promise<void> {
+    return this.cacheReviews(dealId, [review]);
   }
 
   /**
@@ -145,18 +149,19 @@ export class YouTubeReviewEnricher {
 
   /**
    * Primary: YouTube Data API v3 Search (regionCode=IN, videoEmbeddable=true).
+   * Upgraded in PR #92 to return up to 2-3 curated review references.
    */
-  private async searchYouTubeApi(cleanTitle: string): Promise<YouTubeReview | null> {
+  private async searchYouTubeApi(cleanTitle: string, maxResults = 3): Promise<YouTubeReview[]> {
     const apiKey = normalizeSecretValue(process.env.YOUTUBE_API_KEY || process.env.GOOGLE_API_KEY);
     if (!apiKey || isPlaceholderCredential(apiKey)) {
-      return null;
+      return [];
     }
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 6000);
     try {
       const query = encodeURIComponent(`${cleanTitle} review`);
-      const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoEmbeddable=true&maxResults=2&regionCode=IN&q=${query}&key=${apiKey}`;
+      const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoEmbeddable=true&maxResults=${maxResults}&regionCode=IN&q=${query}&key=${apiKey}`;
 
       const res = await fetch(url, {
         headers: { 'Accept': 'application/json' },
@@ -164,50 +169,44 @@ export class YouTubeReviewEnricher {
       });
 
       if (!res.ok) {
-        return null;
+        return [];
       }
 
       const data = await res.json() as any;
       const items = Array.isArray(data.items) ? data.items : [];
-      if (items.length === 0) {
-        return null;
+      const reviews: YouTubeReview[] = [];
+
+      for (const item of items) {
+        const videoId = item?.id?.videoId;
+        if (!videoId) continue;
+        const snippet = item?.snippet || {};
+        reviews.push({
+          videoId,
+          title: snippet.title || `${cleanTitle} Review`,
+          channelTitle: snippet.channelTitle || 'YouTube',
+          thumbnailUrl: snippet.thumbnails?.high?.url || snippet.thumbnails?.medium?.url || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+          videoUrl: `https://www.youtube.com/watch?v=${videoId}`,
+          embedUrl: `https://www.youtube.com/embed/${videoId}`
+        });
+        if (reviews.length >= maxResults) break;
       }
-
-      const item = items[0];
-      const videoId = item?.id?.videoId;
-      if (!videoId) {
-        return null;
-      }
-
-      const snippet = item?.snippet || {};
-      const title = snippet.title || `${cleanTitle} Review`;
-      const channelTitle = snippet.channelTitle || 'YouTube';
-      const thumbnailUrl = snippet.thumbnails?.high?.url || snippet.thumbnails?.medium?.url || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
-
-      return {
-        videoId,
-        title,
-        channelTitle,
-        thumbnailUrl,
-        videoUrl: `https://www.youtube.com/watch?v=${videoId}`,
-        embedUrl: `https://www.youtube.com/embed/${videoId}`
-      };
+      return reviews;
     } catch {
       // Fall through to Tavily fallback
     } finally {
       clearTimeout(timeoutId);
     }
-    return null;
+    return [];
   }
 
   /**
    * Fallback: Tavily search (site:youtube.com/watch ${cleanTitle} review India).
-   * Extracts canonical 11-char video ID.
+   * Extracts canonical 11-char video ID, up to 2-3 reviews.
    */
-  private async searchTavilyFallback(cleanTitle: string): Promise<YouTubeReview | null> {
+  private async searchTavilyFallback(cleanTitle: string, maxResults = 3): Promise<YouTubeReview[]> {
     const tavilyKey = normalizeSecretValue(process.env.TAVILY_API_KEY);
     if (!tavilyKey || isPlaceholderCredential(tavilyKey)) {
-      return null;
+      return [];
     }
 
     const controller = new AbortController();
@@ -229,73 +228,82 @@ export class YouTubeReviewEnricher {
       });
 
       if (!res.ok) {
-        return null;
+        return [];
       }
 
       const data = await res.json() as any;
       const results = Array.isArray(data.results) ? data.results : [];
       const ytRegex = /(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/;
+      const reviews: YouTubeReview[] = [];
+      const seenIds = new Set<string>();
 
       for (const r of results) {
         const match = String(r.url || '').match(ytRegex);
         if (match && match[1]) {
           const videoId = match[1];
-          return {
-            videoId,
-            title: r.title || `${cleanTitle} Review`,
-            channelTitle: 'YouTube',
-            thumbnailUrl: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-            videoUrl: `https://www.youtube.com/watch?v=${videoId}`,
-            embedUrl: `https://www.youtube.com/embed/${videoId}`
-          };
+          if (!seenIds.has(videoId)) {
+            seenIds.add(videoId);
+            reviews.push({
+              videoId,
+              title: r.title || `${cleanTitle} Review`,
+              channelTitle: 'YouTube',
+              thumbnailUrl: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+              videoUrl: `https://www.youtube.com/watch?v=${videoId}`,
+              embedUrl: `https://www.youtube.com/embed/${videoId}`
+            });
+            if (reviews.length >= maxResults) break;
+          }
         }
       }
+      return reviews;
     } catch {
-      // Return null on failure
+      // Return empty array on failure
     } finally {
       clearTimeout(timeoutId);
     }
-    return null;
+    return [];
   }
 
+  private inFlightMulti = new Map<string, Promise<YouTubeReview[]>>();
+
   /**
-   * Resolves a YouTube review for a given deal:
-   * 1. Check D1 durable_events cache (including negative lookups)
-   * 2. Deduplicate in-flight promises
-   * 3. Primary: YouTube Data API v3 (when YOUTUBE_API_KEY is configured)
-   * 4. Fallback: Tavily Search (extract canonical 11-char video ID)
-   * 5. Cache durably in D1 durable_events
+   * Resolves 2-3 YouTube review references for a given deal.
    */
-  public async resolveReviewForDeal(deal: { id: string; title: string; merchant?: string; category?: string; [key: string]: any }): Promise<YouTubeReview | null> {
-    if (!deal || !deal.id) return null;
+  public async resolveReviewsForDeal(deal: { id: string; title: string; merchant?: string; category?: string; [key: string]: any }): Promise<YouTubeReview[]> {
+    if (!deal || !deal.id) return [];
 
-    // Deduplicate in-flight requests for the same deal
-    const existing = this.inFlight.get(deal.id);
-    if (existing) {
-      return existing;
-    }
+    const existing = this.inFlightMulti.get(deal.id);
+    if (existing) return existing;
 
-    const lookupPromise = this.executeResolveReview(deal);
-    this.inFlight.set(deal.id, lookupPromise);
+    const lookupPromise = this.executeResolveReviews(deal);
+    this.inFlightMulti.set(deal.id, lookupPromise);
     try {
       return await lookupPromise;
     } finally {
-      this.inFlight.delete(deal.id);
+      this.inFlightMulti.delete(deal.id);
     }
   }
 
-  private async executeResolveReview(deal: { id: string; title: string; merchant?: string; category?: string; [key: string]: any }): Promise<YouTubeReview | null> {
+  /**
+   * Resolves a single primary YouTube review for backwards compatibility.
+   */
+  public async resolveReviewForDeal(deal: { id: string; title: string; merchant?: string; category?: string; [key: string]: any }): Promise<YouTubeReview | null> {
+    const reviews = await this.resolveReviewsForDeal(deal);
+    return reviews[0] || null;
+  }
+
+  private async executeResolveReviews(deal: { id: string; title: string; merchant?: string; category?: string; [key: string]: any }): Promise<YouTubeReview[]> {
     // 1. D1 durable cache hit
-    const cached = await this.getCachedReview(deal.id);
+    const cached = await this.getCachedReviews(deal.id);
     if (cached === 'NOT_FOUND') {
-      return null;
+      return [];
     }
-    if (cached) {
+    if (Array.isArray(cached) && cached.length > 0) {
       return cached;
     }
 
     const cleanTitle = this.cleanTitleForSearch(deal.title || 'Product');
-    if (!cleanTitle) return null;
+    if (!cleanTitle) return [];
 
     const ytApiKey = normalizeSecretValue(process.env.YOUTUBE_API_KEY || process.env.GOOGLE_API_KEY);
     const tavilyKey = normalizeSecretValue(process.env.TAVILY_API_KEY);
@@ -304,42 +312,44 @@ export class YouTubeReviewEnricher {
       (tavilyKey && !isPlaceholderCredential(tavilyKey))
     );
     if (!process.env.VITEST && !hasKeys) {
-      return null;
+      return [];
     }
 
     // 2. Primary: YouTube API
-    let review = await this.searchYouTubeApi(cleanTitle);
+    let reviews = await this.searchYouTubeApi(cleanTitle, 3);
 
     // 3. Fallback: Tavily Search
-    if (!review) {
-      review = await this.searchTavilyFallback(cleanTitle);
+    if (!reviews || reviews.length === 0) {
+      reviews = await this.searchTavilyFallback(cleanTitle, 3);
     }
 
     // 4. Cache durably if found, else cache negative result
-    if (review) {
-      await this.cacheReview(deal.id, review);
+    if (reviews && reviews.length > 0) {
+      await this.cacheReviews(deal.id, reviews);
+      return reviews;
     } else {
       await this.cacheNegativeResult(deal.id);
+      return [];
     }
-
-    return review;
   }
 
   /**
-   * Enriches a deal object with a youtubeReview property.
+   * Enriches a deal object with youtubeReview and youtubeReviews properties.
    */
-  public async enrichDeal<T extends { id: string; title: string; youtubeReview?: any }>(deal: T): Promise<T> {
+  public async enrichDeal<T extends { id: string; title: string; youtubeReview?: any; youtubeReviews?: any }>(deal: T): Promise<T> {
     if (!deal) return deal;
     try {
-      const review = await this.resolveReviewForDeal(deal);
+      const reviews = await this.resolveReviewsForDeal(deal);
       return {
         ...deal,
-        youtubeReview: review || null
+        youtubeReview: reviews[0] || null,
+        youtubeReviews: reviews
       };
     } catch {
       return {
         ...deal,
-        youtubeReview: null
+        youtubeReview: null,
+        youtubeReviews: []
       };
     }
   }

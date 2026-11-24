@@ -1184,22 +1184,42 @@ export class DurableJobQueue {
   }
 
   public async compactStaleDuplicateQueueJobs(): Promise<number> {
-    const compactionSql = `
-      UPDATE automation_jobs
-      SET status = 'NO_ACTION_DUE', last_error = 'SUPERSEDED_DEDUP', updated_at = datetime('now')
-      WHERE status = 'QUEUED'
-        AND id NOT IN (
-          SELECT max(id) FROM automation_jobs WHERE status = 'QUEUED' GROUP BY workflow_id
-        )
-    `;
-
     try {
+      // PR #92: Replace correlated subquery with bounded indexed scan + primary-key batch update
+      const queuedSql = `SELECT id, workflow_id FROM automation_jobs WHERE status = 'QUEUED' ORDER BY id DESC LIMIT 100`;
+      const rows = isProduction() && !process.env.VITEST
+        ? await this.d1Repo.query<any>('automation_jobs', queuedSql)
+        : getDb().prepare(queuedSql).all() as any[];
+
+      if (!rows || rows.length <= 1) return 0;
+
+      const seenWorkflows = new Set<string>();
+      const duplicateIds: number[] = [];
+      for (const row of rows) {
+        const wf = String(row.workflow_id || '');
+        if (seenWorkflows.has(wf)) {
+          duplicateIds.push(Number(row.id));
+        } else {
+          seenWorkflows.add(wf);
+        }
+      }
+
+      if (duplicateIds.length === 0) return 0;
+
+      const idsToUpdate = duplicateIds.slice(0, 50);
+      const placeholders = idsToUpdate.map(() => '?').join(',');
+      const updateSql = `
+        UPDATE automation_jobs
+        SET status = 'NO_ACTION_DUE', last_error = 'SUPERSEDED_DEDUP', updated_at = datetime('now')
+        WHERE id IN (${placeholders})
+      `;
+
       if (isProduction() && !process.env.VITEST) {
-        const res = await this.d1Repo.executeWrite('automation_jobs', compactionSql, []);
-        return (res as any)?.rowsAffected ?? (res as any)?.changes ?? 0;
+        const res = await this.d1Repo.executeWrite('automation_jobs', updateSql, idsToUpdate);
+        return (res as any)?.rowsAffected ?? (res as any)?.changes ?? idsToUpdate.length;
       } else {
-        const res = getDb().prepare(compactionSql).run();
-        return res.changes ?? 0;
+        const res = getDb().prepare(updateSql).run(...idsToUpdate);
+        return res.changes ?? idsToUpdate.length;
       }
     } catch (err: any) {
       console.warn(`[JobQueue] compactStaleDuplicateQueueJobs notice: ${err.message}`);

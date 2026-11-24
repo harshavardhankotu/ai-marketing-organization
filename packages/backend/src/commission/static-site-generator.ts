@@ -58,6 +58,26 @@ export interface ComparisonPair {
   dealB: any;
 }
 
+function computeBuyerSuitability(d: any): number {
+  let score = 0;
+  if (d.availability === 'IN_STOCK' || !d.availability) score += 20;
+  if ((d.currentPriceINR || 0) > 0) score += 20;
+  if (d.evolutionStatus === 'RISING_WINNER' || d.isFeatured) score += 20;
+  if ((d.priceAdvantageRatio || 0) > 1) score += 10;
+  return score;
+}
+
+function computeEvidenceDepth(d: any): number {
+  let score = 0;
+  const ev = d.evidenceJson || {};
+  if (Array.isArray(ev.listing_facts)) score += Math.min(30, ev.listing_facts.length * 10);
+  if (Array.isArray(ev.price_history) && ev.price_history.length >= 3) score += 25;
+  else if (Array.isArray(ev.price_history) && ev.price_history.length > 0) score += 10;
+  if (d.youtubeReview || (Array.isArray(d.youtubeReviews) && d.youtubeReviews.length > 0)) score += 20;
+  if (d.affiliateVerified) score += 15;
+  return score;
+}
+
 export function generateComparisonPairs(deals: any[], limit: number = 15): ComparisonPair[] {
   const baseFilter = (d: any) =>
     d &&
@@ -69,8 +89,12 @@ export function generateComparisonPairs(deals: any[], limit: number = 15): Compa
     Number(d.currentPriceINR || 0) > 0 &&
     String(d.slug || d.canonicalSlug || d.id || '').trim().length > 0;
 
+  // PR #92: Buyer-First Ranking (suitability + evidence depth first, affiliate economics as tie-breaker)
   const sortCandidates = (list: any[]) =>
     list.slice().sort((a: any, b: any) =>
+      (computeBuyerSuitability(b) - computeBuyerSuitability(a)) ||
+      (computeEvidenceDepth(b) - computeEvidenceDepth(a)) ||
+      (Number(b.verifiedDiscountPercent || 0) - Number(a.verifiedDiscountPercent || 0)) ||
       (Number(b.expectedProfitPer100VisitorsINR || 0) - Number(a.expectedProfitPer100VisitorsINR || 0)) ||
       (Number(b.arbitrageScore || 0) - Number(a.arbitrageScore || 0)) ||
       String(a.id || '').localeCompare(String(b.id || ''))
@@ -234,6 +258,30 @@ const FIXED_BUYER_INTENT_HUBS: HubSeedDefinition[] = [
       /(perfume|fragrance|edp|eau de|groom|beard|trimmer|shav|gift set|combo|bella vita|wild stone|beardo|ustraa|skincare|serum)/i.test(text + ' ' + String(d?.category || ''))
   },
   {
+    intentSlug: 'skincare-and-grooming-under-2000',
+    title: 'Best Skincare & Men\'s Grooming Under ₹2,000 in India (Verified Prices)',
+    h1: 'Best Skincare & Grooming Essentials Under ₹2,000',
+    description: 'Verified merchant snapshot prices on hydrating serums, beard oils, charcoal masks, and daily grooming essentials under ₹2,000 with live Amazon.in coupon check.',
+    priceCapLabel: 'Under ₹2,000',
+    categoryLabel: 'Skincare & Grooming',
+    maxPriceINR: 2000,
+    predicate: (d, text, price) =>
+      price > 0 && price <= 2000 &&
+      /(skincare|skin|groom|beard|moisturizer|serum|mask|kumkumadi|primer|beauty|ayurveda|face wash|oil)/i.test(text + ' ' + String(d?.category || ''))
+  },
+  {
+    intentSlug: 'saas-and-software-tools-lifetime-deals',
+    title: 'Best Lifetime SaaS & Productivity Software Deals (Verified Prices)',
+    h1: 'Best Software & Lifetime SaaS Deals Under ₹5,000',
+    description: 'Verified lifetime license pricing on web automation, workspace templates, and developer SaaS tools with live merchant coupon check.',
+    priceCapLabel: 'Under ₹5,000',
+    categoryLabel: 'Software & SaaS',
+    maxPriceINR: 5000,
+    predicate: (d, text, price) =>
+      price > 0 &&
+      /(software|saas|automation|notion|taskmagic|appsumo|productivity|workflow|license|template)/i.test(text + ' ' + String(d?.category || ''))
+  },
+  {
     intentSlug: 'top-price-drops-today-india',
     title: 'Top Verified Price Drops & Undervalued Deals in India Today',
     h1: 'Top Verified Price Drops & Fair-Price Deals Today in India',
@@ -265,11 +313,14 @@ export function generateBuyerIntentHubs(
 
   if (eligible.length < 2) return [];
 
+  // PR #92: Buyer-First Ranking on buyer hubs (suitability + evidence depth first)
   const rankDeals = (list: any[]) =>
     list.slice().sort((a: any, b: any) =>
+      (computeBuyerSuitability(b) - computeBuyerSuitability(a)) ||
+      (computeEvidenceDepth(b) - computeEvidenceDepth(a)) ||
+      (Number(b.verifiedDiscountPercent || 0) - Number(a.verifiedDiscountPercent || 0)) ||
       (Number(b.expectedProfitPer100VisitorsINR || 0) - Number(a.expectedProfitPer100VisitorsINR || 0)) ||
       (Number(b.arbitrageScore || 0) - Number(a.arbitrageScore || 0)) ||
-      (Number(b.verifiedDiscountPercent || 0) - Number(a.verifiedDiscountPercent || 0)) ||
       (Number(a.currentPriceINR || 0) - Number(b.currentPriceINR || 0)) ||
       String(a.id || '').localeCompare(String(b.id || ''))
     );
@@ -1256,7 +1307,7 @@ export class StaticSiteGenerator {
           var res = await fetch('/api/v1/customer-desk/subscribe-alerts', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email: email, productSlug: productSlug, category: cat, dealId: dId, targetPriceINR: targetPrice })
+            body: JSON.stringify({ email: email, productSlug: productSlug, category: cat, dealId: dId, targetPriceINR: targetPrice, consentType: 'OPTED_IN_FIRST_PARTY' })
           });
           var data = await res.json();
           if (res.ok && data.success) {
@@ -1464,20 +1515,35 @@ ${this.serializeSafeJsonLd(productSchema, true)}
       <p style="font-size:0.88rem;color:#94a3b8;margin:0.5rem 0 1rem 0;">
         Observed At: <code>${this.escapeHtml(verifiedTs || 'Verification timestamp unavailable')}</code> &bull; Verification Status: <strong>${this.escapeHtml(deal.verificationStatus || 'VERIFIED')}</strong>
       </p>
-      ${deal.youtubeReview ? `
-      <div class="youtube-review-embed" style="margin: 1.25rem 0; padding: 1rem; background: #0f172a; border: 1px solid #334155; border-radius: 12px;">
-        <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:0.5rem; margin-bottom:0.75rem;">
-          <div style="display:flex; align-items:center; gap:0.5rem;">
-            <span style="display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;background:#ef4444;border-radius:6px;color:#fff;font-size:11px;font-weight:900;">▶</span>
-            <strong style="font-size:0.92rem; color:#f8fafc;">Watch Real Product Review: ${this.escapeHtml(deal.youtubeReview.title)}</strong>
+      ${(() => {
+        const reviews = Array.isArray((deal as any).youtubeReviews) && (deal as any).youtubeReviews.length > 0
+          ? (deal as any).youtubeReviews
+          : (deal.youtubeReview ? [deal.youtubeReview] : []);
+        if (reviews.length === 0) return '';
+        return `
+        <div class="youtube-review-embed" style="margin: 1.25rem 0; padding: 1.15rem; background: #0f172a; border: 1px solid #334155; border-radius: 12px;">
+          <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:0.5rem; margin-bottom:0.85rem;">
+            <div style="display:flex; align-items:center; gap:0.5rem;">
+              <span style="display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;background:#ef4444;border-radius:6px;color:#fff;font-size:11px;font-weight:900;">▶</span>
+              <strong style="font-size:0.95rem; color:#f8fafc;">Independent Video Reviews to Watch</strong>
+            </div>
+            <span style="font-size:0.75rem; color:#94a3b8; font-style:italic;">Curated independent reviewer perspectives (not tested physical units)</span>
           </div>
-          <span style="font-size:0.75rem; color:#94a3b8; font-weight:600;">Channel: ${this.escapeHtml(deal.youtubeReview.channelTitle)}</span>
-        </div>
-        <div style="position:relative; padding-bottom:56.25%; height:0; overflow:hidden; border-radius:8px; border:1px solid #1e293b;">
-          <iframe src="${this.escapeHtml(deal.youtubeReview.embedUrl)}" title="${this.escapeHtml(deal.youtubeReview.title)}" style="position:absolute; top:0; left:0; width:100%; height:100%; border:0;" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen loading="lazy"></iframe>
-        </div>
-      </div>
-      ` : ''}
+          <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:1rem;">
+            ${reviews.slice(0, 3).map((r: any) => `
+              <div style="background:#1e293b; border-radius:8px; overflow:hidden; padding:0.75rem; border:1px solid #334155;">
+                <div style="font-size:0.85rem; font-weight:600; color:#e2e8f0; margin-bottom:0.4rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+                  <a href="${this.escapeHtml(r.videoUrl)}" target="_blank" rel="noopener noreferrer" style="color:#38bdf8; text-decoration:none;">${this.escapeHtml(r.title)}</a>
+                </div>
+                <div style="font-size:0.75rem; color:#94a3b8; margin-bottom:0.5rem;">Channel: ${this.escapeHtml(r.channelTitle)}</div>
+                <div style="position:relative; padding-bottom:56.25%; height:0; overflow:hidden; border-radius:6px;">
+                  <iframe src="${this.escapeHtml(r.embedUrl)}" title="${this.escapeHtml(r.title)}" style="position:absolute; top:0; left:0; width:100%; height:100%; border:0;" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen loading="lazy"></iframe>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        </div>`;
+      })()}
       <div style="display:flex;flex-wrap:wrap;gap:0.75rem;align-items:center;margin-top:0.5rem;">
         <a href="${this.escapeHtml(redirectHref)}" target="_blank" rel="sponsored nofollow noopener" class="cta-btn" style="margin-top:0;">Claim Verified Deal on ${this.escapeHtml(deal.merchant)} &rarr;</a>
         <a href="${this.escapeHtml(`${config.siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(deal.title || '').slice(0, 120))}&dealId=${encodeURIComponent(String(deal.id || ''))}`)}" target="_blank" rel="sponsored nofollow noopener" style="display:inline-block;background:rgba(245,158,11,0.14);border:1px solid rgba(245,158,11,0.4);color:#fcd34d;font-weight:700;padding:0.9rem 1.35rem;border-radius:10px;text-decoration:none;font-size:0.92rem;">Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)</a>
@@ -1666,9 +1732,9 @@ ${this.serializeSafeJsonLd(itemListSchema, true)}
             <td>${a.couponCode ? `<code>${this.escapeHtml(a.couponCode)}</code>` : 'Direct store pricing'}</td>
             <td>${b.couponCode ? `<code>${this.escapeHtml(b.couponCode)}</code>` : 'Direct store pricing'}</td>
           </tr>
-          ${(a.youtubeReview || b.youtubeReview) ? `
+          ${(a.youtubeReview || b.youtubeReview || a.youtubeReviews || b.youtubeReviews) ? `
           <tr>
-            <th>Product Video Review</th>
+            <th>Independent Video Reviews to Watch</th>
             <td>${a.youtubeReview ? `<div style="font-size:0.78rem;margin-bottom:0.35rem;"><span style="color:#ef4444;font-weight:700;">▶</span> <a href="${this.escapeHtml(a.youtubeReview.videoUrl)}" target="_blank" rel="noopener noreferrer" style="color:#38bdf8;text-decoration:none;">${this.escapeHtml(a.youtubeReview.title)}</a></div><div style="position:relative;padding-bottom:56.25%;height:0;overflow:hidden;border-radius:6px;"><iframe src="${this.escapeHtml(a.youtubeReview.embedUrl)}" title="${this.escapeHtml(a.youtubeReview.title)}" style="position:absolute;top:0;left:0;width:100%;height:100%;border:0;" allowfullscreen loading="lazy"></iframe></div>` : '<span style="color:#64748b;font-size:0.8rem;">Review indexing in progress</span>'}</td>
             <td>${b.youtubeReview ? `<div style="font-size:0.78rem;margin-bottom:0.35rem;"><span style="color:#ef4444;font-weight:700;">▶</span> <a href="${this.escapeHtml(b.youtubeReview.videoUrl)}" target="_blank" rel="noopener noreferrer" style="color:#38bdf8;text-decoration:none;">${this.escapeHtml(b.youtubeReview.title)}</a></div><div style="position:relative;padding-bottom:56.25%;height:0;overflow:hidden;border-radius:6px;"><iframe src="${this.escapeHtml(b.youtubeReview.embedUrl)}" title="${this.escapeHtml(b.youtubeReview.title)}" style="position:absolute;top:0;left:0;width:100%;height:100%;border:0;" allowfullscreen loading="lazy"></iframe></div>` : '<span style="color:#64748b;font-size:0.8rem;">Review indexing in progress</span>'}</td>
           </tr>

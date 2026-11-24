@@ -133,6 +133,14 @@ export const App: React.FC = () => {
     currentPathname === '/deals' ||
     currentPathname.startsWith('/deals/');
 
+  const isBestRoute =
+    currentPathname === '/best' ||
+    currentPathname.startsWith('/best/');
+
+  const isGuidesRoute =
+    currentPathname === '/guides' ||
+    currentPathname.startsWith('/guides/');
+
   const isComparisonRoute =
     currentPathname.startsWith('/vs/');
 
@@ -169,8 +177,8 @@ export const App: React.FC = () => {
   };
 
   useEffect(() => {
-    // Public demand funnels, offer page, comparisons, and compliance routes must not fan out into authenticated owner APIs
-    if (isPublicFunnelRoute || isComplianceRoute || isOfferRoute || isDealsRoute || isComparisonRoute) {
+    // Public demand funnels, offer page, comparisons, guides, best hubs, and compliance routes must not fan out into authenticated owner APIs
+    if (isPublicFunnelRoute || isComplianceRoute || isOfferRoute || isDealsRoute || isBestRoute || isGuidesRoute || isComparisonRoute) {
       setLoading(false);
       return;
     }
@@ -180,7 +188,7 @@ export const App: React.FC = () => {
     });
 
     bootstrapOwnerSession();
-  }, [isPublicFunnelRoute, isComplianceRoute, isOfferRoute, isDealsRoute, isComparisonRoute]);
+  }, [isPublicFunnelRoute, isComplianceRoute, isOfferRoute, isDealsRoute, isBestRoute, isGuidesRoute, isComparisonRoute]);
 
   const handleLoginSuccess = async () => {
     setAuthState('AUTHENTICATED');
@@ -257,7 +265,7 @@ export const App: React.FC = () => {
     return <PublicOfferPage />;
   }
 
-  if (isDealsRoute) {
+  if (isDealsRoute || isBestRoute || isGuidesRoute) {
     return <PublicDealsPage />;
   }
 
