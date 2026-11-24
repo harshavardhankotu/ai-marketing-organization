@@ -83,6 +83,7 @@ describe('PR #93: Honesty Bugs, Daily D1 Budget, EPC Physical Engine & B2B Pilot
       const engine = ContentAssetEngine.getInstance();
       const asset = await engine.generateGuideForApprovedOffer(offerId, 'org_owner_primary', {
         invokeGemini: true,
+        reviewSnippets: ['300 DPI barcodes are crisp but require coated thermal labels for best contrast.'],
         fetchFn: mockFetch as any
       });
 
@@ -276,53 +277,89 @@ describe('PR #93: Honesty Bugs, Daily D1 Budget, EPC Physical Engine & B2B Pilot
   });
 
   describe('Part 2 Item 1: Done-For-You B2B Service Engine', () => {
-    it('generates a clean Before-Action Audit & Pilot Proposal with verified findings and owner-approved pricing', async () => {
+    it('generates an unpriced draft proposal from live scan and enables /b2b/checkout/:proposalId only after owner approval', async () => {
       const b2bService = B2BPilotService.getInstance();
+      const mockScanner: any = {
+        scanUrl: vi.fn().mockResolvedValue({
+          auditId: 'audit_pr93_mock',
+          url: 'https://apex-coaching-academy.in',
+          domain: 'apex-coaching-academy.in',
+          scannedAt: new Date().toISOString(),
+          overallStatus: 'NEEDS_IMPROVEMENT',
+          score: 65,
+          scoreExplanation: 'Mock scan',
+          metrics: { httpStatus: 200, responseTimeMs: 120, htmlSizeBytes: 1200, contentType: 'text/html', redirectChain: [], hasRobotsTxt: false, hasSitemap: false, jsonLdTypesFound: [], contactChannelsFound: [] },
+          findings: [
+            { id: 'schema_jsonld_missing', category: 'STRUCTURED_DATA', title: 'Missing Schema', status: 'ISSUE', severity: 'HIGH', location: 'head', evidence: 'none', explanation: '', recommendation: '', confidence: 100, canAutoGenerate: true, needsUserConfirmation: false },
+            { id: 'viewport_present', category: 'HTML_METADATA', title: 'Viewport Present', status: 'PASS', severity: 'INFO', location: 'head', evidence: 'ok', explanation: '', recommendation: '', confidence: 100, canAutoGenerate: false, needsUserConfirmation: false }
+          ],
+          rawHtml: '<html><head><meta name="viewport" content="width=device-width"></head><body><h1>Apex Coaching Academy</h1></body></html>'
+        })
+      };
 
-      const proposal = await b2bService.generateProposal({
+      const draft = await b2bService.generateProposal({
         targetUrl: 'https://apex-coaching-academy.in',
         businessName: 'Apex Coaching Academy',
-        ownerApproved: true,
+        ownerApproved: true, // Public call must ignore self-approval
+        priceINR: 12500
+      }, { scanner: mockScanner });
+
+      expect(draft.proposalId).toBeDefined();
+      expect(draft.ownerApproved).toBe(false);
+      expect(draft.priceINR).toBeNull();
+      expect(draft.checkoutUrl).toBeNull();
+      expect(draft.packageName).toBe('Website & Admissions Enquiry Conversion Setup');
+      expect(draft.verifiedFindings.length).toBeGreaterThanOrEqual(4);
+
+      const approved = await b2bService.approveProposal({
+        proposalId: draft.proposalId,
         priceINR: 12500,
         checkoutBaseUrl: 'https://ai-marketing-organization.onrender.com'
       });
 
-      expect(proposal.proposalId).toBeDefined();
-      expect(proposal.packageName).toBe('Website & Admissions Enquiry Conversion Setup');
-      expect(proposal.verifiedFindings.length).toBeGreaterThanOrEqual(3);
-      expect(proposal.priceINR).toBe(12500);
-      expect(proposal.checkoutUrl).toContain('package=WEBSITE_ENQUIRY_CONVERSION_SETUP');
-      expect(proposal.checkoutUrl).toContain('amount=12500');
-
-      // Verify Markdown output contains factual findings and NO unbacked ranking guarantees
-      expect(proposal.markdown).toContain('# Before-Action Audit & Pilot Implementation Proposal');
-      expect(proposal.markdown).toContain('Apex Coaching Academy');
-      expect(proposal.markdown).toContain('Direct WhatsApp Click-to-Chat Integration');
-      expect(proposal.markdown).toContain('₹12,500');
-      expect(proposal.markdown).toContain('We never guarantee specific student admission counts or search ranking positions');
-
-      // Verify HTML output is self-contained and clean
-      expect(proposal.html).toContain('<!DOCTYPE html>');
-      expect(proposal.html).toContain('Before-Action Audit &amp; Pilot Proposal');
-      expect(proposal.html).toContain('₹12,500');
-      expect(proposal.html).toContain('checkout?package=WEBSITE_ENQUIRY_CONVERSION_SETUP');
+      expect(approved.ownerApproved).toBe(true);
+      expect(approved.approvedPriceINR).toBe(12500);
+      expect(approved.checkoutUrl).toContain(`/b2b/checkout/${draft.proposalId}`);
+      expect(approved.markdown).toContain('# Before-Action Audit & Pilot Implementation Proposal');
+      expect(approved.markdown).toContain('Apex Coaching Academy');
+      expect(approved.markdown).toContain('Direct WhatsApp Click-to-Chat Integration');
+      expect(approved.markdown).toContain('₹12,500');
+      expect(approved.markdown).toContain('We never guarantee specific student admission counts or search ranking positions');
+      expect(approved.html).toContain('<!DOCTYPE html>');
+      expect(approved.html).toContain('Before-Action Audit &amp; Pilot Proposal');
+      expect(approved.html).toContain('₹12,500');
+      expect(approved.html).toContain(`/b2b/checkout/${draft.proposalId}`);
     });
 
-    it('emits TBD / owner consultation status when ownerApproved=false (never unauthorized prices)', async () => {
+    it('emits UNPRICED_DRAFT / PENDING_OWNER_APPROVAL when unapproved (never unauthorized prices)', async () => {
       const b2bService = B2BPilotService.getInstance();
+      const mockScanner: any = {
+        scanUrl: vi.fn().mockResolvedValue({
+          auditId: 'audit_pr93_mock2',
+          url: 'https://vijayawada-coaching.in',
+          domain: 'vijayawada-coaching.in',
+          scannedAt: new Date().toISOString(),
+          overallStatus: 'NEEDS_IMPROVEMENT',
+          score: 70,
+          scoreExplanation: 'Mock scan',
+          metrics: { httpStatus: 200, responseTimeMs: 120, htmlSizeBytes: 900, contentType: 'text/html', redirectChain: [], hasRobotsTxt: false, hasSitemap: false, jsonLdTypesFound: [], contactChannelsFound: [] },
+          findings: [],
+          rawHtml: '<html><body><h1>Vijayawada Coaching</h1></body></html>'
+        })
+      };
 
       const proposal = await b2bService.generateProposal({
-        targetUrl: 'https://vijayawada-dental-clinic.in',
-        businessName: 'Vijayawada Dental Clinic',
+        targetUrl: 'https://vijayawada-coaching.in',
+        businessName: 'Vijayawada Coaching',
         ownerApproved: false
-      });
+      }, { scanner: mockScanner });
 
       expect(proposal.ownerApproved).toBe(false);
       expect(proposal.priceINR).toBeNull();
       expect(proposal.checkoutUrl).toBeNull();
       expect(proposal.markdown).toContain('To be confirmed upon owner consultation');
-      expect(proposal.markdown).toContain('OWNER_REVIEW_PENDING');
-      expect(proposal.html).toContain('Commercial terms and fee to be confirmed upon consultation with business owner');
+      expect(proposal.markdown).toContain('PENDING_OWNER_APPROVAL');
+      expect(proposal.html).toContain('UNPRICED_DRAFT');
     });
   });
 });

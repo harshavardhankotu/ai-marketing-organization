@@ -188,6 +188,7 @@ export interface SiteAuditResult {
   businessName?: string;
   domain?: string;
   probedAt?: string;
+  rawHtml?: string;
   scorecard?: {
     totalScore: number;
     grade?: string;
@@ -208,6 +209,7 @@ export interface SiteAuditScanRequest {
   businessName?: string;
   skipCache?: boolean;
   userConfirmedOwnership?: boolean;
+  includeRawHtml?: boolean;
 }
 
 export interface RecheckCheckItem {

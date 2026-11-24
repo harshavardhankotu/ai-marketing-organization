@@ -263,6 +263,7 @@ export class SiteAuditScanner {
       preview,
       diagnostics,
       prospectSignals,
+      ...(request.includeRawHtml ? { rawHtml: html } : {}),
       disclosures: {
         notFullCrawl: true,
         noRankGuarantee: true,

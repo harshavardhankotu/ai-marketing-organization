@@ -370,6 +370,8 @@ export class SystemReadinessEngine {
       operatingState = 'READY_FOR_REAL_EXPERIMENT';
     }
 
+    const d1Status = d1Client.getD1Status();
+
     const report: any = {
       status: operatingState,
       operatingState,
@@ -379,6 +381,8 @@ export class SystemReadinessEngine {
       totalChecks,
       checks,
       capabilities,
+      instanceLocalDailyBackgroundRowsRead: d1Status.instanceLocalDailyBackgroundRowsRead,
+      d1Status,
       metrics: {
         realLeadsCount,
         realConsultationsCount,

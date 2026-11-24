@@ -112,6 +112,9 @@ export class D1RevenueRepository {
     params: any[] = []
   ): Promise<{ rowsAffected: number; source: 'CLOUDFLARE_D1' | 'PERSISTENT_SQLITE' }> {
     const isFinancialTable = FINANCIAL_TABLES.includes(table as any) || isFinancialSql(sql);
+    if (this.d1.isCycleActive() && !isFinancialTable) {
+      this.d1.assertBackgroundBudgetAvailable(sql, 'P0', true);
+    }
 
     const shouldSyncRemoteD1 = this.d1.isRemoteD1WriteAllowed();
     if (shouldSyncRemoteD1) {
@@ -137,6 +140,9 @@ export class D1RevenueRepository {
     }
     const db = getDb();
     const info = db.prepare(sql).run(...params);
+    if (this.d1.isCycleActive() && !isFinancialTable) {
+      this.d1.recordCycleUsage(0, info.changes || 1, true);
+    }
     return { rowsAffected: info.changes, source: 'PERSISTENT_SQLITE' };
   }
 
@@ -155,6 +161,9 @@ export class D1RevenueRepository {
     const hasFinancialTable = operations.some(
       o => FINANCIAL_TABLES.includes(o.table as any) || isFinancialSql(o.sql)
     );
+    if (this.d1.isCycleActive() && !hasFinancialTable) {
+      this.d1.assertBackgroundBudgetAvailable(operations.map(o => o.sql).join(' '), 'P0', true);
+    }
 
     if (shouldSyncRemoteD1) {
       const res = await this.d1.executeBatch(operations.map(o => ({ sql: o.sql, params: o.params })), 'P0');
@@ -193,6 +202,9 @@ export class D1RevenueRepository {
       }
     });
     runBatch(operations);
+    if (this.d1.isCycleActive() && !hasFinancialTable) {
+      this.d1.recordCycleUsage(0, totalChanges, true);
+    }
     return { rowsAffected: totalChanges, source: 'PERSISTENT_SQLITE' };
   }
 
@@ -206,6 +218,10 @@ export class D1RevenueRepository {
     sql: string,
     params: any[] = []
   ): Promise<{ results: T[]; source: 'CLOUDFLARE_D1' | 'PERSISTENT_SQLITE' }> {
+    const isFinancialTable = FINANCIAL_TABLES.includes(table as any) || isFinancialSql(sql);
+    if (this.d1.isCycleActive() && !isFinancialTable) {
+      this.d1.assertBackgroundBudgetAvailable(sql, 'P0', true);
+    }
     const shouldQueryRemoteD1 = this.d1.isRemoteD1ReadAllowed();
     if (shouldQueryRemoteD1) {
       const res = await this.d1.executeQuery<T>(sql, params, false, 'P0');
@@ -216,6 +232,9 @@ export class D1RevenueRepository {
     }
     const db = getDb();
     const results = db.prepare(sql).all(...params) as T[];
+    if (this.d1.isCycleActive() && !isFinancialTable) {
+      this.d1.recordCycleUsage(results.length || 1, 0, true);
+    }
     return { results, source: 'PERSISTENT_SQLITE' };
   }
 
