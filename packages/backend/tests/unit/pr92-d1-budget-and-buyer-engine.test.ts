@@ -65,10 +65,13 @@ describe('PR #92: D1 2,500-Budget Containment & Real Buyer-Decision Engine', () 
     it('uses primary-key updates (WHERE id = ?) in CuelinksSyncManager without unindexed scans', async () => {
       const fs = await import('fs');
       const path = await import('path');
-      const syncManagerSrc = fs.readFileSync(
+      const candidatePaths = [
         path.resolve(process.cwd(), 'src/commission/cuelinks-sync-manager.ts'),
-        'utf-8'
-      );
+        path.resolve(process.cwd(), 'packages/backend/src/commission/cuelinks-sync-manager.ts')
+      ];
+      const validPath = candidatePaths.find(p => fs.existsSync(p));
+      expect(validPath).toBeDefined();
+      const syncManagerSrc = fs.readFileSync(validPath!, 'utf-8');
 
       // Ensure no WHERE id = ? OR destination_url = ? remains in update queries
       expect(syncManagerSrc).not.toContain('WHERE id = ? OR destination_url = ?');
@@ -202,9 +205,14 @@ describe('PR #92: D1 2,500-Budget Containment & Real Buyer-Decision Engine', () 
   });
 
   describe('Part B Item 5: High-Intent Decision-Grade Starter Inventory', () => {
-    it('creates 7 high-intent starter deals across Skincare/Men Grooming and AppSumo software', () => {
+    it('creates 7 high-intent physical product starter deals across Skincare/Men Grooming', () => {
       const starters = createHighIntentStarterDeals();
       expect(starters.length).toBe(7);
+
+      for (const deal of starters) {
+        expect(deal.isSeedFallback).toBe(true);
+        expect(deal.observedAt).toBe('2026-11-24T00:00:00.000Z');
+      }
 
       const dotKey = starters.find(d => d.brand === 'Dot & Key');
       expect(dotKey).toBeDefined();
@@ -222,37 +230,29 @@ describe('PR #92: D1 2,500-Budget Containment & Real Buyer-Decision Engine', () 
 
       const tmc = starters.find(d => d.brand === 'The Man Company');
       expect(tmc).toBeDefined();
-      expect(tmc?.currentPriceINR).toBe(349);
+      expect(tmc?.currentPriceINR).toBe(299);
 
       const swiss = starters.find(d => d.brand === 'Swiss Beauty');
       expect(swiss).toBeDefined();
       expect(swiss?.currentPriceINR).toBe(399);
 
-      const taskMagic = starters.find(d => d.brand === 'TaskMagic');
-      expect(taskMagic).toBeDefined();
-      expect(taskMagic?.category).toBe('Software & SaaS');
+      const mcaffeine = starters.find(d => d.brand === 'mCaffeine');
+      expect(mcaffeine).toBeDefined();
+      expect(mcaffeine?.currentPriceINR).toBe(349);
 
-      const notion = starters.find(d => d.brand === 'Notion Mastery');
-      expect(notion).toBeDefined();
-      expect(notion?.category).toBe('Software & SaaS');
+      const beardo = starters.find(d => d.brand === 'Beardo');
+      expect(beardo).toBeDefined();
+      expect(beardo?.currentPriceINR).toBe(225);
     });
 
-    it('generates high-intent comparison pairs matching India Grooming and AppSumo software', () => {
+    it('generates high-intent comparison pairs matching India Grooming & Skincare', () => {
       const starters = createHighIntentStarterDeals();
       const pairs = generateComparisonPairs(starters, 10);
       expect(pairs.length).toBeGreaterThanOrEqual(2);
 
-      // Verify at least 1 Health & Beauty pair and 1 Software & SaaS pair
+      // Verify Health & Beauty physical pairs
       const beautyPairs = pairs.filter(p => p.category === 'Health & Beauty');
-      const softwarePairs = pairs.filter(p => p.category === 'Software & SaaS');
-
-      expect(beautyPairs.length).toBeGreaterThanOrEqual(1);
-      expect(softwarePairs.length).toBeGreaterThanOrEqual(1);
-
-      // Verify software pair compares TaskMagic vs Notion Mastery
-      const softPair = softwarePairs[0];
-      expect(softPair.title).toContain('TaskMagic');
-      expect(softPair.title).toContain('Notion Mastery');
+      expect(beautyPairs.length).toBeGreaterThanOrEqual(2);
     });
 
     it('generates Skincare and Software buyer-intent hubs with target price alert CTAs', () => {

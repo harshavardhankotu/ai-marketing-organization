@@ -46,7 +46,9 @@ export class OwnerAuthService {
     return raw;
   }
   public static readonly PLATFORM_MERCHANT_NAME = 'SiteFix AI';
-  public static readonly PLATFORM_QR_ASSET_PATH = '/images/razorpay-upi-qr.jpg';
+  public static get PLATFORM_QR_ASSET_PATH(): string {
+    return process.env.DIRECT_UPI_QR_URL || '/images/razorpay-upi-qr.jpg';
+  }
 
   /**
    * Identifies disallowed fixed-amount test payment links (e.g. legacy ₹100 paQqSni link).

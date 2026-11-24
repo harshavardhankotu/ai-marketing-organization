@@ -135,7 +135,8 @@ export interface SiteAuditDisclosures {
 }
 
 export interface SiteAuditPageSpeedData {
-  status: 'SUCCESS' | 'UNAVAILABLE';
+  status: 'SUCCESS' | 'UNAVAILABLE' | 'UNAVAILABLE_RATE_LIMITED' | 'UNAVAILABLE_KEY_ERROR';
+  pageSpeedStatus?: 'SUCCESS' | 'UNAVAILABLE' | 'UNAVAILABLE_RATE_LIMITED' | 'UNAVAILABLE_KEY_ERROR';
   reason?: string;
   notice?: string;
   performanceScore?: number | null;
@@ -183,6 +184,7 @@ export interface SiteAuditResult {
   diagnostics?: SiteAuditDetailedDiagnostics;
   prospectSignals?: ProspectTriggerSignals;
   pageSpeed?: SiteAuditPageSpeedData;
+  pageSpeedStatus?: 'SUCCESS' | 'UNAVAILABLE' | 'UNAVAILABLE_RATE_LIMITED' | 'UNAVAILABLE_KEY_ERROR';
   businessName?: string;
   domain?: string;
   probedAt?: string;

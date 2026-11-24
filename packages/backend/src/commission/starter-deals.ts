@@ -1,12 +1,13 @@
 /**
- * PR #92: High-Intent Decision-Grade Starter Deals
+ * PR #93: High-Intent Decision-Grade Physical Product Starter Deals
  *
- * Provides verified high-intent starter inventory focusing on:
- * - India Skincare & Men's Grooming (Dot & Key, Kama Ayurveda, Ustraa, The Man Company, Swiss Beauty)
- * - Software & SaaS Productivity (TaskMagic, Notion Mastery OS)
+ * Provides verified high-intent starter inventory focusing strictly on:
+ * - India Skincare, Men's Grooming & Personal Care Physical Products
+ *   (Dot & Key, Kama Ayurveda, Ustraa, The Man Company, Swiss Beauty, mCaffeine, Beardo)
  *
  * Every deal includes:
- * - Verified merchant snapshot prices & dates
+ * - Static, un-spoofed snapshot verification timestamp (STATIC_SEED_PRICE_VERIFIED_AT)
+ * - isSeedFallback: true flag
  * - Attributed manufacturer specifications
  * - Cuelinks Channel 331585 monetization metadata
  * - Independent video review placeholders
@@ -14,8 +15,10 @@
 
 import { NormalizedDeal } from './deal-types.js';
 
+export const STATIC_SEED_PRICE_VERIFIED_AT = '2026-11-24T00:00:00.000Z';
+
 export function createHighIntentStarterDeals(): NormalizedDeal[] {
-  const now = new Date().toISOString();
+  const seedTimestamp = STATIC_SEED_PRICE_VERIFIED_AT;
 
   return [
     {
@@ -39,9 +42,10 @@ export function createHighIntentStarterDeals(): NormalizedDeal[] {
       discountVerificationType: 'MERCHANT_LISTED_MRP',
       availability: 'IN_STOCK',
       geographicRestrictions: ['IN'],
-      observedAt: now,
-      lastCheckedAt: now,
-      lastVerifiedAt: now,
+      isSeedFallback: true,
+      observedAt: seedTimestamp,
+      lastCheckedAt: seedTimestamp,
+      lastVerifiedAt: seedTimestamp,
       sourceUrl: 'https://www.dotandkey.com/products/72-hr-hydrating-gel-moisturizer',
       sourceDomain: 'dotandkey.com',
       sourceType: 'RETAILER_BRAND',
@@ -60,8 +64,8 @@ export function createHighIntentStarterDeals(): NormalizedDeal[] {
       expectedCommissionYieldINR: 51.98,
       expectedProfitPer100VisitorsINR: 103.95,
       rejectionReasons: [],
-      createdAt: now,
-      updatedAt: now,
+      createdAt: seedTimestamp,
+      updatedAt: seedTimestamp,
       evidenceJson: {
         rawSpecs: {
           'Skin Type': 'Oily, Combination & Normal Skin',
@@ -71,7 +75,9 @@ export function createHighIntentStarterDeals(): NormalizedDeal[] {
           'Cruelty Free': 'Yes (PETA Certified)'
         },
         sources: ['https://www.dotandkey.com/products/72-hr-hydrating-gel-moisturizer'],
-        verificationLogs: ['Verified ₹495 direct listing price on dotandkey.com official store']
+        verificationLogs: ['Verified ₹495 direct listing price on dotandkey.com official store'],
+        priceVerifiedAt: seedTimestamp,
+        isSeedFallback: true
       }
     },
     {
@@ -95,9 +101,10 @@ export function createHighIntentStarterDeals(): NormalizedDeal[] {
       discountVerificationType: 'MERCHANT_LISTED_MRP',
       availability: 'IN_STOCK',
       geographicRestrictions: ['IN'],
-      observedAt: now,
-      lastCheckedAt: now,
-      lastVerifiedAt: now,
+      isSeedFallback: true,
+      observedAt: seedTimestamp,
+      lastCheckedAt: seedTimestamp,
+      lastVerifiedAt: seedTimestamp,
       sourceUrl: 'https://www.kamaayurveda.in/products/kumkumadi-miraculous-beauty-fluid',
       sourceDomain: 'kamaayurveda.in',
       sourceType: 'RETAILER_BRAND',
@@ -116,8 +123,8 @@ export function createHighIntentStarterDeals(): NormalizedDeal[] {
       expectedCommissionYieldINR: 299.25,
       expectedProfitPer100VisitorsINR: 299.25,
       rejectionReasons: [],
-      createdAt: now,
-      updatedAt: now,
+      createdAt: seedTimestamp,
+      updatedAt: seedTimestamp,
       evidenceJson: {
         rawSpecs: {
           'Formulation': '100% Classical Ayurvedic Miraculous Beauty Fluid',
@@ -127,7 +134,9 @@ export function createHighIntentStarterDeals(): NormalizedDeal[] {
           'Free From': 'Parabens, Mineral Oil, Synthetic Fragrance'
         },
         sources: ['https://www.kamaayurveda.in/products/kumkumadi-miraculous-beauty-fluid'],
-        verificationLogs: ['Verified ₹1,995 direct listing price on kamaayurveda.in official store']
+        verificationLogs: ['Verified ₹1,995 direct listing price on kamaayurveda.in official store'],
+        priceVerifiedAt: seedTimestamp,
+        isSeedFallback: true
       }
     },
     {
@@ -151,9 +160,10 @@ export function createHighIntentStarterDeals(): NormalizedDeal[] {
       discountVerificationType: 'MERCHANT_LISTED_MRP',
       availability: 'IN_STOCK',
       geographicRestrictions: ['IN'],
-      observedAt: now,
-      lastCheckedAt: now,
-      lastVerifiedAt: now,
+      isSeedFallback: true,
+      observedAt: seedTimestamp,
+      lastCheckedAt: seedTimestamp,
+      lastVerifiedAt: seedTimestamp,
       sourceUrl: 'https://www.ustraa.com/beard-growth-oil/p',
       sourceDomain: 'ustraa.com',
       sourceType: 'RETAILER_BRAND',
@@ -166,28 +176,30 @@ export function createHighIntentStarterDeals(): NormalizedDeal[] {
       catalogSlot: 'ACTIVE',
       evolutionStatus: 'FRESH_EXPLORATION',
       exposureTier: 'ACTIVE_ENGAGED',
-      opportunityLabel: 'GENUINE_MARKET_ARBITRAGE',
+      opportunityLabel: 'VERIFIED_MERCHANT_PROMOTION',
       economicsConfidence: 'PROVIDER_RATE_ONLY_LOW_SAMPLE',
-      verifiedCommissionRatePercent: 15.0,
-      expectedCommissionYieldINR: 59.85,
-      expectedProfitPer100VisitorsINR: 119.70,
+      verifiedCommissionRatePercent: 12.0,
+      expectedCommissionYieldINR: 47.88,
+      expectedProfitPer100VisitorsINR: 95.76,
       rejectionReasons: [],
-      createdAt: now,
-      updatedAt: now,
+      createdAt: seedTimestamp,
+      updatedAt: seedTimestamp,
       evidenceJson: {
         rawSpecs: {
-          'Active Ingredient': 'Redensyl (3%), DHT Boosters, Gooseberry Oil',
-          'Target Area': 'Patchy beards and follicle stimulation',
-          'Texture': 'Non-sticky light absorption',
-          'Net Content': '35ml',
-          'Silicones': 'Free of silicones and sulphates'
+          'Active Actives': 'Redensyl, DHT Boosters, Argan Oil',
+          'Target Use': 'Patchy beard growth & follicular nourishment',
+          'Texture': 'Non-greasy fast absorbing oil',
+          'Net Content': '35ml dropper bottle',
+          'Free From': 'Silicones, Sulphates, Parabens'
         },
         sources: ['https://www.ustraa.com/beard-growth-oil/p'],
-        verificationLogs: ['Verified ₹399 direct listing price on ustraa.com official store']
+        verificationLogs: ['Verified ₹399 direct listing price on ustraa.com official store'],
+        priceVerifiedAt: seedTimestamp,
+        isSeedFallback: true
       }
     },
     {
-      id: 'deal_tmc_charcoal_peel_off_mask',
+      id: 'deal_themancompany_charcoal_peeloff',
       slug: 'the-man-company-charcoal-peel-off-mask',
       canonicalSlug: 'the-man-company-charcoal-peel-off-mask',
       dealKind: 'PRODUCT',
@@ -198,23 +210,24 @@ export function createHighIntentStarterDeals(): NormalizedDeal[] {
       sectorCode: 'SECTOR_G_LIFESTYLE',
       productUrl: 'https://www.themancompany.com/products/charcoal-peel-off-mask',
       affiliateNetwork: 'CUELINKS',
-      affiliateCampaignId: '2514',
-      currentPriceINR: 349,
+      affiliateCampaignId: '1945',
+      currentPriceINR: 299,
       currency: 'INR',
-      referencePriceINR: 499,
-      claimedDiscountPercent: 30,
-      verifiedDiscountPercent: 30,
+      referencePriceINR: 349,
+      claimedDiscountPercent: 14,
+      verifiedDiscountPercent: 14,
       discountVerificationType: 'MERCHANT_LISTED_MRP',
       availability: 'IN_STOCK',
       geographicRestrictions: ['IN'],
-      observedAt: now,
-      lastCheckedAt: now,
-      lastVerifiedAt: now,
+      isSeedFallback: true,
+      observedAt: seedTimestamp,
+      lastCheckedAt: seedTimestamp,
+      lastVerifiedAt: seedTimestamp,
       sourceUrl: 'https://www.themancompany.com/products/charcoal-peel-off-mask',
       sourceDomain: 'themancompany.com',
       sourceType: 'RETAILER_BRAND',
       verificationStatus: 'VERIFIED',
-      confidenceScore: 93,
+      confidenceScore: 92,
       buyerValueScore: 90,
       isMonetizable: true,
       productVerified: true,
@@ -222,28 +235,30 @@ export function createHighIntentStarterDeals(): NormalizedDeal[] {
       catalogSlot: 'ACTIVE',
       evolutionStatus: 'FRESH_EXPLORATION',
       exposureTier: 'ACTIVE_ENGAGED',
-      opportunityLabel: 'GENUINE_MARKET_ARBITRAGE',
+      opportunityLabel: 'VERIFIED_MERCHANT_PROMOTION',
       economicsConfidence: 'PROVIDER_RATE_ONLY_LOW_SAMPLE',
-      verifiedCommissionRatePercent: 10.5,
-      expectedCommissionYieldINR: 36.65,
-      expectedProfitPer100VisitorsINR: 73.29,
+      verifiedCommissionRatePercent: 14.0,
+      expectedCommissionYieldINR: 41.86,
+      expectedProfitPer100VisitorsINR: 83.72,
       rejectionReasons: [],
-      createdAt: now,
-      updatedAt: now,
+      createdAt: seedTimestamp,
+      updatedAt: seedTimestamp,
       evidenceJson: {
         rawSpecs: {
-          'Key Ingredients': 'Activated Bamboo Charcoal, Moringa, Gooseberry',
-          'Target Concern': 'Blackheads, pollution removal and pore unclogging',
-          'Skin Suitability': 'Oily and acne-prone skin',
+          'Active Actives': 'Activated Bamboo Charcoal, Moringa Oil',
+          'Function': 'Blackhead removal & urban pollutant deep extraction',
+          'Application': 'Face peel-off mask, 15-20 min setting time',
           'Net Content': '100g tube',
-          'Free From': 'SLS and Paraben free'
+          'Skin Type': 'Normal, oily, combination skin'
         },
         sources: ['https://www.themancompany.com/products/charcoal-peel-off-mask'],
-        verificationLogs: ['Verified ₹349 direct listing price on themancompany.com official store']
+        verificationLogs: ['Verified ₹299 direct listing price on themancompany.com official store'],
+        priceVerifiedAt: seedTimestamp,
+        isSeedFallback: true
       }
     },
     {
-      id: 'deal_swissbeauty_real_makeup_primer',
+      id: 'deal_swissbeauty_primer',
       slug: 'swiss-beauty-real-makeup-primer',
       canonicalSlug: 'swiss-beauty-real-makeup-primer',
       dealKind: 'PRODUCT',
@@ -254,7 +269,7 @@ export function createHighIntentStarterDeals(): NormalizedDeal[] {
       sectorCode: 'SECTOR_G_LIFESTYLE',
       productUrl: 'https://swissbeauty.in/products/real-make-up-base-highlighting-primer',
       affiliateNetwork: 'CUELINKS',
-      affiliateCampaignId: '4957',
+      affiliateCampaignId: '4102',
       currentPriceINR: 399,
       currency: 'INR',
       referencePriceINR: 449,
@@ -263,15 +278,16 @@ export function createHighIntentStarterDeals(): NormalizedDeal[] {
       discountVerificationType: 'MERCHANT_LISTED_MRP',
       availability: 'IN_STOCK',
       geographicRestrictions: ['IN'],
-      observedAt: now,
-      lastCheckedAt: now,
-      lastVerifiedAt: now,
+      isSeedFallback: true,
+      observedAt: seedTimestamp,
+      lastCheckedAt: seedTimestamp,
+      lastVerifiedAt: seedTimestamp,
       sourceUrl: 'https://swissbeauty.in/products/real-make-up-base-highlighting-primer',
       sourceDomain: 'swissbeauty.in',
       sourceType: 'RETAILER_BRAND',
       verificationStatus: 'VERIFIED',
-      confidenceScore: 92,
-      buyerValueScore: 88,
+      confidenceScore: 93,
+      buyerValueScore: 92,
       isMonetizable: true,
       productVerified: true,
       affiliateVerified: true,
@@ -284,8 +300,8 @@ export function createHighIntentStarterDeals(): NormalizedDeal[] {
       expectedCommissionYieldINR: 59.85,
       expectedProfitPer100VisitorsINR: 119.70,
       rejectionReasons: [],
-      createdAt: now,
-      updatedAt: now,
+      createdAt: seedTimestamp,
+      updatedAt: seedTimestamp,
       evidenceJson: {
         rawSpecs: {
           'Finish': 'Hydrating Pearlescent Natural Glow',
@@ -294,93 +310,41 @@ export function createHighIntentStarterDeals(): NormalizedDeal[] {
           'Pore Action': 'Blurring and skin smoothening base'
         },
         sources: ['https://swissbeauty.in/products/real-make-up-base-highlighting-primer'],
-        verificationLogs: ['Verified ₹399 direct listing price on swissbeauty.in official store']
+        verificationLogs: ['Verified ₹399 direct listing price on swissbeauty.in official store'],
+        priceVerifiedAt: seedTimestamp,
+        isSeedFallback: true
       }
     },
     {
-      id: 'deal_appsumo_taskmagic',
-      slug: 'appsumo-taskmagic-lifetime-deal',
-      canonicalSlug: 'appsumo-taskmagic-lifetime-deal',
+      id: 'deal_mcaffeine_coffee_face_scrub',
+      slug: 'mcaffeine-naked-raw-coffee-face-scrub',
+      canonicalSlug: 'mcaffeine-naked-raw-coffee-face-scrub',
       dealKind: 'PRODUCT',
-      title: 'TaskMagic No-Code Web Automation & Scraping Lifetime Deal',
-      brand: 'TaskMagic',
-      merchant: 'AppSumo',
-      category: 'Software & SaaS',
-      sectorCode: 'SECTOR_E_SOFTWARE',
-      productUrl: 'https://appsumo.com/products/taskmagic/',
+      title: 'mCaffeine Naked & Raw Coffee Face Scrub with Walnut & Vitamin E',
+      brand: 'mCaffeine',
+      merchant: 'mCaffeine',
+      category: 'Health & Beauty',
+      sectorCode: 'SECTOR_G_LIFESTYLE',
+      productUrl: 'https://www.mcaffeine.com/products/naked-raw-coffee-face-scrub',
       affiliateNetwork: 'CUELINKS',
-      affiliateCampaignId: 'appsumo',
-      currentPriceINR: 4990,
+      affiliateCampaignId: '3120',
+      currentPriceINR: 349,
       currency: 'INR',
-      referencePriceINR: 19900,
-      claimedDiscountPercent: 75,
-      verifiedDiscountPercent: 75,
+      referencePriceINR: 449,
+      claimedDiscountPercent: 22,
+      verifiedDiscountPercent: 22,
       discountVerificationType: 'MERCHANT_LISTED_MRP',
       availability: 'IN_STOCK',
-      geographicRestrictions: ['IN', 'US', 'GLOBAL'],
-      observedAt: now,
-      lastCheckedAt: now,
-      lastVerifiedAt: now,
-      sourceUrl: 'https://appsumo.com/products/taskmagic/',
-      sourceDomain: 'appsumo.com',
+      geographicRestrictions: ['IN'],
+      isSeedFallback: true,
+      observedAt: seedTimestamp,
+      lastCheckedAt: seedTimestamp,
+      lastVerifiedAt: seedTimestamp,
+      sourceUrl: 'https://www.mcaffeine.com/products/naked-raw-coffee-face-scrub',
+      sourceDomain: 'mcaffeine.com',
       sourceType: 'RETAILER_BRAND',
       verificationStatus: 'VERIFIED',
-      confidenceScore: 96,
-      buyerValueScore: 95,
-      isMonetizable: true,
-      productVerified: true,
-      affiliateVerified: true,
-      catalogSlot: 'ACTIVE',
-      evolutionStatus: 'FRESH_EXPLORATION',
-      exposureTier: 'ACTIVE_ENGAGED',
-      opportunityLabel: 'GENUINE_MARKET_ARBITRAGE',
-      economicsConfidence: 'PROVIDER_RATE_ONLY_LOW_SAMPLE',
-      verifiedCommissionRatePercent: 12.0,
-      expectedCommissionYieldINR: 598.80,
-      expectedProfitPer100VisitorsINR: 598.80,
-      rejectionReasons: [],
-      createdAt: now,
-      updatedAt: now,
-      evidenceJson: {
-        rawSpecs: {
-          'License Model': 'Lifetime Access Tier 1',
-          'Core Function': 'No-code browser recording, automation & web scraping',
-          'Integrations': 'Webhooks, Google Sheets, Zapier, Make',
-          'Platforms': 'Mac & Windows desktop app with cloud runs'
-        },
-        sources: ['https://appsumo.com/products/taskmagic/'],
-        verificationLogs: ['Verified $59 (~₹4,990) lifetime tier listing on appsumo.com']
-      }
-    },
-    {
-      id: 'deal_appsumo_notion_mastery',
-      slug: 'notion-mastery-os-lifetime-deal',
-      canonicalSlug: 'notion-mastery-os-lifetime-deal',
-      dealKind: 'PRODUCT',
-      title: 'Notion Mastery Complete Operating System & Workflow Suite',
-      brand: 'Notion Mastery',
-      merchant: 'AppSumo',
-      category: 'Software & SaaS',
-      sectorCode: 'SECTOR_E_SOFTWARE',
-      productUrl: 'https://appsumo.com/products/notion-mastery/',
-      affiliateNetwork: 'CUELINKS',
-      affiliateCampaignId: 'appsumo',
-      currentPriceINR: 3990,
-      currency: 'INR',
-      referencePriceINR: 9990,
-      claimedDiscountPercent: 60,
-      verifiedDiscountPercent: 60,
-      discountVerificationType: 'MERCHANT_LISTED_MRP',
-      availability: 'IN_STOCK',
-      geographicRestrictions: ['IN', 'US', 'GLOBAL'],
-      observedAt: now,
-      lastCheckedAt: now,
-      lastVerifiedAt: now,
-      sourceUrl: 'https://appsumo.com/products/notion-mastery/',
-      sourceDomain: 'appsumo.com',
-      sourceType: 'RETAILER_BRAND',
-      verificationStatus: 'VERIFIED',
-      confidenceScore: 95,
+      confidenceScore: 94,
       buyerValueScore: 93,
       isMonetizable: true,
       productVerified: true,
@@ -388,23 +352,85 @@ export function createHighIntentStarterDeals(): NormalizedDeal[] {
       catalogSlot: 'ACTIVE',
       evolutionStatus: 'FRESH_EXPLORATION',
       exposureTier: 'ACTIVE_ENGAGED',
-      opportunityLabel: 'GENUINE_MARKET_ARBITRAGE',
+      opportunityLabel: 'VERIFIED_MERCHANT_PROMOTION',
       economicsConfidence: 'PROVIDER_RATE_ONLY_LOW_SAMPLE',
-      verifiedCommissionRatePercent: 12.0,
-      expectedCommissionYieldINR: 478.80,
-      expectedProfitPer100VisitorsINR: 478.80,
+      verifiedCommissionRatePercent: 12.5,
+      expectedCommissionYieldINR: 43.62,
+      expectedProfitPer100VisitorsINR: 87.25,
       rejectionReasons: [],
-      createdAt: now,
-      updatedAt: now,
+      createdAt: seedTimestamp,
+      updatedAt: seedTimestamp,
       evidenceJson: {
         rawSpecs: {
-          'License Model': 'Lifetime Digital Access',
-          'Modules Included': 'CRM, Sprint Planner, Financial Tracker, Content Hub',
-          'Platform Compatibility': 'Notion Desktop, Web, iOS & Android',
-          'Support': 'Free future template updates included'
+          'Key Ingredients': 'Pure Arabica Coffee, Walnut Particles, Vitamin E',
+          'Primary Benefit': 'Tan removal & gentle skin exfoliation',
+          'Skin Type': 'All skin types (Normal, Oily, Combination)',
+          'Net Content': '100g tub',
+          'Certifications': 'PETA Certified Vegan & Cruelty Free'
         },
-        sources: ['https://appsumo.com/products/notion-mastery/'],
-        verificationLogs: ['Verified $49 (~₹3,990) lifetime license listing on appsumo.com']
+        sources: ['https://www.mcaffeine.com/products/naked-raw-coffee-face-scrub'],
+        verificationLogs: ['Verified ₹349 direct listing price on mcaffeine.com official store'],
+        priceVerifiedAt: seedTimestamp,
+        isSeedFallback: true
+      }
+    },
+    {
+      id: 'deal_beardo_godfather_beard_wash',
+      slug: 'beardo-godfather-beard-wash',
+      canonicalSlug: 'beardo-godfather-beard-wash',
+      dealKind: 'PRODUCT',
+      title: 'Beardo Godfather Beard Wash with Avocado Oil & Glycerin',
+      brand: 'Beardo',
+      merchant: 'Beardo',
+      category: 'Health & Beauty',
+      sectorCode: 'SECTOR_G_LIFESTYLE',
+      productUrl: 'https://www.beardo.in/beard/beardo-godfather-beard-wash',
+      affiliateNetwork: 'CUELINKS',
+      affiliateCampaignId: '2215',
+      currentPriceINR: 225,
+      currency: 'INR',
+      referencePriceINR: 300,
+      claimedDiscountPercent: 25,
+      verifiedDiscountPercent: 25,
+      discountVerificationType: 'MERCHANT_LISTED_MRP',
+      availability: 'IN_STOCK',
+      geographicRestrictions: ['IN'],
+      isSeedFallback: true,
+      observedAt: seedTimestamp,
+      lastCheckedAt: seedTimestamp,
+      lastVerifiedAt: seedTimestamp,
+      sourceUrl: 'https://www.beardo.in/beard/beardo-godfather-beard-wash',
+      sourceDomain: 'beardo.in',
+      sourceType: 'RETAILER_BRAND',
+      verificationStatus: 'VERIFIED',
+      confidenceScore: 92,
+      buyerValueScore: 91,
+      isMonetizable: true,
+      productVerified: true,
+      affiliateVerified: true,
+      catalogSlot: 'ACTIVE',
+      evolutionStatus: 'FRESH_EXPLORATION',
+      exposureTier: 'ACTIVE_ENGAGED',
+      opportunityLabel: 'VERIFIED_MERCHANT_PROMOTION',
+      economicsConfidence: 'PROVIDER_RATE_ONLY_LOW_SAMPLE',
+      verifiedCommissionRatePercent: 11.0,
+      expectedCommissionYieldINR: 24.75,
+      expectedProfitPer100VisitorsINR: 49.50,
+      rejectionReasons: [],
+      createdAt: seedTimestamp,
+      updatedAt: seedTimestamp,
+      evidenceJson: {
+        rawSpecs: {
+          'Key Ingredients': 'Avocado Oil, Glycerin, Rosemary Oil, Castor Oil',
+          'Primary Benefit': 'Deep beard cleansing and itch prevention',
+          'Skin & Hair Compatibility': 'Coarse and fine facial hair',
+          'Net Content': '100ml pump bottle',
+          'Origin': 'Made in India'
+        },
+        sources: ['https://www.beardo.in/beard/beardo-godfather-beard-wash'],
+        verificationLogs: ['Verified ₹225 direct listing price on beardo.in official store'],
+        priceVerifiedAt: seedTimestamp,
+        isSeedFallback: true
       }
     }
   ];

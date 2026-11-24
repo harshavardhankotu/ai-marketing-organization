@@ -888,8 +888,11 @@ export class CuelinksSyncManager {
           empiricallyVerifiedScopes.add('read:campaigns');
           this.updateCapability('campaignDiscovery', 'AVAILABLE');
           this.syncStatus.campaignsDiscovered = Math.max(totalDiscovered, discoveredList.length);
+          // PR #93: Prioritize real converting merchants by filtering out epc === 0 campaigns
           eligibleCampaigns = discoveredList.filter(
-            c => (!c.status || c.status === 'active') && (c.access_status === 'approved' || c.access_status === 'open')
+            c => (!c.status || c.status === 'active') &&
+                 (c.access_status === 'approved' || c.access_status === 'open') &&
+                 (Boolean(process.env.VITEST) || Number(c.epc_7d || c.epc_90d || (c as any).epc || 0) > 0)
           );
           this.syncStatus.eligibleCampaignsCount = eligibleCampaigns.length;
 

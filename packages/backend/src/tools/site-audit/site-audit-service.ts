@@ -490,25 +490,56 @@ export class SiteAuditService {
           opportunities: psRes.opportunities
         };
       } else {
-        const reason = psRes.reason || 'UNAVAILABLE';
+        const rawReason = String(psRes.reason || psRes.status || 'UNAVAILABLE');
+        let mappedStatus: 'UNAVAILABLE' | 'UNAVAILABLE_RATE_LIMITED' | 'UNAVAILABLE_KEY_ERROR' = 'UNAVAILABLE';
+        let notice = 'Core Web Vitals data currently unavailable. 12-point verified HTML, TTFB, and asset diagnostics completed.';
+        if (
+          psRes.status === 'UNAVAILABLE_RATE_LIMITED' ||
+          rawReason.includes('429') ||
+          rawReason === 'UNAVAILABLE_RATE_LIMITED' ||
+          rawReason.includes('RATE_LIMIT')
+        ) {
+          mappedStatus = 'UNAVAILABLE_RATE_LIMITED';
+          notice = 'Core Web Vitals data currently unavailable: Google PageSpeed Insights rate limit reached (HTTP 429). Verified HTML, TTFB, and server asset diagnostics completed.';
+        } else if (
+          psRes.status === 'UNAVAILABLE_KEY_ERROR' ||
+          rawReason.includes('400') ||
+          rawReason.includes('401') ||
+          rawReason.includes('403') ||
+          rawReason === 'UNAVAILABLE_KEY_ERROR' ||
+          rawReason.includes('API_KEY')
+        ) {
+          mappedStatus = 'UNAVAILABLE_KEY_ERROR';
+          notice = 'Core Web Vitals data currently unavailable: Google PageSpeed API key error or restrictions in effect (HTTP 400/403). Verified HTML, TTFB, and asset diagnostics completed.';
+        } else if (rawReason === 'BLOCKED_NO_DEDICATED_KEY' || rawReason === 'MISSING_API_KEY') {
+          notice = 'Core Web Vitals data currently unavailable: GOOGLE_PAGESPEED_API_KEY is unconfigured in production. 12-point deterministic HTML & technical audit completed.';
+        }
         result.pageSpeed = {
           status: 'UNAVAILABLE',
-          reason,
-          notice: (reason === 'BLOCKED_NO_DEDICATED_KEY' || reason === 'MISSING_API_KEY')
-            ? 'Live Core Web Vitals data currently unavailable: GOOGLE_PAGESPEED_API_KEY is unconfigured in production. 12-point deterministic HTML & technical audit completed.'
-            : 'Live Core Web Vitals data currently unavailable: Google PageSpeed free tier quota reached or unconfigured. Raw HTML audit completed.',
+          pageSpeedStatus: mappedStatus,
+          reason: rawReason,
+          notice,
           coreWebVitals: null,
           opportunities: []
         };
+        result.pageSpeedStatus = mappedStatus;
       }
     } catch (psErr: any) {
+      const msg = String(psErr?.message || 'UNAVAILABLE');
+      const mappedStatus = msg.includes('429')
+        ? 'UNAVAILABLE_RATE_LIMITED'
+        : (msg.includes('400') || msg.includes('401') || msg.includes('403'))
+          ? 'UNAVAILABLE_KEY_ERROR'
+          : 'UNAVAILABLE';
       result.pageSpeed = {
         status: 'UNAVAILABLE',
-        reason: psErr.message || 'UNAVAILABLE',
+        pageSpeedStatus: mappedStatus,
+        reason: msg,
         notice: 'Live Core Web Vitals data currently unavailable: Google PageSpeed free tier quota reached or unconfigured. Raw HTML audit completed.',
         coreWebVitals: null,
         opportunities: []
       };
+      result.pageSpeedStatus = mappedStatus;
     }
 
     this.auditCache.set(result.auditId, {

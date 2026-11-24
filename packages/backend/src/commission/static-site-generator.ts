@@ -270,6 +270,18 @@ const FIXED_BUYER_INTENT_HUBS: HubSeedDefinition[] = [
       /(skincare|skin|groom|beard|moisturizer|serum|mask|kumkumadi|primer|beauty|ayurveda|face wash|oil)/i.test(text + ' ' + String(d?.category || ''))
   },
   {
+    intentSlug: 'daily-personal-care-and-grooming-under-500',
+    title: 'Best Daily Personal Care & Grooming Under ₹500 in India (Verified Prices)',
+    h1: 'Best Daily Personal Care & Grooming Essentials Under ₹500',
+    description: 'Verified merchant snapshot prices on coffee scrubs, beard washes, charcoal peel-offs, primers, and daily grooming essentials under ₹500 with live Amazon.in coupon check.',
+    priceCapLabel: 'Under ₹500',
+    categoryLabel: 'Personal Care & Grooming',
+    maxPriceINR: 500,
+    predicate: (d, text, price) =>
+      price > 0 && price <= 500 &&
+      /(scrub|wash|face wash|beard|mask|primer|moisturizer|groom|care|coffee|charcoal|personal care|mcaffeine|beardo|ustraa)/i.test(text + ' ' + String(d?.category || ''))
+  },
+  {
     intentSlug: 'saas-and-software-tools-lifetime-deals',
     title: 'Best Lifetime SaaS & Productivity Software Deals (Verified Prices)',
     h1: 'Best Software & Lifetime SaaS Deals Under ₹5,000',

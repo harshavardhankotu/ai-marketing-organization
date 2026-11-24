@@ -16016,6 +16016,75 @@ apiRouter.get('/offer/download/:downloadToken', handleOfferDownload);
 apiRouter.get('/api/v1/offer/download/:downloadToken', handleOfferDownload);
 
 /**
+ * PR #93: Done-For-You B2B Service Pilot Proposal Endpoints
+ * Generates verified Before-Action Audit & Implementation Proposal for local businesses & training institutes.
+ */
+apiRouter.post('/b2b/pilot-proposal', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const targetUrl = body.url || body.targetUrl;
+  if (!targetUrl || typeof targetUrl !== 'string') {
+    return c.json({ error: 'INVALID_REQUEST: targetUrl string is required' }, 400);
+  }
+  const businessName = body.businessName || 'Business Owner';
+  const ownerApproved = body.ownerApproved === true;
+  const priceINR = typeof body.priceINR === 'number' ? body.priceINR : null;
+  const checkoutBaseUrl = getTrustedPublicSiteUrl();
+
+  const { B2BPilotService } = await import('../revenue/b2b-pilot-service.js');
+  try {
+    const proposal = await B2BPilotService.getInstance().generateProposal({
+      targetUrl,
+      businessName,
+      ownerApproved,
+      priceINR,
+      checkoutBaseUrl
+    });
+    const format = c.req.query('format') || body.format;
+    if (format === 'html') {
+      return c.html(proposal.html);
+    }
+    if (format === 'markdown') {
+      return c.text(proposal.markdown);
+    }
+    return c.json({ success: true, data: proposal });
+  } catch (err: any) {
+    return c.json({ error: err.message || 'PROPOSAL_GENERATION_FAILED' }, 500);
+  }
+});
+
+apiRouter.get('/b2b/pilot-proposal', async (c) => {
+  const targetUrl = c.req.query('url') || c.req.query('targetUrl');
+  if (!targetUrl) {
+    return c.text('Missing required query parameter: url', 400);
+  }
+  const businessName = c.req.query('businessName') || 'Business Owner';
+  const ownerApproved = c.req.query('ownerApproved') === 'true';
+  const priceINR = c.req.query('priceINR') ? Number(c.req.query('priceINR')) : null;
+  const checkoutBaseUrl = getTrustedPublicSiteUrl();
+
+  const { B2BPilotService } = await import('../revenue/b2b-pilot-service.js');
+  try {
+    const proposal = await B2BPilotService.getInstance().generateProposal({
+      targetUrl,
+      businessName,
+      ownerApproved,
+      priceINR,
+      checkoutBaseUrl
+    });
+    const format = c.req.query('format') || 'html';
+    if (format === 'json') {
+      return c.json({ success: true, data: proposal });
+    }
+    if (format === 'markdown') {
+      return c.text(proposal.markdown);
+    }
+    return c.html(proposal.html);
+  } catch (err: any) {
+    return c.text(`Error generating proposal: ${err.message}`, 500);
+  }
+});
+
+/**
  * =========================================================================
  * V4.0 MULTI-MARKET, HEALTHCARE ACCURACY & FINANCIAL TRUTH ENDPOINTS
  * =========================================================================
