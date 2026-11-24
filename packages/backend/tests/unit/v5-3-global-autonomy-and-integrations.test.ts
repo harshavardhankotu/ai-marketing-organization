@@ -60,10 +60,10 @@ describe('V5.3 — Global Autonomy Brain, Integrations & 4-Engine Multi-Sector P
       expect(cspAudit).toContain('https://checkout.razorpay.com');
     });
 
-    it('redirects /checkout to /offer with 302', async () => {
+    it('redirects /checkout to /tools/site-audit with 302', async () => {
       const res = await app.request('/checkout');
       expect(res.status).toBe(302);
-      expect(res.headers.get('location')).toBe('/offer');
+      expect(res.headers.get('location')).toBe('/tools/site-audit');
     });
   });
 

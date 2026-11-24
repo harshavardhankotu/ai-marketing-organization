@@ -704,7 +704,7 @@ describe('PASS 2.1 — Security & Commercial Integrity Closure', () => {
         expect(attr.bySource[src].scanAttempts).toBe(2);
         expect(attr.bySource[src].completedScans).toBe(1);
         expect(attr.bySource[src].scan).toBe(1);
-        expect(attr.bySource[src].preview_open).toBe(1);
+        expect(attr.bySource[src].page_view).toBe(1);
         expect(attr.bySource[src].checkout_start).toBe(1);
         expect(attr.bySource[src].capture).toBe(1);
         expect(attr.bySource[src].delivery).toBe(1);
