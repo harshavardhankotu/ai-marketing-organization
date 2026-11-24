@@ -3833,6 +3833,11 @@ export class AutonomousDealDiscoveryEngine {
           AND product_verified = 1
           AND product_url IS NOT NULL AND product_url != ''
           AND (expiry_date IS NULL OR expiry_date > datetime('now'))
+        AND (
+          (last_verified_at IS NOT NULL AND last_verified_at > datetime('now', '-7 days'))
+          OR (updated_at IS NOT NULL AND updated_at > datetime('now', '-7 days'))
+          OR (created_at IS NOT NULL AND created_at > datetime('now', '-7 days'))
+        )
           AND (affiliate_verified = 0 OR affiliate_verified IS NULL OR is_monetizable = 0)
         ORDER BY updated_at ASC
         LIMIT ?
@@ -4453,6 +4458,11 @@ export class AutonomousDealDiscoveryEngine {
         AND affiliate_verified = 1
         AND verification_status IN ('VERIFIED', 'AFFILIATE_VERIFIED', 'VERIFIED_WITH_CONDITIONS')
         AND (expiry_date IS NULL OR expiry_date > datetime('now'))
+        AND (
+          (last_verified_at IS NOT NULL AND last_verified_at > datetime('now', '-7 days'))
+          OR (updated_at IS NOT NULL AND updated_at > datetime('now', '-7 days'))
+          OR (created_at IS NOT NULL AND created_at > datetime('now', '-7 days'))
+        )
     `;
     try {
       if (useRemoteD1) {
@@ -4649,6 +4659,11 @@ export class AutonomousDealDiscoveryEngine {
       AND product_verified = 1
       AND affiliate_verified = 1
       AND (expiry_date IS NULL OR expiry_date > datetime('now'))
+      AND (
+        (last_verified_at IS NOT NULL AND last_verified_at > datetime('now', '-7 days'))
+        OR (updated_at IS NOT NULL AND updated_at > datetime('now', '-7 days'))
+        OR (created_at IS NOT NULL AND created_at > datetime('now', '-7 days'))
+      )
     ORDER BY created_at DESC
     LIMIT 250
   `;
@@ -4670,6 +4685,11 @@ export class AutonomousDealDiscoveryEngine {
         AND product_verified = 1
         AND affiliate_verified = 1
         AND (expiry_date IS NULL OR expiry_date > datetime('now'))
+        AND (
+          (last_verified_at IS NOT NULL AND last_verified_at > datetime('now', '-7 days'))
+          OR (updated_at IS NOT NULL AND updated_at > datetime('now', '-7 days'))
+          OR (created_at IS NOT NULL AND created_at > datetime('now', '-7 days'))
+        )
     `;
     const params: any[] = [];
 
@@ -4976,6 +4996,14 @@ export class AutonomousDealDiscoveryEngine {
         ) {
           return false;
         }
+        // Deals Freshness Guard: Exclude stale offers older than 7 days from top public deal rankings until revalidated
+        const checkTs = d.lastCheckedAt || d.lastVerifiedAt || d.updatedAt || d.observedAt || (d as any).created_at;
+        if (checkTs) {
+          const ageMs = Date.now() - new Date(checkTs).getTime();
+          if (Number.isFinite(ageMs) && ageMs > 7 * 24 * 60 * 60 * 1000) {
+            return false;
+          }
+        }
         return (
           d.availability === 'IN_STOCK' &&
           typeof d.currentPriceINR === 'number' && d.currentPriceINR > 0 &&
@@ -5199,6 +5227,15 @@ export class AutonomousDealDiscoveryEngine {
 
       if (d.expiryDate && new Date(d.expiryDate).getTime() < Date.now()) {
         return false;
+      }
+
+      // Deals Freshness Guard: Exclude stale offers older than 7 days from top public deal rankings until revalidated
+      const checkTs = d.lastCheckedAt || d.lastVerifiedAt || d.updatedAt || d.observedAt || (d as any).created_at;
+      if (checkTs) {
+        const ageMs = Date.now() - new Date(checkTs).getTime();
+        if (Number.isFinite(ageMs) && ageMs > 7 * 24 * 60 * 60 * 1000) {
+          return false;
+        }
       }
 
       if (params.verifiedOnly && d.verificationStatus !== 'VERIFIED' && d.verificationStatus !== 'AFFILIATE_VERIFIED') {

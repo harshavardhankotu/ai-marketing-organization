@@ -23,6 +23,7 @@ export type SiteFixFunnelStage =
   | 'checkout_modal_opened'
   | 'payment_captured'
   | 'deliverable_ready'
+  | 'email_accepted'
   | 'email_delivered'
   | 'scan_attempt'
   | 'scan'
@@ -296,9 +297,10 @@ export interface SiteFixFunnelStageCounts {
   /** Distinct daily-salted SHA-256 IP+UA fingerprints observed in the reporting window (not verified unique people). */
   distinctVisitorFingerprints: number;
   distinctSessionFingerprints: number;
+  distinctBrowserSessions: number;
   externalPageViews: number;
 
-  // 9 Clean Funnel Stages (Stage U.1)
+  // Clean Funnel Stages (Stage U.1.1)
   page_view: number;
   scan_started: number;
   scan_completed: number;
@@ -307,6 +309,7 @@ export interface SiteFixFunnelStageCounts {
   checkout_modal_opened: number;
   payment_captured: number;
   deliverable_ready: number;
+  email_accepted: number;
   email_delivered: number;
 
   // Backward-compatibility counters
@@ -336,6 +339,7 @@ function emptyStageCounts(): SiteFixFunnelStageCounts {
   return {
     distinctVisitorFingerprints: 0,
     distinctSessionFingerprints: 0,
+    distinctBrowserSessions: 0,
     externalPageViews: 0,
     page_view: 0,
     scan_started: 0,
@@ -345,6 +349,7 @@ function emptyStageCounts(): SiteFixFunnelStageCounts {
     checkout_modal_opened: 0,
     payment_captured: 0,
     deliverable_ready: 0,
+    email_accepted: 0,
     email_delivered: 0,
     scanAttempts: 0,
     completedScans: 0,
@@ -670,9 +675,15 @@ function aggregateFunnelRows(
       const parsed = JSON.parse(row.payload_json);
       const source = normalizeSiteFixSource(parsed?.source, 'web');
       const stage = parsed?.stage as SiteFixFunnelStage;
-      const isProbe = Boolean(parsed?.isProbe);
+      const isTestOrProbe =
+        Boolean(parsed?.isProbe) ||
+        Boolean(parsed?.isTest) ||
+        Boolean(parsed?.isTestTraffic) ||
+        Boolean(parsed?.isInternal) ||
+        (typeof parsed?.probeReason === 'string' &&
+          /probe|bot|qa|test|diagnostic/i.test(parsed.probeReason));
 
-      if (isProbe) {
+      if (isTestOrProbe) {
         excludedProbesCount++;
         excludedBySource[source]++;
         continue;
@@ -704,10 +715,11 @@ function aggregateFunnelRows(
         bySource[source].scan_completed++;
         bySource[source].completedScans++;
         bySource[source].scan++;
-      } else if (stage === 'preview_displayed' || stage === 'preview_open') {
+      } else if (stage === 'preview_displayed') {
         totals.preview_displayed++;
-        totals.preview_open++;
         bySource[source].preview_displayed++;
+      } else if (stage === 'preview_open') {
+        totals.preview_open++;
         bySource[source].preview_open++;
       } else if (stage === 'order_created' || stage === 'checkout_start') {
         totals.order_created++;
@@ -731,6 +743,9 @@ function aggregateFunnelRows(
         bySource[source].deliverable_ready++;
         bySource[source].delivery++;
         bySource[source].delivered++;
+      } else if (stage === 'email_accepted') {
+        totals.email_accepted++;
+        bySource[source].email_accepted++;
       } else if (stage === 'email_delivered') {
         totals.email_delivered++;
         bySource[source].email_delivered++;
@@ -740,18 +755,24 @@ function aggregateFunnelRows(
 
   totals.distinctVisitorFingerprints = totalFingerprints.size;
   totals.distinctSessionFingerprints = totalFingerprints.size;
+  totals.distinctBrowserSessions = totalFingerprints.size;
   for (const src of ALLOWED_SITEFIX_SOURCES) {
     bySource[src].distinctVisitorFingerprints = fingerprintsBySource[src].size;
     bySource[src].distinctSessionFingerprints = fingerprintsBySource[src].size;
+    bySource[src].distinctBrowserSessions = fingerprintsBySource[src].size;
     // If historical scan rows exist without separate scan_started events, ensure scanAttempts >= completedScans
     if (bySource[src].scanAttempts < bySource[src].completedScans) {
       bySource[src].scanAttempts = bySource[src].completedScans;
-      bySource[src].scan_started = bySource[src].completedScans;
+      if (bySource[src].scan_started < bySource[src].scan_completed) {
+        bySource[src].scan_started = bySource[src].scan_completed;
+      }
     }
   }
   if (totals.scanAttempts < totals.completedScans) {
     totals.scanAttempts = totals.completedScans;
-    totals.scan_started = totals.completedScans;
+  }
+  if (totals.scan_started < totals.scan_completed) {
+    totals.scan_started = totals.scan_completed;
   }
 
   return {

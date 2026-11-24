@@ -167,6 +167,17 @@ app.all('/workflows/first-customer', async (c) => {
   }));
 });
 
+// Top-level /webhooks/* forwarding to /api/v1/webhooks/* (e.g. Razorpay webhook endpoint)
+app.all('/webhooks/*', async (c) => {
+  const targetPath = '/api/v1' + c.req.path;
+  const newReq = new Request(new URL(targetPath, c.req.url).toString(), {
+    method: c.req.method,
+    headers: c.req.raw.headers,
+    body: ['GET', 'HEAD'].includes(c.req.method) ? undefined : await c.req.raw.clone().blob()
+  });
+  return app.fetch(newReq);
+});
+
 // Top-level public calculator, site audit tool and capabilities routing
 app.get('/tools/site-audit', async (c) => {
   const { renderSiteAuditPage } = await import('./tools/site-audit/site-audit-page.js');
