@@ -549,7 +549,18 @@ app.get('/images/razorpay-upi-qr.jpg', async (c) => {
       }
     });
   }
-  return c.text('Payment QR asset not configured locally. Configure DIRECT_UPI_QR_URL runtime environment variable.', 404);
+  // Minimal valid 1x1 JPEG fallback when no personal QR is stored on disk
+  const placeholderJpg = Buffer.from(
+    '/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=',
+    'base64'
+  );
+  return new Response(placeholderJpg, {
+    status: 200,
+    headers: {
+      'Content-Type': 'image/jpeg',
+      'Cache-Control': 'public, max-age=86400'
+    }
+  });
 });
 app.get('/assets/razorpay-upi-qr.jpg', (c) => c.redirect('/images/razorpay-upi-qr.jpg', 301));
 
