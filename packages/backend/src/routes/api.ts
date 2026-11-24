@@ -1507,7 +1507,7 @@ apiRouter.get('/cron/status', async (c) => {
       try {
         const parsed = typeof tRow.metadata_json === 'string' ? JSON.parse(tRow.metadata_json) : tRow.metadata_json;
         if (Array.isArray(parsed?.pings24h)) {
-          pingsList = parsed.pings24h.filter((ts: any) => typeof ts === 'string' && new Date(ts).getTime() >= cutoff24hMs);
+          pingsList = parsed.pings24h.filter((ts: any) => typeof ts === 'string' && parseSqliteTimestampMs(ts) >= cutoff24hMs);
         }
       } catch {}
 
@@ -1663,11 +1663,11 @@ apiRouter.post('/cron/ping', async (c) => {
   const telemetryId = isCloudflareWorker ? 'cloudflare_worker_cron' : 'manual_ping';
 
   // 1. PR #96 Zero-Read Lightweight Heartbeat: record cron_telemetry directly without any SELECT read,
-  //    queue recovery, stale-lease scan, job enqueueing, or getQueueStats().
+  //    queue recovery, stale-lease scan, job enqueueing, or getQueueStats(), while preserving pings24h atomically in JSON1.
   let telemetryRecorded = false;
   const nowIso = new Date().toISOString();
   try {
-    const metadataJson = JSON.stringify({ lastPingIso: nowIso });
+    const initialMetadataJson = JSON.stringify({ lastPingIso: nowIso, pings24h: [nowIso] });
     const sql = `
       INSERT INTO cron_telemetry (id, status, last_observed_ping, total_pings, last_user_agent, worker_source, metadata_json, updated_at)
       VALUES (?, 'OBSERVED', datetime('now'), 1, ?, ?, ?, datetime('now'))
@@ -1677,10 +1677,23 @@ apiRouter.post('/cron/ping', async (c) => {
         total_pings = total_pings + 1,
         last_user_agent = ?,
         worker_source = ?,
-        metadata_json = ?,
+        metadata_json = json_set(
+          CASE WHEN json_valid(cron_telemetry.metadata_json) THEN cron_telemetry.metadata_json ELSE '{}' END,
+          '$.lastPingIso', ?,
+          '$.pings24h', json_insert(
+            CASE
+              WHEN json_type(cron_telemetry.metadata_json, '$.pings24h') = 'array'
+                THEN json_extract(cron_telemetry.metadata_json, '$.pings24h')
+              WHEN cron_telemetry.total_pings > 0 AND cron_telemetry.last_observed_ping IS NOT NULL
+                THEN json_array(cron_telemetry.last_observed_ping)
+              ELSE json_array()
+            END,
+            '$[#]', ?
+          )
+        ),
         updated_at = datetime('now')
     `;
-    const params = [telemetryId, userAgent, workerSource, metadataJson, userAgent, workerSource, metadataJson];
+    const params = [telemetryId, userAgent, workerSource, initialMetadataJson, userAgent, workerSource, nowIso, nowIso];
     await d1Repo.executeWrite('cron_telemetry', sql, params);
     telemetryRecorded = true;
   } catch (err: any) {
