@@ -14985,18 +14985,67 @@ const handleSiteAuditReadiness = async (c: any) => {
   const { RazorpayStandardAdapter } = await import('../payments/razorpay-adapter.js');
   const probe = await RazorpayStandardAdapter.getInstance().probeRazorpayAuth();
   const readiness = SiteAuditService.getInstance().getCheckoutReadiness({ authProbeResult: probe });
-  const d1Status = D1Client.getInstance().getD1Status();
+  const d1 = D1Client.getInstance();
+  const circuit = d1.getRemoteQuotaCircuitState();
+  const d1Telemetry = d1.getD1Status();
+  const isD1QuotaExhausted = Boolean(circuit.exhausted || d1Telemetry.dailyBackgroundBudgetExceeded);
+  const d1Status: 'HEALTHY' | 'DEGRADED_QUOTA_EXHAUSTED' = isD1QuotaExhausted
+    ? 'DEGRADED_QUOTA_EXHAUSTED'
+    : 'HEALTHY';
+  const effectiveReady = Boolean(readiness.isReady && !isD1QuotaExhausted);
+  const effectiveStatus = isD1QuotaExhausted ? 'DEGRADED_QUOTA_EXHAUSTED' : readiness.status;
   return c.json({
     success: true,
     ...readiness,
+    status: effectiveStatus,
+    isReady: effectiveReady,
+    d1Status,
     providerAcceptedAuth: probe.providerAcceptedAuth,
     authDiagnosticCode: probe.authDiagnosticCode,
-    instanceLocalDailyBackgroundRowsRead: d1Status.instanceLocalDailyBackgroundRowsRead,
-    d1Status
+    instanceLocalDailyBackgroundRowsRead: d1Telemetry.instanceLocalDailyBackgroundRowsRead,
+    telemetryScopeNote: 'Instance-local counter in process memory; resets across process restarts or redeploys.',
+    d1Telemetry,
+    d1CircuitBreaker: circuit
   }, 200);
 };
 apiRouter.get('/tools/site-audit/readiness', handleSiteAuditReadiness);
 apiRouter.get('/api/v1/tools/site-audit/readiness', handleSiteAuditReadiness);
+
+/**
+ * PR #94 / Follow-up: B2B Service & Checkout Readiness Endpoint
+ * Surfaces honest D1 quota degradation so checkout readiness never claims healthy when /health returns 503.
+ */
+const handleB2BReadiness = async (c: any) => {
+  const { RazorpayStandardAdapter } = await import('../payments/razorpay-adapter.js');
+  const probe = await RazorpayStandardAdapter.getInstance().probeRazorpayAuth();
+  const d1 = D1Client.getInstance();
+  const circuit = d1.getRemoteQuotaCircuitState();
+  const d1Telemetry = d1.getD1Status();
+  const isD1QuotaExhausted = Boolean(circuit.exhausted || d1Telemetry.dailyBackgroundBudgetExceeded);
+  const d1Status: 'HEALTHY' | 'DEGRADED_QUOTA_EXHAUSTED' = isD1QuotaExhausted
+    ? 'DEGRADED_QUOTA_EXHAUSTED'
+    : 'HEALTHY';
+  const razorpayReady = Boolean(probe.providerAcceptedAuth);
+  const isReady = razorpayReady && !isD1QuotaExhausted;
+  return c.json({
+    success: true,
+    status: isD1QuotaExhausted
+      ? 'DEGRADED_QUOTA_EXHAUSTED'
+      : (razorpayReady ? 'READY' : 'LOCKED_MISSING_CONFIGURATION'),
+    isReady,
+    proposalDraftingAvailable: true,
+    checkoutOrderCreationReady: isReady,
+    d1Status,
+    providerAcceptedAuth: probe.providerAcceptedAuth,
+    authDiagnosticCode: probe.authDiagnosticCode,
+    instanceLocalDailyBackgroundRowsRead: d1Telemetry.instanceLocalDailyBackgroundRowsRead,
+    telemetryScopeNote: 'Instance-local counter in process memory; resets across process restarts or redeploys.',
+    d1Telemetry,
+    d1CircuitBreaker: circuit
+  }, 200);
+};
+apiRouter.get('/b2b/readiness', handleB2BReadiness);
+apiRouter.get('/api/v1/b2b/readiness', handleB2BReadiness);
 
 /**
  * Public Audit Result & Free Preview

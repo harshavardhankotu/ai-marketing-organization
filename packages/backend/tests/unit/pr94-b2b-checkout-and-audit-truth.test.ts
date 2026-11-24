@@ -642,7 +642,32 @@ describe('PR #94: B2B Checkout Truth, Audit Truth, Catalog Honesty, Category Gui
       expect(siteAuditReadyRes.status).toBe(200);
       const readyJson = await siteAuditReadyRes.json() as any;
       expect(readyJson.instanceLocalDailyBackgroundRowsRead).toBe(42);
-      expect(readyJson.d1Status.instanceLocalDailyBackgroundRowsRead).toBe(42);
+      expect(readyJson.d1Status).toBe('HEALTHY');
+      expect(readyJson.d1Telemetry.instanceLocalDailyBackgroundRowsRead).toBe(42);
+      expect(readyJson.telemetryScopeNote).toMatch(/instance-local/i);
+
+      const b2bReadyRes = await app.request('/api/v1/b2b/readiness');
+      expect(b2bReadyRes.status).toBe(200);
+      const b2bReadyJson = await b2bReadyRes.json() as any;
+      expect(b2bReadyJson.d1Status).toBe('HEALTHY');
+      expect(b2bReadyJson.instanceLocalDailyBackgroundRowsRead).toBe(42);
+      expect(b2bReadyJson.telemetryScopeNote).toMatch(/instance-local/i);
+
+      // Simulate active D1 quota circuit exhaustion -> readiness must report DEGRADED_QUOTA_EXHAUSTED & isReady: false
+      d1.tripReadQuotaCircuitBreaker('Your account has exceeded D1 free tier daily row read limit (code 7500)');
+      const degradedAuditRes = await app.request('/api/v1/tools/site-audit/readiness');
+      const degradedAuditJson = await degradedAuditRes.json() as any;
+      expect(degradedAuditJson.d1Status).toBe('DEGRADED_QUOTA_EXHAUSTED');
+      expect(degradedAuditJson.status).toBe('DEGRADED_QUOTA_EXHAUSTED');
+      expect(degradedAuditJson.isReady).toBe(false);
+
+      const degradedB2bRes = await app.request('/api/v1/b2b/readiness');
+      const degradedB2bJson = await degradedB2bRes.json() as any;
+      expect(degradedB2bJson.d1Status).toBe('DEGRADED_QUOTA_EXHAUSTED');
+      expect(degradedB2bJson.status).toBe('DEGRADED_QUOTA_EXHAUSTED');
+      expect(degradedB2bJson.isReady).toBe(false);
+      expect(degradedB2bJson.checkoutOrderCreationReady).toBe(false);
+      d1.resetQuotaCircuitBreakerForTesting();
 
       const sysReadyRes = await app.request('/api/v1/system/readiness', {
         headers: { 'Authorization': 'Bearer test_owner_secret_pr94_valid_key_32chars' }
