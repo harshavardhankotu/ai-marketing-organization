@@ -59,6 +59,14 @@ export class D1Client {
   public static readonly READ_SAFETY_CAP = 4_000_000;
   public static readonly WRITE_SAFETY_CAP = 80_000;
 
+  // PR #92: Per-run background cycle budget cap to stop D1 row-read bleed
+  public static readonly PER_CYCLE_READ_BUDGET_CAP = 2500;
+  private cycleActive = false;
+  private currentCycleRowsRead = 0;
+  private currentCycleRowsWritten = 0;
+  private currentCycleQueries = 0;
+  private cycleBudgetCeiling = 2500;
+
   private constructor() {
     this.accountId = process.env.CLOUDFLARE_ACCOUNT_ID || '9b7511ff69e507dd3a00a7266fec11a3';
     this.databaseId = process.env.CLOUDFLARE_D1_DATABASE_ID || '0563bb85-f6d2-483f-8b0f-0784e3d604c7';
@@ -296,6 +304,7 @@ export class D1Client {
    * Tracks rows read/written to ensure Cloudflare Free Tier caps are never exceeded.
    */
   public recordUsage(rowsRead = 0, rowsWritten = 0): void {
+    this.recordCycleUsage(rowsRead, rowsWritten);
     if (process.env.NODE_ENV === 'production') return;
     try {
       this.ensureUsageTable();
@@ -311,6 +320,61 @@ export class D1Client {
           updated_at = datetime('now')
       `).run(dateKey, rowsRead, rowsWritten, rowsRead, rowsWritten);
     } catch {}
+  }
+
+  // PR #92: Background Cycle Budget Tracking
+  public startBackgroundCycle(budget: number = D1Client.PER_CYCLE_READ_BUDGET_CAP): void {
+    this.currentCycleRowsRead = 0;
+    this.currentCycleRowsWritten = 0;
+    this.currentCycleQueries = 0;
+    this.cycleBudgetCeiling = budget;
+    this.cycleActive = true;
+  }
+
+  public endBackgroundCycle(): {
+    queriesExecuted: number;
+    rowsRead: number;
+    rowsWritten: number;
+    budgetStopped: boolean;
+    budgetCap: number;
+  } {
+    const summary = {
+      queriesExecuted: this.currentCycleQueries,
+      rowsRead: this.currentCycleRowsRead,
+      rowsWritten: this.currentCycleRowsWritten,
+      budgetStopped: this.isCycleBudgetExceeded(),
+      budgetCap: this.cycleBudgetCeiling
+    };
+    this.cycleActive = false;
+    return summary;
+  }
+
+  public isCycleBudgetExceeded(): boolean {
+    return this.cycleActive && this.currentCycleRowsRead >= this.cycleBudgetCeiling;
+  }
+
+  public getCycleUsage(): {
+    queriesExecuted: number;
+    rowsRead: number;
+    rowsWritten: number;
+    budgetLimit: number;
+    budgetExceeded: boolean;
+  } {
+    return {
+      queriesExecuted: this.currentCycleQueries,
+      rowsRead: this.currentCycleRowsRead,
+      rowsWritten: this.currentCycleRowsWritten,
+      budgetLimit: this.cycleBudgetCeiling,
+      budgetExceeded: this.isCycleBudgetExceeded()
+    };
+  }
+
+  public recordCycleUsage(rowsRead = 0, rowsWritten = 0): void {
+    if (this.cycleActive) {
+      this.currentCycleQueries++;
+      this.currentCycleRowsRead += rowsRead;
+      this.currentCycleRowsWritten += rowsWritten;
+    }
   }
 
   /**
@@ -658,6 +722,8 @@ export class D1Client {
               const results = json?.result || [];
               for (const res of results) {
                 totalWritten += typeof res?.meta?.rows_written === 'number' ? res.meta.rows_written : (typeof res?.meta?.changes === 'number' ? res.meta.changes : 1);
+                const rRead = typeof res?.meta?.rows_read === 'number' ? res.meta.rows_read : 0;
+                if (rRead > 0) this.recordUsage(rRead, 0);
               }
               statementOk = true;
               break;

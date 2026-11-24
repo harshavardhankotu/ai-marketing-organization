@@ -1741,19 +1741,8 @@ apiRouter.post('/cron/ping', async (c) => {
     console.warn(`[Cron Ping] Execution budget notice: ${budgetErr.message}`);
   }
 
-  // Trigger background maintenance tasks (does not block HTTP response)
-  if (!process.env.VITEST) {
-    void (async () => {
-      try {
-        const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
-        await SiteAuditService.getInstance().reconcileUnauthorizedThirdPartyAudits();
-      } catch {}
-      try {
-        const { CuelinksSyncManager } = await import('../commission/cuelinks-sync-manager.js');
-        await CuelinksSyncManager.getInstance().hydrateMissingCampaignPayoutsD1('org_owner_primary', 'biz_platform_aro', 100);
-      } catch {}
-    })();
-  }
+  // PR #92: Payout hydration and maintenance consolidated exclusively into scheduled worker step (affiliate_offer_reconciliation).
+  // Zero unawaited background sweeps on /cron/ping to stop D1 row-read bleed.
 
   // Always return HTTP 200 within < 10 seconds
   return c.json({
@@ -1842,18 +1831,12 @@ apiRouter.post('/cron/worker/claim-and-run', async (c) => {
   try {
     queueRecovery = await queue.recoverStaleAndBlockedJobs();
   } catch {}
-  if (!process.env.VITEST) {
-    void (async () => {
-      try {
-        const { SiteAuditService } = await import('../tools/site-audit/site-audit-service.js');
-        await SiteAuditService.getInstance().reconcileUnauthorizedThirdPartyAudits();
-      } catch {}
-      try {
-        const { CuelinksSyncManager } = await import('../commission/cuelinks-sync-manager.js');
-        await CuelinksSyncManager.getInstance().hydrateMissingCampaignPayoutsD1('org_owner_primary', 'biz_platform_aro', 100);
-      } catch {}
-    })();
-  }
+
+  // PR #92: Enforce per-run D1 row-read budget cap of 2,500 rows. Payout hydration consolidated into affiliate_offer_reconciliation.
+  const { D1Client } = await import('../db/d1-client.js');
+  const d1Client = D1Client.getInstance();
+  d1Client.startBackgroundCycle(2500);
+
   const budgetMs = Math.min(25000, Number(c.req.query('budgetMs') || 25000));
   const maxJobs = Math.min(20, Number(c.req.query('maxJobs') || 20));
   const startTime = Date.now();
@@ -1869,6 +1852,18 @@ apiRouter.post('/cron/worker/claim-and-run', async (c) => {
   const engine = AutomationRegistryEngine.getInstance();
 
   while (executedJobs.length < maxJobs && (Date.now() - startTime) < (budgetMs - 3000)) {
+    // Check D1 row-read budget cap before claiming next job
+    if (d1Client.isCycleBudgetExceeded()) {
+      console.log('[D1 Cycle Telemetry]', JSON.stringify({
+        workflowId: lastExecResult?.workflowId || 'cron_cycle',
+        queriesExecuted: d1Client.getCycleUsage().queriesExecuted,
+        rowsRead: d1Client.getCycleUsage().rowsRead,
+        rowsWritten: d1Client.getCycleUsage().rowsWritten,
+        budgetStopped: true
+      }));
+      break;
+    }
+
     const claimedJob = await queue.claimDueJob(workerSource, 90);
     if (!claimedJob) break;
     claimedCount++;
@@ -1944,6 +1939,15 @@ apiRouter.post('/cron/worker/claim-and-run', async (c) => {
   };
   const systemDoctorSummary = await ensureSystemDoctorSummary();
 
+  const cycleTelemetry = d1Client.endBackgroundCycle();
+  console.log('[D1 Cycle Telemetry]', JSON.stringify({
+    workflowId: lastExecResult?.workflowId || (executedJobs[0]?.workflowId) || 'cron_cycle',
+    queriesExecuted: cycleTelemetry.queriesExecuted,
+    rowsRead: cycleTelemetry.rowsRead,
+    rowsWritten: cycleTelemetry.rowsWritten,
+    budgetStopped: cycleTelemetry.budgetStopped
+  }));
+
   if (executedJobs.length === 0) {
     const stats = await queue.getQueueStats();
     return c.json({
@@ -1956,7 +1960,8 @@ apiRouter.post('/cron/worker/claim-and-run', async (c) => {
       failedCount: 0,
       message: 'NO_JOBS_DUE',
       queueStats: stats,
-      systemDoctorSummary
+      systemDoctorSummary,
+      d1CycleTelemetry: cycleTelemetry
     });
   }
 
@@ -1994,7 +1999,8 @@ apiRouter.post('/cron/worker/claim-and-run', async (c) => {
     elapsedMs: Date.now() - startTime,
     job: finalJob,
     executionResult: lastExecResult,
-    systemDoctorSummary
+    systemDoctorSummary,
+    d1CycleTelemetry: cycleTelemetry
   });
 });
 

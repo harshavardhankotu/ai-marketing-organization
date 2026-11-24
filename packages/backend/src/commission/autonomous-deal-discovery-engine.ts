@@ -28,6 +28,7 @@ import {
   SectorCode,
   GuideDataUnavailableError
 } from './deal-types.js';
+import { createHighIntentStarterDeals } from './starter-deals.js';
 
 export { GuideDataUnavailableError };
 
@@ -1143,6 +1144,31 @@ export const APPROVED_SHOPIFY_MERCHANTS: ApprovedShopifyMerchant[] = [
     category: 'Health & Beauty',
     cuelinksCampaignId: '6458'
   },
+  {
+    domain: 'dotandkey.com',
+    name: 'Dot & Key',
+    brand: 'Dot & Key',
+    sectorCode: 'SECTOR_G_LIFESTYLE',
+    category: 'Health & Beauty',
+    cuelinksCampaignId: '3812'
+  },
+  {
+    domain: 'kamaayurveda.in',
+    name: 'Kama Ayurveda',
+    brand: 'Kama Ayurveda',
+    sectorCode: 'SECTOR_G_LIFESTYLE',
+    category: 'Health & Beauty',
+    cuelinksCampaignId: '2981'
+  },
+  // SECTOR_E_SOFTWARE
+  {
+    domain: 'appsumo.com',
+    name: 'AppSumo',
+    brand: 'AppSumo',
+    sectorCode: 'SECTOR_E_SOFTWARE',
+    category: 'Software & SaaS',
+    cuelinksCampaignId: 'appsumo'
+  },
   // SECTOR_C_HOME_APPLIANCES
   {
     domain: 'jaipurrugs.com',
@@ -1181,6 +1207,19 @@ export class AutonomousDealDiscoveryEngine {
   // In-memory operational cache synced to durable D1 storage
   private sourcesMap: Map<string, DealSourceRecord> = new Map();
   private dealsMap: Map<string, NormalizedDeal> = new Map();
+
+  // PR #92: 15-minute in-memory cache for relationship table lookups (production-scoped, invalidated on writes)
+  private static readonly RELATIONSHIP_CACHE_TTL_MS = 15 * 60 * 1000;
+  private relationshipTablesCache: {
+    data: {
+      partnerOffers: any[];
+      partners: any[];
+      campaigns: any[];
+      clickStatsByOffer: Map<string, number>;
+      commissionStatsByOffer: Map<string, { orders: number; approved: number; reversed: number }>;
+    };
+    cachedAt: number;
+  } | null = null;
 
   public getDealsMap(): Map<string, NormalizedDeal> {
     return this.dealsMap;
@@ -4784,6 +4823,10 @@ export class AutonomousDealDiscoveryEngine {
     }
   }
 
+  public clearRelationshipCache(): void {
+    this.relationshipTablesCache = null;
+  }
+
   private async loadRelationshipTables(useRemoteD1: boolean): Promise<{
     partnerOffers: any[];
     partners: any[];
@@ -4791,14 +4834,19 @@ export class AutonomousDealDiscoveryEngine {
     clickStatsByOffer: Map<string, number>;
     commissionStatsByOffer: Map<string, { orders: number; approved: number; reversed: number }>;
   }> {
+    if (useRemoteD1 && !process.env.VITEST && this.relationshipTablesCache && (Date.now() - this.relationshipTablesCache.cachedAt < AutonomousDealDiscoveryEngine.RELATIONSHIP_CACHE_TTL_MS)) {
+      return this.relationshipTablesCache.data;
+    }
+
     let partnerOffers: any[] = [];
     let partners: any[] = [];
     let campaigns: any[] = [];
     const clickStatsByOffer = new Map<string, number>();
     const commissionStatsByOffer = new Map<string, { orders: number; approved: number; reversed: number }>();
 
-    const clickSql = `SELECT offer_id, COUNT(*) as cnt FROM referral_click_events WHERE COALESCE(device_class, '') != 'BOT' GROUP BY offer_id`;
-    const commSql = `SELECT offer_id, COUNT(*) as orders, SUM(CASE WHEN UPPER(external_status) IN ('APPROVED', 'PAID') THEN 1 ELSE 0 END) as approved, SUM(CASE WHEN UPPER(external_status) IN ('REJECTED', 'CANCELLED', 'REFUNDED') THEN 1 ELSE 0 END) as reversed FROM commission_records GROUP BY offer_id`;
+    // PR #92: Bound scans to -7d clicks and -30d commissions to prevent unbounded historical full-table scans
+    const clickSql = `SELECT offer_id, COUNT(*) as cnt FROM referral_click_events WHERE COALESCE(device_class, '') != 'BOT' AND created_at >= datetime('now', '-7 days') GROUP BY offer_id`;
+    const commSql = `SELECT offer_id, COUNT(*) as orders, SUM(CASE WHEN UPPER(external_status) IN ('APPROVED', 'PAID') THEN 1 ELSE 0 END) as approved, SUM(CASE WHEN UPPER(external_status) IN ('REJECTED', 'CANCELLED', 'REFUNDED') THEN 1 ELSE 0 END) as reversed FROM commission_records WHERE created_at >= datetime('now', '-30 days') GROUP BY offer_id`;
 
     if (useRemoteD1) {
       const safeD1Read = async (table: string, sql: string, allowMissing = false): Promise<any[]> => {
@@ -4812,9 +4860,9 @@ export class AutonomousDealDiscoveryEngine {
           return [];
         }
       };
-      partnerOffers = await safeD1Read('partner_offers', 'SELECT * FROM partner_offers');
-      partners = await safeD1Read('partners', 'SELECT * FROM partners');
-      campaigns = await safeD1Read('cuelinks_campaigns', 'SELECT * FROM cuelinks_campaigns');
+      partnerOffers = await safeD1Read('partner_offers', "SELECT * FROM partner_offers WHERE active = 1 AND status = 'ACTIVE' LIMIT 150");
+      partners = await safeD1Read('partners', 'SELECT * FROM partners LIMIT 50');
+      campaigns = await safeD1Read('cuelinks_campaigns', "SELECT * FROM cuelinks_campaigns WHERE status = 'ACTIVE' LIMIT 150");
       const clickRows = await safeD1Read('referral_click_events', clickSql, true);
       for (const cr of clickRows) {
         if (cr?.offer_id) clickStatsByOffer.set(String(cr.offer_id), Number(cr.cnt || 0));
@@ -4832,9 +4880,9 @@ export class AutonomousDealDiscoveryEngine {
     } else {
       try {
         const db = getDb();
-        try { partnerOffers = db.prepare('SELECT * FROM partner_offers').all() as any[]; } catch {}
-        try { partners = db.prepare('SELECT * FROM partners').all() as any[]; } catch {}
-        try { campaigns = db.prepare('SELECT * FROM cuelinks_campaigns').all() as any[]; } catch {}
+        try { partnerOffers = db.prepare("SELECT * FROM partner_offers WHERE active = 1 AND status = 'ACTIVE' LIMIT 150").all() as any[]; } catch {}
+        try { partners = db.prepare('SELECT * FROM partners LIMIT 50').all() as any[]; } catch {}
+        try { campaigns = db.prepare("SELECT * FROM cuelinks_campaigns WHERE status = 'ACTIVE' LIMIT 150").all() as any[]; } catch {}
         try {
           const clickRows = db.prepare(clickSql).all() as any[];
           for (const cr of clickRows) {
@@ -4856,7 +4904,11 @@ export class AutonomousDealDiscoveryEngine {
       } catch {}
     }
 
-    return { partnerOffers, partners, campaigns, clickStatsByOffer, commissionStatsByOffer };
+    const result = { partnerOffers, partners, campaigns, clickStatsByOffer, commissionStatsByOffer };
+    if (useRemoteD1 && !process.env.VITEST) {
+      this.relationshipTablesCache = { data: result, cachedAt: Date.now() };
+    }
+    return result;
   }
 
   private isPartnerOfferValidForDeal(
@@ -5014,6 +5066,17 @@ export class AutonomousDealDiscoveryEngine {
         );
       });
 
+    // PR #92: Ensure high-intent decision-grade starter inventory is available in production or when explicitly enabled
+    const allowStarterDeals = (!process.env.VITEST || process.env.ENABLE_STARTER_DEALS_IN_TEST === 'true') && baseCandidates.length < 5;
+    if (allowStarterDeals) {
+      const starters = createHighIntentStarterDeals();
+      for (const sd of starters) {
+        if (!baseCandidates.some(b => b.id === sd.id || (b.slug && b.slug === sd.slug))) {
+          baseCandidates.push(sd);
+        }
+      }
+    }
+
     // Count canonical destinations across all active deals to detect unkeyed duplicate / conflicting claims
     const candidateDestCounts = new Map<string, number>();
     for (const d of baseCandidates) {
@@ -5126,18 +5189,40 @@ export class AutonomousDealDiscoveryEngine {
       );
     }
 
-    // Sort deterministically: active/featured winners first (rotated stale 72h+ unclicked deals last),
-    // Stage S Task 1: high-conversion impulse offers (₹299–₹1,499 with >=25% discount) prioritized ahead of expensive items,
-    // then by EV/100 profit allocator, market arbitrage score descending, expected commission yield, then price advantage ratio
+    // PR #92: Buyer-First Ranking:
+    // 1. Active non-stale catalog status
+    // 2. Buyer suitability / budget match & verified stock/price freshness
+    // 3. Evidence depth (verified specs, price history, review references)
+    // 4. Affiliate economics strictly as a secondary tie-breaker
+    const computeSuitability = (d: any) => {
+      let score = 0;
+      if (d.availability === 'IN_STOCK' || !d.availability) score += 20;
+      if ((d.currentPriceINR || 0) > 0) score += 20;
+      if (isImpulseConversionDeal(d)) score += 20;
+      if ((d.priceAdvantageRatio || 0) > 1) score += 10;
+      return score;
+    };
+    const computeEvidence = (d: any) => {
+      let score = 0;
+      const ev = d.evidenceJson || {};
+      if (Array.isArray(ev.listing_facts)) score += Math.min(30, ev.listing_facts.length * 10);
+      if (Array.isArray(ev.price_history) && ev.price_history.length >= 3) score += 25;
+      else if (Array.isArray(ev.price_history) && ev.price_history.length > 0) score += 10;
+      if (d.youtubeReview || (Array.isArray(d.youtubeReviews) && d.youtubeReviews.length > 0)) score += 20;
+      if (d.affiliateVerified) score += 15;
+      return score;
+    };
+
     filtered.sort((a, b) =>
       Number(a.catalogSlot === 'ROTATED_OUT_STALE' || (a.staleDecayPenalty || 0) > 0) -
         Number(b.catalogSlot === 'ROTATED_OUT_STALE' || (b.staleDecayPenalty || 0) > 0) ||
-      (Number(isImpulseConversionDeal(b)) - Number(isImpulseConversionDeal(a))) ||
+      (computeSuitability(b) - computeSuitability(a)) ||
+      (computeEvidence(b) - computeEvidence(a)) ||
+      (b.verifiedDiscountPercent || 0) - (a.verifiedDiscountPercent || 0) ||
+      (b.priceAdvantageRatio || 0) - (a.priceAdvantageRatio || 0) ||
       (b.expectedProfitPer100VisitorsINR || 0) - (a.expectedProfitPer100VisitorsINR || 0) ||
       (b.arbitrageScore || 0) - (a.arbitrageScore || 0) ||
-      (b.expectedCommissionYieldINR || 0) - (a.expectedCommissionYieldINR || 0) ||
-      (b.priceAdvantageRatio || 0) - (a.priceAdvantageRatio || 0) ||
-      (b.verifiedDiscountPercent || 0) - (a.verifiedDiscountPercent || 0)
+      (b.expectedCommissionYieldINR || 0) - (a.expectedCommissionYieldINR || 0)
     );
 
     const total = filtered.length;
@@ -5414,6 +5499,17 @@ export class AutonomousDealDiscoveryEngine {
           throw new GuideDataUnavailableError(`Failed resolving workflow deal '${cleanId}' from D1: ${err?.message || 'D1 read failure'}`);
         }
         console.warn(`[DealEngine] Notice resolving deal '${idOrSlug}' from database: ${err.message}`);
+      }
+    }
+
+    // PR #92: Fallback check against verified high-intent starter deals
+    if (!resolvedCandidate) {
+      const starters = createHighIntentStarterDeals();
+      const matched = starters.find(
+        s => s.id === cleanId || s.slug?.toLowerCase() === cleanId.toLowerCase() || s.canonicalSlug?.toLowerCase() === cleanId.toLowerCase()
+      );
+      if (matched) {
+        resolvedCandidate = matched;
       }
     }
 

@@ -1969,87 +1969,8 @@ export async function startServer(): Promise<any> {
     console.log('[Durable Queue] Background operations scheduled via Cloudflare D1 queue (Two daily IST commercial runs: 09:00 & 21:00 IST).');
   })();
 
-  // Stage M Task 1: Execute AutonomousSystemDoctor in-process 2s after boot (non-blocking, unref'd, skipped under Vitest)
-  if (!process.env.VITEST && process.env.NODE_ENV !== 'test') {
-    const bootDoctorTimer = setTimeout(async () => {
-      try {
-        const { AutonomousSystemDoctor } = await import('./automation/autonomous-system-doctor.js');
-        const report = await AutonomousSystemDoctor.getInstance().runSelfHealingPass({
-          skipRecoveryRecursion: true,
-          skipLlm: true
-        });
-        console.log(`[Boot Self-Heal] Doctor run ${report.runId}: repaired=${report.priceRepair.repairedCount}, amazonPurged=${report.priceRepair.amazonStaticPricesPurged}, bottleneck=${report.funnelDiagnosis.bottleneckStage}`);
-      } catch (err: any) {
-        console.warn('[Boot Self-Heal] Doctor scan notice:', err?.message);
-      }
-    }, 2000);
-    if (typeof (bootDoctorTimer as any)?.unref === 'function') {
-      (bootDoctorTimer as any).unref();
-    }
-  }
-
-  // Stage I.2 / I.2-A: Execute once non-blocking 5s after boot — revoke unconsented third-party audits, recover stale/blocked queue jobs, drain due jobs, & hydrate Cuelinks payouts autonomously
-  if (!process.env.VITEST && process.env.NODE_ENV !== 'test') {
-    const bootRecoveryTimer = setTimeout(async () => {
-      try {
-        const { SiteAuditService } = await import('./tools/site-audit/site-audit-service.js');
-        const auditRevoke = await SiteAuditService.getInstance().reconcileUnauthorizedThirdPartyAudits();
-        console.log('[Startup Self-Heal] Unauthorized audit reconciliation:', JSON.stringify(auditRevoke));
-      } catch (err: any) {
-        console.warn('[Startup Self-Heal] Unauthorized audit reconciliation notice:', err?.message);
-      }
-      try {
-        const { DurableJobQueue } = await import('./automation/durable-job-queue.js');
-        const { AutomationRegistryEngine } = await import('./automation/automation-registry-engine.js');
-        const queue = DurableJobQueue.getInstance();
-        const rec = await queue.recoverStaleAndBlockedJobs();
-        if (rec.queueStatsAfter.failedTotal > 0 || rec.expiredLeasesRecovered > 0) {
-          console.log('[Startup Self-Heal] Queue recovery completed:', JSON.stringify(rec));
-        } else {
-          console.log(`[Startup Self-Heal] Queue recovery completed: queued=${rec.queueStatsAfter.queued}, completed=${rec.queueStatsAfter.completed}, overdue=${rec.queueStatsAfter.overdueCount}`);
-        }
-
-        // Drain overdue/due queued jobs on boot (bounded to 20 jobs / 25s) so overdueCount converges to 0
-        const engine = AutomationRegistryEngine.getInstance();
-        const startMs = Date.now();
-        let drained = 0;
-        while (drained < 20 && (Date.now() - startMs) < 25000) {
-          const claimed = await queue.claimDueJob('boot_self_heal', 90);
-          if (!claimed) break;
-          const remaining = Math.max(3000, 25000 - (Date.now() - startMs));
-          const execResult = await engine.executeWorkflow(claimed.workflowId, 'CLOUDFLARE_CRON', remaining);
-          if (
-            execResult.status === 'COMPLETED' ||
-            execResult.status === 'COMPLETED_WITH_FINDINGS' ||
-            execResult.status === 'COMPLETED_NO_FINDINGS' ||
-            execResult.status === 'NO_ACTION_DUE'
-          ) {
-            await queue.completeJob(claimed.id, execResult.status, execResult.resultSummary, claimed.leaseToken || undefined);
-          } else if (execResult.status === 'PARTIAL' || execResult.status === 'BLOCKED') {
-            await queue.completeJob(claimed.id, execResult.status, execResult.resultSummary, claimed.leaseToken || undefined);
-          } else {
-            await queue.failAttempt(claimed.id, execResult.errorMessage || execResult.status, true, undefined, claimed.leaseToken || undefined);
-          }
-          drained++;
-        }
-        if (drained > 0) {
-          console.log(`[Startup Self-Heal] Drained ${drained} due jobs on boot.`);
-        }
-      } catch (err: any) {
-        console.warn('[Startup Self-Heal] Queue recovery/drain notice:', err?.message);
-      }
-      try {
-        const { CuelinksSyncManager } = await import('./commission/cuelinks-sync-manager.js');
-        const hyd = await CuelinksSyncManager.getInstance().hydrateMissingCampaignPayoutsD1('org_owner_primary', 'biz_platform_aro', 100);
-        console.log('[Startup Self-Heal] Cuelinks payout hydration completed:', JSON.stringify(hyd));
-      } catch (err: any) {
-        console.warn('[Startup Self-Heal] Cuelinks hydration notice:', err?.message);
-      }
-    }, 5000);
-    if (typeof (bootRecoveryTimer as any)?.unref === 'function') {
-      (bootRecoveryTimer as any).unref();
-    }
-  }
+  // PR #92: Cold starts perform ZERO background catalog/doctor/hydration sweeps to stop D1 row-read bleed on Render Free spin-downs.
+  // All maintenance sweeps run strictly under Cloudflare Worker cron triggers.
 
   return server;
 }
