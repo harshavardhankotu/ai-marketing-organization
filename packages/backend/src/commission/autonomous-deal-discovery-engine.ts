@@ -4934,7 +4934,7 @@ export class AutonomousDealDiscoveryEngine {
     // PR #82: Always query the full eligible deal population (capped at 250) so candidate destination conflicts
     // are determined across all categories identically in both remote D1 and local SQLite before request filters are applied.
     const fullSql = AutonomousDealDiscoveryEngine.ELIGIBLE_PUBLIC_DEALS_SQL;
-    const useRemoteD1 = this.d1Repo.isRemoteD1ReadAllowed();
+    const useRemoteD1 = this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST);
     let rows: any[] = [];
     if (useRemoteD1) {
       // In production, clear internal in-memory caches before loading authoritative state from D1
