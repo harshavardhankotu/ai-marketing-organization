@@ -135,8 +135,8 @@ async function run() {
       headers: { 'Content-Type': 'application/json; charset=utf-8' },
       body: JSON.stringify({
         host: 'ai-marketing-organization.onrender.com',
-        key: 'ai-marketing-indexnow-key',
-        keyLocation: 'https://ai-marketing-organization.onrender.com/ai-marketing-indexnow-key.txt',
+        key: 'indexnow-key-38f9d0c2',
+        keyLocation: 'https://ai-marketing-organization.onrender.com/indexnow-key-38f9d0c2.txt',
         urlList: [liveDealUrl, `${backendUrl}/deals`]
       })
     });

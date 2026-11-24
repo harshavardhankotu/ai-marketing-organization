@@ -20,6 +20,7 @@ export type SiteFixFunnelStage =
   | 'scan_completed'
   | 'preview_displayed'
   | 'order_created'
+  | 'checkout_open_invoked'
   | 'checkout_modal_opened'
   | 'payment_captured'
   | 'deliverable_ready'
@@ -306,6 +307,7 @@ export interface SiteFixFunnelStageCounts {
   scan_completed: number;
   preview_displayed: number;
   order_created: number;
+  checkout_open_invoked: number;
   checkout_modal_opened: number;
   payment_captured: number;
   deliverable_ready: number;
@@ -346,6 +348,7 @@ function emptyStageCounts(): SiteFixFunnelStageCounts {
     scan_completed: 0,
     preview_displayed: 0,
     order_created: 0,
+    checkout_open_invoked: 0,
     checkout_modal_opened: 0,
     payment_captured: 0,
     deliverable_ready: 0,
@@ -726,7 +729,11 @@ function aggregateFunnelRows(
         totals.checkout_start++;
         bySource[source].order_created++;
         bySource[source].checkout_start++;
-      } else if (stage === 'checkout_modal_opened') {
+      } else if (stage === 'checkout_open_invoked' || stage === 'checkout_modal_opened') {
+        if (stage === 'checkout_open_invoked') {
+          totals.checkout_open_invoked = (totals.checkout_open_invoked || 0) + 1;
+          bySource[source].checkout_open_invoked = (bySource[source].checkout_open_invoked || 0) + 1;
+        }
         totals.checkout_modal_opened++;
         totals.checkout_start = Math.max(totals.checkout_start, totals.checkout_modal_opened);
         bySource[source].checkout_modal_opened++;
