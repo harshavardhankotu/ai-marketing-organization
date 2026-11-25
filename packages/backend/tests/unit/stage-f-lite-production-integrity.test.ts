@@ -473,31 +473,24 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
   });
 
   // --------------------------------------------------------------------------
-  // WORKSTREAM E: Homepage Three-Journey Reorganization
+  // WORKSTREAM E: Homepage Focused B2B Positioning + Segregated /deals & /tools
   // --------------------------------------------------------------------------
-  describe('Workstream E — Homepage Three-Journey Reorganization', () => {
-    it('renders SiteFix Launch Gate (Web, CLI, Action, MCP) and Verified Commercial Consumer Deals', async () => {
+  describe('Workstream E — Homepage B2B Focus & Legal Hygiene', () => {
+    it('renders focused Website Enquiry Path Repair storefront on GET / with /demo CTA and zero clinic/leaked copy', async () => {
       const res = await app.request('/');
       expect(res.status).toBe(200);
       const html = await res.text();
 
-      // Section 1: SiteFix Launch Gate — 3 Developer Pull Interfaces (zero legacy dental/clinical claims)
-      expect(html).toContain('SiteFix Launch Gate');
-      expect(html).toContain('SiteFix Launch Gate — 3 Developer Pull Interfaces');
-      expect(html).toContain('npx sitefix-check');
-      expect(html).toContain('href="/tools/site-audit"');
-      expect(html).toContain('/api/v1/public/mcp');
-      expect(html).not.toMatch(/Apex Dental|chipped tooth|dental clinic/i);
-
-      // Section 2: Commercial Consumer Deals & Buying Guides with #Ad disclosure
-      expect(html).toContain('Commercial Consumer Deals &amp; Buying Guides');
-      expect(html).toContain('#Ad');
-      expect(html).toContain('href="/deals"');
-      expect(html).toContain('href="/guides/student-flight-discounts-india"');
-
-      // Clean footer disclosure without unbacked airline names or unverified claims
-      expect(html).not.toContain('Akasa Air, Air India Express, Cleartrip');
-      expect(html).toContain('tracked affiliate links to authorized partner programs');
+      expect(html).toContain('Website Enquiry Path Repair for Training Institutes');
+      expect(html).toContain('Founding Pilot');
+      expect(html).toContain('₹1,999');
+      expect(html).toContain('href="/demo"');
+      expect(html).toContain('href="/offer"');
+      expect(html).toContain('href="/terms"');
+      expect(html).toContain('href="/privacy"');
+      expect(html).toContain('href="/refund"');
+      expect(html).toContain('href="/contact"');
+      expect(html).not.toMatch(/Apex Dental|chipped tooth|dental clinic|not an offer to contract|DIRECT_OFFER\.md|OWN_OFFER\.md/i);
     });
   });
 

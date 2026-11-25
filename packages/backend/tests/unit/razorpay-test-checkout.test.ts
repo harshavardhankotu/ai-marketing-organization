@@ -1,11 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import crypto from 'node:crypto';
 import { apiRouter } from '../../src/routes/api.js';
+import { OwnerAuthService } from '../../src/auth/owner-auth.js';
 import { RazorpayTestService } from '../../src/integrations/razorpay-test-service.js';
 import { getDb } from '../../src/db/client.js';
 
 describe('V6.2.2 Razorpay Test Checkout & Verification Suite', () => {
   const originalEnv = { ...process.env };
+  let ownerAuthHeader: Record<string, string> = {};
+
+  const authHeaders = (extra: Record<string, string> = {}) => ({
+    ...ownerAuthHeader,
+    ...extra
+  });
 
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -14,14 +21,21 @@ describe('V6.2.2 Razorpay Test Checkout & Verification Suite', () => {
     process.env.RAZORPAY_TEST_CHECKOUT_ENABLED = 'true';
     process.env.RAZORPAY_TEST_KEY_ID = 'rzp_test_mockValidKey123';
     process.env.RAZORPAY_TEST_KEY_SECRET = 'mockValidSecret456789';
+    const session = OwnerAuthService.getInstance().createSession('127.0.0.1');
+    ownerAuthHeader = { Authorization: `Bearer ${session.token}` };
   });
 
   afterEach(() => {
     process.env = { ...originalEnv };
   });
 
-  it('1. GET /api/v1/integrations/razorpay/test-readiness reports ready when properly configured', async () => {
-    const res = await apiRouter.request('/api/v1/integrations/razorpay/test-readiness');
+  it('1. GET /api/v1/integrations/razorpay/test-readiness requires owner auth and reports ready when properly configured', async () => {
+    const unauthRes = await apiRouter.request('/api/v1/integrations/razorpay/test-readiness');
+    expect(unauthRes.status).toBe(401);
+
+    const res = await apiRouter.request('/api/v1/integrations/razorpay/test-readiness', {
+      headers: authHeaders()
+    });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.ready).toBe(true);
@@ -39,7 +53,7 @@ describe('V6.2.2 Razorpay Test Checkout & Verification Suite', () => {
 
     const res = await apiRouter.request('/api/v1/integrations/razorpay/test-order', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' }
+      headers: authHeaders({ 'Content-Type': 'application/json' })
     });
     expect(res.status).toBe(503);
     const data = await res.json();
@@ -53,7 +67,7 @@ describe('V6.2.2 Razorpay Test Checkout & Verification Suite', () => {
     process.env.RAZORPAY_TEST_KEY_ID = 'rzp_live_forbidden123456';
     const res = await apiRouter.request('/api/v1/integrations/razorpay/test-order', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' }
+      headers: authHeaders({ 'Content-Type': 'application/json' })
     });
     expect(res.status).toBe(503);
     const data = await res.json();
@@ -65,7 +79,7 @@ describe('V6.2.2 Razorpay Test Checkout & Verification Suite', () => {
     process.env.RAZORPAY_MODE = 'LIVE';
     const res = await apiRouter.request('/api/v1/integrations/razorpay/test-order', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' }
+      headers: authHeaders({ 'Content-Type': 'application/json' })
     });
     expect(res.status).toBe(503);
     const data = await res.json();
@@ -94,7 +108,7 @@ describe('V6.2.2 Razorpay Test Checkout & Verification Suite', () => {
 
     const res = await apiRouter.request('/api/v1/integrations/razorpay/test-order', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' }
+      headers: authHeaders({ 'Content-Type': 'application/json' })
     });
     const data = await res.json();
     expect(res.status).toBe(200);
@@ -119,7 +133,7 @@ describe('V6.2.2 Razorpay Test Checkout & Verification Suite', () => {
 
     const res = await apiRouter.request('/api/v1/integrations/razorpay/test-order', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' }
+      headers: authHeaders({ 'Content-Type': 'application/json' })
     });
     expect(res.status).toBe(502);
     const data = await res.json();
@@ -140,7 +154,7 @@ describe('V6.2.2 Razorpay Test Checkout & Verification Suite', () => {
 
     const res = await apiRouter.request('/api/v1/integrations/razorpay/test-order', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' }
+      headers: authHeaders({ 'Content-Type': 'application/json' })
     });
     expect(res.status).toBe(502);
     const data = await res.json();
@@ -151,7 +165,7 @@ describe('V6.2.2 Razorpay Test Checkout & Verification Suite', () => {
   it('8. Test verification requires order_id, payment_id, and signature (400)', async () => {
     const res = await apiRouter.request('/api/v1/integrations/razorpay/test-verify', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ razorpay_payment_id: 'pay_test_only_123' })
     });
     expect(res.status).toBe(400);
@@ -163,7 +177,7 @@ describe('V6.2.2 Razorpay Test Checkout & Verification Suite', () => {
   it('9. Rejects unrecorded or fabricated order IDs (404)', async () => {
     const res = await apiRouter.request('/api/v1/integrations/razorpay/test-verify', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         razorpay_order_id: 'order_nonexistent_9999',
         razorpay_payment_id: 'pay_test_123',
@@ -186,7 +200,7 @@ describe('V6.2.2 Razorpay Test Checkout & Verification Suite', () => {
 
     const res = await apiRouter.request('/api/v1/integrations/razorpay/test-verify', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         razorpay_order_id: realOrderId,
         razorpay_payment_id: 'pay_test_sig_123',
@@ -226,7 +240,7 @@ describe('V6.2.2 Razorpay Test Checkout & Verification Suite', () => {
 
     const res = await apiRouter.request('/api/v1/integrations/razorpay/test-verify', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         razorpay_order_id: realOrderId,
         razorpay_payment_id: paymentId,
@@ -266,7 +280,7 @@ describe('V6.2.2 Razorpay Test Checkout & Verification Suite', () => {
 
     const res = await apiRouter.request('/api/v1/integrations/razorpay/test-verify', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         razorpay_order_id: realOrderId,
         razorpay_payment_id: paymentId,
@@ -318,7 +332,7 @@ describe('V6.2.2 Razorpay Test Checkout & Verification Suite', () => {
 
     const res = await apiRouter.request('/api/v1/integrations/razorpay/test-verify', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         razorpay_order_id: realOrderId,
         razorpay_payment_id: paymentId,
@@ -358,7 +372,7 @@ describe('V6.2.2 Razorpay Test Checkout & Verification Suite', () => {
 
     const res = await apiRouter.request('/api/v1/integrations/razorpay/test-verify', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         razorpay_order_id: realOrderId,
         razorpay_payment_id: paymentId,

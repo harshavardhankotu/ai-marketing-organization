@@ -318,7 +318,7 @@ describe('V5.1.2 — Commercial Integrity, Campaign Null-Guard & Variant Stock V
       expect(html).not.toContain('68%');
       expect(html).not.toContain('₹25,000');
       expect(html).not.toContain('₹60,000');
-      expect(html).toContain('SiteFix Launch Gate');
+      expect(html).toContain('Website Enquiry Path Repair for Training Institutes');
       expect(html).not.toMatch(/Apex Dental|dental clinic|chipped tooth/i);
     });
 

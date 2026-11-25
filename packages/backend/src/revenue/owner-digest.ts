@@ -34,6 +34,7 @@ import {
   getSiteFixFunnelAttributionSummaryAsync,
   type SiteFixFunnelAttributionSummary
 } from '../tools/site-audit/sitefix-funnel-attribution.js';
+import { batchLookupProspectsByName } from './outreach-prospect-lookup.js';
 
 export interface OwnerDigestMetrics {
   visits: number | 'UNKNOWN';
@@ -332,28 +333,50 @@ export class OwnerDigestService {
     // 4b. Pending outreach drafts from direct_outreach_log (Human approval gate)
     let pendingOutreachDrafts: PendingOutreachDraftItem[] = [];
     try {
-      const rows = db.prepare(`
+      const rawRows = db.prepare(`
         SELECT 
-          d.id, d.segment, d.prospect_name, d.channel, d.message_draft, 
-          d.compliance_checked, d.human_approved, d.dispatched, d.response_status, d.created_at,
-          COALESCE(p.phone, p.prospect_phone) as prospect_phone,
-          COALESCE(p.email, p.prospect_email) as prospect_email,
-          COALESCE(p.city, p.prospect_city) as prospect_city
-        FROM direct_outreach_log d
-        LEFT JOIN platform_prospects p
-          ON d.prospect_name = p.prospect_business_name OR d.prospect_name = p.business_name
-        WHERE d.human_approved = 0 
-          AND d.dispatched = 0
-          AND (d.response_status IS NULL OR d.response_status NOT IN ('ENTERPRISE_CHAIN_DEFERRED', 'QUARANTINED', 'REJECTED', 'TEST_QUARANTINED', 'OPTED_OUT'))
-          AND (p.status IS NULL OR p.status NOT IN ('ENTERPRISE_CHAIN_DEFERRED', 'QUARANTINED', 'REJECTED', 'TEST_QUARANTINED'))
-        GROUP BY d.id
-        ORDER BY d.created_at DESC
+          id, segment, prospect_name, channel, message_draft, 
+          compliance_checked, human_approved, dispatched, response_status, created_at
+        FROM direct_outreach_log
+        WHERE human_approved = 0 
+          AND dispatched = 0
+          AND (response_status IS NULL OR response_status NOT IN ('ENTERPRISE_CHAIN_DEFERRED', 'QUARANTINED', 'REJECTED', 'TEST_QUARANTINED', 'OPTED_OUT'))
+        ORDER BY created_at DESC
         LIMIT 20
       `).all() as any[];
+      const prospectNames = Array.from(new Set(rawRows.map(r => String(r.prospect_name || '').trim()).filter(Boolean)));
+      const pMap = new Map<string, any>();
+      if (prospectNames.length > 0) {
+        const placeholders = prospectNames.map(() => '?').join(', ');
+        const pRowsA = db.prepare(`
+          SELECT prospect_business_name, business_name, phone, prospect_phone, email, prospect_email, city, prospect_city, status
+          FROM platform_prospects WHERE prospect_business_name IN (${placeholders}) LIMIT ${prospectNames.length * 2}
+        `).all(...prospectNames) as any[];
+        const pRowsB = db.prepare(`
+          SELECT prospect_business_name, business_name, phone, prospect_phone, email, prospect_email, city, prospect_city, status
+          FROM platform_prospects WHERE business_name IN (${placeholders}) LIMIT ${prospectNames.length * 2}
+        `).all(...prospectNames) as any[];
+        for (const p of [...pRowsA, ...pRowsB]) {
+          const k1 = (p.prospect_business_name || '').trim().toLowerCase();
+          const k2 = (p.business_name || '').trim().toLowerCase();
+          if (k1 && !pMap.has(k1)) pMap.set(k1, p);
+          if (k2 && !pMap.has(k2)) pMap.set(k2, p);
+        }
+      }
+      const rows = rawRows.map(r => {
+        const p = pMap.get(String(r.prospect_name || '').trim().toLowerCase());
+        return {
+          ...r,
+          prospect_phone: p?.phone || p?.prospect_phone || null,
+          prospect_email: p?.email || p?.prospect_email || null,
+          prospect_city: p?.city || p?.prospect_city || null,
+          status: p?.status || null
+        };
+      });
 
       let suppressedSet = new Set<string>();
       try {
-        const suppRows = db.prepare(`SELECT identifier FROM outreach_suppression_list`).all() as any[];
+        const suppRows = db.prepare(`SELECT identifier FROM outreach_suppression_list ORDER BY created_at DESC LIMIT 500`).all() as any[];
         for (const sr of suppRows || []) {
           if (sr.identifier) suppressedSet.add(sr.identifier.trim().toLowerCase());
         }
@@ -1319,28 +1342,38 @@ export class OwnerDigestService {
     // 4b. Pending outreach drafts from direct_outreach_log in D1 (Human approval gate)
     let pendingOutreachDrafts: PendingOutreachDraftItem[] = [];
     try {
-      const rows = await this.d1Repo.query<any>(
+      const rawRows = await this.d1Repo.query<any>(
         'direct_outreach_log',
         `SELECT 
-           d.id, d.segment, d.prospect_name, d.channel, d.message_draft, 
-           d.compliance_checked, d.human_approved, d.dispatched, d.response_status, d.created_at,
-           COALESCE(p.phone, p.prospect_phone) as prospect_phone,
-           COALESCE(p.email, p.prospect_email) as prospect_email,
-           COALESCE(p.city, p.prospect_city) as prospect_city
-         FROM direct_outreach_log d
-         LEFT JOIN platform_prospects p
-           ON d.prospect_name = p.prospect_business_name OR d.prospect_name = p.business_name
-         WHERE d.human_approved = 0 
-           AND d.dispatched = 0
-           AND (d.response_status IS NULL OR d.response_status NOT IN ('ENTERPRISE_CHAIN_DEFERRED', 'QUARANTINED', 'REJECTED', 'TEST_QUARANTINED', 'OPTED_OUT'))
-           AND (p.status IS NULL OR p.status NOT IN ('ENTERPRISE_CHAIN_DEFERRED', 'QUARANTINED', 'REJECTED', 'TEST_QUARANTINED'))
-         GROUP BY d.id
-         ORDER BY d.created_at DESC
+           id, segment, prospect_name, channel, message_draft, 
+           compliance_checked, human_approved, dispatched, response_status, created_at
+         FROM direct_outreach_log
+         WHERE human_approved = 0 
+           AND dispatched = 0
+           AND (response_status IS NULL OR response_status NOT IN ('ENTERPRISE_CHAIN_DEFERRED', 'QUARANTINED', 'REJECTED', 'TEST_QUARANTINED', 'OPTED_OUT'))
+         ORDER BY created_at DESC
          LIMIT 20`
       );
+      const prospectMap = await batchLookupProspectsByName(
+        rawRows.map(r => r.prospect_name),
+        { useRemoteD1: this.d1Repo.isRemoteD1ReadAllowed(), d1Repo: this.d1Repo, db: getDb() }
+      );
+      const rows = rawRows.map(r => {
+        const p = prospectMap.get(String(r.prospect_name || '').trim().toLowerCase());
+        return {
+          ...r,
+          prospect_phone: p?.phone || p?.prospect_phone || null,
+          prospect_email: p?.email || p?.prospect_email || null,
+          prospect_city: p?.city || p?.prospect_city || null,
+          status: p?.status || null
+        };
+      });
       let suppressedSet = new Set<string>();
       try {
-        const suppRows = await this.d1Repo.query<any>('outreach_suppression_list', `SELECT identifier FROM outreach_suppression_list`);
+        const suppRows = await this.d1Repo.query<any>(
+          'outreach_suppression_list',
+          `SELECT identifier FROM outreach_suppression_list ORDER BY created_at DESC LIMIT 500`
+        );
         for (const sr of suppRows || []) {
           if (sr.identifier) suppressedSet.add(sr.identifier.trim().toLowerCase());
         }

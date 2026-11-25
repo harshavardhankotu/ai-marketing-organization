@@ -8,6 +8,7 @@ import {
 } from '../commission/autonomous-deal-discovery-engine.js';
 import { generateComparisonPairs } from '../commission/static-site-generator.js';
 import { SiteAuditService } from '../tools/site-audit/site-audit-service.js';
+import { batchLookupProspectsByName } from '../revenue/outreach-prospect-lookup.js';
 import { GeminiProvider } from '../ai/gemini-provider.js';
 import { ExperimentEngine } from '../experiments/experiment-engine.js';
 import {
@@ -597,7 +598,12 @@ export class AutonomousSystemDoctor {
     return { scanned, repairedCount, quarantinedCount, amazonStaticPricesPurged, repairs };
   }
 
-  public async repairOutreachChannelsAndQualifyTargets(siteUrl?: string): Promise<{
+  private lastOutreachRepairAtMs = 0;
+
+  public async repairOutreachChannelsAndQualifyTargets(
+    siteUrl?: string,
+    options?: { force?: boolean }
+  ): Promise<{
     whatsappConfigured: boolean;
     brevoConfigured: boolean;
     reroutedToEmailCount: number;
@@ -610,12 +616,28 @@ export class AutonomousSystemDoctor {
     const db = getDb();
     const resolvedSiteUrl = (siteUrl || getTrustedPublicSiteUrl()).replace(/\/$/, '');
     const allowRemoteWrite = this.d1Repo.isRemoteD1WriteAllowed();
-    const useRemoteD1Read = this.d1Repo.isRemoteD1Configured() && !process.env.VITEST;
+    const useRemoteD1Read = this.d1Repo.isRemoteD1ReadAllowed();
 
     const whatsappConfigured = Boolean(
       (process.env.WHATSAPP_API_TOKEN || process.env.WHATSAPP_ACCESS_TOKEN || process.env.WHATSAPP_BSP_API_KEY || '').trim()
     );
     const brevoConfigured = Boolean((process.env.BREVO_API_KEY || process.env.BREVO_MCP_SERVER_API || '').trim());
+
+    // 6-hour cooldown on repeated cron passes so D1 reads stay bounded
+    const COOLDOWN_MS = 6 * 3600 * 1000;
+    if (!options?.force && !process.env.VITEST && this.lastOutreachRepairAtMs > 0 && (Date.now() - this.lastOutreachRepairAtMs) < COOLDOWN_MS) {
+      return {
+        whatsappConfigured,
+        brevoConfigured,
+        reroutedToEmailCount: 0,
+        disqualifiedEnterpriseCount: 0,
+        disqualifiedHealthcareCount: 0,
+        clearedBlockedJobsCount: 0,
+        reroutedDraftIds: [],
+        disqualifiedTargets: []
+      };
+    }
+    this.lastOutreachRepairAtMs = Date.now();
 
     let outreachRows: any[] = [];
     let contactRows: any[] = [];
@@ -635,24 +657,42 @@ export class AutonomousSystemDoctor {
       }
     };
 
-    outreachRows = await readLocalOrD1(
+    const rawOutreachRows = await readLocalOrD1(
       'direct_outreach_log',
-      `SELECT d.*, COALESCE(p.email, p.prospect_email) as p_email, COALESCE(p.phone, p.prospect_phone) as p_phone,
-              COALESCE(p.website_url, p.prospect_website) as p_website
-       FROM direct_outreach_log d
-       LEFT JOIN platform_prospects p ON d.prospect_name = p.prospect_business_name OR d.prospect_name = p.business_name
-       WHERE d.dispatched = 0`
+      `SELECT *
+       FROM direct_outreach_log
+       WHERE dispatched = 0
+       ORDER BY created_at DESC
+       LIMIT 25`
     );
+    const prospectMap = await batchLookupProspectsByName(
+      rawOutreachRows.map((r: any) => r.prospect_name),
+      { useRemoteD1: useRemoteD1Read, d1Repo: this.d1Repo, db }
+    );
+    outreachRows = rawOutreachRows.map((r: any) => {
+      const p = prospectMap.get(String(r.prospect_name || '').trim().toLowerCase());
+      return {
+        ...r,
+        p_email: p?.email || p?.prospect_email || null,
+        p_phone: p?.phone || p?.prospect_phone || null,
+        p_website: p?.website_url || p?.prospect_website || null
+      };
+    });
 
     contactRows = await readLocalOrD1(
       'outbound_contacts',
       `SELECT id, prospect_name, prospect_business_name, prospect_email, prospect_phone, prospect_website
-       FROM outbound_contacts WHERE is_opted_out = 0 AND is_suppressed = 0`
+       FROM outbound_contacts WHERE is_opted_out = 0 AND is_suppressed = 0
+       ORDER BY updated_at DESC
+       LIMIT 50`
     );
 
     auditRows = await readLocalOrD1(
       'site_audits',
-      `SELECT domain, business_name, status, is_publicly_authorized FROM site_audits WHERE status = 'COMPLETED'`
+      `SELECT domain, business_name, status, is_publicly_authorized
+       FROM site_audits WHERE status = 'COMPLETED'
+       ORDER BY updated_at DESC
+       LIMIT 50`
     );
 
     let reroutedToEmailCount = 0;

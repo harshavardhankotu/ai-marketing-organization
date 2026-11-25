@@ -404,9 +404,17 @@ describe('SiteFix AI: Route Integration Tests via Hono apiRouter', () => {
     expect(hookJson.processed).toBe(true);
   });
 
-  it('exposes dedicated public test integration endpoints without requiring Bearer token', async () => {
-    const readinessRes = await apiRouter.request('/api/v1/integrations/razorpay/test-readiness', {
+  it('protects test integration endpoints behind owner auth (401 unauthenticated, 200 authenticated)', async () => {
+    const unauthRes = await apiRouter.request('/api/v1/integrations/razorpay/test-readiness', {
       method: 'GET'
+    });
+    expect(unauthRes.status).toBe(401);
+
+    const { OwnerAuthService } = await import('../../src/auth/owner-auth.js');
+    const session = OwnerAuthService.getInstance().createSession('127.0.0.1');
+    const readinessRes = await apiRouter.request('/api/v1/integrations/razorpay/test-readiness', {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${session.token}` }
     });
     expect(readinessRes.status).toBe(200);
     const data = await readinessRes.json();

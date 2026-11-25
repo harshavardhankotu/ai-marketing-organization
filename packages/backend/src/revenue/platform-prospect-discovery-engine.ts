@@ -335,16 +335,18 @@ export class PlatformProspectDiscoveryEngine {
     const existingDomains = new Set<string>();
     const existingSourceUrls = new Set<string>();
     try {
-      const existingRows = await this.d1Repo.query<{
-        website_url?: string;
-        prospect_website?: string;
-        discovery_evidence_json?: string;
-        observed_evidence_json?: string;
-      }>(
-        'platform_prospects',
-        `SELECT website_url, prospect_website, discovery_evidence_json, observed_evidence_json
-         FROM platform_prospects`
-      );
+      const sql = `SELECT website_url, prospect_website, discovery_evidence_json, observed_evidence_json
+         FROM platform_prospects
+         ORDER BY updated_at DESC
+         LIMIT 250`;
+      const existingRows = this.d1Repo.isRemoteD1ReadAllowed()
+        ? await this.d1Repo.query<{
+            website_url?: string;
+            prospect_website?: string;
+            discovery_evidence_json?: string;
+            observed_evidence_json?: string;
+          }>('platform_prospects', sql)
+        : (getDb().prepare(sql).all() as any[]);
       for (const row of existingRows) {
         if (row.website_url) existingDomains.add(normalizeDomain(row.website_url));
         if (row.prospect_website) existingDomains.add(normalizeDomain(row.prospect_website));

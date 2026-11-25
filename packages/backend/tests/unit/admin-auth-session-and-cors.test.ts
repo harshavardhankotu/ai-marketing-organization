@@ -648,21 +648,20 @@ describe('Admin Authentication, Session Cookies & CORS Security', () => {
       expect(extProdRes.status).toBe(401);
     });
 
-    it('stores sessionToken in frontend client on loginOwner and attaches Bearer + x-owner-session headers on subsequent API calls', async () => {
+    it('relies strictly on HttpOnly cookies (credentials: include) without storing owner tokens in browser storage or attaching Authorization headers', async () => {
       const originalFetch = globalThis.fetch;
-      const capturedCalls: Array<{ url: string; headers: Record<string, string> }> = [];
+      const capturedCalls: Array<{ url: string; credentials?: RequestCredentials; headers: Record<string, string> }> = [];
 
       globalThis.fetch = vi.fn().mockImplementation(async (url: any, opts: any) => {
         capturedCalls.push({
           url: String(url),
+          credentials: opts?.credentials,
           headers: (opts?.headers || {}) as Record<string, string>
         });
         if (String(url).includes('/auth/owner/login')) {
           return new Response(JSON.stringify({
             success: true,
             authenticated: true,
-            sessionToken: 'sess_own_mock_iframe_token_123',
-            token: 'sess_own_mock_iframe_token_123',
             expiresAt: new Date(Date.now() + 86400000).toISOString()
           }), { status: 200, headers: { 'Content-Type': 'application/json' } });
         }
@@ -677,13 +676,14 @@ describe('Admin Authentication, Session Cookies & CORS Security', () => {
         expect(getStoredOwnerSessionToken()).toBeNull();
 
         await api.loginOwner(TEST_KEY);
-        expect(getStoredOwnerSessionToken()).toBe('sess_own_mock_iframe_token_123');
+        expect(getStoredOwnerSessionToken()).toBeNull();
 
         await api.getBusiness();
         const bizCall = capturedCalls.find(c => c.url.endsWith('/business'));
         expect(bizCall).toBeDefined();
-        expect(bizCall!.headers['Authorization']).toBe('Bearer sess_own_mock_iframe_token_123');
-        expect(bizCall!.headers['x-owner-session']).toBe('sess_own_mock_iframe_token_123');
+        expect(bizCall!.credentials).toBe('include');
+        expect(bizCall!.headers['Authorization']).toBeUndefined();
+        expect(bizCall!.headers['x-owner-session']).toBeUndefined();
 
         await api.logoutOwner();
         expect(getStoredOwnerSessionToken()).toBeNull();

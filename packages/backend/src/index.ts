@@ -101,13 +101,29 @@ app.use('*', cors({
 app.use('*', async (c, next) => {
   const csp = [
     "default-src 'self'",
-    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://checkout.razorpay.com https://*.razorpay.com",
+    "script-src 'self' 'unsafe-inline' https://checkout.razorpay.com https://*.razorpay.com",
     "frame-src 'self' https://api.razorpay.com https://checkout.razorpay.com https://*.razorpay.com",
     "child-src 'self' https://api.razorpay.com https://checkout.razorpay.com https://*.razorpay.com",
     "connect-src 'self' https://api.razorpay.com https://checkout.razorpay.com https://lumberjack.razorpay.com https://*.razorpay.com",
     "img-src 'self' data: https: https://*.razorpay.com",
     "style-src 'self' 'unsafe-inline' https:",
     "font-src 'self' data: https:",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "frame-ancestors 'self'"
+  ].join('; ');
+
+  const cspReportOnly = [
+    "default-src 'self'",
+    "script-src 'self' https://checkout.razorpay.com https://*.razorpay.com",
+    "frame-src 'self' https://api.razorpay.com https://checkout.razorpay.com https://*.razorpay.com",
+    "child-src 'self' https://api.razorpay.com https://checkout.razorpay.com https://*.razorpay.com",
+    "connect-src 'self' https://api.razorpay.com https://checkout.razorpay.com https://lumberjack.razorpay.com https://*.razorpay.com",
+    "img-src 'self' data: https: https://*.razorpay.com",
+    "style-src 'self' 'unsafe-inline' https:",
+    "font-src 'self' data: https:",
+    "object-src 'none'",
+    "base-uri 'self'",
     "frame-ancestors 'self'"
   ].join('; ');
 
@@ -116,6 +132,7 @@ app.use('*', async (c, next) => {
   c.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   c.header('Cross-Origin-Embedder-Policy', 'unsafe-none');
   c.header('Content-Security-Policy', csp);
+  c.header('Content-Security-Policy-Report-Only', cspReportOnly);
 
   await next();
 
@@ -124,6 +141,7 @@ app.use('*', async (c, next) => {
   c.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   c.header('Cross-Origin-Embedder-Policy', 'unsafe-none');
   c.header('Content-Security-Policy', csp);
+  c.header('Content-Security-Policy-Report-Only', cspReportOnly);
 });
 
 // Request Logger
@@ -1665,6 +1683,7 @@ app.get('/sitemap.xml', async (c) => {
 
   const staticUrls = [
     `${baseUrl}/`,
+    `${baseUrl}/demo`,
     `${baseUrl}/deals`,
     `${baseUrl}/offer`,
     `${baseUrl}/tools/site-audit`,

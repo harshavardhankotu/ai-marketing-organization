@@ -40,63 +40,16 @@ export class ApiError extends Error {
 export type UnauthorizedHandler = () => void;
 let unauthorizedHandler: UnauthorizedHandler | null = null;
 
-const OWNER_SESSION_STORAGE_KEY = 'aro_owner_session_token';
-let inMemoryOwnerSessionToken: string | null = null;
-
 export function getStoredOwnerSessionToken(): string | null {
-  if (inMemoryOwnerSessionToken) {
-    return inMemoryOwnerSessionToken;
-  }
-  if (typeof window !== 'undefined') {
-    try {
-      const localStored = window.localStorage?.getItem(OWNER_SESSION_STORAGE_KEY);
-      if (localStored && localStored.trim().length > 0) {
-        inMemoryOwnerSessionToken = localStored.trim();
-        return inMemoryOwnerSessionToken;
-      }
-    } catch {}
-    try {
-      const stored = window.sessionStorage?.getItem(OWNER_SESSION_STORAGE_KEY);
-      if (stored && stored.trim().length > 0) {
-        inMemoryOwnerSessionToken = stored.trim();
-        return inMemoryOwnerSessionToken;
-      }
-    } catch {}
-  }
   return null;
 }
 
-export function setStoredOwnerSessionToken(token?: string | null): void {
-  const cleaned = typeof token === 'string' ? token.trim() : '';
-  inMemoryOwnerSessionToken = cleaned || null;
-  if (typeof window !== 'undefined') {
-    try {
-      if (cleaned) {
-        window.localStorage?.setItem(OWNER_SESSION_STORAGE_KEY, cleaned);
-      } else {
-        window.localStorage?.removeItem(OWNER_SESSION_STORAGE_KEY);
-      }
-    } catch {}
-    try {
-      if (cleaned) {
-        window.sessionStorage?.setItem(OWNER_SESSION_STORAGE_KEY, cleaned);
-      } else {
-        window.sessionStorage?.removeItem(OWNER_SESSION_STORAGE_KEY);
-      }
-    } catch {}
-  }
+export function setStoredOwnerSessionToken(_token?: string | null): void {
+  // Owner sessions are persisted strictly in HttpOnly cookies set by the backend.
 }
 
 export function clearStoredOwnerSessionToken(): void {
-  inMemoryOwnerSessionToken = null;
-  if (typeof window !== 'undefined') {
-    try {
-      window.localStorage?.removeItem(OWNER_SESSION_STORAGE_KEY);
-    } catch {}
-    try {
-      window.sessionStorage?.removeItem(OWNER_SESSION_STORAGE_KEY);
-    } catch {}
-  }
+  // No browser storage token is maintained; logout clears the HttpOnly cookie server-side.
 }
 
 export function onUnauthorized(handler: UnauthorizedHandler | null): void {
@@ -129,19 +82,11 @@ export async function fetchApi<T = any>(endpoint: string, options?: RequestInit)
     } catch {}
   }
 
-  const storedToken = getStoredOwnerSessionToken();
-  const authHeaders: Record<string, string> = {};
-  if (storedToken && !normalizedEndpoint.startsWith('/auth/owner/login')) {
-    authHeaders['Authorization'] = `Bearer ${storedToken}`;
-    authHeaders['x-owner-session'] = storedToken;
-  }
-
   const { headers: optionHeaders, ...restOptions } = options || {};
   const mergedHeaders: Record<string, string> = {
     'Content-Type': 'application/json',
     'bypass-tunnel-reminder': '1',
     ...(activeBizId ? { 'x-business-id': activeBizId } : {}),
-    ...authHeaders,
     ...((optionHeaders as Record<string, string>) || {})
   };
 
@@ -290,35 +235,21 @@ export const api = {
     fetchApi('/payments/manual-upi/claims'),
   createRazorpayPaymentLink: (data: { businessId?: string; amountINR: number; description: string; customer?: any; proposalId?: string; prospectId?: string; offerId: string; organizationId?: string }) =>
     fetchApi('/payments/razorpay/create-payment-link', { method: 'POST', body: JSON.stringify(data) }),
-  // Single-Owner Auth & Administration
+  // Single-Owner Auth & Administration (HttpOnly cookie session only)
   loginOwner: async (apiKey: string) => {
     const trimmed = typeof apiKey === 'string' ? apiKey.trim() : '';
-    const res = await fetchApi('/auth/owner/login', {
+    return fetchApi('/auth/owner/login', {
       method: 'POST',
       body: JSON.stringify({
         apiKey: trimmed
       })
     });
-    const token = res?.sessionToken || res?.token || res?.data?.token;
-    if (typeof token === 'string' && token.trim().length > 0) {
-      setStoredOwnerSessionToken(token);
-    }
-    return res;
   },
   logoutOwner: async () => {
-    try {
-      return await fetchApi('/auth/owner/logout', { method: 'POST' });
-    } finally {
-      clearStoredOwnerSessionToken();
-    }
+    return fetchApi('/auth/owner/logout', { method: 'POST' });
   },
   getOwnerSession: async () => {
-    const res = await fetchApi('/auth/owner/session');
-    const token = res?.sessionToken || res?.token || res?.data?.token;
-    if (typeof token === 'string' && token.trim().length > 0) {
-      setStoredOwnerSessionToken(token);
-    }
-    return res;
+    return fetchApi('/auth/owner/session');
   },
   // Setup Wizard & Commercial Proof
   getSetupStatus: () => fetchApi('/setup/status'),

@@ -241,20 +241,30 @@ export class ReplyDeskService {
   }
 
   private d1Repo = D1RevenueRepository.getInstance();
+  private lastD1SyncAtMs = 0;
 
   /**
    * Syncs today's reply desk query runs from durable D1 into local SQLite on startup / cron wake.
    */
-  public async syncFromD1Async(): Promise<void> {
-    if (!isProduction()) return;
+  public async syncFromD1Async(options?: { force?: boolean }): Promise<void> {
+    const TTL_MS = 10 * 60 * 1000;
+    // TTL guard: skip if recently synced AND D1 is configured. When D1 is not configured (or mocked in tests),
+    // lastD1SyncAtMs is never set so the guard never fires, keeping test spies clean.
+    if (!options?.force && this.d1Repo.isRemoteD1ReadAllowed() && this.lastD1SyncAtMs > 0 && (Date.now() - this.lastD1SyncAtMs) < TTL_MS) {
+      return;
+    }
     try {
       this.ensureTable();
       const todayStr = new Date().toISOString().slice(0, 10);
       const rows = await this.d1Repo.query<any>(
         'reply_desk_query_runs',
-        'SELECT * FROM reply_desk_query_runs WHERE run_date = ?',
+        'SELECT * FROM reply_desk_query_runs WHERE run_date = ? ORDER BY created_at DESC LIMIT 100',
         [todayStr]
       );
+      // Only stamp the TTL when we actually read from remote D1 to avoid polluting TTL in non-D1 environments.
+      if (this.d1Repo.isRemoteD1ReadAllowed()) {
+        this.lastD1SyncAtMs = Date.now();
+      }
       if (rows && rows.length > 0) {
         const db = getDb();
         const stmt = db.prepare(`

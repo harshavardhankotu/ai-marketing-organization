@@ -865,8 +865,8 @@ export class DurableJobQueue {
     const parkedSet = new Set<string>(options?.parkedWorkflowIds ?? []);
     const cadenceMap = new Map<string, number>();
     try {
-      const regSql = `SELECT id, enabled, cadence_minutes FROM automation_registry`;
-      const regRows = isProduction()
+      const regSql = `SELECT id, enabled, cadence_minutes FROM automation_registry LIMIT 100`;
+      const regRows = this.d1Repo.isRemoteD1ReadAllowed()
         ? await this.d1Repo.query<any>('automation_registry', regSql)
         : getDb().prepare(regSql).all() as any[];
       for (const r of regRows) {
@@ -909,8 +909,10 @@ export class DurableJobQueue {
         SELECT id, workflow_id, available_at, created_at
         FROM automation_jobs
         WHERE status IN ('QUEUED', 'RETRY_WAIT')
+        ORDER BY created_at DESC
+        LIMIT 200
       `;
-      const queuedRows = isProduction()
+      const queuedRows = this.d1Repo.isRemoteD1ReadAllowed()
         ? await this.d1Repo.query<any>('automation_jobs', candidateSql)
         : getDb().prepare(candidateSql).all() as any[];
 
@@ -1044,8 +1046,8 @@ export class DurableJobQueue {
     let requeuedActiveBlockedCount = 0;
     let deferredMissingCredentialCount = 0;
     try {
-      const blockedSql = `SELECT id, workflow_id, last_error, payload_json FROM automation_jobs WHERE status = 'BLOCKED'`;
-      const blockedRows = isProduction()
+      const blockedSql = `SELECT id, workflow_id, last_error, payload_json FROM automation_jobs WHERE status = 'BLOCKED' ORDER BY updated_at DESC LIMIT 50`;
+      const blockedRows = this.d1Repo.isRemoteD1ReadAllowed()
         ? await this.d1Repo.query<any>('automation_jobs', blockedSql)
         : getDb().prepare(blockedSql).all() as any[];
 
@@ -1130,8 +1132,8 @@ export class DurableJobQueue {
     const activeIds = Array.from(activeSet);
     if (activeIds.length > 0 && (supersededStaleCount > 0 || requeuedActiveBlockedCount > 0 || options?.activeWorkflowIds)) {
       try {
-        const activeSql = `SELECT DISTINCT workflow_id FROM automation_jobs WHERE status IN ('QUEUED', 'RUNNING', 'RETRY_WAIT')`;
-        const activeRows = isProduction()
+        const activeSql = `SELECT DISTINCT workflow_id FROM automation_jobs WHERE status IN ('QUEUED', 'RUNNING', 'RETRY_WAIT') LIMIT 50`;
+        const activeRows = this.d1Repo.isRemoteD1ReadAllowed()
           ? await this.d1Repo.query<any>('automation_jobs', activeSql)
           : getDb().prepare(activeSql).all() as any[];
         const alreadyActive = new Set(activeRows.map((r: any) => String(r.workflow_id || '')));

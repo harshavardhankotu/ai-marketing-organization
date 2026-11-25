@@ -374,7 +374,6 @@ export const PublicComparisonPage: React.FC = () => {
           </a>
           <div className="flex items-center gap-4 text-xs text-slate-400">
             <span className="hidden sm:inline font-mono">#Ad · Dual-Rail Verified Comparison</span>
-            <a href="/tools/site-audit" className="hover:text-white whitespace-nowrap">SiteFix Audit</a>
             <a href="/public/disclosure" className="hover:text-white whitespace-nowrap">Disclosure</a>
           </div>
         </div>

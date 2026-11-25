@@ -16,6 +16,7 @@ import { isProduction, getTrustedPublicSiteUrl } from '../config/env.js';
 import { CommercialSchedulePolicy } from './commercial-schedule-policy.js';
 import { BusinessAutonomyLock } from '../revenue/business-autonomy-lock.js';
 import { AutonomousPolicyGate } from './autonomous-policy-gate.js';
+import { batchLookupProspectsByName } from '../revenue/outreach-prospect-lookup.js';
 
 export type WorkflowStatus =
   | 'IDLE'
@@ -1527,23 +1528,36 @@ export class AutomationRegistryEngine {
         }
 
         const db = getDb();
-        let pendingAutoDrafts: any[] = [];
-        try {
-          pendingAutoDrafts = db.prepare(`
-            SELECT d.*,
-                   COALESCE(p.email, p.prospect_email) as joined_email,
-                   COALESCE(p.phone, p.prospect_phone) as joined_phone,
-                   COALESCE(p.website_url, p.prospect_website) as joined_website,
-                   p.prospect_vertical as prospect_vertical
-            FROM direct_outreach_log d
-            LEFT JOIN platform_prospects p
-              ON d.prospect_name = p.prospect_business_name OR d.prospect_name = p.business_name
-            WHERE d.dispatched = 0
-              AND UPPER(COALESCE(d.channel, 'EMAIL')) = 'EMAIL'
-              AND COALESCE(d.response_status, '') NOT IN ('SUPPRESSED_HEALTHCARE_POLICY', 'DISQUALIFIED_NATIONAL_ENTERPRISE', 'OPT_OUT')
-            ORDER BY d.created_at ASC
+        const fetchPendingEmailDrafts = async (): Promise<any[]> => {
+          const rawDrafts = db.prepare(`
+            SELECT *
+            FROM direct_outreach_log
+            WHERE dispatched = 0
+              AND UPPER(COALESCE(channel, 'EMAIL')) = 'EMAIL'
+              AND COALESCE(response_status, '') NOT IN ('SUPPRESSED_HEALTHCARE_POLICY', 'DISQUALIFIED_NATIONAL_ENTERPRISE', 'OPT_OUT')
+            ORDER BY created_at ASC
             LIMIT 25
           `).all() as any[];
+          if (rawDrafts.length === 0) return [];
+          const pMap = await batchLookupProspectsByName(
+            rawDrafts.map(d => d.prospect_name),
+            { useRemoteD1: false, d1Repo: this.d1Repo, db }
+          );
+          return rawDrafts.map(d => {
+            const p = pMap.get(String(d.prospect_name || '').trim().toLowerCase());
+            return {
+              ...d,
+              joined_email: p?.email || p?.prospect_email || null,
+              joined_phone: p?.phone || p?.prospect_phone || null,
+              joined_website: p?.website_url || p?.prospect_website || null,
+              prospect_vertical: p?.prospect_vertical || null
+            };
+          });
+        };
+
+        let pendingAutoDrafts: any[] = [];
+        try {
+          pendingAutoDrafts = await fetchPendingEmailDrafts();
         } catch {}
 
         const auditService = SiteAuditService.getInstance();
@@ -1554,10 +1568,10 @@ export class AutomationRegistryEngine {
         let contacts: any[] = [];
         let audits: any[] = [];
         try {
-          contacts = db.prepare(`SELECT prospect_name, prospect_business_name, prospect_email, prospect_website, email_authorized, authorization_source, authorization_evidence_json FROM outbound_contacts WHERE is_opted_out = 0 AND is_suppressed = 0`).all() as any[];
+          contacts = db.prepare(`SELECT prospect_name, prospect_business_name, prospect_email, prospect_website, email_authorized, authorization_source, authorization_evidence_json FROM outbound_contacts WHERE is_opted_out = 0 AND is_suppressed = 0 ORDER BY updated_at DESC LIMIT 50`).all() as any[];
         } catch {}
         try {
-          audits = db.prepare(`SELECT domain, target_url, business_name, checklist_json FROM site_audits WHERE status = 'COMPLETED'`).all() as any[];
+          audits = db.prepare(`SELECT domain, target_url, business_name, checklist_json FROM site_audits WHERE status = 'COMPLETED' ORDER BY updated_at DESC LIMIT 50`).all() as any[];
         } catch {}
 
         // Stage P.2: If pending drafts are exhausted, auto-discover high-trigger audits and draft up to remaining today cap
@@ -1592,21 +1606,7 @@ export class AutomationRegistryEngine {
           }
 
           try {
-            pendingAutoDrafts = db.prepare(`
-              SELECT d.*,
-                     COALESCE(p.email, p.prospect_email) as joined_email,
-                     COALESCE(p.phone, p.prospect_phone) as joined_phone,
-                     COALESCE(p.website_url, p.prospect_website) as joined_website,
-                     p.prospect_vertical as prospect_vertical
-              FROM direct_outreach_log d
-              LEFT JOIN platform_prospects p
-                ON d.prospect_name = p.prospect_business_name OR d.prospect_name = p.business_name
-              WHERE d.dispatched = 0
-                AND UPPER(COALESCE(d.channel, 'EMAIL')) = 'EMAIL'
-                AND COALESCE(d.response_status, '') NOT IN ('SUPPRESSED_HEALTHCARE_POLICY', 'DISQUALIFIED_NATIONAL_ENTERPRISE', 'OPT_OUT')
-              ORDER BY d.created_at ASC
-              LIMIT 25
-            `).all() as any[];
+            pendingAutoDrafts = await fetchPendingEmailDrafts();
           } catch {}
         }
 
@@ -2051,7 +2051,7 @@ export class AutomationRegistryEngine {
 
         let pendingClaims: any[] = [];
         try {
-          const sql = `SELECT * FROM manual_upi_claims WHERE status = 'PAYMENT_CLAIMED'`;
+          const sql = `SELECT * FROM manual_upi_claims WHERE status = 'PAYMENT_CLAIMED' ORDER BY claimed_at DESC LIMIT 10`;
           pendingClaims = isProduction()
             ? await this.d1Repo.query<any>('manual_upi_claims', sql)
             : getDb().prepare(sql).all();

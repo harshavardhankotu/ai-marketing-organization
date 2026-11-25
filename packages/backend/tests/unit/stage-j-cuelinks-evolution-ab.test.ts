@@ -345,13 +345,7 @@ describe('Stage J: Live Cuelinks /offers.json, 72h Evolutionary Rotation, Storef
     expect(winnerEv.evolutionStatus).toBe('RISING_WINNER');
     expect(staleEv.evolutionStatus).toBe('STALE_ROTATED_OUT');
 
-    // / and /deals showcase non-stale featured deal and exclude ROTATED_OUT_STALE from featured slots
-    const homeRes = await app.request('/');
-    expect(homeRes.status).toBe(200);
-    const homeHtml = await homeRes.text();
-    expect(homeHtml).toContain('boAt Airdopes Winner Deal');
-    expect(homeHtml).not.toContain('Old Unclicked Gadget Deal');
-
+    // /deals showcases non-stale featured deal and excludes ROTATED_OUT_STALE from featured slots
     const dealsRes = await app.request('/deals');
     expect(dealsRes.status).toBe(200);
     const dealsHtml = await dealsRes.text();

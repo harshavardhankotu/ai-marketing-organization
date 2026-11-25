@@ -95,6 +95,7 @@ import { CoordinatedAgentOrchestrator } from '../agents/coordinated-orchestrator
 import { DurableJobQueue } from '../automation/durable-job-queue.js';
 import { CommercialSchedulePolicy } from '../automation/commercial-schedule-policy.js';
 import { SiteAuditService } from '../tools/site-audit/site-audit-service.js';
+import { batchLookupProspectsByName } from '../revenue/outreach-prospect-lookup.js';
 
 export type AppVariables = {
   organizationId: string;
@@ -158,9 +159,6 @@ export const EXACT_ROUTE_POLICY = {
     '/payments/razorpay/create-order',
     '/payments/razorpay/create-b2b-order',
     '/payments/razorpay/verify',
-    '/integrations/razorpay/test-readiness',
-    '/integrations/razorpay/test-order',
-    '/integrations/razorpay/test-verify',
     '/payments/manual-upi/claim',
     '/offer/upi-claim',
     '/payments/public/create-link',
@@ -193,6 +191,7 @@ export const EXACT_ROUTE_POLICY = {
     '/recommendations',
     '/offers',
     '/offer',
+    '/demo',
     '/offer/inquiry',
     '/offer/inquiry/delete-request',
     '/privacy',
@@ -231,6 +230,65 @@ export const EXACT_ROUTE_POLICY = {
 
 export const apiRouter = new Hono<{ Variables: AppVariables }>();
 
+function enforceCsrfOriginGuard(c: any, routeLabel: string = 'protected operations'): Response | null {
+  const originHeader = (c.req.header('origin') || '').trim();
+  const refererHeader = (c.req.header('referer') || '').trim();
+  const secFetchSite = (c.req.header('sec-fetch-site') || '').toLowerCase();
+
+  let candidateOrigin = originHeader;
+  if (!candidateOrigin && refererHeader) {
+    try {
+      candidateOrigin = new URL(refererHeader).origin;
+    } catch {
+      return c.json({
+        success: false,
+        error: `FORBIDDEN: Malformed Referer rejected for ${routeLabel}.`
+      }, 403);
+    }
+  }
+
+  const host = (c.req.header('host') || '').trim();
+  const forwardedHost = (c.req.header('x-forwarded-host') || '').trim();
+  const allowedOrigins = [
+    'https://ai-marketing-organization.onrender.com',
+    'https://gen-lang-client-0916255372.web.app',
+    'https://gen-lang-client-0916255372.firebaseapp.com'
+  ];
+  if (process.env.FRONTEND_ORIGIN) {
+    allowedOrigins.push(...process.env.FRONTEND_ORIGIN.split(',').map(s => s.trim()).filter(Boolean));
+  }
+
+  if (candidateOrigin) {
+    let originHost = '';
+    try { originHost = new URL(candidateOrigin).host; } catch {}
+    const isAllowedOrigin = allowedOrigins.includes(candidateOrigin);
+    const isSameHost = Boolean(originHost && (
+      originHost === host ||
+      (host && host.startsWith(originHost)) ||
+      originHost === forwardedHost ||
+      (forwardedHost && forwardedHost.startsWith(originHost))
+    ));
+    const isLocalhost = !isProduction() && (
+      originHost.includes('localhost') ||
+      originHost.includes('127.0.0.1') ||
+      originHost.endsWith('.run.app')
+    );
+
+    if (!isAllowedOrigin && !isSameHost && !isLocalhost) {
+      return c.json({
+        success: false,
+        error: `FORBIDDEN: Untrusted Origin '${candidateOrigin}' rejected for ${routeLabel}.`
+      }, 403);
+    }
+  } else if (secFetchSite === 'cross-site') {
+    return c.json({
+      success: false,
+      error: `FORBIDDEN: Cross-site request without trusted Origin rejected for ${routeLabel}.`
+    }, 403);
+  }
+
+  return null;
+}
 
 // Middleware: Authentication & Tenant Context Boundary
 apiRouter.use('*', async (c, next) => {
@@ -253,6 +311,10 @@ apiRouter.use('*', async (c, next) => {
   );
 
   if (isExplicitPublic) {
+    if (path === '/auth/owner/logout' && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(c.req.method)) {
+      const csrfErr = enforceCsrfOriginGuard(c, 'owner logout');
+      if (csrfErr) return csrfErr;
+    }
     // In production, public requests MUST ignore client-supplied x-organization-id headers
     c.set('organizationId', isProduction() ? '' : (c.req.header('x-organization-id') || 'org_owner_primary'));
     c.set('userId', 'usr_public_lead');
@@ -297,40 +359,11 @@ apiRouter.use('*', async (c, next) => {
 
   const ownerSession = await ownerAuth.validateTokenAsync(token);
 
-  // Strictly validate Origin for owner POST routes to prevent cross-site request forgery
-  if (c.req.method === 'POST' && (path.startsWith('/owner') || path.startsWith('/commission') || path.startsWith('/build'))) {
-    const origin = c.req.header('origin');
-    if (origin) {
-      const host = c.req.header('host') || '';
-      const forwardedHost = c.req.header('x-forwarded-host') || '';
-      let originHost = '';
-      try { originHost = new URL(origin).host; } catch {}
-      const allowedOrigins = [
-        'https://ai-marketing-organization.onrender.com'
-      ];
-      if (process.env.FRONTEND_ORIGIN) {
-        allowedOrigins.push(...process.env.FRONTEND_ORIGIN.split(',').map(s => s.trim()).filter(Boolean));
-      }
-      const isAllowedOrigin = allowedOrigins.includes(origin);
-      const isSameHost = originHost && (
-        originHost === host ||
-        host.startsWith(originHost) ||
-        originHost === forwardedHost ||
-        forwardedHost.startsWith(originHost)
-      );
-      const isLocalhost = !isProduction() && (
-        originHost.includes('localhost') ||
-        originHost.includes('127.0.0.1') ||
-        originHost.endsWith('.run.app')
-      );
-
-      if (!isAllowedOrigin && !isSameHost && !isLocalhost) {
-        return c.json({
-          success: false,
-          error: `FORBIDDEN: Untrusted Origin '${origin}' rejected for owner POST operations.`
-        }, 403);
-      }
-    }
+  // Strictly validate Origin/Referer for all mutating non-public/non-webhook routes to prevent CSRF.
+  // Exempt /mcp — it has its own JSON-RPC Origin guard at the route handler level (returns code -32003).
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(c.req.method) && path !== '/mcp') {
+    const csrfErr = enforceCsrfOriginGuard(c, 'owner mutating operations');
+    if (csrfErr) return csrfErr;
   }
 
   const isOwnerRoute = path.startsWith('/owner') && path !== '/owner/login';
@@ -436,6 +469,7 @@ apiRouter.use('*', async (c, next) => {
       path === '/owner/fulfillment/retry' ||
       (path.startsWith('/payments/manual-upi/') && (path.endsWith('/retry-fulfillment') || path.endsWith('/lifecycle'))) ||
       path === '/payments/reconcile-export' ||
+      path.startsWith('/integrations/razorpay/test-') ||
       isOwnerRoute
     )) {
       if (isOwnerRoute && c.req.header('accept')?.includes('text/html')) {
@@ -487,23 +521,43 @@ apiRouter.get('/health', (c) => {
 // ==========================================
 function buildOwnerSessionCookie(c: any, token: string, maxAgeSeconds: number): string {
   const forwardedProto = (c.req.header('x-forwarded-proto') || '').toLowerCase();
-  const origin = c.req.header('origin') || '';
-  const referer = c.req.header('referer') || '';
+  const origin = (c.req.header('origin') || '').trim();
+  const referer = (c.req.header('referer') || '').trim();
+  const host = (c.req.header('x-forwarded-host') || c.req.header('host') || '').trim();
   const secFetchDest = (c.req.header('sec-fetch-dest') || '').toLowerCase();
   const secFetchSite = (c.req.header('sec-fetch-site') || '').toLowerCase();
   const isHttpsRequest =
     forwardedProto === 'https' ||
     origin.startsWith('https://') ||
     referer.startsWith('https://');
+  const originHost = (() => {
+    try { return origin ? new URL(origin).host : ''; } catch { return ''; }
+  })();
+  const hasCrossOriginFrontend = Boolean(
+    process.env.FRONTEND_ORIGIN &&
+    process.env.FRONTEND_ORIGIN
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean)
+      .some(fo => {
+        try {
+          const foHost = new URL(fo).host;
+          return host ? foHost !== host : !fo.includes('onrender.com');
+        } catch {
+          return false;
+        }
+      })
+  );
+  const isCrossOriginOrigin = Boolean(originHost && host && originHost !== host);
   const isIframeOrCrossOrigin =
-    isHttpsRequest ||
     secFetchDest === 'iframe' ||
     secFetchSite === 'cross-site' ||
-    Boolean(process.env.FRONTEND_ORIGIN && !process.env.FRONTEND_ORIGIN.includes('onrender.com'));
+    isCrossOriginOrigin ||
+    hasCrossOriginFrontend;
   const isSecure = isProduction() || isHttpsRequest;
   const sameSite =
     process.env.COOKIE_SAMESITE ||
-    (isHttpsRequest && isIframeOrCrossOrigin ? 'None' : 'Lax');
+    (isSecure && isIframeOrCrossOrigin ? 'None' : 'Lax');
   const partitioned = sameSite.toLowerCase() === 'none' && isSecure ? '; Partitioned' : '';
   return `owner_session=${token}; Path=/; HttpOnly; SameSite=${sameSite}; Max-Age=${maxAgeSeconds}${isSecure ? '; Secure' : ''}${partitioned}`;
 }
@@ -1838,7 +1892,7 @@ apiRouter.post('/cron/worker/claim-and-run', async (c) => {
     if (!budgetStopped && !d1Client.isCycleBudgetExceeded()) {
       try {
         const now = new Date();
-        const eligibleWorkflowIds = CommercialSchedulePolicy.getEligibleWorkflowIds(now);
+        const eligibleWorkflowIds = CommercialSchedulePolicy.getCronCatchupWorkflowIds(now);
         const optionsList = eligibleWorkflowIds.map(wfId => ({
           workflowId: wfId,
           idempotencyKey: CommercialSchedulePolicy.getIdempotencyKey(wfId, now),
@@ -4001,6 +4055,15 @@ apiRouter.post('/webhooks/razorpay', async (c) => {
         }, 503);
       }
 
+      // Event-driven trigger for payment_status_reconciliation on captured payment webhook
+      try {
+        await DurableJobQueue.getInstance().enqueueJob({
+          workflowId: 'payment_status_reconciliation',
+          idempotencyKey: `event_rzp_${dedupeKey}`,
+          payload: { triggeredBy: 'razorpay_webhook', orderId, paymentId }
+        });
+      } catch {}
+
       return c.json({
         success: true,
         received: true,
@@ -4921,6 +4984,15 @@ apiRouter.post('/offer/inquiry', async (c) => {
         clinicName,
         need: notes || practiceNameAndCity,
         isTest: isTestProspect
+      });
+    } catch {}
+
+    // Event-driven trigger for new_inquiry_processing (instead of polling hourly on cron)
+    try {
+      await DurableJobQueue.getInstance().enqueueJob({
+        workflowId: 'new_inquiry_processing',
+        idempotencyKey: `event_inquiry_${prospectId}`,
+        payload: { triggeredBy: 'offer_inquiry_post', prospectId }
       });
     } catch {}
 
@@ -11608,34 +11680,43 @@ apiRouter.get('/owner/direct-outreach', async (c) => {
   }
 
   const sql = `
-    SELECT 
-      d.id, d.business_id, d.segment, d.prospect_name, d.channel, d.message_draft,
-      d.compliance_checked, d.human_approved, d.dispatched, d.dispatch_timestamp,
-      d.response_status, d.created_at,
-      COALESCE(p.phone, p.prospect_phone) as phone,
-      COALESCE(p.email, p.prospect_email) as email,
-      COALESCE(p.city, p.prospect_city) as city,
-      COALESCE(p.website_url, p.prospect_website) as website_url
-    FROM direct_outreach_log d
-    LEFT JOIN platform_prospects p
-      ON d.prospect_name = p.prospect_business_name OR d.prospect_name = p.business_name
-    ${whereClause}
-    GROUP BY d.id
-    ORDER BY d.created_at DESC
-    LIMIT 50
+    SELECT
+      id, business_id, segment, prospect_name, channel, message_draft,
+      compliance_checked, human_approved, dispatched, dispatch_timestamp,
+      response_status, created_at
+    FROM direct_outreach_log
+    ${whereClause.replace(/\bd\./g, '')}
+    ORDER BY created_at DESC
+    LIMIT 25
   `;
 
-  let rows: any[] = [];
+  let rawRows: any[] = [];
+  const useRemoteD1 = d1Repo.isRemoteD1ReadAllowed();
   try {
-    if (d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST)) {
-      rows = await d1Repo.query<any>('direct_outreach_log', sql);
+    if (useRemoteD1) {
+      rawRows = await d1Repo.query<any>('direct_outreach_log', sql);
     } else {
-      rows = getDb().prepare(sql).all() as any[];
+      rawRows = getDb().prepare(sql).all() as any[];
     }
   } catch (err: any) {
     console.error(`[OwnerDirectOutreach] Query error: ${err.message}`);
     return c.json({ success: false, error: 'D1_QUERY_FAILED', message: err.message }, 503);
   }
+
+  const prospectMap = await batchLookupProspectsByName(
+    rawRows.map(r => r.prospect_name),
+    { useRemoteD1, d1Repo, db: getDb() }
+  );
+  const rows = rawRows.map(r => {
+    const p = prospectMap.get(String(r.prospect_name || '').trim().toLowerCase());
+    return {
+      ...r,
+      phone: p?.phone || p?.prospect_phone || null,
+      email: p?.email || p?.prospect_email || null,
+      city: p?.city || p?.prospect_city || null,
+      website_url: p?.website_url || p?.prospect_website || null
+    };
+  });
 
   const items = rows.map(r => {
     const rawPhone = (r.phone || '').trim();
@@ -11835,20 +11916,27 @@ apiRouter.get('/owner/first-sale/ready-actions', async (c) => {
      LIMIT 15`
   );
 
-  const outreachRows = await readRows<any>(
+  const rawOutreachRows = await readRows<any>(
     'direct_outreach_log',
-    `SELECT d.id, d.business_id, d.segment, d.prospect_name, d.channel, d.message_draft,
-            d.human_approved, d.dispatched, d.response_status, d.created_at,
-            COALESCE(p.email, p.prospect_email) as email,
-            COALESCE(p.phone, p.prospect_phone) as phone,
-            COALESCE(p.website_url, p.prospect_website) as website_url
-     FROM direct_outreach_log d
-     LEFT JOIN platform_prospects p
-       ON d.prospect_name = p.prospect_business_name OR d.prospect_name = p.business_name
-     GROUP BY d.id
-     ORDER BY d.created_at DESC
-     LIMIT 30`
+    `SELECT id, business_id, segment, prospect_name, channel, message_draft,
+            human_approved, dispatched, response_status, created_at
+     FROM direct_outreach_log
+     ORDER BY created_at DESC
+     LIMIT 25`
   );
+  const readyProspectMap = await batchLookupProspectsByName(
+    rawOutreachRows.map((r: any) => r.prospect_name),
+    { useRemoteD1: d1Repo.isRemoteD1ReadAllowed(), d1Repo, db }
+  );
+  const outreachRows = rawOutreachRows.map((r: any) => {
+    const p = readyProspectMap.get(String(r.prospect_name || '').trim().toLowerCase());
+    return {
+      ...r,
+      email: p?.email || p?.prospect_email || null,
+      phone: p?.phone || p?.prospect_phone || null,
+      website_url: p?.website_url || p?.prospect_website || null
+    };
+  });
 
   const contactRows = await readRows<any>(
     'outbound_contacts',
@@ -12806,19 +12894,10 @@ apiRouter.post('/owner/first-sale/approve-and-send/:draftId', async (c) => {
   }
 
   let draft: any = null;
-  const selectSql = `
-    SELECT d.*,
-           COALESCE(p.email, p.prospect_email) as joined_email,
-           COALESCE(p.phone, p.prospect_phone) as joined_phone,
-           COALESCE(p.website_url, p.prospect_website) as joined_website
-    FROM direct_outreach_log d
-    LEFT JOIN platform_prospects p
-      ON d.prospect_name = p.prospect_business_name OR d.prospect_name = p.business_name
-    WHERE d.id = ?
-    LIMIT 1
-  `;
+  const selectSql = `SELECT * FROM direct_outreach_log WHERE id = ? LIMIT 1`;
+  const useRemoteD1ForDraft = d1Repo.isRemoteD1ReadAllowed();
   try {
-    if (d1Repo.isRemoteD1Configured() && !process.env.VITEST) {
+    if (useRemoteD1ForDraft) {
       draft = await d1Repo.queryOne<any>('direct_outreach_log', selectSql, [draftId]);
     } else {
       draft = db.prepare(selectSql).get(draftId);
@@ -12827,6 +12906,18 @@ apiRouter.post('/owner/first-sale/approve-and-send/:draftId', async (c) => {
     try {
       draft = db.prepare(selectSql).get(draftId);
     } catch {}
+  }
+  if (draft) {
+    const pMap = await batchLookupProspectsByName(
+      [draft.prospect_name],
+      { useRemoteD1: useRemoteD1ForDraft, d1Repo, db }
+    );
+    const matchedProspect = pMap.get(String(draft.prospect_name || '').trim().toLowerCase());
+    if (matchedProspect) {
+      draft.joined_email = matchedProspect.email || matchedProspect.prospect_email || null;
+      draft.joined_phone = matchedProspect.phone || matchedProspect.prospect_phone || null;
+      draft.joined_website = matchedProspect.website_url || matchedProspect.prospect_website || null;
+    }
   }
 
   if (!draft) {
@@ -16164,19 +16255,58 @@ apiRouter.get('/api/v1/offer/download/:downloadToken', handleOfferDownload);
  * Public endpoints strictly ignore client-supplied ownerApproved/priceINR and fail closed on scan failures.
  */
 apiRouter.post('/b2b/pilot-proposal', async (c) => {
-  const body = await c.req.json().catch(() => ({}));
-  const targetUrl = body.url || body.targetUrl;
-  if (!targetUrl || typeof targetUrl !== 'string') {
-    return c.json({ success: false, error: 'INVALID_REQUEST: targetUrl string is required' }, 400);
+  const clientIp = getTrustedClientIp(c).ip;
+  const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit(
+    '/b2b/pilot-proposal:post',
+    clientIp,
+    5,
+    600,
+    { failClosed: true }
+  );
+  if (!rateLimit.allowed) {
+    const status = rateLimit.reason === 'RATE_LIMITER_UNAVAILABLE' ? 503 : 429;
+    return c.json({
+      success: false,
+      error: rateLimit.reason || 'RATE_LIMIT_EXCEEDED',
+      retryAfterSeconds: rateLimit.retryAfterSeconds
+    }, status as any);
   }
-  const businessName = typeof body.businessName === 'string' && body.businessName.trim() ? body.businessName.trim() : 'Business Owner';
-  const contactEmail = typeof body.contactEmail === 'string' ? body.contactEmail.trim() : undefined;
+
+  const rawBody = await c.req.text().catch(() => '');
+  if (rawBody.length > 8192) {
+    return c.json({ success: false, error: 'PAYLOAD_TOO_LARGE: Request body exceeds 8KB limit.' }, 413);
+  }
+  let body: any = {};
+  try {
+    body = rawBody ? JSON.parse(rawBody) : {};
+  } catch {
+    return c.json({ success: false, error: 'INVALID_JSON: Request body must be valid JSON.' }, 400);
+  }
+
+  if (body.authorizedToScan !== true) {
+    return c.json({
+      success: false,
+      error: 'AUTHORIZATION_ATTESTATION_REQUIRED',
+      message: 'Explicit authorization attestation (authorizedToScan: true) is required to run a live website scan.'
+    }, 400);
+  }
+
+  const targetUrl = body.url || body.targetUrl;
+  if (!targetUrl || typeof targetUrl !== 'string' || targetUrl.trim().length > 500) {
+    return c.json({ success: false, error: 'INVALID_REQUEST: targetUrl string (<=500 chars) is required' }, 400);
+  }
+  const businessName = typeof body.businessName === 'string' && body.businessName.trim()
+    ? body.businessName.trim().slice(0, 120)
+    : 'Business Owner';
+  const contactEmail = typeof body.contactEmail === 'string'
+    ? body.contactEmail.trim().slice(0, 120)
+    : undefined;
 
   const { B2BPilotService } = await import('../revenue/b2b-pilot-service.js');
   try {
     // Never forward client-supplied ownerApproved or priceINR from public requests
     const proposal = await B2BPilotService.getInstance().generateProposal({
-      targetUrl,
+      targetUrl: targetUrl.trim(),
       businessName,
       contactEmail
     });
@@ -16193,6 +16323,9 @@ apiRouter.post('/b2b/pilot-proposal', async (c) => {
     if (msg.startsWith('INVALID_URL:')) {
       return c.json({ success: false, error: 'INVALID_URL', message: msg }, 400);
     }
+    if (msg.startsWith('SCAN_CAPACITY_EXCEEDED:')) {
+      return c.json({ success: false, error: 'SCAN_CAPACITY_EXCEEDED', message: msg }, 429);
+    }
     if (msg.startsWith('SCAN_FAILED:')) {
       return c.json({ success: false, error: 'SCAN_FAILED', message: msg }, 422);
     }
@@ -16204,22 +16337,54 @@ apiRouter.post('/b2b/pilot-proposal', async (c) => {
 });
 
 apiRouter.get('/b2b/pilot-proposal', async (c) => {
-  const targetUrl = c.req.query('url') || c.req.query('targetUrl');
-  if (!targetUrl) {
-    return c.text('Missing required query parameter: url', 400);
+  const clientIp = getTrustedClientIp(c).ip;
+  const rateLimit = await DurableRateLimiter.getInstance().checkRateLimit(
+    '/b2b/pilot-proposal:get',
+    clientIp,
+    10,
+    600,
+    { failClosed: true }
+  );
+  const format = c.req.query('format') || 'html';
+  if (!rateLimit.allowed) {
+    const status = rateLimit.reason === 'RATE_LIMITER_UNAVAILABLE' ? 503 : 429;
+    if (format === 'json') {
+      return c.json({
+        success: false,
+        error: rateLimit.reason || 'RATE_LIMIT_EXCEEDED',
+        retryAfterSeconds: rateLimit.retryAfterSeconds
+      }, status as any);
+    }
+    return c.text(`Rate limit exceeded. Retry after ${rateLimit.retryAfterSeconds}s.`, status as any);
   }
-  const businessName = c.req.query('businessName') || 'Business Owner';
-  const contactEmail = c.req.query('contactEmail') || undefined;
+
+  const authorizedParam = (c.req.query('authorizedToScan') || '').toLowerCase();
+  if (authorizedParam !== 'true' && authorizedParam !== '1') {
+    if (format === 'json') {
+      return c.json({
+        success: false,
+        error: 'AUTHORIZATION_ATTESTATION_REQUIRED',
+        message: 'Explicit authorization attestation (authorizedToScan=true) is required to run a live website scan.'
+      }, 400);
+    }
+    return c.text('Missing required authorization attestation: authorizedToScan=true', 400);
+  }
+
+  const targetUrl = c.req.query('url') || c.req.query('targetUrl');
+  if (!targetUrl || targetUrl.trim().length > 500) {
+    return c.text('Missing or invalid query parameter: url (<=500 chars)', 400);
+  }
+  const businessName = (c.req.query('businessName') || 'Business Owner').trim().slice(0, 120);
+  const contactEmail = c.req.query('contactEmail')?.trim().slice(0, 120) || undefined;
 
   const { B2BPilotService } = await import('../revenue/b2b-pilot-service.js');
   try {
     // Never forward client-supplied ownerApproved or priceINR from public requests
     const proposal = await B2BPilotService.getInstance().generateProposal({
-      targetUrl,
+      targetUrl: targetUrl.trim(),
       businessName,
       contactEmail
     });
-    const format = c.req.query('format') || 'html';
     if (format === 'json') {
       return c.json({ success: true, data: proposal });
     }
@@ -16229,17 +16394,20 @@ apiRouter.get('/b2b/pilot-proposal', async (c) => {
     return c.html(proposal.html);
   } catch (err: any) {
     const msg = String(err?.message || 'PROPOSAL_GENERATION_FAILED');
-    const format = c.req.query('format') || 'html';
     const isDurableUnavailable = msg.includes('D1_DURABLE_WRITE_UNAVAILABLE') || msg.includes('PERSISTENCE_FAULT') || msg.includes('SERVICE_UNAVAILABLE');
     const statusCode = isDurableUnavailable
       ? 503
-      : (msg.startsWith('INVALID_URL:') ? 400 : (msg.startsWith('SCAN_FAILED:') ? 422 : 500));
+      : (msg.startsWith('SCAN_CAPACITY_EXCEEDED:')
+        ? 429
+        : (msg.startsWith('INVALID_URL:') ? 400 : (msg.startsWith('SCAN_FAILED:') ? 422 : 500)));
     if (format === 'json') {
       return c.json({
         success: false,
         error: isDurableUnavailable
           ? 'D1_DURABLE_WRITE_UNAVAILABLE'
-          : (msg.startsWith('SCAN_FAILED:') ? 'SCAN_FAILED' : 'PROPOSAL_GENERATION_FAILED'),
+          : (msg.startsWith('SCAN_CAPACITY_EXCEEDED:')
+            ? 'SCAN_CAPACITY_EXCEEDED'
+            : (msg.startsWith('SCAN_FAILED:') ? 'SCAN_FAILED' : 'PROPOSAL_GENERATION_FAILED')),
         message: msg
       }, statusCode as any);
     }
@@ -17123,6 +17291,19 @@ const instagramOAuthCallbackHandler = async (c: any) => {
     const safeHandle = result.handle.replace(/[<>&"]/g, '');
     const safeDesc = (result.errorDescription || result.error || '').replace(/[<>&"]/g, '');
     const safeExpiresAt = String(result.expiresAt || '60 days').replace(/[<>&"]/g, '');
+    const allowedTargetOrigins = [
+      ...(process.env.FRONTEND_ORIGIN || '').split(',').map(s => s.trim()).filter(Boolean),
+      getTrustedPublicSiteUrl().replace(/\/+$/, ''),
+      'https://ai-marketing-organization.onrender.com',
+      'https://gen-lang-client-0916255372.web.app',
+      'https://gen-lang-client-0916255372.firebaseapp.com'
+    ];
+    const reqOriginOnly = (() => {
+      try { return new URL(c.req.url).origin; } catch { return ''; }
+    })();
+    const targetOrigin =
+      (reqOriginOnly && (allowedTargetOrigins.includes(reqOriginOnly) || !isProduction()) ? reqOriginOnly : '') ||
+      allowedTargetOrigins[0];
     const messagePayload = JSON.stringify(
       result.ok
         ? {
@@ -17138,9 +17319,10 @@ const instagramOAuthCallbackHandler = async (c: any) => {
             errorDescription: result.errorDescription || 'Instagram authorization was not completed.'
           }
     );
+    const targetOriginJson = JSON.stringify(targetOrigin);
     const html = result.ok
-      ? `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Instagram Connected</title></head><body style="font-family:sans-serif;background:#090d16;color:#e2e8f0;padding:40px;text-align:center;"><script>try{if(window.opener){window.opener.postMessage(${messagePayload},'*');window.close();}}catch(e){}</script><h1>${safeHandle} Connected</h1><p>60-day long-lived token stored securely. Token expires: ${safeExpiresAt}.</p><p><a href="/" style="color:#38bdf8;">Return to Owner Console</a></p></body></html>`
-      : `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Instagram Authorization Cancelled</title></head><body style="font-family:sans-serif;background:#090d16;color:#e2e8f0;padding:40px;text-align:center;"><script>try{if(window.opener){window.opener.postMessage(${messagePayload},'*');window.close();}}catch(e){}</script><h1>Instagram Connection Not Completed</h1><p>${safeDesc}</p><p><a href="/" style="color:#38bdf8;">Return to Owner Console</a></p></body></html>`;
+      ? `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Instagram Connected</title></head><body style="font-family:sans-serif;background:#090d16;color:#e2e8f0;padding:40px;text-align:center;"><script>try{if(window.opener){window.opener.postMessage(${messagePayload},${targetOriginJson});window.close();}}catch(e){}</script><h1>${safeHandle} Connected</h1><p>60-day long-lived token stored securely. Token expires: ${safeExpiresAt}.</p><p><a href="/" style="color:#38bdf8;">Return to Owner Console</a></p></body></html>`
+      : `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Instagram Authorization Cancelled</title></head><body style="font-family:sans-serif;background:#090d16;color:#e2e8f0;padding:40px;text-align:center;"><script>try{if(window.opener){window.opener.postMessage(${messagePayload},${targetOriginJson});window.close();}}catch(e){}</script><h1>Instagram Connection Not Completed</h1><p>${safeDesc}</p><p><a href="/" style="color:#38bdf8;">Return to Owner Console</a></p></body></html>`;
     return c.html(html, result.ok ? 200 : 400);
   }
 

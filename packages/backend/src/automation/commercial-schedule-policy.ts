@@ -47,6 +47,19 @@ export const CONTINUOUS_HOURLY_WORKFLOWS = [
   'b2b_suppression_and_compliance_audit'
 ];
 
+export const EVENT_DRIVEN_WORKFLOWS = [
+  'new_inquiry_processing',
+  'reply_classification_followup',
+  'payment_status_reconciliation'
+];
+
+export const TWICE_DAILY_CRON_CORE_WORKFLOWS = [
+  'affiliate_offer_reconciliation',
+  'daily_market_demand_research',
+  'quota_health_checks',
+  'b2b_suppression_and_compliance_audit'
+];
+
 export class CommercialSchedulePolicy {
   /**
    * Deconstructs a UTC Date into its exact components in Asia/Kolkata (IST).
@@ -154,7 +167,7 @@ export class CommercialSchedulePolicy {
 
   /**
    * Generates a unique, window-aligned idempotency key for a workflow run.
-   * Prevents duplicate logical jobs within the same schedule window.
+   * Aligned to twice-daily cron cadence (0900 / 2100 IST buckets) so jobs do not strand 12h+.
    */
   public static getIdempotencyKey(workflowId: string, date: Date = new Date()): string {
     const ist = this.getISTComponents(date);
@@ -168,8 +181,34 @@ export class CommercialSchedulePolicy {
     if (window === 'EVENING_2100_IST') {
       return `job_${dateStr}_2100_${workflowId}`;
     }
-    // Continuous hourly: hourly bucket
-    return `job_${dateStr}_h${pad(ist.hour)}_${workflowId}`;
+    // Align continuous/catch-up workflows to twice-daily 0900 / 2100 IST buckets matching wrangler.toml (30 3,15 * * *)
+    const bucket = ist.hour >= 9 && ist.hour < 21 ? '0900' : '2100';
+    return `job_${dateStr}_${bucket}_${workflowId}`;
+  }
+
+  /**
+   * Returns bounded workflows for the twice-daily Cloudflare Worker cron trigger (wrangler.toml 30 3,15 * * *).
+   * Event-driven workflows (inquiry/reply/payment) run on POST/webhook triggers plus a bounded catch-up slot.
+   */
+  public static getCronCatchupWorkflowIds(now: Date = new Date()): string[] {
+    const ist = this.getISTComponents(now);
+    const isMorningBucket = ist.hour >= 9 && ist.hour < 21;
+    if (isMorningBucket) {
+      return [
+        'affiliate_offer_reconciliation',
+        'daily_market_demand_research',
+        'new_inquiry_processing',
+        'payment_status_reconciliation',
+        'quota_health_checks'
+      ];
+    }
+    return [
+      'affiliate_offer_reconciliation',
+      'daily_market_demand_research',
+      'reply_classification_followup',
+      'daily_commercial_summary',
+      'b2b_suppression_and_compliance_audit'
+    ];
   }
 
   /**

@@ -105,6 +105,7 @@ describe('PR #94: B2B Checkout Truth, Audit Truth, Catalog Honesty, Category Gui
         body: JSON.stringify({
           url: 'https://coaching-test-academy.in',
           businessName: 'Test Coaching Academy',
+          authorizedToScan: true,
           ownerApproved: true,
           priceINR: 1
         })
@@ -124,7 +125,7 @@ describe('PR #94: B2B Checkout Truth, Audit Truth, Catalog Honesty, Category Gui
 
       // Public GET attempting price/approval tampering via query string
       const getRes = await app.request(
-        '/api/v1/b2b/pilot-proposal?url=https://coaching-test-academy.in&ownerApproved=true&priceINR=1&format=json'
+        '/api/v1/b2b/pilot-proposal?url=https://coaching-test-academy.in&authorizedToScan=true&ownerApproved=true&priceINR=1&format=json'
       );
       expect(getRes.status).toBe(200);
       const getJson = await getRes.json() as any;
@@ -173,7 +174,8 @@ describe('PR #94: B2B Checkout Truth, Audit Truth, Catalog Honesty, Category Gui
         body: JSON.stringify({
           url: 'https://hyderabad-prep.in',
           businessName: 'Hyderabad Prep Institute',
-          contactEmail: 'director@hyderabad-prep.in'
+          contactEmail: 'director@hyderabad-prep.in',
+          authorizedToScan: true
         })
       });
       const draftJson = await draftRes.json() as any;
@@ -394,7 +396,7 @@ describe('PR #94: B2B Checkout Truth, Audit Truth, Catalog Honesty, Category Gui
       const res = await app.request('/api/v1/b2b/pilot-proposal', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: 'https://unreachable-coaching-site.invalid', businessName: 'Unreachable' })
+        body: JSON.stringify({ url: 'https://unreachable-coaching-site.invalid', businessName: 'Unreachable', authorizedToScan: true })
       });
       expect(res.status).toBe(422);
       const json = await res.json() as any;

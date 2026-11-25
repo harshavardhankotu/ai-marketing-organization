@@ -51,6 +51,32 @@ export const PublicCompliancePage: React.FC<PublicCompliancePageProps> = ({ path
       );
     }
 
+    if (currentPath === '/refund') {
+      return (
+        <article className="space-y-6 text-slate-300 text-sm leading-relaxed">
+          <div className="flex items-center gap-3 text-cyan-400 font-semibold text-base mb-2">
+            <FileText className="w-5 h-5 text-cyan-400" />
+            <h2>Cancellation &amp; Refund Policy</h2>
+          </div>
+          <p>
+            For B2B Website Enquiry Path Repair pilots and digital technical deliverables, refunds are governed by transparent milestone verification.
+          </p>
+          <section className="space-y-2">
+            <h3 className="text-white font-medium text-base">1. Founding Pilot Milestone Protection</h3>
+            <p>
+              For Founding Pilot engagements (₹1,999 total: ₹999 advance + ₹1,000 after live handover), if technical deliverables are not furnished as agreed, or if verified live handover defects cannot be resolved within the 7-day bug-fix window, the advance is eligible for a 100% refund upon request.
+            </p>
+          </section>
+          <section className="space-y-2">
+            <h3 className="text-white font-medium text-base">2. How to Request a Refund</h3>
+            <p>
+              Email our founder support channel listed on <a href="/contact" className="text-cyan-400 underline">/contact</a> with your order or proposal reference ID. Verified refunds are processed back to the original payment method via Razorpay within 5–7 business days.
+            </p>
+          </section>
+        </article>
+      );
+    }
+
     if (currentPath === '/about') {
       return (
         <article className="space-y-6 text-slate-300 text-sm leading-relaxed">
@@ -207,6 +233,7 @@ export const PublicCompliancePage: React.FC<PublicCompliancePageProps> = ({ path
           {[
             { label: 'Privacy Policy', path: '/privacy' },
             { label: 'Terms of Service', path: '/terms' },
+            { label: 'Refund Policy', path: '/refund' },
             { label: 'Affiliate Disclosure', path: '/affiliate-disclosure' },
             { label: 'About Us', path: '/about' },
             { label: 'Contact & Grievance', path: '/contact' }
@@ -249,6 +276,8 @@ export const PublicCompliancePage: React.FC<PublicCompliancePageProps> = ({ path
             <button onClick={() => navigateTo('/privacy')} className="hover:text-cyan-400">Privacy Policy</button>
             <span>•</span>
             <button onClick={() => navigateTo('/terms')} className="hover:text-cyan-400">Terms of Service</button>
+            <span>•</span>
+            <button onClick={() => navigateTo('/refund')} className="hover:text-cyan-400">Refund Policy</button>
             <span>•</span>
             <button onClick={() => navigateTo('/affiliate-disclosure')} className="hover:text-cyan-400">Affiliate Disclosure</button>
             <span>•</span>

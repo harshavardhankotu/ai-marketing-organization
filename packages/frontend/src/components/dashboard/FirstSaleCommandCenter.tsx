@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Check,
   Copy,
@@ -14,7 +14,7 @@ import {
   Share2,
   MessageSquare
 } from 'lucide-react';
-import { api } from '../../services/api.js';
+import { api, getApiBaseUrl } from '../../services/api.js';
 
 interface DistributionKitDeal {
   dealId: string;
@@ -277,6 +277,7 @@ export const FirstSaleCommandCenter: React.FC = () => {
   const [igPublishing, setIgPublishing] = useState<boolean>(false);
   const [igPolling, setIgPolling] = useState<boolean>(false);
   const [igAuthUrl, setIgAuthUrl] = useState<string | null>(null);
+  const oauthPopupRef = useRef<Window | null>(null);
   const [igMessage, setIgMessage] = useState<string | null>(null);
   const [igError, setIgError] = useState<string | null>(null);
   const [distKit, setDistKit] = useState<DistributionKitData | null>(null);
@@ -319,13 +320,14 @@ export const FirstSaleCommandCenter: React.FC = () => {
 
   useEffect(() => {
     const handleOAuthMessage = (event: MessageEvent) => {
-      const origin = event.origin || '';
-      if (
-        !origin.endsWith('.run.app') &&
-        !origin.endsWith('.onrender.com') &&
-        !origin.includes('localhost') &&
-        !origin.includes('127.0.0.1')
-      ) {
+      if (!oauthPopupRef.current || event.source !== oauthPopupRef.current) {
+        return;
+      }
+      const allowedOrigins = new Set<string>([window.location.origin]);
+      try {
+        allowedOrigins.add(new URL(getApiBaseUrl(), window.location.origin).origin);
+      } catch {}
+      if (!allowedOrigins.has(event.origin)) {
         return;
       }
       if (event.data?.type === 'INSTAGRAM_OAUTH_SUCCESS') {
@@ -840,15 +842,21 @@ export const FirstSaleCommandCenter: React.FC = () => {
                   </button>
                 )}
                 {igAuthUrl && (
-                  <a
-                    href={igAuthUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const popup = window.open(
+                        igAuthUrl,
+                        'instagram_oauth_popup',
+                        'width=600,height=720'
+                      );
+                      oauthPopupRef.current = popup;
+                    }}
                     className="px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold inline-flex items-center gap-1.5"
                   >
                     <span>Open Meta Authorization</span>
                     <ExternalLink className="w-3 h-3" />
-                  </a>
+                  </button>
                 )}
                 <button
                   type="button"

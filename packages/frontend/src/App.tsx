@@ -23,6 +23,7 @@ import { BusinessOnboarding } from './components/onboarding/BusinessOnboarding.j
 import { OwnerLogin } from './components/auth/OwnerLogin.js';
 import { PublicCompliancePage } from './pages/PublicCompliancePage.js';
 import { PublicOfferPage } from './pages/PublicOfferPage.js';
+import { PublicDemoPage } from './pages/PublicDemoPage.js';
 import { PublicDealsPage } from './pages/PublicDealsPage.js';
 import { PublicComparisonPage } from './pages/PublicComparisonPage.js';
 import { api, onUnauthorized } from './services/api.js';
@@ -129,6 +130,10 @@ export const App: React.FC = () => {
     currentPathname === '/offer' ||
     currentPathname.startsWith('/offer/');
 
+  const isDemoRoute =
+    currentPathname === '/demo' ||
+    currentPathname.startsWith('/demo/');
+
   const isDealsRoute =
     currentPathname === '/deals' ||
     currentPathname.startsWith('/deals/');
@@ -144,7 +149,7 @@ export const App: React.FC = () => {
   const isComparisonRoute =
     currentPathname.startsWith('/vs/');
 
-  const compliancePaths = ['/privacy', '/terms', '/about', '/contact', '/affiliate-disclosure'];
+  const compliancePaths = ['/privacy', '/terms', '/refund', '/about', '/contact', '/affiliate-disclosure'];
   const isComplianceRoute = compliancePaths.some(
     p => currentPathname === p || currentPathname.startsWith(p + '/')
   );
@@ -177,8 +182,8 @@ export const App: React.FC = () => {
   };
 
   useEffect(() => {
-    // Public demand funnels, offer page, comparisons, guides, best hubs, and compliance routes must not fan out into authenticated owner APIs
-    if (isPublicFunnelRoute || isComplianceRoute || isOfferRoute || isDealsRoute || isBestRoute || isGuidesRoute || isComparisonRoute) {
+    // Public demand funnels, offer/demo pages, comparisons, guides, best hubs, and compliance routes must not fan out into authenticated owner APIs
+    if (isPublicFunnelRoute || isComplianceRoute || isOfferRoute || isDemoRoute || isDealsRoute || isBestRoute || isGuidesRoute || isComparisonRoute) {
       setLoading(false);
       return;
     }
@@ -188,7 +193,7 @@ export const App: React.FC = () => {
     });
 
     bootstrapOwnerSession();
-  }, [isPublicFunnelRoute, isComplianceRoute, isOfferRoute, isDealsRoute, isBestRoute, isGuidesRoute, isComparisonRoute]);
+  }, [isPublicFunnelRoute, isComplianceRoute, isOfferRoute, isDemoRoute, isDealsRoute, isBestRoute, isGuidesRoute, isComparisonRoute]);
 
   const handleLoginSuccess = async () => {
     setAuthState('AUTHENTICATED');
@@ -263,6 +268,10 @@ export const App: React.FC = () => {
 
   if (isOfferRoute) {
     return <PublicOfferPage />;
+  }
+
+  if (isDemoRoute) {
+    return <PublicDemoPage />;
   }
 
   if (isDealsRoute || isBestRoute || isGuidesRoute) {
