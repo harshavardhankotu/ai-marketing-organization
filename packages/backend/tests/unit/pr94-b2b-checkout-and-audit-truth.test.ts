@@ -455,7 +455,7 @@ describe('PR #94: B2B Checkout Truth, Audit Truth, Catalog Honesty, Category Gui
   describe('4. Catalog Honesty & /vs/... Resolution', () => {
     it('blocks isSeedFallback: true deals from passesEditorialQualityGate and renders SEED_SNAPSHOT + noindex', () => {
       const starters = createHighIntentStarterDeals();
-      expect(starters.length).toBe(7);
+      expect(starters.length).toBe(6);
       for (const sd of starters) {
         expect(passesEditorialQualityGate(sd)).toBe(false);
       }

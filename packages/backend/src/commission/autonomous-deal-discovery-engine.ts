@@ -9,7 +9,7 @@ import { isProduction } from '../config/env.js';
 import { D1RevenueRepository } from '../db/d1-revenue-repository.js';
 import { OwnerAuthService } from '../auth/owner-auth.js';
 import { DealSsrfGuard } from './deal-ssrf-guard.js';
-import { CuelinksSyncManager } from './cuelinks-sync-manager.js';
+import { CuelinksSyncManager, normalizeCuelinksCategory } from './cuelinks-sync-manager.js';
 import { CuelinksV3Client } from './cuelinks-v3-client.js';
 import { GrowthExperimentTracker } from './growth-experiment-tracker.js';
 import {
@@ -28,7 +28,7 @@ import {
   SectorCode,
   GuideDataUnavailableError
 } from './deal-types.js';
-import { createHighIntentStarterDeals } from './starter-deals.js';
+import { createHighIntentStarterDeals, createVerifiedLiveSkincareSerums } from './starter-deals.js';
 
 export { GuideDataUnavailableError };
 
@@ -2458,13 +2458,7 @@ export class AutonomousDealDiscoveryEngine {
             const isCouponDeal = !currentPrice || offer.offer_type === 'coupon' || Boolean(cleanCouponCode);
 
             // Category resolution
-            let categoryName = 'eCommerce & Retail';
-            if (Array.isArray(offer.categories) && offer.categories.length > 0) {
-              const c0 = offer.categories[0];
-              categoryName = typeof c0 === 'string' ? c0 : (c0?.name || 'eCommerce & Retail');
-            } else if (offer.category) {
-              categoryName = offer.category;
-            }
+            const categoryName = normalizeCuelinksCategory(offer.categories, [offer.category], 'eCommerce & Retail');
 
             // Link conversion & monetization gate
             // Strict conversion truth: No raw shortcut! Only monetizable when convertLink returns affiliated === true and allowlisted URL.
@@ -4287,15 +4281,7 @@ export class AutonomousDealDiscoveryEngine {
         if (seenKeys.has(dedupeKey)) continue;
         seenKeys.add(dedupeKey);
 
-        let categoryName = 'Electronics';
-        if (Array.isArray(offer.categories) && offer.categories.length > 0) {
-          const c0 = offer.categories[0];
-          categoryName = typeof c0 === 'string' ? c0 : (c0?.name || 'Electronics');
-        } else if (offer.category) {
-          categoryName = String(offer.category);
-        } else if (camp?.category) {
-          categoryName = String(camp.category);
-        }
+        const categoryName = normalizeCuelinksCategory(offer.categories, [offer.category, camp?.category], 'Electronics');
         const sharedSector = resolveSectorFromCategory(categoryName) || resolveSectorFromCategory(offer.title);
         const sectorCode = sharedSector?.code || this.mapCategoryToSectorCode(`${categoryName} ${offer.title}`);
         categorySet.add(categoryName);
@@ -5484,29 +5470,37 @@ export class AutonomousDealDiscoveryEngine {
       }
     }
 
-    // 3. Persistent D1 query for cold-start recovery (workflows table)
+    // PR #99: Check verified high-intent starter deals BEFORE workflows LIKE query
+    // (avoids SQLITE_ERROR: LIKE or GLOB pattern too complex on D1 for dashed slugs)
+    if (!resolvedCandidate) {
+      const starters = createHighIntentStarterDeals();
+      const matched = starters.find(
+        s => s.id === cleanId || s.slug?.toLowerCase() === cleanId.toLowerCase() || s.canonicalSlug?.toLowerCase() === cleanId.toLowerCase()
+      );
+      if (matched) {
+        resolvedCandidate = matched;
+      }
+    }
+
+    // 3. Persistent D1 query for cold-start recovery (workflows table by exact ID only, zero wildcard LIKE)
     if (!resolvedCandidate) {
       try {
         const sql = `
           SELECT id, status, current_step, inputs_json, outputs_json, error_info, created_at, updated_at
           FROM workflows
-          WHERE workflow_type = 'PUBLIC_DEAL' AND (
-            id = ? OR id = ? OR inputs_json LIKE ? OR inputs_json LIKE ?
-          )
+          WHERE workflow_type = 'PUBLIC_DEAL' AND (id = ? OR id = ?)
           LIMIT 2
         `;
         const p1 = cleanId;
         const p2 = `deal_${cleanId}`;
-        const p3 = `%"slug":"${cleanId}"%`;
-        const p4 = `%"canonicalSlug":"${cleanId}"%`;
 
         let rows: any[] = [];
         if (useRemoteD1) {
-          const res = await this.d1Repo.executeRead('workflows', sql, [p1, p2, p3, p4]);
+          const res = await this.d1Repo.executeRead('workflows', sql, [p1, p2]);
           rows = Array.isArray(res?.results) ? res.results : [];
         } else {
           const { getDb } = await import('../db/client.js');
-          rows = getDb().prepare(sql).all(p1, p2, p3, p4) as any[];
+          rows = getDb().prepare(sql).all(p1, p2) as any[];
         }
 
         if (rows.length > 1) return null;
@@ -5518,17 +5512,6 @@ export class AutonomousDealDiscoveryEngine {
           throw new GuideDataUnavailableError(`Failed resolving workflow deal '${cleanId}' from D1: ${err?.message || 'D1 read failure'}`);
         }
         console.warn(`[DealEngine] Notice resolving deal '${idOrSlug}' from database: ${err.message}`);
-      }
-    }
-
-    // PR #92: Fallback check against verified high-intent starter deals
-    if (!resolvedCandidate) {
-      const starters = createHighIntentStarterDeals();
-      const matched = starters.find(
-        s => s.id === cleanId || s.slug?.toLowerCase() === cleanId.toLowerCase() || s.canonicalSlug?.toLowerCase() === cleanId.toLowerCase()
-      );
-      if (matched) {
-        resolvedCandidate = matched;
       }
     }
 
@@ -6285,6 +6268,117 @@ export class AutonomousDealDiscoveryEngine {
     }
   }
 
+  /**
+   * PR #99: Repairs historical `[object Object]` category serialization rows in `public_deals` and `cuelinks_campaigns`.
+   */
+  public async repairCorruptObjectCategories(): Promise<{ publicDealsRepaired: number; campaignsRepaired: number }> {
+    const useRemote = this.d1Repo.isRemoteD1Configured() || (isProduction() && !process.env.VITEST);
+    let publicDealsRepaired = 0;
+    let campaignsRepaired = 0;
+
+    const inferCategory = (text: string, sectorCode?: string): string => {
+      if (sectorCode === 'SECTOR_G_LIFESTYLE' || /serum|skin|beauty|face|niacinamide|vitamin c|kumkumadi|beard|groom|asaya|plum|dot|kama|swiss|man company|mcaffeine/i.test(text)) {
+        return 'Health & Beauty';
+      }
+      if (sectorCode === 'SECTOR_B_ELECTRONICS' || /earbud|airdopes|soundbar|watch|boat|noise|fire-boltt|dashcam|speaker/i.test(text)) {
+        return 'Electronics';
+      }
+      return 'General';
+    };
+
+    try {
+      const pdRes = useRemote
+        ? await this.d1Repo.executeRead('public_deals', "SELECT id, title, brand, merchant, sector_code FROM public_deals WHERE category = ? LIMIT 100", ['[object Object]'])
+        : { results: getDb().prepare("SELECT id, title, brand, merchant, sector_code FROM public_deals WHERE category = ? LIMIT 100").all('[object Object]') };
+      const pdRows: any[] = Array.isArray(pdRes?.results) ? pdRes.results : [];
+      for (const r of pdRows) {
+        const nextCat = inferCategory(`${r.title || ''} ${r.brand || ''} ${r.merchant || ''}`, r.sector_code);
+        const sql = "UPDATE public_deals SET category = ?, updated_at = datetime('now') WHERE id = ? AND category = ?";
+        if (useRemote) {
+          await this.d1Repo.executeWrite('public_deals', sql, [nextCat, r.id, '[object Object]']);
+        } else {
+          getDb().prepare(sql).run(nextCat, r.id, '[object Object]');
+        }
+        publicDealsRepaired++;
+      }
+
+      const campRes = useRemote
+        ? await this.d1Repo.executeRead('cuelinks_campaigns', "SELECT campaign_id, merchant_name, merchant_domain FROM cuelinks_campaigns WHERE category = ? LIMIT 100", ['[object Object]'])
+        : { results: getDb().prepare("SELECT campaign_id, merchant_name, merchant_domain FROM cuelinks_campaigns WHERE category = ? LIMIT 100").all('[object Object]') };
+      const campRows: any[] = Array.isArray(campRes?.results) ? campRes.results : [];
+      for (const c of campRows) {
+        const nextCat = inferCategory(`${c.merchant_name || ''} ${c.merchant_domain || ''}`);
+        const sql = "UPDATE cuelinks_campaigns SET category = ?, updated_at = datetime('now') WHERE campaign_id = ? AND category = ?";
+        if (useRemote) {
+          await this.d1Repo.executeWrite('cuelinks_campaigns', sql, [nextCat, c.campaign_id, '[object Object]']);
+        } else {
+          getDb().prepare(sql).run(nextCat, c.campaign_id, '[object Object]');
+        }
+        campaignsRepaired++;
+      }
+    } catch (err: any) {
+      console.warn(`[DealEngine] repairCorruptObjectCategories notice: ${err.message}`);
+    }
+
+    return { publicDealsRepaired, campaignsRepaired };
+  }
+
+  /**
+   * PR #99: Verifies each of the 6 live skincare serum SKUs via Cuelinks Channel 331585 `convertLink`
+   * and persists them to D1 (`workflows`, `public_deals`, `partner_offers`) as `isSeedFallback: false`
+   * so `/deals`, `/vs/`, `/best/`, and `/api/v1/public/deals/:id/redirect` resolve 100% durably.
+   */
+  public async publishVerifiedSkincareCatalog(
+    organizationId: string = 'org_owner_primary',
+    businessId: string = 'biz_platform_aro'
+  ): Promise<{ publishedCount: number; deals: Array<{ id: string; slug: string; campaignId: string }>; repairs: { publicDealsRepaired: number; campaignsRepaired: number } }> {
+    const cuelinksClient = CuelinksV3Client.getInstance();
+    const cuelinksSync = CuelinksSyncManager.getInstance(cuelinksClient);
+    const channelRes = await cuelinksSync.getApprovedChannel();
+    if (!channelRes.approved || !channelRes.channel?.id) {
+      throw new Error('CUELINKS_CHANNEL_UNAVAILABLE: Approved Channel 331585 required to publish live skincare catalog.');
+    }
+    const channelId = Number(channelRes.channel.id);
+    const verifiedAt = new Date().toISOString();
+    const serums = createVerifiedLiveSkincareSerums(verifiedAt);
+    const published: Array<{ id: string; slug: string; campaignId: string }> = [];
+
+    for (const deal of serums) {
+      const convRes = await cuelinksClient.convertLink({
+        url: deal.productUrl,
+        channel_id: channelId,
+        subid: `seed_${deal.id}`,
+        shorten: false
+      });
+      if (!convRes || convRes.affiliated !== true || !convRes.tracking_url || String(convRes.campaign?.id || '') !== String(deal.affiliateCampaignId)) {
+        throw new Error(`CUELINKS_VERIFICATION_FAILED for ${deal.id} (expected campaign ${deal.affiliateCampaignId}, got ${convRes?.campaign?.id})`);
+      }
+
+      deal.trackingUrl = convRes.tracking_url;
+      deal.isSeedFallback = false;
+      deal.verificationStatus = 'AFFILIATE_VERIFIED';
+      deal.evidenceJson = {
+        ...deal.evidenceJson,
+        isSeedFallback: false,
+        affiliateCampaignId: deal.affiliateCampaignId,
+        affiliateNetwork: 'CUELINKS'
+      };
+
+      await this.persistDealToD1(deal, organizationId, businessId);
+      await this.provisionMatchingPartnerOffer(deal, organizationId, businessId);
+      this.dealsMap.set(deal.id, deal);
+      if (deal.slug) this.dealSlugMap.set(deal.slug.toLowerCase(), deal.id);
+      published.push({
+        id: deal.id,
+        slug: deal.slug || deal.canonicalSlug || deal.id,
+        campaignId: String(deal.affiliateCampaignId || '')
+      });
+    }
+
+    const repairs = await this.repairCorruptObjectCategories();
+    return { publishedCount: published.length, deals: published, repairs };
+  }
+
   public mapCategoryToSectorCode(category: string): SectorCode {
     const c = (category || '').toLowerCase();
     if (c.includes('jewel') || c.includes('gold') || c.includes('silver') || c.includes('coin') || c.includes('bullion')) {
@@ -6438,6 +6532,11 @@ export class AutonomousDealDiscoveryEngine {
       );
       evidence.priceHistory = priceHistory;
       evidence.hasVerifiedPriceDrop = this.hasVerifiedPriceDrop(priceHistory, Number(row.current_price_inr || 0));
+      const categoryFallback =
+        row.sector_code === 'SECTOR_G_LIFESTYLE' || /serum|skin|niacinamide|vitamin c|kumkumadi/i.test(String(row.title || ''))
+          ? 'Health & Beauty'
+          : 'eCommerce & Retail';
+      const safeCategory = normalizeCuelinksCategory(row.category, [evidence.category], categoryFallback);
       const parsed: NormalizedDeal = {
         id: row.id,
         slug: row.slug,
@@ -6447,7 +6546,15 @@ export class AutonomousDealDiscoveryEngine {
         title: row.title,
         brand: row.brand || '',
         merchant: row.merchant,
-        category: row.category,
+        category: safeCategory,
+        subCategory: evidence.subCategory,
+        unitVolumeMl: typeof evidence.unitVolumeMl === 'number' ? evidence.unitVolumeMl : undefined,
+        pricePerMlINR: typeof evidence.pricePerMlINR === 'number' ? evidence.pricePerMlINR : undefined,
+        imageUrl: typeof evidence.imageUrl === 'string' ? evidence.imageUrl : undefined,
+        buyerFitSummary: typeof evidence.buyerFitSummary === 'string' ? evidence.buyerFitSummary : undefined,
+        skipFitSummary: typeof evidence.skipFitSummary === 'string' ? evidence.skipFitSummary : undefined,
+        socialMediaPublishersAllowed: typeof evidence.socialMediaPublishersAllowed === 'boolean' ? evidence.socialMediaPublishersAllowed : undefined,
+        isSeedFallback: evidence.isSeedFallback === true,
         productUrl: row.product_url,
         currentPriceINR: Number(row.current_price_inr),
         currency: row.currency || 'INR',

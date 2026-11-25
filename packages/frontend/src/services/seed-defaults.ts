@@ -33,9 +33,9 @@ export const DEFAULT_METRICS = {
 export const DEFAULT_APPROVALS: any[] = [];
 
 export const DEFAULT_INTEGRATIONS = [
-  { provider: 'GOOGLE_SEARCH_API', status: 'READY', mode: 'LIVE', details: 'Google Custom Search JSON API' },
+  { provider: 'GOOGLE_SEARCH_API', status: 'UNCONFIGURED', mode: 'SANDBOX', details: 'Awaiting Google Custom Search API Verification' },
   { provider: 'GOOGLE_BUSINESS_PROFILE', status: 'PENDING_CONFIG', mode: 'SANDBOX', details: 'Awaiting Location Authorization' },
-  { provider: 'GOOGLE_ADS', status: 'READY', mode: 'LIVE', details: 'Google Ads Search Network' },
+  { provider: 'GOOGLE_ADS', status: 'UNCONFIGURED', mode: 'SANDBOX', details: 'Awaiting Google Ads API Verification' },
   { provider: 'META_ADS', status: 'PENDING_CONFIG', mode: 'SANDBOX', details: 'Awaiting Meta Marketing Graph API' },
   { provider: 'WHATSAPP', status: 'PENDING_CONFIG', mode: 'SANDBOX', details: 'Awaiting Meta Cloud API Credentials' },
   { provider: 'EMAIL', status: 'NOT_CONNECTED', mode: 'SANDBOX', details: 'Transactional SMTP Gateway' }

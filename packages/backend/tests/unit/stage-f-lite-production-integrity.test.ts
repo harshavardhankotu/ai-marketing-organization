@@ -1579,14 +1579,16 @@ Missing ID: Airlines charge standard walk-up difference along with standard exce
       const dlqDigest = await OwnerDigestService.getInstance().generateDigestAsync();
       expect(dlqDigest.arosControlCenter?.scheduledExecutionTruth?.deadLetterEventsCount).toBe(1);
 
-      // P6: Concierge widget present on /, /deals, and /tools/site-audit
-      for (const routePath of ['/', '/deals', '/tools/site-audit']) {
+      // P6: Concierge widget present on B2B routes (/, /tools/site-audit) and intentionally removed from consumer /deals
+      for (const routePath of ['/', '/tools/site-audit']) {
         const htmlRes = await app.request(routePath);
         expect(htmlRes.status).toBe(200);
         const bodyHtml = await htmlRes.text();
         expect(bodyHtml).toContain('aros-desk-root');
         expect(bodyHtml).toContain('/api/v1/customer-desk/message');
       }
+      const dealsRouteHtml = await (await app.request('/deals')).text();
+      expect(dealsRouteHtml).not.toContain('aros-desk-root');
     });
 
     it('Stage I.2-A: enforces private tokenised audits, authoritative pricing/UPI env gates, durable emit status, and honest price-history HTML', async () => {
