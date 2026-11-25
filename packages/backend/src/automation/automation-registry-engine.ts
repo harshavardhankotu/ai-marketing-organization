@@ -2051,7 +2051,7 @@ export class AutomationRegistryEngine {
 
         let pendingClaims: any[] = [];
         try {
-          const sql = `SELECT * FROM manual_upi_claims WHERE status = 'PAYMENT_CLAIMED' ORDER BY created_at DESC LIMIT 10`;
+          const sql = `SELECT * FROM manual_upi_claims WHERE status = 'PAYMENT_CLAIMED' ORDER BY claimed_at DESC LIMIT 10`;
           pendingClaims = isProduction()
             ? await this.d1Repo.query<any>('manual_upi_claims', sql)
             : getDb().prepare(sql).all();

@@ -359,8 +359,9 @@ apiRouter.use('*', async (c, next) => {
 
   const ownerSession = await ownerAuth.validateTokenAsync(token);
 
-  // Strictly validate Origin/Referer for all mutating non-public/non-webhook routes to prevent CSRF
-  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(c.req.method)) {
+  // Strictly validate Origin/Referer for all mutating non-public/non-webhook routes to prevent CSRF.
+  // Exempt /mcp — it has its own JSON-RPC Origin guard at the route handler level (returns code -32003).
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(c.req.method) && path !== '/mcp') {
     const csrfErr = enforceCsrfOriginGuard(c, 'owner mutating operations');
     if (csrfErr) return csrfErr;
   }
