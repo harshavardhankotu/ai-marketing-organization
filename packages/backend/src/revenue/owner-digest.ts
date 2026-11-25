@@ -783,50 +783,127 @@ export class OwnerDigestService {
    * across all 4 opportunity lanes, commercial funnel, UPI queue, and cron truth.
    */
   public async getArosControlCenterSummary(): Promise<ArosControlCenterSummary> {
-    const dealStats = await this.queryCcOne<any>(
-      'public_deals',
-      `SELECT
-         COUNT(*) as total,
-         COALESCE(SUM(CASE WHEN product_verified = 1 AND affiliate_verified = 1 THEN 1 ELSE 0 END), 0) as verified,
-         COALESCE(SUM(CASE WHEN product_verified = 1 AND affiliate_verified = 1 AND availability = 'IN_STOCK' AND current_price_inr > 0 AND last_verified_at IS NOT NULL THEN 1 ELSE 0 END), 0) as indexed_eligible
-       FROM public_deals`
-    );
+    const [
+      dealStats,
+      auditStats,
+      oppRows,
+      qOpp,
+      qClaims,
+      qProps,
+      visRow,
+      clkRow,
+      leadRow,
+      commRow,
+      revRow,
+      costRow,
+      claimRows,
+      telemetryRows,
+      jobRow,
+      dealEvRows,
+      ccRow,
+      poRow,
+      coRow,
+      fpRow
+    ] = await Promise.all([
+      this.queryCcOne<any>(
+        'public_deals',
+        `SELECT
+           COUNT(*) as total,
+           COALESCE(SUM(CASE WHEN product_verified = 1 AND affiliate_verified = 1 THEN 1 ELSE 0 END), 0) as verified,
+           COALESCE(SUM(CASE WHEN product_verified = 1 AND affiliate_verified = 1 AND availability = 'IN_STOCK' AND current_price_inr > 0 AND last_verified_at IS NOT NULL THEN 1 ELSE 0 END), 0) as indexed_eligible
+         FROM public_deals`
+      ),
+      this.queryCcOne<any>(
+        'site_audits',
+        `SELECT
+           COUNT(*) as total,
+           COALESCE(SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END), 0) as completed,
+           COALESCE(SUM(CASE WHEN is_publicly_authorized = 1 THEN 1 ELSE 0 END), 0) as publicly_authorized
+         FROM site_audits`
+      ),
+      this.queryCcAll<any>(
+        'opportunities',
+        `SELECT status, evidence_json, source FROM opportunities WHERE LOWER(COALESCE(status, '')) != 'test_quarantined' AND LOWER(COALESCE(source, '')) != 'test_quarantined' ORDER BY updated_at DESC LIMIT 200`
+      ),
+      this.queryCcOne<any>(
+        'opportunities',
+        `SELECT COUNT(*) as c FROM opportunities WHERE UPPER(COALESCE(status, '')) = 'TEST_QUARANTINED' OR UPPER(COALESCE(source, '')) = 'TEST_QUARANTINED'`
+      ),
+      this.queryCcOne<any>(
+        'manual_upi_claims',
+        `SELECT COUNT(*) as c FROM manual_upi_claims WHERE is_test = 1 OR UPPER(COALESCE(status, '')) = 'TEST_QUARANTINED'`
+      ),
+      this.queryCcOne<any>(
+        'proposals',
+        `SELECT COUNT(*) as c FROM proposals WHERE is_test = 1 OR UPPER(COALESCE(status, '')) = 'TEST_QUARANTINED'`
+      ),
+      this.queryCcOne<any>(
+        'traffic_sessions',
+        `SELECT COUNT(*) as c FROM traffic_sessions WHERE traffic_evidence_status = 'VERIFIED_EXTERNAL' OR is_external = 1`
+      ),
+      this.queryCcOne<any>(
+        'referral_click_events',
+        `SELECT COALESCE(SUM(CASE WHEN (device_class IS NULL OR device_class NOT IN ('bot', 'known_bot', 'suspected_bot')) AND (click_status IS NULL OR click_status NOT IN ('DIAGNOSTIC', 'TEST')) THEN 1 ELSE 0 END), 0) as c FROM referral_click_events`
+      ),
+      this.queryCcOne<any>(
+        'platform_prospects',
+        `SELECT COUNT(*) as c FROM platform_prospects WHERE is_test = 0 AND (source IN ('OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', 'homepage_b2b_inquiry') OR discovery_source = 'DIRECT_INBOUND')`
+      ),
+      this.queryCcOne<any>(
+        'commission_records',
+        `SELECT
+           COUNT(*) as total_orders,
+           COALESCE(SUM(CASE WHEN external_status IN ('PENDING', 'APPROVED', 'VALIDATED', 'PAYABLE', 'INVOICED', 'PAID') THEN expected_commission_inr ELSE 0 END), 0) as reported_inr,
+           COALESCE(SUM(CASE WHEN external_status IN ('APPROVED', 'VALIDATED', 'PAYABLE', 'INVOICED', 'PAID') THEN verified_commission_inr ELSE 0 END), 0) as approved_inr,
+           COALESCE(SUM(CASE WHEN external_status = 'PAID' THEN received_commission_inr ELSE 0 END), 0) as comm_paid_inr
+         FROM commission_records`
+      ),
+      this.queryCcOne<any>(
+        'revenue_records',
+        `SELECT COALESCE(SUM(amount_inr), 0) as s FROM revenue_records WHERE verified = 1 AND classification IN ('REAL', 'OWNER_CONFIRMED', 'MANUAL_VERIFIED')`
+      ),
+      this.queryCcOne<any>(
+        'cost_ledger',
+        `SELECT COUNT(*) as cnt, COALESCE(SUM(amount_inr), 0) as s FROM cost_ledger WHERE is_estimated = 0`
+      ),
+      this.queryCcAll<any>(
+        'manual_upi_claims',
+        `SELECT id, utr, amount_inr, service_rendered, status, claimed_at, business_id
+         FROM manual_upi_claims
+         WHERE (is_test = 0 OR is_test IS NULL) AND status != 'TEST_QUARANTINED'
+         ORDER BY claimed_at DESC
+         LIMIT 50`
+      ),
+      this.queryCcAll<any>(
+        'cron_telemetry',
+        `SELECT id, total_pings, last_observed_ping, last_user_agent, worker_source, status, metadata_json
+         FROM cron_telemetry
+         ORDER BY last_observed_ping DESC
+         LIMIT 10`
+      ),
+      this.queryCcOne<any>(
+        'automation_jobs',
+        `SELECT COUNT(*) as queued_count, MIN(created_at) as oldest_created_at FROM automation_jobs WHERE status IN ('QUEUED', 'RETRY_WAIT')`
+      ),
+      this.queryCcAll<any>(
+        'public_deals',
+        `SELECT evidence_json, verification_status, affiliate_verified, is_monetizable FROM public_deals ORDER BY updated_at DESC LIMIT 200`
+      ),
+      this.queryCcOne<any>('cuelinks_campaigns', `SELECT COUNT(*) as c FROM cuelinks_campaigns WHERE status = 'ACTIVE'`),
+      this.queryCcOne<any>('partner_offers', `SELECT COUNT(*) as c FROM partner_offers WHERE status IN ('ACTIVE', 'APPROVED', 'VERIFIED')`),
+      this.queryCcOne<any>('customer_offers', `SELECT COUNT(*) as c FROM customer_offers WHERE active = 1`),
+      this.queryCcOne<any>('demand_signals', `SELECT COUNT(*) as c FROM demand_signals WHERE source_host = 'FIRST_PARTY_CUSTOMER_DESK' AND status != 'QUARANTINED'`)
+    ]);
+
     const dealsTotal = Number(dealStats?.total || 0);
     const dealsVerified = Number(dealStats?.verified || 0);
     const dealsIndexed = Number(dealStats?.indexed_eligible || 0);
 
-    const auditStats = await this.queryCcOne<any>(
-      'site_audits',
-      `SELECT
-         COUNT(*) as total,
-         COALESCE(SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END), 0) as completed,
-         COALESCE(SUM(CASE WHEN is_publicly_authorized = 1 THEN 1 ELSE 0 END), 0) as publicly_authorized
-       FROM site_audits`
-    );
     const auditsTotal = Number(auditStats?.total || 0);
     const auditsCompleted = Number(auditStats?.completed || 0);
     const auditsPublic = Number(auditStats?.publicly_authorized || 0);
 
-    const oppRows = await this.queryCcAll<any>(
-      'opportunities',
-      `SELECT status, evidence_json, source FROM opportunities WHERE LOWER(COALESCE(status, '')) != 'test_quarantined' AND LOWER(COALESCE(source, '')) != 'test_quarantined'`
-    );
-    let quarantinedTestRecordsCount = 0;
-    try {
-      const qOpp = await this.queryCcOne<any>(
-        'opportunities',
-        `SELECT COUNT(*) as c FROM opportunities WHERE UPPER(COALESCE(status, '')) = 'TEST_QUARANTINED' OR UPPER(COALESCE(source, '')) = 'TEST_QUARANTINED'`
-      );
-      const qClaims = await this.queryCcOne<any>(
-        'manual_upi_claims',
-        `SELECT COUNT(*) as c FROM manual_upi_claims WHERE is_test = 1 OR UPPER(COALESCE(status, '')) = 'TEST_QUARANTINED'`
-      );
-      const qProps = await this.queryCcOne<any>(
-        'proposals',
-        `SELECT COUNT(*) as c FROM proposals WHERE is_test = 1 OR UPPER(COALESCE(status, '')) = 'TEST_QUARANTINED'`
-      );
-      quarantinedTestRecordsCount = (Number(qOpp?.c) || 0) + (Number(qClaims?.c) || 0) + (Number(qProps?.c) || 0);
-    } catch {}
+    const quarantinedTestRecordsCount = (Number(qOpp?.c) || 0) + (Number(qClaims?.c) || 0) + (Number(qProps?.c) || 0);
     const byLane: Record<string, { total: number; verified: number; qualified: number; published: number; rejected: number }> = {
       LANE_A_AFFILIATE_COMMERCE: { total: 0, verified: 0, qualified: 0, published: 0, rejected: 0 },
       LANE_B_B2B_SERVICES: { total: 0, verified: 0, qualified: 0, published: 0, rejected: 0 },
@@ -852,41 +929,12 @@ export class OwnerDigestService {
       if (st === 'REJECTED') byLane[lane].rejected++;
     }
 
-    const visRow = await this.queryCcOne<any>(
-      'traffic_sessions',
-      `SELECT COUNT(*) as c FROM traffic_sessions WHERE traffic_evidence_status = 'VERIFIED_EXTERNAL' OR is_external = 1`
-    );
-    const clkRow = await this.queryCcOne<any>(
-      'referral_click_events',
-      `SELECT COALESCE(SUM(CASE WHEN (device_class IS NULL OR device_class NOT IN ('bot', 'known_bot', 'suspected_bot')) AND (click_status IS NULL OR click_status NOT IN ('DIAGNOSTIC', 'TEST')) THEN 1 ELSE 0 END), 0) as c FROM referral_click_events`
-    );
-    const leadRow = await this.queryCcOne<any>(
-      'platform_prospects',
-      `SELECT COUNT(*) as c FROM platform_prospects WHERE is_test = 0 AND (source IN ('OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', 'homepage_b2b_inquiry') OR discovery_source = 'DIRECT_INBOUND')`
-    );
-    const commRow = await this.queryCcOne<any>(
-      'commission_records',
-      `SELECT
-         COUNT(*) as total_orders,
-         COALESCE(SUM(CASE WHEN external_status IN ('PENDING', 'APPROVED', 'VALIDATED', 'PAYABLE', 'INVOICED', 'PAID') THEN expected_commission_inr ELSE 0 END), 0) as reported_inr,
-         COALESCE(SUM(CASE WHEN external_status IN ('APPROVED', 'VALIDATED', 'PAYABLE', 'INVOICED', 'PAID') THEN verified_commission_inr ELSE 0 END), 0) as approved_inr,
-         COALESCE(SUM(CASE WHEN external_status = 'PAID' THEN received_commission_inr ELSE 0 END), 0) as comm_paid_inr
-       FROM commission_records`
-    );
-    const revRow = await this.queryCcOne<any>(
-      'revenue_records',
-      `SELECT COALESCE(SUM(amount_inr), 0) as s FROM revenue_records WHERE verified = 1 AND classification IN ('REAL', 'OWNER_CONFIRMED', 'MANUAL_VERIFIED')`
-    );
     const bankConfirmedCashINR =
       Math.round((Number(revRow?.s || 0) + Number(commRow?.comm_paid_inr || 0)) * 100) / 100;
 
     let operatingExpensesINR: number | null = null;
     try {
       const { CostAccountingEngine } = await import('./cost-accounting.js');
-      const costRow = await this.queryCcOne<any>(
-        'cost_ledger',
-        `SELECT COUNT(*) as cnt, COALESCE(SUM(amount_inr), 0) as s FROM cost_ledger WHERE is_estimated = 0`
-      );
       if (costRow && Number(costRow.cnt || 0) > 0) {
         operatingExpensesINR = Math.round(Number(costRow.s || 0) * 100) / 100;
       } else {
@@ -903,14 +951,6 @@ export class OwnerDigestService {
           sourceTag: 'MEASURED'
         };
 
-    const claimRows = await this.queryCcAll<any>(
-      'manual_upi_claims',
-      `SELECT id, utr, amount_inr, service_rendered, status, claimed_at, business_id
-       FROM manual_upi_claims
-       WHERE (is_test = 0 OR is_test IS NULL) AND status != 'TEST_QUARANTINED'
-       ORDER BY claimed_at DESC
-       LIMIT 50`
-    );
     const countsByState: Record<string, number> = {
       PAYMENT_CLAIMED: 0,
       HUMAN_VERIFIED_PAYMENT: 0,
@@ -936,12 +976,6 @@ export class OwnerDigestService {
       }
     }
 
-    const telemetryRows = await this.queryCcAll<any>(
-      'cron_telemetry',
-      `SELECT id, total_pings, last_observed_ping, last_user_agent, worker_source, status, metadata_json
-       FROM cron_telemetry
-       ORDER BY last_observed_ping DESC`
-    );
     const cronRow = telemetryRows.find((r: any) => r.id === 'cloudflare_worker_cron') || telemetryRows[0] || null;
     const cutoff24hMs = Date.now() - 24 * 3600 * 1000;
     const parseTsMs = (ts: string | null | undefined): number => {
@@ -977,10 +1011,6 @@ export class OwnerDigestService {
       latestUserAgent && latestUserAgent.toLowerCase().includes('ai-marketing-cron-worker')
     );
 
-    const jobRow = await this.queryCcOne<any>(
-      'automation_jobs',
-      `SELECT COUNT(*) as queued_count, MIN(created_at) as oldest_created_at FROM automation_jobs WHERE status IN ('QUEUED', 'RETRY_WAIT')`
-    );
     const queuedJobsCount = Number(jobRow?.queued_count || 0);
     let oldestQueuedJobAgeMinutes: number | null = null;
     if (queuedJobsCount > 0 && jobRow?.oldest_created_at) {
@@ -1001,60 +1031,46 @@ export class OwnerDigestService {
     let freshExplorationCount = 0;
     let staleRotatedOutCount = 0;
     let topExpectedProfitPer100VisitorsINR = 0;
-    try {
-      const dealEvRows = await this.queryCcAll<any>(
-        'public_deals',
-        `SELECT evidence_json, verification_status, affiliate_verified, is_monetizable FROM public_deals`
-      );
-      for (const dr of dealEvRows) {
-        if (Number(dr.affiliate_verified || 0) === 0 || Number(dr.is_monetizable || 0) === 0) {
-          const key = `${dr.verification_status || 'UNKNOWN'}:${Number(dr.is_monetizable || 0) === 1 ? 'MONETIZABLE' : 'UNMONETIZED'}`;
-          rejectionReasons[key] = (rejectionReasons[key] || 0) + 1;
-        }
-        try {
-          const ev = JSON.parse(dr.evidence_json || '{}');
-          if (ev?.evolutionStatus === 'STALE_ROTATED_OUT' || ev?.catalogSlot === 'ROTATED_OUT_STALE' || Number(ev?.staleDecayPenalty || 0) > 0) {
-            staleRotatedOutCount++;
-          } else if (ev?.evolutionStatus === 'RISING_WINNER') {
-            risingWinnersCount++;
-          } else {
-            freshExplorationCount++;
-          }
-          const ev100 = Number(ev?.expectedProfitPer100VisitorsINR || 0);
-          if (Number.isFinite(ev100) && ev100 > topExpectedProfitPer100VisitorsINR) {
-            topExpectedProfitPer100VisitorsINR = Number(ev100.toFixed(2));
-          }
-          if (
-            Number(ev?.verifiedCommissionRatePercent) > 0 ||
-            Number(ev?.commissionRatePercent) > 0 ||
-            Number(ev?.verifiedFlatPayoutINR) > 0
-          ) {
-            withVerifiedCommissionRateCount++;
-          } else if (ev?.missingPayoutReason) {
-            const reasonKey = String(ev.missingPayoutReason);
-            missingPayoutBreakdown[reasonKey] = (missingPayoutBreakdown[reasonKey] || 0) + 1;
-          } else {
-            missingPayoutBreakdown['UNHYDRATED_NO_PAYOUT_METADATA'] =
-              (missingPayoutBreakdown['UNHYDRATED_NO_PAYOUT_METADATA'] || 0) + 1;
-          }
-        } catch {
-          missingPayoutBreakdown['UNPARSEABLE_EVIDENCE_JSON'] =
-            (missingPayoutBreakdown['UNPARSEABLE_EVIDENCE_JSON'] || 0) + 1;
-        }
+    for (const dr of dealEvRows) {
+      if (Number(dr.affiliate_verified || 0) === 0 || Number(dr.is_monetizable || 0) === 0) {
+        const key = `${dr.verification_status || 'UNKNOWN'}:${Number(dr.is_monetizable || 0) === 1 ? 'MONETIZABLE' : 'UNMONETIZED'}`;
+        rejectionReasons[key] = (rejectionReasons[key] || 0) + 1;
       }
-    } catch {}
+      try {
+        const ev = JSON.parse(dr.evidence_json || '{}');
+        if (ev?.evolutionStatus === 'STALE_ROTATED_OUT' || ev?.catalogSlot === 'ROTATED_OUT_STALE' || Number(ev?.staleDecayPenalty || 0) > 0) {
+          staleRotatedOutCount++;
+        } else if (ev?.evolutionStatus === 'RISING_WINNER') {
+          risingWinnersCount++;
+        } else {
+          freshExplorationCount++;
+        }
+        const ev100 = Number(ev?.expectedProfitPer100VisitorsINR || 0);
+        if (Number.isFinite(ev100) && ev100 > topExpectedProfitPer100VisitorsINR) {
+          topExpectedProfitPer100VisitorsINR = Number(ev100.toFixed(2));
+        }
+        if (
+          Number(ev?.verifiedCommissionRatePercent) > 0 ||
+          Number(ev?.commissionRatePercent) > 0 ||
+          Number(ev?.verifiedFlatPayoutINR) > 0
+        ) {
+          withVerifiedCommissionRateCount++;
+        } else if (ev?.missingPayoutReason) {
+          const reasonKey = String(ev.missingPayoutReason);
+          missingPayoutBreakdown[reasonKey] = (missingPayoutBreakdown[reasonKey] || 0) + 1;
+        } else {
+          missingPayoutBreakdown['UNHYDRATED_NO_PAYOUT_METADATA'] =
+            (missingPayoutBreakdown['UNHYDRATED_NO_PAYOUT_METADATA'] || 0) + 1;
+        }
+      } catch {
+        missingPayoutBreakdown['UNPARSEABLE_EVIDENCE_JSON'] =
+          (missingPayoutBreakdown['UNPARSEABLE_EVIDENCE_JSON'] || 0) + 1;
+      }
+    }
 
-    let activeCampaignsCnt = 0;
-    let approvedPartnerOffersCnt = 0;
-    let publishedDigitalProductsCnt = 0;
-    try {
-      const ccRow = await this.queryCcOne<any>('cuelinks_campaigns', `SELECT COUNT(*) as c FROM cuelinks_campaigns WHERE status = 'ACTIVE'`);
-      activeCampaignsCnt = Number(ccRow?.c) || 0;
-      const poRow = await this.queryCcOne<any>('partner_offers', `SELECT COUNT(*) as c FROM partner_offers WHERE status IN ('ACTIVE', 'APPROVED', 'VERIFIED')`);
-      approvedPartnerOffersCnt = Number(poRow?.c) || 0;
-      const coRow = await this.queryCcOne<any>('customer_offers', `SELECT COUNT(*) as c FROM customer_offers WHERE active = 1`);
-      publishedDigitalProductsCnt = Number(coRow?.c) || 0;
-    } catch {}
+    const activeCampaignsCnt = Number(ccRow?.c) || 0;
+    const approvedPartnerOffersCnt = Number(poRow?.c) || 0;
+    const publishedDigitalProductsCnt = Number(coRow?.c) || 0;
 
     // Lane E: SEBI-Compliant Multi-Asset Educational Research & Demand-Supply Radar
     let financialAndArbitrageRadar: any = null;
@@ -1072,14 +1088,7 @@ export class OwnerDigestService {
           0
         )
       : 0;
-    let firstPartyDeskSignalsCnt = 0;
-    try {
-      const fpRow = await this.queryCcOne<any>(
-        'demand_signals',
-        `SELECT COUNT(*) as c FROM demand_signals WHERE source_host = 'FIRST_PARTY_CUSTOMER_DESK' AND status != 'QUARANTINED'`
-      );
-      firstPartyDeskSignalsCnt = Number(fpRow?.c || 0);
-    } catch {}
+    const firstPartyDeskSignalsCnt = Number(fpRow?.c || 0);
     const buyerDemandSignalsCnt = radarDemandSignalsCnt + firstPartyDeskSignalsCnt;
 
     let deadLetterEvents: Array<{ id: string; eventType: string; errorMessage?: string; createdAt: string }> = [];
@@ -1652,21 +1661,16 @@ export class OwnerDigestService {
       } catch {}
     }
 
-    let arosControlCenter: ArosControlCenterSummary | undefined;
-    try {
-      arosControlCenter = await this.getArosControlCenterSummary();
-    } catch {}
-
-    const escalations = await this.getEscalationsAsync();
-
-    const [prodAudits, prodProspects, prodContacts] = await Promise.all([
+    const [arosControlCenter, escalations, prodAudits, prodProspects, prodContacts, sitefixFunnelAttribution] = await Promise.all([
+      this.getArosControlCenterSummary().catch(() => undefined),
+      this.getEscalationsAsync().catch(() => []),
       this.queryCcAll<any>('site_audits', `SELECT domain, target_url, business_name, checklist_json FROM site_audits WHERE status = 'COMPLETED' ORDER BY updated_at DESC LIMIT 30`),
-      this.queryCcAll<any>('platform_prospects', `SELECT business_name, prospect_business_name, COALESCE(email, prospect_email) as email, COALESCE(phone, prospect_phone) as phone, COALESCE(website_url, prospect_website) as website_url FROM platform_prospects LIMIT 60`),
-      this.queryCcAll<any>('outbound_contacts', `SELECT prospect_name, prospect_business_name, prospect_email, prospect_phone, prospect_website FROM outbound_contacts WHERE is_opted_out = 0 AND is_suppressed = 0 LIMIT 60`)
+      this.queryCcAll<any>('platform_prospects', `SELECT business_name, prospect_business_name, COALESCE(email, prospect_email) as email, COALESCE(phone, prospect_phone) as phone, COALESCE(website_url, prospect_website) as website_url FROM platform_prospects ORDER BY created_at DESC LIMIT 60`),
+      this.queryCcAll<any>('outbound_contacts', `SELECT prospect_name, prospect_business_name, prospect_email, prospect_phone, prospect_website FROM outbound_contacts WHERE is_opted_out = 0 AND is_suppressed = 0 ORDER BY created_at DESC LIMIT 60`),
+      getSiteFixFunnelAttributionSummaryAsync(this.d1Repo).catch(() => undefined)
     ]);
     const topHighTriggerProspects = this.scoreAndRankProspectAudits(prodAudits, prodProspects, prodContacts, 5);
     const autopilotStatus = AutonomousSystemDoctor.getInstance().getOutreachAutopilotHealth();
-    const sitefixFunnelAttribution = await getSiteFixFunnelAttributionSummaryAsync(this.d1Repo);
 
     return {
       date: todayStr,

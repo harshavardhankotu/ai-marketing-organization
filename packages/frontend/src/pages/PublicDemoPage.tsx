@@ -134,11 +134,11 @@ export const PublicDemoPage: React.FC = () => {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans">
       <nav className="border-b border-slate-800 bg-slate-950/95 sticky top-0 z-30 backdrop-blur" aria-label="Primary Navigation">
-        <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
+        <div className="max-w-5xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
           <a href="/" className="font-extrabold text-sm text-white whitespace-nowrap">
             AI Marketing Org
           </a>
-          <div className="flex items-center gap-4 text-xs font-semibold text-slate-400">
+          <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1 text-xs font-semibold text-slate-400">
             <a href="/" className="hover:text-cyan-400 whitespace-nowrap">Home</a>
             <a href="/demo" className="text-cyan-400 whitespace-nowrap">Live Demo</a>
             <a href="/offer" className="hover:text-cyan-400 whitespace-nowrap">Founding Pilot</a>
@@ -150,13 +150,13 @@ export const PublicDemoPage: React.FC = () => {
       <main className="max-w-5xl mx-auto px-4 py-8 space-y-8">
         <header className="space-y-3">
           <div className="inline-flex items-center gap-2 bg-cyan-500/10 text-cyan-300 border border-cyan-500/30 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider">
-            SAMPLE DEMO &bull; Interactive Walkthrough
+            SAMPLE DEMO &bull; Browser-Only Walkthrough
           </div>
           <h1 className="text-2xl sm:text-4xl font-extrabold text-white tracking-tight">
             See What Your Repaired Enquiry Path Feels Like on Mobile
           </h1>
           <p className="text-sm sm:text-base text-slate-300 max-w-2xl">
-            Test the exact components included in the <strong>Founding Pilot (₹1,999)</strong>: a fast mobile course enquiry form, a pre-filled WhatsApp click-to-chat preview, and a structured admissions lead tracker. All records below are clearly marked sample data.
+            Test the exact layout components included in the <strong>Founding Pilot (₹1,999)</strong>: a mobile course enquiry form, a sample WhatsApp message preview, and a sample lead tracker. This page runs purely in your browser&apos;s React state — no real enquiry is sent and nothing is saved on a server.
           </p>
         </header>
 
@@ -257,16 +257,16 @@ export const PublicDemoPage: React.FC = () => {
 
           <section className="bg-slate-900 border border-slate-800 rounded-2xl p-5 sm:p-6 space-y-4">
             <div className="flex items-center justify-between gap-2">
-              <h2 className="text-lg font-bold text-white">2. WhatsApp Click-to-Chat Preview</h2>
+              <h2 className="text-lg font-bold text-white">2. Sample WhatsApp Message Preview</h2>
               <span className="text-[11px] font-mono bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded">
-                wa.me PRE-FILL
+                SAMPLE PREVIEW
               </span>
             </div>
             <p className="text-xs text-slate-400">
-              Updates live from the selected course and batch so students never send a vague &ldquo;Hi&rdquo;.
+              Updates live in browser React state using generic <code>wa.me/?text=...</code> — not wired to a live institute number until configured during pilot handover.
             </p>
             <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-3">
-              <div className="text-[11px] font-mono text-slate-400">Pre-filled Student Message Preview</div>
+              <div className="text-[11px] font-mono text-slate-400">Sample WhatsApp Message Preview (Local State)</div>
               <div className="bg-emerald-950/50 border border-emerald-500/30 rounded-lg p-3 text-sm text-emerald-100 leading-relaxed">
                 {waMessage}
               </div>
@@ -280,7 +280,7 @@ export const PublicDemoPage: React.FC = () => {
                   rel="noopener noreferrer"
                   className="inline-flex items-center justify-center px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs"
                 >
-                  Open wa.me Preview &rarr;
+                  Sample WhatsApp Message Preview &rarr;
                 </a>
                 <button
                   type="button"

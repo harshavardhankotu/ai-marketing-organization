@@ -367,19 +367,20 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <script type="applic
     nav.top-nav {
       background: rgba(11, 17, 32, 0.94);
       border-bottom: 1px solid var(--card-border);
-      padding: 0.75rem 1rem;
+      padding: 0.7rem 1rem;
       display: flex;
       justify-content: space-between;
       align-items: center;
-      gap: 0.75rem;
+      flex-wrap: wrap;
+      gap: 0.45rem 0.85rem;
       position: sticky;
       top: 0;
       z-index: 40;
       backdrop-filter: blur(8px);
     }
-    .brand { font-weight: 800; font-size: 0.98rem; color: #fff; text-decoration: none; white-space: nowrap; }
-    .nav-links { display: flex; gap: 0.9rem; align-items: center; flex-wrap: nowrap; overflow-x: auto; }
-    .nav-links a { color: var(--text-muted); text-decoration: none; font-size: 0.85rem; font-weight: 600; white-space: nowrap; }
+    .brand { font-weight: 800; font-size: 0.95rem; color: #fff; text-decoration: none; white-space: nowrap; }
+    .nav-links { display: flex; gap: 0.55rem 0.9rem; align-items: center; flex-wrap: wrap; max-width: 100%; }
+    .nav-links a { color: var(--text-muted); text-decoration: none; font-size: 0.83rem; font-weight: 600; white-space: nowrap; }
     .nav-links a:hover, .nav-links a.active { color: var(--accent); }
     .container { max-width: 960px; margin: 0 auto; padding: 2rem 1rem 2.5rem; }
     .hero { text-align: left; padding: 1.5rem 0 2rem; }
@@ -532,7 +533,7 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <script type="applic
         </div>
         <div class="feature-item">
           <h3>3. Structured Lead Tracker</h3>
-          <p>Every enquiry lands in a clean tracker (<code>New &rarr; Contacted &rarr; Demo Scheduled &rarr; Enrolled</code>) with instant email notification.</p>
+          <p>Every enquiry lands in a clean tracker (<code>New &rarr; Contacted &rarr; Demo Scheduled &rarr; Enrolled</code>) with owner alert &amp; manual follow-up workflow configured for your institute&apos;s channel.</p>
         </div>
         <div class="feature-item">
           <h3>4. Clean SEO &amp; Schema Metadata</h3>
@@ -717,15 +718,16 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <script type="applic
     nav.top-nav {
       background: rgba(11, 17, 32, 0.94);
       border-bottom: 1px solid var(--card-border);
-      padding: 0.75rem 1rem;
+      padding: 0.7rem 1rem;
       display: flex;
       justify-content: space-between;
       align-items: center;
-      gap: 0.75rem;
+      flex-wrap: wrap;
+      gap: 0.45rem 0.85rem;
     }
-    .brand { font-weight: 800; font-size: 0.98rem; color: #fff; text-decoration: none; white-space: nowrap; }
-    .nav-links { display: flex; gap: 0.9rem; align-items: center; flex-wrap: nowrap; overflow-x: auto; }
-    .nav-links a { color: var(--text-muted); text-decoration: none; font-size: 0.85rem; font-weight: 600; white-space: nowrap; }
+    .brand { font-weight: 800; font-size: 0.95rem; color: #fff; text-decoration: none; white-space: nowrap; }
+    .nav-links { display: flex; gap: 0.55rem 0.9rem; align-items: center; flex-wrap: wrap; max-width: 100%; }
+    .nav-links a { color: var(--text-muted); text-decoration: none; font-size: 0.83rem; font-weight: 600; white-space: nowrap; }
     .nav-links a:hover, .nav-links a.active { color: var(--accent); }
     .container { max-width: 860px; margin: 0 auto; padding: 2rem 1rem 3rem; }
     header { text-align: center; margin-bottom: 2rem; }

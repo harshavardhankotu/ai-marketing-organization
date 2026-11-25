@@ -220,16 +220,16 @@ describe('First Real Customer Sprint — Commercial Feasibility & Measurement In
       expect(html).not.toContain('₹15,000');
     });
 
-    it('records inquiry from offer page via POST /api/v1/offer/inquiry into sales pipeline', async () => {
+    it('records education inquiry from offer page via POST /api/v1/offer/inquiry atomically without customer_journeys', async () => {
       const res = await app.request('/api/v1/offer/inquiry', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          customerName: 'Dr. Sprint Kumar',
+          customerName: 'Kiran Sprint Rao',
           customerPhone: '9876543210',
-          customerEmail: 'sprint.kumar@dentalcare.in',
-          serviceOfInterest: 'Sprint Multispeciality Dental, Bengaluru',
-          notes: 'Losing 20+ weekend patient inquiries on WhatsApp. Need 24/7 automated FAQ triage.',
+          customerEmail: 'kiran@sprintacademy.in',
+          serviceOfInterest: 'Sprint Coding Academy, Bengaluru',
+          notes: 'https://sprintacademy.in — losing mobile admissions enquiries after 7 PM.',
           source: 'offer_page_inquiry',
           channel: 'WHATSAPP',
           consentGiven: true
@@ -239,19 +239,39 @@ describe('First Real Customer Sprint — Commercial Feasibility & Measurement In
       expect(res.status).toBe(200);
       const json = await res.json() as any;
       expect(json.success).toBe(true);
-      expect(json.journeyId).toBeDefined();
+      expect(json.prospectId).toBeDefined();
+      expect(json.opportunityId).toBeDefined();
+      expect(json.pipelineId).toBeDefined();
+      expect(json.status).toBe('PENDING_OWNER_REVIEW');
+      expect(json.deletionCode).toMatch(/^del_/);
+      // Must never echo PII or customer_journeys back to public browser
+      expect(json.journeyId).toBeUndefined();
+      expect(json.structuredTriageRecord).toBeUndefined();
+      expect(json.csvRow).toBeUndefined();
+      expect(json.calendarIcs).toBeUndefined();
 
-      // Verify persisted in database
+      // Verify atomic persistence across platform_prospects, opportunities, and sales_pipeline
       const db = getDb();
-      const journey = db.prepare(`SELECT * FROM customer_journeys WHERE id = ?`).get(json.journeyId) as any;
-      expect(journey).toBeDefined();
-      expect(journey.customer_name).toBe('Dr. Sprint Kumar');
-      expect(journey.first_touch_channel).toBe('WHATSAPP');
-      expect(journey.touchpoints_json).toContain('offer_page_inquiry');
+      const prospect = db.prepare(`SELECT * FROM platform_prospects WHERE id = ?`).get(json.prospectId) as any;
+      expect(prospect).toBeDefined();
+      expect(prospect.vertical).toBe('education');
+      expect(prospect.prospect_vertical).toBe('education');
+      expect(prospect.source).toBe('OFFER_PAGE_INQUIRY');
+      expect(prospect.discovery_source).toBe('DIRECT_INBOUND');
+      expect(prospect.fit_score).toBe(0);
+      expect(prospect.prospect_website).toBe('https://sprintacademy.in');
 
-      const pipeline = db.prepare(`SELECT * FROM sales_pipeline WHERE journey_id = ?`).get(json.journeyId) as any;
+      const opp = db.prepare(`SELECT * FROM opportunities WHERE id = ?`).get(json.opportunityId) as any;
+      expect(opp).toBeDefined();
+      expect(opp.estimated_value_inr).toBe(0);
+      expect(opp.probability).toBe(0);
+      expect(opp.next_best_action).toBe('OWNER_REVIEW_INBOUND_ENQUIRY');
+
+      const pipeline = db.prepare(`SELECT * FROM sales_pipeline WHERE id = ?`).get(json.pipelineId) as any;
       expect(pipeline).toBeDefined();
       expect(pipeline.stage).toBe('LEAD');
+      expect(pipeline.journey_id).toBeNull();
+      expect(pipeline.expected_revenue_inr).toBe(0);
     });
   });
 });

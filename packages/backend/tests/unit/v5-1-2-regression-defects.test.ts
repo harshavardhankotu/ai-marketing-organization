@@ -322,13 +322,13 @@ describe('V5.1.2 — Commercial Integrity, Campaign Null-Guard & Variant Stock V
       expect(html).not.toMatch(/Apex Dental|dental clinic|chipped tooth/i);
     });
 
-    it('Test 4b: /api/v1/offer/inquiry produces structuredTriageRecord, calendarIcs, and csvRow', async () => {
+    it('Test 4b: /api/v1/offer/inquiry returns only IDs, PENDING_OWNER_REVIEW status, and deletionCode without echoing PII', async () => {
       const payload = {
-        customerName: 'Dr. Ramesh Babu',
+        customerName: 'Ramesh Academy Owner',
         customerPhone: '9849012345',
-        customerEmail: 'drramesh@kavuridental.com',
-        serviceOfInterest: 'Kavuri Dental Care, Hyderabad',
-        notes: 'Inquiries arriving after 8 PM are missed by front desk.',
+        customerEmail: 'ramesh@hydtraining.in',
+        serviceOfInterest: 'Hyderabad Tech Institute, Hyderabad',
+        notes: 'Inquiries arriving after 8 PM are missed.',
         consentGiven: true
       };
 
@@ -341,24 +341,16 @@ describe('V5.1.2 — Commercial Integrity, Campaign Null-Guard & Variant Stock V
       expect(res.status).toBe(200);
       const json = await res.json();
       expect(json.success).toBe(true);
-      expect(json.structuredTriageRecord).toBeDefined();
-      expect(json.structuredTriageRecord.clinicName).toBe('Kavuri Dental Care');
-      expect(json.structuredTriageRecord.contactPerson).toBe('Dr. Ramesh Babu');
-      expect(json.structuredTriageRecord.serviceCategory).toBe('Administrative Website & WhatsApp Inquiry Capture');
-
-      // Verify valid RFC 5545 calendar file
-      expect(json.calendarIcs).toBeDefined();
-      expect(json.calendarIcs).toContain('BEGIN:VCALENDAR');
-      expect(json.calendarIcs).toContain('BEGIN:VEVENT');
-      expect(json.calendarIcs).toContain('SUMMARY:Administrative Lead Triage Walkthrough - Kavuri Dental Care');
-      expect(json.calendarIcs).toContain('END:VCALENDAR');
-
-      // Verify formatted CSV row
-      expect(json.csvRow).toBeDefined();
-      expect(json.csvRow).toContain('Kavuri Dental Care');
-      expect(json.csvRow).toContain('Dr. Ramesh Babu');
-      expect(json.csvRow).toContain('9849012345');
-      expect(json.csvRow).toContain('PENDING_OWNER_REVIEW');
+      expect(json.status).toBe('PENDING_OWNER_REVIEW');
+      expect(json.prospectId).toBeDefined();
+      expect(json.opportunityId).toBeDefined();
+      expect(json.pipelineId).toBeDefined();
+      expect(json.deletionCode).toMatch(/^del_/);
+      expect(json.structuredTriageRecord).toBeUndefined();
+      expect(json.calendarIcs).toBeUndefined();
+      expect(json.csvRow).toBeUndefined();
+      expect(JSON.stringify(json)).not.toContain('9849012345');
+      expect(JSON.stringify(json)).not.toContain('ramesh@hydtraining.in');
     });
   });
 
