@@ -102,6 +102,42 @@ export type AppVariables = {
   userId: string;
 };
 
+let cachedRemoteRevenueRecordsHasIsTest: boolean | null = null;
+
+async function revenueRecordsHasIsTestColumn(d1Repo: D1RevenueRepository): Promise<boolean> {
+  if (d1Repo.isRemoteD1ReadAllowed()) {
+    if (cachedRemoteRevenueRecordsHasIsTest !== null) {
+      return cachedRemoteRevenueRecordsHasIsTest;
+    }
+    const cols = await d1Repo.query<{ name: string }>(
+      'revenue_records',
+      "SELECT name FROM pragma_table_info('revenue_records') WHERE name = 'is_test'"
+    );
+    cachedRemoteRevenueRecordsHasIsTest = Array.isArray(cols) && cols.length > 0;
+    return cachedRemoteRevenueRecordsHasIsTest;
+  }
+  const cols = getDb().prepare("PRAGMA table_info('revenue_records')").all() as Array<{ name: string }>;
+  return cols.some(c => c.name === 'is_test');
+}
+
+function extractAttributionQuery(c: any): {
+  utmSource?: string;
+  utmMedium?: string;
+  utmCampaign?: string;
+  utmTerm?: string;
+} {
+  const clean = (val?: string | null): string | undefined => {
+    const trimmed = String(val || '').trim();
+    return /^[a-zA-Z0-9_.\-]{1,64}$/.test(trimmed) ? trimmed : undefined;
+  };
+  return {
+    utmSource: clean(c.req.query('utm_source') || c.req.query('source')),
+    utmMedium: clean(c.req.query('utm_medium') || c.req.query('medium')),
+    utmCampaign: clean(c.req.query('utm_campaign') || c.req.query('campaign')),
+    utmTerm: clean(c.req.query('utm_term') || c.req.query('term'))
+  };
+}
+
 /**
  * Phase 2 Task 27: minimal CSV parser for provider commission reports.
  * Handles quoted fields + header row; maps headers case-insensitively to
@@ -1533,9 +1569,15 @@ apiRouter.get('/cron/status', async (c) => {
 
   let verifiedRevenueINR = 0;
   try {
-    const revRow = await d1Repo.queryOne<{ total: number }>('revenue_records', "SELECT COALESCE(SUM(amount_inr), 0) as total FROM revenue_records WHERE verified = 1 AND is_test = 0");
+    const hasIsTestCol = await revenueRecordsHasIsTestColumn(d1Repo);
+    const revSql = hasIsTestCol
+      ? "SELECT COALESCE(SUM(amount_inr), 0) as total FROM revenue_records WHERE verified = 1 AND is_test = 0"
+      : "SELECT COALESCE(SUM(amount_inr), 0) as total FROM revenue_records WHERE verified = 1 AND COALESCE(classification, 'REAL') != 'TEST'";
+    const revRow = await d1Repo.queryOne<{ total: number }>('revenue_records', revSql);
     verifiedRevenueINR = revRow?.total || 0;
-  } catch {}
+  } catch (revErr: any) {
+    console.warn(`[CronStatus] revenue_records query notice: ${revErr?.message || revErr}`);
+  }
 
   const idleCycleShare = totalCycles > 0 ? Math.round((idleCycles / totalCycles) * 100) : 100;
 
@@ -10184,7 +10226,11 @@ apiRouter.get('/vs/:comparisonSlug', async (c) => {
   ]);
   const enrichedMatched = { ...matched, dealA: enrichedA, dealB: enrichedB };
 
-  return c.html(StaticSiteGenerator.getInstance().renderComparisonHtml(enrichedMatched, config, pairs));
+  return c.html(
+    StaticSiteGenerator.getInstance().renderComparisonHtml(enrichedMatched, config, pairs, {
+      attribution: extractAttributionQuery(c)
+    })
+  );
 });
 
 /**
@@ -10280,7 +10326,11 @@ apiRouter.get('/best/:intentSlug', async (c) => {
     p => hubDealIds.has(String(p.dealA?.id || '')) || hubDealIds.has(String(p.dealB?.id || ''))
   );
   const comparisons = (matchingComparisons.length > 0 ? matchingComparisons : allComparisons).slice(0, 8);
-  return c.html(StaticSiteGenerator.getInstance().renderBuyerGuideHtml(enrichedMatched, hubs, comparisons, config));
+  return c.html(
+    StaticSiteGenerator.getInstance().renderBuyerGuideHtml(enrichedMatched, hubs, comparisons, config, {
+      attribution: extractAttributionQuery(c)
+    })
+  );
 });
 
 /**
@@ -10330,6 +10380,12 @@ apiRouter.get('/public/amazon-redirect', async (c) => {
         'x-test-traffic': c.req.header('x-test-traffic') || '',
         'x-test-mode': c.req.header('x-test-mode') || ''
       });
+      const rawAmzPlacement = c.req.query('placement') || c.req.query('utm_placement') || 'amazon_dual_rail';
+      const sanitizedAmzPlacement = /^[a-zA-Z0-9_\-]{1,64}$/.test(rawAmzPlacement) ? rawAmzPlacement : 'amazon_dual_rail';
+      const amzAttr = extractAttributionQuery(c);
+      const amzSource = amzAttr.utmSource || 'amazon_redirect';
+      const amzMedium = amzAttr.utmMedium || 'cpc_affiliate';
+      const amzCampaign = amzAttr.utmCampaign || 'amazon_in_associates';
       const insertRefSql = `
         INSERT OR IGNORE INTO referrals (
           id, click_id, destination_url, organization_id, offer_id, partner_id, ip, user_agent, referer, placement, device_class, created_at
@@ -10355,7 +10411,7 @@ apiRouter.get('/public/amazon-redirect', async (c) => {
             clientInfo.ip,
             userAgent.substring(0, 200),
             referrer.substring(0, 200),
-            'amazon_dual_rail',
+            sanitizedAmzPlacement,
             trafficClass
           ]
         },
@@ -10369,10 +10425,10 @@ apiRouter.get('/public/amazon-redirect', async (c) => {
             orgId,
             dealId,
             'part_amazon_in',
-            'amazon_dual_rail',
-            'amazon_redirect',
-            'cpc_affiliate',
-            'amazon_in_associates',
+            sanitizedAmzPlacement,
+            amzSource,
+            amzMedium,
+            amzCampaign,
             referrer.substring(0, 200),
             trafficClass,
             targetUrl
