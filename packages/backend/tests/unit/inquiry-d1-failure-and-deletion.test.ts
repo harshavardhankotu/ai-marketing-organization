@@ -20,36 +20,32 @@ describe('Steps 3c, 9d, 9e: Inquiry Lifecycle, D1 Persistence, Purge Job & Delet
     } catch {}
   });
 
-  it('Step 3c: In production, inquiry writes to D1 first; if D1 fails, it returns an error and does not claim success', async () => {
+  it('Step 3c: In production, inquiry writes atomically via D1 batch; if D1 fails, it returns HTTP 503 and never claims success', async () => {
     const prevEnv = process.env.NODE_ENV;
     process.env.NODE_ENV = 'production';
     const d1Repo = D1RevenueRepository.getInstance();
-    const originalExecuteWrite = d1Repo.executeWrite.bind(d1Repo);
-    const spy = vi.spyOn(d1Repo, 'executeWrite').mockImplementation(async (table, sql, params) => {
-      if (table === 'platform_prospects') {
-        throw new Error('D1_WRITE_FAULT: Cloudflare D1 connection timeout');
-      }
-      return originalExecuteWrite(table, sql, params);
-    });
+    const spy = vi.spyOn(d1Repo, 'executeBatch').mockRejectedValue(
+      new Error('SERVICE_UNAVAILABLE: D1_DURABLE_WRITE_UNAVAILABLE: Cloudflare D1 connection timeout')
+    );
 
     try {
       const postReq = new Request('http://localhost/offer/inquiry', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          customerName: 'Dr. D1 Failure Test',
+          customerName: 'Kiran D1 Failure',
           customerPhone: '919876543210',
-          customerEmail: 'd1fail@test.in',
-          serviceOfInterest: 'Test Clinic, Mumbai',
+          customerEmail: 'd1fail@academy.in',
+          serviceOfInterest: 'Failure Test Academy, Mumbai',
           consentGiven: true
         })
       });
 
       const res = await apiRouter.fetch(postReq);
-      expect(res.status).toBe(500);
+      expect(res.status).toBe(503);
       const json = await res.json() as any;
       expect(json.success).toBe(false);
-      expect(json.error).toContain('D1_WRITE_FAULT');
+      expect(json.error).toContain('D1_DURABLE_WRITE_UNAVAILABLE');
     } finally {
       spy.mockRestore();
       process.env.NODE_ENV = prevEnv;

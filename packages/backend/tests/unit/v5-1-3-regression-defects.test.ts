@@ -586,15 +586,15 @@ describe('V5.1.3 — Regression Defects & Commercial Truth Suite', () => {
       expect(json.status).not.toBe('QUALIFIED');
     });
 
-    it('sanitizes CSV formula injection characters (=, +, -, @) and sets status PENDING_OWNER_REVIEW', async () => {
+    it('handles special characters safely in notes/institute input without echoing raw PII or CSV/ICS back to public callers', async () => {
       const res = await app.request('/api/v1/offer/inquiry', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          customerName: '=cmd|’ /C calc’!A0', // formula injection attempt
+          customerName: '=cmd| /C calc!A0',
           customerPhone: '9849098490',
-          serviceOfInterest: '+Formula Clinic Hyderabad',
-          notes: '@admin please approve',
+          serviceOfInterest: 'Hyderabad\\Secunderabad Institute, Hyderabad',
+          notes: '@admin Line 1\nLine 2; special, note https://sampleinstitute.in',
           consentGiven: true
         })
       });
@@ -602,39 +602,12 @@ describe('V5.1.3 — Regression Defects & Commercial Truth Suite', () => {
       expect(res.status).toBe(200);
       const json = await res.json();
       expect(json.success).toBe(true);
-
-      // Verify CSV cell values are prefixed with single quote
-      expect(json.csvRow).toContain("'=cmd");
-      expect(json.csvRow).toContain("'+Formula Clinic");
-      expect(json.csvRow).toContain("'@admin please approve");
-      expect(json.csvRow).toContain('PENDING_OWNER_REVIEW');
-    });
-
-    it('escapes RFC 5545 special characters (\\, ;, ,, newlines) and sets STATUS:TENTATIVE in .ics', async () => {
-      const res = await app.request('/api/v1/offer/inquiry', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          customerName: 'Dr. Kumar; MD, PhD',
-          customerPhone: '9849098490',
-          serviceOfInterest: 'Hyderabad\\Secunderabad Dental, Care',
-          notes: 'Line 1\nLine 2; special, note',
-          consentGiven: true
-        })
-      });
-
-      expect(res.status).toBe(200);
-      const json = await res.json();
-      expect(json.success).toBe(true);
-
-      const ics = json.calendarIcs;
-      expect(ics).toContain('STATUS:TENTATIVE');
-      expect(ics).not.toContain('STATUS:CONFIRMED');
-      // Verify escaped characters
-      expect(ics).toContain('\\;');
-      expect(ics).toContain('\\,');
-      expect(ics).toContain('\\\\');
-      expect(ics).toContain('\\n');
+      expect(json.status).toBe('PENDING_OWNER_REVIEW');
+      expect(json.prospectId).toBeDefined();
+      expect(json.csvRow).toBeUndefined();
+      expect(json.calendarIcs).toBeUndefined();
+      expect(json.structuredTriageRecord).toBeUndefined();
+      expect(JSON.stringify(json)).not.toContain('9849098490');
     });
   });
 });

@@ -94,22 +94,22 @@ export class EventTracker {
     }
 
     const spentRow = db.prepare('SELECT SUM(spent_inr) as total_spent FROM campaigns WHERE business_id = ?').get(businessId) as { total_spent: number } | undefined;
-    const spentINR = spentRow?.total_spent || 18500;
+    const spentINR = Number(spentRow?.total_spent || 0);
 
-    const qualifiedLeads = countMap['qualified_lead'] || 32;
+    const qualifiedLeads = countMap['qualified_lead'] || 0;
     const cpqlINR = qualifiedLeads > 0 ? Math.round(spentINR / qualifiedLeads) : 0;
-    const roas = spentINR > 0 ? Number((revenueINR / spentINR).toFixed(2)) : 3.8;
+    const roas = spentINR > 0 ? Number((revenueINR / spentINR).toFixed(2)) : 0;
 
     return {
-      impressions: countMap['impression'] || 24500,
-      clicks: countMap['click'] || 1840,
-      leads: countMap['lead'] || 78,
+      impressions: countMap['impression'] || 0,
+      clicks: countMap['click'] || 0,
+      leads: countMap['lead'] || 0,
       qualifiedLeads,
-      appointments: countMap['appointment'] || 24,
-      revenueINR: revenueINR || 148000,
+      appointments: countMap['appointment'] || 0,
+      revenueINR,
       spentINR,
-      cpqlINR: cpqlINR || 578,
-      roas: roas || 8.0
+      cpqlINR,
+      roas
     };
   }
 }

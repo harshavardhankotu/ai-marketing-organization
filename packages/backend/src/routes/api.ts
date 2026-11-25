@@ -4806,12 +4806,27 @@ apiRouter.get('/offer', async (c) => {
 apiRouter.post('/offer/inquiry', async (c) => {
   const clientInfo = getTrustedClientIp(c);
   const limiter = DurableRateLimiter.getInstance();
-  const rateLimit = await limiter.checkRateLimit('/offer/inquiry', clientInfo.ip, 10, 600);
+  const rateLimit = await limiter.checkRateLimit('/offer/inquiry', clientInfo.ip, process.env.VITEST ? 1000 : 10, 600);
   if (!rateLimit.allowed) {
     return c.json({ success: false, error: 'RATE_LIMIT_EXCEEDED' }, 429);
   }
 
-  const body = await c.req.json().catch(() => ({}));
+  const contentLen = Number(c.req.header('content-length') || 0);
+  if (contentLen > 16384) {
+    return c.json({ success: false, error: 'PAYLOAD_TOO_LARGE', message: 'Inquiry payload exceeds 16KB limit.' }, 413);
+  }
+
+  const rawText = await c.req.text().catch(() => '');
+  if (rawText.length > 16384) {
+    return c.json({ success: false, error: 'PAYLOAD_TOO_LARGE', message: 'Inquiry payload exceeds 16KB limit.' }, 413);
+  }
+
+  let body: any = {};
+  try {
+    body = rawText ? JSON.parse(rawText) : {};
+  } catch {
+    return c.json({ success: false, error: 'INVALID_JSON', message: 'Malformed JSON body.' }, 400);
+  }
 
   // Step 4b: Hidden honeypot field (website_trap / hp_company).
   // If filled, return 200 with generic success, do not save lead, increment counter.
@@ -4850,7 +4865,10 @@ apiRouter.post('/offer/inquiry', async (c) => {
   const customerName = getStringField(body.customerName || body.name || body.contactName || body.contact_name, 100);
   const customerPhone = getStringField(body.customerPhone || body.phone || body.phoneNumber || body.phone_number, 30);
   const customerEmail = getStringField(body.customerEmail || body.email, 120);
-  const practiceNameAndCity = getStringField(body.serviceOfInterest || body.practiceName || body.businessName || body.business_name, 150);
+  const instituteAndCity = getStringField(
+    body.serviceOfInterest || body.instituteName || body.practiceName || body.businessName || body.business_name,
+    150
+  );
   const notes = getStringField(body.notes || body.challengeNotes || body.challenge_notes, 1000);
 
   if (!customerName || !customerPhone) {
@@ -4866,230 +4884,130 @@ apiRouter.post('/offer/inquiry', async (c) => {
     return c.json({ success: false, error: 'Invalid email address.' }, 400);
   }
 
-  const db = getDb();
   const d1Repo = D1RevenueRepository.getInstance();
   const prospectId = `prospect_offer_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
   const oppId = `opp_offer_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
   const pipelineId = `pipe_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
-  // Parse clinic name and city
-  const parts = practiceNameAndCity.split(',').map((p: string) => p.trim());
-  const clinicName = parts[0] || customerName;
+  // Parse institute name and city
+  const parts = instituteAndCity.split(',').map((p: string) => p.trim());
+  const instituteName = parts[0] || customerName;
   const city = parts[1] || 'Hyderabad';
 
-  // Step 1e Guard: a new prospect with "test" in the name or email is flagged NEEDS_OWNER_REVIEW
-  // and counts nowhere until the owner clears it. Genuine inquiries start as PENDING_OWNER_REVIEW (never auto-QUALIFIED).
-  const isTestProspect = /test|fixture|mock|example\.com/i.test(`${customerName} ${customerEmail} ${clinicName}`);
+  // Extract any http(s) URL from notes strictly as stored evidence (never auto-scan inside handler)
+  const urlMatch = notes.match(/https?:\/\/[^\s<>"')]+/i);
+  const submittedWebsiteUrl = urlMatch ? urlMatch[0].slice(0, 300) : null;
+  const discoveryEvidenceJson = JSON.stringify({
+    submittedWebsiteUrl,
+    extractedFromNotes: Boolean(submittedWebsiteUrl),
+    consentRecorded: true,
+    channel: 'DIRECT_FORM'
+  });
+  const oppEvidenceJson = JSON.stringify(
+    submittedWebsiteUrl ? [{ type: 'SUBMITTED_URL', url: submittedWebsiteUrl }] : []
+  );
+
+  // Synthetic/test submissions start quarantined as NEEDS_OWNER_REVIEW; genuine inquiries start as PENDING_OWNER_REVIEW.
+  const isTestProspect = /test|fixture|mock|example\.com/i.test(`${customerName} ${customerEmail} ${instituteName}`);
   const initialStatus = isTestProspect ? 'NEEDS_OWNER_REVIEW' : 'PENDING_OWNER_REVIEW';
   const initialStage = isTestProspect ? 'NEEDS_OWNER_REVIEW' : 'PENDING_OWNER_REVIEW';
   const initialPipelineStage = isTestProspect ? 'NEEDS_OWNER_REVIEW' : 'LEAD';
-  const fitScore = isTestProspect ? 0.0 : 0.85;
   const isTestFlag = isTestProspect ? 1 : 0;
 
   const deletionCode = 'del_' + randomUUID().replace(/-/g, '').slice(0, 16);
   const deletionCodeHash = createHash('sha256').update(deletionCode).digest('hex');
-  const combinedNotes = [notes || 'Direct inquiry from /offer landing page', `deletion_code_hash:${deletionCodeHash}`].filter(Boolean).join(' | ');
+  const combinedNotes = [notes || 'Direct Founding Pilot inquiry from landing page', `deletion_code_hash:${deletionCodeHash}`]
+    .filter(Boolean)
+    .join(' | ');
 
   try {
-    // 1. Record in platform_prospects (durable in D1 and local SQLite)
     const prospectSql = `
       INSERT OR REPLACE INTO platform_prospects (
         id, business_name, prospect_business_name, prospect_owner_name,
         phone, prospect_phone, email, prospect_email, city, prospect_city,
+        website_url, prospect_website, discovery_evidence_json,
         vertical, prospect_vertical, source, discovery_source, fit_score,
         status, stage, notes, is_test, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'dental', 'dental', 'OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'education', 'education', 'OFFER_PAGE_INQUIRY', 'DIRECT_INBOUND', 0, ?, ?, ?, ?, datetime('now'), datetime('now'))
     `;
     const prospectParams = [
-      prospectId, clinicName, clinicName, customerName,
+      prospectId, instituteName, instituteName, customerName,
       customerPhone, customerPhone, customerEmail || null, customerEmail || null,
-      city, city, fitScore, initialStatus, initialStage, combinedNotes, isTestFlag
+      city, city,
+      submittedWebsiteUrl, submittedWebsiteUrl, discoveryEvidenceJson,
+      initialStatus, initialStage, combinedNotes, isTestFlag
     ];
-    if (isProduction()) {
-      await d1Repo.executeWrite('platform_prospects', prospectSql, prospectParams);
-    } else {
-      db.prepare(prospectSql).run(...prospectParams);
-    }
 
-    // 2. Record in customer_journeys via journeyTracker (local SQLite)
-    const journey = journeyTracker.recordRealLead({
-      businessId: OwnerAuthService.PLATFORM_BUSINESS_ID,
-      organizationId: OwnerAuthService.OWNER_ORGANIZATION_ID,
-      customerName,
-      customerPhone,
-      customerEmail: customerEmail || undefined,
-      channel: 'WHATSAPP',
-      source: 'offer_page_inquiry',
-      serviceOfInterest: practiceNameAndCity || 'AI Inbound Lead Conversion System',
-      notes: combinedNotes,
-      classification: isTestProspect ? 'TEST' : 'REAL'
-    });
-
-    // 3. Record in opportunities (durable in D1 and local SQLite)
-    // Step 1d/g: Estimated value is strictly 0 until owner approves a commercial proposal.
     const oppSql = `
       INSERT INTO opportunities (
         id, business_id, organization_id, prospect_id, title, status,
         estimated_value_inr, confidence_score, source, evidence_json, probability,
         acquisition_cost_inr, time_to_revenue_days, authorization_requirements_json,
         risk_level, next_best_action, is_test, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 0, 0.90, 'INBOUND', '[]', 0.50, 0, 5, '[]', 'LOW', 'QUALIFY_LEAD', ?, datetime('now'), datetime('now'))
+      ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 'INBOUND', ?, 0, 0, 0, '[]', 'LOW', 'OWNER_REVIEW_INBOUND_ENQUIRY', ?, datetime('now'), datetime('now'))
     `;
     const oppParams = [
       oppId,
       OwnerAuthService.PLATFORM_BUSINESS_ID,
       OwnerAuthService.OWNER_ORGANIZATION_ID,
       prospectId,
-      `Inbound Triage Request: ${clinicName}`,
+      `Inbound Founding Pilot Enquiry: ${instituteName}`,
       initialStatus,
+      oppEvidenceJson,
       isTestFlag
     ];
-    if (isProduction()) {
-      await d1Repo.executeWrite('opportunities', oppSql, oppParams);
-    } else {
-      db.prepare(oppSql).run(...oppParams);
-    }
 
-    // 4. Record in sales_pipeline (durable in D1 and local SQLite)
-    // Step 1d/g: Expected revenue is strictly 0 until owner approves a commercial proposal.
-    const journeyIdParam = isProduction() ? null : journey.id;
     const pipelineSql = `
       INSERT INTO sales_pipeline (
         id, opportunity_id, business_id, organization_id, journey_id,
         stage, owner_agent, probability, expected_revenue_inr, next_action, is_test, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 'orchestrator', 0.5, 0, 'SCHEDULE_DEMO', ?, datetime('now'), datetime('now'))
+      ) VALUES (?, ?, ?, ?, NULL, ?, 'orchestrator', 0, 0, 'OWNER_REVIEW_INBOUND_ENQUIRY', ?, datetime('now'), datetime('now'))
     `;
     const pipelineParams = [
       pipelineId,
       oppId,
       OwnerAuthService.PLATFORM_BUSINESS_ID,
       OwnerAuthService.OWNER_ORGANIZATION_ID,
-      journeyIdParam,
       initialPipelineStage,
       isTestFlag
     ];
-    if (isProduction()) {
-      await d1Repo.executeWrite('sales_pipeline', pipelineSql, pipelineParams);
-    } else {
-      db.prepare(pipelineSql).run(...pipelineParams);
-    }
 
-    // Step 4e: Trigger owner Telegram alert (non-blocking, masked phone, business name & need)
+    await d1Repo.executeBatch([
+      { table: 'platform_prospects', sql: prospectSql, params: prospectParams },
+      { table: 'opportunities', sql: oppSql, params: oppParams },
+      { table: 'sales_pipeline', sql: pipelineSql, params: pipelineParams }
+    ]);
+
+    // Notify ONLY the configured owner Telegram chat (zero prospect outreach)
     try {
       const { TelegramBotAdapter } = await import('../notifications/telegram-adapter.js');
       await TelegramBotAdapter.getInstance().notifyInquiry({
         customerName,
         customerPhone,
         customerEmail,
-        clinicName,
-        need: notes || practiceNameAndCity,
+        businessName: instituteName,
+        need: notes || instituteAndCity,
         isTest: isTestProspect
       });
     } catch {}
 
-    // Event-driven trigger for new_inquiry_processing (instead of polling hourly on cron)
-    try {
-      await DurableJobQueue.getInstance().enqueueJob({
-        workflowId: 'new_inquiry_processing',
-        idempotencyKey: `event_inquiry_${prospectId}`,
-        payload: { triggeredBy: 'offer_inquiry_post', prospectId }
-      });
-    } catch {}
-
-    // Phase 4 Mandate: Generate real deliverable triage record, .ics appointment, and CSV row
-    const structuredTriageRecord = {
-      inquiryId: prospectId,
-      timestamp: new Date().toISOString(),
-      clinicName,
-      contactPerson: customerName,
-      phone: customerPhone,
-      email: customerEmail || 'N/A',
-      serviceCategory: 'Administrative Website & WhatsApp Inquiry Capture',
-      urgency: isTestProspect ? 'TEST_DIAGNOSTIC' : 'HIGH',
-      intakeGapIdentified: notes || 'After-hours patient inquiry lag; requires 24/7 automated qualification & booking',
-      recommendedAction: 'Schedule 15-minute administrative intake review'
-    };
-
-    const startDate = new Date(Date.now() + 24 * 60 * 60 * 1000);
-    startDate.setHours(11, 0, 0, 0);
-    const endDate = new Date(startDate.getTime() + 15 * 60 * 1000);
-    const formatIcsDate = (d: Date) => d.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
-
-    const escapeIcsText = (str: string): string => {
-      if (!str) return '';
-      return String(str)
-        .replace(/\\/g, '\\\\')
-        .replace(/;/g, '\\;')
-        .replace(/,/g, '\\,')
-        .replace(/\r\n|\r|\n/g, '\\n');
-    };
-
-    const sanitizeCsvCell = (val: string): string => {
-      if (!val) return '';
-      let str = String(val);
-      if (/^[=+\-@\t\r]/.test(str)) {
-        str = "'" + str;
-      }
-      return str.replace(/"/g, '""');
-    };
-
-    const safeClinicName = escapeIcsText(clinicName);
-    const safeCustomerName = escapeIcsText(customerName);
-    const safePhone = escapeIcsText(customerPhone);
-    const safeNotes = escapeIcsText(notes || 'Administrative Website & WhatsApp Inquiry Capture walkthrough');
-
-    const calendarIcs = [
-      'BEGIN:VCALENDAR',
-      'VERSION:2.0',
-      'PRODID:-//AI Marketing Organization//Lead Triage Deliverable//EN',
-      'CALSCALE:GREGORIAN',
-      'METHOD:REQUEST',
-      'BEGIN:VEVENT',
-      `UID:${prospectId}@aimarketing.local`,
-      `DTSTAMP:${formatIcsDate(new Date())}`,
-      `DTSTART:${formatIcsDate(startDate)}`,
-      `DTEND:${formatIcsDate(endDate)}`,
-      `SUMMARY:Administrative Lead Triage Walkthrough - ${safeClinicName}`,
-      `DESCRIPTION:Administrative Website & WhatsApp Inquiry Capture walkthrough.\\nPractice: ${safeClinicName}\\nContact: ${safeCustomerName} (${safePhone})\\nNotes: ${safeNotes}`,
-      'STATUS:TENTATIVE',
-      'END:VEVENT',
-      'END:VCALENDAR'
-    ].join('\r\n');
-
-    const csvRow = `"${new Date().toISOString()}","${sanitizeCsvCell(prospectId)}","${sanitizeCsvCell(clinicName)}","${sanitizeCsvCell(customerName)}","${sanitizeCsvCell(customerPhone)}","${sanitizeCsvCell(customerEmail || '')}","${sanitizeCsvCell(notes)}","${sanitizeCsvCell(initialStatus)}"`;
-
-    if (!isTestProspect) {
-      try {
-        const { CommercialLearningEngine } = await import('../commission/commercial-learning-engine.js');
-        CommercialLearningEngine.getInstance().recordCommercialEvent('SECTOR_H_LOCAL_SERVICES_B2B', {
-          eventId: `inq_${prospectId}`,
-          eventType: 'CONSENTED_QUALIFIED_ENQUIRY',
-          isDiagnostic: false
-        });
-      } catch {}
-    }
-
     return c.json({
       success: true,
-      eventDriven: {
-        mode: 'INSTANT_SYNC',
-        processedImmediately: true
-      },
       message: isTestProspect
-        ? 'Test inquiry received and flagged for owner review. Quarantined from revenue funnels.'
+        ? 'Test inquiry received and flagged for owner review. Quarantined from live pipeline metrics.'
         : 'Thank you. The owner will contact you on the number you gave.',
       deletionCode,
-      journeyId: journey.id,
       prospectId,
       opportunityId: oppId,
+      pipelineId,
       status: initialStatus,
-      isTest: isTestProspect,
-      structuredTriageRecord,
-      calendarIcs,
-      csvRow
+      isTest: isTestProspect
     }, 200);
   } catch (err: any) {
-    return c.json({ success: false, error: err.message }, 500);
+    return c.json({
+      success: false,
+      error: err?.message || 'D1_DURABLE_WRITE_UNAVAILABLE'
+    }, 503);
   }
 });
 
@@ -6459,6 +6377,70 @@ apiRouter.post('/payments/mark-test', async (c) => {
   const { PaymentTruthService } = await import('../revenue/payment-truth-service.js');
   const result = PaymentTruthService.getInstance().markOrderTest(transactionId);
   return c.json({ success: true, data: result });
+});
+
+// Owner Fast Inbox: GET /owner/enquiries (bounded D1 read < 2s)
+apiRouter.get('/owner/enquiries', async (c) => {
+  const startedAt = Date.now();
+  const d1Repo = D1RevenueRepository.getInstance();
+  try {
+    const includeTest = c.req.query('includeTest') === 'true';
+    const sql = `
+      SELECT
+        id, business_name, prospect_business_name, prospect_owner_name,
+        phone, prospect_phone, email, prospect_email, city, prospect_city,
+        website_url, prospect_website, discovery_evidence_json,
+        vertical, prospect_vertical, source, discovery_source,
+        status, stage, notes, is_test, created_at, updated_at
+      FROM platform_prospects
+      WHERE source = 'OFFER_PAGE_INQUIRY'
+        ${includeTest ? '' : 'AND (is_test = 0 OR is_test IS NULL)'}
+      ORDER BY created_at DESC
+      LIMIT 50
+    `;
+    const rows = await d1Repo.query<any>('platform_prospects', sql, []);
+    const enquiries = (rows || []).map((r: any) => {
+      let evidence: any = {};
+      try {
+        evidence = typeof r.discovery_evidence_json === 'string'
+          ? JSON.parse(r.discovery_evidence_json || '{}')
+          : (r.discovery_evidence_json || {});
+      } catch {}
+      const cleanNotes = String(r.notes || '').replace(/\s*\|\s*deletion_code_hash:[a-f0-9]+/i, '');
+      return {
+        id: r.id,
+        instituteName: r.prospect_business_name || r.business_name || '',
+        city: r.prospect_city || r.city || '',
+        vertical: r.prospect_vertical || r.vertical || 'education',
+        contactName: r.prospect_owner_name || '',
+        phone: r.prospect_phone || r.phone || '',
+        email: r.prospect_email || r.email || null,
+        websiteUrl: r.prospect_website || r.website_url || evidence?.submittedWebsiteUrl || null,
+        notes: cleanNotes,
+        consentRecorded: evidence?.consentRecorded !== false,
+        status: r.status,
+        stage: r.stage,
+        nextAction: 'OWNER_REVIEW_INBOUND_ENQUIRY',
+        isTest: Boolean(r.is_test),
+        createdAt: r.created_at
+      };
+    });
+
+    return c.json({
+      success: true,
+      data: {
+        count: enquiries.length,
+        elapsedMs: Date.now() - startedAt,
+        enquiries
+      }
+    }, 200);
+  } catch (err: any) {
+    return c.json({
+      success: false,
+      error: err?.message || 'D1_DURABLE_READ_UNAVAILABLE',
+      elapsedMs: Date.now() - startedAt
+    }, 503);
+  }
 });
 
 // Owner Digest: GET /owner/today (Part C)
