@@ -6346,12 +6346,17 @@ export class AutonomousDealDiscoveryEngine {
     const selector = CommercialOpportunitySelector.getInstance();
     const channelId = Number(channelRes.channel.id);
     const serums = createVerifiedLiveSkincareSerums();
+    const repairs = await this.repairCorruptObjectCategories();
     const published: Array<{ id: string; slug: string; campaignId: string; probeStatus: string }> = [];
 
     try {
-      for (const deal of serums) {
+      for (let idx = 0; idx < serums.length; idx++) {
+        const deal = serums[idx];
+        if (idx > 0) {
+          await new Promise(resolve => setTimeout(resolve, 400));
+        }
         const probe = await selector.probeMerchantProduct(deal.productUrl);
-        if (probe.status === 'DEAD_OR_OUT_OF_STOCK' || (probe.probed && probe.available === false)) {
+        if (probe.status === 'DEAD_OR_OUT_OF_STOCK' || (probe.probed && probe.available === false && Number(probe.httpStatus || 0) === 404)) {
           throw new Error(`MERCHANT_UNAVAILABLE for ${deal.id}: ${probe.error || probe.status}`);
         }
         if (probe.probed && probe.available === true && probe.priceINR && probe.priceINR > 0) {
@@ -6404,7 +6409,6 @@ export class AutonomousDealDiscoveryEngine {
       this.clearRelationshipCache();
     }
 
-    const repairs = await this.repairCorruptObjectCategories();
     return { publishedCount: published.length, deals: published, repairs };
   }
 
