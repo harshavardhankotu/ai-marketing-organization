@@ -882,15 +882,24 @@ export class PartnerRegistryEngine {
     };
   }
 
+  private lastD1SyncAtMs = 0;
+
   /**
    * Syncs partners and partner_offers from durable Cloudflare D1 into local SQLite mirror.
    */
-  public async syncFromD1Async(): Promise<void> {
-    if (!isProduction()) return;
+  public async syncFromD1Async(options?: { force?: boolean }): Promise<void> {
+    if (!this.d1Repo.isRemoteD1ReadAllowed()) return;
+    const TTL_MS = 10 * 60 * 1000;
+    if (!options?.force && this.lastD1SyncAtMs > 0 && (Date.now() - this.lastD1SyncAtMs) < TTL_MS) {
+      return;
+    }
     try {
       const db = getDb();
       // 1. Sync partners
-      const partners = await this.d1Repo.query<any>('partners', 'SELECT * FROM partners');
+      const partners = await this.d1Repo.query<any>(
+        'partners',
+        'SELECT * FROM partners ORDER BY updated_at DESC LIMIT 100'
+      );
       if (partners.length > 0) {
         const stmtP = db.prepare(`
           INSERT INTO partners (
@@ -921,7 +930,10 @@ export class PartnerRegistryEngine {
       }
 
       // 2. Sync partner_offers
-      const offers = await this.d1Repo.query<any>('partner_offers', 'SELECT * FROM partner_offers');
+      const offers = await this.d1Repo.query<any>(
+        'partner_offers',
+        'SELECT * FROM partner_offers ORDER BY updated_at DESC LIMIT 200'
+      );
       if (offers.length > 0) {
         const stmtO = db.prepare(`
           INSERT INTO partner_offers (
@@ -954,6 +966,7 @@ export class PartnerRegistryEngine {
           } catch {}
         }
       }
+      this.lastD1SyncAtMs = Date.now();
     } catch (err: any) {
       console.warn(`[PartnerRegistryEngine] syncFromD1Async error: ${err.message}`);
     }

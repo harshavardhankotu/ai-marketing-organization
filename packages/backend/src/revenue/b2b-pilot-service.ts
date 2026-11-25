@@ -75,10 +75,15 @@ export const B2B_PILOT_PACKAGE_ID = 'WEBSITE_ENQUIRY_CONVERSION_SETUP' as const;
 export const B2B_PILOT_OFFER_ID = 'B2B_WEBSITE_ENQUIRY_SETUP' as const;
 export const B2B_PILOT_PACKAGE_NAME = 'Website & Admissions Enquiry Conversion Setup' as const;
 
+const B2B_SCAN_CACHE_TTL_MS = 10 * 60 * 1000;
+const B2B_MAX_CONCURRENT_SCANS = 3;
+
 export class B2BPilotService {
   private static instance: B2BPilotService;
   private scanner = new SiteAuditScanner();
   private d1Repo = D1RevenueRepository.getInstance();
+  private scanCache = new Map<string, { scanResult: any; expiresAt: number }>();
+  private inFlightScans = 0;
 
   public static getInstance(): B2BPilotService {
     if (!B2BPilotService.instance) {
@@ -101,6 +106,9 @@ export class B2BPilotService {
     options?: { scanner?: SiteAuditScanner }
   ): Promise<B2BPilotProposalResult> {
     const rawUrl = String(req.targetUrl || '').trim();
+    if (rawUrl.length > 500) {
+      throw new Error('INVALID_URL: Target URL exceeds maximum length of 500 characters.');
+    }
     let parsedUrl: URL;
     try {
       parsedUrl = new URL(rawUrl);
@@ -111,25 +119,53 @@ export class B2BPilotService {
       throw new Error(`INVALID_URL: Target URL must begin with http:// or https://: received '${rawUrl}'`);
     }
 
-    const businessName = String(req.businessName || 'Business Owner').trim() || 'Business Owner';
+    const businessName = (String(req.businessName || 'Business Owner').trim() || 'Business Owner').slice(0, 120);
     const contactEmail = req.contactEmail && String(req.contactEmail).includes('@')
-      ? String(req.contactEmail).trim().toLowerCase()
+      ? String(req.contactEmail).trim().toLowerCase().slice(0, 120)
       : null;
     const nowIso = new Date().toISOString();
     const proposalId = `b2b_${Date.now().toString(36)}_${randomUUID().replace(/-/g, '').slice(0, 8)}`;
 
-    // 1. Run deterministic live HTML & technical scan — FAIL CLOSED on any error
-    const activeScanner = options?.scanner || this.scanner;
+    // 1. Run deterministic live HTML & technical scan with short per-domain TTL cache & concurrency cap
+    const cacheKey = `${parsedUrl.hostname.toLowerCase()}${parsedUrl.pathname}`;
+    const cached = !options?.scanner ? this.scanCache.get(cacheKey) : undefined;
     let scanResult: any;
-    try {
-      scanResult = await activeScanner.scanUrl({
-        url: rawUrl,
-        businessCategory: 'EDUCATION_OR_LOCAL_SERVICE',
-        businessName,
-        includeRawHtml: true
-      });
-    } catch (scanErr: any) {
-      throw new Error(`SCAN_FAILED: Live website scan failed for '${rawUrl}': ${scanErr?.message || String(scanErr)}`);
+    if (cached && cached.expiresAt > Date.now()) {
+      scanResult = cached.scanResult;
+    } else {
+      if (this.inFlightScans >= B2B_MAX_CONCURRENT_SCANS) {
+        throw new Error('SCAN_CAPACITY_EXCEEDED: Live website scan concurrency limit reached. Please retry shortly.');
+      }
+      const activeScanner = options?.scanner || this.scanner;
+      this.inFlightScans++;
+      try {
+        scanResult = await activeScanner.scanUrl({
+          url: rawUrl,
+          businessCategory: 'EDUCATION_OR_LOCAL_SERVICE',
+          businessName,
+          includeRawHtml: true
+        });
+      } catch (scanErr: any) {
+        throw new Error(`SCAN_FAILED: Live website scan failed for '${rawUrl}': ${scanErr?.message || String(scanErr)}`);
+      } finally {
+        this.inFlightScans = Math.max(0, this.inFlightScans - 1);
+      }
+
+      if (!scanResult || !Array.isArray(scanResult.findings)) {
+        throw new Error(`SCAN_FAILED: Live website scan returned no valid audit payload for '${rawUrl}'.`);
+      }
+
+      const httpStatus = Number(scanResult.metrics?.httpStatus ?? 200);
+      if (Number.isFinite(httpStatus) && httpStatus >= 400) {
+        throw new Error(`SCAN_FAILED: Target URL '${rawUrl}' responded with HTTP ${httpStatus}.`);
+      }
+
+      if (!options?.scanner) {
+        this.scanCache.set(cacheKey, {
+          scanResult,
+          expiresAt: Date.now() + B2B_SCAN_CACHE_TTL_MS
+        });
+      }
     }
 
     if (!scanResult || !Array.isArray(scanResult.findings)) {
@@ -673,12 +709,16 @@ export class B2BPilotService {
     const badgeClass = (st: B2BAuditFindingStatus) =>
       st === 'VERIFIED_MISSING' ? 'badge-missing' : st === 'VERIFIED_PRESENT' ? 'badge-ok' : 'badge-unchecked';
 
+    const siteUrl = getTrustedPublicSiteUrl().replace(/\/+$/, '');
+    const canonicalUrl = `${siteUrl}/b2b/pilot-proposal?url=${encodeURIComponent(proposal.targetUrl)}`;
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Audit &amp; Pilot Proposal — ${this.escapeHtml(proposal.businessName)}</title>
+  <meta name="description" content="Before-action website enquiry path audit and Founding Pilot proposal for ${this.escapeHtml(proposal.businessName)}.">
+  <link rel="canonical" href="${this.escapeHtml(canonicalUrl)}">
   <style>
     :root { color-scheme: light dark; --bg: #090d16; --card: #111827; --text: #f1f5f9; --text-muted: #94a3b8; --border: #1e293b; --accent: #06b6d4; --success: #10b981; --warning: #f59e0b; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 2rem 1.5rem; line-height: 1.6; }
@@ -796,6 +836,8 @@ export class B2BPilotService {
     }
 
     const amountFormatted = proposal.approvedPriceINR!.toLocaleString('en-IN');
+    const siteUrl = getTrustedPublicSiteUrl().replace(/\/+$/, '');
+    const checkoutCanonical = `${siteUrl}/b2b/checkout/${encodeURIComponent(proposal.proposalId)}`;
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -803,6 +845,8 @@ export class B2BPilotService {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="robots" content="noindex, nofollow">
   <title>B2B Implementation Checkout — ${this.escapeHtml(proposal.businessName)}</title>
+  <meta name="description" content="Owner-approved B2B implementation checkout for ${this.escapeHtml(proposal.businessName)} via Razorpay.">
+  <link rel="canonical" href="${this.escapeHtml(checkoutCanonical)}">
   <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
   <style>
     :root { color-scheme: dark; --bg: #090d16; --card: #111827; --border: #1e293b; --text: #f8fafc; --muted: #94a3b8; --accent: #06b6d4; }

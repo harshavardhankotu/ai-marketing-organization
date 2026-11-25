@@ -288,16 +288,16 @@ describe('V5.8.4 — Revenue Path Closure, Razorpay Webhook Hardening & Truthful
     });
   });
 
-  describe('5. Priority 5: SiteFix Launch Gate Homepage Compliance', () => {
-    it('renders SiteFix Launch Gate framing with verification tags and zero clinical/medical claims', async () => {
+  describe('5. Priority 5: Coherent Homepage Compliance', () => {
+    it('renders B2B Website Enquiry Path Repair framing with verification tags and zero clinical/medical claims', async () => {
       const offerPage = DirectCommercialOfferPage.getInstance();
       const html = offerPage.renderHomepageHtml({
         cuelinksVerificationCode: 'VERIFY-CL-YE94W8YS',
         googleSiteVerification: 'WVPs1hLZgUqJL5yO9jwF2pWwsekPcMtTOLLeWILGU9I'
       });
 
-      expect(html).toContain('SiteFix Launch Gate');
-      expect(html).toContain('Deterministic Pre-Deployment Website QA');
+      expect(html).toContain('Website Enquiry Path Repair for Training Institutes');
+      expect(html).toContain('Founding Pilot');
       expect(html).toContain('content="WVPs1hLZgUqJL5yO9jwF2pWwsekPcMtTOLLeWILGU9I"');
       expect(html).toContain('content="VERIFY-CL-YE94W8YS"');
 

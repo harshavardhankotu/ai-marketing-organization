@@ -25,6 +25,7 @@ export class GrowthExperimentTracker {
   public static readonly MIN_STATISTICAL_OBSERVATIONS: number = 30;
   private d1Repo = D1RevenueRepository.getInstance();
   private experimentsMap: Map<string, GrowthExperimentRecord> = new Map();
+  private lastHydratedAtMs = 0;
 
   private constructor() {
     this.seedBaselineExperiments();
@@ -560,16 +561,27 @@ export class GrowthExperimentTracker {
 
   /**
    * Hydrates growth experiments from durable workflows table (workflow_type = 'GROWTH_EXPERIMENT').
-   * Restores hypotheses, tested configurations, multi-cycle observations, cumulative metrics, and automated decisions.
+   * Uses bounded primary-key prefix scan + 10m TTL to avoid full-table scans on workflows.
    */
-  public async hydrateFromDb(organizationId: string = 'org_owner_primary'): Promise<number> {
+  public async hydrateFromDb(organizationId: string = 'org_owner_primary', options?: { force?: boolean }): Promise<number> {
+    const TTL_MS = 10 * 60 * 1000;
+    if (!options?.force && !process.env.VITEST && this.lastHydratedAtMs > 0 && (Date.now() - this.lastHydratedAtMs) < TTL_MS) {
+      return this.experimentsMap.size;
+    }
     try {
       const sql = `
         SELECT id, organization_id, business_id, campaign_id, status, current_step, inputs_json, outputs_json, created_at, updated_at
         FROM workflows
-        WHERE workflow_type = 'GROWTH_EXPERIMENT'
+        WHERE id >= 'wf_gexp_'
+          AND id < 'wf_gexp\`'
+          AND workflow_type = 'GROWTH_EXPERIMENT'
+        ORDER BY updated_at DESC
+        LIMIT 100
       `;
-      const { results } = await this.d1Repo.executeRead('workflows', sql, []);
+      const results = this.d1Repo.isRemoteD1ReadAllowed()
+        ? (await this.d1Repo.executeRead('workflows', sql, []))?.results || []
+        : (getDb().prepare(sql).all() as any[]);
+      this.lastHydratedAtMs = Date.now();
       if (!Array.isArray(results) || results.length === 0) {
         return 0;
       }

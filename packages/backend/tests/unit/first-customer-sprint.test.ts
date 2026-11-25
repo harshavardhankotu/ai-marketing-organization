@@ -212,9 +212,9 @@ describe('First Real Customer Sprint — Commercial Feasibility & Measurement In
       const html = await res.text();
 
       expect(html).toContain('Configuration Pending Owner Attestation');
-      expect(html).toContain('SiteFix Launch Gate');
-      expect(html).toContain('Technical Scope (Non-Payable Overview)');
-      expect(html).toContain('/tools/site-audit');
+      expect(html).toContain('Website Enquiry Path Repair');
+      expect(html).toContain('Pilot Scope &amp; Verification Policy');
+      expect(html).toContain('/demo');
       expect(html).toContain('/api/v1/referrals/beacon');
       expect(html).not.toContain('upi://pay');
       expect(html).not.toContain('₹15,000');

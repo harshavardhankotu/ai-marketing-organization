@@ -5,11 +5,11 @@
     "agentapi",
     "new-conversation",
     "--",
-    "Perform daily read-only audit: Call GET /owner/status on the marketing organization engine using the $env:OWNER_API_KEY environment variable, extract the current open actions list, and write it to stdout. Do not make code edits. Do not trigger deployments. Do not call paid LLM APIs."
+    "Perform daily read-only audit: Call GET /api/v1/owner/status and GET /api/v1/owner/today on https://ai-marketing-organization.onrender.com using curl.exe -m 30 with header x-owner-key from $env:OWNER_API_KEY (never echo or print the key). Summarize open actions and system readiness to stdout. Do not make code edits. Do not trigger deployments. Do not call paid LLM APIs."
   ],
   "restart_policy": "always",
   "display_name": "Daily Owner Status & Open Actions Audit",
-  "description": "Every day at 9:00 AM (Asia/Kolkata), performs a read-only audit of /owner/status and writes the open actions list with zero code edits, zero deploys, and zero LLM tokens.",
+  "description": "Every day at 9:00 AM (Asia/Kolkata), performs a read-only audit of /api/v1/owner/status and /api/v1/owner/today using curl.exe -m 30 with zero code edits, zero deploys, and zero LLM tokens.",
   "agent_permissions": {
     "access_grants": [
       "command(curl.exe)"

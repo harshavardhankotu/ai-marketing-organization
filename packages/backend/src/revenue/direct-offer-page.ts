@@ -289,13 +289,13 @@ export class DirectCommercialOfferPage {
   }
 
   /**
-   * Public server-rendered homepage (GET /) positioning SiteFix Launch Gate (Pre-Deployment Website QA:
-   * Web Scanner, npx CLI, GitHub Action, Isolated Public MCP) alongside Verified Consumer Deals
-   * & Universal Fair-Price Checker. Zero legacy healthcare/dental clinic demo copy.
+   * Public server-rendered homepage (GET /) positioned cleanly around Website Enquiry Path Repair
+   * for Training Institutes (Founding Pilot ₹1,999, Hyderabad founder-led execution, /demo CTA,
+   * clean 390x844 mobile-first layout, OG + Schema.org JSON-LD, and statutory legal links).
    */
   public renderHomepageHtml(config: Partial<OfferPageConfig> = {}): string {
-    const siteName = config.siteName || (process.env.PUBLIC_SITE_NAME || 'SiteFix AI').trim();
-    const siteUrl = config.siteUrl || (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').trim();
+    const siteName = config.siteName || (process.env.PUBLIC_SITE_NAME || 'AI Marketing Organization').trim();
+    const siteUrl = (config.siteUrl || (process.env.PUBLIC_SITE_URL || 'https://ai-marketing-organization.onrender.com').trim()).replace(/\/+$/, '');
     const contactEmail = config.contactEmail || (process.env.PUBLIC_CONTACT_EMAIL ? process.env.PUBLIC_CONTACT_EMAIL.trim() : null);
     const {
       cuelinksVerificationCode: cuelinksCode = '',
@@ -306,424 +306,356 @@ export class DirectCommercialOfferPage {
       googleCode ? `  <meta name="google-site-verification" content="${escapeMetaAttr(googleCode)}" />` : ''
     ].filter(Boolean).join('\n');
 
+    const pageTitle = `Website Enquiry Path Repair for Training Institutes | ${escapeHtmlText(siteName)}`;
+    const pageDesc = 'Founder-led Website Enquiry Path Repair for coaching and training institutes in Hyderabad and India. Fix broken mobile enquiry forms, add WhatsApp click-to-chat, and set up structured lead tracking. Founding Pilot ₹1,999.';
+    const jsonLd = JSON.stringify({
+      '@context': 'https://schema.org',
+      '@type': 'ProfessionalService',
+      name: siteName,
+      url: `${siteUrl}/`,
+      description: pageDesc,
+      areaServed: {
+        '@type': 'City',
+        name: 'Hyderabad'
+      },
+      ...(contactEmail ? { email: contactEmail } : {}),
+      offers: {
+        '@type': 'Offer',
+        name: 'Founding Pilot — Website Enquiry Path Repair for Training Institutes',
+        price: '1999',
+        priceCurrency: 'INR',
+        url: `${siteUrl}/offer`
+      }
+    }).replace(/</g, '\\u003c');
+
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SiteFix Launch Gate — Pre-Deployment Website QA &amp; Verified Deals | ${escapeHtmlText(siteName)}</title>
-  <meta name="description" content="Deterministic pre-deployment website QA for developers and founders. Inspect HTML metadata, Open Graph, Schema.org JSON-LD, robots.txt, and sitemap.xml via Web UI, npx CLI, GitHub Action, or Public MCP.">
+  <title>${pageTitle}</title>
+  <meta name="description" content="${escapeMetaAttr(pageDesc)}">
   <link rel="canonical" href="${escapeMetaAttr(siteUrl)}/">
-  <link rel="alternate" type="application/rss+xml" title="Verified Commercial Deals RSS Feed" href="/feeds/deals.xml">
   <meta name="robots" content="index, follow">
-${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <style>
+  <meta property="og:title" content="${escapeMetaAttr(pageTitle)}">
+  <meta property="og:description" content="${escapeMetaAttr(pageDesc)}">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="${escapeMetaAttr(siteUrl)}/">
+  <meta property="og:site_name" content="${escapeMetaAttr(siteName)}">
+${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <script type="application/ld+json">${jsonLd}</script>
+  <style>
     :root {
       color-scheme: dark;
-      --bg: #090d16;
+      --bg: #070b14;
+      --surface: #0f172a;
       --card-bg: #111827;
       --card-border: #1e293b;
       --text-main: #f8fafc;
       --text-muted: #94a3b8;
       --accent: #06b6d4;
       --accent-hover: #22d3ee;
-      --warning: #f59e0b;
       --success: #10b981;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
       background: var(--bg);
       color: var(--text-main);
       line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
     }
     nav.top-nav {
-      background: #0b1120;
+      background: rgba(11, 17, 32, 0.94);
       border-bottom: 1px solid var(--card-border);
-      padding: 1rem 1.5rem;
+      padding: 0.75rem 1rem;
       display: flex;
       justify-content: space-between;
       align-items: center;
-      flex-wrap: wrap;
-      gap: 1rem;
+      gap: 0.75rem;
+      position: sticky;
+      top: 0;
+      z-index: 40;
+      backdrop-filter: blur(8px);
     }
-    .brand { font-weight: 800; font-size: 1.15rem; color: #fff; text-decoration: none; }
-    .nav-links { display: flex; gap: 1.25rem; align-items: center; flex-wrap: wrap; }
-    .nav-links a { color: var(--text-muted); text-decoration: none; font-size: 0.9rem; font-weight: 500; }
+    .brand { font-weight: 800; font-size: 0.98rem; color: #fff; text-decoration: none; white-space: nowrap; }
+    .nav-links { display: flex; gap: 0.9rem; align-items: center; flex-wrap: nowrap; overflow-x: auto; }
+    .nav-links a { color: var(--text-muted); text-decoration: none; font-size: 0.85rem; font-weight: 600; white-space: nowrap; }
     .nav-links a:hover, .nav-links a.active { color: var(--accent); }
-    .container { max-width: 980px; margin: 0 auto; padding: 2.5rem 1.25rem; }
-    .hero { text-align: center; margin-bottom: 3rem; }
+    .container { max-width: 960px; margin: 0 auto; padding: 2rem 1rem 2.5rem; }
+    .hero { text-align: left; padding: 1.5rem 0 2rem; }
     .status-badge {
       display: inline-block;
       background: rgba(6, 182, 212, 0.12);
       color: #38bdf8;
-      border: 1px solid rgba(6, 182, 212, 0.3);
-      padding: 0.35rem 0.9rem;
+      border: 1px solid rgba(6, 182, 212, 0.35);
+      padding: 0.3rem 0.75rem;
       border-radius: 999px;
-      font-size: 0.82rem;
+      font-size: 0.75rem;
       font-weight: 700;
-      letter-spacing: 0.05em;
-      margin-bottom: 1.25rem;
+      letter-spacing: 0.04em;
+      margin-bottom: 1rem;
       text-transform: uppercase;
     }
     h1 {
-      font-size: 2.45rem;
+      font-size: clamp(1.75rem, 4.5vw, 2.6rem);
       font-weight: 800;
       color: #ffffff;
-      line-height: 1.2;
-      margin-bottom: 1rem;
+      line-height: 1.18;
+      margin-bottom: 0.9rem;
+      letter-spacing: -0.02em;
     }
     p.subtitle {
-      font-size: 1.1rem;
-      color: var(--text-muted);
-      max-width: 760px;
-      margin: 0 auto 1.75rem auto;
+      font-size: 1rem;
+      color: #cbd5e1;
+      max-width: 680px;
+      margin-bottom: 1.4rem;
     }
-    .cta-group { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
+    .cta-group { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center; }
     .btn {
-      display: inline-block;
-      padding: 0.75rem 1.4rem;
-      border-radius: 8px;
-      font-weight: 600;
-      font-size: 0.95rem;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0.78rem 1.25rem;
+      border-radius: 10px;
+      font-weight: 700;
+      font-size: 0.92rem;
       text-decoration: none;
       cursor: pointer;
       border: none;
     }
-    .btn-primary { background: var(--accent); color: #090d16; }
+    .btn-primary { background: var(--accent); color: #04101d; }
     .btn-primary:hover { background: var(--accent-hover); }
-    .btn-secondary { background: #1e293b; color: #fff; border: 1px solid var(--card-border); }
+    .btn-secondary { background: #1e293b; color: #f8fafc; border: 1px solid #334155; }
+    .btn-secondary:hover { border-color: var(--accent); }
     .card {
       background: var(--card-bg);
       border: 1px solid var(--card-border);
       border-radius: 14px;
-      padding: 2rem;
-      margin-bottom: 2rem;
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
     }
-    .card h2 { font-size: 1.35rem; color: #fff; margin-bottom: 1rem; }
-    .grid-3 {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-      gap: 1.25rem;
-    }
+    .card h2 { font-size: 1.25rem; color: #fff; margin-bottom: 0.75rem; }
     .grid-2 {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-      gap: 1.5rem;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 1rem;
     }
     .feature-item {
       background: #0b1120;
       border: 1px solid var(--card-border);
       border-radius: 10px;
-      padding: 1.25rem;
+      padding: 1.1rem;
     }
-    .feature-item h3 { font-size: 1.05rem; color: #fff; margin-bottom: 0.5rem; }
-    .feature-item p { font-size: 0.9rem; color: #cbd5e1; line-height: 1.5; }
-    .code-box {
-      background: #020617;
-      border: 1px solid #1e293b;
-      border-radius: 8px;
-      padding: 0.75rem 0.9rem;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-      font-size: 0.82rem;
-      color: #38bdf8;
-      overflow-x: auto;
-      margin-top: 0.75rem;
-    }
-    .sample-badge {
-      background: rgba(6, 182, 212, 0.15);
-      color: #38bdf8;
-      border: 1px solid rgba(6, 182, 212, 0.3);
-      padding: 0.25rem 0.6rem;
-      border-radius: 6px;
-      font-size: 0.78rem;
+    .feature-item h3 { font-size: 0.98rem; color: #f8fafc; margin-bottom: 0.35rem; }
+    .feature-item p { font-size: 0.87rem; color: #cbd5e1; line-height: 1.5; }
+    .price-pill {
+      display: inline-block;
+      background: rgba(16, 185, 129, 0.14);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.35);
+      padding: 0.25rem 0.65rem;
+      border-radius: 999px;
+      font-size: 0.76rem;
       font-weight: 700;
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
+    }
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 0.85rem;
+    }
+    label { display: block; font-size: 0.8rem; color: #cbd5e1; margin-bottom: 0.3rem; font-weight: 600; }
+    input[type="text"], input[type="tel"], input[type="email"], textarea {
+      width: 100%;
+      background: #090d16;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 0.62rem 0.75rem;
+      color: #fff;
+      font-size: 0.88rem;
     }
     footer {
       background: #0b1120;
       border-top: 1px solid var(--card-border);
-      padding: 2.5rem 1.5rem;
+      padding: 2rem 1rem 5.5rem;
       text-align: center;
       color: var(--text-muted);
-      font-size: 0.85rem;
+      font-size: 0.84rem;
     }
     footer a { color: var(--accent); text-decoration: none; }
+    @media (max-width: 480px) {
+      nav.top-nav { padding: 0.65rem 0.85rem; }
+      .brand { font-size: 0.9rem; }
+      .nav-links { gap: 0.7rem; }
+      .nav-links a { font-size: 0.8rem; }
+      .cta-group .btn { width: 100%; }
+    }
   </style>
 </head>
 <body>
-  <nav class="top-nav">
+  <nav class="top-nav" aria-label="Primary Navigation">
     <a href="/" class="brand">${escapeHtmlText(siteName)}</a>
     <div class="nav-links">
-      <a href="/" class="active">SiteFix Launch Gate</a>
-      <a href="/tools/site-audit">Free Website Audit</a>
-      <a href="/offer">Commercial Spec</a>
-      <a href="/revenue">Revenue Funnel</a>
-      <a href="/deals">Verified Deals</a>
-      <a href="/guides/student-flight-discounts-india">Travel Guides</a>
+      <a href="/" class="active">Home</a>
+      <a href="/demo">Live Demo</a>
+      <a href="/offer">Founding Pilot</a>
+      <a href="/contact">Contact</a>
     </div>
   </nav>
 
-  <div class="container">
+  <main class="container">
     <header class="hero">
-      <div class="status-badge">SiteFix Launch Gate • Deterministic Pre-Deployment Website QA</div>
-      <h1>Catch Broken Metadata, Schema &amp; Crawl Defects Before You Ship</h1>
+      <div class="status-badge">Hyderabad &bull; Founder-Led B2B Service</div>
+      <h1>Website Enquiry Path Repair for Training Institutes</h1>
       <p class="subtitle">
-        Run a deterministic technical launch check on any public URL via Web UI, zero-install <code>npx</code> CLI, GitHub Action, or Public MCP. Upgrade to the copy-paste Fix-Pack + included verification recheck only when defects are found.
+        Stop losing mobile student admissions enquiries to broken forms, slow phone-only contact pages, and missed WhatsApp follow-ups. See a live working repair flow before you commit.
       </p>
       <div class="cta-group">
-        <a href="/tools/site-audit" class="btn btn-primary">Run Free Website Audit &rarr;</a>
-        <a href="#launch-interfaces" class="btn btn-secondary">CLI, GitHub Action &amp; MCP</a>
+        <a href="/demo" class="btn btn-primary">Try Live Interactive Demo &rarr;</a>
+        <a href="#founding-pilot" class="btn btn-secondary">Founding Pilot &bull; ₹1,999</a>
+        <a href="#pilot-enquiry" class="btn btn-secondary">Request Pilot Setup</a>
       </div>
     </header>
 
-    <!-- Section 1: Three Free Pull Interfaces -->
-    <div class="card" id="launch-interfaces" style="border-color: #06b6d4; background: linear-gradient(180deg, #111827 0%, #0b1120 100%);">
-      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem;">
-        <h2 style="margin: 0;">SiteFix Launch Gate — 3 Developer Pull Interfaces</h2>
-        <span class="sample-badge">Canonical SKU: SITEFIX_AI_PACK_V1</span>
-      </div>
-      <p style="color: #cbd5e1; font-size: 0.95rem; margin-bottom: 1.25rem;">
-        Every interface runs the same SSRF-protected deterministic engine checking HTML <code>&lt;head&gt;</code> metadata, Open Graph social cards, <code>Schema.org</code> JSON-LD syntax and fields, <code>robots.txt</code>, <code>sitemap.xml</code>, and security headers — with zero ranking guarantees and zero guesswork.
+    <section class="card" aria-labelledby="scope-heading">
+      <h2 id="scope-heading">Transparent Done-For-You Scope</h2>
+      <p style="color: #94a3b8; font-size: 0.9rem; margin-bottom: 1rem;">
+        Built for coaching centers and skill academies whose mobile visitors bounce before submitting a course enquiry.
       </p>
-      <div class="grid-3">
+      <div class="grid-2">
         <div class="feature-item">
-          <h3 style="color: #38bdf8;">1. Zero-Install CLI</h3>
-          <p>Audit any staging or production URL from your terminal or CI pipeline and optionally fail builds on critical launch defects.</p>
-          <div class="code-box">npx sitefix-check https://your-site.com --confirm-authorized --fail-on-critical</div>
+          <h3>1. Mobile-First Enquiry Form (390&times;844)</h3>
+          <p>Fix overflowing mobile layouts and broken submission flows so prospective students can enquire in under 30 seconds from any phone.</p>
         </div>
         <div class="feature-item">
-          <h3 style="color: #34d399;">2. Free GitHub Action</h3>
-          <p>Drop SiteFix Launch Gate into pull requests or deploy workflows to publish Markdown pass/fail evidence tables in <code>$GITHUB_STEP_SUMMARY</code>.</p>
-          <div class="code-box">uses: harshavardhankotu/ai-marketing-organization@main</div>
+          <h3>2. Direct WhatsApp Click-to-Chat</h3>
+          <p>Pre-filled <code>wa.me</code> course enquiry button routed straight to your official institute WhatsApp number with zero recurring software fees.</p>
         </div>
         <div class="feature-item">
-          <h3 style="color: #a78bfa;">3. Isolated Public MCP</h3>
-          <p>Connect coding agents (Claude Code, Cursor, Codex) to the strictly isolated public Streamable HTTP MCP server exposing 3 safe SiteFix tools.</p>
-          <div class="code-box">POST ${escapeHtmlText(siteUrl)}/api/v1/public/mcp</div>
+          <h3>3. Structured Lead Tracker</h3>
+          <p>Every enquiry lands in a clean tracker (<code>New &rarr; Contacted &rarr; Demo Scheduled &rarr; Enrolled</code>) with instant email notification.</p>
+        </div>
+        <div class="feature-item">
+          <h3>4. Clean SEO &amp; Schema Metadata</h3>
+          <p>Verified <code>&lt;title&gt;</code>, meta description, canonical URL, Open Graph preview, and <code>EducationalOrganization</code> JSON-LD.</p>
         </div>
       </div>
-      <div style="display: flex; gap: 0.85rem; flex-wrap: wrap; margin-top: 1.35rem;">
-        <a href="/tools/site-audit" class="btn btn-primary" style="font-size: 0.9rem;">Open Web Scanner &rarr;</a>
-        <a href="/.well-known/mcp.json" class="btn btn-secondary" style="font-size: 0.85rem;">View /.well-known/mcp.json</a>
-        <a href="/audit/attagalatta.com" class="btn btn-secondary" style="font-size: 0.85rem;">Sample Audit: attagalatta.com</a>
-        <a href="/audit/roasterycoffee.co.in" class="btn btn-secondary" style="font-size: 0.85rem;">Sample Audit: roasterycoffee.co.in</a>
-      </div>
-    </div>
+    </section>
 
-    <!-- Section 2: Commercial Deals & Buyer Guides (Consumer Shopper Journey) -->
-    <div class="card" id="consumer-deals" style="border-color: #334155; background: #0b1120;">
-      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem;">
-        <h2 style="font-size: 1.3rem; color: #fff; margin: 0;">Commercial Consumer Deals &amp; Buying Guides — Observed Merchant Price Snapshots (#Ad)</h2>
-        <span class="sample-badge">#Ad — Affiliate Links</span>
+    <section class="card" id="founding-pilot" style="border-color: rgba(6, 182, 212, 0.45); background: linear-gradient(180deg, #111827 0%, #0b1120 100%);">
+      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.6rem; margin-bottom: 0.85rem;">
+        <h2 style="margin: 0;">Founding Pilot &mdash; ₹1,999 Total</h2>
+        <span class="price-pill">₹999 Advance + ₹1,000 After Live Handover</span>
       </div>
-      <p style="color: #94a3b8; font-size: 0.9rem; margin-bottom: 1.25rem;">
-        Listed prices and reference MRPs are merchant-reported snapshots observed at a specific timestamp, may change at any time, and must be confirmed directly on the official merchant checkout page:
+      <p style="color: #cbd5e1; font-size: 0.93rem; margin-bottom: 1rem;">
+        Honest milestone billing: pay <strong>₹999</strong> advance to kick off implementation, inspect your live working mobile enquiry path, and pay the remaining <strong>₹1,000</strong> only after live handover. Includes a <strong>7-day post-handover bug-fix window</strong>.
       </p>
-      <div style="display: flex; gap: 0.85rem; flex-wrap: wrap; margin-bottom: 1.25rem;">
-        <a href="/deals" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.05rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.86rem; font-weight: 600;">
-          Indian Commercial Deals Directory &rarr;
-        </a>
-        <a href="/best/skincare-and-grooming-under-2000" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.05rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.86rem; font-weight: 600;">
-          Skincare &amp; Grooming Under ₹2,000 &rarr;
-        </a>
-        <a href="/best/daily-personal-care-and-grooming-under-500" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.05rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.86rem; font-weight: 600;">
-          Personal Care Under ₹500 &rarr;
-        </a>
-        <a href="/best/grooming-and-perfume-bundles-under-1000" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.05rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.86rem; font-weight: 600;">
-          Grooming &amp; Perfume Bundles Under ₹1,000 &rarr;
-        </a>
-        <a href="/best/top-price-drops-today-india" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.05rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.86rem; font-weight: 600;">
-          Top Price Drops Today (India) &rarr;
-        </a>
-        <a href="/compare/electronics-technology" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.05rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.86rem; font-weight: 600;">
-          Electronics &amp; Tech Buying Guide &rarr;
-        </a>
-        <a href="/guides/best-wireless-audio-smartwatches-india" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.05rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.86rem; font-weight: 600;">
-          Audio &amp; Smartwatch Guide &rarr;
-        </a>
-        <a href="/guides/student-flight-discounts-india" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.05rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.86rem; font-weight: 600;">
-          Student Flight Discounts &rarr;
-        </a>
-        <a href="/revenue" style="background: #111827; border: 1px solid #1e293b; padding: 0.7rem 1.05rem; border-radius: 8px; color: #38bdf8; text-decoration: none; font-size: 0.86rem; font-weight: 600;">
-          Public Revenue Funnel &rarr;
-        </a>
+      <ul style="color: #94a3b8; font-size: 0.86rem; padding-left: 1.2rem; margin-bottom: 1.15rem; display: grid; gap: 0.35rem;">
+        <li>Founder-operated in Hyderabad — direct 1:1 execution without agency hand-offs.</li>
+        <li>No fabricated testimonials, no fake client logos, and no guaranteed admission counts.</li>
+        <li>Test the exact deliverables yourself right now on the interactive <a href="/demo" style="color: #38bdf8; font-weight: 600;">/demo page</a>.</li>
+      </ul>
+      <div class="cta-group">
+        <a href="/demo" class="btn btn-primary">Explore Interactive /demo &rarr;</a>
+        <a href="/offer" class="btn btn-secondary">View Full Founding Pilot Details</a>
       </div>
+    </section>
 
-      <!-- Universal Fair-Price Checker & On-Demand Link Monetizer -->
-      <div id="fair-price-widget-home" style="background: #111827; border: 1px solid #1e293b; border-radius: 12px; padding: 1.25rem; margin-bottom: 1.25rem;">
-        <div style="display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.5rem;">
-          <h3 style="margin: 0; font-size: 1.05rem; color: #f8fafc;">Universal Fair-Price Checker &amp; Link Monetizer</h3>
-          <span style="font-size: 0.75rem; color: #94a3b8;">Observed MRP · Coupon Stacking · Amazon.in &amp; Cuelinks</span>
-        </div>
-        <p style="font-size: 0.84rem; color: #94a3b8; margin-bottom: 0.9rem;">
-          Paste any Indian product URL (Amazon.in, D2C store) or type what you want to buy (e.g. <em>best ANC earbuds under 2000</em>) to check true fair value before paying full MRP.
-        </p>
-        <form onsubmit="handleFairPriceHome(event)" style="display: flex; gap: 0.6rem; flex-wrap: wrap;">
-          <input type="text" id="fp-query-home" required placeholder="Paste https://amazon.in/dp/... or search e.g. wireless earbuds under 2000" style="flex: 1 1 260px; padding: 0.65rem 0.85rem; border-radius: 8px; border: 1px solid #334155; background: #090d16; color: #fff; font-size: 0.88rem;">
-          <button type="submit" id="fp-submit-home" class="btn btn-primary" style="padding: 0.65rem 1.15rem; font-size: 0.86rem;">Check Fair Price</button>
-        </form>
-        <div id="fp-result-home" style="display: none; margin-top: 1rem;"></div>
-      </div>
-      ${Array.isArray(config.featuredDeals) && config.featuredDeals.length > 0 ? (() => {
-        const dealCta = config.dealCtaAssignment || {
-          experimentId: 'exp_storefront_deal_cta',
-          variant: 'baseline' as const,
-          ctaText: 'Buy at Merchant →'
-        };
-        const activeFeatured = config.featuredDeals.filter((d: any) => d && d.catalogSlot !== 'ROTATED_OUT_STALE' && d.evidenceJson?.catalogSlot !== 'ROTATED_OUT_STALE').slice(0, 4);
-        if (activeFeatured.length === 0) return '';
-        return `
-      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.9rem; margin-bottom: 1.25rem;" id="featured-deals-grid">
-        ${activeFeatured.map((deal: any) => {
-          const slug = deal.slug || deal.canonicalSlug || deal.id;
-          const detailUrl = `/deals/${encodeURIComponent(String(slug))}`;
-          const outUrl = `${siteUrl}/api/v1/public/deals/${encodeURIComponent(String(deal.id))}/redirect?ab_exp=${encodeURIComponent(dealCta.experimentId)}&ab_variant=${encodeURIComponent(dealCta.variant)}`;
-          const amazonRailUrl = `${siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(deal.title || '').slice(0, 120))}&dealId=${encodeURIComponent(String(deal.id || ''))}`;
-          const priceLabel = Number(deal.currentPriceINR || 0) > 0
-            ? `₹${Number(deal.currentPriceINR).toLocaleString('en-IN')}`
-            : 'Verified Offer';
-          return `
-          <div style="background: #111827; border: 1px solid #1e293b; border-radius: 10px; padding: 1rem; display: flex; flex-direction: column; justify-content: space-between; gap: 0.75rem;">
-            <div>
-              <div style="font-size: 0.72rem; color: #38bdf8; font-weight: 700; text-transform: uppercase; margin-bottom: 0.35rem;">${escapeMetaAttr(String(deal.brand || deal.merchant || 'Verified'))} &bull; ${escapeMetaAttr(String(deal.category || 'Deals'))}</div>
-              <a href="${escapeMetaAttr(detailUrl)}" style="color: #fff; font-weight: 700; font-size: 0.92rem; text-decoration: none; display: block; margin-bottom: 0.45rem;">${escapeMetaAttr(String(deal.title || ''))}</a>
-              <div style="font-size: 1.1rem; font-weight: 800; color: #34d399;">${priceLabel}</div>
-            </div>
-            <div style="display: flex; flex-direction: column; gap: 0.4rem;">
-              <a href="${escapeMetaAttr(outUrl)}" target="_blank" rel="sponsored nofollow noopener" data-ab-experiment="${escapeMetaAttr(dealCta.experimentId)}" data-ab-variant="${escapeMetaAttr(dealCta.variant)}" style="display: inline-block; text-align: center; background: #06b6d4; color: #020617; font-weight: 700; font-size: 0.8rem; padding: 0.45rem 0.75rem; border-radius: 6px; text-decoration: none;">${escapeMetaAttr(dealCta.ctaText)}</a>
-              <a href="${escapeMetaAttr(amazonRailUrl)}" target="_blank" rel="sponsored nofollow noopener" style="display: inline-block; text-align: center; background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); color: #fcd34d; font-weight: 600; font-size: 0.73rem; padding: 0.38rem 0.6rem; border-radius: 6px; text-decoration: none;">Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)</a>
-            </div>
-          </div>`;
-        }).join('')}
-      </div>`;
-      })() : ''}
-      <p style="font-size: 0.78rem; color: #64748b; line-height: 1.4;">
-        #Ad — Qualifying purchases made through outgoing affiliate links may earn a referral commission at zero additional cost to you. Offer prices, stock availability, and terms reflect merchant-reported snapshots and are subject to change without notice.
+    <section class="card" id="pilot-enquiry" aria-labelledby="enquiry-heading">
+      <h2 id="enquiry-heading">Request a Founding Pilot Walkthrough</h2>
+      <p style="color: #94a3b8; font-size: 0.88rem; margin-bottom: 1rem;">
+        Share your institute website or city and we will respond directly with a concrete fix checklist for your enquiry path.
       </p>
-    </div>
-  </div>
+      <form onsubmit="handlePilotEnquiry(event)" style="display: grid; gap: 0.85rem;">
+        <div class="form-grid">
+          <div>
+            <label for="b2b-name">Your Name *</label>
+            <input id="b2b-name" type="text" required maxlength="100" placeholder="e.g. Kiran Reddy">
+          </div>
+          <div>
+            <label for="b2b-phone">WhatsApp / Mobile Number *</label>
+            <input id="b2b-phone" type="tel" required maxlength="20" placeholder="e.g. 9849012345">
+          </div>
+        </div>
+        <div class="form-grid">
+          <div>
+            <label for="b2b-institute">Training Institute &amp; City *</label>
+            <input id="b2b-institute" type="text" required maxlength="140" placeholder="e.g. Pragati Coaching Academy, Hyderabad">
+          </div>
+          <div>
+            <label for="b2b-email">Email Address (Optional)</label>
+            <input id="b2b-email" type="email" maxlength="120" placeholder="founder@institute.in">
+          </div>
+        </div>
+        <div>
+          <label for="b2b-notes">Website URL or Enquiry Issue</label>
+          <textarea id="b2b-notes" rows="2" maxlength="500" placeholder="e.g. https://ourinstitute.in — mobile enquiry button is hard to reach"></textarea>
+        </div>
+        <input type="text" id="b2b-trap" name="website_trap" tabindex="-1" autocomplete="off" style="position:absolute;left:-9999px;width:1px;height:1px;" aria-hidden="true">
+        <label style="display: flex; align-items: flex-start; gap: 0.5rem; font-weight: 400; font-size: 0.82rem; color: #cbd5e1; cursor: pointer;">
+          <input type="checkbox" id="b2b-consent" required style="margin-top: 0.2rem;">
+          <span>I agree to be contacted regarding this Founding Pilot enquiry in accordance with the <a href="/privacy" style="color: #38bdf8;">Privacy Policy</a>.</span>
+        </label>
+        <div>
+          <button type="submit" id="b2b-submit" class="btn btn-primary">Send Pilot Enquiry &rarr;</button>
+        </div>
+        <div id="b2b-status" style="font-size: 0.85rem;"></div>
+      </form>
+    </section>
+  </main>
 
   <footer>
-    <p>&copy; ${new Date().getFullYear()} ${escapeHtmlText(siteName)}. All rights reserved.</p>
-    <p style="margin-top: 0.5rem; max-width: 780px; margin-left: auto; margin-right: auto; line-height: 1.5; color: #64748b; font-size: 0.8rem;">
-      <strong>#Ad Statutory Affiliate Disclosure &amp; Commercial Terms:</strong> Consumer buying guides and commercial deal directories on this platform may contain tracked affiliate links to authorized partner programs. When visitors make qualifying purchases through those links, we may receive an affiliate commission at zero additional cost to the purchaser. Always verify live pricing and terms on the merchant's checkout page. SiteFix Launch Gate technical diagnostics are deterministic checks with zero ranking guarantees.
-    </p>
-    <p style="margin-top: 0.75rem;">
-      <a href="/privacy">Privacy Policy</a> • <a href="/revenue">Revenue Funnel</a> • <a href="/offer">Commercial Spec</a> • <a href="/tools/site-audit">SiteFix Audit</a> • <a href="/deals">Deals</a> • <a href="/public/disclosure">Affiliate Disclosure</a>${contactEmail ? ` • Contact: <a href="mailto:${escapeMetaAttr(contactEmail)}">${escapeHtmlText(contactEmail)}</a>` : ''}
+    <p>&copy; ${new Date().getFullYear()} ${escapeHtmlText(siteName)} &bull; Hyderabad, India</p>
+    <p style="margin-top: 0.6rem;">
+      <a href="/terms">Terms</a> &bull;
+      <a href="/privacy">Privacy Policy</a> &bull;
+      <a href="/refund">Refund Policy</a> &bull;
+      <a href="/contact">Contact</a>${contactEmail ? ` &bull; <a href="mailto:${escapeMetaAttr(contactEmail)}">${escapeHtmlText(contactEmail)}</a>` : ''}
     </p>
   </footer>
 
   <script>
-    function escapeHtml(str) {
-      if (str === null || str === undefined) return '';
-      return String(str)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#039;');
-    }
-
-    async function handleFairPriceHome(e) {
+    async function handlePilotEnquiry(e) {
       e.preventDefault();
-      var qInput = document.getElementById('fp-query-home');
-      var btn = document.getElementById('fp-submit-home');
-      var box = document.getElementById('fp-result-home');
-      if (!qInput || !box) return;
-      var q = qInput.value.trim();
-      if (!q) return;
-      btn.disabled = true;
-      btn.innerText = 'Checking...';
-      box.style.display = 'block';
-      box.innerHTML = '<div style="font-size:0.84rem;color:#94a3b8;">Checking observed Indian market prices and active coupon codes...</div>';
+      var btn = document.getElementById('b2b-submit');
+      var statusEl = document.getElementById('b2b-status');
+      var payload = {
+        customerName: (document.getElementById('b2b-name') || {}).value || '',
+        customerPhone: (document.getElementById('b2b-phone') || {}).value || '',
+        serviceOfInterest: (document.getElementById('b2b-institute') || {}).value || '',
+        customerEmail: (document.getElementById('b2b-email') || {}).value || '',
+        notes: (document.getElementById('b2b-notes') || {}).value || '',
+        website_trap: (document.getElementById('b2b-trap') || {}).value || '',
+        consentGiven: Boolean((document.getElementById('b2b-consent') || {}).checked),
+        source: 'homepage_b2b_inquiry',
+        channel: 'WHATSAPP'
+      };
+      if (btn) { btn.disabled = true; btn.textContent = 'Submitting...'; }
+      if (statusEl) { statusEl.style.color = '#94a3b8'; statusEl.textContent = 'Recording your enquiry...'; }
       try {
-        var res = await fetch('/api/v1/public/fair-price-check', {
+        var res = await fetch('/api/v1/offer/inquiry', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ queryOrUrl: q })
+          body: JSON.stringify(payload)
         });
-        var json = await res.json();
-        if (!res.ok || !json.success) {
-          throw new Error(json.message || json.error || 'Check failed');
+        var data = await res.json();
+        if (!res.ok || !data.success) {
+          throw new Error(data.error || data.message || 'Submission failed');
         }
-        var d = json.data;
-        var verdictColor = d.verdict === 'BUY_NOW_BELOW_FAIR_PRICE' ? '#34d399' : (d.verdict === 'OVERPRICED_WAIT_FOR_DROP' ? '#f59e0b' : '#38bdf8');
-        var verdictLabel = d.verdict === 'BUY_NOW_BELOW_FAIR_PRICE'
-          ? 'BUY NOW — BELOW FAIR PRICE'
-          : (d.verdict === 'OVERPRICED_WAIT_FOR_DROP'
-            ? 'OVERPRICED — WAIT OR COMPARE'
-            : (d.verdict === 'INSUFFICIENT_HISTORY' ? 'INSUFFICIENT HISTORY — SET DROP ALERT' : 'FAIR MARKET PRICE — APPLY COUPON'));
-        var optionsHtml = (d.crossStoreOptions || []).slice(0, 5).map(function(opt) {
-          var isAmz = opt.affiliateNetwork === 'AMAZON_IN' || opt.isAmazonSearchRail || Number(opt.effectivePriceINR || 0) <= 0;
-          var badge = opt.isLowestPrice ? ' <strong style="color:#34d399;">(Lowest Net)</strong>' : '';
-          var coupon = opt.couponCode ? ' · Code: <code>' + escapeHtml(opt.couponCode) + '</code>' : '';
-          var priceTxt = isAmz ? 'Live on Amazon.in' : ('₹' + Number(opt.effectivePriceINR || opt.currentPriceINR || 0).toLocaleString('en-IN'));
-          var btnTxt = opt.ctaLabel || (isAmz ? "Check Today's Live Price & Prime Coupons on Amazon.in →" : 'Buy (#Ad) →');
-          return '<div style="display:flex;justify-content:space-between;align-items:center;gap:0.75rem;padding:0.55rem 0;border-top:1px solid #1e293b;font-size:0.83rem;">' +
-            '<div style="min-width:0;"><div style="color:#f8fafc;font-weight:600;">' + escapeHtml(opt.title) + badge + '</div>' +
-            '<div style="color:#94a3b8;font-size:0.76rem;">' + escapeHtml(opt.merchant) + coupon + ' · ' + escapeHtml(opt.disclosure || '#Ad') + '</div></div>' +
-            '<div style="display:flex;align-items:center;gap:0.65rem;flex-shrink:0;">' +
-              '<span style="font-weight:700;color:#fff;">' + escapeHtml(priceTxt) + '</span>' +
-              '<a href="' + escapeHtml(opt.trackingRedirectUrl) + '" target="_blank" rel="sponsored nofollow noopener" style="background:' + (isAmz ? '#f59e0b' : '#06b6d4') + ';color:#020617;padding:0.35rem 0.7rem;border-radius:6px;font-weight:700;font-size:0.76rem;text-decoration:none;">' + escapeHtml(btnTxt) + '</a>' +
-            '</div></div>';
-        }).join('');
-        box.innerHTML =
-          '<div style="background:#090d16;border:1px solid #1e293b;border-radius:10px;padding:1rem;">' +
-            '<div style="font-size:0.75rem;font-weight:700;letter-spacing:0.04em;color:' + verdictColor + ';margin-bottom:0.3rem;">' + verdictLabel + '</div>' +
-            '<div style="font-size:0.88rem;color:#e2e8f0;margin-bottom:0.5rem;">' + escapeHtml(d.verdictSummary || '') + '</div>' +
-            (d.estimatedFairPriceINR ? '<div style="font-size:0.8rem;color:#94a3b8;margin-bottom:0.6rem;">Estimated Fair Price: <strong style="color:#fff;">₹' + Number(d.estimatedFairPriceINR).toLocaleString('en-IN') + '</strong> · Range: ₹' + Number(d.lowestObservedPriceINR || d.estimatedFairPriceINR).toLocaleString('en-IN') + ' – ₹' + Number(d.highestObservedPriceINR || d.estimatedFairPriceINR).toLocaleString('en-IN') + (d.activeCouponCode ? ' · Best Coupon: <code style="color:#38bdf8;">' + escapeHtml(d.activeCouponCode) + '</code>' : '') + '</div>' : '') +
-            optionsHtml +
-            '<form onsubmit="handleFairPriceAlertHome(event)" style="margin-top:0.85rem;padding-top:0.75rem;border-top:1px solid #1e293b;display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;">' +
-              '<input type="number" id="fp-alert-price-home" min="1" required placeholder="Target ₹ price" value="' + (d.estimatedFairPriceINR ? Math.round(d.estimatedFairPriceINR * 0.9) : '') + '" style="width:120px;padding:0.45rem 0.65rem;border-radius:6px;border:1px solid #334155;background:#111827;color:#fff;font-size:0.8rem;">' +
-              '<input type="email" id="fp-alert-email-home" required placeholder="Email for price-drop alert" style="flex:1 1 190px;padding:0.45rem 0.65rem;border-radius:6px;border:1px solid #334155;background:#111827;color:#fff;font-size:0.8rem;">' +
-              '<label style="font-size:0.74rem;color:#cbd5e1;display:flex;align-items:center;gap:0.35rem;cursor:pointer;"><input type="checkbox" id="fp-alert-consent-home" required> Opt-in alerts (DPDP)</label>' +
-              '<button type="submit" style="background:#10b981;color:#020617;border:none;padding:0.45rem 0.85rem;border-radius:6px;font-weight:700;font-size:0.78rem;cursor:pointer;">Set Price Alert</button>' +
-            '</form>' +
-            '<div id="fp-alert-status-home" style="font-size:0.78rem;margin-top:0.4rem;"></div>' +
-          '</div>';
-      } catch (err) {
-        box.innerHTML = '<div style="font-size:0.82rem;color:#f87171;">Error: ' + escapeHtml(err.message || 'Could not evaluate fair price') + '</div>';
-      } finally {
-        btn.disabled = false;
-        btn.innerText = 'Check Fair Price';
-      }
-    }
-
-    async function handleFairPriceAlertHome(e) {
-      e.preventDefault();
-      var q = (document.getElementById('fp-query-home') || {}).value || '';
-      var price = Number((document.getElementById('fp-alert-price-home') || {}).value || 0);
-      var email = ((document.getElementById('fp-alert-email-home') || {}).value || '').trim();
-      var consent = Boolean((document.getElementById('fp-alert-consent-home') || {}).checked);
-      var statusEl = document.getElementById('fp-alert-status-home');
-      if (!statusEl) return;
-      statusEl.style.color = '#94a3b8';
-      statusEl.innerText = 'Registering price-drop alert...';
-      try {
-        var res = await fetch('/api/v1/public/fair-price-check', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ queryOrUrl: q, targetFairPriceINR: price, alertEmail: email, consentGiven: consent, skipAiSynthesis: true })
-        });
-        var json = await res.json();
-        var reg = json && json.data && json.data.priceDropAlertRegistered;
-        if (reg && reg.registered) {
+        if (statusEl) {
           statusEl.style.color = '#34d399';
-          statusEl.innerText = reg.immediateAlertDispatched
-            ? 'Alert set & instant price-drop email sent to ' + reg.alertEmailMasked + '!'
-            : 'Price-drop alert registered for ' + reg.alertEmailMasked + ' at target ₹' + Number(reg.targetFairPriceINR || price).toLocaleString('en-IN') + '.';
-        } else {
-          statusEl.style.color = '#fbbf24';
-          statusEl.innerText = (reg && reg.reason) || json.message || 'Could not register alert.';
+          statusEl.textContent = data.message || 'Enquiry recorded. We will follow up directly.';
         }
       } catch (err) {
-        statusEl.style.color = '#f87171';
-        statusEl.innerText = 'Error: ' + (err.message || 'Failed');
+        if (statusEl) {
+          statusEl.style.color = '#f87171';
+          statusEl.textContent = err && err.message ? err.message : 'Could not submit enquiry.';
+        }
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Send Pilot Enquiry \\u2192'; }
       }
     }
   </script>
-  ${renderCustomerDeskWidgetHtml('SITEFIX_AI_PACK_V1')}
+  ${renderCustomerDeskWidgetHtml('B2B_WEBSITE_ENQUIRY_SETUP')}
 </body>
 </html>`;
   }
@@ -733,19 +665,41 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <style>
    * Zero unconfirmed prices, zero guarantees, zero UPI VPAs, zero payment links.
    */
   private renderUnattestedOverviewHtml(siteName: string, siteUrl: string, contactEmail: string | null): string {
+    const cleanSiteUrl = siteUrl.replace(/\/+$/, '');
+    const pageTitle = `Founding Pilot Overview — Website Enquiry Path Repair | ${escapeHtmlText(siteName)}`;
+    const pageDesc = 'Informational overview of Website Enquiry Path Repair for Training Institutes. Review scope, demo workflow, and owner-confirmed checkout verification.';
+    const jsonLd = JSON.stringify({
+      '@context': 'https://schema.org',
+      '@type': 'Service',
+      name: 'Website Enquiry Path Repair — Founding Pilot Overview',
+      provider: {
+        '@type': 'Organization',
+        name: siteName,
+        url: cleanSiteUrl
+      },
+      url: `${cleanSiteUrl}/offer`,
+      description: pageDesc
+    }).replace(/</g, '\\u003c');
+
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SiteFix AI Commercial Specification | Service Overview</title>
-  <meta name="description" content="Technical overview of SiteFix Launch Gate website QA and optimization packs. Commercial configuration pending owner attestation.">
-  <link rel="canonical" href="${escapeMetaAttr(siteUrl)}/offer">
-  <meta name="robots" content="noindex, nofollow">
+  <title>${pageTitle}</title>
+  <meta name="description" content="${escapeMetaAttr(pageDesc)}">
+  <link rel="canonical" href="${escapeMetaAttr(cleanSiteUrl)}/offer">
+  <meta name="robots" content="index, follow">
+  <meta property="og:title" content="${escapeMetaAttr(pageTitle)}">
+  <meta property="og:description" content="${escapeMetaAttr(pageDesc)}">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="${escapeMetaAttr(cleanSiteUrl)}/offer">
+  <meta property="og:site_name" content="${escapeMetaAttr(siteName)}">
+  <script type="application/ld+json">${jsonLd}</script>
   <style>
     :root {
       color-scheme: dark;
-      --bg: #090d16;
+      --bg: #070b14;
       --card-bg: #111827;
       --card-border: #1e293b;
       --text-main: #f8fafc;
@@ -755,70 +709,93 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <style>
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
       background: var(--bg);
       color: var(--text-main);
       line-height: 1.6;
-      padding: 2rem 1rem;
     }
-    .container { max-width: 860px; margin: 0 auto; }
-    header { text-align: center; margin-bottom: 2.5rem; }
+    nav.top-nav {
+      background: rgba(11, 17, 32, 0.94);
+      border-bottom: 1px solid var(--card-border);
+      padding: 0.75rem 1rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .brand { font-weight: 800; font-size: 0.98rem; color: #fff; text-decoration: none; white-space: nowrap; }
+    .nav-links { display: flex; gap: 0.9rem; align-items: center; flex-wrap: nowrap; overflow-x: auto; }
+    .nav-links a { color: var(--text-muted); text-decoration: none; font-size: 0.85rem; font-weight: 600; white-space: nowrap; }
+    .nav-links a:hover, .nav-links a.active { color: var(--accent); }
+    .container { max-width: 860px; margin: 0 auto; padding: 2rem 1rem 3rem; }
+    header { text-align: center; margin-bottom: 2rem; }
     .status-badge {
       display: inline-block;
       background: rgba(245, 158, 11, 0.15);
       color: #fbbf24;
       border: 1px solid rgba(245, 158, 11, 0.3);
-      padding: 0.4rem 1rem;
+      padding: 0.35rem 0.9rem;
       border-radius: 999px;
-      font-size: 0.85rem;
+      font-size: 0.78rem;
       font-weight: 700;
-      letter-spacing: 0.05em;
-      margin-bottom: 1.25rem;
+      letter-spacing: 0.04em;
+      margin-bottom: 1rem;
       text-transform: uppercase;
     }
-    h1 { font-size: 2.1rem; font-weight: 800; color: #ffffff; margin-bottom: 0.85rem; }
-    p.subtitle { font-size: 1.05rem; color: var(--text-muted); max-width: 680px; margin: 0 auto; }
+    h1 { font-size: clamp(1.6rem, 4.2vw, 2.2rem); font-weight: 800; color: #ffffff; line-height: 1.2; margin-bottom: 0.85rem; }
+    p.subtitle { font-size: 1rem; color: var(--text-muted); max-width: 680px; margin: 0 auto; }
     .card {
       background: var(--card-bg);
       border: 1px solid var(--card-border);
       border-radius: 14px;
-      padding: 1.75rem;
+      padding: 1.5rem;
       margin-bottom: 1.5rem;
     }
-    .card h2 { font-size: 1.3rem; color: #fff; margin-bottom: 0.9rem; }
-    .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.25rem; }
+    .card h2 { font-size: 1.2rem; color: #fff; margin-bottom: 0.85rem; }
+    .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; }
     footer {
       text-align: center;
-      margin-top: 2.5rem;
-      padding-top: 1.5rem;
+      padding: 2rem 1rem 3rem;
       border-top: 1px solid var(--card-border);
       color: var(--text-muted);
-      font-size: 0.85rem;
+      font-size: 0.84rem;
     }
+    footer a { color: var(--accent); text-decoration: none; }
   </style>
 </head>
 <body>
+  <nav class="top-nav" aria-label="Primary Navigation">
+    <a href="/" class="brand">${escapeHtmlText(siteName)}</a>
+    <div class="nav-links">
+      <a href="/">Home</a>
+      <a href="/demo">Live Demo</a>
+      <a href="/offer" class="active">Founding Pilot</a>
+      <a href="/contact">Contact</a>
+    </div>
+  </nav>
+
   <div class="container">
     <header>
       <div class="status-badge">Configuration Pending Owner Attestation</div>
       <p style="color: #94a3b8; font-size: 0.88rem; margin-bottom: 0.75rem;">Direct online checkout is disabled until commercial terms are attested by the owner.</p>
-      <h1>SiteFix Launch Gate — Technical Website QA</h1>
-      <p class="subtitle">Deterministic pre-deployment HTML metadata, Open Graph, Schema.org JSON-LD, robots.txt, and sitemap.xml auditing for web teams.</p>
-      <div style="margin-top: 1.25rem;">
-        <a href="/tools/site-audit" class="btn btn-primary" style="display: inline-block; background: #06b6d4; color: #090d16; font-weight: 700; padding: 0.75rem 1.4rem; border-radius: 8px; text-decoration: none; font-size: 0.95rem;">Run Free Website Audit &amp; Technical Fix-Pack &rarr;</a>
+      <h1>Website Enquiry Path Repair &mdash; Founding Pilot</h1>
+      <p class="subtitle">Mobile-first admissions enquiry forms, WhatsApp click-to-chat routing, and structured lead tracking for training institutes.</p>
+      <div style="margin-top: 1.25rem; display: flex; justify-content: center; gap: 0.75rem; flex-wrap: wrap;">
+        <a href="/demo" class="btn btn-primary" style="display: inline-block; background: #06b6d4; color: #090d16; font-weight: 700; padding: 0.75rem 1.35rem; border-radius: 8px; text-decoration: none; font-size: 0.92rem;">Try Live Interactive Demo &rarr;</a>
+        <a href="/#pilot-enquiry" class="btn btn-secondary" style="display: inline-block; background: #1e293b; color: #fff; border: 1px solid #334155; font-weight: 600; padding: 0.75rem 1.35rem; border-radius: 8px; text-decoration: none; font-size: 0.92rem;">Request Pilot Walkthrough</a>
       </div>
     </header>
 
     <div class="card">
-      <h2>Technical Scope (Non-Payable Overview)</h2>
+      <h2>Pilot Scope &amp; Verification Policy</h2>
       <div class="grid-2">
         <div style="background: #0b1120; border: 1px solid var(--card-border); border-radius: 10px; padding: 1.25rem;">
-          <h3 style="color: #38bdf8; font-size: 1.02rem; margin-bottom: 0.4rem;">1. Free Deterministic Launch Audit</h3>
-          <p style="font-size: 0.88rem; color: #cbd5e1;">Run instant SSRF-protected technical checks on any public URL via <a href="/tools/site-audit" style="color: #38bdf8;">/tools/site-audit</a>, <code>npx sitefix-check</code>, GitHub Action, or Public MCP.</p>
+          <h3 style="color: #38bdf8; font-size: 1.02rem; margin-bottom: 0.4rem;">1. Interactive Working Sample</h3>
+          <p style="font-size: 0.88rem; color: #cbd5e1;">Inspect the sample course enquiry form, live WhatsApp preview, and interactive lead tracker at <a href="/demo" style="color: #38bdf8;">/demo</a> before requesting implementation.</p>
         </div>
         <div style="background: #0b1120; border: 1px solid var(--card-border); border-radius: 10px; padding: 1.25rem;">
-          <h3 style="color: #34d399; font-size: 1.02rem; margin-bottom: 0.4rem;">2. Owner-Attested Pricing Policy</h3>
-          <p style="font-size: 0.88rem; color: #cbd5e1;">Direct offer terms are cryptographically bound to <code>owner/DIRECT_OFFER.md</code> / <code>owner/OWN_OFFER.md</code> via SHA-256 attestation. Unattested or TBD specifications remain non-payable.</p>
+          <h3 style="color: #34d399; font-size: 1.02rem; margin-bottom: 0.4rem;">2. Owner-Attested Terms Gate</h3>
+          <p style="font-size: 0.88rem; color: #cbd5e1;">Direct online checkout activates only after the founder attests live commercial terms via SHA-256 verification. Unattested specifications remain strictly non-payable.</p>
         </div>
       </div>
     </div>
@@ -826,15 +803,20 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <style>
     <div class="card">
       <h2>Contact &amp; Verification</h2>
       <p style="color: #cbd5e1; font-size: 0.92rem;">
-        ${contactEmail ? `For commercial verification inquiries, contact: <a href="mailto:${escapeMetaAttr(contactEmail)}" style="color: var(--accent);">${escapeHtmlText(contactEmail)}</a>` : 'Owner contact email is currently pending configuration.'}
+        ${contactEmail ? `For Hyderabad Founding Pilot inquiries, contact: <a href="mailto:${escapeMetaAttr(contactEmail)}" style="color: var(--accent);">${escapeHtmlText(contactEmail)}</a>` : 'Reach the founder directly via our <a href="/contact" style="color: var(--accent);">Contact page</a> or <a href="/#pilot-enquiry" style="color: var(--accent);">pilot enquiry form</a>.'}
       </p>
     </div>
-
-    <footer>
-      <p>&copy; ${new Date().getFullYear()} ${escapeHtmlText(siteName)}. All rights reserved.</p>
-      <p style="margin-top: 0.35rem;">Technical overview page • Not an offer to contract until terms are owner-attested. • <a href="/privacy" style="color: var(--text-muted); text-decoration: underline;">Privacy Policy</a> • <a href="/tools/site-audit" style="color: var(--text-muted); text-decoration: underline;">SiteFix Audit</a> • <a href="/deals" style="color: var(--text-muted); text-decoration: underline;">Deals</a> • <a href="/revenue" style="color: var(--text-muted); text-decoration: underline;">Revenue Funnel</a></p>
-    </footer>
   </div>
+
+  <footer>
+    <p>&copy; ${new Date().getFullYear()} ${escapeHtmlText(siteName)} &bull; Hyderabad, India</p>
+    <p style="margin-top: 0.45rem;">
+      <a href="/terms">Terms</a> &bull;
+      <a href="/privacy">Privacy Policy</a> &bull;
+      <a href="/refund">Refund Policy</a> &bull;
+      <a href="/contact">Contact</a>
+    </p>
+  </footer>
   <script>
     (function() {
       try {
@@ -1014,8 +996,13 @@ ${verificationMetaHtml ? verificationMetaHtml + '\n' : ''}  <style>
     </div>
 
     <footer>
-      <p>&copy; ${new Date().getFullYear()} ${escapeHtmlText(siteName)}. All rights reserved.</p>
-      ${contactEmail ? `<p style="margin-top: 0.35rem;">Contact: <a href="mailto:${escapeMetaAttr(contactEmail)}" style="color: var(--accent);">${escapeHtmlText(contactEmail)}</a></p>` : ''}
+      <p>&copy; ${new Date().getFullYear()} ${escapeHtmlText(siteName)} &bull; Hyderabad, India</p>
+      <p style="margin-top: 0.45rem;">
+        <a href="/terms" style="color: var(--accent);">Terms</a> &bull;
+        <a href="/privacy" style="color: var(--accent);">Privacy Policy</a> &bull;
+        <a href="/refund" style="color: var(--accent);">Refund Policy</a> &bull;
+        <a href="/contact" style="color: var(--accent);">Contact</a>${contactEmail ? ` &bull; <a href="mailto:${escapeMetaAttr(contactEmail)}" style="color: var(--accent);">${escapeHtmlText(contactEmail)}</a>` : ''}
+      </p>
     </footer>
   </div>
 </body>

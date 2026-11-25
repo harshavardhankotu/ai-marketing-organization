@@ -183,28 +183,20 @@ describe('Revenue Engine V3.2 — First Customer & Commercial Conversion', () =>
   });
 
   describe('3. Public Storefront & Offer Page (GET / and GET /offer)', () => {
-    it('serves SiteFix Launch Gate storefront & segregated verified deals on GET /', async () => {
+    it('serves focused Website Enquiry Path Repair storefront on GET / with /demo and legal links', async () => {
       const res = await app.request('/');
       expect(res.status).toBe(200);
       const html = await res.text();
 
-      // Positioning & Developer Pull Interfaces (zero legacy dental/clinic lead-gen claims)
-      expect(html).toContain('SiteFix Launch Gate');
-      expect(html).toContain('SiteFix Launch Gate — 3 Developer Pull Interfaces');
-      expect(html).toContain('npx sitefix-check');
-      expect(html).toContain('/tools/site-audit');
-      expect(html).toContain('/api/v1/public/mcp');
+      expect(html).toContain('Website Enquiry Path Repair for Training Institutes');
+      expect(html).toContain('Founding Pilot');
+      expect(html).toContain('href="/demo"');
+      expect(html).toContain('href="/offer"');
+      expect(html).toContain('href="/terms"');
+      expect(html).toContain('href="/privacy"');
+      expect(html).toContain('href="/refund"');
+      expect(html).toContain('href="/contact"');
       expect(html).not.toMatch(/Apex Dental|chipped tooth|8 PM to 8 AM Inquiry Gap|dental clinic/i);
-
-      // Segregated Consumer Deals, Revenue Funnel & Travel Guide links
-      expect(html).toContain('Commercial Consumer Deals &amp; Buying Guides');
-      expect(html).toContain('href="/deals"');
-      expect(html).toContain('href="/guides/student-flight-discounts-india"');
-      expect(html).toContain('href="/revenue"');
-
-      // Statutory Affiliate Disclosure & Transparency Policy
-      expect(html).toContain('Statutory Affiliate Disclosure');
-      expect(html).toContain('href="/public/disclosure"');
     });
 
     it('serves standalone verified deals page on GET /deals without SPA login redirect', async () => {
@@ -216,17 +208,17 @@ describe('Revenue Engine V3.2 — First Customer & Commercial Conversion', () =>
       expect(html).not.toContain('Sign In to Owner Portal');
     });
 
-    it('serves safe non-payable SiteFix overview on GET /offer with zero unconfirmed prices', async () => {
+    it('serves safe non-payable Founding Pilot overview on GET /offer with zero unconfirmed prices and clean robots policy', async () => {
       const res = await app.request('/offer');
       expect(res.status).toBe(200);
       const html = await res.text();
       expect(html).toContain('Configuration Pending Owner Attestation');
-      expect(html).toContain('noindex, nofollow');
-      expect(html).toContain('Technical Scope (Non-Payable Overview)');
-      expect(html).toContain('SiteFix Launch Gate');
-      expect(html).toContain('href="/deals"');
+      expect(html).toContain('index, follow');
+      expect(html).toContain('Pilot Scope &amp; Verification Policy');
+      expect(html).toContain('href="/demo"');
       expect(html).not.toContain('₹15,000');
       expect(html).not.toContain('upi://pay');
+      expect(html).not.toMatch(/not an offer to contract|DIRECT_OFFER\.md|OWN_OFFER\.md/i);
     });
 
     it('processes inbound lead inquiry through POST /api/v1/offer/inquiry and returns DPDP deletion code', async () => {

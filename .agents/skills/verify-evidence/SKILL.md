@@ -15,5 +15,5 @@ Enforces rigorous, unforgeable verification standards across all operational rep
 
 ## Evidence Rules
 1. **Raw Evidence Required**: Every claim must quote exact command outputs, file paths, and database query results.
-2. **Never Print Secrets**: Mask API keys, tokens, session hashes, and the private affiliate tracking tag.
+2. **Never Print Secrets**: Mask API keys, tokens, session hashes, and private tracking tags or payment credentials.
 3. **Execution Limits**: All HTTP verification requests must use `curl -m 30` (or `curl.exe -m 30`). Unit test runs must use `--test-timeout=30000`. Kill any process exceeding 60 seconds.

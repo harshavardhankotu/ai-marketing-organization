@@ -42,12 +42,12 @@ describe('Owner Attestation Gate & Offer Truth (mst_p1_agent_set_owner_attestati
     delete process.env.OWN_OFFER_CONFIRMED;
     const html = DirectCommercialOfferPage.getInstance().renderOfferHtml();
 
-    // Must render non-payable SiteFix technical overview with owner-attestation notice
+    // Must render non-payable Founding Pilot overview with owner-attestation notice
     expect(html).toContain('Configuration Pending Owner Attestation');
-    expect(html).toContain('noindex, nofollow');
-    expect(html).toContain('SiteFix Launch Gate');
-    expect(html).toContain('Technical Scope (Non-Payable Overview)');
-    expect(html).toContain('/tools/site-audit');
+    expect(html).toContain('index, follow');
+    expect(html).toContain('Website Enquiry Path Repair');
+    expect(html).toContain('Pilot Scope &amp; Verification Policy');
+    expect(html).toContain('/demo');
 
     // Must hide pricing, guarantees, payment links, and legacy healthcare/lead-gen copy
     expect(html).not.toContain('₹15,000');

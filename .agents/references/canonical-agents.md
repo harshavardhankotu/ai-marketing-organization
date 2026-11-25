@@ -14,13 +14,13 @@ The 80 agents are organized into 4 functional divisions of 20 agents each:
 9. `res-09` **Local Market Research Agent**: Evaluates neighborhood-specific footfall and local competition.
 10. `res-10` **Pricing Research Agent**: Benchmarks pricing sensitivity and EMI acceptance in INR.
 11. `res-11` **Offer Research Agent**: Formulates high-converting introductory hooks.
-12. `res-12` **Review Mining Agent**: Mines Google Profile and Practo reviews.
+12. `res-12` **Review Mining Agent**: Mines Google Business Profile and verified public customer feedback (plus Practo for Sector H healthcare when explicitly enabled).
 13. `res-13` **Audience Segmentation Agent**: Clusters audiences by geography and intent.
 14. `res-14` **Keyword Research Agent**: Maps vernacular and transliterated search terms.
 15. `res-15` **Content Gap Research Agent**: Identifies unanswered market questions.
 16. `res-16` **Competitor Content Research Agent**: Deconstructs competitor creatives and ad hooks.
 17. `res-17` **Cultural & Language Research Agent**: Ensures regional authenticity and festival alignment.
-18. `res-18` **Regulatory Risk Research Agent**: Screens claims against ASCI and MCI codes.
+18. `res-18` **Regulatory Risk Research Agent**: Screens claims against ASCI, DPDP Act 2023, and sector-specific regulations (including MCI/NMC for Sector H only).
 19. `res-19` **Opportunity Detection Agent**: Highlights underserved niches and timing advantages.
 20. `res-20` **Research Synthesis Agent**: Synthesizes multi-agent research into executive intelligence briefs.
 
@@ -38,8 +38,8 @@ The 80 agents are organized into 4 functional divisions of 20 agents each:
 31. `cnt-11` **WhatsApp Writer**: Crafts personalized conversational WhatsApp Business templates.
 32. `cnt-12` **Ad Copy Writer**: Writes high-CTR headlines for Meta and Google Ads.
 33. `cnt-13` **Landing Page Writer**: Builds direct-response sales copy.
-34: `cnt-14` **Case Study Writer**: Documents patient transformation stories.
-35. `cnt-15` **Thought Leadership Writer**: Articulates clinical expertise and unique methods.
+34: `cnt-14` **Case Study Writer**: Documents verified client and B2B implementation case studies (never fabricated).
+35. `cnt-15` **Thought Leadership Writer**: Articulates domain expertise, technical QA insights, and repeatable workflows.
 36. `cnt-16` **Hook Generator**: Produces psychologically tested pattern interrupts.
 37. `cnt-17` **CTA Specialist**: Engineers low-friction calls to action.
 38. `cnt-18` **Repurposing Agent**: Converts pillar assets into 10+ modular formats.
@@ -63,8 +63,8 @@ The 80 agents are organized into 4 functional divisions of 20 agents each:
 54. `mkt-14` **Partnership Strategist**: Coordinates local co-marketing alliances.
 55. `mkt-15` **Influencer Strategist**: Manages local creator collaborations.
 56. `mkt-16` **Community Strategist**: Cultivates customer loyalty programs.
-57. `mkt-17` **Launch Strategist**: Coordinates clinic launch sequences.
-58. `mkt-18` **Retention Strategist**: Drives recall appointments and preventive care.
+57. `mkt-17` **Launch Strategist**: Coordinates B2B service and campaign launch sequences.
+58. `mkt-18` **Retention Strategist**: Drives follow-up engagement, repeat bookings, and renewal workflows.
 59. `mkt-19` **Experiment Strategist**: Constructs rigorous marketing hypotheses.
 60. `mkt-20` **Growth Optimizer**: Reallocates budgets dynamically to highest-ROI channels.
 
@@ -79,8 +79,8 @@ The 80 agents are organized into 4 functional divisions of 20 agents each:
 68. `anl-08` **Conversion Analyst**: Diagnoses form-level friction.
 69. `anl-09` **Revenue Analyst**: Reconciles ad spend against realized revenue in INR.
 70. `anl-10` **Attribution Analyst**: Executes multi-touch attribution models.
-71. `anl-11` **Cohort Analyst**: Measures long-term patient lifetime value.
-72. `anl-12` **Customer Analyst**: Discovers high-ticket patient characteristics.
+71. `anl-11` **Cohort Analyst**: Measures cohort retention and long-term customer lifetime value.
+72. `anl-12` **Customer Analyst**: Discovers high-intent B2B and SMB buyer characteristics.
 73. `anl-13` **A/B Testing Agent**: Calculates p-value significance and conversion deltas.
 74. `anl-14` **Anomaly Detection Agent**: Catches broken forms and traffic spikes.
 75. `anl-15` **Trend Analysis Agent**: Detects cyclicality and week-over-week trends.

@@ -12,10 +12,9 @@ The AI Marketing Organization is specifically engineered for Indian businesses, 
    - Content and ad copy must account for local cultural context, festivals, and regional idioms.
 3. **Statutory Regulatory Compliance**:
    - **ASCI (Advertising Standards Council of India)**: Ad content must adhere to ASCI truthfulness and honest claims guidelines (no misleading superlatives like "100% Guaranteed Cure" or unsubstantiated superlatives).
-   - **MCI / NMC Guidelines for Healthcare/Medical Practitioners**:
-     - No direct medical solicitation or comparative advertising.
-     - Doctor qualifications, registration details, and clinic credentials must be accurately stated without exaggerated claims.
-     - Strict patient confidentiality under Indian IT Act and DISHA principles.
+   - **Sector H (Healthcare) Only — MCI / NMC Guidelines**:
+     - Applies strictly when an explicitly onboarded business belongs to Sector H (regulated healthcare/medical practices).
+     - No direct medical solicitation or comparative advertising; state qualifications accurately with strict confidentiality under Indian IT Act and DPDP Act 2023.
 4. **Tier-1 / Tier-2 / Tier-3 Market Nuance**:
    - Hyperlocal targeting accounts for Indian urban geography (localities, landmarks, metro stations, pincodes).
    - Payment preference awareness: UPI (PhonePe, Google Pay, Paytm), QR code scanning, Netbanking, Credit/Debit cards, and No-Cost EMI options.

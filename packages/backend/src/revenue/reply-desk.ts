@@ -241,20 +241,26 @@ export class ReplyDeskService {
   }
 
   private d1Repo = D1RevenueRepository.getInstance();
+  private lastD1SyncAtMs = 0;
 
   /**
    * Syncs today's reply desk query runs from durable D1 into local SQLite on startup / cron wake.
    */
-  public async syncFromD1Async(): Promise<void> {
-    if (!isProduction()) return;
+  public async syncFromD1Async(options?: { force?: boolean }): Promise<void> {
+    if (!this.d1Repo.isRemoteD1ReadAllowed()) return;
+    const TTL_MS = 10 * 60 * 1000;
+    if (!options?.force && this.lastD1SyncAtMs > 0 && (Date.now() - this.lastD1SyncAtMs) < TTL_MS) {
+      return;
+    }
     try {
       this.ensureTable();
       const todayStr = new Date().toISOString().slice(0, 10);
       const rows = await this.d1Repo.query<any>(
         'reply_desk_query_runs',
-        'SELECT * FROM reply_desk_query_runs WHERE run_date = ?',
+        'SELECT * FROM reply_desk_query_runs WHERE run_date = ? ORDER BY created_at DESC LIMIT 100',
         [todayStr]
       );
+      this.lastD1SyncAtMs = Date.now();
       if (rows && rows.length > 0) {
         const db = getDb();
         const stmt = db.prepare(`

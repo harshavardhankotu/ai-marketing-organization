@@ -1,21 +1,22 @@
 ---
 name: deploy-and-verify
-description: Protocol for git staging, committing, pushing, tracking live Render deploys, and verifying health.
+description: Protocol for feature-branch PR workflow, CI verification, squash-merge, tracking live Render deploys, and verifying health.
 ---
 
 # Deploy and Verify Skill
 
 ## Purpose
-Governs the safe deployment lifecycle from working tree validation to live health confirmation.
+Governs the safe deployment lifecycle from working tree validation through PR CI checks to live health confirmation.
 
-## Pre-Deploy Verification
-1. Run `npm run typecheck` across all 4 workspaces (`shared`, `backend`, `frontend`, `cloudflare-worker`).
+## Pre-PR Verification
+1. Run `npm run typecheck` across all workspaces.
 2. Run `npm run build` across all workspaces.
-3. Run `npx vitest run --test-timeout=30000` (sequential execution).
+3. Run compliance linters (`npm run lint:owner-prices`, `npm run lint:owner-claims`, `npm run lint:rupee-estimates`, `npm run board:verify`) and targeted Vitest suites (`--test-timeout=30000`).
 
 ## Deployment Protocol
-1. Stage changes with `git add` excluding sensitive files or raw credentials.
-2. Commit with conventional commit message (`feat: ...` or `fix: ...`).
-3. Push to `origin main` to trigger the Render webhook build.
-4. Poll Render service status until deploy status reaches `live`.
-5. Verify live production service using `curl.exe -m 30 -s https://ai-marketing-organization.onrender.com/api/v1/health` and verify HTTP 200 `healthy`.
+1. Create a feature/fix branch (`fix/...` or `feat/...`); never push directly to `main`.
+2. Stage changes with `git add` excluding `owner/`, `.env*`, `rzp-key.csv`, or raw credentials.
+3. Commit with a conventional commit message (`feat: ...` or `fix: ...`), push branch to `origin`, and open a Pull Request.
+4. Watch GitHub Actions CI (`gh pr checks <pr> --watch`) until all checks are green, then squash-merge to `main`.
+5. Track `node scripts/show-render-deploys.mjs` until the new `main` commit reaches `Status: live`.
+6. Verify live production endpoints with `curl.exe -m 30 -s https://ai-marketing-organization.onrender.com/api/v1/health` (HTTP 200 `healthy`).

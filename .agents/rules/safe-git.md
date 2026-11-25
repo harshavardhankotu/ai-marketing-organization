@@ -4,7 +4,7 @@
 Git history is the durable, immutable timeline of product development. Every commit must represent a coherent, tested, and compile-clean state.
 
 ## Invariant Rules
-1. **Never Break the Build on Main**: Every commit pushed to `main` must compile (`tsc --noEmit`) and pass existing tests.
+1. **Never Break the Build on Main**: Work on a dedicated feature/fix branch (`feat/...` or `fix/...`), open a pull request, and merge to `main` only after compilation (`npm run typecheck`), build, and all GitHub Actions CI checks pass.
 2. **State Sync with Git**: Whenever a significant milestone or implementation unit is reached:
    - Run tests to confirm zero regressions.
    - Update `.agent/project-state.json` and `.agent/validation-state.json`.
