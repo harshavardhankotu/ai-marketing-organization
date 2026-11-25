@@ -174,4 +174,37 @@ describe('PR #101 — D1 Baseline 0050 Compatibility, Rel Attributes & UTM Attri
       else process.env.AMAZON_AFFILIATE_TAG = prevTag;
     }
   });
+
+  it('6. Hides all /api/v1/public/amazon-redirect buttons across /deals, /deals/:slug, /vs/, and /best/ when AMAZON_AFFILIATE_TAG is unset', () => {
+    const prevTag = process.env.AMAZON_AFFILIATE_TAG;
+    delete process.env.AMAZON_AFFILIATE_TAG;
+    try {
+      const serums = createVerifiedLiveSkincareSerums('2026-11-25T15:00:00.000Z');
+      const cfg = {
+        siteName: 'AI Marketing Organization',
+        authorName: 'Editorial Desk',
+        contactEmail: 'editorial@ai-marketing-organization.onrender.com',
+        siteUrl: 'https://ai-marketing-organization.onrender.com'
+      };
+      const ssg = StaticSiteGenerator.getInstance();
+      const pairs = generateComparisonPairs(serums, 5);
+      const hubs = generateBuyerIntentHubs(serums, cfg.siteUrl, 5);
+      const niaHub = hubs.find(h => h.intentSlug === 'niacinamide-serums-india')!;
+
+      const rendered = [
+        ssg.renderDealsHtml(serums, cfg),
+        ssg.renderDealDetailHtml(serums[0], serums.slice(1, 3), cfg),
+        ssg.renderComparisonHtml(pairs[0], cfg, pairs),
+        ssg.renderBuyerGuideHtml(niaHub, hubs, pairs, cfg, { attribution: { utmSource: 'yt_short_1' } })
+      ];
+
+      for (const html of rendered) {
+        expect(html).not.toContain('/api/v1/public/amazon-redirect');
+        expect(html).toContain('/api/v1/public/deals/');
+        expect(html).toContain('rel="sponsored noopener noreferrer"');
+      }
+    } finally {
+      if (prevTag !== undefined) process.env.AMAZON_AFFILIATE_TAG = prevTag;
+    }
+  });
 });
