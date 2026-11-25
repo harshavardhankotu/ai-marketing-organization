@@ -123,6 +123,73 @@ export class CommercialLearningEngine {
   public static readonly COLD_START_INTERACTION_THRESHOLD = 10; // Thompson Sampling only after >= 10 interactions
 
   private sectorBanditStates: Map<SectorCode, SectorBanditState> = new Map();
+  private remoteLearningTablesCache: Set<'sector_bandit_states' | 'commercial_reward_events'> | null = null;
+  private remoteLearningTablesProbePromise: Promise<Set<'sector_bandit_states' | 'commercial_reward_events'>> | null = null;
+
+  private isMissingLearningTableError(err: any): boolean {
+    const msg = String(err?.message || err || '');
+    return /no such table:\s*(sector_bandit_states|commercial_reward_events)/i.test(msg);
+  }
+
+  private async getAvailableRemoteLearningTables(): Promise<Set<'sector_bandit_states' | 'commercial_reward_events'>> {
+    if (this.remoteLearningTablesCache) {
+      return this.remoteLearningTablesCache;
+    }
+    if (this.remoteLearningTablesProbePromise) {
+      return this.remoteLearningTablesProbePromise;
+    }
+
+    this.remoteLearningTablesProbePromise = (async () => {
+      try {
+        const rows = await this.d1Repo.query<{ name: string }>(
+          'sqlite_master',
+          "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('sector_bandit_states', 'commercial_reward_events')"
+        );
+        const present = new Set<'sector_bandit_states' | 'commercial_reward_events'>();
+        for (const r of rows || []) {
+          if (r?.name === 'sector_bandit_states' || r?.name === 'commercial_reward_events') {
+            present.add(r.name);
+          }
+        }
+        this.remoteLearningTablesCache = present;
+        return present;
+      } catch (err: any) {
+        // Never cache absent on quota or transient infrastructure failure so real errors are not masked
+        const msg = String(err?.message || err || '');
+        if (!this.isMissingLearningTableError(err)) {
+          console.warn(`[CommercialLearningEngine] Remote D1 table probe notice: ${msg}`);
+        }
+        return new Set<'sector_bandit_states' | 'commercial_reward_events'>();
+      } finally {
+        this.remoteLearningTablesProbePromise = null;
+      }
+    })();
+
+    return this.remoteLearningTablesProbePromise;
+  }
+
+  private writeRemoteLearningTable(
+    table: 'sector_bandit_states' | 'commercial_reward_events',
+    sql: string,
+    params: any[] = []
+  ): void {
+    if (!this.d1Repo.isRemoteD1WriteAllowed()) return;
+    void (async () => {
+      try {
+        const available = await this.getAvailableRemoteLearningTables();
+        if (!available.has(table)) return;
+        await this.d1Repo.executeWrite(table, sql, params);
+      } catch (err: any) {
+        if (this.isMissingLearningTableError(err)) {
+          if (this.remoteLearningTablesCache) {
+            this.remoteLearningTablesCache.delete(table);
+          }
+          return;
+        }
+        console.warn(`[CommercialLearningEngine] Remote D1 write failed for ${table}: ${err?.message || err}`);
+      }
+    })();
+  }
 
   /**
    * Initializes or gets the bandit state for all 8 canonical sectors.
@@ -219,16 +286,14 @@ export class CommercialLearningEngine {
           `).run(code);
         } catch {}
 
-        if (this.d1Repo.isRemoteD1Configured()) {
-          this.d1Repo.executeWrite(
-            'sector_bandit_states',
-            `INSERT OR IGNORE INTO sector_bandit_states (
-              sector_code, alpha, beta, verified_interactions, total_reward,
-              conversions_count, cold_start_complete, allocation_weight, updated_at
-            ) VALUES (?, 1.0, 1.0, 0, 0.0, 0, 0, 0.125, datetime('now'))`,
-            [code]
-          ).catch(() => {});
-        }
+        this.writeRemoteLearningTable(
+          'sector_bandit_states',
+          `INSERT OR IGNORE INTO sector_bandit_states (
+            sector_code, alpha, beta, verified_interactions, total_reward,
+            conversions_count, cold_start_complete, allocation_weight, updated_at
+          ) VALUES (?, 1.0, 1.0, 0, 0.0, 0, 0, 0.125, datetime('now'))`,
+          [code]
+        );
       }
     }
 
@@ -351,25 +416,23 @@ export class CommercialLearningEngine {
       return 0;
     }
 
-    // Persist to remote D1 asynchronously if configured
-    if (this.d1Repo.isRemoteD1Configured()) {
-      this.d1Repo.executeWrite(
-        'commercial_reward_events',
-        `INSERT OR IGNORE INTO commercial_reward_events (
-          event_id, sector_code, event_type, reward_delta, evidence_ref,
-          is_verified_human, metadata_json, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
-        [
-          eventId,
-          sectorCode,
-          event.eventType,
-          reward,
-          event.evidenceRef || event.sourceClickId || null,
-          isVerifiedHumanInt,
-          JSON.stringify(event.metadata || { notes: event.notes, userAgent: event.userAgent })
-        ]
-      ).catch(() => {});
-    }
+    // Persist to remote D1 asynchronously if optional table exists on active D1 baseline
+    this.writeRemoteLearningTable(
+      'commercial_reward_events',
+      `INSERT OR IGNORE INTO commercial_reward_events (
+        event_id, sector_code, event_type, reward_delta, evidence_ref,
+        is_verified_human, metadata_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+      [
+        eventId,
+        sectorCode,
+        event.eventType,
+        reward,
+        event.evidenceRef || event.sourceClickId || null,
+        isVerifiedHumanInt,
+        JSON.stringify(event.metadata || { notes: event.notes, userAgent: event.userAgent })
+      ]
+    );
 
     // 2. State & posterior updates (ONLY if verified human interaction and not diagnostic)
     state.cumulativeReward += reward;
@@ -427,31 +490,29 @@ export class CommercialLearningEngine {
       );
     } catch {}
 
-    if (this.d1Repo.isRemoteD1Configured()) {
-      this.d1Repo.executeWrite(
-        'sector_bandit_states',
-        `UPDATE sector_bandit_states SET
-          alpha = ?,
-          beta = ?,
-          verified_interactions = ?,
-          total_reward = ?,
-          conversions_count = ?,
-          cold_start_complete = ?,
-          allocation_weight = ?,
-          updated_at = datetime('now')
-        WHERE sector_code = ?`,
-        [
-          state.alpha,
-          state.beta,
-          state.verifiedHumanInteractions,
-          state.cumulativeReward,
-          state.conversionsCount,
-          coldStartCompleteInt,
-          state.allocationWeight,
-          sectorCode
-        ]
-      ).catch(() => {});
-    }
+    this.writeRemoteLearningTable(
+      'sector_bandit_states',
+      `UPDATE sector_bandit_states SET
+        alpha = ?,
+        beta = ?,
+        verified_interactions = ?,
+        total_reward = ?,
+        conversions_count = ?,
+        cold_start_complete = ?,
+        allocation_weight = ?,
+        updated_at = datetime('now')
+      WHERE sector_code = ?`,
+      [
+        state.alpha,
+        state.beta,
+        state.verifiedHumanInteractions,
+        state.cumulativeReward,
+        state.conversionsCount,
+        coldStartCompleteInt,
+        state.allocationWeight,
+        sectorCode
+      ]
+    );
 
     return reward;
   }
@@ -606,13 +667,11 @@ export class CommercialLearningEngine {
       db.prepare(`UPDATE sector_bandit_states SET last_selected_at = datetime('now') WHERE sector_code = ?`).run(selectedSector);
     } catch {}
 
-    if (this.d1Repo.isRemoteD1Configured()) {
-      this.d1Repo.executeWrite(
-        'sector_bandit_states',
-        `UPDATE sector_bandit_states SET last_selected_at = datetime('now') WHERE sector_code = ?`,
-        [selectedSector]
-      ).catch(() => {});
-    }
+    this.writeRemoteLearningTable(
+      'sector_bandit_states',
+      `UPDATE sector_bandit_states SET last_selected_at = datetime('now') WHERE sector_code = ?`,
+      [selectedSector]
+    );
 
     return {
       selectedSector,

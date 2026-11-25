@@ -1040,7 +1040,8 @@ app.get('/compare/:sectorSlug', async (c) => {
 
 // Top-level public /vs/:comparisonSlug Head-to-Head Comparison Engine
 app.get('/vs/:comparisonSlug', async (c) => {
-  return app.request(`/api/v1/vs/${encodeURIComponent(c.req.param('comparisonSlug'))}`, {
+  const reqUrl = new URL(c.req.url);
+  return app.request(`/api/v1/vs/${encodeURIComponent(c.req.param('comparisonSlug'))}${reqUrl.search}`, {
     method: 'GET',
     headers: c.req.raw.headers
   });
@@ -1048,7 +1049,8 @@ app.get('/vs/:comparisonSlug', async (c) => {
 
 // Top-level public /best/:intentSlug Programmatic Fair-Price Buyer Hub
 app.get('/best/:intentSlug', async (c) => {
-  return app.request(`/api/v1/best/${encodeURIComponent(c.req.param('intentSlug'))}`, {
+  const reqUrl = new URL(c.req.url);
+  return app.request(`/api/v1/best/${encodeURIComponent(c.req.param('intentSlug'))}${reqUrl.search}`, {
     method: 'GET',
     headers: c.req.raw.headers
   });

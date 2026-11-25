@@ -160,6 +160,46 @@ function getProductImageUrl(d: any): string {
   return /^https:\/\//i.test(raw) ? raw : '';
 }
 
+export interface AttributionQueryParams {
+  utmSource?: string;
+  utmMedium?: string;
+  utmCampaign?: string;
+  utmTerm?: string;
+}
+
+function sanitizeAttrParam(raw?: string | null): string {
+  const val = String(raw || '').trim();
+  return /^[a-zA-Z0-9_.\-]{1,64}$/.test(val) ? val : '';
+}
+
+function appendAttributionParams(
+  baseUrl: string,
+  defaults: { utmSource?: string; placement?: string },
+  attribution?: AttributionQueryParams
+): string {
+  try {
+    const parsed = new URL(baseUrl, 'https://placeholder.local');
+    const incomingSource = sanitizeAttrParam(attribution?.utmSource);
+    const effectiveSource = incomingSource || sanitizeAttrParam(defaults.utmSource);
+    if (effectiveSource) {
+      parsed.searchParams.set('utm_source', effectiveSource);
+    }
+    const placement = sanitizeAttrParam(defaults.placement);
+    if (placement) {
+      parsed.searchParams.set('placement', placement);
+    }
+    const med = sanitizeAttrParam(attribution?.utmMedium);
+    if (med) parsed.searchParams.set('utm_medium', med);
+    const cmp = sanitizeAttrParam(attribution?.utmCampaign);
+    if (cmp) parsed.searchParams.set('utm_campaign', cmp);
+    const term = sanitizeAttrParam(attribution?.utmTerm);
+    if (term) parsed.searchParams.set('utm_term', term);
+    return baseUrl.startsWith('http') ? parsed.toString() : `${parsed.pathname}${parsed.search}${parsed.hash}`;
+  } catch {
+    return baseUrl;
+  }
+}
+
 export function generateComparisonPairs(deals: any[], limit: number = 15): ComparisonPair[] {
   const baseFilter = (d: any) =>
     d &&
@@ -1115,6 +1155,7 @@ export class StaticSiteGenerator {
     config: StaticSiteConfig,
     options?: {
       dealCtaAssignment?: { experimentId: string; variant: 'baseline' | 'treatment'; ctaText: string; promoted?: boolean };
+      attribution?: AttributionQueryParams;
     }
   ): string {
     const siteName = (config.siteName || '').trim();
@@ -1175,10 +1216,17 @@ export class StaticSiteGenerator {
 
     const dealCards = activeDeals.map((deal: any) => {
       const baseTargetHref = deal.id ? `${config.siteUrl}/api/v1/public/deals/${deal.id}/redirect` : (deal.trackingUrl || deal.productUrl);
-      const targetHref = deal.id
+      const rawTargetHref = deal.id
         ? `${baseTargetHref}?ab_exp=${encodeURIComponent(ctaAssignment.experimentId)}&ab_variant=${encodeURIComponent(ctaAssignment.variant)}`
         : baseTargetHref;
-      const amazonRailHref = `${config.siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(deal.title || '').slice(0, 120))}&dealId=${encodeURIComponent(String(deal.id || ''))}`;
+      const targetHref = deal.id
+        ? appendAttributionParams(rawTargetHref, { placement: 'deals_card' }, options?.attribution)
+        : rawTargetHref;
+      const amazonRailHref = appendAttributionParams(
+        `${config.siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(deal.title || '').slice(0, 120))}&dealId=${encodeURIComponent(String(deal.id || ''))}`,
+        { placement: 'deals_amazon_rail' },
+        options?.attribution
+      );
       const detailSlug = deal.slug || deal.canonicalSlug || deal.id;
       const detailHref = detailSlug ? `/deals/${encodeURIComponent(detailSlug)}` : targetHref;
       const rawObservedAt = String(deal.lastVerifiedAt || deal.lastCheckedAt || deal.updatedAt || '');
@@ -1244,10 +1292,10 @@ export class StaticSiteGenerator {
         <div style="margin-top: 1.15rem; padding-top: 0.9rem; border-top: 1px solid #1e293b; display: flex; flex-direction: column; gap: 0.5rem;">
           <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
             <span style="font-size: 0.74rem; color: #94a3b8;"><strong>#Affiliate</strong> &bull; #Ad &bull; Official Brand Store</span>
-            <a href="${this.escapeHtml(targetHref)}" target="_blank" rel="sponsored nofollow noopener" data-ab-experiment="${this.escapeHtml(ctaAssignment.experimentId)}" data-ab-variant="${this.escapeHtml(ctaAssignment.variant)}" style="background: #06b6d4; color: #020617; font-weight: 700; font-size: 0.84rem; padding: 0.55rem 0.95rem; border-radius: 8px; text-decoration: none; min-height: 40px; display: inline-flex; align-items: center; justify-content: center;">${this.escapeHtml(ctaAssignment.ctaText)}</a>
+            <a href="${this.escapeHtml(targetHref)}" target="_blank" rel="sponsored noopener noreferrer" data-ab-experiment="${this.escapeHtml(ctaAssignment.experimentId)}" data-ab-variant="${this.escapeHtml(ctaAssignment.variant)}" style="background: #06b6d4; color: #020617; font-weight: 700; font-size: 0.84rem; padding: 0.55rem 0.95rem; border-radius: 8px; text-decoration: none; min-height: 40px; display: inline-flex; align-items: center; justify-content: center;">${this.escapeHtml(ctaAssignment.ctaText)}</a>
           </div>
           <a href="${this.escapeHtml(detailHref)}" style="display: block; text-align: center; background: #0f172a; border: 1px solid #334155; color: #cbd5e1; font-weight: 600; font-size: 0.78rem; padding: 0.45rem 0.65rem; border-radius: 7px; text-decoration: none;">Ingredients, Video Reviews &amp; Who Should Skip &rarr;</a>
-          <a href="${this.escapeHtml(amazonRailHref)}" target="_blank" rel="sponsored nofollow noopener" style="display: block; text-align: center; background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); color: #fcd34d; font-weight: 600; font-size: 0.76rem; padding: 0.45rem 0.65rem; border-radius: 7px; text-decoration: none;">${amazonRailLabel}</a>
+          <a href="${this.escapeHtml(amazonRailHref)}" target="_blank" rel="sponsored noopener noreferrer" style="display: block; text-align: center; background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); color: #fcd34d; font-weight: 600; font-size: 0.76rem; padding: 0.45rem 0.65rem; border-radius: 7px; text-decoration: none;">${amazonRailLabel}</a>
         </div>
       </div>
     `;
@@ -1415,7 +1463,7 @@ export class StaticSiteGenerator {
             '<div style="color:#94a3b8;font-size:0.76rem;">' + escFp(o.merchant) + (o.couponCode ? ' · Code: ' + escFp(o.couponCode) : '') + ' · ' + escFp(o.disclosure || '#Ad') + '</div></div>' +
             '<div style="display:flex;align-items:center;gap:0.65rem;flex-shrink:0;">' +
               '<span style="font-weight:700;color:#fff;font-variant-numeric:tabular-nums;">' + escFp(priceTxt) + '</span>' +
-              '<a href="' + escFp(o.trackingRedirectUrl) + '" target="_blank" rel="sponsored nofollow noopener" style="background:' + (isAmz ? '#f59e0b' : '#06b6d4') + ';color:#020617;padding:0.35rem 0.7rem;border-radius:6px;font-weight:700;font-size:0.76rem;text-decoration:none;">' + escFp(btnTxt) + '</a>' +
+              '<a href="' + escFp(o.trackingRedirectUrl) + '" target="_blank" rel="sponsored noopener noreferrer" style="background:' + (isAmz ? '#f59e0b' : '#06b6d4') + ';color:#020617;padding:0.35rem 0.7rem;border-radius:6px;font-weight:700;font-size:0.76rem;text-decoration:none;">' + escFp(btnTxt) + '</a>' +
             '</div></div>';
         }).join('');
         out.innerHTML =
@@ -1785,8 +1833,8 @@ ${this.serializeSafeJsonLd(productSchema, true)}
         </div>`;
       })()}
       <div style="display:flex;flex-wrap:wrap;gap:0.75rem;align-items:center;margin-top:0.5rem;">
-        <a href="${this.escapeHtml(redirectHref)}" target="_blank" rel="sponsored nofollow noopener" class="cta-btn" style="margin-top:0;">Claim Verified Deal on ${this.escapeHtml(deal.merchant)} &rarr;</a>
-        <a href="${this.escapeHtml(`${config.siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(deal.title || '').slice(0, 120))}&dealId=${encodeURIComponent(String(deal.id || ''))}`)}" target="_blank" rel="sponsored nofollow noopener" style="display:inline-block;background:rgba(245,158,11,0.14);border:1px solid rgba(245,158,11,0.4);color:#fcd34d;font-weight:700;padding:0.9rem 1.35rem;border-radius:10px;text-decoration:none;font-size:0.92rem;">Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)</a>
+        <a href="${this.escapeHtml(redirectHref)}" target="_blank" rel="sponsored noopener noreferrer" class="cta-btn" style="margin-top:0;">Claim Verified Deal on ${this.escapeHtml(deal.merchant)} &rarr;</a>
+        <a href="${this.escapeHtml(`${config.siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(deal.title || '').slice(0, 120))}&dealId=${encodeURIComponent(String(deal.id || ''))}`)}" target="_blank" rel="sponsored noopener noreferrer" style="display:inline-block;background:rgba(245,158,11,0.14);border:1px solid rgba(245,158,11,0.4);color:#fcd34d;font-weight:700;padding:0.9rem 1.35rem;border-radius:10px;text-decoration:none;font-size:0.92rem;">Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)</a>
       </div>
       ${this.renderPriceDropAlertBoxHtml({ productSlug: deal.slug || deal.canonicalSlug || deal.id, category: deal.category, currentPriceINR: priceNum, dealId: deal.id })}
 
@@ -1850,7 +1898,8 @@ ${this.serializeSafeJsonLd(productSchema, true)}
   public renderComparisonHtml(
     pair: ComparisonPair,
     config: StaticSiteConfig,
-    allPairs: ComparisonPair[] = []
+    allPairs: ComparisonPair[] = [],
+    options?: { attribution?: AttributionQueryParams }
   ): string {
     const a = pair.dealA;
     const b = pair.dealB;
@@ -1874,10 +1923,10 @@ ${this.serializeSafeJsonLd(productSchema, true)}
     const fitBuyB = b.buyerFitSummary || b.evidenceJson?.buyerFitSummary || b.targetBuyerSegment || (isSkincareCompare ? 'Daily active skincare routine buyers' : 'General value buyers');
     const description = `Compare ${a.title} (₹${priceA.toLocaleString('en-IN')}${unitA.pricePerMlLabel ? `, ${unitA.pricePerMlLabel}` : ''}) vs ${b.title} (₹${priceB.toLocaleString('en-IN')}${unitB.pricePerMlLabel ? `, ${unitB.pricePerMlLabel}` : ''}) with key ingredients, cost per ml, and verified store links.`;
 
-    const rail1A = `${config.siteUrl}/api/v1/public/deals/${encodeURIComponent(a.id)}/redirect?utm_source=vs_compare`;
-    const rail1B = `${config.siteUrl}/api/v1/public/deals/${encodeURIComponent(b.id)}/redirect?utm_source=vs_compare`;
-    const rail2A = `${config.siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(a.title || '').slice(0, 120))}&dealId=${encodeURIComponent(a.id)}`;
-    const rail2B = `${config.siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(b.title || '').slice(0, 120))}&dealId=${encodeURIComponent(b.id)}`;
+    const rail1A = appendAttributionParams(`${config.siteUrl}/api/v1/public/deals/${encodeURIComponent(a.id)}/redirect`, { utmSource: 'vs_compare', placement: 'vs_compare' }, options?.attribution);
+    const rail1B = appendAttributionParams(`${config.siteUrl}/api/v1/public/deals/${encodeURIComponent(b.id)}/redirect`, { utmSource: 'vs_compare', placement: 'vs_compare' }, options?.attribution);
+    const rail2A = appendAttributionParams(`${config.siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(a.title || '').slice(0, 120))}&dealId=${encodeURIComponent(a.id)}`, { placement: 'vs_compare_amazon' }, options?.attribution);
+    const rail2B = appendAttributionParams(`${config.siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(b.title || '').slice(0, 120))}&dealId=${encodeURIComponent(b.id)}`, { placement: 'vs_compare_amazon' }, options?.attribution);
 
     const itemListSchema = {
       '@context': 'https://schema.org',
@@ -2026,14 +2075,14 @@ ${this.serializeSafeJsonLd(itemListSchema, true)}
             <th>Dual-Rail Checkout (#Ad)</th>
             <td>
               <div style="display:flex;flex-direction:column;gap:0.5rem;">
-                <a href="${this.escapeHtml(rail1A)}" target="_blank" rel="sponsored nofollow noopener" style="display:inline-block;text-align:center;background:#06b6d4;color:#020617;font-weight:700;padding:0.55rem 0.9rem;border-radius:8px;text-decoration:none;font-size:0.84rem;">Buy at ${this.escapeHtml(a.merchant)} &rarr;</a>
-                <a href="${this.escapeHtml(rail2A)}" target="_blank" rel="sponsored nofollow noopener" style="display:inline-block;text-align:center;background:rgba(245,158,11,0.14);border:1px solid rgba(245,158,11,0.4);color:#fcd34d;font-weight:600;padding:0.48rem 0.75rem;border-radius:8px;text-decoration:none;font-size:0.78rem;">Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)</a>
+                <a href="${this.escapeHtml(rail1A)}" target="_blank" rel="sponsored noopener noreferrer" style="display:inline-block;text-align:center;background:#06b6d4;color:#020617;font-weight:700;padding:0.55rem 0.9rem;border-radius:8px;text-decoration:none;font-size:0.84rem;">Buy at ${this.escapeHtml(a.merchant)} &rarr;</a>
+                <a href="${this.escapeHtml(rail2A)}" target="_blank" rel="sponsored noopener noreferrer" style="display:inline-block;text-align:center;background:rgba(245,158,11,0.14);border:1px solid rgba(245,158,11,0.4);color:#fcd34d;font-weight:600;padding:0.48rem 0.75rem;border-radius:8px;text-decoration:none;font-size:0.78rem;">Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)</a>
               </div>
             </td>
             <td>
               <div style="display:flex;flex-direction:column;gap:0.5rem;">
-                <a href="${this.escapeHtml(rail1B)}" target="_blank" rel="sponsored nofollow noopener" style="display:inline-block;text-align:center;background:#06b6d4;color:#020617;font-weight:700;padding:0.55rem 0.9rem;border-radius:8px;text-decoration:none;font-size:0.84rem;">Buy at ${this.escapeHtml(b.merchant)} &rarr;</a>
-                <a href="${this.escapeHtml(rail2B)}" target="_blank" rel="sponsored nofollow noopener" style="display:inline-block;text-align:center;background:rgba(245,158,11,0.14);border:1px solid rgba(245,158,11,0.4);color:#fcd34d;font-weight:600;padding:0.48rem 0.75rem;border-radius:8px;text-decoration:none;font-size:0.78rem;">Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)</a>
+                <a href="${this.escapeHtml(rail1B)}" target="_blank" rel="sponsored noopener noreferrer" style="display:inline-block;text-align:center;background:#06b6d4;color:#020617;font-weight:700;padding:0.55rem 0.9rem;border-radius:8px;text-decoration:none;font-size:0.84rem;">Buy at ${this.escapeHtml(b.merchant)} &rarr;</a>
+                <a href="${this.escapeHtml(rail2B)}" target="_blank" rel="sponsored noopener noreferrer" style="display:inline-block;text-align:center;background:rgba(245,158,11,0.14);border:1px solid rgba(245,158,11,0.4);color:#fcd34d;font-weight:600;padding:0.48rem 0.75rem;border-radius:8px;text-decoration:none;font-size:0.78rem;">Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)</a>
               </div>
             </td>
           </tr>
@@ -2072,7 +2121,8 @@ ${this.serializeSafeJsonLd(itemListSchema, true)}
     hub: BuyerIntentHub,
     allHubs: BuyerIntentHub[] = [],
     comparisons: ComparisonPair[] = [],
-    config: StaticSiteConfig
+    config: StaticSiteConfig,
+    options?: { attribution?: AttributionQueryParams }
   ): string {
     const canonicalUrl = `${config.siteUrl}/best/${encodeURIComponent(hub.intentSlug)}`;
     const deals = hub.deals || [];
@@ -2119,8 +2169,8 @@ ${this.serializeSafeJsonLd(itemListSchema, true)}
     const renderPickCard = (label: string, d: any) => {
       if (!d) return '';
       const slug = d.slug || d.canonicalSlug || d.id;
-      const rail1 = `${config.siteUrl}/api/v1/public/deals/${encodeURIComponent(d.id)}/redirect?utm_source=best_hub_pick`;
-      const rail2 = `${config.siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(d.title || '').slice(0, 120))}&dealId=${encodeURIComponent(d.id)}`;
+      const rail1 = appendAttributionParams(`${config.siteUrl}/api/v1/public/deals/${encodeURIComponent(d.id)}/redirect`, { utmSource: 'best_hub_pick', placement: 'best_hub_pick' }, options?.attribution);
+      const rail2 = appendAttributionParams(`${config.siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(d.title || '').slice(0, 120))}&dealId=${encodeURIComponent(d.id)}`, { placement: 'best_hub_pick_amazon' }, options?.attribution);
       const unitInfo = getUnitCostDisplay(d);
       const imgUrl = getProductImageUrl(d);
       return `
@@ -2134,8 +2184,8 @@ ${this.serializeSafeJsonLd(itemListSchema, true)}
           ${Number(d.referencePriceINR || 0) > Number(d.currentPriceINR || 0) ? `<div style="font-size:0.75rem;color:#94a3b8;font-variant-numeric:tabular-nums;">Merchant Listed MRP: <span style="text-decoration:line-through;">₹${Number(d.referencePriceINR).toLocaleString('en-IN')}</span></div>` : ''}
         </div>
         <div style="display:flex;flex-direction:column;gap:0.4rem;">
-          <a href="${this.escapeHtml(rail1)}" target="_blank" rel="sponsored nofollow noopener" style="text-align:center;background:#06b6d4;color:#020617;font-weight:700;padding:0.55rem 0.75rem;border-radius:6px;text-decoration:none;font-size:0.8rem;">Official Brand Store (#Affiliate) &rarr;</a>
-          <a href="${this.escapeHtml(rail2)}" target="_blank" rel="sponsored nofollow noopener" style="text-align:center;background:rgba(245,158,11,0.14);border:1px solid rgba(245,158,11,0.38);color:#fcd34d;font-weight:600;padding:0.45rem 0.65rem;border-radius:6px;text-decoration:none;font-size:0.75rem;">Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)</a>
+          <a href="${this.escapeHtml(rail1)}" target="_blank" rel="sponsored noopener noreferrer" style="text-align:center;background:#06b6d4;color:#020617;font-weight:700;padding:0.55rem 0.75rem;border-radius:6px;text-decoration:none;font-size:0.8rem;">Official Brand Store (#Affiliate) &rarr;</a>
+          <a href="${this.escapeHtml(rail2)}" target="_blank" rel="sponsored noopener noreferrer" style="text-align:center;background:rgba(245,158,11,0.14);border:1px solid rgba(245,158,11,0.38);color:#fcd34d;font-weight:600;padding:0.45rem 0.65rem;border-radius:6px;text-decoration:none;font-size:0.75rem;">Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)</a>
         </div>
       </div>`;
     };
@@ -2145,8 +2195,8 @@ ${this.serializeSafeJsonLd(itemListSchema, true)}
       const observedAt = formatHumanVerifiedDate(d.lastVerifiedAt || d.lastCheckedAt || d.updatedAt || '');
       const unitInfo = getUnitCostDisplay(d);
       const specs = getRawSpecsMap(d);
-      const rail1 = `${config.siteUrl}/api/v1/public/deals/${encodeURIComponent(d.id)}/redirect?utm_source=best_hub_table`;
-      const rail2 = `${config.siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(d.title || '').slice(0, 120))}&dealId=${encodeURIComponent(d.id)}`;
+      const rail1 = appendAttributionParams(`${config.siteUrl}/api/v1/public/deals/${encodeURIComponent(d.id)}/redirect`, { utmSource: 'best_hub_table', placement: 'best_hub_table' }, options?.attribution);
+      const rail2 = appendAttributionParams(`${config.siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(d.title || '').slice(0, 120))}&dealId=${encodeURIComponent(d.id)}`, { placement: 'best_hub_table_amazon' }, options?.attribution);
       const hasMrp = Number(d.referencePriceINR || 0) > Number(d.currentPriceINR || 0);
       return `
       <tr>
@@ -2164,8 +2214,8 @@ ${this.serializeSafeJsonLd(itemListSchema, true)}
         </td>
         <td>
           <div style="display:flex;flex-direction:column;gap:0.4rem;min-width:190px;">
-            <a href="${this.escapeHtml(rail1)}" target="_blank" rel="sponsored nofollow noopener" style="text-align:center;background:#06b6d4;color:#020617;font-weight:700;padding:0.45rem 0.7rem;border-radius:6px;text-decoration:none;font-size:0.8rem;">Official Brand Store (#Affiliate) &rarr;</a>
-            <a href="${this.escapeHtml(rail2)}" target="_blank" rel="sponsored nofollow noopener" style="text-align:center;background:rgba(245,158,11,0.14);border:1px solid rgba(245,158,11,0.38);color:#fcd34d;font-weight:600;padding:0.38rem 0.6rem;border-radius:6px;text-decoration:none;font-size:0.75rem;">Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)</a>
+            <a href="${this.escapeHtml(rail1)}" target="_blank" rel="sponsored noopener noreferrer" style="text-align:center;background:#06b6d4;color:#020617;font-weight:700;padding:0.45rem 0.7rem;border-radius:6px;text-decoration:none;font-size:0.8rem;">Official Brand Store (#Affiliate) &rarr;</a>
+            <a href="${this.escapeHtml(rail2)}" target="_blank" rel="sponsored noopener noreferrer" style="text-align:center;background:rgba(245,158,11,0.14);border:1px solid rgba(245,158,11,0.38);color:#fcd34d;font-weight:600;padding:0.38rem 0.6rem;border-radius:6px;text-decoration:none;font-size:0.75rem;">Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)</a>
           </div>
         </td>
       </tr>`;
@@ -2810,7 +2860,7 @@ ${this.serializeSafeJsonLd(faqSchema, true)}
         </div>
         <h4 style="margin:0 0 8px 0;font-size:14px;color:#0f172a;line-height:1.4;">${this.escapeHtml(d.title)}</h4>
         <div style="font-size:18px;font-weight:bold;color:#1e293b;margin-bottom:12px;">₹${(d.currentPriceINR || 0).toLocaleString('en-IN')} ${d.discountBadge ? `<span style="font-size:12px;color:#16a34a;">(${this.escapeHtml(d.discountBadge)})</span>` : ''}</div>
-        <a href="${config.siteUrl}/api/v1/public/deals/${d.id}/redirect" target="_blank" rel="sponsored nofollow noopener" style="display:block;text-align:center;background:#0284c7;color:#fff;padding:8px 12px;border-radius:6px;text-decoration:none;font-size:13px;font-weight:bold;">View Offer on ${this.escapeHtml(d.merchant)} &rarr;</a>
+        <a href="${config.siteUrl}/api/v1/public/deals/${d.id}/redirect" target="_blank" rel="sponsored noopener noreferrer" style="display:block;text-align:center;background:#0284c7;color:#fff;padding:8px 12px;border-radius:6px;text-decoration:none;font-size:13px;font-weight:bold;">View Offer on ${this.escapeHtml(d.merchant)} &rarr;</a>
       </div>
     `).join('');
 
@@ -3153,7 +3203,7 @@ ${this.serializeSafeJsonLd(schemaObj, true)}
           <span style="background:#dcfce7;color:#166534;padding:3px 8px;border-radius:4px;font-size:12px;font-weight:bold;">${this.escapeHtml(d.discountBadge || 'VERIFIED DEAL')}</span>
         </td>
         <td>
-          <a href="${config.siteUrl}/api/v1/public/deals/${d.id}/redirect" target="_blank" rel="sponsored nofollow noopener" style="display:inline-block;background:#2563eb;color:#fff;padding:8px 14px;border-radius:6px;text-decoration:none;font-weight:bold;font-size:13px;">View Deal &rarr;</a>
+          <a href="${config.siteUrl}/api/v1/public/deals/${d.id}/redirect" target="_blank" rel="sponsored noopener noreferrer" style="display:inline-block;background:#2563eb;color:#fff;padding:8px 14px;border-radius:6px;text-decoration:none;font-weight:bold;font-size:13px;">View Deal &rarr;</a>
         </td>
       </tr>
     `).join('');
@@ -3295,8 +3345,8 @@ ${this.serializeSafeJsonLd(schemaObj, true)}
               ${mrp > price ? `<span class="price-mrp">MRP &#8377;${mrp.toLocaleString('en-IN')}</span>` : ''}
             </div>
             <div class="cta-row">
-              <a href="${this.escapeHtml(storeUrl)}" target="_blank" rel="sponsored nofollow noopener" class="cta-primary">Official Store Offer &rarr;</a>
-              <a href="${this.escapeHtml(amazonUrl)}" target="_blank" rel="sponsored nofollow noopener" class="cta-secondary">Check Live on Amazon.in</a>
+              <a href="${this.escapeHtml(storeUrl)}" target="_blank" rel="sponsored noopener noreferrer" class="cta-primary">Official Store Offer &rarr;</a>
+              <a href="${this.escapeHtml(amazonUrl)}" target="_blank" rel="sponsored noopener noreferrer" class="cta-secondary">Check Live on Amazon.in</a>
             </div>
           </article>`;
         }).join('\n')
