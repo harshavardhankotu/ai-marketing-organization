@@ -5482,13 +5482,15 @@ export class AutonomousDealDiscoveryEngine {
       }
     }
 
-    // 3. Persistent D1 query for cold-start recovery (workflows table by exact ID only, zero wildcard LIKE)
+    // 3. Persistent D1 query for cold-start recovery (workflows table by exact ID or JSON slug equality, zero wildcard LIKE)
     if (!resolvedCandidate) {
       try {
         const sql = `
           SELECT id, status, current_step, inputs_json, outputs_json, error_info, created_at, updated_at
           FROM workflows
-          WHERE workflow_type = 'PUBLIC_DEAL' AND (id = ? OR id = ?)
+          WHERE workflow_type = 'PUBLIC_DEAL' AND (
+            id = ? OR id = ? OR json_extract(inputs_json, '$.slug') = ? OR json_extract(inputs_json, '$.canonicalSlug') = ?
+          )
           LIMIT 2
         `;
         const p1 = cleanId;
@@ -5496,11 +5498,11 @@ export class AutonomousDealDiscoveryEngine {
 
         let rows: any[] = [];
         if (useRemoteD1) {
-          const res = await this.d1Repo.executeRead('workflows', sql, [p1, p2]);
+          const res = await this.d1Repo.executeRead('workflows', sql, [p1, p2, p1, p1]);
           rows = Array.isArray(res?.results) ? res.results : [];
         } else {
           const { getDb } = await import('../db/client.js');
-          rows = getDb().prepare(sql).all(p1, p2) as any[];
+          rows = getDb().prepare(sql).all(p1, p2, p1, p1) as any[];
         }
 
         if (rows.length > 1) return null;
@@ -6277,10 +6279,12 @@ export class AutonomousDealDiscoveryEngine {
     let campaignsRepaired = 0;
 
     const inferCategory = (text: string, sectorCode?: string): string => {
-      if (sectorCode === 'SECTOR_G_LIFESTYLE' || /serum|skin|beauty|face|niacinamide|vitamin c|kumkumadi|beard|groom|asaya|plum|dot|kama|swiss|man company|mcaffeine/i.test(text)) {
+      if (sectorCode === 'SECTOR_B_ELECTRONICS') return 'Electronics';
+      if (sectorCode === 'SECTOR_G_LIFESTYLE') return 'Health & Beauty';
+      if (/\b(serum|skincare|skin\s*care|beauty|face\s+(?:wash|serum|cream)|niacinamide|vitamin\s*c|kumkumadi|beard|groom(?:ing)?|asaya|plum|dot\s*&\s*key|kama|swiss\s*beauty|man\s*company|mcaffeine)\b/i.test(text)) {
         return 'Health & Beauty';
       }
-      if (sectorCode === 'SECTOR_B_ELECTRONICS' || /earbud|airdopes|soundbar|watch|boat|noise|fire-boltt|dashcam|speaker/i.test(text)) {
+      if (/\b(earbud|earbuds|airdopes|soundbar|smartwatch|watch|boat|noise|fire-boltt|dashcam|speaker|laptop|bluetooth)\b/i.test(text)) {
         return 'Electronics';
       }
       return 'General';
@@ -6303,8 +6307,8 @@ export class AutonomousDealDiscoveryEngine {
       }
 
       const campRes = useRemote
-        ? await this.d1Repo.executeRead('cuelinks_campaigns', "SELECT campaign_id, merchant_name, merchant_domain FROM cuelinks_campaigns WHERE category = ? LIMIT 100", ['[object Object]'])
-        : { results: getDb().prepare("SELECT campaign_id, merchant_name, merchant_domain FROM cuelinks_campaigns WHERE category = ? LIMIT 100").all('[object Object]') };
+        ? await this.d1Repo.executeRead('cuelinks_campaigns', "SELECT campaign_id, name AS merchant_name, merchant_domain FROM cuelinks_campaigns WHERE category = ? LIMIT 100", ['[object Object]'])
+        : { results: getDb().prepare("SELECT campaign_id, name AS merchant_name, merchant_domain FROM cuelinks_campaigns WHERE category = ? LIMIT 100").all('[object Object]') };
       const campRows: any[] = Array.isArray(campRes?.results) ? campRes.results : [];
       for (const c of campRows) {
         const nextCat = inferCategory(`${c.merchant_name || ''} ${c.merchant_domain || ''}`);
@@ -6324,55 +6328,80 @@ export class AutonomousDealDiscoveryEngine {
   }
 
   /**
-   * PR #99: Verifies each of the 6 live skincare serum SKUs via Cuelinks Channel 331585 `convertLink`
+   * PR #99: Verifies each of the 6 live skincare serum SKUs via live merchant probe + Cuelinks Channel 331585 `convertLink`
    * and persists them to D1 (`workflows`, `public_deals`, `partner_offers`) as `isSeedFallback: false`
    * so `/deals`, `/vs/`, `/best/`, and `/api/v1/public/deals/:id/redirect` resolve 100% durably.
    */
   public async publishVerifiedSkincareCatalog(
     organizationId: string = 'org_owner_primary',
     businessId: string = 'biz_platform_aro'
-  ): Promise<{ publishedCount: number; deals: Array<{ id: string; slug: string; campaignId: string }>; repairs: { publicDealsRepaired: number; campaignsRepaired: number } }> {
+  ): Promise<{ publishedCount: number; deals: Array<{ id: string; slug: string; campaignId: string; probeStatus: string }>; repairs: { publicDealsRepaired: number; campaignsRepaired: number } }> {
     const cuelinksClient = CuelinksV3Client.getInstance();
     const cuelinksSync = CuelinksSyncManager.getInstance(cuelinksClient);
     const channelRes = await cuelinksSync.getApprovedChannel();
     if (!channelRes.approved || !channelRes.channel?.id) {
       throw new Error('CUELINKS_CHANNEL_UNAVAILABLE: Approved Channel 331585 required to publish live skincare catalog.');
     }
+    const { CommercialOpportunitySelector } = await import('./commercial-opportunity-selector.js');
+    const selector = CommercialOpportunitySelector.getInstance();
     const channelId = Number(channelRes.channel.id);
-    const verifiedAt = new Date().toISOString();
-    const serums = createVerifiedLiveSkincareSerums(verifiedAt);
-    const published: Array<{ id: string; slug: string; campaignId: string }> = [];
+    const serums = createVerifiedLiveSkincareSerums();
+    const published: Array<{ id: string; slug: string; campaignId: string; probeStatus: string }> = [];
 
-    for (const deal of serums) {
-      const convRes = await cuelinksClient.convertLink({
-        url: deal.productUrl,
-        channel_id: channelId,
-        subid: `seed_${deal.id}`,
-        shorten: false
-      });
-      if (!convRes || convRes.affiliated !== true || !convRes.tracking_url || String(convRes.campaign?.id || '') !== String(deal.affiliateCampaignId)) {
-        throw new Error(`CUELINKS_VERIFICATION_FAILED for ${deal.id} (expected campaign ${deal.affiliateCampaignId}, got ${convRes?.campaign?.id})`);
+    try {
+      for (const deal of serums) {
+        const probe = await selector.probeMerchantProduct(deal.productUrl);
+        if (probe.status === 'DEAD_OR_OUT_OF_STOCK' || (probe.probed && probe.available === false)) {
+          throw new Error(`MERCHANT_UNAVAILABLE for ${deal.id}: ${probe.error || probe.status}`);
+        }
+        if (probe.probed && probe.available === true && probe.priceINR && probe.priceINR > 0) {
+          deal.currentPriceINR = probe.priceINR;
+          if (deal.unitVolumeMl && deal.unitVolumeMl > 0) {
+            deal.pricePerMlINR = Number((probe.priceINR / deal.unitVolumeMl).toFixed(2));
+          }
+          const observedNow = new Date().toISOString();
+          deal.observedAt = observedNow;
+          deal.lastCheckedAt = observedNow;
+          deal.lastVerifiedAt = observedNow;
+          deal.updatedAt = observedNow;
+        }
+
+        const convRes = await cuelinksClient.convertLink({
+          url: deal.productUrl,
+          channel_id: channelId,
+          subid: `seed_${deal.id}`,
+          shorten: false
+        });
+        if (!convRes || convRes.affiliated !== true || !convRes.tracking_url || String(convRes.campaign?.id || '') !== String(deal.affiliateCampaignId)) {
+          throw new Error(`CUELINKS_VERIFICATION_FAILED for ${deal.id} (expected campaign ${deal.affiliateCampaignId}, got ${convRes?.campaign?.id})`);
+        }
+
+        deal.trackingUrl = convRes.tracking_url;
+        deal.isSeedFallback = false;
+        deal.verificationStatus = 'AFFILIATE_VERIFIED';
+        deal.evidenceJson = {
+          ...deal.evidenceJson,
+          isSeedFallback: false,
+          pricePerMlINR: deal.pricePerMlINR,
+          merchantProbeStatus: probe.status,
+          affiliateCampaignId: deal.affiliateCampaignId,
+          affiliateNetwork: 'CUELINKS'
+        };
+
+        await this.persistDealToD1(deal, organizationId, businessId);
+        await this.provisionMatchingPartnerOffer(deal, organizationId, businessId);
+        this.dealsMap.set(deal.id, deal);
+        if (deal.slug) this.dealSlugMap.set(deal.slug.toLowerCase(), deal.id);
+        published.push({
+          id: deal.id,
+          slug: deal.slug || deal.canonicalSlug || deal.id,
+          campaignId: String(deal.affiliateCampaignId || ''),
+          probeStatus: probe.status
+        });
       }
-
-      deal.trackingUrl = convRes.tracking_url;
-      deal.isSeedFallback = false;
-      deal.verificationStatus = 'AFFILIATE_VERIFIED';
-      deal.evidenceJson = {
-        ...deal.evidenceJson,
-        isSeedFallback: false,
-        affiliateCampaignId: deal.affiliateCampaignId,
-        affiliateNetwork: 'CUELINKS'
-      };
-
-      await this.persistDealToD1(deal, organizationId, businessId);
-      await this.provisionMatchingPartnerOffer(deal, organizationId, businessId);
-      this.dealsMap.set(deal.id, deal);
-      if (deal.slug) this.dealSlugMap.set(deal.slug.toLowerCase(), deal.id);
-      published.push({
-        id: deal.id,
-        slug: deal.slug || deal.canonicalSlug || deal.id,
-        campaignId: String(deal.affiliateCampaignId || '')
-      });
+    } finally {
+      AutonomousDealDiscoveryEngine.invalidateEligibleDealsCache();
+      this.clearRelationshipCache();
     }
 
     const repairs = await this.repairCorruptObjectCategories();

@@ -138,14 +138,21 @@ function getUnitCostDisplay(d: any): { volumeLabel: string; pricePerMlLabel: str
     if (match) vol = Number(match[1]);
   }
   const price = Number(d?.currentPriceINR || 0);
-  let perMl = Number(d?.pricePerMlINR || d?.evidenceJson?.pricePerMlINR || 0);
-  if (!perMl && vol > 0 && price > 0) {
-    perMl = Number((price / vol).toFixed(2));
-  }
+  const computedPerMl = vol > 0 && price > 0 ? Number((price / vol).toFixed(2)) : 0;
+  const perMl = computedPerMl > 0
+    ? computedPerMl
+    : Number(d?.pricePerMlINR || d?.evidenceJson?.pricePerMlINR || 0);
   return {
     volumeLabel: vol > 0 ? `${vol} ml` : '',
     pricePerMlLabel: perMl > 0 ? `₹${perMl.toFixed(2)}/ml` : ''
   };
+}
+
+function formatStockStatusLabel(deal: any): string {
+  if (isSeedFallbackDeal(deal)) return 'SEED_SNAPSHOT';
+  if (deal?.availability === 'OUT_OF_STOCK') return 'Out of Stock';
+  if (deal?.availability === 'LIMITED_STOCK') return '✓ Limited Stock';
+  return '✓ Verified In-Stock';
 }
 
 function getProductImageUrl(d: any): string {
@@ -347,9 +354,11 @@ const FIXED_BUYER_INTENT_HUBS: HubSeedDefinition[] = [
     priceCapLabel: 'Under ₹1,000',
     categoryLabel: 'Skincare Serums',
     maxPriceINR: 1000,
-    predicate: (d, text, price) =>
-      price > 0 && price <= 1000 &&
-      /(niacinamide|alpha arbutin|rice water|pore)/i.test(text + ' ' + String(d?.subCategory || ''))
+    predicate: (d, text, price) => {
+      const sub = String(d?.subCategory || d?.evidenceJson?.subCategory || '').toLowerCase();
+      const isSerum = sub === 'face-serum' || /\bserum\b/i.test(text);
+      return price > 0 && price <= 1000 && isSerum && /(niacinamide|alpha arbutin|rice water|pore)/i.test(text);
+    }
   },
   {
     intentSlug: 'vitamin-c-and-brightening-serums-india',
@@ -358,9 +367,11 @@ const FIXED_BUYER_INTENT_HUBS: HubSeedDefinition[] = [
     description: 'Side-by-side comparison of stabilized 10%–15% Vitamin C serums, Alpha Arbutin, and Saffron formulations with verified Indian D2C pricing and pack unit costs.',
     priceCapLabel: 'All Tiers',
     categoryLabel: 'Skincare Serums',
-    predicate: (d, text, price) =>
-      price > 0 &&
-      /(vitamin c|ethyl ascorbic|kumkumadi|alpha arbutin|spot targeting|brightening)/i.test(text + ' ' + String(d?.subCategory || ''))
+    predicate: (d, text, price) => {
+      const sub = String(d?.subCategory || d?.evidenceJson?.subCategory || '').toLowerCase();
+      const isSerum = sub === 'face-serum' || /\bserum\b/i.test(text);
+      return price > 0 && isSerum && /(vitamin c|ethyl ascorbic|kumkumadi|alpha arbutin|spot targeting|brightening)/i.test(text);
+    }
   },
   {
     intentSlug: 'audio-and-earbuds-under-2000',
@@ -1193,7 +1204,7 @@ export class StaticSiteGenerator {
               ${hasPriceDrop ? `<span style="font-size: 0.72rem; background: rgba(16, 185, 129, 0.2); color: #6ee7b7; border: 1px solid rgba(16, 185, 129, 0.35); padding: 0.2rem 0.5rem; border-radius: 9999px;">Verified Price Drop</span>` : ''}
               ${isSeedFallbackDeal(deal)
                 ? `<span style="font-size: 0.75rem; background: rgba(245, 158, 11, 0.16); color: #fcd34d; border: 1px solid rgba(245, 158, 11, 0.35); padding: 0.2rem 0.5rem; border-radius: 9999px;">SEED_SNAPSHOT</span>`
-                : `<span style="font-size: 0.75rem; background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); padding: 0.2rem 0.5rem; border-radius: 9999px;">✓ Verified In-Stock</span>`}
+                : `<span style="font-size: 0.75rem; background: ${deal.availability === 'OUT_OF_STOCK' ? 'rgba(239, 68, 68, 0.16)' : 'rgba(16, 185, 129, 0.15)'}; color: ${deal.availability === 'OUT_OF_STOCK' ? '#fca5a5' : '#34d399'}; border: 1px solid ${deal.availability === 'OUT_OF_STOCK' ? 'rgba(239, 68, 68, 0.35)' : 'rgba(16, 185, 129, 0.3)'}; padding: 0.2rem 0.5rem; border-radius: 9999px;">${this.escapeHtml(formatStockStatusLabel(deal))}</span>`}
             </div>
           </div>
           ${imgUrl ? `
@@ -1742,7 +1753,7 @@ ${this.serializeSafeJsonLd(productSchema, true)}
         <span style="font-size:0.88rem;font-weight:700;background:rgba(16,185,129,0.2);color:#6ee7b7;padding:0.3rem 0.75rem;border-radius:8px;">${this.escapeHtml(badgeText)}</span>
       </div>
       <p style="font-size:0.86rem;color:#94a3b8;margin:0.5rem 0 1rem 0;">
-        Price Checked: <strong>${this.escapeHtml(formatHumanVerifiedDate(verifiedTs))}</strong> &bull; Status: <strong>${this.escapeHtml(isSeedFallbackDeal(deal) ? 'SEED_SNAPSHOT' : '✓ Verified In-Stock')}</strong>
+        Price Checked: <strong>${this.escapeHtml(formatHumanVerifiedDate(verifiedTs))}</strong> &bull; Status: <strong>${this.escapeHtml(formatStockStatusLabel(deal))}</strong>
       </p>
       ${(() => {
         const reviews = Array.isArray((deal as any).youtubeReviews) && (deal as any).youtubeReviews.length > 0
@@ -1855,8 +1866,12 @@ ${this.serializeSafeJsonLd(productSchema, true)}
     const imgB = getProductImageUrl(b);
     const specsA = getRawSpecsMap(a);
     const specsB = getRawSpecsMap(b);
-    const fitBuyA = a.buyerFitSummary || a.evidenceJson?.buyerFitSummary || a.targetBuyerSegment || 'Daily active skincare routine buyers';
-    const fitBuyB = b.buyerFitSummary || b.evidenceJson?.buyerFitSummary || b.targetBuyerSegment || 'Daily active skincare routine buyers';
+    const isSkincareCompare =
+      inferDealSubCategory(a) === 'face-serum' ||
+      inferDealSubCategory(b) === 'face-serum' ||
+      /beauty|skin/i.test(String(a.category || b.category || ''));
+    const fitBuyA = a.buyerFitSummary || a.evidenceJson?.buyerFitSummary || a.targetBuyerSegment || (isSkincareCompare ? 'Daily active skincare routine buyers' : 'General value buyers');
+    const fitBuyB = b.buyerFitSummary || b.evidenceJson?.buyerFitSummary || b.targetBuyerSegment || (isSkincareCompare ? 'Daily active skincare routine buyers' : 'General value buyers');
     const description = `Compare ${a.title} (₹${priceA.toLocaleString('en-IN')}${unitA.pricePerMlLabel ? `, ${unitA.pricePerMlLabel}` : ''}) vs ${b.title} (₹${priceB.toLocaleString('en-IN')}${unitB.pricePerMlLabel ? `, ${unitB.pricePerMlLabel}` : ''}) with key ingredients, cost per ml, and verified store links.`;
 
     const rail1A = `${config.siteUrl}/api/v1/public/deals/${encodeURIComponent(a.id)}/redirect?utm_source=vs_compare`;
@@ -1976,9 +1991,9 @@ ${this.serializeSafeJsonLd(itemListSchema, true)}
             <td style="font-size:0.84rem;color:#cbd5e1;">${this.escapeHtml(specsB['Key Ingredients'] || b.category || '-')}</td>
           </tr>
           <tr>
-            <th>Texture &amp; Fragrance</th>
-            <td style="font-size:0.84rem;color:#cbd5e1;">${this.escapeHtml([specsA['Texture & Finish'], specsA['Fragrance Profile']].filter(Boolean).join(' &bull; ') || 'Light serum')}</td>
-            <td style="font-size:0.84rem;color:#cbd5e1;">${this.escapeHtml([specsB['Texture & Finish'], specsB['Fragrance Profile']].filter(Boolean).join(' &bull; ') || 'Light serum')}</td>
+            <th>${isSkincareCompare ? 'Texture &amp; Fragrance' : 'Key Specifications'}</th>
+            <td style="font-size:0.84rem;color:#cbd5e1;">${this.escapeHtml([specsA['Texture & Finish'], specsA['Fragrance Profile']].filter(Boolean).join(' • ') || (isSkincareCompare ? 'Light serum' : 'See product specs'))}</td>
+            <td style="font-size:0.84rem;color:#cbd5e1;">${this.escapeHtml([specsB['Texture & Finish'], specsB['Fragrance Profile']].filter(Boolean).join(' • ') || (isSkincareCompare ? 'Light serum' : 'See product specs'))}</td>
           </tr>
           <tr>
             <th>Best For</th>
