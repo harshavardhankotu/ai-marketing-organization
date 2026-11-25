@@ -160,6 +160,10 @@ function getProductImageUrl(d: any): string {
   return /^https:\/\//i.test(raw) ? raw : '';
 }
 
+function isAmazonAssociatesConfigured(): boolean {
+  return Boolean((process.env.AMAZON_AFFILIATE_TAG || '').trim());
+}
+
 export interface AttributionQueryParams {
   utmSource?: string;
   utmMedium?: string;
@@ -1295,7 +1299,7 @@ export class StaticSiteGenerator {
             <a href="${this.escapeHtml(targetHref)}" target="_blank" rel="sponsored noopener noreferrer" data-ab-experiment="${this.escapeHtml(ctaAssignment.experimentId)}" data-ab-variant="${this.escapeHtml(ctaAssignment.variant)}" style="background: #06b6d4; color: #020617; font-weight: 700; font-size: 0.84rem; padding: 0.55rem 0.95rem; border-radius: 8px; text-decoration: none; min-height: 40px; display: inline-flex; align-items: center; justify-content: center;">${this.escapeHtml(ctaAssignment.ctaText)}</a>
           </div>
           <a href="${this.escapeHtml(detailHref)}" style="display: block; text-align: center; background: #0f172a; border: 1px solid #334155; color: #cbd5e1; font-weight: 600; font-size: 0.78rem; padding: 0.45rem 0.65rem; border-radius: 7px; text-decoration: none;">Ingredients, Video Reviews &amp; Who Should Skip &rarr;</a>
-          <a href="${this.escapeHtml(amazonRailHref)}" target="_blank" rel="sponsored noopener noreferrer" style="display: block; text-align: center; background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); color: #fcd34d; font-weight: 600; font-size: 0.76rem; padding: 0.45rem 0.65rem; border-radius: 7px; text-decoration: none;">${amazonRailLabel}</a>
+          ${isAmazonAssociatesConfigured() ? `<a href="${this.escapeHtml(amazonRailHref)}" target="_blank" rel="sponsored noopener noreferrer" style="display: block; text-align: center; background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); color: #fcd34d; font-weight: 600; font-size: 0.76rem; padding: 0.45rem 0.65rem; border-radius: 7px; text-decoration: none;">${amazonRailLabel}</a>` : ''}
         </div>
       </div>
     `;
@@ -1834,7 +1838,7 @@ ${this.serializeSafeJsonLd(productSchema, true)}
       })()}
       <div style="display:flex;flex-wrap:wrap;gap:0.75rem;align-items:center;margin-top:0.5rem;">
         <a href="${this.escapeHtml(redirectHref)}" target="_blank" rel="sponsored noopener noreferrer" class="cta-btn" style="margin-top:0;">Claim Verified Deal on ${this.escapeHtml(deal.merchant)} &rarr;</a>
-        <a href="${this.escapeHtml(`${config.siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(deal.title || '').slice(0, 120))}&dealId=${encodeURIComponent(String(deal.id || ''))}`)}" target="_blank" rel="sponsored noopener noreferrer" style="display:inline-block;background:rgba(245,158,11,0.14);border:1px solid rgba(245,158,11,0.4);color:#fcd34d;font-weight:700;padding:0.9rem 1.35rem;border-radius:10px;text-decoration:none;font-size:0.92rem;">Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)</a>
+        ${isAmazonAssociatesConfigured() ? `<a href="${this.escapeHtml(`${config.siteUrl}/api/v1/public/amazon-redirect?q=${encodeURIComponent(String(deal.title || '').slice(0, 120))}&dealId=${encodeURIComponent(String(deal.id || ''))}`)}" target="_blank" rel="sponsored noopener noreferrer" style="display:inline-block;background:rgba(245,158,11,0.14);border:1px solid rgba(245,158,11,0.4);color:#fcd34d;font-weight:700;padding:0.9rem 1.35rem;border-radius:10px;text-decoration:none;font-size:0.92rem;">Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)</a>` : ''}
       </div>
       ${this.renderPriceDropAlertBoxHtml({ productSlug: deal.slug || deal.canonicalSlug || deal.id, category: deal.category, currentPriceINR: priceNum, dealId: deal.id })}
 
@@ -2072,17 +2076,17 @@ ${this.serializeSafeJsonLd(itemListSchema, true)}
           </tr>
           ` : ''}
           <tr>
-            <th>Dual-Rail Checkout (#Ad)</th>
+            <th>${isAmazonAssociatesConfigured() ? 'Dual-Rail Checkout (#Ad)' : 'Official Brand Store (#Affiliate)'}</th>
             <td>
               <div style="display:flex;flex-direction:column;gap:0.5rem;">
                 <a href="${this.escapeHtml(rail1A)}" target="_blank" rel="sponsored noopener noreferrer" style="display:inline-block;text-align:center;background:#06b6d4;color:#020617;font-weight:700;padding:0.55rem 0.9rem;border-radius:8px;text-decoration:none;font-size:0.84rem;">Buy at ${this.escapeHtml(a.merchant)} &rarr;</a>
-                <a href="${this.escapeHtml(rail2A)}" target="_blank" rel="sponsored noopener noreferrer" style="display:inline-block;text-align:center;background:rgba(245,158,11,0.14);border:1px solid rgba(245,158,11,0.4);color:#fcd34d;font-weight:600;padding:0.48rem 0.75rem;border-radius:8px;text-decoration:none;font-size:0.78rem;">Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)</a>
+                ${isAmazonAssociatesConfigured() ? `<a href="${this.escapeHtml(rail2A)}" target="_blank" rel="sponsored noopener noreferrer" style="display:inline-block;text-align:center;background:rgba(245,158,11,0.14);border:1px solid rgba(245,158,11,0.4);color:#fcd34d;font-weight:600;padding:0.48rem 0.75rem;border-radius:8px;text-decoration:none;font-size:0.78rem;">Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)</a>` : ''}
               </div>
             </td>
             <td>
               <div style="display:flex;flex-direction:column;gap:0.5rem;">
                 <a href="${this.escapeHtml(rail1B)}" target="_blank" rel="sponsored noopener noreferrer" style="display:inline-block;text-align:center;background:#06b6d4;color:#020617;font-weight:700;padding:0.55rem 0.9rem;border-radius:8px;text-decoration:none;font-size:0.84rem;">Buy at ${this.escapeHtml(b.merchant)} &rarr;</a>
-                <a href="${this.escapeHtml(rail2B)}" target="_blank" rel="sponsored noopener noreferrer" style="display:inline-block;text-align:center;background:rgba(245,158,11,0.14);border:1px solid rgba(245,158,11,0.4);color:#fcd34d;font-weight:600;padding:0.48rem 0.75rem;border-radius:8px;text-decoration:none;font-size:0.78rem;">Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)</a>
+                ${isAmazonAssociatesConfigured() ? `<a href="${this.escapeHtml(rail2B)}" target="_blank" rel="sponsored noopener noreferrer" style="display:inline-block;text-align:center;background:rgba(245,158,11,0.14);border:1px solid rgba(245,158,11,0.4);color:#fcd34d;font-weight:600;padding:0.48rem 0.75rem;border-radius:8px;text-decoration:none;font-size:0.78rem;">Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)</a>` : ''}
               </div>
             </td>
           </tr>
@@ -2185,7 +2189,7 @@ ${this.serializeSafeJsonLd(itemListSchema, true)}
         </div>
         <div style="display:flex;flex-direction:column;gap:0.4rem;">
           <a href="${this.escapeHtml(rail1)}" target="_blank" rel="sponsored noopener noreferrer" style="text-align:center;background:#06b6d4;color:#020617;font-weight:700;padding:0.55rem 0.75rem;border-radius:6px;text-decoration:none;font-size:0.8rem;">Official Brand Store (#Affiliate) &rarr;</a>
-          <a href="${this.escapeHtml(rail2)}" target="_blank" rel="sponsored noopener noreferrer" style="text-align:center;background:rgba(245,158,11,0.14);border:1px solid rgba(245,158,11,0.38);color:#fcd34d;font-weight:600;padding:0.45rem 0.65rem;border-radius:6px;text-decoration:none;font-size:0.75rem;">Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)</a>
+          ${isAmazonAssociatesConfigured() ? `<a href="${this.escapeHtml(rail2)}" target="_blank" rel="sponsored noopener noreferrer" style="text-align:center;background:rgba(245,158,11,0.14);border:1px solid rgba(245,158,11,0.38);color:#fcd34d;font-weight:600;padding:0.45rem 0.65rem;border-radius:6px;text-decoration:none;font-size:0.75rem;">Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)</a>` : ''}
         </div>
       </div>`;
     };
@@ -2215,7 +2219,7 @@ ${this.serializeSafeJsonLd(itemListSchema, true)}
         <td>
           <div style="display:flex;flex-direction:column;gap:0.4rem;min-width:190px;">
             <a href="${this.escapeHtml(rail1)}" target="_blank" rel="sponsored noopener noreferrer" style="text-align:center;background:#06b6d4;color:#020617;font-weight:700;padding:0.45rem 0.7rem;border-radius:6px;text-decoration:none;font-size:0.8rem;">Official Brand Store (#Affiliate) &rarr;</a>
-            <a href="${this.escapeHtml(rail2)}" target="_blank" rel="sponsored noopener noreferrer" style="text-align:center;background:rgba(245,158,11,0.14);border:1px solid rgba(245,158,11,0.38);color:#fcd34d;font-weight:600;padding:0.38rem 0.6rem;border-radius:6px;text-decoration:none;font-size:0.75rem;">Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)</a>
+            ${isAmazonAssociatesConfigured() ? `<a href="${this.escapeHtml(rail2)}" target="_blank" rel="sponsored noopener noreferrer" style="text-align:center;background:rgba(245,158,11,0.14);border:1px solid rgba(245,158,11,0.38);color:#fcd34d;font-weight:600;padding:0.38rem 0.6rem;border-radius:6px;text-decoration:none;font-size:0.75rem;">Check Today's Live Price &amp; Prime Coupons on Amazon.in &rarr; (#Ad)</a>` : ''}
           </div>
         </td>
       </tr>`;
